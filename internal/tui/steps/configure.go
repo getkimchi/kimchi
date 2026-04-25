@@ -1,14 +1,17 @@
 package steps
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	klog "k8s.io/klog/v2"
 
 	"github.com/castai/kimchi/internal/config"
+	"github.com/castai/kimchi/internal/models"
 	"github.com/castai/kimchi/internal/tools"
 )
 
@@ -51,6 +54,8 @@ type writeCompleteMsg struct {
 
 type startWriteMsg struct{}
 
+type modelsLoadedMsg struct{}
+
 func NewConfigureStep(params ConfigureParams) *ConfigureStep {
 	return &ConfigureStep{
 		toolIDs:        params.ToolIDs,
@@ -63,13 +68,32 @@ func NewConfigureStep(params ConfigureParams) *ConfigureStep {
 }
 
 func (s *ConfigureStep) Init() tea.Cmd {
-	return tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
-		return startWriteMsg{}
-	})
+	return s.loadModels()
+}
+
+func (s *ConfigureStep) loadModels() tea.Cmd {
+	return func() tea.Msg {
+		reg := models.New()
+		if s.apiKey != "" {
+			client := models.NewClient(nil)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := reg.LoadFromAPI(ctx, client, s.apiKey); err != nil {
+				klog.V(1).ErrorS(err, "failed to load models from API, using defaults")
+			}
+		}
+		tools.SetRegistry(reg)
+		return modelsLoadedMsg{}
+	}
 }
 
 func (s *ConfigureStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 	switch m := msg.(type) {
+	case modelsLoadedMsg:
+		return s, tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
+			return startWriteMsg{}
+		})
+
 	case startWriteMsg:
 		s.startOnce.Do(func() {
 			for i, toolID := range s.toolIDs {
