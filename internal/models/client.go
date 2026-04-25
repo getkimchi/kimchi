@@ -36,21 +36,24 @@ type apiPricing struct {
 	OutputPer1M float64 `json:"output_per_1m"`
 }
 
+// Client fetches model metadata from the Kimchi API.
 type Client struct {
-	http *http.Client
+	http     *http.Client
+	endpoint string
 }
 
+// NewClient creates a Client. Pass nil for the default http.Client.
 func NewClient(client *http.Client) *Client {
 	if client == nil {
 		client = &http.Client{
 			Timeout: 10 * time.Second,
 		}
 	}
-	return &Client{http: client}
+	return &Client{http: client, endpoint: modelsEndpoint}
 }
 
 func (c *Client) FetchModels(ctx context.Context, apiKey string) ([]Model, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsEndpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

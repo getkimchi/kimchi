@@ -46,6 +46,10 @@ func init() {
 	setFromRegistry(reg)
 }
 
+// SetRegistry repopulates the package-level model variables from the given
+// registry. It is NOT safe for concurrent use — call it before any concurrent
+// access to MainModel, CodingModel, SubModel, or allModels begins (e.g. during
+// initialisation, before tool config writes are dispatched).
 func SetRegistry(reg *models.Registry) {
 	setFromRegistry(reg)
 }

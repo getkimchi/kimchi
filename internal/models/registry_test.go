@@ -79,84 +79,45 @@ func TestDefaultTierAssignment(t *testing.T) {
 }
 
 func TestLoadFromAPISuccess(t *testing.T) {
-	apiModels := []Model{
-		{
-			Slug:           "big-model",
-			DisplayName:    "Big Model",
-			Reasoning:      true,
-			SupportsImages: true,
-			Pricing:        Pricing{InputPer1M: 2.0, OutputPer1M: 8.0},
-		},
-		{
-			Slug:           "code-model",
-			DisplayName:    "Code Model",
-			Reasoning:      true,
-			SupportsImages: false,
-			Pricing:        Pricing{InputPer1M: 1.0, OutputPer1M: 4.0},
-		},
-		{
-			Slug:           "cheap-model",
-			DisplayName:    "Cheap Model",
-			Reasoning:      false,
-			SupportsImages: false,
-			Pricing:        Pricing{InputPer1M: 0.1, OutputPer1M: 0.5},
-		},
-	}
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		entries := make([]apiModelEntry, len(apiModels))
-		for i, m := range apiModels {
-			entries[i] = apiModelEntry{
-				Slug:           m.Slug,
-				DisplayName:    m.DisplayName,
-				Reasoning:      m.Reasoning,
-				SupportsImages: m.SupportsImages,
-				Pricing:        &apiPricing{InputPer1M: m.Pricing.InputPer1M, OutputPer1M: m.Pricing.OutputPer1M},
-			}
+		// Verify the client sets auth headers correctly.
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Errorf("expected Authorization header 'Bearer test-key', got %q", got)
 		}
-		_ = json.NewEncoder(w).Encode(apiResponse{Models: entries})
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(apiResponse{Models: []apiModelEntry{
+			{
+				Slug:           "big-model",
+				DisplayName:    "Big Model",
+				Reasoning:      true,
+				SupportsImages: true,
+				Pricing:        &apiPricing{InputPer1M: 2.0, OutputPer1M: 8.0},
+			},
+			{
+				Slug:           "code-model",
+				DisplayName:    "Code Model",
+				Reasoning:      true,
+				SupportsImages: false,
+				Pricing:        &apiPricing{InputPer1M: 1.0, OutputPer1M: 4.0},
+			},
+			{
+				Slug:           "cheap-model",
+				DisplayName:    "Cheap Model",
+				Reasoning:      false,
+				SupportsImages: false,
+				Pricing:        &apiPricing{InputPer1M: 0.1, OutputPer1M: 0.5},
+			},
+		}})
 	}))
 	defer srv.Close()
 
-	client := &Client{http: srv.Client()}
-
-	origEndpoint := modelsEndpoint
-	t.Cleanup(func() { _ = origEndpoint })
-
+	client := &Client{http: srv.Client(), endpoint: srv.URL}
 	reg := New()
-	ctx := context.Background()
 
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
-	req.Header.Set("Authorization", "Bearer test-key")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := srv.Client().Do(req)
-	if err != nil {
-		t.Fatal(err)
+	if err := reg.LoadFromAPI(context.Background(), client, "test-key"); err != nil {
+		t.Fatalf("LoadFromAPI failed: %v", err)
 	}
-	defer resp.Body.Close()
-
-	var apiResp apiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		t.Fatal(err)
-	}
-
-	fetched := make([]Model, 0, len(apiResp.Models))
-	for _, e := range apiResp.Models {
-		m := Model{
-			Slug:           e.Slug,
-			DisplayName:    e.DisplayName,
-			Reasoning:      e.Reasoning,
-			SupportsImages: e.SupportsImages,
-		}
-		if e.Pricing != nil {
-			m.Pricing = Pricing{InputPer1M: e.Pricing.InputPer1M, OutputPer1M: e.Pricing.OutputPer1M}
-		}
-		fetched = append(fetched, m)
-	}
-
-	reg.assign(fetched)
 
 	if reg.Main().Slug != "big-model" {
 		t.Errorf("expected Main=big-model, got %q", reg.Main().Slug)
@@ -170,8 +131,6 @@ func TestLoadFromAPISuccess(t *testing.T) {
 	if len(reg.All()) != 3 {
 		t.Errorf("expected 3 models, got %d", len(reg.All()))
 	}
-
-	_ = client
 }
 
 func TestLoadFromAPIEmptyResponseKeepsDefaults(t *testing.T) {
@@ -186,27 +145,10 @@ func TestLoadFromAPIEmptyResponseKeepsDefaults(t *testing.T) {
 	defaultCoding := reg.Coding().Slug
 	defaultSub := reg.Sub().Slug
 
-	ctx := context.Background()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
-	resp, err := srv.Client().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
+	client := &Client{http: srv.Client(), endpoint: srv.URL}
 
-	var apiResp apiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		t.Fatal(err)
-	}
-
-	if len(apiResp.Models) == 0 {
-		// empty → do NOT call assign → registry keeps defaults
-	} else {
-		fetched := make([]Model, 0, len(apiResp.Models))
-		for _, e := range apiResp.Models {
-			fetched = append(fetched, Model{Slug: e.Slug})
-		}
-		reg.assign(fetched)
+	if err := reg.LoadFromAPI(context.Background(), client, "test-key"); err != nil {
+		t.Fatalf("LoadFromAPI failed: %v", err)
 	}
 
 	if reg.Main().Slug != defaultMain {

@@ -72,10 +72,10 @@ func (r *Registry) assign(models []Model) {
 		}
 	}
 
-	bestOverall, hasBest := bestByPrice(models)
+	bestOverall, hasBest := mostExpensive(models)
 
 	if len(mainCandidates) > 0 {
-		m, _ := bestByPrice(mainCandidates)
+		m, _ := mostExpensive(mainCandidates)
 		r.main = &m
 	} else if hasBest {
 		m := bestOverall
@@ -83,7 +83,7 @@ func (r *Registry) assign(models []Model) {
 	}
 
 	if len(codingCandidates) > 0 {
-		m, _ := bestByPrice(codingCandidates)
+		m, _ := mostExpensive(codingCandidates)
 		r.coding = &m
 	} else if hasBest {
 		m := bestOverall
@@ -91,7 +91,7 @@ func (r *Registry) assign(models []Model) {
 	}
 
 	if len(subCandidates) > 0 {
-		m, _ := bestByPrice(subCandidates)
+		m, _ := mostExpensive(subCandidates)
 		r.sub = &m
 	} else if hasBest {
 		m := bestOverall
@@ -99,7 +99,9 @@ func (r *Registry) assign(models []Model) {
 	}
 }
 
-func bestByPrice(models []Model) (Model, bool) {
+// mostExpensive returns the model with the highest total cost (input + output
+// per 1M tokens). Higher cost is used as a proxy for model quality/capability.
+func mostExpensive(models []Model) (Model, bool) {
 	if len(models) == 0 {
 		return Model{}, false
 	}
