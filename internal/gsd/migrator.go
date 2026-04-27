@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/castai/kimchi/internal/tools"
+	"github.com/castai/kimchi/internal/models"
 	"gopkg.in/yaml.v3"
 )
 
@@ -17,12 +17,12 @@ func NewMigrator() *Migrator {
 	return &Migrator{}
 }
 
-func (m *Migrator) Migrate(installations []Installation) ([]string, error) {
+func (m *Migrator) Migrate(installations []Installation, reg *models.Registry) ([]string, error) {
 	var migrated []string
 
 	for _, install := range installations {
 		for _, agentFile := range install.AgentFiles {
-			if err := m.updateAgentFile(agentFile, install.Type); err != nil {
+			if err := m.updateAgentFile(agentFile, install.Type, reg); err != nil {
 				return nil, fmt.Errorf("update %s: %w", agentFile.Name, err)
 			}
 			migrated = append(migrated, agentFile.Path)
@@ -32,7 +32,7 @@ func (m *Migrator) Migrate(installations []Installation) ([]string, error) {
 	return migrated, nil
 }
 
-func (m *Migrator) updateAgentFile(af AgentFile, installType InstallationType) error {
+func (m *Migrator) updateAgentFile(af AgentFile, installType InstallationType, reg *models.Registry) error {
 	_, err := Backup(af.Path)
 	if err != nil {
 		return fmt.Errorf("backup: %w", err)
@@ -43,7 +43,7 @@ func (m *Migrator) updateAgentFile(af AgentFile, installType InstallationType) e
 		return fmt.Errorf("parse frontmatter: %w", err)
 	}
 
-	model := m.determineModelForAgent(af.Name, installType)
+	model := m.determineModelForAgent(af.Name, installType, reg)
 	frontmatter["model"] = model
 
 	newContent, err := m.serializeFrontmatter(frontmatter, body)
@@ -121,11 +121,11 @@ func (m *Migrator) serializeFrontmatter(frontmatter map[string]any, body string)
 	return buf.String(), nil
 }
 
-func (m *Migrator) determineModelForAgent(agentName string, installType InstallationType) string {
+func (m *Migrator) determineModelForAgent(agentName string, installType InstallationType, reg *models.Registry) string {
 	var model string
 	for _, name := range PlanningAgents {
 		if name == agentName {
-			model = tools.MainModel.Slug
+			model = reg.Main().Slug
 			break
 		}
 	}
@@ -133,14 +133,14 @@ func (m *Migrator) determineModelForAgent(agentName string, installType Installa
 	if model == "" {
 		for _, name := range ExecutionAgents {
 			if name == agentName {
-				model = tools.CodingModel.Slug
+				model = reg.Coding().Slug
 				break
 			}
 		}
 	}
 
 	if model == "" {
-		model = tools.MainModel.Slug
+		model = reg.Main().Slug
 	}
 
 	// For opencode, prefix the model with the provider name

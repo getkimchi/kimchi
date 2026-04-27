@@ -16,6 +16,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/castai/kimchi/internal/models"
 	"github.com/castai/kimchi/internal/tools"
 )
 
@@ -37,11 +38,13 @@ type streamTimeoutMsg struct{}
 type DoneParams struct {
 	APIKey  string
 	ToolIDs []tools.ToolID
+	Reg     *models.Registry
 }
 
 type DoneStep struct {
 	apiKey             string
 	toolIDs            []tools.ToolID
+	reg                *models.Registry
 	streamedMsg        strings.Builder
 	streamDone         bool
 	hasReceivedContent bool
@@ -58,9 +61,14 @@ func NewDoneStep(ctx context.Context, params DoneParams) *DoneStep {
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
 
+	reg := params.Reg
+	if reg == nil {
+		reg = models.New()
+	}
 	return &DoneStep{
 		apiKey:  params.APIKey,
 		toolIDs: params.ToolIDs,
+		reg:     reg,
 		spin:    sp,
 	}
 }
@@ -190,7 +198,7 @@ func (s *DoneStep) runStreamBackground(ctx context.Context) {
 	}
 
 	reqBody := map[string]any{
-		"model": tools.MainModel.Slug,
+		"model": s.reg.Main().Slug,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
@@ -278,11 +286,11 @@ func (s *DoneStep) sendDefaultMessageTo(ch chan string) {
 	ch <- "Welcome to Kimchi!\n\n"
 	ch <- "You've just unlocked access to powerful open-source models\n"
 	ch <- "via Kimchi's infrastructure!\n\n"
-	ch <- tools.MainModel.Slug + " is your primary model for reasoning, planning,\n"
+	ch <- s.reg.Main().Slug + " is your primary model for reasoning, planning,\n"
 	ch <- "code generation, and image processing.\n\n"
-	ch <- tools.CodingModel.Slug + " is your coding subagent for writing,\n"
+	ch <- s.reg.Coding().Slug + " is your coding subagent for writing,\n"
 	ch <- "refactoring, and debugging code.\n\n"
-	ch <- tools.SubModel.Slug + " is your secondary subagent available\n"
+	ch <- s.reg.Sub().Slug + " is your secondary subagent available\n"
 	ch <- "across all your configured tools.\n\n"
 	ch <- "Don't be shy - experiment boldly! Ask tough questions,\n"
 	ch <- "request detailed explanations, generate entire features.\n"
@@ -355,9 +363,9 @@ func (s *DoneStep) buildPrompt(toolsSection string) (string, error) {
 	var buf strings.Builder
 	data := map[string]string{
 		"Tools":       toolsSection,
-		"MainModel":   tools.MainModel.Slug,
-		"CodingModel": tools.CodingModel.Slug,
-		"SubModel":    tools.SubModel.Slug,
+		"MainModel":   s.reg.Main().Slug,
+		"CodingModel": s.reg.Coding().Slug,
+		"SubModel":    s.reg.Sub().Slug,
 	}
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("execute welcome template: %w", err)

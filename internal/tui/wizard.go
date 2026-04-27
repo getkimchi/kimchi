@@ -10,6 +10,7 @@ import (
 
 	"github.com/castai/kimchi/internal/config"
 	"github.com/castai/kimchi/internal/gsd"
+	"github.com/castai/kimchi/internal/models"
 	"github.com/castai/kimchi/internal/telemetry"
 	"github.com/castai/kimchi/internal/tools"
 	"github.com/castai/kimchi/internal/tui/steps"
@@ -337,7 +338,7 @@ func RunWizard(ctx context.Context, opts ...WizardOption) (*WizardConfig, error)
 				AgentFiles: agentFiles,
 			})
 		}
-		if _, err := migrator.Migrate(migrateInstallations); err != nil {
+		if _, err := migrator.Migrate(migrateInstallations, models.Load(context.Background(), cfg.APIKey)); err != nil {
 			fmt.Printf("Warning: GSD migration failed: %v\n", err)
 		}
 	}

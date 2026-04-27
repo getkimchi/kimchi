@@ -12,6 +12,7 @@ import (
 	"github.com/Masterminds/semver/v3"
 
 	"github.com/castai/kimchi/internal/config"
+	"github.com/castai/kimchi/internal/models"
 )
 
 const (
@@ -62,7 +63,9 @@ func init() {
 		ConfigPath:  "~/.config/opencode/opencode.json",
 		BinaryName:  "opencode",
 		IsInstalled: detectBinary("opencode"),
-		Write:       writeOpenCode,
+		Write: func(scope config.ConfigScope, apiKey string, reg *models.Registry) error {
+			return writeOpenCode(scope, apiKey, reg)
+		},
 	})
 }
 
@@ -113,7 +116,7 @@ func extractVersionFromPlugin(pkgName string) string {
 	return ""
 }
 
-func writeOpenCode(scope config.ConfigScope, apiKey string) error {
+func writeOpenCode(scope config.ConfigScope, apiKey string, reg *models.Registry) error {
 	if apiKey == "" {
 		return fmt.Errorf("API key not configured")
 	}
@@ -134,10 +137,10 @@ func writeOpenCode(scope config.ConfigScope, apiKey string) error {
 	if providers == nil {
 		providers = make(map[string]any)
 	}
-	providers[providerName] = OpenCodeProviderConfig(apiKey)
+	providers[providerName] = OpenCodeProviderConfig(apiKey, reg)
 	existing["provider"] = providers
 
-	existing["model"] = providerName + "/" + MainModel.Slug
+	existing["model"] = providerName + "/" + reg.Main().Slug
 
 	if _, ok := existing["compaction"]; !ok {
 		existing["compaction"] = map[string]any{
@@ -217,7 +220,10 @@ func writeOpenCode(scope config.ConfigScope, apiKey string) error {
 }
 
 // OpenCodeProviderConfig returns the provider configuration map for OpenCode.
-func OpenCodeProviderConfig(apiKey string) map[string]any {
+func OpenCodeProviderConfig(apiKey string, reg *models.Registry) map[string]any {
+	main := reg.Main()
+	coding := reg.Coding()
+	sub := reg.Sub()
 	return map[string]any{
 		"npm":  "@ai-sdk/openai-compatible",
 		"name": "Kimchi",
@@ -227,31 +233,31 @@ func OpenCodeProviderConfig(apiKey string) map[string]any {
 			"apiKey":       apiKey,
 		},
 		"models": map[string]any{
-			MainModel.Slug: map[string]any{
-				"name":      MainModel.Slug,
-				"tool_call": MainModel.toolCall,
-				"reasoning": MainModel.reasoning,
+			main.Slug: map[string]any{
+				"name":      main.Slug,
+				"tool_call": main.ToolCall,
+				"reasoning": main.Reasoning,
 				"limit": map[string]any{
-					"context": MainModel.limits.contextWindow,
-					"output":  MainModel.limits.maxOutputTokens,
+					"context": main.Limits.ContextWindow,
+					"output":  main.Limits.MaxOutputTokens,
 				},
 			},
-			CodingModel.Slug: map[string]any{
-				"name":      CodingModel.Slug,
-				"tool_call": CodingModel.toolCall,
-				"reasoning": CodingModel.reasoning,
+			coding.Slug: map[string]any{
+				"name":      coding.Slug,
+				"tool_call": coding.ToolCall,
+				"reasoning": coding.Reasoning,
 				"limit": map[string]any{
-					"context": CodingModel.limits.contextWindow,
-					"output":  CodingModel.limits.maxOutputTokens,
+					"context": coding.Limits.ContextWindow,
+					"output":  coding.Limits.MaxOutputTokens,
 				},
 			},
-			SubModel.Slug: map[string]any{
-				"name":      SubModel.Slug,
-				"tool_call": SubModel.toolCall,
-				"reasoning": SubModel.reasoning,
+			sub.Slug: map[string]any{
+				"name":      sub.Slug,
+				"tool_call": sub.ToolCall,
+				"reasoning": sub.Reasoning,
 				"limit": map[string]any{
-					"context": SubModel.limits.contextWindow,
-					"output":  SubModel.limits.maxOutputTokens,
+					"context": sub.Limits.ContextWindow,
+					"output":  sub.Limits.MaxOutputTokens,
 				},
 			},
 		},

@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/castai/kimchi/internal/config"
+	"github.com/castai/kimchi/internal/models"
 )
 
 const codexConfigPath = "~/.codex/config.toml"
@@ -13,12 +14,12 @@ const codexAgentsPath = "~/.codex/AGENTS.md"
 const codexCatalogPath = "~/.codex/kimchi-models.json"
 const envKeyInstructions = "Set the " + APIKeyEnv + " environment variable with your Kimchi API key. You can add it to your shell profile (~/.zshrc, ~/.bashrc) or a .env file."
 
-func codexAgentMD() string {
+func codexAgentMD(mainSlug, codingSlug string) string {
 	return `# Kimchi Configuration
 
 This project uses Kimchi's open-source models:
-- ` + MainModel.Slug + ` for reasoning, planning, and image processing (primary model)
-- ` + CodingModel.Slug + ` for coding/execution (subagent)
+- ` + mainSlug + ` for reasoning, planning, and image processing (primary model)
+- ` + codingSlug + ` for coding/execution (subagent)
 
 Set the ` + APIKeyEnv + ` environment variable with your Kimchi API key.
 `
@@ -32,7 +33,9 @@ func init() {
 		ConfigPath:  codexConfigPath,
 		BinaryName:  "codex",
 		IsInstalled: detectBinary("codex"),
-		Write:       writeCodex,
+		Write: func(scope config.ConfigScope, apiKey string, reg *models.Registry) error {
+			return writeCodex(scope, apiKey, reg)
+		},
 	})
 }
 
@@ -74,33 +77,29 @@ type codexCatalog struct {
 }
 
 // WriteCodexModelCatalog writes the model catalog JSON to the given path.
-func WriteCodexModelCatalog(path string) error {
-	return writeModelCatalog(path)
+func WriteCodexModelCatalog(path string, reg *models.Registry) error {
+	return writeModelCatalog(path, reg)
 }
 
-func writeModelCatalog(path string) error {
-	var models []codexModelEntry
-	for _, m := range allModels {
+func writeModelCatalog(path string, reg *models.Registry) error {
+	var entries []codexModelEntry
+	for _, m := range reg.All() {
 		entry := codexModelEntry{
 			Slug:             m.Slug,
-			DisplayName:      m.displayName,
-			Description:      m.description,
+			DisplayName:      m.DisplayName,
+			Description:      m.Description,
 			ShellType:        "shell_command",
 			Visibility:       "list",
 			SupportedInAPI:   true,
 			BaseInstructions: "",
-			// Deliberately higher than the Codex default of 10,000 tokens
-			// (https://github.com/openai/codex/blob/main/codex-rs/core/models.json#L12)
-			// because tool outputs in coding use cases (file reads, docs) can be large.
-			// See: https://github.com/openai/codex/issues/6426
 			TruncationPolicy:           codexTruncationPolicy{Mode: "tokens", Limit: 25_000},
-			SupportsParallelToolCalls:  m.toolCall,
+			SupportsParallelToolCalls:  m.ToolCall,
 			ExperimentalSupportedTools: []string{},
-			ContextWindow:              m.limits.contextWindow,
-			InputModalities:            m.inputModalities,
+			ContextWindow:              m.Limits.ContextWindow,
+			InputModalities:            m.InputModalities,
 			ApplyPatchToolType:         "function",
 		}
-		if m.reasoning {
+		if m.Reasoning {
 			entry.DefaultReasoningLevel = "medium"
 			entry.SupportedReasoningLevels = []codexReasoningLevel{
 				{Effort: "low", Description: "Fast responses with lighter reasoning"},
@@ -113,16 +112,16 @@ func writeModelCatalog(path string) error {
 				{Effort: "none", Description: "No reasoning"},
 			}
 		}
-		models = append(models, entry)
+		entries = append(entries, entry)
 	}
-	data, err := json.MarshalIndent(codexCatalog{Models: models}, "", "  ")
+	data, err := json.MarshalIndent(codexCatalog{Models: entries}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal catalog: %w", err)
 	}
 	return config.WriteFile(path, data)
 }
 
-func writeCodex(scope config.ConfigScope, apiKey string) error {
+func writeCodex(scope config.ConfigScope, apiKey string, reg *models.Registry) error {
 	configPath, err := config.ScopePaths(scope, codexConfigPath)
 	if err != nil {
 		return fmt.Errorf("get config path: %w", err)
@@ -133,7 +132,7 @@ func writeCodex(scope config.ConfigScope, apiKey string) error {
 		return fmt.Errorf("read config: %w", err)
 	}
 
-	cfg["model"] = CodingModel.Slug
+	cfg["model"] = reg.Coding().Slug
 	cfg["model_provider"] = providerName
 	cfg["suppress_unstable_features_warning"] = true
 
@@ -153,7 +152,7 @@ func writeCodex(scope config.ConfigScope, apiKey string) error {
 	if err != nil {
 		return fmt.Errorf("get catalog path: %w", err)
 	}
-	if err := writeModelCatalog(catalogPath); err != nil {
+	if err := writeModelCatalog(catalogPath, reg); err != nil {
 		return fmt.Errorf("write model catalog: %w", err)
 	}
 	cfg["model_catalog_json"] = catalogPath
@@ -171,7 +170,7 @@ func writeCodex(scope config.ConfigScope, apiKey string) error {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("stat AGENTS.md: %w", err)
 		}
-		if err := config.WriteFile(instructionsPath, []byte(codexAgentMD())); err != nil {
+		if err := config.WriteFile(instructionsPath, []byte(codexAgentMD(reg.Main().Slug, reg.Coding().Slug))); err != nil {
 			return fmt.Errorf("write AGENTS.md: %w", err)
 		}
 	}
@@ -195,4 +194,6 @@ func CodexProviderBlock() map[string]any {
 func ProviderName() string { return providerName }
 
 // CodexAgentMD returns the default AGENTS.md content for Codex.
-func CodexAgentMD() string { return codexAgentMD() }
+func CodexAgentMD(reg *models.Registry) string {
+	return codexAgentMD(reg.Main().Slug, reg.Coding().Slug)
+}

@@ -32,11 +32,10 @@ func NewOpenCodeCommand() *cobra.Command {
 			}
 
 			reg := models.Load(cmd.Context(), apiKey)
-			tools.SetRegistry(reg)
 
-			printBanner(os.Stderr, tools.ToolOpenCode, cfg)
+			printBanner(os.Stderr, tools.ToolOpenCode, cfg, reg)
 
-			env, err := opencode.Env(apiKey)
+			env, err := opencode.Env(apiKey, reg)
 			if err != nil {
 				return fmt.Errorf("prepare opencode environment: %w", err)
 			}

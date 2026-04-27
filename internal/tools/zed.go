@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/castai/kimchi/internal/config"
+	"github.com/castai/kimchi/internal/models"
 )
 
 func init() {
@@ -14,11 +15,13 @@ func init() {
 		ConfigPath:  "~/.zed/settings.json",
 		BinaryName:  "zed",
 		IsInstalled: detectBinary("zed"),
-		Write:       writeZed,
+		Write: func(scope config.ConfigScope, apiKey string, reg *models.Registry) error {
+			return writeZed(scope, apiKey, reg)
+		},
 	})
 }
 
-func writeZed(scope config.ConfigScope, apiKey string) error {
+func writeZed(scope config.ConfigScope, apiKey string, reg *models.Registry) error {
 	if apiKey == "" {
 		return fmt.Errorf("API key not configured")
 	}
@@ -43,7 +46,7 @@ func writeZed(scope config.ConfigScope, apiKey string) error {
 		defaultModel = make(map[string]any)
 	}
 	defaultModel["provider"] = "openai"
-	defaultModel["model"] = MainModel.Slug
+	defaultModel["model"] = reg.Main().Slug
 	assistant["default_model"] = defaultModel
 
 	openai, _ := assistant["openai"].(map[string]any)

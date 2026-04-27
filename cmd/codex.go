@@ -32,11 +32,10 @@ func NewCodexCommand() *cobra.Command {
 			}
 
 			reg := models.Load(cmd.Context(), apiKey)
-			tools.SetRegistry(reg)
 
-			printBanner(os.Stderr, tools.ToolCodex, cfg)
+			printBanner(os.Stderr, tools.ToolCodex, cfg, reg)
 
-			env, err := codex.Env(apiKey)
+			env, err := codex.Env(apiKey, reg)
 			if err != nil {
 				return fmt.Errorf("prepare codex environment: %w", err)
 			}

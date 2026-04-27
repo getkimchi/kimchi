@@ -32,9 +32,8 @@ func NewClaudeCommand() *cobra.Command {
 			}
 
 			reg := models.Load(cmd.Context(), apiKey)
-			tools.SetRegistry(reg)
 
-			printBanner(os.Stderr, tools.ToolClaudeCode, cfg)
+			printBanner(os.Stderr, tools.ToolClaudeCode, cfg, reg)
 
 			env := claudecode.Env(apiKey)
 

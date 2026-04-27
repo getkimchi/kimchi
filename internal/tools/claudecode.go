@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/castai/kimchi/internal/config"
+	"github.com/castai/kimchi/internal/models"
 	"github.com/castai/kimchi/internal/provider/claudecode"
 )
 
@@ -20,7 +21,9 @@ func init() {
 		ConfigPath:  claudeCodeConfigPath,
 		BinaryName:  "claude",
 		IsInstalled: detectBinary("claude"),
-		Write:       writeClaudeCode,
+		Write: func(scope config.ConfigScope, apiKey string, _ *models.Registry) error {
+			return writeClaudeCode(scope, apiKey)
+		},
 	})
 }
 

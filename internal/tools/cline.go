@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/castai/kimchi/internal/config"
+	"github.com/castai/kimchi/internal/models"
 )
 
 func init() {
@@ -14,11 +15,13 @@ func init() {
 		ConfigPath:  "~/.cline/data/globalState.json",
 		BinaryName:  "cline",
 		IsInstalled: detectBinary("cline"),
-		Write:       writeCline,
+		Write: func(scope config.ConfigScope, apiKey string, reg *models.Registry) error {
+			return writeCline(scope, apiKey, reg)
+		},
 	})
 }
 
-func writeCline(scope config.ConfigScope, apiKey string) error {
+func writeCline(scope config.ConfigScope, apiKey string, reg *models.Registry) error {
 	if apiKey == "" {
 		return fmt.Errorf("API key not configured")
 	}
@@ -35,10 +38,10 @@ func writeCline(scope config.ConfigScope, apiKey string) error {
 
 	existing["ollamaBaseUrl"] = baseURL
 	existing["actModeApiProvider"] = "ollama"
-	existing["actModeOllamaModelId"] = CodingModel.Slug
+	existing["actModeOllamaModelId"] = reg.Coding().Slug
 	existing["actModeOllamaBaseUrl"] = baseURL
 	existing["planModeApiProvider"] = "ollama"
-	existing["planModeOllamaModelId"] = MainModel.Slug
+	existing["planModeOllamaModelId"] = reg.Main().Slug
 	existing["planModeOllamaBaseUrl"] = baseURL
 	existing["welcomeViewCompleted"] = true
 

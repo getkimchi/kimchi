@@ -7,13 +7,14 @@ import (
 
 	"github.com/castai/kimchi/internal/config"
 	"github.com/castai/kimchi/internal/gsd"
+	"github.com/castai/kimchi/internal/models"
 	"github.com/castai/kimchi/internal/tools"
 )
 
 // Env prepares the environment for launching OpenCode with Kimchi
 // configuration. It writes a managed config file to ~/.config/kimchi/opencode/opencode.json
 // and returns environment variables that redirect OpenCode to use it.
-func Env(apiKey string) (map[string]string, error) {
+func Env(apiKey string, reg *models.Registry) (map[string]string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("get home directory: %w", err)
@@ -45,10 +46,10 @@ func Env(apiKey string) (map[string]string, error) {
 	if providers == nil {
 		providers = make(map[string]any)
 	}
-	providers[tools.ProviderName()] = tools.OpenCodeProviderConfig(apiKey)
+	providers[tools.ProviderName()] = tools.OpenCodeProviderConfig(apiKey, reg)
 	existing["provider"] = providers
 
-	existing["model"] = tools.ProviderName() + "/" + tools.MainModel.Slug
+	existing["model"] = tools.ProviderName() + "/" + reg.Main().Slug
 
 	if _, ok := existing["compaction"]; !ok {
 		existing["compaction"] = map[string]any{

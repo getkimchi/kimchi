@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/castai/kimchi/internal/config"
+	"github.com/castai/kimchi/internal/models"
 )
 
 func TestWriteCodex(t *testing.T) {
@@ -17,13 +18,14 @@ func TestWriteCodex(t *testing.T) {
 		tmpDir := t.TempDir()
 		t.Setenv("HOME", tmpDir)
 
-		err := writeCodex(config.ScopeGlobal, "test-api-key")
+		reg := models.New()
+		err := writeCodex(config.ScopeGlobal, "test-api-key", reg)
 		require.NoError(t, err)
 
 		cfg, err := config.ReadTOML(filepath.Join(tmpDir, ".codex", "config.toml"))
 		require.NoError(t, err)
 
-		assert.Equal(t, CodingModel.Slug, cfg["model"])
+		assert.Equal(t, reg.Coding().Slug, cfg["model"])
 		assert.Equal(t, providerName, cfg["model_provider"])
 
 		providers := cfg["model_providers"].(map[string]any)
@@ -47,7 +49,8 @@ check_interval = 30
 `
 		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(existing), 0644))
 
-		err := writeCodex(config.ScopeGlobal, "test-api-key")
+		reg := models.New()
+		err := writeCodex(config.ScopeGlobal, "test-api-key", reg)
 		require.NoError(t, err)
 
 		cfg, err := config.ReadTOML(filepath.Join(configDir, "config.toml"))
@@ -75,7 +78,8 @@ wire_api = "responses"
 `
 		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(existing), 0644))
 
-		err := writeCodex(config.ScopeGlobal, "test-api-key")
+		reg := models.New()
+		err := writeCodex(config.ScopeGlobal, "test-api-key", reg)
 		require.NoError(t, err)
 
 		cfg, err := config.ReadTOML(filepath.Join(configDir, "config.toml"))
@@ -94,7 +98,8 @@ wire_api = "responses"
 		tmpDir := t.TempDir()
 		t.Setenv("HOME", tmpDir)
 
-		err := writeCodex(config.ScopeGlobal, "test-api-key")
+		reg := models.New()
+		err := writeCodex(config.ScopeGlobal, "test-api-key", reg)
 		require.NoError(t, err)
 
 		catalogPath := filepath.Join(tmpDir, ".codex", "kimchi-models.json")
@@ -103,25 +108,24 @@ wire_api = "responses"
 
 		var catalog codexCatalog
 		require.NoError(t, json.Unmarshal(data, &catalog))
-		require.Len(t, catalog.Models, len(allModels))
+		require.Len(t, catalog.Models, len(reg.All()))
 
 		bySlug := make(map[string]codexModelEntry)
 		for _, m := range catalog.Models {
 			bySlug[m.Slug] = m
 		}
-		assert.Equal(t, MainModel.limits.contextWindow, bySlug[MainModel.Slug].ContextWindow)
-		assert.Equal(t, CodingModel.limits.contextWindow, bySlug[CodingModel.Slug].ContextWindow)
-		assert.Equal(t, SubModel.limits.contextWindow, bySlug[SubModel.Slug].ContextWindow)
+		assert.Equal(t, reg.Main().Limits.ContextWindow, bySlug[reg.Main().Slug].ContextWindow)
+		assert.Equal(t, reg.Coding().Limits.ContextWindow, bySlug[reg.Coding().Slug].ContextWindow)
+		assert.Equal(t, reg.Sub().Limits.ContextWindow, bySlug[reg.Sub().Slug].ContextWindow)
 
-		assert.Equal(t, "medium", bySlug[MainModel.Slug].DefaultReasoningLevel)
-		assert.Equal(t, 3, len(bySlug[MainModel.Slug].SupportedReasoningLevels))
-		assert.Equal(t, "medium", bySlug[CodingModel.Slug].DefaultReasoningLevel)
-		assert.Equal(t, 3, len(bySlug[CodingModel.Slug].SupportedReasoningLevels))
+		assert.Equal(t, "medium", bySlug[reg.Main().Slug].DefaultReasoningLevel)
+		assert.Equal(t, 3, len(bySlug[reg.Main().Slug].SupportedReasoningLevels))
+		assert.Equal(t, "medium", bySlug[reg.Coding().Slug].DefaultReasoningLevel)
+		assert.Equal(t, 3, len(bySlug[reg.Coding().Slug].SupportedReasoningLevels))
 
-		assert.Equal(t, "medium", bySlug[SubModel.Slug].DefaultReasoningLevel)
-		assert.Equal(t, 3, len(bySlug[SubModel.Slug].SupportedReasoningLevels))
+		assert.Equal(t, "medium", bySlug[reg.Sub().Slug].DefaultReasoningLevel)
+		assert.Equal(t, 3, len(bySlug[reg.Sub().Slug].SupportedReasoningLevels))
 
-		// Verify config.toml references the catalog
 		cfg, err := config.ReadTOML(filepath.Join(tmpDir, ".codex", "config.toml"))
 		require.NoError(t, err)
 		assert.Equal(t, catalogPath, cfg["model_catalog_json"])
@@ -138,7 +142,8 @@ wire_api = "responses"
 `
 		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(malformed), 0644))
 
-		err := writeCodex(config.ScopeGlobal, "test-api-key")
+		reg := models.New()
+		err := writeCodex(config.ScopeGlobal, "test-api-key", reg)
 		require.ErrorContains(t, err, "expected \"model_providers\" to be a TOML table")
 	})
 
@@ -153,7 +158,8 @@ wire_api = "responses"
 		require.NoError(t, os.Chmod(configDir, 0555))
 		t.Cleanup(func() { _ = os.Chmod(configDir, 0755) })
 
-		err := writeCodex(config.ScopeGlobal, "test-api-key")
+		reg := models.New()
+		err := writeCodex(config.ScopeGlobal, "test-api-key", reg)
 		require.ErrorContains(t, err, "permission denied")
 	})
 
@@ -165,7 +171,8 @@ wire_api = "responses"
 		require.NoError(t, os.MkdirAll(agentsDir, 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "AGENTS.md"), []byte("custom instructions"), 0644))
 
-		err := writeCodex(config.ScopeGlobal, "test-api-key")
+		reg := models.New()
+		err := writeCodex(config.ScopeGlobal, "test-api-key", reg)
 		require.NoError(t, err)
 
 		content, err := os.ReadFile(filepath.Join(agentsDir, "AGENTS.md"))

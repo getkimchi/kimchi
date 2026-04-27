@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/castai/kimchi/internal/config"
+	"github.com/castai/kimchi/internal/models"
 )
 
 type ToolID string
@@ -39,7 +40,7 @@ type Tool struct {
 	InstallURL  string
 	InstallArgs []string
 	IsInstalled func() bool
-	Write       func(scope config.ConfigScope, apiKey string) error
+	Write       func(scope config.ConfigScope, apiKey string, reg *models.Registry) error
 }
 
 func (t Tool) DetectInstalled() bool {

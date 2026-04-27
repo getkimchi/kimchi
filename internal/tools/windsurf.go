@@ -9,6 +9,7 @@ import (
 	"runtime"
 
 	"github.com/castai/kimchi/internal/config"
+	"github.com/castai/kimchi/internal/models"
 )
 
 func init() {
@@ -19,7 +20,9 @@ func init() {
 		ConfigPath:  getWindsurfConfigPath(),
 		BinaryName:  "windsurf",
 		IsInstalled: detectWindsurf,
-		Write:       writeWindsurf,
+		Write: func(scope config.ConfigScope, apiKey string, reg *models.Registry) error {
+			return writeWindsurf(scope, apiKey, reg)
+		},
 	})
 }
 
@@ -45,7 +48,7 @@ func detectWindsurf() bool {
 	return false
 }
 
-func writeWindsurf(scope config.ConfigScope, apiKey string) error {
+func writeWindsurf(scope config.ConfigScope, apiKey string, reg *models.Registry) error {
 	if apiKey == "" {
 		return fmt.Errorf("API key not configured")
 	}
@@ -85,15 +88,19 @@ func writeWindsurf(scope config.ConfigScope, apiKey string) error {
 		apiConfigs = make(map[string]any)
 	}
 
+	main := reg.Main()
+	coding := reg.Coding()
+	sub := reg.Sub()
+
 	kimiConfig := map[string]any{
 		"apiProvider": "openai-native",
 		"apiKey":      apiKey,
 		"baseUrl":     baseURL,
-		"modelId":     MainModel.Slug,
+		"modelId":     main.Slug,
 		"modelInfo": map[string]any{
-			"maxTokens":           MainModel.limits.maxOutputTokens,
-			"contextWindow":       MainModel.limits.contextWindow,
-			"supportsImages":      MainModel.supportsImages,
+			"maxTokens":           main.Limits.MaxOutputTokens,
+			"contextWindow":       main.Limits.ContextWindow,
+			"supportsImages":      main.SupportsImages,
 			"supportsPromptCache": false,
 		},
 	}
@@ -102,11 +109,11 @@ func writeWindsurf(scope config.ConfigScope, apiKey string) error {
 		"apiProvider": "openai-native",
 		"apiKey":      apiKey,
 		"baseUrl":     baseURL,
-		"modelId":     CodingModel.Slug,
+		"modelId":     coding.Slug,
 		"modelInfo": map[string]any{
-			"maxTokens":           CodingModel.limits.maxOutputTokens,
-			"contextWindow":       CodingModel.limits.contextWindow,
-			"supportsImages":      CodingModel.supportsImages,
+			"maxTokens":           coding.Limits.MaxOutputTokens,
+			"contextWindow":       coding.Limits.ContextWindow,
+			"supportsImages":      coding.SupportsImages,
 			"supportsPromptCache": false,
 		},
 	}
@@ -115,11 +122,11 @@ func writeWindsurf(scope config.ConfigScope, apiKey string) error {
 		"apiProvider": "openai-native",
 		"apiKey":      apiKey,
 		"baseUrl":     baseURL,
-		"modelId":     SubModel.Slug,
+		"modelId":     sub.Slug,
 		"modelInfo": map[string]any{
-			"maxTokens":           SubModel.limits.maxOutputTokens,
-			"contextWindow":       SubModel.limits.contextWindow,
-			"supportsImages":      SubModel.supportsImages,
+			"maxTokens":           sub.Limits.MaxOutputTokens,
+			"contextWindow":       sub.Limits.ContextWindow,
+			"supportsImages":      sub.SupportsImages,
 			"supportsPromptCache": false,
 		},
 	}
