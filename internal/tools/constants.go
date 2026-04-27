@@ -11,3 +11,8 @@ const (
 func AnthropicBaseURL() string {
 	return anthropicBaseURL
 }
+
+// BaseURL returns the Kimchi OpenAI-compatible API endpoint URL.
+func BaseURL() string {
+	return baseURL
+}

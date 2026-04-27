@@ -303,7 +303,7 @@ func (s *DoneStep) getToolTip(toolID tools.ToolID) string {
 	case tools.ToolClaudeCode:
 		return "Run 'claude' in any project directory. Claude Code will use Kimchi endpoint for API calls."
 	case tools.ToolGeneric:
-		return "Source the exported environment variables in your shell."
+		return "Add the export lines shown in the previous step to your shell profile, then open a new terminal."
 	default:
 		return "Check the tool's documentation for getting started."
 	}

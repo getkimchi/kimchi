@@ -261,6 +261,9 @@ func (s *ConfigureStep) View() string {
 			} else if s.shellProfileErr != nil {
 				fmt.Fprintf(&b, "\n%s\n", Styles.Warning.Render(fmt.Sprintf("Could not export %s to shell profile: %v", tools.APIKeyEnv, s.shellProfileErr)))
 			}
+			if s.hasGenericTool() {
+				b.WriteString(s.renderGenericEnvBlock())
+			}
 			b.WriteString("\n")
 			b.WriteString(Styles.Help.Render("Press enter to exit"))
 		}
@@ -300,6 +303,25 @@ func (s *ConfigureStep) getModelInfoForTool(toolID tools.ToolID) string {
 	default:
 		return ""
 	}
+}
+
+func (s *ConfigureStep) hasGenericTool() bool {
+	for _, id := range s.toolIDs {
+		if id == tools.ToolGeneric {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *ConfigureStep) renderGenericEnvBlock() string {
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString("Set these in your shell to use the Generic integration:\n")
+	fmt.Fprintf(&b, "  export %s=%s\n", tools.APIKeyEnv, s.apiKey)
+	fmt.Fprintf(&b, "  export OPENAI_API_KEY=%s\n", s.apiKey)
+	fmt.Fprintf(&b, "  export OPENAI_BASE_URL=%s\n", tools.BaseURL())
+	return b.String()
 }
 
 func (s *ConfigureStep) Name() string {
