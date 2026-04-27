@@ -10,6 +10,7 @@ type Model struct {
 	InputModalities []string
 	Limits          Limits
 	Pricing         Pricing
+	Tier            string
 }
 
 type Limits struct {

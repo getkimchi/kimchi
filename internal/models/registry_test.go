@@ -6,37 +6,23 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewRegistryFromDefaults(t *testing.T) {
 	reg := New()
 
-	if reg.Main().Slug == "" {
-		t.Fatal("Main() returned empty slug")
-	}
-	if reg.Coding().Slug == "" {
-		t.Fatal("Coding() returned empty slug")
-	}
-	if reg.Sub().Slug == "" {
-		t.Fatal("Sub() returned empty slug")
-	}
-	if len(reg.All()) == 0 {
-		t.Fatal("All() returned empty slice")
-	}
+	require.NotEmpty(t, reg.Main().Slug)
+	require.NotEmpty(t, reg.Coding().Slug)
+	require.NotEmpty(t, reg.Sub().Slug)
+	require.NotEmpty(t, reg.All())
 
-	main := reg.Main()
-	if !main.Reasoning || !main.SupportsImages {
-		t.Errorf("Main() should be reasoning+images model, got reasoning=%v supportsImages=%v", main.Reasoning, main.SupportsImages)
-	}
-
-	coding := reg.Coding()
-	if !coding.Reasoning {
-		t.Errorf("Coding() should be reasoning model, got reasoning=%v", coding.Reasoning)
-	}
-
-	if main.Slug == coding.Slug {
-		t.Errorf("Main and Coding should be different models, both are %q", main.Slug)
-	}
+	assert.True(t, reg.Main().Reasoning)
+	assert.True(t, reg.Main().SupportsImages)
+	assert.True(t, reg.Coding().Reasoning)
+	assert.NotEqual(t, reg.Main().Slug, reg.Coding().Slug)
 }
 
 func TestDefaultTierAssignment(t *testing.T) {
@@ -59,31 +45,19 @@ func TestDefaultTierAssignment(t *testing.T) {
 			minimaxFound = true
 		}
 	}
-	if !kimiFound || !nemotronFound || !minimaxFound {
-		t.Fatal("defaults missing expected models")
-	}
+	require.True(t, kimiFound && nemotronFound && minimaxFound, "defaults missing expected models")
 
-	if mainSlug != "kimi-k2.5" {
-		t.Errorf("expected Main=kimi-k2.5, got %q", mainSlug)
-	}
-	if codingSlug != "nemotron-3-super-fp4" {
-		t.Errorf("expected Coding=nemotron-3-super-fp4, got %q", codingSlug)
-	}
+	assert.Equal(t, "kimi-k2.5", mainSlug)
+	assert.Equal(t, "nemotron-3-super-fp4", codingSlug)
 
 	// minimax-m2.7 has reasoning=true so it is a coding candidate, not sub.
 	// With no non-reasoning models in defaults, sub falls back to the best overall (kimi-k2.5).
-	subSlug := reg.Sub().Slug
-	if subSlug == "" {
-		t.Error("Sub() returned empty slug")
-	}
+	assert.NotEmpty(t, reg.Sub().Slug)
 }
 
 func TestLoadFromAPISuccess(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify the client sets auth headers correctly.
-		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
-			t.Errorf("expected Authorization header 'Bearer test-key', got %q", got)
-		}
+		assert.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(apiResponse{Models: []apiModelEntry{
@@ -115,22 +89,12 @@ func TestLoadFromAPISuccess(t *testing.T) {
 	client := &Client{http: srv.Client(), endpoint: srv.URL}
 	reg := New()
 
-	if err := reg.LoadFromAPI(context.Background(), client, "test-key"); err != nil {
-		t.Fatalf("LoadFromAPI failed: %v", err)
-	}
+	require.NoError(t, reg.LoadFromAPI(context.Background(), client, "test-key"))
 
-	if reg.Main().Slug != "big-model" {
-		t.Errorf("expected Main=big-model, got %q", reg.Main().Slug)
-	}
-	if reg.Coding().Slug != "code-model" {
-		t.Errorf("expected Coding=code-model, got %q", reg.Coding().Slug)
-	}
-	if reg.Sub().Slug != "cheap-model" {
-		t.Errorf("expected Sub=cheap-model, got %q", reg.Sub().Slug)
-	}
-	if len(reg.All()) != 3 {
-		t.Errorf("expected 3 models, got %d", len(reg.All()))
-	}
+	assert.Equal(t, "big-model", reg.Main().Slug)
+	assert.Equal(t, "code-model", reg.Coding().Slug)
+	assert.Equal(t, "cheap-model", reg.Sub().Slug)
+	assert.Len(t, reg.All(), 3)
 }
 
 func TestLoadFromAPIEmptyResponseKeepsDefaults(t *testing.T) {
@@ -141,25 +105,17 @@ func TestLoadFromAPIEmptyResponseKeepsDefaults(t *testing.T) {
 	defer srv.Close()
 
 	reg := New()
-	defaultMain := reg.Main().Slug
-	defaultCoding := reg.Coding().Slug
-	defaultSub := reg.Sub().Slug
+	defaultMainSlug := reg.Main().Slug
+	defaultCodingSlug := reg.Coding().Slug
+	defaultSubSlug := reg.Sub().Slug
 
 	client := &Client{http: srv.Client(), endpoint: srv.URL}
 
-	if err := reg.LoadFromAPI(context.Background(), client, "test-key"); err != nil {
-		t.Fatalf("LoadFromAPI failed: %v", err)
-	}
+	require.NoError(t, reg.LoadFromAPI(context.Background(), client, "test-key"))
 
-	if reg.Main().Slug != defaultMain {
-		t.Errorf("Main changed after empty API response: got %q, want %q", reg.Main().Slug, defaultMain)
-	}
-	if reg.Coding().Slug != defaultCoding {
-		t.Errorf("Coding changed after empty API response: got %q, want %q", reg.Coding().Slug, defaultCoding)
-	}
-	if reg.Sub().Slug != defaultSub {
-		t.Errorf("Sub changed after empty API response: got %q, want %q", reg.Sub().Slug, defaultSub)
-	}
+	assert.Equal(t, defaultMainSlug, reg.Main().Slug)
+	assert.Equal(t, defaultCodingSlug, reg.Coding().Slug)
+	assert.Equal(t, defaultSubSlug, reg.Sub().Slug)
 }
 
 func TestTierAssignmentFallbackWhenBucketEmpty(t *testing.T) {
@@ -175,15 +131,9 @@ func TestTierAssignmentFallbackWhenBucketEmpty(t *testing.T) {
 	reg := &Registry{}
 	reg.assign(models)
 
-	if reg.Main().Slug != "only-reasoning-images" {
-		t.Errorf("expected Main=only-reasoning-images, got %q", reg.Main().Slug)
-	}
-	if reg.Coding().Slug != "only-reasoning-images" {
-		t.Errorf("expected Coding to fallback to only model, got %q", reg.Coding().Slug)
-	}
-	if reg.Sub().Slug != "only-reasoning-images" {
-		t.Errorf("expected Sub to fallback to only model, got %q", reg.Sub().Slug)
-	}
+	assert.Equal(t, "only-reasoning-images", reg.Main().Slug)
+	assert.Equal(t, "only-reasoning-images", reg.Coding().Slug)
+	assert.Equal(t, "only-reasoning-images", reg.Sub().Slug)
 }
 
 func TestTierAssignmentPicksHighestCost(t *testing.T) {
@@ -217,10 +167,6 @@ func TestTierAssignmentPicksHighestCost(t *testing.T) {
 	reg := &Registry{}
 	reg.assign(models)
 
-	if reg.Main().Slug != "expensive-main" {
-		t.Errorf("expected Main=expensive-main, got %q", reg.Main().Slug)
-	}
-	if reg.Coding().Slug != "expensive-coding" {
-		t.Errorf("expected Coding=expensive-coding, got %q", reg.Coding().Slug)
-	}
+	assert.Equal(t, "expensive-main", reg.Main().Slug)
+	assert.Equal(t, "expensive-coding", reg.Coding().Slug)
 }

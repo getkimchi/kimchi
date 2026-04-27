@@ -1,13 +1,10 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/spf13/cobra"
-	klog "k8s.io/klog/v2"
 
 	"github.com/castai/kimchi/internal/config"
 	"github.com/castai/kimchi/internal/models"
@@ -34,15 +31,7 @@ func NewOpenCodeCommand() *cobra.Command {
 				return err
 			}
 
-			reg := models.New()
-			if apiKey != "" {
-				client := models.NewClient(nil)
-				ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
-				defer cancel()
-				if err := reg.LoadFromAPI(ctx, client, apiKey); err != nil {
-					klog.V(1).ErrorS(err, "failed to load models from API, using defaults")
-				}
-			}
+			reg := models.Load(cmd.Context(), apiKey)
 			tools.SetRegistry(reg)
 
 			printBanner(os.Stderr, tools.ToolOpenCode, cfg)

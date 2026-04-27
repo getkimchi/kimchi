@@ -1,3 +1,5 @@
+// TODO: refactor consumers to use models.Registry directly and remove this
+// compatibility layer. See PR #41 discussion.
 package tools
 
 import "github.com/castai/kimchi/internal/models"

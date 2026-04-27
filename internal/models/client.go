@@ -24,6 +24,7 @@ type apiModelEntry struct {
 	InputModalities []string    `json:"input_modalities,omitempty"`
 	Limits          apiLimits   `json:"limits"`
 	Pricing         *apiPricing `json:"pricing,omitempty"`
+	Tier            string      `json:"tier,omitempty"`
 }
 
 type apiLimits struct {
@@ -94,6 +95,7 @@ func (c *Client) FetchModels(ctx context.Context, apiKey string) ([]Model, error
 				ContextWindow:   e.Limits.ContextWindow,
 				MaxOutputTokens: e.Limits.MaxOutputTokens,
 			},
+			Tier: e.Tier,
 		}
 		if e.Pricing != nil {
 			m.Pricing = Pricing{

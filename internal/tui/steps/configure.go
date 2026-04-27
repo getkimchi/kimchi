@@ -8,7 +8,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	klog "k8s.io/klog/v2"
 
 	"github.com/castai/kimchi/internal/config"
 	"github.com/castai/kimchi/internal/models"
@@ -73,15 +72,7 @@ func (s *ConfigureStep) Init() tea.Cmd {
 
 func (s *ConfigureStep) loadModels() tea.Cmd {
 	return func() tea.Msg {
-		reg := models.New()
-		if s.apiKey != "" {
-			client := models.NewClient(nil)
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			if err := reg.LoadFromAPI(ctx, client, s.apiKey); err != nil {
-				klog.V(1).ErrorS(err, "failed to load models from API, using defaults")
-			}
-		}
+		reg := models.Load(context.Background(), s.apiKey)
 		tools.SetRegistry(reg)
 		return modelsLoadedMsg{}
 	}
