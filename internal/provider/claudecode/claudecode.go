@@ -5,7 +5,8 @@ const anthropicBaseURL = "https://llm.kimchi.dev/anthropic"
 func envPairs(baseURL, apiKey string) map[string]string {
 	return map[string]string{
 		"ANTHROPIC_BASE_URL":                     baseURL,
-		"ANTHROPIC_API_KEY":                      apiKey,
+		"ANTHROPIC_API_KEY":                      "",
+		"ANTHROPIC_AUTH_TOKEN":                   apiKey,
 		"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
 	}
 }

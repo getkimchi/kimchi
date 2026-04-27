@@ -27,10 +27,11 @@ func TestWriteClaudeCode(t *testing.T) {
 		var cfg map[string]any
 		require.NoError(t, json.Unmarshal(data, &cfg))
 
-		env := cfg["env"].(map[string]any)
-		assert.Equal(t, anthropicBaseURL, env["ANTHROPIC_BASE_URL"])
-		assert.Equal(t, "test-api-key", env["ANTHROPIC_API_KEY"])
-		assert.Equal(t, "1", env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"])
+	env := cfg["env"].(map[string]any)
+	assert.Equal(t, anthropicBaseURL, env["ANTHROPIC_BASE_URL"])
+	assert.Equal(t, "", env["ANTHROPIC_API_KEY"])
+	assert.Equal(t, "test-api-key", env["ANTHROPIC_AUTH_TOKEN"])
+	assert.Equal(t, "1", env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"])
 	})
 
 	t.Run("preserves existing config sections", func(t *testing.T) {
@@ -57,11 +58,12 @@ func TestWriteClaudeCode(t *testing.T) {
 		var cfg map[string]any
 		require.NoError(t, json.Unmarshal(data, &cfg))
 
-		assert.Equal(t, "sonnet", cfg["model"])
-		assert.Equal(t, "dark", cfg["theme"])
+	assert.Equal(t, "sonnet", cfg["model"])
+	assert.Equal(t, "dark", cfg["theme"])
 
-		env := cfg["env"].(map[string]any)
-		assert.Equal(t, "test-api-key", env["ANTHROPIC_API_KEY"])
+	env := cfg["env"].(map[string]any)
+	assert.Equal(t, "", env["ANTHROPIC_API_KEY"])
+	assert.Equal(t, "test-api-key", env["ANTHROPIC_AUTH_TOKEN"])
 	})
 
 	t.Run("preserves existing env vars", func(t *testing.T) {
@@ -90,10 +92,11 @@ func TestWriteClaudeCode(t *testing.T) {
 		var cfg map[string]any
 		require.NoError(t, json.Unmarshal(data, &cfg))
 
-		env := cfg["env"].(map[string]any)
-		assert.Equal(t, "custom-value", env["CUSTOM_VAR"])
-		assert.Equal(t, "new-api-key", env["ANTHROPIC_API_KEY"])
-		assert.Equal(t, anthropicBaseURL, env["ANTHROPIC_BASE_URL"])
+	env := cfg["env"].(map[string]any)
+	assert.Equal(t, "custom-value", env["CUSTOM_VAR"])
+	assert.Equal(t, "", env["ANTHROPIC_API_KEY"])
+	assert.Equal(t, "new-api-key", env["ANTHROPIC_AUTH_TOKEN"])
+	assert.Equal(t, anthropicBaseURL, env["ANTHROPIC_BASE_URL"])
 	})
 
 	t.Run("returns error when config directory is read-only", func(t *testing.T) {
@@ -134,7 +137,8 @@ func TestWriteClaudeCode(t *testing.T) {
 		var cfg map[string]any
 		require.NoError(t, json.Unmarshal(data, &cfg))
 
-		env := cfg["env"].(map[string]any)
-		assert.Equal(t, "project-api-key", env["ANTHROPIC_API_KEY"])
+	env := cfg["env"].(map[string]any)
+	assert.Equal(t, "", env["ANTHROPIC_API_KEY"])
+	assert.Equal(t, "project-api-key", env["ANTHROPIC_AUTH_TOKEN"])
 	})
 }
