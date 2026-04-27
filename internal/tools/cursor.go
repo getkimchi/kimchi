@@ -8,6 +8,7 @@ import (
 	"runtime"
 
 	"github.com/castai/kimchi/internal/config"
+	"github.com/castai/kimchi/internal/models"
 
 	_ "modernc.org/sqlite"
 )
@@ -56,7 +57,7 @@ func detectCursor() bool {
 
 // Scope is ignored: Cursor stores its state in a single per-user SQLite database,
 // so there is no project-local equivalent to write to.
-func writeCursor(_ config.ConfigScope, apiKey string) error {
+func writeCursor(_ config.ConfigScope, apiKey string, reg *models.Registry) error {
 	if apiKey == "" {
 		return fmt.Errorf("API key not configured")
 	}
@@ -96,7 +97,7 @@ func writeCursor(_ config.ConfigScope, apiKey string) error {
 		}
 	}
 
-	mergeCursorConfig(storage)
+	mergeCursorConfig(storage, reg)
 
 	newBlob, err := json.Marshal(storage)
 	if err != nil {
@@ -120,11 +121,11 @@ func writeCursor(_ config.ConfigScope, apiKey string) error {
 	return nil
 }
 
-func cursorModelSlug(m model) string {
-	return providerName + "/" + m.Slug
+func cursorModelSlug(slug string) string {
+	return providerName + "/" + slug
 }
 
-func mergeCursorConfig(storage map[string]any) {
+func mergeCursorConfig(storage map[string]any, reg *models.Registry) {
 	storage["openAIBaseUrl"] = baseURL
 	storage["useOpenAIKey"] = true
 
@@ -133,9 +134,9 @@ func mergeCursorConfig(storage map[string]any) {
 		aiSettings = make(map[string]any)
 	}
 
-	main := cursorModelSlug(MainModel)
-	coding := cursorModelSlug(CodingModel)
-	sub := cursorModelSlug(SubModel)
+	main := cursorModelSlug(reg.Main().Slug)
+	coding := cursorModelSlug(reg.Coding().Slug)
+	sub := cursorModelSlug(reg.Sub().Slug)
 
 	modelSlugs := []string{main, coding, sub}
 

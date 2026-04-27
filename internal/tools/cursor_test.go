@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/castai/kimchi/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/castai/kimchi/internal/config"
+	"github.com/castai/kimchi/internal/models"
 
 	_ "modernc.org/sqlite"
 )
@@ -54,7 +56,8 @@ func TestWriteCursor_FreshDB(t *testing.T) {
 	db := createTestCursorDB(t, dbPath)
 	require.NoError(t, db.Close())
 
-	err := writeCursor(config.ScopeGlobal, "test-api-key")
+	reg := models.New()
+	err := writeCursor(config.ScopeGlobal, "test-api-key", reg)
 	require.NoError(t, err)
 
 	storage := readCursorStorage(t, dbPath)
@@ -66,20 +69,20 @@ func TestWriteCursor_FreshDB(t *testing.T) {
 	require.True(t, ok)
 
 	userModels := toStringSlice(aiSettings["userAddedModels"])
-	assert.Contains(t, userModels, cursorModelSlug(MainModel))
-	assert.Contains(t, userModels, cursorModelSlug(CodingModel))
-	assert.Contains(t, userModels, cursorModelSlug(SubModel))
+	assert.Contains(t, userModels, cursorModelSlug(reg.Main().Slug))
+	assert.Contains(t, userModels, cursorModelSlug(reg.Coding().Slug))
+	assert.Contains(t, userModels, cursorModelSlug(reg.Sub().Slug))
 
 	enabled := toStringSlice(aiSettings["modelOverrideEnabled"])
-	assert.Contains(t, enabled, cursorModelSlug(MainModel))
-	assert.Contains(t, enabled, cursorModelSlug(CodingModel))
-	assert.Contains(t, enabled, cursorModelSlug(SubModel))
+	assert.Contains(t, enabled, cursorModelSlug(reg.Main().Slug))
+	assert.Contains(t, enabled, cursorModelSlug(reg.Coding().Slug))
+	assert.Contains(t, enabled, cursorModelSlug(reg.Sub().Slug))
 
 	modelConfig, ok := aiSettings["modelConfig"].(map[string]any)
 	require.True(t, ok)
 	composer, ok := modelConfig["composer"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, cursorModelSlug(MainModel), composer["modelName"])
+	assert.Equal(t, cursorModelSlug(reg.Main().Slug), composer["modelName"])
 
 	rdb, err := sql.Open("sqlite", dbPath)
 	require.NoError(t, err)
@@ -94,6 +97,7 @@ func TestWriteCursor_PreservesExistingSettings(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
+	reg := models.New()
 	dbPath := testCursorDBPath(t)
 	db := createTestCursorDB(t, dbPath)
 
@@ -104,7 +108,7 @@ func TestWriteCursor_PreservesExistingSettings(t *testing.T) {
 			"cmdKModel":             "gpt-4",
 			"userAddedModels":       []any{"my-custom-model"},
 			"modelOverrideEnabled":  []any{"default", "my-custom-model"},
-			"modelOverrideDisabled": []any{cursorModelSlug(MainModel), "some-other-model"},
+			"modelOverrideDisabled": []any{cursorModelSlug(reg.Main().Slug), "some-other-model"},
 			"modelConfig": map[string]any{
 				"cmd-k": map[string]any{
 					"modelName": "gpt-4",
@@ -118,7 +122,7 @@ func TestWriteCursor_PreservesExistingSettings(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
 
-	err = writeCursor(config.ScopeGlobal, "test-key")
+	err = writeCursor(config.ScopeGlobal, "test-key", reg)
 	require.NoError(t, err)
 
 	storage := readCursorStorage(t, dbPath)
@@ -133,35 +137,36 @@ func TestWriteCursor_PreservesExistingSettings(t *testing.T) {
 
 	userModels := toStringSlice(aiSettings["userAddedModels"])
 	assert.Contains(t, userModels, "my-custom-model")
-	assert.Contains(t, userModels, cursorModelSlug(MainModel))
+	assert.Contains(t, userModels, cursorModelSlug(reg.Main().Slug))
 
 	disabled := toStringSlice(aiSettings["modelOverrideDisabled"])
-	assert.NotContains(t, disabled, cursorModelSlug(MainModel))
+	assert.NotContains(t, disabled, cursorModelSlug(reg.Main().Slug))
 	assert.Contains(t, disabled, "some-other-model")
 
 	modelConfig, ok := aiSettings["modelConfig"].(map[string]any)
 	require.True(t, ok)
 	cmdK, ok := modelConfig["cmd-k"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, cursorModelSlug(CodingModel), cmdK["modelName"])
+	assert.Equal(t, cursorModelSlug(reg.Coding().Slug), cmdK["modelName"])
 	bgComposer, ok := modelConfig["background-composer"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, cursorModelSlug(MainModel), bgComposer["modelName"])
+	assert.Equal(t, cursorModelSlug(reg.Main().Slug), bgComposer["modelName"])
 	quickAgent, ok := modelConfig["quick-agent"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, cursorModelSlug(SubModel), quickAgent["modelName"])
+	assert.Equal(t, cursorModelSlug(reg.Sub().Slug), quickAgent["modelName"])
 }
 
 func TestWriteCursor_Idempotent(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
+	reg := models.New()
 	dbPath := testCursorDBPath(t)
 	db := createTestCursorDB(t, dbPath)
 	require.NoError(t, db.Close())
 
-	require.NoError(t, writeCursor(config.ScopeGlobal, "key1"))
-	require.NoError(t, writeCursor(config.ScopeGlobal, "key2"))
+	require.NoError(t, writeCursor(config.ScopeGlobal, "key1", reg))
+	require.NoError(t, writeCursor(config.ScopeGlobal, "key2", reg))
 
 	storage := readCursorStorage(t, dbPath)
 	aiSettings, ok := storage["aiSettings"].(map[string]any)
@@ -170,7 +175,7 @@ func TestWriteCursor_Idempotent(t *testing.T) {
 	userModels := toStringSlice(aiSettings["userAddedModels"])
 	count := 0
 	for _, m := range userModels {
-		if m == cursorModelSlug(MainModel) {
+		if m == cursorModelSlug(reg.Main().Slug) {
 			count++
 		}
 	}
@@ -188,11 +193,12 @@ func TestWriteCursor_StoresAsText(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
+	reg := models.New()
 	dbPath := testCursorDBPath(t)
 	db := createTestCursorDB(t, dbPath)
 	require.NoError(t, db.Close())
 
-	require.NoError(t, writeCursor(config.ScopeGlobal, "test-key"))
+	require.NoError(t, writeCursor(config.ScopeGlobal, "test-key", reg))
 
 	rdb, err := sql.Open("sqlite", dbPath)
 	require.NoError(t, err)
@@ -209,7 +215,7 @@ func TestWriteCursor_StoresAsText(t *testing.T) {
 }
 
 func TestWriteCursor_EmptyAPIKey(t *testing.T) {
-	err := writeCursor(config.ScopeGlobal, "")
+	err := writeCursor(config.ScopeGlobal, "", models.New())
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "API key not configured")
 }
@@ -218,7 +224,7 @@ func TestWriteCursor_MissingDB(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
-	err := writeCursor(config.ScopeGlobal, "test-key")
+	err := writeCursor(config.ScopeGlobal, "test-key", models.New())
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
