@@ -28,18 +28,12 @@ type WizardConfig struct {
 // WizardOption configures the wizard.
 type WizardOption func(*wizard)
 
-// WithPreview enables preview features such as the coding harness update.
-func WithPreview(preview bool) WizardOption {
-	return func(w *wizard) { w.preview = preview }
-}
-
 type wizard struct {
 	stepList         []steps.Step
 	current          int
 	config           WizardConfig
 	finished         bool
 	aborted          bool
-	preview          bool
 	pendingUpdate    *steps.UpdateStep
 	pendingGSD       *steps.GSDStep
 	pendingTelemetry *steps.TelemetryStep
@@ -57,7 +51,7 @@ func newWizard(ctx context.Context, opts ...WizardOption) *wizard {
 		o(w)
 	}
 
-	welcomeStep := steps.NewWelcomeStep(w.preview)
+	welcomeStep := steps.NewWelcomeStep()
 	authStep := steps.NewAuthStep()
 	installStep := steps.NewInstallStep()
 	toolsStep := steps.NewToolsStep()

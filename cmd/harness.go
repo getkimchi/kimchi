@@ -35,7 +35,7 @@ func runHarness(cmd *cobra.Command) error {
 	}
 
 	// Reuse the update command logic for CLI + harness updates.
-	// Uses cache (skipCache=false) since --preview launches happen frequently.
+	// Uses cache (skipCache=false) since harness launches happen frequently.
 	if _, err := runUpdate(cmd, false, false, false); err != nil {
 		return err
 	}

@@ -11,7 +11,7 @@ func NewSetupCommand() *cobra.Command {
 		Use:   "setup",
 		Short: "Run the interactive setup wizard",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, err := tui.RunWizard(cmd.Context(), tui.WithPreview(preview))
+			_, err := tui.RunWizard(cmd.Context())
 			return err
 		},
 	}

@@ -9,6 +9,7 @@ kimchi
 
 # Build
 /dist/
+/bin/
 
 # Test
 *.test

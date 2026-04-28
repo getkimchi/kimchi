@@ -17,50 +17,34 @@ type updateCheckMsg struct {
 
 // WelcomeStep displays an initial welcome message and checks for updates in the background.
 type WelcomeStep struct {
-	preview bool
-
 	cli     update.UpdateStatus
 	harness update.UpdateStatus
 }
 
-func NewWelcomeStep(preview bool) *WelcomeStep {
-	return &WelcomeStep{
-		preview: preview,
-	}
+func NewWelcomeStep() *WelcomeStep {
+	return &WelcomeStep{}
 }
 
 func (s *WelcomeStep) Init() tea.Cmd {
 	if update.IsUpdateCheckDisabled() {
 		return nil
 	}
-	preview := s.preview
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
 		msg := updateCheckMsg{}
 
-		checkCLI := func() {
-			cli, err := update.CheckCLIUpdate(ctx)
-			if err != nil {
-				return
-			}
-			msg.cli = *cli
-		}
-
-		if !preview {
-			// No preview: check only the CLI repo (original behavior).
-			checkCLI()
-			return msg
-		}
-
-		// Preview: check both repos in parallel.
 		var wg sync.WaitGroup
 		wg.Add(2)
 
 		go func() {
 			defer wg.Done()
-			checkCLI()
+			cli, err := update.CheckCLIUpdate(ctx)
+			if err != nil {
+				return
+			}
+			msg.cli = *cli
 		}()
 
 		go func() {

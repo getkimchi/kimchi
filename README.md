@@ -31,7 +31,7 @@ No API keys from Anthropic or OpenAI needed — just your Kimchi API key.
 curl -fsSL https://github.com/castai/kimchi/releases/latest/download/install.sh | bash
 ```
 
-This downloads and installs Kimchi, then launches the setup wizard automatically.
+This downloads and installs Kimchi. Run `kimchi` to launch the [Kimchi coding harness](https://github.com/castai/kimchi-dev), or `kimchi setup` to configure another AI tool.
 
 ### Manual Install
 
@@ -64,8 +64,12 @@ sudo mv kimchi /usr/local/bin/
 
 ### 2. Run Kimchi
 
+Running `kimchi` launches the [Kimchi coding harness](https://github.com/castai/kimchi-dev) — a coding agent pre-wired to Kimchi's models. The harness binary is installed and kept up to date automatically alongside this CLI.
+
+To configure another AI tool to use Kimchi instead, run:
+
 ```bash
-kimchi
+kimchi setup
 ```
 
 The interactive wizard will guide you through:
@@ -99,8 +103,11 @@ The interactive wizard will guide you through:
 ## Usage
 
 ```bash
-# Launch interactive setup
+# Launch the Kimchi coding harness
 kimchi
+
+# Run the interactive wizard to configure other AI tools
+kimchi setup
 
 # Show version
 kimchi version

@@ -88,10 +88,8 @@ func runUpdate(cmd *cobra.Command, force, dryRun, skipCache bool) (*updateResult
 	}
 	res.cliUpdated = cliResult.Updated
 
-	if preview {
-		klog.V(1).Info("checking for coding harness updates")
-		runHarnessUpdate(cmd, ctx, force, dryRun, skipCache)
-	}
+	klog.V(1).Info("checking for coding harness updates")
+	runHarnessUpdate(cmd, ctx, force, dryRun, skipCache)
 	return res, nil
 }
 
