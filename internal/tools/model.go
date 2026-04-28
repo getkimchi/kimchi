@@ -48,6 +48,26 @@ var (
 		inputModalities: []string{"text"},
 		limits:          limits{contextWindow: 196608, maxOutputTokens: 32768},
 	}
+	// OpusModel is the high-capability model for planning and validation tasks.
+	OpusModel = model{
+		Slug:            "claude-opus-4-6",
+		displayName:     "Claude Opus 4.6",
+		description:     "High-capability model for complex planning and validation tasks.",
+		toolCall:        true,
+		reasoning:       true,
+		inputModalities: []string{"text"},
+		limits:          limits{contextWindow: 1000000, maxOutputTokens: 128000},
+	}
+	// SonnetModel is the balanced model for general tasks.
+	SonnetModel = model{
+		Slug:            "claude-sonnet-4-6",
+		displayName:     "Claude Sonnet 4.6",
+		description:     "Balanced model for general reasoning and code tasks.",
+		toolCall:        true,
+		reasoning:       true,
+		inputModalities: []string{"text"},
+		limits:          limits{contextWindow: 1000000, maxOutputTokens: 128000},
+	}
 
-	allModels = []model{MainModel, CodingModel, SubModel}
+	allModels = []model{MainModel, CodingModel, SubModel, OpusModel, SonnetModel}
 )

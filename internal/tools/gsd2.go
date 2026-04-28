@@ -47,6 +47,34 @@ func writeGSD2(scope config.ConfigScope, apiKey string) error {
 				"defaultModel": MainModel.Slug,
 				"models": []map[string]any{
 					{
+						"id":            OpusModel.Slug,
+						"name":          OpusModel.displayName,
+						"contextWindow": OpusModel.limits.contextWindow,
+						"maxTokens":     OpusModel.limits.maxOutputTokens,
+						"reasoning":     OpusModel.reasoning,
+						"input":         []string{"text"},
+						"cost": map[string]any{
+							"input":      5,
+							"output":     25,
+							"cacheRead":  0.5,
+							"cacheWrite": 6.25,
+						},
+					},
+					{
+						"id":            SonnetModel.Slug,
+						"name":          SonnetModel.displayName,
+						"contextWindow": SonnetModel.limits.contextWindow,
+						"maxTokens":     SonnetModel.limits.maxOutputTokens,
+						"reasoning":     SonnetModel.reasoning,
+						"input":         []string{"text"},
+						"cost": map[string]any{
+							"input":      3,
+							"output":     15,
+							"cacheRead":  0.3,
+							"cacheWrite": 3.75,
+						},
+					},
+					{
 						"id":            MainModel.Slug,
 						"name":          MainModel.displayName,
 						"contextWindow": MainModel.limits.contextWindow,
@@ -106,15 +134,28 @@ version: 1
 models:
   research: kimchi/%s
   planning: kimchi/%s
+  discuss: kimchi/%s
   execution: kimchi/%s
+  execution_simple: kimchi/%s
   completion: kimchi/%s
+  validation: kimchi/%s
+  subagent: kimchi/%s
+auto_supervisor:
+  model: kimchi/%s
+dynamic_routing:
+  enabled: false
+  tier_models:
+    light: kimchi/%s
+    standard: kimchi/%s
+    heavy: kimchi/%s
+  budget_pressure: false
 token_profile: balanced
 skill_discovery: suggest
 git:
   isolation: worktree
   merge_strategy: squash
 ---
-`, MainModel.Slug, MainModel.Slug, CodingModel.Slug, CodingModel.Slug)
+`, CodingModel.Slug, OpusModel.Slug, SubModel.Slug, MainModel.Slug, SubModel.Slug, MainModel.Slug, OpusModel.Slug, CodingModel.Slug, OpusModel.Slug, CodingModel.Slug, MainModel.Slug, OpusModel.Slug)
 
 	if err := config.WriteFile(prefsPath, []byte(prefsContent)); err != nil {
 		return fmt.Errorf("write preferences.md: %w", err)

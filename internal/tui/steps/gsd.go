@@ -186,6 +186,15 @@ func (s *GSDStep) View() string {
 	b.WriteString("Optional: install " + Styles.Selected.Render("GSD (Get Shit Done)") + " multi-agent framework?\n")
 	b.WriteString("It orchestrates multiple AI agents — planner, researcher, executor, verifier —\n")
 	b.WriteString("each using the model best suited to the task.\n\n")
+
+	// Check if GSD2 tool is selected and show warning
+	if s.hasGSD2Selected() {
+		b.WriteString(Styles.Warning.Render("⚠ Warning: "))
+		b.WriteString("This will overwrite your existing GSD configuration files:\n")
+		b.WriteString(Styles.Desc.Render("  • ~/.gsd/preferences.md\n"))
+		b.WriteString(Styles.Desc.Render("  • ~/.gsd/agent/models.json\n\n"))
+	}
+
 	b.WriteString("Select the tools you want GSD for, or just press enter to skip.\n\n")
 
 	for i, status := range s.toolStatuses {
@@ -219,6 +228,16 @@ func (s *GSDStep) View() string {
 	b.WriteString(Styles.Help.Render("Press space to toggle, enter to continue"))
 
 	return b.String()
+}
+
+// hasGSD2Selected checks if GSD2 tool is in the initially selected tools list.
+func (s *GSDStep) hasGSD2Selected() bool {
+	for _, t := range s.selectedTools {
+		if t == tools.ToolGSD2 {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *GSDStep) Name() string {
