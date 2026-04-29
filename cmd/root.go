@@ -36,10 +36,11 @@ installed and kept up-to-date automatically alongside this CLI.
 To configure another AI coding tool (OpenCode, Claude Code, Cursor, etc.) to
 use Kimchi's endpoints instead, run 'kimchi setup'.
 Get your API key at: https://app.kimchi.dev`,
-		SilenceUsage:  true,
-		SilenceErrors: true,
-		Version:       version.String(),
-		RunE:          runRoot,
+		SilenceUsage:       true,
+		SilenceErrors:      true,
+		Version:            version.String(),
+		RunE:               runRoot,
+		DisableFlagParsing: true,
 	}
 
 	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
@@ -127,8 +128,27 @@ func propagateKlogFlags(cmd *cobra.Command) {
 	}
 }
 
-func runRoot(cmd *cobra.Command, _ []string) error {
-	return runHarness(cmd)
+func runRoot(cmd *cobra.Command, args []string) error {
+	// Both harness and CLI have clashing --help/version args.
+	// So for now, we prioritize the CLI args.
+	// This will be solved when we merge both repos.
+	for _, a := range args {
+		switch a {
+		case "-h", "--help":
+			return cmd.Help()
+		case "--harness-help":
+			return runHarness(cmd, []string{"--help"})
+		case "--version":
+			for _, subCmd := range cmd.Commands() {
+				if subCmd.Name() == "version" {
+					subCmd.Run(subCmd, nil)
+					return nil
+				}
+			}
+			return nil
+		}
+	}
+	return runHarness(cmd, args)
 }
 
 func Execute(args ...string) error {

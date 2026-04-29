@@ -112,6 +112,12 @@ kimchi setup
 # Show version
 kimchi version
 
+# Show kimchi CLI help
+kimchi --help
+
+# Show coding harness help
+kimchi --harness-help
+
 # Update to the latest version
 kimchi update
 

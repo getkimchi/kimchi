@@ -17,7 +17,7 @@ import (
 	"github.com/castai/kimchi/internal/update"
 )
 
-func runHarness(cmd *cobra.Command) error {
+func runHarness(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
 	harnessPath, err := update.ResolveHarnessPath()
@@ -31,7 +31,7 @@ func runHarness(cmd *cobra.Command) error {
 			return fmt.Errorf("coding harness is not installed and update checks are disabled — " +
 				"unset KIMCHI_NO_UPDATE_CHECK or install the harness manually")
 		}
-		return launchHarness(cmd, harnessPath)
+		return launchHarness(cmd, harnessPath, args)
 	}
 
 	// Reuse the update command logic for CLI + harness updates.
@@ -52,12 +52,12 @@ func runHarness(cmd *cobra.Command) error {
 	}
 	telemetry.FromCtx(ctx).Track(telemetry.NewEvent("harness_launched", props))
 
-	return launchHarness(cmd, harnessPath)
+	return launchHarness(cmd, harnessPath, args)
 }
 
 // launchHarness resolves the API key (prompting if missing), ensures it is
 // saved in the config file, and execs into the harness binary.
-func launchHarness(cmd *cobra.Command, harnessPath string) error {
+func launchHarness(cmd *cobra.Command, harnessPath string, args []string) error {
 	ctx := cmd.Context()
 
 	apiKey, err := config.GetAPIKey()
@@ -83,7 +83,7 @@ func launchHarness(cmd *cobra.Command, harnessPath string) error {
 	klog.V(1).InfoS("launching coding harness", "path", harnessPath)
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Launching coding harness...")
 
-	if err := tools.ExecBinary(harnessPath, nil, nil); err != nil {
+	if err := tools.ExecBinary(harnessPath, args, nil); err != nil {
 		return fmt.Errorf("launch coding harness: %w", err)
 	}
 
