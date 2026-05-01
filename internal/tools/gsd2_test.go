@@ -15,7 +15,7 @@ import (
 )
 
 func TestWriteGSD2(t *testing.T) {
-	t.Run("writes complete models.json with all 5 models", func(t *testing.T) {
+	t.Run("writes complete models.json with all 6 models", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		t.Setenv("HOME", tmpDir)
 
@@ -41,9 +41,9 @@ func TestWriteGSD2(t *testing.T) {
 		assert.Equal(t, "openai-completions", kimchi["api"])
 		assert.Equal(t, MainModel.Slug, kimchi["defaultModel"])
 
-		// Verify all 5 models are present
+		// Verify all 6 models are present
 		models := kimchi["models"].([]any)
-		require.Len(t, models, 5)
+		require.Len(t, models, 6)
 
 		modelSlugs := make(map[string]map[string]any)
 		for _, m := range models {
@@ -54,6 +54,7 @@ func TestWriteGSD2(t *testing.T) {
 		// Verify each model exists with correct metadata
 		require.Contains(t, modelSlugs, "claude-opus-4-6")
 		require.Contains(t, modelSlugs, "claude-sonnet-4-6")
+		require.Contains(t, modelSlugs, "kimi-k2.6")
 		require.Contains(t, modelSlugs, "kimi-k2.5")
 		require.Contains(t, modelSlugs, "nemotron-3-super-fp4")
 		require.Contains(t, modelSlugs, "minimax-m2.7")
@@ -83,7 +84,7 @@ func TestWriteGSD2(t *testing.T) {
 		assert.Equal(t, float64(3.75), sonnetCost["cacheWrite"])
 
 		// Verify other models have zero cost
-		for _, slug := range []string{"kimi-k2.5", "nemotron-3-super-fp4", "minimax-m2.7"} {
+		for _, slug := range []string{"kimi-k2.6", "kimi-k2.5", "nemotron-3-super-fp4", "minimax-m2.7"} {
 			model := modelSlugs[slug]
 			cost := model["cost"].(map[string]any)
 			assert.Equal(t, float64(0), cost["input"], "%s input cost", slug)
@@ -147,8 +148,8 @@ func TestWriteGSD2(t *testing.T) {
 		assert.Equal(t, false, dynamicRouting["budget_pressure"])
 		tierModels := dynamicRouting["tier_models"].(map[string]any)
 		assert.Equal(t, "kimchi/"+CodingModel.Slug, tierModels["light"])
-		assert.Equal(t, "kimchi/"+MainModel.Slug, tierModels["standard"])
-		assert.Equal(t, "kimchi/"+OpusModel.Slug, tierModels["heavy"])
+		assert.Equal(t, "kimchi/"+SubModel.Slug, tierModels["standard"])
+		assert.Equal(t, []any{"kimchi/" + MainModel.Slug, "kimchi/" + OpusModel.Slug}, tierModels["heavy"])
 
 		// Verify other settings
 		assert.Equal(t, "balanced", prefs["token_profile"])

@@ -89,6 +89,20 @@ func writeGSD2(scope config.ConfigScope, apiKey string) error {
 						},
 					},
 					{
+						"id":            KimiK25Model.Slug,
+						"name":          KimiK25Model.displayName,
+						"contextWindow": KimiK25Model.limits.contextWindow,
+						"maxTokens":     KimiK25Model.limits.maxOutputTokens,
+						"reasoning":     KimiK25Model.reasoning,
+						"input":         []string{"text", "image"},
+						"cost": map[string]any{
+							"input":      0,
+							"output":     0,
+							"cacheRead":  0,
+							"cacheWrite": 0,
+						},
+					},
+					{
 						"id":            CodingModel.Slug,
 						"name":          CodingModel.displayName,
 						"contextWindow": CodingModel.limits.contextWindow,
@@ -147,7 +161,9 @@ dynamic_routing:
   tier_models:
     light: kimchi/%s
     standard: kimchi/%s
-    heavy: kimchi/%s
+    heavy:
+      - kimchi/%s
+      - kimchi/%s
   budget_pressure: false
 token_profile: balanced
 skill_discovery: suggest
@@ -155,7 +171,7 @@ git:
   isolation: worktree
   merge_strategy: squash
 ---
-`, CodingModel.Slug, OpusModel.Slug, SubModel.Slug, MainModel.Slug, SubModel.Slug, MainModel.Slug, OpusModel.Slug, CodingModel.Slug, OpusModel.Slug, CodingModel.Slug, MainModel.Slug, OpusModel.Slug)
+`, CodingModel.Slug, OpusModel.Slug, SubModel.Slug, MainModel.Slug, SubModel.Slug, MainModel.Slug, OpusModel.Slug, CodingModel.Slug, OpusModel.Slug, CodingModel.Slug, SubModel.Slug, MainModel.Slug, OpusModel.Slug)
 
 	if err := config.WriteFile(prefsPath, []byte(prefsContent)); err != nil {
 		return fmt.Errorf("write preferences.md: %w", err)

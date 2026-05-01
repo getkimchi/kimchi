@@ -82,7 +82,7 @@ func (s *WelcomeStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 func (s *WelcomeStep) View() string {
 	view := "Start coding with open-source LLMs now!\n\n" +
 		"Kimchi gives you instant access to production-ready open-source\n" +
-		"LLMs — " + Styles.Selected.Render("Kimi K2.5") + ", " + Styles.Selected.Render("Nemotron 3 Super FP4") + ", " + Styles.Selected.Render("MiniMax M2.7") + " — via an " + Styles.Selected.Render("OpenAI-compatible") + "\n" +
+		"LLMs — " + Styles.Selected.Render("Kimi K2.6") + ", " + Styles.Selected.Render("Nemotron 3 Super FP4") + ", " + Styles.Selected.Render("MiniMax M2.7") + " — via an " + Styles.Selected.Render("OpenAI-compatible") + "\n" +
 		"API. No GPUs to provision, no clusters to manage.\n\n" +
 		"This wizard will guide you through configuration of your local\n" +
 		"coding tools in a few quick steps.\n\n"

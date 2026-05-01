@@ -19,8 +19,8 @@ type model struct {
 var (
 	// MainModel is the primary model for reasoning, planning, code generation, and image processing.
 	MainModel = model{
-		Slug:            "kimi-k2.5",
-		displayName:     "Kimi K2.5",
+		Slug:            "kimi-k2.6",
+		displayName:     "Kimi K2.6",
 		description:     "Primary model for reasoning, planning, code generation, and image processing.",
 		toolCall:        true,
 		reasoning:       true,
@@ -68,6 +68,17 @@ var (
 		inputModalities: []string{"text"},
 		limits:          limits{contextWindow: 1000000, maxOutputTokens: 128000},
 	}
+	// KimiK25Model is the previous Kimi model for reasoning and code generation.
+	KimiK25Model = model{
+		Slug:            "kimi-k2.5",
+		displayName:     "Kimi K2.5",
+		description:     "Previous Kimi model for reasoning, planning, and code generation.",
+		toolCall:        true,
+		reasoning:       true,
+		supportsImages:  true,
+		inputModalities: []string{"text", "image"},
+		limits:          limits{contextWindow: 262144, maxOutputTokens: 32768},
+	}
 
-	allModels = []model{MainModel, CodingModel, SubModel, OpusModel, SonnetModel}
+	allModels = []model{MainModel, CodingModel, SubModel, OpusModel, SonnetModel, KimiK25Model}
 )
