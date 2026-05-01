@@ -37,7 +37,7 @@ func TestDefaultTierAssignment(t *testing.T) {
 	minimaxFound := false
 	for _, m := range defaults {
 		switch m.Slug {
-		case "kimi-k2.5":
+		case "kimi-k2.6":
 			kimiFound = true
 		case "nemotron-3-super-fp4":
 			nemotronFound = true
@@ -47,11 +47,11 @@ func TestDefaultTierAssignment(t *testing.T) {
 	}
 	require.True(t, kimiFound && nemotronFound && minimaxFound, "defaults missing expected models")
 
-	assert.Equal(t, "kimi-k2.5", mainSlug)
+	assert.Equal(t, "kimi-k2.6", mainSlug)
 	assert.Equal(t, "nemotron-3-super-fp4", codingSlug)
 
 	// minimax-m2.7 has reasoning=true so it is a coding candidate, not sub.
-	// With no non-reasoning models in defaults, sub falls back to the best overall (kimi-k2.5).
+	// With no non-reasoning models in defaults, sub falls back to the best overall (kimi-k2.6).
 	assert.NotEmpty(t, reg.Sub().Slug)
 }
 

@@ -12,14 +12,16 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/castai/kimchi/internal/config"
+	"github.com/castai/kimchi/internal/models"
 )
 
 func TestWriteGSD2(t *testing.T) {
-	t.Run("writes complete models.json with all 6 models", func(t *testing.T) {
+	t.Run("writes complete models.json with all 5 models", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		t.Setenv("HOME", tmpDir)
 
-		err := writeGSD2(config.ScopeGlobal, "test-api-key")
+		reg := models.New()
+		err := writeGSD2(config.ScopeGlobal, "test-api-key", reg)
 		require.NoError(t, err)
 
 		// Read and verify models.json structure
@@ -39,14 +41,14 @@ func TestWriteGSD2(t *testing.T) {
 		assert.Equal(t, baseURL, kimchi["baseUrl"])
 		assert.Equal(t, "test-api-key", kimchi["apiKey"])
 		assert.Equal(t, "openai-completions", kimchi["api"])
-		assert.Equal(t, MainModel.Slug, kimchi["defaultModel"])
+		assert.Equal(t, reg.Main().Slug, kimchi["defaultModel"])
 
-		// Verify all 6 models are present
-		models := kimchi["models"].([]any)
-		require.Len(t, models, 6)
+		// Verify all 5 models are present
+		modelList := kimchi["models"].([]any)
+		require.Len(t, modelList, 5)
 
 		modelSlugs := make(map[string]map[string]any)
-		for _, m := range models {
+		for _, m := range modelList {
 			model := m.(map[string]any)
 			modelSlugs[model["id"].(string)] = model
 		}
@@ -54,10 +56,9 @@ func TestWriteGSD2(t *testing.T) {
 		// Verify each model exists with correct metadata
 		require.Contains(t, modelSlugs, "claude-opus-4-6")
 		require.Contains(t, modelSlugs, "claude-sonnet-4-6")
-		require.Contains(t, modelSlugs, "kimi-k2.6")
-		require.Contains(t, modelSlugs, "kimi-k2.5")
-		require.Contains(t, modelSlugs, "nemotron-3-super-fp4")
-		require.Contains(t, modelSlugs, "minimax-m2.7")
+		require.Contains(t, modelSlugs, reg.Main().Slug)
+		require.Contains(t, modelSlugs, reg.Coding().Slug)
+		require.Contains(t, modelSlugs, reg.Sub().Slug)
 
 		// Verify Opus model has correct full metadata
 		opus := modelSlugs["claude-opus-4-6"]
@@ -83,8 +84,8 @@ func TestWriteGSD2(t *testing.T) {
 		assert.Equal(t, float64(0.3), sonnetCost["cacheRead"])
 		assert.Equal(t, float64(3.75), sonnetCost["cacheWrite"])
 
-		// Verify other models have zero cost
-		for _, slug := range []string{"kimi-k2.6", "kimi-k2.5", "nemotron-3-super-fp4", "minimax-m2.7"} {
+		// Verify registry-sourced models have zero cost
+		for _, slug := range []string{reg.Main().Slug, reg.Coding().Slug, reg.Sub().Slug} {
 			model := modelSlugs[slug]
 			cost := model["cost"].(map[string]any)
 			assert.Equal(t, float64(0), cost["input"], "%s input cost", slug)
@@ -98,7 +99,8 @@ func TestWriteGSD2(t *testing.T) {
 		tmpDir := t.TempDir()
 		t.Setenv("HOME", tmpDir)
 
-		err := writeGSD2(config.ScopeGlobal, "test-api-key")
+		reg := models.New()
+		err := writeGSD2(config.ScopeGlobal, "test-api-key", reg)
 		require.NoError(t, err)
 
 		prefsPath := filepath.Join(tmpDir, ".gsd", "preferences.md")
@@ -128,15 +130,15 @@ func TestWriteGSD2(t *testing.T) {
 		assert.Equal(t, uint64(1), prefs["version"])
 
 		// Verify all model roles with specific values
-		models := prefs["models"].(map[string]any)
-		assert.Equal(t, "kimchi/"+CodingModel.Slug, models["research"])
-		assert.Equal(t, "kimchi/"+OpusModel.Slug, models["planning"])
-		assert.Equal(t, "kimchi/"+SubModel.Slug, models["discuss"])
-		assert.Equal(t, "kimchi/"+MainModel.Slug, models["execution"])
-		assert.Equal(t, "kimchi/"+SubModel.Slug, models["execution_simple"])
-		assert.Equal(t, "kimchi/"+MainModel.Slug, models["completion"])
-		assert.Equal(t, "kimchi/"+OpusModel.Slug, models["validation"])
-		assert.Equal(t, "kimchi/"+CodingModel.Slug, models["subagent"])
+		modelRoles := prefs["models"].(map[string]any)
+		assert.Equal(t, "kimchi/"+reg.Coding().Slug, modelRoles["research"])
+		assert.Equal(t, "kimchi/"+OpusModel.Slug, modelRoles["planning"])
+		assert.Equal(t, "kimchi/"+reg.Sub().Slug, modelRoles["discuss"])
+		assert.Equal(t, "kimchi/"+reg.Main().Slug, modelRoles["execution"])
+		assert.Equal(t, "kimchi/"+reg.Sub().Slug, modelRoles["execution_simple"])
+		assert.Equal(t, "kimchi/"+reg.Main().Slug, modelRoles["completion"])
+		assert.Equal(t, "kimchi/"+OpusModel.Slug, modelRoles["validation"])
+		assert.Equal(t, "kimchi/"+reg.Coding().Slug, modelRoles["subagent"])
 
 		// Verify auto_supervisor section
 		autoSupervisor := prefs["auto_supervisor"].(map[string]any)
@@ -147,9 +149,9 @@ func TestWriteGSD2(t *testing.T) {
 		assert.Equal(t, false, dynamicRouting["enabled"])
 		assert.Equal(t, false, dynamicRouting["budget_pressure"])
 		tierModels := dynamicRouting["tier_models"].(map[string]any)
-		assert.Equal(t, "kimchi/"+CodingModel.Slug, tierModels["light"])
-		assert.Equal(t, "kimchi/"+SubModel.Slug, tierModels["standard"])
-		assert.Equal(t, []any{"kimchi/" + MainModel.Slug, "kimchi/" + OpusModel.Slug}, tierModels["heavy"])
+		assert.Equal(t, "kimchi/"+reg.Coding().Slug, tierModels["light"])
+		assert.Equal(t, "kimchi/"+reg.Sub().Slug, tierModels["standard"])
+		assert.Equal(t, []any{"kimchi/" + reg.Main().Slug, "kimchi/" + OpusModel.Slug}, tierModels["heavy"])
 
 		// Verify other settings
 		assert.Equal(t, "balanced", prefs["token_profile"])
@@ -160,7 +162,8 @@ func TestWriteGSD2(t *testing.T) {
 	})
 
 	t.Run("returns error when api key is empty", func(t *testing.T) {
-		err := writeGSD2(config.ScopeGlobal, "")
+		reg := models.New()
+		err := writeGSD2(config.ScopeGlobal, "", reg)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "API key not configured")
 	})
@@ -181,7 +184,8 @@ func TestWriteGSD2(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(gsdDir, "preferences.md"), []byte(existingPrefs), 0644))
 
 		// Run the writer
-		err := writeGSD2(config.ScopeGlobal, "new-api-key")
+		reg := models.New()
+		err := writeGSD2(config.ScopeGlobal, "new-api-key", reg)
 		require.NoError(t, err)
 
 		// Verify models.json was overwritten

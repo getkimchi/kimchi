@@ -2,8 +2,8 @@ package models
 
 var (
 	defaultMain = Model{
-		Slug:            "kimi-k2.5",
-		DisplayName:     "Kimi K2.5",
+		Slug:            "kimi-k2.6",
+		DisplayName:     "Kimi K2.6",
 		Description:     "Primary model for reasoning, planning, code generation, and image processing.",
 		ToolCall:        true,
 		Reasoning:       true,
