@@ -5,6 +5,7 @@ import * as clack from "@clack/prompts"
 import { discoverCcConfig } from "./cc-discovery.js"
 import { DEFAULT_SKILL_PATHS, getAgentConfigDir } from "./config.js"
 import type { ServerEntry } from "./extensions/mcp-adapter/types.js"
+import { discoverOcConfig } from "./oc-discovery.js"
 
 export type MigrationState = "done" | "skip-forever"
 
@@ -15,23 +16,63 @@ export interface SetupResult {
 
 type MigrationAction = "migrate" | "skip-once" | "skip-forever"
 
-async function runMigrationPhase(
-	mcpServers: Record<string, ServerEntry>,
-	skillCount: number,
-): Promise<MigrationAction> {
-	const serverNames = Object.keys(mcpServers)
-	const lines: string[] = []
-	if (serverNames.length > 0) {
-		lines.push(`MCP servers: ${serverNames.join(", ")}`)
+interface MergedDiscovery {
+	mcpServers: Record<string, ServerEntry>
+	cc: { skillCount: number; skillsDir?: string; hadServers: boolean }
+	oc: { skillCount: number; skillsDir?: string; hadServers: boolean }
+	hasAnything: boolean
+}
+
+function mergeDiscoveries(): MergedDiscovery {
+	const cc = discoverCcConfig()
+	const oc = discoverOcConfig()
+	// CC wins on conflicts (it's the historical default users have come from);
+	// both can coexist for distinct names.
+	const mcpServers = { ...oc.mcpServers, ...cc.mcpServers }
+	const ccBlock = {
+		skillCount: cc.skillCount,
+		skillsDir: cc.skillsDir,
+		hadServers: Object.keys(cc.mcpServers).length > 0,
 	}
-	if (skillCount > 0) {
-		lines.push(`Skills: ${skillCount} skill(s) in ~/.claude/skills/`)
+	const ocBlock = {
+		skillCount: oc.skillCount,
+		skillsDir: oc.skillsDir,
+		hadServers: Object.keys(oc.mcpServers).length > 0,
+	}
+	const hasAnything =
+		ccBlock.hadServers || ocBlock.hadServers || cc.skillsDir !== undefined || oc.skillsDir !== undefined
+	return { mcpServers, cc: ccBlock, oc: ocBlock, hasAnything }
+}
+
+function prettyHome(p: string): string {
+	const h = homedir()
+	return p === h || p.startsWith(`${h}/`) ? `~${p.slice(h.length)}` : p
+}
+
+async function runMigrationPhase(d: MergedDiscovery): Promise<MigrationAction> {
+	const lines: string[] = []
+	const names = Object.keys(d.mcpServers)
+	if (names.length > 0) lines.push(`MCP servers: ${names.join(", ")}`)
+	if (d.cc.skillsDir) {
+		lines.push(`Claude Code skills: ${d.cc.skillCount} in ${prettyHome(d.cc.skillsDir)}`)
+	}
+	if (d.oc.skillsDir) {
+		lines.push(`OpenCode skills: ${d.oc.skillCount} in ${prettyHome(d.oc.skillsDir)}`)
 	}
 
-	clack.note(lines.join("\n"), "Claude Code configuration found")
+	const ccPresent = d.cc.hadServers || d.cc.skillsDir !== undefined
+	const ocPresent = d.oc.hadServers || d.oc.skillsDir !== undefined
+	const title =
+		ccPresent && ocPresent
+			? "Claude Code + OpenCode configuration found"
+			: ocPresent
+				? "OpenCode configuration found"
+				: "Claude Code configuration found"
+
+	clack.note(lines.join("\n"), title)
 
 	const action = await clack.select<MigrationAction>({
-		message: "Migrate Claude Code MCP servers to Kimchi?",
+		message: "Migrate MCP servers to Kimchi?",
 		options: [
 			{ value: "migrate", label: "Migrate now" },
 			{ value: "skip-once", label: "Skip this time" },
@@ -101,16 +142,14 @@ export async function runSetupWizard(options: {
 	clack.intro("Kimchi first-time setup")
 
 	let migrationState: MigrationState | undefined
-	const discovery = options.needsMigrationCheck ? discoverCcConfig() : { mcpServers: {}, skillCount: 0 }
-	const hasCcConfig =
-		options.needsMigrationCheck && (Object.keys(discovery.mcpServers).length > 0 || discovery.skillCount > 0)
+	const merged = options.needsMigrationCheck ? mergeDiscoveries() : null
 
-	if (hasCcConfig) {
-		const action = await runMigrationPhase(discovery.mcpServers, discovery.skillCount)
+	if (merged?.hasAnything) {
+		const action = await runMigrationPhase(merged)
 		if (action === "migrate") {
-			writeMcpServers(discovery.mcpServers)
+			writeMcpServers(merged.mcpServers)
 			migrationState = "done"
-			clack.log.success(`Migrated ${Object.keys(discovery.mcpServers).length} MCP server(s) to Kimchi.`)
+			clack.log.success(`Migrated ${Object.keys(merged.mcpServers).length} MCP server(s) to Kimchi.`)
 		} else if (action === "skip-forever") {
 			migrationState = "skip-forever"
 		}

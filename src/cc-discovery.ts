@@ -9,6 +9,7 @@ const CC_SKILLS_DIR = join(homedir(), ".claude", "skills")
 export interface CcDiscovery {
 	mcpServers: Record<string, ServerEntry>
 	skillCount: number
+	skillsDir?: string
 }
 
 interface CcMcpServerRaw {
@@ -58,7 +59,12 @@ function ingestServers(into: Record<string, ServerEntry>, source: unknown): void
 	}
 }
 
-export function discoverCcConfig(configPath = CC_CONFIG_PATH): CcDiscovery {
+export function discoverCcConfig(
+	configPath = CC_CONFIG_PATH,
+	opts?: {
+		skillsDirs?: string[]
+	},
+): CcDiscovery {
 	const mcpServers: Record<string, ServerEntry> = {}
 
 	try {
@@ -78,13 +84,19 @@ export function discoverCcConfig(configPath = CC_CONFIG_PATH): CcDiscovery {
 	}
 
 	let skillCount = 0
-	if (existsSync(CC_SKILLS_DIR)) {
-		try {
-			skillCount = readdirSync(CC_SKILLS_DIR, { withFileTypes: true }).filter((e) => e.isDirectory()).length
-		} catch (err) {
-			console.warn(`Failed to read Claude Code skills directory: ${err instanceof Error ? err.message : String(err)}`)
+	let skillsDir: string | undefined
+	const skillsDirs = opts?.skillsDirs ?? [CC_SKILLS_DIR]
+	for (const dir of skillsDirs) {
+		if (existsSync(dir)) {
+			skillsDir = dir
+			try {
+				skillCount = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).length
+			} catch (err) {
+				console.warn(`Failed to read Claude Code skills directory: ${err instanceof Error ? err.message : String(err)}`)
+			}
+			break
 		}
 	}
 
-	return { mcpServers, skillCount }
+	return { mcpServers, skillCount, skillsDir }
 }
