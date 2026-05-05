@@ -6,8 +6,13 @@ function msg(err: unknown): string {
 	return err instanceof Error ? err.message : String(err)
 }
 
-export function hasBearerAuthorizationHeader(headers: Record<string, string>): boolean {
-	return Object.entries(headers).some(
+export function hasBearerAuthorizationHeader(headers: unknown): boolean {
+	// Defensive: `headers` comes from arbitrary parsed JSON and may be null,
+	// an array, or a primitive at runtime even though the call sites cast it
+	// to Record<string, string>. Treat anything that isn't a plain object as
+	// "no bearer header" rather than crashing the discovery pass.
+	if (headers === null || typeof headers !== "object" || Array.isArray(headers)) return false
+	return Object.entries(headers as Record<string, unknown>).some(
 		([k, v]) => k.toLowerCase() === "authorization" && typeof v === "string" && v.toLowerCase().startsWith("bearer "),
 	)
 }

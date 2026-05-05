@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { hasBearerAuthorizationHeader } from "./engine.js"
 import { discoverAgent } from "./index.js"
 import type { AgentDefinition, AgentDiscovery } from "./index.js"
 
@@ -299,5 +300,35 @@ describe("discoverAgent engine", () => {
 
 		const result = discoverAgent(def)
 		expect(result.mcpServers.tool).toBeDefined()
+	})
+
+	describe("hasBearerAuthorizationHeader (defensive)", () => {
+		it("returns true for Authorization: Bearer", () => {
+			expect(hasBearerAuthorizationHeader({ Authorization: "Bearer x" })).toBe(true)
+		})
+		it("is case-insensitive on key and value", () => {
+			expect(hasBearerAuthorizationHeader({ authorization: "bearer x" })).toBe(true)
+			expect(hasBearerAuthorizationHeader({ AUTHORIZATION: "BEARER x" })).toBe(true)
+		})
+		it("returns false for Basic auth", () => {
+			expect(hasBearerAuthorizationHeader({ Authorization: "Basic dXNlcjpwYXNz" })).toBe(false)
+		})
+		it("returns false (does not throw) when headers is null", () => {
+			expect(hasBearerAuthorizationHeader(null)).toBe(false)
+		})
+		it("returns false (does not throw) when headers is undefined", () => {
+			expect(hasBearerAuthorizationHeader(undefined)).toBe(false)
+		})
+		it("returns false (does not throw) when headers is an array", () => {
+			expect(hasBearerAuthorizationHeader(["Authorization", "Bearer x"])).toBe(false)
+		})
+		it("returns false (does not throw) when headers is a primitive", () => {
+			expect(hasBearerAuthorizationHeader("Bearer x")).toBe(false)
+			expect(hasBearerAuthorizationHeader(42)).toBe(false)
+		})
+		it("ignores non-string header values without throwing", () => {
+			expect(hasBearerAuthorizationHeader({ Authorization: 123 })).toBe(false)
+			expect(hasBearerAuthorizationHeader({ Authorization: null })).toBe(false)
+		})
 	})
 })

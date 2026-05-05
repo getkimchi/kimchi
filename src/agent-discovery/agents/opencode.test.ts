@@ -141,6 +141,32 @@ describe("openCode AgentDefinition", () => {
 			expect(result.mcpServers.svc.auth).toBeUndefined()
 		})
 
+		it("remote server with null headers does not crash and sets no auth", () => {
+			// Regression: parsed JSON can put `null` where the schema declares an
+			// object; `Object.entries(null)` would throw without the engine guard.
+			const path = configPath()
+			writeConfig(path, {
+				mcp: {
+					svc: { type: "remote", url: "https://example.com/mcp", headers: null },
+				},
+			})
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
+			expect(result.mcpServers.svc.auth).toBeUndefined()
+		})
+
+		it("remote server with array headers does not crash and sets no auth", () => {
+			const path = configPath()
+			writeConfig(path, {
+				mcp: {
+					svc: { type: "remote", url: "https://example.com/mcp", headers: ["Authorization", "Bearer x"] },
+				},
+			})
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
+			expect(result.mcpServers.svc.auth).toBeUndefined()
+		})
+
 		it("enabled: false server is skipped", () => {
 			const path = configPath()
 			writeConfig(path, {
@@ -241,6 +267,19 @@ describe("openCode AgentDefinition", () => {
 			const result = discoverAgent(def)
 			expect(result.mcpServers.fs.env).toEqual({ K: "V" })
 			expect(result.mcpServers.fs.env?.NOEQUALS).toBeUndefined()
+		})
+
+		it("server with null headers does not crash and sets no auth", () => {
+			// Regression matching the modern path — see comment above.
+			const path = configPath()
+			writeConfig(path, {
+				mcpServers: {
+					remote: { type: "sse", url: "https://api.example.com/mcp", headers: null },
+				},
+			})
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
+			expect(result.mcpServers.remote.auth).toBeUndefined()
 		})
 
 		it("sse server with bearer header sets auth bearer", () => {
