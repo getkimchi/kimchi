@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { isEditToolResult, isWriteToolResult } from "@mariozechner/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@mariozechner/pi-tui"
 import type { TUI } from "@mariozechner/pi-tui"
-import { RST_FG, TEAL_FG } from "../ansi.js"
+import { ORANGE_FG, RST_FG, TEAL_FG } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
 import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } from "../components/footer.js"
 import { LogoHeader } from "../components/logo.js"
@@ -12,6 +12,7 @@ import { SplashHeader } from "../components/splash-header.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { isBareExitAlias } from "./exit-utils.js"
 import { getMultiModelEnabled } from "./orchestration/prompt-enrichment.js"
+import { createWorkingAnimator } from "./spinner.js"
 
 function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {
 	return a.provider === b.provider && a.id === b.id
@@ -142,6 +143,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", (event, ctx) => {
+		stopWorkingAnimation?.()
+		stopWorkingAnimation = undefined
 		resetState()
 		currentCtx = ctx
 		sessionStartMs = Date.now()
@@ -244,13 +247,39 @@ export default function uiExtension(pi: ExtensionAPI) {
 		currentEditor?.setSplashMode(false)
 	})
 
+	let stopWorkingAnimation: (() => void) | undefined
+
+	const startIndicator = (ctx: ExtensionContext) => {
+		ctx.ui.setWorkingVisible(true)
+		stopWorkingAnimation?.()
+		stopWorkingAnimation = createWorkingAnimator((char, message) => {
+			ctx.ui.setWorkingIndicator({ frames: [`${ORANGE_FG}${char}${RST_FG}`] })
+			ctx.ui.setWorkingMessage(`${ORANGE_FG}${message}${RST_FG}`)
+		})
+	}
+
 	pi.on("turn_start", (_, ctx) => {
 		currentCtx = ctx
 		refresh("generating")
+		startIndicator(ctx)
+	})
+	pi.on("message_start", (event, ctx) => {
+		if (event.message.role !== "assistant") return
+		stopWorkingAnimation?.()
+		stopWorkingAnimation = undefined
+		ctx.ui.setWorkingVisible(false)
+	})
+	pi.on("tool_execution_start", (_, ctx) => {
+		startIndicator(ctx)
 	})
 	pi.on("turn_end", (_, ctx) => {
 		currentCtx = ctx
 		refresh("idle")
+	})
+	pi.on("agent_end", (_, ctx) => {
+		stopWorkingAnimation?.()
+		stopWorkingAnimation = undefined
+		ctx.ui.setWorkingVisible(false)
 	})
 	pi.on("model_select", (_, ctx) => {
 		currentCtx = ctx

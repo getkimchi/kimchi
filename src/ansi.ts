@@ -21,6 +21,7 @@ export const TEAL_DIM_FG = TRUECOLOR ? "\x1b[38;2;74;150;125m" : "\x1b[38;5;35m"
 // flattens the visual cue, so callers hardcode the kimchi values here.
 export const SUCCESS_FG = TRUECOLOR ? "\x1b[38;2;74;150;125m" : "\x1b[38;5;35m"
 export const WARNING_FG = TRUECOLOR ? "\x1b[38;2;239;159;39m" : "\x1b[38;5;214m"
+export const ORANGE_FG = TRUECOLOR ? "\x1b[38;2;244;87;46m" : "\x1b[38;5;202m"
 export const ERROR_FG = TRUECOLOR ? "\x1b[38;2;204;102;102m" : "\x1b[38;5;167m"
 export const RST_FG = "\x1b[39m"
 
