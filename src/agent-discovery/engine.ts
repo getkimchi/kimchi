@@ -69,7 +69,10 @@ export function discoverAgent(def: AgentDefinition): AgentDiscovery {
 		}
 		const sources = def.extractServerSources(parsed)
 		for (const block of sources) ingest(mcpServers, block, def.transformServer)
-		break // first readable + parseable file wins
+		// Continue: every readable + parseable file in configPaths contributes
+		// its servers. ingest() does first-writer-wins per server name, so if
+		// the same name appears in multiple files, the entry from the earlier
+		// file in configPaths is kept and later files' duplicates are skipped.
 	}
 
 	let skillCount = 0

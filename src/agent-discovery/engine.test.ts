@@ -62,9 +62,9 @@ describe("discoverAgent engine", () => {
 	}
 
 	// ---------------------------------------------------------------------------
-	// E1: first readable config wins; later configPaths are not read
+	// E1: every readable config in configPaths contributes; servers are merged
 	// ---------------------------------------------------------------------------
-	it("E1: first readable config wins; later configPaths are not read", () => {
+	it("E1: every readable config in configPaths contributes; servers are merged", () => {
 		const path1 = configPath("a.json")
 		const path2 = configPath("b.json")
 		writeFileSync(path1, JSON.stringify({ modern: { toolA: { command: "a" } } }))
@@ -73,8 +73,23 @@ describe("discoverAgent engine", () => {
 		const def = makeDef({ configPaths: [path1, path2] })
 		const result = discoverAgent(def)
 
-		expect(result.mcpServers.toolA).toBeDefined()
-		expect(result.mcpServers.toolB).toBeUndefined()
+		expect(result.mcpServers.toolA).toMatchObject({ command: "a" })
+		expect(result.mcpServers.toolB).toMatchObject({ command: "b" })
+	})
+
+	// ---------------------------------------------------------------------------
+	// E1b: on per-name collision across files, the earlier configPaths entry wins
+	// ---------------------------------------------------------------------------
+	it("E1b: on per-name collision across files, the earlier configPaths entry wins", () => {
+		const path1 = configPath("a.json")
+		const path2 = configPath("b.json")
+		writeFileSync(path1, JSON.stringify({ modern: { shared: { command: "first" } } }))
+		writeFileSync(path2, JSON.stringify({ modern: { shared: { command: "second" } } }))
+
+		const def = makeDef({ configPaths: [path1, path2] })
+		const result = discoverAgent(def)
+
+		expect(result.mcpServers.shared).toMatchObject({ command: "first" })
 	})
 
 	// ---------------------------------------------------------------------------

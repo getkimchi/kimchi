@@ -9,8 +9,14 @@ export interface AgentDefinition {
 	/** Human-readable name shown in the wizard, e.g. "Claude Code". */
 	readonly displayName: string
 	/**
-	 * Config file paths tried in order. The first readable + parseable file
-	 * wins; subsequent paths are not read. Empty array → no config to read.
+	 * Config file paths tried in order. Every readable + parseable file
+	 * contributes its servers to the merged result; deduplication happens
+	 * at the MCP-server-name level (first-writer-wins), not at the file
+	 * level. So if the same server name appears in two files, the entry
+	 * from the earlier path in this list is kept. Files that don't exist
+	 * are silently skipped; files that exist but fail to read or parse
+	 * emit a warning and the loop continues to the next path. Empty
+	 * array → no config to read.
 	 */
 	readonly configPaths: readonly string[]
 	/**

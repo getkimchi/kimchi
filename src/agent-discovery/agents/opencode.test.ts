@@ -405,15 +405,28 @@ describe("openCode AgentDefinition", () => {
 			expect(result.skillsDir).toBe(dir)
 		})
 
-		it("first readable config in configPaths wins; later ones not read", () => {
+		it("configs in configPaths are merged; both files contribute their servers", () => {
 			const path1 = configPath("a.json")
 			const path2 = configPath("b.json")
 			writeConfig(path1, { mcp: { first: { type: "local", command: ["a"] } } })
 			writeConfig(path2, { mcp: { second: { type: "local", command: ["b"] } } })
 			const def = makeOpenCodeDefinition({ configPaths: [path1, path2] })
 			const result = discoverAgent(def)
-			expect(result.mcpServers.first).toBeDefined()
-			expect(result.mcpServers.second).toBeUndefined()
+			expect(result.mcpServers.first).toMatchObject({ command: "a" })
+			expect(result.mcpServers.second).toMatchObject({ command: "b" })
+		})
+
+		it("on per-name collision across files, the earlier path in configPaths wins", () => {
+			// Realistic case: a user with both modern (~/.config/opencode/opencode.json)
+			// and legacy (~/.opencode.json) configs that happen to share a server name.
+			// The modern path comes first in OC_CONFIG_PATHS, so its entry wins.
+			const path1 = configPath("modern.json")
+			const path2 = configPath("legacy.json")
+			writeConfig(path1, { mcp: { shared: { type: "local", command: ["modern"] } } })
+			writeConfig(path2, { mcpServers: { shared: { command: "legacy" } } })
+			const def = makeOpenCodeDefinition({ configPaths: [path1, path2] })
+			const result = discoverAgent(def)
+			expect(result.mcpServers.shared).toMatchObject({ command: "modern" })
 		})
 
 		it("malformed entries inside mcp are skipped silently", () => {
