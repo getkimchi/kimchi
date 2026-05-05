@@ -101,6 +101,8 @@ export function buildOrchestratorSystemPrompt(
 	contextFiles?: readonly ContextFile[],
 	skills?: readonly Skill[],
 	promptCtx?: PromptContext,
+	memoryBlock?: string | null,
+	userProfileBlock?: string | null,
 ): string {
 	const toolsSection = formatToolsSection(tools)
 	const environmentSection = formatEnvironmentSection(env)
@@ -111,6 +113,8 @@ export function buildOrchestratorSystemPrompt(
 		.replace("{{ENVIRONMENT}}", () => environmentSection)
 		.replace("{{PROJECT_CONTEXT}}", () => projectContext)
 		.replace("{{SKILLS}}", () => skillsSection)
+		.replace("{{MEMORY}}", () => memoryBlock ?? "")
+		.replace("{{USER_PROFILE}}", () => userProfileBlock ?? "")
 	const orchestrationSection = buildOrchestrationGuidelinesSection(promptCtx?.currentModelId, promptCtx?.registry)
 	const phaseSection = buildPhaseGuidelinesSection(
 		promptCtx?.currentModelId,
@@ -126,6 +130,8 @@ export function buildSingleModelSystemPrompt(
 	contextFiles?: readonly ContextFile[],
 	skills?: readonly Skill[],
 	promptCtx?: PromptContext,
+	memoryBlock?: string | null,
+	userProfileBlock?: string | null,
 ): string {
 	const toolsSection = formatToolsSection(tools)
 	const environmentSection = formatEnvironmentSection(env)
@@ -136,6 +142,8 @@ export function buildSingleModelSystemPrompt(
 		.replace("{{ENVIRONMENT}}", () => environmentSection)
 		.replace("{{PROJECT_CONTEXT}}", () => projectContext)
 		.replace("{{SKILLS}}", () => skillsSection)
+		.replace("{{MEMORY}}", () => memoryBlock ?? "")
+		.replace("{{USER_PROFILE}}", () => userProfileBlock ?? "")
 	const phaseSection = buildPhaseGuidelinesSection(
 		promptCtx?.currentModelId,
 		promptCtx?.currentPhase,

@@ -467,6 +467,10 @@ export default function (skillPaths: string[]) {
 				currentPhase: getCurrentPhase(),
 				registry: registry,
 			}
+			const memorySnapshot = (ctx as unknown as { memorySnapshot?: { memory: string | null; user: string | null } })
+				.memorySnapshot
+			const memoryBlock = memorySnapshot?.memory ?? null
+			const userProfileBlock = memorySnapshot?.user ?? null
 
 			if (subagentMode) {
 				// Filter the subagent tool out to prevent infinite delegation chains.
@@ -477,11 +481,27 @@ export default function (skillPaths: string[]) {
 			}
 
 			if (!multiModelEnabled) {
-				const systemPrompt = buildSingleModelSystemPrompt(tools, env, cachedContextFiles, cachedSkills, promptCtx)
+				const systemPrompt = buildSingleModelSystemPrompt(
+					tools,
+					env,
+					cachedContextFiles,
+					cachedSkills,
+					promptCtx,
+					memoryBlock,
+					userProfileBlock,
+				)
 				return { systemPrompt }
 			}
 
-			const systemPrompt = buildOrchestratorSystemPrompt(tools, env, cachedContextFiles, cachedSkills, promptCtx)
+			const systemPrompt = buildOrchestratorSystemPrompt(
+				tools,
+				env,
+				cachedContextFiles,
+				cachedSkills,
+				promptCtx,
+				memoryBlock,
+				userProfileBlock,
+			)
 			return { systemPrompt }
 		})
 	}
