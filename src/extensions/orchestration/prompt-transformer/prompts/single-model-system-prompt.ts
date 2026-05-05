@@ -6,6 +6,9 @@ export default [
 {{ENVIRONMENT}}`,
 	TOOLS_SECTION,
 	DOCUMENTS_SECTION,
+	`{{MEMORY}}
+
+{{USER_PROFILE}}`,
 	`## Guidelines
 
 ${CORE_GUIDELINES}`,
