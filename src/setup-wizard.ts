@@ -39,7 +39,12 @@ function prettyHome(p: string): string {
 	return p === h || p.startsWith(`${h}/`) ? `~${p.slice(h.length)}` : p
 }
 
-async function runMigrationPhase(d: MergedDiscovery): Promise<MigrationAction> {
+interface MigrationPhaseResult {
+	action: MigrationAction
+	selectedServers: Record<string, ServerEntry>
+}
+
+async function runMigrationPhase(d: MergedDiscovery): Promise<MigrationPhaseResult> {
 	const lines: string[] = []
 	const names = Object.keys(d.mcpServers)
 	if (names.length > 0) lines.push(`MCP servers: ${names.join(", ")}`)
@@ -68,11 +73,28 @@ async function runMigrationPhase(d: MergedDiscovery): Promise<MigrationAction> {
 	})
 
 	if (clack.isCancel(action)) {
-		return "skip-once"
+		return { action: "skip-once", selectedServers: {} }
 	}
 
 	const validActions: MigrationAction[] = ["migrate", "skip-once", "skip-forever"]
-	return validActions.includes(action as MigrationAction) ? (action as MigrationAction) : "skip-once"
+	const resolvedAction = validActions.includes(action as MigrationAction) ? (action as MigrationAction) : "skip-once"
+
+	if (resolvedAction !== "migrate" || names.length === 0) {
+		return { action: resolvedAction, selectedServers: {} }
+	}
+
+	const chosen = await clack.multiselect<string>({
+		message: "Select MCP servers to migrate:",
+		options: names.map((name) => ({ value: name, label: name, initialChecked: true })),
+		required: false,
+	})
+
+	if (clack.isCancel(chosen) || !Array.isArray(chosen)) {
+		return { action: "skip-once", selectedServers: {} }
+	}
+
+	const selectedServers = Object.fromEntries(chosen.map((name) => [name, d.mcpServers[name]]))
+	return { action: resolvedAction, selectedServers }
 }
 
 function writeMcpServers(servers: Record<string, ServerEntry>): void {
@@ -132,11 +154,11 @@ export async function runSetupWizard(options: {
 	const merged = options.needsMigrationCheck ? mergeDiscoveries() : null
 
 	if (merged?.hasAnythingMigratable) {
-		const action = await runMigrationPhase(merged)
+		const { action, selectedServers } = await runMigrationPhase(merged)
 		if (action === "migrate") {
-			writeMcpServers(merged.mcpServers)
+			writeMcpServers(selectedServers)
 			migrationState = "done"
-			clack.log.success(`Migrated ${Object.keys(merged.mcpServers).length} MCP server(s) to Kimchi.`)
+			clack.log.success(`Migrated ${Object.keys(selectedServers).length} MCP server(s) to Kimchi.`)
 		} else if (action === "skip-forever") {
 			migrationState = "skip-forever"
 		}
