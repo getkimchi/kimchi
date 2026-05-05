@@ -2,9 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { discoverCcConfig } from "./cc-discovery.js"
+import { discoverAgent } from "../index.js"
+import { makeClaudeCodeDefinition } from "./claude-code.js"
 
-describe("discoverCcConfig", () => {
+describe("claudeCode AgentDefinition", () => {
 	let tempDir: string
 	let configPath: string
 
@@ -26,7 +27,7 @@ describe("discoverCcConfig", () => {
 		{
 			config: unknown
 			skillsDirs?: (tempDir: string) => string[]
-			assert: (result: ReturnType<typeof discoverCcConfig>) => void
+			assert: (result: ReturnType<typeof discoverAgent>) => void
 		}
 	> = {
 		"server only at top-level is discovered": {
@@ -146,7 +147,10 @@ describe("discoverCcConfig", () => {
 		it(name, () => {
 			write(tc.config)
 			const skillsDirs = tc.skillsDirs ? tc.skillsDirs(tempDir) : undefined
-			tc.assert(discoverCcConfig(configPath, skillsDirs ? { skillsDirs } : undefined))
+			const def = makeClaudeCodeDefinition(
+				skillsDirs ? { configPaths: [configPath], skillsDirs } : { configPaths: [configPath] },
+			)
+			tc.assert(discoverAgent(def))
 		})
 	}
 })

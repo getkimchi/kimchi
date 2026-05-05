@@ -2,9 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { discoverOcConfig } from "./oc-discovery.js"
+import { discoverAgent } from "../index.js"
+import { makeOpenCodeDefinition } from "./opencode.js"
 
-describe("discoverOcConfig", () => {
+describe("openCode AgentDefinition", () => {
 	let tempDir: string
 
 	beforeEach(() => {
@@ -49,7 +50,8 @@ describe("discoverOcConfig", () => {
 					tool: { type: "local", command: ["npx", "-y", "@modelcontextprotocol/server-everything"] },
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.tool.command).toBe("npx")
 			expect(result.mcpServers.tool.args).toEqual(["-y", "@modelcontextprotocol/server-everything"])
 		})
@@ -61,7 +63,8 @@ describe("discoverOcConfig", () => {
 					tool: { type: "local", command: ["tool"] },
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.tool.command).toBe("tool")
 			expect(result.mcpServers.tool.args).toBeUndefined()
 		})
@@ -73,7 +76,8 @@ describe("discoverOcConfig", () => {
 					tool: { type: "local", command: [] },
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.tool).toBeUndefined()
 		})
 
@@ -84,7 +88,8 @@ describe("discoverOcConfig", () => {
 					tool: { type: "local", command: ["npx"], environment: { FOO: "bar" } },
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.tool.env).toEqual({ FOO: "bar" })
 		})
 
@@ -95,7 +100,8 @@ describe("discoverOcConfig", () => {
 					svc: { type: "remote", url: "https://example.com/mcp", headers: { Authorization: "Bearer secret" } },
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.svc.auth).toBe("bearer")
 		})
 
@@ -106,7 +112,8 @@ describe("discoverOcConfig", () => {
 					svc: { type: "remote", url: "https://example.com/mcp", headers: { authorization: "bearer token" } },
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.svc.auth).toBe("bearer")
 		})
 
@@ -117,7 +124,8 @@ describe("discoverOcConfig", () => {
 					svc: { type: "remote", url: "https://example.com/mcp", headers: { Authorization: "Basic dXNlcjpwYXNz" } },
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.svc.auth).toBeUndefined()
 		})
 
@@ -128,7 +136,8 @@ describe("discoverOcConfig", () => {
 					svc: { type: "remote", url: "https://example.com/mcp" },
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.svc.auth).toBeUndefined()
 		})
 
@@ -139,7 +148,8 @@ describe("discoverOcConfig", () => {
 					tool: { type: "local", command: ["npx"], enabled: false },
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.tool).toBeUndefined()
 		})
 
@@ -150,7 +160,8 @@ describe("discoverOcConfig", () => {
 					tool: { type: "local", command: ["npx"], enabled: true },
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.tool).toBeDefined()
 			expect(result.mcpServers.tool.command).toBe("npx")
 		})
@@ -167,7 +178,8 @@ describe("discoverOcConfig", () => {
 					},
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.svc).toBeDefined()
 			expect(result.mcpServers.svc.url).toBe("https://example.com/mcp")
 		})
@@ -183,7 +195,8 @@ describe("discoverOcConfig", () => {
 					},
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.svc.headers?.Authorization).toBe("Bearer {env:GITHUB_PAT}")
 		})
 	})
@@ -200,7 +213,8 @@ describe("discoverOcConfig", () => {
 					fs: { type: "stdio", command: "npx", args: ["-y", "pkg"], env: { K: "V" } },
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.fs.env).toEqual({ K: "V" })
 		})
 
@@ -211,7 +225,8 @@ describe("discoverOcConfig", () => {
 					fs: { type: "stdio", command: "npx", args: ["-y", "pkg"], env: ["K=V", "X=Y"] },
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.fs.env).toEqual({ K: "V", X: "Y" })
 		})
 
@@ -222,7 +237,8 @@ describe("discoverOcConfig", () => {
 					fs: { type: "stdio", command: "npx", env: ["NOEQUALS", "K=V"] },
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.fs.env).toEqual({ K: "V" })
 			expect(result.mcpServers.fs.env?.NOEQUALS).toBeUndefined()
 		})
@@ -234,7 +250,8 @@ describe("discoverOcConfig", () => {
 					remote: { type: "sse", url: "https://api.example.com/mcp", headers: { Authorization: "Bearer tok" } },
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.remote.auth).toBe("bearer")
 		})
 
@@ -248,7 +265,8 @@ describe("discoverOcConfig", () => {
 					legacy: { type: "stdio", command: "ls" },
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.modern).toBeDefined()
 			expect(result.mcpServers.legacy).toBeDefined()
 		})
@@ -260,10 +278,11 @@ describe("discoverOcConfig", () => {
 
 	describe("skills + file/path semantics", () => {
 		it("no config file at any path returns empty discovery", () => {
-			const result = discoverOcConfig({
+			const def = makeOpenCodeDefinition({
 				configPaths: [join(tempDir, "nonexistent.json")],
 				skillsDirs: [join(tempDir, "nonexistent-skills")],
 			})
+			const result = discoverAgent(def)
 			expect(result.mcpServers).toEqual({})
 			expect(result.skillCount).toBe(0)
 			expect(result.skillsDir).toBeUndefined()
@@ -272,8 +291,11 @@ describe("discoverOcConfig", () => {
 		it("corrupt JSON config emits warning, returns empty", () => {
 			const path = configPath()
 			writeFileSync(path, "{ not valid json", "utf-8")
-			expect(() => discoverOcConfig({ configPaths: [path], skillsDirs: [join(tempDir, "no")] })).not.toThrow()
-			const result = discoverOcConfig({ configPaths: [path], skillsDirs: [join(tempDir, "no")] })
+			expect(() =>
+				discoverAgent(makeOpenCodeDefinition({ configPaths: [path], skillsDirs: [join(tempDir, "no")] })),
+			).not.toThrow()
+			const def = makeOpenCodeDefinition({ configPaths: [path], skillsDirs: [join(tempDir, "no")] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers).toEqual({})
 		})
 
@@ -295,16 +317,18 @@ describe("discoverOcConfig", () => {
 				'{\n  // comment line\n  "mcp": {\n    "tool": { "type": "local", "command": ["npx"] }\n  }\n}',
 				"utf-8",
 			)
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.tool).toBeDefined()
 		})
 
 		it("skills dir with 3 subdirs returns count 3 + skillsDir set", () => {
 			const dir = mkSkillsDir("skills", ["a", "b", "c"])
-			const result = discoverOcConfig({
+			const def = makeOpenCodeDefinition({
 				configPaths: [join(tempDir, "none.json")],
 				skillsDirs: [dir, join(tempDir, "no")],
 			})
+			const result = discoverAgent(def)
 			expect(result.skillCount).toBe(3)
 			expect(result.skillsDir).toBe(dir)
 		})
@@ -312,29 +336,32 @@ describe("discoverOcConfig", () => {
 		it("skills dir with files (not dirs) inside ignores files", () => {
 			const dir = mkSkillsDir("skills")
 			writeFileSync(join(dir, "README.md"), "readme")
-			const result = discoverOcConfig({
+			const def = makeOpenCodeDefinition({
 				configPaths: [join(tempDir, "none.json")],
 				skillsDirs: [dir],
 			})
+			const result = discoverAgent(def)
 			expect(result.skillCount).toBe(0)
 			expect(result.skillsDir).toBe(dir)
 		})
 
 		it("missing skills dir returns no skillsDir", () => {
-			const result = discoverOcConfig({
+			const def = makeOpenCodeDefinition({
 				configPaths: [join(tempDir, "none.json")],
 				skillsDirs: [join(tempDir, "nonexistent-skills")],
 			})
+			const result = discoverAgent(def)
 			expect(result.skillCount).toBe(0)
 			expect(result.skillsDir).toBeUndefined()
 		})
 
 		it("singular skill/ fallback used when plural skills/ missing", () => {
 			const dir = mkSkillsDir("skill", ["alpha", "beta"])
-			const result = discoverOcConfig({
+			const def = makeOpenCodeDefinition({
 				configPaths: [join(tempDir, "none.json")],
 				skillsDirs: [join(tempDir, "skills"), dir],
 			})
+			const result = discoverAgent(def)
 			expect(result.skillCount).toBe(2)
 			expect(result.skillsDir).toBe(dir)
 		})
@@ -344,7 +371,8 @@ describe("discoverOcConfig", () => {
 			const path2 = configPath("b.json")
 			writeConfig(path1, { mcp: { first: { type: "local", command: ["a"] } } })
 			writeConfig(path2, { mcp: { second: { type: "local", command: ["b"] } } })
-			const result = discoverOcConfig({ configPaths: [path1, path2] })
+			const def = makeOpenCodeDefinition({ configPaths: [path1, path2] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.first).toBeDefined()
 			expect(result.mcpServers.second).toBeUndefined()
 		})
@@ -359,7 +387,8 @@ describe("discoverOcConfig", () => {
 					good: { type: "local", command: ["ok"] },
 				},
 			})
-			const result = discoverOcConfig({ configPaths: [path] })
+			const def = makeOpenCodeDefinition({ configPaths: [path] })
+			const result = discoverAgent(def)
 			expect(result.mcpServers.bad1).toBeUndefined()
 			expect(result.mcpServers.bad2).toBeUndefined()
 			expect(result.mcpServers.bad3).toBeUndefined()
@@ -368,10 +397,11 @@ describe("discoverOcConfig", () => {
 
 		it("empty skills dir still sets skillsDir", () => {
 			const dir = mkSkillsDir("skills")
-			const result = discoverOcConfig({
+			const def = makeOpenCodeDefinition({
 				configPaths: [join(tempDir, "none.json")],
 				skillsDirs: [dir],
 			})
+			const result = discoverAgent(def)
 			expect(result.skillCount).toBe(0)
 			expect(result.skillsDir).toBe(dir)
 		})

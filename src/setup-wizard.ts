@@ -2,10 +2,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import * as clack from "@clack/prompts"
-import { discoverCcConfig } from "./cc-discovery.js"
+import { AGENT_DEFINITIONS, type AgentDiscovery, discoverAgent } from "./agent-discovery/index.js"
 import { DEFAULT_SKILL_PATHS, getAgentConfigDir } from "./config.js"
 import type { ServerEntry } from "./extensions/mcp-adapter/types.js"
-import { discoverOcConfig } from "./oc-discovery.js"
 
 export type MigrationState = "done" | "skip-forever"
 
@@ -18,30 +17,21 @@ type MigrationAction = "migrate" | "skip-once" | "skip-forever"
 
 interface MergedDiscovery {
 	mcpServers: Record<string, ServerEntry>
-	cc: { skillCount: number; skillsDir?: string; hadServers: boolean }
-	oc: { skillCount: number; skillsDir?: string; hadServers: boolean }
-	hasAnything: boolean
+	agents: AgentDiscovery[]
+	hasAnythingMigratable: boolean
 }
 
 function mergeDiscoveries(): MergedDiscovery {
-	const cc = discoverCcConfig()
-	const oc = discoverOcConfig()
-	// CC wins on conflicts (it's the historical default users have come from);
-	// both can coexist for distinct names.
-	const mcpServers = { ...oc.mcpServers, ...cc.mcpServers }
-	const ccBlock = {
-		skillCount: cc.skillCount,
-		skillsDir: cc.skillsDir,
-		hadServers: Object.keys(cc.mcpServers).length > 0,
+	const agents = AGENT_DEFINITIONS.map(discoverAgent)
+	// Merge MCP servers in *reverse* registry order so earlier-registered
+	// agents win on name collisions. Today: CC is registered first → CC
+	// wins, matching previous behaviour.
+	const mcpServers: Record<string, ServerEntry> = {}
+	for (let i = agents.length - 1; i >= 0; i--) {
+		Object.assign(mcpServers, agents[i].mcpServers)
 	}
-	const ocBlock = {
-		skillCount: oc.skillCount,
-		skillsDir: oc.skillsDir,
-		hadServers: Object.keys(oc.mcpServers).length > 0,
-	}
-	const hasAnything =
-		ccBlock.hadServers || ocBlock.hadServers || cc.skillsDir !== undefined || oc.skillsDir !== undefined
-	return { mcpServers, cc: ccBlock, oc: ocBlock, hasAnything }
+	const hasAnythingMigratable = agents.some((a) => Object.keys(a.mcpServers).length > 0 || a.skillCount > 0)
+	return { mcpServers, agents, hasAnythingMigratable }
 }
 
 function prettyHome(p: string): string {
@@ -53,21 +43,18 @@ async function runMigrationPhase(d: MergedDiscovery): Promise<MigrationAction> {
 	const lines: string[] = []
 	const names = Object.keys(d.mcpServers)
 	if (names.length > 0) lines.push(`MCP servers: ${names.join(", ")}`)
-	if (d.cc.skillsDir) {
-		lines.push(`Claude Code skills: ${d.cc.skillCount} in ${prettyHome(d.cc.skillsDir)}`)
-	}
-	if (d.oc.skillsDir) {
-		lines.push(`OpenCode skills: ${d.oc.skillCount} in ${prettyHome(d.oc.skillsDir)}`)
+	for (const a of d.agents) {
+		if (a.skillCount > 0 && a.skillsDir) {
+			lines.push(`${a.displayName} skills: ${a.skillCount} in ${prettyHome(a.skillsDir)}`)
+		}
 	}
 
-	const ccPresent = d.cc.hadServers || d.cc.skillsDir !== undefined
-	const ocPresent = d.oc.hadServers || d.oc.skillsDir !== undefined
+	// Title: list each present agent. Presence = servers OR skills.
+	const present = d.agents.filter((a) => Object.keys(a.mcpServers).length > 0 || a.skillCount > 0)
 	const title =
-		ccPresent && ocPresent
-			? "Claude Code + OpenCode configuration found"
-			: ocPresent
-				? "OpenCode configuration found"
-				: "Claude Code configuration found"
+		present.length === 0
+			? "Configuration found"
+			: `${present.map((a) => a.displayName).join(" + ")} configuration found`
 
 	clack.note(lines.join("\n"), title)
 
@@ -144,7 +131,7 @@ export async function runSetupWizard(options: {
 	let migrationState: MigrationState | undefined
 	const merged = options.needsMigrationCheck ? mergeDiscoveries() : null
 
-	if (merged?.hasAnything) {
+	if (merged?.hasAnythingMigratable) {
 		const action = await runMigrationPhase(merged)
 		if (action === "migrate") {
 			writeMcpServers(merged.mcpServers)
