@@ -24,6 +24,7 @@ import loginExtension from "./extensions/login/index.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
+import memoryExtension from "./extensions/memory/index.js"
 import promptEnrichmentExtension from "./extensions/orchestration/prompt-enrichment.js"
 import permissionsExtension from "./extensions/permissions/index.js"
 import { reserveShiftTabForPermissions } from "./extensions/permissions/keybindings.js"
@@ -272,6 +273,7 @@ try {
 			subagentExtension,
 			tagsExtension,
 			telemetryExtension(telemetryConfig),
+			memoryExtension,
 			toolRendererExtension,
 			webFetchExtension,
 			webSearchExtension,
