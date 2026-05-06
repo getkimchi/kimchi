@@ -290,14 +290,17 @@ export class SkillManager {
 		if (!loc) return { success: false, error: `Skill '${name}' not found.` }
 
 		const archiveDir = join(this.skillsDir, ".archive")
-		const timestamp = Date.now()
-		const archivePath = join(archiveDir, `${name}-${timestamp}`)
+		const archivePath = join(archiveDir, `${name}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`)
 
 		try {
 			await mkdir(archiveDir, { recursive: true })
 			await rename(loc.skillDir, archivePath)
 			return { success: true, message: `Skill '${name}' archived.` }
 		} catch (err) {
+			const code = (err as { code?: string }).code
+			if (code === "ENOENT") {
+				return { success: false, error: `Skill '${name}' was already moved or deleted by another operation.` }
+			}
 			return { success: false, error: String(err) }
 		}
 	}
