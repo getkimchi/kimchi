@@ -2,6 +2,7 @@ import type { Api, Model } from "@mariozechner/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@mariozechner/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@mariozechner/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
+import { resolveClassifierModel } from "./classifier-model.js"
 import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
@@ -313,7 +314,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					if (isReadOnlyBashCommand(command)) return undefined
 				}
 
-				const classifierModel = resolveClassifierModel(ctx)
+				const classifierModel = resolveClassifierModel(ctx.model, ctx.modelRegistry)
 				if (!classifierModel) return { block: true, reason: "no model available for classifier" }
 
 				const verdict = await classifyToolCall(
@@ -407,22 +408,6 @@ async function handleConfirm(
 	} finally {
 		opts.activeAborts.delete(abort)
 	}
-}
-
-/**
- * Pick the cheapest available model for the classifier.
- *
- * Strategy: prefer the model with the lowest per-token input cost.
- * Falls back to `ctx.model` (the orchestrator's model) when no
- * alternatives are available in the registry.
- */
-function resolveClassifierModel(ctx: ExtensionContext): Model<Api> | undefined {
-	const available = ctx.modelRegistry.getAvailable()
-	if (available.length === 0) return ctx.model
-
-	// Sort ascending by input cost — cheapest first.
-	const sorted = [...available].sort((a, b) => a.cost.input - b.cost.input)
-	return sorted[0]
 }
 
 function splitFlag(raw: boolean | string | undefined): string[] {

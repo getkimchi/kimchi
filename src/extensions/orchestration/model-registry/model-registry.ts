@@ -24,7 +24,7 @@ import type { ModelMetadata } from "../../../models.js"
 import { MODEL_CAPABILITIES } from "./builtin-models.js"
 import type { ModelCapabilities, OrchestrationModelDescriptor } from "./types.js"
 
-const PROVIDER = "kimchi-dev"
+export const KIMCHI_DEV_PROVIDER = "kimchi-dev"
 
 const GENERIC_CAPABILITIES: ModelCapabilities = {
 	vision: false,
@@ -65,14 +65,14 @@ export class ModelRegistry {
 				warnings.push({ kind: "unknown_model", modelId: m.slug })
 				allModels.push({
 					id: m.slug,
-					provider: PROVIDER,
+					provider: KIMCHI_DEV_PROVIDER,
 					name: deriveName(m),
 					capabilities: GENERIC_CAPABILITIES,
 				})
 			} else {
 				allModels.push({
 					id: m.slug,
-					provider: PROVIDER,
+					provider: KIMCHI_DEV_PROVIDER,
 					name: deriveName(m),
 					capabilities: entry,
 				})
