@@ -57,13 +57,16 @@ const COOKING_FRAMES: SpinnerFrame[] = [
 	{ char: "⊙", message: "Tossing everything together" },
 ]
 
-const CHAR_INTERVAL_MS = 40
+const CHAR_INTERVAL_MS = 50
 const DOT_COUNT = 3
-const HOLD_TICKS = 30
+const HOLD_TICKS = 40
+
+let _resumeFrameIdx = 0
+let _resumeTickOffset = 0
 
 export function createWorkingAnimator(onUpdate: (char: string, message: string) => void): () => void {
-	let frameIdx = 0
-	let tickOffset = 0
+	let frameIdx = _resumeFrameIdx
+	let tickOffset = _resumeTickOffset
 	const id = setInterval(() => {
 		const frame = COOKING_FRAMES[frameIdx]
 		tickOffset++
@@ -71,6 +74,8 @@ export function createWorkingAnimator(onUpdate: (char: string, message: string) 
 			frameIdx = (frameIdx + 1) % COOKING_FRAMES.length
 			tickOffset = 0
 		}
+		_resumeFrameIdx = frameIdx
+		_resumeTickOffset = tickOffset
 		const msg = frame.message
 		const partial =
 			tickOffset <= msg.length
@@ -78,5 +83,9 @@ export function createWorkingAnimator(onUpdate: (char: string, message: string) 
 				: msg + ".".repeat(Math.min(tickOffset - msg.length, DOT_COUNT))
 		onUpdate(frame.char, partial)
 	}, CHAR_INTERVAL_MS)
-	return () => clearInterval(id)
+	return () => {
+		clearInterval(id)
+		_resumeFrameIdx = (frameIdx + 1) % COOKING_FRAMES.length
+		_resumeTickOffset = 0
+	}
 }
