@@ -113,6 +113,18 @@ export async function initializeMcp(pi: ExtensionAPI, ctx: ExtensionContext): Pr
 		}
 	})
 
+	const retryable = results.filter((r) => r.error && !r.error.includes("OAuth"))
+	for (const entry of retryable) {
+		try {
+			const connection = await manager.connect(entry.name, entry.definition)
+			if (connection.status === "needs-auth") continue
+			entry.connection = connection
+			entry.error = null
+		} catch {
+			// keep original error
+		}
+	}
+
 	for (const { name, definition, connection, error } of results) {
 		if (error || !connection) {
 			if (ctx.hasUI) {

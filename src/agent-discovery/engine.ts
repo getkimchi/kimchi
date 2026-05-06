@@ -89,5 +89,29 @@ export function discoverAgent(def: AgentDefinition): AgentDiscovery {
 		}
 	}
 
-	return { id: def.id, displayName: def.displayName, mcpServers, skillCount, skillsDir }
+	let commandsCount = 0
+	let commandsDir: string | undefined
+	for (const dir of def.commandsDirs) {
+		if (existsSync(dir)) {
+			commandsDir = dir
+			try {
+				commandsCount = countMarkdownFiles(dir)
+			} catch (err) {
+				console.warn(`Failed to read ${def.displayName} commands directory at ${dir}: ${msg(err)}`)
+			}
+			break
+		}
+	}
+
+	return { id: def.id, displayName: def.displayName, mcpServers, skillCount, skillsDir, commandsCount, commandsDir }
+}
+
+function countMarkdownFiles(dir: string): number {
+	let count = 0
+	for (const entry of readdirSync(dir, { withFileTypes: true })) {
+		if (entry.isFile() && entry.name.endsWith(".md")) {
+			count++
+		}
+	}
+	return count
 }

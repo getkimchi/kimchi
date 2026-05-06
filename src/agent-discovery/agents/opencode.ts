@@ -24,6 +24,8 @@ const DEFAULT_OC_SKILLS_DIRS = [
 	join(homedir(), ".config", "opencode", "skill"),
 ]
 
+const DEFAULT_OC_COMMANDS_DIRS = [join(homedir(), ".config", "opencode", "commands")]
+
 interface ModernServerRaw {
 	type?: string
 	command?: string[]
@@ -116,15 +118,18 @@ function transformLegacyServer(raw: LegacyServerRaw): ServerEntry {
 export function makeOpenCodeDefinition(overrides?: {
 	configPaths?: string[]
 	skillsDirs?: string[]
+	commandsDirs?: string[]
 }): AgentDefinition {
 	const configPaths = overrides?.configPaths ?? DEFAULT_OC_CONFIG_PATHS
 	const skillsDirs = overrides?.skillsDirs ?? DEFAULT_OC_SKILLS_DIRS
+	const commandsDirs = overrides?.commandsDirs ?? DEFAULT_OC_COMMANDS_DIRS
 
 	return {
 		id: "opencode",
 		displayName: "OpenCode",
 		configPaths,
 		skillsDirs,
+		commandsDirs,
 		parseConfig: parseJsonc,
 
 		extractServerSources(parsed) {

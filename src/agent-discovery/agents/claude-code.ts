@@ -6,6 +6,7 @@ import type { AgentDefinition } from "../index.js"
 
 const CC_CONFIG_PATH = join(homedir(), ".claude.json")
 const CC_SKILLS_DIR = join(homedir(), ".claude", "skills")
+const CC_COMMANDS_DIR = join(homedir(), ".claude", "commands")
 
 interface CcServerRaw {
 	command?: string
@@ -41,15 +42,18 @@ function makeTransformServer(raw: CcServerRaw): ServerEntry {
 export function makeClaudeCodeDefinition(overrides?: {
 	configPaths?: string[]
 	skillsDirs?: string[]
+	commandsDirs?: string[]
 }): AgentDefinition {
 	const configPaths = overrides?.configPaths ?? [CC_CONFIG_PATH]
 	const skillsDirs = overrides?.skillsDirs ?? [CC_SKILLS_DIR]
+	const commandsDirs = overrides?.commandsDirs ?? [CC_COMMANDS_DIR]
 
 	return {
 		id: "claude-code",
 		displayName: "Claude Code",
 		configPaths,
 		skillsDirs,
+		commandsDirs,
 
 		extractServerSources(parsed) {
 			if (!parsed || typeof parsed !== "object") return []

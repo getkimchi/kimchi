@@ -22,6 +22,7 @@ describe("discoverAgent engine", () => {
 		overrides?: Partial<{
 			configPaths: string[]
 			skillsDirs: string[]
+			commandsDirs: string[]
 			parseConfig: (raw: string) => unknown
 		}>,
 	): AgentDefinition {
@@ -31,6 +32,7 @@ describe("discoverAgent engine", () => {
 			displayName: "Test Agent",
 			configPaths: overrides?.configPaths ?? [],
 			skillsDirs: overrides?.skillsDirs ?? [],
+			commandsDirs: overrides?.commandsDirs ?? [],
 			parseConfig,
 			extractServerSources: (parsed: unknown) => {
 				if (!parsed || typeof parsed !== "object") return []
@@ -287,6 +289,62 @@ describe("discoverAgent engine", () => {
 	})
 
 	// ---------------------------------------------------------------------------
+	// E11b: empty commandsDirs → commandsCount: 0, commandsDir undefined
+	// ---------------------------------------------------------------------------
+	it("E11b: empty commandsDirs → commandsCount: 0, commandsDir undefined", () => {
+		const def = makeDef({ configPaths: [], skillsDirs: [], commandsDirs: [] })
+		const result = discoverAgent(def)
+
+		expect(result.commandsCount).toBe(0)
+		expect(result.commandsDir).toBeUndefined()
+	})
+
+	// ---------------------------------------------------------------------------
+	// E11c: missing commands dir → commandsCount: 0, commandsDir undefined
+	// ---------------------------------------------------------------------------
+	it("E11c: missing commands dir → commandsCount: 0, commandsDir undefined", () => {
+		const def = makeDef({ commandsDirs: [join(tempDir, "nonexistent-cmds")] })
+		const result = discoverAgent(def)
+
+		expect(result.commandsCount).toBe(0)
+		expect(result.commandsDir).toBeUndefined()
+	})
+
+	// ---------------------------------------------------------------------------
+	// E11d: commands dir with .md files → commandsCount counts only top-level
+	// ---------------------------------------------------------------------------
+	it("E11d: commands dir with .md files → commandsCount counts only top-level", () => {
+		const dir = join(tempDir, "commands")
+		mkdirSync(dir, { recursive: true })
+		writeFileSync(join(dir, "review.md"), "# review")
+		writeFileSync(join(dir, "deploy.md"), "# deploy")
+		writeFileSync(join(dir, "ignore.txt"), "not a command")
+		const sub = join(dir, "reference")
+		mkdirSync(sub, { recursive: true })
+		writeFileSync(join(sub, "react.md"), "# react")
+
+		const def = makeDef({ commandsDirs: [dir] })
+		const result = discoverAgent(def)
+
+		expect(result.commandsCount).toBe(2)
+		expect(result.commandsDir).toBe(dir)
+	})
+
+	// ---------------------------------------------------------------------------
+	// E11e: commands dir empty → commandsCount: 0, commandsDir set
+	// ---------------------------------------------------------------------------
+	it("E11e: commands dir empty → commandsCount: 0, commandsDir set", () => {
+		const dir = join(tempDir, "empty-cmds")
+		mkdirSync(dir, { recursive: true })
+
+		const def = makeDef({ commandsDirs: [dir] })
+		const result = discoverAgent(def)
+
+		expect(result.commandsCount).toBe(0)
+		expect(result.commandsDir).toBe(dir)
+	})
+
+	// ---------------------------------------------------------------------------
 	// E12: parseConfig defaults to JSON.parse when omitted
 	// ---------------------------------------------------------------------------
 	it("E12: parseConfig defaults to JSON.parse when omitted", () => {
@@ -299,6 +357,7 @@ describe("discoverAgent engine", () => {
 			displayName: "Test",
 			configPaths: [path],
 			skillsDirs: [],
+			commandsDirs: [],
 			extractServerSources: (parsed: unknown) => {
 				if (!parsed || typeof parsed !== "object") return []
 				const root = parsed as Record<string, unknown>

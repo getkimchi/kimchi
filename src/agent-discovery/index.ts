@@ -25,6 +25,12 @@ export interface AgentDefinition {
 	 */
 	readonly skillsDirs: readonly string[]
 	/**
+	 * Commands directory candidates tried in order. The first existing
+	 * directory wins. Commands are .md files that can be migrated as
+	 * prompts. Empty array → no commands concept for this agent.
+	 */
+	readonly commandsDirs: readonly string[]
+	/**
 	 * Parse the raw config file contents. Defaults to JSON.parse if omitted.
 	 * OpenCode uses a JSONC parser; CC uses plain JSON.
 	 */
@@ -58,6 +64,8 @@ export interface AgentDiscovery {
 	readonly mcpServers: Record<string, ServerEntry>
 	readonly skillCount: number
 	readonly skillsDir?: string
+	readonly commandsCount: number
+	readonly commandsDir?: string
 }
 
 export { discoverAgent }
