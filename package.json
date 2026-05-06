@@ -35,12 +35,15 @@
 		"@mariozechner/pi-tui": "^0.72.1",
 		"@modelcontextprotocol/ext-apps": "^1.2.2",
 		"@modelcontextprotocol/sdk": "^1.25.1",
+		"@types/proper-lockfile": "^4.1.4",
 		"micromatch": "^4.0.8",
 		"open": "^10.2.0",
+		"proper-lockfile": "^4.1.2",
 		"shell-quote": "^1.8.3",
 		"tar": "^7.5.13",
 		"undici": "^8.0.2",
 		"uuid": "^14.0.0",
+		"yaml": "^2.8.4",
 		"zod": "^4.0.0"
 	},
 	"peerDependencies": {
