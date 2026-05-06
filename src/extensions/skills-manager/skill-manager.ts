@@ -29,8 +29,7 @@ export function validateName(name: string): string | null {
 
 export function validateCategory(category?: string): string | null {
 	if (!category) return null
-	if (/\s/.test(category)) return "Category must not contain spaces."
-	return null
+	return validateName(category)
 }
 
 /**
@@ -63,10 +62,15 @@ export async function validateFrontmatter(content: string): Promise<string | nul
 	if (body.trim().length === 0) return "Body content is required after frontmatter."
 
 	// Parse just the YAML content between the delimiters
+	let parsed: unknown
 	try {
-		parseYaml(fm)
+		parsed = parseYaml(fm)
 	} catch (err) {
 		return `Frontmatter contains invalid YAML: ${String(err)}`
+	}
+
+	if (typeof parsed !== "object" || parsed === null) {
+		return "Frontmatter YAML must be an object (key-value mapping)."
 	}
 
 	return null
@@ -82,7 +86,9 @@ export function validateFilePath(filePath: string, skillDir: string): string | n
 	// Check that the top-level subdirectory is one of the allowed ones
 	const rel = filePath.replace(/\\/g, "/")
 	const parts = rel.split("/")
-	if (parts.length < 2) return null // file is at root of skill, not allowed
+	if (parts.length < 2) {
+		return "Files must be placed inside a subdirectory (e.g. references/file.md), not at the root of the skill."
+	}
 	const top = parts[0]
 	if (!ALLOWED_SUBDIRS.has(top)) {
 		return `Top-level directory '${top}' is not allowed. Allowed: ${[...ALLOWED_SUBDIRS].join(", ")}.`
@@ -148,7 +154,7 @@ export class SkillManager {
 
 	private async _exists(path: string): Promise<boolean> {
 		try {
-			await readFile(path)
+			await stat(path)
 			return true
 		} catch {
 			return false
@@ -157,7 +163,7 @@ export class SkillManager {
 
 	private async _atomicWrite(filePath: string, content: string): Promise<void> {
 		await mkdir(dirname(filePath), { recursive: true })
-		const tmp = `${filePath}.tmp.${Date.now()}`
+		const tmp = `${filePath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 10)}`
 		await writeFile(tmp, content, "utf-8")
 		await rename(tmp, filePath)
 	}
@@ -279,8 +285,7 @@ export class SkillManager {
 		}
 	}
 
-	async delete(name: string, absorbedInto?: string): Promise<SkillManageResult> {
-		// absorbedInto is for the usage tracker, not used here
+	async delete(name: string, _absorbedInto?: string): Promise<SkillManageResult> {
 		const loc = await this._findSkill(name)
 		if (!loc) return { success: false, error: `Skill '${name}' not found.` }
 
