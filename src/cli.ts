@@ -16,6 +16,7 @@ import {
 } from "./config.js"
 import { isBunBinary } from "./env.js"
 import bashCollapseExtension from "./extensions/bash-collapse.js"
+import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
@@ -263,6 +264,7 @@ try {
 			mcpAdapterExtension,
 			permissionsExtension,
 			promptEnrichmentExtension(skillPaths),
+			behavioursExtension,
 			promptSummaryExtension,
 			contextCompactorExtension,
 			clipboardImageExtension,
