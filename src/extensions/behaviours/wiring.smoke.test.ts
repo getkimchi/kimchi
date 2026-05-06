@@ -26,9 +26,15 @@ interface Appended {
 	data: unknown
 }
 
+interface Sent {
+	message: { customType: string; content: string; display: boolean; details?: unknown }
+	options?: { deliverAs?: string; triggerTurn?: boolean }
+}
+
 class FakePi {
 	readonly handlers = new Map<string, Handler[]>()
 	readonly appended: Appended[] = []
+	readonly sent: Sent[] = []
 
 	asExtensionAPI(): ExtensionAPI {
 		return this as unknown as ExtensionAPI
@@ -42,6 +48,10 @@ class FakePi {
 
 	appendEntry(type: string, data?: unknown): void {
 		this.appended.push({ type, data })
+	}
+
+	sendMessage(message: Sent["message"], options?: Sent["options"]): void {
+		this.sent.push({ message, options })
 	}
 
 	async fire<R = unknown>(event: string, payload: unknown, ctx: unknown = {}): Promise<R[]> {
@@ -165,6 +175,40 @@ describe("wireBehaviours — tool_call", () => {
 		await pi.fire("tool_call", { toolName: "bash", input: { command: "glab mr list" } })
 
 		expect(pi.entries(BEHAVIOUR_EVAL_TYPE)).toEqual([])
+	})
+})
+
+describe("wireBehaviours — tool_result", () => {
+	it("steers a tool-triggered body in the same turn as the trigger", async () => {
+		const pi = setupWired([glabCli])
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", { toolName: "bash", input: { command: "glab mr list" } })
+		await pi.fire("tool_result", { toolName: "bash", input: { command: "glab mr list" } })
+
+		expect(pi.sent).toEqual([
+			{
+				message: expect.objectContaining({
+					customType: BEHAVIOUR_BODY_TYPE,
+					content: "Use glab for GitLab.",
+					display: false,
+				}),
+				options: { deliverAs: "steer" },
+			},
+		])
+
+		// Pending drained: a later before_agent_start does NOT re-deliver the body.
+		const next = await pi.fire<{ message?: unknown }>("before_agent_start", { prompt: "x", systemPrompt: "BASE" })
+		expect(next.flatMap((r) => (r.message ? [r.message] : []))).toEqual([])
+	})
+
+	it("does not steer for session-triggered bodies (already drained by before_agent_start)", async () => {
+		const pi = setupWired([ghCli])
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("before_agent_start", { prompt: "x", systemPrompt: "BASE" })
+		await pi.fire("tool_result", { toolName: "bash", input: { command: "gh pr list" } })
+
+		expect(pi.sent).toEqual([])
 	})
 })
 

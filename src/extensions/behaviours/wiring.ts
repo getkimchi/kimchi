@@ -28,7 +28,7 @@ import type { ProbeSpec } from "./triggers.js"
 import type { Behaviour, TriggeredBehaviour } from "./types.js"
 
 const RULES_HEADER = "## Rules"
-export const BEHAVIOUR_BODY_TYPE = "behaviour_body"
+export const BEHAVIOUR_BODY_TYPE = "behaviour"
 
 interface BehaviourBodyDetails {
 	name: string
@@ -113,6 +113,26 @@ export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[
 				turnIndex: e.turnIndex,
 				toolArgs: e.toolArgs,
 			})
+		}
+	})
+
+	// Drain any pending bodies as steer messages right after the tool result so
+	// the model sees them before its next inference within the same turn.
+	// `before_agent_start` only fires per user prompt, so without this hook a
+	// behaviour that loads on a tool_call mid-turn would never reach the model
+	// in that session.
+	pi.on("tool_result", async () => {
+		for (const b of triggered) {
+			if (!engine.takePending(b.name)) continue
+			pi.sendMessage(
+				{
+					customType: BEHAVIOUR_BODY_TYPE,
+					content: b.body,
+					display: false,
+					details: { name: b.name } satisfies BehaviourBodyDetails,
+				},
+				{ deliverAs: "steer" },
+			)
 		}
 	})
 
