@@ -35,12 +35,14 @@ function makeContext(
 	overrides: Partial<{
 		clis: Iterable<string>
 		gitRemoteHost: string | undefined
+		inGitRepo: boolean
 		paths: Iterable<string>
 	}> = {},
 ): SessionContext {
 	return {
 		cliPresent: new Set(overrides.clis ?? []),
 		gitRemoteHost: overrides.gitRemoteHost,
+		inGitRepo: overrides.inGitRepo ?? false,
 		pathMatches: new Set(overrides.paths ?? []),
 	}
 }
@@ -318,7 +320,7 @@ describe("TriggerEngine.evaluateToolTriggers", () => {
 			},
 		})
 		const engine = new TriggerEngine([ghCli])
-		engine.evaluateSessionTriggers({ cliPresent: new Set(["gh"]), gitRemoteHost: undefined, pathMatches: new Set() }, 0)
+		engine.evaluateSessionTriggers(makeContext({ clis: ["gh"] }), 0)
 		expect(engine.evaluateToolTriggers(bashCall("gh pr list"), 1)).toEqual([])
 	})
 

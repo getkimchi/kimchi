@@ -16,7 +16,7 @@
 
 import { execFileSync } from "node:child_process"
 import type { Dirent } from "node:fs"
-import { readdirSync } from "node:fs"
+import { existsSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import micromatch from "micromatch"
 import { type ProbeSpec, walkLeaves } from "./triggers.js"
@@ -24,6 +24,7 @@ import { type ProbeSpec, walkLeaves } from "./triggers.js"
 export interface SessionContext {
 	readonly cliPresent: ReadonlySet<string>
 	readonly gitRemoteHost: string | undefined
+	readonly inGitRepo: boolean
 	readonly pathMatches: ReadonlySet<string>
 }
 
@@ -41,6 +42,7 @@ export const PATH_IGNORED_DIRS: ReadonlySet<string> = new Set([
 export interface ResolverProbes {
 	cliCommands: ReadonlySet<string>
 	needGitRemote: boolean
+	needGitRepo: boolean
 	pathGlobs: ReadonlySet<string>
 }
 
@@ -48,19 +50,22 @@ export function collectProbes(specs: Iterable<ProbeSpec>): ResolverProbes {
 	const cliCommands = new Set<string>()
 	const pathGlobs = new Set<string>()
 	let needGitRemote = false
+	let needGitRepo = false
 	for (const spec of specs) {
 		walkLeaves(spec, (leaf) => {
 			if (leaf.kind === "cli") cliCommands.add(leaf.name)
 			else if (leaf.kind === "gitRemote") needGitRemote = true
+			else if (leaf.kind === "gitRepo") needGitRepo = true
 			else if (leaf.kind === "path") pathGlobs.add(leaf.glob)
 		})
 	}
-	return { cliCommands, needGitRemote, pathGlobs }
+	return { cliCommands, needGitRemote, needGitRepo, pathGlobs }
 }
 
 export interface ResolverIO {
 	hasCli(name: string): boolean
 	readGitRemoteHost(cwd: string): string | undefined
+	isGitRepo(cwd: string): boolean
 	walkPaths(cwd: string, globs: ReadonlySet<string>): Set<string>
 }
 
@@ -84,6 +89,11 @@ export const defaultResolverIO: ResolverIO = {
 		} catch {
 			return undefined
 		}
+	},
+	isGitRepo(cwd: string): boolean {
+		// `.git` is a directory in a normal repo and a regular file in a linked
+		// worktree or submodule — `existsSync` covers both without a subprocess.
+		return existsSync(join(cwd, ".git"))
 	},
 	walkPaths(cwd, globs) {
 		return walkAndMatch(cwd, globs, PATH_DEPTH_CAP)
@@ -148,12 +158,13 @@ export function resolveSessionContext(
 	cwd: string,
 	io: ResolverIO = defaultResolverIO,
 ): SessionContext {
-	const { cliCommands, needGitRemote, pathGlobs } = collectProbes(specs)
+	const { cliCommands, needGitRemote, needGitRepo, pathGlobs } = collectProbes(specs)
 	const cliPresent = new Set<string>()
 	for (const name of cliCommands) {
 		if (io.hasCli(name)) cliPresent.add(name)
 	}
 	const gitRemoteHost = needGitRemote ? io.readGitRemoteHost(cwd) : undefined
+	const inGitRepo = needGitRepo ? io.isGitRepo(cwd) : false
 	const pathMatches = io.walkPaths(cwd, pathGlobs)
-	return { cliPresent, gitRemoteHost, pathMatches }
+	return { cliPresent, gitRemoteHost, inGitRepo, pathMatches }
 }

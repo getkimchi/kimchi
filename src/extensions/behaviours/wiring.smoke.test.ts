@@ -62,6 +62,7 @@ class FakePi {
 const stubIO: ResolverIO = {
 	hasCli: (name) => name === "gh",
 	readGitRemoteHost: () => undefined,
+	isGitRepo: () => false,
 	walkPaths: () => new Set<string>(),
 }
 

@@ -25,6 +25,7 @@ import type { KnownToolName, ToolArgs } from "./tool-args.js"
 export type ProbeSpec =
 	| { kind: "cli"; name: string }
 	| { kind: "gitRemote"; host: string }
+	| { kind: "gitRepo" }
 	| { kind: "path"; glob: string }
 	| { kind: "any"; children: ProbeSpec[] }
 	| { kind: "all"; children: ProbeSpec[] }
@@ -48,6 +49,10 @@ export function cli(name: string): SessionProbe {
 
 export function gitRemote(host: string): SessionProbe {
 	return withProbeSpec((ctx) => ctx.gitRemoteHost === host, { kind: "gitRemote", host })
+}
+
+export function gitRepo(): SessionProbe {
+	return withProbeSpec((ctx) => ctx.inGitRepo, { kind: "gitRepo" })
 }
 
 export function path(glob: string): SessionProbe {

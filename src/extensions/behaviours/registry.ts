@@ -18,18 +18,30 @@ import glabCliBody from "./bodies/glab-cli.md" with { type: "text" }
 import pythonEditBody from "./bodies/python-edit.md" with { type: "text" }
 import { type BehaviourSource, buildBehaviours } from "./build.js"
 import { bashInvokes, fetchesHost } from "./matchers.js"
-import { any, cli, gitRemote } from "./triggers.js"
+import { any, cli, gitRemote, gitRepo, tool } from "./triggers.js"
 import type { Behaviour } from "./types.js"
 
 const ghInvocation = bashInvokes("gh")
 const githubFromOtherTool = fetchesHost(/(api\.)?github\.com/)
 const glabInvocation = bashInvokes("glab")
 const gitlabFromOtherTool = fetchesHost(/(.+\.)?gitlab\.com/)
+const pythonFileEdit = any(
+	tool("edit", (i) => i.path.endsWith(".py")),
+	tool("write", (i) => i.path.endsWith(".py")),
+)
 
 const sources: BehaviourSource[] = [
-	{ raw: gitHygieneBody, kind: "baseline" },
-	{ raw: pythonEditBody, kind: "baseline" },
 	{ raw: boundToolOutputBody, kind: "baseline" },
+	{
+		raw: gitHygieneBody,
+		kind: "triggered",
+		triggers: { session: gitRepo() },
+	},
+	{
+		raw: pythonEditBody,
+		kind: "triggered",
+		triggers: { tool: pythonFileEdit },
+	},
 	{
 		raw: ghCliBody,
 		kind: "triggered",

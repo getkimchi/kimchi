@@ -126,6 +126,7 @@ describe("resolveSessionContext", () => {
 	function fakeIO(opts: {
 		clis?: ReadonlySet<string>
 		gitRemoteHost?: string | undefined
+		inGitRepo?: boolean
 		paths?: ReadonlySet<string>
 	}): ResolverIO {
 		const clis = opts.clis ?? new Set<string>()
@@ -133,6 +134,7 @@ describe("resolveSessionContext", () => {
 		return {
 			hasCli: (name) => clis.has(name),
 			readGitRemoteHost: () => opts.gitRemoteHost,
+			isGitRepo: () => opts.inGitRepo ?? false,
 			walkPaths: (_cwd, globs) => {
 				const out = new Set<string>()
 				for (const g of globs) if (paths.has(g)) out.add(g)
@@ -175,6 +177,7 @@ describe("resolveSessionContext", () => {
 				called = true
 				return "github.com"
 			},
+			isGitRepo: () => false,
 			walkPaths: () => new Set(),
 		})
 		expect(called).toBe(false)
