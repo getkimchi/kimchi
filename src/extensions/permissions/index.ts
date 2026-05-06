@@ -7,11 +7,17 @@ import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
 import { resolveMode } from "./mode.js"
-import { promptForApproval } from "./prompts.js"
+import { type CompoundSubcommand, promptForApproval, promptForCompoundApproval } from "./prompts.js"
 import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import { evaluateRules, parseRules, stringifyRule } from "./rules.js"
 import { SessionMemory } from "./session-memory.js"
-import { isReadOnlyBashCommand, isReadOnlyTool } from "./taxonomy.js"
+import {
+	isCompoundCommand,
+	isHardBlockedBash,
+	isReadOnlyBashCommand,
+	isReadOnlyTool,
+	splitCompoundCommand,
+} from "./taxonomy.js"
 import { BUILTIN_DENY, DEFAULT_CONFIG, type PermissionMode, type Rule } from "./types.js"
 
 /**
@@ -297,13 +303,38 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				return undefined
 			}
 
+			if (BUILTIN_ALLOW_TOOL_NAMES.includes(toolName)) return undefined
+
+			// Check for compound bash commands FIRST (before general rule evaluation)
+			// Compound commands should not match individual subcommand rules
+			if (toolName === "bash") {
+				const command = typeof input.command === "string" ? input.command : ""
+				const compoundCheck = checkCompoundCommand(command, allRules())
+				if (compoundCheck.decision === "deny") {
+					return { block: true, reason: compoundCheck.deniedReason ?? "Subcommand denied" }
+				}
+				if (compoundCheck.decision === "allow") {
+					return undefined
+				}
+
+				if (compoundCheck.decision === "prompt" && compoundCheck.subcommands) {
+					// Go to compound confirm flow
+					const result = await handleCompoundConfirm(event, {
+						ctx,
+						session,
+						activeAborts: activeAbortControllers,
+						subcommands: compoundCheck.subcommands,
+					})
+					if (result === "aborted") continue
+					return result
+				}
+			}
+
 			const match = evaluateRules(allRules(), toolName, input)
 			if (match.decision === "deny") {
 				return { block: true, reason: `Denied by rule ${formatRule(match.rule)}` }
 			}
 			if (match.decision === "allow") return undefined
-
-			if (BUILTIN_ALLOW_TOOL_NAMES.includes(toolName)) return undefined
 
 			// Auto mode + headless default mode (subagents) both go through the
 			// classifier; prompts without a UI fail closed.
@@ -401,9 +432,79 @@ async function handleConfirm(
 			opts.session.add(outcome.rule)
 			return undefined
 		}
+		if (outcome.kind === "allow-remember-wildcard") {
+			opts.session.add(outcome.rule)
+			return undefined
+		}
 		if (outcome.kind === "deny-with-feedback") {
 			return { block: true, reason: outcome.feedback }
 		}
+		return { block: true, reason: "Declined by user" }
+	} finally {
+		opts.activeAborts.delete(abort)
+	}
+}
+
+async function handleCompoundConfirm(
+	event: ToolCallEvent,
+	opts: ConfirmOptions & { subcommands: string[] },
+): Promise<{ block: true; reason: string } | "aborted" | undefined> {
+	const abort = new AbortController()
+	opts.activeAborts.add(abort)
+	try {
+		const compoundSubs: CompoundSubcommand[] = opts.subcommands.map((cmd) => ({
+			command: cmd,
+			description: `bash(${truncate(cmd, 100)})`,
+		}))
+
+		const outcome = await promptForCompoundApproval({
+			toolName: event.toolName,
+			commands: compoundSubs,
+			ctx: opts.ctx,
+			signal: abort.signal,
+		})
+
+		if (outcome.kind === "aborted") return "aborted"
+		if (outcome.kind === "allow-all-once") return undefined
+
+		if (outcome.kind === "allow-all-remember") {
+			for (const rule of outcome.rules) {
+				opts.session.add(rule)
+			}
+			return undefined
+		}
+
+		if (outcome.kind === "pick-per-subcommand") {
+			// For each subcommand, evaluate rules and prompt if needed
+			for (const subcommand of opts.subcommands) {
+				// Re-evaluate rules (user may have added rules during the prompt)
+				const match = evaluateRules(opts.session.all(), "bash", { command: subcommand })
+				if (match.decision === "allow") {
+					continue
+				}
+				if (match.decision === "deny") {
+					return { block: true, reason: `Subcommand blocked by rule: ${subcommand}` }
+				}
+
+				// Create a fake bash event for this subcommand
+				const subEvent: ToolCallEvent = {
+					...event,
+					input: { command: subcommand },
+				}
+				const result = await handleConfirm(subEvent, opts)
+				if (result === "aborted") return "aborted"
+				if (result !== undefined) {
+					// Blocked
+					return { block: true, reason: result.reason }
+				}
+			}
+			return undefined
+		}
+
+		if (outcome.kind === "deny-with-feedback") {
+			return { block: true, reason: outcome.feedback }
+		}
+
 		return { block: true, reason: "Declined by user" }
 	} finally {
 		opts.activeAborts.delete(abort)
@@ -418,6 +519,61 @@ function splitFlag(raw: boolean | string | undefined): string[] {
 		.filter(Boolean)
 }
 
+function truncate(s: string, max: number): string {
+	if (s.length <= max) return s
+	return `${s.slice(0, max - 1)}…`
+}
+
 function formatRule(rule: Rule): string {
 	return `${stringifyRule(rule)} [${rule.source}]`
+}
+
+interface CompoundCheckResult {
+	decision: "allow" | "deny" | "prompt"
+	deniedReason?: string
+	subcommands?: string[]
+}
+
+/**
+ * Check if a compound bash command can be allowed, denied, or needs prompting.
+ */
+function checkCompoundCommand(command: string, rules: Rule[]): CompoundCheckResult {
+	// First check for hard-blocked programs
+	if (isHardBlockedBash(command)) {
+		return { decision: "deny", deniedReason: `Hard-blocked program in command: ${command}` }
+	}
+
+	// If not compound, fall through to normal flow
+	if (!isCompoundCommand(command)) {
+		return { decision: "prompt" }
+	}
+
+	// Split into subcommands
+	const subcommands = splitCompoundCommand(command)
+	if (!subcommands || subcommands.length === 0) {
+		return { decision: "prompt" }
+	}
+
+	// Check each subcommand — track if all are allowed or any denied
+	let allAllowed = true
+	for (const subcommand of subcommands) {
+		// Check for hard-blocked programs in subcommand
+		if (isHardBlockedBash(subcommand)) {
+			return { decision: "deny", deniedReason: `Hard-blocked program in command: ${subcommand}` }
+		}
+		const match = evaluateRules(rules, "bash", { command: subcommand })
+		if (match.decision === "deny") {
+			return { decision: "deny", deniedReason: `Subcommand blocked by rule: ${subcommand}` }
+		}
+		if (match.decision !== "allow") {
+			allAllowed = false
+		}
+	}
+
+	// If all subcommands explicitly allowed by rules, allow the compound
+	if (allAllowed) {
+		return { decision: "allow" }
+	}
+
+	return { decision: "prompt", subcommands }
 }

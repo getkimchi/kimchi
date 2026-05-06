@@ -173,6 +173,81 @@ export function isHardBlockedBash(command: string): boolean {
 	return false
 }
 
+/**
+ * Returns true if the command contains top-level `&&`, `||`, or `;` operators.
+ * Pipes (`|`) do NOT make a command compound for this purpose — they are a
+ * single data-flow pipeline and are already handled by isReadOnlyBashCommand.
+ */
+export function isCompoundCommand(command: string): boolean {
+	const entries = parseShell(command) as ParseEntry[]
+	for (const entry of entries) {
+		if (typeof entry === "object" && "op" in entry) {
+			const op = entry.op
+			if (op === "&&" || op === "||" || op === ";") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+/**
+ * Split a compound command into individual subcommands.
+ * Only splits on `&&`, `||`, `;` — NOT on `|` (pipes).
+ * Strips leading/trailing whitespace from each subcommand.
+ * Returns null if the command is not compound.
+ */
+export function splitCompoundCommand(command: string): string[] | null {
+	if (!isCompoundCommand(command)) return null
+
+	const entries = parseShell(command) as ParseEntry[]
+	const segments: string[] = []
+	let currentTokens: string[] = []
+
+	for (let i = 0; i < entries.length; i++) {
+		const entry = entries[i]
+		if (typeof entry === "string") {
+			// Strip leading env-var assignments
+			if (currentTokens.length === 0 && /^[A-Za-z_][\w]*=/.test(entry)) {
+				continue
+			}
+			currentTokens.push(entry)
+			continue
+		}
+		if ("comment" in entry) continue
+		if ("op" in entry && entry.op === "glob") {
+			currentTokens.push(entry.pattern)
+			continue
+		}
+		if ("op" in entry) {
+			const op = entry.op
+			// Only split on compound operators, not pipes
+			if (op === "&&" || op === "||" || op === ";") {
+				const reconstructed = currentTokens.join(" ").trim()
+				if (reconstructed) segments.push(reconstructed)
+				currentTokens = []
+				continue
+			}
+			if (op === "|" || op === "|&") {
+				currentTokens.push(entry.op)
+				continue
+			}
+			if ((op === ">" || op === ">>") && typeof entries[i + 1] === "string") {
+				// Consume the redirect target
+				currentTokens.push(entry.op)
+				currentTokens.push(entries[i + 1] as string)
+				i++
+			}
+		}
+	}
+
+	// Append the last segment
+	const reconstructed = currentTokens.join(" ").trim()
+	if (reconstructed) segments.push(reconstructed)
+
+	return segments.filter((s) => s.length > 0)
+}
+
 export function extractBashProgram(command: string): { program: string; subcommand: string | undefined } {
 	const tokens = firstSegmentTokens(command)
 	return { program: tokens[0] ?? "", subcommand: tokens[1] }

@@ -4,6 +4,7 @@ import type { Rule } from "./types.js"
 export interface Scope {
 	toolName: string
 	content?: string
+	wildcardContent?: string
 	label: string
 }
 
@@ -38,7 +39,12 @@ export function suggestScope(toolName: string, input: Record<string, unknown>): 
 		const command = typeof input.command === "string" ? input.command : ""
 		const prefix = bashPrefixScope(command)
 		if (prefix) {
-			return { toolName: lower, content: `${prefix}:*`, label: `bash(${prefix}:*)` }
+			return {
+				toolName: lower,
+				content: `${prefix}:*`,
+				wildcardContent: `${bashProgramOnly(command)} *`,
+				label: `bash(${prefix}:*)`,
+			}
 		}
 		return { toolName: lower, content: undefined, label: "bash" }
 	}
@@ -53,6 +59,13 @@ export function suggestScope(toolName: string, input: Record<string, unknown>): 
 	}
 
 	return { toolName: lower, content: undefined, label: lower }
+}
+
+function bashProgramOnly(command: string): string {
+	const trimmed = command.trim()
+	if (!trimmed) return ""
+	const { program } = extractBashProgram(trimmed)
+	return program
 }
 
 function bashPrefixScope(command: string): string | null {
