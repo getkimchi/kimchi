@@ -10,25 +10,25 @@
  * `BehaviourSource` entry below.
  */
 
+import boundToolOutputBody from "./bodies/bound-tool-output.md" with { type: "text" }
 import ghCliBody from "./bodies/gh-cli.md" with { type: "text" }
 import gitHygieneBody from "./bodies/git-hygiene.md" with { type: "text" }
-import { parseBehaviourBody } from "./frontmatter.js"
-import { bashStartsWith, fetchesHost } from "./matchers.js"
+import glabCliBody from "./bodies/glab-cli.md" with { type: "text" }
+import pythonEditBody from "./bodies/python-edit.md" with { type: "text" }
+import { type BehaviourSource, buildBehaviours } from "./build.js"
+import { bashInvokes, fetchesHost } from "./matchers.js"
 import { any, cli, gitRemote } from "./triggers.js"
-import type { Behaviour, BehaviourEvals, BehaviourKind, BehaviourTriggers } from "./types.js"
+import type { Behaviour } from "./types.js"
 
-interface BehaviourSource {
-	raw: string
-	kind: BehaviourKind
-	triggers?: BehaviourTriggers
-	evals?: BehaviourEvals
-}
-
-const ghInvocation = bashStartsWith("gh")
+const ghInvocation = bashInvokes("gh")
 const githubFromOtherTool = fetchesHost(/(api\.)?github\.com/)
+const glabInvocation = bashInvokes("glab")
+const gitlabFromOtherTool = fetchesHost(/(.+\.)?gitlab\.com/)
 
 const sources: BehaviourSource[] = [
 	{ raw: gitHygieneBody, kind: "baseline" },
+	{ raw: pythonEditBody, kind: "baseline" },
+	{ raw: boundToolOutputBody, kind: "baseline" },
 	{
 		raw: ghCliBody,
 		kind: "triggered",
@@ -41,26 +41,18 @@ const sources: BehaviourSource[] = [
 			violated: githubFromOtherTool,
 		},
 	},
+	{
+		raw: glabCliBody,
+		kind: "triggered",
+		triggers: {
+			session: any(cli("glab"), gitRemote("gitlab.com")),
+			tool: glabInvocation,
+		},
+		evals: {
+			observed: glabInvocation,
+			violated: gitlabFromOtherTool,
+		},
+	},
 ]
 
-export const behaviours: readonly Behaviour[] = (() => {
-	const result: Behaviour[] = []
-	const seen = new Set<string>()
-	for (const src of sources) {
-		const parsed = parseBehaviourBody(src.raw)
-		const { name, description } = parsed.frontmatter
-		if (seen.has(name)) {
-			throw new Error(`duplicate bundled behaviour name: ${name}`)
-		}
-		seen.add(name)
-		result.push({
-			name,
-			description,
-			body: parsed.content,
-			kind: src.kind,
-			triggers: src.triggers,
-			evals: src.evals,
-		})
-	}
-	return result
-})()
+export const behaviours: readonly Behaviour[] = buildBehaviours(sources)

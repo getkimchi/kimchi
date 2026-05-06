@@ -8,8 +8,9 @@
  * - `evaluateToolTriggers` — runs matchers against each tool-call event.
  *
  * Each behaviour transitions from unloaded to loaded at most once per session.
- * Once loaded, both trigger paths are skipped for that behaviour. Compaction
- * handling and re-injection land in a later phase.
+ * Once loaded, both trigger paths are skipped for that behaviour. On
+ * compaction the loaded set is preserved; `requeueLoaded` repopulates the
+ * pending queue so the injector re-delivers each loaded body once.
  */
 
 import type { SessionContext } from "./session-context.js"
@@ -105,5 +106,21 @@ export class TriggerEngine {
 	reset(): void {
 		this.loaded.clear()
 		this.pending.clear()
+	}
+
+	/**
+	 * Repopulate the pending queue with every currently-loaded behaviour, in
+	 * registry order. The loaded set is preserved — triggers do not re-fire
+	 * and `behaviour_loaded` entries are not re-emitted. Used after compaction
+	 * to re-inject bodies the summarisation step replaced.
+	 */
+	requeueLoaded(): string[] {
+		const requeued: string[] = []
+		for (const b of this.behaviours) {
+			if (!this.loaded.has(b.name)) continue
+			this.pending.add(b.name)
+			requeued.push(b.name)
+		}
+		return requeued
 	}
 }

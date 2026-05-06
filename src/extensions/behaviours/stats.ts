@@ -1,13 +1,16 @@
 /**
  * Stats writer — emits behaviour-related custom JSONL entries via
- * `pi.appendEntry`. Phase 3 emits `behaviour_loaded` and `behaviour_eval`;
- * the per-session summary lands in a later phase.
+ * `pi.appendEntry`. Three entry types: `behaviour_loaded` and `behaviour_eval`
+ * are per-event; `behaviour_session_summary` is emitted once on
+ * `session_shutdown` and carries the uncapped per-behaviour totals so
+ * cross-session aggregation is a single jq pass.
  */
 
 import type { EvalVerdict, TriggerSource } from "./types.js"
 
 export const BEHAVIOUR_LOADED_TYPE = "behaviour_loaded"
 export const BEHAVIOUR_EVAL_TYPE = "behaviour_eval"
+export const BEHAVIOUR_SESSION_SUMMARY_TYPE = "behaviour_session_summary"
 
 export interface BehaviourLoadedData {
 	name: string
@@ -22,6 +25,19 @@ export interface BehaviourEvalData {
 	turnIndex: number
 	toolName: string
 	toolArgs: unknown
+}
+
+export interface BehaviourSummaryEntry {
+	name: string
+	loaded: boolean
+	loadedAtTurn?: number
+	trigger?: TriggerSource
+	observed: number
+	violated: number
+}
+
+export interface BehaviourSessionSummaryData {
+	behaviours: BehaviourSummaryEntry[]
 }
 
 export type AppendEntry = <T = unknown>(customType: string, data?: T) => void

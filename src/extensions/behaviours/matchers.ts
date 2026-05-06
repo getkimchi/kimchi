@@ -11,6 +11,7 @@
  * full input shape themselves.
  */
 
+import { bashInvokesCommand } from "./bash-tokenize.js"
 import { type ToolMatcher, any, tool } from "./triggers.js"
 
 /** A condition over a single string field. RegExp form is the common case. */
@@ -21,10 +22,16 @@ export function bashCommand(condition: StringCondition): ToolMatcher {
 	return tool("bash", (input) => testString(condition, input.command))
 }
 
-/** Match a `bash` tool call whose `command` starts with `prefix` (`gh`, `glab`, …). */
-export function bashStartsWith(prefix: string): ToolMatcher {
-	const re = new RegExp(`(^|\\s|;|&&|\\|\\|)${escapeRegex(prefix)}(\\s|$)`)
-	return bashCommand(re)
+/**
+ * Match a `bash` tool call that invokes `executable` as a program in any
+ * stage of the command (pipeline, sequence, subshell, command substitution).
+ *
+ * Uses a shell tokeniser, so substring matches inside string literals,
+ * comments, and heredoc bodies do not trigger; env-var prefixes
+ * (`FOO=bar gh ...`) and pipelines (`cmd | gh ...`) do.
+ */
+export function bashInvokes(executable: string): ToolMatcher {
+	return bashCommand((command) => bashInvokesCommand(command, executable))
 }
 
 /** Match a `web_fetch` tool call whose `url` matches `condition`. */
