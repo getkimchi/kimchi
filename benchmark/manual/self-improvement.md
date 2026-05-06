@@ -47,9 +47,22 @@ cd benchmark/manual
 | complex-single | 10 min | 500k | 0 |
 | research | 2 min | 30k | 0–1 |
 
-**Overall timeout:** 30 minutes for all runs combined. If any run is still active after its individual timeout, kill it and record it as a timeout failure.
+**Overall timeout:** 30 minutes for all runs combined.
 
-**Do not proceed to Phase 3 until all runs have completed or timed out.**
+**Completion detection — use log files, not processes:**
+
+Do not rely on OS processes to determine whether runs are done. Harness processes may stay alive while the model is idle. Instead, poll the session logs:
+
+```bash
+python3 check-session.py              # checks the latest session
+python3 check-session.py <session-NN> # checks a specific session
+```
+
+The script inspects each run's `.jsonl` log for terminal events (`agent_end` or `agent_terminated`). It also detects stalled runs — logs that have not been written to for over 3 minutes without a terminal event.
+
+Poll every 60 seconds until the script exits with code 0 (all done) or the 30-minute overall timeout is reached. When a run is reported as STALLED, kill its process — the model is not doing useful work.
+
+**Do not proceed to Phase 3 until `check-session.py` reports all runs as DONE, TERMINATED, or STALLED (with stalled processes killed).**
 
 ---
 
@@ -69,11 +82,18 @@ Review the output for:
 - Unexpected tool call patterns in orchestrator output
 - Terminated sessions (look for `(terminated)` tag)
 
-Write a structured findings summary covering:
-1. What improved vs previous session (with numbers)
-2. What regressed vs previous session (with numbers)
-3. Hard failures and their likely causes
-4. Proposed changes with expected impact
+Write a structured findings summary. Report regressions and failures first — improvements second. For every metric, state the exact before and after values and give a one-word verdict: WORSE, SAME, or BETTER. Do not use softening language ("slightly", "marginally", "only") — state the numbers and let them speak.
+
+**Regressions-first format:**
+
+1. What REGRESSED vs previous session (with exact numbers and percentage)
+2. Hard FAILURES and their root causes
+3. What IMPROVED vs previous session (with exact numbers and percentage)
+4. What stayed the SAME
+5. Honest overall verdict: did this iteration make things better or worse on balance?
+6. Proposed changes with expected impact
+
+**Anti-sycophancy rule:** Do not rationalise regressions as acceptable trade-offs unless you can cite a specific, measurable gain that outweighs the regression by at least 2x. If a change made things worse, say so plainly and propose reverting it. Never omit a regression from the summary — every metric that got worse must appear in section 1 regardless of magnitude.
 
 **Verification requirement:** For each proposed change, you must identify the specific session log evidence that supports it. Do not propose a change based on a single run of a single task. If a finding appears in only one run, mark it as unconfirmed and do not act on it in this iteration.
 
@@ -113,15 +133,27 @@ Write a summary to `benchmark/manual/iterations/iteration-NN.md` (create the dir
 - Pre-change: session-XX
 - Post-change: session-YY
 
+## Regressions (list every metric that got worse — omit nothing)
+- <metric>: <before> → <after> (<+X%>) — root cause: <explanation>
+
+## Failures
+- <task/model>: <failure description> — root cause: <explanation>
+
+## Improvements
+- <metric>: <before> → <after> (<-X%>)
+
+## Unchanged
+- <metric>: <before> → <after> (within noise)
+
+## Overall Verdict
+- BETTER / WORSE / MIXED — one sentence honest summary
+
 ## Findings
 - [confirmed] <finding> — evidence: <run>, metric delta: <X>
 - [unconfirmed] <finding> — insufficient evidence, deferred
 
 ## Changes Applied
 - <file>: <what changed and why>
-
-## Regression Check
-- PASS / FAIL (detail any regressions)
 
 ## Net Impact
 - Token delta: <+/- X%> across all tasks
@@ -131,12 +163,32 @@ Write a summary to `benchmark/manual/iterations/iteration-NN.md` (create the dir
 
 ---
 
+## Stagnation Breaker
+
+If 2 consecutive iterations produce no confirmed findings or no measurable improvement, you are stagnating. Do not stop — instead, shift to creative exploration mode:
+
+1. Re-read the improvement goals (if provided) and the orchestrator/subagent system prompts end to end.
+2. Brainstorm at least 5 non-obvious ideas that could move the needle. Think beyond incremental prompt tweaks — consider structural changes like:
+   - Reordering prompt sections to change what the model sees first
+   - Removing instructions that may be confusing or contradictory
+   - Changing token budget allocation between orchestrator and subagents
+   - Adjusting model selection heuristics or tier assignments
+   - Simplifying complex prompt logic that models may be ignoring
+   - Changing the default behaviour when the model is uncertain
+3. Pick the most promising idea and test it in the next iteration.
+4. If the creative idea also produces no improvement, try a different one from your list — do not repeat the same class of change.
+
+The loop must not close just because incremental changes stopped working. Exhaust creative options before concluding that no further improvement is possible.
+
+---
+
 ## Stopping Conditions
 
 Stop the loop and report final status when any of the following is true:
 
 - 20 iterations completed
 - Total elapsed time exceeds 8 hours
+- At least 3 creative exploration attempts (from the stagnation breaker) have been tried and none produced measurable improvement — in this case, document all attempted ideas and their results before stopping
 
 ---
 
