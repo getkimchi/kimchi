@@ -1,0 +1,14 @@
+{
+	"name": "docs-curator",
+	"version": "1.0.0",
+	"description": "Curates local docs for tools/frameworks (add, pull, update, remove) and scaffolds agents + skills that reference them",
+	"author": {
+		"name": "CAST AI",
+		"email": "support@cast.ai",
+		"url": "https://cast.ai"
+	},
+	"homepage": "https://github.com/castai/castai-awesome-claude-plugins",
+	"repository": "https://github.com/castai/castai-awesome-claude-plugins",
+	"license": "MIT",
+	"keywords": ["docs", "documentation", "knowledge-base", "scaffolding", "agents", "skills", "frameworks"]
+}

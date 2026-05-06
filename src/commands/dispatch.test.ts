@@ -98,4 +98,17 @@ describe("dispatchSubcommand", () => {
 		const messages = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
 		expect(messages).toContain("Usage: kimchi config")
 	})
+
+	it("plugin with no args prints usage and returns 1", async () => {
+		const result = await dispatchSubcommand(["plugin"])
+		expect(result).toEqual({ kind: "handled", exitCode: 1 })
+		const messages = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
+		expect(messages).toContain("Usage: kimchi plugin")
+	})
+
+	it("plugin list returns 0", async () => {
+		process.env.PI_PACKAGE_DIR = "/Users/tautvydas/Desktop/castai/kimchi-dev-plugin-mgmt"
+		const result = await dispatchSubcommand(["plugin", "list"])
+		expect(result).toEqual({ kind: "handled", exitCode: 0 })
+	})
 })

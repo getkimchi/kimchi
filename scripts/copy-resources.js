@@ -52,3 +52,10 @@ for (const file of bundledKimchiThemes) {
 if (!isDev) {
 	cpSync(join(projectRoot, "package.json"), join(projectRoot, "dist", "share", "kimchi", "package.json"))
 }
+
+if (!isDev) {
+	const pluginSrc = join(projectRoot, "src", "plugins", "kimchi-awesome-orchestrator")
+	const pluginDest = join(projectRoot, "dist", "share", "kimchi", "plugins", "kimchi-awesome-orchestrator")
+	mkdirSync(pluginDest, { recursive: true })
+	cpSync(pluginSrc, pluginDest, { recursive: true })
+}

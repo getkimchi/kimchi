@@ -11,6 +11,7 @@ import { runCursor } from "./cursor.js"
 import { runGsd2 } from "./gsd2.js"
 import { runOpenClaw } from "./openclaw.js"
 import { runOpenCode } from "./opencode.js"
+import { runPlugin } from "./plugin.js"
 import { runSetup } from "./setup.js"
 import { runUpdate } from "./update.js"
 import { runVersion } from "./version.js"
@@ -24,6 +25,7 @@ export const COMMANDS: CommandDefinition[] = [
 	{ name: "gsd2", summary: "Install / configure GSD2 with Kimchi", run: runGsd2 },
 	{ name: "update", summary: "Check for and install kimchi updates", run: runUpdate },
 	{ name: "config", summary: "Inspect or change kimchi config (e.g. telemetry)", run: runConfig },
+	{ name: "plugin", summary: "Manage bundled Claude Code plugins (enable, disable, list, refresh)", run: runPlugin },
 	{ name: "version", summary: "Print the kimchi version", run: runVersion },
 ]
 
