@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { parseFrontmatter } from "@mariozechner/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	type DiscoveredCommand,
@@ -224,9 +225,10 @@ describe("migrateCommandToPrompt", () => {
 
 		expect(result).toBe(true)
 		const content = readFileSync(promptPath, "utf-8")
-		expect(content).toContain("---\nname: mr\n")
-		expect(content).toContain('description: "Create a GitLab MR following this process:"')
-		expect(content).toContain("1. Title")
+		const { frontmatter, body } = parseFrontmatter<{ name: string; description: string }>(content)
+		expect(frontmatter.name).toBe("mr")
+		expect(frontmatter.description).toBe("Create a GitLab MR following this process:")
+		expect(body).toContain("1. Title")
 	})
 
 	it("preserves existing description from frontmatter", () => {
