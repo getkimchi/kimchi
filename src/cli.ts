@@ -28,6 +28,7 @@ import permissionsExtension from "./extensions/permissions/index.js"
 import { reserveShiftTabForPermissions } from "./extensions/permissions/keybindings.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
+import startupUpdateExtension from "./extensions/startup-update.js"
 // import statsExtension from "./extensions/stats/index.js"
 import subagentExtension from "./extensions/subagent.js"
 import tagsExtension from "./extensions/tags.js"
@@ -250,6 +251,7 @@ try {
 		}
 
 		const extensionFactories = [
+			startupUpdateExtension,
 			sessionIdCaptureExtension,
 			shutdownMarkerExtension,
 			// statsExtension,

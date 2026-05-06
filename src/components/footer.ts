@@ -215,10 +215,16 @@ export class StatsFooter implements Component {
 		return seg(teal(`${count} subagent${count === 1 ? "" : "s"}`))
 	}
 
-	private permissionsWarning(width: number): string | null {
+	private permissionsWarning(): FooterSegment | null {
 		const text = this._footerData.getExtensionStatuses().get("permissions-warning")
 		if (!text) return null
-		return truncateToWidth(this.theme.fg("warning", text), width)
+		return seg(this.theme.fg("warning", text))
+	}
+
+	private updateAvailableSegment(): FooterSegment | null {
+		const text = this._footerData.getExtensionStatuses().get("update-available")
+		if (!text) return null
+		return seg(this.theme.fg("accent", text))
 	}
 
 	render(width: number): string[] {
@@ -252,7 +258,25 @@ export class StatsFooter implements Component {
 			line = truncateToWidth(left, width)
 		}
 
-		const warning = this.permissionsWarning(width)
-		return warning ? [warning, line] : [line]
+		const infoLine = this.buildInfoLine(width)
+		return infoLine ? [infoLine, line] : [line]
+	}
+
+	buildInfoLine(width: number): string {
+		let line = ""
+		const permissionsWarningSeg = this.permissionsWarning()
+		const updateSeg = this.updateAvailableSegment()
+
+		let remainingWidth = width
+		if (permissionsWarningSeg) {
+			line = truncateToWidth(permissionsWarningSeg.text, remainingWidth)
+			remainingWidth -= visibleWidth(line)
+		}
+
+		if (updateSeg && remainingWidth >= updateSeg.width + 2) {
+			line = `${line}${" ".repeat(remainingWidth - updateSeg.width)}${updateSeg.text}`
+		}
+
+		return line
 	}
 }

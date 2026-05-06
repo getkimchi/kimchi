@@ -58,9 +58,9 @@ export async function checkForUpdate(opts: CheckOptions): Promise<CheckResult> {
 
 	if (!opts.skipCache) {
 		const cachedState = loadRepoState(repo.owner, repo.name)
-		if (cachedState && !isStale(cachedState) && cachedState.latestVersion !== "") {
-			latestVersion = cachedState.latestVersion
-			releaseUrl = cachedState.releaseUrl ?? ""
+		if (cachedState && !isStale(cachedState)) {
+			latestVersion = cachedState.latest_version
+			releaseUrl = cachedState.release_url ?? ""
 			cached = true
 		}
 	}
@@ -70,9 +70,9 @@ export async function checkForUpdate(opts: CheckOptions): Promise<CheckResult> {
 		latestVersion = info.tagName
 		releaseUrl = info.htmlUrl
 		saveRepoState(repo.owner, repo.name, {
-			checkedAt: Date.now(),
-			latestVersion,
-			releaseUrl,
+			checked_at: new Date().toISOString(),
+			latest_version: latestVersion,
+			release_url: releaseUrl,
 		})
 	}
 
@@ -80,7 +80,8 @@ export async function checkForUpdate(opts: CheckOptions): Promise<CheckResult> {
 	// only parses bare semver, so strip the prefix here. We keep `latestVersion`
 	// itself unchanged so cached state and user-facing messages still show the
 	// canonical tag name.
-	const hasUpdate = !compareSemverGte(opts.currentVersion, latestVersion.replace(/^v/, ""))
+	const tag = (latestVersion ?? "").replace(/^v/, "")
+	const hasUpdate = tag !== "" && !compareSemverGte(opts.currentVersion, tag)
 	return {
 		currentVersion: opts.currentVersion,
 		latestVersion,

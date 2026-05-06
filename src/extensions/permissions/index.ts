@@ -207,7 +207,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (mode === "yolo") {
 			ctx.ui.setStatus(
 				"permissions-warning",
-				"WARNING: all permission checks disabled. YOLO mode is recommended for sandbox/disposable environments only.",
+				"WARNING: all permission checks disabled. Recommended for sandbox environments only.",
 			)
 		} else {
 			ctx.ui.setStatus("permissions-warning", undefined)
