@@ -28,6 +28,7 @@ import type { AssistantMessage, ImageContent, TextContent } from "@mariozechner/
 import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@mariozechner/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@mariozechner/pi-tui"
 import { ANSI, fg } from "../../ansi.js"
+import { getCurrentPhase } from "../../extensions/tags.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import {
@@ -40,9 +41,11 @@ import {
 	stripStaleNudges,
 } from "./continuation-nudge.js"
 import { ModelRegistry } from "./model-registry/index.js"
+import type { Phase } from "./model-registry/types.js"
 import { type ContextFile, loadProjectContextFiles } from "./prompt-transformer/context-files.js"
 import {
 	type EnvironmentInfo,
+	type PromptContext,
 	buildOrchestratorSystemPrompt,
 	buildSingleModelSystemPrompt,
 	buildSubagentSystemPrompt,
@@ -246,9 +249,8 @@ export default function (skillPaths: string[]) {
 		})
 
 		// For sub agents we don't want to transform the prompt sent from parent with model capabilities
+		const registry = new ModelRegistry(getAvailableModels())
 		if (!subagentMode) {
-			const registry = new ModelRegistry(getAvailableModels())
-
 			// Announce newly available API models that have no capability entry yet.
 			for (const warning of registry.warnings) {
 				console.log(
@@ -446,20 +448,26 @@ export default function (skillPaths: string[]) {
 				gitRemote: isGitRepo ? (cachedGitRemote ?? undefined) : undefined,
 			}
 
+			const promptCtx: PromptContext = {
+				currentModelId: ctx.model?.id,
+				currentPhase: getCurrentPhase() as Phase | undefined,
+				registry: registry,
+			}
+
 			if (subagentMode) {
 				// Filter the subagent tool out to prevent infinite delegation chains.
 				const activeTools = pi.getActiveTools().filter((name) => name !== "subagent")
 				pi.setActiveTools(activeTools)
-				const systemPrompt = buildSubagentSystemPrompt(tools, env, cachedContextFiles, cachedSkills)
+				const systemPrompt = buildSubagentSystemPrompt(tools, env, cachedContextFiles, cachedSkills, promptCtx)
 				return { systemPrompt }
 			}
 
 			if (!multiModelEnabled) {
-				const systemPrompt = buildSingleModelSystemPrompt(tools, env, cachedContextFiles, cachedSkills)
+				const systemPrompt = buildSingleModelSystemPrompt(tools, env, cachedContextFiles, cachedSkills, promptCtx)
 				return { systemPrompt }
 			}
 
-			const systemPrompt = buildOrchestratorSystemPrompt(tools, env, cachedContextFiles, cachedSkills)
+			const systemPrompt = buildOrchestratorSystemPrompt(tools, env, cachedContextFiles, cachedSkills, promptCtx)
 			return { systemPrompt }
 		})
 	}

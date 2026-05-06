@@ -1,7 +1,8 @@
 import { type Skill, formatSkillsForPrompt } from "@mariozechner/pi-coding-agent"
 import type { ModelRegistry } from "../model-registry/index.js"
-import type { OrchestrationModelDescriptor } from "../model-registry/types.js"
+import type { OrchestrationModelDescriptor, Phase } from "../model-registry/types.js"
 import type { ContextFile } from "./context-files.js"
+import { DEFAULT_PHASE_GUIDELINES } from "./default-phase-guidelines.js"
 import systemPromptTemplate from "./prompts/orchestrator-system-prompt.js"
 import singleModelSystemPromptTemplate from "./prompts/single-model-system-prompt.js"
 import subagentSystemPromptTemplate from "./prompts/subagent-system-prompt.js"
@@ -48,6 +49,12 @@ function formatModelsSection(models: readonly OrchestrationModelDescriptor[]): s
 	return models.map(formatModel).join("\n\n")
 }
 
+export interface PromptContext {
+	currentModelId?: string
+	currentPhase?: Phase
+	registry?: ModelRegistry
+}
+
 export interface ToolInfo {
 	name: string
 	description: string
@@ -92,16 +99,23 @@ export function buildOrchestratorSystemPrompt(
 	env: EnvironmentInfo,
 	contextFiles?: readonly ContextFile[],
 	skills?: readonly Skill[],
+	promptCtx?: PromptContext,
 ): string {
 	const toolsSection = formatToolsSection(tools)
 	const environmentSection = formatEnvironmentSection(env)
 	const projectContext = formatProjectContext(contextFiles)
 	const skillsSection = formatSkills(skills)
-	return systemPromptTemplate
+	const base = systemPromptTemplate
 		.replace("{{TOOLS}}", () => toolsSection)
 		.replace("{{ENVIRONMENT}}", () => environmentSection)
 		.replace("{{PROJECT_CONTEXT}}", () => projectContext)
 		.replace("{{SKILLS}}", () => skillsSection)
+	const phaseSection = buildPhaseGuidelinesSection(
+		promptCtx?.currentModelId,
+		promptCtx?.currentPhase,
+		promptCtx?.registry,
+	)
+	return base + phaseSection
 }
 
 export function buildSingleModelSystemPrompt(
@@ -109,16 +123,23 @@ export function buildSingleModelSystemPrompt(
 	env: EnvironmentInfo,
 	contextFiles?: readonly ContextFile[],
 	skills?: readonly Skill[],
+	promptCtx?: PromptContext,
 ): string {
 	const toolsSection = formatToolsSection(tools)
 	const environmentSection = formatEnvironmentSection(env)
 	const projectContext = formatProjectContext(contextFiles)
 	const skillsSection = formatSkills(skills)
-	return singleModelSystemPromptTemplate
+	const base = singleModelSystemPromptTemplate
 		.replace("{{TOOLS}}", () => toolsSection)
 		.replace("{{ENVIRONMENT}}", () => environmentSection)
 		.replace("{{PROJECT_CONTEXT}}", () => projectContext)
 		.replace("{{SKILLS}}", () => skillsSection)
+	const phaseSection = buildPhaseGuidelinesSection(
+		promptCtx?.currentModelId,
+		promptCtx?.currentPhase,
+		promptCtx?.registry,
+	)
+	return base + phaseSection
 }
 
 export function buildSubagentSystemPrompt(
@@ -126,17 +147,24 @@ export function buildSubagentSystemPrompt(
 	env: EnvironmentInfo,
 	contextFiles?: readonly ContextFile[],
 	skills?: readonly Skill[],
+	promptCtx?: PromptContext,
 ): string {
 	const filtered = tools.filter((t) => t.name !== SUBAGENT_TOOL_NAME)
 	const toolsSection = formatToolsSection(filtered)
 	const environmentSection = formatEnvironmentSection(env)
 	const projectContext = formatProjectContext(contextFiles)
 	const skillsSection = formatSkills(skills)
-	return subagentSystemPromptTemplate
+	const base = subagentSystemPromptTemplate
 		.replace("{{TOOLS}}", () => toolsSection)
 		.replace("{{ENVIRONMENT}}", () => environmentSection)
 		.replace("{{PROJECT_CONTEXT}}", () => projectContext)
 		.replace("{{SKILLS}}", () => skillsSection)
+	const phaseSection = buildPhaseGuidelinesSection(
+		promptCtx?.currentModelId,
+		promptCtx?.currentPhase,
+		promptCtx?.registry,
+	)
+	return base + phaseSection
 }
 
 function formatToolsSection(tools: readonly ToolInfo[]): string {
@@ -171,6 +199,30 @@ function formatSkills(skills?: readonly Skill[]): string {
 	if (!skills || skills.length === 0) return ""
 	// Cast required until upstream accepts readonly Skill[]
 	return formatSkillsForPrompt(skills as Skill[])
+}
+
+/** Resolve the effective guideline for a model+phase combo.
+ *  Model override takes precedence; falls back to default. */
+export function resolvePhaseGuideline(
+	phase: Phase,
+	modelId: string | undefined,
+	registry: ModelRegistry | undefined,
+): string {
+	const descriptor = modelId ? registry?.getModelsWithCapabilities().find((m) => m.id === modelId) : undefined
+	return descriptor?.capabilities.guidelines?.[phase] ?? DEFAULT_PHASE_GUIDELINES[phase]
+}
+
+/** Build the phase-guidelines annex string for appending to a system prompt.
+ *  Returns empty string if no phase is active. */
+export function buildPhaseGuidelinesSection(
+	modelId: string | undefined,
+	phase: Phase | undefined,
+	registry?: ModelRegistry,
+): string {
+	if (!phase) return ""
+	const guideline = resolvePhaseGuideline(phase, modelId, registry)
+	if (!guideline) return ""
+	return `\n\n## Phase Guidelines (${phase})\n\n${guideline}`
 }
 
 export function isSubagent(): boolean {

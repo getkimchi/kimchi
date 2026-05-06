@@ -2,34 +2,43 @@ import type { Phase } from "../model-registry/types.js"
 
 export const DEFAULT_PHASE_GUIDELINES: Readonly<Record<Phase, string>> = {
 	explore: `During **explore** phase:
-- Read files broadly before diving deep. Trace imports and call chains.
-- Use \`grep\` and \`find\` to locate relevant files quickly.
-- Do NOT modify files. Do NOT write plans yet. Gather context only.
-- Summarize findings concisely — what matters, not everything you saw.`,
+- Goal: build a mental map, not a solution. Do NOT modify files. Do NOT write a plan yet.
+- Start broad with \`grep\`/\`find\`/\`ls\`; then \`read\` the 3–5 most relevant files in full.
+- Trace imports and call chains across module boundaries — note the actual entry points and seams, not every file you saw.
+- Batch independent reads in a single turn to minimise round-trips.
+- Stop as soon as you have enough context to plan. Over-exploring wastes tokens.
+- Output: a tight summary (paths, key types, integration points) — what matters, not everything you saw.`,
 
 	research: `During **research** phase:
-- Use \`web_search\` for external facts, API docs, library versions.
-- Run at most ONE web_search per task. Prefer primary sources.
-- Skip web research for well-known patterns, common APIs, standard algorithms.
-- Synthesize findings into a short markdown note in the Documents directory.`,
+- \`web_search\` is available to ALL models regardless of tier or strengths. Prefer it over delegating a simple lookup.
+- Run AT MOST one \`web_search\` per task. Do not re-search to "verify" — pick the best query the first time.
+- Skip web research for well-known patterns, standard algorithms, or common library APIs you already know.
+- Prefer primary sources (official docs, GitHub READMEs, RFCs). Avoid \`web_fetch\` unless the page is unindexed or the user gave a specific URL.
+- If research output is non-trivial (more than one fact), save a short markdown note to the Documents directory and reference it from the next phase.`,
 
 	plan: `During **plan** phase:
-- Design interfaces and file structure before writing code.
-- Save the spec to the Documents directory as a markdown file.
-- Identify all files that will be touched. Show file paths clearly.
-- List test files that need updating or creation.
-- Only start build once the plan is written and saved.`,
+- Design BEFORE coding: file paths, interfaces, function signatures, data flow.
+- Save the spec as a markdown file in the Documents directory. The build phase reads from there — do not redo discovery in build.
+- List every file that will be created, modified, or deleted, with concrete paths.
+- Identify test files that need creation or update. State the testing strategy.
+- Call out non-obvious decisions and the alternatives you rejected — one line each.
+- Keep the spec focused. Interfaces and file paths beat prose. Long plans waste downstream tokens.
+- Do NOT start build until the spec is written and saved.`,
 
 	build: `During **build** phase:
-- Batch independent tool calls in the same response. Fewer turns = better.
-- Prefer \`edit\` over \`write\` for files >30 lines.
-- Read files before modifying them. Do NOT add features beyond what was asked.
-- If the same pattern is needed >2 times, define an abstraction first.
-- Run tests after changes. Fix errors before declaring done.`,
+- Read each file BEFORE modifying it. Never edit blind.
+- Batch independent tool calls in a single turn — fewer turns = less context accumulation.
+- Prefer \`edit\` over \`write\` for files >30 lines. Reserve \`write\` for new files or full rewrites.
+- Stay in scope: do NOT add features, refactors, or "improvements" beyond what the spec asks for.
+- If the same code pattern is needed >2 times, extract an abstraction first instead of duplicating.
+- After each meaningful change, run the type-checker / linter / tests. Fix errors before moving on.
+- If a tool call fails, diagnose the root cause before retrying — do not retry blindly.
+- Keep diffs minimal and reviewable. Outline-then-diff beats wall-of-text rewrites.`,
 
 	review: `During **review** phase:
-- Read the diff (or changed files) first, then full file context for touched lines.
-- Flag architectural concerns, edge cases, and security issues — not just typos.
-- Be specific: quote the line and suggest the fix.
-- Do NOT rewrite code inline unless asked. Report findings and let the author fix.`,
+- Read the diff or changed files first; then read the surrounding context for any touched function.
+- Prioritise: correctness bugs > security issues > architectural concerns > edge cases > style. Skip nits.
+- Be specific: quote the exact line and propose the concrete fix.
+- Flag missing tests for behaviour the diff introduces or changes.
+- Do NOT rewrite code inline unless explicitly asked. Report findings; let the author apply them.`,
 }
