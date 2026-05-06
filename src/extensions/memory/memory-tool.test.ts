@@ -25,7 +25,8 @@ describe("createMemoryTool", () => {
 		const tool = createMemoryTool(mockStore)
 		const result = await tool.execute("tc1", { action: "add", target: "memory", content: "note" })
 		expect(mockStore.add).toHaveBeenCalledWith("memory", "note")
-		expect(result).toEqual({ success: true, message: "Added" })
+		expect(result.details).toEqual({ success: true, message: "Added" })
+		expect(result.content[0].text).toBe("Added")
 	})
 
 	it("dispatches replace action to store.replace()", async () => {
@@ -49,6 +50,6 @@ describe("createMemoryTool", () => {
 		} as unknown as MemoryStore
 		const tool = createMemoryTool(mockStore)
 		const result = await tool.execute("tc1", { action: "invalid" as never, target: "memory" })
-		expect(result.success).toBe(false)
+		expect(result.details.success).toBe(false)
 	})
 })

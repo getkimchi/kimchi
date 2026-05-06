@@ -31,6 +31,7 @@ import { ANSI, fg } from "../../ansi.js"
 import { getCurrentPhase } from "../../extensions/tags.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
+import type { MemoryContext } from "../memory/types.js"
 import {
 	CONTINUATION_NUDGE_TEXT,
 	ContinuationNudge,
@@ -467,8 +468,7 @@ export default function (skillPaths: string[]) {
 				currentPhase: getCurrentPhase(),
 				registry: registry,
 			}
-			const memorySnapshot = (ctx as unknown as { memorySnapshot?: { memory: string | null; user: string | null } })
-				.memorySnapshot
+			const memorySnapshot = (ctx as MemoryContext).memorySnapshot
 			const memoryBlock = memorySnapshot?.memory ?? null
 			const userProfileBlock = memorySnapshot?.user ?? null
 

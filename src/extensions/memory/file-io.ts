@@ -1,9 +1,9 @@
 import { mkdirSync } from "node:fs"
-import { readFile, writeFile } from "node:fs/promises"
+import { open } from "node:fs/promises"
+import { readFile, rename, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { lock } from "proper-lockfile"
-
-const ENTRY_DELIMITER = "\n§\n"
+import { ENTRY_DELIMITER } from "./types.js"
 
 export async function readMemoryFile(filePath: string): Promise<string[]> {
 	try {
@@ -24,18 +24,15 @@ export async function writeMemoryFile(filePath: string, entries: string[]): Prom
 	const content = entries.length > 0 ? entries.join(ENTRY_DELIMITER) : ""
 	const tmpPath = join(dirname(filePath), `.${Date.now()}.tmp`)
 
-	// Acquire cross-platform file lock before writing
-	let release: (() => Promise<void>) | undefined
-	try {
-		release = await lock(filePath, { retries: { retries: 10, factor: 2, minTimeout: 50, maxTimeout: 1000 } })
-	} catch {
-		// File doesn't exist yet, so we can't lock it — proceed without lock
-	}
+	// Lock a companion .lock file instead of the target so locking works
+	// even when the target doesn't exist yet (proper-lockfile throws on missing files).
+	const lockFile = `${filePath}.lock`
+	await open(lockFile, "a").then((fh) => fh.close())
+	const release = await lock(lockFile, { retries: { retries: 10, factor: 2, minTimeout: 50, maxTimeout: 1000 } })
 	try {
 		await writeFile(tmpPath, content, "utf-8")
-		const { rename } = await import("node:fs/promises")
 		await rename(tmpPath, filePath)
 	} finally {
-		if (release) await release()
+		await release()
 	}
 }

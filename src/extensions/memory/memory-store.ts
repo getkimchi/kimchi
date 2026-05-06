@@ -1,9 +1,8 @@
 import { join } from "node:path"
 import { scanMemoryContent } from "./content-scanner.js"
 import { readMemoryFile, writeMemoryFile } from "./file-io.js"
+import { ENTRY_DELIMITER } from "./types.js"
 import type { MemoryStoreOptions, MemoryTarget, MemoryToolResult } from "./types.js"
-
-const ENTRY_DELIMITER = "\n§\n"
 
 export class MemoryStore {
 	private memoryEntries: string[] = []
@@ -104,6 +103,11 @@ export class MemoryStore {
 		return this._ok(target, "")
 	}
 
+	/**
+	 * Returns the frozen snapshot captured at the last `loadFromDisk()` call.
+	 * This snapshot is injected into the system prompt and intentionally does
+	 * NOT reflect mid-session writes — preserving prefix cache stability.
+	 */
 	formatForSystemPrompt(target: MemoryTarget): string | null {
 		const block = this.snapshot[target]
 		return block || null
@@ -131,6 +135,12 @@ export class MemoryStore {
 		}
 	}
 
+	/**
+	 * Finds a single entry matching `oldText`. If multiple entries match:
+	 * - Returns error if the matching texts are different (ambiguous)
+	 * - Accepts the first match if all matching texts are identical duplicates
+	 *   (e.g. manual edits created dupes — we target the first one)
+	 */
 	private _resolveSingleMatch(
 		entries: string[],
 		oldText: string,
@@ -155,6 +165,11 @@ export class MemoryStore {
 		return { matched: true, idx: matches[0][0] }
 	}
 
+	/**
+	 * Returns the current live entries (reloaded from disk). The `entries` field
+	 * reflects the latest state, which may differ from the frozen snapshot used
+	 * in the system prompt. This is intentional.
+	 */
 	private _ok(target: MemoryTarget, message: string): MemoryToolResult {
 		const entries = this._get(target)
 		const current = entries.join(ENTRY_DELIMITER).length

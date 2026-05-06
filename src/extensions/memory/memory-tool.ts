@@ -1,6 +1,16 @@
 import { Type } from "typebox"
 import type { MemoryStore } from "./memory-store.js"
-import type { MemoryAction, MemoryTarget } from "./types.js"
+import type { MemoryAction, MemoryTarget, MemoryToolResult } from "./types.js"
+
+function wrapResult(result: MemoryToolResult): {
+	content: { type: "text"; text: string }[]
+	details: MemoryToolResult
+} {
+	return {
+		content: [{ type: "text", text: result.success ? (result.message ?? "OK") : (result.error ?? "Error") }],
+		details: result,
+	}
+}
 
 export const MEMORY_SCHEMA = Type.Object({
 	action: Type.String({
@@ -49,18 +59,24 @@ export function createMemoryTool(store: MemoryStore) {
 		parameters: MEMORY_SCHEMA,
 		async execute(_toolCallId: string, params: MemoryToolArgs) {
 			const { action, target, content, old_text } = params
+			let result: MemoryToolResult
 			switch (action) {
 				case "add":
-					return store.add(target, content ?? "")
+					result = await store.add(target, content ?? "")
+					break
 				case "replace":
-					return store.replace(target, old_text ?? "", content ?? "")
+					result = await store.replace(target, old_text ?? "", content ?? "")
+					break
 				case "remove":
-					return store.remove(target, old_text ?? "")
+					result = await store.remove(target, old_text ?? "")
+					break
 				case "read":
-					return store.read(target)
+					result = await store.read(target)
+					break
 				default:
-					return { success: false, error: `Unknown action '${action}'.` }
+					result = { success: false, error: `Unknown action '${action}'.` }
 			}
+			return wrapResult(result)
 		},
 	}
 }

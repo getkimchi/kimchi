@@ -18,3 +18,12 @@ export interface MemoryToolResult {
 	error?: string
 	matches?: string[]
 }
+
+export interface MemoryContext {
+	memorySnapshot?: {
+		memory: string | null
+		user: string | null
+	}
+}
+
+export const ENTRY_DELIMITER = "\n§\n"

@@ -3,6 +3,7 @@ import { getAgentDir } from "@mariozechner/pi-coding-agent"
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
 import { MemoryStore } from "./memory-store.js"
 import { createMemoryTool } from "./memory-tool.js"
+import type { MemoryContext } from "./types.js"
 
 export interface MemoryExtensionOptions {
 	memoryDir?: string
@@ -25,7 +26,7 @@ export default function memoryExtension(pi: ExtensionAPI, options?: MemoryExtens
 
 	pi.on("session_start", async (_event, ctx) => {
 		await store.loadFromDisk()
-		;(ctx as { memorySnapshot?: { memory: string | null; user: string | null } }).memorySnapshot = {
+		;(ctx as MemoryContext).memorySnapshot = {
 			memory: store.formatForSystemPrompt("memory"),
 			user: store.formatForSystemPrompt("user"),
 		}

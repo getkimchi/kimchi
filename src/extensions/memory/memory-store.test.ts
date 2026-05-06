@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { writeMemoryFile } from "./file-io.js"
 import { MemoryStore } from "./memory-store.js"
 
 describe("MemoryStore", () => {
@@ -64,5 +65,12 @@ describe("MemoryStore", () => {
 		const stillSnapshot = store.formatForSystemPrompt("memory")
 		expect(stillSnapshot).toContain("Frozen.")
 		expect(stillSnapshot).not.toContain("Live.")
+	})
+
+	it("handles duplicate identical entries when replacing", async () => {
+		await writeMemoryFile(join(tmpDir, "MEMORY.md"), ["Duplicate text.", "Duplicate text."])
+		const result = await store.replace("memory", "Duplicate text", "Updated.")
+		expect(result.success).toBe(true)
+		expect(result.entries).toEqual(["Updated.", "Duplicate text."])
 	})
 })

@@ -1,6 +1,6 @@
 const MEMORY_THREAT_PATTERNS: { pattern: RegExp; id: string }[] = [
 	{ pattern: /ignore\s+(previous|all|above|prior)\s+instructions/i, id: "prompt_injection" },
-	{ pattern: /you\s+are\s+now\s+/i, id: "role_hijack" },
+	{ pattern: /you\s+are\s+now\s+(?:a|an|the)\b/i, id: "role_hijack" },
 	{ pattern: /do\s+not\s+tell\s+the\s+user/i, id: "deception_hide" },
 	{ pattern: /system\s+prompt\s+override/i, id: "sys_prompt_override" },
 	{ pattern: /disregard\s+(your|all|any)\s+(instructions|rules|guidelines)/i, id: "disregard_rules" },
