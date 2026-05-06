@@ -196,7 +196,7 @@ export function discoverSubdirectoryCommandFiles(commandsDir: string, origin: st
 	return result
 }
 
-const FRONTMATTER_REGEX = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/
+const FRONTMATTER_REGEX = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/m
 
 export function extractExistingFrontmatter(content: string): { description?: string; body: string } {
 	const match = content.match(FRONTMATTER_REGEX)
@@ -209,6 +209,7 @@ export function extractExistingFrontmatter(content: string): { description?: str
 	if (descLine) {
 		const afterColon = descLine.slice(descLine.indexOf(":") + 1).trim()
 		if (afterColon.startsWith("|") || afterColon.startsWith(">")) {
+			const isFolded = afterColon.startsWith(">")
 			const lines: string[] = []
 			const yamlLines = yaml.split("\n")
 			const startIdx = yamlLines.indexOf(descLine) + 1
@@ -220,7 +221,8 @@ export function extractExistingFrontmatter(content: string): { description?: str
 					break
 				}
 			}
-			description = lines.join(" ").trim()
+			// For folded style (>), collapse newlines to spaces; for literal (|), preserve
+			description = isFolded ? lines.join(" ").trim() : lines.join("\n").trim()
 		} else {
 			description = afterColon.replace(/^["']|["']$/g, "")
 		}
@@ -258,7 +260,7 @@ export function migrateCommandToPrompt(cmd: DiscoveredCommand): boolean {
 	return true
 }
 
-async function runCommandsMigrationPhase(agents: AgentDiscovery[]): Promise<number> {
+async function runCommandsMigrationPhase(agents: AgentDiscovery[]): Promise<number | "cancelled"> {
 	const withCommands = agents.filter(
 		(a): a is typeof a & { commandsDir: string } => a.commandsCount > 0 && !!a.commandsDir,
 	)
@@ -286,7 +288,7 @@ async function runCommandsMigrationPhase(agents: AgentDiscovery[]): Promise<numb
 			required: false,
 		})
 
-		if (clack.isCancel(chosen) || !Array.isArray(chosen)) return 0
+		if (clack.isCancel(chosen) || !Array.isArray(chosen)) return "cancelled"
 		selected = new Set(chosen)
 	} else {
 		selected = new Set()
@@ -350,10 +352,14 @@ export async function runSetupWizard(options: {
 				clack.log.success(`Migrated ${serverCount} MCP server(s) to Kimchi.`)
 			}
 			const commandsCopied = await runCommandsMigrationPhase(merged.agents)
-			if (commandsCopied > 0) {
-				clack.log.success(`Migrated ${commandsCopied} command(s) to Kimchi prompts.`)
+			if (commandsCopied === "cancelled") {
+				migrationRan = false
+			} else {
+				if (commandsCopied > 0) {
+					clack.log.success(`Migrated ${commandsCopied} command(s) to Kimchi prompts.`)
+				}
+				migrationRan = true
 			}
-			migrationRan = true
 		} else if (action === "skip-forever") {
 			migrationState = "skip-forever"
 		}

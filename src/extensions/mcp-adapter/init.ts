@@ -113,7 +113,15 @@ export async function initializeMcp(pi: ExtensionAPI, ctx: ExtensionContext): Pr
 		}
 	})
 
-	const retryable = results.filter((r) => r.error && !r.error.includes("OAuth"))
+	// Only retry transient errors that might succeed on second attempt
+	// (EBUSY, ECONNREFUSED, timeouts, npm lock contention, etc.)
+	const TRANSIENT_ERROR_CODES = ["EBUSY", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND"]
+	const isTransientError = (error: string): boolean =>
+		TRANSIENT_ERROR_CODES.some((code) => error.includes(code)) ||
+		/\btimes?\s*out\b/i.test(error) ||
+		/\bnpm.*lock\b/i.test(error)
+
+	const retryable = results.filter((r) => r.error && !r.error.includes("OAuth") && isTransientError(r.error))
 	for (const entry of retryable) {
 		try {
 			const connection = await manager.connect(entry.name, entry.definition)

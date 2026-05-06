@@ -142,10 +142,20 @@ describe("extractExistingFrontmatter", () => {
 		expect(result.body).toBe("\n# Review\n\nBody here.")
 	})
 
-	it("extracts multiline description with pipe syntax", () => {
+	it("extracts multiline description with pipe syntax (literal)", () => {
 		const content = "---\nname: review\ndescription: |\n  Line one\n  Line two\n---\n\nBody."
 		const result = extractExistingFrontmatter(content)
 
+		// Pipe syntax preserves newlines
+		expect(result.description).toBe("Line one\nLine two")
+		expect(result.body).toBe("\nBody.")
+	})
+
+	it("extracts multiline description with folded syntax", () => {
+		const content = "---\nname: review\ndescription: >\n  Line one\n  Line two\n---\n\nBody."
+		const result = extractExistingFrontmatter(content)
+
+		// Folded syntax collapses newlines to single spaces
 		expect(result.description).toBe("Line one Line two")
 		expect(result.body).toBe("\nBody.")
 	})
