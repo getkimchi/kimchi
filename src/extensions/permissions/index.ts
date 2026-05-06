@@ -445,7 +445,7 @@ async function handleConfirm(
 	}
 }
 
-async function handleCompoundConfirm(
+export async function handleCompoundConfirm(
 	event: ToolCallEvent,
 	opts: ConfirmOptions & { subcommands: string[] },
 ): Promise<{ block: true; reason: string } | "aborted" | undefined> {
@@ -536,8 +536,9 @@ interface CompoundCheckResult {
 
 /**
  * Check if a compound bash command can be allowed, denied, or needs prompting.
+ * Exported for testing.
  */
-function checkCompoundCommand(command: string, rules: Rule[]): CompoundCheckResult {
+export function checkCompoundCommand(command: string, rules: Rule[]): CompoundCheckResult {
 	// First check for hard-blocked programs
 	if (isHardBlockedBash(command)) {
 		return { decision: "deny", deniedReason: `Hard-blocked program in command: ${command}` }

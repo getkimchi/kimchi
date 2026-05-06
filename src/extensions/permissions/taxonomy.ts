@@ -233,7 +233,10 @@ export function splitCompoundCommand(command: string): string[] | null {
 				continue
 			}
 			if ((op === ">" || op === ">>") && typeof entries[i + 1] === "string") {
-				// Consume the redirect target
+				// Consume the redirect target.
+				// NOTE: We intentionally handle only > and >>. Other redirects (<, >&, <<)
+				// are intentionally not supported — they would not change the program
+				// classification outcome for permission evaluation.
 				currentTokens.push(entry.op)
 				currentTokens.push(entries[i + 1] as string)
 				i++

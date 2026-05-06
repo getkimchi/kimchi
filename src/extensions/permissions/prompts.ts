@@ -46,10 +46,13 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 	const yesOnce = "Yes — just this call"
 	const yesRemember = `Yes — don't ask again for ${scope.label} this session`
 	const noWithFeedback = "No — tell the assistant what to do differently"
+	const yesWildcard = scope.wildcardContent
+		? `Yes — don't ask again for ${scope.wildcardContent} this session`
+		: undefined
 
 	// Add wildcard option for bash commands
-	const choices = scope.wildcardContent
-		? [yesOnce, yesRemember, `Yes — don't ask again for ${scope.wildcardContent} this session`, noWithFeedback]
+	const choices = yesWildcard
+		? [yesOnce, yesRemember, yesWildcard, noWithFeedback]
 		: [yesOnce, yesRemember, noWithFeedback]
 
 	const choice = await ctx.ui.select(lines.join("\n"), choices, {
@@ -71,7 +74,7 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 	}
 
 	// Check if wildcard was selected (only applicable for bash)
-	if (scope.wildcardContent && choice?.includes(scope.wildcardContent)) {
+	if (yesWildcard && choice === yesWildcard) {
 		const rule: Rule = {
 			toolName: scope.toolName,
 			content: `${scope.wildcardContent}`,
@@ -162,7 +165,8 @@ function describeCall(toolName: string, input: Record<string, unknown>): string 
 	}
 }
 
-function truncate(s: string, max: number): string {
+// Exported for testing
+export function truncate(s: string, max: number): string {
 	if (s.length <= max) return s
 	return `${s.slice(0, max - 1)}…`
 }
