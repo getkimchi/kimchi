@@ -1,4 +1,3 @@
-import { readdirSync } from "node:fs"
 import { mkdir, readFile, readdir, rename, rmdir, unlink, writeFile } from "node:fs/promises"
 import { dirname, join, resolve, sep } from "node:path"
 import { parse as parseYaml } from "yaml"
@@ -156,16 +155,6 @@ export class SkillManager {
 		}
 	}
 
-	private async _isFile(path: string): Promise<boolean> {
-		try {
-			const { stat } = await import("node:fs/promises")
-			const s = await stat(path)
-			return s.isFile()
-		} catch {
-			return false
-		}
-	}
-
 	private async _atomicWrite(filePath: string, content: string): Promise<void> {
 		await mkdir(dirname(filePath), { recursive: true })
 		const tmp = `${filePath}.tmp.${Date.now()}`
@@ -290,7 +279,8 @@ export class SkillManager {
 		}
 	}
 
-	async delete(name: string, _absorbedInto?: string): Promise<SkillManageResult> {
+	async delete(name: string, absorbedInto?: string): Promise<SkillManageResult> {
+		// absorbedInto is for the usage tracker, not used here
 		const loc = await this._findSkill(name)
 		if (!loc) return { success: false, error: `Skill '${name}' not found.` }
 

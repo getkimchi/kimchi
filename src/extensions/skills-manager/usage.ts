@@ -27,10 +27,11 @@ export class UsageTracker {
 	private async _load(): Promise<Map<string, UsageEntry>> {
 		try {
 			const raw = await readFile(this.usagePath, "utf-8")
+			if (!raw.trim()) return new Map()
 			const obj = JSON.parse(raw) as Record<string, UsageEntry>
 			return new Map(Object.entries(obj))
 		} catch (err: unknown) {
-			if (err instanceof Error && "code" in err && err.code === "ENOENT") {
+			if (err instanceof Error && "code" in err && (err as { code: string }).code === "ENOENT") {
 				return new Map()
 			}
 			throw err
