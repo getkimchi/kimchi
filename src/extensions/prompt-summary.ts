@@ -52,26 +52,23 @@ const LABEL_WIDTH = 16
 const INDENT = "  "
 
 function usageRawCols(totals: UsageTotals): string[] {
-	const total = totals.input + totals.output + totals.cacheRead + totals.cacheWrite
 	const cols = [`↑${formatCount(totals.input)}`, `↓${formatCount(totals.output)}`]
 	if (totals.cacheRead > 0 || totals.cacheWrite > 0) {
 		cols.push(`cache-read ${formatCount(totals.cacheRead)}`)
 		cols.push(`cache-write ${formatCount(totals.cacheWrite)}`)
 	}
-	cols.push(formatCount(total))
 	return cols
 }
 
 function formatUsageRows(rows: Array<{ label: string; totals: UsageTotals }>, theme: Theme): string[] {
 	const colSets = rows.map((r) => usageRawCols(r.totals))
 	const colCount = Math.max(...colSets.map((c) => c.length))
-	const colWidths = Array.from({ length: colCount - 1 }, (_, i) => Math.max(...colSets.map((c) => (c[i] ?? "").length)))
+	const colWidths = Array.from({ length: colCount }, (_, i) => Math.max(...colSets.map((c) => (c[i] ?? "").length)))
 
 	return rows.map((row, ri) => {
 		const cols = colSets[ri]
-		const padded = cols.slice(0, -1).map((c, i) => c.padEnd(colWidths[i]))
-		const totalCol = theme.fg("dim", "total ") + cols[cols.length - 1]
-		const values = [...padded, totalCol].join(COL_GAP)
+		const padded = cols.map((c, i) => c.padEnd(colWidths[i]))
+		const values = padded.join(COL_GAP)
 		return INDENT + theme.fg("dim", row.label.padEnd(LABEL_WIDTH)) + values
 	})
 }
@@ -86,15 +83,26 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 	const header = theme.bold(theme.fg("toolTitle", "Prompt summary"))
 	container.addChild(new Text(dash + header, 0, 0))
 
-	container.addChild(new Text(INDENT + theme.fg("dim", "execution:".padEnd(LABEL_WIDTH)) + data.elapsed, 0, 0))
+	container.addChild(new Text(INDENT + theme.fg("dim", "execution".padEnd(LABEL_WIDTH)) + data.elapsed, 0, 0))
 
-	const rows: Array<{ label: string; totals: UsageTotals }> = []
-	if (data.orchestrator) rows.push({ label: "model:", totals: data.orchestrator })
-	if (data.subagents) rows.push({ label: "subagents:", totals: data.subagents })
-	rows.push({ label: "total:", totals: data.total })
+	if (!data.subagents) {
+		// No subagents — single compact "tokens" row
+		const t = data.total
+		let values = `↑${formatCount(t.input)}${COL_GAP}↓${formatCount(t.output)}`
+		if (t.cacheRead > 0 || t.cacheWrite > 0) {
+			values += `${COL_GAP}cache-read ${formatCount(t.cacheRead)}${COL_GAP}cache-write ${formatCount(t.cacheWrite)}`
+		}
+		container.addChild(new Text(INDENT + theme.fg("dim", "tokens".padEnd(LABEL_WIDTH)) + values, 0, 0))
+	} else {
+		// Multi-row breakdown when subagents were involved
+		const rows: Array<{ label: string; totals: UsageTotals }> = []
+		if (data.orchestrator) rows.push({ label: "main model:", totals: data.orchestrator })
+		rows.push({ label: "subagents:", totals: data.subagents })
+		rows.push({ label: "total:", totals: data.total })
 
-	for (const line of formatUsageRows(rows, theme)) {
-		container.addChild(new Text(line, 0, 0))
+		for (const line of formatUsageRows(rows, theme)) {
+			container.addChild(new Text(line, 0, 0))
+		}
 	}
 
 	return container
@@ -107,7 +115,13 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 
 	const orchestrator = emptyTotals()
 	const subagents = emptyTotals()
-	const startedAt = Date.now()
+	let startedAt = Date.now()
+
+	pi.on("agent_start", async () => {
+		Object.assign(orchestrator, emptyTotals())
+		Object.assign(subagents, emptyTotals())
+		startedAt = Date.now()
+	})
 
 	pi.on("message_end", async (event) => {
 		const message = event.message as AssistantMessage
