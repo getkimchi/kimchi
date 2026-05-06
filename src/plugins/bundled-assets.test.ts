@@ -1,14 +1,29 @@
 import { existsSync } from "node:fs"
+import { dirname, resolve } from "node:path"
 import { join } from "node:path"
-import { beforeAll, describe, expect, it } from "vitest"
+import { fileURLToPath } from "node:url"
+import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { getBundledPluginsRoot } from "./registry.js"
+
+const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..")
 
 describe("bundled assets", () => {
 	let root: string
+	let originalPiPackageDir: string | undefined
 
 	beforeAll(() => {
-		process.env.PI_PACKAGE_DIR = "/Users/tautvydas/Desktop/castai/kimchi-dev"
+		originalPiPackageDir = process.env.PI_PACKAGE_DIR
+		process.env.PI_PACKAGE_DIR = PROJECT_ROOT
 		root = getBundledPluginsRoot()
+	})
+
+	afterAll(() => {
+		if (originalPiPackageDir === undefined) {
+			// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
+			delete process.env.PI_PACKAGE_DIR
+		} else {
+			process.env.PI_PACKAGE_DIR = originalPiPackageDir
+		}
 	})
 
 	const orchestratorFiles = [

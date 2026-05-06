@@ -16,7 +16,7 @@ interface LinkResult {
 
 interface LinkError {
 	ok: false
-	reason: "exists-not-symlink" | "symlink-permission"
+	reason: "exists-not-symlink" | "symlink-permission" | "invalid-name"
 	path?: string
 }
 
@@ -29,16 +29,20 @@ interface UnlinkResult {
 
 interface UnlinkError {
 	ok: false
-	reason: "exists-not-symlink"
+	reason: "exists-not-symlink" | "invalid-name"
 	path?: string
 }
 
 type UnlinkPluginResult = UnlinkResult | UnlinkError
 
 const DIRS = ["commands", "agents"] as const
+const SAFE_NAME = /^[a-z0-9][a-z0-9_-]*$/i
 
 export function linkPlugin(input: LinkPluginInput): LinkPluginResult {
 	const { name, sourceDir, claudeHome } = input
+	if (!SAFE_NAME.test(name)) {
+		return { ok: false, reason: "invalid-name", path: name }
+	}
 	let created = 0
 	let replaced = 0
 	let skipped = 0
@@ -93,6 +97,9 @@ export function linkPlugin(input: LinkPluginInput): LinkPluginResult {
 
 export function unlinkPlugin(input: { name: string; claudeHome: string }): UnlinkPluginResult {
 	const { name, claudeHome } = input
+	if (!SAFE_NAME.test(name)) {
+		return { ok: false, reason: "invalid-name", path: name }
+	}
 	let removed = 0
 
 	for (const dir of DIRS) {

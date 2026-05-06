@@ -1,14 +1,19 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { lstatSync } from "node:fs"
 import { tmpdir } from "node:os"
+import { dirname, resolve } from "node:path"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { runPlugin } from "./plugin.js"
+
+const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..")
 
 describe("runPlugin", () => {
 	let logSpy: ReturnType<typeof vi.spyOn>
 	let errSpy: ReturnType<typeof vi.spyOn>
 	let claudeHome: string
+	let configTmpDir: string
 	let configPath: string
 
 	beforeEach(() => {
@@ -16,9 +21,10 @@ describe("runPlugin", () => {
 		errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
 
 		claudeHome = mkdtempSync(join(tmpdir(), "kimchi-claude-home-"))
-		configPath = join(mkdtempSync(join(tmpdir(), "kimchi-config-")), "config.json")
+		configTmpDir = mkdtempSync(join(tmpdir(), "kimchi-config-"))
+		configPath = join(configTmpDir, "config.json")
 
-		process.env.PI_PACKAGE_DIR = "/Users/tautvydas/Desktop/castai/kimchi-dev"
+		process.env.PI_PACKAGE_DIR = PROJECT_ROOT
 		process.env.KIMCHI_CLAUDE_HOME = claudeHome
 		process.env.KIMCHI_CONFIG_PATH = configPath
 	})
@@ -27,11 +33,15 @@ describe("runPlugin", () => {
 		logSpy.mockRestore()
 		errSpy.mockRestore()
 
-		process.env.PI_PACKAGE_DIR = undefined
-		process.env.KIMCHI_CLAUDE_HOME = undefined
-		process.env.KIMCHI_CONFIG_PATH = undefined
+		// biome-ignore lint/performance/noDelete: env vars must actually be deleted, not set to "undefined"
+		delete process.env.PI_PACKAGE_DIR
+		// biome-ignore lint/performance/noDelete: env vars must actually be deleted, not set to "undefined"
+		delete process.env.KIMCHI_CLAUDE_HOME
+		// biome-ignore lint/performance/noDelete: env vars must actually be deleted, not set to "undefined"
+		delete process.env.KIMCHI_CONFIG_PATH
 
 		rmSync(claudeHome, { recursive: true, force: true })
+		rmSync(configTmpDir, { recursive: true, force: true })
 	})
 
 	// ── WI-11: no-args / --help / unknown subcommand ──────────────────────────

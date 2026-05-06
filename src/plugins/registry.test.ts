@@ -1,11 +1,13 @@
+import { dirname, resolve } from "node:path"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { getBundledPluginsRoot, listBundledPlugins } from "./registry.js"
 
 // The real project root — WI-1 will have copied bundled assets here before
 // these tests run in the GREEN phase. In the RED phase the import above fails
 // before any test body executes, which is the expected outcome.
-const PROJECT_ROOT = "/Users/tautvydas/Desktop/castai/kimchi-dev"
+const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..")
 
 describe("getBundledPluginsRoot", () => {
 	let originalPiPackageDir: string | undefined

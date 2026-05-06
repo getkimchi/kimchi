@@ -63,7 +63,11 @@ async function handleEnable(
 	}
 	const result = linkPlugin({ name, sourceDir: plugin.sourceDir, claudeHome })
 	if (!result.ok) {
-		console.error(`plugin enable: ${result.reason} at ${result.path}`)
+		if (result.reason === "invalid-name") {
+			console.error("plugin enable: plugin name must be alphanumeric")
+		} else {
+			console.error(`plugin enable: ${result.reason} at ${result.path}`)
+		}
 		return 1
 	}
 	setPluginEnabled(name, true, "bundled", configPath)
@@ -87,7 +91,11 @@ async function handleDisable(
 	}
 	const result = unlinkPlugin({ name, claudeHome })
 	if (!result.ok) {
-		console.error(`plugin disable: ${result.reason} at ${result.path}`)
+		if (result.reason === "invalid-name") {
+			console.error("plugin disable: plugin name must be alphanumeric")
+		} else {
+			console.error(`plugin disable: ${result.reason} at ${result.path}`)
+		}
 		return 1
 	}
 	setPluginEnabled(name, false, "bundled", configPath)

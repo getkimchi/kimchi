@@ -75,6 +75,11 @@ describe("linkPlugin", () => {
 		expect(lstatSync(join(claudeHome, "commands", "my-plugin")).isSymbolicLink()).toBe(false)
 	})
 
+	it("rejects names with path traversal characters", () => {
+		const result = linkPlugin({ name: "../../etc/passwd", sourceDir, claudeHome })
+		expect(result).toEqual({ ok: false, reason: "invalid-name", path: "../../etc/passwd" })
+	})
+
 	// WI-9: replaces a stale symlink pointing elsewhere
 	it("replaces a stale symlink pointing at a different path", () => {
 		// Pre-create a symlink pointing at a stale target

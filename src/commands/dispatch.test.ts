@@ -1,5 +1,9 @@
+import { dirname, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { dispatchSubcommand } from "./dispatch.js"
+
+const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..")
 
 describe("dispatchSubcommand", () => {
 	let logSpy: ReturnType<typeof vi.spyOn>
@@ -107,8 +111,18 @@ describe("dispatchSubcommand", () => {
 	})
 
 	it("plugin list returns 0", async () => {
-		process.env.PI_PACKAGE_DIR = "/Users/tautvydas/Desktop/castai/kimchi-dev-plugin-mgmt"
-		const result = await dispatchSubcommand(["plugin", "list"])
-		expect(result).toEqual({ kind: "handled", exitCode: 0 })
+		const prior = process.env.PI_PACKAGE_DIR
+		process.env.PI_PACKAGE_DIR = PROJECT_ROOT
+		try {
+			const result = await dispatchSubcommand(["plugin", "list"])
+			expect(result).toEqual({ kind: "handled", exitCode: 0 })
+		} finally {
+			if (prior === undefined) {
+				// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
+				delete process.env.PI_PACKAGE_DIR
+			} else {
+				process.env.PI_PACKAGE_DIR = prior
+			}
+		}
 	})
 })
