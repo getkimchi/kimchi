@@ -39,7 +39,7 @@ export function parseBehaviourBody(raw: string): ParsedBehaviourBody {
 		if (line.trim() === "") continue
 		const m = FIELD_RE.exec(line)
 		if (!m) throw new Error(`malformed frontmatter line: ${JSON.stringify(line)}`)
-		const value = m[2].trim().replace(/^["'](.*)["']$/, "$1")
+		const value = m[2].trim().replace(/^(["'])(.*)\1$/, "$2")
 		fields[m[1]] = value
 	}
 	const name = fields.name

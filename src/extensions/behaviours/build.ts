@@ -10,19 +10,28 @@
  */
 
 import { parseBehaviourBody } from "./frontmatter.js"
-import type { Behaviour, BehaviourEvals, BehaviourKind, BehaviourTriggers } from "./types.js"
+import type { Behaviour, BehaviourEvals, BehaviourTriggers } from "./types.js"
 
-export interface BehaviourSource {
+interface BaselineSource {
 	raw: string
-	kind: BehaviourKind
-	triggers?: BehaviourTriggers
+	kind: "baseline"
+}
+
+interface TriggeredSource {
+	raw: string
+	kind: "triggered"
+	triggers: BehaviourTriggers
 	evals?: BehaviourEvals
 }
+
+export type BehaviourSource = BaselineSource | TriggeredSource
 
 /**
  * Parse and validate a list of behaviour sources into a `Behaviour[]`.
  *
- * Throws on duplicate names. Pure over its inputs.
+ * Throws on duplicate names and on triggered sources whose `triggers` slot is
+ * empty (no session probe and no tool matcher — such a behaviour would be
+ * unreachable). Pure over its inputs.
  */
 export function buildBehaviours(sources: readonly BehaviourSource[]): Behaviour[] {
 	const result: Behaviour[] = []
@@ -34,11 +43,18 @@ export function buildBehaviours(sources: readonly BehaviourSource[]): Behaviour[
 			throw new Error(`duplicate bundled behaviour name: ${name}`)
 		}
 		seen.add(name)
+		if (src.kind === "baseline") {
+			result.push({ kind: "baseline", name, description, body: parsed.content })
+			continue
+		}
+		if (!src.triggers.session && !src.triggers.tool) {
+			throw new Error(`triggered behaviour ${name} has no session or tool trigger`)
+		}
 		result.push({
+			kind: "triggered",
 			name,
 			description,
 			body: parsed.content,
-			kind: src.kind,
 			triggers: src.triggers,
 			evals: src.evals,
 		})

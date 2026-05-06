@@ -5,9 +5,10 @@
  * its kind — `baseline` bodies merge into the system prompt unconditionally,
  * `triggered` bodies stay dormant until their triggers fire.
  *
- * The IIFE at module load validates the registry: every body parses, every
- * name is unique. Adding a new behaviour requires only appending another
- * `BehaviourSource` entry below.
+ * `buildBehaviours` validates the registry at module load: every body parses,
+ * every name is unique, every triggered source has at least one trigger.
+ * Adding a new behaviour requires only appending another `BehaviourSource`
+ * entry below.
  */
 
 import boundToolOutputBody from "./bodies/bound-tool-output.md" with { type: "text" }

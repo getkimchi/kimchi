@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest"
 import { EVAL_SAMPLE_CAP, EvalEngine } from "./eval-engine.js"
 import { type ToolCallEvent, tool } from "./triggers.js"
-import type { Behaviour } from "./types.js"
+import type { Behaviour, BehaviourEvals } from "./types.js"
 
-function makeBehaviour(overrides: Partial<Behaviour> & Pick<Behaviour, "name">): Behaviour {
+function makeBehaviour(args: { name: string; evals?: BehaviourEvals }): Behaviour {
 	return {
-		description: `${overrides.name} behaviour`,
-		body: `body of ${overrides.name}`,
 		kind: "triggered",
-		triggers: undefined,
-		evals: undefined,
-		...overrides,
+		name: args.name,
+		description: `${args.name} behaviour`,
+		body: `body of ${args.name}`,
+		triggers: {},
+		evals: args.evals,
 	}
 }
 

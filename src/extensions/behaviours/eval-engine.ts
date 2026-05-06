@@ -51,6 +51,7 @@ export class EvalEngine {
 	evaluate(event: ToolCallEvent, turnIndex: number): EvalEvent[] {
 		const out: EvalEvent[] = []
 		for (const b of this.behaviours) {
+			if (b.kind !== "triggered") continue
 			if (!this.isLoaded(b.name)) continue
 			const observed = b.evals?.observed
 			const violated = b.evals?.violated

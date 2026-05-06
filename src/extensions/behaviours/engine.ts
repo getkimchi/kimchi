@@ -8,8 +8,11 @@
  * - `evaluateToolTriggers` — runs matchers against each tool-call event.
  *
  * Each behaviour transitions from unloaded to loaded at most once per session.
- * Once loaded, both trigger paths are skipped for that behaviour. On
- * compaction the loaded set is preserved; `requeueLoaded` repopulates the
+ * Once loaded, both trigger paths are skipped for that behaviour. The engine
+ * also records the load circumstances (turn, trigger source, tool args) so
+ * downstream consumers (session summary) don't need a parallel side-table.
+ *
+ * On compaction the loaded set is preserved; `requeueLoaded` repopulates the
  * pending queue so the injector re-delivers each loaded body once.
  */
 
@@ -27,8 +30,15 @@ export interface LoadEvent {
 	toolArgs?: Record<string, unknown>
 }
 
+export interface LoadRecord {
+	trigger: TriggerSource
+	turnIndex: number
+	toolName?: string
+	toolArgs?: Record<string, unknown>
+}
+
 export class TriggerEngine {
-	private readonly loaded = new Set<string>()
+	private readonly loaded = new Map<string, LoadRecord>()
 	private readonly pending = new Set<string>()
 
 	constructor(private readonly behaviours: readonly Behaviour[]) {}
@@ -42,10 +52,10 @@ export class TriggerEngine {
 		for (const b of this.behaviours) {
 			if (b.kind !== "triggered") continue
 			if (this.loaded.has(b.name)) continue
-			const probe = b.triggers?.session
+			const probe = b.triggers.session
 			if (!probe) continue
 			if (!probe(ctx)) continue
-			this.loaded.add(b.name)
+			this.loaded.set(b.name, { trigger: "session", turnIndex })
 			this.pending.add(b.name)
 			events.push({ name: b.name, trigger: "session", turnIndex })
 		}
@@ -63,10 +73,15 @@ export class TriggerEngine {
 		for (const b of this.behaviours) {
 			if (b.kind !== "triggered") continue
 			if (this.loaded.has(b.name)) continue
-			const matcher = b.triggers?.tool
+			const matcher = b.triggers.tool
 			if (!matcher) continue
 			if (!matcher(event)) continue
-			this.loaded.add(b.name)
+			this.loaded.set(b.name, {
+				trigger: "tool",
+				turnIndex,
+				toolName: event.toolName,
+				toolArgs: event.input,
+			})
 			this.pending.add(b.name)
 			events.push({
 				name: b.name,
@@ -84,6 +99,11 @@ export class TriggerEngine {
 		return this.loaded.has(name)
 	}
 
+	/** Load record for the named behaviour, or undefined if it never loaded. */
+	loadRecord(name: string): LoadRecord | undefined {
+		return this.loaded.get(name)
+	}
+
 	/**
 	 * Atomically take the named behaviour off the pending queue. Returns true
 	 * if it was pending (caller should deliver the body), false otherwise.
@@ -94,7 +114,7 @@ export class TriggerEngine {
 
 	/** Snapshot of currently-loaded names — primarily for tests. */
 	loadedNames(): string[] {
-		return [...this.loaded]
+		return [...this.loaded.keys()]
 	}
 
 	/** Snapshot of the pending injection queue — primarily for tests. */

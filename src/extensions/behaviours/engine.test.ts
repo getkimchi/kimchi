@@ -2,14 +2,32 @@ import { describe, expect, it } from "vitest"
 import { TriggerEngine } from "./engine.js"
 import type { SessionContext } from "./session-context.js"
 import { type ToolCallEvent, any, cli, gitRemote, tool } from "./triggers.js"
-import type { Behaviour } from "./types.js"
+import type { Behaviour, BehaviourEvals, BehaviourTriggers } from "./types.js"
 
-function makeBehaviour(overrides: Partial<Behaviour> & Pick<Behaviour, "name" | "kind">): Behaviour {
+type MakeArgs =
+	| { name: string; kind: "baseline"; description?: string; body?: string }
+	| {
+			name: string
+			kind: "triggered"
+			triggers?: BehaviourTriggers
+			evals?: BehaviourEvals
+			description?: string
+			body?: string
+	  }
+
+function makeBehaviour(args: MakeArgs): Behaviour {
+	const description = args.description ?? `${args.name} behaviour`
+	const body = args.body ?? `body of ${args.name}`
+	if (args.kind === "baseline") {
+		return { kind: "baseline", name: args.name, description, body }
+	}
 	return {
-		description: `${overrides.name} behaviour`,
-		body: `body of ${overrides.name}`,
-		triggers: undefined,
-		...overrides,
+		kind: "triggered",
+		name: args.name,
+		description,
+		body,
+		triggers: args.triggers ?? {},
+		evals: args.evals,
 	}
 }
 
@@ -70,12 +88,8 @@ describe("TriggerEngine.evaluateSessionTriggers", () => {
 		expect(engine.loadedNames()).toEqual(["gh-cli"])
 	})
 
-	it("ignores baseline behaviours even when they have a session probe", () => {
-		const baseline = makeBehaviour({
-			name: "git-hygiene",
-			kind: "baseline",
-			triggers: { session: cli("git") },
-		})
+	it("ignores baseline behaviours", () => {
+		const baseline = makeBehaviour({ name: "git-hygiene", kind: "baseline" })
 		const engine = new TriggerEngine([baseline])
 		const events = engine.evaluateSessionTriggers(makeContext({ clis: ["git"] }), 0)
 
@@ -101,8 +115,8 @@ describe("TriggerEngine.evaluateSessionTriggers", () => {
 		expect(engine.pendingNames()).toEqual(["a", "b"])
 	})
 
-	it("skips triggered behaviours without a session probe declared", () => {
-		const noTriggers = makeBehaviour({ name: "x", kind: "triggered" })
+	it("skips triggered behaviours whose triggers slot is empty", () => {
+		const noTriggers = makeBehaviour({ name: "x", kind: "triggered", triggers: {} })
 		const engine = new TriggerEngine([noTriggers])
 		expect(engine.evaluateSessionTriggers(makeContext(), 0)).toEqual([])
 	})
@@ -214,6 +228,40 @@ describe("TriggerEngine.requeueLoaded", () => {
 	})
 })
 
+describe("TriggerEngine.loadRecord", () => {
+	it("captures session-trigger metadata", () => {
+		const ghCli = makeBehaviour({
+			name: "gh-cli",
+			kind: "triggered",
+			triggers: { session: cli("gh") },
+		})
+		const engine = new TriggerEngine([ghCli])
+		engine.evaluateSessionTriggers(makeContext({ clis: ["gh"] }), 4)
+		expect(engine.loadRecord("gh-cli")).toEqual({ trigger: "session", turnIndex: 4 })
+	})
+
+	it("captures tool-trigger metadata including args", () => {
+		const ghCli = makeBehaviour({
+			name: "gh-cli",
+			kind: "triggered",
+			triggers: { tool: tool("bash", (i) => i.command.startsWith("gh ")) },
+		})
+		const engine = new TriggerEngine([ghCli])
+		engine.evaluateToolTriggers(bashCall("gh pr list"), 7)
+		expect(engine.loadRecord("gh-cli")).toEqual({
+			trigger: "tool",
+			turnIndex: 7,
+			toolName: "bash",
+			toolArgs: { command: "gh pr list" },
+		})
+	})
+
+	it("returns undefined for behaviours that never loaded", () => {
+		const engine = new TriggerEngine([])
+		expect(engine.loadRecord("missing")).toBeUndefined()
+	})
+})
+
 describe("TriggerEngine.evaluateToolTriggers", () => {
 	it("loads a triggered behaviour the first time a matching tool call fires", () => {
 		const ghCli = makeBehaviour({
@@ -274,12 +322,8 @@ describe("TriggerEngine.evaluateToolTriggers", () => {
 		expect(engine.evaluateToolTriggers(bashCall("gh pr list"), 1)).toEqual([])
 	})
 
-	it("ignores baseline behaviours even when they declare a tool matcher", () => {
-		const baseline = makeBehaviour({
-			name: "always-on",
-			kind: "baseline",
-			triggers: { tool: tool("bash") },
-		})
+	it("ignores baseline behaviours", () => {
+		const baseline = makeBehaviour({ name: "always-on", kind: "baseline" })
 		const engine = new TriggerEngine([baseline])
 		expect(engine.evaluateToolTriggers(bashCall("anything"), 0)).toEqual([])
 		expect(engine.isLoaded("always-on")).toBe(false)

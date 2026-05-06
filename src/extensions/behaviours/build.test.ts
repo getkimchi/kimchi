@@ -6,12 +6,13 @@
  * in markdown bodies via Bun's `with { type: "text" }` text imports, which
  * vitest/rollup cannot resolve without extra plugin config. Validating the
  * pure builder against synthetic sources covers the contract — the bundled
- * registry runs the same function on startup, so a duplicate would fail
- * loudly at harness boot.
+ * registry runs the same function on startup, so a duplicate or unreachable
+ * triggered source would fail loudly at harness boot.
  */
 
 import { describe, expect, it } from "vitest"
 import { type BehaviourSource, buildBehaviours } from "./build.js"
+import { tool } from "./triggers.js"
 
 const validBody = (name: string) => `---
 name: ${name}
@@ -34,7 +35,7 @@ describe("buildBehaviours", () => {
 	it("preserves source order in the output", () => {
 		const sources: BehaviourSource[] = [
 			{ raw: validBody("a"), kind: "baseline" },
-			{ raw: validBody("b"), kind: "triggered" },
+			{ raw: validBody("b"), kind: "triggered", triggers: { tool: tool("bash") } },
 			{ raw: validBody("c"), kind: "baseline" },
 		]
 		expect(buildBehaviours(sources).map((b) => b.name)).toEqual(["a", "b", "c"])
@@ -43,7 +44,7 @@ describe("buildBehaviours", () => {
 	it("throws when two sources declare the same name", () => {
 		const sources: BehaviourSource[] = [
 			{ raw: validBody("dup"), kind: "baseline" },
-			{ raw: validBody("dup"), kind: "triggered" },
+			{ raw: validBody("dup"), kind: "triggered", triggers: { tool: tool("bash") } },
 		]
 		expect(() => buildBehaviours(sources)).toThrowError(/duplicate bundled behaviour name: dup/)
 	})
@@ -66,9 +67,15 @@ body b
 		expect(() =>
 			buildBehaviours([
 				{ raw: a, kind: "baseline" },
-				{ raw: b, kind: "triggered" },
+				{ raw: b, kind: "triggered", triggers: { tool: tool("bash") } },
 			]),
 		).toThrowError(/duplicate bundled behaviour name: shared/)
+	})
+
+	it("throws when a triggered source has no session probe and no tool matcher", () => {
+		expect(() => buildBehaviours([{ raw: validBody("orphan"), kind: "triggered", triggers: {} }])).toThrowError(
+			/triggered behaviour orphan has no session or tool trigger/,
+		)
 	})
 
 	it("throws when a source has malformed frontmatter", () => {

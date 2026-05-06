@@ -2,10 +2,16 @@
  * Behaviour shape for the bundled-behaviours extension.
  *
  * A behaviour pairs guidance content with the conditions under which it
- * applies. Two trigger slots — `triggers.session` (probes) and `triggers.tool`
- * (matchers) — gate when a triggered behaviour loads. Two evaluator slots —
- * `evals.observed` and `evals.violated` — score post-load tool calls. Both
- * eval slots are restricted to tool matchers at the type level.
+ * applies. The kind is discriminated:
+ *
+ * - `baseline` behaviours always merge into the system prompt — they have no
+ *   triggers and no evals.
+ * - `triggered` behaviours load on demand. They carry a `triggers` slot
+ *   (session probe and/or tool matcher) and optional `evals` (`observed` /
+ *   `violated` matchers scored after load).
+ *
+ * The discriminated union keeps the type system honest: triggers/evals are
+ * unreachable on baselines, so the compiler refuses to set them.
  */
 
 import type { SessionProbe, ToolMatcher } from "./triggers.js"
@@ -24,11 +30,20 @@ export interface BehaviourEvals {
 	violated?: ToolMatcher
 }
 
-export interface Behaviour {
+interface BehaviourBase {
 	name: string
 	description: string
 	body: string
-	kind: BehaviourKind
-	triggers?: BehaviourTriggers
+}
+
+export interface BaselineBehaviour extends BehaviourBase {
+	kind: "baseline"
+}
+
+export interface TriggeredBehaviour extends BehaviourBase {
+	kind: "triggered"
+	triggers: BehaviourTriggers
 	evals?: BehaviourEvals
 }
+
+export type Behaviour = BaselineBehaviour | TriggeredBehaviour

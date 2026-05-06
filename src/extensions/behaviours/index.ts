@@ -14,9 +14,10 @@
  * set, then the trigger engine evaluates tool-call triggers; this ensures the
  * call that loads a behaviour is not also scored against its own evaluators.
  *
- * Triggered loads, eval verdicts, and a per-session summary are written into
- * the active session JSONL (`behaviour_loaded`, `behaviour_eval`,
- * `behaviour_session_summary`) so decisions can be audited offline.
+ * Triggered loads, eval verdicts, post-compaction requeues, and a per-session
+ * summary are written into the active session JSONL (`behaviour_loaded`,
+ * `behaviour_eval`, `behaviour_requeued`, `behaviour_session_summary`) so
+ * decisions can be audited offline.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent"
@@ -27,14 +28,16 @@ import { resolveSessionContext } from "./session-context.js"
 import {
 	BEHAVIOUR_EVAL_TYPE,
 	BEHAVIOUR_LOADED_TYPE,
+	BEHAVIOUR_REQUEUED_TYPE,
 	BEHAVIOUR_SESSION_SUMMARY_TYPE,
 	type BehaviourEvalData,
 	type BehaviourLoadedData,
+	type BehaviourRequeuedData,
 	type BehaviourSessionSummaryData,
 	type BehaviourSummaryEntry,
 } from "./stats.js"
 import type { ProbeSpec } from "./triggers.js"
-import type { Behaviour, TriggerSource } from "./types.js"
+import type { Behaviour, TriggeredBehaviour } from "./types.js"
 
 const RULES_HEADER = "## Rules"
 export const BEHAVIOUR_BODY_TYPE = "behaviour_body"
@@ -43,54 +46,43 @@ interface BehaviourBodyDetails {
 	name: string
 }
 
-interface LoadRecord {
-	loadedAtTurn: number
-	trigger: TriggerSource
-}
-
 function buildRulesBlock(all: readonly Behaviour[]): string {
 	const baseline = all.filter((b) => b.kind === "baseline").map((b) => b.body.trim())
 	if (baseline.length === 0) return ""
 	return `\n\n${RULES_HEADER}\n\n${baseline.join("\n\n")}\n`
 }
 
-function collectSessionSpecs(triggered: readonly Behaviour[]): ProbeSpec[] {
+function collectSessionSpecs(triggered: readonly TriggeredBehaviour[]): ProbeSpec[] {
 	const specs: ProbeSpec[] = []
 	for (const b of triggered) {
-		const probe = b.triggers?.session
+		const probe = b.triggers.session
 		if (probe) specs.push(probe.__spec)
 	}
 	return specs
 }
 
+function isTriggered(b: Behaviour): b is TriggeredBehaviour {
+	return b.kind === "triggered"
+}
+
 export default function behavioursExtension(pi: ExtensionAPI): void {
 	const rulesBlock = buildRulesBlock(behaviours)
-	const triggered = behaviours.filter((b) => b.kind === "triggered")
+	const triggered = behaviours.filter(isTriggered)
 	const sessionSpecs = collectSessionSpecs(triggered)
 	const engine = new TriggerEngine(behaviours)
 	const evalEngine = new EvalEngine(behaviours, (name) => engine.isLoaded(name))
-	const loadRecords = new Map<string, LoadRecord>()
 	let summaryEmitted = false
 	let currentTurnIndex = 0
-
-	function recordLoads(events: { name: string; trigger: TriggerSource; turnIndex: number }[]): void {
-		for (const e of events) {
-			if (loadRecords.has(e.name)) continue
-			loadRecords.set(e.name, { loadedAtTurn: e.turnIndex, trigger: e.trigger })
-		}
-	}
 
 	pi.on("session_start", async (_event, ctx: ExtensionContext) => {
 		// Reset per-session state so re-fired session_start events (reload, new,
 		// fork, resume) don't carry stale loads forward into a fresh session.
 		engine.reset()
 		evalEngine.reset()
-		loadRecords.clear()
 		summaryEmitted = false
 		currentTurnIndex = 0
 		const sessionContext = resolveSessionContext(sessionSpecs, ctx.cwd)
 		const events = engine.evaluateSessionTriggers(sessionContext, currentTurnIndex)
-		recordLoads(events)
 		for (const e of events) {
 			pi.appendEntry<BehaviourLoadedData>(BEHAVIOUR_LOADED_TYPE, {
 				name: e.name,
@@ -121,7 +113,6 @@ export default function behavioursExtension(pi: ExtensionAPI): void {
 		}
 
 		const loadEvents = engine.evaluateToolTriggers(callEvent, currentTurnIndex)
-		recordLoads(loadEvents)
 		for (const e of loadEvents) {
 			pi.appendEntry<BehaviourLoadedData>(BEHAVIOUR_LOADED_TYPE, {
 				name: e.name,
@@ -136,29 +127,36 @@ export default function behavioursExtension(pi: ExtensionAPI): void {
 	// (including any prior behaviour bodies) with a synthesised summary. Re-queue
 	// every loaded behaviour for re-injection on the next agent turn. The loaded
 	// set is preserved — triggers do not re-fire, no duplicate `behaviour_loaded`
-	// entries are emitted.
+	// entries are emitted; instead a `behaviour_requeued` row signals the
+	// re-injection so offline analysis can distinguish first load from re-deliver.
 	pi.on("session_compact", async () => {
-		engine.requeueLoaded()
+		const requeued = engine.requeueLoaded()
+		for (const name of requeued) {
+			pi.appendEntry<BehaviourRequeuedData>(BEHAVIOUR_REQUEUED_TYPE, { name, turnIndex: currentTurnIndex })
+		}
 	})
 
 	pi.on("session_shutdown", async () => {
 		if (summaryEmitted) return
 		summaryEmitted = true
-		const entries: BehaviourSummaryEntry[] = behaviours.map((b) => {
+		const entries: BehaviourSummaryEntry[] = []
+		for (const b of behaviours) {
+			const record = engine.loadRecord(b.name)
+			const isBaseline = b.kind === "baseline"
+			if (!isBaseline && !record) continue
 			const counters = evalEngine.countersFor(b.name)
-			const record = loadRecords.get(b.name)
 			const entry: BehaviourSummaryEntry = {
 				name: b.name,
-				loaded: record !== undefined || b.kind === "baseline",
+				loaded: isBaseline || record !== undefined,
 				observed: counters.observed,
 				violated: counters.violated,
 			}
 			if (record) {
-				entry.loadedAtTurn = record.loadedAtTurn
+				entry.loadedAtTurn = record.turnIndex
 				entry.trigger = record.trigger
 			}
-			return entry
-		})
+			entries.push(entry)
+		}
 		pi.appendEntry<BehaviourSessionSummaryData>(BEHAVIOUR_SESSION_SUMMARY_TYPE, { behaviours: entries })
 	})
 

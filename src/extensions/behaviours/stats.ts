@@ -1,15 +1,20 @@
 /**
- * Stats writer — emits behaviour-related custom JSONL entries via
- * `pi.appendEntry`. Three entry types: `behaviour_loaded` and `behaviour_eval`
- * are per-event; `behaviour_session_summary` is emitted once on
- * `session_shutdown` and carries the uncapped per-behaviour totals so
- * cross-session aggregation is a single jq pass.
+ * Stats writer — defines the behaviour-related custom JSONL entry types
+ * appended via `pi.appendEntry`. Four entry types:
+ *
+ * - `behaviour_loaded` and `behaviour_eval` are per-event.
+ * - `behaviour_requeued` fires once per compaction per behaviour, signalling
+ *   that the body was re-injected after summarisation replaced it.
+ * - `behaviour_session_summary` is emitted once on `session_shutdown` and
+ *   carries the uncapped per-behaviour totals so cross-session aggregation is
+ *   a single jq pass.
  */
 
 import type { EvalVerdict, TriggerSource } from "./types.js"
 
 export const BEHAVIOUR_LOADED_TYPE = "behaviour_loaded"
 export const BEHAVIOUR_EVAL_TYPE = "behaviour_eval"
+export const BEHAVIOUR_REQUEUED_TYPE = "behaviour_requeued"
 export const BEHAVIOUR_SESSION_SUMMARY_TYPE = "behaviour_session_summary"
 
 export interface BehaviourLoadedData {
@@ -27,6 +32,11 @@ export interface BehaviourEvalData {
 	toolArgs: unknown
 }
 
+export interface BehaviourRequeuedData {
+	name: string
+	turnIndex: number
+}
+
 export interface BehaviourSummaryEntry {
 	name: string
 	loaded: boolean
@@ -38,14 +48,4 @@ export interface BehaviourSummaryEntry {
 
 export interface BehaviourSessionSummaryData {
 	behaviours: BehaviourSummaryEntry[]
-}
-
-export type AppendEntry = <T = unknown>(customType: string, data?: T) => void
-
-export function emitBehaviourLoaded(append: AppendEntry, data: BehaviourLoadedData): void {
-	append<BehaviourLoadedData>(BEHAVIOUR_LOADED_TYPE, data)
-}
-
-export function emitBehaviourEval(append: AppendEntry, data: BehaviourEvalData): void {
-	append<BehaviourEvalData>(BEHAVIOUR_EVAL_TYPE, data)
 }
