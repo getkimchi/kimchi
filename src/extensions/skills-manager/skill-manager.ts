@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rename, rmdir, unlink, writeFile } from "node:fs/promises"
+import { mkdir, readFile, readdir, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises"
 import { dirname, join, resolve, sep } from "node:path"
 import { parse as parseYaml } from "yaml"
 
@@ -347,15 +347,13 @@ export class SkillManager {
 		}
 
 		for (const entry of entries) {
-			if (entry === ".archive") continue
 			const full = join(dir, entry)
 			const rel = prefix ? `${prefix}/${entry}` : entry
 			try {
-				const { stat } = await import("node:fs/promises")
 				const s = await stat(full)
 				if (s.isFile()) {
 					out.push(rel)
-				} else {
+				} else if (s.isDirectory()) {
 					await this._collectFiles(full, rel, out)
 				}
 			} catch {
