@@ -12,7 +12,7 @@
  */
 
 import { bashInvokesCommand } from "./bash-tokenize.js"
-import { type ToolMatcher, any, tool } from "./triggers.js"
+import { type ToolMatcher, all, any, tool } from "./triggers.js"
 
 /** A condition over a single string field. RegExp form is the common case. */
 export type StringCondition = RegExp | ((value: string) => boolean)
@@ -50,13 +50,14 @@ export function webSearchQuery(condition: StringCondition): ToolMatcher {
  *
  * Pass a domain string (`"github.com"`) for an exact host match, or a RegExp
  * for fuzzier matching (`/(api\.)?github\.com/`).
+ *
+ * The bash branch routes through the shell tokeniser (`bashInvokes`) rather
+ * than a raw regex, so `# curl github.com` (comment) and `echo curl github.com`
+ * (curl mentioned but not invoked) do not trigger.
  */
 export function fetchesHost(hostPattern: string | RegExp): ToolMatcher {
 	const hostRe = typeof hostPattern === "string" ? new RegExp(`\\b${escapeRegex(hostPattern)}\\b`) : hostPattern
-	return any(
-		bashCommand((command) => /\b(?:curl|wget)\b/.test(command) && hostRe.test(command)),
-		webFetchUrl(hostRe),
-	)
+	return any(all(any(bashInvokes("curl"), bashInvokes("wget")), bashCommand(hostRe)), webFetchUrl(hostRe))
 }
 
 function testString(condition: StringCondition, value: string): boolean {

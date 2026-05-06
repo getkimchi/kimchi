@@ -18,7 +18,7 @@
 
 import type { SessionContext } from "./session-context.js"
 import type { ToolCallEvent } from "./triggers.js"
-import type { Behaviour, TriggerSource } from "./types.js"
+import type { Behaviour, TriggerSource, TriggeredBehaviour } from "./types.js"
 
 export interface LoadEvent {
 	name: string
@@ -48,18 +48,11 @@ export class TriggerEngine {
 	 * that newly transitioned to loaded; already-loaded behaviours are skipped.
 	 */
 	evaluateSessionTriggers(ctx: SessionContext, turnIndex: number): LoadEvent[] {
-		const events: LoadEvent[] = []
-		for (const b of this.behaviours) {
-			if (b.kind !== "triggered") continue
-			if (this.loaded.has(b.name)) continue
+		return this.evaluateAll((b) => {
 			const probe = b.triggers.session
-			if (!probe) continue
-			if (!probe(ctx)) continue
-			this.loaded.set(b.name, { trigger: "session", turnIndex })
-			this.pending.add(b.name)
-			events.push({ name: b.name, trigger: "session", turnIndex })
-		}
-		return events
+			if (!probe || !probe(ctx)) return undefined
+			return { trigger: "session", turnIndex }
+		})
 	}
 
 	/**
@@ -69,27 +62,28 @@ export class TriggerEngine {
 	 * even when many subsequent calls also match the matcher.
 	 */
 	evaluateToolTriggers(event: ToolCallEvent, turnIndex: number): LoadEvent[] {
+		return this.evaluateAll((b) => {
+			const matcher = b.triggers.tool
+			if (!matcher || !matcher(event)) return undefined
+			return { trigger: "tool", turnIndex, toolName: event.toolName, toolArgs: event.input }
+		})
+	}
+
+	/**
+	 * Walk the registry and load every triggered behaviour for which `runCheck`
+	 * returns a `LoadRecord`. Skips baselines and already-loaded behaviours, so
+	 * the predicate only sees candidates it can actually transition.
+	 */
+	private evaluateAll(runCheck: (b: TriggeredBehaviour) => LoadRecord | undefined): LoadEvent[] {
 		const events: LoadEvent[] = []
 		for (const b of this.behaviours) {
 			if (b.kind !== "triggered") continue
 			if (this.loaded.has(b.name)) continue
-			const matcher = b.triggers.tool
-			if (!matcher) continue
-			if (!matcher(event)) continue
-			this.loaded.set(b.name, {
-				trigger: "tool",
-				turnIndex,
-				toolName: event.toolName,
-				toolArgs: event.input,
-			})
+			const record = runCheck(b)
+			if (!record) continue
+			this.loaded.set(b.name, record)
 			this.pending.add(b.name)
-			events.push({
-				name: b.name,
-				trigger: "tool",
-				turnIndex,
-				toolName: event.toolName,
-				toolArgs: event.input,
-			})
+			events.push({ name: b.name, ...record })
 		}
 		return events
 	}

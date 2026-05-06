@@ -129,17 +129,20 @@ function combine(kind: "any" | "all", items: Array<SessionProbe | ToolMatcher>):
 			throw new Error(`${kind} cannot mix session probes and tool matchers`)
 		}
 	}
-	if (first === "tool") {
-		const matchers = items as ToolMatcher[]
-		const reducer = kind === "any" ? "some" : "every"
-		return withToolSpec((event) => matchers[reducer]((m) => m(event)), {
-			kind,
-			children: matchers.map((m) => m.__spec),
-		})
-	}
-	const probes = items as SessionProbe[]
+	return first === "tool" ? combineMatchers(kind, items as ToolMatcher[]) : combineProbes(kind, items as SessionProbe[])
+}
+
+function combineProbes(kind: "any" | "all", probes: SessionProbe[]): SessionProbe {
 	const reducer = kind === "any" ? "some" : "every"
 	return withProbeSpec((ctx) => probes[reducer]((p) => p(ctx)), { kind, children: probes.map((p) => p.__spec) })
+}
+
+function combineMatchers(kind: "any" | "all", matchers: ToolMatcher[]): ToolMatcher {
+	const reducer = kind === "any" ? "some" : "every"
+	return withToolSpec((event) => matchers[reducer]((m) => m(event)), {
+		kind,
+		children: matchers.map((m) => m.__spec),
+	})
 }
 
 // ============================================================================

@@ -13,7 +13,7 @@
  * guidance.
  */
 
-import type { ToolCallEvent } from "./triggers.js"
+import type { ToolCallEvent, ToolMatcher } from "./triggers.js"
 import type { Behaviour, EvalVerdict } from "./types.js"
 
 export const EVAL_SAMPLE_CAP = 5
@@ -53,34 +53,24 @@ export class EvalEngine {
 		for (const b of this.behaviours) {
 			if (b.kind !== "triggered") continue
 			if (!this.isLoaded(b.name)) continue
-			const observed = b.evals?.observed
-			const violated = b.evals?.violated
-			if (observed?.(event)) {
-				this.bump(b.name, "observed")
-				if (this.tryEmit(b.name, "observed")) {
-					out.push({
-						name: b.name,
-						verdict: "observed",
-						turnIndex,
-						toolName: event.toolName,
-						toolArgs: event.input,
-					})
-				}
-			}
-			if (violated?.(event)) {
-				this.bump(b.name, "violated")
-				if (this.tryEmit(b.name, "violated")) {
-					out.push({
-						name: b.name,
-						verdict: "violated",
-						turnIndex,
-						toolName: event.toolName,
-						toolArgs: event.input,
-					})
-				}
-			}
+			this.runVerdict(b.name, "observed", b.evals?.observed, event, turnIndex, out)
+			this.runVerdict(b.name, "violated", b.evals?.violated, event, turnIndex, out)
 		}
 		return out
+	}
+
+	private runVerdict(
+		name: string,
+		verdict: EvalVerdict,
+		matcher: ToolMatcher | undefined,
+		event: ToolCallEvent,
+		turnIndex: number,
+		out: EvalEvent[],
+	): void {
+		if (!matcher?.(event)) return
+		this.bump(name, verdict)
+		if (!this.tryEmit(name, verdict)) return
+		out.push({ name, verdict, turnIndex, toolName: event.toolName, toolArgs: event.input })
 	}
 
 	/** Uncapped counters for a behaviour. Defaults to `{ observed: 0, violated: 0 }`. */

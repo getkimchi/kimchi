@@ -123,6 +123,27 @@ describe("fetchesHost", () => {
 		expect(m(bash("echo github.com"))).toBe(false)
 	})
 
+	it("does not match when curl/wget appears only in a comment", () => {
+		const m = fetchesHost("github.com")
+		expect(m(bash("ls # curl github.com"))).toBe(false)
+	})
+
+	it("does not match when curl is named but not invoked", () => {
+		const m = fetchesHost("github.com")
+		expect(m(bash("echo curl github.com"))).toBe(false)
+	})
+
+	it("does not match curl/wget inside a heredoc body", () => {
+		const m = fetchesHost("github.com")
+		expect(m(bash("cat <<EOF\ncurl https://github.com\nEOF"))).toBe(false)
+	})
+
+	it("matches across pipeline / sequence stages", () => {
+		const m = fetchesHost("github.com")
+		expect(m(bash("ls && curl https://github.com/x"))).toBe(true)
+		expect(m(bash("curl https://github.com/x | jq"))).toBe(true)
+	})
+
 	it("accepts a RegExp host pattern for fuzzier matches", () => {
 		const m = fetchesHost(/(api\.)?github\.com/)
 		expect(m(webFetch("https://api.github.com/repos"))).toBe(true)

@@ -1,8 +1,8 @@
 /**
- * Smoke test asserting that `KNOWN_TOOL_NAMES` matches the names produced by
- * pi-coding-agent's per-tool factories. If upstream renames a built-in tool
- * (e.g. `"bash"` → `"shell"`), this test fails so the local `ToolArgs` map
- * can be updated before behaviour matchers silently break.
+ * Smoke test asserting that `BUILTIN_TOOL_NAMES` matches the names produced
+ * by pi-coding-agent's per-tool factories. If upstream renames a built-in
+ * tool (e.g. `"bash"` → `"shell"`), this test fails so the local `ToolArgs`
+ * map can be updated before behaviour matchers silently break.
  */
 
 import {
