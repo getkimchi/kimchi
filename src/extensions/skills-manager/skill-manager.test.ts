@@ -244,14 +244,14 @@ describe("SkillManager", () => {
 
 		it("returns error and file_preview on zero matches", async () => {
 			await mgr.create("my-skill", "---\nd: x\n---\nHello world.")
-			const result = await mgr.patch("my-skill", "nonexistent")
+			const result = await mgr.patch("my-skill", "nonexistent", "X")
 			expect(result.success).toBe(false)
 			expect(result.file_preview).toBeDefined()
 		})
 
 		it("returns error with unique context message on multiple matches", async () => {
 			await mgr.create("my-skill", "---\nd: x\n---\nfoo foo bar")
-			const result = await mgr.patch("my-skill", "foo")
+			const result = await mgr.patch("my-skill", "foo", "X")
 			expect(result.success).toBe(false)
 			expect(result.error).toMatch(/unique context/i)
 			expect(result.file_preview).toBeDefined()
