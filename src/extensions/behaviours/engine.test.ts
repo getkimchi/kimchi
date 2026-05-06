@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { TriggerEngine } from "./engine.js"
 import type { SessionContext } from "./session-context.js"
-import { any, cli, gitRemote } from "./triggers.js"
+import { type ToolCallEvent, any, cli, gitRemote, tool } from "./triggers.js"
 import type { Behaviour } from "./types.js"
 
 function makeBehaviour(overrides: Partial<Behaviour> & Pick<Behaviour, "name" | "kind">): Behaviour {
@@ -158,5 +158,97 @@ describe("TriggerEngine.reset", () => {
 		const events = engine.evaluateSessionTriggers(ctx, 1)
 
 		expect(events).toEqual([{ name: "gh-cli", trigger: "session", turnIndex: 1 }])
+	})
+})
+
+function bashCall(command: string): ToolCallEvent {
+	return { toolName: "bash", input: { command } }
+}
+
+describe("TriggerEngine.evaluateToolTriggers", () => {
+	it("loads a triggered behaviour the first time a matching tool call fires", () => {
+		const ghCli = makeBehaviour({
+			name: "gh-cli",
+			kind: "triggered",
+			triggers: { tool: tool("bash", (i) => i.command.startsWith("gh ")) },
+		})
+		const engine = new TriggerEngine([ghCli])
+		const events = engine.evaluateToolTriggers(bashCall("gh pr list"), 3)
+
+		expect(events).toEqual([
+			{
+				name: "gh-cli",
+				trigger: "tool",
+				turnIndex: 3,
+				toolName: "bash",
+				toolArgs: { command: "gh pr list" },
+			},
+		])
+		expect(engine.isLoaded("gh-cli")).toBe(true)
+		expect(engine.pendingNames()).toEqual(["gh-cli"])
+	})
+
+	it("does not re-trigger after the behaviour has loaded", () => {
+		const ghCli = makeBehaviour({
+			name: "gh-cli",
+			kind: "triggered",
+			triggers: { tool: tool("bash", (i) => i.command.startsWith("gh ")) },
+		})
+		const engine = new TriggerEngine([ghCli])
+		expect(engine.evaluateToolTriggers(bashCall("gh pr list"), 0)).toHaveLength(1)
+		expect(engine.evaluateToolTriggers(bashCall("gh pr view"), 1)).toEqual([])
+	})
+
+	it("skips events that do not match the tool matcher", () => {
+		const ghCli = makeBehaviour({
+			name: "gh-cli",
+			kind: "triggered",
+			triggers: { tool: tool("bash", (i) => i.command.startsWith("gh ")) },
+		})
+		const engine = new TriggerEngine([ghCli])
+		expect(engine.evaluateToolTriggers(bashCall("ls"), 0)).toEqual([])
+		expect(engine.evaluateToolTriggers({ toolName: "read", input: { file_path: "x" } }, 0)).toEqual([])
+		expect(engine.isLoaded("gh-cli")).toBe(false)
+	})
+
+	it("does not re-load via tool trigger if a session trigger already loaded it", () => {
+		const ghCli = makeBehaviour({
+			name: "gh-cli",
+			kind: "triggered",
+			triggers: {
+				session: cli("gh"),
+				tool: tool("bash", (i) => i.command.startsWith("gh ")),
+			},
+		})
+		const engine = new TriggerEngine([ghCli])
+		engine.evaluateSessionTriggers({ cliPresent: new Set(["gh"]), gitRemoteHost: undefined, pathMatches: new Set() }, 0)
+		expect(engine.evaluateToolTriggers(bashCall("gh pr list"), 1)).toEqual([])
+	})
+
+	it("ignores baseline behaviours even when they declare a tool matcher", () => {
+		const baseline = makeBehaviour({
+			name: "always-on",
+			kind: "baseline",
+			triggers: { tool: tool("bash") },
+		})
+		const engine = new TriggerEngine([baseline])
+		expect(engine.evaluateToolTriggers(bashCall("anything"), 0)).toEqual([])
+		expect(engine.isLoaded("always-on")).toBe(false)
+	})
+
+	it("loads multiple matching behaviours in registry order", () => {
+		const a = makeBehaviour({
+			name: "a",
+			kind: "triggered",
+			triggers: { tool: tool("bash") },
+		})
+		const b = makeBehaviour({
+			name: "b",
+			kind: "triggered",
+			triggers: { tool: tool("bash") },
+		})
+		const engine = new TriggerEngine([a, b])
+		const events = engine.evaluateToolTriggers(bashCall("ls"), 0)
+		expect(events.map((e) => e.name)).toEqual(["a", "b"])
 	})
 })

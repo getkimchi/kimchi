@@ -5,19 +5,29 @@
  * - **Baseline** behaviours are concatenated into a `## Rules` block appended
  *   to the system prompt at every turn. Always in effect, no per-call cost.
  * - **Triggered** behaviours load when their session-probe triggers fire at
- *   session start. Loaded bodies are delivered as hidden custom messages on
- *   the next agent turn, once per behaviour per session.
+ *   session start, or when their tool-call matchers fire on a tool_call event.
+ *   Loaded bodies are delivered as hidden custom messages on the next agent
+ *   turn, once per behaviour per session.
  *
- * Triggered loads are written into the active session JSONL as
- * `behaviour_loaded` custom entries so the load decisions can be audited
- * offline.
+ * On each tool-call event the eval engine runs first against the prior loaded
+ * set, then the trigger engine evaluates tool-call triggers; this ensures the
+ * call that loads a behaviour is not also scored against its own evaluators.
+ *
+ * Triggered loads and eval verdicts are written into the active session JSONL
+ * (`behaviour_loaded`, `behaviour_eval`) so decisions can be audited offline.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent"
 import { TriggerEngine } from "./engine.js"
+import { EvalEngine } from "./eval-engine.js"
 import { behaviours } from "./registry.js"
 import { resolveSessionContext } from "./session-context.js"
-import { BEHAVIOUR_LOADED_TYPE, type BehaviourLoadedData } from "./stats.js"
+import {
+	BEHAVIOUR_EVAL_TYPE,
+	BEHAVIOUR_LOADED_TYPE,
+	type BehaviourEvalData,
+	type BehaviourLoadedData,
+} from "./stats.js"
 import type { ProbeSpec } from "./triggers.js"
 import type { Behaviour } from "./types.js"
 
@@ -48,18 +58,53 @@ export default function behavioursExtension(pi: ExtensionAPI): void {
 	const triggered = behaviours.filter((b) => b.kind === "triggered")
 	const sessionSpecs = collectSessionSpecs(triggered)
 	const engine = new TriggerEngine(behaviours)
+	const evalEngine = new EvalEngine(behaviours, (name) => engine.isLoaded(name))
+	let currentTurnIndex = 0
 
 	pi.on("session_start", async (_event, ctx: ExtensionContext) => {
 		// Reset per-session state so re-fired session_start events (reload, new,
 		// fork, resume) don't carry stale loads forward into a fresh session.
 		engine.reset()
+		evalEngine.reset()
+		currentTurnIndex = 0
 		const sessionContext = resolveSessionContext(sessionSpecs, ctx.cwd)
-		const events = engine.evaluateSessionTriggers(sessionContext, 0)
+		const events = engine.evaluateSessionTriggers(sessionContext, currentTurnIndex)
 		for (const e of events) {
 			pi.appendEntry<BehaviourLoadedData>(BEHAVIOUR_LOADED_TYPE, {
 				name: e.name,
 				trigger: e.trigger,
 				turnIndex: e.turnIndex,
+			})
+		}
+	})
+
+	pi.on("turn_start", async (event) => {
+		currentTurnIndex = event.turnIndex
+	})
+
+	pi.on("tool_call", async (event) => {
+		const callEvent = { toolName: event.toolName, input: event.input as Record<string, unknown> }
+
+		// Score evals against the prior loaded set first, so a behaviour loaded
+		// by this same tool-call does not get scored on the call that loaded it.
+		const evalEvents = evalEngine.evaluate(callEvent, currentTurnIndex)
+		for (const e of evalEvents) {
+			pi.appendEntry<BehaviourEvalData>(BEHAVIOUR_EVAL_TYPE, {
+				name: e.name,
+				verdict: e.verdict,
+				turnIndex: e.turnIndex,
+				toolName: e.toolName,
+				toolArgs: e.toolArgs,
+			})
+		}
+
+		const loadEvents = engine.evaluateToolTriggers(callEvent, currentTurnIndex)
+		for (const e of loadEvents) {
+			pi.appendEntry<BehaviourLoadedData>(BEHAVIOUR_LOADED_TYPE, {
+				name: e.name,
+				trigger: e.trigger,
+				turnIndex: e.turnIndex,
+				toolArgs: e.toolArgs,
 			})
 		}
 	})

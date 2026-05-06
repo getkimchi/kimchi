@@ -1,18 +1,27 @@
 /**
  * Behaviour shape for the bundled-behaviours extension.
  *
- * Phase 2 carries baseline metadata plus optional session-probe triggers.
- * Tool-call matchers and evaluator slots are added in later phases without
- * changing the file layout.
+ * A behaviour pairs guidance content with the conditions under which it
+ * applies. Two trigger slots — `triggers.session` (probes) and `triggers.tool`
+ * (matchers) — gate when a triggered behaviour loads. Two evaluator slots —
+ * `evals.observed` and `evals.violated` — score post-load tool calls. Both
+ * eval slots are restricted to tool matchers at the type level.
  */
 
-import type { SessionProbe } from "./triggers.js"
+import type { SessionProbe, ToolMatcher } from "./triggers.js"
 
 export type BehaviourKind = "baseline" | "triggered"
 export type TriggerSource = "session" | "tool"
+export type EvalVerdict = "observed" | "violated"
 
 export interface BehaviourTriggers {
 	session?: SessionProbe
+	tool?: ToolMatcher
+}
+
+export interface BehaviourEvals {
+	observed?: ToolMatcher
+	violated?: ToolMatcher
 }
 
 export interface Behaviour {
@@ -21,4 +30,5 @@ export interface Behaviour {
 	body: string
 	kind: BehaviourKind
 	triggers?: BehaviourTriggers
+	evals?: BehaviourEvals
 }
