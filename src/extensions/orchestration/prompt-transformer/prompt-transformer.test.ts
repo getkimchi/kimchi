@@ -137,6 +137,11 @@ describe("buildOrchestratorSystemPrompt", () => {
 		expect(result).toContain("delegate")
 	})
 
+	it("includes the hallucination-prevention guideline", () => {
+		const result = buildOrchestratorSystemPrompt(tools, testEnv)
+		expect(result).toContain("Do not hallucinate missing facts")
+	})
+
 	it("replaces the {{TOOLS}} placeholder", () => {
 		const result = buildOrchestratorSystemPrompt(tools, testEnv)
 		expect(result).not.toContain("{{TOOLS}}")

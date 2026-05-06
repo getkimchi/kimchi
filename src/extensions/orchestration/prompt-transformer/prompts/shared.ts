@@ -16,6 +16,7 @@ export const CORE_GUIDELINES = `- Be concise in your responses. Do not restate w
 - Prefer editing existing files over creating new ones.
 - Do NOT introduce security vulnerabilities.
 - Do NOT add features, refactoring, or improvements beyond what was asked.
+- **Do not hallucinate missing facts.** If you need to reference a specific person, file, tool name, or other concrete detail and it is not explicitly present in your context (tool results, files read, or user input), use generic language or ask the user. Never fabricate names, IDs, paths, or other specifics.
 - If you encounter an error, diagnose the root cause before retrying.
 - **Pattern recognition**: If the same implementation pattern is needed more than twice, define the abstraction first, then implement.
 - **Git commits**: Always end every commit message with a blank line followed by \`Co-Authored-By: Kimchi <noreply@kimchi.dev>\`.`
