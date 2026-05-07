@@ -15,6 +15,7 @@ import {
 	writeSkillPaths,
 } from "./config.js"
 import { isBunBinary } from "./env.js"
+import agentsExtension from "./extensions/agents/index.js"
 import bashCollapseExtension from "./extensions/bash-collapse.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
@@ -268,6 +269,7 @@ try {
 			clipboardImageExtension,
 			uiExtension,
 			subagentExtension,
+			agentsExtension,
 			tagsExtension,
 			telemetryExtension(telemetryConfig),
 			toolRendererExtension,
