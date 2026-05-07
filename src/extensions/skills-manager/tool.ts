@@ -49,6 +49,10 @@ const PinAction = Type.Object({
 	pin: Type.Boolean(),
 })
 
+const ListAction = Type.Object({
+	action: Type.Literal("list"),
+})
+
 export const SkillManageSchema = Type.Union([
 	CreateAction,
 	EditAction,
@@ -57,6 +61,7 @@ export const SkillManageSchema = Type.Union([
 	WriteFileAction,
 	RemoveFileAction,
 	PinAction,
+	ListAction,
 ])
 
 export type SkillManageArgs = Static<typeof SkillManageSchema>
@@ -81,9 +86,8 @@ export function createSkillManageTool(manager: SkillManager, tracker: UsageTrack
 		name: "skill_manage",
 		label: "Skill Manager",
 		description:
-			"Create, edit, patch, delete, and manage Kimchi skills.\n\n" +
-			"Actions: create (new skill), edit (rewrite SKILL.md), patch (strict find-replace), " +
-			"delete (archive to .archive/), write_file, remove_file, pin.",
+			"Create, edit, patch, delete, list, and manage Kimchi skills.\n\n" +
+			"Actions: create, edit, patch, delete, list (inventory), write_file, remove_file, pin.",
 		parameters: SkillManageSchema,
 		async execute(_toolCallId: string, params: SkillManageArgs) {
 			try {
@@ -124,6 +128,18 @@ export function createSkillManageTool(manager: SkillManager, tracker: UsageTrack
 							success: true,
 							message: `Pin for '${params.name}' set to ${params.pin}.`,
 						})
+					}
+					case "list": {
+						const inventory = await manager.listInventory()
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: JSON.stringify(inventory, null, 2),
+								},
+							],
+							details: { success: true, message: `Found ${inventory.length} skills.` },
+						}
 					}
 					default: {
 						return wrapResult({ success: false, error: "Unknown action." })

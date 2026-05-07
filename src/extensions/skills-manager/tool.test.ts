@@ -12,6 +12,10 @@ describe("createSkillManageTool", () => {
 			delete: vi.fn().mockResolvedValue({ success: true, message: "Deleted." }),
 			writeFile: vi.fn().mockResolvedValue({ success: true, message: "Wrote." }),
 			removeFile: vi.fn().mockResolvedValue({ success: true, message: "Removed." }),
+			listInventory: vi.fn().mockResolvedValue([
+				{ name: "skill-a", path: "/skills/skill-a" },
+				{ name: "skill-b", category: "ops", path: "/skills/ops/skill-b" },
+			]),
 		} as unknown as SkillManager
 		const tracker = {
 			bumpCreate: vi.fn().mockResolvedValue(undefined),
@@ -71,12 +75,22 @@ describe("createSkillManageTool", () => {
 		expect(result.details.success).toBe(true)
 	})
 
+	it("dispatches list and returns inventory", async () => {
+		const { manager, tracker } = makeMocks()
+		const tool = createSkillManageTool(manager, tracker)
+		const result = await tool.execute("id", { action: "list" })
+		expect(manager.listInventory).toHaveBeenCalled()
+		expect(result.details.success).toBe(true)
+		const inventory = JSON.parse(result.content[0].text)
+		expect(inventory).toHaveLength(2)
+	})
+
 	it("returns error on exception", async () => {
 		const { manager, tracker } = makeMocks()
 		manager.create = vi.fn().mockRejectedValue(new Error("boom"))
 		const tool = createSkillManageTool(manager, tracker)
 		const result = await tool.execute("id", { action: "create", name: "foo", content: "body" })
 		expect(result.details.success).toBe(false)
-		expect(result.details.error).toContain("boom")
+		expect((result.details as { error?: string }).error).toContain("boom")
 	})
 })

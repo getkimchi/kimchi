@@ -197,6 +197,45 @@ export class SkillManager {
 		return loc !== null
 	}
 
+	async listInventory(): Promise<Array<{ name: string; category?: string; path: string }>> {
+		const inventory: Array<{ name: string; category?: string; path: string }> = []
+		await this._scanDir(this.skillsDir, undefined, inventory)
+		return inventory
+	}
+
+	private async _scanDir(
+		dir: string,
+		category: string | undefined,
+		out: Array<{ name: string; category?: string; path: string }>,
+	): Promise<void> {
+		let entries: string[] = []
+		try {
+			entries = await readdir(dir)
+		} catch {
+			return
+		}
+
+		for (const entry of entries) {
+			if (entry.startsWith(".")) continue
+			const full = join(dir, entry)
+			try {
+				const s = await stat(full)
+				if (s.isDirectory()) {
+					const skillPath = join(full, "SKILL.md")
+					try {
+						await stat(skillPath)
+						out.push({ name: entry, category, path: full })
+					} catch {
+						// Not a skill dir, recurse into subdirs
+						await this._scanDir(full, entry, out)
+					}
+				}
+			} catch {
+				// skip
+			}
+		}
+	}
+
 	private async _atomicWrite(filePath: string, content: string): Promise<void> {
 		await mkdir(dirname(filePath), { recursive: true })
 		const tmp = `${filePath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 10)}`
