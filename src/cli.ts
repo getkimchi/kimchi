@@ -17,6 +17,7 @@ import {
 import { isBunBinary } from "./env.js"
 import agentsExtension from "./extensions/agents/index.js"
 import bashCollapseExtension from "./extensions/bash-collapse.js"
+import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
 import extensionSlashCommand from "./extensions/extension-slash/index.js"
@@ -263,8 +264,9 @@ try {
 			loopGuardExtension,
 			lspExtension,
 			mcpAdapterExtension,
-			permissionsExtension,
 			promptEnrichmentExtension(skillPaths),
+			permissionsExtension,
+			behavioursExtension,
 			promptSummaryExtension,
 			contextCompactorExtension,
 			clipboardImageExtension,

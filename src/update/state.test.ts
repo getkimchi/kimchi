@@ -95,7 +95,7 @@ describe("update state cache", () => {
 		expect(got?.checked_at).toBe("2026-05-06T10:58:22.04543+03:00")
 	})
 
-	it("preserves a foreign-shape entry on save instead of overwriting it", () => {
+	it("saving one repo does not overwrite entries for other repos", () => {
 		writeRawState({
 			repos: {
 				"castai/kimchi": {

@@ -38,6 +38,50 @@ kimchi stores its own configuration (settings, sessions, models) under:
 ~/.config/kimchi/harness/
 ```
 
+### Migrating from another coding agent
+
+On first run, kimchi-code looks for an existing **Claude Code** or **OpenCode** installation on your machine and offers to migrate its MCP servers and report any user-level skills it finds. If anything is migratable you'll see a one-shot prompt:
+
+```
+┌  Claude Code + OpenCode configuration found
+│
+│  MCP servers: filesystem, github, ripgrep
+│  Claude Code skills: 4 in ~/.claude/skills
+│  OpenCode skills: 2 in ~/.config/opencode/skills
+│
+◇  Migrate MCP servers to Kimchi?
+│  ● Migrate now
+│  ○ Skip this time
+│  ○ Never ask again
+```
+
+When you accept, the discovered MCP servers are merged into `~/.config/kimchi/harness/mcp.json`. Existing Kimchi entries always win on name collisions, so re-running the migration is safe — your hand-edited Kimchi config is never overwritten.
+
+The prompt is only shown when something is actually worth migrating (at least one MCP server, or at least one skill subdirectory). If neither agent is installed, or both are installed but empty, the wizard skips the migration step silently and never asks again.
+
+#### Sources scanned
+
+| Agent | Config files (read in order, results merged) | Skills directory |
+|---|---|---|
+| Claude Code | `~/.claude.json` (top-level `mcpServers` + per-project `projects[*].mcpServers`) | `~/.claude/skills/` |
+| OpenCode | `$OPENCODE_CONFIG`, then `~/.config/opencode/opencode.json`, `opencode.jsonc`, `config.json`, `~/.opencode.json` | `~/.config/opencode/skills/` (with `skill/` as a fallback) |
+
+For OpenCode, both the modern (`mcp` block, `type: "local" \| "remote"`, `command: string[]`, `environment`, `enabled`) and legacy Go-binary (`mcpServers` block, `type: "stdio" \| "sse"`, `env` as either an object or a `KEY=VAL` array) schemas are supported. Servers with `enabled: false` are skipped. Files that don't exist are silently ignored; files that fail to read or parse emit a warning and the wizard moves on.
+
+#### Conflict resolution
+
+If the same MCP server name shows up in more than one place, the first one wins, deduplicated at the **server-name** level rather than the file level:
+
+1. **Within one agent**: earlier files in the agent's path list win over later files; within a single Claude Code config, project-level entries win over top-level; within a single OpenCode config, the modern `mcp` block wins over the legacy `mcpServers` block.
+2. **Across agents**: Claude Code wins over OpenCode (same default as the historical migration).
+3. **Against your existing Kimchi config**: your existing entries in `~/.config/kimchi/harness/mcp.json` always win.
+
+#### Choosing "Never ask again"
+
+Kimchi remembers your choice in `~/.config/kimchi/config.json` (`migrationState: "skip-forever"`) and won't prompt again on future runs, even if you later install another supported agent. To re-trigger the prompt, delete that field from the config file.
+
+Adding support for another coding agent (Cursor, Cline, Aider, Cody, ...) is a small change — drop a new `AgentDefinition` into [`src/agent-discovery/agents/`](src/agent-discovery/) and append it to `AGENT_DEFINITIONS`; the wizard, merging, prompt gating, and migration write all pick it up automatically.
+
 ### Models
 
 The supported model list is fetched at startup from the kimchi metadata service.

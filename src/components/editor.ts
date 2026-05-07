@@ -85,7 +85,6 @@ export class PromptEditor extends CustomEditor {
 		const border = (s: string) => (this.borderColor ? this.borderColor(s) : s)
 		const chevronColor = this.appTheme.getFgAnsi("accent")
 		const textColor = this.appTheme.getFgAnsi("text")
-		const cursorColor = TEAL_FG
 		const muted = this.appTheme.getFgAnsi("muted")
 
 		const innerWidth = this._splashMode ? Math.min(EDITOR_WIDTH, width - 4) : width
@@ -127,11 +126,12 @@ export class PromptEditor extends CustomEditor {
 
 		if (this.getText().length === 0) {
 			const cursorMarker = "\x1b_pi:c\x07"
-			const cursor = `${cursorMarker}${cursorColor}\x1b[7m \x1b[0m`
+			// Use terminal's native cursor — no custom styling
+			const cursor = `${cursorMarker} `
 			// Reserve room for the indicator (plus one space gutter) on the right.
 			// If the placeholder no longer fits, drop it entirely rather than
 			// truncating mid-word — the cursor still anchors the row.
-			const cursorCellWidth = 1 // the inverse-video space rendered for the cursor
+			const cursorCellWidth = 1 // width of the space the terminal-native cursor occupies
 			const leadWidth = CHEVRON_WIDTH + cursorCellWidth
 			const placeholderBudget = innerWidth - leadWidth - indicatorVisibleWidth - indicatorGutter
 			const placeholderText = placeholderBudget >= visibleWidth(PLACEHOLDER_TEXT) ? PLACEHOLDER_TEXT : ""
@@ -147,10 +147,8 @@ export class PromptEditor extends CustomEditor {
 			if (cursorIdx === -1) cursorIdx = 0
 			for (let i = 0; i < contentLines.length; i++) {
 				const line = contentLines[i]
-				const styled =
-					i === cursorIdx
-						? line.replaceAll("\x1b[7m", `${cursorColor}\x1b[7m`).replaceAll("\x1b[0m", `\x1b[0m${textColor}`)
-						: line
+				// Strip inverse-video cursor styling — use terminal's native cursor
+				const styled = i === cursorIdx ? line.replace("\x1b[7m", "").replaceAll("\x1b[0m", `\x1b[0m${textColor}`) : line
 				const prefix = i === cursorIdx ? `${chevronColor}❯${RST_FG} ` : "  "
 				const styledWidth = visibleWidth(styled)
 				if (i === 0 && indicatorVisibleWidth > 0) {

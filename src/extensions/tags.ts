@@ -434,7 +434,7 @@ const SetPhaseParams = Type.Object({
 
 let tagManagerInstance: TagManager | undefined
 
-export function getCurrentPhase(): string | undefined {
+export function getCurrentPhase(): Phase | undefined {
 	return tagManagerInstance?.getPhase()
 }
 

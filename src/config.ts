@@ -1,17 +1,47 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { dirname, join, relative, resolve } from "node:path"
 
 const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
 const AGENT_CONFIG_DIR = resolve(homedir(), ".config", "kimchi", "harness")
 const CAST_AI_LLM_ENDPOINT = "https://llm.cast.ai/openai/v1"
 const DEFAULT_TELEMETRY_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
 
-export const DEFAULT_SKILL_PATHS = [
-	join(".config", "kimchi", "harness", "skills"),
-	join(".pi", "agent", "skills"),
-	join(".claude", "skills"),
-]
+export const ALWAYS_SHOWN_SKILL_PATHS = [join(".config", "kimchi", "harness", "skills")]
+
+export const OPTIONAL_SKILL_PATHS = [join(".pi", "agent", "skills"), join(".claude", "skills")]
+
+export const DEFAULT_SKILL_PATHS = [...ALWAYS_SHOWN_SKILL_PATHS, ...OPTIONAL_SKILL_PATHS]
+
+export function buildSkillPathOptions(discoveredDirs: string[]): string[] {
+	const home = homedir()
+	const toRelative = (abs: string): string => (abs === home || abs.startsWith(`${home}/`) ? relative(home, abs) : abs)
+
+	const seen = new Set<string>()
+	const result: string[] = []
+
+	for (const p of ALWAYS_SHOWN_SKILL_PATHS) {
+		seen.add(p)
+		result.push(p)
+	}
+
+	for (const p of OPTIONAL_SKILL_PATHS) {
+		if (!seen.has(p) && existsSync(join(home, p))) {
+			seen.add(p)
+			result.push(p)
+		}
+	}
+
+	for (const abs of discoveredDirs) {
+		const rel = toRelative(abs)
+		if (!seen.has(rel) && existsSync(abs)) {
+			seen.add(rel)
+			result.push(rel)
+		}
+	}
+
+	return result
+}
 
 export interface TelemetryConfig {
 	enabled: boolean

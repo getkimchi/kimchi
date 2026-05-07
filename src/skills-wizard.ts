@@ -1,5 +1,6 @@
 import * as clack from "@clack/prompts"
-import { DEFAULT_SKILL_PATHS } from "./config.js"
+import { AGENT_DEFINITIONS, discoverAgent } from "./agent-discovery/index.js"
+import { buildSkillPathOptions } from "./config.js"
 
 export async function runSkillsWizard(): Promise<string[]> {
 	clack.intro("Skills configuration")
@@ -9,15 +10,22 @@ export async function runSkillsWizard(): Promise<string[]> {
 		"First-time setup",
 	)
 
+	const agents = AGENT_DEFINITIONS.map(discoverAgent)
+	const discoveredDirs = agents
+		.filter((a): a is typeof a & { skillsDir: string } => !!a.skillsDir && a.skillCount > 0)
+		.map((a) => a.skillsDir)
+
+	const options = buildSkillPathOptions(discoveredDirs)
+
 	const selected = await clack.multiselect<string>({
-		message: "Select skill paths to enable:",
-		options: DEFAULT_SKILL_PATHS.map((p) => ({ value: p, label: p, initialChecked: true })),
+		message: "Select skill paths to enable (a: toggle all):",
+		options: options.map((p) => ({ value: p, label: p, initialChecked: true })),
 		required: false,
 	})
 
 	if (clack.isCancel(selected)) {
 		clack.cancel("Setup cancelled. Using default paths.")
-		return DEFAULT_SKILL_PATHS
+		return options
 	}
 
 	const paths = selected as string[]

@@ -109,6 +109,52 @@ describe("EnrichmentGuard", () => {
 		guard.reset()
 		expect(guard.shouldEnrich("kimi-k2.6")).toBe(true)
 	})
+
+	it("re-injects when the phase changes with the same model", () => {
+		const guard = new EnrichmentGuard()
+		guard.shouldEnrich("kimi-k2.6", "explore")
+		expect(guard.shouldEnrich("kimi-k2.6", "build")).toBe(true)
+	})
+
+	it("does not re-inject when neither model nor phase changes", () => {
+		const guard = new EnrichmentGuard()
+		guard.shouldEnrich("kimi-k2.6", "build")
+		expect(guard.shouldEnrich("kimi-k2.6", "build")).toBe(false)
+	})
+
+	it("re-injects when both model and phase change simultaneously", () => {
+		const guard = new EnrichmentGuard()
+		guard.shouldEnrich("kimi-k2.6", "explore")
+		expect(guard.shouldEnrich("claude-opus-4-7", "build")).toBe(true)
+	})
+
+	it("treats undefined phase as a stable key (no re-inject on repeated undefined)", () => {
+		const guard = new EnrichmentGuard()
+		guard.shouldEnrich("kimi-k2.6", undefined)
+		expect(guard.shouldEnrich("kimi-k2.6", undefined)).toBe(false)
+	})
+
+	it("re-injects when phase transitions from undefined to a real phase", () => {
+		const guard = new EnrichmentGuard()
+		guard.shouldEnrich("kimi-k2.6", undefined)
+		expect(guard.shouldEnrich("kimi-k2.6", "explore")).toBe(true)
+	})
+
+	it("reset clears both model and phase so next call always re-injects", () => {
+		const guard = new EnrichmentGuard()
+		guard.shouldEnrich("kimi-k2.6", "build")
+		guard.reset()
+		expect(guard.shouldEnrich("kimi-k2.6", "build")).toBe(true)
+	})
+
+	it("re-injects on new session start even when model and phase are identical to previous session", () => {
+		// Simulates: session 1 ends on (modelA, explore); session_start fires and
+		// calls reset(); session 2 first turn is (modelA, explore) — must re-inject.
+		const guard = new EnrichmentGuard()
+		guard.shouldEnrich("kimi-k2.6", "explore") // end of previous session
+		guard.reset() // session_start
+		expect(guard.shouldEnrich("kimi-k2.6", "explore")).toBe(true)
+	})
 })
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { writeFileAtomic, writeJson } from "../config/json.js"
+import { readJson, writeFileAtomic, writeJson } from "../config/json.js"
 import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
 import { BASE_URL, PROVIDER_NAME } from "./constants.js"
@@ -36,31 +36,27 @@ const CATALOG: CatalogEntry[] = [
 ]
 
 /**
- * Build the JSON dropped at ~/.gsd/agent/models.json. GSD2 reads this to
- * populate the kimchi provider in its UI. Cost numbers: Opus/Sonnet at
- * sticker price, the free kimchi-internal models at zero so GSD's budget
+ * Build the kimchi provider block for ~/.gsd/agent/models.json. GSD2 reads
+ * this to populate the kimchi provider in its UI. Cost numbers: Opus/Sonnet
+ * at sticker price, the free kimchi-internal models at zero so GSD's budget
  * tracker doesn't double-charge.
  */
-export function buildGsd2ModelsConfig(apiKey: string): Record<string, unknown> {
+export function buildGsd2KimchiProvider(apiKey: string): Record<string, unknown> {
 	return {
-		providers: {
-			kimchi: {
-				name: "Kimchi",
-				baseUrl: BASE_URL,
-				apiKey,
-				api: "openai-completions",
-				defaultModel: MAIN_MODEL.slug,
-				models: CATALOG.map(({ model, input, cost }) => ({
-					id: model.slug,
-					name: model.displayName,
-					contextWindow: model.limits.contextWindow,
-					maxTokens: model.limits.maxOutputTokens,
-					reasoning: model.reasoning,
-					input,
-					cost,
-				})),
-			},
-		},
+		name: "Kimchi",
+		baseUrl: BASE_URL,
+		apiKey,
+		api: "openai-completions",
+		defaultModel: MAIN_MODEL.slug,
+		models: CATALOG.map(({ model, input, cost }) => ({
+			id: model.slug,
+			name: model.displayName,
+			contextWindow: model.limits.contextWindow,
+			maxTokens: model.limits.maxOutputTokens,
+			reasoning: model.reasoning,
+			input,
+			cost,
+		})),
 	}
 }
 
@@ -110,7 +106,14 @@ async function writeGsd2(scope: ConfigScope, apiKey: string): Promise<void> {
 		throw new Error("API key not configured")
 	}
 	const modelsPath = resolveScopePath(scope, GSD_MODELS_PATH)
-	writeJson(modelsPath, buildGsd2ModelsConfig(apiKey))
+	const existing = readJson(modelsPath)
+	const providers =
+		existing.providers && typeof existing.providers === "object" && !Array.isArray(existing.providers)
+			? (existing.providers as Record<string, unknown>)
+			: {}
+	providers.kimchi = buildGsd2KimchiProvider(apiKey)
+	existing.providers = providers
+	writeJson(modelsPath, existing)
 
 	const prefsPath = resolveScopePath(scope, GSD_PREFERENCES_PATH)
 	writeFileAtomic(prefsPath, buildGsd2Preferences())

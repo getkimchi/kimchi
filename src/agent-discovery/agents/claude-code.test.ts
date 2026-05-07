@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { discoverCcConfig } from "./cc-discovery.js"
+import { discoverAgent } from "../index.js"
+import { makeClaudeCodeDefinition } from "./claude-code.js"
 
-describe("discoverCcConfig", () => {
+describe("claudeCode AgentDefinition", () => {
 	let tempDir: string
 	let configPath: string
 
@@ -21,7 +22,14 @@ describe("discoverCcConfig", () => {
 		writeFileSync(configPath, JSON.stringify(data))
 	}
 
-	const cases: Record<string, { config: unknown; assert: (result: ReturnType<typeof discoverCcConfig>) => void }> = {
+	const cases: Record<
+		string,
+		{
+			config: unknown
+			skillsDirs?: (tempDir: string) => string[]
+			assert: (result: ReturnType<typeof discoverAgent>) => void
+		}
+	> = {
 		"server only at top-level is discovered": {
 			config: {
 				mcpServers: { github: { url: "https://api.github.com/mcp" } },
@@ -89,6 +97,34 @@ describe("discoverCcConfig", () => {
 				expect(result.mcpServers.svc?.auth).toBeUndefined()
 			},
 		},
+		"skills dir present → skillsDir is set to the skills path": {
+			config: {
+				mcpServers: { github: { url: "https://api.github.com/mcp" } },
+			},
+			skillsDirs: (tempDir: string) => {
+				const dir = join(tempDir, "skills")
+				mkdirSync(dir, { recursive: true })
+				mkdirSync(join(dir, "skill-a"), { recursive: true })
+				mkdirSync(join(dir, "skill-b"), { recursive: true })
+				return [dir, join(tempDir, "nonexistent")]
+			},
+			assert(result) {
+				const skillsDir = result.skillsDir
+				expect(skillsDir).toBeDefined()
+				expect(skillsDir?.endsWith("skills")).toBe(true)
+				expect(result.skillCount).toBe(2)
+			},
+		},
+		"skills dir absent → skillsDir undefined": {
+			config: {
+				mcpServers: { github: { url: "https://api.github.com/mcp" } },
+			},
+			skillsDirs: () => [join(tempDir, "nonexistent")],
+			assert(result) {
+				expect(result.skillsDir).toBeUndefined()
+				expect(result.skillCount).toBe(0)
+			},
+		},
 		"malformed entries (null, array, string) are skipped without crashing": {
 			config: {
 				mcpServers: {
@@ -110,7 +146,11 @@ describe("discoverCcConfig", () => {
 	for (const [name, tc] of Object.entries(cases)) {
 		it(name, () => {
 			write(tc.config)
-			tc.assert(discoverCcConfig(configPath))
+			const skillsDirs = tc.skillsDirs ? tc.skillsDirs(tempDir) : undefined
+			const def = makeClaudeCodeDefinition(
+				skillsDirs ? { configPaths: [configPath], skillsDirs } : { configPaths: [configPath] },
+			)
+			tc.assert(discoverAgent(def))
 		})
 	}
 })
