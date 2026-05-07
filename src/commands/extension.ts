@@ -5,13 +5,13 @@ import { DefaultPackageManager, SettingsManager, getAgentDir } from "@mariozechn
 const USAGE = `Usage: kimchi extension <subcommand> [args]
 
 Subcommands:
-  add <source>          Install and enable a pi package
+  add <source>          Install and enable an extension
                         Sources: npm:@scope/pkg, git:github.com/user/repo, /local/path, ./relative/path
-  remove <source>       Remove and unpersist
-  list                  Show configured packages
-  enable <source>       Enable a disabled package
-  disable <source>      Disable an enabled package without removing
-  update [source]       Update one or all packages
+  remove <source>       Remove an installed extension
+  list                  Show configured extensions
+  enable <source>       Enable a disabled extension
+  disable <source>      Disable an enabled extension without removing
+  update [source]       Update one or all extensions
 
 Options:
   -l, --local           Apply to project settings instead of global`

@@ -25,7 +25,14 @@ import { existsSync } from "node:fs"
 import { homedir, platform, userInfo } from "node:os"
 import { isAbsolute, join, normalize, resolve } from "node:path"
 import type { AssistantMessage, ImageContent, TextContent } from "@mariozechner/pi-ai"
-import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@mariozechner/pi-coding-agent"
+import {
+	DefaultPackageManager,
+	type ExtensionAPI,
+	SettingsManager,
+	type Skill,
+	getAgentDir,
+	loadSkills,
+} from "@mariozechner/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@mariozechner/pi-tui"
 import { ANSI, fg } from "../../ansi.js"
 import { getAvailableModels } from "../../startup-context.js"
@@ -49,6 +56,25 @@ import {
 	isSubagent,
 	transformPrompt,
 } from "./prompt-transformer/prompt-transformer.js"
+
+/**
+ * Resolve skill paths contributed by installed kimchi extensions (pi packages).
+ * Each installed extension's `skills/` directory is added as a skill source so
+ * skills shipped via `kimchi extension add <pkg>` show up in the harness.
+ *
+ * Errors are swallowed — a misconfigured package shouldn't block the harness.
+ */
+async function resolveInstalledPackageSkillPaths(cwd: string): Promise<string[]> {
+	try {
+		const agentDir = getAgentDir()
+		const settingsManager = SettingsManager.create(cwd, agentDir)
+		const pm = new DefaultPackageManager({ cwd, agentDir, settingsManager })
+		const resolved = await pm.resolve()
+		return resolved.skills.filter((r) => r.enabled).map((r) => r.path)
+	} catch {
+		return []
+	}
+}
 
 function expandSkillPaths(configuredPaths: string[], cwd: string): string[] {
 	const home = homedir()
@@ -421,12 +447,18 @@ export default function (skillPaths: string[]) {
 		pi.on("before_agent_start", async (_event, ctx) => {
 			const tools = pi.getAllTools()
 			cachedContextFiles ??= loadProjectContextFiles(ctx.cwd)
-			cachedSkills ??= loadSkills({
-				cwd: ctx.cwd,
-				agentDir: getAgentDir(),
-				skillPaths: expandSkillPaths(skillPaths, ctx.cwd),
-				includeDefaults: false,
-			}).skills
+			if (cachedSkills === undefined) {
+				const allSkillPaths = [
+					...expandSkillPaths(skillPaths, ctx.cwd),
+					...(await resolveInstalledPackageSkillPaths(ctx.cwd)),
+				]
+				cachedSkills = loadSkills({
+					cwd: ctx.cwd,
+					agentDir: getAgentDir(),
+					skillPaths: allSkillPaths,
+					includeDefaults: false,
+				}).skills
+			}
 
 			const now = new Date()
 			const isGitRepo = existsSync(join(ctx.cwd, ".git", "HEAD"))

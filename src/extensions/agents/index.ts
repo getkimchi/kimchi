@@ -21,6 +21,7 @@ import {
 } from "@mariozechner/pi-coding-agent"
 import { Text } from "@mariozechner/pi-tui"
 import { Type } from "typebox"
+import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { AgentManager } from "./agent-manager.js"
 import {
 	getAgentConversation,
@@ -658,7 +659,12 @@ Guidelines:
 				)
 			},
 
-			renderResult(result, { expanded, isPartial }, theme) {
+			renderResult(result, { expanded: piExpanded, isPartial }, theme, context) {
+				// Wire kimchi's global ctrl+o cycle: register on first render, then read the
+				// per-tool flag back. Falls back to pi's renderer flag if available.
+				if (context?.toolCallId) registerToolCall(context.toolCallId)
+				const expanded = piExpanded || (context?.toolCallId ? isToolExpanded(context.toolCallId) : false)
+
 				const details = result.details as AgentDetails | undefined
 				if (!details) {
 					const text = result.content[0]?.type === "text" ? result.content[0].text : ""

@@ -28,7 +28,7 @@ export const COMMANDS: CommandDefinition[] = [
 	{ name: "version", summary: "Print the kimchi version", run: runVersion },
 	{
 		name: "extension",
-		summary: "Manage pi extensions/packages (add, remove, list, enable, disable, update)",
+		summary: "Manage kimchi extensions (add, remove, list, enable, disable, update)",
 		run: runExtension,
 	},
 ]

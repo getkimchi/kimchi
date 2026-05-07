@@ -1,18 +1,39 @@
 /**
- * custom-agents.ts — Load user-defined agents from project (.kimchi/agents/) and global ($KIMCHI_CODING_AGENT_DIR/agents/) locations.
+ * custom-agents.ts — Load user-defined agents from project, global, and installed-extension locations.
  *
- * Discovery hierarchy (higher priority wins):
- *   1. Project: <cwd>/.kimchi/agents/*.md
+ * Discovery hierarchy (later overwrites earlier):
+ *   1. Package: each installed kimchi extension's <pkg>/agents/*.md (lowest)
  *   2. Global:  $KIMCHI_CODING_AGENT_DIR/agents/*.md (default: ~/.config/kimchi/harness/agents/*.md)
- *
- * Project-level agents override global ones with the same name.
+ *   3. Project: <cwd>/.kimchi/agents/*.md (highest — overrides everything)
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { basename, join } from "node:path"
-import { getAgentDir, parseFrontmatter } from "@mariozechner/pi-coding-agent"
+import { DefaultPackageManager, SettingsManager, getAgentDir, parseFrontmatter } from "@mariozechner/pi-coding-agent"
 import { BUILTIN_TOOL_NAMES } from "./agent-types.js"
 import type { AgentConfig, MemoryScope, ThinkingLevel } from "./types.js"
+
+/**
+ * Resolve the agents/ directory of every installed kimchi extension package.
+ * Errors are swallowed — a misconfigured package shouldn't block the harness.
+ */
+function getInstalledPackageAgentDirs(cwd: string): string[] {
+	try {
+		const agentDir = getAgentDir()
+		const settingsManager = SettingsManager.create(cwd, agentDir)
+		const pm = new DefaultPackageManager({ cwd, agentDir, settingsManager })
+		const packages = pm.listConfiguredPackages()
+		const dirs: string[] = []
+		for (const pkg of packages) {
+			if (!pkg.installedPath) continue
+			const candidate = join(pkg.installedPath, "agents")
+			if (existsSync(candidate)) dirs.push(candidate)
+		}
+		return dirs
+	} catch {
+		return []
+	}
+}
 
 /**
  * Scan for custom agent .md files from multiple locations.
@@ -22,13 +43,16 @@ export function loadCustomAgents(cwd: string): Map<string, AgentConfig> {
 	const projectDir = join(cwd, ".kimchi", "agents")
 
 	const agentsMap = new Map<string, AgentConfig>()
-	loadFromDir(globalDir, agentsMap, "global") // lower priority
-	loadFromDir(projectDir, agentsMap, "project") // higher priority (overwrites)
+	for (const pkgDir of getInstalledPackageAgentDirs(cwd)) {
+		loadFromDir(pkgDir, agentsMap, "package") // lowest priority
+	}
+	loadFromDir(globalDir, agentsMap, "global") // overrides package
+	loadFromDir(projectDir, agentsMap, "project") // overrides everything
 	return agentsMap
 }
 
 /** Load agent configs from a directory into the map. */
-function loadFromDir(dir: string, agentsMap: Map<string, AgentConfig>, source: "project" | "global"): void {
+function loadFromDir(dir: string, agentsMap: Map<string, AgentConfig>, source: "project" | "global" | "package"): void {
 	if (!existsSync(dir)) return
 
 	let files: string[]

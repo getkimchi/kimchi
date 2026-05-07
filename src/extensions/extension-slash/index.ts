@@ -16,11 +16,11 @@ const HELP_TEXT = `/extension <subcommand> [args]
 
 Subcommands:
   list                  Show configured packages
-  add <source>          Install and enable a pi package (npm:, git:, /path)
-  remove <source>       Remove and unpersist
-  enable <source>       Enable a disabled package
-  disable <source>      Disable an enabled package without removing
-  update [source]       Update one or all packages
+  add <source>          Install and enable an extension (npm:, git:, /path)
+  remove <source>       Remove an installed extension
+  enable <source>       Enable a disabled extension
+  disable <source>      Disable an enabled extension without removing
+  update [source]       Update one or all extensions
 
 Options:
   -l, --local           Apply to project settings instead of global
@@ -28,12 +28,12 @@ Options:
 Note: changes take effect on the next kimchi session.`
 
 const SUBCOMMANDS: AutocompleteItem[] = [
-	{ value: "list", label: "list", description: "Show configured packages" },
-	{ value: "add", label: "add <source>", description: "Install and enable a pi package" },
-	{ value: "remove", label: "remove <source>", description: "Remove and unpersist" },
-	{ value: "enable", label: "enable <source>", description: "Enable a disabled package" },
+	{ value: "list", label: "list", description: "Show configured extensions" },
+	{ value: "add", label: "add <source>", description: "Install and enable an extension" },
+	{ value: "remove", label: "remove <source>", description: "Remove an installed extension" },
+	{ value: "enable", label: "enable <source>", description: "Enable a disabled extension" },
 	{ value: "disable", label: "disable <source>", description: "Disable without removing" },
-	{ value: "update", label: "update [source]", description: "Update one or all packages" },
+	{ value: "update", label: "update [source]", description: "Update one or all extensions" },
 ]
 
 function tokenize(args: string | undefined): string[] {
