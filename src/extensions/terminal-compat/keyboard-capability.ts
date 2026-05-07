@@ -17,7 +17,7 @@ const QUERY_TIMEOUT_MS = 200
 const MAX_BUFFER_BYTES = 4096
 
 let cachedSupportsKittyKeyboard: boolean | undefined
-let probed = false
+let inFlightProbe: Promise<boolean> | undefined
 
 export function getKittyKeyboardSupport(): boolean | undefined {
 	return cachedSupportsKittyKeyboard
@@ -34,49 +34,52 @@ function shouldSkipProbe(): boolean {
 }
 
 export async function probeKittyKeyboardSupport(): Promise<boolean> {
-	if (probed) return cachedSupportsKittyKeyboard ?? false
-	probed = true
+	if (inFlightProbe) return inFlightProbe
 
-	if (shouldSkipProbe()) {
-		cachedSupportsKittyKeyboard = false
-		return false
-	}
-
-	const wasRaw = process.stdin.isRaw
-	process.stdin.setRawMode?.(true)
-	process.stdin.resume()
-
-	return new Promise<boolean>((resolveResult) => {
-		let buffer = ""
-
-		const finish = (supported: boolean, leftover: string) => {
-			clearTimeout(timeout)
-			process.stdin.removeListener("data", handler)
-			cachedSupportsKittyKeyboard = supported
-			if (leftover.length > 0) process.stdin.unshift(Buffer.from(leftover, "utf8"))
-			if (!wasRaw) process.stdin.setRawMode?.(false)
-			process.stdin.pause()
-			resolveResult(supported)
+	inFlightProbe = (async () => {
+		if (shouldSkipProbe()) {
+			cachedSupportsKittyKeyboard = false
+			return false
 		}
 
-		const handler = (data: Buffer | string) => {
-			buffer += data.toString()
-			if (buffer.length > MAX_BUFFER_BYTES) {
-				buffer = buffer.slice(buffer.length - MAX_BUFFER_BYTES)
-			}
-			// Look for CSI ? <digits> u  response
-			// biome-ignore lint/suspicious/noControlCharactersInRegex: Kitty keyboard protocol response
-			const match = buffer.match(/\x1b\[\?(\d+)u/)
-			if (match) {
-				const idx = match.index ?? 0
-				const leftover = buffer.slice(0, idx) + buffer.slice(idx + match[0].length)
-				finish(true, leftover)
-			}
-		}
+		const wasRaw = process.stdin.isRaw
+		process.stdin.setRawMode?.(true)
+		process.stdin.resume()
 
-		const timeout = setTimeout(() => finish(false, buffer), QUERY_TIMEOUT_MS)
+		return new Promise<boolean>((resolveResult) => {
+			let buffer = ""
 
-		process.stdin.on("data", handler)
-		process.stdout.write(QUERY_KITTY_KEYBOARD)
-	})
+			const finish = (supported: boolean, leftover: string) => {
+				clearTimeout(timeout)
+				process.stdin.removeListener("data", handler)
+				cachedSupportsKittyKeyboard = supported
+				if (leftover.length > 0) process.stdin.unshift(Buffer.from(leftover, "utf8"))
+				if (!wasRaw) process.stdin.setRawMode?.(false)
+				process.stdin.pause()
+				resolveResult(supported)
+			}
+
+			const handler = (data: Buffer | string) => {
+				buffer += data.toString()
+				if (buffer.length > MAX_BUFFER_BYTES) {
+					buffer = buffer.slice(buffer.length - MAX_BUFFER_BYTES)
+				}
+				// Look for CSI ? <digits> u  response
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: Kitty keyboard protocol response
+				const match = buffer.match(/\[\?(\d+)u/)
+				if (match) {
+					const idx = match.index ?? 0
+					const leftover = buffer.slice(0, idx) + buffer.slice(idx + match[0].length)
+					finish(true, leftover)
+				}
+			}
+
+			const timeout = setTimeout(() => finish(false, buffer), QUERY_TIMEOUT_MS)
+
+			process.stdin.on("data", handler)
+			process.stdout.write(QUERY_KITTY_KEYBOARD)
+		})
+	})()
+
+	return inFlightProbe
 }

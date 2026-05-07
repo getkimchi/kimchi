@@ -5,6 +5,7 @@ import { join, resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
+import { Box, Text } from "@earendil-works/pi-tui"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import type { TUI } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
@@ -197,8 +198,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 									const settingsFile = settingsPath
 									return {
 										render(width: number): string[] {
-											const { Box } = require("@mariozechner/pi-tui")
-											const { Text } = require("@mariozechner/pi-tui")
 											const box = new Box(2, 1)
 											box.addChild(new Text(theme.inverse("  ⚠  Shift+Enter doesn't work in this terminal  ")))
 											box.addChild(new Text(""))

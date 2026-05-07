@@ -5,8 +5,13 @@ import { dirname, resolve } from "node:path"
 // Returns true if the key appears in any binding value.
 function isKeyBoundElsewhere(current: Record<string, unknown>, key: string): boolean {
 	for (const [, value] of Object.entries(current)) {
-		if (typeof value === "string" && value.includes(key)) return true
-		if (Array.isArray(value) && value.some((v) => typeof v === "string" && v.includes(key))) return true
+		if (typeof value === "string") {
+			const parts = value.split(",").map((s) => s.trim())
+			if (parts.includes(key)) return true
+		}
+		if (Array.isArray(value)) {
+			if (value.some((v) => typeof v === "string" && v.trim() === key)) return true
+		}
 	}
 	return false
 }
