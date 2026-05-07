@@ -1,7 +1,8 @@
 import { watch } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI, MessageRenderer } from "@mariozechner/pi-coding-agent"
+import { Container, Text } from "@mariozechner/pi-tui"
 import { isSubagent } from "../orchestration/prompt-transformer/prompt-transformer.js"
 import { SkillManager } from "../skills-manager/skill-manager.js"
 import { UsageTracker } from "../skills-manager/usage.js"
@@ -11,6 +12,21 @@ import type { CuratorState } from "./state.js"
 import { runAutoTransitions } from "./transitions.js"
 
 const CURATOR_NOTIFICATION_TYPE = "curator-notification"
+
+interface CuratorNotificationData {
+	names: string[]
+}
+
+const curatorNotificationRenderer: MessageRenderer<CuratorNotificationData> = (message, _options, theme) => {
+	const data = message.details as CuratorNotificationData
+	if (!data?.names?.length) return undefined
+	const container = new Container()
+	const symbol = theme.fg("dim", "✦ ")
+	const label = theme.bold(theme.fg("toolTitle", "Skill review"))
+	const names = theme.fg("dim", `  created: ${data.names.join(", ")}`)
+	container.addChild(new Text(`${symbol}${label}${names}`, 0, 0))
+	return container
+}
 
 export interface CuratorExtensionOptions {
 	skillsDir?: string
@@ -29,6 +45,7 @@ export function computeIdleSeconds(state: CuratorState, now: Date): number {
 
 export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExtensionOptions): void {
 	if (isSubagent()) return
+	pi.registerMessageRenderer(CURATOR_NOTIFICATION_TYPE, curatorNotificationRenderer)
 	const skillsDir = options?.skillsDir ?? join(homedir(), ".config", "kimchi", "harness", "skills")
 	const statePath = getStateFilePath(skillsDir)
 	const manager = new SkillManager(skillsDir)
@@ -92,8 +109,11 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 						}
 						pi.sendMessage({
 							customType: CURATOR_NOTIFICATION_TYPE,
-							content: [{ type: "text", text: `skill review created: ${newSkills.join(", ")}` }],
+							content: [
+								{ type: "text", text: "<system-annotation>Skill review created new skills</system-annotation>" },
+							],
 							display: true,
+							details: { names: newSkills } satisfies CuratorNotificationData,
 						})
 					} catch {
 						// best-effort
