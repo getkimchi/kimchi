@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { buildReviewPrompt, parseLLMResponse } from "./review-agent.js"
-import type { LogSummary, SkillMetadata, TransitionProposal } from "./types.js"
+import type { LogSummary, SkillMetadata, SubagentBaselineResult, TransitionProposal } from "./types.js"
 
 describe("buildReviewPrompt", () => {
 	const mockSkills: SkillMetadata[] = [
@@ -77,15 +77,46 @@ describe("buildReviewPrompt", () => {
 		expect(prompt).toContain("(no recent sessions)")
 		expect(prompt).toContain("(no failures logged)")
 	})
+
+	it("includes baseline TDD section when provided", () => {
+		const baseline: SubagentBaselineResult = {
+			phase: "RED",
+			prompt: "Implement user authentication",
+			output: "Auth code with issues",
+			skillsUsed: ["coding-basics"],
+			skillsNeeded: ["auth-patterns", "security-checks"],
+			gapsIdentified: ["No guidance on auth patterns", "Missing security validation"],
+		}
+		const prompt = buildReviewPrompt(mockSkills, mockProposal, mockLogs, baseline)
+		expect(prompt).toContain("RED Baseline Observations (TDD Phase)")
+		expect(prompt).toContain("Task attempted: Implement user authentication")
+		expect(prompt).toContain("Skills used: coding-basics")
+		expect(prompt).toContain("Skills needed: auth-patterns, security-checks")
+		expect(prompt).toContain("Gaps identified: No guidance on auth patterns, Missing security validation")
+	})
+
+	it("does not include baseline section when not provided", () => {
+		const prompt = buildReviewPrompt(mockSkills, mockProposal, mockLogs)
+		expect(prompt).not.toContain("RED Baseline Observations")
+	})
+
+	it("includes consolidation strategy explanations", () => {
+		const prompt = buildReviewPrompt(mockSkills, mockProposal, mockLogs)
+		expect(prompt).toContain("Consolidation Strategies")
+		expect(prompt).toContain("create_new")
+		expect(prompt).toContain("merge_into_existing")
+		expect(prompt).toContain("demote_to_references")
+	})
 })
 
 describe("parseLLMResponse", () => {
-	it("extracts consolidation_proposals from YAML", () => {
+	it("extracts consolidation_proposals from YAML with strategy", () => {
 		const response = `\`\`\`yaml
 consolidation_proposals:
   - umbrella: debugging
     members: [debug-skill, debug-verbose]
     rationale: Both handle debugging scenarios
+    strategy: merge_into_existing
 \`\`\``
 
 		const result = parseLLMResponse(response)
@@ -94,7 +125,45 @@ consolidation_proposals:
 			umbrella: "debugging",
 			members: ["debug-skill", "debug-verbose"],
 			rationale: "Both handle debugging scenarios",
+			strategy: "merge_into_existing",
 		})
+	})
+
+	it("defaults strategy to create_new when not provided", () => {
+		const response = `\`\`\`yaml
+consolidation_proposals:
+  - umbrella: testing
+    members: [test-skill]
+    rationale: Related testing skills
+\`\`\``
+
+		const result = parseLLMResponse(response)
+		expect(result.consolidationProposals).toHaveLength(1)
+		expect(result.consolidationProposals[0].strategy).toBe("create_new")
+	})
+
+	it("extracts all three strategy types", () => {
+		const response = `\`\`\`yaml
+consolidation_proposals:
+  - umbrella: new-skill
+    members: [a]
+    rationale: Creates new
+    strategy: create_new
+  - umbrella: existing
+    members: [b]
+    rationale: Merges into existing
+    strategy: merge_into_existing
+  - umbrella: narrow
+    members: [c]
+    rationale: Demoted
+    strategy: demote_to_references
+\`\`\``
+
+		const result = parseLLMResponse(response)
+		expect(result.consolidationProposals).toHaveLength(3)
+		expect(result.consolidationProposals[0].strategy).toBe("create_new")
+		expect(result.consolidationProposals[1].strategy).toBe("merge_into_existing")
+		expect(result.consolidationProposals[2].strategy).toBe("demote_to_references")
 	})
 
 	it("extracts skill_gaps from YAML", () => {
