@@ -166,6 +166,107 @@ User-defined tags (those added via `/tags add`) are automatically persisted to:
 
 These tags persist across sessions. Static tags from `KIMCHI_TAGS` are not persisted and must be set via environment variable each session.
 
+## Ferment — Cross-Session Project Management
+
+Ferment is Kimchi's progressive-refinement project mode for multi-session work. Instead of starting from scratch each chat, Ferment persists a structured plan (goal, phases, steps) across sessions as a JSON state file.
+
+### Quick start
+
+```bash
+kimchi --ferment "Build Tetris"
+```
+
+Or inside an active session:
+
+```
+/ferment add "Build Tetris"    # creates with mode: plan
+/ferment mode exec              # switch to autonomous execution
+```
+
+### Concepts
+
+- **Ferment** — the top-level project (e.g. "Build Tetris", "Auth rewrite")
+- **Phase** — a milestone within the project (e.g. "Canvas & Grid", "Movement")
+- **Step** — a single executable task within a phase (e.g. "Create index.html")
+- **Decision** — an architectural choice recorded for posterity
+- **Memory** — a gotcha, convention, or pattern encountered during work
+
+### State machine
+
+```
+draft → planned → running → [paused] → complete
+```
+
+1. **draft** — created via `/ferment add`, agent collects goal + phases conversationally
+2. **planned** — `scope_ferment` sets goal, criteria, constraints, phase breakdown
+3. **running** — `activate_phase` starts a phase, agent executes steps
+4. **paused** — user intervention required (plan mode, or `/pause`)
+5. **complete** — all phases terminal, done
+
+### Three work modes
+
+| Mode | Behavior | Use when |
+|------|----------|----------|
+| **plan** | Agent asks permission, proposes, explains. No tool enforcement. | Scoping, ambiguous problems, complex architecture |
+| **exec** | Agent acts immediately. Strips coaching text. Auto-advance. | Clear tasks, iterating fast, trusted execution |
+| **auto** (default) | Full coaching. User decides when to act. | Mixed, exploring, learning |
+
+```
+/ferment mode plan     ← ask the agent to coach you
+/ferment mode exec     ← let the agent run autonomously
+/ferment mode auto     ← coaching mode (default)
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/ferment` | List all ferments with status |
+| `/ferment add "Name"` | Create new ferment (draft, plan mode) |
+| `/ferment switch <id>` | Resume by ID prefix or name |
+| `/ferment delete <id>` | Delete permanently |
+| `/ferment mode` | Show current mode + help |
+| `/ferment mode plan/exec/auto` | Change mode |
+| `/auto` | Enable auto-mode |
+| `/pause` | Disable auto-mode |
+| `/status` | Full status dump with phases, steps, decisions |
+
+### Recovery
+
+Every session writes a `ferment_reference` entry in the session log. On next start, the harness reads this entry, loads the JSON state from `.kimchi/ferments/<uuid>.json`, and immediately tells the agent what to do next.
+
+```bash
+# Day 1
+$ kimchi --ferment "Build Tetris"
+# … agent works, crashes, terminal closes …
+
+# Day 2
+$ kimchi --ferment "Build Tetris"
+# → Rehydrates state, continues Phase 2 exactly where it left off
+```
+
+### Where state lives
+
+```
+.kimchi/
+├── ferments/
+│   └── <uuid>.json          ← machine-readable plan state
+├── sessions/
+│   └── <timestamp>.jsonl    ← chat history + tool calls
+└── .<uuid>.progress.log     ← human-readable audit trail
+```
+
+For full documentation see `docs/ferment.md`.
+
+### Visual display
+
+Active ferment is shown in the footer:
+```
+ferment: Build Tetris [running] phase 2/5 "Pieces"
+```
+
+---
+
 ### Visual display
 
 Active tags are displayed in the footer, grouped by key with color coding for visual distinction. Tags with the same key are shown together (e.g., `project:api,web`).

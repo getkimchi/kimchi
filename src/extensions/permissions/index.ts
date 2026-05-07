@@ -34,7 +34,29 @@ const EMPTY_LOADED_CONFIG: LoadedConfig = {
 const PLAN_MODE_TOOLS = ["read", "grep", "find", "ls", "web_search", "web_fetch", "questionnaire", "bash"]
 
 // subagent delegates to a sub-session that enforces permissions on its own calls.
-const BUILTIN_ALLOW_TOOL_NAMES = ["subagent", "set_phase"]
+// ferment tools are internal state-management operations, never write user files or run shell commands.
+const BUILTIN_ALLOW_TOOL_NAMES = [
+	"subagent",
+	"set_phase",
+	"create_ferment",
+	"list_ferments",
+	"scope_ferment",
+	"update_scope_field",
+	"activate_phase",
+	"refine_phase",
+	"start_step",
+	"complete_step",
+	"verify_step",
+	"skip_step",
+	"complete_phase",
+	"skip_phase",
+	"complete_ferment",
+	"fail_step",
+	"fail_phase",
+	"add_decision",
+	"add_memory",
+	"set_ferment_mode",
+]
 
 const MODES: Array<{ mode: PermissionMode; label: string; color: "success" | "warning" | "error" }> = [
 	{ mode: "default", label: "default", color: "success" },

@@ -20,6 +20,7 @@ import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
 import curatorExtension from "./extensions/curator/index.js"
+import fermentExtension from "./extensions/ferment.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import improveExtension from "./extensions/improve/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
@@ -255,6 +256,8 @@ try {
 			globalThis.fetch = patchedFetch
 		}
 
+		const rawArgs = process.argv.slice(2)
+
 		const extensionFactories = [
 			startupUpdateExtension,
 			sessionIdCaptureExtension,
@@ -276,6 +279,7 @@ try {
 			uiExtension,
 			subagentExtension,
 			tagsExtension,
+			fermentExtension,
 			telemetryExtension(telemetryConfig),
 			toolRendererExtension,
 			webFetchExtension,
@@ -286,7 +290,6 @@ try {
 			curatorExtension,
 		]
 
-		const rawArgs = process.argv.slice(2)
 		if (acpMode) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
 			await runAcpMode({ extensionFactories, agentDir })
