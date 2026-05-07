@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent"
+import { isHomebrewInstall } from "../update/paths.js"
 import { checkForUpdate } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
 
@@ -19,7 +20,7 @@ export default function startupUpdateExtension(pi: ExtensionAPI) {
 		try {
 			const result = await checkForUpdate({ currentVersion: current, skipCache: false })
 			if (result.hasUpdate) {
-				const updateCmd = ctx.ui.theme.bold("kimchi update")
+				const updateCmd = ctx.ui.theme.bold(isHomebrewInstall() ? "brew upgrade kimchi" : "kimchi update")
 				ctx.ui.setStatus(UPDATE_STATUS_KEY, `Update available! Run ${updateCmd}`)
 			}
 		} catch {

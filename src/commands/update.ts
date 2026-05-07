@@ -1,3 +1,4 @@
+import { isHomebrewInstall } from "../update/paths.js"
 import { applyUpdate, checkForUpdate } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
 
@@ -42,6 +43,19 @@ export async function runUpdate(args: string[]): Promise<number> {
 		return 2
 	}
 	const flags = parsed
+
+	// Homebrew manages its own package lifecycle. Self-patching a Homebrew
+	// binary would bypass its shim layer, break the Cellar layout, and risk
+	// losing the installation on the next `brew cleanup`. Direct the user to
+	// the correct upgrade path instead.
+	if (isHomebrewInstall()) {
+		console.log("kimchi is managed by Homebrew. Use Homebrew to update:")
+		console.log("")
+		console.log("  brew upgrade kimchi")
+		console.log("")
+		console.log("If you want the self-update behaviour, install kimchi outside of Homebrew.")
+		return 0
+	}
 
 	const current = getVersion()
 	let check: Awaited<ReturnType<typeof checkForUpdate>>
