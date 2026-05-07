@@ -17,6 +17,7 @@
 //          platform.minimax.io best-practices (step-limit, state tracking),
 //          Verdent failure-mode analysis (scope creep, hallucinated APIs)
 
+/** Reserved: no family-level explore/research/plan overrides identified yet. */
 export const MINIMAX_FAMILY_EXPLORE = ""
 export const MINIMAX_FAMILY_RESEARCH = ""
 export const MINIMAX_FAMILY_PLAN = ""
@@ -44,6 +45,7 @@ export const MINIMAX_FAMILY_REVIEW = `During **review** phase (MiniMax M2 family
 // ── MiniMax M2.7 per-model overrides ──────────────────────────────────
 // Sources: session-01-findings (Go mutex over-use observed in M2.7 benchmarks)
 
+/** Reserved: no M2.7-specific orchestration override identified yet. */
 export const MINIMAX_M27_ORCHESTRATION = ""
 
 /** M2.7 build: Go-specific concurrency pattern observed in M2.7. */

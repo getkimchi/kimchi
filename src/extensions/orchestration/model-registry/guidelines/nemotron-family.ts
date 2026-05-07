@@ -13,6 +13,7 @@
 // ── Family-level (shared across all Nemotron models) ──────────────────
 // Sources: Nemotron model family overview (build.nvidia.com), technical report
 
+/** Reserved: no family-level explore/research/plan overrides identified yet. */
 export const NEMOTRON_FAMILY_EXPLORE = ""
 export const NEMOTRON_FAMILY_RESEARCH = ""
 export const NEMOTRON_FAMILY_PLAN = ""
@@ -21,6 +22,7 @@ export const NEMOTRON_FAMILY_PLAN = ""
 export const NEMOTRON_FAMILY_BUILD = `During **build** phase (Nemotron family):
 - Your long context window is a strength — read each file in full before editing.`
 
+/** Reserved: no family-level review override identified yet. */
 export const NEMOTRON_FAMILY_REVIEW = ""
 /** Nemotron family orchestration: leverage long-context for subagent results.
  * Sources: §3.4 item 1 (1M context window, near-perfect retrieval) */
@@ -30,6 +32,7 @@ export const NEMOTRON_FAMILY_ORCHESTRATION = `When orchestrating (Nemotron famil
 // ── Nemotron 3 Super FP4 per-model overrides ──────────────────────────
 // Sources: in-pool benchmark observations (weakest coder, multi-file unreliability)
 
+/** Reserved: no Nemotron 3 Super-specific orchestration override identified yet. */
 export const NEMOTRON_3_SUPER_ORCHESTRATION = ""
 
 /** Nemotron 3 Super build: conservative scope for FP4 quantisation's coding weakness. */

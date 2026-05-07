@@ -14,9 +14,6 @@
 // Sources: Anthropic "Claude Code: best practices for agentic coding",
 //          Anthropic prompt-engineering guide (over-planning, verbosity, structured output)
 
-export const CLAUDE_FAMILY_RESEARCH = ""
-export const CLAUDE_FAMILY_BUILD = ""
-
 /** Claude family orchestration: proportional delegation, structured prompts.
  * Sources: §3.5 item 1 (over-planning → over-orchestrating),
  *          §3.5 items 2–3 (verbosity, strong structured output) */

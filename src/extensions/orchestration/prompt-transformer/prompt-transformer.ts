@@ -209,7 +209,7 @@ export function resolveOrchestrationGuideline(
 	modelId: string | undefined,
 	registry: ModelRegistry | undefined,
 ): string {
-	const descriptor = modelId ? registry?.getModelsWithCapabilities().find((m) => m.id === modelId) : undefined
+	const descriptor = modelId ? registry?.getModelById(modelId) : undefined
 	return descriptor?.capabilities.orchestrationGuidelines ?? DEFAULT_ORCHESTRATION_GUIDELINES
 }
 
@@ -228,7 +228,7 @@ export function resolvePhaseGuideline(
 	modelId: string | undefined,
 	registry: ModelRegistry | undefined,
 ): string {
-	const descriptor = modelId ? registry?.getModelsWithCapabilities().find((m) => m.id === modelId) : undefined
+	const descriptor = modelId ? registry?.getModelById(modelId) : undefined
 	return descriptor?.capabilities.guidelines?.[phase] ?? DEFAULT_PHASE_GUIDELINES[phase]
 }
 

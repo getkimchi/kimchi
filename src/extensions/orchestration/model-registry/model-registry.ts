@@ -52,6 +52,7 @@ export interface ModelRegistryWarning {
 export class ModelRegistry {
 	private readonly allModels: OrchestrationModelDescriptor[]
 	private readonly modelsWithCapabilities: OrchestrationModelDescriptor[]
+	private readonly modelById: ReadonlyMap<string, OrchestrationModelDescriptor>
 	readonly warnings: readonly ModelRegistryWarning[]
 
 	constructor(availableModels: readonly ModelMetadata[]) {
@@ -84,6 +85,7 @@ export class ModelRegistry {
 			const entry = MODEL_CAPABILITIES.get(descriptor.id)
 			return entry !== undefined && entry !== "ignored"
 		})
+		this.modelById = new Map(this.modelsWithCapabilities.map((m) => [m.id, m]))
 		this.warnings = warnings
 	}
 
@@ -93,5 +95,10 @@ export class ModelRegistry {
 
 	getModelsWithCapabilities(): readonly OrchestrationModelDescriptor[] {
 		return this.modelsWithCapabilities
+	}
+
+	/** O(1) lookup by model ID. Only returns models with capability entries. */
+	getModelById(id: string): OrchestrationModelDescriptor | undefined {
+		return this.modelById.get(id)
 	}
 }

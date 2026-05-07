@@ -511,3 +511,76 @@ describe("guideline injection into system prompts", () => {
 		expect(orchPos).toBeLessThan(phasePos)
 	})
 })
+
+describe("builtin-model guideline content", () => {
+	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
+
+	// kimi-k2.5: build = default + Kimi family + K2.5-specific
+	it("kimi-k2.5 build: contains default, family, and per-model layers", () => {
+		const result = resolvePhaseGuideline("build", "kimi-k2.5", registry)
+		expect(result).toContain("During **build** phase:")
+		expect(result).toContain("Plan-first")
+		expect(result).toContain("well-formed tool calls")
+	})
+
+	// kimi-k2.5: explore = default + K2.5-specific (family explore is empty)
+	it("kimi-k2.5 explore: contains default and per-model layers", () => {
+		const result = resolvePhaseGuideline("explore", "kimi-k2.5", registry)
+		expect(result).toContain("During **explore** phase:")
+		expect(result).toContain("Plan-first")
+		expect(result).toContain("Chunk and label")
+	})
+
+	// kimi-k2.6: plan = default + K2.6-specific (family plan is empty)
+	it("kimi-k2.6 plan: contains default and per-model layers", () => {
+		const result = resolvePhaseGuideline("plan", "kimi-k2.6", registry)
+		expect(result).toContain("Design BEFORE coding")
+		expect(result).toContain("queue of independent sub-tasks")
+		expect(result).toContain("acceptance criteria")
+	})
+
+	// minimax-m2.7: build = default + family + per-model
+	it("minimax-m2.7 build: contains default, family, and per-model layers", () => {
+		const result = resolvePhaseGuideline("build", "minimax-m2.7", registry)
+		expect(result).toContain("During **build** phase:")
+		expect(result).toContain("Outline-then-diff")
+		expect(result).toContain("mutex")
+	})
+
+	// minimax-m2.7: review = default + family + per-model
+	it("minimax-m2.7 review: contains default, family, and per-model layers", () => {
+		const result = resolvePhaseGuideline("review", "minimax-m2.7", registry)
+		expect(result).toContain("During **review** phase:")
+		expect(result).toContain("scope creep")
+		expect(result).toContain("hallucinated APIs")
+		expect(result).toContain("inappropriate concurrency")
+	})
+
+	// nemotron-3-super-fp4: build = default + family + per-model
+	it("nemotron-3-super-fp4 build: contains default, family, and per-model layers", () => {
+		const result = resolvePhaseGuideline("build", "nemotron-3-super-fp4", registry)
+		expect(result).toContain("long context window")
+		expect(result).toContain("strictly within the spec")
+	})
+
+	// claude-opus-4-7: plan = default + family + per-model
+	it("claude-opus-4-7 plan: contains default, family, and per-model layers", () => {
+		const result = resolvePhaseGuideline("plan", "claude-opus-4-7", registry)
+		expect(result).toContain("Design BEFORE coding")
+		expect(result).toContain("Match plan depth")
+		expect(result).toContain("Don't relitigate")
+	})
+
+	// claude-opus-4-7: explore = default + family + per-model
+	it("claude-opus-4-7 explore: contains default, family, and per-model layers", () => {
+		const result = resolvePhaseGuideline("explore", "claude-opus-4-7", registry)
+		expect(result).toContain("During **explore** phase:")
+		expect(result).toContain("Resist over-exploration")
+	})
+
+	// verify co-author trailer is present in build guidelines
+	it("default build guidelines contain the co-author trailer", () => {
+		const result = resolvePhaseGuideline("build", undefined, registry)
+		expect(result).toContain("Co-Authored-By: Kimchi <noreply@kimchi.dev>")
+	})
+})

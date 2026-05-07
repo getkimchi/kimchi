@@ -460,7 +460,7 @@ export default function (skillPaths: string[]) {
 
 			const promptCtx: PromptContext = {
 				currentModelId: ctx.model?.id,
-				currentPhase: getCurrentPhase() as Phase | undefined,
+				currentPhase: getCurrentPhase(),
 				registry: registry,
 			}
 

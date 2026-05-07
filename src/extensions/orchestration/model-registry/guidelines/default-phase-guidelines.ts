@@ -24,6 +24,10 @@ export const DEFAULT_PLAN_GUIDELINES = `During **plan** phase:
 - Keep the spec focused. Interfaces and file paths beat prose. Long plans waste downstream tokens.
 - Do NOT start build until the spec is written and saved.`
 
+/** Co-author trailer appended to every commit message. Defined once here so
+ *  it can be referenced consistently from any guideline that mentions commits. */
+export const KIMCHI_COAUTHOR = "Co-Authored-By: Kimchi <noreply@kimchi.dev>"
+
 export const DEFAULT_BUILD_GUIDELINES = `During **build** phase:
 - Read each file BEFORE modifying it. Never edit blind.
 - Batch independent tool calls in a single turn — fewer turns = less context accumulation.
@@ -33,7 +37,7 @@ export const DEFAULT_BUILD_GUIDELINES = `During **build** phase:
 - After each meaningful change, run the type-checker / linter / tests. Fix errors before moving on.
 - If a tool call fails, diagnose the root cause before retrying — do not retry blindly.
 - Keep diffs minimal and reviewable. Outline-then-diff beats wall-of-text rewrites.
-- **Git commits**: Always end every commit message with a blank line followed by \`Co-Authored-By: Kimchi <noreply@kimchi.dev>\`.`
+- **Git commits**: Always end every commit message with a blank line followed by \`${KIMCHI_COAUTHOR}\`.`
 
 export const DEFAULT_REVIEW_GUIDELINES = `During **review** phase:
 - Read the diff or changed files first; then read the surrounding context for any touched function.

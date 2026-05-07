@@ -15,6 +15,7 @@
 // ── Family-level (shared across all Kimi models) ──────────────────────
 // Sources: §3.2 item 3 (mixed-goal hesitation), §3.2 item 4 (plan-first groove)
 
+/** Reserved: no family-level explore/research/plan overrides identified yet. */
 export const KIMI_FAMILY_EXPLORE = ""
 export const KIMI_FAMILY_RESEARCH = ""
 export const KIMI_FAMILY_PLAN = ""
@@ -24,6 +25,7 @@ export const KIMI_FAMILY_BUILD = `During **build** phase (Kimi family):
 - Plan-first: outline your intended approach before the first tool call.
 - Avoid big mixed-goal turns — Kimi models hesitate on turns with multiple unrelated goals. Split into separate steps.`
 
+/** Reserved: no family-level review override identified yet. */
 export const KIMI_FAMILY_REVIEW = ""
 
 /** Kimi family orchestration: plan-first delegation.
