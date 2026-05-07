@@ -306,8 +306,8 @@ describe("openCode AgentDefinition", () => {
 			})
 			const def = makeOpenCodeDefinition({ configPaths: [path] })
 			const result = discoverAgent(def)
-			expect(result.mcpServers.modern).toBeDefined()
-			expect(result.mcpServers.legacy).toBeDefined()
+			expect(result.mcpServers.modern.command).toBe("tool")
+			expect(result.mcpServers.legacy.command).toBe("ls")
 		})
 	})
 
@@ -444,7 +444,7 @@ describe("openCode AgentDefinition", () => {
 			expect(result.mcpServers.bad1).toBeUndefined()
 			expect(result.mcpServers.bad2).toBeUndefined()
 			expect(result.mcpServers.bad3).toBeUndefined()
-			expect(result.mcpServers.good).toBeDefined()
+			expect(result.mcpServers.good.command).toBe("ok")
 		})
 
 		it("empty skills dir still sets skillsDir", () => {
