@@ -31,6 +31,7 @@ import permissionsExtension from "./extensions/permissions/index.js"
 import { reserveShiftTabForPermissions } from "./extensions/permissions/keybindings.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
+import skillsSlashCommand from "./extensions/skills-slash/index.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 // import statsExtension from "./extensions/stats/index.js"
 import subagentExtension from "./extensions/subagent.js"
@@ -274,6 +275,7 @@ try {
 			subagentExtension,
 			agentsExtension,
 			extensionSlashCommand,
+			skillsSlashCommand,
 			tagsExtension,
 			telemetryExtension(telemetryConfig),
 			toolRendererExtension,
