@@ -25,6 +25,13 @@ interface PromptSummaryData {
 	orchestrator: UsageTotals | null
 	subagents: UsageTotals | null
 	total: UsageTotals
+	extras?: string[]
+}
+
+const pendingExtras: string[] = []
+
+export function addPromptSummaryExtra(text: string): void {
+	pendingExtras.push(text)
 }
 
 function emptyTotals(): UsageTotals {
@@ -97,6 +104,10 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 		container.addChild(new Text(line, 0, 0))
 	}
 
+	for (const extra of data.extras ?? []) {
+		container.addChild(new Text(INDENT + theme.fg("dim", "note:".padEnd(LABEL_WIDTH)) + extra, 0, 0))
+	}
+
 	return container
 }
 
@@ -134,11 +145,14 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 		}
 		if (grandTotal.input + grandTotal.output === 0) return
 
+		const extras = pendingExtras.splice(0)
+
 		const data: PromptSummaryData = {
 			elapsed: formatDuration(Date.now() - startedAt),
 			orchestrator: orchestrator.input + orchestrator.output > 0 ? { ...orchestrator } : null,
 			subagents: subagents.input + subagents.output > 0 ? { ...subagents } : null,
 			total: grandTotal,
+			extras: extras.length > 0 ? extras : undefined,
 		}
 
 		// Defer so the agent event loop finishes and isStreaming resets to false

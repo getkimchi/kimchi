@@ -2,6 +2,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
 import { isSubagent } from "../orchestration/prompt-transformer/prompt-transformer.js"
+import { addPromptSummaryExtra } from "../prompt-summary.js"
 import { SkillManager } from "../skills-manager/skill-manager.js"
 import { debugLog, runCuratorReview, spawnSessionReview } from "./review.js"
 import { loadState, saveState, shouldRunNow } from "./state.js"
@@ -76,17 +77,7 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 			const known = new Set(state.known_agent_skills ?? [])
 			const newSkills = currentAgentSkills.filter((n) => !known.has(n))
 			if (newSkills.length > 0) {
-				void pi.sendMessage({
-					customType: "curator-notification",
-					content: [
-						{
-							type: "text",
-							text: `<system-annotation>Skill review saved: ${newSkills.join(", ")}</system-annotation>`,
-						},
-					],
-					display: true,
-					details: { newSkills },
-				})
+				addPromptSummaryExtra(`skill review created: ${newSkills.join(", ")}`)
 				await saveState(statePath, { ...state, known_agent_skills: currentAgentSkills })
 			} else if (state.known_agent_skills === undefined) {
 				// First run — seed without notifying
