@@ -51,28 +51,6 @@ export function buildOpenClawModelsCatalog(): Record<string, unknown> {
 	return out
 }
 
-/** `openclaw --version` SemVer parse; null if missing or unparseable. */
-export function getOpenClawVersion(execFile: typeof execFileSync = execFileSync): string | null {
-	try {
-		const out = execFile("openclaw", ["--version"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] })
-		const match = out.match(OPENCLAW_VERSION_REGEX)
-		return match ? match[1] : null
-	} catch {
-		return null
-	}
-}
-
-/**
- * Whether OpenClaw supports the `config set --batch-json` flag (>= 2026.3.17).
- * An unknown version is treated as "probably newest", which is the right
- * call when users have just installed via curl. Older versions flip back
- * to sequential `config set` calls.
- */
-export function isBatchJsonSupported(version: string | null): boolean {
-	if (!version) return true
-	return compareSemverGte(version, OPENCLAW_BATCH_MIN_VERSION) || version === OPENCLAW_BATCH_MIN_VERSION
-}
-
 /** Detection: ~/.openclaw/ dir present OR `openclaw` on PATH. */
 function detectOpenClaw(): boolean {
 	const dir = join(homedir(), ".openclaw")
@@ -137,20 +115,11 @@ async function writeOpenClawViaCLI(apiKey: string): Promise<void> {
 	const fallbacks = [`${PROVIDER_NAME}/${CODING_MODEL.slug}`, `${PROVIDER_NAME}/${SUB_MODEL.slug}`]
 	const primary = `${PROVIDER_NAME}/${MAIN_MODEL.slug}`
 
-	if (isBatchJsonSupported(getOpenClawVersion())) {
-		const batch = [
-			{ path: "models.providers.kimchi", value: providerBlock },
-			{ path: "agents.defaults.model.primary", value: primary },
-			{ path: "agents.defaults.model.fallbacks", value: fallbacks },
-			{ path: "agents.defaults.models", value: modelsCatalog },
-		]
-		runOpenClawCmd(["config", "set", "--batch-json", JSON.stringify(batch)])
-	} else {
-		runOpenClawCmd(["config", "set", "models.providers.kimchi", JSON.stringify(providerBlock)])
-		runOpenClawCmd(["config", "set", "agents.defaults.model.primary", primary])
-		runOpenClawCmd(["config", "set", "agents.defaults.model.fallbacks", JSON.stringify(fallbacks)])
-		runOpenClawCmd(["config", "set", "agents.defaults.models", JSON.stringify(modelsCatalog)])
-	}
+	runOpenClawCmd(["config", "set", "models.providers.kimchi", JSON.stringify(providerBlock)])
+	runOpenClawCmd(["config", "set", "agents.defaults.model.primary", primary])
+	// Merge fields that may conflict with existing user config.
+	runOpenClawMerge("agents.defaults.model.fallbacks", (existing) => mergeFallbacks(existing, fallbacks))
+	runOpenClawCmd(["config", "set", "--merge", "agents.defaults.models", JSON.stringify(modelsCatalog)])
 
 	writeOpenClawEnv(apiKey)
 
@@ -182,31 +151,24 @@ async function writeOpenClawDirect(scope: ConfigScope, apiKey: string): Promise<
 	const path = resolveScopePath(scope, OPENCLAW_CONFIG_PATH)
 	const existing = readJson(path)
 
-	const modelsRoot =
-		existing.models && typeof existing.models === "object" && !Array.isArray(existing.models)
-			? (existing.models as Record<string, unknown>)
-			: {}
-	const providers =
-		modelsRoot.providers && typeof modelsRoot.providers === "object" && !Array.isArray(modelsRoot.providers)
-			? (modelsRoot.providers as Record<string, unknown>)
-			: {}
+	const modelsRoot = asObject(existing.models)
+	const providers = asObject(modelsRoot.providers)
 	providers[PROVIDER_NAME] = buildOpenClawProviderBlock()
 	modelsRoot.providers = providers
 	existing.models = modelsRoot
 
-	const agents =
-		existing.agents && typeof existing.agents === "object" && !Array.isArray(existing.agents)
-			? (existing.agents as Record<string, unknown>)
-			: {}
-	const defaults =
-		agents.defaults && typeof agents.defaults === "object" && !Array.isArray(agents.defaults)
-			? (agents.defaults as Record<string, unknown>)
-			: {}
-	defaults.model = {
-		primary: `${PROVIDER_NAME}/${MAIN_MODEL.slug}`,
-		fallbacks: [`${PROVIDER_NAME}/${CODING_MODEL.slug}`, `${PROVIDER_NAME}/${SUB_MODEL.slug}`],
-	}
-	defaults.models = buildOpenClawModelsCatalog()
+	const agents = asObject(existing.agents)
+	const defaults = asObject(agents.defaults)
+	// Merge into model config to preserve existing keys like temperature, max_tokens.
+	const modelMap = asObject(defaults.model)
+	modelMap.primary = `${PROVIDER_NAME}/${MAIN_MODEL.slug}`
+	modelMap.fallbacks = mergeFallbacks(modelMap.fallbacks, [
+		`${PROVIDER_NAME}/${CODING_MODEL.slug}`,
+		`${PROVIDER_NAME}/${SUB_MODEL.slug}`,
+	])
+	defaults.model = modelMap
+
+	defaults.models = mergeModelsCatalog(defaults.models, buildOpenClawModelsCatalog())
 	agents.defaults = defaults
 	existing.agents = agents
 
@@ -227,6 +189,45 @@ async function writeOpenClaw(scope: ConfigScope, apiKey: string): Promise<void> 
 	} else {
 		await writeOpenClawDirect(scope, apiKey)
 	}
+}
+
+/** Read a config value via `openclaw config get --json`; returns `null` if the path is missing or unreadable. */
+function openClawConfigGet(path: string): unknown | null {
+	try {
+		const result = spawnSync("openclaw", ["config", "get", path, "--json"], {
+			encoding: "utf-8",
+			stdio: ["ignore", "pipe", "pipe"],
+		})
+		if (result.status !== 0) return null
+		const raw = (result.stdout ?? "").trim()
+		if (!raw) return null
+		return JSON.parse(raw)
+	} catch {
+		return null
+	}
+}
+
+/** Narrow an unknown value to a plain object, defaulting to `{}` for any other type. */
+function asObject(v: unknown): Record<string, unknown> {
+	return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+}
+
+/** Merge fallbacks with an existing array, deduping entries. */
+function mergeFallbacks(existing: unknown, fallbacks: string[]): string[] {
+	const current = Array.isArray(existing) ? (existing as string[]) : []
+	return [...new Set([...current, ...fallbacks])]
+}
+
+/** Merge models catalog with an existing object, with new entries taking precedence. */
+function mergeModelsCatalog(existing: unknown, catalog: Record<string, unknown>): Record<string, unknown> {
+	return { ...asObject(existing), ...catalog }
+}
+
+/** Read existing value, merge it, and write back with `--replace`. */
+function runOpenClawMerge(path: string, merger: (existing: unknown) => unknown): void {
+	const existing = openClawConfigGet(path)
+	const merged = merger(existing)
+	runOpenClawCmd(["config", "set", "--replace", path, JSON.stringify(merged)])
 }
 
 register({

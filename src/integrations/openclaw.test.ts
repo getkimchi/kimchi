@@ -3,13 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import {
-	buildOpenClawModelsCatalog,
-	buildOpenClawProviderBlock,
-	getOpenClawVersion,
-	isBatchJsonSupported,
-	writeOpenClawEnv,
-} from "./openclaw.js"
+import { buildOpenClawModelsCatalog, buildOpenClawProviderBlock, writeOpenClawEnv } from "./openclaw.js"
 import { byId } from "./registry.js"
 
 type ExecFile = typeof ExecFileSync
@@ -42,38 +36,6 @@ describe("buildOpenClawModelsCatalog", () => {
 		expect(catalog["kimchi/kimi-k2.5"]).toEqual({ alias: "Kimi K2.5" })
 		expect(catalog["kimchi/nemotron-3-super-fp4"]).toEqual({ alias: "Nemotron 3 Super FP4" })
 		expect(catalog["kimchi/minimax-m2.7"]).toEqual({ alias: "MiniMax M2.7" })
-	})
-})
-
-describe("getOpenClawVersion", () => {
-	it("parses CalVer output", () => {
-		const exec = vi.fn().mockReturnValue("OpenClaw 2026.4.8 (9ece252)\n") as unknown as ExecFile
-		expect(getOpenClawVersion(exec)).toBe("2026.4.8")
-	})
-	it("returns null on missing binary", () => {
-		const exec = vi.fn().mockImplementation(() => {
-			throw new Error("ENOENT")
-		}) as unknown as ExecFile
-		expect(getOpenClawVersion(exec)).toBeNull()
-	})
-})
-
-describe("isBatchJsonSupported", () => {
-	it("returns true at the cutoff", () => {
-		expect(isBatchJsonSupported("2026.3.17")).toBe(true)
-	})
-	it("returns true for newer versions", () => {
-		expect(isBatchJsonSupported("2026.4.8")).toBe(true)
-	})
-	it("returns false for older versions", () => {
-		expect(isBatchJsonSupported("2026.3.16")).toBe(false)
-		expect(isBatchJsonSupported("2025.12.31")).toBe(false)
-	})
-	it("returns true when version cannot be detected (assume newest)", () => {
-		// Unknown → optimistically newest. Users who just installed via curl
-		// tend to have the newest version, so this avoids false-negativing
-		// into the slow sequential path.
-		expect(isBatchJsonSupported(null)).toBe(true)
 	})
 })
 
