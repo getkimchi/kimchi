@@ -1,0 +1,31 @@
+diff --git a/dist/utils.js b/dist/utils.js
+--- a/dist/utils.js
++++ b/dist/utils.js
+@@ -729,14 +729,22 @@ export function wrapTextWithAnsi(text, width) {
+  * @returns Line with background applied and padded to width
+  */
+ export function applyBackgroundToLine(line, width, bgFn) {
+     const visibleLen = visibleWidth(line);
+     const paddingNeeded = Math.max(0, width - visibleLen);
+     const padding = " ".repeat(paddingNeeded);
+-    // Apply background to content + padding
+-    const withPadding = line + padding;
+-    return bgFn(withPadding);
++
++    // Lines can contain \x1b[49m (bg reset) or \x1b[0m (full reset) codes that
++    // cancel the block background — including at the very first character when
++    // wrapTextWithAnsi re-emits active ANSI state. Re-inject the bg open code
++    // after each such reset so the block background covers the full line,
++    // including leading whitespace and trailing padding.
++    // Use a sentinel to extract bgOpen without assuming the close-code format.
++    const probe = bgFn("\x00");
++    const sepIdx = probe.indexOf("\x00");
++    const bgOpen = sepIdx > 0 ? probe.slice(0, sepIdx) : null;
++    if (!bgOpen) {
++        return bgFn(line + padding);
++    }
++    const withPersistentBg = (line + padding)
++        .replace(/\x1b\[49m/g, `\x1b[49m${bgOpen}`)
++        .replace(/\x1b\[0m/g, `\x1b[0m${bgOpen}`);
++    return bgFn(withPersistentBg);
+ }
