@@ -39,7 +39,7 @@ export async function runCuratorPipeline(
 
 	// Step 5: Execute if approved
 	if (options.execute) {
-		await executeReport(report)
+		await executeReport(report, skillsDir)
 	}
 
 	return report
