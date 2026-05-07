@@ -94,6 +94,20 @@ async function pinnedGuard(name: string, tracker: UsageTracker): Promise<string 
 	return null
 }
 
+async function sessionReviewWriteGuard(name: string, tracker: UsageTracker): Promise<string | null> {
+	if (process.env.KIMCHI_SESSION_REVIEW !== "1") return null
+	try {
+		const entries = await tracker.list()
+		const entry = entries.find((e: UsageEntry) => e.name === name)
+		if (!entry?.agent_created) {
+			return `Session review cannot modify '${name}': only agent-created skills may be edited by background review.`
+		}
+	} catch {
+		// best-effort — don't block if tracker unreadable
+	}
+	return null
+}
+
 export function createSkillViewTool(manager: SkillManager, tracker: UsageTracker) {
 	return {
 		name: "skill_view",
@@ -153,6 +167,8 @@ export function createSkillManageTool(manager: SkillManager, tracker: UsageTrack
 					case "edit": {
 						const pinErr = await pinnedGuard(params.name, tracker)
 						if (pinErr) return wrapResult({ success: false, error: pinErr })
+						const reviewErr = await sessionReviewWriteGuard(params.name, tracker)
+						if (reviewErr) return wrapResult({ success: false, error: reviewErr })
 						const r = await manager.edit(params.name, params.content)
 						if (r.success) await tracker.bumpPatch(params.name)
 						return wrapResult(r)
@@ -160,6 +176,8 @@ export function createSkillManageTool(manager: SkillManager, tracker: UsageTrack
 					case "patch": {
 						const pinErr = await pinnedGuard(params.name, tracker)
 						if (pinErr) return wrapResult({ success: false, error: pinErr })
+						const reviewErr = await sessionReviewWriteGuard(params.name, tracker)
+						if (reviewErr) return wrapResult({ success: false, error: reviewErr })
 						const r = await manager.patch(params.name, params.old_string, params.new_string, params.file_path)
 						if (r.success) await tracker.bumpPatch(params.name)
 						return wrapResult(r)
@@ -167,6 +185,8 @@ export function createSkillManageTool(manager: SkillManager, tracker: UsageTrack
 					case "delete": {
 						const pinErr = await pinnedGuard(params.name, tracker)
 						if (pinErr) return wrapResult({ success: false, error: pinErr })
+						const reviewErr = await sessionReviewWriteGuard(params.name, tracker)
+						if (reviewErr) return wrapResult({ success: false, error: reviewErr })
 						const r = await manager.delete(params.name, params.absorbed_into)
 						if (r.success) await tracker.archive(params.name, params.absorbed_into)
 						return wrapResult(r)
@@ -174,6 +194,8 @@ export function createSkillManageTool(manager: SkillManager, tracker: UsageTrack
 					case "write_file": {
 						const pinErr = await pinnedGuard(params.name, tracker)
 						if (pinErr) return wrapResult({ success: false, error: pinErr })
+						const reviewErr = await sessionReviewWriteGuard(params.name, tracker)
+						if (reviewErr) return wrapResult({ success: false, error: reviewErr })
 						const r = await manager.writeFile(params.name, params.file_path, params.file_content)
 						if (r.success) await tracker.bumpPatch(params.name)
 						return wrapResult(r)
@@ -181,6 +203,8 @@ export function createSkillManageTool(manager: SkillManager, tracker: UsageTrack
 					case "remove_file": {
 						const pinErr = await pinnedGuard(params.name, tracker)
 						if (pinErr) return wrapResult({ success: false, error: pinErr })
+						const reviewErr = await sessionReviewWriteGuard(params.name, tracker)
+						if (reviewErr) return wrapResult({ success: false, error: reviewErr })
 						const r = await manager.removeFile(params.name, params.file_path)
 						if (r.success) await tracker.bumpPatch(params.name)
 						return wrapResult(r)
