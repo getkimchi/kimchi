@@ -106,7 +106,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	let sessionStartMs = 0
 	let linesAdded = 0
 	let linesRemoved = 0
-	let newlineHintShown = false
+	let newlineHintHandle: { hide(): void } | null = null
 
 	const refresh = (status: "idle" | "generating") => {
 		if (!currentCtx?.hasUI || !scriptFooter || !scriptTui || !scriptCmd) return
@@ -185,15 +185,46 @@ export default function uiExtension(pi: ExtensionAPI) {
 						const kb = JSON.parse(readFileSync(kbPath, "utf-8"))
 						const nl = kb["tui.input.newLine"]
 						if (typeof nl === "string" && nl.includes("ctrl+j")) {
-							ctx.ui.setWidget(
-								"newline-hint",
-								[
-									ctx.ui.theme.fg("accent", "Tip: ") +
-										ctx.ui.theme.fg("muted", "Shift+Enter doesn't work here. Use Ctrl+J to insert a newline."),
-								],
-								{ placement: "aboveEditor" },
+							ctx.ui.custom(
+								(_tui, theme, _kb, done) => {
+									return {
+										render(width: number): string[] {
+											const { Box } = require("@mariozechner/pi-tui")
+											const { Text } = require("@mariozechner/pi-tui")
+											const box = new Box(2, 1)
+											box.addChild(new Text(theme.inverse("  ⚠  Shift+Enter doesn't work in this terminal  ")))
+											box.addChild(new Text(""))
+											box.addChild(new Text(`${theme.bold("Ctrl+J")}${" ".padEnd(12)}→  insert a newline`))
+											box.addChild(new Text(`\\ + Enter${" ".padEnd(9)}→  insert a newline`))
+											box.addChild(new Text(""))
+											box.addChild(new Text(theme.fg("muted", "Press Enter to dismiss")))
+											const accent = theme.getFgAnsi("accent")
+											const reset = "\x1b[0m"
+											const hbar = "─"
+											const inner = width - 2
+											const lines = box.render(inner)
+											const bordered = lines.map((l: string, i: number) => {
+												if (i === 0) return `${accent}┌${hbar.repeat(inner)}┐${reset}`
+												if (i === lines.length - 1) return `${accent}└${hbar.repeat(inner)}┘${reset}`
+												return `${accent}│${reset}${l}${accent}│${reset}`
+											})
+											return bordered
+										},
+										invalidate() {},
+										handleInput(data: string): void {
+											if (matchesKey(data, "enter")) done(undefined)
+										},
+										wantsKeyRelease: false,
+									}
+								},
+								{
+									overlay: true,
+									overlayOptions: { anchor: "center" },
+									onHandle: (handle) => {
+										newlineHintHandle = handle
+									},
+								},
 							)
-							newlineHintShown = true
 						}
 					}
 				} catch {
@@ -258,9 +289,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 			ctx.shutdown()
 		}
 
-		if (newlineHintShown) {
-			ctx.ui.setWidget("newline-hint", undefined)
-			newlineHintShown = false
+		if (newlineHintHandle) {
+			newlineHintHandle.hide()
+			newlineHintHandle = null
 		}
 	})
 
