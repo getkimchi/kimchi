@@ -146,6 +146,15 @@ describe("EnrichmentGuard", () => {
 		guard.reset()
 		expect(guard.shouldEnrich("kimi-k2.6", "build")).toBe(true)
 	})
+
+	it("re-injects on new session start even when model and phase are identical to previous session", () => {
+		// Simulates: session 1 ends on (modelA, explore); session_start fires and
+		// calls reset(); session 2 first turn is (modelA, explore) — must re-inject.
+		const guard = new EnrichmentGuard()
+		guard.shouldEnrich("kimi-k2.6", "explore") // end of previous session
+		guard.reset() // session_start
+		expect(guard.shouldEnrich("kimi-k2.6", "explore")).toBe(true)
+	})
 })
 
 // ---------------------------------------------------------------------------

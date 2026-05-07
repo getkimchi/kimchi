@@ -269,6 +269,10 @@ export default function (skillPaths: string[]) {
 			let unsubAltTab: (() => void) | null = null
 			pi.on("session_start", async (_event, ctx) => {
 				if (unsubAltTab) unsubAltTab()
+				// Reset so the first turn of every session always re-injects the
+				// enriched prompt, even when model and phase are unchanged from the
+				// previous session (e.g. same model, session always starts in explore).
+				enrichmentGuard.reset()
 				if (ctx.hasUI) {
 					unsubAltTab = ctx.ui.onTerminalInput((data) => {
 						if (matchesKey(data, "alt+tab")) {
