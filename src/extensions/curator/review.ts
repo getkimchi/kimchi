@@ -168,6 +168,7 @@ export async function runCuratorReview(opts: RunCuratorReviewOptions): Promise<C
 		const proc = spawn(invocation.command, invocation.args, {
 			stdio: ["ignore", "pipe", "pipe"],
 			detached: true,
+			env: { ...process.env, KIMCHI_SUBAGENT: "1" },
 		})
 		proc.unref()
 		let output = ""
@@ -307,6 +308,7 @@ export function spawnSessionReview(opts: RunSessionReviewOptions): void {
 	const proc = spawn(invocation.command, invocation.args, {
 		stdio: ["ignore", stdoutOption, "ignore"],
 		detached: true,
+		env: { ...process.env, KIMCHI_SUBAGENT: "1" },
 	})
 
 	if (logFd !== undefined) {
