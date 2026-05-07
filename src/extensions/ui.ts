@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process"
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
@@ -15,6 +15,7 @@ import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { isBareExitAlias } from "./exit-utils.js"
 import { getMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
 import { createWorkingAnimator } from "./spinner.js"
+import { getKittyKeyboardSupport } from "./terminal-compat/keyboard-capability.js"
 
 function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {
 	return a.provider === b.provider && a.id === b.id
@@ -105,6 +106,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	let sessionStartMs = 0
 	let linesAdded = 0
 	let linesRemoved = 0
+	let newlineHintShown = false
 
 	const refresh = (status: "idle" | "generating") => {
 		if (!currentCtx?.hasUI || !scriptFooter || !scriptTui || !scriptCmd) return
@@ -169,6 +171,37 @@ export default function uiExtension(pi: ExtensionAPI) {
 			return scriptFooter
 		})
 
+		// Surface the Ctrl+J newline tip inside the TUI for terminals that don't
+		// support the Kitty keyboard protocol (the real root-cause behind Shift+Enter
+		// not working). The startup console warning is easy to miss (nag-throttled
+		// and swallowed by TUI init), so a persistent per-session widget is more
+		// visible than a one-time notification.
+		if (getKittyKeyboardSupport() === false && ctx.hasUI) {
+			const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+			if (agentDir) {
+				try {
+					const kbPath = resolve(agentDir, "keybindings.json")
+					if (existsSync(kbPath)) {
+						const kb = JSON.parse(readFileSync(kbPath, "utf-8"))
+						const nl = kb["tui.input.newLine"]
+						if (typeof nl === "string" && nl.includes("ctrl+j")) {
+							ctx.ui.setWidget(
+								"newline-hint",
+								[
+									ctx.ui.theme.fg("accent", "Tip: ") +
+										ctx.ui.theme.fg("muted", "Shift+Enter doesn't work here. Use Ctrl+J to insert a newline."),
+								],
+								{ placement: "aboveEditor" },
+							)
+							newlineHintShown = true
+						}
+					}
+				} catch {
+					// best-effort; don't break startup if keybindings are unreadable
+				}
+			}
+		}
+
 		ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
 			tui.setShowHardwareCursor(true)
 			const editor = new PromptEditor(tui, editorTheme, keybindings, ctx.ui.theme)
@@ -223,6 +256,11 @@ export default function uiExtension(pi: ExtensionAPI) {
 	pi.on("input", (event, ctx) => {
 		if (isBareExitAlias(event.text)) {
 			ctx.shutdown()
+		}
+
+		if (newlineHintShown) {
+			ctx.ui.setWidget("newline-hint", undefined)
+			newlineHintShown = false
 		}
 	})
 
