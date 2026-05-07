@@ -19,6 +19,7 @@ import agentsExtension from "./extensions/agents/index.js"
 import bashCollapseExtension from "./extensions/bash-collapse.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
+import extensionSlashCommand from "./extensions/extension-slash/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import loginExtension from "./extensions/login/index.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
@@ -270,6 +271,7 @@ try {
 			uiExtension,
 			subagentExtension,
 			agentsExtension,
+			extensionSlashCommand,
 			tagsExtension,
 			telemetryExtension(telemetryConfig),
 			toolRendererExtension,
