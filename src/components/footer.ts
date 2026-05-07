@@ -6,6 +6,7 @@ import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earen
 import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, TEAL_FG, resolvedSemanticFg } from "../ansi.js"
+import { getActiveFerment, getCurrentPhaseIndex } from "../extensions/ferment.js"
 import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/orchestration/prompt-enrichment.js"
 import { getCurrentPermissionsMode } from "../extensions/permissions/index.js"
@@ -216,10 +217,38 @@ export class StatsFooter implements Component {
 		return seg(teal(`${count} subagent${count === 1 ? "" : "s"}`))
 	}
 
-	private permissionsWarning(): FooterSegment | null {
+	private fermentSegment(): FooterSegment | null {
+		const ferment = getActiveFerment()
+		if (!ferment) return null
+		const phaseIdx = getCurrentPhaseIndex()
+		const totalPhases = ferment.phases.length
+		const activePhase = ferment.activePhaseId ? ferment.phases.find((p) => p.id === ferment.activePhaseId) : undefined
+		const activeStep = activePhase?.steps.find(
+			(s) => s.status === "running" || s.status === "pending" || s.status === "failed",
+		)
+
+		const parts: string[] = [`${this.dim("ferment:")}${teal(ferment.name)}`]
+		parts.push(this.dim(`[${ferment.status}]`))
+		parts.push(this.dim(ferment.mode))
+
+		if (phaseIdx !== undefined && totalPhases > 0) {
+			const phaseName = activePhase?.name ?? ""
+			const phaseInfo = phaseName ? ` "${phaseName}"` : ""
+			parts.push(this.dim(`· phase ${phaseIdx}/${totalPhases}${phaseInfo}`))
+		}
+
+		if (activeStep && activePhase) {
+			const totalSteps = activePhase.steps.length
+			parts.push(this.dim(`· step ${activeStep.index}/${totalSteps}`))
+		}
+
+		return seg(parts.join(" "))
+	}
+
+	private permissionsWarning(_width: number): string | null {
 		const text = this._footerData.getExtensionStatuses().get("permissions-warning")
 		if (!text) return null
-		return seg(this.theme.fg("warning", text))
+		return this.theme.fg("warning", text)
 	}
 
 	private updateAvailableSegment(): FooterSegment | null {
@@ -237,6 +266,7 @@ export class StatsFooter implements Component {
 			this.permissionsSegment(),
 			this.multiModelSegment(),
 			this.modelSegment(),
+			this.fermentSegment(),
 			this.subagentSegment(),
 			this.contextSegment(),
 			this.usageSegment(),
@@ -265,12 +295,12 @@ export class StatsFooter implements Component {
 
 	buildInfoLine(width: number): string {
 		let line = ""
-		const permissionsWarningSeg = this.permissionsWarning()
+		const permissionsWarningText = this.permissionsWarning(width)
 		const updateSeg = this.updateAvailableSegment()
 
 		let remainingWidth = width
-		if (permissionsWarningSeg) {
-			line = truncateToWidth(permissionsWarningSeg.text, remainingWidth)
+		if (permissionsWarningText) {
+			line = truncateToWidth(permissionsWarningText, remainingWidth)
 			remainingWidth -= visibleWidth(line)
 		}
 
