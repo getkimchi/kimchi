@@ -5,7 +5,10 @@ import { MODEL_CAPABILITIES, ModelRegistry } from "../model-registry/index.js"
 import {
 	type EnvironmentInfo,
 	buildOrchestratorSystemPrompt,
+	buildSingleModelSystemPrompt,
 	buildSubagentSystemPrompt,
+	resolveOrchestrationGuideline,
+	resolvePhaseGuideline,
 	transformPrompt,
 } from "./prompt-transformer.js"
 
@@ -352,5 +355,159 @@ describe("buildSubagentSystemPrompt", () => {
 	it("replaces the {{ENVIRONMENT}} placeholder", () => {
 		const result = buildSubagentSystemPrompt(tools, testEnv)
 		expect(result).not.toContain("{{ENVIRONMENT}}")
+	})
+})
+
+describe("phase guideline resolution", () => {
+	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
+
+	it("returns default guideline when no model is specified", () => {
+		const result = resolvePhaseGuideline("build", undefined, registry)
+		expect(result).toContain("During **build** phase")
+		expect(result).toContain("Read each file BEFORE modifying it")
+	})
+
+	it("returns model-specific override when model has one", () => {
+		const result = resolvePhaseGuideline("build", "minimax-m2.7", registry)
+		// Should contain default build guidelines
+		expect(result).toContain("During **build** phase:")
+		// Should contain MiniMax family guidelines
+		expect(result).toContain("MiniMax M2 family")
+		expect(result).toContain("Outline-then-diff")
+		// Should contain M2.7-specific guidelines
+		expect(result).toContain("minimax-m2.7 specific")
+		expect(result).toContain("mutex-based concurrency")
+	})
+
+	it("falls back to default for phases with no model override", () => {
+		// minimax-m2.7 has no explore override
+		const result = resolvePhaseGuideline("explore", "minimax-m2.7", registry)
+		expect(result).toContain("During **explore** phase")
+		expect(result).not.toContain("minimax")
+	})
+
+	it("returns default for unknown model IDs", () => {
+		const result = resolvePhaseGuideline("plan", "nonexistent-model", registry)
+		expect(result).toContain("During **plan** phase")
+		expect(result).toContain("Design BEFORE coding")
+	})
+
+	it("composes all three layers for kimi-k2.6 plan", () => {
+		const result = resolvePhaseGuideline("plan", "kimi-k2.6", registry)
+		// Default layer
+		expect(result).toContain("Design BEFORE coding")
+		// K2.6-specific layer
+		expect(result).toContain("kimi-k2.6 specific")
+		expect(result).toContain("queue of independent sub-tasks")
+	})
+})
+
+describe("orchestration guideline resolution", () => {
+	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
+
+	it("returns empty string when no model is specified", () => {
+		const result = resolveOrchestrationGuideline(undefined, registry)
+		expect(result).toBe("")
+	})
+
+	it("returns composed orchestration guideline for minimax-m2.7", () => {
+		const result = resolveOrchestrationGuideline("minimax-m2.7", registry)
+		expect(result).toContain("MiniMax M2 family")
+		expect(result).toContain("web_search")
+		expect(result).toContain("front-load")
+	})
+
+	it("returns composed orchestration guideline for kimi-k2.6", () => {
+		const result = resolveOrchestrationGuideline("kimi-k2.6", registry)
+		// Family layer
+		expect(result).toContain("Kimi family")
+		expect(result).toContain("delegation sequence")
+		// K2.6-specific layer
+		expect(result).toContain("kimi-k2.6 specific")
+		expect(result).toContain("agent-swarm")
+	})
+
+	it("returns composed orchestration guideline for kimi-k2.5", () => {
+		const result = resolveOrchestrationGuideline("kimi-k2.5", registry)
+		// Family layer
+		expect(result).toContain("Kimi family")
+		// K2.5-specific layer
+		expect(result).toContain("kimi-k2.5 specific")
+		expect(result).toContain("tool-call reliability")
+	})
+
+	it("returns composed orchestration guideline for claude-opus-4-7", () => {
+		const result = resolveOrchestrationGuideline("claude-opus-4-7", registry)
+		expect(result).toContain("Claude family")
+		expect(result).toContain("delegation granularity")
+	})
+
+	it("returns composed orchestration guideline for nemotron-3-super-fp4", () => {
+		const result = resolveOrchestrationGuideline("nemotron-3-super-fp4", registry)
+		expect(result).toContain("Nemotron family")
+		expect(result).toContain("long context window")
+	})
+
+	it("returns empty string for unknown model IDs", () => {
+		const result = resolveOrchestrationGuideline("nonexistent-model", registry)
+		expect(result).toBe("")
+	})
+})
+
+describe("guideline injection into system prompts", () => {
+	const tools = [{ name: "read", description: "Read file contents" }]
+	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
+
+	it("injects orchestration guidelines into orchestrator prompt for known models", () => {
+		const result = buildOrchestratorSystemPrompt(tools, testEnv, undefined, undefined, {
+			currentModelId: "minimax-m2.7",
+			registry,
+		})
+		expect(result).toContain("## Orchestration Guidelines")
+		expect(result).toContain("web_search")
+	})
+
+	it("omits orchestration section when no model context is provided", () => {
+		const result = buildOrchestratorSystemPrompt(tools, testEnv)
+		expect(result).not.toContain("## Orchestration Guidelines")
+	})
+
+	it("does not inject orchestration guidelines into single-model prompt", () => {
+		const result = buildSingleModelSystemPrompt(tools, testEnv, undefined, undefined, {
+			currentModelId: "minimax-m2.7",
+			registry,
+		})
+		expect(result).not.toContain("## Orchestration Guidelines")
+	})
+
+	it("does not inject orchestration guidelines into subagent prompt", () => {
+		const result = buildSubagentSystemPrompt(tools, testEnv, undefined, undefined, {
+			currentModelId: "minimax-m2.7",
+			registry,
+		})
+		expect(result).not.toContain("## Orchestration Guidelines")
+	})
+
+	it("injects phase guidelines into orchestrator prompt when phase is set", () => {
+		const result = buildOrchestratorSystemPrompt(tools, testEnv, undefined, undefined, {
+			currentModelId: "minimax-m2.7",
+			currentPhase: "build",
+			registry,
+		})
+		expect(result).toContain("## Phase Guidelines (build)")
+		expect(result).toContain("Outline-then-diff")
+	})
+
+	it("places orchestration section before phase section", () => {
+		const result = buildOrchestratorSystemPrompt(tools, testEnv, undefined, undefined, {
+			currentModelId: "minimax-m2.7",
+			currentPhase: "build",
+			registry,
+		})
+		const orchPos = result.indexOf("## Orchestration Guidelines")
+		const phasePos = result.indexOf("## Phase Guidelines")
+		expect(orchPos).toBeGreaterThan(-1)
+		expect(phasePos).toBeGreaterThan(-1)
+		expect(orchPos).toBeLessThan(phasePos)
 	})
 })
