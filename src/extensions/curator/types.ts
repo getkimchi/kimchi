@@ -5,6 +5,11 @@ export interface TransitionProposal {
 	proposeReactivate: string[]
 }
 
+export interface LogSummary {
+	summaries: string[]
+	failurePatterns: { type: string; count: number; lastSeen: string }[]
+}
+
 export interface SkillMetadata {
 	name: string
 	description: string

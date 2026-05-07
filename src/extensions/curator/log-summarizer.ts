@@ -1,13 +1,11 @@
 import { readFile, readdir } from "node:fs/promises"
 import { join } from "node:path"
+import type { LogSummary } from "./types.js"
+
+export type { LogSummary } from "./types.js"
 
 const MAX_SUMMARIES = 20
 const MAX_FAILURES = 50
-
-export interface LogSummary {
-	summaries: string[]
-	failurePatterns: { type: string; count: number; lastSeen: string }[]
-}
 
 export async function summarizeLogs(memoryDir: string): Promise<LogSummary> {
 	const summariesDir = join(memoryDir, "summaries")
