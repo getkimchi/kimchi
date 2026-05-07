@@ -308,7 +308,7 @@ export function spawnSessionReview(opts: RunSessionReviewOptions): void {
 	const proc = spawn(invocation.command, invocation.args, {
 		stdio: ["ignore", stdoutOption, "ignore"],
 		detached: true,
-		env: { ...process.env, KIMCHI_SUBAGENT: "1" },
+		env: { ...process.env, KIMCHI_SUBAGENT: "1", KIMCHI_SESSION_REVIEW: "1" },
 	})
 
 	if (logFd !== undefined) {

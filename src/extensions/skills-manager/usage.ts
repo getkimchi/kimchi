@@ -162,11 +162,16 @@ export class UsageTracker {
 		return entry
 	}
 
-	async bumpCreate(name: string): Promise<UsageEntry> {
+	async list(): Promise<UsageEntry[]> {
+		const entries = await this._load()
+		return Array.from(entries.values())
+	}
+
+	async bumpCreate(name: string, agentCreated = false): Promise<UsageEntry> {
 		return this._lock((entries) => {
 			const entry: UsageEntry = {
 				name,
-				agent_created: true,
+				agent_created: agentCreated,
 				created_at: this.now(),
 				use_count: 0,
 				patch_count: 0,

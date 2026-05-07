@@ -61,7 +61,7 @@ describe("runAutoTransitions", () => {
 	beforeEach(async () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "kimchi-transitions-test-"))
 		tracker = new UsageTracker(tmpDir)
-		await tracker.bumpCreate("active-old-skill")
+		await tracker.bumpCreate("active-old-skill", true)
 	})
 
 	afterEach(() => {

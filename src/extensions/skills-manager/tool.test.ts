@@ -40,7 +40,7 @@ describe("createSkillManageTool", () => {
 		const tool = createSkillManageTool(manager, tracker)
 		const result = await tool.execute("id", { action: "create", name: "foo", content: "body" })
 		expect(manager.create).toHaveBeenCalledWith("foo", "body", undefined)
-		expect(tracker.bumpCreate).toHaveBeenCalledWith("foo")
+		expect(tracker.bumpCreate).toHaveBeenCalledWith("foo", false)
 		expect(result.content[0].text).toBe("Created.")
 		expect(result.details.success).toBe(true)
 	})

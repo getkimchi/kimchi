@@ -1,7 +1,7 @@
 import { Type } from "typebox"
 import type { Static } from "typebox"
 import type { SkillManageResult, SkillManager } from "./skill-manager.js"
-import type { UsageTracker } from "./usage.js"
+import type { UsageEntry, UsageTracker } from "./usage.js"
 
 const CreateAction = Type.Object({
 	action: Type.Literal("create"),
@@ -81,7 +81,22 @@ function wrapResult(result: SkillManageResult): {
 	}
 }
 
+async function pinnedGuard(name: string, tracker: UsageTracker): Promise<string | null> {
+	try {
+		const entries = await tracker.list()
+		const entry = entries.find((e: UsageEntry) => e.name === name)
+		if (entry?.pinned) {
+			return `Skill '${name}' is pinned and cannot be modified. Unpin it first with: skill_manage action=pin name=${name} pin=false`
+		}
+	} catch {
+		// best-effort — don't block if tracker unreadable
+	}
+	return null
+}
+
 export function createSkillManageTool(manager: SkillManager, tracker: UsageTracker) {
+	const isSessionReview = process.env.KIMCHI_SESSION_REVIEW === "1"
+
 	return {
 		name: "skill_manage",
 		label: "Skill Manager",
@@ -98,30 +113,40 @@ export function createSkillManageTool(manager: SkillManager, tracker: UsageTrack
 				switch (params.action) {
 					case "create": {
 						const r = await manager.create(params.name, params.content, params.category)
-						if (r.success) await tracker.bumpCreate(params.name)
+						if (r.success) await tracker.bumpCreate(params.name, isSessionReview)
 						return wrapResult(r)
 					}
 					case "edit": {
+						const pinErr = await pinnedGuard(params.name, tracker)
+						if (pinErr) return wrapResult({ success: false, error: pinErr })
 						const r = await manager.edit(params.name, params.content)
 						if (r.success) await tracker.bumpPatch(params.name)
 						return wrapResult(r)
 					}
 					case "patch": {
+						const pinErr = await pinnedGuard(params.name, tracker)
+						if (pinErr) return wrapResult({ success: false, error: pinErr })
 						const r = await manager.patch(params.name, params.old_string, params.new_string, params.file_path)
 						if (r.success) await tracker.bumpPatch(params.name)
 						return wrapResult(r)
 					}
 					case "delete": {
+						const pinErr = await pinnedGuard(params.name, tracker)
+						if (pinErr) return wrapResult({ success: false, error: pinErr })
 						const r = await manager.delete(params.name, params.absorbed_into)
 						if (r.success) await tracker.archive(params.name, params.absorbed_into)
 						return wrapResult(r)
 					}
 					case "write_file": {
+						const pinErr = await pinnedGuard(params.name, tracker)
+						if (pinErr) return wrapResult({ success: false, error: pinErr })
 						const r = await manager.writeFile(params.name, params.file_path, params.file_content)
 						if (r.success) await tracker.bumpPatch(params.name)
 						return wrapResult(r)
 					}
 					case "remove_file": {
+						const pinErr = await pinnedGuard(params.name, tracker)
+						if (pinErr) return wrapResult({ success: false, error: pinErr })
 						const r = await manager.removeFile(params.name, params.file_path)
 						if (r.success) await tracker.bumpPatch(params.name)
 						return wrapResult(r)

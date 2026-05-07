@@ -15,7 +15,7 @@ describe("UsageTracker", () => {
 
 	describe("bumpCreate", () => {
 		it("creates .usage.json on first call", async () => {
-			const entry = await tracker.bumpCreate("my-skill")
+			const entry = await tracker.bumpCreate("my-skill", true)
 			expect(entry.name).toBe("my-skill")
 			expect(entry.agent_created).toBe(true)
 			expect(entry.state).toBe("active")
