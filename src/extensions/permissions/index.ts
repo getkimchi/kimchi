@@ -160,6 +160,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	let unsubscribeTerminalInput: (() => void) | null = null
 	let _lastCtx: ExtensionContext | undefined
 
+	// Plan completion menu state: tracks whether the agent used tools during the
+	// current user-input cycle so we can detect text-only turns (plan output).
+	let toolsCalledThisCycle = false
+	let planMenuShownThisCycle = false
+
 	function rebuildConfigRules(): void {
 		configRules = [
 			...parseRules(loaded.allowBySource.local, "allow", "local"),
@@ -294,6 +299,23 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		}
 	}
 
+	function switchFromPlanAndExecute(ctx: ExtensionContext, targetMode: PermissionMode): void {
+		runtimeMode = targetMode
+		restoreToolsFromPlanMode()
+		propagateModeToEnv()
+		updateStatus(ctx)
+		maybeShowYoloWarning(ctx, targetMode)
+
+		pi.sendMessage(
+			{
+				customType: "plan-execute",
+				content: "The user approved the plan. Execute it now.",
+				display: false,
+			},
+			{ triggerTurn: true },
+		)
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
 		_lastCtx = ctx
 		const { errors } = doLoadConfig(ctx)
@@ -345,6 +367,56 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async (event): Promise<{ systemPrompt?: string }> => {
 		if (currentMode() !== "plan") return {}
 		return { systemPrompt: `${event.systemPrompt}\n\n${planModeSupplement.trim()}` }
+	})
+
+	// Reset plan-completion tracking on every new user input.
+	pi.on("input", async () => {
+		toolsCalledThisCycle = false
+		planMenuShownThisCycle = false
+	})
+
+	// Track tool calls so we can distinguish exploration turns from plan output.
+	pi.on("tool_execution_start", async () => {
+		if (currentMode() === "plan") {
+			toolsCalledThisCycle = true
+		}
+	})
+
+	// When the agent finishes a text-only turn in plan mode, offer the user a
+	// menu to approve and execute the plan, similar to Claude Code's approach.
+	pi.on("turn_end", async (event, ctx) => {
+		if (currentMode() !== "plan") return
+		if (!ctx.hasUI) return
+		if (planMenuShownThisCycle) return
+
+		const message = event.message as AssistantMessage
+		if (message.role !== "assistant") return
+
+		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
+		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
+
+		// Only show the menu when the agent produced text without tool calls —
+		// that signals it is presenting a plan rather than still exploring.
+		if (!hasText || hasToolCalls) return
+
+		planMenuShownThisCycle = true
+
+		const EXECUTE = "Yes — execute the plan"
+		const EXECUTE_AUTO = "Yes — execute (auto-approve)"
+		const DECLINE = "No, do something else"
+
+		const choice = await ctx.ui.select("Plan complete. How would you like to proceed?", [
+			EXECUTE,
+			EXECUTE_AUTO,
+			DECLINE,
+		])
+
+		if (choice === EXECUTE) {
+			switchFromPlanAndExecute(ctx, "default")
+		} else if (choice === EXECUTE_AUTO) {
+			switchFromPlanAndExecute(ctx, "auto")
+		}
+		// Decline or escape: stay in plan mode, user types their next message.
 	})
 
 	pi.on("tool_call", async (event, ctx) => {
