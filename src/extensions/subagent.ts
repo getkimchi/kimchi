@@ -59,7 +59,7 @@ interface SubagentTokenUsage {
 	cacheWrite: number
 }
 
-interface SubagentResult {
+export interface SubagentResult {
 	exitCode: number
 	accumulated: string
 	stderr: string
@@ -240,7 +240,7 @@ export function prepareChildSessionFile(
 	return { sessionId, sessionFile }
 }
 
-function getSubagentInvocation(args: string[]): { command: string; args: string[] } {
+export function getSubagentInvocation(args: string[]): { command: string; args: string[] } {
 	// Bun single-file binary: process.execPath IS the self-contained binary and the entry script is baked in, so we spawn with just the CLI args. Do NOT prepend process.argv[1] — it's a virtual /$bunfs/... path that only exists inside this process's embedded filesystem, and the child would either error or misread it as a positional arg.
 	if (isBunBinary) {
 		return { command: process.execPath, args }
@@ -313,7 +313,7 @@ export function parseSubagentEvent(line: string): ParsedSubagentEvent {
 	return empty
 }
 
-function spawnSubagent(
+export function spawnSubagent(
 	invocation: { command: string; args: string[] },
 	cwd: string,
 	signal: AbortSignal | undefined,
