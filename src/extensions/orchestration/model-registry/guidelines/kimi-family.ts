@@ -26,8 +26,20 @@ export const KIMI_FAMILY_BUILD = `During **build** phase (Kimi family):
 
 export const KIMI_FAMILY_REVIEW = ""
 
+/** Kimi family orchestration: plan-first delegation.
+ * Sources: §3.2 item 4 (plan-first groove), §3.2 item 3 (mixed-goal hesitation) */
+export const KIMI_FAMILY_ORCHESTRATION = `When orchestrating (Kimi family):
+- Plan your full delegation sequence in plain text before spawning the first subagent.
+- Keep each subagent prompt focused on a single goal — Kimi models hesitate when a prompt mixes unrelated objectives.`
+
 // ── Kimi K2.5 per-model overrides ─────────────────────────────────────
 // Sources: MoonshotAI/Kimi-K2.5#24, Kilo-Org/kilocode#5722, session-01-findings
+
+/** K2.5 orchestration: tool-call reliability and cascade prevention.
+ * Sources: §2.1 (210k wasted on cascade), §3.2 items 1–2 (tool-call bugs) */
+export const KIMI_K25_ORCHESTRATION = `When orchestrating (kimi-k2.5 specific):
+- Ensure each \`subagent\` tool call is complete and well-formed — your tool-call reliability is lower than other models. Never emit partial or fragmented tool calls.
+- If a subagent fails, do NOT attempt the work yourself — you will waste tokens duplicating effort. Spawn a replacement subagent with a simpler, corrected prompt.`
 
 /** K2.5 build: tool-call reliability fixes (K2.5-specific bugs). */
 export const KIMI_K25_BUILD = `During **build** phase (kimi-k2.5 specific):
@@ -41,6 +53,12 @@ export const KIMI_K25_EXPLORE = `During **explore** phase (kimi-k2.5 specific):
 
 // ── Kimi K2.6 per-model overrides ─────────────────────────────────────
 // Sources: Kimi K2.6 release notes (kimi-k2.org/blog/24-kimi-k2-6-release)
+
+/** K2.6 orchestration: queue-based swarm delegation.
+ * Sources: §3.3 item 1 (agent-swarm primitives), §3.3 item 2 (context compressor) */
+export const KIMI_K26_ORCHESTRATION = `When orchestrating (kimi-k2.6 specific):
+- You are tuned for agent-swarm orchestration. Decompose tasks into a queue of independent subagent calls and run independent ones in parallel.
+- Trust your built-in context compressor between delegation steps — do NOT manually summarise subagent results before deciding next steps.`
 
 /** K2.6 plan: queue-based decomposition for long-horizon orchestration. */
 export const KIMI_K26_PLAN = `During **plan** phase (kimi-k2.6 specific):

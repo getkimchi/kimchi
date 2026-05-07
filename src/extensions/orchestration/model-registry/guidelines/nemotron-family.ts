@@ -22,9 +22,15 @@ export const NEMOTRON_FAMILY_BUILD = `During **build** phase (Nemotron family):
 - Your long context window is a strength — read each file in full before editing.`
 
 export const NEMOTRON_FAMILY_REVIEW = ""
+/** Nemotron family orchestration: leverage long-context for subagent results.
+ * Sources: §3.4 item 1 (1M context window, near-perfect retrieval) */
+export const NEMOTRON_FAMILY_ORCHESTRATION = `When orchestrating (Nemotron family):
+- Read subagent results in full — your long context window lets you ingest them completely. Do not skim or skip sections when deciding next steps.`
 
 // ── Nemotron 3 Super FP4 per-model overrides ──────────────────────────
 // Sources: in-pool benchmark observations (weakest coder, multi-file unreliability)
+
+export const NEMOTRON_3_SUPER_ORCHESTRATION = ""
 
 /** Nemotron 3 Super build: conservative scope for FP4 quantisation's coding weakness. */
 export const NEMOTRON_3_SUPER_BUILD = `During **build** phase (nemotron-3-super-fp4 specific):

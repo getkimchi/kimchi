@@ -1,4 +1,5 @@
 import { type Skill, formatSkillsForPrompt } from "@mariozechner/pi-coding-agent"
+import { DEFAULT_ORCHESTRATION_GUIDELINES } from "../model-registry/guidelines/default-orchestration-guidelines.js"
 import { DEFAULT_PHASE_GUIDELINES } from "../model-registry/guidelines/default-phase-guidelines.js"
 import type { ModelRegistry } from "../model-registry/index.js"
 import type { OrchestrationModelDescriptor, Phase } from "../model-registry/types.js"
@@ -110,12 +111,13 @@ export function buildOrchestratorSystemPrompt(
 		.replace("{{ENVIRONMENT}}", () => environmentSection)
 		.replace("{{PROJECT_CONTEXT}}", () => projectContext)
 		.replace("{{SKILLS}}", () => skillsSection)
+	const orchestrationSection = buildOrchestrationGuidelinesSection(promptCtx?.currentModelId, promptCtx?.registry)
 	const phaseSection = buildPhaseGuidelinesSection(
 		promptCtx?.currentModelId,
 		promptCtx?.currentPhase,
 		promptCtx?.registry,
 	)
-	return base + phaseSection
+	return base + orchestrationSection + phaseSection
 }
 
 export function buildSingleModelSystemPrompt(
@@ -199,6 +201,24 @@ function formatSkills(skills?: readonly Skill[]): string {
 	if (!skills || skills.length === 0) return ""
 	// Cast required until upstream accepts readonly Skill[]
 	return formatSkillsForPrompt(skills as Skill[])
+}
+
+/** Resolve the effective orchestration guideline for a model.
+ *  Model override takes precedence; falls back to default. */
+export function resolveOrchestrationGuideline(
+	modelId: string | undefined,
+	registry: ModelRegistry | undefined,
+): string {
+	const descriptor = modelId ? registry?.getModelsWithCapabilities().find((m) => m.id === modelId) : undefined
+	return descriptor?.capabilities.orchestrationGuidelines ?? DEFAULT_ORCHESTRATION_GUIDELINES
+}
+
+/** Build the orchestration-guidelines annex for appending to an orchestrator
+ *  system prompt. Returns empty string if no guidelines resolve. */
+export function buildOrchestrationGuidelinesSection(modelId: string | undefined, registry?: ModelRegistry): string {
+	const guideline = resolveOrchestrationGuideline(modelId, registry)
+	if (!guideline) return ""
+	return `\n\n## Orchestration Guidelines\n\n${guideline}`
 }
 
 /** Resolve the effective guideline for a model+phase combo.

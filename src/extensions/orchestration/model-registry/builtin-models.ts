@@ -1,11 +1,14 @@
 import {
 	CLAUDE_FAMILY_EXPLORE,
+	CLAUDE_FAMILY_ORCHESTRATION,
 	CLAUDE_FAMILY_PLAN,
 	CLAUDE_FAMILY_REVIEW,
 	CLAUDE_OPUS_47_EXPLORE,
+	CLAUDE_OPUS_47_ORCHESTRATION,
 	CLAUDE_OPUS_47_PLAN,
 	CLAUDE_OPUS_47_REVIEW,
 } from "./guidelines/claude-family.js"
+import { DEFAULT_ORCHESTRATION_GUIDELINES } from "./guidelines/default-orchestration-guidelines.js"
 import {
 	DEFAULT_BUILD_GUIDELINES,
 	DEFAULT_EXPLORE_GUIDELINES,
@@ -15,19 +18,29 @@ import {
 import {
 	KIMI_FAMILY_BUILD,
 	KIMI_FAMILY_EXPLORE,
+	KIMI_FAMILY_ORCHESTRATION,
 	KIMI_FAMILY_PLAN,
 	KIMI_K25_BUILD,
 	KIMI_K25_EXPLORE,
+	KIMI_K25_ORCHESTRATION,
 	KIMI_K26_EXPLORE,
+	KIMI_K26_ORCHESTRATION,
 	KIMI_K26_PLAN,
 } from "./guidelines/kimi-family.js"
 import {
 	MINIMAX_FAMILY_BUILD,
+	MINIMAX_FAMILY_ORCHESTRATION,
 	MINIMAX_FAMILY_REVIEW,
 	MINIMAX_M27_BUILD,
+	MINIMAX_M27_ORCHESTRATION,
 	MINIMAX_M27_REVIEW,
 } from "./guidelines/minimax-family.js"
-import { NEMOTRON_3_SUPER_BUILD, NEMOTRON_FAMILY_BUILD } from "./guidelines/nemotron-family.js"
+import {
+	NEMOTRON_3_SUPER_BUILD,
+	NEMOTRON_3_SUPER_ORCHESTRATION,
+	NEMOTRON_FAMILY_BUILD,
+	NEMOTRON_FAMILY_ORCHESTRATION,
+} from "./guidelines/nemotron-family.js"
 import type { ModelCapabilities } from "./types.js"
 
 /**
@@ -84,6 +97,12 @@ function concatGuidelines(...layers: string[]): string {
 	return layers.filter(Boolean).join("\n\n")
 }
 
+/** Compose guideline layers; returns undefined when all layers are empty
+ *  so the resolver falls back to the default constant. */
+function optionalGuidelines(...layers: string[]): string | undefined {
+	return concatGuidelines(...layers) || undefined
+}
+
 // TODO: these capabilities could be returned by our models metadata API.
 /**
  * Capability knowledge-base keyed by model ID. Used to enrich the dynamic
@@ -109,6 +128,11 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 				plan: concatGuidelines(DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN, KIMI_K26_PLAN),
 				explore: concatGuidelines(DEFAULT_EXPLORE_GUIDELINES, KIMI_FAMILY_EXPLORE, KIMI_K26_EXPLORE),
 			},
+			orchestrationGuidelines: optionalGuidelines(
+				DEFAULT_ORCHESTRATION_GUIDELINES,
+				KIMI_FAMILY_ORCHESTRATION,
+				KIMI_K26_ORCHESTRATION,
+			),
 		},
 	],
 	[
@@ -122,6 +146,11 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 				build: concatGuidelines(DEFAULT_BUILD_GUIDELINES, KIMI_FAMILY_BUILD, KIMI_K25_BUILD),
 				explore: concatGuidelines(DEFAULT_EXPLORE_GUIDELINES, KIMI_FAMILY_EXPLORE, KIMI_K25_EXPLORE),
 			},
+			orchestrationGuidelines: optionalGuidelines(
+				DEFAULT_ORCHESTRATION_GUIDELINES,
+				KIMI_FAMILY_ORCHESTRATION,
+				KIMI_K25_ORCHESTRATION,
+			),
 		},
 	],
 	[
@@ -135,6 +164,11 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 				build: concatGuidelines(DEFAULT_BUILD_GUIDELINES, MINIMAX_FAMILY_BUILD, MINIMAX_M27_BUILD),
 				review: concatGuidelines(DEFAULT_REVIEW_GUIDELINES, MINIMAX_FAMILY_REVIEW, MINIMAX_M27_REVIEW),
 			},
+			orchestrationGuidelines: optionalGuidelines(
+				DEFAULT_ORCHESTRATION_GUIDELINES,
+				MINIMAX_FAMILY_ORCHESTRATION,
+				MINIMAX_M27_ORCHESTRATION,
+			),
 		},
 	],
 	[
@@ -147,6 +181,11 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			guidelines: {
 				build: concatGuidelines(DEFAULT_BUILD_GUIDELINES, NEMOTRON_FAMILY_BUILD, NEMOTRON_3_SUPER_BUILD),
 			},
+			orchestrationGuidelines: optionalGuidelines(
+				DEFAULT_ORCHESTRATION_GUIDELINES,
+				NEMOTRON_FAMILY_ORCHESTRATION,
+				NEMOTRON_3_SUPER_ORCHESTRATION,
+			),
 		},
 	],
 	[
@@ -161,6 +200,11 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 				explore: concatGuidelines(DEFAULT_EXPLORE_GUIDELINES, CLAUDE_FAMILY_EXPLORE, CLAUDE_OPUS_47_EXPLORE),
 				review: concatGuidelines(DEFAULT_REVIEW_GUIDELINES, CLAUDE_FAMILY_REVIEW, CLAUDE_OPUS_47_REVIEW),
 			},
+			orchestrationGuidelines: optionalGuidelines(
+				DEFAULT_ORCHESTRATION_GUIDELINES,
+				CLAUDE_FAMILY_ORCHESTRATION,
+				CLAUDE_OPUS_47_ORCHESTRATION,
+			),
 		},
 	],
 	["glm-5-fp8", "ignored"],

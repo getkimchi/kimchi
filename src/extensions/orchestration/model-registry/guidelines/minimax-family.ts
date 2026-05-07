@@ -21,6 +21,14 @@ export const MINIMAX_FAMILY_EXPLORE = ""
 export const MINIMAX_FAMILY_RESEARCH = ""
 export const MINIMAX_FAMILY_PLAN = ""
 
+/** M2 family orchestration: direct web_search, short prompts, single-goal subagents.
+ * Sources: §2.2 Issue 1 (reflexive research delegation), §3.1 item 2 (drops long lists),
+ *          §3.1 item 5 (step-limit ~100 tool calls) */
+export const MINIMAX_FAMILY_ORCHESTRATION = `When orchestrating (MiniMax M2 family):
+- Call \`web_search\` directly for simple lookups — do NOT delegate to a research subagent. M2 models reflexively over-delegate research, costing 10–20× the tokens.
+- Keep subagent prompts short and front-load the critical instruction. M2 drops items from long structured contexts.
+- Each subagent prompt should target a single focused goal — do not ask a subagent to do multiple unrelated things.`
+
 /** M2 family build: architecture-level traits (outline-then-diff, scope, APIs, step-limit). */
 export const MINIMAX_FAMILY_BUILD = `During **build** phase (MiniMax M2 family):
 - Outline-then-diff: state the change in 1–3 bullets, then emit the minimal diff. No "clever" refactors, no surprise restructuring.
@@ -35,6 +43,8 @@ export const MINIMAX_FAMILY_REVIEW = `During **review** phase (MiniMax M2 family
 
 // ── MiniMax M2.7 per-model overrides ──────────────────────────────────
 // Sources: session-01-findings (Go mutex over-use observed in M2.7 benchmarks)
+
+export const MINIMAX_M27_ORCHESTRATION = ""
 
 /** M2.7 build: Go-specific concurrency pattern observed in M2.7. */
 export const MINIMAX_M27_BUILD = `During **build** phase (minimax-m2.7 specific):

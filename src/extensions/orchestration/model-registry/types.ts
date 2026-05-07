@@ -39,6 +39,10 @@ export interface ModelCapabilities {
 	 *  REPLACES the default guideline for that phase. If absent, the default
 	 *  guideline is used. */
 	guidelines?: Partial<Readonly<Record<Phase, string>>>
+	/** Orchestration-specific guideline annex. Appended to the system prompt
+	 *  when this model acts as the orchestrator. If absent, the default
+	 *  orchestration guideline is used. */
+	orchestrationGuidelines?: string
 }
 
 /**
