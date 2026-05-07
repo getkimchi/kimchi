@@ -22,8 +22,13 @@ export default function memoryExtension(pi: ExtensionAPI, options?: MemoryExtens
 
 	pi.registerTool(createMemoryTool(store))
 
-	pi.on("session_start", async () => {
+	// biome-ignore lint/suspicious/noExplicitAny: ctx shape not exported from pi-coding-agent
+	pi.on("session_start", async (_event, ctx: any) => {
 		await store.loadFromDisk()
+		ctx.memorySnapshot = {
+			memory: store.formatForSystemPrompt("memory") ?? null,
+			user: store.formatForSystemPrompt("user") ?? null,
+		}
 	})
 
 	pi.on("before_agent_start", async (event) => {
