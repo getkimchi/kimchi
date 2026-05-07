@@ -87,7 +87,11 @@ export function createSkillManageTool(manager: SkillManager, tracker: UsageTrack
 		label: "Skill Manager",
 		description:
 			"Create, edit, patch, delete, list, and manage Kimchi skills.\n\n" +
-			"Actions: create, edit, patch, delete, list (inventory), write_file, remove_file, pin.",
+			"Actions: create, edit, patch, delete, list (inventory), write_file, remove_file, pin.\n\n" +
+			"## Inline skill creation guidance\n" +
+			"Create when: complex task succeeded (5+ tool calls), errors overcome, user-corrected approach worked, non-trivial workflow discovered, or user asks you to remember a procedure.\n" +
+			"Update when: instructions stale/wrong, OS-specific failures, missing steps or pitfalls found during use.\n" +
+			"After difficult/iterative tasks, offer to save as a skill. Skip for simple one-offs. Confirm with user before creating or deleting.",
 		parameters: SkillManageSchema,
 		async execute(_toolCallId: string, params: SkillManageArgs) {
 			try {

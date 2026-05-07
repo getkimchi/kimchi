@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
-import type { SkillManager } from "./skill-manager.js"
+import { SkillManager } from "./skill-manager.js"
 import { SkillManageSchema, createSkillManageTool } from "./tool.js"
-import type { UsageTracker } from "./usage.js"
+import { UsageTracker } from "./usage.js"
 
 describe("createSkillManageTool", () => {
 	function makeMocks() {
@@ -83,6 +83,15 @@ describe("createSkillManageTool", () => {
 		expect(result.details.success).toBe(true)
 		const inventory = JSON.parse(result.content[0].text)
 		expect(inventory).toHaveLength(2)
+	})
+
+	it("description includes inline creation guidance", () => {
+		const manager = new SkillManager("/tmp")
+		const tracker = new UsageTracker("/tmp")
+		const tool = createSkillManageTool(manager, tracker)
+		expect(tool.description).toContain("Create when: complex task succeeded")
+		expect(tool.description).toContain("Update when: instructions stale")
+		expect(tool.description).toContain("Confirm with user before creating")
 	})
 
 	it("returns error on exception", async () => {

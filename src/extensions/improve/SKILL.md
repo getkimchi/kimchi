@@ -1,150 +1,51 @@
 ---
 name: improve
-description: Run the self-improvement loop — analyze the skill library and session history, then create, update, or consolidate skills
+description: Run the curator — consolidate the agent-created skill library via umbrella-building
 triggers:
   - user types "/improve"
   - user asks to "run self-improvement"
-  - user asks to "review skills"
+  - user asks to "consolidate skills"
+  - user asks to "review the skill library"
 category: harness
 state: active
-version: 1
+version: 2
 ---
-# Self-Improvement Loop
+# Skill Curator (/improve)
 
-Use this skill when the user asks to run the self-improvement loop. You will analyze the skill library and session history, then create, update, or consolidate skills based on patterns found.
+Use this skill when the user asks to run the self-improvement loop or consolidate skills.
 
-## Setup
+## What the curator does
 
-First, determine the paths:
+The curator consolidates **agent-created skills** — skills you created during sessions via `skill_manage action=create`. It does NOT touch bundled or harness skills. It does NOT delete anything — it archives (recoverable from `.archive/`).
 
-```
-AGENT_DIR = process.env.KIMCHI_CODING_AGENT_DIR or ~/.config/kimchi/harness
-SKILLS_DIR = <AGENT_DIR>/skills
-MEMORY_DIR = <AGENT_DIR>/memory
-SUMMARIES_DIR = <MEMORY_DIR>/summaries
-FAILURE_LOG = <MEMORY_DIR>/failure-log.jsonl
-```
+## Step 1: Check curator status
 
-## Step 1: Inventory the Skill Library
+Call `curator action=status` to check if a background run is in progress.
 
-Run: `ls -la <SKILLS_DIR>`
+If the response shows `"running": true` with a recent `last_run_at` (< 4h ago), report:
+> "The curator is currently running in the background. Check back later or wait for it to finish."
 
-Read every `SKILL.md` file in subdirectories. For each skill, note:
-- name, description, triggers, actions, category
-- `use_count` and `last_used_at` from `.usage.json` (if it exists)
-- `state` field (active / stale / archived)
+Then stop.
 
-Build a mental map of:
-- Which skills overlap or cover similar ground
-- Which skills are stale (not used in 30+ days)
-- Which skills are missing: topics the harness knows nothing about?
+## Step 2: Confirm with user
 
-## Step 2: Analyze Session Summaries
+Before running, confirm:
+> "I'll review your agent-created skills and consolidate overlapping ones into umbrellas. No skills will be deleted — only archived (recoverable). Want to proceed? (Add 'dry-run' to preview without changes.)"
 
-Run: `find <SUMMARIES_DIR> -name "*.md" -type f | sort | tail -20`
+If the user says **dry-run**: call `skill_manage action=list` to show agent-created skills, describe what you'd consolidate, then stop without calling `curator action=run`.
 
-Read the last 20 session summaries. For each, extract:
-- What was built or worked on
-- Any failures or mistakes logged
-- Patterns that could become a skill
+## Step 3: Run the curator
 
-Look specifically for:
-- Recurring errors or misconceptions → high priority, these should become skills
-- Techniques discovered that were non-obvious
-- Workflow patterns that saved time
-- Tools or APIs used that aren't covered by any skill
+Call `curator action=run`.
 
-## Step 3: Analyze Failure Log
+The curator will:
+1. Apply auto-transitions (stale/reactivate/archive by age)
+2. Spawn a consolidation subagent with access to skill_manage, skill_view, skill_list
+3. Return a structured summary
 
-Run: `tail -50 <FAILURE_LOG>`
+## Step 4: Report results
 
-Each line is a JSON failure record: `{"session_id", "timestamp", "type", "description", "resolution"}`
-
-Failures are your highest-priority signal. For each failure:
-- Was a skill created to prevent it? If not, should there be one?
-- Is the resolution pattern generalizable?
-
-Then read the full log: `cat <FAILURE_LOG>`
-
-Look for clusters: same type of failure across multiple sessions = skill gap.
-
-## Step 4: Produce Your Analysis
-
-Report a structured analysis:
-
-### Skills to CREATE
-For each new skill, write the full `SKILL.md` content:
-```
-## Skill: <name>
-- Category: research | coding | ops | harness | debugging
-- Triggers: (what prompts the user to load this skill)
-- Actions: (step-by-step instructions)
-- Examples: (concrete examples of when to use this)
-```
-
-### Skills to UPDATE
-For each existing skill that needs changes:
-```
-## Update: <skill-path relative to SKILLS_DIR>
-- What to change:
-- Why:
-```
-
-### Skills to UMBRELLA
-Groups of related skills that should be consolidated:
-```
-## Umbrella: <name>
-- Member skills: <list>
-- Rationale: <why these belong together>
-```
-
-### Stale Skills
-```
-## Archive: <skill-path>
-- Reason: <why this is stale>
-```
-
-### Skill Gaps
-Topics with no matching skill:
-```
-## Gap: <topic>
-- Evidence: <what you saw that suggests this is needed>
-- Suggested approach:
-```
-
-## Step 5: Execute
-
-Ask the user to confirm before writing files, or proceed if they already agreed.
-
-For each "Skills to CREATE":
-1. Create the directory: `<SKILLS_DIR>/<category>/<skill-name>/`
-2. Write the `SKILL.md`
-3. Update `.usage.json` to add the new skill with `use_count: 0, state: active`
-
-For each "Skills to UPDATE":
-1. Read the existing `SKILL.md`
-2. Apply your changes
-
-For each "Skills to UMBRELLA":
-1. Create the umbrella directory
-2. Write a consolidated `SKILL.md` that references the member skills
-3. Move member skill directories under the umbrella (use `git mv`)
-
-For each "Stale Skills":
-1. Update `.usage.json`: set `state: archived`
-
-After all changes:
-```bash
-cd <SKILLS_DIR>
-git add .
-git commit -m "improve: <short summary of changes>
-
-Co-Authored-By: Kimchi <noreply@kimchi.dev>"
-```
-
-## Output
-
-Always produce:
-1. A numbered action list
-2. The full analysis report (Step 4)
-3. A one-paragraph summary: "Created N skills, updated M skills, archived L skills, identified K gaps"
+Present the summary from the curator tool result:
+- How many skills were consolidated (X → umbrella)
+- How many were archived
+- If nothing changed: "No consolidations found. Your skill library is already well-organized."
