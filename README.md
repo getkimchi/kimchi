@@ -6,6 +6,15 @@ A coding agent CLI powered by [kimchi](https://kimchi.dev/). Built on the [pi-mo
 
 Install the latest release:
 
+**Homebrew (macOS / Linux):**
+
+```bash
+brew tap castai/tap
+brew install castai/tap/kimchi-dev
+```
+
+**Install script:**
+
 ```bash
 curl -fsSL https://github.com/castai/kimchi-dev/releases/latest/download/install.sh | bash
 ```
