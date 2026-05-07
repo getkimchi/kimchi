@@ -19,11 +19,4 @@ export interface MemoryToolResult {
 	matches?: string[]
 }
 
-export interface MemoryContext {
-	memorySnapshot?: {
-		memory: string | null
-		user: string | null
-	}
-}
-
 export const ENTRY_DELIMITER = "\n§\n"

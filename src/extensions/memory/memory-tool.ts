@@ -6,8 +6,20 @@ function wrapResult(result: MemoryToolResult): {
 	content: { type: "text"; text: string }[]
 	details: MemoryToolResult
 } {
+	let text: string
+	if (!result.success) {
+		text = result.error ?? "Error"
+	} else if (result.entries !== undefined) {
+		text =
+			result.entries.length === 0
+				? "Empty."
+				: `${result.entries.length} entr${result.entries.length === 1 ? "y" : "ies"} (${result.usage}):\n\n${result.entries.join("\n---\n")}`
+		if (result.message) text = `${result.message}\n\n${text}`
+	} else {
+		text = result.message ?? "OK"
+	}
 	return {
-		content: [{ type: "text", text: result.success ? (result.message ?? "OK") : (result.error ?? "Error") }],
+		content: [{ type: "text", text }],
 		details: result,
 	}
 }

@@ -87,9 +87,6 @@ By default subagents are killed after 3 minutes of silence. Heavy-tier models (c
 | \`standard\` or \`light\` | omit (default 3 minutes is sufficient) |`,
 	TOOLS_SECTION,
 	DOCUMENTS_SECTION,
-	`{{MEMORY}}
-
-{{USER_PROFILE}}`,
 	`## Guidelines
 
 ${CORE_GUIDELINES}

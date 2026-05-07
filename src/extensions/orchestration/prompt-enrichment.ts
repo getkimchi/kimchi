@@ -31,7 +31,6 @@ import { ANSI, fg } from "../../ansi.js"
 import { getCurrentPhase } from "../../extensions/tags.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
-import type { MemoryContext } from "../memory/types.js"
 import {
 	CONTINUATION_NUDGE_TEXT,
 	ContinuationNudge,
@@ -468,10 +467,6 @@ export default function (skillPaths: string[]) {
 				currentPhase: getCurrentPhase(),
 				registry: registry,
 			}
-			const memorySnapshot = (ctx as MemoryContext).memorySnapshot
-			const memoryBlock = memorySnapshot?.memory ?? null
-			const userProfileBlock = memorySnapshot?.user ?? null
-
 			if (subagentMode) {
 				// Filter the subagent tool out to prevent infinite delegation chains.
 				const activeTools = pi.getActiveTools().filter((name) => name !== "subagent")
@@ -481,27 +476,11 @@ export default function (skillPaths: string[]) {
 			}
 
 			if (!multiModelEnabled) {
-				const systemPrompt = buildSingleModelSystemPrompt(
-					tools,
-					env,
-					cachedContextFiles,
-					cachedSkills,
-					promptCtx,
-					memoryBlock,
-					userProfileBlock,
-				)
+				const systemPrompt = buildSingleModelSystemPrompt(tools, env, cachedContextFiles, cachedSkills, promptCtx)
 				return { systemPrompt }
 			}
 
-			const systemPrompt = buildOrchestratorSystemPrompt(
-				tools,
-				env,
-				cachedContextFiles,
-				cachedSkills,
-				promptCtx,
-				memoryBlock,
-				userProfileBlock,
-			)
+			const systemPrompt = buildOrchestratorSystemPrompt(tools, env, cachedContextFiles, cachedSkills, promptCtx)
 			return { systemPrompt }
 		})
 	}

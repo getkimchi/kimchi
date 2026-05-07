@@ -3,7 +3,6 @@ import { getAgentDir } from "@mariozechner/pi-coding-agent"
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
 import { MemoryStore } from "./memory-store.js"
 import { createMemoryTool } from "./memory-tool.js"
-import type { MemoryContext } from "./types.js"
 
 export interface MemoryExtensionOptions {
 	memoryDir?: string
@@ -21,14 +20,17 @@ export default function memoryExtension(pi: ExtensionAPI, options?: MemoryExtens
 
 	const store = new MemoryStore({ memoryDir, memoryCharLimit, userCharLimit })
 
-	const tool = createMemoryTool(store)
-	pi.registerTool(tool)
+	pi.registerTool(createMemoryTool(store))
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async () => {
 		await store.loadFromDisk()
-		;(ctx as MemoryContext).memorySnapshot = {
-			memory: store.formatForSystemPrompt("memory"),
-			user: store.formatForSystemPrompt("user"),
-		}
+	})
+
+	pi.on("before_agent_start", async (event) => {
+		const memory = store.formatForSystemPrompt("memory")
+		const user = store.formatForSystemPrompt("user")
+		if (!memory && !user) return
+		const blocks = [memory, user].filter(Boolean).join("\n\n")
+		return { systemPrompt: `${event.systemPrompt}\n\n${blocks}` }
 	})
 }
