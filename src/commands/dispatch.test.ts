@@ -98,4 +98,11 @@ describe("dispatchSubcommand", () => {
 		const messages = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
 		expect(messages).toContain("Usage: kimchi config")
 	})
+
+	it("auto with a non-existent task file returns { kind: 'handled', exitCode: 1 }", async () => {
+		// Proves the `auto` subcommand is registered. The real loadTaskSpec will fail
+		// to read /nonexistent.json and runAuto returns 1.
+		const result = await dispatchSubcommand(["auto", "--task", "/nonexistent-kimchi-task.json"])
+		expect(result).toEqual({ kind: "handled", exitCode: 1 })
+	})
 })

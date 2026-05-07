@@ -5,6 +5,7 @@ export interface CommandDefinition {
 	run: (args: string[]) => Promise<number | undefined>
 }
 
+import { runAuto } from "./auto.js"
 import { runClaude } from "./claude.js"
 import { runConfig } from "./config.js"
 import { runCursor } from "./cursor.js"
@@ -16,6 +17,11 @@ import { runUpdate } from "./update.js"
 import { runVersion } from "./version.js"
 
 export const COMMANDS: CommandDefinition[] = [
+	{
+		name: "auto",
+		summary: "Run kimchi unattended on a prompt or task spec; add --runtime to sandbox in a container",
+		run: runAuto,
+	},
 	{ name: "setup", summary: "Run the interactive setup wizard", run: runSetup },
 	{ name: "claude", summary: "Configure Claude Code to use Kimchi (and launch it)", run: runClaude },
 	{ name: "opencode", summary: "Configure OpenCode to use Kimchi (and launch it)", run: runOpenCode },

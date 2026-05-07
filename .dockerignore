@@ -1,0 +1,13 @@
+.git
+.github
+node_modules
+.claude
+.kimchi
+benchmark
+docs
+tests
+**/*.test.ts
+coverage
+.DS_Store
+*.log
+.env*

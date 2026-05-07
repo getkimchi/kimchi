@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dancing Frog</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Dancing Frog</h1>
+        <div class="frog-wrapper">
+            <span class="frog" id="frog">🐸</span>
+        </div>
+        <div class="controls">
+            <button id="danceBtn" class="dance-btn">Dance!</button>
+            <div class="speed-control">
+                <label for="speedSlider">Speed:</label>
+                <input type="range" id="speedSlider" min="0.5" max="3" step="0.1" value="1">
+                <span id="speedValue">1x</span>
+            </div>
+        </div>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

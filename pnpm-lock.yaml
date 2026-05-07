@@ -37,6 +37,9 @@ importers:
       open:
         specifier: ^10.2.0
         version: 10.2.0
+      optional:
+        specifier: ^0.1.4
+        version: 0.1.4
       shell-quote:
         specifier: ^1.8.3
         version: 1.8.3
@@ -1733,6 +1736,9 @@ packages:
         optional: true
       zod:
         optional: true
+
+  optional@0.1.4:
+    resolution: {integrity: sha512-gtvrrCfkE08wKcgXaVwQVgwEQ8vel2dc5DDBn9RLQZ3YtmtkBss6A2HY6BnJH4N/4Ku97Ri/SF8sNWE2225WJw==}
 
   p-retry@4.6.2:
     resolution: {integrity: sha512-312Id396EbJdvRONlngUx0NydfrIQ5lsYu0znKVUzVvArzEIt08V1qhtyESbGVd1FGX7UKtiFp5uwKZdM8wIuQ==}
@@ -4097,6 +4103,8 @@ snapshots:
     optionalDependencies:
       ws: 8.20.0
       zod: 4.3.6
+
+  optional@0.1.4: {}
 
   p-retry@4.6.2:
     dependencies:

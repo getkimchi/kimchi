@@ -21,6 +21,7 @@
 		"check": "pnpm run lint && pnpm run typecheck",
 		"test": "vitest run --dir src",
 		"test:smoke": "vitest run --config tests/smoke/vitest.config.ts",
+		"test:e2e": "KIMCHI_E2E=1 vitest run --config tests/smoke/vitest.config.ts tests/smoke/autonomous-e2e.test.ts",
 		"prepare": "husky",
 		"verify": "pnpm run check && pnpm run build:binary && pnpm run test && pnpm run test:smoke"
 	},
@@ -37,6 +38,7 @@
 		"@modelcontextprotocol/sdk": "^1.25.1",
 		"micromatch": "^4.0.8",
 		"open": "^10.2.0",
+		"optional": "^0.1.4",
 		"shell-quote": "^1.8.3",
 		"tar": "^7.5.13",
 		"undici": "^8.0.2",

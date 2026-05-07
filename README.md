@@ -19,6 +19,8 @@ kimchi         # launch the coding harness
 
 Run `kimchi --help` to see all available subcommands and flags.
 
+For unattended runs in a container, see [Autonomous mode](docs/autonomous-mode.md) (`kimchi auto --runtime <docker|orbstack|podman>`).
+
 ## Configuration
 
 ### Authentication
