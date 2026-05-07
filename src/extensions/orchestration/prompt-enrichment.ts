@@ -72,8 +72,14 @@ async function resolveInstalledPackageSkillPaths(cwd: string): Promise<string[]>
 		const agentDir = getAgentDir()
 		const settingsManager = SettingsManager.create(cwd, agentDir)
 		const pm = new DefaultPackageManager({ cwd, agentDir, settingsManager })
-		const resolved = await pm.resolve()
-		return resolved.skills.filter((r) => r.enabled).map((r) => r.path)
+		const packages = pm.listConfiguredPackages()
+		const dirs: string[] = []
+		for (const pkg of packages) {
+			if (!pkg.installedPath) continue
+			const skillsDir = join(pkg.installedPath, "skills")
+			if (existsSync(skillsDir)) dirs.push(skillsDir)
+		}
+		return dirs
 	} catch {
 		return []
 	}
