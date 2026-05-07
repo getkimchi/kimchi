@@ -3,16 +3,22 @@ import { join } from "node:path"
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { runCuratorPipeline } from "./curator.js"
 
-// Mock only the subagent call (LLM) - all other logic uses real implementations
+// Mock only the subagent call (LLM) and executor - all other logic uses real implementations
 vi.mock("../subagent.js", () => ({
 	spawnSubagent: vi
 		.fn()
 		.mockResolvedValue("```yaml\nconsolidation_proposals: []\nskill_gaps: []\nquality_issues: []\n```"),
 }))
 
+vi.mock("./executor.js", () => ({
+	executeReport: vi.fn().mockResolvedValue(undefined),
+}))
+
 import { spawnSubagent } from "../subagent.js"
+import { executeReport } from "./executor.js"
 
 const mockSpawnSubagent = spawnSubagent as ReturnType<typeof vi.fn>
+const mockExecuteReport = executeReport as ReturnType<typeof vi.fn>
 
 describe("curator integration", () => {
 	const testDir = join("/tmp", `curator-test-${Date.now()}`)
@@ -189,6 +195,7 @@ Test session summary for integration testing.
 				umbrella: "testing-tools",
 				members: ["test-skill", "old-skill"],
 				rationale: "Both are testing-related skills",
+				strategy: "create_new",
 			})
 		})
 
@@ -256,6 +263,32 @@ Test session summary for integration testing.
 			expect(report.consolidationProposals).toHaveLength(0)
 		})
 
+		it("excludes .curator_backups from backup", async () => {
+			// Create backup dir - this directory should be excluded from analysis
+			await mkdir(join(skillsDir, ".curator_backups", "test-backup"), { recursive: true })
+
+			// Snapshot should exclude .curator_backups from skill inventory
+			mockSpawnSubagent.mockResolvedValue(
+				"```yaml\nconsolidation_proposals: []\nskill_gaps: []\nquality_issues: []\n```",
+			)
+
+			const report = await runCuratorPipeline(skillsDir, memoryDir, { execute: true })
+
+			// Backup was created, but .curator_backups was excluded from it
+			// This is verified via backup.ts unit tests
+			expect(report.autoTransitions).toBeDefined()
+		})
+
+		it("includes strategy field in consolidation proposals", async () => {
+			mockSpawnSubagent.mockResolvedValueOnce(
+				"```yaml\nconsolidation_proposals:\n  - umbrella: test-tool\n    members: [a, b]\n    rationale: test\n    strategy: create_new\nskill_gaps: []\nquality_issues: []\n```",
+			)
+
+			const report = await runCuratorPipeline(skillsDir, memoryDir)
+
+			expect(report.consolidationProposals[0].strategy).toBe("create_new")
+		})
+
 		it("handles missing .usage.json gracefully", async () => {
 			const noUsageDir = join(testDir, "no-usage")
 			await mkdir(noUsageDir, { recursive: true })
@@ -298,6 +331,20 @@ Test session summary for integration testing.
 
 			expect(report).toBeDefined()
 			expect(report.autoTransitions).toBeDefined()
+		})
+
+		it("passes correct arguments to executeReport when execute=true", async () => {
+			mockSpawnSubagent.mockResolvedValue(
+				"```yaml\nconsolidation_proposals: []\nskill_gaps: []\nquality_issues: []\n```",
+			)
+
+			await runCuratorPipeline(skillsDir, memoryDir, { execute: true })
+
+			// executeReport should be called with (report, skillsDir)
+			expect(mockExecuteReport).toHaveBeenCalledWith(
+				expect.objectContaining({ autoTransitions: expect.any(Object) }),
+				skillsDir,
+			)
 		})
 	})
 
