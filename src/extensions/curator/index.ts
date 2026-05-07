@@ -1,13 +1,16 @@
+import { watch } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
 import { isSubagent } from "../orchestration/prompt-transformer/prompt-transformer.js"
-import { addPromptSummaryExtra } from "../prompt-summary.js"
 import { SkillManager } from "../skills-manager/skill-manager.js"
+import { UsageTracker } from "../skills-manager/usage.js"
 import { debugLog, runCuratorReview, spawnSessionReview } from "./review.js"
 import { loadState, saveState, shouldRunNow } from "./state.js"
 import type { CuratorState } from "./state.js"
 import { runAutoTransitions } from "./transitions.js"
+
+const CURATOR_NOTIFICATION_TYPE = "curator-notification"
 
 export interface CuratorExtensionOptions {
 	skillsDir?: string
@@ -29,9 +32,13 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 	const skillsDir = options?.skillsDir ?? join(homedir(), ".config", "kimchi", "harness", "skills")
 	const statePath = getStateFilePath(skillsDir)
 	const manager = new SkillManager(skillsDir)
+	const tracker = new UsageTracker(skillsDir)
 
 	let providerModel: { provider: string; model: string } | null =
 		options?.provider && options?.model ? { provider: options.provider, model: options.model } : null
+
+	// Tracks agent_created skill names known at session start — used as baseline for review notifications.
+	let knownAgentSkills = new Set<string>()
 
 	// Capture provider/model from the first real LLM request — works regardless of how kimchi is invoked.
 	pi.on("before_provider_request", (_event, ctx) => {
@@ -64,6 +71,48 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 			skillsDir,
 			messages: event.messages,
 		})
+
+		// Watch skillsDir for .usage.json changes and notify when new agent_created skills appear.
+		const baseline = new Set(knownAgentSkills)
+		let debounce: ReturnType<typeof setTimeout> | undefined
+
+		let watcher: ReturnType<typeof watch> | undefined
+		try {
+			watcher = watch(skillsDir, { persistent: false }, (_eventType, filename) => {
+				if (filename !== ".usage.json") return
+				clearTimeout(debounce)
+				debounce = setTimeout(async () => {
+					try {
+						const entries = await tracker.list()
+						const newSkills = entries.filter((e) => e.agent_created && !baseline.has(e.name)).map((e) => e.name)
+						if (newSkills.length === 0) return
+						for (const s of newSkills) {
+							baseline.add(s)
+							knownAgentSkills.add(s)
+						}
+						pi.sendMessage({
+							customType: CURATOR_NOTIFICATION_TYPE,
+							content: [{ type: "text", text: `skill review created: ${newSkills.join(", ")}` }],
+							display: true,
+						})
+					} catch {
+						// best-effort
+					}
+				}, 500)
+			})
+		} catch {
+			// skillsDir may not exist yet — watcher is best-effort
+		}
+
+		// Clean up after 10 minutes regardless of outcome.
+		const cleanup = setTimeout(
+			() => {
+				clearTimeout(debounce)
+				watcher?.close()
+			},
+			10 * 60 * 1000,
+		)
+		cleanup.unref()
 	})
 
 	pi.on("session_start", async () => {
@@ -72,12 +121,17 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 		try {
 			const state = await loadState(statePath)
 
-			// Detect skills created by a previous session's background review.
+			// Detect skills created by a previous session's background review and notify.
 			const currentAgentSkills = (await manager.listInventory()).filter((s) => s.agent_created).map((s) => s.name)
+			knownAgentSkills = new Set(currentAgentSkills)
 			const known = new Set(state.known_agent_skills ?? [])
 			const newSkills = currentAgentSkills.filter((n) => !known.has(n))
 			if (newSkills.length > 0) {
-				addPromptSummaryExtra(`skill review created: ${newSkills.join(", ")}`)
+				pi.sendMessage({
+					customType: CURATOR_NOTIFICATION_TYPE,
+					content: [{ type: "text", text: `skill review created: ${newSkills.join(", ")}` }],
+					display: true,
+				})
 				await saveState(statePath, { ...state, known_agent_skills: currentAgentSkills })
 			} else if (state.known_agent_skills === undefined) {
 				// First run — seed without notifying
