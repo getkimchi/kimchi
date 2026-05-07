@@ -1,264 +1,192 @@
 import { describe, expect, it } from "vitest"
 import type {
+	AuditDigest,
 	ConsolidationProposal,
+	ConsolidationRecord,
+	ConsolidationStrategy,
 	CuratorReport,
-	ExecutionResult,
-	QualityIssue,
-	SkillGap,
-	SkillMetadata,
-	TransitionProposal,
+	RollbackRecord,
+	SubagentBaselineResult,
+	SubagentVerifyResult,
+	TDDPhase,
+	TransitionRecord,
 } from "./types.js"
 
-describe("TransitionProposal", () => {
-	it("has correct shape with all required fields", () => {
-		const proposal: TransitionProposal = {
-			checked: ["skill-a", "skill-b"],
-			proposeStale: ["skill-c"],
-			proposeArchive: ["skill-d"],
-			proposeReactivate: ["skill-e"],
-		}
+describe("TDD and Audit types", () => {
+	describe("ConsolidationStrategy", () => {
+		it("should accept merge_into_existing", () => {
+			const strategy: ConsolidationStrategy = "merge_into_existing"
+			expect(strategy).toBe("merge_into_existing")
+		})
 
-		expect(proposal.checked).toBeInstanceOf(Array)
-		expect(proposal.proposeStale).toBeInstanceOf(Array)
-		expect(proposal.proposeArchive).toBeInstanceOf(Array)
-		expect(proposal.proposeReactivate).toBeInstanceOf(Array)
-		expect(proposal.checked).toHaveLength(2)
+		it("should accept create_new", () => {
+			const strategy: ConsolidationStrategy = "create_new"
+			expect(strategy).toBe("create_new")
+		})
+
+		it("should accept demote_to_references", () => {
+			const strategy: ConsolidationStrategy = "demote_to_references"
+			expect(strategy).toBe("demote_to_references")
+		})
 	})
 
-	it("can represent empty proposals", () => {
-		const proposal: TransitionProposal = {
-			checked: [],
-			proposeStale: [],
-			proposeArchive: [],
-			proposeReactivate: [],
-		}
-
-		expect(proposal.checked).toHaveLength(0)
-	})
-})
-
-describe("SkillMetadata", () => {
-	it("has correct shape for active skill", () => {
-		const skill: SkillMetadata = {
-			name: "test-skill",
-			description: "A test skill",
-			triggers: ["test", "demo"],
-			category: "testing",
-			state: "active",
-			useCount: 42,
-			lastUsedAt: "2026-01-15T10:30:00.000Z",
-			agentCreated: false,
-		}
-
-		expect(skill.name).toBe("test-skill")
-		expect(skill.state).toBe("active")
-		expect(skill.useCount).toBe(42)
-		expect(skill.agentCreated).toBe(false)
+	describe("ConsolidationProposal", () => {
+		it("should require strategy field", () => {
+			const proposal: ConsolidationProposal = {
+				umbrella: "test-umbrella",
+				members: ["skill-a", "skill-b"],
+				rationale: "These skills overlap in functionality",
+				strategy: "merge_into_existing",
+			}
+			expect(proposal.strategy).toBe("merge_into_existing")
+		})
 	})
 
-	it("has correct shape for stale skill", () => {
-		const skill: SkillMetadata = {
-			name: "stale-skill",
-			description: "An unused skill",
-			triggers: [],
-			category: "legacy",
-			state: "stale",
-			useCount: 0,
-			lastUsedAt: null,
-			agentCreated: true,
-		}
-
-		expect(skill.state).toBe("stale")
-		expect(skill.lastUsedAt).toBeNull()
+	describe("AuditDigest", () => {
+		it("should hold consolidation audit data", () => {
+			const digest: AuditDigest = {
+				timestamp: "2026-05-07T10:00:00Z",
+				skillCountBefore: 10,
+				skillCountAfter: 8,
+				consolidations: [
+					{
+						umbrella: "test-umbrella",
+						members: ["skill-a", "skill-b"],
+						strategy: "merge_into_existing",
+						rationale: "Merged overlapping skills",
+						referencesCreated: [],
+					},
+				],
+				autoTransitionsApplied: [],
+				rollbacks: [],
+			}
+			expect(digest.skillCountBefore).toBe(10)
+			expect(digest.skillCountAfter).toBe(8)
+			expect(digest.consolidations).toHaveLength(1)
+		})
 	})
 
-	it("has correct shape for archived skill", () => {
-		const skill: SkillMetadata = {
-			name: "archived-skill",
-			description: "An archived skill",
-			triggers: ["old"],
-			category: "deprecated",
-			state: "archived",
-			useCount: 5,
-			lastUsedAt: "2025-06-01T00:00:00.000Z",
-			agentCreated: false,
-		}
-
-		expect(skill.state).toBe("archived")
+	describe("ConsolidationRecord", () => {
+		it("should use members array (not absorbed)", () => {
+			const record: ConsolidationRecord = {
+				umbrella: "my-umbrella",
+				members: ["skill-1", "skill-2"],
+				strategy: "create_new",
+				rationale: "Creating new unified skill",
+				referencesCreated: ["ref-1"],
+			}
+			expect(record.members).toEqual(["skill-1", "skill-2"])
+			expect(record.referencesCreated).toEqual(["ref-1"])
+		})
 	})
 
-	it("supports all three states", () => {
-		const states: SkillMetadata["state"][] = ["active", "stale", "archived"]
-		expect(states).toContain("active")
-		expect(states).toContain("stale")
-		expect(states).toContain("archived")
-	})
-})
-
-describe("ConsolidationProposal", () => {
-	it("has correct shape", () => {
-		const proposal: ConsolidationProposal = {
-			umbrella: "parent-skill",
-			members: ["child-a", "child-b", "child-c"],
-			rationale: "These skills share similar functionality",
-		}
-
-		expect(proposal.umbrella).toBe("parent-skill")
-		expect(proposal.members).toHaveLength(3)
-		expect(proposal.rationale).toBeTruthy()
-	})
-})
-
-describe("SkillGap", () => {
-	it("has correct shape", () => {
-		const gap: SkillGap = {
-			topic: "kubernetes-debugging",
-			evidence: "Multiple failed kubectl commands in session logs",
-			suggestedTriggers: ["debug k8s", "kubectl issue", "cluster problem"],
-		}
-
-		expect(gap.topic).toBe("kubernetes-debugging")
-		expect(gap.evidence).toBeTruthy()
-		expect(gap.suggestedTriggers).toBeInstanceOf(Array)
-	})
-})
-
-describe("QualityIssue", () => {
-	it("has correct shape for missing_description", () => {
-		const issue: QualityIssue = {
-			skill: "vague-skill",
-			issue: "missing_description",
-			suggestion: "Add a clear description explaining the skill's purpose",
-		}
-
-		expect(issue.skill).toBe("vague-skill")
-		expect(issue.issue).toBe("missing_description")
+	describe("TransitionRecord", () => {
+		it("should track state transitions", () => {
+			const record: TransitionRecord = {
+				name: "my-skill",
+				from: "active",
+				to: "stale",
+			}
+			expect(record.from).toBe("active")
+			expect(record.to).toBe("stale")
+		})
 	})
 
-	it("has correct shape for missing_triggers", () => {
-		const issue: QualityIssue = {
-			skill: "orphan-skill",
-			issue: "missing_triggers",
-			suggestion: "Add trigger phrases to make this skill discoverable",
-		}
-
-		expect(issue.issue).toBe("missing_triggers")
+	describe("RollbackRecord", () => {
+		it("should track rollback events", () => {
+			const record: RollbackRecord = {
+				timestamp: "2026-05-07T12:00:00Z",
+				backupDir: "/backups/snapshot-2026-05-07",
+				reason: "Consolidation produced errors",
+			}
+			expect(record.backupDir).toBe("/backups/snapshot-2026-05-07")
+		})
 	})
 
-	it("has correct shape for unclear", () => {
-		const issue: QualityIssue = {
-			skill: "confusing-skill",
-			issue: "unclear",
-			suggestion: "Rewrite the description to be more specific",
-		}
+	describe("TDDPhase", () => {
+		it("should accept RED phase", () => {
+			const phase: TDDPhase = "RED"
+			expect(phase).toBe("RED")
+		})
 
-		expect(issue.issue).toBe("unclear")
+		it("should accept GREEN phase", () => {
+			const phase: TDDPhase = "GREEN"
+			expect(phase).toBe("GREEN")
+		})
+
+		it("should accept REFACTOR phase", () => {
+			const phase: TDDPhase = "REFACTOR"
+			expect(phase).toBe("REFACTOR")
+		})
 	})
 
-	it("supports all issue types", () => {
-		const issueTypes: QualityIssue["issue"][] = ["missing_description", "missing_triggers", "unclear"]
-		expect(issueTypes).toHaveLength(3)
+	describe("SubagentBaselineResult", () => {
+		it("should capture RED phase baseline", () => {
+			const result: SubagentBaselineResult = {
+				phase: "RED",
+				prompt: "Implement feature X",
+				output: "Attempted but failed...",
+				skillsUsed: ["implement-skill"],
+				skillsNeeded: ["test-skill", "refactor-skill"],
+				gapsIdentified: ["No tests exist", "Implementation incomplete"],
+			}
+			expect(result.phase).toBe("RED")
+			expect(result.gapsIdentified).toHaveLength(2)
+		})
 	})
-})
 
-describe("CuratorReport", () => {
-	it("has correct shape with all fields", () => {
-		const report: CuratorReport = {
-			autoTransitions: {
-				checked: ["skill-a"],
-				proposeStale: [],
-				proposeArchive: ["skill-b"],
-				proposeReactivate: [],
-			},
-			consolidationProposals: [
-				{
-					umbrella: "unified-skill",
-					members: ["old-a", "old-b"],
-					rationale: "Redundant functionality",
+	describe("SubagentVerifyResult", () => {
+		it("should capture REFACTOR phase verification", () => {
+			const result: SubagentVerifyResult = {
+				phase: "REFACTOR",
+				prompt: "Verify the refactored implementation",
+				output: "All checks passed...",
+				umbrellaUsed: true,
+				behaviors: ["uses consolidation pattern", "proper error handling"],
+			}
+			expect(result.phase).toBe("REFACTOR")
+			expect(result.umbrellaUsed).toBe(true)
+		})
+	})
+
+	describe("CuratorReport", () => {
+		it("should include optional audit field", () => {
+			const report: CuratorReport = {
+				autoTransitions: {
+					checked: [],
+					proposeStale: [],
+					proposeArchive: [],
+					proposeReactivate: [],
 				},
-			],
-			skillGaps: [
-				{
-					topic: "test-gap",
-					evidence: "Evidence here",
-					suggestedTriggers: ["test trigger"],
+				consolidationProposals: [],
+				skillGaps: [],
+				qualityIssues: [],
+				audit: {
+					timestamp: "2026-05-07T09:00:00Z",
+					skillCountBefore: 5,
+					skillCountAfter: 4,
+					consolidations: [],
+					autoTransitionsApplied: [],
+					rollbacks: [],
 				},
-			],
-			qualityIssues: [
-				{
-					skill: "bad-skill",
-					issue: "missing_description",
-					suggestion: "Add description",
+			}
+			expect(report.audit).toBeDefined()
+			expect(report.audit?.skillCountBefore).toBe(5)
+		})
+
+		it("should work without audit field", () => {
+			const report: CuratorReport = {
+				autoTransitions: {
+					checked: ["skill-1"],
+					proposeStale: [],
+					proposeArchive: [],
+					proposeReactivate: [],
 				},
-			],
-		}
-
-		expect(report.autoTransitions).toBeDefined()
-		expect(report.consolidationProposals).toBeInstanceOf(Array)
-		expect(report.skillGaps).toBeInstanceOf(Array)
-		expect(report.qualityIssues).toBeInstanceOf(Array)
-	})
-
-	it("can represent empty report", () => {
-		const report: CuratorReport = {
-			autoTransitions: {
-				checked: [],
-				proposeStale: [],
-				proposeArchive: [],
-				proposeReactivate: [],
-			},
-			consolidationProposals: [],
-			skillGaps: [],
-			qualityIssues: [],
-		}
-
-		expect(report.consolidationProposals).toHaveLength(0)
-		expect(report.skillGaps).toHaveLength(0)
-		expect(report.qualityIssues).toHaveLength(0)
-	})
-})
-
-describe("ExecutionResult", () => {
-	it("has correct shape for successful execution", () => {
-		const result: ExecutionResult = {
-			phaseA: { success: true },
-			phaseB: {
-				succeeded: ["skill-a", "skill-b"],
-				failed: [],
-			},
-		}
-
-		expect(result.phaseA.success).toBe(true)
-		expect(result.phaseA.error).toBeUndefined()
-		expect(result.phaseB.succeeded).toHaveLength(2)
-		expect(result.phaseB.failed).toHaveLength(0)
-	})
-
-	it("has correct shape for failed phaseA", () => {
-		const result: ExecutionResult = {
-			phaseA: { success: false, error: "Permission denied" },
-			phaseB: {
-				succeeded: [],
-				failed: [],
-			},
-		}
-
-		expect(result.phaseA.success).toBe(false)
-		expect(result.phaseA.error).toBe("Permission denied")
-	})
-
-	it("has correct shape for partial phaseB failures", () => {
-		const result: ExecutionResult = {
-			phaseA: { success: true },
-			phaseB: {
-				succeeded: ["skill-a"],
-				failed: [{ proposal: "skill-b", error: "Archive failed" }],
-			},
-		}
-
-		expect(result.phaseB.succeeded).toHaveLength(1)
-		expect(result.phaseB.failed).toHaveLength(1)
-		expect(result.phaseB.failed[0].proposal).toBe("skill-b")
-		expect(result.phaseB.failed[0].error).toBe("Archive failed")
+				consolidationProposals: [],
+				skillGaps: [],
+				qualityIssues: [],
+			}
+			expect(report.audit).toBeUndefined()
+		})
 	})
 })

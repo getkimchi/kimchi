@@ -60,6 +60,7 @@ interface LLMResponseYaml {
 		umbrella: string
 		members: string[]
 		rationale: string
+		strategy?: "merge_into_existing" | "create_new" | "demote_to_references"
 	}>
 	skill_gaps?: Array<{
 		topic: string
@@ -92,6 +93,10 @@ export function parseLLMResponse(
 				umbrella: p.umbrella,
 				members: p.members,
 				rationale: p.rationale,
+				strategy: (p.strategy || "merge_into_existing") as
+					| "merge_into_existing"
+					| "create_new"
+					| "demote_to_references",
 			})),
 			skillGaps: (parsed.skill_gaps || []).map((g) => ({
 				topic: g.topic,
