@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process"
+import { appendFileSync, readFileSync, unlinkSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
+import { convertToLlm } from "@mariozechner/pi-coding-agent"
 import { parse as parseYaml } from "yaml"
 import type { SkillManager } from "../skills-manager/skill-manager.js"
 import { agentCreatedReport } from "../skills-manager/usage.js"
@@ -165,8 +167,9 @@ export async function runCuratorReview(opts: RunCuratorReviewOptions): Promise<C
 		const invocation = getSubagentInvocation(args)
 		const proc = spawn(invocation.command, invocation.args, {
 			stdio: ["ignore", "pipe", "pipe"],
-			detached: false,
+			detached: true,
 		})
+		proc.unref()
 		let output = ""
 		proc.stdout?.on("data", (chunk: Buffer) => {
 			output += chunk.toString()
@@ -188,4 +191,112 @@ export async function runCuratorReview(opts: RunCuratorReviewOptions): Promise<C
 		await finalize("", msg)
 		throw err
 	}
+}
+
+const SESSION_REVIEW_PROMPT = `Review the conversation above and update the skill library. Be \
+ACTIVE — most sessions produce at least one skill update, even if small. A pass that does nothing \
+is a missed learning opportunity, not a neutral outcome.
+
+Target shape of the library: CLASS-LEVEL skills, each with a rich SKILL.md. Not a long flat list \
+of narrow one-session-one-skill entries.
+
+Signals to look for (any one warrants action):
+- User corrected your style, tone, format, or verbosity. "Stop doing X", "too verbose", \
+"just give me the answer", "remember this" — these are FIRST-CLASS skill signals. Update the \
+relevant skill to embed the preference.
+- User corrected your workflow, approach, or sequence of steps. Encode it as a pitfall or step \
+in the governing skill.
+- Non-trivial technique, fix, workaround, or tool-usage pattern emerged that a future session \
+would benefit from.
+- A skill loaded this session turned out to be wrong or missing a step. Patch it now.
+
+Preference order — prefer the earliest action that fits:
+1. UPDATE a currently-loaded skill if it covers the territory.
+2. UPDATE an existing skill via skill_view + patch.
+3. CREATE a new class-level skill when nothing existing fits. The name must be class-level — \
+no PR numbers, error strings, session artifacts, or "fix-X / debug-Y / audit-Z-today" names.
+
+Tools available: skill_manage, skill_view, skill_list. No bash or file tools.
+
+"Nothing to save." is a real option but must not be the default. If the session ran smoothly \
+with no corrections and no reusable technique emerged, say "Nothing to save." and stop. Otherwise, act.`
+
+// biome-ignore lint/suspicious/noExplicitAny: messages type not exported from pi-coding-agent
+function serializeTranscript(messages: any[]): string {
+	const llm = convertToLlm(messages)
+	const lines: string[] = []
+	for (const msg of llm) {
+		if (msg.role !== "user" && msg.role !== "assistant") continue
+		const content = Array.isArray(msg.content)
+			? msg.content
+					.filter((b): b is { type: "text"; text: string } => (b as { type: string }).type === "text")
+					.map((b) => b.text)
+					.join("")
+			: String(msg.content)
+		if (!content.trim()) continue
+		lines.push(`[${msg.role}] ${content.trim()}`)
+	}
+	return lines.join("\n\n")
+}
+
+export interface ReviewAction {
+	action: string
+	name?: string
+}
+
+export interface ReviewNotification {
+	actions: ReviewAction[]
+	timestamp: string
+}
+
+export const NOTIFICATION_FILE = ".review_notification.json"
+
+export function readAndClearNotification(skillsDir: string): ReviewNotification | null {
+	const path = join(skillsDir, NOTIFICATION_FILE)
+	try {
+		const raw = readFileSync(path, "utf-8")
+		unlinkSync(path)
+		return JSON.parse(raw) as ReviewNotification
+	} catch {
+		return null
+	}
+}
+
+export interface RunSessionReviewOptions {
+	provider: string
+	model: string
+	skillsDir: string
+	// biome-ignore lint/suspicious/noExplicitAny: messages type not exported from pi-coding-agent
+	messages: any[]
+}
+
+export function spawnSessionReview(opts: RunSessionReviewOptions): void {
+	const { provider, model, messages } = opts
+	const transcript = serializeTranscript(messages)
+	if (!transcript.trim()) return
+
+	const prompt = `${transcript}\n\n---\n\n${SESSION_REVIEW_PROMPT}`
+	const args = buildSubagentArgs({ provider, model, prompt }, [], collectExtensionArgs())
+	const invocation = getSubagentInvocation(args)
+
+	const debugLog = process.env.KIMCHI_REVIEW_LOG
+	const proc = spawn(invocation.command, invocation.args, {
+		stdio: ["ignore", "pipe", "ignore"],
+		detached: true,
+	})
+	proc.unref()
+
+	if (debugLog) {
+		let buf = ""
+		proc.stdout?.on("data", (chunk: Buffer) => {
+			buf += chunk.toString()
+		})
+		proc.on("close", () => {
+			const ts = new Date().toISOString()
+			appendFileSync(debugLog, `\n=== session-review ${ts} ===\n${buf}\n`)
+		})
+	} else {
+		proc.stdout?.resume()
+	}
+	proc.on("error", () => {})
 }

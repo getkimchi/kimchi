@@ -8,6 +8,7 @@ export interface CuratorState {
 	paused: boolean
 	running: boolean
 	last_run_summary?: string
+	known_agent_skills?: string[]
 }
 
 export const DEFAULT_CURATOR_STATE: CuratorState = {

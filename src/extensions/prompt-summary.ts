@@ -148,7 +148,10 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 
 		pi.sendMessage({
 			customType: "prompt-summary",
-			content: [{ type: "text", text: `Prompt summary (${data.elapsed})` }],
+			// Wrap in a tag so the LLM treats this as a system annotation, not user input.
+			// All custom messages are transformed to role:"user" by pi-mono, so without
+			// this the model interprets "Prompt summary (Xs)" as something the user typed.
+			content: [{ type: "text", text: `<system-annotation>Prompt summary (${data.elapsed})</system-annotation>` }],
 			display: true,
 			details: data,
 		})

@@ -1,8 +1,9 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
+import { isSubagent } from "../orchestration/prompt-transformer/prompt-transformer.js"
 import { SkillManager } from "../skills-manager/skill-manager.js"
-import { runCuratorReview } from "./review.js"
+import { runCuratorReview, spawnSessionReview } from "./review.js"
 import { loadState, saveState, shouldRunNow } from "./state.js"
 import type { CuratorState } from "./state.js"
 import { runAutoTransitions } from "./transitions.js"
@@ -22,31 +23,65 @@ export function computeIdleSeconds(state: CuratorState, now: Date): number {
 	return (now.getTime() - new Date(state.last_session_ended_at).getTime()) / 1000
 }
 
-function readProviderModel(): { provider: string; model: string } | null {
-	const argv = process.argv
-	let provider: string | undefined
-	let model: string | undefined
-	for (let i = 0; i < argv.length; i++) {
-		if (argv[i] === "--provider" && i + 1 < argv.length) provider = argv[++i]
-		else if (argv[i] === "--model" && i + 1 < argv.length) model = argv[++i]
-		else if (argv[i].startsWith("--provider=")) provider = argv[i].slice("--provider=".length)
-		else if (argv[i].startsWith("--model=")) model = argv[i].slice("--model=".length)
-	}
-	return provider && model ? { provider, model } : null
-}
-
 export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExtensionOptions): void {
+	if (isSubagent()) return
 	const skillsDir = options?.skillsDir ?? join(homedir(), ".config", "kimchi", "harness", "skills")
 	const statePath = getStateFilePath(skillsDir)
 	const manager = new SkillManager(skillsDir)
 
-	const providerModel =
-		options?.provider && options?.model ? { provider: options.provider, model: options.model } : readProviderModel()
+	let providerModel: { provider: string; model: string } | null =
+		options?.provider && options?.model ? { provider: options.provider, model: options.model } : null
+
+	// Capture provider/model from the first real LLM request — works regardless of how kimchi is invoked.
+	pi.on("before_provider_request", (_event, ctx) => {
+		if (!providerModel && ctx.model?.provider && ctx.model?.id) {
+			providerModel = { provider: ctx.model.provider, model: ctx.model.id }
+		}
+	})
+
+	const SESSION_REVIEW_THRESHOLD = Number(process.env.KIMCHI_REVIEW_THRESHOLD ?? 5)
+
+	pi.on("agent_end", (event) => {
+		// Count assistant turns directly from the message history.
+		const turnCount = event.messages.filter((m) => (m as { role: string }).role === "assistant").length
+		if (turnCount < SESSION_REVIEW_THRESHOLD) return
+		if (!providerModel) return
+		spawnSessionReview({
+			provider: providerModel.provider,
+			model: providerModel.model,
+			skillsDir,
+			messages: event.messages,
+		})
+	})
 
 	pi.on("session_start", async () => {
 		const now = new Date()
+
 		try {
 			const state = await loadState(statePath)
+
+			// Detect skills created by a previous session's background review.
+			const currentAgentSkills = (await manager.listInventory()).filter((s) => s.agent_created).map((s) => s.name)
+			const known = new Set(state.known_agent_skills ?? [])
+			const newSkills = currentAgentSkills.filter((n) => !known.has(n))
+			if (newSkills.length > 0) {
+				void pi.sendMessage({
+					customType: "curator-notification",
+					content: [
+						{
+							type: "text",
+							text: `<system-annotation>Skill review saved: ${newSkills.join(", ")}</system-annotation>`,
+						},
+					],
+					display: true,
+					details: { newSkills },
+				})
+				await saveState(statePath, { ...state, known_agent_skills: currentAgentSkills })
+			} else if (state.known_agent_skills === undefined) {
+				// First run — seed without notifying
+				await saveState(statePath, { ...state, known_agent_skills: currentAgentSkills })
+			}
+
 			const idleSeconds = computeIdleSeconds(state, now)
 			if (!shouldRunNow(state, idleSeconds, now)) return
 			if (!providerModel) return
