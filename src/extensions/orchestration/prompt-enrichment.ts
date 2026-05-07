@@ -109,6 +109,10 @@ function readMultiModelArgv(): boolean {
 
 let multiModelEnabled = readMultiModelArgv()
 
+// macOS terminals send the legacy escape sequence \x1b\t for Option+Tab
+// instead of the Kitty protocol / CSI-u sequences handled by matchesKey()
+const LEGACY_MACOS_ALT_TAB_SEQUENCE = "\x1b\t"
+
 const ENRICHED_PROMPT_CUSTOM_TYPE = "enriched-prompt"
 
 /**
@@ -275,7 +279,7 @@ export default function (skillPaths: string[]) {
 				enrichmentGuard.reset()
 				if (ctx.hasUI) {
 					unsubAltTab = ctx.ui.onTerminalInput((data) => {
-						if (matchesKey(data, "alt+tab")) {
+						if (matchesKey(data, "alt+tab") || data === LEGACY_MACOS_ALT_TAB_SEQUENCE) {
 							if (!isKeyRelease(data)) {
 								multiModelEnabled = !multiModelEnabled
 								ctx.ui.setStatus("multi-model", undefined)
