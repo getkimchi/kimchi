@@ -3,7 +3,7 @@ import { join } from "node:path"
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
 import { isSubagent } from "../orchestration/prompt-transformer/prompt-transformer.js"
 import { SkillManager } from "../skills-manager/skill-manager.js"
-import { runCuratorReview, spawnSessionReview } from "./review.js"
+import { debugLog, runCuratorReview, spawnSessionReview } from "./review.js"
 import { loadState, saveState, shouldRunNow } from "./state.js"
 import type { CuratorState } from "./state.js"
 import { runAutoTransitions } from "./transitions.js"
@@ -41,11 +41,22 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 
 	const SESSION_REVIEW_THRESHOLD = Number(process.env.KIMCHI_REVIEW_THRESHOLD ?? 5)
 
+	debugLog(`curator registered: threshold=${SESSION_REVIEW_THRESHOLD} skillsDir=${skillsDir}`)
+
 	pi.on("agent_end", (event) => {
-		// Count assistant turns directly from the message history.
 		const turnCount = event.messages.filter((m) => (m as { role: string }).role === "assistant").length
-		if (turnCount < SESSION_REVIEW_THRESHOLD) return
-		if (!providerModel) return
+		debugLog(
+			`agent_end fired: turnCount=${turnCount} threshold=${SESSION_REVIEW_THRESHOLD} providerModel=${JSON.stringify(providerModel)}`,
+		)
+		if (turnCount < SESSION_REVIEW_THRESHOLD) {
+			debugLog("agent_end: below threshold, skipping review")
+			return
+		}
+		if (!providerModel) {
+			debugLog("agent_end: no providerModel, skipping review")
+			return
+		}
+		debugLog("agent_end: dispatching spawnSessionReview")
 		spawnSessionReview({
 			provider: providerModel.provider,
 			model: providerModel.model,

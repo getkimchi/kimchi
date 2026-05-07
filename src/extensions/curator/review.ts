@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { appendFileSync, readFileSync, unlinkSync } from "node:fs"
+import { appendFileSync, closeSync, openSync, readFileSync, unlinkSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { convertToLlm } from "@mariozechner/pi-coding-agent"
@@ -270,33 +270,53 @@ export interface RunSessionReviewOptions {
 	messages: any[]
 }
 
+export function debugLog(msg: string): void {
+	const path = process.env.KIMCHI_REVIEW_LOG
+	if (!path) return
+	appendFileSync(path, `[${new Date().toISOString()}] ${msg}\n`)
+}
+
 export function spawnSessionReview(opts: RunSessionReviewOptions): void {
 	const { provider, model, messages } = opts
+
+	debugLog(`spawnSessionReview called: provider=${provider} model=${model} messages=${messages.length}`)
+
 	const transcript = serializeTranscript(messages)
-	if (!transcript.trim()) return
+	if (!transcript.trim()) {
+		debugLog("spawnSessionReview: empty transcript, skipping")
+		return
+	}
+
+	debugLog(`transcript serialized: ${transcript.length} chars, ${transcript.split("\n\n").length} turns`)
 
 	const prompt = `${transcript}\n\n---\n\n${SESSION_REVIEW_PROMPT}`
 	const args = buildSubagentArgs({ provider, model, prompt }, [], collectExtensionArgs())
 	const invocation = getSubagentInvocation(args)
 
-	const debugLog = process.env.KIMCHI_REVIEW_LOG
+	debugLog(`spawning subagent: ${invocation.command} ${invocation.args.slice(0, 4).join(" ")} ...`)
+
+	const reviewLogPath = process.env.KIMCHI_REVIEW_LOG
+	let stdoutOption: "ignore" | number = "ignore"
+	let logFd: number | undefined
+	if (reviewLogPath) {
+		appendFileSync(reviewLogPath, `\n=== session-review output ${new Date().toISOString()} ===\n`)
+		logFd = openSync(reviewLogPath, "a")
+		stdoutOption = logFd
+	}
+
 	const proc = spawn(invocation.command, invocation.args, {
-		stdio: ["ignore", "pipe", "ignore"],
+		stdio: ["ignore", stdoutOption, "ignore"],
 		detached: true,
 	})
-	proc.unref()
 
-	if (debugLog) {
-		let buf = ""
-		proc.stdout?.on("data", (chunk: Buffer) => {
-			buf += chunk.toString()
-		})
-		proc.on("close", () => {
-			const ts = new Date().toISOString()
-			appendFileSync(debugLog, `\n=== session-review ${ts} ===\n${buf}\n`)
-		})
-	} else {
-		proc.stdout?.resume()
+	if (logFd !== undefined) {
+		closeSync(logFd)
 	}
-	proc.on("error", () => {})
+
+	proc.unref()
+	proc.on("error", (err) => {
+		debugLog(`subagent spawn error: ${err.message}`)
+	})
+
+	debugLog(`subagent spawned pid=${proc.pid ?? "unknown"}`)
 }
