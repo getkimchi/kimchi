@@ -168,6 +168,15 @@ Test session summary for integration testing.
 			expect(Array.isArray(report.autoTransitions.proposeArchive)).toBe(true)
 		})
 
+		it("proposes stale for old skills and not for recent skills", async () => {
+			const report = await runCuratorPipeline(skillsDir, memoryDir)
+
+			// old-skill (35 days ago) should be proposed for stale
+			// test-skill (5 days ago) should NOT be proposed for stale
+			expect(report.autoTransitions.proposeStale).toContain("old-skill")
+			expect(report.autoTransitions.proposeStale).not.toContain("test-skill")
+		})
+
 		it("includes consolidationProposals from LLM response", async () => {
 			mockSpawnSubagent.mockResolvedValueOnce(
 				"```yaml\nconsolidation_proposals:\n  - umbrella: testing-tools\n    members: [test-skill, old-skill]\n    rationale: Both are testing-related skills\nskill_gaps: []\nquality_issues: []\n```",
