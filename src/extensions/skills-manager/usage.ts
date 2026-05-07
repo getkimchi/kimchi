@@ -2,6 +2,34 @@ import { open, readFile, rename, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { lock } from "proper-lockfile"
 
+const SKILLS_DIR_CACHE = new Map<string, UsageTracker>()
+
+export function getUsageTracker(skillsDir: string): UsageTracker {
+	let tracker = SKILLS_DIR_CACHE.get(skillsDir)
+	if (!tracker) {
+		tracker = new UsageTracker(skillsDir)
+		SKILLS_DIR_CACHE.set(skillsDir, tracker)
+	}
+	return tracker
+}
+
+/**
+ * Batch update skill states. All updates happen in a single locked transaction.
+ */
+export async function setStateBatch(changes: { name: string; state: SkillState }[]): Promise<void> {
+	if (changes.length === 0) return
+
+	// Derive skillsDir from first change (assumes all changes target same skillsDir)
+	// For now, we require a skillsDir to be passed. We'll use a placeholder that
+	// gets resolved at runtime by the consumer. Actually, let's make this work
+	// by requiring the caller to provide the tracker instance or skillsDir.
+	// To keep backward compat, we use a singleton approach based on env or default.
+	const skillsDir = process.env.SKILLS_DIR ?? join(process.cwd(), "skills")
+	const tracker = new UsageTracker(skillsDir)
+
+	await tracker.setStateBatch(changes)
+}
+
 export const STATE_ACTIVE = "active" as const
 export const STATE_STALE = "stale" as const
 export const STATE_ARCHIVED = "archived" as const
@@ -187,6 +215,17 @@ export class UsageTracker {
 			const entry = this.getOrThrow(entries, name)
 			entry.state = state
 			return entry
+		})
+	}
+
+	async setStateBatch(changes: { name: string; state: SkillState }[]): Promise<void> {
+		if (changes.length === 0) return
+		await this._lock((entries) => {
+			for (const { name, state } of changes) {
+				const entry = this.getOrThrow(entries, name)
+				entry.state = state
+			}
+			// Return value unused
 		})
 	}
 }

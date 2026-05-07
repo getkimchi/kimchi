@@ -2,6 +2,37 @@ import { mkdir, readFile, readdir, rename, rmdir, stat, unlink, writeFile } from
 import { dirname, join, resolve, sep } from "node:path"
 import { parse as parseYaml } from "yaml"
 
+const SKILLS_DIR_CACHE = new Map<string, SkillManager>()
+
+export function getSkillManager(skillsDir: string): SkillManager {
+	let manager = SKILLS_DIR_CACHE.get(skillsDir)
+	if (!manager) {
+		manager = new SkillManager(skillsDir)
+		SKILLS_DIR_CACHE.set(skillsDir, manager)
+	}
+	return manager
+}
+
+/**
+ * Check if a skill directory exists.
+ */
+export async function skillExists(name: string): Promise<boolean> {
+	const skillsDir = process.env.SKILLS_DIR ?? join(process.cwd(), "skills")
+	const manager = new SkillManager(skillsDir)
+	return manager.exists(name)
+}
+
+/**
+ * Archive a skill by moving it to the .archive directory.
+ * Returns true if successful, false if skill not found.
+ */
+export async function archiveSkill(name: string): Promise<boolean> {
+	const skillsDir = process.env.SKILLS_DIR ?? join(process.cwd(), "skills")
+	const manager = new SkillManager(skillsDir)
+	const result = await manager.delete(name)
+	return result.success
+}
+
 export type SkillAction = "create" | "edit" | "patch" | "delete" | "write_file" | "remove_file" | "pin"
 
 export interface SkillManageResult {
@@ -159,6 +190,11 @@ export class SkillManager {
 		} catch {
 			return false
 		}
+	}
+
+	async exists(name: string): Promise<boolean> {
+		const loc = await this._findSkill(name)
+		return loc !== null
 	}
 
 	private async _atomicWrite(filePath: string, content: string): Promise<void> {
