@@ -2,7 +2,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
 import { SkillManager } from "./skill-manager.js"
-import { createSkillManageTool } from "./tool.js"
+import { createSkillManageTool, createSkillViewTool } from "./tool.js"
 import { UsageTracker } from "./usage.js"
 
 export interface SkillsManagerOptions {
@@ -14,4 +14,5 @@ export default function skillsManagerExtension(pi: ExtensionAPI, options?: Skill
 	const manager = new SkillManager(skillsDir)
 	const tracker = new UsageTracker(skillsDir)
 	pi.registerTool(createSkillManageTool(manager, tracker))
+	pi.registerTool(createSkillViewTool(manager, tracker))
 }

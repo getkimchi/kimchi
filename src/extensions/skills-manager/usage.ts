@@ -211,6 +211,19 @@ export class UsageTracker {
 		})
 	}
 
+	async bumpUse(name: string): Promise<void> {
+		try {
+			await this._lock((entries) => {
+				const entry = entries.get(name)
+				if (!entry) return
+				entry.use_count += 1
+				entry.last_used_at = this.now()
+			})
+		} catch {
+			// best-effort — stale detection is non-critical
+		}
+	}
+
 	async get(name: string): Promise<UsageEntry | undefined> {
 		return this._lock((entries) => entries.get(name))
 	}

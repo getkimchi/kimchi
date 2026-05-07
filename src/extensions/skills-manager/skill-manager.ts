@@ -431,6 +431,52 @@ export class SkillManager {
 		}
 	}
 
+	async view(
+		name: string,
+		filePath?: string,
+	): Promise<SkillManageResult & { content?: string; linked_files?: Record<string, string[]> }> {
+		const loc = await this._findSkill(name)
+		if (!loc) {
+			return { success: false, error: `Skill '${name}' not found.` }
+		}
+
+		const targetPath = filePath ? join(loc.skillDir, filePath) : join(loc.skillDir, "SKILL.md")
+
+		// Path traversal guard
+		if (filePath) {
+			const resolved = resolve(targetPath)
+			if (!resolved.startsWith(`${resolve(loc.skillDir)}/`)) {
+				return { success: false, error: "Path traversal is not allowed." }
+			}
+		}
+
+		let content: string
+		try {
+			content = await readFile(targetPath, "utf-8")
+		} catch {
+			return { success: false, error: `File '${filePath ?? "SKILL.md"}' not found in skill '${name}'.` }
+		}
+
+		if (filePath) {
+			return { success: true, message: `Loaded '${filePath}' from '${name}'.`, content }
+		}
+
+		// Collect linked files by subdirectory
+		const linked_files: Record<string, string[]> = {}
+		for (const subdir of ["references", "templates", "scripts", "assets"]) {
+			const files: string[] = []
+			await this._collectFiles(join(loc.skillDir, subdir), subdir, files)
+			if (files.length > 0) linked_files[subdir] = files
+		}
+
+		return {
+			success: true,
+			message: `Loaded skill '${name}'.`,
+			content,
+			...(Object.keys(linked_files).length > 0 ? { linked_files } : {}),
+		}
+	}
+
 	private async _collectFiles(dir: string, prefix: string, out: string[]): Promise<void> {
 		let entries: string[] = []
 		try {

@@ -94,6 +94,40 @@ async function pinnedGuard(name: string, tracker: UsageTracker): Promise<string 
 	return null
 }
 
+export function createSkillViewTool(manager: SkillManager, tracker: UsageTracker) {
+	return {
+		name: "skill_view",
+		label: "Skill View",
+		description:
+			"Load a skill's full content. First call (no file_path) returns SKILL.md plus a linked_files map of available references/templates/scripts/assets. " +
+			"To read a linked file, call again with file_path (e.g. 'references/api.md').",
+		parameters: Type.Object({
+			name: Type.String({ description: "Skill name (use skill_manage action=list to discover)" }),
+			file_path: Type.Optional(
+				Type.String({
+					description: "Path to a linked file within the skill, e.g. 'references/api.md'. Omit for main SKILL.md.",
+				}),
+			),
+		}),
+		async execute(_toolCallId: string, params: { name: string; file_path?: string }) {
+			const result = await manager.view(params.name, params.file_path)
+			if (result.success) {
+				void tracker.bumpUse(params.name)
+			}
+			const text = result.success
+				? [
+						result.content ?? "",
+						result.linked_files ? `\nLinked files: ${JSON.stringify(result.linked_files)}` : "",
+					].join("")
+				: (result.error ?? "Error")
+			return {
+				content: [{ type: "text" as const, text }],
+				details: result,
+			}
+		},
+	}
+}
+
 export function createSkillManageTool(manager: SkillManager, tracker: UsageTracker) {
 	const isSessionReview = process.env.KIMCHI_SESSION_REVIEW === "1"
 
