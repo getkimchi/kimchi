@@ -98,4 +98,11 @@ describe("dispatchSubcommand", () => {
 		const messages = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
 		expect(messages).toContain("Usage: kimchi config")
 	})
+
+	it("extension with no args prints usage and returns 1", async () => {
+		const result = await dispatchSubcommand(["extension"])
+		expect(result).toEqual({ kind: "handled", exitCode: 1 })
+		const output = logSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
+		expect(output).toContain("Usage: kimchi extension")
+	})
 })

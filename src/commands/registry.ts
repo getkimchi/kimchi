@@ -8,6 +8,7 @@ export interface CommandDefinition {
 import { runClaude } from "./claude.js"
 import { runConfig } from "./config.js"
 import { runCursor } from "./cursor.js"
+import { runExtension } from "./extension.js"
 import { runGsd2 } from "./gsd2.js"
 import { runOpenClaw } from "./openclaw.js"
 import { runOpenCode } from "./opencode.js"
@@ -25,6 +26,11 @@ export const COMMANDS: CommandDefinition[] = [
 	{ name: "update", summary: "Check for and install kimchi updates", run: runUpdate },
 	{ name: "config", summary: "Inspect or change kimchi config (e.g. telemetry)", run: runConfig },
 	{ name: "version", summary: "Print the kimchi version", run: runVersion },
+	{
+		name: "extension",
+		summary: "Manage pi extensions/packages (add, remove, list, enable, disable, update)",
+		run: runExtension,
+	},
 ]
 
 const COMMAND_NAMES = new Set(COMMANDS.map((c) => c.name))
