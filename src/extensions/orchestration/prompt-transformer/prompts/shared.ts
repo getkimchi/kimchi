@@ -2,23 +2,9 @@ export const TOOLS_SECTION = `## Available Tools
 
 {{TOOLS}}`
 
-export const RESEARCH_RULES = `## Research Rules
-
-- Use \`web_search\` only during the \`research\` step — not during \`explore\`, \`plan\`, or \`build\`.
-- **Avoid web_fetch.** It returns raw website content that can flood your context window. Prefer \`web_search\` for most research. Use \`web_fetch\` only when the information is frequently updated and unlikely to be indexed (e.g. changelogs, latest release notes), or when the user's message contains an explicit URL. When you do use it, request markdown or text format and delegate to a subagent to keep the output out of the main context.
-- **Run at most one web_search per task.** Do NOT run a second search to verify or refine.
-- **Skip research for well-known patterns.** Do not search the web for standard algorithms, common library APIs, or language features you already know. Only research when the task involves unfamiliar libraries, specific version constraints, or facts you genuinely do not know.`
-
 export const CORE_GUIDELINES = `- Be concise in your responses. Do not restate what you are about to do, repeat what you just did, or summarize completed steps — act and move on.
-- **Batch independent tool calls.** When you need to write or create multiple files, make all independent tool calls in the same response. Each turn adds to the context window, so fewer turns with more tool calls is strictly better than many single-call turns.
 - Show file paths clearly when working with files.
-- Read files before modifying them.
-- Prefer editing existing files over creating new ones.
-- Do NOT introduce security vulnerabilities.
-- Do NOT add features, refactoring, or improvements beyond what was asked.
-- If you encounter an error, diagnose the root cause before retrying.
-- **Pattern recognition**: If the same implementation pattern is needed more than twice, define the abstraction first, then implement.
-- **Git commits**: Always end every commit message with a blank line followed by \`Co-Authored-By: Kimchi <noreply@kimchi.dev>\`.`
+- Do NOT introduce security vulnerabilities.`
 
 export const DOCUMENTS_SECTION = `## Documents
 

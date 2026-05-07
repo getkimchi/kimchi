@@ -33,7 +33,8 @@ export const DEFAULT_PHASE_GUIDELINES: Readonly<Record<Phase, string>> = {
 - If the same code pattern is needed >2 times, extract an abstraction first instead of duplicating.
 - After each meaningful change, run the type-checker / linter / tests. Fix errors before moving on.
 - If a tool call fails, diagnose the root cause before retrying — do not retry blindly.
-- Keep diffs minimal and reviewable. Outline-then-diff beats wall-of-text rewrites.`,
+- Keep diffs minimal and reviewable. Outline-then-diff beats wall-of-text rewrites.
+- **Git commits**: Always end every commit message with a blank line followed by \`Co-Authored-By: Kimchi <noreply@kimchi.dev>\`.`,
 
 	review: `During **review** phase:
 - Read the diff or changed files first; then read the surrounding context for any touched function.
