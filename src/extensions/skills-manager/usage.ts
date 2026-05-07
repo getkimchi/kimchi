@@ -2,6 +2,11 @@ import { open, readFile, rename, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { lock } from "proper-lockfile"
 
+export const STATE_ACTIVE = "active" as const
+export const STATE_STALE = "stale" as const
+export const STATE_ARCHIVED = "archived" as const
+export type SkillState = "active" | "stale" | "archived"
+
 export interface UsageEntry {
 	name: string
 	agent_created: boolean
@@ -10,9 +15,63 @@ export interface UsageEntry {
 	last_used_at?: string
 	patch_count: number
 	last_patched_at?: string
-	state: "active" | "archived"
+	state: SkillState
 	pinned: boolean
 	absorbed_into?: string
+}
+
+export interface AgentCreatedSkillReport {
+	name: string
+	pinned: boolean
+	state: SkillState
+	created_at?: string
+	last_activity_at?: string
+}
+
+/**
+ * Returns the most recent activity timestamp for a skill.
+ * This considers created_at, last_used_at, and last_patched_at.
+ */
+export function computeLastActivityAt(entry: UsageEntry): string | undefined {
+	const timestamps: string[] = []
+	if (entry.created_at) timestamps.push(entry.created_at)
+	if (entry.last_used_at) timestamps.push(entry.last_used_at)
+	if (entry.last_patched_at) timestamps.push(entry.last_patched_at)
+
+	if (timestamps.length === 0) return undefined
+
+	// Return the most recent timestamp
+	return timestamps.sort().at(-1)
+}
+
+/**
+ * Returns all agent-created skills with their relevant fields for auto-transitions.
+ */
+export async function agentCreatedReport(skillsDir: string): Promise<AgentCreatedSkillReport[]> {
+	const usagePath = join(skillsDir, ".usage.json")
+
+	try {
+		const raw = await readFile(usagePath, "utf-8")
+		if (!raw.trim()) return []
+
+		const obj = JSON.parse(raw) as Record<string, UsageEntry>
+		const entries = Object.values(obj)
+
+		return entries
+			.filter((entry) => entry.agent_created)
+			.map((entry) => ({
+				name: entry.name,
+				pinned: entry.pinned,
+				state: entry.state,
+				created_at: entry.created_at,
+				last_activity_at: computeLastActivityAt(entry),
+			}))
+	} catch (err: unknown) {
+		if (err instanceof Error && "code" in err && (err as { code: string }).code === "ENOENT") {
+			return []
+		}
+		throw err
+	}
 }
 
 export class UsageTracker {
@@ -121,5 +180,13 @@ export class UsageTracker {
 
 	async get(name: string): Promise<UsageEntry | undefined> {
 		return this._lock((entries) => entries.get(name))
+	}
+
+	async setState(name: string, state: SkillState): Promise<UsageEntry> {
+		return this._lock((entries) => {
+			const entry = this.getOrThrow(entries, name)
+			entry.state = state
+			return entry
+		})
 	}
 }
