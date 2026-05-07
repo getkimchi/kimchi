@@ -1,28 +1,26 @@
 import { describe, expect, it } from "vitest"
-import curatorExtension from "./index.js"
+import { registerCuratorExtension } from "./index.js"
 
-describe("curatorExtension", () => {
+describe("registerCuratorExtension", () => {
 	it("is a function", () => {
-		expect(typeof curatorExtension).toBe("function")
+		expect(typeof registerCuratorExtension).toBe("function")
 	})
 
-	it("returns a Promise", async () => {
-		const result = curatorExtension({} as unknown as Parameters<typeof curatorExtension>[0])
-		expect(result).toBeInstanceOf(Promise)
-		await result
+	it("returns an Extension object", () => {
+		const result = registerCuratorExtension()
+		expect(result).toBeDefined()
+		expect(typeof result).toBe("object")
+		expect(result).not.toBeInstanceOf(Promise)
 	})
 
-	it("resolves without error when called", async () => {
-		// No-op extension - should resolve regardless of input
-		const pi = {
-			on: () => {},
-			getAllTools: () => [],
-			getActiveTools: () => [],
-			setActiveTools: () => {},
-			sendMessage: () => {},
-			getcwd: () => "/tmp",
-		} as unknown as Parameters<typeof curatorExtension>[0]
+	it("Extension.path is 'curator'", () => {
+		const result = registerCuratorExtension()
+		expect(result.path).toBe("curator")
+	})
 
-		await expect(curatorExtension(pi)).resolves.toBeUndefined()
+	it("Extension.tools is empty", () => {
+		const result = registerCuratorExtension()
+		expect(result.tools).toBeDefined()
+		expect(result.tools.size).toBe(0)
 	})
 })
