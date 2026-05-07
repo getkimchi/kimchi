@@ -60,15 +60,20 @@ All tied to session-summary gap analysis. The session summary / failure log appr
 ```
 session_start
   └── maybeCurator(idleSeconds)
+        ├── update last_session_ended_at in .curator_state (previous value used for idleSeconds)
         ├── shouldRunNow() — .curator_state + 7d interval + 2h idle → no-op if not due
         ├── applyAutoTransitions() — mutates .usage.json (stale/archive/reactivate), no LLM
         └── runCuratorReview() [background, non-blocking]
-              ├── build candidate list (agent_created skills, names + descriptions)
+              ├── build candidate list (agent_created skills, names + descriptions, capped at 40)
               ├── spawnSubagent(umbrellaPrompt + candidate list)
               │     └── tools: skill_manage, skill_view, skill_list — no terminal, no bash
               └── update .curator_state (last_run_at, run_count, last_run_summary, running: false)
 
+session_end (or process exit)
+  └── write last_session_ended_at to .curator_state
+
 /improve (manual)
+  └── check running: true (with stale-lock timeout) → abort with message if locked
   └── runCuratorReview() [foreground, bypasses interval check]
 ```
 
@@ -81,7 +86,7 @@ session_start
 ```json
 {
   "last_run_at": "2026-05-07T12:00:00.000Z",
-  "last_session_at": "2026-05-07T14:00:00.000Z",
+  "last_session_ended_at": "2026-05-07T13:55:00.000Z",
   "run_count": 3,
   "paused": false,
   "running": false,
@@ -89,11 +94,11 @@ session_start
 }
 ```
 
-`last_session_at` is updated on every `session_start`, before the idle check. `idleSeconds` = `now - last_session_at_previous` (i.e., the gap between this session and the previous one).
+`last_session_ended_at` is written on process exit (SIGTERM/SIGINT hook + normal shutdown). `idleSeconds` = `now - last_session_ended_at` at the start of the next session.
 
 **`shouldRunNow(idleSeconds)`:**
 - Returns false if `paused: true`
-- Returns false if `running: true` (concurrent run guard)
+- Returns false if `running: true` AND `last_run_at` is within 4 hours (stale-lock timeout — assumes crash if older)
 - Returns false if `last_run_at` is within 7 days
 - Returns false if `idleSeconds < 2 * 3600` (2h idle minimum)
 - Otherwise returns true
@@ -102,12 +107,12 @@ session_start
 
 ## Auto-Transitions
 
-Pure computation, no LLM. Runs before every curator pass (background and manual).
+Pure computation, no LLM. Runs before every curator pass (background and manual). Pinned skills are skipped entirely.
 
 | Condition | Action |
 |---|---|
-| last_activity > 90 days, state !== archived | → archived |
-| last_activity > 30 days, state === active | → stale |
+| last_activity > 90 days, state !== archived, !pinned | → archived |
+| last_activity > 30 days, state === active, !pinned | → stale |
 | last_activity ≤ 30 days, state === stale | → active (reactivate) |
 
 `last_activity` = max(last_used_at, last_patched_at, created_at).
@@ -124,14 +129,15 @@ Mirrors Hermes `CURATOR_REVIEW_PROMPT`. Key constraints:
 - **Agent-created skills only** — candidate list is pre-filtered; bundled/harness skills are never touched
 - **No deletion** — only archive via `skill_manage action=delete`. Archives are recoverable.
 - **Pinned skills are off-limits** — skip entirely
-- **Three consolidation strategies:**
+- **Candidate list capped at 40** — most recently active `agent_created` skills; avoids context blowout
+- **Two consolidation strategies** (strategy 3 dropped — `write_file` subdir support unconfirmed in existing `SkillManager`):
   1. Merge into existing umbrella — patch it, archive siblings with `absorbed_into`
   2. Create new umbrella — `skill_manage action=create`, archive absorbed skills
-  3. Demote to references/templates/scripts — `skill_manage action=write_file` under umbrella, archive sibling
 
 **Tools available to subagent:** `skill_manage`, `skill_view`, `skill_list`. No `terminal`, no `bash`.
 
-**Required output format:**
+**Required output format** — subagent must emit this YAML block as its final message, after all tool calls are complete. Parser strips surrounding markdown fences before parsing:
+
 ```yaml
 ## Structured summary (required)
 consolidations:
@@ -150,9 +156,10 @@ Every archived skill must appear in exactly one list.
 ## `/improve` Command
 
 `/improve` SKILL.md rewritten to:
-1. Confirm with user (dry-run preview first if requested)
-2. Call `runCuratorReview()` directly — same pipeline, no interval check
-3. Report the structured summary when done
+1. Check `running: true` (with stale-lock timeout) — if locked, report "Curator is currently running in the background" and abort
+2. Confirm with user (dry-run preview first if requested)
+3. Call `runCuratorReview()` directly — same pipeline, no interval check
+4. Report the structured summary when done
 
 No session summary reading. No failure log analysis. Pure consolidation.
 
@@ -164,9 +171,17 @@ No session summary reading. No failure log analysis. Pure consolidation.
 |---|---|
 | `maybeCurator()` fails | Swallowed, logged at debug. Never blocks session startup. |
 | `applyAutoTransitions()` fails | Skip LLM pass, log. Best-effort. |
-| Subagent errors | Log, write failure note to `.curator_state`, don't retry. |
-| `running: true` on session start | Skip — previous run still in progress or crashed mid-run. |
+| Subagent errors | Log, write failure note to `.curator_state`, set `running: false`, don't retry. |
+| `running: true`, `last_run_at` < 4h | Skip — previous run still in progress. |
+| `running: true`, `last_run_at` > 4h | Assume crash, clear lock, proceed. |
+| `/improve` while `running: true` (non-stale) | Surface to user: "Curator is running in background." |
 | `/improve` subagent errors | Surface to user. |
+
+---
+
+## Open Questions
+
+- **`skill_manage action=write_file` subdirectory support** — does the existing `SkillManager` support writing files under a skill directory? If yes, a third consolidation strategy (demote to reference/template) can be added. Out of scope until confirmed.
 
 ---
 
