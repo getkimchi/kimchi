@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
@@ -184,9 +184,17 @@ export default function uiExtension(pi: ExtensionAPI) {
 					if (existsSync(kbPath)) {
 						const kb = JSON.parse(readFileSync(kbPath, "utf-8"))
 						const nl = kb["tui.input.newLine"]
-						if (typeof nl === "string" && nl.includes("ctrl+j")) {
+						const settingsPath = resolve(agentDir, "settings.json")
+						let settingsData: Record<string, unknown> = {}
+						if (existsSync(settingsPath)) {
+							try {
+								settingsData = JSON.parse(readFileSync(settingsPath, "utf-8"))
+							} catch {}
+						}
+						if (!settingsData.newlineHintDismissed && typeof nl === "string" && nl.includes("ctrl+j")) {
 							ctx.ui.custom(
 								(_tui, theme, _kb, done) => {
+									const settingsFile = settingsPath
 									return {
 										render(width: number): string[] {
 											const { Box } = require("@mariozechner/pi-tui")
@@ -194,10 +202,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 											const box = new Box(2, 1)
 											box.addChild(new Text(theme.inverse("  ⚠  Shift+Enter doesn't work in this terminal  ")))
 											box.addChild(new Text(""))
-											box.addChild(new Text(`${theme.bold("Ctrl+J")}${" ".padEnd(12)}→  insert a newline`))
-											box.addChild(new Text(`\\ + Enter${" ".padEnd(9)}→  insert a newline`))
+											box.addChild(new Text(`${theme.bold("Ctrl+J")}${" ".padEnd(13)}→  insert a newline`))
+											box.addChild(new Text(`\\ + Enter${" ".padEnd(10)}→  insert a newline`))
 											box.addChild(new Text(""))
-											box.addChild(new Text(theme.fg("muted", "Press Enter to dismiss")))
+											box.addChild(new Text(theme.fg("muted", "Enter - dismiss   d - don't remind again")))
 											const accent = theme.getFgAnsi("accent")
 											const reset = "\x1b[0m"
 											const hbar = "─"
@@ -213,6 +221,19 @@ export default function uiExtension(pi: ExtensionAPI) {
 										invalidate() {},
 										handleInput(data: string): void {
 											if (matchesKey(data, "enter")) done(undefined)
+											if (data === "d") {
+												try {
+													const s: Record<string, unknown> = {}
+													if (existsSync(settingsFile)) {
+														try {
+															Object.assign(s, JSON.parse(readFileSync(settingsFile, "utf-8")))
+														} catch {}
+													}
+													s.newlineHintDismissed = true
+													writeFileSync(settingsFile, JSON.stringify(s, null, 2))
+												} catch {}
+												done(undefined)
+											}
 										},
 										wantsKeyRelease: false,
 									}
