@@ -197,8 +197,8 @@ export class SkillManager {
 		return loc !== null
 	}
 
-	async listInventory(): Promise<Array<{ name: string; category?: string; path: string }>> {
-		const inventory: Array<{ name: string; category?: string; path: string }> = []
+	async listInventory(): Promise<Array<{ name: string; category?: string; path: string; agent_created: boolean }>> {
+		const inventory: Array<{ name: string; category?: string; path: string; agent_created: boolean }> = []
 		await this._scanDir(this.skillsDir, undefined, inventory)
 		return inventory
 	}
@@ -206,7 +206,7 @@ export class SkillManager {
 	private async _scanDir(
 		dir: string,
 		category: string | undefined,
-		out: Array<{ name: string; category?: string; path: string }>,
+		out: Array<{ name: string; category?: string; path: string; agent_created: boolean }>,
 	): Promise<void> {
 		let entries: string[] = []
 		try {
@@ -224,7 +224,17 @@ export class SkillManager {
 					const skillPath = join(full, "SKILL.md")
 					try {
 						await stat(skillPath)
-						out.push({ name: entry, category, path: full })
+						// Check agent_created flag in .usage.json
+						let agentCreated = false
+						try {
+							const usagePath = join(full, ".usage.json")
+							const usageContent = await readFile(usagePath, "utf-8")
+							const usage = JSON.parse(usageContent)
+							agentCreated = usage.agent_created === true
+						} catch {
+							// No .usage.json or parse error → not agent-created
+						}
+						out.push({ name: entry, category, path: full, agent_created: agentCreated })
 					} catch {
 						// Not a skill dir, recurse into subdirs
 						await this._scanDir(full, entry, out)
