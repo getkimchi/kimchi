@@ -395,9 +395,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
 
-		// Only show the menu when the agent produced text without tool calls —
-		// that signals it is presenting a plan rather than still exploring.
+		// Only show the menu when the agent produced text without tool calls
+		// AND has called at least one tool this cycle (i.e., it explored before
+		// presenting a plan). Without prior tool calls the agent is likely asking
+		// clarifying questions, not delivering a finished plan.
 		if (!hasText || hasToolCalls) return
+		if (!toolsCalledThisCycle) return
 
 		planMenuShownThisCycle = true
 

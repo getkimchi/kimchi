@@ -34,6 +34,7 @@ import promptEnrichmentExtension from "./extensions/orchestration/prompt-enrichm
 import permissionsExtension from "./extensions/permissions/index.js"
 import { reserveShiftTabForPermissions } from "./extensions/permissions/keybindings.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
+import questionnaireExtension from "./extensions/questionnaire.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 // import statsExtension from "./extensions/stats/index.js"
@@ -323,6 +324,7 @@ try {
 			mcpAdapterExtension,
 			// Ferment must see raw input before prompt enrichment rewrites print-mode text.
 			fermentExtension,
+			questionnaireExtension,
 			promptEnrichmentExtension(skillPaths),
 			permissionsExtension,
 			behavioursExtension,
