@@ -112,22 +112,28 @@ let multiModelEnabled = readMultiModelArgv()
 const ENRICHED_PROMPT_CUSTOM_TYPE = "enriched-prompt"
 
 /**
- * Tracks which model last received an enriched-prompt injection so the
- * capabilities block is only sent once per model, not on every user turn.
+ * Tracks which model and phase last received an enriched-prompt injection so
+ * the capabilities block is only sent once per (model, phase) pair, not on
+ * every user turn. Re-injects when either the model or the active phase
+ * changes, keeping guidelines up to date for both transitions.
  */
 export class EnrichmentGuard {
 	private lastModelId: string | null = null
+	private lastPhase: string | null = null
 
-	/** Returns true if enrichment should be injected for this model ID. */
-	shouldEnrich(modelId: string): boolean {
-		if (modelId === this.lastModelId) return false
+	/** Returns true if enrichment should be injected for this (model, phase) pair. */
+	shouldEnrich(modelId: string, phase?: string): boolean {
+		const phaseKey = phase ?? null
+		if (modelId === this.lastModelId && phaseKey === this.lastPhase) return false
 		this.lastModelId = modelId
+		this.lastPhase = phaseKey
 		return true
 	}
 
 	/** Resets the guard, e.g. when multi-model is toggled off and back on. */
 	reset(): void {
 		this.lastModelId = null
+		this.lastPhase = null
 	}
 }
 
@@ -356,10 +362,10 @@ export default function (skillPaths: string[]) {
 				const currentModel = ctx.model ? { id: ctx.model.id, name: ctx.model.id } : undefined
 				const currentModelId = currentModel?.id ?? ""
 
-				// Only inject capabilities on the first turn or when the model changes.
-				// Re-injecting every turn accumulates duplicate capability blocks in the
-				// context window, inflating token usage and confusing the model.
-				if (!enrichmentGuard.shouldEnrich(currentModelId)) {
+				// Only inject capabilities on the first turn or when the model or phase
+				// changes. Re-injecting every turn accumulates duplicate capability blocks
+				// in the context window, inflating token usage and confusing the model.
+				if (!enrichmentGuard.shouldEnrich(currentModelId, getCurrentPhase())) {
 					return { action: "continue" as const }
 				}
 
