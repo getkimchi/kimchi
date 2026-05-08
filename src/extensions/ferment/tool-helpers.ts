@@ -1,8 +1,16 @@
 /**
  * Tool result builders + entity resolvers shared across tool implementations.
+ *
+ * Also exposes `applyAndPersist` — the bridge between tool handlers and the
+ * pure state machine. Tool handlers should construct a `Command`, call this
+ * helper, and either return its error or use the resulting ferment to format
+ * a success response.
  */
 
+import type { Command, TransitionError } from "../../ferment/state-machine.js"
+import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
+import { getStorage, setActive } from "./state.js"
 
 // ─── Tool result builders ─────────────────────────────────────────────────────
 // Every tool execute returns the same { details, content, isError? } shape;
@@ -42,4 +50,38 @@ export function resolveStep(phase: Phase, stepId: string): Step | undefined {
 		}
 	}
 	return step
+}
+
+// ─── State machine bridge ─────────────────────────────────────────────────────
+
+/**
+ * Apply a state-machine command, persist the result, and update the active
+ * ferment cache. Returns either the new ferment or a transition error.
+ *
+ * This is the canonical path for tool handlers: load → apply → persist.
+ * Anything else (judge calls, side effects, formatting) is the host's job.
+ */
+export type ApplyOutcome =
+	| { ok: true; ferment: Ferment }
+	| { ok: false; error: TransitionError | { code: "FERMENT_NOT_FOUND"; message: string } }
+
+export function applyAndPersist(fermentId: string, cmd: Command): ApplyOutcome {
+	const storage = getStorage()
+	const current = storage.get(fermentId)
+	if (!current) {
+		return { ok: false, error: { code: "FERMENT_NOT_FOUND", message: `Ferment not found: ${fermentId}` } }
+	}
+	const result = applyCommand(current, cmd, { now: new Date().toISOString() })
+	if (!result.ok) return { ok: false, error: result.error }
+	storage.write(result.ferment)
+	setActive(result.ferment)
+	return { ok: true, ferment: result.ferment }
+}
+
+/**
+ * Convert any error with a `message` field into a tool-error result.
+ * Centralized so error wording stays consistent across all tool handlers.
+ */
+export function failedToolResult(error: { message: string }) {
+	return toolErr(error.message)
 }

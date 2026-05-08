@@ -1,12 +1,17 @@
 /**
  * Ferment lifecycle tools: create, list, scope, update fields, set mode, complete.
+ *
+ * Tool handlers follow the pattern:
+ *   1. Validate UI-flow gates (scoping confirmation, etc.) — host concern
+ *   2. Build a Command and call applyAndPersist — state machine concern
+ *   3. Run side effects (judge calls, nudges) — host concern
+ *   4. Format result text — host concern
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import type { Ferment, FermentWorkMode, Phase, Step } from "../../../ferment/types.js"
+import type { Command } from "../../../ferment/state-machine.js"
 import { computeFermentGrade, judgePlan } from "../judge.js"
-import { maybeInjectAutoNudge } from "../nudge.js"
-import { appendRefEntry } from "../nudge.js"
+import { appendRefEntry, maybeInjectAutoNudge } from "../nudge.js"
 import {
 	clearFermentState,
 	consumeScopingGate,
@@ -16,7 +21,7 @@ import {
 	isScopingInteractive,
 	setActive,
 } from "../state.js"
-import { toolErr } from "../tool-helpers.js"
+import { applyAndPersist, failedToolResult, toolErr, toolOk } from "../tool-helpers.js"
 import {
 	CompleteFermentParams,
 	CreateFermentParams,
@@ -33,20 +38,13 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 		description: "Create a new ferment at draft status.",
 		parameters: CreateFermentParams,
 		async execute(_, params) {
+			// Creation is special — no existing ferment to transition from.
+			// Storage's create() handles uuid generation and worktree capture.
 			const f = getStorage().create(params.name, params.description)
 			setActive(f)
 			appendRefEntry(pi, f.id)
-			const wt = f.worktree
-			const branch = wt.branch ?? "(no git)"
-			return {
-				details: undefined,
-				content: [
-					{
-						type: "text",
-						text: `Created "${f.name}".  Mode: ${f.mode}  •  Branch: ${branch}  •  Path: ${wt.path}`,
-					},
-				],
-			}
+			const branch = f.worktree.branch ?? "(no git)"
+			return toolOk(`Created "${f.name}".  Mode: ${f.mode}  •  Branch: ${branch}  •  Path: ${f.worktree.path}`)
 		},
 	})
 
@@ -62,24 +60,14 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 			const filterValue = params.filter === "active" ? "running" : params.filter
 			const filtered = filterValue ? items.filter((f) => f.status === filterValue) : items
 			if (filtered.length === 0) {
-				const msg = filterValue ? `No ferments with status "${filterValue}".` : "No ferments."
-				return { details: undefined, content: [{ type: "text", text: msg }] }
+				return toolOk(filterValue ? `No ferments with status "${filterValue}".` : "No ferments.")
 			}
 			const activeId = getActiveId()
-			return {
-				details: undefined,
-				content: [
-					{
-						type: "text",
-						text: `Ferments:\n${filtered
-							.map((f) => {
-								const active = f.id === activeId ? " ← active" : ""
-								return `- ${f.id} │ ${f.name} [${f.status}] — ${f.phaseCount} phases${active}`
-							})
-							.join("\n")}`,
-					},
-				],
-			}
+			const lines = filtered.map((f) => {
+				const active = f.id === activeId ? " ← active" : ""
+				return `- ${f.id} │ ${f.name} [${f.status}] — ${f.phaseCount} phases${active}`
+			})
+			return toolOk(`Ferments:\n${lines.join("\n")}`)
 		},
 	})
 
@@ -102,76 +90,37 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 			}
 			consumeScopingGate(params.ferment_id)
 
-			const s = getStorage()
-			const f = s.get(params.ferment_id)
-			if (!f) return toolErr(`Ferment not found: ${params.ferment_id}`)
-
-			// Cannot re-scope if already past draft
-			if (f.status !== "draft") {
-				return toolErr(`Ferment is already ${f.status}. Use update_scope_field to revise individual fields.`)
+			const cmd: Command = {
+				type: "scope",
+				title: params.title,
+				goal: params.goal,
+				successCriteria: params.success_criteria,
+				constraints: params.constraints,
+				phases: params.phases ?? [],
+			}
+			const outcome = applyAndPersist(params.ferment_id, cmd)
+			if (!outcome.ok) {
+				// Special-case: ferment-not-in-status with current "planned"/"running" maps
+				// to the user-friendly "use update_scope_field to revise" hint.
+				if (outcome.error.code === "FERMENT_NOT_IN_STATUS" && outcome.error.actual !== "draft") {
+					return toolErr(
+						`Ferment is already ${outcome.error.actual}. Use update_scope_field to revise individual fields.`,
+					)
+				}
+				return failedToolResult(outcome.error)
 			}
 
-			if (params.title) {
-				s.rename(f.id, params.title)
-			}
+			const fresh = outcome.ferment
+			const phaseList = fresh.phases.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") || "(none)"
 
-			// Set each scoping field atomically
-			s.setScopingGoal(f.id, params.goal)
-
-			if (params.success_criteria) {
-				s.setScopingCriteria(f.id, params.success_criteria)
-			}
-
-			if (params.constraints && params.constraints.length > 0) {
-				s.setScopingConstraints(f.id, params.constraints)
-			}
-
-			let phases: Phase[] = []
-			if (params.phases && params.phases.length > 0) {
-				phases = params.phases.map((p, i) => {
-					const steps: Step[] = (p.steps ?? []).map((st, si) => ({
-						id: `step-${si + 1}`,
-						index: si + 1,
-						description: st.description,
-						status: "pending" as const,
-						verification: st.verify ? { command: st.verify, retries: 2, retryDelayMs: 1000 } : undefined,
-					}))
-					return {
-						id: `phase-${i + 1}`,
-						index: i + 1,
-						name: p.name,
-						goal: p.goal,
-						description: p.description ?? "",
-						constraints: p.constraints,
-						budget: p.budget,
-						parallel: p.parallel_group !== undefined,
-						groupIndex: p.parallel_group,
-						status: "planned" as const,
-						steps,
-					}
-				})
-				s.setScopingPhases(f.id, phases)
-			}
-
-			// Transition to planned only after scoping is saved
-			s.updateStatus(f.id, "planned")
-			const fresh = s.get(f.id)
-			if (fresh) setActive(fresh)
-
-			// ── Plan review: judge checks phases before execution starts ─────────
-			const f2 = s.get(f.id)
-			const phaseList = f2?.phases.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") ?? "(none)"
-
+			// Plan review: judge checks phases before execution starts (side effect, host's job)
 			const planReview = await judgePlan(
-				f2?.name ?? f.name,
+				fresh.name,
 				params.goal,
 				params.success_criteria ?? "",
 				(params.constraints ?? []).join(", "),
 				phaseList,
 			)
-
-			// Do NOT call onPhaseCompleted here — ferment just became "planned",
-			// not executing. The engine's activate_phase nudge handles the next step.
 			maybeInjectAutoNudge(pi)
 
 			const reviewNote =
@@ -179,15 +128,9 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 					? `\n\nPlan review: ✓ approved (confidence: ${planReview.confidence}%)`
 					: `\n\nPlan review: ⚠ revision suggested (confidence: ${planReview.confidence}%)\n${planReview.suggestions.map((s) => `  • ${s}`).join("\n")}\n\nRevise the phases if needed, then proceed with activate_phase.`
 
-			return {
-				details: undefined,
-				content: [
-					{
-						type: "text",
-						text: `Ferment "${f2?.name ?? f.name}" scoped and ready.\nferment_id: ${f2?.id ?? f.id}\nGoal: ${params.goal}\nPhases:\n${phaseList}${reviewNote}`,
-					},
-				],
-			}
+			return toolOk(
+				`Ferment "${fresh.name}" scoped and ready.\nferment_id: ${fresh.id}\nGoal: ${params.goal}\nPhases:\n${phaseList}${reviewNote}`,
+			)
 		},
 	})
 
@@ -197,31 +140,16 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 		description: "Revise a single scoping field (goal, criteria, constraints) on an already-planned ferment.",
 		parameters: UpdateScopeFieldParams,
 		async execute(_, params) {
-			const s = getStorage()
-			const f = s.get(params.ferment_id)
-			if (!f) return toolErr("Ferment not found.")
-
-			let updated: Ferment | undefined
-
-			if (params.field === "goal") {
-				updated = s.setScopingGoal(f.id, params.value)
-			} else if (params.field === "criteria") {
-				updated = s.setScopingCriteria(f.id, params.value)
-			} else if (params.field === "constraints") {
-				const parsed = params.value
-					.split(",")
-					.map((c) => c.trim())
-					.filter(Boolean)
-				updated = s.setScopingConstraints(f.id, parsed)
-			} else {
+			if (params.field !== "goal" && params.field !== "criteria" && params.field !== "constraints") {
 				return toolErr(`Unknown field: ${params.field}. Use goal, criteria, or constraints.`)
 			}
-
-			if (updated) setActive(updated)
-			return {
-				details: undefined,
-				content: [{ type: "text", text: `Field "${params.field}" updated for "${f.name}".` }],
-			}
+			const outcome = applyAndPersist(params.ferment_id, {
+				type: "update_scope_field",
+				field: params.field,
+				value: params.value,
+			})
+			if (!outcome.ok) return failedToolResult(outcome.error)
+			return toolOk(`Field "${params.field}" updated for "${outcome.ferment.name}".`)
 		},
 	})
 
@@ -231,15 +159,15 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 		description: "Change the work mode of a ferment.",
 		parameters: SetModeParams,
 		async execute(_, params) {
-			const s = getStorage()
-			const f = s.get(params.ferment_id)
-			if (!f) return toolErr("Ferment not found.")
 			if (!["plan", "exec", "auto"].includes(params.mode)) {
 				return toolErr(`Invalid mode: ${params.mode}. Use plan, exec, or auto.`)
 			}
-			const updated = s.updateMode(f.id, params.mode as FermentWorkMode)
-			if (updated) setActive(updated)
-			return { details: undefined, content: [{ type: "text", text: `Mode set to ${params.mode} for "${f.name}".` }] }
+			const outcome = applyAndPersist(params.ferment_id, {
+				type: "set_mode",
+				mode: params.mode as "plan" | "exec" | "auto",
+			})
+			if (!outcome.ok) return failedToolResult(outcome.error)
+			return toolOk(`Mode set to ${params.mode} for "${outcome.ferment.name}".`)
 		},
 	})
 
@@ -250,41 +178,30 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 			"Mark ferment as complete. All phases must be terminal (completed, skipped, or failed). Judge computes overall grade.",
 		parameters: CompleteFermentParams,
 		async execute(_, params) {
-			const s = getStorage()
-			const f = s.get(params.ferment_id)
-			if (!f) return toolErr("Ferment not found.")
-			const nonTerminal = f.phases.some((p) => p.status === "planned" || p.status === "active")
-			if (nonTerminal) {
-				const blocking = f.phases.filter((p) => p.status === "planned" || p.status === "active")
-				return toolErr(
-					`Cannot complete: ${blocking.length} phase(s) still active or planned: ${blocking.map((p) => `"${p.name}"`).join(", ")}`,
-				)
-			}
+			// Step 1: validate + transition status to complete (state machine).
+			const completeOutcome = applyAndPersist(params.ferment_id, { type: "complete_ferment" })
+			if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
 
-			s.updateStatus(f.id, "complete")
-			clearFermentState(f.id)
+			// Step 2: compute the grade (host concern — needs the post-transition ferment).
+			const grade = computeFermentGrade(completeOutcome.ferment.phases)
 
-			// ── Compute overall ferment grade from phase grades ──────────────────
-			const fresh = s.get(f.id) ?? f
-			const fermentGrade = computeFermentGrade(fresh.phases)
-			const graded = s.setFermentGrade(fresh.id, fermentGrade)
-			if (graded) setActive(graded)
+			// Step 3: persist the grade via another transition.
+			const gradeOutcome = applyAndPersist(params.ferment_id, { type: "set_ferment_grade", grade })
+			if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
 
+			// Step 4: cleanup in-memory state for this ferment.
+			clearFermentState(params.ferment_id)
+
+			const fresh = gradeOutcome.ferment
 			const failedPhases = fresh.phases.filter((p) => p.status === "failed").length
 			const failedNote = failedPhases > 0 ? ` (${failedPhases} phase(s) failed)` : ""
 			const phaseGradeSummary = fresh.phases
 				.filter((p) => p.grade)
 				.map((p) => `  ${p.index}. ${p.name}: ${p.grade?.grade}`)
 				.join("\n")
-			return {
-				details: undefined,
-				content: [
-					{
-						type: "text",
-						text: `Ferment "${fresh.name}" complete${failedNote}.\n\nOverall Grade: ${fermentGrade.grade} — ${fermentGrade.rationale}\n\nPhase grades:\n${phaseGradeSummary || "  (none graded)"}\n\n${params.final_summary ?? ""}`,
-					},
-				],
-			}
+			return toolOk(
+				`Ferment "${fresh.name}" complete${failedNote}.\n\nOverall Grade: ${grade.grade} — ${grade.rationale}\n\nPhase grades:\n${phaseGradeSummary || "  (none graded)"}\n\n${params.final_summary ?? ""}`,
+			)
 		},
 	})
 }

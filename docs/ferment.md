@@ -370,11 +370,45 @@ These tools are available to the agent during a ferment session. They are not me
 
 ## Implementation
 
+Ferment is split into three layers:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ Tool handlers (src/extensions/ferment/tools/*.ts)                │
+│ - Validate UI-flow gates (scoping confirmation, stuck-loop)      │
+│ - Run side effects (judge calls, nudges, bash verification)      │
+│ - Format result text for the LLM                                 │
+│        │                                                         │
+│        │ build a Command, call applyAndPersist()                 │
+│        ▼                                                         │
+├──────────────────────────────────────────────────────────────────┤
+│ State machine (src/ferment/state-machine.ts)                     │
+│ - Pure transition logic: (ferment, command, ctx) → next ferment  │
+│ - Enforces structural invariants (status transitions, etc.)      │
+│ - Returns typed errors with codes (PHASE_NOT_IN_STATUS, …)       │
+│ - No I/O, no time, no randomness — host injects via ctx          │
+│        │                                                         │
+│        │ next ferment, no side effects                           │
+│        ▼                                                         │
+├──────────────────────────────────────────────────────────────────┤
+│ Storage (src/ferment/store.ts)                                   │
+│ - Read/write `.kimchi/ferments/*.json` (atomic, cached)          │
+│ - Convenience mutation methods (legacy, for TUI handlers)        │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+The state machine is pure: same inputs always produce the same outputs, no
+hidden state. This makes it exhaustively testable (58 unit tests cover every
+command × prerequisite-state combination) and reusable — a future server-side
+state service would consume the same module.
+
 | File | Role |
 |------|------|
-| `src/extensions/ferment.ts` | Extension entrypoint — event handlers, commands, tools |
-| `src/ferment/engine.ts` | Pure state machine — reads ferment, returns next action |
+| `src/extensions/ferment/index.ts` | Extension entrypoint — event handlers, slash commands |
+| `src/extensions/ferment/tools/*.ts` | Tool registrations (lifecycle, phases, steps, knowledge) |
+| `src/extensions/ferment/tool-helpers.ts` | `applyAndPersist` bridge + result builders |
+| `src/ferment/state-machine.ts` | Pure transitions: (ferment, command) → next ferment |
+| `src/ferment/engine.ts` | Forward state machine: ferment → next action (`whatNext`) |
 | `src/ferment/store.ts` | Persistence — read/write `.kimchi/ferments/*.json` |
 | `src/ferment/types.ts` | TypeScript types for all ferment data |
-| `src/ferment/shorten-title.ts` | LLM-assisted name shortening for new ferments |
 | `.kimchi/ferments/<uuid>.json` | Persisted ferment state (one file per ferment) |
