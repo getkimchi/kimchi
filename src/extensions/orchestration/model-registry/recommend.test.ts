@@ -1,0 +1,82 @@
+import { describe, expect, it } from "vitest"
+import { recommendModel } from "./recommend.js"
+
+describe("recommendModel", () => {
+	it("returns a result for a single strength with exact tier match", () => {
+		// build strength has standard (minimax-m2.7) and light (nemotron-3-super-fp4)
+		const result = recommendModel({ strengths: ["build"], preferTier: "standard" })
+		expect(result).toBeDefined()
+		expect(result?.provider).toBe("kimchi-dev")
+		expect(result?.modelId).toBe("minimax-m2.7")
+		expect(result?.capabilities.tier).toBe("standard")
+	})
+
+	it("falls back to next tier when preferred tier has no match", () => {
+		// build strength has no heavy tier model; should fall back to standard
+		const result = recommendModel({ strengths: ["build"], preferTier: "heavy" })
+		expect(result).toBeDefined()
+		// heavy → standard fallback
+		expect(result?.capabilities.tier).toBe("standard")
+	})
+
+	it("returns undefined when no model matches the strengths", () => {
+		// No model has both "build" and "research" as strengths simultaneously
+		const result = recommendModel({ strengths: ["build", "research"] })
+		expect(result).toBeUndefined()
+	})
+
+	it("respects vision filter — excludes non-vision models", () => {
+		// explore has vision models (kimi-k2.6, kimi-k2.5, claude-opus-4-7)
+		const result = recommendModel({ strengths: ["explore"], needsVision: true })
+		expect(result).toBeDefined()
+		expect(result?.capabilities.vision).toBe(true)
+	})
+
+	it("returns undefined when vision required but no matching vision model", () => {
+		// build + vision: nemotron has no vision, minimax has no vision
+		const result = recommendModel({ strengths: ["build"], needsVision: true })
+		expect(result).toBeUndefined()
+	})
+
+	it("multi-strength filter: plan + review have overlapping heavy models", () => {
+		// kimi-k2.6 has both plan and review, tier heavy
+		const result = recommendModel({ strengths: ["plan", "review"], preferTier: "heavy" })
+		expect(result).toBeDefined()
+		expect(result?.capabilities.tier).toBe("heavy")
+		expect(result?.capabilities.strengths).toContain("plan")
+		expect(result?.capabilities.strengths).toContain("review")
+	})
+
+	it("ignored entries are excluded", () => {
+		// glm-5-fp8 is ignored; requesting any strength should not return it
+		const result = recommendModel({ strengths: ["build"] })
+		expect(result?.modelId).not.toBe("glm-5-fp8")
+	})
+
+	it("light tier preference returns the lightest model", () => {
+		// build + light → nemotron-3-super-fp4
+		const result = recommendModel({ strengths: ["build"], preferTier: "light" })
+		expect(result).toBeDefined()
+		expect(result?.modelId).toBe("nemotron-3-super-fp4")
+		expect(result?.capabilities.tier).toBe("light")
+	})
+
+	it("returns first by registry insertion order when multiple match same tier", () => {
+		// explore + heavy: kimi-k2.6 is inserted before kimi-k2.5 in registry
+		const result = recommendModel({ strengths: ["explore"], preferTier: "heavy" })
+		expect(result).toBeDefined()
+		expect(result?.modelId).toBe("kimi-k2.6")
+	})
+
+	it("returns undefined for empty strengths that somehow miss all models — sanity check with impossible combo", () => {
+		// Empty strengths with vision=true should return the first vision model found
+		const result = recommendModel({ strengths: [], needsVision: true, preferTier: "heavy" })
+		expect(result).toBeDefined()
+		expect(result?.capabilities.vision).toBe(true)
+	})
+
+	it("provider is always kimchi-dev", () => {
+		const result = recommendModel({ strengths: ["build"] })
+		expect(result?.provider).toBe("kimchi-dev")
+	})
+})

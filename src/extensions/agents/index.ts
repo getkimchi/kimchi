@@ -613,7 +613,7 @@ Model selection — YOU choose based on task complexity:
 - Each agent type's listing above shows the set of models it can use. The list order has no semantics — it is not a tier ranking.
 - Assess the task (single lookup vs. multi-step refactor vs. deep architectural analysis) and pick the model whose capabilities (tier, strengths) best match. Refer to your knowledge of the kimchi-dev models or to your initial system-prompt model section.
 - Pass your choice via the \`model\` parameter as "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7"). Fuzzy names like "kimi" or "minimax" also work.
-- Omit \`model\` to let the runtime use the persona's default; it does not pick by complexity, so for any non-trivial task pass an explicit model.`,
+- If \`model\` is omitted and the persona has no \`models[]\`, the orchestrator picks the best model based on the persona's strengths. Override by passing \`model:\` explicitly.`,
 			parameters: Type.Object({
 				prompt: Type.String({
 					description: "The task for the agent to perform.",
@@ -627,7 +627,7 @@ Model selection — YOU choose based on task complexity:
 				model: Type.Optional(
 					Type.String({
 						description:
-							'Model to use for this spawn — YOU pick based on task complexity. Each agent type advertises a set of models it may use; the list order is not a ranking. Match the task to the model\'s tier/strengths. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7") or fuzzy ("kimi", "minimax", "nemotron"). Omit to let the runtime use the persona\'s default — it does not classify complexity, so pass an explicit model for any non-trivial work.',
+							'Model to use for this spawn — YOU pick based on task complexity. Each agent type advertises a set of models it may use; the list order is not a ranking. Match the task to the model\'s tier/strengths. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7") or fuzzy ("kimi", "minimax", "nemotron"). Omit to use the persona\'s default or let the orchestrator auto-pick based on persona strengths.',
 					}),
 				),
 				thinking: Type.Optional(
