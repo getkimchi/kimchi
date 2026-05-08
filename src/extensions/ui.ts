@@ -25,9 +25,11 @@ const HORIZONTAL_PADDING = 2
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching ANSI/OSC
 const OSC133_RE = /\x1b\]133;[A-Z]\x07/g
 
-// The bottom section of the TUI is always the last 4 children:
-// widgetContainerAbove, editorContainer, widgetContainerBelow, footer.
-const BOTTOM_CHILDREN_COUNT = 4
+// The bottom section of the TUI is always the last 5 children:
+// statusContainer, widgetContainerAbove, editorContainer, widgetContainerBelow, footer.
+// Including statusContainer (the working indicator "◑ Mixing…") in the bottom
+// section keeps the editor/footer pinned when the indicator appears or disappears.
+const BOTTOM_CHILDREN_COUNT = 5
 
 function patchTuiPadding(tui: TUI) {
 	const pad = " ".repeat(HORIZONTAL_PADDING)
@@ -52,12 +54,24 @@ function patchTuiPadding(tui: TUI) {
 
 		// Insert padding between content and bottom components so the prompt
 		// and footer are pushed to the terminal bottom.  This eliminates the
-		// visual jump that occurs when tool output shrinks (e.g. bash collapse).
-		const totalContent = topLines.length + bottomLines.length
+		// visual jump that occurs when tool output shrinks (e.g. bash collapse),
+		// the working indicator toggling, or a selector dialog opening/closing.
 		const terminalHeight = tui.terminal.rows
+		const totalContent = topLines.length + bottomLines.length
 		const paddingCount = Math.max(0, terminalHeight - totalContent)
 
-		const allLines: string[] = topLines
+		// When the bottom section is tall (e.g. model selector open) the total
+		// content can exceed the terminal height.  Truncate the top of the
+		// scrollable section so the rendered output is always exactly
+		// terminalHeight lines — this prevents the TUI diff-renderer from
+		// scrolling/jumping when the tall component is later dismissed.
+		const overflow = Math.max(0, totalContent - terminalHeight)
+		const topStart = Math.min(overflow, topLines.length)
+
+		const allLines: string[] = []
+		for (let i = topStart; i < topLines.length; i++) {
+			allLines.push(topLines[i])
+		}
 		for (let i = 0; i < paddingCount; i++) {
 			allLines.push("")
 		}
