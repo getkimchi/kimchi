@@ -25,12 +25,47 @@ const HORIZONTAL_PADDING = 2
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching ANSI/OSC
 const OSC133_RE = /\x1b\]133;[A-Z]\x07/g
 
+// The bottom section of the TUI is always the last 4 children:
+// widgetContainerAbove, editorContainer, widgetContainerBelow, footer.
+const BOTTOM_CHILDREN_COUNT = 4
+
 function patchTuiPadding(tui: TUI) {
-	const original = tui.render.bind(tui)
 	const pad = " ".repeat(HORIZONTAL_PADDING)
 	tui.render = (width: number): string[] => {
-		const lines = original(Math.max(1, width - HORIZONTAL_PADDING * 2))
-		return lines.map((line: string) => pad + line.replace(OSC133_RE, ""))
+		const innerWidth = Math.max(1, width - HORIZONTAL_PADDING * 2)
+		const children = tui.children
+		const splitAt = Math.max(0, children.length - BOTTOM_CHILDREN_COUNT)
+
+		// Render content (top) and bottom sections separately.
+		const topLines: string[] = []
+		for (let i = 0; i < splitAt; i++) {
+			for (const line of children[i].render(innerWidth)) {
+				topLines.push(line)
+			}
+		}
+		const bottomLines: string[] = []
+		for (let i = splitAt; i < children.length; i++) {
+			for (const line of children[i].render(innerWidth)) {
+				bottomLines.push(line)
+			}
+		}
+
+		// Insert padding between content and bottom components so the prompt
+		// and footer are pushed to the terminal bottom.  This eliminates the
+		// visual jump that occurs when tool output shrinks (e.g. bash collapse).
+		const totalContent = topLines.length + bottomLines.length
+		const terminalHeight = tui.terminal.rows
+		const paddingCount = Math.max(0, terminalHeight - totalContent)
+
+		const allLines: string[] = topLines
+		for (let i = 0; i < paddingCount; i++) {
+			allLines.push("")
+		}
+		for (const line of bottomLines) {
+			allLines.push(line)
+		}
+
+		return allLines.map((line: string) => pad + line.replace(OSC133_RE, ""))
 	}
 }
 
