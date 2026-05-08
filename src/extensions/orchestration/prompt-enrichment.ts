@@ -306,7 +306,13 @@ export default function (skillPaths: string[]) {
 			const enrichmentGuard = new EnrichmentGuard()
 
 			pi.on("input", async (event) => {
-				if (event.source === "extension") return
+				if (event.source === "extension") {
+					// Subagent result arriving. Clear the subagent-pending flag so the
+					// continuation nudge can fire normally once the model has processed
+					// the output (at the next turn_end, after any tool calls it makes).
+					continuationNudge.clearSubagentPending()
+					return
+				}
 				continuationNudge.resetForNewUserInput()
 				emptyTurnNudge.resetForNewUserInput()
 			})
@@ -329,6 +335,16 @@ export default function (skillPaths: string[]) {
 
 			pi.on("turn_end", async (event) => {
 				if (event.message.role !== "assistant") return
+
+				// Detect subagent tool calls and suppress the continuation nudge while
+				// a subagent result is pending. This prevents the model from signalling
+				// DONE before the subagent output has been received and processed.
+				const hasSubagentCall = event.message.content.some(
+					(c) => c.type === "toolCall" && (c as { name?: string }).name === "subagent",
+				)
+				if (hasSubagentCall) {
+					continuationNudge.markSubagentCall()
+				}
 
 				if (continuationNudge.isNudgeResponsePending()) {
 					if (continuationNudge.isDoneSignalReceived()) {

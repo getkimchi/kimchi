@@ -356,6 +356,8 @@ function spawnSubagent(
 		}
 
 		const finish = (exitCode: number) => {
+			if (closed) return
+			closed = true
 			clearTimeout(timeoutHandle)
 			clearTimeout(inactivityHandle)
 			combinedSignal.removeEventListener("abort", onAbort)

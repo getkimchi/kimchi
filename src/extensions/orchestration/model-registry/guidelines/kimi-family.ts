@@ -45,7 +45,6 @@ export const KIMI_K25_ORCHESTRATION = `When orchestrating (kimi-k2.5 specific):
 
 /** K2.5 build: tool-call reliability fixes (K2.5-specific bugs). */
 export const KIMI_K25_BUILD = `During **build** phase (kimi-k2.5 specific):
-- After every tool result, ALWAYS produce text — either the next tool call with explicit reasoning, or a final summary. Never re-issue the same tool call after a successful result.
 - Emit complete, well-formed tool calls only. Never output partial fragments, raw JSON snippets, or "(m"-style stubs as if they were tool calls.`
 
 /** K2.5 explore: chunk inputs and plan reads upfront. */

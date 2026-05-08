@@ -36,7 +36,7 @@ export const DEFAULT_BUILD_GUIDELINES = `During **build** phase:
 - If the same code pattern is needed >2 times, extract an abstraction first instead of duplicating.
 - After each meaningful change, run the type-checker / linter / tests. Fix errors before moving on.
 - If a tool call fails, diagnose the root cause before retrying — do not retry blindly.
-- Keep diffs minimal and reviewable. Outline-then-diff beats wall-of-text rewrites.
+- Keep diffs minimal and reviewable.
 - **Git commits**: Always end every commit message with a blank line followed by \`${KIMCHI_COAUTHOR}\`.`
 
 export const DEFAULT_REVIEW_GUIDELINES = `During **review** phase:
