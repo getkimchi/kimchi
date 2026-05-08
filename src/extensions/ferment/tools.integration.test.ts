@@ -17,6 +17,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { clearAllPendingScopes, getPendingScope, setPendingScope } from "./scoping.js"
 import {
 	clearAllScopingGates,
 	clearAllStepStarts,
@@ -112,6 +113,7 @@ beforeEach(() => {
 	clearFermentCache()
 	clearAllStepStarts()
 	clearAllScopingGates()
+	clearAllPendingScopes()
 	setActive(undefined)
 	// Clean any stale ferments from previous test runs (tools use the project's
 	// default ferments dir, so cross-test pollution is real).
@@ -129,6 +131,7 @@ afterEach(() => {
 	clearFermentCache()
 	clearAllStepStarts()
 	clearAllScopingGates()
+	clearAllPendingScopes()
 	setActive(undefined)
 })
 
@@ -806,5 +809,117 @@ describe("update_scope_field", () => {
 			value: "x",
 		})
 		expect(err(result)).toMatch(/unknown field/i)
+	})
+})
+
+// ─── pause-blocks-tool-calls (state machine enforcement) ─────────────────────
+
+describe("paused ferment blocks tool calls at the bridge", () => {
+	async function setupPaused(): Promise<string> {
+		const id = await createFerment("Paused Test")
+		await scopeFerment(id)
+		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		// Flip to paused via storage (the /pause command path is exercised by
+		// the index.ts handler; here we just need the state).
+		const s = new FermentStorage()
+		s.updateStatus(id, "paused")
+		clearFermentCache()
+		return id
+	}
+
+	it("refuses start_step when ferment is paused", async () => {
+		const id = await setupPaused()
+		const result = await h.call("start_step", {
+			ferment_id: id,
+			phase_id: "phase-1",
+			step_id: "step-1",
+		})
+		expect(err(result)).toMatch(/paused/i)
+	})
+
+	it("refuses activate_phase when ferment is paused", async () => {
+		const id = await setupPaused()
+		const result = await h.call("activate_phase", { ferment_id: id, phase_id: "phase-2" })
+		expect(err(result)).toMatch(/paused/i)
+	})
+
+	it("refuses complete_step when ferment is paused", async () => {
+		const id = await setupPaused()
+		const result = await h.call("complete_step", {
+			ferment_id: id,
+			phase_id: "phase-1",
+			step_id: "step-1",
+			summary: "x",
+		})
+		expect(err(result)).toMatch(/paused/i)
+	})
+
+	it("refuses add_decision when ferment is paused", async () => {
+		const id = await setupPaused()
+		const result = await h.call("add_decision", {
+			ferment_id: id,
+			title: "Decision while paused",
+			description: "should be rejected",
+		})
+		expect(err(result)).toMatch(/paused/i)
+	})
+
+	it("refuses set_ferment_mode when ferment is paused", async () => {
+		const id = await setupPaused()
+		const result = await h.call("set_ferment_mode", { ferment_id: id, mode: "exec" })
+		expect(err(result)).toMatch(/paused/i)
+	})
+})
+
+// ─── propose_phases ──────────────────────────────────────────────────────────
+
+describe("propose_phases", () => {
+	it("rejects when no pending scope exists for the ferment", async () => {
+		const id = await createFerment("No Pending Scope")
+		const result = await h.call("propose_phases", {
+			ferment_id: id,
+			phases: [{ name: "P1", goal: "g", steps: [{ description: "s" }] }],
+		})
+		expect(err(result)).toMatch(/no pending scope/i)
+	})
+
+	it("rejects when phases array is empty", async () => {
+		const id = await createFerment("Empty Phases")
+		setPendingScope(id, { goal: "G", successCriteria: "C", constraints: [] })
+		const result = await h.call("propose_phases", { ferment_id: id, phases: [] })
+		expect(err(result)).toMatch(/at least one phase/i)
+	})
+
+	it("attaches phases to existing pending scope on success", async () => {
+		const id = await createFerment("Attach Phases")
+		setPendingScope(id, { goal: "G", successCriteria: "C", constraints: ["x"] })
+		ok(
+			await h.call("propose_phases", {
+				ferment_id: id,
+				phases: [
+					{ name: "P1", goal: "g1", steps: [{ description: "s1" }] },
+					{ name: "P2", goal: "g2", steps: [{ description: "s2" }] },
+				],
+			}),
+		)
+		const pending = getPendingScope(id)
+		expect(pending?.phases).toHaveLength(2)
+		expect(pending?.phases?.[0].name).toBe("P1")
+		// User-supplied fields preserved
+		expect(pending?.goal).toBe("G")
+		expect(pending?.constraints).toEqual(["x"])
+	})
+
+	it("does NOT transition the ferment status (still draft)", async () => {
+		const id = await createFerment("No Transition")
+		setPendingScope(id, { goal: "G", successCriteria: "C", constraints: [] })
+		ok(
+			await h.call("propose_phases", {
+				ferment_id: id,
+				phases: [{ name: "P1", goal: "g", steps: [{ description: "s" }] }],
+			}),
+		)
+		expect(loadFerment(id).status).toBe("draft")
+		expect(loadFerment(id).phases).toEqual([])
 	})
 })

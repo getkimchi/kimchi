@@ -605,6 +605,57 @@ describe("applyCommand: complete_ferment", () => {
 	})
 })
 
+// ─── pause / resume ───────────────────────────────────────────────────────────
+
+describe("applyCommand: pause", () => {
+	it("transitions running → paused", () => {
+		const result = expectOk(applyCommand(makeFerment({ status: "running" }), { type: "pause" }, ctx))
+		expect(result.status).toBe("paused")
+	})
+
+	it("transitions planned → paused", () => {
+		const result = expectOk(applyCommand(makeFerment({ status: "planned" }), { type: "pause" }, ctx))
+		expect(result.status).toBe("paused")
+	})
+
+	it("rejects pause on draft", () => {
+		const error = expectError(applyCommand(makeFerment({ status: "draft" }), { type: "pause" }, ctx))
+		expect(error.code).toBe("FERMENT_NOT_IN_STATUS")
+	})
+
+	it("rejects pause on already-paused", () => {
+		const error = expectError(applyCommand(makeFerment({ status: "paused" }), { type: "pause" }, ctx))
+		expect(error.code).toBe("FERMENT_NOT_IN_STATUS")
+	})
+
+	it("rejects pause on complete", () => {
+		const error = expectError(applyCommand(makeFerment({ status: "complete" }), { type: "pause" }, ctx))
+		expect(error.code).toBe("FERMENT_NOT_IN_STATUS")
+	})
+})
+
+describe("applyCommand: resume", () => {
+	it("transitions paused → running", () => {
+		const result = expectOk(applyCommand(makeFerment({ status: "paused" }), { type: "resume" }, ctx))
+		expect(result.status).toBe("running")
+	})
+
+	it("rejects resume from running", () => {
+		const error = expectError(applyCommand(makeFerment({ status: "running" }), { type: "resume" }, ctx))
+		expect(error.code).toBe("FERMENT_NOT_IN_STATUS")
+	})
+
+	it("rejects resume from draft", () => {
+		const error = expectError(applyCommand(makeFerment({ status: "draft" }), { type: "resume" }, ctx))
+		expect(error.code).toBe("FERMENT_NOT_IN_STATUS")
+	})
+
+	it("rejects resume from complete", () => {
+		const error = expectError(applyCommand(makeFerment({ status: "complete" }), { type: "resume" }, ctx))
+		expect(error.code).toBe("FERMENT_NOT_IN_STATUS")
+	})
+})
+
 // ─── abandon ──────────────────────────────────────────────────────────────────
 
 describe("applyCommand: abandon", () => {

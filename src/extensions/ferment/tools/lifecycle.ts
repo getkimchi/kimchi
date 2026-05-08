@@ -12,6 +12,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Command } from "../../../ferment/state-machine.js"
 import { computeFermentGrade, judgePlan } from "../judge.js"
 import { appendRefEntry, maybeInjectAutoNudge } from "../nudge.js"
+import { attachPendingPhases, clearPendingScope, getPendingScope } from "../scoping.js"
 import {
 	clearFermentState,
 	consumeScopingGate,
@@ -26,6 +27,7 @@ import {
 	CompleteFermentParams,
 	CreateFermentParams,
 	ListParams,
+	ProposePhasesParams,
 	ScopeParams,
 	SetModeParams,
 	UpdateScopeFieldParams,
@@ -45,6 +47,32 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 			appendRefEntry(pi, f.id)
 			const branch = f.worktree.branch ?? "(no git)"
 			return toolOk(`Created "${f.name}".  Mode: ${f.mode}  •  Branch: ${branch}  •  Path: ${f.worktree.path}`)
+		},
+	})
+
+	pi.registerTool({
+		name: "propose_phases",
+		label: "Propose Phases",
+		description:
+			"Stash a structured plan proposal for the user to review. Call this DURING interactive scoping, AFTER presenting the plan to the user as a numbered list, in the SAME turn that ends with 'Does this plan look right?'. The host applies the proposal automatically when the user confirms via the dropdown — you should NOT call scope_ferment yourself in this flow.",
+		parameters: ProposePhasesParams,
+		async execute(_, params) {
+			// The pending-scope buffer must already exist (set by runScopingFlow's
+			// TUI step). If it doesn't, the LLM is calling propose_phases outside
+			// the interactive flow — reject with a clear message.
+			const pending = getPendingScope(params.ferment_id)
+			if (!pending) {
+				return toolErr(
+					`No pending scope for ferment "${params.ferment_id}". propose_phases is only valid during the interactive scoping flow started by /ferment add. For headless or one-shot scoping, call scope_ferment directly with all fields.`,
+				)
+			}
+			if (!params.phases || params.phases.length === 0) {
+				return toolErr("propose_phases requires at least one phase. Provide 3–7 ordered phases with steps.")
+			}
+			attachPendingPhases(params.ferment_id, params.phases)
+			return toolOk(
+				`Proposal received: ${params.phases.length} phase(s) buffered. The user will see your numbered list and confirm via dropdown — do not call scope_ferment yourself.`,
+			)
 		},
 	})
 
@@ -109,6 +137,9 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 				}
 				return failedToolResult(outcome.error)
 			}
+			// Discard any stale pending-scope buffer — its phases were either applied
+			// here or are no longer relevant (the ferment is now planned).
+			clearPendingScope(params.ferment_id)
 
 			const fresh = outcome.ferment
 			const phaseList = fresh.phases.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") || "(none)"
@@ -123,10 +154,20 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 			)
 			maybeInjectAutoNudge(pi)
 
-			const reviewNote =
-				planReview.verdict === "approve"
-					? `\n\nPlan review: ✓ approved (confidence: ${planReview.confidence}%)`
-					: `\n\nPlan review: ⚠ revision suggested (confidence: ${planReview.confidence}%)\n${planReview.suggestions.map((s) => `  • ${s}`).join("\n")}\n\nRevise the phases if needed, then proceed with activate_phase.`
+			// Build the review note. confidence === 0 means the judge was unreachable
+			// or returned an unparseable response — we distinguish that case so the
+			// user doesn't see a confident-looking number from a degraded judge.
+			let reviewNote: string
+			if (planReview.confidence === 0) {
+				reviewNote = `\n\nPlan review: judge unavailable (${planReview.reasoning || "no response"}). Proceeding without verdict.`
+			} else if (planReview.verdict === "approve") {
+				const reason = planReview.reasoning ? `\n  ${planReview.reasoning}` : ""
+				reviewNote = `\n\nPlan review: ✓ approved (confidence: ${planReview.confidence}%)${reason}`
+			} else {
+				const reason = planReview.reasoning ? `\n  ${planReview.reasoning}` : ""
+				const suggestionLines = planReview.suggestions.map((s) => `  • ${s}`).join("\n")
+				reviewNote = `\n\nPlan review: ⚠ revision suggested (confidence: ${planReview.confidence}%)${reason}\n${suggestionLines}\n\nRevise the phases if needed, then proceed with activate_phase.`
+			}
 
 			return toolOk(
 				`Ferment "${fresh.name}" scoped and ready.\nferment_id: ${fresh.id}\nGoal: ${params.goal}\nPhases:\n${phaseList}${reviewNote}`,
