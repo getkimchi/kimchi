@@ -62,7 +62,7 @@ export interface Ferment {
 	decisions: Decision[]
 	memories: Memory[]
 
-	grade?: JudgeGrade  // computed at complete_ferment from phase grades
+	grade?: JudgeGrade // computed at complete_ferment from phase grades
 
 	createdAt: string
 	updatedAt: string
@@ -85,7 +85,7 @@ export interface Phase {
 	startedAt?: string
 	completedAt?: string
 	summary?: string // what was accomplished
-	grade?: JudgeGrade  // set by judge at complete_phase
+	grade?: JudgeGrade // set by judge at complete_phase
 
 	// Progressive refinement: steps are populated when phase is activated
 	steps: Step[]
@@ -127,7 +127,7 @@ export interface Step {
 
 	verification?: Verification
 	result?: StepResult // populated on completion/verification
-	grade?: JudgeGrade  // set by judge after step completes
+	grade?: JudgeGrade // set by judge after step completes
 }
 
 export interface Verification {

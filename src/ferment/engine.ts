@@ -32,9 +32,7 @@ function planModeAction(ferment: Ferment): FermentAction {
 			const next = findFirstPlannedPhase(ferment)
 			if (next) {
 				const groupNote =
-					next.groupIndex !== undefined
-						? ` (this will activate all phases in parallel group ${next.groupIndex})`
-						: ""
+					next.groupIndex !== undefined ? ` (this will activate all phases in parallel group ${next.groupIndex})` : ""
 				return {
 					kind: "activate_phase",
 					phaseId: next.id,
@@ -235,9 +233,7 @@ function autoModeAction(ferment: Ferment): FermentAction {
 			const next = findFirstPlannedPhase(ferment)
 			if (next) {
 				const groupNote =
-					next.groupIndex !== undefined
-						? ` (this will activate all phases in parallel group ${next.groupIndex})`
-						: ""
+					next.groupIndex !== undefined ? ` (this will activate all phases in parallel group ${next.groupIndex})` : ""
 				return {
 					kind: "activate_phase",
 					phaseId: next.id,
