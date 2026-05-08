@@ -13,6 +13,13 @@ import {
 } from "@mariozechner/pi-tui"
 import { extractText } from "../context.js"
 import type { AgentRecord } from "../types.js"
+
+// Expand tabs so visibleWidth() (which counts a tab as 1) matches what the
+// terminal actually renders (8 columns). Without this, lines with embedded
+// tabs (common in grep output) overflow the layout box and crash the renderer.
+function expandTabs(s: string): string {
+	return s.replace(/\t/g, "        ")
+}
 import { getLifetimeTotal, getSessionContextPercent } from "../usage.js"
 import type { Theme } from "./agent-widget.js"
 import {
@@ -88,8 +95,9 @@ export class ConversationViewer implements Component {
 		const lines: string[] = []
 
 		const pad = (s: string, len: number) => {
-			const vis = visibleWidth(s)
-			return s + " ".repeat(Math.max(0, len - vis))
+			const expanded = expandTabs(s)
+			const vis = visibleWidth(expanded)
+			return expanded + " ".repeat(Math.max(0, len - vis))
 		}
 		const row = (content: string) =>
 			`${th.fg("border", "│")} ${truncateToWidth(pad(content, innerW), innerW)} ${th.fg("border", "│")}`
@@ -213,7 +221,7 @@ export class ConversationViewer implements Component {
 				if (needsSeparator) lines.push(th.fg("dim", "───"))
 				lines.push(th.bold("[Assistant]"))
 				if (textParts.length > 0) {
-					for (const line of wrapTextWithAnsi(textParts.join("\n").trim(), width)) {
+					for (const line of wrapTextWithAnsi(expandTabs(textParts.join("\n").trim()), width)) {
 						lines.push(line)
 					}
 				}
@@ -226,7 +234,7 @@ export class ConversationViewer implements Component {
 				if (!truncated.trim()) continue
 				if (needsSeparator) lines.push(th.fg("dim", "───"))
 				lines.push(th.fg("dim", "[Result]"))
-				for (const line of wrapTextWithAnsi(truncated.trim(), width)) {
+				for (const line of wrapTextWithAnsi(expandTabs(truncated.trim()), width)) {
 					lines.push(th.fg("dim", line))
 				}
 			} else if ((msg as unknown as { role: string }).role === "bashExecution") {
@@ -235,7 +243,7 @@ export class ConversationViewer implements Component {
 				lines.push(truncateToWidth(th.fg("muted", `  $ ${bash.command}`), width))
 				if (bash.output?.trim()) {
 					const out = bash.output.length > 500 ? `${bash.output.slice(0, 500)}... (truncated)` : bash.output
-					for (const line of wrapTextWithAnsi(out.trim(), width)) {
+					for (const line of wrapTextWithAnsi(expandTabs(out.trim()), width)) {
 						lines.push(th.fg("dim", line))
 					}
 				}
