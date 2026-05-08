@@ -5,40 +5,25 @@
  */
 
 import type {
-	GenerateAnalyticsRequest,
 	GenerateAnalyticsResponse,
-	GenerateProductivityMetricsTimeseriesRequest,
 	GenerateProductivityMetricsTimeseriesResponse,
-	GetProductivityMetricsRequest,
 	GetProductivityMetricsResponse,
 } from "./types.js"
 
 const BASE_URL = "https://api.cast.ai"
 
-// Hardcoded user ID as specified in requirements
-const HARDCODED_USER_ID = "d1c79c82-c230-4b19-9def-dbe49bf63368"
-
-// Hardcoded organization ID - needed for some endpoints
-const FALLBACK_ORG_ID = "516442fe-054a-49e2-ac2d-9dc9b104c3d2"
-
 interface ApiClientConfig {
 	apiKey: string
 	baseUrl?: string
-	userId?: string
-	organizationId?: string
 }
 
 export class CastAiStatsApi {
 	private apiKey: string
 	private baseUrl: string
-	private userId: string
-	private organizationId: string
 
 	constructor(config: ApiClientConfig) {
 		this.apiKey = config.apiKey
 		this.baseUrl = config.baseUrl ?? BASE_URL
-		this.userId = config.userId ?? HARDCODED_USER_ID
-		this.organizationId = config.organizationId ?? FALLBACK_ORG_ID
 	}
 
 	/**
@@ -66,33 +51,25 @@ export class CastAiStatsApi {
 
 	/**
 	 * Generates analytics data for the organization.
-	 * Endpoint: GET /ai-optimizer/v1beta/organizations/{id}:generateAnalyticsReport
+	 * Endpoint: GET /ai-optimizer/v1beta/analytics
 	 *
-	 * Note: This endpoint requires an organization ID. It supports filtering by castai_api_key_owner_id.
+	 * Passes inferUserFromApiKey=true so the user is inferred from the API key.
 	 */
-	async generateAnalytics(startTime: Date, endTime: Date, organizationId?: string): Promise<GenerateAnalyticsResponse> {
-		const orgId = organizationId ?? this.organizationId
-
-		// Build filter for user - uses CEL expression
-		// Filter format: castai_api_key_owner_id == "user-id"
-		const filter = `castai_api_key_owner_id == "${this.userId}"`
-
+	async generateAnalytics(startTime: Date, endTime: Date): Promise<GenerateAnalyticsResponse> {
 		const params = new URLSearchParams({
 			startTime: startTime.toISOString(),
 			endTime: endTime.toISOString(),
-			filter: filter,
+			inferUserFromApiKey: "true",
 		})
 
-		return this.request<GenerateAnalyticsResponse>(
-			`/ai-optimizer/v1beta/organizations/${orgId}:generateAnalyticsReport?${params.toString()}`,
-		)
+		return this.request<GenerateAnalyticsResponse>(`/ai-optimizer/v1beta/analytics?${params.toString()}`)
 	}
 
 	/**
 	 * Gets aggregated productivity metrics.
 	 * Endpoint: GET /ai-optimizer/v1beta/productivity-metrics
 	 *
-	 * Note: Supports user_id filtering.
+	 * Passes inferUserFromApiKey=true so the user is inferred from the API key.
 	 */
 	async getProductivityMetrics(
 		startTime: Date,
@@ -106,12 +83,9 @@ export class CastAiStatsApi {
 		const params = new URLSearchParams({
 			from: startTime.toISOString(),
 			to: endTime.toISOString(),
+			inferUserFromApiKey: "true",
 		})
 
-		// NOTE: Not filtering by user_id for productivity metrics - shows all org data
-		// Analytics endpoint still filters by user via CEL expression
-
-		// Optional provider filter
 		if (options.providerName) {
 			params.set("provider_name", options.providerName)
 		}
@@ -133,29 +107,24 @@ export class CastAiStatsApi {
 
 	/**
 	 * Generates productivity metrics as time series data points.
-	 * Endpoint: GET /ai-optimizer/v1beta/organizations/{organization_id}/productivity-metrics:generateTimeseries
+	 * Endpoint: GET /ai-optimizer/v1beta/productivity-metrics:generateTimeseries
 	 *
-	 * Note: This endpoint requires an organization ID. Supports user_id filtering.
+	 * Passes inferUserFromApiKey=true so the user is inferred from the API key.
 	 */
 	async generateProductivityMetricsTimeseries(
 		startTime: Date,
 		endTime: Date,
-		organizationId?: string,
 		options: {
 			metricNames?: string[]
 			sessionId?: string
 			providerName?: string
 		} = {},
 	): Promise<GenerateProductivityMetricsTimeseriesResponse> {
-		const orgId = organizationId ?? this.organizationId
-
 		const params = new URLSearchParams({
 			from: startTime.toISOString(),
 			to: endTime.toISOString(),
+			inferUserFromApiKey: "true",
 		})
-
-		// Note: Productivity timeseries is org-wide data (no user filter)
-		// No provider_name filter - show all providers (claude-code-otel, opencode-otel)
 
 		if (options.metricNames?.length) {
 			for (const name of options.metricNames) {
@@ -168,29 +137,8 @@ export class CastAiStatsApi {
 		}
 
 		return this.request<GenerateProductivityMetricsTimeseriesResponse>(
-			`/ai-optimizer/v1beta/organizations/${orgId}/productivity-metrics:generateTimeseries?${params.toString()}`,
+			`/ai-optimizer/v1beta/productivity-metrics:generateTimeseries?${params.toString()}`,
 		)
-	}
-
-	/**
-	 * Get the hardcoded user ID being used
-	 */
-	getUserId(): string {
-		return this.userId
-	}
-
-	/**
-	 * Get the organization ID being used
-	 */
-	getOrganizationId(): string {
-		return this.organizationId
-	}
-
-	/**
-	 * Set a different organization ID
-	 */
-	setOrganizationId(orgId: string): void {
-		this.organizationId = orgId
 	}
 }
 

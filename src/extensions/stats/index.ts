@@ -8,43 +8,18 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
+import { loadConfig } from "../../config.js"
 import { exitSplashMode } from "../ui.js"
 import { CastAiStatsApi, getTimeRange } from "./api.js"
 import { formatError, formatHelp } from "./display.js"
 import { formatAnalyticsVisual, formatProductivityVisual } from "./visual.js"
 
-// API key used for Cast AI API requests - must be provided via CASTAI_API_KEY env var
-
-// Hardcoded user ID as specified
-const HARDCODED_USER_ID = "d1c79c82-c230-4b19-9def-dbe49bf63368"
-
-// Organization ID - provided by user
-const ORGANIZATION_ID = "516442fe-054a-49e2-ac2d-9dc9b104c3d2"
-
-interface StatsConfig {
-	apiKey: string
-	userId: string
-	organizationId: string
-}
-
-function getStatsConfig(): StatsConfig {
-	const envKey = process.env.CASTAI_API_KEY
-	const envOrg = process.env.CASTAI_ORG_ID
-
-	return {
-		apiKey: envKey || "",
-		userId: HARDCODED_USER_ID,
-		organizationId: envOrg || ORGANIZATION_ID,
-	}
-}
-
 function createApiClient(): CastAiStatsApi {
-	const config = getStatsConfig()
-	return new CastAiStatsApi({
-		apiKey: config.apiKey,
-		userId: config.userId,
-		organizationId: config.organizationId,
-	})
+	const apiKey = loadConfig().apiKey || process.env.CASTAI_API_KEY
+	if (!apiKey) {
+		throw new Error("No API key found. Please run `kimchi login` to set up your API key.")
+	}
+	return new CastAiStatsApi({ apiKey })
 }
 
 async function handleStatsCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
@@ -98,17 +73,7 @@ async function handleStatsCommand(args: string, ctx: ExtensionCommandContext): P
 			}
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err)
-			if (msg.includes("404") || msg.includes("organization")) {
-				outputLines.push(
-					...formatError(
-						"Analytics endpoint requires a valid organization ID. " +
-							"Set CASTAI_ORG_ID environment variable if needed.",
-						ctx.ui.theme,
-					),
-				)
-			} else {
-				outputLines.push(...formatError(`Analytics API: ${msg}`, ctx.ui.theme))
-			}
+			outputLines.push(...formatError(`Analytics API: ${msg}`, ctx.ui.theme))
 		}
 
 		// Fetch productivity metrics
