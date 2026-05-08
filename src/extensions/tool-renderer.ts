@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ToolDefinition } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import {
 	createEditToolDefinition,
 	createFindToolDefinition,
@@ -6,7 +6,7 @@ import {
 	createLsToolDefinition,
 	createReadToolDefinition,
 	createWriteToolDefinition,
-} from "@mariozechner/pi-coding-agent"
+} from "@earendil-works/pi-coding-agent"
 import type { TSchema } from "typebox"
 import { ToolBlockView, buildToolCallHeader, getTextContent } from "../components/tool-block.js"
 import { isToolExpanded, registerToolCall } from "../expand-state.js"

@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getActiveThemeName, onThemeChange } from "../settings-watcher.js"
 import { QUERY_BG, getRawBgPayload } from "../terminal-bg-probe.js"
 

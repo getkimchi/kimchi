@@ -19,8 +19,8 @@ import type {
 	ExtensionContext,
 	Theme,
 	ThemeColor,
-} from "@mariozechner/pi-coding-agent"
-import { Container, Text } from "@mariozechner/pi-tui"
+} from "@earendil-works/pi-coding-agent"
+import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 
 // ─── Constants ───────────────────────────────────────────────────────────────

@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process"
-import type { Api, Model } from "@mariozechner/pi-ai"
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent"
-import { isEditToolResult, isWriteToolResult } from "@mariozechner/pi-coding-agent"
-import { isKeyRelease, matchesKey } from "@mariozechner/pi-tui"
-import type { TUI } from "@mariozechner/pi-tui"
+import type { Api, Model } from "@earendil-works/pi-ai"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
+import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
+import type { TUI } from "@earendil-works/pi-tui"
 import { ORANGE_FG, RST_FG, TEAL_FG } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
 import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } from "../components/footer.js"
@@ -61,8 +61,8 @@ export function exitSplashMode(ctx: {
 		setHeader: (
 			factory: (
 				tui: TUI,
-				theme: import("@mariozechner/pi-coding-agent").Theme,
-			) => import("@mariozechner/pi-tui").Component,
+				theme: import("@earendil-works/pi-coding-agent").Theme,
+			) => import("@earendil-works/pi-tui").Component,
 		) => void
 	}
 }): void {

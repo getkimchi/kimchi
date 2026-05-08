@@ -16,7 +16,7 @@ vi.mock("./url-validator.js", () => ({
 	},
 }))
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import webFetchExtension from "./index.js"
 
 // Detect whether Playwright browsers are installed (they may be absent in CI).

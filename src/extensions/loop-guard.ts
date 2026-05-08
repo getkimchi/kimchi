@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import type { ExtensionAPI, ToolResultEvent } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI, ToolResultEvent } from "@earendil-works/pi-coding-agent"
 
 export interface ToolHistoryRecord {
 	toolName: string

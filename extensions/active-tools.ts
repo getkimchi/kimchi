@@ -7,8 +7,8 @@
  * Usage: kimchi -e extensions/active-tools.ts
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
-import { Box, Text } from "@mariozechner/pi-tui"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { Box, Text } from "@earendil-works/pi-tui"
 
 const palette = [
 	[12, 40, 80], // deep navy

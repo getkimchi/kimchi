@@ -1,4 +1,4 @@
-import type { AssistantMessage, ToolResultMessage } from "@mariozechner/pi-ai"
+import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
 import { describe, expect, it } from "vitest"
 import type { OrchestratorMessages } from "./continuation-nudge.js"
 import { EnrichmentGuard, deduplicateEnrichedPrompts, stripEmptyToolCalls } from "./prompt-enrichment.js"

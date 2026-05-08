@@ -1,7 +1,7 @@
-import { CustomEditor, type Theme } from "@mariozechner/pi-coding-agent"
-import type { KeybindingsManager } from "@mariozechner/pi-coding-agent"
-import type { EditorTheme, TUI } from "@mariozechner/pi-tui"
-import { visibleWidth } from "@mariozechner/pi-tui"
+import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent"
+import type { KeybindingsManager } from "@earendil-works/pi-coding-agent"
+import type { EditorTheme, TUI } from "@earendil-works/pi-tui"
+import { visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, TEAL_FG } from "../ansi.js"
 import { clampLines, splashBottomPaddingFor } from "./splash-layout.js"
 

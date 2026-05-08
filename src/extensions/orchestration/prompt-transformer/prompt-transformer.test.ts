@@ -1,4 +1,4 @@
-import type { Skill } from "@mariozechner/pi-coding-agent"
+import type { Skill } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../../models.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "../model-registry/index.js"

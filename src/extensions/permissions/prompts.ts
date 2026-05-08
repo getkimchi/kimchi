@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent"
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { suggestScope } from "./session-memory.js"
 import type { Rule } from "./types.js"
 

@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { CURRENT_SESSION_VERSION } from "@mariozechner/pi-coding-agent"
+import { CURRENT_SESSION_VERSION } from "@earendil-works/pi-coding-agent"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import {
 	RESULT_MAX_CHARS,

@@ -9,7 +9,7 @@
  * the same handlers without filesystem/process dependencies.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { TriggerEngine } from "./engine.js"
 import { EvalEngine } from "./eval-engine.js"
 import { type ResolverIO, resolveSessionContext } from "./session-context.js"

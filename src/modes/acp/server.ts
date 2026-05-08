@@ -30,7 +30,7 @@ import {
 	type ExtensionFactory,
 	SettingsManager,
 	createAgentSession,
-} from "@mariozechner/pi-coding-agent"
+} from "@earendil-works/pi-coding-agent"
 
 /**
  * Produces a ready-to-use AgentSession for a newSession request. The returned

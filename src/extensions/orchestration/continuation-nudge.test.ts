@@ -1,4 +1,4 @@
-import type { AssistantMessage, UserMessage } from "@mariozechner/pi-ai"
+import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai"
 import { describe, expect, it } from "vitest"
 import {
 	ContinuationNudge,

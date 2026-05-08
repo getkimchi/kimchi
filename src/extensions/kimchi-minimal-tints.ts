@@ -15,7 +15,7 @@
 // Hex→ANSI conversion mirrors pi's internal bgAnsi (theme.js): truecolor uses
 // `48;2;R;G;B`, 256-color quantizes to the 6×6×6 cube + 24-step gray ramp.
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getActiveThemeName, onThemeChange } from "../settings-watcher.js"
 import {
 	type Rgb,

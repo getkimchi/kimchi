@@ -1,5 +1,5 @@
 import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk"
-import type { AgentSession, AgentSessionEvent, AgentSessionEventListener } from "@mariozechner/pi-coding-agent"
+import type { AgentSession, AgentSessionEvent, AgentSessionEventListener } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it } from "vitest"
 import { type AcpSessionFactory, KimchiAcpAgent, assertSessionHasModel, describeToolCall } from "./server.js"
 
