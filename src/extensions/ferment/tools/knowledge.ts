@@ -7,18 +7,10 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { VALID_MEMORY_CATEGORIES } from "../../../ferment/state-machine.js"
 import type { MemoryCategory } from "../../../ferment/types.js"
-import { getStorage, setActive } from "../state.js"
-import { toolErr } from "../tool-helpers.js"
+import { applyAndPersist, failedToolResult, toolErr, toolOk } from "../tool-helpers.js"
 import { DecisionParams, MemoryParams } from "../tool-schemas.js"
-
-const VALID_MEMORY_CATEGORIES: readonly MemoryCategory[] = [
-	"architecture",
-	"convention",
-	"gotcha",
-	"pattern",
-	"preference",
-]
 
 export function registerKnowledgeTools(pi: ExtensionAPI): void {
 	pi.registerTool({
@@ -27,14 +19,16 @@ export function registerKnowledgeTools(pi: ExtensionAPI): void {
 		description: "Record a decision.",
 		parameters: DecisionParams,
 		async execute(_, params) {
-			const s = getStorage()
-			const f = s.addDecision(params.ferment_id, params.title, params.description, params.phase_id, params.step_id)
-			if (!f) return toolErr("Ferment not found.")
-			setActive(f)
-			return {
-				details: undefined,
-				content: [{ type: "text", text: `Decision: ${f.decisions[f.decisions.length - 1].id} — ${params.title}` }],
-			}
+			const outcome = applyAndPersist(params.ferment_id, {
+				type: "add_decision",
+				title: params.title,
+				description: params.description,
+				phaseId: params.phase_id,
+				stepId: params.step_id,
+			})
+			if (!outcome.ok) return failedToolResult(outcome.error)
+			const last = outcome.ferment.decisions[outcome.ferment.decisions.length - 1]
+			return toolOk(`Decision: ${last.id} — ${params.title}`)
 		},
 	})
 
@@ -44,29 +38,20 @@ export function registerKnowledgeTools(pi: ExtensionAPI): void {
 		description: "Record a memory.",
 		parameters: MemoryParams,
 		async execute(_, params) {
-			// Validate category — the type assertion would otherwise let any string through.
+			// Pre-validate to keep the existing user-friendly error wording.
 			if (!VALID_MEMORY_CATEGORIES.includes(params.category as MemoryCategory)) {
 				return toolErr(`Invalid category "${params.category}". Use one of: ${VALID_MEMORY_CATEGORIES.join(", ")}.`)
 			}
-			const s = getStorage()
-			const f = s.addMemory(
-				params.ferment_id,
-				params.category as MemoryCategory,
-				params.content,
-				params.phase_id,
-				params.step_id,
-			)
-			if (!f) return toolErr("Ferment not found.")
-			setActive(f)
-			return {
-				details: undefined,
-				content: [
-					{
-						type: "text",
-						text: `Memory: ${f.memories[f.memories.length - 1].id} [${params.category}]: ${params.content}`,
-					},
-				],
-			}
+			const outcome = applyAndPersist(params.ferment_id, {
+				type: "add_memory",
+				category: params.category as MemoryCategory,
+				content: params.content,
+				phaseId: params.phase_id,
+				stepId: params.step_id,
+			})
+			if (!outcome.ok) return failedToolResult(outcome.error)
+			const last = outcome.ferment.memories[outcome.ferment.memories.length - 1]
+			return toolOk(`Memory: ${last.id} [${params.category}]: ${params.content}`)
 		},
 	})
 }

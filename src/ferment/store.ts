@@ -388,7 +388,9 @@ export class FermentStorage {
 
 	// ─── Atomic write helper ───────────────────────────────────────────────────
 
-	private write(ferment: Ferment): void {
+	/** Atomic write of a ferment. Public so callers can persist results from
+	 *  the pure state machine without going through storage's mutation helpers. */
+	write(ferment: Ferment): void {
 		const path = this.filePath(ferment.id)
 		const tmp = `${path}.${process.pid}.tmp`
 		mkdirSync(dirname(path), { recursive: true })
@@ -398,7 +400,21 @@ export class FermentStorage {
 		fermentCache.set(ferment.id, ferment)
 	}
 
-	// ─── Status & Goal ──────────────────────────────────────────────────────────
+	// ═══════════════════════════════════════════════════════════════════════════
+	// Convenience mutation helpers
+	//
+	// PREFER `applyAndPersist` from extensions/ferment/tool-helpers.ts when
+	// writing new ferment tools — it routes mutations through the pure state
+	// machine and gets you typed errors + invariant checks for free.
+	//
+	// These helpers remain for:
+	//   - TUI command handlers (/progress overlay, /ferment switch/abandon)
+	//   - Test fixtures that need to bypass the state machine
+	//   - Internal callers (nudge.ts auto-advance) that pre-validate themselves
+	//
+	// They write directly without going through the state machine, so they DO
+	// NOT enforce invariants. Caller is responsible for state validity.
+	// ═══════════════════════════════════════════════════════════════════════════
 
 	updateMode(id: string, mode: FermentWorkMode): Ferment | undefined {
 		const f = this.get(id)

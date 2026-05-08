@@ -10,8 +10,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { StepResult } from "../../../ferment/types.js"
 import { judgeGradeStep, judgeStepVerification } from "../judge.js"
 import { onStepCompleted } from "../nudge.js"
-import { bumpStepStart, captureJudgeContext, clearStepStart, getStorage, setActive } from "../state.js"
-import { resolvePhase, resolveStep, toolErr } from "../tool-helpers.js"
+import { bumpStepStart, captureJudgeContext, clearStepStart, getStorage } from "../state.js"
+import { applyAndPersist, failedToolResult, resolvePhase, resolveStep, toolErr, toolOk } from "../tool-helpers.js"
 import { CompleteStepParams, FailStepParams, StepActionParams, VerifyParams } from "../tool-schemas.js"
 
 const VERIFY_TIMEOUT_MS = 60_000
@@ -24,8 +24,8 @@ export function registerStepTools(pi: ExtensionAPI): void {
 			"Mark a step as running. Returns worker_model and parallel_siblings. See planner instructions in the system prompt for orchestration details.",
 		parameters: StepActionParams,
 		async execute(_, params) {
-			const s = getStorage()
-			const f = s.get(params.ferment_id)
+			// Resolve phase and step (host concern — fuzzy lookup).
+			const f = getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
@@ -35,17 +35,10 @@ export function registerStepTools(pi: ExtensionAPI): void {
 					`Step not found. Steps: ${phase.steps.map((st) => `[${st.id}] ${st.index}. ${st.description}`).join(", ")}`,
 				)
 			}
-			// Block concurrent start only when the existing running step is NOT parallel-safe
-			// (or the step being started is not parallel-safe either).
-			const alreadyRunning = phase.steps.find((st) => st.status === "running" && st.id !== step.id)
-			if (alreadyRunning && (!alreadyRunning.canRunParallel || !step.canRunParallel)) {
-				return toolErr(
-					`Cannot start step ${step.index} — step ${alreadyRunning.index} ("${alreadyRunning.description}") is already running and is not parallel-safe. Complete or skip it first.`,
-				)
-			}
-			// Stuck-loop detection: same step started 3+ times without completing.
-			// The counter is held at the threshold so every subsequent call also blocks
-			// until complete_step or skip_step clears it.
+
+			// Stuck-loop detection (UI-flow concern, not domain — runs before transition).
+			// Counter is held at threshold so every subsequent call also blocks until
+			// complete_step or skip_step clears it.
 			const startCount = bumpStepStart(f.id, phase.id, step.id)
 			if (startCount >= 3) {
 				return toolErr(
@@ -53,15 +46,30 @@ export function registerStepTools(pi: ExtensionAPI): void {
 				)
 			}
 
-			const r = s.startStep(f.id, phase.id, step.id)
-			if (!r) return toolErr("Step start failed.")
-			setActive(r)
-			const workerModel = step.workerModel ?? "minimax-m2.7"
+			// Apply the transition. CONCURRENT_NON_PARALLEL_STEP errors get a
+			// custom message that matches the original LLM-facing wording.
+			const outcome = applyAndPersist(params.ferment_id, {
+				type: "start_step",
+				phaseId: phase.id,
+				stepId: step.id,
+			})
+			if (!outcome.ok) {
+				if (outcome.error.code === "CONCURRENT_NON_PARALLEL_STEP") {
+					return toolErr(
+						`Cannot start step ${step.index} — step ${outcome.error.runningStepIndex} ("${outcome.error.runningDescription}") is already running and is not parallel-safe. Complete or skip it first.`,
+					)
+				}
+				return failedToolResult(outcome.error)
+			}
 
-			// Find pending parallel siblings (excluding this step) so the planner
-			// can start them all concurrently without waiting for this one to finish.
-			const parallelSiblings = step.canRunParallel
-				? phase.steps
+			// Reload step from the post-transition ferment for the response.
+			const freshStep = outcome.ferment.phases.find((p) => p.id === phase.id)?.steps.find((s) => s.id === step.id)
+			const workerModel = freshStep?.workerModel ?? "minimax-m2.7"
+
+			// Find pending parallel siblings (excluding this step).
+			const freshPhase = outcome.ferment.phases.find((p) => p.id === phase.id)
+			const parallelSiblings = freshStep?.canRunParallel
+				? (freshPhase?.steps ?? [])
 						.filter((st) => st.id !== step.id && st.status === "pending" && st.canRunParallel)
 						.map((st) => ({
 							step_id: st.id,
@@ -75,15 +83,9 @@ export function registerStepTools(pi: ExtensionAPI): void {
 					? `\nparallel_siblings: ${JSON.stringify(parallelSiblings)}\n\nThese steps are independent — call start_step for each one now and spawn their subagents concurrently. Do not wait for one to finish before starting the next.`
 					: ""
 
-			return {
-				details: undefined,
-				content: [
-					{
-						type: "text",
-						text: `Step ${step.index}: "${step.description}" started.\nphase_id: ${phase.id}\nstep_id: ${step.id}\nworker_model: ${workerModel}\nprovider: kimchi-dev\n\nSpawn a subagent now with provider "kimchi-dev", model "${workerModel}", and a prompt describing exactly what to implement for this step. When it returns, call complete_step with its summary.${parallelNote}`,
-					},
-				],
-			}
+			return toolOk(
+				`Step ${step.index}: "${step.description}" started.\nphase_id: ${phase.id}\nstep_id: ${step.id}\nworker_model: ${workerModel}\nprovider: kimchi-dev\n\nSpawn a subagent now with provider "kimchi-dev", model "${workerModel}", and a prompt describing exactly what to implement for this step. When it returns, call complete_step with its summary.${parallelNote}`,
+			)
 		},
 	})
 
@@ -95,38 +97,40 @@ export function registerStepTools(pi: ExtensionAPI): void {
 		parameters: CompleteStepParams,
 		async execute(_, params, signal, onUpdate, ctx) {
 			captureJudgeContext(ctx?.model, ctx?.modelRegistry)
-			const s = getStorage()
-			const f = s.get(params.ferment_id)
+
+			const f = getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 			const step = resolveStep(phase, params.step_id)
 			if (!step) return toolErr("Step not found.")
-			const r = s.completeStep(f.id, phase.id, step.id)
-			if (!r) return toolErr("Step completion failed.")
-			setActive(r)
-			// Clear stuck-loop counter on successful completion
-			clearStepStart(f.id, phase.id, step.id)
 
+			// Path A: no verification command — straight to done + grade.
 			if (!step.verification) {
-				// Grade step even without verification (summary-based)
+				const completeOutcome = applyAndPersist(params.ferment_id, {
+					type: "complete_step",
+					phaseId: phase.id,
+					stepId: step.id,
+				})
+				if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
+				clearStepStart(f.id, phase.id, step.id)
+
 				const grade = await judgeGradeStep(step.description, params.summary ?? "")
-				const graded = s.setStepGrade(f.id, phase.id, step.id, grade)
-				if (graded) setActive(graded)
+				const gradeOutcome = applyAndPersist(params.ferment_id, {
+					type: "set_step_grade",
+					phaseId: phase.id,
+					stepId: step.id,
+					grade,
+				})
+				if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
+
 				onStepCompleted(pi)
-				return {
-					details: undefined,
-					content: [
-						{
-							type: "text",
-							text: `Step ${step.index}: "${step.description}" done.  Grade: ${grade.grade} — ${grade.rationale}  ${params.summary ?? ""}`,
-						},
-					],
-				}
+				return toolOk(
+					`Step ${step.index}: "${step.description}" done.  Grade: ${grade.grade} — ${grade.rationale}  ${params.summary ?? ""}`,
+				)
 			}
 
-			// ── Auto-verify: run bash verification command ──
-			// Cap verification at 60 seconds — a hung "npm test" should not block forever.
+			// Path B: run the verification command (host concern — bash I/O).
 			let exitCode = 0
 			let stdout = ""
 			let stderr = ""
@@ -148,10 +152,10 @@ export function registerStepTools(pi: ExtensionAPI): void {
 					stdout = execResult.stdout ?? ""
 					stderr = execResult.stderr ?? ""
 					exitCode = execResult.exitCode ?? 0
-				} catch (err) {
+				} catch (e) {
 					exitCode = 1
 					stderr =
-						err instanceof Error && err.name === "TimeoutError"
+						e instanceof Error && e.name === "TimeoutError"
 							? "Verification command timed out after 60s"
 							: "bash execution threw an exception"
 				}
@@ -164,26 +168,34 @@ export function registerStepTools(pi: ExtensionAPI): void {
 				stderr,
 				completedAt: new Date().toISOString(),
 			}
-			const verified = s.verifyStep(f.id, phase.id, step.id, verifyResult)
-			if (verified) setActive(verified)
 
+			// Apply verify_step transition (sets status to verified or done).
+			const verifyOutcome = applyAndPersist(params.ferment_id, {
+				type: "verify_step",
+				phaseId: phase.id,
+				stepId: step.id,
+				result: verifyResult,
+			})
+			if (!verifyOutcome.ok) return failedToolResult(verifyOutcome.error)
+			clearStepStart(f.id, phase.id, step.id)
+
+			// Path B.1: clean pass — grade and return.
 			if (exitCode === 0) {
 				const grade = await judgeGradeStep(step.description, params.summary ?? "", { exitCode, stdout, stderr })
-				const graded = s.setStepGrade(f.id, phase.id, step.id, grade)
-				if (graded) setActive(graded)
+				const gradeOutcome = applyAndPersist(params.ferment_id, {
+					type: "set_step_grade",
+					phaseId: phase.id,
+					stepId: step.id,
+					grade,
+				})
+				if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
 				onStepCompleted(pi)
-				return {
-					details: undefined,
-					content: [
-						{
-							type: "text",
-							text: `Step ${step.index}: "${step.description}" done and verified ✓  Grade: ${grade.grade} — ${grade.rationale}`,
-						},
-					],
-				}
+				return toolOk(
+					`Step ${step.index}: "${step.description}" done and verified ✓  Grade: ${grade.grade} — ${grade.rationale}`,
+				)
 			}
 
-			// Non-zero exit — judge classifies it as pass/retry/fail.
+			// Path B.2: non-zero exit — judge classifies as pass/retry/fail.
 			const judgeVerdict = await judgeStepVerification(
 				step.description,
 				step.verification.command,
@@ -193,43 +205,34 @@ export function registerStepTools(pi: ExtensionAPI): void {
 			)
 
 			if (judgeVerdict.verdict === "pass") {
-				// Judge says non-zero exit is acceptable — grade it
 				const grade = await judgeGradeStep(step.description, params.summary ?? "", { exitCode, stdout, stderr })
-				const graded = s.setStepGrade(f.id, phase.id, step.id, grade)
-				if (graded) setActive(graded)
+				const gradeOutcome = applyAndPersist(params.ferment_id, {
+					type: "set_step_grade",
+					phaseId: phase.id,
+					stepId: step.id,
+					grade,
+				})
+				if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
 				onStepCompleted(pi)
-				return {
-					details: undefined,
-					content: [
-						{
-							type: "text",
-							text: `Step ${step.index}: "${step.description}" done ✓  Judge: ${judgeVerdict.reason}  Grade: ${grade.grade}`,
-						},
-					],
-				}
+				return toolOk(
+					`Step ${step.index}: "${step.description}" done ✓  Judge: ${judgeVerdict.reason}  Grade: ${grade.grade}`,
+				)
 			}
 
+			// Both retry and fail map to fail_step in storage.
+			const failOutcome = applyAndPersist(params.ferment_id, {
+				type: "fail_step",
+				phaseId: phase.id,
+				stepId: step.id,
+				error: `Verification failed (exit ${exitCode}): ${judgeVerdict.reason}`,
+			})
+			if (!failOutcome.ok) return failedToolResult(failOutcome.error)
+
 			if (judgeVerdict.verdict === "retry") {
-				const failed = s.failStep(
-					f.id,
-					phase.id,
-					step.id,
-					`Verification failed (exit ${exitCode}): ${judgeVerdict.reason}`,
-				)
-				if (failed) setActive(failed)
 				return toolErr(
 					`Step ${step.index} verification failed — retry suggested.\nExit: ${exitCode}\nJudge: ${judgeVerdict.reason}\nstdout: ${stdout.slice(0, 500)}\nstderr: ${stderr.slice(0, 500)}`,
 				)
 			}
-
-			// verdict === "fail"
-			const failed = s.failStep(
-				f.id,
-				phase.id,
-				step.id,
-				`Verification failed (exit ${exitCode}): ${judgeVerdict.reason}`,
-			)
-			if (failed) setActive(failed)
 			return toolErr(
 				`Step ${step.index} failed verification.\nExit: ${exitCode}\nJudge: ${judgeVerdict.reason}\nstdout: ${stdout.slice(0, 500)}\nstderr: ${stderr.slice(0, 500)}`,
 			)
@@ -242,8 +245,7 @@ export function registerStepTools(pi: ExtensionAPI): void {
 		description: "Run verification command and record result.",
 		parameters: VerifyParams,
 		async execute(_, params, signal, onUpdate, ctx) {
-			const s = getStorage()
-			const f = s.get(params.ferment_id)
+			const f = getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
@@ -287,12 +289,16 @@ export function registerStepTools(pi: ExtensionAPI): void {
 				completedAt: new Date().toISOString(),
 			}
 
-			const r = s.verifyStep(f.id, phase.id, step.id, result)
-			if (r) setActive(r)
+			const outcome = applyAndPersist(params.ferment_id, {
+				type: "verify_step",
+				phaseId: phase.id,
+				stepId: step.id,
+				result,
+			})
+			if (!outcome.ok) return failedToolResult(outcome.error)
 			onStepCompleted(pi)
 
-			if (result.success)
-				return { details: undefined, content: [{ type: "text", text: `✓ "${step.description}" verified.` }] }
+			if (result.success) return toolOk(`✓ "${step.description}" verified.`)
 			return toolErr(`✗ "${step.description}" failed (exit ${exitCode}).`)
 		},
 	})
@@ -303,19 +309,22 @@ export function registerStepTools(pi: ExtensionAPI): void {
 		description: "Skip a step.",
 		parameters: StepActionParams,
 		async execute(_, params) {
-			const s = getStorage()
-			const f = s.get(params.ferment_id)
+			const f = getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 			const step = resolveStep(phase, params.step_id)
 			if (!step) return toolErr("Step not found.")
-			const r = s.skipStep(f.id, phase.id, step.id)
-			if (!r) return toolErr("Step not found.")
-			setActive(r)
+
+			const outcome = applyAndPersist(params.ferment_id, {
+				type: "skip_step",
+				phaseId: phase.id,
+				stepId: step.id,
+			})
+			if (!outcome.ok) return failedToolResult(outcome.error)
 			clearStepStart(f.id, phase.id, step.id)
 			onStepCompleted(pi)
-			return { details: undefined, content: [{ type: "text", text: "Step skipped." }] }
+			return toolOk("Step skipped.")
 		},
 	})
 
@@ -325,26 +334,24 @@ export function registerStepTools(pi: ExtensionAPI): void {
 		description: "Mark a step as failed with an error message.",
 		parameters: FailStepParams,
 		async execute(_, params) {
-			const s = getStorage()
-			const f = s.get(params.ferment_id)
+			const f = getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 			const step = resolveStep(phase, params.step_id)
 			if (!step) return toolErr("Step not found.")
-			const r = s.failStep(f.id, phase.id, step.id, params.error)
-			if (!r) return toolErr("Failed to mark step as failed.")
-			setActive(r)
+
+			const outcome = applyAndPersist(params.ferment_id, {
+				type: "fail_step",
+				phaseId: phase.id,
+				stepId: step.id,
+				error: params.error,
+			})
+			if (!outcome.ok) return failedToolResult(outcome.error)
 			onStepCompleted(pi)
-			return {
-				details: undefined,
-				content: [
-					{
-						type: "text",
-						text: `Step ${step.index}: "${step.description}" marked as failed. Use skip_step to skip it, or retry the work and call start_step again.`,
-					},
-				],
-			}
+			return toolOk(
+				`Step ${step.index}: "${step.description}" marked as failed. Use skip_step to skip it, or retry the work and call start_step again.`,
+			)
 		},
 	})
 }
