@@ -1,15 +1,15 @@
 import { spawn } from "node:child_process"
 import { existsSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
-import type { AssistantMessage, ToolCall } from "@mariozechner/pi-ai"
+import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import {
 	CURRENT_SESSION_VERSION,
 	type ExtensionAPI,
 	type SessionEntry,
 	type SessionHeader,
 	type Theme,
-} from "@mariozechner/pi-coding-agent"
-import { Container, Spacer, Text, truncateToWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui"
+} from "@earendil-works/pi-coding-agent"
+import { Container, Spacer, Text, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { v7 as uuidv7 } from "uuid"
 import { ToolBlockView, getTextContent } from "../components/tool-block.js"

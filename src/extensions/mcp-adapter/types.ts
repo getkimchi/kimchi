@@ -1,4 +1,4 @@
-import type { ImageContent, TextContent } from "@mariozechner/pi-ai"
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai"
 import type { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
 // types.ts - Core type definitions
 import type { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"

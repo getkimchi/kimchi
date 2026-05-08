@@ -2,7 +2,7 @@
  * Terminal display formatting for stats data
  */
 
-import type { Theme } from "@mariozechner/pi-coding-agent"
+import type { Theme } from "@earendil-works/pi-coding-agent"
 import { formatCount } from "../format.js"
 import type { GenerateAnalyticsResponse, GetProductivityMetricsResponse } from "./types.js"
 

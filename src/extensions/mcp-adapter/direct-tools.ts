@@ -1,4 +1,4 @@
-import type { ToolDefinition } from "@mariozechner/pi-coding-agent"
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { getFailureAgeSeconds, lazyConnect } from "./init.js"
 import { authenticate, supportsOAuth } from "./mcp-auth-flow.js"
 import type { MetadataCache } from "./metadata-cache.js"

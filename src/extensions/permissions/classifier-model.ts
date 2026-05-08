@@ -1,5 +1,5 @@
-import type { Api, Model } from "@mariozechner/pi-ai"
-import type { ModelRegistry } from "@mariozechner/pi-coding-agent"
+import type { Api, Model } from "@earendil-works/pi-ai"
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
 import type { ModelTier } from "../orchestration/model-registry/types.js"
 

@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isHomebrewInstall } from "../update/paths.js"
 import { checkForUpdate } from "../update/workflow.js"
 import { getVersion } from "../utils.js"

@@ -1,6 +1,6 @@
 # Agent Guidelines for Kimchi-Dev
 
-You are editing the kimchi-code CLI harness. This repo extends the pi-mono SDK (`@mariozechner/pi-coding-agent`) — core agent loop lives upstream; this repo adds extensions in `src/extensions/`.
+You are editing the kimchi-code CLI harness. This repo extends the pi-mono SDK (`@earendil-works/pi-coding-agent`) — core agent loop lives upstream; this repo adds extensions in `src/extensions/`.
 
 ## Environment
 - **Package manager**: pnpm (NEVER use npm/yarn)
@@ -25,7 +25,7 @@ You are editing the kimchi-code CLI harness. This repo extends the pi-mono SDK (
 
 ## Before Adding Features
 
-This repo extends `@mariozechner/pi-coding-agent` (pi-mono). Most
+This repo extends `@earendil-works/pi-coding-agent` (pi-mono). Most
 capabilities you might be asked to add already exist upstream or in a
 sibling package. Re-implementing them locally creates maintenance debt
 and divergence. Before writing any new feature, work through the phases
@@ -58,13 +58,13 @@ the others' results. Run them concurrently, not serially:
 pi-mono version is the source of truth for what your harness actually
 runs against:
 ```bash
-grep -r "<concept>" node_modules/@mariozechner/pi-coding-agent/dist
+grep -r "<concept>" node_modules/@earendil-works/pi-coding-agent/dist
 ```
 Also check exported utilities, the `Extension` interface, and existing
 hooks (`onPasteImage`, `onSubmit` transforms, etc.).
 
 **B2. Check the pi.dev package registry.** Scan https://pi.dev/packages
-for sibling packages — especially under the `@mariozechner/*` scope.
+for sibling packages — especially under the `@earendil-works/*` scope.
 ~60 seconds, names and one-line descriptions only. Goal: eliminate "I
 didn't know that package existed." Do NOT deep-read READMEs at this
 stage.

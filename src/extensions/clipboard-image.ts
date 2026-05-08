@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { extname } from "node:path"
-import type { ImageContent } from "@mariozechner/pi-ai"
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent"
+import type { ImageContent } from "@earendil-works/pi-ai"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getAvailableModels } from "../startup-context.js"
 import { setPasteImageHandler, setPendingImageIndicator } from "./ui.js"
 
@@ -12,7 +12,7 @@ import { setPasteImageHandler, setPendingImageIndicator } from "./ui.js"
 // path so:
 //   1. In dev mode (bun run / node), Node's resolver finds the package via
 //      our optionalDependencies declaration in package.json (pnpm symlinks the
-//      one matching the host platform under node_modules/@mariozechner/).
+//      one matching the host platform under node_modules/@earendil-works/).
 //   2. In compiled-binary mode (bun build --compile), Bun's bundler statically
 //      resolves the .node file at compile time and embeds it inside the
 //      executable. At runtime the embedded binary is extracted and loaded —

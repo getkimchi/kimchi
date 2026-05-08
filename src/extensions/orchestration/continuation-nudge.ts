@@ -23,12 +23,12 @@
  * inside the `if (!subagentMode)` guard.
  */
 
-import type { AssistantMessage } from "@mariozechner/pi-ai"
-import type { ContextEvent } from "@mariozechner/pi-coding-agent"
+import type { AssistantMessage } from "@earendil-works/pi-ai"
+import type { ContextEvent } from "@earendil-works/pi-coding-agent"
 
 /**
  * Message-array shape passed through `context` events. Derived from
- * `ContextEvent` because `AgentMessage` lives in `@mariozechner/pi-agent-core`,
+ * `ContextEvent` because `AgentMessage` lives in `@earendil-works/pi-agent-core`,
  * which is only a transitive dep — importing it directly works under npm's
  * flat install but breaks under pnpm's strict resolution (and thus CI).
  */

@@ -13,7 +13,7 @@ import {
 	createLsToolDefinition,
 	createReadToolDefinition,
 	createWriteToolDefinition,
-} from "@mariozechner/pi-coding-agent"
+} from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import { BUILTIN_TOOL_NAMES } from "./tool-args.js"
 

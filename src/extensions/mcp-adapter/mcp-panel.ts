@@ -1,4 +1,4 @@
-import { matchesKey, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui"
+import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { fg } from "../../ansi.js"
 import type { CachedTool, MetadataCache, ServerCacheEntry } from "./metadata-cache.js"
 import { resourceNameToToolName } from "./resource-tools.js"

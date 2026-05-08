@@ -1,6 +1,6 @@
-import type { Theme } from "@mariozechner/pi-coding-agent"
-import type { Component } from "@mariozechner/pi-tui"
-import { visibleWidth } from "@mariozechner/pi-tui"
+import type { Theme } from "@earendil-works/pi-coding-agent"
+import type { Component } from "@earendil-works/pi-tui"
+import { visibleWidth } from "@earendil-works/pi-tui"
 import { buildLogoLines, buildPathLine, buildVersionLine } from "./logo-art.js"
 import { clampLines, splashTopPadding } from "./splash-layout.js"
 

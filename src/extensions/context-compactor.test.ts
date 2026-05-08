@@ -1,5 +1,5 @@
-import type { TextContent, ToolResultMessage } from "@mariozechner/pi-ai"
-import type { ContextEvent, ExtensionAPI } from "@mariozechner/pi-coding-agent"
+import type { TextContent, ToolResultMessage } from "@earendil-works/pi-ai"
+import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import contextCompactorExtension, { computeCutoff, pruneToolResult } from "./context-compactor.js"
 

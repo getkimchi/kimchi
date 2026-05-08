@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs"
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadMcpConfig } from "./config.js"
 import { ConsentManager } from "./consent-manager.js"
 import { getMissingConfiguredDirectToolServers } from "./direct-tools.js"

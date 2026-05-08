@@ -1,6 +1,6 @@
-import type { BashToolDetails, ExtensionAPI, ToolDefinition } from "@mariozechner/pi-coding-agent"
-import { createBashToolDefinition } from "@mariozechner/pi-coding-agent"
-import { Container, Spacer, Text } from "@mariozechner/pi-tui"
+import type { BashToolDetails, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
+import { createBashToolDefinition } from "@earendil-works/pi-coding-agent"
+import { Container, Spacer, Text } from "@earendil-works/pi-tui"
 import { ToolBlockView, buildToolCallHeader, getTextContent } from "../components/tool-block.js"
 import { isToolExpanded, registerToolCall } from "../expand-state.js"
 
