@@ -118,7 +118,7 @@ jobs:
         run: node scripts/set-version.js "${{ needs.preflight.outputs.version }}"
 
       - name: Build binary
-        run: node scripts/build-binary.js --target=${{ matrix.target }}
+        run: pnpm run build:binary -- --target=${{ matrix.target }}
 
       - name: Package binary
         run: tar -czf kimchi-code-canary_${{ matrix.os }}_${{ matrix.arch }}.tar.gz -C dist bin share
