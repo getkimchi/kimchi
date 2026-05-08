@@ -47,7 +47,7 @@ import webSearchExtension from "./extensions/web-search/index.js"
 import { updateModelsConfig } from "./models.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
-import { probeTerminalBackground } from "./terminal-bg-probe.js"
+import { detectColorMode, hexToBgAnsi, probeTerminalBackground } from "./terminal-bg-probe.js"
 import { getVersion } from "./utils.js"
 
 const telemetryConfig = readTelemetryConfig()
@@ -199,7 +199,14 @@ try {
 		// as `""` placeholders; the kimchi-minimal-tints extension fills them in
 		// per-process at session_start from the OSC 11 probe.
 		const themesDir = resolve(agentDir, "themes")
-		const bundledThemes = ["kimchi.json", "kimchi-minimal.json", "kimchi-light.json", "dark.json", "light.json"]
+		const bundledThemes = [
+			"kimchi.json",
+			"kimchi-minimal.json",
+			"kimchi-light.json",
+			"dark.json",
+			"light.json",
+			"night-owl.json",
+		]
 		const bundledThemesSrcDir = isBunBinary
 			? resolve(process.env.PI_PACKAGE_DIR ?? "", "theme")
 			: resolve(dirname(fileURLToPath(import.meta.url)), "../themes")
@@ -236,6 +243,29 @@ try {
 				// dest missing — fall through and write
 			}
 			if (destContent !== srcContent) writeFileSync(dest, srcContent)
+		}
+
+		// Paint the initial viewport background before pi-mono renders its first frame.
+		// This ensures blank areas of the terminal reflect the theme color from the start,
+		// on every terminal regardless of OSC 10/11 support.
+		if (!acpMode && process.stdout.isTTY) {
+			try {
+				const settings = JSON.parse(readFileSync(settingsPath, "utf-8"))
+				const themeName: string = settings.theme ?? "kimchi-minimal"
+				const themeRaw = readFileSync(resolve(themesDir, `${themeName}.json`), "utf-8")
+				const theme = JSON.parse(themeRaw)
+				const vars: Record<string, string> = theme.vars ?? {}
+				const oscBgRaw: string = theme.colors?.oscBg ?? ""
+				if (oscBgRaw) {
+					const bgHex: string = vars[oscBgRaw] ?? oscBgRaw
+					if (bgHex.startsWith("#")) {
+						const bgAnsi = hexToBgAnsi(bgHex, detectColorMode())
+						process.stdout.write(`\x1b[${bgAnsi}m\x1b[2J\x1b[H\x1b[0m`)
+					}
+				}
+			} catch {
+				// No settings file yet or theme missing — skip, pi-mono will render normally
+			}
 		}
 
 		// Suppress Node.js warnings (same as pi-mono's own cli.js)

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getActiveThemeName, onThemeChange } from "../settings-watcher.js"
-import { QUERY_BG, getRawBgPayload } from "../terminal-bg-probe.js"
+import { QUERY_BG, detectColorMode, getRawBgPayload, hexToBgAnsi } from "../terminal-bg-probe.js"
 
 const QUERY_FG = "\x1b]10;?\x07"
 const QUERY_TIMEOUT_MS = 200
@@ -19,6 +19,21 @@ function hexToOscRgb(hex: string): string | null {
 	return `rgb:${r}/${g}/${b}`
 }
 
+/** Detects iTerm2 specifically — only terminals that honour OSC 1337;SetColors. */
+function isIterm2(): boolean {
+	const termProgram = process.env.TERM_PROGRAM ?? ""
+	const term = process.env.TERM ?? ""
+	return termProgram === "iTerm.app" || term === "xterm-256color-italic"
+}
+
+/** Converts hex color (#RRGGBB) to iTerm2 OSC 1337 format (6-char hex without #). */
+function hexToItermFormat(hex: string): string | null {
+	if (!hex || hex === "") return null
+	const match = hex.match(/^#?([0-9a-fA-F]{6})$/i)
+	if (!match) return null
+	return match[1].toUpperCase()
+}
+
 // OSC 10/11 enforce theme-specified fg/bg over the terminal's own colors.
 // Applied when the user has opted into a theme that defines oscFg/oscBg.
 // Any theme without these values (including kimchi-minimal) lets the terminal
@@ -28,20 +43,26 @@ function hexToOscRgb(hex: string): string | null {
 // /settings we have to actively restore the saved fg/bg — otherwise the
 // theme bg lingers under another theme or kimchi-minimal.
 
-function getThemeOscColors(themeName: string): { fg: string; bg: string } | null {
+/** Returns raw hex colors (e.g. "#011627") for themes that opt into full-screen theming. */
+function getThemeColors(themeName: string): { fgHex: string; bgHex: string } | null {
 	try {
 		const dir = process.env.KIMCHI_CODING_AGENT_DIR
 		if (!dir) return null
-		const path = resolve(dir, "theme", `${themeName}.json`)
+		const path = resolve(dir, "themes", `${themeName}.json`)
 		const raw = readFileSync(path, "utf-8")
 		const theme = JSON.parse(raw)
-		const oscBgHex = theme.colors?.oscBg
-		if (!oscBgHex || oscBgHex === "") return null
-		const oscFgHex = theme.colors?.oscFg ?? ""
-		return {
-			fg: hexToOscRgb(oscFgHex) ?? "",
-			bg: hexToOscRgb(oscBgHex) ?? "",
-		}
+		const vars: Record<string, string> = theme.vars ?? {}
+		const resolveVar = (val: string): string => vars[val] ?? val
+
+		const oscBgRaw: string = theme.colors?.oscBg ?? ""
+		if (!oscBgRaw) return null
+		const bgHex = resolveVar(oscBgRaw)
+		if (!bgHex || !bgHex.startsWith("#")) return null
+
+		const oscFgRaw: string = theme.colors?.oscFg ?? ""
+		const fgHex = oscFgRaw ? resolveVar(oscFgRaw) : ""
+
+		return { fgHex, bgHex }
 	} catch {
 		return null
 	}
@@ -55,17 +76,57 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 	let lastCtx: ExtensionContext | undefined
 	let unsubscribeThemeChange: (() => void) | undefined
 
+	// Fills the visible viewport by writing spaces with an explicit bg attribute.
+	// More reliable than \x1b[2J because Terminal.app has BCE disabled — erase
+	// ignores the current bg attribute and always uses the profile background.
+	const fillViewport = (bgAnsi: string) => {
+		const cols = process.stdout.columns || 80
+		const rows = process.stdout.rows || 24
+		const line = `\x1b[${bgAnsi}m${" ".repeat(cols)}`
+		const lines = Array.from({ length: rows }, () => line)
+		process.stdout.write(`\x1b[H${lines.join("\r\n")}\x1b[H\x1b[0m`)
+	}
+
 	const restore = () => {
 		if (!process.stdout.isTTY) return
-		process.stdout.write(savedFg ? `\x1b]10;${savedFg}\x07` : "\x1b]110\x07")
-		process.stdout.write(savedBg ? `\x1b]11;${savedBg}\x07` : "\x1b]111\x07")
+
+		if (isIterm2()) {
+			// iTerm2: reset via named preset first, then fall back to saved OSC values
+			process.stdout.write("\x1b]1337;SetColors=preset=Default\x07")
+			process.stdout.write(savedFg ? `\x1b]10;${savedFg}\x07` : "\x1b]110\x07")
+			process.stdout.write(savedBg ? `\x1b]11;${savedBg}\x07` : "\x1b]111\x07")
+		} else {
+			// Standard OSC reset (covers Terminal.app, Ghostty, Warp, etc.)
+			process.stdout.write(savedFg ? `\x1b]10;${savedFg}\x07` : "\x1b]110\x07")
+			process.stdout.write(savedBg ? `\x1b]11;${savedBg}\x07` : "\x1b]111\x07")
+		}
+		// Re-fill the viewport with the restored default bg so themed cells don't linger.
+		fillViewport("49")
 		active = false
 	}
 
-	const apply = (fg?: string, bg?: string) => {
+	const apply = (fgHex: string, bgHex: string, clearScreen = false) => {
 		if (!process.stdout.isTTY) return
-		if (fg) process.stdout.write(`\x1b]10;${fg}\x07`)
-		if (bg) process.stdout.write(`\x1b]11;${bg}\x07`)
+
+		// Fill every visible cell with the theme bg color. Using space characters
+		// (not \x1b[2J erase) ensures the bg is painted even on BCE-disabled terminals.
+		if (clearScreen && bgHex) {
+			fillViewport(hexToBgAnsi(bgHex, detectColorMode()))
+		}
+
+		// OSC sequences change what "default background" means in the terminal emulator,
+		// affecting future blank cells from scroll/resize. Supplementary to the fill above.
+		const oscBg = hexToOscRgb(bgHex)
+		const oscFg = fgHex ? hexToOscRgb(fgHex) : null
+		if (isIterm2()) {
+			const itermBg = hexToItermFormat(bgHex)
+			if (itermBg) process.stdout.write(`\x1b]1337;SetColors=bg=${itermBg}\x07`)
+			if (oscFg) process.stdout.write(`\x1b]10;${oscFg}\x07`)
+		} else {
+			// Standard OSC 10/11 — Terminal.app, Ghostty, Warp, and most modern terminals
+			if (oscFg) process.stdout.write(`\x1b]10;${oscFg}\x07`)
+			if (oscBg) process.stdout.write(`\x1b]11;${oscBg}\x07`)
+		}
 		active = true
 	}
 
@@ -140,10 +201,10 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 	}
 
 	const reactToThemeChange = (newName: string | undefined) => {
-		const oscColors = getThemeOscColors(newName ?? "")
+		const colors = getThemeColors(newName ?? "")
 
-		if (oscColors?.bg) {
-			if (!active) apply(oscColors.fg, oscColors.bg)
+		if (colors?.bgHex) {
+			apply(colors.fgHex, colors.bgHex, true)
 		} else {
 			if (active) restore()
 		}
@@ -158,9 +219,11 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 
 		// Probe & save terminal-original fg/bg unconditionally so we can restore
 		// when the user later switches away from a theme that sets osc colors.
+		// No clearScreen here — cli.ts paints the initial background before pi-mono
+		// renders its first frame.
 		probeAndSave(() => {
-			const oscColors = getThemeOscColors(getActiveThemeName() ?? "")
-			if (oscColors?.bg) apply(oscColors.fg, oscColors.bg)
+			const colors = getThemeColors(getActiveThemeName() ?? "")
+			if (colors?.bgHex) apply(colors.fgHex, colors.bgHex)
 
 			unsubscribeThemeChange?.()
 			unsubscribeThemeChange = onThemeChange(reactToThemeChange)
