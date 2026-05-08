@@ -113,13 +113,16 @@ export async function runScopingFlow(f: Ferment, pi: ExtensionAPI, ctx: Extensio
 	)
 	if (!criteria) return
 
-	// Step 3: constraints
+	// Step 3: constraints (optional — empty input means "no constraints")
 	pi.appendEntry("ferment_breadcrumb", { text: `scoping "${f.name}" · 3/4 — constraints` })
 	const constraints = await ctx.ui.input(
-		"What should we avoid? Any non-negotiables? (comma-separated)",
+		"What should we avoid? Any non-negotiables? (comma-separated, leave empty for none)",
 		"e.g. 'No external auth libs, must work on mobile'",
 	)
-	if (!constraints) return
+	// `constraints` may be undefined (user cancelled with Esc) or empty string
+	// (user pressed Enter with no input — valid: no constraints). Distinguish:
+	// undefined → cancel the flow; "" → continue with empty list.
+	if (constraints === undefined) return
 
 	// All 3 prerequisites collected — now arm the confirmation gate. Doing this
 	// BEFORE the inputs would leak gate state if the user cancels mid-flow.
