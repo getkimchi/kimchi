@@ -15,7 +15,7 @@ import { Type } from "typebox"
 import { ORANGE_FG, RST_FG, SUCCESS_FG, TEAL_FG, WARNING_FG } from "../ansi.js"
 import { findFirstPlannedPhase, getScopingProgress, whatNext } from "../ferment/engine.js"
 import { shortenTitle } from "../ferment/shorten-title.js"
-import { FermentError, FermentStorage } from "../ferment/store.js"
+import { FermentError, FermentStorage, clearFermentCache } from "../ferment/store.js"
 import type { Ferment, FermentWorkMode, MemoryCategory, Phase, Step, StepResult } from "../ferment/types.js"
 import { notifyFermentActive } from "./permissions/index.js"
 
@@ -87,25 +87,41 @@ function setActive(f: Ferment | undefined): void {
 	widgetUpdateFn?.()
 }
 
+/** Clear all in-memory state scoped to a specific ferment. Called on abandon/delete/complete. */
+function clearFermentState(fermentId: string): void {
+	scopingConfirmed.delete(fermentId)
+	scopingInteractive.delete(fermentId)
+	for (const key of stepStartCounts.keys()) {
+		if (key.startsWith(`${fermentId}:`)) stepStartCounts.delete(key)
+	}
+}
+
 function isPlanMode(): boolean {
 	if (!activeFerment) return process.env.KIMCHI_PERMISSIONS === "plan"
 	return activeFerment.mode === "plan"
 }
 
 function isExecMode(): boolean {
-	if (!activeFerment) return process.env.KIMCHI_PERMISSIONS !== "plan"
-	return activeFerment.mode !== "plan"
+	if (!activeFerment) return false
+	return activeFerment.mode === "exec"
+}
+
+function isAutoMode(): boolean {
+	if (!activeFerment) return false
+	return activeFerment.mode === "auto"
 }
 
 function stripToolRefs(text: string): string {
+	// Match "Use <tool_name> to ..." up to the next sentence boundary or newline.
+	// Use [^.\n]* (no dots, no newlines) so we don't accidentally swallow across sentences.
 	return text
-		.replace(/Use \w+ to\b[\s\S]*?\./g, (m) => m.replace(/\w+_\w+/, "..."))
+		.replace(/Use \w+ to\b[^.\n]*\.?/g, (m) => m.replace(/\w+_\w+/, "..."))
 		.replace(/call \w+\b/g, "decide")
 		.replace(/via \w+_\w+/g, "by deciding")
 }
 
 function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
-	pi.sendMessage({
+	void pi.sendMessage({
 		customType: "ferment_reference",
 		content: [{ type: "text", text: `active: ${fermentId}` }],
 		display: false,
@@ -116,7 +132,19 @@ function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
 function maybeInjectAutoNudge(pi: ExtensionAPI): void {
 	if (!autoModeEnabled || !activeFerment) return
 	const action = whatNext(activeFerment)
+	// Skip terminal/idle states
 	if (action.kind === "paused" || action.kind === "complete_ferment") return
+	// Only nudge on transitions — not on every routine step completion. The planner
+	// already has the next step in its context after complete_step returns.
+	const transitionKinds = new Set([
+		"scope",
+		"refine",
+		"activate_phase",
+		"complete_phase",
+		"recover_step",
+		"recover_phase",
+	])
+	if (!transitionKinds.has(action.kind)) return
 
 	const f = activeFerment
 	const activePhase = f.phases.find((p) => p.id === f.activePhaseId)
@@ -126,7 +154,7 @@ function maybeInjectAutoNudge(pi: ExtensionAPI): void {
 	const breadcrumb = `Auto-nudge [${action.kind}]: "${f.name}" [${f.status}]${phaseInfo}${stepInfo}`
 
 	pi.appendEntry("ferment_breadcrumb", { text: breadcrumb })
-	pi.sendMessage(
+	void pi.sendMessage(
 		{
 			customType: "ferment_automode_nudge",
 			content: [{ type: "text", text: action.message }],
@@ -151,7 +179,7 @@ function onPhaseCompleted(pi: ExtensionAPI): void {
 	const fresh = getStorage().get(activeFermentId)
 	if (fresh) {
 		setActive(fresh)
-		// Auto-advance in exec/automode — no "Activate it?" prompt
+		// Auto-advance only in exec mode — auto/plan modes leave activation to the planner
 		if (isExecMode()) {
 			const next = findFirstPlannedPhase(fresh)
 			if (next) {
@@ -171,10 +199,14 @@ interface WorktreeCheck {
 
 function checkWorktree(f: Ferment): WorktreeCheck {
 	const cwd = process.cwd()
-	if (!cwd.startsWith(f.worktree.path)) {
+	// Path containment: cwd must equal worktree.path OR start with worktree.path + "/".
+	// String prefix alone gives a false positive for "/foo/projectextra" vs "/foo/project".
+	const wtPath = f.worktree.path
+	const isInside = cwd === wtPath || cwd.startsWith(`${wtPath}/`)
+	if (!isInside) {
 		return {
 			severity: "block",
-			message: `You are in ${cwd}, but this ferment was created in ${f.worktree.path}. Use /ferment switch to activate a different ferment, or /ferment switch --force to override.`,
+			message: `You are in ${cwd}, but this ferment was created in ${wtPath}. Use /ferment switch to activate a different ferment, or /ferment switch --force to override.`,
 		}
 	}
 	if (f.worktree.branch) {
@@ -197,8 +229,15 @@ function checkWorktree(f: Ferment): WorktreeCheck {
 	return { severity: "ok" }
 }
 
-function findStep(f: Ferment, phaseId: string, stepId: string) {
-	return f.phases.find((p) => p.id === phaseId)?.steps.find((s) => s.id === stepId)
+// ─── Tool result builders ─────────────────────────────────────────────────────
+// Reduce repetition: every tool execute returns the same { details, content, isError? } shape.
+
+function toolOk(text: string) {
+	return { details: undefined, content: [{ type: "text" as const, text }] }
+}
+
+function toolErr(text: string) {
+	return { details: undefined, content: [{ type: "text" as const, text }], isError: true }
 }
 
 /** Resolve phase by exact id → name substring → active phase. Returns undefined if not found. */
@@ -456,7 +495,9 @@ function buildPhaseDetailTitle(f: Ferment, p: Phase): string {
 }
 
 function buildPhaseStepOptions(p: Phase): string[] {
-	if (p.steps.length === 0) return [pr_dim("No steps defined yet"), pr_dim("─────────────"), "Phase actions", "Back"]
+	// When no steps exist, only show actionable options — never include the
+	// "No steps" label as a selectable item (the user can read it from the title).
+	if (p.steps.length === 0) return ["Phase actions", "Back"]
 	const opts = p.steps.map((s) => {
 		const bullet = stepBulletChar(s.status)
 		const name =
@@ -542,17 +583,22 @@ async function handleStepAction(
 	ctx: ExtensionCommandContext,
 ): Promise<void> {
 	const st = getStorage()
+	const stuckKey = `${f.id}:${p.id}:${s.id}`
 	if (choice === "Mark step done") {
 		const r = st.completeStep(f.id, p.id, s.id)
 		if (r) setActive(r)
+		stepStartCounts.delete(stuckKey)
 		ctx.ui.notify(`Step ${s.index} marked done.`)
 	} else if (choice === "Retry step") {
 		const r = st.startStep(f.id, p.id, s.id)
 		if (r) setActive(r)
+		// User explicitly chose retry — reset stuck-loop counter so the agent isn't blocked
+		stepStartCounts.delete(stuckKey)
 		ctx.ui.notify(`Step ${s.index} reset to running — tell the agent to retry.`)
 	} else if (choice === "Skip step") {
 		const r = st.skipStep(f.id, p.id, s.id)
 		if (r) setActive(r)
+		stepStartCounts.delete(stuckKey)
 		ctx.ui.notify(`Step ${s.index} skipped.`)
 	}
 }
@@ -594,6 +640,10 @@ async function handlePhaseAction(choice: string, f: Ferment, p: Phase, ctx: Exte
 		case "Re-activate phase": {
 			const r = st.activatePhase(f.id, p.id)
 			if (r) setActive(r)
+			// Reset stuck-loop counters for all steps in this phase
+			for (const step of p.steps) {
+				stepStartCounts.delete(`${f.id}:${p.id}:${step.id}`)
+			}
 			ctx.ui.notify(`Phase "${p.name}" re-activated.`)
 			break
 		}
@@ -626,7 +676,7 @@ function formatFermentStatus(f: Ferment): string {
 			lines.push(`   ${m} Phase ${p.index}: ${p.name} [${p.status}]`)
 			for (const s of p.steps) {
 				const sm = s.status === "done" || s.status === "verified" ? "✓" : s.status === "skipped" ? "⊘" : "○"
-				lines.push(`      ${sm} ${s.description} — ${s.result || s.status}`)
+				lines.push(`      ${sm} ${s.description} [${s.status}]`)
 			}
 		}
 	}
@@ -849,19 +899,30 @@ Be concise. Maximum 3 suggestions if revising.`
 	}
 }
 
-// Ferment-level grade: weighted average of phase grades.
+// Ferment-level grade: average of phase grades, with failed phases counted as F (0).
 function computeFermentGrade(phases: import("../ferment/types.js").Phase[]): import("../ferment/types.js").JudgeGrade {
 	const gradeScore: Record<import("../ferment/types.js").Grade, number> = { A: 4, B: 3, C: 2, D: 1, F: 0 }
-	const scoredPhases = phases.filter((p) => p.grade && p.status !== "skipped")
-	if (scoredPhases.length === 0) {
+	// Skipped phases are excluded entirely; failed phases without grades count as F.
+	const relevant = phases.filter((p) => p.status !== "skipped")
+	if (relevant.length === 0) {
 		return { grade: "B", rationale: "No graded phases.", gradedAt: new Date().toISOString() }
 	}
-	const avg = scoredPhases.reduce((sum, p) => sum + (p.grade ? gradeScore[p.grade.grade] : 0), 0) / scoredPhases.length
+	const sum = relevant.reduce((acc, p) => {
+		if (p.grade) return acc + gradeScore[p.grade.grade]
+		// No grade + failed → treat as F. No grade + non-failed → skip from avg.
+		if (p.status === "failed") return acc + gradeScore.F
+		return acc
+	}, 0)
+	const counted = relevant.filter((p) => p.grade || p.status === "failed").length
+	if (counted === 0) {
+		return { grade: "B", rationale: "No graded phases.", gradedAt: new Date().toISOString() }
+	}
+	const avg = sum / counted
 	const failedCount = phases.filter((p) => p.status === "failed").length
-	const adjustedAvg = failedCount > 0 ? avg * (1 - failedCount * 0.1) : avg
 	const grade: import("../ferment/types.js").Grade =
-		adjustedAvg >= 3.5 ? "A" : adjustedAvg >= 2.5 ? "B" : adjustedAvg >= 1.5 ? "C" : adjustedAvg >= 0.5 ? "D" : "F"
-	const rationale = `${scoredPhases.length} phase(s) graded, avg ${avg.toFixed(1)}/4${failedCount > 0 ? `, ${failedCount} failed` : ""}.`
+		avg >= 3.5 ? "A" : avg >= 2.5 ? "B" : avg >= 1.5 ? "C" : avg >= 0.5 ? "D" : "F"
+	const failNote = failedCount > 0 ? `, ${failedCount} failed` : ""
+	const rationale = `${counted} phase(s) counted, avg ${avg.toFixed(1)}/4${failNote}.`
 	return { grade, rationale, gradedAt: new Date().toISOString() }
 }
 
@@ -889,7 +950,7 @@ async function runScopingFlow(
 	if (!ctx.ui.input) {
 		// Headless fallback: let the LLM handle scoping conversationally
 		const prompt = buildScopePrompt(f.id, isPlanMode())
-		pi.sendMessage(
+		void pi.sendMessage(
 			{
 				customType: "ferment_created_nudge",
 				content: [{ type: "text", text: prompt }],
@@ -900,9 +961,6 @@ async function runScopingFlow(
 		)
 		return
 	}
-
-	// TUI path — enforce the confirmation gate for this ferment
-	scopingInteractive.add(f.id)
 
 	// Step 1: goal
 	pi.appendEntry("ferment_breadcrumb", { text: `scoping "${f.name}" · 1/4 — goal` })
@@ -925,6 +983,10 @@ async function runScopingFlow(
 	)
 	if (!constraints) return
 
+	// All 4 fields collected — now arm the confirmation gate. Doing this BEFORE the
+	// inputs would leak gate state if the user cancels mid-flow.
+	scopingInteractive.add(f.id)
+
 	// Step 4: phases — let the LLM propose them given the context so far
 	pi.appendEntry("ferment_breadcrumb", { text: `scoping "${f.name}" · 4/4 — proposing phases…` })
 
@@ -938,7 +1000,7 @@ async function runScopingFlow(
 	// scope_ferment will be called in the NEXT turn after user confirms.
 	const prompt = `Ferment: "${f.name}" (ID: ${f.id})\n\nThe user has already answered the scoping questions:\n- Goal: ${goal}\n- Success criteria: ${criteria}\n- Constraints: ${constraintList.join(", ")}\n\nYour task:\n1. Propose 3–7 ordered phases. For each phase provide: name, goal (one sentence), and 3–6 concrete step descriptions.\n2. Present the phases clearly as a numbered list.\n3. End with the question: "Does this plan look right?"\n\nDo NOT call scope_ferment yet. Do NOT use any file/search/bash tools. Just propose the phases as text and ask for confirmation.`
 
-	pi.sendMessage(
+	void pi.sendMessage(
 		{
 			customType: "ferment_created_nudge",
 			content: [{ type: "text", text: prompt }],
@@ -1104,6 +1166,9 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		stepStartCounts.clear()
 		scopingConfirmed.clear()
 		scopingInteractive.clear()
+		// Clear in-memory ferment cache — fresh session reads from disk once,
+		// then serves subsequent reads from cache until next mutation.
+		clearFermentCache()
 		const envId = process.env.KIMCHI_ACTIVE_FERMENT
 		if (!envId) return
 		const storage = getStorage()
@@ -1123,6 +1188,13 @@ export default function fermentExtension(pi: ExtensionAPI) {
 				}
 			}
 
+			// Re-arm scoping gate on resume: if the ferment is still in draft and the
+			// session has a TUI, the user must confirm again before scope_ferment is
+			// allowed. Without this, the gate is silently bypassed on resume.
+			if (existing.status === "draft" && ctx?.hasUI) {
+				scopingInteractive.add(existing.id)
+			}
+
 			// Resume nudge → hidden from user, triggers LLM to continue
 			const action = whatNext(existing)
 			const msg = isPlanMode() ? stripToolRefs(action.message) : action.message
@@ -1130,7 +1202,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 			const breadcrumb = `Resumed ferment: "${existing.name}" [${existing.status}] ${existing.mode} mode · scoping ${scopeProgress.answered}/${scopeProgress.total}`
 
 			pi.appendEntry("ferment_breadcrumb", { text: breadcrumb })
-			pi.sendMessage(
+			void pi.sendMessage(
 				{
 					customType: "ferment_resume_nudge",
 					content: [{ type: "text", text: msg }],
@@ -1267,7 +1339,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 
 		lastHumanInputAt = new Date()
 		widgetUpdateFn?.()
-		pi.sendUserMessage(reply)
+		void pi.sendUserMessage(reply)
 	})
 
 	// ─── Persistent dashboard widget ────────────────────────────────────────────
@@ -1414,6 +1486,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 
 				if (action === "Delete") {
 					storage.delete(selected.id)
+					clearFermentState(selected.id)
 					if (activeFermentId === selected.id) setActive(undefined)
 					ctx.ui.notify(`Deleted "${selected.name}"`)
 					return
@@ -1485,7 +1558,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 						pi.appendEntry("ferment_breadcrumb", {
 							text: `Mode changed to ${modeArg}: "${updated.name}" [${updated.status}]`,
 						})
-						pi.sendMessage(
+						void pi.sendMessage(
 							{
 								customType: "ferment_mode_nudge",
 								content: [{ type: "text", text: nudge }],
@@ -1516,6 +1589,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 						return
 					}
 					storage.delete(f.id)
+					clearFermentState(f.id)
 					if (activeFermentId === f.id) setActive(undefined)
 					ctx.ui.notify(`Deleted "${f.name}" (${f.id}).`)
 				} catch (err) {
@@ -1565,7 +1639,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 						const scopeProgress = getScopingProgress(f)
 						const breadcrumb = `Switched ferment: "${f.name}" [${f.status}] ${f.mode} mode · scoping ${scopeProgress.answered}/${scopeProgress.total}`
 						pi.appendEntry("ferment_breadcrumb", { text: breadcrumb })
-						pi.sendMessage(
+						void pi.sendMessage(
 							{
 								customType: "ferment_switch_nudge",
 								content: [{ type: "text", text: nudge }],
@@ -1599,9 +1673,11 @@ export default function fermentExtension(pi: ExtensionAPI) {
 					}
 				}
 				const s = getStorage()
-				const r = s.abandonFerment(activeFerment.id, reason || undefined)
+				const abandonedId = activeFerment.id
+				const r = s.abandonFerment(abandonedId, reason || undefined)
 				if (r) {
 					setActive(r)
+					clearFermentState(abandonedId)
 					ctx.ui.notify(`Ferment "${r.name}" abandoned.`)
 				}
 				return
@@ -1725,7 +1801,7 @@ Your task — execute ALL of the following steps WITHOUT pausing to ask the user
 
 CRITICAL: Do NOT use any tools other than ferment tools to research or explore first. Do NOT ask for confirmation at any point. Execute autonomously until complete_ferment is called.`
 
-					pi.sendMessage(
+					void pi.sendMessage(
 						{
 							customType: "ferment_oneshot_nudge",
 							content: [{ type: "text", text: nudge }],
@@ -1833,6 +1909,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 					if (confirmed) {
 						const r = getStorage().abandonFerment(f.id)
 						if (r) setActive(r)
+						clearFermentState(f.id)
 						atPhaseList = false
 					}
 					continue
@@ -1982,12 +2059,15 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 		name: "scope_ferment",
 		label: "Scope Ferment",
 		description:
-			"Save scoping answers and transition ferment from draft to planned. MUST only be called after showing the user a full summary (goal + criteria + constraints + all phases with steps) and receiving explicit confirmation. Do NOT call this while still collecting answers or proposing phases.",
+			"Save scoping answers and transition ferment from draft to planned. In plan mode, the harness gates this call until the user has confirmed the proposed plan via TUI dropdown.",
 		parameters: ScopeParams,
 		async execute(_, params) {
-			// Hard gate: only enforced for ferments scoped interactively (TUI path).
-			// Headless/conversational scoping bypasses the gate — the LLM is trusted there.
-			if (scopingInteractive.has(params.ferment_id) && !scopingConfirmed.has(params.ferment_id)) {
+			// Hard gate: only enforced for ferments scoped interactively (TUI path)
+			// in plan mode. Headless, conversational, exec, and auto modes bypass —
+			// the LLM is trusted there and one-shot/auto-execution should not stall.
+			const fGate = getStorage().get(params.ferment_id)
+			const gateActive = scopingInteractive.has(params.ferment_id) && fGate?.mode === "plan"
+			if (gateActive && !scopingConfirmed.has(params.ferment_id)) {
 				return {
 					details: undefined,
 					content: [
@@ -2117,7 +2197,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 		async execute(_, params) {
 			const s = getStorage()
 			const f = s.get(params.ferment_id)
-			if (!f) return { details: undefined, content: [{ type: "text", text: "Ferment not found." }], isError: true }
+			if (!f) return toolErr("Ferment not found.")
 
 			let updated: Ferment | undefined
 
@@ -2155,7 +2235,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 		async execute(_, params) {
 			const s = getStorage()
 			const f = s.get(params.ferment_id)
-			if (!f) return { details: undefined, content: [{ type: "text", text: "Ferment not found." }], isError: true }
+			if (!f) return toolErr("Ferment not found.")
 
 			// Resolve target phase: by id, by name, or fallback to first planned
 			let target = params.phase_id ? f.phases.find((p) => p.id === params.phase_id) : undefined
@@ -2243,7 +2323,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 		async execute(_, params) {
 			const s = getStorage()
 			const f = s.get(params.ferment_id)
-			if (!f) return { details: undefined, content: [{ type: "text", text: "Ferment not found." }], isError: true }
+			if (!f) return toolErr("Ferment not found.")
 			// Resolve phase: exact id → name substring → active phase fallback
 			let phase = f.phases.find((p) => p.id === params.phase_id)
 			if (!phase) {
@@ -2307,14 +2387,14 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 		name: "start_step",
 		label: "Start Step",
 		description:
-			"Mark step as running, then immediately spawn a subagent to execute it. Use provider 'kimchi-dev' and the worker_model returned in this tool's result (minimax-m2.7 for code/text, kimi-k2.5 for vision). Pass the step description as the subagent prompt along with any relevant file context. If parallel_siblings are listed in the result, call start_step for each of them too and spawn their subagents concurrently — do not wait for one to finish before starting the next. When all subagents finish, call complete_step for each.",
+			"Mark a step as running. Returns worker_model and parallel_siblings. See planner instructions in the system prompt for orchestration details.",
 		parameters: StepActionParams,
 		async execute(_, params) {
 			const s = getStorage()
 			const f = s.get(params.ferment_id)
-			if (!f) return { details: undefined, content: [{ type: "text", text: "Ferment not found." }], isError: true }
+			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
-			if (!phase) return { details: undefined, content: [{ type: "text", text: "Phase not found." }], isError: true }
+			if (!phase) return toolErr("Phase not found.")
 			const step = resolveStep(phase, params.step_id)
 			if (!step)
 				return {
@@ -2408,11 +2488,11 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 			}
 			const s = getStorage()
 			const f = s.get(params.ferment_id)
-			if (!f) return { details: undefined, content: [{ type: "text", text: "Ferment not found." }], isError: true }
+			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
-			if (!phase) return { details: undefined, content: [{ type: "text", text: "Phase not found." }], isError: true }
+			if (!phase) return toolErr("Phase not found.")
 			const step = resolveStep(phase, params.step_id)
-			if (!step) return { details: undefined, content: [{ type: "text", text: "Step not found." }], isError: true }
+			if (!step) return toolErr("Step not found.")
 			const r = s.completeStep(f.id, phase.id, step.id)
 			if (!r) return { details: undefined, content: [{ type: "text", text: "Step completion failed." }], isError: true }
 			setActive(r)
@@ -2437,27 +2517,34 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 			}
 
 			// ── Auto-verify: run bash verification command ──
+			// Cap verification at 60 seconds — a hung "npm test" should not block forever.
 			let exitCode = 0
 			let stdout = ""
 			let stderr = ""
 			// biome-ignore lint/suspicious/noExplicitAny: accessing controller tools
 			const controller = (ctx as any)?.controller
 			if (controller?.tools?.bash?.execute) {
+				const verifySignal = signal
+					? AbortSignal.any([signal, AbortSignal.timeout(60_000)])
+					: AbortSignal.timeout(60_000)
 				try {
 					// biome-ignore lint/suspicious/noExplicitAny: tool execution
 					const execResult = await (controller.tools.bash.execute as any)(
 						"",
 						{ command: step.verification.command },
-						signal,
+						verifySignal,
 						onUpdate,
 						ctx,
 					)
 					stdout = execResult.stdout ?? ""
 					stderr = execResult.stderr ?? ""
 					exitCode = execResult.exitCode ?? 0
-				} catch {
+				} catch (err) {
 					exitCode = 1
-					stderr = "bash execution threw an exception"
+					stderr =
+						err instanceof Error && err.name === "TimeoutError"
+							? "Verification command timed out after 60s"
+							: "bash execution threw an exception"
 				}
 			}
 
@@ -2567,11 +2654,11 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 		async execute(_, params, signal, onUpdate, ctx) {
 			const s = getStorage()
 			const f = s.get(params.ferment_id)
-			if (!f) return { details: undefined, content: [{ type: "text", text: "Ferment not found." }], isError: true }
+			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
-			if (!phase) return { details: undefined, content: [{ type: "text", text: "Phase not found." }], isError: true }
+			if (!phase) return toolErr("Phase not found.")
 			const step = resolveStep(phase, params.step_id)
-			if (!step) return { details: undefined, content: [{ type: "text", text: "Step not found." }], isError: true }
+			if (!step) return toolErr("Step not found.")
 
 			let exitCode = 0
 			let stdout = ""
@@ -2580,12 +2667,15 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 			// biome-ignore lint/suspicious/noExplicitAny: accessing controller tools
 			const controller = (ctx as any).controller
 			if (controller?.tools?.bash?.execute) {
+				const verifySignal = signal
+					? AbortSignal.any([signal, AbortSignal.timeout(60_000)])
+					: AbortSignal.timeout(60_000)
 				try {
 					// biome-ignore lint/suspicious/noExplicitAny: tool execution
 					const execResult = await (controller.tools.bash.execute as any)(
 						"",
 						{ command: params.command },
-						signal,
+						verifySignal,
 						onUpdate,
 						ctx,
 					)
@@ -2629,11 +2719,11 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 		async execute(_, params) {
 			const s = getStorage()
 			const f = s.get(params.ferment_id)
-			if (!f) return { details: undefined, content: [{ type: "text", text: "Ferment not found." }], isError: true }
+			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
-			if (!phase) return { details: undefined, content: [{ type: "text", text: "Phase not found." }], isError: true }
+			if (!phase) return toolErr("Phase not found.")
 			const step = resolveStep(phase, params.step_id)
-			if (!step) return { details: undefined, content: [{ type: "text", text: "Step not found." }], isError: true }
+			if (!step) return toolErr("Step not found.")
 			const r = s.skipStep(f.id, phase.id, step.id)
 			if (!r) return { details: undefined, content: [{ type: "text", text: "Step not found." }], isError: true }
 			setActive(r)
@@ -2655,9 +2745,9 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 			}
 			const s = getStorage()
 			const f = s.get(params.ferment_id)
-			if (!f) return { details: undefined, content: [{ type: "text", text: "Ferment not found." }], isError: true }
+			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
-			if (!phase) return { details: undefined, content: [{ type: "text", text: "Phase not found." }], isError: true }
+			if (!phase) return toolErr("Phase not found.")
 
 			const r = s.completePhase(f.id, phase.id, params.summary)
 			if (!r)
@@ -2680,6 +2770,9 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 			if (next) {
 				if (isPlanMode() && ctx?.ui?.select) {
 					// Build a structured phase review for the user
+					// Hard cap step descriptions to keep the dropdown title from overflowing
+					// the terminal — long descriptions get truncated with an ellipsis.
+					const MAX_STEP_DESC = 80
 					const stepLines = phase.steps
 						.map((st) => {
 							const icon =
@@ -2691,18 +2784,19 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 											? "✗"
 											: "○"
 							const g = st.grade ? `  ${st.grade.grade}` : ""
-							return `  ${icon} ${st.index}. ${st.description}${g}`
+							const desc = truncateLabel(st.description, MAX_STEP_DESC)
+							return `  ${icon} ${st.index}. ${desc}${g}`
 						})
 						.join("\n")
 					const reviewTitle = [
 						`Phase ${phase.index}: "${phase.name}"  ${phaseGrade.grade}`,
-						phaseGrade.rationale,
+						truncateLabel(phaseGrade.rationale, 200),
 						"",
 						"Steps completed:",
 						stepLines,
 						"",
 						`Next → Phase ${next.index}: "${next.name}"`,
-						next.goal,
+						truncateLabel(next.goal, 200),
 					].join("\n")
 
 					const choice = await ctx.ui.select(reviewTitle, [
@@ -2760,7 +2854,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 		async execute(_, params) {
 			const s = getStorage()
 			const f = s.get(params.ferment_id)
-			if (!f) return { details: undefined, content: [{ type: "text", text: "Ferment not found." }], isError: true }
+			if (!f) return toolErr("Ferment not found.")
 			const r = s.skipPhase(f.id, params.phase_id, params.reason)
 			if (!r) return { details: undefined, content: [{ type: "text", text: "Phase not found." }], isError: true }
 			setActive(r)
@@ -2777,7 +2871,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 		async execute(_, params) {
 			const s = getStorage()
 			const f = s.get(params.ferment_id)
-			if (!f) return { details: undefined, content: [{ type: "text", text: "Ferment not found." }], isError: true }
+			if (!f) return toolErr("Ferment not found.")
 			const nonTerminal = f.phases.some((p) => p.status === "planned" || p.status === "active")
 			if (nonTerminal) {
 				const blocking = f.phases.filter((p) => p.status === "planned" || p.status === "active")
@@ -2794,6 +2888,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 			}
 
 			s.updateStatus(f.id, "complete")
+			clearFermentState(f.id)
 
 			// ── Compute overall ferment grade from phase grades ──────────────────
 			const fresh = s.get(f.id) ?? f
@@ -2832,13 +2927,18 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 		async execute(_, params) {
 			const s = getStorage()
 			const f = s.get(params.ferment_id)
-			if (!f) return { details: undefined, content: [{ type: "text", text: "Ferment not found." }], isError: true }
+			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
-			if (!phase) return { details: undefined, content: [{ type: "text", text: "Phase not found." }], isError: true }
+			if (!phase) return toolErr("Phase not found.")
 			const step = resolveStep(phase, params.step_id)
-			if (!step) return { details: undefined, content: [{ type: "text", text: "Step not found." }], isError: true }
+			if (!step) return toolErr("Step not found.")
 			const r = s.failStep(f.id, phase.id, step.id, params.error)
-			if (!r) return { details: undefined, content: [{ type: "text", text: "Step fail failed." }], isError: true }
+			if (!r)
+				return {
+					details: undefined,
+					content: [{ type: "text", text: "Failed to mark step as failed." }],
+					isError: true,
+				}
 			setActive(r)
 			onStepCompleted(pi)
 			return {
@@ -2865,11 +2965,16 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 		async execute(_, params) {
 			const s = getStorage()
 			const f = s.get(params.ferment_id)
-			if (!f) return { details: undefined, content: [{ type: "text", text: "Ferment not found." }], isError: true }
+			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
-			if (!phase) return { details: undefined, content: [{ type: "text", text: "Phase not found." }], isError: true }
+			if (!phase) return toolErr("Phase not found.")
 			const r = s.failPhase(f.id, phase.id, params.reason)
-			if (!r) return { details: undefined, content: [{ type: "text", text: "Phase fail failed." }], isError: true }
+			if (!r)
+				return {
+					details: undefined,
+					content: [{ type: "text", text: "Failed to mark phase as failed." }],
+					isError: true,
+				}
 			setActive(r)
 			return {
 				details: undefined,
@@ -2891,7 +2996,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 		async execute(_, params) {
 			const s = getStorage()
 			const f = s.addDecision(params.ferment_id, params.title, params.description, params.phase_id, params.step_id)
-			if (!f) return { details: undefined, content: [{ type: "text", text: "Ferment not found." }], isError: true }
+			if (!f) return toolErr("Ferment not found.")
 			setActive(f)
 			return {
 				details: undefined,
@@ -2906,6 +3011,26 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 		description: "Record a memory.",
 		parameters: MemoryParams,
 		async execute(_, params) {
+			// Validate category — the type assertion would otherwise let any string through.
+			const validCategories: readonly MemoryCategory[] = [
+				"architecture",
+				"convention",
+				"gotcha",
+				"pattern",
+				"preference",
+			]
+			if (!validCategories.includes(params.category as MemoryCategory)) {
+				return {
+					details: undefined,
+					content: [
+						{
+							type: "text",
+							text: `Invalid category "${params.category}". Use one of: ${validCategories.join(", ")}.`,
+						},
+					],
+					isError: true,
+				}
+			}
 			const s = getStorage()
 			const f = s.addMemory(
 				params.ferment_id,
@@ -2914,7 +3039,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 				params.phase_id,
 				params.step_id,
 			)
-			if (!f) return { details: undefined, content: [{ type: "text", text: "Ferment not found." }], isError: true }
+			if (!f) return toolErr("Ferment not found.")
 			setActive(f)
 			return {
 				details: undefined,
@@ -2936,7 +3061,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 		async execute(_, params) {
 			const s = getStorage()
 			const f = s.get(params.ferment_id)
-			if (!f) return { details: undefined, content: [{ type: "text", text: "Ferment not found." }], isError: true }
+			if (!f) return toolErr("Ferment not found.")
 			if (!["plan", "exec", "auto"].includes(params.mode)) {
 				return {
 					details: undefined,

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { FermentError, FermentStorage, detectProjectRoot } from "./store.js"
+import { FermentError, FermentStorage, clearFermentCache, detectProjectRoot } from "./store.js"
 import type { FermentV3, Phase, Step } from "./types.js"
 
 function createTempDir() {
@@ -16,10 +16,11 @@ describe("FermentStorage v4", () => {
 	beforeEach(() => {
 		tempDir = createTempDir()
 		storage = new FermentStorage(tempDir)
+		clearFermentCache()
 	})
 
 	afterEach(() => {
-		// vitest cleans up temp dirs automatically
+		clearFermentCache()
 	})
 
 	describe("create", () => {
