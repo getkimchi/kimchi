@@ -1,18 +1,32 @@
-import type { execFileSync as ExecFileSync } from "node:child_process"
+import * as childProcess from "node:child_process"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { findBinary } from "./detect.js"
 import {
+	asObject,
 	buildOpenClawModelsCatalog,
 	buildOpenClawProviderBlock,
-	getOpenClawVersion,
-	isBatchJsonSupported,
+	mergeFallbacks,
+	mergeModelsCatalog,
 	writeOpenClawEnv,
 } from "./openclaw.js"
 import { byId } from "./registry.js"
 
-type ExecFile = typeof ExecFileSync
+vi.mock("./detect.js", async () => {
+	const mockFindBinary = vi.fn().mockReturnValue(undefined)
+	return { findBinary: mockFindBinary }
+})
+
+vi.mock("node:child_process", async () => {
+	const actual = await vi.importActual("node:child_process")
+	return {
+		...actual,
+		execFileSync: vi.fn(),
+		spawnSync: vi.fn(),
+	}
+})
 
 describe("buildOpenClawProviderBlock", () => {
 	it("uses the kimchi base URL and ${KIMCHI_API_KEY} placeholder", () => {
@@ -45,38 +59,6 @@ describe("buildOpenClawModelsCatalog", () => {
 	})
 })
 
-describe("getOpenClawVersion", () => {
-	it("parses CalVer output", () => {
-		const exec = vi.fn().mockReturnValue("OpenClaw 2026.4.8 (9ece252)\n") as unknown as ExecFile
-		expect(getOpenClawVersion(exec)).toBe("2026.4.8")
-	})
-	it("returns null on missing binary", () => {
-		const exec = vi.fn().mockImplementation(() => {
-			throw new Error("ENOENT")
-		}) as unknown as ExecFile
-		expect(getOpenClawVersion(exec)).toBeNull()
-	})
-})
-
-describe("isBatchJsonSupported", () => {
-	it("returns true at the cutoff", () => {
-		expect(isBatchJsonSupported("2026.3.17")).toBe(true)
-	})
-	it("returns true for newer versions", () => {
-		expect(isBatchJsonSupported("2026.4.8")).toBe(true)
-	})
-	it("returns false for older versions", () => {
-		expect(isBatchJsonSupported("2026.3.16")).toBe(false)
-		expect(isBatchJsonSupported("2025.12.31")).toBe(false)
-	})
-	it("returns true when version cannot be detected (assume newest)", () => {
-		// Unknown → optimistically newest. Users who just installed via curl
-		// tend to have the newest version, so this avoids false-negativing
-		// into the slow sequential path.
-		expect(isBatchJsonSupported(null)).toBe(true)
-	})
-})
-
 describe("writeOpenClawEnv", () => {
 	let tmp: string
 	let prevHome: string | undefined
@@ -88,8 +70,7 @@ describe("writeOpenClawEnv", () => {
 	})
 
 	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
-		if (prevHome === undefined) delete process.env.HOME
+		if (prevHome === undefined) process.env.HOME = undefined
 		else process.env.HOME = prevHome
 		rmSync(tmp, { recursive: true, force: true })
 	})
@@ -132,5 +113,177 @@ describe("openclaw tool registration", () => {
 	it("write() rejects an empty API key", async () => {
 		const tool = byId("openclaw")
 		await expect(tool?.write("global", "")).rejects.toThrow(/API key/)
+	})
+})
+
+describe("asObject", () => {
+	it("returns the object when passed a plain object", () => {
+		expect(asObject({ foo: "bar" })).toEqual({ foo: "bar" })
+	})
+	it("returns {} for null", () => {
+		expect(asObject(null)).toEqual({})
+	})
+	it("returns {} for arrays", () => {
+		expect(asObject([1, 2, 3])).toEqual({})
+	})
+	it("returns {} for primitives", () => {
+		expect(asObject("string")).toEqual({})
+		expect(asObject(42)).toEqual({})
+		expect(asObject(true)).toEqual({})
+	})
+	it("returns {} for undefined", () => {
+		expect(asObject(undefined)).toEqual({})
+	})
+})
+
+describe("mergeFallbacks", () => {
+	it("appends new fallbacks to an existing array", () => {
+		expect(mergeFallbacks(["a", "b"], ["c", "d"])).toEqual(["a", "b", "c", "d"])
+	})
+	it("dedupes entries across existing and new", () => {
+		expect(mergeFallbacks(["a", "b"], ["b", "c"])).toEqual(["a", "b", "c"])
+	})
+	it("treats non-array existing as empty", () => {
+		expect(mergeFallbacks(null, ["a"])).toEqual(["a"])
+		expect(mergeFallbacks("string", ["a"])).toEqual(["a"])
+		expect(mergeFallbacks({ foo: "bar" }, ["a"])).toEqual(["a"])
+	})
+	it("returns only new fallbacks when existing is undefined", () => {
+		expect(mergeFallbacks(undefined, ["a", "b"])).toEqual(["a", "b"])
+	})
+})
+
+describe("mergeModelsCatalog", () => {
+	it("merges catalog entries into existing object", () => {
+		expect(mergeModelsCatalog({ existing: true }, { newKey: "value" })).toEqual({
+			existing: true,
+			newKey: "value",
+		})
+	})
+	it("new catalog entries take precedence over existing keys", () => {
+		expect(mergeModelsCatalog({ same: "old" }, { same: "new" })).toEqual({ same: "new" })
+	})
+	it("treats non-object existing as empty", () => {
+		expect(mergeModelsCatalog(null, { a: 1 })).toEqual({ a: 1 })
+		expect(mergeModelsCatalog([1, 2], { a: 1 })).toEqual({ a: 1 })
+		expect(mergeModelsCatalog("string", { a: 1 })).toEqual({ a: 1 })
+	})
+})
+
+describe("writeOpenClawDirect integration", () => {
+	let tmp: string
+	let prevHome: string | undefined
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "kimchi-openclaw-direct-"))
+		prevHome = process.env.HOME
+		process.env.HOME = tmp
+		vi.mocked(findBinary).mockReturnValue(undefined)
+	})
+
+	afterEach(() => {
+		if (prevHome === undefined) process.env.HOME = undefined
+		else process.env.HOME = prevHome
+		rmSync(tmp, { recursive: true, force: true })
+		vi.mocked(findBinary).mockClear()
+	})
+
+	it("preserves existing user config keys like temperature and fallbacks", async () => {
+		const configDir = join(tmp, ".openclaw")
+		mkdirSync(configDir, { recursive: true })
+		const existing = {
+			agents: {
+				defaults: {
+					model: {
+						temperature: 0.7,
+						fallbacks: ["other/model"],
+					},
+					models: {
+						"other/model": { alias: "Other" },
+					},
+				},
+			},
+		}
+		writeFileSync(join(configDir, "openclaw.json"), JSON.stringify(existing), "utf-8")
+
+		const tool = byId("openclaw")
+		await tool?.write("global", "test-key-123")
+
+		const written = JSON.parse(readFileSync(join(configDir, "openclaw.json"), "utf-8"))
+
+		expect(written.agents.defaults.model.temperature).toBe(0.7)
+		expect(written.agents.defaults.model.fallbacks).toContain("other/model")
+		expect(written.agents.defaults.model.fallbacks).toContain("kimchi/nemotron-3-super-fp4")
+		expect(written.agents.defaults.model.fallbacks).toContain("kimchi/minimax-m2.7")
+		expect(written.agents.defaults.models["other/model"]).toEqual({ alias: "Other" })
+		expect(written.agents.defaults.models["kimchi/kimi-k2.6"]).toBeDefined()
+		expect(written.models.providers.kimchi).toBeDefined()
+	})
+})
+
+describe("writeOpenClawViaCLI integration", () => {
+	let tmp: string
+	let prevHome: string | undefined
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "kimchi-openclaw-cli-"))
+		prevHome = process.env.HOME
+		process.env.HOME = tmp
+		vi.mocked(findBinary).mockReturnValue("/usr/bin/openclaw")
+		vi.mocked(childProcess.execFileSync).mockReturnValue("not running")
+		vi.mocked(childProcess.spawnSync).mockImplementation((_cmd: unknown, args: unknown) => {
+			const cmdArgs = args as string[]
+			if (cmdArgs[0] === "config" && cmdArgs[1] === "get" && cmdArgs[2] === "agents.defaults.model.fallbacks") {
+				return { status: 0, stdout: JSON.stringify(["existing/model"]), stderr: "" } as ReturnType<
+					typeof childProcess.spawnSync
+				>
+			}
+			return { status: 0, stdout: "", stderr: "" } as ReturnType<typeof childProcess.spawnSync>
+		})
+	})
+
+	afterEach(() => {
+		if (prevHome === undefined) process.env.HOME = undefined
+		else process.env.HOME = prevHome
+		rmSync(tmp, { recursive: true, force: true })
+		vi.mocked(findBinary).mockClear()
+		vi.mocked(childProcess.execFileSync).mockClear()
+		vi.mocked(childProcess.spawnSync).mockClear()
+	})
+
+	it("preserves existing fallbacks and other keys via CLI merge", async () => {
+		const tool = byId("openclaw")
+		await tool?.write("global", "test-key-123")
+
+		const calls = vi.mocked(childProcess.spawnSync).mock.calls
+		const fallbackSetCall = calls.find((c) => {
+			const args = c[1] as string[] | undefined
+			return (
+				args &&
+				args[0] === "config" &&
+				args[1] === "set" &&
+				args[2] === "--replace" &&
+				args[3] === "agents.defaults.model.fallbacks"
+			)
+		})
+		expect(fallbackSetCall).toBeDefined()
+		const mergedFallbacks = JSON.parse((fallbackSetCall?.[1] as string[])[4])
+		expect(mergedFallbacks).toContain("existing/model")
+		expect(mergedFallbacks).toContain("kimchi/nemotron-3-super-fp4")
+
+		const modelsSetCall = calls.find((c) => {
+			const args = c[1] as string[] | undefined
+			return (
+				args &&
+				args[0] === "config" &&
+				args[1] === "set" &&
+				args[2] === "--merge" &&
+				args[3] === "agents.defaults.models"
+			)
+		})
+		expect(modelsSetCall).toBeDefined()
+
+		const envContent = readFileSync(join(tmp, ".openclaw", ".env"), "utf-8")
+		expect(envContent).toBe("KIMCHI_API_KEY=test-key-123\n")
 	})
 })
