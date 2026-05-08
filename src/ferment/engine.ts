@@ -297,7 +297,7 @@ function autoModeAction(ferment: Ferment): FermentAction {
 					return {
 						kind: "start_step",
 						stepId: nextStep.id,
-						message: `Continue the current step: "${nextStep.description}" (Phase ${active.index}: ${active.name}).`,
+						message: `Step ${nextStep.index} "${nextStep.description}" (Phase ${active.index}: ${active.name}) was left in 'running' status — likely interrupted mid-execution. Spawn a subagent worker to complete it, then call complete_step. If you believe the previous worker already finished its task, call complete_step directly with a summary.`,
 					}
 				}
 			}
@@ -342,12 +342,12 @@ function buildRefineMessage(f: Ferment, p: Phase): string {
 	return msg
 }
 
-function buildStartStepMessage(f: Ferment, p: Phase, s: Step): string {
+function buildStartStepMessage(_f: Ferment, p: Phase, s: Step): string {
 	let msg = `Phase ${p.index}: "${p.name}" — Step ${s.index}/${p.steps.length}: "${s.description}"\n`
 	if (s.verification) {
 		msg += `\nVerification: \`${s.verification.command}\`\n`
 	}
-	msg += "\nExecute this step. When complete, use complete_step with a summary of what was done."
+	msg += `\nCall start_step with phase_id "${p.id}" and step_id "${s.id}" now, then spawn a subagent worker to execute it. When the subagent returns, call complete_step with its summary.`
 	return msg
 }
 

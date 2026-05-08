@@ -6,7 +6,7 @@ import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earen
 import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, TEAL_FG, resolvedSemanticFg } from "../ansi.js"
-import { getActiveFerment, getCurrentPhaseIndex } from "../extensions/ferment.js"
+import { getActiveFerment, getCurrentPhaseIndex } from "../extensions/ferment/index.js"
 import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/orchestration/prompt-enrichment.js"
 import { getCurrentPermissionsMode } from "../extensions/permissions/index.js"

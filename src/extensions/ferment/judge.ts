@@ -1,0 +1,236 @@
+/**
+ * Judge — autonomous grading and verification.
+ *
+ * Uses kimchi's `complete()` from pi-ai with the kimchi-dev provider, always
+ * targeting Claude Opus 4.7. The model handles are captured opportunistically
+ * from any tool execute ctx (see state.captureJudgeContext).
+ *
+ * Roles:
+ *  1. judgeStepVerification — non-zero exit at complete_step → pass/retry/fail
+ *  2. judgeGradeStep        — graded after step completes (verified or summary-based)
+ *  3. judgeGradePhase       — graded after complete_phase
+ *  4. judgePlan             — sanity-check phases before execution starts
+ *
+ * computeFermentGrade aggregates phase grades into a final ferment grade.
+ */
+
+import { complete } from "@earendil-works/pi-ai"
+import type { Grade, JudgeGrade, Phase } from "../../ferment/types.js"
+import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
+
+const JUDGE_MODEL_ID = "claude-opus-4-7"
+const JUDGE_PROVIDER = "kimchi-dev"
+
+async function judgeApiCall(systemPrompt: string, userMsg: string, maxTokens = 200): Promise<string | undefined> {
+	const registry = getJudgeModelRegistry()
+	if (!registry) return undefined
+
+	const model = registry.find(JUDGE_PROVIDER, JUDGE_MODEL_ID) ?? getJudgeModel()
+	if (!model) return undefined
+
+	const auth = await registry.getApiKeyAndHeaders(model)
+	if (!auth.ok || !auth.apiKey) return undefined
+
+	try {
+		const response = await complete(
+			model,
+			{
+				systemPrompt,
+				messages: [{ role: "user", content: [{ type: "text", text: userMsg }], timestamp: Date.now() }],
+			},
+			{
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+				signal: AbortSignal.timeout(30_000),
+				maxTokens,
+			},
+		)
+
+		return (
+			response.content
+				.filter((c): c is { type: "text"; text: string } => c.type === "text")
+				.map((c) => c.text)
+				.join("")
+				.trim() || undefined
+		)
+	} catch {
+		return undefined
+	}
+}
+
+// Role 1 — Step verifier: called on non-zero bash exit at complete_step.
+
+export interface JudgeVerdict {
+	verdict: "pass" | "retry" | "fail"
+	reason: string
+}
+
+export async function judgeStepVerification(
+	stepDescription: string,
+	verificationCommand: string,
+	stdout: string,
+	stderr: string,
+	exitCode: number,
+): Promise<JudgeVerdict> {
+	const system = `You are a strict but fair verification judge for a coding agent. A step was marked complete but its verification command exited non-zero. Decide if this is a genuine failure, a transient/flaky issue worth retrying, or actually acceptable.
+
+Respond with EXACTLY one JSON object, no markdown, no explanation:
+{"verdict":"pass"|"retry"|"fail","reason":"<one sentence>"}
+
+- pass: output is correct despite non-zero exit (grep returning 1 when no matches is expected, linter warnings only)
+- retry: transient failure (network timeout, race condition, file not yet written)
+- fail: genuine implementation error that must be fixed before continuing`
+
+	const user = `Step: "${stepDescription}"\nVerification: \`${verificationCommand}\`\nExit: ${exitCode}\nstdout:\n${stdout.slice(0, 1000)}\nstderr:\n${stderr.slice(0, 1000)}`
+
+	const raw = await judgeApiCall(system, user, 120)
+	if (!raw) return { verdict: "fail", reason: "Judge unavailable — treating as failure." }
+	try {
+		const parsed = JSON.parse(raw) as { verdict?: string; reason?: string }
+		const verdict = parsed.verdict === "pass" || parsed.verdict === "retry" ? parsed.verdict : "fail"
+		return { verdict, reason: parsed.reason ?? raw }
+	} catch {
+		return { verdict: "fail", reason: raw.slice(0, 200) }
+	}
+}
+
+// Role 2 — Step grader: called after a step successfully completes.
+
+export async function judgeGradeStep(
+	stepDescription: string,
+	summary: string,
+	verificationResult?: { exitCode: number; stdout: string; stderr: string },
+): Promise<JudgeGrade> {
+	const system = `You are a code quality judge grading a completed step of a coding task.
+
+Respond with EXACTLY one JSON object, no markdown:
+{"grade":"A"|"B"|"C"|"D"|"F","rationale":"<one short sentence>"}
+
+A = excellent, clean, fully verified
+B = good, minor issues
+C = adequate but notable gaps
+D = barely acceptable, significant issues
+F = failed or incomplete`
+
+	const verifyNote = verificationResult
+		? `\nVerification exit: ${verificationResult.exitCode}\nstdout: ${verificationResult.stdout.slice(0, 400)}\nstderr: ${verificationResult.stderr.slice(0, 200)}`
+		: ""
+	const user = `Step: "${stepDescription}"\nSummary: ${summary || "(no summary)"}${verifyNote}`
+
+	const raw = await judgeApiCall(system, user, 120)
+	const now = new Date().toISOString()
+	if (!raw) return { grade: "B", rationale: "Judge unavailable — assumed good.", gradedAt: now }
+	try {
+		const parsed = JSON.parse(raw) as { grade?: string; rationale?: string }
+		const validGrades = ["A", "B", "C", "D", "F"]
+		const grade = validGrades.includes(parsed.grade ?? "") ? (parsed.grade as Grade) : "B"
+		return { grade, rationale: parsed.rationale ?? raw.slice(0, 150), gradedAt: now }
+	} catch {
+		return { grade: "B", rationale: raw.slice(0, 150), gradedAt: now }
+	}
+}
+
+// Role 3 — Phase grader: called at complete_phase.
+
+export async function judgeGradePhase(
+	phaseName: string,
+	phaseGoal: string,
+	stepSummaries: string,
+	summary: string,
+): Promise<JudgeGrade> {
+	const system = `You are a code quality judge grading a completed phase of a coding task.
+
+Respond with EXACTLY one JSON object, no markdown:
+{"grade":"A"|"B"|"C"|"D"|"F","rationale":"<one short sentence>"}
+
+A = phase goal fully achieved, clean implementation
+B = goal mostly achieved, minor gaps
+C = partial achievement, notable gaps
+D = significant issues or incomplete
+F = phase goal not achieved`
+
+	const user = `Phase: "${phaseName}"\nGoal: ${phaseGoal}\nStep summaries:\n${stepSummaries}\nPhase summary: ${summary || "(none)"}`
+
+	const raw = await judgeApiCall(system, user, 150)
+	const now = new Date().toISOString()
+	if (!raw) return { grade: "B", rationale: "Judge unavailable — assumed good.", gradedAt: now }
+	try {
+		const parsed = JSON.parse(raw) as { grade?: string; rationale?: string }
+		const validGrades = ["A", "B", "C", "D", "F"]
+		const grade = validGrades.includes(parsed.grade ?? "") ? (parsed.grade as Grade) : "B"
+		return { grade, rationale: parsed.rationale ?? raw.slice(0, 150), gradedAt: now }
+	} catch {
+		return { grade: "B", rationale: raw.slice(0, 150), gradedAt: now }
+	}
+}
+
+// Role 4 — Plan reviewer: called after scope_ferment to check phases before execution.
+
+export interface PlanReview {
+	verdict: "approve" | "revise"
+	suggestions: string[]
+	confidence: number // 0–100
+}
+
+export async function judgePlan(
+	fermentName: string,
+	goal: string,
+	criteria: string,
+	constraints: string,
+	phases: string,
+): Promise<PlanReview> {
+	const system = `You are a senior engineering lead reviewing a project plan before execution begins.
+
+Respond with EXACTLY one JSON object, no markdown:
+{"verdict":"approve"|"revise","suggestions":["..."],"confidence":0-100}
+
+- approve: plan is sound, phases cover the goal, steps are concrete and verifiable
+- revise: plan has gaps, missing phases, or steps too vague — list specific suggestions
+confidence = how confident you are the plan will achieve the goal (0–100)
+
+Be concise. Maximum 3 suggestions if revising.`
+
+	const user = `Project: "${fermentName}"\nGoal: ${goal}\nSuccess criteria: ${criteria}\nConstraints: ${constraints}\n\nProposed phases:\n${phases}`
+
+	const raw = await judgeApiCall(system, user, 300)
+	if (!raw) return { verdict: "approve", suggestions: [], confidence: 75 }
+	try {
+		const parsed = JSON.parse(raw) as { verdict?: string; suggestions?: unknown; confidence?: number }
+		const verdict = parsed.verdict === "revise" ? "revise" : "approve"
+		const suggestions = Array.isArray(parsed.suggestions)
+			? (parsed.suggestions as unknown[]).filter((s): s is string => typeof s === "string").slice(0, 3)
+			: []
+		const confidence = typeof parsed.confidence === "number" ? Math.min(100, Math.max(0, parsed.confidence)) : 75
+		return { verdict, suggestions, confidence }
+	} catch {
+		return { verdict: "approve", suggestions: [], confidence: 75 }
+	}
+}
+
+// Aggregate phase grades into a final ferment grade.
+//
+// Skipped phases are excluded entirely; failed phases without grades count as F.
+// This avoids the previous multiplicative-penalty bug that could go negative.
+
+export function computeFermentGrade(phases: Phase[]): JudgeGrade {
+	const gradeScore: Record<Grade, number> = { A: 4, B: 3, C: 2, D: 1, F: 0 }
+	const relevant = phases.filter((p) => p.status !== "skipped")
+	if (relevant.length === 0) {
+		return { grade: "B", rationale: "No graded phases.", gradedAt: new Date().toISOString() }
+	}
+	const sum = relevant.reduce((acc, p) => {
+		if (p.grade) return acc + gradeScore[p.grade.grade]
+		if (p.status === "failed") return acc + gradeScore.F
+		return acc
+	}, 0)
+	const counted = relevant.filter((p) => p.grade || p.status === "failed").length
+	if (counted === 0) {
+		return { grade: "B", rationale: "No graded phases.", gradedAt: new Date().toISOString() }
+	}
+	const avg = sum / counted
+	const failedCount = phases.filter((p) => p.status === "failed").length
+	const grade: Grade = avg >= 3.5 ? "A" : avg >= 2.5 ? "B" : avg >= 1.5 ? "C" : avg >= 0.5 ? "D" : "F"
+	const failNote = failedCount > 0 ? `, ${failedCount} failed` : ""
+	const rationale = `${counted} phase(s) counted, avg ${avg.toFixed(1)}/4${failNote}.`
+	return { grade, rationale, gradedAt: new Date().toISOString() }
+}
