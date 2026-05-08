@@ -29,6 +29,14 @@ let widgetUpdateFn: (() => void) | undefined
 let restoringModel = false
 let judgeModel: Model<Api> | undefined
 let judgeModelRegistry: ModelRegistry | undefined
+// Stuck-loop detection: track consecutive start_step calls per step without complete_step
+const stepStartCounts = new Map<string, number>()
+// Context budget: track assistant turns in current session
+let sessionTurnCount = 0
+// Scoping gate: ferment IDs where user has explicitly confirmed the proposed plan
+const scopingConfirmed = new Set<string>()
+// Ferment IDs where scoping is running interactively (TUI path) — gate is enforced
+const scopingInteractive = new Set<string>()
 
 // ─── Exported accessors (footer, CLI) ──────────────────────────────────────────
 
@@ -125,7 +133,7 @@ function maybeInjectAutoNudge(pi: ExtensionAPI): void {
 			display: false,
 			details: { action: action.kind },
 		},
-		{ triggerTurn: true },
+		{ triggerTurn: true, deliverAs: "followUp" },
 	)
 }
 
@@ -226,12 +234,24 @@ const DIM = "\x1b[2m"
 const BOLD = "\x1b[1m"
 const RST_ALL = "\x1b[0m"
 
-function pr_teal(s: string): string { return `${TEAL_FG}${s}${RST_FG}` }
-function pr_orange(s: string): string { return `${ORANGE_FG}${s}${RST_FG}` }
-function pr_success(s: string): string { return `${SUCCESS_FG}${s}${RST_FG}` }
-function pr_warn(s: string): string { return `${WARNING_FG}${s}${RST_FG}` }
-function pr_dim(s: string): string { return `${DIM}${s}${RST_ALL}` }
-function pr_bold(s: string): string { return `${BOLD}${s}${RST_ALL}` }
+function pr_teal(s: string): string {
+	return `${TEAL_FG}${s}${RST_FG}`
+}
+function pr_orange(s: string): string {
+	return `${ORANGE_FG}${s}${RST_FG}`
+}
+function pr_success(s: string): string {
+	return `${SUCCESS_FG}${s}${RST_FG}`
+}
+function pr_warn(s: string): string {
+	return `${WARNING_FG}${s}${RST_FG}`
+}
+function pr_dim(s: string): string {
+	return `${DIM}${s}${RST_ALL}`
+}
+function pr_bold(s: string): string {
+	return `${BOLD}${s}${RST_ALL}`
+}
 
 function truncateLabel(s: string, max = 40): string {
 	return s.length > max ? `${s.slice(0, max - 1)}…` : s
@@ -249,32 +269,47 @@ function formatDuration(ms: number): string {
 
 function gradeColor(g: import("../ferment/types.js").Grade): string {
 	switch (g) {
-		case "A": return pr_success("A")
-		case "B": return pr_teal("B")
-		case "C": return pr_warn("C")
-		case "D": return pr_orange("D")
-		case "F": return pr_orange("F")
+		case "A":
+			return pr_success("A")
+		case "B":
+			return pr_teal("B")
+		case "C":
+			return pr_warn("C")
+		case "D":
+			return pr_orange("D")
+		case "F":
+			return pr_orange("F")
 	}
 }
 
 function phaseBullet(p: Phase): string {
 	switch (p.status) {
-		case "active":   return pr_teal("▶")
-		case "completed": return pr_success("✓")
-		case "failed":   return pr_orange("✗")
-		case "skipped":  return pr_dim("⊘")
-		default:         return pr_dim("○")
+		case "active":
+			return pr_teal("▶")
+		case "completed":
+			return pr_success("✓")
+		case "failed":
+			return pr_orange("✗")
+		case "skipped":
+			return pr_dim("⊘")
+		default:
+			return pr_dim("○")
 	}
 }
 
 function stepBulletChar(status: Step["status"]): string {
 	switch (status) {
 		case "done":
-		case "verified":  return pr_success("✓")
-		case "running":   return pr_teal("▶")
-		case "failed":    return pr_orange("✗")
-		case "skipped":   return pr_dim("⊘")
-		default:          return pr_dim("○")
+		case "verified":
+			return pr_success("✓")
+		case "running":
+			return pr_teal("▶")
+		case "failed":
+			return pr_orange("✗")
+		case "skipped":
+			return pr_dim("⊘")
+		default:
+			return pr_dim("○")
 	}
 }
 
@@ -286,16 +321,18 @@ function buildDashboardWidget(f: Ferment): string[] {
 	const lines: string[] = []
 
 	const statusColor =
-		f.status === "running"   ? pr_teal(f.status) :
-		f.status === "complete"  ? pr_success(f.status) :
-		f.status === "abandoned" ? pr_orange(f.status) : pr_dim(f.status)
+		f.status === "running"
+			? pr_teal(f.status)
+			: f.status === "complete"
+				? pr_success(f.status)
+				: f.status === "abandoned"
+					? pr_orange(f.status)
+					: pr_dim(f.status)
 
 	const gradeTag = f.grade ? `  ${gradeColor(f.grade.grade)}` : ""
 	lines.push(`${pr_teal("🍺")} ${pr_bold(f.name)}  ${pr_dim("[")}${statusColor}${pr_dim("]")}${gradeTag}`)
 
-	const sinceHuman = lastHumanInputAt
-		? formatDuration(Date.now() - lastHumanInputAt.getTime())
-		: pr_dim("n/a")
+	const sinceHuman = lastHumanInputAt ? formatDuration(Date.now() - lastHumanInputAt.getTime()) : pr_dim("n/a")
 	lines.push(`${pr_dim("last human input:")} ${sinceHuman}`)
 	lines.push("")
 
@@ -317,9 +354,13 @@ function buildDashboardWidget(f: Ferment): string[] {
 				const sb = stepBulletChar(s.status)
 				const sName = truncateLabel(s.description, 50)
 				const sText =
-					s.status === "running" ? pr_teal(sName) :
-					s.status === "failed"  ? pr_orange(sName) :
-					(s.status === "done" || s.status === "verified") ? pr_dim(sName) : sName
+					s.status === "running"
+						? pr_teal(sName)
+						: s.status === "failed"
+							? pr_orange(sName)
+							: s.status === "done" || s.status === "verified"
+								? pr_dim(sName)
+								: sName
 				const stepGrade = s.grade ? `  ${gradeColor(s.grade.grade)}` : ""
 				lines.push(`       ${sb}  ${sText}${stepGrade}`)
 			}
@@ -329,6 +370,18 @@ function buildDashboardWidget(f: Ferment): string[] {
 	if (f.phases.length === 0) lines.push(`  ${pr_dim("no phases yet")}`)
 
 	lines.push("")
+
+	// Context budget indicator — warn when session is getting long
+	if (f.status === "running" && sessionTurnCount > 0) {
+		const turnLabel =
+			sessionTurnCount >= 50
+				? `${pr_orange(`⚠ ${sessionTurnCount} turns`)} ${pr_dim("— consider /compact")}`
+				: sessionTurnCount >= 30
+					? `${WARNING_FG}${sessionTurnCount} turns${RST_FG} ${pr_dim("context growing")}`
+					: pr_dim(`${sessionTurnCount} turns`)
+		lines.push(`${pr_dim("context:")} ${turnLabel}`)
+	}
+
 	lines.push(pr_dim("/progress · /pause · /auto"))
 	return lines
 }
@@ -351,16 +404,16 @@ function buildPhaseListTitle(f: Ferment): string {
 	const scopeProgress = getScopingProgress(f)
 	const scopeTag = f.status === "draft" ? pr_dim(`  scoping ${scopeProgress.answered}/4`) : ""
 	const fermentGrade = f.grade ? `  ${gradeColor(f.grade.grade)}` : ""
-	const sinceHuman = lastHumanInputAt
-		? formatDuration(Date.now() - lastHumanInputAt.getTime())
-		: pr_dim("n/a")
+	const sinceHuman = lastHumanInputAt ? formatDuration(Date.now() - lastHumanInputAt.getTime()) : pr_dim("n/a")
 
 	return [
 		`${pr_teal("🍺")} ${pr_bold(f.name)}${fermentGrade}${scopeTag}`,
 		`${bar}  ${pr_teal(`${pct}%`)}  ${pr_dim(`${terminalCount}/${total}`)}`,
 		`${pr_dim("human:")} ${sinceHuman}  ${pr_dim("branch:")} ${f.worktree.branch ? pr_teal(f.worktree.branch) : pr_dim("—")}`,
 		f.goal ? `${pr_dim("goal:")} ${truncateLabel(f.goal, 70)}` : "",
-	].filter(Boolean).join("\n")
+	]
+		.filter(Boolean)
+		.join("\n")
 }
 
 function buildPhaseListOptions(f: Ferment): string[] {
@@ -406,9 +459,14 @@ function buildPhaseStepOptions(p: Phase): string[] {
 	if (p.steps.length === 0) return [pr_dim("No steps defined yet"), pr_dim("─────────────"), "Phase actions", "Back"]
 	const opts = p.steps.map((s) => {
 		const bullet = stepBulletChar(s.status)
-		const name = s.status === "running" ? pr_teal(s.description) :
-			s.status === "failed" ? pr_orange(s.description) :
-			(s.status === "done" || s.status === "verified") ? pr_dim(s.description) : s.description
+		const name =
+			s.status === "running"
+				? pr_teal(s.description)
+				: s.status === "failed"
+					? pr_orange(s.description)
+					: s.status === "done" || s.status === "verified"
+						? pr_dim(s.description)
+						: s.description
 		const gradeTag = s.grade ? `  ${gradeColor(s.grade.grade)}` : ""
 		return `${bullet}  ${name}${gradeTag}`
 	})
@@ -442,7 +500,10 @@ function buildStepDetailTitle(p: Phase, s: Step): string {
 function buildStepActionOptions(p: Phase, s: Step): string[] {
 	const opts: string[] = []
 	if (s.status === "pending" || s.status === "running") opts.push("Mark step done")
-	if (s.status === "failed") { opts.push("Retry step"); opts.push("Skip step") }
+	if (s.status === "failed") {
+		opts.push("Retry step")
+		opts.push("Skip step")
+	}
 	if (s.status !== "skipped") opts.push("Skip step")
 	opts.push(pr_dim("─────────────────────────"))
 	opts.push("Back to phase")
@@ -455,14 +516,19 @@ function buildPhaseActionOptions(f: Ferment, p: Phase): string[] {
 	if (p.status === "planned" && !isActive) opts.push("Activate phase")
 	if ((p.status === "active" || isActive) && p.steps.length === 0) opts.push("Ask agent to refine steps")
 	if (p.status === "active" || isActive) {
-		const allDone = p.steps.length > 0 && p.steps.every(
-			(s) => s.status === "done" || s.status === "verified" || s.status === "skipped" || s.status === "failed",
-		)
+		const allDone =
+			p.steps.length > 0 &&
+			p.steps.every(
+				(s) => s.status === "done" || s.status === "verified" || s.status === "skipped" || s.status === "failed",
+			)
 		if (allDone) opts.push("Mark phase complete")
 		opts.push("Mark phase failed")
 		opts.push("Skip phase")
 	}
-	if (p.status === "failed") { opts.push("Re-activate phase"); opts.push("Skip phase") }
+	if (p.status === "failed") {
+		opts.push("Re-activate phase")
+		opts.push("Skip phase")
+	}
 	opts.push(pr_dim("─────────────────────────"))
 	opts.push("Back to steps")
 	return opts
@@ -491,17 +557,15 @@ async function handleStepAction(
 	}
 }
 
-async function handlePhaseAction(
-	choice: string,
-	f: Ferment,
-	p: Phase,
-	ctx: ExtensionCommandContext,
-): Promise<void> {
+async function handlePhaseAction(choice: string, f: Ferment, p: Phase, ctx: ExtensionCommandContext): Promise<void> {
 	const st = getStorage()
 	switch (choice) {
 		case "Activate phase": {
 			const r = st.activatePhase(f.id, p.id)
-			if (r) { st.updateStatus(f.id, "running"); setActive(r) }
+			if (r) {
+				st.updateStatus(f.id, "running")
+				setActive(r)
+			}
 			ctx.ui.notify(`Phase "${p.name}" activated.`)
 			break
 		}
@@ -575,16 +639,35 @@ function formatFermentStatus(f: Ferment): string {
 	return lines.join("\n")
 }
 
+function formatDecisionsAndMemories(f: Ferment): string {
+	const parts: string[] = []
+	if (f.decisions.length > 0) {
+		parts.push(
+			`## Past Decisions\n${f.decisions.map((d) => `- ${d.id}: **${d.title}** — ${d.description}`).join("\n")}`,
+		)
+	}
+	if (f.memories.length > 0) {
+		parts.push(
+			`## Accumulated Knowledge\n${f.memories.map((m) => `- ${m.id} [${m.category}]: ${m.content}`).join("\n")}`,
+		)
+	}
+	return parts.join("\n\n")
+}
+
+function formatScopingContext(f: Ferment): string {
+	const lines: string[] = []
+	if (f.scoping.goal) lines.push(`Goal: ${f.scoping.goal.answer}`)
+	if (f.scoping.criteria) lines.push(`Success criteria: ${f.scoping.criteria.answer}`)
+	if (f.scoping.constraints) lines.push(`Constraints: ${f.scoping.constraints.answer}`)
+	return lines.length > 0 ? `## Ferment Specification\n${lines.join("\n")}` : ""
+}
+
 // ─── Judge ────────────────────────────────────────────────────────────────────
 
 const JUDGE_MODEL_ID = "claude-opus-4-7"
 const JUDGE_PROVIDER = "kimchi-dev"
 
-async function judgeApiCall(
-	systemPrompt: string,
-	userMsg: string,
-	maxTokens = 200,
-): Promise<string | undefined> {
+async function judgeApiCall(systemPrompt: string, userMsg: string, maxTokens = 200): Promise<string | undefined> {
 	const registry = judgeModelRegistry
 	if (!registry) return undefined
 
@@ -609,11 +692,13 @@ async function judgeApiCall(
 			},
 		)
 
-		return response.content
-			.filter((c): c is { type: "text"; text: string } => c.type === "text")
-			.map((c) => c.text)
-			.join("")
-			.trim() || undefined
+		return (
+			response.content
+				.filter((c): c is { type: "text"; text: string } => c.type === "text")
+				.map((c) => c.text)
+				.join("")
+				.trim() || undefined
+		)
 	} catch {
 		return undefined
 	}
@@ -765,15 +850,13 @@ Be concise. Maximum 3 suggestions if revising.`
 }
 
 // Ferment-level grade: weighted average of phase grades.
-function computeFermentGrade(
-	phases: import("../ferment/types.js").Phase[],
-): import("../ferment/types.js").JudgeGrade {
+function computeFermentGrade(phases: import("../ferment/types.js").Phase[]): import("../ferment/types.js").JudgeGrade {
 	const gradeScore: Record<import("../ferment/types.js").Grade, number> = { A: 4, B: 3, C: 2, D: 1, F: 0 }
 	const scoredPhases = phases.filter((p) => p.grade && p.status !== "skipped")
 	if (scoredPhases.length === 0) {
 		return { grade: "B", rationale: "No graded phases.", gradedAt: new Date().toISOString() }
 	}
-	const avg = scoredPhases.reduce((sum, p) => sum + gradeScore[p.grade!.grade], 0) / scoredPhases.length
+	const avg = scoredPhases.reduce((sum, p) => sum + (p.grade ? gradeScore[p.grade.grade] : 0), 0) / scoredPhases.length
 	const failedCount = phases.filter((p) => p.status === "failed").length
 	const adjustedAvg = failedCount > 0 ? avg * (1 - failedCount * 0.1) : avg
 	const grade: import("../ferment/types.js").Grade =
@@ -818,6 +901,9 @@ async function runScopingFlow(
 		return
 	}
 
+	// TUI path — enforce the confirmation gate for this ferment
+	scopingInteractive.add(f.id)
+
 	// Step 1: goal
 	pi.appendEntry("ferment_breadcrumb", { text: `scoping "${f.name}" · 1/4 — goal` })
 	const goal = await ctx.ui.input("What does done look like? (goal)", "e.g. 'Users can log in with Google OAuth'")
@@ -847,9 +933,10 @@ async function runScopingFlow(
 		.map((c) => c.trim())
 		.filter(Boolean)
 
-	// Fire a single LLM turn with all collected answers. The LLM's job now is
-	// only to propose phases+steps and call scope_ferment — no more Q&A.
-	const prompt = `Ferment: "${f.name}" (ID: ${f.id})\n\nThe user has already answered the scoping questions:\n- Goal: ${goal}\n- Success criteria: ${criteria}\n- Constraints: ${constraintList.join(", ")}\n\nYour task:\n1. Propose 3–7 ordered phases for this ferment. For each phase, include 3–6 concrete steps.\n2. Show the user the proposed phases and steps.\n3. If they confirm (or say "yes"), immediately call scope_ferment with ferment_id "${f.id}", goal, success_criteria, constraints array, and the phases array including steps.\n\nCRITICAL: Do NOT use any tools (read_file, search_code, bash, etc.) — propose phases based solely on the information already provided above. Do not ask any more questions about goal, criteria, or constraints — those are already captured.`
+	// Fire a single LLM turn with all collected answers. The LLM's only job is
+	// to propose phases+steps as text, then ask the user to confirm.
+	// scope_ferment will be called in the NEXT turn after user confirms.
+	const prompt = `Ferment: "${f.name}" (ID: ${f.id})\n\nThe user has already answered the scoping questions:\n- Goal: ${goal}\n- Success criteria: ${criteria}\n- Constraints: ${constraintList.join(", ")}\n\nYour task:\n1. Propose 3–7 ordered phases. For each phase provide: name, goal (one sentence), and 3–6 concrete step descriptions.\n2. Present the phases clearly as a numbered list.\n3. End with the question: "Does this plan look right?"\n\nDo NOT call scope_ferment yet. Do NOT use any file/search/bash tools. Just propose the phases as text and ask for confirmation.`
 
 	pi.sendMessage(
 		{
@@ -1008,7 +1095,15 @@ const SetModeParams = Type.Object({
 
 export default function fermentExtension(pi: ExtensionAPI) {
 	// ─── Session start: rehydrate from prior session ────────────────────────────
-	pi.on("session_start", async () => {
+	// Skip entirely in subagent processes — KIMCHI_ACTIVE_FERMENT leaks into the
+	// child env but the subagent has its own prompt and must not inject a resume
+	// nudge (which would race with the agent startup and cause "already processing").
+	pi.on("session_start", async (_event, ctx) => {
+		if (process.env.KIMCHI_SUBAGENT === "1") return
+		sessionTurnCount = 0
+		stepStartCounts.clear()
+		scopingConfirmed.clear()
+		scopingInteractive.clear()
 		const envId = process.env.KIMCHI_ACTIVE_FERMENT
 		if (!envId) return
 		const storage = getStorage()
@@ -1016,6 +1111,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		if (existing) {
 			setActive(existing)
 			appendRefEntry(pi, existing.id)
+			mountWidget(ctx)
 
 			// Worktree validation
 			const wtCheck = checkWorktree(existing)
@@ -1048,6 +1144,17 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		}
 	})
 
+	// ─── Session shutdown: mark any running ferment as paused ───────────────────
+	// Prevents ferments from being stuck in "running" after the user exits or
+	// interrupts the harness. Subagents exit naturally and should not touch state.
+	pi.on("session_shutdown", async () => {
+		if (process.env.KIMCHI_SUBAGENT === "1") return
+		if (!activeFerment) return
+		if (activeFerment.status === "running" || activeFerment.status === "planned") {
+			getStorage().updateStatus(activeFerment.id, "paused")
+		}
+	})
+
 	// ─── Track last human input time ────────────────────────────────────────────
 	pi.on("input", async (event) => {
 		if (event.source === "interactive") {
@@ -1063,7 +1170,12 @@ export default function fermentExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event) => {
 		if (!activeFerment || activeFerment.status !== "running") return {}
 
-		const supplement = `\n\n## Ferment Planner Role\n\nYou are the PLANNER for ferment "${activeFerment.name}". Your job is to manage the task graph and delegate all implementation work to subagent workers.\n\n**Rules:**\n- NEVER write, edit, or read files yourself during step execution\n- NEVER implement a step inline — always call start_step then immediately spawn a subagent\n- For each step: call start_step → read the worker_model from the result → spawn a subagent with provider "kimchi-dev" and that model\n- If start_step returns parallel_siblings, call start_step for all of them and spawn their subagents CONCURRENTLY in the same turn\n- After a subagent returns, call complete_step with its summary\n- For phase transitions (activate_phase, complete_phase, complete_ferment): call the tool directly, no subagent needed\n- Worker models: minimax-m2.7 for code/text, kimi-k2.5 for vision tasks\n\n**Parallel phases:**\n- When activate_phase returns parallel_group, all listed phase_ids are active simultaneously\n- Call refine_phase for ALL parallel phases in the same turn, then execute their steps concurrently\n- Complete each parallel phase independently with complete_phase when its steps finish\n- Only proceed to the next sequential phase once ALL phases in the parallel group are completed/skipped\n`
+		const dm = formatDecisionsAndMemories(activeFerment)
+		const dmSection = dm ? `\n\n${dm}` : ""
+		const sc = formatScopingContext(activeFerment)
+		const scSection = sc ? `\n\n${sc}` : ""
+
+		const supplement = `\n\n## Ferment Planner Role\n\nYou are the PLANNER for ferment "${activeFerment.name}". Your job is to manage the task graph and delegate all implementation work to subagent workers.\n\n**Rules:**\n- NEVER write, edit, or read files yourself during step execution\n- NEVER implement a step inline — always call start_step then immediately spawn a subagent\n- For each step: call start_step → read the worker_model from the result → spawn a subagent with provider "kimchi-dev" and that model\n- If start_step returns parallel_siblings, call start_step for all of them and spawn their subagents CONCURRENTLY in the same turn\n- After a subagent returns, call complete_step with its summary\n- For phase transitions (activate_phase, complete_phase, complete_ferment): call the tool directly, no subagent needed\n- Worker models: minimax-m2.7 for code/text, kimi-k2.5 for vision tasks\n\n**Parallel phases:**\n- When activate_phase returns parallel_group, all listed phase_ids are active simultaneously\n- Call refine_phase for ALL parallel phases in the same turn, then execute their steps concurrently\n- Complete each parallel phase independently with complete_phase when its steps finish\n- Only proceed to the next sequential phase once ALL phases in the parallel group are completed/skipped\n\n**Knowledge capture:**\n- Call add_decision after any architectural or design choice that affects future phases\n- Call add_memory for reusable patterns, gotchas, or conventions discovered during execution${scSection}${dmSection}\n`
 
 		return { systemPrompt: `${event.systemPrompt}${supplement}` }
 	})
@@ -1072,14 +1184,21 @@ export default function fermentExtension(pi: ExtensionAPI) {
 	// model_select has no cancel mechanism — restore the previous model instead.
 	// Use restoringModel flag to prevent the pi.setModel call from re-entering.
 	pi.on("model_select", async (event, ctx) => {
-		if (ctx?.model) { judgeModel = ctx.model; judgeModelRegistry = ctx.modelRegistry }
+		if (ctx?.model) {
+			judgeModel = ctx.model
+			judgeModelRegistry = ctx.modelRegistry
+		}
 		if (!activeFerment || activeFerment.status !== "running") return
 		if (restoringModel) return // prevent infinite loop from our own setModel call
 
 		// Revert to whatever was active before the switch
 		if (event.previousModel) {
 			restoringModel = true
-			pi.setModel(event.previousModel).catch(() => {}).finally(() => { restoringModel = false })
+			pi.setModel(event.previousModel)
+				.catch(() => {})
+				.finally(() => {
+					restoringModel = false
+				})
 		}
 		ctx.ui.notify(
 			`Model switching is locked while ferment "${activeFerment.name}" is running. Finish or abandon the ferment first.`,
@@ -1093,7 +1212,14 @@ export default function fermentExtension(pi: ExtensionAPI) {
 	// instead of waiting for free-text input. Fires for draft AND running status
 	// in plan mode; never in exec mode (fully autonomous).
 	pi.on("turn_end", async (event, ctx) => {
-		if (ctx?.model) { judgeModel = ctx.model; judgeModelRegistry = ctx.modelRegistry }
+		if (ctx?.model) {
+			judgeModel = ctx.model
+			judgeModelRegistry = ctx.modelRegistry
+		}
+		if (activeFerment && event.message.role === "assistant") {
+			sessionTurnCount++
+			widgetUpdateFn?.()
+		}
 		if (!activeFerment) return
 		if (activeFerment.mode === "exec") return
 		// Only intercept during scoping (draft) or plan-mode confirmation gates (running)
@@ -1104,7 +1230,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		// Extract text from the assistant message content
 		const text = event.message.content
 			.filter((c: { type: string }) => c.type === "text")
-			.map((c: { type: string; text?: string }) => ("text" in c ? c.text ?? "" : ""))
+			.map((c: { type: string; text?: string }) => ("text" in c ? (c.text ?? "") : ""))
 			.join("")
 			.trimEnd()
 
@@ -1115,14 +1241,10 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		if (hasToolCalls) return
 
 		const isDraft = activeFerment.status === "draft"
-		const yesLabel = isDraft ? "Yes, continue" : "Yes, proceed"
-		const noLabel = isDraft ? "No, stop here" : "No, pause"
+		const yesLabel = isDraft ? "Yes, this looks right" : "Yes, proceed"
+		const noLabel = isDraft ? "No, revise" : "No, pause"
 
-		const choice = await ctx.ui.select(text.slice(-200), [
-			yesLabel,
-			noLabel,
-			"Let me say something else",
-		])
+		const choice = await ctx.ui.select(text.slice(-200), [yesLabel, noLabel, "Let me say something else"])
 
 		if (!choice) return
 
@@ -1132,9 +1254,15 @@ export default function fermentExtension(pi: ExtensionAPI) {
 			if (!custom) return
 			reply = custom
 		} else if (choice === noLabel) {
-			reply = isDraft ? "No, stop here." : "No, pause for now."
+			reply = isDraft ? "No — please revise." : "No, pause for now."
 		} else {
-			reply = "Yes, proceed."
+			// User confirmed — if in draft, unlock scope_ferment gate for this ferment
+			if (isDraft && activeFerment) {
+				scopingConfirmed.add(activeFerment.id)
+				reply = `Yes, confirmed. Now call scope_ferment with ferment_id "${activeFerment.id}" and the phases you just proposed.`
+			} else {
+				reply = "Yes, proceed."
+			}
 		}
 
 		lastHumanInputAt = new Date()
@@ -1551,12 +1679,13 @@ export default function fermentExtension(pi: ExtensionAPI) {
 			/* ── /ferment one-shot <description> ── */
 			if (lo.startsWith("one-shot")) {
 				if (activeFerment && activeFerment.status === "running") {
-					ctx.ui.notify(
-						`A ferment is already running: "${activeFerment.name}". Use /progress to check status.`,
-					)
+					ctx.ui.notify(`A ferment is already running: "${activeFerment.name}". Use /progress to check status.`)
 					return
 				}
-				const intent = raw.slice("one-shot".length).trim().replace(/^["']|["']$/g, "")
+				const intent = raw
+					.slice("one-shot".length)
+					.trim()
+					.replace(/^["']|["']$/g, "")
 				let resolvedIntent = intent
 				if (!resolvedIntent && ctx.ui.input) {
 					const typed = await ctx.ui.input("🍺  One-shot: what should be done?", "Describe the full task…")
@@ -1719,7 +1848,10 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 				while (atStepList) {
 					const f2 = getStorage().get(f.id) ?? f
 					const ph = f2.phases.find((p) => p.index === selectedPhaseIndex)
-					if (!ph) { atStepList = false; break }
+					if (!ph) {
+						atStepList = false
+						break
+					}
 
 					const stepOpts = buildPhaseStepOptions(ph)
 					// stepOpts: [step entries..., separator, "Phase actions", "Back"]
@@ -1727,7 +1859,10 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 
 					const l2choice = await ctx.ui.select(buildPhaseDetailTitle(f2, ph), stepOpts)
 
-					if (!l2choice || l2choice === "Back") { atStepList = false; break }
+					if (!l2choice || l2choice === "Back") {
+						atStepList = false
+						break
+					}
 
 					if (l2choice === "Phase actions") {
 						// ── Layer 4 reached via "Phase actions" shortcut ───────
@@ -1735,9 +1870,15 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 						while (atPhaseActions) {
 							const f3 = getStorage().get(f.id) ?? f
 							const ph3 = f3.phases.find((p) => p.index === selectedPhaseIndex)
-							if (!ph3) { atPhaseActions = false; break }
+							if (!ph3) {
+								atPhaseActions = false
+								break
+							}
 							const actionChoice = await ctx.ui.select(buildPhaseDetailTitle(f3, ph3), buildPhaseActionOptions(f3, ph3))
-							if (!actionChoice || actionChoice === "Back to steps") { atPhaseActions = false; break }
+							if (!actionChoice || actionChoice === "Back to steps") {
+								atPhaseActions = false
+								break
+							}
 							await handlePhaseAction(actionChoice, f3, ph3, ctx)
 						}
 						continue
@@ -1753,14 +1894,23 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 					while (atStepDetail) {
 						const f3 = getStorage().get(f.id) ?? f
 						const ph3 = f3.phases.find((p) => p.index === selectedPhaseIndex)
-						if (!ph3) { atStepDetail = false; break }
+						if (!ph3) {
+							atStepDetail = false
+							break
+						}
 						const st = ph3.steps.find((s) => s.index === selectedStepIndex)
-						if (!st) { atStepDetail = false; break }
+						if (!st) {
+							atStepDetail = false
+							break
+						}
 
 						const stepActionOpts = buildStepActionOptions(ph3, st)
 						const l3choice = await ctx.ui.select(buildStepDetailTitle(ph3, st), stepActionOpts)
 
-						if (!l3choice || l3choice === "Back to phase") { atStepDetail = false; break }
+						if (!l3choice || l3choice === "Back to phase") {
+							atStepDetail = false
+							break
+						}
 						await handleStepAction(l3choice, f3, ph3, st, ctx)
 					}
 				}
@@ -1835,6 +1985,23 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 			"Save scoping answers and transition ferment from draft to planned. MUST only be called after showing the user a full summary (goal + criteria + constraints + all phases with steps) and receiving explicit confirmation. Do NOT call this while still collecting answers or proposing phases.",
 		parameters: ScopeParams,
 		async execute(_, params) {
+			// Hard gate: only enforced for ferments scoped interactively (TUI path).
+			// Headless/conversational scoping bypasses the gate — the LLM is trusted there.
+			if (scopingInteractive.has(params.ferment_id) && !scopingConfirmed.has(params.ferment_id)) {
+				return {
+					details: undefined,
+					content: [
+						{
+							type: "text",
+							text: `Cannot scope ferment "${params.ferment_id}" yet — waiting for user confirmation. Present the plan summary to the user and wait for them to confirm before calling scope_ferment.`,
+						},
+					],
+					isError: true,
+				}
+			}
+			scopingInteractive.delete(params.ferment_id)
+			scopingConfirmed.delete(params.ferment_id)
+
 			const s = getStorage()
 			const f = s.get(params.ferment_id)
 			if (!f)
@@ -2010,7 +2177,11 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 			if (target.groupIndex !== undefined) {
 				const r = s.activatePhaseGroup(f.id, target.groupIndex)
 				if (!r)
-					return { details: undefined, content: [{ type: "text", text: "Phase group activation failed." }], isError: true }
+					return {
+						details: undefined,
+						content: [{ type: "text", text: "Phase group activation failed." }],
+						isError: true,
+					}
 				setActive(r)
 				s.updateStatus(f.id, "running")
 				const groupPhases = r.phases.filter((p) => p.groupIndex === target.groupIndex && p.status === "active")
@@ -2023,12 +2194,16 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 						return `  ∥ [${gp.id}] ${gp.index}. "${gp.name}"${stepList}`
 					})
 					.join("\n")
+				const dmParallel = formatDecisionsAndMemories(r)
+				const dmParallelSection = dmParallel ? `\n\n${dmParallel}` : ""
+				const scParallel = formatScopingContext(r)
+				const scParallelSection = scParallel ? `\n\n${scParallel}` : ""
 				return {
 					details: undefined,
 					content: [
 						{
 							type: "text",
-							text: `Parallel group ${target.groupIndex} activated (${groupPhases.length} phases running concurrently).\nferment_id: ${f.id}\nparallel_group: ${target.groupIndex}\nphase_ids: ${groupPhases.map((p) => p.id).join(", ")}\n\n${phaseLines}\n\nRun all parallel phases concurrently: call refine_phase + start_step for each phase simultaneously.`,
+							text: `Parallel group ${target.groupIndex} activated (${groupPhases.length} phases running concurrently).\nferment_id: ${f.id}\nparallel_group: ${target.groupIndex}\nphase_ids: ${groupPhases.map((p) => p.id).join(", ")}\n\n${phaseLines}\n\nRun all parallel phases concurrently: call refine_phase + start_step for each phase simultaneously.${scParallelSection}${dmParallelSection}`,
 						},
 					],
 				}
@@ -2044,12 +2219,16 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 				activatedPhase && activatedPhase.steps.length > 0
 					? `\nSteps:\n${activatedPhase.steps.map((st) => `  ${st.index}. [${st.id}] ${st.description}`).join("\n")}`
 					: "\nNo steps yet — call refine_phase to populate them."
+			const dm = formatDecisionsAndMemories(r)
+			const dmSection = dm ? `\n\n${dm}` : ""
+			const sc = formatScopingContext(r)
+			const scSection = sc ? `\n\n${sc}` : ""
 			return {
 				details: undefined,
 				content: [
 					{
 						type: "text",
-						text: `Phase "${target.name}" activated.\nferment_id: ${f.id}\nphase_id: ${target.id}${stepList}`,
+						text: `Phase "${target.name}" activated.\nferment_id: ${f.id}\nphase_id: ${target.id}${stepList}${scSection}${dmSection}`,
 					},
 				],
 			}
@@ -2163,6 +2342,25 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 					isError: true,
 				}
 			}
+			// Stuck-loop detection: same step started 3+ times without completing
+			const stuckKey = `${f.id}:${phase.id}:${step.id}`
+			const startCount = (stepStartCounts.get(stuckKey) ?? 0) + 1
+			stepStartCounts.set(stuckKey, startCount)
+			if (startCount >= 3) {
+				// Keep the counter at threshold so every subsequent call also blocks
+				// until complete_step or skip_step clears it.
+				return {
+					details: undefined,
+					content: [
+						{
+							type: "text",
+							text: `⚠ Stuck loop detected: step ${step.index} "${step.description}" has been started ${startCount} times without completing. Stop and ask the user: should we retry with a revised approach, skip this step, or pause the ferment? Do NOT call start_step again without user input.`,
+						},
+					],
+					isError: true,
+				}
+			}
+
 			const r = s.startStep(f.id, phase.id, step.id)
 			if (!r) return { details: undefined, content: [{ type: "text", text: "Step start failed." }], isError: true }
 			setActive(r)
@@ -2204,6 +2402,10 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 			"Mark step as done. If the step has a verification command it runs automatically — no need to call verify_step separately.",
 		parameters: CompleteStepParams,
 		async execute(_, params, signal, onUpdate, ctx) {
+			if (ctx?.model) {
+				judgeModel = ctx.model
+				judgeModelRegistry = ctx.modelRegistry
+			}
 			const s = getStorage()
 			const f = s.get(params.ferment_id)
 			if (!f) return { details: undefined, content: [{ type: "text", text: "Ferment not found." }], isError: true }
@@ -2214,6 +2416,8 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 			const r = s.completeStep(f.id, phase.id, step.id)
 			if (!r) return { details: undefined, content: [{ type: "text", text: "Step completion failed." }], isError: true }
 			setActive(r)
+			// Clear stuck-loop counter on successful completion
+			stepStartCounts.delete(`${f.id}:${phase.id}:${step.id}`)
 
 			if (!step.verification) {
 				// Grade step even without verification (summary-based)
@@ -2433,6 +2637,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 			const r = s.skipStep(f.id, phase.id, step.id)
 			if (!r) return { details: undefined, content: [{ type: "text", text: "Step not found." }], isError: true }
 			setActive(r)
+			stepStartCounts.delete(`${f.id}:${phase.id}:${step.id}`)
 			onStepCompleted(pi)
 			return { details: undefined, content: [{ type: "text", text: "Step skipped." }] }
 		},
@@ -2443,7 +2648,11 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 		label: "Complete Phase",
 		description: "Mark phase as completed. Judge grades the phase based on step results.",
 		parameters: CompletePhaseParams,
-		async execute(_, params) {
+		async execute(_, params, _signal, _onUpdate, ctx) {
+			if (ctx?.model) {
+				judgeModel = ctx.model
+				judgeModelRegistry = ctx.modelRegistry
+			}
 			const s = getStorage()
 			const f = s.get(params.ferment_id)
 			if (!f) return { details: undefined, content: [{ type: "text", text: "Ferment not found." }], isError: true }
@@ -2451,7 +2660,8 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 			if (!phase) return { details: undefined, content: [{ type: "text", text: "Phase not found." }], isError: true }
 
 			const r = s.completePhase(f.id, phase.id, params.summary)
-			if (!r) return { details: undefined, content: [{ type: "text", text: "Phase completion failed." }], isError: true }
+			if (!r)
+				return { details: undefined, content: [{ type: "text", text: "Phase completion failed." }], isError: true }
 			setActive(r)
 
 			// ── Grade the phase ──────────────────────────────────────────────────
@@ -2468,14 +2678,65 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 			const gradeNote = `  Grade: ${phaseGrade.grade} — ${phaseGrade.rationale}`
 
 			if (next) {
-				if (isPlanMode()) {
+				if (isPlanMode() && ctx?.ui?.select) {
+					// Build a structured phase review for the user
+					const stepLines = phase.steps
+						.map((st) => {
+							const icon =
+								st.status === "done" || st.status === "verified"
+									? "✓"
+									: st.status === "skipped"
+										? "⊘"
+										: st.status === "failed"
+											? "✗"
+											: "○"
+							const g = st.grade ? `  ${st.grade.grade}` : ""
+							return `  ${icon} ${st.index}. ${st.description}${g}`
+						})
+						.join("\n")
+					const reviewTitle = [
+						`Phase ${phase.index}: "${phase.name}"  ${phaseGrade.grade}`,
+						phaseGrade.rationale,
+						"",
+						"Steps completed:",
+						stepLines,
+						"",
+						`Next → Phase ${next.index}: "${next.name}"`,
+						next.goal,
+					].join("\n")
+
+					const choice = await ctx.ui.select(reviewTitle, [
+						`Proceed to Phase ${next.index}`,
+						"Pause here",
+						"Let me say something",
+					])
+					lastHumanInputAt = new Date()
+					widgetUpdateFn?.()
+					if (!choice || choice === "Pause here") {
+						getStorage().updateStatus(fresh.id, "paused")
+						const paused = getStorage().get(fresh.id)
+						if (paused) setActive(paused)
+						await pi.sendUserMessage("Ferment paused. Let me know when you are ready to continue.", {
+							deliverAs: "followUp",
+						})
+						return {
+							details: undefined,
+							content: [{ type: "text", text: `Phase done.${gradeNote}\nFerment paused at user request.` }],
+						}
+					}
+					if (choice === "Let me say something") {
+						const custom = ctx.ui.input ? await ctx.ui.input("Your message:", "") : undefined
+						if (custom) await pi.sendUserMessage(custom, { deliverAs: "followUp" })
+						return {
+							details: undefined,
+							content: [{ type: "text", text: `Phase done.${gradeNote}\nAwaiting user direction.` }],
+						}
+					}
+					await pi.sendUserMessage(`Proceed to Phase ${next.index}: "${next.name}".`, { deliverAs: "followUp" })
 					return {
 						details: undefined,
 						content: [
-							{
-								type: "text",
-								text: `Phase done.${gradeNote}\nNext: Phase ${next.index}: "${next.name}" (${next.goal}). Activate it?`,
-							},
+							{ type: "text", text: `Phase done.${gradeNote}\nUser confirmed: proceed to Phase ${next.index}.` },
 						],
 					}
 				}
@@ -2510,7 +2771,8 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 	pi.registerTool({
 		name: "complete_ferment",
 		label: "Complete Ferment",
-		description: "Mark ferment as complete. All phases must be terminal (completed, skipped, or failed). Judge computes overall grade.",
+		description:
+			"Mark ferment as complete. All phases must be terminal (completed, skipped, or failed). Judge computes overall grade.",
 		parameters: CompleteFermentParams,
 		async execute(_, params) {
 			const s = getStorage()
@@ -2543,7 +2805,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 			const failedNote = failedPhases > 0 ? ` (${failedPhases} phase(s) failed)` : ""
 			const phaseGradeSummary = fresh.phases
 				.filter((p) => p.grade)
-				.map((p) => `  ${p.index}. ${p.name}: ${p.grade!.grade}`)
+				.map((p) => `  ${p.index}. ${p.name}: ${p.grade?.grade}`)
 				.join("\n")
 			return {
 				details: undefined,
