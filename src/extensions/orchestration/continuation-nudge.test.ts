@@ -214,7 +214,7 @@ describe("ContinuationNudge subagent-pending suppression", () => {
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
 	})
 
-	it("resetForNewUserInput does NOT clear subagentCallPending", () => {
+	it("resetForNewUserInput does NOT clear pendingSubagentCount", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
 		guard.markSubagentCall()
@@ -224,7 +224,7 @@ describe("ContinuationNudge subagent-pending suppression", () => {
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
 	})
 
-	it("a regular tool call does NOT clear subagentCallPending", () => {
+	it("a regular tool call does NOT clear pendingSubagentCount", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
 		guard.markSubagentCall()
@@ -233,12 +233,18 @@ describe("ContinuationNudge subagent-pending suppression", () => {
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
 	})
 
-	it("markSubagentCall is idempotent", () => {
+	it("multiple markSubagentCall requires matching clearSubagentPending calls", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
 		guard.markSubagentCall()
-		guard.markSubagentCall() // called twice — should still suppress
+		guard.markSubagentCall() // two concurrent subagents
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+		// First result arrives — still one pending.
+		guard.clearSubagentPending()
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+		// Second result arrives — all done, nudge can fire.
+		guard.clearSubagentPending()
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
 	})
 
 	it("clearSubagentPending without markSubagentCall has no effect", () => {

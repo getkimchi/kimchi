@@ -57,20 +57,21 @@ export class ContinuationNudge {
 	private nudgedSinceLastUserInput = false
 	private nudgeResponsePending = false
 	private accumulatedResponseText = ""
-	/** Set to true when a subagent tool call was made in the current cycle.
-	 *  Reset by `resetForNewUserInput` when the subagent result arrives. */
-	private subagentCallPending = false
+	/** Number of subagent calls still awaiting results.
+	 *  Incremented by `markSubagentCall()`, decremented by `clearSubagentPending()`.
+	 *  The continuation nudge is suppressed while this is > 0. */
+	private pendingSubagentCount = 0
 
 	resetForNewUserInput(): void {
 		this.toolsCalledSinceLastUserInput = false
 		this.nudgedSinceLastUserInput = false
 		this.nudgeResponsePending = false
 		this.accumulatedResponseText = ""
-		// subagentCallPending is intentionally NOT reset here — it is cleared
-		// only by recordToolCall() to avoid a race where a new user-input cycle
-		// arrives (e.g. an unrelated event) before the subagent result, which
-		// would incorrectly allow the nudge to fire while the subagent result
-		// is still pending.
+		// pendingSubagentCount is intentionally NOT reset here — it is
+		// decremented only by clearSubagentPending() to avoid a race where
+		// a new user-input cycle arrives before all subagent results, which
+		// would incorrectly allow the nudge to fire while subagents are
+		// still in flight.
 	}
 
 	recordToolCall(): void {
@@ -80,13 +81,12 @@ export class ContinuationNudge {
 	}
 
 	/**
-	 * Called by the orchestrator when it invokes the `subagent` tool.
-	 * Until the subagent result arrives (via a new user-input cycle),
-	 * the continuation nudge is suppressed so the model does not prematurely
-	 * signal DONE while a background delegation is in flight.
+	 * Called once per `subagent` tool call detected in a turn.
+	 * Increments the pending counter so the continuation nudge stays
+	 * suppressed until all subagent results have been received.
 	 */
 	markSubagentCall(): void {
-		this.subagentCallPending = true
+		this.pendingSubagentCount++
 	}
 
 	isNudgeResponsePending(): boolean {
@@ -104,9 +104,9 @@ export class ContinuationNudge {
 	evaluateTurn(message: AssistantMessage): boolean {
 		if (this.nudgedSinceLastUserInput) return false
 		if (this.toolsCalledSinceLastUserInput) return false
-		// Do not nudge while a subagent result is pending — the model must
-		// wait for the subagent output before it can continue or signal done.
-		if (this.subagentCallPending) return false
+		// Do not nudge while any subagent result is pending — the model must
+		// wait for all subagent outputs before it can continue or signal done.
+		if (this.pendingSubagentCount > 0) return false
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
 		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
 		if (hasToolCalls || !hasText) return false
@@ -116,12 +116,15 @@ export class ContinuationNudge {
 	}
 
 	/**
-	 * Clears the subagent-pending flag once the result has been received
-	 * and processed. Called by the orchestrator when it detects a subagent
-	 * result in the incoming message cycle.
+	 * Decrements the pending-subagent counter when a subagent result is
+	 * received. Called by the orchestrator for each subagent tool-result.
+	 * The continuation nudge remains suppressed until all pending
+	 * subagents have returned.
 	 */
 	clearSubagentPending(): void {
-		this.subagentCallPending = false
+		if (this.pendingSubagentCount > 0) {
+			this.pendingSubagentCount--
+		}
 	}
 }
 

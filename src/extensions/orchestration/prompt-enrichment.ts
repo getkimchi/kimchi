@@ -336,14 +336,13 @@ export default function (skillPaths: string[]) {
 			pi.on("turn_end", async (event) => {
 				if (event.message.role !== "assistant") return
 
-				// Detect subagent tool calls and suppress the continuation nudge while
-				// a subagent result is pending. This prevents the model from signalling
-				// DONE before the subagent output has been received and processed.
-				const hasSubagentCall = event.message.content.some(
-					(c) => c.type === "toolCall" && (c as { name?: string }).name === "subagent",
-				)
-				if (hasSubagentCall) {
-					continuationNudge.markSubagentCall()
+				// Mark each subagent tool call so the continuation nudge stays
+				// suppressed until all subagent results have been received.
+				// A single turn may contain multiple parallel subagent calls.
+				for (const c of event.message.content) {
+					if (c.type === "toolCall" && (c as { name?: string }).name === "subagent") {
+						continuationNudge.markSubagentCall()
+					}
 				}
 
 				if (continuationNudge.isNudgeResponsePending()) {
