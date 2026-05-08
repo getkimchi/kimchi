@@ -79,6 +79,16 @@ MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-local.sh -i terminal-bench/fix-git
 
 `MODEL` must be `<provider>/<id>`. Available `kimchi-dev` models include `kimi-k2.5`, `glm-5-fp8`, `minimax-m2.7`, `nemotron-3-super-fp4` (run `kimchi --list-models` for the live list). The qualifier is required because kimchi's built-in catalog also registers some IDs (notably `kimi-k2.5`) under the `opencode` provider — without `kimchi-dev/` the resolver picks `opencode` and fails auth with the kimchi key.
 
+### Single-model run (no orchestration)
+
+To benchmark a model on its own, bypassing kimchi's multi-model orchestration, pass `disable-multi-model=true`. The agent forwards `--multi-model=false` to kimchi.
+
+```bash
+MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-local.sh -n 8 --agent-kwarg disable-multi-model=true
+```
+
+The kwarg is named `disable-multi-model` (not `multi-model=false`) because harbor's `parse_kwargs` JSON-decodes `false` into Python `bool`, which the `str`/`enum` `CliFlag` coercers reject — and `bool`-typed flags only emit when truthy, so they can't render `--multi-model=false` directly.
+
 ### Tagging runs for tracking
 
 kimchi attaches tags from `KIMCHI_TAGS` to every outgoing LLM request payload and telemetry event, which lets you slice usage/tokens/cost server-side by run, experiment, or branch.

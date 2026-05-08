@@ -4,7 +4,9 @@ export const TOOLS_SECTION = `## Available Tools
 
 export const CORE_GUIDELINES = `- Be concise in your responses. Do not restate what you are about to do, repeat what you just did, or summarize completed steps — act and move on.
 - Show file paths clearly when working with files.
-- Do NOT introduce security vulnerabilities.`
+- Do NOT introduce security vulnerabilities.
+- After every tool result, ALWAYS produce text — either the next tool call with explicit reasoning, or a final summary. Never re-issue the same tool call after a successful result.
+- Never emit tool calls with empty names, blank IDs, or malformed arguments. If a tool call fails to advance the task after 3 attempts, stop calling tools, summarize what is not working, and reassess in plain text before continuing.`
 
 export const DOCUMENTS_SECTION = `## Documents
 

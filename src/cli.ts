@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import {
 	DEFAULT_SKILL_PATHS,
@@ -20,6 +20,7 @@ import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
 import curatorExtension from "./extensions/curator/index.js"
+import hideThinkingExtension from "./extensions/hide-thinking.js"
 import improveExtension from "./extensions/improve/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import loginExtension from "./extensions/login/index.js"
@@ -119,7 +120,7 @@ try {
 	}
 
 	if (helpOrVersion) {
-		const { main } = await import("@mariozechner/pi-coding-agent")
+		const { main } = await import("@earendil-works/pi-coding-agent")
 		await main(process.argv.slice(2), { extensionFactories: [] })
 	} else {
 		// We're entering the harness/ACP path. Subcommands and --help/--version
@@ -270,6 +271,7 @@ try {
 			behavioursExtension,
 			promptSummaryExtension,
 			contextCompactorExtension,
+			hideThinkingExtension,
 			clipboardImageExtension,
 			uiExtension,
 			subagentExtension,
@@ -290,7 +292,7 @@ try {
 			await runAcpMode({ extensionFactories, agentDir })
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
-			const { main } = await import("@mariozechner/pi-coding-agent")
+			const { main } = await import("@earendil-works/pi-coding-agent")
 			await main(rawArgs, { extensionFactories })
 		}
 	}

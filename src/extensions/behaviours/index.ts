@@ -23,7 +23,7 @@
  * resolving the markdown bodies pulled in by `registry.ts`.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { behaviours as bundledBehaviours } from "./registry.js"
 import { wireBehaviours } from "./wiring.js"
 

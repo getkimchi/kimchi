@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getServerProvenance, writeDirectToolsConfig } from "./config.js"
 import { getFailureAgeSeconds, lazyConnect, updateMetadataCache, updateStatusBar } from "./init.js"
 import { authenticate, supportsOAuth } from "./mcp-auth-flow.js"

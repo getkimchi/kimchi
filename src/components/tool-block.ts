@@ -1,5 +1,5 @@
-import type { Theme } from "@mariozechner/pi-coding-agent"
-import { Container, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui"
+import type { Theme } from "@earendil-works/pi-coding-agent"
+import { Container, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { formatDuration } from "../extensions/format.js"
 
 function buildAlignedLine(left: string, right: string, width: number): string {

@@ -6,7 +6,7 @@
  * shape they return to the agent runner — without re-testing engine logic.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import type { ResolverIO } from "./session-context.js"
 import {

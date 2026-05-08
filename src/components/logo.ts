@@ -1,6 +1,6 @@
-import type { Theme } from "@mariozechner/pi-coding-agent"
-import type { Component } from "@mariozechner/pi-tui"
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui"
+import type { Theme } from "@earendil-works/pi-coding-agent"
+import type { Component } from "@earendil-works/pi-tui"
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG } from "../ansi.js"
 import { buildPathLine, buildVersionLine } from "./logo-art.js"
 

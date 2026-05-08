@@ -1,6 +1,6 @@
 import { platform } from "node:os"
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
-export { getAgentDir } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+export { getAgentDir } from "@earendil-works/pi-coding-agent"
 
 export async function openUrl(pi: ExtensionAPI, url: string, browser?: string): Promise<void> {
 	const os = platform()

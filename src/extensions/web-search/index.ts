@@ -5,9 +5,9 @@
  * execute-handler.ts so it can be tested without pi-mono dependencies.
  */
 
-import { StringEnum } from "@mariozechner/pi-ai"
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
-import { Container, Text } from "@mariozechner/pi-tui"
+import { StringEnum } from "@earendil-works/pi-ai"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { formatCount } from "../format.js"
 import { type SpinnerState, clearSpinner, spinnerFrame, tickSpinner } from "../spinner.js"

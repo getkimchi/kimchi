@@ -15,7 +15,7 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
-const piAgentDist = join(projectRoot, "node_modules", "@mariozechner", "pi-coding-agent", "dist")
+const piAgentDist = join(projectRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist")
 
 const themeFiles = ["dark.json", "light.json", "theme-schema.json"]
 const themeSrc = join(piAgentDist, "modes", "interactive", "theme")

@@ -9,8 +9,8 @@
  */
 import fs from "node:fs"
 import path from "node:path"
-import type { ExtensionAPI, Theme } from "@mariozechner/pi-coding-agent"
-import { Container, Text } from "@mariozechner/pi-tui"
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
+import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { ensureFileOpen, getOrCreateClient, refreshFile, sendRequest, shutdownAll } from "./lsp/client.js"
 import { applyWorkspaceEdit } from "./lsp/edits.js"

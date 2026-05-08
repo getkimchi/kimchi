@@ -1,4 +1,4 @@
-import { type Skill, formatSkillsForPrompt } from "@mariozechner/pi-coding-agent"
+import { type Skill, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent"
 import { DEFAULT_ORCHESTRATION_GUIDELINES } from "../model-registry/guidelines/default-orchestration-guidelines.js"
 import { DEFAULT_PHASE_GUIDELINES } from "../model-registry/guidelines/default-phase-guidelines.js"
 import type { ModelRegistry } from "../model-registry/index.js"

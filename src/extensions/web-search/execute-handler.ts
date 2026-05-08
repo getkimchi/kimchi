@@ -5,7 +5,7 @@
  * pi-mono framework packages (pi-coding-agent, typebox).
  */
 
-import { truncateHead, truncateLine } from "@mariozechner/pi-coding-agent"
+import { truncateHead, truncateLine } from "@earendil-works/pi-coding-agent"
 import { readApiKeyFromConfigFile } from "../../config.js"
 
 export const SEARCH_ENDPOINT = "https://llm.kimchi.dev/v1/search"

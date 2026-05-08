@@ -1,15 +1,15 @@
 import { spawn } from "node:child_process"
 import { existsSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
-import type { AssistantMessage, ToolCall } from "@mariozechner/pi-ai"
+import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import {
 	CURRENT_SESSION_VERSION,
 	type ExtensionAPI,
 	type SessionEntry,
 	type SessionHeader,
 	type Theme,
-} from "@mariozechner/pi-coding-agent"
-import { Container, Spacer, Text, truncateToWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui"
+} from "@earendil-works/pi-coding-agent"
+import { Container, Spacer, Text, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { v7 as uuidv7 } from "uuid"
 import { ToolBlockView, getTextContent } from "../components/tool-block.js"
@@ -401,6 +401,8 @@ export function spawnSubagentInternal(
 		}
 
 		const finish = (exitCode: number) => {
+			if (closed) return
+			closed = true
 			clearTimeout(timeoutHandle)
 			clearTimeout(inactivityHandle)
 			combinedSignal.removeEventListener("abort", onAbort)
@@ -473,13 +475,11 @@ export function spawnSubagentInternal(
 		})
 
 		proc.on("close", (code) => {
-			closed = true
 			if (buffer.trim()) processLine(buffer)
 			finish(code ?? 0)
 		})
 
 		proc.on("error", (err) => {
-			closed = true
 			if (failureReason === undefined) failureReason = "exit_error"
 			stderr = stderr || err.message
 			finish(1)

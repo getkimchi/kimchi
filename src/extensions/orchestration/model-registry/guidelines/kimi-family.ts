@@ -15,10 +15,17 @@
 // ── Family-level (shared across all Kimi models) ──────────────────────
 // Sources: §3.2 item 3 (mixed-goal hesitation), §3.2 item 4 (plan-first groove)
 
-/** Reserved: no family-level explore/research/plan overrides identified yet. */
+/** Reserved: no family-level explore/research overrides identified yet. */
 export const KIMI_FAMILY_EXPLORE = ""
 export const KIMI_FAMILY_RESEARCH = ""
-export const KIMI_FAMILY_PLAN = ""
+
+/** Kimi family plan: chunk-based specs for delegation.
+ * When the orchestrator lacks build strength, the plan must be delegation-ready. */
+export const KIMI_FAMILY_PLAN = `During **plan** phase (Kimi family):
+- Structure the spec with a numbered **Chunks** section. Each chunk is one self-contained unit of work that a subagent can complete independently.
+- Every chunk must list: (1) the files it creates or modifies, (2) a one-sentence goal, (3) acceptance criteria the orchestrator can verify.
+- Keep each chunk small — ideally 1–2 files. A subagent with a 150k token budget must be able to finish the chunk in one pass.
+- Order chunks so later ones can build on earlier ones. Mark chunks that are independent of each other so the orchestrator can run them in parallel.`
 
 /** Kimi family build: plan-first and chunked goals. */
 export const KIMI_FAMILY_BUILD = `During **build** phase (Kimi family):
@@ -45,7 +52,6 @@ export const KIMI_K25_ORCHESTRATION = `When orchestrating (kimi-k2.5 specific):
 
 /** K2.5 build: tool-call reliability fixes (K2.5-specific bugs). */
 export const KIMI_K25_BUILD = `During **build** phase (kimi-k2.5 specific):
-- After every tool result, ALWAYS produce text — either the next tool call with explicit reasoning, or a final summary. Never re-issue the same tool call after a successful result.
 - Emit complete, well-formed tool calls only. Never output partial fragments, raw JSON snippets, or "(m"-style stubs as if they were tool calls.`
 
 /** K2.5 explore: chunk inputs and plan reads upfront. */
@@ -56,18 +62,19 @@ export const KIMI_K25_EXPLORE = `During **explore** phase (kimi-k2.5 specific):
 // ── Kimi K2.6 per-model overrides ─────────────────────────────────────
 // Sources: Kimi K2.6 release notes (kimi-k2.org/blog/24-kimi-k2-6-release)
 
-/** K2.6 orchestration: queue-based swarm delegation.
+/** K2.6 orchestration: chunk-driven delegation.
  * Sources: §3.3 item 1 (agent-swarm primitives), §3.3 item 2 (context compressor) */
 export const KIMI_K26_ORCHESTRATION = `When orchestrating (kimi-k2.6 specific):
-- You are tuned for agent-swarm orchestration. Decompose tasks into a queue of independent subagent calls and run independent ones in parallel.
+- Walk the plan's Chunks list: delegate each chunk as a separate subagent call with a 150k token budget. Do NOT combine multiple chunks into one subagent — smaller calls are cheaper and more reliable.
+- Run independent chunks in parallel (up to 3 concurrent subagents).
 - Trust your built-in context compressor between delegation steps — do NOT manually summarise subagent results before deciding next steps.`
 
 /** K2.6 plan: queue-based decomposition for long-horizon orchestration. */
 export const KIMI_K26_PLAN = `During **plan** phase (kimi-k2.6 specific):
 - You are tuned for long-horizon orchestration: open with a numbered 3–7 step plan before any tool call.
-- Decompose ambitious tasks into a queue of independent sub-tasks the build phase can pull from — K2.6 plans best when given a queue, not a single monolithic instruction.
-- Include per-step acceptance criteria in the spec.
-- Mark each step as "do here" vs. "delegate" so build can route work without re-planning.`
+- Write the spec with a clear **Chunks** section — each chunk maps to exactly one subagent call in the build phase.
+- Include per-chunk acceptance criteria so the orchestrator can verify completion without re-reading all code.
+- Mark independent chunks as parallelisable.`
 
 /** K2.6 explore: leverage long context and built-in compressor. */
 export const KIMI_K26_EXPLORE = `During **explore** phase (kimi-k2.6 specific):

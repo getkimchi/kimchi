@@ -55,6 +55,11 @@ class Kimchi(BaseInstalledAgent):
         CliFlag("tools", cli="--tools", type="str"),
         CliFlag("yolo", cli="--yolo", type="bool"),
         CliFlag(
+            "disable-multi-model",
+            cli="--multi-model=false",
+            type="bool",
+        ),
+        CliFlag(
             "dangerously-skip-permissions",
             cli="--dangerously-skip-permissions",
             type="bool",

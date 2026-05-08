@@ -24,9 +24,9 @@ import { execSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { homedir, platform, userInfo } from "node:os"
 import { isAbsolute, join, normalize, resolve } from "node:path"
-import type { AssistantMessage, ImageContent, TextContent } from "@mariozechner/pi-ai"
-import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@mariozechner/pi-coding-agent"
-import { isKeyRelease, matchesKey } from "@mariozechner/pi-tui"
+import type { AssistantMessage, ImageContent, TextContent } from "@earendil-works/pi-ai"
+import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
+import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { ANSI, fg } from "../../ansi.js"
 import { getCurrentPhase } from "../../extensions/tags.js"
 import { getAvailableModels } from "../../startup-context.js"
@@ -306,7 +306,13 @@ export default function (skillPaths: string[]) {
 			const enrichmentGuard = new EnrichmentGuard()
 
 			pi.on("input", async (event) => {
-				if (event.source === "extension") return
+				if (event.source === "extension") {
+					// Subagent result arriving. Clear the subagent-pending flag so the
+					// continuation nudge can fire normally once the model has processed
+					// the output (at the next turn_end, after any tool calls it makes).
+					continuationNudge.clearSubagentPending()
+					return
+				}
 				continuationNudge.resetForNewUserInput()
 				emptyTurnNudge.resetForNewUserInput()
 			})
@@ -329,6 +335,15 @@ export default function (skillPaths: string[]) {
 
 			pi.on("turn_end", async (event) => {
 				if (event.message.role !== "assistant") return
+
+				// Mark each subagent tool call so the continuation nudge stays
+				// suppressed until all subagent results have been received.
+				// A single turn may contain multiple parallel subagent calls.
+				for (const c of event.message.content) {
+					if (c.type === "toolCall" && (c as { name?: string }).name === "subagent") {
+						continuationNudge.markSubagentCall()
+					}
+				}
 
 				if (continuationNudge.isNudgeResponsePending()) {
 					if (continuationNudge.isDoneSignalReceived()) {

@@ -1,6 +1,6 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { SkillManager } from "./skill-manager.js"
 import { createSkillManageTool, createSkillViewTool } from "./tool.js"
 import { UsageTracker } from "./usage.js"
