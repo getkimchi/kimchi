@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { ANSI, fg } from "../ansi.js"
-import hideThinkingExtension, { _getDisplayToOriginal, _resetState, _setHideThinking } from "./hide-thinking.js"
+import hideThinkingExtension, {
+	_getDisplayToOriginal,
+	_resetState,
+	_setHideThinking,
+	filterThinkingForDisplay,
+} from "./hide-thinking.js"
 
 type Handler = (event: unknown) => unknown
 
@@ -268,4 +273,50 @@ describe("hideThinkingExtension", () => {
 		})
 		expect(result).toBeUndefined()
 	})
+})
+
+describe("filterThinkingForDisplay", () => {
+	beforeEach(() => {
+		_resetState()
+	})
+
+	const cases: Record<string, { input: string; hideThinking: boolean; expected: string }> = {
+		"strips thinking blocks when hideThinking is true": {
+			input: "Before <think>reasoning</think> After",
+			hideThinking: true,
+			expected: "Before  After",
+		},
+		"dims thinking blocks when hideThinking is false": {
+			input: "Before <think>reasoning</think> After",
+			hideThinking: false,
+			expected: `Before ${fg(ANSI.dim, "reasoning")} After`,
+		},
+		"returns text unchanged when no thinking tags present": {
+			input: "plain text without thinking",
+			hideThinking: true,
+			expected: "plain text without thinking",
+		},
+		"handles multiple thinking blocks": {
+			input: "A <think>first</think> B <think>second</think> C",
+			hideThinking: true,
+			expected: "A  B  C",
+		},
+		"handles unclosed think tag by hiding trailing content when hideThinking is true": {
+			input: "Before <think>still streaming",
+			hideThinking: true,
+			expected: "Before ",
+		},
+		"handles unclosed think tag by dimming trailing content when hideThinking is false": {
+			input: "Before <think>still streaming",
+			hideThinking: false,
+			expected: `Before ${fg(ANSI.dim, "still streaming")}`,
+		},
+	}
+
+	for (const [name, { input, hideThinking, expected }] of Object.entries(cases)) {
+		it(name, () => {
+			_setHideThinking(hideThinking)
+			expect(filterThinkingForDisplay(input)).toBe(expected)
+		})
+	}
 })
