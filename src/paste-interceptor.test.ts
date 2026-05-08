@@ -117,8 +117,8 @@ describe("installPasteInterceptor", () => {
 		stdin.on("data", (chunk) => received.push(chunk.toString()))
 
 		stdin.emit("data", "A\rB\rC\r")
-		// 30 ms gap — well past the 5 ms window. A \r arriving now is a typed Enter, not paste.
-		clock.advance(30)
+		// 250 ms gap — well past the 100 ms window. A \r arriving now is a typed Enter (perceive-decide-press takes ≥300 ms), not paste.
+		clock.advance(250)
 		stdin.emit("data", "\r")
 
 		expect(received).toEqual(["A\nB\nC\n", "\r"])
