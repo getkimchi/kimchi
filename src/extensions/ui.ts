@@ -49,17 +49,20 @@ function renderChildren(children: TUI["children"], start: number, end: number, w
 function patchTuiPadding(tui: TUI) {
 	const pad = " ".repeat(HORIZONTAL_PADDING)
 
-	// Capture the original Container.render so we can fall back to it if
-	// the child structure doesn't match our expectations (e.g. upstream
-	// adds or removes a container).  This avoids silently breaking the
-	// layout and keeps the TUI usable even when the contract changes.
 	const originalRender = tui.render.bind(tui)
+
+	// Track the highest line count we ever emitted.  When content shrinks
+	// (e.g. model selector dismissed, tool output collapsed) we pad back
+	// to this mark so the TUI's diff renderer never sees fewer lines than
+	// before — which would trigger a fullRender(clear=true) that clears
+	// the terminal scrollback and repositions the bottom UI.  Keeping the
+	// count monotonically non-decreasing lets old content scroll into the
+	// terminal scrollback naturally, just like Claude Code.
+	let highWaterMark = 0
 
 	tui.render = (width: number): string[] => {
 		const children = tui.children
 
-		// Guard: if the child structure deviates from what we expect, fall
-		// back to the unpatched render so the TUI remains functional.
 		if (children.length !== EXPECTED_CHILDREN_COUNT) {
 			if (process.env.NODE_ENV !== "production") {
 				console.warn(
@@ -73,31 +76,17 @@ function patchTuiPadding(tui: TUI) {
 		const innerWidth = Math.max(1, width - HORIZONTAL_PADDING * 2)
 		const splitAt = children.length - BOTTOM_CHILDREN_COUNT
 
-		// Render top (scrollable) and bottom (pinned) sections separately
-		// by delegating to each child's own render — the same mechanism
-		// the original Container.render uses.
 		const topLines = renderChildren(children, 0, splitAt, innerWidth)
 		const bottomLines = renderChildren(children, splitAt, children.length, innerWidth)
 
-		// Insert padding between content and bottom components so the prompt
-		// and footer are pushed to the terminal bottom.  This eliminates the
-		// visual jump that occurs when tool output shrinks (e.g. bash collapse),
-		// the working indicator toggling, or a selector dialog opening/closing.
 		const terminalHeight = tui.terminal.rows
 		const totalContent = topLines.length + bottomLines.length
-		const paddingCount = Math.max(0, terminalHeight - totalContent)
-
-		// When the bottom section is tall (e.g. model selector open) the total
-		// content can exceed the terminal height.  Truncate the top of the
-		// scrollable section so the rendered output is always exactly
-		// terminalHeight lines — this prevents the TUI diff-renderer from
-		// scrolling/jumping when the tall component is later dismissed.
-		const overflow = Math.max(0, totalContent - terminalHeight)
-		const topStart = Math.min(overflow, topLines.length)
+		const minLines = Math.max(terminalHeight, totalContent, highWaterMark)
+		const paddingCount = minLines - totalContent
 
 		const allLines: string[] = []
-		for (let i = topStart; i < topLines.length; i++) {
-			allLines.push(topLines[i])
+		for (const line of topLines) {
+			allLines.push(line)
 		}
 		for (let i = 0; i < paddingCount; i++) {
 			allLines.push("")
@@ -105,6 +94,8 @@ function patchTuiPadding(tui: TUI) {
 		for (const line of bottomLines) {
 			allLines.push(line)
 		}
+
+		highWaterMark = allLines.length
 
 		return allLines.map((line: string) => pad + line.replace(OSC133_RE, ""))
 	}
