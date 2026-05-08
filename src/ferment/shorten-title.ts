@@ -32,7 +32,7 @@ export async function shortenTitle(rawIntent: string): Promise<string> {
 				Authorization: `Bearer ${apiKey}`,
 			},
 			body: JSON.stringify({
-				model: "gpt-4o-mini",
+				model: "nemotron-3-super-fp4",
 				messages: [
 					{ role: "system", content: SYSTEM_PROMPT },
 					{ role: "user", content: `Short title for: "${rawIntent}"` },

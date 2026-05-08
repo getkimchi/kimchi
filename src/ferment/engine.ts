@@ -31,10 +31,14 @@ function planModeAction(ferment: Ferment): FermentAction {
 		case "planned": {
 			const next = findFirstPlannedPhase(ferment)
 			if (next) {
+				const groupNote =
+					next.groupIndex !== undefined
+						? ` (this will activate all phases in parallel group ${next.groupIndex})`
+						: ""
 				return {
 					kind: "activate_phase",
 					phaseId: next.id,
-					message: `Ferment "${ferment.name}" is planned with ${ferment.phases.length} phase(s). Present the plan to the user for review:\n\n${formatPhases(ferment)}\n\nAsk the user: "Ready to start Phase ${next.index}: '${next.name}'?" — wait for explicit confirmation before calling activate_phase.`,
+					message: `Ferment "${ferment.name}" is planned. Call activate_phase with ferment_id "${ferment.id}" and phase_id "${next.id}" to start Phase ${next.index}: "${next.name}"${groupNote}.`,
 				}
 			}
 			return {
@@ -122,7 +126,10 @@ function buildPlanScopeMessage(f: Ferment): string {
 	if (s.phases) answered.push("Phase Breakdown")
 
 	const answeredMsg = answered.length > 0 ? `\nAlready collected: ${answered.join(", ")}.` : ""
-	return `You are scoping ferment "${f.name}" (ID: ${f.id}).\n\nStill need to collect: ${missing.join(", ")}.${answeredMsg}\n\nAsk the user for each missing item conversationally — one question at a time. When all are answered, show them a review and wait for confirmation before calling scope_ferment.`
+	const phaseNote = missing.includes("Phase Breakdown")
+		? " For phases: propose 3–7 phases and 3–6 concrete steps per phase."
+		: ""
+	return `You are scoping ferment "${f.name}" (ID: ${f.id}).\n\nStill need to collect: ${missing.join(", ")}.${answeredMsg}${phaseNote}\n\nAsk the user for each missing item conversationally — one question at a time. When all are answered, show them a review and wait for confirmation before calling scope_ferment.`
 }
 
 function buildScopeReview(f: Ferment): string {
@@ -132,9 +139,16 @@ function buildScopeReview(f: Ferment): string {
 	if (s.criteria) lines.push(`• Success criteria: ${s.criteria.answer}`)
 	if (s.constraints) lines.push(`• Constraints: ${s.constraints.answer}`)
 	if (s.phases) {
-		lines.push(`• Phases: ${f.phases.length} planned`)
+		const totalSteps = f.phases.reduce((acc, p) => acc + p.steps.length, 0)
+		const stepSummary = totalSteps > 0 ? ` (${totalSteps} steps across all phases)` : ""
+		lines.push(`• Phases: ${f.phases.length} planned${stepSummary}`)
 		for (const p of f.phases) {
 			lines.push(`  ${p.index}. ${p.name} — ${p.goal}`)
+			if (p.steps.length > 0) {
+				for (const s of p.steps) {
+					lines.push(`     ${s.index}. ${s.description}`)
+				}
+			}
 		}
 	}
 	return lines.join("\n")
@@ -220,10 +234,14 @@ function autoModeAction(ferment: Ferment): FermentAction {
 		case "planned": {
 			const next = findFirstPlannedPhase(ferment)
 			if (next) {
+				const groupNote =
+					next.groupIndex !== undefined
+						? ` (this will activate all phases in parallel group ${next.groupIndex})`
+						: ""
 				return {
 					kind: "activate_phase",
 					phaseId: next.id,
-					message: `The ferment "${ferment.name}" is planned with ${ferment.phases.length} phase(s). Start Phase ${next.index}: "${next.name}" — ${next.goal}. Use activate_phase to begin execution.`,
+					message: `Ferment "${ferment.name}" is planned. Call activate_phase with ferment_id "${ferment.id}" and phase_id "${next.id}" to start Phase ${next.index}: "${next.name}"${groupNote}.`,
 				}
 			}
 			return {
@@ -310,7 +328,7 @@ function autoModeAction(ferment: Ferment): FermentAction {
 }
 
 function buildAutoScopeMessage(f: Ferment): string {
-	return `You are scoping a new ferment: "${f.name}" (ID: ${short(f.id)}…).\n\nGuide the user through defining this ferment. Collect:\n1. What does "done" look like? (goal)\n2. What is the definition of done? (success criteria)\n3. Constraints (what to avoid)\n4. Breakdown into 3–7 ordered phases\n\nThen call scope_ferment with all collected information.`
+	return `You are scoping a new ferment: "${f.name}" (ID: ${short(f.id)}…).\n\nAsk the user ONE question at a time, then STOP and wait for their reply. Do not ask the next question until they respond.\n\nCollect in order:\n1. Goal — what does "done" look like?\n2. Success criteria — how will we know we got there?\n3. Constraints — what to avoid, non-negotiables\n4. Phases — propose 3–7 ordered phases, each with 3–6 concrete steps\n\nAfter each answer: acknowledge briefly, then ask the next question. Do NOT call any tool mid-scoping.\nOnly call scope_ferment once the user has confirmed all four fields.`
 }
 
 function buildRefineMessage(f: Ferment, p: Phase): string {
@@ -367,7 +385,10 @@ export function getScopingProgress(f: Ferment): { answered: number; total: numbe
 
 function findActivePhase(f: Ferment): Phase | undefined {
 	if (f.activePhaseId) {
-		return f.phases.find((p) => p.id === f.activePhaseId)
+		const byId = f.phases.find((p) => p.id === f.activePhaseId)
+		// Only trust activePhaseId if the phase is actually in an active state;
+		// fall back to status scan on data drift (e.g. recovered ferments).
+		if (byId && (byId.status === "active" || byId.status === "failed")) return byId
 	}
 	return f.phases.find((p) => p.status === "active")
 }
