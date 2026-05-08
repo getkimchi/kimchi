@@ -144,6 +144,10 @@ let streamingBlocks: Map<number, StreamingBlockState> | null = null
 // Test helpers
 // ---------------------------------------------------------------------------
 
+export function filterThinkingForDisplay(text: string): string {
+	return applyStreamingDisplay(text, readHideThinkingSetting())
+}
+
 export function _setHideThinking(value: boolean | undefined): void {
 	hideThinkingOverride = value
 }

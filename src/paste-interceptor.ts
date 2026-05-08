@@ -39,7 +39,7 @@ export function installPasteInterceptor(stdin: NodeJS.ReadStream = process.stdin
 				return originalEmit("data", wrapAsBracketedPaste(text))
 			}
 		}
-		return originalEmit(event as string, ...args)
+		return originalEmit(event, ...args)
 	}
 	wrapped.installed = true
 	stdin.emit = wrapped

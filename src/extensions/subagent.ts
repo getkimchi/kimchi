@@ -17,6 +17,7 @@ import { isBunBinary, isRunningUnderBun } from "../env.js"
 import { isToolExpanded, registerToolCall } from "../expand-state.js"
 import { findExistingFile, resolveUserPath, stripAtPrefix } from "../fs-paths.js"
 import { formatCount, formatDuration } from "./format.js"
+import { filterThinkingForDisplay } from "./hide-thinking.js"
 import { type SpinnerState, clearSpinner, spinnerFrame, tickSpinner } from "./spinner.js"
 
 const PROMPT_MAX_LENGTH = 60
@@ -819,10 +820,11 @@ export default function (pi: ExtensionAPI) {
 
 			const text = getTextContent(result)
 			if (!text) return new Text("", 0, 0)
+			const displayText = filterThinkingForDisplay(text)
 
 			if (options.isPartial) {
 				const toolCall = state.lastToolCall
-				let displayText: string
+				let partialDisplayText: string
 				let displayStyle: "dim" | "toolOutput"
 				const terminalWidth = process.stdout.columns ?? 80
 				if (toolCall) {
@@ -832,27 +834,27 @@ export default function (pi: ExtensionAPI) {
 						...toolCallVisualLines.slice(0, 5),
 						...Array(5 - Math.min(toolCallVisualLines.length, 5)).fill(""),
 					]
-					displayText = paddedLines.join("\n")
+					partialDisplayText = paddedLines.join("\n")
 					displayStyle = "dim"
 				} else {
-					const nonEmptyLines = text.split("\n").filter((l: string) => l.trim())
+					const nonEmptyLines = displayText.split("\n").filter((l: string) => l.trim())
 					const visualLines = nonEmptyLines.flatMap((l: string) => wrapTextWithAnsi(l, terminalWidth))
 					const last5 = visualLines.slice(-5)
 					const paddedLines = [...Array(5 - last5.length).fill(""), ...last5]
-					displayText = paddedLines.join("\n")
+					partialDisplayText = paddedLines.join("\n")
 					displayStyle = "toolOutput"
 				}
 
 				const component = context.lastComponent instanceof Container ? context.lastComponent : new Container()
 				component.clear()
 				component.addChild(new Spacer(1))
-				component.addChild(new Text(theme.fg(displayStyle, displayText), 0, 0))
+				component.addChild(new Text(theme.fg(displayStyle, partialDisplayText), 0, 0))
 				return component
 			}
 
 			const view = context.lastComponent instanceof ToolBlockView ? context.lastComponent : new ToolBlockView()
 			const stats = result.details as SubagentStats | undefined
-			const nonEmptyLines = text.split("\n").filter((l: string) => l.trim())
+			const nonEmptyLines = displayText.split("\n").filter((l: string) => l.trim())
 			const lineCount = nonEmptyLines.length
 
 			registerToolCall(context.toolCallId)
@@ -861,7 +863,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (isToolExpanded(context.toolCallId)) {
 				const statsLine = stats !== undefined ? formatStats(stats, theme) : ""
-				view.setFooter(theme.fg("toolOutput", text), "")
+				view.setFooter(theme.fg("toolOutput", displayText), "")
 				view.setExtra(statsLine ? [statsLine] : [])
 			} else {
 				const outputSummary = theme.fg("dim", `${lineCount} line${lineCount === 1 ? "" : "s"} written`)
