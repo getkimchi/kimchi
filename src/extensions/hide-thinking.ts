@@ -27,7 +27,7 @@ import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
 import type { AssistantMessage } from "@earendil-works/pi-ai"
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { ANSI, fg } from "../ansi.js"
 import { isSubagent } from "./orchestration/prompt-transformer/prompt-transformer.js"
 
