@@ -19,6 +19,7 @@ import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { formatDecisionsAndMemories, formatFermentStatus, formatScopingContext, stripToolRefs } from "./format.js"
 import { isPlanMode } from "./modes.js"
 import { appendRefEntry, maybeInjectAutoNudge } from "./nudge.js"
+import { maybeRunOnboarding } from "./onboarding.js"
 import {
 	buildPhaseActionOptions,
 	buildPhaseDetailTitle,
@@ -407,6 +408,11 @@ export default function fermentExtension(pi: ExtensionAPI) {
 					ctx.ui.notify('No UI available. Use /ferment add "Name" instead.')
 					return
 				}
+
+				// First-run onboarding: shown only once per user (flag persisted at
+				// ~/.config/kimchi/onboarding.json). No-op for returning users.
+				await maybeRunOnboarding(ctx)
+
 				const rawIntent = await ctx.ui.input(
 					"🍺  What would you like to ferment?",
 					"e.g. 'Rewrite login flow' or 'Add OAuth support'",
