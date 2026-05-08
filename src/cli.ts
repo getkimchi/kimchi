@@ -206,6 +206,11 @@ try {
 			"dark.json",
 			"light.json",
 			"night-owl.json",
+			"nord.json",
+			"one-dark.json",
+			"monokai.json",
+			"catppuccin-macchiato.json",
+			"lucent-orng.json",
 		]
 		const bundledThemesSrcDir = isBunBinary
 			? resolve(process.env.PI_PACKAGE_DIR ?? "", "theme")
