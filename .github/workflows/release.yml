@@ -34,19 +34,19 @@ jobs:
     strategy:
       matrix:
         include:
-          - target: bun-darwin-x64
+          - target: darwin-x64
             os: darwin
             arch: amd64
             runner: macos-15
-          - target: bun-darwin-arm64
+          - target: darwin-arm64
             os: darwin
             arch: arm64
             runner: macos-15
-          - target: bun-linux-x64
+          - target: linux-x64
             os: linux
             arch: amd64
             runner: ubuntu-latest
-          - target: bun-linux-arm64
+          - target: linux-arm64
             os: linux
             arch: arm64
             runner: ubuntu-24.04-arm
@@ -63,7 +63,7 @@ jobs:
         run: node scripts/set-version.js "$GITHUB_REF_NAME"
 
       - name: Build binary
-        run: pnpm run build:binary
+        run: pnpm run build:binary -- --target=${{ matrix.target }}
 
       - name: Package binary
         run: tar -czf kimchi_${{ matrix.os }}_${{ matrix.arch }}.tar.gz -C dist bin share
