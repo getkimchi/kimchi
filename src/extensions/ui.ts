@@ -25,32 +25,59 @@ const HORIZONTAL_PADDING = 2
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching ANSI/OSC
 const OSC133_RE = /\x1b\]133;[A-Z]\x07/g
 
-// The bottom section of the TUI is always the last 5 children:
-// statusContainer, widgetContainerAbove, editorContainer, widgetContainerBelow, footer.
-// Including statusContainer (the working indicator "◑ Mixing…") in the bottom
-// section keeps the editor/footer pinned when the indicator appears or disappears.
+// The interactive TUI has 8 children in a fixed order:
+//   0 headerContainer, 1 chatContainer, 2 pendingMessagesContainer,
+//   3 statusContainer, 4 widgetContainerAbove, 5 editorContainer,
+//   6 widgetContainerBelow, 7 footer.
+//
+// The last 5 form the pinned bottom section.  Including statusContainer
+// (the working indicator "◑ Mixing…") keeps the editor/footer stable
+// when the indicator toggles.
+const EXPECTED_CHILDREN_COUNT = 8
 const BOTTOM_CHILDREN_COUNT = 5
+
+function renderChildren(children: TUI["children"], start: number, end: number, width: number): string[] {
+	const lines: string[] = []
+	for (let i = start; i < end; i++) {
+		for (const line of children[i].render(width)) {
+			lines.push(line)
+		}
+	}
+	return lines
+}
 
 function patchTuiPadding(tui: TUI) {
 	const pad = " ".repeat(HORIZONTAL_PADDING)
-	tui.render = (width: number): string[] => {
-		const innerWidth = Math.max(1, width - HORIZONTAL_PADDING * 2)
-		const children = tui.children
-		const splitAt = Math.max(0, children.length - BOTTOM_CHILDREN_COUNT)
 
-		// Render content (top) and bottom sections separately.
-		const topLines: string[] = []
-		for (let i = 0; i < splitAt; i++) {
-			for (const line of children[i].render(innerWidth)) {
-				topLines.push(line)
+	// Capture the original Container.render so we can fall back to it if
+	// the child structure doesn't match our expectations (e.g. upstream
+	// adds or removes a container).  This avoids silently breaking the
+	// layout and keeps the TUI usable even when the contract changes.
+	const originalRender = tui.render.bind(tui)
+
+	tui.render = (width: number): string[] => {
+		const children = tui.children
+
+		// Guard: if the child structure deviates from what we expect, fall
+		// back to the unpatched render so the TUI remains functional.
+		if (children.length !== EXPECTED_CHILDREN_COUNT) {
+			if (process.env.NODE_ENV !== "production") {
+				console.warn(
+					`[ui] expected ${EXPECTED_CHILDREN_COUNT} TUI children for bottom-pin layout, ` +
+						`got ${children.length} — falling back to default render`,
+				)
 			}
+			return originalRender(width)
 		}
-		const bottomLines: string[] = []
-		for (let i = splitAt; i < children.length; i++) {
-			for (const line of children[i].render(innerWidth)) {
-				bottomLines.push(line)
-			}
-		}
+
+		const innerWidth = Math.max(1, width - HORIZONTAL_PADDING * 2)
+		const splitAt = children.length - BOTTOM_CHILDREN_COUNT
+
+		// Render top (scrollable) and bottom (pinned) sections separately
+		// by delegating to each child's own render — the same mechanism
+		// the original Container.render uses.
+		const topLines = renderChildren(children, 0, splitAt, innerWidth)
+		const bottomLines = renderChildren(children, splitAt, children.length, innerWidth)
 
 		// Insert padding between content and bottom components so the prompt
 		// and footer are pushed to the terminal bottom.  This eliminates the
