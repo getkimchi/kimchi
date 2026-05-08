@@ -21,6 +21,7 @@ import type {
 	FermentStatus,
 	FermentV3,
 	FermentWorkMode,
+	JudgeGrade,
 	Memory,
 	MemoryCategory,
 	Phase,
@@ -532,6 +533,29 @@ export class FermentStorage {
 		return updated
 	}
 
+	/** Activate all phases sharing the same groupIndex (parallel group). */
+	activatePhaseGroup(id: string, groupIndex: number): Ferment | undefined {
+		const f = this.get(id)
+		if (!f) return undefined
+		const now = new Date().toISOString()
+		const groupPhases = f.phases.filter((p) => p.groupIndex === groupIndex && p.status === "planned")
+		if (groupPhases.length === 0) return undefined
+		const firstId = groupPhases[0].id
+		const updated: Ferment = {
+			...f,
+			phases: f.phases.map((p) => {
+				if (p.groupIndex === groupIndex && p.status === "planned")
+					return { ...p, status: "active" as const, startedAt: now }
+				return p
+			}),
+			activePhaseId: firstId,
+			lastActiveAt: now,
+			updatedAt: now,
+		}
+		this.write(updated)
+		return updated
+	}
+
 	/** Check if a ferment is fully terminal (all phases done/skipped/failed). */
 	isFullyTerminal(id: string): boolean {
 		const f = this.get(id)
@@ -616,6 +640,30 @@ export class FermentStorage {
 			completedAt: result.completedAt,
 			result,
 		})
+	}
+
+	setStepGrade(id: string, phaseId: string, stepId: string, grade: JudgeGrade): Ferment | undefined {
+		return this.updateStep(id, phaseId, stepId, { grade })
+	}
+
+	setPhaseGrade(id: string, phaseId: string, grade: JudgeGrade): Ferment | undefined {
+		const f = this.get(id)
+		if (!f) return undefined
+		const updated: Ferment = {
+			...f,
+			phases: f.phases.map((p) => (p.id === phaseId ? { ...p, grade } : p)),
+			updatedAt: new Date().toISOString(),
+		}
+		this.write(updated)
+		return updated
+	}
+
+	setFermentGrade(id: string, grade: JudgeGrade): Ferment | undefined {
+		const f = this.get(id)
+		if (!f) return undefined
+		const updated: Ferment = { ...f, grade, updatedAt: new Date().toISOString() }
+		this.write(updated)
+		return updated
 	}
 
 	/** Update a step in a phase. */

@@ -62,6 +62,8 @@ export interface Ferment {
 	decisions: Decision[]
 	memories: Memory[]
 
+	grade?: JudgeGrade  // computed at complete_ferment from phase grades
+
 	createdAt: string
 	updatedAt: string
 }
@@ -83,6 +85,7 @@ export interface Phase {
 	startedAt?: string
 	completedAt?: string
 	summary?: string // what was accomplished
+	grade?: JudgeGrade  // set by judge at complete_phase
 
 	// Progressive refinement: steps are populated when phase is activated
 	steps: Step[]
@@ -90,6 +93,16 @@ export interface Phase {
 	// Parallel execution (v4.1)
 	parallel?: boolean
 	groupIndex?: number // phases with same groupIndex run together
+}
+
+// ─── Grading ──────────────────────────────────────────────────────────────────
+
+export type Grade = "A" | "B" | "C" | "D" | "F"
+
+export interface JudgeGrade {
+	grade: Grade
+	rationale: string
+	gradedAt: string
 }
 
 // ─── Step / Level 2 (replaces RecipeStep) ─────────────────────────────────────
@@ -105,8 +118,16 @@ export interface Step {
 	startedAt?: string
 	completedAt?: string
 
+	/** Worker model to use when spawning a subagent for this step. */
+	workerModel?: "minimax-m2.7" | "kimi-k2.5"
+	/** Whether this step requires vision (images/screenshots). Determines worker model selection. */
+	needsVision?: boolean
+	/** Whether this step can run in parallel with other canRunParallel steps in the same phase. */
+	canRunParallel?: boolean
+
 	verification?: Verification
 	result?: StepResult // populated on completion/verification
+	grade?: JudgeGrade  // set by judge after step completes
 }
 
 export interface Verification {
