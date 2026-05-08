@@ -36,7 +36,7 @@ cd benchmark/manual
 ./sessions/session-NN/run-all.sh   # replace NN with the session number printed above
 ```
 
-**If you are running in iTerm2, run tasks in foreground so the user can monitor progress in a separate tab. Close the tab when all tasks are done.**
+**Run tasks in foreground so you can monitor progress in the terminal. Close the window/tab when all tasks are done.**
 
 **Per-task timeouts** (enforced by task criteria, not by you):
 

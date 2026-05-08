@@ -104,30 +104,19 @@ cd "$DIR"
         os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         all_scripts.append(script_path)
 
-# run-all.sh — iTerm2 grid (cols=tasks, rows=models) with background fallback
+# run-all.sh — Terminal.app tabs (cols=tasks, rows=models) with background fallback
 run_all = os.path.join(session_dir, "run-all.sh")
 cols = len(tasks)
 rows = len(models)
 
-# Build AppleScript: create a NEW TAB, then split into a grid (cols=tasks, rows=models)
+# Build AppleScript: open one Terminal window per script
 as_lines = []
-# First pane in the new tab
-as_lines.append("      set g0_0 to current session of newTab")
-# Create remaining columns via vertical splits
-for c in range(1, cols):
-    as_lines.append(f"      set g{c}_0 to (split vertically with default profile of g{c-1}_0)")
-# Create rows via horizontal splits
-for r in range(1, rows):
-    for c in range(cols):
-        as_lines.append(f"      set g{c}_{r} to (split horizontally with default profile of g{c}_{r-1})")
-# Write commands
-for r in range(rows):
-    for c in range(cols):
-        i = r * cols + c
-        if i < len(all_scripts):
-                # NOTE: iTerm2's `write text` sends keystrokes and returns immediately —
-            # it does NOT wait for the command to finish.
-            as_lines.append(f'      tell g{c}_{r} to write text "{all_scripts[i]}"')
+as_lines.append("tell application \"Terminal\"")
+as_lines.append("  activate")
+for script in all_scripts:
+    script_escaped = script.replace('"', '\\"')
+    as_lines.append(f'  do script "{script_escaped}"')
+as_lines.append("end tell")
 as_body = "\n".join(as_lines)
 
 # Background fallback: run each script with output to a per-script log file
@@ -140,19 +129,14 @@ bg_body = "\n".join(bg_lines)
 
 with open(run_all, "w") as f:
     f.write(f"""#!/bin/zsh
-if osascript -e 'id of application "iTerm2"' &>/dev/null 2>&1; then
+# Try Terminal.app first, fall back to background processes
+if osascript -e 'id of application "Terminal"' &>/dev/null 2>&1; then
   osascript <<APPLESCRIPT
-tell application "iTerm2"
-  tell current window
-    set newTab to (create tab with default profile)
-    tell newTab
 {as_body}
-    end tell
-  end tell
-end tell
 APPLESCRIPT
+  echo "All scripts running in Terminal.app windows."
 else
-  echo "iTerm2 not available — running {len(all_scripts)} scripts in background (logs in {session_dir}/)..."
+  echo "Terminal.app not available — running {len(all_scripts)} scripts in background (logs in {session_dir}/)..."
 {bg_body}
   wait
   echo "All done."
