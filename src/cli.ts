@@ -15,6 +15,7 @@ import {
 	writeSkillPaths,
 } from "./config.js"
 import { isBunBinary } from "./env.js"
+import agentsExtension from "./extensions/agents/index.js"
 import bashCollapseExtension from "./extensions/bash-collapse.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
@@ -30,7 +31,6 @@ import promptSummaryExtension from "./extensions/prompt-summary.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 // import statsExtension from "./extensions/stats/index.js"
-import subagentExtension from "./extensions/subagent.js"
 import tagsExtension from "./extensions/tags.js"
 import telemetryExtension from "./extensions/telemetry.js"
 import terminalColorsExtension from "./extensions/terminal-colors.js"
@@ -267,7 +267,7 @@ try {
 			contextCompactorExtension,
 			clipboardImageExtension,
 			uiExtension,
-			subagentExtension,
+			agentsExtension,
 			tagsExtension,
 			telemetryExtension(telemetryConfig),
 			toolRendererExtension,

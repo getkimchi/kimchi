@@ -33,8 +33,14 @@ const EMPTY_LOADED_CONFIG: LoadedConfig = {
 // bash is allowed but gated per-command by isReadOnlyBashCommand.
 const PLAN_MODE_TOOLS = ["read", "grep", "find", "ls", "web_search", "web_fetch", "questionnaire", "bash"]
 
-// subagent delegates to a sub-session that enforces permissions on its own calls.
-const BUILTIN_ALLOW_TOOL_NAMES = ["subagent", "set_phase"]
+// Tools that auto-approve in headless/auto modes without LLM classification.
+// `set_phase` is a kimchi built-in. `Agent`/`get_subagent_result`/`steer_subagent`
+// are the agents-extension surface — Agent is the canonical delegation tool, the
+// other two are read-only/control-plane operations on already-approved spawns.
+//
+// Names are lowercased because the tool_call handler lowercases event.toolName
+// before comparing (see `const toolName = event.toolName.toLowerCase()` below).
+const BUILTIN_ALLOW_TOOL_NAMES = ["set_phase", "agent", "get_subagent_result", "steer_subagent"]
 
 const MODES: Array<{ mode: PermissionMode; label: string; color: "success" | "warning" | "error" }> = [
 	{ mode: "default", label: "default", color: "success" },
