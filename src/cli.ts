@@ -19,6 +19,7 @@ import bashCollapseExtension from "./extensions/bash-collapse.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
+import hideThinkingExtension from "./extensions/hide-thinking.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import loginExtension from "./extensions/login/index.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
@@ -267,6 +268,7 @@ try {
 			behavioursExtension,
 			promptSummaryExtension,
 			contextCompactorExtension,
+			hideThinkingExtension,
 			clipboardImageExtension,
 			uiExtension,
 			subagentExtension,
