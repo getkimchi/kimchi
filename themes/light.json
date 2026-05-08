@@ -27,19 +27,19 @@
 		"warning": "yellow",
 		"muted": "mediumGray",
 		"dim": "dimGray",
-		"text": "",
+		"text": "mediumGray",
 		"thinkingText": "mediumGray",
 
 		"selectedBg": "selectedBg",
 		"userMessageBg": "userMsgBg",
-		"userMessageText": "",
+		"userMessageText": "mediumGray",
 		"customMessageBg": "customMsgBg",
-		"customMessageText": "",
+		"customMessageText": "mediumGray",
 		"customMessageLabel": "#7e57c2",
 		"toolPendingBg": "toolPendingBg",
 		"toolSuccessBg": "toolSuccessBg",
 		"toolErrorBg": "toolErrorBg",
-		"toolTitle": "",
+		"toolTitle": "teal",
 		"toolOutput": "mediumGray",
 
 		"mdHeading": "yellow",
@@ -74,7 +74,9 @@
 		"thinkingHigh": "#875f87",
 		"thinkingXhigh": "#8b008b",
 
-		"bashMode": "green"
+		"bashMode": "green",
+		"oscFg": "#333333",
+		"oscBg": "#FFFFFF"
 	},
 	"export": {
 		"pageBg": "#f8f8f8",

@@ -1,21 +1,51 @@
+import { readFileSync } from "node:fs"
+import { resolve } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getActiveThemeName, onThemeChange } from "../settings-watcher.js"
 import { QUERY_BG, getRawBgPayload } from "../terminal-bg-probe.js"
 
-const FG_COLOR = "rgb:A1/A1/A1"
-const BG_COLOR = "rgb:1A/18/18"
-const SET_FG = `\x1b]10;${FG_COLOR}\x07`
-const SET_BG = `\x1b]11;${BG_COLOR}\x07`
 const QUERY_FG = "\x1b]10;?\x07"
 const QUERY_TIMEOUT_MS = 200
 
-// OSC 10/11 enforce kimchi's branded fg/bg over the terminal's own colors. Only
-// applied when the user has opted into the rich `kimchi` theme. Any other theme
-// (including kimchi-minimal, dark, light) lets the terminal own its bg/fg.
+/** Converts hex color (#RRGGBB) to OSC rgb format (rgb:RR/GG/BB). */
+function hexToOscRgb(hex: string): string | null {
+	if (!hex || hex === "") return null
+	// Convert #A1A1A1 to rgb:A1/A1/A1
+	const match = hex.match(/^#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/)
+	if (!match) return null
+	const r = match[1].toUpperCase()
+	const g = match[2].toUpperCase()
+	const b = match[3].toUpperCase()
+	return `rgb:${r}/${g}/${b}`
+}
+
+// OSC 10/11 enforce theme-specified fg/bg over the terminal's own colors.
+// Applied when the user has opted into a theme that defines oscFg/oscBg.
+// Any theme without these values (including kimchi-minimal) lets the terminal
+// own its bg/fg.
 //
 // OSC writes are sticky on the terminal, so when the user toggles themes via
-// /settings we have to actively restore the saved fg/bg — otherwise the kimchi
-// bg lingers under dark/light/kimchi-minimal.
+// /settings we have to actively restore the saved fg/bg — otherwise the
+// theme bg lingers under another theme or kimchi-minimal.
+
+function getThemeOscColors(themeName: string): { fg: string; bg: string } | null {
+	try {
+		const dir = process.env.KIMCHI_CODING_AGENT_DIR
+		if (!dir) return null
+		const path = resolve(dir, "theme", `${themeName}.json`)
+		const raw = readFileSync(path, "utf-8")
+		const theme = JSON.parse(raw)
+		const oscBgHex = theme.colors?.oscBg
+		if (!oscBgHex || oscBgHex === "") return null
+		const oscFgHex = theme.colors?.oscFg ?? ""
+		return {
+			fg: hexToOscRgb(oscFgHex) ?? "",
+			bg: hexToOscRgb(oscBgHex) ?? "",
+		}
+	} catch {
+		return null
+	}
+}
 
 export default function terminalColorsExtension(pi: ExtensionAPI) {
 	let savedFg: string | null = null
@@ -32,10 +62,10 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 		active = false
 	}
 
-	const apply = () => {
+	const apply = (fg?: string, bg?: string) => {
 		if (!process.stdout.isTTY) return
-		process.stdout.write(SET_FG)
-		process.stdout.write(SET_BG)
+		if (fg) process.stdout.write(`\x1b]10;${fg}\x07`)
+		if (bg) process.stdout.write(`\x1b]11;${bg}\x07`)
 		active = true
 	}
 
@@ -110,9 +140,13 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 	}
 
 	const reactToThemeChange = (newName: string | undefined) => {
-		const wantActive = newName === "kimchi"
-		if (wantActive && !active) apply()
-		else if (!wantActive && active) restore()
+		const oscColors = getThemeOscColors(newName ?? "")
+
+		if (oscColors?.bg) {
+			if (!active) apply(oscColors.fg, oscColors.bg)
+		} else {
+			if (active) restore()
+		}
 		// Nudge pi to repaint chrome that may be stuck on stale bg.
 		lastCtx?.ui.setStatus("kimchi-theme-rerender", undefined)
 	}
@@ -123,9 +157,11 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 		installExitHandlers()
 
 		// Probe & save terminal-original fg/bg unconditionally so we can restore
-		// when the user later switches away from kimchi mid-session.
+		// when the user later switches away from a theme that sets osc colors.
 		probeAndSave(() => {
-			if (getActiveThemeName() === "kimchi") apply()
+			const oscColors = getThemeOscColors(getActiveThemeName() ?? "")
+			if (oscColors?.bg) apply(oscColors.fg, oscColors.bg)
+
 			unsubscribeThemeChange?.()
 			unsubscribeThemeChange = onThemeChange(reactToThemeChange)
 		})
