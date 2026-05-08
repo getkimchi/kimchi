@@ -1,22 +1,79 @@
 /**
  * Interactive scoping flow.
  *
- * Collects goal/criteria/constraints via three TUI inputs, then fires ONE LLM
- * turn asking the model to propose phases and end with "Does this plan look
- * right?". The turn_end intercept (in index.ts) shows a Yes/No dropdown; on
- * confirmation it sets the scoping gate flag, which `scope_ferment` checks
- * before allowing the transition to `planned`.
+ * Three-stage handshake:
+ *
+ *   1. `runScopingFlow` collects goal/criteria/constraints via TUI inputs and
+ *      stashes them in `pendingScope` keyed by ferment id. Then it fires ONE
+ *      LLM turn asking the model to (a) propose phases as a numbered list for
+ *      the user, (b) call the `propose_phases` tool with the structured data,
+ *      and (c) end with "Does this plan look right?".
+ *
+ *   2. `propose_phases` (the tool) validates the structured proposal and
+ *      attaches it to the same `pendingScope` entry. No state transition
+ *      happens here — the proposal is just buffered.
+ *
+ *   3. The `turn_end` intercept (in index.ts) shows a Yes/No dropdown. On
+ *      "Yes", it pulls the full pendingScope (user answers + LLM phases) and
+ *      calls `applyAndPersist({type: "scope", ...})` directly. No further LLM
+ *      round-trip — the state machine applies the scope deterministically.
+ *
+ * If the LLM ends its turn without calling `propose_phases`, the dropdown
+ * detects an incomplete pendingScope and instructs the LLM to retry via the
+ * tool. Tool-call structure is the contract; prose is just for the user.
  *
  * In headless sessions (no `ctx.ui.input`), the LLM does the full scoping
- * conversation with no gate enforced.
+ * conversation with no gate enforced and no pending-scope buffer.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { whatNext } from "../../ferment/engine.js"
+import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { stripToolRefs } from "./format.js"
 import { isPlanMode } from "./modes.js"
 import { getStorage, markScopingInteractive } from "./state.js"
+
+// ─── Pending scope buffer ─────────────────────────────────────────────────────
+// Holds the user's TUI-collected scoping answers + the LLM-proposed phases
+// (attached by the propose_phases tool) until the user confirms via dropdown.
+
+export interface PendingScope {
+	goal: string
+	successCriteria: string
+	constraints: string[]
+	phases?: ScopePhaseInput[]
+}
+
+const pendingScopes = new Map<string, PendingScope>()
+
+export function getPendingScope(fermentId: string): PendingScope | undefined {
+	return pendingScopes.get(fermentId)
+}
+
+export function setPendingScope(fermentId: string, scope: PendingScope): void {
+	pendingScopes.set(fermentId, scope)
+}
+
+/** Attach LLM-proposed phases to an existing pending scope. Returns false if
+ *  no pending scope exists for the ferment (i.e. the LLM called
+ *  propose_phases without the host running runScopingFlow first). */
+export function attachPendingPhases(fermentId: string, phases: ScopePhaseInput[]): boolean {
+	const existing = pendingScopes.get(fermentId)
+	if (!existing) return false
+	pendingScopes.set(fermentId, { ...existing, phases })
+	return true
+}
+
+export function clearPendingScope(fermentId: string): void {
+	pendingScopes.delete(fermentId)
+}
+
+export function clearAllPendingScopes(): void {
+	pendingScopes.clear()
+}
+
+// ─── Scoping flow ─────────────────────────────────────────────────────────────
 
 function buildScopePrompt(fermentId: string, isPlan: boolean, rawIntent?: string): string {
 	const f = getStorage().get(fermentId)
@@ -76,10 +133,37 @@ export async function runScopingFlow(f: Ferment, pi: ExtensionAPI, ctx: Extensio
 		.map((c) => c.trim())
 		.filter(Boolean)
 
-	// Fire a single LLM turn with all collected answers. The LLM's only job is
-	// to propose phases+steps as text, then ask the user to confirm.
-	// scope_ferment will be called in the NEXT turn after user confirms.
-	const prompt = `Ferment: "${f.name}" (ID: ${f.id})\n\nThe user has already answered the scoping questions:\n- Goal: ${goal}\n- Success criteria: ${criteria}\n- Constraints: ${constraintList.join(", ")}\n\nYour task:\n1. Propose 3–7 ordered phases. For each phase provide: name, goal (one sentence), and 3–6 concrete step descriptions.\n2. Present the phases clearly as a numbered list.\n3. End with the question: "Does this plan look right?"\n\nDo NOT call scope_ferment yet. Do NOT use any file/search/bash tools. Just propose the phases as text and ask for confirmation.`
+	// Stash the user's answers. The LLM-proposed phases will be attached by
+	// the propose_phases tool when the LLM calls it. The Yes/No dropdown then
+	// reads this combined buffer and applies scope deterministically — no
+	// follow-up prompt needed.
+	setPendingScope(f.id, {
+		goal,
+		successCriteria: criteria,
+		constraints: constraintList,
+	})
+
+	// Fire a single LLM turn. The LLM produces a human-readable plan AND must
+	// call the propose_phases tool with the same plan in structured form. The
+	// tool definition (in tool-schemas.ts) is the contract; the prompt below
+	// is just orientation.
+	const prompt = `Ferment: "${f.name}" (ID: ${f.id})
+
+The user has already answered the scoping questions:
+- Goal: ${goal}
+- Success criteria: ${criteria}
+- Constraints: ${constraintList.join(", ")}
+
+Your task — three things in this order:
+
+1. Present 3–7 ordered phases as a numbered list for the user to read. For each phase: name, one-sentence goal, and 3–6 concrete step descriptions.
+2. Call the \`propose_phases\` tool with ferment_id "${f.id}" and the same plan in structured form. The tool stashes the proposal so the host can apply it deterministically when the user confirms — without this call, the user's confirmation has nothing to save.
+3. End your message with: "Does this plan look right?"
+
+CRITICAL:
+- Do NOT call scope_ferment yourself — the host does that automatically when the user confirms.
+- Do NOT use any file/search/bash tools to research first.
+- Make sure the phases you call propose_phases with EXACTLY match the ones in your numbered list.`
 
 	void pi.sendMessage(
 		{

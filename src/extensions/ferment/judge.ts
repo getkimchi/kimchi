@@ -169,7 +169,8 @@ F = phase goal not achieved`
 export interface PlanReview {
 	verdict: "approve" | "revise"
 	suggestions: string[]
-	confidence: number // 0–100
+	confidence: number // 0–100; 0 means the judge was unreachable / response unparseable
+	reasoning: string
 }
 
 export async function judgePlan(
@@ -179,31 +180,55 @@ export async function judgePlan(
 	constraints: string,
 	phases: string,
 ): Promise<PlanReview> {
-	const system = `You are a senior engineering lead reviewing a project plan before execution begins.
+	const system = `You are a senior engineering lead reviewing a project plan before execution begins. Your job is to spot gaps, vague steps, and missing phases — NOT to rubber-stamp.
 
 Respond with EXACTLY one JSON object, no markdown:
-{"verdict":"approve"|"revise","suggestions":["..."],"confidence":0-100}
+{"verdict":"approve"|"revise","suggestions":["..."],"reasoning":"<one sentence>","confidence":N}
 
-- approve: plan is sound, phases cover the goal, steps are concrete and verifiable
-- revise: plan has gaps, missing phases, or steps too vague — list specific suggestions
-confidence = how confident you are the plan will achieve the goal (0–100)
+# Verdict
 
-Be concise. Maximum 3 suggestions if revising.`
+- approve: every phase has a clear deliverable, every step is concrete and verifiable, the phases cover the full goal end-to-end, and there are no obvious blind spots.
+- revise: any of the above is missing. Be picky.
+
+# Confidence — pick ONE band, do NOT default to a round middle number
+
+- 95: phases are crisp, steps are concrete and verifiable, scope matches the goal exactly, no gaps. Rare.
+- 85: minor concerns (one phase a bit vague, or one obvious risk not called out) but the plan is sound.
+- 70: meaningful gaps or concerns. Plan probably ships something useful but you can name 1-2 risks that could derail it.
+- 55: significant concerns — phases are too high-level, or steps are descriptions rather than actions, or the plan is missing a phase.
+- 35: plan is partly aspirational — the goal won't be reached as written.
+- 15: not a plan, just a wish list.
+
+Picking 75 or 80 because you're unsure means you didn't actually review it. If you can't justify a band, return "revise" with suggestions.
+
+# Suggestions
+
+Maximum 3 if revising. Each must be specific: name the phase or step that's weak and what would fix it. No generic advice.
+
+# Reasoning
+
+One sentence justifying the verdict and confidence. This is shown to the user.`
 
 	const user = `Project: "${fermentName}"\nGoal: ${goal}\nSuccess criteria: ${criteria}\nConstraints: ${constraints}\n\nProposed phases:\n${phases}`
 
-	const raw = await judgeApiCall(system, user, 300)
-	if (!raw) return { verdict: "approve", suggestions: [], confidence: 75 }
+	const raw = await judgeApiCall(system, user, 400)
+	if (!raw) return { verdict: "approve", suggestions: [], confidence: 0, reasoning: "Judge unavailable." }
 	try {
-		const parsed = JSON.parse(raw) as { verdict?: string; suggestions?: unknown; confidence?: number }
+		const parsed = JSON.parse(raw) as {
+			verdict?: string
+			suggestions?: unknown
+			confidence?: number
+			reasoning?: string
+		}
 		const verdict = parsed.verdict === "revise" ? "revise" : "approve"
 		const suggestions = Array.isArray(parsed.suggestions)
 			? (parsed.suggestions as unknown[]).filter((s): s is string => typeof s === "string").slice(0, 3)
 			: []
-		const confidence = typeof parsed.confidence === "number" ? Math.min(100, Math.max(0, parsed.confidence)) : 75
-		return { verdict, suggestions, confidence }
+		const confidence = typeof parsed.confidence === "number" ? Math.min(100, Math.max(0, parsed.confidence)) : 0
+		const reasoning = typeof parsed.reasoning === "string" ? parsed.reasoning.slice(0, 300) : ""
+		return { verdict, suggestions, confidence, reasoning }
 	} catch {
-		return { verdict: "approve", suggestions: [], confidence: 75 }
+		return { verdict: "approve", suggestions: [], confidence: 0, reasoning: "Judge response unparseable." }
 	}
 }
 

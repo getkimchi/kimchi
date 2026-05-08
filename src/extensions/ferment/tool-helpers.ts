@@ -63,13 +63,33 @@ export function resolveStep(phase: Phase, stepId: string): Step | undefined {
  */
 export type ApplyOutcome =
 	| { ok: true; ferment: Ferment }
-	| { ok: false; error: TransitionError | { code: "FERMENT_NOT_FOUND"; message: string } }
+	| {
+			ok: false
+			error:
+				| TransitionError
+				| { code: "FERMENT_NOT_FOUND"; message: string }
+				| { code: "FERMENT_PAUSED"; message: string }
+	  }
+
+// Commands the user/host can issue even when the ferment is paused. Everything
+// else is structurally rejected at the bridge — no tool calls can mutate state
+// while paused. This is the load-bearing piece of the pause feature.
+const COMMANDS_ALLOWED_WHILE_PAUSED = new Set<Command["type"]>(["resume", "abandon"])
 
 export function applyAndPersist(fermentId: string, cmd: Command): ApplyOutcome {
 	const storage = getStorage()
 	const current = storage.get(fermentId)
 	if (!current) {
 		return { ok: false, error: { code: "FERMENT_NOT_FOUND", message: `Ferment not found: ${fermentId}` } }
+	}
+	if (current.status === "paused" && !COMMANDS_ALLOWED_WHILE_PAUSED.has(cmd.type)) {
+		return {
+			ok: false,
+			error: {
+				code: "FERMENT_PAUSED",
+				message: `Ferment "${current.name}" is paused. The user must resume with /auto before any further ferment tool calls. Acknowledge the pause and wait — do NOT call ferment tools.`,
+			},
+		}
 	}
 	const result = applyCommand(current, cmd, { now: new Date().toISOString() })
 	if (!result.ok) return { ok: false, error: result.error }

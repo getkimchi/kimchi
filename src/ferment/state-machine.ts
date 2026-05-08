@@ -89,6 +89,8 @@ export type Command =
 	| { type: "skip_step"; phaseId: string; stepId: string }
 	| { type: "fail_step"; phaseId: string; stepId: string; error?: string }
 	| { type: "complete_ferment"; finalSummary?: string; grade?: JudgeGrade }
+	| { type: "pause" }
+	| { type: "resume" }
 	| { type: "abandon"; reason?: string }
 	| {
 			type: "add_decision"
@@ -183,6 +185,10 @@ export function applyCommand(ferment: Ferment, cmd: Command, ctx: TransitionCont
 			return handleFailStep(ferment, cmd, ctx)
 		case "complete_ferment":
 			return handleCompleteFerment(ferment, cmd, ctx)
+		case "pause":
+			return handlePause(ferment, cmd, ctx)
+		case "resume":
+			return handleResume(ferment, cmd, ctx)
 		case "abandon":
 			return handleAbandon(ferment, cmd, ctx)
 		case "add_decision":
@@ -736,6 +742,35 @@ function handleCompleteFerment(
 	// to a custom field via metadata if needed. Today it just goes into the
 	// tool result text.
 	return ok(touch(ferment, ctx, patch))
+}
+
+// ─── pause / resume ───────────────────────────────────────────────────────────
+// Pause flips a running/planned ferment to "paused". Once paused, the bridge
+// (applyAndPersist) refuses every other state-machine command except `resume`
+// and `abandon`, so the planner is structurally prevented from continuing
+// regardless of what's in its conversation context.
+
+function handlePause(
+	ferment: Ferment,
+	_cmd: Extract<Command, { type: "pause" }>,
+	ctx: TransitionContext,
+): TransitionResult {
+	const guard = requireFermentStatus(ferment, ["running", "planned"])
+	if (guard) return fail(guard)
+	return ok(touch(ferment, ctx, { status: "paused" }))
+}
+
+function handleResume(
+	ferment: Ferment,
+	_cmd: Extract<Command, { type: "resume" }>,
+	ctx: TransitionContext,
+): TransitionResult {
+	const guard = requireFermentStatus(ferment, ["paused"])
+	if (guard) return fail(guard)
+	// Resume always returns to "running". A ferment that was "planned" before
+	// pause loses the distinction — the planner can navigate from running by
+	// calling skip_phase or activate_phase as needed.
+	return ok(touch(ferment, ctx, { status: "running" }))
 }
 
 // ─── abandon ──────────────────────────────────────────────────────────────────

@@ -30,7 +30,7 @@ import {
 	handlePhaseAction,
 	handleStepAction,
 } from "./progress-overlay.js"
-import { runScopingFlow } from "./scoping.js"
+import { clearAllPendingScopes, clearPendingScope, getPendingScope, runScopingFlow } from "./scoping.js"
 import {
 	captureJudgeContext,
 	clearAllScopingGates,
@@ -48,6 +48,7 @@ import {
 	setAutoModeEnabled,
 	setRestoringModel,
 } from "./state.js"
+import { applyAndPersist } from "./tool-helpers.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { registerLifecycleTools } from "./tools/lifecycle.js"
 import { registerPhaseTools } from "./tools/phases.js"
@@ -91,6 +92,39 @@ export function getCurrentBatchName(): string | undefined {
 export function getCurrentRecipe(): Step[] {
 	const f = getActive()
 	return f?.phases.find((p) => p.id === f.activePhaseId)?.steps ?? []
+}
+
+/**
+ * Extract just the final question from an assistant message — the last
+ * sentence ending in `?`, with light cleanup. Falls back to the last 200
+ * chars only if no `?` is found in the trailing region. The full message is
+ * already rendered in the transcript above the dialog; the dialog title
+ * should show only the actual question being asked.
+ */
+function extractTrailingQuestion(text: string): string {
+	const trimmed = text.trim()
+	if (!trimmed) return "Continue?"
+
+	// Look for the last `?` and walk back to the nearest sentence start
+	// (start-of-text, blank line, or sentence-ending punctuation followed by space).
+	const lastQ = trimmed.lastIndexOf("?")
+	if (lastQ === -1) return trimmed.slice(-200)
+
+	// Search backwards from lastQ for a sentence boundary.
+	const tail = trimmed.slice(0, lastQ + 1)
+	const boundary = tail.search(/(?:^|[\n.!?]\s+|"\s+)([^.!?\n"]*\?)$/)
+	if (boundary >= 0) {
+		// Pull out the captured group (the question itself, without the boundary char).
+		const m = tail.match(/(?:^|[\n.!?]\s+|"\s+)([^.!?\n"]*\?)$/)
+		if (m?.[1]) return m[1].trim()
+	}
+
+	// Fallback: take the last line that contains the question mark.
+	const lines = tail.split("\n")
+	for (let i = lines.length - 1; i >= 0; i--) {
+		if (lines[i].includes("?")) return lines[i].trim()
+	}
+	return trimmed.slice(-200)
 }
 
 // ─── Planner system prompt supplement ─────────────────────────────────────────
@@ -183,6 +217,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		if (process.env.KIMCHI_SUBAGENT === "1") return
 		clearAllStepStarts()
 		clearAllScopingGates()
+		clearAllPendingScopes()
 		// Clear in-memory ferment cache — fresh session reads from disk once,
 		// then serves subsequent reads from cache until next mutation.
 		clearFermentCache()
@@ -223,9 +258,17 @@ export default function fermentExtension(pi: ExtensionAPI) {
 	// When a ferment is running, tell the session model it is the planner:
 	// its job is to manage the state machine and delegate implementation to
 	// subagent workers — never to write code itself.
+	// When the ferment is paused, inject a clear stop directive instead. The
+	// state machine refuses ferment tool calls in this state regardless, but
+	// telling the planner up front avoids a turn full of failed attempts.
 	pi.on("before_agent_start", async (event) => {
 		const f = getActive()
-		if (!f || f.status !== "running") return {}
+		if (!f) return {}
+		if (f.status === "paused") {
+			const pausedSupplement = `\n\n## Ferment Paused\n\nFerment "${f.name}" is paused by the user. Do NOT call any ferment tools (activate_phase, start_step, complete_step, etc.) — they will be rejected. Acknowledge any pending question briefly and wait for the user to resume with /auto.`
+			return { systemPrompt: `${event.systemPrompt}${pausedSupplement}` }
+		}
+		if (f.status !== "running") return {}
 		const supplement = buildPlannerSupplement()
 		return { systemPrompt: `${event.systemPrompt}${supplement}` }
 	})
@@ -284,24 +327,55 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		const yesLabel = isDraft ? "Yes, this looks right" : "Yes, proceed"
 		const noLabel = isDraft ? "No, revise" : "No, pause"
 
-		const choice = await ctx.ui.select(text.slice(-200), [yesLabel, noLabel, "Let me say something else"])
+		// Extract just the final question rather than dumping the last 200 chars
+		// of the message. The full text is already rendered above the dialog —
+		// the dialog title should be the question itself, nothing more.
+		const title = extractTrailingQuestion(text)
+		const choice = await ctx.ui.select(title, [yesLabel, noLabel, "Let me say something else"])
 		if (!choice) return
 
 		let reply: string
+
 		if (choice === "Let me say something else") {
 			const custom = ctx.ui.input ? await ctx.ui.input("Your message:", "") : undefined
 			if (!custom) return
 			reply = custom
 		} else if (choice === noLabel) {
 			reply = isDraft ? "No — please revise." : "No, pause for now."
-		} else {
-			// User confirmed — if in draft, unlock scope_ferment gate for this ferment
-			if (isDraft) {
-				markScopingConfirmed(f.id)
-				reply = `Yes, confirmed. Now call scope_ferment with ferment_id "${f.id}" and the phases you just proposed.`
+		} else if (isDraft) {
+			// User confirmed during scoping. If the LLM stashed a structured
+			// proposal via propose_phases, apply it deterministically here —
+			// no further LLM round-trip needed. The user confirmed what they
+			// read on screen; we save EXACTLY that, not whatever the LLM might
+			// re-imagine in a follow-up turn.
+			const pending = getPendingScope(f.id)
+			if (pending?.phases && pending.phases.length > 0) {
+				markScopingConfirmed(f.id) // unlock the scope_ferment gate (still required by the gate)
+				const outcome = applyAndPersist(f.id, {
+					type: "scope",
+					title: f.name,
+					goal: pending.goal,
+					successCriteria: pending.successCriteria,
+					constraints: pending.constraints,
+					phases: pending.phases,
+				})
+				clearPendingScope(f.id)
+				if (!outcome.ok) {
+					ctx.ui.notify(`Failed to save plan: ${outcome.error.message}`)
+					reply = `Plan save failed: ${outcome.error.message}. Investigate the ferment state and try again.`
+				} else {
+					ctx.ui.notify(`Plan saved for "${outcome.ferment.name}". ${outcome.ferment.phases.length} phase(s) ready.`)
+					reply = `Plan saved by user confirmation — ${outcome.ferment.phases.length} phase(s) now in "planned" status. You can proceed with activate_phase when the user is ready, or wait for further instructions.`
+				}
 			} else {
-				reply = "Yes, proceed."
+				// No pending phases — LLM forgot to call propose_phases, or this
+				// turn's "?" wasn't actually the scoping confirmation. Ask the LLM
+				// to retry via the tool so the user's confirmation has something to save.
+				reply =
+					"User confirmed the plan but you never called propose_phases — there's nothing structured for the host to save. Call propose_phases now with the same plan you just showed, then end with 'Does this plan look right?' so the user can confirm again."
 			}
+		} else {
+			reply = "Yes, proceed."
 		}
 
 		markHumanInput()
@@ -419,6 +493,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 				if (action === "Delete") {
 					storage.delete(selected.id)
 					clearFermentState(selected.id)
+					clearPendingScope(selected.id)
 					if (getActiveId() === selected.id) setActive(undefined)
 					ctx.ui.notify(`Deleted "${selected.name}"`)
 					return
@@ -518,6 +593,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 					}
 					storage.delete(f.id)
 					clearFermentState(f.id)
+					clearPendingScope(f.id)
 					if (getActiveId() === f.id) setActive(undefined)
 					ctx.ui.notify(`Deleted "${f.name}" (${f.id}).`)
 				} catch (err) {
@@ -586,6 +662,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 				if (r) {
 					setActive(r)
 					clearFermentState(abandonedId)
+					clearPendingScope(abandonedId)
 					ctx.ui.notify(`Ferment "${r.name}" abandoned.`)
 				}
 				return
@@ -754,19 +831,104 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 	})
 
 	pi.registerCommand("auto", {
-		description: "Enable auto-mode for the active ferment",
+		description: "Resume — flip a paused ferment back to running and re-engage the planner.",
 		async handler(_, ctx) {
 			setAutoModeEnabled(true)
-			ctx.ui.notify("Auto-mode enabled.")
-			if (getActive()) maybeInjectAutoNudge(pi)
+			const active = getActive()
+			if (!active) {
+				ctx.ui.notify("Auto-mode enabled. (No active ferment.)")
+				return
+			}
+			// If the ferment is paused, transition via the state machine.
+			if (active.status === "paused") {
+				const outcome = applyAndPersist(active.id, { type: "resume" })
+				if (!outcome.ok) {
+					ctx.ui.notify(`Cannot resume: ${outcome.error.message}`)
+					return
+				}
+			}
+
+			// State-machine-first resume: if the engine's next action is a state
+			// transition the host can perform without LLM judgment (start_step,
+			// activate_phase), apply it directly. The planner is then nudged with
+			// a much narrower ask: "the step is running, spawn a subagent" rather
+			// than "decide what to do next". This removes the failure mode where
+			// the planner stalls on a "Ready to execute?" question that the
+			// engine's plan-mode prose suggests.
+			const fresh = getActive() ?? active
+			const action = whatNext(fresh)
+			let preflightSummary = ""
+
+			if (action.kind === "start_step") {
+				const activePhase = fresh.phases.find((p) => p.id === fresh.activePhaseId)
+				if (activePhase) {
+					const stepOutcome = applyAndPersist(fresh.id, {
+						type: "start_step",
+						phaseId: activePhase.id,
+						stepId: action.stepId,
+					})
+					if (stepOutcome.ok) {
+						const startedStep = stepOutcome.ferment.phases
+							.find((p) => p.id === activePhase.id)
+							?.steps.find((s) => s.id === action.stepId)
+						preflightSummary = startedStep
+							? `Step ${startedStep.index} "${startedStep.description}" advanced to running by host on /auto.`
+							: ""
+					}
+					// On failure (e.g. step already running, stuck-loop guard),
+					// just skip preflight and let maybeInjectAutoNudge nudge anyway.
+				}
+			} else if (action.kind === "activate_phase") {
+				const phaseOutcome = applyAndPersist(fresh.id, {
+					type: "activate_phase",
+					phaseId: action.phaseId,
+				})
+				if (phaseOutcome.ok) {
+					const activated = phaseOutcome.ferment.phases.find((p) => p.id === action.phaseId)
+					preflightSummary = activated ? `Phase ${activated.index} "${activated.name}" activated by host on /auto.` : ""
+				}
+			}
+
+			if (preflightSummary) {
+				pi.appendEntry("ferment_breadcrumb", { text: `Resume preflight: ${preflightSummary}` })
+			}
+
+			ctx.ui.notify(`Resumed "${active.name}".`)
+			// force: true — bypass the routine-step filter so the planner gets a
+			// kick regardless of the next-action kind. Without this, resuming
+			// onto an in-flight `start_step` action would silently emit no nudge.
+			maybeInjectAutoNudge(pi, { force: true })
 		},
 	})
 
 	pi.registerCommand("pause", {
-		description: "Pause auto-mode for the active ferment",
+		description:
+			"Pause the active ferment — flips status to 'paused'; the state machine then refuses every ferment tool call until /auto.",
 		async handler(_, ctx) {
 			setAutoModeEnabled(false)
-			ctx.ui.notify("Auto-mode paused.")
+
+			const active = getActive()
+			if (!active) {
+				ctx.ui.notify("No active ferment to pause.")
+				return
+			}
+
+			// Pause is a state machine transition. Once status flips to 'paused',
+			// applyAndPersist refuses every command except resume/abandon — so
+			// any in-flight or queued tool call from the planner will fail with
+			// a clear FERMENT_PAUSED error. No prompt-based steering needed.
+			if (active.status === "running" || active.status === "planned") {
+				const outcome = applyAndPersist(active.id, { type: "pause" })
+				if (!outcome.ok) {
+					ctx.ui.notify(`Cannot pause: ${outcome.error.message}`)
+					return
+				}
+			} else if (active.status !== "paused") {
+				ctx.ui.notify(`Ferment is "${active.status}" — nothing to pause.`)
+				return
+			}
+
+			ctx.ui.notify(`Ferment "${active.name}" paused. Type /auto to resume.`)
 		},
 	})
 
@@ -807,6 +969,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 						const r = getStorage().abandonFerment(f.id)
 						if (r) setActive(r)
 						clearFermentState(f.id)
+						clearPendingScope(f.id)
 						atPhaseList = false
 					}
 					continue

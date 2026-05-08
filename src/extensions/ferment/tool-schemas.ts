@@ -16,38 +16,50 @@ export const ListParams = Type.Object({
 	filter: Type.Optional(Type.String({ description: "Optional status filter" })),
 })
 
+// Shared phase schema — used by both scope_ferment (the legacy/headless path)
+// and propose_phases (the new interactive path). Keep them identical so a
+// proposed plan can be applied verbatim.
+const PhaseProposalSchema = Type.Object({
+	name: Type.String(),
+	goal: Type.String(),
+	description: Type.Optional(Type.String()),
+	constraints: Type.Optional(Type.Array(Type.String())),
+	budget: Type.Optional(Type.String({ description: "e.g. '200k tokens'" })),
+	parallel_group: Type.Optional(
+		Type.Number({
+			description:
+				"Phases with the same parallel_group number run concurrently. Omit (or use unique values) for sequential phases. Example: give all research phases parallel_group: 1 to run them simultaneously.",
+		}),
+	),
+	steps: Type.Optional(
+		Type.Array(
+			Type.Object({
+				description: Type.String(),
+				verify: Type.Optional(Type.String({ description: "bash command that exits 0 on success" })),
+			}),
+			{ description: "Initial step breakdown for this phase. Can be refined later with refine_phase." },
+		),
+	),
+})
+
 export const ScopeParams = Type.Object({
 	ferment_id: Type.String(),
 	title: Type.Optional(Type.String({ description: "A short 3-5 word title for this ferment" })),
 	goal: Type.String(),
 	success_criteria: Type.Optional(Type.String()),
 	constraints: Type.Optional(Type.Array(Type.String())),
-	phases: Type.Optional(
-		Type.Array(
-			Type.Object({
-				name: Type.String(),
-				goal: Type.String(),
-				description: Type.Optional(Type.String()),
-				constraints: Type.Optional(Type.Array(Type.String())),
-				budget: Type.Optional(Type.String({ description: "e.g. '200k tokens'" })),
-				parallel_group: Type.Optional(
-					Type.Number({
-						description:
-							"Phases with the same parallel_group number run concurrently. Omit (or use unique values) for sequential phases. Example: give all research phases parallel_group: 1 to run them simultaneously.",
-					}),
-				),
-				steps: Type.Optional(
-					Type.Array(
-						Type.Object({
-							description: Type.String(),
-							verify: Type.Optional(Type.String({ description: "bash command that exits 0 on success" })),
-						}),
-						{ description: "Initial step breakdown for this phase. Can be refined later with refine_phase." },
-					),
-				),
-			}),
-		),
-	),
+	phases: Type.Optional(Type.Array(PhaseProposalSchema)),
+})
+
+export const ProposePhasesParams = Type.Object({
+	ferment_id: Type.String({
+		description:
+			"The ferment whose plan you're proposing. Must match the ferment_id given to you in the scoping prompt.",
+	}),
+	phases: Type.Array(PhaseProposalSchema, {
+		description:
+			"3–7 ordered phases that will become the project plan. Each phase needs a name, one-sentence goal, and 3–6 concrete step descriptions. The host will save these verbatim when the user confirms via the dropdown.",
+	}),
 })
 
 export const ActivateParams = Type.Object({
