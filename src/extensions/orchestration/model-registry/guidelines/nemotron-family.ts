@@ -32,6 +32,12 @@ export const NEMOTRON_FAMILY_ORCHESTRATION = `When orchestrating (Nemotron famil
 // ── Nemotron 3 Super FP4 per-model overrides ──────────────────────────
 // Sources: in-pool benchmark observations (weakest coder, multi-file unreliability)
 
+/** Nemotron 3 Super explore: leverage the 1M context window for efficient codebase reading. */
+export const NEMOTRON_3_SUPER_EXPLORE = `During **explore** phase (nemotron-3-super-fp4 specific):
+- Your 1M token context window is your main advantage — read files in full rather than skimming.
+- Batch independent reads in a single turn to minimise round-trips.
+- Produce a concise summary of paths, key types, and integration points — not a transcript of everything you read.`
+
 /** Reserved: no Nemotron 3 Super-specific orchestration override identified yet. */
 export const NEMOTRON_3_SUPER_ORCHESTRATION = ""
 

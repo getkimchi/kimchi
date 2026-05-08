@@ -396,9 +396,12 @@ describe("phase guideline resolution", () => {
 		const result = resolvePhaseGuideline("plan", "kimi-k2.6", registry)
 		// Default layer
 		expect(result).toContain("Design BEFORE coding")
+		// Family plan layer
+		expect(result).toContain("Kimi family")
+		expect(result).toContain("Chunks")
 		// K2.6-specific layer
 		expect(result).toContain("kimi-k2.6 specific")
-		expect(result).toContain("queue of independent sub-tasks")
+		expect(result).toContain("per-chunk acceptance criteria")
 	})
 })
 
@@ -424,7 +427,7 @@ describe("orchestration guideline resolution", () => {
 		expect(result).toContain("delegation sequence")
 		// K2.6-specific layer
 		expect(result).toContain("kimi-k2.6 specific")
-		expect(result).toContain("agent-swarm")
+		expect(result).toContain("chunk")
 	})
 
 	it("returns composed orchestration guideline for kimi-k2.5", () => {
@@ -523,20 +526,19 @@ describe("builtin-model guideline content", () => {
 		expect(result).toContain("well-formed tool calls")
 	})
 
-	// kimi-k2.5: explore = default + K2.5-specific (family explore is empty)
-	it("kimi-k2.5 explore: contains default and per-model layers", () => {
+	// kimi-k2.5: explore removed from strengths → falls back to default
+	it("kimi-k2.5 explore: falls back to default (no per-model explore)", () => {
 		const result = resolvePhaseGuideline("explore", "kimi-k2.5", registry)
 		expect(result).toContain("During **explore** phase:")
-		expect(result).toContain("Plan-first")
-		expect(result).toContain("Chunk and label")
+		expect(result).not.toContain("Plan-first")
 	})
 
-	// kimi-k2.6: plan = default + K2.6-specific (family plan is empty)
-	it("kimi-k2.6 plan: contains default and per-model layers", () => {
+	// kimi-k2.6: plan = default + family + K2.6-specific
+	it("kimi-k2.6 plan: contains default, family, and per-model layers", () => {
 		const result = resolvePhaseGuideline("plan", "kimi-k2.6", registry)
 		expect(result).toContain("Design BEFORE coding")
-		expect(result).toContain("queue of independent sub-tasks")
-		expect(result).toContain("acceptance criteria")
+		expect(result).toContain("Chunks")
+		expect(result).toContain("per-chunk acceptance criteria")
 	})
 
 	// minimax-m2.7: build = default + family + per-model
