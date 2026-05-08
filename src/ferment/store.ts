@@ -51,17 +51,35 @@ export class FermentError extends Error {
 
 // ─── Directory resolution ─────────────────────────────────────────────────────
 
+// Memoize project root per cwd — `detectProjectRoot()` does up to N existsSync
+// calls walking up the tree, and is invoked on every `new FermentStorage()`.
+const projectRootCache = new Map<string, string>()
+
 export function detectProjectRoot(cwd: string = process.cwd()): string {
-	let current = resolve(cwd)
+	const key = resolve(cwd)
+	const cached = projectRootCache.get(key)
+	if (cached !== undefined) return cached
+
+	// Walk up to find a .git boundary (git repo root). Fall back to the closest
+	// package.json if no git root is found, then to cwd.
+	let current = key
+	let firstPackageJson: string | undefined
 	const stop = resolve(current, "/")
 	while (current !== stop) {
-		if (existsSync(resolve(current, ".git"))) return current
-		if (existsSync(resolve(current, "package.json"))) return current
+		if (existsSync(resolve(current, ".git"))) {
+			projectRootCache.set(key, current)
+			return current
+		}
+		if (firstPackageJson === undefined && existsSync(resolve(current, "package.json"))) {
+			firstPackageJson = current
+		}
 		const parent = dirname(current)
 		if (parent === current) break
 		current = parent
 	}
-	return cwd
+	const result = firstPackageJson ?? cwd
+	projectRootCache.set(key, result)
+	return result
 }
 
 export function getGlobalFermentsDir(): string {
@@ -191,6 +209,16 @@ function upgradeV3toV4(raw: FermentV3): Ferment {
 
 // ─── Storage ───────────────────────────────────────────────────────────────────
 
+// Module-level in-memory cache. Each Ferment is keyed by id (full UUID).
+// Invalidated on write/delete. Avoids re-reading + re-parsing the JSON on every
+// tool call — a hot path that previously did 4–6 disk reads per tool execution.
+const fermentCache = new Map<string, Ferment>()
+
+/** Clear the in-memory ferment cache. Useful for tests; also invoked on file mutations. */
+export function clearFermentCache(): void {
+	fermentCache.clear()
+}
+
 export class FermentStorage {
 	private readonly dir: string
 
@@ -215,18 +243,24 @@ export class FermentStorage {
 	}
 
 	private loadById(id: string): Ferment | undefined {
+		// Cache hit on full UUID
+		const cached = fermentCache.get(id)
+		if (cached) return cached
+
 		// 1. Exact match (full UUID → direct file read)
 		try {
 			const raw = readFileSync(this.filePath(id), "utf-8")
 			const parsed = JSON.parse(raw) as unknown
 			if (hasV3Shape(parsed)) {
 				const v4 = upgradeV3toV4(parsed as FermentV3)
-				this.write(v4)
+				this.write(v4) // populates cache
 				return v4
 			}
 			if (hasV4Shape(parsed)) {
 				normalizeFerment(parsed as Ferment)
-				return parsed as Ferment
+				const f = parsed as Ferment
+				fermentCache.set(f.id, f)
+				return f
 			}
 			return undefined
 		} catch {
@@ -348,6 +382,7 @@ export class FermentStorage {
 		const path = this.filePath(id)
 		if (!existsSync(path)) return false
 		unlinkSync(path)
+		fermentCache.delete(id)
 		return true
 	}
 
@@ -359,6 +394,8 @@ export class FermentStorage {
 		mkdirSync(dirname(path), { recursive: true })
 		writeFileSync(tmp, `${JSON.stringify(ferment, null, 2)}\n`, "utf-8")
 		renameSync(tmp, path)
+		// Update cache with the freshly-written ferment (avoid stale reads next get())
+		fermentCache.set(ferment.id, ferment)
 	}
 
 	// ─── Status & Goal ──────────────────────────────────────────────────────────
@@ -692,8 +729,13 @@ export class FermentStorage {
 		const f = this.get(id)
 		if (!f) return undefined
 		const decisions = f.decisions
+		// Compute next ID as max existing index + 1 (resilient to gaps from edits)
+		const maxIdx = decisions.reduce((m, d) => {
+			const n = Number.parseInt(d.id.slice(1), 10)
+			return Number.isFinite(n) && n > m ? n : m
+		}, 0)
 		const decision: Decision = {
-			id: `D${String(decisions.length + 1).padStart(3, "0")}`,
+			id: `D${String(maxIdx + 1).padStart(3, "0")}`,
 			title,
 			description,
 			phaseId,
@@ -719,8 +761,12 @@ export class FermentStorage {
 		const f = this.get(id)
 		if (!f) return undefined
 		const memories = f.memories
+		const maxIdx = memories.reduce((m, mem) => {
+			const n = Number.parseInt(mem.id.slice(1), 10)
+			return Number.isFinite(n) && n > m ? n : m
+		}, 0)
 		const memory: Memory = {
-			id: `M${String(memories.length + 1).padStart(3, "0")}`,
+			id: `M${String(maxIdx + 1).padStart(3, "0")}`,
 			category,
 			content,
 			phaseId,
@@ -778,7 +824,14 @@ function hasV3Shape(v: unknown): boolean {
 
 function hasV4Shape(v: unknown): boolean {
 	if (!isObject(v)) return false
-	return Array.isArray(v.phases) && !Array.isArray(v.batchRefs) && !Array.isArray(v.plannedBatches)
+	if (!Array.isArray(v.phases)) return false
+	if (Array.isArray(v.batchRefs) || Array.isArray(v.plannedBatches)) return false
+	// Validate the minimum required fields so a corrupted file is rejected early
+	// instead of silently producing undefined behavior downstream.
+	if (typeof v.id !== "string" || typeof v.name !== "string") return false
+	if (typeof v.status !== "string") return false
+	if (!isObject(v.scoping ?? {}) || (v.scoping !== undefined && !isObject(v.scoping))) return false
+	return true
 }
 
 function normalizeFerment(f: Ferment): void {

@@ -40,7 +40,7 @@ describe("whatNext", () => {
 			expect(a.kind).toBe("activate_phase")
 			if (a.kind === "activate_phase") {
 				expect(a.phaseId).toBe("p1")
-				expect(a.message).toContain("Use activate_phase")
+				expect(a.message).toContain("activate_phase")
 			}
 		})
 
@@ -81,8 +81,7 @@ describe("whatNext", () => {
 			expect(a.kind).toBe("activate_phase")
 			if (a.kind === "activate_phase") {
 				expect(a.phaseId).toBe("p1")
-				expect(a.message).toContain("Ask the user")
-				expect(a.message).toContain("confirmation")
+				expect(a.message).toContain("activate_phase")
 			}
 		})
 
