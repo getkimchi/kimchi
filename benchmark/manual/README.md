@@ -26,7 +26,7 @@ Creates `session-01` (or the next number), subdirectories under `runs/`, and one
 
 ### 2. Run the scripts
 
-Open all runs in parallel tabs (uses Terminal.app):
+Open all runs in parallel panes (requires iTerm2):
 
 ```bash
 ./sessions/session-01/run-all.sh
