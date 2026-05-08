@@ -94,6 +94,7 @@ export function buildScriptPayload(
 		multi_model: {
 			enabled: getMultiModelEnabled(),
 		},
+		phase: getCurrentPhase(),
 	}
 }
 

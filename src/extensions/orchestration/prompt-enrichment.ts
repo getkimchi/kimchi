@@ -21,7 +21,7 @@
  */
 
 import { execSync } from "node:child_process"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { homedir, platform, userInfo } from "node:os"
 import { isAbsolute, join, normalize, resolve } from "node:path"
 import type { AssistantMessage, ImageContent, TextContent } from "@earendil-works/pi-ai"
@@ -91,6 +91,19 @@ function readGitRemote(cwd: string): string | undefined {
 }
 
 // Workaround: pi-mono's applyExtensionFlagValues ignores the actual value for boolean flags (always sets true). Read argv directly until upstream is fixed.
+const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
+
+function readHarnessSetting<T>(key: string, fallback: T): T {
+	try {
+		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
+		const parsed = JSON.parse(raw)
+		if (key in parsed) return parsed[key] as T
+	} catch {
+		// settings.json absent or unreadable — use fallback
+	}
+	return fallback
+}
+
 function readMultiModelArgv(): boolean {
 	const args = process.argv
 	for (let i = 0; i < args.length; i++) {
@@ -104,7 +117,8 @@ function readMultiModelArgv(): boolean {
 			return true
 		}
 	}
-	return true
+	// No CLI flag — fall back to settings.json, then hard-coded default
+	return readHarnessSetting("multiModel", true)
 }
 
 let multiModelEnabled = readMultiModelArgv()

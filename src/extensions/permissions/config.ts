@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path"
 import { z } from "zod"
 import { DEFAULT_CONFIG, type PermissionsConfig } from "./types.js"
 
-const modeSchema = z.enum(["default", "plan", "auto"])
+const modeSchema = z.enum(["default", "plan", "auto", "yolo"])
 
 const configSchema = z
 	.object({
