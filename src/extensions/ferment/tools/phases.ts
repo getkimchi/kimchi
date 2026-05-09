@@ -6,6 +6,7 @@
  * via `pi.sendUserMessage(..., { deliverAs: "followUp" })`.
  */
 
+import { execSync } from "node:child_process"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
 import { truncateLabel } from "../colors.js"
@@ -14,9 +15,33 @@ import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { judgeGradePhase, judgeSuggestCorrectiveStep } from "../judge.js"
 import { isPlanMode } from "../modes.js"
 import { onPhaseCompleted } from "../nudge.js"
-import { captureJudgeContext, getStorage, markHumanInput, setActive, setCorrectiveStep } from "../state.js"
+import { gatherPhaseEvidence } from "../phase-evidence.js"
+import {
+	captureJudgeContext,
+	getPhaseStartRef,
+	getStorage,
+	markHumanInput,
+	setActive,
+	setCorrectiveStep,
+	setPhaseStartRef,
+} from "../state.js"
 import { applyAndPersist, failedToolResult, resolvePhase, toolErr, toolOk } from "../tool-helpers.js"
 import { ActivateParams, CompletePhaseParams, FailPhaseParams, RefineParams, SkipPhaseParams } from "../tool-schemas.js"
+
+/** Capture git HEAD at phase activation. Best-effort; silent on non-git or git failure. */
+function captureGitHead(): string | undefined {
+	try {
+		return execSync("git rev-parse HEAD", {
+			encoding: "utf-8",
+			timeout: 3000,
+			stdio: ["ignore", "pipe", "ignore"],
+		})
+			.toString()
+			.trim()
+	} catch {
+		return undefined
+	}
+}
 
 const validateFsmTransition = (
 	f: Parameters<typeof validateFsmTransitionWithFerment>[0],
@@ -56,6 +81,16 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 				})
 				if (!outcome.ok) return failedToolResult(outcome.error)
 
+				// Capture git HEAD per phase so the grader can diff each one independently.
+				const headRef = captureGitHead()
+				if (headRef) {
+					for (const p of outcome.ferment.phases) {
+						if (p.groupIndex === target.groupIndex && p.status === "active") {
+							setPhaseStartRef(params.ferment_id, p.id, headRef)
+						}
+					}
+				}
+
 				const fresh = outcome.ferment
 				const groupPhases = fresh.phases.filter((p) => p.groupIndex === target.groupIndex && p.status === "active")
 				const phaseLines = groupPhases
@@ -78,6 +113,10 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 
 			const outcome = applyAndPersist(params.ferment_id, { type: "activate_phase", phaseId: target.id })
 			if (!outcome.ok) return failedToolResult(outcome.error)
+
+			// Capture git HEAD so the phase grader can diff against it later.
+			const headRef = captureGitHead()
+			if (headRef) setPhaseStartRef(params.ferment_id, target.id, headRef)
 
 			const fresh = outcome.ferment
 			const activated = fresh.phases.find((p) => p.id === target.id)
@@ -178,8 +217,12 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 			})
 			if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
 
-			// Step 3: grade the completed phase (host: I/O).
-			const phaseGrade = await judgeGradePhase(phase.name, phase.goal, stepSummariesText, params.summary)
+			// Step 3: gather code evidence + grade the completed phase. Without the
+			// evidence, the judge sees only worker-written summaries — which let
+			// "tests pass but the integration is wrong" failures slip through.
+			const startRef = getPhaseStartRef(params.ferment_id, phase.id)
+			const evidence = startRef ? gatherPhaseEvidence(startRef) : undefined
+			const phaseGrade = await judgeGradePhase(phase.name, phase.goal, stepSummariesText, params.summary, evidence)
 
 			// Step 4: persist the grade.
 			const gradeOutcome = applyAndPersist(params.ferment_id, {

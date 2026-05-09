@@ -136,6 +136,11 @@ export interface Step {
 	verification?: Verification
 	result?: StepResult // populated on completion/verification
 	grade?: JudgeGrade // set by judge after step completes
+
+	/** Short summary of what the worker accomplished. Set by complete_step.
+	 *  Surfaced in worker context for subsequent steps in the same phase
+	 *  so they don't redo work or miss prior decisions. */
+	summary?: string
 }
 
 export interface Verification {
