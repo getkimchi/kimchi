@@ -10,6 +10,8 @@ const { mockReadClipboardImage, mockGetNativeClipboard, mockReadImageFileFromDis
 	}),
 )
 
+// The deep-import path is aliased in vitest.config.ts to __mocks__/earendil-clipboard-image.js
+// so this vi.mock resolves correctly (not a missing specifier error).
 vi.mock("@earendil-works/pi-coding-agent/dist/utils/clipboard-image.js", () => ({
 	readClipboardImage: mockReadClipboardImage,
 }))
@@ -60,9 +62,9 @@ describe("readClipboardImage", () => {
 			availableFormats: vi.fn().mockReturnValue(["public.png"]),
 		}
 
-		// The AppleScript integration path (execFileSync) is skipped when clipboard has no
-		// public.file-url format — this is the reliable branch we can test without
-		// requiring complex node:child_process mocking in the vitest module isolation model.
+		// The Darwin AppleScript path is exercised when clipboard-read.ts detects
+		// Darwin + no upstream image + native clipboard available + public.file-url format.
+		// We verify it skips execFileSync when there's no file-url (reliable path).
 		it("returns null and does not call execFileSync when clipboard has no public.file-url format", async () => {
 			mockClipboard.availableFormats.mockReturnValue(["public.png"])
 			mockReadClipboardImage.mockResolvedValue(null)
