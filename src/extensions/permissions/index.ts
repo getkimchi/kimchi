@@ -305,28 +305,20 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 			if (BUILTIN_ALLOW_TOOL_NAMES.includes(toolName)) return undefined
 
-			// Check for compound bash commands FIRST (before general rule evaluation)
-			// Compound commands should not match individual subcommand rules
+			// Compound bash commands: early gate for deny/allow only.
+			// If the check returns "prompt", fall through to
+			// evaluateRules → auto-mode/classifier → prompt site below.
 			if (toolName === "bash") {
 				const command = typeof input.command === "string" ? input.command : ""
-				const compoundCheck = checkCompoundCommand(command, allRules())
-				if (compoundCheck.decision === "deny") {
-					return { block: true, reason: compoundCheck.deniedReason ?? "Subcommand denied" }
-				}
-				if (compoundCheck.decision === "allow") {
-					return undefined
-				}
-
-				if (compoundCheck.decision === "prompt" && compoundCheck.subcommands) {
-					// Go to compound confirm flow
-					const result = await handleCompoundConfirm(event, {
-						ctx,
-						session,
-						activeAborts: activeAbortControllers,
-						subcommands: compoundCheck.subcommands,
-					})
-					if (result === "aborted") continue
-					return result
+				if (isCompoundCommand(command)) {
+					const compoundCheck = checkCompoundCommand(command, allRules())
+					if (compoundCheck.decision === "deny") {
+						return { block: true, reason: compoundCheck.deniedReason ?? "Subcommand denied" }
+					}
+					if (compoundCheck.decision === "allow") {
+						return undefined
+					}
+					// "prompt" → fall through to existing flow
 				}
 			}
 
@@ -368,12 +360,31 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					subtitle: `Classifier: ${verdict.reason}`,
 					session,
 					activeAborts: activeAbortControllers,
+					allRules,
 				})
 				if (result === "aborted") continue // mode changed, re-evaluate
 				return result
 			}
 
-			const result = await handleConfirm(event, { ctx, session, activeAborts: activeAbortControllers })
+			// Prompt site — branch to compound or single-command flow
+			if (toolName === "bash") {
+				const command = typeof input.command === "string" ? input.command : ""
+				if (isCompoundCommand(command)) {
+					const subcommands = splitCompoundCommand(command)
+					if (subcommands && subcommands.length > 0) {
+						const result = await handleCompoundConfirm(event, {
+							ctx,
+							session,
+							activeAborts: activeAbortControllers,
+							subcommands,
+							allRules,
+						})
+						if (result === "aborted") continue // mode changed, re-evaluate
+						return result
+					}
+				}
+			}
+			const result = await handleConfirm(event, { ctx, session, activeAborts: activeAbortControllers, allRules })
 			if (result === "aborted") continue // mode changed, re-evaluate
 			return result
 		}
@@ -409,6 +420,7 @@ interface ConfirmOptions {
 	session: SessionMemory
 	subtitle?: string
 	activeAborts: Set<AbortController>
+	allRules?: () => Rule[]
 }
 
 async function handleConfirm(
@@ -478,7 +490,9 @@ export async function handleCompoundConfirm(
 			// For each subcommand, evaluate rules and prompt if needed
 			for (const subcommand of opts.subcommands) {
 				// Re-evaluate rules (user may have added rules during the prompt)
-				const match = evaluateRules(opts.session.all(), "bash", { command: subcommand })
+				const match = evaluateRules(opts.allRules ? opts.allRules() : opts.session.all(), "bash", {
+					command: subcommand,
+				})
 				if (match.decision === "allow") {
 					continue
 				}

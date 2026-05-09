@@ -428,3 +428,30 @@ describe("handleCompoundConfirm", () => {
 		expect(result).toEqual({ block: true, reason: "Declined by user" })
 	})
 })
+
+describe("compound command auto-mode fall-through", () => {
+	it("read-only compound returns prompt from checkCompoundCommand so auto-mode can approve it", () => {
+		// The early gate in the handler ONLY short-circuits on allow/deny;
+		// "prompt" falls through to evaluateRules → auto-mode → classifier.
+		// For ls && pwd, isReadOnlyBashCommand returns true, so auto-mode
+		// silently approves it. checkCompoundCommand must NOT block it.
+		const result = checkCompoundCommand("ls && pwd", [])
+		expect(result.decision).toBe("prompt")
+		expect(result.subcommands).toEqual(["ls", "pwd"])
+	})
+
+	it("hard-blocked compound is denied by the early gate (not auto-mode)", () => {
+		const result = checkCompoundCommand("sudo whoami && ls", [])
+		expect(result.decision).toBe("deny")
+		expect(result.deniedReason).toContain("Hard-blocked")
+	})
+
+	it("explicitly-allowed compound is allowed by the early gate (no auto-mode needed)", () => {
+		const rules: Rule[] = [
+			{ toolName: "bash", content: "ls *", behavior: "allow", source: "session" },
+			{ toolName: "bash", content: "pwd", behavior: "allow", source: "session" },
+		]
+		const result = checkCompoundCommand("ls -la && pwd", rules)
+		expect(result.decision).toBe("allow")
+	})
+})
