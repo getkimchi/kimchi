@@ -17,6 +17,9 @@ export default function startupUpdateExtension(pi: ExtensionAPI) {
 		if (!ctx.hasUI) return
 
 		const current = getVersion()
+		// Canary users opted into the canary track; don't nag them about
+		// stable. Currency on canary is checked by `kimchi update --canary`.
+		if (current.startsWith("0.0.0-canary.")) return
 		try {
 			const result = await checkForUpdate({ currentVersion: current, skipCache: false })
 			if (result.hasUpdate) {
