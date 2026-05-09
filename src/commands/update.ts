@@ -52,6 +52,17 @@ export async function runUpdate(args: string[]): Promise<number> {
 	// losing the installation on the next `brew cleanup`. Direct the user to
 	// the correct upgrade path instead.
 	if (isHomebrewInstall()) {
+		if (flags.canary) {
+			console.log("kimchi is managed by Homebrew. Canary builds are not published to Homebrew.")
+			console.log("")
+			console.log("To use canary, uninstall the Homebrew package and reinstall directly:")
+			console.log("")
+			console.log("  brew uninstall kimchi")
+			console.log("  curl -fsSL https://github.com/castai/kimchi-dev/releases/latest/download/install.sh | bash")
+			console.log("")
+			console.log("Then re-run: kimchi update --canary")
+			return 0
+		}
 		console.log("kimchi is managed by Homebrew. Use Homebrew to update:")
 		console.log("")
 		console.log("  brew upgrade kimchi")
