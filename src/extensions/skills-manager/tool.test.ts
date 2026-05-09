@@ -120,10 +120,6 @@ describe("createSkillManageTool", () => {
  * These tests lock that shape in. If any of them fails, the schema has
  * regressed to a pattern that LiteLLM cannot translate to Anthropic, and
  * `skill_manage` will produce 400s on Anthropic-backed sessions.
- *
- * Companion docs:
- *   - Skill: `kimchi-model-diagnostics`
- *   - Review: `.kimchi/docs/skill-manage-anthropic-400-review.md`
  */
 describe("SkillManageSchema (Anthropic via LiteLLM compat)", () => {
 	const serialized = JSON.stringify(SkillManageSchema)
