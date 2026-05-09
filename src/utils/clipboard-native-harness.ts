@@ -1,9 +1,9 @@
 // Native clipboard NAPI-RS addon loader.
 //
 // Upstream pi-coding-agent has `utils/clipboard-native.js` which does:
-//   require("@earendil-works/clipboard")
+//   require("@mariozechner/clipboard")
 // That package is an index.js loader which does a *runtime* require of the
-// platform-specific package (`@earendil-works/clipboard-darwin-arm64`, etc.).
+// platform-specific package (`@mariozechner/clipboard-darwin-arm64`, etc.).
 //
 // Bun's bundler (`bun build --compile`) resolves `require()` calls at build
 // time by following the literal specifier string. A runtime template-string
@@ -36,33 +36,33 @@ declare const require: NodeJS.Require
 function loadPlatformBinding(): NativeClipboard {
 	if (process.platform === "darwin") {
 		if (process.arch === "arm64")
-			return require("@earendil-works/clipboard-darwin-arm64/clipboard.darwin-arm64.node") as NativeClipboard
+			return require("@mariozechner/clipboard-darwin-arm64/clipboard.darwin-arm64.node") as NativeClipboard
 		if (process.arch === "x64")
-			return require("@earendil-works/clipboard-darwin-x64/clipboard.darwin-x64.node") as NativeClipboard
+			return require("@mariozechner/clipboard-darwin-x64/clipboard.darwin-x64.node") as NativeClipboard
 		throw new Error(`Unsupported macOS architecture: ${process.arch}`)
 	}
 	if (process.platform === "linux") {
 		if (process.arch === "arm64") {
 			try {
-				return require("@earendil-works/clipboard-linux-arm64-gnu/clipboard.linux-arm64-gnu.node") as NativeClipboard
+				return require("@mariozechner/clipboard-linux-arm64-gnu/clipboard.linux-arm64-gnu.node") as NativeClipboard
 			} catch {
-				return require("@earendil-works/clipboard-linux-arm64-musl/clipboard.linux-arm64-musl.node") as NativeClipboard
+				return require("@mariozechner/clipboard-linux-arm64-musl/clipboard.linux-arm64-musl.node") as NativeClipboard
 			}
 		}
 		if (process.arch === "x64") {
 			try {
-				return require("@earendil-works/clipboard-linux-x64-gnu/clipboard.linux-x64-gnu.node") as NativeClipboard
+				return require("@mariozechner/clipboard-linux-x64-gnu/clipboard.linux-x64-gnu.node") as NativeClipboard
 			} catch {
-				return require("@earendil-works/clipboard-linux-x64-musl/clipboard.linux-x64-musl.node") as NativeClipboard
+				return require("@mariozechner/clipboard-linux-x64-musl/clipboard.linux-x64-musl.node") as NativeClipboard
 			}
 		}
 		throw new Error(`Unsupported Linux architecture: ${process.arch}`)
 	}
 	if (process.platform === "win32") {
 		if (process.arch === "arm64")
-			return require("@earendil-works/clipboard-win32-arm64-msvc/clipboard.win32-arm64-msvc.node") as NativeClipboard
+			return require("@mariozechner/clipboard-win32-arm64-msvc/clipboard.win32-arm64-msvc.node") as NativeClipboard
 		if (process.arch === "x64")
-			return require("@earendil-works/clipboard-win32-x64-msvc/clipboard.win32-x64-msvc.node") as NativeClipboard
+			return require("@mariozechner/clipboard-win32-x64-msvc/clipboard.win32-x64-msvc.node") as NativeClipboard
 		throw new Error(`Unsupported Windows architecture: ${process.arch}`)
 	}
 	throw new Error(`Unsupported platform: ${process.platform}`)
