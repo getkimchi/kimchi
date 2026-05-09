@@ -75,7 +75,7 @@ describe("installPasteInterceptor", () => {
 		expect(received).toEqual(["one\ntwo\nthree"])
 	})
 
-	it("rewrites a trailing fragment that arrives within the 5 ms window", () => {
+	it("rewrites a trailing fragment that arrives within the 100 ms TRAILING_WINDOW_MS", () => {
 		const stdin = makeFakeStdin()
 		const clock = makeClock()
 		installPasteInterceptor(stdin as unknown as NodeJS.ReadStream, clock.now)
@@ -102,7 +102,7 @@ describe("installPasteInterceptor", () => {
 		stdin.emit("data", "A\rB\rC\r")
 		clock.advance(3)
 		stdin.emit("data", "D\rE")
-		// 3 ms after the last fragment — still within the rolling 5 ms window.
+		// 3 ms after the last fragment — still within the rolling 100 ms window.
 		clock.advance(3)
 		stdin.emit("data", "\rF")
 

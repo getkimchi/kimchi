@@ -135,7 +135,7 @@ describe.skip("interactive multi-line paste (LLM-1358)", () => {
 		}
 	})
 
-	// Regression for the auto-send / trailing-line bug. The original LLM-1358 interceptor had a per-chunk heuristic (≥2 \r, ≥4 bytes) that missed the small tail chunk a large paste's final fragment lands in — the bare `\r` in that tail reached the Editor as Enter and submitted everything before it, leaving the trailing letter dangling in the input. The v2 fix rewrites \r→\n in the seeding chunk and extends the rewrite to subsequent \r-bearing chunks within a 5 ms window. This test simulates that exact split: the main chunk is a paste-burst, the second chunk is a single \r + final character arriving ~1 ms later.
+	// Regression for the auto-send / trailing-line bug. The original LLM-1358 interceptor had a per-chunk heuristic (≥2 \r, ≥4 bytes) that missed the small tail chunk a large paste's final fragment lands in — the bare `\r` in that tail reached the Editor as Enter and submitted everything before it, leaving the trailing letter dangling in the input. The v2 fix rewrites \r→\n in the seeding chunk and extends the rewrite to subsequent \r-bearing chunks within the TRAILING_WINDOW_MS (100 ms) window. This test simulates that exact split: the main chunk is a paste-burst, the second chunk is a single \r + final character arriving ~1 ms later.
 	it("trailing fragment after a paste-burst chunk is not treated as Enter", { timeout: 60_000 }, async () => {
 		const session = spawnInteractive()
 		try {
@@ -144,7 +144,7 @@ describe.skip("interactive multi-line paste (LLM-1358)", () => {
 			// Main paste-burst: A\rB\r…\rY\r — meets the seeding heuristic (24 \r, 48 bytes).
 			const mainChunk = "ABCDEFGHIJKLMNOPQRSTUVWXY".split("").join("\r") + "\r"
 			session.pty.write(mainChunk)
-			// 1 ms gap simulates the kernel TTY scheduling delay between adjacent reads of one OS-level paste burst. Far below the 5 ms trailing-window.
+			// 1 ms gap simulates the kernel TTY scheduling delay between adjacent reads of one OS-level paste burst. Far below the 100 ms TRAILING_WINDOW_MS.
 			await new Promise((r) => setTimeout(r, 1))
 			// The trailing fragment: leading bare \r (the last paste-internal newline) then the final letter Z. Pre-fix, this \r submitted A..Y and Z was left in the input.
 			session.pty.write("\rZ")
