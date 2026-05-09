@@ -3,10 +3,10 @@
  */
 
 import { truncateToWidth } from "@mariozechner/pi-tui"
-import type { AgentManager } from "../agent-manager.js"
-import { getConfig } from "../agent-types.js"
-import type { SubagentType } from "../types.js"
-import { type LifetimeUsage, type SessionLike, getLifetimeTotal, getSessionContextPercent } from "../usage.js"
+import type { AgentManager } from "../manager/agent-manager.js"
+import { type LifetimeUsage, type SessionLike, getLifetimeTotal, getSessionContextPercent } from "../manager/usage.js"
+import { getConfig } from "../personas/agent-types.js"
+import type { SubagentType } from "../personas/types.js"
 
 const MAX_WIDGET_LINES = 12
 

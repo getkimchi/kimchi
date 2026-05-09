@@ -11,8 +11,8 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@mariozechner/pi-tui"
-import { extractText } from "../context.js"
-import type { AgentRecord } from "../types.js"
+import type { AgentRecord } from "../personas/types.js"
+import { extractText } from "../prompt/context.js"
 
 // Expand tabs so visibleWidth() (which counts a tab as 1) matches what the
 // terminal actually renders (8 columns). Without this, lines with embedded
@@ -20,7 +20,7 @@ import type { AgentRecord } from "../types.js"
 function expandTabs(s: string): string {
 	return s.replace(/\t/g, "        ")
 }
-import { getLifetimeTotal, getSessionContextPercent } from "../usage.js"
+import { getLifetimeTotal, getSessionContextPercent } from "../manager/usage.js"
 import type { Theme } from "./agent-widget.js"
 import {
 	type AgentActivity,

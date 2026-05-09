@@ -3,7 +3,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
-import type { EnvInfo } from "./types.js"
+import type { EnvInfo } from "./personas/types.js"
 
 export async function detectEnv(pi: ExtensionAPI, cwd: string): Promise<EnvInfo> {
 	let isGitRepo = false

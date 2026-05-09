@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { DEFAULT_AGENTS } from "./default-agents.js"
-import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER } from "./types.js"
+import { DEFAULT_AGENTS } from "./personas/default-agents.js"
+import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER } from "./personas/types.js"
 
 describe("DEFAULT_AGENTS", () => {
 	it("always includes General-Purpose, Explore, Plan, and Researcher agents", () => {

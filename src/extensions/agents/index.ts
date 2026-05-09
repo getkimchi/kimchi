@@ -23,7 +23,7 @@ import { Text } from "@mariozechner/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
-import { AgentManager } from "./agent-manager.js"
+import { AgentManager } from "./manager/agent-manager.js"
 import {
 	getAgentConversation,
 	getDefaultMaxTurns,
@@ -32,7 +32,10 @@ import {
 	setDefaultMaxTurns,
 	setGraceTurns,
 	steerAgent,
-} from "./agent-runner.js"
+} from "./manager/agent-runner.js"
+import { GroupJoinManager } from "./manager/group-join.js"
+import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
+import { type LifetimeUsage, addUsage, getLifetimeTotal, getSessionContextPercent } from "./manager/usage.js"
 import {
 	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
@@ -42,13 +45,8 @@ import {
 	getUserAgentNames,
 	registerAgents,
 	resolveType,
-} from "./agent-types.js"
-import { loadCustomAgents } from "./custom-agents.js"
-import { GroupJoinManager } from "./group-join.js"
-import { resolveAgentInvocationConfig, resolveJoinMode } from "./invocation-config.js"
-import { type ModelRegistry, resolveModel } from "./model-resolver.js"
-import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./output-file.js"
-import { type SubagentsSettings, applyAndEmitLoaded, saveAndEmitChanged } from "./settings.js"
+} from "./personas/agent-types.js"
+import { loadCustomAgents } from "./personas/custom-agents.js"
 import {
 	AGENT_GENERAL_PURPOSE,
 	type AgentConfig,
@@ -56,7 +54,10 @@ import {
 	type JoinMode,
 	type NotificationDetails,
 	type SubagentType,
-} from "./types.js"
+} from "./personas/types.js"
+import { resolveAgentInvocationConfig, resolveJoinMode } from "./resolution/invocation-config.js"
+import { type ModelRegistry, resolveModel } from "./resolution/model-resolver.js"
+import { type SubagentsSettings, applyAndEmitLoaded, saveAndEmitChanged } from "./settings.js"
 import {
 	type AgentActivity,
 	type AgentDetails,
@@ -71,7 +72,6 @@ import {
 	getDisplayName,
 	getPromptModeLabel,
 } from "./ui/agent-widget.js"
-import { type LifetimeUsage, addUsage, getLifetimeTotal, getSessionContextPercent } from "./usage.js"
 
 // ---- Shared helpers ----
 
