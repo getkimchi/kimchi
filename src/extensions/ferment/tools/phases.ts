@@ -10,12 +10,19 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
 import { truncateLabel } from "../colors.js"
 import { formatDecisionsAndMemories, formatScopingContext } from "../format.js"
-import { judgeGradePhase } from "../judge.js"
+import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
+import { judgeGradePhase, judgeSuggestCorrectiveStep } from "../judge.js"
 import { isPlanMode } from "../modes.js"
 import { onPhaseCompleted } from "../nudge.js"
-import { captureJudgeContext, getStorage, markHumanInput, setActive } from "../state.js"
+import { captureJudgeContext, getStorage, markHumanInput, setActive, setCorrectiveStep } from "../state.js"
 import { applyAndPersist, failedToolResult, resolvePhase, toolErr, toolOk } from "../tool-helpers.js"
 import { ActivateParams, CompletePhaseParams, FailPhaseParams, RefineParams, SkipPhaseParams } from "../tool-schemas.js"
+
+const validateFsmTransition = (
+	f: Parameters<typeof validateFsmTransitionWithFerment>[0],
+	event: Parameters<typeof validateFsmTransitionWithFerment>[1],
+	params?: Parameters<typeof validateFsmTransitionWithFerment>[2],
+): string | null => validateFsmTransitionWithFerment(f, event, params).error ?? null
 
 export function registerPhaseTools(pi: ExtensionAPI): void {
 	pi.registerTool({
@@ -36,6 +43,10 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 			}
 			if (!target) target = findFirstPlannedPhase(f)
 			if (!target) return toolErr("No planned phases to activate.")
+
+			// FSM validation: ensure phase activation is allowed
+			const fsmError = validateFsmTransition(f, "ACTIVATE_PHASE", { phaseId: target.id })
+			if (fsmError) return toolErr(fsmError)
 
 			// Detect parallel group — activate all siblings at once
 			if (target.groupIndex !== undefined) {
@@ -110,6 +121,10 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 				)
 			}
 
+			// FSM validation: refine_phase is only valid in PHASE_ACTIVE state
+			const fsmError = validateFsmTransition(f, "REFINE_PHASE", { phaseId: phase.id })
+			if (fsmError) return toolErr(fsmError)
+
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "refine_phase",
 				phaseId: phase.id,
@@ -145,6 +160,10 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 
+			// FSM validation: complete_phase requires all phases to be terminal
+			const fsmError = validateFsmTransition(f, "COMPLETE_PHASE", { phaseId: phase.id })
+			if (fsmError) return toolErr(fsmError)
+
 			// Capture the phase shape BEFORE transition for grade computation
 			// (need step summaries from the active phase).
 			const stepSummariesText = phase.steps
@@ -169,6 +188,18 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 				grade: phaseGrade,
 			})
 			if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
+
+			// Step 4b: self-improvement loop — for D/F grades, ask the judge for
+			// one concrete corrective step to inject into the next phase's planner
+			// supplement. Pure best-effort: failures are logged silently and the
+			// loop continues without the suggestion. Computed asynchronously so we
+			// don't block the tool's return; the result lands in the corrective
+			// step cache, picked up on the next system-prompt rebuild.
+			if (phaseGrade.grade === "D" || phaseGrade.grade === "F") {
+				void judgeSuggestCorrectiveStep(phase.name, phase.goal, phaseGrade).then((suggestion) => {
+					if (suggestion) setCorrectiveStep(params.ferment_id, phase.id, suggestion)
+				})
+			}
 
 			onPhaseCompleted(pi)
 			const fresh = gradeOutcome.ferment
@@ -219,11 +250,8 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 				markHumanInput()
 
 				if (!choice || choice === "Pause here") {
-					// "paused" status is set directly via storage — we don't have a
-					// state-machine command for "pause" today (it's a UI-flow concern).
-					getStorage().updateStatus(fresh.id, "paused")
-					const paused = getStorage().get(fresh.id)
-					if (paused) setActive(paused)
+					const pauseOutcome = applyAndPersist(fresh.id, { type: "pause" })
+					if (pauseOutcome.ok) setActive(pauseOutcome.ferment)
 					await pi.sendUserMessage("Ferment paused. Let me know when you are ready to continue.", {
 						deliverAs: "followUp",
 					})
@@ -254,6 +282,10 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 
+			// FSM validation: phase must be active to skip
+			const fsmError = validateFsmTransition(f, "SKIP_PHASE", { phaseId: phase.id })
+			if (fsmError) return toolErr(fsmError)
+
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "skip_phase",
 				phaseId: phase.id,
@@ -274,6 +306,10 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
+
+			// FSM validation: phase must be active to fail
+			const fsmError = validateFsmTransition(f, "FAIL_PHASE", { phaseId: phase.id })
+			if (fsmError) return toolErr(fsmError)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "fail_phase",

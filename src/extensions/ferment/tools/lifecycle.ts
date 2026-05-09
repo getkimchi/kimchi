@@ -10,6 +10,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Command } from "../../../ferment/state-machine.js"
+import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { computeFermentGrade, judgePlan } from "../judge.js"
 import { appendRefEntry, maybeInjectAutoNudge } from "../nudge.js"
 import { attachPendingPhases, clearPendingScope, getPendingScope } from "../scoping.js"
@@ -32,6 +33,12 @@ import {
 	SetModeParams,
 	UpdateScopeFieldParams,
 } from "../tool-schemas.js"
+
+const validateFsmTransition = (
+	f: Parameters<typeof validateFsmTransitionWithFerment>[0],
+	event: Parameters<typeof validateFsmTransitionWithFerment>[1],
+	params?: Parameters<typeof validateFsmTransitionWithFerment>[2],
+): string | null => validateFsmTransitionWithFerment(f, event, params).error ?? null
 
 export function registerLifecycleTools(pi: ExtensionAPI): void {
 	pi.registerTool({
@@ -118,6 +125,16 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 			}
 			consumeScopingGate(params.ferment_id)
 
+			// FSM validation: ensure scope transition is allowed.
+			// Note: For DRAFT state, we skip FSM validation because the FSM's hasPhases
+			// guard is incorrectly applied (it checks if phases exist before scoping,
+			// but phases are created by the scope operation). The state machine's
+			// handleScope only checks status === "draft", so we trust that instead.
+			if (fGate?.status !== "draft") {
+				const fsmError = validateFsmTransition(fGate, "SCOPE_FERMENT")
+				if (fsmError) return toolErr(fsmError)
+			}
+
 			const cmd: Command = {
 				type: "scope",
 				title: params.title,
@@ -203,6 +220,11 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 			if (!["plan", "exec", "auto"].includes(params.mode)) {
 				return toolErr(`Invalid mode: ${params.mode}. Use plan, exec, or auto.`)
 			}
+			// FSM validation: ensure mode change is allowed
+			const f = getStorage().get(params.ferment_id)
+			const fsmError = validateFsmTransition(f, "SET_MODE", { mode: params.mode })
+			if (fsmError) return toolErr(fsmError)
+
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "set_mode",
 				mode: params.mode as "plan" | "exec" | "auto",

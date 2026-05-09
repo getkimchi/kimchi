@@ -7,6 +7,7 @@
  * - resume nudges in plan mode (stripToolRefs)
  */
 
+import { computeStats } from "../../ferment/stats.js"
 import type { Ferment } from "../../ferment/types.js"
 
 export function formatFermentStatus(f: Ferment): string {
@@ -18,6 +19,8 @@ export function formatFermentStatus(f: Ferment): string {
 	const wtBranch = wt.branch ?? "n/a"
 	const wtPath = wt.path ?? process.cwd()
 	const wtCommit = wt.commit ? wt.commit.slice(0, 7) : "n/a"
+
+	const stats = computeStats(f)
 
 	const lines: string[] = [
 		`🍺 Ferment: "${f.name}"  •  ${f.status.toUpperCase()}  •  ${f.mode} mode`,
@@ -33,7 +36,15 @@ export function formatFermentStatus(f: Ferment): string {
 			lines.push(`   ${m} Phase ${p.index}: ${p.name} [${p.status}]`)
 			for (const s of p.steps) {
 				const sm = s.status === "done" || s.status === "verified" ? "✓" : s.status === "skipped" ? "⊘" : "○"
-				lines.push(`      ${sm} ${s.description} [${s.status}]`)
+				let elapsed = ""
+				if (s.startedAt) {
+					const end = s.completedAt ? new Date(s.completedAt) : new Date()
+					const ms = end.getTime() - new Date(s.startedAt).getTime()
+					elapsed = ms > 0 ? ` ⏱ ${(ms / 1000).toFixed(1)}s` : ""
+				}
+				const modelTag = s.workerModel ? ` 🧠 ${s.workerModel}` : ""
+				const gradeTag = s.grade ? ` 📊 ${s.grade.grade}` : ""
+				lines.push(`      ${sm} ${s.description}${elapsed}${modelTag}${gradeTag} [${s.status}]`)
 			}
 		}
 	}
@@ -42,6 +53,15 @@ export function formatFermentStatus(f: Ferment): string {
 		lines.push(`   Decisions: ${f.decisions.length}  •  Memories: ${f.memories.length}`)
 	}
 
+	lines.push(`   ⏱️  Duration: ${(stats.timing.totalDurationMs / 60000).toFixed(1)} min`)
+	if (stats.timing.averageStepDurationMs) {
+		lines.push(`   ⏱️  Avg step: ${(stats.timing.averageStepDurationMs / 1000).toFixed(1)} s`)
+	}
+	if (stats.steps.running > 0 || stats.steps.planned > 0) {
+		lines.push(
+			`   👟 Steps: ${stats.steps.done + stats.steps.skipped + stats.steps.failed} / ${stats.steps.total} done, ${stats.steps.running} running, ${stats.steps.planned} planned`,
+		)
+	}
 	lines.push(`   ID: ${f.id}  •  Created: ${f.createdAt}`)
 	return lines.join("\n")
 }

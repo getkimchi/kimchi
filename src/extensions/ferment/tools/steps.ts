@@ -8,6 +8,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { StepResult } from "../../../ferment/types.js"
+import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { judgeGradeStep, judgeStepVerification } from "../judge.js"
 import { onStepCompleted } from "../nudge.js"
 import { bumpStepStart, captureJudgeContext, clearStepStart, getStorage } from "../state.js"
@@ -15,6 +16,12 @@ import { applyAndPersist, failedToolResult, resolvePhase, resolveStep, toolErr, 
 import { CompleteStepParams, FailStepParams, StepActionParams, VerifyParams } from "../tool-schemas.js"
 
 const VERIFY_TIMEOUT_MS = 60_000
+
+const validateFsmTransition = (
+	f: Parameters<typeof validateFsmTransitionWithFerment>[0],
+	event: Parameters<typeof validateFsmTransitionWithFerment>[1],
+	params?: Parameters<typeof validateFsmTransitionWithFerment>[2],
+): string | null => validateFsmTransitionWithFerment(f, event, params).error ?? null
 
 export function registerStepTools(pi: ExtensionAPI): void {
 	pi.registerTool({
@@ -35,6 +42,10 @@ export function registerStepTools(pi: ExtensionAPI): void {
 					`Step not found. Steps: ${phase.steps.map((st) => `[${st.id}] ${st.index}. ${st.description}`).join(", ")}`,
 				)
 			}
+
+			// FSM validation: ensure step start is allowed
+			const fsmError = validateFsmTransition(f, "START_STEP", { phaseId: phase.id, stepId: step.id })
+			if (fsmError) return toolErr(fsmError)
 
 			// Stuck-loop detection (UI-flow concern, not domain — runs before transition).
 			// Counter is held at threshold so every subsequent call also blocks until
@@ -63,11 +74,18 @@ export function registerStepTools(pi: ExtensionAPI): void {
 			}
 
 			// Reload step from the post-transition ferment for the response.
-			const freshStep = outcome.ferment.phases.find((p) => p.id === phase.id)?.steps.find((s) => s.id === step.id)
+			const freshPhase = outcome.ferment.phases.find((p) => p.id === phase.id)
+			const freshStep = freshPhase?.steps.find((s) => s.id === step.id)
 			const workerModel = freshStep?.workerModel ?? "minimax-m2.7"
 
+			// Check if previous step in same phase got a low grade — inject caution
+			const prevStep = freshPhase?.steps.find((st) => st.index === step.index - 1)
+			const lowGradeCaution =
+				prevStep?.grade && ["C", "D", "F"].includes(prevStep.grade.grade)
+					? `\n\n⚠️  Previous step (${prevStep.index}: "${prevStep.description}") received grade ${prevStep.grade.grade}: ${prevStep.grade.rationale}. Apply extra scrutiny to this step — verify edge cases, error handling, and completeness before reporting done.`
+					: ""
+
 			// Find pending parallel siblings (excluding this step).
-			const freshPhase = outcome.ferment.phases.find((p) => p.id === phase.id)
 			const parallelSiblings = freshStep?.canRunParallel
 				? (freshPhase?.steps ?? [])
 						.filter((st) => st.id !== step.id && st.status === "pending" && st.canRunParallel)
@@ -84,7 +102,7 @@ export function registerStepTools(pi: ExtensionAPI): void {
 					: ""
 
 			return toolOk(
-				`Step ${step.index}: "${step.description}" started.\nphase_id: ${phase.id}\nstep_id: ${step.id}\nworker_model: ${workerModel}\nprovider: kimchi-dev\n\nSpawn a subagent now with provider "kimchi-dev", model "${workerModel}", and a prompt describing exactly what to implement for this step. When it returns, call complete_step with its summary.${parallelNote}`,
+				`Step ${step.index}: "${step.description}" started.\nphase_id: ${phase.id}\nstep_id: ${step.id}\nworker_model: ${workerModel}\nprovider: kimchi-dev\n\nSpawn a subagent now with provider "kimchi-dev", model "${workerModel}", and a prompt describing exactly what to implement for this step. When it returns, call complete_step with its summary.${lowGradeCaution}${parallelNote}`,
 			)
 		},
 	})
@@ -104,6 +122,10 @@ export function registerStepTools(pi: ExtensionAPI): void {
 			if (!phase) return toolErr("Phase not found.")
 			const step = resolveStep(phase, params.step_id)
 			if (!step) return toolErr("Step not found.")
+
+			// FSM validation: ensure step completion is allowed
+			const fsmError = validateFsmTransition(f, "COMPLETE_STEP", { phaseId: phase.id, stepId: step.id })
+			if (fsmError) return toolErr(fsmError)
 
 			// Path A: no verification command — straight to done + grade.
 			if (!step.verification) {
@@ -252,6 +274,10 @@ export function registerStepTools(pi: ExtensionAPI): void {
 			const step = resolveStep(phase, params.step_id)
 			if (!step) return toolErr("Step not found.")
 
+			// FSM validation: ensure step verification is allowed
+			const fsmError = validateFsmTransition(f, "VERIFY_STEP", { phaseId: phase.id, stepId: step.id })
+			if (fsmError) return toolErr(fsmError)
+
 			let exitCode = 0
 			let stdout = ""
 			let stderr = ""
@@ -316,6 +342,10 @@ export function registerStepTools(pi: ExtensionAPI): void {
 			const step = resolveStep(phase, params.step_id)
 			if (!step) return toolErr("Step not found.")
 
+			// FSM validation: ensure step skip is allowed
+			const fsmError = validateFsmTransition(f, "SKIP_STEP", { phaseId: phase.id, stepId: step.id })
+			if (fsmError) return toolErr(fsmError)
+
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "skip_step",
 				phaseId: phase.id,
@@ -340,6 +370,10 @@ export function registerStepTools(pi: ExtensionAPI): void {
 			if (!phase) return toolErr("Phase not found.")
 			const step = resolveStep(phase, params.step_id)
 			if (!step) return toolErr("Step not found.")
+
+			// FSM validation: ensure step fail is allowed
+			const fsmError = validateFsmTransition(f, "FAIL_STEP", { phaseId: phase.id, stepId: step.id })
+			if (fsmError) return toolErr(fsmError)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "fail_step",

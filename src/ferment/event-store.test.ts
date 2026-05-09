@@ -1,0 +1,308 @@
+import { existsSync, mkdtempSync, readFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { commandToEvents } from "./event-mapper.js"
+import { FermentEventStore } from "./event-store.js"
+import { applyCommand } from "./state-machine.js"
+import { FermentStorage, clearFermentCache } from "./store.js"
+import type { Phase } from "./types.js"
+
+function createTempDir() {
+	return mkdtempSync(join(tmpdir(), "ferment-event-store-test-"))
+}
+
+/** Run a command through the same path applyAndPersist uses in production. */
+function exec(store: FermentEventStore, fermentId: string, cmd: Parameters<typeof commandToEvents>[0]) {
+	const before = store.get(fermentId)
+	if (!before) throw new Error(`ferment ${fermentId} not found`)
+	const now = new Date().toISOString()
+	const result = applyCommand(before, cmd, { now })
+	if (!result.ok) throw new Error(`command rejected: ${result.error.message}`)
+	const events = commandToEvents(cmd, before, result.ferment, { now })
+	store.writeWithEvents(result.ferment, events)
+	return result.ferment
+}
+
+function readEvents(
+	dir: string,
+	id: string,
+): { type: string; payload: unknown; preStateHash: string; postStateHash: string }[] {
+	const path = join(dir, `${id}.events.jsonl`)
+	const raw = readFileSync(path, "utf-8")
+	return raw
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line))
+}
+
+describe("FermentEventStore", () => {
+	let tempDir: string
+	let eventStore: FermentEventStore
+	let parentStorage: FermentStorage
+
+	beforeEach(() => {
+		tempDir = createTempDir()
+		eventStore = new FermentEventStore(tempDir)
+		parentStorage = new FermentStorage(tempDir)
+		clearFermentCache()
+	})
+
+	afterEach(() => {
+		clearFermentCache()
+	})
+
+	// ─── create + read-back ────────────────────────────────────────────────────
+
+	describe("create", () => {
+		it("creates ferment, writes one ferment_created event", () => {
+			const ferment = eventStore.create("Auth rewrite", "Rewrite to OAuth2")
+			expect(ferment.name).toBe("Auth rewrite")
+			expect(ferment.status).toBe("draft")
+
+			const events = readEvents(tempDir, ferment.id)
+			expect(events).toHaveLength(1)
+			expect(events[0].type).toBe("ferment_created")
+		})
+
+		it("get() returns the ferment after create", () => {
+			const created = eventStore.create("Read-back test")
+			expect(eventStore.get(created.id)?.name).toBe("Read-back test")
+		})
+	})
+
+	// ─── full mutation path: applyCommand → writeWithEvents → fold ─────────────
+
+	describe("writeWithEvents (production mutation path)", () => {
+		it("scope command emits per-field events + ferment_planned", () => {
+			const f = eventStore.create("Scope test")
+
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Build it",
+				successCriteria: "Tests pass",
+				constraints: ["one constraint"],
+				phases: [{ name: "P1", goal: "G1" }],
+			})
+
+			const types = readEvents(tempDir, f.id).map((e) => e.type)
+			expect(types).toContain("ferment_created")
+			expect(types).toContain("scoping_goal_set")
+			expect(types).toContain("scoping_criteria_set")
+			expect(types).toContain("scoping_constraints_set")
+			expect(types).toContain("scoping_phases_set")
+			expect(types).toContain("ferment_planned")
+		})
+
+		it("activate_phase emits ferment_running + phase_activated", () => {
+			const f = eventStore.create("Activate test")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Goal",
+				successCriteria: "criteria",
+				constraints: [],
+				phases: [{ name: "P1", goal: "G1" }],
+			})
+			const planned = eventStore.get(f.id)
+			if (!planned) throw new Error("ferment missing")
+			exec(eventStore, f.id, { type: "activate_phase", phaseId: planned.phases[0].id })
+
+			const types = readEvents(tempDir, f.id).map((e) => e.type)
+			expect(types).toContain("ferment_running")
+			expect(types).toContain("phase_activated")
+		})
+
+		it("step lifecycle commands all emit corresponding events", () => {
+			const f = eventStore.create("Step lifecycle")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Goal",
+				successCriteria: "criteria",
+				constraints: [],
+				phases: [{ name: "P1", goal: "G1" }],
+			})
+			const planned = eventStore.get(f.id)
+			if (!planned) throw new Error("ferment missing")
+			const phaseId = planned.phases[0].id
+
+			exec(eventStore, f.id, { type: "activate_phase", phaseId })
+			exec(eventStore, f.id, {
+				type: "refine_phase",
+				phaseId,
+				steps: [{ description: "Do thing 1" }, { description: "Do thing 2" }],
+			})
+
+			const refined = eventStore.get(f.id)
+			if (!refined) throw new Error("ferment missing")
+			const stepId = refined.phases[0].steps[0].id
+
+			exec(eventStore, f.id, { type: "start_step", phaseId, stepId })
+			exec(eventStore, f.id, { type: "complete_step", phaseId, stepId })
+
+			const types = readEvents(tempDir, f.id).map((e) => e.type)
+			expect(types).toContain("phase_refined")
+			expect(types).toContain("step_started")
+			expect(types).toContain("step_completed")
+		})
+
+		it("pause + resume each emit one status event", () => {
+			const f = eventStore.create("Pause test")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Goal",
+				successCriteria: "c",
+				constraints: [],
+				phases: [{ name: "P1", goal: "G1" }],
+			})
+			const planned = eventStore.get(f.id)
+			if (!planned) throw new Error("ferment missing")
+			exec(eventStore, f.id, { type: "activate_phase", phaseId: planned.phases[0].id })
+			exec(eventStore, f.id, { type: "pause" })
+			exec(eventStore, f.id, { type: "resume" })
+
+			const types = readEvents(tempDir, f.id).map((e) => e.type)
+			expect(types).toContain("ferment_paused")
+			expect(types).toContain("ferment_resumed")
+		})
+
+		it("folded ferment matches snapshot ferment after a sequence of commands", () => {
+			const f = eventStore.create("Fold equivalence")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Goal",
+				successCriteria: "criteria",
+				constraints: ["c1"],
+				phases: [{ name: "P1", goal: "G1" }],
+			})
+			const planned = eventStore.get(f.id)
+			if (!planned) throw new Error("ferment missing")
+			exec(eventStore, f.id, { type: "activate_phase", phaseId: planned.phases[0].id })
+			exec(eventStore, f.id, {
+				type: "refine_phase",
+				phaseId: planned.phases[0].id,
+				steps: [{ description: "Step 1" }],
+			})
+
+			// At this point shouldUseEvents() may or may not pick events — both should agree.
+			const fromSnapshot = parentStorage.get(f.id)
+			const fromFold = eventStore.get(f.id)
+			expect(fromFold?.status).toBe(fromSnapshot?.status)
+			expect(fromFold?.phases[0].status).toBe(fromSnapshot?.phases[0].status)
+			expect(fromFold?.phases[0].steps).toHaveLength(1)
+		})
+	})
+
+	// ─── migration ─────────────────────────────────────────────────────────────
+
+	describe("migrateLegacy", () => {
+		it("creates event log from legacy snapshot", () => {
+			const legacy = parentStorage.create("Legacy Ferment")
+			parentStorage.setPhases(legacy.id, [
+				{ id: "p1", index: 1, name: "Setup", goal: "G1", status: "planned", steps: [] },
+				{ id: "p2", index: 2, name: "Build", goal: "G2", status: "planned", steps: [] },
+			])
+			parentStorage.activatePhase(legacy.id, "p1")
+			parentStorage.refinePhase(legacy.id, "p1", [{ id: "s1", index: 1, description: "init", status: "pending" }])
+			parentStorage.startStep(legacy.id, "p1", "s1")
+			parentStorage.completeStep(legacy.id, "p1", "s1")
+			parentStorage.completePhase(legacy.id, "p1", "Setup done")
+			parentStorage.addDecision(legacy.id, "Use OAuth", "Better than sessions")
+			parentStorage.addMemory(legacy.id, "gotcha", "Watch for clock drift")
+
+			const eventsPath = join(tempDir, `${legacy.id}.events.jsonl`)
+			expect(existsSync(eventsPath)).toBe(false)
+
+			eventStore.migrateLegacy(legacy.id)
+			expect(existsSync(eventsPath)).toBe(true)
+
+			const types = readEvents(tempDir, legacy.id).map((e) => e.type)
+			expect(types).toContain("ferment_created")
+			expect(types).toContain("phase_activated")
+			expect(types).toContain("phase_refined")
+			expect(types).toContain("step_started")
+			expect(types).toContain("step_completed")
+			expect(types).toContain("phase_completed")
+			expect(types).toContain("decision_added")
+			expect(types).toContain("memory_added")
+		})
+
+		it("idempotent — calling migrateLegacy twice does not duplicate events", () => {
+			const legacy = parentStorage.create("Idempotent")
+			parentStorage.setPhases(legacy.id, [
+				{ id: "p1", index: 1, name: "P1", goal: "G1", status: "active", steps: [] } as Phase,
+			])
+			eventStore.migrateLegacy(legacy.id)
+			const before = readEvents(tempDir, legacy.id).length
+			eventStore.migrateLegacy(legacy.id)
+			const after = readEvents(tempDir, legacy.id).length
+			expect(after).toBe(before)
+		})
+
+		it("synthesises a connected hash chain (each event's preStateHash matches prior postStateHash)", () => {
+			const legacy = parentStorage.create("Chain check")
+			parentStorage.setPhases(legacy.id, [
+				{ id: "p1", index: 1, name: "P1", goal: "G1", status: "completed", summary: "ok", steps: [] } as Phase,
+			])
+			parentStorage.activatePhase(legacy.id, "p1")
+			parentStorage.completePhase(legacy.id, "p1", "ok")
+			eventStore.migrateLegacy(legacy.id)
+
+			const events = readEvents(tempDir, legacy.id)
+			expect(events.length).toBeGreaterThan(1)
+			expect(events[0].preStateHash).toBe("0".repeat(16))
+			for (let i = 1; i < events.length; i++) {
+				expect(events[i].preStateHash).toBe(events[i - 1].postStateHash)
+			}
+			// First → last hashes must differ — proves the chain reflects real state changes.
+			expect(events[0].postStateHash).not.toBe(events[events.length - 1].postStateHash)
+		})
+
+		it("migrated event log can be folded back to the original snapshot", () => {
+			const legacy = parentStorage.create("Round trip")
+			parentStorage.setPhases(legacy.id, [
+				{ id: "p1", index: 1, name: "P1", goal: "G1", status: "planned", steps: [] } as Phase,
+			])
+			parentStorage.activatePhase(legacy.id, "p1")
+			parentStorage.refinePhase(legacy.id, "p1", [{ id: "s1", index: 1, description: "do", status: "pending" }])
+			parentStorage.startStep(legacy.id, "p1", "s1")
+			parentStorage.completeStep(legacy.id, "p1", "s1")
+			parentStorage.completePhase(legacy.id, "p1", "ok")
+			parentStorage.addDecision(legacy.id, "title", "desc")
+			parentStorage.addMemory(legacy.id, "gotcha", "thing")
+
+			eventStore.migrateLegacy(legacy.id)
+			const folded = eventStore.get(legacy.id)
+			const original = parentStorage.get(legacy.id)
+
+			expect(folded?.name).toBe(original?.name)
+			expect(folded?.phases[0].status).toBe(original?.phases[0].status)
+			expect(folded?.phases[0].steps[0]?.status).toBe(original?.phases[0].steps[0]?.status)
+			expect(folded?.decisions).toHaveLength(1)
+			expect(folded?.memories).toHaveLength(1)
+		})
+	})
+
+	// ─── compatibility ─────────────────────────────────────────────────────────
+
+	describe("backward compatibility", () => {
+		it("list() returns ferments", () => {
+			eventStore.create("Alpha")
+			eventStore.create("Beta")
+			const names = eventStore
+				.list()
+				.map((l) => l.name)
+				.sort()
+			expect(names).toEqual(["Alpha", "Beta"])
+		})
+
+		it("resolve() works", () => {
+			const f = eventStore.create("Unique resolve")
+			expect(eventStore.resolve(f.id)?.id).toBe(f.id)
+		})
+
+		it("get() falls back to parent storage for ferments without event log", () => {
+			const legacy = parentStorage.create("Parent-only")
+			expect(eventStore.get(legacy.id)?.name).toBe("Parent-only")
+		})
+	})
+})

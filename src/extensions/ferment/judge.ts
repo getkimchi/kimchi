@@ -15,7 +15,7 @@
  */
 
 import { complete } from "@earendil-works/pi-ai"
-import type { Grade, JudgeGrade, Phase } from "../../ferment/types.js"
+import type { Delta, Grade, JudgeGrade, Phase } from "../../ferment/types.js"
 import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
 
 const JUDGE_MODEL_ID = "claude-opus-4-7"
@@ -141,24 +141,57 @@ export async function judgeGradePhase(
 	const system = `You are a code quality judge grading a completed phase of a coding task.
 
 Respond with EXACTLY one JSON object, no markdown:
-{"grade":"A"|"B"|"C"|"D"|"F","rationale":"<one short sentence>"}
+{"grade":"A"|"B"|"C"|"D"|"F","rationale":"<one short sentence>","deltas":[{"category":"scope"|"quality"|"completeness"|"timing"|"correctness"|"other","expected":"<what should have happened>","actual":"<what actually happened>","severity":"major"|"minor"|"cosmetic"}]}
 
 A = phase goal fully achieved, clean implementation
 B = goal mostly achieved, minor gaps
 C = partial achievement, notable gaps
 D = significant issues or incomplete
-F = phase goal not achieved`
+F = phase goal not achieved
+
+Deltas are the gaps between expected and actual outcomes. Include only significant deltas (severity major or minor); omit cosmetic issues.`
 
 	const user = `Phase: "${phaseName}"\nGoal: ${phaseGoal}\nStep summaries:\n${stepSummaries}\nPhase summary: ${summary || "(none)"}`
 
-	const raw = await judgeApiCall(system, user, 150)
+	const raw = await judgeApiCall(system, user, 250)
 	const now = new Date().toISOString()
 	if (!raw) return { grade: "B", rationale: "Judge unavailable — assumed good.", gradedAt: now }
 	try {
-		const parsed = JSON.parse(raw) as { grade?: string; rationale?: string }
+		const parsed = JSON.parse(raw) as {
+			grade?: string
+			rationale?: string
+			deltas?: unknown[]
+		}
 		const validGrades = ["A", "B", "C", "D", "F"]
 		const grade = validGrades.includes(parsed.grade ?? "") ? (parsed.grade as Grade) : "B"
-		return { grade, rationale: parsed.rationale ?? raw.slice(0, 150), gradedAt: now }
+
+		// Parse deltas if present
+		let deltas: JudgeGrade["deltas"] = undefined
+		if (Array.isArray(parsed.deltas) && parsed.deltas.length > 0) {
+			deltas = parsed.deltas
+				.filter(
+					(d): d is { category: string; expected: string; actual: string; severity: string } =>
+						typeof d === "object" &&
+						d !== null &&
+						"category" in d &&
+						"expected" in d &&
+						"actual" in d &&
+						"severity" in d,
+				)
+				.map((d) => ({
+					category: d.category as Delta["category"],
+					expected: String(d.expected).slice(0, 200),
+					actual: String(d.actual).slice(0, 200),
+					severity: d.severity as Delta["severity"],
+				}))
+		}
+
+		return {
+			grade,
+			rationale: parsed.rationale ?? raw.slice(0, 150),
+			gradedAt: now,
+			deltas,
+		}
 	} catch {
 		return { grade: "B", rationale: raw.slice(0, 150), gradedAt: now }
 	}
@@ -229,6 +262,55 @@ One sentence justifying the verdict and confidence. This is shown to the user.`
 		return { verdict, suggestions, confidence, reasoning }
 	} catch {
 		return { verdict: "approve", suggestions: [], confidence: 0, reasoning: "Judge response unparseable." }
+	}
+}
+
+// ─── Role 5 — Corrective-step suggester ──────────────────────────────────────
+// Called when a phase grade is D or F. Asks the judge to propose a single
+// concrete step the planner should add to the next phase to address the deltas.
+
+/**
+ * Ask the judge for one concrete corrective action given the previous phase's
+ * deltas. Returns undefined when the judge is unreachable. Output is plain
+ * text — a single sentence or short paragraph the planner can read.
+ */
+export async function judgeSuggestCorrectiveStep(
+	phaseName: string,
+	phaseGoal: string,
+	grade: JudgeGrade,
+): Promise<string | undefined> {
+	const deltas = grade.deltas ?? []
+	if (deltas.length === 0) return undefined
+
+	const deltaList = deltas
+		.map((d, i) => `  ${i + 1}. [${d.category}] expected: ${d.expected} | actual: ${d.actual} (${d.severity})`)
+		.join("\n")
+
+	const system = `You are a senior engineer suggesting a single corrective step to address gaps from a recently graded phase.
+
+Respond with EXACTLY one JSON object, no markdown:
+{"step":"<one concrete corrective step, ideally <120 chars>","rationale":"<one short sentence>"}
+
+The step must be:
+- Concrete and verifiable (no vague verbs like "improve" or "review")
+- Bounded (something a worker can execute in one task)
+- Targeted at the largest delta first`
+
+	const user = `Phase: "${phaseName}"
+Goal: ${phaseGoal}
+Grade: ${grade.grade}
+Rationale: ${grade.rationale}
+Deltas:
+${deltaList}`
+
+	const raw = await judgeApiCall(system, user, 200)
+	if (!raw) return undefined
+	try {
+		const parsed = JSON.parse(raw) as { step?: string; rationale?: string }
+		if (!parsed.step) return undefined
+		return parsed.rationale ? `${parsed.step}\n  Rationale: ${parsed.rationale}` : parsed.step
+	} catch {
+		return raw.slice(0, 200)
 	}
 }
 
