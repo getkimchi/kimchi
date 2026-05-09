@@ -157,7 +157,11 @@ export function buildUpdatedPlugins(inputs: PluginUpdateInputs): PluginUpdateRes
 	return { plugins: [...filtered, updatedEntry], skippedKimchiPlugin: false }
 }
 
-async function writeOpenCode(scope: ConfigScope, apiKey: string): Promise<void> {
+async function writeOpenCode(
+	scope: ConfigScope,
+	apiKey: string,
+	_options?: { telemetryEnabled?: boolean },
+): Promise<void> {
 	if (!apiKey) {
 		throw new Error("API key not configured")
 	}

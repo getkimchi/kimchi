@@ -176,7 +176,11 @@ async function writeOpenClawDirect(scope: ConfigScope, apiKey: string): Promise<
 	writeOpenClawEnv(apiKey)
 }
 
-async function writeOpenClaw(scope: ConfigScope, apiKey: string): Promise<void> {
+async function writeOpenClaw(
+	scope: ConfigScope,
+	apiKey: string,
+	_options?: { telemetryEnabled?: boolean },
+): Promise<void> {
 	if (!apiKey) {
 		throw new Error("API key not configured")
 	}
