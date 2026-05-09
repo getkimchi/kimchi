@@ -47,6 +47,10 @@ export function formatFermentStatus(f: Ferment): string {
 				// step was scored — the visible letter is a placeholder, not a real signal.
 				const gradeTag = s.grade ? ` 📊 ${s.grade.grade}${s.grade.unavailable ? "?" : ""}` : ""
 				lines.push(`      ${sm} ${s.description}${elapsed}${modelTag}${gradeTag} [${s.status}]`)
+				if (s.summary) {
+					// Worker-written summary on a continuation line, symmetric with phase summary.
+					lines.push(`         ↳ ${s.summary}`)
+				}
 			}
 		}
 	}

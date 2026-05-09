@@ -53,6 +53,15 @@ export function gatherPhaseEvidence(sinceRef = "HEAD~10", cwd = process.cwd()): 
 	}
 }
 
+/** Capture git HEAD as a SHA. Best-effort; returns undefined on non-git or git failure. */
+export function captureGitHead(cwd: string = process.cwd()): string | undefined {
+	try {
+		return run("git rev-parse HEAD", cwd).trim()
+	} catch {
+		return undefined
+	}
+}
+
 function run(cmd: string, cwd: string): string {
 	return execSync(cmd, {
 		cwd,

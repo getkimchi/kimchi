@@ -11,7 +11,6 @@ import {
 	fsmStateToFermentStatus,
 	getValidEvents,
 	isTerminalState,
-	nextAction,
 	transition,
 } from "./fsm.js"
 
@@ -136,7 +135,7 @@ describe("Valid Transitions", () => {
 			expect(result.error).toBeUndefined()
 		})
 
-		it("returns action suggestion after activating phase", () => {
+		it("transitions cleanly when activating a planned phase", () => {
 			const ctx = makeContext({
 				fermentStatus: "planned",
 				phases: [makePhaseContext("phase-1", 1, "planned")],
@@ -144,8 +143,8 @@ describe("Valid Transitions", () => {
 			const result = transition(FSM_STATES.PLANNED, FSM_EVENTS.ACTIVATE_PHASE, ctx, {
 				phaseId: "phase-1",
 			})
-			expect(result.action).toBeDefined()
-			expect(result.action?.type).toBe(FSM_EVENTS.REFINE_PHASE)
+			expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
+			expect(result.error).toBeUndefined()
 		})
 	})
 
@@ -202,7 +201,7 @@ describe("Valid Transitions", () => {
 			expect(result.error).toBeUndefined()
 		})
 
-		it("handles FAIL_STEP → PHASE_ACTIVE with recovery suggestion", () => {
+		it("handles FAIL_STEP → PHASE_ACTIVE", () => {
 			const ctx = makeContext({
 				fermentStatus: "running",
 				activePhaseId: "phase-1",
@@ -213,8 +212,7 @@ describe("Valid Transitions", () => {
 				stepId: "step-1",
 			})
 			expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
-			expect(result.action).toBeDefined()
-			expect(result.action?.type).toBe(FSM_EVENTS.START_STEP) // recovery
+			expect(result.error).toBeUndefined()
 		})
 
 		it("handles SKIP_STEP → PHASE_ACTIVE", () => {
@@ -272,12 +270,16 @@ describe("Valid Transitions", () => {
 
 describe("Illegal Transitions (Guards)", () => {
 	describe("SCOPE_FERMENT in DRAFT", () => {
-		it("rejects SCOPE_FERMENT when no phases exist", () => {
+		// The previous `hasPhases` guard was wrong: scope is what *creates*
+		// phases. Tool-layer code papered over it by skipping FSM validation
+		// when status === "draft". The guard has been removed (§4.1 of the
+		// review), so SCOPE_FERMENT on an empty DRAFT is legal — phases ride
+		// in via the command, not as a precondition.
+		it("accepts SCOPE_FERMENT in DRAFT even with no pre-existing phases", () => {
 			const ctx = makeContext() // no phases
 			const result = transition(FSM_STATES.DRAFT, FSM_EVENTS.SCOPE_FERMENT, ctx)
-			expect(result.state).toBe(FSM_STATES.DRAFT) // state unchanged
-			expect(result.error).toBeDefined()
-			expect(result.error).toContain("No phases defined")
+			expect(result.state).toBe(FSM_STATES.PLANNED)
+			expect(result.error).toBeUndefined()
 		})
 	})
 
@@ -494,87 +496,13 @@ describe("Pause/Resume Cycle", () => {
 			phaseId: "phase-1",
 		})
 		expect(resumeResult.state).toBe(FSM_STATES.PHASE_ACTIVE)
-		expect(resumeResult.action?.message).toContain("Resuming phase")
+		expect(resumeResult.error).toBeUndefined()
 	})
 })
 
-// ─── nextAction Tests ─────────────────────────────────────────────────────────
-
-describe("nextAction", () => {
-	it("suggests scope in DRAFT state", () => {
-		const ctx = makeContext()
-		const action = nextAction(FSM_STATES.DRAFT, ctx)
-		expect(action.kind).toBe("scope")
-	})
-
-	it("suggests activate_phase in PLANNED state", () => {
-		const ctx = makeContext({
-			fermentStatus: "planned",
-			phases: [makePhaseContext("phase-1", 1, "planned")],
-		})
-		const action = nextAction(FSM_STATES.PLANNED, ctx)
-		expect(action.kind).toBe("activate_phase")
-		if (action.kind === "activate_phase") {
-			expect(action.phaseId).toBe("phase-1")
-		}
-	})
-
-	it("suggests start_step when phase is active and has pending steps", () => {
-		const ctx = makeContext({
-			fermentStatus: "running",
-			activePhaseId: "phase-1",
-			phases: [makePhaseContext("phase-1", 1, "active", [makeStepContext("step-1", 1, "pending")])],
-		})
-		const action = nextAction(FSM_STATES.PHASE_ACTIVE, ctx)
-		expect(action.kind).toBe("start_step")
-		if (action.kind === "start_step") {
-			expect(action.stepId).toBe("step-1")
-			expect(action.phaseId).toBe("phase-1")
-		}
-	})
-
-	it("suggests complete_phase when all steps are terminal", () => {
-		const ctx = makeContext({
-			fermentStatus: "running",
-			activePhaseId: "phase-1",
-			phases: [makePhaseContext("phase-1", 1, "active", [makeStepContext("step-1", 1, "done")])],
-		})
-		const action = nextAction(FSM_STATES.PHASE_ACTIVE, ctx)
-		expect(action.kind).toBe("complete_phase")
-	})
-
-	it("suggests refine when phase has no steps", () => {
-		const ctx = makeContext({
-			fermentStatus: "running",
-			activePhaseId: "phase-1",
-			phases: [makePhaseContext("phase-1", 1, "active", [])],
-		})
-		const action = nextAction(FSM_STATES.PHASE_ACTIVE, ctx)
-		expect(action.kind).toBe("refine")
-	})
-
-	it("suggests recover_phase when phase failed", () => {
-		const ctx = makeContext({
-			fermentStatus: "running",
-			activePhaseId: "phase-1",
-			phases: [makePhaseContext("phase-1", 1, "failed")],
-		})
-		const action = nextAction(FSM_STATES.PHASE_ACTIVE, ctx)
-		expect(action.kind).toBe("recover_phase")
-	})
-
-	it("suggests paused in PAUSED state", () => {
-		const ctx = makeContext({ fermentStatus: "paused" })
-		const action = nextAction(FSM_STATES.PAUSED, ctx)
-		expect(action.kind).toBe("paused")
-	})
-
-	it("suggests complete_ferment in COMPLETE state", () => {
-		const ctx = makeContext({ fermentStatus: "complete" })
-		const action = nextAction(FSM_STATES.COMPLETE, ctx)
-		expect(action.kind).toBe("complete_ferment")
-	})
-})
+// `nextAction` was deleted — see §4.1 of docs/ferment-review.md. The "what
+// to do next" path lives in engine.determineNextAction (with its own tests in
+// engine.test.ts). The FSM is a transition validator, not a planner.
 
 // ─── Utility Functions ────────────────────────────────────────────────────────
 

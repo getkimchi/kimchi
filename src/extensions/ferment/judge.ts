@@ -97,38 +97,82 @@ Respond with EXACTLY one JSON object, no markdown, no explanation:
 
 // Role 2 — Step grader: called after a step successfully completes.
 
+/**
+ * Grade a completed step. When `evidence` is supplied (the diff between the
+ * step's start ref and HEAD), the judge cross-checks the worker's summary
+ * against the actual code change — same protocol as `judgeGradePhase`.
+ *
+ * Without evidence the grader sees only verification output + summary, which
+ * is the same self-report failure mode the phase grader was upgraded to fix.
+ */
 export async function judgeGradeStep(
 	stepDescription: string,
 	summary: string,
 	verificationResult?: { exitCode: number; stdout: string; stderr: string },
+	evidence?: PhaseEvidence,
 ): Promise<JudgeGrade> {
 	const system = `You are a code quality judge grading a completed step of a coding task.
 
+You will be given:
+1. The step description (what should have been done)
+2. A worker-written summary (claim about what was done)
+3. (When available) Verification command output (exit code, stdout, stderr)
+4. (When available) Concrete code evidence: list of files changed since the step started and a truncated unified diff
+
+When evidence is provided, **prioritize it over the summary**. If the summary claims work that the diff doesn't show, treat that as a "completeness" delta with severity major. If the diff shows work the summary doesn't acknowledge, treat that as a "scope" delta with severity minor.
+
 Respond with EXACTLY one JSON object, no markdown:
-{"grade":"A"|"B"|"C"|"D"|"F","rationale":"<one short sentence>"}
+{"grade":"A"|"B"|"C"|"D"|"F","rationale":"<one short sentence>","deltas":[{"category":"scope"|"quality"|"completeness"|"timing"|"correctness"|"other","expected":"<what should have happened>","actual":"<what actually happened>","severity":"major"|"minor"|"cosmetic"}]}
 
 A = excellent, clean, fully verified
 B = good, minor issues
 C = adequate but notable gaps
 D = barely acceptable, significant issues
-F = failed or incomplete`
+F = failed or incomplete
+
+Deltas are the gaps between expected and actual outcomes. Include only significant deltas (severity major or minor); omit cosmetic issues.`
 
 	const verifyNote = verificationResult
 		? `\nVerification exit: ${verificationResult.exitCode}\nstdout: ${verificationResult.stdout.slice(0, 400)}\nstderr: ${verificationResult.stderr.slice(0, 200)}`
 		: ""
-	const user = `Step: "${stepDescription}"\nSummary: ${summary || "(no summary)"}${verifyNote}`
+	const evidenceBlock = evidence?.available
+		? `\n\n--- CODE EVIDENCE ---\nFiles changed:\n${evidence.filesChanged}${evidence.diffSnippet ? `\n\nDiff snippet:\n\`\`\`diff\n${evidence.diffSnippet}\n\`\`\`` : ""}`
+		: ""
+	const user = `Step: "${stepDescription}"\nSummary: ${summary || "(no summary)"}${verifyNote}${evidenceBlock}`
 
-	const raw = await judgeApiCall(system, user, 120)
+	const maxTokens = evidence?.available ? 300 : 150
+	const raw = await judgeApiCall(system, user, maxTokens)
 	const now = new Date().toISOString()
 	// `unavailable: true` lets stats and the self-improvement loop distinguish
 	// "judged B" from "judge couldn't be reached" — without this every judge
 	// outage looks like a string of B grades and the loop never adapts.
 	if (!raw) return { grade: "B", rationale: "Judge unavailable — assumed good.", gradedAt: now, unavailable: true }
 	try {
-		const parsed = JSON.parse(raw) as { grade?: string; rationale?: string }
+		const parsed = JSON.parse(raw) as { grade?: string; rationale?: string; deltas?: unknown[] }
 		const validGrades = ["A", "B", "C", "D", "F"]
 		const grade = validGrades.includes(parsed.grade ?? "") ? (parsed.grade as Grade) : "B"
-		return { grade, rationale: parsed.rationale ?? raw.slice(0, 150), gradedAt: now }
+
+		let deltas: JudgeGrade["deltas"] = undefined
+		if (Array.isArray(parsed.deltas) && parsed.deltas.length > 0) {
+			deltas = parsed.deltas
+				.filter(
+					(d): d is { category: string; expected: string; actual: string; severity: string } =>
+						typeof d === "object" &&
+						d !== null &&
+						"category" in d &&
+						"expected" in d &&
+						"actual" in d &&
+						"severity" in d,
+				)
+				.map((d) => ({
+					category: d.category as Delta["category"],
+					expected: String(d.expected).slice(0, 200),
+					actual: String(d.actual).slice(0, 200),
+					severity: d.severity as Delta["severity"],
+				}))
+		}
+
+		return { grade, rationale: parsed.rationale ?? raw.slice(0, 150), gradedAt: now, deltas }
 	} catch {
 		return { grade: "B", rationale: raw.slice(0, 150), gradedAt: now, unavailable: true }
 	}

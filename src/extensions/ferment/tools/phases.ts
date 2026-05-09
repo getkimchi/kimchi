@@ -6,7 +6,6 @@
  * via `pi.sendUserMessage(..., { deliverAs: "followUp" })`.
  */
 
-import { execSync } from "node:child_process"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
 import { truncateLabel } from "../colors.js"
@@ -15,7 +14,7 @@ import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { judgeGradePhase, judgeSuggestCorrectiveStep } from "../judge.js"
 import { isPlanMode } from "../modes.js"
 import { onPhaseCompleted } from "../nudge.js"
-import { gatherPhaseEvidence } from "../phase-evidence.js"
+import { captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
 import {
 	captureJudgeContext,
 	getPhaseStartRef,
@@ -27,21 +26,6 @@ import {
 } from "../state.js"
 import { applyAndPersist, failedToolResult, resolvePhase, toolErr, toolOk } from "../tool-helpers.js"
 import { ActivateParams, CompletePhaseParams, FailPhaseParams, RefineParams, SkipPhaseParams } from "../tool-schemas.js"
-
-/** Capture git HEAD at phase activation. Best-effort; silent on non-git or git failure. */
-function captureGitHead(): string | undefined {
-	try {
-		return execSync("git rev-parse HEAD", {
-			encoding: "utf-8",
-			timeout: 3000,
-			stdio: ["ignore", "pipe", "ignore"],
-		})
-			.toString()
-			.trim()
-	} catch {
-		return undefined
-	}
-}
 
 const validateFsmTransition = (
 	f: Parameters<typeof validateFsmTransitionWithFerment>[0],
@@ -234,18 +218,21 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 
 			// Step 4b: self-improvement loop — for D/F grades, ask the judge for
 			// one concrete corrective step to inject into the next phase's planner
-			// supplement. Pure best-effort: failures are logged silently and the
-			// loop continues without the suggestion. Computed asynchronously so we
-			// don't block the tool's return; the result lands in the corrective
-			// step cache, picked up on the next system-prompt rebuild.
-			// Skip corrective-step request when grade was unavailable — the placeholder
-			// "B" never actually triggers this branch, but if the grader returns a real
-			// "D"/"F" via the unavailable path (e.g. a partial parse failure that fell
-			// back to D), we still don't trust the rationale enough to ask for a fix.
+			// supplement. Awaited inline (T1#11) — the previous fire-and-forget
+			// version raced the next phase's activate_phase, occasionally landing
+			// the suggestion one phase late. The judge call is bounded at 30s by
+			// AbortSignal.timeout inside judgeApiCall, so the worst-case extra
+			// latency on D/F phase completion is 30s; the typical case is a few
+			// seconds. Failures are still best-effort: judgeSuggestCorrectiveStep
+			// returns undefined on unreachable judge / unparseable output.
+			//
+			// Skip when grade was unavailable — the placeholder "B" never actually
+			// triggers this branch, but if the grader returns a real "D"/"F" via
+			// the unavailable path (e.g. a partial parse failure that fell back),
+			// we don't trust the rationale enough to ask for a fix.
 			if (!phaseGrade.unavailable && (phaseGrade.grade === "D" || phaseGrade.grade === "F")) {
-				void judgeSuggestCorrectiveStep(phase.name, phase.goal, phaseGrade).then((suggestion) => {
-					if (suggestion) setCorrectiveStep(params.ferment_id, phase.id, suggestion)
-				})
+				const suggestion = await judgeSuggestCorrectiveStep(phase.name, phase.goal, phaseGrade)
+				if (suggestion) setCorrectiveStep(params.ferment_id, phase.id, suggestion)
 			}
 
 			onPhaseCompleted(pi)

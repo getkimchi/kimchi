@@ -125,15 +125,12 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 			}
 			consumeScopingGate(params.ferment_id)
 
-			// FSM validation: ensure scope transition is allowed.
-			// Note: For DRAFT state, we skip FSM validation because the FSM's hasPhases
-			// guard is incorrectly applied (it checks if phases exist before scoping,
-			// but phases are created by the scope operation). The state machine's
-			// handleScope only checks status === "draft", so we trust that instead.
-			if (fGate?.status !== "draft") {
-				const fsmError = validateFsmTransition(fGate, "SCOPE_FERMENT")
-				if (fsmError) return toolErr(fsmError)
-			}
+			// FSM validation: ensure scope transition is allowed. The previous
+			// `hasPhases` guard on SCOPE_FERMENT was wrong (scope creates phases) and
+			// has been removed; this call now always runs and the duct-tape "skip
+			// for status === draft" workaround is gone.
+			const fsmError = validateFsmTransition(fGate, "SCOPE_FERMENT")
+			if (fsmError) return toolErr(fsmError)
 
 			const cmd: Command = {
 				type: "scope",

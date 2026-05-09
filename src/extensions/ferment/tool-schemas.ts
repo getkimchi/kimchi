@@ -119,6 +119,10 @@ export const VerifyParams = Type.Object({
 	phase_id: Type.String(),
 	step_id: Type.String(),
 	command: Type.String(),
+	/** Optional worker-written summary of what was accomplished. Persisted on
+	 *  Step.summary so subsequent steps in the same phase can reference it via
+	 *  the worker-context block. Symmetric with CompleteStepParams.summary. */
+	summary: Type.Optional(Type.String()),
 })
 
 export const CompletePhaseParams = Type.Object({

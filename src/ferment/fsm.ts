@@ -1,21 +1,29 @@
 /**
- * Ferment Finite State Machine — Declarative FSM with Guards & Actions
+ * Ferment Finite State Machine — pure transitions + guards.
  *
- * This module implements a proper finite state machine for the ferment system,
- * providing:
- * - Declarative state machine config (XState-style) for visualization
- * - Pure transition functions with guards
- * - Action computation (what to do next)
+ * The FSM is a *validator*: given a current state, an event, and an
+ * FsmContext, it answers "is this transition legal?" and "what's the new
+ * state?". It does NOT compute a "what next?" suggestion — that lives in
+ * `engine.determineNextAction`, which the planner system prompt and the
+ * resume nudges actually consume.
+ *
+ * Earlier versions of this file shipped:
+ *   1. `fsmConfig` — a parallel XState-style declaration of the same
+ *      transitions, never consumed by anything;
+ *   2. `nextAction` / `SuggestedAction` — a second "what's next?" computer
+ *      that the engine never called;
+ *   3. an action-suggestion machinery (`ACTIONS`, `buildAction`, `FsmAction`,
+ *      `INTERNAL_EVENTS`) attached to every transition, returned in
+ *      `FsmTransitionResult.action`, also never consumed.
+ *
+ * All three were dead. They've been deleted to make the contract explicit:
+ * this module guards transitions, the engine decides next steps. See §4.1
+ * of docs/ferment-review.md for the full audit trail.
  *
  * States:
- *   IDLE → DRAFT → SCOPING → PLANNED → PHASE_ACTIVE → STEP_RUNNING → [terminal]
- *                ↘         ↘           ↘
- *                ABANDONED  PAUSED     PAUSED
- *                                     ↘           ↘
- *                                     COMPLETE    ABANDONED
- *
- * The FSM operates on a FermentFsmContext (snapshot of relevant ferment fields)
- * rather than the full Ferment to keep transitions pure and testable.
+ *   IDLE → DRAFT → PLANNED → PHASE_ACTIVE → STEP_RUNNING → COMPLETE
+ *                ↘         ↘             ↘
+ *                ABANDONED  PAUSED       PAUSED
  */
 
 import type { FermentStatus, PhaseStatus, StepStatus } from "./types.js"
@@ -62,18 +70,6 @@ export const FSM_EVENTS = {
 
 export type FsmEvent = (typeof FSM_EVENTS)[keyof typeof FSM_EVENTS]
 
-// Internal events (not exposed as public API)
-const INTERNAL_EVENTS = {
-	COMPLETE_FERMENT: "complete_ferment",
-	RESUME__PLANNED: "resume__planned",
-	COMPLETE_PHASE__NEXT: "complete_phase__next",
-} as const
-
-export type InternalEvent = (typeof INTERNAL_EVENTS)[keyof typeof INTERNAL_EVENTS]
-
-// All valid events including internal ones
-export type AnyEvent = FsmEvent | InternalEvent
-
 // ─── FSM Context — Minimal ferment snapshot for deterministic transitions ─────
 
 export interface PhaseContext {
@@ -105,52 +101,28 @@ export interface FermentFsmContext {
 export interface FsmTransitionResult {
 	state: FsmState
 	error?: string
-	action?: FsmAction
 }
 
-export interface FsmAction {
-	type: AnyEvent
+// ─── Event Parameters ─────────────────────────────────────────────────────────
+
+export interface EventParams {
 	phaseId?: string
 	stepId?: string
-	message: string
+	mode?: string
 }
 
-// ─── Guard Functions ──────────────────────────────────────────────────────────
+// ─── Guard helpers ────────────────────────────────────────────────────────────
 
 type GuardFn = (ctx: FermentFsmContext, params: EventParams) => string | null
-type ActionFn = (ctx: FermentFsmContext, params: EventParams) => FsmAction
 
 const GUARD_ERRORS = {
-	INVALID_STATUS: (expected: string, actual: string) =>
-		`Invalid ferment status: expected ${expected}, got "${actual}".`,
 	PHASE_NOT_FOUND: (id: string) => `Phase "${id}" not found.`,
 	PHASE_NOT_ACTIVE: (id: string, status: PhaseStatus) => `Phase "${id}" is "${status}", expected "active".`,
 	STEP_NOT_FOUND: (id: string, phaseId: string) => `Step "${id}" not found in phase "${phaseId}".`,
 	STEP_NOT_RUNNING: (id: string, status: StepStatus) => `Step "${id}" is "${status}", expected "running".`,
 	CONCURRENT_STEP: (runningId: string) =>
 		`Cannot start new step — step "${runningId}" is already running (non-parallel).`,
-	PARALLEL_GROUP_BLOCKED: (ids: string[]) =>
-		`Parallel group has non-terminal phases: ${ids.join(", ")}. Complete all before proceeding.`,
-	NO_PHASES: "No phases defined. Add phases before activating.",
-	NO_ACTIVE_PHASE: "No active phase. Activate a phase first.",
-	ALREADY_PAUSED: "Ferment is already paused.",
-	NOT_PAUSED: "Ferment is not paused. Only paused ferments can resume.",
-	ALL_COMPLETE: "All phases are terminal. Ferment is complete.",
 } as const
-
-function requireFermentStatus(ctx: FermentFsmContext, expected: FermentStatus[]): string | null {
-	if (expected.includes(ctx.fermentStatus)) return null
-	const expectedStr = expected.map((s) => `"${s}"`).join(" or ")
-	return GUARD_ERRORS.INVALID_STATUS(expectedStr, ctx.fermentStatus)
-}
-
-function requireActivePhase(ctx: FermentFsmContext): PhaseContext | string {
-	if (!ctx.activePhaseId) return GUARD_ERRORS.NO_ACTIVE_PHASE
-	const phase = ctx.phases.find((p) => p.id === ctx.activePhaseId)
-	if (!phase) return GUARD_ERRORS.PHASE_NOT_FOUND(ctx.activePhaseId)
-	if (phase.status !== "active") return GUARD_ERRORS.PHASE_NOT_ACTIVE(phase.id, phase.status)
-	return phase
-}
 
 function findPhaseById(ctx: FermentFsmContext, phaseId: string): PhaseContext | string {
 	const phase = ctx.phases.find((p) => p.id === phaseId)
@@ -165,30 +137,17 @@ function findStepInPhase(phase: PhaseContext, stepId: string): StepContext | str
 }
 
 function hasNonParallelRunningStep(ctx: FermentFsmContext, newStepId: string): string | null {
-	const activePhase =
-		typeof requireActivePhase(ctx) === "string" ? null : ctx.phases.find((p) => p.id === ctx.activePhaseId)
+	if (!ctx.activePhaseId) return null
+	const activePhase = ctx.phases.find((p) => p.id === ctx.activePhaseId)
 	if (!activePhase) return null
 
 	const runningStep = activePhase.steps.find((s) => s.status === "running" && s.id !== newStepId)
 	if (!runningStep) return null
 
-	// Allow if both steps can run in parallel
 	const newStep = activePhase.steps.find((s) => s.id === newStepId)
 	if (runningStep.canRunParallel && newStep?.canRunParallel) return null
 
 	return GUARD_ERRORS.CONCURRENT_STEP(runningStep.id)
-}
-
-function checkParallelGroupComplete(ctx: FermentFsmContext, phase: PhaseContext): string | null {
-	if (phase.groupIndex === undefined) return null
-
-	const groupPhases = ctx.phases.filter((p) => p.groupIndex === phase.groupIndex)
-	const nonTerminal = groupPhases.filter((p) => !isPhaseTerminal(p))
-
-	if (nonTerminal.length > 0) {
-		return GUARD_ERRORS.PARALLEL_GROUP_BLOCKED(nonTerminal.map((p) => p.id))
-	}
-	return null
 }
 
 function isPhaseTerminal(phase: PhaseContext): boolean {
@@ -199,178 +158,15 @@ function areAllPhasesTerminal(ctx: FermentFsmContext): boolean {
 	return ctx.phases.length > 0 && ctx.phases.every((p) => isPhaseTerminal(p))
 }
 
-// ─── Event Parameters ─────────────────────────────────────────────────────────
-
-export interface EventParams {
-	phaseId?: string
-	stepId?: string
-	mode?: string
-}
-
-// ─── Transition Entry ─────────────────────────────────────────────────────────
-
-interface TransitionEntry {
-	target: FsmState | ((ctx: FermentFsmContext) => FsmState)
-	guard?: string // guard name
-	action?: string // action name
-}
-
-type TransitionMap = Partial<Record<FsmState, Partial<Record<string, TransitionEntry>>>>
-
-// ─── FSM Configuration (XState-style declarative config) ─────────────────────
-
-export const fsmConfig = {
-	id: "ferment",
-	initial: "IDLE",
-	states: {
-		IDLE: {
-			on: {
-				CREATE_FERMENT: { target: "DRAFT" },
-			},
-		},
-		DRAFT: {
-			on: {
-				SCOPE_FERMENT: { target: "PLANNED", guard: "hasPhases" },
-				SET_MODE: { target: "DRAFT" },
-				ABANDON: { target: "ABANDONED" },
-			},
-		},
-		SCOPING: {
-			on: {
-				SCOPE_FERMENT: { target: "PLANNED" },
-				ABANDON: { target: "ABANDONED" },
-			},
-		},
-		PLANNED: {
-			on: {
-				ACTIVATE_PHASE: {
-					target: "PHASE_ACTIVE",
-					guard: "phaseExistsAndPlanned",
-					action: "suggestRefineOrStartStep",
-				},
-				REFINE_PHASE: { target: "PLANNED" },
-				SKIP_PHASE: { target: "PLANNED", action: "suggestActivateNextPhase" },
-				SCOPE_FERMENT: { target: "PLANNED" },
-				SET_MODE: { target: "PLANNED" },
-				ABANDON: { target: "ABANDONED" },
-			},
-		},
-		PHASE_ACTIVE: {
-			on: {
-				REFINE_PHASE: { target: "PHASE_ACTIVE" },
-				START_STEP: {
-					target: "STEP_RUNNING",
-					guard: "noConcurrentNonParallelStep",
-					action: "suggestCompleteStep",
-				},
-				COMPLETE_PHASE: {
-					target: (ctx: FermentFsmContext) =>
-						ctx.phases.every((p) => isPhaseTerminal(p)) ? "COMPLETE" : "PHASE_ACTIVE",
-					guard: "phaseActive",
-					action: "suggestCompleteFerment",
-				},
-				SKIP_PHASE: {
-					target: (ctx: FermentFsmContext) => {
-						if (ctx.phases.every((p) => isPhaseTerminal(p))) return "COMPLETE"
-						return "PHASE_ACTIVE"
-					},
-					guard: "phaseActive",
-					action: "suggestActivateNextPhase",
-				},
-				FAIL_PHASE: {
-					target: (ctx: FermentFsmContext) => {
-						if (ctx.phases.every((p) => isPhaseTerminal(p))) return "COMPLETE"
-						return "PHASE_ACTIVE"
-					},
-					guard: "phaseActive",
-					action: "suggestActivateNextPhase",
-				},
-				SKIP_STEP: {
-					target: "PHASE_ACTIVE",
-					guard: "stepSkipped",
-					action: "suggestNextStepOrCompletePhase",
-				},
-				FAIL_STEP: {
-					target: "PHASE_ACTIVE",
-					guard: "stepFailed",
-					action: "suggestRecovery",
-				},
-				PAUSE: { target: "PAUSED" },
-				ABANDON: { target: "ABANDONED" },
-			},
-		},
-		STEP_RUNNING: {
-			on: {
-				COMPLETE_STEP: {
-					target: "PHASE_ACTIVE",
-					guard: "stepCompleted",
-					action: "suggestNextStepOrCompletePhase",
-				},
-				VERIFY_STEP: {
-					target: "PHASE_ACTIVE",
-					guard: "stepCompleted",
-					action: "suggestNextStepOrCompletePhase",
-				},
-				SKIP_STEP: {
-					target: "PHASE_ACTIVE",
-					guard: "stepSkipped",
-					action: "suggestNextStepOrCompletePhase",
-				},
-				FAIL_STEP: {
-					target: "PHASE_ACTIVE",
-					guard: "stepFailed",
-					action: "suggestRecovery",
-				},
-				START_STEP: {
-					target: "STEP_RUNNING",
-					guard: "noConcurrentNonParallelStep",
-					action: "suggestCompleteStep",
-				},
-				PAUSE: { target: "PAUSED" },
-				ABANDON: { target: "ABANDONED" },
-			},
-		},
-		PAUSED: {
-			on: {
-				RESUME: {
-					target: "PHASE_ACTIVE",
-					guard: "phaseActive",
-					action: "suggestResume",
-				},
-				RESUME__PLANNED: {
-					target: "PHASE_ACTIVE",
-					guard: "hasPlannedPhase",
-					action: "suggestActivatePhase",
-				},
-				ABANDON: { target: "ABANDONED" },
-			},
-		},
-		COMPLETE: {
-			on: {
-				COMPLETE_PHASE: { target: "COMPLETE" },
-				SKIP_PHASE: { target: "COMPLETE" },
-				FAIL_PHASE: { target: "COMPLETE" },
-				COMPLETE_STEP: { target: "COMPLETE" },
-				SKIP_STEP: { target: "COMPLETE" },
-				FAIL_STEP: { target: "COMPLETE" },
-				VERIFY_STEP: { target: "COMPLETE" },
-				SET_STEP_GRADE: { target: "COMPLETE" },
-				SET_PHASE_GRADE: { target: "COMPLETE" },
-				SET_FERMENT_GRADE: { target: "COMPLETE" },
-				ABANDON: { target: "ABANDONED" },
-			},
-		},
-		ABANDONED: {
-			on: {},
-		},
-	},
-} as const
-
-// ─── Guard Registry ───────────────────────────────────────────────────────────
+// ─── Guard registry ───────────────────────────────────────────────────────────
+//
+// The SCOPE_FERMENT event used to carry a `hasPhases` guard; that was wrong —
+// `scope` is what *creates* phases, so the guard rejected every legitimate
+// scope-from-draft call. Tool-layer code (lifecycle.ts) papered over this by
+// skipping FSM validation when status was "draft". Removing the guard lets the
+// state-machine owner handle scope-from-draft correctly without the workaround.
 
 const GUARDS: Record<string, GuardFn> = {
-	hasPhases: (ctx) => (ctx.phases.length > 0 ? null : GUARD_ERRORS.NO_PHASES),
-
 	phaseExistsAndPlanned: (ctx, params) => {
 		if (!params.phaseId) return "Missing phaseId"
 		const phase = findPhaseById(ctx, params.phaseId)
@@ -432,63 +228,138 @@ const GUARDS: Record<string, GuardFn> = {
 		return null
 	},
 
-	allPhasesTerminal: (ctx) => (areAllPhasesTerminal(ctx) ? null : "Not all phases are terminal."),
-
-	hasNextPlannedPhase: (ctx) => {
-		const nextPhase = ctx.phases.find((p) => p.status === "planned")
-		if (!nextPhase) return "No more planned phases."
-		if (nextPhase.groupIndex !== undefined) {
-			const groupPhases = ctx.phases.filter((p) => p.groupIndex === nextPhase.groupIndex)
-			const nonTerminal = groupPhases.filter((p) => !isPhaseTerminal(p))
-			if (nonTerminal.length > 0) {
-				return GUARD_ERRORS.PARALLEL_GROUP_BLOCKED(nonTerminal.map((p) => p.id))
-			}
-		}
-		return null
-	},
-
 	hasActiveOrPlannedPhase: (ctx) => {
-		// Has an active phase
 		if (ctx.activePhaseId) {
 			const phase = ctx.phases.find((p) => p.id === ctx.activePhaseId)
-			if (phase && phase.status === "active") {
-				return null
-			}
+			if (phase && phase.status === "active") return null
 		}
-		// Or has planned phases
 		const planned = ctx.phases.find((p) => p.status === "planned")
-		if (planned) {
-			return null
-		}
+		if (planned) return null
 		return "No active or planned phases to resume."
-	},
-
-	hasPlannedPhase: (ctx) => {
-		const planned = ctx.phases.find((p) => p.status === "planned")
-		return planned ? null : "No planned phases to resume."
-	},
-
-	hasParallelGroupBlocked: (ctx, params) => {
-		if (!params.phaseId) return null
-		const phase = findPhaseById(ctx, params.phaseId)
-		if (typeof phase === "string") return null
-		return checkParallelGroupComplete(ctx, phase)
 	},
 }
 
-// ─── FSM Implementation ───────────────────────────────────────────────────────
+// ─── Transition Entry ─────────────────────────────────────────────────────────
+
+interface TransitionEntry {
+	target: FsmState | ((ctx: FermentFsmContext) => FsmState)
+	guard?: string
+}
+
+type TransitionMap = Partial<Record<FsmState, Partial<Record<string, TransitionEntry>>>>
+
+// ─── Transition Table ─────────────────────────────────────────────────────────
+
+const TRANSITIONS: TransitionMap = {
+	[FSM_STATES.IDLE]: {
+		[FSM_EVENTS.CREATE_FERMENT]: { target: FSM_STATES.DRAFT },
+	},
+
+	[FSM_STATES.DRAFT]: {
+		// scope creates phases; no `hasPhases` precondition. Tool-layer no longer
+		// needs to skip FSM validation when status === "draft" (the previous
+		// duct-tape workaround in lifecycle.ts is gone).
+		[FSM_EVENTS.SCOPE_FERMENT]: { target: FSM_STATES.PLANNED },
+		[FSM_EVENTS.SET_MODE]: { target: FSM_STATES.DRAFT },
+		[FSM_EVENTS.ABANDON]: { target: FSM_STATES.ABANDONED },
+	},
+
+	[FSM_STATES.SCOPING]: {
+		[FSM_EVENTS.SCOPE_FERMENT]: { target: FSM_STATES.PLANNED },
+		[FSM_EVENTS.ABANDON]: { target: FSM_STATES.ABANDONED },
+	},
+
+	[FSM_STATES.PLANNED]: {
+		[FSM_EVENTS.ACTIVATE_PHASE]: { target: FSM_STATES.PHASE_ACTIVE, guard: "phaseExistsAndPlanned" },
+		[FSM_EVENTS.REFINE_PHASE]: { target: FSM_STATES.PLANNED },
+		[FSM_EVENTS.SKIP_PHASE]: { target: FSM_STATES.PLANNED },
+		[FSM_EVENTS.SCOPE_FERMENT]: { target: FSM_STATES.PLANNED },
+		[FSM_EVENTS.SET_MODE]: { target: FSM_STATES.PLANNED },
+		[FSM_EVENTS.ABANDON]: { target: FSM_STATES.ABANDONED },
+	},
+
+	[FSM_STATES.PHASE_ACTIVE]: {
+		[FSM_EVENTS.REFINE_PHASE]: { target: FSM_STATES.PHASE_ACTIVE },
+		[FSM_EVENTS.START_STEP]: { target: FSM_STATES.STEP_RUNNING, guard: "noConcurrentNonParallelStep" },
+		[FSM_EVENTS.COMPLETE_PHASE]: {
+			target: (ctx) => (areAllPhasesTerminal(ctx) ? FSM_STATES.COMPLETE : FSM_STATES.PHASE_ACTIVE),
+			guard: "phaseActive",
+		},
+		[FSM_EVENTS.SKIP_PHASE]: {
+			target: (ctx) => {
+				const otherPhases = ctx.phases.filter((p) => p.id !== ctx.activePhaseId)
+				return otherPhases.every((p) => isPhaseTerminal(p)) ? FSM_STATES.COMPLETE : FSM_STATES.PHASE_ACTIVE
+			},
+			guard: "phaseActive",
+		},
+		[FSM_EVENTS.FAIL_PHASE]: {
+			target: (ctx) => {
+				const otherPhases = ctx.phases.filter((p) => p.id !== ctx.activePhaseId)
+				return otherPhases.every((p) => isPhaseTerminal(p)) ? FSM_STATES.COMPLETE : FSM_STATES.PHASE_ACTIVE
+			},
+			guard: "phaseActive",
+		},
+		[FSM_EVENTS.SKIP_STEP]: { target: FSM_STATES.PHASE_ACTIVE, guard: "stepSkipped" },
+		[FSM_EVENTS.FAIL_STEP]: { target: FSM_STATES.PHASE_ACTIVE, guard: "stepFailed" },
+		[FSM_EVENTS.PAUSE]: { target: FSM_STATES.PAUSED },
+		[FSM_EVENTS.ABANDON]: { target: FSM_STATES.ABANDONED },
+	},
+
+	[FSM_STATES.STEP_RUNNING]: {
+		[FSM_EVENTS.COMPLETE_STEP]: { target: FSM_STATES.PHASE_ACTIVE, guard: "stepCompleted" },
+		[FSM_EVENTS.VERIFY_STEP]: { target: FSM_STATES.PHASE_ACTIVE, guard: "stepCompleted" },
+		[FSM_EVENTS.SKIP_STEP]: { target: FSM_STATES.PHASE_ACTIVE, guard: "stepSkipped" },
+		[FSM_EVENTS.FAIL_STEP]: { target: FSM_STATES.PHASE_ACTIVE, guard: "stepFailed" },
+		[FSM_EVENTS.START_STEP]: { target: FSM_STATES.STEP_RUNNING, guard: "noConcurrentNonParallelStep" },
+		[FSM_EVENTS.PAUSE]: { target: FSM_STATES.PAUSED },
+		[FSM_EVENTS.ABANDON]: { target: FSM_STATES.ABANDONED },
+	},
+
+	[FSM_STATES.PAUSED]: {
+		[FSM_EVENTS.RESUME]: {
+			target: (ctx) => {
+				if (ctx.activePhaseId) {
+					const phase = ctx.phases.find((p) => p.id === ctx.activePhaseId)
+					if (phase && phase.status === "active") return FSM_STATES.PHASE_ACTIVE
+				}
+				const nextPhase = ctx.phases.find((p) => p.status === "planned")
+				if (nextPhase) return FSM_STATES.PHASE_ACTIVE
+				return FSM_STATES.PAUSED
+			},
+			guard: "hasActiveOrPlannedPhase",
+		},
+		[FSM_EVENTS.ABANDON]: { target: FSM_STATES.ABANDONED },
+	},
+
+	[FSM_STATES.COMPLETE]: {
+		[FSM_EVENTS.COMPLETE_PHASE]: { target: FSM_STATES.COMPLETE },
+		[FSM_EVENTS.SKIP_PHASE]: { target: FSM_STATES.COMPLETE },
+		[FSM_EVENTS.FAIL_PHASE]: { target: FSM_STATES.COMPLETE },
+		[FSM_EVENTS.COMPLETE_STEP]: { target: FSM_STATES.COMPLETE },
+		[FSM_EVENTS.SKIP_STEP]: { target: FSM_STATES.COMPLETE },
+		[FSM_EVENTS.FAIL_STEP]: { target: FSM_STATES.COMPLETE },
+		[FSM_EVENTS.VERIFY_STEP]: { target: FSM_STATES.COMPLETE },
+		[FSM_EVENTS.SET_STEP_GRADE]: { target: FSM_STATES.COMPLETE },
+		[FSM_EVENTS.SET_PHASE_GRADE]: { target: FSM_STATES.COMPLETE },
+		[FSM_EVENTS.SET_FERMENT_GRADE]: { target: FSM_STATES.COMPLETE },
+		[FSM_EVENTS.ABANDON]: { target: FSM_STATES.ABANDONED },
+	},
+
+	[FSM_STATES.ABANDONED]: {},
+}
+
+// ─── Transition function ──────────────────────────────────────────────────────
 
 /**
- * Main transition function — given current state, event, and context,
- * returns the new state (or error) and optional suggested action.
+ * Validate a transition. Returns the new state (or the current state with an
+ * `error` if the transition was rejected). Pure — no I/O, no side effects.
  */
 export function transition(
 	state: FsmState,
-	event: AnyEvent,
+	event: FsmEvent,
 	ctx: FermentFsmContext,
 	params: EventParams = {},
 ): FsmTransitionResult {
-	// Look up transition for current state + event
 	const stateTransitions = TRANSITIONS[state]
 	if (!stateTransitions) {
 		return { state, error: `No transitions defined for state "${state}" with event "${event}".` }
@@ -499,375 +370,21 @@ export function transition(
 		return { state, error: `Event "${event}" is not valid in state "${state}".` }
 	}
 
-	// Check guard
 	if (transitionEntry.guard) {
 		const guardFn = GUARDS[transitionEntry.guard]
 		if (guardFn) {
 			const guardError = guardFn(ctx, params)
-			if (guardError) {
-				return { state, error: guardError }
-			}
+			if (guardError) return { state, error: guardError }
 		}
 	}
 
-	// Compute target state
 	const target = typeof transitionEntry.target === "function" ? transitionEntry.target(ctx) : transitionEntry.target
-
-	// Compute action if present
-	let action: FsmAction | undefined
-	if (transitionEntry.action) {
-		const actionFn = ACTIONS[transitionEntry.action]
-		if (actionFn) {
-			action = actionFn(ctx, params)
-		}
-	}
-
-	return { state: target, action }
+	return { state: target }
 }
 
-// ─── Actions (suggested next steps) ──────────────────────────────────────────
+// ─── Status mapping ───────────────────────────────────────────────────────────
 
-function buildAction(type: AnyEvent, ctx: FermentFsmContext, params: EventParams, message: string): FsmAction {
-	return {
-		type,
-		phaseId: params.phaseId,
-		stepId: params.stepId,
-		message,
-	}
-}
-
-const ACTIONS: Record<string, ActionFn> = {
-	suggestRefineOrStartStep: (ctx, params) => {
-		const phase = ctx.phases.find((p) => p.id === params.phaseId)
-		if (!phase) {
-			return buildAction(FSM_EVENTS.ACTIVATE_PHASE, ctx, params, "Phase activated.")
-		}
-		if (phase.steps.length === 0) {
-			return buildAction(
-				FSM_EVENTS.REFINE_PHASE,
-				ctx,
-				params,
-				`Phase "${phase.name}" is active. Refine it with steps before starting.`,
-			)
-		}
-		const nextStep = phase.steps.find((s) => s.status === "pending")
-		if (nextStep) {
-			return buildAction(
-				FSM_EVENTS.START_STEP,
-				ctx,
-				{ ...params, stepId: nextStep.id },
-				`Step "${nextStep.description}" is ready to start.`,
-			)
-		}
-		return buildAction(
-			FSM_EVENTS.COMPLETE_PHASE,
-			ctx,
-			params,
-			`All steps in "${phase.name}" are terminal. Complete the phase.`,
-		)
-	},
-
-	suggestCompleteStep: (ctx, params) => {
-		const phase = ctx.phases.find((p) => p.id === params.phaseId)
-		const step = phase?.steps.find((s) => s.id === params.stepId)
-		return buildAction(
-			FSM_EVENTS.COMPLETE_STEP,
-			ctx,
-			params,
-			step ? `Step "${step.description}" is running. Complete it when done.` : "Step started.",
-		)
-	},
-
-	suggestNextStepOrCompletePhase: (ctx, params) => {
-		const phase = ctx.phases.find((p) => p.id === params.phaseId)
-		if (!phase) {
-			return buildAction(FSM_EVENTS.COMPLETE_PHASE, ctx, params, "Phase complete.")
-		}
-		const nextStep = phase.steps.find((s) => s.status === "pending" || s.status === "failed")
-		if (nextStep) {
-			const statusNote = nextStep.status === "failed" ? " (retry)" : ""
-			return buildAction(
-				FSM_EVENTS.START_STEP,
-				ctx,
-				{ ...params, stepId: nextStep.id },
-				`Next step: "${nextStep.description}"${statusNote}`,
-			)
-		}
-		return buildAction(
-			FSM_EVENTS.COMPLETE_PHASE,
-			ctx,
-			params,
-			`All steps in "${phase.name}" are terminal. Complete the phase.`,
-		)
-	},
-
-	suggestRecovery: (ctx, params) => {
-		const phase = ctx.phases.find((p) => p.id === params.phaseId)
-		const step = phase?.steps.find((s) => s.id === params.stepId)
-		return buildAction(
-			FSM_EVENTS.START_STEP,
-			ctx,
-			params,
-			step ? `Step "${step.description}" failed. Retry, skip, or revise.` : "Step failed. Take recovery action.",
-		)
-	},
-
-	suggestCompleteFerment: (_ctx, _params) =>
-		buildAction(
-			INTERNAL_EVENTS.COMPLETE_FERMENT,
-			{} as FermentFsmContext,
-			{},
-			"All phases complete. Mark ferment as complete.",
-		),
-
-	suggestActivateNextPhase: (ctx, params) => {
-		const nextPhase = ctx.phases.find((p) => p.status === "planned")
-		if (!nextPhase) {
-			return buildAction(INTERNAL_EVENTS.COMPLETE_FERMENT, ctx, params, "No more phases.")
-		}
-		const groupNote = nextPhase.groupIndex !== undefined ? ` (parallel group ${nextPhase.groupIndex})` : ""
-		return buildAction(
-			FSM_EVENTS.ACTIVATE_PHASE,
-			ctx,
-			{ ...params, phaseId: nextPhase.id },
-			`Activate next phase: "${nextPhase.name}"${groupNote}`,
-		)
-	},
-
-	suggestResume: (ctx) => {
-		const phase = ctx.phases.find((p) => p.id === ctx.activePhaseId)
-		return buildAction(
-			FSM_EVENTS.ACTIVATE_PHASE,
-			ctx,
-			{ phaseId: ctx.activePhaseId },
-			phase ? `Resuming phase "${phase.name}".` : "Resuming ferment.",
-		)
-	},
-
-	suggestActivatePhase: (ctx) => {
-		const phase = ctx.phases.find((p) => p.status === "planned")
-		if (!phase) {
-			return buildAction(FSM_EVENTS.PAUSE, ctx, {}, "No planned phases.")
-		}
-		return buildAction(FSM_EVENTS.ACTIVATE_PHASE, ctx, { phaseId: phase.id }, `Activate phase: "${phase.name}".`)
-	},
-}
-
-// ─── Transition Table ─────────────────────────────────────────────────────────
-
-const TRANSITIONS: TransitionMap = {
-	[FSM_STATES.IDLE]: {
-		[FSM_EVENTS.CREATE_FERMENT]: {
-			target: FSM_STATES.DRAFT,
-		},
-	},
-
-	[FSM_STATES.DRAFT]: {
-		[FSM_EVENTS.SCOPE_FERMENT]: {
-			target: FSM_STATES.PLANNED,
-			guard: "hasPhases",
-		},
-		[FSM_EVENTS.SET_MODE]: {
-			target: FSM_STATES.DRAFT,
-		},
-		[FSM_EVENTS.ABANDON]: {
-			target: FSM_STATES.ABANDONED,
-		},
-	},
-
-	[FSM_STATES.SCOPING]: {
-		[FSM_EVENTS.SCOPE_FERMENT]: {
-			target: FSM_STATES.PLANNED,
-		},
-		[FSM_EVENTS.ABANDON]: {
-			target: FSM_STATES.ABANDONED,
-		},
-	},
-
-	[FSM_STATES.PLANNED]: {
-		[FSM_EVENTS.ACTIVATE_PHASE]: {
-			target: FSM_STATES.PHASE_ACTIVE,
-			guard: "phaseExistsAndPlanned",
-			action: "suggestRefineOrStartStep",
-		},
-		[FSM_EVENTS.REFINE_PHASE]: {
-			target: FSM_STATES.PLANNED,
-		},
-		[FSM_EVENTS.SKIP_PHASE]: {
-			target: FSM_STATES.PLANNED,
-			action: "suggestActivateNextPhase",
-		},
-		[FSM_EVENTS.SCOPE_FERMENT]: {
-			target: FSM_STATES.PLANNED,
-		},
-		[FSM_EVENTS.SET_MODE]: {
-			target: FSM_STATES.PLANNED,
-		},
-		[FSM_EVENTS.ABANDON]: {
-			target: FSM_STATES.ABANDONED,
-		},
-	},
-
-	[FSM_STATES.PHASE_ACTIVE]: {
-		[FSM_EVENTS.REFINE_PHASE]: {
-			target: FSM_STATES.PHASE_ACTIVE,
-		},
-		[FSM_EVENTS.START_STEP]: {
-			target: FSM_STATES.STEP_RUNNING,
-			guard: "noConcurrentNonParallelStep",
-			action: "suggestCompleteStep",
-		},
-		[FSM_EVENTS.COMPLETE_PHASE]: {
-			target: (ctx) => (areAllPhasesTerminal(ctx) ? FSM_STATES.COMPLETE : FSM_STATES.PHASE_ACTIVE),
-			guard: "phaseActive",
-			action: "suggestCompleteFerment",
-		},
-		[FSM_EVENTS.SKIP_PHASE]: {
-			target: (ctx) => {
-				// After skipping, check if ALL phases would be terminal
-				// If this is the only phase or all other phases are already terminal → COMPLETE
-				const otherPhases = ctx.phases.filter((p) => p.id !== ctx.activePhaseId)
-				const allOtherTerminal = otherPhases.every((p) => isPhaseTerminal(p))
-				if (allOtherTerminal) return FSM_STATES.COMPLETE
-				return FSM_STATES.PHASE_ACTIVE
-			},
-			guard: "phaseActive",
-			action: "suggestActivateNextPhase",
-		},
-		[FSM_EVENTS.FAIL_PHASE]: {
-			target: (ctx) => {
-				// After failing, check if ALL phases would be terminal
-				const otherPhases = ctx.phases.filter((p) => p.id !== ctx.activePhaseId)
-				const allOtherTerminal = otherPhases.every((p) => isPhaseTerminal(p))
-				if (allOtherTerminal) return FSM_STATES.COMPLETE
-				return FSM_STATES.PHASE_ACTIVE
-			},
-			guard: "phaseActive",
-			action: "suggestActivateNextPhase",
-		},
-		[FSM_EVENTS.SKIP_STEP]: {
-			target: FSM_STATES.PHASE_ACTIVE,
-			guard: "stepSkipped",
-			action: "suggestNextStepOrCompletePhase",
-		},
-		[FSM_EVENTS.FAIL_STEP]: {
-			target: FSM_STATES.PHASE_ACTIVE,
-			guard: "stepFailed",
-			action: "suggestRecovery",
-		},
-		[FSM_EVENTS.PAUSE]: {
-			target: FSM_STATES.PAUSED,
-		},
-		[FSM_EVENTS.ABANDON]: {
-			target: FSM_STATES.ABANDONED,
-		},
-	},
-
-	[FSM_STATES.STEP_RUNNING]: {
-		[FSM_EVENTS.COMPLETE_STEP]: {
-			target: FSM_STATES.PHASE_ACTIVE,
-			guard: "stepCompleted",
-			action: "suggestNextStepOrCompletePhase",
-		},
-		[FSM_EVENTS.VERIFY_STEP]: {
-			target: FSM_STATES.PHASE_ACTIVE,
-			guard: "stepCompleted",
-			action: "suggestNextStepOrCompletePhase",
-		},
-		[FSM_EVENTS.SKIP_STEP]: {
-			target: FSM_STATES.PHASE_ACTIVE,
-			guard: "stepSkipped",
-			action: "suggestNextStepOrCompletePhase",
-		},
-		[FSM_EVENTS.FAIL_STEP]: {
-			target: FSM_STATES.PHASE_ACTIVE,
-			guard: "stepFailed",
-			action: "suggestRecovery",
-		},
-		[FSM_EVENTS.START_STEP]: {
-			target: FSM_STATES.STEP_RUNNING,
-			guard: "noConcurrentNonParallelStep",
-			action: "suggestCompleteStep",
-		},
-		[FSM_EVENTS.PAUSE]: {
-			target: FSM_STATES.PAUSED,
-		},
-		[FSM_EVENTS.ABANDON]: {
-			target: FSM_STATES.ABANDONED,
-		},
-	},
-
-	[FSM_STATES.PAUSED]: {
-		[FSM_EVENTS.RESUME]: {
-			target: (ctx) => {
-				// If there's an active phase, resume it
-				if (ctx.activePhaseId) {
-					const phase = ctx.phases.find((p) => p.id === ctx.activePhaseId)
-					if (phase && phase.status === "active") {
-						return FSM_STATES.PHASE_ACTIVE
-					}
-				}
-				// Otherwise, activate the first planned phase
-				const nextPhase = ctx.phases.find((p) => p.status === "planned")
-				if (nextPhase) {
-					return FSM_STATES.PHASE_ACTIVE
-				}
-				// No phases to resume, stay paused
-				return FSM_STATES.PAUSED
-			},
-			guard: "hasActiveOrPlannedPhase",
-			action: "suggestResume",
-		},
-		[FSM_EVENTS.ABANDON]: {
-			target: FSM_STATES.ABANDONED,
-		},
-	},
-
-	[FSM_STATES.COMPLETE]: {
-		[FSM_EVENTS.COMPLETE_PHASE]: {
-			target: FSM_STATES.COMPLETE,
-		},
-		[FSM_EVENTS.SKIP_PHASE]: {
-			target: FSM_STATES.COMPLETE,
-		},
-		[FSM_EVENTS.FAIL_PHASE]: {
-			target: FSM_STATES.COMPLETE,
-		},
-		[FSM_EVENTS.COMPLETE_STEP]: {
-			target: FSM_STATES.COMPLETE,
-		},
-		[FSM_EVENTS.SKIP_STEP]: {
-			target: FSM_STATES.COMPLETE,
-		},
-		[FSM_EVENTS.FAIL_STEP]: {
-			target: FSM_STATES.COMPLETE,
-		},
-		[FSM_EVENTS.VERIFY_STEP]: {
-			target: FSM_STATES.COMPLETE,
-		},
-		[FSM_EVENTS.SET_STEP_GRADE]: {
-			target: FSM_STATES.COMPLETE,
-		},
-		[FSM_EVENTS.SET_PHASE_GRADE]: {
-			target: FSM_STATES.COMPLETE,
-		},
-		[FSM_EVENTS.SET_FERMENT_GRADE]: {
-			target: FSM_STATES.COMPLETE,
-		},
-		[FSM_EVENTS.ABANDON]: {
-			target: FSM_STATES.ABANDONED,
-		},
-	},
-
-	[FSM_STATES.ABANDONED]: {},
-}
-
-// ─── Map FermentStatus to FsmState ───────────────────────────────────────────
-
-/**
- * Maps the Ferment's status (from types.ts) to the FSM state.
- * This is the authoritative mapping from domain status → FSM state.
- */
+/** Maps a Ferment's domain status to its FSM state. */
 export function fermentStatusToFsmState(fermentStatus: FermentStatus): FsmState {
 	switch (fermentStatus) {
 		case "draft":
@@ -887,11 +404,7 @@ export function fermentStatusToFsmState(fermentStatus: FermentStatus): FsmState 
 	}
 }
 
-/**
- * Maps FSM state back to FermentStatus.
- * For states that map to multiple ferment statuses (e.g., PHASE_ACTIVE → running),
- * uses the most common mapping.
- */
+/** Maps an FSM state back to a Ferment domain status. */
 export function fsmStateToFermentStatus(fsmState: FsmState): FermentStatus {
 	switch (fsmState) {
 		case FSM_STATES.IDLE:
@@ -914,135 +427,14 @@ export function fsmStateToFermentStatus(fsmState: FsmState): FermentStatus {
 	}
 }
 
-// ─── Next Action Computation ──────────────────────────────────────────────────
-
-export type SuggestedAction =
-	| { kind: "scope"; message: string }
-	| { kind: "refine"; phaseId: string; message: string }
-	| { kind: "start_step"; stepId: string; phaseId: string; message: string }
-	| { kind: "complete_step"; stepId: string; phaseId: string; message: string }
-	| { kind: "complete_phase"; phaseId: string; message: string }
-	| { kind: "activate_phase"; phaseId: string; message: string }
-	| { kind: "complete_ferment"; message: string }
-	| { kind: "paused"; message: string }
-	| { kind: "recover_step"; stepId: string; phaseId: string; message: string }
-	| { kind: "recover_phase"; phaseId: string; message: string }
-	| { kind: "idle"; message: string }
-
-/**
- * Computes the next suggested action based on current FSM state and context.
- * This replaces the logic from engine.ts's `whatNext()` function.
- */
-export function nextAction(state: FsmState, ctx: FermentFsmContext): SuggestedAction {
-	const phase = ctx.phases.find((p) => p.id === ctx.activePhaseId)
-
-	switch (state) {
-		case FSM_STATES.IDLE:
-		case FSM_STATES.DRAFT:
-			return { kind: "scope", message: "Ferment is in draft. Collect goal, criteria, constraints, and phases." }
-
-		case FSM_STATES.SCOPING:
-			return { kind: "scope", message: "Continue scoping: collect remaining information from the user." }
-
-		case FSM_STATES.PLANNED: {
-			const next = ctx.phases.find((p) => p.status === "planned")
-			if (!next) {
-				return { kind: "complete_ferment", message: "All phases are terminal. Complete the ferment." }
-			}
-			const groupNote = next.groupIndex !== undefined ? ` (parallel group ${next.groupIndex})` : ""
-			return {
-				kind: "activate_phase",
-				phaseId: next.id,
-				message: `Activate phase "${next.name}"${groupNote} to begin.`,
-			}
-		}
-
-		case FSM_STATES.PHASE_ACTIVE: {
-			if (!phase) {
-				return { kind: "paused", message: "No active phase. Something went wrong." }
-			}
-			if (phase.status === "failed") {
-				return {
-					kind: "recover_phase",
-					phaseId: phase.id,
-					message: `Phase "${phase.name}" failed. Retry, skip, or abandon.`,
-				}
-			}
-			if (phase.steps.length === 0) {
-				return {
-					kind: "refine",
-					phaseId: phase.id,
-					message: `Phase "${phase.name}" is active but has no steps. Refine it.`,
-				}
-			}
-			const pending = phase.steps.find((s) => s.status === "pending")
-			if (pending) {
-				return {
-					kind: "start_step",
-					stepId: pending.id,
-					phaseId: phase.id,
-					message: `Start step "${pending.description}".`,
-				}
-			}
-			return {
-				kind: "complete_phase",
-				phaseId: phase.id,
-				message: `All steps in "${phase.name}" are terminal. Complete the phase.`,
-			}
-		}
-
-		case FSM_STATES.STEP_RUNNING: {
-			if (!phase) {
-				return { kind: "paused", message: "No active phase. Something went wrong." }
-			}
-			const running = phase.steps.find((s) => s.status === "running")
-			if (running) {
-				return {
-					kind: "complete_step",
-					stepId: running.id,
-					phaseId: phase.id,
-					message: `Step "${running.description}" is running. Complete it when done.`,
-				}
-			}
-			const failed = phase.steps.find((s) => s.status === "failed")
-			if (failed) {
-				return {
-					kind: "recover_step",
-					stepId: failed.id,
-					phaseId: phase.id,
-					message: `Step "${failed.description}" failed. Retry, skip, or revise.`,
-				}
-			}
-			return { kind: "complete_phase", phaseId: phase.id, message: "Step complete. Complete the phase." }
-		}
-
-		case FSM_STATES.PAUSED:
-			return { kind: "paused", message: "Ferment is paused. Resume or abandon." }
-
-		case FSM_STATES.COMPLETE:
-			return { kind: "complete_ferment", message: "Ferment is complete." }
-
-		case FSM_STATES.ABANDONED:
-			return { kind: "idle", message: "Ferment is abandoned." }
-
-		default:
-			return { kind: "idle", message: "Unknown state." }
-	}
-}
-
-// ─── Utility: Check if state is terminal ─────────────────────────────────────
+// ─── Utility helpers ──────────────────────────────────────────────────────────
 
 export function isTerminalState(state: FsmState): boolean {
 	return state === FSM_STATES.COMPLETE || state === FSM_STATES.ABANDONED
 }
 
-// ─── Utility: Get valid events for current state ─────────────────────────────
-
-export function getValidEvents(state: FsmState): AnyEvent[] {
+export function getValidEvents(state: FsmState): FsmEvent[] {
 	const stateTransitions = TRANSITIONS[state]
 	if (!stateTransitions) return []
-	return Object.keys(stateTransitions) as AnyEvent[]
+	return Object.keys(stateTransitions) as FsmEvent[]
 }
-
-// Re-export internal events for external use
-export { INTERNAL_EVENTS }
