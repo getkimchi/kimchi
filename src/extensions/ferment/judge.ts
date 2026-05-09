@@ -120,14 +120,17 @@ F = failed or incomplete`
 
 	const raw = await judgeApiCall(system, user, 120)
 	const now = new Date().toISOString()
-	if (!raw) return { grade: "B", rationale: "Judge unavailable — assumed good.", gradedAt: now }
+	// `unavailable: true` lets stats and the self-improvement loop distinguish
+	// "judged B" from "judge couldn't be reached" — without this every judge
+	// outage looks like a string of B grades and the loop never adapts.
+	if (!raw) return { grade: "B", rationale: "Judge unavailable — assumed good.", gradedAt: now, unavailable: true }
 	try {
 		const parsed = JSON.parse(raw) as { grade?: string; rationale?: string }
 		const validGrades = ["A", "B", "C", "D", "F"]
 		const grade = validGrades.includes(parsed.grade ?? "") ? (parsed.grade as Grade) : "B"
 		return { grade, rationale: parsed.rationale ?? raw.slice(0, 150), gradedAt: now }
 	} catch {
-		return { grade: "B", rationale: raw.slice(0, 150), gradedAt: now }
+		return { grade: "B", rationale: raw.slice(0, 150), gradedAt: now, unavailable: true }
 	}
 }
 
@@ -171,7 +174,7 @@ Deltas are the gaps between expected and actual outcomes. Include only significa
 	const maxTokens = evidence?.available ? 400 : 250
 	const raw = await judgeApiCall(system, user, maxTokens)
 	const now = new Date().toISOString()
-	if (!raw) return { grade: "B", rationale: "Judge unavailable — assumed good.", gradedAt: now }
+	if (!raw) return { grade: "B", rationale: "Judge unavailable — assumed good.", gradedAt: now, unavailable: true }
 	try {
 		const parsed = JSON.parse(raw) as {
 			grade?: string
@@ -209,7 +212,7 @@ Deltas are the gaps between expected and actual outcomes. Include only significa
 			deltas,
 		}
 	} catch {
-		return { grade: "B", rationale: raw.slice(0, 150), gradedAt: now }
+		return { grade: "B", rationale: raw.slice(0, 150), gradedAt: now, unavailable: true }
 	}
 }
 

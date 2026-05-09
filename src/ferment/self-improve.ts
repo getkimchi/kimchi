@@ -33,8 +33,23 @@ export const DELTA_COUNT_THRESHOLD = 2
 
 /**
  * Compute structured feedback from the previous phase's grade. Pure — no I/O.
+ *
+ * When the grade carries `unavailable: true` (judge was unreachable / output
+ * unparseable), no triggers fire and the adjustment text is neutral. This
+ * prevents a fully-down judge from looking like a string of B grades that
+ * silently keeps the loop quiet.
  */
 export function evaluatePhaseFeedback(grade: JudgeGrade): PhaseFeedback {
+	if (grade.unavailable) {
+		return {
+			adjustment:
+				"Judge was unavailable for the previous phase — no quality signal to act on. Continue current strategy and monitor verification output.",
+			deltaCountTriggered: false,
+			correctiveStepNeeded: false,
+			deltaCount: 0,
+		}
+	}
+
 	const deltaCount = grade.deltas?.length ?? 0
 	const deltaCountTriggered = deltaCount > DELTA_COUNT_THRESHOLD
 	const correctiveStepNeeded = grade.grade === "D" || grade.grade === "F"

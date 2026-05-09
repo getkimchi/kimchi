@@ -43,7 +43,9 @@ export function formatFermentStatus(f: Ferment): string {
 					elapsed = ms > 0 ? ` ⏱ ${(ms / 1000).toFixed(1)}s` : ""
 				}
 				const modelTag = s.workerModel ? ` 🧠 ${s.workerModel}` : ""
-				const gradeTag = s.grade ? ` 📊 ${s.grade.grade}` : ""
+				// `?` suffix on grade indicates the judge was unavailable when this
+				// step was scored — the visible letter is a placeholder, not a real signal.
+				const gradeTag = s.grade ? ` 📊 ${s.grade.grade}${s.grade.unavailable ? "?" : ""}` : ""
 				lines.push(`      ${sm} ${s.description}${elapsed}${modelTag}${gradeTag} [${s.status}]`)
 			}
 		}

@@ -79,6 +79,42 @@ describe("evaluatePhaseFeedback", () => {
 		const f = evaluatePhaseFeedback(grade("A", exactlyAtThreshold))
 		expect(f.deltaCountTriggered).toBe(false)
 	})
+
+	// Audit doc finding 4.5: judge default "B" used to inflate ungraded outcomes.
+	// `unavailable: true` short-circuits the loop so judge outages don't look
+	// like a string of B grades that quietly suppress strategy adjustments.
+	it("unavailable grade short-circuits the loop with a neutral adjustment", () => {
+		const g: JudgeGrade = {
+			grade: "B",
+			rationale: "Judge unavailable — assumed good.",
+			gradedAt: new Date().toISOString(),
+			unavailable: true,
+		}
+		const f = evaluatePhaseFeedback(g)
+		expect(f.deltaCountTriggered).toBe(false)
+		expect(f.correctiveStepNeeded).toBe(false)
+		expect(f.deltaCount).toBe(0)
+		expect(f.adjustment).toContain("unavailable")
+	})
+
+	it("unavailable grade with deltas still does not trigger any adjustments", () => {
+		const g: JudgeGrade = {
+			grade: "B",
+			rationale: "Judge unavailable",
+			gradedAt: new Date().toISOString(),
+			unavailable: true,
+			// Even if deltas are somehow present, an unavailable grade can't be trusted —
+			// the loop should not act on them.
+			deltas: [
+				{ category: "scope", expected: "all", actual: "half", severity: "major" },
+				{ category: "quality", expected: "fast", actual: "slow", severity: "major" },
+				{ category: "completeness", expected: "100%", actual: "60%", severity: "major" },
+			],
+		}
+		const f = evaluatePhaseFeedback(g)
+		expect(f.deltaCountTriggered).toBe(false)
+		expect(f.correctiveStepNeeded).toBe(false)
+	})
 })
 
 describe("renderDeltas", () => {

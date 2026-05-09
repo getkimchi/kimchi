@@ -135,6 +135,14 @@ export type TransitionError =
 	| { code: "INVALID_FIELD"; field: string; message: string }
 	| { code: "INVALID_CATEGORY"; category: string; message: string }
 	| { code: "PHASE_GROUP_EMPTY"; groupIndex: number; message: string }
+	| {
+			code: "STEP_RUNNING"
+			phaseId: string
+			runningStepId: string
+			runningStepIndex: number
+			runningDescription: string
+			message: string
+	  }
 
 export interface TransitionContext {
 	/** ISO timestamp; injected so transitions are deterministic. */
@@ -463,9 +471,16 @@ function handleActivatePhaseGroup(
 		})
 	}
 
+	// Audit doc finding #1: deactivate any phase that's currently active and
+	// NOT in the target group. Without this sweep, a previously-active
+	// non-group phase stays active alongside the new group, breaking the
+	// "active phases are exactly the target group" invariant.
 	const phases = ferment.phases.map((p) => {
 		if (p.groupIndex === cmd.groupIndex && p.status === "planned") {
 			return { ...p, status: "active" as const, startedAt: ctx.now }
+		}
+		if (p.status === "active" && p.groupIndex !== cmd.groupIndex) {
+			return { ...p, status: "planned" as const }
 		}
 		return p
 	})
@@ -493,6 +508,22 @@ function handleRefinePhase(
 
 	const guard = requirePhaseStatus(phase, ["active"])
 	if (guard) return fail(guard)
+
+	// Audit doc finding #4: refine_phase rebuilds the entire steps array, so
+	// allowing it through while a step is `running` would silently delete the
+	// in-flight step. The subagent's later `complete_step` would hit
+	// STEP_NOT_FOUND and the work product would be lost. Reject up front.
+	const running = phase.steps.find((s) => s.status === "running")
+	if (running) {
+		return fail({
+			code: "STEP_RUNNING",
+			phaseId: phase.id,
+			runningStepId: running.id,
+			runningStepIndex: running.index,
+			runningDescription: running.description,
+			message: `Cannot refine phase ${phase.index} "${phase.name}" — step ${running.index} ("${running.description}") is currently running. Complete, skip, or fail it before refining.`,
+		})
+	}
 
 	const steps: Step[] = cmd.steps.map((st, i) => ({
 		id: `step-${i + 1}`,

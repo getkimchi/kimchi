@@ -238,7 +238,11 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 			// loop continues without the suggestion. Computed asynchronously so we
 			// don't block the tool's return; the result lands in the corrective
 			// step cache, picked up on the next system-prompt rebuild.
-			if (phaseGrade.grade === "D" || phaseGrade.grade === "F") {
+			// Skip corrective-step request when grade was unavailable — the placeholder
+			// "B" never actually triggers this branch, but if the grader returns a real
+			// "D"/"F" via the unavailable path (e.g. a partial parse failure that fell
+			// back to D), we still don't trust the rationale enough to ask for a fix.
+			if (!phaseGrade.unavailable && (phaseGrade.grade === "D" || phaseGrade.grade === "F")) {
 				void judgeSuggestCorrectiveStep(phase.name, phase.goal, phaseGrade).then((suggestion) => {
 					if (suggestion) setCorrectiveStep(params.ferment_id, phase.id, suggestion)
 				})

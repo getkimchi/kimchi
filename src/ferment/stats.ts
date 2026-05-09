@@ -164,7 +164,10 @@ export function computeStats(ferment: Ferment): FermentStats {
 				break
 		}
 
-		if (phase.grade) {
+		// Skip unavailable judge grades (judge was unreachable / output unparseable)
+		// — they carry a synthetic "B" placeholder that would otherwise inflate
+		// average grades and mask real outages.
+		if (phase.grade && !phase.grade.unavailable) {
 			phaseGradeList.push(phase.grade.grade)
 		}
 
@@ -208,7 +211,7 @@ export function computeStats(ferment: Ferment): FermentStats {
 					break
 			}
 
-			if (step.grade) {
+			if (step.grade && !step.grade.unavailable) {
 				stepGradeList.push(step.grade.grade)
 			}
 
