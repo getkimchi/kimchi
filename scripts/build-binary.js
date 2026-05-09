@@ -1,5 +1,5 @@
 // Build the CLI into a standalone Bun binary under dist/.
-// Steps: clean → typecheck → compile → fix macOS codesign → copy binary resources.
+// Steps: clean → bun install → typecheck → compile → fix macOS codesign → copy binary resources.
 //
 // Usage:
 //   node scripts/build-binary.js                        # build for the host platform
@@ -31,14 +31,15 @@ function run(label, cmd) {
 }
 
 run("clean", "pnpm run clean")
+run("install (bun)", "bun install")
 run("typecheck", "pnpm run typecheck")
 
 // Externalize packages that cannot be bundled into a Bun compiled binary (native addons, browser automation harnesses).
-// If a new dependency causes a build failure, check whether it also needs --external here.
+// The @earendil-works/* packages have native Node addons that must be resolved at runtime.
 const targetFlag = crossTarget ? ` --target=${crossTarget}` : ""
 run(
 	"compile",
-	`bun build src/entry.ts --compile${targetFlag} --outfile dist/bin/kimchi --external chromium-bidi --external electron`,
+	`bun build src/entry.ts --compile${targetFlag} --outfile dist/bin/kimchi --external chromium-bidi --external electron --external @earendil-works/pi-coding-agent --external @earendil-works/pi-ai --external @earendil-works/pi-tui`,
 )
 
 // Bun --compile produces binaries with an invalid code signature on macOS.
