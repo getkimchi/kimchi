@@ -84,8 +84,11 @@ export type Command =
 			stepId: string
 			result?: StepResult
 			grade?: JudgeGrade
+			/** Short worker-written summary of what was accomplished. Persisted on
+			 *  the Step so subsequent steps in the same phase can reference it. */
+			summary?: string
 	  }
-	| { type: "verify_step"; phaseId: string; stepId: string; result: StepResult }
+	| { type: "verify_step"; phaseId: string; stepId: string; result: StepResult; summary?: string }
 	| { type: "skip_step"; phaseId: string; stepId: string }
 	| { type: "fail_step"; phaseId: string; stepId: string; error?: string }
 	| { type: "complete_ferment"; finalSummary?: string; grade?: JudgeGrade }
@@ -564,6 +567,7 @@ function handleCompleteStep(
 				completedAt: ctx.now,
 				result: cmd.result,
 				grade: cmd.grade,
+				summary: cmd.summary,
 			}),
 		}),
 	)
@@ -590,8 +594,11 @@ function handleVerifyStep(
 		touch(ferment, ctx, {
 			phases: setStep(ferment, phaseIndex, stepIndex, {
 				status,
-				completedAt: cmd.result.completedAt,
-				result: cmd.result,
+				// Use server-side ctx.now rather than the user-supplied result.completedAt
+				// so a misbehaving worker can't backdate or postdate completion.
+				completedAt: ctx.now,
+				result: { ...cmd.result, completedAt: ctx.now },
+				summary: cmd.summary,
 			}),
 		}),
 	)

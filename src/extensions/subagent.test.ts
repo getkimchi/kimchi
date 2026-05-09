@@ -6,9 +6,12 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import {
 	RESULT_MAX_CHARS,
 	buildSubagentArgs,
+	logSubagentTelemetry,
 	parseSubagentEvent,
 	parseSubagentResponse,
 	prepareChildSessionFile,
+	stageFromDuration,
+	stripReasoningWrappers,
 	truncateSubagentResult,
 	validateAttachments,
 } from "./subagent.js"
@@ -423,6 +426,90 @@ describe("parseSubagentResponse", () => {
 			expect(parseSubagentResponse(input)).toEqual(expected)
 		})
 	}
+
+	// Reasoning-model behavior. Workers running minimax-m2.7, kimi-k2.5,
+	// DeepSeek and other reasoning models routinely interleave <think> blocks
+	// with their final answer. Without stripping, valid responses parse as
+	// null and the orchestrator sees "protocol violation" — the actual root
+	// cause behind ~59% of subagent failures observed in a prior session.
+
+	it("strips <think> blocks before parsing JSON", () => {
+		const input = '<think>Let me figure this out</think>\n{"summary": "Done.", "files": []}'
+		expect(parseSubagentResponse(input)).toEqual({ summary: "Done.", files: [] })
+	})
+
+	it("strips <thinking> blocks before parsing JSON", () => {
+		const input = '<thinking>Long reasoning here</thinking>{"summary": "OK"}'
+		expect(parseSubagentResponse(input)).toEqual({ summary: "OK", files: [] })
+	})
+
+	it("strips multiple interleaved <think> blocks", () => {
+		const input =
+			'<think>step 1</think>\n<think>step 2</think>\n<think>final</think>\n{"summary": "Iterated.", "files": []}'
+		expect(parseSubagentResponse(input)).toEqual({ summary: "Iterated.", files: [] })
+	})
+
+	it("strips a trailing unclosed <think> opener (truncated stream)", () => {
+		const input = '{"summary": "Cleanup.", "files": []}\n<think>unfinished'
+		expect(parseSubagentResponse(input)).toEqual({ summary: "Cleanup.", files: [] })
+	})
+
+	it("falls back to markdown-as-summary when worker returns substantive non-JSON content", () => {
+		// Reasoning models that ignore the JSON protocol but still produce useful work
+		// shouldn't be classified as protocol violations — the orchestrator can use the
+		// content even if it isn't structured.
+		const input = `# Inventory
+
+- File: src/ferment/types.ts
+  - Exports: Ferment, Phase, Step, JudgeGrade
+- File: src/ferment/state-machine.ts
+  - Exports: applyCommand, Command`
+		const result = parseSubagentResponse(input)
+		expect(result).not.toBeNull()
+		expect(result?.summary).toContain("Inventory")
+		expect(result?.files).toEqual([])
+	})
+
+	it("fallback truncates very long markdown responses", () => {
+		const long = "x".repeat(3000)
+		const result = parseSubagentResponse(long)
+		expect(result).not.toBeNull()
+		expect(result?.summary.length).toBeLessThanOrEqual(2100)
+		expect(result?.summary).toContain("[response truncated]")
+	})
+
+	it("does NOT fall back for trivial non-JSON output", () => {
+		// Short plain-text "I'm done." style responses still null out so the
+		// orchestrator can decide to retry with a tighter prompt.
+		expect(parseSubagentResponse("ok")).toBeNull()
+		expect(parseSubagentResponse("done!")).toBeNull()
+	})
+})
+
+describe("stripReasoningWrappers", () => {
+	it("strips a single <think> block", () => {
+		expect(stripReasoningWrappers("<think>plan</think>answer")).toBe("answer")
+	})
+
+	it("strips a single <thinking> block", () => {
+		expect(stripReasoningWrappers("<thinking>plan</thinking>answer")).toBe("answer")
+	})
+
+	it("strips multiple closed blocks", () => {
+		expect(stripReasoningWrappers("<think>a</think>X<think>b</think>Y")).toBe("XY")
+	})
+
+	it("drops trailing unclosed <think>", () => {
+		expect(stripReasoningWrappers("answer<think>truncated...")).toBe("answer")
+	})
+
+	it("leaves text without reasoning blocks unchanged", () => {
+		expect(stripReasoningWrappers("plain answer")).toBe("plain answer")
+	})
+
+	it("handles a closed block followed by an unclosed one", () => {
+		expect(stripReasoningWrappers("<think>a</think>middle<think>tail")).toBe("middle")
+	})
 })
 
 describe("truncateSubagentResult", () => {
@@ -481,4 +568,123 @@ describe("truncateSubagentResult", () => {
 			}
 		})
 	}
+})
+
+describe("stageFromDuration", () => {
+	it("returns early for durations < 10s", () => {
+		expect(stageFromDuration(0)).toBe("early")
+		expect(stageFromDuration(9_999)).toBe("early")
+	})
+	it("returns mid for durations >= 10s up to 5min", () => {
+		expect(stageFromDuration(10_000)).toBe("mid")
+		expect(stageFromDuration(60_000)).toBe("mid")
+		expect(stageFromDuration(299_999)).toBe("mid")
+	})
+	it("returns late for durations >= 5min", () => {
+		expect(stageFromDuration(300_000)).toBe("late")
+		expect(stageFromDuration(1_000_000)).toBe("late")
+	})
+})
+
+describe("logSubagentTelemetry", () => {
+	it("creates and appends a JSONL entry when the dir exists", () => {
+		const dir = mkdtempSync(join(tmpdir(), "tm-"))
+		const entry = {
+			timestamp: "2026-01-01T00:00:00Z",
+			model: "test-model",
+			provider: "test-provider",
+			tokenBudget: 100_000,
+			inactivityTimeoutMs: 180_000,
+			promptLength: 42,
+			attachmentCount: 2,
+			result: "success" as const,
+			exitCode: 0,
+			durationMs: 5_000,
+			tokenUsage: { input: 10, output: 20, cacheRead: 5, cacheWrite: 8 },
+			outputLength: 100,
+			stderrLength: 0,
+			toolCallCount: 3,
+			stage: "early" as const,
+		}
+		logSubagentTelemetry(dir, entry)
+
+		const lines = readFileSync(join(dir, "subagent-telemetry.jsonl"), "utf-8").trim().split("\n")
+		expect(lines).toHaveLength(1)
+		const parsed = JSON.parse(lines[0])
+		expect(parsed.model).toBe("test-model")
+		expect(parsed.result).toBe("success")
+		expect(parsed.toolCallCount).toBe(3)
+		expect(parsed.stage).toBe("early")
+		expect(parsed).toHaveProperty("timestamp")
+		expect(parsed).toHaveProperty("tokenUsage")
+
+		rmSync(dir, { recursive: true, force: true })
+	})
+
+	it("appends multiple entries without overwriting", () => {
+		const dir = mkdtempSync(join(tmpdir(), "tm-"))
+		const entryBase = {
+			timestamp: "2026-01-01T00:00:00Z",
+			model: "m",
+			provider: "p",
+			inactivityTimeoutMs: 100,
+			promptLength: 1,
+			attachmentCount: 0,
+			result: "success" as const,
+			exitCode: 0,
+			durationMs: 0,
+			tokenUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			outputLength: 0,
+			stderrLength: 0,
+			toolCallCount: 0,
+			stage: "early" as const,
+		}
+		logSubagentTelemetry(dir, entryBase)
+		logSubagentTelemetry(dir, entryBase)
+
+		const lines = readFileSync(join(dir, "subagent-telemetry.jsonl"), "utf-8").trim().split("\n")
+		expect(lines).toHaveLength(2)
+
+		rmSync(dir, { recursive: true, force: true })
+	})
+
+	it("silently does nothing when sessionDir is undefined", () => {
+		const entry = {
+			timestamp: "2026-01-01T00:00:00Z",
+			model: "m",
+			provider: "p",
+			inactivityTimeoutMs: 100,
+			promptLength: 1,
+			attachmentCount: 0,
+			result: "success" as const,
+			exitCode: 0,
+			durationMs: 0,
+			tokenUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			outputLength: 0,
+			stderrLength: 0,
+			toolCallCount: 0,
+			stage: "early" as const,
+		}
+		expect(() => logSubagentTelemetry(undefined, entry)).not.toThrow()
+	})
+
+	it("silently swallows errors for non-writable or missing dirs", () => {
+		const entry = {
+			timestamp: "2026-01-01T00:00:00Z",
+			model: "m",
+			provider: "p",
+			inactivityTimeoutMs: 100,
+			promptLength: 1,
+			attachmentCount: 0,
+			result: "success" as const,
+			exitCode: 0,
+			durationMs: 0,
+			tokenUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			outputLength: 0,
+			stderrLength: 0,
+			toolCallCount: 0,
+			stage: "early" as const,
+		}
+		expect(() => logSubagentTelemetry("/nonexistent/path/that/does/not/exist", entry)).not.toThrow()
+	})
 })

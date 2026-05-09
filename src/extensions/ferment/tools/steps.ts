@@ -14,6 +14,7 @@ import { onStepCompleted } from "../nudge.js"
 import { bumpStepStart, captureJudgeContext, clearStepStart, getStorage } from "../state.js"
 import { applyAndPersist, failedToolResult, resolvePhase, resolveStep, toolErr, toolOk } from "../tool-helpers.js"
 import { CompleteStepParams, FailStepParams, StepActionParams, VerifyParams } from "../tool-schemas.js"
+import { buildWorkerContext } from "../worker-prompt.js"
 
 const VERIFY_TIMEOUT_MS = 60_000
 
@@ -101,8 +102,17 @@ export function registerStepTools(pi: ExtensionAPI): void {
 					? `\nparallel_siblings: ${JSON.stringify(parallelSiblings)}\n\nThese steps are independent — call start_step for each one now and spawn their subagents concurrently. Do not wait for one to finish before starting the next.`
 					: ""
 
+			// Prebuilt worker context — the planner pastes this verbatim into the
+			// subagent's prompt instead of re-deriving phase/step context every time.
+			// Includes phase goal, prior step summaries (now persisted on the Step),
+			// recent decisions/memories, and ferment constraints.
+			const workerContext = freshPhase && freshStep ? buildWorkerContext(outcome.ferment, freshPhase, freshStep) : ""
+			const contextBlock = workerContext
+				? `\n\n--- BEGIN WORKER PROMPT ---\n${workerContext}\n--- END WORKER PROMPT ---\n\nPaste the block above into the subagent's prompt. You may add a single concrete implementation directive at the end if the step description is ambiguous, but do NOT remove or summarize the context block.`
+				: ""
+
 			return toolOk(
-				`Step ${step.index}: "${step.description}" started.\nphase_id: ${phase.id}\nstep_id: ${step.id}\nworker_model: ${workerModel}\nprovider: kimchi-dev\n\nSpawn a subagent now with provider "kimchi-dev", model "${workerModel}", and a prompt describing exactly what to implement for this step. When it returns, call complete_step with its summary.${lowGradeCaution}${parallelNote}`,
+				`Step ${step.index}: "${step.description}" started.\nphase_id: ${phase.id}\nstep_id: ${step.id}\nworker_model: ${workerModel}\nprovider: kimchi-dev\n\nSpawn a subagent now with provider "kimchi-dev", model "${workerModel}". When it returns, call complete_step with its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
 			)
 		},
 	})
@@ -133,6 +143,7 @@ export function registerStepTools(pi: ExtensionAPI): void {
 					type: "complete_step",
 					phaseId: phase.id,
 					stepId: step.id,
+					summary: params.summary,
 				})
 				if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
 				clearStepStart(f.id, phase.id, step.id)
@@ -197,6 +208,7 @@ export function registerStepTools(pi: ExtensionAPI): void {
 				phaseId: phase.id,
 				stepId: step.id,
 				result: verifyResult,
+				summary: params.summary,
 			})
 			if (!verifyOutcome.ok) return failedToolResult(verifyOutcome.error)
 			clearStepStart(f.id, phase.id, step.id)

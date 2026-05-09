@@ -159,6 +159,22 @@ export function getCorrectiveStep(fermentId: string, phaseId: string): string | 
 	return correctiveSteps.get(`${fermentId}:${phaseId}`)
 }
 
+// ─── Phase-start git ref cache ────────────────────────────────────────────────
+// Captured at activate_phase, consumed at complete_phase by the judge so it can
+// diff against the phase's actual starting state. Not persisted — recomputed on
+// each session resume. If unavailable (not a git repo, etc.) the judge falls
+// back to summary-only grading.
+
+const phaseStartRefs = new Map<string, string>()
+
+export function setPhaseStartRef(fermentId: string, phaseId: string, ref: string): void {
+	phaseStartRefs.set(`${fermentId}:${phaseId}`, ref)
+}
+
+export function getPhaseStartRef(fermentId: string, phaseId: string): string | undefined {
+	return phaseStartRefs.get(`${fermentId}:${phaseId}`)
+}
+
 // ─── Per-ferment cleanup ──────────────────────────────────────────────────────
 
 /** Clear all in-memory state scoped to a specific ferment. Called on abandon/delete/complete. */
@@ -170,6 +186,9 @@ export function clearFermentState(fermentId: string): void {
 	}
 	for (const key of correctiveSteps.keys()) {
 		if (key.startsWith(`${fermentId}:`)) correctiveSteps.delete(key)
+	}
+	for (const key of phaseStartRefs.keys()) {
+		if (key.startsWith(`${fermentId}:`)) phaseStartRefs.delete(key)
 	}
 }
 

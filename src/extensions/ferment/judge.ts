@@ -16,6 +16,7 @@
 
 import { complete } from "@earendil-works/pi-ai"
 import type { Delta, Grade, JudgeGrade, Phase } from "../../ferment/types.js"
+import type { PhaseEvidence } from "./phase-evidence.js"
 import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
 
 const JUDGE_MODEL_ID = "claude-opus-4-7"
@@ -137,8 +138,17 @@ export async function judgeGradePhase(
 	phaseGoal: string,
 	stepSummaries: string,
 	summary: string,
+	evidence?: PhaseEvidence,
 ): Promise<JudgeGrade> {
 	const system = `You are a code quality judge grading a completed phase of a coding task.
+
+You will be given:
+1. The phase goal
+2. Worker-written step summaries (claims about what was done)
+3. A phase summary written by the planner
+4. (When available) Concrete code evidence: list of files changed and a truncated unified diff
+
+When evidence is provided, **prioritize it over the summary**. If the summary claims work that the diff doesn't show, treat that as a "completeness" delta with severity major. If the diff shows work the summary doesn't acknowledge, treat that as a "scope" delta with severity minor.
 
 Respond with EXACTLY one JSON object, no markdown:
 {"grade":"A"|"B"|"C"|"D"|"F","rationale":"<one short sentence>","deltas":[{"category":"scope"|"quality"|"completeness"|"timing"|"correctness"|"other","expected":"<what should have happened>","actual":"<what actually happened>","severity":"major"|"minor"|"cosmetic"}]}
@@ -151,9 +161,15 @@ F = phase goal not achieved
 
 Deltas are the gaps between expected and actual outcomes. Include only significant deltas (severity major or minor); omit cosmetic issues.`
 
-	const user = `Phase: "${phaseName}"\nGoal: ${phaseGoal}\nStep summaries:\n${stepSummaries}\nPhase summary: ${summary || "(none)"}`
+	const evidenceBlock = evidence?.available
+		? `\n\n--- CODE EVIDENCE ---\nFiles changed:\n${evidence.filesChanged}${evidence.diffSnippet ? `\n\nDiff snippet:\n\`\`\`diff\n${evidence.diffSnippet}\n\`\`\`` : ""}`
+		: ""
 
-	const raw = await judgeApiCall(system, user, 250)
+	const user = `Phase: "${phaseName}"\nGoal: ${phaseGoal}\nStep summaries:\n${stepSummaries}\nPhase summary: ${summary || "(none)"}${evidenceBlock}`
+
+	// Allow more tokens when evidence is provided — the judge has more material to compare.
+	const maxTokens = evidence?.available ? 400 : 250
+	const raw = await judgeApiCall(system, user, maxTokens)
 	const now = new Date().toISOString()
 	if (!raw) return { grade: "B", rationale: "Judge unavailable — assumed good.", gradedAt: now }
 	try {
