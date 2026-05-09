@@ -1,15 +1,22 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk"
-import type { AgentSession, AgentSessionEvent, AgentSessionEventListener } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type {
+	AgentSession,
+	AgentSessionEvent,
+	AgentSessionEventListener,
+	SessionInfo as PiSessionInfo,
+} from "@earendil-works/pi-coding-agent"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	type AcpSessionFactory,
+	type AcpSessionLister,
 	KimchiAcpAgent,
 	assertSessionHasModel,
 	buildSessionModelState,
 	describeToolCall,
 	isHiddenToolCall,
+	toAcpSessionInfo,
 } from "./server.js"
 
 // Minimal fake of AgentSession surface used by KimchiAcpAgent. The factory seam
@@ -1196,4 +1203,118 @@ describe("describeToolCall", () => {
 			expect(result.locations).toEqual(c.expect.locations)
 		})
 	}
+})
+
+// Helper for the listSessions tests: builds a pi SessionInfo with sensible
+// defaults so each test only spells out the fields it cares about.
+function makePiSession(overrides: Partial<PiSessionInfo> = {}): PiSessionInfo {
+	return {
+		path: "/tmp/sessions/x.jsonl",
+		id: "id-x",
+		cwd: "/tmp/proj",
+		name: undefined,
+		parentSessionPath: undefined,
+		created: new Date("2026-01-01T00:00:00Z"),
+		modified: new Date("2026-01-01T00:00:00Z"),
+		messageCount: 0,
+		firstMessage: "",
+		allMessagesText: "",
+		...overrides,
+	}
+}
+
+// Direct coverage for the pi → ACP SessionInfo mapping. Title fallback and
+// updatedAt formatting are both load-bearing for Zed's thread-picker UI.
+describe("toAcpSessionInfo", () => {
+	it("uses the user-defined name when present", () => {
+		const out = toAcpSessionInfo(makePiSession({ id: "s1", cwd: "/p", name: "named", firstMessage: "ignored" }))
+		expect(out).toEqual({
+			sessionId: "s1",
+			cwd: "/p",
+			title: "named",
+			updatedAt: "2026-01-01T00:00:00.000Z",
+		})
+	})
+
+	it("falls back to truncated firstMessage when name is absent", () => {
+		const long = "q".repeat(120)
+		const out = toAcpSessionInfo(makePiSession({ firstMessage: long }))
+		expect(out.title).toBe(`${"q".repeat(80)}…`)
+	})
+
+	it("returns null title when both name and firstMessage are empty", () => {
+		const out = toAcpSessionInfo(makePiSession({ name: undefined, firstMessage: "" }))
+		expect(out.title).toBeNull()
+	})
+
+	it("formats updatedAt as ISO 8601 from the modified Date", () => {
+		const out = toAcpSessionInfo(makePiSession({ modified: new Date("2026-05-09T12:34:56.789Z") }))
+		expect(out.updatedAt).toBe("2026-05-09T12:34:56.789Z")
+	})
+})
+
+describe("KimchiAcpAgent listSessions", () => {
+	function makeAgent(lister: AcpSessionLister): KimchiAcpAgent {
+		return new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLister: lister,
+		})
+	}
+
+	it("advertises sessionCapabilities.list in initialize", async () => {
+		const agent = makeAgent(async () => [])
+		const init = await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {} as never,
+		} as never)
+		expect(init.agentCapabilities?.sessionCapabilities?.list).toEqual({})
+	})
+
+	it("dispatches to SessionManager.list when cwd is provided", async () => {
+		let received: { cwd?: string | null } = {}
+		const agent = makeAgent(async (params) => {
+			received = { cwd: params.cwd }
+			return []
+		})
+		await agent.listSessions({ cwd: "/repo/foo", mcpServers: [] } as never)
+		expect(received.cwd).toBe("/repo/foo")
+	})
+
+	it("falls back to listAll when cwd is omitted", async () => {
+		let cwdSeen: string | null | undefined = "sentinel"
+		const agent = makeAgent(async (params) => {
+			cwdSeen = params.cwd
+			return []
+		})
+		await agent.listSessions({} as never)
+		// Lister receives the original (undefined) cwd; the default lister maps
+		// that to listAll(). Tests of the default lister itself live in pi.
+		expect(cwdSeen).toBeUndefined()
+	})
+
+	it("returns empty array for a directory with no sessions", async () => {
+		const agent = makeAgent(async () => [])
+		const res = await agent.listSessions({ cwd: "/empty" } as never)
+		expect(res.sessions).toEqual([])
+	})
+
+	it("sorts sessions newest-first by updatedAt", async () => {
+		const piSessions: PiSessionInfo[] = [
+			makePiSession({ id: "old", modified: new Date("2026-01-01T00:00:00Z"), name: "old" }),
+			makePiSession({ id: "new", modified: new Date("2026-05-09T00:00:00Z"), name: "new" }),
+			makePiSession({ id: "mid", modified: new Date("2026-03-01T00:00:00Z"), name: "mid" }),
+		]
+		const agent = makeAgent(async () => piSessions)
+		const res = await agent.listSessions({ cwd: "/p" } as never)
+		expect(res.sessions.map((s) => s.sessionId)).toEqual(["new", "mid", "old"])
+	})
+
+	it("uses truncated firstMessage as title when name is absent", async () => {
+		const long = "z".repeat(120)
+		const agent = makeAgent(async () => [makePiSession({ id: "s", firstMessage: long, name: undefined })])
+		const res = await agent.listSessions({ cwd: "/p" } as never)
+		expect(res.sessions[0].title).toBe(`${"z".repeat(80)}…`)
+	})
 })

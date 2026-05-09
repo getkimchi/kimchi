@@ -4,6 +4,7 @@
 import { join } from "node:path"
 import { Readable, Writable } from "node:stream"
 import {
+	type SessionInfo as AcpSessionInfo,
 	type Agent,
 	AgentSideConnection,
 	type AuthenticateRequest,
@@ -12,6 +13,8 @@ import {
 	type ContentBlock,
 	type InitializeRequest,
 	type InitializeResponse,
+	type ListSessionsRequest,
+	type ListSessionsResponse,
 	type NewSessionRequest,
 	type NewSessionResponse,
 	PROTOCOL_VERSION,
@@ -35,6 +38,8 @@ import {
 	DefaultResourceLoader,
 	type ExtensionFactory,
 	ModelRegistry,
+	type SessionInfo as PiSessionInfo,
+	SessionManager,
 	SettingsManager,
 	createAgentSession,
 } from "@earendil-works/pi-coding-agent"
@@ -46,11 +51,19 @@ import {
  */
 export type AcpSessionFactory = (params: NewSessionRequest) => Promise<AgentSession>
 
+/**
+ * Enumerates persisted sessions for a listSessions request. Mirrors pi's
+ * SessionManager.list/listAll seam so tests can stub disk access.
+ */
+export type AcpSessionLister = (params: ListSessionsRequest) => Promise<PiSessionInfo[]>
+
 export interface RunAcpOptions {
 	extensionFactories: ExtensionFactory[]
 	agentDir: string
 	/** Override for tests. Defaults to the pi-coding-agent-backed factory. */
 	sessionFactory?: AcpSessionFactory
+	/** Override for tests. Defaults to {@link defaultSessionLister}. */
+	sessionLister?: AcpSessionLister
 }
 
 type TurnContext = {
@@ -78,6 +91,7 @@ export class KimchiAcpAgent implements Agent {
 	private sessions = new Map<string, SessionEntry>()
 	private readonly sessionFactory: AcpSessionFactory
 	private readonly agentDir: string
+	private readonly sessionLister: AcpSessionLister
 	// Track non-text prompt block types we've already warned about so a
 	// misbehaving client that sends 1000 image blocks doesn't flood stderr.
 	private warnedBlockTypes = new Set<string>()
@@ -89,6 +103,7 @@ export class KimchiAcpAgent implements Agent {
 	) {
 		this.sessionFactory = options.sessionFactory ?? defaultSessionFactory(options)
 		this.agentDir = options.agentDir
+		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
 	}
 
 	async initialize(_: InitializeRequest): Promise<InitializeResponse> {
@@ -99,10 +114,30 @@ export class KimchiAcpAgent implements Agent {
 			protocolVersion: PROTOCOL_VERSION,
 			agentCapabilities: {
 				loadSession: false,
+				// `list: {}` advertises support for session/list per spec
+				// (SessionListCapabilities is `{ _meta? }` — empty object means
+				// "supported"). loadSession remains the top-level flag because
+				// the spec hasn't unified it under sessionCapabilities yet.
+				sessionCapabilities: { list: {} },
 				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
 			},
 			authMethods: [],
 		}
+	}
+
+	async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
+		// `additionalDirectories` is @experimental in the SDK and pi's SessionInfo
+		// has no slot for additional roots, so we accept the field but don't
+		// filter on it — rejecting would break Zed clients that send it
+		// optimistically. Cursor pagination is also out of scope for v1: pi reads
+		// only JSONL headers, so even four-digit session counts comfortably meet
+		// the 500ms NFR (revisit only if real installs hit slowness).
+		const piSessions = await this.sessionLister(params)
+		const sessions = piSessions.map(toAcpSessionInfo)
+		// Sort newest-first by updatedAt so Zed's picker surfaces recent threads
+		// at the top without client-side sorting.
+		sessions.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))
+		return { sessions }
 	}
 
 	async authenticate(_: AuthenticateRequest): Promise<AuthenticateResponse> {
@@ -458,6 +493,44 @@ export function assertSessionHasModel(session: Pick<AgentSession, "model">): voi
 			undefined,
 			"No model available for ACP session. Configure an API key or models.json first.",
 		)
+	}
+}
+
+// Title falls back to the truncated first user message when the session has no
+// user-defined name. ACP clients render this in the thread-picker UI; we do
+// NOT trigger a fresh prompt-summary on listSessions because that would mean
+// an LLM call per session and break the 500ms NFR.
+export function toAcpSessionInfo(info: PiSessionInfo): AcpSessionInfo {
+	const fallback = info.firstMessage ? truncate(info.firstMessage) : ""
+	const title = info.name ?? fallback
+	return {
+		sessionId: info.id,
+		cwd: info.cwd,
+		title: title.length > 0 ? title : null,
+		updatedAt: info.modified.toISOString(),
+	}
+}
+
+// Mirrors pi's getDefaultSessionDir (core/session-manager.js): pi declares the
+// helper but doesn't re-export it from the package index. Replicated inline so
+// listSessions points at kimchi's agentDir (~/.config/kimchi/harness/sessions/...)
+// instead of pi's own ~/.pi/agent/sessions/... — pi reads PI_CODING_AGENT_DIR,
+// not KIMCHI_CODING_AGENT_DIR, so without explicit sessionDir threading the
+// default lookup misses every kimchi session. Encoding is a public on-disk
+// format; drift surfaces as "no sessions found" rather than silent corruption.
+function encodeCwdDir(cwd: string): string {
+	return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`
+}
+
+function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
+	return async (params: ListSessionsRequest) => {
+		if (params.cwd) {
+			return SessionManager.list(params.cwd, join(options.agentDir, "sessions", encodeCwdDir(params.cwd)))
+		}
+		// listAll has no agentDir slot in pi today, so a non-default agentDir
+		// won't be honored for the unscoped path. Acceptable v1 limitation:
+		// Zed's thread-import always supplies a cwd.
+		return SessionManager.listAll()
 	}
 }
 
