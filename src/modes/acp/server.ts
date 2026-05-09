@@ -1,7 +1,7 @@
 // ACP (Agent Client Protocol) mode: JSON-RPC 2.0 over stdio using
 // @agentclientprotocol/sdk. Lets Zed / openclaw drive kimchi in-process.
 
-import { existsSync } from "node:fs"
+import { readdirSync } from "node:fs"
 import { join } from "node:path"
 import { Readable, Writable } from "node:stream"
 import {
@@ -727,6 +727,26 @@ function encodeCwdDir(cwd: string): string {
 	return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`
 }
 
+// Find the on-disk JSONL for a sessionId. pi names files
+// `<isoTimestamp>_<sessionId>.jsonl` — match that suffix, with a fallback to
+// the bare `<sessionId>.jsonl` form so a hypothetical future pi format change
+// (or hand-placed file) still resolves. Returns null when the directory is
+// missing or no file matches; rethrows other errno (EACCES, EMFILE, …) so the
+// caller can surface them instead of masquerading as "session not found".
+function resolveSessionPathById(sessionDir: string, sessionId: string): string | null {
+	let entries: string[]
+	try {
+		entries = readdirSync(sessionDir)
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null
+		throw err
+	}
+	const suffix = `_${sessionId}.jsonl`
+	const bare = `${sessionId}.jsonl`
+	const match = entries.find((f) => f === bare || f.endsWith(suffix))
+	return match ? join(sessionDir, match) : null
+}
+
 function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
 	return async (params: ListSessionsRequest) => {
 		if (params.cwd) {
@@ -748,12 +768,28 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 		// not KIMCHI_CODING_AGENT_DIR, so default lookups would miss kimchi
 		// sessions stored under the kimchi agent dir.
 		const sessionDir = join(options.agentDir, "sessions", encodeCwdDir(cwd))
-		const sessionPath = join(sessionDir, `${params.sessionId}.jsonl`)
-		// existsSync is the simplest way to map "session not found" to
-		// invalidParams — SessionManager.open would silently start a fresh
-		// session on a missing/empty file (and rewrite the file with a new id),
-		// which is destructive and not what loadSession should do.
-		if (!existsSync(sessionPath)) {
+		// pi writes session files as `<isoTimestamp>_<sessionId>.jsonl` (see
+		// SessionManager.setSessionFile auto-generation). Looking up by bare
+		// `<sessionId>.jsonl` would miss every real session — match the
+		// timestamp-prefixed form (and accept the bare form too as a forward-
+		// compat hedge if pi ever drops the prefix). Scan the cwd-scoped dir
+		// directly rather than calling SessionManager.list, which would parse
+		// every JSONL header just to find one file.
+		let sessionPath: string | null
+		try {
+			sessionPath = resolveSessionPathById(sessionDir, params.sessionId)
+		} catch (err) {
+			// EACCES / EMFILE / etc. — surface the underlying readdir error so
+			// Zed can show something more useful than "session not found", but
+			// still as invalidParams so it doesn't trip Zed's "server shut down
+			// unexpectedly" error path.
+			const msg = err instanceof Error ? err.message : String(err)
+			throw RequestError.invalidParams(undefined, `failed to read session directory: ${msg}`)
+		}
+		// Map "session not found" to invalidParams — SessionManager.open would
+		// silently start a fresh session on a missing file (and rewrite it with
+		// a new id), which is destructive and not what loadSession should do.
+		if (!sessionPath) {
 			throw RequestError.invalidParams(undefined, `session ${params.sessionId} not found`)
 		}
 		let sessionManager: SessionManager
@@ -765,7 +801,7 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			sessionManager = SessionManager.open(sessionPath, sessionDir)
 		} catch (err) {
 			// loadEntriesFromFile silently skips malformed lines, but I/O
-			// errors (permissions, post-existsSync delete) and migration
+			// errors (permissions, post-readdir delete) and migration
 			// failures still propagate. Surface as invalidParams with a
 			// one-line message instead of crashing the connection (which
 			// triggers Zed's "server shut down unexpectedly" toast).
