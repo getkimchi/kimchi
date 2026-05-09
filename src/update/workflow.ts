@@ -40,6 +40,22 @@ function canaryVersionFromName(name: string): string {
 	return m ? m[1] : "canary"
 }
 
+const SHA7_LEN = 7
+const SHA7_RE = /^[0-9a-f]{7}$/
+const CANARY_VERSION_RE = new RegExp(`^0\\.0\\.0-canary\\.\\d{8}\\.([0-9a-f]{${SHA7_LEN}})$`)
+
+/**
+ * Extract the SHA7 from a canary version string. Returns null for any input
+ * that isn't a canary version of the form `0.0.0-canary.YYYYMMDD.SHA7`.
+ * Used to detect "already on the latest canary" by comparing against the
+ * release's `target_commitish.slice(0, 7)` — date stamp is ignored, since
+ * multiple canaries can land on the same UTC day.
+ */
+export function parseCanarySha7(version: string): string | null {
+	const m = CANARY_VERSION_RE.exec(version)
+	return m ? m[1] : null
+}
+
 /**
  * Resolve the latest release for `repo`, hitting the 24h-cached state file
  * when fresh and falling back to the GitHub API otherwise. Honors
@@ -69,12 +85,22 @@ export async function checkForUpdate(opts: CheckOptions): Promise<CheckResult> {
 		// on every master push, and a stale `latest_version: "canary"` entry
 		// would mask new builds.
 		const info = await client.canaryRelease(repo)
+		// Currency by SHA7, not date: two canaries can land on the same UTC
+		// day. A non-canary local (e.g. user on stable invoking --canary)
+		// returns null and falls through to hasUpdate=true — the explicit
+		// flag is the user's intent. The remote prefix is hex-validated:
+		// `target_commitish` is whatever was passed to `gh release create
+		// --target` and could be a branch name; treat non-hex as "update
+		// available" rather than silently matching a junk prefix.
+		const localSha = parseCanarySha7(opts.currentVersion)
+		const remoteSha = info.targetCommitish.slice(0, SHA7_LEN)
+		const sameSha = SHA7_RE.test(remoteSha) && localSha === remoteSha
 		return {
 			currentVersion: opts.currentVersion,
 			latestVersion: canaryVersionFromName(info.name),
 			tag: info.tagName,
 			releaseUrl: info.htmlUrl,
-			hasUpdate: true,
+			hasUpdate: !sameSha,
 			cached: false,
 		}
 	}
