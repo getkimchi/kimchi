@@ -219,10 +219,13 @@ export async function openMcpPanel(
 						ctx.ui.notify("Direct tools updated. Restart pi to apply.", "info")
 					}
 					done(undefined)
+					// Force a clean redraw so any overlay artifacts are cleared from
+					// scrollback when the panel closes.
+					tui.requestRender(true)
 					resolve()
 				})
 			},
-			{ overlay: true, overlayOptions: { anchor: "center", width: 82 } },
+			{ overlay: true, overlayOptions: { anchor: "center", width: 82, maxHeight: "100%" } },
 		)
 	})
 }
