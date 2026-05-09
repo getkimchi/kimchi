@@ -51,6 +51,7 @@ export type FermentEventType =
 	| "ferment_renamed"
 	| "ferment_mode_set"
 	| "phase_activated"
+	| "phase_group_activated"
 	| "phase_completed"
 	| "phase_skipped"
 	| "phase_failed"
@@ -83,6 +84,12 @@ export interface FermentCreatedPayload {
 	name: string
 	description?: string
 	mode: FermentWorkMode
+	/** Initial worktree captured by `FermentStorage.create()`. Folded back into the
+	 *  reconstructed ferment so the event log produces the same state as the
+	 *  snapshot — without this, fold leaves worktree at `{ path: "" }` while the
+	 *  snapshot has the real path/branch/commit, breaking hash chain equivalence. */
+	worktree?: Ferment["worktree"]
+	createdAt?: string
 }
 
 /** @deprecated Replaced by scoping_*_set + ferment_planned events. Retained for legacy log fold. */
@@ -135,6 +142,21 @@ export interface PhaseActivatedPayload {
 	phaseId: string
 	startedAt: string
 	groupIndex?: number
+}
+
+/**
+ * Atomic activation of every phase in a parallel group.
+ *
+ * Emitted instead of N independent `phase_activated` events when the
+ * state machine activates a `parallel_group`. The fold handler activates
+ * every listed phaseId simultaneously, so replay reproduces the
+ * "multiple phases active at once" snapshot — replaying N independent
+ * activations would deactivate each previously-active sibling in turn.
+ */
+export interface PhaseGroupActivatedPayload {
+	groupIndex: number
+	phaseIds: string[]
+	startedAt: string
 }
 
 export interface PhaseCompletedPayload {
@@ -250,6 +272,10 @@ export type FermentCompletedEvent = FermentEventBase & { type: "ferment_complete
 export type FermentRenamedEvent = FermentEventBase & { type: "ferment_renamed"; payload: FermentRenamedPayload }
 export type FermentModeSetEvent = FermentEventBase & { type: "ferment_mode_set"; payload: FermentModeSetPayload }
 export type PhaseActivatedEvent = FermentEventBase & { type: "phase_activated"; payload: PhaseActivatedPayload }
+export type PhaseGroupActivatedEvent = FermentEventBase & {
+	type: "phase_group_activated"
+	payload: PhaseGroupActivatedPayload
+}
 export type PhaseCompletedEvent = FermentEventBase & { type: "phase_completed"; payload: PhaseCompletedPayload }
 export type PhaseSkippedEvent = FermentEventBase & { type: "phase_skipped"; payload: PhaseSkippedPayload }
 export type PhaseFailedEvent = FermentEventBase & { type: "phase_failed"; payload: PhaseFailedPayload }
@@ -282,6 +308,7 @@ export type FermentEvent =
 	| FermentRenamedEvent
 	| FermentModeSetEvent
 	| PhaseActivatedEvent
+	| PhaseGroupActivatedEvent
 	| PhaseCompletedEvent
 	| PhaseSkippedEvent
 	| PhaseFailedEvent
@@ -346,10 +373,16 @@ export class FermentEventStore {
 	 * already hold both pre and post in scope; callers using `applyAndPersist` go
 	 * through `writeWithEvents` instead.
 	 */
-	private emit(pre: Ferment, post: Ferment, type: FermentEventType, payload: unknown): Ferment {
+	private emit(pre: Ferment, post: Ferment, type: FermentEventType, payload: unknown, timestamp?: string): Ferment {
 		const event = {
 			id: uuidv7(),
-			timestamp: new Date().toISOString(),
+			// Default to post.updatedAt so the event timestamp matches the snapshot's
+			// recorded mutation time. Without this, the fold's reconstructed
+			// updatedAt drifts from the snapshot's by however long elapsed between
+			// storage.create()/etc. and the emit call — which breaks the hash chain
+			// across command boundaries even though both sides are computing
+			// "the right thing" in isolation.
+			timestamp: timestamp ?? post.updatedAt,
 			type,
 			preStateHash: stateHash(pre),
 			postStateHash: stateHash(post),
@@ -374,338 +407,11 @@ export class FermentEventStore {
 		return state
 	}
 
-	/** Apply a single event to a (possibly undefined) ferment state. */
+	/** Apply a single event to a (possibly undefined) ferment state. Delegates to the
+	 *  free `applyFermentEvent` so the mapper and migration share one source of truth
+	 *  for "what does this event do". */
 	private applyEvent(state: Ferment | undefined, event: FermentEvent): Ferment {
-		switch (event.type) {
-			case "ferment_created": {
-				const p = event.payload as FermentCreatedPayload
-				return {
-					id: p.id,
-					name: p.name,
-					description: p.description,
-					status: "draft",
-					mode: p.mode,
-					worktree: { path: "" },
-					scoping: {},
-					phases: [],
-					decisions: [],
-					memories: [],
-					createdAt: event.timestamp,
-					updatedAt: event.timestamp,
-				}
-			}
-			case "ferment_scoped": {
-				// Legacy fold path — old logs that emitted a single ferment_scoped event.
-				if (!state) throw new Error("ferment_scoped requires existing state")
-				const p = event.payload as FermentScopedPayload
-				return { ...state, scoping: p.scoping, updatedAt: event.timestamp }
-			}
-			case "scoping_goal_set": {
-				if (!state) throw new Error("scoping_goal_set requires existing state")
-				const p = event.payload as ScopingGoalSetPayload
-				return { ...state, scoping: { ...state.scoping, goal: p.goal }, updatedAt: event.timestamp }
-			}
-			case "scoping_criteria_set": {
-				if (!state) throw new Error("scoping_criteria_set requires existing state")
-				const p = event.payload as ScopingCriteriaSetPayload
-				return { ...state, scoping: { ...state.scoping, criteria: p.criteria }, updatedAt: event.timestamp }
-			}
-			case "scoping_constraints_set": {
-				if (!state) throw new Error("scoping_constraints_set requires existing state")
-				const p = event.payload as ScopingConstraintsSetPayload
-				return { ...state, scoping: { ...state.scoping, constraints: p.constraints }, updatedAt: event.timestamp }
-			}
-			case "scoping_phases_set": {
-				if (!state) throw new Error("scoping_phases_set requires existing state")
-				const p = event.payload as ScopingPhasesSetPayload
-				return {
-					...state,
-					scoping: { ...state.scoping, phases: p.phases },
-					phases: p.phaseSnapshots,
-					updatedAt: event.timestamp,
-				}
-			}
-			case "ferment_planned":
-				if (!state) throw new Error("ferment_planned requires existing state")
-				return { ...state, status: "planned", updatedAt: event.timestamp }
-			case "ferment_running":
-				if (!state) throw new Error("ferment_running requires existing state")
-				return { ...state, status: "running", updatedAt: event.timestamp }
-			case "ferment_paused":
-				if (!state) throw new Error("ferment_paused requires existing state")
-				return { ...state, status: "paused", updatedAt: event.timestamp }
-			case "ferment_resumed":
-				if (!state) throw new Error("ferment_resumed requires existing state")
-				return { ...state, status: "running", updatedAt: event.timestamp }
-			case "ferment_completed": {
-				if (!state) throw new Error("ferment_completed requires existing state")
-				const p = event.payload as FermentCompletedPayload
-				return {
-					...state,
-					status: "complete",
-					description: p.finalSummary
-						? state.description
-							? `${state.description}\n\n${p.finalSummary}`
-							: p.finalSummary
-						: state.description,
-					updatedAt: event.timestamp,
-				}
-			}
-			case "ferment_renamed": {
-				if (!state) throw new Error("ferment_renamed requires existing state")
-				const p = event.payload as FermentRenamedPayload
-				return { ...state, name: p.name, updatedAt: event.timestamp }
-			}
-			case "ferment_mode_set": {
-				if (!state) throw new Error("ferment_mode_set requires existing state")
-				const p = event.payload as FermentModeSetPayload
-				return { ...state, mode: p.mode, updatedAt: event.timestamp }
-			}
-			case "phase_activated": {
-				if (!state) throw new Error("phase_activated requires existing state")
-				const p = event.payload as PhaseActivatedPayload
-				return {
-					...state,
-					phases: state.phases.map((ph) =>
-						ph.id === p.phaseId
-							? { ...ph, status: "active" as const, startedAt: event.timestamp }
-							: ph.status === "active"
-								? { ...ph, status: "planned" as const }
-								: ph,
-					),
-					activePhaseId: p.phaseId,
-					lastActiveAt: event.timestamp,
-					updatedAt: event.timestamp,
-				}
-			}
-			case "phase_completed": {
-				if (!state) throw new Error("phase_completed requires existing state")
-				const p = event.payload as PhaseCompletedPayload
-				return {
-					...state,
-					phases: state.phases.map((ph) =>
-						ph.id === p.phaseId
-							? { ...ph, status: "completed" as const, summary: p.summary, completedAt: event.timestamp }
-							: ph,
-					),
-					updatedAt: event.timestamp,
-				}
-			}
-			case "phase_skipped": {
-				if (!state) throw new Error("phase_skipped requires existing state")
-				const p = event.payload as PhaseSkippedPayload
-				return {
-					...state,
-					phases: state.phases.map((ph) =>
-						ph.id === p.phaseId
-							? {
-									...ph,
-									status: "skipped" as const,
-									summary: p.reason ?? "Skipped",
-									completedAt: event.timestamp,
-								}
-							: ph,
-					),
-					updatedAt: event.timestamp,
-				}
-			}
-			case "phase_failed": {
-				if (!state) throw new Error("phase_failed requires existing state")
-				const p = event.payload as PhaseFailedPayload
-				return {
-					...state,
-					phases: state.phases.map((ph) =>
-						ph.id === p.phaseId
-							? { ...ph, status: "failed" as const, summary: p.reason, completedAt: event.timestamp }
-							: ph,
-					),
-					updatedAt: event.timestamp,
-				}
-			}
-			case "phase_refined": {
-				if (!state) throw new Error("phase_refined requires existing state")
-				const p = event.payload as PhaseRefinedPayload
-				return {
-					...state,
-					phases: state.phases.map((ph) =>
-						ph.id === p.phaseId ? { ...ph, steps: p.steps.map((s, i) => ({ ...s, index: i + 1 })) } : ph,
-					),
-					updatedAt: event.timestamp,
-				}
-			}
-			case "phase_graded": {
-				if (!state) throw new Error("phase_graded requires existing state")
-				const p = event.payload as PhaseGradedPayload
-				return {
-					...state,
-					phases: state.phases.map((ph) => (ph.id === p.phaseId ? { ...ph, grade: p.grade } : ph)),
-					updatedAt: event.timestamp,
-				}
-			}
-			case "step_started": {
-				if (!state) throw new Error("step_started requires existing state")
-				const p = event.payload as StepStartedPayload
-				return {
-					...state,
-					phases: state.phases.map((ph) =>
-						ph.id === p.phaseId
-							? {
-									...ph,
-									steps: ph.steps.map((s) =>
-										s.id === p.stepId ? { ...s, status: "running" as const, startedAt: event.timestamp } : s,
-									),
-								}
-							: ph,
-					),
-					updatedAt: event.timestamp,
-				}
-			}
-			case "step_completed": {
-				if (!state) throw new Error("step_completed requires existing state")
-				const p = event.payload as StepCompletedPayload
-				return {
-					...state,
-					phases: state.phases.map((ph) =>
-						ph.id === p.phaseId
-							? {
-									...ph,
-									steps: ph.steps.map((s) =>
-										s.id === p.stepId ? { ...s, status: "done" as const, completedAt: event.timestamp } : s,
-									),
-								}
-							: ph,
-					),
-					updatedAt: event.timestamp,
-				}
-			}
-			case "step_skipped": {
-				if (!state) throw new Error("step_skipped requires existing state")
-				const p = event.payload as StepSkippedPayload
-				return {
-					...state,
-					phases: state.phases.map((ph) =>
-						ph.id === p.phaseId
-							? {
-									...ph,
-									steps: ph.steps.map((s) =>
-										s.id === p.stepId ? { ...s, status: "skipped" as const, completedAt: event.timestamp } : s,
-									),
-								}
-							: ph,
-					),
-					updatedAt: event.timestamp,
-				}
-			}
-			case "step_failed": {
-				if (!state) throw new Error("step_failed requires existing state")
-				const p = event.payload as StepFailedPayload
-				return {
-					...state,
-					phases: state.phases.map((ph) =>
-						ph.id === p.phaseId
-							? {
-									...ph,
-									steps: ph.steps.map((s) =>
-										s.id === p.stepId
-											? {
-													...s,
-													status: "failed" as const,
-													completedAt: event.timestamp,
-													result: p.error
-														? {
-																success: false,
-																stderr: p.error,
-																completedAt: event.timestamp,
-															}
-														: undefined,
-												}
-											: s,
-									),
-								}
-							: ph,
-					),
-					updatedAt: event.timestamp,
-				}
-			}
-			case "step_verified": {
-				if (!state) throw new Error("step_verified requires existing state")
-				const p = event.payload as StepVerifiedPayload
-				return {
-					...state,
-					phases: state.phases.map((ph) =>
-						ph.id === p.phaseId
-							? {
-									...ph,
-									steps: ph.steps.map((s) =>
-										s.id === p.stepId
-											? {
-													...s,
-													status: p.result.success ? ("verified" as const) : ("done" as const),
-													completedAt: p.result.completedAt,
-													result: p.result,
-												}
-											: s,
-									),
-								}
-							: ph,
-					),
-					updatedAt: event.timestamp,
-				}
-			}
-			case "step_graded": {
-				if (!state) throw new Error("step_graded requires existing state")
-				const p = event.payload as StepGradedPayload
-				return {
-					...state,
-					phases: state.phases.map((ph) =>
-						ph.id === p.phaseId
-							? { ...ph, steps: ph.steps.map((s) => (s.id === p.stepId ? { ...s, grade: p.grade } : s)) }
-							: ph,
-					),
-					updatedAt: event.timestamp,
-				}
-			}
-			case "ferment_graded": {
-				if (!state) throw new Error("ferment_graded requires existing state")
-				const p = event.payload as FermentGradedPayload
-				return { ...state, grade: p.grade, updatedAt: event.timestamp }
-			}
-			case "decision_added": {
-				if (!state) throw new Error("decision_added requires existing state")
-				const p = event.payload as DecisionAddedPayload
-				return {
-					...state,
-					decisions: [...state.decisions, p.decision],
-					updatedAt: event.timestamp,
-				}
-			}
-			case "memory_added": {
-				if (!state) throw new Error("memory_added requires existing state")
-				const p = event.payload as MemoryAddedPayload
-				return {
-					...state,
-					memories: [...state.memories, p.memory],
-					updatedAt: event.timestamp,
-				}
-			}
-			case "worktree_updated": {
-				if (!state) throw new Error("worktree_updated requires existing state")
-				const p = event.payload as WorktreeUpdatedPayload
-				return { ...state, worktree: p.worktree, updatedAt: event.timestamp }
-			}
-			case "ferment_abandoned": {
-				if (!state) throw new Error("ferment_abandoned requires existing state")
-				const p = event.payload as FermentAbandonedPayload
-				return {
-					...state,
-					status: "abandoned",
-					description: p.reason
-						? `${state.description ? `${state.description}\n\nAbandoned: ${p.reason}` : `Abandoned: ${p.reason}`}`
-						: state.description,
-					updatedAt: event.timestamp,
-				}
-			}
-		}
+		return applyFermentEvent(state, event)
 	}
 
 	// ─── Public read API (backward-compatible with FermentStorage) ─────────────
@@ -755,12 +461,24 @@ export class FermentEventStore {
 		// `pre` for ferment_created is conceptually empty — we use the post to anchor
 		// the chain at a deterministic value (preStateHash := postStateHash for the
 		// genesis event). Chain consumers know the genesis event has no real pre.
-		this.emit(ferment, ferment, "ferment_created", {
-			id: ferment.id,
-			name: ferment.name,
-			description: ferment.description,
-			mode: ferment.mode,
-		})
+		// We pass createdAt + worktree in the payload so fold reproduces the
+		// snapshot exactly; otherwise the fold leaves worktree empty and uses
+		// event.timestamp instead of the storage's create-time, breaking hash chain
+		// equivalence at the very first command boundary.
+		this.emit(
+			ferment,
+			ferment,
+			"ferment_created",
+			{
+				id: ferment.id,
+				name: ferment.name,
+				description: ferment.description,
+				mode: ferment.mode,
+				worktree: ferment.worktree,
+				createdAt: ferment.createdAt,
+			},
+			ferment.createdAt,
+		)
 		return ferment
 	}
 
@@ -1047,5 +765,355 @@ export class FermentEventStore {
 		writeFileSync(path, lines, "utf-8")
 
 		return ferment
+	}
+}
+
+// ─── Pure fold step ───────────────────────────────────────────────────────────
+
+/**
+ * Apply one event to a (possibly undefined) ferment state and return the new
+ * state. Pure — no I/O.
+ *
+ * Exported so command-mapper code can compute meaningful intermediate state
+ * hashes via the same logic the event store uses internally during fold.
+ * There is exactly one source of truth for "what does this event do".
+ */
+export function applyFermentEvent(state: Ferment | undefined, event: FermentEvent): Ferment {
+	switch (event.type) {
+		case "ferment_created": {
+			const p = event.payload as FermentCreatedPayload
+			const ts = p.createdAt ?? event.timestamp
+			return {
+				id: p.id,
+				name: p.name,
+				description: p.description,
+				status: "draft",
+				mode: p.mode,
+				worktree: p.worktree ?? { path: "" },
+				scoping: {},
+				phases: [],
+				decisions: [],
+				memories: [],
+				createdAt: ts,
+				updatedAt: ts,
+			}
+		}
+		case "ferment_scoped": {
+			// Legacy fold path — old logs that emitted a single ferment_scoped event.
+			if (!state) throw new Error("ferment_scoped requires existing state")
+			const p = event.payload as FermentScopedPayload
+			return { ...state, scoping: p.scoping, updatedAt: event.timestamp }
+		}
+		case "scoping_goal_set": {
+			if (!state) throw new Error("scoping_goal_set requires existing state")
+			const p = event.payload as ScopingGoalSetPayload
+			return { ...state, scoping: { ...state.scoping, goal: p.goal }, updatedAt: event.timestamp }
+		}
+		case "scoping_criteria_set": {
+			if (!state) throw new Error("scoping_criteria_set requires existing state")
+			const p = event.payload as ScopingCriteriaSetPayload
+			return { ...state, scoping: { ...state.scoping, criteria: p.criteria }, updatedAt: event.timestamp }
+		}
+		case "scoping_constraints_set": {
+			if (!state) throw new Error("scoping_constraints_set requires existing state")
+			const p = event.payload as ScopingConstraintsSetPayload
+			return { ...state, scoping: { ...state.scoping, constraints: p.constraints }, updatedAt: event.timestamp }
+		}
+		case "scoping_phases_set": {
+			if (!state) throw new Error("scoping_phases_set requires existing state")
+			const p = event.payload as ScopingPhasesSetPayload
+			return {
+				...state,
+				scoping: { ...state.scoping, phases: p.phases },
+				phases: p.phaseSnapshots,
+				updatedAt: event.timestamp,
+			}
+		}
+		case "ferment_planned":
+			if (!state) throw new Error("ferment_planned requires existing state")
+			return { ...state, status: "planned", updatedAt: event.timestamp }
+		case "ferment_running":
+			if (!state) throw new Error("ferment_running requires existing state")
+			return { ...state, status: "running", updatedAt: event.timestamp }
+		case "ferment_paused":
+			if (!state) throw new Error("ferment_paused requires existing state")
+			return { ...state, status: "paused", updatedAt: event.timestamp }
+		case "ferment_resumed":
+			if (!state) throw new Error("ferment_resumed requires existing state")
+			return { ...state, status: "running", updatedAt: event.timestamp }
+		case "ferment_completed": {
+			if (!state) throw new Error("ferment_completed requires existing state")
+			const p = event.payload as FermentCompletedPayload
+			return {
+				...state,
+				status: "complete",
+				description: p.finalSummary
+					? state.description
+						? `${state.description}\n\n${p.finalSummary}`
+						: p.finalSummary
+					: state.description,
+				updatedAt: event.timestamp,
+			}
+		}
+		case "ferment_renamed": {
+			if (!state) throw new Error("ferment_renamed requires existing state")
+			const p = event.payload as FermentRenamedPayload
+			return { ...state, name: p.name, updatedAt: event.timestamp }
+		}
+		case "ferment_mode_set": {
+			if (!state) throw new Error("ferment_mode_set requires existing state")
+			const p = event.payload as FermentModeSetPayload
+			return { ...state, mode: p.mode, updatedAt: event.timestamp }
+		}
+		case "phase_activated": {
+			if (!state) throw new Error("phase_activated requires existing state")
+			const p = event.payload as PhaseActivatedPayload
+			return {
+				...state,
+				phases: state.phases.map((ph) =>
+					ph.id === p.phaseId
+						? { ...ph, status: "active" as const, startedAt: event.timestamp }
+						: ph.status === "active"
+							? { ...ph, status: "planned" as const }
+							: ph,
+				),
+				activePhaseId: p.phaseId,
+				lastActiveAt: event.timestamp,
+				updatedAt: event.timestamp,
+			}
+		}
+		case "phase_group_activated": {
+			if (!state) throw new Error("phase_group_activated requires existing state")
+			const p = event.payload as PhaseGroupActivatedPayload
+			const ids = new Set(p.phaseIds)
+			return {
+				...state,
+				phases: state.phases.map((ph) => {
+					if (ids.has(ph.id)) {
+						return { ...ph, status: "active" as const, startedAt: p.startedAt }
+					}
+					if (ph.status === "active" && !ids.has(ph.id)) {
+						return { ...ph, status: "planned" as const }
+					}
+					return ph
+				}),
+				activePhaseId: p.phaseIds[0],
+				lastActiveAt: p.startedAt,
+				updatedAt: event.timestamp,
+			}
+		}
+		case "phase_completed": {
+			if (!state) throw new Error("phase_completed requires existing state")
+			const p = event.payload as PhaseCompletedPayload
+			return {
+				...state,
+				phases: state.phases.map((ph) =>
+					ph.id === p.phaseId
+						? { ...ph, status: "completed" as const, summary: p.summary, completedAt: event.timestamp }
+						: ph,
+				),
+				updatedAt: event.timestamp,
+			}
+		}
+		case "phase_skipped": {
+			if (!state) throw new Error("phase_skipped requires existing state")
+			const p = event.payload as PhaseSkippedPayload
+			return {
+				...state,
+				phases: state.phases.map((ph) =>
+					ph.id === p.phaseId
+						? {
+								...ph,
+								status: "skipped" as const,
+								summary: p.reason ?? "Skipped",
+								completedAt: event.timestamp,
+							}
+						: ph,
+				),
+				updatedAt: event.timestamp,
+			}
+		}
+		case "phase_failed": {
+			if (!state) throw new Error("phase_failed requires existing state")
+			const p = event.payload as PhaseFailedPayload
+			return {
+				...state,
+				phases: state.phases.map((ph) =>
+					ph.id === p.phaseId
+						? { ...ph, status: "failed" as const, summary: p.reason, completedAt: event.timestamp }
+						: ph,
+				),
+				updatedAt: event.timestamp,
+			}
+		}
+		case "phase_refined": {
+			if (!state) throw new Error("phase_refined requires existing state")
+			const p = event.payload as PhaseRefinedPayload
+			return {
+				...state,
+				phases: state.phases.map((ph) =>
+					ph.id === p.phaseId ? { ...ph, steps: p.steps.map((s, i) => ({ ...s, index: i + 1 })) } : ph,
+				),
+				updatedAt: event.timestamp,
+			}
+		}
+		case "phase_graded": {
+			if (!state) throw new Error("phase_graded requires existing state")
+			const p = event.payload as PhaseGradedPayload
+			return {
+				...state,
+				phases: state.phases.map((ph) => (ph.id === p.phaseId ? { ...ph, grade: p.grade } : ph)),
+				updatedAt: event.timestamp,
+			}
+		}
+		case "step_started": {
+			if (!state) throw new Error("step_started requires existing state")
+			const p = event.payload as StepStartedPayload
+			return {
+				...state,
+				phases: state.phases.map((ph) =>
+					ph.id === p.phaseId
+						? {
+								...ph,
+								steps: ph.steps.map((s) =>
+									s.id === p.stepId ? { ...s, status: "running" as const, startedAt: event.timestamp } : s,
+								),
+							}
+						: ph,
+				),
+				updatedAt: event.timestamp,
+			}
+		}
+		case "step_completed": {
+			if (!state) throw new Error("step_completed requires existing state")
+			const p = event.payload as StepCompletedPayload
+			return {
+				...state,
+				phases: state.phases.map((ph) =>
+					ph.id === p.phaseId
+						? {
+								...ph,
+								steps: ph.steps.map((s) =>
+									s.id === p.stepId ? { ...s, status: "done" as const, completedAt: event.timestamp } : s,
+								),
+							}
+						: ph,
+				),
+				updatedAt: event.timestamp,
+			}
+		}
+		case "step_skipped": {
+			if (!state) throw new Error("step_skipped requires existing state")
+			const p = event.payload as StepSkippedPayload
+			return {
+				...state,
+				phases: state.phases.map((ph) =>
+					ph.id === p.phaseId
+						? {
+								...ph,
+								steps: ph.steps.map((s) =>
+									s.id === p.stepId ? { ...s, status: "skipped" as const, completedAt: event.timestamp } : s,
+								),
+							}
+						: ph,
+				),
+				updatedAt: event.timestamp,
+			}
+		}
+		case "step_failed": {
+			if (!state) throw new Error("step_failed requires existing state")
+			const p = event.payload as StepFailedPayload
+			return {
+				...state,
+				phases: state.phases.map((ph) =>
+					ph.id === p.phaseId
+						? {
+								...ph,
+								steps: ph.steps.map((s) =>
+									s.id === p.stepId
+										? {
+												...s,
+												status: "failed" as const,
+												completedAt: event.timestamp,
+												result: p.error ? { success: false, stderr: p.error, completedAt: event.timestamp } : undefined,
+											}
+										: s,
+								),
+							}
+						: ph,
+				),
+				updatedAt: event.timestamp,
+			}
+		}
+		case "step_verified": {
+			if (!state) throw new Error("step_verified requires existing state")
+			const p = event.payload as StepVerifiedPayload
+			return {
+				...state,
+				phases: state.phases.map((ph) =>
+					ph.id === p.phaseId
+						? {
+								...ph,
+								steps: ph.steps.map((s) =>
+									s.id === p.stepId
+										? {
+												...s,
+												status: p.result.success ? ("verified" as const) : ("done" as const),
+												completedAt: p.result.completedAt,
+												result: p.result,
+											}
+										: s,
+								),
+							}
+						: ph,
+				),
+				updatedAt: event.timestamp,
+			}
+		}
+		case "step_graded": {
+			if (!state) throw new Error("step_graded requires existing state")
+			const p = event.payload as StepGradedPayload
+			return {
+				...state,
+				phases: state.phases.map((ph) =>
+					ph.id === p.phaseId
+						? { ...ph, steps: ph.steps.map((s) => (s.id === p.stepId ? { ...s, grade: p.grade } : s)) }
+						: ph,
+				),
+				updatedAt: event.timestamp,
+			}
+		}
+		case "ferment_graded": {
+			if (!state) throw new Error("ferment_graded requires existing state")
+			const p = event.payload as FermentGradedPayload
+			return { ...state, grade: p.grade, updatedAt: event.timestamp }
+		}
+		case "decision_added": {
+			if (!state) throw new Error("decision_added requires existing state")
+			const p = event.payload as DecisionAddedPayload
+			return { ...state, decisions: [...state.decisions, p.decision], updatedAt: event.timestamp }
+		}
+		case "memory_added": {
+			if (!state) throw new Error("memory_added requires existing state")
+			const p = event.payload as MemoryAddedPayload
+			return { ...state, memories: [...state.memories, p.memory], updatedAt: event.timestamp }
+		}
+		case "worktree_updated": {
+			if (!state) throw new Error("worktree_updated requires existing state")
+			const p = event.payload as WorktreeUpdatedPayload
+			return { ...state, worktree: p.worktree, updatedAt: event.timestamp }
+		}
+		case "ferment_abandoned": {
+			if (!state) throw new Error("ferment_abandoned requires existing state")
+			const p = event.payload as FermentAbandonedPayload
+			return {
+				...state,
+				status: "abandoned",
+				description: p.reason
+					? `${state.description ? `${state.description}\n\nAbandoned: ${p.reason}` : `Abandoned: ${p.reason}`}`
+					: state.description,
+				updatedAt: event.timestamp,
+			}
+		}
 	}
 }
