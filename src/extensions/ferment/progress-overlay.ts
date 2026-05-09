@@ -128,6 +128,11 @@ export function buildStepDetailTitle(p: Phase, s: Step): string {
 		`${pr_dim(`Step ${s.index}/${p.steps.length}`)}  ${pr_bold(p.name)}`,
 		`${bullet}  ${pr_bold(s.description)}${gradeTag}`,
 	]
+	if (s.summary) {
+		// Worker-written summary of what the step accomplished. Symmetric with
+		// the phase-detail rendering of `p.summary`.
+		lines.push(`   ${pr_dim("↳")} ${pr_dim(s.summary)}`)
+	}
 	if (s.verification) {
 		lines.push(`   ${pr_dim("verify:")} ${pr_teal(s.verification.command)}`)
 	}

@@ -11,7 +11,15 @@ import type { StepResult } from "../../../ferment/types.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { judgeGradeStep, judgeStepVerification } from "../judge.js"
 import { onStepCompleted } from "../nudge.js"
-import { bumpStepStart, captureJudgeContext, clearStepStart, getStorage } from "../state.js"
+import { captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
+import {
+	bumpStepStart,
+	captureJudgeContext,
+	clearStepStart,
+	getStepStartRef,
+	getStorage,
+	setStepStartRef,
+} from "../state.js"
 import { applyAndPersist, failedToolResult, resolvePhase, resolveStep, toolErr, toolOk } from "../tool-helpers.js"
 import { CompleteStepParams, FailStepParams, StepActionParams, VerifyParams } from "../tool-schemas.js"
 import { buildWorkerContext } from "../worker-prompt.js"
@@ -73,6 +81,13 @@ export function registerStepTools(pi: ExtensionAPI): void {
 				}
 				return failedToolResult(outcome.error)
 			}
+
+			// Capture git HEAD per step so the step grader can diff against the step's
+			// own starting state (T1#10). Symmetric with the phase-start ref captured
+			// at activate_phase. Best-effort — if not in a git repo, evidence-aware
+			// grading falls back to summary-only at complete_step time.
+			const stepHeadRef = captureGitHead()
+			if (stepHeadRef) setStepStartRef(params.ferment_id, phase.id, step.id, stepHeadRef)
 
 			// Reload step from the post-transition ferment for the response.
 			const freshPhase = outcome.ferment.phases.find((p) => p.id === phase.id)
@@ -148,7 +163,11 @@ export function registerStepTools(pi: ExtensionAPI): void {
 				if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
 				clearStepStart(f.id, phase.id, step.id)
 
-				const grade = await judgeGradeStep(step.description, params.summary ?? "")
+				// T1#10: feed the step grader the diff between step start and now so it
+				// can cross-check the worker's summary against actual code change.
+				const stepRef = getStepStartRef(f.id, phase.id, step.id)
+				const stepEvidence = stepRef ? gatherPhaseEvidence(stepRef) : undefined
+				const grade = await judgeGradeStep(step.description, params.summary ?? "", undefined, stepEvidence)
 				const gradeOutcome = applyAndPersist(params.ferment_id, {
 					type: "set_step_grade",
 					phaseId: phase.id,
@@ -215,7 +234,14 @@ export function registerStepTools(pi: ExtensionAPI): void {
 
 			// Path B.1: clean pass — grade and return.
 			if (exitCode === 0) {
-				const grade = await judgeGradeStep(step.description, params.summary ?? "", { exitCode, stdout, stderr })
+				const stepRef = getStepStartRef(f.id, phase.id, step.id)
+				const stepEvidence = stepRef ? gatherPhaseEvidence(stepRef) : undefined
+				const grade = await judgeGradeStep(
+					step.description,
+					params.summary ?? "",
+					{ exitCode, stdout, stderr },
+					stepEvidence,
+				)
 				const gradeOutcome = applyAndPersist(params.ferment_id, {
 					type: "set_step_grade",
 					phaseId: phase.id,
@@ -239,7 +265,14 @@ export function registerStepTools(pi: ExtensionAPI): void {
 			)
 
 			if (judgeVerdict.verdict === "pass") {
-				const grade = await judgeGradeStep(step.description, params.summary ?? "", { exitCode, stdout, stderr })
+				const stepRef = getStepStartRef(f.id, phase.id, step.id)
+				const stepEvidence = stepRef ? gatherPhaseEvidence(stepRef) : undefined
+				const grade = await judgeGradeStep(
+					step.description,
+					params.summary ?? "",
+					{ exitCode, stdout, stderr },
+					stepEvidence,
+				)
 				const gradeOutcome = applyAndPersist(params.ferment_id, {
 					type: "set_step_grade",
 					phaseId: phase.id,
@@ -332,6 +365,7 @@ export function registerStepTools(pi: ExtensionAPI): void {
 				phaseId: phase.id,
 				stepId: step.id,
 				result,
+				summary: params.summary,
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)
 			onStepCompleted(pi)

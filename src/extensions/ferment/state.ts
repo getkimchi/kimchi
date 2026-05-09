@@ -175,6 +175,21 @@ export function getPhaseStartRef(fermentId: string, phaseId: string): string | u
 	return phaseStartRefs.get(`${fermentId}:${phaseId}`)
 }
 
+// ─── Step-start git ref cache ────────────────────────────────────────────────
+// Captured at start_step, consumed at complete_step / verify_step so the step
+// grader can diff against the step's actual starting state instead of the
+// phase's. Symmetric with phaseStartRefs and identical lifetime semantics.
+
+const stepStartRefs = new Map<string, string>()
+
+export function setStepStartRef(fermentId: string, phaseId: string, stepId: string, ref: string): void {
+	stepStartRefs.set(`${fermentId}:${phaseId}:${stepId}`, ref)
+}
+
+export function getStepStartRef(fermentId: string, phaseId: string, stepId: string): string | undefined {
+	return stepStartRefs.get(`${fermentId}:${phaseId}:${stepId}`)
+}
+
 // ─── Per-ferment cleanup ──────────────────────────────────────────────────────
 
 /** Clear all in-memory state scoped to a specific ferment. Called on abandon/delete/complete. */
@@ -189,6 +204,9 @@ export function clearFermentState(fermentId: string): void {
 	}
 	for (const key of phaseStartRefs.keys()) {
 		if (key.startsWith(`${fermentId}:`)) phaseStartRefs.delete(key)
+	}
+	for (const key of stepStartRefs.keys()) {
+		if (key.startsWith(`${fermentId}:`)) stepStartRefs.delete(key)
 	}
 }
 
