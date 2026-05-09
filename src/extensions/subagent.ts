@@ -16,6 +16,7 @@ import { ToolBlockView, getTextContent } from "../components/tool-block.js"
 import { isBunBinary, isRunningUnderBun } from "../env.js"
 import { isToolExpanded, registerToolCall } from "../expand-state.js"
 import { findExistingFile, resolveUserPath, stripAtPrefix } from "../fs-paths.js"
+import { getAvailableModels } from "../startup-context.js"
 import { getCurrentTurnImages } from "../utils/image-state.js"
 import { writeImagesForSubagent } from "../utils/image-subagent-bridge.js"
 import { formatCount, formatDuration } from "./format.js"
@@ -710,7 +711,7 @@ export default function (pi: ExtensionAPI) {
 			let imageCleanup: (() => void) | null = null
 			let imagePrefix = ""
 			if (turnImages.length > 0) {
-				const meta = ctx.models.find((m) => m.id === params.model)
+				const meta = getAvailableModels().find((m) => m.slug === params.model)
 				if (!meta?.input_modalities?.includes("image")) {
 					return {
 						content: [
