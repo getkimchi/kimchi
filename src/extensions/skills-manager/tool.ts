@@ -230,7 +230,7 @@ export function createSkillManageTool(manager: SkillManager, tracker: UsageTrack
 						}
 					}
 					default: {
-						return wrapResult({ success: false, error: "Unknown action." })
+						return wrapResult({ success: false, error: `Unknown action: '${params.action}'.` })
 					}
 				}
 			} catch (err) {

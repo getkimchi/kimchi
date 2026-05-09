@@ -135,6 +135,14 @@ describe("createSkillManageTool", () => {
 		expect(result.details.success).toBe(false)
 		expect((result.details as { error?: string }).error).toContain("boom")
 	})
+
+	it("returns error for unknown actions", async () => {
+		const { manager, tracker } = makeMocks()
+		const tool = createSkillManageTool(manager, tracker)
+		const result = await tool.execute("id", { action: "frobnicate", name: "foo" })
+		expect(result.details.success).toBe(false)
+		expect((result.details as { error?: string }).error).toContain("Unknown action: 'frobnicate'")
+	})
 })
 
 /**
