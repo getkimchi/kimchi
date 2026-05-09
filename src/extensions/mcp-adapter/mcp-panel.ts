@@ -104,6 +104,35 @@ interface VisibleItem {
 	toolIndex?: number
 }
 
+/**
+ * Compute the visible-item window for the panel given the terminal height,
+ * cursor position, and total item count.
+ *
+ * - `maxVis` adapts to the terminal so the bottom controls stay on-screen
+ *   on small terminals: it's clamped to [MIN_VISIBLE, MAX_VISIBLE] around
+ *   `terminalRows - FIXED_OVERHEAD_ROWS`.
+ * - `startIdx`/`endIdx` slide the visible window so the cursor stays roughly
+ *   centered while staying within `[0, total]`.
+ */
+export function computeVisibleWindow(
+	terminalRows: number,
+	cursorIndex: number,
+	total: number,
+	limits: { maxVisible: number; minVisible: number; fixedOverheadRows: number } = {
+		maxVisible: 12,
+		minVisible: 3,
+		fixedOverheadRows: 16,
+	},
+): { maxVis: number; startIdx: number; endIdx: number } {
+	const maxVis = Math.max(
+		limits.minVisible,
+		Math.min(limits.maxVisible, terminalRows - limits.fixedOverheadRows),
+	)
+	const startIdx = Math.max(0, Math.min(cursorIndex - Math.floor(maxVis / 2), total - maxVis))
+	const endIdx = Math.min(startIdx + maxVis, total)
+	return { maxVis, startIdx, endIdx }
+}
+
 class McpPanel {
 	private prefix: "server" | "none" | "short"
 	private servers: ServerState[] = []
@@ -588,14 +617,17 @@ class McpPanel {
 			lines.push(row(fg(t.hint, italic("No MCP servers configured."))))
 			lines.push(emptyRow())
 		} else {
-			const terminalRows = this.tui.terminal.rows
-			const maxVis = Math.max(
-				McpPanel.MIN_VISIBLE,
-				Math.min(McpPanel.MAX_VISIBLE, terminalRows - McpPanel.FIXED_OVERHEAD_ROWS),
-			)
 			const total = this.visibleItems.length
-			const startIdx = Math.max(0, Math.min(this.cursorIndex - Math.floor(maxVis / 2), total - maxVis))
-			const endIdx = Math.min(startIdx + maxVis, total)
+			const { maxVis, startIdx, endIdx } = computeVisibleWindow(
+				this.tui.terminal.rows,
+				this.cursorIndex,
+				total,
+				{
+					maxVisible: McpPanel.MAX_VISIBLE,
+					minVisible: McpPanel.MIN_VISIBLE,
+					fixedOverheadRows: McpPanel.FIXED_OVERHEAD_ROWS,
+				},
+			)
 
 			lines.push(emptyRow())
 
