@@ -16,6 +16,8 @@ import { ToolBlockView, getTextContent } from "../components/tool-block.js"
 import { isBunBinary, isRunningUnderBun } from "../env.js"
 import { isToolExpanded, registerToolCall } from "../expand-state.js"
 import { findExistingFile, resolveUserPath, stripAtPrefix } from "../fs-paths.js"
+import { getCurrentTurnImages } from "../utils/image-state.js"
+import { writeImagesForSubagent } from "../utils/image-subagent-bridge.js"
 import { formatCount, formatDuration } from "./format.js"
 import { filterThinkingForDisplay } from "./hide-thinking.js"
 import { type SpinnerState, clearSpinner, spinnerFrame, tickSpinner } from "./spinner.js"
@@ -194,8 +196,10 @@ export function buildSubagentArgs(
 	resolvedAttachments: string[],
 	extensionArgs: string[],
 	childSessionFile?: string,
+	imagePrefix?: string,
 ): string[] {
 	const sessionArgs = childSessionFile !== undefined ? ["--session", childSessionFile] : ["--no-session"]
+	const prompt = imagePrefix ? `${imagePrefix}${params.prompt}` : params.prompt
 	return [
 		"--mode",
 		"json",
@@ -207,7 +211,7 @@ export function buildSubagentArgs(
 		params.model,
 		...extensionArgs,
 		...resolvedAttachments.map((p) => `@${p}`),
-		params.prompt,
+		prompt,
 	]
 }
 
@@ -701,6 +705,37 @@ export default function (pi: ExtensionAPI) {
 					isError: true,
 				}
 			}
+			const turnImages = getCurrentTurnImages()
+			let imageTmpPaths: string[] = []
+			let imageCleanup: (() => void) | null = null
+			let imagePrefix = ""
+			if (turnImages.length > 0) {
+				const meta = ctx.models.find((m) => m.id === params.model)
+				if (!meta?.input_modalities?.includes("image")) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Subagent model "${params.model}" is not vision-capable. This turn contains ${turnImages.length} image(s) that cannot be forwarded. Choose a vision-capable model or describe the image(s) in text instead.`,
+							},
+						],
+						details: undefined,
+						isError: true,
+					}
+				}
+				const userAttachmentCount = validated.resolved.length
+				const imageSlots = Math.max(0, 10 - userAttachmentCount)
+				const forwardImages = turnImages.slice(0, imageSlots)
+				const omitted = turnImages.length - forwardImages.length
+				if (omitted > 0) {
+					imagePrefix = `⚠ Forwarding ${forwardImages.length} of ${turnImages.length} images (attachment limit reached). `
+				}
+				const bridge = writeImagesForSubagent(forwardImages)
+				imageTmpPaths = bridge.paths
+				imageCleanup = bridge.cleanup
+			}
+			const allAttachments = [...validated.resolved, ...imageTmpPaths]
+
 			const parentSessionDir = ctx.sessionManager.getSessionDir()
 			const parentSessionFile = ctx.sessionManager.getSessionFile()
 			let sessionId: string | undefined
@@ -728,85 +763,89 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 
-			const args = buildSubagentArgs(params, validated.resolved, collectExtensionArgs(), childSessionFile)
+			const args = buildSubagentArgs(params, allAttachments, collectExtensionArgs(), childSessionFile, imagePrefix)
 			const invocation = getSubagentInvocation(args)
 
 			let lastToolCall: string | undefined
 			const tokenBudget = params.tokenBudget !== undefined ? Number(params.tokenBudget) : undefined
 			const inactivityTimeoutMs =
 				params.inactivityTimeoutMs !== undefined ? Number(params.inactivityTimeoutMs) : INACTIVITY_TIMEOUT_MS
-			const { exitCode, accumulated, stderr, tokenUsage, failureReason, durationMs } = await spawnSubagentInternal(
-				invocation,
-				ctx.cwd,
-				signal,
-				tokenBudget,
-				inactivityTimeoutMs,
-				(text) => {
-					lastToolCall = undefined
-					onUpdate?.({ content: [{ type: "text", text }], details: undefined })
-				},
-				(name, toolArgs, text) => {
-					const firstArg = Object.values(toolArgs)[0]
-					const argHint =
-						typeof firstArg === "string" ? ` ${firstArg.slice(0, 60)}${firstArg.length > 60 ? "…" : ""}` : ""
-					lastToolCall = `${name}${argHint}`
-					onUpdate?.({ content: [{ type: "text", text }], details: lastToolCall })
-				},
-			)
+			try {
+				const { exitCode, accumulated, stderr, tokenUsage, failureReason, durationMs } = await spawnSubagentInternal(
+					invocation,
+					ctx.cwd,
+					signal,
+					tokenBudget,
+					inactivityTimeoutMs,
+					(text) => {
+						lastToolCall = undefined
+						onUpdate?.({ content: [{ type: "text", text }], details: undefined })
+					},
+					(name, toolArgs, text) => {
+						const firstArg = Object.values(toolArgs)[0]
+						const argHint =
+							typeof firstArg === "string" ? ` ${firstArg.slice(0, 60)}${firstArg.length > 60 ? "…" : ""}` : ""
+						lastToolCall = `${name}${argHint}`
+						onUpdate?.({ content: [{ type: "text", text }], details: lastToolCall })
+					},
+				)
 
-			pi.appendEntry<SubagentEndCheckpoint>(CHECKPOINT_END_TYPE, {
-				toolCallId: _toolCallId,
-				accumulated,
-				exitCode,
-				failureReason,
-			})
+				pi.appendEntry<SubagentEndCheckpoint>(CHECKPOINT_END_TYPE, {
+					toolCallId: _toolCallId,
+					accumulated,
+					exitCode,
+					failureReason,
+				})
 
-			sessionCounts.set(params.model, (sessionCounts.get(params.model) ?? 0) + 1)
-			if (ctx.hasUI) {
-				ctx.ui.setStatus(FOOTER_STATUS_KEY, formatFooterStatus(sessionCounts, ctx.ui.theme))
-			}
-
-			const stats: SubagentStats = { durationMs, tokenUsage, sessionId, sessionFile: childSessionFile }
-
-			if (failureReason !== undefined || exitCode !== 0) {
-				const rawDetail = stderr.trim() || accumulated || "(no output)"
-				const error: SubagentError = {
-					reason: failureReason ?? "exit_error",
-					model: params.model,
-					tokenUsage,
-					durationMs,
-					detail: truncateSubagentResult(rawDetail, childSessionFile),
+				sessionCounts.set(params.model, (sessionCounts.get(params.model) ?? 0) + 1)
+				if (ctx.hasUI) {
+					ctx.ui.setStatus(FOOTER_STATUS_KEY, formatFooterStatus(sessionCounts, ctx.ui.theme))
 				}
+
+				const stats: SubagentStats = { durationMs, tokenUsage, sessionId, sessionFile: childSessionFile }
+
+				if (failureReason !== undefined || exitCode !== 0) {
+					const rawDetail = stderr.trim() || accumulated || "(no output)"
+					const error: SubagentError = {
+						reason: failureReason ?? "exit_error",
+						model: params.model,
+						tokenUsage,
+						durationMs,
+						detail: truncateSubagentResult(rawDetail, childSessionFile),
+					}
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Subagent failed — do NOT attempt to implement or complete this work yourself. Spawn a replacement subagent with a corrected or simplified prompt instead.\n\nError details:\n\n${JSON.stringify(error, null, 2)}`,
+							},
+						],
+						details: stats,
+						isError: true,
+					}
+				}
+
+				const resultText = accumulated || "(no output)"
+				const parsed = parseSubagentResponse(resultText)
+				if (parsed === null) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Subagent returned an unstructured response (protocol violation). Do NOT attempt to fix or complete this work manually — spawn a new subagent with a simpler or corrected prompt instead.\n\nRaw output:\n\n${truncateSubagentResult(resultText, childSessionFile)}`,
+							},
+						],
+						details: stats,
+						isError: true,
+					}
+				}
+				const filesLine = parsed.files.length > 0 ? `\nFiles: ${parsed.files.join(", ")}` : ""
 				return {
-					content: [
-						{
-							type: "text",
-							text: `Subagent failed — do NOT attempt to implement or complete this work yourself. Spawn a replacement subagent with a corrected or simplified prompt instead.\n\nError details:\n\n${JSON.stringify(error, null, 2)}`,
-						},
-					],
+					content: [{ type: "text", text: `${parsed.summary}${filesLine}` }],
 					details: stats,
-					isError: true,
 				}
-			}
-
-			const resultText = accumulated || "(no output)"
-			const parsed = parseSubagentResponse(resultText)
-			if (parsed === null) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Subagent returned an unstructured response (protocol violation). Do NOT attempt to fix or complete this work manually — spawn a new subagent with a simpler or corrected prompt instead.\n\nRaw output:\n\n${truncateSubagentResult(resultText, childSessionFile)}`,
-						},
-					],
-					details: stats,
-					isError: true,
-				}
-			}
-			const filesLine = parsed.files.length > 0 ? `\nFiles: ${parsed.files.join(", ")}` : ""
-			return {
-				content: [{ type: "text", text: `${parsed.summary}${filesLine}` }],
-				details: stats,
+			} finally {
+				imageCleanup?.()
 			}
 		},
 
