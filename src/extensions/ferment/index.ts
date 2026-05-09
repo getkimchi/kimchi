@@ -10,11 +10,14 @@
  * Public exports re-export from ./state.ts for cli.ts and components/footer.ts.
  */
 
+import { writeFileSync } from "node:fs"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { findFirstPlannedPhase, getScopingProgress, whatNext } from "../../ferment/engine.js"
+import { determineNextAction, findFirstPlannedPhase, getScopingProgress, whatNext } from "../../ferment/engine.js"
+import { evaluatePhaseFeedback, renderSelfImprovementSection } from "../../ferment/self-improve.js"
 import { shortenTitle } from "../../ferment/shorten-title.js"
+import { computeStats, serializeStats } from "../../ferment/stats.js"
 import { FermentError, clearFermentCache } from "../../ferment/store.js"
-import type { FermentWorkMode, Step } from "../../ferment/types.js"
+import type { Ferment, FermentWorkMode, Step } from "../../ferment/types.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { formatDecisionsAndMemories, formatFermentStatus, formatScopingContext, stripToolRefs } from "./format.js"
 import { isPlanMode } from "./modes.js"
@@ -39,6 +42,7 @@ import {
 	clearFermentState,
 	getActive,
 	getActiveId,
+	getCorrectiveStep,
 	getStorage,
 	isRestoringModel,
 	isScopingInteractive,
@@ -138,7 +142,31 @@ function buildPlannerSupplement(): string {
 	const sc = formatScopingContext(f)
 	const scSection = sc ? `\n\n${sc}` : ""
 
-	return `\n\n## Ferment Planner Role\n\nYou are the PLANNER for ferment "${f.name}". Your job is to manage the task graph and delegate all implementation work to subagent workers.\n\n**Rules:**\n- NEVER write, edit, or read files yourself during step execution\n- NEVER implement a step inline — always call start_step then immediately spawn a subagent\n- For each step: call start_step → read the worker_model from the result → spawn a subagent with provider "kimchi-dev" and that model\n- If start_step returns parallel_siblings, call start_step for all of them and spawn their subagents CONCURRENTLY in the same turn\n- After a subagent returns, call complete_step with its summary\n- For phase transitions (activate_phase, complete_phase, complete_ferment): call the tool directly, no subagent needed\n- Worker models: minimax-m2.7 for code/text, kimi-k2.5 for vision tasks\n\n**Parallel phases:**\n- When activate_phase returns parallel_group, all listed phase_ids are active simultaneously\n- Call refine_phase for ALL parallel phases in the same turn, then execute their steps concurrently\n- Complete each parallel phase independently with complete_phase when its steps finish\n- Only proceed to the next sequential phase once ALL phases in the parallel group are completed/skipped\n\n**Knowledge capture:**\n- Call add_decision after any architectural or design choice that affects future phases\n- Call add_memory for reusable patterns, gotchas, or conventions discovered during execution${scSection}${dmSection}\n`
+	// Self-improvement feedback: inject previous phase's grade if available
+	const selfImprovementSection = buildSelfImprovementSection(f)
+
+	return `\n\n## Ferment Planner Role\n\nYou are the PLANNER for ferment "${f.name}". Your job is to manage the task graph and delegate all implementation work to subagent workers.\n\n**State machine:**\n- The ferment engine's determineNextAction() determines the next action from state\n- Read it via the engine, then execute that action directly\n- For start_step: call the tool, read worker_model from the result, spawn a subagent with provider "kimchi-dev"\n- If start_step returns parallel_siblings, call start_step for all of them and spawn their subagents CONCURRENTLY\n- After a subagent returns, call complete_step with its summary\n- For phase transitions (activate_phase, complete_phase, complete_ferment): call the tool directly, no subagent needed\n- Worker models: minimax-m2.7 for code/text, kimi-k2.5 for vision tasks\n\n**Rules:**\n- NEVER write, edit, or read files yourself during step execution\n- NEVER implement a step inline — always delegate to a subagent worker\n- If the current action is complete_step: this is a SUGGESTION — the LLM decides when the step is done based on subagent results\n\n**Parallel phases:**\n- When activate_phase returns parallel_group, all listed phase_ids are active simultaneously\n- Call refine_phase for ALL parallel phases in the same turn, then execute their steps concurrently\n- Complete each parallel phase independently with complete_phase when its steps finish\n- Only proceed to the next sequential phase once ALL phases in the parallel group are completed/skipped\n\n**Knowledge capture:**\n- Call add_decision after any architectural or design choice that affects future phases\n- Call add_memory for reusable patterns, gotchas, or conventions discovered during execution${scSection}${dmSection}${selfImprovementSection}\n`
+}
+
+/**
+ * Build self-improvement feedback section for the planner based on previous phase grade.
+ *
+ * Pulls the corrective step (if any) from the in-memory cache populated by
+ * complete_phase. The cache may be empty either because the previous grade was
+ * not D/F or because the judge call hasn't completed yet — both fine, the
+ * suggestion is best-effort.
+ */
+function buildSelfImprovementSection(ferment: Ferment): string {
+	const completedPhases = ferment.phases.filter((p) => p.status === "completed" && p.grade)
+	if (completedPhases.length === 0) return ""
+
+	const lastGradedPhase = completedPhases[completedPhases.length - 1]
+	if (!lastGradedPhase.grade) return ""
+
+	const grade = lastGradedPhase.grade
+	const feedback = evaluatePhaseFeedback(grade)
+	const correctiveStep = getCorrectiveStep(ferment.id, lastGradedPhase.id)
+	return renderSelfImprovementSection(grade, feedback, correctiveStep)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -160,8 +188,8 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		// Session_shutdown sets running ferments to "paused" — flip back to
 		// "running" on resume so the engine produces a real next-action nudge.
 		if (existing.status === "paused") {
-			const flipped = storage.updateStatus(existing.id, "running")
-			if (flipped) existing = flipped
+			const out = applyAndPersist(existing.id, { type: "resume" })
+			if (out.ok) existing = out.ferment
 		}
 
 		setActive(existing)
@@ -188,8 +216,8 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		// Wrap the engine's next-action message in an imperative resume preamble
 		// so the model knows this isn't a status report — it's a directive to
 		// pick up where the previous session left off, NOW, without acknowledging.
-		const action = whatNext(existing)
-		const baseMsg = isPlanMode() ? stripToolRefs(action.message) : action.message
+		const action = determineNextAction(existing)
+		const baseMsg = `${action.kind}: ${action.reason}`
 		const scopeProgress = getScopingProgress(existing)
 		const breadcrumb = `Resumed ferment: "${existing.name}" [${existing.status}] ${existing.mode} mode · scoping ${scopeProgress.answered}/${scopeProgress.total}`
 
@@ -244,7 +272,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		const f = getActive()
 		if (!f) return
 		if (f.status === "running" || f.status === "planned") {
-			getStorage().updateStatus(f.id, "paused")
+			applyAndPersist(f.id, { type: "pause" })
 		}
 	})
 
@@ -551,8 +579,8 @@ export default function fermentExtension(pi: ExtensionAPI) {
 					}
 				}
 
-				const s = getStorage()
-				const updated = s.updateMode(active.id, modeArg as FermentWorkMode)
+				const out = applyAndPersist(active.id, { type: "set_mode", mode: modeArg as FermentWorkMode })
+				const updated = out.ok ? out.ferment : undefined
 				if (updated) {
 					setActive(updated)
 					let hint = ""
@@ -561,8 +589,8 @@ export default function fermentExtension(pi: ExtensionAPI) {
 					else if (modeArg === "auto") hint = "\n\n🔄  auto mode — the agent will guide you through each step."
 					ctx.ui.notify(`Mode changed to: ${modeArg}.${hint}`)
 
-					const action = whatNext(updated)
-					const nudge = modeArg === "plan" ? stripToolRefs(action.message) : action.message
+					const action = determineNextAction(updated)
+					const nudge = `${action.kind}: ${action.reason}`
 					if (nudge) {
 						pi.appendEntry("ferment_breadcrumb", {
 							text: `Mode changed to ${modeArg}: "${updated.name}" [${updated.status}]`,
@@ -662,14 +690,13 @@ export default function fermentExtension(pi: ExtensionAPI) {
 						return
 					}
 				}
-				const s = getStorage()
 				const abandonedId = active.id
-				const r = s.abandonFerment(abandonedId, reason || undefined)
-				if (r) {
-					setActive(r)
+				const out = applyAndPersist(abandonedId, { type: "abandon", reason: reason || undefined })
+				if (out.ok) {
+					setActive(out.ferment)
 					clearFermentState(abandonedId)
 					clearPendingScope(abandonedId)
-					ctx.ui.notify(`Ferment "${r.name}" abandoned.`)
+					ctx.ui.notify(`Ferment "${out.ferment.name}" abandoned.`)
 				}
 				return
 			}
@@ -682,7 +709,6 @@ export default function fermentExtension(pi: ExtensionAPI) {
 					return
 				}
 				const field = lo.slice("revise ".length).trim()
-				const s = getStorage()
 
 				if (field === "goal") {
 					if (!ctx.ui.input) {
@@ -691,10 +717,12 @@ export default function fermentExtension(pi: ExtensionAPI) {
 					}
 					const newGoal = await ctx.ui.input("Revise goal:", active.goal ?? "")
 					if (newGoal) {
-						const r = s.setScopingGoal(active.id, newGoal)
-						if (r) {
-							setActive(r)
+						const out = applyAndPersist(active.id, { type: "update_scope_field", field: "goal", value: newGoal })
+						if (out.ok) {
+							setActive(out.ferment)
 							ctx.ui.notify(`Goal updated: "${newGoal}"`)
+						} else {
+							ctx.ui.notify(`Could not update goal: ${out.error.message}`)
 						}
 					}
 					return
@@ -707,10 +735,16 @@ export default function fermentExtension(pi: ExtensionAPI) {
 					}
 					const newCriteria = await ctx.ui.input("Revise success criteria:", active.successCriteria ?? "")
 					if (newCriteria) {
-						const r = s.setScopingCriteria(active.id, newCriteria)
-						if (r) {
-							setActive(r)
+						const out = applyAndPersist(active.id, {
+							type: "update_scope_field",
+							field: "criteria",
+							value: newCriteria,
+						})
+						if (out.ok) {
+							setActive(out.ferment)
 							ctx.ui.notify("Success criteria updated.")
+						} else {
+							ctx.ui.notify(`Could not update criteria: ${out.error.message}`)
 						}
 					}
 					return
@@ -728,10 +762,16 @@ export default function fermentExtension(pi: ExtensionAPI) {
 							.split(",")
 							.map((c) => c.trim())
 							.filter(Boolean)
-						const r = s.setScopingConstraints(active.id, parsed)
-						if (r) {
-							setActive(r)
+						const out = applyAndPersist(active.id, {
+							type: "update_scope_field",
+							field: "constraints",
+							value: parsed.join(","),
+						})
+						if (out.ok) {
+							setActive(out.ferment)
 							ctx.ui.notify(`Constraints updated: ${parsed.join(", ") || "(none)"}`)
+						} else {
+							ctx.ui.notify(`Could not update constraints: ${out.error.message}`)
 						}
 					}
 					return
@@ -740,6 +780,21 @@ export default function fermentExtension(pi: ExtensionAPI) {
 				ctx.ui.notify(
 					"Usage: /ferment revise goal | criteria | constraints\n\nTo revise phases, ask the agent to update them.",
 				)
+				return
+			}
+
+			/* ── /ferment export ── */
+			if (lo === "export" || lo.startsWith("export ")) {
+				const active = getActive()
+				if (!active) {
+					ctx.ui.notify("No active ferment.")
+					return
+				}
+				const stats = computeStats(active)
+				const exportData = serializeStats(stats)
+				const fileName = `ferment-export-${active.id.slice(0, 8)}-${Date.now()}.json`
+				writeFileSync(fileName, exportData)
+				ctx.ui.notify(`Exported ferment stats to ${fileName}`)
 				return
 			}
 
@@ -768,8 +823,8 @@ export default function fermentExtension(pi: ExtensionAPI) {
 					const shortName = await shortenTitle(resolvedIntent)
 					const f = storage.create(shortName, resolvedIntent)
 					// One-shot always runs in exec mode — no user checkpoints
-					storage.updateMode(f.id, "exec")
-					const updated = storage.get(f.id) ?? f
+					const modeOut = applyAndPersist(f.id, { type: "set_mode", mode: "exec" })
+					const updated = modeOut.ok ? modeOut.ferment : f
 					setActive(updated)
 					appendRefEntry(pi, updated.id)
 					pi.appendEntry("ferment_ack", {
@@ -862,7 +917,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 			// the planner stalls on a "Ready to execute?" question that the
 			// engine's plan-mode prose suggests.
 			const fresh = getActive() ?? active
-			const action = whatNext(fresh)
+			const action = determineNextAction(fresh)
 			let preflightSummary = ""
 
 			if (action.kind === "start_step") {
@@ -972,8 +1027,8 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 						"Marks the ferment abandoned. Work done so far is preserved.",
 					)
 					if (confirmed) {
-						const r = getStorage().abandonFerment(f.id)
-						if (r) setActive(r)
+						const outcome = applyAndPersist(f.id, { type: "abandon" })
+						if (outcome.ok) setActive(outcome.ferment)
 						clearFermentState(f.id)
 						clearPendingScope(f.id)
 						atPhaseList = false

@@ -3,360 +3,259 @@
  *
  * Reads the ferment JSON state and returns the next Action for the LLM.
  * Mode-aware: plan mode (coaching), exec mode (auto-advance), auto mode (mixed).
+ *
+ * Two output modes:
+ * - `determineNextAction` — declarative, state-based. Returns a `DeclarativeAction`
+ *   with a one-sentence reason. No prose instructions.
+ * - `whatNext` — prose-driven (legacy). Returns `FermentAction` with LLM prose.
+ *   Used by callers that need the full coaching message.
  */
 
-import type { Ferment, FermentAction, Phase, Scoping, Step } from "./types.js"
+import type { Ferment, FermentAction, Phase, Step } from "./types.js"
 
-export function whatNext(ferment: Ferment): FermentAction {
-	switch (ferment.mode) {
-		case "plan":
-			return planModeAction(ferment)
-		case "exec":
-			return execModeAction(ferment)
-		default:
-			return autoModeAction(ferment)
+// ─── Declarative Action Types ─────────────────────────────────────────────────
+
+export type DeclarativeAction =
+	| { kind: "scope"; reason: string }
+	| { kind: "activate_phase"; phaseId: string; reason: string }
+	| { kind: "refine"; phaseId: string; reason: string }
+	| { kind: "start_step"; phaseId: string; stepId: string; reason: string; canParallel: boolean }
+	| { kind: "complete_step"; phaseId: string; stepId: string; reason: string }
+	| { kind: "verify_step"; phaseId: string; stepId: string; reason: string }
+	| { kind: "complete_phase"; phaseId: string; reason: string }
+	| { kind: "pause"; reason: string }
+	| { kind: "complete_ferment"; reason: string }
+	| { kind: "recover_step"; phaseId: string; stepId: string; reason: string }
+	| { kind: "recover_phase"; phaseId: string; reason: string }
+	| { kind: "noop"; reason: string }
+
+// ─── Main Entry Point ──────────────────────────────────────────────────────────
+
+/**
+ * Declarative next-action determination.
+ * Reads ferment state and returns the next action without prose.
+ * Reason is a one-sentence objective, not an instruction.
+ */
+export function determineNextAction(ferment: Ferment): DeclarativeAction {
+	const active = findActivePhase(ferment)
+
+	// Priority-ordered conditions (higher priority first)
+
+	// 0. Terminal ferment status → complete_ferment
+	if (ferment.status === "complete" || ferment.status === "abandoned") {
+		return { kind: "complete_ferment", reason: `ferment is ${ferment.status}` }
 	}
-}
 
-// ─── Plan Mode — Scoping, review gates, user-confirmed execution ──────────────
+	// 1. No phases defined → scope (only if not paused)
+	if (ferment.phases.length === 0) {
+		if (ferment.status === "paused") {
+			return { kind: "pause", reason: "ferment is paused" }
+		}
+		return { kind: "scope", reason: "collect goal, criteria, constraints, and phase breakdown" }
+	}
 
-function planModeAction(ferment: Ferment): FermentAction {
-	switch (ferment.status) {
-		case "draft":
+	// 2. Ferment is paused
+	if (ferment.status === "paused") {
+		return { kind: "pause", reason: "ferment is paused" }
+	}
+
+	// 3. Active phase failed → recover (before all-terminal check)
+	if (active && active.status === "failed") {
+		return {
+			kind: "recover_phase",
+			phaseId: active.id,
+			reason: "handle failed phase",
+		}
+	}
+
+	// 4. All phases terminal → complete_ferment
+	const allPhasesTerminal = ferment.phases.every(
+		(p) => p.status === "completed" || p.status === "skipped" || p.status === "failed",
+	)
+	if (allPhasesTerminal) {
+		return { kind: "complete_ferment", reason: `all ${ferment.phases.length} phases are terminal` }
+	}
+
+	// 5. No active phase, ferment is planned → activate first planned
+	if (!active && ferment.status === "planned") {
+		const next = findFirstPlannedPhase(ferment)
+		if (next) {
 			return {
-				kind: "scope",
-				message: buildPlanScopeMessage(ferment),
+				kind: "activate_phase",
+				phaseId: next.id,
+				reason: "activate the first planned phase",
 			}
+		}
+	}
 
-		case "planned": {
-			const next = findFirstPlannedPhase(ferment)
-			if (next) {
-				const groupNote =
-					next.groupIndex !== undefined ? ` (this will activate all phases in parallel group ${next.groupIndex})` : ""
-				return {
-					kind: "activate_phase",
-					phaseId: next.id,
-					message: `Ferment "${ferment.name}" is planned. Call activate_phase with ferment_id "${ferment.id}" and phase_id "${next.id}" to start Phase ${next.index}: "${next.name}"${groupNote}.`,
-				}
-			}
+	// 6. Running but no active phase (recovered state)
+	if (ferment.status === "running" && !active) {
+		return { kind: "pause", reason: "no active phase, recovered state" }
+	}
+
+	// 7. Active phase has no steps → refine
+	if (active && active.steps.length === 0) {
+		return { kind: "refine", phaseId: active.id, reason: "populate the active phase with concrete steps" }
+	}
+
+	// 8. Steps with failures → recover_step first
+	if (active) {
+		const failedStep = active.steps.find((s) => s.status === "failed")
+		if (failedStep) {
 			return {
-				kind: "complete_ferment",
-				message: `All ${ferment.phases.length} phase(s) are terminal. Ask the user if they want to mark the ferment as complete.`,
+				kind: "recover_step",
+				phaseId: active.id,
+				stepId: failedStep.id,
+				reason: "handle failed step",
 			}
 		}
 
-		case "running": {
-			const active = findActivePhase(ferment)
-			if (!active) {
-				return {
-					kind: "paused",
-					message: `Ferment is in "running" status but no phase is active. Ask the user what they would like to do next.`,
-				}
+		// 9. Steps pending → start first pending
+		const nextStep = findNextStep(active)
+		if (nextStep) {
+			return {
+				kind: "start_step",
+				phaseId: active.id,
+				stepId: nextStep.id,
+				reason: "start the next pending step",
+				canParallel: false,
 			}
-			if (active.status === "failed") {
-				return {
-					kind: "recover_phase",
-					phaseId: active.id,
-					message: `Phase ${active.index} "${active.name}" has failed${active.summary ? `: ${active.summary}` : ""}. Ask the user: retry, skip, or abandon the ferment?`,
-				}
+		}
+
+		// 10. Step running → complete_step (SUGGESTION, LLM decides when)
+		const runningStep = active.steps.find((s) => s.status === "running")
+		if (runningStep) {
+			return {
+				kind: "complete_step",
+				phaseId: active.id,
+				stepId: runningStep.id,
+				reason: "mark the running step as complete",
 			}
-			if (active.steps.length === 0) {
-				return {
-					kind: "refine",
-					phaseId: active.id,
-					message: `Phase ${active.index} "${active.name}" is active. Break it into 3–6 concrete steps. When ready, present the proposed steps to the user for review before starting.`,
-				}
-			}
-			const next = findNextStep(active)
-			if (next) {
-				if (next.status === "failed") {
-					return {
-						kind: "recover_step",
-						stepId: next.id,
-						phaseId: active.id,
-						message: `Step ${next.index} "${next.description}" has failed. Ask the user: retry, skip, or revise this step?`,
-					}
-				}
-				return {
-					kind: "start_step",
-					stepId: next.id,
-					message: `Phase ${active.index} "${active.name}" — Step ${next.index}/${active.steps.length}: "${next.description}". Ask the user to confirm before starting: "Ready to execute this step?"`,
-				}
-			}
+		}
+
+		// 11. All steps terminal → complete_phase
+		const allStepsTerminal = active.steps.every(
+			(s) => s.status === "done" || s.status === "skipped" || s.status === "verified" || s.status === "failed",
+		)
+		if (allStepsTerminal) {
 			return {
 				kind: "complete_phase",
 				phaseId: active.id,
-				message: `Phase ${active.index} "${active.name}" has all steps terminal. Present a summary to the user and ask them to confirm completing this phase.`,
+				reason: `mark phase ${active.index} as complete when all steps are terminal`,
 			}
 		}
+	}
 
-		case "paused":
+	// 12. Noop
+	return { kind: "noop", reason: "no action needed" }
+}
+
+/**
+ * Legacy prose-driven action. Prefer `determineNextAction` for new code.
+ */
+export function whatNext(ferment: Ferment): FermentAction {
+	const action = determineNextAction(ferment)
+	return toFermentAction(action, ferment)
+}
+
+function toFermentAction(action: DeclarativeAction, ferment: Ferment): FermentAction {
+	// Helper to find phase/step from action
+	const phase = "phaseId" in action ? ferment.phases.find((p) => p.id === action.phaseId) : undefined
+	const step = phase && "stepId" in action ? phase.steps.find((s) => s.id === action.stepId) : undefined
+
+	switch (action.kind) {
+		case "scope":
+			return { kind: "scope", message: buildScopeProse(ferment) }
+
+		case "activate_phase":
 			return {
-				kind: "paused",
-				message: `Ferment "${ferment.name}" is paused. Ask the user what they want to do next.\n\n${formatStatus(ferment)}`,
+				kind: "activate_phase",
+				phaseId: action.phaseId,
+				message: `Activate phase ${phase?.index}: "${phase?.name}"`,
 			}
 
-		case "complete":
-		case "abandoned":
+		case "refine":
+			return {
+				kind: "refine",
+				phaseId: action.phaseId,
+				message: `Break phase ${phase?.index} "${phase?.name}" into 3–6 concrete steps.`,
+			}
+
+		case "start_step":
+			return {
+				kind: "start_step",
+				stepId: action.stepId,
+				message: `Start step ${step?.index}: "${step?.description}"`,
+			}
+
+		case "complete_step":
+			return {
+				kind: "complete_step",
+				stepId: action.stepId,
+				message: `Complete step ${step?.index}: "${step?.description}"`,
+			}
+
+		case "verify_step":
+			// FermentAction uses "verify" kind
+			return {
+				kind: "verify",
+				stepId: action.stepId,
+				message: `Verify step ${step?.index}: "${step?.description}"`,
+			}
+
+		case "complete_phase":
+			return {
+				kind: "complete_phase",
+				phaseId: action.phaseId,
+				message: `Mark phase ${phase?.index} "${phase?.name}" as complete.`,
+			}
+
+		case "pause":
+			return { kind: "paused", message: "Ferment is paused." }
+
+		case "complete_ferment":
 			return {
 				kind: "complete_ferment",
-				message: `Ferment "${ferment.name}" is ${ferment.status}. ${buildSummary(ferment)}`,
+				message:
+					ferment.status !== "running" && ferment.status !== "planned" && ferment.status !== "draft"
+						? `Ferment is ${ferment.status}. All ${ferment.phases.length} phases complete.`
+						: `All ${ferment.phases.length} phases complete. Mark ferment as complete.`,
 			}
+
+		case "recover_step":
+			return {
+				kind: "recover_step",
+				phaseId: action.phaseId,
+				stepId: action.stepId,
+				message: `Step ${step?.index} "${step?.description}" failed.`,
+			}
+
+		case "recover_phase":
+			return {
+				kind: "recover_phase",
+				phaseId: action.phaseId,
+				message: `Phase ${phase?.index} "${phase?.name}" failed.`,
+			}
+
+		case "noop":
+			// noop maps to paused with a "nothing to do" message
+			return { kind: "paused", message: "Nothing to do." }
 	}
 }
 
-function buildPlanScopeMessage(f: Ferment): string {
+function buildScopeProse(f: Ferment): string {
 	const s = f.scoping
 	const missing: string[] = []
-	if (!s.goal) missing.push("Goal")
-	if (!s.criteria) missing.push("Success Criteria")
-	if (!s.constraints) missing.push("Constraints")
-	if (!s.phases) missing.push("Phase Breakdown")
+	if (!s.goal) missing.push("goal")
+	if (!s.criteria) missing.push("success criteria")
+	if (!s.constraints) missing.push("constraints")
+	if (!s.phases) missing.push("phase breakdown")
 
 	if (missing.length === 0) {
-		return `All scoping questions answered for ferment "${f.name}" (ID: ${f.id}).\n\nPresent a review to the user:\n${buildScopeReview(f)}\n\nAsk: "Does this look right? Type 'yes' to confirm and start planning, or tell me what to revise."\nWhen confirmed, call scope_ferment with ferment_id "${f.id}" and all collected answers.`
+		return `All scoping fields collected for ferment "${f.name}".`
 	}
 
-	const answered: string[] = []
-	if (s.goal) answered.push("Goal")
-	if (s.criteria) answered.push("Success Criteria")
-	if (s.constraints) answered.push("Constraints")
-	if (s.phases) answered.push("Phase Breakdown")
-
-	const answeredMsg = answered.length > 0 ? `\nAlready collected: ${answered.join(", ")}.` : ""
-	const phaseNote = missing.includes("Phase Breakdown")
-		? " For phases: propose 3–7 phases and 3–6 concrete steps per phase."
-		: ""
-	return `You are scoping ferment "${f.name}" (ID: ${f.id}).\n\nStill need to collect: ${missing.join(", ")}.${answeredMsg}${phaseNote}\n\nAsk the user for each missing item conversationally — one question at a time. When all are answered, show them a review and wait for confirmation before calling scope_ferment.`
-}
-
-function buildScopeReview(f: Ferment): string {
-	const s = f.scoping
-	const lines: string[] = []
-	if (s.goal) lines.push(`• Goal: ${s.goal.answer}`)
-	if (s.criteria) lines.push(`• Success criteria: ${s.criteria.answer}`)
-	if (s.constraints) lines.push(`• Constraints: ${s.constraints.answer}`)
-	if (s.phases) {
-		const totalSteps = f.phases.reduce((acc, p) => acc + p.steps.length, 0)
-		const stepSummary = totalSteps > 0 ? ` (${totalSteps} steps across all phases)` : ""
-		lines.push(`• Phases: ${f.phases.length} planned${stepSummary}`)
-		for (const p of f.phases) {
-			lines.push(`  ${p.index}. ${p.name} — ${p.goal}`)
-			if (p.steps.length > 0) {
-				for (const s of p.steps) {
-					lines.push(`     ${s.index}. ${s.description}`)
-				}
-			}
-		}
-	}
-	return lines.join("\n")
-}
-
-function formatPhases(f: Ferment): string {
-	if (f.phases.length === 0) return "No phases defined yet."
-	return f.phases.map((p) => `${p.index}. ${p.name} — ${p.goal}`).join("\n")
-}
-
-function formatSteps(f: Ferment, p: Phase): string {
-	if (p.steps.length === 0) return "No steps defined yet. Use refine_phase to populate them."
-	return p.steps.map((s) => `${s.index}. ${s.description}`).join("\n")
-}
-
-function formatStatus(f: Ferment): string {
-	return `Status: ${f.status}, ${f.phases.filter((p) => p.status === "completed" || p.status === "skipped").length}/${f.phases.length} phases done.`
-}
-
-// ─── Exec Mode — Auto-advance, stripped coaching ──────────────────────────────
-
-function execModeAction(ferment: Ferment): FermentAction {
-	const action = autoModeAction(ferment)
-	if (action.kind === "scope") {
-		return {
-			...action,
-			message: `Ferment "${ferment.name}" (${short(ferment.id)}…) is in draft. Collect goal, criteria, constraints, and phases. Store with scope_ferment.`,
-		}
-	}
-	if (action.kind === "activate_phase") {
-		return {
-			...action,
-			message: action.message.replace(/\.\s+Use activate_phase.*$/, "."),
-		}
-	}
-	if (action.kind === "refine") {
-		const stripped = action.message
-			.split("\n")
-			.filter((line) => !line.startsWith("Use ") && !line.includes("Use refine_phase"))
-			.join("\n")
-		return { ...action, message: stripped }
-	}
-	if (action.kind === "start_step") {
-		return {
-			...action,
-			message: action.message.replace(/\.\s+Execute this step[\s\S]*/, ".").replace(/\.\s+Ask the user[\s\S]*/, "."),
-		}
-	}
-	if (action.kind === "complete_step") {
-		return {
-			...action,
-			message: action.message.replace(/\.\s+When complete, use complete_step[\s\S]*/, ". Execute and verify."),
-		}
-	}
-	if (action.kind === "complete_phase") {
-		return {
-			...action,
-			message: action.message
-				.replace(/\.\s+Summarize what was accomplished[\s\S]*/, ".")
-				.replace(/\.\s+Present a summary[\s\S]*/, "."),
-		}
-	}
-	if (action.kind === "recover_step" || action.kind === "recover_phase") {
-		return action
-	}
-	return action
-}
-
-function short(id: string): string {
-	return id.slice(0, 8)
-}
-
-// ─── Auto Mode — Full coaching, user decides ──────────────────────────────────
-
-function autoModeAction(ferment: Ferment): FermentAction {
-	switch (ferment.status) {
-		case "draft":
-			return {
-				kind: "scope",
-				message: buildAutoScopeMessage(ferment),
-			}
-
-		case "planned": {
-			const next = findFirstPlannedPhase(ferment)
-			if (next) {
-				const groupNote =
-					next.groupIndex !== undefined ? ` (this will activate all phases in parallel group ${next.groupIndex})` : ""
-				return {
-					kind: "activate_phase",
-					phaseId: next.id,
-					message: `Ferment "${ferment.name}" is planned. Call activate_phase with ferment_id "${ferment.id}" and phase_id "${next.id}" to start Phase ${next.index}: "${next.name}"${groupNote}.`,
-				}
-			}
-			return {
-				kind: "complete_ferment",
-				message: `All ${ferment.phases.length} phase(s) are already terminal. The ferment "${ferment.name}" can be completed.`,
-			}
-		}
-
-		case "running": {
-			const active = findActivePhase(ferment)
-			if (!active) {
-				return {
-					kind: "paused",
-					message: `The ferment is in "running" status but no phase is active. This may be a recovered state. Activate the next planned phase or switch status to "planned".`,
-				}
-			}
-			if (active.status === "failed") {
-				return {
-					kind: "recover_phase",
-					phaseId: active.id,
-					message: `Phase ${active.index} "${active.name}" has failed${active.summary ? `: ${active.summary}` : ""}. Options: retry (re-activate), skip (mark skipped), or abandon the ferment (/ferment abandon).`,
-				}
-			}
-			// Detect explore phase — discourage individual exploratory tools
-			const isExplorePhase = active.name.toLowerCase().includes("explore")
-			if (isExplorePhase) {
-				return {
-					kind: "paused",
-					message: `You are in the "${active.name}" phase. Use subagents (e.g. /research or /explore) for code research — do NOT make individual read_file, list_directory, or search_code calls yourself. Delegate the exploration work.`,
-				}
-			}
-			if (active.steps.length === 0) {
-				return {
-					kind: "refine",
-					phaseId: active.id,
-					message: buildRefineMessage(ferment, active),
-				}
-			}
-			const nextStep = findNextStep(active)
-			if (nextStep) {
-				if (nextStep.status === "failed") {
-					return {
-						kind: "recover_step",
-						stepId: nextStep.id,
-						phaseId: active.id,
-						message: `Step ${nextStep.index} "${nextStep.description}" has failed${nextStep.result?.stderr ? `: ${nextStep.result.stderr}` : ""}. Options: retry, skip this step, or revise it (/ferment revise step <description>).`,
-					}
-				}
-				if (nextStep.status === "pending") {
-					return {
-						kind: "start_step",
-						stepId: nextStep.id,
-						message: buildStartStepMessage(ferment, active, nextStep),
-					}
-				}
-				if (nextStep.status === "running") {
-					return {
-						kind: "start_step",
-						stepId: nextStep.id,
-						message: `Step ${nextStep.index} "${nextStep.description}" (Phase ${active.index}: ${active.name}) was left in 'running' status — likely interrupted mid-execution. Spawn a subagent worker to complete it, then call complete_step. If you believe the previous worker already finished its task, call complete_step directly with a summary.`,
-					}
-				}
-			}
-			return {
-				kind: "complete_phase",
-				phaseId: active.id,
-				message: `Phase ${active.index} "${active.name}" is complete (${countTerminal(active.steps)}/${active.steps.length} steps terminal). Summarize what was accomplished and mark the phase as completed.`,
-			}
-		}
-
-		case "paused":
-			return {
-				kind: "paused",
-				message: `The ferment "${ferment.name}" is paused. Type /auto to resume, or ask to make changes.`,
-			}
-
-		case "complete":
-		case "abandoned":
-			return {
-				kind: "complete_ferment",
-				message: `The ferment "${ferment.name}" is ${ferment.status}. ${buildSummary(ferment)}`,
-			}
-	}
-}
-
-function buildAutoScopeMessage(f: Ferment): string {
-	return `You are scoping a new ferment: "${f.name}" (ID: ${short(f.id)}…).\n\nAsk the user ONE question at a time, then STOP and wait for their reply. Do not ask the next question until they respond.\n\nCollect in order:\n1. Goal — what does "done" look like?\n2. Success criteria — how will we know we got there?\n3. Constraints — what to avoid, non-negotiables\n4. Phases — propose 3–7 ordered phases, each with 3–6 concrete steps\n\nAfter each answer: acknowledge briefly, then ask the next question. Do NOT call any tool mid-scoping.\nOnly call scope_ferment once the user has confirmed all four fields.`
-}
-
-function buildRefineMessage(f: Ferment, p: Phase): string {
-	let msg = `Phase ${p.index}: "${p.name}" is now active. The goal is: ${p.goal}.\n`
-	if (p.constraints && p.constraints.length > 0) {
-		msg += `\nConstraints: ${p.constraints.join(", ")}\n`
-	}
-	if (p.budget) {
-		msg += `Budget: ${p.budget}\n`
-	}
-	msg += "\nBreak this phase into 3–6 concrete, independently verifiable steps. Each step should have:\n"
-	msg += "- A clear description\n"
-	msg += "- An optional verification command (exit 0 = success)\n\n"
-	msg += "Use refine_phase to populate the steps, then execute them one at a time."
-	return msg
-}
-
-function buildStartStepMessage(_f: Ferment, p: Phase, s: Step): string {
-	let msg = `Phase ${p.index}: "${p.name}" — Step ${s.index}/${p.steps.length}: "${s.description}"\n`
-	if (s.verification) {
-		msg += `\nVerification: \`${s.verification.command}\`\n`
-	}
-	msg += `\nCall start_step with phase_id "${p.id}" and step_id "${s.id}" now, then spawn a subagent worker to execute it. When the subagent returns, call complete_step with its summary.`
-	return msg
-}
-
-function buildSummary(f: Ferment): string {
-	const completed = f.phases.filter((p) => p.status === "completed" || p.status === "skipped").length
-	const total = f.phases.length
-	const dec = f.decisions.length
-	const mem = f.memories.length
-	return `${completed}/${total} phases terminal. ${dec} decisions, ${mem} memories recorded.`
+	return `Collect: ${missing.join(", ")}.`
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -390,11 +289,15 @@ function findActivePhase(f: Ferment): Phase | undefined {
 }
 
 function findNextStep(p: Phase): Step | undefined {
-	return p.steps.find((s) => s.status !== "done" && s.status !== "skipped" && s.status !== "verified")
-}
-
-function countTerminal(steps: Step[]): number {
-	return steps.filter(
-		(s) => s.status === "done" || s.status === "verified" || s.status === "skipped" || s.status === "failed",
-	).length
+	// Returns the first step that should be *started* next. Excludes terminal states
+	// (done/skipped/verified/failed) AND running — a running step is the runningStep
+	// branch's responsibility, not a candidate for start_step.
+	return p.steps.find(
+		(s) =>
+			s.status !== "done" &&
+			s.status !== "skipped" &&
+			s.status !== "verified" &&
+			s.status !== "failed" &&
+			s.status !== "running",
+	)
 }

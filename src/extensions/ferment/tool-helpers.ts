@@ -7,6 +7,7 @@
  * a success response.
  */
 
+import { commandToEvents } from "../../ferment/event-mapper.js"
 import type { Command, TransitionError } from "../../ferment/state-machine.js"
 import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
@@ -91,9 +92,11 @@ export function applyAndPersist(fermentId: string, cmd: Command): ApplyOutcome {
 			},
 		}
 	}
-	const result = applyCommand(current, cmd, { now: new Date().toISOString() })
+	const now = new Date().toISOString()
+	const result = applyCommand(current, cmd, { now })
 	if (!result.ok) return { ok: false, error: result.error }
-	storage.write(result.ferment)
+	const events = commandToEvents(cmd, current, result.ferment, { now })
+	storage.writeWithEvents(result.ferment, events)
 	setActive(result.ferment)
 	return { ok: true, ferment: result.ferment }
 }

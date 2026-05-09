@@ -193,6 +193,8 @@ Or inside an active session:
 
 ### State machine
 
+All lifecycle transitions (create → scope → activate → start → complete) are validated by a **deterministic finite state machine** that enforces valid state changes and prevents illegal operations (e.g., completing a step before it starts, skipping an already-completed phase). The FSM produces declarative next-action guidance so the harness derives behavior directly from state.
+
 ```
 draft → planned → running → [paused] → complete
 ```
@@ -225,6 +227,7 @@ draft → planned → running → [paused] → complete
 | `/ferment add "Name"` | Create new ferment (draft, plan mode) |
 | `/ferment switch <id>` | Resume by ID prefix or name |
 | `/ferment delete <id>` | Delete permanently |
+| `/ferment export` | Export stats to JSON for analysis |
 | `/ferment mode` | Show current mode + help |
 | `/ferment mode plan/exec/auto` | Change mode |
 | `/auto` | Enable auto-mode |
@@ -250,13 +253,16 @@ $ kimchi --ferment "Build Tetris"
 ```
 .kimchi/
 ├── ferments/
-│   └── <uuid>.json          ← machine-readable plan state
+│   ├── <uuid>.json          ← snapshot cache (machine-readable plan state)
+│   └── <uuid>.events.jsonl  ← append-only audit log of every transition
 ├── sessions/
 │   └── <timestamp>.jsonl    ← chat history + tool calls
 └── .<uuid>.progress.log     ← human-readable audit trail
 ```
 
-For full documentation see `docs/ferment.md`.
+Every mutate operation is persisted as an **append-only event** with pre/post state hashes, enabling full auditability. A deterministic **finite state machine (FSM)** validates all lifecycle transitions and prevents illegal operations (e.g., completing a step before it starts). Stats (aggregate phase/step counts, timing percentiles, worker model usage, grade distributions) are computed on demand from the snapshot — surfaced inline (elapsed time, model, grade per step) and exported via `/ferment export` to a JSON file in the cwd.
+
+For full documentation see `docs/ferment.md` and `docs/ferment-storage-schema.md`.
 
 ### Visual display
 

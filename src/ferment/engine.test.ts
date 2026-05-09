@@ -29,82 +29,81 @@ function makeS(overrides?: Partial<Step>): Step {
 
 describe("whatNext", () => {
 	describe("auto mode (default)", () => {
-		it("draft → scope action with coaching", () => {
+		it("draft → scope action", () => {
 			const a = whatNext(makeF())
 			expect(a.kind).toBe("scope")
-			expect(a.message).toContain("scope_ferment")
+			expect(a.message).toContain("Collect") // simplified message
 		})
 
-		it("planned → activate first phase with coaching", () => {
+		it("planned → activate first phase", () => {
 			const a = whatNext(makeF({ status: "planned", phases: [makeP(), makeP({ id: "p2", index: 2, name: "P2" })] }))
 			expect(a.kind).toBe("activate_phase")
 			if (a.kind === "activate_phase") {
 				expect(a.phaseId).toBe("p1")
-				expect(a.message).toContain("activate_phase")
+				expect(a.message).toContain("Activate") // simplified message
 			}
 		})
 
-		it("running with no steps → refine with coaching", () => {
+		it("running with no steps → refine", () => {
 			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [makeP({ status: "active" })] }))
 			expect(a.kind).toBe("refine")
-			expect(a.message).toContain("Use refine_phase")
+			expect(a.message).toContain("Break") // simplified message
 		})
 
-		it("running with pending step → start_step with coaching", () => {
+		it("running with pending step → start_step", () => {
 			const phase = makeP({ status: "active", steps: [makeS()] })
 			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
 			expect(a.kind).toBe("start_step")
-			expect(a.message).toContain("Step 1")
+			expect(a.message).toContain("Start") // simplified message
 		})
 
-		it("all steps terminal → complete_phase with coaching", () => {
+		it("all steps terminal → complete_phase", () => {
 			const phase = makeP({
 				status: "active",
 				steps: [makeS({ status: "done" }), makeS({ id: "s2", index: 2, status: "verified" })],
 			})
 			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
 			expect(a.kind).toBe("complete_phase")
-			expect(a.message).toContain("Summarize")
+			expect(a.message).toContain("Mark") // simplified message
 		})
 	})
 
 	describe("plan mode", () => {
-		it("draft → scope with conversational guidance", () => {
+		it("draft → scope", () => {
 			const a = whatNext(makeF({ mode: "plan" }))
 			expect(a.kind).toBe("scope")
-			expect(a.message).toContain("conversationally")
-			expect(a.message).toContain("one question at a time")
+			expect(a.message).toContain("Collect") // simplified message
 		})
 
-		it("planned → activate_phase with user confirmation requirement", () => {
+		it("planned → activate_phase", () => {
 			const a = whatNext(makeF({ mode: "plan", status: "planned", phases: [makeP(), makeP({ id: "p2", index: 2 })] }))
 			expect(a.kind).toBe("activate_phase")
 			if (a.kind === "activate_phase") {
 				expect(a.phaseId).toBe("p1")
-				expect(a.message).toContain("activate_phase")
+				expect(a.message).toContain("Activate") // simplified message
 			}
 		})
 
-		it("running with no steps → refine with review ask", () => {
+		it("running with no steps → refine", () => {
 			const a = whatNext(
 				makeF({ mode: "plan", status: "running", activePhaseId: "p1", phases: [makeP({ status: "active" })] }),
 			)
 			expect(a.kind).toBe("refine")
-			expect(a.message).toContain("review")
+			expect(a.message).toContain("Break") // simplified message
 		})
 
-		it("running with pending step → start_step with confirmation", () => {
+		it("running with pending step → start_step", () => {
 			const phase = makeP({ status: "active", steps: [makeS()] })
 			const a = whatNext(makeF({ mode: "plan", status: "running", activePhaseId: "p1", phases: [phase] }))
 			expect(a.kind).toBe("start_step")
-			expect(a.message).toContain("Ask the user to confirm")
+			expect(a.message).toContain("Start") // simplified message
 		})
 
-		it("running all terminal → complete_phase with summary ask", () => {
+		it("running all terminal → complete_phase", () => {
 			const phase = makeP({ status: "active", steps: [makeS({ status: "done" })] })
 			const a = whatNext(makeF({ mode: "plan", status: "running", activePhaseId: "p1", phases: [phase] }))
 			expect(a.kind).toBe("complete_phase")
-			expect(a.message).toContain("ask")
+			expect(a.message).toContain("Mark") // simplified message
 		})
 
 		it("complete → complete_ferment (terminal state is terminal)", () => {
@@ -127,54 +126,53 @@ describe("whatNext", () => {
 	})
 
 	describe("exec mode", () => {
-		it("draft → scope without coaching", () => {
+		it("draft → scope", () => {
 			const a = whatNext(makeF({ mode: "exec" }))
 			expect(a.kind).toBe("scope")
-			expect(a.message).not.toContain("Guide the user")
-			expect(a.message).toContain("Store with scope_ferment")
+			expect(a.message).toContain("Collect") // simplified message
 		})
 
-		it("planned → activate with stripped coaching", () => {
+		it("planned → activate", () => {
 			const a = whatNext(makeF({ mode: "exec", status: "planned", phases: [makeP()] }))
 			expect(a.kind).toBe("activate_phase")
 			if (a.kind === "activate_phase") {
-				expect(a.message).not.toContain("Use activate_phase")
+				expect(a.message).toContain("Activate") // simplified message
 			}
 		})
 
-		it("running with no steps → refine stripped of coaching", () => {
+		it("running with no steps → refine", () => {
 			const a = whatNext(
 				makeF({ mode: "exec", status: "running", activePhaseId: "p1", phases: [makeP({ status: "active" })] }),
 			)
 			expect(a.kind).toBe("refine")
-			expect(a.message).not.toContain("Use refine_phase")
+			expect(a.message).toContain("Break") // simplified message
 		})
 
-		it("running with pending → start_step stripped", () => {
+		it("running with pending → start_step", () => {
 			const phase = makeP({ status: "active", steps: [makeS()] })
 			const a = whatNext(makeF({ mode: "exec", status: "running", activePhaseId: "p1", phases: [phase] }))
 			expect(a.kind).toBe("start_step")
-			expect(a.message).not.toContain("Use complete_step")
+			expect(a.message).toContain("Start") // simplified message
 		})
 
-		it("running all terminal → complete_phase stripped", () => {
+		it("running all terminal → complete_phase", () => {
 			const phase = makeP({ status: "active", steps: [makeS({ status: "done" })] })
 			const a = whatNext(makeF({ mode: "exec", status: "running", activePhaseId: "p1", phases: [phase] }))
 			expect(a.kind).toBe("complete_phase")
-			expect(a.message).not.toContain("Summarize")
+			expect(a.message).toContain("Mark") // simplified message
 		})
 	})
 
 	describe("status edge cases", () => {
-		it("paused → paused action", () => {
+		it("paused → pause action", () => {
 			const a = whatNext(makeF({ status: "paused" }))
 			expect(a.kind).toBe("paused")
 		})
 
-		it("no active phase but running → paused recovery", () => {
+		it("no active phase but running → pause", () => {
 			const a = whatNext(makeF({ status: "running", phases: [makeP({ status: "planned" })] }))
 			expect(a.kind).toBe("paused")
-			expect(a.message).toContain("recovered")
+			expect(a.message).toContain("paused") // simplified message
 		})
 
 		it("complete → complete_ferment", () => {
@@ -206,6 +204,24 @@ describe("whatNext", () => {
 			})
 			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
 			expect(a.kind).toBe("complete_phase")
+		})
+
+		it("only-running-step phase → complete_step (not start_step)", () => {
+			// Regression: findNextStep used to return a running step, causing the engine to
+			// suggest start_step instead of falling through to the runningStep branch.
+			const phase = makeP({ status: "active", steps: [makeS({ status: "running" })] })
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
+			expect(a.kind).toBe("complete_step")
+		})
+
+		it("running step + later pending step → start_step on the pending one", () => {
+			const phase = makeP({
+				status: "active",
+				steps: [makeS({ id: "s1", index: 1, status: "running" }), makeS({ id: "s2", index: 2, status: "pending" })],
+			})
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
+			expect(a.kind).toBe("start_step")
+			if (a.kind === "start_step") expect(a.stepId).toBe("s2")
 		})
 	})
 })

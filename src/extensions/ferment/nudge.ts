@@ -14,10 +14,11 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { findFirstPlannedPhase, whatNext } from "../../ferment/engine.js"
-import type { FermentAction } from "../../ferment/types.js"
+import { determineNextAction, findFirstPlannedPhase } from "../../ferment/engine.js"
+import type { DeclarativeAction } from "../../ferment/engine.js"
 import { isExecMode } from "./modes.js"
 import { getActive, getActiveId, getStorage, isAutoModeEnabled, setActive } from "./state.js"
+import { applyAndPersist } from "./tool-helpers.js"
 
 export function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
 	void pi.sendMessage({
@@ -38,13 +39,11 @@ const TRANSITION_KINDS = new Set([
 ])
 
 /**
- * Compose an imperative resume message from a structured FermentAction.
+ * Compose an imperative resume message from a DeclarativeAction.
  *
- * The engine's `whatNext` returns mode-aware prose — fine for plan-mode
- * coaching ("ask the user to confirm before starting"), but wrong after the
- * user has explicitly typed /auto. After resume we want the planner to act,
- * not to ask. This helper keys off the action *kind* (a structural field, not
- * prose) and emits a directive that maps cleanly to a tool call.
+ * The engine's `determineNextAction` returns mode-aware structured actions.
+ * After /auto we want the planner to act, not to ask. This helper keys off
+ * the action *kind* and emits a directive that maps cleanly to a tool call.
  *
  * Mapping action.kind → expected next tool call:
  *   start_step       → start_step + spawn subagent
@@ -54,30 +53,37 @@ const TRANSITION_KINDS = new Set([
  *   recover_step     → fail_step / skip_step / start_step (host-decides)
  *   recover_phase    → activate_phase / skip_phase
  */
-function buildResumeNudgeMessage(action: FermentAction, fermentId: string, phaseId?: string, stepId?: string): string {
-	const preamble = `RESUMING ferment after /auto. The user has confirmed they want execution to continue — do NOT ask "Ready to execute this step?" or any similar question. Take the next action below as a tool call now.`
+function buildResumeNudgeMessage(
+	action: DeclarativeAction,
+	fermentId: string,
+	phaseId?: string,
+	stepId?: string,
+): string {
+	const preamble =
+		"RESUMING ferment after /auto. The user has confirmed they want execution to continue — take the next action now."
 	switch (action.kind) {
 		case "start_step":
-			return `${preamble}\n\nNext action: call start_step with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""}${stepId ? `, step_id "${stepId}"` : ""}, then spawn a subagent worker for that step. When the subagent returns, call complete_step with its summary.`
+			return `${preamble}\n\nAction: call start_step with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""}${stepId ? `, step_id "${stepId}"` : ""}, then spawn a subagent worker for that step. When the subagent returns, call complete_step with its summary.`
 		case "refine":
-			return `${preamble}\n\nNext action: call refine_phase with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""} and 3–6 concrete steps for this phase. After refining, call start_step on step-1.`
+			return `${preamble}\n\nAction: call refine_phase with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""} and 3–6 concrete steps for this phase.`
 		case "activate_phase":
-			return `${preamble}\n\nNext action: call activate_phase with ferment_id "${fermentId}"${"phaseId" in action ? `, phase_id "${action.phaseId}"` : ""}.`
+			return `${preamble}\n\nAction: call activate_phase with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""}.`
 		case "complete_phase":
-			return `${preamble}\n\nNext action: call complete_phase with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""} and a one-paragraph summary of what was accomplished.`
+			return `${preamble}\n\nAction: call complete_phase with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""} and a one-paragraph summary.`
 		case "recover_step":
 			return `${preamble}\n\nThe step previously failed. Decide based on the failure: call start_step to retry, skip_step to bypass, or fail_step to mark it permanently failed. Pick one and call it now.`
 		case "recover_phase":
 			return `${preamble}\n\nThe phase previously failed. Decide based on the failure: call activate_phase to retry, or skip_phase to bypass. Pick one and call it now.`
 		case "scope":
-		case "verify":
+			return `${preamble}\n\nAction: continue scoping — ${action.reason}.`
 		case "complete_step":
-		case "paused":
+			return `${preamble}\n\nAction: call complete_step with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""}${stepId ? `, step_id "${stepId}"` : ""}.`
+		case "verify_step":
+			return `${preamble}\n\nAction: call verify_step with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""}${stepId ? `, step_id "${stepId}"` : ""}.`
+		case "pause":
 		case "complete_ferment":
-			// These shouldn't reach here under normal /auto flow, but fall through
-			// to the engine's prose if they do. The pause/complete cases are
-			// already filtered out at the top of maybeInjectAutoNudge.
-			return action.message
+		case "noop":
+			return `${preamble}\n\nReason: ${action.reason}`
 	}
 }
 
@@ -93,9 +99,9 @@ export function maybeInjectAutoNudge(pi: ExtensionAPI, opts: { force?: boolean }
 	if (!isAutoModeEnabled()) return
 	const f = getActive()
 	if (!f) return
-	const action = whatNext(f)
+	const action = determineNextAction(f)
 	// Skip terminal/idle states even when forced — there's nothing to do.
-	if (action.kind === "paused" || action.kind === "complete_ferment") return
+	if (action.kind === "pause" || action.kind === "complete_ferment" || action.kind === "noop") return
 	// Only nudge on transitions — not on every routine step completion. The planner
 	// already has the next step in its context after complete_step returns. The
 	// `force` option overrides this to support explicit /auto resume.
@@ -109,14 +115,10 @@ export function maybeInjectAutoNudge(pi: ExtensionAPI, opts: { force?: boolean }
 	const breadcrumb = `${tag} [${action.kind}]: "${f.name}" [${f.status}]${phaseInfo}${stepInfo}`
 
 	// Compose the message from the structured action rather than passing through
-	// the engine's mode-aware prose. The engine's plan-mode text says "ask the
-	// user to confirm" — fine for casual coaching but wrong for explicit /auto
-	// resume, where the user has already confirmed by typing the command. We
-	// build an imperative message keyed off action.kind so the planner takes
-	// the right tool call regardless of the engine's mode-flavored prose.
+	// the engine's prose. The reason field provides a one-sentence objective.
 	const messageText = opts.force
 		? buildResumeNudgeMessage(action, f.id, activePhase?.id, activeStep?.id)
-		: action.message
+		: `${action.kind}: ${action.reason}`
 
 	pi.appendEntry("ferment_breadcrumb", { text: breadcrumb })
 	void pi.sendMessage(
@@ -150,9 +152,8 @@ export function onPhaseCompleted(pi: ExtensionAPI): void {
 		if (isExecMode()) {
 			const next = findFirstPlannedPhase(fresh)
 			if (next) {
-				const s = getStorage()
-				const r = s.activatePhase(fresh.id, next.id)
-				if (r) setActive(r)
+				const out = applyAndPersist(fresh.id, { type: "activate_phase", phaseId: next.id })
+				if (out.ok) setActive(out.ferment)
 			}
 		}
 		maybeInjectAutoNudge(pi)

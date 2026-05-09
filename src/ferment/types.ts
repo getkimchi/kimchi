@@ -99,10 +99,18 @@ export interface Phase {
 
 export type Grade = "A" | "B" | "C" | "D" | "F"
 
+export interface Delta {
+	category: "scope" | "quality" | "completeness" | "timing" | "correctness" | "other"
+	expected: string
+	actual: string
+	severity: "major" | "minor" | "cosmetic"
+}
+
 export interface JudgeGrade {
 	grade: Grade
 	rationale: string
 	gradedAt: string
+	deltas?: Delta[]
 }
 
 // ─── Step / Level 2 (replaces RecipeStep) ─────────────────────────────────────

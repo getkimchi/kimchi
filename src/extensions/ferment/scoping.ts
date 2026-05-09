@@ -27,7 +27,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
-import { whatNext } from "../../ferment/engine.js"
+import { determineNextAction } from "../../ferment/engine.js"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { stripToolRefs } from "./format.js"
@@ -75,11 +75,11 @@ export function clearAllPendingScopes(): void {
 
 // ─── Scoping flow ─────────────────────────────────────────────────────────────
 
-function buildScopePrompt(fermentId: string, isPlan: boolean, rawIntent?: string): string {
+function buildScopePrompt(fermentId: string, _isPlan: boolean, rawIntent?: string): string {
 	const f = getStorage().get(fermentId)
 	if (!f) return ""
-	const action = whatNext(f)
-	const msg = isPlan ? stripToolRefs(action.message) : action.message
+	const action = determineNextAction(f)
+	const msg = `Scope: ${action.reason}`
 	if (!rawIntent) return msg
 	return `User wants to ferment: "${rawIntent}"\n\n${msg}`
 }

@@ -11,7 +11,7 @@
 
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
-import { FermentStorage } from "../../ferment/store.js"
+import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { notifyFermentActive } from "../permissions/index.js"
 
@@ -143,6 +143,22 @@ export function clearAllScopingGates(): void {
 	scopingConfirmed.clear()
 }
 
+// ─── Self-improvement: corrective step cache ──────────────────────────────────
+// Key: `${fermentId}:${completedPhaseId}` — set by complete_phase when grade is
+// D/F, consumed by the planner system-prompt builder before the next phase. The
+// cache holds the judge-suggested corrective step so it's not re-fetched on
+// every system-prompt rebuild.
+
+const correctiveSteps = new Map<string, string>()
+
+export function setCorrectiveStep(fermentId: string, phaseId: string, step: string): void {
+	correctiveSteps.set(`${fermentId}:${phaseId}`, step)
+}
+
+export function getCorrectiveStep(fermentId: string, phaseId: string): string | undefined {
+	return correctiveSteps.get(`${fermentId}:${phaseId}`)
+}
+
 // ─── Per-ferment cleanup ──────────────────────────────────────────────────────
 
 /** Clear all in-memory state scoped to a specific ferment. Called on abandon/delete/complete. */
@@ -152,10 +168,18 @@ export function clearFermentState(fermentId: string): void {
 	for (const key of stepStartCounts.keys()) {
 		if (key.startsWith(`${fermentId}:`)) stepStartCounts.delete(key)
 	}
+	for (const key of correctiveSteps.keys()) {
+		if (key.startsWith(`${fermentId}:`)) correctiveSteps.delete(key)
+	}
 }
 
 // ─── Storage handle ───────────────────────────────────────────────────────────
 
-export function getStorage(): FermentStorage {
-	return new FermentStorage()
+/** Returns a FermentEventStore wrapping FermentStorage. All callers use this singleton.
+ *  FermentEventStore is backward-compatible with FermentStorage — same API surface, adds
+ *  append-only event logging for new mutations and transparently falls back to snapshot
+ *  reads for legacy ferments.
+ */
+export function getStorage(): FermentEventStore {
+	return new FermentEventStore()
 }
