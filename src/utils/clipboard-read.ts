@@ -1,17 +1,18 @@
 import { execFileSync } from "node:child_process"
-import { readClipboardImage as readClipboardImageUpstream } from "@earendil-works/pi-coding-agent/dist/utils/clipboard-image.js"
+
+import { readClipboardImage as readClipboardImagePlatform } from "./clipboard-image.js"
 import { getNativeClipboard } from "./clipboard-native-harness.js"
 import { readImageFileFromDisk } from "./image-utils.js"
 
 /**
  * Read the most-recent image from the system clipboard.
  *
- * Uses upstream's `readClipboardImage()` first — it handles Wayland, X11,
- * WSL PowerShell fallback, native NAPI, and format-to-PNG conversion.
+ * Uses our local `readClipboardImage()` which handles Wayland, X11,
+ * WSL PowerShell fallback, and native NAPI.
  *
  * Falls back to a macOS-specific file-URL resolution: when a file is copied
  * in Finder (Cmd+C on the file item), macOS puts `public.file-url` on the
- * pasteboard with no binary image rep. Upstream's native addon returns null
+ * pasteboard with no binary image rep. The native addon returns null
  * in this case because `hasImage()` is false. We detect this via the addon's
  * `availableFormats()`, resolve the URL via AppleScript, and read the actual
  * file from disk.
@@ -19,8 +20,8 @@ import { readImageFileFromDisk } from "./image-utils.js"
  * Returns `null` if no image is on the clipboard or it cannot be read.
  */
 export async function readClipboardImage(): Promise<{ bytes: Uint8Array; mimeType: string } | null> {
-	// 1. Upstream handles all normal cases (screenshots, image bytes, etc.)
-	const upstream = await readClipboardImageUpstream()
+	// 1. Local implementation handles all normal cases (screenshots, image bytes, etc.)
+	const upstream = await readClipboardImagePlatform()
 	if (upstream) return upstream
 
 	// 2. macOS file-URL fallback — only when upstream returns null on Darwin.

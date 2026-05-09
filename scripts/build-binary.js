@@ -34,12 +34,11 @@ run("clean", "pnpm run clean")
 run("typecheck", "pnpm run typecheck")
 
 // Externalize packages that cannot be bundled into a Bun compiled binary (native addons, browser automation harnesses).
-// pi-coding-agent has deep imports that must remain external to avoid build failures.
-// pi-tui and pi-ai can be bundled (no deep import issues).
+// If a new dependency causes a build failure, check whether it also needs --external here.
 const targetFlag = crossTarget ? ` --target=${crossTarget}` : ""
 run(
 	"compile",
-	`bun build src/entry.ts --compile${targetFlag} --outfile dist/bin/kimchi --external chromium-bidi --external electron --external @earendil-works/pi-coding-agent`,
+	`bun build src/entry.ts --compile${targetFlag} --outfile dist/bin/kimchi --external chromium-bidi --external electron`,
 )
 
 // Bun --compile produces binaries with an invalid code signature on macOS.
