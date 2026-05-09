@@ -50,6 +50,17 @@ function getSettingsPath(): string | undefined {
 /** Override for tests — bypasses settings.json when set. */
 let hideThinkingOverride: boolean | undefined
 
+// Exposed so the ACP replay path can consult the same setting without
+// re-implementing the override + settings.json read. Native ThinkingContent
+// blocks are not routed through filterThinkingForDisplay (which is text-tag
+// only), so callers that want a "should this thinking be shown?" predicate
+// should read the flag directly instead of probing the formatter with a
+// synthetic <think> wrapper — that wrapper breaks if the inner thinking text
+// itself contains </think>.
+export function isHideThinkingEnabled(): boolean {
+	return readHideThinkingSetting()
+}
+
 function readHideThinkingSetting(): boolean {
 	if (hideThinkingOverride !== undefined) return hideThinkingOverride
 	const settingsPath = getSettingsPath()

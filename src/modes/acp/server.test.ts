@@ -8,6 +8,7 @@ import type {
 	SessionInfo as PiSessionInfo,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { _resetState as _resetHideThinking, _setHideThinking } from "../../extensions/hide-thinking.js"
 import {
 	type AcpSessionFactory,
 	type AcpSessionLister,
@@ -18,6 +19,8 @@ import {
 	assistantMessageText,
 	describeToolCall,
 	isHiddenToolCall,
+	shouldEmitThinking,
+	stripAnsi,
 	toAcpSessionInfo,
 	userMessageText,
 } from "./server.js"
@@ -1258,6 +1261,15 @@ describe("toAcpSessionInfo", () => {
 		expect(out.title).toBeNull()
 	})
 
+	it("falls back to firstMessage when name is the empty string (not just undefined)", () => {
+		// Pi types `name?: string`, but a hand-edited / migrated session info
+		// entry can land with name === "". A previous version used `??` which
+		// only short-circuits on null/undefined, so the fallback was skipped
+		// and the title became null even though firstMessage was populated.
+		const out = toAcpSessionInfo(makePiSession({ name: "", firstMessage: "hello world" }))
+		expect(out.title).toBe("hello world")
+	})
+
 	it("formats updatedAt as ISO 8601 from the modified Date", () => {
 		const out = toAcpSessionInfo(makePiSession({ modified: new Date("2026-05-09T12:34:56.789Z") }))
 		expect(out.updatedAt).toBe("2026-05-09T12:34:56.789Z")
@@ -1344,6 +1356,13 @@ function userTextEntry(text: string, id = "u1", parentId: string | null = null):
 	}
 }
 function assistantTextEntry(text: string, id = "a1", parentId: string | null = null): unknown {
+	return assistantBlocksEntry([{ type: "text", text }], id, parentId)
+}
+
+// Variant that builds an assistant entry from arbitrary content blocks (text,
+// thinking, toolCall). Used by the Phase 3 replay tests to drop in mixed-block
+// fixtures without re-spelling the message envelope each time.
+function assistantBlocksEntry(content: unknown[], id = "a1", parentId: string | null = null): unknown {
 	return {
 		type: "message",
 		id,
@@ -1351,7 +1370,7 @@ function assistantTextEntry(text: string, id = "a1", parentId: string | null = n
 		timestamp: "2026-05-09T00:00:01Z",
 		message: {
 			role: "assistant",
-			content: [{ type: "text", text }],
+			content,
 			api: "anthropic-messages",
 			provider: "anthropic",
 			model: "claude",
@@ -1364,6 +1383,30 @@ function assistantTextEntry(text: string, id = "a1", parentId: string | null = n
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 			stopReason: "stop",
+			timestamp: 0,
+		},
+	}
+}
+
+function toolResultEntry(
+	toolCallId: string,
+	toolName: string,
+	text: string,
+	isError = false,
+	id = `tr-${toolCallId}`,
+	parentId: string | null = null,
+): unknown {
+	return {
+		type: "message",
+		id,
+		parentId,
+		timestamp: "2026-05-09T00:00:02Z",
+		message: {
+			role: "toolResult",
+			toolCallId,
+			toolName,
+			content: [{ type: "text", text }],
+			isError,
 			timestamp: 0,
 		},
 	}
@@ -1528,71 +1571,84 @@ describe("KimchiAcpAgent loadSession", () => {
 		})
 	})
 
-	it("skips non-text entries in Phase 2 replay (tool calls, thinking, model_change, compaction)", async () => {
-		const fake = new FakeAgentSession("loaded-skip")
+	// Phase 3 replay walker: text + thinking + tool calls all surface as their
+	// own session/update notifications; non-message entries (compaction,
+	// branch_summary, model_change, custom) emit nothing per PRD. The block
+	// of tests below exercises one fixture per kind plus a combined fixture.
+
+	it("rejects a load whose session-header id disagrees with the requested sessionId", async () => {
+		// Defensive: pi reads sessionId from the JSONL header, not the file
+		// name. A corrupt / hand-edited session whose header drifted from the
+		// filename would otherwise land in `sessions` under a different key
+		// than the client knows, and subsequent prompts would 404 even though
+		// the file is held open.
+		const fake = new FakeAgentSession("header-id")
+		const loader: AcpSessionLoader = async () => asSession(fake)
+		const agent = makeAgent(loader)
+		await expect(agent.loadSession({ sessionId: "requested-id", cwd: "/tmp", mcpServers: [] })).rejects.toMatchObject({
+			code: -32602,
+		})
+		expect(fake.disposed).toBe(true)
+	})
+
+	it("coalesces contiguous text blocks within an assistant message into one chunk", async () => {
+		// PRD §"Replay extension contract": emit the full message as a single
+		// chunk. Adjacent text blocks (rare but legal) must merge into one
+		// agent_message_chunk; structural blocks (thinking / toolCall) flush
+		// the buffer so ordering stays faithful.
+		const fake = new FakeAgentSession("loaded-coalesce")
 		fake.branch = [
-			userTextEntry("question", "u1", null),
-			// Assistant message with only thinking + tool call — no text. Phase 2
-			// emits nothing for this; Phase 3 will replay tool_call + agent_thought.
-			{
-				type: "message",
-				id: "a1",
-				parentId: "u1",
-				timestamp: "2026-05-09T00:00:01Z",
-				message: {
-					role: "assistant",
-					content: [
-						{ type: "thinking", thinking: "pondering" },
-						{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "ls" } },
-					],
-					api: "anthropic-messages",
-					provider: "anthropic",
-					model: "claude",
-					usage: {
-						input: 0,
-						output: 0,
-						cacheRead: 0,
-						cacheWrite: 0,
-						totalTokens: 0,
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-					},
-					stopReason: "stop",
-					timestamp: 0,
-				},
-			},
-			// Tool result message — skipped in Phase 2 (handled via tool_call_update in Phase 3).
-			{
-				type: "message",
-				id: "tr1",
-				parentId: "a1",
-				timestamp: "2026-05-09T00:00:02Z",
-				message: {
-					role: "toolResult",
-					toolCallId: "tc-1",
-					toolName: "bash",
-					content: [{ type: "text", text: "output" }],
-					isError: false,
-					timestamp: 0,
-				},
-			},
-			// Non-message entries the PRD says replay should skip.
-			{ type: "model_change", id: "mc1", parentId: "tr1", timestamp: "x", provider: "p", modelId: "m" },
-			{
-				type: "compaction",
-				id: "c1",
-				parentId: "mc1",
-				timestamp: "x",
-				summary: "snip",
-				firstKeptEntryId: "u1",
-				tokensBefore: 0,
-			},
-			assistantTextEntry("final answer", "a2", "c1"),
+			userTextEntry("go", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "first " },
+					{ type: "text", text: "second" },
+					{ type: "thinking", thinking: "pondering" },
+					{ type: "text", text: "third" },
+				],
+				"a1",
+				"u1",
+			),
 		]
 		const { conn, updates } = makeRecordingConn()
 		const agent = makeAgent(async () => asSession(fake), { conn })
-		await agent.loadSession({ sessionId: "loaded-skip", cwd: "/tmp", mcpServers: [] })
-		// Only the user text and the final assistant text survive Phase 2.
-		expect(updates.map((u) => u.update.sessionUpdate)).toEqual(["user_message_chunk", "agent_message_chunk"])
+		await agent.loadSession({ sessionId: "loaded-coalesce", cwd: "/tmp", mcpServers: [] })
+		expect(updates.map((u) => u.update.sessionUpdate)).toEqual([
+			"user_message_chunk",
+			"agent_message_chunk",
+			"agent_thought_chunk",
+			"agent_message_chunk",
+		])
+		expect((updates[1].update as { content: { text: string } }).content.text).toBe("first second")
+		expect((updates[3].update as { content: { text: string } }).content.text).toBe("third")
+	})
+
+	it("strips ANSI escape codes from replayed text and thinking content", async () => {
+		// hide-thinking-aware models (DeepSeek, QwQ) plus hideThinkingBlock=false
+		// persist text with ANSI dim escapes around inner <think> content. The
+		// live TUI renders them; ACP's text content type is plaintext, so the
+		// replay must scrub the escapes before sending — otherwise Zed surfaces
+		// raw \x1b[...m sequences in the transcript.
+		const dimmed = "before \x1b[2minner\x1b[22m after"
+		const fake = new FakeAgentSession("loaded-ansi")
+		fake.branch = [
+			userTextEntry("go", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: dimmed },
+					{ type: "thinking", thinking: "raw \x1b[2mthought\x1b[22m" },
+				],
+				"a1",
+				"u1",
+			),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), { conn })
+		await agent.loadSession({ sessionId: "loaded-ansi", cwd: "/tmp", mcpServers: [] })
+		const messageChunk = updates.find((u) => u.update.sessionUpdate === "agent_message_chunk")
+		const thoughtChunk = updates.find((u) => u.update.sessionUpdate === "agent_thought_chunk")
+		expect((messageChunk?.update as { content: { text: string } }).content.text).toBe("before inner after")
+		expect((thoughtChunk?.update as { content: { text: string } }).content.text).toBe("raw thought")
 	})
 
 	it("treats a concurrent session/cancel during replay as a no-op (no turn active)", async () => {
@@ -1635,6 +1691,394 @@ describe("KimchiAcpAgent loadSession", () => {
 			prompt: [{ type: "text", text: "follow up" }],
 		})
 		expect(res.stopReason).toBe("end_turn")
+	})
+
+	// Per ToolKind: replayed tool calls should produce the same shape as live
+	// turns — an initial tool_call carrying the kind/title/locations, followed
+	// by a single terminal tool_call_update that pins status + content. This
+	// matrix locks in describeToolCall coverage on the replay path so a future
+	// kind addition doesn't silently bypass replay.
+	const toolKindMatrix: Array<{
+		name: string
+		toolName: string
+		args: Record<string, unknown>
+		result: { text: string; isError?: boolean }
+		expect: { kind: string; title: string; status: string; locations: Array<{ path: string }> }
+	}> = [
+		{
+			name: "bash → execute",
+			toolName: "bash",
+			args: { command: "ls -la" },
+			result: { text: "ok" },
+			expect: { kind: "execute", title: "ls -la", status: "completed", locations: [] },
+		},
+		{
+			name: "read → read with location",
+			toolName: "read",
+			args: { file_path: "/tmp/a.ts" },
+			result: { text: "contents" },
+			expect: { kind: "read", title: "/tmp/a.ts", status: "completed", locations: [{ path: "/tmp/a.ts" }] },
+		},
+		{
+			name: "edit → edit with location",
+			toolName: "edit",
+			args: { file_path: "/tmp/b.ts" },
+			result: { text: "edited" },
+			expect: { kind: "edit", title: "/tmp/b.ts", status: "completed", locations: [{ path: "/tmp/b.ts" }] },
+		},
+		{
+			name: "grep → search",
+			toolName: "grep",
+			args: { pattern: "foo" },
+			result: { text: "match" },
+			expect: { kind: "search", title: "foo", status: "completed", locations: [] },
+		},
+		{
+			name: "ls → read",
+			toolName: "ls",
+			args: { path: "/tmp" },
+			result: { text: "listing" },
+			expect: { kind: "read", title: "/tmp", status: "completed", locations: [{ path: "/tmp" }] },
+		},
+		{
+			name: "find → search",
+			toolName: "find",
+			args: { pattern: "*.ts" },
+			result: { text: "found" },
+			expect: { kind: "search", title: "*.ts", status: "completed", locations: [] },
+		},
+		{
+			name: "web_fetch → fetch",
+			toolName: "web_fetch",
+			args: { url: "https://example.com" },
+			result: { text: "html" },
+			expect: { kind: "fetch", title: "web_fetch", status: "completed", locations: [] },
+		},
+		{
+			name: "subagent → think",
+			toolName: "subagent",
+			args: { prompt: "go" },
+			result: { text: "done" },
+			expect: { kind: "think", title: "subagent", status: "completed", locations: [] },
+		},
+		{
+			name: "unknown tool → other",
+			toolName: "mcp__foo__bar",
+			args: { arg: 1 },
+			result: { text: "ok" },
+			expect: { kind: "other", title: "mcp__foo__bar", status: "completed", locations: [] },
+		},
+	]
+	for (const c of toolKindMatrix) {
+		it(`replays tool call (${c.name}) as tool_call + terminal tool_call_update`, async () => {
+			const fake = new FakeAgentSession(`loaded-tool-${c.toolName}`)
+			fake.branch = [
+				userTextEntry("go", "u1", null),
+				assistantBlocksEntry([{ type: "toolCall", id: "tc-1", name: c.toolName, arguments: c.args }], "a1", "u1"),
+				toolResultEntry("tc-1", c.toolName, c.result.text, c.result.isError ?? false, "tr1", "a1"),
+			]
+			const { conn, updates } = makeRecordingConn()
+			const agent = makeAgent(async () => asSession(fake), { conn })
+			await agent.loadSession({ sessionId: fake.sessionId, cwd: "/tmp", mcpServers: [] })
+			const seq = updates.map((u) => u.update.sessionUpdate)
+			expect(seq).toEqual(["user_message_chunk", "tool_call", "tool_call_update"])
+
+			const toolCall = updates[1].update as Record<string, unknown>
+			expect(toolCall).toMatchObject({
+				sessionUpdate: "tool_call",
+				toolCallId: "tc-1",
+				kind: c.expect.kind,
+				title: c.expect.title,
+				status: c.expect.status,
+				locations: c.expect.locations,
+				rawInput: c.args,
+			})
+			const update = updates[2].update as Record<string, unknown>
+			expect(update).toMatchObject({
+				sessionUpdate: "tool_call_update",
+				toolCallId: "tc-1",
+				status: c.expect.status,
+			})
+			const content = (update as { content: Array<{ content: { text: string } }> }).content
+			expect(content[0].content.text).toBe(c.result.text)
+		})
+	}
+
+	it("replays a denied/failed tool call with status failed and the persisted error content", async () => {
+		const fake = new FakeAgentSession("loaded-tool-fail")
+		fake.branch = [
+			userTextEntry("go", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-deny", name: "bash", arguments: { command: "rm -rf /" } }],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-deny", "bash", "permission denied", true, "tr1", "a1"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), { conn })
+		await agent.loadSession({ sessionId: "loaded-tool-fail", cwd: "/tmp", mcpServers: [] })
+		const toolCall = updates[1].update as { status?: string }
+		const update = updates[2].update as { status?: string; content: Array<{ content: { text: string } }> }
+		expect(toolCall.status).toBe("failed")
+		expect(update.status).toBe("failed")
+		expect(update.content[0].content.text).toBe("permission denied")
+	})
+
+	it("replays an interrupted tool call (no persisted result) as failed with empty content", async () => {
+		// Session was killed mid tool execution; the tool result never landed in
+		// the JSONL. "failed" is the only honest terminal status we can synthesize
+		// — leaving it in_progress would hang the client's spinner forever.
+		const fake = new FakeAgentSession("loaded-tool-orphan")
+		fake.branch = [
+			userTextEntry("go", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "toolCall", id: "tc-orphan", name: "bash", arguments: { command: "sleep 100" } }],
+				"a1",
+				"u1",
+			),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), { conn })
+		await agent.loadSession({ sessionId: "loaded-tool-orphan", cwd: "/tmp", mcpServers: [] })
+		expect(updates.map((u) => u.update.sessionUpdate)).toEqual(["user_message_chunk", "tool_call", "tool_call_update"])
+		const toolCall = updates[1].update as { status?: string }
+		const update = updates[2].update as { status?: string; content: unknown[] }
+		expect(toolCall.status).toBe("failed")
+		expect(update.status).toBe("failed")
+		expect(update.content).toEqual([])
+	})
+
+	it("replays thinking blocks as agent_thought_chunk with raw text (no ANSI)", async () => {
+		const fake = new FakeAgentSession("loaded-thinking")
+		fake.branch = [
+			userTextEntry("go", "u1", null),
+			assistantBlocksEntry([{ type: "thinking", thinking: "considering options" }], "a1", "u1"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), { conn })
+		await agent.loadSession({ sessionId: "loaded-thinking", cwd: "/tmp", mcpServers: [] })
+		const thought = updates.find((u) => u.update.sessionUpdate === "agent_thought_chunk")
+		expect(thought).toBeDefined()
+		const content = (thought?.update as { content: { type: string; text: string } }).content
+		expect(content.text).toBe("considering options")
+		// No ANSI escape codes — filterThinkingForDisplay returns dimmed text
+		// for live TUI rendering, but ACP clients can't render escapes. Replay
+		// uses the helper as a yes/no predicate and emits the raw thinking.
+		expect(content.text.includes("\x1b[")).toBe(false)
+	})
+
+	it("skips thinking blocks when hideThinkingBlock is enabled (shared with hide-thinking extension)", async () => {
+		// Same redaction rule the live TUI uses — verified by sharing
+		// filterThinkingForDisplay across both code paths so a setting flip
+		// doesn't drift between live and replay.
+		_setHideThinking(true)
+		try {
+			const fake = new FakeAgentSession("loaded-thinking-hidden")
+			fake.branch = [
+				userTextEntry("go", "u1", null),
+				assistantBlocksEntry([{ type: "thinking", thinking: "considering options" }], "a1", "u1"),
+			]
+			const { conn, updates } = makeRecordingConn()
+			const agent = makeAgent(async () => asSession(fake), { conn })
+			await agent.loadSession({ sessionId: "loaded-thinking-hidden", cwd: "/tmp", mcpServers: [] })
+			expect(updates.find((u) => u.update.sessionUpdate === "agent_thought_chunk")).toBeUndefined()
+		} finally {
+			_resetHideThinking()
+		}
+	})
+
+	it("skips redacted thinking blocks even when hideThinkingBlock is off", async () => {
+		// Redacted thinking has only an opaque encrypted payload (in
+		// thinkingSignature) for multi-turn provider continuity — no plaintext
+		// to surface to the user.
+		const fake = new FakeAgentSession("loaded-thinking-redacted")
+		fake.branch = [
+			userTextEntry("go", "u1", null),
+			assistantBlocksEntry(
+				[{ type: "thinking", thinking: "ignored", redacted: true, thinkingSignature: "opaque" }],
+				"a1",
+				"u1",
+			),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), { conn })
+		await agent.loadSession({ sessionId: "loaded-thinking-redacted", cwd: "/tmp", mcpServers: [] })
+		expect(updates.find((u) => u.update.sessionUpdate === "agent_thought_chunk")).toBeUndefined()
+	})
+
+	it("emits zero notifications for compaction / branch_summary / model_change / custom entries", async () => {
+		// Non-message entries are LLM-context artifacts (or, for model_change,
+		// already conveyed via the load response's models field). Surfacing
+		// them as session updates would make Zed's transcript UI churn through
+		// historical state changes the user never saw the first time around.
+		const fake = new FakeAgentSession("loaded-skip-only")
+		fake.branch = [
+			{ type: "model_change", id: "mc1", parentId: null, timestamp: "x", provider: "p", modelId: "m" },
+			{
+				type: "compaction",
+				id: "c1",
+				parentId: "mc1",
+				timestamp: "x",
+				summary: "snip",
+				firstKeptEntryId: "u1",
+				tokensBefore: 0,
+			},
+			{ type: "branch_summary", id: "bs1", parentId: "c1", timestamp: "x", summary: "branch" },
+			{ type: "custom", id: "cu1", parentId: "bs1", timestamp: "x", payload: { whatever: true } },
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), { conn })
+		await agent.loadSession({ sessionId: "loaded-skip-only", cwd: "/tmp", mcpServers: [] })
+		expect(updates).toHaveLength(0)
+	})
+
+	it("replays a mixed transcript end-to-end (text, thinking, tool, skipped entries, follow-up text)", async () => {
+		const fake = new FakeAgentSession("loaded-mixed")
+		fake.branch = [
+			userTextEntry("question", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "let me check" },
+					{ type: "thinking", thinking: "weighing options" },
+					{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "ls" } },
+				],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-1", "bash", "file1\nfile2", false, "tr1", "a1"),
+			// Skipped entries scattered through the branch must not break the walker.
+			{ type: "model_change", id: "mc1", parentId: "tr1", timestamp: "x", provider: "p", modelId: "m" },
+			{
+				type: "compaction",
+				id: "c1",
+				parentId: "mc1",
+				timestamp: "x",
+				summary: "snip",
+				firstKeptEntryId: "u1",
+				tokensBefore: 0,
+			},
+			assistantTextEntry("here is what I found", "a2", "c1"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), { conn })
+		await agent.loadSession({ sessionId: "loaded-mixed", cwd: "/tmp", mcpServers: [] })
+		// Order is significant: tool_call must precede tool_call_update, and
+		// the post-skipped-entries assistant text must land last.
+		expect(updates.map((u) => u.update.sessionUpdate)).toEqual([
+			"user_message_chunk",
+			"agent_message_chunk",
+			"agent_thought_chunk",
+			"tool_call",
+			"tool_call_update",
+			"agent_message_chunk",
+		])
+	})
+
+	it("does not deliver synthetic agent_* events to session subscribers during replay", async () => {
+		// Acceptance criterion from the plan: extensions registered on a loaded
+		// session must not see the historical turns as if they were live —
+		// otherwise telemetry/loop-guard/etc. would double-count. Replay sends
+		// notifications straight to conn.sessionUpdate, never via emit().
+		const fake = new FakeAgentSession("loaded-no-events")
+		fake.branch = [
+			userTextEntry("hi", "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "text", text: "hello" },
+					{ type: "thinking", thinking: "thinking" },
+					{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "ls" } },
+				],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-1", "bash", "out", false, "tr1", "a1"),
+		]
+		// Pre-subscribe a counter BEFORE loadSession so it sits alongside the
+		// agent's own subscriber; if replay went through the event emitter we'd
+		// see agent_start / message_update / tool_execution_* / agent_end here.
+		let extensionEventCount = 0
+		fake.subscribe(() => {
+			extensionEventCount++
+		})
+		const agent = makeAgent(async () => asSession(fake))
+		await agent.loadSession({ sessionId: "loaded-no-events", cwd: "/tmp", mcpServers: [] })
+		expect(extensionEventCount).toBe(0)
+	})
+
+	it("replays a 200-turn session in well under 1s (NFR)", async () => {
+		// Plan NFR: replay of a 200-turn session must complete in under 1s. The
+		// fake skips disk I/O and JSON-RPC framing — what's actually under test
+		// is that the walker stays O(N) and the per-entry work doesn't regress
+		// into something quadratic.
+		const fake = new FakeAgentSession("loaded-perf")
+		const branch: unknown[] = []
+		for (let i = 0; i < 200; i++) {
+			branch.push(userTextEntry(`q${i}`, `u${i}`, i === 0 ? null : `a${i - 1}`))
+			branch.push(
+				assistantBlocksEntry(
+					[
+						{ type: "text", text: `a${i}` },
+						{ type: "toolCall", id: `tc-${i}`, name: "bash", arguments: { command: `echo ${i}` } },
+					],
+					`a${i}`,
+					`u${i}`,
+				),
+			)
+			branch.push(toolResultEntry(`tc-${i}`, "bash", `out${i}`, false, `tr-${i}`, `a${i}`))
+		}
+		fake.branch = branch
+		const agent = makeAgent(async () => asSession(fake))
+		const start = Date.now()
+		await agent.loadSession({ sessionId: "loaded-perf", cwd: "/tmp", mcpServers: [] })
+		const elapsed = Date.now() - start
+		expect(elapsed).toBeLessThan(1000)
+	})
+})
+
+describe("shouldEmitThinking", () => {
+	it("returns true by default (hideThinkingBlock unset)", () => {
+		_resetHideThinking()
+		expect(shouldEmitThinking("anything")).toBe(true)
+	})
+	it("returns false when hideThinkingBlock is enabled", () => {
+		_setHideThinking(true)
+		try {
+			expect(shouldEmitThinking("anything")).toBe(false)
+		} finally {
+			_resetHideThinking()
+		}
+	})
+	it("does not break when the persisted thinking text contains a literal </think>", () => {
+		// Regression: a previous version probed filterThinkingForDisplay with a
+		// synthetic <think>${thinking}</think> wrapper. Models self-quoting
+		// "</think>" closed the wrapper early and the inner text leaked, making
+		// the predicate non-deterministic. Reading the setting directly avoids
+		// the round-trip entirely.
+		_resetHideThinking()
+		const haunted = "I'll stop now. </think> trailing"
+		expect(shouldEmitThinking(haunted)).toBe(true)
+		_setHideThinking(true)
+		try {
+			expect(shouldEmitThinking(haunted)).toBe(false)
+		} finally {
+			_resetHideThinking()
+		}
+	})
+})
+
+describe("stripAnsi", () => {
+	it("returns unchanged text when no ANSI escapes are present", () => {
+		expect(stripAnsi("plain text")).toBe("plain text")
+	})
+	it("removes CSI sequences (color, dim, reset) without touching surrounding text", () => {
+		expect(stripAnsi("\x1b[2mfoo\x1b[22m bar")).toBe("foo bar")
+		expect(stripAnsi("\x1b[31mred\x1b[0m and \x1b[1mbold\x1b[0m")).toBe("red and bold")
+	})
+	it("leaves a stray ESC byte (no full sequence) untouched", () => {
+		// Conservative scrub: only `\x1b[…<letter>` is dropped. A bare ESC
+		// without a CSI body isn't styling and shouldn't be mangled.
+		expect(stripAnsi("plain\x1bbody")).toBe("plain\x1bbody")
 	})
 })
 

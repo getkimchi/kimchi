@@ -46,6 +46,7 @@ import {
 	SettingsManager,
 	createAgentSession,
 } from "@earendil-works/pi-coding-agent"
+import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
 
 /**
  * Produces a ready-to-use AgentSession for a newSession request. The returned
@@ -238,6 +239,19 @@ export class KimchiAcpAgent implements Agent {
 		// Zed thinks load failed but the agent thinks the id is live, and the
 		// next loadSession for the same id wrongly returns invalidRequest.
 		const sid = session.sessionId
+		// Defensive: pi reads the sessionId from the JSONL header, not the
+		// filename, so a corrupted / hand-edited session whose header id
+		// disagrees with the requested id would land under the wrong key in
+		// `sessions`. Subsequent session/prompt for params.sessionId would then
+		// fail with "unknown sessionId" while the file is still held open.
+		// Reject up front and dispose so we don't quietly diverge.
+		if (sid !== params.sessionId) {
+			session.dispose()
+			throw RequestError.invalidParams(
+				undefined,
+				`session header id ${sid} does not match requested sessionId ${params.sessionId}`,
+			)
+		}
 		try {
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
 			this.sessions.set(sid, { session, unsubscribe })
@@ -490,15 +504,22 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
-	// Phase 2 replay: walk the persisted transcript on the leaf path and emit
-	// one session/update per visible text turn. Tool calls, thinking, and
-	// custom messages are deliberately skipped here and handled in Phase 3.
-	// Compaction/branch_summary/model_change entries emit nothing per PRD —
-	// using getBranch() (raw entries) instead of buildSessionContext() avoids
-	// surfacing compaction summaries as synthetic user messages.
+	// Phase 3 replay: walk the persisted transcript on the leaf path and emit
+	// session/update notifications per content block — text, thinking, tool
+	// calls. Tool results are paired with their originating toolCall by id so
+	// the historical tool render shape (tool_call + terminal tool_call_update)
+	// matches what live turns produce. Compaction / branch_summary /
+	// model_change / custom entries emit nothing per PRD — using getBranch()
+	// (raw entries) instead of buildSessionContext() avoids surfacing
+	// compaction summaries as synthetic user messages.
+	//
+	// Notifications go straight from this method to conn.sessionUpdate; we do
+	// NOT replay through the AgentSession event emitter, so extensions like
+	// telemetryExtension don't double-count historical turns.
 	private replayTranscript(session: AgentSession): void {
 		const sessionId = session.sessionId
 		const entries = session.sessionManager.getBranch()
+		const toolResults = collectToolResults(entries)
 		for (const entry of entries) {
 			if (entry.type !== "message") continue
 			const msg = entry.message
@@ -513,18 +534,98 @@ export class KimchiAcpAgent implements Agent {
 					},
 				})
 			} else if (msg.role === "assistant") {
-				const text = assistantMessageText(msg.content)
-				if (!text) continue
+				this.replayAssistantBlocks(sessionId, msg.content, toolResults)
+			}
+			// toolResult: handled inline alongside its originating toolCall above.
+		}
+	}
+
+	private replayAssistantBlocks(sessionId: string, content: unknown, toolResults: Map<string, ReplayToolResult>): void {
+		if (!Array.isArray(content)) return
+		// Buffer contiguous text blocks so a single assistant message renders as
+		// one agent_message_chunk per natural text segment (PRD: "emit the full
+		// message as a single chunk — no per-token chunking"). When a thinking
+		// or toolCall block interrupts the run, flush the buffered text first so
+		// ordering relative to those structural blocks is preserved.
+		let textBuffer = ""
+		const flushText = () => {
+			if (textBuffer.length === 0) return
+			this.send({
+				sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					content: { type: "text", text: textBuffer },
+				},
+			})
+			textBuffer = ""
+		}
+		for (const block of content) {
+			if (!block || typeof block !== "object") continue
+			const b = block as { type?: string }
+			if (b.type === "text") {
+				const text = (b as { text?: unknown }).text
+				if (typeof text !== "string" || text.length === 0) continue
+				// Persisted text from hide-thinking-aware models can carry ANSI
+				// dim escapes around inner thinking content (the live TUI renders
+				// them; ACP clients can't). Strip before sending — see stripAnsi.
+				textBuffer += stripAnsi(text)
+			} else if (b.type === "thinking") {
+				flushText()
+				const thinking = (b as { thinking?: unknown; redacted?: unknown }).thinking
+				const redacted = (b as { redacted?: unknown }).redacted === true
+				// Redacted thinking has no plaintext to surface — the encrypted
+				// payload only matters for multi-turn provider continuity.
+				if (redacted) continue
+				if (typeof thinking !== "string" || thinking.length === 0) continue
+				if (!shouldEmitThinking(thinking)) continue
 				this.send({
 					sessionId,
 					update: {
-						sessionUpdate: "agent_message_chunk",
-						content: { type: "text", text },
+						sessionUpdate: "agent_thought_chunk",
+						content: { type: "text", text: stripAnsi(thinking) },
+					},
+				})
+			} else if (b.type === "toolCall") {
+				flushText()
+				const tc = b as { id?: unknown; name?: unknown; arguments?: unknown }
+				const id = typeof tc.id === "string" ? tc.id : undefined
+				const name = typeof tc.name === "string" ? tc.name : undefined
+				if (!id || !name) continue
+				const args = (tc.arguments ?? {}) as Record<string, unknown>
+				if (isHiddenToolCall(name, args)) continue
+				const result = toolResults.get(id)
+				// No persisted result → the call never finished (interrupted mid
+				// turn). "failed" is the closest terminal status; leaving the call
+				// in_progress would hang the client's spinner forever on replay.
+				const status: "completed" | "failed" = result ? (result.isError ? "failed" : "completed") : "failed"
+				const { title, kind, locations } = describeToolCall(name, args)
+				this.send({
+					sessionId,
+					update: {
+						sessionUpdate: "tool_call",
+						toolCallId: id,
+						title,
+						kind,
+						status,
+						locations,
+						rawInput: args,
+					},
+				})
+				this.send({
+					sessionId,
+					update: {
+						sessionUpdate: "tool_call_update",
+						toolCallId: id,
+						status,
+						content: result ? toolResultContent(result) : [],
+						rawOutput: result,
 					},
 				})
 			}
-			// toolResult and CustomAgentMessages: deferred to Phase 3.
 		}
+		// Trailing text after the last structural block (or a text-only message)
+		// still needs to land — flushText is a no-op when the buffer is empty.
+		flushText()
 	}
 
 	private modelStateForSession(session: AgentSession): SessionModelState | null {
@@ -601,8 +702,12 @@ export function assertSessionHasModel(session: Pick<AgentSession, "model">): voi
 // NOT trigger a fresh prompt-summary on listSessions because that would mean
 // an LLM call per session and break the 500ms NFR.
 export function toAcpSessionInfo(info: PiSessionInfo): AcpSessionInfo {
+	// Use truthiness rather than `??` so an empty `name` (migration artifact or
+	// hand-edited session-info entry) still falls through to firstMessage —
+	// `??` only short-circuits on null/undefined and would otherwise leave the
+	// title as the empty string and end up null below.
 	const fallback = info.firstMessage ? truncate(info.firstMessage) : ""
-	const title = info.name ?? fallback
+	const title = info.name && info.name.length > 0 ? info.name : fallback
 	return {
 		sessionId: info.id,
 		cwd: info.cwd,
@@ -775,6 +880,18 @@ export function isHiddenToolCall(toolName: string, args: unknown): boolean {
 	return typeof a.visibility === "string" && a.visibility.toLowerCase() === "system"
 }
 
+// Persisted assistant text from hide-thinking-aware models (DeepSeek, QwQ, …)
+// can contain ANSI dim escapes wrapping inner <think> content — the live TUI
+// renders them, but ACP clients receive raw text and would surface the
+// escapes verbatim. Strip a conservative subset (CSI sequences) so the user
+// sees plain text on replay; ACP's text content type carries no styling.
+// Built from String.fromCharCode to keep the literal ESC byte out of source —
+// biome's noControlCharactersInRegex flags it inside a regex literal.
+const ANSI_PATTERN = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*[A-Za-z]`, "g")
+export function stripAnsi(text: string): string {
+	return text.replace(ANSI_PATTERN, "")
+}
+
 export function describeToolCall(
 	toolName: string,
 	args: unknown,
@@ -829,6 +946,61 @@ export function assistantMessageText(content: unknown): string {
 		}
 	}
 	return parts.join("")
+}
+
+type ReplayToolResult = {
+	content?: unknown
+	isError: boolean
+	// Pass-through `details` so the replay's tool_call_update rawOutput carries
+	// the same shape as the live path's event.result (AgentToolResult includes
+	// details). Clients keying UI off rawOutput.details would otherwise see a
+	// thinner payload on replay.
+	details?: unknown
+	toolName?: string
+}
+
+// First pass over the branch: index tool results by their toolCallId so the
+// replay walker can stitch each historical toolCall block to its terminal
+// outcome (status + content) in O(1). Tool results land as separate message
+// entries in the JSONL — without this map we'd have to scan forward inside
+// the walker on every toolCall, turning replay into O(N²).
+function collectToolResults(entries: unknown[]): Map<string, ReplayToolResult> {
+	const out = new Map<string, ReplayToolResult>()
+	for (const entry of entries) {
+		if (!entry || typeof entry !== "object") continue
+		const e = entry as { type?: unknown; message?: unknown }
+		if (e.type !== "message") continue
+		const m = e.message as
+			| {
+					role?: unknown
+					toolCallId?: unknown
+					toolName?: unknown
+					content?: unknown
+					details?: unknown
+					isError?: unknown
+			  }
+			| undefined
+		if (!m || m.role !== "toolResult" || typeof m.toolCallId !== "string") continue
+		out.set(m.toolCallId, {
+			content: m.content,
+			isError: m.isError === true,
+			details: m.details,
+			toolName: typeof m.toolName === "string" ? m.toolName : undefined,
+		})
+	}
+	return out
+}
+
+// Native ThinkingContent blocks aren't routed through hideThinkingExtension
+// (which only mutates <think> tags inside text blocks), but the replay UX
+// should still honor the user's hideThinkingBlock setting — otherwise a user
+// who hides thinking sees a quiet live UI but a noisy replayed transcript.
+// Read the setting directly: a previous version probed filterThinkingForDisplay
+// with a synthetic <think>...</think> wrapper, which broke when the persisted
+// thinking text itself contained `</think>` (the inner regex terminated early
+// and the predicate falsely returned true).
+export function shouldEmitThinking(_thinking: string): boolean {
+	return !isHideThinkingEnabled()
 }
 
 function toolResultContent(result: unknown): ToolCallContent[] {
