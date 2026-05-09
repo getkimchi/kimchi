@@ -796,3 +796,45 @@ describe("describeToolCall", () => {
 		})
 	}
 })
+
+// ---------------------------------------------------------------------------
+// loadSession tests
+// ---------------------------------------------------------------------------
+
+describe("KimchiAcpAgent loadSession", () => {
+	// loadSession rejects mcpServers with invalidParams (same posture as session/new).
+	it("rejects loadSession when mcpServers is non-empty", async () => {
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+		})
+
+		await expect(
+			agent.loadSession({
+				sessionId: "test-session",
+				cwd: "/tmp",
+				// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
+				mcpServers: [{ name: "x", command: "x", args: [] } as any],
+			}),
+		).rejects.toMatchObject({ code: -32602 })
+	})
+
+	// loadSession returns invalidParams when session file doesn't exist.
+	it("returns invalidParams for nonexistent session file", async () => {
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+		})
+
+		await expect(
+			agent.loadSession({
+				sessionId: "definitely-does-not-exist-12345",
+				cwd: "/tmp",
+				mcpServers: [],
+			}),
+		).rejects.toMatchObject({
+			code: -32602,
+			message: expect.stringContaining("Session file not found"),
+		})
+	})
+})

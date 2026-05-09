@@ -1,6 +1,8 @@
 // ACP (Agent Client Protocol) mode: JSON-RPC 2.0 over stdio using
 // @agentclientprotocol/sdk. Lets Zed / openclaw drive kimchi in-process.
 
+import { existsSync } from "node:fs"
+import { join } from "node:path"
 import { Readable, Writable } from "node:stream"
 import {
 	type Agent,
@@ -11,6 +13,10 @@ import {
 	type ContentBlock,
 	type InitializeRequest,
 	type InitializeResponse,
+	type ListSessionsRequest,
+	type ListSessionsResponse,
+	type LoadSessionRequest,
+	type LoadSessionResponse,
 	type NewSessionRequest,
 	type NewSessionResponse,
 	PROTOCOL_VERSION,
@@ -28,6 +34,8 @@ import {
 	type AgentSessionEvent,
 	DefaultResourceLoader,
 	type ExtensionFactory,
+	type SessionInfo,
+	SessionManager,
 	SettingsManager,
 	createAgentSession,
 } from "@earendil-works/pi-coding-agent"
@@ -64,11 +72,14 @@ type SessionEntry = {
 	session: AgentSession
 	unsubscribe: () => void
 	turn?: TurnContext
+	manager?: SessionManager
 }
 
 export class KimchiAcpAgent implements Agent {
 	private sessions = new Map<string, SessionEntry>()
 	private readonly sessionFactory: AcpSessionFactory
+	private readonly agentDir: string
+	private readonly extensionFactories: ExtensionFactory[]
 	// Track non-text prompt block types we've already warned about so a
 	// misbehaving client that sends 1000 image blocks doesn't flood stderr.
 	private warnedBlockTypes = new Set<string>()
@@ -79,13 +90,16 @@ export class KimchiAcpAgent implements Agent {
 		options: RunAcpOptions,
 	) {
 		this.sessionFactory = options.sessionFactory ?? defaultSessionFactory(options)
+		this.agentDir = options.agentDir
+		this.extensionFactories = options.extensionFactories
 	}
 
 	async initialize(_: InitializeRequest): Promise<InitializeResponse> {
 		return {
 			protocolVersion: PROTOCOL_VERSION,
 			agentCapabilities: {
-				loadSession: false,
+				loadSession: true,
+				sessionCapabilities: { list: {} },
 				promptCapabilities: { image: false, audio: false, embeddedContext: false },
 			},
 			authMethods: [],
@@ -201,6 +215,161 @@ export class KimchiAcpAgent implements Agent {
 		if (!entry) return
 		if (entry.turn) entry.turn.cancelled = true
 		await entry.session.abort()
+	}
+
+	async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+		// Reject mcpServers - same posture as session/new
+		if (Array.isArray(params.mcpServers) && params.mcpServers.length > 0) {
+			throw RequestError.invalidParams(undefined, "mcpServers is not supported in session/load")
+		}
+
+		// Resolve path to session file
+		const sessionDir = getDefaultSessionDir(params.cwd, this.agentDir)
+		const sessionPath = join(sessionDir, `${params.sessionId}.jsonl`)
+
+		// Check file exists
+		if (!existsSync(sessionPath)) {
+			throw RequestError.invalidParams("session not found", `Session file not found: ${sessionPath}`)
+		}
+
+		// Reject concurrent load of already-live session
+		if (this.sessions.has(params.sessionId)) {
+			throw RequestError.invalidRequest(
+				undefined,
+				`Session ${params.sessionId} is already loaded; call session/close first`,
+			)
+		}
+
+		// Build SessionManager via open()
+		const sessionManager = SessionManager.open(sessionPath, undefined, params.cwd)
+
+		// Validate cwdOverride matches params.cwd to avoid silently mixing roots
+		const effectiveCwd = sessionManager.getCwd()
+		if (effectiveCwd !== params.cwd) {
+			throw RequestError.invalidParams(
+				"cwd mismatch",
+				`Session header cwd (${effectiveCwd}) differs from requested cwd (${params.cwd})`,
+			)
+		}
+
+		// Build settings and resource loader
+		const settingsManager = SettingsManager.create(params.cwd, this.agentDir)
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: params.cwd,
+			agentDir: this.agentDir,
+			settingsManager,
+			extensionFactories: this.extensionFactories,
+		})
+		await resourceLoader.reload()
+
+		// Create session with the pre-loaded session manager
+		const { session } = await createAgentSession({
+			cwd: params.cwd,
+			agentDir: this.agentDir,
+			sessionManager,
+			settingsManager,
+			resourceLoader,
+		})
+
+		// Bind extensions (same pattern as defaultSessionFactory)
+		try {
+			assertSessionHasModel(session)
+			await session.bindExtensions({
+				onError: (err) => {
+					process.stderr.write(`acp ext error [${err.extensionPath}] ${err.event}: ${err.error}\n`)
+				},
+			})
+		} catch (err) {
+			session.dispose()
+			throw err
+		}
+
+		// Register session in sessions map
+		const sessionId = session.sessionId
+		const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
+		const entry: SessionEntry = { session, unsubscribe, turn: undefined, manager: sessionManager }
+		this.sessions.set(params.sessionId, entry)
+
+		// Emit session_start to extensions (after bindExtensions, before replay)
+		await session.extensionRunner?.emit({ type: "session_start", reason: "resume" })
+
+		// Replay historical entries as ACP session_update notifications
+		await replaySession(
+			sessionManager,
+			sessionId,
+			async (notification) => {
+				await this.conn.sessionUpdate(notification).catch((err: unknown) => {
+					process.stderr.write(`acp sessionUpdate failed: ${String(err)}\n`)
+				})
+			},
+			await isThinkingRedacted(this.agentDir),
+		)
+
+		// Get current model from session for the response
+		const model = session.model
+		return {
+			models: model
+				? {
+						availableModels: [{ modelId: model.id, name: model.id }],
+						currentModelId: model.id,
+					}
+				: null,
+		}
+	}
+
+	async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
+		let sessions: SessionInfo[]
+
+		if (params.cwd) {
+			// List sessions for specific cwd (and optionally additionalDirectories)
+			sessions = await SessionManager.list(params.cwd)
+
+			// If additionalDirectories filter is present and non-empty, apply it
+			if (params.additionalDirectories && params.additionalDirectories.length > 0) {
+				const additionalSessions = await Promise.all(
+					params.additionalDirectories.map((dir) => SessionManager.list(dir)),
+				)
+				sessions = [...sessions, ...additionalSessions.flat()]
+				// Remove duplicates by sessionId
+				const seen = new Set<string>()
+				sessions = sessions.filter((s) => {
+					if (seen.has(s.id)) return false
+					seen.add(s.id)
+					return true
+				})
+			}
+		} else {
+			// List all sessions across all configured directories
+			sessions = await SessionManager.listAll()
+
+			// Apply additionalDirectories filter if present and non-empty
+			if (params.additionalDirectories && params.additionalDirectories.length > 0) {
+				const additionalSessions = await Promise.all(
+					params.additionalDirectories.map((dir) => SessionManager.list(dir)),
+				)
+				sessions = [...sessions, ...additionalSessions.flat()]
+				// Remove duplicates by sessionId
+				const seen = new Set<string>()
+				sessions = sessions.filter((s) => {
+					if (seen.has(s.id)) return false
+					seen.add(s.id)
+					return true
+				})
+			}
+		}
+
+		// Sort newest-first by updatedAt
+		sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime())
+
+		// Map pi SessionInfo → ACP SessionInfo
+		const acpSessions = sessions.map((s) => ({
+			sessionId: s.id,
+			cwd: s.cwd,
+			title: s.name ?? truncate(s.firstMessage),
+			updatedAt: s.modified.toISOString(),
+		}))
+
+		return { sessions: acpSessions, nextCursor: null }
 	}
 
 	async shutdown(cause: "signal" | "disconnect" = "disconnect"): Promise<void> {
@@ -405,6 +574,31 @@ function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Read hideThinkingBlock setting from settings.json */
+async function isThinkingRedacted(agentDir: string): Promise<boolean> {
+	try {
+		const { readFileSync } = await import("node:fs")
+		const { resolve } = await import("node:path")
+		const settingsPath = resolve(agentDir, "settings.json")
+		if (!existsSync(settingsPath)) return false
+		const raw = readFileSync(settingsPath, "utf-8")
+		const parsed = JSON.parse(raw) as Record<string, unknown>
+		return Boolean(parsed.hideThinkingBlock)
+	} catch {
+		return false
+	}
+}
+
+/** Compute the default session directory for a cwd */
+function getDefaultSessionDir(cwd: string, agentDir: string): string {
+	const safePath = `--${cwd.replace(/^[\\/]/, "").replace(/[\\/:]/g, "-")}--`
+	return join(agentDir, "sessions", safePath)
+}
+
 // Mirrors the tool names kimchi actually exposes: pi-coding-agent core tools
 // plus the kimchi extensions in src/extensions (web-fetch, web-search, subagent).
 // ACP clients key UI affordances (icon, grouping, permission messaging) off the
@@ -469,6 +663,122 @@ function toolResultContent(result: unknown): ToolCallContent[] {
 		}
 	}
 	return out
+}
+
+// ---------------------------------------------------------------------------
+// Session replay
+// ---------------------------------------------------------------------------
+
+/**
+ * Replay historical session entries as ACP session_update notifications.
+ * Emits nothing for compaction/branch_summary/model_change entries.
+ * entry.turn stays undefined during replay so concurrent session/cancel is a no-op.
+ */
+async function replaySession(
+	sessionManager: SessionManager,
+	sessionId: string,
+	sendUpdate: (notification: SessionNotification) => Promise<void>,
+	hideThinking: boolean,
+): Promise<void> {
+	for (const entry of sessionManager.getEntries()) {
+		if (entry.type === "message") {
+			const msg = entry.message
+
+			if (msg.role === "user") {
+				// User text → user_message_chunk (single chunk per message)
+				if (typeof msg.content === "string") {
+					if (msg.content.trim()) {
+						await sendUpdate({
+							sessionId,
+							update: { sessionUpdate: "user_message_chunk", content: { type: "text", text: msg.content } },
+						})
+					}
+				} else if (Array.isArray(msg.content)) {
+					const text = msg.content
+						.filter((b: { type?: string; text?: string }): b is { type: "text"; text: string } => b.type === "text")
+						.map((b) => b.text)
+						.join("")
+					if (text.trim()) {
+						await sendUpdate({
+							sessionId,
+							update: { sessionUpdate: "user_message_chunk", content: { type: "text", text } },
+						})
+					}
+				}
+			} else if (msg.role === "assistant") {
+				// Assistant text and thinking
+				const content = typeof msg.content === "string" ? [] : msg.content
+
+				for (const block of content) {
+					if (block.type === "text" && "text" in block) {
+						const textBlock = block as { type: "text"; text: string }
+						await sendUpdate({
+							sessionId,
+							update: {
+								sessionUpdate: "agent_message_chunk",
+								content: { type: "text", text: textBlock.text },
+							},
+						})
+					} else if (block.type === "thinking" && "thinking" in block && !hideThinking) {
+						const thinkingBlock = block as { type: "thinking"; thinking: string }
+						await sendUpdate({
+							sessionId,
+							update: {
+								sessionUpdate: "agent_thought_chunk",
+								content: { type: "text", text: thinkingBlock.thinking },
+							},
+						})
+					} else if (block.type === "toolCall" && "id" in block && "name" in block) {
+						// Tool calls → tool_call (in_progress) + tool_call_update (completed/failed)
+						const toolBlock = block as unknown as {
+							type: "toolCall"
+							id: string
+							name: string
+							args: unknown
+							status?: string
+							error?: string
+							result?: unknown
+						}
+						const { title, kind, locations } = describeToolCall(toolBlock.name, toolBlock.args)
+
+						await sendUpdate({
+							sessionId,
+							update: {
+								sessionUpdate: "tool_call",
+								toolCallId: toolBlock.id,
+								title,
+								kind,
+								status: "in_progress",
+								locations,
+								rawInput: toolBlock.args,
+							},
+						})
+
+						const isDenied = toolBlock.status === "denied"
+						const isError = toolBlock.status === "error"
+						const toolStatus = isDenied || isError ? "failed" : "completed"
+						const errorContent = isDenied ? (toolBlock.error ?? "Tool call denied") : undefined
+
+						await sendUpdate({
+							sessionId,
+							update: {
+								sessionUpdate: "tool_call_update",
+								toolCallId: toolBlock.id,
+								status: toolStatus,
+								content: errorContent
+									? [{ type: "content", content: { type: "text", text: errorContent } }]
+									: toolResultContent(toolBlock.result),
+							},
+						})
+					}
+				}
+			}
+		}
+		// Skip: compaction, branchSummary, modelChange, thinkingLevel entries
+		// - compaction/branchSummary: LLM-context artifacts, not user-visible turns
+		// - modelChange: current model conveyed once via load response's models field
+		// - thinkingLevel: tracked internally for potential future use
+	}
 }
 
 export async function runAcpMode(options: RunAcpOptions): Promise<void> {
