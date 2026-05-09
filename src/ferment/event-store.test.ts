@@ -165,6 +165,168 @@ describe("FermentEventStore", () => {
 			expect(types).toContain("ferment_resumed")
 		})
 
+		// Regression: §4.2 — replaying N independent phase_activated events for a
+		// parallel group used to demote each previously-active sibling, leaving
+		// only the last one active after fold. Atomic phase_group_activated event
+		// fixes this. Test exercises the fold path (eventStore.get → foldEvents)
+		// rather than the snapshot, since the snapshot was always correct.
+		it("parallel-group activation reproduces multi-active-phase state via fold", () => {
+			const f = eventStore.create("Parallel fold test")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Goal",
+				successCriteria: "criteria",
+				constraints: [],
+				phases: [
+					{ name: "P1", goal: "G1", parallel_group: 1, steps: [] },
+					{ name: "P2", goal: "G2", parallel_group: 1, steps: [] },
+					{ name: "P3", goal: "G3", steps: [] },
+				],
+			})
+			exec(eventStore, f.id, { type: "activate_phase_group", groupIndex: 1 })
+
+			// Force fold: read via the event store, which prefers fold when
+			// events.mtime >= snapshot.mtime (true here since the last write was an
+			// event-emitting command).
+			const folded = eventStore.get(f.id)
+			expect(folded).toBeDefined()
+			const p1 = folded?.phases.find((p) => p.name === "P1")
+			const p2 = folded?.phases.find((p) => p.name === "P2")
+			const p3 = folded?.phases.find((p) => p.name === "P3")
+			expect(p1?.status).toBe("active")
+			expect(p2?.status).toBe("active")
+			expect(p3?.status).toBe("planned")
+
+			// And there should be exactly one phase_group_activated event,
+			// not N phase_activated events.
+			const types = readEvents(tempDir, f.id).map((e) => e.type)
+			expect(types).toContain("phase_group_activated")
+			expect(types.filter((t) => t === "phase_activated")).toHaveLength(0)
+		})
+
+		// Regression: §4.3 — complete_step with a successful StepResult records
+		// status "verified" in the state machine, but the mapper used to assume
+		// "done" for its synthetic interim hash, causing every successful verified
+		// completion to break the chain. The cursor-fold pattern avoids this by
+		// re-using applyFermentEvent for hash computation.
+		it("hash chain stays connected across complete_step with grade", () => {
+			const f = eventStore.create("Hash chain test")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Goal",
+				successCriteria: "c",
+				constraints: [],
+				phases: [{ name: "P1", goal: "G1" }],
+			})
+			const planned = eventStore.get(f.id)
+			if (!planned) throw new Error("ferment missing")
+			const phaseId = planned.phases[0].id
+			exec(eventStore, f.id, { type: "activate_phase", phaseId })
+			exec(eventStore, f.id, { type: "refine_phase", phaseId, steps: [{ description: "do" }] })
+			const refined = eventStore.get(f.id)
+			if (!refined) throw new Error("ferment missing")
+			const stepId = refined.phases[0].steps[0].id
+
+			exec(eventStore, f.id, { type: "start_step", phaseId, stepId })
+			exec(eventStore, f.id, {
+				type: "complete_step",
+				phaseId,
+				stepId,
+				grade: { grade: "A", rationale: "ok", gradedAt: new Date().toISOString() },
+			})
+
+			const events = readEvents(tempDir, f.id)
+			expect(events.length).toBeGreaterThan(2)
+			// Connected chain: every event's preStateHash matches the prior postStateHash.
+			for (let i = 1; i < events.length; i++) {
+				expect(events[i].preStateHash, `break at boundary ${events[i - 1].type} → ${events[i].type}`).toBe(
+					events[i - 1].postStateHash,
+				)
+			}
+		})
+
+		// Regression: §4.3 (companion) — complete_ferment with a grade folds
+		// through ferment_completed + ferment_graded; both events' hashes must
+		// reflect the actual cursor state, not a hand-built interim.
+		it("hash chain stays connected across complete_ferment with grade", () => {
+			const f = eventStore.create("Complete with grade")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "g",
+				successCriteria: "c",
+				constraints: [],
+				phases: [{ name: "P1", goal: "G1", steps: [] }],
+			})
+			const planned = eventStore.get(f.id)
+			if (!planned) throw new Error("ferment missing")
+			const phaseId = planned.phases[0].id
+			exec(eventStore, f.id, { type: "activate_phase", phaseId })
+			exec(eventStore, f.id, { type: "complete_phase", phaseId, summary: "done" })
+			exec(eventStore, f.id, {
+				type: "complete_ferment",
+				grade: { grade: "A", rationale: "great", gradedAt: new Date().toISOString() },
+			})
+
+			const events = readEvents(tempDir, f.id)
+			for (let i = 1; i < events.length; i++) {
+				expect(events[i].preStateHash, `break at boundary ${events[i - 1].type} → ${events[i].type}`).toBe(
+					events[i - 1].postStateHash,
+				)
+			}
+			// Folded ferment should match the snapshot exactly.
+			const folded = eventStore.get(f.id)
+			const fromSnapshot = parentStorage.get(f.id)
+			expect(folded?.status).toBe(fromSnapshot?.status)
+			expect(folded?.grade?.grade).toBe(fromSnapshot?.grade?.grade)
+		})
+
+		// Property-style: for every command in a representative sequence, after
+		// writeWithEvents the eventStore.get() (fold path) should produce the same
+		// state as the parentStorage.get() (snapshot path). This is the contract
+		// the four state-bearing layers (state machine, mapper, fold, store)
+		// must collectively satisfy.
+		it("fold-vs-snapshot equivalence across a representative command sequence", () => {
+			const f = eventStore.create("Property sequence")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "g",
+				successCriteria: "c",
+				constraints: ["c1"],
+				phases: [
+					{ name: "P1", goal: "G1", parallel_group: 1, steps: [{ description: "S1" }] },
+					{ name: "P2", goal: "G2", parallel_group: 1, steps: [{ description: "S2" }] },
+					{ name: "P3", goal: "G3", steps: [{ description: "S3" }] },
+				],
+			})
+
+			const assertFoldMatchesSnapshot = (label: string) => {
+				const folded = eventStore.get(f.id)
+				const snap = parentStorage.get(f.id)
+				expect(folded?.status, `${label}: status`).toBe(snap?.status)
+				expect(folded?.activePhaseId, `${label}: activePhaseId`).toBe(snap?.activePhaseId)
+				expect(folded?.phases.map((p) => p.status).join(","), `${label}: phase statuses`).toBe(
+					snap?.phases.map((p) => p.status).join(","),
+				)
+				expect(folded?.phases.map((p) => p.steps.map((s) => s.status).join(",")).join("|")).toBe(
+					snap?.phases.map((p) => p.steps.map((s) => s.status).join(",")).join("|"),
+				)
+			}
+
+			assertFoldMatchesSnapshot("after scope")
+			exec(eventStore, f.id, { type: "activate_phase_group", groupIndex: 1 })
+			assertFoldMatchesSnapshot("after parallel group activation")
+
+			const folded = eventStore.get(f.id)
+			if (!folded) throw new Error("ferment missing")
+			const p1 = folded.phases.find((p) => p.name === "P1")
+			if (!p1 || p1.steps.length === 0) throw new Error("phase missing steps")
+
+			exec(eventStore, f.id, { type: "start_step", phaseId: p1.id, stepId: p1.steps[0].id })
+			assertFoldMatchesSnapshot("after start_step in parallel phase")
+			exec(eventStore, f.id, { type: "complete_step", phaseId: p1.id, stepId: p1.steps[0].id })
+			assertFoldMatchesSnapshot("after complete_step")
+		})
+
 		it("folded ferment matches snapshot ferment after a sequence of commands", () => {
 			const f = eventStore.create("Fold equivalence")
 			exec(eventStore, f.id, {
