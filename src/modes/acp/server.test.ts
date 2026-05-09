@@ -11,27 +11,38 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	type AcpSessionFactory,
 	type AcpSessionLister,
+	type AcpSessionLoader,
 	KimchiAcpAgent,
 	assertSessionHasModel,
 	buildSessionModelState,
+	assistantMessageText,
 	describeToolCall,
 	isHiddenToolCall,
 	toAcpSessionInfo,
+	userMessageText,
 } from "./server.js"
 
 // Minimal fake of AgentSession surface used by KimchiAcpAgent. The factory seam
 // means we only need to stand in for the methods the ACP server actually calls:
-// sessionId, subscribe, prompt, abort, dispose.
+// sessionId, subscribe, prompt, abort, dispose. loadSession also reads
+// `sessionManager.getBranch()` for replay and `model` for the response, so the
+// fake exposes settable fields for both.
 class FakeAgentSession {
 	readonly sessionId: string
 	private listeners = new Set<AgentSessionEventListener>()
 	disposed = false
 	aborted = false
-	model?: { provider: string; id: string; input?: string[] }
+	model?: { provider: string; id: string; name?: string; input?: string[] }
 	modelRegistry = { getAvailable: () => [] as Array<{ provider: string; id: string; name: string }> }
 	promptImpl: (text: string, opts?: { images?: unknown[] }) => Promise<void> = async () => {}
 	abortImpl: () => Promise<void> = async () => {}
 	lastPromptImages?: unknown[]
+	// Branch entries returned to the replay walker. Tests fill this with the
+	// shape buildSessionContext consumers expect (type:"message" + role).
+	branch: unknown[] = []
+	sessionManager = {
+		getBranch: () => this.branch,
+	}
 
 	constructor(sessionId: string) {
 		this.sessionId = sessionId
@@ -1316,5 +1327,353 @@ describe("KimchiAcpAgent listSessions", () => {
 		const agent = makeAgent(async () => [makePiSession({ id: "s", firstMessage: long, name: undefined })])
 		const res = await agent.listSessions({ cwd: "/p" } as never)
 		expect(res.sessions[0].title).toBe(`${"z".repeat(80)}…`)
+	})
+})
+
+// Helpers for replay tests: build the SessionMessageEntry shape that
+// SessionManager.getBranch() returns. `userText` / `assistantText` produce the
+// minimal valid envelope — id/parentId/timestamp are not consulted by the
+// replay walker, so any non-empty placeholder is fine.
+function userTextEntry(text: string, id = "u1", parentId: string | null = null): unknown {
+	return {
+		type: "message",
+		id,
+		parentId,
+		timestamp: "2026-05-09T00:00:00Z",
+		message: { role: "user", content: text, timestamp: 0 },
+	}
+}
+function assistantTextEntry(text: string, id = "a1", parentId: string | null = null): unknown {
+	return {
+		type: "message",
+		id,
+		parentId,
+		timestamp: "2026-05-09T00:00:01Z",
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		},
+	}
+}
+
+describe("KimchiAcpAgent loadSession", () => {
+	function makeAgent(loader: AcpSessionLoader, opts?: { conn?: AgentSideConnection }): KimchiAcpAgent {
+		return new KimchiAcpAgent(opts?.conn ?? makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: loader,
+		})
+	}
+
+	it("advertises loadSession capability in initialize", async () => {
+		const agent = makeAgent(async () => asSession(new FakeAgentSession("unused")))
+		const init = await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: {} as never,
+		} as never)
+		expect(init.agentCapabilities?.loadSession).toBe(true)
+	})
+
+	it("rejects loadSession when mcpServers is non-empty (does not invoke loader)", async () => {
+		const loaderCalls = { count: 0 }
+		const loader: AcpSessionLoader = async () => {
+			loaderCalls.count++
+			return asSession(new FakeAgentSession("unused"))
+		}
+		const agent = makeAgent(loader)
+		await expect(
+			agent.loadSession({
+				sessionId: "s1",
+				cwd: "/tmp",
+				// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
+				mcpServers: [{ name: "x", command: "x", args: [] } as any],
+			}),
+		).rejects.toMatchObject({ code: -32602 })
+		expect(loaderCalls.count).toBe(0)
+	})
+
+	it("rejects loadSession with invalidRequest when sessionId is already loaded", async () => {
+		const loaderCalls = { count: 0 }
+		const live = new FakeAgentSession("live-1")
+		const factory: AcpSessionFactory = async () => asSession(live)
+		const loader: AcpSessionLoader = async () => {
+			loaderCalls.count++
+			return asSession(new FakeAgentSession("unused"))
+		}
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+			sessionLoader: loader,
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		await expect(agent.loadSession({ sessionId: "live-1", cwd: "/tmp", mcpServers: [] })).rejects.toMatchObject({
+			code: -32600,
+		})
+		// invalidRequest must short-circuit BEFORE the loader runs — otherwise
+		// we'd open the same JSONL twice (and pi's append-only writers would
+		// interleave entries on the next prompt).
+		expect(loaderCalls.count).toBe(0)
+	})
+
+	it("propagates loader errors (e.g. missing file → invalidParams)", async () => {
+		const agent = makeAgent(async () => {
+			throw Object.assign(new Error("session not found"), { code: -32602 })
+		})
+		await expect(agent.loadSession({ sessionId: "missing", cwd: "/tmp", mcpServers: [] })).rejects.toThrow(
+			/session not found/,
+		)
+	})
+
+	it("disposes the session if subscribe throws during loadSession", async () => {
+		const leaky = new FakeAgentSession("leak-1")
+		leaky.subscribe = () => {
+			throw new Error("subscribe boom")
+		}
+		const agent = makeAgent(async () => asSession(leaky))
+		await expect(agent.loadSession({ sessionId: "leak-1", cwd: "/tmp", mcpServers: [] })).rejects.toThrow(
+			/subscribe boom/,
+		)
+		expect(leaky.disposed).toBe(true)
+	})
+
+	it("unwinds registration and disposes the session if replay throws", async () => {
+		// Pin the atomic-ownership invariant: a throw during replay must remove
+		// the session from the registry AND dispose it, otherwise the id stays
+		// "live" while loadSession rejects — blocking re-load with invalidRequest.
+		const fake = new FakeAgentSession("replay-boom")
+		fake.sessionManager = {
+			getBranch: () => {
+				throw new Error("branch read failed")
+			},
+		}
+		const agent = makeAgent(async () => asSession(fake))
+		await expect(agent.loadSession({ sessionId: "replay-boom", cwd: "/tmp", mcpServers: [] })).rejects.toThrow(
+			/branch read failed/,
+		)
+		expect(fake.disposed).toBe(true)
+		// Re-load must not see the failed session as already-live.
+		fake.sessionManager = { getBranch: () => [] }
+		fake.disposed = false
+		await expect(agent.loadSession({ sessionId: "replay-boom", cwd: "/tmp", mcpServers: [] })).resolves.toBeDefined()
+	})
+
+	it("replays user/assistant text turns as session/update notifications before the response resolves", async () => {
+		const fake = new FakeAgentSession("loaded-1")
+		fake.model = { provider: "test", id: "test-model", name: "Test Model" }
+		fake.modelRegistry = {
+			getAvailable: () => [{ provider: "test", id: "test-model", name: "Test Model" }],
+		}
+		fake.branch = [
+			userTextEntry("hello", "u1", null),
+			assistantTextEntry("hi there", "a1", "u1"),
+			userTextEntry("how are you?", "u2", "a1"),
+			assistantTextEntry("doing well", "a2", "u2"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), { conn })
+
+		// Capture the order: replay notifications must land BEFORE the response
+		// resolves so Zed sees a coherent transcript on the load promise.
+		const updatesAtResolve: (typeof updates)[number][] = []
+		const original = (conn as unknown as { sessionUpdate: (p: SessionNotification) => Promise<void> }).sessionUpdate
+		;(conn as unknown as { sessionUpdate: (p: SessionNotification) => Promise<void> }).sessionUpdate = async (
+			p: SessionNotification,
+		) => {
+			await original(p)
+		}
+
+		const res = await agent.loadSession({
+			sessionId: "loaded-1",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
+		// Snapshot updates seen at this point (ie. before any further awaits).
+		updatesAtResolve.push(...updates)
+
+		expect(updatesAtResolve).toHaveLength(4)
+		expect(updatesAtResolve[0].update).toMatchObject({
+			sessionUpdate: "user_message_chunk",
+			content: { type: "text", text: "hello" },
+		})
+		expect(updatesAtResolve[1].update).toMatchObject({
+			sessionUpdate: "agent_message_chunk",
+			content: { type: "text", text: "hi there" },
+		})
+		expect(updatesAtResolve[2].update).toMatchObject({
+			sessionUpdate: "user_message_chunk",
+			content: { type: "text", text: "how are you?" },
+		})
+		expect(updatesAtResolve[3].update).toMatchObject({
+			sessionUpdate: "agent_message_chunk",
+			content: { type: "text", text: "doing well" },
+		})
+		expect(res.models).toMatchObject({
+			currentModelId: "test/test-model",
+			availableModels: [{ modelId: "test/test-model", name: "Test Model" }],
+		})
+	})
+
+	it("skips non-text entries in Phase 2 replay (tool calls, thinking, model_change, compaction)", async () => {
+		const fake = new FakeAgentSession("loaded-skip")
+		fake.branch = [
+			userTextEntry("question", "u1", null),
+			// Assistant message with only thinking + tool call — no text. Phase 2
+			// emits nothing for this; Phase 3 will replay tool_call + agent_thought.
+			{
+				type: "message",
+				id: "a1",
+				parentId: "u1",
+				timestamp: "2026-05-09T00:00:01Z",
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "pondering" },
+						{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "ls" } },
+					],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "claude",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: 0,
+				},
+			},
+			// Tool result message — skipped in Phase 2 (handled via tool_call_update in Phase 3).
+			{
+				type: "message",
+				id: "tr1",
+				parentId: "a1",
+				timestamp: "2026-05-09T00:00:02Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "tc-1",
+					toolName: "bash",
+					content: [{ type: "text", text: "output" }],
+					isError: false,
+					timestamp: 0,
+				},
+			},
+			// Non-message entries the PRD says replay should skip.
+			{ type: "model_change", id: "mc1", parentId: "tr1", timestamp: "x", provider: "p", modelId: "m" },
+			{
+				type: "compaction",
+				id: "c1",
+				parentId: "mc1",
+				timestamp: "x",
+				summary: "snip",
+				firstKeptEntryId: "u1",
+				tokensBefore: 0,
+			},
+			assistantTextEntry("final answer", "a2", "c1"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(async () => asSession(fake), { conn })
+		await agent.loadSession({ sessionId: "loaded-skip", cwd: "/tmp", mcpServers: [] })
+		// Only the user text and the final assistant text survive Phase 2.
+		expect(updates.map((u) => u.update.sessionUpdate)).toEqual(["user_message_chunk", "agent_message_chunk"])
+	})
+
+	it("treats a concurrent session/cancel during replay as a no-op (no turn active)", async () => {
+		const fake = new FakeAgentSession("loaded-cancel")
+		fake.branch = [userTextEntry("hi", "u1", null)]
+		const agent = makeAgent(async () => asSession(fake))
+		await agent.loadSession({ sessionId: "loaded-cancel", cwd: "/tmp", mcpServers: [] })
+		// No turn was created during loadSession, so cancel must not throw and
+		// must not invoke abort with side effects beyond the no-op session.abort.
+		await expect(agent.cancel({ sessionId: "loaded-cancel" })).resolves.toBeUndefined()
+	})
+
+	it("returns null models when the loaded session has no model", async () => {
+		const fake = new FakeAgentSession("loaded-no-model")
+		fake.model = undefined
+		fake.branch = []
+		const agent = makeAgent(async () => asSession(fake))
+		const res = await agent.loadSession({
+			sessionId: "loaded-no-model",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
+		// modelStateForSession returns undefined when model is missing; the
+		// loadSession response normalizes that to null so clients see a
+		// consistent shape regardless.
+		expect(res.models).toBeNull()
+	})
+
+	it("registers the loaded session so a follow-up prompt is accepted", async () => {
+		const fake = new FakeAgentSession("loaded-prompt")
+		fake.branch = [userTextEntry("prior", "u1", null)]
+		const agent = makeAgent(async () => asSession(fake))
+		await agent.loadSession({ sessionId: "loaded-prompt", cwd: "/tmp", mcpServers: [] })
+		// Drive a turn through the loaded session — short-circuit path is fine,
+		// we just need to confirm prompt() doesn't reject with "unknown
+		// sessionId" (which would mean the load registration failed).
+		fake.promptImpl = async () => {}
+		const res = await agent.prompt({
+			sessionId: "loaded-prompt",
+			prompt: [{ type: "text", text: "follow up" }],
+		})
+		expect(res.stopReason).toBe("end_turn")
+	})
+})
+
+describe("userMessageText / assistantMessageText", () => {
+	it("returns string content unchanged for user messages", () => {
+		expect(userMessageText("hello world")).toBe("hello world")
+	})
+	it("joins text blocks and skips images for user messages", () => {
+		expect(
+			userMessageText([
+				{ type: "text", text: "hi " },
+				{ type: "image", data: "x", mimeType: "image/png" },
+				{ type: "text", text: "there" },
+			]),
+		).toBe("hi there")
+	})
+	it("returns empty string for null / non-array user content", () => {
+		expect(userMessageText(null)).toBe("")
+		expect(userMessageText(42)).toBe("")
+	})
+	it("joins text blocks for assistant messages", () => {
+		expect(
+			assistantMessageText([
+				{ type: "text", text: "answer " },
+				{ type: "text", text: "in two parts" },
+			]),
+		).toBe("answer in two parts")
+	})
+	it("skips thinking and toolCall blocks in assistant content", () => {
+		expect(
+			assistantMessageText([
+				{ type: "thinking", thinking: "..." },
+				{ type: "text", text: "visible" },
+				{ type: "toolCall", id: "tc", name: "bash", arguments: {} },
+			]),
+		).toBe("visible")
+	})
+	it("returns empty string for non-array assistant content", () => {
+		expect(assistantMessageText(undefined)).toBe("")
+		expect(assistantMessageText("string-not-allowed-here")).toBe("")
 	})
 })

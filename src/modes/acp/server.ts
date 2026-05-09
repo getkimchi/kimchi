@@ -1,6 +1,7 @@
 // ACP (Agent Client Protocol) mode: JSON-RPC 2.0 over stdio using
 // @agentclientprotocol/sdk. Lets Zed / openclaw drive kimchi in-process.
 
+import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { Readable, Writable } from "node:stream"
 import {
@@ -15,6 +16,8 @@ import {
 	type InitializeResponse,
 	type ListSessionsRequest,
 	type ListSessionsResponse,
+	type LoadSessionRequest,
+	type LoadSessionResponse,
 	type NewSessionRequest,
 	type NewSessionResponse,
 	PROTOCOL_VERSION,
@@ -57,6 +60,14 @@ export type AcpSessionFactory = (params: NewSessionRequest) => Promise<AgentSess
  */
 export type AcpSessionLister = (params: ListSessionsRequest) => Promise<PiSessionInfo[]>
 
+/**
+ * Opens a persisted session for a loadSession request. The returned AgentSession
+ * must already be fully wired (model verified, extensions bound) and seeded
+ * with the on-disk transcript; the agent only handles registration, replay,
+ * and response shaping. Exposed so tests can stub disk access.
+ */
+export type AcpSessionLoader = (params: LoadSessionRequest) => Promise<AgentSession>
+
 export interface RunAcpOptions {
 	extensionFactories: ExtensionFactory[]
 	agentDir: string
@@ -64,6 +75,8 @@ export interface RunAcpOptions {
 	sessionFactory?: AcpSessionFactory
 	/** Override for tests. Defaults to {@link defaultSessionLister}. */
 	sessionLister?: AcpSessionLister
+	/** Override for tests. Defaults to {@link defaultSessionLoader}. */
+	sessionLoader?: AcpSessionLoader
 }
 
 type TurnContext = {
@@ -81,17 +94,18 @@ type TurnContext = {
 	reject: (err: unknown) => void
 }
 
-type SessionEntry = {
+type SessionRecord = {
 	session: AgentSession
 	unsubscribe: () => void
 	turn?: TurnContext
 }
 
 export class KimchiAcpAgent implements Agent {
-	private sessions = new Map<string, SessionEntry>()
+	private sessions = new Map<string, SessionRecord>()
 	private readonly sessionFactory: AcpSessionFactory
 	private readonly agentDir: string
 	private readonly sessionLister: AcpSessionLister
+	private readonly sessionLoader: AcpSessionLoader
 	// Track non-text prompt block types we've already warned about so a
 	// misbehaving client that sends 1000 image blocks doesn't flood stderr.
 	private warnedBlockTypes = new Set<string>()
@@ -104,6 +118,7 @@ export class KimchiAcpAgent implements Agent {
 		this.sessionFactory = options.sessionFactory ?? defaultSessionFactory(options)
 		this.agentDir = options.agentDir
 		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
+		this.sessionLoader = options.sessionLoader ?? defaultSessionLoader(options)
 	}
 
 	async initialize(_: InitializeRequest): Promise<InitializeResponse> {
@@ -113,7 +128,7 @@ export class KimchiAcpAgent implements Agent {
 		return {
 			protocolVersion: PROTOCOL_VERSION,
 			agentCapabilities: {
-				loadSession: false,
+				loadSession: true,
 				// `list: {}` advertises support for session/list per spec
 				// (SessionListCapabilities is `{ _meta? }` — empty object means
 				// "supported"). loadSession remains the top-level flag because
@@ -197,6 +212,50 @@ export class KimchiAcpAgent implements Agent {
 			)
 		}
 		return {}
+	}
+
+	async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+		// Same posture as newSession: mcpServers isn't plumbed, surface as
+		// invalidParams instead of silently dropping caller intent.
+		if (Array.isArray(params.mcpServers) && params.mcpServers.length > 0) {
+			throw RequestError.invalidParams(
+				undefined,
+				"mcpServers is not supported; configure MCP servers via kimchi config",
+			)
+		}
+		// Reject re-load of an already-live session: pi's JSONL is append-only and
+		// two writers on the same file would interleave entries unpredictably. Zed
+		// should close the live session before reloading. invalidRequest (-32600)
+		// signals "method valid but state forbids it now".
+		if (this.sessions.has(params.sessionId)) {
+			throw RequestError.invalidRequest(undefined, `session ${params.sessionId} is already loaded; close it first`)
+		}
+		const session = await this.sessionLoader(params)
+		// Atomic ownership transfer mirrors newSession but covers the full
+		// register → replay → respond path: a throw at any point after the
+		// loader hands back a live session must unwind registration AND dispose,
+		// otherwise the session sits in `sessions` while loadSession rejects —
+		// Zed thinks load failed but the agent thinks the id is live, and the
+		// next loadSession for the same id wrongly returns invalidRequest.
+		const sid = session.sessionId
+		try {
+			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
+			this.sessions.set(sid, { session, unsubscribe })
+			// Replay BEFORE the response resolves so Zed sees a coherent transcript
+			// when the loadSession promise settles. No turn context is created, so a
+			// concurrent session/cancel during replay is a no-op (matches the PRD
+			// invariant: "A turn must not be considered active during replay").
+			this.replayTranscript(session)
+			return { models: this.modelStateForSession(session) }
+		} catch (err) {
+			const existing = this.sessions.get(sid)
+			if (existing) {
+				this.sessions.delete(sid)
+				existing.unsubscribe()
+			}
+			session.dispose()
+			throw err
+		}
 	}
 
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
@@ -431,6 +490,47 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
+	// Phase 2 replay: walk the persisted transcript on the leaf path and emit
+	// one session/update per visible text turn. Tool calls, thinking, and
+	// custom messages are deliberately skipped here and handled in Phase 3.
+	// Compaction/branch_summary/model_change entries emit nothing per PRD —
+	// using getBranch() (raw entries) instead of buildSessionContext() avoids
+	// surfacing compaction summaries as synthetic user messages.
+	private replayTranscript(session: AgentSession): void {
+		const sessionId = session.sessionId
+		const entries = session.sessionManager.getBranch()
+		for (const entry of entries) {
+			if (entry.type !== "message") continue
+			const msg = entry.message
+			if (msg.role === "user") {
+				const text = userMessageText(msg.content)
+				if (!text) continue
+				this.send({
+					sessionId,
+					update: {
+						sessionUpdate: "user_message_chunk",
+						content: { type: "text", text },
+					},
+				})
+			} else if (msg.role === "assistant") {
+				const text = assistantMessageText(msg.content)
+				if (!text) continue
+				this.send({
+					sessionId,
+					update: {
+						sessionUpdate: "agent_message_chunk",
+						content: { type: "text", text },
+					},
+				})
+			}
+			// toolResult and CustomAgentMessages: deferred to Phase 3.
+		}
+	}
+
+	private modelStateForSession(session: AgentSession): SessionModelState | null {
+		return buildSessionModelState(session)
+	}
+
 	private send(params: SessionNotification): void {
 		// Fire-and-forget is safe here because the ACP SDK chains every outbound
 		// message onto a shared writeQueue Promise (see @agentclientprotocol/sdk
@@ -446,14 +546,14 @@ export class KimchiAcpAgent implements Agent {
 		})
 	}
 
-	private finalizeTurn(entry: SessionEntry, stopReason: PromptResponse["stopReason"]): void {
+	private finalizeTurn(entry: SessionRecord, stopReason: PromptResponse["stopReason"]): void {
 		const turn = entry.turn
 		if (!turn) return
 		entry.turn = undefined
 		turn.resolve({ stopReason })
 	}
 
-	private failTurn(entry: SessionEntry, err: unknown): void {
+	private failTurn(entry: SessionRecord, err: unknown): void {
 		const turn = entry.turn
 		if (!turn) return
 		entry.turn = undefined
@@ -531,6 +631,77 @@ function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
 		// won't be honored for the unscoped path. Acceptable v1 limitation:
 		// Zed's thread-import always supplies a cwd.
 		return SessionManager.listAll()
+	}
+}
+
+function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
+	return async (params: LoadSessionRequest): Promise<AgentSession> => {
+		const cwd = params.cwd
+		// Mirror defaultSessionLister: encode cwd inline because pi doesn't
+		// re-export getDefaultSessionDir from its package index. Threading
+		// agentDir explicitly is load-bearing — pi reads PI_CODING_AGENT_DIR,
+		// not KIMCHI_CODING_AGENT_DIR, so default lookups would miss kimchi
+		// sessions stored under the kimchi agent dir.
+		const sessionDir = join(options.agentDir, "sessions", encodeCwdDir(cwd))
+		const sessionPath = join(sessionDir, `${params.sessionId}.jsonl`)
+		// existsSync is the simplest way to map "session not found" to
+		// invalidParams — SessionManager.open would silently start a fresh
+		// session on a missing/empty file (and rewrite the file with a new id),
+		// which is destructive and not what loadSession should do.
+		if (!existsSync(sessionPath)) {
+			throw RequestError.invalidParams(undefined, `session ${params.sessionId} not found`)
+		}
+		let sessionManager: SessionManager
+		try {
+			// Open WITHOUT cwdOverride so the on-disk header cwd is preserved —
+			// pi's open is `cwd = cwdOverride ?? header.cwd ?? process.cwd()`
+			// (no comparison), so passing params.cwd upfront would silently
+			// re-root a session created elsewhere. We compare below instead.
+			sessionManager = SessionManager.open(sessionPath, sessionDir)
+		} catch (err) {
+			// loadEntriesFromFile silently skips malformed lines, but I/O
+			// errors (permissions, post-existsSync delete) and migration
+			// failures still propagate. Surface as invalidParams with a
+			// one-line message instead of crashing the connection (which
+			// triggers Zed's "server shut down unexpectedly" toast).
+			const msg = err instanceof Error ? err.message : String(err)
+			throw RequestError.invalidParams(undefined, `failed to open session: ${msg}`)
+		}
+		// Reject cwd mismatch so a session created for one project can't be
+		// silently re-rooted into another. The PRD's "project moved on disk"
+		// case isn't supported in v1 — clients must load against the original
+		// workspace, or pi's listAll surfaces the canonical cwd.
+		const sessionCwd = sessionManager.getCwd()
+		if (sessionCwd !== cwd) {
+			throw RequestError.invalidParams(undefined, `session cwd ${sessionCwd} does not match requested cwd ${cwd}`)
+		}
+		const settingsManager = SettingsManager.create(cwd, options.agentDir)
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir: options.agentDir,
+			settingsManager,
+			extensionFactories: options.extensionFactories,
+		})
+		await resourceLoader.reload()
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir: options.agentDir,
+			settingsManager,
+			resourceLoader,
+			sessionManager,
+		})
+		try {
+			assertSessionHasModel(session)
+			await session.bindExtensions({
+				onError: (err) => {
+					process.stderr.write(`acp ext error [${err.extensionPath}] ${err.event}: ${err.error}\n`)
+				},
+			})
+			return session
+		} catch (err) {
+			session.dispose()
+			throw err
+		}
 	}
 }
 
@@ -624,6 +795,40 @@ export function describeToolCall(
 		kind: TOOL_KINDS[toolName] ?? "other",
 		locations: path ? [{ path }] : [],
 	}
+}
+
+// UserMessage.content is `string | (TextContent | ImageContent)[]` per pi-ai
+// types. For Phase 2 replay we only surface text — Zed has no UX surface for
+// historical image attachments, and the prompt capabilities advertise
+// image: false so a future replay path that emits historical images would
+// also need to flip that flag.
+export function userMessageText(content: unknown): string {
+	if (typeof content === "string") return content
+	if (!Array.isArray(content)) return ""
+	const parts: string[] = []
+	for (const block of content) {
+		if (block && typeof block === "object" && (block as { type?: unknown }).type === "text") {
+			const text = (block as { text?: unknown }).text
+			if (typeof text === "string") parts.push(text)
+		}
+	}
+	return parts.join("")
+}
+
+// AssistantMessage.content is `(TextContent | ThinkingContent | ToolCall)[]`.
+// Phase 2 emits only `text`; thinking/toolCall blocks are deferred to Phase 3
+// so historical thinking still respects the hide-thinking redaction rules and
+// historical tool calls render as proper tool_call notifications.
+export function assistantMessageText(content: unknown): string {
+	if (!Array.isArray(content)) return ""
+	const parts: string[] = []
+	for (const block of content) {
+		if (block && typeof block === "object" && (block as { type?: unknown }).type === "text") {
+			const text = (block as { text?: unknown }).text
+			if (typeof text === "string") parts.push(text)
+		}
+	}
+	return parts.join("")
 }
 
 function toolResultContent(result: unknown): ToolCallContent[] {
