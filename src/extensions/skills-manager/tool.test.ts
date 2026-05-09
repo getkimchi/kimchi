@@ -85,6 +85,39 @@ describe("createSkillManageTool", () => {
 		expect(inventory).toHaveLength(2)
 	})
 
+	it("accepts empty string for content in edit action", async () => {
+		const { manager, tracker } = makeMocks()
+		const tool = createSkillManageTool(manager, tracker)
+		const result = await tool.execute("id", { action: "edit", name: "foo", content: "" })
+		expect(manager.edit).toHaveBeenCalledWith("foo", "")
+		expect(result.details.success).toBe(true)
+	})
+
+	it("accepts empty string for new_string in patch action", async () => {
+		const { manager, tracker } = makeMocks()
+		const tool = createSkillManageTool(manager, tracker)
+		const result = await tool.execute("id", {
+			action: "patch",
+			name: "foo",
+			old_string: "bar",
+			new_string: "",
+		})
+		expect(manager.patch).toHaveBeenCalledWith("foo", "bar", "", undefined)
+		expect(result.details.success).toBe(true)
+	})
+
+	it("rejects undefined required string fields but allows empty strings", async () => {
+		const { manager, tracker } = makeMocks()
+		const tool = createSkillManageTool(manager, tracker)
+		// Missing `content` entirely → undefined → rejected
+		const missing = await tool.execute("id", { action: "edit", name: "foo" })
+		expect(missing.details.success).toBe(false)
+		expect(missing.content[0].text).toContain("requires 'content'")
+		// Empty `content` → allowed
+		const empty = await tool.execute("id", { action: "edit", name: "foo", content: "" })
+		expect(empty.details.success).toBe(true)
+	})
+
 	it("description includes inline creation guidance", () => {
 		const manager = new SkillManager("/tmp")
 		const tracker = new UsageTracker("/tmp")

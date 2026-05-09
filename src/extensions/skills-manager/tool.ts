@@ -120,9 +120,7 @@ export function createSkillManageTool(manager: SkillManager, tracker: UsageTrack
 				field: string,
 				action: string,
 			): { ok: true; value: string } | { ok: false; error: string } =>
-				value === undefined || value === ""
-					? { ok: false, error: `Action '${action}' requires '${field}'.` }
-					: { ok: true, value }
+				value === undefined ? { ok: false, error: `Action '${action}' requires '${field}'.` } : { ok: true, value }
 			const requireBoolean = (
 				value: boolean | undefined,
 				field: string,
