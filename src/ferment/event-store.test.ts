@@ -467,4 +467,45 @@ describe("FermentEventStore", () => {
 			expect(eventStore.get(legacy.id)?.name).toBe("Parent-only")
 		})
 	})
+
+	// Audit doc finding 4.6: parallel subagents racing on complete_step caused
+	// silent state loss because there was no cross-process lock around the
+	// snapshot+events dual-write. The withLock helper closes the gap by routing
+	// every mutation through proper-lockfile. We can't easily test cross-process
+	// contention from a unit test, but we can confirm the lock surface exists
+	// and that successive writes don't leak the lock file.
+	describe("locking", () => {
+		it("releases the lock between successive writes", () => {
+			const f = eventStore.create("Lock test")
+			// If the lock weren't released, the second write would block until
+			// timeout and the test would hang — a clean run is the assertion.
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "g",
+				successCriteria: "c",
+				constraints: [],
+				phases: [{ name: "P1", goal: "G1" }],
+			})
+			exec(eventStore, f.id, {
+				type: "update_scope_field",
+				field: "goal",
+				value: "g2",
+			})
+			expect(eventStore.get(f.id)?.scoping.goal?.answer).toBe("g2")
+		})
+
+		it("does not deadlock on nested mutations from the same process", () => {
+			// `lockSync` would deadlock if called recursively for the same path.
+			// withLock should not nest; create + writeWithEvents are independent calls.
+			const f = eventStore.create("Nested test")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "g",
+				successCriteria: "c",
+				constraints: [],
+				phases: [{ name: "P1", goal: "G1" }],
+			})
+			expect(eventStore.get(f.id)).toBeDefined()
+		})
+	})
 })

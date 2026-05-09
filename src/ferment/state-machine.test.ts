@@ -301,6 +301,28 @@ describe("applyCommand: activate_phase_group", () => {
 		const error = expectError(applyCommand(f, { type: "activate_phase_group", groupIndex: 1 }, ctx))
 		expect(error.code).toBe("PHASE_GROUP_EMPTY")
 	})
+
+	// Audit doc finding #1: handleActivatePhaseGroup used to leave a previously-
+	// active non-group phase active alongside the new group, breaking the
+	// "active phases are exactly the target group" invariant.
+	it("deactivates a previously-active non-group phase (audit #1)", () => {
+		const f = makeFerment({
+			status: "running",
+			activePhaseId: "phase-3",
+			phases: [
+				makePhase({ id: "phase-1", status: "planned", groupIndex: 1 }),
+				makePhase({ id: "phase-2", status: "planned", groupIndex: 1, index: 2, name: "P2" }),
+				// Already-active non-group phase that should get demoted on group activation.
+				makePhase({ id: "phase-3", status: "active", index: 3, name: "P3" }),
+			],
+		})
+		const result = expectOk(applyCommand(f, { type: "activate_phase_group", groupIndex: 1 }, ctx))
+		expect(result.phases[0].status).toBe("active")
+		expect(result.phases[1].status).toBe("active")
+		// The previously-active P3 must be demoted to planned — not left active.
+		expect(result.phases[2].status).toBe("planned")
+		expect(result.activePhaseId).toBe("phase-1")
+	})
 })
 
 // ─── refine_phase ─────────────────────────────────────────────────────────────
@@ -350,6 +372,64 @@ describe("applyCommand: refine_phase", () => {
 			applyCommand(f, { type: "refine_phase", phaseId: "phase-1", steps: [{ description: "x" }] }, ctx),
 		)
 		expect(error.code).toBe("PHASE_NOT_IN_STATUS")
+	})
+
+	// Audit doc finding #4 — refine_phase used to silently destroy a running
+	// step by overwriting the entire steps array. The guard now rejects.
+	it("rejects when a step is running (audit #4)", () => {
+		const f = makeFerment({
+			phases: [
+				makePhase({
+					status: "active",
+					steps: [makeStep({ id: "step-1", status: "running", description: "in flight" })],
+				}),
+			],
+		})
+		const error = expectError(
+			applyCommand(f, { type: "refine_phase", phaseId: "phase-1", steps: [{ description: "x" }] }, ctx),
+		)
+		expect(error.code).toBe("STEP_RUNNING")
+		if (error.code === "STEP_RUNNING") {
+			expect(error.runningStepId).toBe("step-1")
+			expect(error.runningStepIndex).toBe(1)
+			expect(error.runningDescription).toBe("in flight")
+			expect(error.message).toContain("currently running")
+		}
+	})
+
+	it("allows refine after the running step transitions to a terminal state", () => {
+		const f = makeFerment({
+			phases: [
+				makePhase({
+					status: "active",
+					steps: [makeStep({ id: "step-1", status: "done" })],
+				}),
+			],
+		})
+		const result = expectOk(
+			applyCommand(f, { type: "refine_phase", phaseId: "phase-1", steps: [{ description: "fresh" }] }, ctx),
+		)
+		expect(result.phases[0].steps).toHaveLength(1)
+		expect(result.phases[0].steps[0].description).toBe("fresh")
+	})
+
+	it("allows refine when other steps are pending or terminal but none running", () => {
+		const f = makeFerment({
+			phases: [
+				makePhase({
+					status: "active",
+					steps: [
+						makeStep({ id: "step-1", status: "done" }),
+						makeStep({ id: "step-2", status: "skipped" }),
+						makeStep({ id: "step-3", status: "pending" }),
+					],
+				}),
+			],
+		})
+		const result = expectOk(
+			applyCommand(f, { type: "refine_phase", phaseId: "phase-1", steps: [{ description: "x" }] }, ctx),
+		)
+		expect(result.phases[0].steps).toHaveLength(1)
 	})
 })
 

@@ -84,17 +84,23 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 		case "scope": {
 			// Emit one scoping_*_set event per field that the scope command set,
 			// then a ferment_planned status event if status flipped.
+			//
+			// Each scoping_*_set event carries both the typed Scoping field AND
+			// the denormalized top-level Ferment.{goal,successCriteria,constraints}
+			// in its `plain` slot. The state machine writes both, so the fold has
+			// to reproduce both — without `plain`, the fold leaves the top-level
+			// fields undefined and divergence accumulates after every scope.
 			if (post.scoping.goal && pre.scoping.goal?.answer !== post.scoping.goal?.answer) {
-				b.push("scoping_goal_set", { goal: post.scoping.goal })
+				b.push("scoping_goal_set", { goal: post.scoping.goal, plain: post.goal })
 			}
 			if (post.scoping.criteria && pre.scoping.criteria?.answer !== post.scoping.criteria?.answer) {
-				b.push("scoping_criteria_set", { criteria: post.scoping.criteria })
+				b.push("scoping_criteria_set", { criteria: post.scoping.criteria, plain: post.successCriteria })
 			}
 			if (
 				post.scoping.constraints &&
 				JSON.stringify(pre.scoping.constraints) !== JSON.stringify(post.scoping.constraints)
 			) {
-				b.push("scoping_constraints_set", { constraints: post.scoping.constraints })
+				b.push("scoping_constraints_set", { constraints: post.scoping.constraints, plain: post.constraints })
 			}
 			if (post.scoping.phases && JSON.stringify(pre.scoping.phases) !== JSON.stringify(post.scoping.phases)) {
 				b.push("scoping_phases_set", { phases: post.scoping.phases, phaseSnapshots: post.phases })
@@ -114,10 +120,10 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 						: "scoping_constraints_set"
 			const payload =
 				cmd.field === "goal"
-					? { goal: post.scoping.goal }
+					? { goal: post.scoping.goal, plain: post.goal }
 					: cmd.field === "criteria"
-						? { criteria: post.scoping.criteria }
-						: { constraints: post.scoping.constraints }
+						? { criteria: post.scoping.criteria, plain: post.successCriteria }
+						: { constraints: post.scoping.constraints, plain: post.constraints }
 			b.push(eventType, payload)
 			return b.events
 		}

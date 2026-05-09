@@ -10,8 +10,19 @@
  */
 
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import {
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	readdirSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs"
 import { resolve } from "node:path"
+import { lockSync, unlockSync } from "proper-lockfile"
 import { v7 as uuidv7 } from "uuid"
 
 import { FermentStorage, resolveFermentsDir } from "./store.js"
@@ -99,14 +110,22 @@ export interface FermentScopedPayload {
 
 export interface ScopingGoalSetPayload {
 	goal: NonNullable<Scoping["goal"]>
+	/** Denormalized top-level Ferment.goal field (a plain string copy of the
+	 *  answer). The state machine writes both Ferment.goal AND Ferment.scoping.goal,
+	 *  so the fold needs both to reproduce the snapshot. Optional to keep legacy
+	 *  events parseable. */
+	plain?: string
 }
 
 export interface ScopingCriteriaSetPayload {
 	criteria: NonNullable<Scoping["criteria"]>
+	plain?: string
 }
 
 export interface ScopingConstraintsSetPayload {
 	constraints: NonNullable<Scoping["constraints"]>
+	/** Denormalized top-level Ferment.constraints field (string[]). */
+	plain?: string[]
 }
 
 export interface ScopingPhasesSetPayload {
@@ -368,6 +387,55 @@ export class FermentEventStore {
 	}
 
 	/**
+	 * Run `fn` while holding an exclusive cross-process lock on the ferment's
+	 * snapshot file. Used to make the dual-write (snapshot + event log) atomic
+	 * from any reader's perspective and to serialize concurrent mutations from
+	 * parallel subagents racing on the same ferment.
+	 *
+	 * `proper-lockfile.lockSync` requires the target file to exist; we touch it
+	 * if it doesn't. The release is best-effort — if it throws (e.g. lock was
+	 * already released by a stale-recovery path), we swallow the error rather
+	 * than masking the underlying mutation result.
+	 */
+	private withLock<T>(fermentId: string, fn: () => T): T {
+		const snapPath = this.snapshotPath(fermentId)
+		mkdirSync(resolve(snapPath, ".."), { recursive: true })
+		if (!existsSync(snapPath)) {
+			closeSync(openSync(snapPath, "a"))
+		}
+		// `lockSync` does not accept `retries` (the async API does). For
+		// contended locks we hand-roll a retry loop with exponential backoff,
+		// because the sync API just throws ELOCKED on conflict.
+		let release: () => void = () => {}
+		const start = Date.now()
+		const maxWaitMs = 5_000
+		let attempt = 0
+		while (true) {
+			try {
+				release = lockSync(snapPath, { stale: 30_000 })
+				break
+			} catch (err) {
+				if (Date.now() - start >= maxWaitMs) throw err
+				const wait = Math.min(50 * 2 ** attempt, 500)
+				attempt++
+				const end = Date.now() + wait
+				while (Date.now() < end) {
+					// busy-wait — sync lock retry
+				}
+			}
+		}
+		try {
+			return fn()
+		} finally {
+			try {
+				release()
+			} catch {
+				// Lock may have been released by stale-recovery; safe to ignore.
+			}
+		}
+	}
+
+	/**
 	 * Append one event to the log with pre/post hashes derived from the supplied
 	 * states. Used by the convenience methods (`create`, `addDecision`, etc.) that
 	 * already hold both pre and post in scope; callers using `applyAndPersist` go
@@ -447,47 +515,56 @@ export class FermentEventStore {
 	 * events from the post-state — it only persists what was given.
 	 */
 	writeWithEvents(post: Ferment, events: FermentEvent[]): Ferment {
-		this.storage.write(post)
-		for (const event of events) {
-			this.appendEvent(post.id, event)
-		}
-		return post
+		return this.withLock(post.id, () => {
+			this.storage.write(post)
+			for (const event of events) {
+				this.appendEvent(post.id, event)
+			}
+			return post
+		})
 	}
 
 	// ─── Core CRUD (dual-write) ────────────────────────────────────────────────
 
 	create(name: string, description?: string): Ferment {
+		// storage.create allocates the UUID; we don't know it until after the call
+		// runs. So the lock for the genesis event covers only the emit, not the
+		// snapshot creation itself. That's safe because the snapshot path can't
+		// collide before the UUID is assigned.
 		const ferment = this.storage.create(name, description)
-		// `pre` for ferment_created is conceptually empty — we use the post to anchor
-		// the chain at a deterministic value (preStateHash := postStateHash for the
-		// genesis event). Chain consumers know the genesis event has no real pre.
-		// We pass createdAt + worktree in the payload so fold reproduces the
-		// snapshot exactly; otherwise the fold leaves worktree empty and uses
-		// event.timestamp instead of the storage's create-time, breaking hash chain
-		// equivalence at the very first command boundary.
-		this.emit(
-			ferment,
-			ferment,
-			"ferment_created",
-			{
-				id: ferment.id,
-				name: ferment.name,
-				description: ferment.description,
-				mode: ferment.mode,
-				worktree: ferment.worktree,
-				createdAt: ferment.createdAt,
-			},
-			ferment.createdAt,
-		)
-		return ferment
+		return this.withLock(ferment.id, () => {
+			// `pre` for ferment_created is conceptually empty — we use the post to anchor
+			// the chain at a deterministic value (preStateHash := postStateHash for the
+			// genesis event). Chain consumers know the genesis event has no real pre.
+			// We pass createdAt + worktree in the payload so fold reproduces the
+			// snapshot exactly; otherwise the fold leaves worktree empty and uses
+			// event.timestamp instead of the storage's create-time, breaking hash chain
+			// equivalence at the very first command boundary.
+			this.emit(
+				ferment,
+				ferment,
+				"ferment_created",
+				{
+					id: ferment.id,
+					name: ferment.name,
+					description: ferment.description,
+					mode: ferment.mode,
+					worktree: ferment.worktree,
+					createdAt: ferment.createdAt,
+				},
+				ferment.createdAt,
+			)
+			return ferment
+		})
 	}
 
 	delete(id: string): boolean {
-		// Remove event log if present
-		if (this.hasEvents(id)) {
-			unlinkSync(this.eventsPath(id))
-		}
-		return this.storage.delete(id)
+		return this.withLock(id, () => {
+			if (this.hasEvents(id)) {
+				unlinkSync(this.eventsPath(id))
+			}
+			return this.storage.delete(id)
+		})
 	}
 
 	// ─── Decisions & Memories (dual-write) ────────────────────────────────────
@@ -495,13 +572,15 @@ export class FermentEventStore {
 	// invoked directly by tools without producing a Command.
 
 	addDecision(id: string, title: string, description: string, phaseId?: string, stepId?: string): Ferment | undefined {
-		const pre = this.storage.get(id)
-		if (!pre) return undefined
-		const result = this.storage.addDecision(id, title, description, phaseId, stepId)
-		if (!result) return undefined
-		const decision = result.decisions[result.decisions.length - 1]
-		this.emit(pre, result, "decision_added", { decision })
-		return result
+		return this.withLock(id, () => {
+			const pre = this.storage.get(id)
+			if (!pre) return undefined
+			const result = this.storage.addDecision(id, title, description, phaseId, stepId)
+			if (!result) return undefined
+			const decision = result.decisions[result.decisions.length - 1]
+			this.emit(pre, result, "decision_added", { decision })
+			return result
+		})
 	}
 
 	addMemory(
@@ -511,23 +590,27 @@ export class FermentEventStore {
 		phaseId?: string,
 		stepId?: string,
 	): Ferment | undefined {
-		const pre = this.storage.get(id)
-		if (!pre) return undefined
-		const result = this.storage.addMemory(id, category, content, phaseId, stepId)
-		if (!result) return undefined
-		const memory = result.memories[result.memories.length - 1]
-		this.emit(pre, result, "memory_added", { memory })
-		return result
+		return this.withLock(id, () => {
+			const pre = this.storage.get(id)
+			if (!pre) return undefined
+			const result = this.storage.addMemory(id, category, content, phaseId, stepId)
+			if (!result) return undefined
+			const memory = result.memories[result.memories.length - 1]
+			this.emit(pre, result, "memory_added", { memory })
+			return result
+		})
 	}
 
 	/** Update worktree metadata (branch / dirty / commit / path). Emits worktree_updated. */
 	updateWorktree(id: string, worktree: Ferment["worktree"]): Ferment | undefined {
-		const current = this.storage.get(id)
-		if (!current) return undefined
-		const updated: Ferment = { ...current, worktree, updatedAt: new Date().toISOString() }
-		this.storage.write(updated)
-		this.emit(current, updated, "worktree_updated", { worktree })
-		return updated
+		return this.withLock(id, () => {
+			const current = this.storage.get(id)
+			if (!current) return undefined
+			const updated: Ferment = { ...current, worktree, updatedAt: new Date().toISOString() }
+			this.storage.write(updated)
+			this.emit(current, updated, "worktree_updated", { worktree })
+			return updated
+		})
 	}
 
 	// ─── Migration ─────────────────────────────────────────────────────────────
@@ -541,6 +624,10 @@ export class FermentEventStore {
 	 * which to use based on mtime.
 	 */
 	migrateLegacy(id: string): Ferment | undefined {
+		return this.withLock(id, () => this._migrateLegacyLocked(id))
+	}
+
+	private _migrateLegacyLocked(id: string): Ferment | undefined {
 		const ferment = this.storage.get(id)
 		if (!ferment) return undefined
 		if (this.hasEvents(id)) return ferment // already migrated
@@ -807,17 +894,37 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 		case "scoping_goal_set": {
 			if (!state) throw new Error("scoping_goal_set requires existing state")
 			const p = event.payload as ScopingGoalSetPayload
-			return { ...state, scoping: { ...state.scoping, goal: p.goal }, updatedAt: event.timestamp }
+			return {
+				...state,
+				goal: p.plain ?? p.goal.answer,
+				scoping: { ...state.scoping, goal: p.goal },
+				updatedAt: event.timestamp,
+			}
 		}
 		case "scoping_criteria_set": {
 			if (!state) throw new Error("scoping_criteria_set requires existing state")
 			const p = event.payload as ScopingCriteriaSetPayload
-			return { ...state, scoping: { ...state.scoping, criteria: p.criteria }, updatedAt: event.timestamp }
+			return {
+				...state,
+				successCriteria: p.plain ?? p.criteria.answer,
+				scoping: { ...state.scoping, criteria: p.criteria },
+				updatedAt: event.timestamp,
+			}
 		}
 		case "scoping_constraints_set": {
 			if (!state) throw new Error("scoping_constraints_set requires existing state")
 			const p = event.payload as ScopingConstraintsSetPayload
-			return { ...state, scoping: { ...state.scoping, constraints: p.constraints }, updatedAt: event.timestamp }
+			return {
+				...state,
+				constraints:
+					p.plain ??
+					p.constraints.answer
+						.split(",")
+						.map((s) => s.trim())
+						.filter(Boolean),
+				scoping: { ...state.scoping, constraints: p.constraints },
+				updatedAt: event.timestamp,
+			}
 		}
 		case "scoping_phases_set": {
 			if (!state) throw new Error("scoping_phases_set requires existing state")
