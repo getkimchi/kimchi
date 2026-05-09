@@ -121,13 +121,13 @@ jobs:
         run: pnpm run build:binary
 
       - name: Package binary
-        run: tar -czf kimchi-code-canary_${{ matrix.os }}_${{ matrix.arch }}.tar.gz -C dist bin share
+        run: tar -czf kimchi_${{ matrix.os }}_${{ matrix.arch }}.tar.gz -C dist bin share
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kimchi-code-canary_${{ matrix.os }}_${{ matrix.arch }}
-          path: kimchi-code-canary_${{ matrix.os }}_${{ matrix.arch }}.tar.gz
+          name: kimchi_${{ matrix.os }}_${{ matrix.arch }}
+          path: kimchi_${{ matrix.os }}_${{ matrix.arch }}.tar.gz
 
   smoke-test:
     needs: [preflight, build]
@@ -144,12 +144,12 @@ jobs:
       - name: Download linux binary
         uses: actions/download-artifact@v4
         with:
-          name: kimchi-code-canary_linux_amd64
+          name: kimchi_linux_amd64
 
       - name: Extract binary into dist/
         run: |
           mkdir -p dist
-          tar -xzf kimchi-code-canary_linux_amd64.tar.gz -C dist
+          tar -xzf kimchi_linux_amd64.tar.gz -C dist
 
       - name: Smoke tests
         run: pnpm run test:smoke
@@ -176,7 +176,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum kimchi-code-canary_*.tar.gz > checksums.txt
+          sha256sum kimchi_*.tar.gz > checksums.txt
 
       - name: Build release notes
         env:
@@ -211,5 +211,5 @@ jobs:
             --notes-file release-notes.md \
             --prerelease \
             --target "$GITHUB_SHA" \
-            artifacts/kimchi-code-canary_*.tar.gz \
+            artifacts/kimchi_*.tar.gz \
             artifacts/checksums.txt

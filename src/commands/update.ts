@@ -5,17 +5,20 @@ import { getVersion } from "../utils.js"
 interface UpdateFlags {
 	force: boolean
 	dryRun: boolean
+	canary: boolean
 }
 
 function parseFlags(args: string[]): UpdateFlags | string {
-	const flags: UpdateFlags = { force: false, dryRun: false }
+	const flags: UpdateFlags = { force: false, dryRun: false, canary: false }
 	for (const a of args) {
 		if (a === "--force" || a === "-f") flags.force = true
 		else if (a === "--dry-run") flags.dryRun = true
+		else if (a === "--canary") flags.canary = true
 		else if (a === "--help" || a === "-h") {
 			return [
-				"Usage: kimchi update [--force] [--dry-run]",
+				"Usage: kimchi update [--canary] [--force] [--dry-run]",
 				"",
+				"  --canary      Install the latest canary build from master",
 				"  --force, -f   Skip the confirmation prompt",
 				"  --dry-run     Check for updates without installing",
 			].join("\n")
@@ -60,7 +63,7 @@ export async function runUpdate(args: string[]): Promise<number> {
 	const current = getVersion()
 	let check: Awaited<ReturnType<typeof checkForUpdate>>
 	try {
-		check = await checkForUpdate({ currentVersion: current, skipCache: true })
+		check = await checkForUpdate({ currentVersion: current, skipCache: true, canary: flags.canary })
 	} catch (err) {
 		console.error(`kimchi update: failed to check for updates: ${(err as Error).message}`)
 		return 1
@@ -90,7 +93,7 @@ export async function runUpdate(args: string[]): Promise<number> {
 
 	console.log(`Updating to ${check.latestVersion}…`)
 	try {
-		await applyUpdate({ tag: check.latestVersion })
+		await applyUpdate({ tag: check.tag })
 	} catch (err) {
 		console.error(`kimchi update: ${(err as Error).message}`)
 		return 1

@@ -10,7 +10,10 @@ import { isStale, isUpdateCheckDisabled, loadRepoState, saveRepoState } from "./
 
 export interface CheckResult {
 	currentVersion: string
+	/** User-facing version string (e.g. "v0.0.23" or "0.0.0-canary.20260509.abc1234"). */
 	latestVersion: string
+	/** GitHub release tag used for download URLs ("v0.0.23" or "canary"). */
+	tag: string
 	releaseUrl: string
 	hasUpdate: boolean
 	cached: boolean
@@ -27,6 +30,14 @@ export interface CheckOptions {
 	skipCache?: boolean
 	currentVersion: string
 	client?: GitHubClient
+	/** Resolve the floating `canary` release instead of latest stable. */
+	canary?: boolean
+}
+
+/** Strip the "Canary " title prefix to recover the embedded version string. */
+function canaryVersionFromName(name: string): string {
+	const m = /^Canary\s+(.+)$/.exec(name)
+	return m ? m[1] : "canary"
 }
 
 /**
@@ -46,8 +57,24 @@ export async function checkForUpdate(opts: CheckOptions): Promise<CheckResult> {
 		return {
 			currentVersion: opts.currentVersion,
 			latestVersion: opts.currentVersion,
+			tag: "",
 			releaseUrl: "",
 			hasUpdate: false,
+			cached: false,
+		}
+	}
+
+	if (opts.canary) {
+		// Canary always bypasses cache: the floating `canary` tag is replaced
+		// on every master push, and a stale `latest_version: "canary"` entry
+		// would mask new builds.
+		const info = await client.canaryRelease(repo)
+		return {
+			currentVersion: opts.currentVersion,
+			latestVersion: canaryVersionFromName(info.name),
+			tag: info.tagName,
+			releaseUrl: info.htmlUrl,
+			hasUpdate: true,
 			cached: false,
 		}
 	}
@@ -80,11 +107,12 @@ export async function checkForUpdate(opts: CheckOptions): Promise<CheckResult> {
 	// only parses bare semver, so strip the prefix here. We keep `latestVersion`
 	// itself unchanged so cached state and user-facing messages still show the
 	// canonical tag name.
-	const tag = (latestVersion ?? "").replace(/^v/, "")
-	const hasUpdate = tag !== "" && !compareSemverGte(opts.currentVersion, tag)
+	const semver = (latestVersion ?? "").replace(/^v/, "")
+	const hasUpdate = semver !== "" && !compareSemverGte(opts.currentVersion, semver)
 	return {
 		currentVersion: opts.currentVersion,
 		latestVersion,
+		tag: latestVersion,
 		releaseUrl,
 		hasUpdate,
 		cached,
