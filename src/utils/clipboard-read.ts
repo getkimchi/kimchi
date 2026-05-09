@@ -27,7 +27,10 @@ export async function readClipboardImage(): Promise<{ bytes: Uint8Array; mimeTyp
 	// 2. macOS file-URL fallback — only when upstream returns null on Darwin.
 	if (process.platform !== "darwin") return null
 
-	const { clipboard } = getNativeClipboard()
+	const nativeResult = getNativeClipboard()
+	if (!nativeResult) return null
+
+	const clipboard = nativeResult.clipboard
 	if (!clipboard) return null
 
 	let formats: string[] = []

@@ -10,9 +10,8 @@ const { mockReadClipboardImage, mockGetNativeClipboard, mockReadImageFileFromDis
 	}),
 )
 
-// The deep-import path is aliased in vitest.config.ts to __mocks__/earendil-clipboard-image.js
-// so this vi.mock resolves correctly (not a missing specifier error).
-vi.mock("@earendil-works/pi-coding-agent/dist/utils/clipboard-image.js", () => ({
+// Mock the local clipboard-image.ts which replaced the deep import.
+vi.mock("./clipboard-image.js", () => ({
 	readClipboardImage: mockReadClipboardImage,
 }))
 

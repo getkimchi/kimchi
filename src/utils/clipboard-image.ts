@@ -230,12 +230,26 @@ function readClipboardImageViaXclip(): ClipboardImage | null {
 }
 
 async function readClipboardImageViaNativeClipboard(): Promise<ClipboardImage | null> {
-	const { clipboard } = getNativeClipboard()
-	if (!clipboard || !clipboard.hasImage()) {
+	let nativeClipboard: unknown
+
+	try {
+		nativeClipboard = getNativeClipboard()?.clipboard
+	} catch {
 		return null
 	}
 
-	const imageData = await clipboard.getImageBinary()
+	if (!nativeClipboard || typeof nativeClipboard !== "object") {
+		return null
+	}
+
+	const hasImage = (nativeClipboard as { hasImage?: () => boolean }).hasImage
+	const getImageBinary = (nativeClipboard as { getImageBinary?: () => Promise<Uint8Array> }).getImageBinary
+
+	if (!hasImage?.() || !getImageBinary) {
+		return null
+	}
+
+	const imageData = await getImageBinary()
 	if (!imageData || imageData.length === 0) {
 		return null
 	}
