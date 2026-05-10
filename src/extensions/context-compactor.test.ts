@@ -260,6 +260,27 @@ describe("contextCompactorExtension", () => {
 		expect(data.cutoff).toBe(1)
 	})
 
+	it("extends the protected window to include the most recent user message", async () => {
+		const { pi, trigger, entries } = makeMockPI()
+		contextCompactorExtension(pi)
+		await trigger("message_end", makeMessageEndEvent(40_000))
+
+		// oldTool (index 0) is prunable, userMsg (index 1) must be preserved,
+		// and 30 tool results (indices 2-31) fill the protected window.
+		// baseCutoff = 2 would drop userMsg; floor brings it down to 1.
+		const oldTool = makeToolResult("bash", "x".repeat(600))
+		const userMsg = makeUser()
+		const recent = Array.from({ length: 30 }, () => makeToolResult("bash", "x".repeat(600)))
+		const messages = [oldTool, userMsg, ...recent] as ContextEvent["messages"]
+
+		const result = (await trigger("context", { messages })) as { messages: ContextEvent["messages"] }
+		expect(result).toBeDefined()
+		expect(result.messages[1]).toBe(userMsg) // user message preserved
+		expect(entries).toHaveLength(1)
+		const data = entries[0].data as { cutoff: number }
+		expect(data.cutoff).toBe(1)
+	})
+
 	it("does not emit entry when no messages are actually pruned", async () => {
 		const { pi, trigger, entries } = makeMockPI()
 		contextCompactorExtension(pi)
