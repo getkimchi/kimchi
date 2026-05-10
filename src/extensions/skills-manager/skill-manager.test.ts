@@ -91,6 +91,24 @@ describe("validateFrontmatter", () => {
 		expect(result?.toLowerCase()).toContain("content")
 	})
 
+	it("rejects missing description field", async () => {
+		const result = await validateFrontmatter("---\nfoo: bar\n---\nBody here.")
+		expect(result).not.toBeNull()
+		expect(result).toContain("description")
+	})
+
+	it("rejects empty description", async () => {
+		const result = await validateFrontmatter('---\ndescription: ""\n---\nBody here.')
+		expect(result).not.toBeNull()
+		expect(result).toContain("description")
+	})
+
+	it("rejects whitespace-only description", async () => {
+		const result = await validateFrontmatter('---\ndescription: "   "\n---\nBody here.')
+		expect(result).not.toBeNull()
+		expect(result).toContain("description")
+	})
+
 	it("does not treat body --- as a delimiter", async () => {
 		const result = await validateFrontmatter("---\ndescription: test\n---\nBody with\n---\ninside it.")
 		expect(result).toBeNull()
