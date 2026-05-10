@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // Verifies ACP session/load: reconnect-and-resume + ACP↔CLI round-trip.
-// Phase 4 of plans/acp-session-list-and-load.md.
 //
-// Two scenarios per PRD:
+// Two scenarios:
 //   A) Reconnect-and-resume — ACP creates session, disconnect, reconnect,
 //      session/load same id, follow-up prompt sees prior context.
 //   B) ACP↔CLI round-trip — ACP creates session + 1 turn, CLI resumes via
@@ -99,17 +98,21 @@ async function initConn(conn) {
 }
 
 async function promptWithTimeout(conn, sessionId, text) {
-	const result = await Promise.race([
-		conn.prompt({ sessionId, prompt: [{ type: "text", text }] }),
-		delay(PROMPT_TIMEOUT_MS).then(() => ({ stopReason: "TIMEOUT" })),
-	])
+	// Attach a no-op catch BEFORE racing: if the timeout wins and conn.prompt
+	// rejects later, an unhandled rejection would crash the runner under
+	// stricter Node defaults.
+	const promptPromise = conn.prompt({ sessionId, prompt: [{ type: "text", text }] }).catch((err) => ({
+		stopReason: "ERROR",
+		error: err instanceof Error ? err.message : String(err),
+	}))
+	const result = await Promise.race([promptPromise, delay(PROMPT_TIMEOUT_MS).then(() => ({ stopReason: "TIMEOUT" }))])
 	return result
 }
 
 async function scenarioReconnectResume() {
 	process.stderr.write("\n=== scenario A: reconnect-and-resume ===\n")
 	const failures = []
-	const TOKEN = "PHASE4-ALPHA-7K9"
+	const TOKEN = "ALPHA-7K9"
 
 	const a = spawnAcp()
 	let sessionId
@@ -182,8 +185,8 @@ async function scenarioReconnectResume() {
 async function scenarioCrossToolRoundTrip() {
 	process.stderr.write("\n=== scenario B: ACP↔CLI round-trip ===\n")
 	const failures = []
-	const TOK_A = "PHASE4-BETA-3F2"
-	const TOK_B = "PHASE4-GAMMA-9X8"
+	const TOK_A = "BETA-3F2"
+	const TOK_B = "GAMMA-9X8"
 
 	const a = spawnAcp()
 	let sessionId
@@ -230,6 +233,11 @@ async function scenarioCrossToolRoundTrip() {
 	})
 	liveProcs.add(cli)
 	cli.once("exit", () => liveProcs.delete(cli))
+	// If the child exits before reading stdin, `end(cliPrompt)` emits EPIPE
+	// as an uncaught exception and aborts the test runner. Swallow both
+	// streams' errors — the exit-code check below is the source of truth.
+	cli.on("error", (e) => process.stderr.write(`[B2] cli error: ${e}\n`))
+	cli.stdin.on("error", () => {})
 	cli.stdin.end(cliPrompt)
 	const cliExit = await Promise.race([
 		new Promise((r) => cli.once("exit", (code, sig) => r({ code, sig }))),
@@ -285,10 +293,10 @@ async function scenarioCrossToolRoundTrip() {
 	}
 
 	// Step 4: prove turn 3 actually persisted by reloading from a fresh ACP
-	// process and counting replayed user prompts. PRD wording: "verify all
-	// three turns are visible". Without this step we'd only have shown that
-	// turns 1+2 are in context after the round trip — the third turn could
-	// silently be lost on disk and the assertions above would still pass.
+	// process and counting replayed user prompts — verify all three turns
+	// are visible. Without this step we'd only have shown that turns 1+2 are
+	// in context after the round trip; the third turn could silently be lost
+	// on disk and the assertions above would still pass.
 	const c = spawnAcp()
 	try {
 		await initConn(c.conn)

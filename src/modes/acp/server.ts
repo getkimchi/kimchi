@@ -110,6 +110,11 @@ export class KimchiAcpAgent implements Agent {
 	// Track non-text prompt block types we've already warned about so a
 	// misbehaving client that sends 1000 image blocks doesn't flood stderr.
 	private warnedBlockTypes = new Set<string>()
+	// Ids currently inside loadSession's `await sessionLoader(...)` window.
+	// Without this, two concurrent loads of the same id both pass the
+	// `sessions.has()` guard, open the JSONL twice, and the later registration
+	// overwrites (and leaks) the earlier session record.
+	private loadingSessions = new Set<string>()
 	private shutdownPromise: Promise<void> | undefined
 
 	constructor(
@@ -228,10 +233,16 @@ export class KimchiAcpAgent implements Agent {
 		// two writers on the same file would interleave entries unpredictably. Zed
 		// should close the live session before reloading. invalidRequest (-32600)
 		// signals "method valid but state forbids it now".
-		if (this.sessions.has(params.sessionId)) {
+		if (this.sessions.has(params.sessionId) || this.loadingSessions.has(params.sessionId)) {
 			throw RequestError.invalidRequest(undefined, `session ${params.sessionId} is already loaded; close it first`)
 		}
-		const session = await this.sessionLoader(params)
+		this.loadingSessions.add(params.sessionId)
+		let session: AgentSession
+		try {
+			session = await this.sessionLoader(params)
+		} finally {
+			this.loadingSessions.delete(params.sessionId)
+		}
 		// Atomic ownership transfer mirrors newSession but covers the full
 		// register → replay → respond path: a throw at any point after the
 		// loader hands back a live session must unwind registration AND dispose,
@@ -257,8 +268,8 @@ export class KimchiAcpAgent implements Agent {
 			this.sessions.set(sid, { session, unsubscribe })
 			// Replay BEFORE the response resolves so Zed sees a coherent transcript
 			// when the loadSession promise settles. No turn context is created, so a
-			// concurrent session/cancel during replay is a no-op (matches the PRD
-			// invariant: "A turn must not be considered active during replay").
+			// concurrent session/cancel during replay is a no-op — a turn must not
+			// be considered active during replay.
 			this.replayTranscript(session)
 			return { models: this.modelStateForSession(session) }
 		} catch (err) {
@@ -504,14 +515,14 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
-	// Phase 3 replay: walk the persisted transcript on the leaf path and emit
+	// Replay: walk the persisted transcript on the leaf path and emit
 	// session/update notifications per content block — text, thinking, tool
 	// calls. Tool results are paired with their originating toolCall by id so
 	// the historical tool render shape (tool_call + terminal tool_call_update)
 	// matches what live turns produce. Compaction / branch_summary /
-	// model_change / custom entries emit nothing per PRD — using getBranch()
-	// (raw entries) instead of buildSessionContext() avoids surfacing
-	// compaction summaries as synthetic user messages.
+	// model_change / custom entries emit nothing — using getBranch() (raw
+	// entries) instead of buildSessionContext() avoids surfacing compaction
+	// summaries as synthetic user messages.
 	//
 	// Notifications go straight from this method to conn.sessionUpdate; we do
 	// NOT replay through the AgentSession event emitter, so extensions like
@@ -520,7 +531,12 @@ export class KimchiAcpAgent implements Agent {
 		const sessionId = session.sessionId
 		const entries = session.sessionManager.getBranch()
 		const toolResults = collectToolResults(entries)
+		// Evaluate hide-thinking once per replay — readHideThinkingSetting()
+		// hits disk synchronously, so a 200-turn session would otherwise do
+		// hundreds of blocking reads.
+		const emitThinking = !isHideThinkingEnabled()
 		for (const entry of entries) {
+			if (!entry || typeof entry !== "object") continue
 			if (entry.type !== "message") continue
 			const msg = entry.message
 			if (msg.role === "user") {
@@ -534,18 +550,23 @@ export class KimchiAcpAgent implements Agent {
 					},
 				})
 			} else if (msg.role === "assistant") {
-				this.replayAssistantBlocks(sessionId, msg.content, toolResults)
+				this.replayAssistantBlocks(sessionId, msg.content, toolResults, emitThinking)
 			}
 			// toolResult: handled inline alongside its originating toolCall above.
 		}
 	}
 
-	private replayAssistantBlocks(sessionId: string, content: unknown, toolResults: Map<string, ReplayToolResult>): void {
+	private replayAssistantBlocks(
+		sessionId: string,
+		content: unknown,
+		toolResults: Map<string, ReplayToolResult>,
+		emitThinking: boolean,
+	): void {
 		if (!Array.isArray(content)) return
 		// Buffer contiguous text blocks so a single assistant message renders as
-		// one agent_message_chunk per natural text segment (PRD: "emit the full
-		// message as a single chunk — no per-token chunking"). When a thinking
-		// or toolCall block interrupts the run, flush the buffered text first so
+		// one agent_message_chunk per natural text segment — emit the full
+		// message as a single chunk, no per-token chunking. When a thinking or
+		// toolCall block interrupts the run, flush the buffered text first so
 		// ordering relative to those structural blocks is preserved.
 		let textBuffer = ""
 		const flushText = () => {
@@ -577,7 +598,7 @@ export class KimchiAcpAgent implements Agent {
 				// payload only matters for multi-turn provider continuity.
 				if (redacted) continue
 				if (typeof thinking !== "string" || thinking.length === 0) continue
-				if (!shouldEmitThinking(thinking)) continue
+				if (!emitThinking) continue
 				this.send({
 					sessionId,
 					update: {
@@ -809,9 +830,9 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			throw RequestError.invalidParams(undefined, `failed to open session: ${msg}`)
 		}
 		// Reject cwd mismatch so a session created for one project can't be
-		// silently re-rooted into another. The PRD's "project moved on disk"
-		// case isn't supported in v1 — clients must load against the original
-		// workspace, or pi's listAll surfaces the canonical cwd.
+		// silently re-rooted into another. The "project moved on disk" case
+		// isn't supported — clients must load against the original workspace,
+		// or pi's listAll surfaces the canonical cwd.
 		const sessionCwd = sessionManager.getCwd()
 		if (sessionCwd !== cwd) {
 			throw RequestError.invalidParams(undefined, `session cwd ${sessionCwd} does not match requested cwd ${cwd}`)
@@ -951,10 +972,10 @@ export function describeToolCall(
 }
 
 // UserMessage.content is `string | (TextContent | ImageContent)[]` per pi-ai
-// types. For Phase 2 replay we only surface text — Zed has no UX surface for
-// historical image attachments, and the prompt capabilities advertise
-// image: false so a future replay path that emits historical images would
-// also need to flip that flag.
+// types. Replay only surfaces text — Zed has no UX surface for historical
+// image attachments, and the prompt capabilities advertise image: false so a
+// future replay path that emits historical images would also need to flip
+// that flag.
 export function userMessageText(content: unknown): string {
 	if (typeof content === "string") return content
 	if (!Array.isArray(content)) return ""
@@ -969,9 +990,10 @@ export function userMessageText(content: unknown): string {
 }
 
 // AssistantMessage.content is `(TextContent | ThinkingContent | ToolCall)[]`.
-// Phase 2 emits only `text`; thinking/toolCall blocks are deferred to Phase 3
-// so historical thinking still respects the hide-thinking redaction rules and
-// historical tool calls render as proper tool_call notifications.
+// This helper extracts only the `text` blocks; thinking and tool-call blocks
+// are emitted separately by the replay walker so historical thinking respects
+// the hide-thinking redaction rules and historical tool calls render as
+// proper tool_call notifications.
 export function assistantMessageText(content: unknown): string {
 	if (!Array.isArray(content)) return ""
 	const parts: string[] = []
