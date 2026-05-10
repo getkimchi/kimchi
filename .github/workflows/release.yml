@@ -127,6 +127,7 @@ jobs:
 
   homebrew:
     needs: [release]
+    if: ${{ !contains(github.ref_name, '.rc.') }}
     runs-on: ubuntu-latest
 
     steps:
