@@ -25,79 +25,12 @@ const HORIZONTAL_PADDING = 2
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching ANSI/OSC
 const OSC133_RE = /\x1b\]133;[A-Z]\x07/g
 
-// The interactive TUI has 8 children in a fixed order:
-//   0 headerContainer, 1 chatContainer, 2 pendingMessagesContainer,
-//   3 statusContainer, 4 widgetContainerAbove, 5 editorContainer,
-//   6 widgetContainerBelow, 7 footer.
-//
-// The last 5 form the pinned bottom section.  Including statusContainer
-// (the working indicator "◑ Mixing…") keeps the editor/footer stable
-// when the indicator toggles.
-const EXPECTED_CHILDREN_COUNT = 8
-const BOTTOM_CHILDREN_COUNT = 5
-
-function renderChildren(children: TUI["children"], start: number, end: number, width: number): string[] {
-	const lines: string[] = []
-	for (let i = start; i < end; i++) {
-		for (const line of children[i].render(width)) {
-			lines.push(line)
-		}
-	}
-	return lines
-}
-
 function patchTuiPadding(tui: TUI) {
+	const original = tui.render.bind(tui)
 	const pad = " ".repeat(HORIZONTAL_PADDING)
-
-	const originalRender = tui.render.bind(tui)
-
-	// Track the highest line count we ever emitted.  When content shrinks
-	// (e.g. model selector dismissed, tool output collapsed) we pad back
-	// to this mark so the TUI's diff renderer never sees fewer lines than
-	// before — which would trigger a fullRender(clear=true) that clears
-	// the terminal scrollback and repositions the bottom UI.  Keeping the
-	// count monotonically non-decreasing lets old content scroll into the
-	// terminal scrollback naturally, just like Claude Code.
-	let highWaterMark = 0
-
 	tui.render = (width: number): string[] => {
-		const children = tui.children
-
-		if (children.length !== EXPECTED_CHILDREN_COUNT) {
-			if (process.env.NODE_ENV !== "production") {
-				console.warn(
-					`[ui] expected ${EXPECTED_CHILDREN_COUNT} TUI children for bottom-pin layout, ` +
-						`got ${children.length} — falling back to default render`,
-				)
-			}
-			return originalRender(width)
-		}
-
-		const innerWidth = Math.max(1, width - HORIZONTAL_PADDING * 2)
-		const splitAt = children.length - BOTTOM_CHILDREN_COUNT
-
-		const topLines = renderChildren(children, 0, splitAt, innerWidth)
-		const bottomLines = renderChildren(children, splitAt, children.length, innerWidth)
-
-		const terminalHeight = tui.terminal.rows
-		const totalContent = topLines.length + bottomLines.length
-		const minLines = Math.max(terminalHeight, totalContent, highWaterMark)
-		const paddingCount = minLines - totalContent
-
-		const allLines: string[] = []
-		for (const line of topLines) {
-			allLines.push(line)
-		}
-		for (let i = 0; i < paddingCount; i++) {
-			allLines.push("")
-		}
-		for (const line of bottomLines) {
-			allLines.push(line)
-		}
-
-		highWaterMark = allLines.length
-
-		return allLines.map((line: string) => pad + line.replace(OSC133_RE, ""))
+		const lines = original(Math.max(1, width - HORIZONTAL_PADDING * 2))
+		return lines.map((line: string) => pad + line.replace(OSC133_RE, ""))
 	}
 }
 
