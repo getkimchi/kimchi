@@ -20,7 +20,7 @@ export default function startupUpdateExtension(pi: ExtensionAPI) {
 		try {
 			const result = await checkForUpdate({ currentVersion: current, skipCache: false })
 			if (result.hasUpdate) {
-				const updateCmd = ctx.ui.theme.bold(isHomebrewInstall() ? "brew upgrade kimchi" : "kimchi update")
+				const updateCmd = ctx.ui.theme.bold(isHomebrewInstall() ? "brew upgrade kimchi-dev" : "kimchi update")
 				ctx.ui.setStatus(UPDATE_STATUS_KEY, `Update available! Run ${updateCmd}`)
 			}
 		} catch {
