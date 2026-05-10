@@ -133,6 +133,71 @@ function extractTrailingQuestion(text: string): string {
 	return trimmed.slice(-200)
 }
 
+/**
+ * Attempt to extract contextual options from assistant message text.
+ * Returns undefined if no patterns match (fallback to boolean yes/no).
+ *
+ * Recognizes:
+ * 1. Numbered: lines starting with `1)` / `2)` / `3)`  or  `1.`, `2.`, `3.`
+ * 2. Lettered: lines starting with `(a)`/`(b)`/`(c)`  or  `a)`, `b)`, `c)`
+ * 3. Bulleted: lines starting with `- `, `* `, or `• `
+ * 4. Inline alternatives: "A, B, or C?" before the question mark
+ *
+ * Requires at least 2 options to be useful.
+ */
+function extractContextualOptions(text: string): string[] | undefined {
+	const trimmed = text.trim()
+	if (!trimmed) return undefined
+
+	const lines = trimmed
+		.split("\n")
+		.map((l) => l.trim())
+		.filter(Boolean)
+
+	// 1. Numbered options — 1) 2) 3) or 1. 2. 3.
+	const numbered = lines.filter((l) => /^\d+[.)]\s/.test(l))
+	if (numbered.length >= 2) {
+		return numbered.map((l) => l.replace(/^\d+[.)]\s*/, "").trim())
+	}
+
+	// 2. Lettered options — (a) (b) (c) or a) b) c)
+	const lettered = lines.filter((l) => /^\(?[a-z][.)]\)?\s/.test(l))
+	if (lettered.length >= 2) {
+		return lettered.map((l) => l.replace(/^\(?[a-z][.)]\)?\s*/, "").trim())
+	}
+
+	// 3. Bulleted options — - X, * X, • X
+	const bulleted = lines.filter((l) => /^[-*•]\s/.test(l))
+	if (bulleted.length >= 2) {
+		return bulleted.map((l) => l.replace(/^[-*•]\s*/, "").trim())
+	}
+
+	// 4. Inline alternatives with "or" — e.g. "Should we retry, skip, or pause?"
+	const qIdx = trimmed.lastIndexOf("?")
+	if (qIdx !== -1) {
+		const beforeQ = trimmed.slice(0, qIdx)
+		const orIdx = beforeQ.lastIndexOf(" or ")
+		if (orIdx !== -1) {
+			const beforeOr = beforeQ.slice(0, orIdx)
+			const afterOr = beforeQ.slice(orIdx + 4)
+			const parts = beforeOr
+				.split(",")
+				.map((s) => s.trim())
+				.filter(Boolean)
+			if (parts.length >= 1 && afterOr) {
+				// Strip leading filler words (should we / do you want to / etc.) from the first option
+				const cleaned = parts.map((p, i) => {
+					if (i !== 0) return p
+					return p.replace(/^(should we|do you want to|would you like to)\s+/i, "").trim() || p
+				})
+				return [...cleaned, afterOr.trim()]
+			}
+		}
+	}
+
+	return undefined
+}
+
 // ─── Planner system prompt supplement ─────────────────────────────────────────
 
 function buildPlannerSupplement(): string {
@@ -364,7 +429,11 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		// of the message. The full text is already rendered above the dialog —
 		// the dialog title should be the question itself, nothing more.
 		const title = extractTrailingQuestion(text)
-		const choice = await ctx.ui.select(title, [yesLabel, noLabel, "Let me say something else"])
+		const contextualOptions = extractContextualOptions(text)
+		const options = contextualOptions
+			? [...contextualOptions, "Let me say something else"]
+			: [yesLabel, noLabel, "Let me say something else"]
+		const choice = await ctx.ui.select(title, options)
 		if (!choice) return
 
 		let reply: string
@@ -375,7 +444,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 			reply = custom
 		} else if (choice === noLabel) {
 			reply = isDraft ? "No — please revise." : "No, pause for now."
-		} else if (isDraft) {
+		} else if (choice === yesLabel) {
 			// User confirmed during scoping. If the LLM stashed a structured
 			// proposal via propose_phases, apply it deterministically here —
 			// no further LLM round-trip needed. The user confirmed what they
@@ -407,6 +476,9 @@ export default function fermentExtension(pi: ExtensionAPI) {
 				reply =
 					"User confirmed the plan but you never called propose_phases — there's nothing structured for the host to save. Call propose_phases now with the same plan you just showed, then end with 'Does this plan look right?' so the user can confirm again."
 			}
+		} else if (contextualOptions?.includes(choice)) {
+			// User selected a contextual option — pass it through verbatim
+			reply = choice
 		} else {
 			reply = "Yes, proceed."
 		}

@@ -1,4 +1,4 @@
-import { CORE_GUIDELINES, DOCUMENTS_SECTION, FOOTER, PHASE_TAGGING, TOOLS_SECTION } from "./shared.js"
+import { CORE_GUIDELINES, DOCUMENTS_SECTION, FOOTER, PHASE_TAGGING, TOOLS_SECTION, USER_INTERACTION } from "./shared.js"
 
 export default [
 	`You are an expert coding assistant. Your available tools are listed under **Available Tools** below — use only those, never guess or invent tool names. You can also spawn subagents when delegation is more appropriate than doing the work yourself.
@@ -92,5 +92,6 @@ By default subagents are killed after 3 minutes of silence. Heavy-tier models (c
 ${CORE_GUIDELINES}
 - **Sharing context between agents**: Pass plans and structured findings as Markdown files in the Documents directory, not as inline blobs in prompts.`,
 	PHASE_TAGGING,
+	USER_INTERACTION,
 	FOOTER,
 ].join("\n\n")

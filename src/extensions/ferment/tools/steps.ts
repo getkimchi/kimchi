@@ -62,7 +62,15 @@ export function registerStepTools(pi: ExtensionAPI): void {
 			const startCount = bumpStepStart(f.id, phase.id, step.id)
 			if (startCount >= 3) {
 				return toolErr(
-					`⚠ Stuck loop detected: step ${step.index} "${step.description}" has been started ${startCount} times without completing. Stop and ask the user: should we retry with a revised approach, skip this step, or pause the ferment? Do NOT call start_step again without user input.`,
+					`⚠ Stuck loop detected: step ${step.index} "${step.description}" has been started ${startCount} times without completing.
+
+What should we do?
+
+1) Retry with a revised approach
+2) Skip this step and move on
+3) Pause the ferment for now
+
+Do NOT call start_step again without user input.`,
 				)
 			}
 

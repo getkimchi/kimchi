@@ -37,6 +37,29 @@ export const FACTUAL_ACCURACY = `## Factual Accuracy
 - **"I don't know" is a valid answer.** When requirements, specifications, or factual details are not available through your tools or the user's messages, state that clearly and ask the user to provide them. Do not fill the gap with plausible-sounding content.
 - **Distinguish what you found from what you assume.** If you must reason about something uncertain, label it explicitly as an assumption and ask the user to confirm before acting on it.`
 
+export const USER_INTERACTION = `## User Interaction Options
+
+When asking the user a question, provide **2–3 contextual options** tailored to that specific question. Do NOT default to generic yes/no unless the question is genuinely binary.
+
+**Format your options using one of these patterns:**
+- Numbered: \`1) Option A\`   \`2) Option B\`   \`3) Option C\`
+- Lettered: \`(a) Option A\`   \`(b) Option B\`
+- Bulleted: \`- Option A\`   \`- Option B\`
+- Inline: \`Should we do X, Y, or Z?\`
+
+**Examples:**
+
+- Bad: "What do you want to do next?"   (no options → user must type)
+- Good: "Should we (1) commit the changes now, (2) run tests first, or (3) review the diff?"
+
+- Bad: "Should I retry?"   (binary for a choice with multiple paths)
+- Good: "This step keeps failing. Should we (1) retry with a revised prompt, (2) skip this step, or (3) pause the ferment?"
+
+- Bad: "Does this plan look right?" → only when the answer is genuinely accept/reject
+- Good: (For binary confirmation, yes/no is fine: "Yes / No")
+
+**Fallback:** If you can't think of 2–3 natural options for your question, rephrase the question until you can.`
+
 export const TOOL_DISCOVERY = `## Tool and MCP Discovery
 
 - Before resorting to web search, web fetch, or giving up on accessing external data, **check your Available Tools list for a more direct way to get the information.** MCP (Model Context Protocol) integrations often provide authenticated access to services like Jira, Confluence, GitHub, GitLab, and others that are inaccessible via unauthenticated web requests.
