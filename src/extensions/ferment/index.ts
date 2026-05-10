@@ -348,9 +348,11 @@ export default function fermentExtension(pi: ExtensionAPI) {
 
 		if (!text.endsWith("?")) return
 
-		// Don't intercept if the turn also had tool calls (mid-execution text)
+		// Don't intercept if the turn also had tool calls (mid-execution text),
+		// except during draft where a propose_phases tool call may accompany the
+		// confirmation question and the user still needs to respond.
 		const hasToolCalls = event.message.content.some((c: { type: string }) => c.type === "toolCall")
-		if (hasToolCalls) return
+		if (f.status !== "draft" && hasToolCalls) return
 
 		const isDraft = f.status === "draft"
 		const yesLabel = isDraft ? "Yes, this looks right" : "Yes, proceed"
