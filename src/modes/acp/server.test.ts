@@ -1,6 +1,6 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
-import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk"
+import type { AgentSideConnection, ListSessionsRequest, SessionNotification } from "@agentclientprotocol/sdk"
 import type {
 	AgentSession,
 	AgentSessionEvent,
@@ -1315,6 +1315,29 @@ describe("KimchiAcpAgent listSessions", () => {
 		// Lister receives the original (undefined) cwd; the default lister maps
 		// that to listAll(). Tests of the default lister itself live in pi.
 		expect(cwdSeen).toBeUndefined()
+	})
+
+	it("forwards additionalDirectories to the session lister", async () => {
+		let received: ListSessionsRequest | undefined
+		const agent = makeAgent(async (params) => {
+			received = params
+			return []
+		})
+		await agent.listSessions({
+			cwd: "/repo/foo",
+			additionalDirectories: ["/repo/bar", "/repo/baz"],
+		} as never)
+		expect(received?.additionalDirectories).toEqual(["/repo/bar", "/repo/baz"])
+	})
+
+	it("dedupes sessions returned across multiple roots by id", async () => {
+		// Custom lister stand-in for the multi-root default lister: returns the
+		// same id from two roots; handler must surface it once.
+		const dup = makePiSession({ id: "shared", modified: new Date("2026-04-01T00:00:00Z"), name: "shared" })
+		const uniq = makePiSession({ id: "uniq", modified: new Date("2026-03-01T00:00:00Z"), name: "uniq" })
+		const agent = makeAgent(async () => [dup, uniq, dup])
+		const res = await agent.listSessions({ cwd: "/p" } as never)
+		expect(res.sessions.map((s) => s.sessionId)).toEqual(["shared", "uniq"])
 	})
 
 	it("returns empty array for a directory with no sessions", async () => {

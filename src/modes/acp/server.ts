@@ -147,14 +147,22 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
-		// `additionalDirectories` is @experimental in the SDK and pi's SessionInfo
-		// has no slot for additional roots, so we accept the field but don't
-		// filter on it — rejecting would break Zed clients that send it
-		// optimistically. Cursor pagination is also out of scope for v1: pi reads
-		// only JSONL headers, so even four-digit session counts comfortably meet
-		// the 500ms NFR (revisit only if real installs hit slowness).
+		// Cursor pagination is out of scope for v1: pi reads only JSONL headers,
+		// so even four-digit session counts comfortably meet the 500ms NFR
+		// (revisit only if real installs hit slowness). `additionalDirectories`
+		// (@experimental) is honored when non-empty by the default lister.
 		const piSessions = await this.sessionLister(params)
-		const sessions = piSessions.map(toAcpSessionInfo)
+		// Dedupe by session id: the default lister merges results from multiple
+		// roots (cwd + additionalDirectories), and the same session can surface
+		// twice when a client passes its cwd as one of the additional roots.
+		// Keep first occurrence so cwd-listed entries win.
+		const seen = new Set<string>()
+		const sessions: ReturnType<typeof toAcpSessionInfo>[] = []
+		for (const s of piSessions) {
+			if (seen.has(s.id)) continue
+			seen.add(s.id)
+			sessions.push(toAcpSessionInfo(s))
+		}
 		// Sort newest-first by updatedAt so Zed's picker surfaces recent threads
 		// at the top without client-side sorting.
 		sessions.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))
@@ -772,13 +780,24 @@ function resolveSessionPathById(sessionDir: string, sessionId: string): string |
 
 function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
 	return async (params: ListSessionsRequest) => {
-		if (params.cwd) {
-			return SessionManager.list(params.cwd, join(options.agentDir, "sessions", encodeCwdDir(params.cwd)))
+		// Build the set of roots to enumerate: cwd (when present) plus any
+		// non-empty additionalDirectories. Dedupe to avoid double-listing when
+		// a client sends cwd as one of the additional roots.
+		const roots: string[] = []
+		if (params.cwd) roots.push(params.cwd)
+		for (const dir of params.additionalDirectories ?? []) {
+			if (!roots.includes(dir)) roots.push(dir)
 		}
-		// listAll has no agentDir slot in pi today, so a non-default agentDir
-		// won't be honored for the unscoped path. Acceptable v1 limitation:
-		// Zed's thread-import always supplies a cwd.
-		return SessionManager.listAll()
+		if (roots.length === 0) {
+			// listAll has no agentDir slot in pi today, so a non-default agentDir
+			// won't be honored for the unscoped path. Acceptable v1 limitation:
+			// Zed's thread-import always supplies a cwd.
+			return SessionManager.listAll()
+		}
+		const lists = await Promise.all(
+			roots.map((root) => SessionManager.list(root, join(options.agentDir, "sessions", encodeCwdDir(root)))),
+		)
+		return lists.flat()
 	}
 }
 
