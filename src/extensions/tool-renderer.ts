@@ -11,16 +11,11 @@ import type { TSchema } from "typebox"
 import { ToolBlockView, buildToolCallHeader, getTextContent } from "../components/tool-block.js"
 import { isToolExpanded, registerToolCall } from "../expand-state.js"
 
-function shortenPath(p: string): string {
-	const home = process.env.HOME ?? process.env.USERPROFILE ?? ""
-	return home && p.startsWith(home) ? `~${p.slice(home.length)}` : p
-}
-
 function formatArgs(toolName: string, args: Record<string, unknown>): string {
 	return (() => {
 		switch (toolName) {
 			case "read": {
-				const path = shortenPath(String(args.path ?? ""))
+				const path = String(args.path ?? "")
 				const range =
 					args.offset != null || args.limit != null
 						? ` [${args.offset ?? 0}..${args.limit != null ? Number(args.offset ?? 0) + Number(args.limit) : ""}]`
@@ -29,17 +24,17 @@ function formatArgs(toolName: string, args: Record<string, unknown>): string {
 			}
 			case "edit":
 			case "write":
-				return shortenPath(String(args.path ?? ""))
+				return String(args.path ?? "")
 			case "grep": {
 				const pattern = String(args.pattern ?? "")
-				const path = shortenPath(String(args.path ?? ""))
+				const path = String(args.path ?? "")
 				const include = args.include ? ` --include=${args.include}` : ""
 				return `${pattern} ${path}${include}`.trim()
 			}
 			case "find":
-				return `${String(args.pattern ?? "")} ${shortenPath(String(args.path ?? ""))}`.trim()
+				return `${String(args.pattern ?? "")} ${String(args.path ?? "")}`.trim()
 			case "ls":
-				return shortenPath(String(args.path ?? "."))
+				return String(args.path ?? ".")
 			default:
 				return JSON.stringify(args)
 		}
