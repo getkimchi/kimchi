@@ -158,7 +158,9 @@ export class KimchiAcpAgent implements Agent {
 		// Sort newest-first by updatedAt so Zed's picker surfaces recent threads
 		// at the top without client-side sorting.
 		sessions.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))
-		return { sessions }
+		// Explicit `nextCursor: null` signals end-of-pagination per the v1 spec
+		// so clients don't infer it from an omitted field.
+		return { sessions, nextCursor: null }
 	}
 
 	async authenticate(_: AuthenticateRequest): Promise<AuthenticateResponse> {

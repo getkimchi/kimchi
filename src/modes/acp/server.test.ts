@@ -1323,6 +1323,12 @@ describe("KimchiAcpAgent listSessions", () => {
 		expect(res.sessions).toEqual([])
 	})
 
+	it("returns nextCursor: null to signal end-of-pagination", async () => {
+		const agent = makeAgent(async () => [makePiSession({ id: "s" })])
+		const res = await agent.listSessions({ cwd: "/p" } as never)
+		expect(res.nextCursor).toBeNull()
+	})
+
 	it("sorts sessions newest-first by updatedAt", async () => {
 		const piSessions: PiSessionInfo[] = [
 			makePiSession({ id: "old", modified: new Date("2026-01-01T00:00:00Z"), name: "old" }),
