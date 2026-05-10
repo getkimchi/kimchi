@@ -4,9 +4,13 @@ const checkForUpdateMock = vi.fn()
 const getVersionMock = vi.fn()
 const isHomebrewInstallMock = vi.fn(() => false)
 
-vi.mock("../update/workflow.js", () => ({
-	checkForUpdate: (...args: unknown[]) => checkForUpdateMock(...args),
-}))
+vi.mock(import("../update/workflow.js"), async (importOriginal) => {
+	const actual = await importOriginal()
+	return {
+		...actual,
+		checkForUpdate: (...args: unknown[]) => checkForUpdateMock(...args),
+	}
+})
 vi.mock("../utils.js", () => ({
 	getVersion: () => getVersionMock(),
 }))

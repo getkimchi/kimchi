@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isHomebrewInstall } from "../update/paths.js"
-import { checkForUpdate } from "../update/workflow.js"
+import { checkForUpdate, parseCanarySha7 } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
 
 const UPDATE_STATUS_KEY = "update-available"
@@ -19,7 +19,7 @@ export default function startupUpdateExtension(pi: ExtensionAPI) {
 		const current = getVersion()
 		// Canary users opted into the canary track; don't nag them about
 		// stable. Currency on canary is checked by `kimchi update --canary`.
-		if (current.startsWith("0.0.0-canary.")) return
+		if (parseCanarySha7(current) !== null) return
 		try {
 			const result = await checkForUpdate({ currentVersion: current, skipCache: false })
 			if (result.hasUpdate) {
