@@ -35,7 +35,7 @@ const SURFACE_TINTS: ReadonlyArray<[token: string, delta: number, redBias: numbe
 	["toolPendingBg", 6, 0],
 	["toolSuccessBg", 12, 0],
 	["toolErrorBg", 14, 10],
-	["userMessageBg", 14, 0],
+	["userMessageBg", 40, 0],
 	["customMessageBg", 22, 0],
 	["selectedBg", 30, 0],
 ]
