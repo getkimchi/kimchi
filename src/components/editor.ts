@@ -73,6 +73,12 @@ export class PromptEditor extends CustomEditor {
 		this.tui.requestRender()
 	}
 
+	prependText(text: string): void {
+		const existing = this.getText()
+		this.setText(existing ? `${text} ${existing}` : `${text} `)
+		this.tui.requestRender()
+	}
+
 	override handleInput(data: string) {
 		if (this.expandHandler && this.kb.matches(data, "app.tools.expand")) {
 			this.expandHandler()

@@ -1,6 +1,7 @@
 // ACP (Agent Client Protocol) mode: JSON-RPC 2.0 over stdio using
 // @agentclientprotocol/sdk. Lets Zed / openclaw drive kimchi in-process.
 
+import { createServer } from "node:net"
 import { Readable, Writable } from "node:stream"
 import {
 	type Agent,
@@ -44,6 +45,8 @@ export interface RunAcpOptions {
 	agentDir: string
 	/** Override for tests. Defaults to the pi-coding-agent-backed factory. */
 	sessionFactory?: AcpSessionFactory
+	/** TCP port to listen on for incoming connections. If not provided, uses stdio. */
+	listenPort?: number
 }
 
 type TurnContext = {
@@ -353,6 +356,28 @@ export class KimchiAcpAgent implements Agent {
 		entry.turn = undefined
 		turn.reject(err)
 	}
+
+	// Handle extension notifications from IDE plugin
+	async extNotification(method: string, params: Record<string, unknown>): Promise<void> {
+		switch (method) {
+			case "editor/selection": {
+				// IDE plugin sent selected code - it's in the clipboard
+				// The agent should read from clipboard if needed
+				console.error("[kimchi] IDE plugin: editor/selection notification received")
+				return
+			}
+			default:
+				console.error(`[kimchi] Unknown extension notification: ${method}`)
+		}
+	}
+
+	// Handle extension requests from IDE plugin
+	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+		switch (method) {
+			default:
+				return { error: `Unknown extension method: ${method}` }
+		}
+	}
 }
 
 // Exported for testing. In practice the only way model is missing here is a
@@ -471,6 +496,8 @@ function toolResultContent(result: unknown): ToolCallContent[] {
 	return out
 }
 
+const DEFAULT_TCP_PORT = 8080
+
 export async function runAcpMode(options: RunAcpOptions): Promise<void> {
 	// stdout is reserved for JSON-RPC frames; redirect stray console output to
 	// stderr so a lone `console.log` anywhere in pi-mono/extensions can't corrupt
@@ -480,6 +507,18 @@ export async function runAcpMode(options: RunAcpOptions): Promise<void> {
 	console.warn = console.error
 	console.debug = console.error
 
+	const { listenPort } = options
+
+	if (listenPort !== undefined) {
+		// TCP mode: listen on specified port
+		await runAcpTcpServer(options, listenPort)
+	} else {
+		// Default: listen on port 8080 for IDE plugin
+		await runAcpTcpServer(options, DEFAULT_TCP_PORT)
+	}
+}
+
+async function runAcpStdio(options: RunAcpOptions): Promise<void> {
 	const writable = Writable.toWeb(process.stdout) as WritableStream<Uint8Array>
 	const readable = Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>
 	const stream = ndJsonStream(writable, readable)
@@ -509,4 +548,60 @@ export async function runAcpMode(options: RunAcpOptions): Promise<void> {
 		for (const s of signals) process.off(s, onSignal)
 		await agentInstance?.shutdown()
 	}
+}
+
+async function runAcpTcpServer(options: RunAcpOptions, port: number): Promise<void> {
+	const server = createServer((socket) => {
+		console.error(`[kimchi] ACP client connected from ${socket.remoteAddress}:${socket.remotePort}`)
+
+		const writable = Writable.toWeb(socket) as WritableStream<Uint8Array>
+		const readable = Readable.toWeb(socket) as ReadableStream<Uint8Array>
+		const stream = ndJsonStream(writable, readable)
+
+		let agentInstance: KimchiAcpAgent | undefined
+		const conn = new AgentSideConnection((c: AgentSideConnection) => {
+			agentInstance = new KimchiAcpAgent(c, options)
+			return agentInstance
+		}, stream)
+
+		const shutdown = async () => {
+			try {
+				await agentInstance?.shutdown()
+			} finally {
+				try {
+					socket.end()
+				} catch {}
+			}
+		}
+
+		socket.on("close", () => {
+			console.error("[kimchi] ACP client disconnected")
+		})
+
+		socket.on("error", (err) => {
+			console.error(`[kimchi] Socket error: ${err.message}`)
+		})
+
+		// Handle client disconnect
+		conn.closed.catch(() => {}).finally(() => shutdown())
+	})
+
+	return new Promise<void>((resolve, reject) => {
+		server.on("error", (err) => {
+			console.error(`[kimchi] TCP server error: ${err.message}`)
+			reject(err)
+		})
+
+		server.listen(port, "127.0.0.1", () => {
+			console.error(`[kimchi] ACP listening on tcp://127.0.0.1:${port}`)
+		})
+
+		// Handle graceful shutdown
+		const signals: NodeJS.Signals[] = process.platform === "win32" ? ["SIGTERM"] : ["SIGTERM", "SIGHUP", "SIGINT"]
+		const onSignal = (sig: NodeJS.Signals) => {
+			console.error(`[kimchi] Received ${sig}, shutting down...`)
+			server.close(() => resolve())
+		}
+		for (const s of signals) process.on(s, onSignal)
+	})
 }

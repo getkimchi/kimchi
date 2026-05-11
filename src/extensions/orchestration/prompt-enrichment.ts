@@ -28,6 +28,7 @@ import type { AssistantMessage, ImageContent, TextContent } from "@mariozechner/
 import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@mariozechner/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@mariozechner/pi-tui"
 import { ANSI, fg } from "../../ansi.js"
+import { consumePendingAtMentions, getIdeContext } from "../../ide/ide-server-client.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import {
@@ -357,10 +358,6 @@ export default function (skillPaths: string[]) {
 				// Only inject capabilities on the first turn or when the model changes.
 				// Re-injecting every turn accumulates duplicate capability blocks in the
 				// context window, inflating token usage and confusing the model.
-				if (!enrichmentGuard.shouldEnrich(currentModelId)) {
-					return { action: "continue" as const }
-				}
-
 				// Non-interactive (--print/--mode rpc) and debug-prompts mode: replace the user
 				// text inline. The "handled" + sendUserMessage path below relies on the TUI event
 				// loop staying alive long enough for the queued message to drain — in --print mode
@@ -368,14 +365,28 @@ export default function (skillPaths: string[]) {
 				// the in-flight LLM call, so nothing is ever sent. Transforming inline lets the
 				// caller's await session.prompt(enrichedPrompt) do the work synchronously.
 				const debugPrompts = pi.getFlag("debug-prompts") === true
+				const ideContext = getIdeContext() ?? undefined
+
+				// Consume pending at-mentions before the enrichment guard so they're never
+				// dropped on subsequent turns when shouldEnrich() returns false.
+				const atMentions = consumePendingAtMentions()
+				const userText = atMentions.length > 0 ? `${atMentions.join(" ")}\n\n${event.text}` : event.text
+
+				if (!enrichmentGuard.shouldEnrich(currentModelId)) {
+					if (atMentions.length > 0) {
+						return { action: "transform" as const, text: userText, images: event.images }
+					}
+					return { action: "continue" as const }
+				}
+
 				if (debugPrompts || !ctx.hasUI) {
-					const enrichedPrompt = transformPrompt(event.text, registry, currentModel)
+					const enrichedPrompt = transformPrompt(userText, registry, currentModel, true, ideContext)
 					return { action: "transform" as const, text: enrichedPrompt, images: event.images }
 				}
 
 				// In UI mode the original user message is sent separately via sendUserMessage,
 				// so the task text must not be duplicated inside the enriched-prompt header.
-				const enrichedPrompt = transformPrompt(event.text, registry, currentModel, false)
+				const enrichedPrompt = transformPrompt(userText, registry, currentModel, false, ideContext)
 				pi.sendMessage(
 					{
 						customType: ENRICHED_PROMPT_CUSTOM_TYPE,
@@ -384,7 +395,7 @@ export default function (skillPaths: string[]) {
 					},
 					{ deliverAs: "nextTurn" },
 				)
-				const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: event.text }]
+				const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: userText }]
 				if (event.images) userContent.push(...event.images)
 				pi.sendUserMessage(userContent)
 

@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<idea-plugin>
+    <id>dev.kimchi.jetbrains</id>
+    <name>Kimchi AI Coding Agent</name>
+    <version>1.0.0</version>
+    <vendor email="support@kimchi.dev" url="https://kimchi.dev">Kimchi</vendor>
+
+    <description><![CDATA[
+        <p>Kimchi AI Coding Agent integration for JetBrains IDEs.</p>
+        <p>Features:</p>
+        <ul>
+            <li>WebSocket MCP server for IDE context sharing</li>
+            <li>Send selected code to Kimchi terminal via at-mention</li>
+            <li>Automatic selection tracking</li>
+        </ul>
+    ]]></description>
+
+    <change-notes><![CDATA[
+        <p>1.0.0 - Initial release</p>
+    ]]></change-notes>
+
+    <idea-version since-build="232"/>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- Application-level plugin service -->
+        <applicationService
+            serviceImplementation="dev.kimchi.jetbrains.KimchiPlugin"/>
+
+        <!-- Per-project WebSocket server (MCP server) -->
+        <projectService
+            serviceImplementation="dev.kimchi.jetbrains.ide.KimchiWebSocketServer"/>
+
+        <!-- Start the WebSocket server when a project opens -->
+        <postStartupActivity
+            implementation="dev.kimchi.jetbrains.startup.IdeServerStartupActivity"/>
+
+        <!-- Tool window showing at-mentioned files -->
+        <toolWindow
+            id="Kimchi"
+            icon="/icons/kimchi.svg"
+            anchor="right"
+            factoryClass="dev.kimchi.jetbrains.toolwindow.ApprovalToolWindowFactory"
+            canCloseContents="false"/>
+
+        <!-- Settings -->
+        <applicationConfigurable
+            parentId="tools"
+            instance="dev.kimchi.jetbrains.settings.KimchiSettingsConfigurable"
+            id="dev.kimchi.jetbrains.settings.KimchiSettingsConfigurable"
+            displayName="Kimchi"/>
+
+        <applicationService
+            serviceImplementation="dev.kimchi.jetbrains.settings.KimchiSettings"/>
+    </extensions>
+
+    <actions>
+        <!-- Send selected code to Kimchi as an @-mention -->
+        <action id="Kimchi.SendToTerminal"
+                class="dev.kimchi.jetbrains.actions.SendToKimchiAction"
+                text="Send to Kimchi"
+                description="Send selected code to Kimchi as an @-mention"
+                icon="/icons/kimchi.svg">
+            <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="CopyPasteGroup"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift K"/>
+        </action>
+
+        <!-- Show Kimchi Tool Window -->
+        <action id="Kimchi.ShowToolWindow"
+                class="dev.kimchi.jetbrains.actions.KimchiToolWindowAction"
+                text="Show Kimchi"
+                description="Show Kimchi tool window"
+                icon="/icons/kimchi.svg">
+            <add-to-group group-id="ToolWindowGroup" anchor="after" relative-to-action="ActivateTerminalToolWindow"/>
+        </action>
+    </actions>
+
+    <resource-bundle>messages.KimchiBundle</resource-bundle>
+</idea-plugin>

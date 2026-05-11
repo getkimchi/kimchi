@@ -103,6 +103,27 @@ function isAcpMode(args: string[]): boolean {
 	return false
 }
 
+function getAcpListenPort(args: string[]): number | undefined {
+	for (let i = 0; i < args.length; i++) {
+		const a = args[i]
+		// Support both --listen and --port
+		if (a === "--listen" || a === "--port") {
+			const port = Number.parseInt(args[i + 1], 10)
+			if (!Number.isNaN(port) && port > 0 && port < 65536) {
+				return port
+			}
+		}
+		const match = a.match(/^--(?:listen|port)=(\d+)$/)
+		if (match) {
+			const port = Number.parseInt(match[1], 10)
+			if (!Number.isNaN(port) && port > 0 && port < 65536) {
+				return port
+			}
+		}
+	}
+	return undefined
+}
+
 try {
 	// Top-level kimchi subcommands (setup, claude, opencode, …) and the
 	// top-level --help take ownership before any harness setup runs.
@@ -277,8 +298,18 @@ try {
 		const rawArgs = process.argv.slice(2)
 		if (acpMode) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
-			await runAcpMode({ extensionFactories, agentDir })
+			const listenPort = getAcpListenPort(rawArgs)
+			await runAcpMode({ extensionFactories, agentDir, listenPort })
 		} else {
+			// Connect to IDE plugin WebSocket MCP server if available
+			const { connectToIde } = await import("./ide/ide-server-client.js")
+			const ideConnected = await connectToIde(process.cwd())
+			if (ideConnected) {
+				console.error("[kimchi] IDE plugin connected - context sharing enabled")
+			} else {
+				console.error("[kimchi] No IDE plugin detected - running in standalone mode")
+			}
+
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
 			const { main } = await import("@mariozechner/pi-coding-agent")
 			await main(rawArgs, { extensionFactories })

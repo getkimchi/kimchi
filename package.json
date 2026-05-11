@@ -10,6 +10,7 @@
 	"scripts": {
 		"clean": "rm -rf dist",
 		"build": "tsc --noEmit && node scripts/copy-resources.js --dev",
+		"build:jetbrains": "cd plugins/jetbrains && ./gradlew buildPlugin",
 		"build:binary": "node scripts/build-binary.js",
 		"install:local": "node scripts/install-local.js",
 		"build:binary-linux-arm64": "node scripts/build-binary.js --target linux-arm64",

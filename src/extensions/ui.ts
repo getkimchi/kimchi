@@ -10,6 +10,7 @@ import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } 
 import { LogoHeader } from "../components/logo.js"
 import { SplashHeader } from "../components/splash-header.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
+import { setEditorInjector } from "../ide/ide-server-client.js"
 import { isBareExitAlias } from "./exit-utils.js"
 import { getMultiModelEnabled } from "./orchestration/prompt-enrichment.js"
 
@@ -113,6 +114,12 @@ function runScript(scriptPath: string, payload: object, tui: TUI, footer: Script
 }
 
 export default function uiExtension(pi: ExtensionAPI) {
+	setEditorInjector((text: string): boolean => {
+		if (!currentEditor) return false
+		currentEditor.prependText(text)
+		return true
+	})
+
 	let tuiPatched = false
 	let unsubModelCycleInput: (() => void) | null = null
 	let scriptFooter: ScriptFooter | null = null

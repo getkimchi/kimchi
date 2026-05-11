@@ -1,0 +1,44 @@
+#!/bin/sh
+#
+# Gradle wrapper script for Unix
+#
+
+# Find Java
+find_java() {
+    # Check JAVA_HOME first
+    if [ -n "$JAVA_HOME" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+        echo "$JAVA_HOME/bin/java"
+        return
+    fi
+
+    # Check common macOS Homebrew locations
+    for dir in \
+        "/opt/homebrew/opt/openjdk@17/bin/java" \
+        "/opt/homebrew/opt/openjdk/bin/java" \
+        "/opt/homebrew/Cellar/openjdk*/23.0.2/bin/java" \
+        "/Library/Java/JavaVirtualMachines/*/Contents/Home/bin/java" \
+        "/usr/local/opt/openjdk@17/bin/java" \
+        "/usr/local/opt/openjdk/bin/java"
+    do
+        for match in $dir; do
+            if [ -x "$match" ]; then
+                echo "$match"
+                return
+            fi
+        done
+    done
+
+    # Fallback to PATH
+    echo "java"
+}
+
+JAVACMD=$(find_java)
+
+# Get the path to this script
+APP_HOME=$(cd "$(dirname "$0")" && pwd)
+
+# Build the classpath
+CLASSPATH="$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
+
+# Execute Gradle
+exec "$JAVACMD" -classpath "$CLASSPATH" org.gradle.wrapper.GradleWrapperMain "$@"

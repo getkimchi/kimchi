@@ -58,11 +58,27 @@ export interface CurrentModelInfo {
 	name: string
 }
 
+export interface IdeContext {
+	filePath?: string
+	lineStart?: number
+	lineEnd?: number
+}
+
+function formatIdeContext(ideContext: IdeContext | undefined): string {
+	if (!ideContext?.filePath) return ""
+	const ref =
+		ideContext.lineStart !== undefined && ideContext.lineEnd !== undefined
+			? `@${ideContext.filePath}:${ideContext.lineStart}-${ideContext.lineEnd}`
+			: `@${ideContext.filePath}`
+	return `## IDE Context\n\n- **Active selection:** ${ref}\n`
+}
+
 export function transformPrompt(
 	userPrompt: string,
 	registry: ModelRegistry,
 	currentModel?: CurrentModelInfo,
 	includeTask = true,
+	ideContext?: IdeContext,
 ): string {
 	const subagentModels = registry.getModelsWithCapabilities().filter((m) => m.id !== currentModel?.id)
 	const modelsSection = formatModelsSection(subagentModels)
@@ -80,11 +96,14 @@ export function transformPrompt(
 
 	const template = includeTask ? userPromptHeader + userPromptTaskSection : userPromptHeader
 
+	const ideContextSection = formatIdeContext(ideContext)
+	const promptWithIdeContext = ideContextSection + userPrompt
+
 	return template
 		.replace("{{CURRENT_MODEL_NAME}}", () => currentModelName)
 		.replace("{{CURRENT_MODEL_CAPABILITIES}}", () => currentModelCapabilities)
 		.replace("{{MODELS}}", () => modelsSection)
-		.replace("{{USER_PROMPT}}", () => userPrompt)
+		.replace("{{USER_PROMPT}}", () => promptWithIdeContext)
 }
 
 export function buildOrchestratorSystemPrompt(
