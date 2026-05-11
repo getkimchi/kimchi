@@ -244,9 +244,22 @@ async function readClipboardImageViaNativeClipboard(): Promise<ClipboardImage | 
 
 	const hasImage = (nativeClipboard as { hasImage?: () => boolean }).hasImage
 	const getImageBinary = (nativeClipboard as { getImageBinary?: () => Promise<Uint8Array> }).getImageBinary
+	const availableFormats = (nativeClipboard as { availableFormats?: () => string[] }).availableFormats
 
 	if (!hasImage?.() || !getImageBinary) {
 		return null
+	}
+
+	// When a file is copied in Finder (Cmd+C), macOS puts a
+	// "public.file-url" + a thumbnail on the pasteboard.
+	// getImageBinary() returns the thumbnail/icon in this case.
+	// Detect this and return null so clipboard-read.ts uses AppleScript
+	// to read the actual file from disk.
+	if (availableFormats) {
+		const formats = availableFormats()
+		if (formats.includes("public.file-url")) {
+			return null
+		}
 	}
 
 	const imageData = await getImageBinary()
