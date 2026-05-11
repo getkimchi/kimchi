@@ -83,14 +83,20 @@ export const WorkItemSchema = z.object({
 
 ## Lock files
 
-A lock file `ready/wi_<id>.json.lock` is held by the claimer while the item is in `in-progress/`. Uses `proper-lockfile` (already in `package.json`).
+Locks live in a dedicated, state-independent directory so they do not move when the work-item file is renamed between state directories:
+
+```
+.kimchi/coordination/.locks/<item-id>.lock
+```
+
+Uses `proper-lockfile` (already in `package.json`). Keying off `<item-id>` only (not the current state directory) means a single lock identity follows the item across all state transitions.
 
 Lock lifecycle:
-1. **Acquire:** before `ready → in-progress` rename, acquire lock via `proper-lockfile`
-2. **Hold:** while item is `in-progress/`, lock is held
-3. **Release:** on `in-progress → done` or `in-progress → blocked`, release lock after rename
+1. **Acquire:** before `ready → in-progress` rename, acquire `.locks/<id>.lock` via `proper-lockfile`.
+2. **Hold:** while item is `in-progress/`, lock is held.
+3. **Release:** on `in-progress → done` or `in-progress → blocked`, release the lock after the rename completes.
 
-Lock files themselves are ephemeral and do not need to be committed.
+Lock files are ephemeral and gitignored. `claimed_by` MUST be set to a stable identifier the dispatcher chose at spawn time (e.g. `agent:<profile-name>:<session-id>`) — bare pids are not portable across restarts.
 
 ---
 
@@ -112,7 +118,11 @@ Before renaming `todo/<id>.json` → `ready/<id>.json`, the dispatcher must veri
 
 ### Blocked state (in-progress → blocked)
 
-The item is renamed into `blocked/` with `block_reason` written into the JSON. The lock is released. To unblock, an external agent or human writes `block_reason: null` into the JSON and renames it back to `ready/`.
+The item is renamed into `blocked/` with `block_reason` written into the JSON. The lock is released. To unblock, an external agent or human REMOVES the `block_reason` field entirely (field-absent, not `null` and not empty string) and renames the file back to `ready/`.
+
+### Cancellation
+
+Cancellation of a `todo/` or `blocked/` item (rename directly to `archive/` without ever entering `done/`) is **deferred to v0.3**. v0.2 work items always flow forward through `done/` before archival.
 
 ---
 

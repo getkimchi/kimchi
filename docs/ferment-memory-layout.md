@@ -25,11 +25,17 @@ On-disk layout and frontmatter schema for ferment's Markdown-based memory store.
 |---|---|---|---|
 | `user` | `~/.kimchi/memory/user/` | n/a (HOME, outside repo) | No |
 | `project` | `<repo>/.kimchi/memory/project/` | Yes | No |
-| `local` | `<repo>/.kimchi/memory/local/<ferment-id>/` | No (gitignored) | No — per-process by convention |
+| `local` | `<repo>/.kimchi/memory/local/<ferment-id>/` | No (gitignored) | No — per-process by convention (if two agents share one checkout, behaviour is undefined in v0.2) |
 
 ### File-per-concern
 
 One file = one topic. Do not bundle unrelated concerns into a single file. Agents read and write plain Markdown after the frontmatter block — no custom parser required.
+
+### Filename rules
+
+- Allowed charset: `[a-z0-9-]+\.md` (lowercase, digits, hyphens; `.md` extension).
+- No spaces, no slashes inside filenames, no unicode in v0.2.
+- Filenames are stable identifiers — renaming a memory file is treated as deleting one topic and creating another.
 
 ## Frontmatter schema
 
