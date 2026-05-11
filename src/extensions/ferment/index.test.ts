@@ -1,9 +1,14 @@
 import { randomUUID } from "node:crypto"
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { FermentEventStore } from "../../ferment/event-store.js"
 import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
 import fermentExtension from "./index.js"
+import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { getActive, setActive } from "./state.js"
 
 vi.mock("../../ferment/shorten-title.js", () => ({
@@ -13,7 +18,7 @@ vi.mock("../../ferment/shorten-title.js", () => ({
 type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown
 type CommandHandler = (args: string, ctx: unknown) => Promise<unknown> | unknown
 
-function registerFermentExtension() {
+function registerFermentExtension(runtime?: FermentRuntime) {
 	const handlers = new Map<string, EventHandler>()
 	const commands = new Map<string, CommandHandler>()
 	const pi = {
@@ -29,7 +34,7 @@ function registerFermentExtension() {
 		sendUserMessage: vi.fn(),
 	} as unknown as ExtensionAPI
 
-	fermentExtension(pi)
+	fermentExtension(pi, runtime)
 	return { commands, handlers, pi }
 }
 
@@ -71,6 +76,32 @@ describe("/ferment command", () => {
 		const created = getActive()
 		expect(created?.name).toBe(title)
 		expect(created?.description).toBe(title)
+	})
+
+	it("uses injected runtime storage for headless add and scoping nudge", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-test-")))
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			setActive: vi.fn(),
+		}
+		const { commands, pi } = registerFermentExtension(runtime)
+		const fermentCommand = commands.get("ferment")
+		if (!fermentCommand) throw new Error("ferment command was not registered")
+		const title = `Injected runtime ${randomUUID()}`
+
+		await fermentCommand(`add "${title}"`, { hasUI: false, ui: { notify: vi.fn() } })
+
+		const created = storage.list().find((f) => f.name === title)
+		expect(created).toBeDefined()
+		expect(runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ id: created?.id }))
+		expect(getActive()?.name).not.toBe(title)
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				content: [expect.objectContaining({ text: expect.stringContaining("Scope:") })],
+			}),
+			{ triggerTurn: true },
+		)
 	})
 })
 

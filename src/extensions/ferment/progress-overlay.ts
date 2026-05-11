@@ -30,9 +30,9 @@ import {
 	stepBulletChar,
 	truncateLabel,
 } from "./colors.js"
-import { clearStepStart, getStorage, setActive } from "./state.js"
+import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { getLastHumanInputAt } from "./state.js"
-import { applyAndPersist } from "./tool-helpers.js"
+import { createApplyAndPersist } from "./tool-helpers.js"
 
 export function buildPhaseListTitle(f: Ferment): string {
 	const terminalCount = f.phases.filter(
@@ -190,24 +190,26 @@ export async function handleStepAction(
 	p: Phase,
 	s: Step,
 	ctx: ExtensionCommandContext,
+	runtime: FermentRuntime = defaultFermentRuntime,
 ): Promise<void> {
+	const applyAndPersist = createApplyAndPersist(runtime)
 	if (choice === "Mark step done") {
 		const out = applyAndPersist(f.id, { type: "complete_step", phaseId: p.id, stepId: s.id })
-		if (out.ok) setActive(out.ferment)
-		clearStepStart(f.id, p.id, s.id)
+		if (out.ok) runtime.setActive(out.ferment)
+		runtime.clearStepStart(f.id, p.id, s.id)
 		ctx.ui.notify(out.ok ? `Step ${s.index} marked done.` : `Could not complete step: ${out.error.message}`)
 	} else if (choice === "Retry step") {
 		const out = applyAndPersist(f.id, { type: "start_step", phaseId: p.id, stepId: s.id })
-		if (out.ok) setActive(out.ferment)
+		if (out.ok) runtime.setActive(out.ferment)
 		// User explicitly chose retry — reset stuck-loop counter so the agent isn't blocked
-		clearStepStart(f.id, p.id, s.id)
+		runtime.clearStepStart(f.id, p.id, s.id)
 		ctx.ui.notify(
 			out.ok ? `Step ${s.index} reset to running — tell the agent to retry.` : `Could not retry: ${out.error.message}`,
 		)
 	} else if (choice === "Skip step") {
 		const out = applyAndPersist(f.id, { type: "skip_step", phaseId: p.id, stepId: s.id })
-		if (out.ok) setActive(out.ferment)
-		clearStepStart(f.id, p.id, s.id)
+		if (out.ok) runtime.setActive(out.ferment)
+		runtime.clearStepStart(f.id, p.id, s.id)
 		ctx.ui.notify(out.ok ? `Step ${s.index} skipped.` : `Could not skip: ${out.error.message}`)
 	}
 }
@@ -217,12 +219,14 @@ export async function handlePhaseAction(
 	f: Ferment,
 	p: Phase,
 	ctx: ExtensionCommandContext,
+	runtime: FermentRuntime = defaultFermentRuntime,
 ): Promise<void> {
+	const applyAndPersist = createApplyAndPersist(runtime)
 	switch (choice) {
 		case "Activate phase": {
 			// activate_phase transitions ferment.status to "running" — no need for a separate updateStatus.
 			const out = applyAndPersist(f.id, { type: "activate_phase", phaseId: p.id })
-			if (out.ok) setActive(out.ferment)
+			if (out.ok) runtime.setActive(out.ferment)
 			ctx.ui.notify(out.ok ? `Phase "${p.name}" activated.` : `Could not activate: ${out.error.message}`)
 			break
 		}
@@ -231,7 +235,7 @@ export async function handlePhaseAction(
 			break
 		case "Mark phase complete": {
 			const out = applyAndPersist(f.id, { type: "complete_phase", phaseId: p.id, summary: "Completed via /progress" })
-			if (out.ok) setActive(out.ferment)
+			if (out.ok) runtime.setActive(out.ferment)
 			ctx.ui.notify(out.ok ? `Phase "${p.name}" complete.` : `Could not complete: ${out.error.message}`)
 			break
 		}
@@ -242,25 +246,25 @@ export async function handlePhaseAction(
 				phaseId: p.id,
 				reason: reason || "Failed via /progress",
 			})
-			if (out.ok) setActive(out.ferment)
+			if (out.ok) runtime.setActive(out.ferment)
 			ctx.ui.notify(out.ok ? `Phase "${p.name}" marked failed.` : `Could not fail: ${out.error.message}`)
 			break
 		}
 		case "Skip phase": {
 			const out = applyAndPersist(f.id, { type: "skip_phase", phaseId: p.id, reason: "Skipped via /progress" })
-			if (out.ok) setActive(out.ferment)
+			if (out.ok) runtime.setActive(out.ferment)
 			ctx.ui.notify(out.ok ? `Phase "${p.name}" skipped.` : `Could not skip: ${out.error.message}`)
 			break
 		}
 		case "Re-activate phase": {
 			const out = applyAndPersist(f.id, { type: "activate_phase", phaseId: p.id })
 			if (out.ok) {
-				setActive(out.ferment)
+				runtime.setActive(out.ferment)
 				// Reload phase from the post-state so we clear counters for the current step set, not
 				// the stale closure copy (audit doc finding #7).
 				const freshPhase = out.ferment.phases.find((ph) => ph.id === p.id)
 				for (const step of freshPhase?.steps ?? []) {
-					clearStepStart(f.id, p.id, step.id)
+					runtime.clearStepStart(f.id, p.id, step.id)
 				}
 			}
 			ctx.ui.notify(out.ok ? `Phase "${p.name}" re-activated.` : `Could not re-activate: ${out.error.message}`)

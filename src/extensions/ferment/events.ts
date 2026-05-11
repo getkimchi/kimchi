@@ -65,7 +65,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			return { systemPrompt: `${event.systemPrompt}${pausedSupplement}` }
 		}
 		if (f.status !== "running") return {}
-		const supplement = buildPlannerSupplement()
+		const supplement = buildPlannerSupplement(runtime)
 		return { systemPrompt: `${event.systemPrompt}${supplement}` }
 	})
 

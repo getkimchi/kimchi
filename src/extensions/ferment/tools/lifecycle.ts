@@ -98,7 +98,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 
 				const scopeOutcome = confirmPendingScope(runtime, params.ferment_id, params.phases, "propose_phases")
 				if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
-				maybeInjectAutoNudge(pi)
+				maybeInjectAutoNudge(pi, {}, runtime)
 				return toolOk(
 					`Proposal confirmed and saved. Ferment "${scopeOutcome.outcome.ferment.name}" is now planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s).`,
 				)
@@ -193,7 +193,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 				(params.constraints ?? []).join(", "),
 				phaseList,
 			)
-			maybeInjectAutoNudge(pi)
+			maybeInjectAutoNudge(pi, {}, runtime)
 
 			// Build the review note. confidence === 0 means the judge was unreachable
 			// or returned an unparseable response — we distinguish that case so the

@@ -21,15 +21,19 @@ import {
 	consumeScopingGate,
 	getActive,
 	getActiveId,
+	getCorrectiveStep,
 	getPhaseStartRef,
 	getStepStartRef,
 	getStorage,
+	isAutoModeEnabled,
 	isScopingConfirmed,
 	isScopingInteractive,
 	markHumanInput,
 	markScopingConfirmed,
 	markScopingInteractive,
 	setActive,
+	setAutoModeEnabled,
+	setCorrectiveStep,
 	setPhaseStartRef,
 	setStepStartRef,
 } from "./state.js"
@@ -39,6 +43,8 @@ export interface FermentRuntime {
 	getActive(): Ferment | undefined
 	getActiveId(): string | undefined
 	setActive(ferment: Ferment | undefined): void
+	isAutoModeEnabled(): boolean
+	setAutoModeEnabled(enabled: boolean): void
 	markHumanInput(): void
 	captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry): void
 	bumpStepStart(fermentId: string, phaseId: string, stepId: string): number
@@ -50,6 +56,8 @@ export interface FermentRuntime {
 	isScopingConfirmed(fermentId: string): boolean
 	consumeScopingGate(fermentId: string): void
 	clearAllScopingGates(): void
+	setCorrectiveStep(fermentId: string, phaseId: string, step: string): void
+	getCorrectiveStep(fermentId: string, phaseId: string): string | undefined
 	getPendingScope(fermentId: string): PendingScope | undefined
 	setPendingScope(fermentId: string, scope: PendingScope): void
 	attachPendingPhases(fermentId: string, phases: ScopePhaseInput[]): boolean
@@ -68,6 +76,8 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		getActive,
 		getActiveId,
 		setActive,
+		isAutoModeEnabled,
+		setAutoModeEnabled,
 		markHumanInput,
 		captureJudgeContext,
 		bumpStepStart,
@@ -79,6 +89,8 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		isScopingConfirmed,
 		consumeScopingGate,
 		clearAllScopingGates,
+		setCorrectiveStep,
+		getCorrectiveStep,
 		getPendingScope,
 		setPendingScope,
 		attachPendingPhases,

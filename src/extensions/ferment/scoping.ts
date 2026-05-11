@@ -32,7 +32,7 @@ import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { stripToolRefs } from "./format.js"
 import { isPlanMode } from "./modes.js"
-import { getStorage, markScopingInteractive } from "./state.js"
+import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 
 // ─── Pending scope buffer ─────────────────────────────────────────────────────
 // Holds the user's TUI-collected scoping answers + the LLM-proposed phases
@@ -75,8 +75,8 @@ export function clearAllPendingScopes(): void {
 
 // ─── Scoping flow ─────────────────────────────────────────────────────────────
 
-function buildScopePrompt(fermentId: string, _isPlan: boolean, rawIntent?: string): string {
-	const f = getStorage().get(fermentId)
+function buildScopePrompt(runtime: FermentRuntime, fermentId: string, _isPlan: boolean, rawIntent?: string): string {
+	const f = runtime.getStorage().get(fermentId)
 	if (!f) return ""
 	const action = determineNextAction(f)
 	const msg = `Scope: ${action.reason}`
@@ -84,10 +84,15 @@ function buildScopePrompt(fermentId: string, _isPlan: boolean, rawIntent?: strin
 	return `User wants to ferment: "${rawIntent}"\n\n${msg}`
 }
 
-export async function runScopingFlow(f: Ferment, pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+export async function runScopingFlow(
+	f: Ferment,
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	runtime: FermentRuntime = defaultFermentRuntime,
+): Promise<void> {
 	if (!ctx.ui.input) {
 		// Headless fallback: let the LLM handle scoping conversationally
-		const prompt = buildScopePrompt(f.id, isPlanMode())
+		const prompt = buildScopePrompt(runtime, f.id, isPlanMode())
 		void pi.sendMessage(
 			{
 				customType: "ferment_created_nudge",
@@ -126,7 +131,7 @@ export async function runScopingFlow(f: Ferment, pi: ExtensionAPI, ctx: Extensio
 
 	// All 3 prerequisites collected — now arm the confirmation gate. Doing this
 	// BEFORE the inputs would leak gate state if the user cancels mid-flow.
-	markScopingInteractive(f.id)
+	runtime.markScopingInteractive(f.id)
 
 	// Step 4: phases — let the LLM propose them given the context so far
 	pi.appendEntry("ferment_breadcrumb", { text: `scoping "${f.name}" · 4/4 — proposing phases…` })
@@ -140,7 +145,7 @@ export async function runScopingFlow(f: Ferment, pi: ExtensionAPI, ctx: Extensio
 	// the propose_phases tool when the LLM calls it. The tool-owned Yes/No dropdown then
 	// reads this combined buffer and applies scope deterministically — no
 	// follow-up prompt needed.
-	setPendingScope(f.id, {
+	runtime.setPendingScope(f.id, {
 		goal,
 		successCriteria: criteria,
 		constraints: constraintList,

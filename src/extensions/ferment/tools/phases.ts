@@ -16,7 +16,6 @@ import { isPlanMode } from "../modes.js"
 import { onPhaseCompleted } from "../nudge.js"
 import { captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
-import { setCorrectiveStep } from "../state.js"
 import { createApplyAndPersist, failedToolResult, resolvePhase, toolErr, toolOk } from "../tool-helpers.js"
 import { ActivateParams, CompletePhaseParams, FailPhaseParams, RefineParams, SkipPhaseParams } from "../tool-schemas.js"
 
@@ -226,10 +225,10 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			// we don't trust the rationale enough to ask for a fix.
 			if (!phaseGrade.unavailable && (phaseGrade.grade === "D" || phaseGrade.grade === "F")) {
 				const suggestion = await judgeSuggestCorrectiveStep(phase.name, phase.goal, phaseGrade)
-				if (suggestion) setCorrectiveStep(params.ferment_id, phase.id, suggestion)
+				if (suggestion) runtime.setCorrectiveStep(params.ferment_id, phase.id, suggestion)
 			}
 
-			onPhaseCompleted(pi)
+			onPhaseCompleted(pi, runtime)
 			const fresh = gradeOutcome.ferment
 			const next = fresh.phases.find((p) => p.status === "planned")
 			const gradeNote = `  Grade: ${phaseGrade.grade} — ${phaseGrade.rationale}`

@@ -384,6 +384,10 @@ export async function completeStep(
 
 export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
+	const stepServices: StepHandlerServices = {
+		...defaultStepHandlerServices,
+		onStepCompleted: (targetPi) => onStepCompleted(targetPi, runtime),
+	}
 	pi.registerTool({
 		name: "start_step",
 		label: "Start Step",
@@ -391,7 +395,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 			"Mark a step as running. Returns worker_model and parallel_siblings. See planner instructions in the system prompt for orchestration details.",
 		parameters: StepActionParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
-			return startStep(runtime, params, { pi, ctx })
+			return startStep(runtime, params, { pi, ctx }, stepServices)
 		},
 	})
 
@@ -402,7 +406,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 			"Mark step as done. If the step has a verification command it runs automatically — no need to call verify_step separately.",
 		parameters: CompleteStepParams,
 		async execute(_, params, signal, onUpdate, ctx) {
-			return completeStep(runtime, params, { pi, ctx, signal, onUpdate })
+			return completeStep(runtime, params, { pi, ctx, signal, onUpdate }, stepServices)
 		},
 	})
 
@@ -468,7 +472,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 				summary: params.summary,
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)
-			onStepCompleted(pi)
+			onStepCompleted(pi, runtime)
 
 			if (result.success) return toolOk(`✓ "${step.description}" verified.`)
 			return toolErr(`✗ "${step.description}" failed (exit ${exitCode}).`)
@@ -499,7 +503,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)
 			runtime.clearStepStart(f.id, phase.id, step.id)
-			onStepCompleted(pi)
+			onStepCompleted(pi, runtime)
 			return toolOk("Step skipped.")
 		},
 	})
@@ -528,7 +532,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 				error: params.error,
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)
-			onStepCompleted(pi)
+			onStepCompleted(pi, runtime)
 			return toolOk(
 				`Step ${step.index}: "${step.description}" marked as failed. Use skip_step to skip it, or retry the work and call start_step again.`,
 			)
