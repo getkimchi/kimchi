@@ -36,6 +36,12 @@ TASK_CRITERIA = {
         "max_tokens": 30_000,
         "max_duration_s": 120,
     },
+    "mega": {
+        "min_subagents": 3,
+        "max_subagents": 6,
+        "max_tokens": 800_000,
+        "max_duration_s": 900,
+    },
 }
 
 
