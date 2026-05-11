@@ -213,6 +213,20 @@ User: "Add user authentication"
 → set_phase({"phase": "review"})      # Verify the implementation
 ```
 
+## Benchmarking
+
+The `benchmark/` directory contains tools for smoke-testing kimchi sessions and auditing their quality.
+
+### Manual benchmarks
+
+Run predefined tasks (simple, complex, research) against different models and compare results.
+See `benchmark/terminal-bench-2/README.md` for Apple Silicon caveats, timeout tuning, and result interpretation.
+
+### Session phase audit
+
+Audit a completed session for phase discipline, code quality, architecture, testing, model alignment, and cost efficiency. The audit agent parses the session JSONL, reconstructs the phase timeline, and produces a graded report.
+See `benchmark/audit-session/README.md` for the full evaluation criteria and an end-to-end example.
+
 ## Development
 
 ### Prerequisites
