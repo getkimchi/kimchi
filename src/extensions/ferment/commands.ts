@@ -10,6 +10,7 @@ import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { formatFermentStatus } from "./format.js"
 import { appendRefEntry, maybeInjectAutoNudge } from "./nudge.js"
 import { maybeRunOnboarding } from "./onboarding.js"
+import { buildOneshotNudge } from "./oneshot.js"
 import {
 	buildPhaseActionOptions,
 	buildPhaseDetailTitle,
@@ -426,21 +427,7 @@ export class FermentCommandController {
 				pi.appendEntry("ferment_ack", {
 					text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nMode: exec (fully autonomous)`,
 				})
-				const nudge = `You are running a one-shot ferment: "${updated.name}" (ID: ${updated.id}).
-
-User intent: "${resolvedIntent}"
-
-Your task — execute ALL of the following steps WITHOUT pausing to ask the user:
-1. Call scope_ferment with:
-   - ferment_id: "${updated.id}"
-   - goal: derived from the user intent
-   - success_criteria: what observable outcome proves the goal
-   - constraints: any technical constraints implied by the intent
-   - phases: 3–7 ordered phases, each with 3–6 concrete steps and a verify bash command per step
-2. For each phase in order: call activate_phase, then refine_phase (if steps not pre-set), then for each step: start_step → (delegate to subagent worker) → complete_step
-3. When all phases are done: call complete_ferment
-
-CRITICAL: Do NOT use any tools other than ferment tools to research or explore first. Do NOT ask for confirmation at any point. Execute autonomously until complete_ferment is called.`
+				const nudge = buildOneshotNudge(updated, resolvedIntent)
 
 				void pi.sendMessage(
 					{

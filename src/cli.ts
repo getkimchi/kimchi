@@ -258,6 +258,17 @@ try {
 
 		const rawArgs = process.argv.slice(2)
 
+		// `--ferment-oneshot` is consumed entirely by kimchi: it tells the ferment
+		// extension to bootstrap a one-shot exec-mode ferment around the upcoming
+		// initial message. Strip it before pi-mono's parseArgs runs, since pi-mono
+		// errors on unknown flags. The flag is unary (no value).
+		for (let i = rawArgs.length - 1; i >= 0; i--) {
+			if (rawArgs[i] === "--ferment-oneshot") {
+				rawArgs.splice(i, 1)
+				process.env.KIMCHI_FERMENT_ONESHOT = "1"
+			}
+		}
+
 		const extensionFactories = [
 			startupUpdateExtension,
 			sessionIdCaptureExtension,

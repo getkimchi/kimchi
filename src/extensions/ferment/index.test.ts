@@ -42,6 +42,7 @@ afterEach(() => {
 	setActive(undefined)
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
+	Reflect.deleteProperty(process.env, "KIMCHI_FERMENT_ONESHOT")
 	clearFermentCache()
 	const storage = new FermentStorage()
 	for (const item of storage.list()) {
@@ -61,6 +62,86 @@ describe("fermentExtension session resume", () => {
 		expect(getActive()).toBeUndefined()
 		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBeUndefined()
 		expect(Object.hasOwn(process.env, "KIMCHI_ACTIVE_FERMENT")).toBe(false)
+	})
+})
+
+describe("fermentExtension one-shot bootstrap", () => {
+	it("creates an exec-mode ferment and rewrites the initial message into a nudge", async () => {
+		process.env.KIMCHI_FERMENT_ONESHOT = "1"
+		const { handlers, pi } = registerFermentExtension()
+		const sessionStart = handlers.get("session_start")
+		const input = handlers.get("input")
+		if (!sessionStart) throw new Error("session_start handler was not registered")
+		if (!input) throw new Error("input handler was not registered")
+
+		await sessionStart({}, { hasUI: false })
+
+		// session_start consumes the env var so subagents inheriting env can't
+		// re-trigger creation.
+		expect(Object.hasOwn(process.env, "KIMCHI_FERMENT_ONESHOT")).toBe(false)
+		expect(getActive()).toBeUndefined()
+
+		const intent = "Add a CSV export endpoint that streams the orders table"
+		const result = (await input({ type: "input", text: intent, source: "interactive" }, {})) as
+			| { action: "transform"; text: string }
+			| undefined
+
+		const created = getActive()
+		expect(created).toBeDefined()
+		expect(created?.mode).toBe("exec")
+		expect(created?.description).toBe(intent)
+
+		expect(result?.action).toBe("transform")
+		expect(result?.text).toContain("one-shot ferment")
+		expect(result?.text).toContain(intent)
+		expect(result?.text).toContain(created?.id ?? "")
+
+		// Bootstrap is a one-shot — a second input must pass through untouched.
+		const next = await input({ type: "input", text: "follow-up", source: "interactive" }, {})
+		expect(next).toBeUndefined()
+
+		// Side-effects: ack entry + ferment_reference entry get appended.
+		const calls = (pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])
+		expect(calls).toContain("ferment_ack")
+	})
+
+	it("prefers active-ferment resume when both env vars are set", async () => {
+		process.env.KIMCHI_ACTIVE_FERMENT = "missing-id"
+		process.env.KIMCHI_FERMENT_ONESHOT = "1"
+		const { handlers } = registerFermentExtension()
+		const sessionStart = handlers.get("session_start")
+		const input = handlers.get("input")
+		if (!sessionStart) throw new Error("session_start handler was not registered")
+		if (!input) throw new Error("input handler was not registered")
+
+		await sessionStart({}, { hasUI: false })
+
+		// Both env vars cleared — resume took priority and one-shot path is disarmed.
+		expect(Object.hasOwn(process.env, "KIMCHI_ACTIVE_FERMENT")).toBe(false)
+		expect(Object.hasOwn(process.env, "KIMCHI_FERMENT_ONESHOT")).toBe(false)
+
+		// And the input handler does NOT bootstrap a ferment for the next message.
+		const result = await input({ type: "input", text: "first message", source: "interactive" }, {})
+		expect(result).toBeUndefined()
+		expect(getActive()).toBeUndefined()
+	})
+
+	it("skips bootstrap inside a subagent process", async () => {
+		process.env.KIMCHI_FERMENT_ONESHOT = "1"
+		process.env.KIMCHI_SUBAGENT = "1"
+		const { handlers } = registerFermentExtension()
+		const sessionStart = handlers.get("session_start")
+		const input = handlers.get("input")
+		if (!sessionStart) throw new Error("session_start handler was not registered")
+		if (!input) throw new Error("input handler was not registered")
+
+		await sessionStart({}, { hasUI: false })
+
+		// Subagent short-circuits session_start, so the env var is untouched and
+		// the input handler will not perform a bootstrap (pendingOneshot stays false).
+		const result = await input({ type: "input", text: "anything", source: "interactive" }, {})
+		expect(result).toBeUndefined()
+		expect(getActive()).toBeUndefined()
 	})
 })
 
