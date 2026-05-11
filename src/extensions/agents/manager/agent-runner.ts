@@ -14,6 +14,7 @@ import {
 	createAgentSession,
 	getAgentDir,
 } from "@mariozechner/pi-coding-agent"
+import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
 import {
@@ -361,6 +362,12 @@ export async function runAgent(
 		process.env.KIMCHI_AGENT_PERSONA = agentConfig.name
 	}
 
+	const prevPhase = getCurrentPhase()
+	const personaPhase = agentConfig?.strengths?.[0]
+	if (personaPhase) {
+		setCurrentPhase(personaPhase)
+	}
+
 	try {
 		await session.prompt(effectivePrompt)
 	} finally {
@@ -375,6 +382,9 @@ export async function runAgent(
 			} else {
 				process.env.KIMCHI_AGENT_PERSONA = prevPersona
 			}
+		}
+		if (personaPhase) {
+			setCurrentPhase(prevPhase)
 		}
 	}
 

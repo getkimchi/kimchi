@@ -497,6 +497,16 @@ export function getCurrentPhase(): string | undefined {
 	return tagManagerInstance?.getPhase()
 }
 
+export function setCurrentPhase(phase: string | undefined): void {
+	if (!tagManagerInstance) return
+	if (phase === undefined) {
+		tagManagerInstance.setPhase(undefined)
+		return
+	}
+	if (!isValidPhase(phase)) return
+	tagManagerInstance.setPhase(phase)
+}
+
 export function getActiveTags(): string[] {
 	return tagManagerInstance?.getAllTags() ?? []
 }
