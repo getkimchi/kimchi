@@ -251,6 +251,7 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 
 			// Step 4: cleanup in-memory state for this ferment.
 			clearFermentState(params.ferment_id)
+			setActive(undefined)
 
 			const fresh = gradeOutcome.ferment
 			const failedPhases = fresh.phases.filter((p) => p.status === "failed").length

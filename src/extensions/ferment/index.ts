@@ -693,7 +693,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 				const abandonedId = active.id
 				const out = applyAndPersist(abandonedId, { type: "abandon", reason: reason || undefined })
 				if (out.ok) {
-					setActive(out.ferment)
+					setActive(undefined)
 					clearFermentState(abandonedId)
 					clearPendingScope(abandonedId)
 					ctx.ui.notify(`Ferment "${out.ferment.name}" abandoned.`)
@@ -1028,7 +1028,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 					)
 					if (confirmed) {
 						const outcome = applyAndPersist(f.id, { type: "abandon" })
-						if (outcome.ok) setActive(outcome.ferment)
+						if (outcome.ok) setActive(undefined)
 						clearFermentState(f.id)
 						clearPendingScope(f.id)
 						atPhaseList = false

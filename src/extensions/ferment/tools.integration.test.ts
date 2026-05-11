@@ -21,6 +21,7 @@ import { clearAllPendingScopes, getPendingScope, setPendingScope } from "./scopi
 import {
 	clearAllScopingGates,
 	clearAllStepStarts,
+	getActive,
 	markScopingConfirmed,
 	markScopingInteractive,
 	setActive,
@@ -676,11 +677,15 @@ describe("complete_ferment", () => {
 	it("completes when all phases are terminal", async () => {
 		const id = await createFerment("Done Test")
 		await scopeFerment(id)
+		expect(getActive()?.id).toBe(id)
+		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBe(id)
 		const s = new FermentStorage()
 		s.skipPhase(id, "phase-1", "skipped")
 		s.skipPhase(id, "phase-2", "skipped")
 		ok(await h.call("complete_ferment", { ferment_id: id, final_summary: "all done" }))
 		expect(loadFerment(id).status).toBe("complete")
+		expect(getActive()).toBeUndefined()
+		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBeUndefined()
 	})
 
 	it("computes overall grade from phase grades", async () => {
@@ -693,6 +698,37 @@ describe("complete_ferment", () => {
 		s.skipPhase(id, "phase-2", "skip")
 		ok(await h.call("complete_ferment", { ferment_id: id }))
 		expect(loadFerment(id).grade).toBeDefined()
+	})
+})
+
+// ─── active ferment env propagation ───────────────────────────────────────────
+
+describe("active ferment environment", () => {
+	it("deletes KIMCHI_ACTIVE_FERMENT when active ferment is cleared", async () => {
+		const id = await createFerment("Env Clear Test")
+		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBe(id)
+
+		setActive(undefined)
+
+		expect(getActive()).toBeUndefined()
+		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBeUndefined()
+		expect(Object.hasOwn(process.env, "KIMCHI_ACTIVE_FERMENT")).toBe(false)
+	})
+
+	it("does not expose terminal ferments as resumable active work", async () => {
+		const id = await createFerment("Terminal Env Test")
+		await scopeFerment(id)
+		const s = new FermentStorage()
+		s.skipPhase(id, "phase-1", "skipped")
+		s.skipPhase(id, "phase-2", "skipped")
+		ok(await h.call("complete_ferment", { ferment_id: id }))
+
+		const terminal = loadFerment(id)
+		setActive(terminal)
+
+		expect(getActive()?.id).toBe(id)
+		expect(terminal.status).toBe("complete")
+		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBeUndefined()
 	})
 })
 

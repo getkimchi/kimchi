@@ -31,8 +31,13 @@ export function getActiveId(): string | undefined {
 export function setActive(f: Ferment | undefined): void {
 	activeFerment = f
 	activeFermentId = f?.id
-	process.env.KIMCHI_ACTIVE_FERMENT = f?.id
-	notifyFermentActive(f !== undefined)
+	const isResumable = f !== undefined && f.status !== "complete" && f.status !== "abandoned"
+	if (isResumable) {
+		process.env.KIMCHI_ACTIVE_FERMENT = f.id
+	} else {
+		Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
+	}
+	notifyFermentActive(isResumable)
 }
 
 // ─── Auto-mode toggle (set by /pause and /auto commands) ──────────────────────
