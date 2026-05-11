@@ -994,6 +994,43 @@ describe("propose_phases", () => {
 		expect(pending?.constraints).toEqual(["x"])
 	})
 
+	it("confirms and scopes directly when UI is available", async () => {
+		const id = await createFerment("Confirm Proposal")
+		setPendingScope(id, { goal: "G", successCriteria: "C", constraints: ["x"] })
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValue("Yes, this looks right"),
+				input: vi.fn(),
+			},
+		}
+
+		const result = await h.call(
+			"propose_phases",
+			{
+				ferment_id: id,
+				phases: [
+					{ name: "P1", goal: "g1", steps: [{ description: "s1" }] },
+					{ name: "P2", goal: "g2", steps: [{ description: "s2" }] },
+				],
+			},
+			ctx,
+		)
+
+		expect(ok(result)).toMatch(/confirmed and saved/i)
+		expect(ctx.ui.select).toHaveBeenCalledWith(expect.stringContaining("Does this plan look right?"), [
+			"Yes, this looks right",
+			"No, revise",
+			"Let me say something else",
+		])
+		const f = loadFerment(id)
+		expect(f.status).toBe("planned")
+		expect(f.goal).toBe("G")
+		expect(f.successCriteria).toBe("C")
+		expect(f.constraints).toEqual(["x"])
+		expect(f.phases).toHaveLength(2)
+		expect(getPendingScope(id)).toBeUndefined()
+	})
+
 	it("does NOT transition the ferment status (still draft)", async () => {
 		const id = await createFerment("No Transition")
 		setPendingScope(id, { goal: "G", successCriteria: "C", constraints: [] })

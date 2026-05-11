@@ -21,6 +21,7 @@ import {
 	getStorage,
 	isScopingConfirmed,
 	isScopingInteractive,
+	markHumanInput,
 	setActive,
 } from "../state.js"
 import { applyAndPersist, failedToolResult, toolErr, toolOk } from "../tool-helpers.js"
@@ -63,7 +64,7 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 		description:
 			"Stash a structured plan proposal for the user to review. Call this DURING interactive scoping, AFTER presenting the plan to the user as a numbered list, in the SAME turn that ends with 'Does this plan look right?'. The host applies the proposal automatically when the user confirms via the dropdown — you should NOT call scope_ferment yourself in this flow.",
 		parameters: ProposePhasesParams,
-		async execute(_, params) {
+		async execute(_, params, _signal, _onUpdate, ctx) {
 			// The pending-scope buffer must already exist (set by runScopingFlow's
 			// TUI step). If it doesn't, the LLM is calling propose_phases outside
 			// the interactive flow — reject with a clear message.
@@ -77,6 +78,48 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 				return toolErr("propose_phases requires at least one phase. Provide 3–7 ordered phases with steps.")
 			}
 			attachPendingPhases(params.ferment_id, params.phases)
+
+			if (ctx?.ui?.select) {
+				const phaseLines = params.phases.map((p, i) => `${i + 1}. ${p.name} — ${p.goal}`).join("\n")
+				const choice = await ctx.ui.select(`Proposed plan:\n\n${phaseLines}\n\nDoes this plan look right?`, [
+					"Yes, this looks right",
+					"No, revise",
+					"Let me say something else",
+				])
+				markHumanInput()
+
+				if (!choice) {
+					return toolOk(
+						`Proposal received: ${params.phases.length} phase(s) buffered. Awaiting user confirmation before scoping.`,
+					)
+				}
+				if (choice === "No, revise") {
+					return toolOk(
+						"Proposal buffered, but the user requested revisions. Revise the plan and call propose_phases again.",
+					)
+				}
+				if (choice === "Let me say something else") {
+					const custom = ctx.ui.input ? await ctx.ui.input("Your message:", "") : undefined
+					if (custom) await pi.sendUserMessage(custom, { deliverAs: "followUp" })
+					return toolOk("Proposal buffered. Awaiting the user's custom direction.")
+				}
+
+				consumeScopingGate(params.ferment_id)
+				const scopeOutcome = applyAndPersist(params.ferment_id, {
+					type: "scope",
+					goal: pending.goal,
+					successCriteria: pending.successCriteria,
+					constraints: pending.constraints,
+					phases: params.phases,
+				})
+				if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
+				clearPendingScope(params.ferment_id)
+				maybeInjectAutoNudge(pi)
+				return toolOk(
+					`Proposal confirmed and saved. Ferment "${scopeOutcome.ferment.name}" is now planned with ${scopeOutcome.ferment.phases.length} phase(s).`,
+				)
+			}
+
 			return toolOk(
 				`Proposal received: ${params.phases.length} phase(s) buffered. The user will see your numbered list and confirm via dropdown — do not call scope_ferment yourself.`,
 			)

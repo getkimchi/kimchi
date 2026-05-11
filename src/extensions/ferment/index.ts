@@ -101,6 +101,16 @@ export function getCurrentRecipe(): Step[] {
 	return f?.phases.find((p) => p.id === f.activePhaseId)?.steps ?? []
 }
 
+function extractPromptTextAfterLastToolCall(content: Array<{ type: string; text?: string }>): string {
+	const lastToolCall = content.findLastIndex((c) => c.type === "toolCall")
+	return content
+		.slice(lastToolCall + 1)
+		.filter((c) => c.type === "text")
+		.map((c) => c.text ?? "")
+		.join("")
+		.trimEnd()
+}
+
 // ─── Planner system prompt supplement ─────────────────────────────────────────
 
 function buildPlannerSupplement(): string {
@@ -311,16 +321,11 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		if (!ctx?.ui?.select || !ctx?.ui?.input) return
 		if (event.message.role !== "assistant") return
 
-		// Extract text from the assistant message content
-		const text = event.message.content
-			.filter((c: { type: string }) => c.type === "text")
-			.map((c: { type: string; text?: string }) => ("text" in c ? (c.text ?? "") : ""))
-			.join("")
-			.trimEnd()
-
-		// Don't intercept if the turn also had tool calls (mid-execution text)
-		const hasToolCalls = event.message.content.some((c: { type: string }) => c.type === "toolCall")
-		if (hasToolCalls) return
+		// Only inspect text after the final tool call. Text before or between tool
+		// calls can be mid-execution narration; trailing text is the user-facing
+		// prompt that needs the dropdown.
+		const text = extractPromptTextAfterLastToolCall(event.message.content)
+		if (!text) return
 
 		const isDraft = f.status === "draft"
 		const yesLabel = isDraft ? "Yes, this looks right" : "Yes, proceed"

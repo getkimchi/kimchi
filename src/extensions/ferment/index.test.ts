@@ -125,4 +125,45 @@ describe("fermentExtension question dropdown", () => {
 		expect(ctx.ui.select).toHaveBeenCalledWith("What should we do?", ["Retry", "Skip", "Let me say something else"])
 		expect(pi.sendUserMessage).toHaveBeenCalledWith("Skip", { deliverAs: "followUp" })
 	})
+
+	it("intercepts a trailing confirmation question after tool calls", async () => {
+		setActive(makeActivePlanFerment({ status: "draft" }))
+		const { handlers, pi } = registerFermentExtension()
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValue("No, revise"),
+				input: vi.fn(),
+			},
+		}
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "text", text: "Proposal received." },
+						{ type: "toolCall" },
+						{
+							type: "text",
+							text: `1. Phase one
+2. Phase two
+
+Does this plan look right?`,
+						},
+					],
+				},
+			},
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalledWith("Does this plan look right?", [
+			"Yes, this looks right",
+			"No, revise",
+			"Let me say something else",
+		])
+		expect(pi.sendUserMessage).toHaveBeenCalledWith("No — please revise.", { deliverAs: "followUp" })
+	})
 })
