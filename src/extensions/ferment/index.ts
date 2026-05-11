@@ -20,6 +20,7 @@ import { FermentError, clearFermentCache } from "../../ferment/store.js"
 import type { Ferment, FermentWorkMode, Step } from "../../ferment/types.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { parseFermentCommand } from "./command-parser.js"
+import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { formatDecisionsAndMemories, formatFermentStatus, formatScopingContext, stripToolRefs } from "./format.js"
 import { isPlanMode } from "./modes.js"
 import { appendRefEntry, maybeInjectAutoNudge } from "./nudge.js"
@@ -98,104 +99,6 @@ export function getCurrentBatchName(): string | undefined {
 export function getCurrentRecipe(): Step[] {
 	const f = getActive()
 	return f?.phases.find((p) => p.id === f.activePhaseId)?.steps ?? []
-}
-
-/**
- * Extract just the final question from an assistant message — the last
- * sentence ending in `?`, with light cleanup. Falls back to the last 200
- * chars only if no `?` is found in the trailing region. The full message is
- * already rendered in the transcript above the dialog; the dialog title
- * should show only the actual question being asked.
- */
-function extractTrailingQuestion(text: string): string {
-	const trimmed = text.trim()
-	if (!trimmed) return "Continue?"
-
-	// Look for the last `?` and walk back to the nearest sentence start
-	// (start-of-text, blank line, or sentence-ending punctuation followed by space).
-	const lastQ = trimmed.lastIndexOf("?")
-	if (lastQ === -1) return trimmed.slice(-200)
-
-	// Search backwards from lastQ for a sentence boundary.
-	const tail = trimmed.slice(0, lastQ + 1)
-	const boundary = tail.search(/(?:^|[\n.!?]\s+|"\s+)([^.!?\n"]*\?)$/)
-	if (boundary >= 0) {
-		// Pull out the captured group (the question itself, without the boundary char).
-		const m = tail.match(/(?:^|[\n.!?]\s+|"\s+)([^.!?\n"]*\?)$/)
-		if (m?.[1]) return m[1].trim()
-	}
-
-	// Fallback: take the last line that contains the question mark.
-	const lines = tail.split("\n")
-	for (let i = lines.length - 1; i >= 0; i--) {
-		if (lines[i].includes("?")) return lines[i].trim()
-	}
-	return trimmed.slice(-200)
-}
-
-/**
- * Attempt to extract contextual options from assistant message text.
- * Returns undefined if no patterns match (fallback to boolean yes/no).
- *
- * Recognizes:
- * 1. Numbered: lines starting with `1)` / `2)` / `3)`  or  `1.`, `2.`, `3.`
- * 2. Lettered: lines starting with `(a)`/`(b)`/`(c)`  or  `a)`, `b)`, `c)`
- * 3. Bulleted: lines starting with `- `, `* `, or `• `
- * 4. Inline alternatives: "A, B, or C?" before the question mark
- *
- * Requires at least 2 options to be useful.
- */
-function extractContextualOptions(text: string): string[] | undefined {
-	const trimmed = text.trim()
-	if (!trimmed) return undefined
-
-	const lines = trimmed
-		.split("\n")
-		.map((l) => l.trim())
-		.filter(Boolean)
-
-	// 1. Numbered options — 1) 2) 3) or 1. 2. 3.
-	const numbered = lines.filter((l) => /^\d+[.)]\s/.test(l))
-	if (numbered.length >= 2) {
-		return numbered.map((l) => l.replace(/^\d+[.)]\s*/, "").trim())
-	}
-
-	// 2. Lettered options — (a) (b) (c) or a) b) c)
-	const lettered = lines.filter((l) => /^\(?[a-z][.)]\)?\s/.test(l))
-	if (lettered.length >= 2) {
-		return lettered.map((l) => l.replace(/^\(?[a-z][.)]\)?\s*/, "").trim())
-	}
-
-	// 3. Bulleted options — - X, * X, • X
-	const bulleted = lines.filter((l) => /^[-*•]\s/.test(l))
-	if (bulleted.length >= 2) {
-		return bulleted.map((l) => l.replace(/^[-*•]\s*/, "").trim())
-	}
-
-	// 4. Inline alternatives with "or" — e.g. "Should we retry, skip, or pause?"
-	const qIdx = trimmed.lastIndexOf("?")
-	if (qIdx !== -1) {
-		const beforeQ = trimmed.slice(0, qIdx)
-		const orIdx = beforeQ.lastIndexOf(" or ")
-		if (orIdx !== -1) {
-			const beforeOr = beforeQ.slice(0, orIdx)
-			const afterOr = beforeQ.slice(orIdx + 4)
-			const parts = beforeOr
-				.split(",")
-				.map((s) => s.trim())
-				.filter(Boolean)
-			if (parts.length >= 1 && afterOr) {
-				// Strip leading filler words (should we / do you want to / etc.) from the first option
-				const cleaned = parts.map((p, i) => {
-					if (i !== 0) return p
-					return p.replace(/^(should we|do you want to|would you like to)\s+/i, "").trim() || p
-				})
-				return [...cleaned, afterOr.trim()]
-			}
-		}
-	}
-
-	return undefined
 }
 
 // ─── Planner system prompt supplement ─────────────────────────────────────────
@@ -415,8 +318,6 @@ export default function fermentExtension(pi: ExtensionAPI) {
 			.join("")
 			.trimEnd()
 
-		if (!text.endsWith("?")) return
-
 		// Don't intercept if the turn also had tool calls (mid-execution text)
 		const hasToolCalls = event.message.content.some((c: { type: string }) => c.type === "toolCall")
 		if (hasToolCalls) return
@@ -430,6 +331,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		// the dialog title should be the question itself, nothing more.
 		const title = extractTrailingQuestion(text)
 		const contextualOptions = extractContextualOptions(text)
+		if (!text.endsWith("?") && !contextualOptions) return
 		const options = contextualOptions
 			? [...contextualOptions, "Let me say something else"]
 			: [yesLabel, noLabel, "Let me say something else"]

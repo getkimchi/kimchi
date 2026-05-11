@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
+import type { Ferment } from "../../ferment/types.js"
 import fermentExtension from "./index.js"
 import { getActive, setActive } from "./state.js"
 
@@ -69,5 +70,59 @@ describe("/ferment command", () => {
 		expect(created).toHaveLength(1)
 		expect(created[0].name).toBe("Rewrite login")
 		expect(created[0].description).toBe("Rewrite login")
+	})
+})
+
+function makeActivePlanFerment(overrides: Partial<Ferment> = {}): Ferment {
+	const now = "2026-01-01T00:00:00.000Z"
+	return {
+		id: "ferment-1",
+		name: "Test Ferment",
+		status: "running",
+		mode: "plan",
+		worktree: { path: "/repo" },
+		scoping: {},
+		phases: [],
+		decisions: [],
+		memories: [],
+		createdAt: now,
+		updatedAt: now,
+		...overrides,
+	}
+}
+
+describe("fermentExtension question dropdown", () => {
+	it("intercepts contextual option lists even when the message ends with an option", async () => {
+		setActive(makeActivePlanFerment())
+		const { handlers, pi } = registerFermentExtension()
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValue("Skip"),
+				input: vi.fn(),
+			},
+		}
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					content: [
+						{
+							type: "text",
+							text: `What should we do?
+1) Retry
+2) Skip`,
+						},
+					],
+				},
+			},
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalledWith("What should we do?", ["Retry", "Skip", "Let me say something else"])
+		expect(pi.sendUserMessage).toHaveBeenCalledWith("Skip", { deliverAs: "followUp" })
 	})
 })

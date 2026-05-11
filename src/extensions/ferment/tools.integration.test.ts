@@ -48,7 +48,7 @@ interface Harness {
 	storage: FermentStorage
 	tempDir: string
 	tools: Map<string, RegisteredTool>
-	call: (toolName: string, params: unknown) => Promise<ToolResult>
+	call: (toolName: string, params: unknown, ctx?: unknown) => Promise<ToolResult>
 }
 
 function createHarness(): Harness {
@@ -80,10 +80,10 @@ function createHarness(): Harness {
 	registerStepTools(pi)
 	registerKnowledgeTools(pi)
 
-	const call = async (toolName: string, params: unknown): Promise<ToolResult> => {
+	const call = async (toolName: string, params: unknown, ctx?: unknown): Promise<ToolResult> => {
 		const tool = tools.get(toolName)
 		if (!tool) throw new Error(`Tool not found: ${toolName}`)
-		const result = await tool.execute("test-call-id", params, undefined, undefined, undefined)
+		const result = await tool.execute("test-call-id", params, undefined, undefined, ctx)
 		return result as ToolResult
 	}
 
@@ -463,16 +463,64 @@ describe("start_step", () => {
 	it("blocks after 3 consecutive starts (stuck-loop detection)", async () => {
 		const id = await setupActivePhase()
 		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
-		// We need to call start_step 3 times on the same step. The first works.
-		// The 2nd is blocked because step-1 is already running. We need to clear
-		// and re-start to bump the counter.
-		// Actually the counter increments on EVERY call regardless of whether
-		// the step start succeeds (counter bumps before the running-check passes).
-		// Let me reconsider — read the implementation:
-		// bumpStepStart fires AFTER the alreadyRunning check.
-		// So to hit stuck-loop, we'd need to complete-then-restart 3 times. Skip this test for now.
-		// (Behavior is exercised by state-machine tests later.)
+		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		const result = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" })
+		expect(err(result)).toMatch(/Stuck loop detected/i)
+	})
+
+	it("lets the user skip directly from the stuck-loop prompt", async () => {
+		const id = await setupActivePhase()
+		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValue("Skip this step and move on"),
+			},
+		}
+		const result = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }, ctx)
+
+		expect(ok(result)).toMatch(/skipped at user request/i)
+		expect(ctx.ui.select).toHaveBeenCalledWith(expect.stringContaining("has been started 3 times"), [
+			"Retry with a revised approach",
+			"Skip this step and move on",
+			"Pause the ferment for now",
+		])
+		expect(loadFerment(id).phases[0].steps[0].status).toBe("skipped")
+	})
+
+	it("lets the user pause directly from the stuck-loop prompt", async () => {
+		const id = await setupActivePhase()
+		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValue("Pause the ferment for now"),
+			},
+		}
+		const result = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }, ctx)
+
+		expect(ok(result)).toMatch(/paused at user request/i)
+		expect(loadFerment(id).status).toBe("paused")
+	})
+
+	it("lets the user retry from the stuck-loop prompt after clearing the counter", async () => {
+		const id = await setupActivePhase()
+		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValue("Retry with a revised approach"),
+			},
+		}
+		const result = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }, ctx)
+
+		expect(ok(result)).toMatch(/Step 1: "Step A1" started/)
 		expect(loadFerment(id).phases[0].steps[0].status).toBe("running")
+		const nextResult = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" })
+		expect(ok(nextResult)).toMatch(/Step 1: "Step A1" started/)
 	})
 
 	it("returns step not found for invalid step_id", async () => {

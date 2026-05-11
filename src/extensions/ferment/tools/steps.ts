@@ -18,6 +18,7 @@ import {
 	clearStepStart,
 	getStepStartRef,
 	getStorage,
+	markHumanInput,
 	setStepStartRef,
 } from "../state.js"
 import { applyAndPersist, failedToolResult, resolvePhase, resolveStep, toolErr, toolOk } from "../tool-helpers.js"
@@ -39,7 +40,7 @@ export function registerStepTools(pi: ExtensionAPI): void {
 		description:
 			"Mark a step as running. Returns worker_model and parallel_siblings. See planner instructions in the system prompt for orchestration details.",
 		parameters: StepActionParams,
-		async execute(_, params) {
+		async execute(_, params, _signal, _onUpdate, ctx) {
 			// Resolve phase and step (host concern — fuzzy lookup).
 			const f = getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
@@ -61,8 +62,37 @@ export function registerStepTools(pi: ExtensionAPI): void {
 			// complete_step or skip_step clears it.
 			const startCount = bumpStepStart(f.id, phase.id, step.id)
 			if (startCount >= 3) {
-				return toolErr(
-					`⚠ Stuck loop detected: step ${step.index} "${step.description}" has been started ${startCount} times without completing.
+				const title = `Step ${step.index}: "${step.description}" has been started ${startCount} times without completing.`
+				const retryLabel = "Retry with a revised approach"
+				const skipLabel = "Skip this step and move on"
+				const pauseLabel = "Pause the ferment for now"
+
+				if (ctx?.ui?.select) {
+					const choice = await ctx.ui.select(title, [retryLabel, skipLabel, pauseLabel])
+					markHumanInput()
+
+					if (!choice || choice === pauseLabel) {
+						const pauseOutcome = applyAndPersist(f.id, { type: "pause" })
+						if (!pauseOutcome.ok) return failedToolResult(pauseOutcome.error)
+						return toolOk("Ferment paused at user request.")
+					}
+
+					if (choice === skipLabel) {
+						const skipOutcome = applyAndPersist(f.id, {
+							type: "skip_step",
+							phaseId: phase.id,
+							stepId: step.id,
+						})
+						if (!skipOutcome.ok) return failedToolResult(skipOutcome.error)
+						clearStepStart(f.id, phase.id, step.id)
+						onStepCompleted(pi)
+						return toolOk(`Step ${step.index}: "${step.description}" skipped at user request.`)
+					}
+
+					clearStepStart(f.id, phase.id, step.id)
+				} else {
+					return toolErr(
+						`⚠ Stuck loop detected: ${title}
 
 What should we do?
 
@@ -71,7 +101,8 @@ What should we do?
 3) Pause the ferment for now
 
 Do NOT call start_step again without user input.`,
-				)
+					)
+				}
 			}
 
 			// Apply the transition. CONCURRENT_NON_PARALLEL_STEP errors get a
