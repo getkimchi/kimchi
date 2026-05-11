@@ -101,7 +101,13 @@ export function getCurrentRecipe(): Step[] {
 	return f?.phases.find((p) => p.id === f.activePhaseId)?.steps ?? []
 }
 
-function extractPromptTextAfterLastToolCall(content: Array<{ type: string; text?: string }>): string {
+type AssistantContentPart = { type: string; text?: string; name?: string }
+
+function hasToolCall(content: AssistantContentPart[], toolName: string): boolean {
+	return content.some((c) => c.type === "toolCall" && c.name === toolName)
+}
+
+function extractPromptTextAfterLastToolCall(content: AssistantContentPart[]): string {
 	const lastToolCall = content.findLastIndex((c) => c.type === "toolCall")
 	return content
 		.slice(lastToolCall + 1)
@@ -324,6 +330,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		// Only inspect text after the final tool call. Text before or between tool
 		// calls can be mid-execution narration; trailing text is the user-facing
 		// prompt that needs the dropdown.
+		if (hasToolCall(event.message.content, "propose_phases")) return
 		const text = extractPromptTextAfterLastToolCall(event.message.content)
 		if (!text) return
 

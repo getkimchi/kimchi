@@ -62,7 +62,7 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 		name: "propose_phases",
 		label: "Propose Phases",
 		description:
-			"Stash a structured plan proposal for the user to review. Call this DURING interactive scoping, AFTER presenting the plan to the user as a numbered list, in the SAME turn that ends with 'Does this plan look right?'. The host applies the proposal automatically when the user confirms via the dropdown — you should NOT call scope_ferment yourself in this flow.",
+			"Stash a structured plan proposal for the user to review. Call this DURING interactive scoping, AFTER presenting the plan to the user as a numbered list. The tool opens the confirmation dropdown and the host applies the proposal automatically when the user confirms — you should NOT ask an additional 'Does this plan look right?' question or call scope_ferment yourself in this flow.",
 		parameters: ProposePhasesParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
 			// The pending-scope buffer must already exist (set by runScopingFlow's

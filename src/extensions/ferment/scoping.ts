@@ -7,7 +7,7 @@
  *      stashes them in `pendingScope` keyed by ferment id. Then it fires ONE
  *      LLM turn asking the model to (a) propose phases as a numbered list for
  *      the user, (b) call the `propose_phases` tool with the structured data,
- *      and (c) end with "Does this plan look right?".
+ *      and (c) let the tool-owned dialog ask for confirmation.
  *
  *   2. `propose_phases` (the tool) validates the structured proposal and
  *      attaches it to the same `pendingScope` entry. No state transition
@@ -137,7 +137,7 @@ export async function runScopingFlow(f: Ferment, pi: ExtensionAPI, ctx: Extensio
 		.filter(Boolean)
 
 	// Stash the user's answers. The LLM-proposed phases will be attached by
-	// the propose_phases tool when the LLM calls it. The Yes/No dropdown then
+	// the propose_phases tool when the LLM calls it. The tool-owned Yes/No dropdown then
 	// reads this combined buffer and applies scope deterministically — no
 	// follow-up prompt needed.
 	setPendingScope(f.id, {
@@ -157,14 +157,14 @@ The user has already answered the scoping questions:
 - Success criteria: ${criteria}
 - Constraints: ${constraintList.join(", ")}
 
-Your task — three things in this order:
+Your task — two things in this order:
 
 1. Present 3–7 ordered phases as a numbered list for the user to read. For each phase: name, one-sentence goal, and 3–6 concrete step descriptions.
-2. Call the \`propose_phases\` tool with ferment_id "${f.id}" and the same plan in structured form. The tool stashes the proposal so the host can apply it deterministically when the user confirms — without this call, the user's confirmation has nothing to save.
-3. End your message with: "Does this plan look right?"
+2. Call the \`propose_phases\` tool with ferment_id "${f.id}" and the same plan in structured form. The tool opens the confirmation dropdown and the host applies the proposal deterministically when the user confirms — without this call, the user's confirmation has nothing to save.
 
 CRITICAL:
 - Do NOT call scope_ferment yourself — the host does that automatically when the user confirms.
+- Do NOT ask "Does this plan look right?" yourself after calling propose_phases — the tool asks that question.
 - Do NOT use any file/search/bash tools to research first.
 - Make sure the phases you call propose_phases with EXACTLY match the ones in your numbered list.`
 

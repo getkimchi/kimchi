@@ -205,4 +205,35 @@ Does this plan look right?`,
 		])
 		expect(pi.sendUserMessage).toHaveBeenCalledWith("No — please revise.", { deliverAs: "followUp" })
 	})
+
+	it("does not show a second draft confirmation after propose_phases already asked", async () => {
+		setActive(makeActivePlanFerment({ status: "draft" }))
+		const { handlers, pi } = registerFermentExtension()
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+
+		const ctx = {
+			ui: {
+				select: vi.fn(),
+				input: vi.fn(),
+			},
+		}
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "text", text: "1. Phase one\n2. Phase two\n" },
+						{ type: "toolCall", name: "propose_phases" },
+						{ type: "text", text: "Does this plan look right?" },
+					],
+				},
+			},
+			ctx,
+		)
+
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(pi.sendUserMessage).not.toHaveBeenCalled()
+	})
 })
