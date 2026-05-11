@@ -130,6 +130,73 @@ async function sendLog(
 	}
 }
 
+// ---------------------------------------------------------------------------
+// OTLP metrics sender
+// ---------------------------------------------------------------------------
+
+interface MetricData {
+	name: string
+	type: "Sum" | "Gauge"
+	value: number
+	attrs: Record<string, string | number>
+}
+
+async function sendMetrics(config: TelemetryConfig, sessionId: string, metrics: MetricData[]): Promise<void> {
+	if (!config.enabled || !config.metricsEndpoint) return
+	if (metrics.length === 0) return
+	const now = nowNano()
+	const headers: Record<string, string> = { "Content-Type": "application/json", ...config.headers }
+	const payload = {
+		resourceMetrics: [
+			{
+				resource: { attributes: [strAttr("service.name", "kimchi")], droppedAttributesCount: 0 },
+				scopeMetrics: [
+					{
+						scope: { name: "kimchi", version: "1.0.0" },
+						metrics: metrics.map((m) => {
+							const base = {
+								name: m.name,
+								[m.type.toLowerCase() as "sum" | "gauge"]: {
+									dataPoints: [
+										{
+											timeUnixNano: now,
+											...(Number.isInteger(m.value) ? { asInt: String(m.value) } : { asDouble: m.value }),
+											attributes: [
+												strAttr("session.id", sessionId),
+												strAttr("client", "pi"),
+												...Object.entries(m.attrs).map(([k, v]) => strAttr(k, String(v))),
+											],
+										},
+									],
+									...(m.type === "Sum"
+										? {
+												aggregationTemporality: 2,
+												isMonotonic: false,
+											}
+										: {}),
+								},
+							}
+							return base
+						}),
+					},
+				],
+			},
+		],
+	}
+	try {
+		const res = await fetch(config.metricsEndpoint, {
+			method: "POST",
+			headers,
+			body: JSON.stringify(payload),
+		})
+		if (!res.ok) {
+			console.error(`[telemetry] metrics send failed: ${res.status} ${await res.text()}`)
+		}
+	} catch (err) {
+		console.error(`[telemetry] metrics send error: ${err}`)
+	}
+}
+
 const TELEMETRY_DRAIN_TIMEOUT_MS = 5_000
 
 // ---------------------------------------------------------------------------
@@ -201,6 +268,13 @@ export default function telemetryExtension(config: TelemetryConfig) {
 						session_uptime_ms: sessionUptimeMs,
 					}),
 				)
+				track(
+					sendMetrics(config, sessionId, [
+						{ name: "claude_code.token.usage", type: "Sum", value: input, attrs: { type: "input", model, provider } },
+						{ name: "claude_code.token.usage", type: "Sum", value: output, attrs: { type: "output", model, provider } },
+						{ name: "claude_code.cost.usage", type: "Gauge", value: costTotal, attrs: { model, provider } },
+					]),
+				)
 			} catch (err) {
 				console.error("[telemetry] message_end handler error:", err)
 			}
@@ -221,9 +295,29 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				const command = String(args?.command ?? "")
 				if (/git\s+commit\b/.test(command) && !/--dry-run/.test(command)) {
 					track(sendLog(config, sessionId, "tool_usage", { tool: "bash", action: "git_commit" }))
+					track(
+						sendMetrics(config, sessionId, [
+							{
+								name: "claude_code.commit.count",
+								type: "Sum",
+								value: 1,
+								attrs: { tool: "bash", action: "git_commit" },
+							},
+						]),
+					)
 				}
 				if (/gh\s+pr\s+create\b/.test(command)) {
 					track(sendLog(config, sessionId, "tool_usage", { tool: "bash", action: "gh_pr_create" }))
+					track(
+						sendMetrics(config, sessionId, [
+							{
+								name: "claude_code.pull_request.count",
+								type: "Sum",
+								value: 1,
+								attrs: { tool: "bash", action: "gh_pr_create" },
+							},
+						]),
+					)
 				}
 			}
 
@@ -239,6 +333,16 @@ export default function telemetryExtension(config: TelemetryConfig) {
 						lines_removed: changes.removed,
 					}),
 				)
+				track(
+					sendMetrics(config, sessionId, [
+						{
+							name: "claude_code.lines_of_code.count",
+							type: "Sum",
+							value: changes.added + changes.removed,
+							attrs: { language },
+						},
+					]),
+				)
 			}
 
 			if (toolName === "write") {
@@ -252,6 +356,11 @@ export default function telemetryExtension(config: TelemetryConfig) {
 						language,
 						lines_added: lines,
 					}),
+				)
+				track(
+					sendMetrics(config, sessionId, [
+						{ name: "claude_code.lines_of_code.count", type: "Sum", value: lines, attrs: { language } },
+					]),
 				)
 			}
 
@@ -270,6 +379,16 @@ export default function telemetryExtension(config: TelemetryConfig) {
 							lines_added: changes.added,
 							lines_removed: changes.removed,
 						}),
+					)
+					track(
+						sendMetrics(config, sessionId, [
+							{
+								name: "claude_code.lines_of_code.count",
+								type: "Sum",
+								value: changes.added + changes.removed,
+								attrs: { language },
+							},
+						]),
 					)
 				}
 			}
