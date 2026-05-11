@@ -1,5 +1,5 @@
 import { resolve } from "node:path"
-import type { Api, Model } from "@earendil-works/pi-ai"
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
