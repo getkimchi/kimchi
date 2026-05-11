@@ -3,11 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../config.js"
 import telemetryExtension from "./telemetry.js"
 
-type Handler = (event: unknown) => Promise<void> | void
+type Handler = (...args: unknown[]) => Promise<void> | void
 
 function createMockApi() {
 	const handlers = new Map<string, Handler[]>()
-	const on = vi.fn((event: string, handler: Handler) => {
+	const on = vi.fn((event: string, handler: (...args: unknown[]) => Promise<void> | void) => {
 		if (!handlers.has(event)) handlers.set(event, [])
 		handlers.get(event)?.push(handler)
 	})
