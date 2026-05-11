@@ -351,7 +351,10 @@ export default function fermentExtension(pi: ExtensionAPI) {
 			reply = custom
 		} else if (choice === noLabel) {
 			reply = isDraft ? "No — please revise." : "No, pause for now."
-		} else if (choice === yesLabel) {
+		} else if (contextualOptions?.includes(choice)) {
+			// User selected a contextual option — pass it through verbatim
+			reply = choice
+		} else if (isDraft && choice === yesLabel) {
 			// User confirmed during scoping. If the LLM stashed a structured
 			// proposal via propose_phases, apply it deterministically here —
 			// no further LLM round-trip needed. The user confirmed what they
@@ -383,9 +386,6 @@ export default function fermentExtension(pi: ExtensionAPI) {
 				reply =
 					"User confirmed the plan but you never called propose_phases — there's nothing structured for the host to save. Call propose_phases now with the same plan you just showed, then end with 'Does this plan look right?' so the user can confirm again."
 			}
-		} else if (contextualOptions?.includes(choice)) {
-			// User selected a contextual option — pass it through verbatim
-			reply = choice
 		} else {
 			reply = "Yes, proceed."
 		}

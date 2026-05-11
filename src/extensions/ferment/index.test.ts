@@ -127,6 +127,44 @@ describe("fermentExtension question dropdown", () => {
 		expect(pi.sendUserMessage).toHaveBeenCalledWith("Skip", { deliverAs: "followUp" })
 	})
 
+	it("passes through a running-state contextual option named like the default confirmation", async () => {
+		setActive(makeActivePlanFerment())
+		const { handlers, pi } = registerFermentExtension()
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValue("Yes, proceed"),
+				input: vi.fn(),
+			},
+		}
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					content: [
+						{
+							type: "text",
+							text: `What should we do?
+1) Yes, proceed
+2) Pause`,
+						},
+					],
+				},
+			},
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalledWith("What should we do?", [
+			"Yes, proceed",
+			"Pause",
+			"Let me say something else",
+		])
+		expect(pi.sendUserMessage).toHaveBeenCalledWith("Yes, proceed", { deliverAs: "followUp" })
+	})
+
 	it("intercepts a trailing confirmation question after tool calls", async () => {
 		setActive(makeActivePlanFerment({ status: "draft" }))
 		const { handlers, pi } = registerFermentExtension()

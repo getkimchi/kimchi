@@ -49,49 +49,49 @@ export function extractContextualOptions(text: string): string[] | undefined {
 	if (!finalBlock) return undefined
 	if (isBinaryConfirmationQuestion(extractTrailingQuestion(finalBlock))) return undefined
 
-	const lines = finalBlock
-		.trim()
-		.split("\n")
-		.map((l) => l.trim())
-		.filter(Boolean)
+	const lines = extractOptionLinesAdjacentToQuestion(finalBlock)
 
-	const numbered = lines.filter((l) => /^\d+[.)]\s/.test(l))
-	if (numbered.length >= 2) {
-		return numbered.map((l) => l.replace(/^\d+[.)]\s*/, "").trim())
-	}
+	if (lines.length >= 2) {
+		const numbered = lines.filter((l) => /^\d+[.)]\s/.test(l))
+		if (numbered.length >= 2) {
+			return numbered.map((l) => l.replace(/^\d+[.)]\s*/, "").trim())
+		}
 
-	const lettered = lines.filter((l) => /^\(?[a-z][.)]\)?\s/.test(l))
-	if (lettered.length >= 2) {
-		return lettered.map((l) => l.replace(/^\(?[a-z][.)]\)?\s*/, "").trim())
-	}
+		const lettered = lines.filter((l) => /^\(?[a-z][.)]\)?\s/.test(l))
+		if (lettered.length >= 2) {
+			return lettered.map((l) => l.replace(/^\(?[a-z][.)]\)?\s*/, "").trim())
+		}
 
-	const bulleted = lines.filter((l) => /^[-*•]\s/.test(l))
-	if (bulleted.length >= 2) {
-		return bulleted.map((l) => l.replace(/^[-*•]\s*/, "").trim())
-	}
-
-	const qIdx = finalBlock.lastIndexOf("?")
-	if (qIdx !== -1) {
-		const beforeQ = finalBlock.slice(0, qIdx)
-		const orIdx = beforeQ.lastIndexOf(" or ")
-		if (orIdx !== -1) {
-			const beforeOr = beforeQ.slice(0, orIdx)
-			const afterOr = beforeQ.slice(orIdx + 4)
-			const parts = beforeOr
-				.split(",")
-				.map((s) => s.trim())
-				.filter(Boolean)
-			if (parts.length >= 1 && afterOr) {
-				const cleaned = parts.map((p, i) => {
-					if (i !== 0) return p
-					return p.replace(/^(should we|do you want to|would you like to)\s+/i, "").trim() || p
-				})
-				return [...cleaned, afterOr.trim()]
-			}
+		const bulleted = lines.filter((l) => /^[-*•]\s/.test(l))
+		if (bulleted.length >= 2) {
+			return bulleted.map((l) => l.replace(/^[-*•]\s*/, "").trim())
 		}
 	}
 
 	return undefined
+}
+
+function extractOptionLinesAdjacentToQuestion(finalBlock: string): string[] {
+	const lines = finalBlock
+		.trim()
+		.split("\n")
+		.map((l) => l.trim())
+
+	const questionLineIdx = lines.findLastIndex((l) => l.includes("?"))
+	if (questionLineIdx === -1) return []
+
+	const optionLines: string[] = []
+	for (let i = questionLineIdx + 1; i < lines.length; i++) {
+		const line = lines[i]
+		if (!line || !isOptionLine(line)) break
+		optionLines.push(line)
+	}
+
+	return optionLines
+}
+
+function isOptionLine(line: string): boolean {
+	return /^\d+[.)]\s/.test(line) || /^\(?[a-z][.)]\)?\s/.test(line) || /^[-*•]\s/.test(line)
 }
 
 function extractFinalQuestionBlock(text: string): string | undefined {

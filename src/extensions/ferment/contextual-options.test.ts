@@ -25,9 +25,14 @@ describe("extractContextualOptions", () => {
 		expect(extractContextualOptions(text)).toEqual(["Commit", "Test", "Deploy"])
 	})
 
-	it("extracts inline alternatives", () => {
+	it("ignores inline alternatives", () => {
 		const text = "Should we retry, skip, or pause?"
-		expect(extractContextualOptions(text)).toEqual(["retry", "skip", "pause"])
+		expect(extractContextualOptions(text)).toBeUndefined()
+	})
+
+	it("ignores ambiguous inline alternatives with trailing question framing", () => {
+		const text = "The plan covers Phase A, Phase B, or Phase C — which interests you?"
+		expect(extractContextualOptions(text)).toBeUndefined()
 	})
 
 	it("ignores numbered plan content before a binary confirmation question", () => {
@@ -36,6 +41,22 @@ describe("extractContextualOptions", () => {
 2) Add tests
 
 Does this plan look right?`
+		expect(extractContextualOptions(text)).toBeUndefined()
+	})
+
+	it("ignores informational bullets directly before a non-whitelisted question", () => {
+		const text = `Heads up before we continue:
+- The result will be merged
+- It cannot be undone
+Continue?`
+		expect(extractContextualOptions(text)).toBeUndefined()
+	})
+
+	it("ignores numbered plan content directly before a non-whitelisted question", () => {
+		const text = `Plan:
+1) Implement parser
+2) Add tests
+Proceed?`
 		expect(extractContextualOptions(text)).toBeUndefined()
 	})
 
