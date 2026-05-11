@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process"
+import { readFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
@@ -18,12 +21,27 @@ function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {
 	return a.provider === b.provider && a.id === b.id
 }
 
+const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
+
+function getEnabledModelIds(): Set<string> | null {
+	try {
+		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
+		const parsed = JSON.parse(raw)
+		if (Array.isArray(parsed.enabledModels) && parsed.enabledModels.length > 0) {
+			return new Set(parsed.enabledModels as string[])
+		}
+	} catch {
+		// settings absent or unreadable
+	}
+	return null
+}
+
 const HORIZONTAL_PADDING = 2
 
 // Strip OSC 133 shell-integration marks emitted by pi-mono around each message.
 // iTerm2 renders a visible blue triangle at each mark, which is noisy in the TUI.
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching ANSI/OSC
-const OSC133_RE = /\x1b\]133;[A-Z]\x07/g
+const OSC133_RE = /\x1b]133;[A-Z]\x07/g
 
 function patchTuiPadding(tui: TUI) {
 	const original = tui.render.bind(tui)
@@ -118,6 +136,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	let unsubModelCycleInput: (() => void) | null = null
 	let scriptFooter: ScriptFooter | null = null
 	let scriptTui: TUI | null = null
+	let uiTui: TUI | null = null
 	let scriptCmd: string | null = null
 	let scriptPending = false
 	let scriptGeneration = 0
@@ -158,6 +177,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 		ctx.ui.setHeader((_tui, theme) => (isSplash ? new SplashHeader(theme) : new LogoHeader(theme)))
 		ctx.ui.setFooter((tui, theme, footerData) => {
+			uiTui = tui
 			const cmd = readStatusLineCommand()
 			if (!cmd) {
 				scriptCmd = null
@@ -218,7 +238,11 @@ export default function uiExtension(pi: ExtensionAPI) {
 			unsubModelCycleInput = ctx.ui.onTerminalInput((data) => {
 				if (matchesKey(data, "ctrl+p")) {
 					if (!isKeyRelease(data)) {
-						const available = ctx.modelRegistry.getAvailable()
+						const allAvailable = ctx.modelRegistry.getAvailable()
+						const enabledIds = getEnabledModelIds()
+						const available = enabledIds
+							? allAvailable.filter((m) => enabledIds.has(`${m.provider}/${m.id}`))
+							: allAvailable
 						const current = ctx.model
 						if (available.length > 1 && current) {
 							let idx = available.findIndex((m) => modelsAreEqual(m, current))
@@ -284,6 +308,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	pi.on("model_select", (_, ctx) => {
 		currentCtx = ctx
 		refresh("idle")
+		uiTui?.requestRender()
 	})
 
 	pi.on("tool_result", (event) => {
