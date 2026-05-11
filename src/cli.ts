@@ -211,6 +211,11 @@ try {
 			"monokai.json",
 			"catppuccin-macchiato.json",
 			"lucent-orng.json",
+			"dracula.json",
+			"github-dark.json",
+			"github-light.json",
+			"solarized-dark.json",
+			"solarized-light.json",
 		]
 		const bundledThemesSrcDir = isBunBinary
 			? resolve(process.env.PI_PACKAGE_DIR ?? "", "theme")

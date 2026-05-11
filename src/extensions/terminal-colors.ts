@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getActiveThemeName, onThemeChange } from "../settings-watcher.js"
-import { QUERY_BG, detectColorMode, getRawBgPayload, hexToBgAnsi } from "../terminal-bg-probe.js"
+import { QUERY_BG, getRawBgPayload } from "../terminal-bg-probe.js"
 
 const QUERY_FG = "\x1b]10;?\x07"
 const QUERY_TIMEOUT_MS = 200
@@ -76,17 +76,6 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 	let lastCtx: ExtensionContext | undefined
 	let unsubscribeThemeChange: (() => void) | undefined
 
-	// Fills the visible viewport by writing spaces with an explicit bg attribute.
-	// More reliable than \x1b[2J because Terminal.app has BCE disabled — erase
-	// ignores the current bg attribute and always uses the profile background.
-	const fillViewport = (bgAnsi: string) => {
-		const cols = process.stdout.columns || 80
-		const rows = process.stdout.rows || 24
-		const line = `\x1b[${bgAnsi}m${" ".repeat(cols)}`
-		const lines = Array.from({ length: rows }, () => line)
-		process.stdout.write(`\x1b[H${lines.join("\r\n")}\x1b[H\x1b[0m`)
-	}
-
 	const restore = () => {
 		if (!process.stdout.isTTY) return
 
@@ -100,22 +89,15 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 			process.stdout.write(savedFg ? `\x1b]10;${savedFg}\x07` : "\x1b]110\x07")
 			process.stdout.write(savedBg ? `\x1b]11;${savedBg}\x07` : "\x1b]111\x07")
 		}
-		// Re-fill the viewport with the restored default bg so themed cells don't linger.
-		fillViewport("49")
 		active = false
 	}
 
-	const apply = (fgHex: string, bgHex: string, clearScreen = false) => {
+	const apply = (fgHex: string, bgHex: string) => {
 		if (!process.stdout.isTTY) return
 
-		// Fill every visible cell with the theme bg color. Using space characters
-		// (not \x1b[2J erase) ensures the bg is painted even on BCE-disabled terminals.
-		if (clearScreen && bgHex) {
-			fillViewport(hexToBgAnsi(bgHex, detectColorMode()))
-		}
-
-		// OSC sequences change what "default background" means in the terminal emulator,
-		// affecting future blank cells from scroll/resize. Supplementary to the fill above.
+		// OSC sequences change what "default background" means in the terminal emulator.
+		// We only send these — not raw space-fill — because pi-mono owns the terminal
+		// during an active session and will repaint the viewport itself.
 		const oscBg = hexToOscRgb(bgHex)
 		const oscFg = fgHex ? hexToOscRgb(fgHex) : null
 		if (isIterm2()) {
@@ -204,7 +186,7 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 		const colors = getThemeColors(newName ?? "")
 
 		if (colors?.bgHex) {
-			apply(colors.fgHex, colors.bgHex, true)
+			apply(colors.fgHex, colors.bgHex)
 		} else {
 			if (active) restore()
 		}
@@ -216,6 +198,25 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 		if (!process.stdin.isTTY) return
 		lastCtx = ctx
 		installExitHandlers()
+
+		// Sensor widget: zero-height component whose invalidate() fires whenever
+		// pi-mono calls TUI.invalidate() — which happens on every setTheme() call,
+		// including live preview in /settings (onThemePreview doesn't write to disk,
+		// so the file-watcher-based onThemeChange below won't catch it).
+		// We guard with lastSensorTheme to avoid spurious OSC writes on non-theme invalidations.
+		let lastSensorTheme: string | undefined = ctx.ui.theme.name
+		ctx.ui.setWidget("kimchi-osc-sensor", () => ({
+			invalidate(): void {
+				const name = ctx.ui.theme.name
+				if (name !== undefined && name !== lastSensorTheme) {
+					lastSensorTheme = name
+					reactToThemeChange(name)
+				}
+			},
+			render(): string[] {
+				return []
+			},
+		}))
 
 		// Probe & save terminal-original fg/bg unconditionally so we can restore
 		// when the user later switches away from a theme that sets osc colors.
