@@ -70,13 +70,15 @@
 		"@types/shell-quote": "^1.7.5",
 		"@types/tar": "^7.0.87",
 		"@types/turndown": "^5.0.6",
+		"@types/ws": "^8.18.1",
 		"husky": "^9.1.7",
 		"node-pty": "^1.1.0",
 		"playwright": "^1.59.1",
 		"tsx": "^4.21.0",
 		"turndown": "^7.2.4",
 		"typescript": "^5.9.3",
-		"vitest": "^3.2.4"
+		"vitest": "^3.2.4",
+		"ws": "^8.20.0"
 	},
 	"engines": {
 		"node": ">=22.0.0"
