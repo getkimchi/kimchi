@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { determineNextAction, getScopingProgress } from "../../ferment/engine.js"
 import { appendRefEntry } from "./nudge.js"
-import { getStorage, markScopingInteractive, setActive } from "./state.js"
-import { applyAndPersist } from "./tool-helpers.js"
+import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { createApplyAndPersist } from "./tool-helpers.js"
 import { checkWorktree } from "./worktree.js"
 
 /**
@@ -10,11 +10,17 @@ import { checkWorktree } from "./worktree.js"
  * Flips paused to running, validates worktree, re-arms the scoping gate for
  * drafts, and fires an imperative resume nudge so the planner picks up work.
  */
-export function resumeFerment(pi: ExtensionAPI, fermentId: string, ctx: ExtensionContext): void {
-	const storage = getStorage()
+export function resumeFerment(
+	pi: ExtensionAPI,
+	fermentId: string,
+	ctx: ExtensionContext,
+	runtime: FermentRuntime = defaultFermentRuntime,
+): void {
+	const storage = runtime.getStorage()
+	const applyAndPersist = createApplyAndPersist(runtime)
 	let existing = storage.get(fermentId)
 	if (!existing) {
-		setActive(undefined)
+		runtime.setActive(undefined)
 		return
 	}
 
@@ -25,7 +31,7 @@ export function resumeFerment(pi: ExtensionAPI, fermentId: string, ctx: Extensio
 		if (out.ok) existing = out.ferment
 	}
 
-	setActive(existing)
+	runtime.setActive(existing)
 	appendRefEntry(pi, existing.id)
 
 	const wtCheck = checkWorktree(existing)
@@ -37,7 +43,7 @@ export function resumeFerment(pi: ExtensionAPI, fermentId: string, ctx: Extensio
 	}
 
 	if (existing.status === "draft" && ctx?.hasUI) {
-		markScopingInteractive(existing.id)
+		runtime.markScopingInteractive(existing.id)
 	}
 
 	const action = determineNextAction(existing)

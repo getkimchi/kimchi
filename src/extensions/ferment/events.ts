@@ -3,20 +3,10 @@ import { clearFermentCache } from "../../ferment/store.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { buildPlannerSupplement } from "./planner-supplement.js"
 import { resumeFerment } from "./resume.js"
-import { defaultFermentRuntime } from "./runtime.js"
+import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
-import { clearAllPendingScopes } from "./scoping.js"
-import {
-	captureJudgeContext,
-	clearAllScopingGates,
-	clearAllStepStarts,
-	getActive,
-	isRestoringModel,
-	markHumanInput,
-	setActive,
-	setRestoringModel,
-} from "./state.js"
-import { applyAndPersist } from "./tool-helpers.js"
+import { isRestoringModel, setRestoringModel } from "./state.js"
+import { createApplyAndPersist } from "./tool-helpers.js"
 
 type AssistantContentPart = { type: string; text?: string; name?: string }
 
@@ -34,25 +24,27 @@ function extractPromptTextAfterLastToolCall(content: AssistantContentPart[]): st
 		.trimEnd()
 }
 
-export function registerFermentEvents(pi: ExtensionAPI): void {
+export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
+	const applyAndPersist = createApplyAndPersist(runtime)
+
 	pi.on("session_start", async (_event, ctx) => {
 		if (process.env.KIMCHI_SUBAGENT === "1") return
-		clearAllStepStarts()
-		clearAllScopingGates()
-		clearAllPendingScopes()
+		runtime.clearAllStepStarts()
+		runtime.clearAllScopingGates()
+		runtime.clearAllPendingScopes()
 		clearFermentCache()
 
 		const envId = process.env.KIMCHI_ACTIVE_FERMENT
 		if (envId) {
-			resumeFerment(pi, envId, ctx)
+			resumeFerment(pi, envId, ctx, runtime)
 		} else {
-			setActive(undefined)
+			runtime.setActive(undefined)
 		}
 	})
 
 	pi.on("session_shutdown", async () => {
 		if (process.env.KIMCHI_SUBAGENT === "1") return
-		const f = getActive()
+		const f = runtime.getActive()
 		if (!f) return
 		if (f.status === "running" || f.status === "planned") {
 			applyAndPersist(f.id, { type: "pause" })
@@ -61,12 +53,12 @@ export function registerFermentEvents(pi: ExtensionAPI): void {
 
 	pi.on("input", async (event) => {
 		if (event.source === "interactive") {
-			markHumanInput()
+			runtime.markHumanInput()
 		}
 	})
 
 	pi.on("before_agent_start", async (event) => {
-		const f = getActive()
+		const f = runtime.getActive()
 		if (!f) return {}
 		if (f.status === "paused") {
 			const pausedSupplement = `\n\n## Ferment Paused\n\nFerment "${f.name}" is paused by the user. Do NOT call any ferment tools (activate_phase, start_step, complete_step, etc.) — they will be rejected. Acknowledge any pending question briefly and wait for the user to resume with /auto.`
@@ -78,8 +70,8 @@ export function registerFermentEvents(pi: ExtensionAPI): void {
 	})
 
 	pi.on("model_select", async (event, ctx) => {
-		captureJudgeContext(ctx?.model, ctx?.modelRegistry)
-		const f = getActive()
+		runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry)
+		const f = runtime.getActive()
 		if (!f || f.status !== "running") return
 		if (isRestoringModel()) return
 
@@ -98,8 +90,8 @@ export function registerFermentEvents(pi: ExtensionAPI): void {
 	})
 
 	pi.on("turn_end", async (event, ctx) => {
-		captureJudgeContext(ctx?.model, ctx?.modelRegistry)
-		const f = getActive()
+		runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry)
+		const f = runtime.getActive()
 		if (!f) return
 		if (f.mode === "exec") return
 		if (f.status !== "draft" && f.status !== "running") return
@@ -134,7 +126,7 @@ export function registerFermentEvents(pi: ExtensionAPI): void {
 		} else if (contextualOptions?.includes(choice)) {
 			reply = choice
 		} else if (isDraft && choice === yesLabel) {
-			const outcome = confirmPendingScope(defaultFermentRuntime, f.id, undefined, "turn_end", f.name)
+			const outcome = confirmPendingScope(runtime, f.id, undefined, "turn_end", f.name)
 			if (outcome.ok) {
 				ctx.ui.notify(
 					`Plan saved for "${outcome.outcome.ferment.name}". ${outcome.outcome.ferment.phases.length} phase(s) ready.`,
@@ -151,7 +143,7 @@ export function registerFermentEvents(pi: ExtensionAPI): void {
 			reply = "Yes, proceed."
 		}
 
-		markHumanInput()
+		runtime.markHumanInput()
 		void pi.sendUserMessage(reply, { deliverAs: "followUp" })
 	})
 }
