@@ -29,63 +29,73 @@ export function spinnerFrame(state: SpinnerState): string {
 }
 
 // Cooking animator — drives the global working indicator in the status bar
-interface SpinnerFrame {
-	char: string
-	message: string
-}
+const COOKING_FRAMES = [
+	{ frames: ["|", "/", "-", "\\"], message: "Stirring" },
+	{ frames: ["○", "◔", "◑", "◕", "●", "◕", "◑", "◔"], message: "Marinating" },
+	{ frames: ["|", "/", "-", "\\"], message: "Chopping" },
+	{ frames: ["◐", "◓", "◑", "◒"], message: "Mixing the gochugaru" },
+	{ frames: ["·", "+", "·", "×", "·", "+"], message: "Salting the cabbage" },
+	{ frames: ["|", "/", "-", "\\"], message: "Grinding spices" },
+	{ frames: ["_", "-", "_", "-"], message: "Packing the jar" },
+	{ frames: ["|", "/", "-", "\\"], message: "Massaging the leaves" },
+	{ frames: ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂"], message: "Reducing" },
+	{ frames: ["✦", "✧", "✦", "✧"], message: "Prepping aromatics" },
+	{ frames: ["·", "+", "·", "×", "·", "+"], message: "Simmering" },
+	{ frames: ["░", "▒", "▓", "█", "▓", "▒", "░"], message: "Fermenting" },
+	{ frames: ["·", "+", "·", "×", "·", "+"], message: "Seasoning" },
+	{ frames: ["ˊ", "`", "ˊ", "`"], message: "Tasting" },
+	{ frames: ["z", "Z", "z", "Z"], message: "Letting it rest" },
+	{ frames: ["~", "-", "~", "-"], message: "Rinsing" },
+	{ frames: ["•", "·", "•", "·"], message: "Building the brine" },
+	{ frames: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], message: "Cooking" },
+	{ frames: ["~", "-", "~", "-"], message: "Braising" },
+	{ frames: ["⊙", "⊚", "⊙", "⊚"], message: "Tossing everything together" },
+] as const
 
-const COOKING_FRAMES: SpinnerFrame[] = [
-	{ char: "\\", message: "Stirring" },
-	{ char: "○", message: "Marinating" },
-	{ char: "/", message: "Chopping" },
-	{ char: "◑", message: "Mixing the gochugaru" },
-	{ char: "·", message: "Salting the cabbage" },
-	{ char: "/", message: "Grinding spices" },
-	{ char: "_", message: "Packing the jar" },
-	{ char: "/", message: "Massaging the leaves" },
-	{ char: "▬", message: "Reducing" },
-	{ char: "✦", message: "Prepping aromatics" },
-	{ char: "·", message: "Simmering" },
-	{ char: "░", message: "Fermenting" },
-	{ char: "·", message: "Seasoning" },
-	{ char: "ˊ", message: "Tasting" },
-	{ char: "z", message: "Letting it rest" },
-	{ char: "~", message: "Rinsing" },
-	{ char: "•", message: "Building the brine" },
-	{ char: "⠋", message: "Cooking" },
-	{ char: "~", message: "Braising" },
-	{ char: "⊙", message: "Tossing everything together" },
-]
+const DOT_STATES = ["", ".", "..", "..."] as const
 
-const CHAR_INTERVAL_MS = 50
-const DOT_COUNT = 3
-const HOLD_TICKS = 40
+const SPIN_MS = 80
+const DOT_CYCLE_MS = 500
+const MESSAGE_CYCLE_MS = 1400
 
 let _resumeFrameIdx = 0
-let _resumeTickOffset = 0
 
 export function createWorkingAnimator(onUpdate: (char: string, message: string) => void): () => void {
 	let frameIdx = _resumeFrameIdx
-	let tickOffset = _resumeTickOffset
-	const id = setInterval(() => {
-		const frame = COOKING_FRAMES[frameIdx]
-		tickOffset++
-		if (tickOffset > frame.message.length + DOT_COUNT + HOLD_TICKS) {
-			frameIdx = (frameIdx + 1) % COOKING_FRAMES.length
-			tickOffset = 0
-		}
+	let spinIdx = 0
+	let dotIdx = 0
+	const frame = COOKING_FRAMES[frameIdx]
+
+	const initId = setTimeout(() => {
+		onUpdate(frame.frames[spinIdx], frame.message + DOT_STATES[dotIdx])
+	}, 0)
+
+	const spinId = setInterval(() => {
+		const f = COOKING_FRAMES[frameIdx]
+		spinIdx = (spinIdx + 1) % f.frames.length
+		onUpdate(f.frames[spinIdx], f.message + DOT_STATES[dotIdx])
+	}, SPIN_MS)
+
+	const dotId = setInterval(() => {
+		dotIdx = (dotIdx + 1) % DOT_STATES.length
+		const f = COOKING_FRAMES[frameIdx]
+		onUpdate(f.frames[spinIdx], f.message + DOT_STATES[dotIdx])
+	}, DOT_CYCLE_MS)
+
+	const msgId = setInterval(() => {
+		frameIdx = (frameIdx + 1) % COOKING_FRAMES.length
+		spinIdx = 0
+		dotIdx = 0
 		_resumeFrameIdx = frameIdx
-		_resumeTickOffset = tickOffset
-		const msg = frame.message
-		const partial =
-			tickOffset <= msg.length
-				? msg.slice(0, tickOffset)
-				: msg + ".".repeat(Math.min(tickOffset - msg.length, DOT_COUNT))
-		onUpdate(frame.char, partial)
-	}, CHAR_INTERVAL_MS)
+		const f = COOKING_FRAMES[frameIdx]
+		onUpdate(f.frames[spinIdx], f.message + DOT_STATES[dotIdx])
+	}, MESSAGE_CYCLE_MS)
+
 	return () => {
-		clearInterval(id)
+		clearTimeout(initId)
+		clearInterval(spinId)
+		clearInterval(dotId)
+		clearInterval(msgId)
 		_resumeFrameIdx = (frameIdx + 1) % COOKING_FRAMES.length
-		_resumeTickOffset = 0
 	}
 }
