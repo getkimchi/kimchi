@@ -79,6 +79,7 @@ chmod +x "$TEMP_DIR/bin/kimchi"
 # (user install) and remind the user to ensure it's on PATH.
 if [ -n "${KIMCHI_INSTALL_DIR:-}" ]; then
 	INSTALL_DIR="$KIMCHI_INSTALL_DIR"
+	DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}"
 	NEEDS_PATH_SETUP="maybe"
 elif [ -w /usr/local/bin ]; then
 	INSTALL_DIR="/usr/local/bin"
