@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
@@ -63,13 +64,13 @@ describe("/ferment command", () => {
 		const { commands } = registerFermentExtension()
 		const fermentCommand = commands.get("ferment")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
+		const title = `Rewrite login ${randomUUID()}`
 
-		await fermentCommand('add "Rewrite login"', { hasUI: false, ui: { notify: vi.fn() } })
+		await fermentCommand(`add "${title}"`, { hasUI: false, ui: { notify: vi.fn() } })
 
-		const created = new FermentStorage().list()
-		expect(created).toHaveLength(1)
-		expect(created[0].name).toBe("Rewrite login")
-		expect(created[0].description).toBe("Rewrite login")
+		const created = getActive()
+		expect(created?.name).toBe(title)
+		expect(created?.description).toBe(title)
 	})
 })
 

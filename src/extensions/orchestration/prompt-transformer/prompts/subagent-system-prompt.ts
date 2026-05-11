@@ -6,7 +6,6 @@ import {
 	SUBAGENT_RESPONSE_PROTOCOL,
 	TOOLS_SECTION,
 	TOOL_DISCOVERY,
-	USER_INTERACTION,
 } from "./shared.js"
 
 export default [
@@ -18,7 +17,6 @@ export default [
 	SUBAGENT_RESPONSE_PROTOCOL,
 	FACTUAL_ACCURACY,
 	TOOL_DISCOVERY,
-	USER_INTERACTION,
 	`## Guidelines
 
 ${CORE_GUIDELINES}
