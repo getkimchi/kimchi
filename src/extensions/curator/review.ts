@@ -315,51 +315,56 @@ export async function tryReviewLock(skillsDir: string): Promise<(() => Promise<v
 export async function spawnSessionReview(opts: RunSessionReviewOptions): Promise<void> {
 	const { provider, model, messages, skillsDir } = opts
 
-	const lock = await tryReviewLock(skillsDir)
-	if (!lock) {
+	const unlock = await tryReviewLock(skillsDir)
+	if (!unlock) {
 		debugLog("spawnSessionReview: another review is already running, skipping")
 		return
 	}
 
-	debugLog(`spawnSessionReview called: provider=${provider} model=${model} messages=${messages.length}`)
+	try {
+		debugLog(`spawnSessionReview called: provider=${provider} model=${model} messages=${messages.length}`)
 
-	const transcript = serializeTranscript(messages)
-	if (!transcript.trim()) {
-		debugLog("spawnSessionReview: empty transcript, skipping")
-		return
+		const transcript = serializeTranscript(messages)
+		if (!transcript.trim()) {
+			debugLog("spawnSessionReview: empty transcript, skipping")
+			return
+		}
+
+		debugLog(`transcript serialized: ${transcript.length} chars, ${transcript.split("\n\n").length} turns`)
+
+		const prompt = `${transcript}\n\n---\n\n${SESSION_REVIEW_PROMPT}`
+		const args = buildSubagentArgs({ provider, model, prompt }, [], collectExtensionArgs())
+		const invocation = getSubagentInvocation(args)
+
+		debugLog(`spawning subagent: ${invocation.command} ${invocation.args.slice(0, 4).join(" ")} ...`)
+
+		const reviewLogPath = process.env.KIMCHI_REVIEW_LOG
+		let stdoutOption: "ignore" | number = "ignore"
+		let logFd: number | undefined
+		if (reviewLogPath) {
+			appendFileSync(reviewLogPath, `\n=== session-review output ${new Date().toISOString()} ===\n`)
+			logFd = openSync(reviewLogPath, "a")
+			stdoutOption = logFd
+		}
+
+		const proc = spawn(invocation.command, invocation.args, {
+			stdio: ["ignore", stdoutOption, "ignore"],
+			detached: true,
+			env: { ...process.env, KIMCHI_SUBAGENT: "1", KIMCHI_SESSION_REVIEW: "1" },
+		})
+
+		if (logFd !== undefined) {
+			closeSync(logFd)
+		}
+
+		proc.unref()
+		proc.on("error", (err) => {
+			debugLog(`subagent spawn error: ${err.message}`)
+		})
+
+		debugLog(`subagent spawned pid=${proc.pid ?? "unknown"}`)
+	} finally {
+		await unlock()
+		debugLog("spawnSessionReview: lock released")
 	}
-
-	debugLog(`transcript serialized: ${transcript.length} chars, ${transcript.split("\n\n").length} turns`)
-
-	const prompt = `${transcript}\n\n---\n\n${SESSION_REVIEW_PROMPT}`
-	const args = buildSubagentArgs({ provider, model, prompt }, [], collectExtensionArgs())
-	const invocation = getSubagentInvocation(args)
-
-	debugLog(`spawning subagent: ${invocation.command} ${invocation.args.slice(0, 4).join(" ")} ...`)
-
-	const reviewLogPath = process.env.KIMCHI_REVIEW_LOG
-	let stdoutOption: "ignore" | number = "ignore"
-	let logFd: number | undefined
-	if (reviewLogPath) {
-		appendFileSync(reviewLogPath, `\n=== session-review output ${new Date().toISOString()} ===\n`)
-		logFd = openSync(reviewLogPath, "a")
-		stdoutOption = logFd
-	}
-
-	const proc = spawn(invocation.command, invocation.args, {
-		stdio: ["ignore", stdoutOption, "ignore"],
-		detached: true,
-		env: { ...process.env, KIMCHI_SUBAGENT: "1", KIMCHI_SESSION_REVIEW: "1" },
-	})
-
-	if (logFd !== undefined) {
-		closeSync(logFd)
-	}
-
-	proc.unref()
-	proc.on("error", (err) => {
-		debugLog(`subagent spawn error: ${err.message}`)
-	})
-
-	debugLog(`subagent spawned pid=${proc.pid ?? "unknown"}`)
 }

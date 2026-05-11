@@ -95,8 +95,8 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 			model: providerModel.model,
 			skillsDir,
 			messages: event.messages,
-		}).catch(() => {
-			// Review lock acquisition failed or other error — best-effort
+		}).catch((err: Error) => {
+			debugLog(`spawnSessionReview failed: ${err.message}`)
 		})
 
 		// Watch skillsDir for .usage.json changes and notify when new agent_created skills appear.
@@ -143,6 +143,10 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 			10 * 60 * 1000,
 		)
 		cleanup.unref()
+	})
+
+	pi.on("agent_start", () => {
+		reviewDispatched = false
 	})
 
 	pi.on("session_start", async () => {
