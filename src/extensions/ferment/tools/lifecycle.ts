@@ -14,6 +14,7 @@ import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { computeFermentGrade, judgePlan } from "../judge.js"
 import { appendRefEntry, maybeInjectAutoNudge } from "../nudge.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
+import { confirmPendingScope } from "../scoping-confirmation.js"
 import { createApplyAndPersist, failedToolResult, toolErr, toolOk } from "../tool-helpers.js"
 import {
 	CompleteFermentParams,
@@ -95,19 +96,11 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 					return toolOk("Proposal buffered. Awaiting the user's custom direction.")
 				}
 
-				runtime.consumeScopingGate(params.ferment_id)
-				const scopeOutcome = applyAndPersist(params.ferment_id, {
-					type: "scope",
-					goal: pending.goal,
-					successCriteria: pending.successCriteria,
-					constraints: pending.constraints,
-					phases: params.phases,
-				})
+				const scopeOutcome = confirmPendingScope(runtime, params.ferment_id, params.phases, "propose_phases")
 				if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
-				runtime.clearPendingScope(params.ferment_id)
 				maybeInjectAutoNudge(pi)
 				return toolOk(
-					`Proposal confirmed and saved. Ferment "${scopeOutcome.ferment.name}" is now planned with ${scopeOutcome.ferment.phases.length} phase(s).`,
+					`Proposal confirmed and saved. Ferment "${scopeOutcome.outcome.ferment.name}" is now planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s).`,
 				)
 			}
 

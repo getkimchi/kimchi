@@ -36,7 +36,9 @@ import {
 	handlePhaseAction,
 	handleStepAction,
 } from "./progress-overlay.js"
-import { clearAllPendingScopes, clearPendingScope, getPendingScope, runScopingFlow } from "./scoping.js"
+import { defaultFermentRuntime } from "./runtime.js"
+import { confirmPendingScope } from "./scoping-confirmation.js"
+import { clearAllPendingScopes, clearPendingScope, runScopingFlow } from "./scoping.js"
 import {
 	captureJudgeContext,
 	clearAllScopingGates,
@@ -49,7 +51,6 @@ import {
 	isRestoringModel,
 	isScopingInteractive,
 	markHumanInput,
-	markScopingConfirmed,
 	markScopingInteractive,
 	setActive,
 	setAutoModeEnabled,
@@ -367,25 +368,15 @@ export default function fermentExtension(pi: ExtensionAPI) {
 			// no further LLM round-trip needed. The user confirmed what they
 			// read on screen; we save EXACTLY that, not whatever the LLM might
 			// re-imagine in a follow-up turn.
-			const pending = getPendingScope(f.id)
-			if (pending?.phases && pending.phases.length > 0) {
-				markScopingConfirmed(f.id) // unlock the scope_ferment gate (still required by the gate)
-				const outcome = applyAndPersist(f.id, {
-					type: "scope",
-					title: f.name,
-					goal: pending.goal,
-					successCriteria: pending.successCriteria,
-					constraints: pending.constraints,
-					phases: pending.phases,
-				})
-				if (!outcome.ok) {
-					ctx.ui.notify(`Failed to save plan: ${outcome.error.message}`)
-					reply = `Plan save failed: ${outcome.error.message}. Investigate the ferment state and try again.`
-				} else {
-					clearPendingScope(f.id)
-					ctx.ui.notify(`Plan saved for "${outcome.ferment.name}". ${outcome.ferment.phases.length} phase(s) ready.`)
-					reply = `Plan saved by user confirmation — ${outcome.ferment.phases.length} phase(s) now in "planned" status. You can proceed with activate_phase when the user is ready, or wait for further instructions.`
-				}
+			const outcome = confirmPendingScope(defaultFermentRuntime, f.id, undefined, "turn_end", f.name)
+			if (outcome.ok) {
+				ctx.ui.notify(
+					`Plan saved for "${outcome.outcome.ferment.name}". ${outcome.outcome.ferment.phases.length} phase(s) ready.`,
+				)
+				reply = `Plan saved by user confirmation — ${outcome.outcome.ferment.phases.length} phase(s) now in "planned" status. You can proceed with activate_phase when the user is ready, or wait for further instructions.`
+			} else if (outcome.error.code !== "MISSING_PENDING_PHASES" && outcome.error.code !== "MISSING_PENDING_SCOPE") {
+				ctx.ui.notify(`Failed to save plan: ${outcome.error.message}`)
+				reply = `Plan save failed: ${outcome.error.message}. Investigate the ferment state and try again.`
 			} else {
 				// No pending phases — LLM forgot to call propose_phases, or this
 				// turn's "?" wasn't actually the scoping confirmation. Ask the LLM
