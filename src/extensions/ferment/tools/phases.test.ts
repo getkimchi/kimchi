@@ -6,8 +6,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
 import type { JudgeGrade } from "../../../ferment/types.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
+import { setActive } from "../state.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
-import { type PhaseHandlerServices, completePhase } from "./phases.js"
+import { type PhaseHandlerServices, completePhase, registerPhaseTools } from "./phases.js"
+
+vi.mock("../judge.js", () => ({
+	judgeGradePhase: vi.fn(async () => gradeA),
+	judgeSuggestCorrectiveStep: vi.fn(async () => undefined),
+}))
 
 const gradeA: JudgeGrade = { grade: "A", rationale: "solid", gradedAt: "2026-01-01T00:00:00.000Z" }
 
@@ -63,6 +69,7 @@ function createServices(overrides: Partial<PhaseHandlerServices> = {}): PhaseHan
 
 beforeEach(() => {
 	vi.restoreAllMocks()
+	setActive(undefined)
 })
 
 describe("completePhase", () => {
@@ -134,5 +141,45 @@ describe("completePhase", () => {
 		expect(h.pi.sendUserMessage).toHaveBeenCalledWith("Ferment paused. Let me know when you are ready to continue.", {
 			deliverAs: "followUp",
 		})
+	})
+})
+
+describe("registerPhaseTools", () => {
+	it("uses the injected runtime, not the global active ferment, for plan-mode phase review", async () => {
+		const h = createHarness()
+		let injectedActive = h.storage.get(h.fermentId)
+		if (!injectedActive) throw new Error("Expected active ferment in injected storage")
+		h.runtime.getActive = () => injectedActive
+		h.runtime.setActive = (ferment) => {
+			injectedActive = ferment
+		}
+		setActive(undefined)
+
+		const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>()
+		const pi = {
+			registerTool: (tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }) => {
+				tools.set(tool.name, tool)
+			},
+			sendUserMessage: vi.fn(),
+			appendEntry: vi.fn(),
+			sendMessage: vi.fn(),
+		} as unknown as ExtensionAPI
+		registerPhaseTools(pi, h.runtime)
+
+		const select = vi.fn(async () => "Pause here")
+		const completePhaseTool = tools.get("complete_phase")
+		if (!completePhaseTool) throw new Error("complete_phase was not registered")
+
+		const result = (await completePhaseTool.execute(
+			"test-call-id",
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done" },
+			undefined,
+			undefined,
+			{ ui: { select } },
+		)) as { content: { text: string }[]; isError?: boolean }
+
+		expect(okText(result)).toContain("Ferment paused at user request")
+		expect(select).toHaveBeenCalled()
+		expect(h.storage.get(h.fermentId)?.status).toBe("paused")
 	})
 })

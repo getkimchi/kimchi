@@ -201,6 +201,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const phaseServices: PhaseHandlerServices = {
 		...defaultPhaseHandlerServices,
+		isPlanMode: () => runtime.getActive()?.mode === "plan",
 		onPhaseCompleted: (targetPi) => onPhaseCompleted(targetPi, runtime),
 	}
 	pi.registerTool({
