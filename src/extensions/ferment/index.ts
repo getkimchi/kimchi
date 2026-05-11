@@ -11,16 +11,15 @@
  */
 
 import { writeFileSync } from "node:fs"
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { determineNextAction, findFirstPlannedPhase, getScopingProgress, whatNext } from "../../ferment/engine.js"
-import { evaluatePhaseFeedback, renderSelfImprovementSection } from "../../ferment/self-improve.js"
 import { shortenTitle } from "../../ferment/shorten-title.js"
 import { computeStats, serializeStats } from "../../ferment/stats.js"
-import { FermentError, clearFermentCache } from "../../ferment/store.js"
-import type { Ferment, FermentWorkMode, Step } from "../../ferment/types.js"
+import { FermentError } from "../../ferment/store.js"
+import type { FermentWorkMode, Step } from "../../ferment/types.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { parseFermentCommand } from "./command-parser.js"
-import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
+import { registerFermentEvents } from "./events.js"
 import { formatDecisionsAndMemories, formatFermentStatus, formatScopingContext, stripToolRefs } from "./format.js"
 import { isPlanMode } from "./modes.js"
 import { appendRefEntry, maybeInjectAutoNudge } from "./nudge.js"
@@ -36,25 +35,16 @@ import {
 	handlePhaseAction,
 	handleStepAction,
 } from "./progress-overlay.js"
-import { defaultFermentRuntime } from "./runtime.js"
-import { confirmPendingScope } from "./scoping-confirmation.js"
-import { clearAllPendingScopes, clearPendingScope, runScopingFlow } from "./scoping.js"
+import { resumeFerment } from "./resume.js"
+import { clearPendingScope, runScopingFlow } from "./scoping.js"
 import {
-	captureJudgeContext,
-	clearAllScopingGates,
-	clearAllStepStarts,
 	clearFermentState,
 	getActive,
 	getActiveId,
-	getCorrectiveStep,
 	getStorage,
-	isRestoringModel,
 	isScopingInteractive,
-	markHumanInput,
-	markScopingInteractive,
 	setActive,
 	setAutoModeEnabled,
-	setRestoringModel,
 } from "./state.js"
 import { applyAndPersist } from "./tool-helpers.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
@@ -102,298 +92,12 @@ export function getCurrentRecipe(): Step[] {
 	return f?.phases.find((p) => p.id === f.activePhaseId)?.steps ?? []
 }
 
-type AssistantContentPart = { type: string; text?: string; name?: string }
-
-function hasToolCall(content: AssistantContentPart[], toolName: string): boolean {
-	return content.some((c) => c.type === "toolCall" && c.name === toolName)
-}
-
-function extractPromptTextAfterLastToolCall(content: AssistantContentPart[]): string {
-	const lastToolCall = content.findLastIndex((c) => c.type === "toolCall")
-	return content
-		.slice(lastToolCall + 1)
-		.filter((c) => c.type === "text")
-		.map((c) => c.text ?? "")
-		.join("")
-		.trimEnd()
-}
-
-// ─── Planner system prompt supplement ─────────────────────────────────────────
-
-function buildPlannerSupplement(): string {
-	const f = getActive()
-	if (!f) return ""
-	const dm = formatDecisionsAndMemories(f)
-	const dmSection = dm ? `\n\n${dm}` : ""
-	const sc = formatScopingContext(f)
-	const scSection = sc ? `\n\n${sc}` : ""
-
-	// Self-improvement feedback: inject previous phase's grade if available
-	const selfImprovementSection = buildSelfImprovementSection(f)
-
-	return `\n\n## Ferment Planner Role\n\nYou are the PLANNER for ferment "${f.name}". Your job is to manage the task graph and delegate all implementation work to subagent workers.\n\n**State machine:**\n- The ferment engine's determineNextAction() determines the next action from state\n- Read it via the engine, then execute that action directly\n- For start_step: call the tool, read worker_model from the result, spawn a subagent with provider "kimchi-dev"\n- If start_step returns parallel_siblings, call start_step for all of them and spawn their subagents CONCURRENTLY\n- After a subagent returns, call complete_step with its summary\n- For phase transitions (activate_phase, complete_phase, complete_ferment): call the tool directly, no subagent needed\n- Worker models: minimax-m2.7 for code/text, kimi-k2.5 for vision tasks\n\n**Rules:**\n- NEVER write, edit, or read files yourself during step execution\n- NEVER implement a step inline — always delegate to a subagent worker\n- If the current action is complete_step: this is a SUGGESTION — the LLM decides when the step is done based on subagent results\n\n**Parallel phases:**\n- When activate_phase returns parallel_group, all listed phase_ids are active simultaneously\n- Call refine_phase for ALL parallel phases in the same turn, then execute their steps concurrently\n- Complete each parallel phase independently with complete_phase when its steps finish\n- Only proceed to the next sequential phase once ALL phases in the parallel group are completed/skipped\n\n**Knowledge capture:**\n- Call add_decision after any architectural or design choice that affects future phases\n- Call add_memory for reusable patterns, gotchas, or conventions discovered during execution${scSection}${dmSection}${selfImprovementSection}\n`
-}
-
-/**
- * Build self-improvement feedback section for the planner based on previous phase grade.
- *
- * Pulls the corrective step (if any) from the in-memory cache populated by
- * complete_phase. The cache may be empty either because the previous grade was
- * not D/F or because the judge call hasn't completed yet — both fine, the
- * suggestion is best-effort.
- */
-function buildSelfImprovementSection(ferment: Ferment): string {
-	const completedPhases = ferment.phases.filter((p) => p.status === "completed" && p.grade)
-	if (completedPhases.length === 0) return ""
-
-	const lastGradedPhase = completedPhases[completedPhases.length - 1]
-	if (!lastGradedPhase.grade) return ""
-
-	const grade = lastGradedPhase.grade
-	const feedback = evaluatePhaseFeedback(grade)
-	const correctiveStep = getCorrectiveStep(ferment.id, lastGradedPhase.id)
-	return renderSelfImprovementSection(grade, feedback, correctiveStep)
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Extension factory
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function fermentExtension(pi: ExtensionAPI) {
-	// ─── Resume helper ───────────────────────────────────────────────────────
-	// Shared by session_start (env-var path) and the /ferment Continue picker.
-	// Flips paused→running, validates worktree, re-arms the scoping gate for
-	// drafts, and fires an imperative resume nudge so the planner picks up
-	// the work without acknowledging. Does NOT mount the dashboard widget —
-	// that only appears when the user explicitly runs /progress.
-	function resumeFerment(fermentId: string, ctx: ExtensionContext): void {
-		const storage = getStorage()
-		let existing = storage.get(fermentId)
-		if (!existing) {
-			setActive(undefined)
-			return
-		}
-
-		// Session_shutdown sets running ferments to "paused" — flip back to
-		// "running" on resume so the engine produces a real next-action nudge.
-		if (existing.status === "paused") {
-			const out = applyAndPersist(existing.id, { type: "resume" })
-			if (out.ok) existing = out.ferment
-		}
-
-		setActive(existing)
-		appendRefEntry(pi, existing.id)
-
-		// Worktree validation
-		const wtCheck = checkWorktree(existing)
-		if (wtCheck.severity !== "ok" && wtCheck.message) {
-			pi.appendEntry("ferment_worktree_warning", { text: wtCheck.message })
-			if (wtCheck.severity === "block") {
-				// Don't inject resume nudge — wrong directory
-				return
-			}
-		}
-
-		// Re-arm scoping gate on resume: if the ferment is still in draft and the
-		// session has a TUI, the user must confirm again before scope_ferment is
-		// allowed. Without this, the gate is silently bypassed on resume.
-		if (existing.status === "draft" && ctx?.hasUI) {
-			markScopingInteractive(existing.id)
-		}
-
-		// Resume nudge → hidden from user, triggers LLM to continue.
-		// Wrap the engine's next-action message in an imperative resume preamble
-		// so the model knows this isn't a status report — it's a directive to
-		// pick up where the previous session left off, NOW, without acknowledging.
-		const action = determineNextAction(existing)
-		const baseMsg = `${action.kind}: ${action.reason}`
-		const scopeProgress = getScopingProgress(existing)
-		const breadcrumb = `Resumed ferment: "${existing.name}" [${existing.status}] ${existing.mode} mode · scoping ${scopeProgress.answered}/${scopeProgress.total}`
-
-		const imperative =
-			existing.status === "running"
-				? `RESUMING ferment "${existing.name}" — the previous session was interrupted. Pick up the work immediately. Do NOT explain or summarize — execute the next action below.\n\n${baseMsg}`
-				: baseMsg
-
-		pi.appendEntry("ferment_breadcrumb", { text: breadcrumb })
-		void pi.sendMessage(
-			{
-				customType: "ferment_resume_nudge",
-				content: [{ type: "text", text: imperative }],
-				display: false,
-				details: undefined,
-			},
-			{ triggerTurn: true },
-		)
-	}
-
-	// ─── Session start: rehydrate from prior session ──────────────────────────
-	// Skip entirely in subagent processes — KIMCHI_ACTIVE_FERMENT leaks into the
-	// child env but the subagent has its own prompt and must not inject a resume
-	// nudge (which would race with the agent startup and cause "already processing").
-	pi.on("session_start", async (_event, ctx) => {
-		if (process.env.KIMCHI_SUBAGENT === "1") return
-		clearAllStepStarts()
-		clearAllScopingGates()
-		clearAllPendingScopes()
-		// Clear in-memory ferment cache — fresh session reads from disk once,
-		// then serves subsequent reads from cache until next mutation.
-		clearFermentCache()
-
-		// Resume only via the explicit env var KIMCHI_ACTIVE_FERMENT — set when a
-		// ferment is started in the current process tree (e.g. inherited by a
-		// subagent child). We deliberately do NOT auto-resume from session entries
-		// or storage scans: opening kimchi gives a clean session, and the user
-		// picks a ferment to continue via /ferment or /ferment switch.
-		const envId = process.env.KIMCHI_ACTIVE_FERMENT
-		if (envId) {
-			resumeFerment(envId, ctx)
-		} else {
-			setActive(undefined)
-		}
-	})
-
-	// ─── Session shutdown: mark any running ferment as paused ─────────────────
-	// Prevents ferments from being stuck in "running" after the user exits or
-	// interrupts the harness. Subagents exit naturally and should not touch state.
-	pi.on("session_shutdown", async () => {
-		if (process.env.KIMCHI_SUBAGENT === "1") return
-		const f = getActive()
-		if (!f) return
-		if (f.status === "running" || f.status === "planned") {
-			applyAndPersist(f.id, { type: "pause" })
-		}
-	})
-
-	// ─── Track last human input time ──────────────────────────────────────────
-	pi.on("input", async (event) => {
-		if (event.source === "interactive") {
-			markHumanInput()
-		}
-	})
-
-	// ─── Planner system prompt injection ──────────────────────────────────────
-	// When a ferment is running, tell the session model it is the planner:
-	// its job is to manage the state machine and delegate implementation to
-	// subagent workers — never to write code itself.
-	// When the ferment is paused, inject a clear stop directive instead. The
-	// state machine refuses ferment tool calls in this state regardless, but
-	// telling the planner up front avoids a turn full of failed attempts.
-	pi.on("before_agent_start", async (event) => {
-		const f = getActive()
-		if (!f) return {}
-		if (f.status === "paused") {
-			const pausedSupplement = `\n\n## Ferment Paused\n\nFerment "${f.name}" is paused by the user. Do NOT call any ferment tools (activate_phase, start_step, complete_step, etc.) — they will be rejected. Acknowledge any pending question briefly and wait for the user to resume with /auto.`
-			return { systemPrompt: `${event.systemPrompt}${pausedSupplement}` }
-		}
-		if (f.status !== "running") return {}
-		const supplement = buildPlannerSupplement()
-		return { systemPrompt: `${event.systemPrompt}${supplement}` }
-	})
-
-	// ─── Block model switching during ferment execution ───────────────────────
-	// model_select has no cancel mechanism — restore the previous model instead.
-	// `restoringModel` flag prevents the pi.setModel call from re-entering.
-	pi.on("model_select", async (event, ctx) => {
-		captureJudgeContext(ctx?.model, ctx?.modelRegistry)
-		const f = getActive()
-		if (!f || f.status !== "running") return
-		if (isRestoringModel()) return
-
-		if (event.previousModel) {
-			setRestoringModel(true)
-			pi.setModel(event.previousModel)
-				.catch(() => {})
-				.finally(() => {
-					setRestoringModel(false)
-				})
-		}
-		ctx.ui.notify(
-			`Model switching is locked while ferment "${f.name}" is running. Finish or abandon the ferment first.`,
-			"warning",
-		)
-	})
-
-	// ─── Yes/no question intercept ────────────────────────────────────────────
-	// In plan mode the LLM asks yes/no questions after each scoping field and
-	// before each step. Show a TUI dropdown instead of waiting for free-text
-	// input. Fires for draft AND running status in plan mode; never in exec.
-	pi.on("turn_end", async (event, ctx) => {
-		captureJudgeContext(ctx?.model, ctx?.modelRegistry)
-		const f = getActive()
-		if (!f) return
-		if (f.mode === "exec") return
-		// Only intercept during scoping (draft) or plan-mode confirmation gates (running)
-		if (f.status !== "draft" && f.status !== "running") return
-		if (!ctx?.ui?.select || !ctx?.ui?.input) return
-		if (event.message.role !== "assistant") return
-
-		// Only inspect text after the final tool call. Text before or between tool
-		// calls can be mid-execution narration; trailing text is the user-facing
-		// prompt that needs the dropdown.
-		if (hasToolCall(event.message.content, "propose_phases")) return
-		const text = extractPromptTextAfterLastToolCall(event.message.content)
-		if (!text) return
-
-		const isDraft = f.status === "draft"
-		const yesLabel = isDraft ? "Yes, this looks right" : "Yes, proceed"
-		const noLabel = isDraft ? "No, revise" : "No, pause"
-
-		// Extract just the final question rather than dumping the last 200 chars
-		// of the message. The full text is already rendered above the dialog —
-		// the dialog title should be the question itself, nothing more.
-		const title = extractTrailingQuestion(text)
-		const contextualOptions = extractContextualOptions(text)
-		if (!text.endsWith("?") && !contextualOptions) return
-		const options = contextualOptions
-			? [...contextualOptions, "Let me say something else"]
-			: [yesLabel, noLabel, "Let me say something else"]
-		const choice = await ctx.ui.select(title, options)
-		if (!choice) return
-
-		let reply: string
-
-		if (choice === "Let me say something else") {
-			const custom = ctx.ui.input ? await ctx.ui.input("Your message:", "") : undefined
-			if (!custom) return
-			reply = custom
-		} else if (choice === noLabel) {
-			reply = isDraft ? "No — please revise." : "No, pause for now."
-		} else if (contextualOptions?.includes(choice)) {
-			// User selected a contextual option — pass it through verbatim
-			reply = choice
-		} else if (isDraft && choice === yesLabel) {
-			// User confirmed during scoping. If the LLM stashed a structured
-			// proposal via propose_phases, apply it deterministically here —
-			// no further LLM round-trip needed. The user confirmed what they
-			// read on screen; we save EXACTLY that, not whatever the LLM might
-			// re-imagine in a follow-up turn.
-			const outcome = confirmPendingScope(defaultFermentRuntime, f.id, undefined, "turn_end", f.name)
-			if (outcome.ok) {
-				ctx.ui.notify(
-					`Plan saved for "${outcome.outcome.ferment.name}". ${outcome.outcome.ferment.phases.length} phase(s) ready.`,
-				)
-				reply = `Plan saved by user confirmation — ${outcome.outcome.ferment.phases.length} phase(s) now in "planned" status. You can proceed with activate_phase when the user is ready, or wait for further instructions.`
-			} else if (outcome.error.code !== "MISSING_PENDING_PHASES" && outcome.error.code !== "MISSING_PENDING_SCOPE") {
-				ctx.ui.notify(`Failed to save plan: ${outcome.error.message}`)
-				reply = `Plan save failed: ${outcome.error.message}. Investigate the ferment state and try again.`
-			} else {
-				// No pending phases — LLM forgot to call propose_phases, or this
-				// turn's "?" wasn't actually the scoping confirmation. Ask the LLM
-				// to retry via the tool so the user's confirmation has something to save.
-				reply =
-					"User confirmed the plan but you never called propose_phases — there's nothing structured for the host to save. Call propose_phases now with the same plan you just showed, then end with 'Does this plan look right?' so the user can confirm again."
-			}
-		} else {
-			reply = "Yes, proceed."
-		}
-
-		markHumanInput()
-		// Queue as followUp — the previous turn (which produced the "?" question)
-		// may still be finalizing when this fires, and a bare sendUserMessage
-		// would error with "Agent is already processing".
-		void pi.sendUserMessage(reply, { deliverAs: "followUp" })
-	})
+	registerFermentEvents(pi)
 
 	// ─── Commands ─────────────────────────────────────────────────────────────
 
@@ -499,7 +203,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 				if (action === actionContinue) {
 					if (!isActiveSelected) {
 						// Full resume: flips paused→running, mounts widget, fires imperative nudge.
-						resumeFerment(selected.id, ctx)
+						resumeFerment(pi, selected.id, ctx)
 						ctx.ui.notify(`Resumed "${selected.name}"`)
 					}
 					return
@@ -637,7 +341,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 					const wtWarning = wtCheck.severity === "warn" ? `\n⚠️  ${wtCheck.message}` : ""
 					ctx.ui.notify(`Switched to "${f.name}" (${f.id}) [${f.status}].${wtWarning}`)
 					// Full resume: flips paused→running, mounts widget, fires imperative nudge.
-					resumeFerment(f.id, ctx)
+					resumeFerment(pi, f.id, ctx)
 				} catch (err) {
 					ctx.ui.notify(err instanceof FermentError ? err.message : "Switch failed.")
 				}
