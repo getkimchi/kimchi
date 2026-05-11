@@ -51,6 +51,7 @@ Run the steps in order. For steps you own, use your tools directly. For steps yo
 - Spawn independent subtasks in parallel: do NOT run more than 3 concurrent subagents.
 - After a subagent returns, check the \`Files:\` line in the tool result. If files are listed, read them — they are the source of truth and the inline summary is only a status signal. If no files are listed, the summary is the complete result. Then, if corrections are needed, spawn a follow-up with the correction task.
 - If a subagent call returns an error of any kind (including protocol violation, timeout, or exit error): do NOT attempt to implement or debug the work yourself. First assess whether the failure is retryable (e.g. transient timeouts or protocol violations) or not (e.g. missing files, permission errors, or invalid inputs). For retryable failures, spawn a replacement subagent with a corrected or simplified prompt — allow at most one retry per delegated step. For non-retryable failures, report the failure clearly and stop immediately without retrying.
+- **Repeated-failure escalation**: if two subagents in a row fail on the same kind of work (e.g. both hit \`token_budget_exceeded\`, both produce protocol violations on the same module), do NOT spawn a third with the same prompt shape. Return to the \`plan\` phase, narrow the scope (split the chunk, drop a non-essential acceptance criterion, or split one file across two subagents), revise the spec file, then resume with the smaller scope. A third same-shape retry is statistically more expensive than a re-plan.
 - Do NOT spawn a subagent for work you can do in a single tool call.
 - Every file the subagent needs must go in the \`attachments\` field — never paste file contents or \`@path\` tokens into the prompt. The subagent sees each attachment as an image or file block before your prompt; refer to them by name.
 
@@ -70,12 +71,19 @@ Include a \`tokenBudget\` for every subagent call. Match the budget to the **sub
 
 | Subagent task scope | tokenBudget |
 |---|---|
-| Single file (one module, one test file, one doc) | 150000 |
-| Multi-file implementation (2–5 files, one layer) | 200000 |
+| Single small file (≤200 LOC, narrow API) | 100000 |
+| Single larger file or test file with negative paths | 150000 |
+| Multi-file implementation (2–3 tightly coupled files, one layer) | 200000 |
 | Full project or large codebase exploration | 500000 |
 | Plan or research document (writing, not coding) | 200000 |
 
-If a subagent hits its budget, spawn a follow-up with the remaining work rather than raising the budget.
+Subagents inflate context fast — file reads, tool errors, and exploration all count against the budget. **Size for the smallest scope that still fits the work**, and prefer splitting over enlarging.
+
+Rules:
+- **One layer = one subagent.** Do not bundle parser + executor + CLI into a single subagent call. Each layer goes to its own subagent. Independent layers can run in parallel.
+- **If a subagent hits its budget, split the work, do not raise the budget.** A 200k failure does not mean "try 300k next" — it means the task was too big. Break it into two 100k chunks or trim a non-essential acceptance criterion. Raising the budget on the same prompt almost always fails again because the subagent's context-bloat pattern repeats.
+- **Restate the budget discipline in every subagent prompt.** Add a line like "Implement exactly the signatures in the spec — do not explore the codebase or re-read files outside the spec." Subagents that explore freely burn budget on context they don't need.
+- **Pre-attach all files the subagent needs** via the \`attachments\` field rather than asking the subagent to read them. Read-and-paste into the prompt is wasteful; an attachment appears once, not in every tool result.
 
 ## Inactivity timeout
 

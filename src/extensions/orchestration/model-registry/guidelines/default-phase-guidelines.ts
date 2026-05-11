@@ -21,6 +21,7 @@ export const DEFAULT_PLAN_GUIDELINES = `During **plan** phase:
 - List every file that will be created, modified, or deleted, with concrete paths.
 - Identify test files that need creation or update. State the testing strategy.
 - Call out non-obvious decisions and the alternatives you rejected — one line each.
+- **Capture project conventions in a \`## Conventions\` section of the spec.** Cover: commenting policy (the project's stated preference — e.g. "prefer self-explanatory names over comments"), error-handling style (typed errors vs strings, sentinel vs wrapped), test organisation (map-based tables, naming, file layout), and any naming rules. If the working directory has no AGENTS.md/CLAUDE.md, this section is the ONLY channel subagents have for these rules — do not skip it. If conventions are already documented in a project file, name that file in the spec instead of restating them.
 - Keep the spec focused. Interfaces and file paths beat prose. Long plans waste downstream tokens.
 - Do NOT start build until the spec is written and saved.`
 

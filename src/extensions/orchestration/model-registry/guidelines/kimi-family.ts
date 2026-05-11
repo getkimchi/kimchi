@@ -24,8 +24,9 @@ export const KIMI_FAMILY_RESEARCH = ""
 export const KIMI_FAMILY_PLAN = `During **plan** phase (Kimi family):
 - Structure the spec with a numbered **Chunks** section. Each chunk is one self-contained unit of work that a subagent can complete independently.
 - Every chunk must list: (1) the files it creates or modifies, (2) a one-sentence goal, (3) acceptance criteria the orchestrator can verify.
-- Keep each chunk small — ideally 1–2 files. A subagent with a 150k token budget must be able to finish the chunk in one pass.
-- Order chunks so later ones can build on earlier ones. Mark chunks that are independent of each other so the orchestrator can run them in parallel.`
+- Keep each chunk small — ideally 1–2 files. A subagent with a 150k token budget must be able to finish the chunk in one pass. If a chunk needs >2 files or >300 LOC, split it.
+- Order chunks so later ones can build on earlier ones. Mark chunks that are independent of each other so the orchestrator can run them in parallel.
+- Include a top-level **Conventions** section in the spec covering commenting policy, error-handling style, test organisation, and naming rules — subagents have no access to AGENTS.md when the task runs outside this repo, so the spec is their only convention channel. Reference an existing project file if one already documents these rules.`
 
 /** Kimi family build: plan-first and chunked goals. */
 export const KIMI_FAMILY_BUILD = `During **build** phase (Kimi family):
