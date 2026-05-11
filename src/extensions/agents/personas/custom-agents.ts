@@ -9,7 +9,7 @@
 
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { basename, join } from "node:path"
-import { getAgentDir, parseFrontmatter } from "@mariozechner/pi-coding-agent"
+import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent"
 import { getInstalledPackageResourceDirs } from "../package-resources.js"
 import { BUILTIN_TOOL_NAMES } from "./agent-types.js"
 import type { AgentConfig, MemoryScope, ThinkingLevel } from "./types.js"

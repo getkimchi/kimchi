@@ -1,5 +1,5 @@
-import type { AssistantMessage, ToolResultMessage } from "@mariozechner/pi-ai"
-import type { ContextEvent, ExtensionAPI } from "@mariozechner/pi-coding-agent"
+import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
+import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { isSubagent } from "./orchestration/prompt-transformer/prompt-transformer.js"
 
 const PRUNE_THRESHOLD = 35_000

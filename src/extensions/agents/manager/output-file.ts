@@ -8,7 +8,7 @@
 import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { AgentSession, AgentSessionEvent } from "@mariozechner/pi-coding-agent"
+import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent"
 
 /**
  * Encode a cwd path as a filesystem-safe directory name.

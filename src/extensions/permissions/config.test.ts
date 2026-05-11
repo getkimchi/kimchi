@@ -89,4 +89,13 @@ describe("loadConfig merging", () => {
 		expect(loaded.allowBySource.cli).toEqual(["bash(npm test)"])
 		expect(loaded.denyBySource.cli).toEqual(["write(.env)"])
 	})
+
+	it("accepts yolo as defaultMode and round-trips it", () => {
+		mkdirSync(join(tmpCwd, ".kimchi"), { recursive: true })
+		writeFileSync(join(tmpCwd, ".kimchi", "permissions.json"), JSON.stringify({ defaultMode: "yolo" }))
+
+		const { loaded, errors } = loadConfig({ cwd: tmpCwd })
+		expect(errors).toEqual([])
+		expect(loaded.config.defaultMode).toBe("yolo")
+	})
 })

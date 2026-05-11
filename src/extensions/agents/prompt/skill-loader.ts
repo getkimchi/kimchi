@@ -7,8 +7,8 @@
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import type { Skill } from "@mariozechner/pi-coding-agent"
-import { loadSkillsFromDir } from "@mariozechner/pi-coding-agent"
+import type { Skill } from "@earendil-works/pi-coding-agent"
+import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import { DEFAULT_SKILL_PATHS } from "../../../config.js"
 import { isUnsafeName } from "../memory/memory.js"
 

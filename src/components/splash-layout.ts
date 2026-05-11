@@ -1,4 +1,4 @@
-import { truncateToWidth } from "@mariozechner/pi-tui"
+import { truncateToWidth } from "@earendil-works/pi-tui"
 
 // 4 logo lines + 1 empty spacer + 1 version line + 1 path line
 export const SPLASH_HEADER_CONTENT_LINES = 7

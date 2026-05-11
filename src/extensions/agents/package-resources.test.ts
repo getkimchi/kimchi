@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-vi.mock("@mariozechner/pi-coding-agent", () => ({
+vi.mock("@earendil-works/pi-coding-agent", () => ({
 	getAgentDir: vi.fn(() => "/fake/agent/dir"),
 	SettingsManager: {
 		create: vi.fn(() => ({})),
@@ -13,7 +13,7 @@ vi.mock("@mariozechner/pi-coding-agent", () => ({
 	})),
 }))
 
-import { DefaultPackageManager } from "@mariozechner/pi-coding-agent"
+import { DefaultPackageManager } from "@earendil-works/pi-coding-agent"
 import { getInstalledPackageResourceDirs } from "./package-resources.js"
 
 describe("getInstalledPackageResourceDirs", () => {

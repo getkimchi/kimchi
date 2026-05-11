@@ -1,6 +1,6 @@
-import type { AssistantMessage, Usage } from "@mariozechner/pi-ai"
-import type { ExtensionAPI, MessageRenderer, Theme } from "@mariozechner/pi-coding-agent"
-import { Container, Text } from "@mariozechner/pi-tui"
+import type { AssistantMessage, Usage } from "@earendil-works/pi-ai"
+import type { ExtensionAPI, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
+import { Container, Text } from "@earendil-works/pi-tui"
 import { formatCount } from "./format.js"
 import { isSubagent } from "./orchestration/prompt-transformer/prompt-transformer.js"
 
@@ -25,6 +25,13 @@ interface PromptSummaryData {
 	orchestrator: UsageTotals | null
 	subagents: UsageTotals | null
 	total: UsageTotals
+	extras?: string[]
+}
+
+const pendingExtras: string[] = []
+
+export function addPromptSummaryExtra(text: string): void {
+	pendingExtras.push(text)
 }
 
 function emptyTotals(): UsageTotals {
@@ -97,6 +104,10 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 		container.addChild(new Text(line, 0, 0))
 	}
 
+	for (const extra of data.extras ?? []) {
+		container.addChild(new Text(INDENT + theme.fg("dim", "note:".padEnd(LABEL_WIDTH)) + extra, 0, 0))
+	}
+
 	return container
 }
 
@@ -134,11 +145,14 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 		}
 		if (grandTotal.input + grandTotal.output === 0) return
 
+		const extras = pendingExtras.splice(0)
+
 		const data: PromptSummaryData = {
 			elapsed: formatDuration(Date.now() - startedAt),
 			orchestrator: orchestrator.input + orchestrator.output > 0 ? { ...orchestrator } : null,
 			subagents: subagents.input + subagents.output > 0 ? { ...subagents } : null,
 			total: grandTotal,
+			extras: extras.length > 0 ? extras : undefined,
 		}
 
 		// Defer so the agent event loop finishes and isStreaming resets to false
@@ -148,7 +162,10 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 
 		pi.sendMessage({
 			customType: "prompt-summary",
-			content: [{ type: "text", text: `Prompt summary (${data.elapsed})` }],
+			// Wrap in a tag so the LLM treats this as a system annotation, not user input.
+			// All custom messages are transformed to role:"user" by pi-mono, so without
+			// this the model interprets "Prompt summary (Xs)" as something the user typed.
+			content: [{ type: "text", text: `<system-annotation>Prompt summary (${data.elapsed})</system-annotation>` }],
 			display: true,
 			details: data,
 		})

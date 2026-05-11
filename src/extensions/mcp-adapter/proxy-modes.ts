@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir, userInfo } from "node:os"
 import { dirname, join } from "node:path"
-import type { AgentToolResult, ExtensionContext, ToolInfo } from "@mariozechner/pi-coding-agent"
-import { truncateTail } from "@mariozechner/pi-coding-agent"
+import type { AgentToolResult, ExtensionContext, ToolInfo } from "@earendil-works/pi-coding-agent"
+import { truncateTail } from "@earendil-works/pi-coding-agent"
 import type { SearchStrategy } from "./bm25.js"
 import {
 	getFailureAgeSeconds,
@@ -23,7 +23,7 @@ import { truncateAtWord } from "./utils.js"
 
 type ProxyToolResult = AgentToolResult<Record<string, unknown>>
 
-import type { ImageContent, TextContent } from "@mariozechner/pi-ai"
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai"
 
 type ContentBlock = TextContent | ImageContent
 

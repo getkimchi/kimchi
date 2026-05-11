@@ -137,7 +137,8 @@ describe("resolveAgentInvocationConfig — model fallback chain", () => {
 	})
 
 	it("ignores unknown phase values (non-strength phases)", () => {
-		mockGetPhase.mockReturnValue("unknown-phase")
+		// Cast: testing the runtime guard against unexpected phase strings.
+		mockGetPhase.mockReturnValue("unknown-phase" as never)
 		const result = resolveAgentInvocationConfig(
 			{ name: "test", description: "t", extensions: true, skills: true, systemPrompt: "", promptMode: "replace" },
 			{},

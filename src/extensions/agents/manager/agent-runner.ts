@@ -2,8 +2,8 @@
  * agent-runner.ts — Core execution engine: creates sessions, runs agents, collects results.
  */
 
-import type { Api, Model } from "@mariozechner/pi-ai"
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent"
+import type { Api, Model } from "@earendil-works/pi-ai"
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -13,7 +13,7 @@ import {
 	SettingsManager,
 	createAgentSession,
 	getAgentDir,
-} from "@mariozechner/pi-coding-agent"
+} from "@earendil-works/pi-coding-agent"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"

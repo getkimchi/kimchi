@@ -23,12 +23,12 @@
  * inside the `if (!subagentMode)` guard.
  */
 
-import type { AssistantMessage } from "@mariozechner/pi-ai"
-import type { ContextEvent } from "@mariozechner/pi-coding-agent"
+import type { AssistantMessage } from "@earendil-works/pi-ai"
+import type { ContextEvent } from "@earendil-works/pi-coding-agent"
 
 /**
  * Message-array shape passed through `context` events. Derived from
- * `ContextEvent` because `AgentMessage` lives in `@mariozechner/pi-agent-core`,
+ * `ContextEvent` because `AgentMessage` lives in `@earendil-works/pi-agent-core`,
  * which is only a transitive dep — importing it directly works under npm's
  * flat install but breaks under pnpm's strict resolution (and thus CI).
  */
@@ -47,24 +47,46 @@ export const EMPTY_TURN_NUDGE_TEXT =
  * Fires at most once per user-input cycle, and only when no tool has been
  * called during that cycle — so legitimate end-of-task summaries after a
  * completed tool sequence are not nudged.
+ *
+ * Suppresses the nudge while a subagent result is pending to prevent the
+ * model from signalling DONE before the subagent output has been received
+ * and processed.
  */
 export class ContinuationNudge {
 	private toolsCalledSinceLastUserInput = false
 	private nudgedSinceLastUserInput = false
 	private nudgeResponsePending = false
 	private accumulatedResponseText = ""
+	/** Number of subagent calls still awaiting results.
+	 *  Incremented by `markSubagentCall()`, decremented by `clearSubagentPending()`.
+	 *  The continuation nudge is suppressed while this is > 0. */
+	private pendingSubagentCount = 0
 
 	resetForNewUserInput(): void {
 		this.toolsCalledSinceLastUserInput = false
 		this.nudgedSinceLastUserInput = false
 		this.nudgeResponsePending = false
 		this.accumulatedResponseText = ""
+		// pendingSubagentCount is intentionally NOT reset here — it is
+		// decremented only by clearSubagentPending() to avoid a race where
+		// a new user-input cycle arrives before all subagent results, which
+		// would incorrectly allow the nudge to fire while subagents are
+		// still in flight.
 	}
 
 	recordToolCall(): void {
 		this.toolsCalledSinceLastUserInput = true
 		this.nudgeResponsePending = false
 		this.accumulatedResponseText = ""
+	}
+
+	/**
+	 * Called once per `subagent` tool call detected in a turn.
+	 * Increments the pending counter so the continuation nudge stays
+	 * suppressed until all subagent results have been received.
+	 */
+	markSubagentCall(): void {
+		this.pendingSubagentCount++
 	}
 
 	isNudgeResponsePending(): boolean {
@@ -82,12 +104,27 @@ export class ContinuationNudge {
 	evaluateTurn(message: AssistantMessage): boolean {
 		if (this.nudgedSinceLastUserInput) return false
 		if (this.toolsCalledSinceLastUserInput) return false
+		// Do not nudge while any subagent result is pending — the model must
+		// wait for all subagent outputs before it can continue or signal done.
+		if (this.pendingSubagentCount > 0) return false
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
 		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
 		if (hasToolCalls || !hasText) return false
 		this.nudgedSinceLastUserInput = true
 		this.nudgeResponsePending = true
 		return true
+	}
+
+	/**
+	 * Decrements the pending-subagent counter when a subagent result is
+	 * received. Called by the orchestrator for each subagent tool-result.
+	 * The continuation nudge remains suppressed until all pending
+	 * subagents have returned.
+	 */
+	clearSubagentPending(): void {
+		if (this.pendingSubagentCount > 0) {
+			this.pendingSubagentCount--
+		}
 	}
 }
 

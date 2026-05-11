@@ -2,7 +2,7 @@
  * conversation-viewer.ts — Live conversation overlay for viewing agent sessions.
  */
 
-import type { AgentSession } from "@mariozechner/pi-coding-agent"
+import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import {
 	type Component,
 	type TUI,
@@ -10,7 +10,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
-} from "@mariozechner/pi-tui"
+} from "@earendil-works/pi-tui"
 import type { AgentRecord } from "../personas/types.js"
 import { extractText } from "../prompt/context.js"
 

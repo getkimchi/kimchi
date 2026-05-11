@@ -1,4 +1,4 @@
-import type { Theme } from "@mariozechner/pi-coding-agent"
+import type { Theme } from "@earendil-works/pi-coding-agent"
 import { RST_FG } from "../ansi.js"
 import { getFolder, getGitBranch, getVersion } from "../utils.js"
 

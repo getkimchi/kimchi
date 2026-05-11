@@ -1,4 +1,4 @@
-import { matchesKey, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui"
+import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { fg } from "../../ansi.js"
 import type { CachedTool, MetadataCache, ServerCacheEntry } from "./metadata-cache.js"
 import { resourceNameToToolName } from "./resource-tools.js"
@@ -104,6 +104,35 @@ interface VisibleItem {
 	toolIndex?: number
 }
 
+/**
+ * Compute the visible-item window for the panel given the terminal height,
+ * cursor position, and total item count.
+ *
+ * - `maxVis` adapts to the terminal so the bottom controls stay on-screen
+ *   on small terminals: it's clamped to [MIN_VISIBLE, MAX_VISIBLE] around
+ *   `terminalRows - FIXED_OVERHEAD_ROWS`.
+ * - `startIdx`/`endIdx` slide the visible window so the cursor stays roughly
+ *   centered while staying within `[0, total]`.
+ */
+export function computeVisibleWindow(
+	terminalRows: number,
+	cursorIndex: number,
+	total: number,
+	limits: { maxVisible: number; minVisible: number; fixedOverheadRows: number } = {
+		maxVisible: 12,
+		minVisible: 3,
+		fixedOverheadRows: 16,
+	},
+): { maxVis: number; startIdx: number; endIdx: number } {
+	const maxVis = Math.max(
+		limits.minVisible,
+		Math.min(limits.maxVisible, terminalRows - limits.fixedOverheadRows),
+	)
+	const startIdx = Math.max(0, Math.min(cursorIndex - Math.floor(maxVis / 2), total - maxVis))
+	const endIdx = Math.min(startIdx + maxVis, total)
+	return { maxVis, startIdx, endIdx }
+}
+
 class McpPanel {
 	private prefix: "server" | "none" | "short"
 	private servers: ServerState[] = []
@@ -118,10 +147,14 @@ class McpPanel {
 	private authNotice: string | null = null
 	private inactivityTimeout: ReturnType<typeof setTimeout> | null = null
 	private visibleItems: VisibleItem[] = []
-	private tui: { requestRender(): void }
+	private tui: { requestRender(force?: boolean): void; terminal: { rows: number } }
 	private t = DEFAULT_THEME
 
 	private static readonly MAX_VISIBLE = 12
+	// Borders, search row, dividers, empty rows, progress row, stats row, ~2 hint rows.
+	// Subtract from terminal rows to bound visible items so the bottom controls stay on-screen.
+	private static readonly FIXED_OVERHEAD_ROWS = 16
+	private static readonly MIN_VISIBLE = 3
 	private static readonly INACTIVITY_MS = 60_000
 
 	constructor(
@@ -129,7 +162,7 @@ class McpPanel {
 		cache: MetadataCache | null,
 		provenance: Map<string, ServerProvenance>,
 		private callbacks: McpPanelCallbacks,
-		tui: { requestRender(): void },
+		tui: { requestRender(force?: boolean): void; terminal: { rows: number } },
 		private done: (result: McpPanelResult) => void,
 	) {
 		this.tui = tui
@@ -584,10 +617,17 @@ class McpPanel {
 			lines.push(row(fg(t.hint, italic("No MCP servers configured."))))
 			lines.push(emptyRow())
 		} else {
-			const maxVis = McpPanel.MAX_VISIBLE
 			const total = this.visibleItems.length
-			const startIdx = Math.max(0, Math.min(this.cursorIndex - Math.floor(maxVis / 2), total - maxVis))
-			const endIdx = Math.min(startIdx + maxVis, total)
+			const { maxVis, startIdx, endIdx } = computeVisibleWindow(
+				this.tui.terminal.rows,
+				this.cursorIndex,
+				total,
+				{
+					maxVisible: McpPanel.MAX_VISIBLE,
+					minVisible: McpPanel.MIN_VISIBLE,
+					fixedOverheadRows: McpPanel.FIXED_OVERHEAD_ROWS,
+				},
+			)
 
 			lines.push(emptyRow())
 
@@ -721,9 +761,13 @@ class McpPanel {
 
 		const prefixLen = 7 + visibleWidth(tool.name)
 		const maxDescLen = Math.max(0, innerW - prefixLen - 8)
+		// Tool descriptions are often multi-line docstrings (e.g. "Args:\n  ..."). The
+		// newlines have visible width 0 but break terminal layout when emitted. Collapse
+		// any whitespace/control sequence to a single space before truncating.
+		const flatDesc = tool.description ? tool.description.replace(/\s+/g, " ").trim() : ""
 		const descStr =
-			maxDescLen > 5 && tool.description
-				? fg(t.description, "— " + truncateToWidth(tool.description, maxDescLen, "…"))
+			maxDescLen > 5 && flatDesc
+				? fg(t.description, "— " + truncateToWidth(flatDesc, maxDescLen, "…"))
 				: ""
 
 		return `  ${cursor} ${toggleIcon} ${nameStr} ${descStr}`
@@ -741,7 +785,7 @@ export function createMcpPanel(
 	cache: MetadataCache | null,
 	provenance: Map<string, ServerProvenance>,
 	callbacks: McpPanelCallbacks,
-	tui: { requestRender(): void },
+	tui: { requestRender(force?: boolean): void; terminal: { rows: number } },
 	done: (result: McpPanelResult) => void,
 ): McpPanel & { dispose(): void } {
 	return new McpPanel(config, cache, provenance, callbacks, tui, done)

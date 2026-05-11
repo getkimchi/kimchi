@@ -1,45 +1,43 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { buildGsd2ModelsConfig, buildGsd2Preferences } from "./gsd2.js"
+import { buildGsd2KimchiProvider, buildGsd2Preferences } from "./gsd2.js"
 import { byId } from "./registry.js"
 
-describe("buildGsd2ModelsConfig", () => {
-	it("nests the kimchi provider under providers.kimchi", () => {
-		const cfg = buildGsd2ModelsConfig("test-key") as {
-			providers: { kimchi: { apiKey: string; baseUrl: string; defaultModel: string } }
+describe("buildGsd2KimchiProvider", () => {
+	it("returns the provider block with apiKey, baseUrl, and defaultModel", () => {
+		const p = buildGsd2KimchiProvider("test-key") as {
+			apiKey: string
+			baseUrl: string
+			defaultModel: string
 		}
-		expect(cfg.providers.kimchi.apiKey).toBe("test-key")
-		expect(cfg.providers.kimchi.baseUrl).toBe("https://llm.kimchi.dev/openai/v1")
-		expect(cfg.providers.kimchi.defaultModel).toBe("kimi-k2.6")
+		expect(p.apiKey).toBe("test-key")
+		expect(p.baseUrl).toBe("https://llm.kimchi.dev/openai/v1")
+		expect(p.defaultModel).toBe("kimi-k2.6")
 	})
 
 	it("emits all six models with cost metadata (Opus/Sonnet billed, kimchi models free)", () => {
-		const cfg = buildGsd2ModelsConfig("k") as {
-			providers: { kimchi: { models: Array<{ id: string; cost: { input: number } }> } }
+		const p = buildGsd2KimchiProvider("k") as {
+			models: Array<{ id: string; cost: { input: number } }>
 		}
-		const models = cfg.providers.kimchi.models
-		expect(models.length).toBe(6)
-		const opus = models.find((m) => m.id === "claude-opus-4-6")
+		expect(p.models.length).toBe(6)
+		const opus = p.models.find((m) => m.id === "claude-opus-4-6")
 		expect(opus?.cost).toEqual({ input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 })
-		const sonnet = models.find((m) => m.id === "claude-sonnet-4-6")
+		const sonnet = p.models.find((m) => m.id === "claude-sonnet-4-6")
 		expect(sonnet?.cost).toEqual({ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 })
 		for (const slug of ["kimi-k2.6", "kimi-k2.5", "nemotron-3-super-fp4", "minimax-m2.7"]) {
-			const m = models.find((x) => x.id === slug)
+			const m = p.models.find((x) => x.id === slug)
 			expect(m?.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })
 		}
 	})
 
 	it("Kimi models accept text+image input, others text only", () => {
-		const cfg = buildGsd2ModelsConfig("k") as {
-			providers: { kimchi: { models: Array<{ id: string; input: string[] }> } }
-		}
-		const models = cfg.providers.kimchi.models
-		expect(models.find((m) => m.id === "kimi-k2.6")?.input).toEqual(["text", "image"])
-		expect(models.find((m) => m.id === "kimi-k2.5")?.input).toEqual(["text", "image"])
-		expect(models.find((m) => m.id === "nemotron-3-super-fp4")?.input).toEqual(["text"])
-		expect(models.find((m) => m.id === "claude-opus-4-6")?.input).toEqual(["text"])
+		const p = buildGsd2KimchiProvider("k") as { models: Array<{ id: string; input: string[] }> }
+		expect(p.models.find((m) => m.id === "kimi-k2.6")?.input).toEqual(["text", "image"])
+		expect(p.models.find((m) => m.id === "kimi-k2.5")?.input).toEqual(["text", "image"])
+		expect(p.models.find((m) => m.id === "nemotron-3-super-fp4")?.input).toEqual(["text"])
+		expect(p.models.find((m) => m.id === "claude-opus-4-6")?.input).toEqual(["text"])
 	})
 })
 
@@ -114,5 +112,32 @@ describe("gsd2 tool registration", () => {
 
 		const prefs = readFileSync(join(tmp, ".gsd", "preferences.md"), "utf-8")
 		expect(prefs).toContain("planning: kimchi/claude-opus-4-6")
+	})
+
+	it("write() preserves other providers and top-level keys in models.json", async () => {
+		const modelsPath = join(tmp, ".gsd", "agent", "models.json")
+		mkdirSync(join(tmp, ".gsd", "agent"), { recursive: true })
+		writeFileSync(
+			modelsPath,
+			JSON.stringify({
+				version: 7,
+				providers: {
+					anthropic: { apiKey: "user-anthropic-key", baseUrl: "https://api.anthropic.com" },
+					kimchi: { apiKey: "stale-kimchi-key", legacy: true },
+				},
+			}),
+		)
+
+		const tool = byId("gsd2")
+		await tool?.write("global", "fresh-kimchi-key")
+
+		const models = JSON.parse(readFileSync(modelsPath, "utf-8"))
+		expect(models.version).toBe(7)
+		expect(models.providers.anthropic).toEqual({
+			apiKey: "user-anthropic-key",
+			baseUrl: "https://api.anthropic.com",
+		})
+		expect(models.providers.kimchi.apiKey).toBe("fresh-kimchi-key")
+		expect(models.providers.kimchi.legacy).toBeUndefined()
 	})
 })

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs"
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadMcpConfig } from "./config.js"
 import { ConsentManager } from "./consent-manager.js"
 import { getMissingConfiguredDirectToolServers } from "./direct-tools.js"
@@ -112,6 +112,26 @@ export async function initializeMcp(pi: ExtensionAPI, ctx: ExtensionContext): Pr
 			return { name, definition, connection: null, error: message }
 		}
 	})
+
+	// Only retry transient errors that might succeed on second attempt
+	// (EBUSY, ECONNREFUSED, timeouts, npm lock contention, etc.)
+	const TRANSIENT_ERROR_CODES = ["EBUSY", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND"]
+	const isTransientError = (error: string): boolean =>
+		TRANSIENT_ERROR_CODES.some((code) => error.includes(code)) ||
+		/\btimes?\s*out\b/i.test(error) ||
+		/\bnpm.*lock\b/i.test(error)
+
+	const retryable = results.filter((r) => r.error && !r.error.includes("OAuth") && isTransientError(r.error))
+	for (const entry of retryable) {
+		try {
+			const connection = await manager.connect(entry.name, entry.definition)
+			if (connection.status === "needs-auth") continue
+			entry.connection = connection
+			entry.error = null
+		} catch {
+			// keep original error
+		}
+	}
 
 	for (const { name, definition, connection, error } of results) {
 		if (error || !connection) {

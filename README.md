@@ -6,6 +6,15 @@ A coding agent CLI powered by [kimchi](https://kimchi.dev/). Built on the [pi-mo
 
 Install the latest release:
 
+**Homebrew (macOS / Linux):**
+
+```bash
+brew tap castai/tap
+brew install castai/tap/kimchi-dev
+```
+
+**Install script:**
+
 ```bash
 curl -fsSL https://github.com/castai/kimchi-dev/releases/latest/download/install.sh | bash
 ```
@@ -37,6 +46,50 @@ kimchi stores its own configuration (settings, sessions, models) under:
 ```
 ~/.config/kimchi/harness/
 ```
+
+### Migrating from another coding agent
+
+On first run, kimchi-code looks for an existing **Claude Code** or **OpenCode** installation on your machine and offers to migrate its MCP servers and report any user-level skills it finds. If anything is migratable you'll see a one-shot prompt:
+
+```
+┌  Claude Code + OpenCode configuration found
+│
+│  MCP servers: filesystem, github, ripgrep
+│  Claude Code skills: 4 in ~/.claude/skills
+│  OpenCode skills: 2 in ~/.config/opencode/skills
+│
+◇  Migrate MCP servers to Kimchi?
+│  ● Migrate now
+│  ○ Skip this time
+│  ○ Never ask again
+```
+
+When you accept, the discovered MCP servers are merged into `~/.config/kimchi/harness/mcp.json`. Existing Kimchi entries always win on name collisions, so re-running the migration is safe — your hand-edited Kimchi config is never overwritten.
+
+The prompt is only shown when something is actually worth migrating (at least one MCP server, or at least one skill subdirectory). If neither agent is installed, or both are installed but empty, the wizard skips the migration step silently and never asks again.
+
+#### Sources scanned
+
+| Agent | Config files (read in order, results merged) | Skills directory |
+|---|---|---|
+| Claude Code | `~/.claude.json` (top-level `mcpServers` + per-project `projects[*].mcpServers`) | `~/.claude/skills/` |
+| OpenCode | `$OPENCODE_CONFIG`, then `~/.config/opencode/opencode.json`, `opencode.jsonc`, `config.json`, `~/.opencode.json` | `~/.config/opencode/skills/` (with `skill/` as a fallback) |
+
+For OpenCode, both the modern (`mcp` block, `type: "local" \| "remote"`, `command: string[]`, `environment`, `enabled`) and legacy Go-binary (`mcpServers` block, `type: "stdio" \| "sse"`, `env` as either an object or a `KEY=VAL` array) schemas are supported. Servers with `enabled: false` are skipped. Files that don't exist are silently ignored; files that fail to read or parse emit a warning and the wizard moves on.
+
+#### Conflict resolution
+
+If the same MCP server name shows up in more than one place, the first one wins, deduplicated at the **server-name** level rather than the file level:
+
+1. **Within one agent**: earlier files in the agent's path list win over later files; within a single Claude Code config, project-level entries win over top-level; within a single OpenCode config, the modern `mcp` block wins over the legacy `mcpServers` block.
+2. **Across agents**: Claude Code wins over OpenCode (same default as the historical migration).
+3. **Against your existing Kimchi config**: your existing entries in `~/.config/kimchi/harness/mcp.json` always win.
+
+#### Choosing "Never ask again"
+
+Kimchi remembers your choice in `~/.config/kimchi/config.json` (`migrationState: "skip-forever"`) and won't prompt again on future runs, even if you later install another supported agent. To re-trigger the prompt, delete that field from the config file.
+
+Adding support for another coding agent (Cursor, Cline, Aider, Cody, ...) is a small change — drop a new `AgentDefinition` into [`src/agent-discovery/agents/`](src/agent-discovery/) and append it to `AGENT_DEFINITIONS`; the wizard, merging, prompt gating, and migration write all pick it up automatically.
 
 ### Models
 
@@ -112,6 +165,113 @@ User-defined tags (those added via `/tags add`) are automatically persisted to:
 ```
 
 These tags persist across sessions. Static tags from `KIMCHI_TAGS` are not persisted and must be set via environment variable each session.
+
+## Ferment — Cross-Session Project Management
+
+Ferment is Kimchi's progressive-refinement project mode for multi-session work. Instead of starting from scratch each chat, Ferment persists a structured plan (goal, phases, steps) across sessions as a JSON state file.
+
+### Quick start
+
+```bash
+kimchi --ferment "Build Tetris"
+```
+
+Or inside an active session:
+
+```
+/ferment add "Build Tetris"    # creates with mode: plan
+/ferment mode exec              # switch to autonomous execution
+```
+
+### Concepts
+
+- **Ferment** — the top-level project (e.g. "Build Tetris", "Auth rewrite")
+- **Phase** — a milestone within the project (e.g. "Canvas & Grid", "Movement")
+- **Step** — a single executable task within a phase (e.g. "Create index.html")
+- **Decision** — an architectural choice recorded for posterity
+- **Memory** — a gotcha, convention, or pattern encountered during work
+
+### State machine
+
+All lifecycle transitions (create → scope → activate → start → complete) are validated by a **deterministic finite state machine** that enforces valid state changes and prevents illegal operations (e.g., completing a step before it starts, skipping an already-completed phase). The FSM produces declarative next-action guidance so the harness derives behavior directly from state.
+
+```
+draft → planned → running → [paused] → complete
+```
+
+1. **draft** — created via `/ferment add`, agent collects goal + phases conversationally
+2. **planned** — `scope_ferment` sets goal, criteria, constraints, phase breakdown
+3. **running** — `activate_phase` starts a phase, agent executes steps
+4. **paused** — user intervention required (plan mode, or `/pause`)
+5. **complete** — all phases terminal, done
+
+### Three work modes
+
+| Mode | Behavior | Use when |
+|------|----------|----------|
+| **plan** | Agent asks permission, proposes, explains. No tool enforcement. | Scoping, ambiguous problems, complex architecture |
+| **exec** | Agent acts immediately. Strips coaching text. Auto-advance. | Clear tasks, iterating fast, trusted execution |
+| **auto** (default) | Full coaching. User decides when to act. | Mixed, exploring, learning |
+
+```
+/ferment mode plan     ← ask the agent to coach you
+/ferment mode exec     ← let the agent run autonomously
+/ferment mode auto     ← coaching mode (default)
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/ferment` | List all ferments with status |
+| `/ferment add "Name"` | Create new ferment (draft, plan mode) |
+| `/ferment switch <id>` | Resume by ID prefix or name |
+| `/ferment delete <id>` | Delete permanently |
+| `/ferment export` | Export stats to JSON for analysis |
+| `/ferment mode` | Show current mode + help |
+| `/ferment mode plan/exec/auto` | Change mode |
+| `/auto` | Enable auto-mode |
+| `/pause` | Disable auto-mode |
+| `/status` | Full status dump with phases, steps, decisions |
+
+### Recovery
+
+Every session writes a `ferment_reference` entry in the session log. On next start, the harness reads this entry, loads the JSON state from `.kimchi/ferments/<uuid>.json`, and immediately tells the agent what to do next.
+
+```bash
+# Day 1
+$ kimchi --ferment "Build Tetris"
+# … agent works, crashes, terminal closes …
+
+# Day 2
+$ kimchi --ferment "Build Tetris"
+# → Rehydrates state, continues Phase 2 exactly where it left off
+```
+
+### Where state lives
+
+```
+.kimchi/
+├── ferments/
+│   ├── <uuid>.json          ← snapshot cache (machine-readable plan state)
+│   └── <uuid>.events.jsonl  ← append-only audit log of every transition
+├── sessions/
+│   └── <timestamp>.jsonl    ← chat history + tool calls
+└── .<uuid>.progress.log     ← human-readable audit trail
+```
+
+Every mutate operation is persisted as an **append-only event** with pre/post state hashes, enabling full auditability. A deterministic **finite state machine (FSM)** validates all lifecycle transitions and prevents illegal operations (e.g., completing a step before it starts). Stats (aggregate phase/step counts, timing percentiles, worker model usage, grade distributions) are computed on demand from the snapshot — surfaced inline (elapsed time, model, grade per step) and exported via `/ferment export` to a JSON file in the cwd.
+
+For full documentation see `docs/ferment.md` and `docs/ferment-storage-schema.md`.
+
+### Visual display
+
+Active ferment is shown in the footer:
+```
+ferment: Build Tetris [running] phase 2/5 "Pieces"
+```
+
+---
 
 ### Visual display
 

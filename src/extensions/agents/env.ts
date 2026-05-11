@@ -2,7 +2,7 @@
  * env.ts — Detect environment info (git, platform) for subagent system prompts.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { EnvInfo } from "./personas/types.js"
 
 export async function detectEnv(pi: ExtensionAPI, cwd: string): Promise<EnvInfo> {

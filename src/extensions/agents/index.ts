@@ -18,8 +18,8 @@ import {
 	type ExtensionContext,
 	defineTool,
 	getAgentDir,
-} from "@mariozechner/pi-coding-agent"
-import { Text } from "@mariozechner/pi-tui"
+} from "@earendil-works/pi-coding-agent"
+import { Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"

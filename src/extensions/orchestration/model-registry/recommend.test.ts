@@ -62,10 +62,10 @@ describe("recommendModel", () => {
 	})
 
 	it("returns first by registry insertion order when multiple match same tier", () => {
-		// explore + heavy: kimi-k2.6 is inserted before kimi-k2.5 in registry
+		// explore + heavy: only claude-opus-4-7 currently matches explore at heavy tier.
 		const result = recommendModel({ strengths: ["explore"], preferTier: "heavy" })
 		expect(result).toBeDefined()
-		expect(result?.modelId).toBe("kimi-k2.6")
+		expect(result?.modelId).toBe("claude-opus-4-7")
 	})
 
 	it("returns undefined for empty strengths that somehow miss all models — sanity check with impossible combo", () => {

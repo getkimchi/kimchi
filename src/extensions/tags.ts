@@ -12,21 +12,37 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
 	Theme,
 	ThemeColor,
-} from "@mariozechner/pi-coding-agent"
-import { Container, Text } from "@mariozechner/pi-tui"
+} from "@earendil-works/pi-coding-agent"
+import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const FOOTER_STATUS_KEY = "active-tags"
 const TAGS_CONFIG_FILE = resolve(homedir(), ".config", "kimchi", "tags.json")
+const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
+
+function readHarnessSetting<T>(key: string, fallback: T): T {
+	try {
+		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
+		const parsed = JSON.parse(raw)
+		if (key in parsed) return parsed[key] as T
+	} catch {
+		// settings.json absent or unreadable — use fallback
+	}
+	return fallback
+}
+
+export function readHidePhaseChanges(): boolean {
+	return readHarnessSetting<boolean>("hidePhaseChanges", false)
+}
 
 const TAG_COLORS: ThemeColor[] = ["accent", "mdLink", "success", "warning"]
 
@@ -493,7 +509,7 @@ const SetPhaseParams = Type.Object({
 
 let tagManagerInstance: TagManager | undefined
 
-export function getCurrentPhase(): string | undefined {
+export function getCurrentPhase(): Phase | undefined {
 	return tagManagerInstance?.getPhase()
 }
 
@@ -567,6 +583,9 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		},
 
 		renderResult(result, _options, theme) {
+			if (readHidePhaseChanges()) {
+				return new Text("", 0, 0)
+			}
 			const phase = (result.details as { phase: string } | undefined)?.phase ?? "unknown"
 			const dash = theme.fg("dim", "- ")
 			const label = theme.bold(theme.fg("toolTitle", `Phase changed: ${phase}`))

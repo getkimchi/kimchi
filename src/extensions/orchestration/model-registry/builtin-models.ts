@@ -1,3 +1,45 @@
+import {
+	CLAUDE_FAMILY_EXPLORE,
+	CLAUDE_FAMILY_ORCHESTRATION,
+	CLAUDE_FAMILY_PLAN,
+	CLAUDE_FAMILY_REVIEW,
+	CLAUDE_OPUS_47_EXPLORE,
+	CLAUDE_OPUS_47_ORCHESTRATION,
+	CLAUDE_OPUS_47_PLAN,
+	CLAUDE_OPUS_47_REVIEW,
+} from "./guidelines/claude-family.js"
+import { DEFAULT_ORCHESTRATION_GUIDELINES } from "./guidelines/default-orchestration-guidelines.js"
+import {
+	DEFAULT_BUILD_GUIDELINES,
+	DEFAULT_EXPLORE_GUIDELINES,
+	DEFAULT_PLAN_GUIDELINES,
+	DEFAULT_REVIEW_GUIDELINES,
+} from "./guidelines/default-phase-guidelines.js"
+import {
+	KIMI_FAMILY_BUILD,
+	KIMI_FAMILY_ORCHESTRATION,
+	KIMI_FAMILY_PLAN,
+	KIMI_K25_BUILD,
+	KIMI_K25_ORCHESTRATION,
+	KIMI_K26_ORCHESTRATION,
+	KIMI_K26_PLAN,
+} from "./guidelines/kimi-family.js"
+import {
+	MINIMAX_FAMILY_BUILD,
+	MINIMAX_FAMILY_ORCHESTRATION,
+	MINIMAX_FAMILY_REVIEW,
+	MINIMAX_M27_BUILD,
+	MINIMAX_M27_ORCHESTRATION,
+	MINIMAX_M27_REVIEW,
+} from "./guidelines/minimax-family.js"
+import {
+	NEMOTRON_3_SUPER_BUILD,
+	NEMOTRON_3_SUPER_EXPLORE,
+	NEMOTRON_3_SUPER_ORCHESTRATION,
+	NEMOTRON_FAMILY_BUILD,
+	NEMOTRON_FAMILY_EXPLORE,
+	NEMOTRON_FAMILY_ORCHESTRATION,
+} from "./guidelines/nemotron-family.js"
 import type { ModelCapabilities } from "./types.js"
 
 /**
@@ -49,6 +91,17 @@ decomposition — when a hard problem needs a superior plan, this is the model t
 Also excels at deep reasoning, research, and exploration across large codebases. Best for \
 complex multi-step tasks requiring careful analysis and methodical planning.`
 
+/** Filter out empty layers and join with double newlines. */
+function concatGuidelines(...layers: string[]): string {
+	return layers.filter(Boolean).join("\n\n")
+}
+
+/** Compose guideline layers; returns undefined when all layers are empty
+ *  so the resolver falls back to the default constant. */
+function optionalGuidelines(...layers: string[]): string | undefined {
+	return concatGuidelines(...layers) || undefined
+}
+
 // TODO: these capabilities could be returned by our models metadata API.
 /**
  * Capability knowledge-base keyed by model ID. Used to enrich the dynamic
@@ -67,18 +120,35 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		"kimi-k2.6",
 		{
 			vision: true,
-			strengths: ["explore", "research", "plan", "review"],
+			strengths: ["research", "plan", "review"],
 			tier: "heavy",
 			description: KIMI_K26_DESCRIPTION,
+			guidelines: {
+				plan: concatGuidelines(DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN, KIMI_K26_PLAN),
+			},
+			orchestrationGuidelines: optionalGuidelines(
+				DEFAULT_ORCHESTRATION_GUIDELINES,
+				KIMI_FAMILY_ORCHESTRATION,
+				KIMI_K26_ORCHESTRATION,
+			),
 		},
 	],
 	[
 		"kimi-k2.5",
 		{
 			vision: true,
-			strengths: ["explore", "research", "plan", "review"],
+			strengths: ["research", "plan", "review"],
 			tier: "heavy",
 			description: KIMI_K25_DESCRIPTION,
+			guidelines: {
+				build: concatGuidelines(DEFAULT_BUILD_GUIDELINES, KIMI_FAMILY_BUILD, KIMI_K25_BUILD),
+				plan: concatGuidelines(DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN),
+			},
+			orchestrationGuidelines: optionalGuidelines(
+				DEFAULT_ORCHESTRATION_GUIDELINES,
+				KIMI_FAMILY_ORCHESTRATION,
+				KIMI_K25_ORCHESTRATION,
+			),
 		},
 	],
 	[
@@ -88,15 +158,33 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			strengths: ["build", "review"],
 			tier: "standard",
 			description: MINIMAX_M27_DESCRIPTION,
+			guidelines: {
+				build: concatGuidelines(DEFAULT_BUILD_GUIDELINES, MINIMAX_FAMILY_BUILD, MINIMAX_M27_BUILD),
+				review: concatGuidelines(DEFAULT_REVIEW_GUIDELINES, MINIMAX_FAMILY_REVIEW, MINIMAX_M27_REVIEW),
+			},
+			orchestrationGuidelines: optionalGuidelines(
+				DEFAULT_ORCHESTRATION_GUIDELINES,
+				MINIMAX_FAMILY_ORCHESTRATION,
+				MINIMAX_M27_ORCHESTRATION,
+			),
 		},
 	],
 	[
 		"nemotron-3-super-fp4",
 		{
 			vision: false,
-			strengths: ["build"],
+			strengths: ["build", "explore"],
 			tier: "light",
 			description: NEMOTRON_3_SUPER_DESCRIPTION,
+			guidelines: {
+				build: concatGuidelines(DEFAULT_BUILD_GUIDELINES, NEMOTRON_FAMILY_BUILD, NEMOTRON_3_SUPER_BUILD),
+				explore: concatGuidelines(DEFAULT_EXPLORE_GUIDELINES, NEMOTRON_FAMILY_EXPLORE, NEMOTRON_3_SUPER_EXPLORE),
+			},
+			orchestrationGuidelines: optionalGuidelines(
+				DEFAULT_ORCHESTRATION_GUIDELINES,
+				NEMOTRON_FAMILY_ORCHESTRATION,
+				NEMOTRON_3_SUPER_ORCHESTRATION,
+			),
 		},
 	],
 	[
@@ -106,6 +194,16 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			strengths: ["explore", "research", "plan", "review"],
 			tier: "heavy",
 			description: CLAUDE_OPUS_47_DESCRIPTION,
+			guidelines: {
+				plan: concatGuidelines(DEFAULT_PLAN_GUIDELINES, CLAUDE_FAMILY_PLAN, CLAUDE_OPUS_47_PLAN),
+				explore: concatGuidelines(DEFAULT_EXPLORE_GUIDELINES, CLAUDE_FAMILY_EXPLORE, CLAUDE_OPUS_47_EXPLORE),
+				review: concatGuidelines(DEFAULT_REVIEW_GUIDELINES, CLAUDE_FAMILY_REVIEW, CLAUDE_OPUS_47_REVIEW),
+			},
+			orchestrationGuidelines: optionalGuidelines(
+				DEFAULT_ORCHESTRATION_GUIDELINES,
+				CLAUDE_FAMILY_ORCHESTRATION,
+				CLAUDE_OPUS_47_ORCHESTRATION,
+			),
 		},
 	],
 	["glm-5-fp8", "ignored"],

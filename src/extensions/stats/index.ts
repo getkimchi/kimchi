@@ -7,44 +7,45 @@
  * - Productivity Metrics API (getProductivityMetrics)
  */
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
+import { loadConfig } from "../../config.js"
 import { exitSplashMode } from "../ui.js"
 import { CastAiStatsApi, getTimeRange } from "./api.js"
 import { formatError, formatHelp } from "./display.js"
-import { formatAnalyticsVisual, formatProductivityVisual } from "./visual.js"
-
-// API key used for Cast AI API requests - must be provided via CASTAI_API_KEY env var
-
-// Hardcoded user ID as specified
-const HARDCODED_USER_ID = "d1c79c82-c230-4b19-9def-dbe49bf63368"
-
-// Organization ID - provided by user
-const ORGANIZATION_ID = "516442fe-054a-49e2-ac2d-9dc9b104c3d2"
-
-interface StatsConfig {
-	apiKey: string
-	userId: string
-	organizationId: string
-}
-
-function getStatsConfig(): StatsConfig {
-	const envKey = process.env.CASTAI_API_KEY
-	const envOrg = process.env.CASTAI_ORG_ID
-
-	return {
-		apiKey: envKey || "",
-		userId: HARDCODED_USER_ID,
-		organizationId: envOrg || ORGANIZATION_ID,
-	}
-}
+import { type SortBy, formatAnalyticsVisual, formatProductivityVisual } from "./visual.js"
 
 function createApiClient(): CastAiStatsApi {
-	const config = getStatsConfig()
-	return new CastAiStatsApi({
-		apiKey: config.apiKey,
-		userId: config.userId,
-		organizationId: config.organizationId,
-	})
+	const apiKey = loadConfig().apiKey || process.env.CASTAI_API_KEY
+	if (!apiKey) {
+		throw new Error("No API key found. Please run `kimchi login` to set up your API key.")
+	}
+	return new CastAiStatsApi({ apiKey })
+}
+
+/**
+ * Parse /stats command arguments into days and sortBy values.
+ * Exported for unit testing.
+ */
+export function parseStatsArgs(args: string): { days: number; sortBy: SortBy } {
+	const trimmed = args.trim().toLowerCase()
+	let days = 30
+	let sortBy: SortBy = "cost"
+
+	if (trimmed) {
+		const parts = trimmed.split(/\s+/)
+		const sortValues: SortBy[] = ["cost", "tokens", "model", "source"]
+
+		for (const part of parts) {
+			const parsedDays = Number.parseInt(part, 10)
+			if (!Number.isNaN(parsedDays) && parsedDays > 0 && parsedDays <= 365) {
+				days = parsedDays
+			} else if (sortValues.includes(part as SortBy)) {
+				sortBy = part as SortBy
+			}
+		}
+	}
+
+	return { days, sortBy }
 }
 
 async function handleStatsCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
@@ -64,14 +65,8 @@ async function handleStatsCommand(args: string, ctx: ExtensionCommandContext): P
 		return
 	}
 
-	// Parse number of days (e.g., "/stats 7" for last 7 days)
-	let days = 30 // default
-	if (trimmed) {
-		const parsedDays = Number.parseInt(trimmed, 10)
-		if (!Number.isNaN(parsedDays) && parsedDays > 0 && parsedDays <= 365) {
-			days = parsedDays
-		}
-	}
+	// Parse arguments
+	const { days, sortBy } = parseStatsArgs(args)
 
 	const api = createApiClient()
 	const { startTime, endTime } = getTimeRange(days)
@@ -93,22 +88,12 @@ async function handleStatsCommand(args: string, ctx: ExtensionCommandContext): P
 			if (!hasTokenData && !hasCostData && !hasApiCalls) {
 				outputLines.push("", ctx.ui.theme.fg("dim", "No analytics data found for the selected period."), "")
 			} else {
-				const analyticsLines = formatAnalyticsVisual(analytics, ctx.ui.theme, terminalWidth, days)
+				const analyticsLines = formatAnalyticsVisual(analytics, ctx.ui.theme, terminalWidth, days, sortBy)
 				outputLines.push(...analyticsLines)
 			}
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err)
-			if (msg.includes("404") || msg.includes("organization")) {
-				outputLines.push(
-					...formatError(
-						"Analytics endpoint requires a valid organization ID. " +
-							"Set CASTAI_ORG_ID environment variable if needed.",
-						ctx.ui.theme,
-					),
-				)
-			} else {
-				outputLines.push(...formatError(`Analytics API: ${msg}`, ctx.ui.theme))
-			}
+			outputLines.push(...formatError(`Analytics API: ${msg}`, ctx.ui.theme))
 		}
 
 		// Fetch productivity metrics

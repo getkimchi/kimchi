@@ -1,6 +1,6 @@
 {
 	"name": "@kimchi-dev/cli",
-	"version": "0.1.0",
+	"version": "0.0.0",
 	"description": "kimchi — a coding agent CLI powered by Cast AI",
 	"type": "module",
 	"license": "MIT",
@@ -31,16 +31,19 @@
 	"dependencies": {
 		"@agentclientprotocol/sdk": "^0.19.0",
 		"@clack/prompts": "^1.2.0",
-		"@mariozechner/pi-coding-agent": "^0.72.1",
-		"@mariozechner/pi-tui": "^0.72.1",
+		"@earendil-works/pi-coding-agent": "^0.74.0",
+		"@earendil-works/pi-tui": "^0.74.0",
 		"@modelcontextprotocol/ext-apps": "^1.2.2",
 		"@modelcontextprotocol/sdk": "^1.25.1",
+		"@types/proper-lockfile": "^4.1.4",
 		"micromatch": "^4.0.8",
 		"open": "^10.2.0",
+		"proper-lockfile": "^4.1.2",
 		"shell-quote": "^1.8.3",
 		"tar": "^7.5.13",
 		"undici": "^8.0.2",
 		"uuid": "^14.0.0",
+		"yaml": "^2.8.4",
 		"zod": "^4.0.0"
 	},
 	"peerDependencies": {
@@ -59,7 +62,7 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.4",
-		"@mariozechner/pi-ai": "^0.72.1",
+		"@earendil-works/pi-ai": "^0.74.0",
 		"@mixmark-io/domino": "^2.2.0",
 		"@types/micromatch": "^4.0.10",
 		"@types/node": "^22.15.2",
@@ -87,7 +90,7 @@
 			"protobufjs"
 		],
 		"patchedDependencies": {
-			"@mariozechner/pi-coding-agent": "patches/@mariozechner__pi-coding-agent.patch"
+			"@earendil-works/pi-coding-agent": "patches/@earendil-works__pi-coding-agent.patch"
 		}
 	}
 }

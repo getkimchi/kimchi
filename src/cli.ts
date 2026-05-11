@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import {
 	DEFAULT_SKILL_PATHS,
@@ -17,8 +17,13 @@ import {
 import { isBunBinary } from "./env.js"
 import agentsExtension from "./extensions/agents/index.js"
 import bashCollapseExtension from "./extensions/bash-collapse.js"
+import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
+import curatorExtension from "./extensions/curator/index.js"
+import fermentExtension from "./extensions/ferment/index.js"
+import hideThinkingExtension from "./extensions/hide-thinking.js"
+import improveExtension from "./extensions/improve/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import loginExtension from "./extensions/login/index.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
@@ -29,8 +34,9 @@ import permissionsExtension from "./extensions/permissions/index.js"
 import { reserveShiftTabForPermissions } from "./extensions/permissions/keybindings.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
+import skillsManagerExtension from "./extensions/skills-manager/index.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
-// import statsExtension from "./extensions/stats/index.js"
+import statsExtension from "./extensions/stats/index.js"
 import tagsExtension from "./extensions/tags.js"
 import telemetryExtension from "./extensions/telemetry.js"
 import terminalColorsExtension from "./extensions/terminal-colors.js"
@@ -115,7 +121,7 @@ try {
 	}
 
 	if (helpOrVersion) {
-		const { main } = await import("@mariozechner/pi-coding-agent")
+		const { main } = await import("@earendil-works/pi-coding-agent")
 		await main(process.argv.slice(2), { extensionFactories: [] })
 	} else {
 		// We're entering the harness/ACP path. Subcommands and --help/--version
@@ -250,39 +256,46 @@ try {
 			globalThis.fetch = patchedFetch
 		}
 
+		const rawArgs = process.argv.slice(2)
+
 		const extensionFactories = [
 			startupUpdateExtension,
 			sessionIdCaptureExtension,
 			shutdownMarkerExtension,
-			// statsExtension,
+			statsExtension,
 			terminalColorsExtension,
 			kimchiMinimalTintsExtension,
 			bashCollapseExtension,
 			loopGuardExtension,
 			lspExtension,
 			mcpAdapterExtension,
-			permissionsExtension,
 			promptEnrichmentExtension(skillPaths),
+			permissionsExtension,
+			behavioursExtension,
 			promptSummaryExtension,
 			contextCompactorExtension,
+			hideThinkingExtension,
 			clipboardImageExtension,
 			uiExtension,
 			agentsExtension,
 			tagsExtension,
+			fermentExtension,
 			telemetryExtension(telemetryConfig),
 			toolRendererExtension,
 			webFetchExtension,
 			webSearchExtension,
 			loginExtension,
+			skillsManagerExtension,
+			improveExtension,
+			curatorExtension,
 		]
 
-		const rawArgs = process.argv.slice(2)
 		if (acpMode) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
 			await runAcpMode({ extensionFactories, agentDir })
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
-			const { main } = await import("@mariozechner/pi-coding-agent")
+			const { main } = await import("@earendil-works/pi-coding-agent")
 			await main(rawArgs, { extensionFactories })
 		}
 	}

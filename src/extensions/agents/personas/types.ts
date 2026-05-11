@@ -2,7 +2,7 @@
  * types.ts — Type definitions for the agents extension.
  */
 
-import type { AgentSession } from "@mariozechner/pi-coding-agent"
+import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import type { ModelStrength, ModelTier } from "../../orchestration/model-registry/types.js"
 import type { LifetimeUsage } from "../manager/usage.js"
 

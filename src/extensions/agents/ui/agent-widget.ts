@@ -2,7 +2,7 @@
  * agent-widget.ts — Persistent widget showing running/completed agents above the editor.
  */
 
-import { truncateToWidth } from "@mariozechner/pi-tui"
+import { truncateToWidth } from "@earendil-works/pi-tui"
 import type { AgentManager } from "../manager/agent-manager.js"
 import { type LifetimeUsage, type SessionLike, getLifetimeTotal, getSessionContextPercent } from "../manager/usage.js"
 import { getConfig } from "../personas/agent-types.js"

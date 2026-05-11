@@ -21,13 +21,14 @@
  */
 
 import { execSync } from "node:child_process"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { homedir, platform, userInfo } from "node:os"
 import { isAbsolute, join, normalize, resolve } from "node:path"
-import type { AssistantMessage, ImageContent, TextContent } from "@mariozechner/pi-ai"
-import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@mariozechner/pi-coding-agent"
-import { isKeyRelease, matchesKey } from "@mariozechner/pi-tui"
+import type { AssistantMessage, ImageContent, TextContent } from "@earendil-works/pi-ai"
+import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
+import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { ANSI, fg } from "../../ansi.js"
+import { getCurrentPhase } from "../../extensions/tags.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
@@ -41,9 +42,11 @@ import {
 	stripStaleNudges,
 } from "./continuation-nudge.js"
 import { ModelRegistry } from "./model-registry/index.js"
+import type { Phase } from "./model-registry/types.js"
 import { type ContextFile, loadProjectContextFiles } from "./prompt-transformer/context-files.js"
 import {
 	type EnvironmentInfo,
+	type PromptContext,
 	buildOrchestratorSystemPrompt,
 	buildSingleModelSystemPrompt,
 	buildSubagentSystemPrompt,
@@ -89,6 +92,19 @@ function readGitRemote(cwd: string): string | undefined {
 }
 
 // Workaround: pi-mono's applyExtensionFlagValues ignores the actual value for boolean flags (always sets true). Read argv directly until upstream is fixed.
+const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
+
+function readHarnessSetting<T>(key: string, fallback: T): T {
+	try {
+		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
+		const parsed = JSON.parse(raw)
+		if (key in parsed) return parsed[key] as T
+	} catch {
+		// settings.json absent or unreadable — use fallback
+	}
+	return fallback
+}
+
 function readMultiModelArgv(): boolean {
 	const args = process.argv
 	for (let i = 0; i < args.length; i++) {
@@ -102,30 +118,41 @@ function readMultiModelArgv(): boolean {
 			return true
 		}
 	}
-	return true
+	// No CLI flag — fall back to settings.json, then hard-coded default
+	return readHarnessSetting("multiModel", true)
 }
 
 let multiModelEnabled = readMultiModelArgv()
 
+// macOS terminals send the legacy escape sequence \x1b\t for Option+Tab
+// instead of the Kitty protocol / CSI-u sequences handled by matchesKey()
+const LEGACY_MACOS_ALT_TAB_SEQUENCE = "\x1b\t"
+
 const ENRICHED_PROMPT_CUSTOM_TYPE = "enriched-prompt"
 
 /**
- * Tracks which model last received an enriched-prompt injection so the
- * capabilities block is only sent once per model, not on every user turn.
+ * Tracks which model and phase last received an enriched-prompt injection so
+ * the capabilities block is only sent once per (model, phase) pair, not on
+ * every user turn. Re-injects when either the model or the active phase
+ * changes, keeping guidelines up to date for both transitions.
  */
 export class EnrichmentGuard {
 	private lastModelId: string | null = null
+	private lastPhase: string | null = null
 
-	/** Returns true if enrichment should be injected for this model ID. */
-	shouldEnrich(modelId: string): boolean {
-		if (modelId === this.lastModelId) return false
+	/** Returns true if enrichment should be injected for this (model, phase) pair. */
+	shouldEnrich(modelId: string, phase?: string): boolean {
+		const phaseKey = phase ?? null
+		if (modelId === this.lastModelId && phaseKey === this.lastPhase) return false
 		this.lastModelId = modelId
+		this.lastPhase = phaseKey
 		return true
 	}
 
 	/** Resets the guard, e.g. when multi-model is toggled off and back on. */
 	reset(): void {
 		this.lastModelId = null
+		this.lastPhase = null
 	}
 }
 
@@ -247,9 +274,8 @@ export default function (skillPaths: string[]) {
 		})
 
 		// For sub agents we don't want to transform the prompt sent from parent with model capabilities
+		const registry = new ModelRegistry(getAvailableModels())
 		if (!subagentMode) {
-			const registry = new ModelRegistry(getAvailableModels())
-
 			// Announce newly available API models that have no capability entry yet.
 			for (const warning of registry.warnings) {
 				console.log(
@@ -262,9 +288,13 @@ export default function (skillPaths: string[]) {
 			let unsubAltTab: (() => void) | null = null
 			pi.on("session_start", async (_event, ctx) => {
 				if (unsubAltTab) unsubAltTab()
+				// Reset so the first turn of every session always re-injects the
+				// enriched prompt, even when model and phase are unchanged from the
+				// previous session (e.g. same model, session always starts in explore).
+				enrichmentGuard.reset()
 				if (ctx.hasUI) {
 					unsubAltTab = ctx.ui.onTerminalInput((data) => {
-						if (matchesKey(data, "alt+tab")) {
+						if (matchesKey(data, "alt+tab") || data === LEGACY_MACOS_ALT_TAB_SEQUENCE) {
 							if (!isKeyRelease(data)) {
 								multiModelEnabled = !multiModelEnabled
 								ctx.ui.setStatus("multi-model", undefined)
@@ -291,7 +321,13 @@ export default function (skillPaths: string[]) {
 			const enrichmentGuard = new EnrichmentGuard()
 
 			pi.on("input", async (event) => {
-				if (event.source === "extension") return
+				if (event.source === "extension") {
+					// Subagent result arriving. Clear the subagent-pending flag so the
+					// continuation nudge can fire normally once the model has processed
+					// the output (at the next turn_end, after any tool calls it makes).
+					continuationNudge.clearSubagentPending()
+					return
+				}
 				continuationNudge.resetForNewUserInput()
 				emptyTurnNudge.resetForNewUserInput()
 			})
@@ -314,6 +350,15 @@ export default function (skillPaths: string[]) {
 
 			pi.on("turn_end", async (event) => {
 				if (event.message.role !== "assistant") return
+
+				// Mark each subagent tool call so the continuation nudge stays
+				// suppressed until all subagent results have been received.
+				// A single turn may contain multiple parallel subagent calls.
+				for (const c of event.message.content) {
+					if (c.type === "toolCall" && (c as { name?: string }).name === "subagent") {
+						continuationNudge.markSubagentCall()
+					}
+				}
 
 				if (continuationNudge.isNudgeResponsePending()) {
 					if (continuationNudge.isDoneSignalReceived()) {
@@ -355,10 +400,10 @@ export default function (skillPaths: string[]) {
 				const currentModel = ctx.model ? { id: ctx.model.id, name: ctx.model.id } : undefined
 				const currentModelId = currentModel?.id ?? ""
 
-				// Only inject capabilities on the first turn or when the model changes.
-				// Re-injecting every turn accumulates duplicate capability blocks in the
-				// context window, inflating token usage and confusing the model.
-				if (!enrichmentGuard.shouldEnrich(currentModelId)) {
+				// Only inject capabilities on the first turn or when the model or phase
+				// changes. Re-injecting every turn accumulates duplicate capability blocks
+				// in the context window, inflating token usage and confusing the model.
+				if (!enrichmentGuard.shouldEnrich(currentModelId, getCurrentPhase())) {
 					return { action: "continue" as const }
 				}
 
@@ -453,20 +498,26 @@ export default function (skillPaths: string[]) {
 				gitRemote: isGitRepo ? (cachedGitRemote ?? undefined) : undefined,
 			}
 
+			const promptCtx: PromptContext = {
+				currentModelId: ctx.model?.id,
+				currentPhase: getCurrentPhase(),
+				registry: registry,
+			}
+
 			if (subagentMode) {
 				// Filter the subagent tool out to prevent infinite delegation chains.
 				const activeTools = pi.getActiveTools().filter((name) => name !== "subagent")
 				pi.setActiveTools(activeTools)
-				const systemPrompt = buildSubagentSystemPrompt(tools, env, cachedContextFiles, cachedSkills)
+				const systemPrompt = buildSubagentSystemPrompt(tools, env, cachedContextFiles, cachedSkills, promptCtx)
 				return { systemPrompt }
 			}
 
 			if (!multiModelEnabled) {
-				const systemPrompt = buildSingleModelSystemPrompt(tools, env, cachedContextFiles, cachedSkills)
+				const systemPrompt = buildSingleModelSystemPrompt(tools, env, cachedContextFiles, cachedSkills, promptCtx)
 				return { systemPrompt }
 			}
 
-			const systemPrompt = buildOrchestratorSystemPrompt(tools, env, cachedContextFiles, cachedSkills)
+			const systemPrompt = buildOrchestratorSystemPrompt(tools, env, cachedContextFiles, cachedSkills, promptCtx)
 			return { systemPrompt }
 		})
 	}

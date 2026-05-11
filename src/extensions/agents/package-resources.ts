@@ -17,7 +17,7 @@
 
 import { existsSync } from "node:fs"
 import { join } from "node:path"
-import { DefaultPackageManager, SettingsManager, getAgentDir } from "@mariozechner/pi-coding-agent"
+import { DefaultPackageManager, SettingsManager, getAgentDir } from "@earendil-works/pi-coding-agent"
 
 export function getInstalledPackageResourceDirs(cwd: string, subdir: string): string[] {
 	try {

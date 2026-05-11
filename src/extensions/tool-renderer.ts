@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ToolDefinition } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import {
 	createEditToolDefinition,
 	createFindToolDefinition,
@@ -6,13 +6,13 @@ import {
 	createLsToolDefinition,
 	createReadToolDefinition,
 	createWriteToolDefinition,
-} from "@mariozechner/pi-coding-agent"
+} from "@earendil-works/pi-coding-agent"
 import type { TSchema } from "typebox"
 import { ToolBlockView, buildToolCallHeader, getTextContent } from "../components/tool-block.js"
 import { isToolExpanded, registerToolCall } from "../expand-state.js"
 
 function formatArgs(toolName: string, args: Record<string, unknown>): string {
-	const raw = (() => {
+	return (() => {
 		switch (toolName) {
 			case "read": {
 				const path = String(args.path ?? "")
@@ -39,7 +39,6 @@ function formatArgs(toolName: string, args: Record<string, unknown>): string {
 				return JSON.stringify(args)
 		}
 	})()
-	return raw.length > 80 ? `${raw.slice(0, 77)}...` : raw
 }
 
 function formatSummary(toolName: string, content: string, isError: boolean): string {
