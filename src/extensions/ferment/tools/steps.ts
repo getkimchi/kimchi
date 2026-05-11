@@ -16,6 +16,7 @@ import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phas
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { createApplyAndPersist, failedToolResult, resolvePhase, resolveStep, toolErr, toolOk } from "../tool-helpers.js"
 import { CompleteStepParams, FailStepParams, StepActionParams, VerifyParams } from "../tool-schemas.js"
+import type { FermentUi, FermentUiContext } from "../ui.js"
 import { buildWorkerContext } from "../worker-prompt.js"
 
 const VERIFY_TIMEOUT_MS = 60_000
@@ -25,14 +26,7 @@ type CompleteStepArgs = Static<typeof CompleteStepParams>
 
 type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
 
-interface StepUiContext {
-	ui?: {
-		select?: (title: string, options: string[]) => Promise<string | undefined>
-	}
-	model?: Parameters<FermentRuntime["captureJudgeContext"]>[0]
-	modelRegistry?: Parameters<FermentRuntime["captureJudgeContext"]>[1]
-	controller?: unknown
-}
+type StepUiContext = Omit<Partial<FermentUiContext>, "ui"> & { ui?: Partial<FermentUi> }
 
 export interface VerificationExecution {
 	command: string
@@ -299,7 +293,7 @@ export async function completeStep(
 		exitCode,
 		stdout,
 		stderr,
-		completedAt: new Date().toISOString(),
+		completedAt: runtime.nowIso(),
 	}
 
 	const verifyOutcome = applyAndPersist(params.ferment_id, {
@@ -461,7 +455,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 				exitCode,
 				stdout,
 				stderr,
-				completedAt: new Date().toISOString(),
+				completedAt: runtime.nowIso(),
 			}
 
 			const outcome = applyAndPersist(params.ferment_id, {

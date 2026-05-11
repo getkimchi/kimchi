@@ -22,6 +22,7 @@ import {
 	getActive,
 	getActiveId,
 	getCorrectiveStep,
+	getLastHumanInputAt,
 	getPhaseStartRef,
 	getStepStartRef,
 	getStorage,
@@ -45,7 +46,10 @@ export interface FermentRuntime {
 	setActive(ferment: Ferment | undefined): void
 	isAutoModeEnabled(): boolean
 	setAutoModeEnabled(enabled: boolean): void
+	now(): Date
+	nowIso(): string
 	markHumanInput(): void
+	getLastHumanInputAt(): Date | undefined
 	captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry): void
 	bumpStepStart(fermentId: string, phaseId: string, stepId: string): number
 	clearStepStart(fermentId: string, phaseId: string, stepId: string): void
@@ -78,7 +82,10 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		setActive,
 		isAutoModeEnabled,
 		setAutoModeEnabled,
+		now: () => new Date(),
+		nowIso: () => new Date().toISOString(),
 		markHumanInput,
+		getLastHumanInputAt,
 		captureJudgeContext,
 		bumpStepStart,
 		clearStepStart,

@@ -71,6 +71,24 @@ describe("createApplyAndPersist", () => {
 		expect(mutateSpy).toHaveBeenCalledTimes(1)
 	})
 
+	it("uses the injected clock for state-machine timestamps", () => {
+		const { runtime, storage } = createRuntime()
+		runtime.nowIso = () => "2026-05-11T12:34:56.000Z"
+		const applyAndPersist = createApplyAndPersist(runtime)
+		const ferment = storage.create("Clocked")
+
+		const outcome = applyAndPersist(ferment.id, {
+			type: "scope",
+			goal: "Goal",
+			successCriteria: "Works",
+			constraints: [],
+			phases: [{ name: "Phase", goal: "Build" }],
+		})
+
+		expect(outcome.ok).toBe(true)
+		expect(storage.get(ferment.id)?.updatedAt).toBe("2026-05-11T12:34:56.000Z")
+	})
+
 	it("rejects non-resume commands while paused", () => {
 		const { runtime, storage } = createRuntime()
 		const applyAndPersist = createApplyAndPersist(runtime)

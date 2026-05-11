@@ -105,7 +105,7 @@ export function createApplyAndPersist(runtime: FermentRuntime) {
 						},
 					}
 				}
-				const now = new Date().toISOString()
+				const now = runtime.nowIso()
 				const result = applyCommand(current, cmd, { now })
 				if (!result.ok) return { write: false, value: { ok: false, error: result.error } }
 				const events = commandToEvents(cmd, current, result.ferment, { now })

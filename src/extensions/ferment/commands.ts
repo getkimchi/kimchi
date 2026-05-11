@@ -1,12 +1,12 @@
 import { writeFileSync } from "node:fs"
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { determineNextAction, getScopingProgress } from "../../ferment/engine.js"
 import { shortenTitle } from "../../ferment/shorten-title.js"
 import { computeStats, serializeStats } from "../../ferment/stats.js"
 import { FermentError } from "../../ferment/store.js"
 import type { FermentWorkMode } from "../../ferment/types.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
-import { parseFermentCommand } from "./command-parser.js"
+import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { formatFermentStatus } from "./format.js"
 import { appendRefEntry, maybeInjectAutoNudge } from "./nudge.js"
 import { maybeRunOnboarding } from "./onboarding.js"
@@ -25,394 +25,404 @@ import { resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { runScopingFlow } from "./scoping.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
+import type { FermentUiContext } from "./ui.js"
 import { checkWorktree } from "./worktree.js"
 
-export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
-	const applyAndPersist = createApplyAndPersist(runtime)
+export type FermentCliCommand = FermentCommand
 
-	pi.registerCommand("ferment", {
-		description: 'Manage ferments: /ferment list, /ferment add "Name", /ferment one-shot "task", /ferment switch <id>',
-		async handler(args, ctx) {
-			const raw = args.trim()
-			const command = parseFermentCommand(args)
-			const storage = runtime.getStorage()
+export interface FermentCommandDeps {
+	raw: string
+	pi: ExtensionAPI
+	ctx: FermentUiContext & ExtensionCommandContext
+	runtime: FermentRuntime
+}
 
-			if (command.type === "interactive") {
-				const active = runtime.getActive()
-				if (active && active.status === "running") {
-					ctx.ui.notify(
-						`A ferment is already running: "${active.name}". Use /progress to check status or /ferment switch to change.`,
-					)
-					return
-				}
-				if (!ctx.ui.input) {
-					ctx.ui.notify('No UI available. Use /ferment add "Name" instead.')
-					return
-				}
+export interface FermentCommandResult {
+	handled: true
+}
 
-				await maybeRunOnboarding(ctx)
+export class FermentCommandController {
+	async execute(command: FermentCliCommand, deps: FermentCommandDeps): Promise<FermentCommandResult> {
+		const { raw, pi, ctx, runtime } = deps
+		const applyAndPersist = createApplyAndPersist(runtime)
+		const storage = runtime.getStorage()
 
-				const rawIntent = await ctx.ui.input(
-					"🍺  What would you like to ferment?",
-					"e.g. 'Rewrite login flow' or 'Add OAuth support'",
-				)
-				if (!rawIntent) return
-				try {
-					const shortName = await shortenTitle(rawIntent)
-					const f = storage.create(shortName, rawIntent)
-					runtime.setActive(f)
-					appendRefEntry(pi, f.id)
-
-					pi.appendEntry("ferment_ack", {
-						text: `🍺  Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nMode: ${f.mode} · scoping 0/4`,
-					})
-
-					await runScopingFlow(f, pi, ctx, runtime)
-				} catch (err) {
-					ctx.ui.notify(err instanceof FermentError ? err.message : "Create failed.")
-				}
-				return
-			}
-
-			if (command.type === "list") {
-				const items = storage.list().sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-				if (items.length === 0) {
-					ctx.ui.notify("No ferments. Use /ferment to start one.")
-					return
-				}
-
-				const activeId = runtime.getActiveId()
-				if (!ctx.hasUI) {
-					const lines = items.map((f) => {
-						const marker = f.id === activeId ? "▶" : "○"
-						return `${marker}  ${f.name}  [${f.status}]  ${f.phaseCount} phase(s)  ${f.id.slice(0, 8)}…`
-					})
-					ctx.ui.notify(lines.join("\n"))
-					return
-				}
-
-				const listTitle = `${pr_teal("🍺")} ${pr_bold("Ferments")}  ${pr_dim(`(${items.length})`)}\n\n${pr_dim("Select a ferment:")}`
-				const listOpts = items.map((f) => {
-					const isActive = f.id === activeId
-					const bullet = isActive ? pr_teal("▶") : pr_dim("○")
-					const statusColor =
-						f.status === "running"
-							? pr_teal(f.status)
-							: f.status === "complete"
-								? pr_success(f.status)
-								: f.status === "abandoned"
-									? pr_orange(f.status)
-									: pr_dim(f.status)
-					const activeTag = isActive ? `  ${pr_teal("← active")}` : ""
-					return `${bullet}  ${f.name}  ${pr_dim("[")}${statusColor}${pr_dim("]")}${activeTag}`
-				})
-				listOpts.push(pr_dim("Close"))
-
-				const listChoice = await ctx.ui.select(listTitle, listOpts)
-				if (!listChoice || listChoice === pr_dim("Close")) return
-
-				const listIdx = listOpts.indexOf(listChoice)
-				const selected = listIdx >= 0 && listIdx < items.length ? items[listIdx] : undefined
-				if (!selected) return
-
-				const isActiveSelected = selected.id === activeId
-				const subTitle = `${pr_teal("🍺")} ${pr_bold(selected.name)}\n${selected.description && selected.description !== selected.name ? `${pr_dim(selected.description.slice(0, 80))}${selected.description.length > 80 ? pr_dim("…") : ""}\n` : ""}${pr_dim("Status:")} ${selected.status}  ${pr_dim("Phases:")} ${selected.phaseCount}${isActiveSelected ? `  ${pr_teal("← currently active")}` : ""}`
-
-				const actionContinue = isActiveSelected ? "Continue (already active)" : "Continue"
-				const subOpts = [actionContinue, "Delete", "Back"]
-				const action = await ctx.ui.select(subTitle, subOpts)
-				if (!action || action === "Back") return
-
-				if (action === actionContinue) {
-					if (!isActiveSelected) {
-						resumeFerment(pi, selected.id, ctx, runtime)
-						ctx.ui.notify(`Resumed "${selected.name}"`)
-					}
-					return
-				}
-
-				if (action === "Delete") {
-					storage.delete(selected.id)
-					runtime.clearFermentState(selected.id)
-					runtime.clearPendingScope(selected.id)
-					if (runtime.getActiveId() === selected.id) runtime.setActive(undefined)
-					ctx.ui.notify(`Deleted "${selected.name}"`)
-					return
-				}
-				return
-			}
-
-			if (command.type === "mode") {
-				const modeArg = command.mode ?? ""
-				const active = runtime.getActive()
-				if (!modeArg) {
-					if (!active) {
-						ctx.ui.notify("No active ferment. Use /ferment add or /ferment switch first.")
-						return
-					}
-					const lines = [
-						`Ferment: ${active.name} (${active.id})`,
-						`Mode: ${active.mode}`,
-						"",
-						"plan — Scoping and coordination. Agent asks questions, proposes phases.",
-						"exec — Full execution. Agent iterates autonomously.",
-						" auto — Normal. User decides when to act.",
-						"",
-						"Use /ferment mode plan | exec | auto to change.",
-					]
-					ctx.ui.notify(lines.join("\n"))
-					return
-				}
-
-				if (!["plan", "exec", "auto"].includes(modeArg)) {
-					ctx.ui.notify("Usage: /ferment mode plan | exec | auto")
-					return
-				}
-
-				if (!active) {
-					ctx.ui.notify("No active ferment.")
-					return
-				}
-
-				if ((modeArg === "exec" || modeArg === "auto") && active.status === "draft") {
-					const progress = getScopingProgress(active)
-					if (progress.answered < progress.total) {
-						ctx.ui.notify(
-							`Cannot switch to ${modeArg} mode: scoping is ${progress.answered}/${progress.total} complete. Finish scoping in plan mode first.`,
-						)
-						return
-					}
-				}
-
-				const out = applyAndPersist(active.id, { type: "set_mode", mode: modeArg as FermentWorkMode })
-				const updated = out.ok ? out.ferment : undefined
-				if (updated) {
-					runtime.setActive(updated)
-					let hint = ""
-					if (modeArg === "exec") hint = "\n\n⚡  exec mode — the agent now has full tool access."
-					else if (modeArg === "plan") hint = "\n\n📝  plan mode — the agent will ask questions and propose structure."
-					else if (modeArg === "auto") hint = "\n\n🔄  auto mode — the agent will guide you through each step."
-					ctx.ui.notify(`Mode changed to: ${modeArg}.${hint}`)
-
-					const action = determineNextAction(updated)
-					const nudge = `${action.kind}: ${action.reason}`
-					if (nudge) {
-						pi.appendEntry("ferment_breadcrumb", {
-							text: `Mode changed to ${modeArg}: "${updated.name}" [${updated.status}]`,
-						})
-						void pi.sendMessage(
-							{
-								customType: "ferment_mode_nudge",
-								content: [{ type: "text", text: nudge }],
-								display: false,
-								details: undefined,
-							},
-							{ triggerTurn: true },
-						)
-					}
-				}
-				return
-			}
-
-			if (command.type === "delete") {
-				const target = command.target
-				if (!target) {
-					ctx.ui.notify('Usage: /ferment delete <full-id> or /ferment delete "Name"')
-					return
-				}
-				try {
-					const f = storage.resolve(target)
-					if (!f) {
-						ctx.ui.notify(`No ferment matching "${target}".`)
-						return
-					}
-					storage.delete(f.id)
-					runtime.clearFermentState(f.id)
-					runtime.clearPendingScope(f.id)
-					if (runtime.getActiveId() === f.id) runtime.setActive(undefined)
-					ctx.ui.notify(`Deleted "${f.name}" (${f.id}).`)
-				} catch (err) {
-					ctx.ui.notify(err instanceof FermentError ? err.message : "Delete failed.")
-				}
-				return
-			}
-
-			if (command.type === "switch") {
-				const target = command.target
-				if (!target) {
-					ctx.ui.notify('Usage: /ferment switch <full-id> or /ferment switch "Name"')
-					return
-				}
-				try {
-					const f = storage.resolve(target)
-					if (!f) {
-						ctx.ui.notify(`No ferment matching "${target}".`)
-						return
-					}
-
-					const wtCheck = checkWorktree(f)
-					if (wtCheck.severity === "block" && !command.force) {
-						ctx.ui.notify(`${wtCheck.message}\n\nUse /ferment switch --force "${target}" to override.`)
-						return
-					}
-
-					const wtWarning = wtCheck.severity === "warn" ? `\n⚠️  ${wtCheck.message}` : ""
-					ctx.ui.notify(`Switched to "${f.name}" (${f.id}) [${f.status}].${wtWarning}`)
-					resumeFerment(pi, f.id, ctx, runtime)
-				} catch (err) {
-					ctx.ui.notify(err instanceof FermentError ? err.message : "Switch failed.")
-				}
-				return
-			}
-
-			if (command.type === "abandon") {
-				const active = runtime.getActive()
-				if (!active) {
-					ctx.ui.notify("No active ferment.")
-					return
-				}
-				const reason = command.reason ?? ""
-				if (ctx.ui.select) {
-					const choice = await ctx.ui.select(`Abandon "${active.name}"?`, ["Yes, abandon it", "No, keep it"])
-					if (!choice || !choice.startsWith("Yes")) {
-						ctx.ui.notify("Abandon cancelled.")
-						return
-					}
-				}
-				const abandonedId = active.id
-				const out = applyAndPersist(abandonedId, { type: "abandon", reason: reason || undefined })
-				if (out.ok) {
-					runtime.setActive(undefined)
-					runtime.clearFermentState(abandonedId)
-					runtime.clearPendingScope(abandonedId)
-					ctx.ui.notify(`Ferment "${out.ferment.name}" abandoned.`)
-				}
-				return
-			}
-
-			if (command.type === "revise") {
-				const active = runtime.getActive()
-				if (!active) {
-					ctx.ui.notify("No active ferment.")
-					return
-				}
-				const field = command.field
-
-				if (field === "goal") {
-					if (!ctx.ui.input) {
-						ctx.ui.notify("No UI available for interactive revision. Ask the agent to update the goal.")
-						return
-					}
-					const newGoal = await ctx.ui.input("Revise goal:", active.goal ?? "")
-					if (newGoal) {
-						const out = applyAndPersist(active.id, { type: "update_scope_field", field: "goal", value: newGoal })
-						if (out.ok) {
-							runtime.setActive(out.ferment)
-							ctx.ui.notify(`Goal updated: "${newGoal}"`)
-						} else {
-							ctx.ui.notify(`Could not update goal: ${out.error.message}`)
-						}
-					}
-					return
-				}
-
-				if (field === "criteria") {
-					if (!ctx.ui.input) {
-						ctx.ui.notify("No UI available for interactive revision.")
-						return
-					}
-					const newCriteria = await ctx.ui.input("Revise success criteria:", active.successCriteria ?? "")
-					if (newCriteria) {
-						const out = applyAndPersist(active.id, {
-							type: "update_scope_field",
-							field: "criteria",
-							value: newCriteria,
-						})
-						if (out.ok) {
-							runtime.setActive(out.ferment)
-							ctx.ui.notify("Success criteria updated.")
-						} else {
-							ctx.ui.notify(`Could not update criteria: ${out.error.message}`)
-						}
-					}
-					return
-				}
-
-				if (field === "constraints") {
-					if (!ctx.ui.input) {
-						ctx.ui.notify("No UI available for interactive revision.")
-						return
-					}
-					const current = (active.constraints ?? []).join(", ")
-					const newConstraints = await ctx.ui.input("Revise constraints (comma-separated):", current)
-					if (newConstraints !== null && newConstraints !== undefined) {
-						const parsed = newConstraints
-							.split(",")
-							.map((c) => c.trim())
-							.filter(Boolean)
-						const out = applyAndPersist(active.id, {
-							type: "update_scope_field",
-							field: "constraints",
-							value: parsed.join(","),
-						})
-						if (out.ok) {
-							runtime.setActive(out.ferment)
-							ctx.ui.notify(`Constraints updated: ${parsed.join(", ") || "(none)"}`)
-						} else {
-							ctx.ui.notify(`Could not update constraints: ${out.error.message}`)
-						}
-					}
-					return
-				}
-
+		if (command.type === "interactive") {
+			const active = runtime.getActive()
+			if (active && active.status === "running") {
 				ctx.ui.notify(
-					"Usage: /ferment revise goal | criteria | constraints\n\nTo revise phases, ask the agent to update them.",
+					`A ferment is already running: "${active.name}". Use /progress to check status or /ferment switch to change.`,
 				)
-				return
+				return { handled: true }
+			}
+			if (!ctx.ui.input) {
+				ctx.ui.notify('No UI available. Use /ferment add "Name" instead.')
+				return { handled: true }
 			}
 
-			if (command.type === "export") {
-				const active = runtime.getActive()
+			await maybeRunOnboarding(ctx)
+
+			const rawIntent = await ctx.ui.input(
+				"🍺  What would you like to ferment?",
+				"e.g. 'Rewrite login flow' or 'Add OAuth support'",
+			)
+			if (!rawIntent) return { handled: true }
+			try {
+				const shortName = await shortenTitle(rawIntent)
+				const f = storage.create(shortName, rawIntent)
+				runtime.setActive(f)
+				appendRefEntry(pi, f.id)
+
+				pi.appendEntry("ferment_ack", {
+					text: `🍺  Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nMode: ${f.mode} · scoping 0/4`,
+				})
+
+				await runScopingFlow(f, pi, ctx, runtime)
+			} catch (err) {
+				ctx.ui.notify(err instanceof FermentError ? err.message : "Create failed.")
+			}
+			return { handled: true }
+		}
+
+		if (command.type === "list") {
+			const items = storage.list().sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+			if (items.length === 0) {
+				ctx.ui.notify("No ferments. Use /ferment to start one.")
+				return { handled: true }
+			}
+
+			const activeId = runtime.getActiveId()
+			if (!ctx.hasUI) {
+				const lines = items.map((f) => {
+					const marker = f.id === activeId ? "▶" : "○"
+					return `${marker}  ${f.name}  [${f.status}]  ${f.phaseCount} phase(s)  ${f.id.slice(0, 8)}…`
+				})
+				ctx.ui.notify(lines.join("\n"))
+				return { handled: true }
+			}
+
+			const listTitle = `${pr_teal("🍺")} ${pr_bold("Ferments")}  ${pr_dim(`(${items.length})`)}\n\n${pr_dim("Select a ferment:")}`
+			const listOpts = items.map((f) => {
+				const isActive = f.id === activeId
+				const bullet = isActive ? pr_teal("▶") : pr_dim("○")
+				const statusColor =
+					f.status === "running"
+						? pr_teal(f.status)
+						: f.status === "complete"
+							? pr_success(f.status)
+							: f.status === "abandoned"
+								? pr_orange(f.status)
+								: pr_dim(f.status)
+				const activeTag = isActive ? `  ${pr_teal("← active")}` : ""
+				return `${bullet}  ${f.name}  ${pr_dim("[")}${statusColor}${pr_dim("]")}${activeTag}`
+			})
+			listOpts.push(pr_dim("Close"))
+
+			const listChoice = await ctx.ui.select(listTitle, listOpts)
+			if (!listChoice || listChoice === pr_dim("Close")) return { handled: true }
+
+			const listIdx = listOpts.indexOf(listChoice)
+			const selected = listIdx >= 0 && listIdx < items.length ? items[listIdx] : undefined
+			if (!selected) return { handled: true }
+
+			const isActiveSelected = selected.id === activeId
+			const subTitle = `${pr_teal("🍺")} ${pr_bold(selected.name)}\n${selected.description && selected.description !== selected.name ? `${pr_dim(selected.description.slice(0, 80))}${selected.description.length > 80 ? pr_dim("…") : ""}\n` : ""}${pr_dim("Status:")} ${selected.status}  ${pr_dim("Phases:")} ${selected.phaseCount}${isActiveSelected ? `  ${pr_teal("← currently active")}` : ""}`
+
+			const actionContinue = isActiveSelected ? "Continue (already active)" : "Continue"
+			const subOpts = [actionContinue, "Delete", "Back"]
+			const action = await ctx.ui.select(subTitle, subOpts)
+			if (!action || action === "Back") return { handled: true }
+
+			if (action === actionContinue) {
+				if (!isActiveSelected) {
+					resumeFerment(pi, selected.id, ctx, runtime)
+					ctx.ui.notify(`Resumed "${selected.name}"`)
+				}
+				return { handled: true }
+			}
+
+			if (action === "Delete") {
+				storage.delete(selected.id)
+				runtime.clearFermentState(selected.id)
+				runtime.clearPendingScope(selected.id)
+				if (runtime.getActiveId() === selected.id) runtime.setActive(undefined)
+				ctx.ui.notify(`Deleted "${selected.name}"`)
+				return { handled: true }
+			}
+			return { handled: true }
+		}
+
+		if (command.type === "mode") {
+			const modeArg = command.mode ?? ""
+			const active = runtime.getActive()
+			if (!modeArg) {
 				if (!active) {
-					ctx.ui.notify("No active ferment.")
-					return
+					ctx.ui.notify("No active ferment. Use /ferment add or /ferment switch first.")
+					return { handled: true }
 				}
-				const stats = computeStats(active)
-				const exportData = serializeStats(stats)
-				const fileName = `ferment-export-${active.id.slice(0, 8)}-${Date.now()}.json`
-				writeFileSync(fileName, exportData)
-				ctx.ui.notify(`Exported ferment stats to ${fileName}`)
-				return
+				const lines = [
+					`Ferment: ${active.name} (${active.id})`,
+					`Mode: ${active.mode}`,
+					"",
+					"plan — Scoping and coordination. Agent asks questions, proposes phases.",
+					"exec — Full execution. Agent iterates autonomously.",
+					" auto — Normal. User decides when to act.",
+					"",
+					"Use /ferment mode plan | exec | auto to change.",
+				]
+				ctx.ui.notify(lines.join("\n"))
+				return { handled: true }
 			}
 
-			if (command.type === "one-shot") {
-				const active = runtime.getActive()
-				if (active && active.status === "running") {
-					ctx.ui.notify(`A ferment is already running: "${active.name}". Use /progress to check status.`)
-					return
+			if (!["plan", "exec", "auto"].includes(modeArg)) {
+				ctx.ui.notify("Usage: /ferment mode plan | exec | auto")
+				return { handled: true }
+			}
+
+			if (!active) {
+				ctx.ui.notify("No active ferment.")
+				return { handled: true }
+			}
+
+			if ((modeArg === "exec" || modeArg === "auto") && active.status === "draft") {
+				const progress = getScopingProgress(active)
+				if (progress.answered < progress.total) {
+					ctx.ui.notify(
+						`Cannot switch to ${modeArg} mode: scoping is ${progress.answered}/${progress.total} complete. Finish scoping in plan mode first.`,
+					)
+					return { handled: true }
 				}
-				const intent = command.intent
-				let resolvedIntent = intent
-				if (!resolvedIntent && ctx.ui.input) {
-					const typed = await ctx.ui.input("🍺  One-shot: what should be done?", "Describe the full task…")
-					if (!typed) return
-					resolvedIntent = typed
-				}
-				if (!resolvedIntent) {
-					ctx.ui.notify('Usage: /ferment one-shot "description of what to build"')
-					return
-				}
-				try {
-					const shortName = await shortenTitle(resolvedIntent)
-					const f = storage.create(shortName, resolvedIntent)
-					const modeOut = applyAndPersist(f.id, { type: "set_mode", mode: "exec" })
-					const updated = modeOut.ok ? modeOut.ferment : f
-					runtime.setActive(updated)
-					appendRefEntry(pi, updated.id)
-					pi.appendEntry("ferment_ack", {
-						text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nMode: exec (fully autonomous)`,
+			}
+
+			const out = applyAndPersist(active.id, { type: "set_mode", mode: modeArg as FermentWorkMode })
+			const updated = out.ok ? out.ferment : undefined
+			if (updated) {
+				runtime.setActive(updated)
+				let hint = ""
+				if (modeArg === "exec") hint = "\n\n⚡  exec mode — the agent now has full tool access."
+				else if (modeArg === "plan") hint = "\n\n📝  plan mode — the agent will ask questions and propose structure."
+				else if (modeArg === "auto") hint = "\n\n🔄  auto mode — the agent will guide you through each step."
+				ctx.ui.notify(`Mode changed to: ${modeArg}.${hint}`)
+
+				const action = determineNextAction(updated)
+				const nudge = `${action.kind}: ${action.reason}`
+				if (nudge) {
+					pi.appendEntry("ferment_breadcrumb", {
+						text: `Mode changed to ${modeArg}: "${updated.name}" [${updated.status}]`,
 					})
-					const nudge = `You are running a one-shot ferment: "${updated.name}" (ID: ${updated.id}).
+					void pi.sendMessage(
+						{
+							customType: "ferment_mode_nudge",
+							content: [{ type: "text", text: nudge }],
+							display: false,
+							details: undefined,
+						},
+						{ triggerTurn: true },
+					)
+				}
+			}
+			return { handled: true }
+		}
+
+		if (command.type === "delete") {
+			const target = command.target
+			if (!target) {
+				ctx.ui.notify('Usage: /ferment delete <full-id> or /ferment delete "Name"')
+				return { handled: true }
+			}
+			try {
+				const f = storage.resolve(target)
+				if (!f) {
+					ctx.ui.notify(`No ferment matching "${target}".`)
+					return { handled: true }
+				}
+				storage.delete(f.id)
+				runtime.clearFermentState(f.id)
+				runtime.clearPendingScope(f.id)
+				if (runtime.getActiveId() === f.id) runtime.setActive(undefined)
+				ctx.ui.notify(`Deleted "${f.name}" (${f.id}).`)
+			} catch (err) {
+				ctx.ui.notify(err instanceof FermentError ? err.message : "Delete failed.")
+			}
+			return { handled: true }
+		}
+
+		if (command.type === "switch") {
+			const target = command.target
+			if (!target) {
+				ctx.ui.notify('Usage: /ferment switch <full-id> or /ferment switch "Name"')
+				return { handled: true }
+			}
+			try {
+				const f = storage.resolve(target)
+				if (!f) {
+					ctx.ui.notify(`No ferment matching "${target}".`)
+					return { handled: true }
+				}
+
+				const wtCheck = checkWorktree(f)
+				if (wtCheck.severity === "block" && !command.force) {
+					ctx.ui.notify(`${wtCheck.message}\n\nUse /ferment switch --force "${target}" to override.`)
+					return { handled: true }
+				}
+
+				const wtWarning = wtCheck.severity === "warn" ? `\n⚠️  ${wtCheck.message}` : ""
+				ctx.ui.notify(`Switched to "${f.name}" (${f.id}) [${f.status}].${wtWarning}`)
+				resumeFerment(pi, f.id, ctx, runtime)
+			} catch (err) {
+				ctx.ui.notify(err instanceof FermentError ? err.message : "Switch failed.")
+			}
+			return { handled: true }
+		}
+
+		if (command.type === "abandon") {
+			const active = runtime.getActive()
+			if (!active) {
+				ctx.ui.notify("No active ferment.")
+				return { handled: true }
+			}
+			const reason = command.reason ?? ""
+			if (ctx.ui.select) {
+				const choice = await ctx.ui.select(`Abandon "${active.name}"?`, ["Yes, abandon it", "No, keep it"])
+				if (!choice || !choice.startsWith("Yes")) {
+					ctx.ui.notify("Abandon cancelled.")
+					return { handled: true }
+				}
+			}
+			const abandonedId = active.id
+			const out = applyAndPersist(abandonedId, { type: "abandon", reason: reason || undefined })
+			if (out.ok) {
+				runtime.setActive(undefined)
+				runtime.clearFermentState(abandonedId)
+				runtime.clearPendingScope(abandonedId)
+				ctx.ui.notify(`Ferment "${out.ferment.name}" abandoned.`)
+			}
+			return { handled: true }
+		}
+
+		if (command.type === "revise") {
+			const active = runtime.getActive()
+			if (!active) {
+				ctx.ui.notify("No active ferment.")
+				return { handled: true }
+			}
+			const field = command.field
+
+			if (field === "goal") {
+				if (!ctx.ui.input) {
+					ctx.ui.notify("No UI available for interactive revision. Ask the agent to update the goal.")
+					return { handled: true }
+				}
+				const newGoal = await ctx.ui.input("Revise goal:", active.goal ?? "")
+				if (newGoal) {
+					const out = applyAndPersist(active.id, { type: "update_scope_field", field: "goal", value: newGoal })
+					if (out.ok) {
+						runtime.setActive(out.ferment)
+						ctx.ui.notify(`Goal updated: "${newGoal}"`)
+					} else {
+						ctx.ui.notify(`Could not update goal: ${out.error.message}`)
+					}
+				}
+				return { handled: true }
+			}
+
+			if (field === "criteria") {
+				if (!ctx.ui.input) {
+					ctx.ui.notify("No UI available for interactive revision.")
+					return { handled: true }
+				}
+				const newCriteria = await ctx.ui.input("Revise success criteria:", active.successCriteria ?? "")
+				if (newCriteria) {
+					const out = applyAndPersist(active.id, {
+						type: "update_scope_field",
+						field: "criteria",
+						value: newCriteria,
+					})
+					if (out.ok) {
+						runtime.setActive(out.ferment)
+						ctx.ui.notify("Success criteria updated.")
+					} else {
+						ctx.ui.notify(`Could not update criteria: ${out.error.message}`)
+					}
+				}
+				return { handled: true }
+			}
+
+			if (field === "constraints") {
+				if (!ctx.ui.input) {
+					ctx.ui.notify("No UI available for interactive revision.")
+					return { handled: true }
+				}
+				const current = (active.constraints ?? []).join(", ")
+				const newConstraints = await ctx.ui.input("Revise constraints (comma-separated):", current)
+				if (newConstraints !== null && newConstraints !== undefined) {
+					const parsed = newConstraints
+						.split(",")
+						.map((c) => c.trim())
+						.filter(Boolean)
+					const out = applyAndPersist(active.id, {
+						type: "update_scope_field",
+						field: "constraints",
+						value: parsed.join(","),
+					})
+					if (out.ok) {
+						runtime.setActive(out.ferment)
+						ctx.ui.notify(`Constraints updated: ${parsed.join(", ") || "(none)"}`)
+					} else {
+						ctx.ui.notify(`Could not update constraints: ${out.error.message}`)
+					}
+				}
+				return { handled: true }
+			}
+
+			ctx.ui.notify(
+				"Usage: /ferment revise goal | criteria | constraints\n\nTo revise phases, ask the agent to update them.",
+			)
+			return { handled: true }
+		}
+
+		if (command.type === "export") {
+			const active = runtime.getActive()
+			if (!active) {
+				ctx.ui.notify("No active ferment.")
+				return { handled: true }
+			}
+			const stats = computeStats(active)
+			const exportData = serializeStats(stats)
+			const fileName = `ferment-export-${active.id.slice(0, 8)}-${Date.now()}.json`
+			writeFileSync(fileName, exportData)
+			ctx.ui.notify(`Exported ferment stats to ${fileName}`)
+			return { handled: true }
+		}
+
+		if (command.type === "one-shot") {
+			const active = runtime.getActive()
+			if (active && active.status === "running") {
+				ctx.ui.notify(`A ferment is already running: "${active.name}". Use /progress to check status.`)
+				return { handled: true }
+			}
+			const intent = command.intent
+			let resolvedIntent = intent
+			if (!resolvedIntent && ctx.ui.input) {
+				const typed = await ctx.ui.input("🍺  One-shot: what should be done?", "Describe the full task…")
+				if (!typed) return { handled: true }
+				resolvedIntent = typed
+			}
+			if (!resolvedIntent) {
+				ctx.ui.notify('Usage: /ferment one-shot "description of what to build"')
+				return { handled: true }
+			}
+			try {
+				const shortName = await shortenTitle(resolvedIntent)
+				const f = storage.create(shortName, resolvedIntent)
+				const modeOut = applyAndPersist(f.id, { type: "set_mode", mode: "exec" })
+				const updated = modeOut.ok ? modeOut.ferment : f
+				runtime.setActive(updated)
+				appendRefEntry(pi, updated.id)
+				pi.appendEntry("ferment_ack", {
+					text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nMode: exec (fully autonomous)`,
+				})
+				const nudge = `You are running a one-shot ferment: "${updated.name}" (ID: ${updated.id}).
 
 User intent: "${resolvedIntent}"
 
@@ -428,47 +438,61 @@ Your task — execute ALL of the following steps WITHOUT pausing to ask the user
 
 CRITICAL: Do NOT use any tools other than ferment tools to research or explore first. Do NOT ask for confirmation at any point. Execute autonomously until complete_ferment is called.`
 
-					void pi.sendMessage(
-						{
-							customType: "ferment_oneshot_nudge",
-							content: [{ type: "text", text: nudge }],
-							display: false,
-							details: undefined,
-						},
-						{ triggerTurn: true },
-					)
-				} catch (err) {
-					ctx.ui.notify(err instanceof FermentError ? err.message : "One-shot create failed.")
-				}
-				return
-			}
-
-			const active = runtime.getActive()
-			if (active && active.status === "running") {
-				ctx.ui.notify(
-					`A ferment is already running: "${active.name}". Use /progress to check status or /ferment switch to change.`,
+				void pi.sendMessage(
+					{
+						customType: "ferment_oneshot_nudge",
+						content: [{ type: "text", text: nudge }],
+						display: false,
+						details: undefined,
+					},
+					{ triggerTurn: true },
 				)
-				return
-			}
-			const rawName = command.type === "add" ? command.title : raw
-			if (!rawName) {
-				ctx.ui.notify('Usage: /ferment add "Name"')
-				return
-			}
-			try {
-				const shortName = await shortenTitle(rawName)
-				const f = storage.create(shortName, rawName)
-				runtime.setActive(f)
-				appendRefEntry(pi, f.id)
-
-				pi.appendEntry("ferment_ack", {
-					text: `🍺  Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nMode: ${f.mode} · scoping 0/4`,
-				})
-
-				await runScopingFlow(f, pi, ctx, runtime)
 			} catch (err) {
-				ctx.ui.notify(err instanceof FermentError ? err.message : "Create failed.")
+				ctx.ui.notify(err instanceof FermentError ? err.message : "One-shot create failed.")
 			}
+			return { handled: true }
+		}
+
+		const active = runtime.getActive()
+		if (active && active.status === "running") {
+			ctx.ui.notify(
+				`A ferment is already running: "${active.name}". Use /progress to check status or /ferment switch to change.`,
+			)
+			return { handled: true }
+		}
+		const rawName = command.type === "add" ? command.title : raw
+		if (!rawName) {
+			ctx.ui.notify('Usage: /ferment add "Name"')
+			return { handled: true }
+		}
+		try {
+			const shortName = await shortenTitle(rawName)
+			const f = storage.create(shortName, rawName)
+			runtime.setActive(f)
+			appendRefEntry(pi, f.id)
+
+			pi.appendEntry("ferment_ack", {
+				text: `🍺  Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nMode: ${f.mode} · scoping 0/4`,
+			})
+
+			await runScopingFlow(f, pi, ctx, runtime)
+		} catch (err) {
+			ctx.ui.notify(err instanceof FermentError ? err.message : "Create failed.")
+		}
+		return { handled: true }
+	}
+}
+
+export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
+	const applyAndPersist = createApplyAndPersist(runtime)
+	const fermentCommandController = new FermentCommandController()
+
+	pi.registerCommand("ferment", {
+		description: 'Manage ferments: /ferment list, /ferment add "Name", /ferment one-shot "task", /ferment switch <id>',
+		async handler(args, ctx) {
+			const raw = args.trim()
+			const command = parseFermentCommand(args)
+			await fermentCommandController.execute(command, { raw, pi, ctx, runtime })
 		},
 	})
 
@@ -577,7 +601,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 				const phaseListOpts = buildPhaseListOptions(f)
 				const phaseListPhaseCount = f.phases.length
 
-				const l1choice = await ctx.ui.select(buildPhaseListTitle(f), phaseListOpts)
+				const l1choice = await ctx.ui.select(buildPhaseListTitle(f, runtime), phaseListOpts)
 
 				if (!l1choice || l1choice === "Close") {
 					atPhaseList = false

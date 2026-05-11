@@ -11,7 +11,6 @@
  * blocked even after manual intervention.
  */
 
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { getScopingProgress } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import {
@@ -31,10 +30,10 @@ import {
 	truncateLabel,
 } from "./colors.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
-import { getLastHumanInputAt } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
+import type { FermentUiContext } from "./ui.js"
 
-export function buildPhaseListTitle(f: Ferment): string {
+export function buildPhaseListTitle(f: Ferment, runtime: FermentRuntime = defaultFermentRuntime): string {
 	const terminalCount = f.phases.filter(
 		(p) => p.status === "completed" || p.status === "skipped" || p.status === "failed",
 	).length
@@ -46,8 +45,10 @@ export function buildPhaseListTitle(f: Ferment): string {
 	const scopeProgress = getScopingProgress(f)
 	const scopeTag = f.status === "draft" ? pr_dim(`  scoping ${scopeProgress.answered}/4`) : ""
 	const fermentGrade = f.grade ? `  ${gradeColor(f.grade.grade)}` : ""
-	const lastHumanInputAt = getLastHumanInputAt()
-	const sinceHuman = lastHumanInputAt ? formatDuration(Date.now() - lastHumanInputAt.getTime()) : pr_dim("n/a")
+	const lastHumanInputAt = runtime.getLastHumanInputAt()
+	const sinceHuman = lastHumanInputAt
+		? formatDuration(runtime.now().getTime() - lastHumanInputAt.getTime())
+		: pr_dim("n/a")
 
 	return [
 		`${pr_teal("🍺")} ${pr_bold(f.name)}${fermentGrade}${scopeTag}`,
@@ -189,7 +190,7 @@ export async function handleStepAction(
 	f: Ferment,
 	p: Phase,
 	s: Step,
-	ctx: ExtensionCommandContext,
+	ctx: FermentUiContext,
 	runtime: FermentRuntime = defaultFermentRuntime,
 ): Promise<void> {
 	const applyAndPersist = createApplyAndPersist(runtime)
@@ -218,7 +219,7 @@ export async function handlePhaseAction(
 	choice: string,
 	f: Ferment,
 	p: Phase,
-	ctx: ExtensionCommandContext,
+	ctx: FermentUiContext,
 	runtime: FermentRuntime = defaultFermentRuntime,
 ): Promise<void> {
 	const applyAndPersist = createApplyAndPersist(runtime)

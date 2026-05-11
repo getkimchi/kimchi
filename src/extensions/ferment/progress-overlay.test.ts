@@ -5,7 +5,7 @@ import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
-import { handlePhaseAction, handleStepAction } from "./progress-overlay.js"
+import { buildPhaseListTitle, handlePhaseAction, handleStepAction } from "./progress-overlay.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { getActive, setActive } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
@@ -66,6 +66,16 @@ afterEach(() => {
 })
 
 describe("progress overlay action handlers", () => {
+	it("uses injected runtime time for the phase list title", () => {
+		const { runtime, ferment } = createHarness()
+		runtime.now = () => new Date("2026-05-11T12:05:00.000Z")
+		runtime.getLastHumanInputAt = () => new Date("2026-05-11T12:03:00.000Z")
+
+		const title = buildPhaseListTitle(ferment, runtime)
+
+		expect(title).toContain("2m ago")
+	})
+
 	it("uses injected runtime state for step actions", async () => {
 		const { runtime, storage, ferment, phase, step, ctx, setActiveSpy, clearStepStartSpy } = createHarness()
 

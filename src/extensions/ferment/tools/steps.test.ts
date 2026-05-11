@@ -182,6 +182,7 @@ describe("completeStep", () => {
 
 	it("records verification success and grades the step", async () => {
 		const h = createHarness({ verification: "pnpm test" })
+		h.runtime.nowIso = () => "2026-05-11T12:34:56.000Z"
 		const services = createServices({
 			runVerification: vi.fn(async () => ({ exitCode: 0, stdout: "pass", stderr: "" })),
 		})
@@ -197,6 +198,7 @@ describe("completeStep", () => {
 
 		expect(okText(result)).toContain("verified")
 		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("verified")
+		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].result?.completedAt).toBe("2026-05-11T12:34:56.000Z")
 		expect(services.judgeGradeStep).toHaveBeenCalledWith(
 			"First step",
 			"done",
