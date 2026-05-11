@@ -67,7 +67,7 @@ function formatUsageRows(rows: Array<{ label: string; totals: UsageTotals }>, th
 
 	return rows.map((row, ri) => {
 		const cols = colSets[ri]
-		const padded = cols.map((c, i) => c.padEnd(colWidths[i]))
+		const padded = colWidths.map((width, i) => (cols[i] ?? "").padEnd(width))
 		const values = padded.join(COL_GAP)
 		return INDENT + theme.fg("dim", row.label.padEnd(LABEL_WIDTH)) + values
 	})
@@ -117,19 +117,19 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 	const subagents = emptyTotals()
 	let startedAt = Date.now()
 
-	pi.on("agent_start", async () => {
+	pi.on("agent_start", () => {
 		Object.assign(orchestrator, emptyTotals())
 		Object.assign(subagents, emptyTotals())
 		startedAt = Date.now()
 	})
 
-	pi.on("message_end", async (event) => {
+	pi.on("message_end", (event) => {
 		const message = event.message as AssistantMessage
 		if (message.role !== "assistant") return
 		addUsage(orchestrator, message.usage)
 	})
 
-	pi.on("tool_result", async (event) => {
+	pi.on("tool_result", (event) => {
 		if (event.toolName !== "subagent") return
 		const stats = event.details as SubagentStats | undefined
 		if (!stats?.tokenUsage) return
