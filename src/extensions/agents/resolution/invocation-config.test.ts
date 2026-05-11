@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resolveAgentInvocationConfig } from "./invocation-config.js"
 
-// Mock recommendModel to control its output in tests
+// Mock recommendModel + pickFromModelListByTier to control output in tests
 vi.mock("../../orchestration/model-registry/recommend.js", () => ({
 	recommendModel: vi.fn(),
+	pickFromModelListByTier: vi.fn(),
 }))
 
 // Mock getCurrentPhase so tests are deterministic
@@ -11,17 +12,21 @@ vi.mock("../../tags.js", () => ({
 	getCurrentPhase: vi.fn(),
 }))
 
-import { recommendModel } from "../../orchestration/model-registry/recommend.js"
+import { pickFromModelListByTier, recommendModel } from "../../orchestration/model-registry/recommend.js"
 import { getCurrentPhase } from "../../tags.js"
 
 const mockRecommend = vi.mocked(recommendModel)
+const mockPickFromList = vi.mocked(pickFromModelListByTier)
 const mockGetPhase = vi.mocked(getCurrentPhase)
 
 describe("resolveAgentInvocationConfig — model fallback chain", () => {
 	beforeEach(() => {
 		mockRecommend.mockReset()
+		mockPickFromList.mockReset()
 		mockGetPhase.mockReset()
 		mockGetPhase.mockReturnValue(undefined)
+		// Default behavior: return first entry (matches caller's earlier expectation).
+		mockPickFromList.mockImplementation((list) => list[0])
 	})
 
 	afterEach(() => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { recommendModel } from "./recommend.js"
+import { pickFromModelListByTier, recommendModel } from "./recommend.js"
 
 describe("recommendModel", () => {
 	it("returns a result for a single strength with exact tier match", () => {
@@ -78,5 +78,49 @@ describe("recommendModel", () => {
 	it("provider is always kimchi-dev", () => {
 		const result = recommendModel({ strengths: ["build"] })
 		expect(result?.provider).toBe("kimchi-dev")
+	})
+})
+
+describe("pickFromModelListByTier", () => {
+	it("returns undefined for empty list", () => {
+		expect(pickFromModelListByTier([])).toBeUndefined()
+	})
+
+	it("picks the heavy entry when preferTier=heavy and a heavy model is in the list", () => {
+		// kimi-k2.6 (heavy), nemotron-3-super-fp4 (light), minimax-m2.7 (standard)
+		const result = pickFromModelListByTier(
+			["kimchi-dev/nemotron-3-super-fp4", "kimchi-dev/kimi-k2.6", "kimchi-dev/minimax-m2.7"],
+			"heavy",
+		)
+		expect(result).toBe("kimchi-dev/kimi-k2.6")
+	})
+
+	it("picks the light entry when preferTier=light", () => {
+		const result = pickFromModelListByTier(
+			["kimchi-dev/kimi-k2.6", "kimchi-dev/nemotron-3-super-fp4", "kimchi-dev/minimax-m2.7"],
+			"light",
+		)
+		expect(result).toBe("kimchi-dev/nemotron-3-super-fp4")
+	})
+
+	it("falls back through tiers when no exact tier match (heavy → standard → light)", () => {
+		// Only light models in the list; preferTier=heavy should fall back to light.
+		const result = pickFromModelListByTier(["kimchi-dev/nemotron-3-super-fp4"], "heavy")
+		expect(result).toBe("kimchi-dev/nemotron-3-super-fp4")
+	})
+
+	it("preserves caller order when no entries are known to the registry", () => {
+		const result = pickFromModelListByTier(["custom/unknown-1", "custom/unknown-2"], "heavy")
+		expect(result).toBe("custom/unknown-1")
+	})
+
+	it("ignores unknown entries when picking among known ones", () => {
+		const result = pickFromModelListByTier(["custom/unknown", "kimchi-dev/kimi-k2.6", "custom/also-unknown"], "heavy")
+		expect(result).toBe("kimchi-dev/kimi-k2.6")
+	})
+
+	it("defaults preferTier to standard when not specified", () => {
+		const result = pickFromModelListByTier(["kimchi-dev/kimi-k2.6", "kimchi-dev/minimax-m2.7"])
+		expect(result).toBe("kimchi-dev/minimax-m2.7")
 	})
 })

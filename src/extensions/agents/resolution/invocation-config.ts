@@ -1,4 +1,4 @@
-import { recommendModel } from "../../orchestration/model-registry/recommend.js"
+import { pickFromModelListByTier, recommendModel } from "../../orchestration/model-registry/recommend.js"
 import type { ModelStrength } from "../../orchestration/model-registry/types.js"
 import { getCurrentPhase } from "../../tags.js"
 import type { AgentConfig, IsolationMode, JoinMode, ThinkingLevel } from "../personas/types.js"
@@ -37,11 +37,13 @@ export function resolveAgentInvocationConfig(
 		modelInput = params.model
 		modelFromParams = true
 	} else if (agentConfig?.models?.length) {
-		// No caller override and persona declared a list. Default to the first
-		// entry — note this is just a stable fallback, not a "lightest tier"
-		// pick. The calling LLM is expected to pass `model` for any non-trivial
-		// task; the runtime does not classify complexity.
-		modelInput = agentConfig.models[0]
+		// No caller override and persona declared a list. Pick the entry whose
+		// capability tier best matches the persona's preferTier (with the same
+		// light→standard→heavy fallback as recommendModel). If preferTier is
+		// not declared, defaults to "standard". The calling LLM is still
+		// expected to pass `model` for non-trivial task complexity overrides;
+		// this is the no-override default, not a complexity classifier.
+		modelInput = pickFromModelListByTier(agentConfig.models, agentConfig.preferTier ?? "standard")
 	} else if (agentConfig?.strengths?.length) {
 		// Persona has strengths but no explicit models[] — let the orchestrator
 		// auto-pick based on those strengths.

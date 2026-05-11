@@ -81,3 +81,49 @@ export function recommendModel(opts: RecommendOptions): RecommendResult | undefi
 		capabilities: first.capabilities,
 	}
 }
+
+/**
+ * Pick the best entry from an explicit list of "provider/modelId" strings, ordered by
+ * `preferTier` with the same fallback as `recommendModel`. Used by the agents extension's
+ * invocation-config to honour a persona's preferTier when selecting from its `models[]`
+ * array (instead of blindly taking `models[0]`).
+ *
+ * Returns undefined when none of the models resolve in MODEL_CAPABILITIES.
+ * Unknown entries (not in the registry) are preserved at the end of the candidate list
+ * so callers still get a stable fallback when nothing has capability metadata.
+ */
+export function pickFromModelListByTier(
+	models: readonly string[],
+	preferTier: ModelTier = "standard",
+): string | undefined {
+	if (models.length === 0) return undefined
+
+	type Known = { full: string; capabilities: ModelCapabilities }
+	const known: Known[] = []
+	const unknown: string[] = []
+
+	for (const full of models) {
+		const slashIdx = full.indexOf("/")
+		const id = slashIdx >= 0 ? full.slice(slashIdx + 1) : full
+		const entry = MODEL_CAPABILITIES.get(id)
+		if (entry && entry !== "ignored") {
+			known.push({ full, capabilities: entry })
+		} else {
+			unknown.push(full)
+		}
+	}
+
+	if (known.length === 0) {
+		// No capability metadata for any entry — preserve caller's order.
+		return models[0]
+	}
+
+	const tierOrder = TIER_FALLBACK[preferTier]
+	for (const tier of tierOrder) {
+		const match = known.find((c) => c.capabilities.tier === tier)
+		if (match) return match.full
+	}
+
+	// All known entries had unfamiliar tiers — fall back to first known.
+	return known[0]?.full ?? unknown[0] ?? models[0]
+}
