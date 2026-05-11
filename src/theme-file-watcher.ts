@@ -2,8 +2,8 @@
 // is modified. Used for hot-reloading: editing a theme file while kimchi-dev
 // is running immediately reflects the changes (after pi's internal reload).
 
-import { type FSWatcher, existsSync, readFileSync, watch } from "node:fs"
-import { resolve } from "node:path"
+import { type FSWatcher, watch } from "node:fs"
+import { getActiveThemeName } from "./settings-watcher.js"
 
 type ThemeFileChangeListener = (themeName: string) => void
 
@@ -17,23 +17,6 @@ let lastActiveTheme: string | undefined
 // Lazily load the themes directory path from the environment.
 function getThemesDir(): string | undefined {
 	return process.env.KIMCHI_CODING_AGENT_THEMES_DIR
-}
-
-// Read the active theme name from settings.json (same logic as settings-watcher).
-export function getActiveThemeName(): string | undefined {
-	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
-	if (!agentDir) return undefined
-	try {
-		const raw = readFileSync(resolve(agentDir, "settings.json"), "utf-8")
-		const parsed: unknown = JSON.parse(raw)
-		if (parsed && typeof parsed === "object" && "theme" in parsed) {
-			const v = (parsed as { theme: unknown }).theme
-			return typeof v === "string" ? v : undefined
-		}
-		return undefined
-	} catch {
-		return undefined
-	}
 }
 
 function fire(filename: string): void {
