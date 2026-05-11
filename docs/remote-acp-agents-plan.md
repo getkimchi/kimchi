@@ -273,7 +273,9 @@ integration" below.
 | Bearer-auth `fetch` patterns    | `src/auth/validator.ts:27-54`                          |
 | Read `apiKey` from config       | `loadConfig()` / `readApiKeyFromConfigFile()` in `src/config.ts:225-262` |
 | Remote-endpoint transport plumbing (HTTP + Bearer + error mapping) | `src/extensions/mcp-adapter/server-manager.ts:82-170` |
-| NDJSON line framing | Inline in `transport-ws.ts` (~30 LoC); one JSON-RPC line per WS text frame, no helper dep needed |
+| RPC wire-protocol types         | `RpcCommand`, `RpcResponse`, `RpcEventListener`, `RpcSessionState` from `@earendil-works/pi-coding-agent` (top-level public exports — see `index.d.ts`) |
+| RPC client class itself         | **Cannot reuse** — `RpcClient` hardcodes `child_process.spawn` with no transport seam. We write our own thin `RemoteRpcClient` (~150 LoC) that consumes the same wire types over a WebSocket. |
+| NDJSON line framing             | Inline in `transport-ws.ts` (~10 LoC LF-only splitter). pi-mono's `attachJsonlLineReader`/`serializeJsonLine` are internal (`./modes/rpc/jsonl.js`) and not exposed by the package's `exports` field. |
 | Env-var override for credentials | Mirror the `KIMCHI_API_KEY` handling at `src/cli.ts:134-140` |
 
 NDJSON line splitting and per-line forwarding are simple enough to write inline in
@@ -418,12 +420,38 @@ Architecture:
 └──────────────────────────────────────────────────┘
 ```
 
-We do **not** use pi-mono's `RpcClient`. It spawns a child process internally
-(`node:child_process.spawn`) and there is no public hook to swap the transport. We
-write our own RPC client that mirrors the wire format `kimchi --mode rpc` already
-emits/accepts but reads/writes from a WebSocket. Empirically determining the wire
-format is straightforward: it's the same NDJSON line stream produced by `runRpcMode`
-on the server, observable by running `kimchi --mode rpc` locally.
+**What we reuse from pi-mono's RPC**: the wire protocol *types*. `RpcCommand`,
+`RpcResponse`, `RpcEventListener`, and `RpcSessionState` are all exported from
+`@earendil-works/pi-coding-agent`'s top-level entry point (verified in the package's
+`exports` field and `index.d.ts`). They give us the full set of command discriminators,
+parameter shapes, response shapes, and event shapes that `kimchi --mode rpc` already
+produces and consumes. Importing those types means our `RemoteRpcClient` is
+typechecked against the same protocol the server emits, with no schema duplication.
+
+**What we cannot reuse**: the `RpcClient` *class itself*. Reading
+`node_modules/@earendil-works/pi-coding-agent/dist/modes/rpc/rpc-client.js`:
+
+- The constructor takes only `RpcClientOptions` ({ cliPath, cwd, env, provider, model,
+  args }) — every option targets a child process.
+- `start()` calls `spawn("node", [cliPath, ...args], ...)`, sets up
+  `attachJsonlLineReader(this.process.stdout, ...)`, and writes commands to
+  `this.process.stdin`.
+- `stop()`, `send()`, `handleLine()` are all bound to `this.process`.
+- Fields are private; there is no constructor-injected transport, no protected hook
+  to override `send()`, and the methods that bind to `this.process` are not virtual.
+
+Subclassing or monkey-patching to redirect to a WebSocket would require overriding
+`start`, `stop`, `send`, and `handleLine` — i.e., almost the whole class — which is
+not reuse.
+
+**What we do, then**: write a small `RemoteRpcClient` (~150 LoC) whose **public method
+surface mirrors `RpcClient`'s shape** (so the adapter layer above is symmetric) but
+whose internals use a `Transport` instead of a child process. The interesting bits —
+request id allocation, `pendingRequests` map, response-vs-event line discrimination,
+per-request timeout — are mechanical translations of `RpcClient`'s pattern, not
+original logic. The 10-line LF-only JSONL splitter is reimplemented inline since
+`attachJsonlLineReader` / `serializeJsonLine` are internal modules
+(`./modes/rpc/jsonl.js`) and the package's `exports` field doesn't expose them.
 
 Mapping `AgentSession` calls to RPC:
 
