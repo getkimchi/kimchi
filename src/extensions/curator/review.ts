@@ -3,6 +3,7 @@ import { appendFileSync, closeSync, openSync, readFileSync, unlinkSync } from "n
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { convertToLlm } from "@earendil-works/pi-coding-agent"
+import { lock } from "proper-lockfile"
 import { parse as parseYaml } from "yaml"
 import type { SkillManager } from "../skills-manager/skill-manager.js"
 import { agentCreatedReport } from "../skills-manager/usage.js"
@@ -217,6 +218,20 @@ Preference order — prefer the earliest action that fits:
 3. CREATE a new class-level skill when nothing existing fits. The name must be class-level — \
 no PR numbers, error strings, session artifacts, or "fix-X / debug-Y / audit-Z-today" names.
 
+## Skill frontmatter requirement
+
+Every skill you create with \`skill_manage action=create\` MUST start with YAML frontmatter that includes:
+- \`name:\` — exactly matches the skill name argument
+- \`description:\` — a non-empty, human-readable description string
+
+Example:
+---
+name: my-skill
+description: How to query production logs via Loki
+---
+
+Skills without \`description\` will be rejected. Do not use \`d:\`, \`desc:\`, or any abbreviated key.
+
 Tools available: skill_manage, skill_view, skill_list. No bash or file tools.
 
 "Nothing to save." is a real option but must not be the default. If the session ran smoothly \
@@ -277,8 +292,34 @@ export function debugLog(msg: string): void {
 	appendFileSync(path, `[${new Date().toISOString()}] ${msg}\n`)
 }
 
-export function spawnSessionReview(opts: RunSessionReviewOptions): void {
-	const { provider, model, messages } = opts
+export function getReviewLockPath(skillsDir: string): string {
+	return join(skillsDir, ".review.lock")
+}
+
+/**
+ * Layer B of deduplication: try to acquire a cross-session lock using proper-lockfile.
+ * Returns an unlock function if the lock was acquired, or null if the lock is already held.
+ */
+export async function tryReviewLock(skillsDir: string): Promise<(() => Promise<void>) | null> {
+	const lockPath = getReviewLockPath(skillsDir)
+	try {
+		const unlock = await lock(lockPath, { stale: 60 * 60 * 1000 })
+		debugLog(`tryReviewLock: acquired lock at ${lockPath}`)
+		return unlock
+	} catch {
+		debugLog(`tryReviewLock: lock already held at ${lockPath}, skipping spawn`)
+		return null
+	}
+}
+
+export async function spawnSessionReview(opts: RunSessionReviewOptions): Promise<void> {
+	const { provider, model, messages, skillsDir } = opts
+
+	const lock = await tryReviewLock(skillsDir)
+	if (!lock) {
+		debugLog("spawnSessionReview: another review is already running, skipping")
+		return
+	}
 
 	debugLog(`spawnSessionReview called: provider=${provider} model=${model} messages=${messages.length}`)
 

@@ -64,7 +64,10 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 		}
 	})
 
-	const SESSION_REVIEW_THRESHOLD = Number(process.env.KIMCHI_REVIEW_THRESHOLD ?? 5)
+	const SESSION_REVIEW_THRESHOLD = Number(process.env.KIMCHI_REVIEW_THRESHOLD ?? 15)
+
+	// Layer A of deduplication: ensure only one review spawns per session.
+	let reviewDispatched = false
 
 	debugLog(`curator registered: threshold=${SESSION_REVIEW_THRESHOLD} skillsDir=${skillsDir}`)
 
@@ -81,12 +84,19 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 			debugLog("agent_end: no providerModel, skipping review")
 			return
 		}
+		if (reviewDispatched) {
+			debugLog("agent_end: review already dispatched this session, skipping")
+			return
+		}
+		reviewDispatched = true
 		debugLog("agent_end: dispatching spawnSessionReview")
-		spawnSessionReview({
+		void spawnSessionReview({
 			provider: providerModel.provider,
 			model: providerModel.model,
 			skillsDir,
 			messages: event.messages,
+		}).catch(() => {
+			// Review lock acquisition failed or other error — best-effort
 		})
 
 		// Watch skillsDir for .usage.json changes and notify when new agent_created skills appear.
@@ -147,11 +157,7 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 			const known = new Set(state.known_agent_skills ?? [])
 			const newSkills = currentAgentSkills.filter((n) => !known.has(n))
 			if (newSkills.length > 0) {
-				pi.sendMessage({
-					customType: CURATOR_NOTIFICATION_TYPE,
-					content: [{ type: "text", text: `skill review created: ${newSkills.join(", ")}` }],
-					display: true,
-				})
+				// Just update state — the in-session watcher already notified when skills were created.
 				await saveState(statePath, { ...state, known_agent_skills: currentAgentSkills })
 			} else if (state.known_agent_skills === undefined) {
 				// First run — seed without notifying
