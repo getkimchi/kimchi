@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest"
 import {
 	classifyTool,
 	extractBashProgram,
+	isCompoundCommand,
 	isHardBlockedBash,
 	isReadOnlyBashCommand,
 	isReadOnlyTool,
+	splitCompoundCommand,
 } from "./taxonomy.js"
 
 describe("classifyTool", () => {
@@ -193,5 +195,90 @@ describe("isHardBlockedBash", () => {
 		expect(isHardBlockedBash("rm -rf ./build")).toBe(false)
 		expect(isHardBlockedBash("rm foo.txt")).toBe(false)
 		expect(isHardBlockedBash("rm -f node_modules/.cache")).toBe(false)
+	})
+})
+
+describe("isCompoundCommand", () => {
+	it("detects && operator", () => {
+		expect(isCompoundCommand("cd docs && ls")).toBe(true)
+		expect(isCompoundCommand("git status && git push")).toBe(true)
+	})
+
+	it("detects || operator", () => {
+		expect(isCompoundCommand("cd docs || ls")).toBe(true)
+		expect(isCompoundCommand("test -f file || touch file")).toBe(true)
+	})
+
+	it("detects ; operator", () => {
+		expect(isCompoundCommand("cd docs; ls")).toBe(true)
+		expect(isCompoundCommand("ls; pwd; echo done")).toBe(true)
+	})
+
+	it("does not detect pipes as compound", () => {
+		expect(isCompoundCommand("cat foo | grep bar")).toBe(false)
+		expect(isCompoundCommand("ls -la | head -n 5")).toBe(false)
+		expect(isCompoundCommand("echo hi | tee file.txt")).toBe(false)
+	})
+
+	it("detects compound with pipes inside segments", () => {
+		expect(isCompoundCommand("cd docs && git status | grep foo")).toBe(true)
+		expect(isCompoundCommand("ls | wc -l && echo done")).toBe(true)
+	})
+
+	it("returns false for simple commands", () => {
+		expect(isCompoundCommand("ls -la")).toBe(false)
+		expect(isCompoundCommand("git status")).toBe(false)
+		expect(isCompoundCommand("")).toBe(false)
+	})
+})
+
+describe("splitCompoundCommand", () => {
+	it("splits on &&", () => {
+		expect(splitCompoundCommand("cd docs && ls")).toEqual(["cd docs", "ls"])
+		expect(splitCompoundCommand("git status && git push origin main")).toEqual(["git status", "git push origin main"])
+	})
+
+	it("splits on ||", () => {
+		expect(splitCompoundCommand("cd docs || ls")).toEqual(["cd docs", "ls"])
+		expect(splitCompoundCommand("test -f file || touch file")).toEqual(["test -f file", "touch file"])
+	})
+
+	it("splits on ;", () => {
+		expect(splitCompoundCommand("cd docs; ls")).toEqual(["cd docs", "ls"])
+		expect(splitCompoundCommand("ls; pwd; echo done")).toEqual(["ls", "pwd", "echo done"])
+	})
+
+	it("keeps pipes inside segments", () => {
+		// Pipe-only commands are not "compound" — they return null
+		expect(splitCompoundCommand("cat foo | grep bar")).toBeNull()
+		// Pipes inside compound segments are preserved
+		expect(splitCompoundCommand("cd docs && git status | grep foo")).toEqual(["cd docs", "git status | grep foo"])
+	})
+
+	it("strips leading env-var assignments from subcommands", () => {
+		expect(splitCompoundCommand("FOO=bar ls && FOO=baz pwd")).toEqual(["ls", "pwd"])
+	})
+
+	it("strips whitespace", () => {
+		expect(splitCompoundCommand("  cd docs  &&  ls  ")).toEqual(["cd docs", "ls"])
+	})
+
+	it("filters empty segments", () => {
+		expect(splitCompoundCommand("cmd1 && && cmd2")).toEqual(["cmd1", "cmd2"])
+		expect(splitCompoundCommand("; cmd")).toEqual(["cmd"])
+	})
+
+	it("returns null for non-compound commands", () => {
+		expect(splitCompoundCommand("ls -la")).toBeNull()
+		expect(splitCompoundCommand("git status")).toBeNull()
+		expect(splitCompoundCommand("")).toBeNull()
+	})
+
+	it("handles mixed operators", () => {
+		expect(splitCompoundCommand("cd a && cd b || cd c; cd d")).toEqual(["cd a", "cd b", "cd c", "cd d"])
+	})
+
+	it("preserves redirect targets", () => {
+		expect(splitCompoundCommand("echo hi > file.txt && cat file.txt")).toEqual(["echo hi > file.txt", "cat file.txt"])
 	})
 })
