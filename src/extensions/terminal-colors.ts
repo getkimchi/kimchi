@@ -42,6 +42,11 @@ function hexToItermFormat(hex: string): string | null {
 // OSC writes are sticky on the terminal, so when the user toggles themes via
 // /settings we have to actively restore the saved fg/bg — otherwise the
 // theme bg lingers under another theme or kimchi-minimal.
+//
+// We never write raw space characters to stdout during an active session:
+// pi-mono owns the terminal and is async — direct writes race with its render
+// loop and produce corrupted escape sequences. The startup viewport fill is
+// handled in cli.ts before pi-mono starts.
 
 /** Returns raw hex colors (e.g. "#011627") for themes that opt into full-screen theming. */
 function getThemeColors(themeName: string): { fgHex: string; bgHex: string } | null {
@@ -95,10 +100,9 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 	const apply = (fgHex: string, bgHex: string) => {
 		if (!process.stdout.isTTY) return
 
-		// OSC sequences change what "default background" means in the terminal emulator.
-		// We only send these — not raw space-fill — because pi-mono owns the terminal
-		// during an active session and will repaint the viewport itself.
-		const oscBg = hexToOscRgb(bgHex)
+		// OSC sequences change what "default background" means in the terminal emulator,
+		// affecting future blank cells from scroll/resize. Pi-mono's own repaint covers
+		// the TUI cells; OSC handles the rest.
 		const oscFg = fgHex ? hexToOscRgb(fgHex) : null
 		if (isIterm2()) {
 			const itermBg = hexToItermFormat(bgHex)
@@ -106,6 +110,7 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 			if (oscFg) process.stdout.write(`\x1b]10;${oscFg}\x07`)
 		} else {
 			// Standard OSC 10/11 — Terminal.app, Ghostty, Warp, and most modern terminals
+			const oscBg = hexToOscRgb(bgHex)
 			if (oscFg) process.stdout.write(`\x1b]10;${oscFg}\x07`)
 			if (oscBg) process.stdout.write(`\x1b]11;${oscBg}\x07`)
 		}

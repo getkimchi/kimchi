@@ -227,7 +227,7 @@ export class StatsFooter implements Component {
 			(s) => s.status === "running" || s.status === "pending" || s.status === "failed",
 		)
 
-		const parts: string[] = [`${this.dim("ferment:")}${teal(ferment.name)}`]
+		const parts: string[] = [`${this.dim("ferment:")}${this.accent(ferment.name)}`]
 		parts.push(this.dim(`[${ferment.status}]`))
 		parts.push(this.dim(ferment.mode))
 

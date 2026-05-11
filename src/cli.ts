@@ -270,7 +270,10 @@ try {
 					const bgHex: string = vars[oscBgRaw] ?? oscBgRaw
 					if (bgHex.startsWith("#")) {
 						const bgAnsi = hexToBgAnsi(bgHex, detectColorMode())
-						process.stdout.write(`\x1b[${bgAnsi}m\x1b[2J\x1b[H\x1b[0m`)
+						const cols = process.stdout.columns || 80
+						const rows = process.stdout.rows || 24
+						const line = `${bgAnsi}${" ".repeat(cols)}`
+						process.stdout.write(`\x1b[H${Array.from({ length: rows }, () => line).join("\r\n")}\x1b[H\x1b[0m`)
 					}
 				}
 			} catch {
