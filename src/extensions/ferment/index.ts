@@ -19,6 +19,7 @@ import { computeStats, serializeStats } from "../../ferment/stats.js"
 import { FermentError, clearFermentCache } from "../../ferment/store.js"
 import type { Ferment, FermentWorkMode, Step } from "../../ferment/types.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
+import { parseFermentCommand } from "./command-parser.js"
 import { formatDecisionsAndMemories, formatFermentStatus, formatScopingContext, stripToolRefs } from "./format.js"
 import { isPlanMode } from "./modes.js"
 import { appendRefEntry, maybeInjectAutoNudge } from "./nudge.js"
@@ -424,10 +425,11 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		async handler(args, ctx) {
 			const raw = args.trim()
 			const lo = raw.toLowerCase()
+			const command = parseFermentCommand(args)
 			const storage = getStorage()
 
 			/* ── /ferment  (no args) → interactive prompt ── */
-			if (raw === "") {
+			if (command.type === "interactive") {
 				const active = getActive()
 				if (active && active.status === "running") {
 					ctx.ui.notify(
@@ -467,7 +469,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 			}
 
 			/* ── /ferment list ── */
-			if (lo === "list") {
+			if (command.type === "list") {
 				const items = storage.list().sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 				if (items.length === 0) {
 					ctx.ui.notify("No ferments. Use /ferment to start one.")
@@ -539,8 +541,8 @@ export default function fermentExtension(pi: ExtensionAPI) {
 			}
 
 			/* ── /ferment mode ── */
-			if (lo === "mode" || lo.startsWith("mode ")) {
-				const modeArg = lo === "mode" ? "" : lo.slice("mode ".length).trim()
+			if (command.type === "mode") {
+				const modeArg = command.mode ?? ""
 				const active = getActive()
 				if (!modeArg) {
 					if (!active) {
@@ -613,11 +615,8 @@ export default function fermentExtension(pi: ExtensionAPI) {
 			}
 
 			/* ── /ferment delete ... ── */
-			if (lo.startsWith("delete ")) {
-				const target = raw
-					.slice("delete ".length)
-					.trim()
-					.replace(/^["']|["']$/g, "")
+			if (command.type === "delete") {
+				const target = command.target
 				if (!target) {
 					ctx.ui.notify('Usage: /ferment delete <full-id> or /ferment delete "Name"')
 					return
@@ -640,13 +639,8 @@ export default function fermentExtension(pi: ExtensionAPI) {
 			}
 
 			/* ── /ferment switch | use | resume ... ── */
-			if (lo.startsWith("switch ") || lo.startsWith("use ") || lo.startsWith("resume ")) {
-				const sub = lo.startsWith("switch ") ? "switch" : lo.startsWith("use ") ? "use" : "resume"
-				const target = raw
-					.trim()
-					.slice(sub.length)
-					.trim()
-					.replace(/^["']|["']$/g, "")
+			if (command.type === "switch") {
+				const target = command.target
 				if (!target) {
 					ctx.ui.notify('Usage: /ferment switch <full-id> or /ferment switch "Name"')
 					return
@@ -658,9 +652,8 @@ export default function fermentExtension(pi: ExtensionAPI) {
 						return
 					}
 
-					const isForce = raw.includes("--force")
 					const wtCheck = checkWorktree(f)
-					if (wtCheck.severity === "block" && !isForce) {
+					if (wtCheck.severity === "block" && !command.force) {
 						ctx.ui.notify(`${wtCheck.message}\n\nUse /ferment switch --force "${target}" to override.`)
 						return
 					}
@@ -676,16 +669,13 @@ export default function fermentExtension(pi: ExtensionAPI) {
 			}
 
 			/* ── /ferment abandon ── */
-			if (lo === "abandon" || lo.startsWith("abandon ")) {
+			if (command.type === "abandon") {
 				const active = getActive()
 				if (!active) {
 					ctx.ui.notify("No active ferment.")
 					return
 				}
-				const reason = raw
-					.slice("abandon".length)
-					.trim()
-					.replace(/^["']|["']$/g, "")
+				const reason = command.reason ?? ""
 				if (ctx.ui.select) {
 					const choice = await ctx.ui.select(`Abandon "${active.name}"?`, ["Yes, abandon it", "No, keep it"])
 					if (!choice || !choice.startsWith("Yes")) {
@@ -705,13 +695,13 @@ export default function fermentExtension(pi: ExtensionAPI) {
 			}
 
 			/* ── /ferment revise <field> ── */
-			if (lo.startsWith("revise ")) {
+			if (command.type === "revise") {
 				const active = getActive()
 				if (!active) {
 					ctx.ui.notify("No active ferment.")
 					return
 				}
-				const field = lo.slice("revise ".length).trim()
+				const field = command.field
 
 				if (field === "goal") {
 					if (!ctx.ui.input) {
@@ -787,7 +777,7 @@ export default function fermentExtension(pi: ExtensionAPI) {
 			}
 
 			/* ── /ferment export ── */
-			if (lo === "export" || lo.startsWith("export ")) {
+			if (command.type === "export") {
 				const active = getActive()
 				if (!active) {
 					ctx.ui.notify("No active ferment.")
@@ -802,16 +792,13 @@ export default function fermentExtension(pi: ExtensionAPI) {
 			}
 
 			/* ── /ferment one-shot <description> ── */
-			if (lo.startsWith("one-shot")) {
+			if (command.type === "one-shot") {
 				const active = getActive()
 				if (active && active.status === "running") {
 					ctx.ui.notify(`A ferment is already running: "${active.name}". Use /progress to check status.`)
 					return
 				}
-				const intent = raw
-					.slice("one-shot".length)
-					.trim()
-					.replace(/^["']|["']$/g, "")
+				const intent = command.intent
 				let resolvedIntent = intent
 				if (!resolvedIntent && ctx.ui.input) {
 					const typed = await ctx.ui.input("🍺  One-shot: what should be done?", "Describe the full task…")
@@ -872,7 +859,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 				)
 				return
 			}
-			const rawName = raw.replace(/^["']|["']$/g, "")
+			const rawName = command.type === "add" ? command.title : raw
 			if (!rawName) {
 				ctx.ui.notify('Usage: /ferment add "Name"')
 				return
