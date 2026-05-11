@@ -8,7 +8,12 @@ import type { JudgeGrade } from "../../../ferment/types.js"
 import type { PlanReview } from "../judge.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
-import { type LifecycleHandlerServices, completeFerment, scopeFerment } from "./lifecycle.js"
+import { type LifecycleHandlerServices, completeFerment, registerLifecycleTools, scopeFerment } from "./lifecycle.js"
+
+interface RegisteredTool {
+	name: string
+	execute: (toolCallId: string, params: Record<string, unknown>) => Promise<unknown>
+}
 
 function okText(result: { content: { text: string }[]; isError?: boolean }): string {
 	if (result.isError) throw new Error(`Expected ok, got error: ${result.content[0]?.text}`)
@@ -143,6 +148,38 @@ describe("scopeFerment", () => {
 		expect(errText(result)).toContain("waiting for user confirmation")
 		expect(h.storage.get(h.fermentId)?.status).toBe("draft")
 		expect(services.judgePlan).not.toHaveBeenCalled()
+	})
+})
+
+describe("registerLifecycleTools", () => {
+	it("registers create_ferment against the injected runtime storage", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-lifecycle-registered-test-")))
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			setActive: vi.fn(),
+		}
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+			sendMessage: vi.fn(),
+			appendEntry: vi.fn(),
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, runtime)
+
+		const createTool = tools.get("create_ferment")
+		if (!createTool) throw new Error("create_ferment was not registered")
+		const result = (await createTool.execute("test-call-id", {
+			name: "Registered Lifecycle",
+			description: "uses injected storage",
+		})) as { content: { text: string }[]; isError?: boolean }
+
+		expect(okText(result)).toContain('Created "Registered Lifecycle"')
+		const created = storage.list().find((f) => f.name === "Registered Lifecycle")
+		expect(created).toBeDefined()
+		expect(runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ id: created?.id }))
 	})
 })
 

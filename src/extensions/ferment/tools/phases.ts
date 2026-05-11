@@ -9,12 +9,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
-import type { JudgeGrade } from "../../../ferment/types.js"
+import type { Ferment, JudgeGrade } from "../../../ferment/types.js"
 import { truncateLabel } from "../colors.js"
 import { formatDecisionsAndMemories, formatScopingContext } from "../format.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { judgeGradePhase, judgeSuggestCorrectiveStep } from "../judge.js"
-import { isPlanMode } from "../modes.js"
+import { isPlanFerment } from "../modes.js"
 import { onPhaseCompleted } from "../nudge.js"
 import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
@@ -39,7 +39,7 @@ export interface PhaseHandlerServices {
 	): Promise<JudgeGrade>
 	judgeSuggestCorrectiveStep(phaseName: string, phaseGoal: string, grade: JudgeGrade): Promise<string | undefined>
 	onPhaseCompleted(pi: ExtensionAPI): void
-	isPlanMode(): boolean
+	isPlanMode(ferment: Ferment): boolean
 }
 
 export interface PhaseExecutionContext {
@@ -53,7 +53,7 @@ export const defaultPhaseHandlerServices: PhaseHandlerServices = {
 	judgeGradePhase,
 	judgeSuggestCorrectiveStep,
 	onPhaseCompleted,
-	isPlanMode,
+	isPlanMode: isPlanFerment,
 }
 
 const validateFsmTransition = (
@@ -139,7 +139,7 @@ export async function completePhase(
 	}
 
 	// Plan-mode TUI gate: dropdown review of completed phase + next-phase preview.
-	if (services.isPlanMode() && ctx?.ui?.select) {
+	if (services.isPlanMode(fresh) && ctx?.ui?.select) {
 		const MAX_STEP_DESC = 80
 		const completedPhase = fresh.phases.find((p) => p.id === phase.id)
 		const stepLines =
@@ -201,7 +201,6 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const phaseServices: PhaseHandlerServices = {
 		...defaultPhaseHandlerServices,
-		isPlanMode: () => runtime.getActive()?.mode === "plan",
 		onPhaseCompleted: (targetPi) => onPhaseCompleted(targetPi, runtime),
 	}
 	pi.registerTool({

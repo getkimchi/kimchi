@@ -31,7 +31,6 @@ import { determineNextAction } from "../../ferment/engine.js"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { stripToolRefs } from "./format.js"
-import { isPlanMode } from "./modes.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 
 // ─── Pending scope buffer ─────────────────────────────────────────────────────
@@ -75,7 +74,7 @@ export function clearAllPendingScopes(): void {
 
 // ─── Scoping flow ─────────────────────────────────────────────────────────────
 
-function buildScopePrompt(runtime: FermentRuntime, fermentId: string, _isPlan: boolean, rawIntent?: string): string {
+function buildScopePrompt(runtime: FermentRuntime, fermentId: string, rawIntent?: string): string {
 	const f = runtime.getStorage().get(fermentId)
 	if (!f) return ""
 	const action = determineNextAction(f)
@@ -92,7 +91,7 @@ export async function runScopingFlow(
 ): Promise<void> {
 	if (!ctx.ui.input) {
 		// Headless fallback: let the LLM handle scoping conversationally
-		const prompt = buildScopePrompt(runtime, f.id, isPlanMode())
+		const prompt = buildScopePrompt(runtime, f.id)
 		void pi.sendMessage(
 			{
 				customType: "ferment_created_nudge",

@@ -4,12 +4,16 @@ import { join } from "node:path"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
-import { FermentCommandController } from "./commands.js"
+import { FermentCommandController, registerFermentCommands } from "./commands.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 
 vi.mock("../../ferment/shorten-title.js", () => ({
 	shortenTitle: vi.fn(async (input: string) => input),
 }))
+
+interface RegisteredCommand {
+	handler(args: string, ctx: ExtensionCommandContext): Promise<void>
+}
 
 function createHarness() {
 	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-command-controller-test-")))
@@ -61,5 +65,33 @@ describe("FermentCommandController", () => {
 
 		expect(result).toEqual({ handled: true })
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Existing"))
+	})
+})
+
+describe("registerFermentCommands", () => {
+	it("registers /ferment against the injected runtime storage", async () => {
+		const h = createHarness()
+		const commands = new Map<string, RegisteredCommand>()
+		const pi = {
+			...h.pi,
+			registerCommand: (name: string, command: RegisteredCommand) => {
+				commands.set(name, command)
+			},
+		} as unknown as ExtensionAPI
+		registerFermentCommands(pi, h.runtime)
+
+		const fermentCommand = commands.get("ferment")
+		if (!fermentCommand) throw new Error("ferment command was not registered")
+		await fermentCommand.handler('add "Registered Command"', h.ctx)
+
+		const created = h.storage.list().find((f) => f.name === "Registered Command")
+		expect(created).toBeDefined()
+		expect(h.runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ id: created?.id }))
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				content: [expect.objectContaining({ text: expect.stringContaining("Scope:") })],
+			}),
+			{ triggerTurn: true },
+		)
 	})
 })

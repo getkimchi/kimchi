@@ -13,10 +13,16 @@ import {
 	type VerificationResult,
 	completeStep,
 	defaultStepHandlerServices,
+	registerStepTools,
 	startStep,
 } from "./steps.js"
 
 const gradeA: JudgeGrade = { grade: "A", rationale: "solid", gradedAt: "2026-01-01T00:00:00.000Z" }
+
+interface RegisteredTool {
+	name: string
+	execute: (toolCallId: string, params: Record<string, unknown>) => Promise<unknown>
+}
 
 function okText(result: { content: { text: string }[]; isError?: boolean }): string {
 	if (result.isError) throw new Error(`Expected ok, got error: ${result.content[0]?.text}`)
@@ -157,6 +163,33 @@ describe("startStep", () => {
 		expect(okText(skipResult)).toContain("skipped")
 		expect(skipHarness.storage.get(skipHarness.fermentId)?.phases[0].steps[0].status).toBe("skipped")
 		expect(skipServices.onStepCompleted).toHaveBeenCalled()
+	})
+})
+
+describe("registerStepTools", () => {
+	it("registers start_step against the injected runtime storage", async () => {
+		const h = createHarness()
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+			sendMessage: vi.fn(),
+			sendUserMessage: vi.fn(),
+			appendEntry: vi.fn(),
+		} as unknown as ExtensionAPI
+		registerStepTools(pi, h.runtime)
+
+		const startTool = tools.get("start_step")
+		if (!startTool) throw new Error("start_step was not registered")
+		const result = (await startTool.execute("test-call-id", {
+			ferment_id: h.fermentId,
+			phase_id: "phase-1",
+			step_id: "step-1",
+		})) as { content: { text: string }[]; isError?: boolean }
+
+		expect(okText(result)).toContain("First step")
+		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("running")
 	})
 })
 
