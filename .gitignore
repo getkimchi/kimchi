@@ -25,7 +25,9 @@ Thumbs.db
 # Test coverage
 coverage/
 
-# Kimchi docs directory
+# Kimchi transient state (docs, coordination, memory, agent files)
+# Everything under .kimchi/ is per-checkout and must never be committed.
+# Coordination store: .kimchi/coordination/<state>/<item-id>.json
 .kimchi/
 .worktrees
 
