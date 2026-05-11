@@ -424,7 +424,6 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		description: 'Manage ferments: /ferment list, /ferment add "Name", /ferment one-shot "task", /ferment switch <id>',
 		async handler(args, ctx) {
 			const raw = args.trim()
-			const lo = raw.toLowerCase()
 			const command = parseFermentCommand(args)
 			const storage = getStorage()
 
