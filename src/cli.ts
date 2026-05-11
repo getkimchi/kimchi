@@ -59,6 +59,7 @@ let sessionStarted = false
 // logs and not actionable — the IDE owns session continuation. Decide once,
 // at module load, before anything else runs.
 const acpMode = isAcpMode(process.argv.slice(2))
+const remoteMode = isRemoteFlag(process.argv.slice(2))
 const helpOrVersion = isHelpOrVersionArgs(process.argv.slice(2))
 
 process.on("exit", (code) => {
@@ -105,6 +106,16 @@ function isAcpMode(args: string[]): boolean {
 		const a = args[i]
 		if (a === "--mode" && args[i + 1] === "acp") return true
 		if (a === "--mode=acp") return true
+	}
+	return false
+}
+
+// Mirror of isAcpMode: sniff the args for --remote before pi-mono's main()
+// (or our runRemoteSession) takes over. The agent loop runs server-side, but
+// the local TUI is still the entry point — see src/modes/remote/run-interactive.ts.
+function isRemoteFlag(args: string[]): boolean {
+	for (const a of args) {
+		if (a === "--remote") return true
 	}
 	return false
 }
@@ -290,6 +301,22 @@ try {
 		if (acpMode) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
 			await runAcpMode({ extensionFactories, agentDir })
+		} else if (remoteMode) {
+			// --remote runs the same TUI as local mode but with the agent loop
+			// living in the cloud. See docs/remote-acp-agents-plan.md and
+			// src/modes/remote/run-interactive.ts.
+			if (!apiKey) {
+				console.error("Error: --remote requires an API key — run 'kimchi setup' first.")
+				process.exit(1)
+			}
+			const { runRemoteSession } = await import("./modes/remote/index.js")
+			await runRemoteSession({
+				kimchiConfig: config,
+				extensionFactories,
+				agentDir,
+				apiKey,
+				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+			})
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
 			const { main } = await import("@earendil-works/pi-coding-agent")
