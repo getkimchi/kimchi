@@ -53,6 +53,7 @@ Run the steps in order. For steps you own, use your tools directly. For steps yo
 - If a subagent call returns an error of any kind (including protocol violation, timeout, or exit error): do NOT attempt to implement or debug the work yourself. First assess whether the failure is retryable (e.g. transient timeouts or protocol violations) or not (e.g. missing files, permission errors, or invalid inputs). For retryable failures, spawn a replacement subagent with a corrected or simplified prompt — allow at most one retry per delegated step. For non-retryable failures, report the failure clearly and stop immediately without retrying.
 - Do NOT spawn a subagent for work you can do in a single tool call.
 - Every file the subagent needs must go in the \`attachments\` field — never paste file contents or \`@path\` tokens into the prompt. The subagent sees each attachment as an image or file block before your prompt; refer to them by name.
+- **Images are forwarded automatically**: Inline images in your conversation (pasted or uploaded) are automatically forwarded to vision-capable subagents. Do NOT try to manually forward them via \`attachments\` — just call the subagent and the images will be there. If no vision-capable model is available, the harness will automatically switch to one.
 
 ## Model selection for delegation
 

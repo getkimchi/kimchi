@@ -603,7 +603,7 @@ const SubagentParams = Type.Object({
 	attachments: Type.Optional(
 		Type.Array(Type.String({ description: "File path to load at subagent startup." }), {
 			description:
-				"File paths the subagent needs available at startup. Any file type pi's CLI loads via @file works (images, text files, etc.). Do not include the @ prefix — the runtime adds it. Images require a vision-capable model.",
+				"File paths the subagent needs available at startup. Any file type pi's CLI loads via @file works (images, text files, etc.). Do not include the @ prefix — the runtime adds it. Note: inline images from the conversation are forwarded automatically to vision-capable models — do not include them here.",
 			maxItems: 10,
 		}),
 	),
@@ -670,7 +670,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
-		description: `Spawn an isolated subagent process with the given provider, model, and prompt. Both provider and model are required — provider must match the model's registered provider name (e.g. "kimchi-dev"). The subagent runs in a separate pi process with no shared context and returns its final response. Hard timeout: ${TIMEOUT_MS / 60000} minutes.`,
+		description: `Spawn an isolated subagent process with the given provider, model, and prompt. Both provider and model are required — provider must match the model's registered provider name (e.g. "kimchi-dev"). The subagent runs in a separate pi process with no shared context and returns its final response. Hard timeout: ${TIMEOUT_MS / 60000} minutes. Note: inline images from the current turn are automatically forwarded to vision-capable models — do not include them in attachments.`,
 		parameters: SubagentParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -710,18 +710,26 @@ export default function (pi: ExtensionAPI) {
 			let imageTmpPaths: string[] = []
 			let imageCleanup: (() => void) | null = null
 			let imagePrefix = ""
+			let resolvedModel = params.model
 			if (turnImages.length > 0) {
 				const meta = getAvailableModels().find((m) => m.slug === params.model)
 				if (!meta?.input_modalities?.includes("image")) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: `Subagent model "${params.model}" is not vision-capable. This turn contains ${turnImages.length} image(s) that cannot be forwarded. Choose a vision-capable model or describe the image(s) in text instead.`,
-							},
-						],
-						details: undefined,
-						isError: true,
+					// Auto-select first vision-capable model instead of failing
+					const visionModel = getAvailableModels().find((m) => m.input_modalities?.includes("image"))
+					if (visionModel) {
+						resolvedModel = visionModel.slug
+						imagePrefix = `⚠ Image(s) present — using ${visionModel.slug} (vision-capable) instead of ${params.model}. `
+					} else {
+						return {
+							content: [
+								{
+									type: "text",
+									text: `This turn contains ${turnImages.length} image(s) but no vision-capable model is available.`,
+								},
+							],
+							details: undefined,
+							isError: true,
+						}
 					}
 				}
 				const userAttachmentCount = validated.resolved.length
@@ -729,7 +737,7 @@ export default function (pi: ExtensionAPI) {
 				const forwardImages = turnImages.slice(0, imageSlots)
 				const omitted = turnImages.length - forwardImages.length
 				if (omitted > 0) {
-					imagePrefix = `⚠ Forwarding ${forwardImages.length} of ${turnImages.length} images (attachment limit reached). `
+					imagePrefix += `⚠ Forwarding ${forwardImages.length} of ${turnImages.length} images (attachment limit reached). `
 				}
 				const bridge = writeImagesForSubagent(forwardImages)
 				imageTmpPaths = bridge.paths
@@ -764,7 +772,14 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 
-			const args = buildSubagentArgs(params, allAttachments, collectExtensionArgs(), childSessionFile, imagePrefix)
+			const resolvedParams = { ...params, model: resolvedModel }
+			const args = buildSubagentArgs(
+				resolvedParams,
+				allAttachments,
+				collectExtensionArgs(),
+				childSessionFile,
+				imagePrefix,
+			)
 			const invocation = getSubagentInvocation(args)
 
 			let lastToolCall: string | undefined
@@ -798,7 +813,7 @@ export default function (pi: ExtensionAPI) {
 					failureReason,
 				})
 
-				sessionCounts.set(params.model, (sessionCounts.get(params.model) ?? 0) + 1)
+				sessionCounts.set(resolvedModel, (sessionCounts.get(resolvedModel) ?? 0) + 1)
 				if (ctx.hasUI) {
 					ctx.ui.setStatus(FOOTER_STATUS_KEY, formatFooterStatus(sessionCounts, ctx.ui.theme))
 				}
@@ -809,7 +824,7 @@ export default function (pi: ExtensionAPI) {
 					const rawDetail = stderr.trim() || accumulated || "(no output)"
 					const error: SubagentError = {
 						reason: failureReason ?? "exit_error",
-						model: params.model,
+						model: resolvedModel,
 						tokenUsage,
 						durationMs,
 						detail: truncateSubagentResult(rawDetail, childSessionFile),
