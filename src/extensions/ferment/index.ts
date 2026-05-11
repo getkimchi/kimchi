@@ -388,11 +388,11 @@ export default function fermentExtension(pi: ExtensionAPI) {
 					constraints: pending.constraints,
 					phases: pending.phases,
 				})
-				clearPendingScope(f.id)
 				if (!outcome.ok) {
 					ctx.ui.notify(`Failed to save plan: ${outcome.error.message}`)
 					reply = `Plan save failed: ${outcome.error.message}. Investigate the ferment state and try again.`
 				} else {
+					clearPendingScope(f.id)
 					ctx.ui.notify(`Plan saved for "${outcome.ferment.name}". ${outcome.ferment.phases.length} phase(s) ready.`)
 					reply = `Plan saved by user confirmation — ${outcome.ferment.phases.length} phase(s) now in "planned" status. You can proceed with activate_phase when the user is ready, or wait for further instructions.`
 				}

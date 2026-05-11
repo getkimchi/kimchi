@@ -14,14 +14,14 @@ function createTempDir() {
 
 /** Run a command through the same path applyAndPersist uses in production. */
 function exec(store: FermentEventStore, fermentId: string, cmd: Parameters<typeof commandToEvents>[0]) {
-	const before = store.get(fermentId)
-	if (!before) throw new Error(`ferment ${fermentId} not found`)
-	const now = new Date().toISOString()
-	const result = applyCommand(before, cmd, { now })
-	if (!result.ok) throw new Error(`command rejected: ${result.error.message}`)
-	const events = commandToEvents(cmd, before, result.ferment, { now })
-	store.writeWithEvents(result.ferment, events)
-	return result.ferment
+	return store.mutateWithEvents(fermentId, (before) => {
+		if (!before) throw new Error(`ferment ${fermentId} not found`)
+		const now = new Date().toISOString()
+		const result = applyCommand(before, cmd, { now })
+		if (!result.ok) throw new Error(`command rejected: ${result.error.message}`)
+		const events = commandToEvents(cmd, before, result.ferment, { now })
+		return { write: true, ferment: result.ferment, events, value: result.ferment }
+	})
 }
 
 function readEvents(
@@ -506,6 +506,41 @@ describe("FermentEventStore", () => {
 				phases: [{ name: "P1", goal: "G1" }],
 			})
 			expect(eventStore.get(f.id)).toBeDefined()
+		})
+
+		it("derives each command from the latest state inside the lock", () => {
+			const f = eventStore.create("Fresh read test")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "g",
+				successCriteria: "c",
+				constraints: [],
+				phases: [{ name: "P1", goal: "G1" }],
+			})
+			exec(eventStore, f.id, {
+				type: "update_scope_field",
+				field: "goal",
+				value: "g2",
+			})
+
+			eventStore.mutateWithEvents(f.id, (current) => {
+				if (!current) throw new Error("ferment missing")
+				expect(current.goal).toBe("g2")
+				const now = new Date().toISOString()
+				const result = applyCommand(current, { type: "update_scope_field", field: "criteria", value: "c2" }, { now })
+				if (!result.ok) throw new Error(`command rejected: ${result.error.message}`)
+				const events = commandToEvents(
+					{ type: "update_scope_field", field: "criteria", value: "c2" },
+					current,
+					result.ferment,
+					{ now },
+				)
+				return { write: true, ferment: result.ferment, events, value: undefined }
+			})
+
+			const folded = eventStore.get(f.id)
+			expect(folded?.goal).toBe("g2")
+			expect(folded?.successCriteria).toBe("c2")
 		})
 	})
 })

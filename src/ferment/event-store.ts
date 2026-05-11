@@ -400,6 +400,7 @@ export class FermentEventStore {
 	private withLock<T>(fermentId: string, fn: () => T): T {
 		const snapPath = this.snapshotPath(fermentId)
 		mkdirSync(resolve(snapPath, ".."), { recursive: true })
+		const existedBeforeLock = existsSync(snapPath)
 		if (!existsSync(snapPath)) {
 			closeSync(openSync(snapPath, "a"))
 		}
@@ -431,6 +432,9 @@ export class FermentEventStore {
 				release()
 			} catch {
 				// Lock may have been released by stale-recovery; safe to ignore.
+			}
+			if (!existedBeforeLock && existsSync(snapPath) && statSync(snapPath).size === 0) {
+				unlinkSync(snapPath)
 			}
 		}
 	}
@@ -521,6 +525,32 @@ export class FermentEventStore {
 				this.appendEvent(post.id, event)
 			}
 			return post
+		})
+	}
+
+	/**
+	 * Run a full read → derive → write mutation under one ferment lock.
+	 *
+	 * This is the safe path for state-machine commands: concurrent workers must
+	 * derive their post-state from the latest on-disk state, not from a snapshot
+	 * read before waiting on the lock.
+	 */
+	mutateWithEvents<T>(
+		id: string,
+		fn: (
+			current: Ferment | undefined,
+		) => { write: true; ferment: Ferment; events: FermentEvent[]; value: T } | { write: false; value: T },
+	): T {
+		return this.withLock(id, () => {
+			const current = this.shouldUseEvents(id) ? this.foldEvents(id) : this.storage.get(id)
+			const result = fn(current)
+			if (result.write) {
+				this.storage.write(result.ferment)
+				for (const event of result.events) {
+					this.appendEvent(result.ferment.id, event)
+				}
+			}
+			return result.value
 		})
 	}
 

@@ -79,26 +79,40 @@ const COMMANDS_ALLOWED_WHILE_PAUSED = new Set<Command["type"]>(["resume", "aband
 
 export function applyAndPersist(fermentId: string, cmd: Command): ApplyOutcome {
 	const storage = getStorage()
-	const current = storage.get(fermentId)
-	if (!current) {
-		return { ok: false, error: { code: "FERMENT_NOT_FOUND", message: `Ferment not found: ${fermentId}` } }
-	}
-	if (current.status === "paused" && !COMMANDS_ALLOWED_WHILE_PAUSED.has(cmd.type)) {
-		return {
-			ok: false,
-			error: {
-				code: "FERMENT_PAUSED",
-				message: `Ferment "${current.name}" is paused. The user must resume with /auto before any further ferment tool calls. Acknowledge the pause and wait — do NOT call ferment tools.`,
-			},
-		}
-	}
-	const now = new Date().toISOString()
-	const result = applyCommand(current, cmd, { now })
-	if (!result.ok) return { ok: false, error: result.error }
-	const events = commandToEvents(cmd, current, result.ferment, { now })
-	storage.writeWithEvents(result.ferment, events)
-	setActive(result.ferment)
-	return { ok: true, ferment: result.ferment }
+	const outcome = storage.mutateWithEvents(
+		fermentId,
+		(
+			current,
+		):
+			| { write: true; ferment: Ferment; events: ReturnType<typeof commandToEvents>; value: ApplyOutcome }
+			| { write: false; value: ApplyOutcome } => {
+			if (!current) {
+				return {
+					write: false,
+					value: { ok: false, error: { code: "FERMENT_NOT_FOUND", message: `Ferment not found: ${fermentId}` } },
+				}
+			}
+			if (current.status === "paused" && !COMMANDS_ALLOWED_WHILE_PAUSED.has(cmd.type)) {
+				return {
+					write: false,
+					value: {
+						ok: false,
+						error: {
+							code: "FERMENT_PAUSED",
+							message: `Ferment "${current.name}" is paused. The user must resume with /auto before any further ferment tool calls. Acknowledge the pause and wait — do NOT call ferment tools.`,
+						},
+					},
+				}
+			}
+			const now = new Date().toISOString()
+			const result = applyCommand(current, cmd, { now })
+			if (!result.ok) return { write: false, value: { ok: false, error: result.error } }
+			const events = commandToEvents(cmd, current, result.ferment, { now })
+			return { write: true, ferment: result.ferment, events, value: { ok: true, ferment: result.ferment } }
+		},
+	)
+	if (outcome.ok) setActive(outcome.ferment)
+	return outcome
 }
 
 /**
