@@ -7,25 +7,83 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import type { StepResult } from "../../../ferment/types.js"
+import type { Static } from "typebox"
+import type { JudgeGrade, StepResult } from "../../../ferment/types.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
-import { judgeGradeStep, judgeStepVerification } from "../judge.js"
+import { type JudgeVerdict, judgeGradeStep, judgeStepVerification } from "../judge.js"
 import { onStepCompleted } from "../nudge.js"
-import { captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
-import {
-	bumpStepStart,
-	captureJudgeContext,
-	clearStepStart,
-	getStepStartRef,
-	getStorage,
-	markHumanInput,
-	setStepStartRef,
-} from "../state.js"
-import { applyAndPersist, failedToolResult, resolvePhase, resolveStep, toolErr, toolOk } from "../tool-helpers.js"
+import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
+import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
+import { createApplyAndPersist, failedToolResult, resolvePhase, resolveStep, toolErr, toolOk } from "../tool-helpers.js"
 import { CompleteStepParams, FailStepParams, StepActionParams, VerifyParams } from "../tool-schemas.js"
 import { buildWorkerContext } from "../worker-prompt.js"
 
 const VERIFY_TIMEOUT_MS = 60_000
+
+type StepActionArgs = Static<typeof StepActionParams>
+type CompleteStepArgs = Static<typeof CompleteStepParams>
+
+type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
+
+interface StepUiContext {
+	ui?: {
+		select?: (title: string, options: string[]) => Promise<string | undefined>
+	}
+	model?: Parameters<FermentRuntime["captureJudgeContext"]>[0]
+	modelRegistry?: Parameters<FermentRuntime["captureJudgeContext"]>[1]
+	controller?: unknown
+}
+
+export interface VerificationExecution {
+	command: string
+	signal?: AbortSignal
+	onUpdate?: unknown
+	ctx?: StepUiContext
+}
+
+export interface VerificationResult {
+	exitCode: number
+	stdout: string
+	stderr: string
+}
+
+export interface StepHandlerServices {
+	captureGitHead(): string | undefined
+	gatherEvidence(ref: string): PhaseEvidence | undefined
+	judgeGradeStep(
+		stepDescription: string,
+		summary: string,
+		verificationResult?: { exitCode: number; stdout: string; stderr: string },
+		evidence?: PhaseEvidence,
+	): Promise<JudgeGrade>
+	judgeStepVerification(
+		stepDescription: string,
+		verificationCommand: string,
+		stdout: string,
+		stderr: string,
+		exitCode: number,
+	): Promise<JudgeVerdict>
+	onStepCompleted(pi: ExtensionAPI): void
+	buildWorkerContext: typeof buildWorkerContext
+	runVerification(args: VerificationExecution): Promise<VerificationResult>
+}
+
+export interface StepExecutionContext {
+	pi: ExtensionAPI
+	ctx?: StepUiContext
+	signal?: AbortSignal
+	onUpdate?: unknown
+}
+
+export const defaultStepHandlerServices: StepHandlerServices = {
+	captureGitHead,
+	gatherEvidence: gatherPhaseEvidence,
+	judgeGradeStep,
+	judgeStepVerification,
+	onStepCompleted,
+	buildWorkerContext,
+	runVerification: runVerificationCommand,
+}
 
 const validateFsmTransition = (
 	f: Parameters<typeof validateFsmTransitionWithFerment>[0],
@@ -33,66 +91,92 @@ const validateFsmTransition = (
 	params?: Parameters<typeof validateFsmTransitionWithFerment>[2],
 ): string | null => validateFsmTransitionWithFerment(f, event, params).error ?? null
 
-export function registerStepTools(pi: ExtensionAPI): void {
-	pi.registerTool({
-		name: "start_step",
-		label: "Start Step",
-		description:
-			"Mark a step as running. Returns worker_model and parallel_siblings. See planner instructions in the system prompt for orchestration details.",
-		parameters: StepActionParams,
-		async execute(_, params, _signal, _onUpdate, ctx) {
-			// Resolve phase and step (host concern — fuzzy lookup).
-			const f = getStorage().get(params.ferment_id)
-			if (!f) return toolErr("Ferment not found.")
-			const phase = resolvePhase(f, params.phase_id)
-			if (!phase) return toolErr("Phase not found.")
-			const step = resolveStep(phase, params.step_id)
-			if (!step) {
-				return toolErr(
-					`Step not found. Steps: ${phase.steps.map((st) => `[${st.id}] ${st.index}. ${st.description}`).join(", ")}`,
-				)
+async function runVerificationCommand({
+	command,
+	signal,
+	onUpdate,
+	ctx,
+}: VerificationExecution): Promise<VerificationResult> {
+	let exitCode = 0
+	let stdout = ""
+	let stderr = ""
+	// biome-ignore lint/suspicious/noExplicitAny: accessing controller tools
+	const controller = (ctx as any)?.controller
+	if (controller?.tools?.bash?.execute) {
+		const verifySignal = signal
+			? AbortSignal.any([signal, AbortSignal.timeout(VERIFY_TIMEOUT_MS)])
+			: AbortSignal.timeout(VERIFY_TIMEOUT_MS)
+		try {
+			// biome-ignore lint/suspicious/noExplicitAny: tool execution
+			const execResult = await (controller.tools.bash.execute as any)("", { command }, verifySignal, onUpdate, ctx)
+			stdout = execResult.stdout ?? ""
+			stderr = execResult.stderr ?? ""
+			exitCode = execResult.exitCode ?? 0
+		} catch (e) {
+			exitCode = 1
+			stderr =
+				e instanceof Error && e.name === "TimeoutError"
+					? "Verification command timed out after 60s"
+					: "bash execution threw an exception"
+		}
+	}
+	return { exitCode, stdout, stderr }
+}
+
+export async function startStep(
+	runtime: FermentRuntime,
+	params: StepActionArgs,
+	{ pi, ctx }: StepExecutionContext,
+	services: StepHandlerServices = defaultStepHandlerServices,
+): Promise<ToolResult> {
+	const applyAndPersist = createApplyAndPersist(runtime)
+	const f = runtime.getStorage().get(params.ferment_id)
+	if (!f) return toolErr("Ferment not found.")
+	const phase = resolvePhase(f, params.phase_id)
+	if (!phase) return toolErr("Phase not found.")
+	const step = resolveStep(phase, params.step_id)
+	if (!step) {
+		return toolErr(
+			`Step not found. Steps: ${phase.steps.map((st) => `[${st.id}] ${st.index}. ${st.description}`).join(", ")}`,
+		)
+	}
+
+	const fsmError = validateFsmTransition(f, "START_STEP", { phaseId: phase.id, stepId: step.id })
+	if (fsmError) return toolErr(fsmError)
+
+	const startCount = runtime.bumpStepStart(f.id, phase.id, step.id)
+	if (startCount >= 3) {
+		const title = `Step ${step.index}: "${step.description}" has been started ${startCount} times without completing.`
+		const retryLabel = "Retry with a revised approach"
+		const skipLabel = "Skip this step and move on"
+		const pauseLabel = "Pause the ferment for now"
+
+		if (ctx?.ui?.select) {
+			const choice = await ctx.ui.select(title, [retryLabel, skipLabel, pauseLabel])
+			runtime.markHumanInput()
+
+			if (!choice || choice === pauseLabel) {
+				const pauseOutcome = applyAndPersist(f.id, { type: "pause" })
+				if (!pauseOutcome.ok) return failedToolResult(pauseOutcome.error)
+				return toolOk("Ferment paused at user request.")
 			}
 
-			// FSM validation: ensure step start is allowed
-			const fsmError = validateFsmTransition(f, "START_STEP", { phaseId: phase.id, stepId: step.id })
-			if (fsmError) return toolErr(fsmError)
+			if (choice === skipLabel) {
+				const skipOutcome = applyAndPersist(f.id, {
+					type: "skip_step",
+					phaseId: phase.id,
+					stepId: step.id,
+				})
+				if (!skipOutcome.ok) return failedToolResult(skipOutcome.error)
+				runtime.clearStepStart(f.id, phase.id, step.id)
+				services.onStepCompleted(pi)
+				return toolOk(`Step ${step.index}: "${step.description}" skipped at user request.`)
+			}
 
-			// Stuck-loop detection (UI-flow concern, not domain — runs before transition).
-			// Counter is held at threshold so every subsequent call also blocks until
-			// complete_step or skip_step clears it.
-			const startCount = bumpStepStart(f.id, phase.id, step.id)
-			if (startCount >= 3) {
-				const title = `Step ${step.index}: "${step.description}" has been started ${startCount} times without completing.`
-				const retryLabel = "Retry with a revised approach"
-				const skipLabel = "Skip this step and move on"
-				const pauseLabel = "Pause the ferment for now"
-
-				if (ctx?.ui?.select) {
-					const choice = await ctx.ui.select(title, [retryLabel, skipLabel, pauseLabel])
-					markHumanInput()
-
-					if (!choice || choice === pauseLabel) {
-						const pauseOutcome = applyAndPersist(f.id, { type: "pause" })
-						if (!pauseOutcome.ok) return failedToolResult(pauseOutcome.error)
-						return toolOk("Ferment paused at user request.")
-					}
-
-					if (choice === skipLabel) {
-						const skipOutcome = applyAndPersist(f.id, {
-							type: "skip_step",
-							phaseId: phase.id,
-							stepId: step.id,
-						})
-						if (!skipOutcome.ok) return failedToolResult(skipOutcome.error)
-						clearStepStart(f.id, phase.id, step.id)
-						onStepCompleted(pi)
-						return toolOk(`Step ${step.index}: "${step.description}" skipped at user request.`)
-					}
-
-					clearStepStart(f.id, phase.id, step.id)
-				} else {
-					return toolErr(
-						`⚠ Stuck loop detected: ${title}
+			runtime.clearStepStart(f.id, phase.id, step.id)
+		} else {
+			return toolErr(
+				`⚠ Stuck loop detected: ${title}
 
 What should we do?
 
@@ -101,73 +185,213 @@ What should we do?
 3) Pause the ferment for now
 
 Do NOT call start_step again without user input.`,
-					)
-				}
-			}
-
-			// Apply the transition. CONCURRENT_NON_PARALLEL_STEP errors get a
-			// custom message that matches the original LLM-facing wording.
-			const outcome = applyAndPersist(params.ferment_id, {
-				type: "start_step",
-				phaseId: phase.id,
-				stepId: step.id,
-			})
-			if (!outcome.ok) {
-				if (outcome.error.code === "CONCURRENT_NON_PARALLEL_STEP") {
-					return toolErr(
-						`Cannot start step ${step.index} — step ${outcome.error.runningStepIndex} ("${outcome.error.runningDescription}") is already running and is not parallel-safe. Complete or skip it first.`,
-					)
-				}
-				return failedToolResult(outcome.error)
-			}
-
-			// Capture git HEAD per step so the step grader can diff against the step's
-			// own starting state (T1#10). Symmetric with the phase-start ref captured
-			// at activate_phase. Best-effort — if not in a git repo, evidence-aware
-			// grading falls back to summary-only at complete_step time.
-			const stepHeadRef = captureGitHead()
-			if (stepHeadRef) setStepStartRef(params.ferment_id, phase.id, step.id, stepHeadRef)
-
-			// Reload step from the post-transition ferment for the response.
-			const freshPhase = outcome.ferment.phases.find((p) => p.id === phase.id)
-			const freshStep = freshPhase?.steps.find((s) => s.id === step.id)
-			const workerModel = freshStep?.workerModel ?? "minimax-m2.7"
-
-			// Check if previous step in same phase got a low grade — inject caution
-			const prevStep = freshPhase?.steps.find((st) => st.index === step.index - 1)
-			const lowGradeCaution =
-				prevStep?.grade && ["C", "D", "F"].includes(prevStep.grade.grade)
-					? `\n\n⚠️  Previous step (${prevStep.index}: "${prevStep.description}") received grade ${prevStep.grade.grade}: ${prevStep.grade.rationale}. Apply extra scrutiny to this step — verify edge cases, error handling, and completeness before reporting done.`
-					: ""
-
-			// Find pending parallel siblings (excluding this step).
-			const parallelSiblings = freshStep?.canRunParallel
-				? (freshPhase?.steps ?? [])
-						.filter((st) => st.id !== step.id && st.status === "pending" && st.canRunParallel)
-						.map((st) => ({
-							step_id: st.id,
-							description: st.description,
-							worker_model: st.workerModel ?? "minimax-m2.7",
-						}))
-				: []
-
-			const parallelNote =
-				parallelSiblings.length > 0
-					? `\nparallel_siblings: ${JSON.stringify(parallelSiblings)}\n\nThese steps are independent — call start_step for each one now and spawn their subagents concurrently. Do not wait for one to finish before starting the next.`
-					: ""
-
-			// Prebuilt worker context — the planner pastes this verbatim into the
-			// subagent's prompt instead of re-deriving phase/step context every time.
-			// Includes phase goal, prior step summaries (now persisted on the Step),
-			// recent decisions/memories, and ferment constraints.
-			const workerContext = freshPhase && freshStep ? buildWorkerContext(outcome.ferment, freshPhase, freshStep) : ""
-			const contextBlock = workerContext
-				? `\n\n--- BEGIN WORKER PROMPT ---\n${workerContext}\n--- END WORKER PROMPT ---\n\nPaste the block above into the subagent's prompt. You may add a single concrete implementation directive at the end if the step description is ambiguous, but do NOT remove or summarize the context block.`
-				: ""
-
-			return toolOk(
-				`Step ${step.index}: "${step.description}" started.\nphase_id: ${phase.id}\nstep_id: ${step.id}\nworker_model: ${workerModel}\nprovider: kimchi-dev\n\nSpawn a subagent now with provider "kimchi-dev", model "${workerModel}". When it returns, call complete_step with its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
 			)
+		}
+	}
+
+	const outcome = applyAndPersist(params.ferment_id, {
+		type: "start_step",
+		phaseId: phase.id,
+		stepId: step.id,
+	})
+	if (!outcome.ok) {
+		if (outcome.error.code === "CONCURRENT_NON_PARALLEL_STEP") {
+			return toolErr(
+				`Cannot start step ${step.index} — step ${outcome.error.runningStepIndex} ("${outcome.error.runningDescription}") is already running and is not parallel-safe. Complete or skip it first.`,
+			)
+		}
+		return failedToolResult(outcome.error)
+	}
+
+	const stepHeadRef = services.captureGitHead()
+	if (stepHeadRef) runtime.setStepStartRef(params.ferment_id, phase.id, step.id, stepHeadRef)
+
+	const freshPhase = outcome.ferment.phases.find((p) => p.id === phase.id)
+	const freshStep = freshPhase?.steps.find((s) => s.id === step.id)
+	const workerModel = freshStep?.workerModel ?? "minimax-m2.7"
+
+	const prevStep = freshPhase?.steps.find((st) => st.index === step.index - 1)
+	const lowGradeCaution =
+		prevStep?.grade && ["C", "D", "F"].includes(prevStep.grade.grade)
+			? `\n\n⚠️  Previous step (${prevStep.index}: "${prevStep.description}") received grade ${prevStep.grade.grade}: ${prevStep.grade.rationale}. Apply extra scrutiny to this step — verify edge cases, error handling, and completeness before reporting done.`
+			: ""
+
+	const parallelSiblings = freshStep?.canRunParallel
+		? (freshPhase?.steps ?? [])
+				.filter((st) => st.id !== step.id && st.status === "pending" && st.canRunParallel)
+				.map((st) => ({
+					step_id: st.id,
+					description: st.description,
+					worker_model: st.workerModel ?? "minimax-m2.7",
+				}))
+		: []
+
+	const parallelNote =
+		parallelSiblings.length > 0
+			? `\nparallel_siblings: ${JSON.stringify(parallelSiblings)}\n\nThese steps are independent — call start_step for each one now and spawn their subagents concurrently. Do not wait for one to finish before starting the next.`
+			: ""
+
+	const workerContext =
+		freshPhase && freshStep ? services.buildWorkerContext(outcome.ferment, freshPhase, freshStep) : ""
+	const contextBlock = workerContext
+		? `\n\n--- BEGIN WORKER PROMPT ---\n${workerContext}\n--- END WORKER PROMPT ---\n\nPaste the block above into the subagent's prompt. You may add a single concrete implementation directive at the end if the step description is ambiguous, but do NOT remove or summarize the context block.`
+		: ""
+
+	return toolOk(
+		`Step ${step.index}: "${step.description}" started.\nphase_id: ${phase.id}\nstep_id: ${step.id}\nworker_model: ${workerModel}\nprovider: kimchi-dev\n\nSpawn a subagent now with provider "kimchi-dev", model "${workerModel}". When it returns, call complete_step with its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
+	)
+}
+
+export async function completeStep(
+	runtime: FermentRuntime,
+	params: CompleteStepArgs,
+	{ pi, ctx, signal, onUpdate }: StepExecutionContext,
+	services: StepHandlerServices = defaultStepHandlerServices,
+): Promise<ToolResult> {
+	const applyAndPersist = createApplyAndPersist(runtime)
+	runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry)
+
+	const f = runtime.getStorage().get(params.ferment_id)
+	if (!f) return toolErr("Ferment not found.")
+	const phase = resolvePhase(f, params.phase_id)
+	if (!phase) return toolErr("Phase not found.")
+	const step = resolveStep(phase, params.step_id)
+	if (!step) return toolErr("Step not found.")
+
+	const fsmError = validateFsmTransition(f, "COMPLETE_STEP", { phaseId: phase.id, stepId: step.id })
+	if (fsmError) return toolErr(fsmError)
+
+	if (!step.verification) {
+		const completeOutcome = applyAndPersist(params.ferment_id, {
+			type: "complete_step",
+			phaseId: phase.id,
+			stepId: step.id,
+			summary: params.summary,
+		})
+		if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
+		runtime.clearStepStart(f.id, phase.id, step.id)
+
+		const stepRef = runtime.getStepStartRef(f.id, phase.id, step.id)
+		const stepEvidence = stepRef ? services.gatherEvidence(stepRef) : undefined
+		const grade = await services.judgeGradeStep(step.description, params.summary ?? "", undefined, stepEvidence)
+		const gradeOutcome = applyAndPersist(params.ferment_id, {
+			type: "set_step_grade",
+			phaseId: phase.id,
+			stepId: step.id,
+			grade,
+		})
+		if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
+
+		services.onStepCompleted(pi)
+		return toolOk(
+			`Step ${step.index}: "${step.description}" done.  Grade: ${grade.grade} — ${grade.rationale}  ${params.summary ?? ""}`,
+		)
+	}
+
+	const { exitCode, stdout, stderr } = await services.runVerification({
+		command: step.verification.command,
+		signal,
+		onUpdate,
+		ctx,
+	})
+	const verifyResult: StepResult = {
+		success: exitCode === 0,
+		exitCode,
+		stdout,
+		stderr,
+		completedAt: new Date().toISOString(),
+	}
+
+	const verifyOutcome = applyAndPersist(params.ferment_id, {
+		type: "verify_step",
+		phaseId: phase.id,
+		stepId: step.id,
+		result: verifyResult,
+		summary: params.summary,
+	})
+	if (!verifyOutcome.ok) return failedToolResult(verifyOutcome.error)
+	runtime.clearStepStart(f.id, phase.id, step.id)
+
+	if (exitCode === 0) {
+		const stepRef = runtime.getStepStartRef(f.id, phase.id, step.id)
+		const stepEvidence = stepRef ? services.gatherEvidence(stepRef) : undefined
+		const grade = await services.judgeGradeStep(
+			step.description,
+			params.summary ?? "",
+			{ exitCode, stdout, stderr },
+			stepEvidence,
+		)
+		const gradeOutcome = applyAndPersist(params.ferment_id, {
+			type: "set_step_grade",
+			phaseId: phase.id,
+			stepId: step.id,
+			grade,
+		})
+		if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
+		services.onStepCompleted(pi)
+		return toolOk(
+			`Step ${step.index}: "${step.description}" done and verified ✓  Grade: ${grade.grade} — ${grade.rationale}`,
+		)
+	}
+
+	const judgeVerdict = await services.judgeStepVerification(
+		step.description,
+		step.verification.command,
+		stdout,
+		stderr,
+		exitCode,
+	)
+
+	if (judgeVerdict.verdict === "pass") {
+		const stepRef = runtime.getStepStartRef(f.id, phase.id, step.id)
+		const stepEvidence = stepRef ? services.gatherEvidence(stepRef) : undefined
+		const grade = await services.judgeGradeStep(
+			step.description,
+			params.summary ?? "",
+			{ exitCode, stdout, stderr },
+			stepEvidence,
+		)
+		const gradeOutcome = applyAndPersist(params.ferment_id, {
+			type: "set_step_grade",
+			phaseId: phase.id,
+			stepId: step.id,
+			grade,
+		})
+		if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
+		services.onStepCompleted(pi)
+		return toolOk(
+			`Step ${step.index}: "${step.description}" done ✓  Judge: ${judgeVerdict.reason}  Grade: ${grade.grade}`,
+		)
+	}
+
+	const failOutcome = applyAndPersist(params.ferment_id, {
+		type: "fail_step",
+		phaseId: phase.id,
+		stepId: step.id,
+		error: `Verification failed (exit ${exitCode}): ${judgeVerdict.reason}`,
+	})
+	if (!failOutcome.ok) return failedToolResult(failOutcome.error)
+
+	if (judgeVerdict.verdict === "retry") {
+		return toolErr(
+			`Step ${step.index} verification failed — retry suggested.\nExit: ${exitCode}\nJudge: ${judgeVerdict.reason}\nstdout: ${stdout.slice(0, 500)}\nstderr: ${stderr.slice(0, 500)}`,
+		)
+	}
+	return toolErr(
+		`Step ${step.index} failed verification.\nExit: ${exitCode}\nJudge: ${judgeVerdict.reason}\nstdout: ${stdout.slice(0, 500)}\nstderr: ${stderr.slice(0, 500)}`,
+	)
+}
+
+export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
+	const applyAndPersist = createApplyAndPersist(runtime)
+	pi.registerTool({
+		name: "start_step",
+		label: "Start Step",
+		description:
+			"Mark a step as running. Returns worker_model and parallel_siblings. See planner instructions in the system prompt for orchestration details.",
+		parameters: StepActionParams,
+		async execute(_, params, _signal, _onUpdate, ctx) {
+			return startStep(runtime, params, { pi, ctx })
 		},
 	})
 
@@ -178,170 +402,7 @@ Do NOT call start_step again without user input.`,
 			"Mark step as done. If the step has a verification command it runs automatically — no need to call verify_step separately.",
 		parameters: CompleteStepParams,
 		async execute(_, params, signal, onUpdate, ctx) {
-			captureJudgeContext(ctx?.model, ctx?.modelRegistry)
-
-			const f = getStorage().get(params.ferment_id)
-			if (!f) return toolErr("Ferment not found.")
-			const phase = resolvePhase(f, params.phase_id)
-			if (!phase) return toolErr("Phase not found.")
-			const step = resolveStep(phase, params.step_id)
-			if (!step) return toolErr("Step not found.")
-
-			// FSM validation: ensure step completion is allowed
-			const fsmError = validateFsmTransition(f, "COMPLETE_STEP", { phaseId: phase.id, stepId: step.id })
-			if (fsmError) return toolErr(fsmError)
-
-			// Path A: no verification command — straight to done + grade.
-			if (!step.verification) {
-				const completeOutcome = applyAndPersist(params.ferment_id, {
-					type: "complete_step",
-					phaseId: phase.id,
-					stepId: step.id,
-					summary: params.summary,
-				})
-				if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
-				clearStepStart(f.id, phase.id, step.id)
-
-				// T1#10: feed the step grader the diff between step start and now so it
-				// can cross-check the worker's summary against actual code change.
-				const stepRef = getStepStartRef(f.id, phase.id, step.id)
-				const stepEvidence = stepRef ? gatherPhaseEvidence(stepRef) : undefined
-				const grade = await judgeGradeStep(step.description, params.summary ?? "", undefined, stepEvidence)
-				const gradeOutcome = applyAndPersist(params.ferment_id, {
-					type: "set_step_grade",
-					phaseId: phase.id,
-					stepId: step.id,
-					grade,
-				})
-				if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
-
-				onStepCompleted(pi)
-				return toolOk(
-					`Step ${step.index}: "${step.description}" done.  Grade: ${grade.grade} — ${grade.rationale}  ${params.summary ?? ""}`,
-				)
-			}
-
-			// Path B: run the verification command (host concern — bash I/O).
-			let exitCode = 0
-			let stdout = ""
-			let stderr = ""
-			// biome-ignore lint/suspicious/noExplicitAny: accessing controller tools
-			const controller = (ctx as any)?.controller
-			if (controller?.tools?.bash?.execute) {
-				const verifySignal = signal
-					? AbortSignal.any([signal, AbortSignal.timeout(VERIFY_TIMEOUT_MS)])
-					: AbortSignal.timeout(VERIFY_TIMEOUT_MS)
-				try {
-					// biome-ignore lint/suspicious/noExplicitAny: tool execution
-					const execResult = await (controller.tools.bash.execute as any)(
-						"",
-						{ command: step.verification.command },
-						verifySignal,
-						onUpdate,
-						ctx,
-					)
-					stdout = execResult.stdout ?? ""
-					stderr = execResult.stderr ?? ""
-					exitCode = execResult.exitCode ?? 0
-				} catch (e) {
-					exitCode = 1
-					stderr =
-						e instanceof Error && e.name === "TimeoutError"
-							? "Verification command timed out after 60s"
-							: "bash execution threw an exception"
-				}
-			}
-
-			const verifyResult: StepResult = {
-				success: exitCode === 0,
-				exitCode,
-				stdout,
-				stderr,
-				completedAt: new Date().toISOString(),
-			}
-
-			// Apply verify_step transition (sets status to verified or done).
-			const verifyOutcome = applyAndPersist(params.ferment_id, {
-				type: "verify_step",
-				phaseId: phase.id,
-				stepId: step.id,
-				result: verifyResult,
-				summary: params.summary,
-			})
-			if (!verifyOutcome.ok) return failedToolResult(verifyOutcome.error)
-			clearStepStart(f.id, phase.id, step.id)
-
-			// Path B.1: clean pass — grade and return.
-			if (exitCode === 0) {
-				const stepRef = getStepStartRef(f.id, phase.id, step.id)
-				const stepEvidence = stepRef ? gatherPhaseEvidence(stepRef) : undefined
-				const grade = await judgeGradeStep(
-					step.description,
-					params.summary ?? "",
-					{ exitCode, stdout, stderr },
-					stepEvidence,
-				)
-				const gradeOutcome = applyAndPersist(params.ferment_id, {
-					type: "set_step_grade",
-					phaseId: phase.id,
-					stepId: step.id,
-					grade,
-				})
-				if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
-				onStepCompleted(pi)
-				return toolOk(
-					`Step ${step.index}: "${step.description}" done and verified ✓  Grade: ${grade.grade} — ${grade.rationale}`,
-				)
-			}
-
-			// Path B.2: non-zero exit — judge classifies as pass/retry/fail.
-			const judgeVerdict = await judgeStepVerification(
-				step.description,
-				step.verification.command,
-				stdout,
-				stderr,
-				exitCode,
-			)
-
-			if (judgeVerdict.verdict === "pass") {
-				const stepRef = getStepStartRef(f.id, phase.id, step.id)
-				const stepEvidence = stepRef ? gatherPhaseEvidence(stepRef) : undefined
-				const grade = await judgeGradeStep(
-					step.description,
-					params.summary ?? "",
-					{ exitCode, stdout, stderr },
-					stepEvidence,
-				)
-				const gradeOutcome = applyAndPersist(params.ferment_id, {
-					type: "set_step_grade",
-					phaseId: phase.id,
-					stepId: step.id,
-					grade,
-				})
-				if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
-				onStepCompleted(pi)
-				return toolOk(
-					`Step ${step.index}: "${step.description}" done ✓  Judge: ${judgeVerdict.reason}  Grade: ${grade.grade}`,
-				)
-			}
-
-			// Both retry and fail map to fail_step in storage.
-			const failOutcome = applyAndPersist(params.ferment_id, {
-				type: "fail_step",
-				phaseId: phase.id,
-				stepId: step.id,
-				error: `Verification failed (exit ${exitCode}): ${judgeVerdict.reason}`,
-			})
-			if (!failOutcome.ok) return failedToolResult(failOutcome.error)
-
-			if (judgeVerdict.verdict === "retry") {
-				return toolErr(
-					`Step ${step.index} verification failed — retry suggested.\nExit: ${exitCode}\nJudge: ${judgeVerdict.reason}\nstdout: ${stdout.slice(0, 500)}\nstderr: ${stderr.slice(0, 500)}`,
-				)
-			}
-			return toolErr(
-				`Step ${step.index} failed verification.\nExit: ${exitCode}\nJudge: ${judgeVerdict.reason}\nstdout: ${stdout.slice(0, 500)}\nstderr: ${stderr.slice(0, 500)}`,
-			)
+			return completeStep(runtime, params, { pi, ctx, signal, onUpdate })
 		},
 	})
 
@@ -351,7 +412,7 @@ Do NOT call start_step again without user input.`,
 		description: "Run verification command and record result.",
 		parameters: VerifyParams,
 		async execute(_, params, signal, onUpdate, ctx) {
-			const f = getStorage().get(params.ferment_id)
+			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
@@ -420,7 +481,7 @@ Do NOT call start_step again without user input.`,
 		description: "Skip a step.",
 		parameters: StepActionParams,
 		async execute(_, params) {
-			const f = getStorage().get(params.ferment_id)
+			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
@@ -437,7 +498,7 @@ Do NOT call start_step again without user input.`,
 				stepId: step.id,
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)
-			clearStepStart(f.id, phase.id, step.id)
+			runtime.clearStepStart(f.id, phase.id, step.id)
 			onStepCompleted(pi)
 			return toolOk("Step skipped.")
 		},
@@ -449,7 +510,7 @@ Do NOT call start_step again without user input.`,
 		description: "Mark a step as failed with an error message.",
 		parameters: FailStepParams,
 		async execute(_, params) {
-			const f = getStorage().get(params.ferment_id)
+			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
