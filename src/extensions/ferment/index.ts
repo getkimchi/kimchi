@@ -183,7 +183,10 @@ export default function fermentExtension(pi: ExtensionAPI) {
 	function resumeFerment(fermentId: string, ctx: ExtensionContext): void {
 		const storage = getStorage()
 		let existing = storage.get(fermentId)
-		if (!existing) return
+		if (!existing) {
+			setActive(undefined)
+			return
+		}
 
 		// Session_shutdown sets running ferments to "paused" — flip back to
 		// "running" on resume so the engine produces a real next-action nudge.
