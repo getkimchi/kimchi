@@ -198,6 +198,8 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				const answers = new Map<string, Answer>()
 				// multi-select toggles: questionId → Set<optionIndex>
 				const multiToggles = new Map<string, Set<number>>()
+				// multi-select custom "Other" text: questionId → user-typed string
+				const multiCustomText = new Map<string, string>()
 
 				const editorTheme: EditorTheme = {
 					borderColor: (s) => theme.fg("accent", s),
@@ -275,12 +277,20 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 							indices.push(idx + 1)
 						}
 					}
+					const otherIdx = q.options.length
+					const customText = multiCustomText.get(q.id)
+					const otherToggled = toggled.has(otherIdx) && !!customText
+					if (otherToggled && customText) {
+						values.push(customText)
+						labels.push(customText)
+						indices.push(otherIdx + 1)
+					}
 					if (values.length > 0) {
 						answers.set(q.id, {
 							id: q.id,
 							value: values.join(", "),
 							label: labels.join(", "),
-							wasCustom: false,
+							wasCustom: otherToggled,
 							values,
 							labels,
 							indices,
@@ -294,6 +304,18 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				editor.onSubmit = (value: string) => {
 					if (!inputQuestionId) return
 					const trimmed = value.trim() || "(no response)"
+					const q = questions.find((x) => x.id === inputQuestionId)
+					if (q?.type === "multi") {
+						multiCustomText.set(q.id, trimmed)
+						if (!multiToggles.has(q.id)) multiToggles.set(q.id, new Set())
+						multiToggles.get(q.id)?.add(q.options.length)
+						saveMultiAnswer(q)
+						inputMode = false
+						inputQuestionId = null
+						editor.setText("")
+						refresh()
+						return
+					}
 					saveAnswer(inputQuestionId, trimmed, trimmed, true)
 					inputMode = false
 					inputQuestionId = null
@@ -390,7 +412,9 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 						if (!multiToggles.has(q.id)) multiToggles.set(q.id, new Set())
 						const toggled = multiToggles.get(q.id) ?? new Set()
 						const opt = opts[optionIndex]
-						if (opt && !opt.isOther) {
+						// Other rows can be toggled with Space only after a custom value has been typed.
+						const canToggleOther = opt?.isOther && multiCustomText.has(q.id)
+						if (opt && (!opt.isOther || canToggleOther)) {
 							if (toggled.has(optionIndex)) {
 								toggled.delete(optionIndex)
 							} else {
@@ -400,6 +424,23 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 							refresh()
 						}
 						return
+					}
+
+					// Multi-select: enter on the Other row opens the free-text editor when
+					// no committed text exists yet (or when Other was toggled off — useful for
+					// re-editing). When Other already has text and is toggled on, fall through
+					// so Enter advances/submits like the regular rows.
+					if (q && q.type === "multi" && matchesKey(data, Key.enter) && opts[optionIndex]?.isOther) {
+						const toggled = multiToggles.get(q.id) ?? new Set()
+						const otherIdx = q.options.length
+						const committed = multiCustomText.has(q.id) && toggled.has(otherIdx)
+						if (!committed) {
+							inputMode = true
+							inputQuestionId = q.id
+							editor.setText(multiCustomText.get(q.id) ?? "")
+							refresh()
+							return
+						}
 					}
 
 					// Multi-select: enter submits current selections
@@ -476,17 +517,24 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 					// Render options list helper
 					function renderOptions(): void {
 						const toggled = q ? (multiToggles.get(q.id) ?? new Set()) : new Set()
+						const customText = q ? multiCustomText.get(q.id) : undefined
 						for (let i = 0; i < opts.length; i++) {
 							const opt = opts[i]
 							const selected = i === optionIndex
 							const isOther = opt.isOther === true
 
-							if (q?.type === "multi" && !isOther) {
+							if (q?.type === "multi") {
 								const checked = toggled.has(i)
 								const box = checked ? "[x]" : "[ ]"
 								const prefix = selected ? theme.fg("accent", "> ") : "  "
 								const color = selected ? "accent" : "text"
-								add(`${prefix}${theme.fg(color, `${box} ${i + 1}. ${opt.label}`)}`)
+								if (isOther) {
+									const labelText = customText ?? opt.label
+									const suffix = inputMode && q.id === inputQuestionId ? " \u270E" : customText ? " \u270E" : ""
+									add(`${prefix}${theme.fg(color, `${box} ${i + 1}. ${labelText}${suffix}`)}`)
+								} else {
+									add(`${prefix}${theme.fg(color, `${box} ${i + 1}. ${opt.label}`)}`)
+								}
 							} else {
 								const prefix = selected ? theme.fg("accent", "> ") : "  "
 								const color = selected ? "accent" : "text"
