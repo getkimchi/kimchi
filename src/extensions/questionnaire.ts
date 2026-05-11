@@ -19,39 +19,22 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Editor, type EditorTheme, Key, Text, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+import {
+	type Answer,
+	type Question,
+	type QuestionnaireEffect,
+	type QuestionnaireEvent,
+	type QuestionnaireState,
+	type RenderOption,
+	allRequiredAnswered,
+	currentOptions,
+	currentQuestion,
+	initialState,
+	isSubmitTab,
+	reduce,
+} from "./questionnaire-reducer.js"
 
-type QuestionType = "single" | "multi" | "text" | "confirm"
-
-interface QuestionOption {
-	value: string
-	label: string
-	description?: string
-}
-
-interface Question {
-	id: string
-	label: string
-	prompt: string
-	type: QuestionType
-	options: QuestionOption[]
-	allowOther: boolean
-	required: boolean
-}
-
-type RenderOption = QuestionOption & { isOther?: boolean }
-
-interface Answer {
-	id: string
-	value: string
-	label: string
-	wasCustom: boolean
-	index?: number
-	// multi-select fields
-	values?: string[]
-	labels?: string[]
-	indices?: number[]
-}
+export type { Answer, Question }
 
 interface QuestionnaireResult {
 	questions: Question[]
@@ -109,7 +92,7 @@ function errorResult(
 }
 
 function normalizeQuestion(q: Static<typeof QuestionSchema>, index: number): Question {
-	const type: QuestionType = q.type ?? "single"
+	const type = q.type ?? "single"
 	return {
 		id: q.id,
 		label: q.label || `Q${index + 1}`,
@@ -186,20 +169,11 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 			}
 
 			const isMulti = questions.length > 1
-			const totalTabs = questions.length + 1 // questions + Submit
 
 			const result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) => {
 				// ── State ──
-				let currentTab = 0
-				let optionIndex = 0
-				let inputMode = false
-				let inputQuestionId: string | null = null
+				let state: QuestionnaireState = initialState(questions)
 				let cachedLines: string[] | undefined
-				const answers = new Map<string, Answer>()
-				// multi-select toggles: questionId → Set<optionIndex>
-				const multiToggles = new Map<string, Set<number>>()
-				// multi-select custom "Other" text: questionId → user-typed string
-				const multiCustomText = new Map<string, string>()
 
 				const editorTheme: EditorTheme = {
 					borderColor: (s) => theme.fg("accent", s),
@@ -213,263 +187,81 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				}
 				const editor = new Editor(tui, editorTheme)
 
-				// ── Helpers ──
-				function refresh(): void {
-					cachedLines = undefined
-					tui.requestRender()
-				}
-
-				function submit(cancelled: boolean): void {
-					done({ questions, answers: Array.from(answers.values()), cancelled })
-				}
-
-				function currentQuestion(): Question | undefined {
-					return questions[currentTab]
-				}
-
-				function currentOptions(): RenderOption[] {
-					const q = currentQuestion()
-					if (!q || q.type === "text") return []
-					const opts: RenderOption[] = [...q.options]
-					if (q.allowOther) {
-						opts.push({ value: "__other__", label: "Type your own answer", isOther: true })
-					}
-					return opts
-				}
-
-				function allRequiredAnswered(): boolean {
-					return questions.every((q) => !q.required || answers.has(q.id))
-				}
-
-				function advanceAfterAnswer(): void {
-					if (!isMulti) {
-						submit(false)
-						return
-					}
-					if (currentTab < questions.length - 1) {
-						currentTab++
-					} else {
-						currentTab = questions.length // Submit tab
-					}
-					optionIndex = 0
-					refresh()
-				}
-
-				function saveAnswer(
-					questionId: string,
-					value: string,
-					label: string,
-					wasCustom: boolean,
-					index?: number,
-				): void {
-					answers.set(questionId, { id: questionId, value, label, wasCustom, index })
-				}
-
-				function saveMultiAnswer(q: Question): void {
-					const toggled = multiToggles.get(q.id) ?? new Set()
-					const values: string[] = []
-					const labels: string[] = []
-					const indices: number[] = []
-					for (const idx of toggled) {
-						if (idx < q.options.length) {
-							values.push(q.options[idx].value)
-							labels.push(q.options[idx].label)
-							indices.push(idx + 1)
+				// ── Effects & dispatch ──
+				function applyEffects(effects: QuestionnaireEffect[]): void {
+					for (const eff of effects) {
+						switch (eff.kind) {
+							case "render":
+								cachedLines = undefined
+								tui.requestRender()
+								break
+							case "editor-set-text":
+								editor.setText(eff.text)
+								break
+							case "editor-handle-input":
+								editor.handleInput(eff.data)
+								break
+							case "done":
+								done({ questions, answers: Array.from(state.answers.values()), cancelled: eff.cancelled })
+								break
 						}
 					}
-					const otherIdx = q.options.length
-					const customText = multiCustomText.get(q.id)
-					const otherToggled = toggled.has(otherIdx) && !!customText
-					if (otherToggled && customText) {
-						values.push(customText)
-						labels.push(customText)
-						indices.push(otherIdx + 1)
-					}
-					if (values.length > 0) {
-						answers.set(q.id, {
-							id: q.id,
-							value: values.join(", "),
-							label: labels.join(", "),
-							wasCustom: otherToggled,
-							values,
-							labels,
-							indices,
-						})
-					} else {
-						answers.delete(q.id)
-					}
 				}
 
-				// Editor submit callback for free-text input
-				editor.onSubmit = (value: string) => {
-					if (!inputQuestionId) return
-					const trimmed = value.trim() || "(no response)"
-					const q = questions.find((x) => x.id === inputQuestionId)
-					if (q?.type === "multi") {
-						multiCustomText.set(q.id, trimmed)
-						if (!multiToggles.has(q.id)) multiToggles.set(q.id, new Set())
-						multiToggles.get(q.id)?.add(q.options.length)
-						saveMultiAnswer(q)
-						inputMode = false
-						inputQuestionId = null
-						editor.setText("")
-						refresh()
-						return
-					}
-					saveAnswer(inputQuestionId, trimmed, trimmed, true)
-					inputMode = false
-					inputQuestionId = null
-					editor.setText("")
-					advanceAfterAnswer()
+				function dispatch(event: QuestionnaireEvent): void {
+					const result = reduce(state, event)
+					state = result.state
+					applyEffects(result.effects)
 				}
 
-				// ── Input handling ──
+				// ── Editor wiring ──
+				editor.onSubmit = (value: string) => dispatch({ kind: "editor-submit", value })
+
+				// ── Input handling (pure key→event mapper) ──
 				function handleInput(data: string): void {
-					// Input mode: route to editor
-					if (inputMode) {
+					if (state.inputMode) {
 						if (matchesKey(data, Key.escape)) {
-							inputMode = false
-							inputQuestionId = null
-							editor.setText("")
-							refresh()
+							dispatch({ kind: "key-escape" })
 							return
 						}
+						// Forward everything else directly to the live editor and re-render.
 						editor.handleInput(data)
-						refresh()
+						cachedLines = undefined
+						tui.requestRender()
 						return
 					}
 
-					const q = currentQuestion()
-					const opts = currentOptions()
-
-					// Tab navigation (multi-question only)
-					if (isMulti) {
-						if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) {
-							currentTab = (currentTab + 1) % totalTabs
-							optionIndex = 0
-							refresh()
-							return
-						}
-						if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left)) {
-							currentTab = (currentTab - 1 + totalTabs) % totalTabs
-							optionIndex = 0
-							refresh()
-							return
-						}
-					}
-
-					// Submit tab
-					if (currentTab === questions.length) {
-						if (matchesKey(data, Key.enter) && allRequiredAnswered()) {
-							submit(false)
-						} else if (matchesKey(data, Key.escape)) {
-							submit(true)
-						}
-						return
-					}
-
-					// Text-type question: enter input mode immediately
-					if (q && q.type === "text" && !inputMode) {
-						if (matchesKey(data, Key.enter)) {
-							inputMode = true
-							inputQuestionId = q.id
-							// Pre-fill with existing answer if editing
-							const existing = answers.get(q.id)
-							editor.setText(existing?.wasCustom ? existing.value : "")
-							refresh()
-							return
-						}
-						if (matchesKey(data, Key.escape)) {
-							submit(true)
-							return
-						}
-						// Start typing immediately
-						if (data.length === 1 && data >= " ") {
-							inputMode = true
-							inputQuestionId = q.id
-							editor.setText("")
-							editor.handleInput(data)
-							refresh()
-							return
-						}
-						return
-					}
-
-					// Option navigation
 					if (matchesKey(data, Key.up)) {
-						optionIndex = Math.max(0, optionIndex - 1)
-						refresh()
+						dispatch({ kind: "key-up" })
 						return
 					}
 					if (matchesKey(data, Key.down)) {
-						optionIndex = Math.min(opts.length - 1, optionIndex + 1)
-						refresh()
+						dispatch({ kind: "key-down" })
 						return
 					}
-
-					// Multi-select: space to toggle
-					if (q && q.type === "multi" && data === " ") {
-						if (!multiToggles.has(q.id)) multiToggles.set(q.id, new Set())
-						const toggled = multiToggles.get(q.id) ?? new Set()
-						const opt = opts[optionIndex]
-						// Other rows can be toggled with Space only after a custom value has been typed.
-						const canToggleOther = opt?.isOther && multiCustomText.has(q.id)
-						if (opt && (!opt.isOther || canToggleOther)) {
-							if (toggled.has(optionIndex)) {
-								toggled.delete(optionIndex)
-							} else {
-								toggled.add(optionIndex)
-							}
-							saveMultiAnswer(q)
-							refresh()
-						}
+					if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) {
+						dispatch({ kind: "key-right" })
 						return
 					}
-
-					// Multi-select: enter on the Other row opens the free-text editor when
-					// no committed text exists yet (or when Other was toggled off — useful for
-					// re-editing). When Other already has text and is toggled on, fall through
-					// so Enter advances/submits like the regular rows.
-					if (q && q.type === "multi" && matchesKey(data, Key.enter) && opts[optionIndex]?.isOther) {
-						const toggled = multiToggles.get(q.id) ?? new Set()
-						const otherIdx = q.options.length
-						const committed = multiCustomText.has(q.id) && toggled.has(otherIdx)
-						if (!committed) {
-							inputMode = true
-							inputQuestionId = q.id
-							editor.setText(multiCustomText.get(q.id) ?? "")
-							refresh()
-							return
-						}
-					}
-
-					// Multi-select: enter submits current selections
-					if (q && q.type === "multi" && matchesKey(data, Key.enter)) {
-						saveMultiAnswer(q)
-						advanceAfterAnswer()
+					if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left)) {
+						dispatch({ kind: "key-left" })
 						return
 					}
-
-					// Single/confirm: enter selects
-					if (matchesKey(data, Key.enter) && q) {
-						const opt = opts[optionIndex]
-						if (opt?.isOther) {
-							inputMode = true
-							inputQuestionId = q.id
-							editor.setText("")
-							refresh()
-							return
-						}
-						if (opt) {
-							saveAnswer(q.id, opt.value, opt.label, false, optionIndex + 1)
-							advanceAfterAnswer()
-						}
+					if (matchesKey(data, Key.enter)) {
+						dispatch({ kind: "key-enter" })
 						return
 					}
-
-					// Cancel
 					if (matchesKey(data, Key.escape)) {
-						submit(true)
+						dispatch({ kind: "key-escape" })
+						return
+					}
+					if (data === " ") {
+						dispatch({ kind: "key-space" })
+						return
+					}
+					if (data.length === 1 && data >= " ") {
+						dispatch({ kind: "char-typed", char: data })
+						return
 					}
 				}
 
@@ -478,14 +270,14 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 					if (cachedLines) return cachedLines
 
 					const lines: string[] = []
-					const q = currentQuestion()
-					const opts = currentOptions()
+					const q = currentQuestion(state)
+					const opts = currentOptions(state)
 
 					const add = (s: string) => lines.push(truncateToWidth(s, width))
 					add(theme.fg("accent", "\u2500".repeat(width)))
 
 					// Header
-					if (params.header && currentTab === 0 && !inputMode) {
+					if (params.header && state.currentTab === 0 && !state.inputMode) {
 						add(` ${theme.fg("text", params.header)}`)
 						lines.push("")
 					}
@@ -494,8 +286,8 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 					if (isMulti) {
 						const tabs: string[] = ["\u2190 "]
 						for (let i = 0; i < questions.length; i++) {
-							const isActive = i === currentTab
-							const isAnswered = answers.has(questions[i].id)
+							const isActive = i === state.currentTab
+							const isAnswered = state.answers.has(questions[i].id)
 							const lbl = questions[i].label
 							const box = isAnswered ? "\u25A0" : "\u25A1"
 							const color = isAnswered ? "success" : "muted"
@@ -503,10 +295,10 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 							const styled = isActive ? theme.bg("selectedBg", theme.fg("text", text)) : theme.fg(color, text)
 							tabs.push(`${styled} `)
 						}
-						const canSubmit = allRequiredAnswered()
-						const isSubmitTab = currentTab === questions.length
+						const canSubmit = allRequiredAnswered(state)
+						const onSubmitTab = isSubmitTab(state)
 						const submitText = " \u2713 Submit "
-						const submitStyled = isSubmitTab
+						const submitStyled = onSubmitTab
 							? theme.bg("selectedBg", theme.fg("text", submitText))
 							: theme.fg(canSubmit ? "success" : "dim", submitText)
 						tabs.push(`${submitStyled} \u2192`)
@@ -516,11 +308,11 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 
 					// Render options list helper
 					function renderOptions(): void {
-						const toggled = q ? (multiToggles.get(q.id) ?? new Set()) : new Set()
-						const customText = q ? multiCustomText.get(q.id) : undefined
+						const toggled = q ? (state.multiToggles.get(q.id) ?? new Set()) : new Set()
+						const customText = q ? state.multiCustomText.get(q.id) : undefined
 						for (let i = 0; i < opts.length; i++) {
 							const opt = opts[i]
-							const selected = i === optionIndex
+							const selected = i === state.optionIndex
 							const isOther = opt.isOther === true
 
 							if (q?.type === "multi") {
@@ -530,7 +322,8 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 								const color = selected ? "accent" : "text"
 								if (isOther) {
 									const labelText = customText ?? opt.label
-									const suffix = inputMode && q.id === inputQuestionId ? " \u270E" : customText ? " \u270E" : ""
+									const suffix =
+										state.inputMode && q.id === state.inputQuestionId ? " \u270E" : customText ? " \u270E" : ""
 									add(`${prefix}${theme.fg(color, `${box} ${i + 1}. ${labelText}${suffix}`)}`)
 								} else {
 									add(`${prefix}${theme.fg(color, `${box} ${i + 1}. ${opt.label}`)}`)
@@ -538,7 +331,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 							} else {
 								const prefix = selected ? theme.fg("accent", "> ") : "  "
 								const color = selected ? "accent" : "text"
-								if (isOther && inputMode) {
+								if (isOther && state.inputMode) {
 									add(`${prefix}${theme.fg("accent", `${i + 1}. ${opt.label} \u270E`)}`)
 								} else {
 									add(`${prefix}${theme.fg(color, `${i + 1}. ${opt.label}`)}`)
@@ -551,7 +344,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 					}
 
 					// Content
-					if (inputMode && q) {
+					if (state.inputMode && q) {
 						add(theme.fg("text", ` ${q.prompt}`))
 						lines.push("")
 						if (opts.length > 0) renderOptions()
@@ -562,12 +355,12 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 						}
 						lines.push("")
 						add(theme.fg("dim", " Enter to submit \u2022 Esc to cancel"))
-					} else if (currentTab === questions.length) {
+					} else if (isSubmitTab(state)) {
 						// Submit tab
 						add(theme.fg("accent", theme.bold(" Ready to submit")))
 						lines.push("")
 						for (const question of questions) {
-							const answer = answers.get(question.id)
+							const answer = state.answers.get(question.id)
 							if (answer) {
 								const prefix = answer.wasCustom ? "(wrote) " : ""
 								const display = answer.values ? (answer.labels?.join(", ") ?? answer.label) : prefix + answer.label
@@ -577,19 +370,19 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 							}
 						}
 						lines.push("")
-						if (allRequiredAnswered()) {
+						if (allRequiredAnswered(state)) {
 							add(theme.fg("success", " Press Enter to submit"))
 						} else {
 							const missing = questions
-								.filter((q) => q.required && !answers.has(q.id))
-								.map((q) => q.label)
+								.filter((qq) => qq.required && !state.answers.has(qq.id))
+								.map((qq) => qq.label)
 								.join(", ")
 							add(theme.fg("warning", ` Unanswered: ${missing}`))
 						}
 					} else if (q && q.type === "text") {
 						add(theme.fg("text", ` ${q.prompt}`))
 						lines.push("")
-						const existing = answers.get(q.id)
+						const existing = state.answers.get(q.id)
 						if (existing) {
 							add(theme.fg("muted", ` Current: ${existing.label}`))
 							lines.push("")
@@ -602,7 +395,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 					}
 
 					lines.push("")
-					if (!inputMode) {
+					if (!state.inputMode) {
 						let help: string
 						if (q?.type === "multi") {
 							help = isMulti
