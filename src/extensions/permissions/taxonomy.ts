@@ -41,12 +41,16 @@ export function isReadOnlyTool(toolName: string): boolean {
 // but cannot execute other programs, write files (beyond stdout), or mutate
 // system state. If you need to add a program here, confirm it has no flag that
 // runs a subcommand (-exec, -c, -e, --output, etc.) or writes outside stdout.
+// NOTE: cd/pushd/popd are included — they only change process cwd, no files.
 const READ_ONLY_PROGRAMS = new Set([
 	"cat",
 	"head",
 	"tail",
 	"ls",
 	"pwd",
+	"cd",
+	"pushd",
+	"popd",
 	"echo",
 	"printf",
 	"wc",
@@ -128,6 +132,16 @@ const READ_ONLY_SUBCOMMANDS: Record<string, Set<string>> = {
 		"config",
 		"tag",
 		"stash",
+		"reflog",
+		"shortlog",
+		"fsck",
+		"verify-pack",
+		"count-objects",
+		"for-each-ref",
+		"show-ref",
+		"symbolic-ref",
+		"name-rev",
+		"rev-list",
 	]),
 	npm: new Set(["list", "ls", "view", "info", "search", "outdated", "audit", "--version", "-v"]),
 	yarn: new Set(["list", "info", "why", "audit", "--version", "-v"]),

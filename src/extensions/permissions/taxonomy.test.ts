@@ -59,6 +59,14 @@ describe("isReadOnlyBashCommand", () => {
 		expect(isReadOnlyBashCommand("rg foo")).toBe(true)
 	})
 
+	it("allows cd and directory stack commands", () => {
+		expect(isReadOnlyBashCommand("cd /tmp")).toBe(true)
+		expect(isReadOnlyBashCommand("cd /Users/rat/code && git status")).toBe(true)
+		expect(isReadOnlyBashCommand("cd /a && git log --oneline | head -20")).toBe(true)
+		expect(isReadOnlyBashCommand("pushd /tmp")).toBe(true)
+		expect(isReadOnlyBashCommand("popd")).toBe(true)
+	})
+
 	it("allows git subcommand allowlist", () => {
 		expect(isReadOnlyBashCommand("git status")).toBe(true)
 		expect(isReadOnlyBashCommand("git log --oneline")).toBe(true)
