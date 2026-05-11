@@ -32,6 +32,7 @@ import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
 import promptEnrichmentExtension from "./extensions/orchestration/prompt-enrichment.js"
 import permissionsExtension from "./extensions/permissions/index.js"
 import { reserveShiftTabForPermissions } from "./extensions/permissions/keybindings.js"
+import phaseGuardExtension from "./extensions/phase-guard.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import skillsManagerExtension from "./extensions/skills-manager/index.js"
@@ -271,6 +272,7 @@ try {
 			mcpAdapterExtension,
 			promptEnrichmentExtension(skillPaths),
 			permissionsExtension,
+			phaseGuardExtension,
 			behavioursExtension,
 			promptSummaryExtension,
 			contextCompactorExtension,
