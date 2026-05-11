@@ -280,6 +280,13 @@ try {
 			loopGuardExtension,
 			lspExtension,
 			mcpAdapterExtension,
+			// fermentExtension must be registered before promptEnrichmentExtension so its
+			// `input` handler runs first and sees the raw user instruction. In --print mode
+			// prompt enrichment transforms `event.text` inline; if ferment ran after it,
+			// `--ferment-oneshot` would create and name the ferment from the enriched
+			// orchestration wrapper instead of the original task text, diverging from the
+			// `/ferment one-shot` slash command path.
+			fermentExtension,
 			promptEnrichmentExtension(skillPaths),
 			permissionsExtension,
 			behavioursExtension,
@@ -290,7 +297,6 @@ try {
 			uiExtension,
 			agentsExtension,
 			tagsExtension,
-			fermentExtension,
 			telemetryExtension(telemetryConfig),
 			toolRendererExtension,
 			webFetchExtension,
