@@ -53,7 +53,7 @@ if [[ ! -d "$RUNS_DIR" ]]; then
   exit 1
 fi
 
-AVAILABLE_TASKS=($RUNS_DIR/*(/:t))
+AVAILABLE_TASKS=("$RUNS_DIR"/*(/:t))
 if (( ${#AVAILABLE_TASKS[@]} == 0 )); then
   echo "ERROR: No tasks found in $RUNS_DIR" >&2
   exit 1
@@ -95,13 +95,14 @@ fi
 
 for task in "${TASKS[@]}"; do
   task_script="${SESSION_DIR}/run-${task}.sh"
+  task_script_escaped=${task_script//\"/\\\"}
   osascript <<EOF
 tell application "iTerm2"
   tell current window
     set taskTab to (create tab with default profile)
     tell taskTab
       tell current session
-        write text "${task_script}"
+        write text "${task_script_escaped}"
       end tell
     end tell
   end tell
@@ -127,12 +128,12 @@ done
 # --- Step 4: Find the JSONL files for each run ---
 declare -A JSONL_FILES
 for task in "${TASKS[@]}"; do
-  jsonl=$(ls -t "${SESSION_DIR}/runs/${task}/"session-*.jsonl 2>/dev/null | head -1)
-  if [[ -z "$jsonl" ]]; then
+  local jsonls=("${SESSION_DIR}/runs/${task}"/session-*.jsonl(NOm))
+  if (( ${#jsonls} == 0 )); then
     echo "ERROR: No session JSONL found for $task" >&2
     exit 1
   fi
-  JSONL_FILES["$task"]="$jsonl"
+  JSONL_FILES["$task"]=$jsonls[1]
 done
 
 echo ""
@@ -154,13 +155,14 @@ done
 
 for task in "${TASKS[@]}"; do
   audit_cmd="cd \"$REPO_ROOT\" && \"$AUDIT_SCRIPT\" -m kimchi-dev/claude-opus-4-7 \"${JSONL_FILES[\"$task\"]}\""
+  audit_cmd_escaped=${audit_cmd//\"/\\\"}
   osascript <<EOF
 tell application "iTerm2"
   tell current window
     set auditTab to (create tab with default profile)
     tell auditTab
       tell current session
-        write text "$audit_cmd"
+        write text "$audit_cmd_escaped"
       end tell
     end tell
   end tell
