@@ -117,7 +117,10 @@ export async function password(opts: {
 	validate?: (v: string | undefined) => string | undefined
 	backable: boolean
 }): Promise<Outcome<string>> {
-	return awaitWithCancelDetection(opts.backable, () =>
-		clackPassword({ message: opts.message, validate: opts.validate }),
+	const result = await awaitWithCancelDetection<string | undefined>(
+		opts.backable,
+		() => clackPassword({ message: opts.message, validate: opts.validate }) as Promise<string | symbol | undefined>,
 	)
+	if (result.kind !== "next") return result
+	return { kind: "next", value: result.value ?? "" }
 }
