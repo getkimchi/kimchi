@@ -112,31 +112,56 @@ describe("FermentEventStore", () => {
 			expect(types).toContain("phase_activated")
 		})
 
-		it("phase completion replay clears active state so the next phase can be activated", () => {
-			const f = eventStore.create("Advance after phase completion")
+		it("complete_phase clears active metadata and replays the next phase as activatable", () => {
+			const f = eventStore.create("Phase advance test")
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
 				successCriteria: "criteria",
 				constraints: [],
 				phases: [
-					{ name: "P1", goal: "G1", steps: [] },
-					{ name: "P2", goal: "G2", steps: [] },
+					{ name: "P1", goal: "G1" },
+					{ name: "P2", goal: "G2" },
 				],
 			})
-			exec(eventStore, f.id, { type: "activate_phase", phaseId: "phase-1" })
-			exec(eventStore, f.id, { type: "complete_phase", phaseId: "phase-1", summary: "done" })
+			const scoped = eventStore.get(f.id)
+			if (!scoped) throw new Error("ferment missing")
+			exec(eventStore, f.id, { type: "activate_phase", phaseId: scoped.phases[0].id })
+			exec(eventStore, f.id, { type: "complete_phase", phaseId: scoped.phases[0].id, summary: "done" })
 
-			const afterComplete = eventStore.get(f.id)
-			expect(afterComplete?.phases[0].status).toBe("completed")
-			expect(afterComplete?.status).toBe("planned")
-			expect(afterComplete?.activePhaseId).toBeUndefined()
+			const completed = eventStore.get(f.id)
+			expect(completed?.status).toBe("planned")
+			expect(completed?.activePhaseId).toBeUndefined()
+			expect(completed?.phases[0].status).toBe("completed")
 
-			exec(eventStore, f.id, { type: "activate_phase", phaseId: "phase-2" })
-			const afterActivate = eventStore.get(f.id)
-			expect(afterActivate?.status).toBe("running")
-			expect(afterActivate?.activePhaseId).toBe("phase-2")
-			expect(afterActivate?.phases[1].status).toBe("active")
+			exec(eventStore, f.id, { type: "activate_phase", phaseId: scoped.phases[1].id })
+			const advanced = eventStore.get(f.id)
+			expect(advanced?.status).toBe("running")
+			expect(advanced?.activePhaseId).toBe(scoped.phases[1].id)
+			expect(advanced?.phases[1].status).toBe("active")
+		})
+
+		it("complete_phase leaves the final terminal ferment planned until complete_ferment", () => {
+			const f = eventStore.create("Explicit complete test")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Goal",
+				successCriteria: "criteria",
+				constraints: [],
+				phases: [{ name: "P1", goal: "G1" }],
+			})
+			const scoped = eventStore.get(f.id)
+			if (!scoped) throw new Error("ferment missing")
+			exec(eventStore, f.id, { type: "activate_phase", phaseId: scoped.phases[0].id })
+			exec(eventStore, f.id, { type: "complete_phase", phaseId: scoped.phases[0].id, summary: "done" })
+
+			const phaseDone = eventStore.get(f.id)
+			expect(phaseDone?.status).toBe("planned")
+			expect(phaseDone?.activePhaseId).toBeUndefined()
+			expect(phaseDone?.phases.every((p) => p.status === "completed")).toBe(true)
+
+			exec(eventStore, f.id, { type: "complete_ferment" })
+			expect(eventStore.get(f.id)?.status).toBe("complete")
 		})
 
 		it("step lifecycle commands all emit corresponding events", () => {
@@ -190,6 +215,31 @@ describe("FermentEventStore", () => {
 			const types = readEvents(tempDir, f.id).map((e) => e.type)
 			expect(types).toContain("ferment_paused")
 			expect(types).toContain("ferment_resumed")
+		})
+
+		it("resume replays to planned when paused between phases", () => {
+			const f = eventStore.create("Resume between phases")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Goal",
+				successCriteria: "c",
+				constraints: [],
+				phases: [
+					{ name: "P1", goal: "G1" },
+					{ name: "P2", goal: "G2" },
+				],
+			})
+			const scoped = eventStore.get(f.id)
+			if (!scoped) throw new Error("ferment missing")
+			exec(eventStore, f.id, { type: "activate_phase", phaseId: scoped.phases[0].id })
+			exec(eventStore, f.id, { type: "complete_phase", phaseId: scoped.phases[0].id, summary: "done" })
+			exec(eventStore, f.id, { type: "pause" })
+			exec(eventStore, f.id, { type: "resume" })
+
+			const resumed = eventStore.get(f.id)
+			expect(resumed?.status).toBe("planned")
+			expect(resumed?.activePhaseId).toBeUndefined()
+			expect(resumed?.phases[1].status).toBe("planned")
 		})
 
 		// Regression: §4.2 — replaying N independent phase_activated events for a

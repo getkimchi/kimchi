@@ -292,6 +292,14 @@ function setPhase(ferment: Ferment, phaseIndex: number, patch: Partial<Phase>): 
 	return ferment.phases.map((p, i) => (i === phaseIndex ? { ...p, ...patch } : p))
 }
 
+function settleAfterPhaseTerminal(phases: Phase[]): Partial<Ferment> {
+	const activePhase = phases.find((p) => p.status === "active")
+	if (activePhase) {
+		return { phases, activePhaseId: activePhase.id, status: "running" }
+	}
+	return { phases, activePhaseId: undefined, status: "planned" }
+}
+
 function setStep(ferment: Ferment, phaseIndex: number, stepIndex: number, patch: Partial<Step>): Phase[] {
 	return ferment.phases.map((p, i) => {
 		if (i !== phaseIndex) return p
@@ -708,15 +716,8 @@ function handleCompletePhase(
 		completedAt: ctx.now,
 		grade: cmd.grade,
 	})
-	const remainingActivePhase = phases.find((p) => p.status === "active")
 
-	return ok(
-		touch(ferment, ctx, {
-			phases,
-			activePhaseId: remainingActivePhase?.id,
-			status: remainingActivePhase ? "running" : "planned",
-		}),
-	)
+	return ok(touch(ferment, ctx, settleAfterPhaseTerminal(phases)))
 }
 
 // ─── skip_phase ───────────────────────────────────────────────────────────────
@@ -730,15 +731,13 @@ function handleSkipPhase(
 	if (isTransitionError(found)) return fail(found)
 	const { index } = found
 
-	return ok(
-		touch(ferment, ctx, {
-			phases: setPhase(ferment, index, {
-				status: "skipped",
-				summary: cmd.reason ?? "Skipped",
-				completedAt: ctx.now,
-			}),
-		}),
-	)
+	const phases = setPhase(ferment, index, {
+		status: "skipped",
+		summary: cmd.reason ?? "Skipped",
+		completedAt: ctx.now,
+	})
+
+	return ok(touch(ferment, ctx, settleAfterPhaseTerminal(phases)))
 }
 
 // ─── fail_phase ───────────────────────────────────────────────────────────────
@@ -752,15 +751,13 @@ function handleFailPhase(
 	if (isTransitionError(found)) return fail(found)
 	const { index } = found
 
-	return ok(
-		touch(ferment, ctx, {
-			phases: setPhase(ferment, index, {
-				status: "failed",
-				summary: cmd.reason,
-				completedAt: ctx.now,
-			}),
-		}),
-	)
+	const phases = setPhase(ferment, index, {
+		status: "failed",
+		summary: cmd.reason,
+		completedAt: ctx.now,
+	})
+
+	return ok(touch(ferment, ctx, settleAfterPhaseTerminal(phases)))
 }
 
 // ─── complete_ferment ─────────────────────────────────────────────────────────
@@ -810,10 +807,13 @@ function handleResume(
 ): TransitionResult {
 	const guard = requireFermentStatus(ferment, ["paused"])
 	if (guard) return fail(guard)
-	// Resume always returns to "running". A ferment that was "planned" before
-	// pause loses the distinction — the planner can navigate from running by
-	// calling skip_phase or activate_phase as needed.
-	return ok(touch(ferment, ctx, { status: "running" }))
+	const activePhase = ferment.phases.find((p) => p.status === "active")
+	return ok(
+		touch(ferment, ctx, {
+			status: activePhase ? "running" : "planned",
+			activePhaseId: activePhase?.id,
+		}),
+	)
 }
 
 // ─── abandon ──────────────────────────────────────────────────────────────────

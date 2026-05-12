@@ -39,6 +39,14 @@ export interface FermentListItem {
 	createdAt: string
 }
 
+function settleAfterPhaseTerminal(ferment: Ferment, phases: Phase[], timestamp: string): Ferment {
+	const activePhase = phases.find((p) => p.status === "active")
+	if (activePhase) {
+		return { ...ferment, status: "running", activePhaseId: activePhase.id, phases, updatedAt: timestamp }
+	}
+	return { ...ferment, status: "planned", activePhaseId: undefined, phases, updatedAt: timestamp }
+}
+
 export class FermentError extends Error {
 	constructor(
 		message: string,
@@ -526,13 +534,10 @@ export class FermentStorage {
 		const f = this.get(id)
 		if (!f) return undefined
 		const now = new Date().toISOString()
-		const updated: Ferment = {
-			...f,
-			phases: f.phases.map((p) =>
-				p.id === phaseId ? { ...p, status: "failed" as const, summary: reason, completedAt: now } : p,
-			),
-			updatedAt: now,
-		}
+		const phases = f.phases.map((p) =>
+			p.id === phaseId ? { ...p, status: "failed" as const, summary: reason, completedAt: now } : p,
+		)
+		const updated = settleAfterPhaseTerminal(f, phases, now)
 		this.write(updated)
 		return updated
 	}
@@ -627,13 +632,10 @@ export class FermentStorage {
 		const f = this.get(id)
 		if (!f) return undefined
 		const now = new Date().toISOString()
-		const updated: Ferment = {
-			...f,
-			phases: f.phases.map((p) =>
-				p.id === phaseId ? { ...p, status: "completed" as const, summary, completedAt: now } : p,
-			),
-			updatedAt: now,
-		}
+		const phases = f.phases.map((p) =>
+			p.id === phaseId ? { ...p, status: "completed" as const, summary, completedAt: now } : p,
+		)
+		const updated = settleAfterPhaseTerminal(f, phases, now)
 		this.write(updated)
 		return updated
 	}
@@ -643,13 +645,10 @@ export class FermentStorage {
 		const f = this.get(id)
 		if (!f) return undefined
 		const now = new Date().toISOString()
-		const updated: Ferment = {
-			...f,
-			phases: f.phases.map((p) =>
-				p.id === phaseId ? { ...p, status: "skipped" as const, summary: reason ?? "Skipped", completedAt: now } : p,
-			),
-			updatedAt: now,
-		}
+		const phases = f.phases.map((p) =>
+			p.id === phaseId ? { ...p, status: "skipped" as const, summary: reason ?? "Skipped", completedAt: now } : p,
+		)
+		const updated = settleAfterPhaseTerminal(f, phases, now)
 		this.write(updated)
 		return updated
 	}

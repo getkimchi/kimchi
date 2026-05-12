@@ -44,6 +44,19 @@ describe("whatNext", () => {
 			}
 		})
 
+		it("planned between phases → activate next planned phase", () => {
+			const a = whatNext(
+				makeF({
+					status: "planned",
+					phases: [makeP({ status: "completed" }), makeP({ id: "p2", index: 2, name: "P2" })],
+				}),
+			)
+			expect(a.kind).toBe("activate_phase")
+			if (a.kind === "activate_phase") {
+				expect(a.phaseId).toBe("p2")
+			}
+		})
+
 		it("running with no steps → refine", () => {
 			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [makeP({ status: "active" })] }))
 			expect(a.kind).toBe("refine")

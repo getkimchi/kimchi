@@ -887,6 +887,24 @@ export class FermentEventStore {
 
 // ─── Pure fold step ───────────────────────────────────────────────────────────
 
+function settleAfterPhaseTerminal(state: Ferment, phases: Phase[], timestamp: string): Ferment {
+	const activePhase = phases.find((p) => p.status === "active")
+	if (activePhase) {
+		return { ...state, status: "running", activePhaseId: activePhase.id, phases, updatedAt: timestamp }
+	}
+	const { activePhaseId: _activePhaseId, ...rest } = state
+	return { ...rest, status: "planned", phases, updatedAt: timestamp }
+}
+
+function settleAfterResume(state: Ferment, timestamp: string): Ferment {
+	const activePhase = state.phases.find((p) => p.status === "active")
+	if (activePhase) {
+		return { ...state, status: "running", activePhaseId: activePhase.id, updatedAt: timestamp }
+	}
+	const { activePhaseId: _activePhaseId, ...rest } = state
+	return { ...rest, status: "planned", updatedAt: timestamp }
+}
+
 /**
  * Apply one event to a (possibly undefined) ferment state and return the new
  * state. Pure — no I/O.
@@ -977,7 +995,7 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			return { ...state, status: "paused", updatedAt: event.timestamp }
 		case "ferment_resumed":
 			if (!state) throw new Error("ferment_resumed requires existing state")
-			return { ...state, status: "running", updatedAt: event.timestamp }
+			return settleAfterResume(state, event.timestamp)
 		case "ferment_completed": {
 			if (!state) throw new Error("ferment_completed requires existing state")
 			const p = event.payload as FermentCompletedPayload
@@ -1042,61 +1060,37 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 		case "phase_completed": {
 			if (!state) throw new Error("phase_completed requires existing state")
 			const p = event.payload as PhaseCompletedPayload
-			const { activePhaseId: _activePhaseId, lastActiveAt, ...rest } = state
 			const phases = state.phases.map((ph) =>
 				ph.id === p.phaseId
 					? { ...ph, status: "completed" as const, summary: p.summary, completedAt: event.timestamp }
 					: ph,
 			)
-			const remainingActivePhase = phases.find((ph) => ph.status === "active")
-			if (remainingActivePhase) {
-				return {
-					...state,
-					phases,
-					activePhaseId: remainingActivePhase.id,
-					status: "running",
-					updatedAt: event.timestamp,
-				}
-			}
-			return {
-				...rest,
-				phases,
-				lastActiveAt,
-				activePhaseId: undefined,
-				status: "planned",
-				updatedAt: event.timestamp,
-			}
+			return settleAfterPhaseTerminal(state, phases, event.timestamp)
 		}
 		case "phase_skipped": {
 			if (!state) throw new Error("phase_skipped requires existing state")
 			const p = event.payload as PhaseSkippedPayload
-			return {
-				...state,
-				phases: state.phases.map((ph) =>
-					ph.id === p.phaseId
-						? {
-								...ph,
-								status: "skipped" as const,
-								summary: p.reason ?? "Skipped",
-								completedAt: event.timestamp,
-							}
-						: ph,
-				),
-				updatedAt: event.timestamp,
-			}
+			const phases = state.phases.map((ph) =>
+				ph.id === p.phaseId
+					? {
+							...ph,
+							status: "skipped" as const,
+							summary: p.reason ?? "Skipped",
+							completedAt: event.timestamp,
+						}
+					: ph,
+			)
+			return settleAfterPhaseTerminal(state, phases, event.timestamp)
 		}
 		case "phase_failed": {
 			if (!state) throw new Error("phase_failed requires existing state")
 			const p = event.payload as PhaseFailedPayload
-			return {
-				...state,
-				phases: state.phases.map((ph) =>
-					ph.id === p.phaseId
-						? { ...ph, status: "failed" as const, summary: p.reason, completedAt: event.timestamp }
-						: ph,
-				),
-				updatedAt: event.timestamp,
-			}
+			const phases = state.phases.map((ph) =>
+				ph.id === p.phaseId
+					? { ...ph, status: "failed" as const, summary: p.reason, completedAt: event.timestamp }
+					: ph,
+			)
+			return settleAfterPhaseTerminal(state, phases, event.timestamp)
 		}
 		case "phase_refined": {
 			if (!state) throw new Error("phase_refined requires existing state")

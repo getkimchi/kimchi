@@ -116,6 +116,6 @@ describe("createApplyAndPersist", () => {
 		const outcome = applyAndPersist(planned.id, { type: "resume" })
 
 		expect(outcome.ok).toBe(true)
-		if (outcome.ok) expect(outcome.ferment.status).toBe("running")
+		if (outcome.ok) expect(outcome.ferment.status).toBe("planned")
 	})
 })
