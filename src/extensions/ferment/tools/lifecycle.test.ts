@@ -166,6 +166,9 @@ describe("registerLifecycleTools", () => {
 			},
 			sendMessage: vi.fn(),
 			appendEntry: vi.fn(),
+			getActiveTools: vi.fn(() => ["read", "bash"]),
+			getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "create_ferment" }]),
+			setActiveTools: vi.fn(),
 		} as unknown as ExtensionAPI
 		registerLifecycleTools(pi, runtime)
 

@@ -3,6 +3,7 @@ import { determineNextAction, getScopingProgress } from "../../ferment/engine.js
 import { appendRefEntry } from "./nudge.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
+import { setActiveFerment } from "./tool-scope.js"
 import { checkWorktree } from "./worktree.js"
 
 /**
@@ -20,7 +21,7 @@ export function resumeFerment(
 	const applyAndPersist = createApplyAndPersist(runtime)
 	let existing = storage.get(fermentId)
 	if (!existing) {
-		runtime.setActive(undefined)
+		setActiveFerment(pi, runtime, undefined)
 		return
 	}
 
@@ -31,7 +32,7 @@ export function resumeFerment(
 		if (out.ok) existing = out.ferment
 	}
 
-	runtime.setActive(existing)
+	setActiveFerment(pi, runtime, existing)
 	appendRefEntry(pi, existing.id)
 
 	const wtCheck = checkWorktree(existing)

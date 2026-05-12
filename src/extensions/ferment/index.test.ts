@@ -34,6 +34,9 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 			registeredFlags.add(name)
 		}),
 		getFlag: vi.fn((name: string) => (registeredFlags.has(name) ? flagValues[name] : undefined)),
+		getActiveTools: vi.fn(() => ["read", "bash", "create_ferment", "start_step"]),
+		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "create_ferment" }, { name: "start_step" }]),
+		setActiveTools: vi.fn(),
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),

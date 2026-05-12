@@ -69,6 +69,9 @@ function createHarness(): Harness {
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		appendEntry: vi.fn(),
+		getActiveTools: vi.fn(() => ["read", "bash", "complete_ferment"]),
+		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "complete_ferment" }]),
+		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
 
 	registerLifecycleTools(pi, runtime)

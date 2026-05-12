@@ -10,6 +10,7 @@ import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import { isRestoringModel, setRestoringModel } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
+import { disableFermentTools, setActiveFerment } from "./tool-scope.js"
 
 type AssistantContentPart = { type: string; text?: string; name?: string }
 
@@ -36,6 +37,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	})
 
 	pi.on("session_start", async (_event, ctx) => {
+		disableFermentTools(pi)
 		if (process.env.KIMCHI_SUBAGENT === "1") return
 		runtime.clearAllStepStarts()
 		runtime.clearAllScopingGates()
@@ -49,9 +51,9 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
 		} else if (pi.getFlag("ferment-oneshot") === true) {
 			pendingOneshot = true
-			runtime.setActive(undefined)
+			setActiveFerment(pi, runtime, undefined)
 		} else {
-			runtime.setActive(undefined)
+			setActiveFerment(pi, runtime, undefined)
 		}
 	})
 
@@ -86,7 +88,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			const f = storage.create(shortName, intent)
 			const modeOut = applyAndPersist(f.id, { type: "set_mode", mode: "exec" })
 			const updated = modeOut.ok ? modeOut.ferment : f
-			runtime.setActive(updated)
+			setActiveFerment(pi, runtime, updated)
 			appendRefEntry(pi, updated.id)
 			pi.appendEntry("ferment_ack", {
 				text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nMode: exec (fully autonomous)`,
