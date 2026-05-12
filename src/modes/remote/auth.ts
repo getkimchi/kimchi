@@ -1,16 +1,4 @@
-import {
-	type AuthenticateResponse,
-	REMOTE_ENDPOINT,
-	RemoteAuthError,
-	RemoteNetworkError,
-	WIRE_PROTOCOL,
-} from "./types.js"
-
-const CLIENT_INFO = {
-	version: "0.1.0",
-	platform: `${process.platform}-${process.arch}`,
-	wireProtocol: WIRE_PROTOCOL,
-}
+import { type AuthenticateResponse, REMOTE_ENDPOINT, RemoteAuthError, RemoteNetworkError } from "./types.js"
 
 export interface AuthenticateOptions {
 	endpoint?: string
@@ -31,7 +19,9 @@ function resolveEndpoint(explicit?: string): string {
 }
 
 /**
- * Authenticate a remote session, returning a short-lived connect token.
+ * Get a short-lived connect token to the sandbox.
+ *
+ * URL: POST {endpoint}/v1beta/sandbox-tokens:exchange
  */
 export async function authenticateRemoteSession(
 	sessionId: string,
@@ -40,7 +30,7 @@ export async function authenticateRemoteSession(
 ): Promise<AuthenticateResponse> {
 	const endpoint = resolveEndpoint(options.endpoint)
 	const fetchImpl = options.fetch ?? globalThis.fetch
-	const url = `${endpoint}/v1/remote-sessions/${encodeURIComponent(sessionId)}:authenticate`
+	const url = `${endpoint}/api/v1/remote-sessions/${encodeURIComponent(sessionId)}:authenticate`
 
 	let resp: Response
 	try {
@@ -50,10 +40,9 @@ export async function authenticateRemoteSession(
 				Authorization: `Bearer ${apiKey}`,
 				"Content-Type": "application/json",
 			},
-			body: JSON.stringify({ client: CLIENT_INFO }),
 		})
 	} catch {
-		throw new RemoteNetworkError("Could not reach llm.kimchi.dev")
+		throw new RemoteNetworkError("Could not reach the kimchi remote endpoint")
 	}
 
 	if (resp.status === 200) {
