@@ -127,15 +127,17 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 	 * Pass `false` for tools that should persist across turns — e.g. direct tools
 	 * registered after a successful cache bootstrap.
 	 *
-	 * If `state` is not yet ready (callback invoked from inside `initializeMcp`
-	 * before its promise resolves), we still register and activate the tools —
-	 * the executor captures `state` lazily via the `() => state` closure, so
-	 * later calls resolve it correctly. We only skip the dynamic-name tagging
-	 * in that window because `state.dynamicToolNames` doesn't exist yet; this
-	 * is acceptable because the bootstrap path passes `markDynamic: false`.
+	 * When `state` is not yet ready (callback invoked from inside `initializeMcp`
+	 * before its promise resolves), we only allow the permanent path through —
+	 * registering dynamic tools without a state to track them in would leak them
+	 * across turns because the `pi.on("input", …)` clear couldn't find them.
+	 * Permanent tools (`markDynamic: false`) are safe to register early: the
+	 * executor captures `state` lazily via the `() => state` closure and the
+	 * tools are meant to persist anyway.
 	 */
 	function registerAndActivate(specs: DirectToolSpec[], opts?: { markDynamic?: boolean }): string[] {
 		const markDynamic = opts?.markDynamic ?? true
+		if (!state && markDynamic) return []
 		const newNames: string[] = []
 		const alreadyActive: string[] = []
 		for (const spec of specs) {
@@ -159,6 +161,8 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 		}
 		const allInjected = [...alreadyActive, ...newNames]
 		if (newNames.length > 0) {
+			// Guard above ensures `markDynamic` implies `state` is set, so the
+			// dynamic-name bookkeeping is safe without a re-check here.
 			if (markDynamic && state) {
 				for (const name of newNames) {
 					state.dynamicToolNames.add(name)

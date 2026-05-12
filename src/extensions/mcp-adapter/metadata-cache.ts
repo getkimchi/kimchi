@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto"
 // metadata-cache.ts - Persistent MCP metadata cache
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { getToolUiResourceUri } from "@modelcontextprotocol/ext-apps/app-bridge"
+import { logger } from "./logger.js"
 import { resourceNameToToolName } from "./resource-tools.js"
 import type { McpResource, McpTool, ServerEntry, ToolMetadata } from "./types.js"
 import { formatToolName, isToolExcluded } from "./types.js"
@@ -86,15 +87,32 @@ export function saveMetadataCache(cache: MetadataCache): void {
  * Replace the on-disk cache with the provided content (no merge with existing).
  * Use only when you need to delete entries; for adds/updates prefer
  * `saveMetadataCache` so concurrent writers don't clobber each other.
+ *
+ * I/O failures (read-only filesystem, full disk, permission denied) are logged
+ * and swallowed — the cache is a derived artifact and must never crash the
+ * extension host during startup. Callers that need to know the write succeeded
+ * should re-read with `loadMetadataCache()`.
  */
 export function overwriteMetadataCache(cache: MetadataCache): void {
-	const dir = dirname(getCachePath())
-	mkdirSync(dir, { recursive: true })
-
+	const cachePath = getCachePath()
+	const tmpPath = `${cachePath}.${process.pid}.tmp`
 	const out: MetadataCache = { version: CACHE_VERSION, servers: cache.servers ?? {} }
-	const tmpPath = `${getCachePath()}.${process.pid}.tmp`
-	writeFileSync(tmpPath, JSON.stringify(out, null, 2), "utf-8")
-	renameSync(tmpPath, getCachePath())
+
+	try {
+		mkdirSync(dirname(cachePath), { recursive: true })
+		writeFileSync(tmpPath, JSON.stringify(out, null, 2), "utf-8")
+		renameSync(tmpPath, cachePath)
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error)
+		logger.debug(`MCP: failed to overwrite metadata cache at ${cachePath}: ${message}`)
+		// Best-effort cleanup of a half-written temp file so we don't accumulate
+		// `.pid.tmp` dotfiles on repeated failures. If this throws too, drop it.
+		try {
+			if (existsSync(tmpPath)) unlinkSync(tmpPath)
+		} catch {
+			// nothing to do — the next run will overwrite or ignore stale temp files
+		}
+	}
 }
 
 /**
