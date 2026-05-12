@@ -58,8 +58,13 @@ class MockWebSocket {
 }
 
 function installMockWS(ws: MockWebSocket) {
+	return installMockWSFactory(() => ws)
+}
+
+function installMockWSFactory(factory: (url: string) => MockWebSocket) {
 	const OriginalWS = (globalThis as unknown as { WebSocket: unknown }).WebSocket
 	const mockFn = vi.fn().mockImplementation((url: string) => {
+		const ws = factory(url)
 		ws.url = url
 		return ws
 	}) as unknown as typeof WebSocket
@@ -170,6 +175,97 @@ describe("createWebSocketTransport", () => {
 		const result = await closedPromise
 		expect(result.code).toBe(4003)
 		expect(result.reason).toBe("SessionFinished")
+		restore()
+	})
+
+	it("retries on failed handshake then succeeds", async () => {
+		const sockets: MockWebSocket[] = []
+		const restore = installMockWSFactory(() => {
+			const ws = new MockWebSocket("")
+			sockets.push(ws)
+			// First two fail, third succeeds
+			if (sockets.length < 3) {
+				queueMicrotask(() => {
+					ws.readyState = MockWebSocket.CLOSED
+					ws.dispatchEvent(new Event("close"))
+				})
+			} else {
+				queueMicrotask(() => {
+					ws.readyState = MockWebSocket.OPEN
+					ws.dispatchEvent(new Event("open"))
+				})
+			}
+			return ws
+		})
+
+		const log = vi.fn()
+		const fakeFetch = vi.fn(async () => ({ status: 503 }) as unknown as Response)
+
+		const transport = await createWebSocketTransport("ws://localhost:10080/ws", "tok", {
+			maxRetryMs: 1000,
+			initialDelayMs: 1,
+			log,
+			fetch: fakeFetch as unknown as typeof globalThis.fetch,
+		})
+
+		expect(sockets.length).toBe(3)
+		expect(log).toHaveBeenCalled()
+		expect(log.mock.calls.some((c) => String(c[0]).includes("HTTP 503"))).toBe(true)
+
+		transport.close()
+		restore()
+	})
+
+	it("throws after exhausting retry budget", async () => {
+		const restore = installMockWSFactory(() => {
+			const ws = new MockWebSocket("")
+			queueMicrotask(() => {
+				ws.readyState = MockWebSocket.CLOSED
+				ws.dispatchEvent(new Event("close"))
+			})
+			return ws
+		})
+
+		const log = vi.fn()
+		const fakeFetch = vi.fn(async () => ({ status: 503 }) as unknown as Response)
+
+		await expect(
+			createWebSocketTransport("ws://localhost:10080/ws", "tok", {
+				maxRetryMs: 20,
+				initialDelayMs: 1,
+				log,
+				fetch: fakeFetch as unknown as typeof globalThis.fetch,
+			}),
+		).rejects.toThrow()
+
+		restore()
+	})
+
+	it("converts ws:// to http:// when probing status", async () => {
+		const restore = installMockWSFactory(() => {
+			const ws = new MockWebSocket("")
+			queueMicrotask(() => {
+				ws.readyState = MockWebSocket.CLOSED
+				ws.dispatchEvent(new Event("close"))
+			})
+			return ws
+		})
+
+		const fakeFetch = vi.fn(async () => ({ status: 502 }) as unknown as Response)
+
+		await createWebSocketTransport("ws://localhost:10080/path", "tok", {
+			maxRetryMs: 5,
+			initialDelayMs: 1,
+			log: () => {},
+			fetch: fakeFetch as unknown as typeof globalThis.fetch,
+		}).catch(() => {})
+
+		expect(fakeFetch).toHaveBeenCalled()
+		const firstCall = (fakeFetch.mock.calls as unknown as unknown[][])[0]
+		expect(firstCall).toBeDefined()
+		const url = String(firstCall?.[0])
+		expect(url.startsWith("http://localhost:10080/path")).toBe(true)
+
 		restore()
 	})
 })
