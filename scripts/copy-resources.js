@@ -44,7 +44,7 @@ cpSync(exportHtmlSrc, exportHtmlDest, {
 })
 
 // kimchi's own themes live outside node_modules — copy them alongside the upstream themes
-const bundledKimchiThemes = ["kimchi.json", "kimchi-minimal.json", "dark.json", "light.json"]
+const bundledKimchiThemes = ["kimchi.json", "kimchi-minimal.json", "kimchi-light.json", "dark.json", "light.json"]
 for (const file of bundledKimchiThemes) {
 	cpSync(join(projectRoot, "themes", file), join(themeDest, file))
 }

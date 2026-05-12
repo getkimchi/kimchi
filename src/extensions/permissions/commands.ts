@@ -130,16 +130,20 @@ async function openModePicker(ctx: ExtensionContext, deps: CommandDeps): Promise
 	const choice = await ctx.ui.select("Select permission mode", [OPT_DEFAULT, OPT_PLAN, OPT_AUTO, OPT_YOLO, CANCEL])
 	if (!choice || choice === CANCEL) return
 
-	const picked: PermissionMode =
-		choice === OPT_DEFAULT
-			? "default"
-			: choice === OPT_PLAN
-				? "plan"
-				: choice === OPT_AUTO
-					? "auto"
-					: choice === OPT_YOLO
-						? "yolo"
-						: "default"
+	let picked: PermissionMode
+	switch (choice) {
+		case OPT_PLAN:
+			picked = "plan"
+			break
+		case OPT_AUTO:
+			picked = "auto"
+			break
+		case OPT_YOLO:
+			picked = "yolo"
+			break
+		default:
+			picked = "default"
+	}
 	handleMode(ctx, deps, picked)
 }
 
@@ -202,7 +206,6 @@ function handleMode(ctx: ExtensionContext, deps: CommandDeps, arg: string): void
 	if (prev === "plan" && mode !== "plan") deps.restorePlanMode()
 	if (mode === "plan") deps.applyPlanMode()
 	deps.updateStatus(ctx)
-	if (ctx.hasUI) ctx.ui.notify(`permissions: mode → ${mode}`, "info")
 }
 
 function addSessionRule(

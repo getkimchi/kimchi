@@ -39,6 +39,7 @@ const SESSION_EVENT_TYPES = new Set<string>([
 	"thinking_level_changed",
 	"auto_retry_start",
 	"auto_retry_end",
+	"extension_error",
 ])
 
 /**

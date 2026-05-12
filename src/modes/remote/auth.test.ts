@@ -23,7 +23,7 @@ describe("authenticateRemoteSession", () => {
 		expect(result.connectToken).toBe("token123")
 		expect(result.wsUrl).toBe("wss://llm.kimchi.dev/sessions/s1")
 		expect(mockFetch).toHaveBeenCalledWith(
-			"https://api.example.com/v1/remote-sessions/s1:authenticate",
+			"https://api.example.com/api/v1/remote-sessions/s1:authenticate",
 			expect.objectContaining({
 				method: "POST",
 				headers: expect.objectContaining({
@@ -95,7 +95,7 @@ describe("authenticateRemoteSession", () => {
 
 		await authenticateRemoteSession("s1", "key1", { endpoint: "https://override.example.com", fetch: mockFetch })
 		expect(mockFetch).toHaveBeenCalledWith(
-			"https://override.example.com/v1/remote-sessions/s1:authenticate",
+			"https://override.example.com/api/v1/remote-sessions/s1:authenticate",
 			expect.anything(),
 		)
 	})

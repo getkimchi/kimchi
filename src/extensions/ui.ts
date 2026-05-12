@@ -241,10 +241,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 			ctx.shutdown()
 		}
 
-		if (!splashActive) return
-		splashActive = false
-		ctx.ui.setHeader((_tui, theme) => new LogoHeader(theme))
-		currentEditor?.setSplashMode(false)
+		exitSplashMode(ctx)
 	})
 
 	let stopWorkingAnimation: (() => void) | undefined
@@ -260,6 +257,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 	pi.on("turn_start", (_, ctx) => {
 		currentCtx = ctx
+		exitSplashMode(ctx)
 		refresh("generating")
 		startIndicator(ctx)
 	})
