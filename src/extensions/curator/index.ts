@@ -94,6 +94,7 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 			provider: providerModel.provider,
 			model: providerModel.model,
 			skillsDir,
+			manager,
 			messages: event.messages,
 		}).catch((err: Error) => {
 			debugLog(`spawnSessionReview failed: ${err.message}`)

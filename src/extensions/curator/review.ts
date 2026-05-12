@@ -94,6 +94,22 @@ async function readSkillDescription(skillPath: string): Promise<string> {
 	}
 }
 
+async function formatInventoryForPrompt(manager: SkillManager): Promise<string> {
+	const inventory = await manager.listInventory()
+	if (inventory.length === 0) {
+		return "(no skills in library yet)"
+	}
+	const entries = await Promise.all(
+		inventory.map(async (s) => {
+			const tag = s.agent_created ? "[Agent]" : "[Bundled]"
+			const fullName = s.category ? `${s.category}/${s.name}` : s.name
+			const description = await readSkillDescription(s.path)
+			return `${tag} ${fullName}: ${description}`
+		}),
+	)
+	return entries.join("\n")
+}
+
 export async function buildCandidateList(
 	manager: SkillManager,
 	skillsDir: string,
@@ -282,6 +298,7 @@ export interface RunSessionReviewOptions {
 	provider: string
 	model: string
 	skillsDir: string
+	manager: SkillManager
 	// biome-ignore lint/suspicious/noExplicitAny: messages type not exported from pi-coding-agent
 	messages: any[]
 }
@@ -313,7 +330,7 @@ export async function tryReviewLock(skillsDir: string): Promise<(() => Promise<v
 }
 
 export async function spawnSessionReview(opts: RunSessionReviewOptions): Promise<void> {
-	const { provider, model, messages, skillsDir } = opts
+	const { provider, model, messages, skillsDir, manager } = opts
 
 	const unlock = await tryReviewLock(skillsDir)
 	if (!unlock) {
@@ -332,7 +349,8 @@ export async function spawnSessionReview(opts: RunSessionReviewOptions): Promise
 
 		debugLog(`transcript serialized: ${transcript.length} chars, ${transcript.split("\n\n").length} turns`)
 
-		const prompt = `${transcript}\n\n---\n\n${SESSION_REVIEW_PROMPT}`
+		const inventorySection = await formatInventoryForPrompt(manager)
+		const prompt = `${transcript}\n\n---\n\n## Known skills in library\n\n${inventorySection}\n\n## Pre-creation checklist (REQUIRED)\n\nBefore creating ANY new skill, you MUST:\n1. Review the Known Skills list above.\n2. If any skill covers the same topic — same CLI tool, same platform, same workflow class — use \`skill_view\` to read it, then patch it via \`skill_manage action=patch\`.\n3. Only create a new skill if NO existing skill covers the territory.\n4. Do not create near-duplicates (e.g. \`gh-cli\` and \`github-cli\`).\n\n${SESSION_REVIEW_PROMPT}`
 		const args = buildSubagentArgs({ provider, model, prompt }, [], collectExtensionArgs())
 		const invocation = getSubagentInvocation(args)
 
