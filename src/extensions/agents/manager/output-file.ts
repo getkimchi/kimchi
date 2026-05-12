@@ -21,16 +21,21 @@ export function encodeCwd(cwd: string): string {
 }
 
 /** Create the output file path, ensuring the directory exists. */
-export function createOutputFilePath(cwd: string, agentId: string, sessionId: string): string {
+export function createOutputFilePath(cwd: string, agentId: string, sessionId: string, rootDir?: string): string {
 	const encoded = encodeCwd(cwd)
-	const root = join(tmpdir(), `kimchi-agents-${process.getuid?.() ?? 0}`)
+	const hasPersistedRoot = rootDir !== undefined && rootDir.length > 0
+	const root = hasPersistedRoot ? rootDir : join(tmpdir(), `kimchi-agents-${process.getuid?.() ?? 0}`)
 	mkdirSync(root, { recursive: true, mode: 0o700 })
-	try {
-		chmodSync(root, 0o700)
-	} catch (err) {
-		if (process.platform !== "win32") throw err
+	if (!hasPersistedRoot) {
+		try {
+			chmodSync(root, 0o700)
+		} catch (err) {
+			if (process.platform !== "win32") throw err
+		}
 	}
-	const dir = join(root, encoded, sessionId, "tasks")
+	const dir = hasPersistedRoot
+		? join(root, "agent-outputs", sessionId, "tasks")
+		: join(root, encoded, sessionId, "tasks")
 	mkdirSync(dir, { recursive: true })
 	return join(dir, `${agentId}.output`)
 }

@@ -35,6 +35,7 @@ import {
 } from "./manager/agent-runner.js"
 import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
+import { prepareAgentSessionFile } from "./manager/session-file.js"
 import { type LifetimeUsage, addUsage, getLifetimeTotal, getSessionContextPercent } from "./manager/usage.js"
 import {
 	BUILTIN_TOOL_NAMES,
@@ -831,6 +832,18 @@ Model selection — YOU choose based on task complexity:
 
 				if (runInBackground) {
 					const { state: bgState, callbacks: bgCallbacks } = createActivityTracker(effectiveMaxTurns)
+					let childSessionFile: string | undefined
+					const parentSessionDir = ctx.sessionManager.getSessionDir()
+					try {
+						childSessionFile = prepareAgentSessionFile(
+							parentSessionDir,
+							ctx.sessionManager.getSessionFile(),
+							ctx.cwd,
+						)?.sessionFile
+					} catch (err) {
+						const detail = err instanceof Error ? err.message : String(err)
+						return textResult(`Failed to pre-write Agent session file under ${parentSessionDir}: ${detail}`)
+					}
 
 					let id: string
 					const origBgOnSession = bgCallbacks.onSessionCreated
@@ -856,6 +869,8 @@ Model selection — YOU choose based on task complexity:
 							inheritContext,
 							thinkingLevel: thinking,
 							isBackground: true,
+							sessionFile: childSessionFile,
+							sessionDir: parentSessionDir,
 							...bgCallbacks,
 						})
 					} catch (err) {
@@ -867,7 +882,7 @@ Model selection — YOU choose based on task complexity:
 					if (record && joinMode) {
 						record.joinMode = joinMode
 						record.toolCallId = toolCallId
-						record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId())
+						record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
 						writeInitialEntry(record.outputFile, id, params.prompt as string, ctx.cwd)
 					}
 
@@ -941,6 +956,19 @@ Model selection — YOU choose based on task complexity:
 				streamUpdate()
 
 				let record: AgentRecord
+				let childSessionFile: string | undefined
+				const parentSessionDir = ctx.sessionManager.getSessionDir()
+				try {
+					childSessionFile = prepareAgentSessionFile(
+						parentSessionDir,
+						ctx.sessionManager.getSessionFile(),
+						ctx.cwd,
+					)?.sessionFile
+				} catch (err) {
+					clearInterval(spinnerInterval)
+					const detail = err instanceof Error ? err.message : String(err)
+					return textResult(`Failed to pre-write Agent session file under ${parentSessionDir}: ${detail}`)
+				}
 				try {
 					record = await manager.spawnAndWait(pi, ctx, subagentType, params.prompt as string, {
 						description: params.description as string,
@@ -949,6 +977,8 @@ Model selection — YOU choose based on task complexity:
 						isolated,
 						inheritContext,
 						thinkingLevel: thinking,
+						sessionFile: childSessionFile,
+						sessionDir: parentSessionDir,
 						signal,
 						...fgCallbacks,
 					})
