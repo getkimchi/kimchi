@@ -90,4 +90,30 @@ describe("ferment nudges", () => {
 		expect(setActiveSpy).toHaveBeenCalledWith(expect.objectContaining({ id: scoped.ferment.id }))
 		expect(getActive()).toBeUndefined()
 	})
+
+	it("nudges failed phase recovery with retry and bypass actions", () => {
+		const pi = createPi()
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getActive: () =>
+				makeDraftFerment({
+					status: "planned",
+					phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "failed", steps: [] }],
+				}),
+			isAutoModeEnabled: () => true,
+		}
+
+		maybeInjectAutoNudge(pi, { force: true }, runtime)
+
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				content: [
+					expect.objectContaining({
+						text: expect.stringContaining("call activate_phase to retry, skip_phase to bypass"),
+					}),
+				],
+			}),
+			{ triggerTurn: true, deliverAs: "followUp" },
+		)
+	})
 })

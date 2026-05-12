@@ -398,7 +398,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)
 			return toolOk(
-				`Phase marked as failed: ${params.reason}. Options: skip_phase to skip it, activate_phase to retry, or /ferment abandon.`,
+				`Phase marked as failed: ${params.reason}. Use activate_phase to retry, skip_phase to bypass, or abandon if the ferment should stop.`,
 			)
 		},
 	})

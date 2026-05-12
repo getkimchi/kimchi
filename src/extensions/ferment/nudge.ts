@@ -50,7 +50,7 @@ const TRANSITION_KINDS = new Set([
  *   activate_phase   → activate_phase
  *   complete_phase   → complete_phase
  *   recover_step     → fail_step / skip_step / start_step (host-decides)
- *   recover_phase    → activate_phase / skip_phase
+ *   recover_phase    → activate_phase / skip_phase / abandon (host-decides)
  */
 function buildResumeNudgeMessage(
 	action: DeclarativeAction,
@@ -72,7 +72,7 @@ function buildResumeNudgeMessage(
 		case "recover_step":
 			return `${preamble}\n\nThe step previously failed. Decide based on the failure: call start_step to retry, skip_step to bypass, or fail_step to mark it permanently failed. Pick one and call it now.`
 		case "recover_phase":
-			return `${preamble}\n\nThe phase previously failed. Decide based on the failure: call activate_phase to retry, or skip_phase to bypass. Pick one and call it now.`
+			return `${preamble}\n\nThe phase previously failed. Decide based on the failure: call activate_phase to retry, skip_phase to bypass, or abandon if the ferment should stop. Pick one and call it now.`
 		case "scope":
 			return `${preamble}\n\nAction: continue scoping — ${action.reason}.`
 		case "complete_step":
@@ -110,9 +110,11 @@ export function maybeInjectAutoNudge(
 	// `force` option overrides this to support explicit /auto resume.
 	if (!opts.force && !TRANSITION_KINDS.has(action.kind)) return
 
+	const actionPhase = "phaseId" in action ? f.phases.find((p) => p.id === action.phaseId) : undefined
 	const activePhase = f.phases.find((p) => p.id === f.activePhaseId)
+	const displayPhase = actionPhase ?? activePhase
 	const activeStep = activePhase?.steps.find((s) => s.status === "running" || s.status === "pending")
-	const phaseInfo = activePhase ? ` · phase ${activePhase.index}/${f.phases.length} "${activePhase.name}"` : ""
+	const phaseInfo = displayPhase ? ` · phase ${displayPhase.index}/${f.phases.length} "${displayPhase.name}"` : ""
 	const stepInfo = activeStep ? ` · step ${activeStep.index}/${activePhase?.steps.length}` : ""
 	const tag = opts.force ? "Resume" : "Auto-nudge"
 	const breadcrumb = `${tag} [${action.kind}]: "${f.name}" [${f.status}]${phaseInfo}${stepInfo}`
@@ -120,7 +122,7 @@ export function maybeInjectAutoNudge(
 	// Compose the message from the structured action rather than passing through
 	// the engine's prose. The reason field provides a one-sentence objective.
 	const messageText = opts.force
-		? buildResumeNudgeMessage(action, f.id, activePhase?.id, activeStep?.id)
+		? buildResumeNudgeMessage(action, f.id, displayPhase?.id, activeStep?.id)
 		: `${action.kind}: ${action.reason}`
 
 	pi.appendEntry("ferment_breadcrumb", { text: breadcrumb })

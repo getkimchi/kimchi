@@ -257,16 +257,37 @@ describe("applyCommand: activate_phase", () => {
 		expect(result.activePhaseId).toBe("phase-2")
 	})
 
-	it("rejects when phase is not in planned status", () => {
+	it("rejects when phase is not in planned or failed status", () => {
 		const f = makeFerment({
 			phases: [makePhase({ id: "phase-1", status: "completed" })],
 		})
 		const error = expectError(applyCommand(f, { type: "activate_phase", phaseId: "phase-1" }, ctx))
 		expect(error.code).toBe("PHASE_NOT_IN_STATUS")
 		if (error.code === "PHASE_NOT_IN_STATUS") {
-			expect(error.expected).toEqual(["planned"])
+			expect(error.expected).toEqual(["planned", "failed"])
 			expect(error.actual).toBe("completed")
 		}
+	})
+
+	it("reactivates a failed phase and clears stale terminal metadata", () => {
+		const f = makeFerment({
+			status: "planned",
+			phases: [
+				makePhase({
+					id: "phase-1",
+					status: "failed",
+					summary: "failed before",
+					completedAt: "2024-01-01T00:00:00.000Z",
+					grade: makeGrade("F"),
+				}),
+			],
+		})
+		const result = expectOk(applyCommand(f, { type: "activate_phase", phaseId: "phase-1" }, ctx))
+		expect(result.status).toBe("running")
+		expect(result.phases[0].status).toBe("active")
+		expect(result.phases[0].completedAt).toBeUndefined()
+		expect(result.phases[0].summary).toBeUndefined()
+		expect(result.phases[0].grade).toBeUndefined()
 	})
 
 	it("rejects when phase not found", () => {

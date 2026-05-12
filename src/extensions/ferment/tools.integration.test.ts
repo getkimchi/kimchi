@@ -887,8 +887,8 @@ describe("paused ferment blocks tool calls at the bridge", () => {
 		const id = await createFerment("Paused Test")
 		await scopeFerment(id)
 		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
-		// Flip to paused via storage (the /pause command path is exercised by
-		// the index.ts handler; here we just need the state).
+		// Flip to paused via storage; here we just need bridge-level enforcement
+		// for an already-paused ferment.
 		const s = h.storage
 		s.updateStatus(id, "paused")
 		clearFermentCache()

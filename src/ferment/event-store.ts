@@ -1027,7 +1027,14 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 				...state,
 				phases: state.phases.map((ph) =>
 					ph.id === p.phaseId
-						? { ...ph, status: "active" as const, startedAt: event.timestamp }
+						? {
+								...ph,
+								status: "active" as const,
+								startedAt: event.timestamp,
+								completedAt: undefined,
+								summary: undefined,
+								grade: undefined,
+							}
 						: ph.status === "active"
 							? { ...ph, status: "planned" as const }
 							: ph,

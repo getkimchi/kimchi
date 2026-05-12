@@ -146,6 +146,18 @@ describe("Valid Transitions", () => {
 			expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
 			expect(result.error).toBeUndefined()
 		})
+
+		it("handles ACTIVATE_PHASE for a failed phase", () => {
+			const ctx = makeContext({
+				fermentStatus: "planned",
+				phases: [makePhaseContext("phase-1", 1, "failed")],
+			})
+			const result = transition(FSM_STATES.PLANNED, FSM_EVENTS.ACTIVATE_PHASE, ctx, {
+				phaseId: "phase-1",
+			})
+			expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
+			expect(result.error).toBeUndefined()
+		})
 	})
 
 	describe("PHASE_ACTIVE state", () => {
@@ -307,6 +319,18 @@ describe("Illegal Transitions (Guards)", () => {
 			expect(result.error).toBeDefined()
 			expect(result.error).toContain('expected "planned"')
 		})
+
+		it("accepts ACTIVATE_PHASE for failed phase", () => {
+			const ctx = makeContext({
+				fermentStatus: "planned",
+				phases: [makePhaseContext("phase-1", 1, "failed")],
+			})
+			const result = transition(FSM_STATES.PLANNED, FSM_EVENTS.ACTIVATE_PHASE, ctx, {
+				phaseId: "phase-1",
+			})
+			expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
+			expect(result.error).toBeUndefined()
+		})
 	})
 
 	describe("START_STEP guards", () => {
@@ -423,7 +447,7 @@ describe("Parallel Phase Group Transitions", () => {
 		expect(result.error).toContain("active")
 	})
 
-	it("allows phase completion when all parallel group phases are terminal", () => {
+	it("settles to planned when the active phase is the last active parallel sibling", () => {
 		const ctx = makeContext({
 			fermentStatus: "running",
 			activePhaseId: "phase-1",
@@ -432,14 +456,24 @@ describe("Parallel Phase Group Transitions", () => {
 				makePhaseContext("phase-2", 2, "skipped", [], 1), // same group, terminal
 			],
 		})
-		// Note: COMPLETE_PHASE checks allPhasesTerminal, not just the group
-		// So this would fail because phase-1 itself isn't terminal yet
-		// This is correct behavior - must complete the active phase first
 		const result = transition(FSM_STATES.PHASE_ACTIVE, FSM_EVENTS.SKIP_PHASE, ctx, {
 			phaseId: "phase-1",
 		})
-		// skip_phase has phaseActive guard, should work
 		expect(result.error).toBeUndefined()
+		expect(result.state).toBe(FSM_STATES.PLANNED)
+	})
+
+	it("stays phase-active when another parallel phase remains active", () => {
+		const ctx = makeContext({
+			fermentStatus: "running",
+			activePhaseId: "phase-1",
+			phases: [makePhaseContext("phase-1", 1, "active", [], 1), makePhaseContext("phase-2", 2, "active", [], 1)],
+		})
+		const result = transition(FSM_STATES.PHASE_ACTIVE, FSM_EVENTS.COMPLETE_PHASE, ctx, {
+			phaseId: "phase-1",
+		})
+		expect(result.error).toBeUndefined()
+		expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
 	})
 })
 
@@ -567,18 +601,16 @@ describe("Edge Cases", () => {
 		expect(result.state).toBe(FSM_STATES.COMPLETE)
 	})
 
-	it("handles SKIP_PHASE with no remaining phases → COMPLETE", () => {
+	it("handles SKIP_PHASE with no remaining active phases → PLANNED", () => {
 		const ctx = makeContext({
 			fermentStatus: "running",
 			activePhaseId: "phase-1",
 			phases: [makePhaseContext("phase-1", 1, "active")],
 		})
-		// When skipping the last (and only) phase, should transition to COMPLETE
-		// via the dynamic target function
 		const result = transition(FSM_STATES.PHASE_ACTIVE, FSM_EVENTS.SKIP_PHASE, ctx, {
 			phaseId: "phase-1",
 		})
-		expect(result.state).toBe(FSM_STATES.COMPLETE)
+		expect(result.state).toBe(FSM_STATES.PLANNED)
 		expect(result.error).toBeUndefined()
 	})
 

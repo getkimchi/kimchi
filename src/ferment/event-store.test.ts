@@ -141,6 +141,32 @@ describe("FermentEventStore", () => {
 			expect(advanced?.phases[1].status).toBe("active")
 		})
 
+		it("replaying fail_phase then activate_phase reactivates without stale terminal metadata", () => {
+			const f = eventStore.create("Phase retry replay test")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Goal",
+				successCriteria: "criteria",
+				constraints: [],
+				phases: [{ name: "P1", goal: "G1" }],
+			})
+			const scoped = eventStore.get(f.id)
+			if (!scoped) throw new Error("ferment missing")
+			const phaseId = scoped.phases[0].id
+
+			exec(eventStore, f.id, { type: "activate_phase", phaseId })
+			exec(eventStore, f.id, { type: "fail_phase", phaseId, reason: "tests failed" })
+			exec(eventStore, f.id, { type: "activate_phase", phaseId })
+
+			const replayed = new FermentEventStore(tempDir).get(f.id)
+			expect(replayed?.status).toBe("running")
+			expect(replayed?.activePhaseId).toBe(phaseId)
+			expect(replayed?.phases[0].status).toBe("active")
+			expect(replayed?.phases[0].completedAt).toBeUndefined()
+			expect(replayed?.phases[0].summary).toBeUndefined()
+			expect(replayed?.phases[0].grade).toBeUndefined()
+		})
+
 		it("complete_phase leaves the final terminal ferment planned until complete_ferment", () => {
 			const f = eventStore.create("Explicit complete test")
 			exec(eventStore, f.id, {

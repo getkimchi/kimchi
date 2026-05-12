@@ -150,12 +150,10 @@ function hasNonParallelRunningStep(ctx: FermentFsmContext, newStepId: string): s
 	return GUARD_ERRORS.CONCURRENT_STEP(runningStep.id)
 }
 
-function isPhaseTerminal(phase: PhaseContext): boolean {
-	return phase.status === "completed" || phase.status === "skipped" || phase.status === "failed"
-}
-
-function areAllPhasesTerminal(ctx: FermentFsmContext): boolean {
-	return ctx.phases.length > 0 && ctx.phases.every((p) => isPhaseTerminal(p))
+function phaseTerminalTarget(ctx: FermentFsmContext, params: EventParams): FsmState {
+	const terminalPhaseId = params.phaseId
+	const anotherActivePhase = ctx.phases.find((p) => p.status === "active" && p.id !== terminalPhaseId)
+	return anotherActivePhase ? FSM_STATES.PHASE_ACTIVE : FSM_STATES.PLANNED
 }
 
 // ─── Guard registry ───────────────────────────────────────────────────────────
@@ -171,8 +169,8 @@ const GUARDS: Record<string, GuardFn> = {
 		if (!params.phaseId) return "Missing phaseId"
 		const phase = findPhaseById(ctx, params.phaseId)
 		if (typeof phase === "string") return phase
-		if (phase.status !== "planned") {
-			return `Phase "${phase.id}" is "${phase.status}", expected "planned".`
+		if (phase.status !== "planned" && phase.status !== "failed") {
+			return `Phase "${phase.id}" is "${phase.status}", expected "planned" or "failed".`
 		}
 		return null
 	},
@@ -242,7 +240,7 @@ const GUARDS: Record<string, GuardFn> = {
 // ─── Transition Entry ─────────────────────────────────────────────────────────
 
 interface TransitionEntry {
-	target: FsmState | ((ctx: FermentFsmContext) => FsmState)
+	target: FsmState | ((ctx: FermentFsmContext, params: EventParams) => FsmState)
 	guard?: string
 }
 
@@ -282,21 +280,15 @@ const TRANSITIONS: TransitionMap = {
 		[FSM_EVENTS.REFINE_PHASE]: { target: FSM_STATES.PHASE_ACTIVE },
 		[FSM_EVENTS.START_STEP]: { target: FSM_STATES.STEP_RUNNING, guard: "noConcurrentNonParallelStep" },
 		[FSM_EVENTS.COMPLETE_PHASE]: {
-			target: (ctx) => (areAllPhasesTerminal(ctx) ? FSM_STATES.COMPLETE : FSM_STATES.PHASE_ACTIVE),
+			target: phaseTerminalTarget,
 			guard: "phaseActive",
 		},
 		[FSM_EVENTS.SKIP_PHASE]: {
-			target: (ctx) => {
-				const otherPhases = ctx.phases.filter((p) => p.id !== ctx.activePhaseId)
-				return otherPhases.every((p) => isPhaseTerminal(p)) ? FSM_STATES.COMPLETE : FSM_STATES.PHASE_ACTIVE
-			},
+			target: phaseTerminalTarget,
 			guard: "phaseActive",
 		},
 		[FSM_EVENTS.FAIL_PHASE]: {
-			target: (ctx) => {
-				const otherPhases = ctx.phases.filter((p) => p.id !== ctx.activePhaseId)
-				return otherPhases.every((p) => isPhaseTerminal(p)) ? FSM_STATES.COMPLETE : FSM_STATES.PHASE_ACTIVE
-			},
+			target: phaseTerminalTarget,
 			guard: "phaseActive",
 		},
 		[FSM_EVENTS.SKIP_STEP]: { target: FSM_STATES.PHASE_ACTIVE, guard: "stepSkipped" },
@@ -375,7 +367,8 @@ export function transition(
 		}
 	}
 
-	const target = typeof transitionEntry.target === "function" ? transitionEntry.target(ctx) : transitionEntry.target
+	const target =
+		typeof transitionEntry.target === "function" ? transitionEntry.target(ctx, params) : transitionEntry.target
 	return { state: target }
 }
 

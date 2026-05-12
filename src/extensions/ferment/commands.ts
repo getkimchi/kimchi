@@ -552,8 +552,7 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 	})
 
 	pi.registerCommand("pause", {
-		description:
-			"Pause the active ferment — flips status to 'paused'; the state machine then refuses every ferment tool call until /auto.",
+		description: "Pause auto-mode for the active ferment without changing ferment state.",
 		async handler(_, ctx) {
 			runtime.setAutoModeEnabled(false)
 
@@ -563,18 +562,12 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 				return
 			}
 
-			if (active.status === "running" || active.status === "planned") {
-				const outcome = applyAndPersist(active.id, { type: "pause" })
-				if (!outcome.ok) {
-					ctx.ui.notify(`Cannot pause: ${outcome.error.message}`)
-					return
-				}
-			} else if (active.status !== "paused") {
+			if (active.status !== "running" && active.status !== "planned" && active.status !== "paused") {
 				ctx.ui.notify(`Ferment is "${active.status}" — nothing to pause.`)
 				return
 			}
 
-			ctx.ui.notify(`Ferment "${active.name}" paused. Type /auto to resume.`)
+			ctx.ui.notify(`Auto-mode paused for "${active.name}". Ferment remains "${active.status}". Type /auto to resume.`)
 			syncFermentToolScope(pi, runtime.getActive())
 		},
 	})

@@ -585,7 +585,16 @@ export class FermentStorage {
 		const updated: Ferment = {
 			...f,
 			phases: f.phases.map((p) => {
-				if (p.id === phaseId) return { ...p, status: "active" as const, startedAt: now }
+				if (p.id === phaseId) {
+					return {
+						...p,
+						status: "active" as const,
+						startedAt: now,
+						completedAt: undefined,
+						summary: undefined,
+						grade: undefined,
+					}
+				}
 				if (p.status === "active") return { ...p, status: "planned" as const }
 				return p
 			}),

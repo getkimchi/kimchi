@@ -443,12 +443,21 @@ function handleActivatePhase(
 	if (isTransitionError(found)) return fail(found)
 	const { phase, index } = found
 
-	const guard = requirePhaseStatus(phase, ["planned"])
+	const guard = requirePhaseStatus(phase, ["planned", "failed"])
 	if (guard) return fail(guard)
 
 	// Deactivate any other active phase, then activate this one.
 	const phases = ferment.phases.map((p, i) => {
-		if (i === index) return { ...p, status: "active" as const, startedAt: ctx.now }
+		if (i === index) {
+			return {
+				...p,
+				status: "active" as const,
+				startedAt: ctx.now,
+				completedAt: undefined,
+				summary: undefined,
+				grade: undefined,
+			}
+		}
 		if (p.status === "active") return { ...p, status: "planned" as const }
 		return p
 	})
