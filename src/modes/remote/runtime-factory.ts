@@ -1,6 +1,7 @@
 import { resolve } from "node:path"
 import { AuthStorage, ExtensionRunner, createAgentSessionServices } from "@earendil-works/pi-coding-agent"
 import type { AgentSession, CreateAgentSessionRuntimeFactory, ExtensionFactory } from "@earendil-works/pi-coding-agent"
+import { onPermissionsModeChange } from "../../extensions/permissions/index.js"
 import { ReconnectSupervisor } from "./reconnect.js"
 import { RemoteAgentSession } from "./remote-agent-session.js"
 
@@ -78,6 +79,13 @@ export function createRemoteRuntimeFactory(
 		supervisor.onClientChange = (newClient) => {
 			session.swapRpcClient(newClient)
 		}
+
+		// Forward client-side permission mode changes (CLI flags at startup,
+		// shift+tab cycling) to the server so its permissions-extension instance
+		// gates tool calls under the same mode.
+		onPermissionsModeChange((mode) => {
+			void session.setPermissionMode(mode)
+		})
 
 		return {
 			session: session as unknown as AgentSession,

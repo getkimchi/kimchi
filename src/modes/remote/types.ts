@@ -4,21 +4,10 @@ export interface AuthenticateResponse {
 	wsUrl: string
 }
 
-export interface AuthenticateRequestBody {
-	client: {
-		version: string
-		platform: string
-		wireProtocol: string
-	}
-}
-
 export const REMOTE_ENDPOINT = "https://llm.kimchi.dev"
-
-export const WIRE_PROTOCOL = "pi-rpc-v1"
 
 export enum WsCloseCode {
 	Normal = 1000,
-	TokenExpired = 4001,
 	TakenOver = 4002,
 	SessionFinished = 4003,
 }
