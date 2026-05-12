@@ -9,7 +9,12 @@ export function settleAfterPhaseTerminalPatch(phases: Phase[]): Pick<Ferment, "p
 }
 
 export function settleAfterPhaseTerminal(ferment: Ferment, phases: Phase[], timestamp: string): Ferment {
-	return { ...ferment, ...settleAfterPhaseTerminalPatch(phases), updatedAt: timestamp }
+	const activePhase = phases.find((p) => p.status === "active")
+	if (activePhase) {
+		return { ...ferment, status: "running", activePhaseId: activePhase.id, phases, updatedAt: timestamp }
+	}
+	const { activePhaseId: _activePhaseId, ...rest } = ferment
+	return { ...rest, status: "planned", phases, updatedAt: timestamp }
 }
 
 export function activateSinglePhase(phases: Phase[], phaseId: string, timestamp: string): Phase[] {

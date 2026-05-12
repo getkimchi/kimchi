@@ -44,7 +44,23 @@ import type {
 
 /** Simple deterministic hash of a serialisable value. */
 export function stateHash(value: unknown): string {
-	return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16)
+	return createHash("sha256")
+		.update(JSON.stringify(canonicalizeForHash(value)))
+		.digest("hex")
+		.slice(0, 16)
+}
+
+function canonicalizeForHash(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(canonicalizeForHash)
+	if (value && typeof value === "object") {
+		const out: Record<string, unknown> = {}
+		for (const key of Object.keys(value).sort()) {
+			const v = (value as Record<string, unknown>)[key]
+			if (v !== undefined) out[key] = canonicalizeForHash(v)
+		}
+		return out
+	}
+	return value
 }
 
 // ─── Event types ──────────────────────────────────────────────────────────────
@@ -1018,8 +1034,8 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			return {
 				...state,
 				phases: activateSinglePhase(state.phases, p.phaseId, event.timestamp),
-				activePhaseId: p.phaseId,
 				lastActiveAt: event.timestamp,
+				activePhaseId: p.phaseId,
 				updatedAt: event.timestamp,
 			}
 		}

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { commandToEvents } from "./event-mapper.js"
-import { FermentEventStore } from "./event-store.js"
+import { FermentEventStore, stateHash } from "./event-store.js"
 import { applyCommand } from "./state-machine.js"
 import { FermentStorage, clearFermentCache } from "./store.js"
 import type { Phase } from "./types.js"
@@ -53,6 +53,12 @@ describe("FermentEventStore", () => {
 	})
 
 	// ─── create + read-back ────────────────────────────────────────────────────
+
+	describe("stateHash", () => {
+		it("is stable for equivalent object shapes with different key insertion order", () => {
+			expect(stateHash({ a: 1, b: { c: 2 }, d: undefined })).toBe(stateHash({ d: undefined, b: { c: 2 }, a: 1 }))
+		})
+	})
 
 	describe("create", () => {
 		it("creates ferment, writes one ferment_created event", () => {
