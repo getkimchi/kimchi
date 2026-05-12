@@ -109,7 +109,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			const pausedSupplement = `\n\n## Ferment Paused\n\nFerment "${f.name}" is paused by the user. Do NOT call any ferment tools (activate_phase, start_step, complete_step, etc.) — they will be rejected. Acknowledge any pending question briefly and wait for the user to resume with /auto.`
 			return { systemPrompt: `${event.systemPrompt}${pausedSupplement}` }
 		}
-		if (f.status !== "running") return {}
+		if (f.status !== "running" && f.status !== "planned") return {}
 		const supplement = buildPlannerSupplement(runtime)
 		return { systemPrompt: `${event.systemPrompt}${supplement}` }
 	})

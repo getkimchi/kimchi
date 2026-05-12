@@ -322,11 +322,8 @@ const TRANSITIONS: TransitionMap = {
 					const phase = ctx.phases.find((p) => p.id === ctx.activePhaseId)
 					if (phase && phase.status === "active") return FSM_STATES.PHASE_ACTIVE
 				}
-				const nextPhase = ctx.phases.find((p) => p.status === "planned")
-				if (nextPhase) return FSM_STATES.PHASE_ACTIVE
-				return FSM_STATES.PAUSED
+				return FSM_STATES.PLANNED
 			},
-			guard: "hasActiveOrPlannedPhase",
 		},
 		[FSM_EVENTS.ABANDON]: { target: FSM_STATES.ABANDONED },
 	},

@@ -244,14 +244,13 @@ describe("Valid Transitions", () => {
 			expect(result.error).toBeUndefined()
 		})
 
-		it("handles RESUME → PHASE_ACTIVE when resuming planned phase", () => {
+		it("handles RESUME → PLANNED when resuming between phases", () => {
 			const ctx = makeContext({
 				fermentStatus: "paused",
 				phases: [makePhaseContext("phase-1", 1, "planned")],
 			})
-			// Note: RESUME without active phase uses RESUME__PLANNED logic
 			const result = transition(FSM_STATES.PAUSED, FSM_EVENTS.RESUME, ctx)
-			expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
+			expect(result.state).toBe(FSM_STATES.PLANNED)
 			expect(result.error).toBeUndefined()
 		})
 	})
@@ -380,14 +379,14 @@ describe("Illegal Transitions (Guards)", () => {
 	})
 
 	describe("RESUME guards", () => {
-		it("rejects RESUME when no phase is active or planned", () => {
+		it("allows RESUME when all phases are terminal so complete_ferment can run", () => {
 			const ctx = makeContext({
 				fermentStatus: "paused",
 				phases: [makePhaseContext("phase-1", 1, "completed")], // all phases done
 			})
 			const result = transition(FSM_STATES.PAUSED, FSM_EVENTS.RESUME, ctx)
-			// Should fail because no planned phases and no active phase
-			expect(result.error).toBeDefined()
+			expect(result.state).toBe(FSM_STATES.PLANNED)
+			expect(result.error).toBeUndefined()
 		})
 	})
 
@@ -465,6 +464,7 @@ describe("Pause/Resume Cycle", () => {
 		expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
 
 		// Step 4: Pause
+		ctx = makeContext({ activePhaseId: "phase-1", phases: [makePhaseContext("phase-1", 1, "active")] })
 		result = transition(FSM_STATES.PHASE_ACTIVE, FSM_EVENTS.PAUSE, ctx)
 		expect(result.state).toBe(FSM_STATES.PAUSED)
 

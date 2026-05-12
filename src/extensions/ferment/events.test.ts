@@ -94,4 +94,38 @@ describe("registerFermentEvents", () => {
 		)
 		expect((result as { systemPrompt: string }).systemPrompt).toContain("Injected Runtime Plan")
 	})
+
+	it("keeps planner supplement active while a ferment is planned between phases", async () => {
+		const now = "2026-01-01T00:00:00.000Z"
+		const active: Ferment = {
+			id: "ferment-1",
+			name: "Between Phases",
+			status: "planned",
+			mode: "plan",
+			worktree: { path: "/repo" },
+			scoping: {},
+			phases: [
+				{ id: "phase-1", index: 1, name: "Done", goal: "G1", status: "completed", steps: [] },
+				{ id: "phase-2", index: 2, name: "Next", goal: "G2", status: "planned", steps: [] },
+			],
+			decisions: [],
+			memories: [],
+			createdAt: now,
+			updatedAt: now,
+		}
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getActive: () => active,
+		}
+		const { handlers, pi } = createPi()
+
+		registerFermentEvents(pi, runtime)
+		const beforeAgentStart = handlers.get("before_agent_start")
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = await beforeAgentStart({ systemPrompt: "base prompt" }, {})
+
+		expect((result as { systemPrompt: string }).systemPrompt).toContain("Ferment Planner Role")
+		expect((result as { systemPrompt: string }).systemPrompt).toContain("Between Phases")
+	})
 })
