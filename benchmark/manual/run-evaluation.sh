@@ -140,13 +140,61 @@ for task in "${TASKS[@]}"; do
   echo "${task} session: ${JSONL_FILES["$task"]}"
 done
 
-# --- Step 5: Run audits with Claude Opus 4.7 ---
+# --- Step 5: Run audits with Claude Opus 4.7 in separate iTerm2 tabs ---
+echo "=== Spawning iTerm2 tabs for audits ==="
+
+declare -A AUDIT_OUTPUT_FILES
 for task in "${TASKS[@]}"; do
-  echo ""
-  echo "=== Auditing ${task} session with Claude Opus 4.7 ==="
-  cd "$REPO_ROOT"
-  "$AUDIT_SCRIPT" -m kimchi-dev/claude-opus-4-7 "${JSONL_FILES["$task"]}"
+  # Compute the expected audit output path from the session JSONL filename
+  jsonl_basename=$(basename "${JSONL_FILES["$task"]}")
+  audit_slug=$(echo "$task" | tr ' ' '-' | tr '_' '-')
+  audit_name="audit-${audit_slug}--${jsonl_basename%.jsonl}"
+  AUDIT_OUTPUT_FILES["$task"]="${REPO_ROOT}/.kimchi/audits/${audit_name}.html"
 done
+
+for task in "${TASKS[@]}"; do
+  audit_cmd="cd \"$REPO_ROOT\" && \"$AUDIT_SCRIPT\" -m kimchi-dev/claude-opus-4-7 \"${JSONL_FILES[\"$task\"]}\""
+  osascript <<EOF
+tell application "iTerm2"
+  tell current window
+    set auditTab to (create tab with default profile)
+    tell auditTab
+      tell current session
+        write text "$audit_cmd"
+      end tell
+    end tell
+  end tell
+end tell
+EOF
+done
+
+echo "Audit tabs spawned in iTerm2."
+
+# --- Step 6: Poll until audits complete ---
+echo "=== Waiting for audits to complete (poll every 30s, max 60 min) ==="
+echo ""
+
+for ((i = 1; i <= 120; i++)); do
+  echo "--- Audit poll $i/120 ---"
+  all_done=true
+  for task in "${TASKS[@]}"; do
+    if [[ -f "${AUDIT_OUTPUT_FILES["$task"]}" ]]; then
+      echo "  ${task}: done (${AUDIT_OUTPUT_FILES["$task"]})"
+    else
+      echo "  ${task}: still running..."
+      all_done=false
+    fi
+  done
+  if $all_done; then
+    echo "=== All audits finished ==="
+    break
+  fi
+  sleep 30
+done
+
+if ! $all_done; then
+  echo "WARNING: Timed out waiting for audits. Check iTerm2 tabs for status." >&2
+fi
 
 echo ""
 echo "========================================"
