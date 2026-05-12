@@ -15,6 +15,7 @@ import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { v7 as uuidv7 } from "uuid"
 
+import { activateSinglePhase, settleAfterPhaseTerminal } from "./lifecycle.js"
 import type {
 	Decision,
 	Ferment,
@@ -37,14 +38,6 @@ export interface FermentListItem {
 	status: FermentStatus
 	phaseCount: number
 	createdAt: string
-}
-
-function settleAfterPhaseTerminal(ferment: Ferment, phases: Phase[], timestamp: string): Ferment {
-	const activePhase = phases.find((p) => p.status === "active")
-	if (activePhase) {
-		return { ...ferment, status: "running", activePhaseId: activePhase.id, phases, updatedAt: timestamp }
-	}
-	return { ...ferment, status: "planned", activePhaseId: undefined, phases, updatedAt: timestamp }
 }
 
 export class FermentError extends Error {
@@ -584,20 +577,7 @@ export class FermentStorage {
 		const now = new Date().toISOString()
 		const updated: Ferment = {
 			...f,
-			phases: f.phases.map((p) => {
-				if (p.id === phaseId) {
-					return {
-						...p,
-						status: "active" as const,
-						startedAt: now,
-						completedAt: undefined,
-						summary: undefined,
-						grade: undefined,
-					}
-				}
-				if (p.status === "active") return { ...p, status: "planned" as const }
-				return p
-			}),
+			phases: activateSinglePhase(f.phases, phaseId, now),
 			activePhaseId: phaseId,
 			lastActiveAt: now,
 			updatedAt: now,

@@ -22,6 +22,7 @@
  * parameter so transitions remain deterministic and unit-testable.
  */
 
+import { activateSinglePhase, settleAfterPhaseTerminalPatch } from "./lifecycle.js"
 import type {
 	Decision,
 	Ferment,
@@ -292,14 +293,6 @@ function setPhase(ferment: Ferment, phaseIndex: number, patch: Partial<Phase>): 
 	return ferment.phases.map((p, i) => (i === phaseIndex ? { ...p, ...patch } : p))
 }
 
-function settleAfterPhaseTerminal(phases: Phase[]): Partial<Ferment> {
-	const activePhase = phases.find((p) => p.status === "active")
-	if (activePhase) {
-		return { phases, activePhaseId: activePhase.id, status: "running" }
-	}
-	return { phases, activePhaseId: undefined, status: "planned" }
-}
-
 function setStep(ferment: Ferment, phaseIndex: number, stepIndex: number, patch: Partial<Step>): Phase[] {
 	return ferment.phases.map((p, i) => {
 		if (i !== phaseIndex) return p
@@ -447,20 +440,7 @@ function handleActivatePhase(
 	if (guard) return fail(guard)
 
 	// Deactivate any other active phase, then activate this one.
-	const phases = ferment.phases.map((p, i) => {
-		if (i === index) {
-			return {
-				...p,
-				status: "active" as const,
-				startedAt: ctx.now,
-				completedAt: undefined,
-				summary: undefined,
-				grade: undefined,
-			}
-		}
-		if (p.status === "active") return { ...p, status: "planned" as const }
-		return p
-	})
+	const phases = activateSinglePhase(ferment.phases, phase.id, ctx.now)
 
 	return ok(
 		touch(ferment, ctx, {
@@ -726,7 +706,7 @@ function handleCompletePhase(
 		grade: cmd.grade,
 	})
 
-	return ok(touch(ferment, ctx, settleAfterPhaseTerminal(phases)))
+	return ok(touch(ferment, ctx, settleAfterPhaseTerminalPatch(phases)))
 }
 
 // ─── skip_phase ───────────────────────────────────────────────────────────────
@@ -746,7 +726,7 @@ function handleSkipPhase(
 		completedAt: ctx.now,
 	})
 
-	return ok(touch(ferment, ctx, settleAfterPhaseTerminal(phases)))
+	return ok(touch(ferment, ctx, settleAfterPhaseTerminalPatch(phases)))
 }
 
 // ─── fail_phase ───────────────────────────────────────────────────────────────
@@ -766,7 +746,7 @@ function handleFailPhase(
 		completedAt: ctx.now,
 	})
 
-	return ok(touch(ferment, ctx, settleAfterPhaseTerminal(phases)))
+	return ok(touch(ferment, ctx, settleAfterPhaseTerminalPatch(phases)))
 }
 
 // ─── complete_ferment ─────────────────────────────────────────────────────────

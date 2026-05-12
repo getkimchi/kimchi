@@ -53,9 +53,6 @@ draft/planned/running/paused/complete → abandoned
 
 **Step status:** `pending → running → done / skipped / verified / failed` (`failed` steps can be recovered by starting them again)
 
-For the lower-level transition reference, see
-[`docs/ferment-state-transitions.md`](./ferment-state-transitions.md).
-
 ---
 
 ## Work modes

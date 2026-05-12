@@ -25,6 +25,7 @@ import { resolve } from "node:path"
 import { lockSync, unlockSync } from "proper-lockfile"
 import { v7 as uuidv7 } from "uuid"
 
+import { activateSinglePhase, settleAfterPhaseTerminal } from "./lifecycle.js"
 import { FermentStorage, resolveFermentsDir } from "./store.js"
 import type {
 	Decision,
@@ -887,15 +888,6 @@ export class FermentEventStore {
 
 // ─── Pure fold step ───────────────────────────────────────────────────────────
 
-function settleAfterPhaseTerminal(state: Ferment, phases: Phase[], timestamp: string): Ferment {
-	const activePhase = phases.find((p) => p.status === "active")
-	if (activePhase) {
-		return { ...state, status: "running", activePhaseId: activePhase.id, phases, updatedAt: timestamp }
-	}
-	const { activePhaseId: _activePhaseId, ...rest } = state
-	return { ...rest, status: "planned", phases, updatedAt: timestamp }
-}
-
 function settleAfterResume(state: Ferment, timestamp: string): Ferment {
 	const activePhase = state.phases.find((p) => p.status === "active")
 	if (activePhase) {
@@ -1025,20 +1017,7 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			const p = event.payload as PhaseActivatedPayload
 			return {
 				...state,
-				phases: state.phases.map((ph) =>
-					ph.id === p.phaseId
-						? {
-								...ph,
-								status: "active" as const,
-								startedAt: event.timestamp,
-								completedAt: undefined,
-								summary: undefined,
-								grade: undefined,
-							}
-						: ph.status === "active"
-							? { ...ph, status: "planned" as const }
-							: ph,
-				),
+				phases: activateSinglePhase(state.phases, p.phaseId, event.timestamp),
 				activePhaseId: p.phaseId,
 				lastActiveAt: event.timestamp,
 				updatedAt: event.timestamp,
