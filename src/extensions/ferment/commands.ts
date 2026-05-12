@@ -507,6 +507,7 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 					ctx.ui.notify(`Cannot resume: ${outcome.error.message}`)
 					return
 				}
+				setActiveFerment(pi, runtime, outcome.ferment)
 			}
 
 			const fresh = runtime.getActive() ?? active

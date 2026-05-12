@@ -338,7 +338,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 			"Mark ferment as complete. All phases must be terminal (completed, skipped, or failed). Judge computes overall grade.",
 		parameters: CompleteFermentParams,
 		async execute(_, params) {
-			const result = completeFerment(runtime, params, lifecycleServices)
+			const result = await completeFerment(runtime, params, lifecycleServices)
 			if (!("isError" in result) || result.isError !== true) syncFermentToolScope(pi, runtime.getActive())
 			return result
 		},

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { FermentCommandController, registerFermentCommands } from "./commands.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
+import { createApplyAndPersist } from "./tool-helpers.js"
 
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>()
@@ -130,5 +131,43 @@ describe("registerFermentCommands", () => {
 			}),
 			{ triggerTurn: true },
 		)
+	})
+
+	it("reenables ferment tools after /auto resumes a paused ferment", async () => {
+		const h = createHarness()
+		const applyAndPersist = createApplyAndPersist(h.runtime)
+		const ferment = h.storage.create("Paused Ferment")
+		const scoped = applyAndPersist(ferment.id, {
+			type: "scope",
+			goal: "Goal",
+			successCriteria: "Works",
+			constraints: [],
+			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
+		})
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		const paused = applyAndPersist(ferment.id, { type: "pause" })
+		if (!paused.ok) throw new Error(paused.error.message)
+
+		let active = paused.ferment
+		h.runtime.getActive = vi.fn(() => active)
+		h.runtime.setActive = vi.fn((ferment) => {
+			active = ferment ?? active
+		})
+
+		const commands = new Map<string, RegisteredCommand>()
+		const pi = {
+			...h.pi,
+			registerCommand: (name: string, command: RegisteredCommand) => {
+				commands.set(name, command)
+			},
+		} as unknown as ExtensionAPI
+		registerFermentCommands(pi, h.runtime)
+
+		const autoCommand = commands.get("auto")
+		if (!autoCommand) throw new Error("auto command was not registered")
+		await autoCommand.handler("", h.ctx)
+
+		expect(active.status).toBe("running")
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "create_ferment", "start_step"])
 	})
 })

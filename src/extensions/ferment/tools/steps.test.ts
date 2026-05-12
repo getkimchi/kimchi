@@ -38,7 +38,14 @@ function createHarness(options: { verification?: string } = {}) {
 	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-steps-test-")))
 	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
 	const applyAndPersist = createApplyAndPersist(runtime)
-	const pi = { sendMessage: vi.fn(), sendUserMessage: vi.fn(), appendEntry: vi.fn() } as unknown as ExtensionAPI
+	const pi = {
+		sendMessage: vi.fn(),
+		sendUserMessage: vi.fn(),
+		appendEntry: vi.fn(),
+		getActiveTools: vi.fn(() => ["read", "bash", "start_step", "complete_step"]),
+		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "start_step" }, { name: "complete_step" }]),
+		setActiveTools: vi.fn(),
+	} as unknown as ExtensionAPI
 	const ferment = storage.create("Step Test")
 	const scope = applyAndPersist(ferment.id, {
 		type: "scope",
@@ -149,6 +156,7 @@ describe("startStep", () => {
 		)
 		expect(okText(pauseResult)).toContain("paused")
 		expect(pauseHarness.storage.get(pauseHarness.fermentId)?.status).toBe("paused")
+		expect(pauseHarness.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
 
 		const skipHarness = createHarness()
 		const skipServices = createServices()

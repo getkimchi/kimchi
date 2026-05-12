@@ -26,7 +26,14 @@ function createHarness(options: { phases?: number } = {}) {
 	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-phases-test-")))
 	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
 	const applyAndPersist = createApplyAndPersist(runtime)
-	const pi = { sendMessage: vi.fn(), sendUserMessage: vi.fn(), appendEntry: vi.fn() } as unknown as ExtensionAPI
+	const pi = {
+		sendMessage: vi.fn(),
+		sendUserMessage: vi.fn(),
+		appendEntry: vi.fn(),
+		getActiveTools: vi.fn(() => ["read", "bash", "complete_phase", "start_step"]),
+		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "complete_phase" }, { name: "start_step" }]),
+		setActiveTools: vi.fn(),
+	} as unknown as ExtensionAPI
 	const ferment = storage.create("Phase Test")
 	const phaseCount = options.phases ?? 2
 	const scope = applyAndPersist(ferment.id, {
@@ -137,6 +144,7 @@ describe("completePhase", () => {
 
 		expect(okText(result)).toContain("Ferment paused at user request")
 		expect(h.storage.get(h.fermentId)?.status).toBe("paused")
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
 		expect(markHumanInput).toHaveBeenCalled()
 		expect(h.pi.sendUserMessage).toHaveBeenCalledWith("Ferment paused. Let me know when you are ready to continue.", {
 			deliverAs: "followUp",
@@ -163,6 +171,14 @@ describe("registerPhaseTools", () => {
 			sendUserMessage: vi.fn(),
 			appendEntry: vi.fn(),
 			sendMessage: vi.fn(),
+			getActiveTools: vi.fn(() => ["read", "bash", "complete_phase", "start_step"]),
+			getAllTools: vi.fn(() => [
+				{ name: "read" },
+				{ name: "bash" },
+				{ name: "complete_phase" },
+				{ name: "start_step" },
+			]),
+			setActiveTools: vi.fn(),
 		} as unknown as ExtensionAPI
 		registerPhaseTools(pi, h.runtime)
 

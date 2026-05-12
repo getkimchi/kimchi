@@ -20,6 +20,7 @@ import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phas
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { createApplyAndPersist, failedToolResult, resolvePhase, toolErr, toolOk } from "../tool-helpers.js"
 import { ActivateParams, CompletePhaseParams, FailPhaseParams, RefineParams, SkipPhaseParams } from "../tool-schemas.js"
+import { syncFermentToolScope } from "../tool-scope.js"
 import type { FermentUi, FermentUiContext } from "../ui.js"
 
 type CompletePhaseArgs = Static<typeof CompletePhaseParams>
@@ -180,6 +181,7 @@ export async function completePhase(
 		if (!choice || choice === "Pause here") {
 			const pauseOutcome = applyAndPersist(fresh.id, { type: "pause" })
 			if (pauseOutcome.ok) runtime.setActive(pauseOutcome.ferment)
+			if (pauseOutcome.ok) syncFermentToolScope(pi, pauseOutcome.ferment)
 			await pi.sendUserMessage("Ferment paused. Let me know when you are ready to continue.", {
 				deliverAs: "followUp",
 			})
