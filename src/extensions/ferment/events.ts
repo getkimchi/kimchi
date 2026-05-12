@@ -92,7 +92,10 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 				text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nMode: exec (fully autonomous)`,
 			})
 			return { action: "transform" as const, text: buildOneshotNudge(updated, intent), images: event.images }
-		} catch {
+		} catch (err) {
+			pi.appendEntry("ferment_oneshot_failed", {
+				text: `One-shot ferment bootstrap failed: ${err instanceof Error ? err.message : String(err)}`,
+			})
 			return
 		}
 	})

@@ -106,6 +106,29 @@ describe("fermentExtension one-shot bootstrap", () => {
 		expect(calls).toContain("ferment_ack")
 	})
 
+	it("records a diagnostic when one-shot bootstrap fails", async () => {
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: vi.fn(() => {
+				throw new Error("storage unavailable")
+			}),
+		}
+		const { handlers, pi } = registerFermentExtension(runtime, { "ferment-oneshot": true })
+		const sessionStart = handlers.get("session_start")
+		const input = handlers.get("input")
+		if (!sessionStart) throw new Error("session_start handler was not registered")
+		if (!input) throw new Error("input handler was not registered")
+
+		await sessionStart({}, { hasUI: false })
+		const result = await input({ type: "input", text: "Fix the task", source: "interactive" }, {})
+
+		expect(result).toBeUndefined()
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			"ferment_oneshot_failed",
+			expect.objectContaining({ text: expect.stringContaining("storage unavailable") }),
+		)
+	})
+
 	it("prefers active-ferment resume over the one-shot flag", async () => {
 		process.env.KIMCHI_ACTIVE_FERMENT = "missing-id"
 		const { handlers } = registerFermentExtension(undefined, { "ferment-oneshot": true })
