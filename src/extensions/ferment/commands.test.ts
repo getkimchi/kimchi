@@ -1,15 +1,31 @@
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { FermentCommandController, registerFermentCommands } from "./commands.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>()
+	return {
+		...actual,
+		writeFileSync: vi.fn(actual.writeFileSync),
+	}
+})
+
 vi.mock("../../ferment/shorten-title.js", () => ({
 	shortenTitle: vi.fn(async (input: string) => input),
 }))
+
+const writeFileSyncMock = vi.mocked(writeFileSync)
+const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs")
+
+afterEach(() => {
+	writeFileSyncMock.mockReset()
+	writeFileSyncMock.mockImplementation(actualFs.writeFileSync)
+})
 
 interface RegisteredCommand {
 	handler(args: string, ctx: ExtensionCommandContext): Promise<void>
@@ -65,6 +81,24 @@ describe("FermentCommandController", () => {
 
 		expect(result).toEqual({ handled: true })
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Existing"))
+	})
+
+	it("reports export write failures without throwing", async () => {
+		const h = createHarness()
+		const controller = new FermentCommandController()
+		const active = h.storage.create("Export Test")
+		h.runtime.getActive = vi.fn(() => active)
+		writeFileSyncMock.mockImplementation(() => {
+			throw new Error("permission denied")
+		})
+
+		const result = await controller.execute(
+			{ type: "export" },
+			{ raw: "export", pi: h.pi, ctx: h.ctx, runtime: h.runtime },
+		)
+
+		expect(result).toEqual({ handled: true })
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith("Export failed: permission denied")
 	})
 })
 

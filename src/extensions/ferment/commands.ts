@@ -390,8 +390,12 @@ export class FermentCommandController {
 			const stats = computeStats(active)
 			const exportData = serializeStats(stats)
 			const fileName = `ferment-export-${active.id.slice(0, 8)}-${Date.now()}.json`
-			writeFileSync(fileName, exportData)
-			ctx.ui.notify(`Exported ferment stats to ${fileName}`)
+			try {
+				writeFileSync(fileName, exportData)
+				ctx.ui.notify(`Exported ferment stats to ${fileName}`)
+			} catch (err) {
+				ctx.ui.notify(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
+			}
 			return { handled: true }
 		}
 
