@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import type { AgentSessionEvent, AgentSessionEventListener } from "@earendil-works/pi-coding-agent"
+import type { AgentSessionEvent, AgentSessionEventListener, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { type RpcAgentEventLike, translateRpcEvent } from "./event-translation.js"
 import type { ReconnectSupervisor } from "./reconnect.js"
 import type { RemoteRpcClient } from "./rpc-client.js"
@@ -7,6 +7,12 @@ import type { RemoteRpcClient } from "./rpc-client.js"
 export class RemoteAgentSession {
 	private _rpcClient!: RemoteRpcClient
 	private readonly _supervisor: ReconnectSupervisor
+	private readonly _settingsManager?: unknown
+	private readonly _sessionManager?: unknown
+	private readonly _resourceLoader?: unknown
+	private readonly _modelRegistry?: unknown
+	private readonly _extensionRunner?: unknown
+	private _uiContext?: ExtensionUIContext
 	private readonly _listeners = new Set<AgentSessionEventListener>()
 	private _messages: Array<Record<string, unknown>> = []
 	private _isStreaming = false
@@ -19,11 +25,37 @@ export class RemoteAgentSession {
 	constructor(options: {
 		rpcClient: RemoteRpcClient
 		supervisor: ReconnectSupervisor
+		settingsManager?: unknown
+		sessionManager?: unknown
+		resourceLoader?: unknown
+		modelRegistry?: unknown
+		extensionRunner?: unknown
 		[key: string]: unknown
 	}) {
 		this._rpcClient = options.rpcClient
 		this._supervisor = options.supervisor
+		this._settingsManager = options.settingsManager
+		this._sessionManager = options.sessionManager
+		this._resourceLoader = options.resourceLoader
+		this._modelRegistry = options.modelRegistry
+		this._extensionRunner = options.extensionRunner
 		this._attachToClient(this._rpcClient)
+	}
+
+	get settingsManager() {
+		return this._settingsManager
+	}
+	get sessionManager() {
+		return this._sessionManager
+	}
+	get resourceLoader() {
+		return this._resourceLoader
+	}
+	get modelRegistry() {
+		return this._modelRegistry
+	}
+	get extensionRunner() {
+		return this._extensionRunner
 	}
 
 	private _attachToClient(client: RemoteRpcClient) {
@@ -64,10 +96,75 @@ export class RemoteAgentSession {
 			case "thinking_level_changed":
 				this._thinkingLevel = (event.level as string) ?? "disabled"
 				break
+			case "extension_ui_request":
+				void this._handleExtensionUiRequest(event)
+				return
 		}
 
 		const translated = translateRpcEvent(event)
 		if (translated) this._emit(translated as AgentSessionEvent)
+	}
+
+	private async _handleExtensionUiRequest(event: RpcAgentEventLike) {
+		const id = event.id as string | undefined
+		const method = event.method as string | undefined
+		const ui = this._uiContext
+		const sendResponse = (resp: Record<string, unknown>) => {
+			if (!id) return
+			void this._rpcClient.sendOneWay({ type: "extension_ui_response", id, ...resp })
+		}
+		if (!ui) {
+			// No UI bound yet — cancel so the server doesn't hang.
+			sendResponse({ cancelled: true })
+			return
+		}
+		try {
+			switch (method) {
+				case "select": {
+					const value = await ui.select?.(event.title as string, event.options as string[], {
+						timeout: event.timeout as number | undefined,
+					})
+					sendResponse(value === undefined ? { cancelled: true } : { value })
+					break
+				}
+				case "confirm": {
+					const confirmed = await ui.confirm?.(event.title as string, event.message as string, {
+						timeout: event.timeout as number | undefined,
+					})
+					sendResponse(confirmed === undefined ? { cancelled: true } : { confirmed })
+					break
+				}
+				case "input": {
+					const value = await ui.input?.(event.title as string, event.placeholder as string | undefined, {
+						timeout: event.timeout as number | undefined,
+					})
+					sendResponse(value === undefined ? { cancelled: true } : { value })
+					break
+				}
+				case "notify":
+					ui.notify?.(event.message as string, event.notifyType as "warning" | "error" | "info" | undefined)
+					break
+				case "setStatus":
+					ui.setStatus?.(event.statusKey as string, event.statusText as string | undefined)
+					break
+				case "setTitle":
+					ui.setTitle?.(event.title as string)
+					break
+				case "setWidget":
+					ui.setWidget?.(event.widgetKey as string, event.widgetLines as string[] | undefined, {
+						placement: event.widgetPlacement as "aboveEditor" | "belowEditor" | undefined,
+					})
+					break
+				case "setEditorText":
+					ui.setEditorText?.(event.text as string)
+					break
+				default:
+					// Unknown UI request — cancel to release the server.
+					sendResponse({ cancelled: true })
+			}
+		} catch {
+			sendResponse({ cancelled: true })
+		}
 	}
 
 	private _emit(event: AgentSessionEvent) {
@@ -81,6 +178,16 @@ export class RemoteAgentSession {
 	}
 
 	// Duck-typed getters that InteractiveMode reads
+	get state() {
+		return {
+			messages: this._messages,
+			turnIndex: 0,
+			aborted: false,
+			loopType: "chat",
+			toolCallCount: 0,
+			isStreaming: this._isStreaming,
+		}
+	}
 	get agent() {
 		return {
 			state: {
@@ -147,6 +254,12 @@ export class RemoteAgentSession {
 	}
 	get contextUsage() {
 		return undefined
+	}
+	get steeringMode() {
+		return "manual"
+	}
+	get followUpMode() {
+		return "manual"
 	}
 
 	// Used by InteractiveMode to bind events
@@ -260,11 +373,135 @@ export class RemoteAgentSession {
 	setActiveToolsByName() {
 		/* no-op */
 	}
-	bindExtensions() {
-		return Promise.resolve()
+	async bindExtensions(bindings?: {
+		uiContext?: unknown
+		commandContextActions?: unknown
+		shutdownHandler?: unknown
+		onError?: (error: unknown) => void
+	}) {
+		const runner = this._extensionRunner as
+			| {
+					setUIContext?: (ctx: unknown) => void
+					bindCommandContext?: (actions: unknown) => void
+					bindCore?: (actions: unknown, contextActions: unknown, providerActions?: unknown) => void
+					onError?: (cb: (e: unknown) => void) => () => void
+					emit?: (event: unknown) => Promise<unknown>
+			  }
+			| undefined
+		if (!runner) return
+
+		// Replace the loader-time "not initialized" stubs with real actions
+		// before any extension's session_start handler runs.
+		const sessionManager = this._sessionManager as
+			| {
+					appendCustomEntry?: (type: string, data: unknown) => void
+					getSessionName?: () => string | undefined
+					appendLabelChange?: (entryId: string, label: string) => void
+			  }
+			| undefined
+		const modelRegistry = this._modelRegistry as
+			| {
+					registerProvider?: (name: string, config: unknown) => void
+					unregisterProvider?: (name: string) => void
+			  }
+			| undefined
+		runner.bindCore?.(
+			{
+				sendMessage: (message: string, options?: Record<string, unknown>) => {
+					this.sendCustomMessage(message, options).catch(() => {})
+				},
+				sendUserMessage: (content: string, options?: Record<string, unknown>) => {
+					this.sendUserMessage(content, options).catch(() => {})
+				},
+				appendEntry: (customType: string, data: unknown) => {
+					sessionManager?.appendCustomEntry?.(customType, data)
+				},
+				setSessionName: (name: string) => {
+					void this.setSessionName(name)
+				},
+				getSessionName: () => sessionManager?.getSessionName?.(),
+				setLabel: (entryId: string, label: string) => {
+					sessionManager?.appendLabelChange?.(entryId, label)
+				},
+				getActiveTools: () => [],
+				getAllTools: () => [],
+				setActiveTools: () => {},
+				refreshTools: () => {},
+				getCommands: () => [],
+				setModel: async (model: Record<string, string>) => {
+					await this.setModel(model)
+					return true
+				},
+				getThinkingLevel: () => this._thinkingLevel,
+				setThinkingLevel: (level: string) => this.setThinkingLevel(level),
+			},
+			{
+				getModel: () => this._model,
+				isIdle: () => !this._isStreaming,
+				getSignal: () => new AbortController().signal,
+				abort: () => {
+					void this.abort()
+				},
+				hasPendingMessages: () => this.pendingMessageCount > 0,
+				shutdown: () => {
+					bindings?.shutdownHandler && (bindings.shutdownHandler as () => void)()
+				},
+				getContextUsage: () => this.getContextUsage(),
+				compact: (options?: {
+					customInstructions?: string
+					onComplete?: (r: unknown) => void
+					onError?: (e: Error) => void
+				}) => {
+					void (async () => {
+						try {
+							const result = await this.compact(options?.customInstructions)
+							options?.onComplete?.(result)
+						} catch (err) {
+							options?.onError?.(err instanceof Error ? err : new Error(String(err)))
+						}
+					})()
+				},
+				getSystemPrompt: () => this.systemPrompt,
+			},
+			{
+				registerProvider: (name: string, config: unknown) => {
+					modelRegistry?.registerProvider?.(name, config)
+				},
+				unregisterProvider: (name: string) => {
+					modelRegistry?.unregisterProvider?.(name)
+				},
+			},
+		)
+
+		this._uiContext = bindings?.uiContext as ExtensionUIContext | undefined
+		runner.setUIContext?.(bindings?.uiContext)
+		runner.bindCommandContext?.(bindings?.commandContextActions)
+		if (bindings?.onError) runner.onError?.(bindings.onError)
+		await runner.emit?.({ type: "session_start", reason: "startup" })
 	}
 	reload() {
 		return this._rpcClient.send("reload", {})
+	}
+	getContextUsage() {
+		return undefined
+	}
+	getAvailableThinkingLevels(): string[] {
+		return ["disabled", "low", "medium", "high"]
+	}
+	cycleThinkingLevel(direction?: string) {
+		return this._rpcClient.send("cycle_thinking_level", { direction })
+	}
+	getUserMessagesForForking(): Array<Record<string, unknown>> {
+		return []
+	}
+	setScopedModels(models: unknown[]) {
+		return this._rpcClient.send("set_scoped_models", { models })
+	}
+	recordBashResult(_result: unknown) {
+		/* no-op — bash commands stream results via events */
+	}
+	abortBranchSummary() {
+		return this._rpcClient.send("abort_branch_summary", {})
 	}
 	sendCustomMessage(message: string, options?: Record<string, unknown>) {
 		return this._rpcClient.send("send_custom_message", {

@@ -87,6 +87,11 @@ export class RemoteRpcClient {
 		return promise
 	}
 
+	/** Send a fire-and-forget JSONL line without correlating to a response. */
+	sendOneWay(payload: Record<string, unknown>): Promise<void> {
+		return this.enqueueWrite(`${JSON.stringify(payload)}\n`)
+	}
+
 	close(code?: number, reason?: string): void {
 		if (this.closing) return
 		this.closing = true
