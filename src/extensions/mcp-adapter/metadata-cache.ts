@@ -46,41 +46,79 @@ export function getMetadataCachePath(): string {
 	return getCachePath()
 }
 
+/**
+ * Type guard to validate cache structure.
+ */
+function isValidCache(cache: unknown): cache is MetadataCache {
+	return !!(
+		cache &&
+		typeof cache === "object" &&
+		"version" in cache &&
+		cache.version === CACHE_VERSION &&
+		"servers" in cache &&
+		cache.servers &&
+		typeof cache.servers === "object"
+	)
+}
+
+/**
+ * Safely load existing cache from disk, returning empty cache on any error.
+ */
+function loadExistingCache(): MetadataCache {
+	const cache: MetadataCache = { version: CACHE_VERSION, servers: {} }
+
+	if (!existsSync(getCachePath())) return cache
+
+	try {
+		const existing = JSON.parse(readFileSync(getCachePath(), "utf-8"))
+		if (isValidCache(existing)) {
+			cache.servers = { ...existing.servers }
+		}
+	} catch {
+		// Ignore parse errors and return empty cache
+	}
+
+	return cache
+}
+
+/**
+ * Atomically write cache data to disk using temp file + rename.
+ */
+function atomicWriteCache(data: MetadataCache): void {
+	const cachePath = getCachePath()
+	const tmpPath = `${cachePath}.${process.pid}.tmp`
+
+	mkdirSync(dirname(cachePath), { recursive: true })
+	writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf-8")
+	renameSync(tmpPath, cachePath)
+}
+
+/**
+ * Best-effort cleanup of temporary file. Swallows all errors.
+ */
+function cleanupTempFile(tmpPath: string): void {
+	try {
+		if (existsSync(tmpPath)) unlinkSync(tmpPath)
+	} catch {
+		// nothing to do — the next run will overwrite or ignore stale temp files
+	}
+}
+
 export function loadMetadataCache(): MetadataCache | null {
 	if (!existsSync(getCachePath())) return null
 	try {
 		const raw = JSON.parse(readFileSync(getCachePath(), "utf-8"))
-		if (!raw || typeof raw !== "object") return null
-		if (raw.version !== CACHE_VERSION) return null
-		if (!raw.servers || typeof raw.servers !== "object") return null
-		return raw as MetadataCache
+		if (!isValidCache(raw)) return null
+		return raw
 	} catch {
 		return null
 	}
 }
 
 export function saveMetadataCache(cache: MetadataCache): void {
-	const dir = dirname(getCachePath())
-	mkdirSync(dir, { recursive: true })
-
-	const merged: MetadataCache = { version: CACHE_VERSION, servers: {} }
-	try {
-		if (existsSync(getCachePath())) {
-			const existing = JSON.parse(readFileSync(getCachePath(), "utf-8")) as MetadataCache
-			if (existing && existing.version === CACHE_VERSION && existing.servers) {
-				merged.servers = { ...existing.servers }
-			}
-		}
-	} catch {
-		// Ignore parse errors and proceed with empty cache
-	}
-
-	merged.version = CACHE_VERSION
+	const merged = loadExistingCache()
 	merged.servers = { ...merged.servers, ...cache.servers }
-
-	const tmpPath = `${getCachePath()}.${process.pid}.tmp`
-	writeFileSync(tmpPath, JSON.stringify(merged, null, 2), "utf-8")
-	renameSync(tmpPath, getCachePath())
+	atomicWriteCache(merged)
 }
 
 /**
@@ -99,19 +137,13 @@ export function overwriteMetadataCache(cache: MetadataCache): void {
 	const out: MetadataCache = { version: CACHE_VERSION, servers: cache.servers ?? {} }
 
 	try {
-		mkdirSync(dirname(cachePath), { recursive: true })
-		writeFileSync(tmpPath, JSON.stringify(out, null, 2), "utf-8")
-		renameSync(tmpPath, cachePath)
+		atomicWriteCache(out)
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error)
 		logger.debug(`MCP: failed to overwrite metadata cache at ${cachePath}: ${message}`)
 		// Best-effort cleanup of a half-written temp file so we don't accumulate
 		// `.pid.tmp` dotfiles on repeated failures. If this throws too, drop it.
-		try {
-			if (existsSync(tmpPath)) unlinkSync(tmpPath)
-		} catch {
-			// nothing to do — the next run will overwrite or ignore stale temp files
-		}
+		cleanupTempFile(tmpPath)
 	}
 }
 
@@ -182,6 +214,28 @@ export function isServerCacheValid(
 	return true
 }
 
+/**
+ * Build tool metadata if not excluded, otherwise return null.
+ */
+function buildToolMetadata(
+	toolName: string,
+	serverName: string,
+	prefix: "server" | "none" | "short",
+	excludeTools: ServerEntry["excludeTools"],
+	additionalFields: Partial<ToolMetadata>,
+): ToolMetadata | null {
+	if (isToolExcluded(toolName, serverName, prefix, excludeTools)) {
+		return null
+	}
+
+	return {
+		name: formatToolName(toolName, serverName, prefix),
+		originalName: toolName,
+		description: "",
+		...additionalFields,
+	}
+}
+
 export function reconstructToolMetadata(
 	serverName: string,
 	entry: ServerCacheEntry,
@@ -192,34 +246,38 @@ export function reconstructToolMetadata(
 
 	for (const tool of entry.tools ?? []) {
 		if (!tool?.name) continue
-		if (isToolExcluded(tool.name, serverName, prefix, definition.excludeTools)) {
-			continue
-		}
 
-		metadata.push({
-			name: formatToolName(tool.name, serverName, prefix),
-			originalName: tool.name,
+		const toolMetadata = buildToolMetadata(tool.name, serverName, prefix, definition.excludeTools, {
 			description: tool.description ?? "",
 			inputSchema: tool.inputSchema,
 			uiResourceUri: tool.uiResourceUri,
 			uiStreamMode: tool.uiStreamMode,
 		})
+
+		if (toolMetadata) {
+			metadata.push(toolMetadata)
+		}
 	}
 
 	if (definition.exposeResources !== false) {
 		for (const resource of entry.resources ?? []) {
 			if (!resource?.name || !resource?.uri) continue
-			const baseName = `get_${resourceNameToToolName(resource.name)}`
-			if (isToolExcluded(baseName, serverName, prefix, definition.excludeTools)) {
-				continue
-			}
 
-			metadata.push({
-				name: formatToolName(baseName, serverName, prefix),
-				originalName: baseName,
-				description: resource.description ?? `Read resource: ${resource.uri}`,
-				resourceUri: resource.uri,
-			})
+			const baseName = `get_${resourceNameToToolName(resource.name)}`
+			const resourceMetadata = buildToolMetadata(
+				baseName,
+				serverName,
+				prefix,
+				definition.excludeTools,
+				{
+					description: resource.description ?? `Read resource: ${resource.uri}`,
+					resourceUri: resource.uri,
+				},
+			)
+
+			if (resourceMetadata) {
+				metadata.push(resourceMetadata)
+			}
 		}
 	}
 
