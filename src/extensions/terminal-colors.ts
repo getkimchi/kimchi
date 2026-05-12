@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs"
-import { resolve } from "node:path"
+import { basename, resolve } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getActiveThemeName, onThemeChange } from "../settings-watcher.js"
 import { QUERY_BG, getRawBgPayload } from "../terminal-bg-probe.js"
@@ -21,9 +21,7 @@ function hexToOscRgb(hex: string): string | null {
 
 /** Detects iTerm2 specifically — only terminals that honour OSC 1337;SetColors. */
 function isIterm2(): boolean {
-	const termProgram = process.env.TERM_PROGRAM ?? ""
-	const term = process.env.TERM ?? ""
-	return termProgram === "iTerm.app" || term === "xterm-256color-italic"
+	return process.env.TERM_PROGRAM === "iTerm.app"
 }
 
 /** Converts hex color (#RRGGBB) to iTerm2 OSC 1337 format (6-char hex without #). */
@@ -53,7 +51,7 @@ function getThemeColors(themeName: string): { fgHex: string; bgHex: string } | n
 	try {
 		const dir = process.env.KIMCHI_CODING_AGENT_DIR
 		if (!dir) return null
-		const path = resolve(dir, "themes", `${themeName}.json`)
+		const path = resolve(dir, "themes", `${basename(themeName)}.json`)
 		const raw = readFileSync(path, "utf-8")
 		const theme = JSON.parse(raw)
 		const vars: Record<string, string> = theme.vars ?? {}
@@ -80,6 +78,9 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 	let exitHandlersInstalled = false
 	let lastCtx: ExtensionContext | undefined
 	let unsubscribeThemeChange: (() => void) | undefined
+	// Shared by the onThemeChange callback and the sensor widget so neither
+	// re-runs the OSC writes for a theme the other just handled.
+	let lastSensorTheme: string | undefined
 
 	const restore = () => {
 		if (!process.stdout.isTTY) return
@@ -188,6 +189,10 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 	}
 
 	const reactToThemeChange = (newName: string | undefined) => {
+		// Mark before doing work — the setStatus call below invalidates the TUI,
+		// which fires the sensor widget; without this update the sensor would
+		// re-enter and emit duplicate OSC writes for the same theme.
+		lastSensorTheme = newName
 		const colors = getThemeColors(newName ?? "")
 
 		if (colors?.bgHex) {
@@ -208,13 +213,13 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 		// pi-mono calls TUI.invalidate() — which happens on every setTheme() call,
 		// including live preview in /settings (onThemePreview doesn't write to disk,
 		// so the file-watcher-based onThemeChange below won't catch it).
-		// We guard with lastSensorTheme to avoid spurious OSC writes on non-theme invalidations.
-		let lastSensorTheme: string | undefined = ctx.ui.theme.name
+		// lastSensorTheme is factory-scoped and updated inside reactToThemeChange,
+		// so the file-watcher path can't trigger a redundant invocation here.
+		lastSensorTheme = ctx.ui.theme.name
 		ctx.ui.setWidget("kimchi-osc-sensor", () => ({
 			invalidate(): void {
 				const name = ctx.ui.theme.name
 				if (name !== undefined && name !== lastSensorTheme) {
-					lastSensorTheme = name
 					reactToThemeChange(name)
 				}
 			},

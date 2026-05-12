@@ -2,7 +2,7 @@
 // All static imports here (extensions, pi-mono) are safe because the env is already configured.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { dirname, resolve } from "node:path"
+import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { dispatchSubcommand } from "./commands/dispatch.js"
@@ -262,13 +262,13 @@ try {
 			try {
 				const settings = JSON.parse(readFileSync(settingsPath, "utf-8"))
 				const themeName: string = settings.theme ?? "kimchi-minimal"
-				const themeRaw = readFileSync(resolve(themesDir, `${themeName}.json`), "utf-8")
+				const themeRaw = readFileSync(resolve(themesDir, `${basename(themeName)}.json`), "utf-8")
 				const theme = JSON.parse(themeRaw)
 				const vars: Record<string, string> = theme.vars ?? {}
 				const oscBgRaw: string = theme.colors?.oscBg ?? ""
 				if (oscBgRaw) {
 					const bgHex: string = vars[oscBgRaw] ?? oscBgRaw
-					if (bgHex.startsWith("#")) {
+					if (/^#[0-9a-fA-F]{6}$/.test(bgHex)) {
 						const bgAnsi = hexToBgAnsi(bgHex, detectColorMode())
 						const cols = process.stdout.columns || 80
 						const rows = process.stdout.rows || 24
@@ -276,8 +276,13 @@ try {
 						process.stdout.write(`\x1b[H${Array.from({ length: rows }, () => line).join("\r\n")}\x1b[H\x1b[0m`)
 					}
 				}
-			} catch {
-				// No settings file yet or theme missing — skip, pi-mono will render normally
+			} catch (err) {
+				// ENOENT is the expected first-run case (no settings.json or theme file yet);
+				// pi-mono will render normally. Surface anything else so corrupt JSON or
+				// unexpected I/O errors don't disappear silently.
+				if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+					console.warn(`Warning: startup viewport paint failed: ${(err as Error).message}`)
+				}
 			}
 		}
 

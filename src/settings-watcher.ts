@@ -55,6 +55,11 @@ function ensureWatcher(): void {
 			if (debounceTimer) clearTimeout(debounceTimer)
 			debounceTimer = setTimeout(fire, 30)
 		})
+		watcher.on("error", (err) => {
+			console.warn("[settings-watcher] watch error:", err)
+			watcher?.close()
+			watcher = undefined
+		})
 	} catch {
 		// settings.json may not exist yet — listeners just won't fire.
 	}
