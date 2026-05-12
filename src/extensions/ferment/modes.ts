@@ -2,7 +2,7 @@
  * Mode predicates for the active ferment.
  *
  * `plan`: conversational, asks for confirmations.
- * `exec`: fully autonomous, auto-advances on phase completion.
+ * `exec`: fully autonomous; the agent calls activate_phase / start_step / complete_phase explicitly.
  * `auto`: balanced — full instructions, planner decides when to act.
  */
 

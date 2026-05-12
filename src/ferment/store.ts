@@ -417,7 +417,6 @@ export class FermentStorage {
 	// These helpers remain for:
 	//   - TUI command handlers (/progress overlay, /ferment switch/abandon)
 	//   - Test fixtures that need to bypass the state machine
-	//   - Internal callers (nudge.ts auto-advance) that pre-validate themselves
 	//
 	// They write directly without going through the state machine, so they DO
 	// NOT enforce invariants. Caller is responsible for state validity.

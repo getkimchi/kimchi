@@ -342,6 +342,45 @@ const TRANSITIONS: TransitionMap = {
 // ─── Transition function ──────────────────────────────────────────────────────
 
 /**
+ * Recovery hints for the most common "wrong event in this state" mistakes.
+ * Returned alongside the base "not valid in state" message so the agent has
+ * something actionable instead of having to guess at the next call.
+ *
+ * Key is `${state}:${event}`. Hints describe what the agent should do
+ * *instead* — not why the rejection happened.
+ */
+const RECOVERY_HINTS: Partial<Record<string, string>> = {
+	[`${FSM_STATES.PHASE_ACTIVE}:${FSM_EVENTS.ACTIVATE_PHASE}`]:
+		"A phase is already active. Call start_step to begin its work, or complete_phase / skip_phase / fail_phase to finish it before activating another.",
+	[`${FSM_STATES.STEP_RUNNING}:${FSM_EVENTS.ACTIVATE_PHASE}`]:
+		"A step is currently running in the active phase. Call complete_step / skip_step / fail_step first, then complete_phase, then activate the next phase.",
+	[`${FSM_STATES.PHASE_ACTIVE}:${FSM_EVENTS.COMPLETE_STEP}`]:
+		"No step is currently running. Call start_step to begin a step before completing it.",
+	[`${FSM_STATES.PHASE_ACTIVE}:${FSM_EVENTS.VERIFY_STEP}`]:
+		"No step is currently running. Call start_step to begin a step before verifying it.",
+	[`${FSM_STATES.PHASE_ACTIVE}:${FSM_EVENTS.SET_MODE}`]:
+		"set_mode is only valid before a phase is active. Pause the ferment first if you need to change mode.",
+	[`${FSM_STATES.STEP_RUNNING}:${FSM_EVENTS.SET_MODE}`]:
+		"set_mode is only valid before a phase is active. Pause the ferment first if you need to change mode.",
+	[`${FSM_STATES.STEP_RUNNING}:${FSM_EVENTS.COMPLETE_PHASE}`]:
+		"A step is still running in this phase. Finish or fail the running step before completing the phase.",
+	[`${FSM_STATES.PLANNED}:${FSM_EVENTS.START_STEP}`]: "No phase is active. Call activate_phase first, then start_step.",
+	[`${FSM_STATES.PLANNED}:${FSM_EVENTS.COMPLETE_STEP}`]:
+		"No phase is active. Call activate_phase then start_step before completing a step.",
+	[`${FSM_STATES.PLANNED}:${FSM_EVENTS.COMPLETE_PHASE}`]: "No phase is active. Call activate_phase first.",
+	[`${FSM_STATES.COMPLETE}:${FSM_EVENTS.ACTIVATE_PHASE}`]:
+		"This ferment is complete. Start a new ferment to do more work.",
+}
+
+function describeValidEvents(state: FsmState): string {
+	const stateTransitions = TRANSITIONS[state]
+	if (!stateTransitions) return ""
+	const valid = Object.keys(stateTransitions)
+	if (valid.length === 0) return ""
+	return `Valid events in state "${state}": ${valid.join(", ")}.`
+}
+
+/**
  * Validate a transition. Returns the new state (or the current state with an
  * `error` if the transition was rejected). Pure — no I/O, no side effects.
  */
@@ -358,7 +397,11 @@ export function transition(
 
 	const transitionEntry = stateTransitions[event]
 	if (!transitionEntry) {
-		return { state, error: `Event "${event}" is not valid in state "${state}".` }
+		const base = `Event "${event}" is not valid in state "${state}".`
+		const hint = RECOVERY_HINTS[`${state}:${event}`]
+		const fallback = hint ? "" : ` ${describeValidEvents(state)}`
+		const tail = hint ? ` ${hint}` : fallback
+		return { state, error: `${base}${tail}` }
 	}
 
 	if (transitionEntry.guard) {

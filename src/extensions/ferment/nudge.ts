@@ -14,10 +14,9 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { determineNextAction, findFirstPlannedPhase } from "../../ferment/engine.js"
+import { determineNextAction } from "../../ferment/engine.js"
 import type { DeclarativeAction } from "../../ferment/engine.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
-import { createApplyAndPersist } from "./tool-helpers.js"
 
 export function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
 	void pi.sendMessage({
@@ -148,20 +147,16 @@ export function onStepCompleted(pi: ExtensionAPI, runtime: FermentRuntime = defa
 }
 
 export function onPhaseCompleted(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
+	// Refresh the in-memory active ferment cache after the storage write. The agent
+	// drives state — no silent activate_phase here. Prior versions auto-advanced
+	// the next planned phase in exec mode, which left the FSM in PHASE_ACTIVE
+	// behind the agent's back and caused every subsequent agent-initiated
+	// activate_phase to be rejected.
 	const id = runtime.getActiveId()
 	if (!id) return
 	const fresh = runtime.getStorage().get(id)
 	if (fresh) {
 		runtime.setActive(fresh)
-		// Auto-advance only in exec mode — auto/plan modes leave activation to the planner
-		if (fresh.mode === "exec") {
-			const next = findFirstPlannedPhase(fresh)
-			if (next) {
-				const applyAndPersist = createApplyAndPersist(runtime)
-				const out = applyAndPersist(fresh.id, { type: "activate_phase", phaseId: next.id })
-				if (out.ok) runtime.setActive(out.ferment)
-			}
-		}
 		maybeInjectAutoNudge(pi, {}, runtime)
 	}
 }
