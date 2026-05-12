@@ -38,7 +38,6 @@ function createServices(overrides: Partial<LifecycleHandlerServices> = {}): Life
 		judgePlan: vi.fn(async (): Promise<PlanReview> => {
 			return { verdict: "approve", suggestions: [], confidence: 85, reasoning: "Plan is clear." }
 		}),
-		maybeInjectAutoNudge: vi.fn(),
 		computeFermentGrade: vi.fn((): JudgeGrade => {
 			return { grade: "A", rationale: "complete", gradedAt: "2026-01-01T00:00:00.000Z" }
 		}),
@@ -72,7 +71,7 @@ beforeEach(() => {
 })
 
 describe("scopeFerment", () => {
-	it("scopes with injected judge review and auto nudge", async () => {
+	it("scopes with injected judge review", async () => {
 		const h = createHarness()
 		const services = createServices()
 
@@ -98,7 +97,6 @@ describe("scopeFerment", () => {
 			"Keep it small",
 			expect.stringContaining("Build"),
 		)
-		expect(services.maybeInjectAutoNudge).toHaveBeenCalledWith(h.pi)
 	})
 
 	it("formats revision suggestions from injected judge review", async () => {

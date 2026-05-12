@@ -22,5 +22,5 @@ Your task — execute ALL of the following steps WITHOUT pausing to ask the user
 3. Only mark a step complete after its implementation and verification have been attempted, and include verification results in the completion summary
 4. When all phases are done and the final relevant verification passes or the remaining blocker is explicit: call complete_ferment
 
-CRITICAL: Do NOT ask for confirmation, do not narrate progress to the user, and do not create extra process work. Scope from the provided task, delegate implementation to workers, verify with the cheapest task-relevant commands, and execute autonomously until complete_ferment is called.`
+CRITICAL: Do NOT ask for confirmation, do not narrate progress to the user, and do not create extra process work. Scope from the provided task, delegate implementation to workers, verify with the cheapest task-relevant commands, and execute autonomously until complete_ferment is called. After complete_ferment returns, produce one concise final assistant message with no tool calls.`
 }

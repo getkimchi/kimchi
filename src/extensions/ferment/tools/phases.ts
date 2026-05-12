@@ -39,7 +39,7 @@ export interface PhaseHandlerServices {
 		evidence?: PhaseEvidence,
 	): Promise<JudgeGrade>
 	judgeSuggestCorrectiveStep(phaseName: string, phaseGoal: string, grade: JudgeGrade): Promise<string | undefined>
-	onPhaseCompleted(pi: ExtensionAPI): void
+	onPhaseCompleted(): void
 	isPlanMode(ferment: Ferment): boolean
 }
 
@@ -130,7 +130,7 @@ export async function completePhase(
 		if (suggestion) runtime.setCorrectiveStep(params.ferment_id, phase.id, suggestion)
 	}
 
-	services.onPhaseCompleted(pi)
+	services.onPhaseCompleted()
 	const fresh = gradeOutcome.ferment
 	const next = fresh.phases.find((p) => p.status === "planned")
 	const gradeNote = `  Grade: ${phaseGrade.grade} — ${phaseGrade.rationale}`
@@ -203,7 +203,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const phaseServices: PhaseHandlerServices = {
 		...defaultPhaseHandlerServices,
-		onPhaseCompleted: (targetPi) => onPhaseCompleted(targetPi, runtime),
+		onPhaseCompleted: () => onPhaseCompleted(runtime),
 	}
 	pi.registerTool({
 		name: "activate_phase",

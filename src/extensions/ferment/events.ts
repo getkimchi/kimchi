@@ -3,7 +3,7 @@ import { shortenTitle } from "../../ferment/shorten-title.js"
 import { clearFermentCache } from "../../ferment/store.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
-import { appendRefEntry } from "./nudge.js"
+import { appendRefEntry, maybeInjectReactiveAutoNudge, resetReactiveAutoNudgeCount } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import { buildPlannerSupplement } from "./planner-supplement.js"
 import { resumeFerment } from "./resume.js"
@@ -14,9 +14,28 @@ import { createApplyAndPersist } from "./tool-helpers.js"
 import { disableFermentTools, setActiveFerment } from "./tool-scope.js"
 
 type AssistantContentPart = { type: string; text?: string; name?: string }
+type TurnEndContext = {
+	ui?: {
+		select?: (title: string, options: string[]) => Promise<string | undefined>
+		input?: (title: string, value: string) => Promise<string | undefined>
+		notify?: (message: string, type?: "warning" | "error" | "info") => void
+	}
+}
+
+function isAssistantContentPart(value: unknown): value is AssistantContentPart {
+	return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string"
+}
+
+function getAssistantContentParts(content: unknown): AssistantContentPart[] {
+	return Array.isArray(content) ? content.filter(isAssistantContentPart) : []
+}
 
 function hasToolCall(content: AssistantContentPart[], toolName: string): boolean {
 	return content.some((c) => c.type === "toolCall" && c.name === toolName)
+}
+
+function hasAnyToolCall(content: AssistantContentPart[]): boolean {
+	return content.some((c) => c.type === "toolCall")
 }
 
 function extractPromptTextAfterLastToolCall(content: AssistantContentPart[]): string {
@@ -27,6 +46,65 @@ function extractPromptTextAfterLastToolCall(content: AssistantContentPart[]): st
 		.map((c) => c.text ?? "")
 		.join("")
 		.trimEnd()
+}
+
+async function maybeRunPlanModeDropdown(
+	pi: ExtensionAPI,
+	ctx: TurnEndContext | undefined,
+	content: AssistantContentPart[],
+	f: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
+	runtime: FermentRuntime,
+): Promise<void> {
+	if (f.status !== "draft" && f.status !== "running") return
+	if (!ctx?.ui?.select || !ctx?.ui?.input) return
+
+	if (hasToolCall(content, "propose_phases")) return
+	const text = extractPromptTextAfterLastToolCall(content)
+	if (!text) return
+
+	const isDraft = f.status === "draft"
+	const yesLabel = isDraft ? "Yes, this looks right" : "Yes, proceed"
+	const noLabel = isDraft ? "No, revise" : "No, pause"
+
+	const title = extractTrailingQuestion(text)
+	const contextualOptions = extractContextualOptions(text)
+	if (!text.endsWith("?") && !contextualOptions) return
+	const options = contextualOptions
+		? [...contextualOptions, "Let me say something else"]
+		: [yesLabel, noLabel, "Let me say something else"]
+	const choice = await ctx.ui.select(title, options)
+	if (!choice) return
+
+	let reply: string
+
+	if (choice === "Let me say something else") {
+		const custom = ctx.ui.input ? await ctx.ui.input("Your message:", "") : undefined
+		if (!custom) return
+		reply = custom
+	} else if (choice === noLabel) {
+		reply = isDraft ? "No — please revise." : "No, pause for now."
+	} else if (contextualOptions?.includes(choice)) {
+		reply = choice
+	} else if (isDraft && choice === yesLabel) {
+		const outcome = confirmPendingScope(runtime, f.id, undefined, "turn_end", f.name)
+		if (outcome.ok) {
+			ctx.ui.notify?.(
+				`Plan saved for "${outcome.outcome.ferment.name}". ${outcome.outcome.ferment.phases.length} phase(s) ready.`,
+			)
+			reply = `Plan saved by user confirmation — ${outcome.outcome.ferment.phases.length} phase(s) now in "planned" status. You can proceed with activate_phase when the user is ready, or wait for further instructions.`
+		} else if (outcome.error.code !== "MISSING_PENDING_PHASES" && outcome.error.code !== "MISSING_PENDING_SCOPE") {
+			ctx.ui.notify?.(`Failed to save plan: ${outcome.error.message}`)
+			reply = `Plan save failed: ${outcome.error.message}. Investigate the ferment state and try again.`
+		} else {
+			reply =
+				"User confirmed the plan but you never called propose_phases — there's nothing structured for the host to save. Call propose_phases now with the same plan you just showed, then end with 'Does this plan look right?' so the user can confirm again."
+		}
+	} else {
+		reply = "Yes, proceed."
+	}
+
+	runtime.markHumanInput()
+	void pi.sendUserMessage(reply, { deliverAs: "followUp" })
 }
 
 export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
@@ -145,60 +223,20 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	})
 
 	pi.on("turn_end", async (event, ctx) => {
+		if (process.env.KIMCHI_SUBAGENT === "1") return
 		runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry)
+		if (event.message.role !== "assistant") return
+		const content = getAssistantContentParts(event.message.content)
+		const activeId = runtime.getActiveId()
+		const toolCallSeen = hasAnyToolCall(content)
+		if (toolCallSeen && activeId) resetReactiveAutoNudgeCount(activeId)
+
 		const f = runtime.getActive()
 		if (!f) return
-		if (f.mode === "exec") return
-		if (f.status !== "draft" && f.status !== "running") return
-		if (!ctx?.ui?.select || !ctx?.ui?.input) return
-		if (event.message.role !== "assistant") return
-
-		if (hasToolCall(event.message.content, "propose_phases")) return
-		const text = extractPromptTextAfterLastToolCall(event.message.content)
-		if (!text) return
-
-		const isDraft = f.status === "draft"
-		const yesLabel = isDraft ? "Yes, this looks right" : "Yes, proceed"
-		const noLabel = isDraft ? "No, revise" : "No, pause"
-
-		const title = extractTrailingQuestion(text)
-		const contextualOptions = extractContextualOptions(text)
-		if (!text.endsWith("?") && !contextualOptions) return
-		const options = contextualOptions
-			? [...contextualOptions, "Let me say something else"]
-			: [yesLabel, noLabel, "Let me say something else"]
-		const choice = await ctx.ui.select(title, options)
-		if (!choice) return
-
-		let reply: string
-
-		if (choice === "Let me say something else") {
-			const custom = ctx.ui.input ? await ctx.ui.input("Your message:", "") : undefined
-			if (!custom) return
-			reply = custom
-		} else if (choice === noLabel) {
-			reply = isDraft ? "No — please revise." : "No, pause for now."
-		} else if (contextualOptions?.includes(choice)) {
-			reply = choice
-		} else if (isDraft && choice === yesLabel) {
-			const outcome = confirmPendingScope(runtime, f.id, undefined, "turn_end", f.name)
-			if (outcome.ok) {
-				ctx.ui.notify(
-					`Plan saved for "${outcome.outcome.ferment.name}". ${outcome.outcome.ferment.phases.length} phase(s) ready.`,
-				)
-				reply = `Plan saved by user confirmation — ${outcome.outcome.ferment.phases.length} phase(s) now in "planned" status. You can proceed with activate_phase when the user is ready, or wait for further instructions.`
-			} else if (outcome.error.code !== "MISSING_PENDING_PHASES" && outcome.error.code !== "MISSING_PENDING_SCOPE") {
-				ctx.ui.notify(`Failed to save plan: ${outcome.error.message}`)
-				reply = `Plan save failed: ${outcome.error.message}. Investigate the ferment state and try again.`
-			} else {
-				reply =
-					"User confirmed the plan but you never called propose_phases — there's nothing structured for the host to save. Call propose_phases now with the same plan you just showed, then end with 'Does this plan look right?' so the user can confirm again."
-			}
-		} else {
-			reply = "Yes, proceed."
+		if (f.mode === "exec") {
+			if (!toolCallSeen) maybeInjectReactiveAutoNudge(pi, runtime)
+			return
 		}
-
-		runtime.markHumanInput()
-		void pi.sendUserMessage(reply, { deliverAs: "followUp" })
+		await maybeRunPlanModeDropdown(pi, ctx, content, f, runtime)
 	})
 }

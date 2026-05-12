@@ -14,7 +14,7 @@ import type { Command } from "../../../ferment/state-machine.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { autoInitFromEnv, ensureGitRepo } from "../git-init.js"
 import { type PlanReview, computeFermentGrade, judgePlan } from "../judge.js"
-import { appendRefEntry, maybeInjectAutoNudge } from "../nudge.js"
+import { appendRefEntry, resetReactiveAutoNudgeCount } from "../nudge.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
 import { createApplyAndPersist, failedToolResult, toolErr, toolOk } from "../tool-helpers.js"
@@ -41,7 +41,6 @@ export interface LifecycleHandlerServices {
 		constraints: string,
 		phases: string,
 	): Promise<PlanReview>
-	maybeInjectAutoNudge(pi: ExtensionAPI): void
 	computeFermentGrade: typeof computeFermentGrade
 }
 
@@ -51,7 +50,6 @@ export interface LifecycleExecutionContext {
 
 export const defaultLifecycleHandlerServices: LifecycleHandlerServices = {
 	judgePlan,
-	maybeInjectAutoNudge,
 	computeFermentGrade,
 }
 
@@ -119,8 +117,6 @@ export async function scopeFerment(
 		(params.constraints ?? []).join(", "),
 		phaseList,
 	)
-	services.maybeInjectAutoNudge(pi)
-
 	// Build the review note. confidence === 0 means the judge was unreachable
 	// or returned an unparseable response — we distinguish that case so the
 	// user doesn't see a confident-looking number from a degraded judge.
@@ -160,6 +156,7 @@ export function completeFerment(
 
 	// Step 4: cleanup in-memory state for this ferment.
 	runtime.clearFermentState(params.ferment_id)
+	resetReactiveAutoNudgeCount(params.ferment_id)
 	runtime.setActive(undefined)
 
 	const fresh = gradeOutcome.ferment
@@ -176,10 +173,7 @@ export function completeFerment(
 
 export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
-	const lifecycleServices: LifecycleHandlerServices = {
-		...defaultLifecycleHandlerServices,
-		maybeInjectAutoNudge: (targetPi) => maybeInjectAutoNudge(targetPi, {}, runtime),
-	}
+	const lifecycleServices: LifecycleHandlerServices = defaultLifecycleHandlerServices
 	pi.registerTool({
 		name: "create_ferment",
 		label: "Create Ferment",
@@ -248,7 +242,6 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 
 				const scopeOutcome = confirmPendingScope(runtime, params.ferment_id, params.phases, "propose_phases")
 				if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
-				maybeInjectAutoNudge(pi, {}, runtime)
 				return toolOk(
 					`Proposal confirmed and saved. Ferment "${scopeOutcome.outcome.ferment.name}" is now planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s).`,
 				)

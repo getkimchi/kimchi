@@ -58,7 +58,7 @@ export interface StepHandlerServices {
 		stderr: string,
 		exitCode: number,
 	): Promise<JudgeVerdict>
-	onStepCompleted(pi: ExtensionAPI): void
+	onStepCompleted(): void
 	buildWorkerContext: typeof buildWorkerContext
 	runVerification(args: VerificationExecution): Promise<VerificationResult>
 }
@@ -165,7 +165,7 @@ export async function startStep(
 				})
 				if (!skipOutcome.ok) return failedToolResult(skipOutcome.error)
 				runtime.clearStepStart(f.id, phase.id, step.id)
-				services.onStepCompleted(pi)
+				services.onStepCompleted()
 				return toolOk(`Step ${step.index}: "${step.description}" skipped at user request.`)
 			}
 
@@ -278,7 +278,7 @@ export async function completeStep(
 		})
 		if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
 
-		services.onStepCompleted(pi)
+		services.onStepCompleted()
 		return toolOk(
 			`Step ${step.index}: "${step.description}" done.  Grade: ${grade.grade} — ${grade.rationale}  ${params.summary ?? ""}`,
 		)
@@ -324,7 +324,7 @@ export async function completeStep(
 			grade,
 		})
 		if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
-		services.onStepCompleted(pi)
+		services.onStepCompleted()
 		return toolOk(
 			`Step ${step.index}: "${step.description}" done and verified ✓  Grade: ${grade.grade} — ${grade.rationale}`,
 		)
@@ -354,7 +354,7 @@ export async function completeStep(
 			grade,
 		})
 		if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
-		services.onStepCompleted(pi)
+		services.onStepCompleted()
 		return toolOk(
 			`Step ${step.index}: "${step.description}" done ✓  Judge: ${judgeVerdict.reason}  Grade: ${grade.grade}`,
 		)
@@ -382,7 +382,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const stepServices: StepHandlerServices = {
 		...defaultStepHandlerServices,
-		onStepCompleted: (targetPi) => onStepCompleted(targetPi, runtime),
+		onStepCompleted: () => onStepCompleted(runtime),
 	}
 	pi.registerTool({
 		name: "start_step",
@@ -468,7 +468,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 				summary: params.summary,
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)
-			onStepCompleted(pi, runtime)
+			onStepCompleted(runtime)
 
 			if (result.success) return toolOk(`✓ "${step.description}" verified.`)
 			return toolErr(`✗ "${step.description}" failed (exit ${exitCode}).`)
@@ -499,7 +499,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)
 			runtime.clearStepStart(f.id, phase.id, step.id)
-			onStepCompleted(pi, runtime)
+			onStepCompleted(runtime)
 			return toolOk("Step skipped.")
 		},
 	})
@@ -528,7 +528,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 				error: params.error,
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)
-			onStepCompleted(pi, runtime)
+			onStepCompleted(runtime)
 			return toolOk(
 				`Step ${step.index}: "${step.description}" marked as failed. Use skip_step to skip it, or retry the work and call start_step again.`,
 			)

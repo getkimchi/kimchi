@@ -103,7 +103,7 @@ describe("completePhase", () => {
 			"phase done",
 			expect.objectContaining({ available: true }),
 		)
-		expect(services.onPhaseCompleted).toHaveBeenCalledWith(h.pi)
+		expect(services.onPhaseCompleted).toHaveBeenCalledWith()
 	})
 
 	it("stores corrective guidance for low phase grades", async () => {

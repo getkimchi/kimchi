@@ -8,8 +8,11 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
 import fermentExtension from "./index.js"
+import { resetAllReactiveAutoNudgeCounts } from "./nudge.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
-import { getActive, setActive } from "./state.js"
+import { getActive, isAutoModeEnabled, setActive, setAutoModeEnabled } from "./state.js"
+import { createApplyAndPersist } from "./tool-helpers.js"
+import { completeFerment } from "./tools/lifecycle.js"
 
 vi.mock("../../ferment/shorten-title.js", () => ({
 	shortenTitle: vi.fn(async (input: string) => input),
@@ -48,6 +51,8 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 
 afterEach(() => {
 	setActive(undefined)
+	setAutoModeEnabled(true)
+	resetAllReactiveAutoNudgeCounts()
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
 	clearFermentCache()
@@ -84,6 +89,7 @@ describe("fermentExtension one-shot bootstrap", () => {
 
 		expect(pi.registerFlag).toHaveBeenCalledWith("ferment-oneshot", expect.objectContaining({ type: "boolean" }))
 		expect(getActive()).toBeUndefined()
+		expect(isAutoModeEnabled()).toBe(true)
 
 		const intent = "Add a CSV export endpoint that streams the orders table"
 		const result = (await input({ type: "input", text: intent, source: "interactive" }, {})) as
@@ -99,6 +105,7 @@ describe("fermentExtension one-shot bootstrap", () => {
 		expect(result?.text).toContain("one-shot ferment")
 		expect(result?.text).toContain(intent)
 		expect(result?.text).toContain(created?.id ?? "")
+		expect(result?.text).toContain("After complete_ferment returns")
 
 		// Bootstrap is a one-shot — a second input must pass through untouched.
 		const next = await input({ type: "input", text: "follow-up", source: "interactive" }, {})
@@ -228,6 +235,134 @@ function makeActivePlanFerment(overrides: Partial<Ferment> = {}): Ferment {
 }
 
 describe("fermentExtension question dropdown", () => {
+	it("reactively nudges exec ferments after a text-only assistant turn", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-reactive-test-")))
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		const applyAndPersist = createApplyAndPersist(runtime)
+		const draft = storage.create("Reactive Turn")
+		const scoped = applyAndPersist(draft.id, {
+			type: "scope",
+			goal: "Goal",
+			successCriteria: "Works",
+			constraints: [],
+			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
+		})
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		const mode = applyAndPersist(draft.id, { type: "set_mode", mode: "exec" })
+		if (!mode.ok) throw new Error(mode.error.message)
+		setActive(mode.ferment)
+		const { handlers, pi } = registerFermentExtension(runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "I am waiting." }],
+				},
+			},
+			{},
+		)
+
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_automode_nudge",
+				content: [expect.objectContaining({ text: "activate_phase: activate the first planned phase" })],
+			}),
+			{ triggerTurn: true, deliverAs: "followUp" },
+		)
+	})
+
+	it("does not reactively nudge from subagent processes", async () => {
+		process.env.KIMCHI_SUBAGENT = "1"
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-subagent-test-")))
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		const applyAndPersist = createApplyAndPersist(runtime)
+		const draft = storage.create("Subagent Turn")
+		const scoped = applyAndPersist(draft.id, {
+			type: "scope",
+			goal: "Goal",
+			successCriteria: "Works",
+			constraints: [],
+			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
+		})
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		const mode = applyAndPersist(draft.id, { type: "set_mode", mode: "exec" })
+		if (!mode.ok) throw new Error(mode.error.message)
+		setActive(mode.ferment)
+		const { handlers, pi } = registerFermentExtension(runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "I am waiting." }],
+				},
+			},
+			{},
+		)
+
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not create a post-completion nudge after completeFerment", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-complete-nudge-test-")))
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		const applyAndPersist = createApplyAndPersist(runtime)
+		const draft = storage.create("Completed Turn")
+		const scoped = applyAndPersist(draft.id, {
+			type: "scope",
+			goal: "Goal",
+			successCriteria: "Works",
+			constraints: [],
+			phases: [{ name: "Phase", goal: "Build", steps: [] }],
+		})
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		const mode = applyAndPersist(draft.id, { type: "set_mode", mode: "exec" })
+		if (!mode.ok) throw new Error(mode.error.message)
+		const activated = applyAndPersist(draft.id, { type: "activate_phase", phaseId: "phase-1" })
+		if (!activated.ok) throw new Error(activated.error.message)
+		const completedPhase = applyAndPersist(draft.id, {
+			type: "complete_phase",
+			phaseId: "phase-1",
+			summary: "done",
+		})
+		if (!completedPhase.ok) throw new Error(completedPhase.error.message)
+		setActive(completedPhase.ferment)
+
+		const { handlers, pi } = registerFermentExtension(runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		completeFerment(runtime, { ferment_id: draft.id, final_summary: "done" })
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "Done." }],
+				},
+			},
+			{},
+		)
+
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_automode_nudge" }),
+			expect.anything(),
+		)
+	})
+
 	it("intercepts contextual option lists even when the message ends with an option", async () => {
 		setActive(makeActivePlanFerment())
 		const { handlers, pi } = registerFermentExtension()
@@ -298,6 +433,44 @@ describe("fermentExtension question dropdown", () => {
 			"Let me say something else",
 		])
 		expect(pi.sendUserMessage).toHaveBeenCalledWith("Yes, proceed", { deliverAs: "followUp" })
+	})
+
+	it("keeps auto-mode ferments on the contextual question path", async () => {
+		setActive(makeActivePlanFerment({ mode: "auto" }))
+		const { handlers, pi } = registerFermentExtension()
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValue("Pause"),
+				input: vi.fn(),
+			},
+		}
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					content: [
+						{
+							type: "text",
+							text: `What should we do?
+1) Continue
+2) Pause`,
+						},
+					],
+				},
+			},
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalledWith("What should we do?", ["Continue", "Pause", "Let me say something else"])
+		expect(pi.sendUserMessage).toHaveBeenCalledWith("Pause", { deliverAs: "followUp" })
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_automode_nudge" }),
+			expect.anything(),
+		)
 	})
 
 	it("intercepts a trailing confirmation question after tool calls", async () => {

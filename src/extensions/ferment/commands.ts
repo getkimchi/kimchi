@@ -9,7 +9,7 @@ import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
-import { appendRefEntry, maybeInjectAutoNudge } from "./nudge.js"
+import { appendRefEntry, injectResumeAutoNudge } from "./nudge.js"
 import { maybeRunOnboarding } from "./onboarding.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import {
@@ -557,7 +557,7 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 			}
 
 			ctx.ui.notify(`Resumed "${active.name}".`)
-			maybeInjectAutoNudge(pi, { force: true }, runtime)
+			injectResumeAutoNudge(pi, runtime)
 		},
 	})
 
