@@ -15,6 +15,8 @@ function createPi() {
 			handlers.set(event, handler)
 		},
 		appendEntry: vi.fn(),
+		registerFlag: vi.fn(),
+		getFlag: vi.fn(),
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		setModel: vi.fn(),
