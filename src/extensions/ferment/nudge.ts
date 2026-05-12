@@ -50,7 +50,7 @@ const TRANSITION_KINDS = new Set([
  *   activate_phase   → activate_phase
  *   complete_phase   → complete_phase
  *   recover_step     → fail_step / skip_step / start_step (host-decides)
- *   recover_phase    → activate_phase / skip_phase / abandon (host-decides)
+ *   recover_phase    → activate_phase / skip_phase, or ask user for /ferment abandon
  */
 function buildResumeNudgeMessage(
 	action: DeclarativeAction,
@@ -72,7 +72,7 @@ function buildResumeNudgeMessage(
 		case "recover_step":
 			return `${preamble}\n\nThe step previously failed. Decide based on the failure: call start_step to retry, skip_step to bypass, or fail_step to mark it permanently failed. Pick one and call it now.`
 		case "recover_phase":
-			return `${preamble}\n\nThe phase previously failed. Decide based on the failure: call activate_phase to retry, skip_phase to bypass, or abandon if the ferment should stop. Pick one and call it now.`
+			return `${preamble}\n\nThe phase previously failed. Decide based on the failure: call activate_phase to retry, call skip_phase to bypass, or ask the user to run /ferment abandon if the ferment should stop. Pick a tool call now unless abandonment is required.`
 		case "scope":
 			return `${preamble}\n\nAction: continue scoping — ${action.reason}.`
 		case "complete_step":

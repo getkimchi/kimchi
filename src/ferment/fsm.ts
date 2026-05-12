@@ -152,6 +152,8 @@ function hasNonParallelRunningStep(ctx: FermentFsmContext, newStepId: string): s
 
 function phaseTerminalTarget(ctx: FermentFsmContext, params: EventParams): FsmState {
 	const terminalPhaseId = params.phaseId
+	// applyCommand keeps non-parallel phases mutually exclusive; any other active
+	// phase here represents a parallel sibling that should keep the ferment running.
 	const anotherActivePhase = ctx.phases.find((p) => p.status === "active" && p.id !== terminalPhaseId)
 	return anotherActivePhase ? FSM_STATES.PHASE_ACTIVE : FSM_STATES.PLANNED
 }

@@ -109,7 +109,9 @@ describe("ferment nudges", () => {
 			expect.objectContaining({
 				content: [
 					expect.objectContaining({
-						text: expect.stringContaining("call activate_phase to retry, skip_phase to bypass"),
+						text: expect.stringContaining(
+							"call activate_phase to retry, call skip_phase to bypass, or ask the user to run /ferment abandon",
+						),
 					}),
 				],
 			}),

@@ -321,7 +321,7 @@ These tools are available to the agent during a ferment session. They are not me
 | `complete_phase` | Mark phase as completed. Judge grades it automatically. Leaves the ferment between phases unless another parallel phase remains active. |
 | `skip_phase` | Skip a phase (counts as terminal) |
 | `fail_phase` | Mark a phase as failed with a reason. The engine surfaces `recover_phase` before treating failed phases as terminal. |
-| `recover_phase` | Engine action for a failed phase. The planner chooses whether to retry with `activate_phase`, bypass with `skip_phase`, or abandon. |
+| `recover_phase` | Engine action for a failed phase. The planner chooses whether to retry with `activate_phase`, bypass with `skip_phase`, or ask the user to run `/ferment abandon`. |
 
 ### Step execution
 
