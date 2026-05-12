@@ -2,8 +2,8 @@
  * Phase tools: activate_phase, refine_phase, complete_phase, skip_phase, fail_phase.
  *
  * complete_phase is the most complex — in plan mode it surfaces a TUI dropdown
- * with a structured phase review and routes the response back to the planner
- * via `pi.sendUserMessage(..., { deliverAs: "followUp" })`.
+ * with a structured phase review and returns the user's choice in the tool
+ * result. It must not queue follow-up user messages from the tool handler.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
@@ -182,17 +182,13 @@ export async function completePhase(
 			const pauseOutcome = applyAndPersist(fresh.id, { type: "pause" })
 			if (pauseOutcome.ok) runtime.setActive(pauseOutcome.ferment)
 			if (pauseOutcome.ok) syncFermentToolScope(pi, pauseOutcome.ferment)
-			await pi.sendUserMessage("Ferment paused. Let me know when you are ready to continue.", {
-				deliverAs: "followUp",
-			})
 			return toolOk(`Phase done.${gradeNote}\nFerment paused at user request.`)
 		}
 		if (choice === "Let me say something") {
 			const custom = ctx.ui.input ? await ctx.ui.input("Your message:", "") : undefined
-			if (custom) await pi.sendUserMessage(custom, { deliverAs: "followUp" })
+			if (custom) return toolOk(`Phase done.${gradeNote}\nUser direction: ${custom}`)
 			return toolOk(`Phase done.${gradeNote}\nAwaiting user direction.`)
 		}
-		await pi.sendUserMessage(`Proceed to Phase ${next.index}: "${next.name}".`, { deliverAs: "followUp" })
 		return toolOk(`Phase done.${gradeNote}\nUser confirmed: proceed to Phase ${next.index}.`)
 	}
 

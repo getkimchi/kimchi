@@ -1,9 +1,14 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { shortenTitle } from "../../ferment/shorten-title.js"
 import { clearFermentCache } from "../../ferment/store.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
-import { appendRefEntry, maybeInjectReactiveAutoNudge, resetReactiveAutoNudgeCount } from "./nudge.js"
+import {
+	appendRefEntry,
+	injectResumeAutoNudge,
+	maybeInjectReactiveAutoNudge,
+	resetReactiveAutoNudgeCount,
+} from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import { buildPlannerSupplement } from "./planner-supplement.js"
 import { resumeFerment } from "./resume.js"
@@ -14,13 +19,7 @@ import { createApplyAndPersist } from "./tool-helpers.js"
 import { disableFermentTools, setActiveFerment } from "./tool-scope.js"
 
 type AssistantContentPart = { type: string; text?: string; name?: string }
-type TurnEndContext = {
-	ui?: {
-		select?: (title: string, options: string[]) => Promise<string | undefined>
-		input?: (title: string, value: string) => Promise<string | undefined>
-		notify?: (message: string, type?: "warning" | "error" | "info") => void
-	}
-}
+type TurnEndContext = Partial<Pick<ExtensionContext, "ui">>
 
 function isAssistantContentPart(value: unknown): value is AssistantContentPart {
 	return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string"
@@ -55,8 +54,45 @@ async function maybeRunPlanModeDropdown(
 	f: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
 	runtime: FermentRuntime,
 ): Promise<void> {
+	if (!ctx?.ui?.select) return
+
+	if (f.status === "planned") {
+		if (!runtime.hasAfterScopeContinuation(f.id)) return
+		const fresh = runtime.getStorage().get(f.id)
+		if (!fresh || fresh.status === "complete" || fresh.status === "abandoned" || fresh.status === "paused") {
+			runtime.consumeAfterScopeContinuation(f.id)
+			return
+		}
+		if (fresh.status !== "planned" || fresh.mode !== "plan") {
+			runtime.consumeAfterScopeContinuation(f.id)
+			return
+		}
+		runtime.setActive(fresh)
+
+		let choice: string | undefined
+		try {
+			choice = await ctx.ui.select(`Plan saved for "${fresh.name}". Start execution?`, [
+				"Start execution (/auto)",
+				"Wait",
+			])
+			runtime.markHumanInput()
+		} finally {
+			runtime.consumeAfterScopeContinuation(f.id)
+		}
+		if (choice !== "Start execution (/auto)") return
+
+		const rechecked = runtime.getStorage().get(f.id)
+		if (!rechecked || rechecked.status !== "planned" || rechecked.mode !== "plan") return
+
+		runtime.setAutoModeEnabled(true)
+		setActiveFerment(pi, runtime, rechecked)
+		ctx.ui.notify?.(`Starting "${rechecked.name}".`)
+		injectResumeAutoNudge(pi, runtime)
+		return
+	}
+
 	if (f.status !== "draft" && f.status !== "running") return
-	if (!ctx?.ui?.select || !ctx?.ui?.input) return
+	if (!ctx.ui.input) return
 
 	if (hasToolCall(content, "propose_phases")) return
 	const text = extractPromptTextAfterLastToolCall(content)
@@ -124,6 +160,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		if (process.env.KIMCHI_SUBAGENT === "1") return
 		runtime.clearAllStepStarts()
 		runtime.clearAllScopingGates()
+		runtime.clearAllAfterScopeContinuations()
 		runtime.clearAllPendingScopes()
 		clearFermentCache()
 

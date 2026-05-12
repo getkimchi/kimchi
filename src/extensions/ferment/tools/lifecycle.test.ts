@@ -90,6 +90,7 @@ describe("scopeFerment", () => {
 
 		expect(okText(result)).toContain("Plan review: ✓ approved")
 		expect(h.storage.get(h.fermentId)?.status).toBe("planned")
+		expect(h.runtime.hasAfterScopeContinuation(h.fermentId)).toBe(true)
 		expect(services.judgePlan).toHaveBeenCalledWith(
 			"Lifecycle Test",
 			"Ship the feature",
@@ -97,6 +98,28 @@ describe("scopeFerment", () => {
 			"Keep it small",
 			expect.stringContaining("Build"),
 		)
+	})
+
+	it("does not mark an after-scope continuation for exec-mode scoping", async () => {
+		const h = createHarness()
+		const applyAndPersist = createApplyAndPersist(h.runtime)
+		const mode = applyAndPersist(h.fermentId, { type: "set_mode", mode: "exec" })
+		if (!mode.ok) throw new Error(mode.error.message)
+		const services = createServices()
+
+		const result = await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+			},
+			{ pi: h.pi },
+			services,
+		)
+
+		expect(okText(result)).toContain("Plan review: ✓ approved")
+		expect(h.runtime.hasAfterScopeContinuation(h.fermentId)).toBe(false)
 	})
 
 	it("formats revision suggestions from injected judge review", async () => {

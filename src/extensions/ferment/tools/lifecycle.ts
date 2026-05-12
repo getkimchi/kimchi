@@ -105,6 +105,7 @@ export async function scopeFerment(
 	// Discard any stale pending-scope buffer — its phases were either applied
 	// here or are no longer relevant (the ferment is now planned).
 	runtime.clearPendingScope(params.ferment_id)
+	if (outcome.ferment.mode === "plan") runtime.markAfterScopeContinuation(params.ferment_id)
 
 	const fresh = outcome.ferment
 	const phaseList = fresh.phases.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") || "(none)"
@@ -236,7 +237,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 				}
 				if (choice === "Let me say something else") {
 					const custom = ctx.ui.input ? await ctx.ui.input("Your message:", "") : undefined
-					if (custom) await pi.sendUserMessage(custom, { deliverAs: "followUp" })
+					if (custom) return toolOk(`Proposal buffered. User direction: ${custom}`)
 					return toolOk("Proposal buffered. Awaiting the user's custom direction.")
 				}
 

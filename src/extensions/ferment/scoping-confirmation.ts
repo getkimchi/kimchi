@@ -58,5 +58,6 @@ export function confirmPendingScope(
 	})
 	if (!outcome.ok) return { ok: false, error: outcome.error }
 	runtime.clearPendingScope(fermentId)
+	if (outcome.ferment.mode === "plan") runtime.markAfterScopeContinuation(fermentId)
 	return { ok: true, outcome }
 }
