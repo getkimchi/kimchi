@@ -30,6 +30,10 @@ function extractPromptTextAfterLastToolCall(content: AssistantContentPart[]): st
 export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
 	let pendingOneshot = false
+	pi.registerFlag("ferment-oneshot", {
+		type: "boolean",
+		description: "Bootstrap the initial prompt as a one-shot exec-mode ferment.",
+	})
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (process.env.KIMCHI_SUBAGENT === "1") return
@@ -41,12 +45,10 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		const envId = process.env.KIMCHI_ACTIVE_FERMENT
 		if (envId) {
 			pendingOneshot = false
-			Reflect.deleteProperty(process.env, "KIMCHI_FERMENT_ONESHOT")
 			resumeFerment(pi, envId, ctx, runtime)
 			Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
-		} else if (process.env.KIMCHI_FERMENT_ONESHOT === "1") {
+		} else if (pi.getFlag("ferment-oneshot") === true) {
 			pendingOneshot = true
-			Reflect.deleteProperty(process.env, "KIMCHI_FERMENT_ONESHOT")
 			runtime.setActive(undefined)
 		} else {
 			runtime.setActive(undefined)

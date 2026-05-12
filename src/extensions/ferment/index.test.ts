@@ -18,9 +18,10 @@ vi.mock("../../ferment/shorten-title.js", () => ({
 type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown
 type CommandHandler = (args: string, ctx: unknown) => Promise<unknown> | unknown
 
-function registerFermentExtension(runtime?: FermentRuntime) {
+function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<string, boolean | string> = {}) {
 	const handlers = new Map<string, EventHandler>()
 	const commands = new Map<string, CommandHandler>()
+	const registeredFlags = new Set<string>()
 	const pi = {
 		on: (event: string, handler: EventHandler) => {
 			handlers.set(event, handler)
@@ -29,6 +30,10 @@ function registerFermentExtension(runtime?: FermentRuntime) {
 			commands.set(name, command.handler)
 		},
 		registerTool: vi.fn(),
+		registerFlag: vi.fn((name: string) => {
+			registeredFlags.add(name)
+		}),
+		getFlag: vi.fn((name: string) => (registeredFlags.has(name) ? flagValues[name] : undefined)),
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
@@ -42,7 +47,6 @@ afterEach(() => {
 	setActive(undefined)
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
-	Reflect.deleteProperty(process.env, "KIMCHI_FERMENT_ONESHOT")
 	clearFermentCache()
 	const storage = new FermentStorage()
 	for (const item of storage.list()) {
@@ -67,8 +71,7 @@ describe("fermentExtension session resume", () => {
 
 describe("fermentExtension one-shot bootstrap", () => {
 	it("creates an exec-mode ferment and rewrites the initial message into a nudge", async () => {
-		process.env.KIMCHI_FERMENT_ONESHOT = "1"
-		const { handlers, pi } = registerFermentExtension()
+		const { handlers, pi } = registerFermentExtension(undefined, { "ferment-oneshot": true })
 		const sessionStart = handlers.get("session_start")
 		const input = handlers.get("input")
 		if (!sessionStart) throw new Error("session_start handler was not registered")
@@ -76,9 +79,7 @@ describe("fermentExtension one-shot bootstrap", () => {
 
 		await sessionStart({}, { hasUI: false })
 
-		// session_start consumes the env var so subagents inheriting env can't
-		// re-trigger creation.
-		expect(Object.hasOwn(process.env, "KIMCHI_FERMENT_ONESHOT")).toBe(false)
+		expect(pi.registerFlag).toHaveBeenCalledWith("ferment-oneshot", expect.objectContaining({ type: "boolean" }))
 		expect(getActive()).toBeUndefined()
 
 		const intent = "Add a CSV export endpoint that streams the orders table"
@@ -105,10 +106,9 @@ describe("fermentExtension one-shot bootstrap", () => {
 		expect(calls).toContain("ferment_ack")
 	})
 
-	it("prefers active-ferment resume when both env vars are set", async () => {
+	it("prefers active-ferment resume over the one-shot flag", async () => {
 		process.env.KIMCHI_ACTIVE_FERMENT = "missing-id"
-		process.env.KIMCHI_FERMENT_ONESHOT = "1"
-		const { handlers } = registerFermentExtension()
+		const { handlers } = registerFermentExtension(undefined, { "ferment-oneshot": true })
 		const sessionStart = handlers.get("session_start")
 		const input = handlers.get("input")
 		if (!sessionStart) throw new Error("session_start handler was not registered")
@@ -116,9 +116,7 @@ describe("fermentExtension one-shot bootstrap", () => {
 
 		await sessionStart({}, { hasUI: false })
 
-		// Both env vars cleared — resume took priority and one-shot path is disarmed.
 		expect(Object.hasOwn(process.env, "KIMCHI_ACTIVE_FERMENT")).toBe(false)
-		expect(Object.hasOwn(process.env, "KIMCHI_FERMENT_ONESHOT")).toBe(false)
 
 		// And the input handler does NOT bootstrap a ferment for the next message.
 		const result = await input({ type: "input", text: "first message", source: "interactive" }, {})
@@ -127,9 +125,8 @@ describe("fermentExtension one-shot bootstrap", () => {
 	})
 
 	it("skips bootstrap inside a subagent process", async () => {
-		process.env.KIMCHI_FERMENT_ONESHOT = "1"
 		process.env.KIMCHI_SUBAGENT = "1"
-		const { handlers } = registerFermentExtension()
+		const { handlers } = registerFermentExtension(undefined, { "ferment-oneshot": true })
 		const sessionStart = handlers.get("session_start")
 		const input = handlers.get("input")
 		if (!sessionStart) throw new Error("session_start handler was not registered")
@@ -137,8 +134,8 @@ describe("fermentExtension one-shot bootstrap", () => {
 
 		await sessionStart({}, { hasUI: false })
 
-		// Subagent short-circuits session_start, so the env var is untouched and
-		// the input handler will not perform a bootstrap (pendingOneshot stays false).
+		// Subagent short-circuits session_start, so the input handler will not
+		// perform a bootstrap (pendingOneshot stays false).
 		const result = await input({ type: "input", text: "anything", source: "interactive" }, {})
 		expect(result).toBeUndefined()
 		expect(getActive()).toBeUndefined()

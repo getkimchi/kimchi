@@ -258,17 +258,6 @@ try {
 
 		const rawArgs = process.argv.slice(2)
 
-		// `--ferment-oneshot` is consumed entirely by kimchi: it tells the ferment
-		// extension to bootstrap a one-shot exec-mode ferment around the upcoming
-		// initial message. Strip it before pi-mono's parseArgs runs, since pi-mono
-		// errors on unknown flags. The flag is unary (no value).
-		for (let i = rawArgs.length - 1; i >= 0; i--) {
-			if (rawArgs[i] === "--ferment-oneshot") {
-				rawArgs.splice(i, 1)
-				process.env.KIMCHI_FERMENT_ONESHOT = "1"
-			}
-		}
-
 		const extensionFactories = [
 			startupUpdateExtension,
 			sessionIdCaptureExtension,
@@ -280,12 +269,7 @@ try {
 			loopGuardExtension,
 			lspExtension,
 			mcpAdapterExtension,
-			// fermentExtension must be registered before promptEnrichmentExtension so its
-			// `input` handler runs first and sees the raw user instruction. In --print mode
-			// prompt enrichment transforms `event.text` inline; if ferment ran after it,
-			// `--ferment-oneshot` would create and name the ferment from the enriched
-			// orchestration wrapper instead of the original task text, diverging from the
-			// `/ferment one-shot` slash command path.
+			// Ferment must see raw input before prompt enrichment rewrites print-mode text.
 			fermentExtension,
 			promptEnrichmentExtension(skillPaths),
 			permissionsExtension,
