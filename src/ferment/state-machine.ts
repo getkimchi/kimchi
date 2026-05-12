@@ -702,14 +702,19 @@ function handleCompletePhase(
 	const guard = requirePhaseStatus(phase, ["active"])
 	if (guard) return fail(guard)
 
+	const phases = setPhase(ferment, index, {
+		status: "completed",
+		summary: cmd.summary,
+		completedAt: ctx.now,
+		grade: cmd.grade,
+	})
+	const remainingActivePhase = phases.find((p) => p.status === "active")
+
 	return ok(
 		touch(ferment, ctx, {
-			phases: setPhase(ferment, index, {
-				status: "completed",
-				summary: cmd.summary,
-				completedAt: ctx.now,
-				grade: cmd.grade,
-			}),
+			phases,
+			activePhaseId: remainingActivePhase?.id,
+			status: remainingActivePhase ? "running" : "planned",
 		}),
 	)
 }

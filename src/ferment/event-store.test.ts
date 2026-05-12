@@ -112,6 +112,33 @@ describe("FermentEventStore", () => {
 			expect(types).toContain("phase_activated")
 		})
 
+		it("phase completion replay clears active state so the next phase can be activated", () => {
+			const f = eventStore.create("Advance after phase completion")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Goal",
+				successCriteria: "criteria",
+				constraints: [],
+				phases: [
+					{ name: "P1", goal: "G1", steps: [] },
+					{ name: "P2", goal: "G2", steps: [] },
+				],
+			})
+			exec(eventStore, f.id, { type: "activate_phase", phaseId: "phase-1" })
+			exec(eventStore, f.id, { type: "complete_phase", phaseId: "phase-1", summary: "done" })
+
+			const afterComplete = eventStore.get(f.id)
+			expect(afterComplete?.phases[0].status).toBe("completed")
+			expect(afterComplete?.status).toBe("planned")
+			expect(afterComplete?.activePhaseId).toBeUndefined()
+
+			exec(eventStore, f.id, { type: "activate_phase", phaseId: "phase-2" })
+			const afterActivate = eventStore.get(f.id)
+			expect(afterActivate?.status).toBe("running")
+			expect(afterActivate?.activePhaseId).toBe("phase-2")
+			expect(afterActivate?.phases[1].status).toBe("active")
+		})
+
 		it("step lifecycle commands all emit corresponding events", () => {
 			const f = eventStore.create("Step lifecycle")
 			exec(eventStore, f.id, {

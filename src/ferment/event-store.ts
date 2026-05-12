@@ -1042,13 +1042,28 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 		case "phase_completed": {
 			if (!state) throw new Error("phase_completed requires existing state")
 			const p = event.payload as PhaseCompletedPayload
+			const { activePhaseId: _activePhaseId, lastActiveAt, ...rest } = state
+			const phases = state.phases.map((ph) =>
+				ph.id === p.phaseId
+					? { ...ph, status: "completed" as const, summary: p.summary, completedAt: event.timestamp }
+					: ph,
+			)
+			const remainingActivePhase = phases.find((ph) => ph.status === "active")
+			if (remainingActivePhase) {
+				return {
+					...state,
+					phases,
+					activePhaseId: remainingActivePhase.id,
+					status: "running",
+					updatedAt: event.timestamp,
+				}
+			}
 			return {
-				...state,
-				phases: state.phases.map((ph) =>
-					ph.id === p.phaseId
-						? { ...ph, status: "completed" as const, summary: p.summary, completedAt: event.timestamp }
-						: ph,
-				),
+				...rest,
+				phases,
+				lastActiveAt,
+				activePhaseId: undefined,
+				status: "planned",
 				updatedAt: event.timestamp,
 			}
 		}

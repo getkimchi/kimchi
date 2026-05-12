@@ -624,6 +624,27 @@ describe("applyCommand: complete_phase", () => {
 		const error = expectError(applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "x" }, ctx))
 		expect(error.code).toBe("PHASE_NOT_IN_STATUS")
 	})
+
+	it("clears active phase state so the next planned phase can be activated", () => {
+		const f = makeFerment({
+			status: "running",
+			activePhaseId: "phase-1",
+			phases: [
+				makePhase({ id: "phase-1", index: 1, name: "Phase 1", status: "active" }),
+				makePhase({ id: "phase-2", index: 2, name: "Phase 2", status: "planned" }),
+			],
+		})
+
+		const completed = expectOk(applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "done" }, ctx))
+		expect(completed.phases[0].status).toBe("completed")
+		expect(completed.status).toBe("planned")
+		expect(completed.activePhaseId).toBeUndefined()
+
+		const activated = expectOk(applyCommand(completed, { type: "activate_phase", phaseId: "phase-2" }, ctx))
+		expect(activated.status).toBe("running")
+		expect(activated.activePhaseId).toBe("phase-2")
+		expect(activated.phases[1].status).toBe("active")
+	})
 })
 
 // ─── skip_phase ───────────────────────────────────────────────────────────────
