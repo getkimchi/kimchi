@@ -82,6 +82,56 @@ export function saveMetadataCache(cache: MetadataCache): void {
 	renameSync(tmpPath, getCachePath())
 }
 
+/**
+ * Replace the on-disk cache with the provided content (no merge with existing).
+ * Use only when you need to delete entries; for adds/updates prefer
+ * `saveMetadataCache` so concurrent writers don't clobber each other.
+ */
+export function overwriteMetadataCache(cache: MetadataCache): void {
+	const dir = dirname(getCachePath())
+	mkdirSync(dir, { recursive: true })
+
+	const out: MetadataCache = { version: CACHE_VERSION, servers: cache.servers ?? {} }
+	const tmpPath = `${getCachePath()}.${process.pid}.tmp`
+	writeFileSync(tmpPath, JSON.stringify(out, null, 2), "utf-8")
+	renameSync(tmpPath, getCachePath())
+}
+
+/**
+ * Drop cache entries whose configHash no longer matches the current server
+ * definition. Orphan entries (cached servers not in the current config) are
+ * kept by default because the cache file is shared across projects — a server
+ * absent from this project's `mcp.json` is likely configured by another.
+ *
+ * Returns the cleaned cache and the list of removed server names. Caller is
+ * responsible for persisting via `overwriteMetadataCache` when
+ * `removed.length > 0`.
+ */
+export function purgeStaleEntries(
+	cache: MetadataCache | null,
+	mcpServers: Record<string, ServerEntry>,
+): { cleaned: MetadataCache; removed: string[] } {
+	const cleaned: MetadataCache = { version: CACHE_VERSION, servers: {} }
+	const removed: string[] = []
+	if (!cache?.servers) return { cleaned, removed }
+
+	for (const [name, entry] of Object.entries(cache.servers)) {
+		const definition = mcpServers[name]
+		if (!definition) {
+			// Orphan from another project's config — preserve.
+			cleaned.servers[name] = entry
+			continue
+		}
+		if (!entry?.configHash || entry.configHash !== computeServerHash(definition)) {
+			removed.push(name)
+			continue
+		}
+		cleaned.servers[name] = entry
+	}
+
+	return { cleaned, removed }
+}
+
 export function computeServerHash(definition: ServerEntry): string {
 	// Hash only fields that affect server identity and tool/resource output.
 	// Exclude lifecycle, idleTimeout, debug — those are runtime behavior settings
