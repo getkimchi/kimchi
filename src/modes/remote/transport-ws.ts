@@ -1,6 +1,24 @@
 import type { Transport } from "./types.js"
 
-export async function createWebSocketTransport(wsUrl: string, connectToken: string): Promise<Transport> {
+export interface WebSocketTransportOptions {
+	/** Total time budget for retrying failed handshakes. Default 60_000 (1 minute). */
+	maxRetryMs?: number
+	/** Initial backoff between retries; doubles each attempt. Default 1000. */
+	initialDelayMs?: number
+	/** Sink for retry diagnostics. Defaults to writing to stderr. */
+	log?: (msg: string) => void
+	/** Override for HTTP status probing. Defaults to globalThis.fetch. */
+	fetch?: typeof globalThis.fetch
+}
+
+const DEFAULT_MAX_RETRY_MS = 60_000
+const DEFAULT_INITIAL_DELAY_MS = 1000
+
+export async function createWebSocketTransport(
+	wsUrl: string,
+	connectToken: string,
+	options: WebSocketTransportOptions = {},
+): Promise<Transport> {
 	const url = `${wsUrl}?token=${encodeURIComponent(connectToken)}`
 
 	// biome-ignore lint/suspicious/noExplicitAny: accessing globalThis WebSocket
@@ -9,24 +27,66 @@ export async function createWebSocketTransport(wsUrl: string, connectToken: stri
 		throw new Error("WebSocket is not available. Node 22+ is required for --remote.")
 	}
 
+	const maxRetryMs = options.maxRetryMs ?? DEFAULT_MAX_RETRY_MS
+	const initialDelayMs = options.initialDelayMs ?? DEFAULT_INITIAL_DELAY_MS
+	const log = options.log ?? ((msg: string) => process.stderr.write(`${msg}\n`))
+	const fetchImpl = options.fetch ?? globalThis.fetch
+
+	const startTime = Date.now()
+	let attempt = 0
+	let lastError: unknown
+
+	while (true) {
+		try {
+			return await createTransportOnce(WS, url)
+		} catch (err) {
+			lastError = err
+			const elapsed = Date.now() - startTime
+			if (elapsed >= maxRetryMs) break
+
+			const status = await probeHttpStatus(url, fetchImpl)
+			const statusInfo = status === undefined ? "" : ` (HTTP ${status})`
+			const reason = err instanceof Error ? err.message : String(err)
+			log(`kimchi: WebSocket handshake failed${statusInfo}: ${reason} — retrying...`)
+
+			const delay = Math.min(initialDelayMs * 2 ** attempt, maxRetryMs - elapsed)
+			attempt++
+			if (delay > 0) await sleep(delay)
+		}
+	}
+
+	throw lastError instanceof Error ? lastError : new Error(`WebSocket connection failed after ${maxRetryMs}ms`)
+}
+
+async function createTransportOnce(
+	// biome-ignore lint/suspicious/noExplicitAny: WebSocket constructor varies
+	WS: any,
+	url: string,
+): Promise<Transport> {
 	const ws = new WS(url)
 
-	let readableController: ReadableStreamDefaultController<Uint8Array>
 	const encoder = new TextEncoder()
 
 	const readable = new ReadableStream<Uint8Array>({
 		start(controller) {
-			readableController = controller
 			ws.addEventListener("message", (ev: MessageEvent) => {
 				const line = typeof ev.data === "string" ? ev.data : String(ev.data)
 				const chunk = encoder.encode(`${line}\n`)
 				controller.enqueue(chunk)
 			})
 			ws.addEventListener("close", () => {
-				controller.close()
+				try {
+					controller.close()
+				} catch {
+					// stream already closed/errored
+				}
 			})
 			ws.addEventListener("error", (err: ErrorEvent) => {
-				controller.error(err.error ?? new Error("WebSocket error"))
+				try {
+					controller.error(err.error ?? new Error("WebSocket error"))
+				} catch {
+					// stream already closed/errored
+				}
 			})
 		},
 		cancel() {
@@ -103,4 +163,21 @@ export async function createWebSocketTransport(wsUrl: string, connectToken: stri
 			}
 		},
 	}
+}
+
+async function probeHttpStatus(wsUrl: string, fetchImpl: typeof globalThis.fetch): Promise<number | undefined> {
+	const httpUrl = wsUrl.replace(/^ws/, "http")
+	try {
+		const ctrl = new AbortController()
+		const timer = setTimeout(() => ctrl.abort(), 5_000)
+		const resp = await fetchImpl(httpUrl, { method: "GET", signal: ctrl.signal })
+		clearTimeout(timer)
+		return resp.status
+	} catch {
+		return undefined
+	}
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms))
 }
