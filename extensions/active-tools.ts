@@ -59,7 +59,7 @@ export default function (pi: ExtensionAPI) {
 						const rgb = toolColors[name] ?? palette[0]
 						return bg(rgb, `\x1b[38;2;220;220;220m  ${name}  \x1b[39m`)
 					})
-					text.setText(theme.fg("accent", `Active (${tools.length}):`) + " " + parts.join(" "))
+					text.setText(`${theme.fg("accent", `Active (${tools.length}):`)} ${parts.join(" ")}`)
 					return text.render(width)
 				},
 				invalidate() {

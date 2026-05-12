@@ -66,10 +66,19 @@ function inferLanguage(filePath: string): string {
 }
 
 function countLineChanges(oldStr: string, newStr: string): { added: number; removed: number } {
-	const oldLines = oldStr ? oldStr.split("\n").length : 0
-	const newLines = newStr ? newStr.split("\n").length : 0
-	if (newLines >= oldLines) return { added: newLines - oldLines, removed: 0 }
-	return { added: 0, removed: oldLines - newLines }
+	// Trim trailing newlines to avoid counting empty lines from trailing newline
+	const trimmedOld = oldStr.endsWith("\n") ? oldStr.replace(/\n+$/, "") : oldStr
+	const trimmedNew = newStr.endsWith("\n") ? newStr.replace(/\n+$/, "") : newStr
+
+	const oldLines = trimmedOld ? trimmedOld.split("\n").length : 0
+	const newLines = trimmedNew ? trimmedNew.split("\n").length : 0
+
+	// Use || 1 to ensure at least 1 is counted if content changed
+	// (follows OpenCode plugin behavior)
+	const added = Math.max(newLines - oldLines, 0) || 1
+	const removed = Math.max(oldLines - newLines, 0) || 1
+
+	return { added, removed }
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +150,12 @@ interface MetricData {
 	attrs: Record<string, string | number>
 }
 
-async function sendMetrics(config: TelemetryConfig, sessionId: string, metrics: MetricData[]): Promise<void> {
+async function sendMetrics(
+	config: TelemetryConfig,
+	sessionId: string,
+	metrics: MetricData[],
+	sessionStartNano: string,
+): Promise<void> {
 	if (!config.enabled || !config.metricsEndpoint) return
 	if (metrics.length === 0) return
 	const now = nowNano()
@@ -160,6 +174,7 @@ async function sendMetrics(config: TelemetryConfig, sessionId: string, metrics: 
 									dataPoints: [
 										{
 											timeUnixNano: now,
+											startTimeUnixNano: sessionStartNano,
 											...(Number.isInteger(m.value) ? { asInt: String(m.value) } : { asDouble: m.value }),
 											attributes: [
 												strAttr("session.id", sessionId),
@@ -171,7 +186,7 @@ async function sendMetrics(config: TelemetryConfig, sessionId: string, metrics: 
 									...(m.type === "Sum"
 										? {
 												aggregationTemporality: 2,
-												isMonotonic: false,
+												isMonotonic: true,
 											}
 										: {}),
 								},
@@ -198,6 +213,7 @@ async function sendMetrics(config: TelemetryConfig, sessionId: string, metrics: 
 }
 
 const TELEMETRY_DRAIN_TIMEOUT_MS = 5_000
+const METRICS_FLUSH_INTERVAL_MS = 30_000
 
 // ---------------------------------------------------------------------------
 // Extension
@@ -209,10 +225,22 @@ export default function telemetryExtension(config: TelemetryConfig) {
 
 		let sessionId = crypto.randomUUID()
 		let sessionStartMs = Date.now()
+		let sessionStartNano = String(sessionStartMs * 1_000_000)
 		const sentMessages = new Set<string>()
 		const pendingArgs = new Map<string, { toolName: string; args: unknown }>()
 		const inFlight = new Set<Promise<void>>()
 		let shuttingDown = false
+
+		// Accumulation state for metrics
+		const cumulativeTokensByModel: Record<string, { input: number; output: number }> = {}
+		const cumulativeCostByModel: Record<string, number> = {}
+		let cumulativeCommitCount = 0
+		let cumulativePRCount = 0
+		let cumulativeLinesAdded = 0
+		let cumulativeLinesRemoved = 0
+		const cumulativeEditDecisions: Record<string, number> = {}
+
+		let flushTimer: NodeJS.Timeout | undefined
 
 		function track(p: Promise<void>): void {
 			if (shuttingDown) return
@@ -220,16 +248,125 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			p.finally(() => inFlight.delete(p))
 		}
 
+		function flushMetrics(): void {
+			const allMetrics: MetricData[] = []
+
+			// Flush token metrics (keyed by model)
+			for (const [model, tokens] of Object.entries(cumulativeTokensByModel)) {
+				if (tokens.input > 0) {
+					allMetrics.push({
+						name: "claude_code.token.usage",
+						type: "Sum",
+						value: tokens.input,
+						attrs: { type: "input", model, provider: "ai-enabler" },
+					})
+				}
+				if (tokens.output > 0) {
+					allMetrics.push({
+						name: "claude_code.token.usage",
+						type: "Sum",
+						value: tokens.output,
+						attrs: { type: "output", model, provider: "ai-enabler" },
+					})
+				}
+			}
+
+			// Flush cost metrics (keyed by model)
+			for (const [model, cost] of Object.entries(cumulativeCostByModel)) {
+				if (cost > 0) {
+					allMetrics.push({
+						name: "claude_code.cost.usage",
+						type: "Sum",
+						value: cost,
+						attrs: { model, provider: "ai-enabler" },
+					})
+				}
+			}
+
+			// Flush commit count
+			if (cumulativeCommitCount > 0) {
+				allMetrics.push({
+					name: "claude_code.commit.count",
+					type: "Sum",
+					value: cumulativeCommitCount,
+					attrs: { tool_name: "bash", decision: "git_commit" },
+				})
+			}
+
+			// Flush PR count
+			if (cumulativePRCount > 0) {
+				allMetrics.push({
+					name: "claude_code.pull_request.count",
+					type: "Sum",
+					value: cumulativePRCount,
+					attrs: { tool_name: "bash", decision: "gh_pr_create" },
+				})
+			}
+
+			// Flush lines of code (separate added/removed)
+			if (cumulativeLinesAdded > 0) {
+				allMetrics.push({
+					name: "claude_code.lines_of_code.count",
+					type: "Sum",
+					value: cumulativeLinesAdded,
+					attrs: { type: "added" },
+				})
+			}
+			if (cumulativeLinesRemoved > 0) {
+				allMetrics.push({
+					name: "claude_code.lines_of_code.count",
+					type: "Sum",
+					value: cumulativeLinesRemoved,
+					attrs: { type: "removed" },
+				})
+			}
+
+			// Flush edit decisions
+			for (const [key, count] of Object.entries(cumulativeEditDecisions)) {
+				if (count > 0) {
+					const [toolName, decision] = key.split("::")
+					allMetrics.push({
+						name: "claude_code.code_edit_tool.decision",
+						type: "Sum",
+						value: count,
+						attrs: { tool_name: toolName, decision },
+					})
+				}
+			}
+
+			if (allMetrics.length > 0) {
+				track(sendMetrics(config, sessionId, allMetrics, sessionStartNano))
+			}
+		}
+
 		pi.on("session_start", async () => {
 			sessionId = crypto.randomUUID()
 			sessionStartMs = Date.now()
+			sessionStartNano = String(sessionStartMs * 1_000_000)
 			sentMessages.clear()
 			pendingArgs.clear()
 			shuttingDown = false
+
+			// Reset accumulation state
+			for (const key of Object.keys(cumulativeTokensByModel)) delete cumulativeTokensByModel[key]
+			for (const key of Object.keys(cumulativeCostByModel)) delete cumulativeCostByModel[key]
+			cumulativeCommitCount = 0
+			cumulativePRCount = 0
+			cumulativeLinesAdded = 0
+			cumulativeLinesRemoved = 0
+			for (const key of Object.keys(cumulativeEditDecisions)) delete cumulativeEditDecisions[key]
+
+			// Start periodic flush timer
+			if (flushTimer) clearInterval(flushTimer)
+			flushTimer = setInterval(() => {
+				flushMetrics()
+			}, METRICS_FLUSH_INTERVAL_MS)
 		})
 
 		pi.on("session_shutdown", async () => {
 			shuttingDown = true
+			if (flushTimer) clearInterval(flushTimer)
+			flushMetrics()
 			if (inFlight.size === 0) return
 			const drain = Promise.allSettled([...inFlight])
 			let timer: NodeJS.Timeout | undefined
@@ -245,7 +382,8 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			if (msg.role !== "assistant") return
 			try {
 				const assistant = msg as AssistantMessage
-				const msgId = String(assistant.timestamp)
+				// Use message ID if available, fall back to timestamp for deduplication
+				const msgId = assistant.responseId ? String(assistant.responseId) : String(assistant.timestamp)
 				if (sentMessages.has(msgId)) return
 				sentMessages.add(msgId)
 
@@ -268,13 +406,22 @@ export default function telemetryExtension(config: TelemetryConfig) {
 						session_uptime_ms: sessionUptimeMs,
 					}),
 				)
-				track(
-					sendMetrics(config, sessionId, [
-						{ name: "claude_code.token.usage", type: "Sum", value: input, attrs: { type: "input", model, provider } },
-						{ name: "claude_code.token.usage", type: "Sum", value: output, attrs: { type: "output", model, provider } },
-						{ name: "claude_code.cost.usage", type: "Gauge", value: costTotal, attrs: { model, provider } },
-					]),
-				)
+
+				// Accumulate tokens and costs per model
+				if (!cumulativeTokensByModel[model]) {
+					cumulativeTokensByModel[model] = { input: 0, output: 0 }
+				}
+				cumulativeTokensByModel[model].input += input
+				cumulativeTokensByModel[model].output += output
+
+				if (!cumulativeCostByModel[model]) {
+					cumulativeCostByModel[model] = 0
+				}
+				cumulativeCostByModel[model] += costTotal
+
+				// Accumulate code_edit_tool.decision
+				const decisionKey = "message_end::api_request"
+				cumulativeEditDecisions[decisionKey] = (cumulativeEditDecisions[decisionKey] || 0) + 1
 			} catch (err) {
 				console.error("[telemetry] message_end handler error:", err)
 			}
@@ -294,30 +441,18 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			if (toolName === "bash") {
 				const command = String(args?.command ?? "")
 				if (/git\s+commit\b/.test(command) && !/--dry-run/.test(command)) {
-					track(sendLog(config, sessionId, "tool_usage", { tool: "bash", action: "git_commit" }))
-					track(
-						sendMetrics(config, sessionId, [
-							{
-								name: "claude_code.commit.count",
-								type: "Sum",
-								value: 1,
-								attrs: { tool: "bash", action: "git_commit" },
-							},
-						]),
-					)
+					track(sendLog(config, sessionId, "tool_usage", { tool_name: "bash", decision: "git_commit" }))
+					cumulativeCommitCount++
+					// Accumulate edit decision
+					const decisionKey = "bash::git_commit"
+					cumulativeEditDecisions[decisionKey] = (cumulativeEditDecisions[decisionKey] || 0) + 1
 				}
 				if (/gh\s+pr\s+create\b/.test(command)) {
-					track(sendLog(config, sessionId, "tool_usage", { tool: "bash", action: "gh_pr_create" }))
-					track(
-						sendMetrics(config, sessionId, [
-							{
-								name: "claude_code.pull_request.count",
-								type: "Sum",
-								value: 1,
-								attrs: { tool: "bash", action: "gh_pr_create" },
-							},
-						]),
-					)
+					track(sendLog(config, sessionId, "tool_usage", { tool_name: "bash", decision: "gh_pr_create" }))
+					cumulativePRCount++
+					// Accumulate edit decision
+					const decisionKey = "bash::gh_pr_create"
+					cumulativeEditDecisions[decisionKey] = (cumulativeEditDecisions[decisionKey] || 0) + 1
 				}
 			}
 
@@ -327,41 +462,38 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				const changes = countLineChanges(String(args?.oldString ?? ""), String(args?.newString ?? ""))
 				track(
 					sendLog(config, sessionId, "tool_usage", {
-						tool: "edit",
+						tool_name: "edit",
 						language,
 						lines_added: changes.added,
 						lines_removed: changes.removed,
 					}),
 				)
-				track(
-					sendMetrics(config, sessionId, [
-						{
-							name: "claude_code.lines_of_code.count",
-							type: "Sum",
-							value: changes.added + changes.removed,
-							attrs: { language },
-						},
-					]),
-				)
+				cumulativeLinesAdded += changes.added
+				cumulativeLinesRemoved += changes.removed
+				// Accumulate edit decision
+				const decisionKey = "edit::edit_applied"
+				cumulativeEditDecisions[decisionKey] = (cumulativeEditDecisions[decisionKey] || 0) + 1
 			}
 
 			if (toolName === "write") {
 				const filePath = String(args?.filePath ?? "")
 				const language = inferLanguage(filePath)
 				const content = String(args?.content ?? "")
+				// Count lines, handling trailing newline properly
 				const lines = content ? content.split("\n").length : 1
+				const trimmedContent = content.endsWith("\n") ? content.replace(/\n+$/, "") : content
+				const actualLines = trimmedContent ? trimmedContent.split("\n").length : 1
 				track(
 					sendLog(config, sessionId, "tool_usage", {
-						tool: "write",
+						tool_name: "write",
 						language,
-						lines_added: lines,
+						lines_added: actualLines,
 					}),
 				)
-				track(
-					sendMetrics(config, sessionId, [
-						{ name: "claude_code.lines_of_code.count", type: "Sum", value: lines, attrs: { language } },
-					]),
-				)
+				cumulativeLinesAdded += actualLines
+				// Accumulate edit decision
+				const decisionKey = "write::write_created"
+				cumulativeEditDecisions[decisionKey] = (cumulativeEditDecisions[decisionKey] || 0) + 1
 			}
 
 			if (toolName === "multiedit") {
@@ -374,23 +506,18 @@ export default function telemetryExtension(config: TelemetryConfig) {
 					const changes = countLineChanges(String(edit.oldString ?? ""), String(edit.newString ?? ""))
 					track(
 						sendLog(config, sessionId, "tool_usage", {
-							tool: "edit",
+							tool_name: "multiedit",
 							language,
 							lines_added: changes.added,
 							lines_removed: changes.removed,
 						}),
 					)
-					track(
-						sendMetrics(config, sessionId, [
-							{
-								name: "claude_code.lines_of_code.count",
-								type: "Sum",
-								value: changes.added + changes.removed,
-								attrs: { language },
-							},
-						]),
-					)
+					cumulativeLinesAdded += changes.added
+					cumulativeLinesRemoved += changes.removed
 				}
+				// Accumulate edit decision
+				const decisionKey = "multiedit::edit_applied"
+				cumulativeEditDecisions[decisionKey] = (cumulativeEditDecisions[decisionKey] || 0) + 1
 			}
 		})
 	}

@@ -82,13 +82,7 @@
 	},
 	"packageManager": "pnpm@10.8.1",
 	"pnpm": {
-		"onlyBuiltDependencies": [
-			"@biomejs/biome",
-			"esbuild",
-			"koffi",
-			"node-pty",
-			"protobufjs"
-		],
+		"onlyBuiltDependencies": ["@biomejs/biome", "esbuild", "koffi", "node-pty", "protobufjs"],
 		"patchedDependencies": {
 			"@earendil-works/pi-coding-agent": "patches/@earendil-works__pi-coding-agent.patch"
 		}
