@@ -320,6 +320,46 @@ User: "Add user authentication"
 → set_phase({"phase": "review"})      # Verify the implementation
 ```
 
+## Benchmarking
+
+The `benchmark/` directory contains tools for smoke-testing kimchi sessions and auditing their quality.
+
+### Manual benchmarks
+
+Run predefined tasks (simple, complex, research) against different models and compare results:
+
+```bash
+cd benchmark/manual
+./new-session.sh                              # create a new session with run scripts
+./sessions/session-01/run-all.sh              # run all task x model combinations
+python3 analyze-session.py                    # analyze the latest session
+python3 compare-sessions.py 1 2              # compare two sessions
+```
+
+See `benchmark/manual/README.md` for full documentation on tasks, session structure, and analysis.
+
+### Terminal-bench-2
+
+Run the [terminal-bench](https://www.harborframework.com/) suite (89 tasks) against kimchi inside Docker containers. The agent is installed in each task container and runs non-interactively; token and cost counters are parsed from the JSONL output.
+
+```bash
+cd benchmark/terminal-bench-2
+export KIMCHI_API_KEY=...
+
+# Single task (from local build)
+./scripts/run-local.sh -i terminal-bench/fix-git
+
+# Full suite, 8 parallel trials (from latest release)
+./scripts/run-release.sh -n 8
+```
+
+See `benchmark/terminal-bench-2/README.md` for Apple Silicon caveats, timeout tuning, and result interpretation.
+
+### Session phase audit
+
+Audit a completed session for phase discipline, code quality, architecture, testing, model alignment, and cost efficiency. The audit agent parses the session JSONL, reconstructs the phase timeline, and produces a graded report.
+See `benchmark/audit-session/README.md` for the full evaluation criteria and an end-to-end example.
+
 ## Development
 
 ### Prerequisites

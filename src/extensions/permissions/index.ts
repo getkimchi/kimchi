@@ -1,3 +1,4 @@
+import { resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
@@ -21,6 +22,21 @@ import {
 import { BUILTIN_DENY, DEFAULT_CONFIG, type PermissionMode, type Rule } from "./types.js"
 
 /**
+ * Check whether a file path is within .kimchi/plans/ relative to cwd.
+ * Accepts both relative paths (starting with .kimchi/plans/) and
+ * absolute paths under <cwd>/.kimchi/plans/.
+ * Path traversal is prevented by resolving to an absolute path first.
+ */
+export function isWithinKimchiPlans(filePath: string, cwd: string): boolean {
+	const normalizedCwd = cwd.endsWith("/") ? cwd : `${cwd}/`
+	const plansDir = `${normalizedCwd}.kimchi/plans/`
+
+	// Resolve to absolute, normalizing any ".." components
+	const abs = resolve(cwd, filePath)
+	return abs.startsWith(plansDir)
+}
+
+/**
  * DANGER: Bypass flag that disables ALL permission checks.
  * WARNING: This skips denylist, rules, classifier, and prompts.
  * For throwaway/sandboxed environments ONLY.
@@ -39,11 +55,20 @@ const EMPTY_LOADED_CONFIG: LoadedConfig = {
 // bash is allowed but gated per-command by isReadOnlyBashCommand.
 const PLAN_MODE_TOOLS = ["read", "grep", "find", "ls", "web_search", "web_fetch", "questionnaire", "bash"]
 
-// subagent delegates to a sub-session that enforces permissions on its own calls.
-// ferment tools are internal state-management operations, never write user files or run shell commands.
+// Tools that auto-approve in headless/auto modes without LLM classification.
+// `set_phase` is a kimchi built-in. `agent`/`get_subagent_result`/`steer_subagent`
+// are the agents-extension surface — `agent` is the canonical delegation tool,
+// the other two are read-only/control-plane operations on already-approved spawns.
+// `ferment` tools are internal state-management operations from the ferment
+// extension — they never write user files or run shell commands.
+//
+// Names are lowercased because the tool_call handler lowercases event.toolName
+// before comparing (see `const toolName = event.toolName.toLowerCase()` below).
 const BUILTIN_ALLOW_TOOL_NAMES = [
-	"subagent",
 	"set_phase",
+	"agent",
+	"get_subagent_result",
+	"steer_subagent",
 	"create_ferment",
 	"list_ferments",
 	"scope_ferment",
@@ -325,6 +350,23 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	pi.on("tool_call", async (event, ctx) => {
 		const toolName = event.toolName.toLowerCase()
 		const input = event.input as Record<string, unknown>
+
+		// Plan persona path-scope enforcement: when KIMCHI_AGENT_PERSONA=plan (case-insensitive),
+		// write and edit are only allowed for .kimchi/plans/* paths.
+		if (process.env.KIMCHI_AGENT_PERSONA?.toLowerCase() === "plan") {
+			if (toolName === "write" || toolName === "edit") {
+				const filePath =
+					typeof input.file_path === "string" ? input.file_path : typeof input.path === "string" ? input.path : ""
+				if (filePath && !isWithinKimchiPlans(filePath, ctx.cwd)) {
+					return {
+						block: true,
+						reason: `Plan persona: ${toolName} is restricted to .kimchi/plans/ files. The path "${filePath}" is outside that scope.`,
+					}
+				}
+				// path is within .kimchi/plans/ — allow without further checks
+				return undefined
+			}
+		}
 
 		// Re-evaluation loop: when a permission prompt is dismissed because the user
 		// changed mode via shift+tab, we re-evaluate the tool call under the new mode.

@@ -63,7 +63,7 @@ const COOKING_FRAMES: readonly {
 const DOT_STATES = ["", ".", "..", "..."] as const
 
 const DOT_CYCLE_MS = 500
-const MESSAGE_CYCLE_MS = 1400
+const MESSAGE_CYCLE_MS = 6000
 
 let _resumeFrameIdx = 0
 

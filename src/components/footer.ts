@@ -6,11 +6,11 @@ import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earen
 import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, TEAL_FG, resolvedSemanticFg } from "../ansi.js"
+import { getActiveAgentCount } from "../extensions/agents/index.js"
 import { getActiveFerment, getCurrentPhaseIndex } from "../extensions/ferment/index.js"
 import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/orchestration/prompt-enrichment.js"
 import { getCurrentPermissionsMode } from "../extensions/permissions/index.js"
-import { getActiveSubagentCount } from "../extensions/subagent.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 interface FooterSegment {
@@ -212,9 +212,9 @@ export class StatsFooter implements Component {
 	}
 
 	private subagentSegment(): FooterSegment | null {
-		const count = getActiveSubagentCount()
+		const count = getActiveAgentCount()
 		if (count === 0) return null
-		return seg(teal(`${count} subagent${count === 1 ? "" : "s"}`))
+		return seg(teal(`${count} agent${count === 1 ? "" : "s"}`))
 	}
 
 	private fermentSegment(): FooterSegment | null {

@@ -15,8 +15,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { FermentEventStore } from "../../ferment/event-store.js"
 import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { clearAllPendingScopes, getPendingScope, setPendingScope } from "./scoping.js"
 import {
 	clearAllScopingGates,
@@ -46,14 +48,17 @@ interface ToolResult {
 
 interface Harness {
 	storage: FermentStorage
+	runtime: FermentRuntime
 	tempDir: string
 	tools: Map<string, RegisteredTool>
-	call: (toolName: string, params: unknown) => Promise<ToolResult>
+	call: (toolName: string, params: unknown, ctx?: unknown) => Promise<ToolResult>
 }
 
 function createHarness(): Harness {
 	const tempDir = mkdtempSync(join(tmpdir(), "ferment-tools-test-"))
 	const storage = new FermentStorage(tempDir)
+	const eventStorage = new FermentEventStore(tempDir)
+	const runtime = { ...createDefaultFermentRuntime(), getStorage: () => eventStorage }
 	const tools = new Map<string, RegisteredTool>()
 
 	// Mock pi: only what the tool factories actually call.
@@ -64,30 +69,24 @@ function createHarness(): Harness {
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		appendEntry: vi.fn(),
+		getActiveTools: vi.fn(() => ["read", "bash", "complete_ferment"]),
+		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "complete_ferment" }]),
+		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
 
-	// Tools resolve storage via getStorage() which uses the default project dir.
-	// Override by setting KIMCHI_FERMENTS_DIR — but that env knob doesn't exist;
-	// instead, monkey-patch the prototype to redirect to our temp dir for the duration.
-	// Cleanest approach: set process.cwd-affecting env so resolveFermentsDir picks our dir.
-	// Even cleaner: tests use storage directly to seed/inspect, and tools use the default
-	// path. We force them to align by setting a unique cwd-based path.
-	// For this test pass we accept that tools use the project's default ferments dir;
-	// we isolate by clearing the cache + using unique fermentIds (uuidv7) per test.
+	registerLifecycleTools(pi, runtime)
+	registerPhaseTools(pi, runtime)
+	registerStepTools(pi, runtime)
+	registerKnowledgeTools(pi, runtime)
 
-	registerLifecycleTools(pi)
-	registerPhaseTools(pi)
-	registerStepTools(pi)
-	registerKnowledgeTools(pi)
-
-	const call = async (toolName: string, params: unknown): Promise<ToolResult> => {
+	const call = async (toolName: string, params: unknown, ctx?: unknown): Promise<ToolResult> => {
 		const tool = tools.get(toolName)
 		if (!tool) throw new Error(`Tool not found: ${toolName}`)
-		const result = await tool.execute("test-call-id", params, undefined, undefined, undefined)
+		const result = await tool.execute("test-call-id", params, undefined, undefined, ctx)
 		return result as ToolResult
 	}
 
-	return { storage, tempDir, tools, call }
+	return { storage, runtime, tempDir, tools, call }
 }
 
 // Helpers for asserting on tool results.
@@ -116,19 +115,9 @@ beforeEach(() => {
 	clearAllScopingGates()
 	clearAllPendingScopes()
 	setActive(undefined)
-	// Clean any stale ferments from previous test runs (tools use the project's
-	// default ferments dir, so cross-test pollution is real).
-	const s = new FermentStorage()
-	for (const item of s.list()) {
-		s.delete(item.id)
-	}
 })
 
 afterEach(() => {
-	const s = new FermentStorage()
-	for (const item of s.list()) {
-		s.delete(item.id)
-	}
 	clearFermentCache()
 	clearAllStepStarts()
 	clearAllScopingGates()
@@ -136,17 +125,12 @@ afterEach(() => {
 	setActive(undefined)
 })
 
-// Tools all use the default project storage path. To make tests deterministic
-// without monkey-patching, we use a single ferment per test and reach into the
-// real storage via fresh FermentStorage() instances. The storage cache is
-// cleared between tests so cross-contamination is impossible.
-//
-// Helper: create a ferment via the tool, then return its id by reading the
-// most recently created ferment from the default storage.
+// Helper: create a ferment via the tool, then return its id from the harness
+// temp storage used by the registered tool runtime.
 async function createFerment(name: string, description?: string): Promise<string> {
 	const result = await h.call("create_ferment", { name, description })
 	ok(result)
-	const items = new FermentStorage().list()
+	const items = h.storage.list()
 	const created = items.find((f) => f.name === name)
 	if (!created) throw new Error(`Ferment "${name}" not found after create`)
 	return created.id
@@ -183,7 +167,7 @@ async function scopeFerment(
 
 function loadFerment(id: string): Ferment {
 	clearFermentCache()
-	const f = new FermentStorage().get(id)
+	const f = h.storage.get(id)
 	if (!f) throw new Error(`Ferment ${id} not found`)
 	return f
 }
@@ -221,7 +205,7 @@ describe("list_ferments", () => {
 		const alphaId = await createFerment("Alpha")
 		await createFerment("Beta")
 		// Move alpha to running
-		const s = new FermentStorage()
+		const s = h.storage
 		s.updateStatus(alphaId, "running")
 
 		const result = ok(await h.call("list_ferments", { filter: "running" }))
@@ -231,7 +215,7 @@ describe("list_ferments", () => {
 
 	it("normalizes 'active' filter to 'running'", async () => {
 		const id = await createFerment("Alpha")
-		new FermentStorage().updateStatus(id, "running")
+		h.storage.updateStatus(id, "running")
 		const result = ok(await h.call("list_ferments", { filter: "active" }))
 		expect(result).toContain("Alpha")
 	})
@@ -284,7 +268,7 @@ describe("scope_ferment", () => {
 
 	it("bypasses gate when ferment is in exec mode", async () => {
 		const id = await createFerment("Exec Gate Test")
-		new FermentStorage().updateMode(id, "exec")
+		h.storage.updateMode(id, "exec")
 		markScopingInteractive(id)
 		// Don't confirm — exec mode should bypass
 		const result = await h.call("scope_ferment", {
@@ -362,7 +346,7 @@ describe("activate_phase", () => {
 		const id = await createFerment("None Left")
 		await scopeFerment(id)
 		// Skip both phases manually
-		const s = new FermentStorage()
+		const s = h.storage
 		s.skipPhase(id, "phase-1", "skip")
 		s.skipPhase(id, "phase-2", "skip")
 
@@ -463,16 +447,64 @@ describe("start_step", () => {
 	it("blocks after 3 consecutive starts (stuck-loop detection)", async () => {
 		const id = await setupActivePhase()
 		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
-		// We need to call start_step 3 times on the same step. The first works.
-		// The 2nd is blocked because step-1 is already running. We need to clear
-		// and re-start to bump the counter.
-		// Actually the counter increments on EVERY call regardless of whether
-		// the step start succeeds (counter bumps before the running-check passes).
-		// Let me reconsider — read the implementation:
-		// bumpStepStart fires AFTER the alreadyRunning check.
-		// So to hit stuck-loop, we'd need to complete-then-restart 3 times. Skip this test for now.
-		// (Behavior is exercised by state-machine tests later.)
+		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		const result = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" })
+		expect(err(result)).toMatch(/Stuck loop detected/i)
+	})
+
+	it("lets the user skip directly from the stuck-loop prompt", async () => {
+		const id = await setupActivePhase()
+		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValue("Skip this step and move on"),
+			},
+		}
+		const result = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }, ctx)
+
+		expect(ok(result)).toMatch(/skipped at user request/i)
+		expect(ctx.ui.select).toHaveBeenCalledWith(expect.stringContaining("has been started 3 times"), [
+			"Retry with a revised approach",
+			"Skip this step and move on",
+			"Pause the ferment for now",
+		])
+		expect(loadFerment(id).phases[0].steps[0].status).toBe("skipped")
+	})
+
+	it("lets the user pause directly from the stuck-loop prompt", async () => {
+		const id = await setupActivePhase()
+		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValue("Pause the ferment for now"),
+			},
+		}
+		const result = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }, ctx)
+
+		expect(ok(result)).toMatch(/paused at user request/i)
+		expect(loadFerment(id).status).toBe("paused")
+	})
+
+	it("lets the user retry from the stuck-loop prompt after clearing the counter", async () => {
+		const id = await setupActivePhase()
+		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValue("Retry with a revised approach"),
+			},
+		}
+		const result = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }, ctx)
+
+		expect(ok(result)).toMatch(/Step 1: "Step A1" started/)
 		expect(loadFerment(id).phases[0].steps[0].status).toBe("running")
+		const nextResult = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" })
+		expect(ok(nextResult)).toMatch(/Step 1: "Step A1" started/)
 	})
 
 	it("returns step not found for invalid step_id", async () => {
@@ -679,7 +711,7 @@ describe("complete_ferment", () => {
 		await scopeFerment(id)
 		expect(getActive()?.id).toBe(id)
 		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBe(id)
-		const s = new FermentStorage()
+		const s = h.storage
 		s.skipPhase(id, "phase-1", "skipped")
 		s.skipPhase(id, "phase-2", "skipped")
 		ok(await h.call("complete_ferment", { ferment_id: id, final_summary: "all done" }))
@@ -691,7 +723,7 @@ describe("complete_ferment", () => {
 	it("computes overall grade from phase grades", async () => {
 		const id = await createFerment("Graded Test")
 		await scopeFerment(id)
-		const s = new FermentStorage()
+		const s = h.storage
 		s.activatePhase(id, "phase-1")
 		s.completePhase(id, "phase-1", "ok")
 		s.setPhaseGrade(id, "phase-1", { grade: "A", rationale: "good", gradedAt: new Date().toISOString() })
@@ -718,7 +750,7 @@ describe("active ferment environment", () => {
 	it("does not expose terminal ferments as resumable active work", async () => {
 		const id = await createFerment("Terminal Env Test")
 		await scopeFerment(id)
-		const s = new FermentStorage()
+		const s = h.storage
 		s.skipPhase(id, "phase-1", "skipped")
 		s.skipPhase(id, "phase-2", "skipped")
 		ok(await h.call("complete_ferment", { ferment_id: id }))
@@ -857,7 +889,7 @@ describe("paused ferment blocks tool calls at the bridge", () => {
 		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
 		// Flip to paused via storage (the /pause command path is exercised by
 		// the index.ts handler; here we just need the state).
-		const s = new FermentStorage()
+		const s = h.storage
 		s.updateStatus(id, "paused")
 		clearFermentCache()
 		return id
@@ -944,6 +976,43 @@ describe("propose_phases", () => {
 		// User-supplied fields preserved
 		expect(pending?.goal).toBe("G")
 		expect(pending?.constraints).toEqual(["x"])
+	})
+
+	it("confirms and scopes directly when UI is available", async () => {
+		const id = await createFerment("Confirm Proposal")
+		setPendingScope(id, { goal: "G", successCriteria: "C", constraints: ["x"] })
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValue("Yes, this looks right"),
+				input: vi.fn(),
+			},
+		}
+
+		const result = await h.call(
+			"propose_phases",
+			{
+				ferment_id: id,
+				phases: [
+					{ name: "P1", goal: "g1", steps: [{ description: "s1" }] },
+					{ name: "P2", goal: "g2", steps: [{ description: "s2" }] },
+				],
+			},
+			ctx,
+		)
+
+		expect(ok(result)).toMatch(/confirmed and saved/i)
+		expect(ctx.ui.select).toHaveBeenCalledWith(expect.stringContaining("Does this plan look right?"), [
+			"Yes, this looks right",
+			"No, revise",
+			"Let me say something else",
+		])
+		const f = loadFerment(id)
+		expect(f.status).toBe("planned")
+		expect(f.goal).toBe("G")
+		expect(f.successCriteria).toBe("C")
+		expect(f.constraints).toEqual(["x"])
+		expect(f.phases).toHaveLength(2)
+		expect(getPendingScope(id)).toBeUndefined()
 	})
 
 	it("does NOT transition the ferment status (still draft)", async () => {

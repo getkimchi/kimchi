@@ -104,6 +104,11 @@ export async function validateFrontmatter(content: string): Promise<string | nul
 		return "Frontmatter YAML must be an object (key-value mapping)."
 	}
 
+	const obj = parsed as Record<string, unknown>
+	if (typeof obj.description !== "string" || obj.description.trim() === "") {
+		return "Frontmatter must include a non-empty 'description' field."
+	}
+
 	return null
 }
 

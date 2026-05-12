@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { FermentError, FermentStorage, clearFermentCache, detectProjectRoot } from "./store.js"
+import { FermentError, FermentStorage, clearFermentCache, detectProjectRoot, resolveFermentsDir } from "./store.js"
 import type { FermentV3, Phase, Step } from "./types.js"
 
 function createTempDir() {
@@ -412,6 +412,31 @@ describe("FermentStorage v4", () => {
 		it("returns cwd when neither found", () => {
 			const dir = createTempDir()
 			expect(detectProjectRoot(dir)).toBe(dir)
+		})
+	})
+
+	describe("resolveFermentsDir env override", () => {
+		const previous = process.env.KIMCHI_FERMENTS_DIR
+
+		afterEach(() => {
+			if (previous === undefined) {
+				Reflect.deleteProperty(process.env, "KIMCHI_FERMENTS_DIR")
+			} else {
+				process.env.KIMCHI_FERMENTS_DIR = previous
+			}
+		})
+
+		it("honors KIMCHI_FERMENTS_DIR when set", () => {
+			const dir = createTempDir()
+			process.env.KIMCHI_FERMENTS_DIR = dir
+			expect(resolveFermentsDir()).toBe(dir)
+		})
+
+		it("falls back to the project-root path when env is unset", () => {
+			Reflect.deleteProperty(process.env, "KIMCHI_FERMENTS_DIR")
+			const root = createTempDir()
+			mkdirSync(join(root, ".git"))
+			expect(resolveFermentsDir(root)).toBe(join(root, ".kimchi", "ferments"))
 		})
 	})
 })

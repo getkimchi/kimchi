@@ -87,6 +87,12 @@ export function getGlobalFermentsDir(): string {
 }
 
 export function resolveFermentsDir(cwd?: string): string {
+	// Explicit env override wins over project / global resolution. Used by
+	// terminal-bench-2 to land per-trial ferments under the bind-mounted
+	// /logs/agent/ferments directory; also handy for tests that pin storage
+	// to a tmpdir without touching the working tree.
+	const envDir = process.env.KIMCHI_FERMENTS_DIR
+	if (envDir) return envDir
 	const project = detectProjectRoot(cwd)
 	if (project) return resolve(project, ".kimchi", "ferments")
 	return getGlobalFermentsDir()

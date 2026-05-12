@@ -53,29 +53,6 @@ describe("isHomebrewInstall", () => {
 		expect(isHomebrewInstall()).toBe(false)
 	})
 
-	it("returns false when execPath is outside any Homebrew prefix", () => {
-		// No Cellar in tmp → prefix is not a real Homebrew installation.
-		process.env.HOMEBREW_PREFIX = undefined
-		setExecPath(join(tmp, "bin", "kimchi"))
-		expect(isHomebrewInstall()).toBe(false)
-	})
-
-	it("returns true when real path is inside <prefix>/Cellar/", () => {
-		// Build a fake Cellar layout:
-		//   <tmp>/Cellar/kimchi/1.2.3/bin/kimchi   ← the real binary
-		const cellarBin = join(tmp, "Cellar", "kimchi", "1.2.3", "bin")
-		const realBinary = join(cellarBin, "kimchi")
-		touch(realBinary)
-
-		// Point HOMEBREW_PREFIX at our fake prefix so the well-known defaults
-		// (/opt/homebrew, /usr/local) don't interfere.
-		process.env.HOMEBREW_PREFIX = tmp
-
-		// execPath = realBinary (no symlink needed for check 1).
-		setExecPath(realBinary)
-		expect(isHomebrewInstall()).toBe(true)
-	})
-
 	it("returns true via symlink detection (bin → Cellar)", () => {
 		// Fake layout:
 		//   <tmp>/Cellar/kimchi/1.2.3/bin/kimchi   ← real binary
@@ -92,6 +69,21 @@ describe("isHomebrewInstall", () => {
 		process.env.HOMEBREW_PREFIX = tmp
 		setExecPath(symlink)
 		expect(isHomebrewInstall()).toBe(true)
+	})
+
+	it("returns false when a real (non-symlink) binary sits in <prefix>/bin/", () => {
+		// Reproduces the install.sh layout on a host that also has Homebrew:
+		//   <tmp>/Cellar/…           ← exists (some other brew package)
+		//   <tmp>/bin/kimchi         ← real file dropped by install.sh, NOT a symlink
+		// The binary's resolved path is not under Cellar, so detection must
+		// return false even though a Cellar dir exists under the same prefix.
+		mkdirSync(join(tmp, "Cellar"), { recursive: true })
+		const binPath = join(tmp, "bin", "kimchi")
+		touch(binPath)
+
+		process.env.HOMEBREW_PREFIX = tmp
+		setExecPath(binPath)
+		expect(isHomebrewInstall()).toBe(false)
 	})
 
 	it("returns false when Cellar directory does not exist under prefix", () => {

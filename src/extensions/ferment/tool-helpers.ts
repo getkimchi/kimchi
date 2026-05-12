@@ -11,7 +11,7 @@ import { commandToEvents } from "../../ferment/event-mapper.js"
 import type { Command, TransitionError } from "../../ferment/state-machine.js"
 import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
-import { getStorage, setActive } from "./state.js"
+import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 
 // ─── Tool result builders ─────────────────────────────────────────────────────
 // Every tool execute returns the same { details, content, isError? } shape;
@@ -77,42 +77,48 @@ export type ApplyOutcome =
 // while paused. This is the load-bearing piece of the pause feature.
 const COMMANDS_ALLOWED_WHILE_PAUSED = new Set<Command["type"]>(["resume", "abandon"])
 
-export function applyAndPersist(fermentId: string, cmd: Command): ApplyOutcome {
-	const storage = getStorage()
-	const outcome = storage.mutateWithEvents(
-		fermentId,
-		(
-			current,
-		):
-			| { write: true; ferment: Ferment; events: ReturnType<typeof commandToEvents>; value: ApplyOutcome }
-			| { write: false; value: ApplyOutcome } => {
-			if (!current) {
-				return {
-					write: false,
-					value: { ok: false, error: { code: "FERMENT_NOT_FOUND", message: `Ferment not found: ${fermentId}` } },
+export function createApplyAndPersist(runtime: FermentRuntime) {
+	return (fermentId: string, cmd: Command): ApplyOutcome => {
+		const storage = runtime.getStorage()
+		const outcome = storage.mutateWithEvents(
+			fermentId,
+			(
+				current,
+			):
+				| { write: true; ferment: Ferment; events: ReturnType<typeof commandToEvents>; value: ApplyOutcome }
+				| { write: false; value: ApplyOutcome } => {
+				if (!current) {
+					return {
+						write: false,
+						value: { ok: false, error: { code: "FERMENT_NOT_FOUND", message: `Ferment not found: ${fermentId}` } },
+					}
 				}
-			}
-			if (current.status === "paused" && !COMMANDS_ALLOWED_WHILE_PAUSED.has(cmd.type)) {
-				return {
-					write: false,
-					value: {
-						ok: false,
-						error: {
-							code: "FERMENT_PAUSED",
-							message: `Ferment "${current.name}" is paused. The user must resume with /auto before any further ferment tool calls. Acknowledge the pause and wait — do NOT call ferment tools.`,
+				if (current.status === "paused" && !COMMANDS_ALLOWED_WHILE_PAUSED.has(cmd.type)) {
+					return {
+						write: false,
+						value: {
+							ok: false,
+							error: {
+								code: "FERMENT_PAUSED",
+								message: `Ferment "${current.name}" is paused. The user must resume with /auto before any further ferment tool calls. Acknowledge the pause and wait — do NOT call ferment tools.`,
+							},
 						},
-					},
+					}
 				}
-			}
-			const now = new Date().toISOString()
-			const result = applyCommand(current, cmd, { now })
-			if (!result.ok) return { write: false, value: { ok: false, error: result.error } }
-			const events = commandToEvents(cmd, current, result.ferment, { now })
-			return { write: true, ferment: result.ferment, events, value: { ok: true, ferment: result.ferment } }
-		},
-	)
-	if (outcome.ok) setActive(outcome.ferment)
-	return outcome
+				const now = runtime.nowIso()
+				const result = applyCommand(current, cmd, { now })
+				if (!result.ok) return { write: false, value: { ok: false, error: result.error } }
+				const events = commandToEvents(cmd, current, result.ferment, { now })
+				return { write: true, ferment: result.ferment, events, value: { ok: true, ferment: result.ferment } }
+			},
+		)
+		if (outcome.ok) runtime.setActive(outcome.ferment)
+		return outcome
+	}
+}
+
+export function applyAndPersist(fermentId: string, cmd: Command): ApplyOutcome {
+	return createApplyAndPersist(defaultFermentRuntime)(fermentId, cmd)
 }
 
 /**

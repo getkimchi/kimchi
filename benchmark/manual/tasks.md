@@ -60,3 +60,35 @@ List the top 3 with: GitHub stars (approximate), key differentiators, and a one-
 3. **julienschmidt/httprouter** (~16k stars) — minimal, fastest, explicit method routing. `router.GET("/users/:id", handler)`
 
 ---
+
+## Task 4 — Mega coding: Go Concurrent Build System
+
+**Not included in run-all.sh** — run separately via `run-mega-<model>.sh`.
+
+**Prompt:**
+```
+Implement a Go CLI application that acts as a concurrent build system, similar to a simplified Make.
+This is a multi-layer project — start with a plan before writing any code.
+Requirements:
+- Use standard library only (no frameworks, no external dependencies).
+- Parse a declarative build file (buildfile.txt) with this format:
+    target: dep1 dep2
+        command1
+        command2
+  Indented lines under a target are shell commands. Dependencies are space-separated after the colon.
+- Resolve the full dependency graph using topological sort. Detect and report cycles with a clear error message listing the cycle path.
+- Execute independent targets concurrently using a worker pool. Targets whose dependencies are all satisfied should start immediately.
+- Stream command output per target with prefixed labels, e.g. "[compile] go build ./...".
+- Graceful shutdown on SIGINT: finish in-progress targets, skip pending ones, print a summary of what completed and what was skipped.
+- CLI flags: -f <file> (build file path, default: buildfile.txt), -j <N> (max parallel workers, default: number of CPUs), -target <name> (build a specific target and its transitive deps only, default: build all root targets).
+- Fail fast: on the first target error, cancel pending targets and report which target and command failed.
+- Layered architecture: separate packages for parsing, graph resolution, execution engine, and CLI.
+- Unit tests for: build file parsing (valid and malformed input), dependency resolution (diamond deps, cycle detection, single target extraction), and execution ordering (verify concurrency-safe ordering). Use map-based test cases.
+- Put all code in directory: $DIR/buildtool/
+```
+
+**Expected:** plan phase (heavy model) + multiple implementation subagents, 3–6 subagents, <15 min, clean package separation, comprehensive tests, stdlib only.
+
+**Baseline (Claude):** parser package (line-by-line state machine), graph package (Kahn's algorithm for topo sort, DFS for cycle detection), engine package (worker pool with channels, context cancellation, SIGINT trap), cli package (flag parsing), main.go wiring. Map-based tests covering: empty buildfile, single target, diamond dependencies, direct cycle, indirect cycle, malformed indentation, partial-target build, fail-fast propagation.
+
+---

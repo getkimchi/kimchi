@@ -15,6 +15,7 @@ import {
 	writeSkillPaths,
 } from "./config.js"
 import { isBunBinary } from "./env.js"
+import agentsExtension from "./extensions/agents/index.js"
 import bashCollapseExtension from "./extensions/bash-collapse.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
@@ -36,7 +37,6 @@ import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import skillsManagerExtension from "./extensions/skills-manager/index.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
-import subagentExtension from "./extensions/subagent.js"
 import tagsExtension from "./extensions/tags.js"
 import telemetryExtension from "./extensions/telemetry.js"
 import terminalColorsExtension from "./extensions/terminal-colors.js"
@@ -269,6 +269,8 @@ try {
 			loopGuardExtension,
 			lspExtension,
 			mcpAdapterExtension,
+			// Ferment must see raw input before prompt enrichment rewrites print-mode text.
+			fermentExtension,
 			promptEnrichmentExtension(skillPaths),
 			permissionsExtension,
 			behavioursExtension,
@@ -277,9 +279,8 @@ try {
 			hideThinkingExtension,
 			clipboardImageExtension,
 			uiExtension,
-			subagentExtension,
+			agentsExtension,
 			tagsExtension,
-			fermentExtension,
 			telemetryExtension(telemetryConfig),
 			toolRendererExtension,
 			webFetchExtension,
