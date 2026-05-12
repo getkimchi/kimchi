@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { getAvailableModels } from "../startup-context.js"
 import { getNativeClipboard } from "../utils/clipboard-native-harness.js"
 import { readClipboardImage } from "../utils/clipboard-read.js"
-import { clearCurrentTurnImages, setCurrentTurnImages } from "../utils/image-state.js"
+import { addSessionImages, clearCurrentTurnImages } from "../utils/image-state.js"
 import { setPasteImageHandler, setPendingImageIndicator } from "./ui.js"
 
 let pendingImages: ImageContent[] = []
@@ -92,10 +92,11 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		const incoming = event.images ?? []
 		const totalImages = incoming.length + pendingImages.length
 
-		// Always update the turn-local image snapshot so subagent.ts sees the
-		// correct images for this turn — even when there are none (prevents
-		// state leakage from a previous image-bearing turn).
-		setCurrentTurnImages(totalImages === 0 ? [] : [...incoming, ...pendingImages])
+		// Add new images to the session store (images accumulate across turns).
+		// This is the new primary interface — images persist until consumed by subagent.
+		if (totalImages > 0) {
+			addSessionImages([...incoming, ...pendingImages])
+		}
 
 		if (totalImages === 0) return
 

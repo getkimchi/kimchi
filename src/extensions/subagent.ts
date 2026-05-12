@@ -17,7 +17,7 @@ import { isBunBinary, isRunningUnderBun } from "../env.js"
 import { isToolExpanded, registerToolCall } from "../expand-state.js"
 import { findExistingFile, resolveUserPath, stripAtPrefix } from "../fs-paths.js"
 import { getAvailableModels } from "../startup-context.js"
-import { getCurrentTurnImages } from "../utils/image-state.js"
+import { consumeTurnImages, getCurrentTurnImages } from "../utils/image-state.js"
 import { writeImagesForSubagent } from "../utils/image-subagent-bridge.js"
 import { formatCount, formatDuration } from "./format.js"
 import { filterThinkingForDisplay } from "./hide-thinking.js"
@@ -742,6 +742,8 @@ export default function (pi: ExtensionAPI) {
 				const bridge = writeImagesForSubagent(forwardImages)
 				imageTmpPaths = bridge.paths
 				imageCleanup = bridge.cleanup
+				// Mark images as consumed so they won't be forwarded again
+				consumeTurnImages()
 			}
 			const allAttachments = [...validated.resolved, ...imageTmpPaths]
 

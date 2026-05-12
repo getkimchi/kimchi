@@ -10,6 +10,7 @@ const {
 	mockReadClipboardImage,
 	mockGetAvailableModels,
 	mockSetCurrentTurnImages,
+	mockAddSessionImages,
 } = vi.hoisted(() => ({
 	mockSetPasteImageHandler: vi.fn(),
 	mockSetPendingImageIndicator: vi.fn(),
@@ -17,6 +18,7 @@ const {
 	mockReadClipboardImage: vi.fn(),
 	mockGetAvailableModels: vi.fn(),
 	mockSetCurrentTurnImages: vi.fn(),
+	mockAddSessionImages: vi.fn(),
 }))
 
 vi.mock("./ui.js", () => ({
@@ -39,7 +41,9 @@ vi.mock("../startup-context.js", () => ({
 vi.mock("../utils/image-state.js", () => ({
 	clearCurrentTurnImages: vi.fn(),
 	setCurrentTurnImages: mockSetCurrentTurnImages,
+	addSessionImages: mockAddSessionImages,
 	getCurrentTurnImages: vi.fn().mockReturnValue([]),
+	consumeTurnImages: vi.fn(),
 }))
 
 import type { ImageContent } from "@earendil-works/pi-ai"
@@ -94,13 +98,15 @@ describe("clipboard-image extension", () => {
 			})
 		})
 
-		it("updates image-state even when no images are present", () => {
+		it("does not call setCurrentTurnImages when no images are present", () => {
 			const pi = makeMockPi()
 			clipboardImageExtension(pi)
 
 			callInputHandler(pi, { text: "hello", images: [] })
 
-			expect(mockSetCurrentTurnImages).toHaveBeenLastCalledWith([])
+			// With the new accumulation behavior, we return early when no images
+			// and don't call setCurrentTurnImages at all (it would incorrectly reset the store)
+			expect(mockSetCurrentTurnImages).not.toHaveBeenCalled()
 		})
 
 		it("returns undefined (no transform) when no text and no images", () => {

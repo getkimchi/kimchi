@@ -19,10 +19,11 @@ describe("image-state", () => {
 		expect(getCurrentTurnImages()).toEqual([])
 	})
 
-	it("overwrites previous images on set", () => {
-		setCurrentTurnImages([{ type: "image", mimeType: "image/png", data: "old" }])
-		setCurrentTurnImages([{ type: "image", mimeType: "image/webp", data: "new" }])
-		expect(getCurrentTurnImages()).toHaveLength(1)
-		expect(getCurrentTurnImages()[0]?.mimeType).toBe("image/webp")
+	it("accumulates images across calls", () => {
+		setCurrentTurnImages([{ type: "image", mimeType: "image/png", data: "first" }])
+		setCurrentTurnImages([{ type: "image", mimeType: "image/webp", data: "second" }])
+		expect(getCurrentTurnImages()).toHaveLength(2)
+		expect(getCurrentTurnImages()[0]?.mimeType).toBe("image/png")
+		expect(getCurrentTurnImages()[1]?.mimeType).toBe("image/webp")
 	})
 })
