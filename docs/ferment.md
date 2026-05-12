@@ -347,48 +347,66 @@ These tools are available to the agent during a ferment session. They are not me
 
 ## State machine (full)
 
+### Ferment lifecycle
+
 ```mermaid
 stateDiagram-v2
-    state "Ferment" as Ferment {
-        [*] --> Draft: create
-        Draft --> Planned: scope
-        Planned --> Running: activate_phase
-        Running --> Planned: complete_phase / skip_phase / fail_phase
-        Running --> Paused: pause
-        Planned --> Paused: pause
-        Paused --> Running: resume / active phase exists
-        Paused --> Planned: resume / no active phase
-        Planned --> Complete: complete_ferment
-        Running --> Complete: complete_ferment
-        Draft --> Abandoned: abandon
-        Planned --> Abandoned: abandon
-        Running --> Abandoned: abandon
-        Paused --> Abandoned: abandon
-    }
+    direction TB
 
-    state "Phase" as Phase {
-        [*] --> PhasePlanned
-        PhasePlanned --> PhaseActive: activate_phase
-        PhaseActive --> PhaseCompleted: complete_phase
-        PhaseActive --> PhaseSkipped: skip_phase
-        PhasePlanned --> PhaseSkipped: skip_phase
-        PhaseActive --> PhaseFailed: fail_phase
-        PhaseFailed --> PhaseActive: activate_phase / retry
-        PhaseFailed --> PhaseSkipped: skip_phase / bypass
-    }
+    [*] --> Draft: create
+    Draft --> Planned: scope
+    Planned --> Running: activate_phase
+    Running --> Planned: complete_phase / skip_phase / fail_phase
 
-    state "Step" as Step {
-        [*] --> StepPending
-        StepPending --> StepRunning: start_step
-        StepRunning --> StepDone: complete_step
-        StepRunning --> StepVerified: verify_step
-        StepPending --> StepSkipped: skip_step
-        StepRunning --> StepSkipped: skip_step
-        StepPending --> StepFailed: fail_step
-        StepRunning --> StepFailed: fail_step
-        StepFailed --> StepRunning: start_step / retry
-        StepFailed --> StepSkipped: skip_step / bypass
-    }
+    Running --> Paused: pause
+    Planned --> Paused: pause
+    Paused --> Running: resume / active phase exists
+    Paused --> Planned: resume / no active phase
+
+    Planned --> Complete: complete_ferment
+    Running --> Complete: complete_ferment
+
+    Draft --> Abandoned: abandon
+    Planned --> Abandoned: abandon
+    Running --> Abandoned: abandon
+    Paused --> Abandoned: abandon
+```
+
+### Phase lifecycle
+
+```mermaid
+stateDiagram-v2
+    direction TB
+
+    [*] --> Planned
+    Planned --> Active: activate_phase
+    Active --> Completed: complete_phase
+    Active --> Skipped: skip_phase
+    Planned --> Skipped: skip_phase
+    Active --> Failed: fail_phase
+
+    Failed --> Active: activate_phase / retry
+    Failed --> Skipped: skip_phase / bypass
+```
+
+### Step lifecycle
+
+```mermaid
+stateDiagram-v2
+    direction TB
+
+    [*] --> Pending
+    Pending --> Running: start_step
+    Running --> Done: complete_step
+    Running --> Verified: verify_step
+
+    Pending --> Skipped: skip_step
+    Running --> Skipped: skip_step
+
+    Pending --> Failed: fail_step
+    Running --> Failed: fail_step
+    Failed --> Running: start_step / retry
+    Failed --> Skipped: skip_step / bypass
 ```
 
 ---
