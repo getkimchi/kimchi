@@ -209,8 +209,9 @@ describe("createWebSocketTransport", () => {
 		})
 
 		expect(sockets.length).toBe(3)
-		expect(log).toHaveBeenCalled()
-		expect(log.mock.calls.some((c) => String(c[0]).includes("HTTP 503"))).toBe(true)
+		// With the spinner UX, diagnostics are deferred until timeout;
+		// success on retry means no log output.
+		expect(log).not.toHaveBeenCalled()
 
 		transport.close()
 		restore()

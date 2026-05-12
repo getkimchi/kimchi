@@ -20,6 +20,8 @@ export class RemoteAgentSession {
 	private _followUp: string[] = []
 	private _model?: Record<string, unknown>
 	private _thinkingLevel = "disabled"
+	private _isCompacting = false
+	private _isRetrying = false
 	private _unsubscribeEvent?: () => void
 
 	constructor(options: {
@@ -96,13 +98,40 @@ export class RemoteAgentSession {
 			case "thinking_level_changed":
 				this._thinkingLevel = (event.level as string) ?? "disabled"
 				break
+			case "compaction_start":
+				this._isCompacting = true
+				break
+			case "compaction_end":
+				this._isCompacting = false
+				break
+			case "auto_retry_start":
+				this._isRetrying = true
+				break
+			case "auto_retry_end":
+				this._isRetrying = false
+				break
 			case "extension_ui_request":
 				void this._handleExtensionUiRequest(event)
 				return
 		}
 
+		// Replay server-side agent events into the local extension runner so
+		// client-side extensions (which all kimchi extensions are — same code
+		// loaded on both sides) see turn_start / message_end / tool_execution_*
+		// / queue_update / compaction_* / auto_retry_* / etc.  runner.emit is a
+		// string-keyed dispatch: unhandled event types are silent no-ops.
+		this._forwardToExtensionRunner(event)
+
 		const translated = translateRpcEvent(event)
 		if (translated) this._emit(translated as AgentSessionEvent)
+	}
+
+	private _forwardToExtensionRunner(event: RpcAgentEventLike) {
+		const runner = this._extensionRunner as { emit?: (e: unknown) => Promise<unknown> } | undefined
+		if (!runner?.emit) return
+		void runner.emit(event).catch(() => {
+			// Swallow — extension errors flow through extension_error events.
+		})
 	}
 
 	private async _handleExtensionUiRequest(event: RpcAgentEventLike) {
@@ -141,6 +170,11 @@ export class RemoteAgentSession {
 					sendResponse(value === undefined ? { cancelled: true } : { value })
 					break
 				}
+				case "editor": {
+					const value = await ui.editor?.(event.title as string, event.prefill as string | undefined)
+					sendResponse(value === undefined ? { cancelled: true } : { value })
+					break
+				}
 				case "notify":
 					ui.notify?.(event.message as string, event.notifyType as "warning" | "error" | "info" | undefined)
 					break
@@ -155,15 +189,17 @@ export class RemoteAgentSession {
 						placement: event.widgetPlacement as "aboveEditor" | "belowEditor" | undefined,
 					})
 					break
-				case "setEditorText":
+				case "set_editor_text":
 					ui.setEditorText?.(event.text as string)
 					break
 				default:
-					// Unknown UI request — cancel to release the server.
-					sendResponse({ cancelled: true })
+					// Unknown method: log so we notice new server-side ui calls,
+					// and cancel any request/response shape so the server doesn't hang.
+					console.error(`kimchi: unhandled extension_ui_request method "${method}"`)
+					if (id) sendResponse({ cancelled: true })
 			}
 		} catch {
-			sendResponse({ cancelled: true })
+			if (id) sendResponse({ cancelled: true })
 		}
 	}
 
@@ -214,7 +250,7 @@ export class RemoteAgentSession {
 		return 0
 	}
 	get isCompacting() {
-		return false
+		return this._isCompacting
 	}
 	get model() {
 		return this._model
@@ -244,7 +280,7 @@ export class RemoteAgentSession {
 		return false
 	}
 	get isRetrying() {
-		return false
+		return this._isRetrying
 	}
 	get autoRetryEnabled() {
 		return false
@@ -311,6 +347,13 @@ export class RemoteAgentSession {
 	}
 	setFollowUpMode(mode: string) {
 		return this._rpcClient.send("set_follow_up_mode", { mode })
+	}
+	setPermissionMode(mode: string) {
+		// Server has no dedicated RPC verb for this - but the permissions
+		// extension already registers a /permissions slash command, and the
+		// server's `prompt` handler dispatches `/`-prefixed messages straight
+		// to extension handlers (executes immediately, no LLM round-trip).
+		return this._rpcClient.send("prompt", { message: `/permissions mode ${mode}` })
 	}
 	compact(customInstructions?: string) {
 		return this._rpcClient.send("compact", { customInstructions })
