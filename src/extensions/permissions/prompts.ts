@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { numberedChoices, stripChoiceNumber } from "./select-utils.js"
 import { suggestScope } from "./session-memory.js"
 import type { Rule } from "./types.js"
 
@@ -51,9 +52,9 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 		: undefined
 
 	// Add wildcard option for bash commands
-	const choices = yesWildcard
-		? [yesOnce, yesRemember, yesWildcard, noWithFeedback]
-		: [yesOnce, yesRemember, noWithFeedback]
+	const choices = numberedChoices(
+		yesWildcard ? [yesOnce, yesRemember, yesWildcard, noWithFeedback] : [yesOnce, yesRemember, noWithFeedback],
+	)
 
 	const choice = await ctx.ui.select(lines.join("\n"), choices, {
 		signal: opts.signal,
@@ -61,9 +62,11 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 
 	if (choice === undefined && opts.signal?.aborted) return { kind: "aborted" }
 
-	if (choice === yesOnce) return { kind: "allow-once" }
+	const selected = choice ? stripChoiceNumber(choice) : undefined
 
-	if (choice === yesRemember) {
+	if (selected === yesOnce) return { kind: "allow-once" }
+
+	if (selected === yesRemember) {
 		const rule: Rule = {
 			toolName: scope.toolName,
 			content: scope.content,
@@ -74,7 +77,7 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 	}
 
 	// Check if wildcard was selected (only applicable for bash)
-	if (yesWildcard && choice === yesWildcard) {
+	if (yesWildcard && selected === yesWildcard) {
 		const rule: Rule = {
 			toolName: scope.toolName,
 			content: `${scope.wildcardContent}`,
@@ -84,7 +87,7 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 		return { kind: "allow-remember-wildcard", rule }
 	}
 
-	if (choice === noWithFeedback) {
+	if (selected === noWithFeedback) {
 		const feedback = await ctx.ui.input("Tell the assistant what to do differently:")
 		const text = feedback?.trim()
 		if (text) return { kind: "deny-with-feedback", feedback: text }
@@ -115,12 +118,13 @@ export async function promptForCompoundApproval(opts: {
 	]
 	if (opts.subtitle) lines.push(opts.subtitle)
 
-	const choices = [
+	const compoundChoices = [
 		"Run all (once)",
 		"Allow all from now on",
 		"Pick permissions per subcommand",
 		"No — tell the assistant what to do differently",
 	]
+	const choices = numberedChoices(compoundChoices)
 
 	const choice = await ctx.ui.select(lines.join("\n"), choices, {
 		signal: opts.signal,
@@ -128,8 +132,10 @@ export async function promptForCompoundApproval(opts: {
 
 	if (choice === undefined && opts.signal?.aborted) return { kind: "aborted" }
 
-	if (choice === choices[0]) return { kind: "allow-all-once" }
-	if (choice === choices[1]) {
+	const selected = choice ? stripChoiceNumber(choice) : undefined
+
+	if (selected === compoundChoices[0]) return { kind: "allow-all-once" }
+	if (selected === compoundChoices[1]) {
 		const rules: Rule[] = commands.map((cmd) => ({
 			toolName: opts.toolName,
 			content: `${cmd.command.split(" ")[0]} *`,
@@ -138,8 +144,8 @@ export async function promptForCompoundApproval(opts: {
 		}))
 		return { kind: "allow-all-remember", rules }
 	}
-	if (choice === choices[2]) return { kind: "pick-per-subcommand" }
-	if (choice === choices[3]) {
+	if (selected === compoundChoices[2]) return { kind: "pick-per-subcommand" }
+	if (selected === compoundChoices[3]) {
 		const feedback = await ctx.ui.input("Tell the assistant what to do differently:")
 		const text = feedback?.trim()
 		if (text) return { kind: "deny-with-feedback", feedback: text }
