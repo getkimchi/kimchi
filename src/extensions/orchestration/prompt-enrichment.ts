@@ -32,6 +32,7 @@ import { getCurrentPhase } from "../../extensions/tags.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
+import { isFermentRunning } from "../ferment/state.js"
 import {
 	CONTINUATION_NUDGE_TEXT,
 	ContinuationNudge,
@@ -502,6 +503,7 @@ export default function (skillPaths: string[]) {
 				currentModelId: ctx.model?.id,
 				currentPhase: getCurrentPhase(),
 				registry: registry,
+				suppressOrchestrationGuidelines: isFermentRunning(),
 			}
 
 			if (subagentMode) {

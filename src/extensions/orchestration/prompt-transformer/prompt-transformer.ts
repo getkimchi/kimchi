@@ -54,6 +54,10 @@ export interface PromptContext {
 	currentModelId?: string
 	currentPhase?: Phase
 	registry?: ModelRegistry
+	/** When true, omit orchestration guidelines (model routing/delegation).
+	 *  Used when ferment is running — it manages its own delegation via
+	 *  the planner supplement. */
+	suppressOrchestrationGuidelines?: boolean
 }
 
 export interface ToolInfo {
@@ -111,7 +115,9 @@ export function buildOrchestratorSystemPrompt(
 		.replace("{{ENVIRONMENT}}", () => environmentSection)
 		.replace("{{PROJECT_CONTEXT}}", () => projectContext)
 		.replace("{{SKILLS}}", () => skillsSection)
-	const orchestrationSection = buildOrchestrationGuidelinesSection(promptCtx?.currentModelId, promptCtx?.registry)
+	const orchestrationSection = promptCtx?.suppressOrchestrationGuidelines
+		? ""
+		: buildOrchestrationGuidelinesSection(promptCtx?.currentModelId, promptCtx?.registry)
 	const phaseSection = buildPhaseGuidelinesSection(
 		promptCtx?.currentModelId,
 		promptCtx?.currentPhase,

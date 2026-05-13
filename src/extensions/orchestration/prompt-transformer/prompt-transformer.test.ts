@@ -513,6 +513,17 @@ describe("guideline injection into system prompts", () => {
 		expect(phasePos).toBeGreaterThan(-1)
 		expect(orchPos).toBeLessThan(phasePos)
 	})
+
+	it("suppresses orchestration guidelines when suppressOrchestrationGuidelines is set", () => {
+		const result = buildOrchestratorSystemPrompt(tools, testEnv, undefined, undefined, {
+			currentModelId: "minimax-m2.7",
+			currentPhase: "build",
+			registry,
+			suppressOrchestrationGuidelines: true,
+		})
+		expect(result).not.toContain("## Orchestration Guidelines")
+		expect(result).toContain("## Phase Guidelines (build)")
+	})
 })
 
 describe("builtin-model guideline content", () => {

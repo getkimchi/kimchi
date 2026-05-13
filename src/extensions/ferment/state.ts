@@ -40,6 +40,10 @@ export function setActive(f: Ferment | undefined): void {
 	notifyFermentActive(isResumable)
 }
 
+export function isFermentRunning(): boolean {
+	return activeFerment !== undefined && activeFerment.status === "running"
+}
+
 // ─── Auto-mode toggle (set by /pause and /auto commands) ──────────────────────
 
 let autoModeEnabled = true
