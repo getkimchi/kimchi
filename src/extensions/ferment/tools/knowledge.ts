@@ -9,10 +9,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { VALID_MEMORY_CATEGORIES } from "../../../ferment/state-machine.js"
 import type { MemoryCategory } from "../../../ferment/types.js"
-import { applyAndPersist, failedToolResult, toolErr, toolOk } from "../tool-helpers.js"
+import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
+import { createApplyAndPersist, failedToolResult, toolErr, toolOk } from "../tool-helpers.js"
 import { DecisionParams, MemoryParams } from "../tool-schemas.js"
 
-export function registerKnowledgeTools(pi: ExtensionAPI): void {
+export function registerKnowledgeTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
+	const applyAndPersist = createApplyAndPersist(runtime)
 	pi.registerTool({
 		name: "add_decision",
 		label: "Add Decision",

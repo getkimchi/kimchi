@@ -6,22 +6,31 @@
  * `auto`: balanced — full instructions, planner decides when to act.
  */
 
+import type { Ferment } from "../../ferment/types.js"
 import { getActive } from "./state.js"
+
+export function isPlanFerment(f: Ferment | undefined | null): boolean {
+	return f?.mode === "plan"
+}
+
+export function isExecFerment(f: Ferment | undefined | null): boolean {
+	return f?.mode === "exec"
+}
+
+export function isAutoFerment(f: Ferment | undefined | null): boolean {
+	return f?.mode === "auto"
+}
 
 export function isPlanMode(): boolean {
 	const f = getActive()
 	if (!f) return process.env.KIMCHI_PERMISSIONS === "plan"
-	return f.mode === "plan"
+	return isPlanFerment(f)
 }
 
 export function isExecMode(): boolean {
-	const f = getActive()
-	if (!f) return false
-	return f.mode === "exec"
+	return isExecFerment(getActive())
 }
 
 export function isAutoMode(): boolean {
-	const f = getActive()
-	if (!f) return false
-	return f.mode === "auto"
+	return isAutoFerment(getActive())
 }

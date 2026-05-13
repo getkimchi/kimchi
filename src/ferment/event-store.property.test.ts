@@ -177,7 +177,7 @@ function runRandomSequence(seed: number, length: number): RunStats {
 	// Bump events.jsonl mtime so eventStore.get() prefers the fold path on every
 	// read — `shouldUseEvents` returns true iff eventsMtime >= snapMtime.
 	const bumpEventsMtime = () => {
-		const eventsPath = join(dir, `${ferment.id}.events.jsonl`)
+		const eventsPath = join(dir, ferment.id, `${ferment.id}.events.jsonl`)
 		const future = new Date(Date.now() + 60_000)
 		try {
 			utimesSync(eventsPath, future, future)

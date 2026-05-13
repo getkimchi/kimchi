@@ -38,9 +38,10 @@ function makeStepContext(
 	id: string,
 	index: number,
 	status: FermentFsmContext["phases"][number]["steps"][number]["status"],
-	canRunParallel = false,
+	parallel = false,
+	groupIndex?: number,
 ): FermentFsmContext["phases"][number]["steps"][number] {
-	return { id, index, description: `Step ${index}`, status, canRunParallel }
+	return { id, index, description: `Step ${index}`, status, parallel, groupIndex }
 }
 
 // ─── FSM State Mapping Tests ──────────────────────────────────────────────────
@@ -331,14 +332,14 @@ describe("Illegal Transitions (Guards)", () => {
 			expect(result.error).toContain("non-parallel")
 		})
 
-		it("allows START_STEP when both steps can run parallel", () => {
+		it("allows START_STEP when both steps share a parallel group", () => {
 			const ctx = makeContext({
 				fermentStatus: "running",
 				activePhaseId: "phase-1",
 				phases: [
 					makePhaseContext("phase-1", 1, "active", [
-						makeStepContext("step-1", 1, "running", true), // can run parallel
-						makeStepContext("step-2", 2, "pending", true), // can run parallel
+						makeStepContext("step-1", 1, "running", true, 1),
+						makeStepContext("step-2", 2, "pending", true, 1),
 					]),
 				],
 			})
@@ -348,6 +349,25 @@ describe("Illegal Transitions (Guards)", () => {
 			})
 			expect(result.state).toBe(FSM_STATES.STEP_RUNNING)
 			expect(result.error).toBeUndefined()
+		})
+
+		it("rejects START_STEP when parallel steps are in different groups", () => {
+			const ctx = makeContext({
+				fermentStatus: "running",
+				activePhaseId: "phase-1",
+				phases: [
+					makePhaseContext("phase-1", 1, "active", [
+						makeStepContext("step-1", 1, "running", true, 1),
+						makeStepContext("step-2", 2, "pending", true, 2),
+					]),
+				],
+			})
+			const result = transition(FSM_STATES.PHASE_ACTIVE, FSM_EVENTS.START_STEP, ctx, {
+				phaseId: "phase-1",
+				stepId: "step-2",
+			})
+			expect(result.error).toBeDefined()
+			expect(result.error).toContain("already running")
 		})
 	})
 

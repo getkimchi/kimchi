@@ -7,25 +7,54 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { Static } from "typebox"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
+import type { Ferment, JudgeGrade } from "../../../ferment/types.js"
 import { truncateLabel } from "../colors.js"
 import { formatDecisionsAndMemories, formatScopingContext } from "../format.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { judgeGradePhase, judgeSuggestCorrectiveStep } from "../judge.js"
-import { isPlanMode } from "../modes.js"
+import { isPlanFerment } from "../modes.js"
 import { onPhaseCompleted } from "../nudge.js"
-import { captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
-import {
-	captureJudgeContext,
-	getPhaseStartRef,
-	getStorage,
-	markHumanInput,
-	setActive,
-	setCorrectiveStep,
-	setPhaseStartRef,
-} from "../state.js"
-import { applyAndPersist, failedToolResult, resolvePhase, toolErr, toolOk } from "../tool-helpers.js"
+import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
+import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
+import { createApplyAndPersist, failedToolResult, resolvePhase, toolErr, toolOk } from "../tool-helpers.js"
 import { ActivateParams, CompletePhaseParams, FailPhaseParams, RefineParams, SkipPhaseParams } from "../tool-schemas.js"
+import type { FermentUi, FermentUiContext } from "../ui.js"
+
+type CompletePhaseArgs = Static<typeof CompletePhaseParams>
+type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
+
+type PhaseUiContext = Omit<Partial<FermentUiContext>, "ui"> & { ui?: Partial<FermentUi> }
+
+export interface PhaseHandlerServices {
+	captureGitHead(): string | undefined
+	gatherEvidence(ref: string): PhaseEvidence | undefined
+	judgeGradePhase(
+		phaseName: string,
+		phaseGoal: string,
+		stepSummaries: string,
+		summary: string,
+		evidence?: PhaseEvidence,
+	): Promise<JudgeGrade>
+	judgeSuggestCorrectiveStep(phaseName: string, phaseGoal: string, grade: JudgeGrade): Promise<string | undefined>
+	onPhaseCompleted(pi: ExtensionAPI): void
+	isPlanMode(ferment: Ferment): boolean
+}
+
+export interface PhaseExecutionContext {
+	pi: ExtensionAPI
+	ctx?: PhaseUiContext
+}
+
+export const defaultPhaseHandlerServices: PhaseHandlerServices = {
+	captureGitHead,
+	gatherEvidence: gatherPhaseEvidence,
+	judgeGradePhase,
+	judgeSuggestCorrectiveStep,
+	onPhaseCompleted,
+	isPlanMode: isPlanFerment,
+}
 
 const validateFsmTransition = (
 	f: Parameters<typeof validateFsmTransitionWithFerment>[0],
@@ -33,7 +62,159 @@ const validateFsmTransition = (
 	params?: Parameters<typeof validateFsmTransitionWithFerment>[2],
 ): string | null => validateFsmTransitionWithFerment(f, event, params).error ?? null
 
-export function registerPhaseTools(pi: ExtensionAPI): void {
+function isTerminalPhase(phase: Ferment["phases"][number]): boolean {
+	return phase.status === "completed" || phase.status === "skipped" || phase.status === "failed"
+}
+
+function previousRequiredPhasesTerminal(ferment: Ferment, phase: Ferment["phases"][number]): boolean {
+	const startIndex =
+		phase.groupIndex === undefined
+			? phase.index
+			: Math.min(...ferment.phases.filter((p) => p.groupIndex === phase.groupIndex).map((p) => p.index))
+	return ferment.phases.filter((p) => p.index < startIndex).every(isTerminalPhase)
+}
+
+export async function completePhase(
+	runtime: FermentRuntime,
+	params: CompletePhaseArgs,
+	{ pi, ctx }: PhaseExecutionContext,
+	services: PhaseHandlerServices = defaultPhaseHandlerServices,
+): Promise<ToolResult> {
+	const applyAndPersist = createApplyAndPersist(runtime)
+	runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry)
+
+	// Step 1: resolve the phase (host concern — fuzzy lookup).
+	const f = runtime.getStorage().get(params.ferment_id)
+	if (!f) return toolErr("Ferment not found.")
+	const phase = resolvePhase(f, params.phase_id)
+	if (!phase) return toolErr("Phase not found.")
+
+	// FSM validation: complete_phase requires all phases to be terminal
+	const fsmError = validateFsmTransition(f, "COMPLETE_PHASE", { phaseId: phase.id })
+	if (fsmError) return toolErr(fsmError)
+
+	// Capture the phase shape BEFORE transition for grade computation
+	// (need step summaries from the active phase).
+	const stepSummariesText = phase.steps
+		.map((st) => `  ${st.index}. ${st.description} [${st.status}]${st.grade ? ` Grade:${st.grade.grade}` : ""}`)
+		.join("\n")
+
+	// Step 2: transition phase to completed.
+	const completeOutcome = applyAndPersist(params.ferment_id, {
+		type: "complete_phase",
+		phaseId: phase.id,
+		summary: params.summary,
+	})
+	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
+
+	// Step 3: gather code evidence + grade the completed phase. Without the
+	// evidence, the judge sees only worker-written summaries — which let
+	// "tests pass but the integration is wrong" failures slip through.
+	const startRef = runtime.getPhaseStartRef(params.ferment_id, phase.id)
+	const evidence = startRef ? services.gatherEvidence(startRef) : undefined
+	const phaseGrade = await services.judgeGradePhase(phase.name, phase.goal, stepSummariesText, params.summary, evidence)
+
+	// Step 4: persist the grade.
+	const gradeOutcome = applyAndPersist(params.ferment_id, {
+		type: "set_phase_grade",
+		phaseId: phase.id,
+		grade: phaseGrade,
+	})
+	if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
+
+	// Step 4b: self-improvement loop — for D/F grades, ask the judge for
+	// one concrete corrective step to inject into the next phase's planner
+	// supplement. Awaited inline (T1#11) — the previous fire-and-forget
+	// version raced the next phase's activate_phase, occasionally landing
+	// the suggestion one phase late. The judge call is bounded at 30s by
+	// AbortSignal.timeout inside judgeApiCall, so the worst-case extra
+	// latency on D/F phase completion is 30s; the typical case is a few
+	// seconds. Failures are still best-effort: judgeSuggestCorrectiveStep
+	// returns undefined on unreachable judge / unparseable output.
+	//
+	// Skip when grade was unavailable — the placeholder "B" never actually
+	// triggers this branch, but if the grader returns a real "D"/"F" via
+	// the unavailable path (e.g. a partial parse failure that fell back),
+	// we don't trust the rationale enough to ask for a fix.
+	if (!phaseGrade.unavailable && (phaseGrade.grade === "D" || phaseGrade.grade === "F")) {
+		const suggestion = await services.judgeSuggestCorrectiveStep(phase.name, phase.goal, phaseGrade)
+		if (suggestion) runtime.setCorrectiveStep(params.ferment_id, phase.id, suggestion)
+	}
+
+	services.onPhaseCompleted(pi)
+	const fresh = gradeOutcome.ferment
+	const next = fresh.phases.find((p) => p.status === "planned")
+	const gradeNote = `  Grade: ${phaseGrade.grade} — ${phaseGrade.rationale}`
+
+	if (!next) {
+		return toolOk(`Phase done.${gradeNote}\nAll phases terminal. Use complete_ferment.`)
+	}
+
+	// Plan-mode TUI gate: dropdown review of completed phase + next-phase preview.
+	if (services.isPlanMode(fresh) && ctx?.ui?.select) {
+		const MAX_STEP_DESC = 80
+		const completedPhase = fresh.phases.find((p) => p.id === phase.id)
+		const stepLines =
+			completedPhase?.steps
+				.map((st) => {
+					const icon =
+						st.status === "done" || st.status === "verified"
+							? "✓"
+							: st.status === "skipped"
+								? "⊘"
+								: st.status === "failed"
+									? "✗"
+									: "○"
+					const g = st.grade ? `  ${st.grade.grade}` : ""
+					const desc = truncateLabel(st.description, MAX_STEP_DESC)
+					return `  ${icon} ${st.index}. ${desc}${g}`
+				})
+				.join("\n") ?? ""
+
+		const reviewTitle = [
+			`Phase ${phase.index}: "${phase.name}"  ${phaseGrade.grade}`,
+			truncateLabel(phaseGrade.rationale, 200),
+			"",
+			"Steps completed:",
+			stepLines,
+			"",
+			`Next → Phase ${next.index}: "${next.name}"`,
+			truncateLabel(next.goal, 200),
+		].join("\n")
+
+		const choice = await ctx.ui.select(reviewTitle, [
+			`Proceed to Phase ${next.index}`,
+			"Pause here",
+			"Let me say something",
+		])
+		runtime.markHumanInput()
+
+		if (!choice || choice === "Pause here") {
+			const pauseOutcome = applyAndPersist(fresh.id, { type: "pause" })
+			if (pauseOutcome.ok) runtime.setActive(pauseOutcome.ferment)
+			await pi.sendUserMessage("Ferment paused. Let me know when you are ready to continue.", {
+				deliverAs: "followUp",
+			})
+			return toolOk(`Phase done.${gradeNote}\nFerment paused at user request.`)
+		}
+		if (choice === "Let me say something") {
+			const custom = ctx.ui.input ? await ctx.ui.input("Your message:", "") : undefined
+			if (custom) await pi.sendUserMessage(custom, { deliverAs: "followUp" })
+			return toolOk(`Phase done.${gradeNote}\nAwaiting user direction.`)
+		}
+		await pi.sendUserMessage(`Proceed to Phase ${next.index}: "${next.name}".`, { deliverAs: "followUp" })
+		return toolOk(`Phase done.${gradeNote}\nUser confirmed: proceed to Phase ${next.index}.`)
+	}
+
+	return toolOk(`Phase done.${gradeNote}\nNext: "${next.name}".`)
+}
+
+export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
+	const applyAndPersist = createApplyAndPersist(runtime)
+	const phaseServices: PhaseHandlerServices = {
+		...defaultPhaseHandlerServices,
+		onPhaseCompleted: (targetPi) => onPhaseCompleted(targetPi, runtime),
+	}
 	pi.registerTool({
 		name: "activate_phase",
 		label: "Activate Phase",
@@ -42,7 +223,7 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 		async execute(_, params) {
 			// Resolution is a host concern (fuzzy lookup) — find the phase first,
 			// then dispatch to the right state-machine command.
-			const f = getStorage().get(params.ferment_id)
+			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
 
 			let target = params.phase_id ? f.phases.find((p) => p.id === params.phase_id) : undefined
@@ -56,6 +237,9 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 			// FSM validation: ensure phase activation is allowed
 			const fsmError = validateFsmTransition(f, "ACTIVATE_PHASE", { phaseId: target.id })
 			if (fsmError) return toolErr(fsmError)
+			if (!previousRequiredPhasesTerminal(f, target)) {
+				return toolErr(`Cannot activate phase ${target.index} before earlier phases are terminal.`)
+			}
 
 			// Detect parallel group — activate all siblings at once
 			if (target.groupIndex !== undefined) {
@@ -66,11 +250,11 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 				if (!outcome.ok) return failedToolResult(outcome.error)
 
 				// Capture git HEAD per phase so the grader can diff each one independently.
-				const headRef = captureGitHead()
+				const headRef = phaseServices.captureGitHead()
 				if (headRef) {
 					for (const p of outcome.ferment.phases) {
 						if (p.groupIndex === target.groupIndex && p.status === "active") {
-							setPhaseStartRef(params.ferment_id, p.id, headRef)
+							runtime.setPhaseStartRef(params.ferment_id, p.id, headRef)
 						}
 					}
 				}
@@ -99,8 +283,8 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 			if (!outcome.ok) return failedToolResult(outcome.error)
 
 			// Capture git HEAD so the phase grader can diff against it later.
-			const headRef = captureGitHead()
-			if (headRef) setPhaseStartRef(params.ferment_id, target.id, headRef)
+			const headRef = phaseServices.captureGitHead()
+			if (headRef) runtime.setPhaseStartRef(params.ferment_id, target.id, headRef)
 
 			const fresh = outcome.ferment
 			const activated = fresh.phases.find((p) => p.id === target.id)
@@ -125,7 +309,7 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 		parameters: RefineParams,
 		async execute(_, params) {
 			// Phase resolution: exact id → name substring → active phase fallback.
-			const f = getStorage().get(params.ferment_id)
+			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
 			let phase = f.phases.find((p) => p.id === params.phase_id)
 			if (!phase) {
@@ -175,132 +359,7 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 		description: "Mark phase as completed. Judge grades the phase based on step results.",
 		parameters: CompletePhaseParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
-			captureJudgeContext(ctx?.model, ctx?.modelRegistry)
-
-			// Step 1: resolve the phase (host concern — fuzzy lookup).
-			const f = getStorage().get(params.ferment_id)
-			if (!f) return toolErr("Ferment not found.")
-			const phase = resolvePhase(f, params.phase_id)
-			if (!phase) return toolErr("Phase not found.")
-
-			// FSM validation: complete_phase requires all phases to be terminal
-			const fsmError = validateFsmTransition(f, "COMPLETE_PHASE", { phaseId: phase.id })
-			if (fsmError) return toolErr(fsmError)
-
-			// Capture the phase shape BEFORE transition for grade computation
-			// (need step summaries from the active phase).
-			const stepSummariesText = phase.steps
-				.map((st) => `  ${st.index}. ${st.description} [${st.status}]${st.grade ? ` Grade:${st.grade.grade}` : ""}`)
-				.join("\n")
-
-			// Step 2: transition phase to completed.
-			const completeOutcome = applyAndPersist(params.ferment_id, {
-				type: "complete_phase",
-				phaseId: phase.id,
-				summary: params.summary,
-			})
-			if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
-
-			// Step 3: gather code evidence + grade the completed phase. Without the
-			// evidence, the judge sees only worker-written summaries — which let
-			// "tests pass but the integration is wrong" failures slip through.
-			const startRef = getPhaseStartRef(params.ferment_id, phase.id)
-			const evidence = startRef ? gatherPhaseEvidence(startRef) : undefined
-			const phaseGrade = await judgeGradePhase(phase.name, phase.goal, stepSummariesText, params.summary, evidence)
-
-			// Step 4: persist the grade.
-			const gradeOutcome = applyAndPersist(params.ferment_id, {
-				type: "set_phase_grade",
-				phaseId: phase.id,
-				grade: phaseGrade,
-			})
-			if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
-
-			// Step 4b: self-improvement loop — for D/F grades, ask the judge for
-			// one concrete corrective step to inject into the next phase's planner
-			// supplement. Awaited inline (T1#11) — the previous fire-and-forget
-			// version raced the next phase's activate_phase, occasionally landing
-			// the suggestion one phase late. The judge call is bounded at 30s by
-			// AbortSignal.timeout inside judgeApiCall, so the worst-case extra
-			// latency on D/F phase completion is 30s; the typical case is a few
-			// seconds. Failures are still best-effort: judgeSuggestCorrectiveStep
-			// returns undefined on unreachable judge / unparseable output.
-			//
-			// Skip when grade was unavailable — the placeholder "B" never actually
-			// triggers this branch, but if the grader returns a real "D"/"F" via
-			// the unavailable path (e.g. a partial parse failure that fell back),
-			// we don't trust the rationale enough to ask for a fix.
-			if (!phaseGrade.unavailable && (phaseGrade.grade === "D" || phaseGrade.grade === "F")) {
-				const suggestion = await judgeSuggestCorrectiveStep(phase.name, phase.goal, phaseGrade)
-				if (suggestion) setCorrectiveStep(params.ferment_id, phase.id, suggestion)
-			}
-
-			onPhaseCompleted(pi)
-			const fresh = gradeOutcome.ferment
-			const next = fresh.phases.find((p) => p.status === "planned")
-			const gradeNote = `  Grade: ${phaseGrade.grade} — ${phaseGrade.rationale}`
-
-			if (!next) {
-				return toolOk(`Phase done.${gradeNote}\nAll phases terminal. Use complete_ferment.`)
-			}
-
-			// Plan-mode TUI gate: dropdown review of completed phase + next-phase preview.
-			if (isPlanMode() && ctx?.ui?.select) {
-				const MAX_STEP_DESC = 80
-				const completedPhase = fresh.phases.find((p) => p.id === phase.id)
-				const stepLines =
-					completedPhase?.steps
-						.map((st) => {
-							const icon =
-								st.status === "done" || st.status === "verified"
-									? "✓"
-									: st.status === "skipped"
-										? "⊘"
-										: st.status === "failed"
-											? "✗"
-											: "○"
-							const g = st.grade ? `  ${st.grade.grade}` : ""
-							const desc = truncateLabel(st.description, MAX_STEP_DESC)
-							return `  ${icon} ${st.index}. ${desc}${g}`
-						})
-						.join("\n") ?? ""
-
-				const reviewTitle = [
-					`Phase ${phase.index}: "${phase.name}"  ${phaseGrade.grade}`,
-					truncateLabel(phaseGrade.rationale, 200),
-					"",
-					"Steps completed:",
-					stepLines,
-					"",
-					`Next → Phase ${next.index}: "${next.name}"`,
-					truncateLabel(next.goal, 200),
-				].join("\n")
-
-				const choice = await ctx.ui.select(reviewTitle, [
-					`Proceed to Phase ${next.index}`,
-					"Pause here",
-					"Let me say something",
-				])
-				markHumanInput()
-
-				if (!choice || choice === "Pause here") {
-					const pauseOutcome = applyAndPersist(fresh.id, { type: "pause" })
-					if (pauseOutcome.ok) setActive(pauseOutcome.ferment)
-					await pi.sendUserMessage("Ferment paused. Let me know when you are ready to continue.", {
-						deliverAs: "followUp",
-					})
-					return toolOk(`Phase done.${gradeNote}\nFerment paused at user request.`)
-				}
-				if (choice === "Let me say something") {
-					const custom = ctx.ui.input ? await ctx.ui.input("Your message:", "") : undefined
-					if (custom) await pi.sendUserMessage(custom, { deliverAs: "followUp" })
-					return toolOk(`Phase done.${gradeNote}\nAwaiting user direction.`)
-				}
-				await pi.sendUserMessage(`Proceed to Phase ${next.index}: "${next.name}".`, { deliverAs: "followUp" })
-				return toolOk(`Phase done.${gradeNote}\nUser confirmed: proceed to Phase ${next.index}.`)
-			}
-
-			return toolOk(`Phase done.${gradeNote}\nNext: "${next.name}".`)
+			return completePhase(runtime, params, { pi, ctx }, phaseServices)
 		},
 	})
 
@@ -311,7 +370,7 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 		parameters: SkipPhaseParams,
 		async execute(_, params) {
 			// Resolve via fuzzy first (LLM may pass partial id).
-			const f = getStorage().get(params.ferment_id)
+			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
@@ -336,7 +395,7 @@ export function registerPhaseTools(pi: ExtensionAPI): void {
 		description: "Mark a phase as failed with a reason.",
 		parameters: FailPhaseParams,
 		async execute(_, params) {
-			const f = getStorage().get(params.ferment_id)
+			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")

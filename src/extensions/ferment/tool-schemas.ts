@@ -28,7 +28,7 @@ const PhaseProposalSchema = Type.Object({
 	parallel_group: Type.Optional(
 		Type.Number({
 			description:
-				"Phases with the same parallel_group number run concurrently. Omit (or use unique values) for sequential phases. Example: give all research phases parallel_group: 1 to run them simultaneously.",
+				"Phases with the same parallel_group integer run CONCURRENTLY. Use for phases whose outputs are not consumed by their siblings: independent surveys, codebase mapping over disjoint subtrees, parallel audits. Good fit: three 'survey X' phases → all get parallel_group: 1. BAD fit (keep sequential, omit parallel_group): 'Survey files' → 'Edit those files' → 'Verify edits' is a pipeline — each phase consumes the previous phase's output. Same rule as steps: pipelines stay sequential, only independent siblings get the same parallel_group. Singleton groups auto-collapse.",
 		}),
 	),
 	steps: Type.Optional(
@@ -36,6 +36,12 @@ const PhaseProposalSchema = Type.Object({
 			Type.Object({
 				description: Type.String(),
 				verify: Type.Optional(Type.String({ description: "bash command that exits 0 on success" })),
+				parallel_group: Type.Optional(
+					Type.Number({
+						description:
+							"Steps with the same parallel_group number run concurrently within the phase. Omit (or use unique values) for sequential steps. A group with only one step is treated as sequential.",
+					}),
+				),
 			}),
 			{ description: "Initial step breakdown for this phase. Can be refined later with refine_phase." },
 		),
@@ -88,10 +94,10 @@ export const RefineParams = Type.Object({
 						"Set true if this step requires processing images or screenshots. Selects kimi-k2.5 as worker; otherwise minimax-m2.7 is used.",
 				}),
 			),
-			can_run_parallel: Type.Optional(
-				Type.Boolean({
+			parallel_group: Type.Optional(
+				Type.Number({
 					description:
-						"Set true if this step is independent and can run concurrently with other parallel steps in the same phase. The planner will start all parallel-safe steps simultaneously as separate subagents.",
+						"Steps with the same parallel_group integer run CONCURRENTLY inside this phase. Use for steps that read/write disjoint files and don't consume each other's output. Good fit: 'edit package A' + 'edit package B' (both get parallel_group: 1), or one step per file when the user says edits are independent. BAD fit (keep sequential, omit parallel_group): 'find files' → 'record paths' → 'note locations' is a pipeline where each step builds on the previous. Singleton groups auto-collapse to sequential.",
 				}),
 			),
 		}),

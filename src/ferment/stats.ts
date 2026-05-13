@@ -224,7 +224,7 @@ export function computeStats(ferment: Ferment): FermentStats {
 				workerModelCounts[step.workerModel] = (workerModelCounts[step.workerModel] ?? 0) + 1
 			}
 
-			if (step.canRunParallel) {
+			if (step.parallel) {
 				totalParallelSteps++
 			}
 		}

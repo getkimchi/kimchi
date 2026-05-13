@@ -9,22 +9,14 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { Static } from "typebox"
 import type { Command } from "../../../ferment/state-machine.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
-import { computeFermentGrade, judgePlan } from "../judge.js"
+import { type PlanReview, computeFermentGrade, judgePlan } from "../judge.js"
 import { appendRefEntry, maybeInjectAutoNudge } from "../nudge.js"
-import { attachPendingPhases, clearPendingScope, getPendingScope } from "../scoping.js"
-import {
-	clearFermentState,
-	consumeScopingGate,
-	getActiveId,
-	getStorage,
-	isScopingConfirmed,
-	isScopingInteractive,
-	markHumanInput,
-	setActive,
-} from "../state.js"
-import { applyAndPersist, failedToolResult, toolErr, toolOk } from "../tool-helpers.js"
+import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
+import { confirmPendingScope } from "../scoping-confirmation.js"
+import { createApplyAndPersist, failedToolResult, toolErr, toolOk } from "../tool-helpers.js"
 import {
 	CompleteFermentParams,
 	CreateFermentParams,
@@ -35,13 +27,157 @@ import {
 	UpdateScopeFieldParams,
 } from "../tool-schemas.js"
 
+type ScopeArgs = Static<typeof ScopeParams>
+type CompleteFermentArgs = Static<typeof CompleteFermentParams>
+type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
+
+export interface LifecycleHandlerServices {
+	judgePlan(
+		fermentName: string,
+		goal: string,
+		criteria: string,
+		constraints: string,
+		phases: string,
+	): Promise<PlanReview>
+	maybeInjectAutoNudge(pi: ExtensionAPI): void
+	computeFermentGrade: typeof computeFermentGrade
+}
+
+export interface LifecycleExecutionContext {
+	pi: ExtensionAPI
+}
+
+export const defaultLifecycleHandlerServices: LifecycleHandlerServices = {
+	judgePlan,
+	maybeInjectAutoNudge,
+	computeFermentGrade,
+}
+
 const validateFsmTransition = (
 	f: Parameters<typeof validateFsmTransitionWithFerment>[0],
 	event: Parameters<typeof validateFsmTransitionWithFerment>[1],
 	params?: Parameters<typeof validateFsmTransitionWithFerment>[2],
 ): string | null => validateFsmTransitionWithFerment(f, event, params).error ?? null
 
-export function registerLifecycleTools(pi: ExtensionAPI): void {
+export async function scopeFerment(
+	runtime: FermentRuntime,
+	params: ScopeArgs,
+	{ pi }: LifecycleExecutionContext,
+	services: LifecycleHandlerServices = defaultLifecycleHandlerServices,
+): Promise<ToolResult> {
+	const applyAndPersist = createApplyAndPersist(runtime)
+	// Hard gate: only enforced for ferments scoped interactively (TUI path)
+	// in plan mode. Headless, conversational, exec, and auto modes bypass —
+	// the LLM is trusted there and one-shot/auto-execution should not stall.
+	const fGate = runtime.getStorage().get(params.ferment_id)
+	const gateActive = runtime.isScopingInteractive(params.ferment_id) && fGate?.mode === "plan"
+	if (gateActive && !runtime.isScopingConfirmed(params.ferment_id)) {
+		return toolErr(
+			`Cannot scope ferment "${params.ferment_id}" yet — waiting for user confirmation. Present the plan summary to the user and wait for them to confirm before calling scope_ferment.`,
+		)
+	}
+	runtime.consumeScopingGate(params.ferment_id)
+
+	// FSM validation: ensure scope transition is allowed. The previous
+	// `hasPhases` guard on SCOPE_FERMENT was wrong (scope creates phases) and
+	// has been removed; this call now always runs and the duct-tape "skip
+	// for status === draft" workaround is gone.
+	const fsmError = validateFsmTransition(fGate, "SCOPE_FERMENT")
+	if (fsmError) return toolErr(fsmError)
+
+	const cmd: Command = {
+		type: "scope",
+		title: params.title,
+		goal: params.goal,
+		successCriteria: params.success_criteria,
+		constraints: params.constraints,
+		phases: params.phases ?? [],
+	}
+	const outcome = applyAndPersist(params.ferment_id, cmd)
+	if (!outcome.ok) {
+		// Special-case: ferment-not-in-status with current "planned"/"running" maps
+		// to the user-friendly "use update_scope_field to revise" hint.
+		if (outcome.error.code === "FERMENT_NOT_IN_STATUS" && outcome.error.actual !== "draft") {
+			return toolErr(`Ferment is already ${outcome.error.actual}. Use update_scope_field to revise individual fields.`)
+		}
+		return failedToolResult(outcome.error)
+	}
+	// Discard any stale pending-scope buffer — its phases were either applied
+	// here or are no longer relevant (the ferment is now planned).
+	runtime.clearPendingScope(params.ferment_id)
+
+	const fresh = outcome.ferment
+	const phaseList = fresh.phases.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") || "(none)"
+
+	// Plan review: judge checks phases before execution starts (side effect, host's job)
+	const planReview = await services.judgePlan(
+		fresh.name,
+		params.goal,
+		params.success_criteria ?? "",
+		(params.constraints ?? []).join(", "),
+		phaseList,
+	)
+	services.maybeInjectAutoNudge(pi)
+
+	// Build the review note. confidence === 0 means the judge was unreachable
+	// or returned an unparseable response — we distinguish that case so the
+	// user doesn't see a confident-looking number from a degraded judge.
+	let reviewNote: string
+	if (planReview.confidence === 0) {
+		reviewNote = `\n\nPlan review: judge unavailable (${planReview.reasoning || "no response"}). Proceeding without verdict.`
+	} else if (planReview.verdict === "approve") {
+		const reason = planReview.reasoning ? `\n  ${planReview.reasoning}` : ""
+		reviewNote = `\n\nPlan review: ✓ approved (confidence: ${planReview.confidence}%)${reason}`
+	} else {
+		const reason = planReview.reasoning ? `\n  ${planReview.reasoning}` : ""
+		const suggestionLines = planReview.suggestions.map((s) => `  • ${s}`).join("\n")
+		reviewNote = `\n\nPlan review: ⚠ revision suggested (confidence: ${planReview.confidence}%)${reason}\n${suggestionLines}\n\nRevise the phases if needed, then proceed with activate_phase.`
+	}
+
+	return toolOk(
+		`Ferment "${fresh.name}" scoped and ready.\nferment_id: ${fresh.id}\nGoal: ${params.goal}\nPhases:\n${phaseList}${reviewNote}`,
+	)
+}
+
+export function completeFerment(
+	runtime: FermentRuntime,
+	params: CompleteFermentArgs,
+	services: LifecycleHandlerServices = defaultLifecycleHandlerServices,
+): ToolResult {
+	const applyAndPersist = createApplyAndPersist(runtime)
+	// Step 1: validate + transition status to complete (state machine).
+	const completeOutcome = applyAndPersist(params.ferment_id, { type: "complete_ferment" })
+	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
+
+	// Step 2: compute the grade (host concern — needs the post-transition ferment).
+	const grade = services.computeFermentGrade(completeOutcome.ferment.phases)
+
+	// Step 3: persist the grade via another transition.
+	const gradeOutcome = applyAndPersist(params.ferment_id, { type: "set_ferment_grade", grade })
+	if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
+
+	// Step 4: cleanup in-memory state for this ferment.
+	runtime.clearFermentState(params.ferment_id)
+	runtime.setActive(undefined)
+
+	const fresh = gradeOutcome.ferment
+	const failedPhases = fresh.phases.filter((p) => p.status === "failed").length
+	const failedNote = failedPhases > 0 ? ` (${failedPhases} phase(s) failed)` : ""
+	const phaseGradeSummary = fresh.phases
+		.filter((p) => p.grade)
+		.map((p) => `  ${p.index}. ${p.name}: ${p.grade?.grade}`)
+		.join("\n")
+	return toolOk(
+		`Ferment "${fresh.name}" complete${failedNote}.\n\nOverall Grade: ${grade.grade} — ${grade.rationale}\n\nPhase grades:\n${phaseGradeSummary || "  (none graded)"}\n\n${params.final_summary ?? ""}`,
+	)
+}
+
+export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
+	const applyAndPersist = createApplyAndPersist(runtime)
+	const lifecycleServices: LifecycleHandlerServices = {
+		...defaultLifecycleHandlerServices,
+		maybeInjectAutoNudge: (targetPi) => maybeInjectAutoNudge(targetPi, {}, runtime),
+	}
 	pi.registerTool({
 		name: "create_ferment",
 		label: "Create Ferment",
@@ -50,8 +186,8 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 		async execute(_, params) {
 			// Creation is special — no existing ferment to transition from.
 			// Storage's create() handles uuid generation and worktree capture.
-			const f = getStorage().create(params.name, params.description)
-			setActive(f)
+			const f = runtime.getStorage().create(params.name, params.description)
+			runtime.setActive(f)
 			appendRefEntry(pi, f.id)
 			const branch = f.worktree.branch ?? "(no git)"
 			return toolOk(`Created "${f.name}".  Mode: ${f.mode}  •  Branch: ${branch}  •  Path: ${f.worktree.path}`)
@@ -68,7 +204,7 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 			// The pending-scope buffer must already exist (set by runScopingFlow's
 			// TUI step). If it doesn't, the LLM is calling propose_phases outside
 			// the interactive flow — reject with a clear message.
-			const pending = getPendingScope(params.ferment_id)
+			const pending = runtime.getPendingScope(params.ferment_id)
 			if (!pending) {
 				return toolErr(
 					`No pending scope for ferment "${params.ferment_id}". propose_phases is only valid during the interactive scoping flow started by /ferment add. For headless or one-shot scoping, call scope_ferment directly with all fields.`,
@@ -77,7 +213,7 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 			if (!params.phases || params.phases.length === 0) {
 				return toolErr("propose_phases requires at least one phase. Provide 3–7 ordered phases with steps.")
 			}
-			attachPendingPhases(params.ferment_id, params.phases)
+			runtime.attachPendingPhases(params.ferment_id, params.phases)
 
 			if (ctx?.ui?.select) {
 				const phaseLines = params.phases.map((p, i) => `${i + 1}. ${p.name} — ${p.goal}`).join("\n")
@@ -86,7 +222,7 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 					"No, revise",
 					"Let me say something else",
 				])
-				markHumanInput()
+				runtime.markHumanInput()
 
 				if (!choice) {
 					return toolOk(
@@ -104,19 +240,11 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 					return toolOk("Proposal buffered. Awaiting the user's custom direction.")
 				}
 
-				consumeScopingGate(params.ferment_id)
-				const scopeOutcome = applyAndPersist(params.ferment_id, {
-					type: "scope",
-					goal: pending.goal,
-					successCriteria: pending.successCriteria,
-					constraints: pending.constraints,
-					phases: params.phases,
-				})
+				const scopeOutcome = confirmPendingScope(runtime, params.ferment_id, params.phases, "propose_phases")
 				if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
-				clearPendingScope(params.ferment_id)
-				maybeInjectAutoNudge(pi)
+				maybeInjectAutoNudge(pi, {}, runtime)
 				return toolOk(
-					`Proposal confirmed and saved. Ferment "${scopeOutcome.ferment.name}" is now planned with ${scopeOutcome.ferment.phases.length} phase(s).`,
+					`Proposal confirmed and saved. Ferment "${scopeOutcome.outcome.ferment.name}" is now planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s).`,
 				)
 			}
 
@@ -133,14 +261,14 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 			"List all ferments. Filter by status if needed (draft/planned/running/paused/complete/abandoned). The active ferment is marked.",
 		parameters: ListParams,
 		async execute(_, params) {
-			const items = getStorage().list()
+			const items = runtime.getStorage().list()
 			// Normalize filter: "active" is not a status — "running" is the running state
 			const filterValue = params.filter === "active" ? "running" : params.filter
 			const filtered = filterValue ? items.filter((f) => f.status === filterValue) : items
 			if (filtered.length === 0) {
 				return toolOk(filterValue ? `No ferments with status "${filterValue}".` : "No ferments.")
 			}
-			const activeId = getActiveId()
+			const activeId = runtime.getActiveId()
 			const lines = filtered.map((f) => {
 				const active = f.id === activeId ? " ← active" : ""
 				return `- ${f.id} │ ${f.name} [${f.status}] — ${f.phaseCount} phases${active}`
@@ -156,79 +284,7 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 			"Save scoping answers and transition ferment from draft to planned. In plan mode, the harness gates this call until the user has confirmed the proposed plan via TUI dropdown.",
 		parameters: ScopeParams,
 		async execute(_, params) {
-			// Hard gate: only enforced for ferments scoped interactively (TUI path)
-			// in plan mode. Headless, conversational, exec, and auto modes bypass —
-			// the LLM is trusted there and one-shot/auto-execution should not stall.
-			const fGate = getStorage().get(params.ferment_id)
-			const gateActive = isScopingInteractive(params.ferment_id) && fGate?.mode === "plan"
-			if (gateActive && !isScopingConfirmed(params.ferment_id)) {
-				return toolErr(
-					`Cannot scope ferment "${params.ferment_id}" yet — waiting for user confirmation. Present the plan summary to the user and wait for them to confirm before calling scope_ferment.`,
-				)
-			}
-			consumeScopingGate(params.ferment_id)
-
-			// FSM validation: ensure scope transition is allowed. The previous
-			// `hasPhases` guard on SCOPE_FERMENT was wrong (scope creates phases) and
-			// has been removed; this call now always runs and the duct-tape "skip
-			// for status === draft" workaround is gone.
-			const fsmError = validateFsmTransition(fGate, "SCOPE_FERMENT")
-			if (fsmError) return toolErr(fsmError)
-
-			const cmd: Command = {
-				type: "scope",
-				title: params.title,
-				goal: params.goal,
-				successCriteria: params.success_criteria,
-				constraints: params.constraints,
-				phases: params.phases ?? [],
-			}
-			const outcome = applyAndPersist(params.ferment_id, cmd)
-			if (!outcome.ok) {
-				// Special-case: ferment-not-in-status with current "planned"/"running" maps
-				// to the user-friendly "use update_scope_field to revise" hint.
-				if (outcome.error.code === "FERMENT_NOT_IN_STATUS" && outcome.error.actual !== "draft") {
-					return toolErr(
-						`Ferment is already ${outcome.error.actual}. Use update_scope_field to revise individual fields.`,
-					)
-				}
-				return failedToolResult(outcome.error)
-			}
-			// Discard any stale pending-scope buffer — its phases were either applied
-			// here or are no longer relevant (the ferment is now planned).
-			clearPendingScope(params.ferment_id)
-
-			const fresh = outcome.ferment
-			const phaseList = fresh.phases.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") || "(none)"
-
-			// Plan review: judge checks phases before execution starts (side effect, host's job)
-			const planReview = await judgePlan(
-				fresh.name,
-				params.goal,
-				params.success_criteria ?? "",
-				(params.constraints ?? []).join(", "),
-				phaseList,
-			)
-			maybeInjectAutoNudge(pi)
-
-			// Build the review note. confidence === 0 means the judge was unreachable
-			// or returned an unparseable response — we distinguish that case so the
-			// user doesn't see a confident-looking number from a degraded judge.
-			let reviewNote: string
-			if (planReview.confidence === 0) {
-				reviewNote = `\n\nPlan review: judge unavailable (${planReview.reasoning || "no response"}). Proceeding without verdict.`
-			} else if (planReview.verdict === "approve") {
-				const reason = planReview.reasoning ? `\n  ${planReview.reasoning}` : ""
-				reviewNote = `\n\nPlan review: ✓ approved (confidence: ${planReview.confidence}%)${reason}`
-			} else {
-				const reason = planReview.reasoning ? `\n  ${planReview.reasoning}` : ""
-				const suggestionLines = planReview.suggestions.map((s) => `  • ${s}`).join("\n")
-				reviewNote = `\n\nPlan review: ⚠ revision suggested (confidence: ${planReview.confidence}%)${reason}\n${suggestionLines}\n\nRevise the phases if needed, then proceed with activate_phase.`
-			}
-
-			return toolOk(
-				`Ferment "${fresh.name}" scoped and ready.\nferment_id: ${fresh.id}\nGoal: ${params.goal}\nPhases:\n${phaseList}${reviewNote}`,
-			)
+			return scopeFerment(runtime, params, { pi }, lifecycleServices)
 		},
 	})
 
@@ -261,7 +317,7 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 				return toolErr(`Invalid mode: ${params.mode}. Use plan, exec, or auto.`)
 			}
 			// FSM validation: ensure mode change is allowed
-			const f = getStorage().get(params.ferment_id)
+			const f = runtime.getStorage().get(params.ferment_id)
 			const fsmError = validateFsmTransition(f, "SET_MODE", { mode: params.mode })
 			if (fsmError) return toolErr(fsmError)
 
@@ -281,31 +337,7 @@ export function registerLifecycleTools(pi: ExtensionAPI): void {
 			"Mark ferment as complete. All phases must be terminal (completed, skipped, or failed). Judge computes overall grade.",
 		parameters: CompleteFermentParams,
 		async execute(_, params) {
-			// Step 1: validate + transition status to complete (state machine).
-			const completeOutcome = applyAndPersist(params.ferment_id, { type: "complete_ferment" })
-			if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
-
-			// Step 2: compute the grade (host concern — needs the post-transition ferment).
-			const grade = computeFermentGrade(completeOutcome.ferment.phases)
-
-			// Step 3: persist the grade via another transition.
-			const gradeOutcome = applyAndPersist(params.ferment_id, { type: "set_ferment_grade", grade })
-			if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
-
-			// Step 4: cleanup in-memory state for this ferment.
-			clearFermentState(params.ferment_id)
-			setActive(undefined)
-
-			const fresh = gradeOutcome.ferment
-			const failedPhases = fresh.phases.filter((p) => p.status === "failed").length
-			const failedNote = failedPhases > 0 ? ` (${failedPhases} phase(s) failed)` : ""
-			const phaseGradeSummary = fresh.phases
-				.filter((p) => p.grade)
-				.map((p) => `  ${p.index}. ${p.name}: ${p.grade?.grade}`)
-				.join("\n")
-			return toolOk(
-				`Ferment "${fresh.name}" complete${failedNote}.\n\nOverall Grade: ${grade.grade} — ${grade.rationale}\n\nPhase grades:\n${phaseGradeSummary || "  (none graded)"}\n\n${params.final_summary ?? ""}`,
-			)
+			return completeFerment(runtime, params, lifecycleServices)
 		},
 	})
 }

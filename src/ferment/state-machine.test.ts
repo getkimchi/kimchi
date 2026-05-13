@@ -141,6 +141,36 @@ describe("applyCommand: scope", () => {
 		expect(result.phases[2].parallel).toBe(false)
 	})
 
+	it("collapses a loner parallel_group (single phase) to sequential", () => {
+		// A phase that's the only member of its group is functionally serial:
+		// there's no cohort to activate together. The state-machine materialises
+		// it as parallel=false / groupIndex=undefined so engine, events, and UI
+		// don't misreport it as parallel.
+		const result = expectOk(
+			applyCommand(
+				makeFerment(),
+				{
+					type: "scope",
+					goal: "G",
+					phases: [
+						{ name: "P1", goal: "g1", parallel_group: 1, steps: [{ description: "s" }] },
+						{ name: "P2", goal: "g2", parallel_group: 2, steps: [{ description: "s" }] },
+						{ name: "P3", goal: "g3", parallel_group: 2, steps: [{ description: "s" }] },
+					],
+				},
+				ctx,
+			),
+		)
+		// P1 — loner group 1, collapsed
+		expect(result.phases[0].parallel).toBe(false)
+		expect(result.phases[0].groupIndex).toBeUndefined()
+		// P2, P3 — real cohort group 2, preserved
+		expect(result.phases[1].parallel).toBe(true)
+		expect(result.phases[1].groupIndex).toBe(2)
+		expect(result.phases[2].parallel).toBe(true)
+		expect(result.phases[2].groupIndex).toBe(2)
+	})
+
 	it("renames the ferment when title is provided", () => {
 		const result = expectOk(
 			applyCommand(makeFerment({ name: "Original" }), { type: "scope", title: "Renamed", goal: "G", phases: [] }, ctx),
@@ -340,22 +370,47 @@ describe("applyCommand: refine_phase", () => {
 					phaseId: "phase-1",
 					steps: [
 						{ description: "first" },
-						{ description: "second", verify: "test", needs_vision: true, can_run_parallel: true },
+						{ description: "second", verify: "test", needs_vision: true, parallel_group: 1 },
+						{ description: "third", needs_vision: false, parallel_group: 1 },
 					],
 				},
 				ctx,
 			),
 		)
-		expect(result.phases[0].steps).toHaveLength(2)
+		expect(result.phases[0].steps).toHaveLength(3)
 		expect(result.phases[0].steps[0]).toMatchObject({ id: "step-1", index: 1, status: "pending" })
 		expect(result.phases[0].steps[1]).toMatchObject({
 			id: "step-2",
 			index: 2,
 			needsVision: true,
 			workerModel: "kimi-k2.5",
-			canRunParallel: true,
+			parallel: true,
+			groupIndex: 1,
+		})
+		expect(result.phases[0].steps[2]).toMatchObject({
+			id: "step-3",
+			index: 3,
+			parallel: true,
+			groupIndex: 1,
 		})
 		expect(result.phases[0].steps[1].verification?.command).toBe("test")
+	})
+
+	it("collapses a singleton parallel_group step to sequential", () => {
+		const f = makeFerment({ phases: [makePhase({ status: "active" })] })
+		const result = expectOk(
+			applyCommand(
+				f,
+				{
+					type: "refine_phase",
+					phaseId: "phase-1",
+					steps: [{ description: "lone", parallel_group: 1 }],
+				},
+				ctx,
+			),
+		)
+		expect(result.phases[0].steps[0]).toMatchObject({ parallel: false })
+		expect(result.phases[0].steps[0].groupIndex).toBeUndefined()
 	})
 
 	it("defaults workerModel to minimax-m2.7 when needs_vision is false", () => {
@@ -451,8 +506,8 @@ describe("applyCommand: start_step", () => {
 				makePhase({
 					status: "active",
 					steps: [
-						makeStep({ id: "step-1", status: "running", canRunParallel: false }),
-						makeStep({ id: "step-2", index: 2, status: "pending", canRunParallel: false }),
+						makeStep({ id: "step-1", status: "running", parallel: false }),
+						makeStep({ id: "step-2", index: 2, status: "pending", parallel: false }),
 					],
 				}),
 			],
@@ -464,20 +519,36 @@ describe("applyCommand: start_step", () => {
 		}
 	})
 
-	it("allows starting a parallel step when another parallel step is running", () => {
+	it("allows starting a step in the same parallel group as a running step", () => {
 		const f = makeFerment({
 			phases: [
 				makePhase({
 					status: "active",
 					steps: [
-						makeStep({ id: "step-1", status: "running", canRunParallel: true }),
-						makeStep({ id: "step-2", index: 2, status: "pending", canRunParallel: true }),
+						makeStep({ id: "step-1", status: "running", parallel: true, groupIndex: 1 }),
+						makeStep({ id: "step-2", index: 2, status: "pending", parallel: true, groupIndex: 1 }),
 					],
 				}),
 			],
 		})
 		const result = expectOk(applyCommand(f, { type: "start_step", phaseId: "phase-1", stepId: "step-2" }, ctx))
 		expect(result.phases[0].steps[1].status).toBe("running")
+	})
+
+	it("rejects starting a parallel step in a different group than the running one", () => {
+		const f = makeFerment({
+			phases: [
+				makePhase({
+					status: "active",
+					steps: [
+						makeStep({ id: "step-1", status: "running", parallel: true, groupIndex: 1 }),
+						makeStep({ id: "step-2", index: 2, status: "pending", parallel: true, groupIndex: 2 }),
+					],
+				}),
+			],
+		})
+		const error = expectError(applyCommand(f, { type: "start_step", phaseId: "phase-1", stepId: "step-2" }, ctx))
+		expect(error.code).toBe("CONCURRENT_NON_PARALLEL_STEP")
 	})
 
 	it("rejects unknown step", () => {

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -381,10 +381,66 @@ describe("FermentStorage v4", () => {
 			writeFileSync(join(tempDir, "v3-3.json"), `${JSON.stringify(v3)}\n`)
 			const fresh = new FermentStorage(tempDir)
 			fresh.get("v3-3") // triggers migration
-			const raw = readFileSync(join(tempDir, "v3-3.json"), "utf-8")
+			const raw = readFileSync(join(tempDir, "v3-3", "v3-3.json"), "utf-8")
 			expect(raw).toContain("phases")
 			expect(raw).not.toContain("plannedBatches")
 			expect(raw).not.toContain("batchRefs")
+		})
+	})
+
+	describe("legacy flat v4 → nested layout migration", () => {
+		function makeFlatV4(id: string, name = `Ferment ${id}`): Record<string, unknown> {
+			return {
+				id,
+				name,
+				status: "draft",
+				phases: [],
+				decisions: [],
+				memories: [],
+				createdAt: "2024-01-01T00:00:00Z",
+				updatedAt: "2024-01-01T00:00:00Z",
+			}
+		}
+
+		it("relocates a flat v4 file into the per-ferment directory on first read", () => {
+			const legacyPath = join(tempDir, "flat-v4.json")
+			const nestedPath = join(tempDir, "flat-v4", "flat-v4.json")
+			writeFileSync(legacyPath, `${JSON.stringify(makeFlatV4("flat-v4", "Flat ferment"))}\n`)
+			expect(existsSync(nestedPath)).toBe(false)
+
+			const fresh = new FermentStorage(tempDir)
+			const loaded = fresh.get("flat-v4")
+			expect(loaded?.id).toBe("flat-v4")
+			expect(existsSync(nestedPath)).toBe(true)
+			// Legacy file is preserved so older tooling can still read it.
+			expect(existsSync(legacyPath)).toBe(true)
+		})
+
+		it("does not rewrite the nested file when both flat and nested already exist", () => {
+			const flatPath = join(tempDir, "dual.json")
+			const nestedDir = join(tempDir, "dual")
+			const nestedPath = join(nestedDir, "dual.json")
+			mkdirSync(nestedDir, { recursive: true })
+			writeFileSync(nestedPath, `${JSON.stringify(makeFlatV4("dual", "Nested copy (canonical)"))}\n`)
+			writeFileSync(flatPath, `${JSON.stringify(makeFlatV4("dual", "Flat copy (stale)"))}\n`)
+
+			const fresh = new FermentStorage(tempDir)
+			const loaded = fresh.get("dual")
+			// Nested is checked first; legacy must not overwrite it.
+			expect(loaded?.name).toBe("Nested copy (canonical)")
+			const onDisk = JSON.parse(readFileSync(nestedPath, "utf-8")) as { name: string }
+			expect(onDisk.name).toBe("Nested copy (canonical)")
+		})
+
+		it("list() dedupes ferments that appear in both layouts", () => {
+			const nestedDir = join(tempDir, "dedup")
+			mkdirSync(nestedDir, { recursive: true })
+			writeFileSync(join(nestedDir, "dedup.json"), `${JSON.stringify(makeFlatV4("dedup"))}\n`)
+			writeFileSync(join(tempDir, "dedup.json"), `${JSON.stringify(makeFlatV4("dedup"))}\n`)
+
+			const fresh = new FermentStorage(tempDir)
+			const items = fresh.list().filter((i) => i.id === "dedup")
+			expect(items).toHaveLength(1)
 		})
 	})
 

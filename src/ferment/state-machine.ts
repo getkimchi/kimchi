@@ -22,19 +22,20 @@
  * parameter so transitions remain deterministic and unit-testable.
  */
 
-import type {
-	Decision,
-	Ferment,
-	FermentStatus,
-	FermentWorkMode,
-	JudgeGrade,
-	Memory,
-	MemoryCategory,
-	Phase,
-	PhaseStatus,
-	Step,
-	StepResult,
-	StepStatus,
+import {
+	type Decision,
+	type Ferment,
+	type FermentStatus,
+	type FermentWorkMode,
+	type JudgeGrade,
+	type Memory,
+	type MemoryCategory,
+	type Phase,
+	type PhaseStatus,
+	type Step,
+	type StepResult,
+	type StepStatus,
+	inSameParallelCohort,
 } from "./types.js"
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
@@ -46,14 +47,14 @@ export interface ScopePhaseInput {
 	constraints?: string[]
 	budget?: string
 	parallel_group?: number
-	steps?: { description: string; verify?: string }[]
+	steps?: { description: string; verify?: string; parallel_group?: number }[]
 }
 
 export interface RefineStepInput {
 	description: string
 	verify?: string
 	needs_vision?: boolean
-	can_run_parallel?: boolean
+	parallel_group?: number
 }
 
 export type Command =
@@ -306,6 +307,48 @@ function setStep(ferment: Ferment, phaseIndex: number, stepIndex: number, patch:
 // Command handlers
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ─── Cohort resolution ────────────────────────────────────────────────────────
+// Singleton parallel_group values collapse to sequential: surfacing a loner as
+// parallel mis-signals the engine, events, and UI. Shared by phase and step
+// construction since the rule is identical at both layers.
+
+interface CohortFlags {
+	parallel: boolean
+	groupIndex?: number
+}
+
+function resolveCohorts(groups: (number | undefined)[]): CohortFlags[] {
+	const counts = new Map<number, number>()
+	for (const g of groups) {
+		if (g !== undefined) counts.set(g, (counts.get(g) ?? 0) + 1)
+	}
+	return groups.map((g) => {
+		const isMember = g !== undefined && (counts.get(g) ?? 0) >= 2
+		return { parallel: isMember, groupIndex: isMember ? g : undefined }
+	})
+}
+
+interface StepInput {
+	description: string
+	verify?: string
+	needs_vision?: boolean
+	parallel_group?: number
+}
+
+function buildSteps(inputs: StepInput[]): Step[] {
+	const cohorts = resolveCohorts(inputs.map((st) => st.parallel_group))
+	return inputs.map((st, i) => ({
+		id: `step-${i + 1}`,
+		index: i + 1,
+		description: st.description,
+		status: "pending" as const,
+		needsVision: st.needs_vision ?? false,
+		workerModel: st.needs_vision ? "kimi-k2.5" : "minimax-m2.7",
+		verification: st.verify ? { command: st.verify, retries: 2, retryDelayMs: 1000 } : undefined,
+		...cohorts[i],
+	}))
+}
+
 // ─── scope ────────────────────────────────────────────────────────────────────
 // Saves goal/criteria/constraints/phases and transitions draft → planned.
 
@@ -317,14 +360,16 @@ function handleScope(
 	const guard = requireFermentStatus(ferment, ["draft"])
 	if (guard) return fail(guard)
 
+	const phaseCohorts = resolveCohorts(cmd.phases.map((p) => p.parallel_group))
+
 	const phases: Phase[] = cmd.phases.map((p, i) => {
-		const steps: Step[] = (p.steps ?? []).map((st, si) => ({
-			id: `step-${si + 1}`,
-			index: si + 1,
-			description: st.description,
-			status: "pending" as const,
-			verification: st.verify ? { command: st.verify, retries: 2, retryDelayMs: 1000 } : undefined,
-		}))
+		const steps: Step[] = buildSteps(
+			(p.steps ?? []).map((st) => ({
+				description: st.description,
+				verify: st.verify,
+				parallel_group: st.parallel_group,
+			})),
+		)
 		return {
 			id: `phase-${i + 1}`,
 			index: i + 1,
@@ -333,8 +378,7 @@ function handleScope(
 			description: p.description ?? "",
 			constraints: p.constraints,
 			budget: p.budget,
-			parallel: p.parallel_group !== undefined,
-			groupIndex: p.parallel_group,
+			...phaseCohorts[i],
 			status: "planned" as const,
 			steps,
 		}
@@ -525,16 +569,7 @@ function handleRefinePhase(
 		})
 	}
 
-	const steps: Step[] = cmd.steps.map((st, i) => ({
-		id: `step-${i + 1}`,
-		index: i + 1,
-		description: st.description,
-		status: "pending" as const,
-		needsVision: st.needs_vision ?? false,
-		workerModel: st.needs_vision ? "kimi-k2.5" : "minimax-m2.7",
-		canRunParallel: st.can_run_parallel ?? false,
-		verification: st.verify ? { command: st.verify, retries: 2, retryDelayMs: 1000 } : undefined,
-	}))
+	const steps: Step[] = buildSteps(cmd.steps)
 
 	return ok(touch(ferment, ctx, { phases: setPhase(ferment, index, { steps }) }))
 }
@@ -554,15 +589,14 @@ function handleStartStep(
 	if (isTransitionError(stepFound)) return fail(stepFound)
 	const { step, index: stepIndex } = stepFound
 
-	// Block concurrent start when either step is not parallel-safe.
 	const alreadyRunning = phase.steps.find((s) => s.status === "running" && s.id !== step.id)
-	if (alreadyRunning && (!alreadyRunning.canRunParallel || !step.canRunParallel)) {
+	if (alreadyRunning && !inSameParallelCohort(alreadyRunning, step)) {
 		return fail({
 			code: "CONCURRENT_NON_PARALLEL_STEP",
 			runningStepId: alreadyRunning.id,
 			runningStepIndex: alreadyRunning.index,
 			runningDescription: alreadyRunning.description,
-			message: `Cannot start step ${step.index} — step ${alreadyRunning.index} ("${alreadyRunning.description}") is already running and is not parallel-safe.`,
+			message: `Cannot start step ${step.index} — step ${alreadyRunning.index} ("${alreadyRunning.description}") is already running and is not in the same parallel group.`,
 		})
 	}
 

@@ -26,7 +26,7 @@
  *                ABANDONED  PAUSED       PAUSED
  */
 
-import type { FermentStatus, PhaseStatus, StepStatus } from "./types.js"
+import { type FermentStatus, type PhaseStatus, type StepStatus, inSameParallelCohort } from "./types.js"
 
 // ─── FSM States ───────────────────────────────────────────────────────────────
 
@@ -86,7 +86,8 @@ export interface StepContext {
 	index: number
 	description: string
 	status: StepStatus
-	canRunParallel: boolean
+	parallel: boolean
+	groupIndex?: number
 }
 
 export interface FermentFsmContext {
@@ -145,7 +146,7 @@ function hasNonParallelRunningStep(ctx: FermentFsmContext, newStepId: string): s
 	if (!runningStep) return null
 
 	const newStep = activePhase.steps.find((s) => s.id === newStepId)
-	if (runningStep.canRunParallel && newStep?.canRunParallel) return null
+	if (newStep && inSameParallelCohort(runningStep, newStep)) return null
 
 	return GUARD_ERRORS.CONCURRENT_STEP(runningStep.id)
 }
@@ -188,6 +189,17 @@ const GUARDS: Record<string, GuardFn> = {
 	},
 
 	noConcurrentNonParallelStep: (ctx, params) => {
+		if (!params.stepId) return "Missing stepId"
+		return hasNonParallelRunningStep(ctx, params.stepId)
+	},
+
+	startStepInActivePhase: (ctx, params) => {
+		if (!params.phaseId) return "Missing phaseId"
+		const phase = findPhaseById(ctx, params.phaseId)
+		if (typeof phase === "string") return phase
+		if (phase.status !== "active") {
+			return `Cannot start step in phase "${phase.id}" (status: ${phase.status}). Call activate_phase first.`
+		}
 		if (!params.stepId) return "Missing stepId"
 		return hasNonParallelRunningStep(ctx, params.stepId)
 	},
@@ -279,8 +291,12 @@ const TRANSITIONS: TransitionMap = {
 	},
 
 	[FSM_STATES.PHASE_ACTIVE]: {
+		// Allow pivoting to the next planned phase after the current one
+		// completes. Without this, once a phase completes the ferment is stuck
+		// in PHASE_ACTIVE with no legal way to move to phase N+1.
+		[FSM_EVENTS.ACTIVATE_PHASE]: { target: FSM_STATES.PHASE_ACTIVE, guard: "phaseExistsAndPlanned" },
 		[FSM_EVENTS.REFINE_PHASE]: { target: FSM_STATES.PHASE_ACTIVE },
-		[FSM_EVENTS.START_STEP]: { target: FSM_STATES.STEP_RUNNING, guard: "noConcurrentNonParallelStep" },
+		[FSM_EVENTS.START_STEP]: { target: FSM_STATES.STEP_RUNNING, guard: "startStepInActivePhase" },
 		[FSM_EVENTS.COMPLETE_PHASE]: {
 			target: (ctx) => (areAllPhasesTerminal(ctx) ? FSM_STATES.COMPLETE : FSM_STATES.PHASE_ACTIVE),
 			guard: "phaseActive",
@@ -310,7 +326,7 @@ const TRANSITIONS: TransitionMap = {
 		[FSM_EVENTS.VERIFY_STEP]: { target: FSM_STATES.PHASE_ACTIVE, guard: "stepCompleted" },
 		[FSM_EVENTS.SKIP_STEP]: { target: FSM_STATES.PHASE_ACTIVE, guard: "stepSkipped" },
 		[FSM_EVENTS.FAIL_STEP]: { target: FSM_STATES.PHASE_ACTIVE, guard: "stepFailed" },
-		[FSM_EVENTS.START_STEP]: { target: FSM_STATES.STEP_RUNNING, guard: "noConcurrentNonParallelStep" },
+		[FSM_EVENTS.START_STEP]: { target: FSM_STATES.STEP_RUNNING, guard: "startStepInActivePhase" },
 		[FSM_EVENTS.PAUSE]: { target: FSM_STATES.PAUSED },
 		[FSM_EVENTS.ABANDON]: { target: FSM_STATES.ABANDONED },
 	},

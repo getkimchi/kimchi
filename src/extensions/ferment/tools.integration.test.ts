@@ -15,8 +15,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { FermentEventStore } from "../../ferment/event-store.js"
 import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { clearAllPendingScopes, getPendingScope, setPendingScope } from "./scoping.js"
 import {
 	clearAllScopingGates,
@@ -46,6 +48,7 @@ interface ToolResult {
 
 interface Harness {
 	storage: FermentStorage
+	runtime: FermentRuntime
 	tempDir: string
 	tools: Map<string, RegisteredTool>
 	call: (toolName: string, params: unknown, ctx?: unknown) => Promise<ToolResult>
@@ -54,6 +57,8 @@ interface Harness {
 function createHarness(): Harness {
 	const tempDir = mkdtempSync(join(tmpdir(), "ferment-tools-test-"))
 	const storage = new FermentStorage(tempDir)
+	const eventStorage = new FermentEventStore(tempDir)
+	const runtime = { ...createDefaultFermentRuntime(), getStorage: () => eventStorage }
 	const tools = new Map<string, RegisteredTool>()
 
 	// Mock pi: only what the tool factories actually call.
@@ -66,19 +71,10 @@ function createHarness(): Harness {
 		appendEntry: vi.fn(),
 	} as unknown as ExtensionAPI
 
-	// Tools resolve storage via getStorage() which uses the default project dir.
-	// Override by setting KIMCHI_FERMENTS_DIR — but that env knob doesn't exist;
-	// instead, monkey-patch the prototype to redirect to our temp dir for the duration.
-	// Cleanest approach: set process.cwd-affecting env so resolveFermentsDir picks our dir.
-	// Even cleaner: tests use storage directly to seed/inspect, and tools use the default
-	// path. We force them to align by setting a unique cwd-based path.
-	// For this test pass we accept that tools use the project's default ferments dir;
-	// we isolate by clearing the cache + using unique fermentIds (uuidv7) per test.
-
-	registerLifecycleTools(pi)
-	registerPhaseTools(pi)
-	registerStepTools(pi)
-	registerKnowledgeTools(pi)
+	registerLifecycleTools(pi, runtime)
+	registerPhaseTools(pi, runtime)
+	registerStepTools(pi, runtime)
+	registerKnowledgeTools(pi, runtime)
 
 	const call = async (toolName: string, params: unknown, ctx?: unknown): Promise<ToolResult> => {
 		const tool = tools.get(toolName)
@@ -87,7 +83,7 @@ function createHarness(): Harness {
 		return result as ToolResult
 	}
 
-	return { storage, tempDir, tools, call }
+	return { storage, runtime, tempDir, tools, call }
 }
 
 // Helpers for asserting on tool results.
@@ -116,19 +112,9 @@ beforeEach(() => {
 	clearAllScopingGates()
 	clearAllPendingScopes()
 	setActive(undefined)
-	// Clean any stale ferments from previous test runs (tools use the project's
-	// default ferments dir, so cross-test pollution is real).
-	const s = new FermentStorage()
-	for (const item of s.list()) {
-		s.delete(item.id)
-	}
 })
 
 afterEach(() => {
-	const s = new FermentStorage()
-	for (const item of s.list()) {
-		s.delete(item.id)
-	}
 	clearFermentCache()
 	clearAllStepStarts()
 	clearAllScopingGates()
@@ -136,17 +122,12 @@ afterEach(() => {
 	setActive(undefined)
 })
 
-// Tools all use the default project storage path. To make tests deterministic
-// without monkey-patching, we use a single ferment per test and reach into the
-// real storage via fresh FermentStorage() instances. The storage cache is
-// cleared between tests so cross-contamination is impossible.
-//
-// Helper: create a ferment via the tool, then return its id by reading the
-// most recently created ferment from the default storage.
+// Helper: create a ferment via the tool, then return its id from the harness
+// temp storage used by the registered tool runtime.
 async function createFerment(name: string, description?: string): Promise<string> {
 	const result = await h.call("create_ferment", { name, description })
 	ok(result)
-	const items = new FermentStorage().list()
+	const items = h.storage.list()
 	const created = items.find((f) => f.name === name)
 	if (!created) throw new Error(`Ferment "${name}" not found after create`)
 	return created.id
@@ -183,7 +164,7 @@ async function scopeFerment(
 
 function loadFerment(id: string): Ferment {
 	clearFermentCache()
-	const f = new FermentStorage().get(id)
+	const f = h.storage.get(id)
 	if (!f) throw new Error(`Ferment ${id} not found`)
 	return f
 }
@@ -221,7 +202,7 @@ describe("list_ferments", () => {
 		const alphaId = await createFerment("Alpha")
 		await createFerment("Beta")
 		// Move alpha to running
-		const s = new FermentStorage()
+		const s = h.storage
 		s.updateStatus(alphaId, "running")
 
 		const result = ok(await h.call("list_ferments", { filter: "running" }))
@@ -231,7 +212,7 @@ describe("list_ferments", () => {
 
 	it("normalizes 'active' filter to 'running'", async () => {
 		const id = await createFerment("Alpha")
-		new FermentStorage().updateStatus(id, "running")
+		h.storage.updateStatus(id, "running")
 		const result = ok(await h.call("list_ferments", { filter: "active" }))
 		expect(result).toContain("Alpha")
 	})
@@ -284,7 +265,7 @@ describe("scope_ferment", () => {
 
 	it("bypasses gate when ferment is in exec mode", async () => {
 		const id = await createFerment("Exec Gate Test")
-		new FermentStorage().updateMode(id, "exec")
+		h.storage.updateMode(id, "exec")
 		markScopingInteractive(id)
 		// Don't confirm — exec mode should bypass
 		const result = await h.call("scope_ferment", {
@@ -362,7 +343,7 @@ describe("activate_phase", () => {
 		const id = await createFerment("None Left")
 		await scopeFerment(id)
 		// Skip both phases manually
-		const s = new FermentStorage()
+		const s = h.storage
 		s.skipPhase(id, "phase-1", "skip")
 		s.skipPhase(id, "phase-2", "skip")
 
@@ -727,7 +708,7 @@ describe("complete_ferment", () => {
 		await scopeFerment(id)
 		expect(getActive()?.id).toBe(id)
 		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBe(id)
-		const s = new FermentStorage()
+		const s = h.storage
 		s.skipPhase(id, "phase-1", "skipped")
 		s.skipPhase(id, "phase-2", "skipped")
 		ok(await h.call("complete_ferment", { ferment_id: id, final_summary: "all done" }))
@@ -739,7 +720,7 @@ describe("complete_ferment", () => {
 	it("computes overall grade from phase grades", async () => {
 		const id = await createFerment("Graded Test")
 		await scopeFerment(id)
-		const s = new FermentStorage()
+		const s = h.storage
 		s.activatePhase(id, "phase-1")
 		s.completePhase(id, "phase-1", "ok")
 		s.setPhaseGrade(id, "phase-1", { grade: "A", rationale: "good", gradedAt: new Date().toISOString() })
@@ -766,7 +747,7 @@ describe("active ferment environment", () => {
 	it("does not expose terminal ferments as resumable active work", async () => {
 		const id = await createFerment("Terminal Env Test")
 		await scopeFerment(id)
-		const s = new FermentStorage()
+		const s = h.storage
 		s.skipPhase(id, "phase-1", "skipped")
 		s.skipPhase(id, "phase-2", "skipped")
 		ok(await h.call("complete_ferment", { ferment_id: id }))
@@ -905,7 +886,7 @@ describe("paused ferment blocks tool calls at the bridge", () => {
 		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
 		// Flip to paused via storage (the /pause command path is exercised by
 		// the index.ts handler; here we just need the state).
-		const s = new FermentStorage()
+		const s = h.storage
 		s.updateStatus(id, "paused")
 		clearFermentCache()
 		return id

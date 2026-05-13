@@ -199,7 +199,14 @@ try {
 		// as `""` placeholders; the kimchi-minimal-tints extension fills them in
 		// per-process at session_start from the OSC 11 probe.
 		const themesDir = resolve(agentDir, "themes")
-		const bundledThemes = ["kimchi.json", "kimchi-minimal.json", "kimchi-light.json", "dark.json", "light.json"]
+		const bundledThemes = [
+			"kimchi.json",
+			"kimchi-minimal.json",
+			"kimchi-light.json",
+			"dark.json",
+			"light.json",
+			"neon.json",
+		]
 		const bundledThemesSrcDir = isBunBinary
 			? resolve(process.env.PI_PACKAGE_DIR ?? "", "theme")
 			: resolve(dirname(fileURLToPath(import.meta.url)), "../themes")

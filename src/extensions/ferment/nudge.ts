@@ -16,9 +16,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { determineNextAction, findFirstPlannedPhase } from "../../ferment/engine.js"
 import type { DeclarativeAction } from "../../ferment/engine.js"
-import { isExecMode } from "./modes.js"
-import { getActive, getActiveId, getStorage, isAutoModeEnabled, setActive } from "./state.js"
-import { applyAndPersist } from "./tool-helpers.js"
+import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { createApplyAndPersist } from "./tool-helpers.js"
 
 export function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
 	void pi.sendMessage({
@@ -95,9 +94,13 @@ function buildResumeNudgeMessage(
  * The default (force=false) only nudges on real *transitions* to avoid
  * burning a turn after every routine step completion.
  */
-export function maybeInjectAutoNudge(pi: ExtensionAPI, opts: { force?: boolean } = {}): void {
-	if (!isAutoModeEnabled()) return
-	const f = getActive()
+export function maybeInjectAutoNudge(
+	pi: ExtensionAPI,
+	opts: { force?: boolean } = {},
+	runtime: FermentRuntime = defaultFermentRuntime,
+): void {
+	if (!runtime.isAutoModeEnabled()) return
+	const f = runtime.getActive()
 	if (!f) return
 	const action = determineNextAction(f)
 	// Skip terminal/idle states even when forced — there's nothing to do.
@@ -132,30 +135,31 @@ export function maybeInjectAutoNudge(pi: ExtensionAPI, opts: { force?: boolean }
 	)
 }
 
-export function onStepCompleted(pi: ExtensionAPI): void {
-	const id = getActiveId()
+export function onStepCompleted(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
+	const id = runtime.getActiveId()
 	if (!id) return
-	const fresh = getStorage().get(id)
+	const fresh = runtime.getStorage().get(id)
 	if (fresh) {
-		setActive(fresh)
-		maybeInjectAutoNudge(pi)
+		runtime.setActive(fresh)
+		maybeInjectAutoNudge(pi, {}, runtime)
 	}
 }
 
-export function onPhaseCompleted(pi: ExtensionAPI): void {
-	const id = getActiveId()
+export function onPhaseCompleted(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
+	const id = runtime.getActiveId()
 	if (!id) return
-	const fresh = getStorage().get(id)
+	const fresh = runtime.getStorage().get(id)
 	if (fresh) {
-		setActive(fresh)
+		runtime.setActive(fresh)
 		// Auto-advance only in exec mode — auto/plan modes leave activation to the planner
-		if (isExecMode()) {
+		if (fresh.mode === "exec") {
 			const next = findFirstPlannedPhase(fresh)
 			if (next) {
+				const applyAndPersist = createApplyAndPersist(runtime)
 				const out = applyAndPersist(fresh.id, { type: "activate_phase", phaseId: next.id })
-				if (out.ok) setActive(out.ferment)
+				if (out.ok) runtime.setActive(out.ferment)
 			}
 		}
-		maybeInjectAutoNudge(pi)
+		maybeInjectAutoNudge(pi, {}, runtime)
 	}
 }
