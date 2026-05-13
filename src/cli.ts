@@ -29,6 +29,7 @@ import loginExtension from "./extensions/login/index.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
+import modelSwitchExtension from "./extensions/model-switch.js"
 import promptEnrichmentExtension from "./extensions/orchestration/prompt-enrichment.js"
 import permissionsExtension from "./extensions/permissions/index.js"
 import { reserveShiftTabForPermissions } from "./extensions/permissions/keybindings.js"
@@ -338,6 +339,7 @@ try {
 			loginExtension,
 			improveExtension,
 			curatorExtension,
+			modelSwitchExtension,
 		]
 
 		if (acpMode) {

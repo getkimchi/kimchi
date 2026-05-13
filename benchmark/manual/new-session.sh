@@ -51,6 +51,15 @@ simple_prompt = (
     "Put the code in directory: $DIR/rate-limiter/. Include a README.md explaining usage."
 )
 
+simple_model_switching_prompt = (
+    "Implement a Go HTTP middleware that rate-limits requests per client IP using a token bucket algorithm. "
+    "Requirements: Each IP gets 10 requests per second. Respond with HTTP 429 when limit is exceeded. "
+    "Thread-safe implementation. Include tests with map-based test cases. "
+    "Put the code in directory: $DIR/rate-limiter/. Include a README.md explaining usage. "
+    "Switch the main model to another available model in the kimchi-dev provider every time you change the phase. "
+    "Use the /model command or the model switching capability to do this."
+)
+
 complex_prompt = (
     "Implement a Go REST API for a task management system. "
     "This is a multi-layer project — start with a plan before writing any code. "
@@ -93,11 +102,12 @@ mega_prompt = (
 
 # Fourth element: include_in_run_all (default True)
 tasks = [
-    ("simple",         simple_prompt,  [],                      True),
-    ("complex",        complex_prompt, [],                      True),
-    ("complex-single", complex_prompt, ["--multi-model=false"], True),
-    ("research",       research_prompt,[],                      True),
-    ("mega",           mega_prompt,    [],                      False),
+    ("simple",                  simple_prompt,                [],                      True),
+    ("simple-model-switching",  simple_model_switching_prompt, [],                      False),
+    ("complex",                 complex_prompt,               [],                      True),
+    ("complex-single",          complex_prompt,               ["--multi-model=false"], True),
+    ("research",                research_prompt,              [],                      True),
+    ("mega",                    mega_prompt,                  [],                      False),
 ]
 
 all_scripts = []

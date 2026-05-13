@@ -23,7 +23,29 @@ Requirements:
 
 ---
 
-## Task 2 — Complex coding: Go REST API Task Management
+## Task 2 — Simple coding with model switching: Go HTTP Rate Limiter Middleware
+
+**Not included in run-all.sh** — run separately via `run-simple-model-switching-<model>.sh`.
+
+**Prompt:**
+```
+Implement a Go HTTP middleware that rate-limits requests per client IP using a token bucket algorithm.
+Requirements:
+- Each IP gets 10 requests per second
+- Respond with HTTP 429 when limit is exceeded
+- Thread-safe implementation
+- Put the code in directory: rate-limiter/
+- Include a README.md explaining usage
+- Switch the main model to another available model in the kimchi-dev provider every time you change the phase. Use the /model command or the model switching capability to do this.
+```
+
+**Expected:** single subagent, light/standard model, <5 min, tests included, no external deps, model switches observed in session logs.
+
+**Baseline (Claude):** token bucket via sync.Map + per-bucket mutex, cleanup goroutine, net.SplitHostPort for IP, map-based tests, no comments, model cycled through all available models.
+
+---
+
+## Task 3 — Complex coding: Go REST API Task Management
 
 **Prompt:**
 ```
@@ -44,7 +66,7 @@ Requirements:
 
 ---
 
-## Task 3 — Research query: Most popular Go HTTP router libraries
+## Task 4 — Research query: Most popular Go HTTP router libraries
 
 **Prompt:**
 ```
@@ -61,7 +83,7 @@ List the top 3 with: GitHub stars (approximate), key differentiators, and a one-
 
 ---
 
-## Task 4 — Mega coding: Go Concurrent Build System
+## Task 5 — Mega coding: Go Concurrent Build System
 
 **Not included in run-all.sh** — run separately via `run-mega-<model>.sh`.
 
