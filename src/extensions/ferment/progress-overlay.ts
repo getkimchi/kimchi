@@ -33,6 +33,17 @@ import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import type { FermentUiContext } from "./ui.js"
 
+// Parallel-group markers — one compact form for inline list rows, one verbose
+// form for the step detail header. Centralized so the glyph and colour stay
+// in sync when either is edited.
+function parallelMarkerInline(s: Step): string {
+	return s.parallel ? `${pr_teal(`∥${s.groupIndex ?? ""}`)} ` : ""
+}
+
+function parallelMarkerVerbose(s: Step): string {
+	return s.parallel ? `  ${pr_teal(`∥ parallel group ${s.groupIndex ?? "?"}`)}` : ""
+}
+
 export function buildPhaseListTitle(f: Ferment, runtime: FermentRuntime = defaultFermentRuntime): string {
 	const terminalCount = f.phases.filter(
 		(p) => p.status === "completed" || p.status === "skipped" || p.status === "failed",
@@ -120,7 +131,7 @@ export function buildPhaseStepOptions(p: Phase): string[] {
 						: s.description
 		// Parallel-safe steps get a teal ∥ marker before the bullet so cohorts
 		// of concurrently-runnable work are visible without drilling into L3.
-		const parallelTag = s.parallel ? `${pr_teal(`∥${s.groupIndex ?? ""}`)} ` : ""
+		const parallelTag = parallelMarkerInline(s)
 		const gradeTag = s.grade ? `  ${gradeColor(s.grade.grade)}` : ""
 		return `${parallelTag}${bullet}  ${name}${gradeTag}`
 	})
@@ -133,7 +144,7 @@ export function buildPhaseStepOptions(p: Phase): string[] {
 export function buildStepDetailTitle(p: Phase, s: Step): string {
 	const bullet = stepBulletChar(s.status)
 	const gradeTag = s.grade ? `  ${gradeColor(s.grade.grade)}  ${pr_dim(s.grade.rationale)}` : ""
-	const parallelTag = s.parallel ? `  ${pr_teal(`∥ parallel group ${s.groupIndex ?? "?"}`)}` : ""
+	const parallelTag = parallelMarkerVerbose(s)
 	const lines: string[] = [
 		`${pr_dim(`Step ${s.index}/${p.steps.length}`)}  ${pr_bold(p.name)}`,
 		`${bullet}  ${pr_bold(s.description)}${gradeTag}${parallelTag}`,

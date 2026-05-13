@@ -125,11 +125,16 @@ export type StepStatus = "pending" | "running" | "done" | "skipped" | "verified"
 
 /** True when both items are members of the same non-singleton parallel group.
  *  Shared by the transition state machine (Step) and the FSM (StepContext)
- *  since both carry the same parallel/groupIndex pair. */
+ *  since both carry the same parallel/groupIndex pair.
+ *
+ *  Set `KIMCHI_FERMENT_DISABLE_PARALLEL=1` to globally collapse all parallel
+ *  cohorts back to sequential execution — useful when investigating issues
+ *  that might stem from concurrency. */
 export function inSameParallelCohort(
 	a: { parallel?: boolean; groupIndex?: number },
 	b: { parallel?: boolean; groupIndex?: number },
 ): boolean {
+	if (process.env.KIMCHI_FERMENT_DISABLE_PARALLEL === "1") return false
 	return !!a.parallel && !!b.parallel && a.groupIndex !== undefined && a.groupIndex === b.groupIndex
 }
 
