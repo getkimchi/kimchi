@@ -114,6 +114,10 @@ export interface RunOptions {
 	thinkingLevel?: ThinkingLevel
 	/** Override working directory (e.g. for worktree isolation). */
 	cwd?: string
+	/** Persist this agent run to a pre-created session file. Omit for in-memory sessions. */
+	sessionFile?: string
+	/** Directory that owns sessionFile; used for later /new or branch operations. */
+	sessionDir?: string
 	/** Called on tool start/end with activity info. */
 	onToolActivity?: (activity: ToolActivity) => void
 	/** Called on streaming text deltas from the assistant response. */
@@ -254,7 +258,9 @@ export async function runAgent(
 	const sessionOpts: Parameters<typeof createAgentSession>[0] = {
 		cwd: effectiveCwd,
 		agentDir,
-		sessionManager: SessionManager.inMemory(effectiveCwd),
+		sessionManager: options.sessionFile
+			? SessionManager.open(options.sessionFile, options.sessionDir, effectiveCwd)
+			: SessionManager.inMemory(effectiveCwd),
 		settingsManager: SettingsManager.create(effectiveCwd, agentDir),
 		modelRegistry: ctx.modelRegistry,
 		model,

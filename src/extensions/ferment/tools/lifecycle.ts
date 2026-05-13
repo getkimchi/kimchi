@@ -12,8 +12,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import type { Command } from "../../../ferment/state-machine.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
+import { autoInitFromEnv, ensureGitRepo } from "../git-init.js"
 import { type PlanReview, computeFermentGrade, judgePlan } from "../judge.js"
-import { appendRefEntry, maybeInjectAutoNudge } from "../nudge.js"
+import { appendRefEntry, resetReactiveAutoNudgeCount } from "../nudge.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
 import { createApplyAndPersist, failedToolResult, toolErr, toolOk } from "../tool-helpers.js"
@@ -40,7 +41,6 @@ export interface LifecycleHandlerServices {
 		constraints: string,
 		phases: string,
 	): Promise<PlanReview>
-	maybeInjectAutoNudge(pi: ExtensionAPI): void
 	computeFermentGrade: typeof computeFermentGrade
 }
 
@@ -50,7 +50,6 @@ export interface LifecycleExecutionContext {
 
 export const defaultLifecycleHandlerServices: LifecycleHandlerServices = {
 	judgePlan,
-	maybeInjectAutoNudge,
 	computeFermentGrade,
 }
 
@@ -106,6 +105,7 @@ export async function scopeFerment(
 	// Discard any stale pending-scope buffer — its phases were either applied
 	// here or are no longer relevant (the ferment is now planned).
 	runtime.clearPendingScope(params.ferment_id)
+	if (outcome.ferment.mode === "plan") runtime.markAfterScopeContinuation(params.ferment_id)
 
 	const fresh = outcome.ferment
 	const phaseList = fresh.phases.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") || "(none)"
@@ -118,8 +118,6 @@ export async function scopeFerment(
 		(params.constraints ?? []).join(", "),
 		phaseList,
 	)
-	services.maybeInjectAutoNudge(pi)
-
 	// Build the review note. confidence === 0 means the judge was unreachable
 	// or returned an unparseable response — we distinguish that case so the
 	// user doesn't see a confident-looking number from a degraded judge.
@@ -159,6 +157,7 @@ export function completeFerment(
 
 	// Step 4: cleanup in-memory state for this ferment.
 	runtime.clearFermentState(params.ferment_id)
+	resetReactiveAutoNudgeCount(params.ferment_id)
 	runtime.setActive(undefined)
 
 	const fresh = gradeOutcome.ferment
@@ -175,10 +174,7 @@ export function completeFerment(
 
 export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
-	const lifecycleServices: LifecycleHandlerServices = {
-		...defaultLifecycleHandlerServices,
-		maybeInjectAutoNudge: (targetPi) => maybeInjectAutoNudge(targetPi, {}, runtime),
-	}
+	const lifecycleServices: LifecycleHandlerServices = defaultLifecycleHandlerServices
 	pi.registerTool({
 		name: "create_ferment",
 		label: "Create Ferment",
@@ -187,6 +183,10 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 		async execute(_, params) {
 			// Creation is special — no existing ferment to transition from.
 			// Storage's create() handles uuid generation and worktree capture.
+			// LLM-driven, so no interactive prompt; opt-in auto-init only.
+			await ensureGitRepo({
+				autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
+			})
 			const f = runtime.getStorage().create(params.name, params.description)
 			setActiveFerment(pi, runtime, f)
 			appendRefEntry(pi, f.id)
@@ -237,13 +237,12 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 				}
 				if (choice === "Let me say something else") {
 					const custom = ctx.ui.input ? await ctx.ui.input("Your message:", "") : undefined
-					if (custom) await pi.sendUserMessage(custom, { deliverAs: "followUp" })
+					if (custom) return toolOk(`Proposal buffered. User direction: ${custom}`)
 					return toolOk("Proposal buffered. Awaiting the user's custom direction.")
 				}
 
 				const scopeOutcome = confirmPendingScope(runtime, params.ferment_id, params.phases, "propose_phases")
 				if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
-				maybeInjectAutoNudge(pi, {}, runtime)
 				return toolOk(
 					`Proposal confirmed and saved. Ferment "${scopeOutcome.outcome.ferment.name}" is now planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s).`,
 				)

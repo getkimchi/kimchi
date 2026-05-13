@@ -25,6 +25,11 @@ export function resumeFerment(
 		return
 	}
 
+	if (existing.status === "complete" || existing.status === "abandoned") {
+		setActiveFerment(pi, runtime, undefined)
+		return
+	}
+
 	// Session_shutdown sets running ferments to "paused"; flip back to running
 	// on resume so the engine produces a real next-action nudge.
 	if (existing.status === "paused") {

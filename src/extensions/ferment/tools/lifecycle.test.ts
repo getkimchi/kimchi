@@ -38,7 +38,6 @@ function createServices(overrides: Partial<LifecycleHandlerServices> = {}): Life
 		judgePlan: vi.fn(async (): Promise<PlanReview> => {
 			return { verdict: "approve", suggestions: [], confidence: 85, reasoning: "Plan is clear." }
 		}),
-		maybeInjectAutoNudge: vi.fn(),
 		computeFermentGrade: vi.fn((): JudgeGrade => {
 			return { grade: "A", rationale: "complete", gradedAt: "2026-01-01T00:00:00.000Z" }
 		}),
@@ -72,7 +71,7 @@ beforeEach(() => {
 })
 
 describe("scopeFerment", () => {
-	it("scopes with injected judge review and auto nudge", async () => {
+	it("scopes with injected judge review", async () => {
 		const h = createHarness()
 		const services = createServices()
 
@@ -91,6 +90,7 @@ describe("scopeFerment", () => {
 
 		expect(okText(result)).toContain("Plan review: ✓ approved")
 		expect(h.storage.get(h.fermentId)?.status).toBe("planned")
+		expect(h.runtime.hasAfterScopeContinuation(h.fermentId)).toBe(true)
 		expect(services.judgePlan).toHaveBeenCalledWith(
 			"Lifecycle Test",
 			"Ship the feature",
@@ -98,7 +98,28 @@ describe("scopeFerment", () => {
 			"Keep it small",
 			expect.stringContaining("Build"),
 		)
-		expect(services.maybeInjectAutoNudge).toHaveBeenCalledWith(h.pi)
+	})
+
+	it("does not mark an after-scope continuation for exec-mode scoping", async () => {
+		const h = createHarness()
+		const applyAndPersist = createApplyAndPersist(h.runtime)
+		const mode = applyAndPersist(h.fermentId, { type: "set_mode", mode: "exec" })
+		if (!mode.ok) throw new Error(mode.error.message)
+		const services = createServices()
+
+		const result = await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+			},
+			{ pi: h.pi },
+			services,
+		)
+
+		expect(okText(result)).toContain("Plan review: ✓ approved")
+		expect(h.runtime.hasAfterScopeContinuation(h.fermentId)).toBe(false)
 	})
 
 	it("formats revision suggestions from injected judge review", async () => {

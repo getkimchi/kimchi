@@ -14,10 +14,12 @@ import {
 import {
 	bumpStepStart,
 	captureJudgeContext,
+	clearAllAfterScopeContinuations,
 	clearAllScopingGates,
 	clearAllStepStarts,
 	clearFermentState,
 	clearStepStart,
+	consumeAfterScopeContinuation,
 	consumeScopingGate,
 	getActive,
 	getActiveId,
@@ -26,9 +28,11 @@ import {
 	getPhaseStartRef,
 	getStepStartRef,
 	getStorage,
+	hasAfterScopeContinuation,
 	isAutoModeEnabled,
 	isScopingConfirmed,
 	isScopingInteractive,
+	markAfterScopeContinuation,
 	markHumanInput,
 	markScopingConfirmed,
 	markScopingInteractive,
@@ -60,6 +64,10 @@ export interface FermentRuntime {
 	isScopingConfirmed(fermentId: string): boolean
 	consumeScopingGate(fermentId: string): void
 	clearAllScopingGates(): void
+	markAfterScopeContinuation(fermentId: string): void
+	hasAfterScopeContinuation(fermentId: string): boolean
+	consumeAfterScopeContinuation(fermentId: string): boolean
+	clearAllAfterScopeContinuations(): void
 	setCorrectiveStep(fermentId: string, phaseId: string, step: string): void
 	getCorrectiveStep(fermentId: string, phaseId: string): string | undefined
 	getPendingScope(fermentId: string): PendingScope | undefined
@@ -96,6 +104,10 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		isScopingConfirmed,
 		consumeScopingGate,
 		clearAllScopingGates,
+		markAfterScopeContinuation,
+		hasAfterScopeContinuation,
+		consumeAfterScopeContinuation,
+		clearAllAfterScopeContinuations,
 		setCorrectiveStep,
 		getCorrectiveStep,
 		getPendingScope,

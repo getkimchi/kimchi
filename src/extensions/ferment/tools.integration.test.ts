@@ -1029,6 +1029,29 @@ describe("propose_phases", () => {
 		expect(getPendingScope(id)).toBeUndefined()
 	})
 
+	it("returns custom propose_phases direction in the tool result", async () => {
+		const id = await createFerment("Custom Proposal Direction")
+		setPendingScope(id, { goal: "G", successCriteria: "C", constraints: [] })
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValue("Let me say something else"),
+				input: vi.fn().mockResolvedValue("Make the first phase smaller."),
+			},
+		}
+
+		const result = await h.call(
+			"propose_phases",
+			{
+				ferment_id: id,
+				phases: [{ name: "P1", goal: "g1", steps: [{ description: "s1" }] }],
+			},
+			ctx,
+		)
+
+		expect(ok(result)).toContain("User direction: Make the first phase smaller.")
+		expect(getPendingScope(id)?.phases).toHaveLength(1)
+	})
+
 	it("does NOT transition the ferment status (still draft)", async () => {
 		const id = await createFerment("No Transition")
 		setPendingScope(id, { goal: "G", successCriteria: "C", constraints: [] })

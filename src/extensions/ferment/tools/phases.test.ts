@@ -103,7 +103,7 @@ describe("completePhase", () => {
 			"phase done",
 			expect.objectContaining({ available: true }),
 		)
-		expect(services.onPhaseCompleted).toHaveBeenCalledWith(h.pi)
+		expect(services.onPhaseCompleted).toHaveBeenCalledWith()
 	})
 
 	it("stores corrective guidance for low phase grades", async () => {
@@ -146,9 +146,48 @@ describe("completePhase", () => {
 		expect(h.storage.get(h.fermentId)?.status).toBe("paused")
 		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
 		expect(markHumanInput).toHaveBeenCalled()
-		expect(h.pi.sendUserMessage).toHaveBeenCalledWith("Ferment paused. Let me know when you are ready to continue.", {
-			deliverAs: "followUp",
-		})
+		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not queue stale follow-up messages for plan-mode phase review choices", async () => {
+		const h = createHarness()
+		const services = createServices({ isPlanMode: vi.fn(() => true) })
+
+		const proceed = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done" },
+			{
+				pi: h.pi,
+				ctx: { ui: { select: vi.fn(async () => "Proceed to Phase 2") } },
+			},
+			services,
+		)
+
+		expect(okText(proceed)).toContain("User confirmed: proceed to Phase 2")
+		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
+	})
+
+	it("returns custom plan-mode phase direction in the tool result", async () => {
+		const h = createHarness()
+		const services = createServices({ isPlanMode: vi.fn(() => true) })
+
+		const result = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done" },
+			{
+				pi: h.pi,
+				ctx: {
+					ui: {
+						select: vi.fn(async () => "Let me say something"),
+						input: vi.fn(async () => "Skip the remaining setup phase."),
+					},
+				},
+			},
+			services,
+		)
+
+		expect(okText(result)).toContain("User direction: Skip the remaining setup phase.")
+		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
 	})
 })
 

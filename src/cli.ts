@@ -34,7 +34,6 @@ import permissionsExtension from "./extensions/permissions/index.js"
 import { reserveShiftTabForPermissions } from "./extensions/permissions/keybindings.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
-import skillsManagerExtension from "./extensions/skills-manager/index.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import tagsExtension from "./extensions/tags.js"
@@ -48,7 +47,10 @@ import { updateModelsConfig } from "./models.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { detectColorMode, hexToBgAnsi, probeTerminalBackground } from "./terminal-bg-probe.js"
+import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
 import { getVersion } from "./utils.js"
+
+installCloudflare524RetryPatch()
 
 const telemetryConfig = readTelemetryConfig()
 
@@ -334,7 +336,6 @@ try {
 			webFetchExtension,
 			webSearchExtension,
 			loginExtension,
-			skillsManagerExtension,
 			improveExtension,
 			curatorExtension,
 		]

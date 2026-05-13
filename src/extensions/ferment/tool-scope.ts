@@ -26,6 +26,33 @@ export const FERMENT_TOOL_NAMES = [
 
 const FERMENT_TOOL_NAME_SET = new Set<string>(FERMENT_TOOL_NAMES)
 
+/**
+ * Tools the planner is allowed to call directly in `ferment-oneshot` mode.
+ * Everything else (bash, edit, write, web_search, grep, …) must be delegated
+ * to a subagent worker — the whole point of one-shot orchestration is that
+ * the planner orchestrates and workers execute.
+ *
+ * `read` stays available so `complete_step` can sanity-check a worker's diff
+ * without spawning a verification subagent.
+ * `get_subagent_result` is required for background Agent calls.
+ */
+export const PLANNER_ONESHOT_ALLOWLIST = new Set<string>([
+	...FERMENT_TOOL_NAMES,
+	// Delegation tool: the higher-level persona-based `Agent`
+	// (`src/extensions/agents/index.ts:590`). Planners pass the ferment's
+	// per-step `worker_model` through `Agent`'s `model` parameter.
+	// `Agent` uses the same prepareChildSessionFile pattern as the legacy
+	// `subagent` primitive, so bench session-linkage and token aggregation
+	// remain intact.
+	"Agent",
+	"get_subagent_result",
+	"read",
+	// Metadata-only phase tracker mandated by the orchestrator base prompt
+	// (`shared.ts`: "You must call `set_phase` before every block of work").
+	// Taxonomy classifies it as readOnly (`taxonomy.ts`) — no side effects.
+	"set_phase",
+])
+
 export function disableFermentTools(pi: ExtensionAPI): void {
 	pi.setActiveTools(pi.getActiveTools().filter((name) => !FERMENT_TOOL_NAME_SET.has(name)))
 }
@@ -60,4 +87,22 @@ export function syncFermentToolScope(pi: ExtensionAPI, ferment: Ferment | undefi
 export function setActiveFerment(pi: ExtensionAPI, runtime: FermentRuntime, ferment: Ferment | undefined): void {
 	runtime.setActive(ferment)
 	syncFermentToolScope(pi, ferment)
+}
+
+/**
+ * In `ferment-oneshot` mode, restrict the planner's active tools to the
+ * allowlist. Removes inline implementation tools (bash, edit, write,
+ * web_search, grep, …) so the planner is structurally forced to delegate
+ * via `Agent` instead of doing the work itself.
+ *
+ * Must be called after ferment tools are enabled (the allowlist includes
+ * them) and only in the planner process — subagents run with
+ * `KIMCHI_SUBAGENT=1` and need the full toolset to do the actual work.
+ */
+export function applyPlannerOneshotAllowlist(pi: ExtensionAPI): void {
+	const allowed = pi
+		.getAllTools()
+		.map((tool) => tool.name)
+		.filter((name) => PLANNER_ONESHOT_ALLOWLIST.has(name))
+	pi.setActiveTools(allowed)
 }

@@ -34,7 +34,7 @@ function errText(result: { content: { text: string }[]; isError?: boolean }): st
 	return result.content.map((c) => c.text).join("\n")
 }
 
-function createHarness(options: { verification?: string } = {}) {
+function createHarness(options: { verification?: string; goal?: string; successCriteria?: string } = {}) {
 	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-steps-test-")))
 	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
 	const applyAndPersist = createApplyAndPersist(runtime)
@@ -49,8 +49,8 @@ function createHarness(options: { verification?: string } = {}) {
 	const ferment = storage.create("Step Test")
 	const scope = applyAndPersist(ferment.id, {
 		type: "scope",
-		goal: "Goal",
-		successCriteria: "Works",
+		goal: options.goal ?? "Goal",
+		successCriteria: options.successCriteria ?? "Works",
 		constraints: [],
 		phases: [
 			{
@@ -105,6 +105,26 @@ describe("startStep", () => {
 		expect(okText(result)).toContain("First step")
 		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("running")
 		expect(h.runtime.getStepStartRef(h.fermentId, "phase-1", "step-1")).toBe("abc123")
+	})
+
+	it("includes fixed output paths from scoping in the worker prompt handoff", async () => {
+		const h = createHarness({
+			goal: "Write /app/jump_analyzer.py and store the TOML output in /app/output.toml",
+			successCriteria: "Running on /app/example_video.mp4 produces /app/output.toml",
+		})
+		const services = createServices({ buildWorkerContext: defaultStepHandlerServices.buildWorkerContext })
+
+		const result = await startStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+			{ pi: h.pi },
+			services,
+		)
+
+		const text = okText(result)
+		expect(text).toContain("Ferment goal:")
+		expect(text).toContain("/app/output.toml")
+		expect(text).toContain("do NOT remove, summarize, or contradict the context block")
 	})
 
 	it("maps concurrent non-parallel starts to the existing tool error", async () => {
