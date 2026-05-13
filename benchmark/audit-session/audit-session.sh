@@ -219,35 +219,28 @@ sed \
     -e "s|{auditModel}|${EFFECTIVE_MODEL}|g" \
     "$PROMPT_FILE" > "$TMPFILE"
 
-audit_report_content=""
-
+# Runs the audit harness. Output goes directly to stdout so the user sees live progress.
 run_audit_agent() {
     local runner="$1"
     local model="$2"
     local prompt_file="$3"
 
-    local audit_content
     case "$runner" in
         kimchi)
-            audit_content="$(kimchi \
-                --model "$model" \
-                --yolo \
-                "@${prompt_file}" 2>&1)"
+            kimchi --model "$model" --yolo "@${prompt_file}"
             ;;
         claude)
-            audit_content="$(claude \
-                --model "$model" \
-                --dangerously-skip-permissions \
-                "$(cat "$prompt_file")" 2>&1)"
+            claude --model "$model" --dangerously-skip-permissions "$(cat "$prompt_file")"
             ;;
         *)
             echo "Unknown runner: $runner" >&2
             return 1
             ;;
     esac
-    echo "$audit_content"
 }
 
+# Extract the last fenced JSON block from the markdown report and write a sidecar file.
+# Only the sidecar file path is printed to stdout; diagnostics go to stderr.
 extract_json_sidecar() {
     local audit_file="$1"
     local sidecar_file="${audit_file%.md}-AUDIT.json"
@@ -257,40 +250,52 @@ extract_json_sidecar() {
         return 1
     fi
 
+    # Extract the *last* ```json … ``` fenced block, strip the fence lines, and
+    # remove trailing whitespace so jq never sees a stray backslash before EOF.
     local json_content
-    json_content="$(grep -A 200 '^```json' "$audit_file" 2>/dev/null \
-        | grep -v '^```' \
-        | grep -v '^```json' \
-        | sed '/^[[:space:]]*$/d' \
-        | head -c 50000)"
+    json_content="$(awk '
+        /^```json$/     { buf=""; in_block=1; next }
+        in_block && /^```$/ { in_block=0 }
+        in_block        { buf = buf $0 "\n" }
+        END             { printf "%s", buf }
+    ' "$audit_file" | sed -e 's/[[:space:]]*$//')"
 
     if [[ -z "$json_content" ]]; then
         echo "No JSON appendix found in audit report" >&2
         return 1
     fi
 
-    echo "$json_content" > "$sidecar_file"
+    printf '%s\n' "$json_content" > "$sidecar_file"
 
     if command -v jq &>/dev/null; then
         if jq empty "$sidecar_file" 2>/dev/null; then
-            echo "JSON sidecar written: $sidecar_file (validated)"
+            echo "JSON sidecar written: $sidecar_file (validated)" >&2
         else
             echo "JSON sidecar written but may be malformed: $sidecar_file" >&2
         fi
     else
-        echo "JSON sidecar written (jq not available for validation): $sidecar_file"
+        echo "JSON sidecar written (jq not available for validation): $sidecar_file" >&2
     fi
 
-    echo "$sidecar_file"
+    printf '%s\n' "$sidecar_file"
 }
+
+AUDIT_TMP="$(mktemp /tmp/audit-report-XXXXXX)"
+trap 'rm -f "$TMPFILE" "$AUDIT_TMP"' EXIT
 
 echo "Running audit agent ($RUNNER, $EFFECTIVE_MODEL)..."
 echo ""
 
-audit_report_content="$(run_audit_agent "$RUNNER" "$EFFECTIVE_MODEL" "$TMPFILE")"
+# Stream output live to stdout and simultaneously capture to a temp file.
+run_audit_agent "$RUNNER" "$EFFECTIVE_MODEL" "$TMPFILE" | tee "$AUDIT_TMP"
+
+# Read the captured report for post-processing.
+audit_report_content="$(cat "$AUDIT_TMP")"
+rm -f "$AUDIT_TMP"
+trap 'rm -f "$TMPFILE"' EXIT
 
 mkdir -p "$(dirname ".kimchi/audits/$AUDIT_FILENAME")"
-echo "$audit_report_content" > ".kimchi/audits/$AUDIT_FILENAME"
+printf '%s\n' "$audit_report_content" > ".kimchi/audits/$AUDIT_FILENAME"
 
 echo ""
 if [[ -s ".kimchi/audits/$AUDIT_FILENAME" ]]; then

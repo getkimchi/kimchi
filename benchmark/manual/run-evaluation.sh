@@ -144,13 +144,20 @@ done
 # --- Step 5: Run audits with Claude Opus 4.7 in separate iTerm2 tabs ---
 echo "=== Spawning iTerm2 tabs for audits ==="
 
-declare -A AUDIT_OUTPUT_FILES
+# Build expected output paths that match audit-session.sh naming.
+# audit-session.sh writes: <sessionId>-<runner>-<model_slug>-AUDIT.md
+# and its JSON sidecar:   <sessionId>-<runner>-<model_slug>-AUDIT.json
+declare -A AUDIT_MD_FILES
+declare -A AUDIT_JSON_FILES
 for task in "${TASKS[@]}"; do
-  # Compute the expected audit output path from the session JSONL filename
   jsonl_basename=$(basename "${JSONL_FILES["$task"]}")
-  audit_slug=$(echo "$task" | tr ' ' '-' | tr '_' '-')
-  audit_name="audit-${audit_slug}--${jsonl_basename%.jsonl}"
-  AUDIT_OUTPUT_FILES["$task"]="${REPO_ROOT}/.kimchi/audits/${audit_name}.html"
+  session_id="${jsonl_basename%.jsonl}"
+  audit_runner="kimchi"
+  audit_model="kimchi-dev/claude-opus-4-7"
+  model_slug="$(echo "$audit_model" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')"
+  audit_name="${session_id}-${audit_runner}-${model_slug}-AUDIT"
+  AUDIT_MD_FILES["$task"]="${REPO_ROOT}/.kimchi/audits/${audit_name}.md"
+  AUDIT_JSON_FILES["$task"]="${REPO_ROOT}/.kimchi/audits/${audit_name}.json"
 done
 
 for task in "${TASKS[@]}"; do
@@ -162,7 +169,7 @@ tell application "iTerm2"
     set auditTab to (create tab with default profile)
     tell auditTab
       tell current session
-        write text "$audit_cmd_escaped"
+        write text "${audit_cmd_escaped}"
       end tell
     end tell
   end tell
@@ -180,8 +187,13 @@ for ((i = 1; i <= 120; i++)); do
   echo "--- Audit poll $i/120 ---"
   all_done=true
   for task in "${TASKS[@]}"; do
-    if [[ -f "${AUDIT_OUTPUT_FILES["$task"]}" ]]; then
-      echo "  ${task}: done (${AUDIT_OUTPUT_FILES["$task"]})"
+    md_file="${AUDIT_MD_FILES["$task"]}"
+    json_file="${AUDIT_JSON_FILES["$task"]}"
+    if [[ -f "$md_file" && -f "$json_file" ]]; then
+      echo "  ${task}: done (md + json sidecar)"
+    elif [[ -f "$md_file" ]]; then
+      echo "  ${task}: md done, json pending..."
+      all_done=false
     else
       echo "  ${task}: still running..."
       all_done=false
