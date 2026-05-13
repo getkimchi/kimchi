@@ -132,8 +132,10 @@ export interface Step {
 	startedAt?: string
 	completedAt?: string
 
-	/** Worker model to use when spawning a subagent for this step. */
-	workerModel?: "minimax-m2.7" | "kimi-k2.5"
+	/** Worker model to use when spawning a subagent for this step.
+	 *  Resolved dynamically by the extension layer at start_step time
+	 *  via recommendModel(). May be stored explicitly to override. */
+	workerModel?: string
 	/** Whether this step requires vision (images/screenshots). Determines worker model selection. */
 	needsVision?: boolean
 	/** Whether this step can run in parallel with other canRunParallel steps in the same phase. */

@@ -528,7 +528,6 @@ function handleRefinePhase(
 		description: st.description,
 		status: "pending" as const,
 		needsVision: st.needs_vision ?? false,
-		workerModel: st.needs_vision ? "kimi-k2.5" : "minimax-m2.7",
 		canRunParallel: st.can_run_parallel ?? false,
 		verification: st.verify ? { command: st.verify, retries: 2, retryDelayMs: 1000 } : undefined,
 	}))

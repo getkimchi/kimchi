@@ -9,6 +9,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import type { JudgeGrade, StepResult } from "../../../ferment/types.js"
+import { recommendModel } from "../../orchestration/model-registry/recommend.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { type JudgeVerdict, judgeGradeStep, judgeStepVerification } from "../judge.js"
 import { onStepCompleted } from "../nudge.js"
@@ -18,6 +19,16 @@ import { createApplyAndPersist, failedToolResult, resolvePhase, resolveStep, too
 import { CompleteStepParams, FailStepParams, StepActionParams, VerifyParams } from "../tool-schemas.js"
 import { syncFermentToolScope } from "../tool-scope.js"
 import type { FermentUi, FermentUiContext } from "../ui.js"
+
+function resolveWorkerModel(needsVision: boolean): string {
+	const result = recommendModel({
+		strengths: ["build"],
+		needsVision,
+		preferTier: "standard",
+	})
+	if (result) return `${result.provider}/${result.modelId}`
+	return "kimchi-dev/minimax-m2.7"
+}
 import { buildWorkerContext } from "../worker-prompt.js"
 
 const VERIFY_TIMEOUT_MS = 60_000
@@ -204,7 +215,7 @@ Do NOT call start_step again without user input.`,
 
 	const freshPhase = outcome.ferment.phases.find((p) => p.id === phase.id)
 	const freshStep = freshPhase?.steps.find((s) => s.id === step.id)
-	const workerModel = freshStep?.workerModel ?? "minimax-m2.7"
+	const workerModel = freshStep?.workerModel ?? resolveWorkerModel(freshStep?.needsVision ?? false)
 
 	const prevStep = freshPhase?.steps.find((st) => st.index === step.index - 1)
 	const lowGradeCaution =
@@ -218,7 +229,7 @@ Do NOT call start_step again without user input.`,
 				.map((st) => ({
 					step_id: st.id,
 					description: st.description,
-					worker_model: st.workerModel ?? "minimax-m2.7",
+					worker_model: st.workerModel ?? resolveWorkerModel(st.needsVision ?? false),
 				}))
 		: []
 

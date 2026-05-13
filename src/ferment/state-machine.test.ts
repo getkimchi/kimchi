@@ -373,18 +373,17 @@ describe("applyCommand: refine_phase", () => {
 			id: "step-2",
 			index: 2,
 			needsVision: true,
-			workerModel: "kimi-k2.5",
 			canRunParallel: true,
 		})
 		expect(result.phases[0].steps[1].verification?.command).toBe("test")
 	})
 
-	it("defaults workerModel to minimax-m2.7 when needs_vision is false", () => {
+	it("does not assign workerModel (resolved at start_step by extension layer)", () => {
 		const f = makeFerment({ phases: [makePhase({ status: "active" })] })
 		const result = expectOk(
 			applyCommand(f, { type: "refine_phase", phaseId: "phase-1", steps: [{ description: "x" }] }, ctx),
 		)
-		expect(result.phases[0].steps[0].workerModel).toBe("minimax-m2.7")
+		expect(result.phases[0].steps[0].workerModel).toBeUndefined()
 	})
 
 	it("rejects when phase is not active", () => {
