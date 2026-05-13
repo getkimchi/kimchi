@@ -115,7 +115,55 @@ describe("deriveFermentState — runtime context", () => {
 		expect(state.phaseRetry).toBeUndefined()
 	})
 
-	it("surfaces correctiveStep from the LAST graded completed phase", () => {
+	it("surfaces lastGradedPhase with grade + correctiveText when present", () => {
+		const f = makeFerment({
+			phases: [
+				makePhase({
+					id: "phase-1",
+					status: "completed",
+					grade: { grade: "B", rationale: "ok", gradedAt: "2026-01-01T00:00:00.000Z" },
+				}),
+			],
+		})
+		const state = deriveFermentState(
+			f,
+			makeRuntime({
+				getCorrectiveStep: () => "be more careful with edge cases",
+			}),
+		)
+		expect(state.lastGradedPhase).toEqual({
+			phaseId: "phase-1",
+			phaseName: "Phase 1",
+			grade: { grade: "B", rationale: "ok", gradedAt: "2026-01-01T00:00:00.000Z" },
+			correctiveText: "be more careful with edge cases",
+		})
+	})
+
+	it("surfaces lastGradedPhase even when no corrective text is recorded", () => {
+		// An A-graded phase has no corrective step but should still appear in
+		// lastGradedPhase so the planner-supplement can render whatever feedback
+		// the grade implies.
+		const f = makeFerment({
+			phases: [
+				makePhase({
+					id: "phase-1",
+					status: "completed",
+					grade: { grade: "A", rationale: "clean", gradedAt: "2026-01-01T00:00:00.000Z" },
+				}),
+			],
+		})
+		const state = deriveFermentState(f, makeRuntime())
+		expect(state.lastGradedPhase?.phaseId).toBe("phase-1")
+		expect(state.lastGradedPhase?.correctiveText).toBeUndefined()
+	})
+
+	it("does NOT include lastGradedPhase when no graded phases exist", () => {
+		const f = makeFerment({ phases: [makePhase({ status: "planned" })] })
+		const state = deriveFermentState(f, makeRuntime())
+		expect(state.lastGradedPhase).toBeUndefined()
+	})
+
+	it("surfaces correctiveStep (deprecated back-compat field) from the LAST graded completed phase", () => {
 		const f = makeFerment({
 			phases: [
 				makePhase({
