@@ -82,6 +82,50 @@ describe("fermentExtension session resume", () => {
 		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBeUndefined()
 		expect(Object.hasOwn(process.env, "KIMCHI_ACTIVE_FERMENT")).toBe(false)
 	})
+
+	it("does not send resume nudges or active references for completed ferments", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-terminal-resume-test-")))
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		const applyAndPersist = createApplyAndPersist(runtime)
+		const draft = storage.create("Completed Resume")
+		const scoped = applyAndPersist(draft.id, {
+			type: "scope",
+			goal: "Goal",
+			successCriteria: "Works",
+			constraints: [],
+			phases: [{ name: "Phase", goal: "Build", steps: [] }],
+		})
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		const activated = applyAndPersist(draft.id, { type: "activate_phase", phaseId: "phase-1" })
+		if (!activated.ok) throw new Error(activated.error.message)
+		const completedPhase = applyAndPersist(draft.id, {
+			type: "complete_phase",
+			phaseId: "phase-1",
+			summary: "done",
+		})
+		if (!completedPhase.ok) throw new Error(completedPhase.error.message)
+		const completed = completeFerment(runtime, { ferment_id: draft.id, final_summary: "done" })
+		if ("isError" in completed && completed.isError) throw new Error(completed.content[0].text)
+
+		process.env.KIMCHI_ACTIVE_FERMENT = draft.id
+		const { handlers, pi } = registerFermentExtension(runtime)
+		const sessionStart = handlers.get("session_start")
+		if (!sessionStart) throw new Error("session_start handler was not registered")
+
+		await sessionStart({}, { hasUI: false })
+
+		expect(storage.get(draft.id)?.status).toBe("complete")
+		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBeUndefined()
+		expect(Object.hasOwn(process.env, "KIMCHI_ACTIVE_FERMENT")).toBe(false)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi.appendEntry).not.toHaveBeenCalledWith(
+			"ferment_breadcrumb",
+			expect.objectContaining({ text: expect.stringContaining("Resumed ferment") }),
+		)
+	})
 })
 
 describe("fermentExtension one-shot bootstrap", () => {
