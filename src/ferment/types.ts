@@ -111,11 +111,12 @@ export interface JudgeGrade {
 	rationale: string
 	gradedAt: string
 	deltas?: Delta[]
-	/** True when the judge was unreachable or returned unparseable output. The
-	 *  grade field still carries a placeholder ("B") so legacy consumers don't
-	 *  break, but stats and self-improve loop must check this flag first and
-	 *  skip the entry when set — otherwise judge outages look like a string of
-	 *  B grades and the loop never adapts. */
+	/** True when the journey-grade judge was unreachable or returned
+	 *  unparseable output at complete_ferment and the user authorized an
+	 *  ungraded ship. The grade field carries a placeholder ("B") so legacy
+	 *  consumers don't break, but stats should check this flag first and
+	 *  skip the entry when set — otherwise judge outages look like a string
+	 *  of B grades. */
 	unavailable?: boolean
 }
 

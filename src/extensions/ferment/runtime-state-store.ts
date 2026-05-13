@@ -1,14 +1,12 @@
 /**
- * Runtime-state persistence — disk-backed sidecar for the in-memory counters,
- * caches, and corrective-step text that drive the gate-retry/escalation
- * pipeline.
+ * Runtime-state persistence — disk-backed sidecar for the in-memory counters
+ * and git refs that drive the gate-retry/escalation pipeline.
  *
  * What's persisted (per ferment, at `.kimchi/ferments/{fermentId}/runtime.json`):
  *   - stepStartCounts        (phaseId:stepId → int)  stuck-loop detector
  *   - blockRetries           (phaseId → int)         retry budget per phase
  *   - lastBlockHashes        (phaseId → string)      same-failure-twice detector
  *   - stepCompleteAttempts   (phaseId:stepId → int)  symmetric with stepStartCounts
- *   - correctiveSteps        (phaseId → string)      redirect text from flagged phase, surfaced into next-turn planner-supplement
  *   - phaseStartRefs         (phaseId → git sha)     captured at activate_phase, consumed at complete_phase for diff evidence
  *   - stepStartRefs          (phaseId:stepId → sha)  captured at start_step, consumed at complete_step for diff evidence
  *
@@ -42,8 +40,6 @@ export interface PersistedRuntimeState {
 	lastBlockHashes: Record<string, string>
 	/** Key: `${phaseId}:${stepId}`. */
 	stepCompleteAttempts: Record<string, number>
-	/** Key: `${phaseId}`. Redirect text surfaced to the next planner turn. */
-	correctiveSteps: Record<string, string>
 	/** Key: `${phaseId}`. Git sha captured at activate_phase. */
 	phaseStartRefs: Record<string, string>
 	/** Key: `${phaseId}:${stepId}`. Git sha captured at start_step. */
@@ -57,7 +53,6 @@ export function emptyState(): PersistedRuntimeState {
 		blockRetries: {},
 		lastBlockHashes: {},
 		stepCompleteAttempts: {},
-		correctiveSteps: {},
 		phaseStartRefs: {},
 		stepStartRefs: {},
 	}
@@ -90,7 +85,6 @@ export function loadRuntimeState(fermentId: string, root?: string): PersistedRun
 		if (raw.lastBlockHashes && typeof raw.lastBlockHashes === "object") merged.lastBlockHashes = raw.lastBlockHashes
 		if (raw.stepCompleteAttempts && typeof raw.stepCompleteAttempts === "object")
 			merged.stepCompleteAttempts = raw.stepCompleteAttempts
-		if (raw.correctiveSteps && typeof raw.correctiveSteps === "object") merged.correctiveSteps = raw.correctiveSteps
 		if (raw.phaseStartRefs && typeof raw.phaseStartRefs === "object") merged.phaseStartRefs = raw.phaseStartRefs
 		if (raw.stepStartRefs && typeof raw.stepStartRefs === "object") merged.stepStartRefs = raw.stepStartRefs
 		return merged

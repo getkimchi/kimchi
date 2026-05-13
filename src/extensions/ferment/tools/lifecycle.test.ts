@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
-import { type LifecycleHandlerServices, completeFerment, registerLifecycleTools, scopeFerment } from "./lifecycle.js"
+import { completeFerment, registerLifecycleTools, scopeFerment } from "./lifecycle.js"
 
 // Stub the journey-grade judge for completeFerment tests. The mock returns a
 // clean A by default; individual cases can vi.mocked(judgeJourneyGrade).mockResolvedValueOnce(...)
@@ -46,12 +46,6 @@ function createHarness() {
 	const pi = { sendMessage: vi.fn(), sendUserMessage: vi.fn(), appendEntry: vi.fn() } as unknown as ExtensionAPI
 	const ferment = storage.create("Lifecycle Test")
 	return { storage, runtime, pi, fermentId: ferment.id }
-}
-
-function createServices(overrides: Partial<LifecycleHandlerServices> = {}): LifecycleHandlerServices {
-	return {
-		...overrides,
-	}
 }
 
 function createTerminalFerment(h: ReturnType<typeof createHarness>) {
@@ -116,7 +110,6 @@ beforeEach(() => {
 describe("scopeFerment", () => {
 	it("scopes with all plan gates passing and marks an after-scope continuation", async () => {
 		const h = createHarness()
-		const services = createServices()
 
 		const result = await scopeFerment(
 			h.runtime,
@@ -129,7 +122,6 @@ describe("scopeFerment", () => {
 				gates: passingPlanGates(),
 			},
 			{ pi: h.pi },
-			services,
 		)
 
 		expect(okText(result)).toContain("scoped and ready")
@@ -142,7 +134,6 @@ describe("scopeFerment", () => {
 		const applyAndPersist = createApplyAndPersist(h.runtime)
 		const mode = applyAndPersist(h.fermentId, { type: "set_mode", mode: "exec" })
 		if (!mode.ok) throw new Error(mode.error.message)
-		const services = createServices()
 
 		const result = await scopeFerment(
 			h.runtime,
@@ -153,7 +144,6 @@ describe("scopeFerment", () => {
 				gates: passingPlanGates(),
 			},
 			{ pi: h.pi },
-			services,
 		)
 
 		expect(okText(result)).toContain("scoped and ready")
@@ -162,7 +152,6 @@ describe("scopeFerment", () => {
 
 	it("refuses scoping when agent self-flags a plan gate", async () => {
 		const h = createHarness()
-		const services = createServices()
 		const flaggedGates = [
 			{
 				id: "P1",
@@ -183,7 +172,6 @@ describe("scopeFerment", () => {
 				gates: flaggedGates,
 			},
 			{ pi: h.pi },
-			services,
 		)
 
 		expect(errText(result)).toContain("Gate P1")
@@ -193,7 +181,6 @@ describe("scopeFerment", () => {
 
 	it("rejects scoping with a clear error when gate coverage is incomplete", async () => {
 		const h = createHarness()
-		const services = createServices()
 		const incomplete = [{ id: "P1", verdict: "pass" as const, rationale: "ok", evidence: "n/a" }]
 
 		const result = await scopeFerment(
@@ -205,7 +192,6 @@ describe("scopeFerment", () => {
 				gates: incomplete,
 			},
 			{ pi: h.pi },
-			services,
 		)
 
 		expect(errText(result)).toContain("missing required gate verdicts")
@@ -217,7 +203,6 @@ describe("scopeFerment", () => {
 	it("keeps the interactive scoping confirmation gate (after gate validation)", async () => {
 		const h = createHarness()
 		h.runtime.markScopingInteractive(h.fermentId)
-		const services = createServices()
 
 		const result = await scopeFerment(
 			h.runtime,
@@ -228,7 +213,6 @@ describe("scopeFerment", () => {
 				gates: passingPlanGates(),
 			},
 			{ pi: h.pi },
-			services,
 		)
 
 		expect(errText(result)).toContain("waiting for user confirmation")
@@ -279,13 +263,11 @@ describe("completeFerment", () => {
 		const setActive = vi.fn()
 		h.runtime.clearFermentState = clearFermentState
 		h.runtime.setActive = setActive
-		const services = createServices()
 
 		const result = await completeFerment(
 			h.runtime,
 			{ ferment_id: h.fermentId, final_summary: "all done", gates: passingFermentGates() },
 			{ pi: h.pi },
-			services,
 		)
 
 		expect(okText(result)).toContain("complete")
@@ -299,7 +281,6 @@ describe("completeFerment", () => {
 	it("refuses ship when agent self-flags a ferment gate", async () => {
 		const h = createHarness()
 		createTerminalFerment(h)
-		const services = createServices()
 		const flaggedGates = [
 			{ id: "C1", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
 			{
@@ -315,7 +296,6 @@ describe("completeFerment", () => {
 			h.runtime,
 			{ ferment_id: h.fermentId, final_summary: "", gates: flaggedGates },
 			{ pi: h.pi },
-			services,
 		)
 
 		expect(errText(result)).toContain("complete_ferment refused")
@@ -326,14 +306,12 @@ describe("completeFerment", () => {
 	it("rejects ship with a clear error when ferment gate coverage is incomplete", async () => {
 		const h = createHarness()
 		createTerminalFerment(h)
-		const services = createServices()
 		const incomplete = [{ id: "C1", verdict: "pass" as const, rationale: "ok", evidence: "n/a" }]
 
 		const result = await completeFerment(
 			h.runtime,
 			{ ferment_id: h.fermentId, final_summary: "", gates: incomplete },
 			{ pi: h.pi },
-			services,
 		)
 
 		expect(errText(result)).toContain("missing required gate verdicts")
@@ -354,7 +332,6 @@ describe("completeFerment", () => {
 			h.runtime,
 			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
 			{ pi: h.pi },
-			createServices(),
 		)
 		expect(okText(result)).toContain("Final grade: B")
 		expect(okText(result)).toContain("proxy")
@@ -380,7 +357,6 @@ describe("completeFerment", () => {
 			h.runtime,
 			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
 			{ pi: piWithUi, ctx },
-			createServices(),
 		)
 
 		expect(select).toHaveBeenCalled()
@@ -406,7 +382,6 @@ describe("completeFerment", () => {
 			h.runtime,
 			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
 			{ pi: piWithUi, ctx },
-			createServices(),
 		)
 
 		expect(errText(result)).toContain("user declined ungraded ship")
@@ -431,7 +406,6 @@ describe("completeFerment", () => {
 			h.runtime,
 			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
 			{ pi: piOneShot, ctx: { ui: { select } } },
-			createServices(),
 		)
 
 		expect(select).not.toHaveBeenCalled()

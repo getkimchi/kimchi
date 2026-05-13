@@ -11,11 +11,9 @@ import {
 	clearAllStepStarts,
 	clearFermentState,
 	getBlockRetry,
-	getCorrectiveStep,
 	getPhaseStartRef,
 	getStepStartRef,
 	recordBlockHashAndCheckRepeat,
-	setCorrectiveStep,
 	setPhaseStartRef,
 	setRuntimeStatePersistRoot,
 	setStepStartRef,
@@ -84,15 +82,6 @@ describe("runtime-state persistence — write-through + lazy hydrate", () => {
 		expect(recordBlockHashAndCheckRepeat(fId, "phase-1", hashA)).toBe(true)
 	})
 
-	it("persists correctiveSteps across a simulated restart", () => {
-		const fId = "ferment-test-4"
-		setCorrectiveStep(fId, "phase-1", "Address the missing dropout layer.")
-
-		simulateRestart()
-
-		expect(getCorrectiveStep(fId, "phase-1")).toBe("Address the missing dropout layer.")
-	})
-
 	it("persists stepCompleteAttempts across a simulated restart", () => {
 		const fId = "ferment-test-5"
 		bumpStepCompleteAttempt(fId, "phase-1", "step-1")
@@ -118,17 +107,17 @@ describe("runtime-state persistence — write-through + lazy hydrate", () => {
 	it("clearFermentState wipes both in-memory and on-disk state", () => {
 		const fId = "ferment-test-7"
 		bumpBlockRetry(fId, "phase-1")
-		setCorrectiveStep(fId, "phase-1", "fix it")
+		setPhaseStartRef(fId, "phase-1", "deadbeef")
 
 		clearFermentState(fId)
 
 		expect(getBlockRetry(fId, "phase-1")).toBe(0)
-		expect(getCorrectiveStep(fId, "phase-1")).toBeUndefined()
+		expect(getPhaseStartRef(fId, "phase-1")).toBeUndefined()
 
 		// Even after a simulated restart, the cleared state stays empty.
 		simulateRestart()
 		expect(getBlockRetry(fId, "phase-1")).toBe(0)
-		expect(getCorrectiveStep(fId, "phase-1")).toBeUndefined()
+		expect(getPhaseStartRef(fId, "phase-1")).toBeUndefined()
 	})
 
 	it("does not cross-contaminate between two ferments in the same session", () => {
@@ -150,13 +139,13 @@ describe("runtime-state persistence — write-through + lazy hydrate", () => {
 	it("writes the snapshot atomically — only runtime.json is the final artifact", () => {
 		const fId = "ferment-test-9"
 		bumpBlockRetry(fId, "phase-1")
-		setCorrectiveStep(fId, "phase-1", "fix it")
+		setPhaseStartRef(fId, "phase-1", "deadbeef")
 
 		// Verify the JSON shape on disk.
 		const path = join(persistRoot, fId, "runtime.json")
 		const parsed = JSON.parse(readFileSync(path, "utf-8"))
 		expect(parsed.schemaVersion).toBe(1)
 		expect(parsed.blockRetries["phase-1"]).toBe(1)
-		expect(parsed.correctiveSteps["phase-1"]).toBe("fix it")
+		expect(parsed.phaseStartRefs["phase-1"]).toBe("deadbeef")
 	})
 })

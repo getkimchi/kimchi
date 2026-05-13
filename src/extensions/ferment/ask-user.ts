@@ -27,7 +27,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
-import { type JudgeApiResult, isGrade, judgeApiCall } from "./judge.js"
+import { type JudgeApiResult, judgeApiCall } from "./judge.js"
 import type { FermentRuntime } from "./runtime.js"
 import type { FermentUi } from "./ui.js"
 
@@ -233,8 +233,3 @@ export async function askUser(
 		detail: "No TUI attached and not in one-shot mode — cannot route the question to any audience.",
 	}
 }
-
-// Re-export isGrade for callers that want to validate grade-shaped option ids
-// (unused today; placeholder for future use). Kept exported because tests may
-// want to import it directly without pulling judge.ts.
-export { isGrade }

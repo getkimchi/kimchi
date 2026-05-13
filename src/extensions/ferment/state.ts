@@ -227,25 +227,6 @@ export function clearAllAfterScopeContinuations(): void {
 	afterScopeContinuations.clear()
 }
 
-// ─── Self-improvement: corrective step cache ──────────────────────────────────
-// Key: `${fermentId}:${completedPhaseId}` — set by complete_phase when the
-// reviewer emits a block flag, consumed by the planner system-prompt builder
-// before the next phase. The cache holds the actionable redirect text so it's
-// not re-fetched on every system-prompt rebuild.
-
-const correctiveSteps = new Map<string, string>()
-
-export function setCorrectiveStep(fermentId: string, phaseId: string, step: string): void {
-	hydrateIfNeeded(fermentId)
-	correctiveSteps.set(`${fermentId}:${phaseId}`, step)
-	persistFerment(fermentId)
-}
-
-export function getCorrectiveStep(fermentId: string, phaseId: string): string | undefined {
-	hydrateIfNeeded(fermentId)
-	return correctiveSteps.get(`${fermentId}:${phaseId}`)
-}
-
 // ─── Block-retry counter (per phase) ─────────────────────────────────────────
 // Key: `${fermentId}:${phaseId}`. Incremented every time complete_phase is
 // called and the reviewer emits at least one `block` flag. After
@@ -355,8 +336,8 @@ export function getStepStartRef(fermentId: string, phaseId: string, stepId: stri
 // ─── Disk-backed persistence (write-through + lazy hydrate) ───────────────────
 //
 // The six stores above (stepStartCounts, blockRetryCounts, lastBlockHash,
-// stepCompleteAttempts, correctiveSteps, phaseStartRefs, stepStartRefs) survive
-// a CLI restart. The pattern:
+// stepCompleteAttempts, phaseStartRefs, stepStartRefs) survive a CLI restart.
+// The pattern:
 //
 //   1. First access by fermentId hydrates from disk into the in-memory maps.
 //   2. Every mutation writes the full per-ferment snapshot to disk via
@@ -400,9 +381,6 @@ function snapshotForFerment(fermentId: string): PersistedRuntimeState {
 	for (const [k, v] of stepCompleteAttempts.entries()) {
 		if (k.startsWith(prefix)) snap.stepCompleteAttempts[stripPrefix(k)] = v
 	}
-	for (const [k, v] of correctiveSteps.entries()) {
-		if (k.startsWith(prefix)) snap.correctiveSteps[stripPrefix(k)] = v
-	}
 	for (const [k, v] of phaseStartRefs.entries()) {
 		if (k.startsWith(prefix)) snap.phaseStartRefs[stripPrefix(k)] = v
 	}
@@ -424,7 +402,6 @@ function hydrateIfNeeded(fermentId: string): void {
 	for (const [k, v] of Object.entries(state.blockRetries)) blockRetryCounts.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.lastBlockHashes)) lastBlockHash.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.stepCompleteAttempts)) stepCompleteAttempts.set(`${prefix}${k}`, v)
-	for (const [k, v] of Object.entries(state.correctiveSteps)) correctiveSteps.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.phaseStartRefs)) phaseStartRefs.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.stepStartRefs)) stepStartRefs.set(`${prefix}${k}`, v)
 }
@@ -439,14 +416,6 @@ function persistFerment(fermentId: string): void {
 	})
 }
 
-// CounterMap exposes mutating methods on individual keys. To wrap them
-// transparently we need access to internals; use entries() iterator on the
-// underlying map. We work around that by attaching helpers here that wrap
-// the three CounterMaps. The setCorrectiveStep / setPhaseStartRef /
-// setStepStartRef functions above already mutate plain Maps, so they get
-// `.persistFerment(fermentId)` appended in-place by the mutator wrappers
-// below (see the per-function adjustments).
-
 // ─── Per-ferment cleanup ──────────────────────────────────────────────────────
 
 /** Clear all in-memory state scoped to a specific ferment. Called on abandon/delete/complete. */
@@ -460,9 +429,6 @@ export function clearFermentState(fermentId: string): void {
 	stepCompleteAttempts.clearByPrefix(prefix)
 	for (const key of lastBlockHash.keys()) {
 		if (key.startsWith(prefix)) lastBlockHash.delete(key)
-	}
-	for (const key of correctiveSteps.keys()) {
-		if (key.startsWith(prefix)) correctiveSteps.delete(key)
 	}
 	for (const key of phaseStartRefs.keys()) {
 		if (key.startsWith(prefix)) phaseStartRefs.delete(key)

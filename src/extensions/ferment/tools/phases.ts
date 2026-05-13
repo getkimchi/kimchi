@@ -258,10 +258,9 @@ export async function completePhase(
 				)
 			}
 		} else {
-			// Within retry budget — surface flags and refuse advancement.
-			// The first block flag becomes the corrective step for the next
-			// attempt (in case the agent loses context across turns).
-			runtime.setCorrectiveStep(params.ferment_id, phase.id, blockFlags[0].redirect)
+			// Within retry budget — surface flags and refuse advancement. The
+			// redirect text lives in the tool error response below; that's
+			// the agent's recovery surface for the next attempt.
 			const projectChecksNote = projectChecks.discovered ? `\n${projectCheckSummary}` : ""
 			return toolErr(
 				`Phase "${phase.name}" cannot complete — reviewer raised ${blockFlags.length} block flag(s) (retry ${retry}/${MAX_BLOCK_RETRIES}).${projectChecksNote}\n\n${flagLines}${warnLines}\n\nFix the issues above and call complete_phase again with an updated summary.`,

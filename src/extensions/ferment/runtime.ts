@@ -28,7 +28,6 @@ import {
 	getActive,
 	getActiveId,
 	getBlockRetry,
-	getCorrectiveStep,
 	getLastHumanInputAt,
 	getPhaseStartRef,
 	getStepStartRef,
@@ -44,7 +43,6 @@ import {
 	recordBlockHashAndCheckRepeat,
 	setActive,
 	setAutoModeEnabled,
-	setCorrectiveStep,
 	setPhaseStartRef,
 	setStepStartRef,
 } from "./state.js"
@@ -74,8 +72,6 @@ export interface FermentRuntime {
 	hasAfterScopeContinuation(fermentId: string): boolean
 	consumeAfterScopeContinuation(fermentId: string): boolean
 	clearAllAfterScopeContinuations(): void
-	setCorrectiveStep(fermentId: string, phaseId: string, step: string): void
-	getCorrectiveStep(fermentId: string, phaseId: string): string | undefined
 	getPendingScope(fermentId: string): PendingScope | undefined
 	setPendingScope(fermentId: string, scope: PendingScope): void
 	attachPendingPhases(fermentId: string, phases: ScopePhaseInput[]): boolean
@@ -120,8 +116,6 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		hasAfterScopeContinuation,
 		consumeAfterScopeContinuation,
 		clearAllAfterScopeContinuations,
-		setCorrectiveStep,
-		getCorrectiveStep,
 		getPendingScope,
 		setPendingScope,
 		attachPendingPhases,

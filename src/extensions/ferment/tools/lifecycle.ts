@@ -40,18 +40,9 @@ type ScopeArgs = Static<typeof ScopeParams>
 type CompleteFermentArgs = Static<typeof CompleteFermentParams>
 type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
 
-// The gate-registry migration removed every external service this handler
-// used to depend on (judgePlan / computeFermentGrade / maybeInjectAutoNudge).
-// The empty shape stays as a DI seam so tests can inject mocks if future
-// per-handler dependencies show up; today there are none.
-// biome-ignore lint/complexity/noBannedTypes: intentional empty DI seam
-export type LifecycleHandlerServices = {}
-
 export interface LifecycleExecutionContext {
 	pi: ExtensionAPI
 }
-
-export const defaultLifecycleHandlerServices: LifecycleHandlerServices = {}
 
 const validateFsmTransition = (
 	f: Parameters<typeof validateFsmTransitionWithFerment>[0],
@@ -63,7 +54,6 @@ export async function scopeFerment(
 	runtime: FermentRuntime,
 	params: ScopeArgs,
 	{ pi }: LifecycleExecutionContext,
-	services: LifecycleHandlerServices = defaultLifecycleHandlerServices,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 
@@ -139,7 +129,6 @@ export async function completeFerment(
 	runtime: FermentRuntime,
 	params: CompleteFermentArgs,
 	{ pi, ctx }: CompleteFermentExecutionContext,
-	_services: LifecycleHandlerServices = defaultLifecycleHandlerServices,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 
@@ -281,7 +270,6 @@ export async function completeFerment(
 
 export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
-	const lifecycleServices: LifecycleHandlerServices = defaultLifecycleHandlerServices
 	pi.registerTool({
 		name: "create_ferment",
 		label: "Create Ferment",
@@ -410,7 +398,7 @@ ${renderGateGuidance("scope_ferment")}`,
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ScopeParams,
 		async execute(_, params) {
-			return scopeFerment(runtime, params, { pi }, lifecycleServices)
+			return scopeFerment(runtime, params, { pi })
 		},
 	})
 
@@ -464,7 +452,7 @@ ${renderGateGuidance("scope_ferment")}`,
 ${renderGateGuidance("complete_ferment")}`,
 		parameters: CompleteFermentParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
-			const result = await completeFerment(runtime, params, { pi, ctx }, lifecycleServices)
+			const result = await completeFerment(runtime, params, { pi, ctx })
 			if (!("isError" in result) || result.isError !== true) syncFermentToolScope(pi, runtime.getActive())
 			return result
 		},

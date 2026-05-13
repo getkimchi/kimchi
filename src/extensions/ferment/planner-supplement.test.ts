@@ -44,8 +44,6 @@ function makeRuntime(): FermentRuntime {
 	return {
 		...createDefaultFermentRuntime(),
 		getActive: () => ferment,
-		getCorrectiveStep: (fermentId, phaseId) =>
-			fermentId === "ferment-1" && phaseId === "phase-1" ? "Add an explicit edge-case verification step." : undefined,
 	}
 }
 
