@@ -12,14 +12,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import type { Command } from "../../../ferment/state-machine.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
-import {
-	GateCoverageError,
-	assertGateCoverage,
-	flaggedVerdicts,
-	hasBlockingFlag,
-	renderGateGuidance,
-	validateGateVerdict,
-} from "../gate-registry.js"
+import { renderGateGuidance } from "../gate-registry.js"
+import { validateGatesOrErr } from "../gate-validation.js"
 import { autoInitFromEnv, ensureGitRepo } from "../git-init.js"
 import { appendRefEntry, resetReactiveAutoNudgeCount } from "../nudge.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
@@ -70,24 +64,13 @@ export async function scopeFerment(
 	// Plan-scope gate validation runs BEFORE any state mutation. The agent
 	// must declare verifiable success signals (P1), composition (P2), and
 	// the ferment-completion checklist (P3) before scoping is accepted.
-	try {
-		assertGateCoverage(params.gates, "scope_ferment")
-	} catch (err) {
-		if (err instanceof GateCoverageError) return toolErr(err.message)
-		throw err
-	}
-	for (const v of params.gates) {
-		const shapeError = validateGateVerdict(v)
-		if (shapeError) return toolErr(shapeError)
-	}
-	if (hasBlockingFlag(params.gates)) {
-		const flagLines = flaggedVerdicts(params.gates)
-			.map((v) => `  ⛔ Gate ${v.id}: ${v.rationale}\n     evidence: ${v.evidence}`)
-			.join("\n")
-		return toolErr(
-			`Cannot scope ferment — agent self-flagged on ${flaggedVerdicts(params.gates).length} plan gate(s):\n\n${flagLines}\n\nRevise the plan (e.g. give each phase a verifiable success signal, declare a concrete checklist for complete_ferment) and call scope_ferment again with passing P-gate verdicts.`,
-		)
-	}
+	const gateError = validateGatesOrErr(params.gates, {
+		turn: "scope_ferment",
+		flagPolicy: "block-on-flag",
+		renderFlagError: (count, lines) =>
+			`Cannot scope ferment — agent self-flagged on ${count} plan gate(s):\n\n${lines}\n\nRevise the plan (e.g. give each phase a verifiable success signal, declare a concrete checklist for complete_ferment) and call scope_ferment again with passing P-gate verdicts.`,
+	})
+	if (gateError) return gateError
 
 	// Hard gate: only enforced for ferments scoped interactively (TUI path)
 	// in plan mode. Headless, conversational, exec, and auto modes bypass —
@@ -155,24 +138,13 @@ export async function completeFerment(
 	// must answer C1 (success criteria satisfied), C2 (no unresolved F3
 	// deferrals), C3 (real verification ran the artifact) before ship is
 	// allowed. A flag on any gate refuses ship.
-	try {
-		assertGateCoverage(params.gates, "complete_ferment")
-	} catch (err) {
-		if (err instanceof GateCoverageError) return toolErr(err.message)
-		throw err
-	}
-	for (const v of params.gates) {
-		const shapeError = validateGateVerdict(v)
-		if (shapeError) return toolErr(shapeError)
-	}
-	if (hasBlockingFlag(params.gates)) {
-		const flagLines = flaggedVerdicts(params.gates)
-			.map((v) => `  ⛔ Gate ${v.id}: ${v.rationale}\n     evidence: ${v.evidence}`)
-			.join("\n")
-		return toolErr(
-			`complete_ferment refused — agent self-flagged on ${flaggedVerdicts(params.gates).length} ferment gate(s):\n\n${flagLines}\n\nAddress the concern(s) and call complete_ferment again with passing C-gate verdicts.`,
-		)
-	}
+	const gateError = validateGatesOrErr(params.gates, {
+		turn: "complete_ferment",
+		flagPolicy: "block-on-flag",
+		renderFlagError: (count, lines) =>
+			`complete_ferment refused — agent self-flagged on ${count} ferment gate(s):\n\n${lines}\n\nAddress the concern(s) and call complete_ferment again with passing C-gate verdicts.`,
+	})
+	if (gateError) return gateError
 
 	// Gates pass → proceed with completion.
 	const completeOutcome = applyAndPersist(params.ferment_id, { type: "complete_ferment" })
@@ -255,24 +227,13 @@ ${renderGateGuidance("scope_ferment")}`,
 
 			// Plan-scope gates are required here too — the agent must answer
 			// P1/P2/P3 about the proposal before it's even buffered.
-			try {
-				assertGateCoverage(params.gates, "scope_ferment")
-			} catch (err) {
-				if (err instanceof GateCoverageError) return toolErr(err.message)
-				throw err
-			}
-			for (const v of params.gates) {
-				const shapeError = validateGateVerdict(v)
-				if (shapeError) return toolErr(shapeError)
-			}
-			if (hasBlockingFlag(params.gates)) {
-				const flagLines = flaggedVerdicts(params.gates)
-					.map((v) => `  ⛔ Gate ${v.id}: ${v.rationale}\n     evidence: ${v.evidence}`)
-					.join("\n")
-				return toolErr(
-					`Cannot propose phases — agent self-flagged on ${flaggedVerdicts(params.gates).length} plan gate(s):\n\n${flagLines}\n\nRevise the proposal and call propose_phases again.`,
-				)
-			}
+			const gateError = validateGatesOrErr(params.gates, {
+				turn: "scope_ferment",
+				flagPolicy: "block-on-flag",
+				renderFlagError: (count, lines) =>
+					`Cannot propose phases — agent self-flagged on ${count} plan gate(s):\n\n${lines}\n\nRevise the proposal and call propose_phases again.`,
+			})
+			if (gateError) return gateError
 
 			runtime.attachPendingPhases(params.ferment_id, params.phases)
 

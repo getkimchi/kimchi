@@ -13,13 +13,8 @@ import type { Ferment, JudgeGrade } from "../../../ferment/types.js"
 import { truncateLabel } from "../colors.js"
 import { formatDecisionsAndMemories, formatScopingContext } from "../format.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
-import {
-	GateCoverageError,
-	assertGateCoverage,
-	flaggedVerdicts,
-	renderGateGuidance,
-	validateGateVerdict,
-} from "../gate-registry.js"
+import { flaggedVerdicts, renderGateGuidance } from "../gate-registry.js"
+import { validateGatesOrErr } from "../gate-validation.js"
 import type { JudgeFlag } from "../judge.js"
 import { isPlanFerment } from "../modes.js"
 import { onPhaseCompleted } from "../nudge.js"
@@ -121,20 +116,15 @@ export async function completePhase(
 	const fsmError = validateFsmTransition(f, "COMPLETE_PHASE", { phaseId: phase.id })
 	if (fsmError) return toolErr(fsmError)
 
-	// Step 2a: validate gate coverage + per-verdict shape. Strict — missing or
-	// malformed verdicts come back as a tool error so the agent retries with a
-	// complete answer set. No judge call, no LLM here: the agent is the
-	// evaluator and the schema is the contract.
-	try {
-		assertGateCoverage(params.gates, "complete_phase")
-	} catch (err) {
-		if (err instanceof GateCoverageError) return toolErr(err.message)
-		throw err
-	}
-	for (const v of params.gates) {
-		const shapeError = validateGateVerdict(v)
-		if (shapeError) return toolErr(shapeError)
-	}
+	// Step 2a: validate gate coverage + per-verdict shape. Phase-scope is the
+	// one tool that does NOT short-circuit on a flag — flags feed the
+	// retry/escalation pipeline below via flagsFromGateVerdicts. Coverage
+	// failure or malformed shape still return a tool error immediately.
+	const gateError = validateGatesOrErr(params.gates, {
+		turn: "complete_phase",
+		flagPolicy: "coverage-only",
+	})
+	if (gateError) return gateError
 
 	// Capture the phase shape for evidence/review artifacts.
 	const stepSummariesText = phase.steps

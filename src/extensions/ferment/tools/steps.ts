@@ -10,14 +10,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import type { StepResult } from "../../../ferment/types.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
-import {
-	GateCoverageError,
-	assertGateCoverage,
-	flaggedVerdicts,
-	hasBlockingFlag,
-	renderGateGuidance,
-	validateGateVerdict,
-} from "../gate-registry.js"
+import { renderGateGuidance } from "../gate-registry.js"
+import { validateGatesOrErr } from "../gate-validation.js"
 import { type JudgeVerdict, judgeStepVerification } from "../judge.js"
 import { onStepCompleted } from "../nudge.js"
 import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
@@ -262,29 +256,16 @@ export async function completeStep(
 	const fsmError = validateFsmTransition(f, "COMPLETE_STEP", { phaseId: phase.id, stepId: step.id })
 	if (fsmError) return toolErr(fsmError)
 
-	// Gate validation runs BEFORE any state mutation. Coverage failure or a
-	// blocking flag both return tool errors; the FSM never advances on a
-	// rejected verdict set. Step-level flags don't feed the phase
-	// retry/escalation pipeline — they just refuse this single call, and the
-	// agent has to fix the underlying issue and re-call complete_step.
-	try {
-		assertGateCoverage(params.gates, "complete_step")
-	} catch (err) {
-		if (err instanceof GateCoverageError) return toolErr(err.message)
-		throw err
-	}
-	for (const v of params.gates) {
-		const shapeError = validateGateVerdict(v)
-		if (shapeError) return toolErr(shapeError)
-	}
-	if (hasBlockingFlag(params.gates)) {
-		const flagLines = flaggedVerdicts(params.gates)
-			.map((v) => `  ⛔ Gate ${v.id}: ${v.rationale}\n     evidence: ${v.evidence}`)
-			.join("\n")
-		return toolErr(
-			`Step ${step.index}: "${step.description}" cannot complete — agent self-flagged on ${flaggedVerdicts(params.gates).length} step gate(s):\n\n${flagLines}\n\nResolve the underlying issue and re-call complete_step with verdicts of 'pass' (or 'omitted' with rationale if a gate truly does not apply).`,
-		)
-	}
+	// Gate validation runs BEFORE any state mutation. Step-level flags don't
+	// feed the phase retry/escalation pipeline — they just refuse this single
+	// call, and the agent has to fix the underlying issue and re-call.
+	const gateError = validateGatesOrErr(params.gates, {
+		turn: "complete_step",
+		flagPolicy: "block-on-flag",
+		renderFlagError: (count, lines) =>
+			`Step ${step.index}: "${step.description}" cannot complete — agent self-flagged on ${count} step gate(s):\n\n${lines}\n\nResolve the underlying issue and re-call complete_step with verdicts of 'pass' (or 'omitted' with rationale if a gate truly does not apply).`,
+	})
+	if (gateError) return gateError
 
 	if (!step.verification) {
 		// No verification command — gate verdicts are the only signal. Trust
