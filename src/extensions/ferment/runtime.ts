@@ -12,17 +12,22 @@ import {
 	setPendingScope,
 } from "./scoping.js"
 import {
+	bumpBlockRetry,
+	bumpStepCompleteAttempt,
 	bumpStepStart,
 	captureJudgeContext,
 	clearAllAfterScopeContinuations,
 	clearAllScopingGates,
 	clearAllStepStarts,
+	clearBlockRetry,
 	clearFermentState,
+	clearStepCompleteAttempt,
 	clearStepStart,
 	consumeAfterScopeContinuation,
 	consumeScopingGate,
 	getActive,
 	getActiveId,
+	getBlockRetry,
 	getCorrectiveStep,
 	getLastHumanInputAt,
 	getPhaseStartRef,
@@ -36,6 +41,7 @@ import {
 	markHumanInput,
 	markScopingConfirmed,
 	markScopingInteractive,
+	recordBlockHashAndCheckRepeat,
 	setActive,
 	setAutoModeEnabled,
 	setCorrectiveStep,
@@ -79,6 +85,12 @@ export interface FermentRuntime {
 	getPhaseStartRef(fermentId: string, phaseId: string): string | undefined
 	setStepStartRef(fermentId: string, phaseId: string, stepId: string, ref: string): void
 	getStepStartRef(fermentId: string, phaseId: string, stepId: string): string | undefined
+	bumpBlockRetry(fermentId: string, phaseId: string): number
+	getBlockRetry(fermentId: string, phaseId: string): number
+	clearBlockRetry(fermentId: string, phaseId: string): void
+	recordBlockHashAndCheckRepeat(fermentId: string, phaseId: string, hash: string): boolean
+	bumpStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): number
+	clearStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): void
 	clearFermentState(fermentId: string): void
 }
 
@@ -119,6 +131,12 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		getPhaseStartRef,
 		setStepStartRef,
 		getStepStartRef,
+		bumpBlockRetry,
+		getBlockRetry,
+		clearBlockRetry,
+		recordBlockHashAndCheckRepeat,
+		bumpStepCompleteAttempt,
+		clearStepCompleteAttempt,
 		clearFermentState,
 	}
 }

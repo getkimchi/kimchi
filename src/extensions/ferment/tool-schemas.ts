@@ -7,6 +7,27 @@
 
 import { Type } from "typebox"
 
+/** Structured quality-gate verdict the agent must produce on every completion
+ *  tool call. The set of valid `id`s, and which set is required for which
+ *  tool, is enforced by `gate-registry.ts:assertGateCoverage`. Description
+ *  text rendered into each tool's description tells the agent exactly which
+ *  ids to produce and what each one asks. */
+export const GateVerdictSchema = Type.Object({
+	id: Type.String({
+		description: "Gate id from the registry. See the tool description for the exact ids this tool requires.",
+	}),
+	verdict: Type.Union([Type.Literal("pass"), Type.Literal("flag"), Type.Literal("omitted")], {
+		description:
+			"'pass' = the gate's question is answered affirmatively with concrete evidence. 'flag' = the gate identifies a real problem (blocks advancement). 'omitted' = the gate doesn't apply to this work (requires rationale).",
+	}),
+	rationale: Type.String({
+		description: "One sentence justifying the verdict. Required for every verdict including 'pass' and 'omitted'.",
+	}),
+	evidence: Type.String({
+		description: "File:line, quoted diff line, command output, or 'n/a' for omitted gates. Empty evidence is rejected.",
+	}),
+})
+
 export const CreateFermentParams = Type.Object({
 	name: Type.String(),
 	description: Type.Optional(Type.String()),
@@ -55,6 +76,10 @@ export const ScopeParams = Type.Object({
 	success_criteria: Type.Optional(Type.String()),
 	constraints: Type.Optional(Type.Array(Type.String())),
 	phases: Type.Optional(Type.Array(PhaseProposalSchema)),
+	gates: Type.Array(GateVerdictSchema, {
+		description:
+			"Plan-scope gate verdicts. Required ids: P1, P2, P3. See tool description for each gate's question and what counts as 'pass' vs 'flag'.",
+	}),
 })
 
 export const ProposePhasesParams = Type.Object({
@@ -65,6 +90,10 @@ export const ProposePhasesParams = Type.Object({
 	phases: Type.Array(PhaseProposalSchema, {
 		description:
 			"3–7 ordered phases that will become the project plan. Each phase needs a name, one-sentence goal, and 3–6 concrete step descriptions. The host will save these verbatim when the user confirms via the dropdown.",
+	}),
+	gates: Type.Array(GateVerdictSchema, {
+		description:
+			"Plan-scope gate verdicts. Required ids: P1 (verifiable success signal per phase), P2 (phase ordering composes), P3 (success criteria for complete_ferment). See tool description for each gate's question and guidance.",
 	}),
 })
 
@@ -118,6 +147,10 @@ export const CompleteStepParams = Type.Object({
 	phase_id: Type.String(),
 	step_id: Type.String(),
 	summary: Type.Optional(Type.String()),
+	gates: Type.Array(GateVerdictSchema, {
+		description:
+			"Step-scope gate verdicts. Required ids: S1 (summary matches diff), S2 (verify command honesty), S3 (edge case awareness). A 'flag' verdict blocks step completion.",
+	}),
 })
 
 export const VerifyParams = Type.Object({
@@ -135,6 +168,10 @@ export const CompletePhaseParams = Type.Object({
 	ferment_id: Type.String(),
 	phase_id: Type.String(),
 	summary: Type.String(),
+	gates: Type.Array(GateVerdictSchema, {
+		description:
+			"Phase-scope gate verdicts. Required ids: F1 (real verification vs proxies), F2 (combined output meets phase goal), F3 (what was deferred). A 'flag' verdict refuses phase advancement and feeds the retry/escalation pipeline.",
+	}),
 })
 
 export const SkipPhaseParams = Type.Object({
@@ -146,6 +183,10 @@ export const SkipPhaseParams = Type.Object({
 export const CompleteFermentParams = Type.Object({
 	ferment_id: Type.String(),
 	final_summary: Type.Optional(Type.String()),
+	gates: Type.Array(GateVerdictSchema, {
+		description:
+			"Ferment-scope gate verdicts. Required ids: C1 (every plan success criterion satisfied with evidence), C2 (no unresolved F3 deferrals), C3 (real verification actually executed the artifact). A 'flag' verdict refuses ship.",
+	}),
 })
 
 export const DecisionParams = Type.Object({

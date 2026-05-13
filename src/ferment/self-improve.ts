@@ -100,7 +100,8 @@ export function renderDeltas(grade: JudgeGrade): string {
 /**
  * Build the full self-improvement section appended to the planner's system
  * prompt for the next phase. `correctiveStep` is optional — when present it
- * comes from a dedicated judge call (see `judgeSuggestCorrectiveStep`).
+ * comes from the redirect text of the most severe judge flag, populated by
+ * `completePhase` after a `judgeReviewPhase` call.
  */
 export function renderSelfImprovementSection(
 	grade: JudgeGrade,

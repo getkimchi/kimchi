@@ -95,24 +95,57 @@ export function captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry
 	if (registry) judgeModelRegistry = registry
 }
 
+// ─── Counter abstraction ──────────────────────────────────────────────────────
+//
+// We track several per-key integer counters (step starts, step completes,
+// block retries). Each shares the same key-prefix lifecycle: bumped during a
+// turn, cleared on transition, swept by fermentId on cleanup. This helper
+// removes the boilerplate; the named exports below are thin wrappers so call
+// sites stay descriptive.
+
+class CounterMap {
+	private readonly counts = new Map<string, number>()
+
+	bump(key: string): number {
+		const next = (this.counts.get(key) ?? 0) + 1
+		this.counts.set(key, next)
+		return next
+	}
+
+	get(key: string): number {
+		return this.counts.get(key) ?? 0
+	}
+
+	clear(key: string): void {
+		this.counts.delete(key)
+	}
+
+	clearAll(): void {
+		this.counts.clear()
+	}
+
+	clearByPrefix(prefix: string): void {
+		for (const k of this.counts.keys()) {
+			if (k.startsWith(prefix)) this.counts.delete(k)
+		}
+	}
+}
+
 // ─── Stuck-loop detection (per-step counter) ──────────────────────────────────
 // Key: `${fermentId}:${phaseId}:${stepId}`. Cleared on complete/skip/retry.
 
-const stepStartCounts = new Map<string, number>()
+const stepStartCounts = new CounterMap()
 
 export function bumpStepStart(fermentId: string, phaseId: string, stepId: string): number {
-	const key = `${fermentId}:${phaseId}:${stepId}`
-	const next = (stepStartCounts.get(key) ?? 0) + 1
-	stepStartCounts.set(key, next)
-	return next
+	return stepStartCounts.bump(`${fermentId}:${phaseId}:${stepId}`)
 }
 
 export function clearStepStart(fermentId: string, phaseId: string, stepId: string): void {
-	stepStartCounts.delete(`${fermentId}:${phaseId}:${stepId}`)
+	stepStartCounts.clear(`${fermentId}:${phaseId}:${stepId}`)
 }
 
 export function clearAllStepStarts(): void {
-	stepStartCounts.clear()
+	stepStartCounts.clearAll()
 }
 
 // ─── Scoping gate ─────────────────────────────────────────────────────────────
@@ -172,10 +205,10 @@ export function clearAllAfterScopeContinuations(): void {
 }
 
 // ─── Self-improvement: corrective step cache ──────────────────────────────────
-// Key: `${fermentId}:${completedPhaseId}` — set by complete_phase when grade is
-// D/F, consumed by the planner system-prompt builder before the next phase. The
-// cache holds the judge-suggested corrective step so it's not re-fetched on
-// every system-prompt rebuild.
+// Key: `${fermentId}:${completedPhaseId}` — set by complete_phase when the
+// reviewer emits a block flag, consumed by the planner system-prompt builder
+// before the next phase. The cache holds the actionable redirect text so it's
+// not re-fetched on every system-prompt rebuild.
 
 const correctiveSteps = new Map<string, string>()
 
@@ -185,6 +218,61 @@ export function setCorrectiveStep(fermentId: string, phaseId: string, step: stri
 
 export function getCorrectiveStep(fermentId: string, phaseId: string): string | undefined {
 	return correctiveSteps.get(`${fermentId}:${phaseId}`)
+}
+
+// ─── Block-retry counter (per phase) ─────────────────────────────────────────
+// Key: `${fermentId}:${phaseId}`. Incremented every time complete_phase is
+// called and the reviewer emits at least one `block` flag. After
+// MAX_BLOCK_RETRIES the harness escalates to a user-permission prompt.
+//
+// Failure-hash cache: per-phase, store the signature of the last block-flag
+// set the reviewer raised. If the SAME set repeats, the self-heal loop is
+// stuck — we short-circuit retries and escalate immediately. This is the
+// "same broken state twice → don't waste turns" pattern from GSD-2's
+// verification-retry-policy.
+
+const blockRetryCounts = new CounterMap()
+const lastBlockHash = new Map<string, string>()
+
+export const MAX_BLOCK_RETRIES = 3
+
+export function bumpBlockRetry(fermentId: string, phaseId: string): number {
+	return blockRetryCounts.bump(`${fermentId}:${phaseId}`)
+}
+
+export function getBlockRetry(fermentId: string, phaseId: string): number {
+	return blockRetryCounts.get(`${fermentId}:${phaseId}`)
+}
+
+export function clearBlockRetry(fermentId: string, phaseId: string): void {
+	blockRetryCounts.clear(`${fermentId}:${phaseId}`)
+	lastBlockHash.delete(`${fermentId}:${phaseId}`)
+}
+
+/** Record the block-flag signature for this phase. Returns true if the
+ *  signature matches the previously-stored one — i.e., the agent failed to
+ *  make progress against the same blocks twice in a row. */
+export function recordBlockHashAndCheckRepeat(fermentId: string, phaseId: string, hash: string): boolean {
+	const key = `${fermentId}:${phaseId}`
+	const prev = lastBlockHash.get(key)
+	lastBlockHash.set(key, hash)
+	return prev !== undefined && prev === hash
+}
+
+// ─── Step failure / completion counter (per step) ────────────────────────────
+// Used as a deterministic trigger for invoking the judge at complete_step.
+// Increments on every complete_step attempt (successful or not). The judge
+// is asked to review only after a configurable threshold to keep token spend
+// low when work is going smoothly.
+
+const stepCompleteAttempts = new CounterMap()
+
+export function bumpStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): number {
+	return stepCompleteAttempts.bump(`${fermentId}:${phaseId}:${stepId}`)
+}
+
+export function clearStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): void {
+	stepCompleteAttempts.clear(`${fermentId}:${phaseId}:${stepId}`)
 }
 
 // ─── Phase-start git ref cache ────────────────────────────────────────────────
@@ -225,17 +313,21 @@ export function clearFermentState(fermentId: string): void {
 	scopingInteractive.delete(fermentId)
 	scopingConfirmed.delete(fermentId)
 	afterScopeContinuations.delete(fermentId)
-	for (const key of stepStartCounts.keys()) {
-		if (key.startsWith(`${fermentId}:`)) stepStartCounts.delete(key)
+	const prefix = `${fermentId}:`
+	stepStartCounts.clearByPrefix(prefix)
+	blockRetryCounts.clearByPrefix(prefix)
+	stepCompleteAttempts.clearByPrefix(prefix)
+	for (const key of lastBlockHash.keys()) {
+		if (key.startsWith(prefix)) lastBlockHash.delete(key)
 	}
 	for (const key of correctiveSteps.keys()) {
-		if (key.startsWith(`${fermentId}:`)) correctiveSteps.delete(key)
+		if (key.startsWith(prefix)) correctiveSteps.delete(key)
 	}
 	for (const key of phaseStartRefs.keys()) {
-		if (key.startsWith(`${fermentId}:`)) phaseStartRefs.delete(key)
+		if (key.startsWith(prefix)) phaseStartRefs.delete(key)
 	}
 	for (const key of stepStartRefs.keys()) {
-		if (key.startsWith(`${fermentId}:`)) stepStartRefs.delete(key)
+		if (key.startsWith(prefix)) stepStartRefs.delete(key)
 	}
 }
 

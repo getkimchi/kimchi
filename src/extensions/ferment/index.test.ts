@@ -107,7 +107,15 @@ describe("fermentExtension session resume", () => {
 			summary: "done",
 		})
 		if (!completedPhase.ok) throw new Error(completedPhase.error.message)
-		const completed = completeFerment(runtime, { ferment_id: draft.id, final_summary: "done" })
+		const completed = await completeFerment(runtime, {
+			ferment_id: draft.id,
+			final_summary: "done",
+			gates: [
+				{ id: "C1", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "C2", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "C3", verdict: "pass", rationale: "ok", evidence: "n/a" },
+			],
+		})
 		if ("isError" in completed && completed.isError) throw new Error(completed.content[0].text)
 
 		process.env.KIMCHI_ACTIVE_FERMENT = draft.id
@@ -396,7 +404,15 @@ describe("fermentExtension question dropdown", () => {
 		const { handlers, pi } = registerFermentExtension(runtime)
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
-		completeFerment(runtime, { ferment_id: draft.id, final_summary: "done" })
+		await completeFerment(runtime, {
+			ferment_id: draft.id,
+			final_summary: "done",
+			gates: [
+				{ id: "C1", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "C2", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "C3", verdict: "pass", rationale: "ok", evidence: "n/a" },
+			],
+		})
 
 		await turnEnd(
 			{

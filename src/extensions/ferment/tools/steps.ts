@@ -8,9 +8,17 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
-import type { JudgeGrade, StepResult } from "../../../ferment/types.js"
+import type { StepResult } from "../../../ferment/types.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
-import { type JudgeVerdict, judgeGradeStep, judgeStepVerification } from "../judge.js"
+import {
+	GateCoverageError,
+	assertGateCoverage,
+	flaggedVerdicts,
+	hasBlockingFlag,
+	renderGateGuidance,
+	validateGateVerdict,
+} from "../gate-registry.js"
+import { type JudgeVerdict, judgeStepVerification } from "../judge.js"
 import { onStepCompleted } from "../nudge.js"
 import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
@@ -45,12 +53,6 @@ export interface VerificationResult {
 export interface StepHandlerServices {
 	captureGitHead(): string | undefined
 	gatherEvidence(ref: string): PhaseEvidence | undefined
-	judgeGradeStep(
-		stepDescription: string,
-		summary: string,
-		verificationResult?: { exitCode: number; stdout: string; stderr: string },
-		evidence?: PhaseEvidence,
-	): Promise<JudgeGrade>
 	judgeStepVerification(
 		stepDescription: string,
 		verificationCommand: string,
@@ -58,7 +60,7 @@ export interface StepHandlerServices {
 		stderr: string,
 		exitCode: number,
 	): Promise<JudgeVerdict>
-	onStepCompleted(): void
+	onStepCompleted(runtime: FermentRuntime): void
 	buildWorkerContext: typeof buildWorkerContext
 	runVerification(args: VerificationExecution): Promise<VerificationResult>
 }
@@ -73,7 +75,6 @@ export interface StepExecutionContext {
 export const defaultStepHandlerServices: StepHandlerServices = {
 	captureGitHead,
 	gatherEvidence: gatherPhaseEvidence,
-	judgeGradeStep,
 	judgeStepVerification,
 	onStepCompleted,
 	buildWorkerContext,
@@ -165,7 +166,7 @@ export async function startStep(
 				})
 				if (!skipOutcome.ok) return failedToolResult(skipOutcome.error)
 				runtime.clearStepStart(f.id, phase.id, step.id)
-				services.onStepCompleted()
+				services.onStepCompleted(runtime)
 				return toolOk(`Step ${step.index}: "${step.description}" skipped at user request.`)
 			}
 
@@ -261,7 +262,34 @@ export async function completeStep(
 	const fsmError = validateFsmTransition(f, "COMPLETE_STEP", { phaseId: phase.id, stepId: step.id })
 	if (fsmError) return toolErr(fsmError)
 
+	// Gate validation runs BEFORE any state mutation. Coverage failure or a
+	// blocking flag both return tool errors; the FSM never advances on a
+	// rejected verdict set. Step-level flags don't feed the phase
+	// retry/escalation pipeline — they just refuse this single call, and the
+	// agent has to fix the underlying issue and re-call complete_step.
+	try {
+		assertGateCoverage(params.gates, "complete_step")
+	} catch (err) {
+		if (err instanceof GateCoverageError) return toolErr(err.message)
+		throw err
+	}
+	for (const v of params.gates) {
+		const shapeError = validateGateVerdict(v)
+		if (shapeError) return toolErr(shapeError)
+	}
+	if (hasBlockingFlag(params.gates)) {
+		const flagLines = flaggedVerdicts(params.gates)
+			.map((v) => `  ⛔ Gate ${v.id}: ${v.rationale}\n     evidence: ${v.evidence}`)
+			.join("\n")
+		return toolErr(
+			`Step ${step.index}: "${step.description}" cannot complete — agent self-flagged on ${flaggedVerdicts(params.gates).length} step gate(s):\n\n${flagLines}\n\nResolve the underlying issue and re-call complete_step with verdicts of 'pass' (or 'omitted' with rationale if a gate truly does not apply).`,
+		)
+	}
+
 	if (!step.verification) {
+		// No verification command — gate verdicts are the only signal. Trust
+		// them and advance. Phase-level F1 will catch the case where the
+		// whole phase was unverified.
 		const completeOutcome = applyAndPersist(params.ferment_id, {
 			type: "complete_step",
 			phaseId: phase.id,
@@ -270,22 +298,9 @@ export async function completeStep(
 		})
 		if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
 		runtime.clearStepStart(f.id, phase.id, step.id)
-
-		const stepRef = runtime.getStepStartRef(f.id, phase.id, step.id)
-		const stepEvidence = stepRef ? services.gatherEvidence(stepRef) : undefined
-		const grade = await services.judgeGradeStep(step.description, params.summary ?? "", undefined, stepEvidence)
-		const gradeOutcome = applyAndPersist(params.ferment_id, {
-			type: "set_step_grade",
-			phaseId: phase.id,
-			stepId: step.id,
-			grade,
-		})
-		if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
-
-		services.onStepCompleted()
-		return toolOk(
-			`Step ${step.index}: "${step.description}" done.  Grade: ${grade.grade} — ${grade.rationale}  ${params.summary ?? ""}`,
-		)
+		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
+		services.onStepCompleted(runtime)
+		return toolOk(`Step ${step.index}: "${step.description}" done.  ${params.summary ?? ""}`)
 	}
 
 	const { exitCode, stdout, stderr } = await services.runVerification({
@@ -313,27 +328,14 @@ export async function completeStep(
 	runtime.clearStepStart(f.id, phase.id, step.id)
 
 	if (exitCode === 0) {
-		const stepRef = runtime.getStepStartRef(f.id, phase.id, step.id)
-		const stepEvidence = stepRef ? services.gatherEvidence(stepRef) : undefined
-		const grade = await services.judgeGradeStep(
-			step.description,
-			params.summary ?? "",
-			{ exitCode, stdout, stderr },
-			stepEvidence,
-		)
-		const gradeOutcome = applyAndPersist(params.ferment_id, {
-			type: "set_step_grade",
-			phaseId: phase.id,
-			stepId: step.id,
-			grade,
-		})
-		if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
-		services.onStepCompleted()
-		return toolOk(
-			`Step ${step.index}: "${step.description}" done and verified ✓  Grade: ${grade.grade} — ${grade.rationale}`,
-		)
+		// Verification passed + all gates pass → silent advance. No LLM call.
+		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
+		services.onStepCompleted(runtime)
+		return toolOk(`Step ${step.index}: "${step.description}" done and verified ✓`)
 	}
 
+	// Non-zero verify exit. judgeStepVerification is tactical (pass/retry/fail
+	// classification of a failed command), not grading — it stays.
 	const judgeVerdict = await services.judgeStepVerification(
 		step.description,
 		step.verification.command,
@@ -343,25 +345,12 @@ export async function completeStep(
 	)
 
 	if (judgeVerdict.verdict === "pass") {
-		const stepRef = runtime.getStepStartRef(f.id, phase.id, step.id)
-		const stepEvidence = stepRef ? services.gatherEvidence(stepRef) : undefined
-		const grade = await services.judgeGradeStep(
-			step.description,
-			params.summary ?? "",
-			{ exitCode, stdout, stderr },
-			stepEvidence,
-		)
-		const gradeOutcome = applyAndPersist(params.ferment_id, {
-			type: "set_step_grade",
-			phaseId: phase.id,
-			stepId: step.id,
-			grade,
-		})
-		if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
-		services.onStepCompleted()
-		return toolOk(
-			`Step ${step.index}: "${step.description}" done ✓  Judge: ${judgeVerdict.reason}  Grade: ${grade.grade}`,
-		)
+		// Tactical pass: command exited non-zero but the judge says the work
+		// is acceptable (e.g. linter noise on an unrelated file). Gate
+		// verdicts already passed above, so advance.
+		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
+		services.onStepCompleted(runtime)
+		return toolOk(`Step ${step.index}: "${step.description}" done ✓  Judge: ${judgeVerdict.reason}`)
 	}
 
 	const failOutcome = applyAndPersist(params.ferment_id, {
@@ -402,8 +391,9 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 	pi.registerTool({
 		name: "complete_step",
 		label: "Complete Step",
-		description:
-			"Mark step as done. If the step has a verification command it runs automatically — no need to call verify_step separately.",
+		description: `Mark step as done. If the step has a verification command it runs automatically — no need to call verify_step separately. You must produce verdicts for the three step-scope gates below. A "flag" verdict blocks step completion.
+
+${renderGateGuidance("complete_step")}`,
 		parameters: CompleteStepParams,
 		async execute(_, params, signal, onUpdate, ctx) {
 			return completeStep(runtime, params, { pi, ctx, signal, onUpdate }, stepServices)

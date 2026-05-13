@@ -4,18 +4,10 @@ import { join } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
-import type { JudgeGrade } from "../../../ferment/types.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
 import { setActive } from "../state.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
 import { type PhaseHandlerServices, completePhase, registerPhaseTools } from "./phases.js"
-
-vi.mock("../judge.js", () => ({
-	judgeGradePhase: vi.fn(async () => gradeA),
-	judgeSuggestCorrectiveStep: vi.fn(async () => undefined),
-}))
-
-const gradeA: JudgeGrade = { grade: "A", rationale: "solid", gradedAt: "2026-01-01T00:00:00.000Z" }
 
 function okText(result: { content: { text: string }[]; isError?: boolean }): string {
 	if (result.isError) throw new Error(`Expected ok, got error: ${result.content[0]?.text}`)
@@ -66,13 +58,19 @@ function createServices(overrides: Partial<PhaseHandlerServices> = {}): PhaseHan
 	return {
 		captureGitHead: vi.fn(() => undefined),
 		gatherEvidence: vi.fn(() => ({ filesChanged: "file.ts", diffSnippet: "+change", available: true })),
-		judgeGradePhase: vi.fn(async () => gradeA),
-		judgeSuggestCorrectiveStep: vi.fn(async () => undefined),
+		runProjectChecks: vi.fn(() => ({ cwd: "/tmp", discovered: false, anyFailed: false, checks: [] })),
 		onPhaseCompleted: vi.fn(),
 		isPlanMode: vi.fn(() => false),
 		...overrides,
 	}
 }
+
+/** Helper: a complete, all-pass phase-scope gate verdict set. */
+const passingPhaseGates = () => [
+	{ id: "F1", verdict: "pass" as const, rationale: "All step verifications were real.", evidence: "step-1 used smoke" },
+	{ id: "F2", verdict: "pass" as const, rationale: "Phase goal delivered.", evidence: "feature.ts:1-40" },
+	{ id: "F3", verdict: "pass" as const, rationale: "Nothing deferred.", evidence: "n/a" },
+]
 
 beforeEach(() => {
 	vi.restoreAllMocks()
@@ -80,14 +78,14 @@ beforeEach(() => {
 })
 
 describe("completePhase", () => {
-	it("completes, gathers injected evidence, grades, and nudges through services", async () => {
+	it("completes when all gates pass and gathers evidence", async () => {
 		const h = createHarness()
 		h.runtime.setPhaseStartRef(h.fermentId, "phase-1", "abc123")
 		const services = createServices()
 
 		const result = await completePhase(
 			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done" },
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
 			{ pi: h.pi },
 			services,
 		)
@@ -96,37 +94,87 @@ describe("completePhase", () => {
 		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("completed")
 		expect(h.storage.get(h.fermentId)?.phases[0].grade?.grade).toBe("A")
 		expect(services.gatherEvidence).toHaveBeenCalledWith("abc123")
-		expect(services.judgeGradePhase).toHaveBeenCalledWith(
-			"Phase 1",
-			"Build 1",
-			expect.stringContaining("Step 1"),
-			"phase done",
-			expect.objectContaining({ available: true }),
-		)
-		expect(services.onPhaseCompleted).toHaveBeenCalledWith()
+		expect(services.onPhaseCompleted).toHaveBeenCalledWith(h.runtime)
 	})
 
-	it("stores corrective guidance for low phase grades", async () => {
+	it("refuses to advance when the agent raises a flag verdict on a phase gate", async () => {
 		const h = createHarness()
-		const gradeD: JudgeGrade = { grade: "D", rationale: "weak", gradedAt: "2026-01-01T00:00:00.000Z" }
-		const services = createServices({
-			judgeGradePhase: vi.fn(async () => gradeD),
-			judgeSuggestCorrectiveStep: vi.fn(async () => "Add a regression test first."),
-		})
+		const services = createServices()
+		const flaggedGates = [
+			{
+				id: "F1",
+				verdict: "flag" as const,
+				rationale: "All steps were proxy-verified — no real behavior was exercised.",
+				evidence: "step-1 used test -f, step-2 used grep",
+			},
+			{ id: "F2", verdict: "pass" as const, rationale: "Phase artifact exists.", evidence: "feature.ts" },
+			{ id: "F3", verdict: "pass" as const, rationale: "Nothing deferred.", evidence: "n/a" },
+		]
 
 		const result = await completePhase(
 			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done" },
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: flaggedGates },
 			{ pi: h.pi },
 			services,
 		)
 
-		expect(okText(result)).toContain("Grade: D")
-		expect(h.runtime.getCorrectiveStep(h.fermentId, "phase-1")).toBe("Add a regression test first.")
-		expect(services.judgeSuggestCorrectiveStep).toHaveBeenCalledWith("Phase 1", "Build 1", gradeD)
+		const errResult = result as { content: { text: string }[]; isError?: boolean }
+		expect(errResult.isError).toBe(true)
+		const text = errResult.content.map((c) => c.text).join("\n")
+		expect(text).toContain("Gate F1 flagged")
+		expect(text).toContain("proxy-verified")
+		// Phase must NOT be completed.
+		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("active")
+		// Retry counter must have been bumped to 1.
+		expect(h.runtime.getBlockRetry(h.fermentId, "phase-1")).toBe(1)
 	})
 
-	it("uses injected plan-mode UI to pause after phase review", async () => {
+	it("rejects the call with a clear error when gate coverage is incomplete", async () => {
+		const h = createHarness()
+		const services = createServices()
+		const incomplete = [
+			{ id: "F1", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+			// F2 and F3 missing on purpose.
+		]
+
+		const result = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: incomplete },
+			{ pi: h.pi },
+			services,
+		)
+
+		const errResult = result as { content: { text: string }[]; isError?: boolean }
+		expect(errResult.isError).toBe(true)
+		const text = errResult.content.map((c) => c.text).join("\n")
+		expect(text).toContain("missing required gate verdicts")
+		expect(text).toContain("F2")
+		expect(text).toContain("F3")
+		// Phase must NOT be completed and no retry counter bump because we never got past validation.
+		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("active")
+		expect(h.runtime.getBlockRetry(h.fermentId, "phase-1")).toBe(0)
+	})
+
+	it("rejects the call when a verdict shape is invalid (empty rationale)", async () => {
+		const h = createHarness()
+		const services = createServices()
+		const malformed = [
+			{ id: "F1", verdict: "pass" as const, rationale: "", evidence: "n/a" },
+			{ id: "F2", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+			{ id: "F3", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+		]
+		const result = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: malformed },
+			{ pi: h.pi },
+			services,
+		)
+		const errResult = result as { content: { text: string }[]; isError?: boolean }
+		expect(errResult.isError).toBe(true)
+		expect(errResult.content.map((c) => c.text).join("\n")).toContain("rationale")
+	})
+
+	it("uses injected plan-mode UI to pause after phase completion", async () => {
 		const h = createHarness()
 		const markHumanInput = vi.fn()
 		h.runtime.markHumanInput = markHumanInput
@@ -134,7 +182,7 @@ describe("completePhase", () => {
 
 		const result = await completePhase(
 			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done" },
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
 			{
 				pi: h.pi,
 				ctx: { ui: { select: vi.fn(async () => "Pause here") } },
@@ -155,7 +203,7 @@ describe("completePhase", () => {
 
 		const proceed = await completePhase(
 			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done" },
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
 			{
 				pi: h.pi,
 				ctx: { ui: { select: vi.fn(async () => "Proceed to Phase 2") } },
@@ -173,7 +221,7 @@ describe("completePhase", () => {
 
 		const result = await completePhase(
 			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done" },
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
 			{
 				pi: h.pi,
 				ctx: {
@@ -192,7 +240,7 @@ describe("completePhase", () => {
 })
 
 describe("registerPhaseTools", () => {
-	it("uses the injected runtime, not the global active ferment, for plan-mode phase review", async () => {
+	it("uses the injected runtime, not the global active ferment, for plan-mode phase completion", async () => {
 		const h = createHarness()
 		let injectedActive = h.storage.get(h.fermentId)
 		if (!injectedActive) throw new Error("Expected active ferment in injected storage")
@@ -227,7 +275,7 @@ describe("registerPhaseTools", () => {
 
 		const result = (await completePhaseTool.execute(
 			"test-call-id",
-			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done" },
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
 			undefined,
 			undefined,
 			{ ui: { select } },

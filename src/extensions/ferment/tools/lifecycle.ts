@@ -12,8 +12,15 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import type { Command } from "../../../ferment/state-machine.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
+import {
+	GateCoverageError,
+	assertGateCoverage,
+	flaggedVerdicts,
+	hasBlockingFlag,
+	renderGateGuidance,
+	validateGateVerdict,
+} from "../gate-registry.js"
 import { autoInitFromEnv, ensureGitRepo } from "../git-init.js"
-import { type PlanReview, computeFermentGrade, judgePlan } from "../judge.js"
 import { appendRefEntry, resetReactiveAutoNudgeCount } from "../nudge.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
@@ -33,25 +40,18 @@ type ScopeArgs = Static<typeof ScopeParams>
 type CompleteFermentArgs = Static<typeof CompleteFermentParams>
 type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
 
-export interface LifecycleHandlerServices {
-	judgePlan(
-		fermentName: string,
-		goal: string,
-		criteria: string,
-		constraints: string,
-		phases: string,
-	): Promise<PlanReview>
-	computeFermentGrade: typeof computeFermentGrade
-}
+// The gate-registry migration removed every external service this handler
+// used to depend on (judgePlan / computeFermentGrade / maybeInjectAutoNudge).
+// The empty shape stays as a DI seam so tests can inject mocks if future
+// per-handler dependencies show up; today there are none.
+// biome-ignore lint/complexity/noBannedTypes: intentional empty DI seam
+export type LifecycleHandlerServices = {}
 
 export interface LifecycleExecutionContext {
 	pi: ExtensionAPI
 }
 
-export const defaultLifecycleHandlerServices: LifecycleHandlerServices = {
-	judgePlan,
-	computeFermentGrade,
-}
+export const defaultLifecycleHandlerServices: LifecycleHandlerServices = {}
 
 const validateFsmTransition = (
 	f: Parameters<typeof validateFsmTransitionWithFerment>[0],
@@ -66,6 +66,29 @@ export async function scopeFerment(
 	services: LifecycleHandlerServices = defaultLifecycleHandlerServices,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
+
+	// Plan-scope gate validation runs BEFORE any state mutation. The agent
+	// must declare verifiable success signals (P1), composition (P2), and
+	// the ferment-completion checklist (P3) before scoping is accepted.
+	try {
+		assertGateCoverage(params.gates, "scope_ferment")
+	} catch (err) {
+		if (err instanceof GateCoverageError) return toolErr(err.message)
+		throw err
+	}
+	for (const v of params.gates) {
+		const shapeError = validateGateVerdict(v)
+		if (shapeError) return toolErr(shapeError)
+	}
+	if (hasBlockingFlag(params.gates)) {
+		const flagLines = flaggedVerdicts(params.gates)
+			.map((v) => `  ⛔ Gate ${v.id}: ${v.rationale}\n     evidence: ${v.evidence}`)
+			.join("\n")
+		return toolErr(
+			`Cannot scope ferment — agent self-flagged on ${flaggedVerdicts(params.gates).length} plan gate(s):\n\n${flagLines}\n\nRevise the plan (e.g. give each phase a verifiable success signal, declare a concrete checklist for complete_ferment) and call scope_ferment again with passing P-gate verdicts.`,
+		)
+	}
+
 	// Hard gate: only enforced for ferments scoped interactively (TUI path)
 	// in plan mode. Headless, conversational, exec, and auto modes bypass —
 	// the LLM is trusted there and one-shot/auto-execution should not stall.
@@ -110,52 +133,64 @@ export async function scopeFerment(
 	const fresh = outcome.ferment
 	const phaseList = fresh.phases.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") || "(none)"
 
-	// Plan review: judge checks phases before execution starts (side effect, host's job)
-	const planReview = await services.judgePlan(
-		fresh.name,
-		params.goal,
-		params.success_criteria ?? "",
-		(params.constraints ?? []).join(", "),
-		phaseList,
-	)
-	// Build the review note. confidence === 0 means the judge was unreachable
-	// or returned an unparseable response — we distinguish that case so the
-	// user doesn't see a confident-looking number from a degraded judge.
-	let reviewNote: string
-	if (planReview.confidence === 0) {
-		reviewNote = `\n\nPlan review: judge unavailable (${planReview.reasoning || "no response"}). Proceeding without verdict.`
-	} else if (planReview.verdict === "approve") {
-		const reason = planReview.reasoning ? `\n  ${planReview.reasoning}` : ""
-		reviewNote = `\n\nPlan review: ✓ approved (confidence: ${planReview.confidence}%)${reason}`
-	} else {
-		const reason = planReview.reasoning ? `\n  ${planReview.reasoning}` : ""
-		const suggestionLines = planReview.suggestions.map((s) => `  • ${s}`).join("\n")
-		reviewNote = `\n\nPlan review: ⚠ revision suggested (confidence: ${planReview.confidence}%)${reason}\n${suggestionLines}\n\nRevise the phases if needed, then proceed with activate_phase.`
-	}
+	// Auto-nudge handling moved to main's reactive turn-end model — see nudge.ts.
+	// Plan-quality is now enforced via P-gates above; no LLM plan review.
 
 	return toolOk(
-		`Ferment "${fresh.name}" scoped and ready.\nferment_id: ${fresh.id}\nGoal: ${params.goal}\nPhases:\n${phaseList}${reviewNote}`,
+		`Ferment "${fresh.name}" scoped and ready.\nferment_id: ${fresh.id}\nGoal: ${params.goal}\nPhases:\n${phaseList}`,
 	)
 }
 
-export function completeFerment(
+export async function completeFerment(
 	runtime: FermentRuntime,
 	params: CompleteFermentArgs,
-	services: LifecycleHandlerServices = defaultLifecycleHandlerServices,
-): ToolResult {
+	_services: LifecycleHandlerServices = defaultLifecycleHandlerServices,
+): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
-	// Step 1: validate + transition status to complete (state machine).
+
+	const fSnapshot = runtime.getStorage().get(params.ferment_id)
+	if (!fSnapshot) return toolErr("Ferment not found.")
+
+	// Ferment-scope gate validation runs BEFORE any state mutation. The agent
+	// must answer C1 (success criteria satisfied), C2 (no unresolved F3
+	// deferrals), C3 (real verification ran the artifact) before ship is
+	// allowed. A flag on any gate refuses ship.
+	try {
+		assertGateCoverage(params.gates, "complete_ferment")
+	} catch (err) {
+		if (err instanceof GateCoverageError) return toolErr(err.message)
+		throw err
+	}
+	for (const v of params.gates) {
+		const shapeError = validateGateVerdict(v)
+		if (shapeError) return toolErr(shapeError)
+	}
+	if (hasBlockingFlag(params.gates)) {
+		const flagLines = flaggedVerdicts(params.gates)
+			.map((v) => `  ⛔ Gate ${v.id}: ${v.rationale}\n     evidence: ${v.evidence}`)
+			.join("\n")
+		return toolErr(
+			`complete_ferment refused — agent self-flagged on ${flaggedVerdicts(params.gates).length} ferment gate(s):\n\n${flagLines}\n\nAddress the concern(s) and call complete_ferment again with passing C-gate verdicts.`,
+		)
+	}
+
+	// Gates pass → proceed with completion.
 	const completeOutcome = applyAndPersist(params.ferment_id, { type: "complete_ferment" })
 	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
 
-	// Step 2: compute the grade (host concern — needs the post-transition ferment).
-	const grade = services.computeFermentGrade(completeOutcome.ferment.phases)
-
-	// Step 3: persist the grade via another transition.
-	const gradeOutcome = applyAndPersist(params.ferment_id, { type: "set_ferment_grade", grade })
+	// Persist a deterministic ship-grade. All C-gates passed (any flag would
+	// have refused above), so the grade is "A". The rationale carries the
+	// agent's C1 evidence so the audit trail is concrete.
+	const c1 = params.gates.find((g) => g.id === "C1")
+	const shipGrade = {
+		grade: "A" as const,
+		rationale: c1?.rationale ?? "All ferment-scope gates passed.",
+		gradedAt: runtime.nowIso(),
+	}
+	const gradeOutcome = applyAndPersist(params.ferment_id, { type: "set_ferment_grade", grade: shipGrade })
 	if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
 
-	// Step 4: cleanup in-memory state for this ferment.
+	// Cleanup in-memory state.
 	runtime.clearFermentState(params.ferment_id)
 	resetReactiveAutoNudgeCount(params.ferment_id)
 	runtime.setActive(undefined)
@@ -167,8 +202,10 @@ export function completeFerment(
 		.filter((p) => p.grade)
 		.map((p) => `  ${p.index}. ${p.name}: ${p.grade?.grade}`)
 		.join("\n")
+	const gateLines = params.gates.map((g) => `  ${g.id} (${g.verdict}): ${g.rationale}`).join("\n")
+
 	return toolOk(
-		`Ferment "${fresh.name}" complete${failedNote}.\n\nOverall Grade: ${grade.grade} — ${grade.rationale}\n\nPhase grades:\n${phaseGradeSummary || "  (none graded)"}\n\n${params.final_summary ?? ""}`,
+		`Ferment "${fresh.name}" complete${failedNote}.\n\nFinal gates:\n${gateLines}\n\nPhase grades:\n${phaseGradeSummary || "  (none graded)"}\n\n${params.final_summary ?? ""}`,
 	)
 }
 
@@ -198,8 +235,9 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: "propose_phases",
 		label: "Propose Phases",
-		description:
-			"Stash a structured plan proposal for the user to review. Call this DURING interactive scoping, AFTER presenting the plan to the user as a numbered list. The tool opens the confirmation dropdown and the host applies the proposal automatically when the user confirms — you should NOT ask an additional 'Does this plan look right?' question or call scope_ferment yourself in this flow.",
+		description: `Stash a structured plan proposal for the user to review. Call this DURING interactive scoping, AFTER presenting the plan to the user as a numbered list. The tool opens the confirmation dropdown and the host applies the proposal automatically when the user confirms — you should NOT ask an additional 'Does this plan look right?' question or call scope_ferment yourself in this flow. You must produce verdicts for the three plan-scope gates below. A "flag" verdict refuses the proposal.
+
+${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposePhasesParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
 			// The pending-scope buffer must already exist (set by runScopingFlow's
@@ -214,6 +252,28 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 			if (!params.phases || params.phases.length === 0) {
 				return toolErr("propose_phases requires at least one phase. Provide 3–7 ordered phases with steps.")
 			}
+
+			// Plan-scope gates are required here too — the agent must answer
+			// P1/P2/P3 about the proposal before it's even buffered.
+			try {
+				assertGateCoverage(params.gates, "scope_ferment")
+			} catch (err) {
+				if (err instanceof GateCoverageError) return toolErr(err.message)
+				throw err
+			}
+			for (const v of params.gates) {
+				const shapeError = validateGateVerdict(v)
+				if (shapeError) return toolErr(shapeError)
+			}
+			if (hasBlockingFlag(params.gates)) {
+				const flagLines = flaggedVerdicts(params.gates)
+					.map((v) => `  ⛔ Gate ${v.id}: ${v.rationale}\n     evidence: ${v.evidence}`)
+					.join("\n")
+				return toolErr(
+					`Cannot propose phases — agent self-flagged on ${flaggedVerdicts(params.gates).length} plan gate(s):\n\n${flagLines}\n\nRevise the proposal and call propose_phases again.`,
+				)
+			}
+
 			runtime.attachPendingPhases(params.ferment_id, params.phases)
 
 			if (ctx?.ui?.select) {
@@ -280,8 +340,9 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: "scope_ferment",
 		label: "Scope Ferment",
-		description:
-			"Save scoping answers and transition ferment from draft to planned. In plan mode, the harness gates this call until the user has confirmed the proposed plan via TUI dropdown.",
+		description: `Save scoping answers and transition ferment from draft to planned. In plan mode, the harness gates this call until the user has confirmed the proposed plan via TUI dropdown. You must produce verdicts for the three plan-scope gates below. A "flag" verdict refuses scoping.
+
+${renderGateGuidance("scope_ferment")}`,
 		parameters: ScopeParams,
 		async execute(_, params) {
 			return scopeFerment(runtime, params, { pi }, lifecycleServices)
@@ -333,8 +394,9 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: "complete_ferment",
 		label: "Complete Ferment",
-		description:
-			"Mark ferment as complete. All phases must be terminal (completed, skipped, or failed). Judge computes overall grade.",
+		description: `Mark ferment as complete. All phases must be terminal (completed, skipped, or failed). You must produce verdicts for the three ferment-scope gates below. A "flag" verdict refuses ship.
+
+${renderGateGuidance("complete_ferment")}`,
 		parameters: CompleteFermentParams,
 		async execute(_, params) {
 			const result = await completeFerment(runtime, params, lifecycleServices)
