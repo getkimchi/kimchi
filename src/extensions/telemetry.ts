@@ -1,6 +1,7 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { TelemetryConfig } from "../config.js"
+import { getAvailableModels } from "../startup-context.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -183,8 +184,10 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				sentMessages.add(msgId)
 
 				const model = assistant.model ?? "unknown"
+				const availableModels = getAvailableModels()
+				const meta = availableModels.find((m) => m.slug === model)
 				const rawProvider = String(assistant.provider ?? "unknown")
-				const provider = rawProvider === "kimchi-dev" ? "ai-enabler" : rawProvider
+				const provider = meta?.provider ? meta.provider : rawProvider === "kimchi-dev" ? "ai-enabler" : rawProvider
 				const { input, output, cacheRead, cacheWrite } = assistant.usage
 				const costTotal = assistant.usage.cost.total
 				const sessionUptimeMs = Date.now() - sessionStartMs

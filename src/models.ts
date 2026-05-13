@@ -56,6 +56,8 @@ interface PiModelConfig {
 	contextWindow: number
 	maxTokens: number
 	cost: { input: number; output: number; cacheRead: number; cacheWrite: number }
+	// Persisted so telemetry can resolve the actual upstream provider after cache round-trip.
+	provider: string
 	compat?: { supportsReasoningEffort?: boolean }
 }
 
@@ -70,8 +72,9 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		input: m.input_modalities,
 		contextWindow: m.limits.context_window,
 		maxTokens: m.limits.max_output_tokens,
-		// TODO: add costs support
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		// Store upstream provider for telemetry round-trip via models.json
+		provider: m.provider,
 		...(compat && { compat }),
 	}
 }
@@ -99,13 +102,11 @@ function modelToMetadata(m: PiModelConfig): ModelMetadata {
 	return {
 		slug: m.id,
 		display_name: m.name,
-		// `compat` is only set for anthropic models in metadataToModel, so its
-		// presence is a reliable indicator of the provider after a round-trip.
-		provider: m.compat ? "anthropic" : "",
+		// If `provider` was persisted by metadataToModel, use it. Fall back to the
+		// legacy compat heuristic for files written by older CLI versions.
+		provider: m.provider || (m.compat ? "anthropic" : ""),
 		reasoning: m.reasoning,
 		input_modalities: m.input,
-		// is_serverless is not persisted; sortModels will treat all cached models
-		// as serverless on fallback, which is acceptable for a degraded path.
 		is_serverless: true,
 		limits: { context_window: m.contextWindow, max_output_tokens: m.maxTokens },
 	}
