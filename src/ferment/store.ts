@@ -1,7 +1,7 @@
 /**
- * FermentStorage v4 — CRUD on ferments/<id>/<id>.json
+ * FermentStorage v4 — CRUD on ferments/*.json
  *
- * - One JSON file per ferment, named ferments/<id>/<id>.json
+ * - One JSON file per ferment, named <id>.json
  * - Atomic writes via tmp + rename
  * - Name uniqueness enforcement (case-insensitive)
  * - Resolve by id or fuzzy name match
@@ -238,20 +238,8 @@ export class FermentStorage {
 		if (!existsSync(this.dir)) mkdirSync(this.dir, { recursive: true })
 	}
 
-	private fermentDir(id: string): string {
-		return resolve(this.dir, id)
-	}
-
 	private filePath(id: string): string {
-		return resolve(this.fermentDir(id), `${id}.json`)
-	}
-
-	private legacyFilePath(id: string): string {
 		return resolve(this.dir, `${id}.json`)
-	}
-
-	private candidateFilePaths(id: string): string[] {
-		return [this.filePath(id), this.legacyFilePath(id)]
 	}
 
 	// ─── Core CRUD ─────────────────────────────────────────────────────────────
@@ -267,28 +255,23 @@ export class FermentStorage {
 		if (cached) return cached
 
 		// 1. Exact match (full UUID → direct file read)
-		for (const path of this.candidateFilePaths(id)) {
-			try {
-				const raw = readFileSync(path, "utf-8")
-				const parsed = JSON.parse(raw) as unknown
-				if (hasV3Shape(parsed)) {
-					const v4 = upgradeV3toV4(parsed as FermentV3)
-					this.write(v4) // populates cache and migrates to directory layout
-					return v4
-				}
-				if (hasV4Shape(parsed)) {
-					normalizeFerment(parsed as Ferment)
-					const f = parsed as Ferment
-					if (path === this.legacyFilePath(id) && !existsSync(this.filePath(id))) {
-						this.write(f)
-					}
-					fermentCache.set(f.id, f)
-					return f
-				}
-				return undefined
-			} catch {
-				// Try the next candidate path.
+		try {
+			const raw = readFileSync(this.filePath(id), "utf-8")
+			const parsed = JSON.parse(raw) as unknown
+			if (hasV3Shape(parsed)) {
+				const v4 = upgradeV3toV4(parsed as FermentV3)
+				this.write(v4) // populates cache
+				return v4
 			}
+			if (hasV4Shape(parsed)) {
+				normalizeFerment(parsed as Ferment)
+				const f = parsed as Ferment
+				fermentCache.set(f.id, f)
+				return f
+			}
+			return undefined
+		} catch {
+			// Fall through to prefix matching
 		}
 
 		// 2. ID prefix match (the LLM may pass a truncated UUID like "019dfd4f")
@@ -305,27 +288,19 @@ export class FermentStorage {
 	/** List all ferments as summary items. */
 	list(): FermentListItem[] {
 		this.ensureDir()
-		let entries: string[]
+		let files: string[]
 		try {
-			entries = readdirSync(this.dir)
+			files = readdirSync(this.dir).filter((f) => f.endsWith(".json"))
 		} catch {
 			return []
 		}
 
 		const items: FermentListItem[] = []
-		const seen = new Set<string>()
-		const paths = entries.flatMap((entry) => {
-			if (entry.endsWith(".json")) return [resolve(this.dir, entry)]
-			const nested = resolve(this.dir, entry, `${entry}.json`)
-			return existsSync(nested) ? [nested] : []
-		})
-		for (const path of paths) {
+		for (const file of files) {
 			try {
-				const raw = readFileSync(path, "utf-8")
+				const raw = readFileSync(resolve(this.dir, file), "utf-8")
 				const parsed = JSON.parse(raw) as unknown
 				const ferment = hasV3Shape(parsed) ? upgradeV3toV4(parsed as FermentV3) : (parsed as Ferment)
-				if (seen.has(ferment.id)) continue
-				seen.add(ferment.id)
 				items.push({
 					id: ferment.id,
 					name: ferment.name,
@@ -411,8 +386,8 @@ export class FermentStorage {
 
 	/** Delete by ID. Returns true if deleted. */
 	delete(id: string): boolean {
-		const path = this.candidateFilePaths(id).find((candidate) => existsSync(candidate))
-		if (!path) return false
+		const path = this.filePath(id)
+		if (!existsSync(path)) return false
 		unlinkSync(path)
 		fermentCache.delete(id)
 		return true
@@ -425,7 +400,6 @@ export class FermentStorage {
 	write(ferment: Ferment): void {
 		const path = this.filePath(ferment.id)
 		const tmp = `${path}.${process.pid}.tmp`
-		mkdirSync(dirname(path), { recursive: true })
 		writeFileSync(tmp, `${JSON.stringify(ferment, null, 2)}\n`, "utf-8")
 		renameSync(tmp, path)
 		// Update cache with the freshly-written ferment (avoid stale reads next get())

@@ -28,7 +28,7 @@ function readEvents(
 	dir: string,
 	id: string,
 ): { type: string; payload: unknown; preStateHash: string; postStateHash: string }[] {
-	const path = join(dir, id, `${id}.events.jsonl`)
+	const path = join(dir, `${id}.events.jsonl`)
 	const raw = readFileSync(path, "utf-8")
 	return raw
 		.split("\n")
@@ -480,7 +480,7 @@ describe("FermentEventStore", () => {
 			parentStorage.addDecision(legacy.id, "Use OAuth", "Better than sessions")
 			parentStorage.addMemory(legacy.id, "gotcha", "Watch for clock drift")
 
-			const eventsPath = join(tempDir, legacy.id, `${legacy.id}.events.jsonl`)
+			const eventsPath = join(tempDir, `${legacy.id}.events.jsonl`)
 			expect(existsSync(eventsPath)).toBe(false)
 
 			eventStore.migrateLegacy(legacy.id)

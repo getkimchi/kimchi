@@ -1,8 +1,8 @@
 /**
  * FermentEventStore — append-only event log layered over FermentStorage snapshots.
  *
- * - Snapshot layer: FermentStorage
- * - Event log:       <baseDir>/<id>/<id>.events.jsonl — one JSON object per line
+ * - Snapshot layer: FermentStorage (unchanged, same file layout)
+ * - Event log:       <baseDir>/<id>.events.jsonl — one JSON object per line
  * - Dual write:      every mutation goes to snapshot first, then event appended
  * - Read:            if `.events.jsonl` exists and is newer than snapshot, fold
  *                    events to reconstruct; otherwise delegate to snapshot
@@ -376,48 +376,29 @@ export class FermentEventStore {
 	/** Event log path is always keyed by ferment ID. */
 	private eventsPath(fermentId: string): string {
 		const baseDir = this.dir ?? resolveFermentsDir()
-		return resolve(baseDir, fermentId, `${fermentId}.events.jsonl`)
-	}
-
-	private legacyEventsPath(fermentId: string): string {
-		const baseDir = this.dir ?? resolveFermentsDir()
 		return resolve(baseDir, `${fermentId}.events.jsonl`)
 	}
 
-	private readableEventsPath(fermentId: string): string {
-		const path = this.eventsPath(fermentId)
-		if (existsSync(path)) return path
-		return this.legacyEventsPath(fermentId)
-	}
-
 	private snapshotPath(id: string): string {
-		const baseDir = this.dir ?? resolveFermentsDir()
-		return resolve(baseDir, id, `${id}.json`)
-	}
-
-	private legacySnapshotPath(id: string): string {
 		const baseDir = this.dir ?? resolveFermentsDir()
 		return resolve(baseDir, `${id}.json`)
 	}
 
 	private hasEvents(id: string): boolean {
-		return existsSync(this.eventsPath(id)) || existsSync(this.legacyEventsPath(id))
+		return existsSync(this.eventsPath(id))
 	}
 
 	private shouldUseEvents(id: string): boolean {
 		if (!this.hasEvents(id)) return false
-		const eventsMtime = statSync(this.readableEventsPath(id)).mtimeMs
+		const eventsMtime = statSync(this.eventsPath(id)).mtimeMs
 		const snapPath = this.snapshotPath(id)
-		const legacySnapPath = this.legacySnapshotPath(id)
-		const readableSnapPath = existsSync(snapPath) ? snapPath : legacySnapPath
-		if (!existsSync(readableSnapPath)) return true // no snapshot — must use events
-		const snapMtime = statSync(readableSnapPath).mtimeMs
+		if (!existsSync(snapPath)) return true // no snapshot — must use events
+		const snapMtime = statSync(snapPath).mtimeMs
 		return eventsMtime >= snapMtime
 	}
 
 	private appendEvent(fermentId: string, event: FermentEvent): void {
 		const path = this.eventsPath(fermentId)
-		mkdirSync(resolve(path, ".."), { recursive: true })
 		writeFileSync(path, `${JSON.stringify(event)}\n`, { flag: "a", encoding: "utf-8" })
 	}
 
@@ -503,7 +484,7 @@ export class FermentEventStore {
 	// ─── Fold events to reconstruct state ──────────────────────────────────────
 
 	private foldEvents(id: string): Ferment | undefined {
-		const path = this.readableEventsPath(id)
+		const path = this.eventsPath(id)
 		if (!existsSync(path)) return undefined
 		const lines = readFileSync(path, "utf-8").split("\n").filter(Boolean)
 		let state: Ferment | undefined
@@ -625,8 +606,8 @@ export class FermentEventStore {
 
 	delete(id: string): boolean {
 		return this.withLock(id, () => {
-			for (const path of [this.eventsPath(id), this.legacyEventsPath(id)]) {
-				if (existsSync(path)) unlinkSync(path)
+			if (this.hasEvents(id)) {
+				unlinkSync(this.eventsPath(id))
 			}
 			return this.storage.delete(id)
 		})
