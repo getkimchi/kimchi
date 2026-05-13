@@ -280,27 +280,18 @@ extract_json_sidecar() {
     printf '%s\n' "$sidecar_file"
 }
 
-AUDIT_TMP="$(mktemp /tmp/audit-report-XXXXXX)"
-trap 'rm -f "$TMPFILE" "$AUDIT_TMP"' EXIT
-
 echo "Running audit agent ($RUNNER, $EFFECTIVE_MODEL)..."
 echo ""
 
-# Stream output live to stdout and simultaneously capture to a temp file.
-run_audit_agent "$RUNNER" "$EFFECTIVE_MODEL" "$TMPFILE" | tee "$AUDIT_TMP"
-
-# Read the captured report for post-processing.
-audit_report_content="$(cat "$AUDIT_TMP")"
-rm -f "$AUDIT_TMP"
-trap 'rm -f "$TMPFILE"' EXIT
-
-mkdir -p "$(dirname ".kimchi/audits/$AUDIT_FILENAME")"
-printf '%s\n' "$audit_report_content" > ".kimchi/audits/$AUDIT_FILENAME"
+# Run agent interactively (no pipe — preserves TTY so the harness TUI uses the
+# full terminal width instead of falling back to the default 80 columns).
+run_audit_agent "$RUNNER" "$EFFECTIVE_MODEL" "$TMPFILE"
 
 echo ""
-if [[ -s ".kimchi/audits/$AUDIT_FILENAME" ]]; then
-    echo "Audit report written: .kimchi/audits/$AUDIT_FILENAME"
-    sidecar=$(extract_json_sidecar ".kimchi/audits/$AUDIT_FILENAME")
+audit_file=".kimchi/audits/$AUDIT_FILENAME"
+if [[ -s "$audit_file" ]]; then
+    echo "Audit report written: $audit_file"
+    sidecar=$(extract_json_sidecar "$audit_file")
     echo "JSON sidecar written: $sidecar"
 else
     echo "Warning: audit report is empty or was not written" >&2
