@@ -9,6 +9,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import type { StepResult } from "../../../ferment/types.js"
+import { askUser } from "../ask-user.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { validateGatesOrErr } from "../gate-validation.js"
@@ -137,35 +138,18 @@ export async function startStep(
 	const startCount = runtime.bumpStepStart(f.id, phase.id, step.id)
 	if (startCount >= 3) {
 		const title = `Step ${step.index}: "${step.description}" has been started ${startCount} times without completing.`
-		const retryLabel = "Retry with a revised approach"
-		const skipLabel = "Skip this step and move on"
-		const pauseLabel = "Pause the ferment for now"
+		const response = await askUser(
+			title,
+			[
+				{ id: "retry", label: "Retry with a revised approach" },
+				{ id: "skip", label: "Skip this step and move on" },
+				{ id: "pause", label: "Pause the ferment for now" },
+			],
+			{ ferment: f, pi, ctx, runtime },
+		)
 
-		if (ctx?.ui?.select) {
-			const choice = await ctx.ui.select(title, [retryLabel, skipLabel, pauseLabel])
-			runtime.markHumanInput()
-
-			if (!choice || choice === pauseLabel) {
-				const pauseOutcome = applyAndPersist(f.id, { type: "pause" })
-				if (!pauseOutcome.ok) return failedToolResult(pauseOutcome.error)
-				syncFermentToolScope(pi, pauseOutcome.ferment)
-				return toolOk("Ferment paused at user request.")
-			}
-
-			if (choice === skipLabel) {
-				const skipOutcome = applyAndPersist(f.id, {
-					type: "skip_step",
-					phaseId: phase.id,
-					stepId: step.id,
-				})
-				if (!skipOutcome.ok) return failedToolResult(skipOutcome.error)
-				runtime.clearStepStart(f.id, phase.id, step.id)
-				services.onStepCompleted(runtime)
-				return toolOk(`Step ${step.index}: "${step.description}" skipped at user request.`)
-			}
-
-			runtime.clearStepStart(f.id, phase.id, step.id)
-		} else {
+		if (response.failed) {
+			// No audience could be reached. Fall back to the headless error.
 			return toolErr(
 				`⚠ Stuck loop detected: ${title}
 
@@ -178,6 +162,28 @@ What should we do?
 Do NOT call start_step again without user input.`,
 			)
 		}
+
+		if (response.choice === "pause") {
+			const pauseOutcome = applyAndPersist(f.id, { type: "pause" })
+			if (!pauseOutcome.ok) return failedToolResult(pauseOutcome.error)
+			syncFermentToolScope(pi, pauseOutcome.ferment)
+			return toolOk("Ferment paused at user request.")
+		}
+
+		if (response.choice === "skip") {
+			const skipOutcome = applyAndPersist(f.id, {
+				type: "skip_step",
+				phaseId: phase.id,
+				stepId: step.id,
+			})
+			if (!skipOutcome.ok) return failedToolResult(skipOutcome.error)
+			runtime.clearStepStart(f.id, phase.id, step.id)
+			services.onStepCompleted(runtime)
+			return toolOk(`Step ${step.index}: "${step.description}" skipped at user request.`)
+		}
+
+		// choice === "retry"
+		runtime.clearStepStart(f.id, phase.id, step.id)
 	}
 
 	const outcome = applyAndPersist(params.ferment_id, {

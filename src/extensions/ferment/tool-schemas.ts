@@ -230,3 +230,27 @@ export const UpdateScopeFieldParams = Type.Object({
 	field: Type.String({ description: "goal | criteria | constraints" }),
 	value: Type.String({ description: "New value. For constraints, use comma-separated list." }),
 })
+
+/** Option offered to the user (or the judge standing in for the user in
+ *  one-shot mode) by the `ask_user` tool. */
+const AskUserOptionSchema = Type.Object({
+	id: Type.String({ description: "Stable identifier returned in the response. Pick short snake-case ids." }),
+	label: Type.String({ description: "Human-readable label shown in the TUI." }),
+	description: Type.Optional(
+		Type.String({
+			description: "Optional short context shown beneath the label and given to the judge in one-shot mode.",
+		}),
+	),
+})
+
+export const AskUserParams = Type.Object({
+	ferment_id: Type.String(),
+	question: Type.String({
+		description:
+			"The decision the agent cannot resolve from context alone. Be concrete and self-contained — the user (or the judge standing in for the user in one-shot mode) sees only this text plus the options.",
+	}),
+	options: Type.Array(AskUserOptionSchema, {
+		description:
+			"2–5 options. Each option needs a stable id and a human label. Include 'pause' or 'abandon' as an explicit option when relevant — the judge prefers these when uncertain.",
+	}),
+})

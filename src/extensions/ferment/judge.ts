@@ -40,7 +40,7 @@ export type JudgeUnavailableReason = "no_registry" | "no_model" | "no_auth" | "a
 
 export type JudgeApiResult = { ok: true; text: string } | { ok: false; reason: JudgeUnavailableReason; detail?: string }
 
-async function judgeApiCall(systemPrompt: string, userMsg: string, maxTokens = 400): Promise<JudgeApiResult> {
+export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTokens = 400): Promise<JudgeApiResult> {
 	const registry = getJudgeModelRegistry()
 	if (!registry) return { ok: false, reason: "no_registry" }
 

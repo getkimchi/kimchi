@@ -11,6 +11,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import type { Command } from "../../../ferment/state-machine.js"
+import { askUser } from "../ask-user.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { validateGatesOrErr } from "../gate-validation.js"
@@ -20,6 +21,7 @@ import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
 import { createApplyAndPersist, failedToolResult, toolErr, toolOk } from "../tool-helpers.js"
 import {
+	AskUserParams,
 	CompleteFermentParams,
 	CreateFermentParams,
 	ListParams,
@@ -237,40 +239,46 @@ ${renderGateGuidance("scope_ferment")}`,
 
 			runtime.attachPendingPhases(params.ferment_id, params.phases)
 
-			if (ctx?.ui?.select) {
-				const phaseLines = params.phases.map((p, i) => `${i + 1}. ${p.name} — ${p.goal}`).join("\n")
-				const choice = await ctx.ui.select(`Proposed plan:\n\n${phaseLines}\n\nDoes this plan look right?`, [
-					"Yes, this looks right",
-					"No, revise",
-					"Let me say something else",
-				])
-				runtime.markHumanInput()
+			const fermentForAsk = runtime.getStorage().get(params.ferment_id)
+			if (!fermentForAsk) return toolErr("Ferment not found.")
 
-				if (!choice) {
-					return toolOk(
-						`Proposal received: ${params.phases.length} phase(s) buffered. Awaiting user confirmation before scoping.`,
-					)
-				}
-				if (choice === "No, revise") {
-					return toolOk(
-						"Proposal buffered, but the user requested revisions. Revise the plan and call propose_phases again.",
-					)
-				}
-				if (choice === "Let me say something else") {
-					const custom = ctx.ui.input ? await ctx.ui.input("Your message:", "") : undefined
-					if (custom) return toolOk(`Proposal buffered. User direction: ${custom}`)
-					return toolOk("Proposal buffered. Awaiting the user's custom direction.")
-				}
+			const phaseLines = params.phases.map((p, i) => `${i + 1}. ${p.name} — ${p.goal}`).join("\n")
+			const response = await askUser(
+				`Proposed plan:\n\n${phaseLines}\n\nDoes this plan look right?`,
+				[
+					{ id: "confirm", label: "Yes, this looks right" },
+					{ id: "revise", label: "No, revise" },
+					{ id: "say_more", label: "Let me say something else" },
+				],
+				{ ferment: fermentForAsk, pi, ctx, runtime },
+			)
 
-				const scopeOutcome = confirmPendingScope(runtime, params.ferment_id, params.phases, "propose_phases")
-				if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
+			if (response.failed) {
+				// No audience reachable. Leave the proposal buffered for a later
+				// confirmation attempt; surface what happened to the agent.
 				return toolOk(
-					`Proposal confirmed and saved. Ferment "${scopeOutcome.outcome.ferment.name}" is now planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s).`,
+					`Proposal received: ${params.phases.length} phase(s) buffered. The user will see your numbered list and confirm via dropdown — do not call scope_ferment yourself.`,
 				)
 			}
 
+			if (response.choice === "revise") {
+				return toolOk(
+					"Proposal buffered, but the user requested revisions. Revise the plan and call propose_phases again.",
+				)
+			}
+			if (response.choice === "say_more") {
+				// Free-form input is TUI-only; in one-shot mode the judge can't be
+				// asked for arbitrary text. Use ctx.ui.input directly when present.
+				const custom = ctx?.ui?.input ? await ctx.ui.input("Your message:", "") : undefined
+				if (custom) return toolOk(`Proposal buffered. User direction: ${custom}`)
+				return toolOk("Proposal buffered. Awaiting the user's custom direction.")
+			}
+
+			// choice === "confirm"
+			const scopeOutcome = confirmPendingScope(runtime, params.ferment_id, params.phases, "propose_phases")
+			if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
 			return toolOk(
-				`Proposal received: ${params.phases.length} phase(s) buffered. The user will see your numbered list and confirm via dropdown — do not call scope_ferment yourself.`,
+				`Proposal confirmed and saved. Ferment "${scopeOutcome.outcome.ferment.name}" is now planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s).`,
 			)
 		},
 	})
@@ -363,6 +371,63 @@ ${renderGateGuidance("complete_ferment")}`,
 			const result = await completeFerment(runtime, params, lifecycleServices)
 			if (!("isError" in result) || result.isError !== true) syncFermentToolScope(pi, runtime.getActive())
 			return result
+		},
+	})
+
+	pi.registerTool({
+		name: "ask_user",
+		label: "Ask User",
+		description: `Ask the user a structured question with a small set of options. Use ONLY at genuine decision points the agent cannot resolve from context (e.g. ambiguous requirements, choice between two viable approaches, user-only authorization).
+
+Behavior depends on session mode:
+  - Interactive (with TUI): the user picks an option. Returns { choice, answered_by: "user" }.
+  - One-shot (no human attached): an Opus judge stands in for the user. Returns { choice, answered_by: "judge", rationale }.
+
+Hard contract: in one-shot mode, if the judge is unreachable (no API key, timeout, unparseable response) the ferment is ABANDONED — there is no fallback. False-pass is the worst outcome.
+
+The agent should:
+  1. Frame the question concretely. The user/judge sees only the question + options.
+  2. Provide 2–5 options with stable snake-case ids and short labels.
+  3. Include "pause" or "abandon" as an explicit option when one is appropriate — the judge prefers these when uncertain.
+  4. Act on the returned \`choice\` field.
+
+Returns: { choice, answered_by, rationale? } on success, or a tool error if no audience can be reached.`,
+		parameters: AskUserParams,
+		async execute(_, params, _signal, _onUpdate, ctx) {
+			const applyAndPersist = createApplyAndPersist(runtime)
+			const ferment = runtime.getStorage().get(params.ferment_id)
+			if (!ferment) return toolErr("Ferment not found.")
+
+			const response = await askUser(params.question, params.options, {
+				ferment,
+				pi,
+				ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined,
+				runtime,
+			})
+
+			if (response.failed) {
+				// One-shot hard-fail: when the judge is the only legitimate audience
+				// and it can't be reached, the ferment must abandon. Per the design
+				// contract, false-pass is unacceptable in unattended runs.
+				const isJudgeFailure = response.reason === "judge_unavailable" || response.reason === "judge_unparseable"
+				const isOneShot = pi.getFlag?.("ferment-oneshot") === true
+				if (isJudgeFailure && isOneShot) {
+					const abandonOutcome = applyAndPersist(params.ferment_id, {
+						type: "abandon",
+						reason: `ask_user: ${response.detail}`,
+					})
+					if (abandonOutcome.ok) runtime.setActive(abandonOutcome.ferment)
+					return toolErr(
+						`ask_user failed in one-shot mode — ferment abandoned. ${response.detail}\n\nThe ferment cannot continue without user input or a reachable judge. Restart with a valid API key, or run in interactive mode.`,
+					)
+				}
+				return toolErr(`ask_user could not route the question (${response.reason}): ${response.detail}`)
+			}
+
+			const rationaleLine = response.rationale ? `\nRationale: ${response.rationale}` : ""
+			return toolOk(
+				`Answer received.\nChoice: ${response.choice}\nAnswered by: ${response.answered_by}${rationaleLine}`,
+			)
 		},
 	})
 }

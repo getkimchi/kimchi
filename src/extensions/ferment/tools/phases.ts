@@ -10,6 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
 import type { Ferment, JudgeGrade } from "../../../ferment/types.js"
+import { askUser } from "../ask-user.js"
 import { truncateLabel } from "../colors.js"
 import { formatDecisionsAndMemories, formatScopingContext } from "../format.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
@@ -212,29 +213,29 @@ export async function completePhase(
 				maxRetries: MAX_BLOCK_RETRIES,
 			})
 
-			let userChoice: string | undefined
-			if (ctx?.ui?.select) {
-				const reason = sameFailureRepeated
-					? "same block flags repeated — no progress between attempts"
-					: `still blocking after ${MAX_BLOCK_RETRIES} retries`
-				const reviewTitle = [
-					`Phase ${phase.index}: "${phase.name}" — reviewer ${reason}`,
-					"",
-					"Block flags:",
-					...blockFlags.map((fl) => `  - ${fl.problem}`),
-				].join("\n")
-				userChoice = await ctx.ui.select(reviewTitle, [
-					"Override and proceed (mark phase done)",
-					"Pause ferment for manual fix",
-					"Abandon ferment",
-				])
-				runtime.markHumanInput()
-			}
+			const reason = sameFailureRepeated
+				? "same block flags repeated — no progress between attempts"
+				: `still blocking after ${MAX_BLOCK_RETRIES} retries`
+			const reviewTitle = [
+				`Phase ${phase.index}: "${phase.name}" — reviewer ${reason}`,
+				"",
+				"Block flags:",
+				...blockFlags.map((fl) => `  - ${fl.problem}`),
+			].join("\n")
+			const escalationResponse = await askUser(
+				reviewTitle,
+				[
+					{ id: "override", label: "Override and proceed (mark phase done)" },
+					{ id: "pause", label: "Pause ferment for manual fix" },
+					{ id: "abandon", label: "Abandon ferment" },
+				],
+				{ ferment: f, pi, ctx, runtime },
+			)
 
-			if (userChoice === "Override and proceed (mark phase done)") {
+			if (!escalationResponse.failed && escalationResponse.choice === "override") {
 				runtime.clearBlockRetry(params.ferment_id, phase.id)
 				// fall through to "advance phase" path below
-			} else if (userChoice === "Abandon ferment") {
+			} else if (!escalationResponse.failed && escalationResponse.choice === "abandon") {
 				const abandonOutcome = applyAndPersist(params.ferment_id, {
 					type: "abandon",
 					reason: "user abandoned after block retries exhausted",
@@ -242,7 +243,9 @@ export async function completePhase(
 				if (abandonOutcome.ok) runtime.setActive(abandonOutcome.ferment)
 				return toolErr(`Phase "${phase.name}" abandoned at user request after ${MAX_BLOCK_RETRIES} block retries.`)
 			} else {
-				// Default to pause if no UI or user picked Pause.
+				// Default to pause: explicit pause choice, failed routing (no UI
+				// + not one-shot), or user-cancelled. The escalation artifact on
+				// disk is the recovery surface.
 				const pauseOutcome = applyAndPersist(params.ferment_id, { type: "pause" })
 				if (pauseOutcome.ok) {
 					runtime.setActive(pauseOutcome.ferment)
@@ -322,8 +325,10 @@ export async function completePhase(
 		)
 	}
 
-	// Plan-mode TUI gate: dropdown review of completed phase + next-phase preview.
-	if (services.isPlanMode(fresh) && ctx?.ui?.select) {
+	// Plan-mode review: dropdown of completed phase + next-phase preview. In
+	// one-shot mode (which is typically auto-mode, not plan-mode), this branch
+	// is skipped — the agent owns advancement directly via activate_phase.
+	if (services.isPlanMode(fresh)) {
 		const MAX_STEP_DESC = 80
 		const completedPhase = fresh.phases.find((p) => p.id === phase.id)
 		const stepLines =
@@ -354,35 +359,35 @@ export async function completePhase(
 			truncateLabel(next.goal, 200),
 		].join("\n")
 
-		const choice = await ctx.ui.select(reviewTitle, [
-			`Proceed to Phase ${next.index}`,
-			"Pause here",
-			"Let me say something",
-		])
-		runtime.markHumanInput()
+		const response = await askUser(
+			reviewTitle,
+			[
+				{ id: "proceed", label: `Proceed to Phase ${next.index}` },
+				{ id: "pause", label: "Pause here" },
+				{ id: "say_more", label: "Let me say something" },
+			],
+			{ ferment: fresh, pi, ctx, runtime },
+		)
 
-		if (!choice || choice === "Pause here") {
+		// Failed routing or explicit pause both go to pause — same default the
+		// previous code used. The agent's tool-result text carries the
+		// notification; no sendUserMessage (LLM-1616).
+		if (response.failed || response.choice === "pause") {
 			const pauseOutcome = applyAndPersist(fresh.id, { type: "pause" })
 			if (pauseOutcome.ok) runtime.setActive(pauseOutcome.ferment)
 			if (pauseOutcome.ok) syncFermentToolScope(pi, pauseOutcome.ferment)
-			// LLM-1616: no sendUserMessage here — the tool result text carries
-			// the pause notification, and the agent's turn loop handles the
-			// paused state without an additional queued nudge.
 			return toolOk(`Phase done.${gradeNote}${projectChecksLine}${warnSection}\nFerment paused at user request.`)
 		}
-		if (choice === "Let me say something") {
-			// LLM-1616: do NOT queue a sendUserMessage from inside a completion
-			// tool — it triggers post-completion turns that race complete_ferment
-			// and cause Terminal Bench timeouts. The user's direction text rides
-			// in the tool result instead.
-			const custom = ctx.ui.input ? await ctx.ui.input("Your message:", "") : undefined
+		if (response.choice === "say_more") {
+			// Free-form input is TUI-only; in one-shot mode the judge can't
+			// produce arbitrary text. Use ctx.ui.input directly when present.
+			const custom = ctx?.ui?.input ? await ctx.ui.input("Your message:", "") : undefined
 			if (custom) {
 				return toolOk(`Phase done.${gradeNote}${projectChecksLine}${warnSection}\nUser direction: ${custom}`)
 			}
 			return toolOk(`Phase done.${gradeNote}${projectChecksLine}${warnSection}\nAwaiting user direction.`)
 		}
-		// LLM-1616: no sendUserMessage on Proceed — the agent's normal turn loop
-		// will pick up the next phase via the tool-result text + reactive nudge.
+		// choice === "proceed"
 		return toolOk(
 			`Phase done.${gradeNote}${projectChecksLine}${warnSection}\nUser confirmed: proceed to Phase ${next.index}.`,
 		)
