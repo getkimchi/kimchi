@@ -381,7 +381,7 @@ describe("FermentStorage v4", () => {
 			writeFileSync(join(tempDir, "v3-3.json"), `${JSON.stringify(v3)}\n`)
 			const fresh = new FermentStorage(tempDir)
 			fresh.get("v3-3") // triggers migration
-			const raw = readFileSync(join(tempDir, "v3-3", "v3-3.json"), "utf-8")
+			const raw = readFileSync(join(tempDir, "v3-3.json"), "utf-8")
 			expect(raw).toContain("phases")
 			expect(raw).not.toContain("plannedBatches")
 			expect(raw).not.toContain("batchRefs")
