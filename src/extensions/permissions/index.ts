@@ -424,15 +424,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			}
 			if (match.decision === "allow") return undefined
 
+			if (isReadOnlyTool(toolName)) return undefined
+			if (toolName === "bash") {
+				const command = typeof input.command === "string" ? input.command : ""
+				if (isReadOnlyBashCommand(command)) return undefined
+			}
+
 			// Auto mode + headless default mode (subagents) both go through the
 			// classifier; prompts without a UI fail closed.
 			if (mode === "auto" || !ctx.hasUI) {
-				if (isReadOnlyTool(toolName)) return undefined
-				if (toolName === "bash") {
-					const command = typeof input.command === "string" ? input.command : ""
-					if (isReadOnlyBashCommand(command)) return undefined
-				}
-
 				const classifierModel = resolveClassifierModel(ctx.model, ctx.modelRegistry)
 				if (!classifierModel) return { block: true, reason: "no model available for classifier" }
 

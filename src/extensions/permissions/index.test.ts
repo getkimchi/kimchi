@@ -430,10 +430,10 @@ describe("handleCompoundConfirm", () => {
 })
 
 describe("compound command auto-mode fall-through", () => {
-	it("read-only compound returns prompt from checkCompoundCommand so auto-mode can approve it", () => {
+	it("read-only compound returns prompt from checkCompoundCommand so the handler can approve it", () => {
 		// The early gate in the handler ONLY short-circuits on allow/deny;
-		// "prompt" falls through to evaluateRules → auto-mode → classifier.
-		// For ls && pwd, isReadOnlyBashCommand returns true, so auto-mode
+		// "prompt" falls through to evaluateRules → read-only auto-approve.
+		// For ls && pwd, isReadOnlyBashCommand returns true, so the handler
 		// silently approves it. checkCompoundCommand must NOT block it.
 		const result = checkCompoundCommand("ls && pwd", [])
 		expect(result.decision).toBe("prompt")
