@@ -410,6 +410,7 @@ export class FermentStorage {
 	write(ferment: Ferment): void {
 		const path = this.filePath(ferment.id)
 		const tmp = `${path}.${process.pid}.tmp`
+		mkdirSync(dirname(path), { recursive: true })
 		writeFileSync(tmp, `${JSON.stringify(ferment, null, 2)}\n`, "utf-8")
 		renameSync(tmp, path)
 		// Update cache with the freshly-written ferment (avoid stale reads next get())
