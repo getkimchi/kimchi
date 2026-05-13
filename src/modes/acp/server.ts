@@ -17,7 +17,10 @@ import {
 	type PromptRequest,
 	type PromptResponse,
 	RequestError,
+	type SessionModelState,
 	type SessionNotification,
+	type SetSessionModelRequest,
+	type SetSessionModelResponse,
 	type ToolCallContent,
 	type ToolCallLocation,
 	type ToolKind,
@@ -115,11 +118,37 @@ export class KimchiAcpAgent implements Agent {
 			const sessionId = session.sessionId
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, { session, unsubscribe })
-			return { sessionId }
+			const models = buildSessionModelState(session)
+			return { sessionId, models }
 		} catch (err) {
 			session.dispose()
 			throw err
 		}
+	}
+
+	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
+		const entry = this.sessions.get(params.sessionId)
+		if (!entry) {
+			throw RequestError.invalidParams(undefined, `unknown sessionId ${params.sessionId}`)
+		}
+		if (entry.turn) {
+			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
+		}
+		const { session } = entry
+		const availableModels = session.modelRegistry.getAvailable()
+		const selectedModel = availableModels.find((m) => m.id === params.modelId)
+		if (!selectedModel) {
+			throw RequestError.invalidParams(undefined, `Unknown or unavailable model: ${params.modelId}`)
+		}
+		try {
+			await session.setModel(selectedModel)
+		} catch (err) {
+			if (err instanceof RequestError) {
+				throw err
+			}
+			throw RequestError.invalidParams(undefined, `Failed to switch model: ${err instanceof Error ? err.message : String(err)}`)
+		}
+		return {}
 	}
 
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
@@ -360,6 +389,21 @@ export class KimchiAcpAgent implements Agent {
 // KIMCHI_API_KEY before we ever spawned the ACP loop, and updateModelsConfig
 // falls back to defaults rather than failing. authRequired (-32000) nudges
 // Zed toward an auth prompt instead of showing a generic "internal error".
+export function buildSessionModelState(session: Pick<AgentSession, "model" | "modelRegistry">): SessionModelState | null {
+	const currentModel = session.model
+	if (!currentModel) {
+		return null
+	}
+	const availableModels = session.modelRegistry.getAvailable()
+	return {
+		currentModelId: currentModel.id,
+		availableModels: availableModels.map((m) => ({
+			modelId: m.id,
+			name: m.name,
+		})),
+	}
+}
+
 export function assertSessionHasModel(session: Pick<AgentSession, "model">): void {
 	if (!session.model) {
 		throw RequestError.authRequired(
