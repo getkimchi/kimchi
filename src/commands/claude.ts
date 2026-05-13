@@ -15,7 +15,7 @@ import { prepareTool } from "./_helpers.js"
  * having to know Claude's flag set.
  */
 export async function runClaude(args: string[]): Promise<number> {
-	const prepped = prepareTool("claudecode", "inject")
+	const prepped = await prepareTool("claudecode", "inject")
 	if (!prepped) return 1
 
 	const telemetryEnabled = readTelemetryConfig().enabled

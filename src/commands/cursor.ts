@@ -4,7 +4,7 @@ import { popScope, prepareTool } from "./_helpers.js"
 
 export async function runCursor(args: string[]): Promise<number> {
 	const scope = popScope(args)
-	const prepped = prepareTool("cursor", "override")
+	const prepped = await prepareTool("cursor", "override")
 	if (!prepped) return 1
 
 	try {

@@ -4,7 +4,7 @@ import { popScope, prepareTool } from "./_helpers.js"
 
 export async function runOpenClaw(args: string[]): Promise<number> {
 	const scope = popScope(args)
-	const prepped = prepareTool("openclaw", "override")
+	const prepped = await prepareTool("openclaw", "override")
 	if (!prepped) return 1
 
 	try {

@@ -4,7 +4,7 @@ import { popScope, prepareTool } from "./_helpers.js"
 
 export async function runGsd2(args: string[]): Promise<number> {
 	const scope = popScope(args)
-	const prepped = prepareTool("gsd2", "override")
+	const prepped = await prepareTool("gsd2", "override")
 	if (!prepped) return 1
 
 	try {

@@ -13,7 +13,7 @@ import { popScope, prepareTool } from "./_helpers.js"
  */
 export async function runOpenCode(args: string[]): Promise<number> {
 	const scope = popScope(args)
-	const prepped = prepareTool("opencode", "override")
+	const prepped = await prepareTool("opencode", "override")
 	if (!prepped) return 1
 
 	try {
