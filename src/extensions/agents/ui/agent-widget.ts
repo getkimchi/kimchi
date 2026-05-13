@@ -257,7 +257,10 @@ export class AgentWidget {
 
 		const tuiTyped = tui as { terminal: { columns: number } }
 		const w = tuiTyped.terminal.columns
-		const truncate = (line: string) => truncateToWidth(line, w)
+		// Use width - 1 to add a safety margin. The widget lines often operate close to terminal
+		// width boundaries, and visibleWidth() can have off-by-one differences due to Unicode/ANSI
+		// handling. Subtracting 1 ensures we stay safely within the terminal width.
+		const truncate = (line: string) => truncateToWidth(line, w - 1)
 		const headingColor = hasActive ? "accent" : "dim"
 		const headingIcon = hasActive ? "●" : "○"
 		const frame = SPINNER[this.widgetFrame % SPINNER.length]
@@ -289,12 +292,9 @@ export class AgentWidget {
 
 			const activity = bg ? describeActivity(bg.activeTools, bg.responseText) : "thinking…"
 
-			runningLines.push([
-				truncate(
-					`${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modeTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
-				),
-				truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`)),
-			])
+			const treeLine = `${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modeTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`
+			const activityLine = theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`)
+			runningLines.push([truncate(treeLine), truncate(activityLine)])
 		}
 
 		const queuedLine =
