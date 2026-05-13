@@ -136,7 +136,7 @@ export class KimchiAcpAgent implements Agent {
 		}
 		const { session } = entry
 		const availableModels = session.modelRegistry.getAvailable()
-		const selectedModel = availableModels.find((m) => m.id === params.modelId)
+		const selectedModel = availableModels.find((m) => getAcpModelId(m) === params.modelId)
 		if (!selectedModel) {
 			throw RequestError.invalidParams(undefined, `Unknown or unavailable model: ${params.modelId}`)
 		}
@@ -146,7 +146,10 @@ export class KimchiAcpAgent implements Agent {
 			if (err instanceof RequestError) {
 				throw err
 			}
-			throw RequestError.invalidParams(undefined, `Failed to switch model: ${err instanceof Error ? err.message : String(err)}`)
+			throw RequestError.invalidParams(
+				undefined,
+				`Failed to switch model: ${err instanceof Error ? err.message : String(err)}`,
+			)
 		}
 		return {}
 	}
@@ -389,19 +392,25 @@ export class KimchiAcpAgent implements Agent {
 // KIMCHI_API_KEY before we ever spawned the ACP loop, and updateModelsConfig
 // falls back to defaults rather than failing. authRequired (-32000) nudges
 // Zed toward an auth prompt instead of showing a generic "internal error".
-export function buildSessionModelState(session: Pick<AgentSession, "model" | "modelRegistry">): SessionModelState | null {
+export function buildSessionModelState(
+	session: Pick<AgentSession, "model" | "modelRegistry">,
+): SessionModelState | null {
 	const currentModel = session.model
 	if (!currentModel) {
 		return null
 	}
 	const availableModels = session.modelRegistry.getAvailable()
 	return {
-		currentModelId: currentModel.id,
+		currentModelId: getAcpModelId(currentModel),
 		availableModels: availableModels.map((m) => ({
-			modelId: m.id,
+			modelId: getAcpModelId(m),
 			name: m.name,
 		})),
 	}
+}
+
+function getAcpModelId(model: Pick<NonNullable<AgentSession["model"]>, "provider" | "id">): string {
+	return `${model.provider}/${model.id}`
 }
 
 export function assertSessionHasModel(session: Pick<AgentSession, "model">): void {

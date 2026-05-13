@@ -1,7 +1,13 @@
 import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk"
 import type { AgentSession, AgentSessionEvent, AgentSessionEventListener } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it } from "vitest"
-import { type AcpSessionFactory, KimchiAcpAgent, assertSessionHasModel, buildSessionModelState, describeToolCall } from "./server.js"
+import {
+	type AcpSessionFactory,
+	KimchiAcpAgent,
+	assertSessionHasModel,
+	buildSessionModelState,
+	describeToolCall,
+} from "./server.js"
 
 // Minimal fake of AgentSession surface used by KimchiAcpAgent. The factory seam
 // means we only need to stand in for the methods the ACP server actually calls:
@@ -11,8 +17,8 @@ class FakeAgentSession {
 	private listeners = new Set<AgentSessionEventListener>()
 	disposed = false
 	aborted = false
-	model?: { id: string }
-	modelRegistry = { getAvailable: () => [] as Array<{ id: string; name: string }> }
+	model?: { provider: string; id: string }
+	modelRegistry = { getAvailable: () => [] as Array<{ provider: string; id: string; name: string }> }
 	promptImpl: (text: string) => Promise<void> = async () => {}
 	abortImpl: () => Promise<void> = async () => {}
 
@@ -35,7 +41,7 @@ class FakeAgentSession {
 		await this.promptImpl(text)
 	}
 
-	async setModel(model: { id: string }): Promise<void> {
+	async setModel(model: { provider: string; id: string }): Promise<void> {
 		this.model = model
 	}
 
@@ -682,41 +688,43 @@ describe("buildSessionModelState", () => {
 
 	it("returns currentModelId and availableModels when model is present", () => {
 		const fake = new FakeAgentSession("s1")
-		fake.model = { id: "gpt-4" }
+		fake.model = { provider: "openai", id: "gpt-4" }
 		fake.modelRegistry = {
 			getAvailable: () => [
-				{ id: "gpt-4", name: "GPT-4" },
-				{ id: "claude-3", name: "Claude 3" },
+				{ provider: "openai", id: "gpt-4", name: "GPT-4" },
+				{ provider: "anthropic", id: "claude-3", name: "Claude 3" },
 			],
 		}
 		const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
-		expect(result).not.toBeNull()
-		expect(result!.currentModelId).toBe("gpt-4")
-		expect(result!.availableModels).toEqual([
-			{ modelId: "gpt-4", name: "GPT-4" },
-			{ modelId: "claude-3", name: "Claude 3" },
-		])
+		expect(result).toEqual({
+			currentModelId: "openai/gpt-4",
+			availableModels: [
+				{ modelId: "openai/gpt-4", name: "GPT-4" },
+				{ modelId: "anthropic/claude-3", name: "Claude 3" },
+			],
+		})
 	})
 
 	it("returns empty availableModels when registry has no models", () => {
 		const fake = new FakeAgentSession("s1")
-		fake.model = { id: "gpt-4" }
+		fake.model = { provider: "openai", id: "gpt-4" }
 		fake.modelRegistry = { getAvailable: () => [] }
 		const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
-		expect(result).not.toBeNull()
-		expect(result!.currentModelId).toBe("gpt-4")
-		expect(result!.availableModels).toEqual([])
+		expect(result).toEqual({
+			currentModelId: "openai/gpt-4",
+			availableModels: [],
+		})
 	})
 })
 
 describe("newSession model state", () => {
 	it("returns model state in the response when a model is available", async () => {
 		const fake = new FakeAgentSession("session-model")
-		fake.model = { id: "gpt-4" }
+		fake.model = { provider: "openai", id: "gpt-4" }
 		fake.modelRegistry = {
 			getAvailable: () => [
-				{ id: "gpt-4", name: "GPT-4" },
-				{ id: "claude-3", name: "Claude 3" },
+				{ provider: "openai", id: "gpt-4", name: "GPT-4" },
+				{ provider: "anthropic", id: "claude-3", name: "Claude 3" },
 			],
 		}
 		const factory: AcpSessionFactory = async () => asSession(fake)
@@ -728,10 +736,10 @@ describe("newSession model state", () => {
 		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 		expect(res.sessionId).toBe("session-model")
 		expect(res.models).toBeDefined()
-		expect(res.models?.currentModelId).toBe("gpt-4")
+		expect(res.models?.currentModelId).toBe("openai/gpt-4")
 		expect(res.models?.availableModels).toHaveLength(2)
-		expect(res.models?.availableModels[0]).toEqual({ modelId: "gpt-4", name: "GPT-4" })
-		expect(res.models?.availableModels[1]).toEqual({ modelId: "claude-3", name: "Claude 3" })
+		expect(res.models?.availableModels[0]).toEqual({ modelId: "openai/gpt-4", name: "GPT-4" })
+		expect(res.models?.availableModels[1]).toEqual({ modelId: "anthropic/claude-3", name: "Claude 3" })
 	})
 
 	it("returns models: null when no model is active", async () => {
@@ -752,11 +760,11 @@ describe("newSession model state", () => {
 describe("unstable_setSessionModel", () => {
 	it("switches to a valid model", async () => {
 		const fake = new FakeAgentSession("switch-session")
-		fake.model = { id: "model-a" }
+		fake.model = { provider: "provider-a", id: "model-a" }
 		fake.modelRegistry = {
 			getAvailable: () => [
-				{ id: "model-a", name: "Model A" },
-				{ id: "model-b", name: "Model B" },
+				{ provider: "provider-a", id: "model-a", name: "Model A" },
+				{ provider: "provider-b", id: "model-b", name: "Model B" },
 			],
 		}
 		const factory: AcpSessionFactory = async () => asSession(fake)
@@ -766,16 +774,17 @@ describe("unstable_setSessionModel", () => {
 			sessionFactory: factory,
 		})
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-		const res = await agent.unstable_setSessionModel({ sessionId: "switch-session", modelId: "model-b" })
+		const res = await agent.unstable_setSessionModel({ sessionId: "switch-session", modelId: "provider-b/model-b" })
 		expect(res).toEqual({})
+		expect(fake.model?.provider).toBe("provider-b")
 		expect(fake.model?.id).toBe("model-b")
 	})
 
 	it("throws invalidParams for unknown modelId", async () => {
 		const fake = new FakeAgentSession("switch-session")
-		fake.model = { id: "model-a" }
+		fake.model = { provider: "provider-a", id: "model-a" }
 		fake.modelRegistry = {
-			getAvailable: () => [{ id: "model-a", name: "Model A" }],
+			getAvailable: () => [{ provider: "provider-a", id: "model-a", name: "Model A" }],
 		}
 		const factory: AcpSessionFactory = async () => asSession(fake)
 		const agent = new KimchiAcpAgent(makeConn(), {
@@ -784,18 +793,16 @@ describe("unstable_setSessionModel", () => {
 			sessionFactory: factory,
 		})
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-		await expect(
-			agent.unstable_setSessionModel({ sessionId: "switch-session", modelId: "unknown" }),
-		).rejects.toThrow()
+		await expect(agent.unstable_setSessionModel({ sessionId: "switch-session", modelId: "unknown" })).rejects.toThrow()
 	})
 
 	it("prompt still works after switching model", async () => {
 		const fake = new FakeAgentSession("switch-session")
-		fake.model = { id: "model-a" }
+		fake.model = { provider: "provider-a", id: "model-a" }
 		fake.modelRegistry = {
 			getAvailable: () => [
-				{ id: "model-a", name: "Model A" },
-				{ id: "model-b", name: "Model B" },
+				{ provider: "provider-a", id: "model-a", name: "Model A" },
+				{ provider: "provider-b", id: "model-b", name: "Model B" },
 			],
 		}
 		const factory: AcpSessionFactory = async () => asSession(fake)
@@ -805,12 +812,13 @@ describe("unstable_setSessionModel", () => {
 			sessionFactory: factory,
 		})
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-		await agent.unstable_setSessionModel({ sessionId: "switch-session", modelId: "model-b" })
+		await agent.unstable_setSessionModel({ sessionId: "switch-session", modelId: "provider-b/model-b" })
 		const result = await agent.prompt({
 			sessionId: "switch-session",
 			prompt: [{ type: "text", text: "hello" }],
 		})
 		expect(result).toBeDefined()
+		expect(fake.model?.provider).toBe("provider-b")
 		expect(fake.model?.id).toBe("model-b")
 	})
 
@@ -819,9 +827,7 @@ describe("unstable_setSessionModel", () => {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
 		})
-		await expect(
-			agent.unstable_setSessionModel({ sessionId: "no-such-session", modelId: "model-a" }),
-		).rejects.toThrow()
+		await expect(agent.unstable_setSessionModel({ sessionId: "no-such-session", modelId: "model-a" })).rejects.toThrow()
 	})
 })
 
