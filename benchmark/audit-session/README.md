@@ -131,8 +131,87 @@ The report contains phase-by-phase cost breakdown, grade summary, and actionable
 3. Substitutes the selected session path into the prompt template
 4. Launches the chosen runner (kimchi or claude-code) in interactive mode with the prompt
 
+## Metrics Captured
+
+The audit evaluates 13 dimensions of session quality. Sections 1–6 are graded; 7–13 produce structural metrics.
+
+| # | Metric | Description |
+|---|--------|-------------|
+| 1 | Phase Discipline | Logical phase ordering, timely transitions, phase-work alignment |
+| 2 | Architecture & Design | Decision timing, module boundaries, project conventions |
+| 3 | Code Quality | Lint results, naming, duplication, over-engineering |
+| 4 | Testing Strategy | Coverage, negative paths, test organization patterns |
+| 5 | Phase-Model Alignment | Expensive models for complex phases, cheap for routine work |
+| 6 | Cost Efficiency | Per-phase cost breakdown, counterfactual analysis |
+| 7 | Per-Turn Model Attribution | Active model per turn, provider, switch boundaries |
+| 8 | Routing Decision Rationale | What triggered each model switch (phase, tool call, explicit text) |
+| 9 | Switching Latency | ms between model_change and first assistant message per model |
+| 10 | Subagent Lifecycle | Loops, budget usage, context completeness per subagent invocation |
+| 11 | Token Consumption per Task Class | Tokens/cost per class (explore, plan, build, review, research, orchestration) |
+| 12 | Cost per Completed Task | Cost of each task block from start to terminal state |
+| 13 | OSS vs Non-OSS Utilization | Token-based and cost-based ratio of OSS model usage |
+
+## Structured Output
+
+Every audit run produces two files:
+
+| File | Description |
+|------|-------------|
+| `.kimchi/audits/{sessionId}-{runner}-{model}-AUDIT.md` | Human-readable graded report |
+| `.kimchi/audits/{sessionId}-{runner}-{model}-AUDIT.json` | Machine-readable sidecar for automated comparison |
+
+The JSON sidecar conforms to schema version `1.0.0` with these top-level keys:
+
+```json
+{
+  "schemaVersion": "1.0.0",
+  "sessionId": "<session-id>",
+  "timestamp": "<iso-timestamp>",
+  "modelsUsed": [{ "modelId", "provider", "turns", "tokens": {...}, "cost", "isOss" }],
+  "switches": [{ "from", "to", "timestamp", "latencyMs", "rationale" }],
+  "subagents": [{ "delegateModel", "budget", "looped", "completed" }],
+  "taskClasses": { "explore": { "tokens": {...}, "cost" }, ... },
+  "completedTasks": [{ "label", "turnRange", "cost", "terminalState" }],
+  "ossRatio": { "byTokens": 0.0, "byCost": 0.0 },
+  "aggregates": { "totalTokens", "totalCost", "totalTurns", "totalSwitches", "totalSubagents", "errors" }
+}
+```
+
+`jq` is recommended (but optional) for validation — if `jq` is present, the script validates the JSON before writing the sidecar.
+
+## Usage for Automated Comparison
+
+Compare two audit runs with `jq`:
+
+```sh
+# Compare total cost between two sessions
+jq -s '.[0].aggregates.totalCost as $a | .[1].aggregates.totalCost as $b |
+  "Session 1: $\($a)" , "Session 2: $\($b)" , "Delta: $\($b - $a)"' \
+  .kimchi/audits/session-AUDIT.json .kimchi/audits/session-BUDIT.json
+
+# Compare OSS ratio between two runs
+jq -s '"Run 1 OSS cost ratio: \(.[0].ossRatio.byCost * 100 | . * 100 | floor / 100)%",
+       "Run 2 OSS cost ratio: \(.[1].ossRatio.byCost * 100 | . * 100 | floor / 100)%"' \
+  .kimchi/audits/session-AUDIT.json .kimchi/audits/session-BUDIT.json
+
+# Find which model consumed the most in each session
+jq -s 'map(.modelsUsed | max_by(.cost)) | .
+  | "Session 1 most expensive: \(.[0].modelId) ($\([0].cost))",
+       "Session 2 most expensive: \(.[1].modelId) ($\([1].cost))"' \
+  .kimchi/audits/session-AUDIT.json .kimchi/audits/session-BUDIT.json
+
+# Compare subagent loop rates
+jq -s 'map(.subagents | map(.looped) | add / length) | .
+  | "Run 1 loop rate: \(.[0] * 100 | . * 10 | floor / 10)%",
+       "Run 2 loop rate: \(.[1] * 100 | . * 10 | floor / 10)%"' \
+  .kimchi/audits/session-AUDIT.json .kimchi/audits/session-BUDIT.json
+
+# Aggregate cost across many runs (for batch comparison)
+jq -s 'map(.aggregates.totalCost) | add' .kimchi/audits/*-AUDIT.json
+```
+
 ## Prerequisites
 
 - `kimchi` and/or `claude` CLI available on PATH
-- `jq` recommended (used for session parsing; falls back to grep)
+- `jq` recommended (used for session parsing and JSON sidecar validation; falls back to grep)
 - Session JSONL files (from `~/.config/kimchi/harness/sessions/` or `benchmark/manual/`)

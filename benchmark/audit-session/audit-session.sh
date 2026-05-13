@@ -219,18 +219,84 @@ sed \
     -e "s|{auditModel}|${EFFECTIVE_MODEL}|g" \
     "$PROMPT_FILE" > "$TMPFILE"
 
-case "$RUNNER" in
-    kimchi)
-        exec kimchi \
-            --model "$EFFECTIVE_MODEL" \
-            --yolo \
-            "@${TMPFILE}"
-        ;;
-    claude)
-        PROMPT_CONTENT="$(cat "$TMPFILE")"
-        exec claude \
-            --model "$EFFECTIVE_MODEL" \
-            --dangerously-skip-permissions \
-            "$PROMPT_CONTENT"
-        ;;
-esac
+audit_report_content=""
+
+run_audit_agent() {
+    local runner="$1"
+    local model="$2"
+    local prompt_file="$3"
+
+    local audit_content
+    case "$runner" in
+        kimchi)
+            audit_content="$(kimchi \
+                --model "$model" \
+                --yolo \
+                "@${prompt_file}" 2>&1)"
+            ;;
+        claude)
+            audit_content="$(claude \
+                --model "$model" \
+                --dangerously-skip-permissions \
+                "$(cat "$prompt_file")" 2>&1)"
+            ;;
+        *)
+            echo "Unknown runner: $runner" >&2
+            return 1
+            ;;
+    esac
+    echo "$audit_content"
+}
+
+extract_json_sidecar() {
+    local audit_file="$1"
+    local sidecar_file="${audit_file%.md}-AUDIT.json"
+
+    if [[ ! -f "$audit_file" ]]; then
+        echo "Audit file not found: $audit_file" >&2
+        return 1
+    fi
+
+    local json_content
+    json_content="$(grep -A 200 '^```json' "$audit_file" 2>/dev/null \
+        | grep -v '^```' \
+        | grep -v '^```json' \
+        | sed '/^[[:space:]]*$/d' \
+        | head -c 50000)"
+
+    if [[ -z "$json_content" ]]; then
+        echo "No JSON appendix found in audit report" >&2
+        return 1
+    fi
+
+    echo "$json_content" > "$sidecar_file"
+
+    if command -v jq &>/dev/null; then
+        if jq empty "$sidecar_file" 2>/dev/null; then
+            echo "JSON sidecar written: $sidecar_file (validated)"
+        else
+            echo "JSON sidecar written but may be malformed: $sidecar_file" >&2
+        fi
+    else
+        echo "JSON sidecar written (jq not available for validation): $sidecar_file"
+    fi
+
+    echo "$sidecar_file"
+}
+
+echo "Running audit agent ($RUNNER, $EFFECTIVE_MODEL)..."
+echo ""
+
+audit_report_content="$(run_audit_agent "$RUNNER" "$EFFECTIVE_MODEL" "$TMPFILE")"
+
+mkdir -p "$(dirname ".kimchi/audits/$AUDIT_FILENAME")"
+echo "$audit_report_content" > ".kimchi/audits/$AUDIT_FILENAME"
+
+echo ""
+if [[ -s ".kimchi/audits/$AUDIT_FILENAME" ]]; then
+    echo "Audit report written: .kimchi/audits/$AUDIT_FILENAME"
+    sidecar=$(extract_json_sidecar ".kimchi/audits/$AUDIT_FILENAME")
+    echo "JSON sidecar written: $sidecar"
+else
+    echo "Warning: audit report is empty or was not written" >&2
+fi
