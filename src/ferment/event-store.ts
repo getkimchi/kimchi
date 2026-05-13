@@ -394,17 +394,12 @@ export class FermentEventStore {
 		const snapPath = this.snapshotPath(id)
 		if (!existsSync(snapPath)) return true // no snapshot — must use events
 		const snapMtime = statSync(snapPath).mtimeMs
-		// Strict `>` so that on mtime ties (writes within the same filesystem
-		// tick — common on fast CI runners with low mtime granularity) the
-		// snapshot wins. After `writeWithEvents` snapshot and events fold to
-		// the same post-state, so favoring the snapshot is semantically
-		// equivalent; it also tolerates out-of-band snapshot mutations (e.g.
-		// from tests) that the event log doesn't yet reflect.
-		return eventsMtime > snapMtime
+		return eventsMtime >= snapMtime
 	}
 
 	private appendEvent(fermentId: string, event: FermentEvent): void {
 		const path = this.eventsPath(fermentId)
+		mkdirSync(resolve(path, ".."), { recursive: true })
 		writeFileSync(path, `${JSON.stringify(event)}\n`, { flag: "a", encoding: "utf-8" })
 	}
 
