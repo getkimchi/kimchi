@@ -9,6 +9,11 @@ import {
 	maybeInjectReactiveAutoNudge,
 	resetReactiveAutoNudgeCount,
 } from "./nudge.js"
+import {
+	buildOneshotPlannerSystemPrompt,
+	extractBaseSystemPromptFromPayload,
+	rewriteSystemPromptInPayload,
+} from "./oneshot-prompt.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import { buildPlannerSupplement } from "./planner-supplement.js"
 import { resumeFerment } from "./resume.js"
@@ -16,7 +21,7 @@ import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import { isRestoringModel, setRestoringModel } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
-import { disableFermentTools, setActiveFerment } from "./tool-scope.js"
+import { applyPlannerOneshotAllowlist, disableFermentTools, setActiveFerment } from "./tool-scope.js"
 
 type AssistantContentPart = { type: string; text?: string; name?: string }
 type TurnEndContext = Partial<Pick<ExtensionContext, "ui">>
@@ -228,6 +233,17 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	})
 
 	pi.on("before_agent_start", async (event) => {
+		// In ferment-oneshot planner mode, restrict the active tool set to the
+		// allowlist. The orchestrator base prompt is overridden separately in
+		// `before_provider_request` so the planner's outbound LLM call gets the
+		// planner-only frame *without* mutating the parent session's effective
+		// system prompt (which workers inherit via `ctx.getSystemPrompt()`).
+		// Subagent processes (KIMCHI_SUBAGENT=1) keep the full toolset.
+		const isOneshotPlanner = process.env.KIMCHI_SUBAGENT !== "1" && pi.getFlag("ferment-oneshot") === true
+		if (isOneshotPlanner) {
+			applyPlannerOneshotAllowlist(pi)
+			return {}
+		}
 		const f = runtime.getActive()
 		if (!f) return {}
 		if (f.status === "paused") {
@@ -237,6 +253,26 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		if (f.status !== "running" && f.status !== "planned") return {}
 		const supplement = buildPlannerSupplement(runtime)
 		return { systemPrompt: `${event.systemPrompt}${supplement}` }
+	})
+
+	let oneshotPromptRewriteSkipLogged = false
+	pi.on("before_provider_request", async (event) => {
+		if (process.env.KIMCHI_SUBAGENT === "1") return undefined
+		if (pi.getFlag("ferment-oneshot") !== true) return undefined
+
+		const base = extractBaseSystemPromptFromPayload(event.payload)
+		if (base === undefined) {
+			if (!oneshotPromptRewriteSkipLogged) {
+				oneshotPromptRewriteSkipLogged = true
+				pi.appendEntry("ferment_oneshot_prompt_rewrite_skipped", {
+					text: "Could not rewrite ferment-oneshot planner prompt: unrecognized provider payload shape.",
+				})
+			}
+			return undefined
+		}
+
+		const overridden = buildOneshotPlannerSystemPrompt(base, runtime)
+		return rewriteSystemPromptInPayload(event.payload, overridden)
 	})
 
 	pi.on("model_select", async (event, ctx) => {

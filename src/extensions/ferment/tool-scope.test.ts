@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
-import { disableFermentTools, enableFermentTools } from "./tool-scope.js"
+import { applyPlannerOneshotAllowlist, disableFermentTools, enableFermentTools } from "./tool-scope.js"
 
 function createPi(activeTools: string[], allTools: string[]) {
 	return {
@@ -28,5 +28,52 @@ describe("ferment tool scope", () => {
 		enableFermentTools(pi)
 
 		expect(pi.setActiveTools).toHaveBeenCalledWith(["read", "bash", "create_ferment", "start_step"])
+	})
+})
+
+describe("applyPlannerOneshotAllowlist", () => {
+	it("strips inline implementation tools, keeping ferment lifecycle + Agent + read", () => {
+		const allTools = [
+			"bash",
+			"edit",
+			"write",
+			"python-edit",
+			"web_search",
+			"web_fetch",
+			"grep",
+			"ls",
+			"read",
+			"Agent",
+			"get_subagent_result",
+			"set_phase",
+			"scope_ferment",
+			"activate_phase",
+			"start_step",
+			"complete_step",
+			"complete_ferment",
+		]
+		const pi = createPi(allTools, allTools)
+
+		applyPlannerOneshotAllowlist(pi)
+
+		expect(pi.setActiveTools).toHaveBeenCalledWith([
+			"read",
+			"Agent",
+			"get_subagent_result",
+			"set_phase",
+			"scope_ferment",
+			"activate_phase",
+			"start_step",
+			"complete_step",
+			"complete_ferment",
+		])
+	})
+
+	it("only keeps tools that are actually registered", () => {
+		const pi = createPi(["read", "bash"], ["read", "bash"])
+
+		applyPlannerOneshotAllowlist(pi)
+
+		expect(pi.setActiveTools).toHaveBeenCalledWith(["read"])
 	})
 })

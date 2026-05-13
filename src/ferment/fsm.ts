@@ -375,7 +375,7 @@ const RECOVERY_HINTS: Partial<Record<string, string>> = {
 function describeValidEvents(state: FsmState): string {
 	const stateTransitions = TRANSITIONS[state]
 	if (!stateTransitions) return ""
-	const valid = Object.keys(stateTransitions)
+	const valid = Object.keys(stateTransitions).sort()
 	if (valid.length === 0) return ""
 	return `Valid events in state "${state}": ${valid.join(", ")}.`
 }
