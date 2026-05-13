@@ -291,10 +291,6 @@ const TRANSITIONS: TransitionMap = {
 	},
 
 	[FSM_STATES.PHASE_ACTIVE]: {
-		// Allow pivoting to the next planned phase after the current one
-		// completes. Without this, once a phase completes the ferment is stuck
-		// in PHASE_ACTIVE with no legal way to move to phase N+1.
-		[FSM_EVENTS.ACTIVATE_PHASE]: { target: FSM_STATES.PHASE_ACTIVE, guard: "phaseExistsAndPlanned" },
 		[FSM_EVENTS.REFINE_PHASE]: { target: FSM_STATES.PHASE_ACTIVE },
 		[FSM_EVENTS.START_STEP]: { target: FSM_STATES.STEP_RUNNING, guard: "startStepInActivePhase" },
 		[FSM_EVENTS.COMPLETE_PHASE]: {
