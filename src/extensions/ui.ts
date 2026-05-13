@@ -36,7 +36,7 @@ function getEnabledModelIds(): Set<string> | null {
 	return null
 }
 
-const HORIZONTAL_PADDING = 2
+export const HORIZONTAL_PADDING = 2
 
 // Strip OSC 133 shell-integration marks emitted by pi-mono around each message.
 // iTerm2 renders a visible blue triangle at each mark, which is noisy in the TUI.
