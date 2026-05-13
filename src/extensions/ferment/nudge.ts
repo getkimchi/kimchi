@@ -31,8 +31,8 @@ export function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
 const TRANSITION_KINDS = new Set([
 	"scope",
 	"refine",
-	"activate_phase",
-	"complete_phase",
+	"activate_stage",
+	"complete_stage",
 	"recover_step",
 	"recover_phase",
 ])
@@ -65,9 +65,9 @@ function buildResumeNudgeMessage(
 			return `${preamble}\n\nAction: call start_step with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""}${stepId ? `, step_id "${stepId}"` : ""}, then spawn a subagent worker for that step. When the subagent returns, call complete_step with its summary.`
 		case "refine":
 			return `${preamble}\n\nAction: call refine_phase with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""} and 3–6 concrete steps for this phase.`
-		case "activate_phase":
+		case "activate_stage":
 			return `${preamble}\n\nAction: call activate_phase with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""}.`
-		case "complete_phase":
+		case "complete_stage":
 			return `${preamble}\n\nAction: call complete_phase with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""} and a one-paragraph summary.`
 		case "recover_step":
 			return `${preamble}\n\nThe step previously failed. Decide based on the failure: call start_step to retry, skip_step to bypass, or fail_step to mark it permanently failed. Pick one and call it now.`
@@ -110,11 +110,11 @@ export function maybeInjectAutoNudge(
 	// `force` option overrides this to support explicit /auto resume.
 	if (!opts.force && !TRANSITION_KINDS.has(action.kind)) return
 
-	const actionPhase = "phaseId" in action ? f.phases.find((p) => p.id === action.phaseId) : undefined
-	const activePhase = f.phases.find((p) => p.id === f.activePhaseId)
+	const actionPhase = "phaseId" in action ? f.stages.find((p) => p.id === action.phaseId) : undefined
+	const activePhase = f.stages.find((p) => p.id === f.activeStageId)
 	const displayPhase = actionPhase ?? activePhase
 	const activeStep = activePhase?.steps.find((s) => s.status === "running" || s.status === "pending")
-	const phaseInfo = displayPhase ? ` · phase ${displayPhase.index}/${f.phases.length} "${displayPhase.name}"` : ""
+	const phaseInfo = displayPhase ? ` · phase ${displayPhase.index}/${f.stages.length} "${displayPhase.name}"` : ""
 	const stepInfo = activeStep ? ` · step ${activeStep.index}/${activePhase?.steps.length}` : ""
 	const tag = opts.force ? "Resume" : "Auto-nudge"
 	const breadcrumb = `${tag} [${action.kind}]: "${f.name}" [${f.status}]${phaseInfo}${stepInfo}`
@@ -158,7 +158,7 @@ export function onPhaseCompleted(pi: ExtensionAPI, runtime: FermentRuntime = def
 			const next = findFirstPlannedPhase(fresh)
 			if (next) {
 				const applyAndPersist = createApplyAndPersist(runtime)
-				const out = applyAndPersist(fresh.id, { type: "activate_phase", phaseId: next.id })
+				const out = applyAndPersist(fresh.id, { type: "activate_stage", stageId: next.id })
 				if (out.ok) runtime.setActive(out.ferment)
 			}
 		}

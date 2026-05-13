@@ -26,7 +26,7 @@ function makeDraftFerment(overrides: Partial<Ferment> = {}): Ferment {
 		mode: "plan",
 		worktree: { path: "/repo" },
 		scoping: {},
-		phases: [],
+		stages: [],
 		decisions: [],
 		memories: [],
 		createdAt: now,
@@ -98,7 +98,7 @@ describe("ferment nudges", () => {
 			getActive: () =>
 				makeDraftFerment({
 					status: "planned",
-					phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "failed", steps: [] }],
+					stages: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "failed", steps: [] }],
 				}),
 			isAutoModeEnabled: () => true,
 		}

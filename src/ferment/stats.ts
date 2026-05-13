@@ -77,8 +77,8 @@ export interface StatsTiming {
 
 export interface StatsGrading {
 	overallGrade?: Grade
-	phaseGrades: Array<{ phaseId: string; grade: Grade }>
-	stepGrades: Array<{ phaseId: string; stepId: string; grade: Grade }>
+	phaseGrades: Array<{ stageId: string; grade: Grade }>
+	stepGrades: Array<{ stageId: string; stepId: string; grade: Grade }>
 }
 
 export interface StatsWorkers {
@@ -144,7 +144,7 @@ export function computeStats(ferment: Ferment): FermentStats {
 	const phaseGradeList: Grade[] = []
 	const phaseDurationsMs: Record<string, number> = {}
 
-	for (const phase of ferment.phases) {
+	for (const phase of ferment.stages) {
 		phaseTotal++
 		switch (phase.status) {
 			case "completed":
@@ -189,7 +189,7 @@ export function computeStats(ferment: Ferment): FermentStats {
 	const workerModelCounts: Record<string, number> = {}
 	let totalParallelSteps = 0
 
-	for (const phase of ferment.phases) {
+	for (const phase of ferment.stages) {
 		for (const step of phase.steps) {
 			stepTotal++
 			switch (step.status) {
@@ -250,18 +250,18 @@ export function computeStats(ferment: Ferment): FermentStats {
 	const p90StepDurationMs = percentile(sortedDurations, 90)
 
 	// ── Grading ────────────────────────────────────────────────────────────────
-	const phaseGrades: Array<{ phaseId: string; grade: Grade }> = []
-	for (const phase of ferment.phases) {
+	const phaseGrades: Array<{ stageId: string; grade: Grade }> = []
+	for (const phase of ferment.stages) {
 		if (phase.grade) {
-			phaseGrades.push({ phaseId: phase.id, grade: phase.grade.grade })
+			phaseGrades.push({ stageId: phase.id, grade: phase.grade.grade })
 		}
 	}
 
-	const stepGrades: Array<{ phaseId: string; stepId: string; grade: Grade }> = []
-	for (const phase of ferment.phases) {
+	const stepGrades: Array<{ stageId: string; stepId: string; grade: Grade }> = []
+	for (const phase of ferment.stages) {
 		for (const step of phase.steps) {
 			if (step.grade) {
-				stepGrades.push({ phaseId: phase.id, stepId: step.id, grade: step.grade.grade })
+				stepGrades.push({ stageId: phase.id, stepId: step.id, grade: step.grade.grade })
 			}
 		}
 	}

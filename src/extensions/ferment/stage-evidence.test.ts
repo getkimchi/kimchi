@@ -3,10 +3,10 @@ import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { gatherPhaseEvidence } from "./phase-evidence.js"
+import { gatherPhaseEvidence } from "./stage-evidence.js"
 
 function makeRepo(): string {
-	const dir = mkdtempSync(join(tmpdir(), "phase-evidence-"))
+	const dir = mkdtempSync(join(tmpdir(), "stage-evidence-"))
 	const opts = { cwd: dir, stdio: "ignore" as const }
 	execSync("git init", opts)
 	execSync('git config user.email "test@example.com"', opts)

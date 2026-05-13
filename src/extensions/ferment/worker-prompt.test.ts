@@ -10,7 +10,7 @@ function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 		mode: "auto",
 		worktree: { path: "/tmp/test" },
 		scoping: {},
-		phases: [],
+		stages: [],
 		decisions: [],
 		memories: [],
 		createdAt: "2026-05-09T00:00:00Z",
@@ -44,7 +44,7 @@ function makeStep(overrides: Partial<Step> = {}): Step {
 describe("buildWorkerContext", () => {
 	it("includes ferment name, phase goal, and step description", () => {
 		const phase = makePhase({ steps: [makeStep()] })
-		const f = makeFerment({ name: "Auth rewrite", phases: [phase] })
+		const f = makeFerment({ name: "Auth rewrite", stages: [phase] })
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[0])
 		expect(ctx).toContain("Auth rewrite")
@@ -56,7 +56,7 @@ describe("buildWorkerContext", () => {
 	it("includes verification command when present", () => {
 		const step = makeStep({ verification: { command: "pnpm test" } })
 		const phase = makePhase({ steps: [step] })
-		const f = makeFerment({ phases: [phase] })
+		const f = makeFerment({ stages: [phase] })
 
 		const ctx = buildWorkerContext(f, phase, step)
 		expect(ctx).toContain("Verify when done:")
@@ -71,7 +71,7 @@ describe("buildWorkerContext", () => {
 				makeStep({ id: "s3", index: 3, status: "pending", description: "Wire it up" }),
 			],
 		})
-		const f = makeFerment({ phases: [phase] })
+		const f = makeFerment({ stages: [phase] })
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[2])
 		expect(ctx).toContain("Prior steps in this phase (2)")
@@ -90,7 +90,7 @@ describe("buildWorkerContext", () => {
 				makeStep({ id: "s2", index: 2, status: "pending", description: "Next" }),
 			],
 		})
-		const f = makeFerment({ phases: [phase] })
+		const f = makeFerment({ stages: [phase] })
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[1])
 		expect(ctx).toContain("⊘ skipped")
@@ -105,7 +105,7 @@ describe("buildWorkerContext", () => {
 				makeStep({ id: "s3", index: 3, status: "pending", description: "Target" }),
 			],
 		})
-		const f = makeFerment({ phases: [phase] })
+		const f = makeFerment({ stages: [phase] })
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[2])
 		expect(ctx).not.toContain("Prior steps in this phase")
@@ -119,7 +119,7 @@ describe("buildWorkerContext", () => {
 				makeStep({ id: "s2", index: 2, status: "pending", description: "Target" }),
 			],
 		})
-		const f = makeFerment({ phases: [phase] })
+		const f = makeFerment({ stages: [phase] })
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[1])
 		expect(ctx).toContain("…")
@@ -137,7 +137,7 @@ describe("buildWorkerContext", () => {
 			},
 		]
 		const phase = makePhase({ steps: [makeStep()] })
-		const f = makeFerment({ phases: [phase], decisions })
+		const f = makeFerment({ stages: [phase], decisions })
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[0])
 		expect(ctx).toContain("Decisions to honor:")
@@ -154,7 +154,7 @@ describe("buildWorkerContext", () => {
 			},
 		]
 		const phase = makePhase({ steps: [makeStep()] })
-		const f = makeFerment({ phases: [phase], memories })
+		const f = makeFerment({ stages: [phase], memories })
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[0])
 		expect(ctx).toContain("Memories to apply:")
@@ -170,7 +170,7 @@ describe("buildWorkerContext", () => {
 			createdAt: "2026-05-09T00:00:00Z",
 		}))
 		const phase = makePhase({ steps: [makeStep()] })
-		const f = makeFerment({ phases: [phase], decisions })
+		const f = makeFerment({ stages: [phase], decisions })
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[0])
 		// Most recent 5 are decisions 3..7
@@ -183,7 +183,7 @@ describe("buildWorkerContext", () => {
 	it("includes constraints when set", () => {
 		const phase = makePhase({ steps: [makeStep()] })
 		const f = makeFerment({
-			phases: [phase],
+			stages: [phase],
 			scoping: {
 				constraints: { answer: "Must be backwards compatible", confirmedAt: "2026-05-09T00:00:00Z" },
 			},
@@ -197,7 +197,7 @@ describe("buildWorkerContext", () => {
 	it("opts.includeDecisions=false suppresses the decisions section", () => {
 		const decisions: Decision[] = [{ id: "d1", title: "Use Zod", description: "DX", createdAt: "2026-05-09T00:00:00Z" }]
 		const phase = makePhase({ steps: [makeStep()] })
-		const f = makeFerment({ phases: [phase], decisions })
+		const f = makeFerment({ stages: [phase], decisions })
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[0], { includeDecisions: false })
 		expect(ctx).not.toContain("Decisions to honor")

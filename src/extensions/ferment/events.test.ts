@@ -69,7 +69,7 @@ describe("registerFermentEvents", () => {
 			mode: "plan",
 			worktree: { path: "/repo" },
 			scoping: {},
-			phases: [],
+			stages: [],
 			decisions: [],
 			memories: [],
 			createdAt: now,
@@ -104,7 +104,7 @@ describe("registerFermentEvents", () => {
 			mode: "plan",
 			worktree: { path: "/repo" },
 			scoping: {},
-			phases: [
+			stages: [
 				{ id: "phase-1", index: 1, name: "Done", goal: "G1", status: "completed", steps: [] },
 				{ id: "phase-2", index: 2, name: "Next", goal: "G2", status: "planned", steps: [] },
 			],

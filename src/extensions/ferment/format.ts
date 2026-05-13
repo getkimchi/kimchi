@@ -11,10 +11,10 @@ import { computeStats } from "../../ferment/stats.js"
 import type { Ferment } from "../../ferment/types.js"
 
 export function formatFermentStatus(f: Ferment): string {
-	const total = f.phases.length
-	const done = f.phases.filter((p) => p.status === "completed").length
-	const active = f.phases.filter((p) => p.status === "active").length
-	const planned = f.phases.filter((p) => p.status === "planned").length
+	const total = f.stages.length
+	const done = f.stages.filter((p) => p.status === "completed").length
+	const active = f.stages.filter((p) => p.status === "active").length
+	const planned = f.stages.filter((p) => p.status === "planned").length
 	const wt = f.worktree
 	const wtBranch = wt.branch ?? "n/a"
 	const wtPath = wt.path ?? process.cwd()
@@ -31,8 +31,8 @@ export function formatFermentStatus(f: Ferment): string {
 	if (f.goal) lines.push(`   🎯 ${f.goal}`)
 
 	if (total > 0) {
-		for (const p of f.phases) {
-			const m = p.id === f.activePhaseId ? "▶" : p.status === "completed" ? "✓" : "○"
+		for (const p of f.stages) {
+			const m = p.id === f.activeStageId ? "▶" : p.status === "completed" ? "✓" : "○"
 			lines.push(`   ${m} Phase ${p.index}: ${p.name} [${p.status}]`)
 			for (const s of p.steps) {
 				const sm = s.status === "done" || s.status === "verified" ? "✓" : s.status === "skipped" ? "⊘" : "○"

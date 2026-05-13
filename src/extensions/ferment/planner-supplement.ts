@@ -26,7 +26,7 @@ export function buildPlannerSupplement(runtime: FermentRuntime = defaultFermentR
  * suggestion is best-effort.
  */
 function buildSelfImprovementSection(runtime: FermentRuntime, ferment: Ferment): string {
-	const completedPhases = ferment.phases.filter((p) => p.status === "completed" && p.grade)
+	const completedPhases = ferment.stages.filter((p) => p.status === "completed" && p.grade)
 	if (completedPhases.length === 0) return ""
 
 	const lastGradedPhase = completedPhases[completedPhases.length - 1]

@@ -111,7 +111,7 @@ describe("FermentEventStore", () => {
 			})
 			const planned = eventStore.get(f.id)
 			if (!planned) throw new Error("ferment missing")
-			exec(eventStore, f.id, { type: "activate_phase", phaseId: planned.phases[0].id })
+			exec(eventStore, f.id, { type: "activate_stage", stageId: planned.stages[0].id })
 
 			const types = readEvents(tempDir, f.id).map((e) => e.type)
 			expect(types).toContain("ferment_running")
@@ -132,19 +132,19 @@ describe("FermentEventStore", () => {
 			})
 			const scoped = eventStore.get(f.id)
 			if (!scoped) throw new Error("ferment missing")
-			exec(eventStore, f.id, { type: "activate_phase", phaseId: scoped.phases[0].id })
-			exec(eventStore, f.id, { type: "complete_phase", phaseId: scoped.phases[0].id, summary: "done" })
+			exec(eventStore, f.id, { type: "activate_stage", stageId: scoped.stages[0].id })
+			exec(eventStore, f.id, { type: "complete_stage", stageId: scoped.stages[0].id, summary: "done" })
 
 			const completed = eventStore.get(f.id)
 			expect(completed?.status).toBe("planned")
-			expect(completed?.activePhaseId).toBeUndefined()
-			expect(completed?.phases[0].status).toBe("completed")
+			expect(completed?.activeStageId).toBeUndefined()
+			expect(completed?.stages[0].status).toBe("completed")
 
-			exec(eventStore, f.id, { type: "activate_phase", phaseId: scoped.phases[1].id })
+			exec(eventStore, f.id, { type: "activate_stage", stageId: scoped.stages[1].id })
 			const advanced = eventStore.get(f.id)
 			expect(advanced?.status).toBe("running")
-			expect(advanced?.activePhaseId).toBe(scoped.phases[1].id)
-			expect(advanced?.phases[1].status).toBe("active")
+			expect(advanced?.activeStageId).toBe(scoped.stages[1].id)
+			expect(advanced?.stages[1].status).toBe("active")
 		})
 
 		it("replaying fail_phase then activate_phase reactivates without stale terminal metadata", () => {
@@ -158,19 +158,19 @@ describe("FermentEventStore", () => {
 			})
 			const scoped = eventStore.get(f.id)
 			if (!scoped) throw new Error("ferment missing")
-			const phaseId = scoped.phases[0].id
+			const stageId = scoped.stages[0].id
 
-			exec(eventStore, f.id, { type: "activate_phase", phaseId })
-			exec(eventStore, f.id, { type: "fail_phase", phaseId, reason: "tests failed" })
-			exec(eventStore, f.id, { type: "activate_phase", phaseId })
+			exec(eventStore, f.id, { type: "activate_stage", stageId })
+			exec(eventStore, f.id, { type: "fail_stage", stageId, reason: "tests failed" })
+			exec(eventStore, f.id, { type: "activate_stage", stageId })
 
 			const replayed = new FermentEventStore(tempDir).get(f.id)
 			expect(replayed?.status).toBe("running")
-			expect(replayed?.activePhaseId).toBe(phaseId)
-			expect(replayed?.phases[0].status).toBe("active")
-			expect(replayed?.phases[0].completedAt).toBeUndefined()
-			expect(replayed?.phases[0].summary).toBeUndefined()
-			expect(replayed?.phases[0].grade).toBeUndefined()
+			expect(replayed?.activeStageId).toBe(stageId)
+			expect(replayed?.stages[0].status).toBe("active")
+			expect(replayed?.stages[0].completedAt).toBeUndefined()
+			expect(replayed?.stages[0].summary).toBeUndefined()
+			expect(replayed?.stages[0].grade).toBeUndefined()
 		})
 
 		it("complete_phase leaves the final terminal ferment planned until complete_ferment", () => {
@@ -184,13 +184,13 @@ describe("FermentEventStore", () => {
 			})
 			const scoped = eventStore.get(f.id)
 			if (!scoped) throw new Error("ferment missing")
-			exec(eventStore, f.id, { type: "activate_phase", phaseId: scoped.phases[0].id })
-			exec(eventStore, f.id, { type: "complete_phase", phaseId: scoped.phases[0].id, summary: "done" })
+			exec(eventStore, f.id, { type: "activate_stage", stageId: scoped.stages[0].id })
+			exec(eventStore, f.id, { type: "complete_stage", stageId: scoped.stages[0].id, summary: "done" })
 
 			const phaseDone = eventStore.get(f.id)
 			expect(phaseDone?.status).toBe("planned")
-			expect(phaseDone?.activePhaseId).toBeUndefined()
-			expect(phaseDone?.phases.every((p) => p.status === "completed")).toBe(true)
+			expect(phaseDone?.activeStageId).toBeUndefined()
+			expect(phaseDone?.stages.every((p) => p.status === "completed")).toBe(true)
 
 			exec(eventStore, f.id, { type: "complete_ferment" })
 			expect(eventStore.get(f.id)?.status).toBe("complete")
@@ -207,21 +207,21 @@ describe("FermentEventStore", () => {
 			})
 			const planned = eventStore.get(f.id)
 			if (!planned) throw new Error("ferment missing")
-			const phaseId = planned.phases[0].id
+			const stageId = planned.stages[0].id
 
-			exec(eventStore, f.id, { type: "activate_phase", phaseId })
+			exec(eventStore, f.id, { type: "activate_stage", stageId })
 			exec(eventStore, f.id, {
-				type: "refine_phase",
-				phaseId,
+				type: "refine_stage",
+				stageId,
 				steps: [{ description: "Do thing 1" }, { description: "Do thing 2" }],
 			})
 
 			const refined = eventStore.get(f.id)
 			if (!refined) throw new Error("ferment missing")
-			const stepId = refined.phases[0].steps[0].id
+			const stepId = refined.stages[0].steps[0].id
 
-			exec(eventStore, f.id, { type: "start_step", phaseId, stepId })
-			exec(eventStore, f.id, { type: "complete_step", phaseId, stepId })
+			exec(eventStore, f.id, { type: "start_step", stageId, stepId })
+			exec(eventStore, f.id, { type: "complete_step", stageId, stepId })
 
 			const types = readEvents(tempDir, f.id).map((e) => e.type)
 			expect(types).toContain("phase_refined")
@@ -240,7 +240,7 @@ describe("FermentEventStore", () => {
 			})
 			const planned = eventStore.get(f.id)
 			if (!planned) throw new Error("ferment missing")
-			exec(eventStore, f.id, { type: "activate_phase", phaseId: planned.phases[0].id })
+			exec(eventStore, f.id, { type: "activate_stage", stageId: planned.stages[0].id })
 			exec(eventStore, f.id, { type: "pause" })
 			exec(eventStore, f.id, { type: "resume" })
 
@@ -263,15 +263,15 @@ describe("FermentEventStore", () => {
 			})
 			const scoped = eventStore.get(f.id)
 			if (!scoped) throw new Error("ferment missing")
-			exec(eventStore, f.id, { type: "activate_phase", phaseId: scoped.phases[0].id })
-			exec(eventStore, f.id, { type: "complete_phase", phaseId: scoped.phases[0].id, summary: "done" })
+			exec(eventStore, f.id, { type: "activate_stage", stageId: scoped.stages[0].id })
+			exec(eventStore, f.id, { type: "complete_stage", stageId: scoped.stages[0].id, summary: "done" })
 			exec(eventStore, f.id, { type: "pause" })
 			exec(eventStore, f.id, { type: "resume" })
 
 			const resumed = eventStore.get(f.id)
 			expect(resumed?.status).toBe("planned")
-			expect(resumed?.activePhaseId).toBeUndefined()
-			expect(resumed?.phases[1].status).toBe("planned")
+			expect(resumed?.activeStageId).toBeUndefined()
+			expect(resumed?.stages[1].status).toBe("planned")
 		})
 
 		// Regression: §4.2 — replaying N independent phase_activated events for a
@@ -299,9 +299,9 @@ describe("FermentEventStore", () => {
 			// event-emitting command).
 			const folded = eventStore.get(f.id)
 			expect(folded).toBeDefined()
-			const p1 = folded?.phases.find((p) => p.name === "P1")
-			const p2 = folded?.phases.find((p) => p.name === "P2")
-			const p3 = folded?.phases.find((p) => p.name === "P3")
+			const p1 = folded?.stages.find((p) => p.name === "P1")
+			const p2 = folded?.stages.find((p) => p.name === "P2")
+			const p3 = folded?.stages.find((p) => p.name === "P3")
 			expect(p1?.status).toBe("active")
 			expect(p2?.status).toBe("active")
 			expect(p3?.status).toBe("planned")
@@ -329,17 +329,17 @@ describe("FermentEventStore", () => {
 			})
 			const planned = eventStore.get(f.id)
 			if (!planned) throw new Error("ferment missing")
-			const phaseId = planned.phases[0].id
-			exec(eventStore, f.id, { type: "activate_phase", phaseId })
-			exec(eventStore, f.id, { type: "refine_phase", phaseId, steps: [{ description: "do" }] })
+			const stageId = planned.stages[0].id
+			exec(eventStore, f.id, { type: "activate_stage", stageId })
+			exec(eventStore, f.id, { type: "refine_stage", stageId, steps: [{ description: "do" }] })
 			const refined = eventStore.get(f.id)
 			if (!refined) throw new Error("ferment missing")
-			const stepId = refined.phases[0].steps[0].id
+			const stepId = refined.stages[0].steps[0].id
 
-			exec(eventStore, f.id, { type: "start_step", phaseId, stepId })
+			exec(eventStore, f.id, { type: "start_step", stageId, stepId })
 			exec(eventStore, f.id, {
 				type: "complete_step",
-				phaseId,
+				stageId,
 				stepId,
 				grade: { grade: "A", rationale: "ok", gradedAt: new Date().toISOString() },
 			})
@@ -368,9 +368,9 @@ describe("FermentEventStore", () => {
 			})
 			const planned = eventStore.get(f.id)
 			if (!planned) throw new Error("ferment missing")
-			const phaseId = planned.phases[0].id
-			exec(eventStore, f.id, { type: "activate_phase", phaseId })
-			exec(eventStore, f.id, { type: "complete_phase", phaseId, summary: "done" })
+			const stageId = planned.stages[0].id
+			exec(eventStore, f.id, { type: "activate_stage", stageId })
+			exec(eventStore, f.id, { type: "complete_stage", stageId, summary: "done" })
 			exec(eventStore, f.id, {
 				type: "complete_ferment",
 				grade: { grade: "A", rationale: "great", gradedAt: new Date().toISOString() },
@@ -412,12 +412,12 @@ describe("FermentEventStore", () => {
 				const folded = eventStore.get(f.id)
 				const snap = parentStorage.get(f.id)
 				expect(folded?.status, `${label}: status`).toBe(snap?.status)
-				expect(folded?.activePhaseId, `${label}: activePhaseId`).toBe(snap?.activePhaseId)
-				expect(folded?.phases.map((p) => p.status).join(","), `${label}: phase statuses`).toBe(
-					snap?.phases.map((p) => p.status).join(","),
+				expect(folded?.activeStageId, `${label}: activePhaseId`).toBe(snap?.activeStageId)
+				expect(folded?.stages.map((p) => p.status).join(","), `${label}: phase statuses`).toBe(
+					snap?.stages.map((p) => p.status).join(","),
 				)
-				expect(folded?.phases.map((p) => p.steps.map((s) => s.status).join(",")).join("|")).toBe(
-					snap?.phases.map((p) => p.steps.map((s) => s.status).join(",")).join("|"),
+				expect(folded?.stages.map((p) => p.steps.map((s) => s.status).join(",")).join("|")).toBe(
+					snap?.stages.map((p) => p.steps.map((s) => s.status).join(",")).join("|"),
 				)
 			}
 
@@ -427,12 +427,12 @@ describe("FermentEventStore", () => {
 
 			const folded = eventStore.get(f.id)
 			if (!folded) throw new Error("ferment missing")
-			const p1 = folded.phases.find((p) => p.name === "P1")
+			const p1 = folded.stages.find((p) => p.name === "P1")
 			if (!p1 || p1.steps.length === 0) throw new Error("phase missing steps")
 
-			exec(eventStore, f.id, { type: "start_step", phaseId: p1.id, stepId: p1.steps[0].id })
+			exec(eventStore, f.id, { type: "start_step", stageId: p1.id, stepId: p1.steps[0].id })
 			assertFoldMatchesSnapshot("after start_step in parallel phase")
-			exec(eventStore, f.id, { type: "complete_step", phaseId: p1.id, stepId: p1.steps[0].id })
+			exec(eventStore, f.id, { type: "complete_step", stageId: p1.id, stepId: p1.steps[0].id })
 			assertFoldMatchesSnapshot("after complete_step")
 		})
 
@@ -447,10 +447,10 @@ describe("FermentEventStore", () => {
 			})
 			const planned = eventStore.get(f.id)
 			if (!planned) throw new Error("ferment missing")
-			exec(eventStore, f.id, { type: "activate_phase", phaseId: planned.phases[0].id })
+			exec(eventStore, f.id, { type: "activate_stage", stageId: planned.stages[0].id })
 			exec(eventStore, f.id, {
-				type: "refine_phase",
-				phaseId: planned.phases[0].id,
+				type: "refine_stage",
+				stageId: planned.stages[0].id,
 				steps: [{ description: "Step 1" }],
 			})
 
@@ -458,8 +458,8 @@ describe("FermentEventStore", () => {
 			const fromSnapshot = parentStorage.get(f.id)
 			const fromFold = eventStore.get(f.id)
 			expect(fromFold?.status).toBe(fromSnapshot?.status)
-			expect(fromFold?.phases[0].status).toBe(fromSnapshot?.phases[0].status)
-			expect(fromFold?.phases[0].steps).toHaveLength(1)
+			expect(fromFold?.stages[0].status).toBe(fromSnapshot?.stages[0].status)
+			expect(fromFold?.stages[0].steps).toHaveLength(1)
 		})
 	})
 
@@ -546,8 +546,8 @@ describe("FermentEventStore", () => {
 			const original = parentStorage.get(legacy.id)
 
 			expect(folded?.name).toBe(original?.name)
-			expect(folded?.phases[0].status).toBe(original?.phases[0].status)
-			expect(folded?.phases[0].steps[0]?.status).toBe(original?.phases[0].steps[0]?.status)
+			expect(folded?.stages[0].status).toBe(original?.stages[0].status)
+			expect(folded?.stages[0].steps[0]?.status).toBe(original?.stages[0].steps[0]?.status)
 			expect(folded?.decisions).toHaveLength(1)
 			expect(folded?.memories).toHaveLength(1)
 		})

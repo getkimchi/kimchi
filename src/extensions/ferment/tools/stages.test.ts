@@ -8,7 +8,7 @@ import type { JudgeGrade } from "../../../ferment/types.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
 import { setActive } from "../state.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
-import { type PhaseHandlerServices, completePhase, registerPhaseTools } from "./phases.js"
+import { type PhaseHandlerServices, completePhase, registerStageTools } from "./stages.js"
 
 vi.mock("../judge.js", () => ({
 	judgeGradePhase: vi.fn(async () => gradeA),
@@ -30,8 +30,8 @@ function createHarness(options: { phases?: number } = {}) {
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		appendEntry: vi.fn(),
-		getActiveTools: vi.fn(() => ["read", "bash", "complete_phase", "start_step"]),
-		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "complete_phase" }, { name: "start_step" }]),
+		getActiveTools: vi.fn(() => ["read", "bash", "complete_stage", "start_step"]),
+		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "complete_stage" }, { name: "start_step" }]),
 		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
 	const ferment = storage.create("Phase Test")
@@ -48,13 +48,13 @@ function createHarness(options: { phases?: number } = {}) {
 		})),
 	})
 	if (!scope.ok) throw new Error(scope.error.message)
-	const active = applyAndPersist(ferment.id, { type: "activate_phase", phaseId: "phase-1" })
+	const active = applyAndPersist(ferment.id, { type: "activate_stage", stageId: "phase-1" })
 	if (!active.ok) throw new Error(active.error.message)
-	const started = applyAndPersist(ferment.id, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+	const started = applyAndPersist(ferment.id, { type: "start_step", stageId: "phase-1", stepId: "step-1" })
 	if (!started.ok) throw new Error(started.error.message)
 	const completed = applyAndPersist(ferment.id, {
 		type: "complete_step",
-		phaseId: "phase-1",
+		stageId: "phase-1",
 		stepId: "step-1",
 		summary: "done",
 	})
@@ -93,8 +93,8 @@ describe("completePhase", () => {
 		)
 
 		expect(okText(result)).toContain("Grade: A")
-		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("completed")
-		expect(h.storage.get(h.fermentId)?.phases[0].grade?.grade).toBe("A")
+		expect(h.storage.get(h.fermentId)?.stages[0].status).toBe("completed")
+		expect(h.storage.get(h.fermentId)?.stages[0].grade?.grade).toBe("A")
 		expect(services.gatherEvidence).toHaveBeenCalledWith("abc123")
 		expect(services.judgeGradePhase).toHaveBeenCalledWith(
 			"Phase 1",
@@ -152,7 +152,7 @@ describe("completePhase", () => {
 	})
 })
 
-describe("registerPhaseTools", () => {
+describe("registerStageTools", () => {
 	it("uses the injected runtime, not the global active ferment, for plan-mode phase review", async () => {
 		const h = createHarness()
 		let injectedActive = h.storage.get(h.fermentId)
@@ -171,19 +171,19 @@ describe("registerPhaseTools", () => {
 			sendUserMessage: vi.fn(),
 			appendEntry: vi.fn(),
 			sendMessage: vi.fn(),
-			getActiveTools: vi.fn(() => ["read", "bash", "complete_phase", "start_step"]),
+			getActiveTools: vi.fn(() => ["read", "bash", "complete_stage", "start_step"]),
 			getAllTools: vi.fn(() => [
 				{ name: "read" },
 				{ name: "bash" },
-				{ name: "complete_phase" },
+				{ name: "complete_stage" },
 				{ name: "start_step" },
 			]),
 			setActiveTools: vi.fn(),
 		} as unknown as ExtensionAPI
-		registerPhaseTools(pi, h.runtime)
+		registerStageTools(pi, h.runtime)
 
 		const select = vi.fn(async () => "Pause here")
-		const completePhaseTool = tools.get("complete_phase")
+		const completePhaseTool = tools.get("complete_stage")
 		if (!completePhaseTool) throw new Error("complete_phase was not registered")
 
 		const result = (await completePhaseTool.execute(

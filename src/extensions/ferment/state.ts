@@ -96,19 +96,19 @@ export function captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry
 }
 
 // ─── Stuck-loop detection (per-step counter) ──────────────────────────────────
-// Key: `${fermentId}:${phaseId}:${stepId}`. Cleared on complete/skip/retry.
+// Key: `${fermentId}:${stageId}:${stepId}`. Cleared on complete/skip/retry.
 
 const stepStartCounts = new Map<string, number>()
 
-export function bumpStepStart(fermentId: string, phaseId: string, stepId: string): number {
-	const key = `${fermentId}:${phaseId}:${stepId}`
+export function bumpStepStart(fermentId: string, stageId: string, stepId: string): number {
+	const key = `${fermentId}:${stageId}:${stepId}`
 	const next = (stepStartCounts.get(key) ?? 0) + 1
 	stepStartCounts.set(key, next)
 	return next
 }
 
-export function clearStepStart(fermentId: string, phaseId: string, stepId: string): void {
-	stepStartCounts.delete(`${fermentId}:${phaseId}:${stepId}`)
+export function clearStepStart(fermentId: string, stageId: string, stepId: string): void {
+	stepStartCounts.delete(`${fermentId}:${stageId}:${stepId}`)
 }
 
 export function clearAllStepStarts(): void {
@@ -156,12 +156,12 @@ export function clearAllScopingGates(): void {
 
 const correctiveSteps = new Map<string, string>()
 
-export function setCorrectiveStep(fermentId: string, phaseId: string, step: string): void {
-	correctiveSteps.set(`${fermentId}:${phaseId}`, step)
+export function setCorrectiveStep(fermentId: string, stageId: string, step: string): void {
+	correctiveSteps.set(`${fermentId}:${stageId}`, step)
 }
 
-export function getCorrectiveStep(fermentId: string, phaseId: string): string | undefined {
-	return correctiveSteps.get(`${fermentId}:${phaseId}`)
+export function getCorrectiveStep(fermentId: string, stageId: string): string | undefined {
+	return correctiveSteps.get(`${fermentId}:${stageId}`)
 }
 
 // ─── Phase-start git ref cache ────────────────────────────────────────────────
@@ -172,12 +172,12 @@ export function getCorrectiveStep(fermentId: string, phaseId: string): string | 
 
 const phaseStartRefs = new Map<string, string>()
 
-export function setPhaseStartRef(fermentId: string, phaseId: string, ref: string): void {
-	phaseStartRefs.set(`${fermentId}:${phaseId}`, ref)
+export function setPhaseStartRef(fermentId: string, stageId: string, ref: string): void {
+	phaseStartRefs.set(`${fermentId}:${stageId}`, ref)
 }
 
-export function getPhaseStartRef(fermentId: string, phaseId: string): string | undefined {
-	return phaseStartRefs.get(`${fermentId}:${phaseId}`)
+export function getPhaseStartRef(fermentId: string, stageId: string): string | undefined {
+	return phaseStartRefs.get(`${fermentId}:${stageId}`)
 }
 
 // ─── Step-start git ref cache ────────────────────────────────────────────────
@@ -187,12 +187,12 @@ export function getPhaseStartRef(fermentId: string, phaseId: string): string | u
 
 const stepStartRefs = new Map<string, string>()
 
-export function setStepStartRef(fermentId: string, phaseId: string, stepId: string, ref: string): void {
-	stepStartRefs.set(`${fermentId}:${phaseId}:${stepId}`, ref)
+export function setStepStartRef(fermentId: string, stageId: string, stepId: string, ref: string): void {
+	stepStartRefs.set(`${fermentId}:${stageId}:${stepId}`, ref)
 }
 
-export function getStepStartRef(fermentId: string, phaseId: string, stepId: string): string | undefined {
-	return stepStartRefs.get(`${fermentId}:${phaseId}:${stepId}`)
+export function getStepStartRef(fermentId: string, stageId: string, stepId: string): string | undefined {
+	return stepStartRefs.get(`${fermentId}:${stageId}:${stepId}`)
 }
 
 // ─── Per-ferment cleanup ──────────────────────────────────────────────────────

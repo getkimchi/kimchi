@@ -56,11 +56,11 @@ function createTerminalFerment(h: ReturnType<typeof createHarness>) {
 		phases: [{ name: "Build", goal: "Implement", steps: [] }],
 	})
 	if (!scoped.ok) throw new Error(scoped.error.message)
-	const activated = applyAndPersist(h.fermentId, { type: "activate_phase", phaseId: "phase-1" })
+	const activated = applyAndPersist(h.fermentId, { type: "activate_stage", stageId: "phase-1" })
 	if (!activated.ok) throw new Error(activated.error.message)
 	const completed = applyAndPersist(h.fermentId, {
-		type: "complete_phase",
-		phaseId: "phase-1",
+		type: "complete_stage",
+		stageId: "phase-1",
 		summary: "phase done",
 	})
 	if (!completed.ok) throw new Error(completed.error.message)

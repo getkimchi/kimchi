@@ -515,15 +515,15 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 			let preflightSummary = ""
 
 			if (action.kind === "start_step") {
-				const activePhase = fresh.phases.find((p) => p.id === fresh.activePhaseId)
+				const activePhase = fresh.stages.find((p) => p.id === fresh.activeStageId)
 				if (activePhase) {
 					const stepOutcome = applyAndPersist(fresh.id, {
 						type: "start_step",
-						phaseId: activePhase.id,
+						stageId: activePhase.id,
 						stepId: action.stepId,
 					})
 					if (stepOutcome.ok) {
-						const startedStep = stepOutcome.ferment.phases
+						const startedStep = stepOutcome.ferment.stages
 							.find((p) => p.id === activePhase.id)
 							?.steps.find((s) => s.id === action.stepId)
 						preflightSummary = startedStep
@@ -531,13 +531,13 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 							: ""
 					}
 				}
-			} else if (action.kind === "activate_phase") {
+			} else if (action.kind === "activate_stage") {
 				const phaseOutcome = applyAndPersist(fresh.id, {
-					type: "activate_phase",
-					phaseId: action.phaseId,
+					type: "activate_stage",
+					stageId: action.stageId,
 				})
 				if (phaseOutcome.ok) {
-					const activated = phaseOutcome.ferment.phases.find((p) => p.id === action.phaseId)
+					const activated = phaseOutcome.ferment.stages.find((p) => p.id === action.stageId)
 					preflightSummary = activated ? `Phase ${activated.index} "${activated.name}" activated by host on /auto.` : ""
 				}
 			}
@@ -590,7 +590,7 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 			while (atPhaseList) {
 				const f = runtime.getStorage().get(active.id) ?? active
 				const phaseListOpts = buildPhaseListOptions(f)
-				const phaseListPhaseCount = f.phases.length
+				const phaseListPhaseCount = f.stages.length
 
 				const l1choice = await ctx.ui.select(buildPhaseListTitle(f, runtime), phaseListOpts)
 
@@ -616,12 +616,12 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 
 				const l1idx = phaseListOpts.indexOf(l1choice)
 				if (l1idx < 0 || l1idx >= phaseListPhaseCount) continue
-				const selectedPhaseIndex = f.phases[l1idx].index
+				const selectedPhaseIndex = f.stages[l1idx].index
 
 				let atStepList = true
 				while (atStepList) {
 					const f2 = runtime.getStorage().get(f.id) ?? f
-					const ph = f2.phases.find((p) => p.index === selectedPhaseIndex)
+					const ph = f2.stages.find((p) => p.index === selectedPhaseIndex)
 					if (!ph) {
 						atStepList = false
 						break
@@ -641,7 +641,7 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 						let atPhaseActions = true
 						while (atPhaseActions) {
 							const f3 = runtime.getStorage().get(f.id) ?? f
-							const ph3 = f3.phases.find((p) => p.index === selectedPhaseIndex)
+							const ph3 = f3.stages.find((p) => p.index === selectedPhaseIndex)
 							if (!ph3) {
 								atPhaseActions = false
 								break
@@ -663,7 +663,7 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 					let atStepDetail = true
 					while (atStepDetail) {
 						const f3 = runtime.getStorage().get(f.id) ?? f
-						const ph3 = f3.phases.find((p) => p.index === selectedPhaseIndex)
+						const ph3 = f3.stages.find((p) => p.index === selectedPhaseIndex)
 						if (!ph3) {
 							atStepDetail = false
 							break

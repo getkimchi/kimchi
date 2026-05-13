@@ -36,7 +36,7 @@ export function computeFsmState(ferment: Ferment | undefined | null): FsmState {
 	if (baseState !== FSM_STATES.PHASE_ACTIVE) return baseState
 
 	// Check if any step is currently running
-	const hasRunningStep = ferment.phases.some((p) => p.steps.some((s) => s.status === "running"))
+	const hasRunningStep = ferment.stages.some((p) => p.steps.some((s) => s.status === "running"))
 
 	return hasRunningStep ? FSM_STATES.STEP_RUNNING : FSM_STATES.PHASE_ACTIVE
 }
@@ -48,12 +48,12 @@ export function computeFsmState(ferment: Ferment | undefined | null): FsmState {
  */
 export function buildFsmContext(f: Ferment | undefined | null): FermentFsmContext {
 	if (!f) {
-		return { fermentStatus: "draft", phases: [] }
+		return { fermentStatus: "draft", stages: [] }
 	}
 	return {
 		fermentStatus: f.status,
-		activePhaseId: f.activePhaseId,
-		phases: f.phases.map((p) => ({
+		activeStageId: f.activeStageId,
+		stages: f.stages.map((p) => ({
 			id: p.id,
 			index: p.index,
 			name: p.name,
@@ -83,13 +83,13 @@ export interface FsmValidationResult {
  *
  * @param ferment - The ferment to validate against
  * @param event - The FSM event type to validate
- * @param params - Event parameters (phaseId, stepId, etc.)
+ * @param params - Event parameters (stageId, stepId, etc.)
  * @returns FsmValidationResult with error field if validation failed
  */
 export function validateFsmTransitionWithFerment(
 	ferment: Ferment | undefined | null,
 	event: keyof typeof FSM_EVENTS,
-	params: { phaseId?: string; stepId?: string; mode?: string } = {},
+	params: { stageId?: string; stepId?: string; mode?: string; phaseId?: string } = {},
 ): FsmValidationResult {
 	if (!ferment) {
 		return { error: "Ferment not found." }

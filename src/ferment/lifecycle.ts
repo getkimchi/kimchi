@@ -1,27 +1,27 @@
-import type { Ferment, Phase } from "./types.js"
+import type { Ferment, Stage } from "./types.js"
 
-export function settleAfterPhaseTerminalPatch(phases: Phase[]): Pick<Ferment, "phases" | "status" | "activePhaseId"> {
-	const activePhase = phases.find((p) => p.status === "active")
-	if (activePhase) {
-		return { phases, activePhaseId: activePhase.id, status: "running" }
+export function settleAfterStageTerminalPatch(stages: Stage[]): Pick<Ferment, "stages" | "status" | "activeStageId"> {
+	const activeStage = stages.find((p) => p.status === "active")
+	if (activeStage) {
+		return { stages, activeStageId: activeStage.id, status: "running" }
 	}
-	return { phases, activePhaseId: undefined, status: "planned" }
+	return { stages, activeStageId: undefined, status: "planned" }
 }
 
-export function settleAfterPhaseTerminal(ferment: Ferment, phases: Phase[], timestamp: string): Ferment {
-	const activePhase = phases.find((p) => p.status === "active")
-	if (activePhase) {
-		return { ...ferment, status: "running", activePhaseId: activePhase.id, phases, updatedAt: timestamp }
+export function settleAfterStageTerminal(ferment: Ferment, stages: Stage[], timestamp: string): Ferment {
+	const activeStage = stages.find((p) => p.status === "active")
+	if (activeStage) {
+		return { ...ferment, status: "running", activeStageId: activeStage.id, stages, updatedAt: timestamp }
 	}
-	const { activePhaseId: _activePhaseId, ...rest } = ferment
-	return { ...rest, status: "planned", phases, updatedAt: timestamp }
+	const { activeStageId: _activeStageId, ...rest } = ferment
+	return { ...rest, status: "planned", stages, updatedAt: timestamp }
 }
 
-export function activateSinglePhase(phases: Phase[], phaseId: string, timestamp: string): Phase[] {
-	return phases.map((phase) => {
-		if (phase.id === phaseId) {
+export function activateSingleStage(stages: Stage[], stageId: string, timestamp: string): Stage[] {
+	return stages.map((stage) => {
+		if (stage.id === stageId) {
 			return {
-				...phase,
+				...stage,
 				status: "active" as const,
 				startedAt: timestamp,
 				completedAt: undefined,
@@ -29,7 +29,15 @@ export function activateSinglePhase(phases: Phase[], phaseId: string, timestamp:
 				grade: undefined,
 			}
 		}
-		if (phase.status === "active") return { ...phase, status: "planned" as const }
-		return phase
+		if (stage.status === "active") return { ...stage, status: "planned" as const }
+		return stage
 	})
 }
+
+// Backward-compat re-exports
+/** @deprecated Use settleAfterStageTerminalPatch */
+export const settleAfterPhaseTerminalPatch = settleAfterStageTerminalPatch
+/** @deprecated Use settleAfterStageTerminal */
+export const settleAfterPhaseTerminal = settleAfterStageTerminal
+/** @deprecated Use activateSingleStage */
+export const activateSinglePhase = activateSingleStage

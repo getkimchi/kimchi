@@ -108,7 +108,7 @@ export async function scopeFerment(
 	runtime.clearPendingScope(params.ferment_id)
 
 	const fresh = outcome.ferment
-	const phaseList = fresh.phases.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") || "(none)"
+	const phaseList = fresh.stages.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") || "(none)"
 
 	// Plan review: judge checks phases before execution starts (side effect, host's job)
 	const planReview = await services.judgePlan(
@@ -151,7 +151,7 @@ export function completeFerment(
 	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
 
 	// Step 2: compute the grade (host concern — needs the post-transition ferment).
-	const grade = services.computeFermentGrade(completeOutcome.ferment.phases)
+	const grade = services.computeFermentGrade(completeOutcome.ferment.stages)
 
 	// Step 3: persist the grade via another transition.
 	const gradeOutcome = applyAndPersist(params.ferment_id, { type: "set_ferment_grade", grade })
@@ -162,9 +162,9 @@ export function completeFerment(
 	runtime.setActive(undefined)
 
 	const fresh = gradeOutcome.ferment
-	const failedPhases = fresh.phases.filter((p) => p.status === "failed").length
+	const failedPhases = fresh.stages.filter((p) => p.status === "failed").length
 	const failedNote = failedPhases > 0 ? ` (${failedPhases} phase(s) failed)` : ""
-	const phaseGradeSummary = fresh.phases
+	const phaseGradeSummary = fresh.stages
 		.filter((p) => p.grade)
 		.map((p) => `  ${p.index}. ${p.name}: ${p.grade?.grade}`)
 		.join("\n")
@@ -245,7 +245,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 				if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
 				maybeInjectAutoNudge(pi, {}, runtime)
 				return toolOk(
-					`Proposal confirmed and saved. Ferment "${scopeOutcome.outcome.ferment.name}" is now planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s).`,
+					`Proposal confirmed and saved. Ferment "${scopeOutcome.outcome.ferment.name}" is now planned with ${scopeOutcome.outcome.ferment.stages.length} phase(s).`,
 				)
 			}
 

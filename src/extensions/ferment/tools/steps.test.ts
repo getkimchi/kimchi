@@ -67,7 +67,7 @@ function createHarness(options: { verification?: string } = {}) {
 		],
 	})
 	if (!scope.ok) throw new Error(scope.error.message)
-	const active = applyAndPersist(ferment.id, { type: "activate_phase", phaseId: "phase-1" })
+	const active = applyAndPersist(ferment.id, { type: "activate_stage", stageId: "phase-1" })
 	if (!active.ok) throw new Error(active.error.message)
 	return { storage, runtime, applyAndPersist, pi, fermentId: ferment.id }
 }
@@ -103,7 +103,7 @@ describe("startStep", () => {
 		)
 
 		expect(okText(result)).toContain("First step")
-		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("running")
+		expect(h.storage.get(h.fermentId)?.stages[0].steps[0].status).toBe("running")
 		expect(h.runtime.getStepStartRef(h.fermentId, "phase-1", "step-1")).toBe("abc123")
 	})
 
@@ -141,7 +141,7 @@ describe("startStep", () => {
 		)
 
 		expect(errText(result)).toMatch(/Stuck loop detected/)
-		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("pending")
+		expect(h.storage.get(h.fermentId)?.stages[0].steps[0].status).toBe("pending")
 	})
 
 	it("pauses or skips from the stuck-loop UI decision", async () => {
@@ -169,7 +169,7 @@ describe("startStep", () => {
 			skipServices,
 		)
 		expect(okText(skipResult)).toContain("skipped")
-		expect(skipHarness.storage.get(skipHarness.fermentId)?.phases[0].steps[0].status).toBe("skipped")
+		expect(skipHarness.storage.get(skipHarness.fermentId)?.stages[0].steps[0].status).toBe("skipped")
 		expect(skipServices.onStepCompleted).toHaveBeenCalled()
 	})
 })
@@ -197,7 +197,7 @@ describe("registerStepTools", () => {
 		})) as { content: { text: string }[]; isError?: boolean }
 
 		expect(okText(result)).toContain("First step")
-		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("running")
+		expect(h.storage.get(h.fermentId)?.stages[0].steps[0].status).toBe("running")
 	})
 })
 
@@ -205,7 +205,7 @@ describe("completeStep", () => {
 	it("completes and grades a step without verification", async () => {
 		const h = createHarness()
 		const services = createServices()
-		const start = h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+		const start = h.applyAndPersist(h.fermentId, { type: "start_step", stageId: "phase-1", stepId: "step-1" })
 		if (!start.ok) throw new Error(start.error.message)
 
 		const result = await completeStep(
@@ -216,8 +216,8 @@ describe("completeStep", () => {
 		)
 
 		expect(okText(result)).toContain("Grade: A")
-		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("done")
-		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].grade?.grade).toBe("A")
+		expect(h.storage.get(h.fermentId)?.stages[0].steps[0].status).toBe("done")
+		expect(h.storage.get(h.fermentId)?.stages[0].steps[0].grade?.grade).toBe("A")
 		expect(services.onStepCompleted).toHaveBeenCalled()
 	})
 
@@ -227,7 +227,7 @@ describe("completeStep", () => {
 		const services = createServices({
 			runVerification: vi.fn(async () => ({ exitCode: 0, stdout: "pass", stderr: "" })),
 		})
-		const start = h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+		const start = h.applyAndPersist(h.fermentId, { type: "start_step", stageId: "phase-1", stepId: "step-1" })
 		if (!start.ok) throw new Error(start.error.message)
 
 		const result = await completeStep(
@@ -238,8 +238,8 @@ describe("completeStep", () => {
 		)
 
 		expect(okText(result)).toContain("verified")
-		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("verified")
-		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].result?.completedAt).toBe("2026-05-11T12:34:56.000Z")
+		expect(h.storage.get(h.fermentId)?.stages[0].steps[0].status).toBe("verified")
+		expect(h.storage.get(h.fermentId)?.stages[0].steps[0].result?.completedAt).toBe("2026-05-11T12:34:56.000Z")
 		expect(services.judgeGradeStep).toHaveBeenCalledWith(
 			"First step",
 			"done",
@@ -254,7 +254,7 @@ describe("completeStep", () => {
 			runVerification: vi.fn(async () => ({ exitCode: 1, stdout: "", stderr: "no match" })),
 			judgeStepVerification: vi.fn(async () => ({ verdict: "pass" as const, reason: "acceptable" })),
 		})
-		const start = h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+		const start = h.applyAndPersist(h.fermentId, { type: "start_step", stageId: "phase-1", stepId: "step-1" })
 		if (!start.ok) throw new Error(start.error.message)
 
 		const result = await completeStep(
@@ -265,8 +265,8 @@ describe("completeStep", () => {
 		)
 
 		expect(okText(result)).toContain("Judge: acceptable")
-		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("done")
-		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].grade?.grade).toBe("A")
+		expect(h.storage.get(h.fermentId)?.stages[0].steps[0].status).toBe("done")
+		expect(h.storage.get(h.fermentId)?.stages[0].steps[0].grade?.grade).toBe("A")
 	})
 
 	it("fails the step when judge asks for retry or fail", async () => {
@@ -276,7 +276,7 @@ describe("completeStep", () => {
 				runVerification: vi.fn(async () => ({ exitCode: 2, stdout: "out", stderr: "err" })),
 				judgeStepVerification: vi.fn(async () => ({ verdict, reason: "not good" })),
 			})
-			const start = h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+			const start = h.applyAndPersist(h.fermentId, { type: "start_step", stageId: "phase-1", stepId: "step-1" })
 			if (!start.ok) throw new Error(start.error.message)
 
 			const result = await completeStep(
@@ -287,14 +287,14 @@ describe("completeStep", () => {
 			)
 
 			expect(errText(result)).toMatch(verdict === "retry" ? /retry suggested/ : /failed verification/)
-			expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("failed")
+			expect(h.storage.get(h.fermentId)?.stages[0].steps[0].status).toBe("failed")
 		}
 	})
 
 	it("treats a missing bash runner as a clean verification pass", async () => {
 		const h = createHarness({ verification: "pnpm test" })
 		const services = createServices({ runVerification: defaultStepHandlerServices.runVerification })
-		const start = h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+		const start = h.applyAndPersist(h.fermentId, { type: "start_step", stageId: "phase-1", stepId: "step-1" })
 		if (!start.ok) throw new Error(start.error.message)
 
 		const result = await completeStep(

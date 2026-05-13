@@ -12,7 +12,7 @@ function makeRuntime(): FermentRuntime {
 		mode: "plan",
 		worktree: { path: "/repo" },
 		scoping: {},
-		phases: [
+		stages: [
 			{
 				id: "phase-1",
 				index: 1,

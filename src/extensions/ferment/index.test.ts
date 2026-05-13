@@ -218,7 +218,7 @@ function makeActivePlanFerment(overrides: Partial<Ferment> = {}): Ferment {
 		mode: "plan",
 		worktree: { path: "/repo" },
 		scoping: {},
-		phases: [],
+		stages: [],
 		decisions: [],
 		memories: [],
 		createdAt: now,

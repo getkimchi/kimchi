@@ -16,7 +16,7 @@
 
 import { complete } from "@earendil-works/pi-ai"
 import type { Delta, Grade, JudgeGrade, Phase } from "../../ferment/types.js"
-import type { PhaseEvidence } from "./phase-evidence.js"
+import type { PhaseEvidence } from "./stage-evidence.js"
 import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
 
 const JUDGE_MODEL_ID = "claude-opus-4-7"

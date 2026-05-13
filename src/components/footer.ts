@@ -7,7 +7,7 @@ import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
-import { getActiveFerment, getCurrentPhaseIndex } from "../extensions/ferment/index.js"
+import { getActiveFerment, getCurrentStageIndex } from "../extensions/ferment/index.js"
 import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/orchestration/prompt-enrichment.js"
 import { getCurrentPermissionsMode } from "../extensions/permissions/index.js"
@@ -220,10 +220,10 @@ export class StatsFooter implements Component {
 	private fermentSegment(): FooterSegment | null {
 		const ferment = getActiveFerment()
 		if (!ferment) return null
-		const phaseIdx = getCurrentPhaseIndex()
-		const totalPhases = ferment.phases.length
-		const activePhase = ferment.activePhaseId ? ferment.phases.find((p) => p.id === ferment.activePhaseId) : undefined
-		const activeStep = activePhase?.steps.find(
+		const stageIdx = getCurrentStageIndex()
+		const totalStages = ferment.stages.length
+		const activeStage = ferment.activeStageId ? ferment.stages.find((p) => p.id === ferment.activeStageId) : undefined
+		const activeStep = activeStage?.steps.find(
 			(s) => s.status === "running" || s.status === "pending" || s.status === "failed",
 		)
 
@@ -231,14 +231,14 @@ export class StatsFooter implements Component {
 		parts.push(this.dim(`[${ferment.status}]`))
 		parts.push(this.dim(ferment.mode))
 
-		if (phaseIdx !== undefined && totalPhases > 0) {
-			const phaseName = activePhase?.name ?? ""
-			const phaseInfo = phaseName ? ` "${phaseName}"` : ""
-			parts.push(this.dim(`· phase ${phaseIdx}/${totalPhases}${phaseInfo}`))
+		if (stageIdx !== undefined && totalStages > 0) {
+			const stageName = activeStage?.name ?? ""
+			const stageInfo = stageName ? ` "${stageName}"` : ""
+			parts.push(this.dim(`· stage ${stageIdx}/${totalStages}${stageInfo}`))
 		}
 
-		if (activeStep && activePhase) {
-			const totalSteps = activePhase.steps.length
+		if (activeStep && activeStage) {
+			const totalSteps = activeStage.steps.length
 			parts.push(this.dim(`· step ${activeStep.index}/${totalSteps}`))
 		}
 

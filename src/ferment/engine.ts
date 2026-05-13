@@ -17,16 +17,16 @@ import type { Ferment, FermentAction, Phase, Step } from "./types.js"
 
 export type DeclarativeAction =
 	| { kind: "scope"; reason: string }
-	| { kind: "activate_phase"; phaseId: string; reason: string }
-	| { kind: "refine"; phaseId: string; reason: string }
-	| { kind: "start_step"; phaseId: string; stepId: string; reason: string; canParallel: boolean }
-	| { kind: "complete_step"; phaseId: string; stepId: string; reason: string }
-	| { kind: "verify_step"; phaseId: string; stepId: string; reason: string }
-	| { kind: "complete_phase"; phaseId: string; reason: string }
+	| { kind: "activate_stage"; stageId: string; reason: string }
+	| { kind: "refine"; stageId: string; reason: string }
+	| { kind: "start_step"; stageId: string; stepId: string; reason: string; canParallel: boolean }
+	| { kind: "complete_step"; stageId: string; stepId: string; reason: string }
+	| { kind: "verify_step"; stageId: string; stepId: string; reason: string }
+	| { kind: "complete_stage"; stageId: string; reason: string }
 	| { kind: "pause"; reason: string }
 	| { kind: "complete_ferment"; reason: string }
-	| { kind: "recover_step"; phaseId: string; stepId: string; reason: string }
-	| { kind: "recover_phase"; phaseId: string; reason: string }
+	| { kind: "recover_step"; stageId: string; stepId: string; reason: string }
+	| { kind: "recover_phase"; stageId: string; reason: string }
 	| { kind: "noop"; reason: string }
 
 // ─── Main Entry Point ──────────────────────────────────────────────────────────
@@ -47,7 +47,7 @@ export function determineNextAction(ferment: Ferment): DeclarativeAction {
 	}
 
 	// 1. No phases defined → scope (only if not paused)
-	if (ferment.phases.length === 0) {
+	if (ferment.stages.length === 0) {
 		if (ferment.status === "paused") {
 			return { kind: "pause", reason: "ferment is paused" }
 		}
@@ -61,17 +61,17 @@ export function determineNextAction(ferment: Ferment): DeclarativeAction {
 
 	// 3. Failed phase → recover_phase. This must run before all-terminal
 	// completion so failed phases can be retried or explicitly bypassed.
-	const failedPhase = ferment.phases.find((p) => p.status === "failed")
+	const failedPhase = ferment.stages.find((p) => p.status === "failed")
 	if (failedPhase) {
-		return { kind: "recover_phase", phaseId: failedPhase.id, reason: "handle failed phase" }
+		return { kind: "recover_phase", stageId: failedPhase.id, reason: "handle failed phase" }
 	}
 
 	// 4. All phases terminal → complete_ferment
-	const allPhasesTerminal = ferment.phases.every(
+	const allPhasesTerminal = ferment.stages.every(
 		(p) => p.status === "completed" || p.status === "skipped" || p.status === "failed",
 	)
 	if (allPhasesTerminal) {
-		return { kind: "complete_ferment", reason: `all ${ferment.phases.length} phases are terminal` }
+		return { kind: "complete_ferment", reason: `all ${ferment.stages.length} phases are terminal` }
 	}
 
 	// 5. No active phase, ferment is planned → activate first planned
@@ -79,8 +79,8 @@ export function determineNextAction(ferment: Ferment): DeclarativeAction {
 		const next = findFirstPlannedPhase(ferment)
 		if (next) {
 			return {
-				kind: "activate_phase",
-				phaseId: next.id,
+				kind: "activate_stage",
+				stageId: next.id,
 				reason: "activate the first planned phase",
 			}
 		}
@@ -93,7 +93,7 @@ export function determineNextAction(ferment: Ferment): DeclarativeAction {
 
 	// 7. Active phase has no steps → refine
 	if (active && active.steps.length === 0) {
-		return { kind: "refine", phaseId: active.id, reason: "populate the active phase with concrete steps" }
+		return { kind: "refine", stageId: active.id, reason: "populate the active phase with concrete steps" }
 	}
 
 	// 8. Steps with failures → recover_step first
@@ -102,7 +102,7 @@ export function determineNextAction(ferment: Ferment): DeclarativeAction {
 		if (failedStep) {
 			return {
 				kind: "recover_step",
-				phaseId: active.id,
+				stageId: active.id,
 				stepId: failedStep.id,
 				reason: "handle failed step",
 			}
@@ -113,7 +113,7 @@ export function determineNextAction(ferment: Ferment): DeclarativeAction {
 		if (nextStep) {
 			return {
 				kind: "start_step",
-				phaseId: active.id,
+				stageId: active.id,
 				stepId: nextStep.id,
 				reason: "start the next pending step",
 				canParallel: false,
@@ -125,7 +125,7 @@ export function determineNextAction(ferment: Ferment): DeclarativeAction {
 		if (runningStep) {
 			return {
 				kind: "complete_step",
-				phaseId: active.id,
+				stageId: active.id,
 				stepId: runningStep.id,
 				reason: "mark the running step as complete",
 			}
@@ -137,8 +137,8 @@ export function determineNextAction(ferment: Ferment): DeclarativeAction {
 		)
 		if (allStepsTerminal) {
 			return {
-				kind: "complete_phase",
-				phaseId: active.id,
+				kind: "complete_stage",
+				stageId: active.id,
 				reason: `mark phase ${active.index} as complete when all steps are terminal`,
 			}
 		}
@@ -158,24 +158,24 @@ export function whatNext(ferment: Ferment): FermentAction {
 
 function toFermentAction(action: DeclarativeAction, ferment: Ferment): FermentAction {
 	// Helper to find phase/step from action
-	const phase = "phaseId" in action ? ferment.phases.find((p) => p.id === action.phaseId) : undefined
+	const phase = "phaseId" in action ? ferment.stages.find((p) => p.id === action.phaseId) : undefined
 	const step = phase && "stepId" in action ? phase.steps.find((s) => s.id === action.stepId) : undefined
 
 	switch (action.kind) {
 		case "scope":
 			return { kind: "scope", message: buildScopeProse(ferment) }
 
-		case "activate_phase":
+		case "activate_stage":
 			return {
-				kind: "activate_phase",
-				phaseId: action.phaseId,
+				kind: "activate_stage",
+				stageId: action.stageId,
 				message: `Activate phase ${phase?.index}: "${phase?.name}"`,
 			}
 
 		case "refine":
 			return {
 				kind: "refine",
-				phaseId: action.phaseId,
+				stageId: action.stageId,
 				message: `Break phase ${phase?.index} "${phase?.name}" into 3–6 concrete steps.`,
 			}
 
@@ -201,10 +201,10 @@ function toFermentAction(action: DeclarativeAction, ferment: Ferment): FermentAc
 				message: `Verify step ${step?.index}: "${step?.description}"`,
 			}
 
-		case "complete_phase":
+		case "complete_stage":
 			return {
-				kind: "complete_phase",
-				phaseId: action.phaseId,
+				kind: "complete_stage",
+				stageId: action.stageId,
 				message: `Mark phase ${phase?.index} "${phase?.name}" as complete.`,
 			}
 
@@ -216,14 +216,14 @@ function toFermentAction(action: DeclarativeAction, ferment: Ferment): FermentAc
 				kind: "complete_ferment",
 				message:
 					ferment.status !== "running" && ferment.status !== "planned" && ferment.status !== "draft"
-						? `Ferment is ${ferment.status}. All ${ferment.phases.length} phases complete.`
-						: `All ${ferment.phases.length} phases complete. Mark ferment as complete.`,
+						? `Ferment is ${ferment.status}. All ${ferment.stages.length} phases complete.`
+						: `All ${ferment.stages.length} phases complete. Mark ferment as complete.`,
 			}
 
 		case "recover_step":
 			return {
 				kind: "recover_step",
-				phaseId: action.phaseId,
+				stageId: action.stageId,
 				stepId: action.stepId,
 				message: `Step ${step?.index} "${step?.description}" failed.`,
 			}
@@ -231,8 +231,8 @@ function toFermentAction(action: DeclarativeAction, ferment: Ferment): FermentAc
 		case "recover_phase":
 			return {
 				kind: "recover_phase",
-				phaseId: action.phaseId,
-				message: `Phase ${phase?.index} "${phase?.name}" failed. Retry it with activate_phase, bypass it with skip_phase, or ask the user to run /ferment abandon if the ferment should stop.`,
+				stageId: action.stageId,
+				message: `Phase ${phase?.index} "${phase?.name}" failed. Retry it with activate_stage, bypass it with skip_stage, or ask the user to run /ferment abandon if the ferment should stop.`,
 			}
 
 		case "noop":
@@ -259,7 +259,7 @@ function buildScopeProse(f: Ferment): string {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 export function findFirstPlannedPhase(f: Ferment): Phase | undefined {
-	return f.phases.find((p) => p.status === "planned")
+	return f.stages.find((p) => p.status === "planned")
 }
 
 export function isScopingComplete(f: Ferment): boolean {
@@ -277,13 +277,13 @@ export function getScopingProgress(f: Ferment): { answered: number; total: numbe
 }
 
 function findActivePhase(f: Ferment): Phase | undefined {
-	if (f.activePhaseId) {
-		const byId = f.phases.find((p) => p.id === f.activePhaseId)
+	if (f.activeStageId) {
+		const byId = f.stages.find((p) => p.id === f.activeStageId)
 		// Only trust activePhaseId if the phase is actually in an active state;
 		// fall back to status scan on data drift (e.g. recovered ferments).
 		if (byId?.status === "active") return byId
 	}
-	return f.phases.find((p) => p.status === "active")
+	return f.stages.find((p) => p.status === "active")
 }
 
 function findNextStep(p: Phase): Step | undefined {

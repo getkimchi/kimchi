@@ -30,7 +30,7 @@ import {
 } from "./state.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { registerLifecycleTools } from "./tools/lifecycle.js"
-import { registerPhaseTools } from "./tools/phases.js"
+import { registerStageTools } from "./tools/stages.js"
 import { registerStepTools } from "./tools/steps.js"
 
 // ─── Test harness ─────────────────────────────────────────────────────────────
@@ -75,7 +75,7 @@ function createHarness(): Harness {
 	} as unknown as ExtensionAPI
 
 	registerLifecycleTools(pi, runtime)
-	registerPhaseTools(pi, runtime)
+	registerStageTools(pi, runtime)
 	registerStepTools(pi, runtime)
 	registerKnowledgeTools(pi, runtime)
 
@@ -181,7 +181,7 @@ describe("create_ferment", () => {
 		expect(f.name).toBe("Test Project")
 		expect(f.status).toBe("draft")
 		expect(f.mode).toBe("plan")
-		expect(f.phases).toEqual([])
+		expect(f.stages).toEqual([])
 	})
 
 	it("captures description when provided", async () => {
@@ -235,9 +235,9 @@ describe("scope_ferment", () => {
 		await scopeFerment(id)
 		const f = loadFerment(id)
 		expect(f.status).toBe("planned")
-		expect(f.phases).toHaveLength(2)
-		expect(f.phases[0].name).toBe("Phase A")
-		expect(f.phases[0].steps).toHaveLength(2)
+		expect(f.stages).toHaveLength(2)
+		expect(f.stages[0].name).toBe("Phase A")
+		expect(f.stages[0].steps).toHaveLength(2)
 	})
 
 	it("rejects when ferment is not in draft", async () => {
@@ -296,46 +296,46 @@ describe("scope_ferment", () => {
 			],
 		})
 		const f = loadFerment(id)
-		expect(f.phases[0].groupIndex).toBe(1)
-		expect(f.phases[1].groupIndex).toBe(1)
-		expect(f.phases[2].groupIndex).toBeUndefined()
+		expect(f.stages[0].groupIndex).toBe(1)
+		expect(f.stages[1].groupIndex).toBe(1)
+		expect(f.stages[2].groupIndex).toBeUndefined()
 	})
 })
 
 // ─── activate_phase ───────────────────────────────────────────────────────────
 
-describe("activate_phase", () => {
+describe("activate_stage", () => {
 	it("activates the first planned phase", async () => {
 		const id = await createFerment("Activate Test")
 		await scopeFerment(id)
-		const result = ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		const result = ok(await h.call("activate_stage", { ferment_id: id, phase_id: "phase-1" }))
 		expect(result).toContain("activated")
 
 		const f = loadFerment(id)
 		expect(f.status).toBe("running")
-		expect(f.phases[0].status).toBe("active")
-		expect(f.activePhaseId).toBe("phase-1")
+		expect(f.stages[0].status).toBe("active")
+		expect(f.activeStageId).toBe("phase-1")
 	})
 
 	it("falls back to first planned phase if phase_id not given", async () => {
 		const id = await createFerment("Fallback")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id }))
-		expect(loadFerment(id).phases[0].status).toBe("active")
+		ok(await h.call("activate_stage", { ferment_id: id }))
+		expect(loadFerment(id).stages[0].status).toBe("active")
 	})
 
 	it("falls back to failed phase recovery before activating a planned phase", async () => {
 		const id = await createFerment("Retry Fallback")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
-		ok(await h.call("fail_phase", { ferment_id: id, phase_id: "phase-1", reason: "tests failed" }))
+		ok(await h.call("activate_stage", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("fail_stage", { ferment_id: id, phase_id: "phase-1", reason: "tests failed" }))
 
-		ok(await h.call("activate_phase", { ferment_id: id }))
+		ok(await h.call("activate_stage", { ferment_id: id }))
 
 		const f = loadFerment(id)
-		expect(f.phases[0].status).toBe("active")
-		expect(f.phases[1].status).toBe("planned")
-		expect(f.activePhaseId).toBe("phase-1")
+		expect(f.stages[0].status).toBe("active")
+		expect(f.stages[1].status).toBe("planned")
+		expect(f.activeStageId).toBe("phase-1")
 	})
 
 	it("activates all phases in a parallel group", async () => {
@@ -347,13 +347,13 @@ describe("activate_phase", () => {
 				{ name: "P3", goal: "G3", steps: [{ description: "S3" }] },
 			],
 		})
-		const result = ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		const result = ok(await h.call("activate_stage", { ferment_id: id, phase_id: "phase-1" }))
 		expect(result).toContain("Parallel group")
 
 		const f = loadFerment(id)
-		expect(f.phases[0].status).toBe("active")
-		expect(f.phases[1].status).toBe("active")
-		expect(f.phases[2].status).toBe("planned")
+		expect(f.stages[0].status).toBe("active")
+		expect(f.stages[1].status).toBe("active")
+		expect(f.stages[2].status).toBe("planned")
 	})
 
 	it("fails when no planned phases remain", async () => {
@@ -364,26 +364,26 @@ describe("activate_phase", () => {
 		s.skipPhase(id, "phase-1", "skip")
 		s.skipPhase(id, "phase-2", "skip")
 
-		const result = await h.call("activate_phase", { ferment_id: id })
+		const result = await h.call("activate_stage", { ferment_id: id })
 		expect(err(result)).toMatch(/no planned or failed phases/i)
 	})
 
 	it("returns error when ferment not found", async () => {
-		const result = await h.call("activate_phase", { ferment_id: "nope" })
+		const result = await h.call("activate_stage", { ferment_id: "nope" })
 		expect(err(result)).toMatch(/not found/i)
 	})
 })
 
 // ─── refine_phase ─────────────────────────────────────────────────────────────
 
-describe("refine_phase", () => {
+describe("refine_stage", () => {
 	it("replaces steps on an active phase", async () => {
 		const id = await createFerment("Refine Test")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("activate_stage", { ferment_id: id, phase_id: "phase-1" }))
 
 		ok(
-			await h.call("refine_phase", {
+			await h.call("refine_stage", {
 				ferment_id: id,
 				phase_id: "phase-1",
 				steps: [
@@ -395,7 +395,7 @@ describe("refine_phase", () => {
 		)
 
 		const f = loadFerment(id)
-		const phase = f.phases[0]
+		const phase = f.stages[0]
 		expect(phase.steps).toHaveLength(3)
 		expect(phase.steps[0].description).toBe("New step 1")
 		expect(phase.steps[1].verification?.command).toBe("echo ok")
@@ -405,7 +405,7 @@ describe("refine_phase", () => {
 		const id = await createFerment("Inactive Refine")
 		await scopeFerment(id)
 		// phase-1 is still in 'planned' status
-		const result = await h.call("refine_phase", {
+		const result = await h.call("refine_stage", {
 			ferment_id: id,
 			phase_id: "phase-1",
 			steps: [{ description: "X" }],
@@ -416,10 +416,10 @@ describe("refine_phase", () => {
 	it("sets workerModel based on needs_vision flag", async () => {
 		const id = await createFerment("Vision Test")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("activate_stage", { ferment_id: id, phase_id: "phase-1" }))
 
 		ok(
-			await h.call("refine_phase", {
+			await h.call("refine_stage", {
 				ferment_id: id,
 				phase_id: "phase-1",
 				steps: [
@@ -430,8 +430,8 @@ describe("refine_phase", () => {
 		)
 
 		const f = loadFerment(id)
-		expect(f.phases[0].steps[0].workerModel).toBe("minimax-m2.7")
-		expect(f.phases[0].steps[1].workerModel).toBe("kimi-k2.5")
+		expect(f.stages[0].steps[0].workerModel).toBe("minimax-m2.7")
+		expect(f.stages[0].steps[1].workerModel).toBe("kimi-k2.5")
 	})
 })
 
@@ -441,14 +441,14 @@ describe("start_step", () => {
 	async function setupActivePhase(): Promise<string> {
 		const id = await createFerment("Start Step Test")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("activate_stage", { ferment_id: id, phase_id: "phase-1" }))
 		return id
 	}
 
 	it("transitions step from pending → running", async () => {
 		const id = await setupActivePhase()
 		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
-		expect(loadFerment(id).phases[0].steps[0].status).toBe("running")
+		expect(loadFerment(id).stages[0].steps[0].status).toBe("running")
 	})
 
 	it("rejects starting a step when a non-parallel step is already running", async () => {
@@ -484,7 +484,7 @@ describe("start_step", () => {
 			"Skip this step and move on",
 			"Pause the ferment for now",
 		])
-		expect(loadFerment(id).phases[0].steps[0].status).toBe("skipped")
+		expect(loadFerment(id).stages[0].steps[0].status).toBe("skipped")
 	})
 
 	it("lets the user pause directly from the stuck-loop prompt", async () => {
@@ -516,7 +516,7 @@ describe("start_step", () => {
 		const result = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }, ctx)
 
 		expect(ok(result)).toMatch(/Step 1: "Step A1" started/)
-		expect(loadFerment(id).phases[0].steps[0].status).toBe("running")
+		expect(loadFerment(id).stages[0].steps[0].status).toBe("running")
 		const nextResult = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" })
 		expect(ok(nextResult)).toMatch(/Step 1: "Step A1" started/)
 	})
@@ -542,7 +542,7 @@ describe("complete_step", () => {
 				},
 			],
 		})
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("activate_stage", { ferment_id: id, phase_id: "phase-1" }))
 		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
 		return id
 	}
@@ -557,7 +557,7 @@ describe("complete_step", () => {
 				summary: "did it",
 			}),
 		)
-		expect(loadFerment(id).phases[0].steps[0].status).toBe("done")
+		expect(loadFerment(id).stages[0].steps[0].status).toBe("done")
 	})
 
 	it("records summary in step result", async () => {
@@ -569,7 +569,7 @@ describe("complete_step", () => {
 			summary: "summary text",
 		})
 		// Summary is graded by judge but with no model registry, judge falls back to "B" with rationale
-		const step = loadFerment(id).phases[0].steps[0]
+		const step = loadFerment(id).stages[0].steps[0]
 		expect(step.grade?.grade).toBeDefined()
 	})
 
@@ -590,9 +590,9 @@ describe("skip_step", () => {
 	it("marks step as skipped", async () => {
 		const id = await createFerment("Skip Step Test")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("activate_stage", { ferment_id: id, phase_id: "phase-1" }))
 		ok(await h.call("skip_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
-		expect(loadFerment(id).phases[0].steps[0].status).toBe("skipped")
+		expect(loadFerment(id).stages[0].steps[0].status).toBe("skipped")
 	})
 })
 
@@ -602,7 +602,7 @@ describe("fail_step", () => {
 	it("marks step as failed with error message", async () => {
 		const id = await createFerment("Fail Step Test")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("activate_stage", { ferment_id: id, phase_id: "phase-1" }))
 		ok(
 			await h.call("fail_step", {
 				ferment_id: id,
@@ -611,7 +611,7 @@ describe("fail_step", () => {
 				error: "broken",
 			}),
 		)
-		const step = loadFerment(id).phases[0].steps[0]
+		const step = loadFerment(id).stages[0].steps[0]
 		expect(step.status).toBe("failed")
 		expect(step.result?.stderr).toBe("broken")
 	})
@@ -619,11 +619,11 @@ describe("fail_step", () => {
 
 // ─── complete_phase ───────────────────────────────────────────────────────────
 
-describe("complete_phase", () => {
+describe("complete_stage", () => {
 	async function setupAllStepsTerminal(): Promise<string> {
 		const id = await createFerment("Complete Phase Test")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("activate_stage", { ferment_id: id, phase_id: "phase-1" }))
 		// Complete both steps in phase 1
 		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
 		ok(
@@ -649,64 +649,64 @@ describe("complete_phase", () => {
 	it("transitions phase from active → completed", async () => {
 		const id = await setupAllStepsTerminal()
 		ok(
-			await h.call("complete_phase", {
+			await h.call("complete_stage", {
 				ferment_id: id,
 				phase_id: "phase-1",
 				summary: "phase done",
 			}),
 		)
 		const f = loadFerment(id)
-		expect(f.phases[0].status).toBe("completed")
-		expect(f.phases[0].summary).toBe("phase done")
+		expect(f.stages[0].status).toBe("completed")
+		expect(f.stages[0].summary).toBe("phase done")
 	})
 
 	it("assigns a grade to the completed phase", async () => {
 		const id = await setupAllStepsTerminal()
 		ok(
-			await h.call("complete_phase", {
+			await h.call("complete_stage", {
 				ferment_id: id,
 				phase_id: "phase-1",
 				summary: "phase done",
 			}),
 		)
-		expect(loadFerment(id).phases[0].grade).toBeDefined()
+		expect(loadFerment(id).stages[0].grade).toBeDefined()
 	})
 })
 
 // ─── skip_phase ───────────────────────────────────────────────────────────────
 
-describe("skip_phase", () => {
+describe("skip_stage", () => {
 	it("marks phase as skipped", async () => {
 		const id = await createFerment("Skip Phase Test")
 		await scopeFerment(id)
 		ok(
-			await h.call("skip_phase", {
+			await h.call("skip_stage", {
 				ferment_id: id,
 				phase_id: "phase-1",
 				reason: "not needed",
 			}),
 		)
 		const f = loadFerment(id)
-		expect(f.phases[0].status).toBe("skipped")
-		expect(f.phases[0].summary).toBe("not needed")
+		expect(f.stages[0].status).toBe("skipped")
+		expect(f.stages[0].summary).toBe("not needed")
 	})
 })
 
 // ─── fail_phase ───────────────────────────────────────────────────────────────
 
-describe("fail_phase", () => {
+describe("fail_stage", () => {
 	it("marks phase as failed with reason", async () => {
 		const id = await createFerment("Fail Phase Test")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("activate_stage", { ferment_id: id, phase_id: "phase-1" }))
 		ok(
-			await h.call("fail_phase", {
+			await h.call("fail_stage", {
 				ferment_id: id,
 				phase_id: "phase-1",
 				reason: "tests don't pass",
 			}),
 		)
-		expect(loadFerment(id).phases[0].status).toBe("failed")
+		expect(loadFerment(id).stages[0].status).toBe("failed")
 	})
 })
 
@@ -900,7 +900,7 @@ describe("paused ferment blocks tool calls at the bridge", () => {
 	async function setupPaused(): Promise<string> {
 		const id = await createFerment("Paused Test")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("activate_stage", { ferment_id: id, phase_id: "phase-1" }))
 		// Flip to paused via storage; here we just need bridge-level enforcement
 		// for an already-paused ferment.
 		const s = h.storage
@@ -921,7 +921,7 @@ describe("paused ferment blocks tool calls at the bridge", () => {
 
 	it("refuses activate_phase when ferment is paused", async () => {
 		const id = await setupPaused()
-		const result = await h.call("activate_phase", { ferment_id: id, phase_id: "phase-2" })
+		const result = await h.call("activate_stage", { ferment_id: id, phase_id: "phase-2" })
 		expect(err(result)).toMatch(/paused/i)
 	})
 
@@ -1025,7 +1025,7 @@ describe("propose_phases", () => {
 		expect(f.goal).toBe("G")
 		expect(f.successCriteria).toBe("C")
 		expect(f.constraints).toEqual(["x"])
-		expect(f.phases).toHaveLength(2)
+		expect(f.stages).toHaveLength(2)
 		expect(getPendingScope(id)).toBeUndefined()
 	})
 
@@ -1039,6 +1039,6 @@ describe("propose_phases", () => {
 			}),
 		)
 		expect(loadFerment(id).status).toBe("draft")
-		expect(loadFerment(id).phases).toEqual([])
+		expect(loadFerment(id).stages).toEqual([])
 	})
 })

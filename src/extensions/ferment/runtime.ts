@@ -51,8 +51,8 @@ export interface FermentRuntime {
 	markHumanInput(): void
 	getLastHumanInputAt(): Date | undefined
 	captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry): void
-	bumpStepStart(fermentId: string, phaseId: string, stepId: string): number
-	clearStepStart(fermentId: string, phaseId: string, stepId: string): void
+	bumpStepStart(fermentId: string, stageId: string, stepId: string): number
+	clearStepStart(fermentId: string, stageId: string, stepId: string): void
 	clearAllStepStarts(): void
 	markScopingInteractive(fermentId: string): void
 	markScopingConfirmed(fermentId: string): void
@@ -60,17 +60,17 @@ export interface FermentRuntime {
 	isScopingConfirmed(fermentId: string): boolean
 	consumeScopingGate(fermentId: string): void
 	clearAllScopingGates(): void
-	setCorrectiveStep(fermentId: string, phaseId: string, step: string): void
-	getCorrectiveStep(fermentId: string, phaseId: string): string | undefined
+	setCorrectiveStep(fermentId: string, stageId: string, step: string): void
+	getCorrectiveStep(fermentId: string, stageId: string): string | undefined
 	getPendingScope(fermentId: string): PendingScope | undefined
 	setPendingScope(fermentId: string, scope: PendingScope): void
 	attachPendingPhases(fermentId: string, phases: ScopePhaseInput[]): boolean
 	clearPendingScope(fermentId: string): void
 	clearAllPendingScopes(): void
-	setPhaseStartRef(fermentId: string, phaseId: string, ref: string): void
-	getPhaseStartRef(fermentId: string, phaseId: string): string | undefined
-	setStepStartRef(fermentId: string, phaseId: string, stepId: string, ref: string): void
-	getStepStartRef(fermentId: string, phaseId: string, stepId: string): string | undefined
+	setPhaseStartRef(fermentId: string, stageId: string, ref: string): void
+	getPhaseStartRef(fermentId: string, stageId: string): string | undefined
+	setStepStartRef(fermentId: string, stageId: string, stepId: string, ref: string): void
+	getStepStartRef(fermentId: string, stageId: string, stepId: string): string | undefined
 	clearFermentState(fermentId: string): void
 }
 

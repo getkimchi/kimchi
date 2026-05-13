@@ -19,7 +19,7 @@ import {
 function makeContext(overrides: Partial<FermentFsmContext> = {}): FermentFsmContext {
 	return {
 		fermentStatus: "draft",
-		phases: [],
+		stages: [],
 		...overrides,
 	}
 }
@@ -27,19 +27,19 @@ function makeContext(overrides: Partial<FermentFsmContext> = {}): FermentFsmCont
 function makePhaseContext(
 	id: string,
 	index: number,
-	status: FermentFsmContext["phases"][number]["status"],
-	steps: FermentFsmContext["phases"][number]["steps"] = [],
+	status: FermentFsmContext["stages"][number]["status"],
+	steps: FermentFsmContext["stages"][number]["steps"] = [],
 	groupIndex?: number,
-): FermentFsmContext["phases"][number] {
+): FermentFsmContext["stages"][number] {
 	return { id, index, name: `Phase ${index}`, status, steps, groupIndex }
 }
 
 function makeStepContext(
 	id: string,
 	index: number,
-	status: FermentFsmContext["phases"][number]["steps"][number]["status"],
+	status: FermentFsmContext["stages"][number]["steps"][number]["status"],
 	canRunParallel = false,
-): FermentFsmContext["phases"][number]["steps"][number] {
+): FermentFsmContext["stages"][number]["steps"][number] {
 	return { id, index, description: `Step ${index}`, status, canRunParallel }
 }
 
@@ -100,7 +100,7 @@ describe("Valid Transitions", () => {
 	describe("DRAFT state", () => {
 		it("handles SCOPE_FERMENT → PLANNED when phases exist", () => {
 			const ctx = makeContext({
-				phases: [makePhaseContext("phase-1", 1, "planned")],
+				stages: [makePhaseContext("phase-1", 1, "planned")],
 			})
 			const result = transition(FSM_STATES.DRAFT, FSM_EVENTS.SCOPE_FERMENT, ctx)
 			expect(result.state).toBe(FSM_STATES.PLANNED)
@@ -126,10 +126,10 @@ describe("Valid Transitions", () => {
 		it("handles ACTIVATE_PHASE → PHASE_ACTIVE", () => {
 			const ctx = makeContext({
 				fermentStatus: "planned",
-				phases: [makePhaseContext("phase-1", 1, "planned")],
+				stages: [makePhaseContext("phase-1", 1, "planned")],
 			})
 			const result = transition(FSM_STATES.PLANNED, FSM_EVENTS.ACTIVATE_PHASE, ctx, {
-				phaseId: "phase-1",
+				stageId: "phase-1",
 			})
 			expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
 			expect(result.error).toBeUndefined()
@@ -138,10 +138,10 @@ describe("Valid Transitions", () => {
 		it("transitions cleanly when activating a planned phase", () => {
 			const ctx = makeContext({
 				fermentStatus: "planned",
-				phases: [makePhaseContext("phase-1", 1, "planned")],
+				stages: [makePhaseContext("phase-1", 1, "planned")],
 			})
 			const result = transition(FSM_STATES.PLANNED, FSM_EVENTS.ACTIVATE_PHASE, ctx, {
-				phaseId: "phase-1",
+				stageId: "phase-1",
 			})
 			expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
 			expect(result.error).toBeUndefined()
@@ -150,10 +150,10 @@ describe("Valid Transitions", () => {
 		it("handles ACTIVATE_PHASE for a failed phase", () => {
 			const ctx = makeContext({
 				fermentStatus: "planned",
-				phases: [makePhaseContext("phase-1", 1, "failed")],
+				stages: [makePhaseContext("phase-1", 1, "failed")],
 			})
 			const result = transition(FSM_STATES.PLANNED, FSM_EVENTS.ACTIVATE_PHASE, ctx, {
-				phaseId: "phase-1",
+				stageId: "phase-1",
 			})
 			expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
 			expect(result.error).toBeUndefined()
@@ -164,11 +164,11 @@ describe("Valid Transitions", () => {
 		it("handles START_STEP → STEP_RUNNING", () => {
 			const ctx = makeContext({
 				fermentStatus: "running",
-				activePhaseId: "phase-1",
-				phases: [makePhaseContext("phase-1", 1, "active", [makeStepContext("step-1", 1, "pending")])],
+				activeStageId: "phase-1",
+				stages: [makePhaseContext("phase-1", 1, "active", [makeStepContext("step-1", 1, "pending")])],
 			})
 			const result = transition(FSM_STATES.PHASE_ACTIVE, FSM_EVENTS.START_STEP, ctx, {
-				phaseId: "phase-1",
+				stageId: "phase-1",
 				stepId: "step-1",
 			})
 			expect(result.state).toBe(FSM_STATES.STEP_RUNNING)
@@ -178,8 +178,8 @@ describe("Valid Transitions", () => {
 		it("handles PAUSE → PAUSED", () => {
 			const ctx = makeContext({
 				fermentStatus: "running",
-				activePhaseId: "phase-1",
-				phases: [makePhaseContext("phase-1", 1, "active")],
+				activeStageId: "phase-1",
+				stages: [makePhaseContext("phase-1", 1, "active")],
 			})
 			const result = transition(FSM_STATES.PHASE_ACTIVE, FSM_EVENTS.PAUSE, ctx)
 			expect(result.state).toBe(FSM_STATES.PAUSED)
@@ -189,8 +189,8 @@ describe("Valid Transitions", () => {
 		it("handles ABANDON → ABANDONED", () => {
 			const ctx = makeContext({
 				fermentStatus: "running",
-				activePhaseId: "phase-1",
-				phases: [makePhaseContext("phase-1", 1, "active")],
+				activeStageId: "phase-1",
+				stages: [makePhaseContext("phase-1", 1, "active")],
 			})
 			const result = transition(FSM_STATES.PHASE_ACTIVE, FSM_EVENTS.ABANDON, ctx)
 			expect(result.state).toBe(FSM_STATES.ABANDONED)
@@ -202,11 +202,11 @@ describe("Valid Transitions", () => {
 		it("handles COMPLETE_STEP → PHASE_ACTIVE", () => {
 			const ctx = makeContext({
 				fermentStatus: "running",
-				activePhaseId: "phase-1",
-				phases: [makePhaseContext("phase-1", 1, "active", [makeStepContext("step-1", 1, "running")])],
+				activeStageId: "phase-1",
+				stages: [makePhaseContext("phase-1", 1, "active", [makeStepContext("step-1", 1, "running")])],
 			})
 			const result = transition(FSM_STATES.STEP_RUNNING, FSM_EVENTS.COMPLETE_STEP, ctx, {
-				phaseId: "phase-1",
+				stageId: "phase-1",
 				stepId: "step-1",
 			})
 			expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
@@ -216,11 +216,11 @@ describe("Valid Transitions", () => {
 		it("handles FAIL_STEP → PHASE_ACTIVE", () => {
 			const ctx = makeContext({
 				fermentStatus: "running",
-				activePhaseId: "phase-1",
-				phases: [makePhaseContext("phase-1", 1, "active", [makeStepContext("step-1", 1, "running")])],
+				activeStageId: "phase-1",
+				stages: [makePhaseContext("phase-1", 1, "active", [makeStepContext("step-1", 1, "running")])],
 			})
 			const result = transition(FSM_STATES.STEP_RUNNING, FSM_EVENTS.FAIL_STEP, ctx, {
-				phaseId: "phase-1",
+				stageId: "phase-1",
 				stepId: "step-1",
 			})
 			expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
@@ -230,11 +230,11 @@ describe("Valid Transitions", () => {
 		it("handles SKIP_STEP → PHASE_ACTIVE", () => {
 			const ctx = makeContext({
 				fermentStatus: "running",
-				activePhaseId: "phase-1",
-				phases: [makePhaseContext("phase-1", 1, "active", [makeStepContext("step-1", 1, "running")])],
+				activeStageId: "phase-1",
+				stages: [makePhaseContext("phase-1", 1, "active", [makeStepContext("step-1", 1, "running")])],
 			})
 			const result = transition(FSM_STATES.STEP_RUNNING, FSM_EVENTS.SKIP_STEP, ctx, {
-				phaseId: "phase-1",
+				stageId: "phase-1",
 				stepId: "step-1",
 			})
 			expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
@@ -246,11 +246,11 @@ describe("Valid Transitions", () => {
 		it("handles RESUME → PHASE_ACTIVE when phase is active", () => {
 			const ctx = makeContext({
 				fermentStatus: "paused",
-				activePhaseId: "phase-1",
-				phases: [makePhaseContext("phase-1", 1, "active")],
+				activeStageId: "phase-1",
+				stages: [makePhaseContext("phase-1", 1, "active")],
 			})
 			const result = transition(FSM_STATES.PAUSED, FSM_EVENTS.RESUME, ctx, {
-				phaseId: "phase-1",
+				stageId: "phase-1",
 			})
 			expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
 			expect(result.error).toBeUndefined()
@@ -259,7 +259,7 @@ describe("Valid Transitions", () => {
 		it("handles RESUME → PLANNED when resuming between phases", () => {
 			const ctx = makeContext({
 				fermentStatus: "paused",
-				phases: [makePhaseContext("phase-1", 1, "planned")],
+				stages: [makePhaseContext("phase-1", 1, "planned")],
 			})
 			const result = transition(FSM_STATES.PAUSED, FSM_EVENTS.RESUME, ctx)
 			expect(result.state).toBe(FSM_STATES.PLANNED)
@@ -298,10 +298,10 @@ describe("Illegal Transitions (Guards)", () => {
 		it("rejects ACTIVATE_PHASE for non-existent phase", () => {
 			const ctx = makeContext({
 				fermentStatus: "planned",
-				phases: [],
+				stages: [],
 			})
 			const result = transition(FSM_STATES.PLANNED, FSM_EVENTS.ACTIVATE_PHASE, ctx, {
-				phaseId: "non-existent",
+				stageId: "non-existent",
 			})
 			expect(result.error).toBeDefined()
 			expect(result.error).toContain("not found")
@@ -310,11 +310,11 @@ describe("Illegal Transitions (Guards)", () => {
 		it("rejects ACTIVATE_PHASE for already active phase", () => {
 			const ctx = makeContext({
 				fermentStatus: "running",
-				activePhaseId: "phase-1",
-				phases: [makePhaseContext("phase-1", 1, "active")],
+				activeStageId: "phase-1",
+				stages: [makePhaseContext("phase-1", 1, "active")],
 			})
 			const result = transition(FSM_STATES.PLANNED, FSM_EVENTS.ACTIVATE_PHASE, ctx, {
-				phaseId: "phase-1",
+				stageId: "phase-1",
 			})
 			expect(result.error).toBeDefined()
 			expect(result.error).toContain('expected "planned"')
@@ -323,10 +323,10 @@ describe("Illegal Transitions (Guards)", () => {
 		it("accepts ACTIVATE_PHASE for failed phase", () => {
 			const ctx = makeContext({
 				fermentStatus: "planned",
-				phases: [makePhaseContext("phase-1", 1, "failed")],
+				stages: [makePhaseContext("phase-1", 1, "failed")],
 			})
 			const result = transition(FSM_STATES.PLANNED, FSM_EVENTS.ACTIVATE_PHASE, ctx, {
-				phaseId: "phase-1",
+				stageId: "phase-1",
 			})
 			expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
 			expect(result.error).toBeUndefined()
@@ -337,8 +337,8 @@ describe("Illegal Transitions (Guards)", () => {
 		it("rejects START_STEP when another non-parallel step is running", () => {
 			const ctx = makeContext({
 				fermentStatus: "running",
-				activePhaseId: "phase-1",
-				phases: [
+				activeStageId: "phase-1",
+				stages: [
 					makePhaseContext("phase-1", 1, "active", [
 						makeStepContext("step-1", 1, "running", false), // non-parallel
 						makeStepContext("step-2", 2, "pending", false),
@@ -346,7 +346,7 @@ describe("Illegal Transitions (Guards)", () => {
 				],
 			})
 			const result = transition(FSM_STATES.PHASE_ACTIVE, FSM_EVENTS.START_STEP, ctx, {
-				phaseId: "phase-1",
+				stageId: "phase-1",
 				stepId: "step-2",
 			})
 			expect(result.error).toBeDefined()
@@ -357,8 +357,8 @@ describe("Illegal Transitions (Guards)", () => {
 		it("allows START_STEP when both steps can run parallel", () => {
 			const ctx = makeContext({
 				fermentStatus: "running",
-				activePhaseId: "phase-1",
-				phases: [
+				activeStageId: "phase-1",
+				stages: [
 					makePhaseContext("phase-1", 1, "active", [
 						makeStepContext("step-1", 1, "running", true), // can run parallel
 						makeStepContext("step-2", 2, "pending", true), // can run parallel
@@ -366,7 +366,7 @@ describe("Illegal Transitions (Guards)", () => {
 				],
 			})
 			const result = transition(FSM_STATES.PHASE_ACTIVE, FSM_EVENTS.START_STEP, ctx, {
-				phaseId: "phase-1",
+				stageId: "phase-1",
 				stepId: "step-2",
 			})
 			expect(result.state).toBe(FSM_STATES.STEP_RUNNING)
@@ -378,11 +378,11 @@ describe("Illegal Transitions (Guards)", () => {
 		it("rejects COMPLETE_STEP when step is not running", () => {
 			const ctx = makeContext({
 				fermentStatus: "running",
-				activePhaseId: "phase-1",
-				phases: [makePhaseContext("phase-1", 1, "active", [makeStepContext("step-1", 1, "pending")])],
+				activeStageId: "phase-1",
+				stages: [makePhaseContext("phase-1", 1, "active", [makeStepContext("step-1", 1, "pending")])],
 			})
 			const result = transition(FSM_STATES.STEP_RUNNING, FSM_EVENTS.COMPLETE_STEP, ctx, {
-				phaseId: "phase-1",
+				stageId: "phase-1",
 				stepId: "step-1",
 			})
 			expect(result.error).toBeDefined()
@@ -394,7 +394,7 @@ describe("Illegal Transitions (Guards)", () => {
 		it("rejects PAUSE in PLANNED state", () => {
 			const ctx = makeContext({
 				fermentStatus: "planned",
-				phases: [makePhaseContext("phase-1", 1, "planned")],
+				stages: [makePhaseContext("phase-1", 1, "planned")],
 			})
 			const result = transition(FSM_STATES.PLANNED, FSM_EVENTS.PAUSE, ctx)
 			expect(result.error).toBeDefined()
@@ -406,7 +406,7 @@ describe("Illegal Transitions (Guards)", () => {
 		it("allows RESUME when all phases are terminal so complete_ferment can run", () => {
 			const ctx = makeContext({
 				fermentStatus: "paused",
-				phases: [makePhaseContext("phase-1", 1, "completed")], // all phases done
+				stages: [makePhaseContext("phase-1", 1, "completed")], // all phases done
 			})
 			const result = transition(FSM_STATES.PAUSED, FSM_EVENTS.RESUME, ctx)
 			expect(result.state).toBe(FSM_STATES.PLANNED)
@@ -418,10 +418,10 @@ describe("Illegal Transitions (Guards)", () => {
 		it("rejects START_STEP in PLANNED state", () => {
 			const ctx = makeContext({
 				fermentStatus: "planned",
-				phases: [makePhaseContext("phase-1", 1, "planned", [makeStepContext("step-1", 1, "pending")])],
+				stages: [makePhaseContext("phase-1", 1, "planned", [makeStepContext("step-1", 1, "pending")])],
 			})
 			const result = transition(FSM_STATES.PLANNED, FSM_EVENTS.START_STEP, ctx, {
-				phaseId: "phase-1",
+				stageId: "phase-1",
 				stepId: "step-1",
 			})
 			expect(result.error).toBeDefined()
@@ -437,11 +437,11 @@ describe("Parallel Phase Group Transitions", () => {
 		// ferment is running but the target phase is not the active one
 		const ctx = makeContext({
 			fermentStatus: "running",
-			activePhaseId: "phase-2",
-			phases: [makePhaseContext("phase-1", 1, "planned", [], 1), makePhaseContext("phase-2", 2, "active", [], 1)],
+			activeStageId: "phase-2",
+			stages: [makePhaseContext("phase-1", 1, "planned", [], 1), makePhaseContext("phase-2", 2, "active", [], 1)],
 		})
 		const result = transition(FSM_STATES.PHASE_ACTIVE, FSM_EVENTS.COMPLETE_PHASE, ctx, {
-			phaseId: "phase-1",
+			stageId: "phase-1",
 		})
 		expect(result.error).toBeDefined()
 		expect(result.error).toContain("active")
@@ -450,14 +450,14 @@ describe("Parallel Phase Group Transitions", () => {
 	it("settles to planned when the active phase is the last active parallel sibling", () => {
 		const ctx = makeContext({
 			fermentStatus: "running",
-			activePhaseId: "phase-1",
-			phases: [
+			activeStageId: "phase-1",
+			stages: [
 				makePhaseContext("phase-1", 1, "active", [], 1),
 				makePhaseContext("phase-2", 2, "skipped", [], 1), // same group, terminal
 			],
 		})
 		const result = transition(FSM_STATES.PHASE_ACTIVE, FSM_EVENTS.SKIP_PHASE, ctx, {
-			phaseId: "phase-1",
+			stageId: "phase-1",
 		})
 		expect(result.error).toBeUndefined()
 		expect(result.state).toBe(FSM_STATES.PLANNED)
@@ -466,11 +466,11 @@ describe("Parallel Phase Group Transitions", () => {
 	it("stays phase-active when another parallel phase remains active", () => {
 		const ctx = makeContext({
 			fermentStatus: "running",
-			activePhaseId: "phase-1",
-			phases: [makePhaseContext("phase-1", 1, "active", [], 1), makePhaseContext("phase-2", 2, "active", [], 1)],
+			activeStageId: "phase-1",
+			stages: [makePhaseContext("phase-1", 1, "active", [], 1), makePhaseContext("phase-2", 2, "active", [], 1)],
 		})
 		const result = transition(FSM_STATES.PHASE_ACTIVE, FSM_EVENTS.COMPLETE_PHASE, ctx, {
-			phaseId: "phase-1",
+			stageId: "phase-1",
 		})
 		expect(result.error).toBeUndefined()
 		expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
@@ -487,24 +487,24 @@ describe("Pause/Resume Cycle", () => {
 		expect(result.state).toBe(FSM_STATES.DRAFT)
 
 		// Step 2: Scope with phases
-		ctx = makeContext({ phases: [makePhaseContext("phase-1", 1, "planned")] })
+		ctx = makeContext({ stages: [makePhaseContext("phase-1", 1, "planned")] })
 		result = transition(FSM_STATES.DRAFT, FSM_EVENTS.SCOPE_FERMENT, ctx)
 		expect(result.state).toBe(FSM_STATES.PLANNED)
 
 		// Step 3: Activate phase
 		result = transition(FSM_STATES.PLANNED, FSM_EVENTS.ACTIVATE_PHASE, ctx, {
-			phaseId: "phase-1",
+			stageId: "phase-1",
 		})
 		expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
 
 		// Step 4: Pause
-		ctx = makeContext({ activePhaseId: "phase-1", phases: [makePhaseContext("phase-1", 1, "active")] })
+		ctx = makeContext({ activeStageId: "phase-1", stages: [makePhaseContext("phase-1", 1, "active")] })
 		result = transition(FSM_STATES.PHASE_ACTIVE, FSM_EVENTS.PAUSE, ctx)
 		expect(result.state).toBe(FSM_STATES.PAUSED)
 
 		// Step 5: Resume
 		result = transition(FSM_STATES.PAUSED, FSM_EVENTS.RESUME, ctx, {
-			phaseId: "phase-1",
+			stageId: "phase-1",
 		})
 		expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
 	})
@@ -512,8 +512,8 @@ describe("Pause/Resume Cycle", () => {
 	it("pause/resume preserves context correctly", () => {
 		const ctx = makeContext({
 			fermentStatus: "running",
-			activePhaseId: "phase-1",
-			phases: [
+			activeStageId: "phase-1",
+			stages: [
 				makePhaseContext("phase-1", 1, "active", [
 					makeStepContext("step-1", 1, "pending"),
 					makeStepContext("step-2", 2, "pending"),
@@ -527,7 +527,7 @@ describe("Pause/Resume Cycle", () => {
 
 		// Resume
 		const resumeResult = transition(FSM_STATES.PAUSED, FSM_EVENTS.RESUME, ctx, {
-			phaseId: "phase-1",
+			stageId: "phase-1",
 		})
 		expect(resumeResult.state).toBe(FSM_STATES.PHASE_ACTIVE)
 		expect(resumeResult.error).toBeUndefined()
@@ -590,12 +590,12 @@ describe("Edge Cases", () => {
 		const completedPhase = makePhaseContext("phase-1", 1, "completed", [makeStepContext("step-1", 1, "done")])
 		const ctx = makeContext({
 			fermentStatus: "running",
-			activePhaseId: "phase-1",
-			phases: [completedPhase],
+			activeStageId: "phase-1",
+			stages: [completedPhase],
 		})
 		// Since the only phase is already terminal, FSM state is COMPLETE
 		const result = transition(FSM_STATES.COMPLETE, FSM_EVENTS.COMPLETE_PHASE, ctx, {
-			phaseId: "phase-1",
+			stageId: "phase-1",
 		})
 		expect(result.error).toBeUndefined()
 		expect(result.state).toBe(FSM_STATES.COMPLETE)
@@ -604,11 +604,11 @@ describe("Edge Cases", () => {
 	it("handles SKIP_PHASE with no remaining active phases → PLANNED", () => {
 		const ctx = makeContext({
 			fermentStatus: "running",
-			activePhaseId: "phase-1",
-			phases: [makePhaseContext("phase-1", 1, "active")],
+			activeStageId: "phase-1",
+			stages: [makePhaseContext("phase-1", 1, "active")],
 		})
 		const result = transition(FSM_STATES.PHASE_ACTIVE, FSM_EVENTS.SKIP_PHASE, ctx, {
-			phaseId: "phase-1",
+			stageId: "phase-1",
 		})
 		expect(result.state).toBe(FSM_STATES.PLANNED)
 		expect(result.error).toBeUndefined()
@@ -617,11 +617,11 @@ describe("Edge Cases", () => {
 	it("handles VERIFY_STEP similar to COMPLETE_STEP", () => {
 		const ctx = makeContext({
 			fermentStatus: "running",
-			activePhaseId: "phase-1",
-			phases: [makePhaseContext("phase-1", 1, "active", [makeStepContext("step-1", 1, "running")])],
+			activeStageId: "phase-1",
+			stages: [makePhaseContext("phase-1", 1, "active", [makeStepContext("step-1", 1, "running")])],
 		})
 		const result = transition(FSM_STATES.STEP_RUNNING, FSM_EVENTS.VERIFY_STEP, ctx, {
-			phaseId: "phase-1",
+			stageId: "phase-1",
 			stepId: "step-1",
 		})
 		expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)

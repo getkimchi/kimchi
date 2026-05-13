@@ -40,20 +40,20 @@ function createHarness(): {
 	})
 	if (!scoped.ok) throw new Error(scoped.error.message)
 	const activated = applyAndPersist(scoped.ferment.id, {
-		type: "activate_phase",
-		phaseId: scoped.ferment.phases[0].id,
+		type: "activate_stage",
+		stageId: scoped.ferment.stages[0].id,
 	})
 	if (!activated.ok) throw new Error(activated.error.message)
-	const phase = activated.ferment.phases[0]
+	const phase = activated.ferment.stages[0]
 	const step = phase.steps[0]
 	const started = applyAndPersist(activated.ferment.id, {
 		type: "start_step",
-		phaseId: phase.id,
+		stageId: phase.id,
 		stepId: step.id,
 	})
 	if (!started.ok) throw new Error(started.error.message)
 	const ferment = started.ferment
-	const freshPhase = ferment.phases[0]
+	const freshPhase = ferment.stages[0]
 	const freshStep = freshPhase.steps[0]
 	const ctx = { ui: { notify: vi.fn(), input: vi.fn() } } as unknown as ExtensionCommandContext
 	setActiveSpy.mockClear()
@@ -81,7 +81,7 @@ describe("progress overlay action handlers", () => {
 
 		await handleStepAction("Skip step", ferment, phase, step, ctx, runtime)
 
-		const freshStep = storage.get(ferment.id)?.phases[0].steps[0]
+		const freshStep = storage.get(ferment.id)?.stages[0].steps[0]
 		expect(freshStep?.status).toBe("skipped")
 		expect(setActiveSpy).toHaveBeenCalledWith(expect.objectContaining({ id: ferment.id }))
 		expect(clearStepStartSpy).toHaveBeenCalledWith(ferment.id, phase.id, step.id)
@@ -94,7 +94,7 @@ describe("progress overlay action handlers", () => {
 
 		await handlePhaseAction("Skip phase", ferment, phase, ctx, runtime)
 
-		const freshPhase = storage.get(ferment.id)?.phases[0]
+		const freshPhase = storage.get(ferment.id)?.stages[0]
 		expect(freshPhase?.status).toBe("skipped")
 		expect(setActiveSpy).toHaveBeenCalledWith(expect.objectContaining({ id: ferment.id }))
 		expect(getActive()).toBeUndefined()

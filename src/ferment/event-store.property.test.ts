@@ -99,16 +99,16 @@ function legalCommands(f: Ferment, rng: Rng): Command[] {
 	}
 
 	// Status is planned or running.
-	const active = f.phases.find((p) => p.status === "active")
-	const hasRunning = f.phases.some((p) => p.steps.some((s) => s.status === "running"))
+	const active = f.stages.find((p) => p.status === "active")
+	const hasRunning = f.stages.some((p) => p.steps.some((s) => s.status === "running"))
 
 	// Activate a planned phase.
-	const planned = f.phases.find((p) => p.status === "planned")
+	const planned = f.stages.find((p) => p.status === "planned")
 	if (planned) {
 		if (planned.groupIndex !== undefined) {
 			out.push({ type: "activate_phase_group", groupIndex: planned.groupIndex })
 		} else {
-			out.push({ type: "activate_phase", phaseId: planned.id })
+			out.push({ type: "activate_stage", stageId: planned.id })
 		}
 	}
 
@@ -116,8 +116,8 @@ function legalCommands(f: Ferment, rng: Rng): Command[] {
 		// Refine — only when no step is currently running (audit #4 guard).
 		if (!hasRunning && active.steps.length === 0) {
 			out.push({
-				type: "refine_phase",
-				phaseId: active.id,
+				type: "refine_stage",
+				stageId: active.id,
 				steps: [{ description: "step a" }, { description: "step b" }],
 			})
 		}
@@ -125,13 +125,13 @@ function legalCommands(f: Ferment, rng: Rng): Command[] {
 		// Step lifecycle.
 		const pending = active.steps.find((s) => s.status === "pending")
 		if (pending && !hasRunning) {
-			out.push({ type: "start_step", phaseId: active.id, stepId: pending.id })
+			out.push({ type: "start_step", stageId: active.id, stepId: pending.id })
 		}
 		const running = active.steps.find((s) => s.status === "running")
 		if (running) {
-			out.push({ type: "complete_step", phaseId: active.id, stepId: running.id })
-			out.push({ type: "skip_step", phaseId: active.id, stepId: running.id })
-			out.push({ type: "fail_step", phaseId: active.id, stepId: running.id, error: "boom" })
+			out.push({ type: "complete_step", stageId: active.id, stepId: running.id })
+			out.push({ type: "skip_step", stageId: active.id, stepId: running.id })
+			out.push({ type: "fail_step", stageId: active.id, stepId: running.id, error: "boom" })
 		}
 
 		// Complete phase only if all steps are terminal AND non-empty.
@@ -141,8 +141,8 @@ function legalCommands(f: Ferment, rng: Rng): Command[] {
 				(s) => s.status === "done" || s.status === "verified" || s.status === "skipped" || s.status === "failed",
 			)
 		if (allTerminal) {
-			out.push({ type: "complete_phase", phaseId: active.id, summary: "ok" })
-			out.push({ type: "skip_phase", phaseId: active.id, reason: "skipping" })
+			out.push({ type: "complete_stage", stageId: active.id, summary: "ok" })
+			out.push({ type: "skip_stage", stageId: active.id, reason: "skipping" })
 		}
 	}
 

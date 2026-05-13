@@ -22,7 +22,7 @@
  * parameter so transitions remain deterministic and unit-testable.
  */
 
-import { activateSinglePhase, settleAfterPhaseTerminalPatch } from "./lifecycle.js"
+import { activateSingleStage, settleAfterStageTerminalPatch } from "./lifecycle.js"
 import type {
 	Decision,
 	Ferment,
@@ -31,8 +31,8 @@ import type {
 	JudgeGrade,
 	Memory,
 	MemoryCategory,
-	Phase,
-	PhaseStatus,
+	Stage,
+	StageStatus,
 	Step,
 	StepResult,
 	StepStatus,
@@ -72,26 +72,26 @@ export type Command =
 			value: string
 	  }
 	| { type: "set_mode"; mode: FermentWorkMode }
-	| { type: "activate_phase"; phaseId: string }
+	| { type: "activate_stage"; stageId: string }
 	| { type: "activate_phase_group"; groupIndex: number }
-	| { type: "refine_phase"; phaseId: string; steps: RefineStepInput[] }
-	| { type: "complete_phase"; phaseId: string; summary: string; grade?: JudgeGrade }
-	| { type: "skip_phase"; phaseId: string; reason?: string }
-	| { type: "fail_phase"; phaseId: string; reason: string }
-	| { type: "start_step"; phaseId: string; stepId: string }
+	| { type: "refine_stage"; stageId: string; steps: RefineStepInput[] }
+	| { type: "complete_stage"; stageId: string; summary: string; grade?: JudgeGrade }
+	| { type: "skip_stage"; stageId: string; reason?: string }
+	| { type: "fail_stage"; stageId: string; reason: string }
+	| { type: "start_step"; stageId: string; stepId: string }
 	| {
 			type: "complete_step"
-			phaseId: string
+			stageId: string
 			stepId: string
 			result?: StepResult
 			grade?: JudgeGrade
 			/** Short worker-written summary of what was accomplished. Persisted on
-			 *  the Step so subsequent steps in the same phase can reference it. */
+			 *  the Step so subsequent steps in the same stage can reference it. */
 			summary?: string
 	  }
-	| { type: "verify_step"; phaseId: string; stepId: string; result: StepResult; summary?: string }
-	| { type: "skip_step"; phaseId: string; stepId: string }
-	| { type: "fail_step"; phaseId: string; stepId: string; error?: string }
+	| { type: "verify_step"; stageId: string; stepId: string; result: StepResult; summary?: string }
+	| { type: "skip_step"; stageId: string; stepId: string }
+	| { type: "fail_step"; stageId: string; stepId: string; error?: string }
 	| { type: "complete_ferment"; finalSummary?: string; grade?: JudgeGrade }
 	| { type: "pause" }
 	| { type: "resume" }
@@ -100,18 +100,18 @@ export type Command =
 			type: "add_decision"
 			title: string
 			description: string
-			phaseId?: string
+			stageId?: string
 			stepId?: string
 	  }
 	| {
 			type: "add_memory"
 			category: MemoryCategory
 			content: string
-			phaseId?: string
+			stageId?: string
 			stepId?: string
 	  }
-	| { type: "set_phase_grade"; phaseId: string; grade: JudgeGrade }
-	| { type: "set_step_grade"; phaseId: string; stepId: string; grade: JudgeGrade }
+	| { type: "set_stage_grade"; stageId: string; grade: JudgeGrade }
+	| { type: "set_step_grade"; stageId: string; stepId: string; grade: JudgeGrade }
 	| { type: "set_ferment_grade"; grade: JudgeGrade }
 	| { type: "rename"; name: string }
 
@@ -119,8 +119,8 @@ export type Command =
 
 export type TransitionError =
 	| { code: "FERMENT_NOT_IN_STATUS"; expected: FermentStatus[]; actual: FermentStatus; message: string }
-	| { code: "PHASE_NOT_FOUND"; phaseId: string; message: string }
-	| { code: "PHASE_NOT_IN_STATUS"; phaseId: string; expected: PhaseStatus[]; actual: PhaseStatus; message: string }
+	| { code: "PHASE_NOT_FOUND"; stageId: string; message: string }
+	| { code: "PHASE_NOT_IN_STATUS"; stageId: string; expected: StageStatus[]; actual: StageStatus; message: string }
 	| { code: "STEP_NOT_FOUND"; stepId: string; message: string }
 	| { code: "STEP_NOT_IN_STATUS"; stepId: string; expected: StepStatus[]; actual: StepStatus; message: string }
 	| {
@@ -138,7 +138,7 @@ export type TransitionError =
 	| { code: "PHASE_GROUP_EMPTY"; groupIndex: number; message: string }
 	| {
 			code: "STEP_RUNNING"
-			phaseId: string
+			stageId: string
 			runningStepId: string
 			runningStepIndex: number
 			runningDescription: string
@@ -161,7 +161,7 @@ const VALID_MEMORY_CATEGORIES: readonly MemoryCategory[] = [
 ]
 
 const TERMINAL_STEP_STATUSES: readonly StepStatus[] = ["done", "verified", "skipped", "failed"]
-const TERMINAL_PHASE_STATUSES: readonly PhaseStatus[] = ["completed", "skipped", "failed"]
+const TERMINAL_STAGE_STATUSES: readonly StageStatus[] = ["completed", "skipped", "failed"]
 
 // ─── Public entry point ───────────────────────────────────────────────────────
 
@@ -173,18 +173,18 @@ export function applyCommand(ferment: Ferment, cmd: Command, ctx: TransitionCont
 			return handleUpdateScopeField(ferment, cmd, ctx)
 		case "set_mode":
 			return handleSetMode(ferment, cmd, ctx)
-		case "activate_phase":
-			return handleActivatePhase(ferment, cmd, ctx)
+		case "activate_stage":
+			return handleActivateStage(ferment, cmd, ctx)
 		case "activate_phase_group":
 			return handleActivatePhaseGroup(ferment, cmd, ctx)
-		case "refine_phase":
-			return handleRefinePhase(ferment, cmd, ctx)
-		case "complete_phase":
-			return handleCompletePhase(ferment, cmd, ctx)
-		case "skip_phase":
-			return handleSkipPhase(ferment, cmd, ctx)
-		case "fail_phase":
-			return handleFailPhase(ferment, cmd, ctx)
+		case "refine_stage":
+			return handleRefineStage(ferment, cmd, ctx)
+		case "complete_stage":
+			return handleCompleteStage(ferment, cmd, ctx)
+		case "skip_stage":
+			return handleSkipStage(ferment, cmd, ctx)
+		case "fail_stage":
+			return handleFailStage(ferment, cmd, ctx)
 		case "start_step":
 			return handleStartStep(ferment, cmd, ctx)
 		case "complete_step":
@@ -207,8 +207,8 @@ export function applyCommand(ferment: Ferment, cmd: Command, ctx: TransitionCont
 			return handleAddDecision(ferment, cmd, ctx)
 		case "add_memory":
 			return handleAddMemory(ferment, cmd, ctx)
-		case "set_phase_grade":
-			return handleSetPhaseGrade(ferment, cmd, ctx)
+		case "set_stage_grade":
+			return handleSetStageGrade(ferment, cmd, ctx)
 		case "set_step_grade":
 			return handleSetStepGrade(ferment, cmd, ctx)
 		case "set_ferment_grade":
@@ -244,41 +244,41 @@ function requireFermentStatus(ferment: Ferment, expected: FermentStatus[]): Tran
 	}
 }
 
-function findPhase(ferment: Ferment, phaseId: string): { phase: Phase; index: number } | null {
-	const index = ferment.phases.findIndex((p) => p.id === phaseId)
+function findStage(ferment: Ferment, stageId: string): { stage: Stage; index: number } | null {
+	const index = ferment.stages.findIndex((p) => p.id === stageId)
 	if (index < 0) return null
-	return { phase: ferment.phases[index], index }
+	return { stage: ferment.stages[index], index }
 }
 
-function requirePhase(ferment: Ferment, phaseId: string): { phase: Phase; index: number } | TransitionError {
-	const found = findPhase(ferment, phaseId)
+function requireStage(ferment: Ferment, stageId: string): { stage: Stage; index: number } | TransitionError {
+	const found = findStage(ferment, stageId)
 	if (!found) {
-		return { code: "PHASE_NOT_FOUND", phaseId, message: `Phase "${phaseId}" not found.` }
+		return { code: "PHASE_NOT_FOUND", stageId: stageId, message: `Phase "${stageId}" not found.` }
 	}
 	return found
 }
 
-function requirePhaseStatus(phase: Phase, expected: PhaseStatus[]): TransitionError | null {
-	if (expected.includes(phase.status)) return null
+function requireStageStatus(stage: Stage, expected: StageStatus[]): TransitionError | null {
+	if (expected.includes(stage.status)) return null
 	return {
 		code: "PHASE_NOT_IN_STATUS",
-		phaseId: phase.id,
+		stageId: stage.id,
 		expected,
-		actual: phase.status,
-		message: `Phase "${phase.id}" is "${phase.status}", expected ${expected.map((s) => `"${s}"`).join(" or ")}.`,
+		actual: stage.status,
+		message: `Phase "${stage.id}" is "${stage.status}", expected ${expected.map((s) => `"${s}"`).join(" or ")}.`,
 	}
 }
 
-function findStep(phase: Phase, stepId: string): { step: Step; index: number } | null {
-	const index = phase.steps.findIndex((s) => s.id === stepId)
+function findStep(stage: Stage, stepId: string): { step: Step; index: number } | null {
+	const index = stage.steps.findIndex((s) => s.id === stepId)
 	if (index < 0) return null
-	return { step: phase.steps[index], index }
+	return { step: stage.steps[index], index }
 }
 
-function requireStep(phase: Phase, stepId: string): { step: Step; index: number } | TransitionError {
-	const found = findStep(phase, stepId)
+function requireStep(stage: Stage, stepId: string): { step: Step; index: number } | TransitionError {
+	const found = findStep(stage, stepId)
 	if (!found) {
-		return { code: "STEP_NOT_FOUND", stepId, message: `Step "${stepId}" not found in phase "${phase.id}".` }
+		return { code: "STEP_NOT_FOUND", stepId, message: `Step "${stepId}" not found in phase "${stage.id}".` }
 	}
 	return found
 }
@@ -289,13 +289,13 @@ function isTransitionError(v: unknown): v is TransitionError {
 
 // ─── Field updates ────────────────────────────────────────────────────────────
 
-function setPhase(ferment: Ferment, phaseIndex: number, patch: Partial<Phase>): Phase[] {
-	return ferment.phases.map((p, i) => (i === phaseIndex ? { ...p, ...patch } : p))
+function setStage(ferment: Ferment, stageIndex: number, patch: Partial<Stage>): Stage[] {
+	return ferment.stages.map((p, i) => (i === stageIndex ? { ...p, ...patch } : p))
 }
 
-function setStep(ferment: Ferment, phaseIndex: number, stepIndex: number, patch: Partial<Step>): Phase[] {
-	return ferment.phases.map((p, i) => {
-		if (i !== phaseIndex) return p
+function setStageStep(ferment: Ferment, stageIndex: number, stepIndex: number, patch: Partial<Step>): Stage[] {
+	return ferment.stages.map((p, i) => {
+		if (i !== stageIndex) return p
 		return {
 			...p,
 			steps: p.steps.map((s, j) => (j === stepIndex ? { ...s, ...patch } : s)),
@@ -318,7 +318,7 @@ function handleScope(
 	const guard = requireFermentStatus(ferment, ["draft"])
 	if (guard) return fail(guard)
 
-	const phases: Phase[] = cmd.phases.map((p, i) => {
+	const stages: Stage[] = cmd.phases.map((p, i) => {
 		const steps: Step[] = (p.steps ?? []).map((st, si) => ({
 			id: `step-${si + 1}`,
 			index: si + 1,
@@ -347,8 +347,8 @@ function handleScope(
 	if (cmd.constraints && cmd.constraints.length > 0) {
 		scoping.constraints = { answer: cmd.constraints.join(", "), confirmedAt: ctx.now }
 	}
-	if (phases.length > 0) {
-		scoping.phases = { answer: phases.map((p) => p.name).join(", "), confirmedAt: ctx.now }
+	if (stages.length > 0) {
+		scoping.phases = { answer: stages.map((p) => p.name).join(", "), confirmedAt: ctx.now }
 	}
 
 	return ok(
@@ -358,7 +358,7 @@ function handleScope(
 			successCriteria: cmd.successCriteria,
 			constraints: cmd.constraints,
 			scoping,
-			phases,
+			stages,
 			status: "planned",
 		}),
 	)
@@ -425,27 +425,26 @@ function handleRename(
 	return ok(touch(ferment, ctx, { name: cmd.name }))
 }
 
-// ─── activate_phase ───────────────────────────────────────────────────────────
+// ─── activate_stage ───────────────────────────────────────────────────────────
 
-function handleActivatePhase(
+function handleActivateStage(
 	ferment: Ferment,
-	cmd: Extract<Command, { type: "activate_phase" }>,
+	cmd: Extract<Command, { type: "activate_stage" }>,
 	ctx: TransitionContext,
 ): TransitionResult {
-	const found = requirePhase(ferment, cmd.phaseId)
+	const found = requireStage(ferment, cmd.stageId)
 	if (isTransitionError(found)) return fail(found)
-	const { phase, index } = found
+	const { stage, index } = found
 
-	const guard = requirePhaseStatus(phase, ["planned", "failed"])
+	const guard = requireStageStatus(stage, ["planned", "failed"])
 	if (guard) return fail(guard)
 
-	// Deactivate any other active phase, then activate this one.
-	const phases = activateSinglePhase(ferment.phases, phase.id, ctx.now)
+	const stages = activateSingleStage(ferment.stages, stage.id, ctx.now)
 
 	return ok(
 		touch(ferment, ctx, {
-			phases,
-			activePhaseId: phase.id,
+			stages,
+			activeStageId: stage.id,
 			lastActiveAt: ctx.now,
 			status: "running",
 		}),
@@ -459,8 +458,8 @@ function handleActivatePhaseGroup(
 	cmd: Extract<Command, { type: "activate_phase_group" }>,
 	ctx: TransitionContext,
 ): TransitionResult {
-	const groupPhases = ferment.phases.filter((p) => p.groupIndex === cmd.groupIndex && p.status === "planned")
-	if (groupPhases.length === 0) {
+	const groupStages = ferment.stages.filter((p) => p.groupIndex === cmd.groupIndex && p.status === "planned")
+	if (groupStages.length === 0) {
 		return fail({
 			code: "PHASE_GROUP_EMPTY",
 			groupIndex: cmd.groupIndex,
@@ -468,11 +467,7 @@ function handleActivatePhaseGroup(
 		})
 	}
 
-	// Audit doc finding #1: deactivate any phase that's currently active and
-	// NOT in the target group. Without this sweep, a previously-active
-	// non-group phase stays active alongside the new group, breaking the
-	// "active phases are exactly the target group" invariant.
-	const phases = ferment.phases.map((p) => {
+	const stages = ferment.stages.map((p) => {
 		if (p.groupIndex === cmd.groupIndex && p.status === "planned") {
 			return { ...p, status: "active" as const, startedAt: ctx.now }
 		}
@@ -484,41 +479,37 @@ function handleActivatePhaseGroup(
 
 	return ok(
 		touch(ferment, ctx, {
-			phases,
-			activePhaseId: groupPhases[0].id,
+			stages,
+			activeStageId: groupStages[0].id,
 			lastActiveAt: ctx.now,
 			status: "running",
 		}),
 	)
 }
 
-// ─── refine_phase ─────────────────────────────────────────────────────────────
+// ─── refine_stage ─────────────────────────────────────────────────────────────
 
-function handleRefinePhase(
+function handleRefineStage(
 	ferment: Ferment,
-	cmd: Extract<Command, { type: "refine_phase" }>,
+	cmd: Extract<Command, { type: "refine_stage" }>,
 	ctx: TransitionContext,
 ): TransitionResult {
-	const found = requirePhase(ferment, cmd.phaseId)
+	const found = requireStage(ferment, cmd.stageId)
 	if (isTransitionError(found)) return fail(found)
-	const { phase, index } = found
+	const { stage, index } = found
 
-	const guard = requirePhaseStatus(phase, ["active"])
+	const guard = requireStageStatus(stage, ["active"])
 	if (guard) return fail(guard)
 
-	// Audit doc finding #4: refine_phase rebuilds the entire steps array, so
-	// allowing it through while a step is `running` would silently delete the
-	// in-flight step. The subagent's later `complete_step` would hit
-	// STEP_NOT_FOUND and the work product would be lost. Reject up front.
-	const running = phase.steps.find((s) => s.status === "running")
+	const running = stage.steps.find((s) => s.status === "running")
 	if (running) {
 		return fail({
 			code: "STEP_RUNNING",
-			phaseId: phase.id,
+			stageId: stage.id,
 			runningStepId: running.id,
 			runningStepIndex: running.index,
 			runningDescription: running.description,
-			message: `Cannot refine phase ${phase.index} "${phase.name}" — step ${running.index} ("${running.description}") is currently running. Complete, skip, or fail it before refining.`,
+			message: `Cannot refine phase ${stage.index} "${stage.name}" — step ${running.index} ("${running.description}") is currently running. Complete, skip, or fail it before refining.`,
 		})
 	}
 
@@ -533,7 +524,7 @@ function handleRefinePhase(
 		verification: st.verify ? { command: st.verify, retries: 2, retryDelayMs: 1000 } : undefined,
 	}))
 
-	return ok(touch(ferment, ctx, { phases: setPhase(ferment, index, { steps }) }))
+	return ok(touch(ferment, ctx, { stages: setStage(ferment, index, { steps }) }))
 }
 
 // ─── start_step ───────────────────────────────────────────────────────────────
@@ -543,16 +534,15 @@ function handleStartStep(
 	cmd: Extract<Command, { type: "start_step" }>,
 	ctx: TransitionContext,
 ): TransitionResult {
-	const phaseFound = requirePhase(ferment, cmd.phaseId)
-	if (isTransitionError(phaseFound)) return fail(phaseFound)
-	const { phase, index: phaseIndex } = phaseFound
+	const stageFound = requireStage(ferment, cmd.stageId)
+	if (isTransitionError(stageFound)) return fail(stageFound)
+	const { stage, index: stageIndex } = stageFound
 
-	const stepFound = requireStep(phase, cmd.stepId)
+	const stepFound = requireStep(stage, cmd.stepId)
 	if (isTransitionError(stepFound)) return fail(stepFound)
 	const { step, index: stepIndex } = stepFound
 
-	// Block concurrent start when either step is not parallel-safe.
-	const alreadyRunning = phase.steps.find((s) => s.status === "running" && s.id !== step.id)
+	const alreadyRunning = stage.steps.find((s) => s.status === "running" && s.id !== step.id)
 	if (alreadyRunning && (!alreadyRunning.canRunParallel || !step.canRunParallel)) {
 		return fail({
 			code: "CONCURRENT_NON_PARALLEL_STEP",
@@ -565,7 +555,7 @@ function handleStartStep(
 
 	return ok(
 		touch(ferment, ctx, {
-			phases: setStep(ferment, phaseIndex, stepIndex, { status: "running", startedAt: ctx.now }),
+			stages: setStageStep(ferment, stageIndex, stepIndex, { status: "running", startedAt: ctx.now }),
 		}),
 	)
 }
@@ -577,20 +567,19 @@ function handleCompleteStep(
 	cmd: Extract<Command, { type: "complete_step" }>,
 	ctx: TransitionContext,
 ): TransitionResult {
-	const phaseFound = requirePhase(ferment, cmd.phaseId)
-	if (isTransitionError(phaseFound)) return fail(phaseFound)
-	const { phase, index: phaseIndex } = phaseFound
+	const stageFound = requireStage(ferment, cmd.stageId)
+	if (isTransitionError(stageFound)) return fail(stageFound)
+	const { stage, index: stageIndex } = stageFound
 
-	const stepFound = requireStep(phase, cmd.stepId)
+	const stepFound = requireStep(stage, cmd.stepId)
 	if (isTransitionError(stepFound)) return fail(stepFound)
 	const { index: stepIndex } = stepFound
 
-	// Verify result determines status: verified vs done.
 	const status: StepStatus = cmd.result?.success ? "verified" : "done"
 
 	return ok(
 		touch(ferment, ctx, {
-			phases: setStep(ferment, phaseIndex, stepIndex, {
+			stages: setStageStep(ferment, stageIndex, stepIndex, {
 				status,
 				completedAt: ctx.now,
 				result: cmd.result,
@@ -608,11 +597,11 @@ function handleVerifyStep(
 	cmd: Extract<Command, { type: "verify_step" }>,
 	ctx: TransitionContext,
 ): TransitionResult {
-	const phaseFound = requirePhase(ferment, cmd.phaseId)
-	if (isTransitionError(phaseFound)) return fail(phaseFound)
-	const { phase, index: phaseIndex } = phaseFound
+	const stageFound = requireStage(ferment, cmd.stageId)
+	if (isTransitionError(stageFound)) return fail(stageFound)
+	const { stage, index: stageIndex } = stageFound
 
-	const stepFound = requireStep(phase, cmd.stepId)
+	const stepFound = requireStep(stage, cmd.stepId)
 	if (isTransitionError(stepFound)) return fail(stepFound)
 	const { index: stepIndex } = stepFound
 
@@ -620,10 +609,8 @@ function handleVerifyStep(
 
 	return ok(
 		touch(ferment, ctx, {
-			phases: setStep(ferment, phaseIndex, stepIndex, {
+			stages: setStageStep(ferment, stageIndex, stepIndex, {
 				status,
-				// Use server-side ctx.now rather than the user-supplied result.completedAt
-				// so a misbehaving worker can't backdate or postdate completion.
 				completedAt: ctx.now,
 				result: { ...cmd.result, completedAt: ctx.now },
 				summary: cmd.summary,
@@ -639,17 +626,17 @@ function handleSkipStep(
 	cmd: Extract<Command, { type: "skip_step" }>,
 	ctx: TransitionContext,
 ): TransitionResult {
-	const phaseFound = requirePhase(ferment, cmd.phaseId)
-	if (isTransitionError(phaseFound)) return fail(phaseFound)
-	const { phase, index: phaseIndex } = phaseFound
+	const stageFound = requireStage(ferment, cmd.stageId)
+	if (isTransitionError(stageFound)) return fail(stageFound)
+	const { stage, index: stageIndex } = stageFound
 
-	const stepFound = requireStep(phase, cmd.stepId)
+	const stepFound = requireStep(stage, cmd.stepId)
 	if (isTransitionError(stepFound)) return fail(stepFound)
 	const { index: stepIndex } = stepFound
 
 	return ok(
 		touch(ferment, ctx, {
-			phases: setStep(ferment, phaseIndex, stepIndex, { status: "skipped", completedAt: ctx.now }),
+			stages: setStageStep(ferment, stageIndex, stepIndex, { status: "skipped", completedAt: ctx.now }),
 		}),
 	)
 }
@@ -661,11 +648,11 @@ function handleFailStep(
 	cmd: Extract<Command, { type: "fail_step" }>,
 	ctx: TransitionContext,
 ): TransitionResult {
-	const phaseFound = requirePhase(ferment, cmd.phaseId)
-	if (isTransitionError(phaseFound)) return fail(phaseFound)
-	const { phase, index: phaseIndex } = phaseFound
+	const stageFound = requireStage(ferment, cmd.stageId)
+	if (isTransitionError(stageFound)) return fail(stageFound)
+	const { stage, index: stageIndex } = stageFound
 
-	const stepFound = requireStep(phase, cmd.stepId)
+	const stepFound = requireStep(stage, cmd.stepId)
 	if (isTransitionError(stepFound)) return fail(stepFound)
 	const { index: stepIndex } = stepFound
 
@@ -675,7 +662,7 @@ function handleFailStep(
 
 	return ok(
 		touch(ferment, ctx, {
-			phases: setStep(ferment, phaseIndex, stepIndex, {
+			stages: setStageStep(ferment, stageIndex, stepIndex, {
 				status: "failed",
 				completedAt: ctx.now,
 				result,
@@ -684,69 +671,68 @@ function handleFailStep(
 	)
 }
 
-// ─── complete_phase ───────────────────────────────────────────────────────────
+// ─── complete_stage ───────────────────────────────────────────────────────────
 
-function handleCompletePhase(
+function handleCompleteStage(
 	ferment: Ferment,
-	cmd: Extract<Command, { type: "complete_phase" }>,
+	cmd: Extract<Command, { type: "complete_stage" }>,
 	ctx: TransitionContext,
 ): TransitionResult {
-	const found = requirePhase(ferment, cmd.phaseId)
+	const found = requireStage(ferment, cmd.stageId)
 	if (isTransitionError(found)) return fail(found)
-	const { phase, index } = found
+	const { stage, index } = found
 
-	// Phase must be active to complete.
-	const guard = requirePhaseStatus(phase, ["active"])
+	const guard = requireStageStatus(stage, ["active"])
 	if (guard) return fail(guard)
 
-	const phases = setPhase(ferment, index, {
+	const stages = setStage(ferment, index, {
 		status: "completed",
 		summary: cmd.summary,
 		completedAt: ctx.now,
 		grade: cmd.grade,
 	})
 
-	return ok(touch(ferment, ctx, settleAfterPhaseTerminalPatch(phases)))
+	return ok(touch(ferment, ctx, settleAfterStageTerminalPatch(stages)))
 }
 
-// ─── skip_phase ───────────────────────────────────────────────────────────────
+// ─── skip_stage ───────────────────────────────────────────────────────────────
 
-function handleSkipPhase(
+function handleSkipStage(
 	ferment: Ferment,
-	cmd: Extract<Command, { type: "skip_phase" }>,
+	cmd: Extract<Command, { type: "skip_stage" }>,
 	ctx: TransitionContext,
 ): TransitionResult {
-	const found = requirePhase(ferment, cmd.phaseId)
+	const found = requireStage(ferment, cmd.stageId)
 	if (isTransitionError(found)) return fail(found)
 	const { index } = found
 
-	const phases = setPhase(ferment, index, {
+	const stages = setStage(ferment, index, {
 		status: "skipped",
 		summary: cmd.reason ?? "Skipped",
 		completedAt: ctx.now,
 	})
 
-	return ok(touch(ferment, ctx, settleAfterPhaseTerminalPatch(phases)))
+	return ok(touch(ferment, ctx, settleAfterStageTerminalPatch(stages)))
 }
 
-// ─── fail_phase ───────────────────────────────────────────────────────────────
+// ─── fail_stage ───────────────────────────────────────────────────────────────
 
-function handleFailPhase(
+function handleFailStage(
 	ferment: Ferment,
-	cmd: Extract<Command, { type: "fail_phase" }>,
+	cmd: Extract<Command, { type: "fail_stage" }>,
 	ctx: TransitionContext,
 ): TransitionResult {
-	const found = requirePhase(ferment, cmd.phaseId)
+	const found = requireStage(ferment, cmd.stageId)
 	if (isTransitionError(found)) return fail(found)
 	const { index } = found
 
-	const phases = setPhase(ferment, index, {
+	const stages = setStage(ferment, index, {
 		status: "failed",
 		summary: cmd.reason,
 		completedAt: ctx.now,
 	})
 
-	return ok(touch(ferment, ctx, settleAfterPhaseTerminalPatch(phases)))
+	return ok(touch(ferment, ctx, settleAfterStageTerminalPatch(stages)))
 }
 
 // ─── complete_ferment ─────────────────────────────────────────────────────────
@@ -756,7 +742,7 @@ function handleCompleteFerment(
 	cmd: Extract<Command, { type: "complete_ferment" }>,
 	ctx: TransitionContext,
 ): TransitionResult {
-	const nonTerminal = ferment.phases.filter((p) => !TERMINAL_PHASE_STATUSES.includes(p.status))
+	const nonTerminal = ferment.stages.filter((p) => !TERMINAL_STAGE_STATUSES.includes(p.status))
 	if (nonTerminal.length > 0) {
 		return fail({
 			code: "PHASES_NOT_TERMINAL",
@@ -767,17 +753,10 @@ function handleCompleteFerment(
 
 	const patch: Partial<Ferment> = { status: "complete" }
 	if (cmd.grade) patch.grade = cmd.grade
-	// finalSummary intentionally not stored on Ferment — host can append it
-	// to a custom field via metadata if needed. Today it just goes into the
-	// tool result text.
 	return ok(touch(ferment, ctx, patch))
 }
 
 // ─── pause / resume ───────────────────────────────────────────────────────────
-// Pause flips a running/planned ferment to "paused". Once paused, the bridge
-// (applyAndPersist) refuses every other state-machine command except `resume`
-// and `abandon`, so the planner is structurally prevented from continuing
-// regardless of what's in its conversation context.
 
 function handlePause(
 	ferment: Ferment,
@@ -796,11 +775,11 @@ function handleResume(
 ): TransitionResult {
 	const guard = requireFermentStatus(ferment, ["paused"])
 	if (guard) return fail(guard)
-	const activePhase = ferment.phases.find((p) => p.status === "active")
+	const activeStage = ferment.stages.find((p) => p.status === "active")
 	return ok(
 		touch(ferment, ctx, {
-			status: activePhase ? "running" : "planned",
-			activePhaseId: activePhase?.id,
+			status: activeStage ? "running" : "planned",
+			activeStageId: activeStage?.id,
 		}),
 	)
 }
@@ -833,7 +812,7 @@ function handleAddDecision(
 		id: `D${String(maxIdx + 1).padStart(3, "0")}`,
 		title: cmd.title,
 		description: cmd.description,
-		phaseId: cmd.phaseId,
+		phaseId: cmd.stageId,
 		stepId: cmd.stepId,
 		createdAt: ctx.now,
 	}
@@ -862,25 +841,25 @@ function handleAddMemory(
 		id: `M${String(maxIdx + 1).padStart(3, "0")}`,
 		category: cmd.category,
 		content: cmd.content,
-		phaseId: cmd.phaseId,
+		phaseId: cmd.stageId,
 		stepId: cmd.stepId,
 		createdAt: ctx.now,
 	}
 	return ok(touch(ferment, ctx, { memories: [...ferment.memories, memory] }))
 }
 
-// ─── set_phase_grade ──────────────────────────────────────────────────────────
+// ─── set_stage_grade ──────────────────────────────────────────────────────────
 
-function handleSetPhaseGrade(
+function handleSetStageGrade(
 	ferment: Ferment,
-	cmd: Extract<Command, { type: "set_phase_grade" }>,
+	cmd: Extract<Command, { type: "set_stage_grade" }>,
 	ctx: TransitionContext,
 ): TransitionResult {
-	const found = requirePhase(ferment, cmd.phaseId)
+	const found = requireStage(ferment, cmd.stageId)
 	if (isTransitionError(found)) return fail(found)
 	const { index } = found
 
-	return ok(touch(ferment, ctx, { phases: setPhase(ferment, index, { grade: cmd.grade }) }))
+	return ok(touch(ferment, ctx, { stages: setStage(ferment, index, { grade: cmd.grade }) }))
 }
 
 // ─── set_step_grade ───────────────────────────────────────────────────────────
@@ -890,15 +869,15 @@ function handleSetStepGrade(
 	cmd: Extract<Command, { type: "set_step_grade" }>,
 	ctx: TransitionContext,
 ): TransitionResult {
-	const phaseFound = requirePhase(ferment, cmd.phaseId)
-	if (isTransitionError(phaseFound)) return fail(phaseFound)
-	const { phase, index: phaseIndex } = phaseFound
+	const stageFound = requireStage(ferment, cmd.stageId)
+	if (isTransitionError(stageFound)) return fail(stageFound)
+	const { stage, index: stageIndex } = stageFound
 
-	const stepFound = requireStep(phase, cmd.stepId)
+	const stepFound = requireStep(stage, cmd.stepId)
 	if (isTransitionError(stepFound)) return fail(stepFound)
 	const { index: stepIndex } = stepFound
 
-	return ok(touch(ferment, ctx, { phases: setStep(ferment, phaseIndex, stepIndex, { grade: cmd.grade }) }))
+	return ok(touch(ferment, ctx, { stages: setStageStep(ferment, stageIndex, stepIndex, { grade: cmd.grade }) }))
 }
 
 // ─── set_ferment_grade ────────────────────────────────────────────────────────
@@ -913,4 +892,5 @@ function handleSetFermentGrade(
 
 // ─── Re-exports for callers that need the constants ──────────────────────────
 
-export { TERMINAL_PHASE_STATUSES, TERMINAL_STEP_STATUSES, VALID_MEMORY_CATEGORIES }
+export { TERMINAL_STAGE_STATUSES, TERMINAL_STEP_STATUSES, VALID_MEMORY_CATEGORIES }
+export { TERMINAL_STAGE_STATUSES as TERMINAL_PHASE_STATUSES }

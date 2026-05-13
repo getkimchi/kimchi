@@ -16,7 +16,7 @@ import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { judgeGradePhase, judgeSuggestCorrectiveStep } from "../judge.js"
 import { isPlanFerment } from "../modes.js"
 import { onPhaseCompleted } from "../nudge.js"
-import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
+import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../stage-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { createApplyAndPersist, failedToolResult, resolvePhase, toolErr, toolOk } from "../tool-helpers.js"
 import { ActivateParams, CompletePhaseParams, FailPhaseParams, RefineParams, SkipPhaseParams } from "../tool-schemas.js"
@@ -79,7 +79,7 @@ export async function completePhase(
 	if (!phase) return toolErr("Phase not found.")
 
 	// FSM validation: complete_phase requires all phases to be terminal
-	const fsmError = validateFsmTransition(f, "COMPLETE_PHASE", { phaseId: phase.id })
+	const fsmError = validateFsmTransition(f, "COMPLETE_PHASE", { stageId: phase.id })
 	if (fsmError) return toolErr(fsmError)
 
 	// Capture the phase shape BEFORE transition for grade computation
@@ -90,8 +90,8 @@ export async function completePhase(
 
 	// Step 2: transition phase to completed.
 	const completeOutcome = applyAndPersist(params.ferment_id, {
-		type: "complete_phase",
-		phaseId: phase.id,
+		type: "complete_stage",
+		stageId: phase.id,
 		summary: params.summary,
 	})
 	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
@@ -105,8 +105,8 @@ export async function completePhase(
 
 	// Step 4: persist the grade.
 	const gradeOutcome = applyAndPersist(params.ferment_id, {
-		type: "set_phase_grade",
-		phaseId: phase.id,
+		type: "set_stage_grade",
+		stageId: phase.id,
 		grade: phaseGrade,
 	})
 	if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
@@ -132,7 +132,7 @@ export async function completePhase(
 
 	services.onPhaseCompleted(pi)
 	const fresh = gradeOutcome.ferment
-	const next = fresh.phases.find((p) => p.status === "planned")
+	const next = fresh.stages.find((p) => p.status === "planned")
 	const gradeNote = `  Grade: ${phaseGrade.grade} — ${phaseGrade.rationale}`
 
 	if (!next) {
@@ -142,7 +142,7 @@ export async function completePhase(
 	// Plan-mode TUI gate: dropdown review of completed phase + next-phase preview.
 	if (services.isPlanMode(fresh) && ctx?.ui?.select) {
 		const MAX_STEP_DESC = 80
-		const completedPhase = fresh.phases.find((p) => p.id === phase.id)
+		const completedPhase = fresh.stages.find((p) => p.id === phase.id)
 		const stepLines =
 			completedPhase?.steps
 				.map((st) => {
@@ -199,14 +199,14 @@ export async function completePhase(
 	return toolOk(`Phase done.${gradeNote}\nNext: "${next.name}".`)
 }
 
-export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
+export function registerStageTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const phaseServices: PhaseHandlerServices = {
 		...defaultPhaseHandlerServices,
 		onPhaseCompleted: (targetPi) => onPhaseCompleted(targetPi, runtime),
 	}
 	pi.registerTool({
-		name: "activate_phase",
+		name: "activate_stage",
 		label: "Activate Phase",
 		description: "Start a planned phase.",
 		parameters: ActivateParams,
@@ -216,16 +216,16 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
 
-			let target = params.phase_id ? f.phases.find((p) => p.id === params.phase_id) : undefined
+			let target = params.phase_id ? f.stages.find((p) => p.id === params.phase_id) : undefined
 			if (!target && params.phase_id) {
 				const name = params.phase_id.toLowerCase()
-				target = f.phases.find((p) => p.name.toLowerCase().includes(name))
+				target = f.stages.find((p) => p.name.toLowerCase().includes(name))
 			}
-			if (!target) target = f.phases.find((p) => p.status === "failed") ?? findFirstPlannedPhase(f)
+			if (!target) target = f.stages.find((p) => p.status === "failed") ?? findFirstPlannedPhase(f)
 			if (!target) return toolErr("No planned or failed phases to activate.")
 
 			// FSM validation: ensure phase activation is allowed
-			const fsmError = validateFsmTransition(f, "ACTIVATE_PHASE", { phaseId: target.id })
+			const fsmError = validateFsmTransition(f, "ACTIVATE_PHASE", { stageId: target.id })
 			if (fsmError) return toolErr(fsmError)
 
 			// Detect parallel group — activate all siblings at once
@@ -239,7 +239,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				// Capture git HEAD per phase so the grader can diff each one independently.
 				const headRef = phaseServices.captureGitHead()
 				if (headRef) {
-					for (const p of outcome.ferment.phases) {
+					for (const p of outcome.ferment.stages) {
 						if (p.groupIndex === target.groupIndex && p.status === "active") {
 							runtime.setPhaseStartRef(params.ferment_id, p.id, headRef)
 						}
@@ -247,7 +247,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				}
 
 				const fresh = outcome.ferment
-				const groupPhases = fresh.phases.filter((p) => p.groupIndex === target.groupIndex && p.status === "active")
+				const groupPhases = fresh.stages.filter((p) => p.groupIndex === target.groupIndex && p.status === "active")
 				const phaseLines = groupPhases
 					.map((gp) => {
 						const stepList =
@@ -266,7 +266,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				)
 			}
 
-			const outcome = applyAndPersist(params.ferment_id, { type: "activate_phase", phaseId: target.id })
+			const outcome = applyAndPersist(params.ferment_id, { type: "activate_stage", stageId: target.id })
 			if (!outcome.ok) return failedToolResult(outcome.error)
 
 			// Capture git HEAD so the phase grader can diff against it later.
@@ -274,7 +274,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			if (headRef) runtime.setPhaseStartRef(params.ferment_id, target.id, headRef)
 
 			const fresh = outcome.ferment
-			const activated = fresh.phases.find((p) => p.id === target.id)
+			const activated = fresh.stages.find((p) => p.id === target.id)
 			const stepList =
 				activated && activated.steps.length > 0
 					? `\nSteps:\n${activated.steps.map((st) => `  ${st.index}. [${st.id}] ${st.description}`).join("\n")}`
@@ -290,7 +290,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 	})
 
 	pi.registerTool({
-		name: "refine_phase",
+		name: "refine_stage",
 		label: "Refine Phase",
 		description: "Add steps to an active phase. Overwrites existing. Use the phase_id returned by activate_phase.",
 		parameters: RefineParams,
@@ -298,16 +298,16 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			// Phase resolution: exact id → name substring → active phase fallback.
 			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
-			let phase = f.phases.find((p) => p.id === params.phase_id)
+			let phase = f.stages.find((p) => p.id === params.phase_id)
 			if (!phase) {
 				const needle = params.phase_id.toLowerCase()
-				phase = f.phases.find((p) => p.name.toLowerCase().includes(needle))
+				phase = f.stages.find((p) => p.name.toLowerCase().includes(needle))
 			}
-			if (!phase) phase = f.phases.find((p) => p.status === "active")
+			if (!phase) phase = f.stages.find((p) => p.status === "active")
 			if (!phase) {
 				return toolErr(
 					`Phase not found. Active phases: ${
-						f.phases
+						f.stages
 							.filter((p) => p.status === "active")
 							.map((p) => `${p.id} (${p.name})`)
 							.join(", ") || "none"
@@ -316,12 +316,12 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			}
 
 			// FSM validation: refine_phase is only valid in PHASE_ACTIVE state
-			const fsmError = validateFsmTransition(f, "REFINE_PHASE", { phaseId: phase.id })
+			const fsmError = validateFsmTransition(f, "REFINE_PHASE", { stageId: phase.id })
 			if (fsmError) return toolErr(fsmError)
 
 			const outcome = applyAndPersist(params.ferment_id, {
-				type: "refine_phase",
-				phaseId: phase.id,
+				type: "refine_stage",
+				stageId: phase.id,
 				steps: params.steps,
 			})
 			if (!outcome.ok) {
@@ -332,7 +332,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				return failedToolResult(outcome.error)
 			}
 
-			const refined = outcome.ferment.phases.find((p) => p.id === phase.id)
+			const refined = outcome.ferment.stages.find((p) => p.id === phase.id)
 			const stepList = refined?.steps.map((st, i) => `  ${i + 1}. [step-${i + 1}] ${st.description}`).join("\n") ?? ""
 			return toolOk(
 				`"${phase.name}" refined with ${refined?.steps.length ?? 0} step(s).\nferment_id: ${outcome.ferment.id}\nphase_id: ${phase.id}\n${stepList}\nCall start_step with step_id to begin.`,
@@ -341,7 +341,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 	})
 
 	pi.registerTool({
-		name: "complete_phase",
+		name: "complete_stage",
 		label: "Complete Phase",
 		description: "Mark phase as completed. Judge grades the phase based on step results.",
 		parameters: CompletePhaseParams,
@@ -351,7 +351,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 	})
 
 	pi.registerTool({
-		name: "skip_phase",
+		name: "skip_stage",
 		label: "Skip Phase",
 		description: "Skip a phase.",
 		parameters: SkipPhaseParams,
@@ -363,12 +363,12 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			if (!phase) return toolErr("Phase not found.")
 
 			// FSM validation: phase must be active to skip
-			const fsmError = validateFsmTransition(f, "SKIP_PHASE", { phaseId: phase.id })
+			const fsmError = validateFsmTransition(f, "SKIP_PHASE", { stageId: phase.id })
 			if (fsmError) return toolErr(fsmError)
 
 			const outcome = applyAndPersist(params.ferment_id, {
-				type: "skip_phase",
-				phaseId: phase.id,
+				type: "skip_stage",
+				stageId: phase.id,
 				reason: params.reason,
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)
@@ -377,7 +377,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 	})
 
 	pi.registerTool({
-		name: "fail_phase",
+		name: "fail_stage",
 		label: "Fail Phase",
 		description: "Mark a phase as failed with a reason.",
 		parameters: FailPhaseParams,
@@ -388,12 +388,12 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			if (!phase) return toolErr("Phase not found.")
 
 			// FSM validation: phase must be active to fail
-			const fsmError = validateFsmTransition(f, "FAIL_PHASE", { phaseId: phase.id })
+			const fsmError = validateFsmTransition(f, "FAIL_PHASE", { stageId: phase.id })
 			if (fsmError) return toolErr(fsmError)
 
 			const outcome = applyAndPersist(params.ferment_id, {
-				type: "fail_phase",
-				phaseId: phase.id,
+				type: "fail_stage",
+				stageId: phase.id,
 				reason: params.reason,
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)

@@ -50,11 +50,11 @@ export const FSM_EVENTS = {
 	CREATE_FERMENT: "create_ferment",
 	SCOPE_FERMENT: "scope_ferment",
 	SET_MODE: "set_mode",
-	ACTIVATE_PHASE: "activate_phase",
-	REFINE_PHASE: "refine_phase",
-	COMPLETE_PHASE: "complete_phase",
-	SKIP_PHASE: "skip_phase",
-	FAIL_PHASE: "fail_phase",
+	ACTIVATE_PHASE: "activate_stage",
+	REFINE_PHASE: "refine_stage",
+	COMPLETE_PHASE: "complete_stage",
+	SKIP_PHASE: "skip_stage",
+	FAIL_PHASE: "fail_stage",
 	START_STEP: "start_step",
 	COMPLETE_STEP: "complete_step",
 	VERIFY_STEP: "verify_step",
@@ -63,7 +63,7 @@ export const FSM_EVENTS = {
 	PAUSE: "pause",
 	RESUME: "resume",
 	SET_STEP_GRADE: "set_step_grade",
-	SET_PHASE_GRADE: "set_phase_grade",
+	SET_PHASE_GRADE: "set_stage_grade",
 	SET_FERMENT_GRADE: "set_ferment_grade",
 	ABANDON: "abandon",
 } as const
@@ -92,8 +92,8 @@ export interface StepContext {
 export interface FermentFsmContext {
 	/** FSM maps FermentStatus to FsmState */
 	fermentStatus: FermentStatus
-	activePhaseId?: string
-	phases: PhaseContext[]
+	activeStageId?: string
+	stages: PhaseContext[]
 }
 
 // ─── Transition Result ────────────────────────────────────────────────────────
@@ -106,9 +106,11 @@ export interface FsmTransitionResult {
 // ─── Event Parameters ─────────────────────────────────────────────────────────
 
 export interface EventParams {
-	phaseId?: string
+	stageId?: string
 	stepId?: string
 	mode?: string
+	/** @deprecated Use stageId */
+	phaseId?: string
 }
 
 // ─── Guard helpers ────────────────────────────────────────────────────────────
@@ -118,15 +120,15 @@ type GuardFn = (ctx: FermentFsmContext, params: EventParams) => string | null
 const GUARD_ERRORS = {
 	PHASE_NOT_FOUND: (id: string) => `Phase "${id}" not found.`,
 	PHASE_NOT_ACTIVE: (id: string, status: PhaseStatus) => `Phase "${id}" is "${status}", expected "active".`,
-	STEP_NOT_FOUND: (id: string, phaseId: string) => `Step "${id}" not found in phase "${phaseId}".`,
+	STEP_NOT_FOUND: (id: string, stageId: string) => `Step "${id}" not found in phase "${stageId}".`,
 	STEP_NOT_RUNNING: (id: string, status: StepStatus) => `Step "${id}" is "${status}", expected "running".`,
 	CONCURRENT_STEP: (runningId: string) =>
 		`Cannot start new step — step "${runningId}" is already running (non-parallel).`,
 } as const
 
-function findPhaseById(ctx: FermentFsmContext, phaseId: string): PhaseContext | string {
-	const phase = ctx.phases.find((p) => p.id === phaseId)
-	if (!phase) return GUARD_ERRORS.PHASE_NOT_FOUND(phaseId)
+function findPhaseById(ctx: FermentFsmContext, stageId: string): PhaseContext | string {
+	const phase = ctx.stages.find((p) => p.id === stageId)
+	if (!phase) return GUARD_ERRORS.PHASE_NOT_FOUND(stageId)
 	return phase
 }
 
@@ -137,8 +139,8 @@ function findStepInPhase(phase: PhaseContext, stepId: string): StepContext | str
 }
 
 function hasNonParallelRunningStep(ctx: FermentFsmContext, newStepId: string): string | null {
-	if (!ctx.activePhaseId) return null
-	const activePhase = ctx.phases.find((p) => p.id === ctx.activePhaseId)
+	if (!ctx.activeStageId) return null
+	const activePhase = ctx.stages.find((p) => p.id === ctx.activeStageId)
 	if (!activePhase) return null
 
 	const runningStep = activePhase.steps.find((s) => s.status === "running" && s.id !== newStepId)
@@ -151,10 +153,10 @@ function hasNonParallelRunningStep(ctx: FermentFsmContext, newStepId: string): s
 }
 
 function phaseTerminalTarget(ctx: FermentFsmContext, params: EventParams): FsmState {
-	const terminalPhaseId = params.phaseId
+	const terminalPhaseId = params.stageId
 	// applyCommand keeps non-parallel phases mutually exclusive; any other active
 	// phase here represents a parallel sibling that should keep the ferment running.
-	const anotherActivePhase = ctx.phases.find((p) => p.status === "active" && p.id !== terminalPhaseId)
+	const anotherActivePhase = ctx.stages.find((p) => p.status === "active" && p.id !== terminalPhaseId)
 	return anotherActivePhase ? FSM_STATES.PHASE_ACTIVE : FSM_STATES.PLANNED
 }
 
@@ -168,8 +170,8 @@ function phaseTerminalTarget(ctx: FermentFsmContext, params: EventParams): FsmSt
 
 const GUARDS: Record<string, GuardFn> = {
 	phaseExistsAndPlanned: (ctx, params) => {
-		if (!params.phaseId) return "Missing phaseId"
-		const phase = findPhaseById(ctx, params.phaseId)
+		if (!params.stageId) return "Missing stageId"
+		const phase = findPhaseById(ctx, params.stageId)
 		if (typeof phase === "string") return phase
 		if (phase.status !== "planned" && phase.status !== "failed") {
 			return `Phase "${phase.id}" is "${phase.status}", expected "planned" or "failed".`
@@ -178,8 +180,8 @@ const GUARDS: Record<string, GuardFn> = {
 	},
 
 	phaseActive: (ctx, params) => {
-		if (!params.phaseId) return "Missing phaseId"
-		const phase = findPhaseById(ctx, params.phaseId)
+		if (!params.stageId) return "Missing stageId"
+		const phase = findPhaseById(ctx, params.stageId)
 		if (typeof phase === "string") return phase
 		if (phase.status !== "active") {
 			return GUARD_ERRORS.PHASE_NOT_ACTIVE(phase.id, phase.status)
@@ -193,8 +195,8 @@ const GUARDS: Record<string, GuardFn> = {
 	},
 
 	stepCompleted: (ctx, params) => {
-		if (!params.phaseId || !params.stepId) return "Missing phaseId or stepId"
-		const phase = findPhaseById(ctx, params.phaseId)
+		if (!params.stageId || !params.stepId) return "Missing stageId or stepId"
+		const phase = findPhaseById(ctx, params.stageId)
 		if (typeof phase === "string") return phase
 		const step = findStepInPhase(phase, params.stepId)
 		if (typeof step === "string") return step
@@ -205,8 +207,8 @@ const GUARDS: Record<string, GuardFn> = {
 	},
 
 	stepSkipped: (ctx, params) => {
-		if (!params.phaseId || !params.stepId) return "Missing phaseId or stepId"
-		const phase = findPhaseById(ctx, params.phaseId)
+		if (!params.stageId || !params.stepId) return "Missing stageId or stepId"
+		const phase = findPhaseById(ctx, params.stageId)
 		if (typeof phase === "string") return phase
 		const step = findStepInPhase(phase, params.stepId)
 		if (typeof step === "string") return step
@@ -217,8 +219,8 @@ const GUARDS: Record<string, GuardFn> = {
 	},
 
 	stepFailed: (ctx, params) => {
-		if (!params.phaseId || !params.stepId) return "Missing phaseId or stepId"
-		const phase = findPhaseById(ctx, params.phaseId)
+		if (!params.stageId || !params.stepId) return "Missing stageId or stepId"
+		const phase = findPhaseById(ctx, params.stageId)
 		if (typeof phase === "string") return phase
 		const step = findStepInPhase(phase, params.stepId)
 		if (typeof step === "string") return step
@@ -229,11 +231,11 @@ const GUARDS: Record<string, GuardFn> = {
 	},
 
 	hasActiveOrPlannedPhase: (ctx) => {
-		if (ctx.activePhaseId) {
-			const phase = ctx.phases.find((p) => p.id === ctx.activePhaseId)
+		if (ctx.activeStageId) {
+			const phase = ctx.stages.find((p) => p.id === ctx.activeStageId)
 			if (phase && phase.status === "active") return null
 		}
-		const planned = ctx.phases.find((p) => p.status === "planned")
+		const planned = ctx.stages.find((p) => p.status === "planned")
 		if (planned) return null
 		return "No active or planned phases to resume."
 	},
@@ -312,8 +314,8 @@ const TRANSITIONS: TransitionMap = {
 	[FSM_STATES.PAUSED]: {
 		[FSM_EVENTS.RESUME]: {
 			target: (ctx) => {
-				if (ctx.activePhaseId) {
-					const phase = ctx.phases.find((p) => p.id === ctx.activePhaseId)
+				if (ctx.activeStageId) {
+					const phase = ctx.stages.find((p) => p.id === ctx.activeStageId)
 					if (phase && phase.status === "active") return FSM_STATES.PHASE_ACTIVE
 				}
 				return FSM_STATES.PLANNED

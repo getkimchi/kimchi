@@ -10,7 +10,7 @@
 import { commandToEvents } from "../../ferment/event-mapper.js"
 import type { Command, TransitionError } from "../../ferment/state-machine.js"
 import { applyCommand } from "../../ferment/state-machine.js"
-import type { Ferment, Phase, Step } from "../../ferment/types.js"
+import type { Ferment, Phase, Stage, Step } from "../../ferment/types.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 
 // ─── Tool result builders ─────────────────────────────────────────────────────
@@ -28,17 +28,20 @@ export function toolErr(text: string) {
 // ─── Resolvers ────────────────────────────────────────────────────────────────
 
 /** Resolve a phase by exact id → name substring → active phase. */
-export function resolvePhase(f: Ferment, phaseId: string): Phase | undefined {
-	let phase = f.phases.find((p) => p.id === phaseId)
-	if (!phase) {
-		const needle = phaseId.toLowerCase()
-		phase = f.phases.find((p) => p.name.toLowerCase().includes(needle))
+export function resolveStage(f: Ferment, stageId: string): Stage | undefined {
+	let stage = f.stages.find((p) => p.id === stageId)
+	if (!stage) {
+		const needle = stageId.toLowerCase()
+		stage = f.stages.find((p) => p.name.toLowerCase().includes(needle))
 	}
-	if (!phase) {
-		phase = f.phases.find((p) => p.status === "active")
+	if (!stage) {
+		stage = f.stages.find((p) => p.status === "active")
 	}
-	return phase
+	return stage
 }
+
+/** @deprecated Use resolveStage */
+export const resolvePhase = resolveStage
 
 /** Resolve a step by exact id → step-N index format. */
 export function resolveStep(phase: Phase, stepId: string): Step | undefined {

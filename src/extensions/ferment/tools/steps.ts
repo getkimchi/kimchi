@@ -12,7 +12,7 @@ import type { JudgeGrade, StepResult } from "../../../ferment/types.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { type JudgeVerdict, judgeGradeStep, judgeStepVerification } from "../judge.js"
 import { onStepCompleted } from "../nudge.js"
-import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
+import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../stage-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { createApplyAndPersist, failedToolResult, resolvePhase, resolveStep, toolErr, toolOk } from "../tool-helpers.js"
 import { CompleteStepParams, FailStepParams, StepActionParams, VerifyParams } from "../tool-schemas.js"
@@ -136,7 +136,7 @@ export async function startStep(
 		)
 	}
 
-	const fsmError = validateFsmTransition(f, "START_STEP", { phaseId: phase.id, stepId: step.id })
+	const fsmError = validateFsmTransition(f, "START_STEP", { stageId: phase.id, stepId: step.id })
 	if (fsmError) return toolErr(fsmError)
 
 	const startCount = runtime.bumpStepStart(f.id, phase.id, step.id)
@@ -160,7 +160,7 @@ export async function startStep(
 			if (choice === skipLabel) {
 				const skipOutcome = applyAndPersist(f.id, {
 					type: "skip_step",
-					phaseId: phase.id,
+					stageId: phase.id,
 					stepId: step.id,
 				})
 				if (!skipOutcome.ok) return failedToolResult(skipOutcome.error)
@@ -187,7 +187,7 @@ Do NOT call start_step again without user input.`,
 
 	const outcome = applyAndPersist(params.ferment_id, {
 		type: "start_step",
-		phaseId: phase.id,
+		stageId: phase.id,
 		stepId: step.id,
 	})
 	if (!outcome.ok) {
@@ -202,7 +202,7 @@ Do NOT call start_step again without user input.`,
 	const stepHeadRef = services.captureGitHead()
 	if (stepHeadRef) runtime.setStepStartRef(params.ferment_id, phase.id, step.id, stepHeadRef)
 
-	const freshPhase = outcome.ferment.phases.find((p) => p.id === phase.id)
+	const freshPhase = outcome.ferment.stages.find((p) => p.id === phase.id)
 	const freshStep = freshPhase?.steps.find((s) => s.id === step.id)
 	const workerModel = freshStep?.workerModel ?? "minimax-m2.7"
 
@@ -254,13 +254,13 @@ export async function completeStep(
 	const step = resolveStep(phase, params.step_id)
 	if (!step) return toolErr("Step not found.")
 
-	const fsmError = validateFsmTransition(f, "COMPLETE_STEP", { phaseId: phase.id, stepId: step.id })
+	const fsmError = validateFsmTransition(f, "COMPLETE_STEP", { stageId: phase.id, stepId: step.id })
 	if (fsmError) return toolErr(fsmError)
 
 	if (!step.verification) {
 		const completeOutcome = applyAndPersist(params.ferment_id, {
 			type: "complete_step",
-			phaseId: phase.id,
+			stageId: phase.id,
 			stepId: step.id,
 			summary: params.summary,
 		})
@@ -272,7 +272,7 @@ export async function completeStep(
 		const grade = await services.judgeGradeStep(step.description, params.summary ?? "", undefined, stepEvidence)
 		const gradeOutcome = applyAndPersist(params.ferment_id, {
 			type: "set_step_grade",
-			phaseId: phase.id,
+			stageId: phase.id,
 			stepId: step.id,
 			grade,
 		})
@@ -300,7 +300,7 @@ export async function completeStep(
 
 	const verifyOutcome = applyAndPersist(params.ferment_id, {
 		type: "verify_step",
-		phaseId: phase.id,
+		stageId: phase.id,
 		stepId: step.id,
 		result: verifyResult,
 		summary: params.summary,
@@ -319,7 +319,7 @@ export async function completeStep(
 		)
 		const gradeOutcome = applyAndPersist(params.ferment_id, {
 			type: "set_step_grade",
-			phaseId: phase.id,
+			stageId: phase.id,
 			stepId: step.id,
 			grade,
 		})
@@ -349,7 +349,7 @@ export async function completeStep(
 		)
 		const gradeOutcome = applyAndPersist(params.ferment_id, {
 			type: "set_step_grade",
-			phaseId: phase.id,
+			stageId: phase.id,
 			stepId: step.id,
 			grade,
 		})
@@ -362,7 +362,7 @@ export async function completeStep(
 
 	const failOutcome = applyAndPersist(params.ferment_id, {
 		type: "fail_step",
-		phaseId: phase.id,
+		stageId: phase.id,
 		stepId: step.id,
 		error: `Verification failed (exit ${exitCode}): ${judgeVerdict.reason}`,
 	})
@@ -420,7 +420,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 			if (!step) return toolErr("Step not found.")
 
 			// FSM validation: ensure step verification is allowed
-			const fsmError = validateFsmTransition(f, "VERIFY_STEP", { phaseId: phase.id, stepId: step.id })
+			const fsmError = validateFsmTransition(f, "VERIFY_STEP", { stageId: phase.id, stepId: step.id })
 			if (fsmError) return toolErr(fsmError)
 
 			let exitCode = 0
@@ -462,7 +462,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "verify_step",
-				phaseId: phase.id,
+				stageId: phase.id,
 				stepId: step.id,
 				result,
 				summary: params.summary,
@@ -489,12 +489,12 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 			if (!step) return toolErr("Step not found.")
 
 			// FSM validation: ensure step skip is allowed
-			const fsmError = validateFsmTransition(f, "SKIP_STEP", { phaseId: phase.id, stepId: step.id })
+			const fsmError = validateFsmTransition(f, "SKIP_STEP", { stageId: phase.id, stepId: step.id })
 			if (fsmError) return toolErr(fsmError)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "skip_step",
-				phaseId: phase.id,
+				stageId: phase.id,
 				stepId: step.id,
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)
@@ -518,12 +518,12 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 			if (!step) return toolErr("Step not found.")
 
 			// FSM validation: ensure step fail is allowed
-			const fsmError = validateFsmTransition(f, "FAIL_STEP", { phaseId: phase.id, stepId: step.id })
+			const fsmError = validateFsmTransition(f, "FAIL_STEP", { stageId: phase.id, stepId: step.id })
 			if (fsmError) return toolErr(fsmError)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "fail_step",
-				phaseId: phase.id,
+				stageId: phase.id,
 				stepId: step.id,
 				error: params.error,
 			})

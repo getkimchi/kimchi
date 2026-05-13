@@ -28,7 +28,7 @@ describe("FermentStorage v4", () => {
 			const f = storage.create("Auth rewrite")
 			expect(f.name).toBe("Auth rewrite")
 			expect(f.status).toBe("draft")
-			expect(f.phases).toEqual([])
+			expect(f.stages).toEqual([])
 			expect(f.decisions).toEqual([])
 			expect(f.memories).toEqual([])
 			expect(f.createdAt).toBeTruthy()
@@ -148,7 +148,7 @@ describe("FermentStorage v4", () => {
 				{ id: "p2", index: 2, name: "Phase 2", goal: "G2", status: "planned", steps: [] },
 			]
 			const updated = storage.setPhases(f.id, phases)
-			expect(updated?.phases).toHaveLength(2)
+			expect(updated?.stages).toHaveLength(2)
 			expect(updated?.status).toBe("draft")
 		})
 
@@ -165,9 +165,9 @@ describe("FermentStorage v4", () => {
 				{ id: "p2", index: 2, name: "Phase 2", goal: "G2", status: "planned", steps: [] },
 			])
 			const updated = storage.activatePhase(f.id, "p1")
-			expect(updated?.phases[0]?.status).toBe("active")
-			expect(updated?.phases[0]?.startedAt).toBeTruthy()
-			expect(updated?.activePhaseId).toBe("p1")
+			expect(updated?.stages[0]?.status).toBe("active")
+			expect(updated?.stages[0]?.startedAt).toBeTruthy()
+			expect(updated?.activeStageId).toBe("p1")
 		})
 
 		it("deactivates any previously active phase", () => {
@@ -177,8 +177,8 @@ describe("FermentStorage v4", () => {
 				{ id: "p2", index: 2, name: "Phase 2", goal: "G2", status: "planned", steps: [] },
 			])
 			const updated = storage.activatePhase(f.id, "p2")
-			expect(updated?.phases[0]?.status).toBe("planned")
-			expect(updated?.phases[1]?.status).toBe("active")
+			expect(updated?.stages[0]?.status).toBe("planned")
+			expect(updated?.stages[1]?.status).toBe("active")
 		})
 	})
 
@@ -187,9 +187,9 @@ describe("FermentStorage v4", () => {
 			const f = storage.create("X")
 			storage.setPhases(f.id, [{ id: "p1", index: 1, name: "Phase 1", goal: "G1", status: "active", steps: [] }])
 			const updated = storage.completePhase(f.id, "p1", "Done!")
-			expect(updated?.phases[0]?.status).toBe("completed")
-			expect(updated?.phases[0]?.summary).toBe("Done!")
-			expect(updated?.phases[0]?.completedAt).toBeTruthy()
+			expect(updated?.stages[0]?.status).toBe("completed")
+			expect(updated?.stages[0]?.summary).toBe("Done!")
+			expect(updated?.stages[0]?.completedAt).toBeTruthy()
 		})
 	})
 
@@ -198,8 +198,8 @@ describe("FermentStorage v4", () => {
 			const f = storage.create("X")
 			storage.setPhases(f.id, [{ id: "p1", index: 1, name: "Phase 1", goal: "G1", status: "planned", steps: [] }])
 			const updated = storage.skipPhase(f.id, "p1", "Out of scope")
-			expect(updated?.phases[0]?.status).toBe("skipped")
-			expect(updated?.phases[0]?.summary).toBe("Out of scope")
+			expect(updated?.stages[0]?.status).toBe("skipped")
+			expect(updated?.stages[0]?.summary).toBe("Out of scope")
 		})
 	})
 
@@ -212,7 +212,7 @@ describe("FermentStorage v4", () => {
 				{ id: "s2", index: 0, description: "Test it", status: "pending" },
 			]
 			const updated = storage.refinePhase(f.id, "p1", steps)
-			const p = updated?.phases[0]
+			const p = updated?.stages[0]
 			expect(p?.steps).toHaveLength(2)
 			expect(p?.steps[0].index).toBe(1)
 			expect(p?.steps[1].index).toBe(2)
@@ -235,7 +235,7 @@ describe("FermentStorage v4", () => {
 
 		it("starts a step", () => {
 			const updated = storage.startStep(f.id, "p1", "s1")
-			const step = updated?.phases[0]?.steps[0]
+			const step = updated?.stages[0]?.steps[0]
 			expect(step?.status).toBe("running")
 			expect(step?.startedAt).toBeTruthy()
 		})
@@ -243,14 +243,14 @@ describe("FermentStorage v4", () => {
 		it("completes a step", () => {
 			storage.startStep(f.id, "p1", "s1")
 			const updated = storage.completeStep(f.id, "p1", "s1")
-			const step = updated?.phases[0]?.steps[0]
+			const step = updated?.stages[0]?.steps[0]
 			expect(step?.status).toBe("done")
 			expect(step?.completedAt).toBeTruthy()
 		})
 
 		it("skips a step", () => {
 			const updated = storage.skipStep(f.id, "p1", "s1")
-			const step = updated?.phases[0]?.steps[0]
+			const step = updated?.stages[0]?.steps[0]
 			expect(step?.status).toBe("skipped")
 		})
 
@@ -258,7 +258,7 @@ describe("FermentStorage v4", () => {
 			storage.startStep(f.id, "p1", "s1")
 			const result = { success: true, exitCode: 0, completedAt: new Date().toISOString() }
 			const updated = storage.verifyStep(f.id, "p1", "s1", result)
-			const step = updated?.phases[0]?.steps[0]
+			const step = updated?.stages[0]?.steps[0]
 			expect(step?.status).toBe("verified")
 			expect(step?.result).toEqual(result)
 		})
@@ -267,7 +267,7 @@ describe("FermentStorage v4", () => {
 			storage.startStep(f.id, "p1", "s1")
 			const result = { success: false, exitCode: 1, completedAt: new Date().toISOString() }
 			const updated = storage.verifyStep(f.id, "p1", "s1", result)
-			const step = updated?.phases[0]?.steps[0]
+			const step = updated?.stages[0]?.steps[0]
 			expect(step?.status).toBe("done")
 			expect(step?.result).toEqual(result)
 		})
@@ -337,15 +337,15 @@ describe("FermentStorage v4", () => {
 			const f = fresh.get("v3-ferment")
 			expect(f).toBeDefined()
 			expect(f?.status).toBe("running") // executing -> running
-			expect(f?.phases).toHaveLength(2)
+			expect(f?.stages).toHaveLength(2)
 
-			const p1 = f?.phases[0]
+			const p1 = f?.stages[0]
 			expect(p1?.name).toBe("Setup")
 			expect(p1?.status).toBe("completed") // batchRef completed wins
 			expect(p1?.summary).toBe("Done")
 			expect(p1?.steps).toEqual([])
 
-			const p2 = f?.phases[1]
+			const p2 = f?.stages[1]
 			expect(p2?.name).toBe("Core")
 			expect(p2?.status).toBe("active") // ref status=active overrides pb.status=planned
 
@@ -382,7 +382,7 @@ describe("FermentStorage v4", () => {
 			const fresh = new FermentStorage(tempDir)
 			fresh.get("v3-3") // triggers migration
 			const raw = readFileSync(join(tempDir, "v3-3.json"), "utf-8")
-			expect(raw).toContain("phases")
+			expect(raw).toContain("stages")
 			expect(raw).not.toContain("plannedBatches")
 			expect(raw).not.toContain("batchRefs")
 		})

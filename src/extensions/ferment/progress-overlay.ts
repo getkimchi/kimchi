@@ -34,10 +34,10 @@ import { createApplyAndPersist } from "./tool-helpers.js"
 import type { FermentUiContext } from "./ui.js"
 
 export function buildPhaseListTitle(f: Ferment, runtime: FermentRuntime = defaultFermentRuntime): string {
-	const terminalCount = f.phases.filter(
+	const terminalCount = f.stages.filter(
 		(p) => p.status === "completed" || p.status === "skipped" || p.status === "failed",
 	).length
-	const total = f.phases.length
+	const total = f.stages.length
 	const barLen = 28
 	const filled = total > 0 ? Math.round((terminalCount / total) * barLen) : 0
 	const bar = `${SUCCESS_FG}${"█".repeat(filled)}${RST_FG}${DIM}${"░".repeat(barLen - filled)}${RST_ALL}`
@@ -61,8 +61,8 @@ export function buildPhaseListTitle(f: Ferment, runtime: FermentRuntime = defaul
 }
 
 export function buildPhaseListOptions(f: Ferment): string[] {
-	const opts = f.phases.map((p) => {
-		const isActive = p.id === f.activePhaseId || (p.groupIndex !== undefined && p.status === "active")
+	const opts = f.stages.map((p) => {
+		const isActive = p.id === f.activeStageId || (p.groupIndex !== undefined && p.status === "active")
 		const bullet = phaseBullet(p)
 		const parallelTag = p.groupIndex !== undefined ? pr_dim("∥ ") : ""
 		const name = isActive ? pr_teal(p.name) : p.status === "completed" ? pr_dim(p.name) : p.name
@@ -80,7 +80,7 @@ export function buildPhaseListOptions(f: Ferment): string[] {
 }
 
 export function buildPhaseDetailTitle(f: Ferment, p: Phase): string {
-	const isActive = p.id === f.activePhaseId
+	const isActive = p.id === f.activeStageId
 	const bullet = phaseBullet(p)
 	const stepsDone = p.steps.filter(
 		(s) => s.status === "done" || s.status === "verified" || s.status === "skipped" || s.status === "failed",
@@ -89,7 +89,7 @@ export function buildPhaseDetailTitle(f: Ferment, p: Phase): string {
 	const gradeTag = p.grade ? `  ${gradeColor(p.grade.grade)}  ${pr_dim(p.grade.rationale)}` : ""
 
 	const lines: string[] = [
-		`${pr_dim(`Phase ${p.index}/${f.phases.length}`)}  ${pr_bold(f.name)}`,
+		`${pr_dim(`Phase ${p.index}/${f.stages.length}`)}  ${pr_bold(f.name)}`,
 		`${bullet}  ${pr_bold(p.name)}${stepsTag}${gradeTag}`,
 		`   ${pr_dim(p.goal)}`,
 	]
@@ -162,7 +162,7 @@ export function buildStepActionOptions(_p: Phase, s: Step): string[] {
 }
 
 export function buildPhaseActionOptions(f: Ferment, p: Phase): string[] {
-	const isActive = p.id === f.activePhaseId
+	const isActive = p.id === f.activeStageId
 	const opts: string[] = []
 	if (p.status === "planned" && !isActive) opts.push("Activate phase")
 	if ((p.status === "active" || isActive) && p.steps.length === 0) opts.push("Ask agent to refine steps")
@@ -195,12 +195,12 @@ export async function handleStepAction(
 ): Promise<void> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 	if (choice === "Mark step done") {
-		const out = applyAndPersist(f.id, { type: "complete_step", phaseId: p.id, stepId: s.id })
+		const out = applyAndPersist(f.id, { type: "complete_step", stageId: p.id, stepId: s.id })
 		if (out.ok) runtime.setActive(out.ferment)
 		runtime.clearStepStart(f.id, p.id, s.id)
 		ctx.ui.notify(out.ok ? `Step ${s.index} marked done.` : `Could not complete step: ${out.error.message}`)
 	} else if (choice === "Retry step") {
-		const out = applyAndPersist(f.id, { type: "start_step", phaseId: p.id, stepId: s.id })
+		const out = applyAndPersist(f.id, { type: "start_step", stageId: p.id, stepId: s.id })
 		if (out.ok) runtime.setActive(out.ferment)
 		// User explicitly chose retry — reset stuck-loop counter so the agent isn't blocked
 		runtime.clearStepStart(f.id, p.id, s.id)
@@ -208,7 +208,7 @@ export async function handleStepAction(
 			out.ok ? `Step ${s.index} reset to running — tell the agent to retry.` : `Could not retry: ${out.error.message}`,
 		)
 	} else if (choice === "Skip step") {
-		const out = applyAndPersist(f.id, { type: "skip_step", phaseId: p.id, stepId: s.id })
+		const out = applyAndPersist(f.id, { type: "skip_step", stageId: p.id, stepId: s.id })
 		if (out.ok) runtime.setActive(out.ferment)
 		runtime.clearStepStart(f.id, p.id, s.id)
 		ctx.ui.notify(out.ok ? `Step ${s.index} skipped.` : `Could not skip: ${out.error.message}`)
@@ -226,7 +226,7 @@ export async function handlePhaseAction(
 	switch (choice) {
 		case "Activate phase": {
 			// activate_phase transitions ferment.status to "running" — no need for a separate updateStatus.
-			const out = applyAndPersist(f.id, { type: "activate_phase", phaseId: p.id })
+			const out = applyAndPersist(f.id, { type: "activate_stage", stageId: p.id })
 			if (out.ok) runtime.setActive(out.ferment)
 			ctx.ui.notify(out.ok ? `Phase "${p.name}" activated.` : `Could not activate: ${out.error.message}`)
 			break
@@ -235,7 +235,7 @@ export async function handlePhaseAction(
 			ctx.ui.notify(`Tell the agent: refine_phase for phase ${p.index} "${p.name}"`)
 			break
 		case "Mark phase complete": {
-			const out = applyAndPersist(f.id, { type: "complete_phase", phaseId: p.id, summary: "Completed via /progress" })
+			const out = applyAndPersist(f.id, { type: "complete_stage", stageId: p.id, summary: "Completed via /progress" })
 			if (out.ok) runtime.setActive(out.ferment)
 			ctx.ui.notify(out.ok ? `Phase "${p.name}" complete.` : `Could not complete: ${out.error.message}`)
 			break
@@ -243,8 +243,8 @@ export async function handlePhaseAction(
 		case "Mark phase failed": {
 			const reason = ctx.ui.input ? await ctx.ui.input("Reason for failure:", "") : ""
 			const out = applyAndPersist(f.id, {
-				type: "fail_phase",
-				phaseId: p.id,
+				type: "fail_stage",
+				stageId: p.id,
 				reason: reason || "Failed via /progress",
 			})
 			if (out.ok) runtime.setActive(out.ferment)
@@ -252,18 +252,18 @@ export async function handlePhaseAction(
 			break
 		}
 		case "Skip phase": {
-			const out = applyAndPersist(f.id, { type: "skip_phase", phaseId: p.id, reason: "Skipped via /progress" })
+			const out = applyAndPersist(f.id, { type: "skip_stage", stageId: p.id, reason: "Skipped via /progress" })
 			if (out.ok) runtime.setActive(out.ferment)
 			ctx.ui.notify(out.ok ? `Phase "${p.name}" skipped.` : `Could not skip: ${out.error.message}`)
 			break
 		}
 		case "Re-activate phase": {
-			const out = applyAndPersist(f.id, { type: "activate_phase", phaseId: p.id })
+			const out = applyAndPersist(f.id, { type: "activate_stage", stageId: p.id })
 			if (out.ok) {
 				runtime.setActive(out.ferment)
 				// Reload phase from the post-state so we clear counters for the current step set, not
 				// the stale closure copy (audit doc finding #7).
-				const freshPhase = out.ferment.phases.find((ph) => ph.id === p.id)
+				const freshPhase = out.ferment.stages.find((ph) => ph.id === p.id)
 				for (const step of freshPhase?.steps ?? []) {
 					runtime.clearStepStart(f.id, p.id, step.id)
 				}

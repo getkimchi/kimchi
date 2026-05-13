@@ -147,7 +147,7 @@ export interface ScopingConstraintsSetPayload {
 
 export interface ScopingPhasesSetPayload {
 	phases: NonNullable<Scoping["phases"]>
-	/** Snapshot of post.phases when scope was applied — needed during fold to reconstruct
+	/** Snapshot of post.stages when scope was applied — needed during fold to reconstruct
 	 *  the structural Phase[] array (the `Scoping` record only holds the answer text). */
 	phaseSnapshots: Phase[]
 }
@@ -175,7 +175,7 @@ export interface FermentModeSetPayload {
 }
 
 export interface PhaseActivatedPayload {
-	phaseId: string
+	stageId: string
 	startedAt: string
 	groupIndex?: number
 }
@@ -196,61 +196,61 @@ export interface PhaseGroupActivatedPayload {
 }
 
 export interface PhaseCompletedPayload {
-	phaseId: string
+	stageId: string
 	summary: string
 	completedAt: string
 }
 
 export interface PhaseSkippedPayload {
-	phaseId: string
+	stageId: string
 	reason?: string
 	completedAt: string
 }
 
 export interface PhaseFailedPayload {
-	phaseId: string
+	stageId: string
 	reason: string
 	completedAt: string
 }
 
 export interface PhaseRefinedPayload {
-	phaseId: string
+	stageId: string
 	steps: Step[]
 }
 
 export interface PhaseGradedPayload {
-	phaseId: string
+	stageId: string
 	grade: JudgeGrade
 }
 
 export interface StepStartedPayload {
-	phaseId: string
+	stageId: string
 	stepId: string
 	workerModel?: string
 	startedAt: string
 }
 
 export interface StepCompletedPayload {
-	phaseId: string
+	stageId: string
 	stepId: string
 	completedAt: string
 }
 
 export interface StepSkippedPayload {
-	phaseId: string
+	stageId: string
 	stepId: string
 	completedAt: string
 }
 
 export interface StepFailedPayload {
-	phaseId: string
+	stageId: string
 	stepId: string
 	error?: string
 	completedAt: string
 }
 
 export interface StepVerifiedPayload {
-	phaseId: string
+	stageId: string
 	stepId: string
 	result: StepResult
 	verifiedAt: string
@@ -258,7 +258,7 @@ export interface StepVerifiedPayload {
 }
 
 export interface StepGradedPayload {
-	phaseId: string
+	stageId: string
 	stepId: string
 	grade: JudgeGrade
 	gradedAt: string
@@ -720,15 +720,15 @@ export class FermentEventStore {
 		// Emit scoping_phases_set whenever the legacy snapshot has phases, even if
 		// scoping.phases was never set — without this, the synthesized log loses
 		// every phase on fold (the structural Phase[] lives separately from Scoping).
-		if (ferment.phases.length > 0) {
+		if (ferment.stages.length > 0) {
 			const synthesizedAnswer: import("./types.js").ScopingAnswer = ferment.scoping.phases ?? {
-				answer: `${ferment.phases.length} phase(s)`,
+				answer: `${ferment.stages.length} phase(s)`,
 				confirmedAt: ferment.createdAt,
 			}
 			pending.push({
 				timestamp: ferment.createdAt,
 				type: "scoping_phases_set",
-				payload: { phases: synthesizedAnswer, phaseSnapshots: ferment.phases },
+				payload: { phases: synthesizedAnswer, phaseSnapshots: ferment.stages },
 			})
 		}
 		// ferment_planned only if the ferment ever progressed beyond draft.
@@ -740,19 +740,19 @@ export class FermentEventStore {
 		pending.push({ timestamp: ferment.updatedAt, type: "ferment_mode_set", payload: { mode: ferment.mode } })
 
 		// Stage 3: per-phase + per-step events in temporal order
-		for (const phase of ferment.phases) {
+		for (const phase of ferment.stages) {
 			if (phase.startedAt) {
 				pending.push({
 					timestamp: phase.startedAt,
 					type: "phase_activated",
-					payload: { phaseId: phase.id, startedAt: phase.startedAt, groupIndex: phase.groupIndex },
+					payload: { stageId: phase.id, startedAt: phase.startedAt, groupIndex: phase.groupIndex },
 				})
 			}
 			if (phase.steps.length > 0) {
 				pending.push({
 					timestamp: phase.startedAt ?? ferment.createdAt,
 					type: "phase_refined",
-					payload: { phaseId: phase.id, steps: phase.steps },
+					payload: { stageId: phase.id, steps: phase.steps },
 				})
 			}
 			for (const step of phase.steps) {
@@ -761,7 +761,7 @@ export class FermentEventStore {
 						timestamp: step.startedAt,
 						type: "step_started",
 						payload: {
-							phaseId: phase.id,
+							stageId: phase.id,
 							stepId: step.id,
 							workerModel: step.workerModel,
 							startedAt: step.startedAt,
@@ -772,20 +772,20 @@ export class FermentEventStore {
 					pending.push({
 						timestamp: step.completedAt ?? now,
 						type: "step_completed",
-						payload: { phaseId: phase.id, stepId: step.id, completedAt: step.completedAt ?? now },
+						payload: { stageId: phase.id, stepId: step.id, completedAt: step.completedAt ?? now },
 					})
 				} else if (step.status === "skipped") {
 					pending.push({
 						timestamp: step.completedAt ?? now,
 						type: "step_skipped",
-						payload: { phaseId: phase.id, stepId: step.id, completedAt: step.completedAt ?? now },
+						payload: { stageId: phase.id, stepId: step.id, completedAt: step.completedAt ?? now },
 					})
 				} else if (step.status === "failed") {
 					pending.push({
 						timestamp: step.completedAt ?? now,
 						type: "step_failed",
 						payload: {
-							phaseId: phase.id,
+							stageId: phase.id,
 							stepId: step.id,
 							error: step.result?.stderr,
 							completedAt: step.completedAt ?? now,
@@ -796,7 +796,7 @@ export class FermentEventStore {
 						timestamp: step.completedAt ?? now,
 						type: "step_verified",
 						payload: {
-							phaseId: phase.id,
+							stageId: phase.id,
 							stepId: step.id,
 							result: step.result ?? { success: true, completedAt: step.completedAt ?? now },
 							verifiedAt: step.completedAt ?? now,
@@ -808,7 +808,7 @@ export class FermentEventStore {
 					pending.push({
 						timestamp: step.grade.gradedAt,
 						type: "step_graded",
-						payload: { phaseId: phase.id, stepId: step.id, grade: step.grade, gradedAt: step.grade.gradedAt },
+						payload: { stageId: phase.id, stepId: step.id, grade: step.grade, gradedAt: step.grade.gradedAt },
 					})
 				}
 			}
@@ -816,26 +816,26 @@ export class FermentEventStore {
 				pending.push({
 					timestamp: phase.completedAt ?? now,
 					type: "phase_completed",
-					payload: { phaseId: phase.id, summary: phase.summary ?? "", completedAt: phase.completedAt ?? now },
+					payload: { stageId: phase.id, summary: phase.summary ?? "", completedAt: phase.completedAt ?? now },
 				})
 			} else if (phase.status === "skipped") {
 				pending.push({
 					timestamp: phase.completedAt ?? now,
 					type: "phase_skipped",
-					payload: { phaseId: phase.id, reason: phase.summary, completedAt: phase.completedAt ?? now },
+					payload: { stageId: phase.id, reason: phase.summary, completedAt: phase.completedAt ?? now },
 				})
 			} else if (phase.status === "failed") {
 				pending.push({
 					timestamp: phase.completedAt ?? now,
 					type: "phase_failed",
-					payload: { phaseId: phase.id, reason: phase.summary ?? "", completedAt: phase.completedAt ?? now },
+					payload: { stageId: phase.id, reason: phase.summary ?? "", completedAt: phase.completedAt ?? now },
 				})
 			}
 			if (phase.grade) {
 				pending.push({
 					timestamp: phase.grade.gradedAt,
 					type: "phase_graded",
-					payload: { phaseId: phase.id, grade: phase.grade },
+					payload: { stageId: phase.id, grade: phase.grade },
 				})
 			}
 		}
@@ -905,11 +905,11 @@ export class FermentEventStore {
 // ─── Pure fold step ───────────────────────────────────────────────────────────
 
 function settleAfterResume(state: Ferment, timestamp: string): Ferment {
-	const activePhase = state.phases.find((p) => p.status === "active")
+	const activePhase = state.stages.find((p) => p.status === "active")
 	if (activePhase) {
-		return { ...state, status: "running", activePhaseId: activePhase.id, updatedAt: timestamp }
+		return { ...state, status: "running", activeStageId: activePhase.id, updatedAt: timestamp }
 	}
-	const { activePhaseId: _activePhaseId, ...rest } = state
+	const { activeStageId: _activeStageId, ...rest } = state
 	return { ...rest, status: "planned", updatedAt: timestamp }
 }
 
@@ -934,7 +934,7 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 				mode: p.mode,
 				worktree: p.worktree ?? { path: "" },
 				scoping: {},
-				phases: [],
+				stages: [],
 				decisions: [],
 				memories: [],
 				createdAt: ts,
@@ -988,7 +988,7 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			return {
 				...state,
 				scoping: { ...state.scoping, phases: p.phases },
-				phases: p.phaseSnapshots,
+				stages: p.phaseSnapshots,
 				updatedAt: event.timestamp,
 			}
 		}
@@ -1033,9 +1033,9 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			const p = event.payload as PhaseActivatedPayload
 			return {
 				...state,
-				phases: activateSinglePhase(state.phases, p.phaseId, event.timestamp),
+				stages: activateSinglePhase(state.stages, p.stageId, event.timestamp),
 				lastActiveAt: event.timestamp,
-				activePhaseId: p.phaseId,
+				activeStageId: p.stageId,
 				updatedAt: event.timestamp,
 			}
 		}
@@ -1045,7 +1045,7 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			const ids = new Set(p.phaseIds)
 			return {
 				...state,
-				phases: state.phases.map((ph) => {
+				stages: state.stages.map((ph) => {
 					if (ids.has(ph.id)) {
 						return { ...ph, status: "active" as const, startedAt: p.startedAt }
 					}
@@ -1054,7 +1054,7 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 					}
 					return ph
 				}),
-				activePhaseId: p.phaseIds[0],
+				activeStageId: p.phaseIds[0],
 				lastActiveAt: p.startedAt,
 				updatedAt: event.timestamp,
 			}
@@ -1062,8 +1062,8 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 		case "phase_completed": {
 			if (!state) throw new Error("phase_completed requires existing state")
 			const p = event.payload as PhaseCompletedPayload
-			const phases = state.phases.map((ph) =>
-				ph.id === p.phaseId
+			const phases = state.stages.map((ph) =>
+				ph.id === p.stageId
 					? { ...ph, status: "completed" as const, summary: p.summary, completedAt: event.timestamp }
 					: ph,
 			)
@@ -1072,8 +1072,8 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 		case "phase_skipped": {
 			if (!state) throw new Error("phase_skipped requires existing state")
 			const p = event.payload as PhaseSkippedPayload
-			const phases = state.phases.map((ph) =>
-				ph.id === p.phaseId
+			const phases = state.stages.map((ph) =>
+				ph.id === p.stageId
 					? {
 							...ph,
 							status: "skipped" as const,
@@ -1087,8 +1087,8 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 		case "phase_failed": {
 			if (!state) throw new Error("phase_failed requires existing state")
 			const p = event.payload as PhaseFailedPayload
-			const phases = state.phases.map((ph) =>
-				ph.id === p.phaseId
+			const phases = state.stages.map((ph) =>
+				ph.id === p.stageId
 					? { ...ph, status: "failed" as const, summary: p.reason, completedAt: event.timestamp }
 					: ph,
 			)
@@ -1099,8 +1099,8 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			const p = event.payload as PhaseRefinedPayload
 			return {
 				...state,
-				phases: state.phases.map((ph) =>
-					ph.id === p.phaseId ? { ...ph, steps: p.steps.map((s, i) => ({ ...s, index: i + 1 })) } : ph,
+				stages: state.stages.map((ph) =>
+					ph.id === p.stageId ? { ...ph, steps: p.steps.map((s, i) => ({ ...s, index: i + 1 })) } : ph,
 				),
 				updatedAt: event.timestamp,
 			}
@@ -1110,7 +1110,7 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			const p = event.payload as PhaseGradedPayload
 			return {
 				...state,
-				phases: state.phases.map((ph) => (ph.id === p.phaseId ? { ...ph, grade: p.grade } : ph)),
+				stages: state.stages.map((ph) => (ph.id === p.stageId ? { ...ph, grade: p.grade } : ph)),
 				updatedAt: event.timestamp,
 			}
 		}
@@ -1119,8 +1119,8 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			const p = event.payload as StepStartedPayload
 			return {
 				...state,
-				phases: state.phases.map((ph) =>
-					ph.id === p.phaseId
+				stages: state.stages.map((ph) =>
+					ph.id === p.stageId
 						? {
 								...ph,
 								steps: ph.steps.map((s) =>
@@ -1137,8 +1137,8 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			const p = event.payload as StepCompletedPayload
 			return {
 				...state,
-				phases: state.phases.map((ph) =>
-					ph.id === p.phaseId
+				stages: state.stages.map((ph) =>
+					ph.id === p.stageId
 						? {
 								...ph,
 								steps: ph.steps.map((s) =>
@@ -1155,8 +1155,8 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			const p = event.payload as StepSkippedPayload
 			return {
 				...state,
-				phases: state.phases.map((ph) =>
-					ph.id === p.phaseId
+				stages: state.stages.map((ph) =>
+					ph.id === p.stageId
 						? {
 								...ph,
 								steps: ph.steps.map((s) =>
@@ -1173,8 +1173,8 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			const p = event.payload as StepFailedPayload
 			return {
 				...state,
-				phases: state.phases.map((ph) =>
-					ph.id === p.phaseId
+				stages: state.stages.map((ph) =>
+					ph.id === p.stageId
 						? {
 								...ph,
 								steps: ph.steps.map((s) =>
@@ -1198,8 +1198,8 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			const p = event.payload as StepVerifiedPayload
 			return {
 				...state,
-				phases: state.phases.map((ph) =>
-					ph.id === p.phaseId
+				stages: state.stages.map((ph) =>
+					ph.id === p.stageId
 						? {
 								...ph,
 								steps: ph.steps.map((s) =>
@@ -1223,8 +1223,8 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			const p = event.payload as StepGradedPayload
 			return {
 				...state,
-				phases: state.phases.map((ph) =>
-					ph.id === p.phaseId
+				stages: state.stages.map((ph) =>
+					ph.id === p.stageId
 						? { ...ph, steps: ph.steps.map((s) => (s.id === p.stepId ? { ...s, grade: p.grade } : s)) }
 						: ph,
 				),

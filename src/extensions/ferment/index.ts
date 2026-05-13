@@ -18,7 +18,7 @@ import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { getActive, getActiveId } from "./state.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { registerLifecycleTools } from "./tools/lifecycle.js"
-import { registerPhaseTools } from "./tools/phases.js"
+import { registerStageTools } from "./tools/stages.js"
 import { registerStepTools } from "./tools/steps.js"
 
 // ─── Public exports for cli.ts and components/footer.ts ──────────────────────
@@ -28,20 +28,26 @@ export function getActiveFerment() {
 	return getActive()
 }
 
-/** 1-based phase index or undefined */
-export function getCurrentPhaseIndex(): number | undefined {
+/** 1-based stage index or undefined */
+export function getCurrentStageIndex(): number | undefined {
 	const f = getActive()
-	if (!f || !f.activePhaseId) return undefined
-	const idx = f.phases.findIndex((p) => p.id === f.activePhaseId)
+	if (!f || !f.activeStageId) return undefined
+	const idx = f.stages.findIndex((p) => p.id === f.activeStageId)
 	return idx >= 0 ? idx + 1 : undefined
 }
 
-/** Active phase name or undefined */
-export function getCurrentPhaseName(): string | undefined {
+/** @deprecated Use getCurrentStageIndex */
+export const getCurrentPhaseIndex = getCurrentStageIndex
+
+/** Active stage name or undefined */
+export function getCurrentStageName(): string | undefined {
 	const f = getActive()
-	if (!f || !f.activePhaseId) return undefined
-	return f.phases.find((p) => p.id === f.activePhaseId)?.name
+	if (!f || !f.activeStageId) return undefined
+	return f.stages.find((p) => p.id === f.activeStageId)?.name
 }
+
+/** @deprecated Use getCurrentStageName */
+export const getCurrentPhaseName = getCurrentStageName
 
 /** For CLI --ferment resume */
 export function getActiveFermentIdForResume(): string | undefined {
@@ -50,14 +56,14 @@ export function getActiveFermentIdForResume(): string | undefined {
 
 /** Backward compat for any code using these names */
 export function getCurrentBatchIndex(): number | undefined {
-	return getCurrentPhaseIndex()
+	return getCurrentStageIndex()
 }
 export function getCurrentBatchName(): string | undefined {
-	return getCurrentPhaseName()
+	return getCurrentStageName()
 }
 export function getCurrentRecipe(): Step[] {
 	const f = getActive()
-	return f?.phases.find((p) => p.id === f.activePhaseId)?.steps ?? []
+	return f?.stages.find((p) => p.id === f.activeStageId)?.steps ?? []
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -70,7 +76,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 	// ─── Tool registrations ───────────────────────────────────────────────────
 	registerLifecycleTools(pi, runtime)
-	registerPhaseTools(pi, runtime)
+	registerStageTools(pi, runtime)
 	registerStepTools(pi, runtime)
 	registerKnowledgeTools(pi, runtime)
 }

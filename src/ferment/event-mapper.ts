@@ -103,7 +103,7 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 				b.push("scoping_constraints_set", { constraints: post.scoping.constraints, plain: post.constraints })
 			}
 			if (post.scoping.phases && JSON.stringify(pre.scoping.phases) !== JSON.stringify(post.scoping.phases)) {
-				b.push("scoping_phases_set", { phases: post.scoping.phases, phaseSnapshots: post.phases })
+				b.push("scoping_phases_set", { phases: post.scoping.phases, phaseSnapshots: post.stages })
 			}
 			if (pre.status !== post.status && post.status === "planned") {
 				b.push("ferment_planned", {})
@@ -132,15 +132,15 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 			b.push("ferment_mode_set", { mode: cmd.mode })
 			return b.events
 
-		case "activate_phase": {
-			const phase = post.phases.find((p) => p.id === cmd.phaseId)
+		case "activate_stage": {
+			const phase = post.stages.find((p) => p.id === cmd.stageId)
 			if (!phase) return []
 			if (pre.status !== post.status && post.status === "running") {
 				b.push("ferment_running", {})
 			}
 			b.push(
 				"phase_activated",
-				{ phaseId: cmd.phaseId, startedAt: phase.startedAt ?? ctx.now },
+				{ stageId: cmd.stageId, startedAt: phase.startedAt ?? ctx.now },
 				phase.startedAt ?? ctx.now,
 			)
 			return b.events
@@ -155,7 +155,7 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 			if (pre.status !== post.status && post.status === "running") {
 				b.push("ferment_running", {})
 			}
-			const groupPhases = post.phases.filter(
+			const groupPhases = post.stages.filter(
 				(p) => p.status === "active" && p.startedAt === ctx.now && p.groupIndex === cmd.groupIndex,
 			)
 			if (groupPhases.length > 0) {
@@ -168,34 +168,34 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 			return b.events
 		}
 
-		case "refine_phase": {
-			const phase = post.phases.find((p) => p.id === cmd.phaseId)
+		case "refine_stage": {
+			const phase = post.stages.find((p) => p.id === cmd.stageId)
 			if (!phase) return []
-			b.push("phase_refined", { phaseId: cmd.phaseId, steps: phase.steps })
+			b.push("phase_refined", { stageId: cmd.stageId, steps: phase.steps })
 			return b.events
 		}
 
-		case "complete_phase": {
-			b.push("phase_completed", { phaseId: cmd.phaseId, summary: cmd.summary, completedAt: ctx.now })
+		case "complete_stage": {
+			b.push("phase_completed", { stageId: cmd.stageId, summary: cmd.summary, completedAt: ctx.now })
 			if (cmd.grade) {
-				b.push("phase_graded", { phaseId: cmd.phaseId, grade: cmd.grade })
+				b.push("phase_graded", { stageId: cmd.stageId, grade: cmd.grade })
 			}
 			return b.events
 		}
 
-		case "skip_phase":
-			b.push("phase_skipped", { phaseId: cmd.phaseId, reason: cmd.reason, completedAt: ctx.now })
+		case "skip_stage":
+			b.push("phase_skipped", { stageId: cmd.stageId, reason: cmd.reason, completedAt: ctx.now })
 			return b.events
 
-		case "fail_phase":
-			b.push("phase_failed", { phaseId: cmd.phaseId, reason: cmd.reason, completedAt: ctx.now })
+		case "fail_stage":
+			b.push("phase_failed", { stageId: cmd.stageId, reason: cmd.reason, completedAt: ctx.now })
 			return b.events
 
 		case "start_step": {
-			const phase = post.phases.find((p) => p.id === cmd.phaseId)
+			const phase = post.stages.find((p) => p.id === cmd.stageId)
 			const step = phase?.steps.find((s) => s.id === cmd.stepId)
 			b.push("step_started", {
-				phaseId: cmd.phaseId,
+				stageId: cmd.stageId,
 				stepId: cmd.stepId,
 				workerModel: step?.workerModel,
 				startedAt: ctx.now,
@@ -211,10 +211,10 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 			// records as "verified", causing a hash chain mismatch on every
 			// successful verified completion. Folding through applyFermentEvent
 			// keeps the chain truthful.
-			b.push("step_completed", { phaseId: cmd.phaseId, stepId: cmd.stepId, completedAt: ctx.now })
+			b.push("step_completed", { stageId: cmd.stageId, stepId: cmd.stepId, completedAt: ctx.now })
 			if (cmd.grade) {
 				b.push("step_graded", {
-					phaseId: cmd.phaseId,
+					stageId: cmd.stageId,
 					stepId: cmd.stepId,
 					grade: cmd.grade,
 					gradedAt: cmd.grade.gradedAt,
@@ -225,7 +225,7 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 
 		case "verify_step":
 			b.push("step_verified", {
-				phaseId: cmd.phaseId,
+				stageId: cmd.stageId,
 				stepId: cmd.stepId,
 				result: cmd.result,
 				verifiedAt: ctx.now,
@@ -234,11 +234,11 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 			return b.events
 
 		case "skip_step":
-			b.push("step_skipped", { phaseId: cmd.phaseId, stepId: cmd.stepId, completedAt: ctx.now })
+			b.push("step_skipped", { stageId: cmd.stageId, stepId: cmd.stepId, completedAt: ctx.now })
 			return b.events
 
 		case "fail_step":
-			b.push("step_failed", { phaseId: cmd.phaseId, stepId: cmd.stepId, error: cmd.error, completedAt: ctx.now })
+			b.push("step_failed", { stageId: cmd.stageId, stepId: cmd.stepId, error: cmd.error, completedAt: ctx.now })
 			return b.events
 
 		case "complete_ferment": {
@@ -273,13 +273,13 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 			return b.events
 		}
 
-		case "set_phase_grade":
-			b.push("phase_graded", { phaseId: cmd.phaseId, grade: cmd.grade })
+		case "set_stage_grade":
+			b.push("phase_graded", { stageId: cmd.stageId, grade: cmd.grade })
 			return b.events
 
 		case "set_step_grade":
 			b.push("step_graded", {
-				phaseId: cmd.phaseId,
+				stageId: cmd.stageId,
 				stepId: cmd.stepId,
 				grade: cmd.grade,
 				gradedAt: cmd.grade.gradedAt,

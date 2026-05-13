@@ -174,9 +174,9 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			const outcome = confirmPendingScope(runtime, f.id, undefined, "turn_end", f.name)
 			if (outcome.ok) {
 				ctx.ui.notify(
-					`Plan saved for "${outcome.outcome.ferment.name}". ${outcome.outcome.ferment.phases.length} phase(s) ready.`,
+					`Plan saved for "${outcome.outcome.ferment.name}". ${outcome.outcome.ferment.stages.length} phase(s) ready.`,
 				)
-				reply = `Plan saved by user confirmation — ${outcome.outcome.ferment.phases.length} phase(s) now in "planned" status. You can proceed with activate_phase when the user is ready, or wait for further instructions.`
+				reply = `Plan saved by user confirmation — ${outcome.outcome.ferment.stages.length} phase(s) now in "planned" status. You can proceed with activate_phase when the user is ready, or wait for further instructions.`
 			} else if (outcome.error.code !== "MISSING_PENDING_PHASES" && outcome.error.code !== "MISSING_PENDING_SCOPE") {
 				ctx.ui.notify(`Failed to save plan: ${outcome.error.message}`)
 				reply = `Plan save failed: ${outcome.error.message}. Investigate the ferment state and try again.`

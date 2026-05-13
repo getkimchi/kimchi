@@ -25,7 +25,7 @@ export function registerKnowledgeTools(pi: ExtensionAPI, runtime: FermentRuntime
 				type: "add_decision",
 				title: params.title,
 				description: params.description,
-				phaseId: params.phase_id,
+				stageId: params.phase_id,
 				stepId: params.step_id,
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)
@@ -48,7 +48,7 @@ export function registerKnowledgeTools(pi: ExtensionAPI, runtime: FermentRuntime
 				type: "add_memory",
 				category: params.category as MemoryCategory,
 				content: params.content,
-				phaseId: params.phase_id,
+				stageId: params.phase_id,
 				stepId: params.step_id,
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)

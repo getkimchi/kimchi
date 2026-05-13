@@ -24,7 +24,7 @@ function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 		mode: "plan",
 		worktree: { path: "/tmp/test" },
 		scoping: {},
-		phases: [],
+		stages: [],
 		decisions: [],
 		memories: [],
 		createdAt: "2026-05-01T00:00:00.000Z",
@@ -106,16 +106,16 @@ describe("applyCommand: scope", () => {
 		expect(result.scoping.criteria?.answer).toBe("It works")
 		expect(result.scoping.constraints?.answer).toBe("no libs, must be fast")
 		expect(result.scoping.phases?.answer).toBe("Phase A, Phase B")
-		expect(result.phases).toHaveLength(2)
-		expect(result.phases[0]).toMatchObject({
+		expect(result.stages).toHaveLength(2)
+		expect(result.stages[0]).toMatchObject({
 			id: "phase-1",
 			index: 1,
 			name: "Phase A",
 			status: "planned",
 		})
-		expect(result.phases[0].steps).toHaveLength(2)
-		expect(result.phases[0].steps[0]).toMatchObject({ id: "step-1", index: 1, status: "pending" })
-		expect(result.phases[0].steps[1].verification?.command).toBe("echo ok")
+		expect(result.stages[0].steps).toHaveLength(2)
+		expect(result.stages[0].steps[0]).toMatchObject({ id: "step-1", index: 1, status: "pending" })
+		expect(result.stages[0].steps[1].verification?.command).toBe("echo ok")
 		expect(result.updatedAt).toBe(NOW)
 	})
 
@@ -135,10 +135,10 @@ describe("applyCommand: scope", () => {
 				ctx,
 			),
 		)
-		expect(result.phases[0].groupIndex).toBe(1)
-		expect(result.phases[0].parallel).toBe(true)
-		expect(result.phases[2].groupIndex).toBeUndefined()
-		expect(result.phases[2].parallel).toBe(false)
+		expect(result.stages[0].groupIndex).toBe(1)
+		expect(result.stages[0].parallel).toBe(true)
+		expect(result.stages[2].groupIndex).toBeUndefined()
+		expect(result.stages[2].parallel).toBe(false)
 	})
 
 	it("renames the ferment when title is provided", () => {
@@ -163,7 +163,7 @@ describe("applyCommand: scope", () => {
 		const f = makeFerment()
 		applyCommand(f, { type: "scope", goal: "G", phases: [{ name: "P", goal: "g", steps: [] }] }, ctx)
 		expect(f.status).toBe("draft")
-		expect(f.phases).toEqual([])
+		expect(f.stages).toEqual([])
 	})
 })
 
@@ -232,36 +232,36 @@ describe("applyCommand: activate_phase", () => {
 	it("activates a planned phase", () => {
 		const f = makeFerment({
 			status: "planned",
-			phases: [makePhase({ id: "phase-1", status: "planned" })],
+			stages: [makePhase({ id: "phase-1", status: "planned" })],
 		})
-		const result = expectOk(applyCommand(f, { type: "activate_phase", phaseId: "phase-1" }, ctx))
+		const result = expectOk(applyCommand(f, { type: "activate_stage", stageId: "phase-1" }, ctx))
 		expect(result.status).toBe("running")
-		expect(result.phases[0].status).toBe("active")
-		expect(result.phases[0].startedAt).toBe(NOW)
-		expect(result.activePhaseId).toBe("phase-1")
+		expect(result.stages[0].status).toBe("active")
+		expect(result.stages[0].startedAt).toBe(NOW)
+		expect(result.activeStageId).toBe("phase-1")
 		expect(result.lastActiveAt).toBe(NOW)
 	})
 
 	it("deactivates the previously-active phase", () => {
 		const f = makeFerment({
 			status: "running",
-			phases: [
+			stages: [
 				makePhase({ id: "phase-1", status: "active" }),
 				makePhase({ id: "phase-2", status: "planned", index: 2, name: "P2" }),
 			],
-			activePhaseId: "phase-1",
+			activeStageId: "phase-1",
 		})
-		const result = expectOk(applyCommand(f, { type: "activate_phase", phaseId: "phase-2" }, ctx))
-		expect(result.phases[0].status).toBe("planned")
-		expect(result.phases[1].status).toBe("active")
-		expect(result.activePhaseId).toBe("phase-2")
+		const result = expectOk(applyCommand(f, { type: "activate_stage", stageId: "phase-2" }, ctx))
+		expect(result.stages[0].status).toBe("planned")
+		expect(result.stages[1].status).toBe("active")
+		expect(result.activeStageId).toBe("phase-2")
 	})
 
 	it("rejects when phase is not in planned or failed status", () => {
 		const f = makeFerment({
-			phases: [makePhase({ id: "phase-1", status: "completed" })],
+			stages: [makePhase({ id: "phase-1", status: "completed" })],
 		})
-		const error = expectError(applyCommand(f, { type: "activate_phase", phaseId: "phase-1" }, ctx))
+		const error = expectError(applyCommand(f, { type: "activate_stage", stageId: "phase-1" }, ctx))
 		expect(error.code).toBe("PHASE_NOT_IN_STATUS")
 		if (error.code === "PHASE_NOT_IN_STATUS") {
 			expect(error.expected).toEqual(["planned", "failed"])
@@ -272,7 +272,7 @@ describe("applyCommand: activate_phase", () => {
 	it("reactivates a failed phase and clears stale terminal metadata", () => {
 		const f = makeFerment({
 			status: "planned",
-			phases: [
+			stages: [
 				makePhase({
 					id: "phase-1",
 					status: "failed",
@@ -282,16 +282,16 @@ describe("applyCommand: activate_phase", () => {
 				}),
 			],
 		})
-		const result = expectOk(applyCommand(f, { type: "activate_phase", phaseId: "phase-1" }, ctx))
+		const result = expectOk(applyCommand(f, { type: "activate_stage", stageId: "phase-1" }, ctx))
 		expect(result.status).toBe("running")
-		expect(result.phases[0].status).toBe("active")
-		expect(result.phases[0].completedAt).toBeUndefined()
-		expect(result.phases[0].summary).toBeUndefined()
-		expect(result.phases[0].grade).toBeUndefined()
+		expect(result.stages[0].status).toBe("active")
+		expect(result.stages[0].completedAt).toBeUndefined()
+		expect(result.stages[0].summary).toBeUndefined()
+		expect(result.stages[0].grade).toBeUndefined()
 	})
 
 	it("rejects when phase not found", () => {
-		const error = expectError(applyCommand(makeFerment(), { type: "activate_phase", phaseId: "nope" }, ctx))
+		const error = expectError(applyCommand(makeFerment(), { type: "activate_stage", stageId: "nope" }, ctx))
 		expect(error.code).toBe("PHASE_NOT_FOUND")
 	})
 })
@@ -302,22 +302,22 @@ describe("applyCommand: activate_phase_group", () => {
 	it("activates all planned phases in the group", () => {
 		const f = makeFerment({
 			status: "planned",
-			phases: [
+			stages: [
 				makePhase({ id: "phase-1", status: "planned", groupIndex: 1 }),
 				makePhase({ id: "phase-2", status: "planned", groupIndex: 1, index: 2, name: "P2" }),
 				makePhase({ id: "phase-3", status: "planned", index: 3, name: "P3" }),
 			],
 		})
 		const result = expectOk(applyCommand(f, { type: "activate_phase_group", groupIndex: 1 }, ctx))
-		expect(result.phases[0].status).toBe("active")
-		expect(result.phases[1].status).toBe("active")
-		expect(result.phases[2].status).toBe("planned") // not in group
-		expect(result.activePhaseId).toBe("phase-1") // first in group
+		expect(result.stages[0].status).toBe("active")
+		expect(result.stages[1].status).toBe("active")
+		expect(result.stages[2].status).toBe("planned") // not in group
+		expect(result.activeStageId).toBe("phase-1") // first in group
 	})
 
 	it("rejects when no planned phases in group", () => {
 		const f = makeFerment({
-			phases: [makePhase({ id: "phase-1", status: "completed", groupIndex: 1 })],
+			stages: [makePhase({ id: "phase-1", status: "completed", groupIndex: 1 })],
 		})
 		const error = expectError(applyCommand(f, { type: "activate_phase_group", groupIndex: 1 }, ctx))
 		expect(error.code).toBe("PHASE_GROUP_EMPTY")
@@ -329,8 +329,8 @@ describe("applyCommand: activate_phase_group", () => {
 	it("deactivates a previously-active non-group phase (audit #1)", () => {
 		const f = makeFerment({
 			status: "running",
-			activePhaseId: "phase-3",
-			phases: [
+			activeStageId: "phase-3",
+			stages: [
 				makePhase({ id: "phase-1", status: "planned", groupIndex: 1 }),
 				makePhase({ id: "phase-2", status: "planned", groupIndex: 1, index: 2, name: "P2" }),
 				// Already-active non-group phase that should get demoted on group activation.
@@ -338,11 +338,11 @@ describe("applyCommand: activate_phase_group", () => {
 			],
 		})
 		const result = expectOk(applyCommand(f, { type: "activate_phase_group", groupIndex: 1 }, ctx))
-		expect(result.phases[0].status).toBe("active")
-		expect(result.phases[1].status).toBe("active")
+		expect(result.stages[0].status).toBe("active")
+		expect(result.stages[1].status).toBe("active")
 		// The previously-active P3 must be demoted to planned — not left active.
-		expect(result.phases[2].status).toBe("planned")
-		expect(result.activePhaseId).toBe("phase-1")
+		expect(result.stages[2].status).toBe("planned")
+		expect(result.activeStageId).toBe("phase-1")
 	})
 })
 
@@ -351,14 +351,14 @@ describe("applyCommand: activate_phase_group", () => {
 describe("applyCommand: refine_phase", () => {
 	it("replaces steps on an active phase", () => {
 		const f = makeFerment({
-			phases: [makePhase({ id: "phase-1", status: "active" })],
+			stages: [makePhase({ id: "phase-1", status: "active" })],
 		})
 		const result = expectOk(
 			applyCommand(
 				f,
 				{
-					type: "refine_phase",
-					phaseId: "phase-1",
+					type: "refine_stage",
+					stageId: "phase-1",
 					steps: [
 						{ description: "first" },
 						{ description: "second", verify: "test", needs_vision: true, can_run_parallel: true },
@@ -367,30 +367,30 @@ describe("applyCommand: refine_phase", () => {
 				ctx,
 			),
 		)
-		expect(result.phases[0].steps).toHaveLength(2)
-		expect(result.phases[0].steps[0]).toMatchObject({ id: "step-1", index: 1, status: "pending" })
-		expect(result.phases[0].steps[1]).toMatchObject({
+		expect(result.stages[0].steps).toHaveLength(2)
+		expect(result.stages[0].steps[0]).toMatchObject({ id: "step-1", index: 1, status: "pending" })
+		expect(result.stages[0].steps[1]).toMatchObject({
 			id: "step-2",
 			index: 2,
 			needsVision: true,
 			workerModel: "kimi-k2.5",
 			canRunParallel: true,
 		})
-		expect(result.phases[0].steps[1].verification?.command).toBe("test")
+		expect(result.stages[0].steps[1].verification?.command).toBe("test")
 	})
 
 	it("defaults workerModel to minimax-m2.7 when needs_vision is false", () => {
-		const f = makeFerment({ phases: [makePhase({ status: "active" })] })
+		const f = makeFerment({ stages: [makePhase({ status: "active" })] })
 		const result = expectOk(
-			applyCommand(f, { type: "refine_phase", phaseId: "phase-1", steps: [{ description: "x" }] }, ctx),
+			applyCommand(f, { type: "refine_stage", stageId: "phase-1", steps: [{ description: "x" }] }, ctx),
 		)
-		expect(result.phases[0].steps[0].workerModel).toBe("minimax-m2.7")
+		expect(result.stages[0].steps[0].workerModel).toBe("minimax-m2.7")
 	})
 
 	it("rejects when phase is not active", () => {
-		const f = makeFerment({ phases: [makePhase({ status: "planned" })] })
+		const f = makeFerment({ stages: [makePhase({ status: "planned" })] })
 		const error = expectError(
-			applyCommand(f, { type: "refine_phase", phaseId: "phase-1", steps: [{ description: "x" }] }, ctx),
+			applyCommand(f, { type: "refine_stage", stageId: "phase-1", steps: [{ description: "x" }] }, ctx),
 		)
 		expect(error.code).toBe("PHASE_NOT_IN_STATUS")
 	})
@@ -399,7 +399,7 @@ describe("applyCommand: refine_phase", () => {
 	// step by overwriting the entire steps array. The guard now rejects.
 	it("rejects when a step is running (audit #4)", () => {
 		const f = makeFerment({
-			phases: [
+			stages: [
 				makePhase({
 					status: "active",
 					steps: [makeStep({ id: "step-1", status: "running", description: "in flight" })],
@@ -407,7 +407,7 @@ describe("applyCommand: refine_phase", () => {
 			],
 		})
 		const error = expectError(
-			applyCommand(f, { type: "refine_phase", phaseId: "phase-1", steps: [{ description: "x" }] }, ctx),
+			applyCommand(f, { type: "refine_stage", stageId: "phase-1", steps: [{ description: "x" }] }, ctx),
 		)
 		expect(error.code).toBe("STEP_RUNNING")
 		if (error.code === "STEP_RUNNING") {
@@ -420,7 +420,7 @@ describe("applyCommand: refine_phase", () => {
 
 	it("allows refine after the running step transitions to a terminal state", () => {
 		const f = makeFerment({
-			phases: [
+			stages: [
 				makePhase({
 					status: "active",
 					steps: [makeStep({ id: "step-1", status: "done" })],
@@ -428,15 +428,15 @@ describe("applyCommand: refine_phase", () => {
 			],
 		})
 		const result = expectOk(
-			applyCommand(f, { type: "refine_phase", phaseId: "phase-1", steps: [{ description: "fresh" }] }, ctx),
+			applyCommand(f, { type: "refine_stage", stageId: "phase-1", steps: [{ description: "fresh" }] }, ctx),
 		)
-		expect(result.phases[0].steps).toHaveLength(1)
-		expect(result.phases[0].steps[0].description).toBe("fresh")
+		expect(result.stages[0].steps).toHaveLength(1)
+		expect(result.stages[0].steps[0].description).toBe("fresh")
 	})
 
 	it("allows refine when other steps are pending or terminal but none running", () => {
 		const f = makeFerment({
-			phases: [
+			stages: [
 				makePhase({
 					status: "active",
 					steps: [
@@ -448,9 +448,9 @@ describe("applyCommand: refine_phase", () => {
 			],
 		})
 		const result = expectOk(
-			applyCommand(f, { type: "refine_phase", phaseId: "phase-1", steps: [{ description: "x" }] }, ctx),
+			applyCommand(f, { type: "refine_stage", stageId: "phase-1", steps: [{ description: "x" }] }, ctx),
 		)
-		expect(result.phases[0].steps).toHaveLength(1)
+		expect(result.stages[0].steps).toHaveLength(1)
 	})
 })
 
@@ -459,16 +459,16 @@ describe("applyCommand: refine_phase", () => {
 describe("applyCommand: start_step", () => {
 	it("transitions step pending → running", () => {
 		const f = makeFerment({
-			phases: [makePhase({ status: "active", steps: [makeStep()] })],
+			stages: [makePhase({ status: "active", steps: [makeStep()] })],
 		})
-		const result = expectOk(applyCommand(f, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ctx))
-		expect(result.phases[0].steps[0].status).toBe("running")
-		expect(result.phases[0].steps[0].startedAt).toBe(NOW)
+		const result = expectOk(applyCommand(f, { type: "start_step", stageId: "phase-1", stepId: "step-1" }, ctx))
+		expect(result.stages[0].steps[0].status).toBe("running")
+		expect(result.stages[0].steps[0].startedAt).toBe(NOW)
 	})
 
 	it("rejects when another non-parallel step is running", () => {
 		const f = makeFerment({
-			phases: [
+			stages: [
 				makePhase({
 					status: "active",
 					steps: [
@@ -478,7 +478,7 @@ describe("applyCommand: start_step", () => {
 				}),
 			],
 		})
-		const error = expectError(applyCommand(f, { type: "start_step", phaseId: "phase-1", stepId: "step-2" }, ctx))
+		const error = expectError(applyCommand(f, { type: "start_step", stageId: "phase-1", stepId: "step-2" }, ctx))
 		expect(error.code).toBe("CONCURRENT_NON_PARALLEL_STEP")
 		if (error.code === "CONCURRENT_NON_PARALLEL_STEP") {
 			expect(error.runningStepId).toBe("step-1")
@@ -487,7 +487,7 @@ describe("applyCommand: start_step", () => {
 
 	it("allows starting a parallel step when another parallel step is running", () => {
 		const f = makeFerment({
-			phases: [
+			stages: [
 				makePhase({
 					status: "active",
 					steps: [
@@ -497,21 +497,21 @@ describe("applyCommand: start_step", () => {
 				}),
 			],
 		})
-		const result = expectOk(applyCommand(f, { type: "start_step", phaseId: "phase-1", stepId: "step-2" }, ctx))
-		expect(result.phases[0].steps[1].status).toBe("running")
+		const result = expectOk(applyCommand(f, { type: "start_step", stageId: "phase-1", stepId: "step-2" }, ctx))
+		expect(result.stages[0].steps[1].status).toBe("running")
 	})
 
 	it("rejects unknown step", () => {
 		const f = makeFerment({
-			phases: [makePhase({ status: "active", steps: [makeStep()] })],
+			stages: [makePhase({ status: "active", steps: [makeStep()] })],
 		})
-		const error = expectError(applyCommand(f, { type: "start_step", phaseId: "phase-1", stepId: "step-99" }, ctx))
+		const error = expectError(applyCommand(f, { type: "start_step", stageId: "phase-1", stepId: "step-99" }, ctx))
 		expect(error.code).toBe("STEP_NOT_FOUND")
 	})
 
 	it("rejects unknown phase", () => {
 		const error = expectError(
-			applyCommand(makeFerment(), { type: "start_step", phaseId: "nope", stepId: "step-1" }, ctx),
+			applyCommand(makeFerment(), { type: "start_step", stageId: "nope", stepId: "step-1" }, ctx),
 		)
 		expect(error.code).toBe("PHASE_NOT_FOUND")
 	})
@@ -522,34 +522,34 @@ describe("applyCommand: start_step", () => {
 describe("applyCommand: complete_step", () => {
 	it("transitions running → done when no result", () => {
 		const f = makeFerment({
-			phases: [makePhase({ status: "active", steps: [makeStep({ status: "running" })] })],
+			stages: [makePhase({ status: "active", steps: [makeStep({ status: "running" })] })],
 		})
-		const result = expectOk(applyCommand(f, { type: "complete_step", phaseId: "phase-1", stepId: "step-1" }, ctx))
-		expect(result.phases[0].steps[0].status).toBe("done")
-		expect(result.phases[0].steps[0].completedAt).toBe(NOW)
+		const result = expectOk(applyCommand(f, { type: "complete_step", stageId: "phase-1", stepId: "step-1" }, ctx))
+		expect(result.stages[0].steps[0].status).toBe("done")
+		expect(result.stages[0].steps[0].completedAt).toBe(NOW)
 	})
 
 	it("transitions running → verified when result.success is true", () => {
 		const f = makeFerment({
-			phases: [makePhase({ status: "active", steps: [makeStep({ status: "running" })] })],
+			stages: [makePhase({ status: "active", steps: [makeStep({ status: "running" })] })],
 		})
 		const stepResult: StepResult = { success: true, exitCode: 0, completedAt: NOW }
 		const result = expectOk(
-			applyCommand(f, { type: "complete_step", phaseId: "phase-1", stepId: "step-1", result: stepResult }, ctx),
+			applyCommand(f, { type: "complete_step", stageId: "phase-1", stepId: "step-1", result: stepResult }, ctx),
 		)
-		expect(result.phases[0].steps[0].status).toBe("verified")
-		expect(result.phases[0].steps[0].result?.success).toBe(true)
+		expect(result.stages[0].steps[0].status).toBe("verified")
+		expect(result.stages[0].steps[0].result?.success).toBe(true)
 	})
 
 	it("attaches grade when provided", () => {
 		const f = makeFerment({
-			phases: [makePhase({ status: "active", steps: [makeStep({ status: "running" })] })],
+			stages: [makePhase({ status: "active", steps: [makeStep({ status: "running" })] })],
 		})
 		const grade = makeGrade("A")
 		const result = expectOk(
-			applyCommand(f, { type: "complete_step", phaseId: "phase-1", stepId: "step-1", grade }, ctx),
+			applyCommand(f, { type: "complete_step", stageId: "phase-1", stepId: "step-1", grade }, ctx),
 		)
-		expect(result.phases[0].steps[0].grade).toEqual(grade)
+		expect(result.stages[0].steps[0].grade).toEqual(grade)
 	})
 })
 
@@ -558,25 +558,25 @@ describe("applyCommand: complete_step", () => {
 describe("applyCommand: verify_step", () => {
 	it("records result and sets verified status when success", () => {
 		const f = makeFerment({
-			phases: [makePhase({ status: "active", steps: [makeStep({ status: "running" })] })],
+			stages: [makePhase({ status: "active", steps: [makeStep({ status: "running" })] })],
 		})
 		const stepResult: StepResult = { success: true, exitCode: 0, stdout: "ok", completedAt: NOW }
 		const result = expectOk(
-			applyCommand(f, { type: "verify_step", phaseId: "phase-1", stepId: "step-1", result: stepResult }, ctx),
+			applyCommand(f, { type: "verify_step", stageId: "phase-1", stepId: "step-1", result: stepResult }, ctx),
 		)
-		expect(result.phases[0].steps[0].status).toBe("verified")
-		expect(result.phases[0].steps[0].result?.stdout).toBe("ok")
+		expect(result.stages[0].steps[0].status).toBe("verified")
+		expect(result.stages[0].steps[0].result?.stdout).toBe("ok")
 	})
 
 	it("sets done status when verify fails", () => {
 		const f = makeFerment({
-			phases: [makePhase({ status: "active", steps: [makeStep({ status: "running" })] })],
+			stages: [makePhase({ status: "active", steps: [makeStep({ status: "running" })] })],
 		})
 		const stepResult: StepResult = { success: false, exitCode: 1, stderr: "fail", completedAt: NOW }
 		const result = expectOk(
-			applyCommand(f, { type: "verify_step", phaseId: "phase-1", stepId: "step-1", result: stepResult }, ctx),
+			applyCommand(f, { type: "verify_step", stageId: "phase-1", stepId: "step-1", result: stepResult }, ctx),
 		)
-		expect(result.phases[0].steps[0].status).toBe("done")
+		expect(result.stages[0].steps[0].status).toBe("done")
 	})
 })
 
@@ -585,11 +585,11 @@ describe("applyCommand: verify_step", () => {
 describe("applyCommand: skip_step", () => {
 	it("transitions to skipped from any status", () => {
 		const f = makeFerment({
-			phases: [makePhase({ status: "active", steps: [makeStep({ status: "running" })] })],
+			stages: [makePhase({ status: "active", steps: [makeStep({ status: "running" })] })],
 		})
-		const result = expectOk(applyCommand(f, { type: "skip_step", phaseId: "phase-1", stepId: "step-1" }, ctx))
-		expect(result.phases[0].steps[0].status).toBe("skipped")
-		expect(result.phases[0].steps[0].completedAt).toBe(NOW)
+		const result = expectOk(applyCommand(f, { type: "skip_step", stageId: "phase-1", stepId: "step-1" }, ctx))
+		expect(result.stages[0].steps[0].status).toBe("skipped")
+		expect(result.stages[0].steps[0].completedAt).toBe(NOW)
 	})
 })
 
@@ -598,23 +598,23 @@ describe("applyCommand: skip_step", () => {
 describe("applyCommand: fail_step", () => {
 	it("marks step failed with error message", () => {
 		const f = makeFerment({
-			phases: [makePhase({ status: "active", steps: [makeStep({ status: "running" })] })],
+			stages: [makePhase({ status: "active", steps: [makeStep({ status: "running" })] })],
 		})
 		const result = expectOk(
-			applyCommand(f, { type: "fail_step", phaseId: "phase-1", stepId: "step-1", error: "broke" }, ctx),
+			applyCommand(f, { type: "fail_step", stageId: "phase-1", stepId: "step-1", error: "broke" }, ctx),
 		)
-		expect(result.phases[0].steps[0].status).toBe("failed")
-		expect(result.phases[0].steps[0].result?.stderr).toBe("broke")
-		expect(result.phases[0].steps[0].result?.success).toBe(false)
+		expect(result.stages[0].steps[0].status).toBe("failed")
+		expect(result.stages[0].steps[0].result?.stderr).toBe("broke")
+		expect(result.stages[0].steps[0].result?.success).toBe(false)
 	})
 
 	it("works without error message", () => {
 		const f = makeFerment({
-			phases: [makePhase({ status: "active", steps: [makeStep({ status: "running" })] })],
+			stages: [makePhase({ status: "active", steps: [makeStep({ status: "running" })] })],
 		})
-		const result = expectOk(applyCommand(f, { type: "fail_step", phaseId: "phase-1", stepId: "step-1" }, ctx))
-		expect(result.phases[0].steps[0].status).toBe("failed")
-		expect(result.phases[0].steps[0].result).toBeUndefined()
+		const result = expectOk(applyCommand(f, { type: "fail_step", stageId: "phase-1", stepId: "step-1" }, ctx))
+		expect(result.stages[0].steps[0].status).toBe("failed")
+		expect(result.stages[0].steps[0].result).toBeUndefined()
 	})
 })
 
@@ -624,89 +624,89 @@ describe("applyCommand: complete_phase", () => {
 	it("transitions active → completed", () => {
 		const f = makeFerment({
 			status: "running",
-			activePhaseId: "phase-1",
-			phases: [makePhase({ status: "active" })],
+			activeStageId: "phase-1",
+			stages: [makePhase({ status: "active" })],
 		})
-		const result = expectOk(applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "done" }, ctx))
+		const result = expectOk(applyCommand(f, { type: "complete_stage", stageId: "phase-1", summary: "done" }, ctx))
 		expect(result.status).toBe("planned")
-		expect(result.activePhaseId).toBeUndefined()
-		expect(result.phases[0].status).toBe("completed")
-		expect(result.phases[0].summary).toBe("done")
-		expect(result.phases[0].completedAt).toBe(NOW)
+		expect(result.activeStageId).toBeUndefined()
+		expect(result.stages[0].status).toBe("completed")
+		expect(result.stages[0].summary).toBe("done")
+		expect(result.stages[0].completedAt).toBe(NOW)
 	})
 
 	it("clears the completed active phase so the next planned phase can activate", () => {
 		const f = makeFerment({
 			status: "running",
-			activePhaseId: "phase-1",
-			phases: [
+			activeStageId: "phase-1",
+			stages: [
 				makePhase({ id: "phase-1", status: "active" }),
 				makePhase({ id: "phase-2", index: 2, name: "P2", status: "planned" }),
 			],
 		})
 
-		const completed = expectOk(applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "done" }, ctx))
+		const completed = expectOk(applyCommand(f, { type: "complete_stage", stageId: "phase-1", summary: "done" }, ctx))
 		expect(completed.status).toBe("planned")
-		expect(completed.activePhaseId).toBeUndefined()
-		expect(completed.phases[0].status).toBe("completed")
+		expect(completed.activeStageId).toBeUndefined()
+		expect(completed.stages[0].status).toBe("completed")
 
-		const activated = expectOk(applyCommand(completed, { type: "activate_phase", phaseId: "phase-2" }, ctx))
+		const activated = expectOk(applyCommand(completed, { type: "activate_stage", stageId: "phase-2" }, ctx))
 		expect(activated.status).toBe("running")
-		expect(activated.activePhaseId).toBe("phase-2")
-		expect(activated.phases[1].status).toBe("active")
+		expect(activated.activeStageId).toBe("phase-2")
+		expect(activated.stages[1].status).toBe("active")
 	})
 
 	it("keeps running and selects another active phase when completing one parallel phase", () => {
 		const f = makeFerment({
 			status: "running",
-			activePhaseId: "phase-1",
-			phases: [
+			activeStageId: "phase-1",
+			stages: [
 				makePhase({ id: "phase-1", status: "active", groupIndex: 1 }),
 				makePhase({ id: "phase-2", index: 2, name: "P2", status: "active", groupIndex: 1 }),
 			],
 		})
 
-		const result = expectOk(applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "done" }, ctx))
+		const result = expectOk(applyCommand(f, { type: "complete_stage", stageId: "phase-1", summary: "done" }, ctx))
 		expect(result.status).toBe("running")
-		expect(result.activePhaseId).toBe("phase-2")
-		expect(result.phases[0].status).toBe("completed")
-		expect(result.phases[1].status).toBe("active")
+		expect(result.activeStageId).toBe("phase-2")
+		expect(result.stages[0].status).toBe("completed")
+		expect(result.stages[1].status).toBe("active")
 	})
 
 	it("attaches grade when provided", () => {
-		const f = makeFerment({ phases: [makePhase({ status: "active" })] })
+		const f = makeFerment({ stages: [makePhase({ status: "active" })] })
 		const grade = makeGrade("A")
 		const result = expectOk(
-			applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "done", grade }, ctx),
+			applyCommand(f, { type: "complete_stage", stageId: "phase-1", summary: "done", grade }, ctx),
 		)
-		expect(result.phases[0].grade).toEqual(grade)
+		expect(result.stages[0].grade).toEqual(grade)
 	})
 
 	it("rejects when phase not active", () => {
-		const f = makeFerment({ phases: [makePhase({ status: "planned" })] })
-		const error = expectError(applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "x" }, ctx))
+		const f = makeFerment({ stages: [makePhase({ status: "planned" })] })
+		const error = expectError(applyCommand(f, { type: "complete_stage", stageId: "phase-1", summary: "x" }, ctx))
 		expect(error.code).toBe("PHASE_NOT_IN_STATUS")
 	})
 
 	it("clears active phase state so the next planned phase can be activated", () => {
 		const f = makeFerment({
 			status: "running",
-			activePhaseId: "phase-1",
-			phases: [
+			activeStageId: "phase-1",
+			stages: [
 				makePhase({ id: "phase-1", index: 1, name: "Phase 1", status: "active" }),
 				makePhase({ id: "phase-2", index: 2, name: "Phase 2", status: "planned" }),
 			],
 		})
 
-		const completed = expectOk(applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "done" }, ctx))
-		expect(completed.phases[0].status).toBe("completed")
+		const completed = expectOk(applyCommand(f, { type: "complete_stage", stageId: "phase-1", summary: "done" }, ctx))
+		expect(completed.stages[0].status).toBe("completed")
 		expect(completed.status).toBe("planned")
-		expect(completed.activePhaseId).toBeUndefined()
+		expect(completed.activeStageId).toBeUndefined()
 
-		const activated = expectOk(applyCommand(completed, { type: "activate_phase", phaseId: "phase-2" }, ctx))
+		const activated = expectOk(applyCommand(completed, { type: "activate_stage", stageId: "phase-2" }, ctx))
 		expect(activated.status).toBe("running")
-		expect(activated.activePhaseId).toBe("phase-2")
-		expect(activated.phases[1].status).toBe("active")
+		expect(activated.activeStageId).toBe("phase-2")
+		expect(activated.stages[1].status).toBe("active")
 	})
 })
 
@@ -714,28 +714,28 @@ describe("applyCommand: complete_phase", () => {
 
 describe("applyCommand: skip_phase", () => {
 	it("transitions to skipped with reason", () => {
-		const f = makeFerment({ phases: [makePhase({ status: "planned" })] })
-		const result = expectOk(applyCommand(f, { type: "skip_phase", phaseId: "phase-1", reason: "n/a" }, ctx))
-		expect(result.phases[0].status).toBe("skipped")
-		expect(result.phases[0].summary).toBe("n/a")
+		const f = makeFerment({ stages: [makePhase({ status: "planned" })] })
+		const result = expectOk(applyCommand(f, { type: "skip_stage", stageId: "phase-1", reason: "n/a" }, ctx))
+		expect(result.stages[0].status).toBe("skipped")
+		expect(result.stages[0].summary).toBe("n/a")
 	})
 
 	it("uses default reason when not provided", () => {
-		const f = makeFerment({ phases: [makePhase({ status: "planned" })] })
-		const result = expectOk(applyCommand(f, { type: "skip_phase", phaseId: "phase-1" }, ctx))
-		expect(result.phases[0].summary).toBe("Skipped")
+		const f = makeFerment({ stages: [makePhase({ status: "planned" })] })
+		const result = expectOk(applyCommand(f, { type: "skip_stage", stageId: "phase-1" }, ctx))
+		expect(result.stages[0].summary).toBe("Skipped")
 	})
 
 	it("clears active phase metadata when skipping the active phase", () => {
 		const f = makeFerment({
 			status: "running",
-			activePhaseId: "phase-1",
-			phases: [makePhase({ status: "active" })],
+			activeStageId: "phase-1",
+			stages: [makePhase({ status: "active" })],
 		})
-		const result = expectOk(applyCommand(f, { type: "skip_phase", phaseId: "phase-1" }, ctx))
+		const result = expectOk(applyCommand(f, { type: "skip_stage", stageId: "phase-1" }, ctx))
 		expect(result.status).toBe("planned")
-		expect(result.activePhaseId).toBeUndefined()
-		expect(result.phases[0].status).toBe("skipped")
+		expect(result.activeStageId).toBeUndefined()
+		expect(result.stages[0].status).toBe("skipped")
 	})
 })
 
@@ -743,12 +743,12 @@ describe("applyCommand: skip_phase", () => {
 
 describe("applyCommand: fail_phase", () => {
 	it("transitions to failed with reason", () => {
-		const f = makeFerment({ status: "running", activePhaseId: "phase-1", phases: [makePhase({ status: "active" })] })
-		const result = expectOk(applyCommand(f, { type: "fail_phase", phaseId: "phase-1", reason: "tests failed" }, ctx))
+		const f = makeFerment({ status: "running", activeStageId: "phase-1", stages: [makePhase({ status: "active" })] })
+		const result = expectOk(applyCommand(f, { type: "fail_stage", stageId: "phase-1", reason: "tests failed" }, ctx))
 		expect(result.status).toBe("planned")
-		expect(result.activePhaseId).toBeUndefined()
-		expect(result.phases[0].status).toBe("failed")
-		expect(result.phases[0].summary).toBe("tests failed")
+		expect(result.activeStageId).toBeUndefined()
+		expect(result.stages[0].status).toBe("failed")
+		expect(result.stages[0].summary).toBe("tests failed")
 	})
 })
 
@@ -758,7 +758,7 @@ describe("applyCommand: complete_ferment", () => {
 	it("succeeds when all phases terminal", () => {
 		const f = makeFerment({
 			status: "running",
-			phases: [makePhase({ id: "p1", status: "completed" }), makePhase({ id: "p2", status: "skipped", index: 2 })],
+			stages: [makePhase({ id: "p1", status: "completed" }), makePhase({ id: "p2", status: "skipped", index: 2 })],
 		})
 		const result = expectOk(applyCommand(f, { type: "complete_ferment" }, ctx))
 		expect(result.status).toBe("complete")
@@ -766,7 +766,7 @@ describe("applyCommand: complete_ferment", () => {
 
 	it("rejects when phases are still active or planned", () => {
 		const f = makeFerment({
-			phases: [makePhase({ id: "p1", status: "active" }), makePhase({ id: "p2", status: "planned", index: 2 })],
+			stages: [makePhase({ id: "p1", status: "active" }), makePhase({ id: "p2", status: "planned", index: 2 })],
 		})
 		const error = expectError(applyCommand(f, { type: "complete_ferment" }, ctx))
 		expect(error.code).toBe("PHASES_NOT_TERMINAL")
@@ -776,7 +776,7 @@ describe("applyCommand: complete_ferment", () => {
 	})
 
 	it("attaches grade when provided", () => {
-		const f = makeFerment({ phases: [makePhase({ status: "completed" })] })
+		const f = makeFerment({ stages: [makePhase({ status: "completed" })] })
 		const grade = makeGrade("B")
 		const result = expectOk(applyCommand(f, { type: "complete_ferment", grade }, ctx))
 		expect(result.grade).toEqual(grade)
@@ -785,14 +785,14 @@ describe("applyCommand: complete_ferment", () => {
 	it("completes explicitly after the final phase leaves the ferment planned", () => {
 		const f = makeFerment({
 			status: "running",
-			activePhaseId: "phase-1",
-			phases: [makePhase({ status: "active" })],
+			activeStageId: "phase-1",
+			stages: [makePhase({ status: "active" })],
 		})
 
-		const phaseDone = expectOk(applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "done" }, ctx))
+		const phaseDone = expectOk(applyCommand(f, { type: "complete_stage", stageId: "phase-1", summary: "done" }, ctx))
 		expect(phaseDone.status).toBe("planned")
-		expect(phaseDone.activePhaseId).toBeUndefined()
-		expect(phaseDone.phases.every((p) => p.status === "completed")).toBe(true)
+		expect(phaseDone.activeStageId).toBeUndefined()
+		expect(phaseDone.stages.every((p) => p.status === "completed")).toBe(true)
 
 		const result = expectOk(applyCommand(phaseDone, { type: "complete_ferment" }, ctx))
 		expect(result.status).toBe("complete")
@@ -832,13 +832,13 @@ describe("applyCommand: resume", () => {
 	it("transitions paused with active phase → running", () => {
 		const result = expectOk(
 			applyCommand(
-				makeFerment({ status: "paused", activePhaseId: "phase-1", phases: [makePhase({ status: "active" })] }),
+				makeFerment({ status: "paused", activeStageId: "phase-1", stages: [makePhase({ status: "active" })] }),
 				{ type: "resume" },
 				ctx,
 			),
 		)
 		expect(result.status).toBe("running")
-		expect(result.activePhaseId).toBe("phase-1")
+		expect(result.activeStageId).toBe("phase-1")
 	})
 
 	it("transitions paused between phases → planned", () => {
@@ -846,8 +846,8 @@ describe("applyCommand: resume", () => {
 			applyCommand(
 				makeFerment({
 					status: "paused",
-					activePhaseId: "phase-1",
-					phases: [
+					activeStageId: "phase-1",
+					stages: [
 						makePhase({ id: "phase-1", status: "completed" }),
 						makePhase({ id: "phase-2", index: 2, name: "P2", status: "planned" }),
 					],
@@ -857,7 +857,7 @@ describe("applyCommand: resume", () => {
 			),
 		)
 		expect(result.status).toBe("planned")
-		expect(result.activePhaseId).toBeUndefined()
+		expect(result.activeStageId).toBeUndefined()
 	})
 
 	it("rejects resume from running", () => {
@@ -918,7 +918,7 @@ describe("applyCommand: add_decision", () => {
 		const result = expectOk(
 			applyCommand(
 				makeFerment(),
-				{ type: "add_decision", title: "T", description: "D", phaseId: "p1", stepId: "s1" },
+				{ type: "add_decision", title: "T", description: "D", stageId: "p1", stepId: "s1" },
 				ctx,
 			),
 		)
@@ -967,21 +967,21 @@ describe("applyCommand: add_memory", () => {
 
 describe("applyCommand: set_phase_grade / set_step_grade / set_ferment_grade", () => {
 	it("sets phase grade", () => {
-		const f = makeFerment({ phases: [makePhase({ status: "completed" })] })
+		const f = makeFerment({ stages: [makePhase({ status: "completed" })] })
 		const grade = makeGrade("B")
-		const result = expectOk(applyCommand(f, { type: "set_phase_grade", phaseId: "phase-1", grade }, ctx))
-		expect(result.phases[0].grade).toEqual(grade)
+		const result = expectOk(applyCommand(f, { type: "set_stage_grade", stageId: "phase-1", grade }, ctx))
+		expect(result.stages[0].grade).toEqual(grade)
 	})
 
 	it("sets step grade", () => {
 		const f = makeFerment({
-			phases: [makePhase({ status: "active", steps: [makeStep({ status: "done" })] })],
+			stages: [makePhase({ status: "active", steps: [makeStep({ status: "done" })] })],
 		})
 		const grade = makeGrade("A")
 		const result = expectOk(
-			applyCommand(f, { type: "set_step_grade", phaseId: "phase-1", stepId: "step-1", grade }, ctx),
+			applyCommand(f, { type: "set_step_grade", stageId: "phase-1", stepId: "step-1", grade }, ctx),
 		)
-		expect(result.phases[0].steps[0].grade).toEqual(grade)
+		expect(result.stages[0].steps[0].grade).toEqual(grade)
 	})
 
 	it("sets ferment grade", () => {
@@ -1005,16 +1005,16 @@ describe("applyCommand: rename", () => {
 
 describe("applyCommand: purity", () => {
 	it("does not mutate input on success", () => {
-		const f = makeFerment({ phases: [makePhase({ status: "active" })] })
+		const f = makeFerment({ stages: [makePhase({ status: "active" })] })
 		const before = JSON.stringify(f)
-		applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "done" }, ctx)
+		applyCommand(f, { type: "complete_stage", stageId: "phase-1", summary: "done" }, ctx)
 		expect(JSON.stringify(f)).toBe(before)
 	})
 
 	it("does not mutate input on error", () => {
-		const f = makeFerment({ phases: [makePhase({ status: "planned" })] })
+		const f = makeFerment({ stages: [makePhase({ status: "planned" })] })
 		const before = JSON.stringify(f)
-		applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "x" }, ctx)
+		applyCommand(f, { type: "complete_stage", stageId: "phase-1", summary: "x" }, ctx)
 		expect(JSON.stringify(f)).toBe(before)
 	})
 

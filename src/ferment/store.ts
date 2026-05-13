@@ -193,7 +193,7 @@ function upgradeV3toV4(raw: FermentV3): Ferment {
 	})
 
 	// Determine active phase
-	const activePhaseId = phases.find((p) => p.status === "active")?.id
+	const activeStageId = phases.find((p) => p.status === "active")?.id
 
 	return {
 		id: raw.id,
@@ -201,12 +201,12 @@ function upgradeV3toV4(raw: FermentV3): Ferment {
 		description: raw.description,
 		status: statusMap[raw.status] ?? "draft",
 		mode: "auto",
-		activePhaseId,
+		activeStageId,
 		goal: raw.goal,
 		successCriteria: raw.successCriteria,
 		worktree: { path: detectProjectRoot() ?? process.cwd() },
 		scoping: {},
-		phases,
+		stages: phases,
 		decisions: raw.decisions ?? [],
 		memories: raw.memories ?? [],
 		createdAt: raw.createdAt,
@@ -264,6 +264,7 @@ export class FermentStorage {
 				return v4
 			}
 			if (hasV4Shape(parsed)) {
+				upgradeV4FieldNames(parsed as Record<string, unknown>)
 				normalizeFerment(parsed as Ferment)
 				const f = parsed as Ferment
 				fermentCache.set(f.id, f)
@@ -306,7 +307,7 @@ export class FermentStorage {
 					name: ferment.name,
 					description: ferment.description,
 					status: ferment.status,
-					phaseCount: ferment.phases.length,
+					phaseCount: ferment.stages.length,
 					createdAt: ferment.createdAt,
 				})
 			} catch {
@@ -373,7 +374,7 @@ export class FermentStorage {
 			mode: "plan",
 			worktree: captureWorktree(),
 			scoping: {},
-			phases: [],
+			stages: [],
 			decisions: [],
 			memories: [],
 			createdAt: now,
@@ -505,7 +506,7 @@ export class FermentStorage {
 		const answer = phases.map((p) => p.name).join(", ")
 		const updated: Ferment = {
 			...f,
-			phases,
+			stages: phases,
 			scoping: { ...f.scoping, phases: { answer, confirmedAt: new Date().toISOString() } },
 			updatedAt: new Date().toISOString(),
 		}
@@ -514,8 +515,8 @@ export class FermentStorage {
 	}
 
 	/** Mark a step as failed with an optional error message. */
-	failStep(id: string, phaseId: string, stepId: string, error?: string): Ferment | undefined {
-		return this.updateStep(id, phaseId, stepId, {
+	failStep(id: string, stageId: string, stepId: string, error?: string): Ferment | undefined {
+		return this.updateStep(id, stageId, stepId, {
 			status: "failed",
 			completedAt: new Date().toISOString(),
 			result: error ? { success: false, stderr: error, completedAt: new Date().toISOString() } : undefined,
@@ -523,12 +524,12 @@ export class FermentStorage {
 	}
 
 	/** Mark a phase as failed with a reason. */
-	failPhase(id: string, phaseId: string, reason: string): Ferment | undefined {
+	failPhase(id: string, stageId: string, reason: string): Ferment | undefined {
 		const f = this.get(id)
 		if (!f) return undefined
 		const now = new Date().toISOString()
-		const phases = f.phases.map((p) =>
-			p.id === phaseId ? { ...p, status: "failed" as const, summary: reason, completedAt: now } : p,
+		const phases = f.stages.map((p) =>
+			p.id === stageId ? { ...p, status: "failed" as const, summary: reason, completedAt: now } : p,
 		)
 		const updated = settleAfterPhaseTerminal(f, phases, now)
 		this.write(updated)
@@ -565,20 +566,20 @@ export class FermentStorage {
 	setPhases(id: string, phases: Phase[]): Ferment | undefined {
 		const f = this.get(id)
 		if (!f) return undefined
-		const updated: Ferment = { ...f, phases, updatedAt: new Date().toISOString() }
+		const updated: Ferment = { ...f, stages: phases, updatedAt: new Date().toISOString() }
 		this.write(updated)
 		return updated
 	}
 
 	/** Activate a phase: set it to "active" and deactivate any other active phase. */
-	activatePhase(id: string, phaseId: string): Ferment | undefined {
+	activatePhase(id: string, stageId: string): Ferment | undefined {
 		const f = this.get(id)
 		if (!f) return undefined
 		const now = new Date().toISOString()
 		const updated: Ferment = {
 			...f,
-			phases: activateSinglePhase(f.phases, phaseId, now),
-			activePhaseId: phaseId,
+			stages: activateSinglePhase(f.stages, stageId, now),
+			activeStageId: stageId,
 			lastActiveAt: now,
 			updatedAt: now,
 		}
@@ -591,17 +592,17 @@ export class FermentStorage {
 		const f = this.get(id)
 		if (!f) return undefined
 		const now = new Date().toISOString()
-		const groupPhases = f.phases.filter((p) => p.groupIndex === groupIndex && p.status === "planned")
+		const groupPhases = f.stages.filter((p) => p.groupIndex === groupIndex && p.status === "planned")
 		if (groupPhases.length === 0) return undefined
 		const firstId = groupPhases[0].id
 		const updated: Ferment = {
 			...f,
-			phases: f.phases.map((p) => {
+			stages: f.stages.map((p) => {
 				if (p.groupIndex === groupIndex && p.status === "planned")
 					return { ...p, status: "active" as const, startedAt: now }
 				return p
 			}),
-			activePhaseId: firstId,
+			activeStageId: firstId,
 			lastActiveAt: now,
 			updatedAt: now,
 		}
@@ -613,16 +614,16 @@ export class FermentStorage {
 	isFullyTerminal(id: string): boolean {
 		const f = this.get(id)
 		if (!f) return false
-		return f.phases.every((p) => p.status === "completed" || p.status === "skipped" || p.status === "failed")
+		return f.stages.every((p) => p.status === "completed" || p.status === "skipped" || p.status === "failed")
 	}
 
 	/** Mark a phase as completed with a summary. */
-	completePhase(id: string, phaseId: string, summary: string): Ferment | undefined {
+	completePhase(id: string, stageId: string, summary: string): Ferment | undefined {
 		const f = this.get(id)
 		if (!f) return undefined
 		const now = new Date().toISOString()
-		const phases = f.phases.map((p) =>
-			p.id === phaseId ? { ...p, status: "completed" as const, summary, completedAt: now } : p,
+		const phases = f.stages.map((p) =>
+			p.id === stageId ? { ...p, status: "completed" as const, summary, completedAt: now } : p,
 		)
 		const updated = settleAfterPhaseTerminal(f, phases, now)
 		this.write(updated)
@@ -630,12 +631,12 @@ export class FermentStorage {
 	}
 
 	/** Skip a phase. */
-	skipPhase(id: string, phaseId: string, reason?: string): Ferment | undefined {
+	skipPhase(id: string, stageId: string, reason?: string): Ferment | undefined {
 		const f = this.get(id)
 		if (!f) return undefined
 		const now = new Date().toISOString()
-		const phases = f.phases.map((p) =>
-			p.id === phaseId ? { ...p, status: "skipped" as const, summary: reason ?? "Skipped", completedAt: now } : p,
+		const phases = f.stages.map((p) =>
+			p.id === stageId ? { ...p, status: "skipped" as const, summary: reason ?? "Skipped", completedAt: now } : p,
 		)
 		const updated = settleAfterPhaseTerminal(f, phases, now)
 		this.write(updated)
@@ -643,13 +644,13 @@ export class FermentStorage {
 	}
 
 	/** Refine phase: set its steps. */
-	refinePhase(id: string, phaseId: string, steps: Step[]): Ferment | undefined {
+	refinePhase(id: string, stageId: string, steps: Step[]): Ferment | undefined {
 		const f = this.get(id)
 		if (!f) return undefined
 		const updated: Ferment = {
 			...f,
-			phases: f.phases.map((p) =>
-				p.id === phaseId ? { ...p, steps: steps.map((s, i) => ({ ...s, index: i + 1 })) } : p,
+			stages: f.stages.map((p) =>
+				p.id === stageId ? { ...p, steps: steps.map((s, i) => ({ ...s, index: i + 1 })) } : p,
 			),
 			updatedAt: new Date().toISOString(),
 		}
@@ -659,46 +660,46 @@ export class FermentStorage {
 
 	// ─── Step Lifecycle ─────────────────────────────────────────────────────────
 
-	private findPhase(f: Ferment, phaseId: string): Phase | undefined {
-		return f.phases.find((p) => p.id === phaseId)
+	private findPhase(f: Ferment, stageId: string): Phase | undefined {
+		return f.stages.find((p) => p.id === stageId)
 	}
 
-	startStep(id: string, phaseId: string, stepId: string): Ferment | undefined {
-		return this.updateStep(id, phaseId, stepId, { status: "running", startedAt: new Date().toISOString() })
+	startStep(id: string, stageId: string, stepId: string): Ferment | undefined {
+		return this.updateStep(id, stageId, stepId, { status: "running", startedAt: new Date().toISOString() })
 	}
 
-	completeStep(id: string, phaseId: string, stepId: string): Ferment | undefined {
-		return this.updateStep(id, phaseId, stepId, {
+	completeStep(id: string, stageId: string, stepId: string): Ferment | undefined {
+		return this.updateStep(id, stageId, stepId, {
 			status: "done",
 			completedAt: new Date().toISOString(),
 		})
 	}
 
-	skipStep(id: string, phaseId: string, stepId: string): Ferment | undefined {
-		return this.updateStep(id, phaseId, stepId, {
+	skipStep(id: string, stageId: string, stepId: string): Ferment | undefined {
+		return this.updateStep(id, stageId, stepId, {
 			status: "skipped",
 			completedAt: new Date().toISOString(),
 		})
 	}
 
-	verifyStep(id: string, phaseId: string, stepId: string, result: StepResult): Ferment | undefined {
-		return this.updateStep(id, phaseId, stepId, {
+	verifyStep(id: string, stageId: string, stepId: string, result: StepResult): Ferment | undefined {
+		return this.updateStep(id, stageId, stepId, {
 			status: result.success ? "verified" : "done",
 			completedAt: result.completedAt,
 			result,
 		})
 	}
 
-	setStepGrade(id: string, phaseId: string, stepId: string, grade: JudgeGrade): Ferment | undefined {
-		return this.updateStep(id, phaseId, stepId, { grade })
+	setStepGrade(id: string, stageId: string, stepId: string, grade: JudgeGrade): Ferment | undefined {
+		return this.updateStep(id, stageId, stepId, { grade })
 	}
 
-	setPhaseGrade(id: string, phaseId: string, grade: JudgeGrade): Ferment | undefined {
+	setPhaseGrade(id: string, stageId: string, grade: JudgeGrade): Ferment | undefined {
 		const f = this.get(id)
 		if (!f) return undefined
 		const updated: Ferment = {
 			...f,
-			phases: f.phases.map((p) => (p.id === phaseId ? { ...p, grade } : p)),
+			stages: f.stages.map((p) => (p.id === stageId ? { ...p, grade } : p)),
 			updatedAt: new Date().toISOString(),
 		}
 		this.write(updated)
@@ -714,13 +715,13 @@ export class FermentStorage {
 	}
 
 	/** Update a step in a phase. */
-	private updateStep(id: string, phaseId: string, stepId: string, patch: Partial<Step>): Ferment | undefined {
+	private updateStep(id: string, stageId: string, stepId: string, patch: Partial<Step>): Ferment | undefined {
 		const f = this.get(id)
 		if (!f) return undefined
 		const updated: Ferment = {
 			...f,
-			phases: f.phases.map((p) =>
-				p.id === phaseId
+			stages: f.stages.map((p) =>
+				p.id === stageId
 					? {
 							...p,
 							steps: p.steps.map((s) => (s.id === stepId ? { ...s, ...patch } : s)),
@@ -735,7 +736,7 @@ export class FermentStorage {
 
 	// ─── Decisions & Memories ───────────────────────────────────────────────────
 
-	addDecision(id: string, title: string, description: string, phaseId?: string, stepId?: string): Ferment | undefined {
+	addDecision(id: string, title: string, description: string, stageId?: string, stepId?: string): Ferment | undefined {
 		const f = this.get(id)
 		if (!f) return undefined
 		const decisions = f.decisions
@@ -748,7 +749,7 @@ export class FermentStorage {
 			id: `D${String(maxIdx + 1).padStart(3, "0")}`,
 			title,
 			description,
-			phaseId,
+			phaseId: stageId,
 			stepId,
 			createdAt: new Date().toISOString(),
 		}
@@ -834,14 +835,23 @@ function hasV3Shape(v: unknown): boolean {
 
 function hasV4Shape(v: unknown): boolean {
 	if (!isObject(v)) return false
-	if (!Array.isArray(v.phases)) return false
+	if (!Array.isArray(v.stages) && !Array.isArray(v.phases)) return false
 	if (Array.isArray(v.batchRefs) || Array.isArray(v.plannedBatches)) return false
-	// Validate the minimum required fields so a corrupted file is rejected early
-	// instead of silently producing undefined behavior downstream.
 	if (typeof v.id !== "string" || typeof v.name !== "string") return false
 	if (typeof v.status !== "string") return false
 	if (!isObject(v.scoping ?? {}) || (v.scoping !== undefined && !isObject(v.scoping))) return false
 	return true
+}
+
+function upgradeV4FieldNames(raw: Record<string, unknown>): void {
+	if (Array.isArray(raw.phases) && !Array.isArray(raw.stages)) {
+		raw.stages = raw.phases
+		delete raw.phases
+	}
+	if (typeof raw.activePhaseId === "string" && raw.activeStageId === undefined) {
+		raw.activeStageId = raw.activePhaseId
+		delete raw.activePhaseId
+	}
 }
 
 function normalizeFerment(f: Ferment): void {
@@ -865,7 +875,7 @@ function normalizeFerment(f: Ferment): void {
 			f.scoping.constraints = { answer: (f.constraints ?? []).join(", "), confirmedAt: now }
 		}
 		if (old.phasesAnswered) {
-			f.scoping.phases = { answer: `${f.phases.length} phases`, confirmedAt: now }
+			f.scoping.phases = { answer: `${f.stages.length} phases`, confirmedAt: now }
 		}
 	}
 }

@@ -34,12 +34,12 @@ describe("confirmPendingScope", () => {
 		if (first.ok) {
 			expect(first.outcome.ferment.name).toBe("Confirmed Title")
 			expect(first.outcome.ferment.status).toBe("planned")
-			expect(first.outcome.ferment.phases).toHaveLength(1)
+			expect(first.outcome.ferment.stages).toHaveLength(1)
 		}
 		expect(second.ok).toBe(false)
 		if (!second.ok) expect(second.error.code).toBe("MISSING_PENDING_SCOPE")
 		expect(runtime.getPendingScope(ferment.id)).toBeUndefined()
-		expect(storage.get(ferment.id)?.phases).toHaveLength(1)
+		expect(storage.get(ferment.id)?.stages).toHaveLength(1)
 	})
 
 	it("uses explicit phases from propose_phases and preserves pending user answers", () => {
@@ -63,7 +63,7 @@ describe("confirmPendingScope", () => {
 		expect(saved?.goal).toBe("User goal")
 		expect(saved?.successCriteria).toBe("User criteria")
 		expect(saved?.constraints).toEqual(["user constraint"])
-		expect(saved?.phases[0]?.name).toBe("P1")
+		expect(saved?.stages[0]?.name).toBe("P1")
 	})
 
 	it("rejects missing pending scope or missing phases without mutating", () => {

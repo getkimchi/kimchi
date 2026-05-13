@@ -1,8 +1,8 @@
 /**
  * Ferment v4 — Progressive Refinement Types
  *
- * Unifies PlannedBatch + BatchRef into Phase.
- * Moves recipes into persisted Step[] within Phase.
+ * Unifies PlannedBatch + BatchRef into Stage.
+ * Moves recipes into persisted Step[] within Stage.
  * 5-state lifecycle: draft → planned → running → paused → complete.
  * Added: git worktree tracking + scoping questionnaire validation.
  */
@@ -34,7 +34,7 @@ export interface Scoping {
 	criteria?: ScopingAnswer
 	/** The constraints that were collected and confirmed */
 	constraints?: ScopingAnswer
-	/** Whether phases have been proposed/accepted */
+	/** Whether stages have been proposed/accepted */
 	phases?: ScopingAnswer
 }
 
@@ -50,7 +50,7 @@ export interface Ferment {
 
 	status: FermentStatus
 	mode: FermentWorkMode
-	activePhaseId?: string
+	activeStageId?: string
 	lastActiveAt?: string
 
 	/** Git worktree where this ferment was started */
@@ -58,41 +58,41 @@ export interface Ferment {
 	/** Scoping questionnaire state */
 	scoping: Scoping
 
-	phases: Phase[]
+	stages: Stage[]
 	decisions: Decision[]
 	memories: Memory[]
 
-	grade?: JudgeGrade // computed at complete_ferment from phase grades
+	grade?: JudgeGrade // computed at complete_ferment from stage grades
 
 	createdAt: string
 	updatedAt: string
 }
 
-// ─── Phase / Level 1 ──────────────────────────────────────────────────────────
+// ─── Stage / Level 1 ──────────────────────────────────────────────────────────
 
-export type PhaseStatus = "planned" | "active" | "completed" | "skipped" | "failed"
+export type StageStatus = "planned" | "active" | "completed" | "skipped" | "failed"
 
-export interface Phase {
+export interface Stage {
 	id: string
 	index: number // 1-based for display
 	name: string
 	description?: string
-	goal: string // what THIS phase delivers
-	constraints?: string[] // per-phase boundaries
+	goal: string // what THIS stage delivers
+	constraints?: string[] // per-stage boundaries
 	budget?: string // e.g. "200k tokens"
 
-	status: PhaseStatus
+	status: StageStatus
 	startedAt?: string
 	completedAt?: string
 	summary?: string // what was accomplished
-	grade?: JudgeGrade // set by judge at complete_phase
+	grade?: JudgeGrade // set by judge at complete_stage
 
-	// Progressive refinement: steps are populated when phase is activated
+	// Progressive refinement: steps are populated when stage is activated
 	steps: Step[]
 
 	// Parallel execution (v4.1)
 	parallel?: boolean
-	groupIndex?: number // phases with same groupIndex run together
+	groupIndex?: number // stages with same groupIndex run together
 }
 
 // ─── Grading ──────────────────────────────────────────────────────────────────
@@ -136,7 +136,7 @@ export interface Step {
 	workerModel?: "minimax-m2.7" | "kimi-k2.5"
 	/** Whether this step requires vision (images/screenshots). Determines worker model selection. */
 	needsVision?: boolean
-	/** Whether this step can run in parallel with other canRunParallel steps in the same phase. */
+	/** Whether this step can run in parallel with other canRunParallel steps in the same stage. */
 	canRunParallel?: boolean
 
 	verification?: Verification
@@ -144,7 +144,7 @@ export interface Step {
 	grade?: JudgeGrade // set by judge after step completes
 
 	/** Short summary of what the worker accomplished. Set by complete_step.
-	 *  Surfaced in worker context for subsequent steps in the same phase
+	 *  Surfaced in worker context for subsequent steps in the same stage
 	 *  so they don't redo work or miss prior decisions. */
 	summary?: string
 }
@@ -189,16 +189,16 @@ export interface Memory {
 
 export type FermentAction =
 	| { kind: "scope"; message: string } // ask user for goal + phases
-	| { kind: "refine"; phaseId: string; message: string } // populate steps
+	| { kind: "refine"; stageId: string; message: string } // populate steps
 	| { kind: "start_step"; stepId: string; message: string } // begin work
 	| { kind: "verify"; stepId: string; message: string } // run verify command
 	| { kind: "complete_step"; stepId: string; message: string } // step done
-	| { kind: "complete_phase"; phaseId: string; message: string } // phase done
-	| { kind: "activate_phase"; phaseId: string; message: string } // start next
+	| { kind: "complete_stage"; stageId: string; message: string } // stage done
+	| { kind: "activate_stage"; stageId: string; message: string } // start next
 	| { kind: "complete_ferment"; message: string } // all done
 	| { kind: "paused"; message: string } // wait for user
-	| { kind: "recover_step"; stepId: string; phaseId: string; message: string } // failed step recovery
-	| { kind: "recover_phase"; phaseId: string; message: string } // failed phase recovery
+	| { kind: "recover_step"; stepId: string; stageId: string; message: string } // failed step recovery
+	| { kind: "recover_phase"; stageId: string; message: string } // failed stage recovery
 
 // ─── Custom session entry types ───────────────────────────────────────────────
 
@@ -239,3 +239,10 @@ export interface FermentV3 {
 	decisions?: Decision[]
 	memories?: Memory[]
 }
+
+// ─── Backward-compat aliases ─────────────────────────────────────────────────
+
+/** @deprecated Use Stage instead */
+export type Phase = Stage
+/** @deprecated Use StageStatus instead */
+export type PhaseStatus = StageStatus
