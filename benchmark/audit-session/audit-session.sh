@@ -219,7 +219,6 @@ sed \
     -e "s|{auditModel}|${EFFECTIVE_MODEL}|g" \
     "$PROMPT_FILE" > "$TMPFILE"
 
-# Runs the audit harness. Output goes directly to stdout so the user sees live progress.
 run_audit_agent() {
     local runner="$1"
     local model="$2"
@@ -239,8 +238,6 @@ run_audit_agent() {
     esac
 }
 
-# Extract the last fenced JSON block from the markdown report and write a sidecar file.
-# Only the sidecar file path is printed to stdout; diagnostics go to stderr.
 extract_json_sidecar() {
     local audit_file="$1"
     local sidecar_file="${audit_file%.md}-AUDIT.json"
@@ -250,8 +247,6 @@ extract_json_sidecar() {
         return 1
     fi
 
-    # Extract the *last* ```json … ``` fenced block, strip the fence lines, and
-    # remove trailing whitespace so jq never sees a stray backslash before EOF.
     local json_content
     json_content="$(awk '
         /^```json$/     { buf=""; in_block=1; next }
@@ -283,8 +278,6 @@ extract_json_sidecar() {
 echo "Running audit agent ($RUNNER, $EFFECTIVE_MODEL)..."
 echo ""
 
-# Run agent interactively (no pipe — preserves TTY so the harness TUI uses the
-# full terminal width instead of falling back to the default 80 columns).
 run_audit_agent "$RUNNER" "$EFFECTIVE_MODEL" "$TMPFILE"
 
 echo ""
