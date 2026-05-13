@@ -185,3 +185,136 @@ ${stderr.slice(0, 1200)}`
 	const verdict = parsed.verdict === "pass" || parsed.verdict === "retry" ? parsed.verdict : "fail"
 	return { verdict, reason: parsed.reason ?? "(no rationale provided)" }
 }
+
+// ─── Public API: journey grade (final ferment grade) ──────────────────────────
+//
+// At complete_ferment, after C-gates pass and the ferment transitions to
+// "complete", this judge call assigns the final letter grade A–F. It reads
+// the whole journey — per-phase F-gate verdicts, the final C-gates, the
+// scope (goal + success criteria), and the total diff — and produces a
+// pessimistic grade with a 2-3 sentence rationale citing specific evidence.
+//
+// The judge does NOT decide whether to ship. C-gates already did that. The
+// judge measures HOW WELL the work was done.
+
+export interface JourneyPhaseInput {
+	name: string
+	goal: string
+	status: string
+	/** Per-phase gate verdicts from the successful complete_phase attempt
+	 *  (read from the on-disk review-evidence sidecar). Optional because
+	 *  legacy ferments may lack the sidecar — judge sees "(no verdicts on
+	 *  file)" in that case. */
+	gateVerdicts?: Array<{ id: string; verdict: string; rationale: string }>
+}
+
+export interface JourneyGateVerdict {
+	id: string
+	verdict: string
+	rationale: string
+}
+
+export interface JourneyDiff {
+	available: boolean
+	filesChanged?: string
+	diffSnippet?: string
+}
+
+export interface JudgeJourneyGradeInput {
+	fermentName: string
+	goal: string
+	successCriteria: string
+	finalSummary: string
+	phases: ReadonlyArray<JourneyPhaseInput>
+	fermentGates: ReadonlyArray<JourneyGateVerdict>
+	totalDiff?: JourneyDiff
+}
+
+export interface JudgeJourneyGradeOk {
+	ok: true
+	grade: Grade
+	rationale: string
+}
+
+export interface JudgeJourneyGradeFailure {
+	ok: false
+	reason: JudgeUnavailableReason | "unparseable" | "invalid_grade"
+	detail?: string
+}
+
+export type JudgeJourneyGradeResult = JudgeJourneyGradeOk | JudgeJourneyGradeFailure
+
+const JOURNEY_GRADE_SYSTEM = `You are the final reviewer for an autonomous coding ferment. The agent has completed all phases and the ferment-scope gates (C1/C2/C3) all passed — so shipping is allowed. Your job is NOT to decide whether to ship. Your job is to assign a letter grade A–F that describes HOW WELL the work was done.
+
+Your bias is PESSIMISTIC. Most work is B or C, not A. A is reserved for ferments that delivered cleanly without retries, with concrete real-execution verification at every phase, and where every gate verdict was substantiated with specific evidence.
+
+Letter rubric (be strict):
+- A: every phase delivered, real verification of artifact ran, diff cleanly implements goal end-to-end, no warns, no block-retries needed, gate rationales cite specific files/commands not vague claims.
+- B: goal met with minor unresolved warns OR weak verification (mostly proxy/sentinel) OR thin gate rationales.
+- C: partial goal achievement, suspect coverage, summaries that hallucinate work not in the diff, OR phases needed retries to converge.
+- D: substantial gaps — phases that failed, summaries that don't match the diff, gate rationales that don't ground in evidence.
+- F: goal not achieved, evidence shows clearly broken work, or the agent never actually exercised the artifact.
+
+You will be given:
+- The ferment goal and success criteria.
+- A per-phase trail: name, goal, status, and the F-gate verdicts the agent provided at complete_phase.
+- The final C-gate verdicts the agent provided at complete_ferment.
+- The total diff (files changed + snippet) from ferment start to now.
+- The agent's final summary.
+
+Respond with EXACTLY one JSON object, no markdown:
+{"grade":"A"|"B"|"C"|"D"|"F","rationale":"<2-3 sentences citing specific phases, gates, or diff regions>"}`
+
+function buildJourneyGradeUserMsg(input: JudgeJourneyGradeInput): string {
+	const parts: string[] = []
+	parts.push(`Ferment: "${input.fermentName}"`)
+	parts.push(`Goal: ${input.goal || "(none specified)"}`)
+	parts.push(`Success criteria: ${input.successCriteria || "(none specified)"}`)
+	parts.push(`Final summary: ${input.finalSummary || "(none)"}`)
+	parts.push("")
+	parts.push("Per-phase trail:")
+	for (const p of input.phases) {
+		parts.push(`  - Phase "${p.name}" [${p.status}] — ${p.goal}`)
+		if (!p.gateVerdicts || p.gateVerdicts.length === 0) {
+			parts.push("    (no verdicts on file)")
+		} else {
+			for (const v of p.gateVerdicts) {
+				parts.push(`    ${v.id} (${v.verdict}): ${v.rationale}`)
+			}
+		}
+	}
+	parts.push("")
+	parts.push("Ferment-scope gate verdicts:")
+	for (const v of input.fermentGates) {
+		parts.push(`  ${v.id} (${v.verdict}): ${v.rationale}`)
+	}
+	if (input.totalDiff?.available) {
+		parts.push("")
+		parts.push("--- TOTAL DIFF ---")
+		parts.push(`Files changed:\n${input.totalDiff.filesChanged ?? "(none recorded)"}`)
+		if (input.totalDiff.diffSnippet) {
+			parts.push(`\nDiff snippet:\n\`\`\`diff\n${input.totalDiff.diffSnippet}\n\`\`\``)
+		}
+	} else {
+		parts.push("")
+		parts.push("(No diff available — judge on verdicts + summary only.)")
+	}
+	return parts.join("\n")
+}
+
+export async function judgeJourneyGrade(
+	input: JudgeJourneyGradeInput,
+	apiCall: (sys: string, msg: string, maxTokens?: number) => Promise<JudgeApiResult> = judgeApiCall,
+): Promise<JudgeJourneyGradeResult> {
+	const api = await apiCall(JOURNEY_GRADE_SYSTEM, buildJourneyGradeUserMsg(input), 400)
+	if (!api.ok) return { ok: false, reason: api.reason, detail: api.detail }
+	const parsed = tryParseJson<{ grade?: string; rationale?: string }>(api.text)
+	if (parsed === undefined) {
+		return { ok: false, reason: "unparseable", detail: api.text.slice(0, 200) }
+	}
+	if (!isGrade(parsed.grade)) {
+		return { ok: false, reason: "invalid_grade", detail: `Judge returned: ${parsed.grade}` }
+	}
+	const rationale = typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
+	return { ok: true, grade: parsed.grade, rationale }
+}

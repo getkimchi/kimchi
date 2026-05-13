@@ -50,7 +50,6 @@ function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 function makeRuntime(overrides: Partial<RuntimeReader> = {}): RuntimeReader {
 	return {
 		getBlockRetry: () => 0,
-		getCorrectiveStep: () => undefined,
 		getPhaseStartRef: () => undefined,
 		getStepStartRef: () => undefined,
 		hasAfterScopeContinuation: () => false,
@@ -69,7 +68,6 @@ describe("deriveFermentState — happy path", () => {
 		expect(state.afterScopeContinuation).toBe(false)
 		expect(state.blocked).toBeUndefined()
 		expect(state.phaseRetry).toBeUndefined()
-		expect(state.correctiveStep).toBeUndefined()
 	})
 
 	it("surfaces the active step when a step is running", () => {
@@ -113,102 +111,6 @@ describe("deriveFermentState — runtime context", () => {
 		const f = makeFerment({ phases: [makePhase({ status: "active" })] })
 		const state = deriveFermentState(f, makeRuntime({ getBlockRetry: () => 0 }))
 		expect(state.phaseRetry).toBeUndefined()
-	})
-
-	it("surfaces lastGradedPhase with grade + correctiveText when present", () => {
-		const f = makeFerment({
-			phases: [
-				makePhase({
-					id: "phase-1",
-					status: "completed",
-					grade: { grade: "B", rationale: "ok", gradedAt: "2026-01-01T00:00:00.000Z" },
-				}),
-			],
-		})
-		const state = deriveFermentState(
-			f,
-			makeRuntime({
-				getCorrectiveStep: () => "be more careful with edge cases",
-			}),
-		)
-		expect(state.lastGradedPhase).toEqual({
-			phaseId: "phase-1",
-			phaseName: "Phase 1",
-			grade: { grade: "B", rationale: "ok", gradedAt: "2026-01-01T00:00:00.000Z" },
-			correctiveText: "be more careful with edge cases",
-		})
-	})
-
-	it("surfaces lastGradedPhase even when no corrective text is recorded", () => {
-		// An A-graded phase has no corrective step but should still appear in
-		// lastGradedPhase so the planner-supplement can render whatever feedback
-		// the grade implies.
-		const f = makeFerment({
-			phases: [
-				makePhase({
-					id: "phase-1",
-					status: "completed",
-					grade: { grade: "A", rationale: "clean", gradedAt: "2026-01-01T00:00:00.000Z" },
-				}),
-			],
-		})
-		const state = deriveFermentState(f, makeRuntime())
-		expect(state.lastGradedPhase?.phaseId).toBe("phase-1")
-		expect(state.lastGradedPhase?.correctiveText).toBeUndefined()
-	})
-
-	it("does NOT include lastGradedPhase when no graded phases exist", () => {
-		const f = makeFerment({ phases: [makePhase({ status: "planned" })] })
-		const state = deriveFermentState(f, makeRuntime())
-		expect(state.lastGradedPhase).toBeUndefined()
-	})
-
-	it("surfaces correctiveStep (deprecated back-compat field) from the LAST graded completed phase", () => {
-		const f = makeFerment({
-			phases: [
-				makePhase({
-					id: "phase-1",
-					status: "completed",
-					grade: { grade: "F", rationale: "x", gradedAt: "2026-01-01T00:00:00.000Z" },
-				}),
-				makePhase({
-					id: "phase-2",
-					index: 2,
-					name: "Phase 2",
-					goal: "Build 2",
-					status: "completed",
-					grade: { grade: "B", rationale: "y", gradedAt: "2026-01-01T00:00:00.000Z" },
-				}),
-				makePhase({
-					id: "phase-3",
-					index: 3,
-					name: "Phase 3",
-					goal: "Build 3",
-					status: "planned",
-				}),
-			],
-		})
-		// Runtime has corrective text only for phase-2 (the most recent graded).
-		const state = deriveFermentState(
-			f,
-			makeRuntime({
-				getCorrectiveStep: (_fId, phaseId) => (phaseId === "phase-2" ? "Add a regression test next time." : undefined),
-			}),
-		)
-		expect(state.correctiveStep).toEqual({
-			phaseId: "phase-2",
-			text: "Add a regression test next time.",
-		})
-	})
-
-	it("ignores correctiveStep on uncompleted phases even if recorded", () => {
-		// Defensive: runtime might have stale corrective text for a still-active
-		// phase. We only surface text for completed-with-grade phases.
-		const f = makeFerment({
-			phases: [makePhase({ status: "active" })],
-		})
-		const state = deriveFermentState(f, makeRuntime({ getCorrectiveStep: () => "stale text from before" }))
-		expect(state.correctiveStep).toBeUndefined()
 	})
 
 	it("includes git refs when runtime has them", () => {
@@ -285,7 +187,6 @@ describe("deriveFermentState — purity", () => {
 			f,
 			makeRuntime({
 				getBlockRetry: () => 2,
-				getCorrectiveStep: () => "fix it",
 				getPhaseStartRef: () => "sha",
 				getStepStartRef: () => "sha2",
 				hasAfterScopeContinuation: () => true,
@@ -301,10 +202,6 @@ describe("deriveFermentState — purity", () => {
 			getBlockRetry: (_f, p) => {
 				reads.push(`getBlockRetry:${p}`)
 				return 0
-			},
-			getCorrectiveStep: (_f, p) => {
-				reads.push(`getCorrectiveStep:${p}`)
-				return undefined
 			},
 			getPhaseStartRef: (_f, p) => {
 				reads.push(`getPhaseStartRef:${p}`)

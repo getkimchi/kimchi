@@ -27,7 +27,7 @@
 
 import { type DeclarativeAction, determineNextAction } from "../../ferment/engine.js"
 import type { FsmState } from "../../ferment/fsm.js"
-import type { Ferment, JudgeGrade, Phase, Step } from "../../ferment/types.js"
+import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { computeFsmState } from "./fsm-adapter.js"
 import { MAX_BLOCK_RETRIES } from "./state.js"
 
@@ -35,7 +35,6 @@ import { MAX_BLOCK_RETRIES } from "./state.js"
  *  lets callers pass either the full runtime or a test mock. */
 export interface RuntimeReader {
 	getBlockRetry(fermentId: string, phaseId: string): number
-	getCorrectiveStep(fermentId: string, phaseId: string): string | undefined
 	getPhaseStartRef(fermentId: string, phaseId: string): string | undefined
 	getStepStartRef(fermentId: string, phaseId: string, stepId: string): string | undefined
 	hasAfterScopeContinuation(fermentId: string): boolean
@@ -66,23 +65,6 @@ export interface PhaseRetryBudget {
 	atRiskOfEscalation: boolean
 }
 
-export interface CorrectiveStepInfo {
-	phaseId: string
-	text: string
-}
-
-/** The most recently completed phase that carries a JudgeGrade. Surfaced so
- *  callers (planner-supplement, future debug commands) can read previous-phase
- *  feedback in one place instead of re-scanning ferment.phases. */
-export interface LastGradedPhaseInfo {
-	phaseId: string
-	phaseName: string
-	grade: JudgeGrade
-	/** Corrective text recorded by complete_phase. Undefined when complete_phase
-	 *  didn't record one (e.g. no warn/block flags on that phase). */
-	correctiveText?: string
-}
-
 export interface DerivedFermentState {
 	/** Current FSM cell. Same value `computeFsmState` returns. */
 	fsmState: FsmState
@@ -95,17 +77,6 @@ export interface DerivedFermentState {
 	/** Retry budget for the active phase — only present when retries have been
 	 *  used. `at_risk` callers can surface this in prompts / dashboards. */
 	phaseRetry?: PhaseRetryBudget
-	/** Corrective step text from the last block-flagged phase, ready to be
-	 *  injected into the next-turn planner-supplement.
-	 *  @deprecated Use `lastGradedPhase.correctiveText` instead — same value,
-	 *  one canonical surface. Kept for back-compat; will be removed in a
-	 *  follow-up. */
-	correctiveStep?: CorrectiveStepInfo
-	/** The most recently completed phase that has a JudgeGrade attached.
-	 *  Carries the grade itself + any corrective text recorded by
-	 *  complete_phase. The planner-supplement uses this for next-phase
-	 *  feedback injection. */
-	lastGradedPhase?: LastGradedPhaseInfo
 	/** Plan-mode handoff signal: ferment was just scoped and the agent's first
 	 *  turn after scoping should expect a user nudge. */
 	afterScopeContinuation: boolean
@@ -187,25 +158,6 @@ export function deriveFermentState(ferment: Ferment, runtime: RuntimeReader): De
 		result.activeStep = describeStep(activeStepObj)
 		const stepRef = runtime.getStepStartRef(ferment.id, activePhaseObj.id, activeStepObj.id)
 		if (stepRef) result.stepStartRef = stepRef
-	}
-
-	// Most-recent graded completed phase. We surface it (with its grade) so
-	// planner-supplement and future debug commands can read previous-phase
-	// feedback in one place. The corrective text is the same value the
-	// (deprecated) top-level `correctiveStep` field carries.
-	const completedPhases = ferment.phases.filter((p) => p.status === "completed" && p.grade)
-	const lastGraded = completedPhases[completedPhases.length - 1]
-	if (lastGraded?.grade) {
-		const text = runtime.getCorrectiveStep(ferment.id, lastGraded.id)
-		result.lastGradedPhase = {
-			phaseId: lastGraded.id,
-			phaseName: lastGraded.name,
-			grade: lastGraded.grade,
-			correctiveText: text,
-		}
-		// Back-compat: keep `correctiveStep` populated for callers that haven't
-		// migrated to `lastGradedPhase` yet. Same value, two surfaces.
-		if (text) result.correctiveStep = { phaseId: lastGraded.id, text }
 	}
 
 	const blocked = blockedReason(ferment)

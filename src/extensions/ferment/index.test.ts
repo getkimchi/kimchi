@@ -24,6 +24,20 @@ vi.mock("../../ferment/shorten-title.js", () => ({
 	shortenTitle: vi.fn(async (input: string) => input),
 }))
 
+// Stub the journey-grade judge so completeFerment doesn't try to call a real
+// Opus endpoint during tests. Returns a clean A by default.
+vi.mock("./judge.js", async () => {
+	const actual = await vi.importActual<typeof import("./judge.js")>("./judge.js")
+	return {
+		...actual,
+		judgeJourneyGrade: vi.fn(async () => ({
+			ok: true as const,
+			grade: "A" as const,
+			rationale: "Clean delivery; gates substantiated.",
+		})),
+	}
+})
+
 type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown
 type CommandHandler = (args: string, ctx: unknown) => Promise<unknown> | unknown
 
@@ -107,15 +121,19 @@ describe("fermentExtension session resume", () => {
 			summary: "done",
 		})
 		if (!completedPhase.ok) throw new Error(completedPhase.error.message)
-		const completed = await completeFerment(runtime, {
-			ferment_id: draft.id,
-			final_summary: "done",
-			gates: [
-				{ id: "C1", verdict: "pass", rationale: "ok", evidence: "n/a" },
-				{ id: "C2", verdict: "pass", rationale: "ok", evidence: "n/a" },
-				{ id: "C3", verdict: "pass", rationale: "ok", evidence: "n/a" },
-			],
-		})
+		const completed = await completeFerment(
+			runtime,
+			{
+				ferment_id: draft.id,
+				final_summary: "done",
+				gates: [
+					{ id: "C1", verdict: "pass", rationale: "ok", evidence: "n/a" },
+					{ id: "C2", verdict: "pass", rationale: "ok", evidence: "n/a" },
+					{ id: "C3", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				],
+			},
+			{ pi: {} as never },
+		)
 		if ("isError" in completed && completed.isError) throw new Error(completed.content[0].text)
 
 		process.env.KIMCHI_ACTIVE_FERMENT = draft.id
@@ -404,15 +422,19 @@ describe("fermentExtension question dropdown", () => {
 		const { handlers, pi } = registerFermentExtension(runtime)
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
-		await completeFerment(runtime, {
-			ferment_id: draft.id,
-			final_summary: "done",
-			gates: [
-				{ id: "C1", verdict: "pass", rationale: "ok", evidence: "n/a" },
-				{ id: "C2", verdict: "pass", rationale: "ok", evidence: "n/a" },
-				{ id: "C3", verdict: "pass", rationale: "ok", evidence: "n/a" },
-			],
-		})
+		await completeFerment(
+			runtime,
+			{
+				ferment_id: draft.id,
+				final_summary: "done",
+				gates: [
+					{ id: "C1", verdict: "pass", rationale: "ok", evidence: "n/a" },
+					{ id: "C2", verdict: "pass", rationale: "ok", evidence: "n/a" },
+					{ id: "C3", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				],
+			},
+			{ pi: {} as never },
+		)
 
 		await turnEnd(
 			{

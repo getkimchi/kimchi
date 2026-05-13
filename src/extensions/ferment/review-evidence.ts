@@ -23,11 +23,20 @@
  * scaled down to a single ferment context.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { resolveFermentsDir } from "../../ferment/store.js"
 import type { JudgeFlag, ReviewOutcome } from "./judge.js"
 import type { ProjectCheckResult } from "./project-tests.js"
+
+/** Raw F-gate verdict the agent provided at complete_phase. Persisted on the
+ *  review-evidence sidecar so the journey-grade judge can read it later. */
+export interface PersistedGateVerdict {
+	id: string
+	verdict: string
+	rationale: string
+	evidence: string
+}
 
 export interface ReviewEvidence {
 	schemaVersion: 1
@@ -49,6 +58,12 @@ export interface ReviewEvidence {
 	derivedGrade: string
 	reviewerRationale: string
 	reviewerUnavailable?: boolean
+
+	/** Raw F-gate verdicts the agent submitted at complete_phase. Optional for
+	 *  back-compat with sidecars written before this field existed; new writes
+	 *  always populate it. Consumed by the journey-grade judge at
+	 *  complete_ferment to grade the journey end-to-end. */
+	gateVerdicts?: PersistedGateVerdict[]
 
 	projectChecks?: {
 		discovered: boolean
@@ -101,6 +116,9 @@ export function writeReviewEvidence(args: {
 	diffFilesChanged?: string
 	diffAvailable: boolean
 	projectChecks?: ProjectCheckResult
+	/** Raw F-gate verdicts the agent passed at complete_phase. Persisted so the
+	 *  journey-grade judge at complete_ferment can grade based on the trail. */
+	gateVerdicts?: ReadonlyArray<PersistedGateVerdict>
 	root?: string
 	onError?: (err: unknown) => void
 }): string | undefined {
@@ -128,6 +146,7 @@ export function writeReviewEvidence(args: {
 		derivedGrade: args.outcome.grade,
 		reviewerRationale: args.outcome.rationale,
 		reviewerUnavailable: args.outcome.unavailable,
+		gateVerdicts: args.gateVerdicts ? [...args.gateVerdicts] : undefined,
 		projectChecks: args.projectChecks
 			? {
 					discovered: args.projectChecks.discovered,
@@ -184,6 +203,52 @@ export function writeEscalationArtifact(args: {
 	}
 	safeWrite(path, `${JSON.stringify(record, null, 2)}\n`, args.onError)
 	return path
+}
+
+/** Read the highest-attempt review-evidence sidecar for each phase in the
+ *  ferment. Used by the journey-grade judge at complete_ferment to assemble
+ *  the per-phase verdict trail. Returns an empty map when the reviews/ dir is
+ *  missing (legacy ferment) or unreadable (best-effort). */
+export function readLatestPhaseReviews(fermentId: string, root?: string): Map<string, ReviewEvidence> {
+	const reviewsDir = resolve(fermentSidecarDir(fermentId, root), "reviews")
+	const result = new Map<string, ReviewEvidence>()
+	if (!existsSync(reviewsDir)) return result
+
+	let entries: string[]
+	try {
+		entries = readdirSync(reviewsDir)
+	} catch {
+		return result
+	}
+
+	// Files are named `phase-{phaseId}-{attempt}.json`. Group by phaseId,
+	// keep the highest attempt. The filename pattern is sufficient — no need
+	// to parse every file just to find the latest.
+	const bestByPhase = new Map<string, { attempt: number; file: string }>()
+	for (const file of entries) {
+		const m = file.match(/^phase-(.+)-(\d+)\.json$/)
+		if (!m) continue
+		const phaseId = m[1]
+		const attempt = Number.parseInt(m[2], 10)
+		if (!Number.isFinite(attempt)) continue
+		const prev = bestByPhase.get(phaseId)
+		if (!prev || attempt > prev.attempt) bestByPhase.set(phaseId, { attempt, file })
+	}
+
+	for (const [phaseId, { file }] of bestByPhase) {
+		try {
+			const raw = readFileSync(resolve(reviewsDir, file), "utf-8")
+			const parsed = JSON.parse(raw) as ReviewEvidence
+			if (parsed?.schemaVersion === 1 && parsed?.phaseId === phaseId) {
+				result.set(phaseId, parsed)
+			}
+		} catch {
+			// Skip corrupt/missing entries — best-effort. The journey judge
+			// will see "(no verdicts on file)" for this phase, which is
+			// honest about the gap.
+		}
+	}
+	return result
 }
 
 /** Stable, order-independent hash of a flag set. Used by the retry loop to

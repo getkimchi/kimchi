@@ -11,12 +11,16 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import type { Command } from "../../../ferment/state-machine.js"
+import type { Grade } from "../../../ferment/types.js"
 import { askUser } from "../ask-user.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { validateGatesOrErr } from "../gate-validation.js"
 import { autoInitFromEnv, ensureGitRepo } from "../git-init.js"
+import { judgeJourneyGrade } from "../judge.js"
 import { appendRefEntry, resetReactiveAutoNudgeCount } from "../nudge.js"
+import { gatherPhaseEvidence } from "../phase-evidence.js"
+import { readLatestPhaseReviews } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
 import { createApplyAndPersist, failedToolResult, toolErr, toolOk } from "../tool-helpers.js"
@@ -126,9 +130,15 @@ export async function scopeFerment(
 	)
 }
 
+export interface CompleteFermentExecutionContext {
+	pi: ExtensionAPI
+	ctx?: unknown
+}
+
 export async function completeFerment(
 	runtime: FermentRuntime,
 	params: CompleteFermentArgs,
+	{ pi, ctx }: CompleteFermentExecutionContext,
 	_services: LifecycleHandlerServices = defaultLifecycleHandlerServices,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
@@ -152,16 +162,105 @@ export async function completeFerment(
 	const completeOutcome = applyAndPersist(params.ferment_id, { type: "complete_ferment" })
 	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
 
-	// Persist a deterministic ship-grade. All C-gates passed (any flag would
-	// have refused above), so the grade is "A". The rationale carries the
-	// agent's C1 evidence so the audit trail is concrete.
-	const c1 = params.gates.find((g) => g.id === "C1")
-	const shipGrade = {
-		grade: "A" as const,
-		rationale: c1?.rationale ?? "All ferment-scope gates passed.",
-		gradedAt: runtime.nowIso(),
+	// Journey-grade judge: reads per-phase F-gate verdicts from the on-disk
+	// review-evidence sidecars, the C-gates the agent just provided, the goal
+	// + success criteria, and the total diff. Produces a pessimistic A–F
+	// grade with rationale. C-gates already decided ship/refuse — the judge
+	// only measures HOW WELL the work was done.
+	const ferment = completeOutcome.ferment
+	const phaseReviews = readLatestPhaseReviews(ferment.id)
+	const totalDiff = ferment.worktree.commit ? gatherPhaseEvidence(ferment.worktree.commit) : undefined
+	const journeyResult = await judgeJourneyGrade({
+		fermentName: ferment.name,
+		goal: ferment.goal ?? "",
+		successCriteria: ferment.successCriteria ?? "",
+		finalSummary: params.final_summary ?? "",
+		phases: ferment.phases.map((p) => {
+			const review = phaseReviews.get(p.id)
+			return {
+				name: p.name,
+				goal: p.goal,
+				status: p.status,
+				gateVerdicts: review?.gateVerdicts?.map((v) => ({
+					id: v.id,
+					verdict: v.verdict,
+					rationale: v.rationale,
+				})),
+			}
+		}),
+		fermentGates: params.gates.map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
+		totalDiff: totalDiff
+			? { available: totalDiff.available, filesChanged: totalDiff.filesChanged, diffSnippet: totalDiff.diffSnippet }
+			: { available: false },
+	})
+
+	// Resolve the grade, possibly via a user prompt on judge failure.
+	let resolvedGrade: { grade: Grade; rationale: string; unavailable?: boolean }
+	if (journeyResult.ok) {
+		resolvedGrade = { grade: journeyResult.grade, rationale: journeyResult.rationale }
+	} else {
+		// Judge failed. In interactive sessions, ask the user whether to ship
+		// without a grade or abandon. In one-shot, the judge is also the
+		// stand-in for the user — asking is circular — so we abandon directly
+		// and leave an artifact for /ferment resume.
+		const isOneShot = pi.getFlag?.("ferment-oneshot") === true
+		const failureDetail = `${journeyResult.reason}${journeyResult.detail ? `: ${journeyResult.detail}` : ""}`
+
+		if (isOneShot) {
+			const abandonOutcome = applyAndPersist(params.ferment_id, {
+				type: "abandon",
+				reason: `final grade judge unreachable (${failureDetail})`,
+			})
+			if (abandonOutcome.ok) runtime.setActive(abandonOutcome.ferment)
+			return toolErr(
+				`complete_ferment refused — final grade judge unreachable in one-shot mode (${failureDetail}).\nFerment abandoned. Restart with a reachable judge or resume interactively.`,
+			)
+		}
+
+		// Interactive: askUser routes to TUI here. Two options: ship without
+		// a grade, or abandon. Failed routing (e.g. no TUI) defaults to
+		// abandon — safer when we can't be sure the user saw the prompt.
+		const choice = await askUser(
+			`Final grade judge unreachable (${failureDetail}). Ship without a grade or abandon?`,
+			[
+				{
+					id: "ship_no_grade",
+					label: "Ship without a grade",
+					description: "Mark complete; grade will be recorded as unavailable.",
+				},
+				{ id: "abandon", label: "Abandon ferment", description: "Discard completion; the work stays on disk." },
+			],
+			{ ferment, pi, ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined, runtime },
+		)
+
+		if (choice.failed || choice.choice === "abandon") {
+			const reason = choice.failed
+				? `judge unreachable and no audience to authorize ungraded ship (${choice.reason})`
+				: "judge unreachable; user declined ungraded ship"
+			const abandonOutcome = applyAndPersist(params.ferment_id, { type: "abandon", reason })
+			if (abandonOutcome.ok) runtime.setActive(abandonOutcome.ferment)
+			return toolErr(`complete_ferment refused — ${reason}.`)
+		}
+
+		// choice === "ship_no_grade"
+		resolvedGrade = {
+			grade: "B",
+			rationale: `Judge unreachable (${failureDetail}); user authorized ship without a graded review.`,
+			unavailable: true,
+		}
 	}
-	const gradeOutcome = applyAndPersist(params.ferment_id, { type: "set_ferment_grade", grade: shipGrade })
+
+	// Persist the resolved grade. JudgeGrade requires a `grade` letter and
+	// `gradedAt` ISO timestamp; `unavailable` flags ungraded-but-shipped.
+	const gradeOutcome = applyAndPersist(params.ferment_id, {
+		type: "set_ferment_grade",
+		grade: {
+			grade: resolvedGrade.grade,
+			rationale: resolvedGrade.rationale,
+			gradedAt: runtime.nowIso(),
+			unavailable: resolvedGrade.unavailable,
+		},
+	})
 	if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
 
 	// Cleanup in-memory state.
@@ -172,14 +271,11 @@ export async function completeFerment(
 	const fresh = gradeOutcome.ferment
 	const failedPhases = fresh.phases.filter((p) => p.status === "failed").length
 	const failedNote = failedPhases > 0 ? ` (${failedPhases} phase(s) failed)` : ""
-	const phaseGradeSummary = fresh.phases
-		.filter((p) => p.grade)
-		.map((p) => `  ${p.index}. ${p.name}: ${p.grade?.grade}`)
-		.join("\n")
 	const gateLines = params.gates.map((g) => `  ${g.id} (${g.verdict}): ${g.rationale}`).join("\n")
+	const gradeLabel = resolvedGrade.unavailable ? `${resolvedGrade.grade} (unavailable)` : resolvedGrade.grade
 
 	return toolOk(
-		`Ferment "${fresh.name}" complete${failedNote}.\n\nFinal gates:\n${gateLines}\n\nPhase grades:\n${phaseGradeSummary || "  (none graded)"}\n\n${params.final_summary ?? ""}`,
+		`Ferment "${fresh.name}" complete${failedNote}.\n\nFinal gates:\n${gateLines}\n\nFinal grade: ${gradeLabel} — ${resolvedGrade.rationale}\n\n${params.final_summary ?? ""}`,
 	)
 }
 
@@ -367,8 +463,8 @@ ${renderGateGuidance("scope_ferment")}`,
 
 ${renderGateGuidance("complete_ferment")}`,
 		parameters: CompleteFermentParams,
-		async execute(_, params) {
-			const result = await completeFerment(runtime, params, lifecycleServices)
+		async execute(_, params, _signal, _onUpdate, ctx) {
+			const result = await completeFerment(runtime, params, { pi, ctx }, lifecycleServices)
 			if (!("isError" in result) || result.isError !== true) syncFermentToolScope(pi, runtime.getActive())
 			return result
 		},

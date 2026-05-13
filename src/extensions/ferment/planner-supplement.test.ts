@@ -54,13 +54,15 @@ describe("buildPlannerSupplement", () => {
 		registerAgents(new Map())
 	})
 
-	it("uses injected active ferment and corrective-step state", () => {
+	it("uses injected active ferment", () => {
 		const supplement = buildPlannerSupplement(makeRuntime())
 
 		expect(supplement).toContain('ferment "Runtime Plan"')
-		expect(supplement).toContain("## Self-Improvement Feedback")
-		expect(supplement).toContain("Important requirements were missed.")
-		expect(supplement).toContain("Add an explicit edge-case verification step.")
+		// Phase-grade-based self-improvement was removed when per-phase grading
+		// went away. The corrective-step pipeline now lives entirely inside
+		// the block-retry loop at complete_phase — surfaced via tool error
+		// text, not via a planner-prompt section.
+		expect(supplement).not.toContain("## Self-Improvement Feedback")
 	})
 
 	it("lists default subagent types when the registry is populated", () => {

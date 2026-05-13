@@ -8,6 +8,23 @@ import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
 import { type LifecycleHandlerServices, completeFerment, registerLifecycleTools, scopeFerment } from "./lifecycle.js"
 
+// Stub the journey-grade judge for completeFerment tests. The mock returns a
+// clean A by default; individual cases can vi.mocked(judgeJourneyGrade).mockResolvedValueOnce(...)
+// to exercise the judge-unavailable / unparseable paths.
+vi.mock("../judge.js", async () => {
+	const actual = await vi.importActual<typeof import("../judge.js")>("../judge.js")
+	return {
+		...actual,
+		judgeJourneyGrade: vi.fn(async () => ({
+			ok: true as const,
+			grade: "A" as const,
+			rationale: "Clean delivery; gates substantiated.",
+		})),
+	}
+})
+
+const { judgeJourneyGrade: mockJudgeJourneyGrade } = await import("../judge.js")
+
 interface RegisteredTool {
 	name: string
 	execute: (toolCallId: string, params: Record<string, unknown>) => Promise<unknown>
@@ -267,6 +284,7 @@ describe("completeFerment", () => {
 		const result = await completeFerment(
 			h.runtime,
 			{ ferment_id: h.fermentId, final_summary: "all done", gates: passingFermentGates() },
+			{ pi: h.pi },
 			services,
 		)
 
@@ -296,6 +314,7 @@ describe("completeFerment", () => {
 		const result = await completeFerment(
 			h.runtime,
 			{ ferment_id: h.fermentId, final_summary: "", gates: flaggedGates },
+			{ pi: h.pi },
 			services,
 		)
 
@@ -313,6 +332,7 @@ describe("completeFerment", () => {
 		const result = await completeFerment(
 			h.runtime,
 			{ ferment_id: h.fermentId, final_summary: "", gates: incomplete },
+			{ pi: h.pi },
 			services,
 		)
 
@@ -320,5 +340,102 @@ describe("completeFerment", () => {
 		expect(errText(result)).toContain("C2")
 		expect(errText(result)).toContain("C3")
 		expect(h.storage.get(h.fermentId)?.status).not.toBe("complete")
+	})
+
+	it("persists the journey grade from the judge into ferment.grade", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "B",
+			rationale: "Phase 1 verified via proxy; goal met but coverage is thin.",
+		})
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ pi: h.pi },
+			createServices(),
+		)
+		expect(okText(result)).toContain("Final grade: B")
+		expect(okText(result)).toContain("proxy")
+		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("B")
+		expect(h.storage.get(h.fermentId)?.grade?.rationale).toContain("proxy")
+		expect(h.storage.get(h.fermentId)?.grade?.unavailable).toBeUndefined()
+	})
+
+	it("interactive: judge unavailable + user chooses ship_no_grade → ships with unavailable=true", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: false,
+			reason: "no_auth",
+			detail: "missing api key",
+		})
+		// pi.getFlag returns undefined (no ferment-oneshot) → askUser routes to TUI.
+		const select = vi.fn(async () => "Ship without a grade")
+		const piWithUi = { ...h.pi, getFlag: vi.fn(() => undefined) } as unknown as ExtensionAPI
+		const ctx = { ui: { select } }
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ pi: piWithUi, ctx },
+			createServices(),
+		)
+
+		expect(select).toHaveBeenCalled()
+		expect(okText(result)).toContain("Final grade: B (unavailable)")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade?.unavailable).toBe(true)
+		expect(h.storage.get(h.fermentId)?.grade?.rationale).toContain("user authorized ship")
+	})
+
+	it("interactive: judge unavailable + user chooses abandon → ferment abandoned", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: false,
+			reason: "api_error",
+			detail: "timeout after 45s",
+		})
+		const select = vi.fn(async () => "Abandon ferment")
+		const piWithUi = { ...h.pi, getFlag: vi.fn(() => undefined) } as unknown as ExtensionAPI
+		const ctx = { ui: { select } }
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ pi: piWithUi, ctx },
+			createServices(),
+		)
+
+		expect(errText(result)).toContain("user declined ungraded ship")
+		expect(h.storage.get(h.fermentId)?.status).toBe("abandoned")
+		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
+	})
+
+	it("one-shot: judge unavailable → abandon directly without prompting", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: false,
+			reason: "no_registry",
+		})
+		const select = vi.fn() // must NOT be called
+		const piOneShot = {
+			...h.pi,
+			getFlag: vi.fn((name: string) => (name === "ferment-oneshot" ? true : undefined)),
+		} as unknown as ExtensionAPI
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ pi: piOneShot, ctx: { ui: { select } } },
+			createServices(),
+		)
+
+		expect(select).not.toHaveBeenCalled()
+		expect(errText(result)).toContain("one-shot mode")
+		expect(h.storage.get(h.fermentId)?.status).toBe("abandoned")
 	})
 })

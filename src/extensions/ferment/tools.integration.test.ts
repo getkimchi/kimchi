@@ -39,6 +39,11 @@ vi.mock("./judge.js", async () => {
 	return {
 		...actual,
 		judgeStepVerification: vi.fn(async () => ({ verdict: "fail" as const, reason: "stub" })),
+		judgeJourneyGrade: vi.fn(async () => ({
+			ok: true as const,
+			grade: "A" as const,
+			rationale: "Clean delivery; gates substantiated.",
+		})),
 	}
 })
 import { registerKnowledgeTools } from "./tools/knowledge.js"
@@ -713,7 +718,7 @@ describe("complete_phase", () => {
 		expect(f.phases[0].summary).toBe("phase done")
 	})
 
-	it("assigns a grade to the completed phase", async () => {
+	it("does NOT assign a per-phase grade — grading is now journey-only at complete_ferment", async () => {
 		const id = await setupAllStepsTerminal()
 		ok(
 			await h.call("complete_phase", {
@@ -723,7 +728,9 @@ describe("complete_phase", () => {
 				gates: passingPhaseGates(),
 			}),
 		)
-		expect(loadFerment(id).phases[0].grade).toBeDefined()
+		// Per-phase grading was removed: the only letter grade lives on
+		// ferment.grade after the journey-grade judge runs at complete_ferment.
+		expect(loadFerment(id).phases[0].grade).toBeUndefined()
 	})
 })
 

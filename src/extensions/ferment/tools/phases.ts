@@ -9,7 +9,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
-import type { Ferment, JudgeGrade } from "../../../ferment/types.js"
+import type { Ferment } from "../../../ferment/types.js"
 import { askUser } from "../ask-user.js"
 import { truncateLabel } from "../colors.js"
 import { formatDecisionsAndMemories, formatScopingContext } from "../format.js"
@@ -128,9 +128,7 @@ export async function completePhase(
 	if (gateError) return gateError
 
 	// Capture the phase shape for evidence/review artifacts.
-	const stepSummariesText = phase.steps
-		.map((st) => `  ${st.index}. ${st.description} [${st.status}]${st.grade ? ` Grade:${st.grade.grade}` : ""}`)
-		.join("\n")
+	const stepSummariesText = phase.steps.map((st) => `  ${st.index}. ${st.description} [${st.status}]`).join("\n")
 
 	// Step 2b: deterministic gate — validate that the project's own checks
 	// (tests, lint, typecheck) are wired correctly. We do NOT execute them
@@ -175,6 +173,7 @@ export async function completePhase(
 		diffAvailable: evidence?.available ?? false,
 		diffFilesChanged: evidence?.filesChanged,
 		projectChecks,
+		gateVerdicts: params.gates,
 	})
 
 	// Step 3: if either the reviewer or the project checks raised block flags,
@@ -281,47 +280,24 @@ export async function completePhase(
 	// Step 3a: clear the block-retry counter — phase advanced cleanly.
 	runtime.clearBlockRetry(params.ferment_id, phase.id)
 
-	// Step 4: build a JudgeGrade from the gate verdicts for backwards compat
-	// with the state machine's set_phase_grade event + the planner-supplement
-	// self-improvement section. The grade is derived deterministically from
-	// the verdict mix (block→F, warn→B, all pass→A) — no LLM call.
-	const phaseGrade: JudgeGrade = {
-		grade: derivedGrade,
-		rationale,
-		gradedAt: runtime.nowIso(),
-		deltas: warnFlags.map((fl) => ({
-			category: "correctness",
-			expected: fl.redirect,
-			actual: fl.problem,
-			severity: "minor",
-		})),
-	}
-	const gradeOutcome = applyAndPersist(params.ferment_id, {
-		type: "set_phase_grade",
-		phaseId: phase.id,
-		grade: phaseGrade,
-	})
-	if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
-
-	// Step 4b: if any warns remain, plant them as the corrective step so the
-	// next phase's planner supplement carries the redirect text.
-	if (warnFlags.length > 0) {
-		runtime.setCorrectiveStep(params.ferment_id, phase.id, warnFlags[0].redirect)
-	}
+	// Step 4: no per-phase grading. The journey-grade judge at
+	// complete_ferment is the only place a letter grade is assigned, and it
+	// reads the on-disk review-evidence sidecar (which already captures
+	// derivedGrade + the raw F-gate verdicts written above) as input. So we
+	// skip set_phase_grade entirely on the new path.
 
 	services.onPhaseCompleted(runtime)
-	const fresh = gradeOutcome.ferment
+	const fresh = completeOutcome.ferment
 	const next = fresh.phases.find((p) => p.status === "planned")
 	const warnSection =
 		warnFlags.length > 0
 			? `\n\nAdvisory warnings carried over:\n${warnFlags.map((fl) => `  ⚠ ${fl.problem} — ${fl.redirect}`).join("\n")}`
 			: ""
 	const projectChecksLine = projectChecks.discovered ? `\n${projectCheckSummary}` : ""
-	const gradeNote = `  Grade: ${derivedGrade} — ${rationale}`
 
 	if (!next) {
 		return toolOk(
-			`Phase done.${gradeNote}${projectChecksLine}${warnSection}\nAll phases terminal. Use complete_ferment.`,
+			`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nAll phases terminal. Use complete_ferment to ship.`,
 		)
 	}
 
@@ -342,15 +318,14 @@ export async function completePhase(
 								: st.status === "failed"
 									? "✗"
 									: "○"
-					const g = st.grade ? `  ${st.grade.grade}` : ""
 					const desc = truncateLabel(st.description, MAX_STEP_DESC)
-					return `  ${icon} ${st.index}. ${desc}${g}`
+					return `  ${icon} ${st.index}. ${desc}`
 				})
 				.join("\n") ?? ""
 
 		const reviewTitle = [
-			`Phase ${phase.index}: "${phase.name}"  ${phaseGrade.grade}`,
-			truncateLabel(phaseGrade.rationale, 200),
+			`Phase ${phase.index}: "${phase.name}" — done`,
+			truncateLabel(rationale, 200),
 			"",
 			"Steps completed:",
 			stepLines,
@@ -376,24 +351,24 @@ export async function completePhase(
 			const pauseOutcome = applyAndPersist(fresh.id, { type: "pause" })
 			if (pauseOutcome.ok) runtime.setActive(pauseOutcome.ferment)
 			if (pauseOutcome.ok) syncFermentToolScope(pi, pauseOutcome.ferment)
-			return toolOk(`Phase done.${gradeNote}${projectChecksLine}${warnSection}\nFerment paused at user request.`)
+			return toolOk(`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nFerment paused at user request.`)
 		}
 		if (response.choice === "say_more") {
 			// Free-form input is TUI-only; in one-shot mode the judge can't
 			// produce arbitrary text. Use ctx.ui.input directly when present.
 			const custom = ctx?.ui?.input ? await ctx.ui.input("Your message:", "") : undefined
 			if (custom) {
-				return toolOk(`Phase done.${gradeNote}${projectChecksLine}${warnSection}\nUser direction: ${custom}`)
+				return toolOk(`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nUser direction: ${custom}`)
 			}
-			return toolOk(`Phase done.${gradeNote}${projectChecksLine}${warnSection}\nAwaiting user direction.`)
+			return toolOk(`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nAwaiting user direction.`)
 		}
 		// choice === "proceed"
 		return toolOk(
-			`Phase done.${gradeNote}${projectChecksLine}${warnSection}\nUser confirmed: proceed to Phase ${next.index}.`,
+			`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nUser confirmed: proceed to Phase ${next.index}.`,
 		)
 	}
 
-	return toolOk(`Phase done.${gradeNote}${projectChecksLine}${warnSection}\nNext: "${next.name}".`)
+	return toolOk(`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nNext: "${next.name}".`)
 }
 
 export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {

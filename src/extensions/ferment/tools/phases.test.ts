@@ -90,9 +90,11 @@ describe("completePhase", () => {
 			services,
 		)
 
-		expect(okText(result)).toContain("Grade: A")
+		// Phase grades no longer exist — grading happens only at complete_ferment
+		// (the journey-grade judge). Phase completion just transitions status.
+		expect(okText(result)).toContain('Phase "Phase 1" done')
 		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("completed")
-		expect(h.storage.get(h.fermentId)?.phases[0].grade?.grade).toBe("A")
+		expect(h.storage.get(h.fermentId)?.phases[0].grade).toBeUndefined()
 		expect(services.gatherEvidence).toHaveBeenCalledWith("abc123")
 		expect(services.onPhaseCompleted).toHaveBeenCalledWith(h.runtime)
 	})
