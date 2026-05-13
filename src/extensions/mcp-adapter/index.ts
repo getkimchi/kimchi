@@ -17,7 +17,7 @@ import {
 } from "./direct-tools.js"
 import { flushMetadataCache, initializeMcp, updateStatusBar } from "./init.js"
 import { initializeOAuth, shutdownOAuth } from "./mcp-auth-flow.js"
-import { loadMetadataCache } from "./metadata-cache.js"
+import { loadMetadataCache, overwriteMetadataCache, purgeStaleEntries } from "./metadata-cache.js"
 import {
 	executeCall,
 	executeConnect,
@@ -65,7 +65,20 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 
 	const earlyConfigPath = getConfigPathFromArgv()
 	const earlyConfig = loadMcpConfig(earlyConfigPath)
-	const earlyCache = loadMetadataCache()
+	let earlyCache = loadMetadataCache()
+
+	// Drop cache entries whose configHash no longer matches the configured server
+	// definition, or whose server has been removed from config. Otherwise stale
+	// entries silently block direct-tool registration on every startup.
+	if (earlyCache) {
+		const { cleaned, removed } = purgeStaleEntries(earlyCache, earlyConfig.mcpServers)
+		if (removed.length > 0) {
+			overwriteMetadataCache(cleaned)
+			earlyCache = cleaned
+			console.warn(`MCP: purged stale cache entries: ${removed.join(", ")}`)
+		}
+	}
+
 	const prefix = earlyConfig.settings?.toolPrefix ?? "server"
 
 	const envRaw = process.env.MCP_DIRECT_TOOLS
@@ -106,8 +119,25 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 		registeredToolNames.add(spec.prefixedName)
 	}
 
-	function registerAndActivate(specs: DirectToolSpec[]): string[] {
-		if (!state) return []
+	/**
+	 * Register tool specs with the agent and add them to the active set.
+	 *
+	 * `markDynamic` (default true) tags the new names in `state.dynamicToolNames`
+	 * so the next user input clears them (used by proxy describe/search results).
+	 * Pass `false` for tools that should persist across turns — e.g. direct tools
+	 * registered after a successful cache bootstrap.
+	 *
+	 * When `state` is not yet ready (callback invoked from inside `initializeMcp`
+	 * before its promise resolves), we only allow the permanent path through —
+	 * registering dynamic tools without a state to track them in would leak them
+	 * across turns because the `pi.on("input", …)` clear couldn't find them.
+	 * Permanent tools (`markDynamic: false`) are safe to register early: the
+	 * executor captures `state` lazily via the `() => state` closure and the
+	 * tools are meant to persist anyway.
+	 */
+	function registerAndActivate(specs: DirectToolSpec[], opts?: { markDynamic?: boolean }): string[] {
+		const markDynamic = opts?.markDynamic ?? true
+		if (!state && markDynamic) return []
 		const newNames: string[] = []
 		const alreadyActive: string[] = []
 		for (const spec of specs) {
@@ -131,14 +161,27 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 		}
 		const allInjected = [...alreadyActive, ...newNames]
 		if (newNames.length > 0) {
-			for (const name of newNames) {
-				state.dynamicToolNames.add(name)
+			// Guard above ensures `markDynamic` implies `state` is set, so the
+			// dynamic-name bookkeeping is safe without a re-check here.
+			if (markDynamic && state) {
+				for (const name of newNames) {
+					state.dynamicToolNames.add(name)
+				}
 			}
 			const current = new Set(pi.getActiveTools())
 			for (const name of newNames) current.add(name)
 			pi.setActiveTools([...current])
 		}
 		return allInjected
+	}
+
+	/**
+	 * Register direct-tool specs produced by the cache bootstrap path
+	 * (`init.ts` → `resolveDirectTools` after first connect). These tools
+	 * are permanent for the session, so they must not be marked dynamic.
+	 */
+	function registerBootstrappedDirectTools(specs: DirectToolSpec[]): string[] {
+		return registerAndActivate(specs, { markDynamic: false })
 	}
 
 	pi.on("input", () => {
@@ -176,7 +219,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 			console.error("MCP OAuth initialization failed:", err)
 		})
 
-		const promise = initializeMcp(pi, ctx)
+		const promise = initializeMcp(pi, ctx, registerBootstrappedDirectTools)
 		initPromise = promise
 
 		promise

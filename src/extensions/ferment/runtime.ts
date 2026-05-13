@@ -1,6 +1,5 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
-
 import type { FermentEventStore } from "../../ferment/event-store.js"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"

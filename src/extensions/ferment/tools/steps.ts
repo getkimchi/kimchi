@@ -16,6 +16,7 @@ import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phas
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { createApplyAndPersist, failedToolResult, resolvePhase, resolveStep, toolErr, toolOk } from "../tool-helpers.js"
 import { CompleteStepParams, FailStepParams, StepActionParams, VerifyParams } from "../tool-schemas.js"
+import { syncFermentToolScope } from "../tool-scope.js"
 import type { FermentUi, FermentUiContext } from "../ui.js"
 import { buildWorkerContext } from "../worker-prompt.js"
 
@@ -152,6 +153,7 @@ export async function startStep(
 			if (!choice || choice === pauseLabel) {
 				const pauseOutcome = applyAndPersist(f.id, { type: "pause" })
 				if (!pauseOutcome.ok) return failedToolResult(pauseOutcome.error)
+				syncFermentToolScope(pi, pauseOutcome.ferment)
 				return toolOk("Ferment paused at user request.")
 			}
 

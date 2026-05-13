@@ -18,9 +18,10 @@ vi.mock("../../ferment/shorten-title.js", () => ({
 type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown
 type CommandHandler = (args: string, ctx: unknown) => Promise<unknown> | unknown
 
-function registerFermentExtension(runtime?: FermentRuntime) {
+function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<string, boolean | string> = {}) {
 	const handlers = new Map<string, EventHandler>()
 	const commands = new Map<string, CommandHandler>()
+	const registeredFlags = new Set<string>()
 	const pi = {
 		on: (event: string, handler: EventHandler) => {
 			handlers.set(event, handler)
@@ -29,6 +30,13 @@ function registerFermentExtension(runtime?: FermentRuntime) {
 			commands.set(name, command.handler)
 		},
 		registerTool: vi.fn(),
+		registerFlag: vi.fn((name: string) => {
+			registeredFlags.add(name)
+		}),
+		getFlag: vi.fn((name: string) => (registeredFlags.has(name) ? flagValues[name] : undefined)),
+		getActiveTools: vi.fn(() => ["read", "bash", "create_ferment", "start_step"]),
+		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "create_ferment" }, { name: "start_step" }]),
+		setActiveTools: vi.fn(),
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
@@ -61,6 +69,102 @@ describe("fermentExtension session resume", () => {
 		expect(getActive()).toBeUndefined()
 		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBeUndefined()
 		expect(Object.hasOwn(process.env, "KIMCHI_ACTIVE_FERMENT")).toBe(false)
+	})
+})
+
+describe("fermentExtension one-shot bootstrap", () => {
+	it("creates an exec-mode ferment and rewrites the initial message into a nudge", async () => {
+		const { handlers, pi } = registerFermentExtension(undefined, { "ferment-oneshot": true })
+		const sessionStart = handlers.get("session_start")
+		const input = handlers.get("input")
+		if (!sessionStart) throw new Error("session_start handler was not registered")
+		if (!input) throw new Error("input handler was not registered")
+
+		await sessionStart({}, { hasUI: false })
+
+		expect(pi.registerFlag).toHaveBeenCalledWith("ferment-oneshot", expect.objectContaining({ type: "boolean" }))
+		expect(getActive()).toBeUndefined()
+
+		const intent = "Add a CSV export endpoint that streams the orders table"
+		const result = (await input({ type: "input", text: intent, source: "interactive" }, {})) as
+			| { action: "transform"; text: string }
+			| undefined
+
+		const created = getActive()
+		expect(created).toBeDefined()
+		expect(created?.mode).toBe("exec")
+		expect(created?.description).toBe(intent)
+
+		expect(result?.action).toBe("transform")
+		expect(result?.text).toContain("one-shot ferment")
+		expect(result?.text).toContain(intent)
+		expect(result?.text).toContain(created?.id ?? "")
+
+		// Bootstrap is a one-shot — a second input must pass through untouched.
+		const next = await input({ type: "input", text: "follow-up", source: "interactive" }, {})
+		expect(next).toBeUndefined()
+
+		// Side-effects: ack entry + ferment_reference entry get appended.
+		const calls = (pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])
+		expect(calls).toContain("ferment_ack")
+	})
+
+	it("records a diagnostic when one-shot bootstrap fails", async () => {
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: vi.fn(() => {
+				throw new Error("storage unavailable")
+			}),
+		}
+		const { handlers, pi } = registerFermentExtension(runtime, { "ferment-oneshot": true })
+		const sessionStart = handlers.get("session_start")
+		const input = handlers.get("input")
+		if (!sessionStart) throw new Error("session_start handler was not registered")
+		if (!input) throw new Error("input handler was not registered")
+
+		await sessionStart({}, { hasUI: false })
+		const result = await input({ type: "input", text: "Fix the task", source: "interactive" }, {})
+
+		expect(result).toBeUndefined()
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			"ferment_oneshot_failed",
+			expect.objectContaining({ text: expect.stringContaining("storage unavailable") }),
+		)
+	})
+
+	it("prefers active-ferment resume over the one-shot flag", async () => {
+		process.env.KIMCHI_ACTIVE_FERMENT = "missing-id"
+		const { handlers } = registerFermentExtension(undefined, { "ferment-oneshot": true })
+		const sessionStart = handlers.get("session_start")
+		const input = handlers.get("input")
+		if (!sessionStart) throw new Error("session_start handler was not registered")
+		if (!input) throw new Error("input handler was not registered")
+
+		await sessionStart({}, { hasUI: false })
+
+		expect(Object.hasOwn(process.env, "KIMCHI_ACTIVE_FERMENT")).toBe(false)
+
+		// And the input handler does NOT bootstrap a ferment for the next message.
+		const result = await input({ type: "input", text: "first message", source: "interactive" }, {})
+		expect(result).toBeUndefined()
+		expect(getActive()).toBeUndefined()
+	})
+
+	it("skips bootstrap inside a subagent process", async () => {
+		process.env.KIMCHI_SUBAGENT = "1"
+		const { handlers } = registerFermentExtension(undefined, { "ferment-oneshot": true })
+		const sessionStart = handlers.get("session_start")
+		const input = handlers.get("input")
+		if (!sessionStart) throw new Error("session_start handler was not registered")
+		if (!input) throw new Error("input handler was not registered")
+
+		await sessionStart({}, { hasUI: false })
+
+		// Subagent short-circuits session_start, so the input handler will not
+		// perform a bootstrap (pendingOneshot stays false).
+		const result = await input({ type: "input", text: "anything", source: "interactive" }, {})
+		expect(result).toBeUndefined()
+		expect(getActive()).toBeUndefined()
 	})
 })
 

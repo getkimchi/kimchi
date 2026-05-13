@@ -37,11 +37,13 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 		if (state.mode === "inject") {
 			// No disk writes in inject mode — the launcher sets env per-process.
 			outcome.successes.push(tool.name)
-			log.info(`${tool.name}: ready (launch via 'kimchi ${id}')`)
+			// 'claudecode' is the tool ID but the CLI command is 'claude'
+			const launchCmd = id === "claudecode" ? "claude" : id
+			log.info(`${tool.name}: ready (launch via 'kimchi ${launchCmd}')`)
 			continue
 		}
 		try {
-			await tool.write(state.scope, state.apiKey)
+			await tool.write(state.scope, state.apiKey, { telemetryEnabled: state.telemetryEnabled })
 			outcome.successes.push(tool.name)
 			log.success(`${tool.name}: configured`)
 		} catch (err) {
@@ -67,7 +69,9 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 		`Scope: ${state.scope}`,
 		`Telemetry: ${state.telemetryEnabled ? "enabled" : "disabled"}`,
 		outcome.successes.length > 0 ? `Configured: ${outcome.successes.join(", ")}` : "",
-		outcome.failures.length > 0 ? `Failed: ${outcome.failures.map((f) => f.id).join(", ")}` : "",
+		outcome.failures.length > 0
+			? `Failed: ${outcome.failures.map((f) => byId(f.id as ToolId)?.name ?? f.id).join(", ")}`
+			: "",
 		shellExport.path ? `${KIMCHI_API_KEY_ENV}: exported to ${shellExport.path}` : "",
 	].filter((l) => l.length > 0)
 

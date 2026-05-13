@@ -59,13 +59,11 @@ export function determineNextAction(ferment: Ferment): DeclarativeAction {
 		return { kind: "pause", reason: "ferment is paused" }
 	}
 
-	// 3. Active phase failed → recover (before all-terminal check)
-	if (active && active.status === "failed") {
-		return {
-			kind: "recover_phase",
-			phaseId: active.id,
-			reason: "handle failed phase",
-		}
+	// 3. Failed phase → recover_phase. This must run before all-terminal
+	// completion so failed phases can be retried or explicitly bypassed.
+	const failedPhase = ferment.phases.find((p) => p.status === "failed")
+	if (failedPhase) {
+		return { kind: "recover_phase", phaseId: failedPhase.id, reason: "handle failed phase" }
 	}
 
 	// 4. All phases terminal → complete_ferment
@@ -234,7 +232,7 @@ function toFermentAction(action: DeclarativeAction, ferment: Ferment): FermentAc
 			return {
 				kind: "recover_phase",
 				phaseId: action.phaseId,
-				message: `Phase ${phase?.index} "${phase?.name}" failed.`,
+				message: `Phase ${phase?.index} "${phase?.name}" failed. Retry it with activate_phase, bypass it with skip_phase, or ask the user to run /ferment abandon if the ferment should stop.`,
 			}
 
 		case "noop":
@@ -283,7 +281,7 @@ function findActivePhase(f: Ferment): Phase | undefined {
 		const byId = f.phases.find((p) => p.id === f.activePhaseId)
 		// Only trust activePhaseId if the phase is actually in an active state;
 		// fall back to status scan on data drift (e.g. recovered ferments).
-		if (byId && (byId.status === "active" || byId.status === "failed")) return byId
+		if (byId?.status === "active") return byId
 	}
 	return f.phases.find((p) => p.status === "active")
 }

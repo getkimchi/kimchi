@@ -151,12 +151,12 @@ function hasNonParallelRunningStep(ctx: FermentFsmContext, newStepId: string): s
 	return GUARD_ERRORS.CONCURRENT_STEP(runningStep.id)
 }
 
-function isPhaseTerminal(phase: PhaseContext): boolean {
-	return phase.status === "completed" || phase.status === "skipped" || phase.status === "failed"
-}
-
-function areAllPhasesTerminal(ctx: FermentFsmContext): boolean {
-	return ctx.phases.length > 0 && ctx.phases.every((p) => isPhaseTerminal(p))
+function phaseTerminalTarget(ctx: FermentFsmContext, params: EventParams): FsmState {
+	const terminalPhaseId = params.phaseId
+	// applyCommand keeps non-parallel phases mutually exclusive; any other active
+	// phase here represents a parallel sibling that should keep the ferment running.
+	const anotherActivePhase = ctx.phases.find((p) => p.status === "active" && p.id !== terminalPhaseId)
+	return anotherActivePhase ? FSM_STATES.PHASE_ACTIVE : FSM_STATES.PLANNED
 }
 
 // ─── Guard registry ───────────────────────────────────────────────────────────
@@ -172,8 +172,8 @@ const GUARDS: Record<string, GuardFn> = {
 		if (!params.phaseId) return "Missing phaseId"
 		const phase = findPhaseById(ctx, params.phaseId)
 		if (typeof phase === "string") return phase
-		if (phase.status !== "planned") {
-			return `Phase "${phase.id}" is "${phase.status}", expected "planned".`
+		if (phase.status !== "planned" && phase.status !== "failed") {
+			return `Phase "${phase.id}" is "${phase.status}", expected "planned" or "failed".`
 		}
 		return null
 	},
@@ -254,7 +254,7 @@ const GUARDS: Record<string, GuardFn> = {
 // ─── Transition Entry ─────────────────────────────────────────────────────────
 
 interface TransitionEntry {
-	target: FsmState | ((ctx: FermentFsmContext) => FsmState)
+	target: FsmState | ((ctx: FermentFsmContext, params: EventParams) => FsmState)
 	guard?: string
 }
 
@@ -298,21 +298,15 @@ const TRANSITIONS: TransitionMap = {
 		[FSM_EVENTS.REFINE_PHASE]: { target: FSM_STATES.PHASE_ACTIVE },
 		[FSM_EVENTS.START_STEP]: { target: FSM_STATES.STEP_RUNNING, guard: "startStepInActivePhase" },
 		[FSM_EVENTS.COMPLETE_PHASE]: {
-			target: (ctx) => (areAllPhasesTerminal(ctx) ? FSM_STATES.COMPLETE : FSM_STATES.PHASE_ACTIVE),
+			target: phaseTerminalTarget,
 			guard: "phaseActive",
 		},
 		[FSM_EVENTS.SKIP_PHASE]: {
-			target: (ctx) => {
-				const otherPhases = ctx.phases.filter((p) => p.id !== ctx.activePhaseId)
-				return otherPhases.every((p) => isPhaseTerminal(p)) ? FSM_STATES.COMPLETE : FSM_STATES.PHASE_ACTIVE
-			},
+			target: phaseTerminalTarget,
 			guard: "phaseActive",
 		},
 		[FSM_EVENTS.FAIL_PHASE]: {
-			target: (ctx) => {
-				const otherPhases = ctx.phases.filter((p) => p.id !== ctx.activePhaseId)
-				return otherPhases.every((p) => isPhaseTerminal(p)) ? FSM_STATES.COMPLETE : FSM_STATES.PHASE_ACTIVE
-			},
+			target: phaseTerminalTarget,
 			guard: "phaseActive",
 		},
 		[FSM_EVENTS.SKIP_STEP]: { target: FSM_STATES.PHASE_ACTIVE, guard: "stepSkipped" },
@@ -338,11 +332,8 @@ const TRANSITIONS: TransitionMap = {
 					const phase = ctx.phases.find((p) => p.id === ctx.activePhaseId)
 					if (phase && phase.status === "active") return FSM_STATES.PHASE_ACTIVE
 				}
-				const nextPhase = ctx.phases.find((p) => p.status === "planned")
-				if (nextPhase) return FSM_STATES.PHASE_ACTIVE
-				return FSM_STATES.PAUSED
+				return FSM_STATES.PLANNED
 			},
-			guard: "hasActiveOrPlannedPhase",
 		},
 		[FSM_EVENTS.ABANDON]: { target: FSM_STATES.ABANDONED },
 	},
@@ -367,6 +358,45 @@ const TRANSITIONS: TransitionMap = {
 // ─── Transition function ──────────────────────────────────────────────────────
 
 /**
+ * Recovery hints for the most common "wrong event in this state" mistakes.
+ * Returned alongside the base "not valid in state" message so the agent has
+ * something actionable instead of having to guess at the next call.
+ *
+ * Key is `${state}:${event}`. Hints describe what the agent should do
+ * *instead* — not why the rejection happened.
+ */
+const RECOVERY_HINTS: Partial<Record<string, string>> = {
+	[`${FSM_STATES.PHASE_ACTIVE}:${FSM_EVENTS.ACTIVATE_PHASE}`]:
+		"A phase is already active. Call start_step to begin its work, or complete_phase / skip_phase / fail_phase to finish it before activating another.",
+	[`${FSM_STATES.STEP_RUNNING}:${FSM_EVENTS.ACTIVATE_PHASE}`]:
+		"A step is currently running in the active phase. Call complete_step / skip_step / fail_step first, then complete_phase, then activate the next phase.",
+	[`${FSM_STATES.PHASE_ACTIVE}:${FSM_EVENTS.COMPLETE_STEP}`]:
+		"No step is currently running. Call start_step to begin a step before completing it.",
+	[`${FSM_STATES.PHASE_ACTIVE}:${FSM_EVENTS.VERIFY_STEP}`]:
+		"No step is currently running. Call start_step to begin a step before verifying it.",
+	[`${FSM_STATES.PHASE_ACTIVE}:${FSM_EVENTS.SET_MODE}`]:
+		"set_mode is only valid before a phase is active. Pause the ferment first if you need to change mode.",
+	[`${FSM_STATES.STEP_RUNNING}:${FSM_EVENTS.SET_MODE}`]:
+		"set_mode is only valid before a phase is active. Pause the ferment first if you need to change mode.",
+	[`${FSM_STATES.STEP_RUNNING}:${FSM_EVENTS.COMPLETE_PHASE}`]:
+		"A step is still running in this phase. Finish or fail the running step before completing the phase.",
+	[`${FSM_STATES.PLANNED}:${FSM_EVENTS.START_STEP}`]: "No phase is active. Call activate_phase first, then start_step.",
+	[`${FSM_STATES.PLANNED}:${FSM_EVENTS.COMPLETE_STEP}`]:
+		"No phase is active. Call activate_phase then start_step before completing a step.",
+	[`${FSM_STATES.PLANNED}:${FSM_EVENTS.COMPLETE_PHASE}`]: "No phase is active. Call activate_phase first.",
+	[`${FSM_STATES.COMPLETE}:${FSM_EVENTS.ACTIVATE_PHASE}`]:
+		"This ferment is complete. Start a new ferment to do more work.",
+}
+
+function describeValidEvents(state: FsmState): string {
+	const stateTransitions = TRANSITIONS[state]
+	if (!stateTransitions) return ""
+	const valid = Object.keys(stateTransitions)
+	if (valid.length === 0) return ""
+	return `Valid events in state "${state}": ${valid.join(", ")}.`
+}
+
+/**
  * Validate a transition. Returns the new state (or the current state with an
  * `error` if the transition was rejected). Pure — no I/O, no side effects.
  */
@@ -383,7 +413,11 @@ export function transition(
 
 	const transitionEntry = stateTransitions[event]
 	if (!transitionEntry) {
-		return { state, error: `Event "${event}" is not valid in state "${state}".` }
+		const base = `Event "${event}" is not valid in state "${state}".`
+		const hint = RECOVERY_HINTS[`${state}:${event}`]
+		const fallback = hint ? "" : ` ${describeValidEvents(state)}`
+		const tail = hint ? ` ${hint}` : fallback
+		return { state, error: `${base}${tail}` }
 	}
 
 	if (transitionEntry.guard) {
@@ -394,7 +428,8 @@ export function transition(
 		}
 	}
 
-	const target = typeof transitionEntry.target === "function" ? transitionEntry.target(ctx) : transitionEntry.target
+	const target =
+		typeof transitionEntry.target === "function" ? transitionEntry.target(ctx, params) : transitionEntry.target
 	return { state: target }
 }
 

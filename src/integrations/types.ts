@@ -23,5 +23,5 @@ export interface ToolDefinition {
 	/** Detect whether the tool is installed locally (PATH probe, well-known dir, etc). */
 	isInstalled: () => boolean
 	/** Write configuration so this tool talks to kimchi's LLM endpoints. */
-	write: (scope: ConfigScope, apiKey: string) => Promise<void>
+	write: (scope: ConfigScope, apiKey: string, options?: { telemetryEnabled?: boolean }) => Promise<void>
 }

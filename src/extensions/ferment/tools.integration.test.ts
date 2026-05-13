@@ -69,6 +69,9 @@ function createHarness(): Harness {
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		appendEntry: vi.fn(),
+		getActiveTools: vi.fn(() => ["read", "bash", "complete_ferment"]),
+		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "complete_ferment" }]),
+		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
 
 	registerLifecycleTools(pi, runtime)
@@ -321,6 +324,20 @@ describe("activate_phase", () => {
 		expect(loadFerment(id).phases[0].status).toBe("active")
 	})
 
+	it("falls back to failed phase recovery before activating a planned phase", async () => {
+		const id = await createFerment("Retry Fallback")
+		await scopeFerment(id)
+		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("fail_phase", { ferment_id: id, phase_id: "phase-1", reason: "tests failed" }))
+
+		ok(await h.call("activate_phase", { ferment_id: id }))
+
+		const f = loadFerment(id)
+		expect(f.phases[0].status).toBe("active")
+		expect(f.phases[1].status).toBe("planned")
+		expect(f.activePhaseId).toBe("phase-1")
+	})
+
 	it("activates all phases in a parallel group", async () => {
 		const id = await createFerment("Parallel Activate")
 		await scopeFerment(id, {
@@ -348,7 +365,7 @@ describe("activate_phase", () => {
 		s.skipPhase(id, "phase-2", "skip")
 
 		const result = await h.call("activate_phase", { ferment_id: id })
-		expect(err(result)).toMatch(/no planned phases/i)
+		expect(err(result)).toMatch(/no planned or failed phases/i)
 	})
 
 	it("returns error when ferment not found", async () => {
@@ -884,8 +901,8 @@ describe("paused ferment blocks tool calls at the bridge", () => {
 		const id = await createFerment("Paused Test")
 		await scopeFerment(id)
 		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
-		// Flip to paused via storage (the /pause command path is exercised by
-		// the index.ts handler; here we just need the state).
+		// Flip to paused via storage; here we just need bridge-level enforcement
+		// for an already-paused ferment.
 		const s = h.storage
 		s.updateStatus(id, "paused")
 		clearFermentCache()

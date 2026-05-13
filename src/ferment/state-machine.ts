@@ -22,6 +22,7 @@
  * parameter so transitions remain deterministic and unit-testable.
  */
 
+import { activateSinglePhase, settleAfterPhaseTerminalPatch } from "./lifecycle.js"
 import {
 	type Decision,
 	type Ferment,
@@ -479,15 +480,11 @@ function handleActivatePhase(
 	if (isTransitionError(found)) return fail(found)
 	const { phase, index } = found
 
-	const guard = requirePhaseStatus(phase, ["planned"])
+	const guard = requirePhaseStatus(phase, ["planned", "failed"])
 	if (guard) return fail(guard)
 
 	// Deactivate any other active phase, then activate this one.
-	const phases = ferment.phases.map((p, i) => {
-		if (i === index) return { ...p, status: "active" as const, startedAt: ctx.now }
-		if (p.status === "active") return { ...p, status: "planned" as const }
-		return p
-	})
+	const phases = activateSinglePhase(ferment.phases, phase.id, ctx.now)
 
 	return ok(
 		touch(ferment, ctx, {
@@ -736,16 +733,14 @@ function handleCompletePhase(
 	const guard = requirePhaseStatus(phase, ["active"])
 	if (guard) return fail(guard)
 
-	return ok(
-		touch(ferment, ctx, {
-			phases: setPhase(ferment, index, {
-				status: "completed",
-				summary: cmd.summary,
-				completedAt: ctx.now,
-				grade: cmd.grade,
-			}),
-		}),
-	)
+	const phases = setPhase(ferment, index, {
+		status: "completed",
+		summary: cmd.summary,
+		completedAt: ctx.now,
+		grade: cmd.grade,
+	})
+
+	return ok(touch(ferment, ctx, settleAfterPhaseTerminalPatch(phases)))
 }
 
 // ─── skip_phase ───────────────────────────────────────────────────────────────
@@ -759,15 +754,13 @@ function handleSkipPhase(
 	if (isTransitionError(found)) return fail(found)
 	const { index } = found
 
-	return ok(
-		touch(ferment, ctx, {
-			phases: setPhase(ferment, index, {
-				status: "skipped",
-				summary: cmd.reason ?? "Skipped",
-				completedAt: ctx.now,
-			}),
-		}),
-	)
+	const phases = setPhase(ferment, index, {
+		status: "skipped",
+		summary: cmd.reason ?? "Skipped",
+		completedAt: ctx.now,
+	})
+
+	return ok(touch(ferment, ctx, settleAfterPhaseTerminalPatch(phases)))
 }
 
 // ─── fail_phase ───────────────────────────────────────────────────────────────
@@ -781,15 +774,13 @@ function handleFailPhase(
 	if (isTransitionError(found)) return fail(found)
 	const { index } = found
 
-	return ok(
-		touch(ferment, ctx, {
-			phases: setPhase(ferment, index, {
-				status: "failed",
-				summary: cmd.reason,
-				completedAt: ctx.now,
-			}),
-		}),
-	)
+	const phases = setPhase(ferment, index, {
+		status: "failed",
+		summary: cmd.reason,
+		completedAt: ctx.now,
+	})
+
+	return ok(touch(ferment, ctx, settleAfterPhaseTerminalPatch(phases)))
 }
 
 // ─── complete_ferment ─────────────────────────────────────────────────────────
@@ -839,10 +830,13 @@ function handleResume(
 ): TransitionResult {
 	const guard = requireFermentStatus(ferment, ["paused"])
 	if (guard) return fail(guard)
-	// Resume always returns to "running". A ferment that was "planned" before
-	// pause loses the distinction — the planner can navigate from running by
-	// calling skip_phase or activate_phase as needed.
-	return ok(touch(ferment, ctx, { status: "running" }))
+	const activePhase = ferment.phases.find((p) => p.status === "active")
+	return ok(
+		touch(ferment, ctx, {
+			status: activePhase ? "running" : "planned",
+			activePhaseId: activePhase?.id,
+		}),
+	)
 }
 
 // ─── abandon ──────────────────────────────────────────────────────────────────

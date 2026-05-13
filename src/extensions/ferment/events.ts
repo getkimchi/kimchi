@@ -1,12 +1,16 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { shortenTitle } from "../../ferment/shorten-title.js"
 import { clearFermentCache } from "../../ferment/store.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
+import { appendRefEntry } from "./nudge.js"
+import { buildOneshotNudge } from "./oneshot.js"
 import { buildPlannerSupplement } from "./planner-supplement.js"
 import { resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import { isRestoringModel, setRestoringModel } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
+import { disableFermentTools, setActiveFerment } from "./tool-scope.js"
 
 type AssistantContentPart = { type: string; text?: string; name?: string }
 
@@ -26,8 +30,14 @@ function extractPromptTextAfterLastToolCall(content: AssistantContentPart[]): st
 
 export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
+	let pendingOneshot = false
+	pi.registerFlag("ferment-oneshot", {
+		type: "boolean",
+		description: "Bootstrap the initial prompt as a one-shot exec-mode ferment.",
+	})
 
 	pi.on("session_start", async (_event, ctx) => {
+		disableFermentTools(pi)
 		if (process.env.KIMCHI_SUBAGENT === "1") return
 		runtime.clearAllStepStarts()
 		runtime.clearAllScopingGates()
@@ -36,9 +46,14 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 
 		const envId = process.env.KIMCHI_ACTIVE_FERMENT
 		if (envId) {
+			pendingOneshot = false
 			resumeFerment(pi, envId, ctx, runtime)
+			Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
+		} else if (pi.getFlag("ferment-oneshot") === true) {
+			pendingOneshot = true
+			setActiveFerment(pi, runtime, undefined)
 		} else {
-			runtime.setActive(undefined)
+			setActiveFerment(pi, runtime, undefined)
 		}
 	})
 
@@ -55,6 +70,36 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		if (event.source === "interactive") {
 			runtime.markHumanInput()
 		}
+
+		if (!pendingOneshot) return
+		pendingOneshot = false
+
+		const intent = event.text.trim()
+		if (!intent) return
+
+		try {
+			const storage = runtime.getStorage()
+			let shortName: string
+			try {
+				shortName = await shortenTitle(intent)
+			} catch {
+				shortName = intent.length > 60 ? `${intent.slice(0, 57).trimEnd()}...` : intent
+			}
+			const f = storage.create(shortName, intent)
+			const modeOut = applyAndPersist(f.id, { type: "set_mode", mode: "exec" })
+			const updated = modeOut.ok ? modeOut.ferment : f
+			setActiveFerment(pi, runtime, updated)
+			appendRefEntry(pi, updated.id)
+			pi.appendEntry("ferment_ack", {
+				text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nMode: exec (fully autonomous)`,
+			})
+			return { action: "transform" as const, text: buildOneshotNudge(updated, intent), images: event.images }
+		} catch (err) {
+			pi.appendEntry("ferment_oneshot_failed", {
+				text: `One-shot ferment bootstrap failed: ${err instanceof Error ? err.message : String(err)}`,
+			})
+			return
+		}
 	})
 
 	pi.on("before_agent_start", async (event) => {
@@ -64,8 +109,8 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			const pausedSupplement = `\n\n## Ferment Paused\n\nFerment "${f.name}" is paused by the user. Do NOT call any ferment tools (activate_phase, start_step, complete_step, etc.) — they will be rejected. Acknowledge any pending question briefly and wait for the user to resume with /auto.`
 			return { systemPrompt: `${event.systemPrompt}${pausedSupplement}` }
 		}
-		if (f.status !== "running") return {}
-		const supplement = await buildPlannerSupplement(runtime)
+		if (f.status !== "running" && f.status !== "planned") return {}
+		const supplement = buildPlannerSupplement(runtime)
 		return { systemPrompt: `${event.systemPrompt}${supplement}` }
 	})
 

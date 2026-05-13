@@ -26,6 +26,7 @@ import {
 	SetModeParams,
 	UpdateScopeFieldParams,
 } from "../tool-schemas.js"
+import { setActiveFerment, syncFermentToolScope } from "../tool-scope.js"
 
 type ScopeArgs = Static<typeof ScopeParams>
 type CompleteFermentArgs = Static<typeof CompleteFermentParams>
@@ -187,7 +188,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 			// Creation is special — no existing ferment to transition from.
 			// Storage's create() handles uuid generation and worktree capture.
 			const f = runtime.getStorage().create(params.name, params.description)
-			runtime.setActive(f)
+			setActiveFerment(pi, runtime, f)
 			appendRefEntry(pi, f.id)
 			const branch = f.worktree.branch ?? "(no git)"
 			return toolOk(`Created "${f.name}".  Mode: ${f.mode}  •  Branch: ${branch}  •  Path: ${f.worktree.path}`)
@@ -337,7 +338,9 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 			"Mark ferment as complete. All phases must be terminal (completed, skipped, or failed). Judge computes overall grade.",
 		parameters: CompleteFermentParams,
 		async execute(_, params) {
-			return completeFerment(runtime, params, lifecycleServices)
+			const result = await completeFerment(runtime, params, lifecycleServices)
+			if (!("isError" in result) || result.isError !== true) syncFermentToolScope(pi, runtime.getActive())
+			return result
 		},
 	})
 }

@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto"
 // metadata-cache.ts - Persistent MCP metadata cache
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { getToolUiResourceUri } from "@modelcontextprotocol/ext-apps/app-bridge"
+import { logger } from "./logger.js"
 import { resourceNameToToolName } from "./resource-tools.js"
 import type { McpResource, McpTool, ServerEntry, ToolMetadata } from "./types.js"
 import { formatToolName, isToolExcluded } from "./types.js"
@@ -45,41 +46,140 @@ export function getMetadataCachePath(): string {
 	return getCachePath()
 }
 
+/**
+ * Type guard to validate cache structure.
+ */
+function isValidCache(cache: unknown): cache is MetadataCache {
+	return !!(
+		cache &&
+		typeof cache === "object" &&
+		"version" in cache &&
+		cache.version === CACHE_VERSION &&
+		"servers" in cache &&
+		cache.servers &&
+		typeof cache.servers === "object"
+	)
+}
+
+/**
+ * Safely load existing cache from disk, returning empty cache on any error.
+ */
+function loadExistingCache(): MetadataCache {
+	const cache: MetadataCache = { version: CACHE_VERSION, servers: {} }
+
+	if (!existsSync(getCachePath())) return cache
+
+	try {
+		const existing = JSON.parse(readFileSync(getCachePath(), "utf-8"))
+		if (isValidCache(existing)) {
+			cache.servers = { ...existing.servers }
+		}
+	} catch {
+		// Ignore parse errors and return empty cache
+	}
+
+	return cache
+}
+
+/**
+ * Atomically write cache data to disk using temp file + rename.
+ */
+function atomicWriteCache(data: MetadataCache): void {
+	const cachePath = getCachePath()
+	const tmpPath = `${cachePath}.${process.pid}.tmp`
+
+	mkdirSync(dirname(cachePath), { recursive: true })
+	writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf-8")
+	renameSync(tmpPath, cachePath)
+}
+
+/**
+ * Best-effort cleanup of temporary file. Swallows all errors.
+ */
+function cleanupTempFile(tmpPath: string): void {
+	try {
+		if (existsSync(tmpPath)) unlinkSync(tmpPath)
+	} catch {
+		// nothing to do — the next run will overwrite or ignore stale temp files
+	}
+}
+
 export function loadMetadataCache(): MetadataCache | null {
 	if (!existsSync(getCachePath())) return null
 	try {
 		const raw = JSON.parse(readFileSync(getCachePath(), "utf-8"))
-		if (!raw || typeof raw !== "object") return null
-		if (raw.version !== CACHE_VERSION) return null
-		if (!raw.servers || typeof raw.servers !== "object") return null
-		return raw as MetadataCache
+		if (!isValidCache(raw)) return null
+		return raw
 	} catch {
 		return null
 	}
 }
 
 export function saveMetadataCache(cache: MetadataCache): void {
-	const dir = dirname(getCachePath())
-	mkdirSync(dir, { recursive: true })
+	const merged = loadExistingCache()
+	merged.servers = { ...merged.servers, ...cache.servers }
+	atomicWriteCache(merged)
+}
 
-	const merged: MetadataCache = { version: CACHE_VERSION, servers: {} }
+/**
+ * Replace the on-disk cache with the provided content (no merge with existing).
+ * Use only when you need to delete entries; for adds/updates prefer
+ * `saveMetadataCache` so concurrent writers don't clobber each other.
+ *
+ * I/O failures (read-only filesystem, full disk, permission denied) are logged
+ * and swallowed — the cache is a derived artifact and must never crash the
+ * extension host during startup. Callers that need to know the write succeeded
+ * should re-read with `loadMetadataCache()`.
+ */
+export function overwriteMetadataCache(cache: MetadataCache): void {
+	const cachePath = getCachePath()
+	const tmpPath = `${cachePath}.${process.pid}.tmp`
+	const out: MetadataCache = { version: CACHE_VERSION, servers: cache.servers ?? {} }
+
 	try {
-		if (existsSync(getCachePath())) {
-			const existing = JSON.parse(readFileSync(getCachePath(), "utf-8")) as MetadataCache
-			if (existing && existing.version === CACHE_VERSION && existing.servers) {
-				merged.servers = { ...existing.servers }
-			}
+		atomicWriteCache(out)
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error)
+		logger.debug(`MCP: failed to overwrite metadata cache at ${cachePath}: ${message}`)
+		// Best-effort cleanup of a half-written temp file so we don't accumulate
+		// `.pid.tmp` dotfiles on repeated failures. If this throws too, drop it.
+		cleanupTempFile(tmpPath)
+	}
+}
+
+/**
+ * Drop cache entries whose configHash no longer matches the current server
+ * definition. Orphan entries (cached servers not in the current config) are
+ * kept by default because the cache file is shared across projects — a server
+ * absent from this project's `mcp.json` is likely configured by another.
+ *
+ * Returns the cleaned cache and the list of removed server names. Caller is
+ * responsible for persisting via `overwriteMetadataCache` when
+ * `removed.length > 0`.
+ */
+export function purgeStaleEntries(
+	cache: MetadataCache | null,
+	mcpServers: Record<string, ServerEntry>,
+): { cleaned: MetadataCache; removed: string[] } {
+	const cleaned: MetadataCache = { version: CACHE_VERSION, servers: {} }
+	const removed: string[] = []
+	if (!cache?.servers) return { cleaned, removed }
+
+	for (const [name, entry] of Object.entries(cache.servers)) {
+		const definition = mcpServers[name]
+		if (!definition) {
+			// Orphan from another project's config — preserve.
+			cleaned.servers[name] = entry
+			continue
 		}
-	} catch {
-		// Ignore parse errors and proceed with empty cache
+		if (!entry?.configHash || entry.configHash !== computeServerHash(definition)) {
+			removed.push(name)
+			continue
+		}
+		cleaned.servers[name] = entry
 	}
 
-	merged.version = CACHE_VERSION
-	merged.servers = { ...merged.servers, ...cache.servers }
-
-	const tmpPath = `${getCachePath()}.${process.pid}.tmp`
-	writeFileSync(tmpPath, JSON.stringify(merged, null, 2), "utf-8")
-	renameSync(tmpPath, getCachePath())
+	return { cleaned, removed }
 }
 
 export function computeServerHash(definition: ServerEntry): string {
@@ -114,6 +214,28 @@ export function isServerCacheValid(
 	return true
 }
 
+/**
+ * Build tool metadata if not excluded, otherwise return null.
+ */
+function buildToolMetadata(
+	toolName: string,
+	serverName: string,
+	prefix: "server" | "none" | "short",
+	excludeTools: ServerEntry["excludeTools"],
+	additionalFields: Partial<ToolMetadata>,
+): ToolMetadata | null {
+	if (isToolExcluded(toolName, serverName, prefix, excludeTools)) {
+		return null
+	}
+
+	return {
+		name: formatToolName(toolName, serverName, prefix),
+		originalName: toolName,
+		description: "",
+		...additionalFields,
+	}
+}
+
 export function reconstructToolMetadata(
 	serverName: string,
 	entry: ServerCacheEntry,
@@ -124,34 +246,38 @@ export function reconstructToolMetadata(
 
 	for (const tool of entry.tools ?? []) {
 		if (!tool?.name) continue
-		if (isToolExcluded(tool.name, serverName, prefix, definition.excludeTools)) {
-			continue
-		}
 
-		metadata.push({
-			name: formatToolName(tool.name, serverName, prefix),
-			originalName: tool.name,
+		const toolMetadata = buildToolMetadata(tool.name, serverName, prefix, definition.excludeTools, {
 			description: tool.description ?? "",
 			inputSchema: tool.inputSchema,
 			uiResourceUri: tool.uiResourceUri,
 			uiStreamMode: tool.uiStreamMode,
 		})
+
+		if (toolMetadata) {
+			metadata.push(toolMetadata)
+		}
 	}
 
 	if (definition.exposeResources !== false) {
 		for (const resource of entry.resources ?? []) {
 			if (!resource?.name || !resource?.uri) continue
-			const baseName = `get_${resourceNameToToolName(resource.name)}`
-			if (isToolExcluded(baseName, serverName, prefix, definition.excludeTools)) {
-				continue
-			}
 
-			metadata.push({
-				name: formatToolName(baseName, serverName, prefix),
-				originalName: baseName,
-				description: resource.description ?? `Read resource: ${resource.uri}`,
-				resourceUri: resource.uri,
-			})
+			const baseName = `get_${resourceNameToToolName(resource.name)}`
+			const resourceMetadata = buildToolMetadata(
+				baseName,
+				serverName,
+				prefix,
+				definition.excludeTools,
+				{
+					description: resource.description ?? `Read resource: ${resource.uri}`,
+					resourceUri: resource.uri,
+				},
+			)
+
+			if (resourceMetadata) {
+				metadata.push(resourceMetadata)
+			}
 		}
 	}
 

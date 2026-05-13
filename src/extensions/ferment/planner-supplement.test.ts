@@ -49,34 +49,12 @@ function makeRuntime(): FermentRuntime {
 }
 
 describe("buildPlannerSupplement", () => {
-	it("uses injected active ferment and corrective-step state", async () => {
-		const supplement = await buildPlannerSupplement(makeRuntime())
+	it("uses injected active ferment and corrective-step state", () => {
+		const supplement = buildPlannerSupplement(makeRuntime())
 
 		expect(supplement).toContain('ferment "Runtime Plan"')
 		expect(supplement).toContain("## Self-Improvement Feedback")
 		expect(supplement).toContain("Important requirements were missed.")
 		expect(supplement).toContain("Add an explicit edge-case verification step.")
-	})
-
-	it("mentions parallel_group activation flow", async () => {
-		// The prompt is intentionally terse: it describes the activation/refine
-		// flow for parallel_group cohorts so the planner can drive them, but it
-		// does NOT lecture the planner about WHEN to use parallelism. That
-		// choice is left to the LLM (and to the tool-schema docstrings).
-		const supplement = await buildPlannerSupplement(makeRuntime())
-
-		expect(supplement).toContain("parallel_group")
-		expect(supplement).toMatch(/Parallel phases/)
-		expect(supplement).toMatch(/refine_phase for ALL parallel phases/)
-	})
-
-	it("does not mention the removed kanban/coordination substrate", async () => {
-		// Belt-and-braces: the coordination kanban prompt was the source of
-		// "this is so complicated" friction. Make sure it's gone for good.
-		const supplement = await buildPlannerSupplement(makeRuntime())
-
-		expect(supplement).not.toContain("kanban")
-		expect(supplement).not.toContain("work_item_create")
-		expect(supplement).not.toContain("coordination work item")
 	})
 })

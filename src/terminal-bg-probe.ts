@@ -174,6 +174,17 @@ export function estimateTerminalBackground(): Rgb {
 	return { r: 0x1a, g: 0x18, b: 0x18 }
 }
 
+// Foreground ANSI color conversion utilities — mirrors pi's fgAnsi in theme.js.
+// Used by kimchi-minimal-tints to apply auto-contrast text colors.
+
+export function hexToFgAnsi(hex: string, mode: "truecolor" | "256color"): string {
+	const r = Number.parseInt(hex.slice(1, 3), 16)
+	const g = Number.parseInt(hex.slice(3, 5), 16)
+	const b = Number.parseInt(hex.slice(5, 7), 16)
+	if (mode === "truecolor") return `\x1b[38;2;${r};${g};${b}m`
+	return `\x1b[38;5;${rgbTo256(r, g, b)}m`
+}
+
 // BG ANSI color conversion utilities — used by kimchi-minimal-tints to apply
 // tint hex values as ANSI background codes. Co-located here with the rest of
 // the terminal color math.

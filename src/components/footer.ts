@@ -5,7 +5,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
-import { RST_FG, TEAL_FG, resolvedSemanticFg } from "../ansi.js"
+import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
 import { getActiveFerment, getCurrentPhaseIndex } from "../extensions/ferment/index.js"
 import { formatCount } from "../extensions/format.js"
@@ -120,10 +120,6 @@ export class ScriptFooter implements Component {
 
 const BAR_WIDTH = 16
 
-function teal(text: string): string {
-	return `${TEAL_FG}${text}${RST_FG}`
-}
-
 function seg(text: string): FooterSegment {
 	return { text, width: visibleWidth(text) }
 }
@@ -137,14 +133,18 @@ export class StatsFooter implements Component {
 
 	invalidate(): void {}
 
-	// Use the "text" token (not "dim") so labels match the editor input/cwd chrome.
 	private dim(s: string): string {
-		return this.theme.fg("text", s)
+		return this.theme.fg("dim", s)
+	}
+
+	private accent(s: string): string {
+		const ansi = resolvedAccentFg(this.theme)
+		return `${ansi}${s}${RST_FG}`
 	}
 
 	private modelSegment(): FooterSegment {
 		const modelId = this.ctx.model?.id ?? "n/a"
-		return seg(teal(modelId))
+		return seg(this.accent(modelId))
 	}
 
 	private usageSegment(): FooterSegment | null {
@@ -176,13 +176,13 @@ export class StatsFooter implements Component {
 		const pctColor = pct > 90 ? "error" : pct > 70 ? "warning" : undefined
 		const pctStr = pctColor
 			? `${resolvedSemanticFg(this.theme, pctColor)}${Math.round(pct)}%${RST_FG}`
-			: teal(`${Math.round(pct)}%`)
+			: this.accent(`${Math.round(pct)}%`)
 		return seg(`${bar} ${pctStr} ${this.dim("ctx")}`)
 	}
 
 	private phaseSegment(): FooterSegment {
 		const phase = getCurrentPhase() ?? "n/a"
-		return seg(`${this.dim("phase:")}${teal(phase)}`)
+		return seg(`${this.dim("phase:")}${this.accent(phase)}`)
 	}
 
 	private tagsSegment(parsed: Array<{ key: string; value: string }>): FooterSegment | null {
@@ -195,7 +195,7 @@ export class StatsFooter implements Component {
 	private teamSegment(parsed: Array<{ key: string; value: string }>): FooterSegment | null {
 		const team = parsed.find((t) => t.key === "team")
 		if (!team) return null
-		return seg(`${this.dim("team:")}${teal(team.value)}`)
+		return seg(`${this.dim("team:")}${this.accent(team.value)}`)
 	}
 
 	private permissionsSegment(): FooterSegment | null {
@@ -206,7 +206,7 @@ export class StatsFooter implements Component {
 
 	private multiModelSegment(): FooterSegment {
 		const enabled = getMultiModelEnabled()
-		const label = enabled ? teal("on") : this.dim("off")
+		const label = enabled ? this.accent("on") : this.dim("off")
 		const shortcut = process.platform === "darwin" ? "option+tab" : "alt+tab"
 		return seg(`${this.dim("multi-model:")} ${label} ${this.dim(`→ ${shortcut}`)}`)
 	}
@@ -214,7 +214,7 @@ export class StatsFooter implements Component {
 	private subagentSegment(): FooterSegment | null {
 		const count = getActiveAgentCount()
 		if (count === 0) return null
-		return seg(teal(`${count} agent${count === 1 ? "" : "s"}`))
+		return seg(this.accent(`${count} agent${count === 1 ? "" : "s"}`))
 	}
 
 	private fermentSegment(): FooterSegment | null {
@@ -227,7 +227,7 @@ export class StatsFooter implements Component {
 			(s) => s.status === "running" || s.status === "pending" || s.status === "failed",
 		)
 
-		const parts: string[] = [`${this.dim("ferment:")}${teal(ferment.name)}`]
+		const parts: string[] = [`${this.dim("ferment:")}${this.accent(ferment.name)}`]
 		parts.push(this.dim(`[${ferment.status}]`))
 		parts.push(this.dim(ferment.mode))
 

@@ -6,14 +6,16 @@ import { clampLines, splashTopPadding } from "./splash-layout.js"
 
 export class SplashHeader implements Component {
 	private readonly theme: Theme
-	private readonly logoLines: string[]
+	private logoLines: string[]
 
 	constructor(theme: Theme) {
 		this.theme = theme
 		this.logoLines = buildLogoLines(theme)
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.logoLines = buildLogoLines(this.theme)
+	}
 
 	render(width: number): string[] {
 		const versionLine = buildVersionLine(this.theme)

@@ -14,10 +14,9 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { determineNextAction, findFirstPlannedPhase } from "../../ferment/engine.js"
+import { determineNextAction } from "../../ferment/engine.js"
 import type { DeclarativeAction } from "../../ferment/engine.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
-import { createApplyAndPersist } from "./tool-helpers.js"
 
 export function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
 	void pi.sendMessage({
@@ -50,7 +49,7 @@ const TRANSITION_KINDS = new Set([
  *   activate_phase   → activate_phase
  *   complete_phase   → complete_phase
  *   recover_step     → fail_step / skip_step / start_step (host-decides)
- *   recover_phase    → activate_phase / skip_phase
+ *   recover_phase    → activate_phase / skip_phase, or ask user for /ferment abandon
  */
 function buildResumeNudgeMessage(
 	action: DeclarativeAction,
@@ -72,7 +71,7 @@ function buildResumeNudgeMessage(
 		case "recover_step":
 			return `${preamble}\n\nThe step previously failed. Decide based on the failure: call start_step to retry, skip_step to bypass, or fail_step to mark it permanently failed. Pick one and call it now.`
 		case "recover_phase":
-			return `${preamble}\n\nThe phase previously failed. Decide based on the failure: call activate_phase to retry, or skip_phase to bypass. Pick one and call it now.`
+			return `${preamble}\n\nThe phase previously failed. Decide based on the failure: call activate_phase to retry, call skip_phase to bypass, or ask the user to run /ferment abandon if the ferment should stop. Pick a tool call now unless abandonment is required.`
 		case "scope":
 			return `${preamble}\n\nAction: continue scoping — ${action.reason}.`
 		case "complete_step":
@@ -110,9 +109,11 @@ export function maybeInjectAutoNudge(
 	// `force` option overrides this to support explicit /auto resume.
 	if (!opts.force && !TRANSITION_KINDS.has(action.kind)) return
 
+	const actionPhase = "phaseId" in action ? f.phases.find((p) => p.id === action.phaseId) : undefined
 	const activePhase = f.phases.find((p) => p.id === f.activePhaseId)
+	const displayPhase = actionPhase ?? activePhase
 	const activeStep = activePhase?.steps.find((s) => s.status === "running" || s.status === "pending")
-	const phaseInfo = activePhase ? ` · phase ${activePhase.index}/${f.phases.length} "${activePhase.name}"` : ""
+	const phaseInfo = displayPhase ? ` · phase ${displayPhase.index}/${f.phases.length} "${displayPhase.name}"` : ""
 	const stepInfo = activeStep ? ` · step ${activeStep.index}/${activePhase?.steps.length}` : ""
 	const tag = opts.force ? "Resume" : "Auto-nudge"
 	const breadcrumb = `${tag} [${action.kind}]: "${f.name}" [${f.status}]${phaseInfo}${stepInfo}`
@@ -120,7 +121,7 @@ export function maybeInjectAutoNudge(
 	// Compose the message from the structured action rather than passing through
 	// the engine's prose. The reason field provides a one-sentence objective.
 	const messageText = opts.force
-		? buildResumeNudgeMessage(action, f.id, activePhase?.id, activeStep?.id)
+		? buildResumeNudgeMessage(action, f.id, displayPhase?.id, activeStep?.id)
 		: `${action.kind}: ${action.reason}`
 
 	pi.appendEntry("ferment_breadcrumb", { text: breadcrumb })
@@ -146,20 +147,16 @@ export function onStepCompleted(pi: ExtensionAPI, runtime: FermentRuntime = defa
 }
 
 export function onPhaseCompleted(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
+	// Refresh the in-memory active ferment cache after the storage write. The agent
+	// drives state — no silent activate_phase here. Prior versions auto-advanced
+	// the next planned phase in exec mode, which left the FSM in PHASE_ACTIVE
+	// behind the agent's back and caused every subsequent agent-initiated
+	// activate_phase to be rejected.
 	const id = runtime.getActiveId()
 	if (!id) return
 	const fresh = runtime.getStorage().get(id)
 	if (fresh) {
 		runtime.setActive(fresh)
-		// Auto-advance only in exec mode — auto/plan modes leave activation to the planner
-		if (fresh.mode === "exec") {
-			const next = findFirstPlannedPhase(fresh)
-			if (next) {
-				const applyAndPersist = createApplyAndPersist(runtime)
-				const out = applyAndPersist(fresh.id, { type: "activate_phase", phaseId: next.id })
-				if (out.ok) runtime.setActive(out.ferment)
-			}
-		}
 		maybeInjectAutoNudge(pi, {}, runtime)
 	}
 }

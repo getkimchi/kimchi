@@ -184,6 +184,16 @@ interface FermentStats {
   <uuid>.stats.json     ← computed stats cache (NEW)
 ```
 
+### Directory resolution
+
+`resolveFermentsDir()` picks the storage location in this order:
+
+1. **`KIMCHI_FERMENTS_DIR` env var** — explicit override. Used by terminal-bench-2 to land per-trial ferments under the bind-mounted `/logs/agent/ferments`, and by tests that need to pin storage to a tmpdir.
+2. **`<project-root>/.kimchi/ferments`** — when the cwd is inside a git/package.json project. Keeps ferments co-located with the work.
+3. **`~/.config/kimchi/ferments`** — global fallback when no project root is found.
+
+The event log path is keyed off the same resolved directory, so a single env override moves both the snapshot cache and `<uuid>.events.jsonl`.
+
 ## Migration from Legacy Snapshot
 
 A `migrateLegacy(legacySnapshot): FermentEvent[]` function generates the minimal event sequence that would recreate the legacy snapshot. It walks the phases and steps in order and emits the appropriate events. This ensures that every historical ferment has a complete event retroactively.

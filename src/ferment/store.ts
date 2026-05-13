@@ -15,6 +15,7 @@ import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { v7 as uuidv7 } from "uuid"
 
+import { activateSinglePhase, settleAfterPhaseTerminal } from "./lifecycle.js"
 import type {
 	Decision,
 	Ferment,
@@ -87,6 +88,12 @@ export function getGlobalFermentsDir(): string {
 }
 
 export function resolveFermentsDir(cwd?: string): string {
+	// Explicit env override wins over project / global resolution. Used by
+	// terminal-bench-2 to land per-trial ferments under the bind-mounted
+	// /logs/agent/ferments directory; also handy for tests that pin storage
+	// to a tmpdir without touching the working tree.
+	const envDir = process.env.KIMCHI_FERMENTS_DIR
+	if (envDir) return envDir
 	const project = detectProjectRoot(cwd)
 	if (project) return resolve(project, ".kimchi", "ferments")
 	return getGlobalFermentsDir()
@@ -435,7 +442,6 @@ export class FermentStorage {
 	// These helpers remain for:
 	//   - TUI command handlers (/progress overlay, /ferment switch/abandon)
 	//   - Test fixtures that need to bypass the state machine
-	//   - Internal callers (nudge.ts auto-advance) that pre-validate themselves
 	//
 	// They write directly without going through the state machine, so they DO
 	// NOT enforce invariants. Caller is responsible for state validity.
@@ -545,13 +551,10 @@ export class FermentStorage {
 		const f = this.get(id)
 		if (!f) return undefined
 		const now = new Date().toISOString()
-		const updated: Ferment = {
-			...f,
-			phases: f.phases.map((p) =>
-				p.id === phaseId ? { ...p, status: "failed" as const, summary: reason, completedAt: now } : p,
-			),
-			updatedAt: now,
-		}
+		const phases = f.phases.map((p) =>
+			p.id === phaseId ? { ...p, status: "failed" as const, summary: reason, completedAt: now } : p,
+		)
+		const updated = settleAfterPhaseTerminal(f, phases, now)
 		this.write(updated)
 		return updated
 	}
@@ -598,11 +601,7 @@ export class FermentStorage {
 		const now = new Date().toISOString()
 		const updated: Ferment = {
 			...f,
-			phases: f.phases.map((p) => {
-				if (p.id === phaseId) return { ...p, status: "active" as const, startedAt: now }
-				if (p.status === "active") return { ...p, status: "planned" as const }
-				return p
-			}),
+			phases: activateSinglePhase(f.phases, phaseId, now),
 			activePhaseId: phaseId,
 			lastActiveAt: now,
 			updatedAt: now,
@@ -646,13 +645,10 @@ export class FermentStorage {
 		const f = this.get(id)
 		if (!f) return undefined
 		const now = new Date().toISOString()
-		const updated: Ferment = {
-			...f,
-			phases: f.phases.map((p) =>
-				p.id === phaseId ? { ...p, status: "completed" as const, summary, completedAt: now } : p,
-			),
-			updatedAt: now,
-		}
+		const phases = f.phases.map((p) =>
+			p.id === phaseId ? { ...p, status: "completed" as const, summary, completedAt: now } : p,
+		)
+		const updated = settleAfterPhaseTerminal(f, phases, now)
 		this.write(updated)
 		return updated
 	}
@@ -662,13 +658,10 @@ export class FermentStorage {
 		const f = this.get(id)
 		if (!f) return undefined
 		const now = new Date().toISOString()
-		const updated: Ferment = {
-			...f,
-			phases: f.phases.map((p) =>
-				p.id === phaseId ? { ...p, status: "skipped" as const, summary: reason ?? "Skipped", completedAt: now } : p,
-			),
-			updatedAt: now,
-		}
+		const phases = f.phases.map((p) =>
+			p.id === phaseId ? { ...p, status: "skipped" as const, summary: reason ?? "Skipped", completedAt: now } : p,
+		)
+		const updated = settleAfterPhaseTerminal(f, phases, now)
 		this.write(updated)
 		return updated
 	}

@@ -19,6 +19,40 @@ const STATIC_CATEGORIES: Record<string, ToolCategory> = {
 
 const READ_ONLY_NAME_HINT = /^(read|get|list|search|query|describe|find|grep|ls|loki_|view|show)/i
 
+// Verbs at the start of an underscore-separated segment that signal a read-only
+// operation on namespaced MCP direct tools like `jetbrains_get_all_open_file_paths`
+// or `supabase_list_tables`. We require an exact segment-position match (not a
+// substring) to avoid false positives — e.g. server names that happen to contain
+// `get` should not flip the classification.
+const READ_ONLY_VERB_SEGMENTS = new Set([
+	"read",
+	"get",
+	"list",
+	"search",
+	"query",
+	"describe",
+	"find",
+	"grep",
+	"ls",
+	"view",
+	"show",
+	"preview",
+	"inspect",
+])
+
+function hasReadOnlyVerbSegment(toolName: string): boolean {
+	const lower = toolName.toLowerCase()
+	if (!lower.includes("_")) return false
+	// Skip the first segment (typically the server/namespace prefix) so a
+	// namespace called "list" or "get" doesn't blanket-mark every tool
+	// underneath it as read-only. Verbs in any subsequent segment count.
+	const segments = lower.split("_")
+	for (let i = 1; i < segments.length; i++) {
+		if (READ_ONLY_VERB_SEGMENTS.has(segments[i])) return true
+	}
+	return false
+}
+
 export function classifyTool(toolName: string): ToolCategory {
 	const lower = toolName.toLowerCase()
 	if (lower in STATIC_CATEGORIES) return STATIC_CATEGORIES[lower]
@@ -30,6 +64,10 @@ export function classifyTool(toolName: string): ToolCategory {
 	}
 
 	if (READ_ONLY_NAME_HINT.test(toolName)) return "readOnly"
+	// MCP direct tools (with toolPrefix: "server") arrive flattened to a single
+	// underscore-separated name. Inspect post-prefix verb segments so they're
+	// not all stranded as "unknown" in plan mode.
+	if (hasReadOnlyVerbSegment(toolName)) return "readOnly"
 	return "unknown"
 }
 

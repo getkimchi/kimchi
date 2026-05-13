@@ -110,7 +110,11 @@ export function mergeCursorConfig(storage: Record<string, unknown>): Record<stri
  * equivalent, so the `scope` argument is accepted for the ToolDefinition
  * contract but ignored — the writer always targets the global path.
  */
-async function writeCursor(_scope: ConfigScope, apiKey: string): Promise<void> {
+async function writeCursor(
+	_scope: ConfigScope,
+	apiKey: string,
+	_options?: { telemetryEnabled?: boolean },
+): Promise<void> {
 	if (!apiKey) {
 		throw new Error("API key not configured")
 	}

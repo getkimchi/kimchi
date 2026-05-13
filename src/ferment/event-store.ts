@@ -25,6 +25,7 @@ import { resolve } from "node:path"
 import { lockSync, unlockSync } from "proper-lockfile"
 import { v7 as uuidv7 } from "uuid"
 
+import { activateSinglePhase, settleAfterPhaseTerminal } from "./lifecycle.js"
 import { FermentStorage, resolveFermentsDir } from "./store.js"
 import type {
 	Decision,
@@ -43,7 +44,23 @@ import type {
 
 /** Simple deterministic hash of a serialisable value. */
 export function stateHash(value: unknown): string {
-	return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16)
+	return createHash("sha256")
+		.update(JSON.stringify(canonicalizeForHash(value)))
+		.digest("hex")
+		.slice(0, 16)
+}
+
+function canonicalizeForHash(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(canonicalizeForHash)
+	if (value && typeof value === "object") {
+		const out: Record<string, unknown> = {}
+		for (const key of Object.keys(value).sort()) {
+			const v = (value as Record<string, unknown>)[key]
+			if (v !== undefined) out[key] = canonicalizeForHash(v)
+		}
+		return out
+	}
+	return value
 }
 
 // ─── Event types ──────────────────────────────────────────────────────────────
@@ -905,6 +922,15 @@ export class FermentEventStore {
 
 // ─── Pure fold step ───────────────────────────────────────────────────────────
 
+function settleAfterResume(state: Ferment, timestamp: string): Ferment {
+	const activePhase = state.phases.find((p) => p.status === "active")
+	if (activePhase) {
+		return { ...state, status: "running", activePhaseId: activePhase.id, updatedAt: timestamp }
+	}
+	const { activePhaseId: _activePhaseId, ...rest } = state
+	return { ...rest, status: "planned", updatedAt: timestamp }
+}
+
 /**
  * Apply one event to a (possibly undefined) ferment state and return the new
  * state. Pure — no I/O.
@@ -995,7 +1021,7 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			return { ...state, status: "paused", updatedAt: event.timestamp }
 		case "ferment_resumed":
 			if (!state) throw new Error("ferment_resumed requires existing state")
-			return { ...state, status: "running", updatedAt: event.timestamp }
+			return settleAfterResume(state, event.timestamp)
 		case "ferment_completed": {
 			if (!state) throw new Error("ferment_completed requires existing state")
 			const p = event.payload as FermentCompletedPayload
@@ -1025,15 +1051,9 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			const p = event.payload as PhaseActivatedPayload
 			return {
 				...state,
-				phases: state.phases.map((ph) =>
-					ph.id === p.phaseId
-						? { ...ph, status: "active" as const, startedAt: event.timestamp }
-						: ph.status === "active"
-							? { ...ph, status: "planned" as const }
-							: ph,
-				),
-				activePhaseId: p.phaseId,
+				phases: activateSinglePhase(state.phases, p.phaseId, event.timestamp),
 				lastActiveAt: event.timestamp,
+				activePhaseId: p.phaseId,
 				updatedAt: event.timestamp,
 			}
 		}
@@ -1060,46 +1080,37 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 		case "phase_completed": {
 			if (!state) throw new Error("phase_completed requires existing state")
 			const p = event.payload as PhaseCompletedPayload
-			return {
-				...state,
-				phases: state.phases.map((ph) =>
-					ph.id === p.phaseId
-						? { ...ph, status: "completed" as const, summary: p.summary, completedAt: event.timestamp }
-						: ph,
-				),
-				updatedAt: event.timestamp,
-			}
+			const phases = state.phases.map((ph) =>
+				ph.id === p.phaseId
+					? { ...ph, status: "completed" as const, summary: p.summary, completedAt: event.timestamp }
+					: ph,
+			)
+			return settleAfterPhaseTerminal(state, phases, event.timestamp)
 		}
 		case "phase_skipped": {
 			if (!state) throw new Error("phase_skipped requires existing state")
 			const p = event.payload as PhaseSkippedPayload
-			return {
-				...state,
-				phases: state.phases.map((ph) =>
-					ph.id === p.phaseId
-						? {
-								...ph,
-								status: "skipped" as const,
-								summary: p.reason ?? "Skipped",
-								completedAt: event.timestamp,
-							}
-						: ph,
-				),
-				updatedAt: event.timestamp,
-			}
+			const phases = state.phases.map((ph) =>
+				ph.id === p.phaseId
+					? {
+							...ph,
+							status: "skipped" as const,
+							summary: p.reason ?? "Skipped",
+							completedAt: event.timestamp,
+						}
+					: ph,
+			)
+			return settleAfterPhaseTerminal(state, phases, event.timestamp)
 		}
 		case "phase_failed": {
 			if (!state) throw new Error("phase_failed requires existing state")
 			const p = event.payload as PhaseFailedPayload
-			return {
-				...state,
-				phases: state.phases.map((ph) =>
-					ph.id === p.phaseId
-						? { ...ph, status: "failed" as const, summary: p.reason, completedAt: event.timestamp }
-						: ph,
-				),
-				updatedAt: event.timestamp,
-			}
+			const phases = state.phases.map((ph) =>
+				ph.id === p.phaseId
+					? { ...ph, status: "failed" as const, summary: p.reason, completedAt: event.timestamp }
+					: ph,
+			)
+			return settleAfterPhaseTerminal(state, phases, event.timestamp)
 		}
 		case "phase_refined": {
 			if (!state) throw new Error("phase_refined requires existing state")

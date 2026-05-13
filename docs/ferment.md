@@ -31,8 +31,13 @@ Ferment  ← the project ("Build Tetris")
 
 **Ferment status:**
 ```
-draft → planned → running ⇄ paused → complete
-                                    → abandoned
+draft → planned → running
+          ↑          │
+          └──────────┘ complete/skip/fail phase when no active phase remains
+
+planned/running → complete   (explicit complete_ferment)
+planned/running ⇄ paused     (internal user-intervention/session state)
+draft/planned/running/paused/complete → abandoned
 ```
 
 | Status | Meaning |
@@ -40,13 +45,13 @@ draft → planned → running ⇄ paused → complete
 | `draft` | Created, scoping in progress |
 | `planned` | Scoping confirmed, phases ready to execute |
 | `running` | At least one phase is active |
-| `paused` | User intervention requested (or session ended) |
-| `complete` | All phases terminal |
+| `paused` | Internal user-intervention/session state; ferment tools are blocked until resume |
+| `complete` | Explicitly finalized after all phases are terminal |
 | `abandoned` | Permanently stopped — cannot resume |
 
 **Phase status:** `planned → active → completed / skipped / failed`
 
-**Step status:** `pending → running → done / skipped / verified / failed`
+**Step status:** `pending → running → done / skipped / verified / failed` (`failed` steps can be recovered by starting them again)
 
 ---
 
@@ -145,6 +150,10 @@ Run `/progress` for full phase/step navigation with grades and actions.
 /pause     ← stop auto-mode (ferment stays "running")
 /auto      ← resume
 ```
+
+`/pause` only disables auto-mode. It does not persist the ferment as `paused`.
+The persisted `paused` status is reserved for internal user-intervention and
+session-resume paths.
 
 Sessions resume automatically. When you close and reopen Kimchi with an active ferment, the agent picks up exactly where it left off.
 
@@ -300,7 +309,7 @@ These tools are available to the agent during a ferment session. They are not me
 | `scope_ferment` | Save confirmed scoping answers → `draft` to `planned` |
 | `update_scope_field` | Update a single scoping field mid-draft |
 | `set_ferment_mode` | Change work mode (`plan` / `exec` / `auto`) |
-| `complete_ferment` | Mark all phases done → `complete` |
+| `complete_ferment` | Mark the ferment `complete` after all phases are terminal |
 | `list_ferments` | List ferments, optionally filtered by status |
 
 ### Phase execution
@@ -309,9 +318,10 @@ These tools are available to the agent during a ferment session. They are not me
 |------|-------------|
 | `activate_phase` | Transition a planned phase to active. Activates all phases in a parallel group simultaneously. |
 | `refine_phase` | Populate a phase with concrete steps (3–6). Can set `worker_model`, `verification`, and `canRunParallel` per step. |
-| `complete_phase` | Mark phase as completed. Judge grades it automatically. In plan mode, shows a TUI dropdown before activating the next phase. |
+| `complete_phase` | Mark phase as completed. Judge grades it automatically. Leaves the ferment between phases unless another parallel phase remains active. |
 | `skip_phase` | Skip a phase (counts as terminal) |
-| `fail_phase` | Mark a phase as failed with a reason |
+| `fail_phase` | Mark a phase as failed with a reason. The engine surfaces `recover_phase` before treating failed phases as terminal. |
+| `recover_phase` | Engine action for a failed phase. The planner chooses whether to retry with `activate_phase`, bypass with `skip_phase`, or ask the user to run `/ferment abandon`. |
 
 ### Step execution
 
@@ -334,36 +344,66 @@ These tools are available to the agent during a ferment session. They are not me
 
 ## State machine (full)
 
+### Ferment lifecycle
+
+```mermaid
+stateDiagram-v2
+    direction TB
+
+    [*] --> Draft: create
+    Draft --> Planned: scope
+    Planned --> Running: activate_phase
+    Running --> Planned: complete_phase / skip_phase / fail_phase
+
+    Running --> Paused: pause
+    Planned --> Paused: pause
+    Paused --> Running: resume / active phase exists
+    Paused --> Planned: resume / no active phase
+
+    Planned --> Complete: complete_ferment
+    Running --> Complete: complete_ferment
+
+    Draft --> Abandoned: abandon
+    Planned --> Abandoned: abandon
+    Running --> Abandoned: abandon
+    Paused --> Abandoned: abandon
 ```
-                    ┌─────────────────────────────┐
-                    │           FERMENT            │
-                    │                              │
-  create ──► draft ──► planned ──► running ──► complete
-                                     │
-                                   paused ◄──► running
-                                     │
-                                  abandoned
-                    └─────────────────────────────┘
 
-                    ┌──────────────────────┐
-                    │         PHASE        │
-                    │                      │
-            planned ──► active ──► completed
-                           │
-                         failed
-                           │
-                         skipped
-                    └──────────────────────┘
+### Phase lifecycle
 
-                    ┌─────────────────────────────┐
-                    │           STEP               │
-                    │                              │
-            pending ──► running ──► done ──► verified
-                           │
-                         failed
-                           │
-                         skipped
-                    └─────────────────────────────┘
+```mermaid
+stateDiagram-v2
+    direction TB
+
+    [*] --> Planned
+    Planned --> Active: activate_phase
+    Active --> Completed: complete_phase
+    Active --> Skipped: skip_phase
+    Planned --> Skipped: skip_phase
+    Active --> Failed: fail_phase
+
+    Failed --> Active: activate_phase / retry
+    Failed --> Skipped: skip_phase / bypass
+```
+
+### Step lifecycle
+
+```mermaid
+stateDiagram-v2
+    direction TB
+
+    [*] --> Pending
+    Pending --> Running: start_step
+    Running --> Done: complete_step
+    Running --> Verified: verify_step
+
+    Pending --> Skipped: skip_step
+    Running --> Skipped: skip_step
+
+    Pending --> Failed: fail_step
+    Running --> Failed: fail_step
+    Failed --> Running: start_step / retry
+    Failed --> Skipped: skip_step / bypass
 ```
 
 ---

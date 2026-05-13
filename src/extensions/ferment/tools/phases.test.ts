@@ -26,7 +26,14 @@ function createHarness(options: { phases?: number } = {}) {
 	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-phases-test-")))
 	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
 	const applyAndPersist = createApplyAndPersist(runtime)
-	const pi = { sendMessage: vi.fn(), sendUserMessage: vi.fn(), appendEntry: vi.fn() } as unknown as ExtensionAPI
+	const pi = {
+		sendMessage: vi.fn(),
+		sendUserMessage: vi.fn(),
+		appendEntry: vi.fn(),
+		getActiveTools: vi.fn(() => ["read", "bash", "complete_phase", "start_step"]),
+		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "complete_phase" }, { name: "start_step" }]),
+		setActiveTools: vi.fn(),
+	} as unknown as ExtensionAPI
 	const ferment = storage.create("Phase Test")
 	const phaseCount = options.phases ?? 2
 	const scope = applyAndPersist(ferment.id, {
@@ -137,6 +144,7 @@ describe("completePhase", () => {
 
 		expect(okText(result)).toContain("Ferment paused at user request")
 		expect(h.storage.get(h.fermentId)?.status).toBe("paused")
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
 		expect(markHumanInput).toHaveBeenCalled()
 		expect(h.pi.sendUserMessage).toHaveBeenCalledWith("Ferment paused. Let me know when you are ready to continue.", {
 			deliverAs: "followUp",
@@ -145,46 +153,6 @@ describe("completePhase", () => {
 })
 
 describe("registerPhaseTools", () => {
-	it("rejects activating a later phase before earlier phases are terminal", async () => {
-		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-activate-order-test-")))
-		const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
-		const applyAndPersist = createApplyAndPersist(runtime)
-		const pi = {
-			registerTool: vi.fn(),
-			sendUserMessage: vi.fn(),
-			appendEntry: vi.fn(),
-			sendMessage: vi.fn(),
-		} as unknown as ExtensionAPI
-		const ferment = storage.create("Activation Order")
-		const scoped = applyAndPersist(ferment.id, {
-			type: "scope",
-			goal: "Goal",
-			successCriteria: "Works",
-			constraints: [],
-			phases: [
-				{ name: "First", goal: "One", steps: [] },
-				{ name: "Second", goal: "Two", steps: [] },
-			],
-		})
-		if (!scoped.ok) throw new Error(scoped.error.message)
-		const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>()
-		pi.registerTool = ((tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }) => {
-			tools.set(tool.name, tool)
-		}) as ExtensionAPI["registerTool"]
-		registerPhaseTools(pi, runtime)
-
-		const activatePhaseTool = tools.get("activate_phase")
-		if (!activatePhaseTool) throw new Error("activate_phase was not registered")
-		const result = (await activatePhaseTool.execute("test-call-id", {
-			ferment_id: ferment.id,
-			phase_id: "phase-2",
-		})) as { content: { text: string }[]; isError?: boolean }
-
-		expect(result.isError).toBe(true)
-		expect(result.content[0]?.text).toContain("before earlier phases are terminal")
-		expect(storage.get(ferment.id)?.activePhaseId).toBeUndefined()
-	})
-
 	it("uses the injected runtime, not the global active ferment, for plan-mode phase review", async () => {
 		const h = createHarness()
 		let injectedActive = h.storage.get(h.fermentId)
@@ -203,6 +171,14 @@ describe("registerPhaseTools", () => {
 			sendUserMessage: vi.fn(),
 			appendEntry: vi.fn(),
 			sendMessage: vi.fn(),
+			getActiveTools: vi.fn(() => ["read", "bash", "complete_phase", "start_step"]),
+			getAllTools: vi.fn(() => [
+				{ name: "read" },
+				{ name: "bash" },
+				{ name: "complete_phase" },
+				{ name: "start_step" },
+			]),
+			setActiveTools: vi.fn(),
 		} as unknown as ExtensionAPI
 		registerPhaseTools(pi, h.runtime)
 

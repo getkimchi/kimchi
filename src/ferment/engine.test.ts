@@ -44,6 +44,35 @@ describe("whatNext", () => {
 			}
 		})
 
+		it("planned between phases → activate next planned phase", () => {
+			const a = whatNext(
+				makeF({
+					status: "planned",
+					phases: [makeP({ status: "completed" }), makeP({ id: "p2", index: 2, name: "P2" })],
+				}),
+			)
+			expect(a.kind).toBe("activate_phase")
+			if (a.kind === "activate_phase") {
+				expect(a.phaseId).toBe("p2")
+			}
+		})
+
+		it("planned after a failed phase → recover failed phase", () => {
+			const a = whatNext(
+				makeF({
+					status: "planned",
+					activePhaseId: "p1",
+					phases: [makeP({ status: "failed" }), makeP({ id: "p2", index: 2, name: "P2" })],
+				}),
+			)
+			expect(a.kind).toBe("recover_phase")
+			if (a.kind === "recover_phase") {
+				expect(a.phaseId).toBe("p1")
+				expect(a.message).toContain("activate_phase")
+				expect(a.message).toContain("skip_phase")
+			}
+		})
+
 		it("running with no steps → refine", () => {
 			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [makeP({ status: "active" })] }))
 			expect(a.kind).toBe("refine")
@@ -117,7 +146,7 @@ describe("whatNext", () => {
 			expect(a.kind).toBe("recover_step")
 		})
 
-		it("running with failed phase → recover_phase", () => {
+		it("running with failed phase and all phases terminal → recover_phase", () => {
 			const a = whatNext(
 				makeF({ mode: "plan", status: "running", activePhaseId: "p1", phases: [makeP({ status: "failed" })] }),
 			)
@@ -192,7 +221,7 @@ describe("whatNext", () => {
 			expect(a.kind).toBe("recover_step")
 		})
 
-		it("running with failed phase → recover_phase", () => {
+		it("running with failed phase and all phases terminal → recover_phase", () => {
 			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [makeP({ status: "failed" })] }))
 			expect(a.kind).toBe("recover_phase")
 		})

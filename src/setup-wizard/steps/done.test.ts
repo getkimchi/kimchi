@@ -63,7 +63,7 @@ describe("runDoneStep", () => {
 		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()
 
 		const outcome = await runDoneStep(baseState())
-		expect(writeSpy).toHaveBeenCalledWith("global", "test-key")
+		expect(writeSpy).toHaveBeenCalledWith("global", "test-key", { telemetryEnabled: true })
 		expect(outcome.successes).toEqual(["Claude Code"])
 		expect(outcome.failures).toEqual([])
 

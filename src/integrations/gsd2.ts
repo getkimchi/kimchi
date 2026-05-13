@@ -101,7 +101,7 @@ function detectGsd2(): boolean {
 	return findBinary("gsd") !== undefined || findBinary("gsd-cli") !== undefined
 }
 
-async function writeGsd2(scope: ConfigScope, apiKey: string): Promise<void> {
+async function writeGsd2(scope: ConfigScope, apiKey: string, _options?: { telemetryEnabled?: boolean }): Promise<void> {
 	if (!apiKey) {
 		throw new Error("API key not configured")
 	}

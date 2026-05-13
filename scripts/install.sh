@@ -79,15 +79,16 @@ chmod +x "$TEMP_DIR/bin/kimchi"
 # (user install) and remind the user to ensure it's on PATH.
 if [ -n "${KIMCHI_INSTALL_DIR:-}" ]; then
 	INSTALL_DIR="$KIMCHI_INSTALL_DIR"
-	NEEDS_PATH_HINT="maybe"
+	DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}"
+	NEEDS_PATH_SETUP="maybe"
 elif [ -w /usr/local/bin ]; then
 	INSTALL_DIR="/usr/local/bin"
 	DATA_DIR="/usr/local/share"
-	NEEDS_PATH_HINT="no"
+	NEEDS_PATH_SETUP="no"
 else
 	INSTALL_DIR="$HOME/.local/bin"
 	DATA_DIR="$HOME/.local/share"
-	NEEDS_PATH_HINT="yes"
+	NEEDS_PATH_SETUP="yes"
 fi
 
 mkdir -p "$INSTALL_DIR"
@@ -104,26 +105,52 @@ fi
 echo ""
 echo -e "${GREEN}✓ Installed kimchi to ${INSTALL_PATH}${NC}"
 
-# PATH hint when we landed somewhere a fresh shell may not see.
-if [ "$NEEDS_PATH_HINT" = "yes" ] || { [ "$NEEDS_PATH_HINT" = "maybe" ] && ! command -v kimchi >/dev/null 2>&1; }; then
+# Returns 0 if the install dir is already on PATH or present in an active
+# (non-commented) line in the rc file, or if we already wrote our marker.
+path_already_configured() {
+	local rc="$1" dir="$2"
+	case ":${PATH}:" in
+	*":${dir}:"*) return 0 ;;
+	esac
+	[ -f "$rc" ] || return 1
+	grep -qF "# Kimchi CLI" "$rc" && return 0
+}
+
+# Writes the PATH export line to the rc file if not already present.
+add_to_path() {
+	local rc="$1" dir="$2"
+	if path_already_configured "$rc" "$dir"; then
+		return
+	fi
 	echo ""
-	echo -e "${YELLOW}Note: ${INSTALL_DIR} may not be on your PATH.${NC}"
+	echo -e "${YELLOW}Note: ${dir} is not on your PATH.${NC}"
+	printf '\n# Kimchi CLI\nexport PATH="%s:$PATH"\n' "$dir" >> "$rc"
+	echo -e "${GREEN}✓ Added ${dir} to PATH in ${rc}${NC}"
+	echo -e "${YELLOW}  Restart your shell or run: source ${rc}${NC}"
+}
+
+# PATH setup when we landed somewhere a fresh shell may not see.
+if [ "$NEEDS_PATH_SETUP" = "yes" ] || { [ "$NEEDS_PATH_SETUP" = "maybe" ] && ! command -v kimchi >/dev/null 2>&1; }; then
 	case "${SHELL:-}" in
 	*/fish*)
+		echo ""
+		echo -e "${YELLOW}Note: ${INSTALL_DIR} is not on your PATH.${NC}"
 		echo "  Run: fish_add_path ${INSTALL_DIR}"
 		;;
 	*/zsh*)
-		echo "  Run: echo 'export PATH=\"${INSTALL_DIR}:\$PATH\"' >> ~/.zshrc && source ~/.zshrc"
+		add_to_path "$HOME/.zshrc" "$INSTALL_DIR"
 		;;
 	*/bash*)
 		# macOS bash sources .bash_profile for login shells; Linux uses .bashrc.
 		case "$OS" in
 		darwin) RC="$HOME/.bash_profile" ;;
-		*) RC="$HOME/.bashrc" ;;
+		*)      RC="$HOME/.bashrc" ;;
 		esac
-		echo "  Run: echo 'export PATH=\"${INSTALL_DIR}:\$PATH\"' >> ${RC} && source ${RC}"
+		add_to_path "$RC" "$INSTALL_DIR"
 		;;
 	*)
+		echo ""
+		echo -e "${YELLOW}Note: ${INSTALL_DIR} is not on your PATH.${NC}"
 		echo "  Add ${INSTALL_DIR} to your PATH in your shell's config file."
 		;;
 	esac

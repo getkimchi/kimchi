@@ -11,11 +11,11 @@
 		"dimGray": "#666666",
 		"darkGray": "#505050",
 		"accent": "#8abeb7",
+		"bg-primary": "#1e1e24",
+		"bg-secondary": "#282832",
+		"bg-tertiary": "#343541",
 		"selectedBg": "#3a3a4a",
 		"userMsgBg": "#343541",
-		"toolPendingBg": "#282832",
-		"toolSuccessBg": "#283228",
-		"toolErrorBg": "#3c2828",
 		"customMsgBg": "#2d2838"
 	},
 	"colors": {
@@ -28,19 +28,19 @@
 		"warning": "yellow",
 		"muted": "gray",
 		"dim": "dimGray",
-		"text": "",
+		"text": "gray",
 		"thinkingText": "gray",
 
 		"selectedBg": "selectedBg",
 		"userMessageBg": "userMsgBg",
-		"userMessageText": "",
+		"userMessageText": "gray",
 		"customMessageBg": "customMsgBg",
-		"customMessageText": "",
+		"customMessageText": "gray",
 		"customMessageLabel": "#9575cd",
-		"toolPendingBg": "toolPendingBg",
-		"toolSuccessBg": "toolSuccessBg",
-		"toolErrorBg": "toolErrorBg",
-		"toolTitle": "",
+		"toolPendingBg": "bg-tertiary",
+		"toolSuccessBg": "bg-secondary",
+		"toolErrorBg": "bg-primary",
+		"toolTitle": "cyan",
 		"toolOutput": "gray",
 
 		"mdHeading": "#f0c674",
@@ -75,7 +75,9 @@
 		"thinkingHigh": "#b294bb",
 		"thinkingXhigh": "#d183e8",
 
-		"bashMode": "green"
+		"bashMode": "green",
+		"oscFg": "#D4D4D4",
+		"oscBg": "#1E1E1E"
 	},
 	"export": {
 		"pageBg": "#18181e",

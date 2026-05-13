@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import type { TUI } from "@earendil-works/pi-tui"
-import { ORANGE_FG, RST_FG, TEAL_FG } from "../ansi.js"
+import { ORANGE_FG, RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
 import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } from "../components/footer.js"
 import { LogoHeader } from "../components/logo.js"
@@ -169,7 +169,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 				const perm = footerData.getExtensionStatuses().get("permissions-mode")
 				if (perm) parts.push(perm)
 				const enabled = getMultiModelEnabled()
-				const label = enabled ? `${TEAL_FG}on${RST_FG}` : theme.fg("dim", "off")
+				const label = enabled ? `${resolvedAccentFg(theme)}on${RST_FG}` : theme.fg("dim", "off")
 				const shortcut = process.platform === "darwin" ? "option+tab" : "alt+tab"
 				parts.push(`${theme.fg("dim", "multi-model:")} ${label} ${theme.fg("dim", `→ ${shortcut}`)}`)
 				return parts.join(` ${theme.fg("dim", "·")} `)

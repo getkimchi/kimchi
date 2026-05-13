@@ -20,6 +20,7 @@ import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phas
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { createApplyAndPersist, failedToolResult, resolvePhase, toolErr, toolOk } from "../tool-helpers.js"
 import { ActivateParams, CompletePhaseParams, FailPhaseParams, RefineParams, SkipPhaseParams } from "../tool-schemas.js"
+import { syncFermentToolScope } from "../tool-scope.js"
 import type { FermentUi, FermentUiContext } from "../ui.js"
 
 type CompletePhaseArgs = Static<typeof CompletePhaseParams>
@@ -61,18 +62,6 @@ const validateFsmTransition = (
 	event: Parameters<typeof validateFsmTransitionWithFerment>[1],
 	params?: Parameters<typeof validateFsmTransitionWithFerment>[2],
 ): string | null => validateFsmTransitionWithFerment(f, event, params).error ?? null
-
-function isTerminalPhase(phase: Ferment["phases"][number]): boolean {
-	return phase.status === "completed" || phase.status === "skipped" || phase.status === "failed"
-}
-
-function previousRequiredPhasesTerminal(ferment: Ferment, phase: Ferment["phases"][number]): boolean {
-	const startIndex =
-		phase.groupIndex === undefined
-			? phase.index
-			: Math.min(...ferment.phases.filter((p) => p.groupIndex === phase.groupIndex).map((p) => p.index))
-	return ferment.phases.filter((p) => p.index < startIndex).every(isTerminalPhase)
-}
 
 export async function completePhase(
 	runtime: FermentRuntime,
@@ -192,6 +181,7 @@ export async function completePhase(
 		if (!choice || choice === "Pause here") {
 			const pauseOutcome = applyAndPersist(fresh.id, { type: "pause" })
 			if (pauseOutcome.ok) runtime.setActive(pauseOutcome.ferment)
+			if (pauseOutcome.ok) syncFermentToolScope(pi, pauseOutcome.ferment)
 			await pi.sendUserMessage("Ferment paused. Let me know when you are ready to continue.", {
 				deliverAs: "followUp",
 			})
@@ -231,15 +221,12 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				const name = params.phase_id.toLowerCase()
 				target = f.phases.find((p) => p.name.toLowerCase().includes(name))
 			}
-			if (!target) target = findFirstPlannedPhase(f)
-			if (!target) return toolErr("No planned phases to activate.")
+			if (!target) target = f.phases.find((p) => p.status === "failed") ?? findFirstPlannedPhase(f)
+			if (!target) return toolErr("No planned or failed phases to activate.")
 
 			// FSM validation: ensure phase activation is allowed
 			const fsmError = validateFsmTransition(f, "ACTIVATE_PHASE", { phaseId: target.id })
 			if (fsmError) return toolErr(fsmError)
-			if (!previousRequiredPhasesTerminal(f, target)) {
-				return toolErr(`Cannot activate phase ${target.index} before earlier phases are terminal.`)
-			}
 
 			// Detect parallel group — activate all siblings at once
 			if (target.groupIndex !== undefined) {
@@ -411,7 +398,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)
 			return toolOk(
-				`Phase marked as failed: ${params.reason}. Options: skip_phase to skip it, activate_phase to retry, or /ferment abandon.`,
+				`Phase marked as failed: ${params.reason}. Use activate_phase to retry, skip_phase to bypass, or ask the user to run /ferment abandon if the ferment should stop.`,
 			)
 		},
 	})

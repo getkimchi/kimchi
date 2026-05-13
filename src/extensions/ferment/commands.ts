@@ -10,6 +10,7 @@ import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { formatFermentStatus } from "./format.js"
 import { appendRefEntry, maybeInjectAutoNudge } from "./nudge.js"
 import { maybeRunOnboarding } from "./onboarding.js"
+import { buildOneshotNudge } from "./oneshot.js"
 import {
 	buildPhaseActionOptions,
 	buildPhaseDetailTitle,
@@ -25,6 +26,7 @@ import { resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { runScopingFlow } from "./scoping.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
+import { setActiveFerment, syncFermentToolScope } from "./tool-scope.js"
 import type { FermentUiContext } from "./ui.js"
 import { checkWorktree } from "./worktree.js"
 
@@ -70,7 +72,7 @@ export class FermentCommandController {
 			try {
 				const shortName = await shortenTitle(rawIntent)
 				const f = storage.create(shortName, rawIntent)
-				runtime.setActive(f)
+				setActiveFerment(pi, runtime, f)
 				appendRefEntry(pi, f.id)
 
 				pi.appendEntry("ferment_ack", {
@@ -145,7 +147,7 @@ export class FermentCommandController {
 				storage.delete(selected.id)
 				runtime.clearFermentState(selected.id)
 				runtime.clearPendingScope(selected.id)
-				if (runtime.getActiveId() === selected.id) runtime.setActive(undefined)
+				if (runtime.getActiveId() === selected.id) setActiveFerment(pi, runtime, undefined)
 				ctx.ui.notify(`Deleted "${selected.name}"`)
 				return { handled: true }
 			}
@@ -164,7 +166,7 @@ export class FermentCommandController {
 					`Ferment: ${active.name} (${active.id})`,
 					`Mode: ${active.mode}`,
 					"",
-					"plan — Scoping and planning. Agent asks questions, proposes phases.",
+					"plan — Scoping and coordination. Agent asks questions, proposes phases.",
 					"exec — Full execution. Agent iterates autonomously.",
 					" auto — Normal. User decides when to act.",
 					"",
@@ -197,7 +199,7 @@ export class FermentCommandController {
 			const out = applyAndPersist(active.id, { type: "set_mode", mode: modeArg as FermentWorkMode })
 			const updated = out.ok ? out.ferment : undefined
 			if (updated) {
-				runtime.setActive(updated)
+				setActiveFerment(pi, runtime, updated)
 				let hint = ""
 				if (modeArg === "exec") hint = "\n\n⚡  exec mode — the agent now has full tool access."
 				else if (modeArg === "plan") hint = "\n\n📝  plan mode — the agent will ask questions and propose structure."
@@ -239,7 +241,9 @@ export class FermentCommandController {
 				storage.delete(f.id)
 				runtime.clearFermentState(f.id)
 				runtime.clearPendingScope(f.id)
-				if (runtime.getActiveId() === f.id) runtime.setActive(undefined)
+				if (runtime.getActiveId() === f.id) {
+					setActiveFerment(pi, runtime, undefined)
+				}
 				ctx.ui.notify(`Deleted "${f.name}" (${f.id}).`)
 			} catch (err) {
 				ctx.ui.notify(err instanceof FermentError ? err.message : "Delete failed.")
@@ -292,7 +296,7 @@ export class FermentCommandController {
 			const abandonedId = active.id
 			const out = applyAndPersist(abandonedId, { type: "abandon", reason: reason || undefined })
 			if (out.ok) {
-				runtime.setActive(undefined)
+				setActiveFerment(pi, runtime, undefined)
 				runtime.clearFermentState(abandonedId)
 				runtime.clearPendingScope(abandonedId)
 				ctx.ui.notify(`Ferment "${out.ferment.name}" abandoned.`)
@@ -317,7 +321,7 @@ export class FermentCommandController {
 				if (newGoal) {
 					const out = applyAndPersist(active.id, { type: "update_scope_field", field: "goal", value: newGoal })
 					if (out.ok) {
-						runtime.setActive(out.ferment)
+						setActiveFerment(pi, runtime, out.ferment)
 						ctx.ui.notify(`Goal updated: "${newGoal}"`)
 					} else {
 						ctx.ui.notify(`Could not update goal: ${out.error.message}`)
@@ -339,7 +343,7 @@ export class FermentCommandController {
 						value: newCriteria,
 					})
 					if (out.ok) {
-						runtime.setActive(out.ferment)
+						setActiveFerment(pi, runtime, out.ferment)
 						ctx.ui.notify("Success criteria updated.")
 					} else {
 						ctx.ui.notify(`Could not update criteria: ${out.error.message}`)
@@ -366,7 +370,7 @@ export class FermentCommandController {
 						value: parsed.join(","),
 					})
 					if (out.ok) {
-						runtime.setActive(out.ferment)
+						setActiveFerment(pi, runtime, out.ferment)
 						ctx.ui.notify(`Constraints updated: ${parsed.join(", ") || "(none)"}`)
 					} else {
 						ctx.ui.notify(`Could not update constraints: ${out.error.message}`)
@@ -421,26 +425,12 @@ export class FermentCommandController {
 				const f = storage.create(shortName, resolvedIntent)
 				const modeOut = applyAndPersist(f.id, { type: "set_mode", mode: "exec" })
 				const updated = modeOut.ok ? modeOut.ferment : f
-				runtime.setActive(updated)
+				setActiveFerment(pi, runtime, updated)
 				appendRefEntry(pi, updated.id)
 				pi.appendEntry("ferment_ack", {
 					text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nMode: exec (fully autonomous)`,
 				})
-				const nudge = `You are running a one-shot ferment: "${updated.name}" (ID: ${updated.id}).
-
-User intent: "${resolvedIntent}"
-
-Your task — execute ALL of the following steps WITHOUT pausing to ask the user:
-1. Call scope_ferment with:
-   - ferment_id: "${updated.id}"
-   - goal: derived from the user intent
-   - success_criteria: what observable outcome proves the goal
-   - constraints: any technical constraints implied by the intent
-   - phases: 3–7 ordered phases, each with 3–6 concrete steps and a verify bash command per step
-2. For each phase in order: call activate_phase, then refine_phase (if steps not pre-set), then for each step: start_step → (delegate to subagent worker) → complete_step
-3. When all phases are done: call complete_ferment
-
-CRITICAL: Do NOT use any tools other than ferment tools to research or explore first. Do NOT ask for confirmation at any point. Execute autonomously until complete_ferment is called.`
+				const nudge = buildOneshotNudge(updated, resolvedIntent)
 
 				void pi.sendMessage(
 					{
@@ -472,7 +462,7 @@ CRITICAL: Do NOT use any tools other than ferment tools to research or explore f
 		try {
 			const shortName = await shortenTitle(rawName)
 			const f = storage.create(shortName, rawName)
-			runtime.setActive(f)
+			setActiveFerment(pi, runtime, f)
 			appendRefEntry(pi, f.id)
 
 			pi.appendEntry("ferment_ack", {
@@ -507,14 +497,17 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 			const active = runtime.getActive()
 			if (!active) {
 				ctx.ui.notify("Auto-mode enabled. (No active ferment.)")
+				syncFermentToolScope(pi, undefined)
 				return
 			}
+			syncFermentToolScope(pi, active)
 			if (active.status === "paused") {
 				const outcome = applyAndPersist(active.id, { type: "resume" })
 				if (!outcome.ok) {
 					ctx.ui.notify(`Cannot resume: ${outcome.error.message}`)
 					return
 				}
+				setActiveFerment(pi, runtime, outcome.ferment)
 			}
 
 			const fresh = runtime.getActive() ?? active
@@ -559,8 +552,7 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 	})
 
 	pi.registerCommand("pause", {
-		description:
-			"Pause the active ferment — flips status to 'paused'; the state machine then refuses every ferment tool call until /auto.",
+		description: "Pause auto-mode for the active ferment without changing ferment state.",
 		async handler(_, ctx) {
 			runtime.setAutoModeEnabled(false)
 
@@ -570,18 +562,13 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 				return
 			}
 
-			if (active.status === "running" || active.status === "planned") {
-				const outcome = applyAndPersist(active.id, { type: "pause" })
-				if (!outcome.ok) {
-					ctx.ui.notify(`Cannot pause: ${outcome.error.message}`)
-					return
-				}
-			} else if (active.status !== "paused") {
+			if (active.status !== "running" && active.status !== "planned" && active.status !== "paused") {
 				ctx.ui.notify(`Ferment is "${active.status}" — nothing to pause.`)
 				return
 			}
 
-			ctx.ui.notify(`Ferment "${active.name}" paused. Type /auto to resume.`)
+			ctx.ui.notify(`Auto-mode paused for "${active.name}". Ferment remains "${active.status}". Type /auto to resume.`)
+			syncFermentToolScope(pi, runtime.getActive())
 		},
 	})
 
@@ -619,7 +606,7 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 					)
 					if (confirmed) {
 						const outcome = applyAndPersist(f.id, { type: "abandon" })
-						if (outcome.ok) runtime.setActive(undefined)
+						if (outcome.ok) setActiveFerment(pi, runtime, undefined)
 						runtime.clearFermentState(f.id)
 						runtime.clearPendingScope(f.id)
 						atPhaseList = false
