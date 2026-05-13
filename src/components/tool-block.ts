@@ -2,19 +2,27 @@ import type { Theme } from "@earendil-works/pi-coding-agent"
 import { Container, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { formatDuration } from "../extensions/format.js"
 
-function buildAlignedLine(left: string, right: string, width: number): string {
+const MIN_GAP = 2
+
+export function buildAlignedLine(left: string, right: string, width: number): string {
+	if (width <= 0) return ""
 	const leftW = visibleWidth(left)
-	if (!right) {
-		if (leftW > width) return truncateToWidth(left, width)
-		return left
-	}
+	if (!right) return leftW > width ? truncateToWidth(left, width) : left
+
 	const rightW = visibleWidth(right)
-	const available = width - rightW - 2
+	if (rightW >= width) return truncateToWidth(right, width)
+
+	const available = width - rightW - MIN_GAP
 	if (leftW > available) {
-		const truncLeft = truncateToWidth(left, Math.max(1, available))
-		return `${truncLeft}  ${right}`
+		if (available <= 0) {
+			const pad = width - rightW
+			return " ".repeat(Math.max(0, pad)) + right
+		}
+		const truncLeft = truncateToWidth(left, available)
+		const gap = width - visibleWidth(truncLeft) - rightW
+		return truncLeft + " ".repeat(Math.max(0, gap)) + right
 	}
-	const gap = Math.max(2, width - leftW - rightW)
+	const gap = width - leftW - rightW
 	return left + " ".repeat(gap) + right
 }
 

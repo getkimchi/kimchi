@@ -33,7 +33,7 @@ export type UICtx = {
 	setStatus(key: string, text: string | undefined): void
 	setWidget(
 		key: string,
-		content: undefined | ((tui: unknown, theme: Theme) => { render(): string[]; invalidate(): void }),
+		content: undefined | ((tui: unknown, theme: Theme) => { render(width: number): string[]; invalidate(): void }),
 		options?: { placement?: "aboveEditor" | "belowEditor" },
 	): void
 }
@@ -241,7 +241,7 @@ export class AgentWidget {
 		return `${icon} ${theme.fg("dim", name)}${modeTag}  ${theme.fg("dim", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}${statusText}`
 	}
 
-	private renderWidget(tui: unknown, theme: Theme): string[] {
+	private renderWidget(theme: Theme, width: number): string[] {
 		const allAgents = this.manager.listAgents()
 		const running = allAgents.filter((a) => a.status === "running")
 		const queued = allAgents.filter((a) => a.status === "queued")
@@ -255,9 +255,7 @@ export class AgentWidget {
 
 		if (!hasActive && !hasFinished) return []
 
-		const tuiTyped = tui as { terminal: { columns: number } }
-		const w = tuiTyped.terminal.columns
-		const truncate = (line: string) => truncateToWidth(line, w)
+		const truncate = (line: string) => truncateToWidth(line, width)
 		const headingColor = hasActive ? "accent" : "dim"
 		const headingIcon = hasActive ? "●" : "○"
 		const frame = SPINNER[this.widgetFrame % SPINNER.length]
@@ -423,7 +421,7 @@ export class AgentWidget {
 				(tui, theme) => {
 					this.tui = tui
 					return {
-						render: () => this.renderWidget(tui, theme),
+						render: (width: number) => this.renderWidget(theme, width),
 						invalidate: () => {
 							this.widgetRegistered = false
 							this.tui = undefined
