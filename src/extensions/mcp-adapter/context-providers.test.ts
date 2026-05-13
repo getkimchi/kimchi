@@ -79,6 +79,12 @@ describe('fillMissingRequired', () => {
     expect('projectPath' in result).toBe(false)
   })
 
+  it('fills missing required param with empty string when cwd is empty string', () => {
+    const meta = makeMeta(['projectPath'])
+    const result = fillMissingRequired(meta, {}, { cwd: '' })
+    expect(result.projectPath).toBe('')
+  })
+
   it('does NOT overwrite a caller-supplied null value', () => {
     const meta = makeMeta(['projectPath'])
     const result = fillMissingRequired(meta, { projectPath: null }, { cwd: '/kimchi' })

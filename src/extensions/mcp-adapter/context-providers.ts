@@ -22,8 +22,8 @@ const DEFAULT_PROVIDERS: ContextProvider[] = [
 
 /**
  * Merge caller-supplied args with auto-filled required params.
- * Only fills required params that are missing/null/empty string.
- * Never overwrites a caller-supplied non-empty value.
+ * Only fills required params that are missing or null.
+ * Never overwrites a caller-supplied value.
  */
 export function fillMissingRequired(
   metadata: ToolMetadata | undefined,
