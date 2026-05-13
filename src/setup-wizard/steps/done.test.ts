@@ -2,8 +2,10 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { TEST_MODELS } from "../../integrations/__fixtures__/models.js"
 import "../../integrations/claude-code.js"
 import { byId } from "../../integrations/registry.js"
+import * as modelsModule from "../../models.js"
 import type { WizardState } from "../state.js"
 import { runDoneStep } from "./done.js"
 
@@ -27,6 +29,11 @@ describe("runDoneStep", () => {
 		// runner output stays focused on assertions.
 		vi.spyOn(process.stdout, "write").mockImplementation(() => true)
 		vi.spyOn(console, "warn").mockImplementation(() => {})
+
+		// Mock updateModelsConfig so we don't hit the real network.
+		vi.spyOn(modelsModule, "updateModelsConfig").mockResolvedValue({
+			models: TEST_MODELS as import("../../models.js").ModelMetadata[],
+		})
 	})
 
 	afterEach(() => {
@@ -58,12 +65,13 @@ describe("runDoneStep", () => {
 		return tool
 	}
 
-	it("override mode invokes the integration writer", async () => {
+	it("override mode invokes the integration writer with models from the API", async () => {
 		const tool = getClaudeCodeTool()
 		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()
 
 		const outcome = await runDoneStep(baseState())
-		expect(writeSpy).toHaveBeenCalledWith("global", "test-key", { telemetryEnabled: true })
+		// write is called with (scope, apiKey, models, options)
+		expect(writeSpy).toHaveBeenCalledWith("global", "test-key", TEST_MODELS, { telemetryEnabled: true })
 		expect(outcome.successes).toEqual(["Claude Code"])
 		expect(outcome.failures).toEqual([])
 

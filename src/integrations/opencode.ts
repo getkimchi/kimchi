@@ -3,6 +3,7 @@ import { readTelemetryConfig } from "../config.js"
 import { readJson, writeJson } from "../config/json.js"
 import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
+import type { ModelMetadata } from "../models.js"
 import {
 	NPM_REGISTRY_BASE_URL,
 	OPENCODE_PLUGIN_ARRAY_MIN_VERSION,
@@ -10,7 +11,7 @@ import {
 	PROVIDER_NAME,
 } from "./constants.js"
 import { detectBinaryFactory } from "./detect.js"
-import { MAIN_MODEL } from "./models.js"
+import { resolveModelRole } from "./models.js"
 import { openCodeProviderConfig } from "./provider/opencode.js"
 import { register } from "./registry.js"
 
@@ -160,10 +161,15 @@ export function buildUpdatedPlugins(inputs: PluginUpdateInputs): PluginUpdateRes
 async function writeOpenCode(
 	scope: ConfigScope,
 	apiKey: string,
+	models: readonly ModelMetadata[],
 	_options?: { telemetryEnabled?: boolean },
 ): Promise<void> {
 	if (!apiKey) {
 		throw new Error("API key not configured")
+	}
+
+	if (!models || models.length === 0) {
+		throw new Error("No models available — is the API key valid?")
 	}
 
 	const path = resolveScopePath(scope, OPENCODE_CONFIG_PATH)
@@ -175,10 +181,11 @@ async function writeOpenCode(
 		existing.provider && typeof existing.provider === "object" && !Array.isArray(existing.provider)
 			? (existing.provider as Record<string, unknown>)
 			: {}
-	providers[PROVIDER_NAME] = openCodeProviderConfig(apiKey)
+	providers[PROVIDER_NAME] = openCodeProviderConfig(apiKey, models)
 	existing.provider = providers
 
-	existing.model = `${PROVIDER_NAME}/${MAIN_MODEL.slug}`
+	const main = resolveModelRole(models, "main")
+	existing.model = `${PROVIDER_NAME}/${main?.slug ?? models[0].slug}`
 
 	if (!("compaction" in existing)) {
 		existing.compaction = { auto: true }

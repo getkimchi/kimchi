@@ -22,7 +22,7 @@ export async function runOpenCode(args: string[]): Promise<number> {
 			console.error("kimchi opencode: integration not registered")
 			return 1
 		}
-		await tool.write(scope, prepped.apiKey)
+		await tool.write(scope, prepped.apiKey, prepped.models)
 		return await runForeground("opencode", args)
 	} catch (err) {
 		console.error(`kimchi opencode: ${(err as Error).message}`)

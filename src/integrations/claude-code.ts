@@ -4,6 +4,7 @@ import { log } from "@clack/prompts"
 import { readJson, writeJson } from "../config/json.js"
 import { resolveScopePath } from "../config/scope.js"
 import type { ConfigScope } from "../config/scope.js"
+import type { ModelMetadata } from "../models.js"
 import { confirm } from "../setup-wizard/prompt.js"
 import { ANTHROPIC_BASE_URL } from "./constants.js"
 import { detectBinaryFactory } from "./detect.js"
@@ -137,6 +138,7 @@ function formatDiff(diffs: EnvDiff[]): string {
 async function writeClaudeCode(
 	scope: ConfigScope,
 	apiKey: string,
+	_models: readonly ModelMetadata[],
 	options?: { telemetryEnabled?: boolean },
 ): Promise<void> {
 	if (!apiKey) {

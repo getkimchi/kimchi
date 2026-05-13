@@ -1,16 +1,16 @@
+import type { ModelMetadata } from "../../models.js"
 import { BASE_URL } from "../constants.js"
-import { CODING_MODEL, type KimchiModel, MAIN_MODEL, SUB_MODEL } from "../models.js"
 
 /**
  * Build the OpenCode provider config block for the kimchi provider.
  * OpenCode pickers fail silently on unknown keys, so keep the schema
  * exact.
  *
- * The shape is `existing.provider.kimchi = …` in opencode.json. Each model
- * entry only lists the three models the writer cares about (Main/Coding/Sub);
- * Opus and Sonnet are exposed via the harness, not OpenCode directly.
+ * The shape is `existing.provider.kimchi = …` in opencode.json. All
+ * available models from the API are included — OpenCode's picker will
+ * surface whichever ones it supports.
  */
-export function openCodeProviderConfig(apiKey: string): Record<string, unknown> {
+export function openCodeProviderConfig(apiKey: string, models: readonly ModelMetadata[]): Record<string, unknown> {
 	return {
 		npm: "@ai-sdk/openai-compatible",
 		name: "Kimchi",
@@ -19,22 +19,19 @@ export function openCodeProviderConfig(apiKey: string): Record<string, unknown> 
 			litellmProxy: true,
 			apiKey,
 		},
-		models: {
-			[MAIN_MODEL.slug]: openCodeModelEntry(MAIN_MODEL),
-			[CODING_MODEL.slug]: openCodeModelEntry(CODING_MODEL),
-			[SUB_MODEL.slug]: openCodeModelEntry(SUB_MODEL),
-		},
+		models: Object.fromEntries(models.map((m) => [m.slug, openCodeModelEntry(m)])),
 	}
 }
 
-function openCodeModelEntry(model: KimchiModel): Record<string, unknown> {
+function openCodeModelEntry(model: ModelMetadata): Record<string, unknown> {
 	return {
 		name: model.slug,
-		tool_call: model.toolCall,
+		// `tool_call` is not in ModelMetadata; all models served through kimchi support it.
+		tool_call: true,
 		reasoning: model.reasoning,
 		limit: {
-			context: model.limits.contextWindow,
-			output: model.limits.maxOutputTokens,
+			context: model.limits.context_window,
+			output: model.limits.max_output_tokens,
 		},
 	}
 }

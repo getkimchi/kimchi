@@ -2,6 +2,7 @@ import { readApiKeyFromConfigFile } from "../config.js"
 import type { ConfigScope } from "../config/scope.js"
 import { byId } from "../integrations/registry.js"
 import type { ToolId } from "../integrations/types.js"
+import { getAvailableModels } from "../startup-context.js"
 import { printBanner } from "./banner.js"
 
 /**
@@ -51,7 +52,11 @@ export function popScope(args: string[]): ConfigScope {
 export function prepareTool(
 	toolId: ToolId,
 	mode: "inject" | "override",
-): { apiKey: string; tool: NonNullable<ReturnType<typeof byId>> } | null {
+): {
+	apiKey: string
+	tool: NonNullable<ReturnType<typeof byId>>
+	models: readonly import("../models.js").ModelMetadata[]
+} | null {
 	const apiKey = resolveApiKey()
 	if (!apiKey) {
 		console.error("kimchi: no API key configured. Run `kimchi setup` or set $KIMCHI_API_KEY.")
@@ -65,6 +70,10 @@ export function prepareTool(
 		console.error(`kimchi: integration "${toolId}" not registered.`)
 		return null
 	}
-	printBanner({ toolId, gsdActive: byId("gsd2")?.isInstalled() ?? false, mode })
-	return { apiKey, tool }
+	// Use models cached at startup (populated by cli.ts before main() runs).
+	// If the cache is empty (e.g. subcommand invoked directly) the banner
+	// renders a "dynamic models" placeholder.
+	const models = getAvailableModels()
+	printBanner({ toolId, gsdActive: byId("gsd2")?.isInstalled() ?? false, mode, availableModels: models })
+	return { apiKey, tool, models }
 }

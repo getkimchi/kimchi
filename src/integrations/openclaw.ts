@@ -7,7 +7,7 @@ import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
 import { API_KEY_ENV, BASE_URL, PROVIDER_NAME } from "./constants.js"
 import { findBinary } from "./detect.js"
-import { ALL_MODELS, CODING_MODEL, MAIN_MODEL, SUB_MODEL } from "./models.js"
+import { type ModelRole, resolveAllModelRoles, resolveModelRole } from "./models.js"
 import { compareSemverGte } from "./opencode.js"
 import { register } from "./registry.js"
 
@@ -25,28 +25,34 @@ const OPENCLAW_VERSION_REGEX = /OpenClaw\s+(\d{4}\.\d+\.\d+)/
  * key so the JSON can be checked into version control without leaking
  * credentials; the daemon resolves the env var from ~/.openclaw/.env at
  * launch time.
+ *
+ * @param models - Live `ModelMetadata[]` fetched from the API.
  */
-export function buildOpenClawProviderBlock(): Record<string, unknown> {
+export function buildOpenClawProviderBlock(
+	models: readonly import("../models.js").ModelMetadata[],
+): Record<string, unknown> {
 	return {
 		baseUrl: BASE_URL,
 		apiKey: `\${${API_KEY_ENV}}`,
 		api: "openai-completions",
-		models: ALL_MODELS.map((m) => ({
+		models: models.map((m) => ({
 			id: `${PROVIDER_NAME}/${m.slug}`,
-			name: m.displayName,
+			name: m.display_name,
 			reasoning: m.reasoning,
-			input: m.inputModalities,
-			contextWindow: m.limits.contextWindow,
-			maxTokens: m.limits.maxOutputTokens,
+			input: m.input_modalities,
+			contextWindow: m.limits.context_window,
+			maxTokens: m.limits.max_output_tokens,
 		})),
 	}
 }
 
 /** Map of `<provider>/<slug>` → `{ alias: displayName }` for agents.defaults.models. */
-export function buildOpenClawModelsCatalog(): Record<string, unknown> {
+export function buildOpenClawModelsCatalog(
+	models: readonly import("../models.js").ModelMetadata[],
+): Record<string, unknown> {
 	const out: Record<string, unknown> = {}
-	for (const m of ALL_MODELS) {
-		out[`${PROVIDER_NAME}/${m.slug}`] = { alias: m.displayName }
+	for (const m of models) {
+		out[`${PROVIDER_NAME}/${m.slug}`] = { alias: m.display_name }
 	}
 	return out
 }
@@ -109,11 +115,20 @@ function runOpenClawCmd(args: string[]): void {
 }
 
 /** Configure OpenClaw via the `openclaw config set` CLI (preferred when binary is present). */
-async function writeOpenClawViaCLI(apiKey: string): Promise<void> {
-	const providerBlock = buildOpenClawProviderBlock()
-	const modelsCatalog = buildOpenClawModelsCatalog()
-	const fallbacks = [`${PROVIDER_NAME}/${CODING_MODEL.slug}`, `${PROVIDER_NAME}/${SUB_MODEL.slug}`]
-	const primary = `${PROVIDER_NAME}/${MAIN_MODEL.slug}`
+async function writeOpenClawViaCLI(
+	apiKey: string,
+	models: readonly import("../models.js").ModelMetadata[],
+): Promise<void> {
+	if (models.length === 0) throw new Error("No models available — is the API key valid?")
+
+	const providerBlock = buildOpenClawProviderBlock(models)
+	const modelsCatalog = buildOpenClawModelsCatalog(models)
+
+	const resolved = resolveAllModelRoles(models, ["main", "coding", "sub"] as readonly ModelRole[])
+	const primary = resolved.main ? `${PROVIDER_NAME}/${resolved.main.slug}` : `${PROVIDER_NAME}/${models[0].slug}`
+	const fallbacks = ([resolved.coding, resolved.sub] as Array<import("../models.js").ModelMetadata>)
+		.filter((m): m is import("../models.js").ModelMetadata => m !== undefined)
+		.map((m) => `${PROVIDER_NAME}/${m.slug}`)
 
 	runOpenClawCmd(["config", "set", "models.providers.kimchi", JSON.stringify(providerBlock)])
 	runOpenClawCmd(["config", "set", "agents.defaults.model.primary", primary])
@@ -147,28 +162,37 @@ async function writeOpenClawViaCLI(apiKey: string): Promise<void> {
 }
 
 /** Configure OpenClaw by writing JSON directly when no CLI is available. */
-async function writeOpenClawDirect(scope: ConfigScope, apiKey: string): Promise<void> {
+async function writeOpenClawDirect(
+	scope: ConfigScope,
+	apiKey: string,
+	models: readonly import("../models.js").ModelMetadata[],
+): Promise<void> {
+	if (models.length === 0) throw new Error("No models available — is the API key valid?")
+
 	const path = resolveScopePath(scope, OPENCLAW_CONFIG_PATH)
 	const existing = readJson(path)
 
 	const modelsRoot = asObject(existing.models)
 	const providers = asObject(modelsRoot.providers)
-	providers[PROVIDER_NAME] = buildOpenClawProviderBlock()
+	providers[PROVIDER_NAME] = buildOpenClawProviderBlock(models)
 	modelsRoot.providers = providers
 	existing.models = modelsRoot
+
+	const resolved = resolveAllModelRoles(models, ["main", "coding", "sub"] as readonly ModelRole[])
+	const mainSlug = resolved.main?.slug ?? models[0].slug
+	const fallbacks = ([resolved.coding, resolved.sub] as Array<import("../models.js").ModelMetadata>)
+		.filter((m): m is import("../models.js").ModelMetadata => m !== undefined)
+		.map((m) => `${PROVIDER_NAME}/${m.slug}`)
 
 	const agents = asObject(existing.agents)
 	const defaults = asObject(agents.defaults)
 	// Merge into model config to preserve existing keys like temperature, max_tokens.
 	const modelMap = asObject(defaults.model)
-	modelMap.primary = `${PROVIDER_NAME}/${MAIN_MODEL.slug}`
-	modelMap.fallbacks = mergeFallbacks(modelMap.fallbacks, [
-		`${PROVIDER_NAME}/${CODING_MODEL.slug}`,
-		`${PROVIDER_NAME}/${SUB_MODEL.slug}`,
-	])
+	modelMap.primary = `${PROVIDER_NAME}/${mainSlug}`
+	modelMap.fallbacks = mergeFallbacks(modelMap.fallbacks, fallbacks)
 	defaults.model = modelMap
 
-	defaults.models = mergeModelsCatalog(defaults.models, buildOpenClawModelsCatalog())
+	defaults.models = mergeModelsCatalog(defaults.models, buildOpenClawModelsCatalog(models))
 	agents.defaults = defaults
 	existing.agents = agents
 
@@ -179,19 +203,23 @@ async function writeOpenClawDirect(scope: ConfigScope, apiKey: string): Promise<
 async function writeOpenClaw(
 	scope: ConfigScope,
 	apiKey: string,
+	models: readonly import("../models.js").ModelMetadata[],
 	_options?: { telemetryEnabled?: boolean },
 ): Promise<void> {
 	if (!apiKey) {
 		throw new Error("API key not configured")
+	}
+	if (!models || models.length === 0) {
+		throw new Error("No models available — is the API key valid?")
 	}
 	// CLI route preferred when the binary is on PATH — OpenClaw uses JSON5
 	// internally and the CLI's setter is the only path that round-trips
 	// cleanly through that parser. Fall back to direct JSON write only when
 	// there's no openclaw binary to ask.
 	if (findBinary("openclaw")) {
-		await writeOpenClawViaCLI(apiKey)
+		await writeOpenClawViaCLI(apiKey, models)
 	} else {
-		await writeOpenClawDirect(scope, apiKey)
+		await writeOpenClawDirect(scope, apiKey, models)
 	}
 }
 

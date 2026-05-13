@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { TEST_MODELS } from "./__fixtures__/models.js"
 import { claudeCodeEnv, injectClaudeCodeEnv } from "./claude-code.js"
 import { byId } from "./registry.js"
 
@@ -216,7 +217,7 @@ describe("claude-code tool registration", () => {
 
 		const tool = byId("claudecode")
 		expect(tool).toBeDefined()
-		await tool?.write("global", "test-key")
+		await tool?.write("global", "test-key", TEST_MODELS)
 
 		const written = JSON.parse(readFileSync(settings, "utf-8"))
 		expect(written.theme).toBe("dark")
@@ -230,7 +231,7 @@ describe("claude-code tool registration", () => {
 	it("write() creates the directory and file when they don't exist yet", async () => {
 		const tool = byId("claudecode")
 		expect(tool).toBeDefined()
-		await tool?.write("global", "fresh-key")
+		await tool?.write("global", "fresh-key", TEST_MODELS)
 
 		const settings = join(scratchHome, ".claude", "settings.json")
 		const written = JSON.parse(readFileSync(settings, "utf-8"))
@@ -241,7 +242,7 @@ describe("claude-code tool registration", () => {
 	it("write() includes OTEL env vars when telemetryEnabled is true", async () => {
 		const tool = byId("claudecode")
 		expect(tool).toBeDefined()
-		await tool?.write("global", "key-123", { telemetryEnabled: true })
+		await tool?.write("global", "key-123", TEST_MODELS, { telemetryEnabled: true })
 
 		const settings = join(scratchHome, ".claude", "settings.json")
 		const written = JSON.parse(readFileSync(settings, "utf-8"))
@@ -253,7 +254,7 @@ describe("claude-code tool registration", () => {
 	it("write() does not include OTEL env vars when telemetryEnabled is false", async () => {
 		const tool = byId("claudecode")
 		expect(tool).toBeDefined()
-		await tool?.write("global", "key-456", { telemetryEnabled: false })
+		await tool?.write("global", "key-456", TEST_MODELS, { telemetryEnabled: false })
 
 		const settings = join(scratchHome, ".claude", "settings.json")
 		const written = JSON.parse(readFileSync(settings, "utf-8"))
@@ -282,7 +283,7 @@ describe("claude-code tool registration", () => {
 
 		const tool = byId("claudecode")
 		expect(tool).toBeDefined()
-		await tool?.write("global", "new-key", { telemetryEnabled: false })
+		await tool?.write("global", "new-key", TEST_MODELS, { telemetryEnabled: false })
 
 		const written = JSON.parse(readFileSync(settings, "utf-8"))
 		expect(written.env.ANTHROPIC_AUTH_TOKEN).toBe("new-key")
@@ -323,7 +324,7 @@ describe("claude-code tool registration", () => {
 
 		const tool = byId("claudecode")
 		expect(tool).toBeDefined()
-		await tool?.write("global", "new-key", { telemetryEnabled: false })
+		await tool?.write("global", "new-key", TEST_MODELS, { telemetryEnabled: false })
 
 		const written = JSON.parse(readFileSync(settings, "utf-8"))
 		// The 4 Cast-AI-specific keys should be gone
@@ -368,7 +369,7 @@ describe("claude-code tool registration", () => {
 
 		const tool = byId("claudecode")
 		expect(tool).toBeDefined()
-		await tool?.write("global", "new-key", { telemetryEnabled: false })
+		await tool?.write("global", "new-key", TEST_MODELS, { telemetryEnabled: false })
 
 		const written = JSON.parse(readFileSync(settings, "utf-8"))
 		expect(written.env.ANTHROPIC_AUTH_TOKEN).toBe("new-key")
@@ -382,6 +383,6 @@ describe("claude-code tool registration", () => {
 	it("write() rejects an empty API key", async () => {
 		const tool = byId("claudecode")
 		expect(tool).toBeDefined()
-		await expect(tool?.write("global", "")).rejects.toThrow(/API key/)
+		await expect(tool?.write("global", "", TEST_MODELS)).rejects.toThrow(/API key/)
 	})
 })

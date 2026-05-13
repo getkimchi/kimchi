@@ -2,8 +2,9 @@ import { existsSync } from "node:fs"
 import { platform } from "node:os"
 import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
+import type { ModelMetadata } from "../models.js"
 import { BASE_URL, PROVIDER_NAME } from "./constants.js"
-import { CODING_MODEL, type KimchiModel, MAIN_MODEL, SUB_MODEL } from "./models.js"
+import { resolveModelRole } from "./models.js"
 import { register } from "./registry.js"
 
 const CURSOR_REACTIVE_STORAGE_KEY =
@@ -23,8 +24,18 @@ function detectCursor(): boolean {
 	return false
 }
 
-function modelSlug(model: KimchiModel): string {
-	return `${PROVIDER_NAME}/${model.slug}`
+/**
+ * Cursor detects model names containing "sonnet-", "opus-", "haiku-" and
+ * switches to its native Anthropic API integration, bypassing the OpenAI compat
+ * layer. Alias those substrings so Cursor always routes through kimchi's gateway
+ * regardless of the underlying provider.
+ */
+function modelSlug(model: ModelMetadata): string {
+	const slug = model.slug
+		.replace(/claude-sonnet-/g, "claude-so-")
+		.replace(/claude-opus-/g, "claude-op-")
+		.replace(/claude-haiku-/g, "claude-ha-")
+	return `${PROVIDER_NAME}/${slug}`
 }
 
 function modelEntry(slug: string): Record<string, unknown> {
@@ -65,8 +76,16 @@ function removeAll(slice: string[], remove: readonly string[]): string[] {
  * at different models; we map those onto Main/Coding/Sub. The user's
  * pre-existing model lists are preserved (kimchi models are added
  * uniquely, no clobber).
+ *
+ * @param storage - The parsed reactive-storage blob from Cursor's SQLite DB.
+ * @param models  - Live `ModelMetadata[]` fetched from the API.
  */
-export function mergeCursorConfig(storage: Record<string, unknown>): Record<string, unknown> {
+export function mergeCursorConfig(
+	storage: Record<string, unknown>,
+	models: readonly ModelMetadata[],
+): Record<string, unknown> {
+	if (!models || models.length === 0) return storage
+
 	storage.openAIBaseUrl = BASE_URL
 	storage.useOpenAIKey = true
 
@@ -75,28 +94,33 @@ export function mergeCursorConfig(storage: Record<string, unknown>): Record<stri
 			? (storage.aiSettings as Record<string, unknown>)
 			: {}
 
-	const main = modelSlug(MAIN_MODEL)
-	const coding = modelSlug(CODING_MODEL)
-	const sub = modelSlug(SUB_MODEL)
-	const slugs = [main, coding, sub]
+	const main = resolveModelRole(models, "main")
+	const coding = resolveModelRole(models, "coding", main)
+	const sub = resolveModelRole(models, "sub", main)
 
-	aiSettings.userAddedModels = appendUnique(toStringArray(aiSettings.userAddedModels), slugs)
-	aiSettings.modelOverrideEnabled = appendUnique(toStringArray(aiSettings.modelOverrideEnabled), slugs)
-	aiSettings.modelOverrideDisabled = removeAll(toStringArray(aiSettings.modelOverrideDisabled), slugs)
+	// Add all available models to Cursor's picker — Cursor is a flat list, not a
+	// provider block, so there is no downside to including everything the API knows
+	// about. Role resolution only determines which surface maps to which model.
+	const allSlugs = models.map(modelSlug)
+
+	aiSettings.userAddedModels = appendUnique(toStringArray(aiSettings.userAddedModels), allSlugs)
+	aiSettings.modelOverrideEnabled = appendUnique(toStringArray(aiSettings.modelOverrideEnabled), allSlugs)
+	aiSettings.modelOverrideDisabled = removeAll(toStringArray(aiSettings.modelOverrideDisabled), allSlugs)
 
 	const modelConfig =
 		(aiSettings.modelConfig as Record<string, unknown> | undefined) && typeof aiSettings.modelConfig === "object"
 			? (aiSettings.modelConfig as Record<string, unknown>)
 			: {}
 
-	modelConfig.composer = modelEntry(main)
-	modelConfig["cmd-k"] = modelEntry(coding)
-	modelConfig["background-composer"] = modelEntry(main)
-	modelConfig["plan-execution"] = modelEntry(coding)
-	modelConfig.spec = modelEntry(main)
-	modelConfig["deep-search"] = modelEntry(main)
-	modelConfig["quick-agent"] = modelEntry(sub)
-	modelConfig["composer-ensemble"] = modelEntry(main)
+	// Only write surface mappings for models that were successfully resolved.
+	if (main) modelConfig.composer = modelEntry(modelSlug(main))
+	if (coding) modelConfig["cmd-k"] = modelEntry(modelSlug(coding))
+	if (main) modelConfig["background-composer"] = modelEntry(modelSlug(main))
+	if (coding) modelConfig["plan-execution"] = modelEntry(modelSlug(coding))
+	if (main) modelConfig.spec = modelEntry(modelSlug(main))
+	if (main) modelConfig["deep-search"] = modelEntry(modelSlug(main))
+	if (sub) modelConfig["quick-agent"] = modelEntry(modelSlug(sub))
+	if (main) modelConfig["composer-ensemble"] = modelEntry(modelSlug(main))
 
 	aiSettings.modelConfig = modelConfig
 	storage.aiSettings = aiSettings
@@ -113,10 +137,14 @@ export function mergeCursorConfig(storage: Record<string, unknown>): Record<stri
 async function writeCursor(
 	_scope: ConfigScope,
 	apiKey: string,
+	models: readonly ModelMetadata[],
 	_options?: { telemetryEnabled?: boolean },
 ): Promise<void> {
 	if (!apiKey) {
 		throw new Error("API key not configured")
+	}
+	if (!models || models.length === 0) {
+		throw new Error("No models available — is the API key valid?")
 	}
 	const dbPath = resolveScopePath("global", cursorDbPath())
 	if (!existsSync(dbPath)) {
@@ -136,7 +164,7 @@ async function writeCursor(
 				.query<{ value: string }, [string]>("SELECT value FROM ItemTable WHERE key = ?")
 				.get(CURSOR_REACTIVE_STORAGE_KEY)
 			const storage: Record<string, unknown> = row?.value ? JSON.parse(row.value) : {}
-			mergeCursorConfig(storage)
+			mergeCursorConfig(storage, models)
 			db.run("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)", [
 				CURSOR_REACTIVE_STORAGE_KEY,
 				JSON.stringify(storage),

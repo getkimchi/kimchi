@@ -1,4 +1,5 @@
 import type { ConfigScope } from "../config/scope.js"
+import type { ModelMetadata } from "../models.js"
 
 export type ToolId = "opencode" | "claudecode" | "cursor" | "openclaw" | "gsd2"
 
@@ -23,5 +24,10 @@ export interface ToolDefinition {
 	/** Detect whether the tool is installed locally (PATH probe, well-known dir, etc). */
 	isInstalled: () => boolean
 	/** Write configuration so this tool talks to kimchi's LLM endpoints. */
-	write: (scope: ConfigScope, apiKey: string, options?: { telemetryEnabled?: boolean }) => Promise<void>
+	write: (
+		scope: ConfigScope,
+		apiKey: string,
+		models: readonly ModelMetadata[],
+		options?: { telemetryEnabled?: boolean },
+	) => Promise<void>
 }

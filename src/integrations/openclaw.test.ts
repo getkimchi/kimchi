@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { TEST_MODELS } from "./__fixtures__/models.js"
 import { findBinary } from "./detect.js"
 import {
 	asObject,
@@ -30,15 +31,20 @@ vi.mock("node:child_process", async () => {
 
 describe("buildOpenClawProviderBlock", () => {
 	it("uses the kimchi base URL and ${KIMCHI_API_KEY} placeholder", () => {
-		const block = buildOpenClawProviderBlock() as { baseUrl: string; apiKey: string; api: string; models: unknown[] }
+		const block = buildOpenClawProviderBlock(TEST_MODELS) as {
+			baseUrl: string
+			apiKey: string
+			api: string
+			models: unknown[]
+		}
 		expect(block.baseUrl).toBe("https://llm.kimchi.dev/openai/v1")
 		expect(block.apiKey).toBe("${KIMCHI_API_KEY}")
 		expect(block.api).toBe("openai-completions")
-		expect(block.models.length).toBe(6)
+		expect(block.models.length).toBe(TEST_MODELS.length)
 	})
 
 	it("includes per-model id/name/contextWindow/maxTokens", () => {
-		const block = buildOpenClawProviderBlock() as {
+		const block = buildOpenClawProviderBlock(TEST_MODELS) as {
 			models: Array<{ id: string; name: string; contextWindow: number; maxTokens: number }>
 		}
 		const main = block.models.find((m) => m.id === "kimchi/kimi-k2.6")
@@ -51,7 +57,7 @@ describe("buildOpenClawProviderBlock", () => {
 
 describe("buildOpenClawModelsCatalog", () => {
 	it("maps each model id to its display alias", () => {
-		const catalog = buildOpenClawModelsCatalog()
+		const catalog = buildOpenClawModelsCatalog(TEST_MODELS)
 		expect(catalog["kimchi/kimi-k2.6"]).toEqual({ alias: "Kimi K2.6" })
 		expect(catalog["kimchi/kimi-k2.5"]).toEqual({ alias: "Kimi K2.5" })
 		expect(catalog["kimchi/nemotron-3-super-fp4"]).toEqual({ alias: "Nemotron 3 Super FP4" })
@@ -112,7 +118,7 @@ describe("openclaw tool registration", () => {
 	})
 	it("write() rejects an empty API key", async () => {
 		const tool = byId("openclaw")
-		await expect(tool?.write("global", "")).rejects.toThrow(/API key/)
+		await expect(tool?.write("global", "", TEST_MODELS)).rejects.toThrow(/API key/)
 	})
 })
 
@@ -207,7 +213,7 @@ describe("writeOpenClawDirect integration", () => {
 		writeFileSync(join(configDir, "openclaw.json"), JSON.stringify(existing), "utf-8")
 
 		const tool = byId("openclaw")
-		await tool?.write("global", "test-key-123")
+		await tool?.write("global", "test-key-123", TEST_MODELS)
 
 		const written = JSON.parse(readFileSync(join(configDir, "openclaw.json"), "utf-8"))
 
@@ -253,7 +259,7 @@ describe("writeOpenClawViaCLI integration", () => {
 
 	it("preserves existing fallbacks and other keys via CLI merge", async () => {
 		const tool = byId("openclaw")
-		await tool?.write("global", "test-key-123")
+		await tool?.write("global", "test-key-123", TEST_MODELS)
 
 		const calls = vi.mocked(childProcess.spawnSync).mock.calls
 		const fallbackSetCall = calls.find((c) => {
