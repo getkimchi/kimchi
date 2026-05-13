@@ -57,4 +57,14 @@ describe("buildPlannerSupplement", () => {
 		expect(supplement).toContain("Important requirements were missed.")
 		expect(supplement).toContain("Add an explicit edge-case verification step.")
 	})
+
+	it("warns against turning fixed interfaces into configurable options", () => {
+		const supplement = buildPlannerSupplement(makeRuntime())
+
+		expect(supplement).toContain("fixed output path")
+		expect(supplement).toContain("fixed runtime interface")
+		expect(supplement).toContain("extra CLI argument")
+		expect(supplement).toContain("config option")
+		expect(supplement).toContain("flexible interface")
+	})
 })

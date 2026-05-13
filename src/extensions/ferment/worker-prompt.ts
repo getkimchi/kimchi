@@ -6,14 +6,17 @@
  * planner to "describe what to implement" — and the planner does so from the
  * step description alone, missing phase goal and prior-step continuity.
  *
- * We give workers three things:
+ * We give workers five kinds of context:
  *   1. The phase goal — so they know the bigger-picture deliverable
- *   2. Prior step summaries in the same phase — so they don't redo work
- *   3. Decisions and memories captured in the ferment — so they stay consistent
+ *   2. The ferment goal and success criteria — so fixed deliverables survive
+ *   3. Prior step summaries in the same phase — so they don't redo work
+ *   4. Decisions and memories captured in the ferment — so they stay consistent
+ *   5. Constraints — so they preserve externally visible contracts
  *
- * This is bounded: only the active phase's prior steps, only the most recent
- * decisions/memories. We do not give the worker the whole ferment context
- * (phases ahead, future scope) — that risks scope creep and over-eager
+ * The rendered block puts goal/criteria near the top and constraints near the
+ * bottom. This is bounded: only the active phase's prior steps, only the most
+ * recent decisions/memories. We do not give the worker the whole ferment
+ * context (phases ahead, future scope) — that risks scope creep and over-eager
  * implementation.
  */
 
@@ -41,6 +44,13 @@ export function buildWorkerContext(ferment: Ferment, phase: Phase, step: Step, o
 	lines.push(`**Step ${step.index}:** ${step.description}`)
 	if (step.verification?.command) {
 		lines.push(`**Verify when done:** \`${step.verification.command}\``)
+	}
+	if (ferment.scoping.goal?.answer) {
+		lines.push("")
+		lines.push(`**Ferment goal:** ${ferment.scoping.goal.answer}`)
+	}
+	if (ferment.scoping.criteria?.answer) {
+		lines.push(`**Success criteria:** ${ferment.scoping.criteria.answer}`)
 	}
 
 	const priorSteps = phase.steps

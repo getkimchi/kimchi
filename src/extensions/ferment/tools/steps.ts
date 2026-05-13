@@ -230,7 +230,7 @@ Do NOT call start_step again without user input.`,
 	const workerContext =
 		freshPhase && freshStep ? services.buildWorkerContext(outcome.ferment, freshPhase, freshStep) : ""
 	const contextBlock = workerContext
-		? `\n\n--- BEGIN WORKER PROMPT ---\n${workerContext}\n--- END WORKER PROMPT ---\n\nPaste the block above into the Agent's prompt. You may add a single concrete implementation directive at the end if the step description is ambiguous, but do NOT remove or summarize the context block.`
+		? `\n\n--- BEGIN WORKER PROMPT ---\n${workerContext}\n--- END WORKER PROMPT ---\n\nPaste the block above into the Agent's prompt. You may add a single concrete implementation directive at the end if the step description is ambiguous, but do NOT remove, summarize, or contradict the context block.`
 		: ""
 
 	return toolOk(
