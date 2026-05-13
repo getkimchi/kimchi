@@ -8,6 +8,7 @@ import type { FermentWorkMode } from "../../ferment/types.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { formatFermentStatus } from "./format.js"
+import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { appendRefEntry, maybeInjectAutoNudge } from "./nudge.js"
 import { maybeRunOnboarding } from "./onboarding.js"
 import { buildOneshotNudge } from "./oneshot.js"
@@ -421,6 +422,12 @@ export class FermentCommandController {
 				return { handled: true }
 			}
 			try {
+				// One-shot is non-interactive by definition — only auto-init when the
+				// user opted in via flag or env var. Otherwise skip silently.
+				await ensureGitRepo({
+					ui: ctx.ui,
+					autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
+				})
 				const shortName = await shortenTitle(resolvedIntent)
 				const f = storage.create(shortName, resolvedIntent)
 				const modeOut = applyAndPersist(f.id, { type: "set_mode", mode: "exec" })
@@ -460,6 +467,9 @@ export class FermentCommandController {
 			return { handled: true }
 		}
 		try {
+			// Interactive path: ui.confirm is available, so ensureGitRepo will ask.
+			// User can decline; ferment still proceeds with no branch/commit info.
+			await ensureGitRepo({ ui: ctx.ui })
 			const shortName = await shortenTitle(rawName)
 			const f = storage.create(shortName, rawName)
 			setActiveFerment(pi, runtime, f)

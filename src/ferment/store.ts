@@ -106,12 +106,22 @@ export function captureWorktree(cwd?: string): import("./types.js").FermentWorkt
 	let branch: string | undefined
 	let commit: string | undefined
 	try {
-		branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: path, encoding: "utf-8", timeout: 1000 }).trim()
+		branch = execSync("git rev-parse --abbrev-ref HEAD", {
+			cwd: path,
+			encoding: "utf-8",
+			timeout: 1000,
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim()
 	} catch {
 		// not a git repo or git not available
 	}
 	try {
-		commit = execSync("git rev-parse HEAD", { cwd: path, encoding: "utf-8", timeout: 1000 }).trim()
+		commit = execSync("git rev-parse HEAD", {
+			cwd: path,
+			encoding: "utf-8",
+			timeout: 1000,
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim()
 	} catch {
 		// not a git repo or git not available
 	}

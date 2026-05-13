@@ -12,6 +12,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import type { Command } from "../../../ferment/state-machine.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
+import { autoInitFromEnv, ensureGitRepo } from "../git-init.js"
 import { type PlanReview, computeFermentGrade, judgePlan } from "../judge.js"
 import { appendRefEntry, maybeInjectAutoNudge } from "../nudge.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
@@ -187,6 +188,10 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 		async execute(_, params) {
 			// Creation is special — no existing ferment to transition from.
 			// Storage's create() handles uuid generation and worktree capture.
+			// LLM-driven, so no interactive prompt; opt-in auto-init only.
+			await ensureGitRepo({
+				autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
+			})
 			const f = runtime.getStorage().create(params.name, params.description)
 			setActiveFerment(pi, runtime, f)
 			appendRefEntry(pi, f.id)

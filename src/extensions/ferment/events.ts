@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { shortenTitle } from "../../ferment/shorten-title.js"
 import { clearFermentCache } from "../../ferment/store.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
+import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { appendRefEntry } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import { buildPlannerSupplement } from "./planner-supplement.js"
@@ -34,6 +35,10 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	pi.registerFlag("ferment-oneshot", {
 		type: "boolean",
 		description: "Bootstrap the initial prompt as a one-shot exec-mode ferment.",
+	})
+	pi.registerFlag("init-git", {
+		type: "boolean",
+		description: "When the ferment cwd is not a git repo, run `git init` instead of skipping.",
 	})
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -78,6 +83,11 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		if (!intent) return
 
 		try {
+			// Bootstrap path: no UI available yet, so only auto-init when the user
+			// opted in via --init-git or KIMCHI_AUTO_GIT_INIT=1.
+			await ensureGitRepo({
+				autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
+			})
 			const storage = runtime.getStorage()
 			let shortName: string
 			try {
