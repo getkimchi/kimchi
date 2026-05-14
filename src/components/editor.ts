@@ -1,7 +1,7 @@
 import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent"
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent"
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui"
-import { visibleWidth } from "@earendil-works/pi-tui"
+import { Editor, isKittyProtocolActive, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, TEAL_FG } from "../ansi.js"
 import { clampLines, splashBottomPaddingFor } from "./splash-layout.js"
 
@@ -76,6 +76,14 @@ export class PromptEditor extends CustomEditor {
 	override handleInput(data: string) {
 		if (this.expandHandler && this.kb.matches(data, "app.tools.expand")) {
 			this.expandHandler()
+			return
+		}
+		// tmux and some terminals send \x1b\r for Shift+Enter. Upstream parses
+		// it as alt+enter when kitty protocol is not active, so app.message.followUp
+		// intercepts it before Editor.handleInput can create a newline. Route it
+		// directly to the Editor as \n, which the Editor always treats as newline.
+		if (!isKittyProtocolActive() && (data === "\x1b\r" || data === "\x1b\n")) {
+			Editor.prototype.handleInput.call(this, "\n")
 			return
 		}
 		super.handleInput(data)
