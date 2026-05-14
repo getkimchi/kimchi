@@ -1,6 +1,6 @@
 {
 	"name": "@kimchi-dev/cli",
-	"version": "0.1.0",
+	"version": "0.0.0",
 	"description": "kimchi — a coding agent CLI powered by Cast AI",
 	"type": "module",
 	"license": "MIT",
@@ -15,6 +15,7 @@
 		"build:binary-linux-arm64": "node scripts/build-binary.js --target linux-arm64",
 		"build:binary-linux-x64": "node scripts/build-binary.js --target linux-x64",
 		"dev": "bun run --preload ./src/set-package-dir.ts src/entry.ts",
+		"dev:setup": "bun run --preload ./src/set-package-dir.ts src/entry.ts setup",
 		"lint": "biome check src/ scripts/",
 		"lint:fix": "biome check --write src/ scripts/",
 		"typecheck": "tsc --noEmit",

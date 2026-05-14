@@ -34,3 +34,5 @@ kimchi-session-*.html
 
 # Root-level test stubs only — src/__mocks__ is for vitest alias stubs and must be committed
 /__mocks__/
+
+*.bun-build

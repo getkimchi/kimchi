@@ -31,6 +31,7 @@ import { ANSI, fg } from "../../ansi.js"
 import { getCurrentPhase } from "../../extensions/tags.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
+import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
 import {
 	CONTINUATION_NUDGE_TEXT,
 	ContinuationNudge,
@@ -466,12 +467,18 @@ export default function (skillPaths: string[]) {
 		pi.on("before_agent_start", async (_event, ctx) => {
 			const tools = pi.getAllTools()
 			cachedContextFiles ??= loadProjectContextFiles(ctx.cwd)
-			cachedSkills ??= loadSkills({
-				cwd: ctx.cwd,
-				agentDir: getAgentDir(),
-				skillPaths: expandSkillPaths(skillPaths, ctx.cwd),
-				includeDefaults: false,
-			}).skills
+			if (cachedSkills === undefined) {
+				const allSkillPaths = [
+					...expandSkillPaths(skillPaths, ctx.cwd),
+					...getInstalledPackageResourceDirs(ctx.cwd, "skills"),
+				]
+				cachedSkills = loadSkills({
+					cwd: ctx.cwd,
+					agentDir: getAgentDir(),
+					skillPaths: allSkillPaths,
+					includeDefaults: false,
+				}).skills
+			}
 
 			const now = new Date()
 			const isGitRepo = existsSync(join(ctx.cwd, ".git", "HEAD"))

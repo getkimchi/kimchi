@@ -87,7 +87,7 @@ describe.skip("interactive multi-line paste (LLM-1358)", () => {
 		}
 	})
 
-	// LLM-1358 fix verification. When the terminal (or tmux/SSH layer) doesn't honor pi-tui's bracketed-paste enable sequence, a multi-line paste arrives as raw `\r`-separated keystrokes, which would normally submit each line as its own message. The paste interceptor in src/paste-interceptor.ts detects such bursts and re-emits them wrapped in ESC[200~...ESC[201~ so pi-tui's existing bracketed-paste pipeline handles them correctly. This test confirms the fallback path produces the same result as the bracketed-paste path.
+	// LLM-1358 fix verification. When the terminal (or tmux/SSH layer) doesn't honor pi-tui's bracketed-paste enable sequence, a multi-line paste arrives as raw `\r`-separated keystrokes, which would normally submit each line as its own message. The paste interceptor in src/paste-interceptor.ts detects such bursts and rewrites the `\r` bytes to `\n` in place so the Editor inserts newlines instead of submitting. This test confirms the fallback path produces the same result as the bracketed-paste path.
 	it("paste without bracketed-paste markers is recovered by the interceptor", { timeout: 60_000 }, async () => {
 		const session = spawnInteractive()
 		try {
@@ -130,6 +130,36 @@ describe.skip("interactive multi-line paste (LLM-1358)", () => {
 
 			// A misfire would wrap `\r\r\r\r\r\r\r\r\r\r` into a single bracketed paste and push ten `\n`-separated empty rows into the editor buffer — showing up as a long run of blank rows between the editor border dividers. Six or more consecutive empty/whitespace-only lines is well beyond anything the idle TUI renders.
 			expect(plain).not.toMatch(/(\n\s*){6,}\n/)
+		} finally {
+			await session.kill()
+		}
+	})
+
+	// Regression for the auto-send / trailing-line bug. The original LLM-1358 interceptor had a per-chunk heuristic (≥2 \r, ≥4 bytes) that missed the small tail chunk a large paste's final fragment lands in — the bare `\r` in that tail reached the Editor as Enter and submitted everything before it, leaving the trailing letter dangling in the input. The v2 fix rewrites \r→\n in the seeding chunk and extends the rewrite to subsequent \r-bearing chunks within the TRAILING_WINDOW_MS (100 ms) window. This test simulates that exact split: the main chunk is a paste-burst, the second chunk is a single \r + final character arriving ~1 ms later.
+	it("trailing fragment after a paste-burst chunk is not treated as Enter", { timeout: 60_000 }, async () => {
+		const session = spawnInteractive()
+		try {
+			await waitForPrompt(session)
+
+			// Main paste-burst: A\rB\r…\rY\r — meets the seeding heuristic (24 \r, 48 bytes).
+			const mainChunk = "ABCDEFGHIJKLMNOPQRSTUVWXY".split("").join("\r") + "\r"
+			session.pty.write(mainChunk)
+			// 1 ms gap simulates the kernel TTY scheduling delay between adjacent reads of one OS-level paste burst. Far below the 100 ms TRAILING_WINDOW_MS.
+			await new Promise((r) => setTimeout(r, 1))
+			// The trailing fragment: leading bare \r (the last paste-internal newline) then the final letter Z. Pre-fix, this \r submitted A..Y and Z was left in the input.
+			session.pty.write("\rZ")
+
+			// Wait for all 26 letters to render in the editor on their own rows.
+			const rowRegexes = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").map(onOwnRow)
+			await session.waitFor((out) => rowRegexes.every((re) => re.test(stripAnsi(out))), 5_000)
+
+			const plain = stripAnsi(session.output())
+			for (const re of rowRegexes) {
+				expect(plain).toMatch(re)
+			}
+			// Auto-send guard: if the bug had recurred, the prompt would have been submitted mid-paste and the editor would have re-rendered with the placeholder text shown again after submission. The placeholder must NOT reappear after the paste lands.
+			const placeholderHits = plain.match(/ask anything or type \/ for commands/g)?.length ?? 0
+			expect(placeholderHits).toBeLessThanOrEqual(1)
 		} finally {
 			await session.kill()
 		}

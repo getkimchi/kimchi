@@ -69,17 +69,42 @@ research_prompt = (
     "and a one-line example of defining a route with a path parameter."
 )
 
+mega_prompt = (
+    "Implement a Go CLI application that acts as a concurrent build system, similar to a simplified Make. "
+    "This is a multi-layer project — start with a plan before writing any code. "
+    "Requirements: Use standard library only (no frameworks, no external dependencies). "
+    "Parse a declarative build file (buildfile.txt) with this format:\n"
+    "    target: dep1 dep2\n"
+    "        command1\n"
+    "        command2\n"
+    "Indented lines under a target are shell commands. Dependencies are space-separated after the colon. "
+    "Resolve the full dependency graph using topological sort. Detect and report cycles with a clear error message listing the cycle path. "
+    "Execute independent targets concurrently using a worker pool. Targets whose dependencies are all satisfied should start immediately. "
+    "Stream command output per target with prefixed labels, e.g. '[compile] go build ./...'. "
+    "Graceful shutdown on SIGINT: finish in-progress targets, skip pending ones, print a summary of what completed and what was skipped. "
+    "CLI flags: -f <file> (build file path, default: buildfile.txt), -j <N> (max parallel workers, default: number of CPUs), "
+    "-target <name> (build a specific target and its transitive deps only, default: build all root targets). "
+    "Fail fast: on the first target error, cancel pending targets and report which target and command failed. "
+    "Layered architecture: separate packages for parsing, graph resolution, execution engine, and CLI. "
+    "Unit tests for: build file parsing (valid and malformed input), dependency resolution (diamond deps, cycle detection, single target extraction), "
+    "and execution ordering (verify concurrency-safe ordering). Use map-based test cases. "
+    "Put all code in directory: $DIR/buildtool/"
+)
+
+# Fourth element: include_in_run_all (default True)
 tasks = [
-    ("simple",         simple_prompt,  []),
-    ("complex",        complex_prompt, []),
-    ("complex-single", complex_prompt, ["--multi-model=false"]),
-    ("research",       research_prompt,[]),
+    ("simple",         simple_prompt,  [],                      True),
+    ("complex",        complex_prompt, [],                      True),
+    ("complex-single", complex_prompt, ["--multi-model=false"], True),
+    ("research",       research_prompt,[],                      True),
+    ("mega",           mega_prompt,    [],                      False),
 ]
 
 all_scripts = []
+run_all_scripts = []
 for model in models:
     print(f"model: kimchi-dev/{model}")
-    for task, task_prompt, extra_flags in tasks:
+    for task, task_prompt, extra_flags, in_run_all in tasks:
         run_dir = f"{task}-{model}"
         os.makedirs(os.path.join(session_dir, "runs", run_dir), exist_ok=True)
         slug = f"s{n}-{task}-{model}"
@@ -103,10 +128,14 @@ cd "$DIR"
             f.write(content)
         os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         all_scripts.append(script_path)
+        if in_run_all:
+            run_all_scripts.append(script_path)
 
 # run-all.sh — iTerm2 grid (cols=tasks, rows=models) with background fallback
+# Only includes tasks marked with in_run_all=True
 run_all = os.path.join(session_dir, "run-all.sh")
-cols = len(tasks)
+run_all_tasks = [t for t in tasks if t[3]]
+cols = len(run_all_tasks)
 rows = len(models)
 
 # Build AppleScript: create a NEW TAB, then split into a grid (cols=tasks, rows=models)
@@ -124,15 +153,15 @@ for r in range(1, rows):
 for r in range(rows):
     for c in range(cols):
         i = r * cols + c
-        if i < len(all_scripts):
+        if i < len(run_all_scripts):
                 # NOTE: iTerm2's `write text` sends keystrokes and returns immediately —
             # it does NOT wait for the command to finish.
-            as_lines.append(f'      tell g{c}_{r} to write text "{all_scripts[i]}"')
+            as_lines.append(f'      tell g{c}_{r} to write text "{run_all_scripts[i]}"')
 as_body = "\n".join(as_lines)
 
 # Background fallback: run each script with output to a per-script log file
 bg_lines = []
-for script in all_scripts:
+for script in run_all_scripts:
     name = os.path.basename(script).replace(".sh", "")
     log = os.path.join(session_dir, f"{name}.log")
     bg_lines.append(f'  "{script}" >"{log}" 2>&1 &')
@@ -152,7 +181,7 @@ tell application "iTerm2"
 end tell
 APPLESCRIPT
 else
-  echo "iTerm2 not available — running {len(all_scripts)} scripts in background (logs in {session_dir}/)..."
+  echo "iTerm2 not available — running {len(run_all_scripts)} scripts in background (logs in {session_dir}/)..."
 {bg_body}
   wait
   echo "All done."
@@ -160,6 +189,10 @@ fi
 """)
 os.chmod(run_all, os.stat(run_all).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
+excluded = [s for s in all_scripts if s not in run_all_scripts]
 print(f"\nDone. {len(all_scripts)} scripts created in {session_dir}/")
+print(f"  run-all.sh includes {len(run_all_scripts)} tasks")
+if excluded:
+    print(f"  run separately: {', '.join(os.path.basename(s) for s in excluded)}")
 print(f"Next: {session_dir}/run-all.sh")
 PYEOF

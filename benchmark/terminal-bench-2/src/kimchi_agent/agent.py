@@ -65,6 +65,7 @@ class Kimchi(BaseInstalledAgent):
             type="bool",
             default=True,
         ),
+        CliFlag("ferment-oneshot", cli="--ferment-oneshot", type="bool"),
     ]
 
     def __init__(self, *args, **kwargs):
@@ -169,6 +170,15 @@ class Kimchi(BaseInstalledAgent):
         user_tags = self._extra_env.get("KIMCHI_TAGS", "")
         self._extra_env["KIMCHI_TAGS"] = self._merge_kimchi_tags(user_tags)
 
+        # When the bench opts into a one-shot ferment per trial, pin the ferments
+        # directory under /logs/agent — which is bind-mounted to
+        # jobs/<run>/<task>__<trial>/agent/ on the host. The snapshot
+        # (<uuid>.json) and append-only event log (<uuid>.events.jsonl) then end
+        # up alongside kimchi.txt and sessions/ for post-run inspection.
+        ferment_env: dict[str, str] = {}
+        if self._resolved_flags.get("ferment-oneshot"):
+            ferment_env["KIMCHI_FERMENTS_DIR"] = f"{CONTAINER_LOGS_DIR}/ferments"
+
         # Pipe the prompt via stdin instead of as a positional arg: pi-coding-agent's
         # parseArgs treats any token starting with `-` as a flag (no `--` end-of-options
         # marker), which deterministically crashes on instructions like "- You are given...".
@@ -182,7 +192,11 @@ class Kimchi(BaseInstalledAgent):
                 f"--model {shlex.quote(self.model_name)} "
                 f"{cli_flags}"
             ),
-            env={"KIMCHI_API_KEY": self._config.api_key, "PI_PACKAGE_DIR": PI_PACKAGE_DIR},
+            env={
+                "KIMCHI_API_KEY": self._config.api_key,
+                "PI_PACKAGE_DIR": PI_PACKAGE_DIR,
+                **ferment_env,
+            },
         )
 
     def _auto_tags(self) -> dict[str, str]:

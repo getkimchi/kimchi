@@ -221,8 +221,12 @@ export function formatHelp(theme: Theme): string[] {
 		theme.bold("Stats Command Usage"),
 		"",
 		"  /stats                    Show analytics and productivity metrics (last 30 days)",
-		"  /stats 7                  Show metrics for last 7 days (1-30 days supported)",
+		"  /stats 7                  Show metrics for last 7 days",
+		"  /stats tokens             Sort by tokens",
+		"  /stats 7 model            Sort by model name (7 days)",
 		"  /stats help               Show this help message",
+		"",
+		"  Sort: cost (default), tokens, model, source",
 		"",
 	]
 }

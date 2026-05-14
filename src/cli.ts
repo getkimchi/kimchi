@@ -2,7 +2,7 @@
 // All static imports here (extensions, pi-mono) are safe because the env is already configured.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { dirname, resolve } from "node:path"
+import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { dispatchSubcommand } from "./commands/dispatch.js"
@@ -15,11 +15,13 @@ import {
 	writeSkillPaths,
 } from "./config.js"
 import { isBunBinary } from "./env.js"
+import agentsExtension from "./extensions/agents/index.js"
 import bashCollapseExtension from "./extensions/bash-collapse.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
 import curatorExtension from "./extensions/curator/index.js"
+import fermentExtension from "./extensions/ferment/index.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import improveExtension from "./extensions/improve/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
@@ -32,10 +34,8 @@ import permissionsExtension from "./extensions/permissions/index.js"
 import { reserveShiftTabForPermissions } from "./extensions/permissions/keybindings.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
-import skillsManagerExtension from "./extensions/skills-manager/index.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
-import subagentExtension from "./extensions/subagent.js"
 import tagsExtension from "./extensions/tags.js"
 import telemetryExtension from "./extensions/telemetry.js"
 import terminalColorsExtension from "./extensions/terminal-colors.js"
@@ -46,8 +46,11 @@ import webSearchExtension from "./extensions/web-search/index.js"
 import { updateModelsConfig } from "./models.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
-import { probeTerminalBackground } from "./terminal-bg-probe.js"
+import { detectColorMode, hexToBgAnsi, probeTerminalBackground } from "./terminal-bg-probe.js"
+import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
 import { getVersion } from "./utils.js"
+
+installCloudflare524RetryPatch()
 
 const telemetryConfig = readTelemetryConfig()
 
@@ -198,7 +201,24 @@ try {
 		// as `""` placeholders; the kimchi-minimal-tints extension fills them in
 		// per-process at session_start from the OSC 11 probe.
 		const themesDir = resolve(agentDir, "themes")
-		const bundledThemes = ["kimchi.json", "kimchi-minimal.json", "kimchi-light.json", "dark.json", "light.json"]
+		const bundledThemes = [
+			"kimchi.json",
+			"kimchi-minimal.json",
+			"kimchi-light.json",
+			"dark.json",
+			"light.json",
+			"night-owl.json",
+			"nord.json",
+			"one-dark.json",
+			"monokai.json",
+			"catppuccin-macchiato.json",
+			"lucent-orng.json",
+			"dracula.json",
+			"github-dark.json",
+			"github-light.json",
+			"solarized-dark.json",
+			"solarized-light.json",
+		]
 		const bundledThemesSrcDir = isBunBinary
 			? resolve(process.env.PI_PACKAGE_DIR ?? "", "theme")
 			: resolve(dirname(fileURLToPath(import.meta.url)), "../themes")
@@ -237,6 +257,37 @@ try {
 			if (destContent !== srcContent) writeFileSync(dest, srcContent)
 		}
 
+		// Paint the initial viewport background before pi-mono renders its first frame.
+		// This ensures blank areas of the terminal reflect the theme color from the start,
+		// on every terminal regardless of OSC 10/11 support.
+		if (!acpMode && process.stdout.isTTY) {
+			try {
+				const settings = JSON.parse(readFileSync(settingsPath, "utf-8"))
+				const themeName: string = settings.theme ?? "kimchi-minimal"
+				const themeRaw = readFileSync(resolve(themesDir, `${basename(themeName)}.json`), "utf-8")
+				const theme = JSON.parse(themeRaw)
+				const vars: Record<string, string> = theme.vars ?? {}
+				const oscBgRaw: string = theme.colors?.oscBg ?? ""
+				if (oscBgRaw) {
+					const bgHex: string = vars[oscBgRaw] ?? oscBgRaw
+					if (/^#[0-9a-fA-F]{6}$/.test(bgHex)) {
+						const bgAnsi = hexToBgAnsi(bgHex, detectColorMode())
+						const cols = process.stdout.columns || 80
+						const rows = process.stdout.rows || 24
+						const line = `${bgAnsi}${" ".repeat(cols)}`
+						process.stdout.write(`\x1b[H${Array.from({ length: rows }, () => line).join("\r\n")}\x1b[H\x1b[0m`)
+					}
+				}
+			} catch (err) {
+				// ENOENT is the expected first-run case (no settings.json or theme file yet);
+				// pi-mono will render normally. Surface anything else so corrupt JSON or
+				// unexpected I/O errors don't disappear silently.
+				if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+					console.warn(`Warning: startup viewport paint failed: ${(err as Error).message}`)
+				}
+			}
+		}
+
 		// Suppress Node.js warnings (same as pi-mono's own cli.js)
 		process.emitWarning = () => {}
 
@@ -255,6 +306,8 @@ try {
 			globalThis.fetch = patchedFetch
 		}
 
+		const rawArgs = process.argv.slice(2)
+
 		const extensionFactories = [
 			startupUpdateExtension,
 			sessionIdCaptureExtension,
@@ -266,6 +319,8 @@ try {
 			loopGuardExtension,
 			lspExtension,
 			mcpAdapterExtension,
+			// Ferment must see raw input before prompt enrichment rewrites print-mode text.
+			fermentExtension,
 			promptEnrichmentExtension(skillPaths),
 			permissionsExtension,
 			behavioursExtension,
@@ -274,19 +329,17 @@ try {
 			hideThinkingExtension,
 			clipboardImageExtension,
 			uiExtension,
-			subagentExtension,
+			agentsExtension,
 			tagsExtension,
 			telemetryExtension(telemetryConfig),
 			toolRendererExtension,
 			webFetchExtension,
 			webSearchExtension,
 			loginExtension,
-			skillsManagerExtension,
 			improveExtension,
 			curatorExtension,
 		]
 
-		const rawArgs = process.argv.slice(2)
 		if (acpMode) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
 			await runAcpMode({ extensionFactories, agentDir })

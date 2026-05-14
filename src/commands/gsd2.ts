@@ -4,7 +4,7 @@ import { popScope, prepareTool } from "./_helpers.js"
 
 export async function runGsd2(args: string[]): Promise<number> {
 	const scope = popScope(args)
-	const prepped = prepareTool("gsd2", "override")
+	const prepped = await prepareTool("gsd2", "override")
 	if (!prepped) return 1
 
 	try {
@@ -13,7 +13,7 @@ export async function runGsd2(args: string[]): Promise<number> {
 			console.error("kimchi gsd2: integration not registered")
 			return 1
 		}
-		await tool.write(scope, prepped.apiKey)
+		await tool.write(scope, prepped.apiKey, prepped.models)
 		console.log("kimchi gsd2: configuration written. Run `gsd` to use kimchi-routed models.")
 		return 0
 	} catch (err) {

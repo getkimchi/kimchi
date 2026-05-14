@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { existsSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import {
@@ -22,6 +22,7 @@ import { writeImagesForSubagent } from "../utils/image-subagent-bridge.js"
 import { formatCount, formatDuration } from "./format.js"
 import { filterThinkingForDisplay } from "./hide-thinking.js"
 import { type SpinnerState, clearSpinner, spinnerFrame, tickSpinner } from "./spinner.js"
+import { HORIZONTAL_PADDING } from "./ui.js"
 
 const PROMPT_MAX_LENGTH = 60
 const FOOTER_STATUS_KEY = "subagent-sessions"
@@ -61,6 +62,43 @@ interface SubagentTokenUsage {
 	output: number
 	cacheRead: number
 	cacheWrite: number
+}
+
+interface SubagentTelemetryEntry {
+	timestamp: string // ISO 8601
+	sessionId?: string // from child session handle
+	model: string
+	provider: string
+	tokenBudget?: number
+	inactivityTimeoutMs: number
+	promptLength: number
+	attachmentCount: number
+	result: "success" | "failure"
+	failureReason?: SubagentFailureReason
+	exitCode: number
+	durationMs: number
+	tokenUsage: SubagentTokenUsage
+	outputLength: number
+	stderrLength: number
+	toolCallCount: number // number of tool_execution_start events
+	stage: "early" | "mid" | "late" // early: <10s, mid: 10s-5min, late: >5min
+}
+
+export function stageFromDuration(durationMs: number): "early" | "mid" | "late" {
+	if (durationMs < 10_000) return "early"
+	if (durationMs < 5 * 60 * 1000) return "mid"
+	return "late"
+}
+
+/** Writes a JSON line to sessionDir/subagent-telemetry.jsonl, creating the file if needed. I/O errors are swallowed — telemetry must never break normal subagent flow. */
+export function logSubagentTelemetry(sessionDir: string | undefined, entry: SubagentTelemetryEntry): void {
+	if (sessionDir === undefined || sessionDir.length === 0) return
+	try {
+		const filePath = join(sessionDir, "subagent-telemetry.jsonl")
+		appendFileSync(filePath, `${JSON.stringify(entry)}\n`)
+	} catch {
+		// swallow all I/O errors
+	}
 }
 
 export interface SubagentResult {
@@ -406,6 +444,7 @@ export function spawnSubagentInternal(
 		let outputTokens = 0
 		let cacheReadTokens = 0
 		let cacheWriteTokens = 0
+		let toolCallCount = 0
 		let failureReason: SubagentFailureReason | undefined
 		let closed = false
 
@@ -422,6 +461,7 @@ export function spawnSubagentInternal(
 			clearTimeout(timeoutHandle)
 			clearTimeout(inactivityHandle)
 			combinedSignal.removeEventListener("abort", onAbort)
+			const durationMs = Date.now() - startedAt
 			resolve({
 				exitCode,
 				accumulated,
@@ -433,8 +473,33 @@ export function spawnSubagentInternal(
 					cacheWrite: cacheWriteTokens,
 				},
 				failureReason,
-				durationMs: Date.now() - startedAt,
+				durationMs,
 			})
+
+			const result_ok: SubagentTelemetryEntry = {
+				timestamp: new Date().toISOString(),
+				model: model ?? "",
+				provider: provider ?? "",
+				tokenBudget,
+				inactivityTimeoutMs,
+				promptLength: promptLength ?? 0,
+				attachmentCount: attachmentCount ?? 0,
+				result: failureReason === undefined && exitCode === 0 ? "success" : "failure",
+				failureReason,
+				exitCode,
+				durationMs,
+				tokenUsage: {
+					input: inputTokens,
+					output: outputTokens,
+					cacheRead: cacheReadTokens,
+					cacheWrite: cacheWriteTokens,
+				},
+				outputLength: accumulated.length,
+				stderrLength: stderr.length,
+				toolCallCount,
+				stage: stageFromDuration(durationMs),
+			}
+			logSubagentTelemetry(sessionDir, result_ok)
 		}
 
 		const kill = (reason: SubagentFailureReason) => {
@@ -470,6 +535,7 @@ export function spawnSubagentInternal(
 			cacheReadTokens += lineCacheRead
 			cacheWriteTokens += lineCacheWrite
 			if (toolCall !== null) {
+				toolCallCount++
 				onToolCall(toolCall.name, toolCall.args, accumulated)
 			}
 		}
@@ -522,8 +588,45 @@ interface SubagentResponse {
 	files: string[]
 }
 
+/**
+ * Strip reasoning wrappers (`<think>...</think>`, `<thinking>...</thinking>`)
+ * from a worker's accumulated output. Reasoning models (minimax-m2.7, kimi,
+ * DeepSeek, Qwen) frequently interleave reasoning blocks with their final
+ * answer; the protocol parser then chokes on the surrounding text.
+ *
+ * Also strips dangling unclosed openers — the worker may stream a `<think>`
+ * that never closes if it's truncated. Closing tags without an opener are
+ * left as-is (rare and benign).
+ */
+export function stripReasoningWrappers(text: string): string {
+	let out = text
+	// Closed blocks (greedy non-cross-block matches)
+	out = out.replace(/<think>[\s\S]*?<\/think>/g, "")
+	out = out.replace(/<thinking>[\s\S]*?<\/thinking>/g, "")
+	// Trailing unclosed opener — drop everything from the last unclosed tag
+	// to the end. Detected by checking that an opener occurs after the last
+	// closer.
+	const lastThinkOpen = out.lastIndexOf("<think>")
+	const lastThinkClose = out.lastIndexOf("</think>")
+	if (lastThinkOpen !== -1 && lastThinkOpen > lastThinkClose) {
+		out = out.slice(0, lastThinkOpen)
+	}
+	const lastThinkingOpen = out.lastIndexOf("<thinking>")
+	const lastThinkingClose = out.lastIndexOf("</thinking>")
+	if (lastThinkingOpen !== -1 && lastThinkingOpen > lastThinkingClose) {
+		out = out.slice(0, lastThinkingOpen)
+	}
+	return out
+}
+
 export function parseSubagentResponse(text: string): SubagentResponse | null {
-	const trimmed = text.trim()
+	// Reasoning models often interleave <think>/<thinking> blocks with their
+	// final JSON. Strip those before any parse attempt — without this the
+	// regex/walker logic below sees scrambled braces and treats valid output
+	// as a protocol violation. (Observed empirically: minimax-m2.7 hit a 59%
+	// false-violation rate in a 7-phase ferment session before this fix.)
+	const cleaned = stripReasoningWrappers(text)
+	const trimmed = cleaned.trim()
 
 	const tryParse = (s: string): SubagentResponse | null => {
 		try {
@@ -565,6 +668,18 @@ export function parseSubagentResponse(text: string): SubagentResponse | null {
 			if (fromBlock !== null) return fromBlock
 			searchFrom = openIdx - 1
 		}
+	}
+
+	// Final fallback: extract a markdown-rendered summary from the
+	// reasoning-stripped text. When the worker produced a substantive answer
+	// in markdown rather than JSON, treat the content as the summary so the
+	// orchestrator gets the work product instead of a protocol-violation
+	// error. The fallback only fires when the cleaned text is non-trivial.
+	if (trimmed.length >= 40 && /[a-zA-Z]/.test(trimmed)) {
+		// Bound the summary at ~2000 chars; longer responses are likely structured
+		// docs that should have gone into the Documents directory anyway.
+		const summary = trimmed.length > 2000 ? `${trimmed.slice(0, 2000)}\n\n[response truncated]` : trimmed
+		return { summary, files: [] }
 	}
 
 	return null
@@ -943,7 +1058,7 @@ export default function (pi: ExtensionAPI) {
 				const toolCall = state.lastToolCall
 				let partialDisplayText: string
 				let displayStyle: "dim" | "toolOutput"
-				const terminalWidth = process.stdout.columns ?? 80
+				const terminalWidth = Math.max(1, (process.stdout.columns ?? 80) - HORIZONTAL_PADDING * 2)
 				if (toolCall) {
 					const truncated = truncateToWidth(`> ${toolCall}`, terminalWidth * 5)
 					const toolCallVisualLines = wrapTextWithAnsi(truncated, terminalWidth)

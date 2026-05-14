@@ -63,7 +63,7 @@ describe("validateCategory", () => {
 
 describe("validateFrontmatter", () => {
 	it("accepts valid frontmatter with body", async () => {
-		const result = await validateFrontmatter("---\ndesc: test\n---\nBody here.")
+		const result = await validateFrontmatter("---\ndescription: test\n---\nBody here.")
 		expect(result).toBeNull()
 	})
 
@@ -86,21 +86,39 @@ describe("validateFrontmatter", () => {
 	})
 
 	it("rejects missing body", async () => {
-		const result = await validateFrontmatter("---\ndesc: test\n---\n")
+		const result = await validateFrontmatter("---\ndescription: test\n---\n")
 		expect(result).not.toBeNull()
 		expect(result?.toLowerCase()).toContain("content")
 	})
 
+	it("rejects missing description field", async () => {
+		const result = await validateFrontmatter("---\nfoo: bar\n---\nBody here.")
+		expect(result).not.toBeNull()
+		expect(result).toContain("description")
+	})
+
+	it("rejects empty description", async () => {
+		const result = await validateFrontmatter('---\ndescription: ""\n---\nBody here.')
+		expect(result).not.toBeNull()
+		expect(result).toContain("description")
+	})
+
+	it("rejects whitespace-only description", async () => {
+		const result = await validateFrontmatter('---\ndescription: "   "\n---\nBody here.')
+		expect(result).not.toBeNull()
+		expect(result).toContain("description")
+	})
+
 	it("does not treat body --- as a delimiter", async () => {
-		const result = await validateFrontmatter("---\ndesc: test\n---\nBody with\n---\ninside it.")
+		const result = await validateFrontmatter("---\ndescription: test\n---\nBody with\n---\ninside it.")
 		expect(result).toBeNull()
 	})
 })
 
 describe("parseSkill", () => {
 	it("splits frontmatter and body correctly", () => {
-		const { frontmatter, body } = parseSkill("---\ndesc: test\n---\nBody here.")
-		expect(frontmatter).toBe("---\ndesc: test\n---\n")
+		const { frontmatter, body } = parseSkill("---\ndescription: test\n---\nBody here.")
+		expect(frontmatter).toBe("---\ndescription: test\n---\n")
 		expect(body).toBe("Body here.")
 	})
 
@@ -111,8 +129,8 @@ describe("parseSkill", () => {
 	})
 
 	it("handles body with --- inside", () => {
-		const { frontmatter, body } = parseSkill("---\ndesc: test\n---\nLine one\n---\nLine two")
-		expect(frontmatter).toBe("---\ndesc: test\n---\n")
+		const { frontmatter, body } = parseSkill("---\ndescription: test\n---\nLine one\n---\nLine two")
+		expect(frontmatter).toBe("---\ndescription: test\n---\n")
 		expect(body).toBe("Line one\n---\nLine two")
 	})
 })
@@ -183,20 +201,20 @@ describe("SkillManager", () => {
 
 	describe("create", () => {
 		it("creates a skill successfully", async () => {
-			const result = await mgr.create("my-skill", "---\nd: x\n---\nBody.")
+			const result = await mgr.create("my-skill", "---\ndescription: x\n---\nBody.")
 			expect(result.success).toBe(true)
 			expect(existsSync(join(tmpDir, "my-skill", "SKILL.md"))).toBe(true)
 		})
 
 		it("rejects duplicate name", async () => {
-			await mgr.create("my-skill", "---\nd: x\n---\nBody.")
-			const result = await mgr.create("my-skill", "---\nd: y\n---\nBody2.")
+			await mgr.create("my-skill", "---\ndescription: x\n---\nBody.")
+			const result = await mgr.create("my-skill", "---\ndescription: y\n---\nBody2.")
 			expect(result.success).toBe(false)
 			expect(result.error).toMatch(/already exists/i)
 		})
 
 		it("rejects bad name", async () => {
-			const result = await mgr.create("-bad", "---\nd: x\n---\nBody.")
+			const result = await mgr.create("-bad", "---\ndescription: x\n---\nBody.")
 			expect(result.success).toBe(false)
 		})
 
@@ -207,7 +225,7 @@ describe("SkillManager", () => {
 		})
 
 		it("creates in category subdirectory when specified", async () => {
-			const result = await mgr.create("s", "---\nd: x\n---\nBody.", "debug")
+			const result = await mgr.create("s", "---\ndescription: x\n---\nBody.", "debug")
 			expect(result.success).toBe(true)
 			expect(result.path).toMatch(/debug[/\\]s/)
 			expect(existsSync(join(tmpDir, "debug", "s", "SKILL.md"))).toBe(true)
@@ -216,15 +234,15 @@ describe("SkillManager", () => {
 
 	describe("edit", () => {
 		it("updates content successfully", async () => {
-			await mgr.create("my-skill", "---\nd: x\n---\nBody.")
-			const result = await mgr.edit("my-skill", "---\nd: y\n---\nNew body.")
+			await mgr.create("my-skill", "---\ndescription: x\n---\nBody.")
+			const result = await mgr.edit("my-skill", "---\ndescription: y\n---\nNew body.")
 			expect(result.success).toBe(true)
 			const content = readFileSync(join(tmpDir, "my-skill", "SKILL.md"), "utf-8")
 			expect(content).toContain("New body.")
 		})
 
 		it("preserves original on bad frontmatter", async () => {
-			await mgr.create("my-skill", "---\nd: x\n---\nBody.")
+			await mgr.create("my-skill", "---\ndescription: x\n---\nBody.")
 			const result = await mgr.edit("my-skill", "no delimiter\nbody")
 			expect(result.success).toBe(false)
 			expect(result.file_preview).toBeDefined()
@@ -235,7 +253,7 @@ describe("SkillManager", () => {
 
 	describe("patch", () => {
 		it("patches unique match successfully", async () => {
-			await mgr.create("my-skill", "---\nd: x\n---\nHello world.")
+			await mgr.create("my-skill", "---\ndescription: x\n---\nHello world.")
 			const result = await mgr.patch("my-skill", "world", "universe")
 			expect(result.success).toBe(true)
 			const content = readFileSync(join(tmpDir, "my-skill", "SKILL.md"), "utf-8")
@@ -243,14 +261,14 @@ describe("SkillManager", () => {
 		})
 
 		it("returns error and file_preview on zero matches", async () => {
-			await mgr.create("my-skill", "---\nd: x\n---\nHello world.")
+			await mgr.create("my-skill", "---\ndescription: x\n---\nHello world.")
 			const result = await mgr.patch("my-skill", "nonexistent", "X")
 			expect(result.success).toBe(false)
 			expect(result.file_preview).toBeDefined()
 		})
 
 		it("returns error with unique context message on multiple matches", async () => {
-			await mgr.create("my-skill", "---\nd: x\n---\nfoo foo bar")
+			await mgr.create("my-skill", "---\ndescription: x\n---\nfoo foo bar")
 			const result = await mgr.patch("my-skill", "foo", "X")
 			expect(result.success).toBe(false)
 			expect(result.error).toMatch(/unique context/i)
@@ -258,7 +276,7 @@ describe("SkillManager", () => {
 		})
 
 		it("preserves original on breaking frontmatter patch", async () => {
-			await mgr.create("my-skill", "---\nd: x\n---\nBody.")
+			await mgr.create("my-skill", "---\ndescription: x\n---\nBody.")
 			// Replace body with empty content - this breaks frontmatter (no body)
 			const result = await mgr.patch("my-skill", "Body.", "")
 			expect(result.success).toBe(false)
@@ -267,7 +285,7 @@ describe("SkillManager", () => {
 		})
 
 		it("patches file at specific filePath", async () => {
-			await mgr.create("my-skill", "---\nd: x\n---\nBody.")
+			await mgr.create("my-skill", "---\ndescription: x\n---\nBody.")
 			await mgr.writeFile("my-skill", "references/test.md", "Hello world.")
 			const result = await mgr.patch("my-skill", "world", "universe", "references/test.md")
 			expect(result.success).toBe(true)
@@ -278,7 +296,7 @@ describe("SkillManager", () => {
 
 	describe("delete", () => {
 		it("removes skill and archives it", async () => {
-			await mgr.create("my-skill", "---\nd: x\n---\nBody.")
+			await mgr.create("my-skill", "---\ndescription: x\n---\nBody.")
 			const result = await mgr.delete("my-skill")
 			expect(result.success).toBe(true)
 			expect(existsSync(join(tmpDir, "my-skill"))).toBe(false)
@@ -291,7 +309,7 @@ describe("SkillManager", () => {
 		})
 
 		it("handles absorbedInto parameter", async () => {
-			await mgr.create("obsolete", "---\nd: x\n---\nBody.")
+			await mgr.create("obsolete", "---\ndescription: x\n---\nBody.")
 			const result = await mgr.delete("obsolete", "replacement")
 			expect(result.success).toBe(true)
 		})
@@ -299,7 +317,7 @@ describe("SkillManager", () => {
 
 	describe("writeFile", () => {
 		it("creates file in references/ subdirectory", async () => {
-			await mgr.create("my-skill", "---\nd: x\n---\nBody.")
+			await mgr.create("my-skill", "---\ndescription: x\n---\nBody.")
 			const result = await mgr.writeFile("my-skill", "references/foo.md", "# My Doc\n\nContent.")
 			expect(result.success).toBe(true)
 			expect(existsSync(join(tmpDir, "my-skill", "references", "foo.md"))).toBe(true)
@@ -308,7 +326,7 @@ describe("SkillManager", () => {
 
 	describe("removeFile", () => {
 		it("removes existing file", async () => {
-			await mgr.create("my-skill", "---\nd: x\n---\nBody.")
+			await mgr.create("my-skill", "---\ndescription: x\n---\nBody.")
 			await mgr.writeFile("my-skill", "references/foo.md", "# Doc")
 			const result = await mgr.removeFile("my-skill", "references/foo.md")
 			expect(result.success).toBe(true)
@@ -316,14 +334,14 @@ describe("SkillManager", () => {
 		})
 
 		it("returns error with available_files for missing path", async () => {
-			await mgr.create("my-skill", "---\nd: x\n---\nBody.")
+			await mgr.create("my-skill", "---\ndescription: x\n---\nBody.")
 			const result = await mgr.removeFile("my-skill", "references/missing.md")
 			expect(result.success).toBe(false)
 			expect(result.available_files).toBeDefined()
 		})
 
 		it("removes empty parent directories", async () => {
-			await mgr.create("my-skill", "---\nd: x\n---\nBody.")
+			await mgr.create("my-skill", "---\ndescription: x\n---\nBody.")
 			await mgr.writeFile("my-skill", "references/foo.md", "# Doc")
 			await mgr.removeFile("my-skill", "references/foo.md")
 			expect(existsSync(join(tmpDir, "my-skill", "references"))).toBe(false)

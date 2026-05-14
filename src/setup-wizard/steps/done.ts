@@ -1,6 +1,8 @@
+import { resolve } from "node:path"
 import { log, note, outro } from "@clack/prompts"
 import { byId } from "../../integrations/registry.js"
 import type { ToolId } from "../../integrations/types.js"
+import { updateModelsConfig } from "../../models.js"
 import { exportEnvToShellProfile } from "../shell-profile.js"
 import type { WizardState } from "../state.js"
 
@@ -28,6 +30,30 @@ interface ApplyOutcome {
 export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 	const outcome: ApplyOutcome = { successes: [], failures: [] }
 
+	// Fetch live models before writing any tool config.
+	// Throws if no key or network fails; surface the error and abort gracefully.
+	const agentDir =
+		process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(process.env.HOME ?? "~", ".config/kimchi-coding-agent")
+	const modelsJsonPath = resolve(agentDir, "models.json")
+	let models: readonly import("../../models.js").ModelMetadata[] = []
+	try {
+		const result = await updateModelsConfig(modelsJsonPath, state.apiKey)
+		models = result.models
+	} catch (err) {
+		const msg = (err as Error).message
+		log.error(`Could not fetch available models: ${msg}`)
+		outcome.failures.push({ id: "*", error: `model fetch failed: ${msg}` })
+		outro("Aborted.")
+		return outcome
+	}
+
+	if (models.length === 0) {
+		log.error("API returned an empty model list — is your API key valid?")
+		outcome.failures.push({ id: "*", error: "empty model list from API" })
+		outro("Aborted.")
+		return outcome
+	}
+
 	for (const id of state.selectedTools as ToolId[]) {
 		const tool = byId(id)
 		if (!tool) {
@@ -37,11 +63,13 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 		if (state.mode === "inject") {
 			// No disk writes in inject mode — the launcher sets env per-process.
 			outcome.successes.push(tool.name)
-			log.info(`${tool.name}: ready (launch via 'kimchi ${id}')`)
+			// 'claudecode' is the tool ID but the CLI command is 'claude'
+			const launchCmd = id === "claudecode" ? "claude" : id
+			log.info(`${tool.name}: ready (launch via 'kimchi ${launchCmd}')`)
 			continue
 		}
 		try {
-			await tool.write(state.scope, state.apiKey)
+			await tool.write(state.scope, state.apiKey, models, { telemetryEnabled: state.telemetryEnabled })
 			outcome.successes.push(tool.name)
 			log.success(`${tool.name}: configured`)
 		} catch (err) {
@@ -67,7 +95,9 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 		`Scope: ${state.scope}`,
 		`Telemetry: ${state.telemetryEnabled ? "enabled" : "disabled"}`,
 		outcome.successes.length > 0 ? `Configured: ${outcome.successes.join(", ")}` : "",
-		outcome.failures.length > 0 ? `Failed: ${outcome.failures.map((f) => f.id).join(", ")}` : "",
+		outcome.failures.length > 0
+			? `Failed: ${outcome.failures.map((f) => byId(f.id as ToolId)?.name ?? f.id).join(", ")}`
+			: "",
 		shellExport.path ? `${KIMCHI_API_KEY_ENV}: exported to ${shellExport.path}` : "",
 	].filter((l) => l.length > 0)
 

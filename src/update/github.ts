@@ -18,6 +18,14 @@ export interface ReleaseInfo {
 	htmlUrl: string
 }
 
+export interface CanaryReleaseInfo {
+	tagName: string
+	targetCommitish: string
+	htmlUrl: string
+	/** Release title, e.g. "Canary 0.0.0-canary.20260509.abc1234". */
+	name: string
+}
+
 export interface GitHubClientOptions {
 	apiBase?: string
 	downloadBase?: string
@@ -84,6 +92,35 @@ export class GitHubClient {
 		return {
 			tagName: json.tag_name,
 			htmlUrl: typeof json.html_url === "string" ? json.html_url : "",
+		}
+	}
+
+	/** GET /repos/{owner}/{name}/releases/tags/canary. */
+	async canaryRelease(repo: Repo): Promise<CanaryReleaseInfo> {
+		const url = `${this.apiBase}/repos/${repo.owner}/${repo.name}/releases/tags/canary`
+		const res = await this.fetchImpl(url, {
+			headers: { Accept: "application/vnd.github+json" },
+		})
+		if (!res.ok) {
+			throw new Error(`github API returned ${res.status}`)
+		}
+		const json = (await res.json()) as {
+			tag_name?: unknown
+			html_url?: unknown
+			target_commitish?: unknown
+			name?: unknown
+		}
+		if (typeof json.tag_name !== "string" || json.tag_name.length === 0) {
+			throw new Error("github API response missing tag_name")
+		}
+		if (typeof json.target_commitish !== "string" || json.target_commitish.length === 0) {
+			throw new Error("github API response missing target_commitish")
+		}
+		return {
+			tagName: json.tag_name,
+			targetCommitish: json.target_commitish,
+			htmlUrl: typeof json.html_url === "string" ? json.html_url : "",
+			name: typeof json.name === "string" ? json.name : "",
 		}
 	}
 

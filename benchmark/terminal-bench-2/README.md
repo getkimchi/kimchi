@@ -89,6 +89,26 @@ MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-local.sh -n 8 --agent-kwarg disable-
 
 The kwarg is named `disable-multi-model` (not `multi-model=false`) because harbor's `parse_kwargs` JSON-decodes `false` into Python `bool`, which the `str`/`enum` `CliFlag` coercers reject — and `bool`-typed flags only emit when truthy, so they can't render `--multi-model=false` directly.
 
+### One-shot ferment per task
+
+Pass `ferment-oneshot=true` to wrap each trial in a one-shot exec-mode ferment. The agent boots into kimchi's progressive-refinement project mode and runs `scope_ferment` → `activate_phase` → `start_step` → `complete_step` → `complete_ferment` autonomously, delegating each step's implementation to a subagent worker.
+
+```bash
+./scripts/run-local.sh -i terminal-bench/fix-git --agent-kwarg ferment-oneshot=true
+```
+
+State lands in `jobs/<timestamp>/<task>__<trial>/agent/ferments/`:
+
+- `<uuid>.json` — final snapshot (phase + step state, decisions, memories)
+- `<uuid>.events.jsonl` — append-only audit log of every state transition (`ferment_created`, `set_mode`, `phase_activated`, `step_started`, `step_completed`, …)
+
+The mode is opt-in and default-off; without the kwarg, terminal-bench-2 behaves exactly as before — a single-shot `kimchi --print` call with no ferment bootstrap. To compare ferment-mode vs. baseline reward / tokens / cost, hold model + dataset constant and toggle the kwarg between runs.
+
+Caveats:
+
+- One extra LLM round-trip per trial: kimchi calls `shortenTitle` on the instruction to produce a ferment name (billed under the bench's `KIMCHI_API_KEY`, tagged `task:<task_id>`).
+- Token / cost aggregation is unchanged — `populate_context_post_run` still reads `agent/sessions/*.jsonl`, which already includes subagent session files spawned during step execution.
+
 ### Tagging runs for tracking
 
 kimchi attaches tags from `KIMCHI_TAGS` to every outgoing LLM request payload and telemetry event, which lets you slice usage/tokens/cost server-side by run, experiment, or branch.

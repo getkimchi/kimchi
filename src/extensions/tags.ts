@@ -299,6 +299,65 @@ function subcommandArgs(args: string, subcommand: string): string {
 	return normalised.slice(subcommand.length).trim()
 }
 
+async function handlePhaseCommand(args: string, ctx: ExtensionCommandContext, tagManager: TagManager): Promise<void> {
+	const trimmed = args.trim().toLowerCase()
+
+	// No arg → show current phase + offer interactive selector when there's a UI.
+	if (!trimmed) {
+		const current = tagManager.getPhase()
+		const currentLabel = current ? `current phase: ${current}` : "no phase set"
+
+		if (!ctx.hasUI) {
+			console.log(`${currentLabel}\nValid phases: ${VALID_PHASES.join(", ")}, none`)
+			return
+		}
+
+		const choice = await ctx.ui.select(`Phase — ${currentLabel}`, [...VALID_PHASES, "none (clear)"])
+		if (!choice) return
+
+		if (choice === "none (clear)") {
+			tagManager.setPhase(undefined)
+			updateFooterStatus(tagManager, ctx)
+			ctx.ui.notify("Phase cleared", "info")
+			return
+		}
+
+		const next = choice as Phase
+		tagManager.setPhase(next)
+		updateFooterStatus(tagManager, ctx)
+		ctx.ui.notify(`Phase changed to: ${next}`, "info")
+		return
+	}
+
+	// Explicit clear.
+	if (trimmed === "none" || trimmed === "clear" || trimmed === "off") {
+		tagManager.setPhase(undefined)
+		if (ctx.hasUI) {
+			updateFooterStatus(tagManager, ctx)
+			ctx.ui.notify("Phase cleared", "info")
+		} else {
+			console.log("Phase cleared")
+		}
+		return
+	}
+
+	// Direct switch via /phase <name>.
+	if (!isValidPhase(trimmed)) {
+		const msg = `Invalid phase "${args.trim()}". Valid: ${VALID_PHASES.join(", ")}, none`
+		if (ctx.hasUI) ctx.ui.notify(msg, "error")
+		else console.error(msg)
+		return
+	}
+
+	tagManager.setPhase(trimmed)
+	if (ctx.hasUI) {
+		updateFooterStatus(tagManager, ctx)
+		ctx.ui.notify(`Phase changed to: ${trimmed}`, "info")
+	} else {
+		console.log(`Phase changed to: ${trimmed}`)
+	}
+}
+
 function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManager: TagManager): void {
 	const trimmed = args.trim().toLowerCase()
 
@@ -454,6 +513,16 @@ export function getCurrentPhase(): Phase | undefined {
 	return tagManagerInstance?.getPhase()
 }
 
+export function setCurrentPhase(phase: string | undefined): void {
+	if (!tagManagerInstance) return
+	if (phase === undefined) {
+		tagManagerInstance.setPhase(undefined)
+		return
+	}
+	if (!isValidPhase(phase)) return
+	tagManagerInstance.setPhase(phase)
+}
+
 export function getActiveTags(): string[] {
 	return tagManagerInstance?.getAllTags() ?? []
 }
@@ -467,6 +536,22 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		description: "Manage LLM request tags for usage tracking",
 		handler: async (args, ctx) => {
 			handleTagsCommand(args, ctx, tagManager)
+		},
+	})
+
+	// Register the /phase slash command — manual phase switch (mirrors set_phase tool).
+	pi.registerCommand("phase", {
+		description: `Show or change the current work phase (${VALID_PHASES.join(", ")})`,
+		getArgumentCompletions: (prefix) => {
+			const lower = prefix.toLowerCase()
+			return VALID_PHASES.filter((p) => p.startsWith(lower)).map((value) => ({
+				value,
+				label: value,
+				description: `Switch to ${value} phase`,
+			}))
+		},
+		handler: async (args, ctx) => {
+			await handlePhaseCommand(args, ctx, tagManager)
 		},
 	})
 

@@ -12,7 +12,7 @@ import { ToolBlockView, buildToolCallHeader, getTextContent } from "../component
 import { isToolExpanded, registerToolCall } from "../expand-state.js"
 
 function formatArgs(toolName: string, args: Record<string, unknown>): string {
-	const raw = (() => {
+	return (() => {
 		switch (toolName) {
 			case "read": {
 				const path = String(args.path ?? "")
@@ -39,7 +39,6 @@ function formatArgs(toolName: string, args: Record<string, unknown>): string {
 				return JSON.stringify(args)
 		}
 	})()
-	return raw.length > 80 ? `${raw.slice(0, 77)}...` : raw
 }
 
 function formatSummary(toolName: string, content: string, isError: boolean): string {

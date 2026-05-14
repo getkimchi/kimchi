@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest"
 import {
 	classifyTool,
 	extractBashProgram,
+	isCompoundCommand,
 	isHardBlockedBash,
 	isReadOnlyBashCommand,
 	isReadOnlyTool,
+	splitCompoundCommand,
 } from "./taxonomy.js"
 
 describe("classifyTool", () => {
@@ -30,6 +32,38 @@ describe("classifyTool", () => {
 	it("treats unknown-named tools as unknown", () => {
 		expect(classifyTool("do_the_thing")).toBe("unknown")
 		expect(classifyTool("mcp__foo__apply_changes")).toBe("unknown")
+	})
+
+	it("classifies MCP direct tools by read-verb segments after the server prefix", () => {
+		// Direct tools arrive flattened: <server>_<verb>_<rest>. The verb sits at
+		// position 1 (or later), not at the start of the name, so the segment
+		// scan kicks in.
+		expect(classifyTool("jetbrains_get_all_open_file_paths")).toBe("readOnly")
+		expect(classifyTool("jetbrains_get_run_configurations")).toBe("readOnly")
+		expect(classifyTool("jetbrains_xdebug_get_stack")).toBe("readOnly")
+		expect(classifyTool("supabase_list_tables")).toBe("readOnly")
+		expect(classifyTool("supabase_search_docs")).toBe("readOnly")
+	})
+
+	it("leaves mutating MCP direct tools as unknown", () => {
+		// No read-verb segment after the prefix — these tools change state and
+		// must remain blocked in plan mode.
+		expect(classifyTool("jetbrains_execute_run_configuration")).toBe("unknown")
+		expect(classifyTool("jetbrains_build_project")).toBe("unknown")
+		expect(classifyTool("jetbrains_create_new_file")).toBe("unknown")
+		expect(classifyTool("jetbrains_rename_refactoring")).toBe("unknown")
+		expect(classifyTool("playwright_browser_click")).toBe("unknown")
+	})
+
+	it("ignores read-verbs that appear in the first (server-prefix) segment", () => {
+		// If the server is literally called "get" or "list", we don't want to
+		// blanket-mark every tool under it as read-only — only later segments
+		// count.
+		expect(classifyTool("list_writer_create_thing")).toBe("readOnly") // hits the start-anchored regex via "list"
+		// A standalone segment that's just a read verb is fine; the start-anchored
+		// hint already handled that. The post-prefix scan is additive, not a
+		// regression of existing behavior.
+		expect(classifyTool("show_status")).toBe("readOnly")
 	})
 })
 
@@ -57,6 +91,14 @@ describe("isReadOnlyBashCommand", () => {
 		expect(isReadOnlyBashCommand("cat foo.txt")).toBe(true)
 		expect(isReadOnlyBashCommand("grep -r foo src/")).toBe(true)
 		expect(isReadOnlyBashCommand("rg foo")).toBe(true)
+	})
+
+	it("allows cd and directory stack commands", () => {
+		expect(isReadOnlyBashCommand("cd /tmp")).toBe(true)
+		expect(isReadOnlyBashCommand("cd /Users/rat/code && git status")).toBe(true)
+		expect(isReadOnlyBashCommand("cd /a && git log --oneline | head -20")).toBe(true)
+		expect(isReadOnlyBashCommand("pushd /tmp")).toBe(true)
+		expect(isReadOnlyBashCommand("popd")).toBe(true)
 	})
 
 	it("allows git subcommand allowlist", () => {
@@ -185,5 +227,90 @@ describe("isHardBlockedBash", () => {
 		expect(isHardBlockedBash("rm -rf ./build")).toBe(false)
 		expect(isHardBlockedBash("rm foo.txt")).toBe(false)
 		expect(isHardBlockedBash("rm -f node_modules/.cache")).toBe(false)
+	})
+})
+
+describe("isCompoundCommand", () => {
+	it("detects && operator", () => {
+		expect(isCompoundCommand("cd docs && ls")).toBe(true)
+		expect(isCompoundCommand("git status && git push")).toBe(true)
+	})
+
+	it("detects || operator", () => {
+		expect(isCompoundCommand("cd docs || ls")).toBe(true)
+		expect(isCompoundCommand("test -f file || touch file")).toBe(true)
+	})
+
+	it("detects ; operator", () => {
+		expect(isCompoundCommand("cd docs; ls")).toBe(true)
+		expect(isCompoundCommand("ls; pwd; echo done")).toBe(true)
+	})
+
+	it("does not detect pipes as compound", () => {
+		expect(isCompoundCommand("cat foo | grep bar")).toBe(false)
+		expect(isCompoundCommand("ls -la | head -n 5")).toBe(false)
+		expect(isCompoundCommand("echo hi | tee file.txt")).toBe(false)
+	})
+
+	it("detects compound with pipes inside segments", () => {
+		expect(isCompoundCommand("cd docs && git status | grep foo")).toBe(true)
+		expect(isCompoundCommand("ls | wc -l && echo done")).toBe(true)
+	})
+
+	it("returns false for simple commands", () => {
+		expect(isCompoundCommand("ls -la")).toBe(false)
+		expect(isCompoundCommand("git status")).toBe(false)
+		expect(isCompoundCommand("")).toBe(false)
+	})
+})
+
+describe("splitCompoundCommand", () => {
+	it("splits on &&", () => {
+		expect(splitCompoundCommand("cd docs && ls")).toEqual(["cd docs", "ls"])
+		expect(splitCompoundCommand("git status && git push origin main")).toEqual(["git status", "git push origin main"])
+	})
+
+	it("splits on ||", () => {
+		expect(splitCompoundCommand("cd docs || ls")).toEqual(["cd docs", "ls"])
+		expect(splitCompoundCommand("test -f file || touch file")).toEqual(["test -f file", "touch file"])
+	})
+
+	it("splits on ;", () => {
+		expect(splitCompoundCommand("cd docs; ls")).toEqual(["cd docs", "ls"])
+		expect(splitCompoundCommand("ls; pwd; echo done")).toEqual(["ls", "pwd", "echo done"])
+	})
+
+	it("keeps pipes inside segments", () => {
+		// Pipe-only commands are not "compound" — they return null
+		expect(splitCompoundCommand("cat foo | grep bar")).toBeNull()
+		// Pipes inside compound segments are preserved
+		expect(splitCompoundCommand("cd docs && git status | grep foo")).toEqual(["cd docs", "git status | grep foo"])
+	})
+
+	it("strips leading env-var assignments from subcommands", () => {
+		expect(splitCompoundCommand("FOO=bar ls && FOO=baz pwd")).toEqual(["ls", "pwd"])
+	})
+
+	it("strips whitespace", () => {
+		expect(splitCompoundCommand("  cd docs  &&  ls  ")).toEqual(["cd docs", "ls"])
+	})
+
+	it("filters empty segments", () => {
+		expect(splitCompoundCommand("cmd1 && && cmd2")).toEqual(["cmd1", "cmd2"])
+		expect(splitCompoundCommand("; cmd")).toEqual(["cmd"])
+	})
+
+	it("returns null for non-compound commands", () => {
+		expect(splitCompoundCommand("ls -la")).toBeNull()
+		expect(splitCompoundCommand("git status")).toBeNull()
+		expect(splitCompoundCommand("")).toBeNull()
+	})
+
+	it("handles mixed operators", () => {
+		expect(splitCompoundCommand("cd a && cd b || cd c; cd d")).toEqual(["cd a", "cd b", "cd c", "cd d"])
+	})
+
+	it("preserves redirect targets", () => {
+		expect(splitCompoundCommand("echo hi > file.txt && cat file.txt")).toEqual(["echo hi > file.txt", "cat file.txt"])
 	})
 })

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadMcpConfig } from "./config.js"
 import { ConsentManager } from "./consent-manager.js"
-import { getMissingConfiguredDirectToolServers } from "./direct-tools.js"
+import { getMissingConfiguredDirectToolServers, resolveDirectTools } from "./direct-tools.js"
 import { McpLifecycleManager } from "./lifecycle.js"
 import { logger } from "./logger.js"
 import {
@@ -11,6 +11,8 @@ import {
 	getMetadataCachePath,
 	isServerCacheValid,
 	loadMetadataCache,
+	overwriteMetadataCache,
+	purgeStaleEntries,
 	reconstructToolMetadata,
 	saveMetadataCache,
 	serializeResources,
@@ -19,13 +21,17 @@ import {
 import { McpServerManager } from "./server-manager.js"
 import type { McpExtensionState } from "./state.js"
 import { buildToolMetadata, totalToolCount } from "./tool-metadata.js"
-import type { ToolMetadata } from "./types.js"
+import type { DirectToolSpec, ToolMetadata } from "./types.js"
 import { UiResourceHandler } from "./ui-resource-handler.js"
 import { openUrl, parallelLimit } from "./utils.js"
 
 const FAILURE_BACKOFF_MS = 60 * 1000
 
-export async function initializeMcp(pi: ExtensionAPI, ctx: ExtensionContext): Promise<McpExtensionState> {
+export async function initializeMcp(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	registerBootstrappedDirectTools?: (specs: DirectToolSpec[]) => string[],
+): Promise<McpExtensionState> {
 	const configPath = pi.getFlag("mcp-config") as string | undefined
 	const config = loadMcpConfig(configPath)
 
@@ -71,6 +77,19 @@ export async function initializeMcp(pi: ExtensionAPI, ctx: ExtensionContext): Pr
 	} else if (!cache) {
 		cache = { version: 1, servers: {} }
 		saveMetadataCache(cache)
+	}
+
+	// Drop entries with stale configHash or no-longer-configured servers.
+	// Mirrors the load-time purge in index.ts so non-Pi entry points (tests,
+	// embedded use) get the same hygiene. Bootstrap below will repopulate
+	// anything we removed that's still in `config.mcpServers`.
+	if (cache) {
+		const { cleaned, removed } = purgeStaleEntries(cache, config.mcpServers)
+		if (removed.length > 0) {
+			overwriteMetadataCache(cleaned)
+			cache = cleaned
+			logger.debug(`MCP: purged stale cache entries: ${removed.join(", ")}`)
+		}
 	}
 
 	const prefix = config.settings?.toolPrefix ?? "server"
@@ -196,8 +215,40 @@ export async function initializeMcp(pi: ExtensionAPI, ctx: ExtensionContext): Pr
 				},
 			)
 			const bootstrapped = bootstrapResults.filter((r) => r.ok).map((r) => r.name)
-			if (bootstrapped.length > 0 && ctx.hasUI) {
-				ctx.ui.notify(`MCP: direct tools for ${bootstrapped.join(", ")} will be available after restart`, "info")
+			if (bootstrapped.length > 0) {
+				// Try to register direct tools for the just-bootstrapped servers
+				// in the current session. Avoids the historical "restart required"
+				// dance — the index.ts callback uses pi.registerTool +
+				// pi.setActiveTools, which exposes the tools to subsequent turns
+				// without reloading.
+				let injectedCount = 0
+				if (registerBootstrappedDirectTools) {
+					const freshCache = loadMetadataCache()
+					const envOverride = envDirect
+						?.split(",")
+						.map((s) => s.trim())
+						.filter(Boolean)
+					const allSpecs = resolveDirectTools(config, freshCache, prefix, envOverride)
+					const newSpecs = allSpecs.filter((s) => bootstrapped.includes(s.serverName))
+					if (newSpecs.length > 0) {
+						const injected = registerBootstrappedDirectTools(newSpecs)
+						injectedCount = injected.length
+					}
+				}
+
+				if (ctx.hasUI) {
+					if (injectedCount > 0) {
+						ctx.ui.notify(
+							`MCP: ${injectedCount} direct tool(s) from ${bootstrapped.join(", ")} are now available`,
+							"info",
+						)
+					} else {
+						ctx.ui.notify(
+							`MCP: direct tools for ${bootstrapped.join(", ")} will be available after restart`,
+							"info",
+						)
+					}
+				}
 			}
 		}
 	}

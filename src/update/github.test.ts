@@ -59,6 +59,43 @@ describe("GitHubClient.latestRelease", () => {
 	})
 })
 
+describe("GitHubClient.canaryRelease", () => {
+	it("parses tag_name + target_commitish + name out of the API response", async () => {
+		const fetchImpl = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => ({
+				tag_name: "canary",
+				target_commitish: "abc1234abc1234abc1234abc1234abc1234abc12",
+				html_url: "https://github.com/x/y/releases/tag/canary",
+				name: "Canary 0.0.0-canary.20260509.abc1234",
+			}),
+		}) as unknown as typeof fetch
+		const client = new GitHubClient({ fetch: fetchImpl })
+		const got = await client.canaryRelease(REPO)
+		expect(got.tagName).toBe("canary")
+		expect(got.targetCommitish).toBe("abc1234abc1234abc1234abc1234abc1234abc12")
+		expect(got.htmlUrl).toBe("https://github.com/x/y/releases/tag/canary")
+		expect(got.name).toBe("Canary 0.0.0-canary.20260509.abc1234")
+	})
+
+	it("throws on non-200 response", async () => {
+		const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 404 }) as unknown as typeof fetch
+		const client = new GitHubClient({ fetch: fetchImpl })
+		await expect(client.canaryRelease(REPO)).rejects.toThrow(/404/)
+	})
+
+	it("throws when target_commitish is missing", async () => {
+		const fetchImpl = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => ({ tag_name: "canary", html_url: "..." }),
+		}) as unknown as typeof fetch
+		const client = new GitHubClient({ fetch: fetchImpl })
+		await expect(client.canaryRelease(REPO)).rejects.toThrow(/target_commitish/)
+	})
+})
+
 describe("GitHubClient.fetchChecksum", () => {
 	it("finds the checksum line for our platform's asset", async () => {
 		const origPlat = process.platform

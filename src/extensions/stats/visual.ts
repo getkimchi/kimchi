@@ -32,11 +32,57 @@ export function formatDurationCompact(seconds: number): string {
  */
 export function getProviderDisplayName(providerName: string): string {
 	const mapping: Record<string, string> = {
-		"claude-code-otel": "Claude Code",
+		"cloud-code-otel": "Claude Code",
 		"opencode-otel": "OpenCode",
 		"pi-otel": "Kimchi",
 	}
 	return mapping[providerName] || providerName
+}
+
+/**
+ * Maps provider name to source category for analytics table.
+ * Unknown providers are classified as "Proxy".
+ */
+export function getSourceName(providerName: string): string {
+	if (!providerName) return "Proxy"
+	const mapping: Record<string, string> = {
+		"cloud-code-otel": "Claude Code",
+		"opencode-otel": "OpenCode",
+		"pi-otel": "Kimchi",
+	}
+	return mapping[providerName] || "Proxy"
+}
+
+export type SortBy = "cost" | "tokens" | "model" | "source"
+
+type SortStats = {
+	modelName: string
+	source: string
+	cost: number
+	inputTokens: number
+	outputTokens: number
+}
+
+/**
+ * Sort function for model stats with configurable sort criteria.
+ * Exported for unit testing.
+ */
+export function sortFn(a: SortStats, b: SortStats, sortBy: SortBy): number {
+	switch (sortBy) {
+		case "tokens": {
+			const aTokens = a.inputTokens + a.outputTokens
+			const bTokens = b.inputTokens + b.outputTokens
+			return bTokens - aTokens || a.modelName.localeCompare(b.modelName) || a.source.localeCompare(b.source)
+		}
+		case "model":
+			return a.modelName.localeCompare(b.modelName) || a.source.localeCompare(b.source)
+		case "source":
+			return a.source.localeCompare(b.source) || a.modelName.localeCompare(b.modelName)
+		default: {
+			// cost
+			return b.cost - a.cost || a.modelName.localeCompare(b.modelName) || a.source.localeCompare(b.source)
+		}
+	}
 }
 
 export function formatAnalyticsVisual(
@@ -44,6 +90,7 @@ export function formatAnalyticsVisual(
 	theme: Theme,
 	termWidth = 100,
 	days = 30,
+	sortBy: SortBy = "cost",
 ): string[] {
 	const lines: string[] = []
 
@@ -52,10 +99,18 @@ export function formatAnalyticsVisual(
 	lines.push(theme.fg("dim", `  Last ${days} Days`))
 	lines.push("")
 
-	// Collect model stats
+	// Collect model+source stats
 	const modelStats = new Map<
 		string,
-		{ cost: number; inputTokens: number; outputTokens: number; inputCost: number; outputCost: number }
+		{
+			modelName: string
+			source: string
+			cost: number
+			inputTokens: number
+			outputTokens: number
+			inputCost: number
+			outputCost: number
+		}
 	>()
 
 	if (data.cost?.items) {
@@ -64,7 +119,11 @@ export function formatAnalyticsVisual(
 				for (const model of item.models) {
 					const cost = Number.parseFloat(model.totalCost || "0")
 					if (cost > 0) {
-						const existing = modelStats.get(model.model) || {
+						const source = getSourceName(model.providerName)
+						const key = `${model.model}\t${source}`
+						const existing = modelStats.get(key) || {
+							modelName: model.model,
+							source,
 							cost: 0,
 							inputTokens: 0,
 							outputTokens: 0,
@@ -74,7 +133,7 @@ export function formatAnalyticsVisual(
 						existing.cost += cost
 						existing.inputCost += Number.parseFloat(model.inputTokenCost || "0")
 						existing.outputCost += Number.parseFloat(model.outputTokenCost || "0")
-						modelStats.set(model.model, existing)
+						modelStats.set(key, existing)
 					}
 				}
 			}
@@ -85,7 +144,11 @@ export function formatAnalyticsVisual(
 		for (const item of data.inputTokens.items) {
 			if (item.models) {
 				for (const model of item.models) {
-					const stats = modelStats.get(model.model) || {
+					const source = getSourceName(model.providerName)
+					const key = `${model.model}\t${source}`
+					const stats = modelStats.get(key) || {
+						modelName: model.model,
+						source,
 						cost: 0,
 						inputTokens: 0,
 						outputTokens: 0,
@@ -93,7 +156,7 @@ export function formatAnalyticsVisual(
 						outputCost: 0,
 					}
 					stats.inputTokens += model.totalCount || 0
-					modelStats.set(model.model, stats)
+					modelStats.set(key, stats)
 				}
 			}
 		}
@@ -103,7 +166,11 @@ export function formatAnalyticsVisual(
 		for (const item of data.outputTokens.items) {
 			if (item.models) {
 				for (const model of item.models) {
-					const stats = modelStats.get(model.model) || {
+					const source = getSourceName(model.providerName)
+					const key = `${model.model}\t${source}`
+					const stats = modelStats.get(key) || {
+						modelName: model.model,
+						source,
 						cost: 0,
 						inputTokens: 0,
 						outputTokens: 0,
@@ -111,7 +178,7 @@ export function formatAnalyticsVisual(
 						outputCost: 0,
 					}
 					stats.outputTokens += model.totalCount || 0
-					modelStats.set(model.model, stats)
+					modelStats.set(key, stats)
 				}
 			}
 		}
@@ -120,14 +187,15 @@ export function formatAnalyticsVisual(
 	if (modelStats.size > 0) {
 		// Fixed column widths for compact display
 		const modelCol = 20
-		const tokensCol = 12
-		const ioCol = 18
-		const costCol = 12
-		const costIoCol = 18
-		const lineWidth = modelCol + tokensCol + ioCol + costCol + costIoCol + 4
+		const sourceCol = 12
+		const tokensCol = 10
+		const ioCol = 16
+		const costCol = 10
+		const costIoCol = 16
+		const lineWidth = modelCol + sourceCol + tokensCol + ioCol + costCol + costIoCol + 5
 
 		lines.push(
-			`  ${"Model".padEnd(modelCol)} ${"Tokens".padStart(tokensCol)} ${"(I / O)".padStart(ioCol)} ${"Cost".padStart(costCol)} ${"(I / O)".padStart(costIoCol)}`,
+			`  ${"Model".padEnd(modelCol)} ${theme.fg("dim", "Source".padStart(sourceCol))} ${theme.fg("dim", "Tokens".padStart(tokensCol))} ${theme.fg("dim", "(I / O)".padStart(ioCol))} ${theme.fg("dim", "Cost".padStart(costCol))} ${theme.fg("dim", "(I / O)".padStart(costIoCol))}`,
 		)
 		lines.push(`  ${theme.fg("dim", "─".repeat(lineWidth))}`)
 
@@ -137,15 +205,17 @@ export function formatAnalyticsVisual(
 		let totalInputCost = 0
 		let totalOutputCost = 0
 
-		const sortedModels = Array.from(modelStats.entries()).sort((a, b) => b[1].cost - a[1].cost)
-		for (const [model, stats] of sortedModels.slice(0, 6)) {
-			const label = model.length > 15 ? `${model.slice(0, 12)}...` : model
+		const sortedModels = Array.from(modelStats.values()).sort((a, b) => sortFn(a, b, sortBy))
+		for (const stats of sortedModels) {
+			const label = stats.modelName.length > 15 ? `${stats.modelName.slice(0, 12)}...` : stats.modelName
 			const totalTokens = stats.inputTokens + stats.outputTokens
 			const tokenStr = formatCount(totalTokens).padStart(tokensCol)
 			const ioStr = `${formatCount(stats.inputTokens)} / ${formatCount(stats.outputTokens)}`.padStart(ioCol)
 			const costStr = formatCurrency(stats.cost).padStart(costCol)
 			const costIoStr = `${formatCurrency(stats.inputCost)} / ${formatCurrency(stats.outputCost)}`.padStart(costIoCol)
-			lines.push(`  ${theme.fg("accent", label.padEnd(modelCol))} ${tokenStr} ${ioStr} ${costStr} ${costIoStr}`)
+			lines.push(
+				`  ${theme.fg("accent", label.padEnd(modelCol))} ${theme.fg("accent", stats.source.padStart(sourceCol))} ${tokenStr} ${ioStr} ${costStr} ${costIoStr}`,
+			)
 
 			totalInputTokens += stats.inputTokens
 			totalOutputTokens += stats.outputTokens
@@ -159,7 +229,9 @@ export function formatAnalyticsVisual(
 		const totalIoStr = `${formatCount(totalInputTokens)} / ${formatCount(totalOutputTokens)}`.padStart(ioCol)
 		const totalCostStr = formatCurrency(totalModelCost).padStart(costCol)
 		const totalCostIoStr = `${formatCurrency(totalInputCost)} / ${formatCurrency(totalOutputCost)}`.padStart(costIoCol)
-		lines.push(`  ${"Total".padEnd(modelCol)} ${totalTokensStr} ${totalIoStr} ${totalCostStr} ${totalCostIoStr}`)
+		lines.push(
+			`  ${theme.fg("dim", "Total".padEnd(modelCol))} ${"".padStart(sourceCol)} ${totalTokensStr} ${totalIoStr} ${totalCostStr} ${totalCostIoStr}`,
+		)
 	}
 
 	return lines

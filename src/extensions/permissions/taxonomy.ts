@@ -19,6 +19,40 @@ const STATIC_CATEGORIES: Record<string, ToolCategory> = {
 
 const READ_ONLY_NAME_HINT = /^(read|get|list|search|query|describe|find|grep|ls|loki_|view|show)/i
 
+// Verbs at the start of an underscore-separated segment that signal a read-only
+// operation on namespaced MCP direct tools like `jetbrains_get_all_open_file_paths`
+// or `supabase_list_tables`. We require an exact segment-position match (not a
+// substring) to avoid false positives — e.g. server names that happen to contain
+// `get` should not flip the classification.
+const READ_ONLY_VERB_SEGMENTS = new Set([
+	"read",
+	"get",
+	"list",
+	"search",
+	"query",
+	"describe",
+	"find",
+	"grep",
+	"ls",
+	"view",
+	"show",
+	"preview",
+	"inspect",
+])
+
+function hasReadOnlyVerbSegment(toolName: string): boolean {
+	const lower = toolName.toLowerCase()
+	if (!lower.includes("_")) return false
+	// Skip the first segment (typically the server/namespace prefix) so a
+	// namespace called "list" or "get" doesn't blanket-mark every tool
+	// underneath it as read-only. Verbs in any subsequent segment count.
+	const segments = lower.split("_")
+	for (let i = 1; i < segments.length; i++) {
+		if (READ_ONLY_VERB_SEGMENTS.has(segments[i])) return true
+	}
+	return false
+}
+
 export function classifyTool(toolName: string): ToolCategory {
 	const lower = toolName.toLowerCase()
 	if (lower in STATIC_CATEGORIES) return STATIC_CATEGORIES[lower]
@@ -30,6 +64,10 @@ export function classifyTool(toolName: string): ToolCategory {
 	}
 
 	if (READ_ONLY_NAME_HINT.test(toolName)) return "readOnly"
+	// MCP direct tools (with toolPrefix: "server") arrive flattened to a single
+	// underscore-separated name. Inspect post-prefix verb segments so they're
+	// not all stranded as "unknown" in plan mode.
+	if (hasReadOnlyVerbSegment(toolName)) return "readOnly"
 	return "unknown"
 }
 
@@ -41,12 +79,16 @@ export function isReadOnlyTool(toolName: string): boolean {
 // but cannot execute other programs, write files (beyond stdout), or mutate
 // system state. If you need to add a program here, confirm it has no flag that
 // runs a subcommand (-exec, -c, -e, --output, etc.) or writes outside stdout.
+// NOTE: cd/pushd/popd are included — they only change process cwd, no files.
 const READ_ONLY_PROGRAMS = new Set([
 	"cat",
 	"head",
 	"tail",
 	"ls",
 	"pwd",
+	"cd",
+	"pushd",
+	"popd",
 	"echo",
 	"printf",
 	"wc",
@@ -128,6 +170,16 @@ const READ_ONLY_SUBCOMMANDS: Record<string, Set<string>> = {
 		"config",
 		"tag",
 		"stash",
+		"reflog",
+		"shortlog",
+		"fsck",
+		"verify-pack",
+		"count-objects",
+		"for-each-ref",
+		"show-ref",
+		"symbolic-ref",
+		"name-rev",
+		"rev-list",
 	]),
 	npm: new Set(["list", "ls", "view", "info", "search", "outdated", "audit", "--version", "-v"]),
 	yarn: new Set(["list", "info", "why", "audit", "--version", "-v"]),
@@ -171,6 +223,84 @@ export function isHardBlockedBash(command: string): boolean {
 		if (program === "dd" && segment.tokens.some((t) => t.startsWith("of=/dev/"))) return true
 	}
 	return false
+}
+
+/**
+ * Returns true if the command contains top-level `&&`, `||`, or `;` operators.
+ * Pipes (`|`) do NOT make a command compound for this purpose — they are a
+ * single data-flow pipeline and are already handled by isReadOnlyBashCommand.
+ */
+export function isCompoundCommand(command: string): boolean {
+	const entries = parseShell(command) as ParseEntry[]
+	for (const entry of entries) {
+		if (typeof entry === "object" && "op" in entry) {
+			const op = entry.op
+			if (op === "&&" || op === "||" || op === ";") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+/**
+ * Split a compound command into individual subcommands.
+ * Only splits on `&&`, `||`, `;` — NOT on `|` (pipes).
+ * Strips leading/trailing whitespace from each subcommand.
+ * Returns null if the command is not compound.
+ */
+export function splitCompoundCommand(command: string): string[] | null {
+	if (!isCompoundCommand(command)) return null
+
+	const entries = parseShell(command) as ParseEntry[]
+	const segments: string[] = []
+	let currentTokens: string[] = []
+
+	for (let i = 0; i < entries.length; i++) {
+		const entry = entries[i]
+		if (typeof entry === "string") {
+			// Strip leading env-var assignments
+			if (currentTokens.length === 0 && /^[A-Za-z_][\w]*=/.test(entry)) {
+				continue
+			}
+			currentTokens.push(entry)
+			continue
+		}
+		if ("comment" in entry) continue
+		if ("op" in entry && entry.op === "glob") {
+			currentTokens.push(entry.pattern)
+			continue
+		}
+		if ("op" in entry) {
+			const op = entry.op
+			// Only split on compound operators, not pipes
+			if (op === "&&" || op === "||" || op === ";") {
+				const reconstructed = currentTokens.join(" ").trim()
+				if (reconstructed) segments.push(reconstructed)
+				currentTokens = []
+				continue
+			}
+			if (op === "|" || op === "|&") {
+				currentTokens.push(entry.op)
+				continue
+			}
+			if ((op === ">" || op === ">>") && typeof entries[i + 1] === "string") {
+				// Consume the redirect target.
+				// NOTE: We intentionally handle only > and >>. Other redirects (<, >&, <<)
+				// are intentionally not supported — they would not change the program
+				// classification outcome for permission evaluation.
+				currentTokens.push(entry.op)
+				currentTokens.push(entries[i + 1] as string)
+				i++
+			}
+		}
+	}
+
+	// Append the last segment
+	const reconstructed = currentTokens.join(" ").trim()
+	if (reconstructed) segments.push(reconstructed)
+
+	return segments.filter((s) => s.length > 0)
 }
 
 export function extractBashProgram(command: string): { program: string; subcommand: string | undefined } {

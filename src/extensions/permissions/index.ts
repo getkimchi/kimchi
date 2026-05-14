@@ -1,3 +1,4 @@
+import { resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
@@ -7,12 +8,33 @@ import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
 import { resolveMode } from "./mode.js"
-import { promptForApproval } from "./prompts.js"
+import { type CompoundSubcommand, promptForApproval, promptForCompoundApproval } from "./prompts.js"
 import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import { evaluateRules, parseRules, stringifyRule } from "./rules.js"
 import { SessionMemory } from "./session-memory.js"
-import { isReadOnlyBashCommand, isReadOnlyTool } from "./taxonomy.js"
+import {
+	isCompoundCommand,
+	isHardBlockedBash,
+	isReadOnlyBashCommand,
+	isReadOnlyTool,
+	splitCompoundCommand,
+} from "./taxonomy.js"
 import { BUILTIN_DENY, DEFAULT_CONFIG, type PermissionMode, type Rule } from "./types.js"
+
+/**
+ * Check whether a file path is within .kimchi/plans/ relative to cwd.
+ * Accepts both relative paths (starting with .kimchi/plans/) and
+ * absolute paths under <cwd>/.kimchi/plans/.
+ * Path traversal is prevented by resolving to an absolute path first.
+ */
+export function isWithinKimchiPlans(filePath: string, cwd: string): boolean {
+	const normalizedCwd = cwd.endsWith("/") ? cwd : `${cwd}/`
+	const plansDir = `${normalizedCwd}.kimchi/plans/`
+
+	// Resolve to absolute, normalizing any ".." components
+	const abs = resolve(cwd, filePath)
+	return abs.startsWith(plansDir)
+}
 
 /**
  * DANGER: Bypass flag that disables ALL permission checks.
@@ -33,8 +55,39 @@ const EMPTY_LOADED_CONFIG: LoadedConfig = {
 // bash is allowed but gated per-command by isReadOnlyBashCommand.
 const PLAN_MODE_TOOLS = ["read", "grep", "find", "ls", "web_search", "web_fetch", "questionnaire", "bash"]
 
-// subagent delegates to a sub-session that enforces permissions on its own calls.
-const BUILTIN_ALLOW_TOOL_NAMES = ["subagent", "set_phase"]
+// Tools that auto-approve in headless/auto modes without LLM classification.
+// `set_phase` is a kimchi built-in. `agent`/`get_subagent_result`/`steer_subagent`
+// are the agents-extension surface — `agent` is the canonical delegation tool,
+// the other two are read-only/control-plane operations on already-approved spawns.
+// `ferment` tools are internal state-management operations from the ferment
+// extension — they never write user files or run shell commands.
+//
+// Names are lowercased because the tool_call handler lowercases event.toolName
+// before comparing (see `const toolName = event.toolName.toLowerCase()` below).
+const BUILTIN_ALLOW_TOOL_NAMES = [
+	"set_phase",
+	"agent",
+	"get_subagent_result",
+	"steer_subagent",
+	"create_ferment",
+	"list_ferments",
+	"scope_ferment",
+	"update_scope_field",
+	"activate_phase",
+	"refine_phase",
+	"start_step",
+	"complete_step",
+	"verify_step",
+	"skip_step",
+	"complete_phase",
+	"skip_phase",
+	"complete_ferment",
+	"fail_step",
+	"fail_phase",
+	"add_decision",
+	"add_memory",
+	"set_ferment_mode",
+]
 
 const MODES: Array<{ mode: PermissionMode; label: string; color: "success" | "warning" | "error" }> = [
 	{ mode: "default", label: "default", color: "success" },
@@ -47,6 +100,13 @@ let _currentPermissionsMode: PermissionMode = "default"
 
 export function getCurrentPermissionsMode(): PermissionMode {
 	return _currentPermissionsMode
+}
+
+/** Called by the ferment extension whenever a ferment becomes active or is cleared. */
+let _onFermentActiveChange: ((hasActiveFerment: boolean) => void) | undefined
+
+export function notifyFermentActive(hasActiveFerment: boolean): void {
+	_onFermentActiveChange?.(hasActiveFerment)
 }
 
 export default function permissionsExtension(pi: ExtensionAPI): void {
@@ -98,6 +158,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	/** Tracks all active permission prompt abort controllers for concurrent tool calls. */
 	const activeAbortControllers = new Set<AbortController>()
 	let unsubscribeTerminalInput: (() => void) | null = null
+	let _lastCtx: ExtensionContext | undefined
 
 	function rebuildConfigRules(): void {
 		configRules = [
@@ -192,6 +253,23 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		maybeShowYoloWarning(ctx, next)
 	}
 
+	// Wire the cross-extension callback: ferment calls notifyFermentActive() when
+	// a ferment is activated or cleared, so permissions can switch to/from yolo.
+	_onFermentActiveChange = (hasActiveFerment: boolean) => {
+		if (cliMode) return // explicit CLI flag always wins
+		if (hasActiveFerment) {
+			runtimeMode = "yolo"
+		} else {
+			// Only clear runtimeMode if we set it for ferment (not if user changed it manually)
+			if (runtimeMode === "yolo") runtimeMode = undefined
+		}
+		propagateModeToEnv()
+		if (_lastCtx) {
+			updateStatus(_lastCtx)
+			maybeShowYoloWarning(_lastCtx, currentMode())
+		}
+	}
+
 	function doLoadConfig(ctx: ExtensionContext): { errors: string[] } {
 		const { loaded: lc, errors } = loadConfig({
 			cwd: ctx.cwd,
@@ -217,6 +295,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		_lastCtx = ctx
 		const { errors } = doLoadConfig(ctx)
 
 		for (const err of errors) {
@@ -250,6 +329,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// YOLO mode: --yolo and --dangerously-skip-permissions both set yolo mode (no classifier, auto-approve all)
 		else if (pi.getFlag("yolo") || pi.getFlag("dangerously-skip-permissions")) cliMode = "yolo"
 
+		// Active ferment → auto-yolo so all ferment tools execute without approval prompts.
+		// Only applies when no explicit CLI mode flag was given.
+		if (!cliMode && process.env.KIMCHI_ACTIVE_FERMENT) {
+			runtimeMode = "yolo"
+		}
+
 		if (currentMode() === "plan") applyPlanModeTools()
 		propagateModeToEnv()
 		updateStatus(ctx)
@@ -265,6 +350,23 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	pi.on("tool_call", async (event, ctx) => {
 		const toolName = event.toolName.toLowerCase()
 		const input = event.input as Record<string, unknown>
+
+		// Plan persona path-scope enforcement: when KIMCHI_AGENT_PERSONA=plan (case-insensitive),
+		// write and edit are only allowed for .kimchi/plans/* paths.
+		if (process.env.KIMCHI_AGENT_PERSONA?.toLowerCase() === "plan") {
+			if (toolName === "write" || toolName === "edit") {
+				const filePath =
+					typeof input.file_path === "string" ? input.file_path : typeof input.path === "string" ? input.path : ""
+				if (filePath && !isWithinKimchiPlans(filePath, ctx.cwd)) {
+					return {
+						block: true,
+						reason: `Plan persona: ${toolName} is restricted to .kimchi/plans/ files. The path "${filePath}" is outside that scope.`,
+					}
+				}
+				// path is within .kimchi/plans/ — allow without further checks
+				return undefined
+			}
+		}
 
 		// Re-evaluation loop: when a permission prompt is dismissed because the user
 		// changed mode via shift+tab, we re-evaluate the tool call under the new mode.
@@ -297,13 +399,30 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				return undefined
 			}
 
+			if (BUILTIN_ALLOW_TOOL_NAMES.includes(toolName)) return undefined
+
+			// Compound bash commands: early gate for deny/allow only.
+			// If the check returns "prompt", fall through to
+			// evaluateRules → auto-mode/classifier → prompt site below.
+			if (toolName === "bash") {
+				const command = typeof input.command === "string" ? input.command : ""
+				if (isCompoundCommand(command)) {
+					const compoundCheck = checkCompoundCommand(command, allRules())
+					if (compoundCheck.decision === "deny") {
+						return { block: true, reason: compoundCheck.deniedReason ?? "Subcommand denied" }
+					}
+					if (compoundCheck.decision === "allow") {
+						return undefined
+					}
+					// "prompt" → fall through to existing flow
+				}
+			}
+
 			const match = evaluateRules(allRules(), toolName, input)
 			if (match.decision === "deny") {
 				return { block: true, reason: `Denied by rule ${formatRule(match.rule)}` }
 			}
 			if (match.decision === "allow") return undefined
-
-			if (BUILTIN_ALLOW_TOOL_NAMES.includes(toolName)) return undefined
 
 			// Auto mode + headless default mode (subagents) both go through the
 			// classifier; prompts without a UI fail closed.
@@ -337,12 +456,31 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					subtitle: `Classifier: ${verdict.reason}`,
 					session,
 					activeAborts: activeAbortControllers,
+					allRules,
 				})
 				if (result === "aborted") continue // mode changed, re-evaluate
 				return result
 			}
 
-			const result = await handleConfirm(event, { ctx, session, activeAborts: activeAbortControllers })
+			// Prompt site — branch to compound or single-command flow
+			if (toolName === "bash") {
+				const command = typeof input.command === "string" ? input.command : ""
+				if (isCompoundCommand(command)) {
+					const subcommands = splitCompoundCommand(command)
+					if (subcommands && subcommands.length > 0) {
+						const result = await handleCompoundConfirm(event, {
+							ctx,
+							session,
+							activeAborts: activeAbortControllers,
+							subcommands,
+							allRules,
+						})
+						if (result === "aborted") continue // mode changed, re-evaluate
+						return result
+					}
+				}
+			}
+			const result = await handleConfirm(event, { ctx, session, activeAborts: activeAbortControllers, allRules })
 			if (result === "aborted") continue // mode changed, re-evaluate
 			return result
 		}
@@ -378,6 +516,7 @@ interface ConfirmOptions {
 	session: SessionMemory
 	subtitle?: string
 	activeAborts: Set<AbortController>
+	allRules?: () => Rule[]
 }
 
 async function handleConfirm(
@@ -401,9 +540,81 @@ async function handleConfirm(
 			opts.session.add(outcome.rule)
 			return undefined
 		}
+		if (outcome.kind === "allow-remember-wildcard") {
+			opts.session.add(outcome.rule)
+			return undefined
+		}
 		if (outcome.kind === "deny-with-feedback") {
 			return { block: true, reason: outcome.feedback }
 		}
+		return { block: true, reason: "Declined by user" }
+	} finally {
+		opts.activeAborts.delete(abort)
+	}
+}
+
+export async function handleCompoundConfirm(
+	event: ToolCallEvent,
+	opts: ConfirmOptions & { subcommands: string[] },
+): Promise<{ block: true; reason: string } | "aborted" | undefined> {
+	const abort = new AbortController()
+	opts.activeAborts.add(abort)
+	try {
+		const compoundSubs: CompoundSubcommand[] = opts.subcommands.map((cmd) => ({
+			command: cmd,
+			description: `bash(${truncate(cmd, 100)})`,
+		}))
+
+		const outcome = await promptForCompoundApproval({
+			toolName: event.toolName,
+			commands: compoundSubs,
+			ctx: opts.ctx,
+			signal: abort.signal,
+		})
+
+		if (outcome.kind === "aborted") return "aborted"
+		if (outcome.kind === "allow-all-once") return undefined
+
+		if (outcome.kind === "allow-all-remember") {
+			for (const rule of outcome.rules) {
+				opts.session.add(rule)
+			}
+			return undefined
+		}
+
+		if (outcome.kind === "pick-per-subcommand") {
+			// For each subcommand, evaluate rules and prompt if needed
+			for (const subcommand of opts.subcommands) {
+				// Re-evaluate rules (user may have added rules during the prompt)
+				const match = evaluateRules(opts.allRules ? opts.allRules() : opts.session.all(), "bash", {
+					command: subcommand,
+				})
+				if (match.decision === "allow") {
+					continue
+				}
+				if (match.decision === "deny") {
+					return { block: true, reason: `Subcommand blocked by rule: ${subcommand}` }
+				}
+
+				// Create a fake bash event for this subcommand
+				const subEvent: ToolCallEvent = {
+					...event,
+					input: { command: subcommand },
+				}
+				const result = await handleConfirm(subEvent, opts)
+				if (result === "aborted") return "aborted"
+				if (result !== undefined) {
+					// Blocked
+					return { block: true, reason: result.reason }
+				}
+			}
+			return undefined
+		}
+
+		if (outcome.kind === "deny-with-feedback") {
+			return { block: true, reason: outcome.feedback }
+		}
+
 		return { block: true, reason: "Declined by user" }
 	} finally {
 		opts.activeAborts.delete(abort)
@@ -418,6 +629,62 @@ function splitFlag(raw: boolean | string | undefined): string[] {
 		.filter(Boolean)
 }
 
+function truncate(s: string, max: number): string {
+	if (s.length <= max) return s
+	return `${s.slice(0, max - 1)}…`
+}
+
 function formatRule(rule: Rule): string {
 	return `${stringifyRule(rule)} [${rule.source}]`
+}
+
+interface CompoundCheckResult {
+	decision: "allow" | "deny" | "prompt"
+	deniedReason?: string
+	subcommands?: string[]
+}
+
+/**
+ * Check if a compound bash command can be allowed, denied, or needs prompting.
+ * Exported for testing.
+ */
+export function checkCompoundCommand(command: string, rules: Rule[]): CompoundCheckResult {
+	// First check for hard-blocked programs
+	if (isHardBlockedBash(command)) {
+		return { decision: "deny", deniedReason: `Hard-blocked program in command: ${command}` }
+	}
+
+	// If not compound, fall through to normal flow
+	if (!isCompoundCommand(command)) {
+		return { decision: "prompt" }
+	}
+
+	// Split into subcommands
+	const subcommands = splitCompoundCommand(command)
+	if (!subcommands || subcommands.length === 0) {
+		return { decision: "prompt" }
+	}
+
+	// Check each subcommand — track if all are allowed or any denied
+	let allAllowed = true
+	for (const subcommand of subcommands) {
+		// Check for hard-blocked programs in subcommand
+		if (isHardBlockedBash(subcommand)) {
+			return { decision: "deny", deniedReason: `Hard-blocked program in command: ${subcommand}` }
+		}
+		const match = evaluateRules(rules, "bash", { command: subcommand })
+		if (match.decision === "deny") {
+			return { decision: "deny", deniedReason: `Subcommand blocked by rule: ${subcommand}` }
+		}
+		if (match.decision !== "allow") {
+			allAllowed = false
+		}
+	}
+
+	// If all subcommands explicitly allowed by rules, allow the compound
+	if (allAllowed) {
+		return { decision: "allow" }
+	}
+
+	return { decision: "prompt", subcommands }
 }

@@ -37,6 +37,14 @@ export function resolvedSemanticFg(theme: Theme, c: "success" | "warning" | "err
 	return ansi === RST_FG ? semanticFg(c) : ansi
 }
 
+// Returns the theme's accent ANSI sequence, falling back to TEAL_FG for
+// kimchi-minimal which intentionally leaves accent empty to inherit from
+// the terminal scheme.
+export function resolvedAccentFg(theme: Theme): string {
+	const ansi = theme.getFgAnsi("accent")
+	return ansi === RST_FG ? TEAL_FG : ansi
+}
+
 export const ANSI = {
 	accent: "38;2;138;190;183",
 	dim: tc("102;102;102", "242"),

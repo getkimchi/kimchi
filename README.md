@@ -166,6 +166,113 @@ User-defined tags (those added via `/tags add`) are automatically persisted to:
 
 These tags persist across sessions. Static tags from `KIMCHI_TAGS` are not persisted and must be set via environment variable each session.
 
+## Ferment — Cross-Session Project Management
+
+Ferment is Kimchi's progressive-refinement project mode for multi-session work. Instead of starting from scratch each chat, Ferment persists a structured plan (goal, phases, steps) across sessions as a JSON state file.
+
+### Quick start
+
+```bash
+kimchi --ferment "Build Tetris"
+```
+
+Or inside an active session:
+
+```
+/ferment add "Build Tetris"    # creates with mode: plan
+/ferment mode exec              # switch to autonomous execution
+```
+
+### Concepts
+
+- **Ferment** — the top-level project (e.g. "Build Tetris", "Auth rewrite")
+- **Phase** — a milestone within the project (e.g. "Canvas & Grid", "Movement")
+- **Step** — a single executable task within a phase (e.g. "Create index.html")
+- **Decision** — an architectural choice recorded for posterity
+- **Memory** — a gotcha, convention, or pattern encountered during work
+
+### State machine
+
+All lifecycle transitions (create → scope → activate → start → complete) are validated by a **deterministic finite state machine** that enforces valid state changes and prevents illegal operations (e.g., completing a step before it starts, skipping an already-completed phase). The FSM produces declarative next-action guidance so the harness derives behavior directly from state.
+
+```
+draft → planned → running → [paused] → complete
+```
+
+1. **draft** — created via `/ferment add`, agent collects goal + phases conversationally
+2. **planned** — `scope_ferment` sets goal, criteria, constraints, phase breakdown
+3. **running** — `activate_phase` starts a phase, agent executes steps
+4. **paused** — user intervention required (plan mode, or `/pause`)
+5. **complete** — all phases terminal, done
+
+### Three work modes
+
+| Mode | Behavior | Use when |
+|------|----------|----------|
+| **plan** | Agent asks permission, proposes, explains. No tool enforcement. | Scoping, ambiguous problems, complex architecture |
+| **exec** | Agent acts immediately. Strips coaching text. Auto-advance. | Clear tasks, iterating fast, trusted execution |
+| **auto** (default) | Full coaching. User decides when to act. | Mixed, exploring, learning |
+
+```
+/ferment mode plan     ← ask the agent to coach you
+/ferment mode exec     ← let the agent run autonomously
+/ferment mode auto     ← coaching mode (default)
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/ferment` | List all ferments with status |
+| `/ferment add "Name"` | Create new ferment (draft, plan mode) |
+| `/ferment switch <id>` | Resume by ID prefix or name |
+| `/ferment delete <id>` | Delete permanently |
+| `/ferment export` | Export stats to JSON for analysis |
+| `/ferment mode` | Show current mode + help |
+| `/ferment mode plan/exec/auto` | Change mode |
+| `/auto` | Enable auto-mode |
+| `/pause` | Disable auto-mode |
+| `/status` | Full status dump with phases, steps, decisions |
+
+### Recovery
+
+Every session writes a `ferment_reference` entry in the session log. On next start, the harness reads this entry, loads the JSON state from `.kimchi/ferments/<uuid>.json`, and immediately tells the agent what to do next.
+
+```bash
+# Day 1
+$ kimchi --ferment "Build Tetris"
+# … agent works, crashes, terminal closes …
+
+# Day 2
+$ kimchi --ferment "Build Tetris"
+# → Rehydrates state, continues Phase 2 exactly where it left off
+```
+
+### Where state lives
+
+```
+.kimchi/
+├── ferments/
+│   ├── <uuid>.json          ← snapshot cache (machine-readable plan state)
+│   └── <uuid>.events.jsonl  ← append-only audit log of every transition
+├── sessions/
+│   └── <timestamp>.jsonl    ← chat history + tool calls
+└── .<uuid>.progress.log     ← human-readable audit trail
+```
+
+Every mutate operation is persisted as an **append-only event** with pre/post state hashes, enabling full auditability. A deterministic **finite state machine (FSM)** validates all lifecycle transitions and prevents illegal operations (e.g., completing a step before it starts). Stats (aggregate phase/step counts, timing percentiles, worker model usage, grade distributions) are computed on demand from the snapshot — surfaced inline (elapsed time, model, grade per step) and exported via `/ferment export` to a JSON file in the cwd.
+
+For full documentation see `docs/ferment.md` and `docs/ferment-storage-schema.md`.
+
+### Visual display
+
+Active ferment is shown in the footer:
+```
+ferment: Build Tetris [running] phase 2/5 "Pieces"
+```
+
+---
+
 ### Visual display
 
 Active tags are displayed in the footer, grouped by key with color coding for visual distinction. Tags with the same key are shown together (e.g., `project:api,web`).
@@ -212,6 +319,46 @@ User: "Add user authentication"
 → set_phase({"phase": "build"})       # Implement the auth code
 → set_phase({"phase": "review"})      # Verify the implementation
 ```
+
+## Benchmarking
+
+The `benchmark/` directory contains tools for smoke-testing kimchi sessions and auditing their quality.
+
+### Manual benchmarks
+
+Run predefined tasks (simple, complex, research) against different models and compare results:
+
+```bash
+cd benchmark/manual
+./new-session.sh                              # create a new session with run scripts
+./sessions/session-01/run-all.sh              # run all task x model combinations
+python3 analyze-session.py                    # analyze the latest session
+python3 compare-sessions.py 1 2              # compare two sessions
+```
+
+See `benchmark/manual/README.md` for full documentation on tasks, session structure, and analysis.
+
+### Terminal-bench-2
+
+Run the [terminal-bench](https://www.harborframework.com/) suite (89 tasks) against kimchi inside Docker containers. The agent is installed in each task container and runs non-interactively; token and cost counters are parsed from the JSONL output.
+
+```bash
+cd benchmark/terminal-bench-2
+export KIMCHI_API_KEY=...
+
+# Single task (from local build)
+./scripts/run-local.sh -i terminal-bench/fix-git
+
+# Full suite, 8 parallel trials (from latest release)
+./scripts/run-release.sh -n 8
+```
+
+See `benchmark/terminal-bench-2/README.md` for Apple Silicon caveats, timeout tuning, and result interpretation.
+
+### Session phase audit
+
+Audit a completed session for phase discipline, code quality, architecture, testing, model alignment, and cost efficiency. The audit agent parses the session JSONL, reconstructs the phase timeline, and produces a graded report.
+See `benchmark/audit-session/README.md` for the full evaluation criteria and an end-to-end example.
 
 ## Development
 

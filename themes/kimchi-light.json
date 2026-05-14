@@ -86,7 +86,9 @@
 		"thinkingHigh": "#875f87",
 		"thinkingXhigh": "#8b008b",
 
-		"bashMode": "lime-600"
+		"bashMode": "lime-600",
+		"oscFg": "#333333",
+		"oscBg": "#FAFAFA"
 	},
 	"export": {
 		"pageBg": "#f8f8f8",
