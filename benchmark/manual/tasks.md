@@ -117,8 +117,6 @@ Requirements:
 
 ## Task 5 — Explore + refactor: Add input validation to existing Go API
 
-**Not included in run-all.sh** — run separately via `run-explore-<model>.sh`.
-
 **Seed project:** `benchmark/manual/seeds/explore-refactor/` — a Go HTTP user-management API (~850 lines, 13 files) with layered architecture (handler -> service -> repository). Multiple handlers have intentional missing input validation.
 
 **Prompt:**
