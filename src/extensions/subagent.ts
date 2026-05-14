@@ -344,12 +344,17 @@ export async function spawnSubagent(params: {
 		params.signal,
 		params.tokenBudget,
 		INACTIVITY_TIMEOUT_MS,
+		undefined,
 		(text) => {
 			accumulated = text
 		},
 		() => {
 			// ignore tool calls in simple mode
 		},
+		undefined,
+		undefined,
+		undefined,
+		undefined,
 	)
 
 	if (result.failureReason !== undefined || result.exitCode !== 0) {
@@ -370,8 +375,13 @@ export function spawnSubagentInternal(
 	signal: AbortSignal | undefined,
 	tokenBudget: number | undefined,
 	inactivityTimeoutMs: number,
+	sessionDir: string | undefined,
 	onToken: (accumulated: string) => void,
 	onToolCall: (name: string, args: Record<string, unknown>, accumulated: string) => void,
+	model?: string,
+	provider?: string,
+	promptLength?: number,
+	attachmentCount?: number,
 ): Promise<SubagentResult> {
 	return new Promise((resolve) => {
 		const startedAt = Date.now()
@@ -795,6 +805,7 @@ export default function (pi: ExtensionAPI) {
 					signal,
 					tokenBudget,
 					inactivityTimeoutMs,
+					parentSessionDir,
 					(text) => {
 						lastToolCall = undefined
 						onUpdate?.({ content: [{ type: "text", text }], details: undefined })
@@ -806,6 +817,10 @@ export default function (pi: ExtensionAPI) {
 						lastToolCall = `${name}${argHint}`
 						onUpdate?.({ content: [{ type: "text", text }], details: lastToolCall })
 					},
+					params.model,
+					params.provider,
+					params.prompt.length,
+					allAttachments.length,
 				)
 
 				pi.appendEntry<SubagentEndCheckpoint>(CHECKPOINT_END_TYPE, {
