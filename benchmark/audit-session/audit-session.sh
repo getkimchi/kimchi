@@ -240,7 +240,7 @@ run_audit_agent() {
 
 extract_json_sidecar() {
     local audit_file="$1"
-    local sidecar_file="${audit_file%.md}-AUDIT.json"
+    local sidecar_file="${audit_file%.md}.json"
 
     if [[ ! -f "$audit_file" ]]; then
         echo "Audit file not found: $audit_file" >&2
@@ -284,8 +284,11 @@ echo ""
 audit_file=".kimchi/audits/$AUDIT_FILENAME"
 if [[ -s "$audit_file" ]]; then
     echo "Audit report written: $audit_file"
-    sidecar=$(extract_json_sidecar "$audit_file")
-    echo "JSON sidecar written: $sidecar"
+    if sidecar=$(extract_json_sidecar "$audit_file"); then
+        echo "JSON sidecar written: $sidecar"
+    else
+        echo "Warning: JSON sidecar extraction failed" >&2
+    fi
 else
     echo "Warning: audit report is empty or was not written" >&2
 fi
