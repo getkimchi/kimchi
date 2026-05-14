@@ -10,7 +10,7 @@
 //                                   plus package.json → dist/share/kimchi/
 //                                   so the compiled binary resolves assets from the shared data directory
 
-import { cpSync, mkdirSync } from "node:fs"
+import { cpSync, mkdirSync, readdirSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -44,9 +44,10 @@ cpSync(exportHtmlSrc, exportHtmlDest, {
 })
 
 // kimchi's own themes live outside node_modules — copy them alongside the upstream themes
-const bundledKimchiThemes = ["kimchi.json", "kimchi-minimal.json", "dark.json", "light.json"]
-for (const file of bundledKimchiThemes) {
-	cpSync(join(projectRoot, "themes", file), join(themeDest, file))
+const kimchiThemesSrc = join(projectRoot, "themes")
+const kimchiThemeFiles = readdirSync(kimchiThemesSrc).filter((f) => f.endsWith(".json"))
+for (const file of kimchiThemeFiles) {
+	cpSync(join(kimchiThemesSrc, file), join(themeDest, file))
 }
 
 if (!isDev) {
