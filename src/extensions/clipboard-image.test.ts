@@ -9,16 +9,18 @@ const {
 	mockGetNativeClipboard,
 	mockReadClipboardImage,
 	mockGetAvailableModels,
-	mockSetCurrentTurnImages,
-	mockAddSessionImages,
+	mockAddImage,
+	mockClearAllImages,
+	mockSetImageCacheDir,
 } = vi.hoisted(() => ({
 	mockSetPasteImageHandler: vi.fn(),
 	mockSetPendingImageIndicator: vi.fn(),
 	mockGetNativeClipboard: vi.fn(),
 	mockReadClipboardImage: vi.fn(),
 	mockGetAvailableModels: vi.fn(),
-	mockSetCurrentTurnImages: vi.fn(),
-	mockAddSessionImages: vi.fn(),
+	mockAddImage: vi.fn(),
+	mockClearAllImages: vi.fn(),
+	mockSetImageCacheDir: vi.fn(),
 }))
 
 vi.mock("./ui.js", () => ({
@@ -38,12 +40,10 @@ vi.mock("../startup-context.js", () => ({
 	getAvailableModels: mockGetAvailableModels,
 }))
 
-vi.mock("../utils/image-state.js", () => ({
-	clearCurrentTurnImages: vi.fn(),
-	setCurrentTurnImages: mockSetCurrentTurnImages,
-	addSessionImages: mockAddSessionImages,
-	getCurrentTurnImages: vi.fn().mockReturnValue([]),
-	consumeTurnImages: vi.fn(),
+vi.mock("../utils/image-registry.js", () => ({
+	addImage: mockAddImage,
+	clearAllImages: mockClearAllImages,
+	setImageCacheDir: mockSetImageCacheDir,
 }))
 
 import type { ImageContent } from "@earendil-works/pi-ai"
@@ -98,15 +98,14 @@ describe("clipboard-image extension", () => {
 			})
 		})
 
-		it("does not call setCurrentTurnImages when no images are present", () => {
+		it("does not call addImage when no images are present", () => {
 			const pi = makeMockPi()
 			clipboardImageExtension(pi)
 
 			callInputHandler(pi, { text: "hello", images: [] })
 
-			// With the new accumulation behavior, we return early when no images
-			// and don't call setCurrentTurnImages at all (it would incorrectly reset the store)
-			expect(mockSetCurrentTurnImages).not.toHaveBeenCalled()
+			// Early return when no images — addImage must not be called.
+			expect(mockAddImage).not.toHaveBeenCalled()
 		})
 
 		it("returns undefined (no transform) when no text and no images", () => {

@@ -1,9 +1,10 @@
+import { join } from "node:path"
 import type { ImageContent } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getAvailableModels } from "../startup-context.js"
 import { getNativeClipboard } from "../utils/clipboard-native-harness.js"
 import { readClipboardImage } from "../utils/clipboard-read.js"
-import { addSessionImages, clearCurrentTurnImages } from "../utils/image-state.js"
+import { addImage, clearAllImages, setImageCacheDir } from "../utils/image-registry.js"
 import { setPasteImageHandler, setPendingImageIndicator } from "./ui.js"
 
 let pendingImages: ImageContent[] = []
@@ -84,19 +85,16 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		currentCtx = ctx
 		pendingImages = []
 		imageCounter = 0
-		clearCurrentTurnImages()
+		const sessionDir = ctx.sessionManager?.getSessionDir?.() ?? null
+		const dir = sessionDir ? join(sessionDir, "image-cache") : null
+		setImageCacheDir(dir)
+		clearAllImages()
 		updateIndicator()
 	})
 
 	pi.on("input", (event) => {
 		const incoming = event.images ?? []
 		const totalImages = incoming.length + pendingImages.length
-
-		// Add new images to the session store (images accumulate across turns).
-		// This is the new primary interface — images persist until consumed by subagent.
-		if (totalImages > 0) {
-			addSessionImages([...incoming, ...pendingImages])
-		}
 
 		if (totalImages === 0) return
 
@@ -106,6 +104,11 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 
 		const startIndex = imageCounter + 1
 		imageCounter += totalImages
+		// Persist each image to disk and register under its [Image #N] id.
+		images.forEach((image, i) => {
+			const id = startIndex + i
+			addImage(id, image)
+		})
 		const prefix = buildImageMarkerPrefix(startIndex, totalImages)
 		const trimmed = event.text.trimStart()
 		const text = trimmed ? `${prefix} ${trimmed}` : prefix

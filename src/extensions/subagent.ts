@@ -17,12 +17,27 @@ import { isBunBinary, isRunningUnderBun } from "../env.js"
 import { isToolExpanded, registerToolCall } from "../expand-state.js"
 import { findExistingFile, resolveUserPath, stripAtPrefix } from "../fs-paths.js"
 import { getAvailableModels } from "../startup-context.js"
-import { consumeTurnImages, getCurrentTurnImages } from "../utils/image-state.js"
-import { writeImagesForSubagent } from "../utils/image-subagent-bridge.js"
+import { getAllImages, getImagesByIds, parseImageReferences } from "../utils/image-registry.js"
 import { formatCount, formatDuration } from "./format.js"
 import { filterThinkingForDisplay } from "./hide-thinking.js"
 import { type SpinnerState, clearSpinner, spinnerFrame, tickSpinner } from "./spinner.js"
 import { HORIZONTAL_PADDING } from "./ui.js"
+
+function modelSupportsImages(modelId: string | undefined): boolean {
+	if (!modelId) return false
+	const models = getAvailableModels()
+	const meta = models.find((m) => m.slug === modelId)
+	return meta?.input_modalities.includes("image") ?? false
+}
+
+function findVisionCapableAlternative(
+	provider: string | undefined,
+	_currentModel: string | undefined,
+): { slug: string } | undefined {
+	const models = getAvailableModels().filter((m) => m.input_modalities.includes("image"))
+	// Prefer same-provider model; fall back to any vision-capable model.
+	return models.find((m) => m.provider === provider) ?? models[0]
+}
 
 const PROMPT_MAX_LENGTH = 60
 const FOOTER_STATUS_KEY = "subagent-sessions"
@@ -831,16 +846,22 @@ export default function (pi: ExtensionAPI) {
 					isError: true,
 				}
 			}
-			const turnImages = getCurrentTurnImages()
-			let imageTmpPaths: string[] = []
-			let imageCleanup: (() => void) | null = null
+			// Resolve which cached images to forward to the subagent.
+			// - If the prompt contains [Image #N] markers, forward only those.
+			// - Otherwise, forward ALL cached session images (back-compat for the
+			//   "I pasted an image, send it to the subagent" simple case).
+			const referencedIds = parseImageReferences(params.prompt)
+			const candidateEntries = referencedIds.length > 0 ? getImagesByIds(referencedIds) : getAllImages()
+
+			let imagePaths: string[] = []
 			let imagePrefix = ""
 			let resolvedModel = params.model
-			if (turnImages.length > 0) {
-				const meta = getAvailableModels().find((m) => m.slug === params.model)
-				if (!meta?.input_modalities?.includes("image")) {
-					// Auto-select first vision-capable model instead of failing
-					const visionModel = getAvailableModels().find((m) => m.input_modalities?.includes("image"))
+
+			if (candidateEntries.length > 0) {
+				// If the chosen model doesn't support images, swap to a vision-capable
+				// alternative from the same provider.
+				if (!modelSupportsImages(params.model)) {
+					const visionModel = findVisionCapableAlternative(params.provider, params.model)
 					if (visionModel) {
 						resolvedModel = visionModel.slug
 						imagePrefix = `⚠ Image(s) present — using ${visionModel.slug} (vision-capable) instead of ${params.model}. `
@@ -849,7 +870,7 @@ export default function (pi: ExtensionAPI) {
 							content: [
 								{
 									type: "text",
-									text: `This turn contains ${turnImages.length} image(s) but no vision-capable model is available.`,
+									text: `This turn contains ${candidateEntries.length} image(s) but no vision-capable model is available for provider "${params.provider}".`,
 								},
 							],
 							details: undefined,
@@ -857,20 +878,18 @@ export default function (pi: ExtensionAPI) {
 						}
 					}
 				}
+
 				const userAttachmentCount = validated.resolved.length
 				const imageSlots = Math.max(0, 10 - userAttachmentCount)
-				const forwardImages = turnImages.slice(0, imageSlots)
-				const omitted = turnImages.length - forwardImages.length
+				const forwardEntries = candidateEntries.slice(0, imageSlots)
+				const omitted = candidateEntries.length - forwardEntries.length
 				if (omitted > 0) {
-					imagePrefix += `⚠ Forwarding ${forwardImages.length} of ${turnImages.length} images (attachment limit reached). `
+					imagePrefix += `⚠ Forwarding ${forwardEntries.length} of ${candidateEntries.length} images (attachment limit reached). `
 				}
-				const bridge = writeImagesForSubagent(forwardImages)
-				imageTmpPaths = bridge.paths
-				imageCleanup = bridge.cleanup
-				// Mark images as consumed so they won't be forwarded again
-				consumeTurnImages()
+				imagePaths = forwardEntries.map((e) => e.path)
 			}
-			const allAttachments = [...validated.resolved, ...imageTmpPaths]
+
+			const allAttachments = [...validated.resolved, ...imagePaths]
 
 			const parentSessionDir = ctx.sessionManager.getSessionDir()
 			const parentSessionFile = ctx.sessionManager.getSessionFile()
@@ -913,87 +932,83 @@ export default function (pi: ExtensionAPI) {
 			const tokenBudget = params.tokenBudget !== undefined ? Number(params.tokenBudget) : undefined
 			const inactivityTimeoutMs =
 				params.inactivityTimeoutMs !== undefined ? Number(params.inactivityTimeoutMs) : INACTIVITY_TIMEOUT_MS
-			try {
-				const { exitCode, accumulated, stderr, tokenUsage, failureReason, durationMs } = await spawnSubagentInternal(
-					invocation,
-					ctx.cwd,
-					signal,
-					tokenBudget,
-					inactivityTimeoutMs,
-					parentSessionDir,
-					(text) => {
-						lastToolCall = undefined
-						onUpdate?.({ content: [{ type: "text", text }], details: undefined })
-					},
-					(name, toolArgs, text) => {
-						const firstArg = Object.values(toolArgs)[0]
-						const argHint =
-							typeof firstArg === "string" ? ` ${firstArg.slice(0, 60)}${firstArg.length > 60 ? "…" : ""}` : ""
-						lastToolCall = `${name}${argHint}`
-						onUpdate?.({ content: [{ type: "text", text }], details: lastToolCall })
-					},
-					params.model,
-					params.provider,
-					params.prompt.length,
-					allAttachments.length,
-				)
+			const { exitCode, accumulated, stderr, tokenUsage, failureReason, durationMs } = await spawnSubagentInternal(
+				invocation,
+				ctx.cwd,
+				signal,
+				tokenBudget,
+				inactivityTimeoutMs,
+				parentSessionDir,
+				(text) => {
+					lastToolCall = undefined
+					onUpdate?.({ content: [{ type: "text", text }], details: undefined })
+				},
+				(name, toolArgs, text) => {
+					const firstArg = Object.values(toolArgs)[0]
+					const argHint =
+						typeof firstArg === "string" ? ` ${firstArg.slice(0, 60)}${firstArg.length > 60 ? "…" : ""}` : ""
+					lastToolCall = `${name}${argHint}`
+					onUpdate?.({ content: [{ type: "text", text }], details: lastToolCall })
+				},
+				params.model,
+				params.provider,
+				params.prompt.length,
+				allAttachments.length,
+			)
 
-				pi.appendEntry<SubagentEndCheckpoint>(CHECKPOINT_END_TYPE, {
-					toolCallId: _toolCallId,
-					accumulated,
-					exitCode,
-					failureReason,
-				})
+			pi.appendEntry<SubagentEndCheckpoint>(CHECKPOINT_END_TYPE, {
+				toolCallId: _toolCallId,
+				accumulated,
+				exitCode,
+				failureReason,
+			})
 
-				sessionCounts.set(resolvedModel, (sessionCounts.get(resolvedModel) ?? 0) + 1)
-				if (ctx.hasUI) {
-					ctx.ui.setStatus(FOOTER_STATUS_KEY, formatFooterStatus(sessionCounts, ctx.ui.theme))
+			sessionCounts.set(resolvedModel, (sessionCounts.get(resolvedModel) ?? 0) + 1)
+			if (ctx.hasUI) {
+				ctx.ui.setStatus(FOOTER_STATUS_KEY, formatFooterStatus(sessionCounts, ctx.ui.theme))
+			}
+
+			const stats: SubagentStats = { durationMs, tokenUsage, sessionId, sessionFile: childSessionFile }
+
+			if (failureReason !== undefined || exitCode !== 0) {
+				const rawDetail = stderr.trim() || accumulated || "(no output)"
+				const error: SubagentError = {
+					reason: failureReason ?? "exit_error",
+					model: resolvedModel,
+					tokenUsage,
+					durationMs,
+					detail: truncateSubagentResult(rawDetail, childSessionFile),
 				}
-
-				const stats: SubagentStats = { durationMs, tokenUsage, sessionId, sessionFile: childSessionFile }
-
-				if (failureReason !== undefined || exitCode !== 0) {
-					const rawDetail = stderr.trim() || accumulated || "(no output)"
-					const error: SubagentError = {
-						reason: failureReason ?? "exit_error",
-						model: resolvedModel,
-						tokenUsage,
-						durationMs,
-						detail: truncateSubagentResult(rawDetail, childSessionFile),
-					}
-					return {
-						content: [
-							{
-								type: "text",
-								text: `Subagent failed — do NOT attempt to implement or complete this work yourself. Spawn a replacement subagent with a corrected or simplified prompt instead.\n\nError details:\n\n${JSON.stringify(error, null, 2)}`,
-							},
-						],
-						details: stats,
-						isError: true,
-					}
-				}
-
-				const resultText = accumulated || "(no output)"
-				const parsed = parseSubagentResponse(resultText)
-				if (parsed === null) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: `Subagent returned an unstructured response (protocol violation). Do NOT attempt to fix or complete this work manually — spawn a new subagent with a simpler or corrected prompt instead.\n\nRaw output:\n\n${truncateSubagentResult(resultText, childSessionFile)}`,
-							},
-						],
-						details: stats,
-						isError: true,
-					}
-				}
-				const filesLine = parsed.files.length > 0 ? `\nFiles: ${parsed.files.join(", ")}` : ""
 				return {
-					content: [{ type: "text", text: `${parsed.summary}${filesLine}` }],
+					content: [
+						{
+							type: "text",
+							text: `Subagent failed — do NOT attempt to implement or complete this work yourself. Spawn a replacement subagent with a corrected or simplified prompt instead.\n\nError details:\n\n${JSON.stringify(error, null, 2)}`,
+						},
+					],
 					details: stats,
+					isError: true,
 				}
-			} finally {
-				imageCleanup?.()
+			}
+
+			const resultText = accumulated || "(no output)"
+			const parsed = parseSubagentResponse(resultText)
+			if (parsed === null) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Subagent returned an unstructured response (protocol violation). Do NOT attempt to fix or complete this work manually — spawn a new subagent with a simpler or corrected prompt instead.\n\nRaw output:\n\n${truncateSubagentResult(resultText, childSessionFile)}`,
+						},
+					],
+					details: stats,
+					isError: true,
+				}
+			}
+			const filesLine = parsed.files.length > 0 ? `\nFiles: ${parsed.files.join(", ")}` : ""
+			return {
+				content: [{ type: "text", text: `${parsed.summary}${filesLine}` }],
+				details: stats,
 			}
 		},
 
