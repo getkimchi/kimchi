@@ -46,6 +46,7 @@ interface SpawnOptions {
 	sessionFile?: string
 	sessionDir?: string
 	signal?: AbortSignal
+	tokenBudget?: number
 	onToolActivity?: (activity: ToolActivity) => void
 	onTextDelta?: (delta: string, fullText: string) => void
 	onSessionCreated?: (session: AgentSession) => void
@@ -140,6 +141,7 @@ export class AgentManager {
 			pi,
 			model: options.model,
 			maxTurns: options.maxTurns,
+			tokenBudget: options.tokenBudget,
 			isolated: options.isolated,
 			inheritContext: options.inheritContext,
 			thinkingLevel: options.thinkingLevel,

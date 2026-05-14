@@ -58,6 +58,7 @@ export interface AgentConfig {
 	models?: string[]
 	thinking?: ThinkingLevel
 	maxTurns?: number
+	tokenBudget?: number
 	systemPrompt: string
 	promptMode: "replace" | "append"
 	/** Default for spawn: fork parent conversation. undefined = caller decides. */

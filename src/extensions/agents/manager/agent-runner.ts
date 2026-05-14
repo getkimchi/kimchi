@@ -129,6 +129,8 @@ export interface RunOptions {
 	onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void
 	/** Called when the session successfully compacts. */
 	onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void
+	/** Maximum cumulative tokens (input + output) this agent is allowed to consume. Overrides agentConfig.tokenBudget. */
+	tokenBudget?: number
 }
 
 export interface RunResult {
@@ -305,8 +307,11 @@ export async function runAgent(
 
 	let turnCount = 0
 	const maxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
+	const effectiveTokenBudget = options.tokenBudget ?? agentConfig?.tokenBudget
+	let cumulativeTokens = 0
 	let softLimitReached = false
 	let aborted = false
+	let budgetAborted = false
 
 	let currentMessageText = ""
 	const unsubTurns = session.subscribe((event: AgentSessionEvent) => {
@@ -338,12 +343,23 @@ export async function runAgent(
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			const u = (event.message as unknown as { usage?: { input: number; output: number; cacheWrite: number } }).usage
-			if (u)
+			if (u) {
 				options.onAssistantUsage?.({
 					input: u.input ?? 0,
 					output: u.output ?? 0,
 					cacheWrite: u.cacheWrite ?? 0,
 				})
+				if (effectiveTokenBudget != null && !budgetAborted) {
+					cumulativeTokens += (u.input ?? 0) + (u.output ?? 0)
+					if (cumulativeTokens > effectiveTokenBudget) {
+						budgetAborted = true
+						console.warn(
+							`[agent-runner] token budget exceeded (cumulative=${cumulativeTokens}, budget=${effectiveTokenBudget}); aborting`,
+						)
+						session.abort()
+					}
+				}
+			}
 		}
 		if (event.type === "compaction_end" && !event.aborted && event.result) {
 			options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore })

@@ -64,6 +64,7 @@ function loadFromDir(dir: string, agentsMap: Map<string, AgentConfig>, source: "
 			models: modelToArray(fm),
 			thinking: str(fm.thinking) as ThinkingLevel | undefined,
 			maxTurns: nonNegativeInt(fm.max_turns),
+			tokenBudget: positiveInt(fm.token_budget),
 			systemPrompt: body.trim(),
 			promptMode: fm.prompt_mode === "append" ? "append" : "replace",
 			inheritContext: fm.inherit_context != null ? fm.inherit_context === true : undefined,
@@ -85,6 +86,11 @@ function str(val: unknown): string | undefined {
 
 function nonNegativeInt(val: unknown): number | undefined {
 	return typeof val === "number" && val >= 0 ? val : undefined
+}
+
+function positiveInt(val: unknown): number | undefined {
+	const n = nonNegativeInt(val)
+	return n != null && n > 0 ? n : undefined
 }
 
 function parseCsvField(val: unknown): string[] | undefined {

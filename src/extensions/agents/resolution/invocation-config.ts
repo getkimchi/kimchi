@@ -7,12 +7,17 @@ interface AgentInvocationParams {
 	model?: string
 	thinking?: string
 	max_turns?: number
+	token_budget?: number
 	run_in_background?: boolean
 	inherit_context?: boolean
 	isolated?: boolean
 	isolation?: IsolationMode
 }
 
+/**
+ * Resolves agent invocation config by merging params and agentConfig. Precedence: params > agentConfig > undefined.
+ * Caller-supplied params win (the LLM knows per-spawn scope); agentConfig is the persona default.
+ */
 export function resolveAgentInvocationConfig(
 	agentConfig: AgentConfig | undefined,
 	params: AgentInvocationParams,
@@ -21,6 +26,7 @@ export function resolveAgentInvocationConfig(
 	modelFromParams: boolean
 	thinking?: ThinkingLevel
 	maxTurns?: number
+	tokenBudget?: number
 	inheritContext: boolean
 	runInBackground: boolean
 	isolated: boolean
@@ -83,6 +89,7 @@ export function resolveAgentInvocationConfig(
 		modelFromParams,
 		thinking: (agentConfig?.thinking ?? params.thinking) as ThinkingLevel | undefined,
 		maxTurns: agentConfig?.maxTurns ?? params.max_turns,
+		tokenBudget: params.token_budget ?? agentConfig?.tokenBudget,
 		inheritContext: agentConfig?.inheritContext ?? params.inherit_context ?? false,
 		runInBackground: agentConfig?.runInBackground ?? params.run_in_background ?? false,
 		isolated: agentConfig?.isolated ?? params.isolated ?? false,

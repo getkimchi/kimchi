@@ -642,6 +642,12 @@ Model selection — YOU choose based on task complexity:
 						minimum: 1,
 					}),
 				),
+				token_budget: Type.Optional(
+					Type.Integer({
+						description: "Maximum number of tokens this agent is allowed to consume in total.",
+						minimum: 1,
+					}),
+				),
 				run_in_background: Type.Optional(
 					Type.Boolean({
 						description:
@@ -865,6 +871,7 @@ Model selection — YOU choose based on task complexity:
 							description: params.description as string,
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
 							maxTurns: effectiveMaxTurns,
+							tokenBudget: resolvedConfig.tokenBudget,
 							isolated,
 							inheritContext,
 							thinkingLevel: thinking,
@@ -974,6 +981,7 @@ Model selection — YOU choose based on task complexity:
 						description: params.description as string,
 						model: model as Parameters<typeof manager.spawnAndWait>[4]["model"],
 						maxTurns: effectiveMaxTurns,
+						tokenBudget: resolvedConfig.tokenBudget,
 						isolated,
 						inheritContext,
 						thinkingLevel: thinking,

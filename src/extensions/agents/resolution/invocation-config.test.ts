@@ -152,3 +152,63 @@ describe("resolveAgentInvocationConfig — model fallback chain", () => {
 		expect(result.modelInput).toBeUndefined()
 	})
 })
+
+describe("resolveAgentInvocationConfig — tokenBudget precedence", () => {
+	beforeEach(() => {
+		mockRecommend.mockReset()
+		mockPickFromList.mockReset()
+		mockGetPhase.mockReset()
+		mockGetPhase.mockReturnValue(undefined)
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("agentConfig.tokenBudget used when params has no token_budget", () => {
+		const result = resolveAgentInvocationConfig(
+			{
+				name: "test",
+				description: "t",
+				extensions: true,
+				skills: true,
+				systemPrompt: "",
+				promptMode: "replace",
+				tokenBudget: 80_000,
+			},
+			{},
+		)
+		expect(result.tokenBudget).toBe(80_000)
+	})
+
+	it("params.token_budget wins over agentConfig.tokenBudget (caller takes precedence)", () => {
+		const result = resolveAgentInvocationConfig(
+			{
+				name: "test",
+				description: "t",
+				extensions: true,
+				skills: true,
+				systemPrompt: "",
+				promptMode: "replace",
+				tokenBudget: 80_000,
+			},
+			{ token_budget: 50_000 } as Parameters<typeof resolveAgentInvocationConfig>[1] & { token_budget?: number },
+		)
+		expect(result.tokenBudget).toBe(50_000)
+	})
+
+	it("tokenBudget is undefined when neither agentConfig nor params supply a value", () => {
+		const result = resolveAgentInvocationConfig(
+			{
+				name: "test",
+				description: "t",
+				extensions: true,
+				skills: true,
+				systemPrompt: "",
+				promptMode: "replace",
+			},
+			{},
+		)
+		expect(result.tokenBudget).toBeUndefined()
+	})
+})
