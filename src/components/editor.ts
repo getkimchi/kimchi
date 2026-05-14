@@ -83,7 +83,10 @@ export class PromptEditor extends CustomEditor {
 		// intercepts it before Editor.handleInput can create a newline. Route it
 		// directly to the Editor as \n, which the Editor always treats as newline.
 		if (!isKittyProtocolActive() && (data === "\x1b\r" || data === "\x1b\n")) {
-			Editor.prototype.handleInput.call(this, "\n")
+			// Re-emit as \n so Editor.handleInput treats it as a newline
+			// (its explicit fallback catches \n before the submit path).
+			// Going through super avoids brittle prototype-chain jumps.
+			super.handleInput("\n")
 			return
 		}
 		super.handleInput(data)
