@@ -883,6 +883,47 @@ describe("applyCommand: pause", () => {
 		expect(result.status).toBe("paused")
 	})
 
+	it("resets running steps to pending on pause", () => {
+		const f = makeFerment({
+			status: "running",
+			activePhaseId: "phase-1",
+			phases: [
+				makePhase({
+					status: "active",
+					steps: [
+						makeStep({ id: "step-1", status: "running" }),
+						makeStep({ id: "step-2", index: 2, status: "pending" }),
+					],
+				}),
+			],
+		})
+		const result = expectOk(applyCommand(f, { type: "pause" }, ctx))
+		expect(result.status).toBe("paused")
+		expect(result.phases[0].steps[0].status).toBe("pending")
+		expect(result.phases[0].steps[1].status).toBe("pending")
+	})
+
+	it("resets running steps in parallel groups to pending on pause", () => {
+		const f = makeFerment({
+			status: "running",
+			activePhaseId: "phase-1",
+			phases: [
+				makePhase({
+					status: "active",
+					steps: [
+						makeStep({ id: "step-1", status: "running", parallel: true, groupIndex: 1 }),
+						makeStep({ id: "step-2", index: 2, status: "running", parallel: true, groupIndex: 1 }),
+						makeStep({ id: "step-3", index: 3, status: "done" }),
+					],
+				}),
+			],
+		})
+		const result = expectOk(applyCommand(f, { type: "pause" }, ctx))
+		expect(result.phases[0].steps[0].status).toBe("pending")
+		expect(result.phases[0].steps[1].status).toBe("pending")
+		expect(result.phases[0].steps[2].status).toBe("done")
+	})
+
 	it("rejects pause on draft", () => {
 		const error = expectError(applyCommand(makeFerment({ status: "draft" }), { type: "pause" }, ctx))
 		expect(error.code).toBe("FERMENT_NOT_IN_STATUS")

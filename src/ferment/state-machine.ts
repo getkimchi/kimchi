@@ -820,7 +820,16 @@ function handlePause(
 ): TransitionResult {
 	const guard = requireFermentStatus(ferment, ["running", "planned"])
 	if (guard) return fail(guard)
-	return ok(touch(ferment, ctx, { status: "paused" }))
+
+	// Reset any running steps to pending since their subagent will be killed.
+	// Without this, determineNextAction later suggests complete_step for a
+	// step whose subagent is already dead.
+	const phases = ferment.phases.map((p) => ({
+		...p,
+		steps: p.steps.map((s) => (s.status === "running" ? { ...s, status: "pending" as const } : s)),
+	}))
+
+	return ok(touch(ferment, ctx, { status: "paused", phases }))
 }
 
 function handleResume(

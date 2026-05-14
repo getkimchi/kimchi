@@ -1000,7 +1000,15 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			return { ...state, status: "running", updatedAt: event.timestamp }
 		case "ferment_paused":
 			if (!state) throw new Error("ferment_paused requires existing state")
-			return { ...state, status: "paused", updatedAt: event.timestamp }
+			return {
+				...state,
+				status: "paused",
+				phases: state.phases.map((p) => ({
+					...p,
+					steps: p.steps.map((s) => (s.status === "running" ? { ...s, status: "pending" as const } : s)),
+				})),
+				updatedAt: event.timestamp,
+			}
 		case "ferment_resumed":
 			if (!state) throw new Error("ferment_resumed requires existing state")
 			return settleAfterResume(state, event.timestamp)

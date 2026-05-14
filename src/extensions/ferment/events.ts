@@ -160,6 +160,28 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		description: "When the ferment cwd is not a git repo, run `git init` instead of skipping.",
 	})
 
+	function recoverStuckFerments(): void {
+		// On a fresh start with no KIMCHI_ACTIVE_FERMENT, any ferment in
+		// "running" or "planned" must be stale — the previous process died
+		// without graceful shutdown. Pause them so their orphaned steps are
+		// reset to "pending" by handlePause and the engineer can restart them.
+		const applyAndPersist = createApplyAndPersist(runtime)
+		for (const f of runtime.getStorage().list()) {
+			if (f.status === "running" || f.status === "planned") {
+				try {
+					const outcome = applyAndPersist(f.id, { type: "pause" })
+					if (!outcome.ok) {
+						// eslint-disable-next-line no-console
+						console.error("RECOVER FAILED for", f.id, outcome.error)
+					}
+				} catch (err) {
+					// eslint-disable-next-line no-console
+					console.error("RECOVER EXCEPTION for", f.id, err)
+				}
+			}
+		}
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
 		disableFermentTools(pi)
 		if (process.env.KIMCHI_SUBAGENT === "1") return
@@ -170,6 +192,15 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		clearFermentCache()
 
 		const envId = process.env.KIMCHI_ACTIVE_FERMENT
+		if (!envId) {
+			try {
+				recoverStuckFerments()
+			} catch {
+				// Best-effort recovery. If storage is unavailable during startup,
+				// we can't pause anything — the next clean start will retry.
+			}
+		}
+
 		if (envId) {
 			pendingOneshot = false
 			resumeFerment(pi, envId, ctx, runtime)
@@ -187,7 +218,12 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		const f = runtime.getActive()
 		if (!f) return
 		if (f.status === "running" || f.status === "planned") {
-			applyAndPersist(f.id, { type: "pause" })
+			try {
+				applyAndPersist(f.id, { type: "pause" })
+			} catch {
+				// If persistence fails during shutdown, we can't fix it here.
+				// The startup scanner will recover the stale state on next launch.
+			}
 		}
 	})
 
