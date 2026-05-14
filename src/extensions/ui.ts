@@ -289,9 +289,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 	})
 	pi.on("message_start", (event, ctx) => {
 		if (event.message.role !== "assistant") return
-		stopWorkingAnimation?.()
-		stopWorkingAnimation = undefined
-		ctx.ui.setWorkingVisible(false)
+		// Keep the working animator visible during assistant response
+		// (including the thinking phase). The upstream hides it when
+		// appropriate (e.g. at agent_end).
 	})
 	pi.on("tool_execution_start", (_, ctx) => {
 		startIndicator(ctx)
