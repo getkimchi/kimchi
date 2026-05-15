@@ -16,6 +16,9 @@ import {
 	createAgentSession,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
+import { getAvailableModels } from "../../../startup-context.js"
+import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
@@ -97,6 +100,13 @@ function resolveDefaultModel(
 	}
 
 	return parentModel
+}
+
+let cachedGuidelinesRegistry: ModelRegistry | undefined
+
+function getGuidelinesRegistry(): ModelRegistry {
+	cachedGuidelinesRegistry ??= new ModelRegistry(getAvailableModels())
+	return cachedGuidelinesRegistry
 }
 
 /** Info about a tool event in the subagent. */
@@ -217,6 +227,10 @@ export async function runAgent(
 			extras.memoryBlock = buildReadOnlyMemoryBlock(agentConfig.name, agentConfig.memory, effectiveCwd)
 		}
 	}
+
+	const modelId = (options.model as { id?: string } | undefined)?.id
+	const guidelinesBlock = buildPhaseGuidelinesSection(modelId, getCurrentPhase(), getGuidelinesRegistry())
+	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
 
 	let systemPrompt: string
 	if (agentConfig) {
