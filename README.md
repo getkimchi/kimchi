@@ -2,6 +2,8 @@
 
 A coding agent CLI powered by [kimchi](https://kimchi.dev/). Built on the [pi-mono](https://github.com/badlogic/pi-mono) coding agent SDK, kimchi gives you an AI-powered development assistant in your terminal that connects to kimchi's LLM infrastructure.
 
+![kimchi](./kimchi.png)
+
 ## Quick start
 
 Install the latest release:
