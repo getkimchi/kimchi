@@ -62,7 +62,7 @@ node ./scripts/copy-resources.js --dev
 
 # Start the harness
 echo -e "${GREEN}🎯 Starting Kimchi harness...${NC}"
-pnpm run dev
+pnpm run dev "$@"
 
 # Remind user to add bun to shell profile if it was just installed
 if [ "$BUN_JUST_INSTALLED" = true ]; then
