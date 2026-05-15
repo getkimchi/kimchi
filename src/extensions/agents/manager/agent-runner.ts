@@ -344,7 +344,9 @@ export async function runAgent(
 			if (maxTurns != null) {
 				if (!softLimitReached && turnCount >= maxTurns) {
 					softLimitReached = true
-					session.steer("You have reached your turn limit. Wrap up immediately — provide your final answer now.")
+					session.steer(
+						"You have reached your turn limit. Stop exploring. Complete your current edit, ensure file syntax is valid, undo any git state mutations so your work is visible on the filesystem, and summarize progress for the orchestrator. Do not start new edits.",
+					)
 				} else if (softLimitReached && turnCount >= maxTurns + graceTurns) {
 					aborted = true
 					session.abort()
