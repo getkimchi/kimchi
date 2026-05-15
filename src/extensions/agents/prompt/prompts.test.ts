@@ -3,12 +3,6 @@ import { DEFAULT_AGENTS } from "../personas/default-agents.js"
 import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER, type EnvInfo } from "../personas/types.js"
 import { buildAgentPrompt } from "./prompts.js"
 
-// ---------------------------------------------------------------------------
-// Snapshot suite — assembled subagent system prompt for every default agent
-// × a representative model / fixed env.
-// ---------------------------------------------------------------------------
-
-/** Fixed deterministic environment used for all snapshots. */
 const FIXED_ENV: EnvInfo = {
 	isGitRepo: true,
 	branch: "main",
@@ -17,10 +11,6 @@ const FIXED_ENV: EnvInfo = {
 
 const FIXED_CWD = "/home/testuser/projects/myapp"
 
-/**
- * A representative parent system prompt that would come from the orchestrator.
- * Used for "append" mode agents to exercise the inherited-prompt path.
- */
 const PARENT_SYSTEM_PROMPT =
 	"You are a kimchi coding agent. You orchestrate sub-agents and tools to solve complex tasks."
 

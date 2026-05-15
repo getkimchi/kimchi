@@ -10,7 +10,6 @@ vi.mock("../package-resources.js", () => ({
 import { getInstalledPackageResourceDirs } from "../package-resources.js"
 import { loadCustomAgents } from "./custom-agents.js"
 
-// Point getAgentDir() to a temp dir so global agents don't pollute project-only tests
 const FAKE_AGENT_DIR = join(tmpdir(), `kimchi-global-custom-agents-${Date.now()}`)
 
 function writeAgentMd(dir: string, name: string, frontmatter: string, body = "System prompt."): void {
@@ -95,21 +94,17 @@ describe("custom agents — user override hierarchy preserves new fields", () =>
 	beforeEach(() => {
 		tmpRoot = join(tmpdir(), `kimchi-hierarchy-${Date.now()}`)
 
-		// Package source: a fake installed-extension agents dir
 		packageAgentsDir = join(tmpRoot, "package", "agents")
 		mkdirSync(packageAgentsDir, { recursive: true })
 
-		// Global source: controlled via PI_CODING_AGENT_DIR env var
 		globalAgentsDir = join(tmpRoot, "global", "agents")
 		mkdirSync(globalAgentsDir, { recursive: true })
 		process.env.PI_CODING_AGENT_DIR = join(tmpRoot, "global")
 
-		// Project source: <cwd>/.kimchi/agents/
 		projectDir = join(tmpRoot, "project")
 		projectAgentsDir = join(projectDir, ".kimchi", "agents")
 		mkdirSync(projectAgentsDir, { recursive: true })
 
-		// Wire the package source mock to return our fake package agents dir
 		vi.mocked(getInstalledPackageResourceDirs).mockReturnValue([packageAgentsDir])
 	})
 
@@ -151,7 +146,6 @@ describe("custom agents — user override hierarchy preserves new fields", () =>
 			join(globalAgentsDir, "budget-agent.md"),
 			"---\ndescription: budget agent\ntoken_budget: 200\n---\nGlobal prompt.",
 		)
-		// No project-level file
 
 		const agents = loadCustomAgents(projectDir)
 		const agent = agents.get("budget-agent")
@@ -166,7 +160,6 @@ describe("custom agents — user override hierarchy preserves new fields", () =>
 			join(packageAgentsDir, "budget-agent.md"),
 			"---\ndescription: budget agent\ntoken_budget: 100\n---\nPackage prompt.",
 		)
-		// No global file, no project file
 
 		const agents = loadCustomAgents(projectDir)
 		const agent = agents.get("budget-agent")

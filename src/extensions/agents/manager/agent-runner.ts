@@ -136,7 +136,7 @@ export interface RunOptions {
 export interface RunResult {
 	responseText: string
 	session: AgentSession
-	/** True if the agent was hard-aborted (max_turns + grace exceeded). */
+	/** True if the agent was hard-aborted by max turns or token budget. */
 	aborted: boolean
 	/** True if the agent was steered to wrap up (hit soft turn limit) but finished in time. */
 	steered: boolean
@@ -411,7 +411,7 @@ export async function runAgent(
 	}
 
 	const responseText = collector.getText().trim() || getLastAssistantText(session)
-	return { responseText, session, aborted, steered: softLimitReached }
+	return { responseText, session, aborted: aborted || budgetAborted, steered: softLimitReached }
 }
 
 /**

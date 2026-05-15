@@ -15,8 +15,9 @@ interface AgentInvocationParams {
 }
 
 /**
- * Resolves agent invocation config by merging params and agentConfig. Precedence: params > agentConfig > undefined.
- * Caller-supplied params win (the LLM knows per-spawn scope); agentConfig is the persona default.
+ * Resolves agent invocation config by merging caller params with persona defaults.
+ * Some persona fields intentionally win so profile policy stays stable; explicit
+ * model and token-budget params remain per-spawn overrides.
  */
 export function resolveAgentInvocationConfig(
 	agentConfig: AgentConfig | undefined,

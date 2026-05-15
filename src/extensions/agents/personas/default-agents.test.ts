@@ -2,10 +2,6 @@ import { describe, expect, it, vi } from "vitest"
 import { DEFAULT_AGENTS } from "./default-agents.js"
 import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER } from "./types.js"
 
-// ---------------------------------------------------------------------------
-// Snapshot suite — resolved invocation config for every default agent
-// ---------------------------------------------------------------------------
-
 // Stub pickFromModelListByTier and recommendModel so snapshots are deterministic
 // and don't depend on the live model registry insertion order.
 // We cannot import the real implementations here because default-agents.ts calls
@@ -86,10 +82,6 @@ describe("DEFAULT_AGENTS", () => {
 })
 
 describe("default agents — resolved invocation config snapshot", () => {
-	// NOTE: modelId is included in the snapshot. pickFromModelListByTier is stubbed
-	// to return list[0] (registry insertion order), so the value is stable across
-	// test runs but will change if the models[] array on a default agent changes —
-	// which is exactly when we want the snapshot to break.
 	it("General-Purpose", () => {
 		const agent = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE)
 		if (!agent) throw new Error("expected default agent 'General-Purpose' to exist")
