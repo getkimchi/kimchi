@@ -54,7 +54,9 @@ function createHarness(options: { setModelResult?: boolean } = {}): Harness {
 	const tool = registered
 
 	const exec: Harness["exec"] = (model, opts = {}) => {
-		const ctx = opts.omitRegistry ? {} : { modelRegistry: { find, getAvailable } }
+		const ctx = opts.omitRegistry
+			? { getContextUsage: () => undefined }
+			: { modelRegistry: { find, getAvailable }, getContextUsage: () => undefined }
 		return tool.execute("test-call-id", { model }, undefined, undefined, ctx)
 	}
 

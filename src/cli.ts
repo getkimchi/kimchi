@@ -30,6 +30,7 @@ import loginExtension from "./extensions/login/index.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
+import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import permissionsExtension from "./extensions/permissions/index.js"
@@ -316,6 +317,7 @@ try {
 			improveExtension,
 			curatorExtension,
 			modelSwitchExtension,
+			modelGuardExtension,
 		]
 
 		if (acpMode) {

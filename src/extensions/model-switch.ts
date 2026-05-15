@@ -53,6 +53,19 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 				}
 			}
 
+			const usage = ctx.getContextUsage()
+			if (usage?.tokens != null && usage.tokens > target.contextWindow) {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Current context (${usage.tokens} tokens) exceeds the target model "${model}" context window of ${target.contextWindow} tokens. Switch rejected to prevent data loss. Compact or truncate the conversation first.`,
+						},
+					],
+					details: null,
+				}
+			}
+
 			const ok = await pi.setModel(target)
 			if (!ok) {
 				return {
