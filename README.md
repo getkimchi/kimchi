@@ -16,7 +16,7 @@ brew install castai/tap/kimchi-dev
 **Install script:**
 
 ```bash
-curl -fsSL https://github.com/castai/kimchi-dev/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/castai/kimchi/releases/latest/download/install.sh | bash
 ```
 
 Then configure your API key and tools, and launch:

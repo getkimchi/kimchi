@@ -3,7 +3,7 @@
 # Install the kimchi coding-harness CLI from the latest GitHub release.
 #
 # Usage:
-#   curl -fsSL https://github.com/castai/kimchi-dev/releases/latest/download/install.sh | bash
+#   curl -fsSL https://github.com/castai/kimchi/releases/latest/download/install.sh | bash
 #
 # Optional env:
 #   KIMCHI_INSTALL_DIR  Override install dir. Defaults to /usr/local/bin if
@@ -20,7 +20,7 @@ BLUE='\033[0;34m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 
-REPO="${KIMCHI_REPO_OVERRIDE:-castai/kimchi-dev}"
+REPO="${KIMCHI_REPO_OVERRIDE:-castai/kimchi}"
 VERSION="${KIMCHI_VERSION:-latest}"
 
 echo -e "${BLUE}Installing Kimchi from ${REPO}${VERSION:+ (${VERSION})}…${NC}"
