@@ -160,15 +160,15 @@ function buildModelCapabilitiesSection(registry: ModelRegistry, currentModelId?:
 	const modelsSection =
 		subagentModels.length > 0 ? subagentModels.map(formatModel).join("\n\n") : "(No models available)"
 
-	return `## Your Capabilities
-
-${currentModelCapabilities}
-
-## Available Models
+	return `## Available Models
 
 Each model is described with: **Tier** (heavy/standard/light — cost vs capability), **Strengths** (build, explore, review, plan, research), **Vision** (image input support).
 
-${modelsSection}`
+${modelsSection}
+
+## Your Capabilities
+
+${currentModelCapabilities}`
 }
 
 // ---------------------------------------------------------------------------
