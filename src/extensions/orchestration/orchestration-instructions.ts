@@ -118,11 +118,13 @@ By default subagents are killed after 3 minutes of silence. Heavy-tier models (c
 | \`standard\` or \`light\` | omit (default 3 minutes is sufficient) |`
 
 function resolveOrchestratorInstructions(ctx: OrchestrationInstructionsContext): string {
-	const parts = [ORCHESTRATOR_INSTRUCTIONS]
+	const parts: string[] = []
 
 	if (ctx.registry) {
 		parts.push(buildModelCapabilitiesSection(ctx.registry, ctx.currentModelId))
 	}
+
+	parts.push(ORCHESTRATOR_INSTRUCTIONS)
 
 	const orchGuidelines = buildOrchestrationGuidelinesSection(ctx.currentModelId, ctx.registry)
 	if (orchGuidelines) parts.push(orchGuidelines)
@@ -158,11 +160,11 @@ function buildModelCapabilitiesSection(registry: ModelRegistry, currentModelId?:
 	const modelsSection =
 		subagentModels.length > 0 ? subagentModels.map(formatModel).join("\n\n") : "(No models available)"
 
-	return `### Your Capabilities
+	return `## Your Capabilities
 
 ${currentModelCapabilities}
 
-### Available Models
+## Available Models
 
 Each model is described with: **Tier** (heavy/standard/light — cost vs capability), **Strengths** (build, explore, review, plan, research), **Vision** (image input support).
 
