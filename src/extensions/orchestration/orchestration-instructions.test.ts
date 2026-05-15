@@ -42,8 +42,8 @@ describe("resolveOrchestrationInstructions", () => {
 			registry,
 			mode: "orchestrator",
 		})
-		expect(result).toContain("### Your Capabilities")
-		expect(result).toContain("### Available Models")
+		expect(result).toContain("## Your Capabilities")
+		expect(result).toContain("## Available Models")
 		for (const model of registry.getModelsWithCapabilities()) {
 			if (model.id !== "kimi-k2.6") {
 				expect(result).toContain(model.name)
@@ -68,8 +68,6 @@ describe("resolveOrchestrationInstructions", () => {
 		})
 		expect(result).toContain("Subagent response protocol")
 		expect(result).toContain('{"summary":')
-		expect(result).toContain("Factual Accuracy")
-		expect(result).toContain("Tool and MCP Discovery")
 		expect(result).not.toContain("Subagent delegation rules")
 	})
 

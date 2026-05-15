@@ -95,6 +95,14 @@ Use the **Available Models** section above to pick the right model for each dele
 - Prefer cheaper models for mechanical work once the design is settled.
 - **Tool call classification** (permission checks in auto mode) automatically uses the cheapest available model. Do not override this — it is handled by the runtime and should not influence your model selection for user-facing tasks.
 
+### Review delegation
+
+Review is often the most token-intensive phase — it involves reading files, running tests, writing smoke harnesses, and iterating on fixes. Most of this work is mechanical verification, not architectural judgment.
+
+- **Delegate mechanical review to a standard-tier model.** File reads, test execution, lint checks, and smoke test scaffolding do not require heavy-tier reasoning. Spawn a standard-tier subagent with the diff and spec attached, a 150k budget, and a clear checklist of what to verify.
+- **Reserve the orchestrator for the final judgment call.** Once the review subagent returns its findings, assess the results yourself: is the architecture sound? Do the interfaces match the spec? Are there design-level issues the automated checks could not catch?
+- **Never run a full review loop yourself when a cheaper model can do it.** If you find yourself reading files, running \`go test\`, and fixing lint errors in sequence, that is mechanical work — delegate it.
+
 ### Token budgets
 
 Include a \`tokenBudget\` for every subagent call. Match the budget to the **subagent's task scope**, not the overall project complexity:
