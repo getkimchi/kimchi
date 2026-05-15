@@ -259,6 +259,7 @@ describe("wireBehaviours — before_agent_start", () => {
 		await pi.fire("session_start", {}, { cwd: "/tmp" })
 
 		const sp = buildSystemPrompt({
+			pi: pi.asExtensionAPI(),
 			tools: [{ name: "read", description: "Read file contents" }],
 			env: testEnv,
 			contextFiles: [{ path: "/repo/AGENTS.md", content: "Project rule." }],

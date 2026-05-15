@@ -381,6 +381,7 @@ export default function (skillPaths: string[]) {
 			const mode: PromptMode = subagentMode ? "subagent" : multiModelEnabled ? "orchestrator" : "single"
 
 			const systemPrompt = buildSystemPrompt({
+				pi,
 				tools: tools as readonly ToolInfo[],
 				env,
 				contextFiles: cachedContextFiles,

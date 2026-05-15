@@ -8,7 +8,7 @@
  * All mode-specific content lives in orchestration-instructions.ts.
  */
 
-import { type Skill, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent"
+import { type ExtensionAPI, type Skill, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent"
 import { buildPhaseGuidelinesSection } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
 import type { Phase } from "../orchestration/model-registry/types.js"
@@ -37,6 +37,7 @@ export interface ToolInfo {
 export type PromptMode = "orchestrator" | "subagent" | "single"
 
 export interface SystemPromptBuildOptions {
+	pi?: ExtensionAPI
 	tools: readonly ToolInfo[]
 	env: EnvironmentInfo
 	contextFiles?: readonly ContextFile[]
@@ -50,7 +51,7 @@ export interface SystemPromptBuildOptions {
 const SUBAGENT_TOOL_NAME = "subagent"
 
 export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
-	const { tools, env, contextFiles, skills, currentModelId, currentPhase, registry, mode } = options
+	const { pi, tools, env, contextFiles, skills, currentModelId, currentPhase, registry, mode } = options
 
 	const effectiveTools = mode === "subagent" ? tools.filter((t) => t.name !== SUBAGENT_TOOL_NAME) : tools
 
@@ -68,7 +69,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	})
 
 	const phaseSection = buildPhaseGuidelinesSection(currentModelId, currentPhase, registry)
-	const blocks = renderSystemPromptBlocks({ mode })
+	const blocks = pi ? renderSystemPromptBlocks(pi, { mode }) : []
 	const suppressed = new Set<SuppressibleSection>()
 	for (const block of blocks) {
 		for (const section of block.suppress) suppressed.add(section)

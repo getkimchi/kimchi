@@ -75,18 +75,15 @@ interface PiRecord {
 }
 
 const recordsByPi = new WeakMap<ExtensionAPI, PiRecord>()
-const activeRecords = new Set<PiRecord>()
 
 function getRecord(pi: ExtensionAPI): PiRecord {
 	let record = recordsByPi.get(pi)
 	if (!record) {
 		record = { handles: new Set() }
 		recordsByPi.set(pi, record)
-		activeRecords.add(record)
 		const recordForHandler = record
 		pi.on("session_shutdown", () => {
 			recordsByPi.delete(pi)
-			activeRecords.delete(recordForHandler)
 			recordForHandler.handles.clear()
 		})
 	}
@@ -99,17 +96,18 @@ export function createSystemPromptBlocks(pi: ExtensionAPI, owner: string): Syste
 	return handle
 }
 
-export function renderSystemPromptBlocks(ctx: SystemPromptBlockContext): RenderedSystemPromptBlock[] {
+export function renderSystemPromptBlocks(pi: ExtensionAPI, ctx: SystemPromptBlockContext): RenderedSystemPromptBlock[] {
 	const rendered: RenderedSystemPromptBlock[] = []
-	for (const record of activeRecords) {
-		for (const handle of record.handles) {
-			rendered.push(...handle.render(ctx))
-		}
+	const record = recordsByPi.get(pi)
+	if (!record) return rendered
+	for (const handle of record.handles) {
+		rendered.push(...handle.render(ctx))
 	}
 	return rendered.sort((a, b) => {
-		const owner = a.owner.localeCompare(b.owner)
-		if (owner !== 0) return owner
-		const id = a.id.localeCompare(b.id)
-		return id
+		if (a.owner < b.owner) return -1
+		if (a.owner > b.owner) return 1
+		if (a.id < b.id) return -1
+		if (a.id > b.id) return 1
+		return 0
 	})
 }

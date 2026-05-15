@@ -34,8 +34,9 @@ function makePi(): ExtensionAPI & { fireShutdown: () => void } {
 	return pi as unknown as ExtensionAPI & { fireShutdown: () => void }
 }
 
-function prompt(): string {
+function prompt(pi?: ExtensionAPI): string {
 	return buildSystemPrompt({
+		pi,
 		tools: testTools,
 		env: testEnv,
 		contextFiles: [{ path: "/repo/AGENTS.md", content: "Project rule." }],
@@ -59,7 +60,7 @@ describe("system prompt blocks", () => {
 		const bFirst = createSystemPromptBlocks(piA, "b")
 		bFirst.register({ id: "two", render: () => "## B Two" })
 		aFirst.register({ id: "one", render: () => "## A One" })
-		const first = prompt()
+		const first = prompt(piA)
 		piA.fireShutdown()
 
 		const piB = makePi()
@@ -67,7 +68,7 @@ describe("system prompt blocks", () => {
 		const aSecond = createSystemPromptBlocks(piB, "a")
 		aSecond.register({ id: "one", render: () => "## A One" })
 		bSecond.register({ id: "two", render: () => "## B Two" })
-		const second = prompt()
+		const second = prompt(piB)
 
 		expect(second).toBe(first)
 	})
@@ -82,7 +83,7 @@ describe("system prompt blocks", () => {
 		a.register({ id: "a", render: () => "## AA" })
 		z.register({ id: "a", render: () => "## ZA" })
 
-		const result = prompt()
+		const result = prompt(pi)
 		expect(result.indexOf("## AA")).toBeLessThan(result.indexOf("## AB"))
 		expect(result.indexOf("## AB")).toBeLessThan(result.indexOf("## ZA"))
 		expect(result.indexOf("## ZA")).toBeLessThan(result.indexOf("## ZB"))
@@ -97,7 +98,7 @@ describe("system prompt blocks", () => {
 			suppress: () => new Set(["orchestration"]),
 		})
 
-		const result = prompt()
+		const result = prompt(pi)
 		expect(result).not.toContain("inactive")
 		expect(result).toContain("Subagent delegation rules")
 	})
@@ -107,7 +108,7 @@ describe("system prompt blocks", () => {
 		const blocks = createSystemPromptBlocks(pi, "test")
 		blocks.register({ id: "empty", render: () => " \n\t " })
 
-		expect(prompt()).toBe(idlePrompt())
+		expect(prompt(pi)).toBe(idlePrompt())
 	})
 
 	it("skips a block whose render throws without failing the prompt build", () => {
@@ -122,7 +123,7 @@ describe("system prompt blocks", () => {
 		})
 		blocks.register({ id: "good", render: () => "## Good Block" })
 
-		const result = prompt()
+		const result = prompt(pi)
 		expect(result).toContain("## Good Block")
 		expect(result).not.toContain("bad-render")
 		expect(warn).toHaveBeenCalledWith("system-prompt-blocks: test/bad-render render failed: boom")
@@ -140,7 +141,7 @@ describe("system prompt blocks", () => {
 			},
 		})
 
-		const result = prompt()
+		const result = prompt(pi)
 		expect(result).toContain("## Bad Suppress Block")
 		expect(result).toContain("Subagent delegation rules")
 		expect(warn).toHaveBeenCalledWith("system-prompt-blocks: test/bad-suppress suppress failed: nope")
@@ -162,6 +163,7 @@ describe("system prompt blocks", () => {
 		})
 
 		const result = buildSystemPrompt({
+			pi,
 			tools: testTools,
 			env: testEnv,
 			contextFiles: [{ path: "/repo/AGENTS.md", content: "Project rule." }],
@@ -200,7 +202,7 @@ describe("system prompt blocks", () => {
 			suppress: () => new Set(["project-context"]),
 		})
 
-		const result = prompt()
+		const result = prompt(pi)
 		expect(result).toContain("## A Block")
 		expect(result).toContain("## B Block")
 		expect(result).not.toContain("Project rule.")
@@ -213,7 +215,7 @@ describe("system prompt blocks", () => {
 		const blocks = createSystemPromptBlocks(pi, "test")
 		blocks.register({ id: "frame", render: () => "## Frame\n\nUse this frame." })
 
-		const result = prompt()
+		const result = prompt(pi)
 		const project = result.indexOf("## Project Guidelines")
 		const frame = result.indexOf("## Frame")
 		const tools = result.indexOf("## Available Tools")
@@ -231,7 +233,7 @@ describe("system prompt blocks", () => {
 		blocks.register({ id: "a", render: () => "## First\n\nAlpha" })
 		blocks.register({ id: "b", render: () => "## Second\n\nBeta" })
 
-		const result = prompt()
+		const result = prompt(pi)
 		expect(result).toContain("Project rule.\n\n## First")
 		expect(result).toContain("Alpha\n\n## Second")
 		expect(result).toContain("Beta\n\n## Available Tools")
@@ -242,22 +244,37 @@ describe("system prompt blocks", () => {
 		const pi = makePi()
 		createSystemPromptBlocks(pi, "test").register({ id: "inactive", render: () => undefined })
 
-		expect(prompt()).toBe(before)
+		expect(prompt(pi)).toBe(before)
 	})
 
 	it("cleans up all blocks for a pi on session_shutdown", () => {
 		const pi = makePi()
 		createSystemPromptBlocks(pi, "test").register({ id: "one", render: () => "## One" })
-		expect(prompt()).toContain("## One")
+		expect(prompt(pi)).toContain("## One")
 
 		pi.fireShutdown()
 
-		expect(prompt()).not.toContain("## One")
+		expect(prompt(pi)).not.toContain("## One")
 		createSystemPromptBlocks(pi, "test").register({ id: "two", render: () => "## Two" })
-		expect(prompt()).toContain("## Two")
+		expect(prompt(pi)).toContain("## Two")
 	})
 
-	it("keeps registrations isolated across pi instances", () => {
+	it("renders only blocks registered to the pi building the prompt", () => {
+		const piA = makePi()
+		const piB = makePi()
+		createSystemPromptBlocks(piA, "a").register({ id: "one", render: () => "## Pi A Block" })
+		createSystemPromptBlocks(piB, "b").register({ id: "one", render: () => "## Pi B Block" })
+
+		const resultA = prompt(piA)
+		expect(resultA).toContain("## Pi A Block")
+		expect(resultA).not.toContain("## Pi B Block")
+
+		const resultB = prompt(piB)
+		expect(resultB).not.toContain("## Pi A Block")
+		expect(resultB).toContain("## Pi B Block")
+	})
+
+	it("keeps registrations isolated across pi instances after shutdown", () => {
 		const piA = makePi()
 		const piB = makePi()
 		createSystemPromptBlocks(piA, "a").register({ id: "one", render: () => "## Pi A Block" })
@@ -265,7 +282,7 @@ describe("system prompt blocks", () => {
 
 		piA.fireShutdown()
 
-		const result = prompt()
+		const result = prompt(piB)
 		expect(result).not.toContain("## Pi A Block")
 		expect(result).toContain("## Pi B Block")
 	})
