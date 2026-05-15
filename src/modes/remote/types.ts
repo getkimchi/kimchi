@@ -4,7 +4,7 @@ export interface AuthenticateResponse {
 	wsUrl: string
 }
 
-export const REMOTE_ENDPOINT = "https://llm.kimchi.dev"
+export const REMOTE_ENDPOINT = "https://app.kimchi.dev"
 
 export enum WsCloseCode {
 	Normal = 1000,
