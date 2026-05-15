@@ -58,9 +58,15 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 	let knownAgentSkills = new Set<string>()
 
 	// Capture provider/model from the first real LLM request — works regardless of how kimchi is invoked.
+	// If a request from a torn-down session reaches us after `/new`, ctx.model throws via assertActive.
 	pi.on("before_provider_request", (_event, ctx) => {
-		if (!providerModel && ctx.model?.provider && ctx.model?.id) {
-			providerModel = { provider: ctx.model.provider, model: ctx.model.id }
+		if (providerModel) return
+		try {
+			if (ctx.model?.provider && ctx.model?.id) {
+				providerModel = { provider: ctx.model.provider, model: ctx.model.id }
+			}
+		} catch {
+			// stale ctx — ignore
 		}
 	})
 
