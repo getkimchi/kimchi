@@ -299,6 +299,17 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		}
 	}
 
+	function switchToPlanModeRuntime(ctx: ExtensionContext): void {
+		runtimeMode = "plan"
+		applyPlanModeTools()
+		propagateModeToEnv()
+		updateStatus(ctx)
+		// Other concurrent prompts are stale under the new mode — let them re-evaluate.
+		for (const ctrl of activeAbortControllers) ctrl.abort()
+		activeAbortControllers.clear()
+		maybeShowYoloWarning(ctx, "plan")
+	}
+
 	function switchFromPlanAndExecute(ctx: ExtensionContext, targetMode: PermissionMode): void {
 		runtimeMode = targetMode
 		restoreToolsFromPlanMode()
@@ -383,7 +394,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	})
 
 	// When the agent finishes a text-only turn in plan mode, offer the user a
-	// menu to approve and execute the plan, similar to Claude Code's approach.
+	// menu to approve and execute the plan.
 	pi.on("turn_end", async (event, ctx) => {
 		if (currentMode() !== "plan") return
 		if (!ctx.hasUI) return
@@ -499,6 +510,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			}
 			if (match.decision === "allow") return undefined
 
+			// In default mode, a questionnaire call means the agent wants to plan —
+			// auto-promote the session to plan mode so the rest of the conversation
+			// runs under the right tool set instead of silently approving here.
+			if (toolName === "questionnaire" && mode === "default") {
+				switchToPlanModeRuntime(ctx)
+				return undefined
+			}
 			if (isReadOnlyTool(toolName)) return undefined
 			if (toolName === "bash") {
 				const command = typeof input.command === "string" ? input.command : ""
@@ -555,7 +573,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					}
 				}
 			}
-			const result = await handleConfirm(event, { ctx, session, activeAborts: activeAbortControllers, allRules })
+			const result = await handleConfirm(event, {
+				ctx,
+				session,
+				activeAborts: activeAbortControllers,
+				allRules,
+			})
 			if (result === "aborted") continue // mode changed, re-evaluate
 			return result
 		}
