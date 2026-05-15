@@ -388,7 +388,11 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 					lines.push("")
 					if (!state.inputMode) {
 						let help: string
-						if (q?.type === "multi") {
+						if (isSubmitTab(state)) {
+							help = isMulti
+								? " Tab/\u2190\u2192 navigate \u2022 Enter submit \u2022 Esc cancel"
+								: " Enter submit \u2022 Esc cancel"
+						} else if (q?.type === "multi") {
 							help = isMulti
 								? " Tab/\u2190\u2192 navigate \u2022 \u2191\u2193 select \u2022 Space toggle \u2022 Enter submit \u2022 Esc cancel"
 								: " \u2191\u2193 navigate \u2022 Space toggle \u2022 Enter submit \u2022 Esc cancel"

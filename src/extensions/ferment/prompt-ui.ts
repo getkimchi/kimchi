@@ -453,7 +453,9 @@ function createPromptFormComponent(
 		lines.push("")
 		if (!state.inputMode) {
 			let help: string
-			if (q?.type === "multi") {
+			if (isSubmitTab(state)) {
+				help = isMulti ? " Tab/Shift+Tab move | Enter submit | Esc cancel" : " Enter submit | Esc cancel"
+			} else if (q?.type === "multi") {
 				help = isMulti
 					? " Tab/Shift+Tab move | Up/Down option | Space toggle | Enter advance | Esc cancel"
 					: " Up/Down option | Space toggle | Enter submit | Esc cancel"
