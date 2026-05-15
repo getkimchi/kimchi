@@ -344,7 +344,8 @@ export default function (skillPaths: string[]) {
 		let cachedGitRemote: string | undefined | null = null
 
 		pi.on("before_agent_start", async (_event, ctx) => {
-			const tools = pi.getAllTools()
+			const activeToolNames = new Set(pi.getActiveTools())
+			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
 			cachedContextFiles ??= loadProjectContextFiles(ctx.cwd)
 			if (cachedSkills === undefined) {
 				const allSkillPaths = [

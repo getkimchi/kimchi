@@ -1,7 +1,9 @@
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
+import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
-import { stripEmptyToolCalls } from "./prompt-enrichment.js"
+import promptEnrichmentExtension, { stripEmptyToolCalls } from "./prompt-enrichment.js"
+import { createToolVisibility } from "./tool-visibility.js"
 
 function makeUser(text: string): OrchestratorMessages[number] {
 	return { role: "user", content: [{ type: "text", text }], timestamp: Date.now() }
@@ -159,5 +161,85 @@ describe("stripEmptyToolCalls", () => {
 			expect((msg as AssistantMessage).role).toBe("assistant")
 			expect((msg as AssistantMessage).content).toHaveLength(1)
 		}
+	})
+})
+
+describe("prompt enrichment tool visibility", () => {
+	it("omits hidden tools from the rendered available tools section", async () => {
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
+		const tools = [
+			{ name: "read", description: "Read file contents" },
+			{ name: "bash", description: "Execute shell commands" },
+		] as ToolInfo[]
+		let activeTools = tools.map((tool) => tool.name)
+		const pi = {
+			registerFlag: () => {},
+			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
+				handlers.set(event, handler)
+			},
+			getAllTools: () => tools,
+			getActiveTools: () => activeTools,
+			setActiveTools: (toolNames: string[]) => {
+				activeTools = toolNames
+			},
+			getFlag: () => false,
+		} as unknown as ExtensionAPI
+
+		promptEnrichmentExtension([])(pi)
+		const visibility = createToolVisibility(pi)
+		visibility.disable(["bash"])
+
+		const beforeAgentStart = handlers.get("before_agent_start")
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		try {
+			const result = (await beforeAgentStart(
+				{},
+				{
+					cwd: "/tmp",
+					model: undefined,
+					hasUI: false,
+				},
+			)) as { systemPrompt: string }
+
+			expect(result.systemPrompt).toContain('<tool name="read">')
+			expect(result.systemPrompt).not.toContain('<tool name="bash">')
+		} finally {
+			visibility.enable(["bash"])
+		}
+	})
+
+	it("omits inactive tools from the rendered available tools section", async () => {
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
+		const tools = [
+			{ name: "read", description: "Read file contents" },
+			{ name: "bash", description: "Execute shell commands" },
+		] as ToolInfo[]
+		const pi = {
+			registerFlag: () => {},
+			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
+				handlers.set(event, handler)
+			},
+			getAllTools: () => tools,
+			getActiveTools: () => ["read"],
+			getFlag: () => false,
+		} as unknown as ExtensionAPI
+
+		promptEnrichmentExtension([])(pi)
+
+		const beforeAgentStart = handlers.get("before_agent_start")
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{},
+			{
+				cwd: "/tmp",
+				model: undefined,
+				hasUI: false,
+			},
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).toContain('<tool name="read">')
+		expect(result.systemPrompt).not.toContain('<tool name="bash">')
 	})
 })
