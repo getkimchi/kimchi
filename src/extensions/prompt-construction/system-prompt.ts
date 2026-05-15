@@ -58,6 +58,8 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	const projectContext = formatProjectContext(contextFiles)
 	const skillsSection = formatSkills(skills)
 
+	// TODO!!!
+	// In the future we will need to dynamically resolve orchestration instructions based on the user prompt "to do"
 	const orchestrationSection = resolveOrchestrationInstructions({
 		currentModelId,
 		registry,

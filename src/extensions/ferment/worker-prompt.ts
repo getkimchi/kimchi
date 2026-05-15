@@ -100,5 +100,7 @@ export function buildWorkerContext(ferment: Ferment, phase: Phase, step: Step, o
 		lines.push(`**Constraints:** ${ferment.scoping.constraints.answer}`)
 	}
 
+	console.log("test prompt is printed")
+
 	return lines.join("\n")
 }
