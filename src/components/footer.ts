@@ -543,7 +543,7 @@ export class StatsFooter implements Component {
 
 	buildInfoLine(width: number): string {
 		let line = ""
-		const permissionsWarningText = this.permissionsWarning(width)
+		const permissionsWarningText = this.permissionsWarning()
 		const updateSeg = this.updateAvailableSegment()
 
 		let remainingWidth = width
