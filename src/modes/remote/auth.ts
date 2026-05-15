@@ -16,7 +16,7 @@ export interface AuthenticateOptions {
 
 function resolveEndpoint(options?: AuthenticateOptions): string {
 	const fromEnv = process.env.KIMCHI_REMOTE_ENDPOINT
-	return options?.endpoint ?? fromEnv ?? "https://app.kimchi.dev"
+	return options?.endpoint ?? fromEnv ?? "https://app.kimchi.dev/api"
 }
 
 async function fetchWithTimeout(
@@ -40,13 +40,16 @@ async function checkResponse(resp: Response, endpoint: string): Promise<void> {
 	const body = await resp.text().catch(() => "")
 	switch (resp.status) {
 		case 401:
-			throw new RemoteAuthError(`Invalid API key - run 'kimchi setup' to authenticate`, 401)
+			throw new RemoteAuthError(`Invalid API key - run 'kimchi setup' to authenticate: ${endpoint}`, 401)
 		case 403:
-			throw new RemoteAuthError("Forbidden - your API key does not have permission to use remote sessions.", 403)
+			throw new RemoteAuthError(
+				`Forbidden - your API key does not have permission to use remote sessions. ${endpoint}`,
+				403,
+			)
 		case 404:
-			throw new RemoteAuthError("Session not found or endpoint not available.", 404)
+			throw new RemoteAuthError(`Session not found or endpoint not available. ${endpoint}`, 404)
 		case 409:
-			throw new RemoteAuthError("Session conflict - another client may already own this session.", 409)
+			throw new RemoteAuthError(`Session conflict - another client may already own this session. ${endpoint}`, 409)
 		default: {
 			throw new RemoteNetworkError(`HTTP ${resp.status} from ${endpoint}${body ? `: ${body}` : ""}`)
 		}
@@ -57,7 +60,7 @@ async function verifyApiKey(apiKey: string, options?: AuthenticateOptions): Prom
 	const endpoint = resolveEndpoint(options)
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 
-	const url = `${endpoint}/api/ai-optimizer/v1beta/api-keys:verify`
+	const url = `${endpoint}/ai-optimizer/v1beta/api-keys:verify`
 	const resp = await fetchWithTimeout(
 		url,
 		{
@@ -70,7 +73,7 @@ async function verifyApiKey(apiKey: string, options?: AuthenticateOptions): Prom
 		fetchImpl,
 	)
 
-	await checkResponse(resp, endpoint)
+	await checkResponse(resp, url)
 
 	const data = await resp.json().catch(() => {
 		throw new RemoteNetworkError(`Unexpected non-JSON response from ${endpoint}`)
@@ -93,7 +96,7 @@ async function createOrUpdateSession(
 	const endpoint = resolveEndpoint(options)
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 
-	const url = `${endpoint}/api/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/sessions/${encodeURIComponent(sessionId)}`
+	const url = `${endpoint}/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/sessions/${encodeURIComponent(sessionId)}`
 	const resp = await fetchWithTimeout(
 		url,
 		{
@@ -107,7 +110,7 @@ async function createOrUpdateSession(
 		fetchImpl,
 	)
 
-	await checkResponse(resp, endpoint)
+	await checkResponse(resp, url)
 
 	const data = await resp.json().catch(() => {
 		throw new RemoteNetworkError(`Unexpected non-JSON response from ${endpoint}`)
@@ -129,7 +132,7 @@ async function exchangeSessionToken(
 	const endpoint = resolveEndpoint(options)
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 
-	const url = `${endpoint}/api/ai-optimizer/v1beta/session-tokens:exchange`
+	const url = `${endpoint}/ai-optimizer/v1beta/session-tokens:exchange`
 	const resp = await fetchWithTimeout(
 		url,
 		{
@@ -143,7 +146,7 @@ async function exchangeSessionToken(
 		fetchImpl,
 	)
 
-	await checkResponse(resp, endpoint)
+	await checkResponse(resp, url)
 
 	const data = await resp.json().catch(() => {
 		throw new RemoteNetworkError(`Unexpected non-JSON response from ${endpoint}`)
