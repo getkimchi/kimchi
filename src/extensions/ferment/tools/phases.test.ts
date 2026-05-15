@@ -176,10 +176,9 @@ describe("completePhase", () => {
 		expect(errResult.content.map((c) => c.text).join("\n")).toContain("rationale")
 	})
 
-	it("uses injected plan-mode UI to pause after phase completion", async () => {
+	it("in plan mode, completePhase does NOT show a review dropdown", async () => {
 		const h = createHarness()
-		const markHumanInput = vi.fn()
-		h.runtime.markHumanInput = markHumanInput
+		const selectSpy = vi.fn()
 		const services = createServices({ isPlanMode: vi.fn(() => true) })
 
 		const result = await completePhase(
@@ -187,38 +186,22 @@ describe("completePhase", () => {
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
 			{
 				pi: h.pi,
-				ctx: { ui: { select: vi.fn(async () => "Pause here") } },
+				ctx: { ui: { select: selectSpy } },
 			},
 			services,
 		)
 
-		expect(okText(result)).toContain("Ferment paused at user request")
-		expect(h.storage.get(h.fermentId)?.status).toBe("paused")
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
-		expect(markHumanInput).toHaveBeenCalled()
+		// No dropdown shown — silent fall-through to toolOk.
+		expect(selectSpy).not.toHaveBeenCalled()
+		// Phase is completed, not paused.
+		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("completed")
+		// No follow-up user message queued.
 		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
 	})
 
-	it("does not queue stale follow-up messages for plan-mode phase review choices", async () => {
+	it("in plan mode, completePhase returns a tool message and does not queue follow-up dropdown actions", async () => {
 		const h = createHarness()
-		const services = createServices({ isPlanMode: vi.fn(() => true) })
-
-		const proceed = await completePhase(
-			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
-			{
-				pi: h.pi,
-				ctx: { ui: { select: vi.fn(async () => "Proceed to Phase 2") } },
-			},
-			services,
-		)
-
-		expect(okText(proceed)).toContain("User confirmed: proceed to Phase 2")
-		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
-	})
-
-	it("returns custom plan-mode phase direction in the tool result", async () => {
-		const h = createHarness()
+		const selectSpy = vi.fn()
 		const services = createServices({ isPlanMode: vi.fn(() => true) })
 
 		const result = await completePhase(
@@ -226,17 +209,16 @@ describe("completePhase", () => {
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
 			{
 				pi: h.pi,
-				ctx: {
-					ui: {
-						select: vi.fn(async () => "Let me say something"),
-						input: vi.fn(async () => "Skip the remaining setup phase."),
-					},
-				},
+				ctx: { ui: { select: selectSpy } },
 			},
 			services,
 		)
 
-		expect(okText(result)).toContain("User direction: Skip the remaining setup phase.")
+		// The silent toolOk result contains next-phase reference, no "User confirmed" dropdown text.
+		expect(okText(result)).toContain("Phase")
+		expect(okText(result)).not.toContain("User confirmed")
+		expect(okText(result)).not.toContain("Proceed to Phase")
+		expect(selectSpy).not.toHaveBeenCalled()
 		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
 	})
 })
@@ -271,20 +253,22 @@ describe("registerPhaseTools", () => {
 		} as unknown as ExtensionAPI
 		registerPhaseTools(pi, h.runtime)
 
-		const select = vi.fn(async () => "Pause here")
+		const selectSpy = vi.fn()
 		const completePhaseTool = tools.get("complete_phase")
 		if (!completePhaseTool) throw new Error("complete_phase was not registered")
 
+		// Call with plan-mode UI injected — runtime uses injected storage (not global active).
 		const result = (await completePhaseTool.execute(
 			"test-call-id",
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
 			undefined,
 			undefined,
-			{ ui: { select } },
+			{ ui: { select: selectSpy } },
 		)) as { content: { text: string }[]; isError?: boolean }
 
-		expect(okText(result)).toContain("Ferment paused at user request")
-		expect(select).toHaveBeenCalled()
-		expect(h.storage.get(h.fermentId)?.status).toBe("paused")
+		// Silent path: no dropdown, phase completed normally using the injected runtime.
+		expect(selectSpy).not.toHaveBeenCalled()
+		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("completed")
+		expect(okText(result)).toContain("Phase")
 	})
 })

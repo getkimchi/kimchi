@@ -30,7 +30,7 @@ const FAILURE_BACKOFF_MS = 60 * 1000
 export async function initializeMcp(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
-	registerBootstrappedDirectTools?: (specs: DirectToolSpec[]) => string[],
+	registerBootstrappedDirectTools?: (specs: DirectToolSpec[], ctx?: Pick<ExtensionContext, "cwd">) => string[],
 ): Promise<McpExtensionState> {
 	const configPath = pi.getFlag("mcp-config") as string | undefined
 	const config = loadMcpConfig(configPath)
@@ -231,7 +231,7 @@ export async function initializeMcp(
 					const allSpecs = resolveDirectTools(config, freshCache, prefix, envOverride)
 					const newSpecs = allSpecs.filter((s) => bootstrapped.includes(s.serverName))
 					if (newSpecs.length > 0) {
-						const injected = registerBootstrappedDirectTools(newSpecs)
+						const injected = registerBootstrappedDirectTools(newSpecs, { cwd: ctx.cwd })
 						injectedCount = injected.length
 					}
 				}

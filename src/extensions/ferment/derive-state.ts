@@ -37,7 +37,6 @@ export interface RuntimeReader {
 	getBlockRetry(fermentId: string, phaseId: string): number
 	getPhaseStartRef(fermentId: string, phaseId: string): string | undefined
 	getStepStartRef(fermentId: string, phaseId: string, stepId: string): string | undefined
-	hasAfterScopeContinuation(fermentId: string): boolean
 }
 
 /** Slim phase descriptor for embedding in DerivedFermentState. */
@@ -77,9 +76,6 @@ export interface DerivedFermentState {
 	/** Retry budget for the active phase — only present when retries have been
 	 *  used. `at_risk` callers can surface this in prompts / dashboards. */
 	phaseRetry?: PhaseRetryBudget
-	/** Plan-mode handoff signal: ferment was just scoped and the agent's first
-	 *  turn after scoping should expect a user nudge. */
-	afterScopeContinuation: boolean
 	/** Git refs captured at activate_phase / start_step. Available even after
 	 *  a restart thanks to Step B persistence. */
 	phaseStartRef?: string
@@ -136,7 +132,6 @@ export function deriveFermentState(ferment: Ferment, runtime: RuntimeReader): De
 	const result: DerivedFermentState = {
 		fsmState,
 		nextAction,
-		afterScopeContinuation: runtime.hasAfterScopeContinuation(ferment.id),
 	}
 
 	if (activePhaseObj) {

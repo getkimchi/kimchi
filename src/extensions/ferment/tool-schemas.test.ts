@@ -1,0 +1,210 @@
+/**
+ * TypeBox schema validation tests for ProposeScopingParams and related schemas.
+ * Uses typebox/value Value.Check for structural validation.
+ */
+
+import { Value } from "typebox/value"
+import { describe, expect, it } from "vitest"
+import { CompleteStepParams, ProposeScopingParams } from "./tool-schemas.js"
+
+// Minimal valid payload fixtures
+const passingGates = () => [
+	{ id: "P1", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+	{ id: "P2", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+	{ id: "P3", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+]
+
+const minimalPhases = () => [
+	{ name: "P1", goal: "Phase 1 goal", steps: [{ description: "Step 1" }] },
+	{ name: "P2", goal: "Phase 2 goal", steps: [{ description: "Step 2" }] },
+	{ name: "P3", goal: "Phase 3 goal", steps: [{ description: "Step 3" }] },
+]
+
+describe("ProposeScopingParams schema", () => {
+	it("accepts full payload with questions", () => {
+		const payload = {
+			ferment_id: "f-123",
+			title: "Auth System",
+			goal: "Users can log in with OAuth",
+			success_criteria: "E2E tests pass",
+			constraints: ["no external auth libs"],
+			assumptions: "k8s cluster provisioned",
+			phases: minimalPhases(),
+			questions: [
+				{
+					id: "q1",
+					text: "Which OAuth provider first?",
+					options: [
+						{ id: "google", label: "Google", recommended: true },
+						{ id: "github", label: "GitHub" },
+					],
+				},
+			],
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
+	})
+
+	it("accepts payload without questions (questions is optional)", () => {
+		const payload = {
+			ferment_id: "f-123",
+			goal: "Do something",
+			phases: minimalPhases(),
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
+	})
+
+	it("accepts stringified phases/questions as a defensive fallback", () => {
+		const payload = {
+			ferment_id: "f-123",
+			goal: "Do something",
+			phases: JSON.stringify(minimalPhases()),
+			questions: JSON.stringify([
+				{
+					id: "q1",
+					text: "Which first?",
+					options: [
+						{ id: "a", label: "A", recommended: true },
+						{ id: "b", label: "B" },
+					],
+				},
+			]),
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
+	})
+
+	it("rejects question with fewer than 2 options (minItems: 2)", () => {
+		const payload = {
+			ferment_id: "f-123",
+			goal: "Do something",
+			phases: minimalPhases(),
+			questions: [
+				{
+					id: "q1",
+					text: "Only one option?",
+					options: [{ id: "a", label: "Only option" }],
+				},
+			],
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
+	})
+
+	it("rejects question with no options (empty array violates minItems: 2)", () => {
+		const payload = {
+			ferment_id: "f-123",
+			goal: "Do something",
+			phases: minimalPhases(),
+			questions: [
+				{
+					id: "q1",
+					text: "No options?",
+					options: [],
+				},
+			],
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
+	})
+
+	it("rejects more than 3 questions (maxItems: 3)", () => {
+		const question = (id: string) => ({
+			id,
+			text: `Question ${id}`,
+			options: [
+				{ id: "a", label: "A" },
+				{ id: "b", label: "B" },
+			],
+		})
+
+		const payload = {
+			ferment_id: "f-123",
+			goal: "Do something",
+			phases: minimalPhases(),
+			questions: [question("q1"), question("q2"), question("q3"), question("q4")],
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
+	})
+
+	it("rejects fewer than 3 phases (minItems: 3)", () => {
+		const payload = {
+			ferment_id: "f-123",
+			goal: "Do something",
+			phases: [
+				{ name: "P1", goal: "Phase 1 goal", steps: [{ description: "Step 1" }] },
+				{ name: "P2", goal: "Phase 2 goal", steps: [{ description: "Step 2" }] },
+			],
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
+	})
+
+	it("rejects more than 7 phases (maxItems: 7)", () => {
+		const phases = Array.from({ length: 8 }, (_, i) => ({
+			name: `P${i + 1}`,
+			goal: `Phase ${i + 1} goal`,
+			steps: [{ description: "Step" }],
+		}))
+
+		const payload = {
+			ferment_id: "f-123",
+			goal: "Do something",
+			phases,
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
+	})
+
+	it("rejects question with more than 4 options (maxItems: 4)", () => {
+		const payload = {
+			ferment_id: "f-123",
+			goal: "Do something",
+			phases: minimalPhases(),
+			questions: [
+				{
+					id: "q1",
+					text: "Too many choices?",
+					options: [
+						{ id: "a", label: "A" },
+						{ id: "b", label: "B" },
+						{ id: "c", label: "C" },
+						{ id: "d", label: "D" },
+						{ id: "e", label: "E" },
+					],
+				},
+			],
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
+	})
+})
+
+describe("CompleteStepParams schema", () => {
+	it("accepts S2 smoke verdict as a defensive alias before gate normalization", () => {
+		const payload = {
+			ferment_id: "f-123",
+			phase_id: "phase-1",
+			step_id: "step-1",
+			summary: "done",
+			gates: [
+				{ id: "S1", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "S2", verdict: "smoke", rationale: "ran a smoke check", evidence: "browser run" },
+				{ id: "S3", verdict: "pass", rationale: "ok", evidence: "n/a" },
+			],
+		}
+
+		expect(Value.Check(CompleteStepParams, payload)).toBe(true)
+	})
+})

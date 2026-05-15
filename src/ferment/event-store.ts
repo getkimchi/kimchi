@@ -71,6 +71,7 @@ export type FermentEventType =
 	| "scoping_criteria_set"
 	| "scoping_constraints_set"
 	| "scoping_phases_set"
+	| "scoping_assumptions_set"
 	| "ferment_planned"
 	| "ferment_running"
 	| "ferment_paused"
@@ -150,6 +151,10 @@ export interface ScopingPhasesSetPayload {
 	/** Snapshot of post.phases when scope was applied — needed during fold to reconstruct
 	 *  the structural Phase[] array (the `Scoping` record only holds the answer text). */
 	phaseSnapshots: Phase[]
+}
+
+export interface ScopingAssumptionsSetPayload {
+	assumptions: NonNullable<Scoping["assumptions"]>
 }
 
 /** Status-transition events carry no payload data — pre/postStateHash captures the change. */
@@ -300,6 +305,10 @@ export type ScopingPhasesSetEvent = FermentEventBase & {
 	type: "scoping_phases_set"
 	payload: ScopingPhasesSetPayload
 }
+export type ScopingAssumptionsSetEvent = FermentEventBase & {
+	type: "scoping_assumptions_set"
+	payload: ScopingAssumptionsSetPayload
+}
 export type FermentPlannedEvent = FermentEventBase & { type: "ferment_planned"; payload: FermentPlannedPayload }
 export type FermentRunningEvent = FermentEventBase & { type: "ferment_running"; payload: FermentRunningPayload }
 export type FermentPausedEvent = FermentEventBase & { type: "ferment_paused"; payload: FermentPausedPayload }
@@ -336,6 +345,7 @@ export type FermentEvent =
 	| ScopingCriteriaSetEvent
 	| ScopingConstraintsSetEvent
 	| ScopingPhasesSetEvent
+	| ScopingAssumptionsSetEvent
 	| FermentPlannedEvent
 	| FermentRunningEvent
 	| FermentPausedEvent
@@ -989,6 +999,15 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 				...state,
 				scoping: { ...state.scoping, phases: p.phases },
 				phases: p.phaseSnapshots,
+				updatedAt: event.timestamp,
+			}
+		}
+		case "scoping_assumptions_set": {
+			if (!state) throw new Error("scoping_assumptions_set requires existing state")
+			const p = event.payload as ScopingAssumptionsSetPayload
+			return {
+				...state,
+				scoping: { ...state.scoping, assumptions: p.assumptions },
 				updatedAt: event.timestamp,
 			}
 		}

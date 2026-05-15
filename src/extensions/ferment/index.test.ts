@@ -10,15 +10,9 @@ import type { Ferment } from "../../ferment/types.js"
 import fermentExtension from "./index.js"
 import { resetAllReactiveAutoNudgeCounts } from "./nudge.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
-import {
-	clearAllAfterScopeContinuations,
-	getActive,
-	isAutoModeEnabled,
-	setActive,
-	setAutoModeEnabled,
-} from "./state.js"
+import { getActive, isAutoModeEnabled, setActive, setAutoModeEnabled } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
-import { completeFerment } from "./tools/lifecycle.js"
+import { completeFerment, scopeFerment } from "./tools/lifecycle.js"
 
 vi.mock("../../ferment/shorten-title.js", () => ({
 	shortenTitle: vi.fn(async (input: string) => input),
@@ -53,6 +47,7 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 			commands.set(name, command.handler)
 		},
 		registerTool: vi.fn(),
+		registerMessageRenderer: vi.fn(),
 		registerFlag: vi.fn((name: string) => {
 			registeredFlags.add(name)
 		}),
@@ -73,7 +68,6 @@ afterEach(() => {
 	setActive(undefined)
 	setAutoModeEnabled(true)
 	resetAllReactiveAutoNudgeCounts()
-	clearAllAfterScopeContinuations()
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
 	clearFermentCache()
@@ -562,7 +556,7 @@ describe("fermentExtension question dropdown", () => {
 		)
 	})
 
-	it("offers a one-time start handoff after an interactive plan is saved", async () => {
+	it("silently nudges resume into auto execution when scopeFerment succeeds in plan mode (no dropdown)", async () => {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-plan-handoff-test-")))
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
@@ -570,41 +564,30 @@ describe("fermentExtension question dropdown", () => {
 		}
 		const applyAndPersist = createApplyAndPersist(runtime)
 		const draft = storage.create("Plan Handoff")
-		const scoped = applyAndPersist(draft.id, {
-			type: "scope",
-			goal: "Goal",
-			successCriteria: "Works",
-			constraints: [],
-			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
-		})
-		if (!scoped.ok) throw new Error(scoped.error.message)
-		setActive(scoped.ferment)
-		runtime.markAfterScopeContinuation(draft.id)
-		const { handlers, pi } = registerFermentExtension(runtime)
-		const turnEnd = handlers.get("turn_end")
-		if (!turnEnd) throw new Error("turn_end handler was not registered")
-		const ctx = {
-			ui: {
-				select: vi.fn().mockResolvedValue("Start execution (/auto)"),
-				notify: vi.fn(),
-			},
-		}
+		const moded = applyAndPersist(draft.id, { type: "set_mode", mode: "plan" })
+		if (!moded.ok) throw new Error(moded.error.message)
+		setActive(moded.ferment)
+		const { pi } = registerFermentExtension(runtime)
 
-		await turnEnd(
+		// Drive scopeFerment directly — the nudge fires at scope-time.
+		await scopeFerment(
+			runtime,
 			{
-				message: {
-					role: "assistant",
-					content: [{ type: "toolCall", name: "propose_phases" }],
-				},
+				ferment_id: draft.id,
+				goal: "Goal",
+				success_criteria: "Works",
+				constraints: [],
+				phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
+				gates: [
+					{ id: "P1", verdict: "pass", rationale: "ok", evidence: "n/a" },
+					{ id: "P2", verdict: "pass", rationale: "ok", evidence: "n/a" },
+					{ id: "P3", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				],
 			},
-			ctx,
+			{ pi },
 		)
 
-		expect(ctx.ui.select).toHaveBeenCalledWith('Plan saved for "Plan Handoff". Start execution?', [
-			"Start execution (/auto)",
-			"Wait",
-		])
-		expect(storage.get(draft.id)?.mode).toBe("plan")
+		// The resume nudge is injected once at scope-time without a dropdown.
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_automode_nudge",
@@ -614,14 +597,14 @@ describe("fermentExtension question dropdown", () => {
 		)
 	})
 
-	it("drops the after-scope handoff if the ferment was abandoned before turn end", async () => {
-		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-abandoned-handoff-test-")))
+	it("turn_end no longer emits nudge for planned-mode ferments (nudge fires at scope-time instead)", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-planned-turn-end-test-")))
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
 			getStorage: () => storage,
 		}
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const draft = storage.create("Abandoned Handoff")
+		const draft = storage.create("No Nudge From Turn End")
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
@@ -630,16 +613,16 @@ describe("fermentExtension question dropdown", () => {
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
 		if (!scoped.ok) throw new Error(scoped.error.message)
-		setActive(scoped.ferment)
-		runtime.markAfterScopeContinuation(draft.id)
-		const abandoned = applyAndPersist(draft.id, { type: "abandon", reason: "cancelled" })
-		if (!abandoned.ok) throw new Error(abandoned.error.message)
-		setActive(scoped.ferment)
+		// Explicitly in plan mode to confirm turn_end does NOT nudge planned ferments.
+		const moded = applyAndPersist(draft.id, { type: "set_mode", mode: "plan" })
+		if (!moded.ok) throw new Error(moded.error.message)
+		setActive(moded.ferment)
 		const { handlers, pi } = registerFermentExtension(runtime)
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 		const ctx = { ui: { select: vi.fn(), input: vi.fn(), notify: vi.fn() } }
 
+		// Fire a text-only turn — in the old code this triggered the nudge loop.
 		await turnEnd(
 			{
 				message: {
@@ -650,105 +633,12 @@ describe("fermentExtension question dropdown", () => {
 			ctx,
 		)
 
+		// turn_end must not nudge — nudge fires only at scope-time now.
 		expect(ctx.ui.select).not.toHaveBeenCalled()
 		expect(pi.sendMessage).not.toHaveBeenCalledWith(
 			expect.objectContaining({ customType: "ferment_automode_nudge" }),
 			expect.anything(),
 		)
-		expect(runtime.hasAfterScopeContinuation(draft.id)).toBe(false)
-	})
-
-	it("consumes the after-scope handoff if the start prompt throws", async () => {
-		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-throwing-handoff-test-")))
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getStorage: () => storage,
-		}
-		const applyAndPersist = createApplyAndPersist(runtime)
-		const draft = storage.create("Throwing Handoff")
-		const scoped = applyAndPersist(draft.id, {
-			type: "scope",
-			goal: "Goal",
-			successCriteria: "Works",
-			constraints: [],
-			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
-		})
-		if (!scoped.ok) throw new Error(scoped.error.message)
-		setActive(scoped.ferment)
-		runtime.markAfterScopeContinuation(draft.id)
-		const { handlers } = registerFermentExtension(runtime)
-		const turnEnd = handlers.get("turn_end")
-		if (!turnEnd) throw new Error("turn_end handler was not registered")
-		const ctx = {
-			ui: {
-				select: vi.fn().mockRejectedValue(new Error("terminal closed")),
-				notify: vi.fn(),
-			},
-		}
-
-		await expect(
-			turnEnd(
-				{
-					message: {
-						role: "assistant",
-						content: [{ type: "text", text: "Plan saved." }],
-					},
-				},
-				ctx,
-			),
-		).rejects.toThrow("terminal closed")
-
-		expect(runtime.hasAfterScopeContinuation(draft.id)).toBe(false)
-	})
-
-	it("rechecks after-scope state after the start prompt before nudging", async () => {
-		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-stale-handoff-test-")))
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getStorage: () => storage,
-		}
-		const applyAndPersist = createApplyAndPersist(runtime)
-		const draft = storage.create("Stale Handoff")
-		const scoped = applyAndPersist(draft.id, {
-			type: "scope",
-			goal: "Goal",
-			successCriteria: "Works",
-			constraints: [],
-			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
-		})
-		if (!scoped.ok) throw new Error(scoped.error.message)
-		setActive(scoped.ferment)
-		runtime.markAfterScopeContinuation(draft.id)
-		const { handlers, pi } = registerFermentExtension(runtime)
-		const turnEnd = handlers.get("turn_end")
-		if (!turnEnd) throw new Error("turn_end handler was not registered")
-		const ctx = {
-			ui: {
-				select: vi.fn().mockImplementation(async () => {
-					const abandoned = applyAndPersist(draft.id, { type: "abandon", reason: "cancelled during prompt" })
-					if (!abandoned.ok) throw new Error(abandoned.error.message)
-					return "Start execution (/auto)"
-				}),
-				notify: vi.fn(),
-			},
-		}
-
-		await turnEnd(
-			{
-				message: {
-					role: "assistant",
-					content: [{ type: "text", text: "Plan saved." }],
-				},
-			},
-			ctx,
-		)
-
-		expect(storage.get(draft.id)?.status).toBe("abandoned")
-		expect(pi.sendMessage).not.toHaveBeenCalledWith(
-			expect.objectContaining({ customType: "ferment_automode_nudge" }),
-			expect.anything(),
-		)
-		expect(runtime.hasAfterScopeContinuation(draft.id)).toBe(false)
 	})
 
 	it("intercepts a trailing confirmation question after tool calls", async () => {
@@ -792,7 +682,7 @@ Does this plan look right?`,
 		expect(pi.sendUserMessage).toHaveBeenCalledWith("No — please revise.", { deliverAs: "followUp" })
 	})
 
-	it("does not show a second draft confirmation after propose_phases already asked", async () => {
+	it("does not show a second draft confirmation after propose_scoping already asked", async () => {
 		setActive(makeActivePlanFerment({ status: "draft" }))
 		const { handlers, pi } = registerFermentExtension()
 		const turnEnd = handlers.get("turn_end")
@@ -811,7 +701,7 @@ Does this plan look right?`,
 					role: "assistant",
 					content: [
 						{ type: "text", text: "1. Phase one\n2. Phase two\n" },
-						{ type: "toolCall", name: "propose_phases" },
+						{ type: "toolCall", name: "propose_scoping" },
 						{ type: "text", text: "Does this plan look right?" },
 					],
 				},

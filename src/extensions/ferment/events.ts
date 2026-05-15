@@ -3,12 +3,7 @@ import { shortenTitle } from "../../ferment/shorten-title.js"
 import { clearFermentCache } from "../../ferment/store.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
-import {
-	appendRefEntry,
-	injectResumeAutoNudge,
-	maybeInjectReactiveAutoNudge,
-	resetReactiveAutoNudgeCount,
-} from "./nudge.js"
+import { appendRefEntry, maybeInjectReactiveAutoNudge, resetReactiveAutoNudgeCount } from "./nudge.js"
 import {
 	buildOneshotPlannerSystemPrompt,
 	extractBaseSystemPromptFromPayload,
@@ -16,6 +11,7 @@ import {
 } from "./oneshot-prompt.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import { buildPlannerSupplement } from "./planner-supplement.js"
+import { promptInput, promptSelect } from "./prompt-ui.js"
 import { resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
@@ -61,45 +57,10 @@ async function maybeRunPlanModeDropdown(
 ): Promise<void> {
 	if (!ctx?.ui?.select) return
 
-	if (f.status === "planned") {
-		if (!runtime.hasAfterScopeContinuation(f.id)) return
-		const fresh = runtime.getStorage().get(f.id)
-		if (!fresh || fresh.status === "complete" || fresh.status === "abandoned" || fresh.status === "paused") {
-			runtime.consumeAfterScopeContinuation(f.id)
-			return
-		}
-		if (fresh.status !== "planned" || fresh.mode !== "plan") {
-			runtime.consumeAfterScopeContinuation(f.id)
-			return
-		}
-		runtime.setActive(fresh)
-
-		let choice: string | undefined
-		try {
-			choice = await ctx.ui.select(`Plan saved for "${fresh.name}". Start execution?`, [
-				"Start execution (/auto)",
-				"Wait",
-			])
-			runtime.markHumanInput()
-		} finally {
-			runtime.consumeAfterScopeContinuation(f.id)
-		}
-		if (choice !== "Start execution (/auto)") return
-
-		const rechecked = runtime.getStorage().get(f.id)
-		if (!rechecked || rechecked.status !== "planned" || rechecked.mode !== "plan") return
-
-		runtime.setAutoModeEnabled(true)
-		setActiveFerment(pi, runtime, rechecked)
-		ctx.ui.notify?.(`Starting "${rechecked.name}".`)
-		injectResumeAutoNudge(pi, runtime)
-		return
-	}
-
 	if (f.status !== "draft" && f.status !== "running") return
 	if (!ctx.ui.input) return
 
-	if (hasToolCall(content, "propose_phases")) return
+	if (hasToolCall(content, "propose_scoping")) return
 	const text = extractPromptTextAfterLastToolCall(content)
 	if (!text) return
 
@@ -113,13 +74,13 @@ async function maybeRunPlanModeDropdown(
 	const options = contextualOptions
 		? [...contextualOptions, "Let me say something else"]
 		: [yesLabel, noLabel, "Let me say something else"]
-	const choice = await ctx.ui.select(title, options)
+	const choice = await promptSelect(ctx, title, options)
 	if (!choice) return
 
 	let reply: string
 
 	if (choice === "Let me say something else") {
-		const custom = ctx.ui.input ? await ctx.ui.input("Your message:", "") : undefined
+		const custom = await promptInput(ctx, "Your message:", "")
 		if (!custom) return
 		reply = custom
 	} else if (choice === noLabel) {
@@ -127,7 +88,7 @@ async function maybeRunPlanModeDropdown(
 	} else if (contextualOptions?.includes(choice)) {
 		reply = choice
 	} else if (isDraft && choice === yesLabel) {
-		const outcome = confirmPendingScope(runtime, f.id, undefined, "turn_end", f.name)
+		const outcome = confirmPendingScope(runtime, f.id, undefined, "turn_end", f.name, pi)
 		if (outcome.ok) {
 			ctx.ui.notify?.(
 				`Plan saved for "${outcome.outcome.ferment.name}". ${outcome.outcome.ferment.phases.length} phase(s) ready.`,
@@ -138,7 +99,7 @@ async function maybeRunPlanModeDropdown(
 			reply = `Plan save failed: ${outcome.error.message}. Investigate the ferment state and try again.`
 		} else {
 			reply =
-				"User confirmed the plan but you never called propose_phases — there's nothing structured for the host to save. Call propose_phases now with the same plan you just showed, then end with 'Does this plan look right?' so the user can confirm again."
+				"User confirmed the plan but you never called propose_scoping — there's nothing structured for the host to save. Call propose_scoping now with the same plan you just showed; propose_scoping will handle confirmation via its own dropdown — do not append a trailing question."
 		}
 	} else {
 		reply = "Yes, proceed."
@@ -187,7 +148,6 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		if (process.env.KIMCHI_SUBAGENT === "1") return
 		runtime.clearAllStepStarts()
 		runtime.clearAllScopingGates()
-		runtime.clearAllAfterScopeContinuations()
 		runtime.clearAllPendingScopes()
 		clearFermentCache()
 

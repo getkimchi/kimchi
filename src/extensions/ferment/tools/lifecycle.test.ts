@@ -108,7 +108,7 @@ beforeEach(() => {
 })
 
 describe("scopeFerment", () => {
-	it("scopes with all plan gates passing and marks an after-scope continuation", async () => {
+	it("scopes with all plan gates passing", async () => {
 		const h = createHarness()
 
 		const result = await scopeFerment(
@@ -126,10 +126,9 @@ describe("scopeFerment", () => {
 
 		expect(okText(result)).toContain("scoped and ready")
 		expect(h.storage.get(h.fermentId)?.status).toBe("planned")
-		expect(h.runtime.hasAfterScopeContinuation(h.fermentId)).toBe(true)
 	})
 
-	it("does not mark an after-scope continuation for exec-mode scoping", async () => {
+	it("scopes exec-mode ferments without the continuation subsystem", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
 		const mode = applyAndPersist(h.fermentId, { type: "set_mode", mode: "exec" })
@@ -147,7 +146,7 @@ describe("scopeFerment", () => {
 		)
 
 		expect(okText(result)).toContain("scoped and ready")
-		expect(h.runtime.hasAfterScopeContinuation(h.fermentId)).toBe(false)
+		expect(h.storage.get(h.fermentId)?.status).toBe("planned")
 	})
 
 	it("refuses scoping when agent self-flags a plan gate", async () => {
@@ -218,6 +217,44 @@ describe("scopeFerment", () => {
 		expect(errText(result)).toContain("waiting for user confirmation")
 		expect(h.storage.get(h.fermentId)?.status).toBe("draft")
 	})
+
+	it("scope_ferment tool with assumptions param persists them into scoping.assumptions", async () => {
+		const h = createHarness()
+
+		await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				goal: "Ship the feature",
+				success_criteria: "Tests pass",
+				assumptions: "k8s cluster exists and is reachable",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				gates: passingPlanGates(),
+			},
+			{ pi: h.pi },
+		)
+
+		const saved = h.storage.get(h.fermentId)
+		expect(saved?.scoping.assumptions?.answer).toBe("k8s cluster exists and is reachable")
+	})
+
+	it("scope_ferment tool without assumptions leaves scoping.assumptions undefined", async () => {
+		const h = createHarness()
+
+		await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				gates: passingPlanGates(),
+			},
+			{ pi: h.pi },
+		)
+
+		const saved = h.storage.get(h.fermentId)
+		expect(saved?.scoping.assumptions).toBeUndefined()
+	})
 })
 
 describe("registerLifecycleTools", () => {
@@ -252,6 +289,66 @@ describe("registerLifecycleTools", () => {
 		const created = storage.list().find((f) => f.name === "Registered Lifecycle")
 		expect(created).toBeDefined()
 		expect(runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ id: created?.id }))
+	})
+})
+
+describe("update_scope_field via registerLifecycleTools", () => {
+	function createRegisteredHarness() {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-update-scope-test-")))
+		const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+			sendMessage: vi.fn(),
+			appendEntry: vi.fn(),
+			getActiveTools: vi.fn(() => ["read", "bash"]),
+			getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }]),
+			setActiveTools: vi.fn(),
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, runtime)
+		// Create and scope a ferment so update_scope_field has something to revise.
+		const applyAndPersist = createApplyAndPersist(runtime)
+		const ferment = storage.create("Update Scope Test")
+		const scoped = applyAndPersist(ferment.id, {
+			type: "scope",
+			goal: "Original goal",
+			successCriteria: "Done",
+			constraints: [],
+			phases: [{ name: "Phase", goal: "Build", steps: [] }],
+		})
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		return { storage, runtime, tools, fermentId: ferment.id }
+	}
+
+	it("update_scope_field with field 'assumptions' writes scoping.assumptions via the tool", async () => {
+		const { tools, fermentId, storage } = createRegisteredHarness()
+		const tool = tools.get("update_scope_field")
+		if (!tool) throw new Error("update_scope_field was not registered")
+
+		const result = (await tool.execute("test-call-id", {
+			ferment_id: fermentId,
+			field: "assumptions",
+			value: "k8s cluster exists and is reachable",
+		})) as { content: { text: string }[]; isError?: boolean }
+
+		expect(okText(result)).toContain("assumptions")
+		expect(storage.get(fermentId)?.scoping.assumptions?.answer).toBe("k8s cluster exists and is reachable")
+	})
+
+	it("update_scope_field rejects unknown fields with a message listing assumptions", async () => {
+		const { tools, fermentId } = createRegisteredHarness()
+		const tool = tools.get("update_scope_field")
+		if (!tool) throw new Error("update_scope_field was not registered")
+
+		const result = (await tool.execute("test-call-id", {
+			ferment_id: fermentId,
+			field: "unknown_field",
+			value: "ignored",
+		})) as { content: { text: string }[]; isError?: boolean }
+
+		expect(errText(result)).toContain("assumptions")
 	})
 })
 

@@ -276,13 +276,6 @@ export default function (skillPaths: string[]) {
 		// For sub agents we don't want to transform the prompt sent from parent with model capabilities
 		const registry = new ModelRegistry(getAvailableModels())
 		if (!subagentMode) {
-			// Announce newly available API models that have no capability entry yet.
-			for (const warning of registry.warnings) {
-				console.log(
-					`${fg(ANSI.accent, ` New model available: "kimchi-dev/${warning.modelId}"`)}\n${fg(ANSI.dim, " Update the app or add the new model to model capabilities config to unlock orchestration support.")}`,
-				)
-			}
-
 			// Global terminal input listener so alt+tab works even when a
 			// dialog (e.g. permission prompt) has focus instead of the editor.
 			let unsubAltTab: (() => void) | null = null

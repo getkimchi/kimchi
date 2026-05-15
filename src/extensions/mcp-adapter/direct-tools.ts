@@ -1,4 +1,6 @@
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
+import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent"
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
+import { fillMissingRequired } from "./context-providers.js"
 import { getFailureAgeSeconds, lazyConnect } from "./init.js"
 import { authenticate, supportsOAuth } from "./mcp-auth-flow.js"
 import type { MetadataCache } from "./metadata-cache.js"
@@ -232,6 +234,7 @@ export function createDirectToolExecutor(
 	getState: () => McpExtensionState | null,
 	getInitPromise: () => Promise<McpExtensionState> | null,
 	spec: DirectToolSpec,
+	ctx?: Pick<ExtensionContext, "cwd">,
 ): DirectToolExecute {
 	return async function execute(_toolCallId, params) {
 		let state = getState()
@@ -303,6 +306,13 @@ export function createDirectToolExecutor(
 			}
 		}
 
+		const mergedArgs = fillMissingRequired(
+			spec.metadata,
+			(params ?? {}) as Record<string, unknown>,
+			ctx ?? { cwd: process.cwd() },
+			(msg) => console.debug(msg),
+		)
+
 		let uiSession: UiSessionRuntime | null = null
 
 		try {
@@ -331,20 +341,18 @@ export function createDirectToolExecutor(
 				? await maybeStartUiSession(state, {
 						serverName: spec.serverName,
 						toolName: spec.originalName,
-						toolArgs: (params ?? {}) as Record<string, unknown>,
+						toolArgs: mergedArgs,
 						uiResourceUri: spec.uiResourceUri!,
 						streamMode: spec.uiStreamMode,
 					})
 				: null
 
-			const resultPromise = connection.client.callTool({
+			const result = await connection.client.callTool({
 				name: spec.originalName,
-				arguments: (params ?? {}) as Record<string, unknown>,
+				arguments: mergedArgs,
 				_meta: uiSession?.requestMeta,
 			})
-
-			const result = await resultPromise
-			uiSession?.sendToolResult(result as unknown as import("@modelcontextprotocol/sdk/types.js").CallToolResult)
+			uiSession?.sendToolResult(result as unknown as CallToolResult)
 
 			const mcpContent = (result.content ?? []) as McpContent[]
 			const content = transformMcpContent(mcpContent)

@@ -65,11 +65,12 @@ export type Command =
 			goal: string
 			successCriteria?: string
 			constraints?: string[]
+			assumptions?: string
 			phases: ScopePhaseInput[]
 	  }
 	| {
 			type: "update_scope_field"
-			field: "goal" | "criteria" | "constraints"
+			field: "goal" | "criteria" | "constraints" | "assumptions"
 			value: string
 	  }
 	| { type: "set_mode"; mode: FermentWorkMode }
@@ -391,6 +392,9 @@ function handleScope(
 	if (cmd.constraints && cmd.constraints.length > 0) {
 		scoping.constraints = { answer: cmd.constraints.join(", "), confirmedAt: ctx.now }
 	}
+	if (cmd.assumptions && cmd.assumptions.trim().length > 0) {
+		scoping.assumptions = { answer: cmd.assumptions, confirmedAt: ctx.now }
+	}
 	if (phases.length > 0) {
 		scoping.phases = { answer: phases.map((p) => p.name).join(", "), confirmedAt: ctx.now }
 	}
@@ -431,11 +435,13 @@ function handleUpdateScopeField(
 			.filter(Boolean)
 		patch.constraints = parsed
 		scoping.constraints = { answer: parsed.join(", "), confirmedAt: ctx.now }
+	} else if (cmd.field === "assumptions") {
+		scoping.assumptions = { answer: cmd.value, confirmedAt: ctx.now }
 	} else {
 		return fail({
 			code: "INVALID_FIELD",
 			field: cmd.field,
-			message: `Unknown field: "${cmd.field}". Use goal, criteria, or constraints.`,
+			message: `Unknown field: "${cmd.field}". Use goal, criteria, constraints, or assumptions.`,
 		})
 	}
 

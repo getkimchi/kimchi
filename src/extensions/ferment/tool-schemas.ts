@@ -16,10 +16,24 @@ export const GateVerdictSchema = Type.Object({
 	id: Type.String({
 		description: "Gate id from the registry. See the tool description for the exact ids this tool requires.",
 	}),
-	verdict: Type.Union([Type.Literal("pass"), Type.Literal("flag"), Type.Literal("omitted")], {
-		description:
-			"'pass' = the gate's question is answered affirmatively with concrete evidence. 'flag' = the gate identifies a real problem (blocks advancement). 'omitted' = the gate doesn't apply to this work (requires rationale).",
-	}),
+	verdict: Type.Union(
+		[
+			Type.Literal("pass"),
+			Type.Literal("flag"),
+			Type.Literal("omitted"),
+			// Defensive aliases for S2's verification classification vocabulary.
+			// Gate validation normalizes these before persistence.
+			Type.Literal("smoke"),
+			Type.Literal("test"),
+			Type.Literal("syntactic"),
+			Type.Literal("proxy"),
+			Type.Literal("sentinel"),
+		],
+		{
+			description:
+				"'pass' = the gate's question is answered affirmatively with concrete evidence. 'flag' = the gate identifies a real problem (blocks advancement). 'omitted' = the gate doesn't apply to this work (requires rationale). Prefer pass | flag | omitted. If you accidentally use S2 verification labels, smoke/test/syntactic normalize to pass and proxy/sentinel normalize to flag.",
+		},
+	),
 	rationale: Type.String({
 		description: "One sentence justifying the verdict. Required for every verdict including 'pass' and 'omitted'.",
 	}),
@@ -37,10 +51,10 @@ export const ListParams = Type.Object({
 	filter: Type.Optional(Type.String({ description: "Optional status filter" })),
 })
 
-// Shared phase schema — used by both scope_ferment (the legacy/headless path)
-// and propose_phases (the new interactive path). Keep them identical so a
-// proposed plan can be applied verbatim.
-const PhaseProposalSchema = Type.Object({
+// Shared phase schema — used by both scope_ferment (headless path) and
+// propose_scoping (interactive path). Keep them identical so a proposed plan
+// can be applied verbatim.
+export const PhaseProposalSchema = Type.Object({
 	name: Type.String(),
 	goal: Type.String(),
 	description: Type.Optional(Type.String()),
@@ -75,6 +89,12 @@ export const ScopeParams = Type.Object({
 	goal: Type.String(),
 	success_criteria: Type.Optional(Type.String()),
 	constraints: Type.Optional(Type.Array(Type.String())),
+	assumptions: Type.Optional(
+		Type.String({
+			description:
+				"Upfront assumptions the plan rests on. Will be surfaced to the planner. If the agent later discovers an assumption is false, record a decision and continue rather than asking the user.",
+		}),
+	),
 	phases: Type.Optional(Type.Array(PhaseProposalSchema)),
 	gates: Type.Array(GateVerdictSchema, {
 		description:
@@ -82,18 +102,77 @@ export const ScopeParams = Type.Object({
 	}),
 })
 
-export const ProposePhasesParams = Type.Object({
+export const ScopingQuestionOptionSchema = Type.Object({
+	id: Type.String({ description: "Stable identifier for this option." }),
+	label: Type.String({ description: "Human-readable label shown in the TUI." }),
+	recommended: Type.Optional(
+		Type.Boolean({
+			description:
+				"At most ONE option per question may have recommended: true. Mark the option the agent recommends given current context. No reason text.",
+		}),
+	),
+})
+
+export const ScopingQuestionSchema = Type.Object({
+	id: Type.String({ description: "Stable identifier for this question." }),
+	text: Type.String({ description: "The question text shown to the user." }),
+	options: Type.Array(ScopingQuestionOptionSchema, {
+		minItems: 2,
+		maxItems: 4,
+		description: "2–4 candidate options for the question.",
+	}),
+})
+
+export const ProposeScopingParams = Type.Object({
 	ferment_id: Type.String({
-		description:
-			"The ferment whose plan you're proposing. Must match the ferment_id given to you in the scoping prompt.",
+		description: "The ferment whose scoping you're proposing.",
 	}),
-	phases: Type.Array(PhaseProposalSchema, {
-		description:
-			"3–7 ordered phases that will become the project plan. Each phase needs a name, one-sentence goal, and 3–6 concrete step descriptions. The host will save these verbatim when the user confirms via the dropdown.",
-	}),
+	title: Type.Optional(Type.String({ description: "A short 3-5 word title for this ferment." })),
+	goal: Type.String({ description: "The ferment goal." }),
+	success_criteria: Type.Optional(Type.String()),
+	constraints: Type.Optional(
+		Type.Union([
+			Type.Array(Type.String()),
+			Type.String({
+				description:
+					"Fallback only: JSON-stringified string array. Prefer a real JSON array; the tool normalizes this if the model stringifies it.",
+			}),
+		]),
+	),
+	assumptions: Type.Optional(
+		Type.String({
+			description:
+				"Upfront assumptions the plan rests on. Will be surfaced to the planner. If the agent later discovers an assumption is false, record a decision and continue rather than asking the user.",
+		}),
+	),
+	phases: Type.Union([
+		Type.Array(PhaseProposalSchema, {
+			minItems: 3,
+			maxItems: 7,
+			description:
+				"3–7 ordered phase OBJECTS that will become the project plan. Emit as a real JSON array, not a quoted string, markdown block, or prose.",
+		}),
+		Type.String({
+			description:
+				"Fallback only: a valid JSON array string containing phase objects. Prefer a real JSON array. Prose, markdown lists, and malformed JSON are rejected.",
+		}),
+	]),
+	questions: Type.Optional(
+		Type.Union([
+			Type.Array(ScopingQuestionSchema, {
+				maxItems: 3,
+				description:
+					"Emit ONLY when truly uncertain. At most 3. Must be a real JSON array of question objects, never a quoted string. Each question needs 2-4 options in the display order you want; the host preserves that order and appends Custom answer last. Mark at most ONE option per question with `recommended: true`. No reason text. On replans after user answers, ask only NEW decision-blocking questions; never repeat answered questions.",
+			}),
+			Type.String({
+				description:
+					"Compatibility fallback only: a valid JSON array string containing question objects. Prefer a real JSON array. Prose, markdown lists, and malformed JSON are rejected and shown back to the model for retry.",
+			}),
+		]),
+	),
 	gates: Type.Array(GateVerdictSchema, {
 		description:
-			"Plan-scope gate verdicts. Required ids: P1 (verifiable success signal per phase), P2 (phase ordering composes), P3 (success criteria for complete_ferment). See tool description for each gate's question and guidance.",
+			"Plan-scope gate verdicts. Required ids: P1, P2, P3. See tool description for each gate's question and what counts as 'pass' vs 'flag'.",
 	}),
 })
 
@@ -227,7 +306,7 @@ export const FailPhaseParams = Type.Object({
 
 export const UpdateScopeFieldParams = Type.Object({
 	ferment_id: Type.String(),
-	field: Type.String({ description: "goal | criteria | constraints" }),
+	field: Type.String({ description: "goal | criteria | constraints | assumptions" }),
 	value: Type.String({ description: "New value. For constraints, use comma-separated list." }),
 })
 

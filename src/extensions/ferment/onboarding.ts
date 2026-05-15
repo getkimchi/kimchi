@@ -83,12 +83,11 @@ Let's see how each one works.`,
 			title: `📝  /ferment
 
 Type /ferment with no arguments to start one. You'll be asked:
-  1. What you want to ferment (e.g. "Add Google OAuth login")
-  2. Goal (what does done look like?)
-  3. Success criteria (how will we know we got there?)
-  4. Constraints (anything to avoid? — optional)
+  1. What you want to ferment (free-form; rough is fine)
 
-The agent then proposes 3–7 phases. Confirm via dropdown and you're scoped.
+The agent drafts the goal, success criteria, constraints, assumptions, and
+3–7 phases. If the request is ambiguous, it asks a few focused questions with
+recommended answers. Review the markdown plan, then choose Start execution.
 
 Other forms:
   /ferment list                    — pick from existing ferments
@@ -99,10 +98,11 @@ Other forms:
 		{
 			title: `🔄  /auto and ⏸  /pause
 
-After scoping, the planner waits at "Ready to execute?". Type:
+After you confirm Start execution, the planner activates phases and steps.
+Type:
 
-  /auto    — flips to running, kicks the planner to execute the next step.
-             Use this whenever you want the agent to keep going on its own.
+  /auto    — resumes a paused/planned ferment and kicks the planner to the
+             next state-machine action.
 
   /pause   — flips to paused. The state machine refuses every ferment tool
              call until you resume. Safe to use mid-step.
@@ -131,13 +131,11 @@ Also useful:
 
   > /ferment
   What would you like to ferment? Add Google OAuth login
-  Goal? Users can sign in with their Google account
-  Success criteria? E2E test passes; no regressions in /login
-  Constraints? No external auth libs
 
-  [agent proposes 4 phases — you click "Yes, this looks right"]
+  [agent drafts goal/criteria/constraints/assumptions + 4 phases]
+  [agent asks any needed scoping questions with recommended answers]
+  [you review the markdown plan and click "Start execution"]
 
-  > /auto
   [agent runs phase 1 step 1, returns with a summary]
   [agent runs phase 1 step 2 …]
 

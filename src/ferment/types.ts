@@ -27,6 +27,18 @@ export interface ScopingAnswer {
 	confirmedAt: string
 }
 
+export interface ScopingQuestionOption {
+	id: string
+	label: string
+	recommended?: boolean
+}
+
+export interface ScopingQuestion {
+	id: string
+	text: string
+	options: ScopingQuestionOption[]
+}
+
 export interface Scoping {
 	/** The goal that was collected and confirmed */
 	goal?: ScopingAnswer
@@ -36,6 +48,8 @@ export interface Scoping {
 	constraints?: ScopingAnswer
 	/** Whether phases have been proposed/accepted */
 	phases?: ScopingAnswer
+	/** Assumptions the team is operating under (optional) */
+	assumptions?: ScopingAnswer
 }
 
 export interface Ferment {

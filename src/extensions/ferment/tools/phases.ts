@@ -11,8 +11,7 @@ import type { Static } from "typebox"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
 import type { Ferment } from "../../../ferment/types.js"
 import { askUser } from "../ask-user.js"
-import { truncateLabel } from "../colors.js"
-import { formatDecisionsAndMemories, formatScopingContext } from "../format.js"
+import { formatDecisionsAndMemories } from "../format.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { flaggedVerdicts, renderGateGuidance } from "../gate-registry.js"
 import { validateGatesOrErr } from "../gate-validation.js"
@@ -300,73 +299,6 @@ export async function completePhase(
 		)
 	}
 
-	// Plan-mode review: dropdown of completed phase + next-phase preview. In
-	// one-shot mode (which is typically auto-mode, not plan-mode), this branch
-	// is skipped — the agent owns advancement directly via activate_phase.
-	if (services.isPlanMode(fresh)) {
-		const MAX_STEP_DESC = 80
-		const completedPhase = fresh.phases.find((p) => p.id === phase.id)
-		const stepLines =
-			completedPhase?.steps
-				.map((st) => {
-					const icon =
-						st.status === "done" || st.status === "verified"
-							? "✓"
-							: st.status === "skipped"
-								? "⊘"
-								: st.status === "failed"
-									? "✗"
-									: "○"
-					const desc = truncateLabel(st.description, MAX_STEP_DESC)
-					return `  ${icon} ${st.index}. ${desc}`
-				})
-				.join("\n") ?? ""
-
-		const reviewTitle = [
-			`Phase ${phase.index}: "${phase.name}" — done`,
-			truncateLabel(rationale, 200),
-			"",
-			"Steps completed:",
-			stepLines,
-			"",
-			`Next → Phase ${next.index}: "${next.name}"`,
-			truncateLabel(next.goal, 200),
-		].join("\n")
-
-		const response = await askUser(
-			reviewTitle,
-			[
-				{ id: "proceed", label: `Proceed to Phase ${next.index}` },
-				{ id: "pause", label: "Pause here" },
-				{ id: "say_more", label: "Let me say something" },
-			],
-			{ ferment: fresh, pi, ctx, runtime },
-		)
-
-		// Failed routing or explicit pause both go to pause — same default the
-		// previous code used. The agent's tool-result text carries the
-		// notification; no sendUserMessage (LLM-1616).
-		if (response.failed || response.choice === "pause") {
-			const pauseOutcome = applyAndPersist(fresh.id, { type: "pause" })
-			if (pauseOutcome.ok) runtime.setActive(pauseOutcome.ferment)
-			if (pauseOutcome.ok) syncFermentToolScope(pi, pauseOutcome.ferment)
-			return toolOk(`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nFerment paused at user request.`)
-		}
-		if (response.choice === "say_more") {
-			// Free-form input is TUI-only; in one-shot mode the judge can't
-			// produce arbitrary text. Use ctx.ui.input directly when present.
-			const custom = ctx?.ui?.input ? await ctx.ui.input("Your message:", "") : undefined
-			if (custom) {
-				return toolOk(`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nUser direction: ${custom}`)
-			}
-			return toolOk(`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nAwaiting user direction.`)
-		}
-		// choice === "proceed"
-		return toolOk(
-			`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nUser confirmed: proceed to Phase ${next.index}.`,
-		)
-	}
-
 	return toolOk(`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nNext: "${next.name}".`)
 }
 
@@ -430,10 +362,8 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 					.join("\n")
 				const dm = formatDecisionsAndMemories(fresh)
 				const dmSection = dm ? `\n\n${dm}` : ""
-				const sc = formatScopingContext(fresh)
-				const scSection = sc ? `\n\n${sc}` : ""
 				return toolOk(
-					`Parallel group ${target.groupIndex} activated (${groupPhases.length} phases running concurrently).\nferment_id: ${fresh.id}\nparallel_group: ${target.groupIndex}\nphase_ids: ${groupPhases.map((p) => p.id).join(", ")}\n\n${phaseLines}\n\nRun all parallel phases concurrently: call refine_phase + start_step for each phase simultaneously.${scSection}${dmSection}`,
+					`Parallel group ${target.groupIndex} activated (${groupPhases.length} phases running concurrently).\nferment_id: ${fresh.id}\nparallel_group: ${target.groupIndex}\nphase_ids: ${groupPhases.map((p) => p.id).join(", ")}\n\n${phaseLines}\n\nRun all parallel phases concurrently: call refine_phase + start_step for each phase simultaneously.${dmSection}`,
 				)
 			}
 
@@ -452,10 +382,8 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 					: "\nNo steps yet — call refine_phase to populate them."
 			const dm = formatDecisionsAndMemories(fresh)
 			const dmSection = dm ? `\n\n${dm}` : ""
-			const sc = formatScopingContext(fresh)
-			const scSection = sc ? `\n\n${sc}` : ""
 			return toolOk(
-				`Phase "${target.name}" activated.\nferment_id: ${fresh.id}\nphase_id: ${target.id}${stepList}${scSection}${dmSection}`,
+				`Phase "${target.name}" activated.\nferment_id: ${fresh.id}\nphase_id: ${target.id}${stepList}${dmSection}`,
 			)
 		},
 	})

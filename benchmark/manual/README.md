@@ -89,6 +89,7 @@ See `tasks.md` for full prompts, baseline implementations, and expected behavior
 | complex | Go REST API task management (layered architecture) | 2–6 subagents, <10 min, <700k tokens |
 | complex-single | Same as complex, single-model mode | 1–5 subagents, <10 min, <500k tokens |
 | research | Top 3 Go HTTP router libraries with stars and examples | 0 subagents, <2 min, <30k tokens |
+| explore | Find and fix missing input validation in existing Go API | 1–4 subagents, <10 min, <500k tokens |
 
 ## Session directory structure
 

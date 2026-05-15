@@ -29,13 +29,16 @@ import loginExtension from "./extensions/login/index.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
+import modelSwitchExtension from "./extensions/model-switch.js"
 import promptEnrichmentExtension from "./extensions/orchestration/prompt-enrichment.js"
 import permissionsExtension from "./extensions/permissions/index.js"
 import { reserveShiftTabForPermissions } from "./extensions/permissions/keybindings.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
+import questionnaireExtension from "./extensions/questionnaire.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
+import subagentExtension from "./extensions/subagent.js"
 import tagsExtension from "./extensions/tags.js"
 import telemetryExtension from "./extensions/telemetry.js"
 import terminalColorsExtension from "./extensions/terminal-colors.js"
@@ -321,6 +324,7 @@ try {
 			mcpAdapterExtension,
 			// Ferment must see raw input before prompt enrichment rewrites print-mode text.
 			fermentExtension,
+			questionnaireExtension,
 			promptEnrichmentExtension(skillPaths),
 			permissionsExtension,
 			behavioursExtension,
@@ -338,6 +342,7 @@ try {
 			loginExtension,
 			improveExtension,
 			curatorExtension,
+			modelSwitchExtension,
 		]
 
 		if (acpMode) {

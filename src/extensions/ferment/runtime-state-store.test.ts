@@ -6,7 +6,6 @@ import {
 	bumpBlockRetry,
 	bumpStepCompleteAttempt,
 	bumpStepStart,
-	clearAllAfterScopeContinuations,
 	clearAllScopingGates,
 	clearAllStepStarts,
 	clearFermentState,
@@ -30,7 +29,6 @@ afterEach(() => {
 	// Reset state between tests so global maps don't leak across cases.
 	clearAllStepStarts()
 	clearAllScopingGates()
-	clearAllAfterScopeContinuations()
 	setRuntimeStatePersistRoot(undefined)
 })
 
@@ -39,7 +37,6 @@ function simulateRestart(): void {
 	// accessors must re-hydrate from disk.
 	clearAllStepStarts()
 	clearAllScopingGates()
-	clearAllAfterScopeContinuations()
 	// Re-set the persist root so hydratedFerments gets cleared and disk
 	// reads target the same directory.
 	setRuntimeStatePersistRoot(persistRoot)

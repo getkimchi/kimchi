@@ -5,6 +5,7 @@ import { shortenTitle } from "../../ferment/shorten-title.js"
 import { computeStats, serializeStats } from "../../ferment/stats.js"
 import { FermentError } from "../../ferment/store.js"
 import type { FermentWorkMode } from "../../ferment/types.js"
+import { exitSplashMode } from "../ui.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { formatFermentStatus } from "./format.js"
@@ -25,7 +26,7 @@ import {
 } from "./progress-overlay.js"
 import { resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
-import { runScopingFlow } from "./scoping.js"
+import { runScopingFlow, sendFermentRequestMessage } from "./scoping.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { setActiveFerment, syncFermentToolScope } from "./tool-scope.js"
 import type { FermentUiContext } from "./ui.js"
@@ -70,6 +71,8 @@ export class FermentCommandController {
 				"e.g. 'Rewrite login flow' or 'Add OAuth support'",
 			)
 			if (!rawIntent) return { handled: true }
+			exitSplashMode(ctx)
+			sendFermentRequestMessage(pi, rawIntent)
 			try {
 				const shortName = await shortenTitle(rawIntent)
 				const f = storage.create(shortName, rawIntent)
@@ -77,10 +80,10 @@ export class FermentCommandController {
 				appendRefEntry(pi, f.id)
 
 				pi.appendEntry("ferment_ack", {
-					text: `🍺  Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nMode: ${f.mode} · scoping 0/4`,
+					text: `🍺  Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nMode: ${f.mode}`,
 				})
 
-				await runScopingFlow(f, pi, ctx, runtime)
+				await runScopingFlow(f, pi, ctx, runtime, rawIntent)
 			} catch (err) {
 				ctx.ui.notify(err instanceof FermentError ? err.message : "Create failed.")
 			}
@@ -476,7 +479,7 @@ export class FermentCommandController {
 			appendRefEntry(pi, f.id)
 
 			pi.appendEntry("ferment_ack", {
-				text: `🍺  Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nMode: ${f.mode} · scoping 0/4`,
+				text: `🍺  Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nMode: ${f.mode}`,
 			})
 
 			await runScopingFlow(f, pi, ctx, runtime)
@@ -562,7 +565,7 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 	})
 
 	pi.registerCommand("pause", {
-		description: "Pause auto-mode for the active ferment without changing ferment state.",
+		description: "Pause the active ferment and disable auto-mode.",
 		async handler(_, ctx) {
 			runtime.setAutoModeEnabled(false)
 
@@ -577,8 +580,21 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 				return
 			}
 
-			ctx.ui.notify(`Auto-mode paused for "${active.name}". Ferment remains "${active.status}". Type /auto to resume.`)
-			syncFermentToolScope(pi, runtime.getActive())
+			if (active.status === "paused") {
+				ctx.ui.notify(`"${active.name}" is already paused. Type /auto to resume.`)
+				syncFermentToolScope(pi, active)
+				return
+			}
+
+			const outcome = applyAndPersist(active.id, { type: "pause" })
+			if (!outcome.ok) {
+				ctx.ui.notify(`Failed to pause: ${outcome.error.message}`)
+				return
+			}
+
+			ctx.ui.notify(`Paused "${outcome.ferment.name}". Type /auto to resume.`)
+			syncFermentToolScope(pi, outcome.ferment)
+			ctx.abort()
 		},
 	})
 

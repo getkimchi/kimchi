@@ -1,7 +1,7 @@
-import type { ExtensionAPI, ToolInfo, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, ToolInfo, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent"
 import { Theme, keyHint } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
-import type { DirectToolSpec } from "./types.js"
+import type { DirectToolSpec, ToolMetadata } from "./types.js"
 import { formatToolName } from "./types.js"
 import { type Component, Text } from "@earendil-works/pi-tui"
 import { registerToolCall, isToolExpanded } from "../../expand-state.js"
@@ -104,6 +104,18 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 	const registeredToolNames = new Set<string>()
 
 	for (const spec of directSpecs) {
+		const cachedServer = earlyCache?.servers?.[spec.serverName]
+		const cachedTool = cachedServer?.tools?.find((t) => t.name === spec.originalName)
+		const metadata: ToolMetadata | undefined = cachedTool
+			? {
+					name: spec.prefixedName,
+					originalName: spec.originalName,
+					description: spec.description,
+					inputSchema: cachedTool.inputSchema,
+					uiResourceUri: cachedTool.uiResourceUri,
+					uiStreamMode: cachedTool.uiStreamMode,
+				}
+			: undefined
 		pi.registerTool({
 			name: spec.prefixedName,
 			label: `MCP: ${spec.originalName}`,
@@ -113,7 +125,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 			execute: createDirectToolExecutor(
 				() => state,
 				() => initPromise,
-				spec,
+				{ ...spec, metadata },
 			),
 		})
 		registeredToolNames.add(spec.prefixedName)
@@ -135,7 +147,11 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 	 * executor captures `state` lazily via the `() => state` closure and the
 	 * tools are meant to persist anyway.
 	 */
-	function registerAndActivate(specs: DirectToolSpec[], opts?: { markDynamic?: boolean }): string[] {
+	function registerAndActivate(
+		specs: DirectToolSpec[],
+		opts?: { markDynamic?: boolean },
+		ctx?: Pick<ExtensionContext, "cwd">,
+	): string[] {
 		const markDynamic = opts?.markDynamic ?? true
 		if (!state && markDynamic) return []
 		const newNames: string[] = []
@@ -154,6 +170,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 					() => state,
 					() => initPromise,
 					spec,
+					ctx,
 				),
 			})
 			registeredToolNames.add(spec.prefixedName)
@@ -180,8 +197,11 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 	 * (`init.ts` → `resolveDirectTools` after first connect). These tools
 	 * are permanent for the session, so they must not be marked dynamic.
 	 */
-	function registerBootstrappedDirectTools(specs: DirectToolSpec[]): string[] {
-		return registerAndActivate(specs, { markDynamic: false })
+	function registerBootstrappedDirectTools(
+		specs: DirectToolSpec[],
+		ctx?: Pick<ExtensionContext, "cwd">,
+	): string[] {
+		return registerAndActivate(specs, { markDynamic: false }, ctx)
 	}
 
 	pi.on("input", () => {
@@ -438,7 +458,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 				}
 				if (params.describe) {
 					return executeDescribe(state, params.describe, (specs) =>
-						registerAndActivate(specs.map((s) => ({ ...s, prefixedName: formatToolName(s.originalName, s.serverName, prefix) })))
+						registerAndActivate(specs.map((s) => ({ ...s, prefixedName: formatToolName(s.originalName, s.serverName, prefix) })), undefined, ctx)
 					)
 				}
 				if (params.search) {
@@ -450,7 +470,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 					// no API key configured; default is fine
 				}
 				return executeSearch(state, params.search, params.regex, params.server, params.includeSchemas, getPiTools, params.limit ?? mcpSearchLimit, state.searchStrategy, (specs) =>
-					registerAndActivate(specs.map((s) => ({ ...s, prefixedName: formatToolName(s.originalName, s.serverName, prefix) })))
+					registerAndActivate(specs.map((s) => ({ ...s, prefixedName: formatToolName(s.originalName, s.serverName, prefix) })), undefined, ctx)
 				)
 				}
 				return {

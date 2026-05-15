@@ -46,6 +46,7 @@ vi.mock("./judge.js", async () => {
 		})),
 	}
 })
+import { pr_dim } from "./colors.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { registerLifecycleTools } from "./tools/lifecycle.js"
 import { registerPhaseTools } from "./tools/phases.js"
@@ -69,6 +70,7 @@ interface Harness {
 	runtime: FermentRuntime
 	tempDir: string
 	tools: Map<string, RegisteredTool>
+	pi: ExtensionAPI
 	call: (toolName: string, params: unknown, ctx?: unknown) => Promise<ToolResult>
 }
 
@@ -104,7 +106,7 @@ function createHarness(): Harness {
 		return result as ToolResult
 	}
 
-	return { storage, runtime, tempDir, tools, call }
+	return { storage, runtime, tempDir, tools, pi, call }
 }
 
 // Helpers for asserting on tool results.
@@ -361,6 +363,7 @@ describe("activate_phase", () => {
 		await scopeFerment(id)
 		const result = ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
 		expect(result).toContain("activated")
+		expect(result).not.toContain("Ferment Specification")
 
 		const f = loadFerment(id)
 		expect(f.status).toBe("running")
@@ -400,6 +403,7 @@ describe("activate_phase", () => {
 		})
 		const result = ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
 		expect(result).toContain("Parallel group")
+		expect(result).not.toContain("Ferment Specification")
 
 		const f = loadFerment(id)
 		expect(f.phases[0].status).toBe("active")
@@ -1021,124 +1025,575 @@ describe("paused ferment blocks tool calls at the bridge", () => {
 	})
 })
 
-// ─── propose_phases ──────────────────────────────────────────────────────────
+// ─── propose_scoping ──────────────────────────────────────────────────────────
 
-describe("propose_phases", () => {
-	it("rejects when no pending scope exists for the ferment", async () => {
-		const id = await createFerment("No Pending Scope")
-		const result = await h.call("propose_phases", {
-			ferment_id: id,
-			phases: [{ name: "P1", goal: "g", steps: [{ description: "s" }] }],
-			gates: passingPlanGates(),
-		})
-		expect(err(result)).toMatch(/no pending scope/i)
+describe("propose_scoping", () => {
+	const threePhases = [
+		{ name: "P1", goal: "g1", steps: [{ description: "s1" }] },
+		{ name: "P2", goal: "g2", steps: [{ description: "s2" }] },
+		{ name: "P3", goal: "g3", steps: [{ description: "s3" }] },
+	]
+
+	const basePayload = (ferment_id: string, overrides: Record<string, unknown> = {}) => ({
+		ferment_id,
+		goal: "Build a thing",
+		success_criteria: "Tests pass",
+		constraints: ["no breaking changes"],
+		assumptions: "API is stable",
+		phases: threePhases,
+		gates: passingPlanGates(),
+		...overrides,
 	})
 
-	it("rejects when phases array is empty", async () => {
-		const id = await createFerment("Empty Phases")
-		setPendingScope(id, { goal: "G", successCriteria: "C", constraints: [] })
-		const result = await h.call("propose_phases", {
-			ferment_id: id,
-			phases: [],
-			gates: passingPlanGates(),
-		})
-		expect(err(result)).toMatch(/at least one phase/i)
+	// Helper: seed a pending scope so propose_scoping can replace it.
+	function seedPending(id: string) {
+		setPendingScope(id, { goal: "", successCriteria: "", constraints: [] })
+		markScopingInteractive(id)
+	}
+
+	// (a) zero-questions + Continue → planned
+	it("(a) zero-questions + Continue → ferment becomes planned", async () => {
+		const id = await createFerment("ZeroQ Continue")
+		seedPending(id)
+		const ctx = { ui: { select: vi.fn().mockResolvedValue("Start execution  ✓"), input: vi.fn() } }
+
+		const result = ok(await h.call("propose_scoping", basePayload(id), ctx))
+
+		const f = loadFerment(id)
+		expect(f.status).toBe("planned")
+		expect(f.phases).toHaveLength(3)
+		expect(f.scoping?.assumptions?.answer).toBe("API is stable")
+		expect(getPendingScope(id)).toBeUndefined()
+		expect(result).toContain("Plan saved")
+		expect(result).toContain("Here is the proposed plan")
+		expect(result).toContain("# Plan:")
+		expect(ctx.ui.select).toHaveBeenCalledWith(expect.stringContaining("# Plan:"), expect.any(Array))
 	})
 
-	it("attaches phases to existing pending scope on success", async () => {
-		const id = await createFerment("Attach Phases")
-		setPendingScope(id, { goal: "G", successCriteria: "C", constraints: ["x"] })
-		ok(
-			await h.call("propose_phases", {
-				ferment_id: id,
-				phases: [
-					{ name: "P1", goal: "g1", steps: [{ description: "s1" }] },
-					{ name: "P2", goal: "g2", steps: [{ description: "s2" }] },
+	it("normalizes stringified phases/questions before rendering the plan UI", async () => {
+		const id = await createFerment("Stringified")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
 				],
-				gates: passingPlanGates(),
-			}),
-		)
-		const pending = getPendingScope(id)
-		expect(pending?.phases).toHaveLength(2)
-		expect(pending?.phases?.[0].name).toBe("P1")
-		// User-supplied fields preserved
-		expect(pending?.goal).toBe("G")
-		expect(pending?.constraints).toEqual(["x"])
-	})
-
-	it("confirms and scopes directly when UI is available", async () => {
-		const id = await createFerment("Confirm Proposal")
-		setPendingScope(id, { goal: "G", successCriteria: "C", constraints: ["x"] })
+			},
+		]
 		const ctx = {
 			ui: {
-				select: vi.fn().mockResolvedValue("Yes, this looks right"),
+				select: vi.fn().mockResolvedValueOnce("Option A  ★ Recommended").mockResolvedValueOnce("Start execution  ✓"),
 				input: vi.fn(),
 			},
 		}
 
-		const result = await h.call(
-			"propose_phases",
-			{
-				ferment_id: id,
-				phases: [
-					{ name: "P1", goal: "g1", steps: [{ description: "s1" }] },
-					{ name: "P2", goal: "g2", steps: [{ description: "s2" }] },
-				],
-				gates: passingPlanGates(),
-			},
-			ctx,
+		const result = ok(
+			await h.call(
+				"propose_scoping",
+				basePayload(id, {
+					assumptions: JSON.stringify(["A web app exists", "Local-first is acceptable"]),
+					constraints: "no backend",
+					phases: JSON.stringify(threePhases),
+					questions: JSON.stringify(questions),
+				}),
+				ctx,
+			),
 		)
 
-		expect(ok(result)).toMatch(/confirmed and saved/i)
-		expect(ctx.ui.select).toHaveBeenCalledWith(expect.stringContaining("Does this plan look right?"), [
-			"Yes, this looks right",
-			"No, revise",
-			"Let me say something else",
-		])
 		const f = loadFerment(id)
 		expect(f.status).toBe("planned")
-		expect(f.goal).toBe("G")
-		expect(f.successCriteria).toBe("C")
-		expect(f.constraints).toEqual(["x"])
-		expect(f.phases).toHaveLength(2)
-		expect(getPendingScope(id)).toBeUndefined()
+		expect(f.phases).toHaveLength(3)
+		expect(f.scoping?.assumptions?.answer).toBe("A web app exists; Local-first is acceptable")
+		expect(result).toContain("Plan saved")
+		expect(result).toContain("## Constraints")
+		expect(result).toContain("- no backend")
+		expect(result).toContain("Here is the proposed plan")
 	})
 
-	it("returns custom propose_phases direction in the tool result", async () => {
-		const id = await createFerment("Custom Proposal Direction")
-		setPendingScope(id, { goal: "G", successCriteria: "C", constraints: [] })
+	it("treats duplicate propose_scoping after plan save as a no-op", async () => {
+		const id = await createFerment("DuplicatePropose")
+		seedPending(id)
+		const ctx = { ui: { select: vi.fn().mockResolvedValue("Start execution  ✓"), input: vi.fn() } }
+
+		ok(await h.call("propose_scoping", basePayload(id), ctx))
+		const second = ok(await h.call("propose_scoping", basePayload(id), ctx))
+
+		expect(second).toContain("already planned")
+		expect(second).toContain("activate_phase")
+		expect(loadFerment(id).status).toBe("planned")
+	})
+
+	it("normalizes fenced JSON array strings for phases/questions", async () => {
+		const id = await createFerment("FencedJson")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
+				],
+			},
+		]
 		const ctx = {
 			ui: {
-				select: vi.fn().mockResolvedValue("Let me say something else"),
-				input: vi.fn().mockResolvedValue("Make the first phase smaller."),
+				select: vi.fn().mockResolvedValueOnce("Option A  ★ Recommended").mockResolvedValueOnce("Start execution  ✓"),
+				input: vi.fn(),
 			},
 		}
 
-		const result = await h.call(
-			"propose_phases",
-			{
-				ferment_id: id,
-				phases: [{ name: "P1", goal: "g1", steps: [{ description: "s1" }] }],
-				gates: passingPlanGates(),
-			},
-			ctx,
+		const result = ok(
+			await h.call(
+				"propose_scoping",
+				basePayload(id, {
+					constraints: ["- preserve data"],
+					phases: `Here is the plan:\n\`\`\`json\n${JSON.stringify(threePhases)}\n\`\`\``,
+					questions: `Questions:\n${JSON.stringify(questions)}`,
+				}),
+				ctx,
+			),
 		)
 
-		expect(ok(result)).toContain("User direction: Make the first phase smaller.")
-		expect(getPendingScope(id)?.phases).toHaveLength(1)
+		const f = loadFerment(id)
+		expect(f.status).toBe("planned")
+		expect(f.phases).toHaveLength(3)
+		expect(result).toContain("- preserve data")
+		expect(result).not.toContain("- - preserve data")
 	})
 
-	it("does NOT transition the ferment status (still draft)", async () => {
-		const id = await createFerment("No Transition")
-		setPendingScope(id, { goal: "G", successCriteria: "C", constraints: [] })
-		ok(
-			await h.call("propose_phases", {
-				ferment_id: id,
-				phases: [{ name: "P1", goal: "g", steps: [{ description: "s" }] }],
-				gates: passingPlanGates(),
-			}),
+	// (b) with questions + all recommended picks → planned, no sendMessage re-emit
+	it("(b) with questions + all recommended picks → planned, no feedback message", async () => {
+		const id = await createFerment("WithQ Continue")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
+				],
+			},
+			{
+				id: "q2",
+				text: "Scope?",
+				options: [
+					{ id: "wide", label: "Wide" },
+					{ id: "narrow", label: "Narrow", recommended: true },
+				],
+			},
+		]
+		// Q1: pick recommended, Q2: pick recommended, then review → Continue
+		const q1RecLabel = "Option A  ★ Recommended"
+		const q2RecLabel = "Narrow  ★ Recommended"
+		const continueLabel = "Start execution  ✓"
+		const ctx = {
+			ui: {
+				select: vi
+					.fn()
+					.mockResolvedValueOnce(q1RecLabel)
+					.mockResolvedValueOnce(q2RecLabel)
+					.mockResolvedValueOnce(continueLabel),
+				input: vi.fn(),
+			},
+		}
+
+		const result = ok(await h.call("propose_scoping", basePayload(id, { questions }), ctx))
+
+		const f = loadFerment(id)
+		expect(f.status).toBe("planned")
+		expect(f.phases).toHaveLength(3)
+		expect(result).toContain("Here is the proposed plan")
+		expect(result).toContain("Your answers")
+		expect(ctx.ui.select).toHaveBeenNthCalledWith(2, "[Q2/2] Scope?", [
+			"Wide",
+			q2RecLabel,
+			`✎ ${pr_dim("Custom answer...")}`,
+		])
+		// All recommended → confirmPendingScope directly, no sendMessage re-emit
+		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>
+		const feedbackCalls = sendMsg.mock.calls.filter(
+			(c: unknown[]) => (c[0] as { customType?: string })?.customType === "ferment_scoping_iteration",
 		)
+		expect(feedbackCalls).toHaveLength(0)
+	})
+
+	// (c) per-question non-recommended pick → ferment stays draft, ONE sendMessage with all answers
+	it("(c) per-question non-recommended pick → draft status, sendMessage with triggerTurn fired", async () => {
+		const id = await createFerment("PerQ Pick")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
+				],
+			},
+		]
+		// Q1/1: pick non-recommended "Option B"; review: update the plan
+		const continueLabel = "Update plan  ✓"
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValueOnce("Option B").mockResolvedValueOnce(continueLabel),
+				input: vi.fn(),
+			},
+		}
+
+		const result = ok(await h.call("propose_scoping", basePayload(id, { questions }), ctx))
+
 		expect(loadFerment(id).status).toBe("draft")
-		expect(loadFerment(id).phases).toEqual([])
+
+		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>
+		const iterCalls = sendMsg.mock.calls.filter(
+			(c: unknown[]) => (c[0] as { customType?: string })?.customType === "ferment_scoping_iteration",
+		)
+		expect(iterCalls).toHaveLength(1)
+		const msgContent: string =
+			typeof iterCalls[0][0].content === "string" ? iterCalls[0][0].content : (iterCalls[0][0].content?.[0]?.text ?? "")
+		// New bundled-message format: question TEXT + chosen option label + id.
+		expect(msgContent).toContain("Approach?")
+		expect(msgContent).toContain("opt-b")
+		expect(msgContent).toContain("Option B")
+		expect(msgContent).toContain("Usually emit `questions: []`")
+		expect(msgContent).toContain("only if these answers reveal a genuinely new")
+		expect(msgContent).toContain("never repeat or rephrase")
+		const triggerTurn = iterCalls[0][1]?.triggerTurn ?? iterCalls[0][0]?.triggerTurn
+		expect(triggerTurn).toBe(true)
+		expect(result).toMatch(/updating the plan/i)
+	})
+
+	// (d) say more → ctx.ui.input invoked, message echoed with triggerTurn
+	it("(d) say more → input invoked, sendMessage echoes user text with triggerTurn", async () => {
+		const id = await createFerment("SayMore")
+		seedPending(id)
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValue("Let me say something"),
+				input: vi.fn().mockResolvedValue("actually drop phase 3"),
+				setWorkingVisible: vi.fn(),
+			},
+		}
+
+		ok(await h.call("propose_scoping", basePayload(id), ctx))
+
+		expect(ctx.ui.input).toHaveBeenCalled()
+		expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(false)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(true)
+		expect(loadFerment(id).status).toBe("draft")
+
+		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>
+		const iterCalls = sendMsg.mock.calls.filter(
+			(c: unknown[]) => (c[0] as { customType?: string })?.customType === "ferment_scoping_iteration",
+		)
+		expect(iterCalls).toHaveLength(1)
+		const msgContent: string =
+			typeof iterCalls[0][0].content === "string" ? iterCalls[0][0].content : (iterCalls[0][0].content?.[0]?.text ?? "")
+		expect(msgContent).toContain("actually drop phase 3")
+		const triggerTurn = iterCalls[0][1]?.triggerTurn ?? iterCalls[0][0]?.triggerTurn
+		expect(triggerTurn).toBe(true)
+	})
+
+	// (e) P-gate flag blocks the call
+	it("(e) P-gate flag blocks the call, ferment stays draft", async () => {
+		const id = await createFerment("GateBlock")
+		seedPending(id)
+		const flaggedGates = [
+			{ id: "P1", verdict: "flag" as const, rationale: "no success signal", evidence: "none" },
+			{ id: "P2", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+			{ id: "P3", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+		]
+		const ctx = { ui: { select: vi.fn(), input: vi.fn() } }
+
+		const result = await h.call("propose_scoping", basePayload(id, { gates: flaggedGates }), ctx)
+
+		expect(result.isError).toBe(true)
+		expect(err(result)).toContain("P1")
+		expect(loadFerment(id).status).toBe("draft")
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		// Buffer is unchanged — not replaced on gate failure
+		expect(h.runtime.getPendingScope(id)).toMatchObject({ goal: "" })
+	})
+
+	// (f) headless (no ctx.ui.select) zero-question → direct confirm
+	it("(f) headless zero-question → direct confirm, ferment planned", async () => {
+		const id = await createFerment("Headless ZeroQ")
+		seedPending(id)
+		// No ui.select provided — headless path
+		const ctx = {}
+
+		ok(await h.call("propose_scoping", basePayload(id), ctx))
+
+		expect(loadFerment(id).status).toBe("planned")
+		expect(getPendingScope(id)).toBeUndefined()
+	})
+
+	// (g) headless with questions → refuse until the agent folds defaults into a final no-question proposal
+	it("(g) headless with questions → asks agent to fold recommendations into questions=[] proposal", async () => {
+		const id = await createFerment("Headless WithQ")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
+				],
+			},
+			{
+				id: "q2",
+				text: "Scope?",
+				options: [
+					{ id: "wide", label: "Wide" },
+					{ id: "narrow", label: "Narrow", recommended: true },
+				],
+			},
+		]
+		const ctx = {}
+
+		const result = err(await h.call("propose_scoping", basePayload(id, { questions }), ctx))
+
+		expect(result).toContain("Cannot ask scoping questions without an interactive UI")
+		expect(result).toContain("q1: opt-a")
+		expect(result).toContain("q2: narrow")
+		expect(loadFerment(id).status).toBe("draft")
+		expect(getPendingScope(id)).toBeDefined()
+	})
+
+	// (h) second invocation REPLACES buffer wholesale
+	it("(h) second invocation replaces buffer wholesale — omitted fields become undefined", async () => {
+		const id = await createFerment("BufReplace")
+		seedPending(id)
+
+		// First call: set assumptions
+		const ctx1 = {
+			ui: { select: vi.fn().mockResolvedValue("Let me say something"), input: vi.fn().mockResolvedValue("") },
+		}
+		await h.call("propose_scoping", basePayload(id, { assumptions: "X" }), ctx1)
+
+		// Buffer should now have assumptions = "X"
+		expect(getPendingScope(id)?.assumptions).toBe("X")
+
+		// Second call: omit assumptions entirely
+		const ctx2 = {
+			ui: { select: vi.fn().mockResolvedValue("Let me say something"), input: vi.fn().mockResolvedValue("") },
+		}
+		const payloadNoAssumptions = { ...basePayload(id), assumptions: undefined }
+		await h.call("propose_scoping", payloadNoAssumptions, ctx2)
+
+		// Buffer should be replaced wholesale — assumptions now undefined
+		expect(getPendingScope(id)?.assumptions).toBeUndefined()
+	})
+
+	// Fix 1: Esc on dropdown → returns toolOk wait message, no sendMessage, ferment stays draft
+	it("Esc on dropdown → returns toolOk wait message, no sendMessage, ferment stays draft", async () => {
+		const id = await createFerment("EscDropdown")
+		seedPending(id)
+		// ui.select returns undefined (user pressed Esc)
+		const ctx = { ui: { select: vi.fn().mockResolvedValue(undefined), input: vi.fn() } }
+
+		const result = ok(await h.call("propose_scoping", basePayload(id), ctx))
+
+		expect(result).toMatch(/no changes made/i)
+		expect(result).toMatch(/waiting/i)
+		expect(loadFerment(id).status).toBe("draft")
+		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>
+		const iterCalls = sendMsg.mock.calls.filter(
+			(c: unknown[]) => (c[0] as { customType?: string })?.customType === "ferment_scoping_iteration",
+		)
+		expect(iterCalls).toHaveLength(0)
+	})
+
+	// Fix 2: rejects question with duplicate option labels
+	it("rejects question with duplicate option labels", async () => {
+		const id = await createFerment("DupLabels")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Yes", recommended: true },
+					{ id: "opt-b", label: "Yes" },
+				],
+			},
+		]
+		const ctx = { ui: { select: vi.fn(), input: vi.fn() } }
+
+		const result = await h.call("propose_scoping", basePayload(id, { questions }), ctx)
+
+		expect(result.isError).toBe(true)
+		expect(err(result)).toContain("duplicate option labels")
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+	})
+
+	// Fix 3: 4th invocation with questions returns toolErr forcing convergence
+	it("4th invocation with questions returns toolErr forcing convergence", async () => {
+		const id = await createFerment("IterCap")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
+				],
+			},
+		]
+		const continueLabel = "Update plan  ✓"
+		// Each call: user picks non-recommended "Option B" then Continue → fires sendMessage, increments iteration count
+		for (let i = 0; i < 3; i++) {
+			const ctx = {
+				ui: {
+					select: vi.fn().mockResolvedValueOnce("Option B").mockResolvedValueOnce(continueLabel),
+					input: vi.fn(),
+				},
+			}
+			ok(await h.call("propose_scoping", basePayload(id, { questions }), ctx))
+		}
+
+		// 4th call with questions → should be blocked before showing any UI
+		const ctx4 = { ui: { select: vi.fn(), input: vi.fn() } }
+		const result = await h.call("propose_scoping", basePayload(id, { questions }), ctx4)
+
+		expect(result.isError).toBe(true)
+		expect(err(result)).toMatch(/3 times/i)
+		expect(ctx4.ui.select).not.toHaveBeenCalled()
+	})
+
+	// New: Custom answer option opens ctx.ui.input and free-form text is recorded
+	it("Custom answer option opens ctx.ui.input and free-form text is included in sendMessage", async () => {
+		const id = await createFerment("CustomAnswer")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
+				],
+			},
+		]
+		const customLabel = `✎ ${pr_dim("Custom answer...")}`
+		const continueLabel = "Update plan  ✓"
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValueOnce(customLabel).mockResolvedValueOnce(continueLabel),
+				input: vi.fn().mockResolvedValue("my custom thing"),
+				setWorkingVisible: vi.fn(),
+			},
+		}
+
+		ok(await h.call("propose_scoping", basePayload(id, { questions }), ctx))
+
+		expect(ctx.ui.input).toHaveBeenCalledWith(expect.stringContaining("Approach?"), "")
+		expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(false)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(true)
+		expect(loadFerment(id).status).toBe("draft")
+
+		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>
+		const iterCalls = sendMsg.mock.calls.filter(
+			(c: unknown[]) => (c[0] as { customType?: string })?.customType === "ferment_scoping_iteration",
+		)
+		expect(iterCalls).toHaveLength(1)
+		const msgContent: string =
+			typeof iterCalls[0][0].content === "string" ? iterCalls[0][0].content : (iterCalls[0][0].content?.[0]?.text ?? "")
+		expect(msgContent).toContain("my custom thing")
+	})
+
+	// New: Restart questions cycles back to Q1
+	it("Restart questions cycles back to Q1 and second iteration is recorded", async () => {
+		const id = await createFerment("RestartQ")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
+				],
+			},
+		]
+		const q1RecLabel = "Option A  ★ Recommended"
+		const continueLabel = "Update plan  ✓"
+		// First pass: pick recommended → review → Restart
+		// Second pass: pick non-recommended "Option B" → review → Continue
+		const ctx = {
+			ui: {
+				select: vi
+					.fn()
+					.mockResolvedValueOnce(q1RecLabel) // Q1 first pass
+					.mockResolvedValueOnce("Restart questions") // review first pass
+					.mockResolvedValueOnce("Option B") // Q1 second pass
+					.mockResolvedValueOnce(continueLabel), // review second pass
+				input: vi.fn(),
+			},
+		}
+
+		ok(await h.call("propose_scoping", basePayload(id, { questions }), ctx))
+
+		// select was called 4 times total (Q1 ×2 + review ×2)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(4)
+		// Non-recommended answer → sendMessage fired
+		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>
+		const iterCalls = sendMsg.mock.calls.filter(
+			(c: unknown[]) => (c[0] as { customType?: string })?.customType === "ferment_scoping_iteration",
+		)
+		expect(iterCalls).toHaveLength(1)
+		const msgContent: string =
+			typeof iterCalls[0][0].content === "string" ? iterCalls[0][0].content : (iterCalls[0][0].content?.[0]?.text ?? "")
+		expect(msgContent).toContain("opt-b")
+	})
+
+	// New: Esc on per-question select cancels the whole flow
+	it("Esc on per-question select cancels the whole flow", async () => {
+		const id = await createFerment("EscPerQ")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
+				],
+			},
+			{
+				id: "q2",
+				text: "Scope?",
+				options: [
+					{ id: "wide", label: "Wide" },
+					{ id: "narrow", label: "Narrow", recommended: true },
+				],
+			},
+		]
+		const q1RecLabel = "Option A  ★ Recommended"
+		// Q1: pick recommended; Q2: Esc (undefined)
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValueOnce(q1RecLabel).mockResolvedValueOnce(undefined),
+				input: vi.fn(),
+			},
+		}
+
+		const result = ok(await h.call("propose_scoping", basePayload(id, { questions }), ctx))
+
+		expect(result).toMatch(/Q2/i)
+		expect(result).toMatch(/dismissed/i)
+		expect(loadFerment(id).status).toBe("draft")
+		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>
+		const iterCalls = sendMsg.mock.calls.filter(
+			(c: unknown[]) => (c[0] as { customType?: string })?.customType === "ferment_scoping_iteration",
+		)
+		expect(iterCalls).toHaveLength(0)
 	})
 })

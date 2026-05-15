@@ -24,7 +24,7 @@ from pathlib import Path
 IMPROVEMENT_DIR = Path(__file__).parent
 SESSIONS_DIR = IMPROVEMENT_DIR / "sessions"
 
-INACTIVITY_THRESHOLD_S = 180  # 3 minutes with no log writes → stalled
+INACTIVITY_THRESHOLD_S = 1800  # 30 minutes
 
 
 def check_jsonl(path: Path) -> dict:

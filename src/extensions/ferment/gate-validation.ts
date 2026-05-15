@@ -32,7 +32,7 @@ type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
 
 export type GateFlagPolicy =
 	/** Any "flag" verdict refuses the call with a tool error. Used by
-	 *  scope_ferment, propose_phases, complete_step, complete_ferment. */
+	 *  scope_ferment, propose_scoping, complete_step, complete_ferment. */
 	| "block-on-flag"
 	/** Coverage + shape only. "flag" verdicts are caller's problem — they
 	 *  feed into a retry/escalation pipeline downstream. Used by complete_phase. */
@@ -46,6 +46,26 @@ export interface GateValidationOptions {
 	 *
 	 *  Receives the count of flagged verdicts so the message can pluralize. */
 	renderFlagError?: (flagCount: number, flagLines: string) => string
+}
+
+function normalizeGateVerdict(v: { id: string; verdict: string }, turn: OwnerTurn): void {
+	// The schema accepts S2 verification-classification aliases defensively
+	// because models often put "smoke" in `verdict`. Only S2 on complete_step
+	// may use those aliases; all other gates must stay canonical.
+	if (turn !== "complete_step" || v.id !== "S2") return
+	switch (v.verdict) {
+		case "smoke":
+		case "test":
+		case "syntactic":
+			v.verdict = "pass"
+			return
+		case "proxy":
+		case "sentinel":
+			v.verdict = "flag"
+			return
+		default:
+			return
+	}
 }
 
 /** Run gate validation. Returns null on pass; returns a tool-error result
@@ -64,7 +84,10 @@ export function validateGatesOrErr(
 	}
 
 	// 2. Per-verdict shape check. By here, gates is guaranteed to be an array.
-	const verdicts = gates as ReadonlyArray<{ id: string; verdict: string; rationale: string; evidence: string }>
+	const verdicts = gates as Array<{ id: string; verdict: string; rationale: string; evidence: string }>
+	for (const v of verdicts) {
+		normalizeGateVerdict(v, options.turn)
+	}
 	for (const v of verdicts) {
 		const shapeError = validateGateVerdict(v)
 		if (shapeError) return toolErr(shapeError)

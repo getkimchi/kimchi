@@ -44,6 +44,46 @@ describe("validateGatesOrErr", () => {
 		expect(result?.content.map((c) => c.text).join("\n")).toMatch(/rationale/)
 	})
 
+	it("normalizes common S2 verification labels into canonical gate verdicts", () => {
+		const gates = [
+			{ id: "S1", verdict: "pass", rationale: "summary matches diff", evidence: "file.ts:1" },
+			{ id: "S2", verdict: "smoke", rationale: "ran the artifact end-to-end", evidence: "browser smoke" },
+			{ id: "S3", verdict: "pass", rationale: "edge case covered", evidence: "empty input" },
+		]
+
+		const result = validateGatesOrErr(gates, { turn: "complete_step", flagPolicy: "block-on-flag" })
+
+		expect(result).toBeNull()
+		expect(gates[1].verdict).toBe("pass")
+	})
+
+	it("normalizes proxy/sentinel S2 labels to flag so weak verification blocks", () => {
+		const gates = [
+			{ id: "S1", verdict: "pass", rationale: "summary matches diff", evidence: "file.ts:1" },
+			{ id: "S2", verdict: "proxy", rationale: "grep only", evidence: "grep output" },
+			{ id: "S3", verdict: "pass", rationale: "edge case covered", evidence: "empty input" },
+		]
+
+		const result = validateGatesOrErr(gates, { turn: "complete_step", flagPolicy: "block-on-flag" })
+
+		expect(result && "isError" in result && result.isError).toBe(true)
+		expect(gates[1].verdict).toBe("flag")
+	})
+
+	it("does not normalize verification labels outside complete_step S2", () => {
+		const gates = [
+			{ id: "F1", verdict: "smoke", rationale: "ran a smoke check", evidence: "browser smoke" },
+			{ id: "F2", verdict: "pass", rationale: "ok", evidence: "n/a" },
+			{ id: "F3", verdict: "pass", rationale: "ok", evidence: "n/a" },
+		]
+
+		const result = validateGatesOrErr(gates, { turn: "complete_phase", flagPolicy: "coverage-only" })
+
+		expect(result && "isError" in result && result.isError).toBe(true)
+		expect(result?.content.map((c) => c.text).join("\n")).toContain("invalid verdict: smoke")
+		expect(gates[0].verdict).toBe("smoke")
+	})
+
 	it("under block-on-flag policy, a flag verdict triggers refusal with the custom message", () => {
 		const flagged = [
 			{ id: "F1", verdict: "flag", rationale: "step verifies via grep only", evidence: "step-1 used grep" },

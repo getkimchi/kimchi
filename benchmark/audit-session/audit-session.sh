@@ -219,7 +219,6 @@ sed \
     -e "s|{auditModel}|${EFFECTIVE_MODEL}|g" \
     "$PROMPT_FILE" > "$TMPFILE"
 
-# Runs the audit harness. Output goes directly to stdout so the user sees live progress.
 run_audit_agent() {
     local runner="$1"
     local model="$2"
@@ -239,19 +238,15 @@ run_audit_agent() {
     esac
 }
 
-# Extract the last fenced JSON block from the markdown report and write a sidecar file.
-# Only the sidecar file path is printed to stdout; diagnostics go to stderr.
 extract_json_sidecar() {
     local audit_file="$1"
-    local sidecar_file="${audit_file%.md}-AUDIT.json"
+    local sidecar_file="${audit_file%.md}.json"
 
     if [[ ! -f "$audit_file" ]]; then
         echo "Audit file not found: $audit_file" >&2
         return 1
     fi
 
-    # Extract the *last* ```json … ``` fenced block, strip the fence lines, and
-    # remove trailing whitespace so jq never sees a stray backslash before EOF.
     local json_content
     json_content="$(awk '
         /^```json$/     { buf=""; in_block=1; next }
@@ -283,16 +278,17 @@ extract_json_sidecar() {
 echo "Running audit agent ($RUNNER, $EFFECTIVE_MODEL)..."
 echo ""
 
-# Run agent interactively (no pipe — preserves TTY so the harness TUI uses the
-# full terminal width instead of falling back to the default 80 columns).
 run_audit_agent "$RUNNER" "$EFFECTIVE_MODEL" "$TMPFILE"
 
 echo ""
 audit_file=".kimchi/audits/$AUDIT_FILENAME"
 if [[ -s "$audit_file" ]]; then
     echo "Audit report written: $audit_file"
-    sidecar=$(extract_json_sidecar "$audit_file")
-    echo "JSON sidecar written: $sidecar"
+    if sidecar=$(extract_json_sidecar "$audit_file"); then
+        echo "JSON sidecar written: $sidecar"
+    else
+        echo "Warning: JSON sidecar extraction failed" >&2
+    fi
 else
     echo "Warning: audit report is empty or was not written" >&2
 fi

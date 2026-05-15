@@ -177,7 +177,6 @@ export function clearAllStepStarts(): void {
 
 const scopingInteractive = new Set<string>()
 const scopingConfirmed = new Set<string>()
-const afterScopeContinuations = new Set<string>()
 
 export function markScopingInteractive(fermentId: string): void {
 	scopingInteractive.add(fermentId)
@@ -203,28 +202,6 @@ export function consumeScopingGate(fermentId: string): void {
 export function clearAllScopingGates(): void {
 	scopingInteractive.clear()
 	scopingConfirmed.clear()
-}
-
-// ─── Post-scope continuation handoff ─────────────────────────────────────────
-// In plan mode, the after-scope transition needs a one-time user handoff: the
-// plan was accepted inside a tool call, and the next step is a user decision.
-
-export function markAfterScopeContinuation(fermentId: string): void {
-	afterScopeContinuations.add(fermentId)
-}
-
-export function hasAfterScopeContinuation(fermentId: string): boolean {
-	return afterScopeContinuations.has(fermentId)
-}
-
-export function consumeAfterScopeContinuation(fermentId: string): boolean {
-	const hadContinuation = afterScopeContinuations.has(fermentId)
-	afterScopeContinuations.delete(fermentId)
-	return hadContinuation
-}
-
-export function clearAllAfterScopeContinuations(): void {
-	afterScopeContinuations.clear()
 }
 
 // ─── Block-retry counter (per phase) ─────────────────────────────────────────
@@ -346,8 +323,8 @@ export function getStepStartRef(fermentId: string, phaseId: string, stepId: stri
 //      session, disk is the recovery surface.
 //   3. clearFermentState deletes both in-memory entries and the disk file.
 //
-// scopingInteractive / scopingConfirmed / afterScopeContinuations are NOT
-// persisted — they're single-session UI handoff state.
+// scopingInteractive / scopingConfirmed are NOT persisted — they're
+// single-session UI handoff state.
 
 const hydratedFerments = new Set<string>()
 
@@ -422,7 +399,6 @@ function persistFerment(fermentId: string): void {
 export function clearFermentState(fermentId: string): void {
 	scopingInteractive.delete(fermentId)
 	scopingConfirmed.delete(fermentId)
-	afterScopeContinuations.delete(fermentId)
 	const prefix = `${fermentId}:`
 	stepStartCounts.clearByPrefix(prefix)
 	blockRetryCounts.clearByPrefix(prefix)

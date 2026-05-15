@@ -7,7 +7,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import type { TUI } from "@earendil-works/pi-tui"
-import { ORANGE_FG, RST_FG, resolvedAccentFg } from "../ansi.js"
+import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
 import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } from "../components/footer.js"
 import { LogoHeader } from "../components/logo.js"
@@ -34,22 +34,6 @@ function getEnabledModelIds(): Set<string> | null {
 		// settings absent or unreadable
 	}
 	return null
-}
-
-export const HORIZONTAL_PADDING = 2
-
-// Strip OSC 133 shell-integration marks emitted by pi-mono around each message.
-// iTerm2 renders a visible blue triangle at each mark, which is noisy in the TUI.
-// biome-ignore lint/suspicious/noControlCharactersInRegex: matching ANSI/OSC
-const OSC133_RE = /\x1b]133;[A-Z]\x07/g
-
-function patchTuiPadding(tui: TUI) {
-	const original = tui.render.bind(tui)
-	const pad = " ".repeat(HORIZONTAL_PADDING)
-	tui.render = (width: number): string[] => {
-		const lines = original(Math.max(1, width - HORIZONTAL_PADDING * 2))
-		return lines.map((line: string) => pad + line.replace(OSC133_RE, ""))
-	}
 }
 
 // Track splash state globally so other extensions can reset it
@@ -132,7 +116,6 @@ function runScript(scriptPath: string, payload: object, tui: TUI, footer: Script
 }
 
 export default function uiExtension(pi: ExtensionAPI) {
-	let tuiPatched = false
 	let unsubModelCycleInput: (() => void) | null = null
 	let scriptFooter: ScriptFooter | null = null
 	let scriptTui: TUI | null = null
@@ -211,10 +194,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 		})
 
 		ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
-			if (!tuiPatched) {
-				tuiPatched = true
-				patchTuiPadding(tui)
-			}
 			tui.setShowHardwareCursor(true)
 			const editor = new PromptEditor(tui, editorTheme, keybindings, ctx.ui.theme)
 			editor.setSplashMode(isSplash)
@@ -277,8 +256,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 		ctx.ui.setWorkingVisible(true)
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = createWorkingAnimator((char, message) => {
-			ctx.ui.setWorkingIndicator({ frames: [`${ORANGE_FG}${char}${RST_FG}`] })
-			ctx.ui.setWorkingMessage(`${ORANGE_FG}${message}${RST_FG}`)
+			const accent = resolvedAccentFg(ctx.ui.theme)
+			ctx.ui.setWorkingIndicator({ frames: [`${accent}${char}${RST_FG}`] })
+			ctx.ui.setWorkingMessage(`${accent}${message}${RST_FG}`)
 		})
 	}
 
@@ -287,11 +267,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 		refresh("generating")
 		startIndicator(ctx)
 	})
-	pi.on("message_start", (event, ctx) => {
+	pi.on("message_start", (event) => {
 		if (event.message.role !== "assistant") return
-		stopWorkingAnimation?.()
-		stopWorkingAnimation = undefined
-		ctx.ui.setWorkingVisible(false)
+		// Keep the working indicator visible while assistant text is streaming.
+		// It is cleared on agent_end, which is the reliable "work stopped" signal.
 	})
 	pi.on("tool_execution_start", (_, ctx) => {
 		startIndicator(ctx)

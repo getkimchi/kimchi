@@ -100,6 +100,27 @@ describe("FermentEventStore", () => {
 			expect(types).toContain("ferment_planned")
 		})
 
+		it("scope command with assumptions emits scoping_assumptions_set and round-trips via fold", () => {
+			const f = eventStore.create("Assumptions round-trip")
+
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Build it",
+				successCriteria: "Tests pass",
+				constraints: [],
+				assumptions: "Redis is available",
+				phases: [{ name: "P1", goal: "G1" }],
+			})
+
+			const types = readEvents(tempDir, f.id).map((e) => e.type)
+			expect(types).toContain("scoping_assumptions_set")
+
+			// Force fold by reading from a fresh store instance (which will prefer
+			// the event log over the snapshot).
+			const replayed = new FermentEventStore(tempDir).get(f.id)
+			expect(replayed?.scoping.assumptions?.answer).toBe("Redis is available")
+		})
+
 		it("activate_phase emits ferment_running + phase_activated", () => {
 			const f = eventStore.create("Activate test")
 			exec(eventStore, f.id, {

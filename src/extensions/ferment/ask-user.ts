@@ -16,7 +16,7 @@
  *
  * The agent-callable `ask_user` tool wraps this with a tool-error layer that
  * abandons the ferment when the judge can't be reached in one-shot mode.
- * Internal callers (plan-mode dropdowns, escalation, propose_phases) check
+ * Internal callers (plan-mode dropdowns, escalation, propose_scoping) check
  * the `failed` flag and degrade gracefully.
  *
  * Detection of one-shot mode comes from the `ferment-oneshot` PI flag (set at
@@ -28,6 +28,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
 import { type JudgeApiResult, judgeApiCall } from "./judge.js"
+import { promptSelect } from "./prompt-ui.js"
 import type { FermentRuntime } from "./runtime.js"
 import type { FermentUi } from "./ui.js"
 
@@ -208,7 +209,7 @@ export async function askUser(
 	const select = context.ctx?.ui?.select
 	if (select) {
 		const labels = options.map((o) => o.label)
-		const chosenLabel = await select(question, labels)
+		const chosenLabel = await promptSelect(context.ctx, question, labels)
 		if (!chosenLabel) {
 			return { failed: true, reason: "user_cancelled", detail: "User cancelled the prompt." }
 		}
