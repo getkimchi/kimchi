@@ -166,7 +166,7 @@ describe("ProposeScopingParams schema", () => {
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
 	})
 
-	it("rejects question with more than 4 options (maxItems: 4)", () => {
+	it("rejects question with more than 5 options (maxItems: 5)", () => {
 		const payload = {
 			ferment_id: "f-123",
 			goal: "Do something",
@@ -181,6 +181,7 @@ describe("ProposeScopingParams schema", () => {
 						{ id: "c", label: "C" },
 						{ id: "d", label: "D" },
 						{ id: "e", label: "E" },
+						{ id: "f", label: "F" },
 					],
 				},
 			],

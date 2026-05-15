@@ -30,7 +30,7 @@ export function buildPlannerSupplement(runtime: FermentRuntime = defaultFermentR
 
 When the user answers scoping questions and the host asks you to replan, treat those answers as final decisions. Re-emit the full updated plan. Usually set \`questions: []\`. Ask follow-up questions only for genuinely new, decision-blocking ambiguity introduced by the answers. Never repeat, rephrase, or "double check" a question the user already answered. After two question rounds, converge: make the best assumption, record it in \`assumptions\`, and let the user review the final plan.
 
-For each question: 2-4 options with stable ids, emitted as a real JSON array of objects. Keep options in the display order you want; the host preserves your order and appends "Custom answer..." last. Mark ONE option as \`recommended: true\` (what you'd pick if no answer came back), but do not move it to the top unless that is also the natural ordering. No reason text on recommendations.
+For each question: 2-5 options with stable ids, emitted as a real JSON array of objects. Keep options in the display order you want; the host preserves your order and appends "Custom answer..." last. Mark ONE option as \`recommended: true\` (what you'd pick if no answer came back), but do not move it to the top unless that is also the natural ordering. No reason text on recommendations.
 
 Plans are rendered by the host in markdown style. Keep plan field content markdown-friendly: concise sentences, bullet-like success criteria separated by newlines or semicolons, concrete phase names, and step descriptions that read well as numbered markdown lists.
 
@@ -38,7 +38,7 @@ Plans are rendered by the host in markdown style. Keep plan field content markdo
 
 **Do NOT chat-list the questions to the user after calling propose_scoping.** The host displays them in dropdowns; repeating them in prose is duplicate noise. After the tool call, output nothing or a one-line confirmation at most.
 
-**Do NOT include a "Let me say something" or similar escape-hatch option in your questions.options array.** The host adds that affordance on the review screen. Your options array is just real choices.
+**Do NOT include a "Let me say something" or similar escape-hatch option in your questions.options array.** The host adds the free-form affordance where appropriate. Your options array is just real choices.
 
 Every option label must be a SINGLE concrete choice. Never use compound "X or Y" labels (e.g. "React or Vue", "Keep existing or rewrite"). Each "or" branch deserves its own option row. A label like "React (CRA or Next.js)" is OK only when both halves describe the SAME single choice (a React app, flavor unspecified).
 

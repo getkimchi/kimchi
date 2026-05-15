@@ -118,8 +118,8 @@ export const ScopingQuestionSchema = Type.Object({
 	text: Type.String({ description: "The question text shown to the user." }),
 	options: Type.Array(ScopingQuestionOptionSchema, {
 		minItems: 2,
-		maxItems: 4,
-		description: "2–4 candidate options for the question.",
+		maxItems: 5,
+		description: "2–5 candidate options for the question.",
 	}),
 })
 
@@ -162,7 +162,7 @@ export const ProposeScopingParams = Type.Object({
 			Type.Array(ScopingQuestionSchema, {
 				maxItems: 3,
 				description:
-					"Emit ONLY when truly uncertain. At most 3. Must be a real JSON array of question objects, never a quoted string. Each question needs 2-4 options in the display order you want; the host preserves that order and appends Custom answer last. Mark at most ONE option per question with `recommended: true`. No reason text. On replans after user answers, ask only NEW decision-blocking questions; never repeat answered questions.",
+					"Emit ONLY when truly uncertain. At most 3. Must be a real JSON array of question objects, never a quoted string. Each question needs 2-5 options in the display order you want; the host preserves that order and appends Custom answer last. Mark at most ONE option per question with `recommended: true`. No reason text. On replans after user answers, ask only NEW decision-blocking questions; never repeat answered questions.",
 			}),
 			Type.String({
 				description:
@@ -322,14 +322,62 @@ const AskUserOptionSchema = Type.Object({
 	),
 })
 
+const AskUserQuestionSchema = Type.Object({
+	id: Type.String({ description: "Stable identifier for this question. Returned with the answer." }),
+	type: Type.Union([Type.Literal("radio"), Type.Literal("checkbox"), Type.Literal("text")], {
+		description: "radio = single-select, checkbox = multi-select, text = free-form input.",
+	}),
+	prompt: Type.String({ description: "The full question text shown to the user or judge." }),
+	label: Type.Optional(Type.String({ description: "Short label shown in the TUI tab bar. Defaults to Q1, Q2, etc." })),
+	options: Type.Optional(
+		Type.Array(AskUserOptionSchema, {
+			description: "Options for radio/checkbox questions. Omit for text questions.",
+		}),
+	),
+	allowOther: Type.Optional(
+		Type.Boolean({
+			description:
+				"When true, the TUI adds an Other/free-text option. The judge may also return a custom value. Default: false.",
+		}),
+	),
+	required: Type.Optional(Type.Boolean({ description: "Whether this question must be answered. Default: true." })),
+	placeholder: Type.Optional(Type.String({ description: "Optional placeholder hint for text/custom answers." })),
+})
+
 export const AskUserParams = Type.Object({
 	ferment_id: Type.String(),
-	question: Type.String({
-		description:
-			"The decision the agent cannot resolve from context alone. Be concrete and self-contained — the user (or the judge standing in for the user in one-shot mode) sees only this text plus the options.",
-	}),
-	options: Type.Array(AskUserOptionSchema, {
-		description:
-			"2–5 options. Each option needs a stable id and a human label. Include 'pause' or 'abandon' as an explicit option when relevant — the judge prefers these when uncertain.",
-	}),
+	title: Type.Optional(
+		Type.String({
+			description: "Optional title for a multi-question form. Use with questions[].",
+		}),
+	),
+	description: Type.Optional(
+		Type.String({
+			description: "Optional short context shown above a multi-question form and given to the judge.",
+		}),
+	),
+	response_type: Type.Optional(
+		Type.Union([Type.Literal("single"), Type.Literal("multi"), Type.Literal("text")], {
+			description:
+				"Compatibility shorthand for a single question. single returns choice, multi returns choices, text returns text. Default: single.",
+		}),
+	),
+	question: Type.Optional(
+		Type.String({
+			description:
+				"Compatibility shorthand for one question. For 1:1 TUI behavior, prefer questions[] with radio/checkbox/text.",
+		}),
+	),
+	options: Type.Optional(
+		Type.Array(AskUserOptionSchema, {
+			description:
+				"Compatibility shorthand options for single/multi questions. Each option needs a stable id and a human label. Omit for text questions.",
+		}),
+	),
+	questions: Type.Optional(
+		Type.Array(AskUserQuestionSchema, {
+			description:
+				"One or more form questions. Supports radio, checkbox, and text; radio/checkbox support allowOther. Multiple questions use Tab/Shift+Tab navigation and a Submit tab.",
+		}),
+	),
 })
