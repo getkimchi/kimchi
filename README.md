@@ -10,7 +10,7 @@ Install the latest release:
 
 ```bash
 brew tap castai/tap
-brew install castai/tap/kimchi-dev
+brew install castai/tap/kimchi
 ```
 
 **Install script:**
