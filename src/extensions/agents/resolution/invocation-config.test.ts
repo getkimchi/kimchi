@@ -1,13 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resolveAgentInvocationConfig } from "./invocation-config.js"
 
-// Mock recommendModel + pickFromModelListByTier to control output in tests
 vi.mock("../../orchestration/model-registry/recommend.js", () => ({
 	recommendModel: vi.fn(),
 	pickFromModelListByTier: vi.fn(),
 }))
 
-// Mock getCurrentPhase so tests are deterministic
 vi.mock("../../tags.js", () => ({
 	getCurrentPhase: vi.fn(),
 }))
@@ -25,7 +23,6 @@ describe("resolveAgentInvocationConfig — model fallback chain", () => {
 		mockPickFromList.mockReset()
 		mockGetPhase.mockReset()
 		mockGetPhase.mockReturnValue(undefined)
-		// Default behavior: return first entry (matches caller's earlier expectation).
 		mockPickFromList.mockImplementation((list) => list[0])
 	})
 
@@ -197,6 +194,22 @@ describe("resolveAgentInvocationConfig — tokenBudget precedence", () => {
 		expect(result.tokenBudget).toBe(50_000)
 	})
 
+	it("accepts tokenBudget as a compatibility alias", () => {
+		const result = resolveAgentInvocationConfig(
+			{
+				name: "test",
+				description: "t",
+				extensions: true,
+				skills: true,
+				systemPrompt: "",
+				promptMode: "replace",
+				tokenBudget: 80_000,
+			},
+			{ tokenBudget: 50_000 } as Parameters<typeof resolveAgentInvocationConfig>[1] & { tokenBudget?: number },
+		)
+		expect(result.tokenBudget).toBe(50_000)
+	})
+
 	it("tokenBudget is undefined when neither agentConfig nor params supply a value", () => {
 		const result = resolveAgentInvocationConfig(
 			{
@@ -210,5 +223,50 @@ describe("resolveAgentInvocationConfig — tokenBudget precedence", () => {
 			{},
 		)
 		expect(result.tokenBudget).toBeUndefined()
+	})
+})
+
+describe("resolveAgentInvocationConfig — persona policy precedence", () => {
+	beforeEach(() => {
+		mockRecommend.mockReset()
+		mockPickFromList.mockReset()
+		mockGetPhase.mockReset()
+		mockGetPhase.mockReturnValue(undefined)
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("agentConfig.thinking wins over params.thinking", () => {
+		const result = resolveAgentInvocationConfig(
+			{
+				name: "test",
+				description: "t",
+				extensions: true,
+				skills: true,
+				systemPrompt: "",
+				promptMode: "replace",
+				thinking: "minimal",
+			},
+			{ thinking: "high" },
+		)
+		expect(result.thinking).toBe("minimal")
+	})
+
+	it("agentConfig.maxTurns wins over params.max_turns", () => {
+		const result = resolveAgentInvocationConfig(
+			{
+				name: "test",
+				description: "t",
+				extensions: true,
+				skills: true,
+				systemPrompt: "",
+				promptMode: "replace",
+				maxTurns: 3,
+			},
+			{ max_turns: 10 },
+		)
+		expect(result.maxTurns).toBe(3)
 	})
 })

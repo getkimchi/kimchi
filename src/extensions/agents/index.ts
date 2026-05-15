@@ -33,6 +33,7 @@ import {
 	setGraceTurns,
 	steerAgent,
 } from "./manager/agent-runner.js"
+import { type BudgetRetryBlock, createBudgetRetryBlock, shouldBlockBudgetRetry } from "./manager/budget-retry-guard.js"
 import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
@@ -182,6 +183,13 @@ function getStatusNote(status: string, abortReason?: AgentAbortReason): string {
 	}
 }
 
+function getStatusInstruction(status: string, abortReason?: AgentAbortReason): string {
+	if (status === "aborted" && abortReason === "token_budget") {
+		return "\nThis completes the requested Agent call under the supplied budget. Do not call Agent again with a higher token_budget in this user turn."
+	}
+	return ""
+}
+
 function escapeXml(s: string): string {
 	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
 }
@@ -274,12 +282,17 @@ function buildNotificationDetails(
 }
 
 let activeManager: AgentManager | undefined
+let budgetRetryBlock: BudgetRetryBlock | undefined
 
 export function getActiveAgentCount(): number {
 	return activeManager?.getRunningCount() ?? 0
 }
 
 export default function (pi: ExtensionAPI) {
+	pi.on("message_start", (event) => {
+		if (event.message.role === "user") budgetRetryBlock = undefined
+	})
+
 	// ---- Register custom notification renderer ----
 	pi.registerMessageRenderer<NotificationDetails>("subagent-notification", (message, { expanded }, theme) => {
 		const d = message.details
@@ -632,6 +645,7 @@ Available agent types:
 ${typeListText}
 
 Guidelines:
+- If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
 - For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
 - Use Explore for codebase searches and code understanding.
 - Use Plan for architecture and implementation planning.
@@ -642,7 +656,9 @@ Guidelines:
 - Use run_in_background for work you don't need immediately. You will be notified when it completes.
 - Use resume with an agent ID to continue a previous agent's work.
 - Use steer_subagent to send mid-run messages to a running background agent.
-- Use thinking to control extended thinking level.
+- Use thinking to request an extended thinking level when the selected agent profile does not fix one.
+- Use token_budget to cap the agent's total token usage when the task scope is small or bounded.
+- Treat token_budget as a hard caller constraint. If an agent aborts because of token_budget, do not retry with a higher budget unless the user explicitly asks.
 - Use inherit_context if the agent needs the parent conversation history.
 
 Model selection — YOU choose based on task complexity:
@@ -668,12 +684,14 @@ Model selection — YOU choose based on task complexity:
 				),
 				thinking: Type.Optional(
 					Type.String({
-						description: "Thinking level: off, minimal, low, medium, high, xhigh. Overrides agent default.",
+						description:
+							"Requested thinking level: off, minimal, low, medium, high, xhigh. Agent profiles with fixed thinking keep their profile value.",
 					}),
 				),
 				max_turns: Type.Optional(
 					Type.Number({
-						description: "Maximum number of agentic turns before stopping. Omit for unlimited (default).",
+						description:
+							"Requested maximum agentic turns before stopping. Agent profiles with fixed maxTurns keep their profile value.",
 						minimum: 1,
 					}),
 				),
@@ -826,6 +844,24 @@ Model selection — YOU choose based on task complexity:
 					}
 				}
 
+				const explicitTokenBudget =
+					(params as { token_budget?: number; tokenBudget?: number }).token_budget ??
+					(params as { token_budget?: number; tokenBudget?: number }).tokenBudget
+				const activeBudgetRetryBlock = budgetRetryBlock
+				if (
+					activeBudgetRetryBlock &&
+					shouldBlockBudgetRetry(activeBudgetRetryBlock, {
+						tokenBudget: resolvedConfig.tokenBudget,
+						subagentType,
+						description: params.description as string,
+						prompt: params.prompt as string,
+					})
+				) {
+					return textResult(
+						`Agent retry blocked: the previous Agent call for "${activeBudgetRetryBlock.description}" already aborted because the user-supplied token_budget (${formatTokens(activeBudgetRetryBlock.budget)}) was too small. Do not raise the budget or retry the Agent tool unless the user explicitly asks.`,
+					)
+				}
+
 				const thinking = resolvedConfig.thinking
 				const inheritContext = resolvedConfig.inheritContext
 				const runInBackground = resolvedConfig.runInBackground
@@ -843,6 +879,7 @@ Model selection — YOU choose based on task complexity:
 				const modeLabel = getPromptModeLabel(subagentType)
 				if (modeLabel) agentTags.push(modeLabel)
 				if (thinking) agentTags.push(`thinking: ${thinking}`)
+				if (resolvedConfig.tokenBudget != null) agentTags.push(`budget: ${formatTokens(resolvedConfig.tokenBudget)}`)
 				if (isolated) agentTags.push("isolated")
 				const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns ?? getDefaultMaxTurns())
 				const detailBase = {
@@ -1048,13 +1085,21 @@ Model selection — YOU choose based on task complexity:
 				if (record.status === "error") {
 					return textResult(`${fallbackNote}Agent failed: ${record.error}`, details)
 				}
+				if (explicitTokenBudget != null && record.status === "aborted" && record.abortReason === "token_budget") {
+					budgetRetryBlock = createBudgetRetryBlock({
+						budget: explicitTokenBudget,
+						subagentType,
+						description: params.description as string,
+						prompt: params.prompt as string,
+					})
+				}
 
 				const durationMs = (record.completedAt ?? Date.now()) - record.startedAt
 				const statsParts = [`${record.toolUses} tool uses`]
 				if (tokenText) statsParts.push(tokenText)
 				const outcome = record.status === "aborted" ? "aborted" : record.status === "stopped" ? "stopped" : "completed"
 				return textResult(
-					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.\n\n${record.result?.trim() || "No output."}`,
+					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.${getStatusInstruction(record.status, record.abortReason)}\n\n${record.result?.trim() || "No output."}`,
 					details,
 				)
 			},
@@ -1577,6 +1622,7 @@ tools: <comma-separated built-in tools: read, bash, edit, write, grep, find, ls.
 models: <optional ordered list of models, e.g. ["kimchi-dev/minimax-m2.7"]. Omit to inherit parent model>
 thinking: <optional thinking level: off, minimal, low, medium, high, xhigh. Omit to inherit>
 max_turns: <optional max agentic turns. 0 or omit for unlimited (default)>
+token_budget: <optional maximum total tokens for this agent. Omit for no profile budget>
 prompt_mode: <"replace" (body IS the full system prompt) or "append" (body is appended to default prompt). Default: replace>
 extensions: <true (inherit all MCP/extension tools), false (none), or comma-separated names. Default: true>
 skills: <true (inherit all), false (none), or comma-separated skill names to preload into prompt. Default: true>
@@ -1669,12 +1715,40 @@ Write the file using the write tool. Only write the file, nothing else.`
 		let thinkingLine = ""
 		if (thinkingChoice !== "inherit") thinkingLine = `\nthinking: ${thinkingChoice}`
 
+		const maxTurnsInput = await ctx.ui.input("Max turns (optional, blank for unlimited)", "")
+		let maxTurnsLine = ""
+		if (maxTurnsInput?.trim()) {
+			const trimmed = maxTurnsInput.trim()
+			if (!/^\d+$/.test(trimmed)) {
+				ctx.ui.notify("Max turns must be a non-negative integer.", "warning")
+				return
+			}
+			const maxTurns = Number.parseInt(trimmed, 10)
+			maxTurnsLine = `\nmax_turns: ${maxTurns}`
+		}
+
+		const tokenBudgetInput = await ctx.ui.input("Token budget (optional, blank for none)", "")
+		let tokenBudgetLine = ""
+		if (tokenBudgetInput?.trim()) {
+			const trimmed = tokenBudgetInput.trim()
+			if (!/^\d+$/.test(trimmed)) {
+				ctx.ui.notify("Token budget must be a positive integer.", "warning")
+				return
+			}
+			const tokenBudget = Number.parseInt(trimmed, 10)
+			if (tokenBudget <= 0) {
+				ctx.ui.notify("Token budget must be a positive integer.", "warning")
+				return
+			}
+			tokenBudgetLine = `\ntoken_budget: ${tokenBudget}`
+		}
+
 		const systemPrompt = await ctx.ui.editor("System prompt", "")
 		if (systemPrompt === undefined) return
 
 		const content = `---
 description: ${description}
-tools: ${tools}${modelLine}${thinkingLine}
+tools: ${tools}${modelLine}${thinkingLine}${maxTurnsLine}${tokenBudgetLine}
 prompt_mode: replace
 ---
 

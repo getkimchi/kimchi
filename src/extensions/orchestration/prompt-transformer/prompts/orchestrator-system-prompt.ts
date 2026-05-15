@@ -67,9 +67,10 @@ The user message contains an "## Available Models" section. Use it to pick the r
 
 ## Token budgets
 
-Include a \`tokenBudget\` for every subagent call. Match the budget to the **subagent's task scope**, not the overall project complexity:
+Include a \`token_budget\` for every Agent call. Match the budget to the **subagent's task scope**, not the overall project complexity:
+If the user explicitly asks for the Agent tool with a specific \`token_budget\`, make that Agent call once with the requested value. Do not ask to increase the budget or substitute a larger budget before the tool runs.
 
-| Subagent task scope | tokenBudget |
+| Subagent task scope | token_budget |
 |---|---|
 | Single file (one module, one test file, one doc) | 150000 |
 | Multi-file implementation (2–5 files, one layer) | 200000 |

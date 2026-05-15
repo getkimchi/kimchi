@@ -8,6 +8,7 @@ interface AgentInvocationParams {
 	thinking?: string
 	max_turns?: number
 	token_budget?: number
+	tokenBudget?: number
 	run_in_background?: boolean
 	inherit_context?: boolean
 	isolated?: boolean
@@ -16,8 +17,11 @@ interface AgentInvocationParams {
 
 /**
  * Resolves agent invocation config by merging caller params with persona defaults.
- * Some persona fields intentionally win so profile policy stays stable; explicit
- * model and token-budget params remain per-spawn overrides.
+ *
+ * Precedence by field:
+ * - model and tokenBudget: caller override first, then persona default.
+ * - thinking, maxTurns, isolation, inheritContext, runInBackground: persona
+ *   policy first, then caller value.
  */
 export function resolveAgentInvocationConfig(
 	agentConfig: AgentConfig | undefined,
@@ -90,7 +94,7 @@ export function resolveAgentInvocationConfig(
 		modelFromParams,
 		thinking: (agentConfig?.thinking ?? params.thinking) as ThinkingLevel | undefined,
 		maxTurns: agentConfig?.maxTurns ?? params.max_turns,
-		tokenBudget: params.token_budget ?? agentConfig?.tokenBudget,
+		tokenBudget: params.token_budget ?? params.tokenBudget ?? agentConfig?.tokenBudget,
 		inheritContext: agentConfig?.inheritContext ?? params.inherit_context ?? false,
 		runInBackground: agentConfig?.runInBackground ?? params.run_in_background ?? false,
 		isolated: agentConfig?.isolated ?? params.isolated ?? false,

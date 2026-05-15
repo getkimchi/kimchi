@@ -90,11 +90,13 @@ function makeFakeSession({
 	outputTokens = 0,
 	cacheWriteTokens = 0,
 	abortSpy = vi.fn(),
+	emitUsage = true,
 }: {
 	promptTokens?: number
 	outputTokens?: number
 	cacheWriteTokens?: number
 	abortSpy?: ReturnType<typeof vi.fn>
+	emitUsage?: boolean
 } = {}) {
 	const subscribers: Subscriber[] = []
 	let promptCalled = false
@@ -113,17 +115,22 @@ function makeFakeSession({
 		setActiveToolsByName: vi.fn(),
 		bindExtensions: vi.fn().mockResolvedValue(undefined),
 		messages: [],
+		getSessionStats: vi.fn().mockReturnValue({
+			tokens: { input: promptTokens, output: outputTokens, cacheWrite: cacheWriteTokens },
+		}),
 		prompt: vi.fn().mockImplementation(async () => {
 			if (!promptCalled) {
 				promptCalled = true
-				for (const sub of subscribers) {
-					sub({
-						type: "message_end",
-						message: {
-							role: "assistant",
-							usage: { input: promptTokens, output: outputTokens, cacheWrite: cacheWriteTokens },
-						},
-					})
+				if (emitUsage) {
+					for (const sub of subscribers) {
+						sub({
+							type: "message_end",
+							message: {
+								role: "assistant",
+								usage: { input: promptTokens, output: outputTokens, cacheWrite: cacheWriteTokens },
+							},
+						})
+					}
 				}
 				for (const sub of subscribers) {
 					sub({ type: "turn_end" })
@@ -156,17 +163,6 @@ function makeFakePi() {
 		exec: vi.fn().mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 }),
 	}
 }
-
-describe("RunOptions.tokenBudget — field exists on the interface", () => {
-	it("RunOptions accepts tokenBudget as an optional number field (compile-time check)", () => {
-		const opts: RunOptions = {
-			pi: makeFakePi() as unknown as RunOptions["pi"],
-			tokenBudget: 12345,
-		}
-
-		expect((opts as unknown as Record<string, unknown>).tokenBudget).toBe(12345)
-	})
-})
 
 describe("runAgent — tokenBudget forwarding", () => {
 	let ctx: ReturnType<typeof makeFakeCtx>
@@ -231,6 +227,55 @@ describe("runAgent — tokenBudget forwarding", () => {
 		expect(abortSpy).toHaveBeenCalled()
 		expect(result.aborted).toBe(true)
 		expect(result.abortReason).toBe("token_budget")
+	})
+
+	it("checks final session stats when message_end usage is not emitted", async () => {
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({
+			promptTokens: 10_000,
+			outputTokens: 5_000,
+			abortSpy,
+			emitUsage: false,
+		})
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			tokenBudget: 100,
+		})
+
+		expect(abortSpy).not.toHaveBeenCalled()
+		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("token_budget")
+	})
+
+	it("aborts before prompting when the estimated prompt already exceeds tokenBudget", async () => {
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({ abortSpy })
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			tokenBudget: 1,
+		})
+
+		expect(session.prompt).not.toHaveBeenCalled()
+		expect(abortSpy).not.toHaveBeenCalled()
+		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("token_budget")
+		expect(result.responseText).toContain("Token budget exceeded before agent start")
 	})
 
 	it("does NOT abort when token usage stays below tokenBudget", async () => {

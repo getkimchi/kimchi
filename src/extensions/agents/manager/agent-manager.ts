@@ -1,11 +1,3 @@
-/**
- * agent-manager.ts — Tracks agents, background execution, resume support.
- *
- * Background agents are subject to a configurable concurrency limit (default: 4).
- * Excess agents are queued and auto-started as running agents complete.
- * Foreground agents bypass the queue (they block the parent anyway).
- */
-
 import { randomUUID } from "node:crypto"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"

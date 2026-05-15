@@ -1,7 +1,3 @@
-/**
- * agent-runner.ts — Core execution engine: creates sessions, runs agents, collects results.
- */
-
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import {
@@ -34,6 +30,7 @@ import {
 import { buildParentContext, extractText } from "../prompt/context.js"
 import { type PromptExtras, buildAgentPrompt } from "../prompt/prompts.js"
 import { preloadSkills } from "../prompt/skill-loader.js"
+import { type LifetimeUsage, getLifetimeTotal, getSessionUsage } from "./usage.js"
 
 /** Names of tools registered by this extension that subagents must NOT inherit. */
 const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"]
@@ -169,6 +166,20 @@ function getLastAssistantText(session: AgentSession): string {
 		if (text) return text
 	}
 	return ""
+}
+
+function usageDelta(total: LifetimeUsage | undefined, observed: LifetimeUsage): LifetimeUsage | undefined {
+	if (!total) return undefined
+	const delta = {
+		input: Math.max(0, total.input - observed.input),
+		output: Math.max(0, total.output - observed.output),
+		cacheWrite: Math.max(0, total.cacheWrite - observed.cacheWrite),
+	}
+	return getLifetimeTotal(delta) > 0 ? delta : undefined
+}
+
+function estimateTextTokens(text: string): number {
+	return Math.ceil(text.length / 4)
 }
 
 function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => void {
@@ -315,6 +326,7 @@ export async function runAgent(
 	const maxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
 	const effectiveTokenBudget = options.tokenBudget ?? agentConfig?.tokenBudget
 	let cumulativeTokens = 0
+	const observedUsage: LifetimeUsage = { input: 0, output: 0, cacheWrite: 0 }
 	let softLimitReached = false
 	let aborted = false
 	let abortReason: AgentAbortReason | undefined
@@ -352,13 +364,17 @@ export async function runAgent(
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			const u = (event.message as unknown as { usage?: { input: number; output: number; cacheWrite: number } }).usage
 			if (u) {
-				options.onAssistantUsage?.({
+				const usage = {
 					input: u.input ?? 0,
 					output: u.output ?? 0,
 					cacheWrite: u.cacheWrite ?? 0,
-				})
+				}
+				observedUsage.input += usage.input
+				observedUsage.output += usage.output
+				observedUsage.cacheWrite += usage.cacheWrite
+				options.onAssistantUsage?.(usage)
 				if (effectiveTokenBudget != null && !budgetAborted) {
-					cumulativeTokens += (u.input ?? 0) + (u.output ?? 0) + (u.cacheWrite ?? 0)
+					cumulativeTokens += getLifetimeTotal(usage)
 					if (cumulativeTokens > effectiveTokenBudget) {
 						budgetAborted = true
 						abortReason = "token_budget"
@@ -383,6 +399,24 @@ export async function runAgent(
 		const parentContext = buildParentContext(ctx)
 		if (parentContext) {
 			effectivePrompt = parentContext + prompt
+		}
+	}
+
+	const promptEstimate = estimateTextTokens(systemPrompt) + estimateTextTokens(effectivePrompt)
+	if (effectiveTokenBudget != null && promptEstimate > effectiveTokenBudget) {
+		const usage = { input: promptEstimate, output: 0, cacheWrite: 0 }
+		observedUsage.input += usage.input
+		cumulativeTokens += getLifetimeTotal(usage)
+		options.onAssistantUsage?.(usage)
+		unsubTurns()
+		collector.unsubscribe()
+		cleanupAbort()
+		return {
+			responseText: `Token budget exceeded before agent start: estimated prompt cost is ${promptEstimate} tokens, budget is ${effectiveTokenBudget}.`,
+			session,
+			aborted: true,
+			abortReason: "token_budget",
+			steered: false,
 		}
 	}
 
@@ -417,6 +451,20 @@ export async function runAgent(
 		if (personaPhase) {
 			setCurrentPhase(prevPhase)
 		}
+	}
+
+	const finalUsageDelta = usageDelta(getSessionUsage(session), observedUsage)
+	if (finalUsageDelta) {
+		observedUsage.input += finalUsageDelta.input
+		observedUsage.output += finalUsageDelta.output
+		observedUsage.cacheWrite += finalUsageDelta.cacheWrite
+		cumulativeTokens += getLifetimeTotal(finalUsageDelta)
+		options.onAssistantUsage?.(finalUsageDelta)
+	}
+
+	if (effectiveTokenBudget != null && !budgetAborted && getLifetimeTotal(observedUsage) > effectiveTokenBudget) {
+		budgetAborted = true
+		abortReason = "token_budget"
 	}
 
 	const responseText = collector.getText().trim() || getLastAssistantText(session)
