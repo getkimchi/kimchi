@@ -4,7 +4,7 @@ import type { FermentRuntime } from "./runtime.js"
 
 export const FERMENT_TOOL_NAMES = [
 	"create_ferment",
-	"propose_phases",
+	"propose_scoping",
 	"list_ferments",
 	"scope_ferment",
 	"update_scope_field",

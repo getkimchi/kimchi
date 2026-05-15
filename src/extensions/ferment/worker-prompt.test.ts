@@ -63,6 +63,17 @@ describe("buildWorkerContext", () => {
 		expect(ctx).toContain("pnpm test")
 	})
 
+	it("directs worker scratch docs into the ferment docs directory", () => {
+		const phase = makePhase({ steps: [makeStep()] })
+		const f = makeFerment({ id: "ferment-docs-1", phases: [phase] })
+
+		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+
+		expect(ctx).toContain("Ferment docs directory:")
+		expect(ctx).toContain(".kimchi/ferments/ferment-docs-1/docs/")
+		expect(ctx).toContain("Do NOT create ad-hoc project-root scratch folders like `.ui-audit/`")
+	})
+
 	it("includes ferment goal and success criteria when present", () => {
 		const phase = makePhase({ steps: [makeStep()] })
 		const f = makeFerment({
@@ -157,7 +168,7 @@ describe("buildWorkerContext", () => {
 		const ctx = buildWorkerContext(f, phase, phase.steps[1])
 		expect(ctx).toContain("…")
 		// The full 500 'x's should not appear verbatim
-		expect(ctx.length).toBeLessThan(500 + 200) // some prologue + truncated body
+		expect(ctx).not.toContain(longSummary)
 	})
 
 	it("includes recent decisions when present", () => {

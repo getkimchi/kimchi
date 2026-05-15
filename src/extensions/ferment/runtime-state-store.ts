@@ -12,7 +12,6 @@
  *
  * What's NOT persisted (single-CLI-session only):
  *   - scopingInteractive / scopingConfirmed (TUI flow; local-only)
- *   - afterScopeContinuations (consumed within minutes; ephemeral handoff)
  *   - judge model handles, active ferment reference (process-scoped)
  *
  * The persistence pattern is write-through with an in-memory cache: every

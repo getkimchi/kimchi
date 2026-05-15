@@ -52,7 +52,6 @@ function makeRuntime(overrides: Partial<RuntimeReader> = {}): RuntimeReader {
 		getBlockRetry: () => 0,
 		getPhaseStartRef: () => undefined,
 		getStepStartRef: () => undefined,
-		hasAfterScopeContinuation: () => false,
 		...overrides,
 	}
 }
@@ -65,7 +64,7 @@ describe("deriveFermentState — happy path", () => {
 		const state = deriveFermentState(f, makeRuntime())
 		expect(state.activePhase?.id).toBe("phase-1")
 		expect(state.activeStep).toBeUndefined() // no step running yet
-		expect(state.afterScopeContinuation).toBe(false)
+		expect(state).not.toHaveProperty("afterScopeContinuation")
 		expect(state.blocked).toBeUndefined()
 		expect(state.phaseRetry).toBeUndefined()
 	})
@@ -133,10 +132,10 @@ describe("deriveFermentState — runtime context", () => {
 		expect(state.stepStartRef).toBe("step-sha")
 	})
 
-	it("surfaces afterScopeContinuation when runtime flags it", () => {
+	it("does not include afterScopeContinuation on DerivedFermentState", () => {
 		const f = makeFerment()
-		const state = deriveFermentState(f, makeRuntime({ hasAfterScopeContinuation: () => true }))
-		expect(state.afterScopeContinuation).toBe(true)
+		const state = deriveFermentState(f, makeRuntime())
+		expect(state).not.toHaveProperty("afterScopeContinuation")
 	})
 })
 
@@ -189,7 +188,6 @@ describe("deriveFermentState — purity", () => {
 				getBlockRetry: () => 2,
 				getPhaseStartRef: () => "sha",
 				getStepStartRef: () => "sha2",
-				hasAfterScopeContinuation: () => true,
 			}),
 		)
 		expect(JSON.stringify(f)).toBe(before)
@@ -211,20 +209,15 @@ describe("deriveFermentState — purity", () => {
 				reads.push(`getStepStartRef:${p}:${s}`)
 				return undefined
 			},
-			hasAfterScopeContinuation: (f) => {
-				reads.push(`hasAfterScopeContinuation:${f}`)
-				return false
-			},
 		}
 		const f = makeFerment({
 			phases: [makePhase({ status: "active", steps: [makeStep({ status: "running" })] })],
 		})
 		deriveFermentState(f, runtime)
-		// At minimum the active-phase retry, start-ref, after-scope continuation
-		// must have been read. No write-style method exists on RuntimeReader so
-		// the no-write claim is structurally guaranteed.
+		// At minimum the active-phase retry and start-ref must have been read.
+		// No write-style method exists on RuntimeReader so the no-write claim is
+		// structurally guaranteed.
 		expect(reads).toContain("getBlockRetry:phase-1")
 		expect(reads).toContain("getPhaseStartRef:phase-1")
-		expect(reads).toContain("hasAfterScopeContinuation:ferment-1")
 	})
 })

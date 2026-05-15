@@ -105,6 +105,12 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 			if (post.scoping.phases && JSON.stringify(pre.scoping.phases) !== JSON.stringify(post.scoping.phases)) {
 				b.push("scoping_phases_set", { phases: post.scoping.phases, phaseSnapshots: post.phases })
 			}
+			if (
+				post.scoping.assumptions &&
+				JSON.stringify(pre.scoping.assumptions) !== JSON.stringify(post.scoping.assumptions)
+			) {
+				b.push("scoping_assumptions_set", { assumptions: post.scoping.assumptions })
+			}
 			if (pre.status !== post.status && post.status === "planned") {
 				b.push("ferment_planned", {})
 			}
@@ -117,7 +123,13 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 					? "scoping_goal_set"
 					: cmd.field === "criteria"
 						? "scoping_criteria_set"
-						: "scoping_constraints_set"
+						: cmd.field === "assumptions"
+							? "scoping_assumptions_set"
+							: "scoping_constraints_set"
+			if (cmd.field === "assumptions" && post.scoping.assumptions) {
+				b.push(eventType, { assumptions: post.scoping.assumptions })
+				return b.events
+			}
 			const payload =
 				cmd.field === "goal"
 					? { goal: post.scoping.goal, plain: post.goal }

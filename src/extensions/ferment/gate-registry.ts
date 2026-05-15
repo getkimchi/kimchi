@@ -24,7 +24,7 @@
  */
 
 export type GateId =
-	// Plan-scope (owned by scope_ferment / propose_phases)
+	// Plan-scope (owned by scope_ferment / propose_scoping)
 	| "P1"
 	| "P2"
 	| "P3"
@@ -131,6 +131,7 @@ export const GATE_REGISTRY = {
 			"  - syntactic: type-check, compile-check, lint — proves shape, not behavior",
 			"  - proxy:   greps output, checks file existence, counts lines — proves nothing about correctness",
 			"  - sentinel: touches a file or echoes a string — pure ceremony, no signal",
+			"Put that classification in rationale/evidence. The verdict itself should still be pass, flag, or omitted.",
 			"Return 'flag' if your verify is proxy or sentinel for a step that claims semantic work.",
 			"Return 'omitted' for steps with no verification command (your S1 evidence carries the weight).",
 		].join("\n"),

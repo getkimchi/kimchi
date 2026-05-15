@@ -45,6 +45,11 @@ export function buildWorkerContext(ferment: Ferment, phase: Phase, step: Step, o
 	if (step.verification?.command) {
 		lines.push(`**Verify when done:** \`${step.verification.command}\``)
 	}
+	lines.push("")
+	lines.push(`**Ferment docs directory:** \`.kimchi/ferments/${ferment.id}/docs/\``)
+	lines.push(
+		"Write transient audit notes, investigation reports, implementation notes, and verification reports there. Do NOT create ad-hoc project-root scratch folders like `.ui-audit/` unless the user explicitly requested a product artifact in the app itself.",
+	)
 	if (ferment.scoping.goal?.answer) {
 		lines.push("")
 		lines.push(`**Ferment goal:** ${ferment.scoping.goal.answer}`)

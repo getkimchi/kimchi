@@ -10,16 +10,18 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
-import type { Command } from "../../../ferment/state-machine.js"
-import type { Grade } from "../../../ferment/types.js"
+import type { Command, ScopePhaseInput } from "../../../ferment/state-machine.js"
+import type { Grade, ScopingQuestion } from "../../../ferment/types.js"
 import { askUser } from "../ask-user.js"
+import { pr_bold, pr_dim } from "../colors.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { validateGatesOrErr } from "../gate-validation.js"
 import { autoInitFromEnv, ensureGitRepo } from "../git-init.js"
 import { judgeJourneyGrade } from "../judge.js"
-import { appendRefEntry, resetReactiveAutoNudgeCount } from "../nudge.js"
+import { appendRefEntry, injectResumeAutoNudge, resetReactiveAutoNudgeCount } from "../nudge.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
+import { getPromptUi, promptInput, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
@@ -29,7 +31,7 @@ import {
 	CompleteFermentParams,
 	CreateFermentParams,
 	ListParams,
-	ProposePhasesParams,
+	ProposeScopingParams,
 	ScopeParams,
 	SetModeParams,
 	UpdateScopeFieldParams,
@@ -37,8 +39,24 @@ import {
 import { setActiveFerment, syncFermentToolScope } from "../tool-scope.js"
 
 type ScopeArgs = Static<typeof ScopeParams>
+type ProposeScopingArgs = Static<typeof ProposeScopingParams>
+type NormalizedProposeScopingArgs = Omit<ProposeScopingArgs, "constraints" | "phases" | "questions" | "assumptions"> & {
+	constraints?: string[]
+	assumptions?: string
+	phases: ScopePhaseInput[]
+	questions?: ScopingQuestion[]
+}
+type NormalizeProposeScopingResult =
+	| { ok: true; params: NormalizedProposeScopingArgs }
+	| { ok: false; error: ReturnType<typeof toolErr> }
 type CompleteFermentArgs = Static<typeof CompleteFermentParams>
 type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
+type ScopingAnswer = {
+	questionId: string
+	optionId: string
+	label: string
+	recommended: boolean
+}
 
 export interface LifecycleExecutionContext {
 	pi: ExtensionAPI
@@ -49,6 +67,274 @@ const validateFsmTransition = (
 	event: Parameters<typeof validateFsmTransitionWithFerment>[1],
 	params?: Parameters<typeof validateFsmTransitionWithFerment>[2],
 ): string | null => validateFsmTransitionWithFerment(f, event, params).error ?? null
+
+function parseJsonArray(value: unknown, field: string): unknown[] | string {
+	if (Array.isArray(value)) return value
+	if (typeof value !== "string") return `Field "${field}" must be an array.`
+	const trimmed = value.trim()
+	const unfenced = trimmed
+		.replace(/^```(?:json)?\s*/i, "")
+		.replace(/\s*```$/i, "")
+		.trim()
+	const start = unfenced.indexOf("[")
+	const end = unfenced.lastIndexOf("]")
+	const candidate = start >= 0 && end > start ? unfenced.slice(start, end + 1) : unfenced
+	try {
+		const parsed = JSON.parse(candidate)
+		if (!Array.isArray(parsed)) return `Field "${field}" was a JSON string, but it did not decode to an array.`
+		return parsed
+	} catch {
+		return `Field "${field}" was a string, but it did not contain a valid JSON array. Emit ${field} as a real array, not prose or malformed JSON text.`
+	}
+}
+
+function normalizeStringArray(value: unknown, field: string): string[] | undefined | string {
+	if (value === undefined) return undefined
+	if (typeof value === "string") {
+		const trimmed = value.trim()
+		if (trimmed === "") return []
+		if (!trimmed.startsWith("[")) {
+			return trimmed
+				.split(/\r?\n|;/)
+				.map((item) => item.trim())
+				.filter(Boolean)
+		}
+	}
+	const parsed = parseJsonArray(value, field)
+	if (typeof parsed === "string") return parsed
+	if (parsed.some((item) => typeof item !== "string")) return `Field "${field}" must contain only strings.`
+	return parsed as string[]
+}
+
+function splitListText(value: string | undefined): string[] {
+	if (!value) return []
+	return value
+		.split(/\r?\n|;/)
+		.map((item) => item.replace(/^[-*]\s+/, "").trim())
+		.filter(Boolean)
+}
+
+function wrapText(value: string, width = 92): string[] {
+	const words = value.trim().split(/\s+/).filter(Boolean)
+	if (words.length === 0) return []
+	const lines: string[] = []
+	let line = ""
+	for (const word of words) {
+		if (line && `${line} ${word}`.length > width) {
+			lines.push(line)
+			line = word
+		} else {
+			line = line ? `${line} ${word}` : word
+		}
+	}
+	if (line) lines.push(line)
+	return lines
+}
+
+function renderWrapped(label: string, value: string | undefined): string {
+	const lines = wrapText(value || "—")
+	const renderedLabel = label.startsWith("#") ? label : pr_bold(label)
+	return [renderedLabel, ...lines.map((line) => `  ${line}`)].join("\n")
+}
+
+function renderBullets(label: string, items: string[]): string {
+	if (items.length === 0) return renderWrapped(label, "—")
+	const lines = items.flatMap((item) => {
+		const cleaned = item.replace(/^[-*]\s+/, "").trim()
+		return wrapText(cleaned, 88).map((line, index) => (index === 0 ? `  - ${line}` : `    ${line}`))
+	})
+	const renderedLabel = label.startsWith("#") ? label : pr_bold(label)
+	return [renderedLabel, ...lines].join("\n")
+}
+
+function renderStep(index: number, description: string): string {
+	const lines = wrapText(description, 82)
+	if (lines.length === 0) return `${index}. —`
+	return lines.map((line, lineIndex) => (lineIndex === 0 ? `${index}. ${line}` : `   ${line}`)).join("\n")
+}
+
+function normalizeAssumptions(value: unknown): string | undefined {
+	if (value === undefined || typeof value !== "string") return value as string | undefined
+	const trimmed = value.trim()
+	if (!trimmed.startsWith("[")) return value
+	try {
+		const parsed = JSON.parse(trimmed)
+		if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
+			return parsed.join("; ")
+		}
+	} catch {
+		// Leave the original text alone. `assumptions` is a string field, so a
+		// malformed JSON-looking string is still better than rejecting the plan.
+	}
+	return value
+}
+
+function normalizePhases(value: ProposeScopingArgs["phases"]): ScopePhaseInput[] | string {
+	const parsed = parseJsonArray(value, "phases")
+	if (typeof parsed === "string") return parsed
+	if (parsed.length < 3) return 'Field "phases" must contain at least 3 phases.'
+	if (parsed.length > 7) return 'Field "phases" must contain at most 7 phases.'
+	const phases: ScopePhaseInput[] = []
+	for (const [phaseIndex, raw] of parsed.entries()) {
+		if (!raw || typeof raw !== "object") return `phases.${phaseIndex} must be an object.`
+		const phase = raw as Record<string, unknown>
+		if (typeof phase.name !== "string") return `phases.${phaseIndex}.name must be a string.`
+		if (typeof phase.goal !== "string") return `phases.${phaseIndex}.goal must be a string.`
+		if (phase.description !== undefined && typeof phase.description !== "string") {
+			return `phases.${phaseIndex}.description must be a string.`
+		}
+		const constraints = normalizeStringArray(phase.constraints, `phases.${phaseIndex}.constraints`)
+		if (typeof constraints === "string") return constraints
+		if (phase.budget !== undefined && typeof phase.budget !== "string")
+			return `phases.${phaseIndex}.budget must be a string.`
+		if (phase.parallel_group !== undefined && typeof phase.parallel_group !== "number") {
+			return `phases.${phaseIndex}.parallel_group must be a number.`
+		}
+		if (phase.steps !== undefined) {
+			if (!Array.isArray(phase.steps)) return `phases.${phaseIndex}.steps must be an array.`
+			for (const [stepIndex, rawStep] of phase.steps.entries()) {
+				if (!rawStep || typeof rawStep !== "object") return `phases.${phaseIndex}.steps.${stepIndex} must be an object.`
+				const step = rawStep as Record<string, unknown>
+				if (typeof step.description !== "string") {
+					return `phases.${phaseIndex}.steps.${stepIndex}.description must be a string.`
+				}
+				if (step.verify !== undefined && typeof step.verify !== "string") {
+					return `phases.${phaseIndex}.steps.${stepIndex}.verify must be a string.`
+				}
+				if (step.parallel_group !== undefined && typeof step.parallel_group !== "number") {
+					return `phases.${phaseIndex}.steps.${stepIndex}.parallel_group must be a number.`
+				}
+			}
+		}
+		phases.push({
+			name: phase.name as string,
+			goal: phase.goal as string,
+			description: phase.description as string | undefined,
+			constraints,
+			budget: phase.budget as string | undefined,
+			parallel_group: phase.parallel_group as number | undefined,
+			steps: phase.steps as ScopePhaseInput["steps"],
+		})
+	}
+	return phases
+}
+
+function normalizeQuestions(value: ProposeScopingArgs["questions"]): ScopingQuestion[] | undefined | string {
+	if (value === undefined) return undefined
+	const parsed = parseJsonArray(value, "questions")
+	if (typeof parsed === "string") return parsed
+	if (parsed.length > 3) return 'Field "questions" must contain at most 3 questions.'
+	for (const [questionIndex, raw] of parsed.entries()) {
+		if (!raw || typeof raw !== "object") return `questions.${questionIndex} must be an object.`
+		const q = raw as Record<string, unknown>
+		if (typeof q.id !== "string") return `questions.${questionIndex}.id must be a string.`
+		if (typeof q.text !== "string") return `questions.${questionIndex}.text must be a string.`
+		if (!Array.isArray(q.options)) return `questions.${questionIndex}.options must be an array.`
+		if (q.options.length < 2 || q.options.length > 4) {
+			return `questions.${questionIndex}.options must contain 2-4 options.`
+		}
+		for (const [optionIndex, rawOption] of q.options.entries()) {
+			if (!rawOption || typeof rawOption !== "object") {
+				return `questions.${questionIndex}.options.${optionIndex} must be an object.`
+			}
+			const option = rawOption as Record<string, unknown>
+			if (typeof option.id !== "string") return `questions.${questionIndex}.options.${optionIndex}.id must be a string.`
+			if (typeof option.label !== "string") {
+				return `questions.${questionIndex}.options.${optionIndex}.label must be a string.`
+			}
+			if (option.recommended !== undefined && typeof option.recommended !== "boolean") {
+				return `questions.${questionIndex}.options.${optionIndex}.recommended must be boolean.`
+			}
+		}
+	}
+	return parsed as ScopingQuestion[]
+}
+
+function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizeProposeScopingResult {
+	const constraints = normalizeStringArray(params.constraints, "constraints")
+	if (typeof constraints === "string") return { ok: false, error: toolErr(constraints) }
+	const phases = normalizePhases(params.phases)
+	if (typeof phases === "string") return { ok: false, error: toolErr(phases) }
+	const questions = normalizeQuestions(params.questions)
+	if (typeof questions === "string") return { ok: false, error: toolErr(questions) }
+	return {
+		ok: true,
+		params: { ...params, constraints, assumptions: normalizeAssumptions(params.assumptions), phases, questions },
+	}
+}
+
+function validateScopingQuestions(questions: ScopingQuestion[]): string | null {
+	const questionIds = questions.map((q) => q.id)
+	if (new Set(questionIds).size !== questionIds.length) {
+		return "Question ids must be unique. Found duplicate question ids."
+	}
+
+	for (const q of questions) {
+		const recommendedCount = q.options.filter((o) => o.recommended === true).length
+		if (recommendedCount > 1) {
+			return `Question "${q.id}" has ${recommendedCount} options with recommended: true. At most one option per question may be recommended.`
+		}
+
+		const optionIds = q.options.map((o) => o.id)
+		if (new Set(optionIds).size !== optionIds.length) {
+			return `Question "${q.id}" has duplicate option ids.`
+		}
+		const optionLabels = q.options.map((o) => o.label)
+		if (new Set(optionLabels).size !== optionLabels.length) {
+			return `Question "${q.id}" has duplicate option labels — labels must be distinct.`
+		}
+	}
+
+	return null
+}
+
+function buildPlanEntry(fermentName: string, params: NormalizedProposeScopingArgs): string {
+	const phaseBlocks = params.phases.map((p, i) => {
+		const goalLines = wrapText(p.goal, 86)
+		const stepLines = (p.steps ?? []).map((s, j) => renderStep(j + 1, s.description)).join("\n")
+		return [
+			`### Phase ${i + 1}: ${p.name}`,
+			...goalLines.map((line, index) => (index === 0 ? `**Goal:** ${line}` : `          ${line}`)),
+			stepLines ? `**Steps:**\n${stepLines}` : null,
+		]
+			.filter(Boolean)
+			.join("\n")
+	})
+	const divider = pr_dim("╌".repeat(72))
+	const planBody = [
+		`# Plan: ${fermentName}`,
+		"",
+		renderWrapped("## Goal", params.goal),
+		"",
+		renderBullets("## Success criteria", splitListText(params.success_criteria)),
+		"",
+		renderBullets("## Constraints", params.constraints ?? []),
+		"",
+		renderBullets("## Assumptions", splitListText(params.assumptions)),
+		"",
+		"## Phases",
+		phaseBlocks.join("\n\n"),
+	].join("\n")
+
+	return [pr_bold("Ready to execute?"), "Here is the proposed plan:", divider, planBody, divider].join("\n")
+}
+
+function buildAnswersEntry(questions: ScopingQuestion[], answers: ScopingAnswer[]): string {
+	const answerLines = answers.map((a, i) => {
+		const recMarker = a.recommended ? " ★" : ""
+		return `Q${i + 1}: ${questions[i].text}\n    · ${a.label}${recMarker}`
+	})
+	return `${pr_bold("Your answers")}\n${answerLines.join("\n")}`
+}
+
+function buildScopingIterationMessage(questions: ScopingQuestion[], answers: ScopingAnswer[]): string {
+	const bundledAnswerLines = answers.map((a, i) => {
+		const q = questions[i]
+		const answerText = a.optionId === "custom" ? `free-form: "${a.label}"` : `option "${a.optionId}" ("${a.label}")`
+		return `- "${q.text}" → ${answerText}`
+	})
+	return `The user reviewed your draft and chose these answers (which OVERRIDE your recommendations):\n${bundledAnswerLines.join("\n")}\n\nRe-emit propose_scoping ONCE with updated goal/criteria/constraints/assumptions/phases reflecting these answers. Usually emit \`questions: []\` so the user can review the final plan. You may emit new questions only if these answers reveal a genuinely new, decision-blocking ambiguity; never repeat or rephrase any question answered above. Do NOT ask questions in chat — call the tool directly.`
+}
 
 export async function scopeFerment(
 	runtime: FermentRuntime,
@@ -80,10 +366,7 @@ export async function scopeFerment(
 	}
 	runtime.consumeScopingGate(params.ferment_id)
 
-	// FSM validation: ensure scope transition is allowed. The previous
-	// `hasPhases` guard on SCOPE_FERMENT was wrong (scope creates phases) and
-	// has been removed; this call now always runs and the duct-tape "skip
-	// for status === draft" workaround is gone.
+	// FSM validation: ensure the scope transition is allowed before applying it.
 	const fsmError = validateFsmTransition(fGate, "SCOPE_FERMENT")
 	if (fsmError) return toolErr(fsmError)
 
@@ -93,6 +376,7 @@ export async function scopeFerment(
 		goal: params.goal,
 		successCriteria: params.success_criteria,
 		constraints: params.constraints,
+		assumptions: params.assumptions,
 		phases: params.phases ?? [],
 	}
 	const outcome = applyAndPersist(params.ferment_id, cmd)
@@ -107,13 +391,16 @@ export async function scopeFerment(
 	// Discard any stale pending-scope buffer — its phases were either applied
 	// here or are no longer relevant (the ferment is now planned).
 	runtime.clearPendingScope(params.ferment_id)
-	if (outcome.ferment.mode === "plan") runtime.markAfterScopeContinuation(params.ferment_id)
 
 	const fresh = outcome.ferment
 	const phaseList = fresh.phases.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") || "(none)"
 
-	// Auto-nudge handling moved to main's reactive turn-end model — see nudge.ts.
-	// Plan-quality is now enforced via P-gates above; no LLM plan review.
+	// In plan mode, inject the resume nudge exactly once here — at the moment of
+	// successful scoping — so the planner is kicked forward without a TUI dropdown.
+	if (fresh.mode === "plan") {
+		runtime.setActive(fresh)
+		injectResumeAutoNudge(pi, runtime)
+	}
 
 	return toolOk(
 		`Ferment "${fresh.name}" scoped and ready.\nferment_id: ${fresh.id}\nGoal: ${params.goal}\nPhases:\n${phaseList}`,
@@ -291,79 +578,249 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	})
 
 	pi.registerTool({
-		name: "propose_phases",
-		label: "Propose Phases",
-		description: `Stash a structured plan proposal for the user to review. Call this DURING interactive scoping, AFTER presenting the plan to the user as a numbered list. The tool opens the confirmation dropdown and the host applies the proposal automatically when the user confirms — you should NOT ask an additional 'Does this plan look right?' question or call scope_ferment yourself in this flow. You must produce verdicts for the three plan-scope gates below. A "flag" verdict refuses the proposal.
+		name: "propose_scoping",
+		label: "Propose Scoping",
+		description: `Single combined emission of the full scoping draft after the user's free-form intent. Includes goal, success criteria, constraints, assumptions, phases (3-7), and optional clarifying questions (≤3) with one option \`recommended: true\` per question. Replaces previous draft wholesale.
 
 ${renderGateGuidance("scope_ferment")}`,
-		parameters: ProposePhasesParams,
-		async execute(_, params, _signal, _onUpdate, ctx) {
-			// The pending-scope buffer must already exist (set by runScopingFlow's
-			// TUI step). If it doesn't, the LLM is calling propose_phases outside
-			// the interactive flow — reject with a clear message.
-			const pending = runtime.getPendingScope(params.ferment_id)
-			if (!pending) {
-				return toolErr(
-					`No pending scope for ferment "${params.ferment_id}". propose_phases is only valid during the interactive scoping flow started by /ferment add. For headless or one-shot scoping, call scope_ferment directly with all fields.`,
-				)
-			}
-			if (!params.phases || params.phases.length === 0) {
-				return toolErr("propose_phases requires at least one phase. Provide 3–7 ordered phases with steps.")
-			}
+		parameters: ProposeScopingParams,
+		async execute(_, rawParams, _signal, _onUpdate, ctx) {
+			const normalized = normalizeProposeScopingParams(rawParams)
+			if (!normalized.ok) return normalized.error
+			const params = normalized.params
 
-			// Plan-scope gates are required here too — the agent must answer
-			// P1/P2/P3 about the proposal before it's even buffered.
+			// 1. Validate P-gates (same as scopeFerment).
 			const gateError = validateGatesOrErr(params.gates, {
 				turn: "scope_ferment",
 				flagPolicy: "block-on-flag",
 				renderFlagError: (count, lines) =>
-					`Cannot propose phases — agent self-flagged on ${count} plan gate(s):\n\n${lines}\n\nRevise the proposal and call propose_phases again.`,
+					`Cannot propose scoping — agent self-flagged on ${count} plan gate(s):\n\n${lines}\n\nRevise the plan and call propose_scoping again with passing P-gate verdicts.`,
 			})
 			if (gateError) return gateError
 
-			runtime.attachPendingPhases(params.ferment_id, params.phases)
+			// 2. Extra validation: at most one recommended per question, unique ids.
+			const questions = params.questions ?? []
+			const questionValidationError = validateScopingQuestions(questions)
+			if (questionValidationError) return toolErr(questionValidationError)
 
-			const fermentForAsk = runtime.getStorage().get(params.ferment_id)
-			if (!fermentForAsk) return toolErr("Ferment not found.")
-
-			const phaseLines = params.phases.map((p, i) => `${i + 1}. ${p.name} — ${p.goal}`).join("\n")
-			const response = await askUser(
-				`Proposed plan:\n\n${phaseLines}\n\nDoes this plan look right?`,
-				[
-					{ id: "confirm", label: "Yes, this looks right" },
-					{ id: "revise", label: "No, revise" },
-					{ id: "say_more", label: "Let me say something else" },
-				],
-				{ ferment: fermentForAsk, pi, ctx, runtime },
-			)
-
-			if (response.failed) {
-				// No audience reachable. Leave the proposal buffered for a later
-				// confirmation attempt; surface what happened to the agent.
+			// 3. Replace pending buffer wholesale.
+			const ferment = runtime.getStorage().get(params.ferment_id)
+			if (!ferment) return toolErr(`Ferment "${params.ferment_id}" not found.`)
+			if (ferment.status !== "draft") {
+				const nextAction = ferment.status === "planned" ? "call activate_phase" : "continue the current ferment action"
 				return toolOk(
-					`Proposal received: ${params.phases.length} phase(s) buffered. The user will see your numbered list and confirm via dropdown — do not call scope_ferment yourself.`,
+					`Ferment "${ferment.name}" is already ${ferment.status}; ignore this duplicate propose_scoping call and ${nextAction}.`,
 				)
 			}
 
-			if (response.choice === "revise") {
-				return toolOk(
-					"Proposal buffered, but the user requested revisions. Revise the plan and call propose_phases again.",
-				)
-			}
-			if (response.choice === "say_more") {
-				// Free-form input is TUI-only; in one-shot mode the judge can't be
-				// asked for arbitrary text. Use ctx.ui.input directly when present.
-				const custom = ctx?.ui?.input ? await ctx.ui.input("Your message:", "") : undefined
-				if (custom) return toolOk(`Proposal buffered. User direction: ${custom}`)
-				return toolOk("Proposal buffered. Awaiting the user's custom direction.")
+			const pending = runtime.getPendingScope(params.ferment_id)
+			if (!pending) {
+				// Seed an empty buffer so attachPendingProposal can replace it.
+				runtime.setPendingScope(params.ferment_id, { goal: "", successCriteria: "", constraints: [] })
 			}
 
-			// choice === "confirm"
-			const scopeOutcome = confirmPendingScope(runtime, params.ferment_id, params.phases, "propose_phases")
-			if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
-			return toolOk(
-				`Proposal confirmed and saved. Ferment "${scopeOutcome.outcome.ferment.name}" is now planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s).`,
-			)
+			// Iteration cap: prevent infinite propose_scoping loops.
+			const currentIterations = pending?.proposeIterations ?? 0
+			const nextIterations = currentIterations + 1
+			if (currentIterations >= 3 && questions.length > 0) {
+				return toolErr(
+					"You've proposed scoping 3 times. Pick the best draft and emit propose_scoping with questions=[] to let the user confirm.",
+				)
+			}
+
+			runtime.attachPendingProposal(params.ferment_id, {
+				title: params.title,
+				goal: params.goal,
+				successCriteria: params.success_criteria,
+				constraints: params.constraints,
+				assumptions: params.assumptions,
+				phases: params.phases,
+				proposeIterations: nextIterations,
+			})
+
+			// 4. Build the persistent plan entry. We only emit it at the real
+			// decision point: immediately for zero-question drafts, or after the
+			// user accepts recommendations. If the user changes answers, the
+			// agent re-drafts first so we never show a stale plan as final.
+			const planEntry = buildPlanEntry(ferment.name, params)
+			const formatPlanEntry = (suffix?: string): string => (suffix ? `${planEntry}\n\n${suffix}` : planEntry)
+			const planToolOk = (message: string, options: { includePlan?: boolean; suffix?: string } = {}) =>
+				toolOk(options.includePlan ? `${formatPlanEntry(options.suffix)}\n\n${message}` : message)
+
+			// 5. Headless path.
+			if (!getPromptUi(ctx)?.select) {
+				if (questions.length === 0) {
+					const scopeOutcome = confirmPendingScope(
+						runtime,
+						params.ferment_id,
+						params.phases,
+						"propose_scoping",
+						params.title,
+						pi,
+					)
+					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
+					return planToolOk("Plan saved.", { includePlan: true })
+				}
+				const recSummary = questions
+					.map((q) => {
+						const rec = q.options.find((o) => o.recommended) ?? q.options[0]
+						return `${q.id}: ${rec.id}`
+					})
+					.join(", ")
+				return toolErr(
+					`Cannot ask scoping questions without an interactive UI. Re-emit propose_scoping with those recommendations folded into goal/criteria/constraints/assumptions/phases and questions=[].\nRecommended answers: ${recSummary}`,
+				)
+			}
+
+			// 6. Zero-questions path: plan is already in chat scrollback above.
+			// The dropdown just asks for the decision.
+			if (questions.length === 0) {
+				const startLabel = "Start execution  ✓"
+				const selected = await promptSelect(ctx, `${formatPlanEntry()}\n\nProceed with this plan?`, [
+					startLabel,
+					"Let me say something",
+				])
+				if (selected === undefined) {
+					return planToolOk("No changes made. Waiting for your next instruction.")
+				}
+				if (selected === startLabel) {
+					const scopeOutcome = confirmPendingScope(
+						runtime,
+						params.ferment_id,
+						params.phases,
+						"propose_scoping",
+						params.title,
+						pi,
+					)
+					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
+					return planToolOk(
+						`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
+						{ includePlan: true },
+					)
+				}
+				// "Let me say something"
+				const userText = await promptInput(ctx, "Your direction:", "")
+				if (!userText) {
+					return planToolOk("No changes made. Waiting for your next instruction.")
+				}
+				const sayMoreContent = `User said: ${userText}. Re-run propose_scoping incorporating this direction.`
+				void pi.sendMessage(
+					{ content: sayMoreContent, customType: "ferment_scoping_iteration", display: false },
+					{ triggerTurn: true },
+				)
+				return planToolOk("Got it. Updating the plan with your direction...")
+			}
+
+			// 7. Sequential per-question screens + review loop.
+			const N = questions.length
+			const CUSTOM_LABEL = `✎ ${pr_dim("Custom answer...")}`
+
+			const runQuestions = async (): Promise<ScopingAnswer[] | "cancelled" | { kind: "dismiss"; qn: number }> => {
+				const answers: ScopingAnswer[] = []
+				for (let n = 0; n < N; n++) {
+					const q = questions[n]
+					const labeledOptions = q.options.map((o) => ({
+						option: o,
+						label: o.recommended === true ? `${o.label}  ★ Recommended` : o.label,
+					}))
+					const optionLabels = labeledOptions.map((o) => o.label)
+					optionLabels.push(CUSTOM_LABEL)
+
+					const title = `[Q${n + 1}/${N}] ${q.text}`
+					const chosen = await promptSelect(ctx, title, optionLabels)
+
+					if (chosen === undefined) {
+						return { kind: "dismiss", qn: n + 1 }
+					}
+
+					if (chosen === CUSTOM_LABEL) {
+						const freeForm = await promptInput(ctx, `[Q${n + 1}/${N}] Your answer for: ${q.text}`, "")
+						if (!freeForm) {
+							return "cancelled"
+						}
+						answers.push({ questionId: q.id, optionId: "custom", label: freeForm, recommended: false })
+						continue
+					}
+
+					// Decode which real option was chosen.
+					const matched = labeledOptions.find((o) => o.label === chosen)
+					if (matched) {
+						answers.push({
+							questionId: q.id,
+							optionId: matched.option.id,
+							label: matched.option.label,
+							recommended: matched.option.recommended === true,
+						})
+					}
+				}
+				return answers
+			}
+
+			// Outer loop: supports "Restart questions".
+			while (true) {
+				const answersResult = await runQuestions()
+
+				if (answersResult === "cancelled") {
+					return planToolOk("Question flow cancelled. Waiting for your next instruction.")
+				}
+				if (typeof answersResult === "object" && "kind" in answersResult) {
+					return planToolOk(`Question Q${answersResult.qn} dismissed. Waiting for your next instruction.`)
+				}
+
+				const answers = answersResult
+
+				const answersEntry = buildAnswersEntry(questions, answers)
+				const allRecommended = answers.every((a) => a.recommended === true)
+				const continueLabel = allRecommended ? "Start execution  ✓" : "Update plan  ✓"
+				const reviewOptions = [continueLabel, "Restart questions", "Let me say something"]
+
+				const reviewTitle = allRecommended
+					? `${formatPlanEntry(answersEntry)}\n\nProceed with this plan?`
+					: `${answersEntry}\n\nUpdate the plan with these answers?`
+				const reviewChoice = await promptSelect(ctx, reviewTitle, reviewOptions)
+
+				if (reviewChoice === undefined) {
+					return planToolOk("Review dismissed. Waiting for your next instruction.")
+				}
+				if (reviewChoice === "Restart questions") {
+					// Loop back to per-question screens.
+					continue
+				}
+
+				if (reviewChoice === "Let me say something") {
+					const userText = await promptInput(ctx, "Your direction:", "")
+					if (!userText) {
+						return planToolOk(`${answersEntry}\n\nNo changes made. Waiting for your next instruction.`)
+					}
+					const sayMoreContent = `User said: ${userText}. Re-run propose_scoping incorporating this direction.`
+					void pi.sendMessage(
+						{ content: sayMoreContent, customType: "ferment_scoping_iteration", display: false },
+						{ triggerTurn: true },
+					)
+					return planToolOk(`${answersEntry}\n\nGot it. Updating the plan with your direction...`)
+				}
+
+				// Start immediately only when the user accepted every recommendation.
+				if (allRecommended) {
+					const scopeOutcome = confirmPendingScope(
+						runtime,
+						params.ferment_id,
+						params.phases,
+						"propose_scoping",
+						params.title,
+						pi,
+					)
+					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
+					return planToolOk(
+						`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
+						{ includePlan: true, suffix: answersEntry },
+					)
+				}
+
+				const content = buildScopingIterationMessage(questions, answers)
+				void pi.sendMessage({ content, customType: "ferment_scoping_iteration", display: false }, { triggerTurn: true })
+				return planToolOk(`${answersEntry}\n\nAnswers recorded. Updating the plan with your choices...`)
+			}
 		},
 	})
 
@@ -405,11 +862,17 @@ ${renderGateGuidance("scope_ferment")}`,
 	pi.registerTool({
 		name: "update_scope_field",
 		label: "Update Scope Field",
-		description: "Revise a single scoping field (goal, criteria, constraints) on an already-planned ferment.",
+		description:
+			"Revise a single scoping field (goal, criteria, constraints, assumptions) on an already-planned ferment.",
 		parameters: UpdateScopeFieldParams,
 		async execute(_, params) {
-			if (params.field !== "goal" && params.field !== "criteria" && params.field !== "constraints") {
-				return toolErr(`Unknown field: ${params.field}. Use goal, criteria, or constraints.`)
+			if (
+				params.field !== "goal" &&
+				params.field !== "criteria" &&
+				params.field !== "constraints" &&
+				params.field !== "assumptions"
+			) {
+				return toolErr(`Unknown field: ${params.field}. Use goal, criteria, constraints, or assumptions.`)
 			}
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "update_scope_field",

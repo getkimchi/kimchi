@@ -195,6 +195,56 @@ describe("applyCommand: scope", () => {
 		expect(f.status).toBe("draft")
 		expect(f.phases).toEqual([])
 	})
+
+	it("scope command persists assumptions when provided", () => {
+		const result = expectOk(
+			applyCommand(
+				makeFerment(),
+				{
+					type: "scope",
+					goal: "g",
+					successCriteria: "sc",
+					constraints: ["c"],
+					assumptions: "k8s cluster exists",
+					phases: [{ name: "P1", goal: "g1", steps: [{ description: "s1" }] }],
+				},
+				ctx,
+			),
+		)
+		expect(result.scoping.assumptions?.answer).toBe("k8s cluster exists")
+		expect(result.scoping.assumptions?.confirmedAt).toBe(NOW)
+	})
+
+	it("scope command omits assumptions when not provided", () => {
+		const result = expectOk(
+			applyCommand(
+				makeFerment(),
+				{
+					type: "scope",
+					goal: "g",
+					phases: [{ name: "P1", goal: "g1", steps: [{ description: "s1" }] }],
+				},
+				ctx,
+			),
+		)
+		expect(result.scoping.assumptions).toBeUndefined()
+	})
+
+	it("scope command omits assumptions when empty string", () => {
+		const result = expectOk(
+			applyCommand(
+				makeFerment(),
+				{
+					type: "scope",
+					goal: "g",
+					assumptions: "",
+					phases: [{ name: "P1", goal: "g1", steps: [{ description: "s1" }] }],
+				},
+				ctx,
+			),
+		)
+		expect(result.scoping.assumptions).toBeUndefined()
+	})
 })
 
 // ─── update_scope_field ───────────────────────────────────────────────────────
@@ -236,6 +286,27 @@ describe("applyCommand: update_scope_field", () => {
 			),
 		)
 		expect(error.code).toBe("INVALID_FIELD")
+	})
+
+	it("update_scope_field assumptions writes scoping.assumptions", () => {
+		// First scope the ferment so it is in "planned" state with no assumptions,
+		// then apply update_scope_field to write assumptions.
+		const scoped = expectOk(
+			applyCommand(
+				makeFerment(),
+				{
+					type: "scope",
+					goal: "g",
+					phases: [{ name: "P1", goal: "g1", steps: [{ description: "s1" }] }],
+				},
+				ctx,
+			),
+		)
+		const result = expectOk(
+			applyCommand(scoped, { type: "update_scope_field", field: "assumptions", value: "new assumption" }, ctx),
+		)
+		expect(result.scoping.assumptions?.answer).toBe("new assumption")
+		expect(result.scoping.assumptions?.confirmedAt).toBe(NOW)
 	})
 })
 

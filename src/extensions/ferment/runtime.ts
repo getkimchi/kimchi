@@ -1,11 +1,10 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import type { FermentEventStore } from "../../ferment/event-store.js"
-import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
-import type { PendingScope } from "./scoping.js"
+import type { AttachPendingProposalPartial, PendingScope } from "./scoping.js"
 import {
-	attachPendingPhases,
+	attachPendingProposal,
 	clearAllPendingScopes,
 	clearPendingScope,
 	getPendingScope,
@@ -16,14 +15,12 @@ import {
 	bumpStepCompleteAttempt,
 	bumpStepStart,
 	captureJudgeContext,
-	clearAllAfterScopeContinuations,
 	clearAllScopingGates,
 	clearAllStepStarts,
 	clearBlockRetry,
 	clearFermentState,
 	clearStepCompleteAttempt,
 	clearStepStart,
-	consumeAfterScopeContinuation,
 	consumeScopingGate,
 	getActive,
 	getActiveId,
@@ -32,11 +29,9 @@ import {
 	getPhaseStartRef,
 	getStepStartRef,
 	getStorage,
-	hasAfterScopeContinuation,
 	isAutoModeEnabled,
 	isScopingConfirmed,
 	isScopingInteractive,
-	markAfterScopeContinuation,
 	markHumanInput,
 	markScopingConfirmed,
 	markScopingInteractive,
@@ -68,13 +63,9 @@ export interface FermentRuntime {
 	isScopingConfirmed(fermentId: string): boolean
 	consumeScopingGate(fermentId: string): void
 	clearAllScopingGates(): void
-	markAfterScopeContinuation(fermentId: string): void
-	hasAfterScopeContinuation(fermentId: string): boolean
-	consumeAfterScopeContinuation(fermentId: string): boolean
-	clearAllAfterScopeContinuations(): void
 	getPendingScope(fermentId: string): PendingScope | undefined
 	setPendingScope(fermentId: string, scope: PendingScope): void
-	attachPendingPhases(fermentId: string, phases: ScopePhaseInput[]): boolean
+	attachPendingProposal(fermentId: string, partial: AttachPendingProposalPartial): boolean
 	clearPendingScope(fermentId: string): void
 	clearAllPendingScopes(): void
 	setPhaseStartRef(fermentId: string, phaseId: string, ref: string): void
@@ -112,13 +103,9 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		isScopingConfirmed,
 		consumeScopingGate,
 		clearAllScopingGates,
-		markAfterScopeContinuation,
-		hasAfterScopeContinuation,
-		consumeAfterScopeContinuation,
-		clearAllAfterScopeContinuations,
 		getPendingScope,
 		setPendingScope,
-		attachPendingPhases,
+		attachPendingProposal,
 		clearPendingScope,
 		clearAllPendingScopes,
 		setPhaseStartRef,

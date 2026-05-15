@@ -94,6 +94,7 @@ export function formatScopingContext(f: Ferment): string {
 	if (f.scoping.goal) lines.push(`Goal: ${f.scoping.goal.answer}`)
 	if (f.scoping.criteria) lines.push(`Success criteria: ${f.scoping.criteria.answer}`)
 	if (f.scoping.constraints) lines.push(`Constraints: ${f.scoping.constraints.answer}`)
+	if (f.scoping.assumptions) lines.push(`Assumptions: ${f.scoping.assumptions.answer}`)
 	return lines.length > 0 ? `## Ferment Specification\n${lines.join("\n")}` : ""
 }
 

@@ -4,8 +4,9 @@ import { registerAgents } from "../agents/personas/agent-types.js"
 import { buildPlannerSupplement } from "./planner-supplement.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 
-function makeRuntime(): FermentRuntime {
-	const now = "2026-01-01T00:00:00.000Z"
+const NOW = "2026-01-01T00:00:00.000Z"
+
+function makeRuntime(fermentOverrides: Partial<Ferment> = {}): FermentRuntime {
 	const ferment: Ferment = {
 		id: "ferment-1",
 		name: "Runtime Plan",
@@ -32,18 +33,26 @@ function makeRuntime(): FermentRuntime {
 							severity: "major",
 						},
 					],
-					gradedAt: now,
+					gradedAt: NOW,
 				},
 			},
 		],
 		decisions: [],
 		memories: [],
-		createdAt: now,
-		updatedAt: now,
+		createdAt: NOW,
+		updatedAt: NOW,
+		...fermentOverrides,
 	}
 	return {
 		...createDefaultFermentRuntime(),
 		getActive: () => ferment,
+	}
+}
+
+function makeNoActiveFermentRuntime(): FermentRuntime {
+	return {
+		...createDefaultFermentRuntime(),
+		getActive: () => undefined,
 	}
 }
 
@@ -82,5 +91,31 @@ describe("buildPlannerSupplement", () => {
 		expect(supplement).toContain("extra CLI argument")
 		expect(supplement).toContain("config option")
 		expect(supplement).toContain("flexible interface")
+	})
+
+	it("includes the Upfront Contract directive when there is an active ferment", () => {
+		const supplement = buildPlannerSupplement(makeRuntime())
+
+		expect(supplement).toContain("Upfront Contract")
+		expect(supplement).toContain("Do not ask the user to confirm")
+	})
+
+	it("omits the Upfront Contract directive when there is no active ferment", () => {
+		const supplement = buildPlannerSupplement(makeNoActiveFermentRuntime())
+
+		expect(supplement).not.toContain("Upfront Contract")
+	})
+
+	it("Upfront Contract mentions propose_scoping AND emphasises emitting questions for vague intents AND 'recommended: true' AND 'no reason text'", () => {
+		const supplement = buildPlannerSupplement(makeRuntime())
+
+		expect(supplement).toContain("propose_scoping")
+		expect(supplement).toContain("Emit clarifying questions when the user's intent is short, vague")
+		expect(supplement).toContain("recommended: true")
+		expect(supplement).toContain("reason text")
+		expect(supplement).toContain("markdown style")
+		expect(supplement).toContain("Ask follow-up questions only for genuinely new")
+		expect(supplement).toContain("Never repeat, rephrase")
+		expect(supplement).toContain('After `propose_scoping` returns "Plan saved"')
 	})
 })

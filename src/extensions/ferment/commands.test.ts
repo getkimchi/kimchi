@@ -77,6 +77,37 @@ describe("FermentCommandController", () => {
 		)
 	})
 
+	it("echoes the interactive request before starting the hidden scoping turn", async () => {
+		const h = createHarness()
+		const controller = new FermentCommandController()
+		const ctx = {
+			hasUI: true,
+			ui: {
+				notify: vi.fn(),
+				input: vi.fn().mockResolvedValueOnce("make the todo app glassy"),
+				select: vi.fn().mockResolvedValue("No, I know what I'm doing"),
+			},
+		} as unknown as ExtensionCommandContext
+
+		const result = await controller.execute({ type: "interactive" }, { raw: "", pi: h.pi, ctx, runtime: h.runtime })
+
+		expect(result).toEqual({ handled: true })
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_request",
+				display: true,
+				details: { intent: "make the todo app glassy" },
+			}),
+		)
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_created_nudge",
+				content: [expect.objectContaining({ text: expect.stringContaining("make the todo app glassy") })],
+			}),
+			{ triggerTurn: true },
+		)
+	})
+
 	it("returns a structured handled result for headless list output", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
