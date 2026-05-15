@@ -34,7 +34,7 @@ type SegmentId =
  *  so the compaction step can slice it off in place. Cheaper than a rebuild
  *  and the segment's tail is identical in both forms anyway. */
 type SegmentRaw =
-	| { kind: "context"; percent: number }
+	| { kind: "context"; percent: number; pctColor?: "error" | "warning" }
 	| { kind: "multi-model"; enabled: boolean }
 	| { kind: "phase"; phase: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
@@ -66,6 +66,8 @@ interface CompactionContext {
 	/** Theme accessors so steps can rebuild colorized text when shortening. */
 	dim: (s: string) => string
 	accent: (s: string) => string
+	/** Apply a named semantic color (e.g. "error", "warning") to a string. */
+	semantic: (color: string, s: string) => string
 	/** Set to `false` once the command hint should no longer be appended. */
 	showCommandHint: boolean
 }
@@ -175,15 +177,15 @@ const BAR_WIDTH = 16
 /** Compact form builders */
 
 /** Compact form for the context segment: drops the bar, keeps `N% ctx`. */
-export function buildContextCompact(ctx: CompactionContext, percent: number): Segment {
-	const pctStr = ctx.accent(`${Math.round(percent)}%`)
+export function buildContextCompact(ctx: CompactionContext, percent: number, pctColor?: "error" | "warning"): Segment {
+	const pctStr = pctColor ? ctx.semantic(pctColor, `${Math.round(percent)}%`) : ctx.accent(`${Math.round(percent)}%`)
 	const ctxStr = ctx.dim("ctx")
 	const text = `${pctStr} ${ctxStr}`
 	return {
 		id: "context",
 		text,
 		width: visibleWidth(text),
-		raw: { kind: "context", percent },
+		raw: { kind: "context", percent, pctColor },
 	}
 }
 
@@ -278,7 +280,8 @@ const STEPS: CompactionStep[] = [
 	},
 	{
 		name: "drop-context-bar",
-		apply: (segs, ctx) => recompactSegment(segs, "context", "context", (raw) => buildContextCompact(ctx, raw.percent)),
+		apply: (segs, ctx) =>
+			recompactSegment(segs, "context", "context", (raw) => buildContextCompact(ctx, raw.percent, raw.pctColor)),
 	},
 	{
 		name: "abbrev-multi-model-label",
@@ -373,7 +376,8 @@ export class StatsFooter implements Component {
 
 	private modelSegment(): Segment {
 		const modelId = this.ctx.model?.id ?? "n/a"
-		return { id: "model", text: this.accent(modelId), width: visibleWidth(modelId) }
+		const text = this.accent(modelId)
+		return { id: "model", text, width: visibleWidth(text) }
 	}
 
 	private usageSegment(): Segment | null {
@@ -407,7 +411,7 @@ export class StatsFooter implements Component {
 			? `${resolvedSemanticFg(this.theme, pctColor)}${Math.round(pct)}%${RST_FG}`
 			: this.accent(`${Math.round(pct)}%`)
 		const text = `${bar} ${pctStr} ${this.dim("ctx")}`
-		return { id: "context", text, width: visibleWidth(text), raw: { kind: "context", percent: pct } }
+		return { id: "context", text, width: visibleWidth(text), raw: { kind: "context", percent: pct, pctColor } }
 	}
 
 	private phaseSegment(): Segment {
@@ -532,6 +536,8 @@ export class StatsFooter implements Component {
 		const ctx: CompactionContext = {
 			dim: (s) => this.dim(s),
 			accent: (s) => this.accent(s),
+			semantic: (color, s) =>
+				`${resolvedSemanticFg(this.theme, color as "success" | "warning" | "error")}${s}${RST_FG}`,
 			showCommandHint: true,
 		}
 
@@ -541,7 +547,7 @@ export class StatsFooter implements Component {
 		return infoLine ? [infoLine, line] : [line]
 	}
 
-	buildInfoLine(width: number): string {
+	private buildInfoLine(width: number): string {
 		let line = ""
 		const permissionsWarningText = this.permissionsWarning()
 		const updateSeg = this.updateAvailableSegment()

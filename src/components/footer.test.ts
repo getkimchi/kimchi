@@ -94,6 +94,7 @@ function stubPlatform(value: NodeJS.Platform): () => void {
 const compactCtx = {
 	dim: (s: string) => s,
 	accent: (s: string) => s,
+	semantic: (name: string, s: string) => `[${name}:${s}]`,
 	showCommandHint: true,
 }
 
@@ -104,7 +105,7 @@ describe("compact-form builders", () => {
 			expect(seg.id).toBe("context")
 			expect(seg.text).toBe("13% ctx")
 			expect(seg.width).toBe(7)
-			expect(seg.raw).toEqual({ kind: "context", percent: 13 })
+			expect(seg.raw).toEqual({ kind: "context", percent: 13, pctColor: undefined })
 			expect(seg.text).not.toContain("\u2588")
 			expect(seg.text).not.toContain("\u2591")
 		})
@@ -117,6 +118,57 @@ describe("compact-form builders", () => {
 		it("handles 0%", () => {
 			const seg = buildContextCompact(compactCtx, 0)
 			expect(seg.text).toBe("0% ctx")
+		})
+
+		it("preserves warning color at 75%", () => {
+			const seen: Array<[string, string]> = []
+			const ctx = {
+				...compactCtx,
+				semantic: (name: string, s: string) => {
+					seen.push([name, s])
+					return `[${name}:${s}]`
+				},
+			}
+			const seg = buildContextCompact(ctx, 75, "warning")
+			expect(seg.text).toBe("[warning:75%] ctx")
+			expect(seen).toEqual([["warning", "75%"]])
+			expect(seg.raw).toEqual({ kind: "context", percent: 75, pctColor: "warning" })
+		})
+
+		it("preserves error color at 95%", () => {
+			const seen: Array<[string, string]> = []
+			const ctx = {
+				...compactCtx,
+				semantic: (name: string, s: string) => {
+					seen.push([name, s])
+					return `[${name}:${s}]`
+				},
+			}
+			const seg = buildContextCompact(ctx, 95, "error")
+			expect(seg.text).toBe("[error:95%] ctx")
+			expect(seen).toEqual([["error", "95%"]])
+			expect(seg.raw).toEqual({ kind: "context", percent: 95, pctColor: "error" })
+		})
+
+		it("falls back to accent when no semantic color", () => {
+			const seenAccent: string[] = []
+			const seenSemantic: Array<[string, string]> = []
+			const ctx = {
+				...compactCtx,
+				accent: (s: string) => {
+					seenAccent.push(s)
+					return `[accent:${s}]`
+				},
+				semantic: (name: string, s: string) => {
+					seenSemantic.push([name, s])
+					return `[${name}:${s}]`
+				},
+			}
+			const seg = buildContextCompact(ctx, 50)
+			expect(seg.text).toBe("[accent:50%] ctx")
+			expect(seenAccent).toEqual(["50%"])
+			expect(seenSemantic).toEqual([])
+			expect(seg.raw).toEqual({ kind: "context", percent: 50, pctColor: undefined })
 		})
 	})
 
@@ -285,6 +337,12 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		expect(visible).not.toContain("/ for commands")
 		expect(visible).not.toContain("shift+tab")
 		expect(visible).not.toContain("option+tab")
+		// multi-model label is abbreviated to `m-m:`.
+		expect(visible).toContain("m-m:")
+		expect(visible).not.toContain("multi-model:")
+		// phase prefix is dropped; value survives.
+		expect(visible).toContain("explore")
+		expect(visible).not.toContain("phase:")
 		// The model is the highest-priority segment and should survive.
 		expect(visible).toContain("claude-opus-4-7")
 	})
@@ -311,7 +369,7 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 	it("never overflows when phase contains wide (CJK) characters", () => {
 		// CJK characters are single code units but take TWO visible columns.
 		// This is the case `visibleWidth` catches and `.length` would miss.
-		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("\u63a2\u7d22\u4e2d")
+		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("\u63a2\u7d22\u4e2d" as ReturnType<typeof TAGS.getCurrentPhase>)
 		for (const w of [200, 100, 60, 40, 20]) {
 			const { raw } = renderAt(w)
 			expect(visibleWidth(raw), `width=${w}`).toBeLessThanOrEqual(w)
