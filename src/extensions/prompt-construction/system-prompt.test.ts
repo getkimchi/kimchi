@@ -80,6 +80,17 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain('<tool name="subagent">')
 		})
 
+		it("does not include phase tagging instructions without the tags extension", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "orchestrator",
+			})
+
+			expect(result).not.toContain("Phase Tagging for Analytics")
+			expect(result).not.toContain("You must call `set_phase`")
+		})
+
 		it("handles empty tools list", () => {
 			const result = buildSystemPrompt({
 				tools: [],

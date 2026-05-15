@@ -120,10 +120,6 @@ const CORE_GUIDELINES = `- Be concise in your responses. Do not restate what you
 - After every tool result, ALWAYS produce text — either the next tool call with explicit reasoning, or a final summary. Never re-issue the same tool call after a successful result.
 - Never emit tool calls with empty names, blank IDs, or malformed arguments. If a tool call fails to advance the task after 3 attempts, stop calling tools, summarize what is not working, and reassess in plain text before continuing.`
 
-const PHASE_TAGGING = `
-You must call \`set_phase\` before every block of work. Never take an action without the correct phase being set first. Use one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\` strictly matching current work type.
-The session starts in \`explore\` phase by default. Call \`set_phase\` immediately when your work type changes. Only one phase is active at a time — the most recent call wins.`
-
 const FACTUAL_ACCURACY = `
 - Never guess, assume, or fabricate information. Every claim you make must be backed by data you concretely obtained during this session. Do NOT escalate to escalation for minor issues or blame the user for poor request phrasing.
 - "I don't know" is a valid answer. When requirements, specifications, or factual details are not available through your tools or the user's messages, state that clearly and ask the user to provide them. Do not fill the gap with plausible-sounding content.
@@ -143,7 +139,6 @@ function buildPrompt(parts: PromptParts): string {
 	sections.push(`## Documents\n\n${DOCUMENTS_SECTION}`)
 	sections.push(`## Guidelines\n\n${CORE_GUIDELINES}`)
 	sections.push(`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`)
-	sections.push(`## Phase Tagging for Analytics\n\n${PHASE_TAGGING}`)
 	sections.push(`## Tool and MCP Discovery\n\n${TOOL_DISCOVERY}`)
 
 	if (!parts.suppressed.has("orchestration") && parts.orchestrationSection) {
