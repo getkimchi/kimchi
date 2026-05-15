@@ -21,7 +21,6 @@ import { getAllImages, getImagesByIds, parseImageReferences } from "../utils/ima
 import { formatCount, formatDuration } from "./format.js"
 import { filterThinkingForDisplay } from "./hide-thinking.js"
 import { type SpinnerState, clearSpinner, spinnerFrame, tickSpinner } from "./spinner.js"
-import { HORIZONTAL_PADDING } from "./ui.js"
 
 function modelSupportsImages(modelId: string | undefined): boolean {
 	if (!modelId) return false
@@ -1073,7 +1072,7 @@ export default function (pi: ExtensionAPI) {
 				const toolCall = state.lastToolCall
 				let partialDisplayText: string
 				let displayStyle: "dim" | "toolOutput"
-				const terminalWidth = Math.max(1, (process.stdout.columns ?? 80) - HORIZONTAL_PADDING * 2)
+				const terminalWidth = process.stdout.columns ?? 80
 				if (toolCall) {
 					const truncated = truncateToWidth(`> ${toolCall}`, terminalWidth * 5)
 					const toolCallVisualLines = wrapTextWithAnsi(truncated, terminalWidth)

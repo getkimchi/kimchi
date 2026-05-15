@@ -36,22 +36,6 @@ function getEnabledModelIds(): Set<string> | null {
 	return null
 }
 
-export const HORIZONTAL_PADDING = 2
-
-// Strip OSC 133 shell-integration marks emitted by pi-mono around each message.
-// iTerm2 renders a visible blue triangle at each mark, which is noisy in the TUI.
-// biome-ignore lint/suspicious/noControlCharactersInRegex: matching ANSI/OSC
-const OSC133_RE = /\x1b]133;[A-Z]\x07/g
-
-function patchTuiPadding(tui: TUI) {
-	const original = tui.render.bind(tui)
-	const pad = " ".repeat(HORIZONTAL_PADDING)
-	tui.render = (width: number): string[] => {
-		const lines = original(Math.max(1, width - HORIZONTAL_PADDING * 2))
-		return lines.map((line: string) => pad + line.replace(OSC133_RE, ""))
-	}
-}
-
 // Track splash state globally so other extensions can reset it
 let splashActive = false
 let currentEditor: PromptEditor | undefined
@@ -132,7 +116,6 @@ function runScript(scriptPath: string, payload: object, tui: TUI, footer: Script
 }
 
 export default function uiExtension(pi: ExtensionAPI) {
-	let tuiPatched = false
 	let unsubModelCycleInput: (() => void) | null = null
 	let scriptFooter: ScriptFooter | null = null
 	let scriptTui: TUI | null = null
@@ -211,10 +194,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 		})
 
 		ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
-			if (!tuiPatched) {
-				tuiPatched = true
-				patchTuiPadding(tui)
-			}
 			tui.setShowHardwareCursor(true)
 			const editor = new PromptEditor(tui, editorTheme, keybindings, ctx.ui.theme)
 			editor.setSplashMode(isSplash)
