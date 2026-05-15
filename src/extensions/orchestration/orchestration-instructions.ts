@@ -186,18 +186,6 @@ Your final response must be a single JSON object with no other text before or af
 
 Write all substantive output (plans, specs, research notes, findings) to files in the Documents directory — never inline in the summary. Do NOT add any text before or after the JSON. Do NOT wrap it in a markdown code fence.`
 
-const FACTUAL_ACCURACY = `## Factual Accuracy
-
-- Never guess, assume, or fabricate information. Every claim you make must be backed by data you concretely obtained during this session. Do NOT escalate to escalation for minor issues or blame the user for poor request phrasing.
-- "I don't know" is a valid answer. When requirements, specifications, or factual details are not available through your tools or the user's messages, state that clearly and ask the user to provide them. Do not fill the gap with plausible-sounding content.
-- Distinguish what you found from what you assume. If you must reason about something uncertain, label it explicitly as an assumption and ask the user to confirm before acting on it.`
-
-const TOOL_DISCOVERY = `## Tool and MCP Discovery
-
-- Before resorting to web search, web fetch, or giving up on accessing external data, check your Available Tools list for a more direct way to get the information. MCP (Model Context Protocol) integrations often provide authenticated access to services like Jira, Confluence, GitHub, GitLab, and others that are inaccessible via unauthenticated web requests.
-- If you see an mcp tool in your tool list, use mcp({ search: "query" }) to discover what MCP servers and tools are available before assuming you have no way to access a service.
-- Prefer MCP tools over web_fetch for any service that requires authentication (Jira, Confluence, internal wikis, etc.). MCP tools already have credentials configured.`
-
 function resolveSubagentInstructions(): string {
-	return [SUBAGENT_RESPONSE_PROTOCOL, FACTUAL_ACCURACY, TOOL_DISCOVERY].join("\n\n")
+	return [SUBAGENT_RESPONSE_PROTOCOL].join("\n\n")
 }

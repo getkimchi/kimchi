@@ -194,11 +194,21 @@ Compute and present:
 
 ### Step 3: Write the Audit Report
 
-Write the full audit report to: `.kimchi/audits/{auditFilename}`
+Write the audit report to: `.kimchi/audits/{auditFilename}`
 
 Create the `.kimchi/audits/` directory if it does not exist.
 
-Use this format:
+**IMPORTANT — Write in chunks:** Do NOT attempt to write the entire report in a single tool call. Large writes can cause socket timeouts. Instead, write the report across multiple sequential tool calls:
+
+1. **Write** the file with the header, summary table, and phase timeline (Step 3a)
+2. **Append** the detailed findings for each dimension (Step 3b)
+3. **Append** tool usage, improvements, and recommendations (Step 3c)
+
+Use the following format, split across the writes described above.
+
+#### Step 3a — Write header, summary, and phase timeline
+
+Write a new file at `.kimchi/audits/{auditFilename}` containing:
 
 ```markdown
 # Session Phase Audit: {sessionId}
@@ -237,7 +247,13 @@ Use this format:
 | 1 | explore | HH:MM | HH:MM | Xm | model-id | N | $X |
 | 2 | plan | HH:MM | HH:MM | Xm | model-id | N | $X |
 | ... | | | | | | | |
+```
 
+#### Step 3b — Append detailed findings
+
+Append to the same file. Write one section per dimension:
+
+```markdown
 ## Detailed Findings
 
 ### Phase Discipline — Grade: X
@@ -273,7 +289,13 @@ Use this format:
 ### Cost Analysis
 
 (Full tables from Step 2.6)
+```
 
+#### Step 3c — Append tool usage, improvements, and recommendations
+
+Append to the same file:
+
+```markdown
 ## Tool Usage by Phase
 
 | Tool | explore | research | plan | build | review | Total |
@@ -301,8 +323,6 @@ Use this format:
 - Were any phases skipped that should have been used?
 - Were any phases used that added no value?
 ```
-
-After writing the artifact, say: "Audit complete for session {sessionId}. Report at .kimchi/audits/{auditFilename}"
 
 ---
 
@@ -469,9 +489,7 @@ Summary:
 
 ### Step 11: Write the JSON Sidecar
 
-Append the following fenced JSON block to the audit report (after the markdown content). This is the machine-readable sidecar for automated comparison between experiment runs.
-
-After the markdown content and before the "Audit complete" message, append:
+**Append** the following fenced JSON block to the audit report file (after the markdown content). This is the machine-readable sidecar for automated comparison between experiment runs. Write this as a separate append operation — do NOT combine it with any markdown write.
 
 \`\`\`json
 {
@@ -536,4 +554,4 @@ After the markdown content and before the "Audit complete" message, append:
 }
 \`\`\`
 
-After writing the artifact (both markdown and JSON), say: "Audit complete for session {sessionId}. Report at .kimchi/audits/{auditFilename}"
+After writing the JSON sidecar, say: "Audit complete for session {sessionId}. Report at .kimchi/audits/{auditFilename}"
