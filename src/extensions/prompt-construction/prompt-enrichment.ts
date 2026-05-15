@@ -21,14 +21,14 @@
  */
 
 import { execSync } from "node:child_process"
-import { existsSync, readFileSync } from "node:fs"
+import { randomUUID } from "node:crypto"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir, platform, userInfo } from "node:os"
 import { isAbsolute, join, normalize, resolve } from "node:path"
-import type { AssistantMessage, ImageContent, TextContent } from "@earendil-works/pi-ai"
+import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { ANSI, fg } from "../../ansi.js"
-import { getCurrentPhase } from "../../extensions/tags.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
@@ -40,19 +40,11 @@ import {
 	NUDGE_CUSTOM_TYPE,
 	type OrchestratorMessages,
 	stripStaleNudges,
-} from "./continuation-nudge.js"
-import { ModelRegistry } from "./model-registry/index.js"
-import type { Phase } from "./model-registry/types.js"
-import { type ContextFile, loadProjectContextFiles } from "./prompt-transformer/context-files.js"
-import {
-	type EnvironmentInfo,
-	type PromptContext,
-	buildOrchestratorSystemPrompt,
-	buildSingleModelSystemPrompt,
-	buildSubagentSystemPrompt,
-	isSubagent,
-	transformPrompt,
-} from "./prompt-transformer/prompt-transformer.js"
+} from "../orchestration/continuation-nudge.js"
+import { ModelRegistry } from "../orchestration/model-registry/index.js"
+import { getCurrentPhase } from "../tags.js"
+import { type ContextFile, loadProjectContextFiles } from "./context-files.js"
+import { type EnvironmentInfo, type PromptMode, type ToolInfo, buildSystemPrompt } from "./system-prompt.js"
 
 function expandSkillPaths(configuredPaths: string[], cwd: string): string[] {
 	const home = homedir()
@@ -127,34 +119,6 @@ let multiModelEnabled = readMultiModelArgv()
 // macOS terminals send the legacy escape sequence \x1b\t for Option+Tab
 // instead of the Kitty protocol / CSI-u sequences handled by matchesKey()
 const LEGACY_MACOS_ALT_TAB_SEQUENCE = "\x1b\t"
-
-const ENRICHED_PROMPT_CUSTOM_TYPE = "enriched-prompt"
-
-/**
- * Tracks which model and phase last received an enriched-prompt injection so
- * the capabilities block is only sent once per (model, phase) pair, not on
- * every user turn. Re-injects when either the model or the active phase
- * changes, keeping guidelines up to date for both transitions.
- */
-export class EnrichmentGuard {
-	private lastModelId: string | null = null
-	private lastPhase: string | null = null
-
-	/** Returns true if enrichment should be injected for this (model, phase) pair. */
-	shouldEnrich(modelId: string, phase?: string): boolean {
-		const phaseKey = phase ?? null
-		if (modelId === this.lastModelId && phaseKey === this.lastPhase) return false
-		this.lastModelId = modelId
-		this.lastPhase = phaseKey
-		return true
-	}
-
-	/** Resets the guard, e.g. when multi-model is toggled off and back on. */
-	reset(): void {
-		this.lastModelId = null
-		this.lastPhase = null
-	}
-}
 
 /**
  * Shape of a tool-call content block as emitted in assistant messages.
@@ -233,28 +197,12 @@ export function stripEmptyToolCalls(messages: OrchestratorMessages): Orchestrato
 	return changed ? filtered : messages
 }
 
-export function deduplicateEnrichedPrompts(messages: OrchestratorMessages): OrchestratorMessages {
-	const lastIdx = messages.findLastIndex(
-		(m) =>
-			m.role === "custom" &&
-			"customType" in m &&
-			(m as { customType: string }).customType === ENRICHED_PROMPT_CUSTOM_TYPE,
-	)
-	if (lastIdx === -1) return messages
-	const filtered = messages.filter(
-		(m, i) =>
-			i === lastIdx ||
-			!(
-				m.role === "custom" &&
-				"customType" in m &&
-				(m as { customType: string }).customType === ENRICHED_PROMPT_CUSTOM_TYPE
-			),
-	)
-	return filtered.length === messages.length ? messages : filtered
-}
-
 export function getMultiModelEnabled(): boolean {
 	return multiModelEnabled
+}
+
+export function isSubagent(): boolean {
+	return process.env.KIMCHI_SUBAGENT === "1"
 }
 
 export default function (skillPaths: string[]) {
@@ -264,7 +212,7 @@ export default function (skillPaths: string[]) {
 		pi.registerFlag("debug-prompts", {
 			type: "boolean",
 			description: "Print enriched prompts in the UI (default: hidden)",
-			default: false,
+			default: process.env.KIMCHI_DEBUG_PROMPTS === "1",
 		})
 
 		pi.registerFlag("multi-model", {
@@ -281,10 +229,6 @@ export default function (skillPaths: string[]) {
 			let unsubAltTab: (() => void) | null = null
 			pi.on("session_start", async (_event, ctx) => {
 				if (unsubAltTab) unsubAltTab()
-				// Reset so the first turn of every session always re-injects the
-				// enriched prompt, even when model and phase are unchanged from the
-				// previous session (e.g. same model, session always starts in explore).
-				enrichmentGuard.reset()
 				if (ctx.hasUI) {
 					unsubAltTab = ctx.ui.onTerminalInput((data) => {
 						if (matchesKey(data, "alt+tab") || data === LEGACY_MACOS_ALT_TAB_SEQUENCE) {
@@ -311,8 +255,6 @@ export default function (skillPaths: string[]) {
 			// circuits the input-handler chain.
 			const continuationNudge = new ContinuationNudge()
 			const emptyTurnNudge = new EmptyTurnNudge()
-			const enrichmentGuard = new EnrichmentGuard()
-
 			pi.on("input", async (event) => {
 				if (event.source === "extension") {
 					// Subagent result arriving. Clear the subagent-pending flag so the
@@ -374,69 +316,14 @@ export default function (skillPaths: string[]) {
 				)
 			})
 
-			pi.on("input", async (event, ctx) => {
-				if (event.source === "extension") {
-					return { action: "continue" as const }
-				}
-
-				// Steering and follow-up messages arrive while the agent is streaming
-				// (ctx.isIdle() === false, i.e. session.isStreaming === true).
-				// Skip enrichment and let them pass through unchanged
-				if (!ctx.isIdle()) {
-					return { action: "continue" as const }
-				}
-
-				if (!multiModelEnabled) {
-					return { action: "continue" as const }
-				}
-
-				const currentModel = ctx.model ? { id: ctx.model.id, name: ctx.model.id } : undefined
-				const currentModelId = currentModel?.id ?? ""
-
-				// Only inject capabilities on the first turn or when the model or phase
-				// changes. Re-injecting every turn accumulates duplicate capability blocks
-				// in the context window, inflating token usage and confusing the model.
-				if (!enrichmentGuard.shouldEnrich(currentModelId, getCurrentPhase())) {
-					return { action: "continue" as const }
-				}
-
-				// Non-interactive (--print/--mode rpc) and debug-prompts mode: replace the user
-				// text inline. The "handled" + sendUserMessage path below relies on the TUI event
-				// loop staying alive long enough for the queued message to drain — in --print mode
-				// the loop returns as soon as session.prompt resolves and disposeRuntime cancels
-				// the in-flight LLM call, so nothing is ever sent. Transforming inline lets the
-				// caller's await session.prompt(enrichedPrompt) do the work synchronously.
-				const debugPrompts = pi.getFlag("debug-prompts") === true
-				if (debugPrompts || !ctx.hasUI) {
-					const enrichedPrompt = transformPrompt(event.text, registry, currentModel)
-					return { action: "transform" as const, text: enrichedPrompt, images: event.images }
-				}
-
-				// In UI mode the original user message is sent separately via sendUserMessage,
-				// so the task text must not be duplicated inside the enriched-prompt header.
-				const enrichedPrompt = transformPrompt(event.text, registry, currentModel, false)
-				pi.sendMessage(
-					{
-						customType: ENRICHED_PROMPT_CUSTOM_TYPE,
-						content: [{ type: "text", text: enrichedPrompt }],
-						display: false,
-					},
-					{ deliverAs: "nextTurn" },
-				)
-				const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: event.text }]
-				if (event.images) userContent.push(...event.images)
-				pi.sendUserMessage(userContent)
-
-				return { action: "handled" as const }
-			})
-
 			pi.on("context", async (event) => {
 				let messages = stripStaleNudges(event.messages)
-				messages = deduplicateEnrichedPrompts(messages)
 				messages = stripEmptyToolCalls(messages)
 				if (messages !== event.messages) return { messages }
 			})
-		} else {
+		}
+
+		if (subagentMode) {
 			// Subagents skip orchestrator-specific transforms but still benefit from
 			// stripping phantom empty-name tool calls. Some models (notably Kimi K2.x
 			// and MiniMax M2.7) emit empty tool calls after a real write/edit call,
@@ -491,26 +378,41 @@ export default function (skillPaths: string[]) {
 				gitRemote: isGitRepo ? (cachedGitRemote ?? undefined) : undefined,
 			}
 
-			const promptCtx: PromptContext = {
+			const mode: PromptMode = subagentMode ? "subagent" : multiModelEnabled ? "orchestrator" : "single"
+
+			const systemPrompt = buildSystemPrompt({
+				tools: tools as readonly ToolInfo[],
+				env,
+				contextFiles: cachedContextFiles,
+				skills: cachedSkills,
 				currentModelId: ctx.model?.id,
 				currentPhase: getCurrentPhase(),
 				registry: registry,
+				mode,
+			})
+
+			const debugSession = process.env.KIMCHI_DEBUG_SESSION
+			const debugFlag = pi.getFlag("debug-prompts") === true
+			if (debugFlag || debugSession) {
+				const sessionId = debugSession ?? randomUUID().slice(0, 8)
+				process.env.KIMCHI_DEBUG_PROMPTS = "1"
+				process.env.KIMCHI_DEBUG_SESSION = sessionId
+
+				const debugDir = join(ctx.cwd, ".kimchi", "debug", sessionId)
+				mkdirSync(debugDir, { recursive: true })
+
+				const label = subagentMode ? "subagent" : `main-agent-${mode}`
+				const filePath = join(debugDir, `${label}-${Date.now()}.md`)
+				writeFileSync(filePath, systemPrompt)
+
+				if (ctx.hasUI) {
+					ctx.ui.notify(`[debug-prompts] ${filePath}`, "info")
+				}
+			} else {
+				process.env.KIMCHI_DEBUG_PROMPTS = undefined
+				process.env.KIMCHI_DEBUG_SESSION = undefined
 			}
 
-			if (subagentMode) {
-				// Filter the subagent tool out to prevent infinite delegation chains.
-				const activeTools = pi.getActiveTools().filter((name) => name !== "subagent")
-				pi.setActiveTools(activeTools)
-				const systemPrompt = buildSubagentSystemPrompt(tools, env, cachedContextFiles, cachedSkills, promptCtx)
-				return { systemPrompt }
-			}
-
-			if (!multiModelEnabled) {
-				const systemPrompt = buildSingleModelSystemPrompt(tools, env, cachedContextFiles, cachedSkills, promptCtx)
-				return { systemPrompt }
-			}
-
-			const systemPrompt = buildOrchestratorSystemPrompt(tools, env, cachedContextFiles, cachedSkills, promptCtx)
 			return { systemPrompt }
 		})
 	}

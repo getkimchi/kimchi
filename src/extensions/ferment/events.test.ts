@@ -235,7 +235,7 @@ describe("registerFermentEvents", () => {
 	})
 
 	describe("before_provider_request planner prompt override", () => {
-		const ANTHROPIC_BASE = `You are an expert coding assistant. Do NOT spawn a subagent for work you can do in a single tool call.\n\n# Environment\n\n- OS: linux\n- Working directory: "/repo"\n\n## How to approach every task\n\nstuff`
+		const ANTHROPIC_BASE = `You are an expert coding assistant. Do NOT spawn a subagent for work you can do in a single tool call.\n\n# Environment\n\n- OS: linux\n- Working directory: "/repo"\n\n## Orchestrate the work\n\nstuff`
 
 		function setupOneshotPlannerPi() {
 			const runtime: FermentRuntime = { ...createDefaultFermentRuntime() }
@@ -259,7 +259,7 @@ describe("registerFermentEvents", () => {
 			expect(result.system).toContain("# Environment")
 			expect(result.system).toContain(`Working directory: "/repo"`)
 			expect(result.system).not.toContain("Do NOT spawn a subagent for work you can do in a single tool call")
-			expect(result.system).not.toContain("How to approach every task")
+			expect(result.system).not.toContain("Orchestrate the work")
 		})
 
 		it("rewrites Anthropic array payload.system preserving cache_control on the text block", async () => {

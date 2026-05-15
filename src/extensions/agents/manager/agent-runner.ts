@@ -2,6 +2,8 @@
  * agent-runner.ts — Core execution engine: creates sessions, runs agents, collects results.
  */
 
+import { mkdirSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import {
@@ -223,6 +225,18 @@ export async function runAgent(
 		const fallback = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE)
 		if (!fallback) throw new Error(`No fallback config available for unknown type "${type}"`)
 		systemPrompt = buildAgentPrompt({ ...fallback, name: type }, effectiveCwd, env, parentSystemPrompt, extras)
+	}
+
+	const debugSession = process.env.KIMCHI_DEBUG_SESSION
+	if (debugSession) {
+		try {
+			const debugDir = join(effectiveCwd, ".kimchi", "debug", debugSession)
+			mkdirSync(debugDir, { recursive: true })
+			const agentLabel = agentConfig?.name ?? type
+			writeFileSync(join(debugDir, `agent-${agentLabel}-${Date.now()}.md`), systemPrompt)
+		} catch {
+			// best-effort debug logging
+		}
 	}
 
 	const noSkills = skills === false || Array.isArray(skills)

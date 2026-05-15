@@ -5,10 +5,10 @@ import { PLANNER_ONESHOT_ALLOWLIST } from "./tool-scope.js"
 /**
  * Extract the `# Environment` block from the orchestrator base system prompt.
  *
- * The base prompt (`orchestrator-system-prompt.ts`) substitutes `{{ENVIRONMENT}}`
- * with a `# Environment` heading followed by an OS/cwd/git block. The block ends
- * before the next top-level `## ` section. Returns empty string when no block is
- * found so the planner still gets a usable (if env-less) prompt.
+ * The base prompt (`system-prompt.ts`) includes a `# Environment`
+ * heading followed by an OS/cwd/git block. The block ends before the next
+ * top-level `## ` section. Returns empty string when no block is found so
+ * the planner still gets a usable (if env-less) prompt.
  */
 export function extractEnvironmentBlock(systemPrompt: string): string {
 	const match = systemPrompt.match(/(^|\n)# Environment\n[\s\S]*?(?=\n\n## |\n\n# |$)/)

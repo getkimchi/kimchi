@@ -228,7 +228,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		}
 	})
 
-	pi.on("before_agent_start", async (event) => {
+	pi.on("before_agent_start", async (event, ctx) => {
 		// In ferment-oneshot planner mode, restrict the active tool set to the
 		// allowlist. The orchestrator base prompt is overridden separately in
 		// `before_provider_request` so the planner's outbound LLM call gets the

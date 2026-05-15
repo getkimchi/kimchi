@@ -47,8 +47,8 @@ export const PLANNER_ONESHOT_ALLOWLIST = new Set<string>([
 	"Agent",
 	"get_subagent_result",
 	"read",
-	// Metadata-only phase tracker mandated by the orchestrator base prompt
-	// (`shared.ts`: "You must call `set_phase` before every block of work").
+	// Metadata-only phase tracker injected by the ferment planner supplement
+	// when a ferment is active.
 	// Taxonomy classifies it as readOnly (`taxonomy.ts`) — no side effects.
 	"set_phase",
 ])

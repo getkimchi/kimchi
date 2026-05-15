@@ -14,7 +14,7 @@ import { LogoHeader } from "../components/logo.js"
 import { SplashHeader } from "../components/splash-header.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { isBareExitAlias } from "./exit-utils.js"
-import { getMultiModelEnabled } from "./orchestration/prompt-enrichment.js"
+import { getMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
 import { createWorkingAnimator } from "./spinner.js"
 
 function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {

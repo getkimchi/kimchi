@@ -9,8 +9,8 @@ import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
 import { getActiveFerment, getCurrentPhaseIndex } from "../extensions/ferment/index.js"
 import { formatCount } from "../extensions/format.js"
-import { getMultiModelEnabled } from "../extensions/orchestration/prompt-enrichment.js"
 import { getCurrentPermissionsMode } from "../extensions/permissions/index.js"
+import { getMultiModelEnabled } from "../extensions/prompt-construction/prompt-enrichment.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 interface FooterSegment {
