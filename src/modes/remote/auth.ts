@@ -1,68 +1,193 @@
-import { type AuthenticateResponse, REMOTE_ENDPOINT, RemoteAuthError, RemoteNetworkError } from "./types.js"
+import { type AuthenticateResponse, RemoteAuthError, RemoteNetworkError } from "./types.js"
 
 export interface AuthenticateOptions {
+	/**
+	 * Override the remote endpoint (used by tests).  Resolution order:
+	 * 1. this option
+	 * 2. `KIMCHI_REMOTE_ENDPOINT` env-var (for dev / mock-server testing)
+	 * 3. production default `https://app.kimchi.dev`
+	 */
 	endpoint?: string
+	/**
+	 * Override global fetch (used by tests).
+	 */
 	fetch?: typeof globalThis.fetch
 }
 
-/**
- * Resolve the remote endpoint. Precedence:
- * 1. explicit `options.endpoint`
- * 2. `KIMCHI_REMOTE_ENDPOINT` env-var (for dev / mock-server testing)
- * 3. production default `https://llm.kimchi.dev`
- */
-function resolveEndpoint(explicit?: string): string {
-	if (explicit) return explicit
+function resolveEndpoint(options?: AuthenticateOptions): string {
 	const fromEnv = process.env.KIMCHI_REMOTE_ENDPOINT
-	if (fromEnv && fromEnv.length > 0) return fromEnv
-	return REMOTE_ENDPOINT
+	return options?.endpoint ?? fromEnv ?? "https://app.kimchi.dev"
 }
 
-/**
- * Get a short-lived connect token to the sandbox.
- *
- * URL: POST {endpoint}/v1beta/sandbox-tokens:exchange
- */
-export async function authenticateRemoteSession(
-	sessionId: string,
-	apiKey: string,
-	options: AuthenticateOptions = {},
-): Promise<AuthenticateResponse> {
-	const endpoint = resolveEndpoint(options.endpoint)
-	const fetchImpl = options.fetch ?? globalThis.fetch
-	const url = `${endpoint}/api/v1/remote-sessions/${encodeURIComponent(sessionId)}:authenticate`
-
-	let resp: Response
+async function fetchWithTimeout(
+	url: string,
+	init: RequestInit,
+	fetchImpl: typeof globalThis.fetch,
+	ms = 30_000,
+): Promise<Response> {
+	const ctrl = new AbortController()
+	const timer = setTimeout(() => ctrl.abort(), ms)
 	try {
-		resp = await fetchImpl(url, {
+		return await fetchImpl(url, { ...init, signal: ctrl.signal })
+	} finally {
+		clearTimeout(timer)
+	}
+}
+
+async function checkResponse(resp: Response, endpoint: string): Promise<void> {
+	if (resp.ok) return
+
+	const body = await resp.text().catch(() => "")
+	switch (resp.status) {
+		case 401:
+			throw new RemoteAuthError(`Invalid API key - run 'kimchi setup' to authenticate`, 401)
+		case 403:
+			throw new RemoteAuthError("Forbidden - your API key does not have permission to use remote sessions.", 403)
+		case 404:
+			throw new RemoteAuthError("Session not found or endpoint not available.", 404)
+		case 409:
+			throw new RemoteAuthError("Session conflict - another client may already own this session.", 409)
+		default: {
+			throw new RemoteNetworkError(`HTTP ${resp.status} from ${endpoint}${body ? `: ${body}` : ""}`)
+		}
+	}
+}
+
+async function verifyApiKey(apiKey: string, options?: AuthenticateOptions): Promise<string> {
+	const endpoint = resolveEndpoint(options)
+	const fetchImpl = options?.fetch ?? globalThis.fetch
+
+	const url = `${endpoint}/api/ai-optimizer/v1beta/api-keys:verify`
+	const resp = await fetchWithTimeout(
+		url,
+		{
 			method: "POST",
 			headers: {
 				Authorization: `Bearer ${apiKey}`,
 				"Content-Type": "application/json",
 			},
-		})
-	} catch {
-		throw new RemoteNetworkError("Could not reach the kimchi remote endpoint")
+		},
+		fetchImpl,
+	)
+
+	await checkResponse(resp, endpoint)
+
+	const data = await resp.json().catch(() => {
+		throw new RemoteNetworkError(`Unexpected non-JSON response from ${endpoint}`)
+	})
+
+	const orgId = data.organizationId
+	if (typeof orgId !== "string") {
+		throw new RemoteNetworkError(`Missing organizationId in verify response from ${endpoint}`)
 	}
 
-	if (resp.status === 200) {
-		const data = (await resp.json()) as AuthenticateResponse
-		return data
+	return orgId
+}
+
+async function createOrUpdateSession(
+	orgId: string,
+	sessionId: string,
+	apiKey: string,
+	options?: AuthenticateOptions,
+): Promise<{ uri: string }> {
+	const endpoint = resolveEndpoint(options)
+	const fetchImpl = options?.fetch ?? globalThis.fetch
+
+	const url = `${endpoint}/api/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/sessions/${encodeURIComponent(sessionId)}`
+	const resp = await fetchWithTimeout(
+		url,
+		{
+			method: "PUT",
+			headers: {
+				Authorization: `Bearer ${apiKey}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ description: "kimchi remote session" }),
+		},
+		fetchImpl,
+	)
+
+	await checkResponse(resp, endpoint)
+
+	const data = await resp.json().catch(() => {
+		throw new RemoteNetworkError(`Unexpected non-JSON response from ${endpoint}`)
+	})
+
+	const uri = data.uri
+	if (typeof uri !== "string") {
+		throw new RemoteNetworkError(`Missing uri in session response from ${endpoint}`)
 	}
 
-	if (resp.status === 401) {
-		throw new RemoteAuthError("Invalid API key — run 'kimchi setup' to authenticate", 401)
-	}
-	if (resp.status === 403) {
-		throw new RemoteAuthError("Your account does not have access to remote sessions", 403)
-	}
-	if (resp.status === 404) {
-		throw new RemoteAuthError("Session not found", 404)
-	}
-	if (resp.status === 409) {
-		throw new RemoteAuthError("Session is active on another client", 409)
+	return { uri }
+}
+
+async function exchangeSessionToken(
+	apiKey: string,
+	sessionId: string,
+	options?: AuthenticateOptions,
+): Promise<{ token: string; expireTime: string }> {
+	const endpoint = resolveEndpoint(options)
+	const fetchImpl = options?.fetch ?? globalThis.fetch
+
+	const url = `${endpoint}/api/ai-optimizer/v1beta/session-tokens:exchange`
+	const resp = await fetchWithTimeout(
+		url,
+		{
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${apiKey}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ sessionId }),
+		},
+		fetchImpl,
+	)
+
+	await checkResponse(resp, endpoint)
+
+	const data = await resp.json().catch(() => {
+		throw new RemoteNetworkError(`Unexpected non-JSON response from ${endpoint}`)
+	})
+
+	const token = data.token
+	const expireTime = data.expireTime
+	if (typeof token !== "string") {
+		throw new RemoteNetworkError(`Missing token in exchange response from ${endpoint}`)
 	}
 
-	const body = await resp.text().catch(() => "")
-	throw new RemoteNetworkError(`Authentication failed (${resp.status}): ${body}`)
+	return { token, expireTime: typeof expireTime === "string" ? expireTime : "" }
+}
+
+/**
+ * Three-step authentication flow:
+ * 1. Verify API key → organizationId.
+ * 2. Create or update session → get WebSocket URI.
+ * 3. Exchange for session token → get JWT for WebSocket auth.
+ *
+ * Keeps the same {@link AuthenticateResponse} shape so reconnect.ts and
+ * transport-ws.ts do not need to change.
+ */
+export async function authenticateRemoteSession(
+	sessionId: string,
+	apiKey: string,
+	options?: AuthenticateOptions,
+): Promise<AuthenticateResponse> {
+	const fetchImpl = options?.fetch ?? globalThis.fetch
+
+	try {
+		const orgId = await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })
+		const { uri } = await createOrUpdateSession(orgId, sessionId, apiKey, { ...options, fetch: fetchImpl })
+		const { token, expireTime } = await exchangeSessionToken(apiKey, sessionId, { ...options, fetch: fetchImpl })
+
+		return {
+			connectToken: token,
+			expiresAt: expireTime,
+			wsUrl: uri,
+		}
+	} catch (err) {
+		if (err instanceof RemoteAuthError || err instanceof RemoteNetworkError) {
+			throw err
+		}
+		throw new RemoteNetworkError(err instanceof Error ? err.message : String(err))
+	}
 }
