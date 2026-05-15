@@ -489,7 +489,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 
 			return {
 				content: [{ type: "text", text: `Phase changed to: ${phase}` }],
-				details: { phase },
+				details: { phase, model: ctx.model?.id },
 			}
 		},
 
@@ -501,10 +501,13 @@ export default function tagsExtension(pi: ExtensionAPI) {
 			if (readHidePhaseChanges()) {
 				return new Text("", 0, 0)
 			}
-			const phase = (result.details as { phase: string } | undefined)?.phase ?? "unknown"
+			const details = result.details as { phase: string; model?: string } | undefined
+			const phase = details?.phase ?? "unknown"
+			const model = details?.model
 			const dash = theme.fg("dim", "- ")
 			const label = theme.bold(theme.fg("toolTitle", `Phase changed: ${phase}`))
-			return new Text(dash + label, 0, 0)
+			const modelSuffix = model ? theme.fg("dim", ` [${model}]`) : ""
+			return new Text(dash + label + modelSuffix, 0, 0)
 		},
 	})
 
