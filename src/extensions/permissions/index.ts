@@ -3,6 +3,7 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
+import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { resolveClassifierModel } from "./classifier-model.js"
 import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
@@ -375,9 +376,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		maybeShowYoloWarning(ctx, currentMode())
 	})
 
-	pi.on("before_agent_start", async (event): Promise<{ systemPrompt?: string }> => {
-		if (currentMode() !== "plan") return {}
-		return { systemPrompt: `${event.systemPrompt}\n\n${planModeSupplement.trim()}` }
+	const blocks = createSystemPromptBlocks(pi, "permissions")
+	blocks.register({
+		id: "plan-mode-supplement",
+		render: () => {
+			if (currentMode() !== "plan") return undefined
+			return planModeSupplement.trim()
+		},
 	})
 
 	// Reset plan-completion tracking on every new user input.

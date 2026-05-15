@@ -14,6 +14,7 @@ import type { ModelRegistry } from "../orchestration/model-registry/index.js"
 import type { Phase } from "../orchestration/model-registry/types.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
 import type { ContextFile } from "./context-files.js"
+import { type SuppressibleSection, renderSystemPromptBlocks } from "./system-prompt-blocks.js"
 
 export interface EnvironmentInfo {
 	os: string
@@ -67,6 +68,11 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	})
 
 	const phaseSection = buildPhaseGuidelinesSection(currentModelId, currentPhase, registry)
+	const blocks = renderSystemPromptBlocks({ mode })
+	const suppressed = new Set<SuppressibleSection>()
+	for (const block of blocks) {
+		for (const section of block.suppress) suppressed.add(section)
+	}
 
 	return buildPrompt({
 		mode,
@@ -76,6 +82,8 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		skillsSection,
 		orchestrationSection,
 		phaseSection,
+		systemPromptBlocks: blocks.map((block) => block.content).join("\n\n"),
+		suppressed,
 	})
 }
 
@@ -91,6 +99,8 @@ interface PromptParts {
 	skillsSection: string
 	orchestrationSection: string
 	phaseSection: string
+	systemPromptBlocks: string
+	suppressed: ReadonlySet<SuppressibleSection>
 }
 
 const BASE_INSTRUCTIONS =
@@ -135,21 +145,25 @@ function buildPrompt(parts: PromptParts): string {
 	sections.push(`## Phase Tagging for Analytics\n\n${PHASE_TAGGING}`)
 	sections.push(`## Tool and MCP Discovery\n\n${TOOL_DISCOVERY}`)
 
-	if (parts.orchestrationSection) {
+	if (!parts.suppressed.has("orchestration") && parts.orchestrationSection) {
 		sections.push(parts.orchestrationSection)
 	}
 
-	if (parts.phaseSection) {
+	if (!parts.suppressed.has("phase-guidelines") && parts.phaseSection) {
 		sections.push(parts.phaseSection)
 	}
 
-	if (parts.projectContext) {
+	if (!parts.suppressed.has("project-context") && parts.projectContext) {
 		sections.push(parts.projectContext)
+	}
+
+	if (parts.systemPromptBlocks) {
+		sections.push(parts.systemPromptBlocks)
 	}
 
 	sections.push(parts.toolsSection)
 
-	if (parts.skillsSection) {
+	if (!parts.suppressed.has("skills") && parts.skillsSection) {
 		sections.push(parts.skillsSection)
 	}
 
