@@ -50,6 +50,7 @@ import {
 import { loadCustomAgents } from "./personas/custom-agents.js"
 import {
 	AGENT_GENERAL_PURPOSE,
+	type AgentAbortReason,
 	type AgentConfig,
 	type AgentRecord,
 	type JoinMode,
@@ -131,12 +132,34 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 	return { state, callbacks }
 }
 
-function getStatusLabel(status: string, error?: string): string {
+function getAbortLabel(reason?: AgentAbortReason): string {
+	switch (reason) {
+		case "max_turns":
+			return "Aborted (max turns exceeded)"
+		case "token_budget":
+			return "Aborted (token budget exceeded)"
+		default:
+			return "Aborted"
+	}
+}
+
+function getAbortNote(reason?: AgentAbortReason): string {
+	switch (reason) {
+		case "max_turns":
+			return " (aborted — max turns exceeded, output may be incomplete)"
+		case "token_budget":
+			return " (aborted — token budget exceeded, output may be incomplete)"
+		default:
+			return " (aborted, output may be incomplete)"
+	}
+}
+
+function getStatusLabel(status: string, error?: string, abortReason?: AgentAbortReason): string {
 	switch (status) {
 		case "error":
 			return `Error: ${error ?? "unknown"}`
 		case "aborted":
-			return "Aborted (max turns exceeded)"
+			return getAbortLabel(abortReason)
 		case "steered":
 			return "Wrapped up (turn limit)"
 		case "stopped":
@@ -146,10 +169,10 @@ function getStatusLabel(status: string, error?: string): string {
 	}
 }
 
-function getStatusNote(status: string): string {
+function getStatusNote(status: string, abortReason?: AgentAbortReason): string {
 	switch (status) {
 		case "aborted":
-			return " (aborted — max turns exceeded, output may be incomplete)"
+			return getAbortNote(abortReason)
 		case "steered":
 			return " (wrapped up — reached turn limit)"
 		case "stopped":
@@ -164,7 +187,7 @@ function escapeXml(s: string): string {
 }
 
 function formatTaskNotification(record: AgentRecord, resultMaxLen: number): string {
-	const status = getStatusLabel(record.status, record.error)
+	const status = getStatusLabel(record.status, record.error, record.abortReason)
 	const durationMs = record.completedAt ? record.completedAt - record.startedAt : 0
 	const totalTokens = getLifetimeTotal(record.lifetimeUsage)
 	const contextPercent = getSessionContextPercent(record.session)
@@ -199,6 +222,7 @@ function buildDetails(
 		startedAt: number
 		completedAt?: number
 		status: string
+		abortReason?: AgentAbortReason
 		error?: string
 		id?: string
 		session?: unknown
@@ -217,6 +241,7 @@ function buildDetails(
 		status: record.status as AgentDetails["status"],
 		agentId: record.id,
 		error: record.error,
+		abortReason: record.abortReason,
 		...overrides,
 	}
 }
@@ -232,6 +257,7 @@ function buildNotificationDetails(
 		id: record.id,
 		description: record.description,
 		status: record.status,
+		abortReason: record.abortReason,
 		toolUses: record.toolUses,
 		turnCount: activity?.turnCount ?? 0,
 		maxTurns: activity?.maxTurns,
@@ -262,7 +288,14 @@ export default function (pi: ExtensionAPI) {
 		function renderOne(d: NotificationDetails): string {
 			const isError = d.status === "error" || d.status === "stopped" || d.status === "aborted"
 			const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓")
-			const statusText = isError ? d.status : d.status === "steered" ? "completed (steered)" : "completed"
+			const statusText =
+				d.status === "aborted"
+					? getAbortLabel(d.abortReason)
+					: isError
+						? d.status
+						: d.status === "steered"
+							? "completed (steered)"
+							: "completed"
 
 			let line = `${icon} ${theme.bold(d.description)} ${theme.fg("dim", statusText)}`
 
@@ -401,6 +434,7 @@ export default function (pi: ExtensionAPI) {
 			result: record.result,
 			error: record.error,
 			status: record.status,
+			abortReason: record.abortReason,
 			toolUses: record.toolUses,
 			durationMs,
 			tokens,
@@ -454,6 +488,7 @@ export default function (pi: ExtensionAPI) {
 				type: record.type,
 				description: record.description,
 				status: record.status,
+				abortReason: record.abortReason,
 				result: record.result,
 				error: record.error,
 				startedAt: record.startedAt,
@@ -756,7 +791,7 @@ Model selection — YOU choose based on task complexity:
 				if (details.status === "error") {
 					line += `\n${theme.fg("error", `  ⎿  Error: ${details.error ?? "unknown"}`)}`
 				} else {
-					line += `\n${theme.fg("warning", "  ⎿  Aborted (max turns exceeded)")}`
+					line += `\n${theme.fg("warning", `  ⎿  ${getAbortLabel(details.abortReason)}`)}`
 				}
 
 				return new Text(line, 0, 0)
@@ -1017,8 +1052,9 @@ Model selection — YOU choose based on task complexity:
 				const durationMs = (record.completedAt ?? Date.now()) - record.startedAt
 				const statsParts = [`${record.toolUses} tool uses`]
 				if (tokenText) statsParts.push(tokenText)
+				const outcome = record.status === "aborted" ? "aborted" : record.status === "stopped" ? "stopped" : "completed"
 				return textResult(
-					`${fallbackNote}Agent completed in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status)}.\n\n${record.result?.trim() || "No output."}`,
+					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.\n\n${record.result?.trim() || "No output."}`,
 					details,
 				)
 			},

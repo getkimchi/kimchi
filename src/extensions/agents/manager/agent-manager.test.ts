@@ -33,6 +33,7 @@ describe("AgentManager", () => {
 			responseText: "partial output",
 			session: { dispose: vi.fn() } as unknown as AgentSession,
 			aborted: true,
+			abortReason: "token_budget",
 			steered: false,
 		})
 		manager = new AgentManager()
@@ -42,6 +43,7 @@ describe("AgentManager", () => {
 		})
 
 		expect(record.status).toBe("aborted")
+		expect(record.abortReason).toBe("token_budget")
 		expect(record.result).toBe("partial output")
 	})
 })

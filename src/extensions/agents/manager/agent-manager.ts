@@ -174,10 +174,11 @@ export class AgentManager {
 				options.onSessionCreated?.(session)
 			},
 		})
-			.then(({ responseText, session, aborted, steered }) => {
+			.then(({ responseText, session, aborted, abortReason, steered }) => {
 				if (record.status !== "stopped") {
 					record.status = aborted ? "aborted" : steered ? "steered" : "completed"
 				}
+				record.abortReason = abortReason
 				record.result = responseText
 				record.session = session
 				record.completedAt ??= Date.now()
@@ -276,6 +277,7 @@ export class AgentManager {
 		record.completedAt = undefined
 		record.result = undefined
 		record.error = undefined
+		record.abortReason = undefined
 
 		try {
 			const responseText = await resumeAgent(record.session, prompt, {

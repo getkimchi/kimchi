@@ -88,10 +88,12 @@ type Subscriber = (event: SessionEvent) => void
 function makeFakeSession({
 	promptTokens = 0,
 	outputTokens = 0,
+	cacheWriteTokens = 0,
 	abortSpy = vi.fn(),
 }: {
 	promptTokens?: number
 	outputTokens?: number
+	cacheWriteTokens?: number
 	abortSpy?: ReturnType<typeof vi.fn>
 } = {}) {
 	const subscribers: Subscriber[] = []
@@ -119,7 +121,7 @@ function makeFakeSession({
 						type: "message_end",
 						message: {
 							role: "assistant",
-							usage: { input: promptTokens, output: outputTokens, cacheWrite: 0 },
+							usage: { input: promptTokens, output: outputTokens, cacheWrite: cacheWriteTokens },
 						},
 					})
 				}
@@ -202,6 +204,33 @@ describe("runAgent — tokenBudget forwarding", () => {
 
 		expect(abortSpy).toHaveBeenCalled()
 		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("token_budget")
+	})
+
+	it("counts cacheWrite tokens toward tokenBudget", async () => {
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({
+			promptTokens: 8_000,
+			outputTokens: 1_000,
+			cacheWriteTokens: 4_000,
+			abortSpy,
+		})
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			tokenBudget: 10_000,
+		})
+
+		expect(abortSpy).toHaveBeenCalled()
+		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("token_budget")
 	})
 
 	it("does NOT abort when token usage stays below tokenBudget", async () => {
@@ -283,6 +312,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 
 		expect(abortSpy).toHaveBeenCalled()
 		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("token_budget")
 	})
 
 	it("explicit tokenBudget param wins over profile tokenBudget (precedence)", async () => {
@@ -320,5 +350,6 @@ describe("runAgent — tokenBudget forwarding", () => {
 
 		expect(abortSpy).toHaveBeenCalled()
 		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("token_budget")
 	})
 })

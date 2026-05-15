@@ -25,7 +25,12 @@ import {
 	getToolNamesForType,
 } from "../personas/agent-types.js"
 import { DEFAULT_AGENTS } from "../personas/default-agents.js"
-import { AGENT_GENERAL_PURPOSE, type SubagentType, type ThinkingLevel } from "../personas/types.js"
+import {
+	AGENT_GENERAL_PURPOSE,
+	type AgentAbortReason,
+	type SubagentType,
+	type ThinkingLevel,
+} from "../personas/types.js"
 import { buildParentContext, extractText } from "../prompt/context.js"
 import { type PromptExtras, buildAgentPrompt } from "../prompt/prompts.js"
 import { preloadSkills } from "../prompt/skill-loader.js"
@@ -129,7 +134,7 @@ export interface RunOptions {
 	onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void
 	/** Called when the session successfully compacts. */
 	onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void
-	/** Maximum cumulative tokens (input + output) this agent is allowed to consume. Overrides agentConfig.tokenBudget. */
+	/** Maximum cumulative tokens this agent is allowed to consume. Overrides agentConfig.tokenBudget. */
 	tokenBudget?: number
 }
 
@@ -138,6 +143,7 @@ export interface RunResult {
 	session: AgentSession
 	/** True if the agent was hard-aborted by max turns or token budget. */
 	aborted: boolean
+	abortReason?: AgentAbortReason
 	/** True if the agent was steered to wrap up (hit soft turn limit) but finished in time. */
 	steered: boolean
 }
@@ -311,6 +317,7 @@ export async function runAgent(
 	let cumulativeTokens = 0
 	let softLimitReached = false
 	let aborted = false
+	let abortReason: AgentAbortReason | undefined
 	let budgetAborted = false
 
 	let currentMessageText = ""
@@ -324,6 +331,7 @@ export async function runAgent(
 					session.steer("You have reached your turn limit. Wrap up immediately — provide your final answer now.")
 				} else if (softLimitReached && turnCount >= maxTurns + graceTurns) {
 					aborted = true
+					abortReason = "max_turns"
 					session.abort()
 				}
 			}
@@ -350,9 +358,10 @@ export async function runAgent(
 					cacheWrite: u.cacheWrite ?? 0,
 				})
 				if (effectiveTokenBudget != null && !budgetAborted) {
-					cumulativeTokens += (u.input ?? 0) + (u.output ?? 0)
+					cumulativeTokens += (u.input ?? 0) + (u.output ?? 0) + (u.cacheWrite ?? 0)
 					if (cumulativeTokens > effectiveTokenBudget) {
 						budgetAborted = true
+						abortReason = "token_budget"
 						console.warn(
 							`[agent-runner] token budget exceeded (cumulative=${cumulativeTokens}, budget=${effectiveTokenBudget}); aborting`,
 						)
@@ -411,7 +420,7 @@ export async function runAgent(
 	}
 
 	const responseText = collector.getText().trim() || getLastAssistantText(session)
-	return { responseText, session, aborted: aborted || budgetAborted, steered: softLimitReached }
+	return { responseText, session, aborted: aborted || budgetAborted, abortReason, steered: softLimitReached }
 }
 
 /**

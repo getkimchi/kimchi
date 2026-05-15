@@ -9,6 +9,8 @@ import type { LifetimeUsage } from "../manager/usage.js"
 /** Thinking/reasoning level for models that support it. */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
 
+export type AgentAbortReason = "max_turns" | "token_budget"
+
 /** Agent type: any string name (built-in defaults or user-defined). */
 export type SubagentType = string
 
@@ -96,6 +98,7 @@ export interface AgentRecord {
 	type: SubagentType
 	description: string
 	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error"
+	abortReason?: AgentAbortReason
 	result?: string
 	error?: string
 	toolUses: number
@@ -131,6 +134,7 @@ export interface NotificationDetails {
 	id: string
 	description: string
 	status: string
+	abortReason?: AgentAbortReason
 	toolUses: number
 	turnCount: number
 	maxTurns?: number
