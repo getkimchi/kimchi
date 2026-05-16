@@ -4,7 +4,7 @@ import { formatActionNudgeLine } from "./action-tool-names.js"
 import { appendRefEntry } from "./nudge.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
-import { setActiveFerment } from "./tool-scope.js"
+import { setActiveFermentAndApplyProfile } from "./tool-scope.js"
 import { checkWorktree } from "./worktree.js"
 
 /**
@@ -22,12 +22,12 @@ export function resumeFerment(
 	const applyAndPersist = createApplyAndPersist(runtime)
 	let existing = storage.get(fermentId)
 	if (!existing) {
-		setActiveFerment(pi, runtime, undefined)
+		setActiveFermentAndApplyProfile(pi, runtime, undefined)
 		return
 	}
 
 	if (existing.status === "complete" || existing.status === "abandoned") {
-		setActiveFerment(pi, runtime, undefined)
+		setActiveFermentAndApplyProfile(pi, runtime, undefined)
 		return
 	}
 
@@ -38,7 +38,7 @@ export function resumeFerment(
 		if (out.ok) existing = out.ferment
 	}
 
-	setActiveFerment(pi, runtime, existing)
+	setActiveFermentAndApplyProfile(pi, runtime, existing)
 	appendRefEntry(pi, existing.id)
 
 	const wtCheck = checkWorktree(existing)

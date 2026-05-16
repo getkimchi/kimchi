@@ -414,7 +414,7 @@ Map each assistant turn to a **task class** based on the dominant activity in th
 | `build` | `edit`, `write`, `bash` (compilation / test execution) dominates |
 | `review` | `lsp_diagnostics`, review comments, `set_phase("review")` |
 | `research` | `web_search`, `web_fetch` calls |
-| `orchestration` | `Agent`, `set_phase`, `start_step`, `complete_step`, `get_subagent_result` |
+| `orchestration` | `Agent`, `set_phase`, `start_ferment_step`, `complete_ferment_step`, `get_subagent_result` |
 
 If a turn has mixed tools, classify by the most frequent tool family. If tie, prefer: orchestration > plan > build > review > research > explore.
 

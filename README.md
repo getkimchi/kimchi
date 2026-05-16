@@ -203,9 +203,14 @@ draft → planned → running → [paused] → complete
 
 1. **draft** — created via `/ferment add`, agent collects goal + phases conversationally
 2. **planned** — `scope_ferment` sets goal, criteria, constraints, phase breakdown
-3. **running** — `activate_phase` starts a phase, agent executes steps
+3. **running** — `activate_ferment_phase` starts a phase, agent executes steps
 4. **paused** — user intervention required (plan mode, or `/pause`)
 5. **complete** — all phases terminal, done
+
+Ferment tool visibility is session-profile based. Active planners see the full
+namespaced lifecycle surface for a whole run, and the FSM/tool result text says
+which call is legal next; worker subagents do not receive ferment lifecycle
+tools.
 
 ### Three work modes
 

@@ -25,7 +25,14 @@ import { getPromptUi, promptForm, promptInput, promptSelect } from "../prompt-ui
 import { readLatestPhaseReviews } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
-import { createApplyAndPersist, failedToolResult, toolErr, toolOk } from "../tool-helpers.js"
+import {
+	createApplyAndPersist,
+	failedToolResult,
+	toolErr,
+	toolErrWithNextAction,
+	toolOk,
+	withNextActionHint,
+} from "../tool-helpers.js"
 import {
 	AskUserParams,
 	CompleteFermentParams,
@@ -36,7 +43,7 @@ import {
 	SetModeParams,
 	UpdateScopeFieldParams,
 } from "../tool-schemas.js"
-import { setActiveFerment, syncFermentToolScope } from "../tool-scope.js"
+import { setActiveFermentState } from "../tool-scope.js"
 
 type ScopeArgs = Static<typeof ScopeParams>
 type ProposeScopingArgs = Static<typeof ProposeScopingParams>
@@ -369,7 +376,7 @@ export async function scopeFerment(
 
 	// FSM validation: ensure the scope transition is allowed before applying it.
 	const fsmError = validateFsmTransition(fGate, "SCOPE_FERMENT")
-	if (fsmError) return toolErr(fsmError)
+	if (fsmError) return toolErrWithNextAction(fsmError, fGate)
 
 	const cmd: Command = {
 		type: "scope",
@@ -386,10 +393,13 @@ export async function scopeFerment(
 		// to the user-friendly "use update_ferment_scope_field to revise" hint.
 		if (outcome.error.code === "FERMENT_NOT_IN_STATUS" && outcome.error.actual !== "draft") {
 			return toolErr(
-				`Ferment is already ${outcome.error.actual}. Use update_ferment_scope_field to revise individual fields.`,
+				withNextActionHint(
+					`Ferment is already ${outcome.error.actual}. Use update_ferment_scope_field to revise individual fields.`,
+					fGate,
+				),
 			)
 		}
-		return failedToolResult(outcome.error)
+		return failedToolResult(outcome.error, fGate)
 	}
 	// Discard any stale pending-scope buffer — its phases were either applied
 	// here or are no longer relevant (the ferment is now planned).
@@ -406,7 +416,10 @@ export async function scopeFerment(
 	}
 
 	return toolOk(
-		`Ferment "${fresh.name}" scoped and ready.\nferment_id: ${fresh.id}\nGoal: ${params.goal}\nPhases:\n${phaseList}`,
+		withNextActionHint(
+			`Ferment "${fresh.name}" scoped and ready.\nferment_id: ${fresh.id}\nGoal: ${params.goal}\nPhases:\n${phaseList}`,
+			fresh,
+		),
 	)
 }
 
@@ -439,7 +452,7 @@ export async function completeFerment(
 
 	// Gates pass → proceed with completion.
 	const completeOutcome = applyAndPersist(params.ferment_id, { type: "complete_ferment" })
-	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
+	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, fSnapshot)
 
 	// Journey-grade judge: reads per-phase F-gate verdicts from the on-disk
 	// review-evidence sidecars, the C-gates the agent just provided, the goal
@@ -540,7 +553,7 @@ export async function completeFerment(
 			unavailable: resolvedGrade.unavailable,
 		},
 	})
-	if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
+	if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error, ferment)
 
 	// Cleanup in-memory state.
 	runtime.clearFermentState(params.ferment_id)
@@ -573,10 +586,15 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 				autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
 			})
 			const f = runtime.getStorage().create(params.name, params.description)
-			setActiveFerment(pi, runtime, f)
+			setActiveFermentState(runtime, f)
 			appendRefEntry(pi, f.id)
 			const branch = f.worktree.branch ?? "(no git)"
-			return toolOk(`Created "${f.name}".  Mode: ${f.mode}  •  Branch: ${branch}  •  Path: ${f.worktree.path}`)
+			return toolOk(
+				withNextActionHint(
+					`Created "${f.name}".  Mode: ${f.mode}  •  Branch: ${branch}  •  Path: ${f.worktree.path}`,
+					f,
+				),
+			)
 		},
 	})
 
@@ -613,7 +631,10 @@ ${renderGateGuidance("scope_ferment")}`,
 				const nextAction =
 					ferment.status === "planned" ? "call activate_ferment_phase" : "continue the current ferment action"
 				return toolOk(
-					`Ferment "${ferment.name}" is already ${ferment.status}; ignore this duplicate propose_ferment_scoping call and ${nextAction}.`,
+					withNextActionHint(
+						`Ferment "${ferment.name}" is already ${ferment.status}; ignore this duplicate propose_ferment_scoping call and ${nextAction}.`,
+						ferment,
+					),
 				)
 			}
 
@@ -662,8 +683,8 @@ ${renderGateGuidance("scope_ferment")}`,
 						params.title,
 						pi,
 					)
-					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
-					return planToolOk("Plan saved.", { includePlan: true })
+					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
+					return planToolOk(withNextActionHint("Plan saved.", scopeOutcome.outcome.ferment), { includePlan: true })
 				}
 				const recSummary = questions
 					.map((q) => {
@@ -696,9 +717,12 @@ ${renderGateGuidance("scope_ferment")}`,
 						params.title,
 						pi,
 					)
-					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
+					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
 					return planToolOk(
-						`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
+						withNextActionHint(
+							`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
+							scopeOutcome.outcome.ferment,
+						),
 						{ includePlan: true },
 					)
 				}
@@ -812,9 +836,12 @@ ${renderGateGuidance("scope_ferment")}`,
 							params.title,
 							pi,
 						)
-						if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
+						if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
 						return planToolOk(
-							`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
+							withNextActionHint(
+								`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
+								scopeOutcome.outcome.ferment,
+							),
 							{ includePlan: true, suffix: answersEntry },
 						)
 					}
@@ -866,9 +893,12 @@ ${renderGateGuidance("scope_ferment")}`,
 						params.title,
 						pi,
 					)
-					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
+					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
 					return planToolOk(
-						`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
+						withNextActionHint(
+							`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
+							scopeOutcome.outcome.ferment,
+						),
 						{ includePlan: true, suffix: answersEntry },
 					)
 				}
@@ -936,7 +966,9 @@ ${renderGateGuidance("scope_ferment")}`,
 				value: params.value,
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)
-			return toolOk(`Field "${params.field}" updated for "${outcome.ferment.name}".`)
+			return toolOk(
+				withNextActionHint(`Field "${params.field}" updated for "${outcome.ferment.name}".`, outcome.ferment),
+			)
 		},
 	})
 
@@ -952,14 +984,14 @@ ${renderGateGuidance("scope_ferment")}`,
 			// FSM validation: ensure mode change is allowed
 			const f = runtime.getStorage().get(params.ferment_id)
 			const fsmError = validateFsmTransition(f, "SET_MODE", { mode: params.mode })
-			if (fsmError) return toolErr(fsmError)
+			if (fsmError) return toolErrWithNextAction(fsmError, f)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "set_mode",
 				mode: params.mode as "plan" | "exec" | "auto",
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error)
-			return toolOk(`Mode set to ${params.mode} for "${outcome.ferment.name}".`)
+			if (!outcome.ok) return failedToolResult(outcome.error, f)
+			return toolOk(withNextActionHint(`Mode set to ${params.mode} for "${outcome.ferment.name}".`, outcome.ferment))
 		},
 	})
 
@@ -971,9 +1003,7 @@ ${renderGateGuidance("scope_ferment")}`,
 ${renderGateGuidance("complete_ferment")}`,
 		parameters: CompleteFermentParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
-			const result = await completeFerment(runtime, params, { pi, ctx })
-			if (!("isError" in result) || result.isError !== true) syncFermentToolScope(pi, runtime.getActive())
-			return result
+			return completeFerment(runtime, params, { pi, ctx })
 		},
 	})
 

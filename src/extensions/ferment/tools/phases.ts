@@ -23,9 +23,16 @@ import { type ProjectCheckResult, runProjectChecks, summarizeProjectChecks } fro
 import { hashFlags, writeEscalationArtifact, writeReviewEvidence } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { MAX_BLOCK_RETRIES } from "../state.js"
-import { createApplyAndPersist, failedToolResult, resolvePhase, toolErr, toolOk } from "../tool-helpers.js"
+import {
+	createApplyAndPersist,
+	failedToolResult,
+	resolvePhase,
+	toolErr,
+	toolErrWithNextAction,
+	toolOk,
+	withNextActionHint,
+} from "../tool-helpers.js"
 import { ActivateParams, CompletePhaseParams, FailPhaseParams, RefineParams, SkipPhaseParams } from "../tool-schemas.js"
-import { syncFermentToolScope } from "../tool-scope.js"
 import type { FermentUi, FermentUiContext } from "../ui.js"
 
 type CompletePhaseArgs = Static<typeof CompletePhaseParams>
@@ -114,7 +121,7 @@ export async function completePhase(
 
 	// FSM validation: complete_ferment_phase requires all phases to be terminal
 	const fsmError = validateFsmTransition(f, "COMPLETE_PHASE", { phaseId: phase.id })
-	if (fsmError) return toolErr(fsmError)
+	if (fsmError) return toolErrWithNextAction(fsmError, f)
 
 	// Step 2a: validate gate coverage + per-verdict shape. Phase-scope is the
 	// one tool that does NOT short-circuit on a flag — flags feed the
@@ -247,7 +254,6 @@ export async function completePhase(
 				const pauseOutcome = applyAndPersist(params.ferment_id, { type: "pause" })
 				if (pauseOutcome.ok) {
 					runtime.setActive(pauseOutcome.ferment)
-					syncFermentToolScope(pi, pauseOutcome.ferment)
 				}
 				const reasonNote = sameFailureRepeated
 					? "the reviewer raised the same block flags twice in a row — agent made no progress against them"
@@ -273,7 +279,7 @@ export async function completePhase(
 		phaseId: phase.id,
 		summary: params.summary,
 	})
-	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
+	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f)
 
 	// Step 3a: clear the block-retry counter — phase advanced cleanly.
 	runtime.clearBlockRetry(params.ferment_id, phase.id)
@@ -295,11 +301,13 @@ export async function completePhase(
 
 	if (!next) {
 		return toolOk(
-			`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nAll phases terminal. Use complete_ferment to ship.`,
+			withNextActionHint(`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nAll phases terminal.`, fresh),
 		)
 	}
 
-	return toolOk(`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nNext: "${next.name}".`)
+	return toolOk(
+		withNextActionHint(`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nNext: "${next.name}".`, fresh),
+	)
 }
 
 export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
@@ -325,11 +333,11 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				target = f.phases.find((p) => p.name.toLowerCase().includes(name))
 			}
 			if (!target) target = f.phases.find((p) => p.status === "failed") ?? findFirstPlannedPhase(f)
-			if (!target) return toolErr("No planned or failed phases to activate.")
+			if (!target) return toolErrWithNextAction("No planned or failed phases to activate.", f)
 
 			// FSM validation: ensure phase activation is allowed
 			const fsmError = validateFsmTransition(f, "ACTIVATE_PHASE", { phaseId: target.id })
-			if (fsmError) return toolErr(fsmError)
+			if (fsmError) return toolErrWithNextAction(fsmError, f)
 
 			// Detect parallel group — activate all siblings at once
 			if (target.groupIndex !== undefined) {
@@ -337,7 +345,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 					type: "activate_phase_group",
 					groupIndex: target.groupIndex,
 				})
-				if (!outcome.ok) return failedToolResult(outcome.error)
+				if (!outcome.ok) return failedToolResult(outcome.error, f)
 
 				// Capture git HEAD per phase so the grader can diff each one independently.
 				const headRef = phaseServices.captureGitHead()
@@ -363,12 +371,15 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				const dm = formatDecisionsAndMemories(fresh)
 				const dmSection = dm ? `\n\n${dm}` : ""
 				return toolOk(
-					`Parallel group ${target.groupIndex} activated (${groupPhases.length} phases running concurrently).\nferment_id: ${fresh.id}\nparallel_group: ${target.groupIndex}\nphase_ids: ${groupPhases.map((p) => p.id).join(", ")}\n\n${phaseLines}\n\nRun all parallel phases concurrently: call refine_ferment_phase + start_ferment_step for each phase simultaneously.${dmSection}`,
+					withNextActionHint(
+						`Parallel group ${target.groupIndex} activated (${groupPhases.length} phases running concurrently).\nferment_id: ${fresh.id}\nparallel_group: ${target.groupIndex}\nphase_ids: ${groupPhases.map((p) => p.id).join(", ")}\n\n${phaseLines}\n\nRun all parallel phases concurrently: call refine_ferment_phase + start_ferment_step for each phase simultaneously.${dmSection}`,
+						fresh,
+					),
 				)
 			}
 
 			const outcome = applyAndPersist(params.ferment_id, { type: "activate_phase", phaseId: target.id })
-			if (!outcome.ok) return failedToolResult(outcome.error)
+			if (!outcome.ok) return failedToolResult(outcome.error, f)
 
 			// Capture git HEAD so the phase grader can diff against it later.
 			const headRef = phaseServices.captureGitHead()
@@ -383,7 +394,10 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			const dm = formatDecisionsAndMemories(fresh)
 			const dmSection = dm ? `\n\n${dm}` : ""
 			return toolOk(
-				`Phase "${target.name}" activated.\nferment_id: ${fresh.id}\nphase_id: ${target.id}${stepList}${dmSection}`,
+				withNextActionHint(
+					`Phase "${target.name}" activated.\nferment_id: ${fresh.id}\nphase_id: ${target.id}${stepList}${dmSection}`,
+					fresh,
+				),
 			)
 		},
 	})
@@ -417,7 +431,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 
 			// FSM validation: refine_ferment_phase is only valid in PHASE_ACTIVE state
 			const fsmError = validateFsmTransition(f, "REFINE_PHASE", { phaseId: phase.id })
-			if (fsmError) return toolErr(fsmError)
+			if (fsmError) return toolErrWithNextAction(fsmError, f)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "refine_phase",
@@ -427,15 +441,18 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			if (!outcome.ok) {
 				// Rewrite phase-not-active for the LLM-friendly form expected today.
 				if (outcome.error.code === "PHASE_NOT_IN_STATUS") {
-					return toolErr(`Phase must be active. Current: ${outcome.error.actual}`)
+					return toolErrWithNextAction(`Phase must be active. Current: ${outcome.error.actual}`, f)
 				}
-				return failedToolResult(outcome.error)
+				return failedToolResult(outcome.error, f)
 			}
 
 			const refined = outcome.ferment.phases.find((p) => p.id === phase.id)
 			const stepList = refined?.steps.map((st, i) => `  ${i + 1}. [step-${i + 1}] ${st.description}`).join("\n") ?? ""
 			return toolOk(
-				`"${phase.name}" refined with ${refined?.steps.length ?? 0} step(s).\nferment_id: ${outcome.ferment.id}\nphase_id: ${phase.id}\n${stepList}\nCall start_ferment_step with step_id to begin.`,
+				withNextActionHint(
+					`"${phase.name}" refined with ${refined?.steps.length ?? 0} step(s).\nferment_id: ${outcome.ferment.id}\nphase_id: ${phase.id}\n${stepList}`,
+					outcome.ferment,
+				),
 			)
 		},
 	})
@@ -466,15 +483,15 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 
 			// FSM validation: phase must be active to skip
 			const fsmError = validateFsmTransition(f, "SKIP_PHASE", { phaseId: phase.id })
-			if (fsmError) return toolErr(fsmError)
+			if (fsmError) return toolErrWithNextAction(fsmError, f)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "skip_phase",
 				phaseId: phase.id,
 				reason: params.reason,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error)
-			return toolOk("Phase skipped.")
+			if (!outcome.ok) return failedToolResult(outcome.error, f)
+			return toolOk(withNextActionHint("Phase skipped.", outcome.ferment))
 		},
 	})
 
@@ -491,16 +508,19 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 
 			// FSM validation: phase must be active to fail
 			const fsmError = validateFsmTransition(f, "FAIL_PHASE", { phaseId: phase.id })
-			if (fsmError) return toolErr(fsmError)
+			if (fsmError) return toolErrWithNextAction(fsmError, f)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "fail_phase",
 				phaseId: phase.id,
 				reason: params.reason,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error)
+			if (!outcome.ok) return failedToolResult(outcome.error, f)
 			return toolOk(
-				`Phase marked as failed: ${params.reason}. Use activate_ferment_phase to retry, skip_ferment_phase to bypass, or ask the user to run /ferment abandon if the ferment should stop.`,
+				withNextActionHint(
+					`Phase marked as failed: ${params.reason}. Use activate_ferment_phase to retry, skip_ferment_phase to bypass, or ask the user to run /ferment abandon if the ferment should stop.`,
+					outcome.ferment,
+				),
 			)
 		},
 	})

@@ -11,7 +11,12 @@ import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import { isRestoringModel, setRestoringModel } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
-import { applyPlannerOneshotAllowlist, disableFermentTools, setActiveFerment } from "./tool-scope.js"
+import {
+	applyFermentRuntimeToolProfile,
+	applyFermentToolProfile,
+	setActiveFermentAndApplyProfile,
+	setActiveFermentState,
+} from "./tool-scope.js"
 
 type AssistantContentPart = { type: string; text?: string; name?: string }
 type TurnEndContext = Partial<Pick<ExtensionContext, "ui">>
@@ -138,8 +143,10 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		disableFermentTools(pi)
-		if (process.env.KIMCHI_SUBAGENT === "1") return
+		if (process.env.KIMCHI_SUBAGENT === "1") {
+			applyFermentToolProfile(pi, "worker")
+			return
+		}
 		runtime.clearAllStepStarts()
 		runtime.clearAllScopingGates()
 		runtime.clearAllPendingScopes()
@@ -161,9 +168,11 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
 		} else if (pi.getFlag("ferment-oneshot") === true) {
 			pendingOneshot = true
-			setActiveFerment(pi, runtime, undefined)
+			setActiveFermentState(runtime, undefined)
+			applyFermentToolProfile(pi, "oneshot-planner")
 		} else {
-			setActiveFerment(pi, runtime, undefined)
+			pendingOneshot = false
+			setActiveFermentAndApplyProfile(pi, runtime, undefined)
 		}
 	})
 
@@ -208,7 +217,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			const f = storage.create(shortName, intent)
 			const modeOut = applyAndPersist(f.id, { type: "set_mode", mode: "exec" })
 			const updated = modeOut.ok ? modeOut.ferment : f
-			setActiveFerment(pi, runtime, updated)
+			setActiveFermentState(runtime, updated)
 			appendRefEntry(pi, updated.id)
 			pi.appendEntry("ferment_ack", {
 				text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nMode: exec (fully autonomous)`,
@@ -223,15 +232,18 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	})
 
 	pi.on("before_agent_start", async () => {
-		// In ferment-oneshot planner mode, restrict the active tool set to the
-		// allowlist so the planner can only orchestrate (no bash/edit/write/etc.).
-		// The planner system-prompt text itself is assembled via the
-		// SystemPromptBlock registered in index.ts. Subagent processes
-		// (KIMCHI_SUBAGENT=1) keep the full toolset.
-		const isOneshotPlanner = process.env.KIMCHI_SUBAGENT !== "1" && pi.getFlag("ferment-oneshot") === true
-		if (isOneshotPlanner) {
-			applyPlannerOneshotAllowlist(pi)
+		// pi-mono snapshots the active tool list when an agent run starts. Apply
+		// only run-static profiles here; lifecycle tools remain visible for the
+		// whole active planner run and invalid transitions are rejected by tools.
+		if (process.env.KIMCHI_SUBAGENT === "1") {
+			applyFermentToolProfile(pi, "worker")
+			return {}
 		}
+		if (pi.getFlag("ferment-oneshot") === true) {
+			applyFermentToolProfile(pi, "oneshot-planner")
+			return {}
+		}
+		applyFermentRuntimeToolProfile(pi, runtime)
 		return {}
 	})
 

@@ -187,7 +187,7 @@ describe("startStep", () => {
 		)
 		expect(okText(pauseResult)).toContain("paused")
 		expect(pauseHarness.storage.get(pauseHarness.fermentId)?.status).toBe("paused")
-		expect(pauseHarness.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(pauseHarness.pi.setActiveTools).not.toHaveBeenCalled()
 
 		const skipHarness = createHarness()
 		const skipServices = createServices()

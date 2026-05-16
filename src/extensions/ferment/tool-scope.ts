@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
+import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import type { FermentRuntime } from "./runtime.js"
 
 export const FERMENT_TOOL_NAMES = [
@@ -26,18 +27,27 @@ export const FERMENT_TOOL_NAMES = [
 
 const FERMENT_TOOL_NAME_SET = new Set<string>(FERMENT_TOOL_NAMES)
 
+export type FermentToolProfile = "idle" | "planner-active" | "paused-terminal" | "worker" | "oneshot-planner"
+
+const IDLE_FERMENT_TOOL_NAMES = ["create_ferment", "list_ferments"] as const
+const PAUSED_TERMINAL_FERMENT_TOOL_NAMES = ["list_ferments"] as const
+
 /**
  * Tools the planner is allowed to call directly in `ferment-oneshot` mode.
  * Everything else (bash, edit, write, web_search, grep, …) must be delegated
  * to a subagent worker — the whole point of one-shot orchestration is that
  * the planner orchestrates and workers execute.
  *
+ * `create_ferment` is intentionally excluded: one-shot bootstraps exactly one
+ * ferment before the planner run starts.
  * `read` stays available so `complete_ferment_step` can sanity-check a worker's diff
  * without spawning a verification subagent.
  * `get_subagent_result` is required for background Agent calls.
  */
+const PLANNER_ONESHOT_FERMENT_TOOL_NAMES = FERMENT_TOOL_NAMES.filter((name) => name !== "create_ferment")
+
 export const PLANNER_ONESHOT_ALLOWLIST = new Set<string>([
-	...FERMENT_TOOL_NAMES,
+	...PLANNER_ONESHOT_FERMENT_TOOL_NAMES,
 	// Delegation tool: the higher-level persona-based `Agent`
 	// (`src/extensions/agents/index.ts:590`). The orchestrator picks the
 	// worker model from its registry; ferment no longer prescribes it.
@@ -53,40 +63,94 @@ export const PLANNER_ONESHOT_ALLOWLIST = new Set<string>([
 	"set_phase",
 ])
 
-export function disableFermentTools(pi: ExtensionAPI): void {
-	pi.setActiveTools(pi.getActiveTools().filter((name) => !FERMENT_TOOL_NAME_SET.has(name)))
-}
-
-export function enableFermentTools(pi: ExtensionAPI): void {
-	const activeWithoutFerment = pi.getActiveTools().filter((name) => !FERMENT_TOOL_NAME_SET.has(name))
-	const registeredFermentTools = pi
+function registeredFermentToolNames(pi: ExtensionAPI): string[] {
+	return pi
 		.getAllTools()
 		.map((tool) => tool.name)
 		.filter((name) => FERMENT_TOOL_NAME_SET.has(name))
-
-	pi.setActiveTools([...new Set([...activeWithoutFerment, ...registeredFermentTools])])
 }
 
-export function shouldEnableFermentTools(ferment: Ferment | undefined): boolean {
-	return (
-		ferment !== undefined &&
-		ferment.status !== "paused" &&
-		ferment.status !== "complete" &&
-		ferment.status !== "abandoned"
-	)
-}
-
-export function syncFermentToolScope(pi: ExtensionAPI, ferment: Ferment | undefined): void {
-	if (shouldEnableFermentTools(ferment)) {
-		enableFermentTools(pi)
-	} else {
-		disableFermentTools(pi)
+function allowedFermentToolNamesForProfile(profile: FermentToolProfile): readonly string[] {
+	switch (profile) {
+		case "idle":
+			return IDLE_FERMENT_TOOL_NAMES
+		case "planner-active":
+			return FERMENT_TOOL_NAMES
+		case "oneshot-planner":
+			return PLANNER_ONESHOT_FERMENT_TOOL_NAMES
+		case "paused-terminal":
+			return PAUSED_TERMINAL_FERMENT_TOOL_NAMES
+		case "worker":
+			return []
 	}
 }
 
-export function setActiveFerment(pi: ExtensionAPI, runtime: FermentRuntime, ferment: Ferment | undefined): void {
+export function profileForFerment(ferment: Ferment | undefined): FermentToolProfile {
+	if (process.env.KIMCHI_SUBAGENT === "1") return "worker"
+	if (!ferment) return "idle"
+	if (ferment.status === "paused" || ferment.status === "complete" || ferment.status === "abandoned") {
+		return "paused-terminal"
+	}
+	return "planner-active"
+}
+
+export class FermentToolScope {
+	private readonly visibility: ToolVisibilityAPI
+
+	constructor(private readonly pi: ExtensionAPI) {
+		this.visibility = createToolVisibility(pi)
+	}
+
+	applyProfile(profile: FermentToolProfile): void {
+		if (profile === "oneshot-planner") {
+			// One-shot is an intentionally session-static allowlist that also
+			// curates non-ferment tools. Treat it as the master profile instead
+			// of mixing direct allowlist writes with cooperative ferment votes.
+			applyPlannerOneshotAllowlist(this.pi)
+			return
+		}
+
+		const registered = registeredFermentToolNames(this.pi)
+		const allowed = new Set(allowedFermentToolNamesForProfile(profile))
+		const allowedRegistered = registered.filter((name) => allowed.has(name))
+
+		// Ferment owns only its own tools. Static profiles are applied before a
+		// run starts; pi-mono will snapshot the resulting tool list for that run.
+		this.visibility.disable(registered)
+		this.visibility.enable(allowedRegistered)
+	}
+}
+
+const scopesByPi = new WeakMap<ExtensionAPI, FermentToolScope>()
+
+export function getFermentToolScope(pi: ExtensionAPI): FermentToolScope {
+	let scope = scopesByPi.get(pi)
+	if (!scope) {
+		scope = new FermentToolScope(pi)
+		scopesByPi.set(pi, scope)
+	}
+	return scope
+}
+
+export function applyFermentToolProfile(pi: ExtensionAPI, profile: FermentToolProfile): void {
+	getFermentToolScope(pi).applyProfile(profile)
+}
+
+export function applyFermentRuntimeToolProfile(pi: ExtensionAPI, runtime: FermentRuntime): void {
+	applyFermentToolProfile(pi, profileForFerment(runtime.getActive()))
+}
+
+export function setActiveFermentState(runtime: FermentRuntime, ferment: Ferment | undefined): void {
 	runtime.setActive(ferment)
-	syncFermentToolScope(pi, ferment)
+}
+
+export function setActiveFermentAndApplyProfile(
+	pi: ExtensionAPI,
+	runtime: FermentRuntime,
+	ferment: Ferment | undefined,
+): void {
+	runtime.setActive(ferment)
+	applyFermentToolProfile(pi, profileForFerment(ferment))
 }
 
 /**
