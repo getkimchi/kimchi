@@ -65,8 +65,9 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 			if (ctx.model?.provider && ctx.model?.id) {
 				providerModel = { provider: ctx.model.provider, model: ctx.model.id }
 			}
-		} catch {
-			// stale ctx — ignore
+		} catch (err) {
+			if (err instanceof Error && err.message.startsWith("This extension ctx is stale")) return
+			throw err
 		}
 	})
 

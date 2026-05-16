@@ -621,8 +621,9 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		let model: { provider?: string; id?: string } | undefined
 		try {
 			model = ctx.model ?? undefined
-		} catch {
-			return
+		} catch (err) {
+			if (err instanceof Error && err.message.startsWith("This extension ctx is stale")) return
+			throw err
 		}
 		if (model?.provider !== "kimchi-dev") return
 
