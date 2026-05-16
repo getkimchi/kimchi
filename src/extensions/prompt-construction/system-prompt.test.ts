@@ -265,7 +265,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("Subagent response protocol")
 			expect(result).toContain('{"summary":')
 			expect(result).toContain("Factual Accuracy")
-			expect(result).toContain("Tool and MCP Discovery")
+			expect(result).not.toContain("Tool and MCP Discovery")
 		})
 
 		it("does not contain orchestration instructions", () => {
