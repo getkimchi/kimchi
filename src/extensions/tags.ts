@@ -23,6 +23,7 @@ import type {
 import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
+import { isStaleCtxError } from "./stale-ctx.js"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -622,7 +623,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		try {
 			model = ctx.model ?? undefined
 		} catch (err) {
-			if (err instanceof Error && err.message.startsWith("This extension ctx is stale")) return
+			if (isStaleCtxError(err)) return
 			throw err
 		}
 		if (model?.provider !== "kimchi-dev") return

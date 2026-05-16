@@ -6,6 +6,7 @@ import { Container, Text } from "@earendil-works/pi-tui"
 import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
 import { SkillManager } from "../skills-manager/skill-manager.js"
 import { UsageTracker } from "../skills-manager/usage.js"
+import { isStaleCtxError } from "../stale-ctx.js"
 import { debugLog, runCuratorReview, spawnSessionReview } from "./review.js"
 import { loadState, saveState, shouldRunNow } from "./state.js"
 import type { CuratorState } from "./state.js"
@@ -66,7 +67,7 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 				providerModel = { provider: ctx.model.provider, model: ctx.model.id }
 			}
 		} catch (err) {
-			if (err instanceof Error && err.message.startsWith("This extension ctx is stale")) return
+			if (isStaleCtxError(err)) return
 			throw err
 		}
 	})
