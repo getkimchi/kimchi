@@ -17,12 +17,10 @@
  *   - state.ts          (persisted runtime state, lazily hydrated)
  *   - engine.ts         (determineNextAction — what the agent should do next)
  *   - fsm-adapter.ts    (computeFsmState — current FSM cell)
- *   - planner-supplement.ts (consumer; today reads pieces directly, can be
- *                            simplified to read the struct)
  *
- * Not consumed yet by tool handlers — those still read their specific bits.
- * The function is provided so future debug/status commands and the
- * planner-supplement can converge on a single source of truth.
+ * Not consumed yet by tool handlers or prompt-block.ts — those still read
+ * their specific bits. The function is provided so future debug/status
+ * commands can converge on a single source of truth.
  */
 
 import { type DeclarativeAction, determineNextAction } from "../../ferment/engine.js"

@@ -114,7 +114,7 @@ export interface AskUserContext {
 	ctx?: { ui?: Partial<FermentUi> }
 	/** Optional. When provided, `askUser` calls `runtime.markHumanInput()`
 	 *  on user-answered responses so downstream signals (nudge throttling,
-	 *  planner-supplement freshness) reflect the interaction. */
+	 *  prompt-block freshness) reflect the interaction. */
 	runtime?: Pick<FermentRuntime, "markHumanInput">
 }
 
@@ -587,7 +587,7 @@ export async function askUser(
 			}
 		}
 		// Side effect: mark human input so downstream signals (nudge throttling,
-		// planner-supplement freshness) reflect that the user just interacted.
+		// prompt-block freshness) reflect that the user just interacted.
 		// Skipped for judge-answered responses since no human was involved.
 		context.runtime?.markHumanInput()
 		return { choice: answer.value, response_type: "single", answered_by: "user" }
