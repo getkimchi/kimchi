@@ -615,8 +615,16 @@ export default function tagsExtension(pi: ExtensionAPI) {
 
 	// Inject tags into every LLM request
 	pi.on("before_provider_request", async (event, ctx) => {
-		// Tags are a Cast AI-specific API field; skip for other providers
-		if (ctx.model?.provider !== "kimchi-dev") return
+		// Tags are a Cast AI-specific API field; skip for other providers.
+		// If a request from a torn-down session reaches us after `/new` (etc.),
+		// any ctx getter throws via assertActive — bail silently in that case.
+		let model: { provider?: string; id?: string } | undefined
+		try {
+			model = ctx.model ?? undefined
+		} catch {
+			return
+		}
+		if (model?.provider !== "kimchi-dev") return
 
 		const payload = event.payload as Record<string, unknown> | null
 		if (!payload || typeof payload !== "object") return
@@ -625,8 +633,8 @@ export default function tagsExtension(pi: ExtensionAPI) {
 
 		// Build reserved tags first (model + phase) so they are never dropped by the cap
 		const reservedTags: string[] = []
-		if (ctx.model?.id) {
-			reservedTags.push(`model:${ctx.model.id}`)
+		if (model?.id) {
+			reservedTags.push(`model:${model.id}`)
 		}
 		const phaseTag = tagManager.getPhaseTag()
 		if (phaseTag) {
