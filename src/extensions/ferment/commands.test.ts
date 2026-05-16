@@ -44,7 +44,12 @@ function createHarness() {
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		getActiveTools: vi.fn(() => ["read", "bash"]),
-		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "create_ferment" }, { name: "start_step" }]),
+		getAllTools: vi.fn(() => [
+			{ name: "read" },
+			{ name: "bash" },
+			{ name: "create_ferment" },
+			{ name: "start_ferment_step" },
+		]),
 		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
 	const ctx = {
@@ -200,7 +205,7 @@ describe("registerFermentCommands", () => {
 		await autoCommand.handler("", h.ctx)
 
 		expect(active.status).toBe("running")
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "create_ferment", "start_step"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "create_ferment", "start_ferment_step"])
 	})
 
 	it("/pause transitions running ferment to paused status", async () => {
@@ -338,7 +343,7 @@ describe("registerFermentCommands", () => {
 		expect(h.runtime.setAutoModeEnabled).toHaveBeenCalledWith(true)
 		expect(active.status).toBe("running")
 		expect(active.phases[0].status).toBe("active")
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "create_ferment", "start_step"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "create_ferment", "start_ferment_step"])
 
 		// Step 4: Verify setAutoModeEnabled was called with both false and true
 		expect(h.runtime.setAutoModeEnabled).toHaveBeenCalledTimes(2)

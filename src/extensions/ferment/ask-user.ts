@@ -17,7 +17,7 @@
  *
  * The agent-callable `ask_user` tool wraps this with a tool-error layer that
  * abandons the ferment when the judge can't be reached in one-shot mode.
- * Internal callers (plan-mode dropdowns, escalation, propose_scoping) check
+ * Internal callers (plan-mode dropdowns, escalation, propose_ferment_scoping) check
  * the `failed` flag and degrade gracefully.
  *
  * Detection of one-shot mode comes from the `ferment-oneshot` PI flag (set at

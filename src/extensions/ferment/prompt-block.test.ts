@@ -181,18 +181,18 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("flexible interface")
 		})
 
-		it("includes Upfront Contract directives mentioning propose_scoping", () => {
+		it("includes Upfront Contract directives mentioning propose_ferment_scoping", () => {
 			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime()) ?? ""
 			expect(out).toContain("Upfront Contract")
 			expect(out).toContain("Do not ask the user to confirm")
-			expect(out).toContain("propose_scoping")
+			expect(out).toContain("propose_ferment_scoping")
 			expect(out).toContain("Emit clarifying questions when the user's intent is short, vague")
 			expect(out).toContain("recommended: true")
 			expect(out).toContain("reason text")
 			expect(out).toContain("markdown style")
 			expect(out).toContain("Ask follow-up questions only for genuinely new")
 			expect(out).toContain("Never repeat, rephrase")
-			expect(out).toContain('After `propose_scoping` returns "Plan saved"')
+			expect(out).toContain('After `propose_ferment_scoping` returns "Plan saved"')
 		})
 
 		it("lists default subagent types when the registry is populated", () => {
@@ -209,7 +209,7 @@ describe("buildFermentPromptBlock", () => {
 			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime()) ?? ""
 			expect(out).toContain('ferment "Runtime Plan"')
 			// Phase-grade-based self-improvement was removed when per-phase grading
-			// went away. Corrective-step pipeline now lives in complete_phase
+			// went away. Corrective-step pipeline now lives in complete_ferment_phase
 			// retries — surfaced via tool error text, not via a prompt section.
 			expect(out).not.toContain("## Self-Improvement Feedback")
 		})

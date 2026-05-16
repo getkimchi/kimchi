@@ -1,5 +1,5 @@
 /**
- * Knowledge tools: add_decision and add_memory.
+ * Knowledge tools: add_ferment_decision and add_ferment_memory.
  *
  * Both append to the active ferment's persisted knowledge log. The system
  * prompt supplement injects these into the planner's context every turn — see
@@ -16,7 +16,7 @@ import { DecisionParams, MemoryParams } from "../tool-schemas.js"
 export function registerKnowledgeTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
 	pi.registerTool({
-		name: "add_decision",
+		name: "add_ferment_decision",
 		label: "Add Decision",
 		description: "Record a decision.",
 		parameters: DecisionParams,
@@ -35,7 +35,7 @@ export function registerKnowledgeTools(pi: ExtensionAPI, runtime: FermentRuntime
 	})
 
 	pi.registerTool({
-		name: "add_memory",
+		name: "add_ferment_memory",
 		label: "Add Memory",
 		description: "Record a memory.",
 		parameters: MemoryParams,

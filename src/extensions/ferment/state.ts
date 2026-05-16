@@ -205,7 +205,7 @@ export function clearAllScopingGates(): void {
 }
 
 // ─── Block-retry counter (per phase) ─────────────────────────────────────────
-// Key: `${fermentId}:${phaseId}`. Incremented every time complete_phase is
+// Key: `${fermentId}:${phaseId}`. Incremented every time complete_ferment_phase is
 // called and the reviewer emits at least one `block` flag. After
 // MAX_BLOCK_RETRIES the harness escalates to a user-permission prompt.
 //
@@ -252,8 +252,8 @@ export function recordBlockHashAndCheckRepeat(fermentId: string, phaseId: string
 }
 
 // ─── Step failure / completion counter (per step) ────────────────────────────
-// Used as a deterministic trigger for invoking the judge at complete_step.
-// Increments on every complete_step attempt (successful or not). The judge
+// Used as a deterministic trigger for invoking the judge at complete_ferment_step.
+// Increments on every complete_ferment_step attempt (successful or not). The judge
 // is asked to review only after a configurable threshold to keep token spend
 // low when work is going smoothly.
 
@@ -273,7 +273,7 @@ export function clearStepCompleteAttempt(fermentId: string, phaseId: string, ste
 }
 
 // ─── Phase-start git ref cache ────────────────────────────────────────────────
-// Captured at activate_phase, consumed at complete_phase so the gate-validation
+// Captured at activate_ferment_phase, consumed at complete_ferment_phase so the gate-validation
 // path can include diff evidence. Persisted to disk (see below) so the ref
 // survives a CLI restart. If unavailable (not a git repo, etc.) callers fall
 // back to summary-only handling.
@@ -292,7 +292,7 @@ export function getPhaseStartRef(fermentId: string, phaseId: string): string | u
 }
 
 // ─── Step-start git ref cache ────────────────────────────────────────────────
-// Captured at start_step, consumed at complete_step / verify_step so the
+// Captured at start_ferment_step, consumed at complete_ferment_step / verify_ferment_step so the
 // gate-evidence path can diff against the step's actual starting state instead
 // of the phase's. Symmetric with phaseStartRefs and identical lifetime
 // semantics (persisted, survives restart).

@@ -201,7 +201,7 @@ export interface JourneyPhaseInput {
 	name: string
 	goal: string
 	status: string
-	/** Per-phase gate verdicts from the successful complete_phase attempt
+	/** Per-phase gate verdicts from the successful complete_ferment_phase attempt
 	 *  (read from the on-disk review-evidence sidecar). Optional because
 	 *  legacy ferments may lack the sidecar — judge sees "(no verdicts on
 	 *  file)" in that case. */
@@ -257,7 +257,7 @@ Letter rubric (be strict):
 
 You will be given:
 - The ferment goal and success criteria.
-- A per-phase trail: name, goal, status, and the F-gate verdicts the agent provided at complete_phase.
+- A per-phase trail: name, goal, status, and the F-gate verdicts the agent provided at complete_ferment_phase.
 - The final C-gate verdicts the agent provided at complete_ferment.
 - The total diff (files changed + snippet) from ferment start to now.
 - The agent's final summary.

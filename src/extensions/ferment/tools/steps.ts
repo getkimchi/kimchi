@@ -1,7 +1,7 @@
 /**
- * Step tools: start_step, complete_step, verify_step, skip_step, fail_step.
+ * Step tools: start_ferment_step, complete_ferment_step, verify_ferment_step, skip_ferment_step, fail_ferment_step.
  *
- * complete_step is the largest — it auto-runs the verification command (with
+ * complete_ferment_step is the largest — it auto-runs the verification command (with
  * a 60s timeout), routes non-zero exits through the judge for pass/retry/fail
  * classification, then grades the step.
  */
@@ -159,7 +159,7 @@ What should we do?
 2) Skip this step and move on
 3) Pause the ferment for now
 
-Do NOT call start_step again without user input.`,
+Do NOT call start_ferment_step again without user input.`,
 			)
 		}
 
@@ -227,7 +227,7 @@ Do NOT call start_step again without user input.`,
 
 	const parallelNote =
 		parallelSiblings.length > 0
-			? `\nparallel_siblings: ${JSON.stringify(parallelSiblings)}\n\nThese steps are independent — call start_step for each one now and launch their Agents concurrently. Do not wait for one to finish before starting the next.`
+			? `\nparallel_siblings: ${JSON.stringify(parallelSiblings)}\n\nThese steps are independent — call start_ferment_step for each one now and launch their Agents concurrently. Do not wait for one to finish before starting the next.`
 			: ""
 
 	const workerContext =
@@ -237,7 +237,7 @@ Do NOT call start_step again without user input.`,
 		: ""
 
 	return toolOk(
-		`Step ${step.index}: "${step.description}" started.\nphase_id: ${phase.id}\nstep_id: ${step.id}\n\nLaunch an Agent now with subagent_type "general-purpose". When it returns, call complete_step with its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
+		`Step ${step.index}: "${step.description}" started.\nphase_id: ${phase.id}\nstep_id: ${step.id}\n\nLaunch an Agent now with subagent_type "general-purpose". When it returns, call complete_ferment_step with its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
 	)
 }
 
@@ -264,10 +264,10 @@ export async function completeStep(
 	// feed the phase retry/escalation pipeline — they just refuse this single
 	// call, and the agent has to fix the underlying issue and re-call.
 	const gateError = validateGatesOrErr(params.gates, {
-		turn: "complete_step",
+		turn: "complete_ferment_step",
 		flagPolicy: "block-on-flag",
 		renderFlagError: (count, lines) =>
-			`Step ${step.index}: "${step.description}" cannot complete — agent self-flagged on ${count} step gate(s):\n\n${lines}\n\nResolve the underlying issue and re-call complete_step with verdicts of 'pass' (or 'omitted' with rationale if a gate truly does not apply).`,
+			`Step ${step.index}: "${step.description}" cannot complete — agent self-flagged on ${count} step gate(s):\n\n${lines}\n\nResolve the underlying issue and re-call complete_ferment_step with verdicts of 'pass' (or 'omitted' with rationale if a gate truly does not apply).`,
 	})
 	if (gateError) return gateError
 
@@ -363,7 +363,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 		onStepCompleted: () => onStepCompleted(runtime),
 	}
 	pi.registerTool({
-		name: "start_step",
+		name: "start_ferment_step",
 		label: "Start Step",
 		description:
 			"Mark a step as running. Returns parallel_siblings. See planner instructions in the system prompt for orchestration details.",
@@ -374,11 +374,11 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 	})
 
 	pi.registerTool({
-		name: "complete_step",
+		name: "complete_ferment_step",
 		label: "Complete Step",
-		description: `Mark step as done. If the step has a verification command it runs automatically — no need to call verify_step separately. You must produce verdicts for the three step-scope gates below. A "flag" verdict blocks step completion.
+		description: `Mark step as done. If the step has a verification command it runs automatically — no need to call verify_ferment_step separately. You must produce verdicts for the three step-scope gates below. A "flag" verdict blocks step completion.
 
-${renderGateGuidance("complete_step")}`,
+${renderGateGuidance("complete_ferment_step")}`,
 		parameters: CompleteStepParams,
 		async execute(_, params, signal, onUpdate, ctx) {
 			return completeStep(runtime, params, { pi, ctx, signal, onUpdate }, stepServices)
@@ -386,7 +386,7 @@ ${renderGateGuidance("complete_step")}`,
 	})
 
 	pi.registerTool({
-		name: "verify_step",
+		name: "verify_ferment_step",
 		label: "Verify Step",
 		description: "Run verification command and record result.",
 		parameters: VerifyParams,
@@ -455,7 +455,7 @@ ${renderGateGuidance("complete_step")}`,
 	})
 
 	pi.registerTool({
-		name: "skip_step",
+		name: "skip_ferment_step",
 		label: "Skip Step",
 		description: "Skip a step.",
 		parameters: StepActionParams,
@@ -484,7 +484,7 @@ ${renderGateGuidance("complete_step")}`,
 	})
 
 	pi.registerTool({
-		name: "fail_step",
+		name: "fail_ferment_step",
 		label: "Fail Step",
 		description: "Mark a step as failed with an error message.",
 		parameters: FailStepParams,
@@ -509,7 +509,7 @@ ${renderGateGuidance("complete_step")}`,
 			if (!outcome.ok) return failedToolResult(outcome.error)
 			onStepCompleted(runtime)
 			return toolOk(
-				`Step ${step.index}: "${step.description}" marked as failed. Use skip_step to skip it, or retry the work and call start_step again.`,
+				`Step ${step.index}: "${step.description}" marked as failed. Use skip_ferment_step to skip it, or retry the work and call start_ferment_step again.`,
 			)
 		},
 	})

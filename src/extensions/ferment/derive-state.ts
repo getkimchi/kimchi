@@ -57,7 +57,7 @@ export interface PhaseRetryBudget {
 	phaseId: string
 	used: number
 	max: number
-	/** True when used >= max — one more block-flagged complete_phase call will
+	/** True when used >= max — one more block-flagged complete_ferment_phase call will
 	 *  trigger escalation (or has already). */
 	atRiskOfEscalation: boolean
 }
@@ -74,7 +74,7 @@ export interface DerivedFermentState {
 	/** Retry budget for the active phase — only present when retries have been
 	 *  used. `at_risk` callers can surface this in prompts / dashboards. */
 	phaseRetry?: PhaseRetryBudget
-	/** Git refs captured at activate_phase / start_step. Available even after
+	/** Git refs captured at activate_ferment_phase / start_ferment_step. Available even after
 	 *  a restart thanks to Step B persistence. */
 	phaseStartRef?: string
 	stepStartRef?: string
@@ -101,7 +101,7 @@ function blockedReason(ferment: Ferment): { reason: string; recoveryHint?: strin
 		case "paused":
 			return {
 				reason: "Ferment is paused.",
-				recoveryHint: "Resume with /ferment resume or activate_phase after the issue is addressed.",
+				recoveryHint: "Resume with /ferment resume or activate_ferment_phase after the issue is addressed.",
 			}
 		case "abandoned":
 			return {

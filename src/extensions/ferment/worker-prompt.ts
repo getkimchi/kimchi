@@ -1,7 +1,7 @@
 /**
  * Worker prompt builder.
  *
- * `start_step` returns a structured WORKER CONTEXT block the planner can paste
+ * `start_ferment_step` returns a structured WORKER CONTEXT block the planner can paste
  * into the subagent's prompt verbatim. Without this, every spawn re-asks the
  * planner to "describe what to implement" — and the planner does so from the
  * step description alone, missing phase goal and prior-step continuity.

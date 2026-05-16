@@ -6,6 +6,7 @@ import { computeStats, serializeStats } from "../../ferment/stats.js"
 import { FermentError } from "../../ferment/store.js"
 import type { FermentWorkMode } from "../../ferment/types.js"
 import { exitSplashMode } from "../ui.js"
+import { formatActionNudgeLine } from "./action-tool-names.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { formatFermentStatus } from "./format.js"
@@ -211,7 +212,7 @@ export class FermentCommandController {
 				ctx.ui.notify(`Mode changed to: ${modeArg}.${hint}`)
 
 				const action = determineNextAction(updated)
-				const nudge = `${action.kind}: ${action.reason}`
+				const nudge = formatActionNudgeLine(action)
 				if (nudge) {
 					pi.appendEntry("ferment_breadcrumb", {
 						text: `Mode changed to ${modeArg}: "${updated.name}" [${updated.status}]`,

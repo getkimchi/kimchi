@@ -5,11 +5,11 @@
  *
  *   1. `runScopingFlow` shows ONE free-form text input ("What do you want to
  *      do?"). On non-empty input it seeds the pending-scope buffer and fires a
- *      single LLM turn asking the model to call `propose_scoping` with the
+ *      single LLM turn asking the model to call `propose_ferment_scoping` with the
  *      full draft (goal, criteria, constraints, assumptions, phases, and
  *      optional clarifying questions).
  *
- *   2. `propose_scoping` (the tool) validates P-gates, replaces the buffer
+ *   2. `propose_ferment_scoping` (the tool) validates P-gates, replaces the buffer
  *      wholesale, shows a combined dropdown, and either confirms the scope or
  *      queues a re-run turn for iteration.
  *
@@ -26,7 +26,7 @@ import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 
 // ─── Pending scope buffer ─────────────────────────────────────────────────────
 // Seeded as an empty buffer by runScopingFlow, then replaced wholesale by
-// propose_scoping on each call. Held until the user confirms via dropdown.
+// propose_ferment_scoping on each call. Held until the user confirms via dropdown.
 
 export interface PendingScope {
 	goal: string
@@ -34,7 +34,7 @@ export interface PendingScope {
 	constraints: string[]
 	phases?: ScopePhaseInput[]
 	assumptions?: string
-	/** Number of times propose_scoping has been called for this ferment. Reset on confirm. */
+	/** Number of times propose_ferment_scoping has been called for this ferment. Reset on confirm. */
 	proposeIterations?: number
 }
 
@@ -136,7 +136,7 @@ export async function runScopingFlow(
 
 	exitSplashMode(ctx)
 	runtime.markScopingInteractive(f.id)
-	// Seed an empty buffer so propose_scoping detects the interactive flow is active.
+	// Seed an empty buffer so propose_ferment_scoping detects the interactive flow is active.
 	runtime.setPendingScope(f.id, { goal: "", successCriteria: "", constraints: [] })
 	if (preIntent === undefined) {
 		sendFermentRequestMessage(pi, intent)
@@ -148,7 +148,7 @@ export async function runScopingFlow(
 			content: [
 				{
 					type: "text",
-					text: `User wants to ferment "${f.name}": ${intent}\n\nDraft a complete Scoping (goal, success_criteria, constraints, assumptions) AND 3-7 phases AND clarifying questions ONLY where you're genuinely uncertain. Call propose_scoping with everything. Don't research with file/bash tools first.`,
+					text: `User wants to ferment "${f.name}": ${intent}\n\nDraft a complete Scoping (goal, success_criteria, constraints, assumptions) AND 3-7 phases AND clarifying questions ONLY where you're genuinely uncertain. Call propose_ferment_scoping with everything. Don't research with file/bash tools first.`,
 				},
 			],
 			display: false,

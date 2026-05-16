@@ -22,8 +22,13 @@ function createHarness(options: { phases?: number } = {}) {
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		appendEntry: vi.fn(),
-		getActiveTools: vi.fn(() => ["read", "bash", "complete_phase", "start_step"]),
-		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "complete_phase" }, { name: "start_step" }]),
+		getActiveTools: vi.fn(() => ["read", "bash", "complete_ferment_phase", "start_ferment_step"]),
+		getAllTools: vi.fn(() => [
+			{ name: "read" },
+			{ name: "bash" },
+			{ name: "complete_ferment_phase" },
+			{ name: "start_ferment_step" },
+		]),
 		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
 	const ferment = storage.create("Phase Test")
@@ -242,20 +247,20 @@ describe("registerPhaseTools", () => {
 			sendUserMessage: vi.fn(),
 			appendEntry: vi.fn(),
 			sendMessage: vi.fn(),
-			getActiveTools: vi.fn(() => ["read", "bash", "complete_phase", "start_step"]),
+			getActiveTools: vi.fn(() => ["read", "bash", "complete_ferment_phase", "start_ferment_step"]),
 			getAllTools: vi.fn(() => [
 				{ name: "read" },
 				{ name: "bash" },
-				{ name: "complete_phase" },
-				{ name: "start_step" },
+				{ name: "complete_ferment_phase" },
+				{ name: "start_ferment_step" },
 			]),
 			setActiveTools: vi.fn(),
 		} as unknown as ExtensionAPI
 		registerPhaseTools(pi, h.runtime)
 
 		const selectSpy = vi.fn()
-		const completePhaseTool = tools.get("complete_phase")
-		if (!completePhaseTool) throw new Error("complete_phase was not registered")
+		const completePhaseTool = tools.get("complete_ferment_phase")
+		if (!completePhaseTool) throw new Error("complete_ferment_phase was not registered")
 
 		// Call with plan-mode UI injected — runtime uses injected storage (not global active).
 		const result = (await completePhaseTool.execute(

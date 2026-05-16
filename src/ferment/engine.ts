@@ -232,7 +232,7 @@ function toFermentAction(action: DeclarativeAction, ferment: Ferment): FermentAc
 			return {
 				kind: "recover_phase",
 				phaseId: action.phaseId,
-				message: `Phase ${phase?.index} "${phase?.name}" failed. Retry it with activate_phase, bypass it with skip_phase, or ask the user to run /ferment abandon if the ferment should stop.`,
+				message: `Phase ${phase?.index} "${phase?.name}" failed. Retry it with activate_ferment_phase, bypass it with skip_ferment_phase, or ask the user to run /ferment abandon if the ferment should stop.`,
 			}
 
 		case "noop":

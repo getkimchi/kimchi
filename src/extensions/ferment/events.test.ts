@@ -16,8 +16,13 @@ function createPi() {
 		appendEntry: vi.fn(),
 		registerFlag: vi.fn(),
 		getFlag: vi.fn(),
-		getActiveTools: vi.fn(() => ["read", "bash", "create_ferment", "start_step"]),
-		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "create_ferment" }, { name: "start_step" }]),
+		getActiveTools: vi.fn(() => ["read", "bash", "create_ferment", "start_ferment_step"]),
+		getAllTools: vi.fn(() => [
+			{ name: "read" },
+			{ name: "bash" },
+			{ name: "create_ferment" },
+			{ name: "start_ferment_step" },
+		]),
 		setActiveTools: vi.fn(),
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
@@ -75,7 +80,7 @@ describe("registerFermentEvents", () => {
 			{ name: "Agent" },
 			{ name: "get_subagent_result" },
 			{ name: "scope_ferment" },
-			{ name: "start_step" },
+			{ name: "start_ferment_step" },
 		])
 
 		registerFermentEvents(pi, runtime)
@@ -93,7 +98,7 @@ describe("registerFermentEvents", () => {
 		expect(lastCall).toContain("Agent")
 		expect(lastCall).toContain("get_subagent_result")
 		expect(lastCall).toContain("scope_ferment")
-		expect(lastCall).toContain("start_step")
+		expect(lastCall).toContain("start_ferment_step")
 	})
 
 	it("does not set systemPrompt from before_agent_start in oneshot planner mode", async () => {
@@ -105,7 +110,7 @@ describe("registerFermentEvents", () => {
 		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue([
 			{ name: "Agent" },
 			{ name: "read" },
-			{ name: "start_step" },
+			{ name: "start_ferment_step" },
 		])
 
 		registerFermentEvents(pi, runtime)

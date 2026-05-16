@@ -39,8 +39,13 @@ function createHarness(options: { verification?: string; goal?: string; successC
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		appendEntry: vi.fn(),
-		getActiveTools: vi.fn(() => ["read", "bash", "start_step", "complete_step"]),
-		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "start_step" }, { name: "complete_step" }]),
+		getActiveTools: vi.fn(() => ["read", "bash", "start_ferment_step", "complete_ferment_step"]),
+		getAllTools: vi.fn(() => [
+			{ name: "read" },
+			{ name: "bash" },
+			{ name: "start_ferment_step" },
+			{ name: "complete_ferment_step" },
+		]),
 		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
 	const ferment = storage.create("Step Test")
@@ -201,7 +206,7 @@ describe("startStep", () => {
 })
 
 describe("registerStepTools", () => {
-	it("registers start_step against the injected runtime storage", async () => {
+	it("registers start_ferment_step against the injected runtime storage", async () => {
 		const h = createHarness()
 		const tools = new Map<string, RegisteredTool>()
 		const pi = {
@@ -214,8 +219,8 @@ describe("registerStepTools", () => {
 		} as unknown as ExtensionAPI
 		registerStepTools(pi, h.runtime)
 
-		const startTool = tools.get("start_step")
-		if (!startTool) throw new Error("start_step was not registered")
+		const startTool = tools.get("start_ferment_step")
+		if (!startTool) throw new Error("start_ferment_step was not registered")
 		const result = (await startTool.execute("test-call-id", {
 			ferment_id: h.fermentId,
 			phase_id: "phase-1",

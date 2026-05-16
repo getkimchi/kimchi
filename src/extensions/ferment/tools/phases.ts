@@ -1,7 +1,7 @@
 /**
- * Phase tools: activate_phase, refine_phase, complete_phase, skip_phase, fail_phase.
+ * Phase tools: activate_ferment_phase, refine_ferment_phase, complete_ferment_phase, skip_ferment_phase, fail_ferment_phase.
  *
- * complete_phase is the most complex — in plan mode it surfaces a TUI dropdown
+ * complete_ferment_phase is the most complex — in plan mode it surfaces a TUI dropdown
  * with a structured phase review and returns the user's choice in the tool
  * result. It must not queue follow-up user messages from the tool handler.
  */
@@ -112,7 +112,7 @@ export async function completePhase(
 	const phase = resolvePhase(f, params.phase_id)
 	if (!phase) return toolErr("Phase not found.")
 
-	// FSM validation: complete_phase requires all phases to be terminal
+	// FSM validation: complete_ferment_phase requires all phases to be terminal
 	const fsmError = validateFsmTransition(f, "COMPLETE_PHASE", { phaseId: phase.id })
 	if (fsmError) return toolErr(fsmError)
 
@@ -121,7 +121,7 @@ export async function completePhase(
 	// retry/escalation pipeline below via flagsFromGateVerdicts. Coverage
 	// failure or malformed shape still return a tool error immediately.
 	const gateError = validateGatesOrErr(params.gates, {
-		turn: "complete_phase",
+		turn: "complete_ferment_phase",
 		flagPolicy: "coverage-only",
 	})
 	if (gateError) return gateError
@@ -177,7 +177,7 @@ export async function completePhase(
 
 	// Step 3: if either the reviewer or the project checks raised block flags,
 	// refuse phase advancement. This is the self-heal loop: agent gets
-	// concrete redirects, fixes the work, and calls complete_phase again.
+	// concrete redirects, fixes the work, and calls complete_ferment_phase again.
 	// Block-retry counter bounds the loop at MAX_BLOCK_RETRIES; on overflow
 	// we escalate to the user.
 	//
@@ -262,7 +262,7 @@ export async function completePhase(
 			// the agent's recovery surface for the next attempt.
 			const projectChecksNote = projectChecks.discovered ? `\n${projectCheckSummary}` : ""
 			return toolErr(
-				`Phase "${phase.name}" cannot complete — reviewer raised ${blockFlags.length} block flag(s) (retry ${retry}/${MAX_BLOCK_RETRIES}).${projectChecksNote}\n\n${flagLines}${warnLines}\n\nFix the issues above and call complete_phase again with an updated summary.`,
+				`Phase "${phase.name}" cannot complete — reviewer raised ${blockFlags.length} block flag(s) (retry ${retry}/${MAX_BLOCK_RETRIES}).${projectChecksNote}\n\n${flagLines}${warnLines}\n\nFix the issues above and call complete_ferment_phase again with an updated summary.`,
 			)
 		}
 	}
@@ -309,7 +309,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 		onPhaseCompleted: () => onPhaseCompleted(runtime),
 	}
 	pi.registerTool({
-		name: "activate_phase",
+		name: "activate_ferment_phase",
 		label: "Activate Phase",
 		description: "Start a planned phase.",
 		parameters: ActivateParams,
@@ -356,14 +356,14 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 						const stepList =
 							gp.steps.length > 0
 								? `\n    Steps:\n${gp.steps.map((st) => `      ${st.index}. [${st.id}] ${st.description}`).join("\n")}`
-								: "\n    No steps yet — call refine_phase to populate them."
+								: "\n    No steps yet — call refine_ferment_phase to populate them."
 						return `  ∥ [${gp.id}] ${gp.index}. "${gp.name}"${stepList}`
 					})
 					.join("\n")
 				const dm = formatDecisionsAndMemories(fresh)
 				const dmSection = dm ? `\n\n${dm}` : ""
 				return toolOk(
-					`Parallel group ${target.groupIndex} activated (${groupPhases.length} phases running concurrently).\nferment_id: ${fresh.id}\nparallel_group: ${target.groupIndex}\nphase_ids: ${groupPhases.map((p) => p.id).join(", ")}\n\n${phaseLines}\n\nRun all parallel phases concurrently: call refine_phase + start_step for each phase simultaneously.${dmSection}`,
+					`Parallel group ${target.groupIndex} activated (${groupPhases.length} phases running concurrently).\nferment_id: ${fresh.id}\nparallel_group: ${target.groupIndex}\nphase_ids: ${groupPhases.map((p) => p.id).join(", ")}\n\n${phaseLines}\n\nRun all parallel phases concurrently: call refine_ferment_phase + start_ferment_step for each phase simultaneously.${dmSection}`,
 				)
 			}
 
@@ -379,7 +379,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			const stepList =
 				activated && activated.steps.length > 0
 					? `\nSteps:\n${activated.steps.map((st) => `  ${st.index}. [${st.id}] ${st.description}`).join("\n")}`
-					: "\nNo steps yet — call refine_phase to populate them."
+					: "\nNo steps yet — call refine_ferment_phase to populate them."
 			const dm = formatDecisionsAndMemories(fresh)
 			const dmSection = dm ? `\n\n${dm}` : ""
 			return toolOk(
@@ -389,9 +389,10 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 	})
 
 	pi.registerTool({
-		name: "refine_phase",
+		name: "refine_ferment_phase",
 		label: "Refine Phase",
-		description: "Add steps to an active phase. Overwrites existing. Use the phase_id returned by activate_phase.",
+		description:
+			"Add steps to an active phase. Overwrites existing. Use the phase_id returned by activate_ferment_phase.",
 		parameters: RefineParams,
 		async execute(_, params) {
 			// Phase resolution: exact id → name substring → active phase fallback.
@@ -414,7 +415,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				)
 			}
 
-			// FSM validation: refine_phase is only valid in PHASE_ACTIVE state
+			// FSM validation: refine_ferment_phase is only valid in PHASE_ACTIVE state
 			const fsmError = validateFsmTransition(f, "REFINE_PHASE", { phaseId: phase.id })
 			if (fsmError) return toolErr(fsmError)
 
@@ -434,17 +435,17 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			const refined = outcome.ferment.phases.find((p) => p.id === phase.id)
 			const stepList = refined?.steps.map((st, i) => `  ${i + 1}. [step-${i + 1}] ${st.description}`).join("\n") ?? ""
 			return toolOk(
-				`"${phase.name}" refined with ${refined?.steps.length ?? 0} step(s).\nferment_id: ${outcome.ferment.id}\nphase_id: ${phase.id}\n${stepList}\nCall start_step with step_id to begin.`,
+				`"${phase.name}" refined with ${refined?.steps.length ?? 0} step(s).\nferment_id: ${outcome.ferment.id}\nphase_id: ${phase.id}\n${stepList}\nCall start_ferment_step with step_id to begin.`,
 			)
 		},
 	})
 
 	pi.registerTool({
-		name: "complete_phase",
+		name: "complete_ferment_phase",
 		label: "Complete Phase",
 		description: `Mark phase as completed. You must produce verdicts for the three phase-scope gates below. A "flag" verdict refuses advancement.
 
-${renderGateGuidance("complete_phase")}`,
+${renderGateGuidance("complete_ferment_phase")}`,
 		parameters: CompletePhaseParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
 			return completePhase(runtime, params, { pi, ctx }, phaseServices)
@@ -452,7 +453,7 @@ ${renderGateGuidance("complete_phase")}`,
 	})
 
 	pi.registerTool({
-		name: "skip_phase",
+		name: "skip_ferment_phase",
 		label: "Skip Phase",
 		description: "Skip a phase.",
 		parameters: SkipPhaseParams,
@@ -478,7 +479,7 @@ ${renderGateGuidance("complete_phase")}`,
 	})
 
 	pi.registerTool({
-		name: "fail_phase",
+		name: "fail_ferment_phase",
 		label: "Fail Phase",
 		description: "Mark a phase as failed with a reason.",
 		parameters: FailPhaseParams,
@@ -499,7 +500,7 @@ ${renderGateGuidance("complete_phase")}`,
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)
 			return toolOk(
-				`Phase marked as failed: ${params.reason}. Use activate_phase to retry, skip_phase to bypass, or ask the user to run /ferment abandon if the ferment should stop.`,
+				`Phase marked as failed: ${params.reason}. Use activate_ferment_phase to retry, skip_ferment_phase to bypass, or ask the user to run /ferment abandon if the ferment should stop.`,
 			)
 		},
 	})

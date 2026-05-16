@@ -20,6 +20,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { DeclarativeAction } from "../../ferment/engine.js"
 import type { Ferment } from "../../ferment/types.js"
+import { formatActionNudgeLine } from "./action-tool-names.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 
 export function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
@@ -59,12 +60,12 @@ export function refreshActiveFermentFromStorage(runtime: FermentRuntime): Fermen
  * the action *kind* and emits a directive that maps cleanly to a tool call.
  *
  * Mapping action.kind → expected next tool call:
- *   start_step       → start_step + spawn subagent
- *   refine           → refine_phase
- *   activate_phase   → activate_phase
- *   complete_phase   → complete_phase
- *   recover_step     → fail_step / skip_step / start_step (host-decides)
- *   recover_phase    → activate_phase / skip_phase, or ask user for /ferment abandon
+ *   start_step       → start_ferment_step + spawn subagent
+ *   refine           → refine_ferment_phase
+ *   activate_phase   → activate_ferment_phase
+ *   complete_phase   → complete_ferment_phase
+ *   recover_step     → fail_ferment_step / skip_ferment_step / start_ferment_step (host-decides)
+ *   recover_phase    → activate_ferment_phase / skip_ferment_phase, or ask user for /ferment abandon
  */
 export function buildAutoNudge(
 	action: DeclarativeAction,
@@ -76,23 +77,23 @@ export function buildAutoNudge(
 		"RESUMING ferment after /auto. The user has confirmed they want execution to continue — take the next action now."
 	switch (action.kind) {
 		case "start_step":
-			return `${preamble}\n\nAction: call start_step with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""}${stepId ? `, step_id "${stepId}"` : ""}, then spawn a subagent worker for that step. When the subagent returns, call complete_step with its summary.`
+			return `${preamble}\n\nAction: call start_ferment_step with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""}${stepId ? `, step_id "${stepId}"` : ""}, then spawn a subagent worker for that step. When the subagent returns, call complete_ferment_step with its summary.`
 		case "refine":
-			return `${preamble}\n\nAction: call refine_phase with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""} and 3–6 concrete steps for this phase.`
+			return `${preamble}\n\nAction: call refine_ferment_phase with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""} and 3–6 concrete steps for this phase.`
 		case "activate_phase":
-			return `${preamble}\n\nAction: call activate_phase with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""}.`
+			return `${preamble}\n\nAction: call activate_ferment_phase with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""}.`
 		case "complete_phase":
-			return `${preamble}\n\nAction: call complete_phase with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""} and a one-paragraph summary.`
+			return `${preamble}\n\nAction: call complete_ferment_phase with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""} and a one-paragraph summary.`
 		case "recover_step":
-			return `${preamble}\n\nThe step previously failed. Decide based on the failure: call start_step to retry, skip_step to bypass, or fail_step to mark it permanently failed. Pick one and call it now.`
+			return `${preamble}\n\nThe step previously failed. Decide based on the failure: call start_ferment_step to retry, skip_ferment_step to bypass, or fail_ferment_step to mark it permanently failed. Pick one and call it now.`
 		case "recover_phase":
-			return `${preamble}\n\nThe phase previously failed. Decide based on the failure: call activate_phase to retry, call skip_phase to bypass, or ask the user to run /ferment abandon if the ferment should stop. Pick a tool call now unless abandonment is required.`
+			return `${preamble}\n\nThe phase previously failed. Decide based on the failure: call activate_ferment_phase to retry, call skip_ferment_phase to bypass, or ask the user to run /ferment abandon if the ferment should stop. Pick a tool call now unless abandonment is required.`
 		case "scope":
 			return `${preamble}\n\nAction: continue scoping — ${action.reason}.`
 		case "complete_step":
-			return `${preamble}\n\nAction: call complete_step with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""}${stepId ? `, step_id "${stepId}"` : ""}.`
+			return `${preamble}\n\nAction: call complete_ferment_step with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""}${stepId ? `, step_id "${stepId}"` : ""}.`
 		case "verify_step":
-			return `${preamble}\n\nAction: call verify_step with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""}${stepId ? `, step_id "${stepId}"` : ""}.`
+			return `${preamble}\n\nAction: call verify_ferment_step with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""}${stepId ? `, step_id "${stepId}"` : ""}.`
 		case "pause":
 		case "complete_ferment":
 		case "noop":
@@ -117,7 +118,7 @@ export function sendAutoNudge(
 
 	const messageText = opts.force
 		? buildAutoNudge(action, f.id, displayPhase?.id, activeStep?.id)
-		: `${action.kind}: ${action.reason}`
+		: formatActionNudgeLine(action)
 
 	pi.appendEntry("ferment_breadcrumb", { text: breadcrumb })
 	void pi.sendMessage(
@@ -183,9 +184,9 @@ export function onStepCompleted(runtime: FermentRuntime = defaultFermentRuntime)
 
 export function onPhaseCompleted(runtime: FermentRuntime = defaultFermentRuntime): void {
 	// Refresh the in-memory active ferment cache after the storage write. The agent
-	// drives state; no silent activate_phase here. Prior versions auto-advanced
+	// drives state; no silent activate_ferment_phase here. Prior versions auto-advanced
 	// the next planned phase in exec mode, which left the FSM in PHASE_ACTIVE
 	// behind the agent's back and caused every subsequent agent-initiated
-	// activate_phase to be rejected.
+	// activate_ferment_phase to be rejected.
 	refreshActiveFermentFromStorage(runtime)
 }

@@ -4,24 +4,24 @@ import type { FermentRuntime } from "./runtime.js"
 
 export const FERMENT_TOOL_NAMES = [
 	"create_ferment",
-	"propose_scoping",
+	"propose_ferment_scoping",
 	"list_ferments",
 	"scope_ferment",
-	"update_scope_field",
+	"update_ferment_scope_field",
 	"set_ferment_mode",
 	"complete_ferment",
-	"activate_phase",
-	"refine_phase",
-	"complete_phase",
-	"skip_phase",
-	"fail_phase",
-	"start_step",
-	"complete_step",
-	"verify_step",
-	"skip_step",
-	"fail_step",
-	"add_decision",
-	"add_memory",
+	"activate_ferment_phase",
+	"refine_ferment_phase",
+	"complete_ferment_phase",
+	"skip_ferment_phase",
+	"fail_ferment_phase",
+	"start_ferment_step",
+	"complete_ferment_step",
+	"verify_ferment_step",
+	"skip_ferment_step",
+	"fail_ferment_step",
+	"add_ferment_decision",
+	"add_ferment_memory",
 ] as const
 
 const FERMENT_TOOL_NAME_SET = new Set<string>(FERMENT_TOOL_NAMES)
@@ -32,7 +32,7 @@ const FERMENT_TOOL_NAME_SET = new Set<string>(FERMENT_TOOL_NAMES)
  * to a subagent worker — the whole point of one-shot orchestration is that
  * the planner orchestrates and workers execute.
  *
- * `read` stays available so `complete_step` can sanity-check a worker's diff
+ * `read` stays available so `complete_ferment_step` can sanity-check a worker's diff
  * without spawning a verification subagent.
  * `get_subagent_result` is required for background Agent calls.
  */

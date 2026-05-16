@@ -15,6 +15,7 @@ import {
 	transition,
 } from "../../ferment/fsm.js"
 import type { Ferment } from "../../ferment/types.js"
+import { publicToolNameForActionKind } from "./action-tool-names.js"
 
 // ─── FSM State Computation ────────────────────────────────────────────────────
 
@@ -112,5 +113,5 @@ function formatNextActionSuggestion(action: DeclarativeAction): string {
 	if ("phaseId" in action) refs.push(`phaseId=${action.phaseId}`)
 	if ("stepId" in action) refs.push(`stepId=${action.stepId}`)
 	const refSuffix = refs.length ? ` (${refs.join(", ")})` : ""
-	return `Recommended next action: ${action.kind}${refSuffix} — ${action.reason}.`
+	return `Recommended next action: ${publicToolNameForActionKind(action.kind)}${refSuffix} — ${action.reason}.`
 }

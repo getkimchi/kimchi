@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { determineNextAction, getScopingProgress } from "../../ferment/engine.js"
+import { formatActionNudgeLine } from "./action-tool-names.js"
 import { appendRefEntry } from "./nudge.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
@@ -53,7 +54,7 @@ export function resumeFerment(
 	}
 
 	const action = determineNextAction(existing)
-	const baseMsg = `${action.kind}: ${action.reason}`
+	const baseMsg = formatActionNudgeLine(action)
 	const scopeProgress = getScopingProgress(existing)
 	const breadcrumb = `Resumed ferment: "${existing.name}" [${existing.status}] ${existing.mode} mode · scoping ${scopeProgress.answered}/${scopeProgress.total}`
 

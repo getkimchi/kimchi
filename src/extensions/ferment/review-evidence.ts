@@ -29,7 +29,7 @@ import { resolveFermentsDir } from "../../ferment/store.js"
 import type { JudgeFlag, ReviewOutcome } from "./judge.js"
 import type { ProjectCheckResult } from "./project-tests.js"
 
-/** Raw F-gate verdict the agent provided at complete_phase. Persisted on the
+/** Raw F-gate verdict the agent provided at complete_ferment_phase. Persisted on the
  *  review-evidence sidecar so the journey-grade judge can read it later. */
 export interface PersistedGateVerdict {
 	id: string
@@ -59,7 +59,7 @@ export interface ReviewEvidence {
 	reviewerRationale: string
 	reviewerUnavailable?: boolean
 
-	/** Raw F-gate verdicts the agent submitted at complete_phase. Optional for
+	/** Raw F-gate verdicts the agent submitted at complete_ferment_phase. Optional for
 	 *  back-compat with sidecars written before this field existed; new writes
 	 *  always populate it. Consumed by the journey-grade judge at
 	 *  complete_ferment to grade the journey end-to-end. */
@@ -116,7 +116,7 @@ export function writeReviewEvidence(args: {
 	diffFilesChanged?: string
 	diffAvailable: boolean
 	projectChecks?: ProjectCheckResult
-	/** Raw F-gate verdicts the agent passed at complete_phase. Persisted so the
+	/** Raw F-gate verdicts the agent passed at complete_ferment_phase. Persisted so the
 	 *  journey-grade judge at complete_ferment can grade based on the trail. */
 	gateVerdicts?: ReadonlyArray<PersistedGateVerdict>
 	root?: string

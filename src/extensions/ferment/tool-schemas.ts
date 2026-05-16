@@ -52,7 +52,7 @@ export const ListParams = Type.Object({
 })
 
 // Shared phase schema — used by both scope_ferment (headless path) and
-// propose_scoping (interactive path). Keep them identical so a proposed plan
+// propose_ferment_scoping (interactive path). Keep them identical so a proposed plan
 // can be applied verbatim.
 export const PhaseProposalSchema = Type.Object({
 	name: Type.String(),
@@ -78,7 +78,7 @@ export const PhaseProposalSchema = Type.Object({
 					}),
 				),
 			}),
-			{ description: "Initial step breakdown for this phase. Can be refined later with refine_phase." },
+			{ description: "Initial step breakdown for this phase. Can be refined later with refine_ferment_phase." },
 		),
 	),
 })
@@ -188,13 +188,15 @@ export const ActivateParams = Type.Object({
 export const RefineParams = Type.Object({
 	ferment_id: Type.String(),
 	phase_id: Type.String({
-		description: "Phase ID in format 'phase-N', e.g. 'phase-1'. Use the phase_id returned by activate_phase.",
+		description: "Phase ID in format 'phase-N', e.g. 'phase-1'. Use the phase_id returned by activate_ferment_phase.",
 	}),
 	steps: Type.Array(
 		Type.Object({
 			description: Type.String(),
 			verify: Type.Optional(
-				Type.String({ description: "Bash command that exits 0 on success. Run automatically after complete_step." }),
+				Type.String({
+					description: "Bash command that exits 0 on success. Run automatically after complete_ferment_step.",
+				}),
 			),
 			parallel_group: Type.Optional(
 				Type.Number({
@@ -211,7 +213,7 @@ export const StepActionParams = Type.Object({
 	phase_id: Type.String({ description: "Phase ID in format 'phase-N', e.g. 'phase-1'." }),
 	step_id: Type.String({
 		description:
-			"Step ID in format 'step-N', e.g. 'step-1'. Use the step_id returned by refine_phase or activate_phase.",
+			"Step ID in format 'step-N', e.g. 'step-1'. Use the step_id returned by refine_ferment_phase or activate_ferment_phase.",
 	}),
 })
 

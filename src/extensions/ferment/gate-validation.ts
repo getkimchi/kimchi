@@ -9,7 +9,7 @@
  *      Enforced by `validateGateVerdict`.
  *   3. Blocking flag short-circuit (opt-in): if `flagPolicy: "block-on-flag"`,
  *      a "flag" verdict returns a tool error with the rendered flag lines.
- *      `complete_phase` opts OUT of this — phase-level flags feed the
+ *      `complete_ferment_phase` opts OUT of this — phase-level flags feed the
  *      retry/escalation pipeline downstream, not an immediate refusal.
  *
  * Returns null when validation passes (caller proceeds). Returns a tool
@@ -32,10 +32,10 @@ type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
 
 export type GateFlagPolicy =
 	/** Any "flag" verdict refuses the call with a tool error. Used by
-	 *  scope_ferment, propose_scoping, complete_step, complete_ferment. */
+	 *  scope_ferment, propose_ferment_scoping, complete_ferment_step, complete_ferment. */
 	| "block-on-flag"
 	/** Coverage + shape only. "flag" verdicts are caller's problem — they
-	 *  feed into a retry/escalation pipeline downstream. Used by complete_phase. */
+	 *  feed into a retry/escalation pipeline downstream. Used by complete_ferment_phase. */
 	| "coverage-only"
 
 export interface GateValidationOptions {
@@ -50,9 +50,9 @@ export interface GateValidationOptions {
 
 function normalizeGateVerdict(v: { id: string; verdict: string }, turn: OwnerTurn): void {
 	// The schema accepts S2 verification-classification aliases defensively
-	// because models often put "smoke" in `verdict`. Only S2 on complete_step
+	// because models often put "smoke" in `verdict`. Only S2 on complete_ferment_step
 	// may use those aliases; all other gates must stay canonical.
-	if (turn !== "complete_step" || v.id !== "S2") return
+	if (turn !== "complete_ferment_step" || v.id !== "S2") return
 	switch (v.verdict) {
 		case "smoke":
 		case "test":

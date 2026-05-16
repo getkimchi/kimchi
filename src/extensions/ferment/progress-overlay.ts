@@ -246,14 +246,14 @@ export async function handlePhaseAction(
 	const applyAndPersist = createApplyAndPersist(runtime)
 	switch (choice) {
 		case "Activate phase": {
-			// activate_phase transitions ferment.status to "running" — no need for a separate updateStatus.
+			// activate_ferment_phase transitions ferment.status to "running" — no need for a separate updateStatus.
 			const out = applyAndPersist(f.id, { type: "activate_phase", phaseId: p.id })
 			if (out.ok) runtime.setActive(out.ferment)
 			ctx.ui.notify(out.ok ? `Phase "${p.name}" activated.` : `Could not activate: ${out.error.message}`)
 			break
 		}
 		case "Ask agent to refine steps":
-			ctx.ui.notify(`Tell the agent: refine_phase for phase ${p.index} "${p.name}"`)
+			ctx.ui.notify(`Tell the agent: refine_ferment_phase for phase ${p.index} "${p.name}"`)
 			break
 		case "Mark phase complete": {
 			const out = applyAndPersist(f.id, { type: "complete_phase", phaseId: p.id, summary: "Completed via /progress" })

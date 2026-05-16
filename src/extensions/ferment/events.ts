@@ -54,7 +54,7 @@ async function maybeRunPlanModeDropdown(
 	if (f.status !== "draft" && f.status !== "running") return
 	if (!ctx.ui.input) return
 
-	if (hasToolCall(content, "propose_scoping")) return
+	if (hasToolCall(content, "propose_ferment_scoping")) return
 	const text = extractPromptTextAfterLastToolCall(content)
 	if (!text) return
 
@@ -87,13 +87,13 @@ async function maybeRunPlanModeDropdown(
 			ctx.ui.notify?.(
 				`Plan saved for "${outcome.outcome.ferment.name}". ${outcome.outcome.ferment.phases.length} phase(s) ready.`,
 			)
-			reply = `Plan saved by user confirmation — ${outcome.outcome.ferment.phases.length} phase(s) now in "planned" status. You can proceed with activate_phase when the user is ready, or wait for further instructions.`
+			reply = `Plan saved by user confirmation — ${outcome.outcome.ferment.phases.length} phase(s) now in "planned" status. You can proceed with activate_ferment_phase when the user is ready, or wait for further instructions.`
 		} else if (outcome.error.code !== "MISSING_PENDING_PHASES" && outcome.error.code !== "MISSING_PENDING_SCOPE") {
 			ctx.ui.notify?.(`Failed to save plan: ${outcome.error.message}`)
 			reply = `Plan save failed: ${outcome.error.message}. Investigate the ferment state and try again.`
 		} else {
 			reply =
-				"User confirmed the plan but you never called propose_scoping — there's nothing structured for the host to save. Call propose_scoping now with the same plan you just showed; propose_scoping will handle confirmation via its own dropdown — do not append a trailing question."
+				"User confirmed the plan but you never called propose_ferment_scoping — there's nothing structured for the host to save. Call propose_ferment_scoping now with the same plan you just showed; propose_ferment_scoping will handle confirmation via its own dropdown — do not append a trailing question."
 		}
 	} else {
 		reply = "Yes, proceed."

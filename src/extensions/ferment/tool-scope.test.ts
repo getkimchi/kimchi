@@ -13,8 +13,8 @@ function createPi(activeTools: string[], allTools: string[]) {
 describe("ferment tool scope", () => {
 	it("removes ferment tools from the active set", () => {
 		const pi = createPi(
-			["read", "create_ferment", "bash", "start_step"],
-			["read", "bash", "create_ferment", "start_step"],
+			["read", "create_ferment", "bash", "start_ferment_step"],
+			["read", "bash", "create_ferment", "start_ferment_step"],
 		)
 
 		disableFermentTools(pi)
@@ -23,11 +23,11 @@ describe("ferment tool scope", () => {
 	})
 
 	it("enables registered ferment tools without duplicating active tools", () => {
-		const pi = createPi(["read", "create_ferment", "bash"], ["read", "bash", "create_ferment", "start_step"])
+		const pi = createPi(["read", "create_ferment", "bash"], ["read", "bash", "create_ferment", "start_ferment_step"])
 
 		enableFermentTools(pi)
 
-		expect(pi.setActiveTools).toHaveBeenCalledWith(["read", "bash", "create_ferment", "start_step"])
+		expect(pi.setActiveTools).toHaveBeenCalledWith(["read", "bash", "create_ferment", "start_ferment_step"])
 	})
 })
 
@@ -47,9 +47,9 @@ describe("applyPlannerOneshotAllowlist", () => {
 			"get_subagent_result",
 			"set_phase",
 			"scope_ferment",
-			"activate_phase",
-			"start_step",
-			"complete_step",
+			"activate_ferment_phase",
+			"start_ferment_step",
+			"complete_ferment_step",
 			"complete_ferment",
 		]
 		const pi = createPi(allTools, allTools)
@@ -62,9 +62,9 @@ describe("applyPlannerOneshotAllowlist", () => {
 			"get_subagent_result",
 			"set_phase",
 			"scope_ferment",
-			"activate_phase",
-			"start_step",
-			"complete_step",
+			"activate_ferment_phase",
+			"start_ferment_step",
+			"complete_ferment_step",
 			"complete_ferment",
 		])
 	})

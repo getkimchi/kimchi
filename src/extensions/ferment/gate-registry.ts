@@ -6,8 +6,8 @@
  *
  *   { id, verdict: "pass" | "flag" | "omitted", rationale, evidence }
  *
- * Gates are owned by exactly one tool turn (scope, complete_step,
- * complete_phase, complete_ferment). A "flag" verdict refuses advancement and
+ * Gates are owned by exactly one tool turn (scope, complete_ferment_step,
+ * complete_ferment_phase, complete_ferment). A "flag" verdict refuses advancement and
  * feeds the same retry/escalation pipeline as project-check failures. An
  * "omitted" verdict requires a rationale explaining why the gate doesn't apply.
  *
@@ -24,15 +24,15 @@
  */
 
 export type GateId =
-	// Plan-scope (owned by scope_ferment / propose_scoping)
+	// Plan-scope (owned by scope_ferment / propose_ferment_scoping)
 	| "P1"
 	| "P2"
 	| "P3"
-	// Step-scope (owned by complete_step)
+	// Step-scope (owned by complete_ferment_step)
 	| "S1"
 	| "S2"
 	| "S3"
-	// Phase-scope (owned by complete_phase)
+	// Phase-scope (owned by complete_ferment_phase)
 	| "F1"
 	| "F2"
 	| "F3"
@@ -43,7 +43,7 @@ export type GateId =
 
 export type GateScope = "plan" | "step" | "phase" | "ferment"
 
-export type OwnerTurn = "scope_ferment" | "complete_step" | "complete_phase" | "complete_ferment"
+export type OwnerTurn = "scope_ferment" | "complete_ferment_step" | "complete_ferment_phase" | "complete_ferment"
 
 export type GateVerdictValue = "pass" | "flag" | "omitted"
 
@@ -110,7 +110,7 @@ export const GATE_REGISTRY = {
 	S1: {
 		id: "S1",
 		scope: "step",
-		ownerTurn: "complete_step",
+		ownerTurn: "complete_ferment_step",
 		question: "Does the summary describe work present in the diff?",
 		guidance: [
 			"Read your own summary. For each concrete claim (file path, function name, behavior), cite the diff line that proves it.",
@@ -122,7 +122,7 @@ export const GATE_REGISTRY = {
 	S2: {
 		id: "S2",
 		scope: "step",
-		ownerTurn: "complete_step",
+		ownerTurn: "complete_ferment_step",
 		question: "What did the verify command actually exercise?",
 		guidance: [
 			"Classify your own verify command honestly:",
@@ -139,7 +139,7 @@ export const GATE_REGISTRY = {
 	S3: {
 		id: "S3",
 		scope: "step",
-		ownerTurn: "complete_step",
+		ownerTurn: "complete_ferment_step",
 		question: "What edge case would break this step?",
 		guidance: [
 			"Name one concrete input or condition that would make your work fail.",
@@ -153,7 +153,7 @@ export const GATE_REGISTRY = {
 	F1: {
 		id: "F1",
 		scope: "phase",
-		ownerTurn: "complete_phase",
+		ownerTurn: "complete_ferment_phase",
 		question: "Did every step's claim verify against real behavior, or are some proxies?",
 		guidance: [
 			"Read the S2 verdicts from every step in this phase.",
@@ -165,7 +165,7 @@ export const GATE_REGISTRY = {
 	F2: {
 		id: "F2",
 		scope: "phase",
-		ownerTurn: "complete_phase",
+		ownerTurn: "complete_ferment_phase",
 		question: "Does the phase's combined output deliver the phase goal?",
 		guidance: [
 			"Restate the phase goal in one sentence, then map the union of step outputs to that goal.",
@@ -176,7 +176,7 @@ export const GATE_REGISTRY = {
 	F3: {
 		id: "F3",
 		scope: "phase",
-		ownerTurn: "complete_phase",
+		ownerTurn: "complete_ferment_phase",
 		question: "What was left undone or deferred in this phase?",
 		guidance: [
 			"List anything you couldn't do, skipped, or deferred — by step or by intent.",

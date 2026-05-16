@@ -125,7 +125,7 @@ describe("ferment nudges", () => {
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_automode_nudge",
-				content: [expect.objectContaining({ text: "activate_phase: activate the first planned phase" })],
+				content: [expect.objectContaining({ text: "activate_ferment_phase: activate the first planned phase" })],
 			}),
 			{ triggerTurn: true, deliverAs: "followUp" },
 		)
@@ -252,7 +252,7 @@ describe("ferment nudges", () => {
 				content: [
 					expect.objectContaining({
 						text: expect.stringContaining(
-							"call activate_phase to retry, call skip_phase to bypass, or ask the user to run /ferment abandon",
+							"call activate_ferment_phase to retry, call skip_ferment_phase to bypass, or ask the user to run /ferment abandon",
 						),
 					}),
 				],

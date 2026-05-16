@@ -50,8 +50,8 @@ describe("gate-registry shape", () => {
 	it("each ownerTurn maps to a consistent scope", () => {
 		const turnScopeMap: Record<string, string> = {
 			scope_ferment: "plan",
-			complete_step: "step",
-			complete_phase: "phase",
+			complete_ferment_step: "step",
+			complete_ferment_phase: "phase",
 			complete_ferment: "ferment",
 		}
 		for (const g of Object.values(GATE_REGISTRY)) {
@@ -66,12 +66,12 @@ describe("getGatesForTurn", () => {
 		expect(gates.map((g) => g.id)).toEqual(["P1", "P2", "P3"])
 	})
 
-	it("returns the three step gates for complete_step", () => {
-		expect(getGatesForTurn("complete_step").map((g) => g.id)).toEqual(["S1", "S2", "S3"])
+	it("returns the three step gates for complete_ferment_step", () => {
+		expect(getGatesForTurn("complete_ferment_step").map((g) => g.id)).toEqual(["S1", "S2", "S3"])
 	})
 
-	it("returns the three phase gates for complete_phase", () => {
-		expect(getGatesForTurn("complete_phase").map((g) => g.id)).toEqual(["F1", "F2", "F3"])
+	it("returns the three phase gates for complete_ferment_phase", () => {
+		expect(getGatesForTurn("complete_ferment_phase").map((g) => g.id)).toEqual(["F1", "F2", "F3"])
 	})
 
 	it("returns the three ferment gates for complete_ferment", () => {
@@ -81,7 +81,7 @@ describe("getGatesForTurn", () => {
 
 describe("getGateIdsForTurn / getGateDefinition", () => {
 	it("getGateIdsForTurn returns a set matching getGatesForTurn", () => {
-		const ids = getGateIdsForTurn("complete_phase")
+		const ids = getGateIdsForTurn("complete_ferment_phase")
 		expect([...ids].sort()).toEqual(["F1", "F2", "F3"])
 	})
 
@@ -92,31 +92,35 @@ describe("getGateIdsForTurn / getGateDefinition", () => {
 	it("getGateDefinition round-trips a known id", () => {
 		const def = getGateDefinition("S2")
 		expect(def?.scope).toBe("step")
-		expect(def?.ownerTurn).toBe("complete_step")
+		expect(def?.ownerTurn).toBe("complete_ferment_step")
 	})
 })
 
 describe("assertGateCoverage", () => {
 	it("passes when all owned gates are present exactly once", () => {
-		expect(() => assertGateCoverage([v("F1"), v("F2"), v("F3")], "complete_phase")).not.toThrow()
+		expect(() => assertGateCoverage([v("F1"), v("F2"), v("F3")], "complete_ferment_phase")).not.toThrow()
 	})
 
 	it("throws when a required gate is missing", () => {
-		expect(() => assertGateCoverage([v("F1"), v("F2")], "complete_phase")).toThrow(GateCoverageError)
+		expect(() => assertGateCoverage([v("F1"), v("F2")], "complete_ferment_phase")).toThrow(GateCoverageError)
 	})
 
 	it("throws when an unknown gate id is provided", () => {
 		expect(() =>
-			assertGateCoverage([v("F1"), v("F2"), v("F3"), { ...v("Z99"), id: "Z99" as never }], "complete_phase"),
+			assertGateCoverage([v("F1"), v("F2"), v("F3"), { ...v("Z99"), id: "Z99" as never }], "complete_ferment_phase"),
 		).toThrow(/does not own/)
 	})
 
 	it("throws when a gate owned by another turn is provided", () => {
-		expect(() => assertGateCoverage([v("S1"), v("S2"), v("S3"), v("F1")], "complete_step")).toThrow(/does not own/)
+		expect(() => assertGateCoverage([v("S1"), v("S2"), v("S3"), v("F1")], "complete_ferment_step")).toThrow(
+			/does not own/,
+		)
 	})
 
 	it("throws on duplicate gate id", () => {
-		expect(() => assertGateCoverage([v("F1"), v("F1"), v("F2"), v("F3")], "complete_phase")).toThrow(/duplicate/)
+		expect(() => assertGateCoverage([v("F1"), v("F1"), v("F2"), v("F3")], "complete_ferment_phase")).toThrow(
+			/duplicate/,
+		)
 	})
 })
 
@@ -160,7 +164,7 @@ describe("hasBlockingFlag / flaggedVerdicts", () => {
 
 describe("renderGateGuidance", () => {
 	it("returns a markdown block listing every gate the turn owns", () => {
-		const md = renderGateGuidance("complete_phase")
+		const md = renderGateGuidance("complete_ferment_phase")
 		expect(md).toContain("**F1**")
 		expect(md).toContain("**F2**")
 		expect(md).toContain("**F3**")

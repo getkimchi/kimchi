@@ -334,7 +334,7 @@ function buildScopingIterationMessage(questions: ScopingQuestion[], answers: Sco
 		const answerText = a.optionId === "custom" ? `free-form: "${a.label}"` : `option "${a.optionId}" ("${a.label}")`
 		return `- "${q.text}" → ${answerText}`
 	})
-	return `The user reviewed your draft and chose these answers (which OVERRIDE your recommendations):\n${bundledAnswerLines.join("\n")}\n\nRe-emit propose_scoping ONCE with updated goal/criteria/constraints/assumptions/phases reflecting these answers. Usually emit \`questions: []\` so the user can review the final plan. You may emit new questions only if these answers reveal a genuinely new, decision-blocking ambiguity; never repeat or rephrase any question answered above. Do NOT ask questions in chat — call the tool directly.`
+	return `The user reviewed your draft and chose these answers (which OVERRIDE your recommendations):\n${bundledAnswerLines.join("\n")}\n\nRe-emit propose_ferment_scoping ONCE with updated goal/criteria/constraints/assumptions/phases reflecting these answers. Usually emit \`questions: []\` so the user can review the final plan. You may emit new questions only if these answers reveal a genuinely new, decision-blocking ambiguity; never repeat or rephrase any question answered above. Do NOT ask questions in chat — call the tool directly.`
 }
 
 export async function scopeFerment(
@@ -383,9 +383,11 @@ export async function scopeFerment(
 	const outcome = applyAndPersist(params.ferment_id, cmd)
 	if (!outcome.ok) {
 		// Special-case: ferment-not-in-status with current "planned"/"running" maps
-		// to the user-friendly "use update_scope_field to revise" hint.
+		// to the user-friendly "use update_ferment_scope_field to revise" hint.
 		if (outcome.error.code === "FERMENT_NOT_IN_STATUS" && outcome.error.actual !== "draft") {
-			return toolErr(`Ferment is already ${outcome.error.actual}. Use update_scope_field to revise individual fields.`)
+			return toolErr(
+				`Ferment is already ${outcome.error.actual}. Use update_ferment_scope_field to revise individual fields.`,
+			)
 		}
 		return failedToolResult(outcome.error)
 	}
@@ -579,7 +581,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	})
 
 	pi.registerTool({
-		name: "propose_scoping",
+		name: "propose_ferment_scoping",
 		label: "Propose Scoping",
 		description: `Single combined emission of the full scoping draft after the user's free-form intent. Includes goal, success criteria, constraints, assumptions, phases (3-7), and optional clarifying questions (≤3) with one option \`recommended: true\` per question. Replaces previous draft wholesale.
 
@@ -595,7 +597,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				turn: "scope_ferment",
 				flagPolicy: "block-on-flag",
 				renderFlagError: (count, lines) =>
-					`Cannot propose scoping — agent self-flagged on ${count} plan gate(s):\n\n${lines}\n\nRevise the plan and call propose_scoping again with passing P-gate verdicts.`,
+					`Cannot propose scoping — agent self-flagged on ${count} plan gate(s):\n\n${lines}\n\nRevise the plan and call propose_ferment_scoping again with passing P-gate verdicts.`,
 			})
 			if (gateError) return gateError
 
@@ -608,9 +610,10 @@ ${renderGateGuidance("scope_ferment")}`,
 			const ferment = runtime.getStorage().get(params.ferment_id)
 			if (!ferment) return toolErr(`Ferment "${params.ferment_id}" not found.`)
 			if (ferment.status !== "draft") {
-				const nextAction = ferment.status === "planned" ? "call activate_phase" : "continue the current ferment action"
+				const nextAction =
+					ferment.status === "planned" ? "call activate_ferment_phase" : "continue the current ferment action"
 				return toolOk(
-					`Ferment "${ferment.name}" is already ${ferment.status}; ignore this duplicate propose_scoping call and ${nextAction}.`,
+					`Ferment "${ferment.name}" is already ${ferment.status}; ignore this duplicate propose_ferment_scoping call and ${nextAction}.`,
 				)
 			}
 
@@ -620,12 +623,12 @@ ${renderGateGuidance("scope_ferment")}`,
 				runtime.setPendingScope(params.ferment_id, { goal: "", successCriteria: "", constraints: [] })
 			}
 
-			// Iteration cap: prevent infinite propose_scoping loops.
+			// Iteration cap: prevent infinite propose_ferment_scoping loops.
 			const currentIterations = pending?.proposeIterations ?? 0
 			const nextIterations = currentIterations + 1
 			if (currentIterations >= 3 && questions.length > 0) {
 				return toolErr(
-					"You've proposed scoping 3 times. Pick the best draft and emit propose_scoping with questions=[] to let the user confirm.",
+					"You've proposed scoping 3 times. Pick the best draft and emit propose_ferment_scoping with questions=[] to let the user confirm.",
 				)
 			}
 
@@ -655,7 +658,7 @@ ${renderGateGuidance("scope_ferment")}`,
 						runtime,
 						params.ferment_id,
 						params.phases,
-						"propose_scoping",
+						"propose_ferment_scoping",
 						params.title,
 						pi,
 					)
@@ -669,7 +672,7 @@ ${renderGateGuidance("scope_ferment")}`,
 					})
 					.join(", ")
 				return toolErr(
-					`Cannot ask scoping questions without an interactive UI. Re-emit propose_scoping with those recommendations folded into goal/criteria/constraints/assumptions/phases and questions=[].\nRecommended answers: ${recSummary}`,
+					`Cannot ask scoping questions without an interactive UI. Re-emit propose_ferment_scoping with those recommendations folded into goal/criteria/constraints/assumptions/phases and questions=[].\nRecommended answers: ${recSummary}`,
 				)
 			}
 
@@ -689,7 +692,7 @@ ${renderGateGuidance("scope_ferment")}`,
 						runtime,
 						params.ferment_id,
 						params.phases,
-						"propose_scoping",
+						"propose_ferment_scoping",
 						params.title,
 						pi,
 					)
@@ -704,7 +707,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				if (!userText) {
 					return planToolOk("No changes made. Waiting for your next instruction.")
 				}
-				const sayMoreContent = `User said: ${userText}. Re-run propose_scoping incorporating this direction.`
+				const sayMoreContent = `User said: ${userText}. Re-run propose_ferment_scoping incorporating this direction.`
 				void pi.sendMessage(
 					{ content: sayMoreContent, customType: "ferment_scoping_iteration", display: false },
 					{ triggerTurn: true },
@@ -805,7 +808,7 @@ ${renderGateGuidance("scope_ferment")}`,
 							runtime,
 							params.ferment_id,
 							params.phases,
-							"propose_scoping",
+							"propose_ferment_scoping",
 							params.title,
 							pi,
 						)
@@ -845,7 +848,7 @@ ${renderGateGuidance("scope_ferment")}`,
 					if (!userText) {
 						return planToolOk(`${answersEntry}\n\nNo changes made. Waiting for your next instruction.`)
 					}
-					const sayMoreContent = `User said: ${userText}. Re-run propose_scoping incorporating this direction.`
+					const sayMoreContent = `User said: ${userText}. Re-run propose_ferment_scoping incorporating this direction.`
 					void pi.sendMessage(
 						{ content: sayMoreContent, customType: "ferment_scoping_iteration", display: false },
 						{ triggerTurn: true },
@@ -859,7 +862,7 @@ ${renderGateGuidance("scope_ferment")}`,
 						runtime,
 						params.ferment_id,
 						params.phases,
-						"propose_scoping",
+						"propose_ferment_scoping",
 						params.title,
 						pi,
 					)
@@ -913,7 +916,7 @@ ${renderGateGuidance("scope_ferment")}`,
 	})
 
 	pi.registerTool({
-		name: "update_scope_field",
+		name: "update_ferment_scope_field",
 		label: "Update Scope Field",
 		description:
 			"Revise a single scoping field (goal, criteria, constraints, assumptions) on an already-planned ferment.",

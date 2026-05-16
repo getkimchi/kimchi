@@ -4,7 +4,7 @@ import { injectResumeAutoNudge } from "./nudge.js"
 import type { FermentRuntime } from "./runtime.js"
 import { type ApplyOutcome, createApplyAndPersist } from "./tool-helpers.js"
 
-export type ConfirmPendingScopeSource = "propose_scoping" | "turn_end"
+export type ConfirmPendingScopeSource = "propose_ferment_scoping" | "turn_end"
 
 export type ConfirmPendingScopeResult =
 	| { ok: true; outcome: Extract<ApplyOutcome, { ok: true }> }
@@ -44,7 +44,7 @@ export function confirmPendingScope(
 				message:
 					source === "turn_end"
 						? "User confirmed the plan but no structured phases are pending."
-						: "No structured phases are pending for this proposal. Call propose_scoping with the phases included.",
+						: "No structured phases are pending for this proposal. Call propose_ferment_scoping with the phases included.",
 			},
 		}
 	}
