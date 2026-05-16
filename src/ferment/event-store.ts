@@ -231,7 +231,6 @@ export interface PhaseGradedPayload {
 export interface StepStartedPayload {
 	phaseId: string
 	stepId: string
-	workerModel?: string
 	startedAt: string
 }
 
@@ -773,7 +772,6 @@ export class FermentEventStore {
 						payload: {
 							phaseId: phase.id,
 							stepId: step.id,
-							workerModel: step.workerModel,
 							startedAt: step.startedAt,
 						},
 					})
@@ -913,6 +911,22 @@ export class FermentEventStore {
 }
 
 // ─── Pure fold step ───────────────────────────────────────────────────────────
+
+/** Drop deprecated model-policy keys from refined-step payloads. Historic
+ *  events may carry `workerModel`/`needsVision`; the live `Step` type no
+ *  longer declares them, so strip them at the fold to keep reconstructed
+ *  state clean. */
+function normalizeRefinedStep(s: Step, i: number): Step {
+	const {
+		workerModel: _wm,
+		needsVision: _nv,
+		...rest
+	} = s as Step & {
+		workerModel?: unknown
+		needsVision?: unknown
+	}
+	return { ...rest, index: i + 1 }
+}
 
 function settleAfterResume(state: Ferment, timestamp: string): Ferment {
 	const activePhase = state.phases.find((p) => p.status === "active")
@@ -1127,7 +1141,7 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			return {
 				...state,
 				phases: state.phases.map((ph) =>
-					ph.id === p.phaseId ? { ...ph, steps: p.steps.map((s, i) => ({ ...s, index: i + 1 })) } : ph,
+					ph.id === p.phaseId ? { ...ph, steps: p.steps.map((s, i) => normalizeRefinedStep(s, i)) } : ph,
 				),
 				updatedAt: event.timestamp,
 			}

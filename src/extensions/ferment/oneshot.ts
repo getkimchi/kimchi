@@ -18,7 +18,7 @@ Your task — execute ALL of the following steps WITHOUT pausing to ask the user
    - constraints: any technical constraints implied by the intent
    - phases: the smallest useful ordered plan, usually 2–4 phases with 1–3 concrete steps each
    - every step must include a specific verify bash command when the task allows it
-2. For each phase in order: call activate_phase, then refine_phase (if steps not pre-set), then for each step: start_step → (delegate to Agent worker with model "kimchi-dev/<worker_model>") → complete_step
+2. For each phase in order: call activate_phase, then refine_phase (if steps not pre-set), then for each step: start_step → (delegate to Agent worker) → complete_step
 3. Only mark a step complete after its implementation and verification have been attempted, and include verification results in the completion summary
 4. When all phases are done and the final relevant verification passes or the remaining blocker is explicit: call complete_ferment
 

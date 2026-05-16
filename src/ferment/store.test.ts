@@ -439,4 +439,49 @@ describe("FermentStorage v4", () => {
 			expect(resolveFermentsDir(root)).toBe(join(root, ".kimchi", "ferments"))
 		})
 	})
+
+	describe("legacy snapshot normalization for deprecated model-policy keys", () => {
+		it("strips workerModel and needsVision from step objects when loading a legacy snapshot", () => {
+			const legacy = {
+				id: "leg-1",
+				name: "Legacy Ferment",
+				status: "running",
+				mode: "auto",
+				worktree: { path: tempDir },
+				scoping: {},
+				phases: [
+					{
+						id: "phase-1",
+						index: 1,
+						name: "Build",
+						goal: "build",
+						status: "active",
+						steps: [
+							{
+								id: "step-1",
+								index: 1,
+								description: "legacy",
+								status: "pending",
+								workerModel: "minimax-m2.7",
+								needsVision: true,
+							},
+						],
+					},
+				],
+				decisions: [],
+				memories: [],
+				activePhaseId: "phase-1",
+				createdAt: "2026-01-01T00:00:00.000Z",
+				updatedAt: "2026-01-01T00:00:00.000Z",
+			}
+			writeFileSync(join(tempDir, "leg-1.json"), `${JSON.stringify(legacy)}\n`)
+			clearFermentCache()
+
+			const loaded = storage.get("leg-1")
+			const step = loaded?.phases[0].steps[0] as unknown as Record<string, unknown>
+			expect(step.description).toBe("legacy")
+			expect(step).not.toHaveProperty("workerModel")
+			expect(step).not.toHaveProperty("needsVision")
+		})
+	})
 })

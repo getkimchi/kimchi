@@ -196,12 +196,6 @@ export const RefineParams = Type.Object({
 			verify: Type.Optional(
 				Type.String({ description: "Bash command that exits 0 on success. Run automatically after complete_step." }),
 			),
-			needs_vision: Type.Optional(
-				Type.Boolean({
-					description:
-						"Set true if this step requires processing images or screenshots. Selects kimi-k2.5 as worker; otherwise minimax-m2.7 is used.",
-				}),
-			),
 			parallel_group: Type.Optional(
 				Type.Number({
 					description:

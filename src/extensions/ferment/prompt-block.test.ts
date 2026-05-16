@@ -213,6 +213,13 @@ describe("buildFermentPromptBlock", () => {
 			// retries — surfaced via tool error text, not via a prompt section.
 			expect(out).not.toContain("## Self-Improvement Feedback")
 		})
+
+		it("does not prescribe concrete worker models — orchestrator owns that policy now", () => {
+			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime()) ?? ""
+			expect(out).not.toContain("minimax-m2.7")
+			expect(out).not.toContain("kimi-k2.5")
+			expect(out).not.toContain("worker_model")
+		})
 	})
 
 	describe("paused isolation — mutual exclusion at runtime", () => {

@@ -467,27 +467,6 @@ describe("refine_phase", () => {
 		})
 		expect(err(result)).toMatch(/must be active/i)
 	})
-
-	it("sets workerModel based on needs_vision flag", async () => {
-		const id = await createFerment("Vision Test")
-		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
-
-		ok(
-			await h.call("refine_phase", {
-				ferment_id: id,
-				phase_id: "phase-1",
-				steps: [
-					{ description: "code task", needs_vision: false },
-					{ description: "vision task", needs_vision: true },
-				],
-			}),
-		)
-
-		const f = loadFerment(id)
-		expect(f.phases[0].steps[0].workerModel).toBe("minimax-m2.7")
-		expect(f.phases[0].steps[1].workerModel).toBe("kimi-k2.5")
-	})
 })
 
 // ─── start_step ───────────────────────────────────────────────────────────────

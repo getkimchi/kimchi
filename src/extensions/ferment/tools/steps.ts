@@ -205,7 +205,6 @@ Do NOT call start_step again without user input.`,
 
 	const freshPhase = outcome.ferment.phases.find((p) => p.id === phase.id)
 	const freshStep = freshPhase?.steps.find((s) => s.id === step.id)
-	const workerModel = freshStep?.workerModel ?? "minimax-m2.7"
 
 	const prevStep = freshPhase?.steps.find((st) => st.index === step.index - 1)
 	const lowGradeCaution =
@@ -223,7 +222,6 @@ Do NOT call start_step again without user input.`,
 					.map((st) => ({
 						step_id: st.id,
 						description: st.description,
-						worker_model: st.workerModel ?? "minimax-m2.7",
 					}))
 			: []
 
@@ -239,7 +237,7 @@ Do NOT call start_step again without user input.`,
 		: ""
 
 	return toolOk(
-		`Step ${step.index}: "${step.description}" started.\nphase_id: ${phase.id}\nstep_id: ${step.id}\nworker_model: ${workerModel}\n\nLaunch an Agent now with subagent_type "general-purpose" and model "kimchi-dev/${workerModel}". When it returns, call complete_step with its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
+		`Step ${step.index}: "${step.description}" started.\nphase_id: ${phase.id}\nstep_id: ${step.id}\n\nLaunch an Agent now with subagent_type "general-purpose". When it returns, call complete_step with its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
 	)
 }
 
@@ -368,7 +366,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 		name: "start_step",
 		label: "Start Step",
 		description:
-			"Mark a step as running. Returns worker_model and parallel_siblings. See planner instructions in the system prompt for orchestration details.",
+			"Mark a step as running. Returns parallel_siblings. See planner instructions in the system prompt for orchestration details.",
 		parameters: StepActionParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
 			return startStep(runtime, params, { pi, ctx }, stepServices)

@@ -105,7 +105,10 @@ describe("startStep", () => {
 			services,
 		)
 
-		expect(okText(result)).toContain("First step")
+		const text = okText(result)
+		expect(text).toContain("First step")
+		expect(text).not.toContain("worker_model:")
+		expect(text).not.toMatch(/model "kimchi-dev/)
 		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("running")
 		expect(h.runtime.getStepStartRef(h.fermentId, "phase-1", "step-1")).toBe("abc123")
 	})

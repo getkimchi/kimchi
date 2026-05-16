@@ -39,8 +39,8 @@ const FERMENT_TOOL_NAME_SET = new Set<string>(FERMENT_TOOL_NAMES)
 export const PLANNER_ONESHOT_ALLOWLIST = new Set<string>([
 	...FERMENT_TOOL_NAMES,
 	// Delegation tool: the higher-level persona-based `Agent`
-	// (`src/extensions/agents/index.ts:590`). Planners pass the ferment's
-	// per-step `worker_model` through `Agent`'s `model` parameter.
+	// (`src/extensions/agents/index.ts:590`). The orchestrator picks the
+	// worker model from its registry; ferment no longer prescribes it.
 	// `Agent` uses the same prepareChildSessionFile pattern as the legacy
 	// `subagent` primitive, so bench session-linkage and token aggregation
 	// remain intact.

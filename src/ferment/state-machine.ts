@@ -54,7 +54,6 @@ export interface ScopePhaseInput {
 export interface RefineStepInput {
 	description: string
 	verify?: string
-	needs_vision?: boolean
 	parallel_group?: number
 }
 
@@ -333,7 +332,6 @@ function resolveCohorts(groups: (number | undefined)[]): CohortFlags[] {
 interface StepInput {
 	description: string
 	verify?: string
-	needs_vision?: boolean
 	parallel_group?: number
 }
 
@@ -344,8 +342,6 @@ function buildSteps(inputs: StepInput[]): Step[] {
 		index: i + 1,
 		description: st.description,
 		status: "pending" as const,
-		needsVision: st.needs_vision ?? false,
-		workerModel: st.needs_vision ? "kimi-k2.5" : "minimax-m2.7",
 		verification: st.verify ? { command: st.verify, retries: 2, retryDelayMs: 1000 } : undefined,
 		...cohorts[i],
 	}))

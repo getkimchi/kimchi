@@ -82,7 +82,6 @@ export interface StatsGrading {
 }
 
 export interface StatsWorkers {
-	modelsUsed: Array<{ model: string; count: number }>
 	totalParallelSteps: number
 }
 
@@ -186,7 +185,6 @@ export function computeStats(ferment: Ferment): FermentStats {
 	let stepPlanned = 0
 	const stepGradeList: Grade[] = []
 	const stepDurationsMs: Record<string, number> = {}
-	const workerModelCounts: Record<string, number> = {}
 	let totalParallelSteps = 0
 
 	for (const phase of ferment.phases) {
@@ -218,10 +216,6 @@ export function computeStats(ferment: Ferment): FermentStats {
 			const dur = stepDuration(step)
 			if (dur !== null) {
 				stepDurationsMs[step.id] = dur
-			}
-
-			if (step.workerModel) {
-				workerModelCounts[step.workerModel] = (workerModelCounts[step.workerModel] ?? 0) + 1
 			}
 
 			if (step.parallel) {
@@ -265,11 +259,6 @@ export function computeStats(ferment: Ferment): FermentStats {
 			}
 		}
 	}
-
-	// ── Workers ────────────────────────────────────────────────────────────────
-	const modelsUsed = Object.entries(workerModelCounts)
-		.map(([model, count]) => ({ model, count }))
-		.sort((a, b) => b.count - a.count)
 
 	// ── Decisions ──────────────────────────────────────────────────────────────
 	const decisionsByPhase: Record<string, number> = {}
@@ -320,7 +309,6 @@ export function computeStats(ferment: Ferment): FermentStats {
 			stepGrades,
 		},
 		workers: {
-			modelsUsed,
 			totalParallelSteps,
 		},
 		decisions: {

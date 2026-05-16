@@ -42,11 +42,10 @@ export function formatFermentStatus(f: Ferment): string {
 					const ms = end.getTime() - new Date(s.startedAt).getTime()
 					elapsed = ms > 0 ? ` ⏱ ${(ms / 1000).toFixed(1)}s` : ""
 				}
-				const modelTag = s.workerModel ? ` 🧠 ${s.workerModel}` : ""
 				// `?` suffix on grade indicates the judge was unavailable when this
 				// step was scored — the visible letter is a placeholder, not a real signal.
 				const gradeTag = s.grade ? ` 📊 ${s.grade.grade}${s.grade.unavailable ? "?" : ""}` : ""
-				lines.push(`      ${sm} ${s.description}${elapsed}${modelTag}${gradeTag} [${s.status}]`)
+				lines.push(`      ${sm} ${s.description}${elapsed}${gradeTag} [${s.status}]`)
 				if (s.summary) {
 					// Worker-written summary on a continuation line, symmetric with phase summary.
 					lines.push(`         ↳ ${s.summary}`)
