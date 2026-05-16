@@ -450,4 +450,4 @@ Release assets follow the naming convention `kimchi_{os}_{arch}.tar.gz` with a `
 
 ## License
 
-MIT
+[Apache License 2.0](LICENSE) — see [CONTRIBUTING.md](CONTRIBUTING.md) for the CLA and contributor guidelines.
