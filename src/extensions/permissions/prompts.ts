@@ -158,17 +158,24 @@ export async function promptForCompoundApproval(opts: {
 function describeCall(toolName: string, input: Record<string, unknown>): string {
 	const lower = toolName.toLowerCase()
 	if (lower === "bash" && typeof input.command === "string") {
-		return `bash(${truncate(input.command, 200)})`
+		return `bash(${truncate(collapseNewlines(input.command), 200)})`
 	}
 	if (typeof input.path === "string") {
-		return `${lower}(${truncate(input.path, 200)})`
+		return `${lower}(${truncate(collapseNewlines(input.path), 200)})`
 	}
 	try {
-		const preview = truncate(JSON.stringify(input), 120)
+		const preview = truncate(collapseNewlines(JSON.stringify(input)), 120)
 		return `${lower}(${preview})`
 	} catch {
 		return lower
 	}
+}
+
+// The prompt title is passed to ctx.ui.select as a single string. pi-tui's Text
+// component splits on \n, so any embedded newline expands the prompt to multiple
+// rows and overlaps surrounding UI. Collapse to a single line before display.
+function collapseNewlines(s: string): string {
+	return s.replace(/\r?\n+/g, " ⏎ ")
 }
 
 // Exported for testing

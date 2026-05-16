@@ -1,6 +1,6 @@
 import type { BashToolDetails, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent"
-import { Container, Spacer, Text } from "@earendil-works/pi-tui"
+import { Text } from "@earendil-works/pi-tui"
 import { ToolBlockView, buildToolCallHeader, getTextContent } from "../components/tool-block.js"
 import { isToolExpanded, registerToolCall } from "../expand-state.js"
 
@@ -29,14 +29,14 @@ export default function (pi: ExtensionAPI) {
 
 		renderResult(result, options, theme, context) {
 			if (options.isPartial) {
-				const displayText = getTextContent(result).split("\n").slice(-5).join("\n")
-
-				const component = context.lastComponent instanceof Container ? context.lastComponent : new Container()
-				component.clear()
-				component.addChild(new Spacer(1))
-				component.addChild(new Text(theme.fg("toolOutput", displayText), 0, 0))
-				component.invalidate()
-				return component
+				// ToolBlockView.render() ignores children, so addChild() output would be invisible.
+				// Use setExtra() instead, which is actually rendered, and reuse the existing view
+				// so the header set by renderCall stays put.
+				const view = context.lastComponent instanceof ToolBlockView ? context.lastComponent : new ToolBlockView()
+				const previewLines = getTextContent(result).split("\n").slice(-5)
+				view.setExtra(previewLines.map((line) => theme.fg("toolOutput", line)))
+				view.invalidate()
+				return view
 			}
 
 			registerToolCall(context.toolCallId)
