@@ -4,18 +4,25 @@
  * Manages session naming via:
  * - CLI flag: --name <value>
  * - Slash command: /rename <name>
+ * - Auto-naming: automatically names session from first message after first turn
  *
  * Updates terminal title dynamically and exposes the name for footer display.
  */
 
 import { basename } from "node:path"
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+	TurnEndEvent,
+} from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../config.js"
 import { getSessionName, setSessionName as setStartupSessionName } from "../startup-context.js"
 
 // Module-level state for current session name and pi reference
 let _currentSessionName: string | undefined = undefined
 let _piRef: ExtensionAPI | undefined = undefined
+let hasAutoNamed = false
 
 // System prompt for session name generation - keep it simple; cheap models choke
 // on negative constraints, formatting demands, and multi-step instructions.
@@ -101,17 +108,20 @@ export function deterministicFallback(input: string): string {
 /**
  * Suggest a session name using the cheap Cast AI LLM.
  * Falls back to deterministic truncation on any error, with diagnostics.
+ * When quiet is true, suppresses all user-facing error output (for background auto-naming).
  */
-export async function suggestSessionName(ctx: ExtensionContext): Promise<string> {
+export async function suggestSessionName(ctx: ExtensionContext, hint?: string, quiet = false): Promise<string> {
 	const base = basename(ctx.cwd)
-	const hint = extractFirstUserMessage(ctx)
+	const resolvedHint = hint ?? extractFirstUserMessage(ctx)
 
 	// If there's no user message to work with, skip the LLM entirely.
-	if (!hint) {
-		if (ctx.hasUI) {
-			ctx.ui.notify("Auto-naming: no user message found in this session yet.", "error")
-		} else {
-			console.error("[kimchi] auto-naming failed: no user message found")
+	if (!resolvedHint) {
+		if (!quiet) {
+			if (ctx.hasUI) {
+				ctx.ui.notify("Auto-naming: no user message found in this session yet.", "error")
+			} else {
+				console.error("[kimchi] auto-naming failed: no user message found")
+			}
 		}
 		return deterministicFallback(base)
 	}
@@ -120,10 +130,12 @@ export async function suggestSessionName(ctx: ExtensionContext): Promise<string>
 	const apiKey = config.apiKey || process.env.KIMCHI_API_KEY || ""
 
 	if (!apiKey) {
-		if (ctx.hasUI) {
-			ctx.ui.notify("Auto-naming: no API key configured.", "error")
-		} else {
-			console.error("[kimchi] auto-naming failed: no API key")
+		if (!quiet) {
+			if (ctx.hasUI) {
+				ctx.ui.notify("Auto-naming: no API key configured.", "error")
+			} else {
+				console.error("[kimchi] auto-naming failed: no API key")
+			}
 		}
 		return deterministicFallback(base)
 	}
@@ -135,7 +147,7 @@ export async function suggestSessionName(ctx: ExtensionContext): Promise<string>
 				{ role: "system", content: SESSION_NAME_SYSTEM_PROMPT },
 				// Frame the message exactly like shortenTitle does - cheap models need
 				// an explicit task, not raw text.
-				{ role: "user", content: `Short title for this conversation:\n\n${capHint(hint)}` },
+				{ role: "user", content: `Short title for this conversation:\n\n${capHint(resolvedHint)}` },
 			],
 			// Cheap think-models spend tokens on reasoning before outputting.
 			// Give enough room for both reasoning and the final title.
@@ -155,14 +167,16 @@ export async function suggestSessionName(ctx: ExtensionContext): Promise<string>
 		})
 
 		if (!response.ok) {
-			const body = await response.text().catch(() => "")
-			if (ctx.hasUI) {
-				ctx.ui.notify(
-					`Auto-naming: API error ${response.status} ${response.statusText}${body ? ` — ${body.slice(0, 200)}` : ""}`,
-					"error",
-				)
-			} else {
-				console.error(`[kimchi] auto-naming API error: ${response.status} ${response.statusText} ${body}`)
+			const errorBody = await response.text().catch(() => "")
+			if (!quiet) {
+				if (ctx.hasUI) {
+					ctx.ui.notify(
+						`Auto-naming: API error ${response.status} ${response.statusText}${errorBody ? ` — ${errorBody.slice(0, 200)}` : ""}`,
+						"error",
+					)
+				} else {
+					console.error(`[kimchi] auto-naming API error: ${response.status} ${response.statusText} ${errorBody}`)
+				}
 			}
 			return deterministicFallback(base)
 		}
@@ -176,32 +190,51 @@ export async function suggestSessionName(ctx: ExtensionContext): Promise<string>
 		if (suggestion.length > 0) {
 			return suggestion
 		}
-		if (ctx.hasUI) {
-			ctx.ui.notify("Auto-naming: LLM returned empty suggestion.", "error")
-		} else {
-			console.error("[kimchi] auto-naming: LLM returned empty suggestion")
+		if (!quiet) {
+			if (ctx.hasUI) {
+				ctx.ui.notify("Auto-naming: LLM returned empty suggestion.", "error")
+			} else {
+				console.error("[kimchi] auto-naming: LLM returned empty suggestion")
+			}
 		}
 		return deterministicFallback(base)
 	} catch (err) {
-		if (ctx.hasUI) {
-			ctx.ui.notify(`Auto-naming: ${err instanceof Error ? err.message : String(err)}`, "error")
-		} else {
-			console.error(`[kimchi] auto-naming exception: ${err}`)
+		if (!quiet) {
+			if (ctx.hasUI) {
+				ctx.ui.notify(`Auto-naming: ${err instanceof Error ? err.message : String(err)}`, "error")
+			} else {
+				console.error(`[kimchi] auto-naming exception: ${err}`)
+			}
 		}
 		return deterministicFallback(base)
 	}
 }
 
 /**
+ * Strip ASCII control characters from a string to prevent terminal injection.
+ * Removes \x00–\x1f and \x7f, preserving common whitespace (space, tab, newline).
+ */
+function sanitizeSessionName(name: string): string {
+	return [...name]
+		.filter((c) => {
+			const cp = c.charCodeAt(0)
+			return cp === 0x09 || cp === 0x0a || cp === 0x0d || (cp >= 0x20 && cp !== 0x7f)
+		})
+		.join("")
+		.trim()
+}
+
+/**
  * Update the terminal title with OSC sequence and process.title.
- * Format: "kimchi · {name} · {basename(cwd)}"
+ * Format: "kimchi \u00b7 {name} \u00b7 {basename(cwd)}"
  * Only runs when UI is available.
  */
 export function updateTerminalTitle(ctx: ExtensionContext): void {
 	if (!ctx.hasUI || !_currentSessionName) return
 
 	const cwdBasename = basename(ctx.cwd)
-	const title = `kimchi · ${_currentSessionName} · ${cwdBasename}`
+	const safeName = sanitizeSessionName(_currentSessionName)
+	const title = `kimchi \u00b7 ${safeName} \u00b7 ${cwdBasename}`
 
 	// OSC 0 sequence to set window/tab title
 	process.stdout.write(`\x1b]0;${title}\x07`)
@@ -221,9 +254,10 @@ export function getCurrentSessionName(): string | undefined {
  * Note: pi.setSessionName is available on ExtensionAPI, not ExtensionContext.
  */
 function setAndUpdateSessionName(name: string, pi: ExtensionAPI, ctx: ExtensionContext): void {
-	_currentSessionName = name
-	setStartupSessionName(name)
-	pi.setSessionName(name)
+	const safeName = sanitizeSessionName(name)
+	_currentSessionName = safeName
+	setStartupSessionName(safeName)
+	pi.setSessionName(safeName)
 	updateTerminalTitle(ctx)
 }
 
@@ -236,12 +270,44 @@ export default function sessionNameExtension(initialName?: string) {
 		// Store pi reference for command handlers
 		_piRef = pi
 
-		// If initial name was provided at startup, set it on session_start
-		if (initialName) {
-			pi.on("session_start", (_event, ctx: ExtensionContext) => {
+		// On session_start: reset the auto-naming tracker so background auto-naming
+		// can run for new sessions. If initial name was provided at startup, apply it.
+		pi.on("session_start", (_event, ctx: ExtensionContext) => {
+			hasAutoNamed = false
+			if (initialName) {
 				setAndUpdateSessionName(initialName, pi, ctx)
-			})
-		}
+			} else {
+				const existingName = ctx.sessionManager.getSessionName()
+				if (existingName) {
+					_currentSessionName = existingName
+					updateTerminalTitle(ctx)
+				}
+			}
+		})
+
+		// Auto-name sessions after the first turn when no name was set.
+		pi.on("turn_end", (_event: TurnEndEvent, ctx: ExtensionContext) => {
+			if (hasAutoNamed) return
+			if (ctx.sessionManager.getSessionName()) {
+				hasAutoNamed = true
+				return
+			}
+			const hint = extractFirstUserMessage(ctx)
+			if (!hint) {
+				hasAutoNamed = true
+				return
+			}
+			hasAutoNamed = true
+			suggestSessionName(ctx, hint, true)
+				.then((suggestion) => {
+					if (suggestion && _piRef && !ctx.sessionManager.getSessionName()) {
+						setAndUpdateSessionName(suggestion, _piRef, ctx)
+					}
+				})
+				.catch(() => {
+					// Silently ignore background auto-naming failures
+				})
+		})
 
 		// Register the /rename command
 		pi.registerCommand("rename", {
