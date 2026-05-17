@@ -136,15 +136,41 @@ describe("runChildWithTTYHandoff", () => {
 		await expect(promise).resolves.toBe(128)
 	})
 
-	it("writes the show/hide-cursor escapes around the child", async () => {
+	it("disables pi-tui modes before the child and re-enables them after", async () => {
 		const { spawner, calls } = makeSpawner()
 		const promise = runChildWithTTYHandoff({ cmd: "ssh", args: [], _spawn: spawner })
 
-		expect(writeSpy).toHaveBeenCalledWith("\x1b[?25h")
+		// Pre-spawn teardown: bracketed-paste off, kitty pop, modifyOtherKeys off, cursor shown.
+		const preCalls = writeSpy.mock.calls.flat().join("")
+		expect(preCalls).toContain("\x1b[?2004l")
+		expect(preCalls).toContain("\x1b[<u")
+		expect(preCalls).toContain("\x1b[>4;0m")
+		expect(preCalls).toContain("\x1b[?25h")
 
 		calls[0].child.emit("exit", 0, null)
 		await promise
 
-		expect(writeSpy).toHaveBeenCalledWith("\x1b[?25l")
+		// Post-spawn restore: bracketed-paste on, kitty push, cursor hidden.
+		const allCalls = writeSpy.mock.calls.flat().join("")
+		expect(allCalls).toContain("\x1b[?2004h")
+		expect(allCalls).toContain("\x1b[>7u")
+		expect(allCalls).toContain("\x1b[?25l")
+	})
+
+	it("enters and leaves the alternate screen buffer around the child", async () => {
+		const { spawner, calls } = makeSpawner()
+		const promise = runChildWithTTYHandoff({ cmd: "ssh", args: [], _spawn: spawner })
+
+		const preCalls = writeSpy.mock.calls.flat().join("")
+		expect(preCalls).toContain("\x1b[?1049h")
+		expect(preCalls).not.toContain("\x1b[?1049l")
+
+		calls[0].child.emit("exit", 0, null)
+		await promise
+
+		const allCalls = writeSpy.mock.calls.flat().join("")
+		expect(allCalls).toContain("\x1b[?1049l")
+		// Order matters: the leave must come after the enter.
+		expect(allCalls.indexOf("\x1b[?1049l")).toBeGreaterThan(allCalls.indexOf("\x1b[?1049h"))
 	})
 })

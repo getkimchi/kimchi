@@ -11,7 +11,7 @@ import { authenticateRemoteSession, listRemoteSessions } from "../remote/auth.js
 import { buildRemoteAgentSession } from "../remote/build-remote-session.js"
 import type { RemoteAgentSession } from "../remote/remote-agent-session.js"
 import { RemoteAuthError } from "../remote/types.js"
-import type { RemoteSessionStatus, RemoteSessionSummary } from "../remote/types.js"
+import type { AuthenticateResponse, RemoteSessionStatus, RemoteSessionSummary } from "../remote/types.js"
 import type { AttachArgs, ConnectArgs, DetachArgs, TeleportArgs } from "./args.js"
 import { BASE_EXCLUDE_GLOBS, RsyncError, runRsync } from "./rsync-transport.js"
 import { type SessionRow, renderSessionsTable } from "./sessions-table.js"
@@ -216,7 +216,7 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 	// ── 2. Auth ──
 	const sessionId = randomUUID()
 	status(ctx, "Authenticating…")
-	let authResult
+	let authResult: AuthenticateResponse
 	try {
 		authResult = await authenticateRemoteSession(sessionId, ctx.apiKey, { endpoint: ctx.endpoint })
 	} catch (err) {
@@ -456,7 +456,7 @@ export async function runConnect(
 	}
 
 	status(ctx, "Authenticating SSH…")
-	let auth
+	let auth: AuthenticateResponse
 	try {
 		auth = await authenticateRemoteSession(sessionId, ctx.apiKey, { endpoint: ctx.endpoint })
 	} catch (err) {
@@ -496,9 +496,7 @@ export async function runConnect(
 
 // ───────────────────────── runListSessions ─────────────────────────
 
-export type ListSessionsArgs = {}
-
-export async function runListSessions(_args: ListSessionsArgs, ctx: TeleportContext): Promise<void> {
+export async function runListSessions(ctx: TeleportContext): Promise<void> {
 	const wrapper = ctx.wrapper
 
 	let serverSessions: RemoteSessionSummary[] = []
