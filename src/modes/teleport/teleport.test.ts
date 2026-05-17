@@ -548,7 +548,7 @@ describe("runListSessions", () => {
 		const home = new FakeSession("local-1")
 		const { ctx, ui } = makeCtx(home)
 
-		await runListSessions({}, ctx)
+		await runListSessions(ctx)
 		expect(ui.notify).toHaveBeenCalledWith("No remote sessions.", "info")
 	})
 
@@ -588,7 +588,7 @@ describe("runListSessions", () => {
 			},
 		] satisfies RemoteSessionSummary[])
 
-		await runListSessions({}, ctx)
+		await runListSessions(ctx)
 		expect(listMock).toHaveBeenCalledOnce()
 		const tableCall = ui.notify.mock.calls.find(
 			(c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("STATE"),
@@ -610,7 +610,7 @@ describe("runListSessions", () => {
 
 		listMock.mockRejectedValueOnce(new Error("network down"))
 
-		await runListSessions({}, ctx)
+		await runListSessions(ctx)
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Could not fetch server sessions/), "warning")
 		const tableCall = ui.notify.mock.calls.find(
 			(c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("STATE"),
