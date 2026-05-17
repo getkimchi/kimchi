@@ -47,6 +47,7 @@ export async function createWebSocketTransport(
 	options: WebSocketTransportOptions = {},
 ): Promise<Transport> {
 	const url = `${wsUrl}?token=${encodeURIComponent(connectToken)}`
+	const headers = { Authorization: `Bearer ${connectToken}` }
 
 	// biome-ignore lint/suspicious/noExplicitAny: accessing globalThis WebSocket
 	const WS = (globalThis as any).WebSocket
@@ -67,7 +68,7 @@ export async function createWebSocketTransport(
 	while (true) {
 		try {
 			spinner?.stop()
-			return await createTransportOnce(WS, url)
+			return await createTransportOnce(WS, url, headers)
 		} catch (err) {
 			lastError = err
 			const elapsed = Date.now() - startTime
@@ -97,8 +98,9 @@ async function createTransportOnce(
 	// biome-ignore lint/suspicious/noExplicitAny: WebSocket constructor varies
 	WS: any,
 	url: string,
+	headers: Record<string, string>,
 ): Promise<Transport> {
-	const ws = new WS(url)
+	const ws = new WS(url, { headers })
 
 	const encoder = new TextEncoder()
 

@@ -60,6 +60,7 @@ let sessionStarted = false
 // at module load, before anything else runs.
 const acpMode = isAcpMode(process.argv.slice(2))
 const remoteMode = isRemoteFlag(process.argv.slice(2))
+const teleportMode = isTeleportFlag(process.argv.slice(2))
 const helpOrVersion = isHelpOrVersionArgs(process.argv.slice(2))
 
 process.on("exit", (code) => {
@@ -116,6 +117,13 @@ function isAcpMode(args: string[]): boolean {
 function isRemoteFlag(args: string[]): boolean {
 	for (const a of args) {
 		if (a === "--remote") return true
+	}
+	return false
+}
+
+function isTeleportFlag(args: string[]): boolean {
+	for (const a of args) {
+		if (a === "--teleport") return true
 	}
 	return false
 }
@@ -298,9 +306,23 @@ try {
 		]
 
 		const rawArgs = process.argv.slice(2)
+		if (teleportMode && remoteMode) {
+			process.stderr.write(
+				"`--teleport` and `--remote` are mutually exclusive. Use `--remote --session <id>` to attach to a remote at startup, or `--teleport` to enable session multiplex from local.\n",
+			)
+			process.exit(1)
+		}
 		if (acpMode) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
 			await runAcpMode({ extensionFactories, agentDir })
+		} else if (teleportMode) {
+			const { runTeleportSession } = await import("./modes/teleport/run-interactive-teleport.js")
+			await runTeleportSession({
+				extensionFactories,
+				agentDir,
+				apiKey: apiKey ?? "",
+				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+			})
 		} else if (remoteMode) {
 			// --remote runs the same TUI as local mode but with the agent loop
 			// living in the cloud. See docs/remote-acp-agents-plan.md and
