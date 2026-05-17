@@ -30,6 +30,24 @@ kimchi         # launch the coding harness
 
 Run `kimchi --help` to see all available subcommands and flags.
 
+## Remote teleport (preview)
+
+Launch with `kimchi --teleport` to enable the session-multiplex commands. The local TUI stays the home base; remote workers are spawned, detached, and re-attached without restarting kimchi.
+
+```bash
+kimchi --teleport
+```
+
+Four slash commands are available inside the TUI:
+
+- `/teleport [name] [--allow-dirty] [--exclude <glob>] [--include-ignored] [--abandon-pending] [--force]` — rsync the working tree to a fresh remote sandbox and foreground it. The remote starts with an empty conversation in this release (session import is deferred); the workspace is canonical on the remote from that point on.
+- `/detach [--abandon-pending]` — drop the WebSocket to the foreground remote (the server keeps the session running) and return to the local home base.
+- `/attach <name-or-id>` — re-attach to a previously detached remote, either one from this kimchi run or one running server-side from a prior session. Server state is canonical; no rsync.
+- `/sessions` — list everything: the foreground remote (if any), in-process detached remotes, and other server-side sessions.
+- `/connect [name-or-id]` — open an interactive ssh shell on the sandbox via the teleport proxy. With no argument, connects to the currently foregrounded remote. With a name or id, resolves like `/attach` but only opens a shell — kimchi's session state is unchanged when ssh exits. Auth uses a freshly-minted connect token; the proxy bridges your local ssh to the sandbox over the same `/ssh` WebSocket endpoint rsync uses.
+
+`--teleport` and `--remote` are mutually exclusive. Use `--remote --session <id>` to attach to a single remote at startup; use `--teleport` to multiplex from a local home base.
+
 ## Configuration
 
 ### Authentication

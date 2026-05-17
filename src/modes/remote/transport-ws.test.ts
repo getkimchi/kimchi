@@ -9,6 +9,7 @@ class MockWebSocket {
 	static CLOSED = 3
 	readyState = MockWebSocket.CONNECTING
 	public url: string
+	public constructorOpts?: { headers?: Record<string, string> }
 	public sent: (string | Uint8Array)[] = []
 	private listeners = new Map<string, Array<EventListenerOrEventListenerObject>>()
 
@@ -63,9 +64,10 @@ function installMockWS(ws: MockWebSocket) {
 
 function installMockWSFactory(factory: (url: string) => MockWebSocket) {
 	const OriginalWS = (globalThis as unknown as { WebSocket: unknown }).WebSocket
-	const mockFn = vi.fn().mockImplementation((url: string) => {
+	const mockFn = vi.fn().mockImplementation((url: string, opts?: { headers?: Record<string, string> }) => {
 		const ws = factory(url)
 		ws.url = url
+		ws.constructorOpts = opts
 		return ws
 	}) as unknown as typeof WebSocket
 	;(mockFn as unknown as Record<string, number>).OPEN = MockWebSocket.OPEN
@@ -79,7 +81,7 @@ function installMockWSFactory(factory: (url: string) => MockWebSocket) {
 }
 
 describe("createWebSocketTransport", () => {
-	it("appends token as query param", async () => {
+	it("sends token both as query param and as Authorization header", async () => {
 		const ws = new MockWebSocket("")
 		ws.readyState = MockWebSocket.OPEN
 		const restore = installMockWS(ws)
@@ -90,6 +92,7 @@ describe("createWebSocketTransport", () => {
 
 		const transport = await transportPromise
 		expect(ws.url).toBe("wss://test.com/ws?token=tok-abc")
+		expect(ws.constructorOpts?.headers).toEqual({ Authorization: "Bearer tok-abc" })
 		transport.close()
 		restore()
 	})
