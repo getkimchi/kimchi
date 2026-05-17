@@ -151,7 +151,7 @@ export default function makeTeleportExtension(deps: TeleportExtensionDeps): (pi:
 				const tctx = buildCtx(ctx, deps)
 				if (!tctx) return
 				try {
-					await runListSessions({}, tctx)
+					await runListSessions(tctx)
 				} catch (err) {
 					handleError(ctx, err)
 				}

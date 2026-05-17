@@ -37,7 +37,21 @@ export async function runChildWithTTYHandoff(opts: RunChildOptions): Promise<num
 		// best-effort
 	}
 	try {
-		process.stdout.write("\x1b[?25h")
+		// Mirror pi-tui's terminal teardown (see node_modules/@earendil-works/pi-tui/dist/terminal.js
+		// stop()/drainInput()). If we don't pop these modes, kitty-encoded keystrokes leak
+		// into the child as `CSI <code>;<mod>:<event>u` and bracketed-paste markers wrap input.
+		// `?1049h` enters the alternate screen buffer (saves cursor + main screen) so the
+		// child gets a clean canvas; `?1049l` on the return path restores the kimchi UI
+		// exactly as it was. pi-tui doesn't use the alt screen, so this nests cleanly.
+		process.stdout.write(
+			"\x1b[?2004l" + // disable bracketed paste
+				"\x1b[<u" + // pop kitty keyboard protocol
+				"\x1b[>4;0m" + // disable modifyOtherKeys
+				"\x1b[?1049h" + // enter alternate screen (saves main screen + cursor)
+				"\x1b[?25h" + // show cursor
+				"\x1b[0m" + // reset SGR
+				"\x1b[H", // cursor home in the alt buffer
+		)
 	} catch {
 		// best-effort
 	}
@@ -74,7 +88,17 @@ export async function runChildWithTTYHandoff(opts: RunChildOptions): Promise<num
 			// best-effort
 		}
 		try {
-			process.stdout.write("\x1b[?25l")
+			// Exit the alt screen first so the main screen + cursor are restored.
+			// Then re-enable pi-tui's terminal modes so the TUI keeps working post-child.
+			// pi-tui's internal flags stay set across this excursion, so re-emitting
+			// the enables keeps the terminal and the parser in sync. SIGWINCH below
+			// covers the case where the user resized the terminal during the child.
+			process.stdout.write(
+				"\x1b[?1049l" + // leave alternate screen (restores main screen + cursor)
+					"\x1b[?2004h" + // bracketed paste back on
+					"\x1b[>7u" + // kitty keyboard push (flags 7)
+					"\x1b[?25l", // hide cursor
+			)
 		} catch {
 			// best-effort
 		}
