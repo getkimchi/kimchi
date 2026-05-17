@@ -1,4 +1,10 @@
-import { type AuthenticateResponse, RemoteAuthError, RemoteNetworkError } from "./types.js"
+import {
+	type AuthenticateResponse,
+	RemoteAuthError,
+	RemoteNetworkError,
+	type RemoteSessionStatus,
+	type RemoteSessionSummary,
+} from "./types.js"
 
 export interface AuthenticateOptions {
 	/**
@@ -24,11 +30,13 @@ async function fetchWithTimeout(
 	init: RequestInit,
 	fetchImpl: typeof globalThis.fetch,
 	ms = 30_000,
+	externalSignal?: AbortSignal,
 ): Promise<Response> {
 	const ctrl = new AbortController()
 	const timer = setTimeout(() => ctrl.abort(), ms)
+	const signal = externalSignal ? AbortSignal.any([ctrl.signal, externalSignal]) : ctrl.signal
 	try {
-		return await fetchImpl(url, { ...init, signal: ctrl.signal })
+		return await fetchImpl(url, { ...init, signal })
 	} finally {
 		clearTimeout(timer)
 	}
@@ -182,15 +190,176 @@ export async function authenticateRemoteSession(
 		const { uri } = await createOrUpdateSession(orgId, sessionId, apiKey, { ...options, fetch: fetchImpl })
 		const { token, expireTime } = await exchangeSessionToken(apiKey, sessionId, { ...options, fetch: fetchImpl })
 
+		const { wsUrl, host, port } = normalizeWsUri(uri)
+
 		return {
 			connectToken: token,
 			expiresAt: expireTime,
-			wsUrl: uri,
+			wsUrl,
+			host,
+			port,
 		}
 	} catch (err) {
 		if (err instanceof RemoteAuthError || err instanceof RemoteNetworkError) {
 			throw err
 		}
 		throw new RemoteNetworkError(err instanceof Error ? err.message : String(err))
+	}
+}
+
+function normalizeWsUri(raw: string): { wsUrl: string; host: string; port: number } {
+	const schemeMatch = raw.match(/^([a-z][a-z0-9+.-]*):\/\//i)
+	if (schemeMatch && !/^wss?$/i.test(schemeMatch[1])) {
+		throw new RemoteNetworkError(`Unexpected protocol "${schemeMatch[1]}:" in server URI: ${raw}`)
+	}
+	const withScheme = schemeMatch ? raw : `wss://${raw}`
+	let url: URL
+	try {
+		url = new URL(withScheme)
+	} catch {
+		throw new RemoteNetworkError(`Invalid WebSocket URI from server: ${raw}`)
+	}
+	if (url.protocol !== "wss:" && url.protocol !== "ws:") {
+		throw new RemoteNetworkError(`Unexpected protocol "${url.protocol}" in server URI: ${raw}`)
+	}
+	const defaultPort = url.protocol === "wss:" ? 443 : 80
+	const port = url.port ? Number(url.port) : defaultPort
+	if (!Number.isFinite(port) || port <= 0) {
+		throw new RemoteNetworkError(`Invalid port in WebSocket URI: ${raw}`)
+	}
+	const portStr = url.port && Number(url.port) !== defaultPort ? `:${url.port}` : ""
+	const pathStr = url.pathname && url.pathname !== "/" ? url.pathname : ""
+	return {
+		wsUrl: `${url.protocol}//${url.hostname}${portStr}${pathStr}`,
+		host: url.hostname,
+		port,
+	}
+}
+
+export interface ListRemoteSessionsOptions extends AuthenticateOptions {
+	signal?: AbortSignal
+}
+
+const LIST_SESSIONS_PAGE_LIMIT = 200
+const LIST_SESSIONS_PAGE_HARD_CAP = 10
+
+export async function listRemoteSessions(
+	apiKey: string,
+	options?: ListRemoteSessionsOptions,
+): Promise<RemoteSessionSummary[]> {
+	const fetchImpl = options?.fetch ?? globalThis.fetch
+	const endpoint = resolveEndpoint(options)
+	const signal = options?.signal
+
+	try {
+		const orgId = await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })
+
+		const results: RemoteSessionSummary[] = []
+		let cursor = ""
+
+		for (let page = 0; page < LIST_SESSIONS_PAGE_HARD_CAP; page++) {
+			const params = new URLSearchParams()
+			params.set("page.limit", String(LIST_SESSIONS_PAGE_LIMIT))
+			if (cursor) params.set("page.cursor", cursor)
+
+			const url = `${endpoint}/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/sessions?${params.toString()}`
+			const resp = await fetchWithTimeout(
+				url,
+				{
+					method: "GET",
+					headers: {
+						Authorization: `Bearer ${apiKey}`,
+						Accept: "application/json",
+					},
+				},
+				fetchImpl,
+				30_000,
+				signal,
+			)
+
+			await checkResponse(resp, url)
+
+			const bodyText = await resp.text()
+			let data: unknown
+			try {
+				data = JSON.parse(bodyText)
+			} catch {
+				console.error(`listRemoteSessions: non-JSON response from ${url}: ${bodyText.slice(0, 500)}`)
+				throw new RemoteNetworkError(`Unexpected non-JSON response from ${endpoint}`)
+			}
+
+			if (typeof data !== "object" || data === null) {
+				throw new RemoteNetworkError(`Unexpected response shape from ${endpoint}`)
+			}
+
+			const items = (data as { items?: unknown }).items
+			if (!Array.isArray(items)) {
+				console.error(`listRemoteSessions: missing items array from ${url}: ${bodyText.slice(0, 500)}`)
+				throw new RemoteNetworkError(`Missing items array in list-sessions response from ${endpoint}`)
+			}
+
+			for (const item of items) {
+				results.push(mapSessionToSummary(item, endpoint))
+			}
+
+			const nextCursor = (data as { nextPageCursor?: unknown }).nextPageCursor
+			if (typeof nextCursor !== "string" || nextCursor.length === 0) {
+				return results
+			}
+			cursor = nextCursor
+		}
+
+		return results
+	} catch (err) {
+		if (err instanceof RemoteAuthError || err instanceof RemoteNetworkError) {
+			throw err
+		}
+		throw new RemoteNetworkError(err instanceof Error ? err.message : String(err))
+	}
+}
+
+function mapSessionToSummary(raw: unknown, endpoint: string): RemoteSessionSummary {
+	if (typeof raw !== "object" || raw === null) {
+		throw new RemoteNetworkError(`Invalid session entry in list-sessions response from ${endpoint}`)
+	}
+	const r = raw as Record<string, unknown>
+
+	const id = r.id
+	if (typeof id !== "string" || id.length === 0) {
+		throw new RemoteNetworkError(`Missing session id in list-sessions response from ${endpoint}`)
+	}
+
+	const createTime = r.createTime
+	if (typeof createTime !== "string") {
+		throw new RemoteNetworkError(`Missing createTime for session ${id} from ${endpoint}`)
+	}
+	const createdAt = new Date(createTime)
+	if (Number.isNaN(createdAt.getTime())) {
+		throw new RemoteNetworkError(`Invalid createTime "${createTime}" for session ${id} from ${endpoint}`)
+	}
+
+	const name = typeof r.description === "string" ? r.description : ""
+	const status = mapSessionStatus(r.status)
+
+	// Server proto has no last_activity_time / has_connected_client fields yet — placeholder for v1.
+	return {
+		id,
+		name,
+		createdAt,
+		lastActivityAt: createdAt,
+		status,
+		hasConnectedClient: false,
+	}
+}
+
+function mapSessionStatus(raw: unknown): RemoteSessionStatus {
+	switch (raw) {
+		case "ACTIVE":
+		case "INITIALIZING":
+			return "active"
+		case "DELETING":
+			return "completed"
+		default:
+			return "idle"
 	}
 }

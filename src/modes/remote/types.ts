@@ -2,6 +2,19 @@ export interface AuthenticateResponse {
 	connectToken: string
 	expiresAt: string
 	wsUrl: string
+	host: string
+	port: number
+}
+
+export type RemoteSessionStatus = "active" | "idle" | "completed"
+
+export interface RemoteSessionSummary {
+	id: string
+	name: string
+	createdAt: Date
+	lastActivityAt: Date
+	status: RemoteSessionStatus
+	hasConnectedClient: boolean
 }
 
 export const REMOTE_ENDPOINT = "https://app.kimchi.dev"

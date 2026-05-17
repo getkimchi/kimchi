@@ -1,9 +1,8 @@
 import { resolve } from "node:path"
-import { AuthStorage, ExtensionRunner, createAgentSessionServices } from "@earendil-works/pi-coding-agent"
+import { AuthStorage, createAgentSessionServices } from "@earendil-works/pi-coding-agent"
 import type { AgentSession, CreateAgentSessionRuntimeFactory, ExtensionFactory } from "@earendil-works/pi-coding-agent"
 import { onPermissionsModeChange } from "../../extensions/permissions/index.js"
-import { ReconnectSupervisor } from "./reconnect.js"
-import { RemoteAgentSession } from "./remote-agent-session.js"
+import { buildRemoteAgentSession } from "./build-remote-session.js"
 
 export interface CreateRemoteRuntimeFactoryOptions {
 	apiKey: string
@@ -40,45 +39,20 @@ export function createRemoteRuntimeFactory(
 			},
 		})
 
-		const supervisor = new ReconnectSupervisor({
+		const session = await buildRemoteAgentSession({
 			sessionId: sessionManager.getSessionId() ?? "remote-session",
 			apiKey: options.apiKey,
 			endpoint: options.endpoint,
+			services,
+			sessionManager,
+			cwd,
 		})
 
-		const client = await supervisor.connect()
-
-		// `resourceLoader.getExtensions()` returns the LoadExtensionsResult
-		// that pi-mono's `CreateAgentSessionRuntimeResult` requires.  No
-		// additional loading needed — `createAgentSessionServices` already ran
-		// the loader.
 		const extensionsResult = services.resourceLoader.getExtensions()
 		const loaderDiagnostics = extensionsResult.errors.map(({ path, error }) => ({
 			type: "error" as const,
 			message: `Failed to load extension "${path}": ${error}`,
 		}))
-
-		const extensionRunner = new ExtensionRunner(
-			extensionsResult.extensions,
-			extensionsResult.runtime,
-			cwd,
-			sessionManager,
-			services.modelRegistry,
-		)
-
-		const session = new RemoteAgentSession({
-			rpcClient: client,
-			supervisor,
-			settingsManager: services.settingsManager,
-			sessionManager,
-			resourceLoader: services.resourceLoader,
-			modelRegistry: services.modelRegistry,
-			extensionRunner,
-		})
-
-		supervisor.onClientChange = (newClient) => {
-			session.swapRpcClient(newClient)
-		}
 
 		// Forward client-side permission mode changes (CLI flags at startup,
 		// shift+tab cycling) to the server so its permissions-extension instance
