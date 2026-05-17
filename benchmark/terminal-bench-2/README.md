@@ -2,7 +2,9 @@
 
 Run [terminal-bench](https://www.harborframework.com/) against kimchi.
 
-The package ships a single harbor agent, `kimchi_agent:Kimchi`, that installs the `kimchi` binary inside each task container and runs it non-interactively (`--print --mode json --no-session`). Token and cost counters are parsed from the JSONL output and fed back into harbor's trial context.
+The package ships a single harbor agent, `kimchi_agent:Kimchi`, that installs the `kimchi` binary inside each task container and runs it non-interactively (`--print --session /logs/agent/sessions/main.jsonl`). Token and cost counters are parsed from session JSONL files and fed back into harbor's trial context.
+
+The agent starts `kimchi` in its own process group and records the process-group id at `/logs/agent/kimchi-agent.pgid`. If Harbor cancels the agent phase on timeout, the cleanup path terminates that recorded process group before the verifier starts; on normal exit, the pgid file is removed.
 
 ## Prereqs
 
@@ -26,7 +28,7 @@ You will hit one of two failure modes:
 
 **What this means in practice:**
 
-- **Apple Silicon is fine for harness/agent iteration** — verifying the install path, the message-parsing extension, prompt enrichment, etc. The agent will run and you can read its tool calls and final reasoning out of `agent/kimchi.txt`.
+- **Apple Silicon is fine for harness/agent iteration** — verifying the install path, the message-parsing extension, prompt enrichment, etc. The agent will run and you can read its tool calls and final reasoning out of `agent/sessions/*.jsonl`.
 - **Do not trust reward numbers from local Apple Silicon runs.** A `0.0` may be the verifier crashing under emulation, not the model failing. Compare your numbers against published terminal-bench results only after running on real x86_64.
 - **For trusted reward numbers, run on real Linux x86_64 hardware** — a CI runner (GitHub Actions `ubuntu-latest`, etc.).
 
@@ -140,7 +142,7 @@ Tag format is `key:value`, comma-separated; keys and values are alphanumeric plu
 
 ## Results
 
-`benchmark/terminal-bench-2/jobs/<timestamp>/<task>__<trial_id>/` — each trial directory contains `trial.log`, `result.json` (with `reward`), and `config.json`. The raw kimchi JSONL stream is in `agent/kimchi.txt`. Resumable session files (parent + each subagent, linked via `parentSession`) are in `agent/sessions/*.jsonl`; replay any of them with `kimchi --session <path>`.
+`benchmark/terminal-bench-2/jobs/<timestamp>/<task>__<trial_id>/` — each trial directory contains `trial.log`, `result.json` (with `reward`), and `config.json`. Resumable session files (parent + each subagent, linked via `parentSession`) are in `agent/sessions/*.jsonl`; replay any of them with `kimchi --session <path>`.
 
 ## Troubleshooting
 

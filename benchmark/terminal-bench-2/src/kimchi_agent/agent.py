@@ -1,3 +1,4 @@
+import asyncio
 import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
@@ -31,6 +32,7 @@ UPLOAD_STAGE_DIR = "/tmp/kimchi-stage"
 CONTAINER_LOGS_DIR = "/logs/agent"
 CONTAINER_SESSIONS_DIR = f"{CONTAINER_LOGS_DIR}/sessions"
 CONTAINER_MAIN_SESSION = f"{CONTAINER_SESSIONS_DIR}/main.jsonl"
+CONTAINER_AGENT_PGID_FILE = f"{CONTAINER_LOGS_DIR}/kimchi-agent.pgid"
 
 
 class Kimchi(BaseInstalledAgent):
@@ -179,25 +181,103 @@ class Kimchi(BaseInstalledAgent):
         if self._resolved_flags.get("ferment-oneshot"):
             ferment_env["KIMCHI_FERMENTS_DIR"] = f"{CONTAINER_LOGS_DIR}/ferments"
 
+        env = {
+            "KIMCHI_API_KEY": self._config.api_key,
+            "PI_PACKAGE_DIR": PI_PACKAGE_DIR,
+            **ferment_env,
+        }
+
         # Pipe the prompt via stdin instead of as a positional arg: pi-coding-agent's
         # parseArgs treats any token starting with `-` as a flag (no `--` end-of-options
         # marker), which deterministically crashes on instructions like "- You are given...".
-        await self.exec_as_agent(
-            environment,
-            command=(
-                f"mkdir -p {CONTAINER_SESSIONS_DIR} && "
-                f"printf '%s' {shlex.quote(instruction)} | "
-                f"{shlex.quote(BINARY_PATH)} "
-                f"--print --session {CONTAINER_MAIN_SESSION} "
-                f"--model {shlex.quote(self.model_name)} "
-                f"{cli_flags}"
-            ),
-            env={
-                "KIMCHI_API_KEY": self._config.api_key,
-                "PI_PACKAGE_DIR": PI_PACKAGE_DIR,
-                **ferment_env,
-            },
+        #
+        # Run kimchi in its own process group and persist the pgid in /logs/agent.
+        # Harbor enforces the agent timeout around this coroutine; when that outer
+        # wait is cancelled, docker compose may leave the in-container process tree
+        # alive. The pgid lets us terminate kimchi and its tool/subagent children
+        # before verification starts.
+        try:
+            await self.exec_as_agent(
+                environment,
+                command=self._kimchi_launch_command(instruction, cli_flags),
+                env=env,
+            )
+        except asyncio.CancelledError:
+            await self._terminate_kimchi_process_group(environment)
+            raise
+
+    def _kimchi_launch_command(self, instruction: str, cli_flags: str) -> str:
+        runner = self._kimchi_command(cli_flags)
+        return (
+            # Ensure kimchi has a stable location for the main session and any
+            # subagent session files before the process starts.
+            f"mkdir -p {shlex.quote(CONTAINER_SESSIONS_DIR)} && "
+            # Drop stale state from a previous interrupted attempt in the same
+            # mounted logs directory.
+            f"rm -f {shlex.quote(CONTAINER_AGENT_PGID_FILE)} && "
+            # Enable job control so the backgrounded kimchi pipeline gets a
+            # process group that can be terminated as a unit on timeout.
+            "set -m && { "
+            # Feed the task prompt through stdin and background the pipeline so
+            # this wrapper shell can record the process-group id before waiting.
+            f"(printf '%s' {shlex.quote(instruction)} | {runner}) & "
+            # $! is the pid of the most recent background job, here the kimchi
+            # pipeline leader as seen by the shell.
+            "agent_pid=$!; "
+            # Linux /proc/<pid>/stat field 5 is the process-group id. If the
+            # process exits too quickly, keep going and fall back to agent_pid.
+            "agent_pgid=$(awk '{print $5}' \"/proc/$agent_pid/stat\" 2>/dev/null || true); "
+            "agent_pgid=${agent_pgid//[[:space:]]/}; "
+            # Persist the pgid in /logs/agent so cancellation cleanup, which
+            # runs in a separate docker exec, can find the process group.
+            f"printf '%s\\n' \"${{agent_pgid:-$agent_pid}}\" > {shlex.quote(CONTAINER_AGENT_PGID_FILE)}; "
+            # Wait for kimchi and preserve its real exit status for Harbor.
+            'wait "$agent_pid"; '
+            "agent_status=$?; "
+            # Normal completion should not leave stale cleanup state behind.
+            f"rm -f {shlex.quote(CONTAINER_AGENT_PGID_FILE)}; "
+            'exit "$agent_status"; '
+            "}"
         )
+
+    def _kimchi_command(self, cli_flags: str) -> str:
+        return (
+            f"{shlex.quote(BINARY_PATH)} "
+            f"--print --session {shlex.quote(CONTAINER_MAIN_SESSION)} "
+            f"--model {shlex.quote(self.model_name or '')} "
+            f"{cli_flags}"
+        )
+
+    async def _terminate_kimchi_process_group(self, environment: BaseEnvironment) -> None:
+        command = (
+            # The pgid file is written by _kimchi_launch_command while kimchi is running.
+            # Validate it before using it as a negative pid target for kill(1).
+            f"if [ -s {shlex.quote(CONTAINER_AGENT_PGID_FILE)} ]; then "
+            f"pgid=$(cat {shlex.quote(CONTAINER_AGENT_PGID_FILE)} 2>/dev/null || true); "
+            'case "$pgid" in '
+            "*[!0-9]*|'') ;; "
+            "*) "
+            # Terminate the whole process group: kimchi, tools, and subagents.
+            'kill -TERM -- -"$pgid" 2>/dev/null || true; '
+            "sleep 2; "
+            # Escalate if anything ignored SIGTERM.
+            'kill -KILL -- -"$pgid" 2>/dev/null || true; '
+            ";; "
+            "esac; "
+            "fi; "
+            # Always remove the marker; if cleanup ran, this trial is done.
+            f"rm -f {shlex.quote(CONTAINER_AGENT_PGID_FILE)}"
+        )
+        await self._run_cleanup_command(environment, command)
+
+    async def _run_cleanup_command(self, environment: BaseEnvironment, command: str) -> None:
+        try:
+            await asyncio.wait_for(self.exec_as_root(environment, command=command), timeout=10)
+        except Exception as exc:
+            self.logger.warning(
+                "Failed to terminate kimchi process group after cancellation",
+                extra={"error": str(exc)},
+            )
 
     def _auto_tags(self) -> dict[str, str]:
         # logs_dir is expected to be jobs/<run>/<task>__<trial>/agent. Derive
@@ -249,7 +329,15 @@ class Kimchi(BaseInstalledAgent):
         # Aggregate main.jsonl + Agent child <timestamp>_<uuid>.jsonl siblings.
         # Agent runs are separate sessions, so their usage isn't reflected in main.jsonl.
         for session_file in sorted(sessions_dir.glob("*.jsonl")):
-            for line in session_file.read_text().splitlines():
+            try:
+                lines = session_file.read_text().splitlines()
+            except OSError as exc:
+                self.logger.warning(
+                    "Skipping unreadable kimchi session file during token aggregation",
+                    extra={"path": str(session_file), "error": str(exc)},
+                )
+                continue
+            for line in lines:
                 line = line.strip()
                 if not line:
                     continue
