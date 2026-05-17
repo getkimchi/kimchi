@@ -1,0 +1,9 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderSessionsTable > emits a stable snapshot for a representative mix 1`] = `
+"  STATE                  ID       NAME             STATUS    LAST ACTIVITY
+* foreground             abcd1234 feature-x        idle      2m ago
+  detached (this kimchi) ef567890 bugfix-y         idle      15m ago
+  detached               12345678 exp-z            idle      3h ago
+  active elsewhere       9abc0def -                active    just now"
+`;

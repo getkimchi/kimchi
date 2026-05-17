@@ -71,6 +71,7 @@ const cliMode = getCliModeArg(process.argv.slice(2))
 const acpMode = cliMode === "acp"
 const acpMode = isAcpMode(process.argv.slice(2))
 const remoteMode = isRemoteFlag(process.argv.slice(2))
+const teleportMode = isTeleportFlag(process.argv.slice(2))
 const helpOrVersion = isHelpOrVersionArgs(process.argv.slice(2))
 
 // Internal control signal: setup cancellation must skip harness/extensions
@@ -113,6 +114,13 @@ function sessionIdCaptureExtension(pi: ExtensionAPI) {
 function isRemoteFlag(args: string[]): boolean {
 	for (const a of args) {
 		if (a === "--remote") return true
+	}
+	return false
+}
+
+function isTeleportFlag(args: string[]): boolean {
+	for (const a of args) {
+		if (a === "--teleport") return true
 	}
 	return false
 }
@@ -297,7 +305,6 @@ try {
 			stdinIsTTY: process.stdin.isTTY === true,
 			stdoutIsTTY: process.stdout.isTTY === true,
 		})
-
 		const extensionFactories = [
 			startupUpdateExtension,
 			sessionIdCaptureExtension,
@@ -335,9 +342,24 @@ try {
 			stripImagesExtension,
 		]
 
+		const rawArgs = process.argv.slice(2)
+		if (teleportMode && remoteMode) {
+			process.stderr.write(
+				"`--teleport` and `--remote` are mutually exclusive. Use `--remote --session <id>` to attach to a remote at startup, or `--teleport` to enable session multiplex from local.\n",
+			)
+			process.exit(1)
+		}
 		if (acpMode) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
 			await runAcpMode({ extensionFactories, agentDir })
+		} else if (teleportMode) {
+			const { runTeleportSession } = await import("./modes/teleport/run-interactive-teleport.js")
+			await runTeleportSession({
+				extensionFactories,
+				agentDir,
+				apiKey: apiKey ?? "",
+				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+			})
 		} else if (remoteMode) {
 			// --remote runs the same TUI as local mode but with the agent loop
 			// living in the cloud. See docs/remote-acp-agents-plan.md and
