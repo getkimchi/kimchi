@@ -56,7 +56,7 @@ async function checkResponse(resp: Response, endpoint: string): Promise<void> {
 	}
 }
 
-async function verifyApiKey(apiKey: string, options?: AuthenticateOptions): Promise<string> {
+export async function verifyApiKey(apiKey: string, options?: AuthenticateOptions): Promise<string> {
 	const endpoint = resolveEndpoint(options)
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 
@@ -124,7 +124,7 @@ async function createOrUpdateSession(
 	return { uri }
 }
 
-async function exchangeSessionToken(
+export async function exchangeSessionToken(
 	apiKey: string,
 	sessionId: string,
 	options?: AuthenticateOptions,

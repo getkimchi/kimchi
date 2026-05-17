@@ -60,6 +60,7 @@ let sessionStarted = false
 // at module load, before anything else runs.
 const acpMode = isAcpMode(process.argv.slice(2))
 const remoteMode = isRemoteFlag(process.argv.slice(2))
+const sshProxySandboxUrl = parseSshProxyFlag(process.argv.slice(2))
 const helpOrVersion = isHelpOrVersionArgs(process.argv.slice(2))
 
 process.on("exit", (code) => {
@@ -120,6 +121,22 @@ function isRemoteFlag(args: string[]): boolean {
 	return false
 }
 
+// Sniff --ssh-proxy <sandbox-url> before anything else takes over.
+// Returns the sandbox URL when present, or undefined when the flag is absent.
+function parseSshProxyFlag(args: string[]): string | undefined {
+	for (let i = 0; i < args.length; i++) {
+		if (args[i] === "--ssh-proxy") {
+			const url = args[i + 1]
+			if (!url || url.startsWith("-")) {
+				console.error("Error: --ssh-proxy requires a sandbox URL argument.")
+				process.exit(1)
+			}
+			return url
+		}
+	}
+	return undefined
+}
+
 try {
 	// Top-level kimchi subcommands (setup, claude, opencode, …) and the
 	// top-level --help take ownership before any harness setup runs.
@@ -130,14 +147,27 @@ try {
 		process.exit(dispatch.exitCode)
 	}
 
-	if (helpOrVersion) {
+	if (sshProxySandboxUrl) {
+		// --ssh-proxy is a raw byte tunnel — no TUI, no extensions, no session.
+		// Just authenticate and splice stdin/stdout over the WebSocket.
+		const config = loadConfig()
+		const apiKey = config.apiKey
+		if (!apiKey) {
+			console.error("Error: --ssh-proxy requires an API key — run 'kimchi setup' first.")
+			process.exit(1)
+		}
+		const { proxyConnect } = await import("./modes/remote/ssh-proxy.js")
+		await proxyConnect(sshProxySandboxUrl, apiKey, {
+			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+		})
+	} else if (helpOrVersion) {
 		const { main } = await import("@earendil-works/pi-coding-agent")
 		await main(process.argv.slice(2), { extensionFactories: [] })
 	} else {
-		// We're entering the harness/ACP path. Subcommands and --help/--version
-		// short-circuit above without ever reaching here, which is why the exit
-		// hook keys off this flag instead of just running unconditionally on a
-		// 0-status exit.
+		// We're entering the harness/ACP path. Subcommands, --help/--version, and
+		// --ssh-proxy short-circuit above without ever reaching here, which is why
+		// the exit hook keys off this flag instead of just running unconditionally
+		// on a 0-status exit.
 		sessionStarted = true
 		let config = loadConfig()
 
