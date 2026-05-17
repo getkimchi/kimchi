@@ -35,6 +35,7 @@ import { reserveShiftTabForPermissions } from "./extensions/permissions/keybindi
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire.js"
+import sessionNameExtension from "./extensions/session-name.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
@@ -48,7 +49,7 @@ import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { updateModelsConfig } from "./models.js"
 import { runSetupWizard } from "./setup-wizard.js"
-import { setAvailableModels } from "./startup-context.js"
+import { resolveStartupContext, setAvailableModels, setSessionName } from "./startup-context.js"
 import { detectColorMode, hexToBgAnsi, probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
 import { getVersion } from "./utils.js"
@@ -311,8 +312,28 @@ try {
 
 		const rawArgs = process.argv.slice(2)
 
+		// Parse startup context and extract --name flag
+		const startupContext = resolveStartupContext(rawArgs)
+
+		// Strip --name and its value from rawArgs before passing to main()
+		const strippedArgs = rawArgs.filter((arg, index) => {
+			// Skip --name
+			if (arg === "--name") return false
+			// Skip the value after --name
+			if (index > 0 && rawArgs[index - 1] === "--name") return false
+			// Skip --name=<value> format
+			if (arg.startsWith("--name=")) return false
+			return true
+		})
+
+		// Store session name for extension
+		if (startupContext.sessionName) {
+			setSessionName(startupContext.sessionName)
+		}
+
 		const extensionFactories = [
 			startupUpdateExtension,
+			sessionNameExtension(startupContext.sessionName),
 			sessionIdCaptureExtension,
 			shutdownMarkerExtension,
 			statsExtension,
@@ -351,7 +372,7 @@ try {
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
 			const { main } = await import("@earendil-works/pi-coding-agent")
-			await main(rawArgs, { extensionFactories })
+			await main(strippedArgs, { extensionFactories })
 		}
 	}
 } catch (err) {
