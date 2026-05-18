@@ -78,6 +78,15 @@ export interface TeleportContext {
 	 * session and the editor appears frozen. Captured by run-interactive-teleport.
 	 */
 	triggerRebind?: () => Promise<void>
+	/**
+	 * Mirrors pi-mono's post-`switchSession` UI reset: clears extension
+	 * overlays/shortcuts/widgets and resets the chat container to the new
+	 * foreground's message history. Required *after* `triggerRebind` so the
+	 * editor reflects the swapped foreground; without it the chat keeps
+	 * showing the previous session's state and submits look like they do
+	 * nothing.
+	 */
+	triggerFreshUI?: () => void
 }
 
 export class TeleportRefusal extends Error {
@@ -118,6 +127,24 @@ async function rebindAfterSwap(ctx: TeleportContext): Promise<void> {
 		await ctx.triggerRebind()
 	} catch (err) {
 		warn(ctx, `Session rebind failed: ${err instanceof Error ? err.message : String(err)}`)
+	}
+}
+
+/**
+ * Run the full post-swap UI sequence: rebind listeners/extensions to the new
+ * foreground, then drive pi-mono's own UI reset (`resetExtensionUI` +
+ * `renderCurrentSessionState`) so the chat, status, overlays, and ext shortcut
+ * handler are wired to the new foreground from a clean slate. Failure of the
+ * UI reset is non-fatal — we surface a warning so the user sees that the swap
+ * itself happened.
+ */
+async function refreshUIAfterSwap(ctx: TeleportContext): Promise<void> {
+	await rebindAfterSwap(ctx)
+	if (!ctx.triggerFreshUI) return
+	try {
+		ctx.triggerFreshUI()
+	} catch (err) {
+		warn(ctx, `UI refresh failed: ${err instanceof Error ? err.message : String(err)}`)
 	}
 }
 
@@ -414,7 +441,7 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 
 	// ── 7. Swap ──
 	wrapper.foregroundRemote(remote)
-	await rebindAfterSwap(ctx)
+	await refreshUIAfterSwap(ctx)
 
 	// ── 8. Notify ──
 	status(ctx, undefined)
@@ -461,7 +488,7 @@ export async function runDetach(args: DetachArgs, ctx: TeleportContext): Promise
 	}
 
 	wrapper.detachToHomeBase()
-	await rebindAfterSwap(ctx)
+	await refreshUIAfterSwap(ctx)
 
 	status(ctx, undefined)
 	const hint = name ? `/attach ${name}` : `/attach ${sessionId.slice(0, 8)}`
@@ -520,7 +547,7 @@ export async function runAttach(args: AttachArgs, ctx: TeleportContext): Promise
 	}
 
 	wrapper.foregroundRemote(remote)
-	await rebindAfterSwap(ctx)
+	await refreshUIAfterSwap(ctx)
 	status(ctx, undefined)
 	info(ctx, `Attached to remote session ${sessionId}.`)
 }

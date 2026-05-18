@@ -28,6 +28,15 @@ export interface TeleportExtensionDeps {
 	 * appears to do nothing.
 	 */
 	getTriggerRebind: () => (() => Promise<void>) | undefined
+	/**
+	 * Lazy getter for the "fresh UI" trigger captured in run-interactive-teleport.ts.
+	 * Mirrors pi-mono's own post-`switchSession` sequence (`resetExtensionUI` +
+	 * `renderCurrentSessionState`). The rebind alone re-attaches listeners and
+	 * bindings but leaves the chat container and extension overlays from the
+	 * previous foreground in place — that staleness manifests as "I can type
+	 * but nothing happens" after `/teleport`.
+	 */
+	getTriggerFreshUI: () => (() => void) | undefined
 	apiKey: string
 	endpoint?: string
 }
@@ -48,6 +57,7 @@ function buildCtx(ctx: ExtensionCommandContext, deps: TeleportExtensionDeps): Te
 		ui: ctx.ui,
 		signal: ctx.signal,
 		triggerRebind: deps.getTriggerRebind(),
+		triggerFreshUI: deps.getTriggerFreshUI(),
 	}
 }
 

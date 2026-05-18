@@ -80,6 +80,7 @@ describe("RemoteAgentSession WebSocket integration", () => {
 		const session = new RemoteAgentSession({
 			rpcClient: client,
 			supervisor,
+			sessionId: "test-session",
 		})
 
 		// Listen to events
@@ -161,6 +162,7 @@ describe("RemoteAgentSession WebSocket integration", () => {
 		const session = new RemoteAgentSession({
 			rpcClient: client1,
 			supervisor,
+			sessionId: "test-session",
 		})
 
 		// Simulate a reconnect by swapping to client2

@@ -97,6 +97,36 @@ describe("createWebSocketTransport", () => {
 		restore()
 	})
 
+	it("appends /connect when wsUrl has no path (matches the agentgateway endpoint)", async () => {
+		const ws = new MockWebSocket("")
+		ws.readyState = MockWebSocket.OPEN
+		const restore = installMockWS(ws)
+
+		const transportPromise = createWebSocketTransport("wss://example.com", "tok")
+
+		queueMicrotask(() => ws.dispatchEvent(new Event("open")))
+
+		const transport = await transportPromise
+		expect(ws.url).toBe("wss://example.com/connect?token=tok")
+		transport.close()
+		restore()
+	})
+
+	it("appends /connect when wsUrl has bare '/' path", async () => {
+		const ws = new MockWebSocket("")
+		ws.readyState = MockWebSocket.OPEN
+		const restore = installMockWS(ws)
+
+		const transportPromise = createWebSocketTransport("wss://example.com/", "tok")
+
+		queueMicrotask(() => ws.dispatchEvent(new Event("open")))
+
+		const transport = await transportPromise
+		expect(ws.url).toBe("wss://example.com/connect?token=tok")
+		transport.close()
+		restore()
+	})
+
 	it("writes lines as individual WS text messages", async () => {
 		const ws = new MockWebSocket("")
 		ws.readyState = MockWebSocket.OPEN

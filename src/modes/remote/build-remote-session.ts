@@ -44,6 +44,7 @@ export async function buildRemoteAgentSession(options: BuildRemoteAgentSessionOp
 	const session = new RemoteAgentSession({
 		rpcClient: client,
 		supervisor,
+		sessionId: options.sessionId,
 		settingsManager: options.services.settingsManager,
 		sessionManager: options.sessionManager,
 		resourceLoader: options.services.resourceLoader,
