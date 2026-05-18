@@ -63,6 +63,50 @@ describe("buildWorkerContext", () => {
 		expect(ctx).toContain("pnpm test")
 	})
 
+	it("directs worker scratch docs into the ferment docs directory", () => {
+		const phase = makePhase({ steps: [makeStep()] })
+		const f = makeFerment({ id: "ferment-docs-1", phases: [phase] })
+
+		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+
+		expect(ctx).toContain("Ferment docs directory:")
+		expect(ctx).toContain(".kimchi/ferments/ferment-docs-1/docs/")
+		expect(ctx).toContain("Do NOT create ad-hoc project-root scratch folders like `.ui-audit/`")
+	})
+
+	it("includes ferment goal and success criteria when present", () => {
+		const phase = makePhase({ steps: [makeStep()] })
+		const f = makeFerment({
+			phases: [phase],
+			scoping: {
+				goal: {
+					answer: "Write /app/jump_analyzer.py and store results in /app/output.toml",
+					confirmedAt: "2026-05-09T00:00:00Z",
+				},
+				criteria: {
+					answer: "Running on /app/example_video.mp4 produces /app/output.toml",
+					confirmedAt: "2026-05-09T00:00:00Z",
+				},
+			},
+		})
+
+		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		expect(ctx).toContain("Ferment goal:")
+		expect(ctx).toContain("Write /app/jump_analyzer.py")
+		expect(ctx).toContain("/app/output.toml")
+		expect(ctx).toContain("Success criteria:")
+		expect(ctx).toContain("Running on /app/example_video.mp4 produces /app/output.toml")
+	})
+
+	it("omits ferment goal and success criteria when absent", () => {
+		const phase = makePhase({ steps: [makeStep()] })
+		const f = makeFerment({ phases: [phase] })
+
+		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		expect(ctx).not.toContain("Ferment goal:")
+		expect(ctx).not.toContain("Success criteria:")
+	})
+
 	it("includes prior completed steps with their summaries", () => {
 		const phase = makePhase({
 			steps: [
@@ -124,7 +168,7 @@ describe("buildWorkerContext", () => {
 		const ctx = buildWorkerContext(f, phase, phase.steps[1])
 		expect(ctx).toContain("…")
 		// The full 500 'x's should not appear verbatim
-		expect(ctx.length).toBeLessThan(500 + 200) // some prologue + truncated body
+		expect(ctx).not.toContain(longSummary)
 	})
 
 	it("includes recent decisions when present", () => {

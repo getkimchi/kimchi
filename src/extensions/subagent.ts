@@ -16,9 +16,27 @@ import { ToolBlockView, getTextContent } from "../components/tool-block.js"
 import { isBunBinary, isRunningUnderBun } from "../env.js"
 import { isToolExpanded, registerToolCall } from "../expand-state.js"
 import { findExistingFile, resolveUserPath, stripAtPrefix } from "../fs-paths.js"
+import { getAvailableModels } from "../startup-context.js"
+import { getAllImages, getImagesByIds, parseImageReferences } from "../utils/image-registry.js"
 import { formatCount, formatDuration } from "./format.js"
 import { filterThinkingForDisplay } from "./hide-thinking.js"
 import { type SpinnerState, clearSpinner, spinnerFrame, tickSpinner } from "./spinner.js"
+
+function modelSupportsImages(modelId: string | undefined): boolean {
+	if (!modelId) return false
+	const models = getAvailableModels()
+	const meta = models.find((m) => m.slug === modelId)
+	return meta?.input_modalities.includes("image") ?? false
+}
+
+function findVisionCapableAlternative(
+	provider: string | undefined,
+	_currentModel: string | undefined,
+): { slug: string } | undefined {
+	const models = getAvailableModels().filter((m) => m.input_modalities.includes("image"))
+	// Prefer same-provider model; fall back to any vision-capable model.
+	return models.find((m) => m.provider === provider) ?? models[0]
+}
 
 const PROMPT_MAX_LENGTH = 60
 const FOOTER_STATUS_KEY = "subagent-sessions"
@@ -231,8 +249,10 @@ export function buildSubagentArgs(
 	resolvedAttachments: string[],
 	extensionArgs: string[],
 	childSessionFile?: string,
+	imagePrefix?: string,
 ): string[] {
 	const sessionArgs = childSessionFile !== undefined ? ["--session", childSessionFile] : ["--no-session"]
+	const prompt = imagePrefix ? `${imagePrefix}${params.prompt}` : params.prompt
 	return [
 		"--mode",
 		"json",
@@ -244,7 +264,7 @@ export function buildSubagentArgs(
 		params.model,
 		...extensionArgs,
 		...resolvedAttachments.map((p) => `@${p}`),
-		params.prompt,
+		prompt,
 	]
 }
 
@@ -383,6 +403,10 @@ export async function spawnSubagent(params: {
 		() => {
 			// ignore tool calls in simple mode
 		},
+		undefined,
+		undefined,
+		undefined,
+		undefined,
 	)
 
 	if (result.failureReason !== undefined || result.exitCode !== 0) {
@@ -718,7 +742,7 @@ const SubagentParams = Type.Object({
 	attachments: Type.Optional(
 		Type.Array(Type.String({ description: "File path to load at subagent startup." }), {
 			description:
-				"File paths the subagent needs available at startup. Any file type pi's CLI loads via @file works (images, text files, etc.). Do not include the @ prefix — the runtime adds it. Images require a vision-capable model.",
+				"File paths the subagent needs available at startup. Any file type pi's CLI loads via @file works (images, text files, etc.). Do not include the @ prefix — the runtime adds it. Note: inline images from the conversation are forwarded automatically to vision-capable models — do not include them here.",
 			maxItems: 10,
 		}),
 	),
@@ -785,7 +809,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
-		description: `Spawn an isolated subagent process with the given provider, model, and prompt. Both provider and model are required — provider must match the model's registered provider name (e.g. "kimchi-dev"). The subagent runs in a separate pi process with no shared context and returns its final response. Hard timeout: ${TIMEOUT_MS / 60000} minutes.`,
+		description: `Spawn an isolated subagent process with the given provider, model, and prompt. Both provider and model are required — provider must match the model's registered provider name (e.g. "kimchi-dev"). The subagent runs in a separate pi process with no shared context and returns its final response. Hard timeout: ${TIMEOUT_MS / 60000} minutes. Note: inline images from the current turn are automatically forwarded to vision-capable models — do not include them in attachments.`,
 		parameters: SubagentParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -821,6 +845,51 @@ export default function (pi: ExtensionAPI) {
 					isError: true,
 				}
 			}
+			// Resolve which cached images to forward to the subagent.
+			// - If the prompt contains [Image #N] markers, forward only those.
+			// - Otherwise, forward ALL cached session images (back-compat for the
+			//   "I pasted an image, send it to the subagent" simple case).
+			const referencedIds = parseImageReferences(params.prompt)
+			const candidateEntries = referencedIds.length > 0 ? getImagesByIds(referencedIds) : getAllImages()
+
+			let imagePaths: string[] = []
+			let imagePrefix = ""
+			let resolvedModel = params.model
+
+			if (candidateEntries.length > 0) {
+				// If the chosen model doesn't support images, swap to a vision-capable
+				// alternative from the same provider.
+				if (!modelSupportsImages(params.model)) {
+					const visionModel = findVisionCapableAlternative(params.provider, params.model)
+					if (visionModel) {
+						resolvedModel = visionModel.slug
+						imagePrefix = `⚠ Image(s) present — using ${visionModel.slug} (vision-capable) instead of ${params.model}. `
+					} else {
+						return {
+							content: [
+								{
+									type: "text",
+									text: `This turn contains ${candidateEntries.length} image(s) but no vision-capable model is available for provider "${params.provider}".`,
+								},
+							],
+							details: undefined,
+							isError: true,
+						}
+					}
+				}
+
+				const userAttachmentCount = validated.resolved.length
+				const imageSlots = Math.max(0, 10 - userAttachmentCount)
+				const forwardEntries = candidateEntries.slice(0, imageSlots)
+				const omitted = candidateEntries.length - forwardEntries.length
+				if (omitted > 0) {
+					imagePrefix += `⚠ Forwarding ${forwardEntries.length} of ${candidateEntries.length} images (attachment limit reached). `
+				}
+				imagePaths = forwardEntries.map((e) => e.path)
+			}
+
+			const allAttachments = [...validated.resolved, ...imagePaths]
+
 			const parentSessionDir = ctx.sessionManager.getSessionDir()
 			const parentSessionFile = ctx.sessionManager.getSessionFile()
 			let sessionId: string | undefined
@@ -848,7 +917,14 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 
-			const args = buildSubagentArgs(params, validated.resolved, collectExtensionArgs(), childSessionFile)
+			const resolvedParams = { ...params, model: resolvedModel }
+			const args = buildSubagentArgs(
+				resolvedParams,
+				allAttachments,
+				collectExtensionArgs(),
+				childSessionFile,
+				imagePrefix,
+			)
 			const invocation = getSubagentInvocation(args)
 
 			let lastToolCall: string | undefined
@@ -876,7 +952,7 @@ export default function (pi: ExtensionAPI) {
 				params.model,
 				params.provider,
 				params.prompt.length,
-				(validated.resolved ?? []).length,
+				allAttachments.length,
 			)
 
 			pi.appendEntry<SubagentEndCheckpoint>(CHECKPOINT_END_TYPE, {
@@ -886,7 +962,7 @@ export default function (pi: ExtensionAPI) {
 				failureReason,
 			})
 
-			sessionCounts.set(params.model, (sessionCounts.get(params.model) ?? 0) + 1)
+			sessionCounts.set(resolvedModel, (sessionCounts.get(resolvedModel) ?? 0) + 1)
 			if (ctx.hasUI) {
 				ctx.ui.setStatus(FOOTER_STATUS_KEY, formatFooterStatus(sessionCounts, ctx.ui.theme))
 			}
@@ -897,7 +973,7 @@ export default function (pi: ExtensionAPI) {
 				const rawDetail = stderr.trim() || accumulated || "(no output)"
 				const error: SubagentError = {
 					reason: failureReason ?? "exit_error",
-					model: params.model,
+					model: resolvedModel,
 					tokenUsage,
 					durationMs,
 					detail: truncateSubagentResult(rawDetail, childSessionFile),

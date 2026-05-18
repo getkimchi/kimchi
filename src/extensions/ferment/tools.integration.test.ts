@@ -28,6 +28,25 @@ import {
 	markScopingInteractive,
 	setActive,
 } from "./state.js"
+
+// Mock the judge module so the integration tests don't depend on a live LLM
+// endpoint. After the gate-registry migration, judgeStepVerification is the
+// only LLM-as-judge call left — invoked tactically when a step's verify
+// command exits non-zero. Stub it to "fail" so tests that don't exercise that
+// path get deterministic behaviour.
+vi.mock("./judge.js", async () => {
+	const actual = await vi.importActual<typeof import("./judge.js")>("./judge.js")
+	return {
+		...actual,
+		judgeStepVerification: vi.fn(async () => ({ verdict: "fail" as const, reason: "stub" })),
+		judgeJourneyGrade: vi.fn(async () => ({
+			ok: true as const,
+			grade: "A" as const,
+			rationale: "Clean delivery; gates substantiated.",
+		})),
+	}
+})
+import { pr_dim } from "./colors.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { registerLifecycleTools } from "./tools/lifecycle.js"
 import { registerPhaseTools } from "./tools/phases.js"
@@ -51,6 +70,7 @@ interface Harness {
 	runtime: FermentRuntime
 	tempDir: string
 	tools: Map<string, RegisteredTool>
+	pi: ExtensionAPI
 	call: (toolName: string, params: unknown, ctx?: unknown) => Promise<ToolResult>
 }
 
@@ -86,7 +106,7 @@ function createHarness(): Harness {
 		return result as ToolResult
 	}
 
-	return { storage, runtime, tempDir, tools, call }
+	return { storage, runtime, tempDir, tools, pi, call }
 }
 
 // Helpers for asserting on tool results.
@@ -125,6 +145,30 @@ afterEach(() => {
 	setActive(undefined)
 })
 
+// Gate verdict helpers — return a complete passing set for each scope so the
+// strict assertGateCoverage check passes. Tests that need a "flag" verdict
+// override individual entries inline.
+const passingPlanGates = () => [
+	{ id: "P1", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+	{ id: "P2", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+	{ id: "P3", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+]
+const passingStepGates = () => [
+	{ id: "S1", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+	{ id: "S2", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+	{ id: "S3", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+]
+const passingPhaseGates = () => [
+	{ id: "F1", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+	{ id: "F2", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+	{ id: "F3", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+]
+const passingFermentGates = () => [
+	{ id: "C1", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+	{ id: "C2", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+	{ id: "C3", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+]
+
 // Helper: create a ferment via the tool, then return its id from the harness
 // temp storage used by the registered tool runtime.
 async function createFerment(name: string, description?: string): Promise<string> {
@@ -160,6 +204,7 @@ async function scopeFerment(
 				steps: [{ description: "Step B1" }],
 			},
 		],
+		gates: passingPlanGates(),
 	}
 	const result = await h.call("scope_ferment", params)
 	ok(result)
@@ -250,6 +295,7 @@ describe("scope_ferment", () => {
 			ferment_id: id,
 			goal: "Different goal",
 			phases: [],
+			gates: passingPlanGates(),
 		})
 		expect(err(result)).toMatch(/already planned/i)
 	})
@@ -262,6 +308,7 @@ describe("scope_ferment", () => {
 			ferment_id: id,
 			goal: "X",
 			phases: [],
+			gates: passingPlanGates(),
 		})
 		expect(err(result)).toMatch(/waiting for user confirmation/i)
 	})
@@ -275,6 +322,7 @@ describe("scope_ferment", () => {
 			ferment_id: id,
 			goal: "X",
 			phases: [{ name: "P1", goal: "G", steps: [{ description: "S" }] }],
+			gates: passingPlanGates(),
 		})
 		ok(result)
 		expect(loadFerment(id).status).toBe("planned")
@@ -282,7 +330,12 @@ describe("scope_ferment", () => {
 
 	it("returns error when ferment not found", async () => {
 		markScopingConfirmed("nonexistent")
-		const result = await h.call("scope_ferment", { ferment_id: "nonexistent", goal: "X", phases: [] })
+		const result = await h.call("scope_ferment", {
+			ferment_id: "nonexistent",
+			goal: "X",
+			phases: [],
+			gates: passingPlanGates(),
+		})
 		expect(err(result)).toMatch(/not found/i)
 	})
 
@@ -302,14 +355,15 @@ describe("scope_ferment", () => {
 	})
 })
 
-// ─── activate_phase ───────────────────────────────────────────────────────────
+// ─── activate_ferment_phase ───────────────────────────────────────────────────────────
 
-describe("activate_phase", () => {
+describe("activate_ferment_phase", () => {
 	it("activates the first planned phase", async () => {
 		const id = await createFerment("Activate Test")
 		await scopeFerment(id)
-		const result = ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		const result = ok(await h.call("activate_ferment_phase", { ferment_id: id, phase_id: "phase-1" }))
 		expect(result).toContain("activated")
+		expect(result).not.toContain("Ferment Specification")
 
 		const f = loadFerment(id)
 		expect(f.status).toBe("running")
@@ -320,8 +374,22 @@ describe("activate_phase", () => {
 	it("falls back to first planned phase if phase_id not given", async () => {
 		const id = await createFerment("Fallback")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id }))
+		ok(await h.call("activate_ferment_phase", { ferment_id: id }))
 		expect(loadFerment(id).phases[0].status).toBe("active")
+	})
+
+	it("falls back to failed phase recovery before activating a planned phase", async () => {
+		const id = await createFerment("Retry Fallback")
+		await scopeFerment(id)
+		ok(await h.call("activate_ferment_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("fail_ferment_phase", { ferment_id: id, phase_id: "phase-1", reason: "tests failed" }))
+
+		ok(await h.call("activate_ferment_phase", { ferment_id: id }))
+
+		const f = loadFerment(id)
+		expect(f.phases[0].status).toBe("active")
+		expect(f.phases[1].status).toBe("planned")
+		expect(f.activePhaseId).toBe("phase-1")
 	})
 
 	it("activates all phases in a parallel group", async () => {
@@ -333,8 +401,9 @@ describe("activate_phase", () => {
 				{ name: "P3", goal: "G3", steps: [{ description: "S3" }] },
 			],
 		})
-		const result = ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		const result = ok(await h.call("activate_ferment_phase", { ferment_id: id, phase_id: "phase-1" }))
 		expect(result).toContain("Parallel group")
+		expect(result).not.toContain("Ferment Specification")
 
 		const f = loadFerment(id)
 		expect(f.phases[0].status).toBe("active")
@@ -350,26 +419,26 @@ describe("activate_phase", () => {
 		s.skipPhase(id, "phase-1", "skip")
 		s.skipPhase(id, "phase-2", "skip")
 
-		const result = await h.call("activate_phase", { ferment_id: id })
-		expect(err(result)).toMatch(/no planned phases/i)
+		const result = await h.call("activate_ferment_phase", { ferment_id: id })
+		expect(err(result)).toMatch(/no planned or failed phases/i)
 	})
 
 	it("returns error when ferment not found", async () => {
-		const result = await h.call("activate_phase", { ferment_id: "nope" })
+		const result = await h.call("activate_ferment_phase", { ferment_id: "nope" })
 		expect(err(result)).toMatch(/not found/i)
 	})
 })
 
-// ─── refine_phase ─────────────────────────────────────────────────────────────
+// ─── refine_ferment_phase ─────────────────────────────────────────────────────────────
 
-describe("refine_phase", () => {
+describe("refine_ferment_phase", () => {
 	it("replaces steps on an active phase", async () => {
 		const id = await createFerment("Refine Test")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("activate_ferment_phase", { ferment_id: id, phase_id: "phase-1" }))
 
 		ok(
-			await h.call("refine_phase", {
+			await h.call("refine_ferment_phase", {
 				ferment_id: id,
 				phase_id: "phase-1",
 				steps: [
@@ -391,78 +460,57 @@ describe("refine_phase", () => {
 		const id = await createFerment("Inactive Refine")
 		await scopeFerment(id)
 		// phase-1 is still in 'planned' status
-		const result = await h.call("refine_phase", {
+		const result = await h.call("refine_ferment_phase", {
 			ferment_id: id,
 			phase_id: "phase-1",
 			steps: [{ description: "X" }],
 		})
 		expect(err(result)).toMatch(/must be active/i)
 	})
-
-	it("sets workerModel based on needs_vision flag", async () => {
-		const id = await createFerment("Vision Test")
-		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
-
-		ok(
-			await h.call("refine_phase", {
-				ferment_id: id,
-				phase_id: "phase-1",
-				steps: [
-					{ description: "code task", needs_vision: false },
-					{ description: "vision task", needs_vision: true },
-				],
-			}),
-		)
-
-		const f = loadFerment(id)
-		expect(f.phases[0].steps[0].workerModel).toBe("minimax-m2.7")
-		expect(f.phases[0].steps[1].workerModel).toBe("kimi-k2.5")
-	})
 })
 
-// ─── start_step ───────────────────────────────────────────────────────────────
+// ─── start_ferment_step ───────────────────────────────────────────────────────────────
 
-describe("start_step", () => {
+describe("start_ferment_step", () => {
 	async function setupActivePhase(): Promise<string> {
 		const id = await createFerment("Start Step Test")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("activate_ferment_phase", { ferment_id: id, phase_id: "phase-1" }))
 		return id
 	}
 
 	it("transitions step from pending → running", async () => {
 		const id = await setupActivePhase()
-		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		ok(await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
 		expect(loadFerment(id).phases[0].steps[0].status).toBe("running")
 	})
 
 	it("rejects starting a step when a non-parallel step is already running", async () => {
 		const id = await setupActivePhase()
-		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
-		const result = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-2" })
+		ok(await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		const result = await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-2" })
 		expect(err(result)).toMatch(/already running/i)
 	})
 
 	it("blocks after 3 consecutive starts (stuck-loop detection)", async () => {
 		const id = await setupActivePhase()
-		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
-		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
-		const result = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" })
+		ok(await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		ok(await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		const result = await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" })
 		expect(err(result)).toMatch(/Stuck loop detected/i)
 	})
 
 	it("lets the user skip directly from the stuck-loop prompt", async () => {
 		const id = await setupActivePhase()
-		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
-		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		ok(await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		ok(await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
 
 		const ctx = {
 			ui: {
 				select: vi.fn().mockResolvedValue("Skip this step and move on"),
 			},
 		}
-		const result = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }, ctx)
+		const result = await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }, ctx)
 
 		expect(ok(result)).toMatch(/skipped at user request/i)
 		expect(ctx.ui.select).toHaveBeenCalledWith(expect.stringContaining("has been started 3 times"), [
@@ -475,15 +523,15 @@ describe("start_step", () => {
 
 	it("lets the user pause directly from the stuck-loop prompt", async () => {
 		const id = await setupActivePhase()
-		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
-		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		ok(await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		ok(await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
 
 		const ctx = {
 			ui: {
 				select: vi.fn().mockResolvedValue("Pause the ferment for now"),
 			},
 		}
-		const result = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }, ctx)
+		const result = await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }, ctx)
 
 		expect(ok(result)).toMatch(/paused at user request/i)
 		expect(loadFerment(id).status).toBe("paused")
@@ -491,32 +539,32 @@ describe("start_step", () => {
 
 	it("lets the user retry from the stuck-loop prompt after clearing the counter", async () => {
 		const id = await setupActivePhase()
-		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
-		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		ok(await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		ok(await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
 
 		const ctx = {
 			ui: {
 				select: vi.fn().mockResolvedValue("Retry with a revised approach"),
 			},
 		}
-		const result = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }, ctx)
+		const result = await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }, ctx)
 
 		expect(ok(result)).toMatch(/Step 1: "Step A1" started/)
 		expect(loadFerment(id).phases[0].steps[0].status).toBe("running")
-		const nextResult = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" })
+		const nextResult = await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" })
 		expect(ok(nextResult)).toMatch(/Step 1: "Step A1" started/)
 	})
 
 	it("returns step not found for invalid step_id", async () => {
 		const id = await setupActivePhase()
-		const result = await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-999" })
+		const result = await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-999" })
 		expect(err(result)).toMatch(/not found/i)
 	})
 })
 
-// ─── complete_step ────────────────────────────────────────────────────────────
+// ─── complete_ferment_step ────────────────────────────────────────────────────────────
 
-describe("complete_step", () => {
+describe("complete_ferment_step", () => {
 	async function setupRunningStep(): Promise<string> {
 		const id = await createFerment("Complete Step Test")
 		await scopeFerment(id, {
@@ -528,19 +576,20 @@ describe("complete_step", () => {
 				},
 			],
 		})
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
-		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		ok(await h.call("activate_ferment_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
 		return id
 	}
 
 	it("transitions step from running → done (no verification)", async () => {
 		const id = await setupRunningStep()
 		ok(
-			await h.call("complete_step", {
+			await h.call("complete_ferment_step", {
 				ferment_id: id,
 				phase_id: "phase-1",
 				step_id: "step-1",
 				summary: "did it",
+				gates: passingStepGates(),
 			}),
 		)
 		expect(loadFerment(id).phases[0].steps[0].status).toBe("done")
@@ -548,49 +597,52 @@ describe("complete_step", () => {
 
 	it("records summary in step result", async () => {
 		const id = await setupRunningStep()
-		await h.call("complete_step", {
+		await h.call("complete_ferment_step", {
 			ferment_id: id,
 			phase_id: "phase-1",
 			step_id: "step-1",
 			summary: "summary text",
+			gates: passingStepGates(),
 		})
-		// Summary is graded by judge but with no model registry, judge falls back to "B" with rationale
+		// Step grading no longer happens at complete_ferment_step (gates replace grades),
+		// so step.grade is undefined; the summary itself is what we verify here.
 		const step = loadFerment(id).phases[0].steps[0]
-		expect(step.grade?.grade).toBeDefined()
+		expect(step.summary).toBe("summary text")
 	})
 
 	it("rejects when step does not exist", async () => {
 		const id = await setupRunningStep()
-		const result = await h.call("complete_step", {
+		const result = await h.call("complete_ferment_step", {
 			ferment_id: id,
 			phase_id: "phase-1",
 			step_id: "step-999",
+			gates: passingStepGates(),
 		})
 		expect(err(result)).toMatch(/not found/i)
 	})
 })
 
-// ─── skip_step ────────────────────────────────────────────────────────────────
+// ─── skip_ferment_step ────────────────────────────────────────────────────────────────
 
-describe("skip_step", () => {
+describe("skip_ferment_step", () => {
 	it("marks step as skipped", async () => {
 		const id = await createFerment("Skip Step Test")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
-		ok(await h.call("skip_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		ok(await h.call("activate_ferment_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("skip_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
 		expect(loadFerment(id).phases[0].steps[0].status).toBe("skipped")
 	})
 })
 
-// ─── fail_step ────────────────────────────────────────────────────────────────
+// ─── fail_ferment_step ────────────────────────────────────────────────────────────────
 
-describe("fail_step", () => {
+describe("fail_ferment_step", () => {
 	it("marks step as failed with error message", async () => {
 		const id = await createFerment("Fail Step Test")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("activate_ferment_phase", { ferment_id: id, phase_id: "phase-1" }))
 		ok(
-			await h.call("fail_step", {
+			await h.call("fail_ferment_step", {
 				ferment_id: id,
 				phase_id: "phase-1",
 				step_id: "step-1",
@@ -603,30 +655,32 @@ describe("fail_step", () => {
 	})
 })
 
-// ─── complete_phase ───────────────────────────────────────────────────────────
+// ─── complete_ferment_phase ───────────────────────────────────────────────────────────
 
-describe("complete_phase", () => {
+describe("complete_ferment_phase", () => {
 	async function setupAllStepsTerminal(): Promise<string> {
 		const id = await createFerment("Complete Phase Test")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("activate_ferment_phase", { ferment_id: id, phase_id: "phase-1" }))
 		// Complete both steps in phase 1
-		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
+		ok(await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }))
 		ok(
-			await h.call("complete_step", {
+			await h.call("complete_ferment_step", {
 				ferment_id: id,
 				phase_id: "phase-1",
 				step_id: "step-1",
 				summary: "done",
+				gates: passingStepGates(),
 			}),
 		)
-		ok(await h.call("start_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-2" }))
+		ok(await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-2" }))
 		ok(
-			await h.call("complete_step", {
+			await h.call("complete_ferment_step", {
 				ferment_id: id,
 				phase_id: "phase-1",
 				step_id: "step-2",
 				summary: "done",
+				gates: passingStepGates(),
 			}),
 		)
 		return id
@@ -635,10 +689,11 @@ describe("complete_phase", () => {
 	it("transitions phase from active → completed", async () => {
 		const id = await setupAllStepsTerminal()
 		ok(
-			await h.call("complete_phase", {
+			await h.call("complete_ferment_phase", {
 				ferment_id: id,
 				phase_id: "phase-1",
 				summary: "phase done",
+				gates: passingPhaseGates(),
 			}),
 		)
 		const f = loadFerment(id)
@@ -646,27 +701,30 @@ describe("complete_phase", () => {
 		expect(f.phases[0].summary).toBe("phase done")
 	})
 
-	it("assigns a grade to the completed phase", async () => {
+	it("does NOT assign a per-phase grade — grading is now journey-only at complete_ferment", async () => {
 		const id = await setupAllStepsTerminal()
 		ok(
-			await h.call("complete_phase", {
+			await h.call("complete_ferment_phase", {
 				ferment_id: id,
 				phase_id: "phase-1",
 				summary: "phase done",
+				gates: passingPhaseGates(),
 			}),
 		)
-		expect(loadFerment(id).phases[0].grade).toBeDefined()
+		// Per-phase grading was removed: the only letter grade lives on
+		// ferment.grade after the journey-grade judge runs at complete_ferment.
+		expect(loadFerment(id).phases[0].grade).toBeUndefined()
 	})
 })
 
-// ─── skip_phase ───────────────────────────────────────────────────────────────
+// ─── skip_ferment_phase ───────────────────────────────────────────────────────────────
 
-describe("skip_phase", () => {
+describe("skip_ferment_phase", () => {
 	it("marks phase as skipped", async () => {
 		const id = await createFerment("Skip Phase Test")
 		await scopeFerment(id)
 		ok(
-			await h.call("skip_phase", {
+			await h.call("skip_ferment_phase", {
 				ferment_id: id,
 				phase_id: "phase-1",
 				reason: "not needed",
@@ -678,15 +736,15 @@ describe("skip_phase", () => {
 	})
 })
 
-// ─── fail_phase ───────────────────────────────────────────────────────────────
+// ─── fail_ferment_phase ───────────────────────────────────────────────────────────────
 
-describe("fail_phase", () => {
+describe("fail_ferment_phase", () => {
 	it("marks phase as failed with reason", async () => {
 		const id = await createFerment("Fail Phase Test")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
+		ok(await h.call("activate_ferment_phase", { ferment_id: id, phase_id: "phase-1" }))
 		ok(
-			await h.call("fail_phase", {
+			await h.call("fail_ferment_phase", {
 				ferment_id: id,
 				phase_id: "phase-1",
 				reason: "tests don't pass",
@@ -702,7 +760,7 @@ describe("complete_ferment", () => {
 	it("rejects when phases are still planned or active", async () => {
 		const id = await createFerment("Incomplete Test")
 		await scopeFerment(id)
-		const result = await h.call("complete_ferment", { ferment_id: id })
+		const result = await h.call("complete_ferment", { ferment_id: id, gates: passingFermentGates() })
 		expect(err(result)).toMatch(/still active or planned/i)
 	})
 
@@ -714,7 +772,13 @@ describe("complete_ferment", () => {
 		const s = h.storage
 		s.skipPhase(id, "phase-1", "skipped")
 		s.skipPhase(id, "phase-2", "skipped")
-		ok(await h.call("complete_ferment", { ferment_id: id, final_summary: "all done" }))
+		ok(
+			await h.call("complete_ferment", {
+				ferment_id: id,
+				final_summary: "all done",
+				gates: passingFermentGates(),
+			}),
+		)
 		expect(loadFerment(id).status).toBe("complete")
 		expect(getActive()).toBeUndefined()
 		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBeUndefined()
@@ -728,7 +792,7 @@ describe("complete_ferment", () => {
 		s.completePhase(id, "phase-1", "ok")
 		s.setPhaseGrade(id, "phase-1", { grade: "A", rationale: "good", gradedAt: new Date().toISOString() })
 		s.skipPhase(id, "phase-2", "skip")
-		ok(await h.call("complete_ferment", { ferment_id: id }))
+		ok(await h.call("complete_ferment", { ferment_id: id, gates: passingFermentGates() }))
 		expect(loadFerment(id).grade).toBeDefined()
 	})
 })
@@ -753,7 +817,7 @@ describe("active ferment environment", () => {
 		const s = h.storage
 		s.skipPhase(id, "phase-1", "skipped")
 		s.skipPhase(id, "phase-2", "skipped")
-		ok(await h.call("complete_ferment", { ferment_id: id }))
+		ok(await h.call("complete_ferment", { ferment_id: id, gates: passingFermentGates() }))
 
 		const terminal = loadFerment(id)
 		setActive(terminal)
@@ -764,14 +828,14 @@ describe("active ferment environment", () => {
 	})
 })
 
-// ─── add_decision ─────────────────────────────────────────────────────────────
+// ─── add_ferment_decision ─────────────────────────────────────────────────────────────
 
-describe("add_decision", () => {
+describe("add_ferment_decision", () => {
 	it("appends a decision to the ferment", async () => {
 		const id = await createFerment("Decision Test")
 		await scopeFerment(id)
 		ok(
-			await h.call("add_decision", {
+			await h.call("add_ferment_decision", {
 				ferment_id: id,
 				title: "Use SQLite",
 				description: "Faster than JSON",
@@ -786,22 +850,22 @@ describe("add_decision", () => {
 	it("assigns sequential ids", async () => {
 		const id = await createFerment("Sequential Test")
 		await scopeFerment(id)
-		await h.call("add_decision", { ferment_id: id, title: "First", description: "x" })
-		await h.call("add_decision", { ferment_id: id, title: "Second", description: "y" })
+		await h.call("add_ferment_decision", { ferment_id: id, title: "First", description: "x" })
+		await h.call("add_ferment_decision", { ferment_id: id, title: "Second", description: "y" })
 		const f = loadFerment(id)
 		expect(f.decisions[0].id).toBe("D001")
 		expect(f.decisions[1].id).toBe("D002")
 	})
 })
 
-// ─── add_memory ───────────────────────────────────────────────────────────────
+// ─── add_ferment_memory ───────────────────────────────────────────────────────────────
 
-describe("add_memory", () => {
+describe("add_ferment_memory", () => {
 	it("appends a memory with valid category", async () => {
 		const id = await createFerment("Memory Test")
 		await scopeFerment(id)
 		ok(
-			await h.call("add_memory", {
+			await h.call("add_ferment_memory", {
 				ferment_id: id,
 				category: "gotcha",
 				content: "Watch out for X",
@@ -815,7 +879,7 @@ describe("add_memory", () => {
 	it("rejects invalid categories", async () => {
 		const id = await createFerment("Invalid Category Test")
 		await scopeFerment(id)
-		const result = await h.call("add_memory", {
+		const result = await h.call("add_ferment_memory", {
 			ferment_id: id,
 			category: "not-a-category",
 			content: "X",
@@ -840,14 +904,14 @@ describe("set_ferment_mode", () => {
 	})
 })
 
-// ─── update_scope_field ───────────────────────────────────────────────────────
+// ─── update_ferment_scope_field ───────────────────────────────────────────────────────
 
-describe("update_scope_field", () => {
+describe("update_ferment_scope_field", () => {
 	it("updates the goal field", async () => {
 		const id = await createFerment("Update Test")
 		await scopeFerment(id, { goal: "Original" })
 		ok(
-			await h.call("update_scope_field", {
+			await h.call("update_ferment_scope_field", {
 				ferment_id: id,
 				field: "goal",
 				value: "Updated goal",
@@ -860,7 +924,7 @@ describe("update_scope_field", () => {
 		const id = await createFerment("Constraints Update")
 		await scopeFerment(id)
 		ok(
-			await h.call("update_scope_field", {
+			await h.call("update_ferment_scope_field", {
 				ferment_id: id,
 				field: "constraints",
 				value: "no libs, must be fast",
@@ -871,7 +935,7 @@ describe("update_scope_field", () => {
 
 	it("rejects unknown field names", async () => {
 		const id = await createFerment("Unknown Field Test")
-		const result = await h.call("update_scope_field", {
+		const result = await h.call("update_ferment_scope_field", {
 			ferment_id: id,
 			field: "bogus",
 			value: "x",
@@ -886,18 +950,18 @@ describe("paused ferment blocks tool calls at the bridge", () => {
 	async function setupPaused(): Promise<string> {
 		const id = await createFerment("Paused Test")
 		await scopeFerment(id)
-		ok(await h.call("activate_phase", { ferment_id: id, phase_id: "phase-1" }))
-		// Flip to paused via storage (the /pause command path is exercised by
-		// the index.ts handler; here we just need the state).
+		ok(await h.call("activate_ferment_phase", { ferment_id: id, phase_id: "phase-1" }))
+		// Flip to paused via storage; here we just need bridge-level enforcement
+		// for an already-paused ferment.
 		const s = h.storage
 		s.updateStatus(id, "paused")
 		clearFermentCache()
 		return id
 	}
 
-	it("refuses start_step when ferment is paused", async () => {
+	it("refuses start_ferment_step when ferment is paused", async () => {
 		const id = await setupPaused()
-		const result = await h.call("start_step", {
+		const result = await h.call("start_ferment_step", {
 			ferment_id: id,
 			phase_id: "phase-1",
 			step_id: "step-1",
@@ -905,26 +969,27 @@ describe("paused ferment blocks tool calls at the bridge", () => {
 		expect(err(result)).toMatch(/paused/i)
 	})
 
-	it("refuses activate_phase when ferment is paused", async () => {
+	it("refuses activate_ferment_phase when ferment is paused", async () => {
 		const id = await setupPaused()
-		const result = await h.call("activate_phase", { ferment_id: id, phase_id: "phase-2" })
+		const result = await h.call("activate_ferment_phase", { ferment_id: id, phase_id: "phase-2" })
 		expect(err(result)).toMatch(/paused/i)
 	})
 
-	it("refuses complete_step when ferment is paused", async () => {
+	it("refuses complete_ferment_step when ferment is paused", async () => {
 		const id = await setupPaused()
-		const result = await h.call("complete_step", {
+		const result = await h.call("complete_ferment_step", {
 			ferment_id: id,
 			phase_id: "phase-1",
 			step_id: "step-1",
 			summary: "x",
+			gates: passingStepGates(),
 		})
 		expect(err(result)).toMatch(/paused/i)
 	})
 
-	it("refuses add_decision when ferment is paused", async () => {
+	it("refuses add_ferment_decision when ferment is paused", async () => {
 		const id = await setupPaused()
-		const result = await h.call("add_decision", {
+		const result = await h.call("add_ferment_decision", {
 			ferment_id: id,
 			title: "Decision while paused",
 			description: "should be rejected",
@@ -939,92 +1004,575 @@ describe("paused ferment blocks tool calls at the bridge", () => {
 	})
 })
 
-// ─── propose_phases ──────────────────────────────────────────────────────────
+// ─── propose_ferment_scoping ──────────────────────────────────────────────────────────
 
-describe("propose_phases", () => {
-	it("rejects when no pending scope exists for the ferment", async () => {
-		const id = await createFerment("No Pending Scope")
-		const result = await h.call("propose_phases", {
-			ferment_id: id,
-			phases: [{ name: "P1", goal: "g", steps: [{ description: "s" }] }],
-		})
-		expect(err(result)).toMatch(/no pending scope/i)
+describe("propose_ferment_scoping", () => {
+	const threePhases = [
+		{ name: "P1", goal: "g1", steps: [{ description: "s1" }] },
+		{ name: "P2", goal: "g2", steps: [{ description: "s2" }] },
+		{ name: "P3", goal: "g3", steps: [{ description: "s3" }] },
+	]
+
+	const basePayload = (ferment_id: string, overrides: Record<string, unknown> = {}) => ({
+		ferment_id,
+		goal: "Build a thing",
+		success_criteria: "Tests pass",
+		constraints: ["no breaking changes"],
+		assumptions: "API is stable",
+		phases: threePhases,
+		gates: passingPlanGates(),
+		...overrides,
 	})
 
-	it("rejects when phases array is empty", async () => {
-		const id = await createFerment("Empty Phases")
-		setPendingScope(id, { goal: "G", successCriteria: "C", constraints: [] })
-		const result = await h.call("propose_phases", { ferment_id: id, phases: [] })
-		expect(err(result)).toMatch(/at least one phase/i)
+	// Helper: seed a pending scope so propose_ferment_scoping can replace it.
+	function seedPending(id: string) {
+		setPendingScope(id, { goal: "", successCriteria: "", constraints: [] })
+		markScopingInteractive(id)
+	}
+
+	// (a) zero-questions + Continue → planned
+	it("(a) zero-questions + Continue → ferment becomes planned", async () => {
+		const id = await createFerment("ZeroQ Continue")
+		seedPending(id)
+		const ctx = { ui: { select: vi.fn().mockResolvedValue("Start execution  ✓"), input: vi.fn() } }
+
+		const result = ok(await h.call("propose_ferment_scoping", basePayload(id), ctx))
+
+		const f = loadFerment(id)
+		expect(f.status).toBe("planned")
+		expect(f.phases).toHaveLength(3)
+		expect(f.scoping?.assumptions?.answer).toBe("API is stable")
+		expect(getPendingScope(id)).toBeUndefined()
+		expect(result).toContain("Plan saved")
+		expect(result).toContain("Here is the proposed plan")
+		expect(result).toContain("# Plan:")
+		expect(ctx.ui.select).toHaveBeenCalledWith(expect.stringContaining("# Plan:"), expect.any(Array))
 	})
 
-	it("attaches phases to existing pending scope on success", async () => {
-		const id = await createFerment("Attach Phases")
-		setPendingScope(id, { goal: "G", successCriteria: "C", constraints: ["x"] })
-		ok(
-			await h.call("propose_phases", {
-				ferment_id: id,
-				phases: [
-					{ name: "P1", goal: "g1", steps: [{ description: "s1" }] },
-					{ name: "P2", goal: "g2", steps: [{ description: "s2" }] },
+	it("normalizes stringified phases/questions before rendering the plan UI", async () => {
+		const id = await createFerment("Stringified")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
 				],
-			}),
-		)
-		const pending = getPendingScope(id)
-		expect(pending?.phases).toHaveLength(2)
-		expect(pending?.phases?.[0].name).toBe("P1")
-		// User-supplied fields preserved
-		expect(pending?.goal).toBe("G")
-		expect(pending?.constraints).toEqual(["x"])
-	})
-
-	it("confirms and scopes directly when UI is available", async () => {
-		const id = await createFerment("Confirm Proposal")
-		setPendingScope(id, { goal: "G", successCriteria: "C", constraints: ["x"] })
+			},
+		]
 		const ctx = {
 			ui: {
-				select: vi.fn().mockResolvedValue("Yes, this looks right"),
+				select: vi.fn().mockResolvedValueOnce("Option A  ★ Recommended").mockResolvedValueOnce("Start execution  ✓"),
 				input: vi.fn(),
 			},
 		}
 
-		const result = await h.call(
-			"propose_phases",
-			{
-				ferment_id: id,
-				phases: [
-					{ name: "P1", goal: "g1", steps: [{ description: "s1" }] },
-					{ name: "P2", goal: "g2", steps: [{ description: "s2" }] },
-				],
-			},
-			ctx,
+		const result = ok(
+			await h.call(
+				"propose_ferment_scoping",
+				basePayload(id, {
+					assumptions: JSON.stringify(["A web app exists", "Local-first is acceptable"]),
+					constraints: "no backend",
+					phases: JSON.stringify(threePhases),
+					questions: JSON.stringify(questions),
+				}),
+				ctx,
+			),
 		)
 
-		expect(ok(result)).toMatch(/confirmed and saved/i)
-		expect(ctx.ui.select).toHaveBeenCalledWith(expect.stringContaining("Does this plan look right?"), [
-			"Yes, this looks right",
-			"No, revise",
-			"Let me say something else",
-		])
 		const f = loadFerment(id)
 		expect(f.status).toBe("planned")
-		expect(f.goal).toBe("G")
-		expect(f.successCriteria).toBe("C")
-		expect(f.constraints).toEqual(["x"])
-		expect(f.phases).toHaveLength(2)
+		expect(f.phases).toHaveLength(3)
+		expect(f.scoping?.assumptions?.answer).toBe("A web app exists; Local-first is acceptable")
+		expect(result).toContain("Plan saved")
+		expect(result).toContain("## Constraints")
+		expect(result).toContain("- no backend")
+		expect(result).toContain("Here is the proposed plan")
+	})
+
+	it("treats duplicate propose_ferment_scoping after plan save as a no-op", async () => {
+		const id = await createFerment("DuplicatePropose")
+		seedPending(id)
+		const ctx = { ui: { select: vi.fn().mockResolvedValue("Start execution  ✓"), input: vi.fn() } }
+
+		ok(await h.call("propose_ferment_scoping", basePayload(id), ctx))
+		const second = ok(await h.call("propose_ferment_scoping", basePayload(id), ctx))
+
+		expect(second).toContain("already planned")
+		expect(second).toContain("activate_ferment_phase")
+		expect(loadFerment(id).status).toBe("planned")
+	})
+
+	it("normalizes fenced JSON array strings for phases/questions", async () => {
+		const id = await createFerment("FencedJson")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
+				],
+			},
+		]
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValueOnce("Option A  ★ Recommended").mockResolvedValueOnce("Start execution  ✓"),
+				input: vi.fn(),
+			},
+		}
+
+		const result = ok(
+			await h.call(
+				"propose_ferment_scoping",
+				basePayload(id, {
+					constraints: ["- preserve data"],
+					phases: `Here is the plan:\n\`\`\`json\n${JSON.stringify(threePhases)}\n\`\`\``,
+					questions: `Questions:\n${JSON.stringify(questions)}`,
+				}),
+				ctx,
+			),
+		)
+
+		const f = loadFerment(id)
+		expect(f.status).toBe("planned")
+		expect(f.phases).toHaveLength(3)
+		expect(result).toContain("- preserve data")
+		expect(result).not.toContain("- - preserve data")
+	})
+
+	// (b) with questions + all recommended picks → planned, no sendMessage re-emit
+	it("(b) with questions + all recommended picks → planned, no feedback message", async () => {
+		const id = await createFerment("WithQ Continue")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
+				],
+			},
+			{
+				id: "q2",
+				text: "Scope?",
+				options: [
+					{ id: "wide", label: "Wide" },
+					{ id: "narrow", label: "Narrow", recommended: true },
+				],
+			},
+		]
+		// Q1: pick recommended, Q2: pick recommended, then review → Continue
+		const q1RecLabel = "Option A  ★ Recommended"
+		const q2RecLabel = "Narrow  ★ Recommended"
+		const continueLabel = "Start execution  ✓"
+		const ctx = {
+			ui: {
+				select: vi
+					.fn()
+					.mockResolvedValueOnce(q1RecLabel)
+					.mockResolvedValueOnce(q2RecLabel)
+					.mockResolvedValueOnce(continueLabel),
+				input: vi.fn(),
+			},
+		}
+
+		const result = ok(await h.call("propose_ferment_scoping", basePayload(id, { questions }), ctx))
+
+		const f = loadFerment(id)
+		expect(f.status).toBe("planned")
+		expect(f.phases).toHaveLength(3)
+		expect(result).toContain("Here is the proposed plan")
+		expect(result).toContain("Your answers")
+		expect(ctx.ui.select).toHaveBeenNthCalledWith(2, "[Q2/2] Scope?", [
+			"Wide",
+			q2RecLabel,
+			`✎ ${pr_dim("Custom answer...")}`,
+		])
+		// All recommended → confirmPendingScope directly, no sendMessage re-emit
+		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>
+		const feedbackCalls = sendMsg.mock.calls.filter(
+			(c: unknown[]) => (c[0] as { customType?: string })?.customType === "ferment_scoping_iteration",
+		)
+		expect(feedbackCalls).toHaveLength(0)
+	})
+
+	// (c) per-question non-recommended pick → ferment stays draft, ONE sendMessage with all answers
+	it("(c) per-question non-recommended pick → draft status, sendMessage with triggerTurn fired", async () => {
+		const id = await createFerment("PerQ Pick")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
+				],
+			},
+		]
+		// Q1/1: pick non-recommended "Option B"; review: update the plan
+		const continueLabel = "Update plan  ✓"
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValueOnce("Option B").mockResolvedValueOnce(continueLabel),
+				input: vi.fn(),
+			},
+		}
+
+		const result = ok(await h.call("propose_ferment_scoping", basePayload(id, { questions }), ctx))
+
+		expect(loadFerment(id).status).toBe("draft")
+
+		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>
+		const iterCalls = sendMsg.mock.calls.filter(
+			(c: unknown[]) => (c[0] as { customType?: string })?.customType === "ferment_scoping_iteration",
+		)
+		expect(iterCalls).toHaveLength(1)
+		const msgContent: string =
+			typeof iterCalls[0][0].content === "string" ? iterCalls[0][0].content : (iterCalls[0][0].content?.[0]?.text ?? "")
+		// New bundled-message format: question TEXT + chosen option label + id.
+		expect(msgContent).toContain("Approach?")
+		expect(msgContent).toContain("opt-b")
+		expect(msgContent).toContain("Option B")
+		expect(msgContent).toContain("Usually emit `questions: []`")
+		expect(msgContent).toContain("only if these answers reveal a genuinely new")
+		expect(msgContent).toContain("never repeat or rephrase")
+		const triggerTurn = iterCalls[0][1]?.triggerTurn ?? iterCalls[0][0]?.triggerTurn
+		expect(triggerTurn).toBe(true)
+		expect(result).toMatch(/updating the plan/i)
+	})
+
+	// (d) say more → ctx.ui.input invoked, message echoed with triggerTurn
+	it("(d) say more → input invoked, sendMessage echoes user text with triggerTurn", async () => {
+		const id = await createFerment("SayMore")
+		seedPending(id)
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValue("Let me say something"),
+				input: vi.fn().mockResolvedValue("actually drop phase 3"),
+				setWorkingVisible: vi.fn(),
+			},
+		}
+
+		ok(await h.call("propose_ferment_scoping", basePayload(id), ctx))
+
+		expect(ctx.ui.input).toHaveBeenCalled()
+		expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(false)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(true)
+		expect(loadFerment(id).status).toBe("draft")
+
+		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>
+		const iterCalls = sendMsg.mock.calls.filter(
+			(c: unknown[]) => (c[0] as { customType?: string })?.customType === "ferment_scoping_iteration",
+		)
+		expect(iterCalls).toHaveLength(1)
+		const msgContent: string =
+			typeof iterCalls[0][0].content === "string" ? iterCalls[0][0].content : (iterCalls[0][0].content?.[0]?.text ?? "")
+		expect(msgContent).toContain("actually drop phase 3")
+		const triggerTurn = iterCalls[0][1]?.triggerTurn ?? iterCalls[0][0]?.triggerTurn
+		expect(triggerTurn).toBe(true)
+	})
+
+	// (e) P-gate flag blocks the call
+	it("(e) P-gate flag blocks the call, ferment stays draft", async () => {
+		const id = await createFerment("GateBlock")
+		seedPending(id)
+		const flaggedGates = [
+			{ id: "P1", verdict: "flag" as const, rationale: "no success signal", evidence: "none" },
+			{ id: "P2", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+			{ id: "P3", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+		]
+		const ctx = { ui: { select: vi.fn(), input: vi.fn() } }
+
+		const result = await h.call("propose_ferment_scoping", basePayload(id, { gates: flaggedGates }), ctx)
+
+		expect(result.isError).toBe(true)
+		expect(err(result)).toContain("P1")
+		expect(loadFerment(id).status).toBe("draft")
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		// Buffer is unchanged — not replaced on gate failure
+		expect(h.runtime.getPendingScope(id)).toMatchObject({ goal: "" })
+	})
+
+	// (f) headless (no ctx.ui.select) zero-question → direct confirm
+	it("(f) headless zero-question → direct confirm, ferment planned", async () => {
+		const id = await createFerment("Headless ZeroQ")
+		seedPending(id)
+		// No ui.select provided — headless path
+		const ctx = {}
+
+		ok(await h.call("propose_ferment_scoping", basePayload(id), ctx))
+
+		expect(loadFerment(id).status).toBe("planned")
 		expect(getPendingScope(id)).toBeUndefined()
 	})
 
-	it("does NOT transition the ferment status (still draft)", async () => {
-		const id = await createFerment("No Transition")
-		setPendingScope(id, { goal: "G", successCriteria: "C", constraints: [] })
-		ok(
-			await h.call("propose_phases", {
-				ferment_id: id,
-				phases: [{ name: "P1", goal: "g", steps: [{ description: "s" }] }],
-			}),
-		)
+	// (g) headless with questions → refuse until the agent folds defaults into a final no-question proposal
+	it("(g) headless with questions → asks agent to fold recommendations into questions=[] proposal", async () => {
+		const id = await createFerment("Headless WithQ")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
+				],
+			},
+			{
+				id: "q2",
+				text: "Scope?",
+				options: [
+					{ id: "wide", label: "Wide" },
+					{ id: "narrow", label: "Narrow", recommended: true },
+				],
+			},
+		]
+		const ctx = {}
+
+		const result = err(await h.call("propose_ferment_scoping", basePayload(id, { questions }), ctx))
+
+		expect(result).toContain("Cannot ask scoping questions without an interactive UI")
+		expect(result).toContain("q1: opt-a")
+		expect(result).toContain("q2: narrow")
 		expect(loadFerment(id).status).toBe("draft")
-		expect(loadFerment(id).phases).toEqual([])
+		expect(getPendingScope(id)).toBeDefined()
+	})
+
+	// (h) second invocation REPLACES buffer wholesale
+	it("(h) second invocation replaces buffer wholesale — omitted fields become undefined", async () => {
+		const id = await createFerment("BufReplace")
+		seedPending(id)
+
+		// First call: set assumptions
+		const ctx1 = {
+			ui: { select: vi.fn().mockResolvedValue("Let me say something"), input: vi.fn().mockResolvedValue("") },
+		}
+		await h.call("propose_ferment_scoping", basePayload(id, { assumptions: "X" }), ctx1)
+
+		// Buffer should now have assumptions = "X"
+		expect(getPendingScope(id)?.assumptions).toBe("X")
+
+		// Second call: omit assumptions entirely
+		const ctx2 = {
+			ui: { select: vi.fn().mockResolvedValue("Let me say something"), input: vi.fn().mockResolvedValue("") },
+		}
+		const payloadNoAssumptions = { ...basePayload(id), assumptions: undefined }
+		await h.call("propose_ferment_scoping", payloadNoAssumptions, ctx2)
+
+		// Buffer should be replaced wholesale — assumptions now undefined
+		expect(getPendingScope(id)?.assumptions).toBeUndefined()
+	})
+
+	// Fix 1: Esc on dropdown → returns toolOk wait message, no sendMessage, ferment stays draft
+	it("Esc on dropdown → returns toolOk wait message, no sendMessage, ferment stays draft", async () => {
+		const id = await createFerment("EscDropdown")
+		seedPending(id)
+		// ui.select returns undefined (user pressed Esc)
+		const ctx = { ui: { select: vi.fn().mockResolvedValue(undefined), input: vi.fn() } }
+
+		const result = ok(await h.call("propose_ferment_scoping", basePayload(id), ctx))
+
+		expect(result).toMatch(/no changes made/i)
+		expect(result).toMatch(/waiting/i)
+		expect(loadFerment(id).status).toBe("draft")
+		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>
+		const iterCalls = sendMsg.mock.calls.filter(
+			(c: unknown[]) => (c[0] as { customType?: string })?.customType === "ferment_scoping_iteration",
+		)
+		expect(iterCalls).toHaveLength(0)
+	})
+
+	// Fix 2: rejects question with duplicate option labels
+	it("rejects question with duplicate option labels", async () => {
+		const id = await createFerment("DupLabels")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Yes", recommended: true },
+					{ id: "opt-b", label: "Yes" },
+				],
+			},
+		]
+		const ctx = { ui: { select: vi.fn(), input: vi.fn() } }
+
+		const result = await h.call("propose_ferment_scoping", basePayload(id, { questions }), ctx)
+
+		expect(result.isError).toBe(true)
+		expect(err(result)).toContain("duplicate option labels")
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+	})
+
+	// Fix 3: 4th invocation with questions returns toolErr forcing convergence
+	it("4th invocation with questions returns toolErr forcing convergence", async () => {
+		const id = await createFerment("IterCap")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
+				],
+			},
+		]
+		const continueLabel = "Update plan  ✓"
+		// Each call: user picks non-recommended "Option B" then Continue → fires sendMessage, increments iteration count
+		for (let i = 0; i < 3; i++) {
+			const ctx = {
+				ui: {
+					select: vi.fn().mockResolvedValueOnce("Option B").mockResolvedValueOnce(continueLabel),
+					input: vi.fn(),
+				},
+			}
+			ok(await h.call("propose_ferment_scoping", basePayload(id, { questions }), ctx))
+		}
+
+		// 4th call with questions → should be blocked before showing any UI
+		const ctx4 = { ui: { select: vi.fn(), input: vi.fn() } }
+		const result = await h.call("propose_ferment_scoping", basePayload(id, { questions }), ctx4)
+
+		expect(result.isError).toBe(true)
+		expect(err(result)).toMatch(/3 times/i)
+		expect(ctx4.ui.select).not.toHaveBeenCalled()
+	})
+
+	// New: Custom answer option opens ctx.ui.input and free-form text is recorded
+	it("Custom answer option opens ctx.ui.input and free-form text is included in sendMessage", async () => {
+		const id = await createFerment("CustomAnswer")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
+				],
+			},
+		]
+		const customLabel = `✎ ${pr_dim("Custom answer...")}`
+		const continueLabel = "Update plan  ✓"
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValueOnce(customLabel).mockResolvedValueOnce(continueLabel),
+				input: vi.fn().mockResolvedValue("my custom thing"),
+				setWorkingVisible: vi.fn(),
+			},
+		}
+
+		ok(await h.call("propose_ferment_scoping", basePayload(id, { questions }), ctx))
+
+		expect(ctx.ui.input).toHaveBeenCalledWith(expect.stringContaining("Approach?"), "")
+		expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(false)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(true)
+		expect(loadFerment(id).status).toBe("draft")
+
+		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>
+		const iterCalls = sendMsg.mock.calls.filter(
+			(c: unknown[]) => (c[0] as { customType?: string })?.customType === "ferment_scoping_iteration",
+		)
+		expect(iterCalls).toHaveLength(1)
+		const msgContent: string =
+			typeof iterCalls[0][0].content === "string" ? iterCalls[0][0].content : (iterCalls[0][0].content?.[0]?.text ?? "")
+		expect(msgContent).toContain("my custom thing")
+	})
+
+	// New: Restart questions cycles back to Q1
+	it("Restart questions cycles back to Q1 and second iteration is recorded", async () => {
+		const id = await createFerment("RestartQ")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
+				],
+			},
+		]
+		const q1RecLabel = "Option A  ★ Recommended"
+		const continueLabel = "Update plan  ✓"
+		// First pass: pick recommended → review → Restart
+		// Second pass: pick non-recommended "Option B" → review → Continue
+		const ctx = {
+			ui: {
+				select: vi
+					.fn()
+					.mockResolvedValueOnce(q1RecLabel) // Q1 first pass
+					.mockResolvedValueOnce("Restart questions") // review first pass
+					.mockResolvedValueOnce("Option B") // Q1 second pass
+					.mockResolvedValueOnce(continueLabel), // review second pass
+				input: vi.fn(),
+			},
+		}
+
+		ok(await h.call("propose_ferment_scoping", basePayload(id, { questions }), ctx))
+
+		// select was called 4 times total (Q1 ×2 + review ×2)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(4)
+		// Non-recommended answer → sendMessage fired
+		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>
+		const iterCalls = sendMsg.mock.calls.filter(
+			(c: unknown[]) => (c[0] as { customType?: string })?.customType === "ferment_scoping_iteration",
+		)
+		expect(iterCalls).toHaveLength(1)
+		const msgContent: string =
+			typeof iterCalls[0][0].content === "string" ? iterCalls[0][0].content : (iterCalls[0][0].content?.[0]?.text ?? "")
+		expect(msgContent).toContain("opt-b")
+	})
+
+	// New: Esc on per-question select cancels the whole flow
+	it("Esc on per-question select cancels the whole flow", async () => {
+		const id = await createFerment("EscPerQ")
+		seedPending(id)
+		const questions = [
+			{
+				id: "q1",
+				text: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
+				],
+			},
+			{
+				id: "q2",
+				text: "Scope?",
+				options: [
+					{ id: "wide", label: "Wide" },
+					{ id: "narrow", label: "Narrow", recommended: true },
+				],
+			},
+		]
+		const q1RecLabel = "Option A  ★ Recommended"
+		// Q1: pick recommended; Q2: Esc (undefined)
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValueOnce(q1RecLabel).mockResolvedValueOnce(undefined),
+				input: vi.fn(),
+			},
+		}
+
+		const result = ok(await h.call("propose_ferment_scoping", basePayload(id, { questions }), ctx))
+
+		expect(result).toMatch(/Q2/i)
+		expect(result).toMatch(/dismissed/i)
+		expect(loadFerment(id).status).toBe("draft")
+		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>
+		const iterCalls = sendMsg.mock.calls.filter(
+			(c: unknown[]) => (c[0] as { customType?: string })?.customType === "ferment_scoping_iteration",
+		)
+		expect(iterCalls).toHaveLength(0)
 	})
 })

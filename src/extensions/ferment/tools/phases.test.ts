@@ -4,18 +4,10 @@ import { join } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
-import type { JudgeGrade } from "../../../ferment/types.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
 import { setActive } from "../state.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
 import { type PhaseHandlerServices, completePhase, registerPhaseTools } from "./phases.js"
-
-vi.mock("../judge.js", () => ({
-	judgeGradePhase: vi.fn(async () => gradeA),
-	judgeSuggestCorrectiveStep: vi.fn(async () => undefined),
-}))
-
-const gradeA: JudgeGrade = { grade: "A", rationale: "solid", gradedAt: "2026-01-01T00:00:00.000Z" }
 
 function okText(result: { content: { text: string }[]; isError?: boolean }): string {
 	if (result.isError) throw new Error(`Expected ok, got error: ${result.content[0]?.text}`)
@@ -30,8 +22,13 @@ function createHarness(options: { phases?: number } = {}) {
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		appendEntry: vi.fn(),
-		getActiveTools: vi.fn(() => ["read", "bash", "complete_phase", "start_step"]),
-		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "complete_phase" }, { name: "start_step" }]),
+		getActiveTools: vi.fn(() => ["read", "bash", "complete_ferment_phase", "start_ferment_step"]),
+		getAllTools: vi.fn(() => [
+			{ name: "read" },
+			{ name: "bash" },
+			{ name: "complete_ferment_phase" },
+			{ name: "start_ferment_step" },
+		]),
 		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
 	const ferment = storage.create("Phase Test")
@@ -66,13 +63,19 @@ function createServices(overrides: Partial<PhaseHandlerServices> = {}): PhaseHan
 	return {
 		captureGitHead: vi.fn(() => undefined),
 		gatherEvidence: vi.fn(() => ({ filesChanged: "file.ts", diffSnippet: "+change", available: true })),
-		judgeGradePhase: vi.fn(async () => gradeA),
-		judgeSuggestCorrectiveStep: vi.fn(async () => undefined),
+		runProjectChecks: vi.fn(() => ({ cwd: "/tmp", discovered: false, anyFailed: false, checks: [] })),
 		onPhaseCompleted: vi.fn(),
 		isPlanMode: vi.fn(() => false),
 		...overrides,
 	}
 }
+
+/** Helper: a complete, all-pass phase-scope gate verdict set. */
+const passingPhaseGates = () => [
+	{ id: "F1", verdict: "pass" as const, rationale: "All step verifications were real.", evidence: "step-1 used smoke" },
+	{ id: "F2", verdict: "pass" as const, rationale: "Phase goal delivered.", evidence: "feature.ts:1-40" },
+	{ id: "F3", verdict: "pass" as const, rationale: "Nothing deferred.", evidence: "n/a" },
+]
 
 beforeEach(() => {
 	vi.restoreAllMocks()
@@ -80,80 +83,153 @@ beforeEach(() => {
 })
 
 describe("completePhase", () => {
-	it("completes, gathers injected evidence, grades, and nudges through services", async () => {
+	it("completes when all gates pass and gathers evidence", async () => {
 		const h = createHarness()
 		h.runtime.setPhaseStartRef(h.fermentId, "phase-1", "abc123")
 		const services = createServices()
 
 		const result = await completePhase(
 			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done" },
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
 			{ pi: h.pi },
 			services,
 		)
 
-		expect(okText(result)).toContain("Grade: A")
+		// Phase grades no longer exist — grading happens only at complete_ferment
+		// (the journey-grade judge). Phase completion just transitions status.
+		expect(okText(result)).toContain('Phase "Phase 1" done')
 		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("completed")
-		expect(h.storage.get(h.fermentId)?.phases[0].grade?.grade).toBe("A")
+		expect(h.storage.get(h.fermentId)?.phases[0].grade).toBeUndefined()
 		expect(services.gatherEvidence).toHaveBeenCalledWith("abc123")
-		expect(services.judgeGradePhase).toHaveBeenCalledWith(
-			"Phase 1",
-			"Build 1",
-			expect.stringContaining("Step 1"),
-			"phase done",
-			expect.objectContaining({ available: true }),
-		)
-		expect(services.onPhaseCompleted).toHaveBeenCalledWith(h.pi)
+		expect(services.onPhaseCompleted).toHaveBeenCalledWith(h.runtime)
 	})
 
-	it("stores corrective guidance for low phase grades", async () => {
+	it("refuses to advance when the agent raises a flag verdict on a phase gate", async () => {
 		const h = createHarness()
-		const gradeD: JudgeGrade = { grade: "D", rationale: "weak", gradedAt: "2026-01-01T00:00:00.000Z" }
-		const services = createServices({
-			judgeGradePhase: vi.fn(async () => gradeD),
-			judgeSuggestCorrectiveStep: vi.fn(async () => "Add a regression test first."),
-		})
+		const services = createServices()
+		const flaggedGates = [
+			{
+				id: "F1",
+				verdict: "flag" as const,
+				rationale: "All steps were proxy-verified — no real behavior was exercised.",
+				evidence: "step-1 used test -f, step-2 used grep",
+			},
+			{ id: "F2", verdict: "pass" as const, rationale: "Phase artifact exists.", evidence: "feature.ts" },
+			{ id: "F3", verdict: "pass" as const, rationale: "Nothing deferred.", evidence: "n/a" },
+		]
 
 		const result = await completePhase(
 			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done" },
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: flaggedGates },
 			{ pi: h.pi },
 			services,
 		)
 
-		expect(okText(result)).toContain("Grade: D")
-		expect(h.runtime.getCorrectiveStep(h.fermentId, "phase-1")).toBe("Add a regression test first.")
-		expect(services.judgeSuggestCorrectiveStep).toHaveBeenCalledWith("Phase 1", "Build 1", gradeD)
+		const errResult = result as { content: { text: string }[]; isError?: boolean }
+		expect(errResult.isError).toBe(true)
+		const text = errResult.content.map((c) => c.text).join("\n")
+		expect(text).toContain("Gate F1 flagged")
+		expect(text).toContain("proxy-verified")
+		// Phase must NOT be completed.
+		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("active")
+		// Retry counter must have been bumped to 1.
+		expect(h.runtime.getBlockRetry(h.fermentId, "phase-1")).toBe(1)
 	})
 
-	it("uses injected plan-mode UI to pause after phase review", async () => {
+	it("rejects the call with a clear error when gate coverage is incomplete", async () => {
 		const h = createHarness()
-		const markHumanInput = vi.fn()
-		h.runtime.markHumanInput = markHumanInput
+		const services = createServices()
+		const incomplete = [
+			{ id: "F1", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+			// F2 and F3 missing on purpose.
+		]
+
+		const result = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: incomplete },
+			{ pi: h.pi },
+			services,
+		)
+
+		const errResult = result as { content: { text: string }[]; isError?: boolean }
+		expect(errResult.isError).toBe(true)
+		const text = errResult.content.map((c) => c.text).join("\n")
+		expect(text).toContain("missing required gate verdicts")
+		expect(text).toContain("F2")
+		expect(text).toContain("F3")
+		// Phase must NOT be completed and no retry counter bump because we never got past validation.
+		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("active")
+		expect(h.runtime.getBlockRetry(h.fermentId, "phase-1")).toBe(0)
+	})
+
+	it("rejects the call when a verdict shape is invalid (empty rationale)", async () => {
+		const h = createHarness()
+		const services = createServices()
+		const malformed = [
+			{ id: "F1", verdict: "pass" as const, rationale: "", evidence: "n/a" },
+			{ id: "F2", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+			{ id: "F3", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+		]
+		const result = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: malformed },
+			{ pi: h.pi },
+			services,
+		)
+		const errResult = result as { content: { text: string }[]; isError?: boolean }
+		expect(errResult.isError).toBe(true)
+		expect(errResult.content.map((c) => c.text).join("\n")).toContain("rationale")
+	})
+
+	it("in plan mode, completePhase does NOT show a review dropdown", async () => {
+		const h = createHarness()
+		const selectSpy = vi.fn()
 		const services = createServices({ isPlanMode: vi.fn(() => true) })
 
 		const result = await completePhase(
 			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done" },
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
 			{
 				pi: h.pi,
-				ctx: { ui: { select: vi.fn(async () => "Pause here") } },
+				ctx: { ui: { select: selectSpy } },
 			},
 			services,
 		)
 
-		expect(okText(result)).toContain("Ferment paused at user request")
-		expect(h.storage.get(h.fermentId)?.status).toBe("paused")
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
-		expect(markHumanInput).toHaveBeenCalled()
-		expect(h.pi.sendUserMessage).toHaveBeenCalledWith("Ferment paused. Let me know when you are ready to continue.", {
-			deliverAs: "followUp",
-		})
+		// No dropdown shown — silent fall-through to toolOk.
+		expect(selectSpy).not.toHaveBeenCalled()
+		// Phase is completed, not paused.
+		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("completed")
+		// No follow-up user message queued.
+		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
+	})
+
+	it("in plan mode, completePhase returns a tool message and does not queue follow-up dropdown actions", async () => {
+		const h = createHarness()
+		const selectSpy = vi.fn()
+		const services = createServices({ isPlanMode: vi.fn(() => true) })
+
+		const result = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
+			{
+				pi: h.pi,
+				ctx: { ui: { select: selectSpy } },
+			},
+			services,
+		)
+
+		// The silent toolOk result contains next-phase reference, no "User confirmed" dropdown text.
+		expect(okText(result)).toContain("Phase")
+		expect(okText(result)).not.toContain("User confirmed")
+		expect(okText(result)).not.toContain("Proceed to Phase")
+		expect(selectSpy).not.toHaveBeenCalled()
+		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
 	})
 })
 
 describe("registerPhaseTools", () => {
-	it("uses the injected runtime, not the global active ferment, for plan-mode phase review", async () => {
+	it("uses the injected runtime, not the global active ferment, for plan-mode phase completion", async () => {
 		const h = createHarness()
 		let injectedActive = h.storage.get(h.fermentId)
 		if (!injectedActive) throw new Error("Expected active ferment in injected storage")
@@ -171,31 +247,33 @@ describe("registerPhaseTools", () => {
 			sendUserMessage: vi.fn(),
 			appendEntry: vi.fn(),
 			sendMessage: vi.fn(),
-			getActiveTools: vi.fn(() => ["read", "bash", "complete_phase", "start_step"]),
+			getActiveTools: vi.fn(() => ["read", "bash", "complete_ferment_phase", "start_ferment_step"]),
 			getAllTools: vi.fn(() => [
 				{ name: "read" },
 				{ name: "bash" },
-				{ name: "complete_phase" },
-				{ name: "start_step" },
+				{ name: "complete_ferment_phase" },
+				{ name: "start_ferment_step" },
 			]),
 			setActiveTools: vi.fn(),
 		} as unknown as ExtensionAPI
 		registerPhaseTools(pi, h.runtime)
 
-		const select = vi.fn(async () => "Pause here")
-		const completePhaseTool = tools.get("complete_phase")
-		if (!completePhaseTool) throw new Error("complete_phase was not registered")
+		const selectSpy = vi.fn()
+		const completePhaseTool = tools.get("complete_ferment_phase")
+		if (!completePhaseTool) throw new Error("complete_ferment_phase was not registered")
 
+		// Call with plan-mode UI injected — runtime uses injected storage (not global active).
 		const result = (await completePhaseTool.execute(
 			"test-call-id",
-			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done" },
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
 			undefined,
 			undefined,
-			{ ui: { select } },
+			{ ui: { select: selectSpy } },
 		)) as { content: { text: string }[]; isError?: boolean }
 
-		expect(okText(result)).toContain("Ferment paused at user request")
-		expect(select).toHaveBeenCalled()
-		expect(h.storage.get(h.fermentId)?.status).toBe("paused")
+		// Silent path: no dropdown, phase completed normally using the injected runtime.
+		expect(selectSpy).not.toHaveBeenCalled()
+		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("completed")
+		expect(okText(result)).toContain("Phase")
 	})
 })

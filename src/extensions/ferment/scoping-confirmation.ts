@@ -1,8 +1,10 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
+import { injectResumeAutoNudge } from "./nudge.js"
 import type { FermentRuntime } from "./runtime.js"
 import { type ApplyOutcome, createApplyAndPersist } from "./tool-helpers.js"
 
-export type ConfirmPendingScopeSource = "propose_phases" | "turn_end"
+export type ConfirmPendingScopeSource = "propose_ferment_scoping" | "turn_end"
 
 export type ConfirmPendingScopeResult =
 	| { ok: true; outcome: Extract<ApplyOutcome, { ok: true }> }
@@ -20,6 +22,7 @@ export function confirmPendingScope(
 	phases: ScopePhaseInput[] | undefined,
 	source: ConfirmPendingScopeSource,
 	title?: string,
+	pi?: ExtensionAPI,
 ): ConfirmPendingScopeResult {
 	const pending = runtime.getPendingScope(fermentId)
 	if (!pending) {
@@ -41,7 +44,7 @@ export function confirmPendingScope(
 				message:
 					source === "turn_end"
 						? "User confirmed the plan but no structured phases are pending."
-						: "No structured phases are pending for this proposal.",
+						: "No structured phases are pending for this proposal. Call propose_ferment_scoping with the phases included.",
 			},
 		}
 	}
@@ -54,9 +57,19 @@ export function confirmPendingScope(
 		goal: pending.goal,
 		successCriteria: pending.successCriteria,
 		constraints: pending.constraints,
+		assumptions: pending.assumptions,
 		phases: scopedPhases,
 	})
 	if (!outcome.ok) return { ok: false, error: outcome.error }
 	runtime.clearPendingScope(fermentId)
+
+	// In plan mode, inject the resume nudge exactly once here — at the moment of
+	// successful scope confirmation — so the planner is kicked forward without a
+	// TUI dropdown.
+	if (pi && outcome.ferment.mode === "plan") {
+		runtime.setActive(outcome.ferment)
+		injectResumeAutoNudge(pi, runtime)
+	}
+
 	return { ok: true, outcome }
 }

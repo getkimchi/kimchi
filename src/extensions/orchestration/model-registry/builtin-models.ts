@@ -191,7 +191,7 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		"claude-opus-4-7",
 		{
 			vision: true,
-			strengths: ["explore", "research", "plan", "review"],
+			strengths: ["research", "plan", "review"],
 			tier: "heavy",
 			description: CLAUDE_OPUS_47_DESCRIPTION,
 			guidelines: {

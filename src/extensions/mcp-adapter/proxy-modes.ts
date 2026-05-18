@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir, userInfo } from "node:os"
 import { dirname, join } from "node:path"
 import type { AgentToolResult, ExtensionContext, ToolInfo } from "@earendil-works/pi-coding-agent"
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import { truncateTail } from "@earendil-works/pi-coding-agent"
 import type { SearchStrategy } from "./bm25.js"
 import {
@@ -906,7 +907,7 @@ export async function executeCall(
 
 		if (toolMeta.uiResourceUri) {
 			const result = await resultPromise
-			uiSession?.sendToolResult(result as unknown as import("@modelcontextprotocol/sdk/types.js").CallToolResult)
+			uiSession?.sendToolResult(result as unknown as CallToolResult)
 			const mcpContent = (result.content ?? []) as McpContent[]
 			const content = transformMcpContent(mcpContent)
 

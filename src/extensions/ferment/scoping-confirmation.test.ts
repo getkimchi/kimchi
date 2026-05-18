@@ -42,7 +42,7 @@ describe("confirmPendingScope", () => {
 		expect(storage.get(ferment.id)?.phases).toHaveLength(1)
 	})
 
-	it("uses explicit phases from propose_phases and preserves pending user answers", () => {
+	it("uses explicit phases from propose_ferment_scoping and preserves pending user answers", () => {
 		const { runtime, storage } = createRuntime()
 		const ferment = storage.create("Explicit")
 		runtime.setPendingScope(ferment.id, {
@@ -55,7 +55,7 @@ describe("confirmPendingScope", () => {
 			runtime,
 			ferment.id,
 			[{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
-			"propose_phases",
+			"propose_ferment_scoping",
 		)
 
 		expect(result.ok).toBe(true)
@@ -80,5 +80,63 @@ describe("confirmPendingScope", () => {
 		if (!empty.ok) expect(empty.error.code).toBe("MISSING_PENDING_PHASES")
 		expect(storage.get(ferment.id)?.status).toBe("draft")
 		expect(runtime.getPendingScope(ferment.id)).toBeDefined()
+	})
+
+	it("forwards assumptions from pendingScope into the persisted ferment", () => {
+		const { runtime, storage } = createRuntime()
+		const ferment = storage.create("With Assumptions")
+		runtime.setPendingScope(ferment.id, {
+			goal: "Goal",
+			successCriteria: "Works",
+			constraints: [],
+			assumptions: "API rate limits are documented",
+			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
+		})
+
+		const result = confirmPendingScope(runtime, ferment.id, undefined, "turn_end")
+
+		expect(result.ok).toBe(true)
+		if (result.ok) {
+			expect(result.outcome.ferment.scoping.assumptions?.answer).toBe("API rate limits are documented")
+		}
+	})
+
+	it("accepts propose_ferment_scoping as a valid source and applies pending scope", () => {
+		const { runtime, storage } = createRuntime()
+		const ferment = storage.create("Scoping Source Test")
+		runtime.setPendingScope(ferment.id, {
+			goal: "Build auth",
+			successCriteria: "Tests pass",
+			constraints: ["no external libs"],
+			phases: [{ name: "P1", goal: "Implement OAuth", steps: [{ description: "Add handler" }] }],
+		})
+
+		const result = confirmPendingScope(runtime, ferment.id, undefined, "propose_ferment_scoping")
+
+		expect(result.ok).toBe(true)
+		if (result.ok) {
+			expect(result.outcome.ferment.status).toBe("planned")
+			expect(result.outcome.ferment.goal).toBe("Build auth")
+		}
+		// Pending scope should be cleared after confirmation
+		expect(runtime.getPendingScope(ferment.id)).toBeUndefined()
+	})
+
+	it("omits assumptions in persisted ferment when pendingScope.assumptions is undefined", () => {
+		const { runtime, storage } = createRuntime()
+		const ferment = storage.create("No Assumptions")
+		runtime.setPendingScope(ferment.id, {
+			goal: "Goal",
+			successCriteria: "Works",
+			constraints: [],
+			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
+		})
+
+		const result = confirmPendingScope(runtime, ferment.id, undefined, "turn_end")
+
+		expect(result.ok).toBe(true)
+		if (result.ok) {
+			expect(result.outcome.ferment.scoping.assumptions).toBeUndefined()
+		}
 	})
 })

@@ -29,7 +29,7 @@ import { resolve } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { ANSI, fg } from "../ansi.js"
-import { isSubagent } from "./orchestration/prompt-transformer/prompt-transformer.js"
+import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
 
 const THINK_TAG_PATTERN = /<think>[\s\S]*?<\/think>/g
 

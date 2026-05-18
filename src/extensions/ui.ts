@@ -1,37 +1,39 @@
 import { spawn } from "node:child_process"
+import { readFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import type { TUI } from "@earendil-works/pi-tui"
-import { ORANGE_FG, RST_FG, TEAL_FG } from "../ansi.js"
+import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
 import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } from "../components/footer.js"
 import { LogoHeader } from "../components/logo.js"
 import { SplashHeader } from "../components/splash-header.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { isBareExitAlias } from "./exit-utils.js"
-import { getMultiModelEnabled } from "./orchestration/prompt-enrichment.js"
+import { getMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
 import { createWorkingAnimator } from "./spinner.js"
 
 function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {
 	return a.provider === b.provider && a.id === b.id
 }
 
-const HORIZONTAL_PADDING = 2
+const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
 
-// Strip OSC 133 shell-integration marks emitted by pi-mono around each message.
-// iTerm2 renders a visible blue triangle at each mark, which is noisy in the TUI.
-// biome-ignore lint/suspicious/noControlCharactersInRegex: matching ANSI/OSC
-const OSC133_RE = /\x1b\]133;[A-Z]\x07/g
-
-function patchTuiPadding(tui: TUI) {
-	const original = tui.render.bind(tui)
-	const pad = " ".repeat(HORIZONTAL_PADDING)
-	tui.render = (width: number): string[] => {
-		const lines = original(Math.max(1, width - HORIZONTAL_PADDING * 2))
-		return lines.map((line: string) => pad + line.replace(OSC133_RE, ""))
+function getEnabledModelIds(): Set<string> | null {
+	try {
+		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
+		const parsed = JSON.parse(raw)
+		if (Array.isArray(parsed.enabledModels) && parsed.enabledModels.length > 0) {
+			return new Set(parsed.enabledModels as string[])
+		}
+	} catch {
+		// settings absent or unreadable
 	}
+	return null
 }
 
 // Track splash state globally so other extensions can reset it
@@ -114,10 +116,10 @@ function runScript(scriptPath: string, payload: object, tui: TUI, footer: Script
 }
 
 export default function uiExtension(pi: ExtensionAPI) {
-	let tuiPatched = false
 	let unsubModelCycleInput: (() => void) | null = null
 	let scriptFooter: ScriptFooter | null = null
 	let scriptTui: TUI | null = null
+	let uiTui: TUI | null = null
 	let scriptCmd: string | null = null
 	let scriptPending = false
 	let scriptGeneration = 0
@@ -145,6 +147,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	pi.on("session_start", (event, ctx) => {
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
+		toolsInFlight = 0
 		resetState()
 		currentCtx = ctx
 		sessionStartMs = Date.now()
@@ -158,6 +161,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 		ctx.ui.setHeader((_tui, theme) => (isSplash ? new SplashHeader(theme) : new LogoHeader(theme)))
 		ctx.ui.setFooter((tui, theme, footerData) => {
+			uiTui = tui
 			const cmd = readStatusLineCommand()
 			if (!cmd) {
 				scriptCmd = null
@@ -169,7 +173,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 				const perm = footerData.getExtensionStatuses().get("permissions-mode")
 				if (perm) parts.push(perm)
 				const enabled = getMultiModelEnabled()
-				const label = enabled ? `${TEAL_FG}on${RST_FG}` : theme.fg("dim", "off")
+				const label = enabled ? `${resolvedAccentFg(theme)}on${RST_FG}` : theme.fg("dim", "off")
 				const shortcut = process.platform === "darwin" ? "option+tab" : "alt+tab"
 				parts.push(`${theme.fg("dim", "multi-model:")} ${label} ${theme.fg("dim", `→ ${shortcut}`)}`)
 				return parts.join(` ${theme.fg("dim", "·")} `)
@@ -191,10 +195,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 		})
 
 		ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
-			if (!tuiPatched) {
-				tuiPatched = true
-				patchTuiPadding(tui)
-			}
 			tui.setShowHardwareCursor(true)
 			const editor = new PromptEditor(tui, editorTheme, keybindings, ctx.ui.theme)
 			editor.setSplashMode(isSplash)
@@ -218,7 +218,11 @@ export default function uiExtension(pi: ExtensionAPI) {
 			unsubModelCycleInput = ctx.ui.onTerminalInput((data) => {
 				if (matchesKey(data, "ctrl+p")) {
 					if (!isKeyRelease(data)) {
-						const available = ctx.modelRegistry.getAvailable()
+						const allAvailable = ctx.modelRegistry.getAvailable()
+						const enabledIds = getEnabledModelIds()
+						const available = enabledIds
+							? allAvailable.filter((m) => enabledIds.has(`${m.provider}/${m.id}`))
+							: allAvailable
 						const current = ctx.model
 						if (available.length > 1 && current) {
 							let idx = available.findIndex((m) => modelsAreEqual(m, current))
@@ -248,35 +252,54 @@ export default function uiExtension(pi: ExtensionAPI) {
 	})
 
 	let stopWorkingAnimation: (() => void) | undefined
+	let toolsInFlight = 0
 
 	const startIndicator = (ctx: ExtensionContext) => {
 		ctx.ui.setWorkingVisible(true)
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = createWorkingAnimator((char, message) => {
-			ctx.ui.setWorkingIndicator({ frames: [`${ORANGE_FG}${char}${RST_FG}`] })
-			ctx.ui.setWorkingMessage(`${ORANGE_FG}${message}${RST_FG}`)
+			const accent = resolvedAccentFg(ctx.ui.theme)
+			ctx.ui.setWorkingIndicator({ frames: [`${accent}${char}${RST_FG}`] })
+			ctx.ui.setWorkingMessage(`${accent}${message}${RST_FG}`)
 		})
 	}
 
 	pi.on("turn_start", (_, ctx) => {
 		currentCtx = ctx
+		toolsInFlight = 0
 		refresh("generating")
 		startIndicator(ctx)
 	})
 	pi.on("message_start", (event, ctx) => {
 		if (event.message.role !== "assistant") return
-		stopWorkingAnimation?.()
-		stopWorkingAnimation = undefined
-		ctx.ui.setWorkingVisible(false)
+		// Only stop the tool animation when assistant text arrives if no tools are
+		// still running. Parallel tool calls (Kimi K2.5+, deepseek) may have their
+		// results arrive while the assistant message is still streaming; keeping the
+		// indicator alive until all tools finish avoids a premature flash-and-clear.
+		if (toolsInFlight === 0) {
+			stopWorkingAnimation?.()
+			stopWorkingAnimation = undefined
+			ctx.ui.setWorkingVisible(false)
+		}
 	})
 	pi.on("tool_execution_start", (_, ctx) => {
+		toolsInFlight++
 		startIndicator(ctx)
+	})
+	pi.on("tool_execution_end", (_, ctx) => {
+		toolsInFlight = Math.max(0, toolsInFlight - 1)
+		if (toolsInFlight === 0) {
+			stopWorkingAnimation?.()
+			stopWorkingAnimation = undefined
+			ctx.ui.setWorkingVisible(false)
+		}
 	})
 	pi.on("turn_end", (_, ctx) => {
 		currentCtx = ctx
 		refresh("idle")
 	})
 	pi.on("agent_end", (_, ctx) => {
+		toolsInFlight = 0
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
 		ctx.ui.setWorkingVisible(false)
@@ -284,6 +307,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	pi.on("model_select", (_, ctx) => {
 		currentCtx = ctx
 		refresh("idle")
+		uiTui?.requestRender()
 	})
 
 	pi.on("tool_result", (event) => {

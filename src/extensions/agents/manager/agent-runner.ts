@@ -2,6 +2,8 @@
  * agent-runner.ts — Core execution engine: creates sessions, runs agents, collects results.
  */
 
+import { mkdirSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import {
@@ -14,6 +16,9 @@ import {
 	createAgentSession,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
+import { getAvailableModels } from "../../../startup-context.js"
+import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
@@ -97,6 +102,13 @@ function resolveDefaultModel(
 	return parentModel
 }
 
+let cachedGuidelinesRegistry: ModelRegistry | undefined
+
+function getGuidelinesRegistry(): ModelRegistry {
+	cachedGuidelinesRegistry ??= new ModelRegistry(getAvailableModels())
+	return cachedGuidelinesRegistry
+}
+
 /** Info about a tool event in the subagent. */
 export interface ToolActivity {
 	type: "start" | "end"
@@ -114,6 +126,10 @@ export interface RunOptions {
 	thinkingLevel?: ThinkingLevel
 	/** Override working directory (e.g. for worktree isolation). */
 	cwd?: string
+	/** Persist this agent run to a pre-created session file. Omit for in-memory sessions. */
+	sessionFile?: string
+	/** Directory that owns sessionFile; used for later /new or branch operations. */
+	sessionDir?: string
 	/** Called on tool start/end with activity info. */
 	onToolActivity?: (activity: ToolActivity) => void
 	/** Called on streaming text deltas from the assistant response. */
@@ -212,6 +228,10 @@ export async function runAgent(
 		}
 	}
 
+	const modelId = (options.model as { id?: string } | undefined)?.id
+	const guidelinesBlock = buildPhaseGuidelinesSection(modelId, getCurrentPhase(), getGuidelinesRegistry())
+	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
+
 	let systemPrompt: string
 	if (agentConfig) {
 		systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras)
@@ -219,6 +239,18 @@ export async function runAgent(
 		const fallback = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE)
 		if (!fallback) throw new Error(`No fallback config available for unknown type "${type}"`)
 		systemPrompt = buildAgentPrompt({ ...fallback, name: type }, effectiveCwd, env, parentSystemPrompt, extras)
+	}
+
+	const debugSession = process.env.KIMCHI_DEBUG_SESSION
+	if (debugSession) {
+		try {
+			const debugDir = join(effectiveCwd, ".kimchi", "debug", debugSession)
+			mkdirSync(debugDir, { recursive: true })
+			const agentLabel = agentConfig?.name ?? type
+			writeFileSync(join(debugDir, `agent-${agentLabel}-${Date.now()}.md`), systemPrompt)
+		} catch {
+			// best-effort debug logging
+		}
 	}
 
 	const noSkills = skills === false || Array.isArray(skills)
@@ -254,7 +286,9 @@ export async function runAgent(
 	const sessionOpts: Parameters<typeof createAgentSession>[0] = {
 		cwd: effectiveCwd,
 		agentDir,
-		sessionManager: SessionManager.inMemory(effectiveCwd),
+		sessionManager: options.sessionFile
+			? SessionManager.open(options.sessionFile, options.sessionDir, effectiveCwd)
+			: SessionManager.inMemory(effectiveCwd),
 		settingsManager: SettingsManager.create(effectiveCwd, agentDir),
 		modelRegistry: ctx.modelRegistry,
 		model,
@@ -310,7 +344,9 @@ export async function runAgent(
 			if (maxTurns != null) {
 				if (!softLimitReached && turnCount >= maxTurns) {
 					softLimitReached = true
-					session.steer("You have reached your turn limit. Wrap up immediately — provide your final answer now.")
+					session.steer(
+						"You have reached your turn limit. Stop exploring. Complete your current edit, ensure file syntax is valid, undo any git state mutations so your work is visible on the filesystem, and summarize progress for the orchestrator. Do not start new edits.",
+					)
 				} else if (softLimitReached && turnCount >= maxTurns + graceTurns) {
 					aborted = true
 					session.abort()

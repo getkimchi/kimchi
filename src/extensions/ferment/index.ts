@@ -10,11 +10,15 @@
  * Public exports re-export from ./state.ts for cli.ts and components/footer.ts.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, MessageRenderer } from "@earendil-works/pi-coding-agent"
+import { Container, Text } from "@earendil-works/pi-tui"
 import type { Step } from "../../ferment/types.js"
+import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { registerFermentCommands } from "./commands.js"
 import { registerFermentEvents } from "./events.js"
+import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { FERMENT_REQUEST_MESSAGE_TYPE, type FermentRequestMessageDetails } from "./scoping.js"
 import { getActive, getActiveId } from "./state.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { registerLifecycleTools } from "./tools/lifecycle.js"
@@ -60,13 +64,36 @@ export function getCurrentRecipe(): Step[] {
 	return f?.phases.find((p) => p.id === f.activePhaseId)?.steps ?? []
 }
 
+const fermentRequestRenderer: MessageRenderer<FermentRequestMessageDetails> = (message, _options, theme) => {
+	const intent =
+		message.details?.intent ??
+		(typeof message.content === "string"
+			? message.content.replace(/^User entered ferment request:\s*/u, "")
+			: message.content
+					.filter((part) => part.type === "text")
+					.map((part) => part.text)
+					.join("\n")
+					.replace(/^User entered ferment request:\s*/u, ""))
+
+	const container = new Container()
+	container.addChild(new Text(`${theme.fg("dim", "❯")}  ${intent}`, 0, 0))
+	container.addChild(new Text(`   ${theme.fg("dim", "Drafting the plan...")}`, 0, 0))
+	return container
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Extension factory
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime) {
+	pi.registerMessageRenderer(FERMENT_REQUEST_MESSAGE_TYPE, fermentRequestRenderer)
 	registerFermentEvents(pi, runtime)
 	registerFermentCommands(pi, runtime)
+
+	createSystemPromptBlocks(pi, "ferment").register({
+		id: "ferment-supplement",
+		render: () => buildFermentPromptBlock(pi, runtime),
+	})
 
 	// ─── Tool registrations ───────────────────────────────────────────────────
 	registerLifecycleTools(pi, runtime)

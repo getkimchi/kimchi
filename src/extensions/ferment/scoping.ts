@@ -1,50 +1,68 @@
 /**
  * Interactive scoping flow.
  *
- * Three-stage handshake:
+ * Single-input handshake:
  *
- *   1. `runScopingFlow` collects goal/criteria/constraints via TUI inputs and
- *      stashes them in `pendingScope` keyed by ferment id. Then it fires ONE
- *      LLM turn asking the model to (a) propose phases as a numbered list for
- *      the user, (b) call the `propose_phases` tool with the structured data,
- *      and (c) let the tool-owned dialog ask for confirmation.
+ *   1. `runScopingFlow` shows ONE free-form text input ("What do you want to
+ *      do?"). On non-empty input it seeds the pending-scope buffer and fires a
+ *      single LLM turn asking the model to call `propose_ferment_scoping` with the
+ *      full draft (goal, criteria, constraints, assumptions, phases, and
+ *      optional clarifying questions).
  *
- *   2. `propose_phases` (the tool) validates the structured proposal and
- *      attaches it to the same `pendingScope` entry. No state transition
- *      happens here — the proposal is just buffered.
+ *   2. `propose_ferment_scoping` (the tool) validates P-gates, replaces the buffer
+ *      wholesale, shows a combined dropdown, and either confirms the scope or
+ *      queues a re-run turn for iteration.
  *
- *   3. The `turn_end` intercept (in index.ts) shows a Yes/No dropdown. On
- *      "Yes", it pulls the full pendingScope (user answers + LLM phases) and
- *      calls `applyAndPersist({type: "scope", ...})` directly. No further LLM
- *      round-trip — the state machine applies the scope deterministically.
- *
- * If the LLM ends its turn without calling `propose_phases`, the dropdown
- * detects an incomplete pendingScope and instructs the LLM to retry via the
- * tool. Tool-call structure is the contract; prose is just for the user.
- *
- * In headless sessions (no `ctx.ui.input`), the LLM does the full scoping
- * conversation with no gate enforced and no pending-scope buffer.
+ * In headless sessions (no `ctx.ui.input`), the existing nudge path fires
+ * unchanged — the LLM handles scoping conversationally.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
-import { stripToolRefs } from "./format.js"
+import { exitSplashMode } from "../ui.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 
 // ─── Pending scope buffer ─────────────────────────────────────────────────────
-// Holds the user's TUI-collected scoping answers + the LLM-proposed phases
-// (attached by the propose_phases tool) until the user confirms via dropdown.
+// Seeded as an empty buffer by runScopingFlow, then replaced wholesale by
+// propose_ferment_scoping on each call. Held until the user confirms via dropdown.
 
 export interface PendingScope {
 	goal: string
 	successCriteria: string
 	constraints: string[]
 	phases?: ScopePhaseInput[]
+	assumptions?: string
+	/** Number of times propose_ferment_scoping has been called for this ferment. Reset on confirm. */
+	proposeIterations?: number
+}
+
+export interface AttachPendingProposalPartial {
+	title?: string
+	goal?: string
+	successCriteria?: string
+	constraints?: string[]
+	assumptions?: string
+	phases?: ScopePhaseInput[]
+	proposeIterations?: number
 }
 
 const pendingScopes = new Map<string, PendingScope>()
+
+/** Replace the pending scope buffer wholesale. Returns false if no buffer exists. */
+export function attachPendingProposal(fermentId: string, partial: AttachPendingProposalPartial): boolean {
+	if (!pendingScopes.has(fermentId)) return false
+	pendingScopes.set(fermentId, {
+		goal: partial.goal ?? "",
+		successCriteria: partial.successCriteria ?? "",
+		constraints: partial.constraints ?? [],
+		phases: partial.phases,
+		assumptions: partial.assumptions,
+		proposeIterations: partial.proposeIterations,
+	})
+	return true
+}
 
 export function getPendingScope(fermentId: string): PendingScope | undefined {
 	return pendingScopes.get(fermentId)
@@ -52,16 +70,6 @@ export function getPendingScope(fermentId: string): PendingScope | undefined {
 
 export function setPendingScope(fermentId: string, scope: PendingScope): void {
 	pendingScopes.set(fermentId, scope)
-}
-
-/** Attach LLM-proposed phases to an existing pending scope. Returns false if
- *  no pending scope exists for the ferment (i.e. the LLM called
- *  propose_phases without the host running runScopingFlow first). */
-export function attachPendingPhases(fermentId: string, phases: ScopePhaseInput[]): boolean {
-	const existing = pendingScopes.get(fermentId)
-	if (!existing) return false
-	pendingScopes.set(fermentId, { ...existing, phases })
-	return true
 }
 
 export function clearPendingScope(fermentId: string): void {
@@ -72,15 +80,30 @@ export function clearAllPendingScopes(): void {
 	pendingScopes.clear()
 }
 
+// ─── Visible request echo ────────────────────────────────────────────────────
+
+export const FERMENT_REQUEST_MESSAGE_TYPE = "ferment_request"
+
+export interface FermentRequestMessageDetails {
+	intent: string
+}
+
+export function sendFermentRequestMessage(pi: ExtensionAPI, intent: string): void {
+	void pi.sendMessage<FermentRequestMessageDetails>({
+		customType: FERMENT_REQUEST_MESSAGE_TYPE,
+		content: [{ type: "text", text: `User entered ferment request: ${intent}` }],
+		display: true,
+		details: { intent },
+	})
+}
+
 // ─── Scoping flow ─────────────────────────────────────────────────────────────
 
-function buildScopePrompt(runtime: FermentRuntime, fermentId: string, rawIntent?: string): string {
+function buildScopePrompt(runtime: FermentRuntime, fermentId: string): string {
 	const f = runtime.getStorage().get(fermentId)
 	if (!f) return ""
 	const action = determineNextAction(f)
-	const msg = `Scope: ${action.reason}`
-	if (!rawIntent) return msg
-	return `User wants to ferment: "${rawIntent}"\n\n${msg}`
+	return `Scope: ${action.reason}`
 }
 
 export async function runScopingFlow(
@@ -88,6 +111,7 @@ export async function runScopingFlow(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
 	runtime: FermentRuntime = defaultFermentRuntime,
+	preIntent?: string,
 ): Promise<void> {
 	if (!ctx.ui.input) {
 		// Headless fallback: let the LLM handle scoping conversationally
@@ -104,78 +128,29 @@ export async function runScopingFlow(
 		return
 	}
 
-	// Step 1: goal
-	pi.appendEntry("ferment_breadcrumb", { text: `scoping "${f.name}" · 1/4 — goal` })
-	const goal = await ctx.ui.input("What does done look like? (goal)", "e.g. 'Users can log in with Google OAuth'")
-	if (!goal) return
+	let intent: string | undefined = preIntent
+	if (!intent) {
+		intent = await ctx.ui.input("What do you want to do?", "Describe what you want to accomplish…")
+	}
+	if (intent === undefined || intent === "") return
 
-	// Step 2: success criteria
-	pi.appendEntry("ferment_breadcrumb", { text: `scoping "${f.name}" · 2/4 — success criteria` })
-	const criteria = await ctx.ui.input(
-		"How will we know we got there? (success criteria)",
-		"e.g. 'E2E test passes, no regressions in login flow'",
-	)
-	if (!criteria) return
-
-	// Step 3: constraints (optional — empty input means "no constraints")
-	pi.appendEntry("ferment_breadcrumb", { text: `scoping "${f.name}" · 3/4 — constraints` })
-	const constraints = await ctx.ui.input(
-		"What should we avoid? Any non-negotiables? (comma-separated, leave empty for none)",
-		"e.g. 'No external auth libs, must work on mobile'",
-	)
-	// `constraints` may be undefined (user cancelled with Esc) or empty string
-	// (user pressed Enter with no input — valid: no constraints). Distinguish:
-	// undefined → cancel the flow; "" → continue with empty list.
-	if (constraints === undefined) return
-
-	// All 3 prerequisites collected — now arm the confirmation gate. Doing this
-	// BEFORE the inputs would leak gate state if the user cancels mid-flow.
+	exitSplashMode(ctx)
 	runtime.markScopingInteractive(f.id)
-
-	// Step 4: phases — let the LLM propose them given the context so far
-	pi.appendEntry("ferment_breadcrumb", { text: `scoping "${f.name}" · 4/4 — proposing phases…` })
-
-	const constraintList = constraints
-		.split(",")
-		.map((c) => c.trim())
-		.filter(Boolean)
-
-	// Stash the user's answers. The LLM-proposed phases will be attached by
-	// the propose_phases tool when the LLM calls it. The tool-owned Yes/No dropdown then
-	// reads this combined buffer and applies scope deterministically — no
-	// follow-up prompt needed.
-	runtime.setPendingScope(f.id, {
-		goal,
-		successCriteria: criteria,
-		constraints: constraintList,
-	})
-
-	// Fire a single LLM turn. The LLM produces a human-readable plan AND must
-	// call the propose_phases tool with the same plan in structured form. The
-	// tool definition (in tool-schemas.ts) is the contract; the prompt below
-	// is just orientation.
-	const prompt = `Ferment: "${f.name}" (ID: ${f.id})
-
-The user has already answered the scoping questions:
-- Goal: ${goal}
-- Success criteria: ${criteria}
-- Constraints: ${constraintList.join(", ")}
-
-Your task — two things in this order:
-
-1. Present 3–7 ordered phases as a numbered list for the user to read. For each phase: name, one-sentence goal, and 3–6 concrete step descriptions.
-2. Call the \`propose_phases\` tool with ferment_id "${f.id}" and the same plan in structured form. The tool opens the confirmation dropdown and the host applies the proposal deterministically when the user confirms — without this call, the user's confirmation has nothing to save.
-
-CRITICAL:
-- Do NOT call scope_ferment yourself — the host does that automatically when the user confirms.
-- Do NOT ask "Does this plan look right?" yourself after calling propose_phases — the tool asks that question.
-- Do NOT use any file/search/bash tools to research first.
-- Make sure the phases you call propose_phases with EXACTLY match the ones in your numbered list.`
+	// Seed an empty buffer so propose_ferment_scoping detects the interactive flow is active.
+	runtime.setPendingScope(f.id, { goal: "", successCriteria: "", constraints: [] })
+	if (preIntent === undefined) {
+		sendFermentRequestMessage(pi, intent)
+	}
 
 	void pi.sendMessage(
 		{
 			customType: "ferment_created_nudge",
-			content: [{ type: "text", text: prompt }],
+			content: [
+				{
+					type: "text",
+					text: `User wants to ferment "${f.name}": ${intent}\n\nDraft a complete Scoping (goal, success_criteria, constraints, assumptions) AND 3-7 phases AND clarifying questions ONLY where you're genuinely uncertain. Call propose_ferment_scoping with everything. Don't research with file/bash tools first.`,
+				},
+			],
 			display: false,
 			details: undefined,
 		},

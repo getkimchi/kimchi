@@ -22,6 +22,7 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
+import { createSystemPromptBlocks } from "./prompt-construction/index.js"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -49,6 +50,11 @@ const TAG_COLORS: ThemeColor[] = ["accent", "mdLink", "success", "warning"]
 // Valid phases for phase tracking
 const VALID_PHASES = ["explore", "plan", "build", "review", "research"] as const
 type Phase = (typeof VALID_PHASES)[number]
+
+const PHASE_TAGGING_PROMPT = `## Phase Tagging for Analytics
+
+You must call \`set_phase\` before every block of work. Never take an action without the correct phase being set first. Use one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\` strictly matching current work type.
+The session starts in \`explore\` phase by default. Call \`set_phase\` immediately when your work type changes. Only one phase is active at a time — the most recent call wins.`
 
 export function isValidPhase(phase: string): phase is Phase {
 	return VALID_PHASES.includes(phase as Phase)
@@ -574,7 +580,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 
 			return {
 				content: [{ type: "text", text: `Phase changed to: ${phase}` }],
-				details: { phase },
+				details: { phase, model: ctx.model?.id },
 			}
 		},
 
@@ -586,11 +592,19 @@ export default function tagsExtension(pi: ExtensionAPI) {
 			if (readHidePhaseChanges()) {
 				return new Text("", 0, 0)
 			}
-			const phase = (result.details as { phase: string } | undefined)?.phase ?? "unknown"
+			const details = result.details as { phase: string; model?: string } | undefined
+			const phase = details?.phase ?? "unknown"
+			const model = details?.model
 			const dash = theme.fg("dim", "- ")
 			const label = theme.bold(theme.fg("toolTitle", `Phase changed: ${phase}`))
-			return new Text(dash + label, 0, 0)
+			const modelSuffix = model ? theme.fg("dim", ` [${model}]`) : ""
+			return new Text(dash + label + modelSuffix, 0, 0)
 		},
+	})
+
+	createSystemPromptBlocks(pi, "tags").register({
+		id: "phase-tagging",
+		render: () => PHASE_TAGGING_PROMPT,
 	})
 
 	// Initialize footer status and default phase on session start

@@ -1,5 +1,5 @@
 import { RST, TRUECOLOR } from "../ansi.js"
-import { CODING_MODEL, MAIN_MODEL } from "../integrations/models.js"
+import { formatModelPair } from "../integrations/models.js"
 import type { ToolId } from "../integrations/types.js"
 
 /**
@@ -7,11 +7,15 @@ import type { ToolId } from "../integrations/types.js"
  * (`kimchi claude`, `kimchi opencode`, …). It states which tool we're
  * configuring, the model pair, GSD status, and config mode so the user
  * has a quick at-a-glance summary before the tool boots.
+ *
+ * If `availableModels` is provided, the model pair is rendered dynamically
+ * from the live API list. Otherwise falls back to "dynamic models" placeholder.
  */
 export interface BannerSummary {
 	toolId: ToolId
 	gsdActive: boolean
 	mode: "inject" | "override"
+	availableModels?: readonly import("../models.js").ModelMetadata[]
 }
 
 const BOLD = "\x1b[1m"
@@ -31,7 +35,7 @@ function colorEnabled(): boolean {
 
 export function renderBanner(summary: BannerSummary): string {
 	const line = "─".repeat(45)
-	const models = `${MAIN_MODEL.slug} (reasoning) / ${CODING_MODEL.slug} (coding)`
+	const models = summary.availableModels ? formatModelPair(summary.availableModels) : "dynamic models"
 	const gsd = summary.gsdActive ? "active" : "not installed"
 
 	if (!colorEnabled()) {

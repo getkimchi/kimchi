@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { TEST_MODELS } from "./__fixtures__/models.js"
 import {
 	buildUpdatedPlugins,
 	compareSemverGte,
@@ -150,7 +151,7 @@ describe("opencode tool registration", () => {
 
 	it("write() rejects an empty API key", async () => {
 		const tool = byId("opencode")
-		await expect(tool?.write("global", "")).rejects.toThrow(/API key/)
+		await expect(tool?.write("global", "", TEST_MODELS)).rejects.toThrow(/API key/)
 	})
 
 	it("write() merges provider + plugin into opencode.json without clobbering unrelated keys", async () => {
@@ -173,7 +174,7 @@ describe("opencode tool registration", () => {
 			writeFileSync(path, JSON.stringify({ theme: "dark", provider: { other: { keep: true } } }), "utf-8")
 
 			const tool = byId("opencode")
-			await tool?.write("global", "test-key-123")
+			await tool?.write("global", "test-key-123", TEST_MODELS)
 
 			const written = JSON.parse(readFileSync(path, "utf-8"))
 			expect(written.theme).toBe("dark")

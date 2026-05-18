@@ -342,6 +342,8 @@ export interface DirectToolSpec {
 	resourceUri?: string
 	uiResourceUri?: string
 	uiStreamMode?: UiStreamMode
+	/** Cached schema for auto-fill and retry decisions */
+	metadata?: ToolMetadata
 }
 
 export interface ServerProvenance {

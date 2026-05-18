@@ -2,6 +2,8 @@
 
 A coding agent CLI powered by [kimchi](https://kimchi.dev/). Built on the [pi-mono](https://github.com/badlogic/pi-mono) coding agent SDK, kimchi gives you an AI-powered development assistant in your terminal that connects to kimchi's LLM infrastructure.
 
+![kimchi](./kimchi.png)
+
 ## Quick start
 
 Install the latest release:
@@ -10,13 +12,13 @@ Install the latest release:
 
 ```bash
 brew tap castai/tap
-brew install castai/tap/kimchi-dev
+brew install castai/tap/kimchi
 ```
 
 **Install script:**
 
 ```bash
-curl -fsSL https://github.com/castai/kimchi-dev/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/castai/kimchi/releases/latest/download/install.sh | bash
 ```
 
 Then configure your API key and tools, and launch:
@@ -201,9 +203,14 @@ draft → planned → running → [paused] → complete
 
 1. **draft** — created via `/ferment add`, agent collects goal + phases conversationally
 2. **planned** — `scope_ferment` sets goal, criteria, constraints, phase breakdown
-3. **running** — `activate_phase` starts a phase, agent executes steps
+3. **running** — `activate_ferment_phase` starts a phase, agent executes steps
 4. **paused** — user intervention required (plan mode, or `/pause`)
 5. **complete** — all phases terminal, done
+
+Ferment tool visibility is session-profile based. Active planners see the full
+namespaced lifecycle surface for a whole run, and the FSM/tool result text says
+which call is legal next; worker subagents do not receive ferment lifecycle
+tools.
 
 ### Three work modes
 
@@ -448,4 +455,4 @@ Release assets follow the naming convention `kimchi_{os}_{arch}.tar.gz` with a `
 
 ## License
 
-MIT
+[Apache License 2.0](LICENSE) — see [CONTRIBUTING.md](CONTRIBUTING.md) for the CLA and contributor guidelines.

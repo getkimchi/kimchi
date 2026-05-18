@@ -22,19 +22,21 @@
  * parameter so transitions remain deterministic and unit-testable.
  */
 
-import type {
-	Decision,
-	Ferment,
-	FermentStatus,
-	FermentWorkMode,
-	JudgeGrade,
-	Memory,
-	MemoryCategory,
-	Phase,
-	PhaseStatus,
-	Step,
-	StepResult,
-	StepStatus,
+import { activateSinglePhase, settleAfterPhaseTerminalPatch } from "./lifecycle.js"
+import {
+	type Decision,
+	type Ferment,
+	type FermentStatus,
+	type FermentWorkMode,
+	type JudgeGrade,
+	type Memory,
+	type MemoryCategory,
+	type Phase,
+	type PhaseStatus,
+	type Step,
+	type StepResult,
+	type StepStatus,
+	inSameParallelCohort,
 } from "./types.js"
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
@@ -46,14 +48,13 @@ export interface ScopePhaseInput {
 	constraints?: string[]
 	budget?: string
 	parallel_group?: number
-	steps?: { description: string; verify?: string }[]
+	steps?: { description: string; verify?: string; parallel_group?: number }[]
 }
 
 export interface RefineStepInput {
 	description: string
 	verify?: string
-	needs_vision?: boolean
-	can_run_parallel?: boolean
+	parallel_group?: number
 }
 
 export type Command =
@@ -63,11 +64,12 @@ export type Command =
 			goal: string
 			successCriteria?: string
 			constraints?: string[]
+			assumptions?: string
 			phases: ScopePhaseInput[]
 	  }
 	| {
 			type: "update_scope_field"
-			field: "goal" | "criteria" | "constraints"
+			field: "goal" | "criteria" | "constraints" | "assumptions"
 			value: string
 	  }
 	| { type: "set_mode"; mode: FermentWorkMode }
@@ -306,6 +308,45 @@ function setStep(ferment: Ferment, phaseIndex: number, stepIndex: number, patch:
 // Command handlers
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ─── Cohort resolution ────────────────────────────────────────────────────────
+// Singleton parallel_group values collapse to sequential: surfacing a loner as
+// parallel mis-signals the engine, events, and UI. Shared by phase and step
+// construction since the rule is identical at both layers.
+
+interface CohortFlags {
+	parallel: boolean
+	groupIndex?: number
+}
+
+function resolveCohorts(groups: (number | undefined)[]): CohortFlags[] {
+	const counts = new Map<number, number>()
+	for (const g of groups) {
+		if (g !== undefined) counts.set(g, (counts.get(g) ?? 0) + 1)
+	}
+	return groups.map((g) => {
+		const isMember = g !== undefined && (counts.get(g) ?? 0) >= 2
+		return { parallel: isMember, groupIndex: isMember ? g : undefined }
+	})
+}
+
+interface StepInput {
+	description: string
+	verify?: string
+	parallel_group?: number
+}
+
+function buildSteps(inputs: StepInput[]): Step[] {
+	const cohorts = resolveCohorts(inputs.map((st) => st.parallel_group))
+	return inputs.map((st, i) => ({
+		id: `step-${i + 1}`,
+		index: i + 1,
+		description: st.description,
+		status: "pending" as const,
+		verification: st.verify ? { command: st.verify, retries: 2, retryDelayMs: 1000 } : undefined,
+		...cohorts[i],
+	}))
+}
+
 // ─── scope ────────────────────────────────────────────────────────────────────
 // Saves goal/criteria/constraints/phases and transitions draft → planned.
 
@@ -317,14 +358,16 @@ function handleScope(
 	const guard = requireFermentStatus(ferment, ["draft"])
 	if (guard) return fail(guard)
 
+	const phaseCohorts = resolveCohorts(cmd.phases.map((p) => p.parallel_group))
+
 	const phases: Phase[] = cmd.phases.map((p, i) => {
-		const steps: Step[] = (p.steps ?? []).map((st, si) => ({
-			id: `step-${si + 1}`,
-			index: si + 1,
-			description: st.description,
-			status: "pending" as const,
-			verification: st.verify ? { command: st.verify, retries: 2, retryDelayMs: 1000 } : undefined,
-		}))
+		const steps: Step[] = buildSteps(
+			(p.steps ?? []).map((st) => ({
+				description: st.description,
+				verify: st.verify,
+				parallel_group: st.parallel_group,
+			})),
+		)
 		return {
 			id: `phase-${i + 1}`,
 			index: i + 1,
@@ -333,8 +376,7 @@ function handleScope(
 			description: p.description ?? "",
 			constraints: p.constraints,
 			budget: p.budget,
-			parallel: p.parallel_group !== undefined,
-			groupIndex: p.parallel_group,
+			...phaseCohorts[i],
 			status: "planned" as const,
 			steps,
 		}
@@ -345,6 +387,9 @@ function handleScope(
 	if (cmd.successCriteria) scoping.criteria = { answer: cmd.successCriteria, confirmedAt: ctx.now }
 	if (cmd.constraints && cmd.constraints.length > 0) {
 		scoping.constraints = { answer: cmd.constraints.join(", "), confirmedAt: ctx.now }
+	}
+	if (cmd.assumptions && cmd.assumptions.trim().length > 0) {
+		scoping.assumptions = { answer: cmd.assumptions, confirmedAt: ctx.now }
 	}
 	if (phases.length > 0) {
 		scoping.phases = { answer: phases.map((p) => p.name).join(", "), confirmedAt: ctx.now }
@@ -386,11 +431,13 @@ function handleUpdateScopeField(
 			.filter(Boolean)
 		patch.constraints = parsed
 		scoping.constraints = { answer: parsed.join(", "), confirmedAt: ctx.now }
+	} else if (cmd.field === "assumptions") {
+		scoping.assumptions = { answer: cmd.value, confirmedAt: ctx.now }
 	} else {
 		return fail({
 			code: "INVALID_FIELD",
 			field: cmd.field,
-			message: `Unknown field: "${cmd.field}". Use goal, criteria, or constraints.`,
+			message: `Unknown field: "${cmd.field}". Use goal, criteria, constraints, or assumptions.`,
 		})
 	}
 
@@ -435,15 +482,11 @@ function handleActivatePhase(
 	if (isTransitionError(found)) return fail(found)
 	const { phase, index } = found
 
-	const guard = requirePhaseStatus(phase, ["planned"])
+	const guard = requirePhaseStatus(phase, ["planned", "failed"])
 	if (guard) return fail(guard)
 
 	// Deactivate any other active phase, then activate this one.
-	const phases = ferment.phases.map((p, i) => {
-		if (i === index) return { ...p, status: "active" as const, startedAt: ctx.now }
-		if (p.status === "active") return { ...p, status: "planned" as const }
-		return p
-	})
+	const phases = activateSinglePhase(ferment.phases, phase.id, ctx.now)
 
 	return ok(
 		touch(ferment, ctx, {
@@ -525,16 +568,7 @@ function handleRefinePhase(
 		})
 	}
 
-	const steps: Step[] = cmd.steps.map((st, i) => ({
-		id: `step-${i + 1}`,
-		index: i + 1,
-		description: st.description,
-		status: "pending" as const,
-		needsVision: st.needs_vision ?? false,
-		workerModel: st.needs_vision ? "kimi-k2.5" : "minimax-m2.7",
-		canRunParallel: st.can_run_parallel ?? false,
-		verification: st.verify ? { command: st.verify, retries: 2, retryDelayMs: 1000 } : undefined,
-	}))
+	const steps: Step[] = buildSteps(cmd.steps)
 
 	return ok(touch(ferment, ctx, { phases: setPhase(ferment, index, { steps }) }))
 }
@@ -554,15 +588,14 @@ function handleStartStep(
 	if (isTransitionError(stepFound)) return fail(stepFound)
 	const { step, index: stepIndex } = stepFound
 
-	// Block concurrent start when either step is not parallel-safe.
 	const alreadyRunning = phase.steps.find((s) => s.status === "running" && s.id !== step.id)
-	if (alreadyRunning && (!alreadyRunning.canRunParallel || !step.canRunParallel)) {
+	if (alreadyRunning && !inSameParallelCohort(alreadyRunning, step)) {
 		return fail({
 			code: "CONCURRENT_NON_PARALLEL_STEP",
 			runningStepId: alreadyRunning.id,
 			runningStepIndex: alreadyRunning.index,
 			runningDescription: alreadyRunning.description,
-			message: `Cannot start step ${step.index} — step ${alreadyRunning.index} ("${alreadyRunning.description}") is already running and is not parallel-safe.`,
+			message: `Cannot start step ${step.index} — step ${alreadyRunning.index} ("${alreadyRunning.description}") is already running and is not in the same parallel group.`,
 		})
 	}
 
@@ -702,16 +735,14 @@ function handleCompletePhase(
 	const guard = requirePhaseStatus(phase, ["active"])
 	if (guard) return fail(guard)
 
-	return ok(
-		touch(ferment, ctx, {
-			phases: setPhase(ferment, index, {
-				status: "completed",
-				summary: cmd.summary,
-				completedAt: ctx.now,
-				grade: cmd.grade,
-			}),
-		}),
-	)
+	const phases = setPhase(ferment, index, {
+		status: "completed",
+		summary: cmd.summary,
+		completedAt: ctx.now,
+		grade: cmd.grade,
+	})
+
+	return ok(touch(ferment, ctx, settleAfterPhaseTerminalPatch(phases)))
 }
 
 // ─── skip_phase ───────────────────────────────────────────────────────────────
@@ -725,15 +756,13 @@ function handleSkipPhase(
 	if (isTransitionError(found)) return fail(found)
 	const { index } = found
 
-	return ok(
-		touch(ferment, ctx, {
-			phases: setPhase(ferment, index, {
-				status: "skipped",
-				summary: cmd.reason ?? "Skipped",
-				completedAt: ctx.now,
-			}),
-		}),
-	)
+	const phases = setPhase(ferment, index, {
+		status: "skipped",
+		summary: cmd.reason ?? "Skipped",
+		completedAt: ctx.now,
+	})
+
+	return ok(touch(ferment, ctx, settleAfterPhaseTerminalPatch(phases)))
 }
 
 // ─── fail_phase ───────────────────────────────────────────────────────────────
@@ -747,15 +776,13 @@ function handleFailPhase(
 	if (isTransitionError(found)) return fail(found)
 	const { index } = found
 
-	return ok(
-		touch(ferment, ctx, {
-			phases: setPhase(ferment, index, {
-				status: "failed",
-				summary: cmd.reason,
-				completedAt: ctx.now,
-			}),
-		}),
-	)
+	const phases = setPhase(ferment, index, {
+		status: "failed",
+		summary: cmd.reason,
+		completedAt: ctx.now,
+	})
+
+	return ok(touch(ferment, ctx, settleAfterPhaseTerminalPatch(phases)))
 }
 
 // ─── complete_ferment ─────────────────────────────────────────────────────────
@@ -795,7 +822,16 @@ function handlePause(
 ): TransitionResult {
 	const guard = requireFermentStatus(ferment, ["running", "planned"])
 	if (guard) return fail(guard)
-	return ok(touch(ferment, ctx, { status: "paused" }))
+
+	// Reset any running steps to pending since their subagent will be killed.
+	// Without this, determineNextAction later suggests complete_step for a
+	// step whose subagent is already dead.
+	const phases = ferment.phases.map((p) => ({
+		...p,
+		steps: p.steps.map((s) => (s.status === "running" ? { ...s, status: "pending" as const } : s)),
+	}))
+
+	return ok(touch(ferment, ctx, { status: "paused", phases }))
 }
 
 function handleResume(
@@ -805,10 +841,13 @@ function handleResume(
 ): TransitionResult {
 	const guard = requireFermentStatus(ferment, ["paused"])
 	if (guard) return fail(guard)
-	// Resume always returns to "running". A ferment that was "planned" before
-	// pause loses the distinction — the planner can navigate from running by
-	// calling skip_phase or activate_phase as needed.
-	return ok(touch(ferment, ctx, { status: "running" }))
+	const activePhase = ferment.phases.find((p) => p.status === "active")
+	return ok(
+		touch(ferment, ctx, {
+			status: activePhase ? "running" : "planned",
+			activePhaseId: activePhase?.id,
+		}),
+	)
 }
 
 // ─── abandon ──────────────────────────────────────────────────────────────────

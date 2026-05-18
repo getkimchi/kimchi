@@ -1,8 +1,10 @@
 import { resolve } from "node:path"
-import type { Api, Model } from "@earendil-works/pi-ai"
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
+import { createSystemPromptBlocks } from "../prompt-construction/index.js"
+import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { resolveClassifierModel } from "./classifier-model.js"
 import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
@@ -54,6 +56,7 @@ const EMPTY_LOADED_CONFIG: LoadedConfig = {
 
 // bash is allowed but gated per-command by isReadOnlyBashCommand.
 const PLAN_MODE_TOOLS = ["read", "grep", "find", "ls", "web_search", "web_fetch", "questionnaire", "bash"]
+const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 
 // Tools that auto-approve in headless/auto modes without LLM classification.
 // `set_phase` is a kimchi built-in. `agent`/`get_subagent_result`/`steer_subagent`
@@ -72,20 +75,20 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 	"create_ferment",
 	"list_ferments",
 	"scope_ferment",
-	"update_scope_field",
-	"activate_phase",
-	"refine_phase",
-	"start_step",
-	"complete_step",
-	"verify_step",
-	"skip_step",
-	"complete_phase",
-	"skip_phase",
+	"update_ferment_scope_field",
+	"activate_ferment_phase",
+	"refine_ferment_phase",
+	"start_ferment_step",
+	"complete_ferment_step",
+	"verify_ferment_step",
+	"skip_ferment_step",
+	"complete_ferment_phase",
+	"skip_ferment_phase",
 	"complete_ferment",
-	"fail_step",
-	"fail_phase",
-	"add_decision",
-	"add_memory",
+	"fail_ferment_step",
+	"fail_ferment_phase",
+	"add_ferment_decision",
+	"add_ferment_memory",
 	"set_ferment_mode",
 ]
 
@@ -153,12 +156,18 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	let configRules: Rule[] = []
 	let runtimeMode: PermissionMode | undefined
 	let cliMode: PermissionMode | undefined
-	let originalActiveTools: string[] | null = null
 	let planModeApplied = false
+	let planModeHiddenTools: string[] = []
+	const planToolVisibility: ToolVisibilityAPI = createToolVisibility(pi)
 	/** Tracks all active permission prompt abort controllers for concurrent tool calls. */
 	const activeAbortControllers = new Set<AbortController>()
 	let unsubscribeTerminalInput: (() => void) | null = null
 	let _lastCtx: ExtensionContext | undefined
+
+	// Plan completion menu state: tracks whether the agent used tools during the
+	// current user-input cycle so we can detect text-only turns (plan output).
+	let toolsCalledThisCycle = false
+	let planMenuShownThisCycle = false
 
 	function rebuildConfigRules(): void {
 		configRules = [
@@ -189,35 +198,29 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		return [...session.all(), ...configRules, ...builtinRules]
 	}
 
+	function isPlanModeTool(name: string): boolean {
+		return PLAN_MODE_TOOL_SET.has(name) || isReadOnlyTool(name)
+	}
+
 	function applyPlanModeTools(): void {
 		if (planModeApplied) return
 		try {
-			if (originalActiveTools === null) {
-				originalActiveTools = pi.getActiveTools()
-			}
-			const allTools = pi.getAllTools()
-			const planTools = new Set<string>()
-			for (const tool of allTools) {
-				if (PLAN_MODE_TOOLS.includes(tool.name) || isReadOnlyTool(tool.name)) {
-					planTools.add(tool.name)
-				}
-			}
-			pi.setActiveTools([...planTools])
+			planModeHiddenTools = pi.getActiveTools().filter((name) => !isPlanModeTool(name))
+			planToolVisibility.disable(planModeHiddenTools)
 			planModeApplied = true
 		} catch {
-			// setActiveTools may be unavailable; tool_call handler still enforces the policy.
+			// Tool visibility may be unavailable; tool_call handler still enforces the policy.
 		}
 	}
 
 	function restoreToolsFromPlanMode(): void {
 		if (!planModeApplied) return
-		if (originalActiveTools) {
-			try {
-				pi.setActiveTools(originalActiveTools)
-			} catch {
-				// best-effort restore
-			}
+		try {
+			planToolVisibility.enable(planModeHiddenTools)
+		} catch {
+			// best-effort restore
 		}
+		planModeHiddenTools = []
 		planModeApplied = false
 	}
 
@@ -294,6 +297,34 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		}
 	}
 
+	function switchToPlanModeRuntime(ctx: ExtensionContext): void {
+		runtimeMode = "plan"
+		applyPlanModeTools()
+		propagateModeToEnv()
+		updateStatus(ctx)
+		// Other concurrent prompts are stale under the new mode — let them re-evaluate.
+		for (const ctrl of activeAbortControllers) ctrl.abort()
+		activeAbortControllers.clear()
+		maybeShowYoloWarning(ctx, "plan")
+	}
+
+	function switchFromPlanAndExecute(ctx: ExtensionContext, targetMode: PermissionMode): void {
+		runtimeMode = targetMode
+		restoreToolsFromPlanMode()
+		propagateModeToEnv()
+		updateStatus(ctx)
+		maybeShowYoloWarning(ctx, targetMode)
+
+		pi.sendMessage(
+			{
+				customType: "plan-execute",
+				content: "The user approved the plan. Execute it now.",
+				display: false,
+			},
+			{ triggerTurn: true },
+		)
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
 		_lastCtx = ctx
 		const { errors } = doLoadConfig(ctx)
@@ -342,9 +373,66 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		maybeShowYoloWarning(ctx, currentMode())
 	})
 
-	pi.on("before_agent_start", async (event): Promise<{ systemPrompt?: string }> => {
-		if (currentMode() !== "plan") return {}
-		return { systemPrompt: `${event.systemPrompt}\n\n${planModeSupplement.trim()}` }
+	const blocks = createSystemPromptBlocks(pi, "permissions")
+	blocks.register({
+		id: "plan-mode-supplement",
+		render: () => {
+			if (currentMode() !== "plan") return undefined
+			return planModeSupplement.trim()
+		},
+	})
+
+	// Reset plan-completion tracking on every new user input.
+	pi.on("input", async () => {
+		toolsCalledThisCycle = false
+		planMenuShownThisCycle = false
+	})
+
+	// Track tool calls so we can distinguish exploration turns from plan output.
+	pi.on("tool_execution_start", async () => {
+		if (currentMode() === "plan") {
+			toolsCalledThisCycle = true
+		}
+	})
+
+	// When the agent finishes a text-only turn in plan mode, offer the user a
+	// menu to approve and execute the plan.
+	pi.on("turn_end", async (event, ctx) => {
+		if (currentMode() !== "plan") return
+		if (!ctx.hasUI) return
+		if (planMenuShownThisCycle) return
+
+		const message = event.message as AssistantMessage
+		if (message.role !== "assistant") return
+
+		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
+		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
+
+		// Only show the menu when the agent produced text without tool calls
+		// AND has called at least one tool this cycle (i.e., it explored before
+		// presenting a plan). Without prior tool calls the agent is likely asking
+		// clarifying questions, not delivering a finished plan.
+		if (!hasText || hasToolCalls) return
+		if (!toolsCalledThisCycle) return
+
+		planMenuShownThisCycle = true
+
+		const EXECUTE = "Yes — execute the plan"
+		const EXECUTE_AUTO = "Yes — execute (auto-approve)"
+		const DECLINE = "No, do something else"
+
+		const choice = await ctx.ui.select("Plan complete. How would you like to proceed?", [
+			EXECUTE,
+			EXECUTE_AUTO,
+			DECLINE,
+		])
+
+		if (choice === EXECUTE) {
+			switchFromPlanAndExecute(ctx, "default")
+		} else if (choice === EXECUTE_AUTO) {
+			switchFromPlanAndExecute(ctx, "auto")
+		}
+		// Decline or escape: stay in plan mode, user types their next message.
 	})
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -424,15 +512,22 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			}
 			if (match.decision === "allow") return undefined
 
+			// In default mode, a questionnaire call means the agent wants to plan —
+			// auto-promote the session to plan mode so the rest of the conversation
+			// runs under the right tool set instead of silently approving here.
+			if (toolName === "questionnaire" && mode === "default") {
+				switchToPlanModeRuntime(ctx)
+				return undefined
+			}
+			if (isReadOnlyTool(toolName)) return undefined
+			if (toolName === "bash") {
+				const command = typeof input.command === "string" ? input.command : ""
+				if (isReadOnlyBashCommand(command)) return undefined
+			}
+
 			// Auto mode + headless default mode (subagents) both go through the
 			// classifier; prompts without a UI fail closed.
 			if (mode === "auto" || !ctx.hasUI) {
-				if (isReadOnlyTool(toolName)) return undefined
-				if (toolName === "bash") {
-					const command = typeof input.command === "string" ? input.command : ""
-					if (isReadOnlyBashCommand(command)) return undefined
-				}
-
 				const classifierModel = resolveClassifierModel(ctx.model, ctx.modelRegistry)
 				if (!classifierModel) return { block: true, reason: "no model available for classifier" }
 
@@ -480,7 +575,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					}
 				}
 			}
-			const result = await handleConfirm(event, { ctx, session, activeAborts: activeAbortControllers, allRules })
+			const result = await handleConfirm(event, {
+				ctx,
+				session,
+				activeAborts: activeAbortControllers,
+				allRules,
+			})
 			if (result === "aborted") continue // mode changed, re-evaluate
 			return result
 		}

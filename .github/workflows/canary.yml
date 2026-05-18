@@ -91,7 +91,7 @@ jobs:
           - target: bun-darwin-x64
             os: darwin
             arch: amd64
-            runner: macos-15
+            runner: macos-15-intel
           - target: bun-darwin-arm64
             os: darwin
             arch: arm64
@@ -119,6 +119,15 @@ jobs:
 
       - name: Build binary
         run: pnpm run build:binary
+
+      - name: Verify binary architecture
+        run: |
+          file dist/bin/kimchi
+          case "${{ matrix.arch }}" in
+            amd64) file dist/bin/kimchi | grep -Eq 'x86[_-]64|x86-64' ;;
+            arm64) file dist/bin/kimchi | grep -Eq 'arm64|aarch64' ;;
+            *) echo "Unsupported arch: ${{ matrix.arch }}" >&2; exit 1 ;;
+          esac
 
       - name: Package binary
         run: tar -czf kimchi_${{ matrix.os }}_${{ matrix.arch }}.tar.gz -C dist bin share

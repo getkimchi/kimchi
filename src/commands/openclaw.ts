@@ -4,7 +4,7 @@ import { popScope, prepareTool } from "./_helpers.js"
 
 export async function runOpenClaw(args: string[]): Promise<number> {
 	const scope = popScope(args)
-	const prepped = prepareTool("openclaw", "override")
+	const prepped = await prepareTool("openclaw", "override")
 	if (!prepped) return 1
 
 	try {
@@ -13,7 +13,7 @@ export async function runOpenClaw(args: string[]): Promise<number> {
 			console.error("kimchi openclaw: integration not registered")
 			return 1
 		}
-		await tool.write(scope, prepped.apiKey)
+		await tool.write(scope, prepped.apiKey, prepped.models)
 		console.log("kimchi openclaw: configuration written.")
 		return 0
 	} catch (err) {

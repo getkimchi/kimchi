@@ -69,6 +69,23 @@ research_prompt = (
     "and a one-line example of defining a route with a path parameter."
 )
 
+explore_seed = os.path.join(os.path.dirname(benchmark_json), "seeds", "explore-refactor")
+explore_prompt = (
+    "The directory $DIR/usermgmt/ contains an existing Go HTTP API for user and team management. "
+    "Explore the codebase, find all HTTP handlers that are missing input validation, and fix them. "
+    "Requirements: "
+    "- First explore the entire codebase to build a map of all handlers and their validation status. "
+    "- Write a plan listing every handler endpoint, what validation is missing, and what you will add. "
+    "- Implement the validation fixes. Specific issues to find and fix: "
+    "  - Handlers that accept arbitrary strings for fields with a fixed set of valid values (e.g. roles) "
+    "  - Handlers that accept zero or negative integers for fields that must be positive "
+    "  - Handlers that accept empty strings for required fields at the HTTP layer (even if the service layer also checks) "
+    "  - Search/filter endpoints with no length limit on query parameters "
+    "  - Pagination parameters with no bounds checking (negative offsets, excessively large limits) "
+    "- Add unit tests for the validation logic using map-based test cases. "
+    "- Do not change the project structure or add external dependencies."
+)
+
 mega_prompt = (
     "Implement a Go CLI application that acts as a concurrent build system, similar to a simplified Make. "
     "This is a multi-layer project — start with a plan before writing any code. "
@@ -91,26 +108,30 @@ mega_prompt = (
     "Put all code in directory: $DIR/buildtool/"
 )
 
-# Fourth element: include_in_run_all (default True)
+# Fields: (name, prompt, extra_flags, include_in_run_all, setup_cmd or None)
 tasks = [
-    ("simple",         simple_prompt,  [],                      True),
-    ("complex",        complex_prompt, [],                      True),
-    ("complex-single", complex_prompt, ["--multi-model=false"], True),
-    ("research",       research_prompt,[],                      True),
-    ("mega",           mega_prompt,    [],                      False),
+    ("simple",         simple_prompt,  [],                      True,  None),
+    ("complex",        complex_prompt, [],                      True,  None),
+    ("complex-single", complex_prompt, ["--multi-model=false"], True,  None),
+    ("research",       research_prompt,[],                      True,  None),
+    ("explore",        explore_prompt, [],                      True,  f'mkdir -p "$DIR/usermgmt" && cp -R "{explore_seed}/"* "$DIR/usermgmt/"'),
+    ("mega",           mega_prompt,    [],                      False, None),
 ]
 
 all_scripts = []
 run_all_scripts = []
 for model in models:
     print(f"model: kimchi-dev/{model}")
-    for task, task_prompt, extra_flags, in_run_all in tasks:
+    for task, task_prompt, extra_flags, in_run_all, setup_cmd in tasks:
         run_dir = f"{task}-{model}"
         os.makedirs(os.path.join(session_dir, "runs", run_dir), exist_ok=True)
         slug = f"s{n}-{task}-{model}"
         script_path = os.path.join(session_dir, f"run-{task}-{model}.sh")
         flags = "\n".join(f"  {flag} \\" for flag in extra_flags)
         flags_block = (flags + "\n") if flags else ""
+        setup_block = ""
+        if setup_cmd:
+            setup_block = f"{setup_cmd}\n"
         content = f"""#!/bin/zsh
 TS=$(date +%Y%m%d-%H%M%S)
 SESSION_FILE="{session_dir}/runs/{run_dir}/session-${{TS}}.jsonl"
@@ -118,7 +139,7 @@ DIR=$(mktemp -d /private/tmp/kimchi-{slug}-XXXXXX)
 echo "Working directory: $DIR"
 echo "Session file: $SESSION_FILE"
 cd "$DIR"
-{binary} \\
+{setup_block}{binary} \\
   --yolo \\
   --model kimchi-dev/{model} \\
 {flags_block}  --session "$SESSION_FILE" \\

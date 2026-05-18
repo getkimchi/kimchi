@@ -22,6 +22,7 @@ import {
 import { Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
+import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
 import { AgentManager } from "./manager/agent-manager.js"
 import {
@@ -35,6 +36,7 @@ import {
 } from "./manager/agent-runner.js"
 import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
+import { prepareAgentSessionFile } from "./manager/session-file.js"
 import { type LifetimeUsage, addUsage, getLifetimeTotal, getSessionContextPercent } from "./manager/usage.js"
 import {
 	BUILTIN_TOOL_NAMES,
@@ -63,6 +65,7 @@ import {
 	type AgentDetails,
 	AgentWidget,
 	SPINNER,
+	type Theme,
 	type UICtx,
 	describeActivity,
 	formatDuration,
@@ -75,8 +78,64 @@ import {
 
 // ---- Shared helpers ----
 
-function textResult(msg: string, details?: AgentDetails) {
+function textResult<T = AgentDetails>(msg: string, details?: T) {
 	return { content: [{ type: "text" as const, text: msg }], details: details as unknown }
+}
+
+interface GetSubagentResultDetails {
+	agentId: string
+	displayName: string
+	description: string
+	status: string
+	toolUses: number
+	tokens: string
+	contextPercent: number | null
+	compactionCount?: number
+	durationMs?: number
+	error?: string
+	bodyText: string
+}
+
+function formatAgentBodyForDisplay(raw: string): string {
+	const cleaned = filterThinkingForDisplay(raw)
+	return cleaned.replace(/\n{3,}/g, "\n\n").trimEnd()
+}
+
+function getSubagentResultIcon(status: string, theme: Theme): string {
+	switch (status) {
+		case "running":
+		case "queued":
+			return theme.fg("accent", SPINNER[0])
+		case "error":
+		case "aborted":
+			return theme.fg("error", "✗")
+		case "stopped":
+			return theme.fg("dim", "■")
+		case "steered":
+			return theme.fg("warning", "✓")
+		default:
+			return theme.fg("success", "✓")
+	}
+}
+
+function summaryForStatus(status: string, error?: string): string {
+	switch (status) {
+		case "running":
+		case "queued":
+			return "Still running"
+		case "completed":
+			return "Done"
+		case "steered":
+			return "Wrapped up (turn limit)"
+		case "aborted":
+			return "Aborted (max turns exceeded)"
+		case "stopped":
+			return "Stopped"
+		case "error":
+			return `Error: ${error?.split("\n")[0]?.trim() || "unknown"}`
+		default:
+			return status
+	}
 }
 
 function formatLifetimeTokens(o: { lifetimeUsage: LifetimeUsage }): string {
@@ -831,6 +890,18 @@ Model selection — YOU choose based on task complexity:
 
 				if (runInBackground) {
 					const { state: bgState, callbacks: bgCallbacks } = createActivityTracker(effectiveMaxTurns)
+					let childSessionFile: string | undefined
+					const parentSessionDir = ctx.sessionManager.getSessionDir()
+					try {
+						childSessionFile = prepareAgentSessionFile(
+							parentSessionDir,
+							ctx.sessionManager.getSessionFile(),
+							ctx.cwd,
+						)?.sessionFile
+					} catch (err) {
+						const detail = err instanceof Error ? err.message : String(err)
+						return textResult(`Failed to pre-write Agent session file under ${parentSessionDir}: ${detail}`)
+					}
 
 					let id: string
 					const origBgOnSession = bgCallbacks.onSessionCreated
@@ -856,6 +927,8 @@ Model selection — YOU choose based on task complexity:
 							inheritContext,
 							thinkingLevel: thinking,
 							isBackground: true,
+							sessionFile: childSessionFile,
+							sessionDir: parentSessionDir,
 							...bgCallbacks,
 						})
 					} catch (err) {
@@ -867,7 +940,7 @@ Model selection — YOU choose based on task complexity:
 					if (record && joinMode) {
 						record.joinMode = joinMode
 						record.toolCallId = toolCallId
-						record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId())
+						record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
 						writeInitialEntry(record.outputFile, id, params.prompt as string, ctx.cwd)
 					}
 
@@ -941,6 +1014,19 @@ Model selection — YOU choose based on task complexity:
 				streamUpdate()
 
 				let record: AgentRecord
+				let childSessionFile: string | undefined
+				const parentSessionDir = ctx.sessionManager.getSessionDir()
+				try {
+					childSessionFile = prepareAgentSessionFile(
+						parentSessionDir,
+						ctx.sessionManager.getSessionFile(),
+						ctx.cwd,
+					)?.sessionFile
+				} catch (err) {
+					clearInterval(spinnerInterval)
+					const detail = err instanceof Error ? err.message : String(err)
+					return textResult(`Failed to pre-write Agent session file under ${parentSessionDir}: ${detail}`)
+				}
 				try {
 					record = await manager.spawnAndWait(pi, ctx, subagentType, params.prompt as string, {
 						description: params.description as string,
@@ -949,6 +1035,8 @@ Model selection — YOU choose based on task complexity:
 						isolated,
 						inheritContext,
 						thinkingLevel: thinking,
+						sessionFile: childSessionFile,
+						sessionDir: parentSessionDir,
 						signal,
 						...fgCallbacks,
 					})
@@ -1010,6 +1098,58 @@ Model selection — YOU choose based on task complexity:
 					}),
 				),
 			}),
+
+			renderResult(result, { expanded: piExpanded }, theme, context) {
+				if (context?.toolCallId) registerToolCall(context.toolCallId)
+				const expanded = piExpanded || (context?.toolCallId ? isToolExpanded(context.toolCallId) : false)
+
+				const details = result.details as GetSubagentResultDetails | undefined
+				if (!details) {
+					const text = result.content[0]?.type === "text" ? result.content[0].text : ""
+					return new Text(text, 0, 0)
+				}
+
+				const statsLine = (d: GetSubagentResultDetails) => {
+					const parts: string[] = [d.status]
+					if (d.toolUses > 0) parts.push(`${d.toolUses} tool use${d.toolUses === 1 ? "" : "s"}`)
+					if (d.tokens) parts.push(d.tokens)
+					if (d.contextPercent != null) parts.push(`${Math.round(d.contextPercent)}% ctx`)
+					if (d.compactionCount && d.compactionCount > 0) {
+						parts.push(`${d.compactionCount} compaction${d.compactionCount === 1 ? "" : "s"}`)
+					}
+					return parts.map((p) => theme.fg("dim", p)).join(` ${theme.fg("dim", "·")} `)
+				}
+
+				const icon = getSubagentResultIcon(details.status, theme)
+
+				const headerName = theme.fg("toolTitle", theme.bold("Get Agent Result"))
+				const headerDesc = details.description ? `  ${theme.fg("muted", details.description)}` : ""
+				const durationTail =
+					details.durationMs != null ? ` ${theme.fg("dim", "·")} ${theme.fg("dim", formatMs(details.durationMs))}` : ""
+
+				let line = `${icon} ${headerName}${headerDesc}${durationTail}`
+				const stats = statsLine(details)
+				if (stats) line += `\n${theme.fg("dim", "  ⎿  ")}${stats}`
+
+				const bodyText = details.bodyText ?? ""
+				if (expanded && bodyText) {
+					const lines = bodyText.split("\n")
+					const maxLines = 50
+					const visible = lines.slice(0, maxLines)
+					for (const l of visible) {
+						line += `\n${theme.fg("dim", `  ${l}`)}`
+					}
+					if (lines.length > maxLines) {
+						line += `\n${theme.fg("muted", `  … (${lines.length - maxLines} more lines — use verbose: true for full output)`)}`
+					}
+				} else if (!expanded) {
+					const summary = summaryForStatus(details.status, details.error)
+					line += `\n${theme.fg("dim", `  ⎿  ${summary}`)}`
+				}
+
+				return new Text(line, 0, 0)
+			},
+
 			execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
 				const record = manager.getRecord(params.agent_id as string)
 				if (!record) {
@@ -1037,12 +1177,16 @@ Model selection — YOU choose based on task complexity:
 					`Type: ${displayName} | Status: ${record.status} | ${statsParts.join(" | ")}\n` +
 					`Description: ${record.description}\n\n`
 
+				let bodyForDisplay: string
 				if (record.status === "running") {
-					output += "Agent is still running. Use wait: true or check back later."
+					bodyForDisplay = "Agent is still running. Use wait: true or check back later."
+					output += bodyForDisplay
 				} else if (record.status === "error") {
-					output += `Error: ${record.error}`
+					bodyForDisplay = `Error: ${record.error}`
+					output += bodyForDisplay
 				} else {
-					output += record.result?.trim() || "No output."
+					bodyForDisplay = record.result?.trim() || "No output."
+					output += bodyForDisplay
 				}
 
 				if (record.status !== "running" && record.status !== "queued") {
@@ -1053,11 +1197,29 @@ Model selection — YOU choose based on task complexity:
 				if (params.verbose && record.session) {
 					const conversation = getAgentConversation(record.session)
 					if (conversation) {
-						output += `\n\n--- Agent Conversation ---\n${conversation}`
+						const verboseTail = `\n\n--- Agent Conversation ---\n${conversation}`
+						output += verboseTail
+						bodyForDisplay += verboseTail
 					}
 				}
 
-				return textResult(output)
+				const completedAt = record.completedAt ?? Date.now()
+				const durationMs = record.startedAt != null ? completedAt - record.startedAt : undefined
+				const details: GetSubagentResultDetails = {
+					agentId: record.id,
+					displayName,
+					description: record.description,
+					status: record.status,
+					toolUses: record.toolUses,
+					tokens,
+					contextPercent,
+					compactionCount: record.compactionCount,
+					durationMs,
+					error: record.error,
+					bodyText: formatAgentBodyForDisplay(bodyForDisplay),
+				}
+
+				return textResult(output, details)
 			},
 		}),
 	)

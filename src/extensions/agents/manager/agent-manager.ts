@@ -43,6 +43,8 @@ interface SpawnOptions {
 	 */
 	bypassQueue?: boolean
 	isolation?: IsolationMode
+	sessionFile?: string
+	sessionDir?: string
 	signal?: AbortSignal
 	onToolActivity?: (activity: ToolActivity) => void
 	onTextDelta?: (delta: string, fullText: string) => void
@@ -141,6 +143,8 @@ export class AgentManager {
 			isolated: options.isolated,
 			inheritContext: options.inheritContext,
 			thinkingLevel: options.thinkingLevel,
+			sessionFile: options.sessionFile,
+			sessionDir: options.sessionDir,
 			signal: record.abortController?.signal,
 			onToolActivity: (activity) => {
 				if (activity.type === "end") record.toolUses++

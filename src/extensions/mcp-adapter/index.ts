@@ -1,10 +1,11 @@
-import type { ExtensionAPI, ToolInfo, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, ToolInfo, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent"
 import { Theme, keyHint } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
-import type { DirectToolSpec } from "./types.js"
+import type { DirectToolSpec, ToolMetadata } from "./types.js"
 import { formatToolName } from "./types.js"
 import { type Component, Text } from "@earendil-works/pi-tui"
 import { registerToolCall, isToolExpanded } from "../../expand-state.js"
+import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { authenticateServer, openMcpPanel, reconnectServers, showStatus, showTools } from "./commands.js"
 import { loadConfig } from "../../config.js"
 import { BM25_DEFAULTS, buildStrategy, buildToolEntries } from "./bm25.js"
@@ -15,9 +16,10 @@ import {
 	getMissingConfiguredDirectToolServers,
 	resolveDirectTools,
 } from "./direct-tools.js"
+import { createDirectToolVisibility } from "./direct-tool-visibility.js"
 import { flushMetadataCache, initializeMcp, updateStatusBar } from "./init.js"
 import { initializeOAuth, shutdownOAuth } from "./mcp-auth-flow.js"
-import { loadMetadataCache } from "./metadata-cache.js"
+import { loadMetadataCache, overwriteMetadataCache, purgeStaleEntries } from "./metadata-cache.js"
 import {
 	executeCall,
 	executeConnect,
@@ -27,6 +29,12 @@ import {
 } from "./proxy-modes.js"
 import type { McpExtensionState } from "./state.js"
 import { getConfigPathFromArgv, truncateAtWord } from "./utils.js"
+
+const TOOL_AND_MCP_DISCOVERY_PROMPT = `## Tool and MCP Discovery
+
+- Before resorting to web search, web fetch, or giving up on accessing external data, check your Available Tools list for a more direct way to get the information. MCP (Model Context Protocol) integrations often provide authenticated access to services like Jira, Confluence, GitHub, GitLab, and others that are inaccessible via unauthenticated web requests.
+- If you see an mcp tool in your tool list, use mcp({ search: "query" }) to discover what MCP servers and tools are available before assuming you have no way to access a service.
+- Prefer MCP tools over web_fetch for any service that requires authentication (Jira, Confluence, internal wikis, etc.). MCP tools already have credentials configured.`
 
 export default function mcpAdapter(pi: ExtensionAPI) {
 	let state: McpExtensionState | null = null
@@ -65,7 +73,20 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 
 	const earlyConfigPath = getConfigPathFromArgv()
 	const earlyConfig = loadMcpConfig(earlyConfigPath)
-	const earlyCache = loadMetadataCache()
+	let earlyCache = loadMetadataCache()
+
+	// Drop cache entries whose configHash no longer matches the configured server
+	// definition, or whose server has been removed from config. Otherwise stale
+	// entries silently block direct-tool registration on every startup.
+	if (earlyCache) {
+		const { cleaned, removed } = purgeStaleEntries(earlyCache, earlyConfig.mcpServers)
+		if (removed.length > 0) {
+			overwriteMetadataCache(cleaned)
+			earlyCache = cleaned
+			console.warn(`MCP: purged stale cache entries: ${removed.join(", ")}`)
+		}
+	}
+
 	const prefix = earlyConfig.settings?.toolPrefix ?? "server"
 
 	const envRaw = process.env.MCP_DIRECT_TOOLS
@@ -89,8 +110,21 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 
 	// Track all registered tool names to avoid double-registration
 	const registeredToolNames = new Set<string>()
+	const directToolVisibility = createDirectToolVisibility(pi)
 
 	for (const spec of directSpecs) {
+		const cachedServer = earlyCache?.servers?.[spec.serverName]
+		const cachedTool = cachedServer?.tools?.find((t) => t.name === spec.originalName)
+		const metadata: ToolMetadata | undefined = cachedTool
+			? {
+					name: spec.prefixedName,
+					originalName: spec.originalName,
+					description: spec.description,
+					inputSchema: cachedTool.inputSchema,
+					uiResourceUri: cachedTool.uiResourceUri,
+					uiStreamMode: cachedTool.uiStreamMode,
+				}
+			: undefined
 		pi.registerTool({
 			name: spec.prefixedName,
 			label: `MCP: ${spec.originalName}`,
@@ -100,19 +134,43 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 			execute: createDirectToolExecutor(
 				() => state,
 				() => initPromise,
-				spec,
+				{ ...spec, metadata },
 			),
 		})
 		registeredToolNames.add(spec.prefixedName)
+		directToolVisibility.markPermanent([spec.prefixedName])
 	}
 
-	function registerAndActivate(specs: DirectToolSpec[]): string[] {
-		if (!state) return []
+	/**
+	 * Register tool specs with the agent and expose them in the active set.
+	 *
+	 * `markDynamic` (default true) tags the new names in `state.dynamicToolNames`
+	 * so the next user input clears them (used by proxy describe/search results).
+	 * Pass `false` for tools that should persist across turns — e.g. direct tools
+	 * registered after a successful cache bootstrap. `pi.registerTool` activates
+	 * newly registered tools; the visibility controller releases any prior
+	 * transient hide when a previously registered dynamic tool is injected again.
+	 *
+	 * When `state` is not yet ready (callback invoked from inside `initializeMcp`
+	 * before its promise resolves), we only allow the permanent path through —
+	 * registering dynamic tools without a state to track them in would leak them
+	 * across turns because the `pi.on("input", …)` clear couldn't find them.
+	 * Permanent tools (`markDynamic: false`) are safe to register early: the
+	 * executor captures `state` lazily via the `() => state` closure and the
+	 * tools are meant to persist anyway.
+	 */
+	function registerAndActivate(
+		specs: DirectToolSpec[],
+		opts?: { markDynamic?: boolean },
+		ctx?: Pick<ExtensionContext, "cwd">,
+	): string[] {
+		const markDynamic = opts?.markDynamic ?? true
+		if (!state && markDynamic) return []
 		const newNames: string[] = []
-		const alreadyActive: string[] = []
+		const alreadyRegistered: string[] = []
 		for (const spec of specs) {
 			if (registeredToolNames.has(spec.prefixedName)) {
-				alreadyActive.push(spec.prefixedName)
+				alreadyRegistered.push(spec.prefixedName)
 				continue
 			}
 			pi.registerTool({
@@ -124,29 +182,35 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 					() => state,
 					() => initPromise,
 					spec,
+					ctx,
 				),
 			})
 			registeredToolNames.add(spec.prefixedName)
 			newNames.push(spec.prefixedName)
 		}
-		const allInjected = [...alreadyActive, ...newNames]
-		if (newNames.length > 0) {
-			for (const name of newNames) {
-				state.dynamicToolNames.add(name)
-			}
-			const current = new Set(pi.getActiveTools())
-			for (const name of newNames) current.add(name)
-			pi.setActiveTools([...current])
-		}
+		const allInjected = [...alreadyRegistered, ...newNames]
+		directToolVisibility.expose(allInjected, {
+			markDynamic,
+			dynamicToolNames: state?.dynamicToolNames,
+		})
 		return allInjected
+	}
+
+	/**
+	 * Register direct-tool specs produced by the cache bootstrap path
+	 * (`init.ts` → `resolveDirectTools` after first connect). These tools
+	 * are permanent for the session, so they must not be marked dynamic.
+	 */
+	function registerBootstrappedDirectTools(
+		specs: DirectToolSpec[],
+		ctx?: Pick<ExtensionContext, "cwd">,
+	): string[] {
+		return registerAndActivate(specs, { markDynamic: false }, ctx)
 	}
 
 	pi.on("input", () => {
 		if (!state || state.dynamicToolNames.size === 0) return
-		const dynamic = state.dynamicToolNames
-		const cleaned = pi.getActiveTools().filter((n) => !dynamic.has(n))
-		pi.setActiveTools(cleaned)
-		state.dynamicToolNames.clear()
+		directToolVisibility.hideDynamic(state.dynamicToolNames)
 	})
 
 	const getPiTools = (): ToolInfo[] => pi.getAllTools()
@@ -154,6 +218,11 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 	pi.registerFlag("mcp-config", {
 		description: "Path to MCP config file",
 		type: "string",
+	})
+
+	createSystemPromptBlocks(pi, "mcp-adapter").register({
+		id: "tool-and-mcp-discovery",
+		render: () => TOOL_AND_MCP_DISCOVERY_PROMPT,
 	})
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -176,7 +245,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 			console.error("MCP OAuth initialization failed:", err)
 		})
 
-		const promise = initializeMcp(pi, ctx)
+		const promise = initializeMcp(pi, ctx, registerBootstrappedDirectTools)
 		initPromise = promise
 
 		promise
@@ -395,7 +464,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 				}
 				if (params.describe) {
 					return executeDescribe(state, params.describe, (specs) =>
-						registerAndActivate(specs.map((s) => ({ ...s, prefixedName: formatToolName(s.originalName, s.serverName, prefix) })))
+						registerAndActivate(specs.map((s) => ({ ...s, prefixedName: formatToolName(s.originalName, s.serverName, prefix) })), undefined, ctx)
 					)
 				}
 				if (params.search) {
@@ -407,7 +476,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 					// no API key configured; default is fine
 				}
 				return executeSearch(state, params.search, params.regex, params.server, params.includeSchemas, getPiTools, params.limit ?? mcpSearchLimit, state.searchStrategy, (specs) =>
-					registerAndActivate(specs.map((s) => ({ ...s, prefixedName: formatToolName(s.originalName, s.serverName, prefix) })))
+					registerAndActivate(specs.map((s) => ({ ...s, prefixedName: formatToolName(s.originalName, s.serverName, prefix) })), undefined, ctx)
 				)
 				}
 				return {

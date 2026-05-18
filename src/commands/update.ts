@@ -65,7 +65,7 @@ export async function runUpdate(args: string[]): Promise<number> {
 		}
 		console.log("kimchi is managed by Homebrew. Use Homebrew to update:")
 		console.log("")
-		console.log("  brew upgrade kimchi-dev")
+		console.log("  brew upgrade kimchi")
 		console.log("")
 		console.log("If you want the self-update behaviour, install kimchi outside of Homebrew.")
 		return 0

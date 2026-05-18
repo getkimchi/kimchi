@@ -1,8 +1,38 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { TagManager, isValidTag, parseTag } from "./tags.js"
+import { type EnvironmentInfo, buildSystemPrompt } from "./prompt-construction/system-prompt.js"
+import tagsExtension, { TagManager, isValidTag, parseTag } from "./tags.js"
+
+const testEnv: EnvironmentInfo = {
+	os: "Linux",
+	username: "testuser",
+	homeDir: "/home/testuser",
+	cwd: "/home/testuser/project",
+	documentsDir: "/home/testuser/project/.kimchi/docs",
+	currentTime: "2026-01-01T00:00:00.000Z",
+	localDate: "2026-01-01",
+	isGitRepo: false,
+}
+
+type Handler = (event: unknown, ctx: unknown) => unknown
+
+function makePi(): ExtensionAPI & { fireShutdown: () => void } {
+	const shutdownHandlers: Array<() => void> = []
+	const pi = {
+		registerCommand: () => {},
+		registerTool: () => {},
+		on: (event: string, handler: Handler) => {
+			if (event === "session_shutdown") shutdownHandlers.push(handler as () => void)
+		},
+		fireShutdown: () => {
+			for (const handler of shutdownHandlers) handler()
+		},
+	}
+	return pi as unknown as ExtensionAPI & { fireShutdown: () => void }
+}
 
 describe("isValidTag", () => {
 	const validCases = [
@@ -57,6 +87,31 @@ describe("parseTag", () => {
 			expect(parseTag(tag)).toEqual(expected)
 		})
 	}
+})
+
+describe("tags system prompt block", () => {
+	it("registers phase tagging instructions with the extension that owns set_phase", () => {
+		const pi = makePi()
+		tagsExtension(pi)
+
+		try {
+			const result = buildSystemPrompt({
+				pi,
+				tools: [
+					{ name: "read", description: "Read file contents" },
+					{ name: "set_phase", description: "Set the current work phase" },
+				],
+				env: testEnv,
+				mode: "orchestrator",
+			})
+
+			expect(result).toContain("## Phase Tagging for Analytics")
+			expect(result).toContain("You must call `set_phase` before every block of work")
+			expect(result.indexOf("## Phase Tagging for Analytics")).toBeLessThan(result.indexOf("## Available Tools"))
+		} finally {
+			pi.fireShutdown()
+		}
+	})
 })
 
 describe("TagManager persistence", () => {

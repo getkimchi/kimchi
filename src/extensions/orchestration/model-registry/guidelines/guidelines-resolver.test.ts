@@ -1,0 +1,202 @@
+import { describe, expect, it } from "vitest"
+import type { ModelMetadata } from "../../../../models.js"
+import { MODEL_CAPABILITIES, ModelRegistry } from "../index.js"
+import {
+	buildOrchestrationGuidelinesSection,
+	buildPhaseGuidelinesSection,
+	resolveOrchestrationGuideline,
+	resolvePhaseGuideline,
+} from "./guidelines-resolver.js"
+
+const ALL_KNOWN_IDS = [...MODEL_CAPABILITIES.keys()]
+
+function fakeMetadata(slug: string): ModelMetadata {
+	return {
+		slug,
+		display_name: "",
+		provider: "ai-enabler",
+		reasoning: false,
+		input_modalities: ["text"],
+		is_serverless: true,
+		limits: { context_window: 131072, max_output_tokens: 16384 },
+	}
+}
+
+const ALL_KNOWN_METADATA = ALL_KNOWN_IDS.map(fakeMetadata)
+
+describe("phase guideline resolution", () => {
+	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
+
+	it("returns default guideline when no model is specified", () => {
+		const result = resolvePhaseGuideline("build", undefined, registry)
+		expect(result).toContain("During **build** phase")
+		expect(result).toContain("Read each file BEFORE modifying it")
+	})
+
+	it("returns model-specific override when model has one", () => {
+		const result = resolvePhaseGuideline("build", "minimax-m2.7", registry)
+		expect(result).toContain("During **build** phase:")
+		expect(result).toContain("MiniMax M2 family")
+		expect(result).toContain("Outline-then-diff")
+		expect(result).toContain("minimax-m2.7 specific")
+		expect(result).toContain("mutex-based concurrency")
+	})
+
+	it("falls back to default for phases with no model override", () => {
+		const result = resolvePhaseGuideline("explore", "minimax-m2.7", registry)
+		expect(result).toContain("During **explore** phase")
+		expect(result).not.toContain("minimax")
+	})
+
+	it("returns default for unknown model IDs", () => {
+		const result = resolvePhaseGuideline("plan", "nonexistent-model", registry)
+		expect(result).toContain("During **plan** phase")
+		expect(result).toContain("Design BEFORE coding")
+	})
+
+	it("composes all three layers for kimi-k2.6 plan", () => {
+		const result = resolvePhaseGuideline("plan", "kimi-k2.6", registry)
+		expect(result).toContain("Design BEFORE coding")
+		expect(result).toContain("Kimi family")
+		expect(result).toContain("Chunks")
+		expect(result).toContain("kimi-k2.6 specific")
+		expect(result).toContain("per-chunk acceptance criteria")
+	})
+})
+
+describe("orchestration guideline resolution", () => {
+	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
+
+	it("returns empty string when no model is specified", () => {
+		const result = resolveOrchestrationGuideline(undefined, registry)
+		expect(result).toBe("")
+	})
+
+	it("returns composed orchestration guideline for minimax-m2.7", () => {
+		const result = resolveOrchestrationGuideline("minimax-m2.7", registry)
+		expect(result).toContain("MiniMax M2 family")
+		expect(result).toContain("web_search")
+		expect(result).toContain("front-load")
+	})
+
+	it("returns composed orchestration guideline for kimi-k2.6", () => {
+		const result = resolveOrchestrationGuideline("kimi-k2.6", registry)
+		expect(result).toContain("Kimi family")
+		expect(result).toContain("delegation sequence")
+		expect(result).toContain("kimi-k2.6 specific")
+		expect(result).toContain("chunk")
+	})
+
+	it("returns composed orchestration guideline for kimi-k2.5", () => {
+		const result = resolveOrchestrationGuideline("kimi-k2.5", registry)
+		expect(result).toContain("Kimi family")
+		expect(result).toContain("kimi-k2.5 specific")
+		expect(result).toContain("tool-call reliability")
+	})
+
+	it("returns composed orchestration guideline for claude-opus-4-7", () => {
+		const result = resolveOrchestrationGuideline("claude-opus-4-7", registry)
+		expect(result).toContain("Claude family")
+		expect(result).toContain("delegation granularity")
+	})
+
+	it("returns composed orchestration guideline for nemotron-3-super-fp4", () => {
+		const result = resolveOrchestrationGuideline("nemotron-3-super-fp4", registry)
+		expect(result).toContain("Nemotron family")
+		expect(result).toContain("long context window")
+	})
+
+	it("returns empty string for unknown model IDs", () => {
+		const result = resolveOrchestrationGuideline("nonexistent-model", registry)
+		expect(result).toBe("")
+	})
+})
+
+describe("guideline section building", () => {
+	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
+
+	it("builds orchestration guidelines section with content", () => {
+		const result = buildOrchestrationGuidelinesSection("minimax-m2.7", registry)
+		expect(result).toContain("### Orchestration Guidelines")
+		expect(result).toContain("MiniMax M2 family")
+	})
+
+	it("returns empty string when no guidelines", () => {
+		const result = buildOrchestrationGuidelinesSection(undefined, registry)
+		expect(result).toBe("")
+	})
+
+	it("builds phase guidelines section with content", () => {
+		const result = buildPhaseGuidelinesSection("minimax-m2.7", "build", registry)
+		expect(result).toContain("## Phase Guidelines (build)")
+		expect(result).toContain("Outline-then-diff")
+	})
+
+	it("returns empty string when no phase", () => {
+		const result = buildPhaseGuidelinesSection("minimax-m2.7", undefined, registry)
+		expect(result).toBe("")
+	})
+})
+
+describe("builtin-model guideline content", () => {
+	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
+
+	it("kimi-k2.5 build: contains default, family, and per-model layers", () => {
+		const result = resolvePhaseGuideline("build", "kimi-k2.5", registry)
+		expect(result).toContain("During **build** phase:")
+		expect(result).toContain("Plan-first")
+		expect(result).toContain("well-formed tool calls")
+	})
+
+	it("kimi-k2.5 explore: falls back to default (no per-model explore)", () => {
+		const result = resolvePhaseGuideline("explore", "kimi-k2.5", registry)
+		expect(result).toContain("During **explore** phase:")
+		expect(result).not.toContain("Plan-first")
+	})
+
+	it("kimi-k2.6 plan: contains default, family, and per-model layers", () => {
+		const result = resolvePhaseGuideline("plan", "kimi-k2.6", registry)
+		expect(result).toContain("Design BEFORE coding")
+		expect(result).toContain("Chunks")
+		expect(result).toContain("per-chunk acceptance criteria")
+	})
+
+	it("minimax-m2.7 build: contains default, family, and per-model layers", () => {
+		const result = resolvePhaseGuideline("build", "minimax-m2.7", registry)
+		expect(result).toContain("During **build** phase:")
+		expect(result).toContain("Outline-then-diff")
+		expect(result).toContain("mutex")
+	})
+
+	it("minimax-m2.7 review: contains default, family, and per-model layers", () => {
+		const result = resolvePhaseGuideline("review", "minimax-m2.7", registry)
+		expect(result).toContain("During **review** phase:")
+		expect(result).toContain("scope creep")
+		expect(result).toContain("hallucinated APIs")
+		expect(result).toContain("inappropriate concurrency")
+	})
+
+	it("nemotron-3-super-fp4 build: contains default, family, and per-model layers", () => {
+		const result = resolvePhaseGuideline("build", "nemotron-3-super-fp4", registry)
+		expect(result).toContain("long context window")
+		expect(result).toContain("strictly within the spec")
+	})
+
+	it("claude-opus-4-7 plan: contains default, family, and per-model layers", () => {
+		const result = resolvePhaseGuideline("plan", "claude-opus-4-7", registry)
+		expect(result).toContain("Design BEFORE coding")
+		expect(result).toContain("Match plan depth")
+		expect(result).toContain("Don't relitigate")
+	})
+
+	it("claude-opus-4-7 explore: contains default, family, and per-model layers", () => {
+		const result = resolvePhaseGuideline("explore", "claude-opus-4-7", registry)
+		expect(result).toContain("During **explore** phase:")
+		expect(result).toContain("Resist over-exploration")
+	})
+
+	it("default build guidelines contain the co-author trailer", () => {
+		const result = resolvePhaseGuideline("build", undefined, registry)
+		expect(result).toContain("Co-Authored-By: Kimchi <noreply@kimchi.dev>")
+	})
+})

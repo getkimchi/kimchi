@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { commandToEvents } from "./event-mapper.js"
-import { FermentEventStore } from "./event-store.js"
+import { type FermentEvent, FermentEventStore, applyFermentEvent, stateHash } from "./event-store.js"
 import { applyCommand } from "./state-machine.js"
 import { FermentStorage, clearFermentCache } from "./store.js"
 import type { Phase } from "./types.js"
@@ -54,6 +54,12 @@ describe("FermentEventStore", () => {
 
 	// ─── create + read-back ────────────────────────────────────────────────────
 
+	describe("stateHash", () => {
+		it("is stable for equivalent object shapes with different key insertion order", () => {
+			expect(stateHash({ a: 1, b: { c: 2 }, d: undefined })).toBe(stateHash({ d: undefined, b: { c: 2 }, a: 1 }))
+		})
+	})
+
 	describe("create", () => {
 		it("creates ferment, writes one ferment_created event", () => {
 			const ferment = eventStore.create("Auth rewrite", "Rewrite to OAuth2")
@@ -94,6 +100,27 @@ describe("FermentEventStore", () => {
 			expect(types).toContain("ferment_planned")
 		})
 
+		it("scope command with assumptions emits scoping_assumptions_set and round-trips via fold", () => {
+			const f = eventStore.create("Assumptions round-trip")
+
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Build it",
+				successCriteria: "Tests pass",
+				constraints: [],
+				assumptions: "Redis is available",
+				phases: [{ name: "P1", goal: "G1" }],
+			})
+
+			const types = readEvents(tempDir, f.id).map((e) => e.type)
+			expect(types).toContain("scoping_assumptions_set")
+
+			// Force fold by reading from a fresh store instance (which will prefer
+			// the event log over the snapshot).
+			const replayed = new FermentEventStore(tempDir).get(f.id)
+			expect(replayed?.scoping.assumptions?.answer).toBe("Redis is available")
+		})
+
 		it("activate_phase emits ferment_running + phase_activated", () => {
 			const f = eventStore.create("Activate test")
 			exec(eventStore, f.id, {
@@ -110,6 +137,84 @@ describe("FermentEventStore", () => {
 			const types = readEvents(tempDir, f.id).map((e) => e.type)
 			expect(types).toContain("ferment_running")
 			expect(types).toContain("phase_activated")
+		})
+
+		it("complete_phase clears active metadata and replays the next phase as activatable", () => {
+			const f = eventStore.create("Phase advance test")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Goal",
+				successCriteria: "criteria",
+				constraints: [],
+				phases: [
+					{ name: "P1", goal: "G1" },
+					{ name: "P2", goal: "G2" },
+				],
+			})
+			const scoped = eventStore.get(f.id)
+			if (!scoped) throw new Error("ferment missing")
+			exec(eventStore, f.id, { type: "activate_phase", phaseId: scoped.phases[0].id })
+			exec(eventStore, f.id, { type: "complete_phase", phaseId: scoped.phases[0].id, summary: "done" })
+
+			const completed = eventStore.get(f.id)
+			expect(completed?.status).toBe("planned")
+			expect(completed?.activePhaseId).toBeUndefined()
+			expect(completed?.phases[0].status).toBe("completed")
+
+			exec(eventStore, f.id, { type: "activate_phase", phaseId: scoped.phases[1].id })
+			const advanced = eventStore.get(f.id)
+			expect(advanced?.status).toBe("running")
+			expect(advanced?.activePhaseId).toBe(scoped.phases[1].id)
+			expect(advanced?.phases[1].status).toBe("active")
+		})
+
+		it("replaying fail_phase then activate_phase reactivates without stale terminal metadata", () => {
+			const f = eventStore.create("Phase retry replay test")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Goal",
+				successCriteria: "criteria",
+				constraints: [],
+				phases: [{ name: "P1", goal: "G1" }],
+			})
+			const scoped = eventStore.get(f.id)
+			if (!scoped) throw new Error("ferment missing")
+			const phaseId = scoped.phases[0].id
+
+			exec(eventStore, f.id, { type: "activate_phase", phaseId })
+			exec(eventStore, f.id, { type: "fail_phase", phaseId, reason: "tests failed" })
+			exec(eventStore, f.id, { type: "activate_phase", phaseId })
+
+			const replayed = new FermentEventStore(tempDir).get(f.id)
+			expect(replayed?.status).toBe("running")
+			expect(replayed?.activePhaseId).toBe(phaseId)
+			expect(replayed?.phases[0].status).toBe("active")
+			expect(replayed?.phases[0].completedAt).toBeUndefined()
+			expect(replayed?.phases[0].summary).toBeUndefined()
+			expect(replayed?.phases[0].grade).toBeUndefined()
+		})
+
+		it("complete_phase leaves the final terminal ferment planned until complete_ferment", () => {
+			const f = eventStore.create("Explicit complete test")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Goal",
+				successCriteria: "criteria",
+				constraints: [],
+				phases: [{ name: "P1", goal: "G1" }],
+			})
+			const scoped = eventStore.get(f.id)
+			if (!scoped) throw new Error("ferment missing")
+			exec(eventStore, f.id, { type: "activate_phase", phaseId: scoped.phases[0].id })
+			exec(eventStore, f.id, { type: "complete_phase", phaseId: scoped.phases[0].id, summary: "done" })
+
+			const phaseDone = eventStore.get(f.id)
+			expect(phaseDone?.status).toBe("planned")
+			expect(phaseDone?.activePhaseId).toBeUndefined()
+			expect(phaseDone?.phases.every((p) => p.status === "completed")).toBe(true)
+
+			exec(eventStore, f.id, { type: "complete_ferment" })
+			expect(eventStore.get(f.id)?.status).toBe("complete")
 		})
 
 		it("step lifecycle commands all emit corresponding events", () => {
@@ -163,6 +268,31 @@ describe("FermentEventStore", () => {
 			const types = readEvents(tempDir, f.id).map((e) => e.type)
 			expect(types).toContain("ferment_paused")
 			expect(types).toContain("ferment_resumed")
+		})
+
+		it("resume replays to planned when paused between phases", () => {
+			const f = eventStore.create("Resume between phases")
+			exec(eventStore, f.id, {
+				type: "scope",
+				goal: "Goal",
+				successCriteria: "c",
+				constraints: [],
+				phases: [
+					{ name: "P1", goal: "G1" },
+					{ name: "P2", goal: "G2" },
+				],
+			})
+			const scoped = eventStore.get(f.id)
+			if (!scoped) throw new Error("ferment missing")
+			exec(eventStore, f.id, { type: "activate_phase", phaseId: scoped.phases[0].id })
+			exec(eventStore, f.id, { type: "complete_phase", phaseId: scoped.phases[0].id, summary: "done" })
+			exec(eventStore, f.id, { type: "pause" })
+			exec(eventStore, f.id, { type: "resume" })
+
+			const resumed = eventStore.get(f.id)
+			expect(resumed?.status).toBe("planned")
+			expect(resumed?.activePhaseId).toBeUndefined()
+			expect(resumed?.phases[1].status).toBe("planned")
 		})
 
 		// Regression: §4.2 — replaying N independent phase_activated events for a
@@ -541,6 +671,53 @@ describe("FermentEventStore", () => {
 			const folded = eventStore.get(f.id)
 			expect(folded?.goal).toBe("g2")
 			expect(folded?.successCriteria).toBe("c2")
+		})
+	})
+
+	// Historic event logs may carry deprecated `workerModel`/`needsVision`
+	// keys on phase_refined step payloads from when ferment encoded model
+	// policy. The fold's normalizer must strip them so they never leak into
+	// reconstructed `Step` objects.
+	describe("phase_refined replay tolerance for deprecated keys", () => {
+		it("drops legacy workerModel and needsVision keys from refined steps when applyFermentEvent folds them", () => {
+			const baseFerment = eventStore.create("Legacy Replay")
+			exec(eventStore, baseFerment.id, {
+				type: "scope",
+				goal: "g",
+				successCriteria: "c",
+				constraints: [],
+				phases: [{ name: "P", goal: "build", steps: [{ description: "stub" }] }],
+			})
+			exec(eventStore, baseFerment.id, { type: "activate_phase", phaseId: "phase-1" })
+			const current = eventStore.get(baseFerment.id)
+			if (!current) throw new Error("setup ferment missing")
+
+			// Hand-craft a phase_refined event whose steps[] payload carries the
+			// legacy keys, mimicking pre-removal disk state.
+			const legacyEvent = {
+				type: "phase_refined",
+				timestamp: "2026-01-01T00:00:00.000Z",
+				payload: {
+					phaseId: "phase-1",
+					steps: [
+						{
+							id: "step-1",
+							index: 1,
+							description: "legacy task",
+							status: "pending",
+							workerModel: "minimax-m2.7",
+							needsVision: true,
+						},
+					],
+				},
+				// biome-ignore lint/suspicious/noExplicitAny: synthetic legacy payload
+			} as any as FermentEvent
+
+			const folded = applyFermentEvent(current, legacyEvent)
+			const step = folded.phases[0].steps[0] as unknown as Record<string, unknown>
+			expect(step.description).toBe("legacy task")
+			expect(step).not.toHaveProperty("workerModel")
+			expect(step).not.toHaveProperty("needsVision")
 		})
 	})
 })

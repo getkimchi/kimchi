@@ -1,7 +1,10 @@
+import { resolve } from "node:path"
 import { readApiKeyFromConfigFile } from "../config.js"
 import type { ConfigScope } from "../config/scope.js"
 import { byId } from "../integrations/registry.js"
 import type { ToolId } from "../integrations/types.js"
+import { updateModelsConfig } from "../models.js"
+import { getAvailableModels, setAvailableModels } from "../startup-context.js"
 import { printBanner } from "./banner.js"
 
 /**
@@ -48,10 +51,14 @@ export function popScope(args: string[]): ConfigScope {
  * null + writes a stderr message when the API key isn't available, so
  * the caller can simply `return 1` from runX().
  */
-export function prepareTool(
+export async function prepareTool(
 	toolId: ToolId,
 	mode: "inject" | "override",
-): { apiKey: string; tool: NonNullable<ReturnType<typeof byId>> } | null {
+): Promise<{
+	apiKey: string
+	tool: NonNullable<ReturnType<typeof byId>>
+	models: readonly import("../models.js").ModelMetadata[]
+} | null> {
 	const apiKey = resolveApiKey()
 	if (!apiKey) {
 		console.error("kimchi: no API key configured. Run `kimchi setup` or set $KIMCHI_API_KEY.")
@@ -65,6 +72,16 @@ export function prepareTool(
 		console.error(`kimchi: integration "${toolId}" not registered.`)
 		return null
 	}
-	printBanner({ toolId, gsdActive: byId("gsd2")?.isInstalled() ?? false, mode })
-	return { apiKey, tool }
+	let models = getAvailableModels()
+	if (models.length === 0) {
+		const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+		if (!agentDir) {
+			throw new Error("KIMCHI_CODING_AGENT_DIR is not set; cli.ts must be entered via entry.ts")
+		}
+		const result = await updateModelsConfig(resolve(agentDir, "models.json"), apiKey)
+		models = result.models
+		setAvailableModels(models)
+	}
+	printBanner({ toolId, gsdActive: byId("gsd2")?.isInstalled() ?? false, mode, availableModels: models })
+	return { apiKey, tool, models }
 }

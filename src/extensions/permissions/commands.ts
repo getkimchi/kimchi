@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { type LoadedConfig, appendToConfig, projectConfigPath, userConfigPath } from "./config.js"
 import { parseModeString } from "./mode.js"
 import { parseRule, stringifyRule } from "./rules.js"
+import { numberedChoices, stripChoiceNumber } from "./select-utils.js"
 import type { SessionMemory } from "./session-memory.js"
 import type { PermissionMode, Rule } from "./types.js"
 
@@ -87,7 +88,7 @@ async function openSelector(ctx: ExtensionContext, deps: CommandDeps): Promise<v
 	const RELOAD = "Reload config files"
 	const CANCEL = "Cancel"
 
-	const options = [
+	const options = numberedChoices([
 		CHANGE_MODE,
 		LIST_RULES,
 		ADD_ALLOW,
@@ -95,19 +96,21 @@ async function openSelector(ctx: ExtensionContext, deps: CommandDeps): Promise<v
 		...(sessionCount > 0 ? [SAVE_USER, SAVE_PROJECT] : []),
 		RELOAD,
 		CANCEL,
-	]
+	])
 
 	const title = `Permissions — mode: ${mode}${sessionCount ? ` · ${sessionCount} session rule(s)` : ""}`
 	const choice = await ctx.ui.select(title, options)
-	if (!choice || choice === CANCEL) return
+	if (!choice) return
+	const selected = stripChoiceNumber(choice)
+	if (selected === CANCEL) return
 
-	if (choice === CHANGE_MODE) return openModePicker(ctx, deps)
-	if (choice === LIST_RULES) return showStatus(ctx as ExtensionCommandContext, deps)
-	if (choice === ADD_ALLOW) return promptForRule(ctx, deps, "allow")
-	if (choice === ADD_DENY) return promptForRule(ctx, deps, "deny")
-	if (choice === SAVE_USER) return saveSessionRules(ctx, deps, "user")
-	if (choice === SAVE_PROJECT) return saveSessionRules(ctx, deps, "project")
-	if (choice === RELOAD) {
+	if (selected === CHANGE_MODE) return openModePicker(ctx, deps)
+	if (selected === LIST_RULES) return showStatus(ctx as ExtensionCommandContext, deps)
+	if (selected === ADD_ALLOW) return promptForRule(ctx, deps, "allow")
+	if (selected === ADD_DENY) return promptForRule(ctx, deps, "deny")
+	if (selected === SAVE_USER) return saveSessionRules(ctx, deps, "user")
+	if (selected === SAVE_PROJECT) return saveSessionRules(ctx, deps, "project")
+	if (selected === RELOAD) {
 		deps.reloadConfig(ctx)
 		ctx.ui.notify("permissions: config reloaded", "info")
 	}
@@ -127,17 +130,22 @@ async function openModePicker(ctx: ExtensionContext, deps: CommandDeps): Promise
 	const OPT_YOLO = `${marker("yolo")}  yolo — run freely, no classifier (DANGER)`
 	const CANCEL = "Cancel"
 
-	const choice = await ctx.ui.select("Select permission mode", [OPT_DEFAULT, OPT_PLAN, OPT_AUTO, OPT_YOLO, CANCEL])
-	if (!choice || choice === CANCEL) return
+	const choice = await ctx.ui.select(
+		"Select permission mode",
+		numberedChoices([OPT_DEFAULT, OPT_PLAN, OPT_AUTO, OPT_YOLO, CANCEL]),
+	)
+	if (!choice) return
+	const selected = stripChoiceNumber(choice)
+	if (selected === CANCEL) return
 
 	const picked: PermissionMode =
-		choice === OPT_DEFAULT
+		selected === OPT_DEFAULT
 			? "default"
-			: choice === OPT_PLAN
+			: selected === OPT_PLAN
 				? "plan"
-				: choice === OPT_AUTO
+				: selected === OPT_AUTO
 					? "auto"
-					: choice === OPT_YOLO
+					: selected === OPT_YOLO
 						? "yolo"
 						: "default"
 	handleMode(ctx, deps, picked)

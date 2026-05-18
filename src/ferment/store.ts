@@ -15,6 +15,7 @@ import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { v7 as uuidv7 } from "uuid"
 
+import { activateSinglePhase, settleAfterPhaseTerminal } from "./lifecycle.js"
 import type {
 	Decision,
 	Ferment,
@@ -105,12 +106,22 @@ export function captureWorktree(cwd?: string): import("./types.js").FermentWorkt
 	let branch: string | undefined
 	let commit: string | undefined
 	try {
-		branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: path, encoding: "utf-8", timeout: 1000 }).trim()
+		branch = execSync("git rev-parse --abbrev-ref HEAD", {
+			cwd: path,
+			encoding: "utf-8",
+			timeout: 1000,
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim()
 	} catch {
 		// not a git repo or git not available
 	}
 	try {
-		commit = execSync("git rev-parse HEAD", { cwd: path, encoding: "utf-8", timeout: 1000 }).trim()
+		commit = execSync("git rev-parse HEAD", {
+			cwd: path,
+			encoding: "utf-8",
+			timeout: 1000,
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim()
 	} catch {
 		// not a git repo or git not available
 	}
@@ -416,7 +427,6 @@ export class FermentStorage {
 	// These helpers remain for:
 	//   - TUI command handlers (/progress overlay, /ferment switch/abandon)
 	//   - Test fixtures that need to bypass the state machine
-	//   - Internal callers (nudge.ts auto-advance) that pre-validate themselves
 	//
 	// They write directly without going through the state machine, so they DO
 	// NOT enforce invariants. Caller is responsible for state validity.
@@ -526,13 +536,10 @@ export class FermentStorage {
 		const f = this.get(id)
 		if (!f) return undefined
 		const now = new Date().toISOString()
-		const updated: Ferment = {
-			...f,
-			phases: f.phases.map((p) =>
-				p.id === phaseId ? { ...p, status: "failed" as const, summary: reason, completedAt: now } : p,
-			),
-			updatedAt: now,
-		}
+		const phases = f.phases.map((p) =>
+			p.id === phaseId ? { ...p, status: "failed" as const, summary: reason, completedAt: now } : p,
+		)
+		const updated = settleAfterPhaseTerminal(f, phases, now)
 		this.write(updated)
 		return updated
 	}
@@ -579,11 +586,7 @@ export class FermentStorage {
 		const now = new Date().toISOString()
 		const updated: Ferment = {
 			...f,
-			phases: f.phases.map((p) => {
-				if (p.id === phaseId) return { ...p, status: "active" as const, startedAt: now }
-				if (p.status === "active") return { ...p, status: "planned" as const }
-				return p
-			}),
+			phases: activateSinglePhase(f.phases, phaseId, now),
 			activePhaseId: phaseId,
 			lastActiveAt: now,
 			updatedAt: now,
@@ -627,13 +630,10 @@ export class FermentStorage {
 		const f = this.get(id)
 		if (!f) return undefined
 		const now = new Date().toISOString()
-		const updated: Ferment = {
-			...f,
-			phases: f.phases.map((p) =>
-				p.id === phaseId ? { ...p, status: "completed" as const, summary, completedAt: now } : p,
-			),
-			updatedAt: now,
-		}
+		const phases = f.phases.map((p) =>
+			p.id === phaseId ? { ...p, status: "completed" as const, summary, completedAt: now } : p,
+		)
+		const updated = settleAfterPhaseTerminal(f, phases, now)
 		this.write(updated)
 		return updated
 	}
@@ -643,13 +643,10 @@ export class FermentStorage {
 		const f = this.get(id)
 		if (!f) return undefined
 		const now = new Date().toISOString()
-		const updated: Ferment = {
-			...f,
-			phases: f.phases.map((p) =>
-				p.id === phaseId ? { ...p, status: "skipped" as const, summary: reason ?? "Skipped", completedAt: now } : p,
-			),
-			updatedAt: now,
-		}
+		const phases = f.phases.map((p) =>
+			p.id === phaseId ? { ...p, status: "skipped" as const, summary: reason ?? "Skipped", completedAt: now } : p,
+		)
+		const updated = settleAfterPhaseTerminal(f, phases, now)
 		this.write(updated)
 		return updated
 	}
@@ -859,6 +856,23 @@ function hasV4Shape(v: unknown): boolean {
 function normalizeFerment(f: Ferment): void {
 	if (!f.worktree) {
 		f.worktree = { path: detectProjectRoot() ?? process.cwd() }
+	}
+	// Strip deprecated model-policy keys from steps on legacy snapshots. The
+	// fold path has its own normalizer for phase_refined events; this one
+	// covers the snapshot-load path so writes that spread step objects (e.g.
+	// setStep) cannot perpetuate the old vocabulary.
+	for (const phase of f.phases ?? []) {
+		phase.steps = (phase.steps ?? []).map((step) => {
+			const {
+				workerModel: _wm,
+				needsVision: _nv,
+				...rest
+			} = step as Step & {
+				workerModel?: unknown
+				needsVision?: unknown
+			}
+			return rest
+		})
 	}
 	if (!f.scoping) {
 		f.scoping = {}

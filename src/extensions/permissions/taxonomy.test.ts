@@ -33,6 +33,38 @@ describe("classifyTool", () => {
 		expect(classifyTool("do_the_thing")).toBe("unknown")
 		expect(classifyTool("mcp__foo__apply_changes")).toBe("unknown")
 	})
+
+	it("classifies MCP direct tools by read-verb segments after the server prefix", () => {
+		// Direct tools arrive flattened: <server>_<verb>_<rest>. The verb sits at
+		// position 1 (or later), not at the start of the name, so the segment
+		// scan kicks in.
+		expect(classifyTool("jetbrains_get_all_open_file_paths")).toBe("readOnly")
+		expect(classifyTool("jetbrains_get_run_configurations")).toBe("readOnly")
+		expect(classifyTool("jetbrains_xdebug_get_stack")).toBe("readOnly")
+		expect(classifyTool("supabase_list_tables")).toBe("readOnly")
+		expect(classifyTool("supabase_search_docs")).toBe("readOnly")
+	})
+
+	it("leaves mutating MCP direct tools as unknown", () => {
+		// No read-verb segment after the prefix — these tools change state and
+		// must remain blocked in plan mode.
+		expect(classifyTool("jetbrains_execute_run_configuration")).toBe("unknown")
+		expect(classifyTool("jetbrains_build_project")).toBe("unknown")
+		expect(classifyTool("jetbrains_create_new_file")).toBe("unknown")
+		expect(classifyTool("jetbrains_rename_refactoring")).toBe("unknown")
+		expect(classifyTool("playwright_browser_click")).toBe("unknown")
+	})
+
+	it("ignores read-verbs that appear in the first (server-prefix) segment", () => {
+		// If the server is literally called "get" or "list", we don't want to
+		// blanket-mark every tool under it as read-only — only later segments
+		// count.
+		expect(classifyTool("list_writer_create_thing")).toBe("readOnly") // hits the start-anchored regex via "list"
+		// A standalone segment that's just a read verb is fine; the start-anchored
+		// hint already handled that. The post-prefix scan is additive, not a
+		// regression of existing behavior.
+		expect(classifyTool("show_status")).toBe("readOnly")
+	})
 })
 
 describe("isReadOnlyTool", () => {

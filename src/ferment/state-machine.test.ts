@@ -141,6 +141,36 @@ describe("applyCommand: scope", () => {
 		expect(result.phases[2].parallel).toBe(false)
 	})
 
+	it("collapses a loner parallel_group (single phase) to sequential", () => {
+		// A phase that's the only member of its group is functionally serial:
+		// there's no cohort to activate together. The state-machine materialises
+		// it as parallel=false / groupIndex=undefined so engine, events, and UI
+		// don't misreport it as parallel.
+		const result = expectOk(
+			applyCommand(
+				makeFerment(),
+				{
+					type: "scope",
+					goal: "G",
+					phases: [
+						{ name: "P1", goal: "g1", parallel_group: 1, steps: [{ description: "s" }] },
+						{ name: "P2", goal: "g2", parallel_group: 2, steps: [{ description: "s" }] },
+						{ name: "P3", goal: "g3", parallel_group: 2, steps: [{ description: "s" }] },
+					],
+				},
+				ctx,
+			),
+		)
+		// P1 — loner group 1, collapsed
+		expect(result.phases[0].parallel).toBe(false)
+		expect(result.phases[0].groupIndex).toBeUndefined()
+		// P2, P3 — real cohort group 2, preserved
+		expect(result.phases[1].parallel).toBe(true)
+		expect(result.phases[1].groupIndex).toBe(2)
+		expect(result.phases[2].parallel).toBe(true)
+		expect(result.phases[2].groupIndex).toBe(2)
+	})
+
 	it("renames the ferment when title is provided", () => {
 		const result = expectOk(
 			applyCommand(makeFerment({ name: "Original" }), { type: "scope", title: "Renamed", goal: "G", phases: [] }, ctx),
@@ -164,6 +194,56 @@ describe("applyCommand: scope", () => {
 		applyCommand(f, { type: "scope", goal: "G", phases: [{ name: "P", goal: "g", steps: [] }] }, ctx)
 		expect(f.status).toBe("draft")
 		expect(f.phases).toEqual([])
+	})
+
+	it("scope command persists assumptions when provided", () => {
+		const result = expectOk(
+			applyCommand(
+				makeFerment(),
+				{
+					type: "scope",
+					goal: "g",
+					successCriteria: "sc",
+					constraints: ["c"],
+					assumptions: "k8s cluster exists",
+					phases: [{ name: "P1", goal: "g1", steps: [{ description: "s1" }] }],
+				},
+				ctx,
+			),
+		)
+		expect(result.scoping.assumptions?.answer).toBe("k8s cluster exists")
+		expect(result.scoping.assumptions?.confirmedAt).toBe(NOW)
+	})
+
+	it("scope command omits assumptions when not provided", () => {
+		const result = expectOk(
+			applyCommand(
+				makeFerment(),
+				{
+					type: "scope",
+					goal: "g",
+					phases: [{ name: "P1", goal: "g1", steps: [{ description: "s1" }] }],
+				},
+				ctx,
+			),
+		)
+		expect(result.scoping.assumptions).toBeUndefined()
+	})
+
+	it("scope command omits assumptions when empty string", () => {
+		const result = expectOk(
+			applyCommand(
+				makeFerment(),
+				{
+					type: "scope",
+					goal: "g",
+					assumptions: "",
+					phases: [{ name: "P1", goal: "g1", steps: [{ description: "s1" }] }],
+				},
+				ctx,
+			),
+		)
+		expect(result.scoping.assumptions).toBeUndefined()
 	})
 })
 
@@ -206,6 +286,27 @@ describe("applyCommand: update_scope_field", () => {
 			),
 		)
 		expect(error.code).toBe("INVALID_FIELD")
+	})
+
+	it("update_scope_field assumptions writes scoping.assumptions", () => {
+		// First scope the ferment so it is in "planned" state with no assumptions,
+		// then apply update_scope_field to write assumptions.
+		const scoped = expectOk(
+			applyCommand(
+				makeFerment(),
+				{
+					type: "scope",
+					goal: "g",
+					phases: [{ name: "P1", goal: "g1", steps: [{ description: "s1" }] }],
+				},
+				ctx,
+			),
+		)
+		const result = expectOk(
+			applyCommand(scoped, { type: "update_scope_field", field: "assumptions", value: "new assumption" }, ctx),
+		)
+		expect(result.scoping.assumptions?.answer).toBe("new assumption")
+		expect(result.scoping.assumptions?.confirmedAt).toBe(NOW)
 	})
 })
 
@@ -257,16 +358,37 @@ describe("applyCommand: activate_phase", () => {
 		expect(result.activePhaseId).toBe("phase-2")
 	})
 
-	it("rejects when phase is not in planned status", () => {
+	it("rejects when phase is not in planned or failed status", () => {
 		const f = makeFerment({
 			phases: [makePhase({ id: "phase-1", status: "completed" })],
 		})
 		const error = expectError(applyCommand(f, { type: "activate_phase", phaseId: "phase-1" }, ctx))
 		expect(error.code).toBe("PHASE_NOT_IN_STATUS")
 		if (error.code === "PHASE_NOT_IN_STATUS") {
-			expect(error.expected).toEqual(["planned"])
+			expect(error.expected).toEqual(["planned", "failed"])
 			expect(error.actual).toBe("completed")
 		}
+	})
+
+	it("reactivates a failed phase and clears stale terminal metadata", () => {
+		const f = makeFerment({
+			status: "planned",
+			phases: [
+				makePhase({
+					id: "phase-1",
+					status: "failed",
+					summary: "failed before",
+					completedAt: "2024-01-01T00:00:00.000Z",
+					grade: makeGrade("F"),
+				}),
+			],
+		})
+		const result = expectOk(applyCommand(f, { type: "activate_phase", phaseId: "phase-1" }, ctx))
+		expect(result.status).toBe("running")
+		expect(result.phases[0].status).toBe("active")
+		expect(result.phases[0].completedAt).toBeUndefined()
+		expect(result.phases[0].summary).toBeUndefined()
+		expect(result.phases[0].grade).toBeUndefined()
 	})
 
 	it("rejects when phase not found", () => {
@@ -340,30 +462,45 @@ describe("applyCommand: refine_phase", () => {
 					phaseId: "phase-1",
 					steps: [
 						{ description: "first" },
-						{ description: "second", verify: "test", needs_vision: true, can_run_parallel: true },
+						{ description: "second", verify: "test", parallel_group: 1 },
+						{ description: "third", parallel_group: 1 },
 					],
 				},
 				ctx,
 			),
 		)
-		expect(result.phases[0].steps).toHaveLength(2)
+		expect(result.phases[0].steps).toHaveLength(3)
 		expect(result.phases[0].steps[0]).toMatchObject({ id: "step-1", index: 1, status: "pending" })
 		expect(result.phases[0].steps[1]).toMatchObject({
 			id: "step-2",
 			index: 2,
-			needsVision: true,
-			workerModel: "kimi-k2.5",
-			canRunParallel: true,
+			parallel: true,
+			groupIndex: 1,
+		})
+		expect(result.phases[0].steps[2]).toMatchObject({
+			id: "step-3",
+			index: 3,
+			parallel: true,
+			groupIndex: 1,
 		})
 		expect(result.phases[0].steps[1].verification?.command).toBe("test")
 	})
 
-	it("defaults workerModel to minimax-m2.7 when needs_vision is false", () => {
+	it("collapses a singleton parallel_group step to sequential", () => {
 		const f = makeFerment({ phases: [makePhase({ status: "active" })] })
 		const result = expectOk(
-			applyCommand(f, { type: "refine_phase", phaseId: "phase-1", steps: [{ description: "x" }] }, ctx),
+			applyCommand(
+				f,
+				{
+					type: "refine_phase",
+					phaseId: "phase-1",
+					steps: [{ description: "lone", parallel_group: 1 }],
+				},
+				ctx,
+			),
 		)
-		expect(result.phases[0].steps[0].workerModel).toBe("minimax-m2.7")
+		expect(result.phases[0].steps[0]).toMatchObject({ parallel: false })
+		expect(result.phases[0].steps[0].groupIndex).toBeUndefined()
 	})
 
 	it("rejects when phase is not active", () => {
@@ -451,8 +588,8 @@ describe("applyCommand: start_step", () => {
 				makePhase({
 					status: "active",
 					steps: [
-						makeStep({ id: "step-1", status: "running", canRunParallel: false }),
-						makeStep({ id: "step-2", index: 2, status: "pending", canRunParallel: false }),
+						makeStep({ id: "step-1", status: "running", parallel: false }),
+						makeStep({ id: "step-2", index: 2, status: "pending", parallel: false }),
 					],
 				}),
 			],
@@ -464,20 +601,36 @@ describe("applyCommand: start_step", () => {
 		}
 	})
 
-	it("allows starting a parallel step when another parallel step is running", () => {
+	it("allows starting a step in the same parallel group as a running step", () => {
 		const f = makeFerment({
 			phases: [
 				makePhase({
 					status: "active",
 					steps: [
-						makeStep({ id: "step-1", status: "running", canRunParallel: true }),
-						makeStep({ id: "step-2", index: 2, status: "pending", canRunParallel: true }),
+						makeStep({ id: "step-1", status: "running", parallel: true, groupIndex: 1 }),
+						makeStep({ id: "step-2", index: 2, status: "pending", parallel: true, groupIndex: 1 }),
 					],
 				}),
 			],
 		})
 		const result = expectOk(applyCommand(f, { type: "start_step", phaseId: "phase-1", stepId: "step-2" }, ctx))
 		expect(result.phases[0].steps[1].status).toBe("running")
+	})
+
+	it("rejects starting a parallel step in a different group than the running one", () => {
+		const f = makeFerment({
+			phases: [
+				makePhase({
+					status: "active",
+					steps: [
+						makeStep({ id: "step-1", status: "running", parallel: true, groupIndex: 1 }),
+						makeStep({ id: "step-2", index: 2, status: "pending", parallel: true, groupIndex: 2 }),
+					],
+				}),
+			],
+		})
+		const error = expectError(applyCommand(f, { type: "start_step", phaseId: "phase-1", stepId: "step-2" }, ctx))
+		expect(error.code).toBe("CONCURRENT_NON_PARALLEL_STEP")
 	})
 
 	it("rejects unknown step", () => {
@@ -602,12 +755,54 @@ describe("applyCommand: fail_step", () => {
 describe("applyCommand: complete_phase", () => {
 	it("transitions active → completed", () => {
 		const f = makeFerment({
+			status: "running",
+			activePhaseId: "phase-1",
 			phases: [makePhase({ status: "active" })],
 		})
 		const result = expectOk(applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "done" }, ctx))
+		expect(result.status).toBe("planned")
+		expect(result.activePhaseId).toBeUndefined()
 		expect(result.phases[0].status).toBe("completed")
 		expect(result.phases[0].summary).toBe("done")
 		expect(result.phases[0].completedAt).toBe(NOW)
+	})
+
+	it("clears the completed active phase so the next planned phase can activate", () => {
+		const f = makeFerment({
+			status: "running",
+			activePhaseId: "phase-1",
+			phases: [
+				makePhase({ id: "phase-1", status: "active" }),
+				makePhase({ id: "phase-2", index: 2, name: "P2", status: "planned" }),
+			],
+		})
+
+		const completed = expectOk(applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "done" }, ctx))
+		expect(completed.status).toBe("planned")
+		expect(completed.activePhaseId).toBeUndefined()
+		expect(completed.phases[0].status).toBe("completed")
+
+		const activated = expectOk(applyCommand(completed, { type: "activate_phase", phaseId: "phase-2" }, ctx))
+		expect(activated.status).toBe("running")
+		expect(activated.activePhaseId).toBe("phase-2")
+		expect(activated.phases[1].status).toBe("active")
+	})
+
+	it("keeps running and selects another active phase when completing one parallel phase", () => {
+		const f = makeFerment({
+			status: "running",
+			activePhaseId: "phase-1",
+			phases: [
+				makePhase({ id: "phase-1", status: "active", groupIndex: 1 }),
+				makePhase({ id: "phase-2", index: 2, name: "P2", status: "active", groupIndex: 1 }),
+			],
+		})
+
+		const result = expectOk(applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "done" }, ctx))
+		expect(result.status).toBe("running")
+		expect(result.activePhaseId).toBe("phase-2")
+		expect(result.phases[0].status).toBe("completed")
+		expect(result.phases[1].status).toBe("active")
 	})
 
 	it("attaches grade when provided", () => {
@@ -623,6 +818,27 @@ describe("applyCommand: complete_phase", () => {
 		const f = makeFerment({ phases: [makePhase({ status: "planned" })] })
 		const error = expectError(applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "x" }, ctx))
 		expect(error.code).toBe("PHASE_NOT_IN_STATUS")
+	})
+
+	it("clears active phase state so the next planned phase can be activated", () => {
+		const f = makeFerment({
+			status: "running",
+			activePhaseId: "phase-1",
+			phases: [
+				makePhase({ id: "phase-1", index: 1, name: "Phase 1", status: "active" }),
+				makePhase({ id: "phase-2", index: 2, name: "Phase 2", status: "planned" }),
+			],
+		})
+
+		const completed = expectOk(applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "done" }, ctx))
+		expect(completed.phases[0].status).toBe("completed")
+		expect(completed.status).toBe("planned")
+		expect(completed.activePhaseId).toBeUndefined()
+
+		const activated = expectOk(applyCommand(completed, { type: "activate_phase", phaseId: "phase-2" }, ctx))
+		expect(activated.status).toBe("running")
+		expect(activated.activePhaseId).toBe("phase-2")
+		expect(activated.phases[1].status).toBe("active")
 	})
 })
 
@@ -641,14 +857,28 @@ describe("applyCommand: skip_phase", () => {
 		const result = expectOk(applyCommand(f, { type: "skip_phase", phaseId: "phase-1" }, ctx))
 		expect(result.phases[0].summary).toBe("Skipped")
 	})
+
+	it("clears active phase metadata when skipping the active phase", () => {
+		const f = makeFerment({
+			status: "running",
+			activePhaseId: "phase-1",
+			phases: [makePhase({ status: "active" })],
+		})
+		const result = expectOk(applyCommand(f, { type: "skip_phase", phaseId: "phase-1" }, ctx))
+		expect(result.status).toBe("planned")
+		expect(result.activePhaseId).toBeUndefined()
+		expect(result.phases[0].status).toBe("skipped")
+	})
 })
 
 // ─── fail_phase ───────────────────────────────────────────────────────────────
 
 describe("applyCommand: fail_phase", () => {
 	it("transitions to failed with reason", () => {
-		const f = makeFerment({ phases: [makePhase({ status: "active" })] })
+		const f = makeFerment({ status: "running", activePhaseId: "phase-1", phases: [makePhase({ status: "active" })] })
 		const result = expectOk(applyCommand(f, { type: "fail_phase", phaseId: "phase-1", reason: "tests failed" }, ctx))
+		expect(result.status).toBe("planned")
+		expect(result.activePhaseId).toBeUndefined()
 		expect(result.phases[0].status).toBe("failed")
 		expect(result.phases[0].summary).toBe("tests failed")
 	})
@@ -683,6 +913,22 @@ describe("applyCommand: complete_ferment", () => {
 		const result = expectOk(applyCommand(f, { type: "complete_ferment", grade }, ctx))
 		expect(result.grade).toEqual(grade)
 	})
+
+	it("completes explicitly after the final phase leaves the ferment planned", () => {
+		const f = makeFerment({
+			status: "running",
+			activePhaseId: "phase-1",
+			phases: [makePhase({ status: "active" })],
+		})
+
+		const phaseDone = expectOk(applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "done" }, ctx))
+		expect(phaseDone.status).toBe("planned")
+		expect(phaseDone.activePhaseId).toBeUndefined()
+		expect(phaseDone.phases.every((p) => p.status === "completed")).toBe(true)
+
+		const result = expectOk(applyCommand(phaseDone, { type: "complete_ferment" }, ctx))
+		expect(result.status).toBe("complete")
+	})
 })
 
 // ─── pause / resume ───────────────────────────────────────────────────────────
@@ -696,6 +942,47 @@ describe("applyCommand: pause", () => {
 	it("transitions planned → paused", () => {
 		const result = expectOk(applyCommand(makeFerment({ status: "planned" }), { type: "pause" }, ctx))
 		expect(result.status).toBe("paused")
+	})
+
+	it("resets running steps to pending on pause", () => {
+		const f = makeFerment({
+			status: "running",
+			activePhaseId: "phase-1",
+			phases: [
+				makePhase({
+					status: "active",
+					steps: [
+						makeStep({ id: "step-1", status: "running" }),
+						makeStep({ id: "step-2", index: 2, status: "pending" }),
+					],
+				}),
+			],
+		})
+		const result = expectOk(applyCommand(f, { type: "pause" }, ctx))
+		expect(result.status).toBe("paused")
+		expect(result.phases[0].steps[0].status).toBe("pending")
+		expect(result.phases[0].steps[1].status).toBe("pending")
+	})
+
+	it("resets running steps in parallel groups to pending on pause", () => {
+		const f = makeFerment({
+			status: "running",
+			activePhaseId: "phase-1",
+			phases: [
+				makePhase({
+					status: "active",
+					steps: [
+						makeStep({ id: "step-1", status: "running", parallel: true, groupIndex: 1 }),
+						makeStep({ id: "step-2", index: 2, status: "running", parallel: true, groupIndex: 1 }),
+						makeStep({ id: "step-3", index: 3, status: "done" }),
+					],
+				}),
+			],
+		})
+		const result = expectOk(applyCommand(f, { type: "pause" }, ctx))
+		expect(result.phases[0].steps[0].status).toBe("pending")
+		expect(result.phases[0].steps[1].status).toBe("pending")
+		expect(result.phases[0].steps[2].status).toBe("done")
 	})
 
 	it("rejects pause on draft", () => {
@@ -715,9 +1002,35 @@ describe("applyCommand: pause", () => {
 })
 
 describe("applyCommand: resume", () => {
-	it("transitions paused → running", () => {
-		const result = expectOk(applyCommand(makeFerment({ status: "paused" }), { type: "resume" }, ctx))
+	it("transitions paused with active phase → running", () => {
+		const result = expectOk(
+			applyCommand(
+				makeFerment({ status: "paused", activePhaseId: "phase-1", phases: [makePhase({ status: "active" })] }),
+				{ type: "resume" },
+				ctx,
+			),
+		)
 		expect(result.status).toBe("running")
+		expect(result.activePhaseId).toBe("phase-1")
+	})
+
+	it("transitions paused between phases → planned", () => {
+		const result = expectOk(
+			applyCommand(
+				makeFerment({
+					status: "paused",
+					activePhaseId: "phase-1",
+					phases: [
+						makePhase({ id: "phase-1", status: "completed" }),
+						makePhase({ id: "phase-2", index: 2, name: "P2", status: "planned" }),
+					],
+				}),
+				{ type: "resume" },
+				ctx,
+			),
+		)
+		expect(result.status).toBe("planned")
+		expect(result.activePhaseId).toBeUndefined()
 	})
 
 	it("rejects resume from running", () => {

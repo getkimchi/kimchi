@@ -4,7 +4,6 @@ import { join } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
-import type { JudgeGrade } from "../../../ferment/types.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
 import { clearAllStepStarts } from "../state.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
@@ -16,8 +15,6 @@ import {
 	registerStepTools,
 	startStep,
 } from "./steps.js"
-
-const gradeA: JudgeGrade = { grade: "A", rationale: "solid", gradedAt: "2026-01-01T00:00:00.000Z" }
 
 interface RegisteredTool {
 	name: string
@@ -34,7 +31,7 @@ function errText(result: { content: { text: string }[]; isError?: boolean }): st
 	return result.content.map((c) => c.text).join("\n")
 }
 
-function createHarness(options: { verification?: string } = {}) {
+function createHarness(options: { verification?: string; goal?: string; successCriteria?: string } = {}) {
 	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-steps-test-")))
 	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
 	const applyAndPersist = createApplyAndPersist(runtime)
@@ -42,15 +39,20 @@ function createHarness(options: { verification?: string } = {}) {
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		appendEntry: vi.fn(),
-		getActiveTools: vi.fn(() => ["read", "bash", "start_step", "complete_step"]),
-		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "start_step" }, { name: "complete_step" }]),
+		getActiveTools: vi.fn(() => ["read", "bash", "start_ferment_step", "complete_ferment_step"]),
+		getAllTools: vi.fn(() => [
+			{ name: "read" },
+			{ name: "bash" },
+			{ name: "start_ferment_step" },
+			{ name: "complete_ferment_step" },
+		]),
 		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
 	const ferment = storage.create("Step Test")
 	const scope = applyAndPersist(ferment.id, {
 		type: "scope",
-		goal: "Goal",
-		successCriteria: "Works",
+		goal: options.goal ?? "Goal",
+		successCriteria: options.successCriteria ?? "Works",
 		constraints: [],
 		phases: [
 			{
@@ -76,7 +78,6 @@ function createServices(overrides: Partial<StepHandlerServices> = {}): StepHandl
 	return {
 		captureGitHead: vi.fn(() => undefined),
 		gatherEvidence: vi.fn(() => undefined),
-		judgeGradeStep: vi.fn(async () => gradeA),
 		judgeStepVerification: vi.fn(async () => ({ verdict: "fail" as const, reason: "broken" })),
 		onStepCompleted: vi.fn(),
 		buildWorkerContext: vi.fn(() => "worker context"),
@@ -84,6 +85,13 @@ function createServices(overrides: Partial<StepHandlerServices> = {}): StepHandl
 		...overrides,
 	}
 }
+
+/** Helper: a complete, all-pass step-scope gate verdict set. */
+const passingStepGates = () => [
+	{ id: "S1", verdict: "pass" as const, rationale: "Summary cites edited file.", evidence: "first.ts:1-10" },
+	{ id: "S2", verdict: "pass" as const, rationale: "Verify command runs the artifact.", evidence: "pnpm test" },
+	{ id: "S3", verdict: "pass" as const, rationale: "Empty input handled.", evidence: "throws TypeError; covered" },
+]
 
 beforeEach(() => {
 	clearAllStepStarts()
@@ -102,9 +110,32 @@ describe("startStep", () => {
 			services,
 		)
 
-		expect(okText(result)).toContain("First step")
+		const text = okText(result)
+		expect(text).toContain("First step")
+		expect(text).not.toContain("worker_model:")
+		expect(text).not.toMatch(/model "kimchi-dev/)
 		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("running")
 		expect(h.runtime.getStepStartRef(h.fermentId, "phase-1", "step-1")).toBe("abc123")
+	})
+
+	it("includes fixed output paths from scoping in the worker prompt handoff", async () => {
+		const h = createHarness({
+			goal: "Write /app/jump_analyzer.py and store the TOML output in /app/output.toml",
+			successCriteria: "Running on /app/example_video.mp4 produces /app/output.toml",
+		})
+		const services = createServices({ buildWorkerContext: defaultStepHandlerServices.buildWorkerContext })
+
+		const result = await startStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+			{ pi: h.pi },
+			services,
+		)
+
+		const text = okText(result)
+		expect(text).toContain("Ferment goal:")
+		expect(text).toContain("/app/output.toml")
+		expect(text).toContain("do NOT remove, summarize, or contradict the context block")
 	})
 
 	it("maps concurrent non-parallel starts to the existing tool error", async () => {
@@ -156,7 +187,7 @@ describe("startStep", () => {
 		)
 		expect(okText(pauseResult)).toContain("paused")
 		expect(pauseHarness.storage.get(pauseHarness.fermentId)?.status).toBe("paused")
-		expect(pauseHarness.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(pauseHarness.pi.setActiveTools).not.toHaveBeenCalled()
 
 		const skipHarness = createHarness()
 		const skipServices = createServices()
@@ -175,7 +206,7 @@ describe("startStep", () => {
 })
 
 describe("registerStepTools", () => {
-	it("registers start_step against the injected runtime storage", async () => {
+	it("registers start_ferment_step against the injected runtime storage", async () => {
 		const h = createHarness()
 		const tools = new Map<string, RegisteredTool>()
 		const pi = {
@@ -188,8 +219,8 @@ describe("registerStepTools", () => {
 		} as unknown as ExtensionAPI
 		registerStepTools(pi, h.runtime)
 
-		const startTool = tools.get("start_step")
-		if (!startTool) throw new Error("start_step was not registered")
+		const startTool = tools.get("start_ferment_step")
+		if (!startTool) throw new Error("start_ferment_step was not registered")
 		const result = (await startTool.execute("test-call-id", {
 			ferment_id: h.fermentId,
 			phase_id: "phase-1",
@@ -202,7 +233,7 @@ describe("registerStepTools", () => {
 })
 
 describe("completeStep", () => {
-	it("completes and grades a step without verification", async () => {
+	it("completes a step without verification when all gates pass", async () => {
 		const h = createHarness()
 		const services = createServices()
 		const start = h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
@@ -210,18 +241,23 @@ describe("completeStep", () => {
 
 		const result = await completeStep(
 			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1", summary: "done" },
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-1",
+				summary: "done",
+				gates: passingStepGates(),
+			},
 			{ pi: h.pi },
 			services,
 		)
 
-		expect(okText(result)).toContain("Grade: A")
+		expect(okText(result)).toContain("done")
 		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("done")
-		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].grade?.grade).toBe("A")
 		expect(services.onStepCompleted).toHaveBeenCalled()
 	})
 
-	it("records verification success and grades the step", async () => {
+	it("records verification success silently when all gates pass", async () => {
 		const h = createHarness({ verification: "pnpm test" })
 		h.runtime.nowIso = () => "2026-05-11T12:34:56.000Z"
 		const services = createServices({
@@ -232,7 +268,13 @@ describe("completeStep", () => {
 
 		const result = await completeStep(
 			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1", summary: "done" },
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-1",
+				summary: "done",
+				gates: passingStepGates(),
+			},
 			{ pi: h.pi },
 			services,
 		)
@@ -240,15 +282,64 @@ describe("completeStep", () => {
 		expect(okText(result)).toContain("verified")
 		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("verified")
 		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].result?.completedAt).toBe("2026-05-11T12:34:56.000Z")
-		expect(services.judgeGradeStep).toHaveBeenCalledWith(
-			"First step",
-			"done",
-			expect.objectContaining({ exitCode: 0 }),
-			undefined,
-		)
+		// No LLM grading call exists anymore on the verify-success path.
+		expect(services.judgeStepVerification).not.toHaveBeenCalled()
 	})
 
-	it("grades success when judge accepts a non-zero verification", async () => {
+	it("refuses step completion when the agent self-flags on a step gate", async () => {
+		const h = createHarness()
+		const services = createServices()
+		const start = h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+		if (!start.ok) throw new Error(start.error.message)
+
+		const flaggedGates = [
+			{
+				id: "S1",
+				verdict: "flag" as const,
+				rationale: "Summary mentions /app/cancel.py but diff only touches first.ts.",
+				evidence: "summary vs diff mismatch",
+			},
+			{ id: "S2", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+			{ id: "S3", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+		]
+
+		const result = await completeStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1", summary: "done", gates: flaggedGates },
+			{ pi: h.pi },
+			services,
+		)
+
+		expect(errText(result)).toContain("Gate S1")
+		expect(errText(result)).toContain("cancel.py")
+		// Step must NOT be marked done.
+		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("running")
+		// onStepCompleted should NOT fire on a refused completion.
+		expect(services.onStepCompleted).not.toHaveBeenCalled()
+	})
+
+	it("rejects the call with a clear error when gate coverage is incomplete", async () => {
+		const h = createHarness()
+		const services = createServices()
+		const start = h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+		if (!start.ok) throw new Error(start.error.message)
+
+		const incomplete = [{ id: "S1", verdict: "pass" as const, rationale: "ok", evidence: "n/a" }]
+
+		const result = await completeStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1", summary: "done", gates: incomplete },
+			{ pi: h.pi },
+			services,
+		)
+
+		expect(errText(result)).toContain("missing required gate verdicts")
+		expect(errText(result)).toContain("S2")
+		expect(errText(result)).toContain("S3")
+		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("running")
+	})
+
+	it("treats a tactical judge 'pass' verdict as success on non-zero verify exit", async () => {
 		const h = createHarness({ verification: "grep expected" })
 		const services = createServices({
 			runVerification: vi.fn(async () => ({ exitCode: 1, stdout: "", stderr: "no match" })),
@@ -259,17 +350,22 @@ describe("completeStep", () => {
 
 		const result = await completeStep(
 			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1", summary: "done" },
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-1",
+				summary: "done",
+				gates: passingStepGates(),
+			},
 			{ pi: h.pi },
 			services,
 		)
 
 		expect(okText(result)).toContain("Judge: acceptable")
 		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("done")
-		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].grade?.grade).toBe("A")
 	})
 
-	it("fails the step when judge asks for retry or fail", async () => {
+	it("fails the step when judge asks for retry or fail on non-zero verify exit", async () => {
 		for (const verdict of ["retry", "fail"] as const) {
 			const h = createHarness({ verification: "pnpm test" })
 			const services = createServices({
@@ -281,7 +377,13 @@ describe("completeStep", () => {
 
 			const result = await completeStep(
 				h.runtime,
-				{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1", summary: "done" },
+				{
+					ferment_id: h.fermentId,
+					phase_id: "phase-1",
+					step_id: "step-1",
+					summary: "done",
+					gates: passingStepGates(),
+				},
 				{ pi: h.pi },
 				services,
 			)
@@ -299,7 +401,13 @@ describe("completeStep", () => {
 
 		const result = await completeStep(
 			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1", summary: "done" },
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-1",
+				summary: "done",
+				gates: passingStepGates(),
+			},
 			{ pi: h.pi, ctx: {} },
 			services,
 		)

@@ -43,12 +43,12 @@
 		"userMessageBg": "teal-900",
 		"userMessageText": "white-100",
 		"customMessageBg": "grey-700",
-		"customMessageText": "",
+		"customMessageText": "grey-400",
 		"customMessageLabel": "purple-400",
 		"toolPendingBg": "grey-900",
 		"toolSuccessBg": "grey-900",
 		"toolErrorBg": "red-950",
-		"toolTitle": "",
+		"toolTitle": "grey-400",
 		"toolOutput": "grey-400",
 		"mdHeading": "orange-500",
 		"mdLink": "purple-400",
@@ -78,7 +78,9 @@
 		"thinkingMedium": "purple-400",
 		"thinkingHigh": "cyan-500",
 		"thinkingXhigh": "orange-500",
-		"bashMode": "lime-500"
+		"bashMode": "lime-500",
+		"oscFg": "#A1A1A1",
+		"oscBg": "#1A1818"
 	},
 	"export": {
 		"pageBg": "#1A1818",

@@ -10,6 +10,8 @@ export interface PromptExtras {
 	memoryBlock?: string
 	/** Preloaded skill contents to inject. */
 	skillBlocks?: { name: string; content: string }[]
+	/** Model-specific phase guidelines resolved from the model registry. */
+	guidelinesBlock?: string
 }
 
 /**
@@ -33,6 +35,9 @@ Platform: ${env.platform}`
 
 	// Build optional extras suffix
 	const extraSections: string[] = []
+	if (extras?.guidelinesBlock) {
+		extraSections.push(extras.guidelinesBlock)
+	}
 	if (extras?.memoryBlock) {
 		extraSections.push(extras.memoryBlock)
 	}

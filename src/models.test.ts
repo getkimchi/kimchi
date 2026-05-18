@@ -77,6 +77,7 @@ describe("updateModelsConfig", () => {
 				contextWindow: 262144,
 				maxTokens: 262144,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				provider: "ai-enabler",
 			},
 		])
 	})
@@ -159,8 +160,8 @@ describe("updateModelsConfig", () => {
 		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5", "glm-5-fp8"])
 	})
 
-	it("overwrites an existing models.json with fetched metadata", async () => {
-		writeFileSync(modelsJsonPath, JSON.stringify({ providers: { custom: {} } }))
+	it("preserves user-added providers when updating models.json", async () => {
+		writeFileSync(modelsJsonPath, JSON.stringify({ providers: { custom: { models: [] } } }))
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI] }),
@@ -170,6 +171,7 @@ describe("updateModelsConfig", () => {
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
 		expect(config.providers["kimchi-dev"].models.map((m: { id: string }) => m.id)).toEqual(["kimi-k2.5"])
+		expect(config.providers.custom).toEqual({ models: [] })
 	})
 
 	it("throws on fetch failure when no cached config exists", async () => {

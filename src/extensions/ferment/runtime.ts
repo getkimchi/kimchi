@@ -1,27 +1,30 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import type { FermentEventStore } from "../../ferment/event-store.js"
-import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
-import type { PendingScope } from "./scoping.js"
+import type { AttachPendingProposalPartial, PendingScope } from "./scoping.js"
 import {
-	attachPendingPhases,
+	attachPendingProposal,
 	clearAllPendingScopes,
 	clearPendingScope,
 	getPendingScope,
 	setPendingScope,
 } from "./scoping.js"
 import {
+	bumpBlockRetry,
+	bumpStepCompleteAttempt,
 	bumpStepStart,
 	captureJudgeContext,
 	clearAllScopingGates,
 	clearAllStepStarts,
+	clearBlockRetry,
 	clearFermentState,
+	clearStepCompleteAttempt,
 	clearStepStart,
 	consumeScopingGate,
 	getActive,
 	getActiveId,
-	getCorrectiveStep,
+	getBlockRetry,
 	getLastHumanInputAt,
 	getPhaseStartRef,
 	getStepStartRef,
@@ -32,9 +35,9 @@ import {
 	markHumanInput,
 	markScopingConfirmed,
 	markScopingInteractive,
+	recordBlockHashAndCheckRepeat,
 	setActive,
 	setAutoModeEnabled,
-	setCorrectiveStep,
 	setPhaseStartRef,
 	setStepStartRef,
 } from "./state.js"
@@ -60,17 +63,21 @@ export interface FermentRuntime {
 	isScopingConfirmed(fermentId: string): boolean
 	consumeScopingGate(fermentId: string): void
 	clearAllScopingGates(): void
-	setCorrectiveStep(fermentId: string, phaseId: string, step: string): void
-	getCorrectiveStep(fermentId: string, phaseId: string): string | undefined
 	getPendingScope(fermentId: string): PendingScope | undefined
 	setPendingScope(fermentId: string, scope: PendingScope): void
-	attachPendingPhases(fermentId: string, phases: ScopePhaseInput[]): boolean
+	attachPendingProposal(fermentId: string, partial: AttachPendingProposalPartial): boolean
 	clearPendingScope(fermentId: string): void
 	clearAllPendingScopes(): void
 	setPhaseStartRef(fermentId: string, phaseId: string, ref: string): void
 	getPhaseStartRef(fermentId: string, phaseId: string): string | undefined
 	setStepStartRef(fermentId: string, phaseId: string, stepId: string, ref: string): void
 	getStepStartRef(fermentId: string, phaseId: string, stepId: string): string | undefined
+	bumpBlockRetry(fermentId: string, phaseId: string): number
+	getBlockRetry(fermentId: string, phaseId: string): number
+	clearBlockRetry(fermentId: string, phaseId: string): void
+	recordBlockHashAndCheckRepeat(fermentId: string, phaseId: string, hash: string): boolean
+	bumpStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): number
+	clearStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): void
 	clearFermentState(fermentId: string): void
 }
 
@@ -96,17 +103,21 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		isScopingConfirmed,
 		consumeScopingGate,
 		clearAllScopingGates,
-		setCorrectiveStep,
-		getCorrectiveStep,
 		getPendingScope,
 		setPendingScope,
-		attachPendingPhases,
+		attachPendingProposal,
 		clearPendingScope,
 		clearAllPendingScopes,
 		setPhaseStartRef,
 		getPhaseStartRef,
 		setStepStartRef,
 		getStepStartRef,
+		bumpBlockRetry,
+		getBlockRetry,
+		clearBlockRetry,
+		recordBlockHashAndCheckRepeat,
+		bumpStepCompleteAttempt,
+		clearStepCompleteAttempt,
 		clearFermentState,
 	}
 }

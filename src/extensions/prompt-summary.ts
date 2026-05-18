@@ -2,7 +2,7 @@ import type { AssistantMessage, Usage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { formatCount } from "./format.js"
-import { isSubagent } from "./orchestration/prompt-transformer/prompt-transformer.js"
+import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
 
 interface UsageTotals {
 	input: number

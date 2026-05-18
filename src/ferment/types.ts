@@ -27,6 +27,18 @@ export interface ScopingAnswer {
 	confirmedAt: string
 }
 
+export interface ScopingQuestionOption {
+	id: string
+	label: string
+	recommended?: boolean
+}
+
+export interface ScopingQuestion {
+	id: string
+	text: string
+	options: ScopingQuestionOption[]
+}
+
 export interface Scoping {
 	/** The goal that was collected and confirmed */
 	goal?: ScopingAnswer
@@ -36,6 +48,8 @@ export interface Scoping {
 	constraints?: ScopingAnswer
 	/** Whether phases have been proposed/accepted */
 	phases?: ScopingAnswer
+	/** Assumptions the team is operating under (optional) */
+	assumptions?: ScopingAnswer
 }
 
 export interface Ferment {
@@ -111,17 +125,33 @@ export interface JudgeGrade {
 	rationale: string
 	gradedAt: string
 	deltas?: Delta[]
-	/** True when the judge was unreachable or returned unparseable output. The
-	 *  grade field still carries a placeholder ("B") so legacy consumers don't
-	 *  break, but stats and self-improve loop must check this flag first and
-	 *  skip the entry when set — otherwise judge outages look like a string of
-	 *  B grades and the loop never adapts. */
+	/** True when the journey-grade judge was unreachable or returned
+	 *  unparseable output at complete_ferment and the user authorized an
+	 *  ungraded ship. The grade field carries a placeholder ("B") so legacy
+	 *  consumers don't break, but stats should check this flag first and
+	 *  skip the entry when set — otherwise judge outages look like a string
+	 *  of B grades. */
 	unavailable?: boolean
 }
 
 // ─── Step / Level 2 (replaces RecipeStep) ─────────────────────────────────────
 
 export type StepStatus = "pending" | "running" | "done" | "skipped" | "verified" | "failed"
+
+/** True when both items are members of the same non-singleton parallel group.
+ *  Shared by the transition state machine (Step) and the FSM (StepContext)
+ *  since both carry the same parallel/groupIndex pair.
+ *
+ *  Set `KIMCHI_FERMENT_DISABLE_PARALLEL=1` to globally collapse all parallel
+ *  cohorts back to sequential execution — useful when investigating issues
+ *  that might stem from concurrency. */
+export function inSameParallelCohort(
+	a: { parallel?: boolean; groupIndex?: number },
+	b: { parallel?: boolean; groupIndex?: number },
+): boolean {
+	if (process.env.KIMCHI_FERMENT_DISABLE_PARALLEL === "1") return false
+	return !!a.parallel && !!b.parallel && a.groupIndex !== undefined && a.groupIndex === b.groupIndex
+}
 
 export interface Step {
 	id: string
@@ -132,12 +162,11 @@ export interface Step {
 	startedAt?: string
 	completedAt?: string
 
-	/** Worker model to use when spawning a subagent for this step. */
-	workerModel?: "minimax-m2.7" | "kimi-k2.5"
-	/** Whether this step requires vision (images/screenshots). Determines worker model selection. */
-	needsVision?: boolean
-	/** Whether this step can run in parallel with other canRunParallel steps in the same phase. */
-	canRunParallel?: boolean
+	// Parallel execution — symmetric with Phase. Steps that share groupIndex
+	// inside the same phase run concurrently; `parallel` is the derived "this
+	// step is a member of a cohort of size ≥ 2" flag.
+	parallel?: boolean
+	groupIndex?: number
 
 	verification?: Verification
 	result?: StepResult // populated on completion/verification

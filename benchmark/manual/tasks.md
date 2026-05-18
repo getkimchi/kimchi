@@ -23,7 +23,29 @@ Requirements:
 
 ---
 
-## Task 2 — Complex coding: Go REST API Task Management
+## Task 2 — Simple coding with model switching: Go HTTP Rate Limiter Middleware
+
+**Not included in run-all.sh** — run separately via `run-simple-model-switching-<model>.sh`.
+
+**Prompt:**
+```
+Implement a Go HTTP middleware that rate-limits requests per client IP using a token bucket algorithm.
+Requirements:
+- Each IP gets 10 requests per second
+- Respond with HTTP 429 when limit is exceeded
+- Thread-safe implementation
+- Put the code in directory: rate-limiter/
+- Include a README.md explaining usage
+- Switch the main model to another available model in the kimchi-dev provider every time you change the phase. Use the /model command or the model switching capability to do this.
+```
+
+**Expected:** single subagent, light/standard model, <5 min, tests included, no external deps, model switches observed in session logs.
+
+**Baseline (Claude):** token bucket via sync.Map + per-bucket mutex, cleanup goroutine, net.SplitHostPort for IP, map-based tests, no comments, model cycled through all available models.
+
+---
+
+## Task 3 — Complex coding: Go REST API Task Management
 
 **Prompt:**
 ```
@@ -44,7 +66,7 @@ Requirements:
 
 ---
 
-## Task 3 — Research query: Most popular Go HTTP router libraries
+## Task 4 — Research query: Most popular Go HTTP router libraries
 
 **Prompt:**
 ```
@@ -61,7 +83,7 @@ List the top 3 with: GitHub stars (approximate), key differentiators, and a one-
 
 ---
 
-## Task 4 — Mega coding: Go Concurrent Build System
+## Task 5 — Mega coding: Go Concurrent Build System
 
 **Not included in run-all.sh** — run separately via `run-mega-<model>.sh`.
 
@@ -90,5 +112,43 @@ Requirements:
 **Expected:** plan phase (heavy model) + multiple implementation subagents, 3–6 subagents, <15 min, clean package separation, comprehensive tests, stdlib only.
 
 **Baseline (Claude):** parser package (line-by-line state machine), graph package (Kahn's algorithm for topo sort, DFS for cycle detection), engine package (worker pool with channels, context cancellation, SIGINT trap), cli package (flag parsing), main.go wiring. Map-based tests covering: empty buildfile, single target, diamond dependencies, direct cycle, indirect cycle, malformed indentation, partial-target build, fail-fast propagation.
+
+---
+
+## Task 5 — Explore + refactor: Add input validation to existing Go API
+
+**Seed project:** `benchmark/manual/seeds/explore-refactor/` — a Go HTTP user-management API (~850 lines, 13 files) with layered architecture (handler -> service -> repository). Multiple handlers have intentional missing input validation.
+
+**Prompt:**
+```
+The directory $DIR/usermgmt/ contains an existing Go HTTP API for user and team management.
+Explore the codebase, find all HTTP handlers that are missing input validation, and fix them.
+Requirements:
+- First explore the entire codebase to build a map of all handlers and their validation status.
+- Write a plan listing every handler endpoint, what validation is missing, and what you will add.
+- Implement the validation fixes. Specific issues to find and fix:
+  - Handlers that accept arbitrary strings for fields with a fixed set of valid values (e.g. roles)
+  - Handlers that accept zero or negative integers for fields that must be positive
+  - Handlers that accept empty strings for required fields at the HTTP layer (even if the service layer also checks)
+  - Search/filter endpoints with no length limit on query parameters
+  - Pagination parameters with no bounds checking (negative offsets, excessively large limits)
+- Add unit tests for the validation logic using map-based test cases.
+- Do not change the project structure or add external dependencies.
+```
+
+**Expected:** explore phase (light model) + plan phase (heavy model) + build phase (standard model), 2–4 subagents, <10 min, all validation gaps found and fixed, tests added.
+
+**Baseline (Claude):**
+Validation gaps in the seed project:
+1. `PATCH /users/{id}/role` — accepts any string as role (should be one of: admin, member, viewer)
+2. `PATCH /users/{id}/team` — accepts empty team_id
+3. `GET /users/search` — no length limit on `q` parameter
+4. `POST /teams` — max_members can be 0 or negative
+5. `PUT /teams/{id}` — name can be empty, max_members can be negative
+6. `POST /invitations` — email can be empty or malformed, role is arbitrary
+7. `GET /invitations` — empty team_id returns empty list without error
+8. `GET /audit` — offset/limit have no bounds checking (negative values, huge limits)
+
+Expected fixes: validate role against allowed set, require non-empty team_id, cap search query length, enforce positive max_members, require non-empty name on update, validate email format, require team_id on invitation list, clamp offset/limit to valid ranges. Handler-level tests with map-based test cases covering valid and invalid inputs.
 
 ---

@@ -1,0 +1,28 @@
+Kimchi
+Copyright 2024-2026 CAST AI Group, Inc.
+
+Kimchi is an open-source project stewarded by CAST AI Group, Inc. (https://cast.ai).
+
+================================================================================
+THIRD-PARTY COMPONENTS
+================================================================================
+
+This project bundles or references the following third-party software under
+their respective licenses:
+
+1. mcp-adapter
+   Location: src/extensions/mcp-adapter/
+   License: MIT
+   Copyright (c) 2026 Nico Bailon
+
+2. marked
+   Location: src/core/export-html/vendor/marked.min.js
+   License: MIT
+   Copyright (c) 2011-2024, Christopher Jeffrey
+   https://github.com/markedjs/marked
+
+3. Pi coding agent SDK
+   Location: npm dependency (pi packages)
+   License: MIT
+   Copyright (c) 2024-2025 Mario Zechner (Earendil Works)
+   https://github.com/earendil-works/pi

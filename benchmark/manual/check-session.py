@@ -24,7 +24,7 @@ from pathlib import Path
 IMPROVEMENT_DIR = Path(__file__).parent
 SESSIONS_DIR = IMPROVEMENT_DIR / "sessions"
 
-INACTIVITY_THRESHOLD_S = 180  # 3 minutes with no log writes → stalled
+INACTIVITY_THRESHOLD_S = 1800  # 30 minutes
 
 
 def check_jsonl(path: Path) -> dict:
@@ -78,6 +78,13 @@ def find_latest_jsonl(run_dir: Path) -> Path | None:
     return jsonls[-1] if jsonls else None
 
 
+def is_session_arg(arg: str) -> bool:
+    """Return True if arg looks like a session identifier (digits or existing dir name)."""
+    if arg.isdigit():
+        return True
+    return (SESSIONS_DIR / arg).is_dir()
+
+
 def resolve_session(arg: str) -> Path:
     if arg.isdigit():
         return SESSIONS_DIR / f"session-{int(arg):02d}"
@@ -85,9 +92,30 @@ def resolve_session(arg: str) -> Path:
 
 
 def main():
-    if len(sys.argv) >= 2:
-        session_dir = resolve_session(sys.argv[1])
-    else:
+    args = sys.argv[1:]
+
+    # Determine session and task filters
+    session_dir = None
+    task_filters: list[str] = []
+
+    if args:
+        # Collect leading args that look like session identifiers
+        session_args: list[str] = []
+        for arg in args:
+            if is_session_arg(arg):
+                session_args.append(arg)
+            else:
+                break
+
+        if session_args:
+            # Last session arg wins; rest are task filters
+            session_dir = resolve_session(session_args[-1])
+            task_filters = args[len(session_args):]
+        else:
+            # No session arg found — all args are task filters; use latest session
+            task_filters = args
+
+    if session_dir is None:
         sessions = sorted(
             (d for d in SESSIONS_DIR.iterdir() if d.is_dir() and d.name.startswith("session-")),
             key=lambda d: d.name,
@@ -106,6 +134,18 @@ def main():
     if not run_dirs:
         print(f"No run directories in {runs_dir}", file=sys.stderr)
         sys.exit(2)
+
+    total_runs = len(run_dirs)
+
+    # Filter runs by task substrings (case-insensitive)
+    if task_filters:
+        run_dirs = [
+            d for d in run_dirs
+            if any(f.lower() in d.name.lower() for f in task_filters)
+        ]
+        if not run_dirs:
+            print("No runs matched the provided task filters.", file=sys.stderr)
+            sys.exit(2)
 
     results = {}
     for run_dir in run_dirs:
@@ -153,7 +193,11 @@ def main():
 
     total = len(results)
     print()
-    print(f"Total: {total}  Done: {finished}  Stalled: {stalled}  In progress: {in_progress}  No log: {no_log}")
+    if task_filters:
+        print(f"Showing {len(results)} of {total_runs} runs (filter: {', '.join(task_filters)})")
+        print(f"Total: {len(results)}  Done: {finished}  Stalled: {stalled}  In progress: {in_progress}  No log: {no_log}")
+    else:
+        print(f"Total: {total}  Done: {finished}  Stalled: {stalled}  In progress: {in_progress}  No log: {no_log}")
 
     all_done = finished + stalled == total and in_progress == 0 and no_log == 0
     if all_done:

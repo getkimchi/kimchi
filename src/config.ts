@@ -12,6 +12,10 @@ export const ALWAYS_SHOWN_SKILL_PATHS = [join(".config", "kimchi", "harness", "s
 
 export const OPTIONAL_SKILL_PATHS = [join(".pi", "agent", "skills"), join(".claude", "skills")]
 
+export const envConfig = {
+	KIMCHI_WEB_APP_URL: process.env.KIMCHI_WEB_APP_URL ?? "https://app.kimchi.dev",
+}
+
 export const DEFAULT_SKILL_PATHS = [...ALWAYS_SHOWN_SKILL_PATHS, ...OPTIONAL_SKILL_PATHS]
 
 export function buildSkillPathOptions(discoveredDirs: string[]): string[] {
@@ -99,6 +103,8 @@ export function readApiKeyFromConfigFile(configPath: string = KIMCHI_CONFIG_PATH
 }
 
 function readConfigExtras(configPath: string): {
+	apiKey?: string
+	llmEndpoint?: string
 	maxToolResultChars?: number
 	mcpSearchLimit?: number
 	mcpSearch?: Partial<SearchStrategyConfig>
@@ -149,7 +155,19 @@ function readConfigExtras(configPath: string): {
 			parsed.migrationState === "done" || parsed.migrationState === "skip-forever"
 				? (parsed.migrationState as MigrationState)
 				: undefined
-		return { maxToolResultChars, mcpSearchLimit, mcpSearch, skillPaths, migrationState }
+		// Read apiKey (prefer camelCase, fall back to snake_case)
+		let apiKey: string | undefined
+		if (typeof parsed.apiKey === "string" && parsed.apiKey.length > 0) {
+			apiKey = parsed.apiKey
+		} else if (typeof parsed.api_key === "string" && parsed.api_key.length > 0) {
+			apiKey = parsed.api_key
+		}
+
+		// Read llmEndpoint
+		const llmEndpoint =
+			typeof parsed.llmEndpoint === "string" && parsed.llmEndpoint.length > 0 ? parsed.llmEndpoint : undefined
+
+		return { apiKey, llmEndpoint, maxToolResultChars, mcpSearchLimit, mcpSearch, skillPaths, migrationState }
 	} catch {
 		return {}
 	}
@@ -221,27 +239,44 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 /**
  * Load the kimchi configuration.
  *
- * API key resolution order:
+ * Config precedence (highest to lowest):
  *   1. KIMCHI_API_KEY environment variable (highest precedence)
- *   2. ~/.config/kimchi/config.json field "APIKey"
+ *   2. Project .kimchi/config.json (if cwd provided)
+ *   3. Global ~/.config/kimchi/config.json
  *
- * Throws if no API key is found in either location.
+ * For mcpSearch, a shallow merge is performed: project config overrides
+ * individual keys, but global fills in any missing keys.
+ * For all other fields, project config completely replaces global.
+ *
+ * Returns `apiKey: ""` when no API key is present in either config file.
  */
-export function loadConfig(options?: { configPath?: string }): KimchiConfig {
-	const configPath = options?.configPath ?? KIMCHI_CONFIG_PATH
-	const extras = readConfigExtras(configPath)
-	const maxToolResultChars = extras.maxToolResultChars ?? 10_000
-	const mcpSearchLimit = extras.mcpSearchLimit ?? 5
-	const mcpSearch: SearchStrategyConfig = { ...SEARCH_STRATEGY_DEFAULTS, ...extras.mcpSearch }
+export function loadConfig(options?: { configPath?: string; cwd?: string }): KimchiConfig {
+	// Read global config
+	const globalConfigPath = options?.configPath ?? KIMCHI_CONFIG_PATH
+	const globalExtras = readConfigExtras(globalConfigPath)
 
-	const fileKey = readApiKeyFromConfigFile(configPath)
+	// Read project-level config
+	const projectPath = resolve(options?.cwd ?? process.cwd(), ".kimchi", "config.json")
+	const projectExtras = readConfigExtras(projectPath)
+
+	// Merge: project wins for scalars; shallow merge for mcpSearch
+	const extras = {
+		apiKey: projectExtras.apiKey ?? globalExtras.apiKey,
+		llmEndpoint: projectExtras.llmEndpoint ?? globalExtras.llmEndpoint,
+		maxToolResultChars: projectExtras.maxToolResultChars ?? globalExtras.maxToolResultChars,
+		mcpSearchLimit: projectExtras.mcpSearchLimit ?? globalExtras.mcpSearchLimit,
+		mcpSearch: { ...globalExtras.mcpSearch, ...projectExtras.mcpSearch },
+		skillPaths: projectExtras.skillPaths ?? globalExtras.skillPaths,
+		migrationState: projectExtras.migrationState ?? globalExtras.migrationState,
+	}
+
 	return {
-		apiKey: fileKey ?? "",
+		apiKey: extras.apiKey ?? "",
 		agentConfigDir: AGENT_CONFIG_DIR,
-		llmEndpoint: CAST_AI_LLM_ENDPOINT,
-		maxToolResultChars,
-		mcpSearchLimit,
-		mcpSearch,
+		llmEndpoint: extras.llmEndpoint ?? CAST_AI_LLM_ENDPOINT,
+		maxToolResultChars: extras.maxToolResultChars ?? 10_000,
+		mcpSearchLimit: extras.mcpSearchLimit ?? 5,
+		mcpSearch: { ...SEARCH_STRATEGY_DEFAULTS, ...extras.mcpSearch },
 		skillPaths: extras.skillPaths,
 		migrationState: extras.migrationState,
 	}
@@ -254,7 +289,10 @@ export function getAgentConfigDir(): string {
 function writeConfigField(key: string, value: unknown, configPath: string): void {
 	let raw: Record<string, unknown> = {}
 	try {
-		raw = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>
+		const parsed = JSON.parse(readFileSync(configPath, "utf-8"))
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			raw = parsed as Record<string, unknown>
+		}
 	} catch {
 		// file missing or invalid — start fresh
 	}
@@ -274,7 +312,24 @@ export function writeSkillPaths(paths: string[], configPath?: string): void {
 }
 
 export function writeApiKey(key: string, configPath?: string): void {
-	writeConfigField("apiKey", key, configPath ?? KIMCHI_CONFIG_PATH)
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	let raw: Record<string, unknown> = {}
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf-8"))
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			raw = parsed as Record<string, unknown>
+		}
+	} catch {
+		// file missing or invalid — start fresh
+	}
+	raw.apiKey = key
+	// Clear legacy snake_case key so we don't keep stale data
+	// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
+	delete raw.api_key
+	mkdirSync(dirname(path), { recursive: true })
+	const tmp = `${path}.${process.pid}.tmp`
+	writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
+	renameSync(tmp, path)
 }
 
 /**
@@ -288,7 +343,10 @@ export function writeTelemetryEnabled(enabled: boolean, configPath?: string): vo
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	let raw: Record<string, unknown> = {}
 	try {
-		raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>
+		const parsed = JSON.parse(readFileSync(path, "utf-8"))
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			raw = parsed as Record<string, unknown>
+		}
 	} catch {
 		// file missing or invalid — start fresh
 	}
@@ -305,7 +363,10 @@ export function clearApiKey(configPath?: string): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	let raw: Record<string, unknown> = {}
 	try {
-		raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>
+		const parsed = JSON.parse(readFileSync(path, "utf-8"))
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			raw = parsed as Record<string, unknown>
+		}
 	} catch {
 		return
 	}

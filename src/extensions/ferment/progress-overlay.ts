@@ -29,9 +29,21 @@ import {
 	stepBulletChar,
 	truncateLabel,
 } from "./colors.js"
+import { promptInput } from "./prompt-ui.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import type { FermentUiContext } from "./ui.js"
+
+// Parallel-group markers — one compact form for inline list rows, one verbose
+// form for the step detail header. Centralized so the glyph and colour stay
+// in sync when either is edited.
+function parallelMarkerInline(s: Step): string {
+	return s.parallel ? `${pr_teal(`∥${s.groupIndex ?? ""}`)} ` : ""
+}
+
+function parallelMarkerVerbose(s: Step): string {
+	return s.parallel ? `  ${pr_teal(`∥ parallel group ${s.groupIndex ?? "?"}`)}` : ""
+}
 
 export function buildPhaseListTitle(f: Ferment, runtime: FermentRuntime = defaultFermentRuntime): string {
 	const terminalCount = f.phases.filter(
@@ -64,14 +76,19 @@ export function buildPhaseListOptions(f: Ferment): string[] {
 	const opts = f.phases.map((p) => {
 		const isActive = p.id === f.activePhaseId || (p.groupIndex !== undefined && p.status === "active")
 		const bullet = phaseBullet(p)
-		const parallelTag = p.groupIndex !== undefined ? pr_dim("∥ ") : ""
+		// Parallel phases get a colored, non-dimmed marker so the structure is
+		// readable at a glance. Group index helps disambiguate when there are
+		// multiple parallel cohorts in one plan.
+		const parallelTag = p.groupIndex !== undefined ? pr_teal(`∥${p.groupIndex} `) : ""
 		const name = isActive ? pr_teal(p.name) : p.status === "completed" ? pr_dim(p.name) : p.name
 		const stepsDone = p.steps.filter(
 			(s) => s.status === "done" || s.status === "verified" || s.status === "skipped",
 		).length
+		const parallelSteps = p.steps.filter((s) => s.parallel).length
+		const parallelStepsTag = parallelSteps > 0 ? pr_dim(` (${parallelSteps}∥)`) : ""
 		const stepsTag = p.steps.length > 0 ? pr_dim(`  ${stepsDone}/${p.steps.length}`) : ""
 		const gradeTag = p.grade ? `  ${gradeColor(p.grade.grade)}` : ""
-		return `${bullet}  ${parallelTag}${name}${stepsTag}${gradeTag}`
+		return `${bullet}  ${parallelTag}${name}${stepsTag}${parallelStepsTag}${gradeTag}`
 	})
 	opts.push(pr_dim("─────────────────────────"))
 	if (f.status !== "complete" && f.status !== "abandoned") opts.push("Abandon ferment")
@@ -113,8 +130,11 @@ export function buildPhaseStepOptions(p: Phase): string[] {
 					: s.status === "done" || s.status === "verified"
 						? pr_dim(s.description)
 						: s.description
+		// Parallel-safe steps get a teal ∥ marker before the bullet so cohorts
+		// of concurrently-runnable work are visible without drilling into L3.
+		const parallelTag = parallelMarkerInline(s)
 		const gradeTag = s.grade ? `  ${gradeColor(s.grade.grade)}` : ""
-		return `${bullet}  ${name}${gradeTag}`
+		return `${parallelTag}${bullet}  ${name}${gradeTag}`
 	})
 	opts.push(pr_dim("─────────────────────────"))
 	opts.push("Phase actions")
@@ -125,9 +145,10 @@ export function buildPhaseStepOptions(p: Phase): string[] {
 export function buildStepDetailTitle(p: Phase, s: Step): string {
 	const bullet = stepBulletChar(s.status)
 	const gradeTag = s.grade ? `  ${gradeColor(s.grade.grade)}  ${pr_dim(s.grade.rationale)}` : ""
+	const parallelTag = parallelMarkerVerbose(s)
 	const lines: string[] = [
 		`${pr_dim(`Step ${s.index}/${p.steps.length}`)}  ${pr_bold(p.name)}`,
-		`${bullet}  ${pr_bold(s.description)}${gradeTag}`,
+		`${bullet}  ${pr_bold(s.description)}${gradeTag}${parallelTag}`,
 	]
 	if (s.summary) {
 		// Worker-written summary of what the step accomplished. Symmetric with
@@ -225,14 +246,14 @@ export async function handlePhaseAction(
 	const applyAndPersist = createApplyAndPersist(runtime)
 	switch (choice) {
 		case "Activate phase": {
-			// activate_phase transitions ferment.status to "running" — no need for a separate updateStatus.
+			// activate_ferment_phase transitions ferment.status to "running" — no need for a separate updateStatus.
 			const out = applyAndPersist(f.id, { type: "activate_phase", phaseId: p.id })
 			if (out.ok) runtime.setActive(out.ferment)
 			ctx.ui.notify(out.ok ? `Phase "${p.name}" activated.` : `Could not activate: ${out.error.message}`)
 			break
 		}
 		case "Ask agent to refine steps":
-			ctx.ui.notify(`Tell the agent: refine_phase for phase ${p.index} "${p.name}"`)
+			ctx.ui.notify(`Tell the agent: refine_ferment_phase for phase ${p.index} "${p.name}"`)
 			break
 		case "Mark phase complete": {
 			const out = applyAndPersist(f.id, { type: "complete_phase", phaseId: p.id, summary: "Completed via /progress" })
@@ -241,7 +262,7 @@ export async function handlePhaseAction(
 			break
 		}
 		case "Mark phase failed": {
-			const reason = ctx.ui.input ? await ctx.ui.input("Reason for failure:", "") : ""
+			const reason = await promptInput(ctx, "Reason for failure:", "")
 			const out = applyAndPersist(f.id, {
 				type: "fail_phase",
 				phaseId: p.id,

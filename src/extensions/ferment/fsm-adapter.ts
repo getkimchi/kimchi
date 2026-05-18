@@ -5,6 +5,7 @@
  * executing state-mutating operations.
  */
 
+import { type DeclarativeAction, determineNextAction } from "../../ferment/engine.js"
 import {
 	FSM_EVENTS,
 	FSM_STATES,
@@ -14,6 +15,7 @@ import {
 	transition,
 } from "../../ferment/fsm.js"
 import type { Ferment } from "../../ferment/types.js"
+import { publicToolNameForActionKind } from "./action-tool-names.js"
 
 // ─── FSM State Computation ────────────────────────────────────────────────────
 
@@ -64,7 +66,8 @@ export function buildFsmContext(f: Ferment | undefined | null): FermentFsmContex
 				index: s.index,
 				description: s.description,
 				status: s.status,
-				canRunParallel: s.canRunParallel ?? false,
+				parallel: s.parallel ?? false,
+				groupIndex: s.groupIndex,
 			})),
 		})),
 	}
@@ -99,5 +102,16 @@ export function validateFsmTransitionWithFerment(
 	const ctx = buildFsmContext(ferment)
 	const result = transition(currentState, FSM_EVENTS[event], ctx, params)
 
-	return result.error ? { error: result.error } : {}
+	if (!result.error) return {}
+	const suggestion = formatNextActionSuggestion(determineNextAction(ferment))
+	return { error: suggestion ? `${result.error} ${suggestion}` : result.error }
+}
+
+function formatNextActionSuggestion(action: DeclarativeAction): string {
+	if (action.kind === "noop") return ""
+	const refs: string[] = []
+	if ("phaseId" in action) refs.push(`phaseId=${action.phaseId}`)
+	if ("stepId" in action) refs.push(`stepId=${action.stepId}`)
+	const refSuffix = refs.length ? ` (${refs.join(", ")})` : ""
+	return `Recommended next action: ${publicToolNameForActionKind(action.kind)}${refSuffix} — ${action.reason}.`
 }

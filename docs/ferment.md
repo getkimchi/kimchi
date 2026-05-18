@@ -31,8 +31,13 @@ Ferment  ← the project ("Build Tetris")
 
 **Ferment status:**
 ```
-draft → planned → running ⇄ paused → complete
-                                    → abandoned
+draft → planned → running
+          ↑          │
+          └──────────┘ complete/skip/fail phase when no active phase remains
+
+planned/running → complete   (explicit complete_ferment)
+planned/running ⇄ paused     (internal user-intervention/session state)
+draft/planned/running/paused/complete → abandoned
 ```
 
 | Status | Meaning |
@@ -40,13 +45,31 @@ draft → planned → running ⇄ paused → complete
 | `draft` | Created, scoping in progress |
 | `planned` | Scoping confirmed, phases ready to execute |
 | `running` | At least one phase is active |
-| `paused` | User intervention requested (or session ended) |
-| `complete` | All phases terminal |
+| `paused` | Internal user-intervention/session state; ferment tools are blocked until resume |
+| `complete` | Explicitly finalized after all phases are terminal |
 | `abandoned` | Permanently stopped — cannot resume |
 
 **Phase status:** `planned → active → completed / skipped / failed`
 
-**Step status:** `pending → running → done / skipped / verified / failed`
+**Step status:** `pending → running → done / skipped / verified / failed` (`failed` steps can be recovered by starting them again)
+
+### Tool visibility
+
+Ferment follows pi-mono's run-level tool snapshot model: active tools are chosen
+before an agent run starts and stay fixed for that run. Kimchi therefore uses
+static session profiles instead of changing lifecycle tool visibility after
+each FSM transition.
+
+- Idle sessions expose discovery tools (`create_ferment`, `list_ferments`).
+- Active planner sessions expose the current-ferment lifecycle tool surface;
+  tool handlers and result text decide which transition is legal now.
+- Paused or terminal ferments hide mutating lifecycle tools.
+- Worker subagents (`KIMCHI_SUBAGENT=1`) receive no ferment lifecycle tools.
+- One-shot planners use a static allowlist containing current-ferment lifecycle
+  tools plus delegation tools (`Agent`, `get_subagent_result`) and `read`.
+
+There is no shell CLI for phase or step transitions. Planners should call the
+ferment tools directly and follow each tool result's `Next action:` hint.
 
 ---
 
@@ -146,6 +169,10 @@ Run `/progress` for full phase/step navigation with grades and actions.
 /auto      ← resume
 ```
 
+`/pause` only disables auto-mode. It does not persist the ferment as `paused`.
+The persisted `paused` status is reserved for internal user-intervention and
+session-resume paths.
+
 Sessions resume automatically. When you close and reopen Kimchi with an active ferment, the agent picks up exactly where it left off.
 
 ---
@@ -183,7 +210,7 @@ M002 [convention]: All piece coordinates are relative to their bounding box
 M003 [pattern]: Use Uint8Array for grid — faster collision detection
 ```
 
-Both are automatically injected into the planner's system prompt and every `activate_phase` result — so Phase 4 knows what Phase 1 decided without repeating context.
+Both are automatically injected into the planner's system prompt and every `activate_ferment_phase` result — so Phase 4 knows what Phase 1 decided without repeating context.
 
 ---
 
@@ -204,7 +231,7 @@ The planner activates both group-1 phases at once, spawns subagents for each con
 
 ## Stuck-loop protection
 
-If `start_step` is called on the same step 3 or more times without a `complete_step`, the tool blocks further starts and surfaces an explicit recovery prompt to the user:
+If `start_ferment_step` is called on the same step 3 or more times without a `complete_ferment_step`, the tool blocks further starts and surfaces an explicit recovery prompt to the user:
 
 ```
 ⚠ Stuck loop detected: step 2 "Implement collision detection" has been started
@@ -212,7 +239,7 @@ If `start_step` is called on the same step 3 or more times without a `complete_s
   revised approach, skip this step, or pause the ferment?
 ```
 
-The block stays active until the step is either completed (`complete_step`) or skipped (`skip_step`).
+The block stays active until the step is either completed (`complete_ferment_step`) or skipped (`skip_ferment_step`).
 
 ---
 
@@ -297,73 +324,105 @@ These tools are available to the agent during a ferment session. They are not me
 | Tool | Description |
 |------|-------------|
 | `create_ferment` | Create a new ferment at `draft` status |
+| `propose_ferment_scoping` | Draft scoping for interactive confirmation |
 | `scope_ferment` | Save confirmed scoping answers → `draft` to `planned` |
-| `update_scope_field` | Update a single scoping field mid-draft |
+| `update_ferment_scope_field` | Update a single scoping field mid-draft |
 | `set_ferment_mode` | Change work mode (`plan` / `exec` / `auto`) |
-| `complete_ferment` | Mark all phases done → `complete` |
+| `complete_ferment` | Mark the ferment `complete` after all phases are terminal |
 | `list_ferments` | List ferments, optionally filtered by status |
 
 ### Phase execution
 
 | Tool | Description |
 |------|-------------|
-| `activate_phase` | Transition a planned phase to active. Activates all phases in a parallel group simultaneously. |
-| `refine_phase` | Populate a phase with concrete steps (3–6). Can set `worker_model`, `verification`, and `canRunParallel` per step. |
-| `complete_phase` | Mark phase as completed. Judge grades it automatically. In plan mode, shows a TUI dropdown before activating the next phase. |
-| `skip_phase` | Skip a phase (counts as terminal) |
-| `fail_phase` | Mark a phase as failed with a reason |
+| `activate_ferment_phase` | Transition a planned phase to active. Activates all phases in a parallel group simultaneously. |
+| `refine_ferment_phase` | Populate a phase with concrete steps. |
+| `complete_ferment_phase` | Mark phase as completed after phase gates pass. Leaves the ferment between phases unless another parallel phase remains active. |
+| `skip_ferment_phase` | Skip a phase (counts as terminal) |
+| `fail_ferment_phase` | Mark a phase as failed with a reason. The engine surfaces recovery before treating failed phases as terminal. |
+| recovery | For a failed phase, retry with `activate_ferment_phase`, bypass with `skip_ferment_phase`, or ask the user whether to abandon. |
 
 ### Step execution
 
 | Tool | Description |
 |------|-------------|
-| `start_step` | Mark step as running. Returns `worker_model` for the subagent. If `canRunParallel` siblings exist, returns them for concurrent dispatch. Blocks after 3 consecutive starts without a complete (stuck-loop guard). |
-| `complete_step` | Mark step as done. Runs verification command automatically if set. Judge grades the step. |
-| `verify_step` | Run the verification command manually and record the result. |
-| `skip_step` | Skip a step (counts as terminal) |
-| `fail_step` | Mark a step as failed with a reason |
+| `start_ferment_step` | Mark step as running. Returns worker prompt context and any parallel siblings for concurrent dispatch. Blocks after 3 consecutive starts without a complete (stuck-loop guard). |
+| `complete_ferment_step` | Mark step as done. Runs verification command automatically if set. |
+| `verify_ferment_step` | Run the verification command manually and record the result. |
+| `skip_ferment_step` | Skip a step (counts as terminal) |
+| `fail_ferment_step` | Mark a step as failed with a reason |
 
 ### Knowledge
 
 | Tool | Description |
 |------|-------------|
-| `add_decision` | Record an architectural or design decision. Injected into future phase context. |
-| `add_memory` | Record a reusable insight. Categories: `architecture` / `convention` / `gotcha` / `pattern` / `preference`. |
+| `add_ferment_decision` | Record an architectural or design decision. Injected into future phase context. |
+| `add_ferment_memory` | Record a reusable insight. Categories: `architecture` / `convention` / `gotcha` / `pattern` / `preference`. |
 
 ---
 
 ## State machine (full)
 
+### Ferment lifecycle
+
+```mermaid
+stateDiagram-v2
+    direction TB
+
+    [*] --> Draft: create
+    Draft --> Planned: scope
+    Planned --> Running: activate_ferment_phase
+    Running --> Planned: complete_ferment_phase / skip_ferment_phase / fail_ferment_phase
+
+    Running --> Paused: pause
+    Planned --> Paused: pause
+    Paused --> Running: resume / active phase exists
+    Paused --> Planned: resume / no active phase
+
+    Planned --> Complete: complete_ferment
+    Running --> Complete: complete_ferment
+
+    Draft --> Abandoned: abandon
+    Planned --> Abandoned: abandon
+    Running --> Abandoned: abandon
+    Paused --> Abandoned: abandon
 ```
-                    ┌─────────────────────────────┐
-                    │           FERMENT            │
-                    │                              │
-  create ──► draft ──► planned ──► running ──► complete
-                                     │
-                                   paused ◄──► running
-                                     │
-                                  abandoned
-                    └─────────────────────────────┘
 
-                    ┌──────────────────────┐
-                    │         PHASE        │
-                    │                      │
-            planned ──► active ──► completed
-                           │
-                         failed
-                           │
-                         skipped
-                    └──────────────────────┘
+### Phase lifecycle
 
-                    ┌─────────────────────────────┐
-                    │           STEP               │
-                    │                              │
-            pending ──► running ──► done ──► verified
-                           │
-                         failed
-                           │
-                         skipped
-                    └─────────────────────────────┘
+```mermaid
+stateDiagram-v2
+    direction TB
+
+    [*] --> Planned
+    Planned --> Active: activate_ferment_phase
+    Active --> Completed: complete_ferment_phase
+    Active --> Skipped: skip_ferment_phase
+    Planned --> Skipped: skip_ferment_phase
+    Active --> Failed: fail_ferment_phase
+
+    Failed --> Active: activate_ferment_phase / retry
+    Failed --> Skipped: skip_ferment_phase / bypass
+```
+
+### Step lifecycle
+
+```mermaid
+stateDiagram-v2
+    direction TB
+
+    [*] --> Pending
+    Pending --> Running: start_ferment_step
+    Running --> Done: complete_ferment_step
+    Running --> Verified: verify_ferment_step
+
+    Pending --> Skipped: skip_ferment_step
+    Running --> Skipped: skip_ferment_step
+
+    Pending --> Failed: fail_ferment_step
+    Running --> Failed: fail_ferment_step
+    Failed --> Running: start_ferment_step / retry
+    Failed --> Skipped: skip_ferment_step / bypass
 ```
 
 ---
@@ -406,6 +465,7 @@ state service would consume the same module.
 |------|------|
 | `src/extensions/ferment/index.ts` | Extension entrypoint — event handlers, slash commands |
 | `src/extensions/ferment/tools/*.ts` | Tool registrations (lifecycle, phases, steps, knowledge) |
+| `src/extensions/ferment/tool-scope.ts` | Static session profiles for ferment tool visibility |
 | `src/extensions/ferment/tool-helpers.ts` | `applyAndPersist` bridge + result builders |
 | `src/ferment/state-machine.ts` | Pure transitions: (ferment, command) → next ferment |
 | `src/ferment/engine.ts` | Forward state machine: ferment → next action (`whatNext`) |

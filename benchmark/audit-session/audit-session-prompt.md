@@ -194,11 +194,21 @@ Compute and present:
 
 ### Step 3: Write the Audit Report
 
-Write the full audit report to: `.kimchi/audits/{auditFilename}`
+Write the audit report to: `.kimchi/audits/{auditFilename}`
 
 Create the `.kimchi/audits/` directory if it does not exist.
 
-Use this format:
+**IMPORTANT — Write in chunks:** Do NOT attempt to write the entire report in a single tool call. Large writes can cause socket timeouts. Instead, write the report across multiple sequential tool calls:
+
+1. **Write** the file with the header, summary table, and phase timeline (Step 3a)
+2. **Append** the detailed findings for each dimension (Step 3b)
+3. **Append** tool usage, improvements, and recommendations (Step 3c)
+
+Use the following format, split across the writes described above.
+
+#### Step 3a — Write header, summary, and phase timeline
+
+Write a new file at `.kimchi/audits/{auditFilename}` containing:
 
 ```markdown
 # Session Phase Audit: {sessionId}
@@ -237,7 +247,13 @@ Use this format:
 | 1 | explore | HH:MM | HH:MM | Xm | model-id | N | $X |
 | 2 | plan | HH:MM | HH:MM | Xm | model-id | N | $X |
 | ... | | | | | | | |
+```
 
+#### Step 3b — Append detailed findings
+
+Append to the same file. Write one section per dimension:
+
+```markdown
 ## Detailed Findings
 
 ### Phase Discipline — Grade: X
@@ -273,7 +289,13 @@ Use this format:
 ### Cost Analysis
 
 (Full tables from Step 2.6)
+```
 
+#### Step 3c — Append tool usage, improvements, and recommendations
+
+Append to the same file:
+
+```markdown
 ## Tool Usage by Phase
 
 | Tool | explore | research | plan | build | review | Total |
@@ -302,4 +324,234 @@ Use this format:
 - Were any phases used that added no value?
 ```
 
-After writing the artifact, say: "Audit complete for session {sessionId}. Report at .kimchi/audits/{auditFilename}"
+---
+
+### Step 4: Per-Turn Model Attribution
+
+Iterate every assistant turn (type: "message", role: "assistant"). Determine active model per turn by walking `model_change` entries in chronological order. The first assistant message after a `model_change` marks the start of that model's turns.
+
+Output a table:
+
+| Turn | Model | Provider | Duration (since previous turn) | Notes |
+|------|-------|----------|-------------------------------|-------|
+| 1 | model-id | provider | Xs | first turn |
+| 2 | model-id | provider | Xs | |
+| ... | | | | |
+
+For the first turn of each model, annotate that this is a **switch boundary**.
+
+---
+
+### Step 5: Routing Decision Rationale
+
+When a new model appears (model_change), look backward for the preceding assistant message that contains clues about why the switch happened (e.g. tool calls `Agent`/`set_phase`, deployment rules in system prompts, explicit orchestration text).
+
+Record:
+
+| Switch # | From | To | Trigger (phase, tool call, or explicit text) | Evidence (message ID or turn #) |
+|----------|------|----|----------------------------------------------|--------------------------------|
+| 1 | model-a | model-b | phase: plan | turn #4 |
+| 2 | model-b | model-c | Agent delegation to kimi-k2.6 | turn #12 |
+
+If no evidence is found, note "inferred from session bootstrap".
+
+---
+
+### Step 6: Switching Latency
+
+Measure `switch_latency_ms` = timestamp(first assistant message after model_change) - timestamp(model_change entry).
+
+Aggregate across all switches:
+
+| Metric | Value |
+|--------|-------|
+| Mean latency | Xms |
+| Max latency | Xms |
+| Min latency | Xms |
+| Total switches | N |
+
+Per-model-pair breakdown:
+
+| From | To | Count | Mean Latency | Max Latency |
+|------|----|-------|--------------|-------------|
+| model-a | model-b | 2 | Xms | Xms |
+| model-b | model-c | 1 | Xms | Xms |
+
+---
+
+### Step 7: Subagent Lifecycle Metrics
+
+Search for all `Agent` tool calls within assistant turns. For each, capture:
+- The `turnIndex` when invoked
+- The model delegated to (from tool arguments: `model` field)
+- The `tokenBudget` requested
+- Whether a `get_subagent_result` or `steer_subagent` appears later in the session (indicating lifecycle completion or intervention)
+
+Count subagent loops: # of `Agent` calls that precede a `steer_subagent` for the same subagent.
+
+Output table:
+
+| Subagent # | Turn Invoked | Delegate Model | Budget | Looped? | Completed? | Context-Complete? |
+|------------|-------------|----------------|--------|---------|------------|-------------------|
+| 1 | 4 | kimi-k2.6 | 150000 | No | Yes | Yes |
+| 2 | 12 | minimax-m2.7 | 200000 | Yes | Yes | No |
+
+Definitions:
+- **Looped**: a `steer_subagent` was sent to this subagent before it completed
+- **Completed**: a `get_subagent_result` was received for this subagent
+- **Context-Complete**: no `steer_subagent` was needed (subagent self-completed)
+
+---
+
+### Step 8: Token Consumption per Task Class
+
+Map each assistant turn to a **task class** based on the dominant activity in that turn:
+
+| Task Class | Detection heuristics |
+|------------|---------------------|
+| `explore` | `read`, `grep`, `find`, `ls` tool calls dominate |
+| `plan` | `edit`/`write` of `.md` spec files, `set_phase("plan")`, or explicit planning tool calls |
+| `build` | `edit`, `write`, `bash` (compilation / test execution) dominates |
+| `review` | `lsp_diagnostics`, review comments, `set_phase("review")` |
+| `research` | `web_search`, `web_fetch` calls |
+| `orchestration` | `Agent`, `set_phase`, `start_ferment_step`, `complete_ferment_step`, `get_subagent_result` |
+
+If a turn has mixed tools, classify by the most frequent tool family. If tie, prefer: orchestration > plan > build > review > research > explore.
+
+Aggregate token usage per class across all turns and per-model:
+
+| Task Class | Turns | Input | Output | CacheRead | CacheWrite | Total Tokens | Cost |
+|------------|-------|-------|--------|-----------|------------|--------------|------|
+| explore | N | X | X | X | X | X | $X |
+| plan | N | X | X | X | X | X | $X |
+| build | N | X | X | X | X | X | $X |
+| review | N | X | X | X | X | X | $X |
+| research | N | X | X | X | X | X | $X |
+| orchestration | N | X | X | X | X | X | $X |
+| **TOTAL** | N | X | X | X | X | X | $X |
+
+---
+
+### Step 9: Cost per Completed Task
+
+A "task" is defined as a contiguous block of turns bounded by:
+- A phase switch (set_phase to a different phase), OR
+- A terminal outcome (all tests passing, human-explicit completion, or branch commit/push)
+
+Compute cost per task = sum of `usage.cost.total` for all turns within the block.
+
+Only count tasks that reach a terminal state (tests pass, user confirms done, branch commit/push, etc.).
+
+Output:
+
+| Task # | Label | Phase | Turn Range | Cost | Terminal State |
+|--------|-------|-------|------------|------|----------------|
+| 1 | fix-auth-bug | build | 3–7 | $X.XX | tests pass |
+| 2 | add-tests | build | 8–14 | $X.XX | PR created |
+
+If a task does not reach a terminal state, note "incomplete" and exclude from efficiency analysis.
+
+---
+
+### Step 10: OSS vs Non-OSS Utilization
+
+Classify each model as OSS or non-OSS using this mapping:
+
+| Model | Provider | OSS? |
+|-------|----------|------|
+| minimax-m2.5 | MiniMax | No |
+| minimax-m2.7 | MiniMax | No |
+| qwen3-coder-next-fp8 | Qwen | Yes |
+| kimi-k2.5 | Kimi | No |
+| kimi-k2.6 | Kimi | No |
+| nemotron-3-super-120b | NVIDIA | Yes |
+| claude-opus-4-7 | Anthropic | No |
+| claude-sonnet-4-7 | Anthropic | No |
+
+If a model is not in this table, classify it based on provider (Qwen/NVIDIA = OSS; others = non-OSS) unless you have specific knowledge.
+
+Compute:
+- **Token-based ratio**: (tokens sent to OSS models) / (total tokens)
+- **Cost-based ratio**: (cost for OSS models) / (total cost)
+
+Report both. Provide per-model breakdown:
+
+| Model | OSS? | Input Tokens | Output Tokens | Total Tokens | Cost |
+|-------|------|-------------|---------------|--------------|------|
+| kimi-k2.6 | No | X | X | X | $X |
+| qwen3-coder-next-fp8 | Yes | X | X | X | $X |
+
+Summary:
+- OSS token ratio: X.X%
+- OSS cost ratio: X.X%
+
+---
+
+### Step 11: Write the JSON Sidecar
+
+**Append** the following fenced JSON block to the audit report file (after the markdown content). This is the machine-readable sidecar for automated comparison between experiment runs. Write this as a separate append operation — do NOT combine it with any markdown write.
+
+\`\`\`json
+{
+  "schemaVersion": "1.0.0",
+  "sessionId": "{sessionId}",
+  "timestamp": "<session_start_timestamp>",
+  "modelsUsed": [
+    {
+      "modelId": "<model-id>",
+      "provider": "<provider>",
+      "turns": <count>,
+      "tokens": { "input": <n>, "output": <n>, "cacheRead": <n>, "cacheWrite": <n> },
+      "cost": <total-cost>,
+      "isOss": <true|false>
+    }
+  ],
+  "switches": [
+    {
+      "from": "<model-a>",
+      "to": "<model-b>",
+      "timestamp": "<iso-timestamp>",
+      "latencyMs": <ms>,
+      "rationale": "<trigger description>"
+    }
+  ],
+  "subagents": [
+    {
+      "delegateModel": "<model>",
+      "budget": <token-budget>,
+      "looped": <true|false>,
+      "completed": <true|false>
+    }
+  ],
+  "taskClasses": {
+    "explore": { "tokens": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }, "cost": 0 },
+    "plan": { "tokens": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }, "cost": 0 },
+    "build": { "tokens": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }, "cost": 0 },
+    "review": { "tokens": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }, "cost": 0 },
+    "research": { "tokens": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }, "cost": 0 },
+    "orchestration": { "tokens": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }, "cost": 0 }
+  },
+  "completedTasks": [
+    {
+      "label": "<task-label>",
+      "turnRange": [<start>, <end>],
+      "cost": <cost>,
+      "terminalState": "<state>"
+    }
+  ],
+  "ossRatio": {
+    "byTokens": 0.0,
+    "byCost": 0.0
+  },
+  "aggregates": {
+    "totalTokens": 0,
+    "totalCost": 0,
+    "totalTurns": 0,
+    "totalSwitches": 0,
+    "totalSubagents": 0,
+    "errors": 0
+  }
+}
+\`\`\`
+
+After writing the JSON sidecar, say: "Audit complete for session {sessionId}. Report at .kimchi/audits/{auditFilename}"
