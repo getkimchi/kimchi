@@ -58,20 +58,24 @@ describe("findNextCompatibleModel", () => {
 	})
 
 	it("skips models with insufficient context window and records reason", () => {
-		const models = [makeModel("small", 10_000), makeModel("big", 100_000)]
-		// currentIndex = 0, currentTokens = 50_000 — "small" doesn't fit
+		const models = [makeModel("current", 100_000), makeModel("small", 10_000), makeModel("big", 100_000)]
+		// currentIndex = 0, currentTokens = 50_000 — "small" at offset 1 doesn't fit, "big" at offset 2 does
 		const result = findNextCompatibleModel(models, 0, 50_000, false)
-		expect(result.model).toBe(models[1])
+		expect(result.model).toBe(models[2])
 		expect(result.skipped).toHaveLength(1)
-		expect(result.skipped[0].model).toBe(models[0])
+		expect(result.skipped[0].model).toBe(models[1])
 		expect(result.skipped[0].reason).toContain("10K context")
 		expect(result.skipped[0].reason).toContain("50K tokens")
 	})
 
 	it("skips non-vision models when hasImages is true and records reason", () => {
-		const models = [makeModel("vision", 100_000, ["text", "image"]), makeModel("text-only", 100_000, ["text"])]
+		const models = [
+			makeModel("current-vision", 100_000, ["text", "image"]),
+			makeModel("text-only", 100_000, ["text"]),
+			makeModel("other-vision", 100_000, ["text", "image"]),
+		]
 		const result = findNextCompatibleModel(models, 0, 50_000, true)
-		expect(result.model).toBe(models[0])
+		expect(result.model).toBe(models[2])
 		expect(result.skipped).toHaveLength(1)
 		expect(result.skipped[0].model).toBe(models[1])
 		expect(result.skipped[0].reason).toContain("no vision support")
@@ -85,16 +89,24 @@ describe("findNextCompatibleModel", () => {
 	})
 
 	it("skips both context-window-incompatible AND non-vision models", () => {
-		const models = [makeModel("small-text", 10_000, ["text"]), makeModel("big-vision", 100_000, ["text", "image"])]
-		// currentTokens=50_000 → "small-text" fails context check
-		// hasImages=true → "small-text" also fails vision check
+		const models = [
+			makeModel("current", 100_000, ["text", "image"]),
+			makeModel("small-text", 10_000, ["text"]),
+			makeModel("no-vision", 100_000, ["text"]),
+			makeModel("big-vision", 100_000, ["text", "image"]),
+		]
+		// currentTokens=50_000 → "small-text" fails context check, "no-vision" fails vision check
 		const result = findNextCompatibleModel(models, 0, 50_000, true)
-		expect(result.model).toBe(models[1])
-		expect(result.skipped).toHaveLength(1)
+		expect(result.model).toBe(models[3])
+		expect(result.skipped).toHaveLength(2)
 	})
 
-	it("returns undefined model when no compatible model exists (all skipped)", () => {
-		const models = [makeModel("small", 10_000), makeModel("text-only", 100_000, ["text"])]
+	it("returns undefined model when no compatible candidate exists (all skipped)", () => {
+		const models = [
+			makeModel("current", 100_000, ["text", "image"]),
+			makeModel("small", 10_000),
+			makeModel("text-only", 100_000, ["text"]),
+		]
 		// 50k tokens exceeds "small"; hasImages=true blocks "text-only"
 		const result = findNextCompatibleModel(models, 0, 50_000, true)
 		expect(result.model).toBeUndefined()

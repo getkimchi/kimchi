@@ -308,12 +308,9 @@ describe("modelSwitchExtension", () => {
 
 	describe("MODEL_CAPABILITIES lookup", () => {
 		it("MODEL_CAPABILITIES contains expected keys", async () => {
-			// Dynamic import to test the actual module state in the test environment
 			const { MODEL_CAPABILITIES } = await import("./orchestration/model-registry/builtin-models.js")
 			const kimiCaps = MODEL_CAPABILITIES.get("kimi-k2.6")
 			const nemotronCaps = MODEL_CAPABILITIES.get("nemotron-3-super-fp4")
-			console.log("kimi-k2.6 caps:", JSON.stringify(kimiCaps))
-			console.log("nemotron-3-super-fp4 caps:", JSON.stringify(nemotronCaps))
 			expect(kimiCaps).toBeDefined()
 			expect(kimiCaps).not.toBe("ignored")
 			if (kimiCaps && kimiCaps !== "ignored") {
@@ -327,12 +324,9 @@ describe("modelSwitchExtension", () => {
 		})
 
 		it("getModelTier returns correct tier for known models via the tool execution context", async () => {
-			// Replicate the getModelTier logic inline using the same static import that model-switch.ts uses
 			const { MODEL_CAPABILITIES } = await import("./orchestration/model-registry/builtin-models.js")
-			// Simulate a model object as ctx.model would be in the test
 			const fakeModel = { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] } as { id: string }
 			const caps = MODEL_CAPABILITIES.get(fakeModel.id)
-			console.log("Inline caps check:", caps && caps !== "ignored" ? (caps as { tier: unknown }).tier : undefined)
 			expect(caps).toBeDefined()
 			expect(caps).not.toBe("ignored")
 			if (caps && caps !== "ignored") {
