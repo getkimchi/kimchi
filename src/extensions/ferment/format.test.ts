@@ -8,7 +8,6 @@ function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 		id: "ferment-1",
 		name: "Test Ferment",
 		status: "draft",
-		mode: "auto",
 		worktree: { path: "/repo" },
 		scoping: {},
 		phases: [],

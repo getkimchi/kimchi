@@ -28,7 +28,6 @@ function makeDraftFerment(overrides: Partial<Ferment> = {}): Ferment {
 		id: "ferment-1",
 		name: "Injected Nudge",
 		status: "draft",
-		mode: "plan",
 		worktree: { path: "/repo" },
 		scoping: {},
 		phases: [],
@@ -148,8 +147,6 @@ describe("ferment nudges", () => {
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
 		if (!scoped.ok) throw new Error(scoped.error.message)
-		const mode = applyAndPersist(draft.id, { type: "set_mode", mode: "exec" })
-		if (!mode.ok) throw new Error(mode.error.message)
 		runtime.getActiveId = () => draft.id
 
 		maybeInjectReactiveAutoNudge(pi, runtime)
@@ -167,7 +164,6 @@ describe("ferment nudges", () => {
 		const pi = createPi()
 		const boundary = makeDraftFerment({
 			status: "planned",
-			mode: "plan",
 			phases: [
 				{ id: "phase-1", index: 1, name: "Done", goal: "Build", status: "completed", steps: [] },
 				{ id: "phase-2", index: 2, name: "Next", goal: "Continue", status: "planned", steps: [] },
@@ -240,7 +236,6 @@ describe("ferment nudges", () => {
 			getActive: () =>
 				makeDraftFerment({
 					status: "planned",
-					mode: "exec",
 					phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "planned", steps: [] }],
 				}),
 			getActiveId: () => "ferment-1",
@@ -249,7 +244,6 @@ describe("ferment nudges", () => {
 					get: () =>
 						makeDraftFerment({
 							status: "planned",
-							mode: "exec",
 							phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "planned", steps: [] }],
 						}),
 				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
@@ -272,7 +266,6 @@ describe("ferment nudges", () => {
 		const pi = createPi()
 		let current = makeDraftFerment({
 			status: "planned",
-			mode: "exec",
 			phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "planned", steps: [] }],
 		})
 		const runtime: FermentRuntime = {

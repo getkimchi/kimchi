@@ -4,7 +4,7 @@
  * Used by:
  * - `/progress` headless fallback (formatFermentStatus)
  * - planner system-prompt supplement (formatDecisionsAndMemories, formatScopingContext)
- * - resume nudges in plan mode (stripToolRefs)
+ * - resume nudges in manual policy (stripToolRefs)
  */
 
 import { computeStats } from "../../ferment/stats.js"
@@ -99,7 +99,7 @@ export function formatScopingContext(f: Ferment): string {
 }
 
 /**
- * Strip references to specific tool names from engine messages, for plan mode.
+ * Strip references to specific tool names from engine messages for user-facing nudges.
  * Match "Use <tool_name> to ..." up to the next sentence boundary or newline —
  * `[^.\n]*` so we never swallow across sentences.
  */

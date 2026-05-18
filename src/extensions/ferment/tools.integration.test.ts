@@ -220,12 +220,12 @@ function loadFerment(id: string): Ferment {
 // ─── create_ferment ───────────────────────────────────────────────────────────
 
 describe("create_ferment", () => {
-	it("creates a ferment in draft status with plan mode", async () => {
+	it("creates a mode-less ferment in draft status", async () => {
 		const id = await createFerment("Test Project")
 		const f = loadFerment(id)
 		expect(f.name).toBe("Test Project")
 		expect(f.status).toBe("draft")
-		expect(f.mode).toBe("plan")
+		expect(f).not.toHaveProperty("mode")
 		expect(f.phases).toEqual([])
 	})
 
@@ -313,19 +313,18 @@ describe("scope_ferment", () => {
 		expect(err(result)).toMatch(/waiting for user confirmation/i)
 	})
 
-	it("bypasses gate when ferment is in exec mode", async () => {
+	it("does not let legacy mode bypass an interactive scoping gate", async () => {
 		const id = await createFerment("Exec Gate Test")
 		h.storage.updateMode(id, "exec")
 		markScopingInteractive(id)
-		// Don't confirm — exec mode should bypass
+		// Don't confirm — legacy mode is inert and cannot bypass this gate.
 		const result = await h.call("scope_ferment", {
 			ferment_id: id,
 			goal: "X",
 			phases: [{ name: "P1", goal: "G", steps: [{ description: "S" }] }],
 			gates: passingPlanGates(),
 		})
-		ok(result)
-		expect(loadFerment(id).status).toBe("planned")
+		expect(err(result)).toMatch(/waiting for user confirmation/i)
 	})
 
 	it("returns error when ferment not found", async () => {
@@ -891,16 +890,20 @@ describe("add_ferment_memory", () => {
 // ─── set_ferment_mode ─────────────────────────────────────────────────────────
 
 describe("set_ferment_mode", () => {
-	it("changes work mode", async () => {
+	it("returns compatibility guidance without persisting mode", async () => {
 		const id = await createFerment("Mode Test")
-		ok(await h.call("set_ferment_mode", { ferment_id: id, mode: "exec" }))
-		expect(loadFerment(id).mode).toBe("exec")
+		const result = await h.call("set_ferment_mode", { ferment_id: id, mode: "exec" })
+		ok(result)
+		expect(result.content[0].text).toContain("Legacy ferment mode is ignored")
+		expect(loadFerment(id)).not.toHaveProperty("mode")
 	})
 
-	it("rejects invalid modes", async () => {
+	it("guides invalid legacy modes to /manual and /auto", async () => {
 		const id = await createFerment("Invalid Mode Test")
 		const result = await h.call("set_ferment_mode", { ferment_id: id, mode: "rocket" })
-		expect(err(result)).toMatch(/invalid mode/i)
+		ok(result)
+		expect(result.content[0].text).toContain("/manual")
+		expect(result.content[0].text).toContain("/auto")
 	})
 })
 
@@ -997,10 +1000,12 @@ describe("paused ferment blocks tool calls at the bridge", () => {
 		expect(err(result)).toMatch(/paused/i)
 	})
 
-	it("refuses set_ferment_mode when ferment is paused", async () => {
+	it("keeps set_ferment_mode inert when ferment is paused", async () => {
 		const id = await setupPaused()
 		const result = await h.call("set_ferment_mode", { ferment_id: id, mode: "exec" })
-		expect(err(result)).toMatch(/paused/i)
+		ok(result)
+		expect(loadFerment(id).status).toBe("paused")
+		expect(loadFerment(id)).not.toHaveProperty("mode")
 	})
 })
 

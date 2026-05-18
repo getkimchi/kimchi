@@ -17,13 +17,12 @@
  *
  * The agent-callable `ask_user` tool wraps this with a tool-error layer that
  * abandons the ferment when the judge can't be reached in one-shot mode.
- * Internal callers (plan-mode dropdowns, escalation, propose_ferment_scoping) check
+ * Internal callers (interactive dropdowns, escalation, propose_ferment_scoping) check
  * the `failed` flag and degrade gracefully.
  *
  * Detection of one-shot mode comes from the `ferment-oneshot` PI flag (set at
- * session boot by /ferment one-shot or --ferment-oneshot). There is no
- * `ferment.mode === "one-shot"` — modes are plan/exec/auto. The flag is
- * orthogonal.
+ * session boot by /ferment one-shot or --ferment-oneshot). The flag is
+ * session-level, whereas a Ferment can outlive the session that created it.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"

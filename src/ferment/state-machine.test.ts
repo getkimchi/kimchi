@@ -21,7 +21,6 @@ function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 		id: "ferment-1",
 		name: "Test Ferment",
 		status: "draft",
-		mode: "plan",
 		worktree: { path: "/tmp/test" },
 		scoping: {},
 		phases: [],
@@ -307,23 +306,6 @@ describe("applyCommand: update_scope_field", () => {
 		)
 		expect(result.scoping.assumptions?.answer).toBe("new assumption")
 		expect(result.scoping.assumptions?.confirmedAt).toBe(NOW)
-	})
-})
-
-// ─── set_mode ─────────────────────────────────────────────────────────────────
-
-describe("applyCommand: set_mode", () => {
-	it("changes mode", () => {
-		const result = expectOk(applyCommand(makeFerment(), { type: "set_mode", mode: "exec" }, ctx))
-		expect(result.mode).toBe("exec")
-	})
-
-	it("rejects invalid modes", () => {
-		const error = expectError(
-			// biome-ignore lint/suspicious/noExplicitAny: testing invalid input
-			applyCommand(makeFerment(), { type: "set_mode", mode: "rocket" as any }, ctx),
-		)
-		expect(error.code).toBe("INVALID_MODE")
 	})
 })
 
@@ -1201,7 +1183,7 @@ describe("applyCommand: purity", () => {
 
 	it("updates updatedAt on every successful transition", () => {
 		const f = makeFerment({ updatedAt: "2026-01-01T00:00:00.000Z" })
-		const result = expectOk(applyCommand(f, { type: "set_mode", mode: "exec" }, ctx))
+		const result = expectOk(applyCommand(f, { type: "rename", name: "Renamed" }, ctx))
 		expect(result.updatedAt).toBe(NOW)
 	})
 })

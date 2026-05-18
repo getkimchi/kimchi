@@ -28,10 +28,17 @@ describe("FermentStorage v4", () => {
 			const f = storage.create("Auth rewrite")
 			expect(f.name).toBe("Auth rewrite")
 			expect(f.status).toBe("draft")
+			expect(f).not.toHaveProperty("mode")
 			expect(f.phases).toEqual([])
 			expect(f.decisions).toEqual([])
 			expect(f.memories).toEqual([])
 			expect(f.createdAt).toBeTruthy()
+		})
+
+		it("does not serialize mode for new ferments", () => {
+			const f = storage.create("Mode-less")
+			const raw = JSON.parse(readFileSync(join(tempDir, `${f.id}.json`), "utf-8")) as Record<string, unknown>
+			expect(raw).not.toHaveProperty("mode")
 		})
 
 		it("accepts description", () => {
@@ -441,6 +448,33 @@ describe("FermentStorage v4", () => {
 	})
 
 	describe("legacy snapshot normalization for deprecated model-policy keys", () => {
+		it("loads old mode-bearing snapshots and strips mode on the next write", () => {
+			const legacy = {
+				id: "legacy-mode",
+				name: "Legacy Mode",
+				status: "draft",
+				mode: "exec",
+				worktree: { path: tempDir },
+				scoping: {},
+				phases: [],
+				decisions: [],
+				memories: [],
+				createdAt: "2026-01-01T00:00:00.000Z",
+				updatedAt: "2026-01-01T00:00:00.000Z",
+			}
+			writeFileSync(join(tempDir, "legacy-mode.json"), `${JSON.stringify(legacy, null, 2)}\n`)
+			clearFermentCache()
+
+			const loaded = storage.get("legacy-mode")
+			expect(loaded?.name).toBe("Legacy Mode")
+			expect(loaded).not.toHaveProperty("mode")
+
+			const updated = storage.updateGoal("legacy-mode", "new goal")
+			expect(updated).not.toHaveProperty("mode")
+			const raw = JSON.parse(readFileSync(join(tempDir, "legacy-mode.json"), "utf-8")) as Record<string, unknown>
+			expect(raw).not.toHaveProperty("mode")
+		})
+
 		it("strips workerModel and needsVision from step objects when loading a legacy snapshot", () => {
 			const legacy = {
 				id: "leg-1",

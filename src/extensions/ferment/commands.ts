@@ -1,12 +1,10 @@
 import { writeFileSync } from "node:fs"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
-import { determineNextAction, getScopingProgress } from "../../ferment/engine.js"
+import { getScopingProgress } from "../../ferment/engine.js"
 import { shortenTitle } from "../../ferment/shorten-title.js"
 import { computeStats, serializeStats } from "../../ferment/stats.js"
 import { FermentError } from "../../ferment/store.js"
-import type { FermentWorkMode } from "../../ferment/types.js"
 import { exitSplashMode } from "../ui.js"
-import { formatActionNudgeLine } from "./action-tool-names.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { formatFermentStatus } from "./format.js"
@@ -262,74 +260,16 @@ export class FermentCommandController {
 		}
 
 		if (command.type === "mode") {
-			const modeArg = command.mode ?? ""
 			const active = runtime.getActive()
-			if (!modeArg) {
-				if (!active) {
-					ctx.ui.notify("No active ferment. Use /ferment new or /ferment switch first.")
-					return { handled: true }
-				}
-				const lines = [
-					`Ferment: ${active.name} (${active.id})`,
-					`Mode: ${active.mode}`,
-					"",
-					"plan — Scoping and coordination. Agent asks questions, proposes phases.",
-					"exec — Full execution. Agent iterates autonomously.",
-					" auto — Normal. User decides when to act.",
-					"",
-					"Use /ferment mode plan | exec | auto to change.",
-				]
-				ctx.ui.notify(lines.join("\n"))
-				return { handled: true }
-			}
-
-			if (!["plan", "exec", "auto"].includes(modeArg)) {
-				ctx.ui.notify("Usage: /ferment mode plan | exec | auto")
-				return { handled: true }
-			}
-
 			if (!active) {
-				ctx.ui.notify("No active ferment.")
+				ctx.ui.notify("No active ferment. Use /ferment new or /ferment switch first.")
 				return { handled: true }
 			}
-
-			if ((modeArg === "exec" || modeArg === "auto") && active.status === "draft") {
-				const progress = getScopingProgress(active)
-				if (progress.answered < progress.total) {
-					ctx.ui.notify(
-						`Cannot switch to ${modeArg} mode: scoping is ${progress.answered}/${progress.total} complete. Finish scoping in plan mode first.`,
-					)
-					return { handled: true }
-				}
-			}
-
-			const out = applyAndPersist(active.id, { type: "set_mode", mode: modeArg as FermentWorkMode })
-			const updated = out.ok ? out.ferment : undefined
-			if (updated) {
-				setActiveFermentAndApplyProfile(pi, runtime, updated)
-				let hint = ""
-				if (modeArg === "exec") hint = "\n\n⚡  exec mode — the agent now has full tool access."
-				else if (modeArg === "plan") hint = "\n\n📝  plan mode — the agent will ask questions and propose structure."
-				else if (modeArg === "auto") hint = "\n\n🔄  auto mode — the agent will guide you through each step."
-				ctx.ui.notify(`Mode changed to: ${modeArg}.${hint}`)
-
-				const action = determineNextAction(updated)
-				const nudge = formatActionNudgeLine(action)
-				if (nudge) {
-					pi.appendEntry("ferment_breadcrumb", {
-						text: `Mode changed to ${modeArg}: "${updated.name}" [${updated.status}]`,
-					})
-					void pi.sendMessage(
-						{
-							customType: "ferment_mode_nudge",
-							content: [{ type: "text", text: nudge }],
-							display: false,
-							details: undefined,
-						},
-						{ triggerTurn: true },
-					)
-				}
-			}
+			const scoping = active.status === "draft" ? getScopingProgress(active) : undefined
+			const progress = scoping ? ` Scoping: ${scoping.answered}/${scoping.total}.` : ""
+			ctx.ui.notify(
+				`Legacy ferment modes are ignored for "${active.name}". Current terminal policy: ${runtime.getContinuationPolicy()}.${progress} Use /manual or /auto to change continuation policy.`,
+			)
 			return { handled: true }
 		}
 
@@ -592,8 +532,7 @@ export class FermentCommandController {
 				runtime.setContinuationPolicy("automated")
 				const shortName = await shortenTitle(resolvedIntent)
 				const f = storage.create(shortName, resolvedIntent)
-				const modeOut = applyAndPersist(f.id, { type: "set_mode", mode: "exec" })
-				const updated = modeOut.ok ? modeOut.ferment : f
+				const updated = f
 				setActiveFermentAndApplyProfile(pi, runtime, updated)
 				appendRefEntry(pi, updated.id)
 				pi.appendEntry("ferment_ack", {

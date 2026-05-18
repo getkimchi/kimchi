@@ -132,7 +132,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	let pendingOneshot = false
 	pi.registerFlag("ferment-oneshot", {
 		type: "boolean",
-		description: "Bootstrap the initial prompt as a one-shot exec-mode ferment.",
+		description: "Bootstrap the initial prompt as an automated one-shot ferment.",
 	})
 	pi.registerFlag("init-git", {
 		type: "boolean",
@@ -236,8 +236,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 				shortName = intent.length > 60 ? `${intent.slice(0, 57).trimEnd()}...` : intent
 			}
 			const f = storage.create(shortName, intent)
-			const modeOut = applyAndPersist(f.id, { type: "set_mode", mode: "exec" })
-			const updated = modeOut.ok ? modeOut.ferment : f
+			const updated = f
 			setActiveFermentState(runtime, updated)
 			appendRefEntry(pi, updated.id)
 			pi.appendEntry("ferment_ack", {

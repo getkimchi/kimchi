@@ -1,5 +1,5 @@
 /**
- * Ferment lifecycle tools: create, list, scope, update fields, set mode, complete.
+ * Ferment lifecycle tools: create, list, scope, update fields, complete.
  *
  * Tool handlers follow the pattern:
  *   1. Validate UI-flow gates (scoping confirmation, etc.) — host concern
@@ -362,11 +362,11 @@ export async function scopeFerment(
 	})
 	if (gateError) return gateError
 
-	// Hard gate: only enforced for ferments scoped interactively (TUI path)
-	// in plan mode. Headless, conversational, exec, and auto modes bypass —
-	// the LLM is trusted there and one-shot/auto-execution should not stall.
+	// Hard gate: only enforced for ferments scoped through the interactive TUI
+	// path. Headless and one-shot scoping never mark this gate as interactive,
+	// so they continue without depending on legacy persisted mode.
 	const fGate = runtime.getStorage().get(params.ferment_id)
-	const gateActive = runtime.isScopingInteractive(params.ferment_id) && fGate?.mode === "plan"
+	const gateActive = runtime.isScopingInteractive(params.ferment_id)
 	if (gateActive && !runtime.isScopingConfirmed(params.ferment_id)) {
 		return toolErr(
 			`Cannot scope ferment "${params.ferment_id}" yet — waiting for user confirmation. Present the plan summary to the user and wait for them to confirm before calling scope_ferment.`,
@@ -592,7 +592,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 			const branch = f.worktree.branch ?? "(no git)"
 			return toolOk(
 				withNextActionHint(
-					`Created "${f.name}".  Mode: ${f.mode}  •  Branch: ${branch}  •  Path: ${f.worktree.path}`,
+					`Created "${f.name}".  Policy: ${runtime.getContinuationPolicy()}  •  Branch: ${branch}  •  Path: ${f.worktree.path}`,
 					f,
 				),
 			)
@@ -937,7 +937,7 @@ ${renderGateGuidance("scope_ferment")}`,
 	pi.registerTool({
 		name: "scope_ferment",
 		label: "Scope Ferment",
-		description: `Save scoping answers and transition ferment from draft to planned. In plan mode, the harness gates this call until the user has confirmed the proposed plan via TUI dropdown. You must produce verdicts for the three plan-scope gates below. A "flag" verdict refuses scoping.
+		description: `Save scoping answers and transition ferment from draft to planned. In interactive scoping, the harness gates this call until the user has confirmed the proposed plan via TUI dropdown. You must produce verdicts for the three plan-scope gates below. A "flag" verdict refuses scoping.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ScopeParams,
@@ -976,23 +976,17 @@ ${renderGateGuidance("scope_ferment")}`,
 	pi.registerTool({
 		name: "set_ferment_mode",
 		label: "Set Ferment Mode",
-		description: "Change the work mode of a ferment.",
+		description: "Legacy compatibility stub. Use /manual or /auto to change the terminal continuation policy.",
 		parameters: SetModeParams,
 		async execute(_, params) {
-			if (!["plan", "exec", "auto"].includes(params.mode)) {
-				return toolErr(`Invalid mode: ${params.mode}. Use plan, exec, or auto.`)
-			}
-			// FSM validation: ensure mode change is allowed
 			const f = runtime.getStorage().get(params.ferment_id)
-			const fsmError = validateFsmTransition(f, "SET_MODE", { mode: params.mode })
-			if (fsmError) return toolErrWithNextAction(fsmError, f)
-
-			const outcome = applyAndPersist(params.ferment_id, {
-				type: "set_mode",
-				mode: params.mode as "plan" | "exec" | "auto",
-			})
-			if (!outcome.ok) return failedToolResult(outcome.error, f)
-			return toolOk(withNextActionHint(`Mode set to ${params.mode} for "${outcome.ferment.name}".`, outcome.ferment))
+			if (!f) return toolErr(`Ferment not found: ${params.ferment_id}`)
+			return toolOk(
+				withNextActionHint(
+					"Legacy ferment mode is ignored. Use /manual to ask before phase transitions, or /auto to continue automatically.",
+					f,
+				),
+			)
 		},
 	})
 

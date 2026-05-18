@@ -339,6 +339,24 @@ describe("registerFermentCommands", () => {
 		expect(h.pi.sendMessage).not.toHaveBeenCalled()
 	})
 
+	it("/ferment mode is a compatibility stub that does not mutate policy or persisted state", async () => {
+		const h = createHarness()
+		const controller = new FermentCommandController()
+		const ferment = h.storage.create("Legacy Mode Command")
+		h.runtime.setActive(ferment)
+
+		const result = await controller.execute(
+			{ type: "mode", mode: "exec" },
+			{ raw: "mode exec", pi: h.pi, ctx: h.ctx, runtime: h.runtime },
+		)
+
+		expect(result).toEqual({ handled: true })
+		expect(h.runtime.getContinuationPolicy()).toBe("manual")
+		expect(h.storage.get(ferment.id)).not.toHaveProperty("mode")
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Legacy ferment modes are ignored"))
+		expect(h.pi.sendMessage).not.toHaveBeenCalled()
+	})
+
 	it("/auto at a phase boundary kicks automated continuation without changing lifecycle state", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)

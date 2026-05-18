@@ -22,7 +22,6 @@ function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 		id: "ferment-1",
 		name: "Runtime Plan",
 		status: "running",
-		mode: "plan",
 		worktree: { path: "/repo" },
 		scoping: {},
 		phases: [

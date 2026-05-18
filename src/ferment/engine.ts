@@ -1,8 +1,9 @@
 /**
  * Ferment Engine v4 — Progressive Refinement
  *
- * Reads the ferment JSON state and returns the next Action for the LLM.
- * Mode-aware: plan mode (coaching), exec mode (auto-advance), auto mode (mixed).
+ * Reads canonical ferment state and returns the next action for the LLM.
+ * Runtime continuation policy decides whether callers act on that action
+ * automatically or wait for user confirmation.
  *
  * Two output modes:
  * - `determineNextAction` — declarative, state-based. Returns a `DeclarativeAction`

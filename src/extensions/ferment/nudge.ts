@@ -55,7 +55,7 @@ export function refreshActiveFermentFromStorage(runtime: FermentRuntime): Fermen
 /**
  * Compose an imperative resume message from a DeclarativeAction.
  *
- * The engine's `determineNextAction` returns mode-aware structured actions.
+ * The engine's `determineNextAction` returns structured actions.
  * For automated continuation kicks we want the planner to act, not to ask.
  * This helper keys off the action *kind* and emits a directive that maps
  * cleanly to a tool call.
@@ -186,7 +186,7 @@ export function onStepCompleted(runtime: FermentRuntime = defaultFermentRuntime)
 export function onPhaseCompleted(runtime: FermentRuntime = defaultFermentRuntime): void {
 	// Refresh the in-memory active ferment cache after the storage write. The agent
 	// drives state; no silent activate_ferment_phase here. Prior versions auto-advanced
-	// the next planned phase in exec mode, which left the FSM in PHASE_ACTIVE
+	// the next planned phase, which left the FSM in PHASE_ACTIVE
 	// behind the agent's back and caused every subsequent agent-initiated
 	// activate_ferment_phase to be rejected.
 	refreshActiveFermentFromStorage(runtime)

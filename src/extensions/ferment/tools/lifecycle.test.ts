@@ -128,11 +128,8 @@ describe("scopeFerment", () => {
 		expect(h.storage.get(h.fermentId)?.status).toBe("planned")
 	})
 
-	it("scopes exec-mode ferments without the continuation subsystem", async () => {
+	it("scopes non-interactive ferments without the confirmation subsystem", async () => {
 		const h = createHarness()
-		const applyAndPersist = createApplyAndPersist(h.runtime)
-		const mode = applyAndPersist(h.fermentId, { type: "set_mode", mode: "exec" })
-		if (!mode.ok) throw new Error(mode.error.message)
 
 		const result = await scopeFerment(
 			h.runtime,

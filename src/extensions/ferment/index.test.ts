@@ -154,7 +154,7 @@ describe("fermentExtension session resume", () => {
 })
 
 describe("fermentExtension one-shot bootstrap", () => {
-	it("creates an exec-mode ferment and rewrites the initial message into a nudge", async () => {
+	it("creates an automated one-shot ferment and rewrites the initial message into a nudge", async () => {
 		const { handlers, pi } = registerFermentExtension(undefined, { "ferment-oneshot": true })
 		const sessionStart = handlers.get("session_start")
 		const input = handlers.get("input")
@@ -174,7 +174,6 @@ describe("fermentExtension one-shot bootstrap", () => {
 
 		const created = getActive()
 		expect(created).toBeDefined()
-		expect(created?.mode).toBe("exec")
 		expect(created?.description).toBe(intent)
 
 		expect(result?.action).toBe("transform")
@@ -298,7 +297,6 @@ function makeActivePlanFerment(overrides: Partial<Ferment> = {}): Ferment {
 		id: "ferment-1",
 		name: "Test Ferment",
 		status: "running",
-		mode: "plan",
 		worktree: { path: "/repo" },
 		scoping: {},
 		phases: [],
@@ -421,9 +419,7 @@ describe("fermentExtension question dropdown", () => {
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
 		if (!scoped.ok) throw new Error(scoped.error.message)
-		const mode = applyAndPersist(draft.id, { type: "set_mode", mode: "exec" })
-		if (!mode.ok) throw new Error(mode.error.message)
-		setActive(mode.ferment)
+		setActive(scoped.ferment)
 		const { handlers, pi } = registerFermentExtension(runtime)
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
@@ -457,8 +453,6 @@ describe("fermentExtension question dropdown", () => {
 			phases: [{ name: "Phase", goal: "Build", steps: [] }],
 		})
 		if (!scoped.ok) throw new Error(scoped.error.message)
-		const mode = applyAndPersist(draft.id, { type: "set_mode", mode: "exec" })
-		if (!mode.ok) throw new Error(mode.error.message)
 		const activated = applyAndPersist(draft.id, { type: "activate_phase", phaseId: "phase-1" })
 		if (!activated.ok) throw new Error(activated.error.message)
 		const completedPhase = applyAndPersist(draft.id, {
@@ -575,7 +569,7 @@ describe("fermentExtension question dropdown", () => {
 	})
 
 	it("keeps automated ferments on the contextual question path when user input is needed", async () => {
-		setActive(makeActivePlanFerment({ mode: "auto" }))
+		setActive(makeActivePlanFerment())
 		const runtime = createDefaultFermentRuntime()
 		runtime.setContinuationPolicy("automated")
 		const { handlers, pi } = registerFermentExtension(runtime)
@@ -623,9 +617,7 @@ describe("fermentExtension question dropdown", () => {
 		runtime.setContinuationPolicy("automated")
 		const applyAndPersist = createApplyAndPersist(runtime)
 		const draft = storage.create("Plan Handoff")
-		const moded = applyAndPersist(draft.id, { type: "set_mode", mode: "exec" })
-		if (!moded.ok) throw new Error(moded.error.message)
-		setActive(moded.ferment)
+		setActive(draft)
 		const { pi } = registerFermentExtension(runtime)
 
 		// Drive scopeFerment directly — the nudge fires at scope-time based on
@@ -673,10 +665,8 @@ describe("fermentExtension question dropdown", () => {
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
 		if (!scoped.ok) throw new Error(scoped.error.message)
-		// Explicitly in plan mode to confirm turn_end does NOT nudge planned ferments.
-		const moded = applyAndPersist(draft.id, { type: "set_mode", mode: "plan" })
-		if (!moded.ok) throw new Error(moded.error.message)
-		setActive(moded.ferment)
+		// Manual policy confirms turn_end does NOT nudge planned ferments.
+		setActive(scoped.ferment)
 		const { handlers, pi } = registerFermentExtension(runtime)
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")

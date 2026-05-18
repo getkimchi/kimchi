@@ -33,7 +33,6 @@ function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 		successCriteria: "Works.",
 		constraints: [],
 		status: "running",
-		mode: "auto",
 		worktree: { path: "/tmp/test", branch: undefined, commit: undefined },
 		scoping: {},
 		phases: [makePhase()],

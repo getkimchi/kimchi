@@ -1,36 +1,33 @@
 /**
- * Mode predicates for the active ferment.
+ * Legacy mode predicates.
  *
- * `plan`: conversational, asks for confirmations.
- * `exec`: fully autonomous; the agent calls activate_ferment_phase / start_ferment_step / complete_ferment_phase explicitly.
- * `auto`: balanced — full instructions, planner decides when to act.
+ * Persisted ferment mode is no longer behavioral. Keep these helpers as inert
+ * compatibility wrappers until the old mode surface is fully retired.
  */
 
 import type { Ferment } from "../../ferment/types.js"
-import { getActive } from "./state.js"
+import { getContinuationPolicy } from "./state.js"
 
 export function isPlanFerment(f: Ferment | undefined | null): boolean {
-	return f?.mode === "plan"
+	return !!f && getContinuationPolicy() === "manual"
 }
 
 export function isExecFerment(f: Ferment | undefined | null): boolean {
-	return f?.mode === "exec"
+	return !!f && getContinuationPolicy() === "automated"
 }
 
 export function isAutoFerment(f: Ferment | undefined | null): boolean {
-	return f?.mode === "auto"
+	return !!f && getContinuationPolicy() === "automated"
 }
 
 export function isPlanMode(): boolean {
-	const f = getActive()
-	if (!f) return process.env.KIMCHI_PERMISSIONS === "plan"
-	return isPlanFerment(f)
+	return getContinuationPolicy() === "manual"
 }
 
 export function isExecMode(): boolean {
-	return isExecFerment(getActive())
+	return getContinuationPolicy() === "automated"
 }
 
 export function isAutoMode(): boolean {
-	return isAutoFerment(getActive())
+	return getContinuationPolicy() === "automated"
 }

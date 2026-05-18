@@ -92,7 +92,7 @@ export interface FsmValidationResult {
 export function validateFsmTransitionWithFerment(
 	ferment: Ferment | undefined | null,
 	event: keyof typeof FSM_EVENTS,
-	params: { phaseId?: string; stepId?: string; mode?: string } = {},
+	params: { phaseId?: string; stepId?: string } = {},
 ): FsmValidationResult {
 	if (!ferment) {
 		return { error: "Ferment not found." }

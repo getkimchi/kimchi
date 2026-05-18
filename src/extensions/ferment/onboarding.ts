@@ -92,7 +92,7 @@ recommended answers. Review the markdown plan, then choose Start execution.
 Other forms:
   /ferment list                    — pick from existing ferments
   /ferment new "Name"              — start with a known name
-  /ferment one-shot "task"         — autonomous exec mode, no confirmations`,
+  /ferment one-shot "task"         — automated one-shot run, no confirmations`,
 			next: "Next: /auto and lifecycle",
 		},
 		{
