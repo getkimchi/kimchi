@@ -102,7 +102,8 @@ describe("telemetryExtension", () => {
 
 			const metricsPayload = JSON.parse(String((metricsCalls[0][1] as RequestInit).body))
 			const metrics = metricsPayload.resourceMetrics[0].scopeMetrics[0].metrics
-			expect(metrics).toHaveLength(4) // token.input, token.output, cost.usage, code_edit_tool.decision
+			expect(metrics).toHaveLength(3) // token.input, token.output, cost.usage
+			// (code_edit_tool.decision is only emitted when tools generate edit decisions)
 
 			const names = metrics.map((m: { name: string }) => m.name)
 			expect(names).toContain("claude_code.token.usage")
@@ -334,17 +335,26 @@ describe("telemetryExtension", () => {
 			const metrics = payload.resourceMetrics[0].scopeMetrics[0].metrics
 
 			// Should have separate added and removed metrics
-			const locMetric = metrics.find((m: { name: string }) => m.name === "claude_code.lines_of_code.count")
-			expect(locMetric).toBeDefined()
+			const locMetrics = metrics.filter((m: { name: string }) => m.name === "claude_code.lines_of_code.count")
+			expect(locMetrics.length).toBeGreaterThan(0)
+
 			// countLineChanges trims trailing newlines, so "old line\n" -> ["old line"] (1 line)
 			// "new line 1\nnew line 2\n" trimmed -> "new line 1\nnew line 2" -> ["new line 1", "new line 2"] (2 lines)
-			// added = 2-1 = 1, removed = 0 but || 1 makes it 1
-			expect(locMetric.sum.dataPoints[0].asInt).toBe("1")
-			expect(
-				locMetric.sum.dataPoints[0].attributes.some(
-					(a: { key: string; value: { stringValue: string } }) => a.key === "type",
-				),
-			).toBe(true)
+			// For a pure-addition edit, added = 2-1 = 1, removed = 0
+			// Verify the "added" metric has value 1
+			const addedMetric = locMetrics.find(
+				(m: { sum?: { dataPoints: Array<{ attributes: Array<{ key: string; value: { stringValue: string } }> }> } }) =>
+					m.sum?.dataPoints[0]?.attributes?.some((a) => a.key === "type" && a.value.stringValue === "added"),
+			)
+			expect(addedMetric).toBeDefined()
+			expect(addedMetric.sum.dataPoints[0].asInt).toBe("1")
+
+			// For a pure-addition edit, no "removed" metric should be emitted (since nothing was removed)
+			const removedMetric = locMetrics.find(
+				(m: { sum?: { dataPoints: Array<{ attributes: Array<{ key: string; value: { stringValue: string } }> }> } }) =>
+					m.sum?.dataPoints[0]?.attributes?.some((a) => a.key === "type" && a.value.stringValue === "removed"),
+			)
+			expect(removedMetric).toBeUndefined()
 		})
 
 		it("sends lines_of_code metric for write tool with trailing newline handled", async () => {
@@ -559,6 +569,8 @@ describe("telemetryExtension", () => {
 			const ext = telemetryExtension(makeConfig())
 			ext(api)
 
+			// Capture session start time before calling session_start
+			const startTimeMs = Date.now()
 			await getHandler(handlers, "session_start")()
 
 			const msgEnd = getHandler(handlers, "message_end")
@@ -593,10 +605,14 @@ describe("telemetryExtension", () => {
 					...((m.gauge?.dataPoints ?? []) as Array<{ startTimeUnixNano: string }>),
 				],
 			)
+
+			// Verify startTimeUnixNano equals startTimeMs * 1_000_000 (nanoseconds)
+			const expectedStartTimeNano = String(startTimeMs * 1_000_000)
 			for (const dp of dataPoints) {
 				expect(dp.startTimeUnixNano).toBeDefined()
 				expect(typeof dp.startTimeUnixNano).toBe("string")
 				expect(dp.startTimeUnixNano.length).toBeGreaterThan(0)
+				expect(dp.startTimeUnixNano).toBe(expectedStartTimeNano)
 			}
 		})
 

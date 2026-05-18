@@ -74,10 +74,11 @@ function countLineChanges(oldStr: string, newStr: string): { added: number; remo
 	const oldLines = trimmedOld ? trimmedOld.split("\n").length : 0
 	const newLines = trimmedNew ? trimmedNew.split("\n").length : 0
 
-	// Use || 1 to ensure at least 1 is counted if content changed
-	// (follows OpenCode plugin behavior)
-	const added = Math.max(newLines - oldLines, 0) || 1
-	const removed = Math.max(oldLines - newLines, 0) || 1
+	// Only count as a change if strings actually differ
+	const changed = trimmedOld !== trimmedNew
+	// Use || 1 only when the side has net additions/removals (follows OpenCode plugin behavior)
+	const added = Math.max(newLines - oldLines, 0) || (changed && newLines >= oldLines ? 1 : 0)
+	const removed = Math.max(oldLines - newLines, 0) || (changed && oldLines > newLines ? 1 : 0)
 
 	return { added, removed }
 }
@@ -233,13 +234,16 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		let shuttingDown = false
 
 		// Accumulation state for metrics
-		const cumulativeTokensByModel: Record<string, { input: number; output: number }> = {}
+		const cumulativeTokensByModel: Record<
+			string,
+			{ input: number; output: number; cacheRead: number; cacheWrite: number }
+		> = {}
 		const cumulativeCostByModel: Record<string, number> = {}
 		let cumulativeCommitCount = 0
 		let cumulativePRCount = 0
 		let cumulativeLinesAdded = 0
 		let cumulativeLinesRemoved = 0
-		const cumulativeEditDecisions: Record<string, number> = {}
+		const cumulativeEditDecisionsFull: MetricData[] = []
 
 		let flushTimer: NodeJS.Timeout | undefined
 
@@ -268,6 +272,22 @@ export default function telemetryExtension(config: TelemetryConfig) {
 						type: "Sum",
 						value: tokens.output,
 						attrs: { type: "output", model, provider: "ai-enabler" },
+					})
+				}
+				if (tokens.cacheRead > 0) {
+					allMetrics.push({
+						name: "claude_code.token.usage",
+						type: "Sum",
+						value: tokens.cacheRead,
+						attrs: { type: "cacheRead", model, provider: "ai-enabler" },
+					})
+				}
+				if (tokens.cacheWrite > 0) {
+					allMetrics.push({
+						name: "claude_code.token.usage",
+						type: "Sum",
+						value: tokens.cacheWrite,
+						attrs: { type: "cacheCreation", model, provider: "ai-enabler" },
 					})
 				}
 			}
@@ -322,18 +342,8 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				})
 			}
 
-			// Flush edit decisions
-			for (const [key, count] of Object.entries(cumulativeEditDecisions)) {
-				if (count > 0) {
-					const [toolName, decision] = key.split("::")
-					allMetrics.push({
-						name: "claude_code.code_edit_tool.decision",
-						type: "Sum",
-						value: count,
-						attrs: { tool_name: toolName, decision },
-					})
-				}
-			}
+			// Flush edit decisions with full attributes (language when known)
+			allMetrics.push(...cumulativeEditDecisionsFull)
 
 			if (allMetrics.length > 0) {
 				track(sendMetrics(config, sessionId, allMetrics, sessionStartNano))
@@ -355,7 +365,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			cumulativePRCount = 0
 			cumulativeLinesAdded = 0
 			cumulativeLinesRemoved = 0
-			for (const key of Object.keys(cumulativeEditDecisions)) delete cumulativeEditDecisions[key]
+			cumulativeEditDecisionsFull.length = 0
 
 			// Start periodic flush timer
 			if (flushTimer) clearInterval(flushTimer)
@@ -394,7 +404,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				const rawProvider = String(assistant.provider ?? "unknown")
 				const provider = meta?.provider ? meta.provider : rawProvider === "kimchi-dev" ? "ai-enabler" : rawProvider
 				const { input, output, cacheRead, cacheWrite } = assistant.usage
-				const costTotal = assistant.usage.cost.total
+				const costTotal = assistant.usage?.cost?.total ?? 0
 				const sessionUptimeMs = Date.now() - sessionStartMs
 
 				track(
@@ -412,19 +422,17 @@ export default function telemetryExtension(config: TelemetryConfig) {
 
 				// Accumulate tokens and costs per model
 				if (!cumulativeTokensByModel[model]) {
-					cumulativeTokensByModel[model] = { input: 0, output: 0 }
+					cumulativeTokensByModel[model] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 				}
 				cumulativeTokensByModel[model].input += input
 				cumulativeTokensByModel[model].output += output
+				cumulativeTokensByModel[model].cacheRead += cacheRead
+				cumulativeTokensByModel[model].cacheWrite += cacheWrite
 
 				if (!cumulativeCostByModel[model]) {
 					cumulativeCostByModel[model] = 0
 				}
 				cumulativeCostByModel[model] += costTotal
-
-				// Accumulate code_edit_tool.decision
-				const decisionKey = "message_end::api_request"
-				cumulativeEditDecisions[decisionKey] = (cumulativeEditDecisions[decisionKey] || 0) + 1
 			} catch (err) {
 				console.error("[telemetry] message_end handler error:", err)
 			}
@@ -446,16 +454,22 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				if (/git\s+commit\b/.test(command) && !/--dry-run/.test(command)) {
 					track(sendLog(config, sessionId, "tool_usage", { tool_name: "bash", decision: "git_commit" }))
 					cumulativeCommitCount++
-					// Accumulate edit decision
-					const decisionKey = "bash::git_commit"
-					cumulativeEditDecisions[decisionKey] = (cumulativeEditDecisions[decisionKey] || 0) + 1
+					cumulativeEditDecisionsFull.push({
+						name: "claude_code.code_edit_tool.decision",
+						type: "Sum",
+						value: 1,
+						attrs: { tool_name: "bash", decision: "git_commit", source: "auto", decision_type: "applied" },
+					})
 				}
 				if (/gh\s+pr\s+create\b/.test(command)) {
 					track(sendLog(config, sessionId, "tool_usage", { tool_name: "bash", decision: "gh_pr_create" }))
 					cumulativePRCount++
-					// Accumulate edit decision
-					const decisionKey = "bash::gh_pr_create"
-					cumulativeEditDecisions[decisionKey] = (cumulativeEditDecisions[decisionKey] || 0) + 1
+					cumulativeEditDecisionsFull.push({
+						name: "claude_code.code_edit_tool.decision",
+						type: "Sum",
+						value: 1,
+						attrs: { tool_name: "bash", decision: "gh_pr_create", source: "auto", decision_type: "applied" },
+					})
 				}
 			}
 
@@ -473,17 +487,18 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				)
 				cumulativeLinesAdded += changes.added
 				cumulativeLinesRemoved += changes.removed
-				// Accumulate edit decision
-				const decisionKey = "edit::edit_applied"
-				cumulativeEditDecisions[decisionKey] = (cumulativeEditDecisions[decisionKey] || 0) + 1
+				cumulativeEditDecisionsFull.push({
+					name: "claude_code.code_edit_tool.decision",
+					type: "Sum",
+					value: 1,
+					attrs: { tool_name: "edit", decision: "edit_applied", language, source: "auto", decision_type: "applied" },
+				})
 			}
 
 			if (toolName === "write") {
 				const filePath = String(args?.filePath ?? "")
 				const language = inferLanguage(filePath)
 				const content = String(args?.content ?? "")
-				// Count lines, handling trailing newline properly
-				const lines = content ? content.split("\n").length : 1
 				const trimmedContent = content.endsWith("\n") ? content.replace(/\n+$/, "") : content
 				const actualLines = trimmedContent ? trimmedContent.split("\n").length : 1
 				track(
@@ -493,10 +508,20 @@ export default function telemetryExtension(config: TelemetryConfig) {
 						lines_added: actualLines,
 					}),
 				)
-				cumulativeLinesAdded += actualLines
-				// Accumulate edit decision
-				const decisionKey = "write::write_created"
-				cumulativeEditDecisions[decisionKey] = (cumulativeEditDecisions[decisionKey] || 0) + 1
+				// Emit lines_of_code.count directly with language attribute
+				cumulativeEditDecisionsFull.push({
+					name: "claude_code.lines_of_code.count",
+					type: "Sum",
+					value: actualLines,
+					attrs: { type: "added", language },
+				})
+				// Emit code_edit_tool.decision with full attributes
+				cumulativeEditDecisionsFull.push({
+					name: "claude_code.code_edit_tool.decision",
+					type: "Sum",
+					value: 1,
+					attrs: { tool_name: "write", decision: "write_created", language, source: "auto", decision_type: "applied" },
+				})
 			}
 
 			if (toolName === "multiedit") {
@@ -518,9 +543,18 @@ export default function telemetryExtension(config: TelemetryConfig) {
 					cumulativeLinesAdded += changes.added
 					cumulativeLinesRemoved += changes.removed
 				}
-				// Accumulate edit decision
-				const decisionKey = "multiedit::edit_applied"
-				cumulativeEditDecisions[decisionKey] = (cumulativeEditDecisions[decisionKey] || 0) + 1
+				cumulativeEditDecisionsFull.push({
+					name: "claude_code.code_edit_tool.decision",
+					type: "Sum",
+					value: 1,
+					attrs: {
+						tool_name: "multiedit",
+						decision: "edit_applied",
+						language,
+						source: "auto",
+						decision_type: "applied",
+					},
+				})
 			}
 		})
 	}
