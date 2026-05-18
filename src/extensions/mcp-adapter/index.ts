@@ -16,6 +16,7 @@ import {
 	getMissingConfiguredDirectToolServers,
 	resolveDirectTools,
 } from "./direct-tools.js"
+import { createDirectToolVisibility } from "./direct-tool-visibility.js"
 import { flushMetadataCache, initializeMcp, updateStatusBar } from "./init.js"
 import { initializeOAuth, shutdownOAuth } from "./mcp-auth-flow.js"
 import { loadMetadataCache, overwriteMetadataCache, purgeStaleEntries } from "./metadata-cache.js"
@@ -109,6 +110,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 
 	// Track all registered tool names to avoid double-registration
 	const registeredToolNames = new Set<string>()
+	const directToolVisibility = createDirectToolVisibility(pi)
 
 	for (const spec of directSpecs) {
 		const cachedServer = earlyCache?.servers?.[spec.serverName]
@@ -136,15 +138,18 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 			),
 		})
 		registeredToolNames.add(spec.prefixedName)
+		directToolVisibility.markPermanent([spec.prefixedName])
 	}
 
 	/**
-	 * Register tool specs with the agent and add them to the active set.
+	 * Register tool specs with the agent and expose them in the active set.
 	 *
 	 * `markDynamic` (default true) tags the new names in `state.dynamicToolNames`
 	 * so the next user input clears them (used by proxy describe/search results).
 	 * Pass `false` for tools that should persist across turns — e.g. direct tools
-	 * registered after a successful cache bootstrap.
+	 * registered after a successful cache bootstrap. `pi.registerTool` activates
+	 * newly registered tools; the visibility controller releases any prior
+	 * transient hide when a previously registered dynamic tool is injected again.
 	 *
 	 * When `state` is not yet ready (callback invoked from inside `initializeMcp`
 	 * before its promise resolves), we only allow the permanent path through —
@@ -162,10 +167,10 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 		const markDynamic = opts?.markDynamic ?? true
 		if (!state && markDynamic) return []
 		const newNames: string[] = []
-		const alreadyActive: string[] = []
+		const alreadyRegistered: string[] = []
 		for (const spec of specs) {
 			if (registeredToolNames.has(spec.prefixedName)) {
-				alreadyActive.push(spec.prefixedName)
+				alreadyRegistered.push(spec.prefixedName)
 				continue
 			}
 			pi.registerTool({
@@ -183,19 +188,11 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 			registeredToolNames.add(spec.prefixedName)
 			newNames.push(spec.prefixedName)
 		}
-		const allInjected = [...alreadyActive, ...newNames]
-		if (newNames.length > 0) {
-			// Guard above ensures `markDynamic` implies `state` is set, so the
-			// dynamic-name bookkeeping is safe without a re-check here.
-			if (markDynamic && state) {
-				for (const name of newNames) {
-					state.dynamicToolNames.add(name)
-				}
-			}
-			const current = new Set(pi.getActiveTools())
-			for (const name of newNames) current.add(name)
-			pi.setActiveTools([...current])
-		}
+		const allInjected = [...alreadyRegistered, ...newNames]
+		directToolVisibility.expose(allInjected, {
+			markDynamic,
+			dynamicToolNames: state?.dynamicToolNames,
+		})
 		return allInjected
 	}
 
@@ -213,10 +210,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 
 	pi.on("input", () => {
 		if (!state || state.dynamicToolNames.size === 0) return
-		const dynamic = state.dynamicToolNames
-		const cleaned = pi.getActiveTools().filter((n) => !dynamic.has(n))
-		pi.setActiveTools(cleaned)
-		state.dynamicToolNames.clear()
+		directToolVisibility.hideDynamic(state.dynamicToolNames)
 	})
 
 	const getPiTools = (): ToolInfo[] => pi.getAllTools()

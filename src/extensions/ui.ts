@@ -147,6 +147,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	pi.on("session_start", (event, ctx) => {
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
+		toolsInFlight = 0
 		resetState()
 		currentCtx = ctx
 		sessionStartMs = Date.now()
@@ -251,6 +252,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	})
 
 	let stopWorkingAnimation: (() => void) | undefined
+	let toolsInFlight = 0
 
 	const startIndicator = (ctx: ExtensionContext) => {
 		ctx.ui.setWorkingVisible(true)
@@ -264,22 +266,40 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 	pi.on("turn_start", (_, ctx) => {
 		currentCtx = ctx
+		toolsInFlight = 0
 		refresh("generating")
 		startIndicator(ctx)
 	})
-	pi.on("message_start", (event) => {
+	pi.on("message_start", (event, ctx) => {
 		if (event.message.role !== "assistant") return
-		// Keep the working indicator visible while assistant text is streaming.
-		// It is cleared on agent_end, which is the reliable "work stopped" signal.
+		// Only stop the tool animation when assistant text arrives if no tools are
+		// still running. Parallel tool calls (Kimi K2.5+, deepseek) may have their
+		// results arrive while the assistant message is still streaming; keeping the
+		// indicator alive until all tools finish avoids a premature flash-and-clear.
+		if (toolsInFlight === 0) {
+			stopWorkingAnimation?.()
+			stopWorkingAnimation = undefined
+			ctx.ui.setWorkingVisible(false)
+		}
 	})
 	pi.on("tool_execution_start", (_, ctx) => {
+		toolsInFlight++
 		startIndicator(ctx)
+	})
+	pi.on("tool_execution_end", (_, ctx) => {
+		toolsInFlight = Math.max(0, toolsInFlight - 1)
+		if (toolsInFlight === 0) {
+			stopWorkingAnimation?.()
+			stopWorkingAnimation = undefined
+			ctx.ui.setWorkingVisible(false)
+		}
 	})
 	pi.on("turn_end", (_, ctx) => {
 		currentCtx = ctx
 		refresh("idle")
 	})
 	pi.on("agent_end", (_, ctx) => {
+		toolsInFlight = 0
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
 		ctx.ui.setWorkingVisible(false)

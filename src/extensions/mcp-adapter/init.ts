@@ -218,8 +218,8 @@ export async function initializeMcp(
 			if (bootstrapped.length > 0) {
 				// Try to register direct tools for the just-bootstrapped servers
 				// in the current session. Avoids the historical "restart required"
-				// dance — the index.ts callback uses pi.registerTool +
-				// pi.setActiveTools, which exposes the tools to subsequent turns
+				// dance — the index.ts callback registers the tools and releases any
+				// transient visibility hide, which exposes them to subsequent turns
 				// without reloading.
 				let injectedCount = 0
 				if (registerBootstrappedDirectTools) {
