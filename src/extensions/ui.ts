@@ -31,33 +31,109 @@ function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {
 }
 
 /**
+
+/** Reason a model was skipped during ctrl+p cycle. */
+export interface SkippedModel {
+	model: Model<Api>
+	reason: string
+}
+
+/** Result of findNextCompatibleModel — the selected model plus any skipped candidates. */
+export interface NextModelResult {
+	model: Model<Api> | undefined
+	skipped: SkippedModel[]
+}
+
+/**
  * Iterates through the model list starting from currentIndex, wrapping around,
  * and returns the first model compatible with the current context (token count
- * and vision requirements). Returns undefined if no compatible model is found.
+ * and vision requirements). Also collects a list of all skipped models with
+ * human-readable reasons, which the caller can surface in a notification.
  */
 export function findNextCompatibleModel(
 	available: readonly Model<Api>[],
 	currentIndex: number,
 	currentTokens: number | null,
 	hasImages: boolean,
-): Model<Api> | undefined {
+): NextModelResult {
 	const len = available.length
-	if (len === 0) return undefined
+	if (len === 0) return { model: undefined, skipped: [] }
 
-	for (let offset = 1; offset <= len; offset++) {
+	const skipped: SkippedModel[] = []
+
+	// Current model (at currentIndex): if incompatible, add to skipped.
+	// Remaining candidates (offset=1..len-1): add incompatible to skipped, return first compatible.
+	const current = available[currentIndex]
+
+	// Context window check for current model
+	if (currentTokens !== null && current.contextWindow < currentTokens) {
+		skipped.push({
+			model: current,
+			reason: `${(current.contextWindow / 1000).toFixed(0)}K context \u2014 current usage (${(currentTokens / 1000).toFixed(0)}K tokens) exceeds its window`,
+		})
+	} else if (hasImages && !current.input.includes("image")) {
+		skipped.push({
+			model: current,
+			reason: "no vision support \u2014 session contains images",
+		})
+	} else {
+		// Current model is compatible — check remaining candidates
+		for (let offset = 1; offset < len; offset++) {
+			const idx = (currentIndex + offset) % len
+			const candidate = available[idx]
+
+			// Context window check
+			if (currentTokens !== null && candidate.contextWindow < currentTokens) {
+				skipped.push({
+					model: candidate,
+					reason: `${(candidate.contextWindow / 1000).toFixed(0)}K context \u2014 current usage (${(currentTokens / 1000).toFixed(0)}K tokens) exceeds its window`,
+				})
+				continue
+			}
+
+			// Vision check
+			if (hasImages && !candidate.input.includes("image")) {
+				skipped.push({
+					model: candidate,
+					reason: "no vision support \u2014 session contains images",
+				})
+				continue
+			}
+
+			return { model: candidate, skipped }
+		}
+
+		// All remaining candidates were incompatible or none existed → return current
+		return { model: current, skipped }
+	}
+
+	// Current model is incompatible: iterate from currentIndex+1, collecting skips, returning first compatible
+	for (let offset = 1; offset < len; offset++) {
 		const idx = (currentIndex + offset) % len
 		const candidate = available[idx]
 
 		// Context window check
-		if (currentTokens !== null && candidate.contextWindow < currentTokens) continue
+		if (currentTokens !== null && candidate.contextWindow < currentTokens) {
+			skipped.push({
+				model: candidate,
+				reason: `${(candidate.contextWindow / 1000).toFixed(0)}K context \u2014 current usage (${(currentTokens / 1000).toFixed(0)}K tokens) exceeds its window`,
+			})
+			continue
+		}
 
 		// Vision check
-		if (hasImages && !candidate.input.includes("image")) continue
+		if (hasImages && !candidate.input.includes("image")) {
+			skipped.push({
+				model: candidate,
+				reason: "no vision support \u2014 session contains images",
+			})
+			continue
+		}
 
-		return candidate
+		return { model: candidate, skipped }
 	}
 
-	return undefined
+	return { model: undefined, skipped }
 }
 
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
@@ -276,9 +352,24 @@ export default function uiExtension(pi: ExtensionAPI) {
 							let idx = available.findIndex((m) => modelsAreEqual(m, current))
 							if (idx === -1) idx = 0
 							const usage = ctx.getContextUsage()
-							const next = findNextCompatibleModel(available, idx, usage?.tokens ?? null, sessionHasImages())
+							const { model: next, skipped } = findNextCompatibleModel(
+								available,
+								idx,
+								usage?.tokens ?? null,
+								sessionHasImages(),
+							)
+							if (skipped.length > 0) {
+								const lines = skipped.map((s) => `$  • ${s.model.id} (${s.model.provider}): ${s.reason}`)
+								ctx.ui.notify(
+									`Skipped ${skipped.length} incompatible model${skipped.length > 1 ? "s" : ""}:\n${lines.join("\n")}\nUse /compact to free up context and unlock more models.`,
+									"info",
+								)
+							}
 							if (!next) {
-								ctx.ui.notify("No compatible model available for the current context.", "info")
+								ctx.ui.notify(
+									"No compatible model available for the current context. Use /compact to reduce context size and try again.",
+									"info",
+								)
 							} else {
 								pi.setModel(next).catch((err) => {
 									ctx.ui.notify(`Failed to cycle model: ${err instanceof Error ? err.message : String(err)}`, "warning")
