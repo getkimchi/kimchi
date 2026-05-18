@@ -101,7 +101,7 @@ export function getToolNamesForType(type: string): string[] {
 	const key = resolveKey(type)
 	const raw = key ? agents.get(key) : undefined
 	const config = raw?.enabled !== false ? raw : undefined
-	const names = config?.builtinToolNames?.length ? config.builtinToolNames : [...BUILTIN_TOOL_NAMES]
+	const names = config?.builtinToolNames !== undefined ? config.builtinToolNames : [...BUILTIN_TOOL_NAMES]
 	return names
 }
 

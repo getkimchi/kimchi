@@ -94,6 +94,7 @@ interface GetSubagentResultDetails {
 	displayName: string
 	description: string
 	status: string
+	abortReason?: AgentAbortReason
 	toolUses: number
 	tokens: string
 	contextPercent: number | null
@@ -125,7 +126,7 @@ function getSubagentResultIcon(status: string, theme: Theme): string {
 	}
 }
 
-function summaryForStatus(status: string, error?: string): string {
+export function summaryForStatus(status: string, error?: string, abortReason?: AgentAbortReason): string {
 	switch (status) {
 		case "running":
 		case "queued":
@@ -135,7 +136,7 @@ function summaryForStatus(status: string, error?: string): string {
 		case "steered":
 			return "Wrapped up (turn limit)"
 		case "aborted":
-			return "Aborted (max turns exceeded)"
+			return getAbortLabel(abortReason)
 		case "stopped":
 			return "Stopped"
 		case "error":
@@ -1259,7 +1260,7 @@ Model selection — YOU choose based on task complexity:
 						line += `\n${theme.fg("muted", `  … (${lines.length - maxLines} more lines — use verbose: true for full output)`)}`
 					}
 				} else if (!expanded) {
-					const summary = summaryForStatus(details.status, details.error)
+					const summary = summaryForStatus(details.status, details.error, details.abortReason)
 					line += `\n${theme.fg("dim", `  ⎿  ${summary}`)}`
 				}
 
@@ -1326,6 +1327,7 @@ Model selection — YOU choose based on task complexity:
 					displayName,
 					description: record.description,
 					status: record.status,
+					abortReason: record.abortReason,
 					toolUses: record.toolUses,
 					tokens,
 					contextPercent,

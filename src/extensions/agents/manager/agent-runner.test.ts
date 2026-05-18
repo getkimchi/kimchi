@@ -44,6 +44,7 @@ vi.mock("../prompt/context.js", () => ({
 }))
 
 vi.mock("../personas/agent-types.js", () => ({
+	BUILTIN_TOOL_NAMES: ["read", "bash", "edit", "write", "grep", "find", "ls"],
 	getConfig: vi.fn().mockReturnValue({
 		extensions: false,
 		skills: false,
@@ -78,9 +79,13 @@ vi.mock("../../memory/memory.js", () => ({
 }))
 
 import { createAgentSession } from "@earendil-works/pi-coding-agent"
+import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { type RunOptions, runAgent } from "./agent-runner.js"
 
 const mockCreateAgentSession = vi.mocked(createAgentSession)
+const mockGetConfig = vi.mocked(getConfig)
+const mockGetAgentConfig = vi.mocked(getAgentConfig)
+const mockGetToolNamesForType = vi.mocked(getToolNamesForType)
 
 type SessionEvent = { type: string; [k: string]: unknown }
 type Subscriber = (event: SessionEvent) => void
@@ -93,6 +98,7 @@ function makeFakeSession({
 	emitUsage = true,
 	events,
 	statsTokens,
+	activeToolNames = [],
 }: {
 	promptTokens?: number
 	outputTokens?: number
@@ -101,6 +107,7 @@ function makeFakeSession({
 	emitUsage?: boolean
 	events?: SessionEvent[]
 	statsTokens?: { input: number; output: number; cacheWrite: number }
+	activeToolNames?: string[]
 } = {}) {
 	const subscribers: Subscriber[] = []
 	let promptCalled = false
@@ -116,7 +123,7 @@ function makeFakeSession({
 		}),
 		abort: abortSpy,
 		steer: vi.fn(),
-		getActiveToolNames: vi.fn().mockReturnValue([]),
+		getActiveToolNames: vi.fn().mockReturnValue(activeToolNames),
 		setActiveToolsByName: vi.fn(),
 		bindExtensions: vi.fn().mockResolvedValue(undefined),
 		messages: [],
@@ -177,6 +184,38 @@ function makeFakePi() {
 	}
 }
 
+function makeTypeConfig(overrides: Partial<ReturnType<typeof getConfig>> = {}): ReturnType<typeof getConfig> {
+	return {
+		displayName: "Agent",
+		description: "Agent",
+		builtinToolNames: [],
+		extensions: false,
+		skills: false,
+		promptMode: "replace",
+		...overrides,
+	}
+}
+
+function makeAgentConfig(
+	overrides: Partial<NonNullable<ReturnType<typeof getAgentConfig>>> = {},
+): NonNullable<ReturnType<typeof getAgentConfig>> {
+	return {
+		name: "General-Purpose",
+		description: "General purpose agent",
+		extensions: false,
+		skills: false,
+		systemPrompt: "",
+		promptMode: "replace",
+		thinking: undefined,
+		maxTurns: undefined,
+		memory: undefined,
+		disallowedTools: undefined,
+		strengths: undefined,
+		models: undefined,
+		...overrides,
+	}
+}
+
 describe("runAgent — tokenBudget forwarding", () => {
 	let ctx: ReturnType<typeof makeFakeCtx>
 	let pi: ReturnType<typeof makeFakePi>
@@ -185,6 +224,14 @@ describe("runAgent — tokenBudget forwarding", () => {
 		ctx = makeFakeCtx()
 		pi = makeFakePi()
 		mockCreateAgentSession.mockReset()
+		mockGetConfig.mockReturnValue(
+			makeTypeConfig({
+				extensions: false,
+				skills: false,
+			}),
+		)
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+		mockGetToolNamesForType.mockReturnValue([])
 	})
 
 	afterEach(() => {
@@ -455,5 +502,77 @@ describe("runAgent — tokenBudget forwarding", () => {
 		expect(abortSpy).toHaveBeenCalled()
 		expect(result.aborted).toBe(true)
 		expect(result.abortReason).toBe("token_budget")
+	})
+})
+
+describe("runAgent — profile tool access", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockGetConfig.mockReturnValue(
+			makeTypeConfig({
+				extensions: true,
+				skills: false,
+			}),
+		)
+		mockGetAgentConfig.mockReturnValue(
+			makeAgentConfig({
+				name: "Researcher",
+				description: "Research agent",
+				strengths: ["research"],
+			}),
+		)
+		mockGetToolNamesForType.mockReturnValue(["read", "grep"])
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("does not pass a hard tools allowlist when profile extensions are enabled", async () => {
+		const session = makeFakeSession({
+			activeToolNames: ["read", "grep", "edit", "web_search", "Agent", "steer_subagent"],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockCreateAgentSession).toHaveBeenCalledWith(expect.not.objectContaining({ tools: expect.anything() }))
+		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "grep", "web_search"])
+	})
+
+	it("keeps only matching extension tools when profile names an extension allowlist", async () => {
+		mockGetConfig.mockReturnValue(
+			makeTypeConfig({
+				extensions: ["web"],
+				skills: false,
+			}),
+		)
+		const session = makeFakeSession({
+			activeToolNames: ["read", "grep", "web_search", "mcp__db__query", "Agent"],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "grep", "web_search"])
 	})
 })

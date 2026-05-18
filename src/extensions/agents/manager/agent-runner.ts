@@ -19,6 +19,7 @@ import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
 import {
+	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
 	getConfig,
 	getMemoryToolNames,
@@ -317,8 +318,10 @@ export async function runAgent(
 		settingsManager: SettingsManager.create(effectiveCwd, agentDir),
 		modelRegistry: ctx.modelRegistry,
 		model,
-		tools: toolNames,
 		resourceLoader: loader,
+	}
+	if (extensions === false) {
+		sessionOpts.tools = toolNames
 	}
 	if (thinkingLevel) {
 		sessionOpts.thinkingLevel = thinkingLevel
@@ -328,12 +331,23 @@ export async function runAgent(
 
 	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
 
+	await session.bindExtensions({
+		onError: (err) => {
+			options.onToolActivity?.({
+				type: "end",
+				toolName: `extension-error:${err.extensionPath}`,
+			})
+		},
+	})
+
 	if (extensions !== false) {
 		const builtinToolNameSet = new Set(toolNames)
+		const allBuiltinToolNames = new Set(BUILTIN_TOOL_NAMES)
 		const activeTools = session.getActiveToolNames().filter((t) => {
 			if (EXCLUDED_TOOL_NAMES.includes(t)) return false
 			if (disallowedSet?.has(t)) return false
 			if (builtinToolNameSet.has(t)) return true
+			if (allBuiltinToolNames.has(t)) return false
 			if (Array.isArray(extensions)) {
 				return extensions.some((ext) => t.startsWith(ext) || t.includes(ext))
 			}
@@ -344,15 +358,6 @@ export async function runAgent(
 		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet.has(t))
 		session.setActiveToolsByName(activeTools)
 	}
-
-	await session.bindExtensions({
-		onError: (err) => {
-			options.onToolActivity?.({
-				type: "end",
-				toolName: `extension-error:${err.extensionPath}`,
-			})
-		},
-	})
 
 	options.onSessionCreated?.(session)
 
