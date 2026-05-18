@@ -33,7 +33,12 @@ import {
 	setGraceTurns,
 	steerAgent,
 } from "./manager/agent-runner.js"
-import { type BudgetRetryBlock, createBudgetRetryBlock, shouldBlockBudgetRetry } from "./manager/budget-retry-guard.js"
+import {
+	type BudgetRetryBlock,
+	type BudgetRetryCandidate,
+	createBudgetRetryBlockFromCompletion,
+	shouldBlockBudgetRetry,
+} from "./manager/budget-retry-guard.js"
 import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
@@ -283,6 +288,12 @@ function buildNotificationDetails(
 
 let activeManager: AgentManager | undefined
 let budgetRetryBlock: BudgetRetryBlock | undefined
+const budgetRetryCandidates = new Map<string, BudgetRetryCandidate>()
+
+function blockBudgetRetryIfNeeded(record: AgentRecord, candidate: BudgetRetryCandidate | undefined): void {
+	const block = createBudgetRetryBlockFromCompletion(candidate, record)
+	if (block) budgetRetryBlock = block
+}
 
 export function getActiveAgentCount(): number {
 	return activeManager?.getRunningCount() ?? 0
@@ -488,6 +499,10 @@ export default function (pi: ExtensionAPI) {
 
 	const manager = new AgentManager(
 		(record) => {
+			const retryCandidate = budgetRetryCandidates.get(record.id)
+			budgetRetryCandidates.delete(record.id)
+			blockBudgetRetryIfNeeded(record, retryCandidate)
+
 			const isError = record.status === "error" || record.status === "stopped" || record.status === "aborted"
 			const eventData = buildEventData(record)
 			if (isError) {
@@ -563,6 +578,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async () => {
 		manager.abortAll()
+		budgetRetryCandidates.clear()
 		for (const timer of pendingNudges.values()) clearTimeout(timer)
 		pendingNudges.clear()
 		manager.dispose()
@@ -964,6 +980,14 @@ Model selection — YOU choose based on task complexity:
 						record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
 						writeInitialEntry(record.outputFile, id, params.prompt as string, ctx.cwd)
 					}
+					if (explicitTokenBudget != null) {
+						budgetRetryCandidates.set(id, {
+							budget: explicitTokenBudget,
+							subagentType,
+							description: params.description as string,
+							prompt: params.prompt as string,
+						})
+					}
 
 					if (joinMode != null && joinMode !== "async") {
 						currentBatchAgents.push({ id, joinMode })
@@ -1085,14 +1109,17 @@ Model selection — YOU choose based on task complexity:
 				if (record.status === "error") {
 					return textResult(`${fallbackNote}Agent failed: ${record.error}`, details)
 				}
-				if (explicitTokenBudget != null && record.status === "aborted" && record.abortReason === "token_budget") {
-					budgetRetryBlock = createBudgetRetryBlock({
-						budget: explicitTokenBudget,
-						subagentType,
-						description: params.description as string,
-						prompt: params.prompt as string,
-					})
-				}
+				blockBudgetRetryIfNeeded(
+					record,
+					explicitTokenBudget != null
+						? {
+								budget: explicitTokenBudget,
+								subagentType,
+								description: params.description as string,
+								prompt: params.prompt as string,
+							}
+						: undefined,
+				)
 
 				const durationMs = (record.completedAt ?? Date.now()) - record.startedAt
 				const statsParts = [`${record.toolUses} tool uses`]

@@ -91,15 +91,20 @@ function makeFakeSession({
 	cacheWriteTokens = 0,
 	abortSpy = vi.fn(),
 	emitUsage = true,
+	events,
+	statsTokens,
 }: {
 	promptTokens?: number
 	outputTokens?: number
 	cacheWriteTokens?: number
 	abortSpy?: ReturnType<typeof vi.fn>
 	emitUsage?: boolean
+	events?: SessionEvent[]
+	statsTokens?: { input: number; output: number; cacheWrite: number }
 } = {}) {
 	const subscribers: Subscriber[] = []
 	let promptCalled = false
+	const sessionStatsTokens = statsTokens ?? { input: promptTokens, output: outputTokens, cacheWrite: cacheWriteTokens }
 
 	const session = {
 		subscribe: vi.fn((cb: Subscriber) => {
@@ -116,11 +121,19 @@ function makeFakeSession({
 		bindExtensions: vi.fn().mockResolvedValue(undefined),
 		messages: [],
 		getSessionStats: vi.fn().mockReturnValue({
-			tokens: { input: promptTokens, output: outputTokens, cacheWrite: cacheWriteTokens },
+			tokens: sessionStatsTokens,
 		}),
 		prompt: vi.fn().mockImplementation(async () => {
 			if (!promptCalled) {
 				promptCalled = true
+				if (events) {
+					for (const event of events) {
+						for (const sub of subscribers) {
+							sub(event)
+						}
+					}
+					return
+				}
 				if (emitUsage) {
 					for (const sub of subscribers) {
 						sub({
@@ -251,6 +264,52 @@ describe("runAgent — tokenBudget forwarding", () => {
 		})
 
 		expect(abortSpy).not.toHaveBeenCalled()
+		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("token_budget")
+	})
+
+	it("reconciles final session stats against the current post-compaction window", async () => {
+		const abortSpy = vi.fn()
+		const usageEvents: Array<{ input: number; output: number; cacheWrite: number }> = []
+		const session = makeFakeSession({
+			abortSpy,
+			statsTokens: { input: 1_000, output: 500, cacheWrite: 0 },
+			events: [
+				{
+					type: "message_end",
+					message: {
+						role: "assistant",
+						usage: { input: 9_000, output: 1_000, cacheWrite: 0 },
+					},
+				},
+				{
+					type: "compaction_end",
+					aborted: false,
+					reason: "threshold",
+					result: { tokensBefore: 10_000 },
+				},
+				{ type: "turn_end" },
+			],
+		})
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			tokenBudget: 11_000,
+			onAssistantUsage: (usage) => usageEvents.push(usage),
+		})
+
+		expect(abortSpy).not.toHaveBeenCalled()
+		expect(usageEvents).toEqual([
+			{ input: 9_000, output: 1_000, cacheWrite: 0 },
+			{ input: 1_000, output: 500, cacheWrite: 0 },
+		])
 		expect(result.aborted).toBe(true)
 		expect(result.abortReason).toBe("token_budget")
 	})

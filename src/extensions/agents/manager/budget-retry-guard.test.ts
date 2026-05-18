@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest"
-import { createBudgetRetryBlock, shouldBlockBudgetRetry } from "./budget-retry-guard.js"
+import {
+	createBudgetRetryBlock,
+	createBudgetRetryBlockFromCompletion,
+	shouldBlockBudgetRetry,
+} from "./budget-retry-guard.js"
 
 describe("budget retry guard", () => {
 	it("blocks a higher-budget retry of the same failed call", () => {
@@ -54,5 +58,38 @@ describe("budget retry guard", () => {
 				prompt: "inspect package metadata",
 			}),
 		).toBe(false)
+	})
+
+	it("creates a retry block when a background completion reports token budget abort", () => {
+		const block = createBudgetRetryBlockFromCompletion(
+			{
+				budget: 100,
+				subagentType: "Explore",
+				description: "Explore agent extension",
+				prompt: "inspect repository",
+			},
+			{ status: "aborted", abortReason: "token_budget" },
+		)
+
+		expect(block).toMatchObject({
+			budget: 100,
+			subagentType: "Explore",
+			normalizedDescription: "explore agent extension",
+			normalizedPrompt: "inspect repository",
+		})
+	})
+
+	it("does not create a retry block for non-budget completions", () => {
+		const candidate = {
+			budget: 100,
+			subagentType: "Explore",
+			description: "Explore agent extension",
+			prompt: "inspect repository",
+		}
+
+		expect(createBudgetRetryBlockFromCompletion(candidate, { status: "completed" })).toBeUndefined()
+		expect(
+			createBudgetRetryBlockFromCompletion(candidate, { status: "aborted", abortReason: "max_turns" }),
+		).toBeUndefined()
 	})
 })

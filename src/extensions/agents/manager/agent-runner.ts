@@ -35,7 +35,7 @@ import {
 import { buildParentContext, extractText } from "../prompt/context.js"
 import { type PromptExtras, buildAgentPrompt } from "../prompt/prompts.js"
 import { preloadSkills } from "../prompt/skill-loader.js"
-import { type LifetimeUsage, getLifetimeTotal, getSessionUsage } from "./usage.js"
+import { type LifetimeUsage, addUsage, getLifetimeTotal, getSessionUsage } from "./usage.js"
 
 /** Names of tools registered by this extension that subagents must NOT inherit. */
 const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"]
@@ -188,6 +188,12 @@ function usageDelta(total: LifetimeUsage | undefined, observed: LifetimeUsage): 
 		cacheWrite: Math.max(0, total.cacheWrite - observed.cacheWrite),
 	}
 	return getLifetimeTotal(delta) > 0 ? delta : undefined
+}
+
+function resetUsage(usage: LifetimeUsage): void {
+	usage.input = 0
+	usage.output = 0
+	usage.cacheWrite = 0
 }
 
 function estimateTextTokens(text: string): number {
@@ -355,6 +361,7 @@ export async function runAgent(
 	const effectiveTokenBudget = options.tokenBudget ?? agentConfig?.tokenBudget
 	let cumulativeTokens = 0
 	const observedUsage: LifetimeUsage = { input: 0, output: 0, cacheWrite: 0 }
+	const windowObservedUsage: LifetimeUsage = { input: 0, output: 0, cacheWrite: 0 }
 	let softLimitReached = false
 	let aborted = false
 	let abortReason: AgentAbortReason | undefined
@@ -399,9 +406,8 @@ export async function runAgent(
 					output: u.output ?? 0,
 					cacheWrite: u.cacheWrite ?? 0,
 				}
-				observedUsage.input += usage.input
-				observedUsage.output += usage.output
-				observedUsage.cacheWrite += usage.cacheWrite
+				addUsage(observedUsage, usage)
+				addUsage(windowObservedUsage, usage)
 				options.onAssistantUsage?.(usage)
 				if (effectiveTokenBudget != null && !budgetAborted) {
 					cumulativeTokens += getLifetimeTotal(usage)
@@ -417,6 +423,7 @@ export async function runAgent(
 			}
 		}
 		if (event.type === "compaction_end" && !event.aborted && event.result) {
+			resetUsage(windowObservedUsage)
 			options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore })
 		}
 	})
@@ -435,7 +442,8 @@ export async function runAgent(
 	const promptEstimate = estimateTextTokens(systemPrompt) + estimateTextTokens(effectivePrompt)
 	if (effectiveTokenBudget != null && promptEstimate > effectiveTokenBudget) {
 		const usage = { input: promptEstimate, output: 0, cacheWrite: 0 }
-		observedUsage.input += usage.input
+		addUsage(observedUsage, usage)
+		addUsage(windowObservedUsage, usage)
 		cumulativeTokens += getLifetimeTotal(usage)
 		options.onAssistantUsage?.(usage)
 		unsubTurns()
@@ -483,11 +491,10 @@ export async function runAgent(
 		}
 	}
 
-	const finalUsageDelta = usageDelta(getSessionUsage(session), observedUsage)
+	const finalUsageDelta = usageDelta(getSessionUsage(session), windowObservedUsage)
 	if (finalUsageDelta) {
-		observedUsage.input += finalUsageDelta.input
-		observedUsage.output += finalUsageDelta.output
-		observedUsage.cacheWrite += finalUsageDelta.cacheWrite
+		addUsage(observedUsage, finalUsageDelta)
+		addUsage(windowObservedUsage, finalUsageDelta)
 		cumulativeTokens += getLifetimeTotal(finalUsageDelta)
 		options.onAssistantUsage?.(finalUsageDelta)
 	}

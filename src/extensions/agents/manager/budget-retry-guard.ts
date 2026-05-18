@@ -15,6 +15,8 @@ export interface BudgetRetryAttempt {
 	prompt?: string
 }
 
+export type BudgetRetryCandidate = Pick<BudgetRetryBlock, "budget" | "subagentType" | "description" | "prompt">
+
 function normalize(value: string | undefined): string {
 	return (value ?? "").trim().replace(/\s+/g, " ").toLowerCase()
 }
@@ -43,4 +45,13 @@ export function shouldBlockBudgetRetry(block: BudgetRetryBlock | undefined, atte
 		(description.length > 0 && description === block.normalizedDescription) ||
 		(prompt.length > 0 && prompt === block.normalizedPrompt)
 	)
+}
+
+export function createBudgetRetryBlockFromCompletion(
+	candidate: BudgetRetryCandidate | undefined,
+	record: { status: string; abortReason?: string },
+): BudgetRetryBlock | undefined {
+	if (!candidate) return undefined
+	if (record.status !== "aborted" || record.abortReason !== "token_budget") return undefined
+	return createBudgetRetryBlock(candidate)
 }
