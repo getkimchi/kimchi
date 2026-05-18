@@ -46,7 +46,19 @@ export async function createWebSocketTransport(
 	connectToken: string,
 	options: WebSocketTransportOptions = {},
 ): Promise<Transport> {
-	const url = `${wsUrl}?token=${encodeURIComponent(connectToken)}`
+	// The agentgateway only accepts WS upgrades on `/connect` (agent RPC) and
+	// `/ssh` (SSH tunnel, handled separately in teleport-proxy.js). The auth
+	// response gives us a path-less wsUrl, so without this we'd hit `/` and
+	// the server would 401 — wasting the full retry budget before failing.
+	// Mirrors the probe in src/modes/remote/auth.ts:waitForSessionReady which
+	// uses the same `/connect` path. A non-`/` path from the server is
+	// preserved (server contract change escape hatch).
+	const u = new URL(wsUrl)
+	if (!u.pathname || u.pathname === "/") {
+		u.pathname = "/connect"
+	}
+	u.searchParams.set("token", connectToken)
+	const url = u.toString()
 	const headers = { Authorization: `Bearer ${connectToken}` }
 
 	// biome-ignore lint/suspicious/noExplicitAny: accessing globalThis WebSocket
