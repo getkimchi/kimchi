@@ -35,6 +35,7 @@ import { reserveShiftTabForPermissions } from "./extensions/permissions/keybindi
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire.js"
+import sessionNameExtension from "./extensions/session-name.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
@@ -48,7 +49,7 @@ import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { updateModelsConfig } from "./models.js"
 import { runSetupWizard } from "./setup-wizard.js"
-import { setAvailableModels } from "./startup-context.js"
+import { parseNameArg, resolveStartupContext, setAvailableModels, setSessionName } from "./startup-context.js"
 import { detectColorMode, hexToBgAnsi, probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
 import { getVersion } from "./utils.js"
@@ -311,8 +312,21 @@ try {
 
 		const rawArgs = process.argv.slice(2)
 
+		// Parse --name from rawArgs and determine what to strip before main()
+		const { name: sessionNameArg, stripIndices } = parseNameArg(rawArgs)
+
+		const strippedArgs = rawArgs.filter((_, i) => !stripIndices.includes(i))
+
+		// Store session name for extension
+		if (sessionNameArg) {
+			setSessionName(sessionNameArg)
+		}
+
+		const startupContext = resolveStartupContext(rawArgs)
+
 		const extensionFactories = [
 			startupUpdateExtension,
+			sessionNameExtension(startupContext.sessionName),
 			sessionIdCaptureExtension,
 			shutdownMarkerExtension,
 			statsExtension,
@@ -351,7 +365,7 @@ try {
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
 			const { main } = await import("@earendil-works/pi-coding-agent")
-			await main(rawArgs, { extensionFactories })
+			await main(strippedArgs, { extensionFactories })
 		}
 	}
 } catch (err) {

@@ -18,6 +18,7 @@ interface FlagDoc {
 }
 
 const KIMCHI_FLAGS: FlagDoc[] = [
+	{ name: "--name <name>", description: "Set a human-readable session name (shown in terminal tabs and footer)" },
 	{ name: "--provider <name>", description: "Provider (default: kimchi-dev)" },
 	{ name: "--model <pattern>", description: "Model id or pattern, optionally `provider/id` and/or `:<thinking>`" },
 	{ name: "--thinking <level>", description: "Thinking level: off, minimal, low, medium, high, xhigh" },
