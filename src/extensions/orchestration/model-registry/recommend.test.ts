@@ -26,8 +26,8 @@ describe("recommendModel", () => {
 	})
 
 	it("respects vision filter — excludes non-vision models", () => {
-		// explore has vision models (kimi-k2.6, kimi-k2.5, claude-opus-4-7)
-		const result = recommendModel({ strengths: ["explore"], needsVision: true })
+		// research + vision: kimi-k2.6, kimi-k2.5, claude-opus-4-7 have research with vision
+		const result = recommendModel({ strengths: ["research"], needsVision: true })
 		expect(result).toBeDefined()
 		expect(result?.capabilities.vision).toBe(true)
 	})
@@ -62,10 +62,11 @@ describe("recommendModel", () => {
 	})
 
 	it("returns first by registry insertion order when multiple match same tier", () => {
-		// explore + heavy: only claude-opus-4-7 currently matches explore at heavy tier.
-		const result = recommendModel({ strengths: ["explore"], preferTier: "heavy" })
+		// plan + heavy: kimi-k2.6 and kimi-k2.5 and claude-opus-4-7 have plan at heavy tier.
+		// First by registry insertion order is kimi-k2.6.
+		const result = recommendModel({ strengths: ["plan"], preferTier: "heavy" })
 		expect(result).toBeDefined()
-		expect(result?.modelId).toBe("claude-opus-4-7")
+		expect(result?.modelId).toBe("kimi-k2.6")
 	})
 
 	it("returns undefined for empty strengths that somehow miss all models — sanity check with impossible combo", () => {

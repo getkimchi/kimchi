@@ -93,6 +93,7 @@ Use the **Available Models** section above to pick the right model for each dele
 - Match the model's **tier** to the complexity: light for simple well-scoped work, heavy for ambiguous or multi-step work.
 - If the subtask involves images or visual content, you MUST select a model with \`Vision: yes\`.
 - Prefer cheaper models for mechanical work once the design is settled.
+- **Use the lightest model with the required capability.** Unless the task explicitly requires non-usual approach (e.g., deep architectural planning, complex task decomposition), prefer the lightest tier model that has the required strength. For example, use nemotron‑3‑super‑fp4 for exploration and simple well‑defined tasks rather than kimi‑k2.6 or claude‑opus‑4‑7.
 - **Tool call classification** (permission checks in auto mode) automatically uses the cheapest available model. Do not override this — it is handled by the runtime and should not influence your model selection for user-facing tasks.
 
 ### Review delegation
@@ -100,6 +101,7 @@ Use the **Available Models** section above to pick the right model for each dele
 Review is often the most token-intensive phase — it involves reading files, running tests, writing smoke harnesses, and iterating on fixes. Most of this work is mechanical verification, not architectural judgment.
 
 - **Delegate mechanical review to a standard-tier model.** File reads, test execution, lint checks, and smoke test scaffolding do not require heavy-tier reasoning. Spawn a standard-tier subagent with the diff and spec attached, a 150k budget, and a clear checklist of what to verify.
+- **Use a different model than build/plan when possible.** If the build subagent was a heavy‑tier model (e.g., minimax‑m2.7), avoid using that same model for review — delegate review to a different model (e.g., nemotron‑3‑super‑fp4 or kimi‑k2.5). Fresh eyes catch different issues and reduce over‑reliance on a single model's biases.
 - **Reserve the orchestrator for the final judgment call.** Once the review subagent returns its findings, assess the results yourself: is the architecture sound? Do the interfaces match the spec? Are there design-level issues the automated checks could not catch?
 - **Never run a full review loop yourself when a cheaper model can do it.** If you find yourself reading files, running \`go test\`, and fixing lint errors in sequence, that is mechanical work — delegate it.
 

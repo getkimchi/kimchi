@@ -5,7 +5,8 @@ describe("modelsForStrength", () => {
 	it("explore strength returns all explore-capable models in registry insertion order", () => {
 		const result = modelsForStrength("explore")
 		// Order is MODEL_CAPABILITIES insertion order — NOT a tier ranking.
-		expect(result).toEqual(["kimchi-dev/nemotron-3-super-fp4", "kimchi-dev/claude-opus-4-7"])
+		// nemotron-3-super-fp4 is currently the only model with explore strength.
+		expect(result).toEqual(["kimchi-dev/nemotron-3-super-fp4"])
 	})
 
 	it("build strength returns build-capable models", () => {
@@ -22,8 +23,8 @@ describe("modelsForStrength", () => {
 	})
 
 	it("filters to availableIds when provided", () => {
-		const result = modelsForStrength("explore", { availableIds: new Set(["claude-opus-4-7"]) })
-		expect(result).toEqual(["kimchi-dev/claude-opus-4-7"])
+		const result = modelsForStrength("explore", { availableIds: new Set(["nemotron-3-super-fp4"]) })
+		expect(result).toEqual(["kimchi-dev/nemotron-3-super-fp4"])
 	})
 
 	it("returns empty array when no model matches the strength", () => {
