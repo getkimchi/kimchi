@@ -7,6 +7,7 @@ import type { RemoteRpcClient } from "./rpc-client.js"
 export class RemoteAgentSession {
 	private _rpcClient!: RemoteRpcClient
 	private readonly _supervisor: ReconnectSupervisor
+	private readonly _sessionId: string
 	private readonly _settingsManager?: unknown
 	private readonly _sessionManager?: unknown
 	private readonly _resourceLoader?: unknown
@@ -27,6 +28,7 @@ export class RemoteAgentSession {
 	constructor(options: {
 		rpcClient: RemoteRpcClient
 		supervisor: ReconnectSupervisor
+		sessionId: string
 		settingsManager?: unknown
 		sessionManager?: unknown
 		resourceLoader?: unknown
@@ -36,12 +38,22 @@ export class RemoteAgentSession {
 	}) {
 		this._rpcClient = options.rpcClient
 		this._supervisor = options.supervisor
+		this._sessionId = options.sessionId
 		this._settingsManager = options.settingsManager
 		this._sessionManager = options.sessionManager
 		this._resourceLoader = options.resourceLoader
 		this._modelRegistry = options.modelRegistry
 		this._extensionRunner = options.extensionRunner
 		this._attachToClient(this._rpcClient)
+	}
+
+	/**
+	 * The remote session id this client is connected to. Surfaced so the
+	 * `TeleportableAgentSession` wrapper can key its detached map and emit
+	 * `transport_changed` events without reaching into RPC-shaped state.
+	 */
+	get sessionId(): string {
+		return this._sessionId
 	}
 
 	get settingsManager() {

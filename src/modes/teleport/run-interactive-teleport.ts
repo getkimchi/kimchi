@@ -51,11 +51,36 @@ export async function runTeleportSession(options: RunTeleportSessionOptions): Pr
 	// the runtime's `apply()` path (which normally triggers the rebind) is
 	// not involved.
 	let triggerRebindRef: (() => Promise<void>) | undefined
+	// Captured after `new InteractiveMode(...)` below. Used to drive pi-mono's
+	// `resetExtensionUI()` + `renderCurrentSessionState()` after a wrapper
+	// foreground swap, which `rebindCurrentSession()` alone does not do.
+	// Without this pass the chat container, ext shortcut handler, and
+	// extension overlays stay wired to the previous foreground and the editor
+	// looks unresponsive (text accepted but no visible response).
+	let interactiveModeRef: InteractiveMode | undefined
 
 	const teleportExtension = makeTeleportExtension({
 		getWrapper: () => wrapperRef,
 		getServices: () => servicesRef,
 		getTriggerRebind: () => triggerRebindRef,
+		getTriggerFreshUI: () => {
+			// `resetExtensionUI` and `renderCurrentSessionState` are not part
+			// of pi-mono's public type surface — they're real methods on
+			// `InteractiveMode` (access modifiers are TS-only and stripped at
+			// build), so we reach them via cast. Optional-chaining keeps us
+			// graceful if a future pi-mono renames either.
+			const im = interactiveModeRef as unknown as
+				| {
+						resetExtensionUI?: () => void
+						renderCurrentSessionState?: () => void
+				  }
+				| undefined
+			if (!im) return undefined
+			return () => {
+				im.resetExtensionUI?.()
+				im.renderCurrentSessionState?.()
+			}
+		},
 		apiKey: options.apiKey,
 		endpoint: options.endpoint,
 	})
@@ -94,6 +119,7 @@ export async function runTeleportSession(options: RunTeleportSessionOptions): Pr
 	const interactiveMode = new InteractiveMode(runtime, {
 		modelFallbackMessage: runtime.modelFallbackMessage,
 	})
+	interactiveModeRef = interactiveMode
 	try {
 		await interactiveMode.run()
 	} finally {
