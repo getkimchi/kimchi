@@ -1,7 +1,13 @@
 import type { ImageContent, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
-import modelGuardExtension, { estimateTokens, hasImages, stripImages, truncateMessages } from "./model-guard.js"
+import modelGuardExtension, {
+	estimateTokens,
+	hasImages,
+	sessionHasImages,
+	stripImages,
+	truncateMessages,
+} from "./model-guard.js"
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -148,6 +154,72 @@ describe("hasImages", () => {
 		const msgs: ContextEvent["messages"] = [makeUser("look at this", [makeImageBlock()])]
 		const stripped = stripImages(msgs)
 		expect(hasImages(stripped)).toBe(false)
+	})
+})
+
+// ── sessionHasImages ─────────────────────────────────────────────────────────
+
+describe("sessionHasImages", () => {
+	it("initially reflects the image state after a context event with no images", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const ctx = makeMockCtx({
+			model: { id: "claude", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
+		})
+		// Fire a context event with text-only messages
+		await trigger("context", { messages: [makeUser("hello")] }, ctx)
+		expect(sessionHasImages()).toBe(false)
+	})
+
+	it("returns true after a context event with image blocks", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const ctx = makeMockCtx({
+			model: { id: "claude", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
+		})
+		await trigger("context", { messages: [makeUser("look", [makeImageBlock()])] }, ctx)
+		expect(sessionHasImages()).toBe(true)
+	})
+
+	it("returns false after a subsequent text-only context event (state updated, not accumulated)", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const ctx = makeMockCtx({
+			model: { id: "claude", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
+		})
+		// First: images present
+		await trigger("context", { messages: [makeUser("look", [makeImageBlock()])] }, ctx)
+		expect(sessionHasImages()).toBe(true)
+		// Second: images gone
+		await trigger("context", { messages: [makeUser("hello")] }, ctx)
+		expect(sessionHasImages()).toBe(false)
+	})
+
+	it("returns true after a context event with an image in a tool result", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const ctx = makeMockCtx({
+			model: { id: "claude", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
+		})
+		const imgBlock = makeImageBlock()
+		await trigger(
+			"context",
+			{
+				messages: [
+					{
+						role: "toolResult" as const,
+						toolCallId: "id-1",
+						toolName: "read",
+						content: [imgBlock, { type: "text", text: "screenshot" }],
+						details: undefined,
+						isError: false,
+						timestamp: 0,
+					},
+				],
+			},
+			ctx,
+		)
+		expect(sessionHasImages()).toBe(true)
 	})
 })
 

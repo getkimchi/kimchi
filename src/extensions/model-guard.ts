@@ -3,6 +3,26 @@ import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-wor
 
 const SAFETY_MARGIN = 0.95
 
+/** Module-level flag tracking whether the current session contains image blocks. */
+let imagesDetected = false
+
+/**
+ * Returns true if the most recent `context` event contained image blocks.
+ * Updated automatically by the extension's `context` handler.
+ */
+export function sessionHasImages(): boolean {
+	return imagesDetected
+}
+
+/**
+ * Resets the module-level imagesDetected flag to false.
+ * Exported exclusively for use in unit tests — do not call in production code.
+ * @internal
+ */
+export function __resetImagesDetectedForTest(): void {
+	imagesDetected = false
+}
+
 /**
  * Rough token estimation: 4 chars per token for text, images counted separately.
  * Accumulates from assistant message usage when available for higher accuracy.
@@ -125,12 +145,15 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 
 		const messages = event.messages
 
+		// Always update the session-level image flag before any other processing
+		imagesDetected = hasImages(messages)
+
 		let modified = false
 		let result = messages
 
 		// Strip images when target model does not support vision input
 		if (model && !model.input.includes("image")) {
-			if (hasImages(messages)) {
+			if (imagesDetected) {
 				result = stripImages(result)
 				modified = true
 			}

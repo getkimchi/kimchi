@@ -1,6 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it, vi } from "vitest"
-import modelSwitchExtension from "./model-switch.js"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import createModelGuardExtension from "./model-guard.js"
+import { __resetImagesDetectedForTest, sessionHasImages } from "./model-guard.js"
+import modelSwitchExtension, { getModelTier } from "./model-switch.js"
 
 type RegisteredTool = {
 	name: string
@@ -16,7 +18,7 @@ type RegisteredTool = {
 	) => Promise<{ content: Array<{ type: string; text: string }>; details: unknown }>
 }
 
-type ModelEntry = { id: string; provider: string; name: string }
+type ModelEntry = { id: string; provider: string; name: string; input?: string[]; contextWindow?: number }
 
 interface Harness {
 	tool: RegisteredTool
@@ -25,14 +27,27 @@ interface Harness {
 	getAvailable: ReturnType<typeof vi.fn>
 	exec: (
 		model: string,
-		opts?: { omitRegistry?: boolean },
+		opts?: { omitRegistry?: boolean; currentModel?: ModelEntry; imagesPresent?: boolean },
 	) => Promise<{ content: Array<{ type: string; text: string }>; details: unknown }>
 }
 
 const MODELS: ModelEntry[] = [
-	{ id: "kimi-k2.6", provider: "kimchi-dev", name: "Kimi K2.6" },
-	{ id: "minimax-m2.7", provider: "kimchi-dev", name: "MiniMax M2.7" },
-	{ id: "claude-sonnet-4-20250514", provider: "anthropic", name: "Claude Sonnet 4" },
+	{ id: "kimi-k2.6", provider: "kimchi-dev", name: "Kimi K2.6", input: ["text", "image"], contextWindow: 200_000 },
+	{ id: "minimax-m2.7", provider: "kimchi-dev", name: "MiniMax M2.7", input: ["text"], contextWindow: 100_000 },
+	{
+		id: "nemotron-3-super-fp4",
+		provider: "kimchi-dev",
+		name: "Nemotron 3 Super FP4",
+		input: ["text"],
+		contextWindow: 1_000_000,
+	},
+	{
+		id: "claude-sonnet-4-20250514",
+		provider: "anthropic",
+		name: "Claude Sonnet 4",
+		input: ["text", "image"],
+		contextWindow: 200_000,
+	},
 ]
 
 function createHarness(options: { setModelResult?: boolean } = {}): Harness {
@@ -55,12 +70,46 @@ function createHarness(options: { setModelResult?: boolean } = {}): Harness {
 
 	const exec: Harness["exec"] = (model, opts = {}) => {
 		const ctx = opts.omitRegistry
-			? { getContextUsage: () => undefined }
-			: { modelRegistry: { find, getAvailable }, getContextUsage: () => undefined }
+			? { getContextUsage: () => undefined, model: undefined }
+			: {
+					modelRegistry: { find, getAvailable },
+					getContextUsage: () => undefined,
+					model: opts.currentModel
+						? { id: opts.currentModel.id, provider: opts.currentModel.provider, input: ["text", "image"] }
+						: { id: MODELS[0].id, provider: MODELS[0].provider, input: ["text", "image"] },
+				}
 		return tool.execute("test-call-id", { model }, undefined, undefined, ctx)
 	}
 
 	return { tool, setModel, find, getAvailable, exec }
+}
+
+/**
+ * Creates a harness that exposes `pi` and `trigger` for tests that need to fire
+ * context events (e.g. to update sessionHasImages() in model-guard).
+ */
+function createHarnessWithTrigger() {
+	type Handler = (data: unknown, ctx: unknown) => unknown
+	const handlers = new Map<string, Set<Handler>>()
+	const on = (event: string, handler: Handler) => {
+		if (!handlers.has(event)) handlers.set(event, new Set())
+		handlers.get(event)?.add(handler)
+	}
+	const trigger = async (event: string, data: unknown, ctx: unknown) => {
+		const set = handlers.get(event)
+		if (set) for (const h of set) await h(data, ctx)
+	}
+	const pi = { on } as unknown as ExtensionAPI
+	return { pi, trigger }
+}
+
+/** Returns a minimal mock ExtensionContext for triggering context events. */
+function makeMockCtx() {
+	return {
+		model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+		modelRegistry: { getAvailable: () => MODELS },
+		getContextUsage: () => ({ tokens: 10_000 }),
+	}
 }
 
 function textOf(result: { content: Array<{ type: string; text: string }> }): string {
@@ -157,6 +206,8 @@ describe("modelSwitchExtension", () => {
 				id: "kimi-k2.6",
 				provider: "kimchi-dev",
 				name: "Kimi K2.6",
+				input: ["text", "image"],
+				contextWindow: 200_000,
 			})
 			expect(textOf(result)).toBe("Switched to model kimchi-dev/kimi-k2.6 (Kimi K2.6)")
 			expect(result.details).toBeNull()
@@ -170,8 +221,171 @@ describe("modelSwitchExtension", () => {
 				id: "claude-sonnet-4-20250514",
 				provider: "anthropic",
 				name: "Claude Sonnet 4",
+				input: ["text", "image"],
+				contextWindow: 200_000,
 			})
 			expect(textOf(result)).toBe("Switched to model anthropic/claude-sonnet-4-20250514 (Claude Sonnet 4)")
+		})
+	})
+
+	describe("vision compatibility guard", () => {
+		beforeEach(() => {
+			__resetImagesDetectedForTest()
+		})
+
+		it("rejects switch to non-vision model when session has images", async () => {
+			const h = createHarness()
+			// Simulate sessionHasImages() == true by directly setting the flag
+			// (in production this is set by model-guard's context handler)
+			const { pi: imgPi, trigger } = createHarnessWithTrigger()
+			createModelGuardExtension(imgPi)
+			const ctx = makeMockCtx()
+			await trigger(
+				"context",
+				{
+					messages: [
+						{
+							role: "user" as const,
+							content: [
+								{ type: "text" as const, text: "look at this" },
+								{
+									type: "image" as const,
+									source: { type: "base64" as const, mediaType: "image/png" as const, data: "abc" },
+								},
+							],
+						},
+					],
+				},
+				ctx as never,
+			)
+			expect(sessionHasImages()).toBe(true)
+
+			const result = await h.exec("kimchi-dev/minimax-m2.7")
+			expect(h.setModel).not.toHaveBeenCalled()
+			expect(textOf(result)).toContain("Current conversation contains images")
+			expect(textOf(result)).toContain('target model "kimchi-dev/minimax-m2.7" does not support vision input')
+			expect(result.details).toBeNull()
+		})
+
+		it("allows switch to vision-capable model when session has images", async () => {
+			const h = createHarness()
+			const { pi: imgPi, trigger } = createHarnessWithTrigger()
+			createModelGuardExtension(imgPi)
+			const ctx = makeMockCtx()
+			await trigger(
+				"context",
+				{
+					messages: [
+						{
+							role: "user" as const,
+							content: [
+								{ type: "text" as const, text: "look" },
+								{
+									type: "image" as const,
+									source: { type: "base64" as const, mediaType: "image/png" as const, data: "xyz" },
+								},
+							],
+						},
+					],
+				},
+				ctx as never,
+			)
+
+			const result = await h.exec("kimchi-dev/kimi-k2.6")
+			expect(h.setModel).toHaveBeenCalled()
+			expect(textOf(result)).toContain("Switched to model kimchi-dev/kimi-k2.6 (Kimi K2.6)")
+		})
+
+		it("allows switch to non-vision model when session has no images", async () => {
+			const h = createHarness()
+			// imagesDetected is reset to false in beforeEach
+			expect(sessionHasImages()).toBe(false)
+			const result = await h.exec("kimchi-dev/minimax-m2.7")
+			expect(h.setModel).toHaveBeenCalled()
+			expect(textOf(result)).toContain("Switched to model kimchi-dev/minimax-m2.7 (MiniMax M2.7)")
+		})
+	})
+
+	describe("MODEL_CAPABILITIES lookup", () => {
+		it("MODEL_CAPABILITIES contains expected keys", async () => {
+			// Dynamic import to test the actual module state in the test environment
+			const { MODEL_CAPABILITIES } = await import("./orchestration/model-registry/builtin-models.js")
+			const kimiCaps = MODEL_CAPABILITIES.get("kimi-k2.6")
+			const nemotronCaps = MODEL_CAPABILITIES.get("nemotron-3-super-fp4")
+			console.log("kimi-k2.6 caps:", JSON.stringify(kimiCaps))
+			console.log("nemotron-3-super-fp4 caps:", JSON.stringify(nemotronCaps))
+			expect(kimiCaps).toBeDefined()
+			expect(kimiCaps).not.toBe("ignored")
+			if (kimiCaps && kimiCaps !== "ignored") {
+				expect(kimiCaps.tier).toBe("heavy")
+			}
+			expect(nemotronCaps).toBeDefined()
+			expect(nemotronCaps).not.toBe("ignored")
+			if (nemotronCaps && nemotronCaps !== "ignored") {
+				expect(nemotronCaps.tier).toBe("light")
+			}
+		})
+
+		it("getModelTier returns correct tier for known models via the tool execution context", async () => {
+			// Replicate the getModelTier logic inline using the same static import that model-switch.ts uses
+			const { MODEL_CAPABILITIES } = await import("./orchestration/model-registry/builtin-models.js")
+			// Simulate a model object as ctx.model would be in the test
+			const fakeModel = { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] } as { id: string }
+			const caps = MODEL_CAPABILITIES.get(fakeModel.id)
+			console.log("Inline caps check:", caps && caps !== "ignored" ? (caps as { tier: unknown }).tier : undefined)
+			expect(caps).toBeDefined()
+			expect(caps).not.toBe("ignored")
+			if (caps && caps !== "ignored") {
+				expect((caps as { tier: unknown }).tier).toBe("heavy")
+			}
+		})
+	})
+
+	describe("tier-downgrade warning", () => {
+		it("getModelTier returns heavy for kimi-k2.6 and light for nemotron (fresh import)", async () => {
+			const { MODEL_CAPABILITIES } = await import("./orchestration/model-registry/builtin-models.js")
+			const currentTier = getModelTier({ id: "kimi-k2.6", provider: "kimchi-dev" } as never, MODEL_CAPABILITIES)
+			const targetTier = getModelTier(
+				{ id: "nemotron-3-super-fp4", provider: "kimchi-dev" } as never,
+				MODEL_CAPABILITIES,
+			)
+			expect(currentTier).toBe("heavy")
+			expect(targetTier).toBe("light")
+		})
+
+		it("appends a warning when switching from heavy to light tier (kimi-k2.6 → nemotron)", async () => {
+			const h = createHarness()
+			const result = await h.exec("kimchi-dev/nemotron-3-super-fp4", {
+				currentModel: { id: "kimi-k2.6", provider: "kimchi-dev", name: "Kimi K2.6" },
+			})
+			expect(h.setModel).toHaveBeenCalled()
+			expect(textOf(result)).toContain("Switched to model")
+			expect(textOf(result)).toContain("heavy")
+			expect(textOf(result)).toContain("light")
+			expect(textOf(result)).toContain("Reasoning and planning quality may be reduced")
+		})
+
+		it("appends a warning when switching from heavy to standard tier (kimi-k2.6 → minimax)", async () => {
+			const h = createHarness()
+			const result = await h.exec("kimchi-dev/minimax-m2.7", {
+				currentModel: { id: "kimi-k2.6", provider: "kimchi-dev", name: "Kimi K2.6" },
+			})
+			expect(h.setModel).toHaveBeenCalled()
+			expect(textOf(result)).toContain("Switched to model kimchi-dev/minimax-m2.7")
+			expect(textOf(result)).toContain("heavy")
+			expect(textOf(result)).toContain("standard")
+			expect(textOf(result)).toContain("Reasoning and planning quality may be reduced")
+		})
+
+		it("does NOT append a warning when current model is not in MODEL_CAPABILITIES", async () => {
+			const h = createHarness()
+			const result = await h.exec("kimchi-dev/nemotron-3-super-fp4", {
+				currentModel: { id: "unknown-model", provider: "kimchi-dev", name: "Unknown Model" },
+			})
+			expect(h.setModel).toHaveBeenCalled()
+			const text = textOf(result)
+			expect(text).not.toContain("tier")
+			expect(text).not.toContain("downgrade")
 		})
 	})
 

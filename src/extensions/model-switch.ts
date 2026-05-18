@@ -1,5 +1,26 @@
+import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { sessionHasImages } from "./model-guard.js"
+import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
+import type { ModelTier } from "./orchestration/model-registry/types.js"
+
+/** Tier ordering for downgrade detection: higher index = lower tier. */
+const TIER_ORDER: ModelTier[] = ["heavy", "standard", "light"]
+
+/**
+ * Extract tier from a model descriptor via MODEL_CAPABILITIES.
+ * In tests, pass the capabilities map explicitly to avoid module-isolation issues.
+ */
+export function getModelTier(
+	model: Model<Api> | undefined,
+	capsMap: ReadonlyMap<string, unknown> = MODEL_CAPABILITIES,
+): ModelTier | undefined {
+	if (!model) return undefined
+	const caps = capsMap.get(model.id)
+	if (!caps || caps === "ignored") return undefined
+	return (caps as { tier: ModelTier }).tier
+}
 
 export default function modelSwitchExtension(pi: ExtensionAPI) {
 	pi.registerTool({
@@ -66,6 +87,27 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 				}
 			}
 
+			// Vision compatibility guard
+			if (sessionHasImages() && !target.input.includes("image")) {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Current conversation contains images but target model "${model}" does not support vision input. Switch to a vision-capable model or start a new session.`,
+						},
+					],
+					details: null,
+				}
+			}
+
+			// Tier-downgrade warning (informational, not a blocker)
+			const currentTier = getModelTier(ctx.model)
+			const targetTier = getModelTier(target)
+			const tierWarning =
+				currentTier && targetTier && TIER_ORDER.indexOf(currentTier) < TIER_ORDER.indexOf(targetTier)
+					? `\n\nNote: Switched from a ${currentTier}-tier to a ${targetTier}-tier model. Reasoning and planning quality may be reduced for complex tasks.`
+					: ""
+
 			const ok = await pi.setModel(target)
 			if (!ok) {
 				return {
@@ -81,7 +123,10 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 
 			return {
 				content: [
-					{ type: "text" as const, text: `Switched to model ${target.provider}/${target.id} (${target.name})` },
+					{
+						type: "text" as const,
+						text: `Switched to model ${target.provider}/${target.id} (${target.name})${tierWarning}`,
+					},
 				],
 				details: null,
 			}

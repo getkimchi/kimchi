@@ -15,6 +15,7 @@ import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { isBareExitAlias } from "./exit-utils.js"
 import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
+import { sessionHasImages } from "./model-guard.js"
 import { getMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
 import {
 	isSessionModeOnboardingFooterSuppressed,
@@ -27,6 +28,36 @@ export { requestSharedFooterRender, setSessionModeOnboardingFooterSuppressed } f
 
 function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {
 	return a.provider === b.provider && a.id === b.id
+}
+
+/**
+ * Iterates through the model list starting from currentIndex, wrapping around,
+ * and returns the first model compatible with the current context (token count
+ * and vision requirements). Returns undefined if no compatible model is found.
+ */
+export function findNextCompatibleModel(
+	available: readonly Model<Api>[],
+	currentIndex: number,
+	currentTokens: number | null,
+	hasImages: boolean,
+): Model<Api> | undefined {
+	const len = available.length
+	if (len === 0) return undefined
+
+	for (let offset = 1; offset <= len; offset++) {
+		const idx = (currentIndex + offset) % len
+		const candidate = available[idx]
+
+		// Context window check
+		if (currentTokens !== null && candidate.contextWindow < currentTokens) continue
+
+		// Vision check
+		if (hasImages && !candidate.input.includes("image")) continue
+
+		return candidate
+	}
+
+	return undefined
 }
 
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
@@ -244,10 +275,15 @@ export default function uiExtension(pi: ExtensionAPI) {
 						if (available.length > 1 && current) {
 							let idx = available.findIndex((m) => modelsAreEqual(m, current))
 							if (idx === -1) idx = 0
-							const next = available[(idx + 1) % available.length]
-							pi.setModel(next).catch((err) => {
-								ctx.ui.notify(`Failed to cycle model: ${err instanceof Error ? err.message : String(err)}`, "warning")
-							})
+							const usage = ctx.getContextUsage()
+							const next = findNextCompatibleModel(available, idx, usage?.tokens ?? null, sessionHasImages())
+							if (!next) {
+								ctx.ui.notify("No compatible model available for the current context.", "info")
+							} else {
+								pi.setModel(next).catch((err) => {
+									ctx.ui.notify(`Failed to cycle model: ${err instanceof Error ? err.message : String(err)}`, "warning")
+								})
+							}
 						}
 					}
 					return { consume: true }
