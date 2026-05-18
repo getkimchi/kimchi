@@ -1,7 +1,7 @@
 /**
  * Shared visual primitives — ANSI color helpers and small formatters.
  *
- * Used by progress-overlay.ts (the /progress dropdown) and any tool that needs
+ * Used by progress-overlay.ts (the /ferment progress dropdown) and any tool that needs
  * consistent terminal styling.
  */
 

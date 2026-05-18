@@ -887,23 +887,11 @@ describe("add_ferment_memory", () => {
 	})
 })
 
-// ─── set_ferment_mode ─────────────────────────────────────────────────────────
+// ─── retired mode tool ────────────────────────────────────────────────────────
 
-describe("set_ferment_mode", () => {
-	it("returns compatibility guidance without persisting mode", async () => {
-		const id = await createFerment("Mode Test")
-		const result = await h.call("set_ferment_mode", { ferment_id: id, mode: "exec" })
-		ok(result)
-		expect(result.content[0].text).toContain("Legacy ferment mode is ignored")
-		expect(loadFerment(id)).not.toHaveProperty("mode")
-	})
-
-	it("guides invalid legacy modes to /manual and /auto", async () => {
-		const id = await createFerment("Invalid Mode Test")
-		const result = await h.call("set_ferment_mode", { ferment_id: id, mode: "rocket" })
-		ok(result)
-		expect(result.content[0].text).toContain("/manual")
-		expect(result.content[0].text).toContain("/auto")
+describe("retired mode tool", () => {
+	it("does not expose set_ferment_mode on the tool surface", () => {
+		expect(h.tools.has("set_ferment_mode")).toBe(false)
 	})
 })
 
@@ -998,14 +986,6 @@ describe("paused ferment blocks tool calls at the bridge", () => {
 			description: "should be rejected",
 		})
 		expect(err(result)).toMatch(/paused/i)
-	})
-
-	it("keeps set_ferment_mode inert when ferment is paused", async () => {
-		const id = await setupPaused()
-		const result = await h.call("set_ferment_mode", { ferment_id: id, mode: "exec" })
-		ok(result)
-		expect(loadFerment(id).status).toBe("paused")
-		expect(loadFerment(id)).not.toHaveProperty("mode")
 	})
 })
 

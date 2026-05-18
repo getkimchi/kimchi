@@ -4,7 +4,7 @@
  * Wires together:
  * - Event handlers (session_start, session_shutdown, input, before_agent_start,
  *   model_select, turn_end)
- * - Slash commands (/ferment, /manual, /auto, /progress)
+ * - Slash command (/ferment)
  * - All ferment tools (registered via tools/ submodules)
  *
  * Public exports re-export from ./state.ts for cli.ts and components/footer.ts.

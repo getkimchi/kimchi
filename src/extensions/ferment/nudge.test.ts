@@ -68,7 +68,7 @@ describe("ferment nudges", () => {
 		)
 	})
 
-	it("/auto kicks a ferment waiting at a manual phase boundary", () => {
+	it("/ferment auto kicks a ferment waiting at a manual phase boundary", () => {
 		const pi = createPi()
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),

@@ -40,7 +40,6 @@ import {
 	ListParams,
 	ProposeScopingParams,
 	ScopeParams,
-	SetModeParams,
 	UpdateScopeFieldParams,
 } from "../tool-schemas.js"
 import { setActiveFermentState } from "../tool-scope.js"
@@ -969,23 +968,6 @@ ${renderGateGuidance("scope_ferment")}`,
 			if (!outcome.ok) return failedToolResult(outcome.error)
 			return toolOk(
 				withNextActionHint(`Field "${params.field}" updated for "${outcome.ferment.name}".`, outcome.ferment),
-			)
-		},
-	})
-
-	pi.registerTool({
-		name: "set_ferment_mode",
-		label: "Set Ferment Mode",
-		description: "Legacy compatibility stub. Use /manual or /auto to change the terminal continuation policy.",
-		parameters: SetModeParams,
-		async execute(_, params) {
-			const f = runtime.getStorage().get(params.ferment_id)
-			if (!f) return toolErr(`Ferment not found: ${params.ferment_id}`)
-			return toolOk(
-				withNextActionHint(
-					"Legacy ferment mode is ignored. Use /manual to ask before phase transitions, or /auto to continue automatically.",
-					f,
-				),
 			)
 		},
 	})

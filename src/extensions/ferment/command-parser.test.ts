@@ -19,6 +19,10 @@ describe("parseFermentCommand", () => {
 		expect(parseFermentCommand('add "Rewrite login"')).toEqual({ type: "unknown", input: 'add "Rewrite login"' })
 	})
 
+	it("does not accept the old mode command", () => {
+		expect(parseFermentCommand("mode exec")).toEqual({ type: "unknown", input: "mode exec" })
+	})
+
 	it("parses switch force before the target", () => {
 		expect(parseFermentCommand('switch --force "Rewrite login"')).toEqual({
 			type: "switch",
@@ -54,6 +58,15 @@ describe("parseFermentCommand", () => {
 
 	it("parses bare resume as active ferment lifecycle resume", () => {
 		expect(parseFermentCommand("resume")).toEqual({ type: "resume-lifecycle" })
+	})
+
+	it("parses nested continuation policy commands", () => {
+		expect(parseFermentCommand("manual")).toEqual({ type: "manual-policy" })
+		expect(parseFermentCommand("auto")).toEqual({ type: "auto-policy" })
+	})
+
+	it("parses nested progress command", () => {
+		expect(parseFermentCommand("progress")).toEqual({ type: "progress" })
 	})
 
 	it("parses one-shot intent", () => {

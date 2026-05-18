@@ -4,8 +4,8 @@
  * - `appendRefEntry`: writes a hidden session entry that survives compaction —
  *   used so resumed sessions can find the active ferment.
  * - `injectResumeAutoNudge`: injects a "what's next" prompt for automated
- *   continuation kicks such as /auto, /ferment resume, and scoping handoff.
- * - `maybeInjectReactiveAutoNudge`: in auto mode, injects a "what's next"
+ *   continuation kicks such as /ferment auto, /ferment resume, and scoping handoff.
+ * - `maybeInjectReactiveAutoNudge`: under automated policy, injects a "what's next"
  *   prompt only after an assistant turn stalls without tool calls.
  * - `onStepCompleted` / `onPhaseCompleted`: stable post-mutation hooks tools
  *   call after writing storage. Today they re-sync active ferment state; keep
@@ -136,7 +136,7 @@ export function sendAutoNudge(
 /**
  * Inject an auto-mode nudge into the next agent turn.
  *
- * `opts.force` skips the routine-noise filter — used by /auto resume so the
+ * `opts.force` skips the routine-noise filter — used by /ferment auto so the
  * planner always gets a kick when the user explicitly asks to continue.
  * The default (force=false) only nudges on real *transitions* to avoid
  * burning a turn after every routine step completion.

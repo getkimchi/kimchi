@@ -282,11 +282,6 @@ export const MemoryParams = Type.Object({
 
 export const ShowParams = Type.Object({ ferment_id: Type.String() })
 
-export const SetModeParams = Type.Object({
-	ferment_id: Type.String(),
-	mode: Type.String({ description: "plan | exec | auto" }),
-})
-
 export const FailStepParams = Type.Object({
 	ferment_id: Type.String(),
 	phase_id: Type.String(),

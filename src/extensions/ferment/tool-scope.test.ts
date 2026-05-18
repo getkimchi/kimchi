@@ -61,6 +61,7 @@ describe("ferment tool scope", () => {
 		for (const name of FERMENT_TOOL_NAMES) {
 			expect(lastCall).toContain(name)
 		}
+		expect(lastCall).not.toContain("set_ferment_mode")
 	})
 
 	it("keeps only non-mutating ferment discovery while paused or terminal", () => {

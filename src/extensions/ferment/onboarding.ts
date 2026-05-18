@@ -73,7 +73,7 @@ A ferment is a multi-session unit of work. You scope a goal once, the agent brea
 
 Three commands you'll use most:
   /ferment        — start or pick a ferment
-  /auto           — let the agent run autonomously
+  /ferment auto   — let the agent run autonomously
   /ferment pause  — stop and freeze state
 
 Let's see how each one works.`,
@@ -93,24 +93,24 @@ Other forms:
   /ferment list                    — pick from existing ferments
   /ferment new "Name"              — start with a known name
   /ferment one-shot "task"         — automated one-shot run, no confirmations`,
-			next: "Next: /auto and lifecycle",
+			next: "Next: /ferment auto and lifecycle",
 		},
 		{
-			title: `🔄  /auto and lifecycle pause/resume
+			title: `🔄  /ferment auto and lifecycle pause/resume
 
 After you confirm Start execution, the planner activates phases and steps.
 Type:
 
-  /auto            — sets continuation policy to automated.
+  /ferment auto    — sets continuation policy to automated.
 
   /ferment pause   — flips to paused. The state machine refuses every ferment
                      tool call until you resume. Safe to use mid-step.
 
   /ferment resume  — resumes the paused lifecycle using the current policy.`,
-			next: "Next: /progress",
+			next: "Next: /ferment progress",
 		},
 		{
-			title: `📊  /progress
+			title: `📊  /ferment progress
 
 Open the phase/step navigator for the active ferment.
 
@@ -119,7 +119,7 @@ Open the phase/step navigator for the active ferment.
   • Layer 3: per-step detail (logs, retry, skip, fail)
 
 Also useful:
-  /manual or /auto                 — change continuation policy
+  /ferment manual or /ferment auto — change continuation policy
   /ferment revise goal|criteria    — edit scoping after the fact
   /ferment abandon                 — give up and free the slot`,
 			next: "Next: example flow",

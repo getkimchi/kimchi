@@ -222,6 +222,15 @@ describe("registerFermentCommands", () => {
 				description: expect.stringContaining("Pause"),
 			}),
 		)
+		expect(getFermentArgumentCompletions("man", h.runtime)).toContainEqual(
+			expect.objectContaining({ value: "manual", label: "manual" }),
+		)
+		expect(getFermentArgumentCompletions("aut", h.runtime)).toContainEqual(
+			expect.objectContaining({ value: "auto", label: "auto" }),
+		)
+		expect(getFermentArgumentCompletions("prog", h.runtime)).toContainEqual(
+			expect.objectContaining({ value: "progress", label: "progress" }),
+		)
 		expect(completions).not.toContainEqual(expect.objectContaining({ value: "use " }))
 		expect(completions).not.toContainEqual(expect.objectContaining({ value: "add " }))
 	})
@@ -264,14 +273,28 @@ describe("registerFermentCommands", () => {
 		expect(getFermentArgumentCompletions("revise c", h.runtime)).toContainEqual(
 			expect.objectContaining({ value: "revise criteria", label: "criteria" }),
 		)
-		expect(getFermentArgumentCompletions("mode e", h.runtime)).toContainEqual(
-			expect.objectContaining({ value: "mode exec", label: "exec" }),
-		)
+		expect(getFermentArgumentCompletions("mode e", h.runtime)).toBeNull()
 	})
 
-	it("/manual and /auto update continuation policy without changing lifecycle status", async () => {
+	it("does not register top-level ferment policy/progress shortcuts", () => {
 		const h = createHarness()
-		const ferment = h.storage.create("Policy Ferment")
+		const commands = new Map<string, RegisteredCommand>()
+		const pi = {
+			...h.pi,
+			registerCommand: (name: string, command: RegisteredCommand) => {
+				commands.set(name, command)
+			},
+		} as unknown as ExtensionAPI
+		registerFermentCommands(pi, h.runtime)
+
+		expect(commands.has("manual")).toBe(false)
+		expect(commands.has("auto")).toBe(false)
+		expect(commands.has("progress")).toBe(false)
+	})
+
+	it("/ferment manual and /ferment auto use the same continuation policy controls", async () => {
+		const h = createHarness()
+		const ferment = h.storage.create("Nested Policy Ferment")
 		h.runtime.setActive(ferment)
 
 		const commands = new Map<string, RegisteredCommand>()
@@ -283,21 +306,19 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const autoCommand = commands.get("auto")
-		const manualCommand = commands.get("manual")
-		if (!autoCommand) throw new Error("auto command was not registered")
-		if (!manualCommand) throw new Error("manual command was not registered")
+		const fermentCommand = commands.get("ferment")
+		if (!fermentCommand) throw new Error("ferment command was not registered")
 
-		await autoCommand.handler("", h.ctx)
+		await fermentCommand.handler("auto", h.ctx)
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
 		expect(h.storage.get(ferment.id)?.status).toBe("draft")
 
-		await manualCommand.handler("", h.ctx)
+		await fermentCommand.handler("manual", h.ctx)
 		expect(h.runtime.getContinuationPolicy()).toBe("manual")
 		expect(h.storage.get(ferment.id)?.status).toBe("draft")
 	})
 
-	it("/auto on a paused ferment sets automated policy without resuming lifecycle", async () => {
+	it("/ferment auto on a paused ferment sets automated policy without resuming lifecycle", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
 		const ferment = h.storage.create("Paused Ferment")
@@ -327,9 +348,9 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const autoCommand = commands.get("auto")
-		if (!autoCommand) throw new Error("auto command was not registered")
-		await autoCommand.handler("", h.ctx)
+		const fermentCommand = commands.get("ferment")
+		if (!fermentCommand) throw new Error("ferment command was not registered")
+		await fermentCommand.handler("auto", h.ctx)
 
 		active = h.storage.get(active.id) ?? active
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
@@ -339,25 +360,48 @@ describe("registerFermentCommands", () => {
 		expect(h.pi.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("/ferment mode is a compatibility stub that does not mutate policy or persisted state", async () => {
+	it("/ferment mode is no longer a command", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
 		const ferment = h.storage.create("Legacy Mode Command")
 		h.runtime.setActive(ferment)
 
 		const result = await controller.execute(
-			{ type: "mode", mode: "exec" },
+			{ type: "unknown", input: "mode exec" },
 			{ raw: "mode exec", pi: h.pi, ctx: h.ctx, runtime: h.runtime },
 		)
 
 		expect(result).toEqual({ handled: true })
 		expect(h.runtime.getContinuationPolicy()).toBe("manual")
 		expect(h.storage.get(ferment.id)).not.toHaveProperty("mode")
-		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Legacy ferment modes are ignored"))
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Unknown /ferment command"))
 		expect(h.pi.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("/auto at a phase boundary kicks automated continuation without changing lifecycle state", async () => {
+	it("/ferment progress renders the headless status", async () => {
+		const h = createHarness()
+		const ferment = h.storage.create("Progress Ferment")
+		h.runtime.setActive(ferment)
+
+		const commands = new Map<string, RegisteredCommand>()
+		const pi = {
+			...h.pi,
+			registerCommand: (name: string, command: RegisteredCommand) => {
+				commands.set(name, command)
+			},
+		} as unknown as ExtensionAPI
+		registerFermentCommands(pi, h.runtime)
+
+		const fermentCommand = commands.get("ferment")
+		if (!fermentCommand) throw new Error("ferment command was not registered")
+		expect(commands.has("progress")).toBe(false)
+
+		await fermentCommand.handler("progress", h.ctx)
+
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Progress Ferment"))
+	})
+
+	it("/ferment auto at a phase boundary kicks automated continuation without changing lifecycle state", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
 		const ferment = h.storage.create("Boundary Ferment")
@@ -396,9 +440,9 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const autoCommand = commands.get("auto")
-		if (!autoCommand) throw new Error("auto command was not registered")
-		await autoCommand.handler("", h.ctx)
+		const fermentCommand = commands.get("ferment")
+		if (!fermentCommand) throw new Error("ferment command was not registered")
+		await fermentCommand.handler("auto", h.ctx)
 
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
 		expect(active.status).toBe("planned")
@@ -622,7 +666,7 @@ describe("registerFermentCommands", () => {
 		expect(h.ctx.abort).not.toHaveBeenCalled()
 	})
 
-	it("implements pause → /auto → /ferment resume with policy separated from lifecycle", async () => {
+	it("implements pause → /ferment auto → /ferment resume with policy separated from lifecycle", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
 		const ferment = h.storage.create("Lifecycle Ferment")
@@ -670,10 +714,8 @@ describe("registerFermentCommands", () => {
 		expect(active.phases[0].steps[1].status).toBe("pending")
 		expect(h.ctx.abort).toHaveBeenCalled()
 
-		// Step 3: Call /auto handler → policy changes, lifecycle stays paused
-		const autoCommand = commands.get("auto")
-		if (!autoCommand) throw new Error("auto command was not registered")
-		await autoCommand.handler("", h.ctx)
+		// Step 3: Call /ferment auto → policy changes, lifecycle stays paused
+		await fermentCommand.handler("auto", h.ctx)
 
 		active = h.storage.get(active.id) ?? active
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")

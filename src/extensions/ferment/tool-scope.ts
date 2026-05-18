@@ -9,7 +9,6 @@ export const FERMENT_TOOL_NAMES = [
 	"list_ferments",
 	"scope_ferment",
 	"update_ferment_scope_field",
-	"set_ferment_mode",
 	"complete_ferment",
 	"activate_ferment_phase",
 	"refine_ferment_phase",

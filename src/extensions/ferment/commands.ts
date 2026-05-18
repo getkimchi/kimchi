@@ -1,6 +1,5 @@
 import { writeFileSync } from "node:fs"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
-import { getScopingProgress } from "../../ferment/engine.js"
 import { shortenTitle } from "../../ferment/shorten-title.js"
 import { computeStats, serializeStats } from "../../ferment/stats.js"
 import { FermentError } from "../../ferment/store.js"
@@ -41,6 +40,9 @@ interface FermentArgumentCompletion {
 
 const FERMENT_SUBCOMMAND_COMPLETIONS: FermentArgumentCompletion[] = [
 	{ value: "new ", label: "new", description: "Create a ferment" },
+	{ value: "manual", label: "manual", description: "Ask before moving to the next phase" },
+	{ value: "auto", label: "auto", description: "Continue until done or blocked" },
+	{ value: "progress", label: "progress", description: "Open phase/step progress" },
 	{ value: "pause", label: "pause", description: "Pause the active ferment lifecycle" },
 	{ value: "resume", label: "resume", description: "Resume the active ferment lifecycle" },
 	{ value: "list", label: "list", description: "List ferments" },
@@ -50,22 +52,15 @@ const FERMENT_SUBCOMMAND_COMPLETIONS: FermentArgumentCompletion[] = [
 	{ value: "revise ", label: "revise", description: "Revise goal, criteria, or constraints" },
 	{ value: "abandon", label: "abandon", description: "Abandon the active ferment" },
 	{ value: "one-shot ", label: "one-shot", description: "Create and auto-execute a single task ferment" },
-	{ value: "mode ", label: "mode", description: "Legacy mode compatibility" },
 ]
 
 const FERMENT_COMMAND_USAGE =
-	'Unknown /ferment command. Use /ferment, /ferment new "Name", /ferment list, /ferment switch <id-or-name>, /ferment pause, or /ferment resume.'
+	'Unknown /ferment command. Use /ferment, /ferment new "Name", /ferment progress, /ferment list, /ferment switch <id-or-name>, /ferment pause, or /ferment resume.'
 
 const FERMENT_REVISE_COMPLETIONS: FermentArgumentCompletion[] = [
 	{ value: "revise goal", label: "goal", description: "Revise the ferment goal" },
 	{ value: "revise criteria", label: "criteria", description: "Revise success criteria" },
 	{ value: "revise constraints", label: "constraints", description: "Revise constraints" },
-]
-
-const FERMENT_MODE_COMPLETIONS: FermentArgumentCompletion[] = [
-	{ value: "mode plan", label: "plan", description: "Legacy mode compatibility" },
-	{ value: "mode exec", label: "exec", description: "Legacy mode compatibility" },
-	{ value: "mode auto", label: "auto", description: "Legacy mode compatibility" },
 ]
 
 function quoteFermentTarget(name: string, id: string): string {
@@ -125,10 +120,6 @@ export function getFermentArgumentCompletions(
 		return matchCompletionPrefix(FERMENT_REVISE_COMPLETIONS, trimmedStart)
 	}
 
-	if (lower === "mode" || lower.startsWith("mode ")) {
-		return matchCompletionPrefix(FERMENT_MODE_COMPLETIONS, trimmedStart)
-	}
-
 	return matchCompletionPrefix(FERMENT_SUBCOMMAND_COMPLETIONS, trimmedStart)
 }
 
@@ -143,6 +134,159 @@ export interface FermentCommandResult {
 	handled: true
 }
 
+function setManualContinuationPolicy(pi: ExtensionAPI, ctx: FermentUiContext, runtime: FermentRuntime): void {
+	runtime.setContinuationPolicy("manual")
+	const active = runtime.getActive()
+	if (!active) {
+		ctx.ui.notify("Continuation policy set to manual. (No active ferment.)")
+		applyFermentRuntimeToolProfile(pi, runtime)
+		return
+	}
+	if (active.status === "paused") {
+		ctx.ui.notify(`Continuation policy set to manual. "${active.name}" is paused; run /ferment resume to resume.`)
+		applyFermentRuntimeToolProfile(pi, runtime)
+		return
+	}
+
+	ctx.ui.notify(`Continuation policy set to manual for "${active.name}".`)
+	applyFermentRuntimeToolProfile(pi, runtime)
+}
+
+function setAutomatedContinuationPolicy(pi: ExtensionAPI, ctx: FermentUiContext, runtime: FermentRuntime): void {
+	runtime.setContinuationPolicy("automated")
+	const active = runtime.getActive()
+	if (!active) {
+		ctx.ui.notify("Continuation policy set to automated. (No active ferment.)")
+		applyFermentRuntimeToolProfile(pi, runtime)
+		return
+	}
+
+	if (active.status === "paused") {
+		ctx.ui.notify(`Continuation policy set to automated. "${active.name}" is paused; run /ferment resume to resume.`)
+		applyFermentRuntimeToolProfile(pi, runtime)
+		return
+	}
+
+	ctx.ui.notify(`Continuation policy set to automated for "${active.name}".`)
+	injectResumeAutoNudge(pi, runtime)
+}
+
+async function openFermentProgress(pi: ExtensionAPI, ctx: FermentUiContext, runtime: FermentRuntime): Promise<void> {
+	const applyAndPersist = createApplyAndPersist(runtime)
+	const active = runtime.getActive()
+	if (!active) {
+		ctx.ui.notify("No active ferment. Start one with /ferment.")
+		return
+	}
+
+	if (!ctx.hasUI || !ctx.ui.select || !ctx.ui.confirm) {
+		ctx.ui.notify(formatFermentStatus(active, runtime.getContinuationPolicy()))
+		return
+	}
+	const select = ctx.ui.select.bind(ctx.ui)
+	const confirm = ctx.ui.confirm.bind(ctx.ui)
+
+	let atPhaseList = true
+	while (atPhaseList) {
+		const f = runtime.getStorage().get(active.id) ?? active
+		const phaseListOpts = buildPhaseListOptions(f)
+		const phaseListPhaseCount = f.phases.length
+
+		const l1choice = await select(buildPhaseListTitle(f, runtime), phaseListOpts)
+
+		if (!l1choice || l1choice === "Close") {
+			atPhaseList = false
+			continue
+		}
+
+		if (l1choice === "Abandon ferment") {
+			const confirmed = await confirm(
+				`Abandon "${f.name}"?`,
+				"Marks the ferment abandoned. Work done so far is preserved.",
+			)
+			if (confirmed) {
+				const outcome = applyAndPersist(f.id, { type: "abandon" })
+				if (outcome.ok) setActiveFermentAndApplyProfile(pi, runtime, undefined)
+				runtime.clearFermentState(f.id)
+				runtime.clearPendingScope(f.id)
+				atPhaseList = false
+			}
+			continue
+		}
+
+		const l1idx = phaseListOpts.indexOf(l1choice)
+		if (l1idx < 0 || l1idx >= phaseListPhaseCount) continue
+		const selectedPhaseIndex = f.phases[l1idx].index
+
+		let atStepList = true
+		while (atStepList) {
+			const f2 = runtime.getStorage().get(f.id) ?? f
+			const ph = f2.phases.find((p) => p.index === selectedPhaseIndex)
+			if (!ph) {
+				atStepList = false
+				break
+			}
+
+			const stepOpts = buildPhaseStepOptions(ph)
+			const stepCount = ph.steps.length
+
+			const l2choice = await select(buildPhaseDetailTitle(f2, ph), stepOpts)
+
+			if (!l2choice || l2choice === "Back") {
+				atStepList = false
+				break
+			}
+
+			if (l2choice === "Phase actions") {
+				let atPhaseActions = true
+				while (atPhaseActions) {
+					const f3 = runtime.getStorage().get(f.id) ?? f
+					const ph3 = f3.phases.find((p) => p.index === selectedPhaseIndex)
+					if (!ph3) {
+						atPhaseActions = false
+						break
+					}
+					const actionChoice = await select(buildPhaseDetailTitle(f3, ph3), buildPhaseActionOptions(f3, ph3))
+					if (!actionChoice || actionChoice === "Back to steps") {
+						atPhaseActions = false
+						break
+					}
+					await handlePhaseAction(actionChoice, f3, ph3, ctx, runtime)
+				}
+				continue
+			}
+
+			const l2idx = stepOpts.indexOf(l2choice)
+			if (l2idx < 0 || l2idx >= stepCount) continue
+			const selectedStepIndex = ph.steps[l2idx].index
+
+			let atStepDetail = true
+			while (atStepDetail) {
+				const f3 = runtime.getStorage().get(f.id) ?? f
+				const ph3 = f3.phases.find((p) => p.index === selectedPhaseIndex)
+				if (!ph3) {
+					atStepDetail = false
+					break
+				}
+				const st = ph3.steps.find((s) => s.index === selectedStepIndex)
+				if (!st) {
+					atStepDetail = false
+					break
+				}
+
+				const stepActionOpts = buildStepActionOptions(ph3, st)
+				const l3choice = await select(buildStepDetailTitle(ph3, st), stepActionOpts)
+
+				if (!l3choice || l3choice === "Back to phase") {
+					atStepDetail = false
+					break
+				}
+				await handleStepAction(l3choice, f3, ph3, st, ctx, runtime)
+			}
+		}
+	}
+}
+
 export class FermentCommandController {
 	async execute(command: FermentCliCommand, deps: FermentCommandDeps): Promise<FermentCommandResult> {
 		const { raw, pi, ctx, runtime } = deps
@@ -153,7 +297,7 @@ export class FermentCommandController {
 			const active = runtime.getActive()
 			if (active && active.status === "running") {
 				ctx.ui.notify(
-					`A ferment is already running: "${active.name}". Use /progress to check status or /ferment switch to change.`,
+					`A ferment is already running: "${active.name}". Use /ferment progress to check status or /ferment switch to change.`,
 				)
 				return { handled: true }
 			}
@@ -259,17 +403,18 @@ export class FermentCommandController {
 			return { handled: true }
 		}
 
-		if (command.type === "mode") {
-			const active = runtime.getActive()
-			if (!active) {
-				ctx.ui.notify("No active ferment. Use /ferment new or /ferment switch first.")
-				return { handled: true }
-			}
-			const scoping = active.status === "draft" ? getScopingProgress(active) : undefined
-			const progress = scoping ? ` Scoping: ${scoping.answered}/${scoping.total}.` : ""
-			ctx.ui.notify(
-				`Legacy ferment modes are ignored for "${active.name}". Current terminal policy: ${runtime.getContinuationPolicy()}.${progress} Use /manual or /auto to change continuation policy.`,
-			)
+		if (command.type === "manual-policy") {
+			setManualContinuationPolicy(pi, ctx, runtime)
+			return { handled: true }
+		}
+
+		if (command.type === "auto-policy") {
+			setAutomatedContinuationPolicy(pi, ctx, runtime)
+			return { handled: true }
+		}
+
+		if (command.type === "progress") {
+			await openFermentProgress(pi, ctx, runtime)
 			return { handled: true }
 		}
 
@@ -508,7 +653,7 @@ export class FermentCommandController {
 		if (command.type === "one-shot") {
 			const active = runtime.getActive()
 			if (active && active.status === "running") {
-				ctx.ui.notify(`A ferment is already running: "${active.name}". Use /progress to check status.`)
+				ctx.ui.notify(`A ferment is already running: "${active.name}". Use /ferment progress to check status.`)
 				return { handled: true }
 			}
 			const intent = command.intent
@@ -558,7 +703,7 @@ export class FermentCommandController {
 		const active = runtime.getActive()
 		if (active && active.status === "running") {
 			ctx.ui.notify(
-				`A ferment is already running: "${active.name}". Use /progress to check status or /ferment switch to change.`,
+				`A ferment is already running: "${active.name}". Use /ferment progress to check status or /ferment switch to change.`,
 			)
 			return { handled: true }
 		}
@@ -593,7 +738,6 @@ export class FermentCommandController {
 }
 
 export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
-	const applyAndPersist = createApplyAndPersist(runtime)
 	const fermentCommandController = new FermentCommandController()
 
 	pi.registerCommand("ferment", {
@@ -603,167 +747,6 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 			const raw = args.trim()
 			const command = parseFermentCommand(args)
 			await fermentCommandController.execute(command, { raw, pi, ctx, runtime })
-		},
-	})
-
-	pi.registerCommand("manual", {
-		description: "Set ferment continuation policy to manual. The agent asks before moving to the next phase.",
-		async handler(_, ctx) {
-			runtime.setContinuationPolicy("manual")
-			const active = runtime.getActive()
-			if (!active) {
-				ctx.ui.notify("Continuation policy set to manual. (No active ferment.)")
-				applyFermentRuntimeToolProfile(pi, runtime)
-				return
-			}
-			if (active.status === "paused") {
-				ctx.ui.notify(`Continuation policy set to manual. "${active.name}" is paused; run /ferment resume to resume.`)
-				applyFermentRuntimeToolProfile(pi, runtime)
-				return
-			}
-
-			ctx.ui.notify(`Continuation policy set to manual for "${active.name}".`)
-			applyFermentRuntimeToolProfile(pi, runtime)
-		},
-	})
-
-	pi.registerCommand("auto", {
-		description: "Set ferment continuation policy to automated.",
-		async handler(_, ctx) {
-			runtime.setContinuationPolicy("automated")
-			const active = runtime.getActive()
-			if (!active) {
-				ctx.ui.notify("Continuation policy set to automated. (No active ferment.)")
-				applyFermentRuntimeToolProfile(pi, runtime)
-				return
-			}
-
-			if (active.status === "paused") {
-				ctx.ui.notify(
-					`Continuation policy set to automated. "${active.name}" is paused; run /ferment resume to resume.`,
-				)
-				applyFermentRuntimeToolProfile(pi, runtime)
-				return
-			}
-
-			ctx.ui.notify(`Continuation policy set to automated for "${active.name}".`)
-			injectResumeAutoNudge(pi, runtime)
-		},
-	})
-
-	pi.registerCommand("progress", {
-		description: "Ferment overlay: phase/step navigator with grades.",
-		async handler(_, ctx) {
-			const active = runtime.getActive()
-			if (!active) {
-				ctx.ui.notify("No active ferment. Start one with /ferment.")
-				return
-			}
-
-			if (!ctx.hasUI) {
-				ctx.ui.notify(formatFermentStatus(active, runtime.getContinuationPolicy()))
-				return
-			}
-
-			let atPhaseList = true
-			while (atPhaseList) {
-				const f = runtime.getStorage().get(active.id) ?? active
-				const phaseListOpts = buildPhaseListOptions(f)
-				const phaseListPhaseCount = f.phases.length
-
-				const l1choice = await ctx.ui.select(buildPhaseListTitle(f, runtime), phaseListOpts)
-
-				if (!l1choice || l1choice === "Close") {
-					atPhaseList = false
-					continue
-				}
-
-				if (l1choice === "Abandon ferment") {
-					const confirmed = await ctx.ui.confirm(
-						`Abandon "${f.name}"?`,
-						"Marks the ferment abandoned. Work done so far is preserved.",
-					)
-					if (confirmed) {
-						const outcome = applyAndPersist(f.id, { type: "abandon" })
-						if (outcome.ok) setActiveFermentAndApplyProfile(pi, runtime, undefined)
-						runtime.clearFermentState(f.id)
-						runtime.clearPendingScope(f.id)
-						atPhaseList = false
-					}
-					continue
-				}
-
-				const l1idx = phaseListOpts.indexOf(l1choice)
-				if (l1idx < 0 || l1idx >= phaseListPhaseCount) continue
-				const selectedPhaseIndex = f.phases[l1idx].index
-
-				let atStepList = true
-				while (atStepList) {
-					const f2 = runtime.getStorage().get(f.id) ?? f
-					const ph = f2.phases.find((p) => p.index === selectedPhaseIndex)
-					if (!ph) {
-						atStepList = false
-						break
-					}
-
-					const stepOpts = buildPhaseStepOptions(ph)
-					const stepCount = ph.steps.length
-
-					const l2choice = await ctx.ui.select(buildPhaseDetailTitle(f2, ph), stepOpts)
-
-					if (!l2choice || l2choice === "Back") {
-						atStepList = false
-						break
-					}
-
-					if (l2choice === "Phase actions") {
-						let atPhaseActions = true
-						while (atPhaseActions) {
-							const f3 = runtime.getStorage().get(f.id) ?? f
-							const ph3 = f3.phases.find((p) => p.index === selectedPhaseIndex)
-							if (!ph3) {
-								atPhaseActions = false
-								break
-							}
-							const actionChoice = await ctx.ui.select(buildPhaseDetailTitle(f3, ph3), buildPhaseActionOptions(f3, ph3))
-							if (!actionChoice || actionChoice === "Back to steps") {
-								atPhaseActions = false
-								break
-							}
-							await handlePhaseAction(actionChoice, f3, ph3, ctx, runtime)
-						}
-						continue
-					}
-
-					const l2idx = stepOpts.indexOf(l2choice)
-					if (l2idx < 0 || l2idx >= stepCount) continue
-					const selectedStepIndex = ph.steps[l2idx].index
-
-					let atStepDetail = true
-					while (atStepDetail) {
-						const f3 = runtime.getStorage().get(f.id) ?? f
-						const ph3 = f3.phases.find((p) => p.index === selectedPhaseIndex)
-						if (!ph3) {
-							atStepDetail = false
-							break
-						}
-						const st = ph3.steps.find((s) => s.index === selectedStepIndex)
-						if (!st) {
-							atStepDetail = false
-							break
-						}
-
-						const stepActionOpts = buildStepActionOptions(ph3, st)
-						const l3choice = await ctx.ui.select(buildStepDetailTitle(ph3, st), stepActionOpts)
-
-						if (!l3choice || l3choice === "Back to phase") {
-							atStepDetail = false
-							break
-						}
-						await handleStepAction(l3choice, f3, ph3, st, ctx, runtime)
-					}
-				}
-			}
 		},
 	})
 }

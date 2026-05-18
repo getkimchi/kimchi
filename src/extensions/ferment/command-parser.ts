@@ -1,7 +1,9 @@
 export type FermentCommand =
 	| { type: "interactive" }
 	| { type: "list" }
-	| { type: "mode"; mode?: string }
+	| { type: "manual-policy" }
+	| { type: "auto-policy" }
+	| { type: "progress" }
 	| { type: "pause-lifecycle" }
 	| { type: "resume-lifecycle" }
 	| { type: "delete"; target: string }
@@ -39,8 +41,9 @@ export function parseFermentCommand(args: string): FermentCommand {
 
 	if (raw === "") return { type: "interactive" }
 	if (lo === "list") return { type: "list" }
-	if (lo === "mode") return { type: "mode" }
-	if (lo.startsWith("mode ")) return { type: "mode", mode: lo.slice("mode ".length).trim() }
+	if (lo === "manual") return { type: "manual-policy" }
+	if (lo === "auto") return { type: "auto-policy" }
+	if (lo === "progress") return { type: "progress" }
 	if (lo === "pause") return { type: "pause-lifecycle" }
 	if (lo === "resume") return { type: "resume-lifecycle" }
 	if (lo.startsWith("delete ")) return { type: "delete", target: stripOuterQuotes(raw.slice("delete ".length)) }

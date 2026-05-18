@@ -2,7 +2,7 @@
  * Formatters that produce plain-text representations of ferment state.
  *
  * Used by:
- * - `/progress` headless fallback (formatFermentStatus)
+ * - `/ferment progress` headless fallback (formatFermentStatus)
  * - planner system-prompt supplement (formatDecisionsAndMemories, formatScopingContext)
  * - resume nudges in manual policy (stripToolRefs)
  */

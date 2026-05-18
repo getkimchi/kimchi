@@ -69,7 +69,7 @@ export function setAutoModeEnabled(v: boolean): void {
 	continuationPolicy = v ? "automated" : "manual"
 }
 
-// ─── Last human input timestamp (used by the /progress dialog title) ─────────
+// ─── Last human input timestamp (used by the /ferment progress dialog title) ─
 
 let lastHumanInputAt: Date | undefined
 
