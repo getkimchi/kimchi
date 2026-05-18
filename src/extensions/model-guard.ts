@@ -1,5 +1,16 @@
 import type { ImageContent, TextContent, UserMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { getModelTier } from "./model-switch.js"
+import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
+
+// ModelSelectEvent is not yet re-exported from pi-coding-agent index — define locally
+type ModelSelectSource = "set" | "cycle" | "restore"
+interface ModelSelectEvent {
+	type: "model_select"
+	model: { id: string; input: string[]; contextWindow: number }
+	previousModel: { id: string; input: string[]; contextWindow: number } | undefined
+	source: ModelSelectSource
+}
 
 const SAFETY_MARGIN = 0.95
 
@@ -172,5 +183,47 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 		}
 
 		if (modified) return { messages: result }
+	})
+
+	_pi.on("model_select", async (event: ModelSelectEvent, ctx: ExtensionContext) => {
+		// Skip restore events — these are automatic reversions, not user-initiated
+		if (event.source === "restore") return
+
+		const model = ctx.model
+
+		// Guard 1: context overflow — warn when current tokens exceed 90% of target
+		const usage = ctx.getContextUsage()
+		if (model && usage?.tokens != null && usage.tokens > model.contextWindow * 0.9) {
+			ctx.ui.notify(
+				`Current context (${usage.tokens.toLocaleString()} tokens) exceeds 90% of "${model.id}" context window (${model.contextWindow.toLocaleString()} tokens). Use /compact to reduce context size.`,
+				"warning",
+			)
+		}
+
+		// Guard 2: vision incompatibility — warn when switching away from a vision model
+		// while session contains images (they would be stripped)
+		if (sessionHasImages() && model && !model.input.includes("image")) {
+			ctx.ui.notify(
+				`Switching to "${model.id}" will strip ${model.provider}/${model.id} does not support image input.`,
+				"warning",
+			)
+		}
+
+		// Guard 3: tier downgrade — warn when switching to a lower reasoning tier
+		if (event.previousModel) {
+			const prevTier = getModelTier(event.previousModel as never, MODEL_CAPABILITIES)
+			const nextTier = getModelTier(model as never, MODEL_CAPABILITIES)
+			if (prevTier && nextTier) {
+				const TIER_ORDER = ["light", "standard", "heavy"]
+				const prevIdx = TIER_ORDER.indexOf(prevTier)
+				const nextIdx = TIER_ORDER.indexOf(nextTier)
+				if (prevIdx > nextIdx) {
+					ctx.ui.notify(
+						`Switching from ${prevTier} → ${nextTier} tier. Reasoning and planning quality may be reduced.`,
+						"info",
+					)
+				}
+			}
+		}
 	})
 }
