@@ -21,6 +21,14 @@ jobs:
           bun: "true"
           playwright: "true"
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+
+      - name: Build proxy-helper
+        run: make build
+        working-directory: tools/proxy-helper
+
       - name: Check (lint + type check)
         run: pnpm run check
 
@@ -47,6 +55,14 @@ jobs:
         with:
           bun: "true"
           playwright: "true"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+
+      - name: Build proxy-helper
+        run: make build
+        working-directory: tools/proxy-helper
 
       - name: Check (lint + type check)
         run: pnpm run check
