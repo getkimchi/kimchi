@@ -162,6 +162,7 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 				Authorization: `Bearer ${apiKey}`,
 			},
 			body,
+			signal: AbortSignal.timeout(10000),
 		})
 
 		if (!response.ok) {
