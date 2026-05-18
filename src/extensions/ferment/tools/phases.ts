@@ -122,51 +122,13 @@ function formatManualPhaseBoundaryWait(
 	)
 }
 
-async function completeManualPhaseBoundary(
-	runtime: FermentRuntime,
+function completeManualPhaseBoundary(
 	ferment: Ferment,
 	completedPhase: Phase,
 	nextPhase: Phase,
 	projectChecksLine: string,
 	warnSection: string,
-	{ pi, ctx }: PhaseExecutionContext,
-): Promise<ToolResult> {
-	if (ctx?.ui && pi.getFlag?.("ferment-oneshot") !== true) {
-		const response = await askUser(
-			`Phase "${completedPhase.name}" is complete. Continue to phase ${nextPhase.index}: "${nextPhase.name}"?`,
-			[
-				{
-					id: "continue",
-					label: "Continue to next phase",
-					description: `Activate phase ${nextPhase.index} now.`,
-				},
-				{
-					id: "wait",
-					label: "Wait here",
-					description: "Leave the ferment at the phase boundary without pausing it.",
-				},
-			],
-			{ ferment, pi, ctx, runtime },
-		)
-
-		if (!response.failed && response.choice === "continue") {
-			return toolOk(
-				withNextActionHint(
-					`Phase "${completedPhase.name}" done.${projectChecksLine}${warnSection}\nUser confirmed continuing to "${nextPhase.name}".`,
-					ferment,
-				),
-			)
-		}
-
-		const reason =
-			response.failed && response.reason !== "user_cancelled"
-				? `Boundary prompt was not answered: ${response.detail}`
-				: "User chose to wait at the phase boundary."
-		return toolOk(
-			formatManualPhaseBoundaryWait(ferment, completedPhase, nextPhase, projectChecksLine, warnSection, reason),
-		)
-	}
-
+): ToolResult {
 	return toolOk(formatManualPhaseBoundaryWait(ferment, completedPhase, nextPhase, projectChecksLine, warnSection))
 }
 
@@ -372,7 +334,7 @@ export async function completePhase(
 	}
 
 	if (runtime.getContinuationPolicy() === "manual") {
-		return completeManualPhaseBoundary(runtime, fresh, phase, next, projectChecksLine, warnSection, { pi, ctx })
+		return completeManualPhaseBoundary(fresh, phase, next, projectChecksLine, warnSection)
 	}
 
 	return toolOk(

@@ -311,7 +311,7 @@ function makeActivePlanFerment(overrides: Partial<Ferment> = {}): Ferment {
 }
 
 describe("fermentExtension question dropdown", () => {
-	it("reactively nudges exec ferments after a text-only assistant turn when policy is automated", async () => {
+	it("reactively nudges automated ferments after a text-only assistant turn regardless of legacy mode", async () => {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-reactive-test-")))
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
@@ -328,9 +328,7 @@ describe("fermentExtension question dropdown", () => {
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
 		if (!scoped.ok) throw new Error(scoped.error.message)
-		const mode = applyAndPersist(draft.id, { type: "set_mode", mode: "exec" })
-		if (!mode.ok) throw new Error(mode.error.message)
-		setActive(mode.ferment)
+		setActive(scoped.ferment)
 		const { handlers, pi } = registerFermentExtension(runtime)
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
@@ -340,6 +338,58 @@ describe("fermentExtension question dropdown", () => {
 				message: {
 					role: "assistant",
 					content: [{ type: "text", text: "I am waiting." }],
+				},
+			},
+			{},
+		)
+
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_automode_nudge",
+				content: [expect.objectContaining({ text: "activate_ferment_phase: activate the first planned phase" })],
+			}),
+			{ triggerTurn: true, deliverAs: "followUp" },
+		)
+	})
+
+	it("reactively nudges automated ferments across a completed phase boundary", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-boundary-nudge-test-")))
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		runtime.setContinuationPolicy("automated")
+		const applyAndPersist = createApplyAndPersist(runtime)
+		const draft = storage.create("Boundary Turn")
+		const scoped = applyAndPersist(draft.id, {
+			type: "scope",
+			goal: "Goal",
+			successCriteria: "Works",
+			constraints: [],
+			phases: [
+				{ name: "Done", goal: "Build", steps: [] },
+				{ name: "Next", goal: "Continue", steps: [] },
+			],
+		})
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		const activated = applyAndPersist(draft.id, { type: "activate_phase", phaseId: "phase-1" })
+		if (!activated.ok) throw new Error(activated.error.message)
+		const completed = applyAndPersist(draft.id, {
+			type: "complete_phase",
+			phaseId: "phase-1",
+			summary: "done",
+		})
+		if (!completed.ok) throw new Error(completed.error.message)
+		setActive(completed.ferment)
+		const { handlers, pi } = registerFermentExtension(runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "Phase 1 is done." }],
 				},
 			},
 			{},
@@ -524,9 +574,11 @@ describe("fermentExtension question dropdown", () => {
 		expect(pi.sendUserMessage).toHaveBeenCalledWith("Yes, proceed", { deliverAs: "followUp" })
 	})
 
-	it("keeps auto-mode ferments on the contextual question path", async () => {
+	it("keeps automated ferments on the contextual question path when user input is needed", async () => {
 		setActive(makeActivePlanFerment({ mode: "auto" }))
-		const { handlers, pi } = registerFermentExtension()
+		const runtime = createDefaultFermentRuntime()
+		runtime.setContinuationPolicy("automated")
+		const { handlers, pi } = registerFermentExtension(runtime)
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 
@@ -571,12 +623,13 @@ describe("fermentExtension question dropdown", () => {
 		runtime.setContinuationPolicy("automated")
 		const applyAndPersist = createApplyAndPersist(runtime)
 		const draft = storage.create("Plan Handoff")
-		const moded = applyAndPersist(draft.id, { type: "set_mode", mode: "plan" })
+		const moded = applyAndPersist(draft.id, { type: "set_mode", mode: "exec" })
 		if (!moded.ok) throw new Error(moded.error.message)
 		setActive(moded.ferment)
 		const { pi } = registerFermentExtension(runtime)
 
-		// Drive scopeFerment directly — the nudge fires at scope-time.
+		// Drive scopeFerment directly — the nudge fires at scope-time based on
+		// runtime policy, not the legacy persisted mode.
 		await scopeFerment(
 			runtime,
 			{

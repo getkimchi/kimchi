@@ -63,7 +63,39 @@ describe("ferment nudges", () => {
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_automode_nudge",
-				content: [expect.objectContaining({ text: expect.stringContaining("RESUMING ferment after /auto") })],
+				content: [expect.objectContaining({ text: expect.stringContaining("RESUMING automated ferment") })],
+			}),
+			{ triggerTurn: true, deliverAs: "followUp" },
+		)
+	})
+
+	it("/auto kicks a ferment waiting at a manual phase boundary", () => {
+		const pi = createPi()
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getActive: () =>
+				makeDraftFerment({
+					status: "planned",
+					phases: [
+						{ id: "phase-1", index: 1, name: "Done", goal: "Build", status: "completed", steps: [] },
+						{ id: "phase-2", index: 2, name: "Next", goal: "Continue", status: "planned", steps: [] },
+					],
+				}),
+			isAutoModeEnabled: () => true,
+		}
+
+		injectResumeAutoNudge(pi, runtime)
+
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_automode_nudge",
+				content: [
+					expect.objectContaining({
+						text: expect.stringContaining(
+							'Action: call activate_ferment_phase with ferment_id "ferment-1", phase_id "phase-2"',
+						),
+					}),
+				],
 			}),
 			{ triggerTurn: true, deliverAs: "followUp" },
 		)
@@ -119,6 +151,37 @@ describe("ferment nudges", () => {
 		const mode = applyAndPersist(draft.id, { type: "set_mode", mode: "exec" })
 		if (!mode.ok) throw new Error(mode.error.message)
 		runtime.getActiveId = () => draft.id
+
+		maybeInjectReactiveAutoNudge(pi, runtime)
+
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_automode_nudge",
+				content: [expect.objectContaining({ text: "activate_ferment_phase: activate the first planned phase" })],
+			}),
+			{ triggerTurn: true, deliverAs: "followUp" },
+		)
+	})
+
+	it("reactively nudges an automated ferment across a completed phase boundary", () => {
+		const pi = createPi()
+		const boundary = makeDraftFerment({
+			status: "planned",
+			mode: "plan",
+			phases: [
+				{ id: "phase-1", index: 1, name: "Done", goal: "Build", status: "completed", steps: [] },
+				{ id: "phase-2", index: 2, name: "Next", goal: "Continue", status: "planned", steps: [] },
+			],
+		})
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getActiveId: () => boundary.id,
+			getStorage: () =>
+				({
+					get: () => boundary,
+				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+			isAutoModeEnabled: () => true,
+		}
 
 		maybeInjectReactiveAutoNudge(pi, runtime)
 

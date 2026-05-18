@@ -408,9 +408,10 @@ export async function scopeFerment(
 	const fresh = outcome.ferment
 	const phaseList = fresh.phases.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") || "(none)"
 
-	// In plan mode, inject the resume nudge exactly once here — at the moment of
-	// successful scoping — so the planner is kicked forward without a TUI dropdown.
-	if (fresh.mode === "plan") {
+	// In automated policy, inject the continuation nudge exactly once here — at
+	// the moment of successful scoping — so the planner is kicked forward without
+	// depending on legacy persisted mode.
+	if (runtime.isAutoModeEnabled()) {
 		runtime.setActive(fresh)
 		injectResumeAutoNudge(pi, runtime)
 	}

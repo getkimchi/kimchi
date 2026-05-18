@@ -197,7 +197,7 @@ describe("completePhase", () => {
 		)
 
 		const text = okText(result)
-		expect(selectSpy).toHaveBeenCalled()
+		expect(selectSpy).not.toHaveBeenCalled()
 		expect(text).toContain("Manual continuation policy is active")
 		expect(text).toContain('Next: "Phase 2"')
 		expect(text).not.toContain("Next action: call `activate_ferment_phase`")
@@ -209,7 +209,7 @@ describe("completePhase", () => {
 		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
 	})
 
-	it("manual policy returns the next activation hint when the user confirms continuing", async () => {
+	it("manual policy does not consume inline UI confirmation at the phase boundary", async () => {
 		const h = createHarness()
 		h.runtime.setContinuationPolicy("manual")
 		const selectSpy = vi.fn(async () => "Continue to next phase")
@@ -226,9 +226,11 @@ describe("completePhase", () => {
 		)
 
 		const text = okText(result)
-		expect(selectSpy).toHaveBeenCalled()
-		expect(text).toContain("User confirmed continuing")
-		expect(text).toContain('phase_id "phase-2"')
+		expect(selectSpy).not.toHaveBeenCalled()
+		expect(text).toContain("Manual continuation policy is active")
+		expect(text).toContain("Wait for the user to say continue")
+		expect(text).not.toContain("User confirmed continuing")
+		expect(text).not.toContain("Next action: call `activate_ferment_phase`")
 		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
 	})
 

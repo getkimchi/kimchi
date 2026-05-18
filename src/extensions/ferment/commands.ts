@@ -25,7 +25,7 @@ import {
 	handlePhaseAction,
 	handleStepAction,
 } from "./progress-overlay.js"
-import { resumeFerment } from "./resume.js"
+import { resumeFerment, sendLifecycleResumeNudge } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { runScopingFlow, sendFermentRequestMessage } from "./scoping.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
@@ -245,10 +245,8 @@ export class FermentCommandController {
 			if (!action || action === "Back") return { handled: true }
 
 			if (action === actionContinue) {
-				if (!isActiveSelected) {
-					resumeFerment(pi, selected.id, ctx, runtime)
-					ctx.ui.notify(`Resumed "${selected.name}"`)
-				}
+				resumeFerment(pi, selected.id, ctx, runtime, { allowManualPhaseBoundary: true })
+				ctx.ui.notify(`Continuing "${selected.name}"`)
 				return { handled: true }
 			}
 
@@ -386,7 +384,7 @@ export class FermentCommandController {
 
 			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
 			ctx.ui.notify(`Resumed "${outcome.ferment.name}". Continuation policy: ${runtime.getContinuationPolicy()}.`)
-			injectResumeAutoNudge(pi, runtime)
+			sendLifecycleResumeNudge(pi, outcome.ferment, runtime)
 			return { handled: true }
 		}
 

@@ -47,46 +47,64 @@ function extractPromptTextAfterLastToolCall(content: AssistantContentPart[]): st
 		.trimEnd()
 }
 
-async function maybeRunPlanModeDropdown(
+interface UserInputPrompt {
+	text: string
+	title: string
+	options: string[]
+	isDraft: boolean
+	contextualOptions: string[] | undefined
+	yesLabel: string
+	noLabel: string
+}
+
+function findUserInputPrompt(
+	content: AssistantContentPart[],
+	f: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
+): UserInputPrompt | undefined {
+	if (f.status !== "draft" && f.status !== "planned" && f.status !== "running") return undefined
+	if (hasToolCall(content, "propose_ferment_scoping")) return undefined
+	const text = extractPromptTextAfterLastToolCall(content)
+	if (!text) return undefined
+
+	const title = extractTrailingQuestion(text)
+	const contextualOptions = extractContextualOptions(text)
+	if (!text.endsWith("?") && !contextualOptions) return undefined
+
+	const isDraft = f.status === "draft"
+	const yesLabel = isDraft ? "Yes, this looks right" : "Yes, proceed"
+	const noLabel = isDraft ? "No, revise" : "No, pause"
+	const options = contextualOptions
+		? [...contextualOptions, "Let me say something else"]
+		: [yesLabel, noLabel, "Let me say something else"]
+
+	return { text, title, options, isDraft, contextualOptions, yesLabel, noLabel }
+}
+
+async function maybeRunUserInputDropdown(
 	pi: ExtensionAPI,
 	ctx: TurnEndContext | undefined,
 	content: AssistantContentPart[],
 	f: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
 	runtime: FermentRuntime,
-): Promise<void> {
-	if (!ctx?.ui?.select) return
+): Promise<boolean> {
+	const prompt = findUserInputPrompt(content, f)
+	if (!prompt) return false
+	if (!ctx?.ui?.select || !ctx.ui.input) return true
 
-	if (f.status !== "draft" && f.status !== "running") return
-	if (!ctx.ui.input) return
-
-	if (hasToolCall(content, "propose_ferment_scoping")) return
-	const text = extractPromptTextAfterLastToolCall(content)
-	if (!text) return
-
-	const isDraft = f.status === "draft"
-	const yesLabel = isDraft ? "Yes, this looks right" : "Yes, proceed"
-	const noLabel = isDraft ? "No, revise" : "No, pause"
-
-	const title = extractTrailingQuestion(text)
-	const contextualOptions = extractContextualOptions(text)
-	if (!text.endsWith("?") && !contextualOptions) return
-	const options = contextualOptions
-		? [...contextualOptions, "Let me say something else"]
-		: [yesLabel, noLabel, "Let me say something else"]
-	const choice = await promptSelect(ctx, title, options)
-	if (!choice) return
+	const choice = await promptSelect(ctx, prompt.title, prompt.options)
+	if (!choice) return true
 
 	let reply: string
 
 	if (choice === "Let me say something else") {
 		const custom = await promptInput(ctx, "Your message:", "")
-		if (!custom) return
+		if (!custom) return true
 		reply = custom
-	} else if (choice === noLabel) {
-		reply = isDraft ? "No — please revise." : "No, pause for now."
-	} else if (contextualOptions?.includes(choice)) {
+	} else if (choice === prompt.noLabel) {
+		reply = prompt.isDraft ? "No — please revise." : "No, pause for now."
+	} else if (prompt.contextualOptions?.includes(choice)) {
 		reply = choice
-	} else if (isDraft && choice === yesLabel) {
+	} else if (prompt.isDraft && choice === prompt.yesLabel) {
 		const outcome = confirmPendingScope(runtime, f.id, undefined, "turn_end", f.name, pi)
 		if (outcome.ok) {
 			ctx.ui.notify?.(
@@ -106,6 +124,7 @@ async function maybeRunPlanModeDropdown(
 
 	runtime.markHumanInput()
 	void pi.sendUserMessage(reply, { deliverAs: "followUp" })
+	return true
 }
 
 export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
@@ -280,10 +299,8 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 
 		const f = runtime.getActive()
 		if (!f) return
-		if (f.mode === "exec") {
-			if (!toolCallSeen) maybeInjectReactiveAutoNudge(pi, runtime)
-			return
-		}
-		await maybeRunPlanModeDropdown(pi, ctx, content, f, runtime)
+		const userInputHandled = await maybeRunUserInputDropdown(pi, ctx, content, f, runtime)
+		if (userInputHandled) return
+		if (!toolCallSeen) maybeInjectReactiveAutoNudge(pi, runtime)
 	})
 }

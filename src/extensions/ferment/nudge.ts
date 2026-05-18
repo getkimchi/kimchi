@@ -3,8 +3,8 @@
  *
  * - `appendRefEntry`: writes a hidden session entry that survives compaction —
  *   used so resumed sessions can find the active ferment.
- * - `injectResumeAutoNudge`: injects a "what's next" prompt for explicit
- *   resume flows such as /auto.
+ * - `injectResumeAutoNudge`: injects a "what's next" prompt for automated
+ *   continuation kicks such as /auto, /ferment resume, and scoping handoff.
  * - `maybeInjectReactiveAutoNudge`: in auto mode, injects a "what's next"
  *   prompt only after an assistant turn stalls without tool calls.
  * - `onStepCompleted` / `onPhaseCompleted`: stable post-mutation hooks tools
@@ -56,8 +56,9 @@ export function refreshActiveFermentFromStorage(runtime: FermentRuntime): Fermen
  * Compose an imperative resume message from a DeclarativeAction.
  *
  * The engine's `determineNextAction` returns mode-aware structured actions.
- * After /auto we want the planner to act, not to ask. This helper keys off
- * the action *kind* and emits a directive that maps cleanly to a tool call.
+ * For automated continuation kicks we want the planner to act, not to ask.
+ * This helper keys off the action *kind* and emits a directive that maps
+ * cleanly to a tool call.
  *
  * Mapping action.kind → expected next tool call:
  *   start_step       → start_ferment_step + spawn subagent
@@ -74,7 +75,7 @@ export function buildAutoNudge(
 	stepId?: string,
 ): string {
 	const preamble =
-		"RESUMING ferment after /auto. The user has confirmed they want execution to continue — take the next action now."
+		"RESUMING automated ferment. The current continuation policy allows execution to continue — take the next action now."
 	switch (action.kind) {
 		case "start_step":
 			return `${preamble}\n\nAction: call start_ferment_step with ferment_id "${fermentId}"${phaseId ? `, phase_id "${phaseId}"` : ""}${stepId ? `, step_id "${stepId}"` : ""}, then spawn a subagent worker for that step. When the subagent returns, call complete_ferment_step with its summary.`

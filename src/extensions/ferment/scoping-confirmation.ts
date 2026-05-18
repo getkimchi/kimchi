@@ -63,10 +63,10 @@ export function confirmPendingScope(
 	if (!outcome.ok) return { ok: false, error: outcome.error }
 	runtime.clearPendingScope(fermentId)
 
-	// In plan mode, inject the resume nudge exactly once here — at the moment of
-	// successful scope confirmation — so the planner is kicked forward without a
-	// TUI dropdown.
-	if (pi && outcome.ferment.mode === "plan") {
+	// In automated policy, inject the continuation nudge exactly once here — at
+	// the moment of successful scope confirmation — so the planner is kicked
+	// forward without depending on legacy persisted mode.
+	if (pi && runtime.isAutoModeEnabled()) {
 		runtime.setActive(outcome.ferment)
 		injectResumeAutoNudge(pi, runtime)
 	}
