@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 import { createWebSocketTransport } from "./transport-ws.js"
 
-// Mock that mimics the native WebSocket event interface (addEventListener etc.)
+// Mock close event object — avoids Node.js CloseEvent dependency (not available < v22).
 class MockWebSocket {
 	static CONNECTING = 0
 	static OPEN = 1
@@ -25,10 +25,7 @@ class MockWebSocket {
 		this.readyState = MockWebSocket.CLOSING
 		queueMicrotask(() => {
 			this.readyState = MockWebSocket.CLOSED
-			const evt = new CloseEvent("close", {
-				code: code ?? 1000,
-				reason: reason ?? "",
-			})
+			const evt = { type: "close", code: code ?? 1000, reason: reason ?? "" } as CloseEvent
 			this.dispatchEvent(evt)
 		})
 	}
@@ -81,7 +78,7 @@ function installMockWSFactory(factory: (url: string) => MockWebSocket) {
 }
 
 describe("createWebSocketTransport", () => {
-	it("sends token both as query param and as Authorization header", async () => {
+	it("sends token as Authorization header", async () => {
 		const ws = new MockWebSocket("")
 		ws.readyState = MockWebSocket.OPEN
 		const restore = installMockWS(ws)
@@ -91,7 +88,7 @@ describe("createWebSocketTransport", () => {
 		queueMicrotask(() => ws.dispatchEvent(new Event("open")))
 
 		const transport = await transportPromise
-		expect(ws.url).toBe("wss://test.com/ws?token=tok-abc")
+		expect(ws.url).toBe("wss://test.com/ws")
 		expect(ws.constructorOpts?.headers).toEqual({ Authorization: "Bearer tok-abc" })
 		transport.close()
 		restore()
@@ -107,7 +104,7 @@ describe("createWebSocketTransport", () => {
 		queueMicrotask(() => ws.dispatchEvent(new Event("open")))
 
 		const transport = await transportPromise
-		expect(ws.url).toBe("wss://example.com/connect?token=tok")
+		expect(ws.url).toBe("wss://example.com/connect")
 		transport.close()
 		restore()
 	})
@@ -122,7 +119,7 @@ describe("createWebSocketTransport", () => {
 		queueMicrotask(() => ws.dispatchEvent(new Event("open")))
 
 		const transport = await transportPromise
-		expect(ws.url).toBe("wss://example.com/connect?token=tok")
+		expect(ws.url).toBe("wss://example.com/connect")
 		transport.close()
 		restore()
 	})

@@ -56,7 +56,7 @@ describe("authenticateRemoteSession", () => {
 		expect(result.port).toBe(443)
 
 		expect(mockFetch).toHaveBeenCalledTimes(3)
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/api/ai-optimizer/v1beta/api-keys:verify`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/ai-optimizer/v1beta/api-keys:verify`)
 		expect(mockFetch.mock.calls[0][1]).toMatchObject({
 			method: "POST",
 			headers: expect.objectContaining({
@@ -65,7 +65,7 @@ describe("authenticateRemoteSession", () => {
 			}),
 		})
 		expect(mockFetch.mock.calls[1][0]).toBe(
-			`${BASE}/api/ai-optimizer/v1beta/organizations/org-516442fe-054a-49e2-ac2d-9dc9b104c3d2/sessions/sess-123`,
+			`${BASE}/ai-optimizer/v1beta/organizations/org-516442fe-054a-49e2-ac2d-9dc9b104c3d2/sessions/sess-123`,
 		)
 		expect(mockFetch.mock.calls[1][1]).toMatchObject({
 			method: "PUT",
@@ -74,7 +74,7 @@ describe("authenticateRemoteSession", () => {
 				"Content-Type": "application/json",
 			}),
 		})
-		expect(mockFetch.mock.calls[2][0]).toBe(`${BASE}/api/ai-optimizer/v1beta/session-tokens:exchange`)
+		expect(mockFetch.mock.calls[2][0]).toBe(`${BASE}/ai-optimizer/v1beta/session-tokens:exchange`)
 		expect(mockFetch.mock.calls[2][1]).toMatchObject({
 			method: "POST",
 			headers: expect.objectContaining({
