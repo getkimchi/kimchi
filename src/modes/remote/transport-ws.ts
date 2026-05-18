@@ -57,7 +57,6 @@ export async function createWebSocketTransport(
 	if (!u.pathname || u.pathname === "/") {
 		u.pathname = "/connect"
 	}
-	u.searchParams.set("token", connectToken)
 	const url = u.toString()
 	const headers = { Authorization: `Bearer ${connectToken}` }
 
