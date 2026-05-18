@@ -47,7 +47,9 @@ describe("buildSystemPrompt", () => {
 	const tools = [
 		{ name: "read", description: "Read file contents" },
 		{ name: "bash", description: "Execute bash commands" },
-		{ name: "subagent", description: "Spawn an isolated subagent process" },
+		{ name: "Agent", description: "Launch a specialized agent" },
+		{ name: "get_subagent_result", description: "Get background agent result" },
+		{ name: "steer_subagent", description: "Steer a running background agent" },
 	]
 
 	describe("orchestrator mode", () => {
@@ -77,7 +79,7 @@ describe("buildSystemPrompt", () => {
 				mode: "orchestrator",
 			})
 			expect(result).toContain('<tool name="read">')
-			expect(result).toContain('<tool name="subagent">')
+			expect(result).toContain('<tool name="Agent">')
 		})
 
 		it("does not include phase tagging instructions without the tags extension", () => {
@@ -237,13 +239,15 @@ describe("buildSystemPrompt", () => {
 	})
 
 	describe("subagent mode", () => {
-		it("excludes the subagent tool", () => {
+		it("excludes delegation tools", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
 				mode: "subagent",
 			})
-			expect(result).not.toContain("subagent")
+			expect(result).not.toContain('<tool name="Agent">')
+			expect(result).not.toContain('<tool name="get_subagent_result">')
+			expect(result).not.toContain('<tool name="steer_subagent">')
 		})
 
 		it("includes all other tools", () => {
@@ -278,9 +282,12 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("Model selection for delegation")
 		})
 
-		it("handles tools list with only the subagent tool", () => {
+		it("handles tools list with only delegation tools", () => {
 			const result = buildSystemPrompt({
-				tools: [{ name: "subagent", description: "Spawn" }],
+				tools: [
+					{ name: "Agent", description: "Launch" },
+					{ name: "get_subagent_result", description: "Get result" },
+				],
 				env: testEnv,
 				mode: "subagent",
 			})
@@ -379,7 +386,7 @@ describe("buildSystemPrompt", () => {
 			})
 			expect(result).toContain('<tool name="read">')
 			expect(result).toContain('<tool name="bash">')
-			expect(result).toContain('<tool name="subagent">')
+			expect(result).toContain('<tool name="Agent">')
 		})
 
 		it("includes phase guidelines when phase is provided", () => {

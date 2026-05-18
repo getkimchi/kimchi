@@ -51,6 +51,7 @@ export interface RunAcpOptions {
 
 type TurnContext = {
 	cancelled: boolean
+	hiddenToolCallIds: Set<string>
 	// True once ANY turn-lifecycle event has been delivered to our subscriber
 	// (agent_start, message_update, tool_execution_start, tool_execution_update).
 	// Used by prompt()'s short-circuit detector to tell "session.prompt() ran
@@ -185,7 +186,13 @@ export class KimchiAcpAgent implements Agent {
 			turnResolve = resolve
 			turnReject = reject
 		})
-		entry.turn = { cancelled: false, turnActive: false, resolve: turnResolve, reject: turnReject }
+		entry.turn = {
+			cancelled: false,
+			hiddenToolCallIds: new Set(),
+			turnActive: false,
+			resolve: turnResolve,
+			reject: turnReject,
+		}
 		// Kick off session.prompt but don't await inside the async function body —
 		// shutdown() needs to be able to reject `result` and have the caller's await
 		// on prompt() settle immediately, which can't happen while this body is
@@ -299,6 +306,10 @@ export class KimchiAcpAgent implements Agent {
 				// a turn it already considers over.
 				if (!turn) return
 				turn.turnActive = true
+				if (isHiddenToolCall(event.toolName, event.args)) {
+					turn.hiddenToolCallIds.add(event.toolCallId)
+					return
+				}
 				const { title, kind, locations } = describeToolCall(event.toolName, event.args)
 				this.send({
 					sessionId,
@@ -317,6 +328,10 @@ export class KimchiAcpAgent implements Agent {
 			case "tool_execution_update": {
 				if (!turn) return
 				turn.turnActive = true
+				if (turn.hiddenToolCallIds.has(event.toolCallId) || isHiddenToolCall(event.toolName, event.args)) {
+					turn.hiddenToolCallIds.add(event.toolCallId)
+					return
+				}
 				const partial = toolResultContent(event.partialResult)
 				if (partial.length === 0) return
 				this.send({
@@ -332,6 +347,10 @@ export class KimchiAcpAgent implements Agent {
 			}
 			case "tool_execution_end": {
 				if (!turn) return
+				if (turn.hiddenToolCallIds.has(event.toolCallId)) {
+					turn.hiddenToolCallIds.delete(event.toolCallId)
+					return
+				}
 				this.send({
 					sessionId,
 					update: {
@@ -459,7 +478,7 @@ function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
 }
 
 // Mirrors the tool names kimchi actually exposes: pi-coding-agent core tools
-// plus the kimchi extensions in src/extensions (web-fetch, web-search, subagent).
+// plus the kimchi extensions in src/extensions (web-fetch, web-search, Agent).
 // ACP clients key UI affordances (icon, grouping, permission messaging) off the
 // kind field, so every registered tool should map to the most specific kind in
 // the ToolKind vocabulary before falling back to "other". MCP tools arrive with
@@ -475,12 +494,18 @@ const TOOL_KINDS: Record<string, ToolKind> = {
 	write: "edit",
 	web_fetch: "fetch",
 	web_search: "search",
-	subagent: "think",
+	Agent: "think",
 }
 const TITLE_MAX = 80
 
 const asString = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined)
 const truncate = (s: string): string => (s.length > TITLE_MAX ? `${s.slice(0, TITLE_MAX)}…` : s)
+
+export function isHiddenToolCall(toolName: string, args: unknown): boolean {
+	if (toolName !== "Agent") return false
+	const a = (args ?? {}) as Record<string, unknown>
+	return a.visibility === "system"
+}
 
 export function describeToolCall(
 	toolName: string,

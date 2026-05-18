@@ -48,12 +48,12 @@ export interface SystemPromptBuildOptions {
 	mode: PromptMode
 }
 
-const SUBAGENT_TOOL_NAME = "subagent"
+const DELEGATION_TOOL_NAMES = new Set(["Agent", "get_subagent_result", "steer_subagent"])
 
 export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	const { pi, tools, env, contextFiles, skills, currentModelId, currentPhase, registry, mode } = options
 
-	const effectiveTools = mode === "subagent" ? tools.filter((t) => t.name !== SUBAGENT_TOOL_NAME) : tools
+	const effectiveTools = mode === "subagent" ? tools.filter((t) => !DELEGATION_TOOL_NAMES.has(t.name)) : tools
 
 	const toolsSection = formatToolsSection(effectiveTools)
 	const environmentSection = formatEnvironmentSection(env)

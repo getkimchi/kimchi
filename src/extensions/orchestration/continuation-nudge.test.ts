@@ -34,8 +34,8 @@ const toolCallMessage = makeAssistant([
 	{
 		type: "toolCall",
 		id: "call_1",
-		name: "subagent",
-		arguments: { provider: "kimchi-dev", model: "nemotron-3-super-fp4", prompt: "build it" },
+		name: "Agent",
+		arguments: { model: "kimchi-dev/nemotron-3-super-fp4", subagent_type: "General-Purpose", prompt: "build it" },
 	},
 ])
 
@@ -44,8 +44,8 @@ const textAndToolCallMessage = makeAssistant([
 	{
 		type: "toolCall",
 		id: "call_2",
-		name: "subagent",
-		arguments: { provider: "kimchi-dev", model: "nemotron-3-super-fp4", prompt: "build it" },
+		name: "Agent",
+		arguments: { model: "kimchi-dev/nemotron-3-super-fp4", subagent_type: "General-Purpose", prompt: "build it" },
 	},
 ])
 
@@ -195,62 +195,62 @@ describe("ContinuationNudge.isDoneSignalReceived", () => {
 	})
 })
 
-describe("ContinuationNudge subagent-pending suppression", () => {
-	it("suppresses the nudge when a subagent call is pending", () => {
+describe("ContinuationNudge Agent-pending suppression", () => {
+	it("suppresses the nudge when an Agent call is pending", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		guard.markSubagentCall()
+		guard.markDelegationCall()
 		// Even though this is a text-only turn, the nudge must not fire
-		// because a subagent result is still pending.
+		// because an Agent result is still pending.
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
 	})
 
-	it("allows the nudge after clearSubagentPending is called", () => {
+	it("allows the nudge after clearDelegationPending is called", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		guard.markSubagentCall()
-		guard.clearSubagentPending()
+		guard.markDelegationCall()
+		guard.clearDelegationPending()
 		// Now the nudge can fire normally.
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
 	})
 
-	it("resetForNewUserInput does NOT clear pendingSubagentCount", () => {
+	it("resetForNewUserInput does NOT clear pending delegation count", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		guard.markSubagentCall()
-		// Simulate an unrelated user input arriving while subagent is running.
+		guard.markDelegationCall()
+		// Simulate an unrelated user input arriving while an Agent is running.
 		guard.resetForNewUserInput()
 		// The nudge must still be suppressed — we are still waiting for the result.
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
 	})
 
-	it("a regular tool call does NOT clear pendingSubagentCount", () => {
+	it("a regular tool call does NOT clear pending delegation count", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		guard.markSubagentCall()
-		// Model makes a regular (non-subagent) tool call — subagent is still pending.
+		guard.markDelegationCall()
+		// Model makes a regular non-Agent tool call — delegation is still pending.
 		guard.recordToolCall()
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
 	})
 
-	it("multiple markSubagentCall requires matching clearSubagentPending calls", () => {
+	it("multiple markDelegationCall requires matching clearDelegationPending calls", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		guard.markSubagentCall()
-		guard.markSubagentCall() // two concurrent subagents
+		guard.markDelegationCall()
+		guard.markDelegationCall() // two concurrent Agents
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
 		// First result arrives — still one pending.
-		guard.clearSubagentPending()
+		guard.clearDelegationPending()
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
 		// Second result arrives — all done, nudge can fire.
-		guard.clearSubagentPending()
+		guard.clearDelegationPending()
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
 	})
 
-	it("clearSubagentPending without markSubagentCall has no effect", () => {
+	it("clearDelegationPending without markDelegationCall has no effect", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		guard.clearSubagentPending()
+		guard.clearDelegationPending()
 		// Normal behavior: nudge fires on text-only turn.
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
 	})

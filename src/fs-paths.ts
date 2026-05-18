@@ -1,4 +1,4 @@
-// Resolves attachment paths the same way pi's @file loader does, so pre-spawn validation in the subagent tool accepts anything pi would accept.
+// Resolves attachment paths the same way pi's @file loader does, so pre-spawn validation accepts anything pi would accept.
 // Ported from pi-mono: packages/coding-agent/src/core/tools/path-utils.ts — keep in sync manually if pi's rules evolve.
 // The macOS-specific variants below exist because typing a screenshot's filename rarely produces the exact bytes the filesystem stored; see findExistingFile.
 
@@ -37,7 +37,7 @@ export function resolveUserPath(filePath: string, cwd: string): string {
 }
 
 // Files only — a directory at the path is NOT a hit. This is the one intentional divergence from pi's resolveReadPath (which uses F_OK and thus accepts directories).
-// Verified against pi-coding-agent@0.67.68: passing a directory in @attachments reaches detectSupportedImageMimeTypeFromFile, whose read() throws EISDIR. The rejection is unhandled — Node prints a stacktrace and the subagent exits 1 before any LLM call. Rejecting dirs up front turns that into a clean pre-spawn "file not found" error.
+// Verified against pi-coding-agent@0.67.68: passing a directory in @attachments reaches detectSupportedImageMimeTypeFromFile, whose read() throws EISDIR. Rejecting dirs up front turns that into a clean pre-spawn "file not found" error.
 function isFile(p: string): boolean {
 	try {
 		return statSync(p).isFile()

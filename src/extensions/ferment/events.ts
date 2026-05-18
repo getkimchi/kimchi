@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { shortenTitle } from "../../ferment/shorten-title.js"
 import { clearFermentCache } from "../../ferment/store.js"
+import { isAgentWorker } from "../agent-worker-context.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { appendRefEntry, maybeInjectReactiveAutoNudge, resetReactiveAutoNudgeCount } from "./nudge.js"
@@ -143,7 +144,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		if (process.env.KIMCHI_SUBAGENT === "1") {
+		if (isAgentWorker()) {
 			applyFermentToolProfile(pi, "worker")
 			return
 		}
@@ -177,7 +178,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	})
 
 	pi.on("session_shutdown", async () => {
-		if (process.env.KIMCHI_SUBAGENT === "1") return
+		if (isAgentWorker()) return
 		const f = runtime.getActive()
 		if (!f) return
 		if (f.status === "running" || f.status === "planned") {
@@ -235,7 +236,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		// pi-mono snapshots the active tool list when an agent run starts. Apply
 		// only run-static profiles here; lifecycle tools remain visible for the
 		// whole active planner run and invalid transitions are rejected by tools.
-		if (process.env.KIMCHI_SUBAGENT === "1") {
+		if (isAgentWorker()) {
 			applyFermentToolProfile(pi, "worker")
 			return {}
 		}
@@ -268,7 +269,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	})
 
 	pi.on("turn_end", async (event, ctx) => {
-		if (process.env.KIMCHI_SUBAGENT === "1") return
+		if (isAgentWorker()) return
 		runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry)
 		if (event.message.role !== "assistant") return
 		const content = getAssistantContentParts(event.message.content)

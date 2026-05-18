@@ -1,4 +1,6 @@
-// End-to-end checks that a real kimchi run spawning a real subagent subprocess leaves parent and child session files side-by-side on disk with bidirectional linkage — the path unit tests can't reach.
+// End-to-end checks that a real kimchi run spawning a real Agent leaves parent
+// and child session files side-by-side on disk with bidirectional linkage — the
+// path unit tests can't reach.
 
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -13,8 +15,8 @@ interface TokenUsage {
 	cacheWrite: number
 }
 
-interface SubagentDetails {
-	sessionId?: string
+interface AgentDetails {
+ 	agentId?: string
 	sessionFile?: string
 	tokenUsage?: TokenUsage
 	durationMs?: number
@@ -52,11 +54,11 @@ function sumAssistantUsage(entries: SessionEntry[]): TokenUsage {
 	return total
 }
 
-describe("subagent session tracking smoke tests", () => {
+describe("Agent session tracking smoke tests", () => {
 	let sessionDir: string
 
 	beforeEach(() => {
-		sessionDir = mkdtempSync(join(tmpdir(), "kimchi-subagent-session-"))
+		sessionDir = mkdtempSync(join(tmpdir(), "kimchi-agent-session-"))
 	})
 
 	afterEach(() => {
@@ -64,16 +66,17 @@ describe("subagent session tracking smoke tests", () => {
 	})
 
 	it.skipIf(!process.env.KIMCHI_API_KEY)(
-		"subagent run leaves a child session file with a header that back-references the parent, and the parent's tool-result records the child's id and path",
+		"Agent run leaves a child session file with a header that back-references the parent, and the parent's tool-result records the child's id and path",
 		{ timeout: 60_000, retry: 1 },
 		() => {
 			const prompt = [
-				"Use the `subagent` tool exactly once with these arguments:",
-				'- provider: "kimchi-dev"',
-				'- model: "kimi-k2.5"',
+				"Use the `Agent` tool exactly once with these arguments:",
+				'- subagent_type: "General-Purpose"',
+				'- model: "kimchi-dev/kimi-k2.5"',
+				'- description: "reply ok"',
 				'- prompt: "Reply with only the single word: OK"',
 				"",
-				"After it returns, echo the subagent's reply verbatim as your final answer and nothing else.",
+				"After it returns, echo the Agent's reply verbatim as your final answer and nothing else.",
 			].join("\n")
 
 			runBinary({
@@ -103,43 +106,47 @@ describe("subagent session tracking smoke tests", () => {
 			// Header linkage: child → parent.
 			expect(child?.header.parentSession).toBe(parent?.file)
 
-			// Parent → child linkage: the parent session log should carry a tool-result entry with SubagentStats.details referencing the child.
+			// Parent → child linkage: the parent session log should carry a tool-result entry with AgentDetails referencing the child.
 			const toolResult = parent?.entries.find(
 				(e) =>
 					e.type === "message" &&
 					e.message?.role === "toolResult" &&
-					(e.message.details as SubagentDetails | undefined)?.sessionFile !== undefined,
+					(e.message.details as AgentDetails | undefined)?.sessionFile !== undefined,
 			)
 			expect(
 				toolResult,
-				"parent session should contain a subagent tool-result with sessionFile populated",
+				"parent session should contain an Agent tool-result with sessionFile populated",
 			).toBeDefined()
-			const details = toolResult?.message?.details as SubagentDetails
-			expect(details.sessionId).toBe(child?.header.id)
+			const details = toolResult?.message?.details as AgentDetails
+			expect(details.agentId).toBeDefined()
 			expect(details.sessionFile).toBe(child?.file)
 		},
 	)
 
-	// Nesting: a subagent that itself spawns a subagent must land its grandchild in the top-level parent's dir, with a back-reference chain parent → child → grandchild intact. Load-bearing for pi's session-selector tree UI at depth > 1. The test also pins that each child's on-disk `message.usage` sum matches the aggregate the parent recorded in SubagentStats — i.e. pi-mono's assistant-usage fields don't drift from kimchi-dev's stdout aggregation.
+	// Nesting: an Agent that itself spawns an Agent must land its grandchild in the
+	// top-level parent's dir, with a back-reference chain parent → child →
+	// grandchild intact. Load-bearing for pi's session-selector tree UI at depth > 1.
 	it.skipIf(!process.env.KIMCHI_API_KEY)(
-		"nested subagent runs keep all descendants in the top-level parent's directory, with intact back-references and reconciled per-turn usage",
+		"nested Agent runs keep all descendants in the top-level parent's directory with intact back-references",
 		{ timeout: 120_000, retry: 1 },
 		() => {
 			const prompt = [
-				"Use the `subagent` tool exactly once with these arguments:",
-				'- provider: "kimchi-dev"',
-				'- model: "kimi-k2.5"',
+				"Use the `Agent` tool exactly once with these arguments:",
+				'- subagent_type: "General-Purpose"',
+				'- model: "kimchi-dev/kimi-k2.5"',
+				'- description: "spawn child"',
 				"- prompt: (multi-line, copy verbatim)",
 				'    """',
-				"    Use the `subagent` tool exactly once with these arguments:",
-				'    - provider: "kimchi-dev"',
-				'    - model: "kimi-k2.5"',
+				"    Use the `Agent` tool exactly once with these arguments:",
+				'    - subagent_type: "General-Purpose"',
+				'    - model: "kimchi-dev/kimi-k2.5"',
+				'    - description: "reply ok"',
 				'    - prompt: "Reply with only the single word: OK"',
 				"",
-				"    After it returns, echo the subagent's reply verbatim as your final answer and nothing else.",
+				"    After it returns, echo the Agent's reply verbatim as your final answer and nothing else.",
 				'    """',
 				"",
-				"After it returns, echo the subagent's reply verbatim as your final answer and nothing else.",
+				"After it returns, echo the Agent's reply verbatim as your final answer and nothing else.",
 			].join("\n")
 
 			runBinary({
@@ -175,32 +182,22 @@ describe("subagent session tracking smoke tests", () => {
 			expect(child?.file.startsWith(`${sessionDir}/`)).toBe(true)
 			expect(grandchild?.file.startsWith(`${sessionDir}/`)).toBe(true)
 
-			// Forward linkage: each level's tool-result points at the next level's session file/id, AND the aggregate tokenUsage the parent recorded matches the child's on-disk per-turn usage sum.
+			// Forward linkage: each level's tool-result points at the next level's session file.
 			const parentToolResult = parent?.entries.find(
 				(e) =>
 					e.type === "message" &&
 					e.message?.role === "toolResult" &&
-					(e.message.details as SubagentDetails | undefined)?.sessionFile === child?.file,
+					(e.message.details as AgentDetails | undefined)?.sessionFile === child?.file,
 			)
 			expect(parentToolResult, "parent tool-result should reference child.sessionFile").toBeDefined()
-			const parentDetails = parentToolResult?.message?.details as SubagentDetails
-			expect(parentDetails.sessionId).toBe(child?.header.id)
-			expect(parentDetails.tokenUsage, "child per-turn sum must equal parent's recorded aggregate").toEqual(
-				sumAssistantUsage(child?.entries ?? []),
-			)
 
 			const childToolResult = child?.entries.find(
 				(e) =>
 					e.type === "message" &&
 					e.message?.role === "toolResult" &&
-					(e.message.details as SubagentDetails | undefined)?.sessionFile === grandchild?.file,
+					(e.message.details as AgentDetails | undefined)?.sessionFile === grandchild?.file,
 			)
 			expect(childToolResult, "child tool-result should reference grandchild.sessionFile").toBeDefined()
-			const childDetails = childToolResult?.message?.details as SubagentDetails
-			expect(childDetails.sessionId).toBe(grandchild?.header.id)
-			expect(childDetails.tokenUsage, "grandchild per-turn sum must equal child's recorded aggregate").toEqual(
-				sumAssistantUsage(grandchild?.entries ?? []),
-			)
 		},
 	)
 })

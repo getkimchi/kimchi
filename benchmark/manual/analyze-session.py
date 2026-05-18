@@ -105,7 +105,7 @@ def analyze_jsonl(path):
             if event.get("type") == "message":
                 msg = event.get("message", {})
                 role = msg.get("role", "")
-                if role == "toolResult" and msg.get("toolName") == "subagent":
+                if role == "toolResult" and msg.get("toolName") in {"Agent", "get_subagent_result"}:
                     subagent_count += 1
                     tu = (msg.get("details") or {}).get("tokenUsage") or {}
                     sub_input += tu.get("input", 0)
@@ -115,7 +115,7 @@ def analyze_jsonl(path):
                     orch_input += usage.get("input", 0)
                     orch_output += usage.get("output", 0)
                     for item in msg.get("content", []):
-                        if item.get("type") == "toolCall" and item.get("name") != "subagent":
+                        if item.get("type") == "toolCall" and item.get("name") != "Agent":
                             orch_tool_calls.append(item.get("name"))
 
     if summary_details:

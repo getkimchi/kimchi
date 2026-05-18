@@ -17,6 +17,7 @@ import {
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
 import { getAvailableModels } from "../../../startup-context.js"
+import { runAsAgentWorker } from "../../agent-worker-context.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
@@ -183,6 +184,15 @@ function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => 
 }
 
 export async function runAgent(
+	ctx: ExtensionContext,
+	type: SubagentType,
+	prompt: string,
+	options: RunOptions,
+): Promise<RunResult> {
+	return runAsAgentWorker(() => runAgentInner(ctx, type, prompt, options))
+}
+
+async function runAgentInner(
 	ctx: ExtensionContext,
 	type: SubagentType,
 	prompt: string,

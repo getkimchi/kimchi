@@ -246,9 +246,8 @@ class Kimchi(BaseInstalledAgent):
         total_cache_write_tokens = 0
         total_cost = 0.0
 
-        # Aggregate main.jsonl + subagent <timestamp>_<uuid>.jsonl siblings (see
-        # src/extensions/subagent.ts:prepareChildSessionFile). Subagent runs are
-        # separate sessions, so their usage isn't reflected in main.jsonl.
+        # Aggregate main.jsonl + Agent child <timestamp>_<uuid>.jsonl siblings.
+        # Agent runs are separate sessions, so their usage isn't reflected in main.jsonl.
         for session_file in sorted(sessions_dir.glob("*.jsonl")):
             for line in session_file.read_text().splitlines():
                 line = line.strip()

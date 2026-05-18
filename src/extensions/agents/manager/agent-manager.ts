@@ -9,7 +9,7 @@
 import { randomUUID } from "node:crypto"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import type { AgentRecord, IsolationMode, SubagentType, ThinkingLevel } from "../personas/types.js"
+import type { AgentRecord, AgentVisibility, IsolationMode, SubagentType, ThinkingLevel } from "../personas/types.js"
 import { type ToolActivity, resumeAgent, runAgent } from "./agent-runner.js"
 import { addUsage } from "./usage.js"
 
@@ -31,6 +31,7 @@ interface SpawnArgs {
 
 interface SpawnOptions {
 	description: string
+	visibility?: AgentVisibility
 	model?: Model<Api>
 	maxTurns?: number
 	isolated?: boolean
@@ -94,10 +95,12 @@ export class AgentManager {
 			id,
 			type,
 			description: options.description,
+			visibility: options.visibility ?? "user",
 			status: options.isBackground ? "queued" : "running",
 			toolUses: 0,
 			startedAt: Date.now(),
 			abortController,
+			sessionFile: options.sessionFile,
 			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
 			compactionCount: 0,
 		}

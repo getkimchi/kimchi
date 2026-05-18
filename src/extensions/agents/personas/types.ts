@@ -89,11 +89,14 @@ export interface AgentConfig {
 }
 
 export type JoinMode = "async" | "group" | "smart"
+export type AgentVisibility = "user" | "system"
 
 export interface AgentRecord {
 	id: string
 	type: SubagentType
 	description: string
+	/** user = visible in UI/notifications; system = hidden technical/background work. */
+	visibility: AgentVisibility
 	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error"
 	result?: string
 	error?: string
@@ -113,6 +116,8 @@ export interface AgentRecord {
 	toolCallId?: string
 	/** Path to the streaming output transcript file. */
 	outputFile?: string
+	/** Persisted session file for this agent run, when the parent session is persisted. */
+	sessionFile?: string
 	/** Cleanup function for the output file stream subscription. */
 	outputCleanup?: () => void
 	/**

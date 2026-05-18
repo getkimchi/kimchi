@@ -52,6 +52,7 @@ import {
 	AGENT_GENERAL_PURPOSE,
 	type AgentConfig,
 	type AgentRecord,
+	type AgentVisibility,
 	type JoinMode,
 	type NotificationDetails,
 	type SubagentType,
@@ -193,7 +194,7 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
 }
 
 function buildDetails(
-	base: Pick<AgentDetails, "displayName" | "description" | "subagentType" | "modelName" | "tags">,
+	base: Pick<AgentDetails, "displayName" | "description" | "subagentType" | "modelName" | "tags" | "visibility">,
 	record: {
 		toolUses: number
 		startedAt: number
@@ -201,6 +202,7 @@ function buildDetails(
 		status: string
 		error?: string
 		id?: string
+		sessionFile?: string
 		session?: unknown
 		lifetimeUsage: LifetimeUsage
 	},
@@ -211,11 +213,18 @@ function buildDetails(
 		...base,
 		toolUses: record.toolUses,
 		tokens: formatLifetimeTokens(record),
+		tokenUsage: {
+			input: record.lifetimeUsage.input,
+			output: record.lifetimeUsage.output,
+			cacheRead: 0,
+			cacheWrite: record.lifetimeUsage.cacheWrite,
+		},
 		turnCount: activity?.turnCount,
 		maxTurns: activity?.maxTurns,
 		durationMs: (record.completedAt ?? Date.now()) - record.startedAt,
 		status: record.status as AgentDetails["status"],
 		agentId: record.id,
+		sessionFile: record.sessionFile,
 		error: record.error,
 		...overrides,
 	}
@@ -327,6 +336,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function emitIndividualNudge(record: AgentRecord) {
+		if (record.visibility === "system") return
 		if (record.resultConsumed) return
 
 		const notification = formatTaskNotification(record, 500)
@@ -401,6 +411,7 @@ export default function (pi: ExtensionAPI) {
 			result: record.result,
 			error: record.error,
 			status: record.status,
+			visibility: record.visibility,
 			toolUses: record.toolUses,
 			durationMs,
 			tokens,
@@ -453,6 +464,7 @@ export default function (pi: ExtensionAPI) {
 				id: record.id,
 				type: record.type,
 				description: record.description,
+				visibility: record.visibility,
 				status: record.status,
 				result: record.result,
 				error: record.error,
@@ -461,6 +473,13 @@ export default function (pi: ExtensionAPI) {
 			})
 
 			if (record.resultConsumed) {
+				agentActivity.delete(record.id)
+				widget.markFinished(record.id)
+				widget.update()
+				return
+			}
+
+			if (record.visibility === "system") {
 				agentActivity.delete(record.id)
 				widget.markFinished(record.id)
 				widget.update()
@@ -484,6 +503,7 @@ export default function (pi: ExtensionAPI) {
 				id: record.id,
 				type: record.type,
 				description: record.description,
+				visibility: record.visibility,
 			})
 		},
 		(record, info) => {
@@ -491,6 +511,7 @@ export default function (pi: ExtensionAPI) {
 				id: record.id,
 				type: record.type,
 				description: record.description,
+				visibility: record.visibility,
 				reason: info.reason,
 				tokensBefore: info.tokensBefore,
 				compactionCount: record.compactionCount,
@@ -521,6 +542,7 @@ export default function (pi: ExtensionAPI) {
 	})
 
 	const widget = new AgentWidget(manager, agentActivity)
+	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
 
 	let defaultJoinMode: JoinMode = "smart"
 	function getDefaultJoinMode(): JoinMode {
@@ -663,9 +685,16 @@ Model selection — YOU choose based on task complexity:
 						description: "If true, fork parent conversation into the agent. Default: false (fresh context).",
 					}),
 				),
+				visibility: Type.Optional(
+					Type.String({
+						description:
+							'Visibility for this agent. Use "user" (default) for normal user-facing delegation. Use "system" for technical/internal background work that must be hidden from user-facing UI and completion notifications.',
+					}),
+				),
 			}),
 
 			renderCall(args, theme) {
+				if (args.visibility === "system") return new Text("", 0, 0)
 				const displayName = args.subagent_type ? getDisplayName(args.subagent_type as string) : "Agent"
 				const desc = (args.description as string) ?? ""
 				return new Text(
@@ -682,6 +711,7 @@ Model selection — YOU choose based on task complexity:
 				const expanded = piExpanded || (context?.toolCallId ? isToolExpanded(context.toolCallId) : false)
 
 				const details = result.details as AgentDetails | undefined
+				if (details?.visibility === "system") return new Text("", 0, 0)
 				if (!details) {
 					const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 					return new Text(text, 0, 0)
@@ -787,8 +817,10 @@ Model selection — YOU choose based on task complexity:
 
 				const thinking = resolvedConfig.thinking
 				const inheritContext = resolvedConfig.inheritContext
-				const runInBackground = resolvedConfig.runInBackground
 				const isolated = resolvedConfig.isolated
+				const visibility: AgentVisibility = params.visibility === "system" ? "system" : "user"
+				const isSystemAgent = visibility === "system"
+				const runInBackground = isSystemAgent ? true : resolvedConfig.runInBackground
 
 				const parentModelId = ctx.model?.id
 				const effectiveModelId = (model as { id?: string } | undefined)?.id
@@ -808,6 +840,7 @@ Model selection — YOU choose based on task complexity:
 					displayName,
 					description: params.description as string,
 					subagentType,
+					visibility,
 					modelName: agentModelName,
 					tags: agentTags.length > 0 ? agentTags : undefined,
 				}
@@ -826,7 +859,7 @@ Model selection — YOU choose based on task complexity:
 					}
 					return textResult(
 						record.result?.trim() || record.error?.trim() || "No output.",
-						buildDetails(detailBase, record),
+						buildDetails({ ...detailBase, visibility: existing.visibility }, record),
 					)
 				}
 
@@ -863,6 +896,7 @@ Model selection — YOU choose based on task complexity:
 					try {
 						id = manager.spawn(pi, ctx, subagentType, params.prompt as string, {
 							description: params.description as string,
+							visibility,
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
 							maxTurns: effectiveMaxTurns,
 							isolated,
@@ -879,31 +913,40 @@ Model selection — YOU choose based on task complexity:
 
 					const joinMode = resolveJoinMode(getDefaultJoinMode(), true)
 					const record = manager.getRecord(id)
-					if (record && joinMode) {
+					if (record && joinMode && !isSystemAgent) {
 						record.joinMode = joinMode
 						record.toolCallId = toolCallId
 						record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
 						writeInitialEntry(record.outputFile, id, params.prompt as string, ctx.cwd)
 					}
 
-					if (joinMode != null && joinMode !== "async") {
+					if (!isSystemAgent && joinMode != null && joinMode !== "async") {
 						currentBatchAgents.push({ id, joinMode })
 						if (batchFinalizeTimer) clearTimeout(batchFinalizeTimer)
 						batchFinalizeTimer = setTimeout(finalizeBatch, 100)
 					}
 
-					agentActivity.set(id, bgState)
-					widget.ensureTimer()
-					widget.update()
+					if (!isSystemAgent) {
+						agentActivity.set(id, bgState)
+						widget.ensureTimer()
+						widget.update()
+					}
 
 					pi.events.emit("subagents:created", {
 						id,
 						type: subagentType,
 						description: params.description,
 						isBackground: true,
+						visibility,
 					})
 
 					const isQueued = record?.status === "queued"
+					if (isSystemAgent) {
+						return textResult(
+							`System agent ${isQueued ? "queued" : "started"}.\nAgent ID: ${id}\nUse get_subagent_result to retrieve the result.`,
+							{ ...detailBase, toolUses: 0, tokens: "", durationMs: 0, status: "background" as const, agentId: id },
+						)
+					}
 					return textResult(
 						`Agent ${isQueued ? "queued" : "started"} in background.\nAgent ID: ${id}\nType: ${displayName}\nDescription: ${params.description}\n${record?.outputFile ? `Output file: ${record.outputFile}\n` : ""}${isQueued ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n` : ""}\nYou will be notified when this agent completes.\nUse get_subagent_result to retrieve full results, or steer_subagent to send it messages.\nDo not duplicate this agent's work.`,
 						{ ...detailBase, toolUses: 0, tokens: "", durationMs: 0, status: "background" as const, agentId: id },
@@ -972,6 +1015,7 @@ Model selection — YOU choose based on task complexity:
 				try {
 					record = await manager.spawnAndWait(pi, ctx, subagentType, params.prompt as string, {
 						description: params.description as string,
+						visibility,
 						model: model as Parameters<typeof manager.spawnAndWait>[4]["model"],
 						maxTurns: effectiveMaxTurns,
 						isolated,
@@ -1087,7 +1131,20 @@ Model selection — YOU choose based on task complexity:
 					}
 				}
 
-				return textResult(output)
+				return textResult(
+					output,
+					buildDetails(
+						{
+							displayName,
+							description: record.description,
+							subagentType: record.type,
+							visibility: record.visibility,
+							modelName: undefined,
+							tags: undefined,
+						},
+						record,
+					),
+				)
 			},
 		}),
 	)
@@ -1187,7 +1244,7 @@ Model selection — YOU choose based on task complexity:
 
 		const options: string[] = []
 
-		const agents = manager.listAgents()
+		const agents = listUserVisibleAgents()
 		if (agents.length > 0) {
 			const running = agents.filter((a) => a.status === "running" || a.status === "queued").length
 			const done = agents.filter((a) => a.status === "completed" || a.status === "steered").length
@@ -1282,7 +1339,7 @@ Model selection — YOU choose based on task complexity:
 	}
 
 	async function showRunningAgents(ctx: ExtensionCommandContext) {
-		const agents = manager.listAgents()
+		const agents = listUserVisibleAgents()
 		if (agents.length === 0) {
 			ctx.ui.notify("No agents.", "info")
 			return

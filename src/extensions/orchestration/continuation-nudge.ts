@@ -6,7 +6,7 @@
  * so the agent loop restarts:
  *
  *   1. Continuation nudge — the orchestrator reasons in prose, announces it
- *      will delegate, and ends its turn without emitting the `subagent` tool
+ *      will delegate, and ends its turn without emitting the `Agent` tool
  *      call. Mirrors AISI Inspect's `on_continue`.
  *
  *   2. Empty-turn nudge — some Kimi deployments return an empty response
@@ -48,8 +48,8 @@ export const EMPTY_TURN_NUDGE_TEXT =
  * called during that cycle — so legitimate end-of-task summaries after a
  * completed tool sequence are not nudged.
  *
- * Suppresses the nudge while a subagent result is pending to prevent the
- * model from signalling DONE before the subagent output has been received
+ * Suppresses the nudge while an Agent result is pending to prevent the
+ * model from signalling DONE before the Agent output has been received
  * and processed.
  */
 export class ContinuationNudge {
@@ -57,21 +57,20 @@ export class ContinuationNudge {
 	private nudgedSinceLastUserInput = false
 	private nudgeResponsePending = false
 	private accumulatedResponseText = ""
-	/** Number of subagent calls still awaiting results.
-	 *  Incremented by `markSubagentCall()`, decremented by `clearSubagentPending()`.
+	/** Number of Agent calls still awaiting results.
+	 *  Incremented by `markDelegationCall()`, decremented by `clearDelegationPending()`.
 	 *  The continuation nudge is suppressed while this is > 0. */
-	private pendingSubagentCount = 0
+	private pendingDelegationCount = 0
 
 	resetForNewUserInput(): void {
 		this.toolsCalledSinceLastUserInput = false
 		this.nudgedSinceLastUserInput = false
 		this.nudgeResponsePending = false
 		this.accumulatedResponseText = ""
-		// pendingSubagentCount is intentionally NOT reset here — it is
-		// decremented only by clearSubagentPending() to avoid a race where
-		// a new user-input cycle arrives before all subagent results, which
-		// would incorrectly allow the nudge to fire while subagents are
-		// still in flight.
+		// pendingDelegationCount is intentionally NOT reset here — it is
+		// decremented only by clearDelegationPending() to avoid a race where
+		// a new user-input cycle arrives before all Agent results, which
+		// would incorrectly allow the nudge to fire while Agents are still in flight.
 	}
 
 	recordToolCall(): void {
@@ -81,12 +80,12 @@ export class ContinuationNudge {
 	}
 
 	/**
-	 * Called once per `subagent` tool call detected in a turn.
+	 * Called once per `Agent` tool call detected in a turn.
 	 * Increments the pending counter so the continuation nudge stays
-	 * suppressed until all subagent results have been received.
+	 * suppressed until all Agent results have been received.
 	 */
-	markSubagentCall(): void {
-		this.pendingSubagentCount++
+	markDelegationCall(): void {
+		this.pendingDelegationCount++
 	}
 
 	isNudgeResponsePending(): boolean {
@@ -104,9 +103,9 @@ export class ContinuationNudge {
 	evaluateTurn(message: AssistantMessage): boolean {
 		if (this.nudgedSinceLastUserInput) return false
 		if (this.toolsCalledSinceLastUserInput) return false
-		// Do not nudge while any subagent result is pending — the model must
-		// wait for all subagent outputs before it can continue or signal done.
-		if (this.pendingSubagentCount > 0) return false
+		// Do not nudge while any Agent result is pending — the model must
+		// wait for all Agent outputs before it can continue or signal done.
+		if (this.pendingDelegationCount > 0) return false
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
 		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
 		if (hasToolCalls || !hasText) return false
@@ -116,14 +115,14 @@ export class ContinuationNudge {
 	}
 
 	/**
-	 * Decrements the pending-subagent counter when a subagent result is
-	 * received. Called by the orchestrator for each subagent tool-result.
+	 * Decrements the pending-Agent counter when an Agent result is
+	 * received. Called by the orchestrator for each Agent tool-result.
 	 * The continuation nudge remains suppressed until all pending
-	 * subagents have returned.
+	 * Agents have returned.
 	 */
-	clearSubagentPending(): void {
-		if (this.pendingSubagentCount > 0) {
-			this.pendingSubagentCount--
+	clearDelegationPending(): void {
+		if (this.pendingDelegationCount > 0) {
+			this.pendingDelegationCount--
 		}
 	}
 }

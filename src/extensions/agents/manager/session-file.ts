@@ -10,8 +10,7 @@ export interface AgentSessionFile {
 
 /**
  * Pre-write a child Agent session header so the in-process Agent runner can open
- * a persisted session with the same parentSession backlink used by the legacy
- * subprocess subagent tool.
+ * a persisted session with a parentSession backlink to the spawning session.
  */
 export function prepareAgentSessionFile(
 	parentSessionDir: string,

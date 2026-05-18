@@ -1,20 +1,20 @@
 /**
  * Orchestration prompt enrichment extension.
  *
- * Behavior depends on whether this process is the main model or a subagent
- * (detected via the KIMCHI_SUBAGENT env var set during subagent spawning).
+ * Behavior depends on whether this process is the main model or an Agent worker
+ * (detected via Agent worker context or the legacy KIMCHI_SUBAGENT env var).
  *
  * Main model mode:
  * - "input": wraps the user prompt with the current model's own capabilities
- *   and the available subagent models so the model can self-classify the task
+ *   and the available Agent worker models so the model can self-classify the task
  *   and decide which steps to execute itself vs. delegate.
  * - "before_agent_start": injects the self-classification system prompt with
- *   full tool access (read, write, edit, bash, subagent).
+ *   full tool access (read, write, edit, bash, Agent).
  *
  * Subagent mode:
  * - "input": passes through unchanged.
  * - "before_agent_start": injects the pure worker system prompt. Filters out
- *   the subagent tool to prevent infinite delegation chains.
+ *   delegation tools to prevent infinite delegation chains.
  *
  * Steering messages are excluded — when the agent is streaming, the handler
  * returns "continue" so the message passes through unchanged.
@@ -30,6 +30,7 @@ import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendi
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
+import { isAgentWorker } from "../agent-worker-context.js"
 import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
 import {
 	CONTINUATION_NUDGE_TEXT,
@@ -201,7 +202,7 @@ export function getMultiModelEnabled(): boolean {
 }
 
 export function isSubagent(): boolean {
-	return process.env.KIMCHI_SUBAGENT === "1"
+	return isAgentWorker()
 }
 
 export default function (skillPaths: string[]) {
@@ -244,7 +245,7 @@ export default function (skillPaths: string[]) {
 
 			// Detect the inverse of the context-event nudge below: the orchestrator reasons
 			// in prose, announces it will delegate, and ends its turn without emitting the
-			// `subagent` tool call. The agent loop would otherwise exit and wait for another
+			// `Agent` tool call. The agent loop would otherwise exit and wait for another
 			// user prompt. Nudge once per user-input cycle, and only when no tool has fired
 			// that cycle — so genuine end-of-task summaries are left alone. Mirrors AISI
 			// Inspect's `on_continue`.
@@ -256,10 +257,10 @@ export default function (skillPaths: string[]) {
 			const emptyTurnNudge = new EmptyTurnNudge()
 			pi.on("input", async (event) => {
 				if (event.source === "extension") {
-					// Subagent result arriving. Clear the subagent-pending flag so the
+					// Agent result arriving. Clear the delegation-pending flag so the
 					// continuation nudge can fire normally once the model has processed
 					// the output (at the next turn_end, after any tool calls it makes).
-					continuationNudge.clearSubagentPending()
+					continuationNudge.clearDelegationPending()
 					return
 				}
 				continuationNudge.resetForNewUserInput()
@@ -285,12 +286,12 @@ export default function (skillPaths: string[]) {
 			pi.on("turn_end", async (event) => {
 				if (event.message.role !== "assistant") return
 
-				// Mark each subagent tool call so the continuation nudge stays
-				// suppressed until all subagent results have been received.
-				// A single turn may contain multiple parallel subagent calls.
+				// Mark each Agent tool call so the continuation nudge stays
+				// suppressed until all Agent results have been received.
+				// A single turn may contain multiple parallel Agent calls.
 				for (const c of event.message.content) {
-					if (c.type === "toolCall" && (c as { name?: string }).name === "subagent") {
-						continuationNudge.markSubagentCall()
+					if (c.type === "toolCall" && (c as { name?: string }).name === "Agent") {
+						continuationNudge.markDelegationCall()
 					}
 				}
 
