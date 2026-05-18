@@ -16,6 +16,7 @@ import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { isBareExitAlias } from "./exit-utils.js"
 import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
+import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
 import { getMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
 import {
@@ -200,9 +201,13 @@ export default function uiExtension(pi: ExtensionAPI) {
 	let scriptGeneration = 0
 	let currentCtx: ExtensionContext | null = null
 	let sessionStartMs = 0
+	let turnStartMs = 0
 	let linesAdded = 0
 	let linesRemoved = 0
 	let newlineHintHandle: { hide(): void } | null = null
+	let thinkingStatus: "thinking" | number | null = null
+	let thinkingStartMs = 0
+	let workedForTimer: ReturnType<typeof setTimeout> | undefined
 
 	const refresh = (status: "idle" | "generating") => {
 		if (!currentCtx?.hasUI || !scriptFooter || !scriptTui || !scriptCmd) return
@@ -450,15 +455,39 @@ export default function uiExtension(pi: ExtensionAPI) {
 		stopWorkingAnimation = createWorkingAnimator((char, message) => {
 			const accent = resolvedAccentFg(ctx.ui.theme)
 			ctx.ui.setWorkingIndicator({ frames: [`${accent}${char}${RST_FG}`] })
-			ctx.ui.setWorkingMessage(`${accent}${message}${RST_FG}`)
+			let suffix = ""
+			if (thinkingStatus === "thinking") {
+				suffix = ` ${ctx.ui.theme.fg("dim", "(thinking…)")}`
+			} else if (typeof thinkingStatus === "number") {
+				const secs = Math.max(1, Math.round(thinkingStatus / 1000))
+				suffix = ` ${ctx.ui.theme.fg("dim", `(thought for ${secs}s)`)}`
+			}
+			ctx.ui.setWorkingMessage(`${accent}${message}${RST_FG}${suffix}`)
 		})
 	}
 
 	pi.on("turn_start", (_, ctx) => {
+		clearTimeout(workedForTimer)
+		workedForTimer = undefined
 		currentCtx = ctx
 		toolsInFlight = 0
+		turnStartMs = Date.now()
+		thinkingStatus = null
+		thinkingStartMs = 0
 		refresh("generating")
 		startIndicator(ctx)
+	})
+	pi.on("message_update", (event) => {
+		const evt = event.assistantMessageEvent as { type: string }
+		if (evt.type === "thinking_start") {
+			thinkingStartMs = Date.now()
+			thinkingStatus = "thinking"
+		} else if (evt.type === "thinking_end") {
+			if (thinkingStatus === "thinking") {
+				const duration = Date.now() - thinkingStartMs
+				thinkingStatus = duration > 100 ? duration : null
+			}
+		}
 	})
 	pi.on("message_start", (event, ctx) => {
 		if (event.message.role !== "assistant") return
@@ -487,8 +516,20 @@ export default function uiExtension(pi: ExtensionAPI) {
 	pi.on("turn_end", (_, ctx) => {
 		currentCtx = ctx
 		refresh("idle")
+		if (ctx.hasUI && turnStartMs > 0) {
+			clearTimeout(workedForTimer)
+			const elapsed = Date.now() - turnStartMs
+			ctx.ui.setWorkingVisible(true)
+			ctx.ui.setWorkingMessage(ctx.ui.theme.fg("dim", `✻ Worked for ${formatDuration(elapsed)}`))
+			workedForTimer = setTimeout(() => {
+				workedForTimer = undefined
+				ctx.ui.setWorkingVisible(false)
+			}, 2500)
+		}
 	})
 	pi.on("agent_end", (_, ctx) => {
+		clearTimeout(workedForTimer)
+		workedForTimer = undefined
 		toolsInFlight = 0
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined

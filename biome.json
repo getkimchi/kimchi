@@ -20,6 +20,24 @@
 			"semicolons": "asNeeded"
 		}
 	},
+	"overrides": [
+		{
+			"include": ["src/extensions/thinking-steps/**"],
+			"linter": {
+				"rules": {
+					"suspicious": {
+						"noControlCharactersInRegex": "off"
+					},
+					"style": {
+						"noNonNullAssertion": "off"
+					},
+					"complexity": {
+						"noForEach": "off"
+					}
+				}
+			}
+		}
+	],
 	"files": {
 		"ignore": ["dist/", "node_modules/", "src/core/export-html/", "src/extensions/mcp-adapter/"]
 	}

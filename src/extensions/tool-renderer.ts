@@ -7,9 +7,43 @@ import {
 	createReadToolDefinition,
 	createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent"
+import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { TSchema } from "typebox"
 import { ToolBlockView, buildToolCallHeader, getTextContent } from "../components/tool-block.js"
 import { isToolExpanded, registerToolCall } from "../expand-state.js"
+
+const ANSI_RESET = "\x1b[0m"
+const ANSI_GREEN = "\x1b[32m"
+const ANSI_RED = "\x1b[31m"
+const ANSI_CYAN = "\x1b[36m"
+const ANSI_DIM = "\x1b[2m"
+
+function colorizeDiff(content: string): string {
+	return content
+		.split("\n")
+		.map((line) => {
+			if (line.startsWith("+++") || line.startsWith("---")) return `${ANSI_DIM}${line}${ANSI_RESET}`
+			if (line.startsWith("+")) return `${ANSI_GREEN}${line}${ANSI_RESET}`
+			if (line.startsWith("-")) return `${ANSI_RED}${line}${ANSI_RESET}`
+			if (line.startsWith("@@")) return `${ANSI_CYAN}${line}${ANSI_RESET}`
+			return `${ANSI_DIM}${line}${ANSI_RESET}`
+		})
+		.join("\n")
+}
+
+function diffSummary(content: string): string {
+	let added = 0
+	let removed = 0
+	for (const line of content.split("\n")) {
+		if (line.startsWith("+") && !line.startsWith("+++")) added++
+		else if (line.startsWith("-") && !line.startsWith("---")) removed++
+	}
+	if (added === 0 && removed === 0) return "no changes"
+	const parts: string[] = []
+	if (added > 0) parts.push(`${ANSI_GREEN}+${added}${ANSI_RESET}`)
+	if (removed > 0) parts.push(`${ANSI_RED}-${removed}${ANSI_RESET}`)
+	return parts.join(" ")
+}
 
 function formatArgs(toolName: string, args: Record<string, unknown>): string {
 	return (() => {
@@ -41,23 +75,25 @@ function formatArgs(toolName: string, args: Record<string, unknown>): string {
 	})()
 }
 
-function formatSummary(toolName: string, content: string, isError: boolean): string {
+function formatSummary(toolName: string, content: string, isError: boolean, theme: Theme): string {
 	if (isError) return content.split("\n")[0] || "error"
 	const trimmed = content.replace(/\n+$/, "")
 	const lines = trimmed ? trimmed.split("\n").length : 0
 	switch (toolName) {
 		case "edit":
-			return "changes applied"
-		case "write":
-			return "file written"
+			return diffSummary(content)
+		case "write": {
+			const writeLines = content ? content.split("\n").length : 0
+			return theme.fg("dim", `${writeLines} line${writeLines === 1 ? "" : "s"} written`)
+		}
 		case "read":
 		case "grep":
 		case "ls":
-			return `${lines} line${lines === 1 ? "" : "s"} of output`
+			return theme.fg("dim", `${lines} line${lines === 1 ? "" : "s"} of output`)
 		case "find":
-			return `${lines} file${lines === 1 ? "" : "s"} found`
+			return theme.fg("dim", `${lines} file${lines === 1 ? "" : "s"} found`)
 		default:
-			return "done"
+			return theme.fg("dim", "done")
 	}
 }
 
@@ -75,19 +111,28 @@ function buildBuiltinTool<TParams extends TSchema, TDetails>(
 			buildToolCallHeader(view, meta.name, formatArgs(meta.name, args as Record<string, unknown>), theme, ctx)
 			return view
 		},
-		renderResult(result, options, theme, ctx) {
+		renderResult(result, _options, theme, ctx) {
 			const view = ctx.lastComponent instanceof ToolBlockView ? ctx.lastComponent : new ToolBlockView()
 			const content = getTextContent(result)
 
 			registerToolCall(ctx.toolCallId)
-			view.setDivider((s: string) => theme.fg("borderMuted", s))
+			view.setBranchMode((s) => theme.fg("borderMuted", s))
+
+			const isDiff = meta.name === "edit" || meta.name === "write"
 
 			if (isToolExpanded(ctx.toolCallId) && content) {
-				view.setFooter(theme.fg("toolOutput", content), "")
-				view.setExtra([])
+				if (isDiff && meta.name === "edit") {
+					const colorized = colorizeDiff(content)
+					view.setFooter("", "")
+					view.setExtra(colorized.split("\n"))
+				} else {
+					view.setFooter(theme.fg("toolOutput", content), "")
+					view.setExtra([])
+				}
 			} else {
-				const summary = formatSummary(meta.name, content, ctx.isError)
-				view.setFooter(theme.fg("dim", summary), theme.fg("dim", "ctrl+o to expand"))
+				const summary = formatSummary(meta.name, content, ctx.isError, theme)
+				const hint = ctx.isError ? "" : theme.fg("dim", "ctrl+o")
+				view.setFooter(summary, hint)
 				view.setExtra([])
 			}
 
