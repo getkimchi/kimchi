@@ -1,12 +1,25 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { isRestoringModel } from "./ferment/state.js"
 import { sessionHasImages } from "./model-guard.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
 
 /** Tier ordering for downgrade detection: higher index = lower tier. */
 const TIER_ORDER: ModelTier[] = ["heavy", "standard", "light"]
+
+/** Prevents model_select handler from re-checking what set_model tool already validated. */
+let suppressModelSelectGuard = false
+
+/** Recursion guard — true while our own revert is in progress. */
+let isRevertingModel = false
+
+/** Resets module state between tests. */
+export function __resetModelSwitchStateForTest(): void {
+	suppressModelSelectGuard = false
+	isRevertingModel = false
+}
 
 /**
  * Extract tier from a model descriptor via MODEL_CAPABILITIES.
@@ -108,7 +121,9 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 					? `\n\nNote: Switched from a ${currentTier}-tier to a ${targetTier}-tier model. Reasoning and planning quality may be reduced for complex tasks.`
 					: ""
 
+			suppressModelSelectGuard = true
 			const ok = await pi.setModel(target)
+			suppressModelSelectGuard = false
 			if (!ok) {
 				return {
 					content: [
@@ -131,5 +146,54 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 				details: null,
 			}
 		},
+	})
+
+	pi.on?.("model_select", async (event, ctx) => {
+		// Skip if a revert is already in progress
+		if (isRevertingModel) return
+		// Skip if set_model tool initiated this (already validated)
+		if (suppressModelSelectGuard) return
+		// cycle and restore are handled by ctrl+p / session recovery already
+		if (event.source === "cycle" || event.source === "restore") return
+		// Skip if ferment is reverting (its own rollback path)
+		if (isRestoringModel()) return
+		// Nothing to revert to
+		if (!event.previousModel) return
+
+		const usage = ctx.getContextUsage?.()
+
+		// Context window guard — block if current tokens exceed target context window
+		if (usage?.tokens != null && usage.tokens > event.model.contextWindow) {
+			isRevertingModel = true
+			await pi.setModel(event.previousModel)
+			isRevertingModel = false
+			ctx.ui?.notify(
+				`Current context (${usage.tokens} tokens) exceeds the ${event.model.id} context window (${event.model.contextWindow} tokens). Switch rejected — use /compact to reduce context size, then try again.`,
+				"error",
+			)
+			return
+		}
+
+		// Vision guard — block if session has images but target lacks vision support
+		if (sessionHasImages() && !event.model.input.includes("image")) {
+			isRevertingModel = true
+			await pi.setModel(event.previousModel)
+			isRevertingModel = false
+			ctx.ui?.notify(
+				`Session contains images but ${event.model.id} does not support vision. Switch rejected — use a vision-capable model or start a new session.`,
+				"error",
+			)
+			return
+		}
+
+		// Tier-downgrade info — non-blocking
+		const prevTier = getModelTier(event.previousModel as never, MODEL_CAPABILITIES)
+		const nextTier = getModelTier(event.model as never, MODEL_CAPABILITIES)
+		if (prevTier && nextTier && TIER_ORDER.indexOf(prevTier) < TIER_ORDER.indexOf(nextTier)) {
+			ctx.ui?.notify(
+				`Switching from ${prevTier}-tier to ${nextTier}-tier model. Reasoning quality may be reduced for complex tasks.`,
+				"info",
+			)
+		}
 	})
 }

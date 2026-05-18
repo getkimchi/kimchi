@@ -310,14 +310,14 @@ export default function uiExtension(pi: ExtensionAPI) {
 							if (!next) {
 								const lines = skipped.map((s) => `  • ${s.model.id}: ${s.reason}`)
 								ctx.ui.notify(
-									`No compatible model available.\n${lines.join("\n")}\nUse /compact to reduce context size and try again.`,
+									`No compatible model available.\n${lines.join("\n")}\nUse /compact to unlock models blocked by insufficient context size and try again.`,
 									"warning",
 								)
 							} else if (!modelsAreEqual(next, current)) {
 								if (skipped.length > 0) {
 									const lines = skipped.map((s) => `  • ${s.model.id}: ${s.reason}`)
 									ctx.ui.notify(
-										`Skipped ${skipped.length} model${skipped.length > 1 ? "s" : ""}:\n${lines.join("\n")}\nUse /compact to unlock more models.`,
+										`Skipped ${skipped.length} model${skipped.length > 1 ? "s" : ""}:\n${lines.join("\n")}\n\nUse /compact to unlock models blocked by insufficient context size.`,
 										"info",
 									)
 								}
