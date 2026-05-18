@@ -173,46 +173,16 @@ describe("compact-form builders", () => {
 	})
 
 	describe("buildMultiModelAbbrev", () => {
-		it("uses `m-m:` instead of `multi-model:` when enabled (darwin)", () => {
-			const restore = stubPlatform("darwin")
-			try {
-				const seg = buildMultiModelAbbrev(compactCtx, true)
-				expect(seg.id).toBe("multi-model")
-				expect(seg.text).toBe("m-m: on \u2192 option+tab")
-				expect(seg.raw).toEqual({ kind: "multi-model", enabled: true })
-			} finally {
-				restore()
-			}
+		it("uses `m-m:` instead of `multi-model:` when enabled", () => {
+			const seg = buildMultiModelAbbrev(compactCtx, true)
+			expect(seg.id).toBe("multi-model")
+			expect(seg.text).toBe("m-m: on \u2192 alt+m")
+			expect(seg.raw).toEqual({ kind: "multi-model", enabled: true })
 		})
 
-		it("shows `off` when disabled (darwin)", () => {
-			const restore = stubPlatform("darwin")
-			try {
-				const seg = buildMultiModelAbbrev(compactCtx, false)
-				expect(seg.text).toBe("m-m: off \u2192 option+tab")
-			} finally {
-				restore()
-			}
-		})
-
-		it("uses `alt+tab` shortcut on non-darwin (enabled)", () => {
-			const restore = stubPlatform("linux")
-			try {
-				const seg = buildMultiModelAbbrev(compactCtx, true)
-				expect(seg.text).toBe("m-m: on \u2192 alt+tab")
-			} finally {
-				restore()
-			}
-		})
-
-		it("uses `alt+tab` shortcut on non-darwin (disabled)", () => {
-			const restore = stubPlatform("linux")
-			try {
-				const seg = buildMultiModelAbbrev(compactCtx, false)
-				expect(seg.text).toBe("m-m: off \u2192 alt+tab")
-			} finally {
-				restore()
-			}
+		it("shows `off` when disabled", () => {
+			const seg = buildMultiModelAbbrev(compactCtx, false)
+			expect(seg.text).toBe("m-m: off \u2192 alt+m")
 		})
 	})
 
@@ -239,14 +209,8 @@ describe("SHORTCUT_TAIL regex", () => {
 		expect(text.replace(SHORTCUT_TAIL, "")).toBe("\u25cf default")
 	})
 
-	it("matches the multi-model trailing shortcut (darwin)", () => {
-		const text = "multi-model: on \x1b[38;5;242m\u2192 option+tab\x1b[39m"
-		expect(SHORTCUT_TAIL.test(text)).toBe(true)
-		expect(text.replace(SHORTCUT_TAIL, "")).toBe("multi-model: on")
-	})
-
-	it("matches the multi-model trailing shortcut (linux)", () => {
-		const text = "multi-model: on \x1b[38;5;242m\u2192 alt+tab\x1b[39m"
+	it("matches the multi-model trailing shortcut", () => {
+		const text = "multi-model: on \x1b[38;5;242m\u2192 alt+m\x1b[39m"
 		expect(SHORTCUT_TAIL.test(text)).toBe(true)
 		expect(text.replace(SHORTCUT_TAIL, "")).toBe("multi-model: on")
 	})
@@ -302,7 +266,7 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 	it("width 160: full footer + `/ for commands` hint, padded to width", () => {
 		const { raw, visible } = renderAt(160)
 		expect(visible).toContain("\u25cf default \u2192 shift+tab")
-		expect(visible).toContain("multi-model: on \u2192 option+tab")
+		expect(visible).toContain("multi-model: on \u2192 alt+m")
 		expect(visible).toContain("claude-opus-4-7")
 		expect(visible).toContain("0% ctx")
 		expect(visible).toContain("phase:explore")
