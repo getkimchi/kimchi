@@ -12,7 +12,6 @@ import type { WizardResult, WizardState } from "./state.js"
 import { runAuthStep } from "./steps/auth.js"
 import { runDoneStep } from "./steps/done.js"
 import { runModeStep } from "./steps/mode.js"
-import { runScopeStep } from "./steps/scope.js"
 import { runTelemetryStep } from "./steps/telemetry.js"
 import { runToolsStep } from "./steps/tools.js"
 import { runWelcomeStep } from "./steps/welcome.js"
@@ -27,7 +26,6 @@ const STEPS: Step[] = [
 	{ name: "auth", run: runAuthStep },
 	{ name: "tools", run: runToolsStep },
 	{ name: "mode", run: runModeStep },
-	{ name: "scope", skip: (s) => s.mode === "inject", run: runScopeStep },
 	{ name: "telemetry", skip: (s) => !s.selectedTools.includes("claudecode"), run: runTelemetryStep },
 ]
 
@@ -36,11 +34,7 @@ const STEPS: Step[] = [
  * forward, calling each step and respecting `state.back` (rewind to the
  * previous non-skipped step) and `state.cancelled` (abort).
  *
- * Step order: welcome → auth → tools → mode → scope → telemetry → done.
- *
- * Scope is skipped in inject mode because there's no disk write to scope —
- * the launcher subcommands set env vars per-process regardless of where
- * any global/project config might live.
+ * Step order: welcome → auth → tools → mode → telemetry → done.
  *
  * Telemetry is only asked when Claude Code is among the selected tools —
  * the other integrations already enable it via their own config and the
