@@ -10,7 +10,7 @@ import type { Ferment } from "../../ferment/types.js"
 import fermentExtension from "./index.js"
 import { resetAllReactiveAutoNudgeCounts } from "./nudge.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
-import { getActive, isAutoModeEnabled, setActive, setAutoModeEnabled } from "./state.js"
+import { getActive, isAutoModeEnabled, setActive, setContinuationPolicy } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { completeFerment, scopeFerment } from "./tools/lifecycle.js"
 
@@ -71,7 +71,7 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 
 afterEach(() => {
 	setActive(undefined)
-	setAutoModeEnabled(true)
+	setContinuationPolicy("manual")
 	resetAllReactiveAutoNudgeCounts()
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
@@ -252,20 +252,20 @@ describe("fermentExtension one-shot bootstrap", () => {
 })
 
 describe("/ferment command", () => {
-	it('strips the add subcommand from /ferment add "Title"', async () => {
+	it('strips the new subcommand from /ferment new "Title"', async () => {
 		const { commands } = registerFermentExtension()
 		const fermentCommand = commands.get("ferment")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		const title = `Rewrite login ${randomUUID()}`
 
-		await fermentCommand(`add "${title}"`, { hasUI: false, ui: { notify: vi.fn() } })
+		await fermentCommand(`new "${title}"`, { hasUI: false, ui: { notify: vi.fn() } })
 
 		const created = getActive()
 		expect(created?.name).toBe(title)
 		expect(created?.description).toBe(title)
 	})
 
-	it("uses injected runtime storage for headless add and scoping nudge", async () => {
+	it("uses injected runtime storage for headless new and scoping nudge", async () => {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-test-")))
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
@@ -277,7 +277,7 @@ describe("/ferment command", () => {
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		const title = `Injected runtime ${randomUUID()}`
 
-		await fermentCommand(`add "${title}"`, { hasUI: false, ui: { notify: vi.fn() } })
+		await fermentCommand(`new "${title}"`, { hasUI: false, ui: { notify: vi.fn() } })
 
 		const created = storage.list().find((f) => f.name === title)
 		expect(created).toBeDefined()
@@ -311,12 +311,13 @@ function makeActivePlanFerment(overrides: Partial<Ferment> = {}): Ferment {
 }
 
 describe("fermentExtension question dropdown", () => {
-	it("reactively nudges exec ferments after a text-only assistant turn", async () => {
+	it("reactively nudges exec ferments after a text-only assistant turn when policy is automated", async () => {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-reactive-test-")))
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
 			getStorage: () => storage,
 		}
+		runtime.setContinuationPolicy("automated")
 		const applyAndPersist = createApplyAndPersist(runtime)
 		const draft = storage.create("Reactive Turn")
 		const scoped = applyAndPersist(draft.id, {
@@ -561,12 +562,13 @@ describe("fermentExtension question dropdown", () => {
 		)
 	})
 
-	it("silently nudges resume into auto execution when scopeFerment succeeds in plan mode (no dropdown)", async () => {
+	it("silently nudges resume into auto execution when scopeFerment succeeds under automated policy", async () => {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-plan-handoff-test-")))
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
 			getStorage: () => storage,
 		}
+		runtime.setContinuationPolicy("automated")
 		const applyAndPersist = createApplyAndPersist(runtime)
 		const draft = storage.create("Plan Handoff")
 		const moded = applyAndPersist(draft.id, { type: "set_mode", mode: "plan" })

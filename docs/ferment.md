@@ -97,7 +97,7 @@ Switch modes at any time:
 ### 1. Create a ferment
 
 ```
-/ferment add "Build Tetris"
+/ferment new "Build Tetris"
 ```
 
 Or type `/ferment` with no arguments for an input prompt.
@@ -157,7 +157,7 @@ The dashboard widget is always visible above the editor:
   ○  Scoring  0/3
 
 context: 14 turns
-/progress · /pause · /auto
+/progress · /manual · /auto · /ferment pause
 ```
 
 Run `/progress` for full phase/step navigation with grades and actions.
@@ -165,13 +165,14 @@ Run `/progress` for full phase/step navigation with grades and actions.
 ### 4. Pause and resume
 
 ```
-/pause     ← stop auto-mode (ferment stays "running")
-/auto      ← resume
+/ferment pause   ← pause the ferment lifecycle
+/ferment resume  ← resume the ferment lifecycle
+/manual          ← ask before moving to the next phase
+/auto            ← keep going until done or blocked
 ```
 
-`/pause` only disables auto-mode. It does not persist the ferment as `paused`.
-The persisted `paused` status is reserved for internal user-intervention and
-session-resume paths.
+`/ferment pause` persists the ferment as `paused`. `/ferment resume` resumes
+the lifecycle and continues according to the current continuation policy.
 
 Sessions resume automatically. When you close and reopen Kimchi with an active ferment, the agent picks up exactly where it left off.
 
@@ -301,7 +302,7 @@ The file is the authoritative source of truth. You can inspect it directly, back
 | Command | Description |
 |---------|-------------|
 | `/ferment` | Interactive picker — create or switch |
-| `/ferment add "Name"` | Create a new ferment |
+| `/ferment new "Name"` | Create a new ferment |
 | `/ferment list` | List all ferments |
 | `/ferment switch <id>` | Switch active ferment by ID prefix or name |
 | `/ferment delete <id>` | Delete a ferment permanently |
@@ -310,8 +311,10 @@ The file is the authoritative source of truth. You can inspect it directly, back
 | `/ferment revise goal` | Revise a scoping field |
 | `/ferment one-shot "task"` | Create and auto-execute a single task ferment |
 | `/progress` | Open phase/step navigator overlay (toggle) |
-| `/pause` | Pause auto-mode |
-| `/auto` | Resume auto-mode |
+| `/manual` | Set manual continuation policy |
+| `/auto` | Set automated continuation policy |
+| `/ferment pause` | Pause the active ferment lifecycle |
+| `/ferment resume` | Resume the active ferment lifecycle |
 
 ---
 

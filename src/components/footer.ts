@@ -7,7 +7,7 @@ import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
-import { getActiveFerment, getCurrentPhaseIndex } from "../extensions/ferment/index.js"
+import { getActiveFerment, getCurrentPhaseIndex, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatCount } from "../extensions/format.js"
 import { getCurrentPermissionsMode } from "../extensions/permissions/index.js"
 import { getMultiModelEnabled } from "../extensions/prompt-construction/prompt-enrichment.js"
@@ -473,7 +473,7 @@ export class StatsFooter implements Component {
 
 		const parts: string[] = [`${prefix}${this.accent(ferment.name)}`]
 		parts.push(this.dim(`[${ferment.status}]`))
-		parts.push(this.dim(ferment.mode))
+		parts.push(this.dim(`policy:${getFermentContinuationPolicy()}`))
 
 		if (phaseIdx !== undefined && totalPhases > 0) {
 			const phaseName = activePhase?.name ?? ""

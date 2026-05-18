@@ -58,7 +58,7 @@ After \`propose_ferment_scoping\` returns "Plan saved", the host confirmation al
 }
 
 function buildPausedWarning(f: Ferment): string {
-	return `\n\n## Ferment Paused\n\nFerment "${f.name}" is paused by the user. Do NOT call any ferment tools (activate_ferment_phase, start_ferment_step, complete_ferment_step, etc.) — they will be rejected. Acknowledge any pending question briefly and wait for the user to resume with /auto.`
+	return `\n\n## Ferment Paused\n\nFerment "${f.name}" is paused by the user. Do NOT call any ferment tools (activate_ferment_phase, start_ferment_step, complete_ferment_step, etc.) — they will be rejected. Acknowledge any pending question briefly and wait for the user to resume with /ferment resume.`
 }
 
 /**

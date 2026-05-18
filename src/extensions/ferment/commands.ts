@@ -35,6 +35,105 @@ import { checkWorktree } from "./worktree.js"
 
 export type FermentCliCommand = FermentCommand
 
+interface FermentArgumentCompletion {
+	value: string
+	label: string
+	description?: string
+}
+
+const FERMENT_SUBCOMMAND_COMPLETIONS: FermentArgumentCompletion[] = [
+	{ value: "new ", label: "new", description: "Create a ferment" },
+	{ value: "pause", label: "pause", description: "Pause the active ferment lifecycle" },
+	{ value: "resume", label: "resume", description: "Resume the active ferment lifecycle" },
+	{ value: "list", label: "list", description: "List ferments" },
+	{ value: "switch ", label: "switch", description: "Switch active ferment by id or name" },
+	{ value: "delete ", label: "delete", description: "Delete a ferment" },
+	{ value: "export", label: "export", description: "Export active ferment stats" },
+	{ value: "revise ", label: "revise", description: "Revise goal, criteria, or constraints" },
+	{ value: "abandon", label: "abandon", description: "Abandon the active ferment" },
+	{ value: "one-shot ", label: "one-shot", description: "Create and auto-execute a single task ferment" },
+	{ value: "mode ", label: "mode", description: "Legacy mode compatibility" },
+]
+
+const FERMENT_COMMAND_USAGE =
+	'Unknown /ferment command. Use /ferment, /ferment new "Name", /ferment list, /ferment switch <id-or-name>, /ferment pause, or /ferment resume.'
+
+const FERMENT_REVISE_COMPLETIONS: FermentArgumentCompletion[] = [
+	{ value: "revise goal", label: "goal", description: "Revise the ferment goal" },
+	{ value: "revise criteria", label: "criteria", description: "Revise success criteria" },
+	{ value: "revise constraints", label: "constraints", description: "Revise constraints" },
+]
+
+const FERMENT_MODE_COMPLETIONS: FermentArgumentCompletion[] = [
+	{ value: "mode plan", label: "plan", description: "Legacy mode compatibility" },
+	{ value: "mode exec", label: "exec", description: "Legacy mode compatibility" },
+	{ value: "mode auto", label: "auto", description: "Legacy mode compatibility" },
+]
+
+function quoteFermentTarget(name: string, id: string): string {
+	if (name.includes('"')) return id
+	return `"${name}"`
+}
+
+function matchCompletionPrefix(items: FermentArgumentCompletion[], prefix: string): FermentArgumentCompletion[] | null {
+	const needle = prefix.toLowerCase()
+	const matches = items.filter(
+		(item) => item.value.toLowerCase().startsWith(needle) || item.label.toLowerCase().startsWith(needle),
+	)
+	return matches.length > 0 ? matches : null
+}
+
+function fermentTargetCompletions(
+	runtime: FermentRuntime,
+	verb: "switch" | "delete",
+	prefix: string,
+): FermentArgumentCompletion[] | null {
+	const targetPrefix = prefix
+		.slice(verb.length)
+		.trim()
+		.replace(/^["']|["']$/g, "")
+		.toLowerCase()
+	const matches = runtime
+		.getStorage()
+		.list()
+		.filter((f) => {
+			if (!targetPrefix) return true
+			return f.name.toLowerCase().includes(targetPrefix) || f.id.toLowerCase().startsWith(targetPrefix)
+		})
+		.slice(0, 20)
+		.map((f) => ({
+			value: `${verb} ${quoteFermentTarget(f.name, f.id)}`,
+			label: f.name,
+			description: `${f.status} · ${f.id.slice(0, 8)}`,
+		}))
+
+	return matches.length > 0 ? matches : null
+}
+
+export function getFermentArgumentCompletions(
+	prefix: string,
+	runtime: FermentRuntime = defaultFermentRuntime,
+): FermentArgumentCompletion[] | null {
+	const trimmedStart = prefix.trimStart()
+	const lower = trimmedStart.toLowerCase()
+
+	for (const verb of ["switch", "delete"] as const) {
+		if (lower === verb || lower.startsWith(`${verb} `)) {
+			return fermentTargetCompletions(runtime, verb, trimmedStart)
+		}
+	}
+
+	if (lower === "revise" || lower.startsWith("revise ")) {
+		return matchCompletionPrefix(FERMENT_REVISE_COMPLETIONS, trimmedStart)
+	}
+
+	if (lower === "mode" || lower.startsWith("mode ")) {
+		return matchCompletionPrefix(FERMENT_MODE_COMPLETIONS, trimmedStart)
+	}
+
+	return matchCompletionPrefix(FERMENT_SUBCOMMAND_COMPLETIONS, trimmedStart)
+}
+
 export interface FermentCommandDeps {
 	raw: string
 	pi: ExtensionAPI
@@ -61,7 +160,7 @@ export class FermentCommandController {
 				return { handled: true }
 			}
 			if (!ctx.ui.input) {
-				ctx.ui.notify('No UI available. Use /ferment add "Name" instead.')
+				ctx.ui.notify('No UI available. Use /ferment new "Name" instead.')
 				return { handled: true }
 			}
 
@@ -81,13 +180,18 @@ export class FermentCommandController {
 				appendRefEntry(pi, f.id)
 
 				pi.appendEntry("ferment_ack", {
-					text: `🍺  Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nMode: ${f.mode}`,
+					text: `🍺  Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nPolicy: ${runtime.getContinuationPolicy()}`,
 				})
 
 				await runScopingFlow(f, pi, ctx, runtime, rawIntent)
 			} catch (err) {
 				ctx.ui.notify(err instanceof FermentError ? err.message : "Create failed.")
 			}
+			return { handled: true }
+		}
+
+		if (command.type === "unknown") {
+			ctx.ui.notify(FERMENT_COMMAND_USAGE)
 			return { handled: true }
 		}
 
@@ -164,7 +268,7 @@ export class FermentCommandController {
 			const active = runtime.getActive()
 			if (!modeArg) {
 				if (!active) {
-					ctx.ui.notify("No active ferment. Use /ferment add or /ferment switch first.")
+					ctx.ui.notify("No active ferment. Use /ferment new or /ferment switch first.")
 					return { handled: true }
 				}
 				const lines = [
@@ -228,6 +332,61 @@ export class FermentCommandController {
 					)
 				}
 			}
+			return { handled: true }
+		}
+
+		if (command.type === "pause-lifecycle") {
+			const active = runtime.getActive()
+			if (!active) {
+				ctx.ui.notify("No active ferment to pause.")
+				return { handled: true }
+			}
+
+			if (active.status !== "running" && active.status !== "planned" && active.status !== "paused") {
+				ctx.ui.notify(`Ferment is "${active.status}" — nothing to pause.`)
+				return { handled: true }
+			}
+
+			if (active.status === "paused") {
+				ctx.ui.notify(`"${active.name}" is already paused. Type /ferment resume to resume.`)
+				applyFermentRuntimeToolProfile(pi, runtime)
+				return { handled: true }
+			}
+
+			const outcome = applyAndPersist(active.id, { type: "pause" })
+			if (!outcome.ok) {
+				ctx.ui.notify(`Failed to pause: ${outcome.error.message}`)
+				return { handled: true }
+			}
+
+			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
+			ctx.ui.notify(`Paused "${outcome.ferment.name}". Type /ferment resume to resume.`)
+			ctx.abort()
+			return { handled: true }
+		}
+
+		if (command.type === "resume-lifecycle") {
+			const active = runtime.getActive()
+			if (!active) {
+				ctx.ui.notify("No active ferment to resume.")
+				return { handled: true }
+			}
+
+			if (active.status !== "paused") {
+				ctx.ui.notify(`"${active.name}" is ${active.status}; nothing to resume.`)
+				applyFermentRuntimeToolProfile(pi, runtime)
+				return { handled: true }
+			}
+
+			const outcome = applyAndPersist(active.id, { type: "resume" })
+			if (!outcome.ok) {
+				ctx.ui.notify(`Failed to resume: ${outcome.error.message}`)
+				return { handled: true }
+			}
+
+			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
+			ctx.ui.notify(`Resumed "${outcome.ferment.name}". Continuation policy: ${runtime.getContinuationPolicy()}.`)
+			injectResumeAutoNudge(pi, runtime)
 			return { handled: true }
 		}
 
@@ -432,6 +591,7 @@ export class FermentCommandController {
 					ui: ctx.ui,
 					autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
 				})
+				runtime.setContinuationPolicy("automated")
 				const shortName = await shortenTitle(resolvedIntent)
 				const f = storage.create(shortName, resolvedIntent)
 				const modeOut = applyAndPersist(f.id, { type: "set_mode", mode: "exec" })
@@ -439,7 +599,7 @@ export class FermentCommandController {
 				setActiveFermentAndApplyProfile(pi, runtime, updated)
 				appendRefEntry(pi, updated.id)
 				pi.appendEntry("ferment_ack", {
-					text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nMode: exec (fully autonomous)`,
+					text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nPolicy: automated`,
 				})
 				const nudge = buildOneshotNudge(updated, resolvedIntent)
 
@@ -465,9 +625,13 @@ export class FermentCommandController {
 			)
 			return { handled: true }
 		}
-		const rawName = command.type === "add" ? command.title : raw
+		if (command.type !== "new") {
+			ctx.ui.notify(FERMENT_COMMAND_USAGE)
+			return { handled: true }
+		}
+		const rawName = command.title
 		if (!rawName) {
-			ctx.ui.notify('Usage: /ferment add "Name"')
+			ctx.ui.notify('Usage: /ferment new "Name"')
 			return { handled: true }
 		}
 		try {
@@ -480,7 +644,7 @@ export class FermentCommandController {
 			appendRefEntry(pi, f.id)
 
 			pi.appendEntry("ferment_ack", {
-				text: `🍺  Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nMode: ${f.mode}`,
+				text: `🍺  Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nPolicy: ${runtime.getContinuationPolicy()}`,
 			})
 
 			await runScopingFlow(f, pi, ctx, runtime)
@@ -496,7 +660,8 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 	const fermentCommandController = new FermentCommandController()
 
 	pi.registerCommand("ferment", {
-		description: 'Manage ferments: /ferment list, /ferment add "Name", /ferment one-shot "task", /ferment switch <id>',
+		description: 'Manage ferments: /ferment list, /ferment new "Name", /ferment one-shot "task", /ferment switch <id>',
+		getArgumentCompletions: (prefix) => getFermentArgumentCompletions(prefix, runtime),
 		async handler(args, ctx) {
 			const raw = args.trim()
 			const command = parseFermentCommand(args)
@@ -504,97 +669,48 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 		},
 	})
 
-	pi.registerCommand("auto", {
-		description: "Resume — flip a paused ferment back to running and re-engage the planner.",
+	pi.registerCommand("manual", {
+		description: "Set ferment continuation policy to manual. The agent asks before moving to the next phase.",
 		async handler(_, ctx) {
-			runtime.setAutoModeEnabled(true)
+			runtime.setContinuationPolicy("manual")
 			const active = runtime.getActive()
 			if (!active) {
-				ctx.ui.notify("Auto-mode enabled. (No active ferment.)")
+				ctx.ui.notify("Continuation policy set to manual. (No active ferment.)")
 				applyFermentRuntimeToolProfile(pi, runtime)
 				return
 			}
 			if (active.status === "paused") {
-				const outcome = applyAndPersist(active.id, { type: "resume" })
-				if (!outcome.ok) {
-					ctx.ui.notify(`Cannot resume: ${outcome.error.message}`)
-					return
-				}
-				setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
+				ctx.ui.notify(`Continuation policy set to manual. "${active.name}" is paused; run /ferment resume to resume.`)
+				applyFermentRuntimeToolProfile(pi, runtime)
+				return
 			}
 
-			const fresh = runtime.getActive() ?? active
-			const action = determineNextAction(fresh)
-			let preflightSummary = ""
-
-			if (action.kind === "start_step") {
-				const activePhase = fresh.phases.find((p) => p.id === fresh.activePhaseId)
-				if (activePhase) {
-					const stepOutcome = applyAndPersist(fresh.id, {
-						type: "start_step",
-						phaseId: activePhase.id,
-						stepId: action.stepId,
-					})
-					if (stepOutcome.ok) {
-						const startedStep = stepOutcome.ferment.phases
-							.find((p) => p.id === activePhase.id)
-							?.steps.find((s) => s.id === action.stepId)
-						preflightSummary = startedStep
-							? `Step ${startedStep.index} "${startedStep.description}" advanced to running by host on /auto.`
-							: ""
-					}
-				}
-			} else if (action.kind === "activate_phase") {
-				const phaseOutcome = applyAndPersist(fresh.id, {
-					type: "activate_phase",
-					phaseId: action.phaseId,
-				})
-				if (phaseOutcome.ok) {
-					const activated = phaseOutcome.ferment.phases.find((p) => p.id === action.phaseId)
-					preflightSummary = activated ? `Phase ${activated.index} "${activated.name}" activated by host on /auto.` : ""
-				}
-			}
-
-			if (preflightSummary) {
-				pi.appendEntry("ferment_breadcrumb", { text: `Resume preflight: ${preflightSummary}` })
-			}
-
-			ctx.ui.notify(`Resumed "${active.name}".`)
-			injectResumeAutoNudge(pi, runtime)
+			ctx.ui.notify(`Continuation policy set to manual for "${active.name}".`)
+			applyFermentRuntimeToolProfile(pi, runtime)
 		},
 	})
 
-	pi.registerCommand("pause", {
-		description: "Pause the active ferment and disable auto-mode.",
+	pi.registerCommand("auto", {
+		description: "Set ferment continuation policy to automated.",
 		async handler(_, ctx) {
-			runtime.setAutoModeEnabled(false)
-
+			runtime.setContinuationPolicy("automated")
 			const active = runtime.getActive()
 			if (!active) {
-				ctx.ui.notify("No active ferment to pause.")
-				return
-			}
-
-			if (active.status !== "running" && active.status !== "planned" && active.status !== "paused") {
-				ctx.ui.notify(`Ferment is "${active.status}" — nothing to pause.`)
-				return
-			}
-
-			if (active.status === "paused") {
-				ctx.ui.notify(`"${active.name}" is already paused. Type /auto to resume.`)
+				ctx.ui.notify("Continuation policy set to automated. (No active ferment.)")
 				applyFermentRuntimeToolProfile(pi, runtime)
 				return
 			}
 
-			const outcome = applyAndPersist(active.id, { type: "pause" })
-			if (!outcome.ok) {
-				ctx.ui.notify(`Failed to pause: ${outcome.error.message}`)
+			if (active.status === "paused") {
+				ctx.ui.notify(
+					`Continuation policy set to automated. "${active.name}" is paused; run /ferment resume to resume.`,
+				)
+				applyFermentRuntimeToolProfile(pi, runtime)
 				return
 			}
 
-			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
-			ctx.ui.notify(`Paused "${outcome.ferment.name}". Type /auto to resume.`)
-			ctx.abort()
+			ctx.ui.notify(`Continuation policy set to automated for "${active.name}".`)
+			injectResumeAutoNudge(pi, runtime)
 		},
 	})
 
@@ -608,7 +724,7 @@ export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntim
 			}
 
 			if (!ctx.hasUI) {
-				ctx.ui.notify(formatFermentStatus(active))
+				ctx.ui.notify(formatFermentStatus(active, runtime.getContinuationPolicy()))
 				return
 			}
 

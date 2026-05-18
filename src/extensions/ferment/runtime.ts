@@ -25,6 +25,7 @@ import {
 	getActive,
 	getActiveId,
 	getBlockRetry,
+	getContinuationPolicy,
 	getLastHumanInputAt,
 	getPhaseStartRef,
 	getStepStartRef,
@@ -38,15 +39,19 @@ import {
 	recordBlockHashAndCheckRepeat,
 	setActive,
 	setAutoModeEnabled,
+	setContinuationPolicy,
 	setPhaseStartRef,
 	setStepStartRef,
 } from "./state.js"
+import type { ContinuationPolicy } from "./state.js"
 
 export interface FermentRuntime {
 	getStorage(): FermentEventStore
 	getActive(): Ferment | undefined
 	getActiveId(): string | undefined
 	setActive(ferment: Ferment | undefined): void
+	getContinuationPolicy(): ContinuationPolicy
+	setContinuationPolicy(policy: ContinuationPolicy): void
 	isAutoModeEnabled(): boolean
 	setAutoModeEnabled(enabled: boolean): void
 	now(): Date
@@ -87,6 +92,8 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		getActive,
 		getActiveId,
 		setActive,
+		getContinuationPolicy,
+		setContinuationPolicy,
 		isAutoModeEnabled,
 		setAutoModeEnabled,
 		now: () => new Date(),

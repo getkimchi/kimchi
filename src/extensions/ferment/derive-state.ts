@@ -106,7 +106,7 @@ function blockedReason(ferment: Ferment): { reason: string; recoveryHint?: strin
 		case "abandoned":
 			return {
 				reason: "Ferment was abandoned and cannot proceed.",
-				recoveryHint: "Create a new ferment with /ferment add or /ferment one-shot.",
+				recoveryHint: "Create a new ferment with /ferment new or /ferment one-shot.",
 			}
 		case "complete":
 			return {

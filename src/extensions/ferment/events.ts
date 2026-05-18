@@ -147,6 +147,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			applyFermentToolProfile(pi, "worker")
 			return
 		}
+		runtime.setContinuationPolicy(ctx?.hasUI ? "manual" : "automated")
 		runtime.clearAllStepStarts()
 		runtime.clearAllScopingGates()
 		runtime.clearAllPendingScopes()
@@ -204,6 +205,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		try {
 			// Bootstrap path: no UI available yet, so only auto-init when the user
 			// opted in via --init-git or KIMCHI_AUTO_GIT_INIT=1.
+			runtime.setContinuationPolicy("automated")
 			await ensureGitRepo({
 				autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
 			})
@@ -220,7 +222,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			setActiveFermentState(runtime, updated)
 			appendRefEntry(pi, updated.id)
 			pi.appendEntry("ferment_ack", {
-				text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nMode: exec (fully autonomous)`,
+				text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nPolicy: automated`,
 			})
 			return { action: "transform" as const, text: buildOneshotNudge(updated, intent), images: event.images }
 		} catch (err) {

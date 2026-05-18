@@ -181,7 +181,7 @@ kimchi --ferment "Build Tetris"
 Or inside an active session:
 
 ```
-/ferment add "Build Tetris"    # creates with mode: plan
+/ferment new "Build Tetris"    # creates with mode: plan
 /ferment mode exec              # switch to autonomous execution
 ```
 
@@ -201,10 +201,10 @@ All lifecycle transitions (create → scope → activate → start → complete)
 draft → planned → running → [paused] → complete
 ```
 
-1. **draft** — created via `/ferment add`, agent collects goal + phases conversationally
+1. **draft** — created via `/ferment new`, agent collects goal + phases conversationally
 2. **planned** — `scope_ferment` sets goal, criteria, constraints, phase breakdown
 3. **running** — `activate_ferment_phase` starts a phase, agent executes steps
-4. **paused** — user intervention required (plan mode, or `/pause`)
+4. **paused** — user intervention required, or paused with `/ferment pause`
 5. **complete** — all phases terminal, done
 
 Ferment tool visibility is session-profile based. Active planners see the full
@@ -230,15 +230,17 @@ tools.
 
 | Command | Description |
 |---------|-------------|
-| `/ferment` | List all ferments with status |
-| `/ferment add "Name"` | Create new ferment (draft, plan mode) |
+| `/ferment` | Start a new ferment via prompt |
+| `/ferment new "Name"` | Create new ferment (draft, plan mode) |
 | `/ferment switch <id>` | Resume by ID prefix or name |
 | `/ferment delete <id>` | Delete permanently |
 | `/ferment export` | Export stats to JSON for analysis |
 | `/ferment mode` | Show current mode + help |
 | `/ferment mode plan/exec/auto` | Change mode |
-| `/auto` | Enable auto-mode |
-| `/pause` | Disable auto-mode |
+| `/manual` | Set manual continuation policy |
+| `/auto` | Set automated continuation policy |
+| `/ferment pause` | Pause the active ferment lifecycle |
+| `/ferment resume` | Resume the active ferment lifecycle |
 | `/status` | Full status dump with phases, steps, decisions |
 
 ### Recovery

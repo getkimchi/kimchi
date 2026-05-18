@@ -9,8 +9,9 @@
 
 import { computeStats } from "../../ferment/stats.js"
 import type { Ferment } from "../../ferment/types.js"
+import type { ContinuationPolicy } from "./state.js"
 
-export function formatFermentStatus(f: Ferment): string {
+export function formatFermentStatus(f: Ferment, continuationPolicy?: ContinuationPolicy): string {
 	const total = f.phases.length
 	const done = f.phases.filter((p) => p.status === "completed").length
 	const active = f.phases.filter((p) => p.status === "active").length
@@ -23,7 +24,7 @@ export function formatFermentStatus(f: Ferment): string {
 	const stats = computeStats(f)
 
 	const lines: string[] = [
-		`🍺 Ferment: "${f.name}"  •  ${f.status.toUpperCase()}  •  ${f.mode} mode`,
+		`🍺 Ferment: "${f.name}"  •  ${f.status.toUpperCase()}${continuationPolicy ? `  •  ${continuationPolicy} policy` : ""}`,
 		`   📍 ${wtBranch} @ ${wtCommit} — ${wtPath}`,
 		`   Phases: ${total} total, ${planned} planned, ${active} active, ${done} done`,
 	]

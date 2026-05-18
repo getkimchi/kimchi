@@ -6,6 +6,7 @@ describe("FermentRuntime", () => {
 
 	beforeEach(() => {
 		runtime = createDefaultFermentRuntime()
+		runtime.setContinuationPolicy("manual")
 	})
 
 	afterEach(() => {
@@ -16,5 +17,20 @@ describe("FermentRuntime", () => {
 		// Regression: we deliberately removed the kanban/coordination
 		// substrate. Make sure the runtime surface stays clean.
 		expect("getCoord" in runtime).toBe(false)
+	})
+
+	it("defaults to manual continuation policy for interactive runtime state", () => {
+		expect(runtime.getContinuationPolicy()).toBe("manual")
+		expect(runtime.isAutoModeEnabled()).toBe(false)
+	})
+
+	it("keeps legacy auto-mode helpers as policy wrappers", () => {
+		runtime.setAutoModeEnabled(true)
+		expect(runtime.getContinuationPolicy()).toBe("automated")
+		expect(runtime.isAutoModeEnabled()).toBe(true)
+
+		runtime.setAutoModeEnabled(false)
+		expect(runtime.getContinuationPolicy()).toBe("manual")
+		expect(runtime.isAutoModeEnabled()).toBe(false)
 	})
 })

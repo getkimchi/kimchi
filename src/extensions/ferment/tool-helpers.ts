@@ -143,7 +143,7 @@ export function createApplyAndPersist(runtime: FermentRuntime) {
 							ok: false,
 							error: {
 								code: "FERMENT_PAUSED",
-								message: `Ferment "${current.name}" is paused. The user must resume with /auto before any further ferment tool calls. Acknowledge the pause and wait — do NOT call ferment tools.`,
+								message: `Ferment "${current.name}" is paused. The user must resume with /ferment resume before any further ferment tool calls. Acknowledge the pause and wait — do NOT call ferment tools.`,
 							},
 						},
 					}
