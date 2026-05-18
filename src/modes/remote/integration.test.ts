@@ -28,7 +28,7 @@ function createFakeTransport() {
 	}
 
 	function injectResponse(id: string, success: boolean, data?: unknown, error?: string) {
-		injectLine(JSON.stringify({ id, success, data, error }))
+		injectLine(JSON.stringify({ type: "response", id, success, data, error }))
 	}
 
 	const transport: Transport = {

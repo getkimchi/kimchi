@@ -15,7 +15,7 @@ describe("WebSocket integration", () => {
 			ws.on("message", (data) => {
 				const line = String(data)
 				const req = JSON.parse(line)
-				ws.send(JSON.stringify({ id: req.id, success: true, data: { pong: 1 } }))
+				ws.send(JSON.stringify({ type: "response", id: req.id, success: true, data: { pong: 1 } }))
 			})
 		})
 
@@ -46,7 +46,7 @@ describe("WebSocket integration", () => {
 				// stream agent_start event
 				ws.send(JSON.stringify({ type: "agent_start" }))
 				// send response
-				ws.send(JSON.stringify({ id: req.id, success: true, data: null }))
+				ws.send(JSON.stringify({ type: "response", id: req.id, success: true, data: null }))
 			})
 		})
 
@@ -76,7 +76,7 @@ describe("WebSocket integration", () => {
 			ws.on("message", (data) => {
 				const line = String(data)
 				const req = JSON.parse(line)
-				ws.send(JSON.stringify({ id: req.id, success: true, data: null }))
+				ws.send(JSON.stringify({ type: "response", id: req.id, success: true, data: null }))
 				// Server closes session after processing
 				ws.close(WsCloseCode.SessionFinished, "done")
 			})
