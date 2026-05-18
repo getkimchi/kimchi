@@ -44,10 +44,18 @@ export async function runTeleportSession(options: RunTeleportSessionOptions): Pr
 
 	let wrapperRef: TeleportableAgentSession | undefined
 	let servicesRef: AgentSessionServices | undefined
+	// Captured below from runtime.setRebindSession once InteractiveMode
+	// registers its rebind. Calling it asks InteractiveMode to re-bind to
+	// the wrapper's current foreground — required after /teleport, /attach,
+	// or /detach because we mutate the wrapper's inner session in place and
+	// the runtime's `apply()` path (which normally triggers the rebind) is
+	// not involved.
+	let triggerRebindRef: (() => Promise<void>) | undefined
 
 	const teleportExtension = makeTeleportExtension({
 		getWrapper: () => wrapperRef,
 		getServices: () => servicesRef,
+		getTriggerRebind: () => triggerRebindRef,
 		apiKey: options.apiKey,
 		endpoint: options.endpoint,
 	})
@@ -70,6 +78,18 @@ export async function runTeleportSession(options: RunTeleportSessionOptions): Pr
 	})
 
 	initTheme(runtime.services.settingsManager.getTheme(), true)
+
+	// Intercept setRebindSession so we can drive InteractiveMode's
+	// rebindCurrentSession ourselves after the wrapper swaps its inner
+	// foreground (which the runtime's session replacement path doesn't
+	// know about). Must run before `new InteractiveMode(...)` because
+	// InteractiveMode's constructor synchronously calls setRebindSession.
+	type RebindCb = (session: AgentSession) => Promise<void>
+	const originalSetRebindSession = runtime.setRebindSession.bind(runtime)
+	runtime.setRebindSession = (cb?: RebindCb) => {
+		triggerRebindRef = cb ? async () => cb(runtime.session) : undefined
+		originalSetRebindSession(cb)
+	}
 
 	const interactiveMode = new InteractiveMode(runtime, {
 		modelFallbackMessage: runtime.modelFallbackMessage,
