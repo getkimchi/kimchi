@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import { getVersion } from "./utils.js"
 
@@ -125,6 +125,19 @@ function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined
 	}
 }
 
+function readExistingProviders(modelsJsonPath: string): Record<string, unknown> {
+	if (!existsSync(modelsJsonPath)) return {}
+	try {
+		const raw = readFileSync(modelsJsonPath, "utf-8")
+		const config = JSON.parse(raw)
+		const providers = config?.providers ?? {}
+		const { "kimchi-dev": _kimchi, ...rest } = providers as Record<string, unknown>
+		return rest
+	} catch {
+		return {}
+	}
+}
+
 export async function validateApiKey(apiKey: string): Promise<void> {
 	await fetchAvailableModels(apiKey)
 }
@@ -136,6 +149,9 @@ export async function validateApiKey(apiKey: string): Promise<void> {
  * If the fetch fails and the previous models.json is still on disk, returns
  * the cached models with a warning. Throws only when a key is present but
  * there is no cache to fall back on.
+ *
+ * User-added providers (anything other than "kimchi-dev") are preserved across
+ * updates so custom model configurations are not lost on startup.
  */
 export async function updateModelsConfig(modelsJsonPath: string, apiKey: string): Promise<ModelsConfigResult> {
 	const dir = dirname(modelsJsonPath)
@@ -144,6 +160,8 @@ export async function updateModelsConfig(modelsJsonPath: string, apiKey: string)
 	if (!apiKey) {
 		return { models: readCachedMetadata(modelsJsonPath) ?? [] }
 	}
+
+	const otherProviders = readExistingProviders(modelsJsonPath)
 
 	let fetched: ModelMetadata[]
 	try {
@@ -157,6 +175,7 @@ export async function updateModelsConfig(modelsJsonPath: string, apiKey: string)
 	}
 
 	const models = sortModels(fetched)
-	writeFileSync(modelsJsonPath, JSON.stringify(buildModelsConfig(models), null, "\t"), "utf-8")
+	const merged = { providers: { ...otherProviders, ...buildModelsConfig(models).providers } }
+	writeFileSync(modelsJsonPath, JSON.stringify(merged, null, "\t"), "utf-8")
 	return { models }
 }
