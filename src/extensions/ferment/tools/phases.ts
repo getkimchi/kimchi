@@ -1,22 +1,21 @@
 /**
  * Phase tools: activate_ferment_phase, refine_ferment_phase, complete_ferment_phase, skip_ferment_phase, fail_ferment_phase.
  *
- * complete_ferment_phase is the most complex — in plan mode it surfaces a TUI dropdown
- * with a structured phase review and returns the user's choice in the tool
- * result. It must not queue follow-up user messages from the tool handler.
+ * complete_ferment_phase is the most complex: it validates phase gates,
+ * records evidence, handles retry escalation, and applies the continuation
+ * policy at phase boundaries.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
-import type { Ferment } from "../../../ferment/types.js"
+import type { Ferment, Phase } from "../../../ferment/types.js"
 import { askUser } from "../ask-user.js"
 import { formatDecisionsAndMemories } from "../format.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { flaggedVerdicts, renderGateGuidance } from "../gate-registry.js"
 import { validateGatesOrErr } from "../gate-validation.js"
 import type { JudgeFlag } from "../judge.js"
-import { isPlanFerment } from "../modes.js"
 import { onPhaseCompleted } from "../nudge.js"
 import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
 import { type ProjectCheckResult, runProjectChecks, summarizeProjectChecks } from "../project-tests.js"
@@ -49,7 +48,6 @@ export interface PhaseHandlerServices {
 	 *  ferment's worktree path. */
 	runProjectChecks(cwd: string): ProjectCheckResult
 	onPhaseCompleted(runtime: FermentRuntime): void
-	isPlanMode(ferment: Ferment): boolean
 }
 
 export interface PhaseExecutionContext {
@@ -62,7 +60,6 @@ export const defaultPhaseHandlerServices: PhaseHandlerServices = {
 	gatherEvidence: gatherPhaseEvidence,
 	runProjectChecks: (cwd) => runProjectChecks(cwd),
 	onPhaseCompleted,
-	isPlanMode: isPlanFerment,
 }
 
 const validateFsmTransition = (
@@ -102,6 +99,75 @@ function flagsFromGateVerdicts(
 		severity: "block" as const,
 		redirect: `Address ${v.id} before completing this phase. The flag was self-reported — fix the underlying problem and re-submit the gate with verdict 'pass' (or 'omitted' with rationale if the gate truly does not apply).`,
 	}))
+}
+
+function formatManualPhaseBoundaryWait(
+	ferment: Ferment,
+	completedPhase: Phase,
+	nextPhase: Phase,
+	projectChecksLine: string,
+	warnSection: string,
+	reason?: string,
+): string {
+	const reasonLine = reason ? `\n\n${reason}` : ""
+	return (
+		[
+			`Phase "${completedPhase.name}" done.${projectChecksLine}${warnSection}`,
+			`Next: "${nextPhase.name}".`,
+			"",
+			"Manual continuation policy is active. Ask the user before activating the next phase.",
+			`Do not call activate_ferment_phase yet. Wait for the user to say continue, then call activate_ferment_phase with ferment_id "${ferment.id}" and phase_id "${nextPhase.id}".`,
+			"The ferment is not paused; it is waiting at the phase boundary.",
+		].join("\n") + reasonLine
+	)
+}
+
+async function completeManualPhaseBoundary(
+	runtime: FermentRuntime,
+	ferment: Ferment,
+	completedPhase: Phase,
+	nextPhase: Phase,
+	projectChecksLine: string,
+	warnSection: string,
+	{ pi, ctx }: PhaseExecutionContext,
+): Promise<ToolResult> {
+	if (ctx?.ui && pi.getFlag?.("ferment-oneshot") !== true) {
+		const response = await askUser(
+			`Phase "${completedPhase.name}" is complete. Continue to phase ${nextPhase.index}: "${nextPhase.name}"?`,
+			[
+				{
+					id: "continue",
+					label: "Continue to next phase",
+					description: `Activate phase ${nextPhase.index} now.`,
+				},
+				{
+					id: "wait",
+					label: "Wait here",
+					description: "Leave the ferment at the phase boundary without pausing it.",
+				},
+			],
+			{ ferment, pi, ctx, runtime },
+		)
+
+		if (!response.failed && response.choice === "continue") {
+			return toolOk(
+				withNextActionHint(
+					`Phase "${completedPhase.name}" done.${projectChecksLine}${warnSection}\nUser confirmed continuing to "${nextPhase.name}".`,
+					ferment,
+				),
+			)
+		}
+
+		const reason =
+			response.failed && response.reason !== "user_cancelled"
+				? `Boundary prompt was not answered: ${response.detail}`
+				: "User chose to wait at the phase boundary."
+		return toolOk(
+			formatManualPhaseBoundaryWait(ferment, completedPhase, nextPhase, projectChecksLine, warnSection, reason),
+		)
+	}
+
+	return toolOk(formatManualPhaseBoundaryWait(ferment, completedPhase, nextPhase, projectChecksLine, warnSection))
 }
 
 export async function completePhase(
@@ -303,6 +369,10 @@ export async function completePhase(
 		return toolOk(
 			withNextActionHint(`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nAll phases terminal.`, fresh),
 		)
+	}
+
+	if (runtime.getContinuationPolicy() === "manual") {
+		return completeManualPhaseBoundary(runtime, fresh, phase, next, projectChecksLine, warnSection, { pi, ctx })
 	}
 
 	return toolOk(
