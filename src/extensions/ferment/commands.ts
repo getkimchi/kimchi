@@ -6,9 +6,10 @@ import { FermentError } from "../../ferment/store.js"
 import { exitSplashMode } from "../ui.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
+import { decideContinuation } from "./continuation.js"
 import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
-import { appendRefEntry, injectResumeAutoNudge } from "./nudge.js"
+import { appendRefEntry, injectAutomatedContinuationNudge } from "./nudge.js"
 import { maybeRunOnboarding } from "./onboarding.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import {
@@ -22,8 +23,9 @@ import {
 	handlePhaseAction,
 	handleStepAction,
 } from "./progress-overlay.js"
-import { resumeFerment, sendLifecycleResumeNudge } from "./resume.js"
+import { resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { scheduleFermentWakeUp } from "./scheduler.js"
 import { runScopingFlow, sendFermentRequestMessage } from "./scoping.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { applyFermentRuntimeToolProfile, setActiveFermentAndApplyProfile } from "./tool-scope.js"
@@ -150,6 +152,19 @@ function setManualContinuationPolicy(pi: ExtensionAPI, ctx: FermentUiContext, ru
 
 	ctx.ui.notify(`Continuation policy set to manual for "${active.name}".`)
 	applyFermentRuntimeToolProfile(pi, runtime)
+	recordManualBoundaryBreadcrumb(pi, active, runtime)
+}
+
+function recordManualBoundaryBreadcrumb(
+	pi: ExtensionAPI,
+	active: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
+	runtime: FermentRuntime,
+): void {
+	const decision = decideContinuation(active, runtime.getContinuationPolicy())
+	if (decision.type !== "wait_manual_boundary") return
+	pi.appendEntry("ferment_breadcrumb", {
+		text: `Manual policy waiting at phase boundary for "${active.name}".`,
+	})
 }
 
 function setAutomatedContinuationPolicy(pi: ExtensionAPI, ctx: FermentUiContext, runtime: FermentRuntime): void {
@@ -168,7 +183,53 @@ function setAutomatedContinuationPolicy(pi: ExtensionAPI, ctx: FermentUiContext,
 	}
 
 	ctx.ui.notify(`Continuation policy set to automated for "${active.name}".`)
-	injectResumeAutoNudge(pi, runtime)
+	injectAutomatedContinuationNudge(pi, runtime)
+}
+
+async function confirmManualPhaseBoundaryForCommand(
+	pi: ExtensionAPI,
+	ctx: FermentUiContext,
+	runtime: FermentRuntime,
+	active: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
+): Promise<boolean> {
+	const decision = decideContinuation(active, runtime.getContinuationPolicy())
+	if (decision.type !== "wait_manual_boundary") return false
+	recordManualBoundaryBreadcrumb(pi, active, runtime)
+
+	const nextPhase = active.phases.find((phase) => phase.id === decision.action.phaseId)
+	const nextPhaseName = nextPhase?.name ?? decision.action.phaseId
+
+	if (ctx.hasUI && ctx.ui.select) {
+		const choice = await ctx.ui.select(`Continue "${active.name}" to "${nextPhaseName}"?`, [
+			"Continue to next phase",
+			"Pause here",
+		])
+
+		if (choice === "Continue to next phase") {
+			scheduleFermentWakeUp(pi, runtime, {
+				allowManualPhaseBoundary: true,
+				fermentId: active.id,
+				tag: "Manual boundary wake-up",
+			})
+			return true
+		}
+
+		if (choice === "Pause here") {
+			const outcome = createApplyAndPersist(runtime)(active.id, { type: "pause" })
+			if (!outcome.ok) {
+				ctx.ui.notify(`Failed to pause: ${outcome.error.message}`)
+				return true
+			}
+			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
+			ctx.ui.notify(`Paused "${outcome.ferment.name}". Type /ferment resume to resume.`)
+			return true
+		}
+	}
+
+	ctx.ui.notify(
+		`"${active.name}" is waiting before "${nextPhaseName}". Run /ferment auto to continue automatically, or choose Continue from /ferment list.`,
+	)
+	return true
 }
 
 async function openFermentProgress(pi: ExtensionAPI, ctx: FermentUiContext, runtime: FermentRuntime): Promise<void> {
@@ -469,7 +530,10 @@ export class FermentCommandController {
 
 			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
 			ctx.ui.notify(`Resumed "${outcome.ferment.name}". Continuation policy: ${runtime.getContinuationPolicy()}.`)
-			sendLifecycleResumeNudge(pi, outcome.ferment, runtime)
+			if (await confirmManualPhaseBoundaryForCommand(pi, ctx, runtime, outcome.ferment)) {
+				return { handled: true }
+			}
+			scheduleFermentWakeUp(pi, runtime, { fermentId: outcome.ferment.id, tag: "Resume wake-up" })
 			return { handled: true }
 		}
 

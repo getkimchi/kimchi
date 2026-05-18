@@ -2,12 +2,14 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { shortenTitle } from "../../ferment/shorten-title.js"
 import { clearFermentCache } from "../../ferment/store.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
+import { decideContinuation } from "./continuation.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
-import { appendRefEntry, maybeInjectReactiveAutoNudge, resetReactiveAutoNudgeCount } from "./nudge.js"
+import { appendRefEntry, maybeInjectReactiveContinuationNudge, resetReactiveContinuationNudgeCount } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import { promptInput, promptSelect } from "./prompt-ui.js"
 import { resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { scheduleFermentWakeUp } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import { isRestoringModel, setRestoringModel } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
@@ -80,6 +82,48 @@ function findUserInputPrompt(
 	return { text, title, options, isDraft, contextualOptions, yesLabel, noLabel }
 }
 
+async function maybeRunManualBoundaryDropdown(
+	pi: ExtensionAPI,
+	ctx: TurnEndContext | undefined,
+	prompt: UserInputPrompt,
+	f: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
+	runtime: FermentRuntime,
+): Promise<boolean> {
+	const decision = decideContinuation(f, runtime.getContinuationPolicy())
+	if (decision.type !== "wait_manual_boundary") return false
+	if (!ctx?.ui?.select) return true
+
+	const nextPhase = f.phases.find((phase) => phase.id === decision.action.phaseId)
+	const nextPhaseName = nextPhase?.name ?? decision.action.phaseId
+	const choice = await promptSelect(ctx, prompt.title || `Continue to "${nextPhaseName}"?`, [
+		"Continue to next phase",
+		"Pause here",
+	])
+	if (!choice) return true
+
+	if (choice === "Continue to next phase") {
+		scheduleFermentWakeUp(pi, runtime, {
+			allowManualPhaseBoundary: true,
+			deliverAsFollowUp: true,
+			fermentId: f.id,
+			tag: "Manual boundary wake-up",
+		})
+		return true
+	}
+
+	if (choice === "Pause here") {
+		const outcome = createApplyAndPersist(runtime)(f.id, { type: "pause" })
+		if (!outcome.ok) {
+			ctx.ui.notify?.(`Failed to pause: ${outcome.error.message}`)
+			return true
+		}
+		setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
+		ctx.ui.notify?.(`Paused "${outcome.ferment.name}". Type /ferment resume to resume.`)
+		return true
+	}
+	return true
+}
+
 async function maybeRunUserInputDropdown(
 	pi: ExtensionAPI,
 	ctx: TurnEndContext | undefined,
@@ -89,6 +133,8 @@ async function maybeRunUserInputDropdown(
 ): Promise<boolean> {
 	const prompt = findUserInputPrompt(content, f)
 	if (!prompt) return false
+	const boundaryHandled = await maybeRunManualBoundaryDropdown(pi, ctx, prompt, f, runtime)
+	if (boundaryHandled) return true
 	if (!ctx?.ui?.select || !ctx.ui.input) return true
 
 	const choice = await promptSelect(ctx, prompt.title, prompt.options)
@@ -294,12 +340,12 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		const content = getAssistantContentParts(event.message.content)
 		const activeId = runtime.getActiveId()
 		const toolCallSeen = hasAnyToolCall(content)
-		if (toolCallSeen && activeId) resetReactiveAutoNudgeCount(activeId)
+		if (toolCallSeen && activeId) resetReactiveContinuationNudgeCount(activeId)
 
 		const f = runtime.getActive()
 		if (!f) return
 		const userInputHandled = await maybeRunUserInputDropdown(pi, ctx, content, f, runtime)
 		if (userInputHandled) return
-		if (!toolCallSeen) maybeInjectReactiveAutoNudge(pi, runtime)
+		if (!toolCallSeen) maybeInjectReactiveContinuationNudge(pi, runtime)
 	})
 }

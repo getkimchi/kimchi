@@ -19,7 +19,7 @@ import { renderGateGuidance } from "../gate-registry.js"
 import { validateGatesOrErr } from "../gate-validation.js"
 import { autoInitFromEnv, ensureGitRepo } from "../git-init.js"
 import { judgeJourneyGrade } from "../judge.js"
-import { appendRefEntry, injectResumeAutoNudge, resetReactiveAutoNudgeCount } from "../nudge.js"
+import { appendRefEntry, resetReactiveContinuationNudgeCount } from "../nudge.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
 import { getPromptUi, promptForm, promptInput, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
@@ -362,13 +362,23 @@ export async function scopeFerment(
 	if (gateError) return gateError
 
 	// Hard gate: only enforced for ferments scoped through the interactive TUI
-	// path. Headless and one-shot scoping never mark this gate as interactive,
-	// so they continue without depending on legacy persisted mode.
+	// path. Headless and one-shot scoping never mark this gate as interactive.
 	const fGate = runtime.getStorage().get(params.ferment_id)
 	const gateActive = runtime.isScopingInteractive(params.ferment_id)
 	if (gateActive && !runtime.isScopingConfirmed(params.ferment_id)) {
+		const pending = runtime.getPendingScope(params.ferment_id)
+		const pendingHint =
+			pending?.phases && pending.phases.length > 0
+				? "A structured proposal is pending in the interactive scoping flow. Do not call scope_ferment directly; the host confirmation must come from propose_ferment_scoping."
+				: "No valid structured proposal has reached the host yet. Call propose_ferment_scoping with the full payload so the host can render the confirmation dropdown."
 		return toolErr(
-			`Cannot scope ferment "${params.ferment_id}" yet — waiting for user confirmation. Present the plan summary to the user and wait for them to confirm before calling scope_ferment.`,
+			[
+				`Cannot call scope_ferment for interactive ferment "${params.ferment_id}" before host confirmation.`,
+				pendingHint,
+				"Retry by calling propose_ferment_scoping with the full valid payload: goal, success_criteria, constraints, assumptions, phases, questions, and gates.",
+				"If a previous propose_ferment_scoping call failed validation, fix that schema error and re-emit the same plan.",
+				"Do not summarize the plan in chat. Do not call scope_ferment directly.",
+			].join("\n"),
 		)
 	}
 	runtime.consumeScopingGate(params.ferment_id)
@@ -407,13 +417,7 @@ export async function scopeFerment(
 	const fresh = outcome.ferment
 	const phaseList = fresh.phases.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") || "(none)"
 
-	// In automated policy, inject the continuation nudge exactly once here — at
-	// the moment of successful scoping — so the planner is kicked forward without
-	// depending on legacy persisted mode.
-	if (runtime.isAutoModeEnabled()) {
-		runtime.setActive(fresh)
-		injectResumeAutoNudge(pi, runtime)
-	}
+	runtime.setActive(fresh)
 
 	return toolOk(
 		withNextActionHint(
@@ -437,6 +441,18 @@ export async function completeFerment(
 
 	const fSnapshot = runtime.getStorage().get(params.ferment_id)
 	if (!fSnapshot) return toolErr("Ferment not found.")
+	if (fSnapshot.status === "complete") {
+		runtime.clearFermentState(params.ferment_id)
+		resetReactiveContinuationNudgeCount(params.ferment_id)
+		runtime.setActive(undefined)
+		return toolOk(`Ferment "${fSnapshot.name}" is already complete. No further lifecycle action is available.`)
+	}
+	if (fSnapshot.status === "abandoned") {
+		runtime.clearFermentState(params.ferment_id)
+		resetReactiveContinuationNudgeCount(params.ferment_id)
+		runtime.setActive(undefined)
+		return toolErr(`Ferment "${fSnapshot.name}" is abandoned and cannot be completed.`)
+	}
 
 	// Ferment-scope gate validation runs BEFORE any state mutation. The agent
 	// must answer C1 (success criteria satisfied), C2 (no unresolved F3
@@ -449,6 +465,7 @@ export async function completeFerment(
 			`complete_ferment refused — agent self-flagged on ${count} ferment gate(s):\n\n${lines}\n\nAddress the concern(s) and call complete_ferment again with passing C-gate verdicts.`,
 	})
 	if (gateError) return gateError
+	const gates = params.gates ?? []
 
 	// Gates pass → proceed with completion.
 	const completeOutcome = applyAndPersist(params.ferment_id, { type: "complete_ferment" })
@@ -480,7 +497,7 @@ export async function completeFerment(
 				})),
 			}
 		}),
-		fermentGates: params.gates.map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
+		fermentGates: gates.map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
 		totalDiff: totalDiff
 			? { available: totalDiff.available, filesChanged: totalDiff.filesChanged, diffSnippet: totalDiff.diffSnippet }
 			: { available: false },
@@ -557,13 +574,13 @@ export async function completeFerment(
 
 	// Cleanup in-memory state.
 	runtime.clearFermentState(params.ferment_id)
-	resetReactiveAutoNudgeCount(params.ferment_id)
+	resetReactiveContinuationNudgeCount(params.ferment_id)
 	runtime.setActive(undefined)
 
 	const fresh = gradeOutcome.ferment
 	const failedPhases = fresh.phases.filter((p) => p.status === "failed").length
 	const failedNote = failedPhases > 0 ? ` (${failedPhases} phase(s) failed)` : ""
-	const gateLines = params.gates.map((g) => `  ${g.id} (${g.verdict}): ${g.rationale}`).join("\n")
+	const gateLines = gates.map((g) => `  ${g.id} (${g.verdict}): ${g.rationale}`).join("\n")
 	const gradeLabel = resolvedGrade.unavailable ? `${resolvedGrade.grade} (unavailable)` : resolvedGrade.grade
 
 	return toolOk(

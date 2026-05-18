@@ -770,6 +770,23 @@ function handleCompleteFerment(
 	cmd: Extract<Command, { type: "complete_ferment" }>,
 	ctx: TransitionContext,
 ): TransitionResult {
+	if (ferment.status === "complete") {
+		return fail({
+			code: "FERMENT_NOT_IN_STATUS",
+			expected: ["planned", "running"],
+			actual: ferment.status,
+			message: `Ferment "${ferment.name}" is already complete.`,
+		})
+	}
+	if (ferment.status === "abandoned") {
+		return fail({
+			code: "FERMENT_NOT_IN_STATUS",
+			expected: ["planned", "running"],
+			actual: ferment.status,
+			message: `Ferment "${ferment.name}" is abandoned and cannot be completed.`,
+		})
+	}
+
 	const nonTerminal = ferment.phases.filter((p) => !TERMINAL_PHASE_STATUSES.includes(p.status))
 	if (nonTerminal.length > 0) {
 		return fail({

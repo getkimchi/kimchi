@@ -42,6 +42,26 @@ describe("confirmPendingScope", () => {
 		expect(storage.get(ferment.id)?.phases).toHaveLength(1)
 	})
 
+	it("does not send a hidden continuation nudge after confirmed manual scoping", () => {
+		const { runtime, storage } = createRuntime()
+		const pi = { appendEntry: vi.fn(), sendMessage: vi.fn() }
+		const ferment = storage.create("Confirm And Continue")
+		runtime.setPendingScope(ferment.id, {
+			goal: "Goal",
+			successCriteria: "Works",
+			constraints: [],
+			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
+		})
+
+		const result = confirmPendingScope(runtime, ferment.id, undefined, "turn_end", "Confirmed Title", pi as never)
+
+		expect(result.ok).toBe(true)
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+			expect.anything(),
+		)
+	})
+
 	it("uses explicit phases from propose_ferment_scoping and preserves pending user answers", () => {
 		const { runtime, storage } = createRuntime()
 		const ferment = storage.create("Explicit")

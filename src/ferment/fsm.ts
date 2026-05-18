@@ -5,7 +5,7 @@
  * FsmContext, it answers "is this transition legal?" and "what's the new
  * state?". It does NOT compute a "what next?" suggestion — that lives in
  * `engine.determineNextAction`, which the planner system prompt and the
- * resume nudges actually consume.
+ * continuation nudges actually consume.
  *
  * Earlier versions of this file shipped:
  *   1. `fsmConfig` — a parallel XState-style declaration of the same

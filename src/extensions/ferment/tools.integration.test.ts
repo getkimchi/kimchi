@@ -310,7 +310,9 @@ describe("scope_ferment", () => {
 			phases: [],
 			gates: passingPlanGates(),
 		})
-		expect(err(result)).toMatch(/waiting for user confirmation/i)
+		expect(err(result)).toMatch(/propose_ferment_scoping/i)
+		expect(err(result)).toMatch(/do not call scope_ferment directly/i)
+		expect(err(result)).not.toMatch(/present the plan summary/i)
 	})
 
 	it("does not let legacy mode bypass an interactive scoping gate", async () => {
@@ -324,7 +326,8 @@ describe("scope_ferment", () => {
 			phases: [{ name: "P1", goal: "G", steps: [{ description: "S" }] }],
 			gates: passingPlanGates(),
 		})
-		expect(err(result)).toMatch(/waiting for user confirmation/i)
+		expect(err(result)).toMatch(/propose_ferment_scoping/i)
+		expect(err(result)).toMatch(/do not call scope_ferment directly/i)
 	})
 
 	it("returns error when ferment not found", async () => {

@@ -61,11 +61,11 @@ export function setContinuationPolicy(policy: ContinuationPolicy): void {
 	continuationPolicy = policy
 }
 
-export function isAutoModeEnabled(): boolean {
+export function isAutomatedContinuationEnabled(): boolean {
 	return continuationPolicy === "automated"
 }
 
-export function setAutoModeEnabled(v: boolean): void {
+export function setAutomatedContinuationEnabled(v: boolean): void {
 	continuationPolicy = v ? "automated" : "manual"
 }
 

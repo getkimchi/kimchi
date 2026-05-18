@@ -21,16 +21,16 @@ describe("FermentRuntime", () => {
 
 	it("defaults to manual continuation policy for interactive runtime state", () => {
 		expect(runtime.getContinuationPolicy()).toBe("manual")
-		expect(runtime.isAutoModeEnabled()).toBe(false)
+		expect(runtime.isAutomatedContinuationEnabled()).toBe(false)
 	})
 
-	it("keeps legacy auto-mode helpers as policy wrappers", () => {
-		runtime.setAutoModeEnabled(true)
+	it("sets automated continuation through helper methods", () => {
+		runtime.setAutomatedContinuationEnabled(true)
 		expect(runtime.getContinuationPolicy()).toBe("automated")
-		expect(runtime.isAutoModeEnabled()).toBe(true)
+		expect(runtime.isAutomatedContinuationEnabled()).toBe(true)
 
-		runtime.setAutoModeEnabled(false)
+		runtime.setAutomatedContinuationEnabled(false)
 		expect(runtime.getContinuationPolicy()).toBe("manual")
-		expect(runtime.isAutoModeEnabled()).toBe(false)
+		expect(runtime.isAutomatedContinuationEnabled()).toBe(false)
 	})
 })

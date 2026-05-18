@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
-import { whatNext } from "./engine.js"
-import type { Ferment, Phase, Step } from "./types.js"
+import { determineNextAction, whatNext as maybeWhatNext } from "./engine.js"
+import type { Ferment, FermentAction, Phase, Step } from "./types.js"
+
+const whatNext = maybeWhatNext as (ferment: Ferment) => FermentAction
 
 function makeF(overrides?: Partial<Ferment>): Ferment {
 	return {
@@ -132,9 +134,10 @@ describe("whatNext", () => {
 			expect(a.message).toContain("Mark") // simplified message
 		})
 
-		it("complete → complete_ferment (terminal state is terminal)", () => {
-			const a = whatNext(makeF({ status: "complete" }))
-			expect(a.kind).toBe("complete_ferment")
+		it("complete → no next action", () => {
+			const action = determineNextAction(makeF({ status: "complete" }))
+			expect(action).toBeUndefined()
+			expect(maybeWhatNext(makeF({ status: "complete" }))).toBeUndefined()
 		})
 
 		it("running with failed step → recover_step", () => {
@@ -197,15 +200,21 @@ describe("whatNext", () => {
 			expect(a.message).toContain("paused") // simplified message
 		})
 
-		it("complete → complete_ferment", () => {
-			const a = whatNext(makeF({ status: "complete" }))
+		it("planned with all phases terminal → complete_ferment", () => {
+			const a = whatNext(makeF({ status: "planned", phases: [makeP({ status: "completed" })] }))
 			expect(a.kind).toBe("complete_ferment")
 		})
 
-		it("abandoned → complete_ferment", () => {
-			const a = whatNext(makeF({ status: "abandoned" }))
-			expect(a.kind).toBe("complete_ferment")
-			expect(a.message).toContain("abandoned")
+		it("complete → no next action", () => {
+			const action = determineNextAction(makeF({ status: "complete" }))
+			expect(action).toBeUndefined()
+			expect(maybeWhatNext(makeF({ status: "complete" }))).toBeUndefined()
+		})
+
+		it("abandoned → no next action", () => {
+			const action = determineNextAction(makeF({ status: "abandoned" }))
+			expect(action).toBeUndefined()
+			expect(maybeWhatNext(makeF({ status: "abandoned" }))).toBeUndefined()
 		})
 
 		it("running with failed step → recover_step", () => {

@@ -29,6 +29,7 @@ export function toolErr(text: string) {
 
 export function formatNextActionHint(ferment: Ferment): string | undefined {
 	const action = determineNextAction(ferment)
+	if (!action) return undefined
 	const toolName = publicToolNameForActionKind(action.kind)
 
 	switch (action.kind) {
@@ -54,8 +55,6 @@ export function formatNextActionHint(ferment: Ferment): string | undefined {
 			return `Next action: resolve failed phase "${action.phaseId}", then call \`activate_ferment_phase\` to retry, \`skip_ferment_phase\` to bypass, or ask the user whether to abandon.`
 		case "pause":
 			return "Next action: wait for the user to run /ferment resume; do not call ferment lifecycle tools while paused."
-		case "noop":
-			return undefined
 	}
 }
 

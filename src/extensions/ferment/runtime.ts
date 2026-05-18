@@ -30,7 +30,7 @@ import {
 	getPhaseStartRef,
 	getStepStartRef,
 	getStorage,
-	isAutoModeEnabled,
+	isAutomatedContinuationEnabled,
 	isScopingConfirmed,
 	isScopingInteractive,
 	markHumanInput,
@@ -38,7 +38,7 @@ import {
 	markScopingInteractive,
 	recordBlockHashAndCheckRepeat,
 	setActive,
-	setAutoModeEnabled,
+	setAutomatedContinuationEnabled,
 	setContinuationPolicy,
 	setPhaseStartRef,
 	setStepStartRef,
@@ -52,8 +52,8 @@ export interface FermentRuntime {
 	setActive(ferment: Ferment | undefined): void
 	getContinuationPolicy(): ContinuationPolicy
 	setContinuationPolicy(policy: ContinuationPolicy): void
-	isAutoModeEnabled(): boolean
-	setAutoModeEnabled(enabled: boolean): void
+	isAutomatedContinuationEnabled(): boolean
+	setAutomatedContinuationEnabled(enabled: boolean): void
 	now(): Date
 	nowIso(): string
 	markHumanInput(): void
@@ -94,8 +94,8 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		setActive,
 		getContinuationPolicy,
 		setContinuationPolicy,
-		isAutoModeEnabled,
-		setAutoModeEnabled,
+		isAutomatedContinuationEnabled,
+		setAutomatedContinuationEnabled,
 		now: () => new Date(),
 		nowIso: () => new Date().toISOString(),
 		markHumanInput,

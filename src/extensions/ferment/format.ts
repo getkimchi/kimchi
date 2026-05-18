@@ -4,7 +4,7 @@
  * Used by:
  * - `/ferment progress` headless fallback (formatFermentStatus)
  * - planner system-prompt supplement (formatDecisionsAndMemories, formatScopingContext)
- * - resume nudges in manual policy (stripToolRefs)
+ * - continuation nudges in manual policy (stripToolRefs)
  */
 
 import { computeStats } from "../../ferment/stats.js"

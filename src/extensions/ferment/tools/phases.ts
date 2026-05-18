@@ -115,21 +115,67 @@ function formatManualPhaseBoundaryWait(
 			`Phase "${completedPhase.name}" done.${projectChecksLine}${warnSection}`,
 			`Next: "${nextPhase.name}".`,
 			"",
-			"Manual continuation policy is active. Ask the user before activating the next phase.",
-			`Do not call activate_ferment_phase yet. Wait for the user to say continue, then call activate_ferment_phase with ferment_id "${ferment.id}" and phase_id "${nextPhase.id}".`,
-			"The ferment is not paused; it is waiting at the phase boundary.",
+			"Manual continuation policy stopped here.",
+			`The ferment is paused. Do not call activate_ferment_phase yet. To continue later, the user can run /ferment resume for ferment_id "${ferment.id}" and phase_id "${nextPhase.id}".`,
+			"Do not ask a generic follow-up question in chat.",
 		].join("\n") + reasonLine
 	)
 }
 
-function completeManualPhaseBoundary(
+async function completeManualPhaseBoundary(
+	runtime: FermentRuntime,
+	{ pi, ctx }: PhaseExecutionContext,
 	ferment: Ferment,
 	completedPhase: Phase,
 	nextPhase: Phase,
 	projectChecksLine: string,
 	warnSection: string,
-): ToolResult {
-	return toolOk(formatManualPhaseBoundaryWait(ferment, completedPhase, nextPhase, projectChecksLine, warnSection))
+): Promise<ToolResult> {
+	const response = await askUser(
+		`Phase "${completedPhase.name}" is complete. Continue to "${nextPhase.name}"?`,
+		[
+			{ id: "continue", label: "Continue to next phase" },
+			{ id: "stop", label: "Pause here" },
+		],
+		{ ferment, pi, ctx, runtime },
+	)
+
+	if (!response.failed && response.choice === "continue") {
+		return toolOk(
+			withNextActionHint(
+				`Phase "${completedPhase.name}" done.${projectChecksLine}${warnSection}\nUser confirmed continuing to "${nextPhase.name}".`,
+				ferment,
+			),
+		)
+	}
+
+	if (!response.failed && response.choice === "stop") {
+		const pauseOutcome = createApplyAndPersist(runtime)(ferment.id, { type: "pause" })
+		if (pauseOutcome.ok) {
+			runtime.setActive(pauseOutcome.ferment)
+			return toolOk(
+				formatManualPhaseBoundaryWait(pauseOutcome.ferment, completedPhase, nextPhase, projectChecksLine, warnSection),
+			)
+		}
+	}
+
+	const pauseOutcome = createApplyAndPersist(runtime)(ferment.id, { type: "pause" })
+	if (pauseOutcome.ok) {
+		runtime.setActive(pauseOutcome.ferment)
+		return toolOk(
+			formatManualPhaseBoundaryWait(pauseOutcome.ferment, completedPhase, nextPhase, projectChecksLine, warnSection),
+		)
+	}
+	return toolOk(
+		formatManualPhaseBoundaryWait(
+			ferment,
+			completedPhase,
+			nextPhase,
+			projectChecksLine,
+			warnSection,
+			`Could not pause automatically: ${pauseOutcome.error.message}`,
+		),
+	)
 }
 
 export async function completePhase(
@@ -334,7 +380,7 @@ export async function completePhase(
 	}
 
 	if (runtime.getContinuationPolicy() === "manual") {
-		return completeManualPhaseBoundary(fresh, phase, next, projectChecksLine, warnSection)
+		return completeManualPhaseBoundary(runtime, { pi, ctx }, fresh, phase, next, projectChecksLine, warnSection)
 	}
 
 	return toolOk(

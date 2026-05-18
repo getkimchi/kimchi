@@ -65,8 +65,8 @@ export interface PhaseRetryBudget {
 export interface DerivedFermentState {
 	/** Current FSM cell. Same value `computeFsmState` returns. */
 	fsmState: FsmState
-	/** What the agent should do next. From `determineNextAction`. */
-	nextAction: DeclarativeAction
+	/** What the agent should do next. Absent when no lifecycle action remains. */
+	nextAction?: DeclarativeAction
 	/** The phase currently active (status === "active"), if any. */
 	activePhase?: DerivedPhase
 	/** The step currently running (status === "running") in the active phase. */
@@ -127,10 +127,8 @@ export function deriveFermentState(ferment: Ferment, runtime: RuntimeReader): De
 	const activePhaseObj = ferment.phases.find((p) => p.status === "active")
 	const activeStepObj = activePhaseObj?.steps.find((s) => s.status === "running")
 
-	const result: DerivedFermentState = {
-		fsmState,
-		nextAction,
-	}
+	const result: DerivedFermentState = { fsmState }
+	if (nextAction) result.nextAction = nextAction
 
 	if (activePhaseObj) {
 		result.activePhase = describePhase(activePhaseObj)

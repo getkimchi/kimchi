@@ -107,8 +107,8 @@ export function validateFsmTransitionWithFerment(
 	return { error: suggestion ? `${result.error} ${suggestion}` : result.error }
 }
 
-function formatNextActionSuggestion(action: DeclarativeAction): string {
-	if (action.kind === "noop") return ""
+function formatNextActionSuggestion(action: DeclarativeAction | undefined): string {
+	if (!action) return ""
 	const refs: string[] = []
 	if ("phaseId" in action) refs.push(`phaseId=${action.phaseId}`)
 	if ("stepId" in action) refs.push(`stepId=${action.stepId}`)

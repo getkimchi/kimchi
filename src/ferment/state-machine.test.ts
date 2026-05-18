@@ -911,6 +911,20 @@ describe("applyCommand: complete_ferment", () => {
 		const result = expectOk(applyCommand(phaseDone, { type: "complete_ferment" }, ctx))
 		expect(result.status).toBe("complete")
 	})
+
+	it("rejects completion when the ferment is already complete", () => {
+		const f = makeFerment({ status: "complete", phases: [makePhase({ status: "completed" })] })
+		const error = expectError(applyCommand(f, { type: "complete_ferment" }, ctx))
+		expect(error.code).toBe("FERMENT_NOT_IN_STATUS")
+		expect(error.message).toContain("already complete")
+	})
+
+	it("rejects completion when the ferment is abandoned", () => {
+		const f = makeFerment({ status: "abandoned", phases: [makePhase({ status: "completed" })] })
+		const error = expectError(applyCommand(f, { type: "complete_ferment" }, ctx))
+		expect(error.code).toBe("FERMENT_NOT_IN_STATUS")
+		expect(error.message).toContain("abandoned")
+	})
 })
 
 // ─── pause / resume ───────────────────────────────────────────────────────────

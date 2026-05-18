@@ -103,7 +103,7 @@ function buildScopePrompt(runtime: FermentRuntime, fermentId: string): string {
 	const f = runtime.getStorage().get(fermentId)
 	if (!f) return ""
 	const action = determineNextAction(f)
-	return `Scope: ${action.reason}`
+	return `Scope: ${action?.reason ?? "no lifecycle action remains"}`
 }
 
 export async function runScopingFlow(

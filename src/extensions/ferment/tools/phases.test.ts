@@ -180,10 +180,10 @@ describe("completePhase", () => {
 		expect(errResult.content.map((c) => c.text).join("\n")).toContain("rationale")
 	})
 
-	it("manual policy asks before activating the next planned phase and leaves the ferment unpaused", async () => {
+	it("manual policy stops at the boundary and pauses when the user chooses Pause here", async () => {
 		const h = createHarness()
 		h.runtime.setContinuationPolicy("manual")
-		const selectSpy = vi.fn(async () => "Wait here")
+		const selectSpy = vi.fn(async () => "Pause here")
 		const services = createServices()
 
 		const result = await completePhase(
@@ -197,19 +197,19 @@ describe("completePhase", () => {
 		)
 
 		const text = okText(result)
-		expect(selectSpy).not.toHaveBeenCalled()
-		expect(text).toContain("Manual continuation policy is active")
+		expect(selectSpy).toHaveBeenCalled()
+		expect(text).toContain("Manual continuation policy stopped here")
 		expect(text).toContain('Next: "Phase 2"')
 		expect(text).not.toContain("Next action: call `activate_ferment_phase`")
 		const stored = h.storage.get(h.fermentId)
-		expect(stored?.status).toBe("planned")
+		expect(stored?.status).toBe("paused")
 		expect(stored?.phases[0].status).toBe("completed")
 		expect(stored?.phases[1].status).toBe("planned")
 		expect(stored?.activePhaseId).toBeUndefined()
 		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
 	})
 
-	it("manual policy does not consume inline UI confirmation at the phase boundary", async () => {
+	it("manual policy consumes host UI confirmation at the phase boundary", async () => {
 		const h = createHarness()
 		h.runtime.setContinuationPolicy("manual")
 		const selectSpy = vi.fn(async () => "Continue to next phase")
@@ -226,11 +226,9 @@ describe("completePhase", () => {
 		)
 
 		const text = okText(result)
-		expect(selectSpy).not.toHaveBeenCalled()
-		expect(text).toContain("Manual continuation policy is active")
-		expect(text).toContain("Wait for the user to say continue")
-		expect(text).not.toContain("User confirmed continuing")
-		expect(text).not.toContain("Next action: call `activate_ferment_phase`")
+		expect(selectSpy).toHaveBeenCalled()
+		expect(text).toContain("User confirmed continuing")
+		expect(text).toContain("Next action: call `activate_ferment_phase`")
 		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
 	})
 
