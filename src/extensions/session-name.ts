@@ -19,10 +19,8 @@ import type {
 import { loadConfig } from "../config.js"
 import { getSessionName, setSessionName as setStartupSessionName } from "../startup-context.js"
 
-// Module-level state for current session name and pi reference
-let _currentSessionName: string | undefined = undefined
-let _piRef: ExtensionAPI | undefined = undefined
-let hasAutoNamed = false
+// No process-level mutable state — all state lives inside the factory closure
+// to keep the extension reentrant per the ExtensionAPI contract.
 
 // System prompt for session name generation - keep it simple; cheap models choke
 // on negative constraints, formatting demands, and multi-step instructions.
@@ -229,11 +227,11 @@ function sanitizeSessionName(name: string): string {
  * Format: "kimchi \u00b7 {name} \u00b7 {basename(cwd)}"
  * Only runs when UI is available.
  */
-export function updateTerminalTitle(ctx: ExtensionContext): void {
-	if (!ctx.hasUI || !_currentSessionName) return
+export function updateTerminalTitle(ctx: ExtensionContext, name: string): void {
+	if (!ctx.hasUI || !name) return
 
 	const cwdBasename = basename(ctx.cwd)
-	const safeName = sanitizeSessionName(_currentSessionName)
+	const safeName = sanitizeSessionName(name)
 	const title = `kimchi \u00b7 ${safeName} \u00b7 ${cwdBasename}`
 
 	// OSC 0 sequence to set window/tab title
@@ -243,22 +241,20 @@ export function updateTerminalTitle(ctx: ExtensionContext): void {
 }
 
 /**
- * Get the current session name (for footer usage).
- */
-export function getCurrentSessionName(): string | undefined {
-	return _currentSessionName
-}
-
-/**
  * Set the session name and update terminal title.
  * Note: pi.setSessionName is available on ExtensionAPI, not ExtensionContext.
  */
-function setAndUpdateSessionName(name: string, pi: ExtensionAPI, ctx: ExtensionContext): void {
+function setAndUpdateSessionName(
+	name: string,
+	currentNameRef: { value: string | undefined },
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+): void {
 	const safeName = sanitizeSessionName(name)
-	_currentSessionName = safeName
+	currentNameRef.value = safeName
 	setStartupSessionName(safeName)
 	pi.setSessionName(safeName)
-	updateTerminalTitle(ctx)
+	updateTerminalTitle(ctx, safeName)
 }
 
 /**
@@ -267,20 +263,22 @@ function setAndUpdateSessionName(name: string, pi: ExtensionAPI, ctx: ExtensionC
  */
 export default function sessionNameExtension(initialName?: string) {
 	return (pi: ExtensionAPI) => {
-		// Store pi reference for command handlers
-		_piRef = pi
+		// Per-instance mutable state — each factory invocation gets its own
+		// variables so the extension is reentrant and test-safe.
+		let currentSessionName: string | undefined = undefined
+		let hasAutoNamed = false
 
 		// On session_start: reset the auto-naming tracker so background auto-naming
 		// can run for new sessions. If initial name was provided at startup, apply it.
 		pi.on("session_start", (_event, ctx: ExtensionContext) => {
 			hasAutoNamed = false
 			if (initialName) {
-				setAndUpdateSessionName(initialName, pi, ctx)
+				setAndUpdateSessionName(initialName, { value: currentSessionName }, pi, ctx)
 			} else {
 				const existingName = ctx.sessionManager.getSessionName()
 				if (existingName) {
-					_currentSessionName = existingName
-					updateTerminalTitle(ctx)
+					currentSessionName = existingName
+					updateTerminalTitle(ctx, existingName)
 				}
 			}
 		})
@@ -300,8 +298,8 @@ export default function sessionNameExtension(initialName?: string) {
 			hasAutoNamed = true
 			suggestSessionName(ctx, hint, true)
 				.then((suggestion) => {
-					if (suggestion && _piRef && !ctx.sessionManager.getSessionName()) {
-						setAndUpdateSessionName(suggestion, _piRef, ctx)
+					if (suggestion && !ctx.sessionManager.getSessionName()) {
+						setAndUpdateSessionName(suggestion, { value: currentSessionName }, pi, ctx)
 					}
 				})
 				.catch(() => {
@@ -319,7 +317,7 @@ export default function sessionNameExtension(initialName?: string) {
 					return []
 				}
 				// Offer the current name as completion base
-				const current = _currentSessionName || ""
+				const current = currentSessionName || ""
 				if (current) {
 					return [{ value: current, label: current, description: "Current session name" }]
 				}
@@ -353,15 +351,8 @@ export default function sessionNameExtension(initialName?: string) {
 					return
 				}
 
-				// Set the new name using the stored pi reference
-				if (_piRef) {
-					setAndUpdateSessionName(name, _piRef, ctx as ExtensionContext)
-				} else {
-					// Fallback: just update local state
-					_currentSessionName = name
-					setStartupSessionName(name)
-					updateTerminalTitle(ctx as ExtensionContext)
-				}
+				// Set the new name using the closure pi reference
+				setAndUpdateSessionName(name, { value: currentSessionName }, pi, ctx as ExtensionContext)
 
 				// Notify user
 				if (ctx.hasUI) {
@@ -384,8 +375,8 @@ export default function sessionNameExtension(initialName?: string) {
 			},
 			async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
 				return {
-					content: [{ type: "text", text: _currentSessionName || "(no session name)" }],
-					details: { name: _currentSessionName },
+					content: [{ type: "text", text: currentSessionName || "(no session name)" }],
+					details: { name: currentSessionName },
 				}
 			},
 		})
