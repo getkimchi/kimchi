@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { type SessionRow, formatRelativeTime, renderSessionsTable } from "./sessions-table.js"
 
 const NOW = new Date("2026-05-17T12:00:00Z")
+const FIXED_WIDTH = 100
 
 function makeRow(overrides: Partial<SessionRow>): SessionRow {
 	return {
@@ -43,9 +44,9 @@ describe("formatRelativeTime", () => {
 
 describe("renderSessionsTable", () => {
 	it("renders only the header for an empty list", () => {
-		const out = renderSessionsTable([], NOW)
+		const out = renderSessionsTable([], NOW, FIXED_WIDTH)
 		expect(out.split("\n")).toHaveLength(1)
-		expect(out).toContain("STATE")
+		expect(out).not.toContain("STATE")
 		expect(out).toContain("ID")
 		expect(out).toContain("NAME")
 		expect(out).toContain("STATUS")
@@ -53,25 +54,20 @@ describe("renderSessionsTable", () => {
 	})
 
 	it("prefixes the foreground row with a *", () => {
-		const out = renderSessionsTable([makeRow({})], NOW)
+		const out = renderSessionsTable([makeRow({})], NOW, FIXED_WIDTH)
 		const lines = out.split("\n")
 		expect(lines[1].startsWith("*")).toBe(true)
 	})
 
 	it("uses a leading space for non-foreground rows", () => {
-		const out = renderSessionsTable([makeRow({ state: "detached" })], NOW)
+		const out = renderSessionsTable([makeRow({ state: "detached" })], NOW, FIXED_WIDTH)
 		const lines = out.split("\n")
 		expect(lines[1].startsWith(" ")).toBe(true)
 		expect(lines[1].startsWith("*")).toBe(false)
 	})
 
-	it("truncates long names with an ellipsis", () => {
-		const out = renderSessionsTable([makeRow({ name: "this-is-a-very-long-feature-name" })], NOW)
-		expect(out).toContain("this-is-a-very-…")
-	})
-
 	it("renders empty names as '-'", () => {
-		const out = renderSessionsTable([makeRow({ name: "" })], NOW)
+		const out = renderSessionsTable([makeRow({ name: "" })], NOW, FIXED_WIDTH)
 		const lines = out.split("\n")
 		// "-" appears in the NAME column on the row
 		expect(lines[1]).toMatch(/ - /)
@@ -83,7 +79,7 @@ describe("renderSessionsTable", () => {
 			makeRow({ id: "dt222222", name: "dt-name", state: "detached (this kimchi)" }),
 			makeRow({ id: "sv333333", name: "sv-name", state: "active elsewhere", status: "active" }),
 		]
-		const out = renderSessionsTable(rows, NOW)
+		const out = renderSessionsTable(rows, NOW, FIXED_WIDTH)
 		const lines = out.split("\n")
 		expect(lines).toHaveLength(4)
 		expect(lines[1]).toContain("fg111111")
@@ -91,7 +87,42 @@ describe("renderSessionsTable", () => {
 		expect(lines[3]).toContain("sv333333")
 		expect(lines[1].startsWith("*")).toBe(true)
 		expect(lines[2].startsWith(" ")).toBe(true)
-		expect(lines[3]).toContain("active elsewhere")
+		// STATE column is gone — verify it is not present anywhere.
+		expect(out).not.toContain("active elsewhere")
+		expect(out).not.toContain("detached (this kimchi)")
+	})
+
+	it("shows full IDs (not truncated)", () => {
+		const longId = "019e3a7e-1234-5678-9abc-def012345678"
+		const out = renderSessionsTable([makeRow({ id: longId })], NOW, 200)
+		expect(out).toContain(longId)
+	})
+
+	it("renders lines strictly narrower than the requested width", () => {
+		const out = renderSessionsTable([makeRow({})], NOW, 120)
+		const lines = out.split("\n")
+		for (const line of lines) {
+			// One-column safety margin so the UI layer's prefix doesn't push the line onto the next row.
+			expect(line.length).toBeLessThan(120)
+		}
+	})
+
+	it("does not pad NAME past the longest actual name when width is generous", () => {
+		const short = renderSessionsTable([makeRow({ name: "feature-x" })], NOW, 200)
+		const long = renderSessionsTable([makeRow({ name: "a-much-longer-feature-name" })], NOW, 200)
+		// With short names the line is short; with longer names the line grows. Neither
+		// fills the terminal — NAME is sized to content, not to the available width.
+		expect(short.split("\n")[0].length).toBeLessThan(long.split("\n")[0].length)
+		expect(long.split("\n")[0].length).toBeLessThan(200)
+	})
+
+	it("truncates NAME (not ID) when width is tight", () => {
+		const longName = "this-is-a-very-long-feature-name-indeed"
+		const longId = "019e3a7e-1234-5678-9abc-def012345678"
+		const out = renderSessionsTable([makeRow({ id: longId, name: longName })], NOW, 80)
+		expect(out).toContain(longId)
+		expect(out).not.toContain(longName)
+		expect(out).toContain("…")
 	})
 
 	it("emits a stable snapshot for a representative mix", () => {
@@ -125,6 +156,6 @@ describe("renderSessionsTable", () => {
 				lastActivityAt: new Date(NOW.getTime() - 30_000),
 			}),
 		]
-		expect(renderSessionsTable(rows, NOW)).toMatchSnapshot()
+		expect(renderSessionsTable(rows, NOW, FIXED_WIDTH)).toMatchSnapshot()
 	})
 })

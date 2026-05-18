@@ -11,43 +11,47 @@ export interface SessionRow {
 	lastActivityAt?: Date
 }
 
-const COL = {
-	marker: 1,
-	state: 22,
-	id: 8,
-	name: 16,
-	status: 9,
-	lastActivity: 14,
-}
-
 const HEADERS = {
-	state: "STATE",
 	id: "ID",
 	name: "NAME",
 	status: "STATUS",
 	lastActivity: "LAST ACTIVITY",
 }
 
-export function renderSessionsTable(rows: SessionRow[], now: Date = new Date()): string {
+const MIN_NAME_WIDTH = 8
+
+export function renderSessionsTable(
+	rows: SessionRow[],
+	now: Date = new Date(),
+	width: number = process.stdout.columns || 120,
+): string {
+	const idWidth = Math.max(HEADERS.id.length, ...rows.map((r) => r.id.length))
+	const statusWidth = Math.max(HEADERS.status.length, ...rows.map((r) => (r.status ?? "-").length))
+	const lastWidth = HEADERS.lastActivity.length
+
+	// Layout: <marker> <id> <name> <status> <last>
+	// Inter-column separator: one space. Marker is 1 char + 1 space.
+	const fixed = 1 /* marker */ + 1 + idWidth + 1 + statusWidth + 1 + lastWidth
+	const longestName = Math.max(HEADERS.name.length, ...rows.map((r) => (r.name || "-").length))
+	const available = Math.max(MIN_NAME_WIDTH, width - fixed - 2)
+	const nameWidth = Math.min(longestName, available)
+
 	const header = [
-		" ".repeat(COL.marker),
-		pad(HEADERS.state, COL.state),
-		pad(HEADERS.id, COL.id),
-		pad(HEADERS.name, COL.name),
-		pad(HEADERS.status, COL.status),
+		" ", // marker column header
+		pad(HEADERS.id, idWidth),
+		pad(HEADERS.name, nameWidth),
+		pad(HEADERS.status, statusWidth),
 		HEADERS.lastActivity,
 	].join(" ")
 
 	const lines: string[] = [header]
 	for (const row of rows) {
 		const marker = row.state === "foreground" ? "*" : " "
-		const id = row.id.slice(0, COL.id)
-		const name = truncate(row.name || "-", COL.name)
-		const status = pad(row.status ?? "-", COL.status)
+		const id = pad(row.id, idWidth)
+		const name = pad(truncate(row.name || "-", nameWidth), nameWidth)
+		const status = pad(row.status ?? "-", statusWidth)
 		const lastActivity = row.lastActivityAt ? formatRelativeTime(row.lastActivityAt, now) : "-"
-		lines.push(
-			[marker, pad(row.state, COL.state), pad(id, COL.id), pad(name, COL.name), status, lastActivity].join(" "),
-		)
+		lines.push([marker, id, name, status, lastActivity].join(" "))
 	}
 	return lines.join("\n")
 }
