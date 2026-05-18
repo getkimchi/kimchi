@@ -6,6 +6,71 @@ import {
 	type RemoteSessionSummary,
 } from "./types.js"
 
+/**
+ * In-process cache of the current user id, keyed by apiKey. Populated at
+ * startup by `getCurrentUserId` (a `/v1/me` lookup). Used by `listRemoteSessions`
+ * to filter results to the current user via the server's `creatorId` query
+ * parameter (the user id equals `castai_api_key_owner_id`, see Session and
+ * TeamMember schemas in `.claude/openapi.yaml`).
+ *
+ * Not persisted to disk — a fresh kimchi process is uncached until startup
+ * re-fetches `/v1/me`. Keyed by apiKey so concurrent flows under different
+ * credentials never alias.
+ */
+const userIdByApiKey = new Map<string, string>()
+
+export function setCurrentUserId(apiKey: string, userId: string): void {
+	userIdByApiKey.set(apiKey, userId)
+}
+
+export function getCachedUserId(apiKey: string): string | undefined {
+	return userIdByApiKey.get(apiKey)
+}
+
+/**
+ * Fetch the current user's id from the server's `/v1/me` endpoint.
+ *
+ * Returns `undefined` on 404 (endpoint not deployed yet) so callers can soft-
+ * fail at startup; throws `RemoteAuthError` on 401/403 and `RemoteNetworkError`
+ * on other failures so credential and infra problems surface clearly.
+ *
+ * Response shape isn't part of the OpenAPI spec yet, so we accept several
+ * common variants (`id`, `userId`, `user_id`, nested `user.id`/`user.userId`).
+ */
+export async function getCurrentUserId(apiKey: string, options?: AuthenticateOptions): Promise<string | undefined> {
+	const endpoint = resolveEndpoint(options)
+	const fetchImpl = options?.fetch ?? globalThis.fetch
+	const url = `${endpoint}/v1/me`
+
+	const resp = await fetchWithTimeout(
+		url,
+		{
+			method: "GET",
+			headers: {
+				Authorization: `Bearer ${apiKey}`,
+				Accept: "application/json",
+			},
+		},
+		fetchImpl,
+	)
+	if (resp.status === 404) return undefined
+	await checkResponse(resp, url)
+
+	const data = await resp.json().catch(() => undefined)
+	return extractUserIdFromMeResponse(data)
+}
+
+function extractUserIdFromMeResponse(data: unknown): string | undefined {
+	if (typeof data !== "object" || data === null) return undefined
+	const obj = data as Record<string, unknown>
+	const nested = (obj.user as Record<string, unknown> | undefined) ?? undefined
+	const candidates: unknown[] = [obj.id, obj.userId, obj.user_id, nested?.id, nested?.userId]
+	for (const v of candidates) {
+		if (typeof v === "string" && v.length > 0) return v
+	}
+	return undefined
+}
+
 export interface AuthenticateOptions {
 	/**
 	 * Override the remote endpoint (used by tests).  Resolution order:
@@ -238,6 +303,12 @@ function normalizeWsUri(raw: string): { wsUrl: string; host: string; port: numbe
 
 export interface ListRemoteSessionsOptions extends AuthenticateOptions {
 	signal?: AbortSignal
+	/**
+	 * Filter by creator user id (server-side). When omitted, falls back to the
+	 * cached user id from the most recent `authenticateRemoteSession` under
+	 * the same apiKey; if neither is set, the call returns all org sessions.
+	 */
+	creatorId?: string
 }
 
 const LIST_SESSIONS_PAGE_LIMIT = 200
@@ -250,6 +321,7 @@ export async function listRemoteSessions(
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 	const endpoint = resolveEndpoint(options)
 	const signal = options?.signal
+	const creatorId = options?.creatorId ?? userIdByApiKey.get(apiKey)
 
 	try {
 		const orgId = await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })
@@ -261,6 +333,7 @@ export async function listRemoteSessions(
 			const params = new URLSearchParams()
 			params.set("page.limit", String(LIST_SESSIONS_PAGE_LIMIT))
 			if (cursor) params.set("page.cursor", cursor)
+			if (creatorId) params.set("creatorId", creatorId)
 
 			const url = `${endpoint}/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/sessions?${params.toString()}`
 			const resp = await fetchWithTimeout(

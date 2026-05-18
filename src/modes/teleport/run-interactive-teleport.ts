@@ -16,6 +16,7 @@ import type {
 	ExtensionFactory,
 } from "@earendil-works/pi-coding-agent"
 import makeTeleportExtension from "../../extensions/teleport.js"
+import { getCurrentUserId, setCurrentUserId } from "../remote/auth.js"
 import { TeleportableAgentSession } from "./teleportable-agent-session.js"
 
 export interface RunTeleportSessionOptions {
@@ -41,6 +42,23 @@ export async function runTeleportSession(options: RunTeleportSessionOptions): Pr
 	const settingsManager = SettingsManager.create(cwd, options.agentDir)
 	const sessionDir = process.env.KIMCHI_SESSION_DIR ?? settingsManager.getSessionDir()
 	const sessionManager = SessionManager.create(cwd, sessionDir)
+
+	// Resolve the current user id from `/v1/me` and cache it for the lifetime
+	// of this kimchi process. `listRemoteSessions` reads the cache to filter by
+	// `creatorId` so users only see their own sessions. Soft-fail: any error
+	// (404 because the endpoint isn't deployed, network blip, etc.) just leaves
+	// the cache empty and the list falls back to unfiltered, today's behavior.
+	try {
+		const userId = await getCurrentUserId(options.apiKey, { endpoint: options.endpoint })
+		if (userId) {
+			setCurrentUserId(options.apiKey, userId)
+		} else {
+			process.stderr.write("kimchi: /v1/me returned no usable user id — session list will be unfiltered\n")
+		}
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err)
+		process.stderr.write(`kimchi: /v1/me failed (${reason}) — session list will be unfiltered\n`)
+	}
 
 	let wrapperRef: TeleportableAgentSession | undefined
 	let servicesRef: AgentSessionServices | undefined

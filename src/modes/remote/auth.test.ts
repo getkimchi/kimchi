@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest"
-import { authenticateRemoteSession, listRemoteSessions, waitForSessionReady } from "./auth.js"
+import {
+	authenticateRemoteSession,
+	getCachedUserId,
+	getCurrentUserId,
+	listRemoteSessions,
+	setCurrentUserId,
+	waitForSessionReady,
+} from "./auth.js"
 import { RemoteAuthError, RemoteNetworkError } from "./types.js"
 
 const BASE = "https://api.example.com"
@@ -579,6 +586,126 @@ describe("listRemoteSessions", () => {
 		expect(result).toHaveLength(10)
 		// 1 verify + 10 list pages = 11 total fetches
 		expect(mockFetch).toHaveBeenCalledTimes(11)
+	})
+})
+
+describe("getCurrentUserId", () => {
+	function jsonResp(body: unknown, status = 200): Response {
+		return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } })
+	}
+
+	it("extracts id from { id }", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(jsonResp({ id: "user-abc" }))
+		const result = await getCurrentUserId("key-me-id", { endpoint: BASE, fetch: mockFetch })
+		expect(result).toBe("user-abc")
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/v1/me`)
+		expect(mockFetch.mock.calls[0][1]).toMatchObject({
+			method: "GET",
+			headers: expect.objectContaining({ Authorization: "Bearer key-me-id", Accept: "application/json" }),
+		})
+	})
+
+	it("extracts id from { userId }", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(jsonResp({ userId: "user-camel" }))
+		expect(await getCurrentUserId("key-me-camel", { endpoint: BASE, fetch: mockFetch })).toBe("user-camel")
+	})
+
+	it("extracts id from { user_id }", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(jsonResp({ user_id: "user-snake" }))
+		expect(await getCurrentUserId("key-me-snake", { endpoint: BASE, fetch: mockFetch })).toBe("user-snake")
+	})
+
+	it("extracts id from nested { user: { id } }", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(jsonResp({ user: { id: "user-nested" } }))
+		expect(await getCurrentUserId("key-me-nested", { endpoint: BASE, fetch: mockFetch })).toBe("user-nested")
+	})
+
+	it("returns undefined on 404 without throwing", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(new Response(null, { status: 404 }))
+		await expect(getCurrentUserId("key-me-404", { endpoint: BASE, fetch: mockFetch })).resolves.toBeUndefined()
+	})
+
+	it("returns undefined when response has no usable id field", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(jsonResp({ name: "no id here" }))
+		expect(await getCurrentUserId("key-me-noid", { endpoint: BASE, fetch: mockFetch })).toBeUndefined()
+	})
+
+	it("throws RemoteAuthError on 401", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(new Response(null, { status: 401 }))
+		await expect(getCurrentUserId("key-me-401", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
+			RemoteAuthError,
+		)
+	})
+
+	it("throws RemoteNetworkError on 500", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(new Response(null, { status: 500 }))
+		await expect(getCurrentUserId("key-me-500", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
+			RemoteNetworkError,
+		)
+	})
+})
+
+describe("listRemoteSessions creatorId filter", () => {
+	it("appends creatorId from the apiKey cache when no option is passed", async () => {
+		setCurrentUserId("key-filter-cached", "user-cached")
+		// Sanity-check the cache helpers stay in sync.
+		expect(getCachedUserId("key-filter-cached")).toBe("user-cached")
+
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValueOnce(verifyResponse())
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ items: [], totalCount: 0 }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			)
+
+		await listRemoteSessions("key-filter-cached", { endpoint: BASE, fetch: mockFetch })
+
+		const listCall = mockFetch.mock.calls[1][0] as string
+		expect(listCall).toContain("creatorId=user-cached")
+	})
+
+	it("omits creatorId when neither cache nor option provides one", async () => {
+		// Use an apiKey we never put in the cache.
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValueOnce(verifyResponse())
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ items: [], totalCount: 0 }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			)
+
+		await listRemoteSessions("key-filter-uncached", { endpoint: BASE, fetch: mockFetch })
+
+		const listCall = mockFetch.mock.calls[1][0] as string
+		expect(listCall).not.toContain("creatorId=")
+	})
+
+	it("explicit option overrides the cache", async () => {
+		setCurrentUserId("key-filter-override", "user-from-cache")
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValueOnce(verifyResponse())
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ items: [], totalCount: 0 }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			)
+
+		await listRemoteSessions("key-filter-override", {
+			endpoint: BASE,
+			fetch: mockFetch,
+			creatorId: "user-from-option",
+		})
+
+		const listCall = mockFetch.mock.calls[1][0] as string
+		expect(listCall).toContain("creatorId=user-from-option")
+		expect(listCall).not.toContain("user-from-cache")
 	})
 })
 
