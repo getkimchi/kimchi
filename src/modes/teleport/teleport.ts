@@ -8,7 +8,7 @@ import type {
 	ExtensionUIContext,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent"
-import { authenticateRemoteSession, listRemoteSessions, waitForSessionReady } from "../remote/auth.js"
+import { authenticateRemoteSession, getMe, listRemoteSessions, waitForSessionReady } from "../remote/auth.js"
 import { buildRemoteAgentSession } from "../remote/build-remote-session.js"
 import type { RemoteAgentSession } from "../remote/remote-agent-session.js"
 import { RemoteAuthError } from "../remote/types.js"
@@ -658,9 +658,24 @@ export async function runConnect(
 export async function runListSessions(ctx: TeleportContext): Promise<void> {
 	const wrapper = ctx.wrapper
 
+	let creatorId: string | undefined
+	try {
+		const me = await getMe(ctx.apiKey, { endpoint: ctx.endpoint })
+		creatorId = me.id
+	} catch (err) {
+		warn(
+			ctx,
+			`Could not fetch current user: ${err instanceof Error ? err.message : String(err)}. Listing all sessions.`,
+		)
+	}
+
 	let serverSessions: RemoteSessionSummary[] = []
 	try {
-		serverSessions = await listRemoteSessions(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal })
+		serverSessions = await listRemoteSessions(ctx.apiKey, {
+			endpoint: ctx.endpoint,
+			signal: ctx.signal,
+			creatorId,
+		})
 	} catch (err) {
 		warn(
 			ctx,

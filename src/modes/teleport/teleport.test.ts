@@ -15,7 +15,7 @@ const PROMISIFY_CUSTOM = Symbol.for("nodejs.util.promisify.custom")
 
 type ExecAsyncImpl = (cmd: string, opts?: unknown) => Promise<{ stdout: string; stderr: string }>
 
-const { execAsyncMock, execMock, authMock, listMock, buildMock, rsyncMock, waitMock } = vi.hoisted(() => {
+const { execAsyncMock, execMock, authMock, listMock, getMeMock, buildMock, rsyncMock, waitMock } = vi.hoisted(() => {
 	const execAsyncMock = vi.fn<ExecAsyncImpl>(async () => ({ stdout: "", stderr: "" }))
 	const PROMISIFY = Symbol.for("nodejs.util.promisify.custom")
 	const execMock: { (...args: unknown[]): void; [PROMISIFY]?: typeof execAsyncMock } = Object.assign(vi.fn(), {
@@ -26,6 +26,7 @@ const { execAsyncMock, execMock, authMock, listMock, buildMock, rsyncMock, waitM
 		execAsyncMock,
 		authMock: vi.fn(),
 		listMock: vi.fn(),
+		getMeMock: vi.fn(),
 		buildMock: vi.fn(),
 		rsyncMock: vi.fn(),
 		waitMock: vi.fn(),
@@ -36,6 +37,7 @@ vi.mock("node:child_process", () => ({ exec: execMock }))
 vi.mock("../remote/auth.js", () => ({
 	authenticateRemoteSession: authMock,
 	listRemoteSessions: listMock,
+	getMe: getMeMock,
 	waitForSessionReady: waitMock,
 }))
 vi.mock("../remote/build-remote-session.js", () => ({
@@ -172,6 +174,8 @@ beforeEach(() => {
 	execAsyncMock.mockImplementation(async () => ({ stdout: "", stderr: "" }))
 	authMock.mockReset()
 	listMock.mockReset()
+	getMeMock.mockReset()
+	getMeMock.mockResolvedValue({ id: "test-user" })
 	buildMock.mockReset()
 	rsyncMock.mockReset()
 	waitMock.mockReset()
@@ -746,7 +750,7 @@ describe("runListSessions", () => {
 		await runListSessions(ctx)
 		expect(listMock).toHaveBeenCalledOnce()
 		const tableCall = ui.notify.mock.calls.find(
-			(c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("STATE"),
+			(c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("LAST ACTIVITY"),
 		)
 		expect(tableCall).toBeDefined()
 		const out = tableCall?.[0] as string
@@ -768,10 +772,35 @@ describe("runListSessions", () => {
 		await runListSessions(ctx)
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Could not fetch server sessions/), "warning")
 		const tableCall = ui.notify.mock.calls.find(
-			(c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("STATE"),
+			(c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("LAST ACTIVITY"),
 		)
 		expect(tableCall).toBeDefined()
 		expect(tableCall?.[0] as string).toContain("fg-id")
+	})
+
+	it("calls getMe and forwards id as creatorId to listRemoteSessions", async () => {
+		const home = new FakeSession("local-1")
+		const { ctx } = makeCtx(home)
+		getMeMock.mockResolvedValueOnce({ id: "user-42", email: "u@example.com" })
+
+		await runListSessions(ctx)
+
+		expect(getMeMock).toHaveBeenCalledWith("test-key", { endpoint: "https://api.example.com" })
+		expect(listMock).toHaveBeenCalledWith(
+			"test-key",
+			expect.objectContaining({ creatorId: "user-42", endpoint: "https://api.example.com" }),
+		)
+	})
+
+	it("still lists sessions (unfiltered) when getMe fails", async () => {
+		const home = new FakeSession("local-1")
+		const { ctx, ui } = makeCtx(home)
+		getMeMock.mockRejectedValueOnce(new Error("me unavailable"))
+
+		await runListSessions(ctx)
+
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Could not fetch current user/), "warning")
+		expect(listMock).toHaveBeenCalledWith("test-key", expect.objectContaining({ creatorId: undefined }))
 	})
 })
 

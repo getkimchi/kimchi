@@ -236,8 +236,46 @@ function normalizeWsUri(raw: string): { wsUrl: string; host: string; port: numbe
 	}
 }
 
+export interface MeResponse {
+	id: string
+	username?: string
+	name?: string
+	email?: string
+}
+
+export async function getMe(apiKey: string, options?: AuthenticateOptions): Promise<MeResponse> {
+	const endpoint = resolveEndpoint(options)
+	const fetchImpl = options?.fetch ?? globalThis.fetch
+
+	const url = `${endpoint}/v1/me`
+	const resp = await fetchWithTimeout(
+		url,
+		{
+			method: "GET",
+			headers: {
+				Authorization: `Bearer ${apiKey}`,
+				Accept: "application/json",
+			},
+		},
+		fetchImpl,
+	)
+
+	await checkResponse(resp, url)
+
+	const data = await resp.json().catch(() => {
+		throw new RemoteNetworkError(`Unexpected non-JSON response from ${endpoint}`)
+	})
+
+	if (typeof data?.id !== "string" || data.id.length === 0) {
+		throw new RemoteNetworkError(`Missing id in /v1/me response from ${endpoint}`)
+	}
+
+	return data as MeResponse
+}
+
 export interface ListRemoteSessionsOptions extends AuthenticateOptions {
 	signal?: AbortSignal
+	creatorId?: string
 }
 
 const LIST_SESSIONS_PAGE_LIMIT = 200
@@ -250,6 +288,7 @@ export async function listRemoteSessions(
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 	const endpoint = resolveEndpoint(options)
 	const signal = options?.signal
+	const creatorId = options?.creatorId
 
 	try {
 		const orgId = await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })
@@ -261,6 +300,7 @@ export async function listRemoteSessions(
 			const params = new URLSearchParams()
 			params.set("page.limit", String(LIST_SESSIONS_PAGE_LIMIT))
 			if (cursor) params.set("page.cursor", cursor)
+			if (creatorId) params.set("creatorId", creatorId)
 
 			const url = `${endpoint}/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/sessions?${params.toString()}`
 			const resp = await fetchWithTimeout(

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { authenticateRemoteSession, listRemoteSessions, waitForSessionReady } from "./auth.js"
+import { authenticateRemoteSession, getMe, listRemoteSessions, waitForSessionReady } from "./auth.js"
 import { RemoteAuthError, RemoteNetworkError } from "./types.js"
 
 const BASE = "https://api.example.com"
@@ -322,10 +322,11 @@ function verifyResponse() {
 	})
 }
 
-function listUrl(cursor?: string) {
+function listUrl(cursor?: string, creatorId?: string) {
 	const params = new URLSearchParams()
 	params.set("page.limit", "200")
 	if (cursor) params.set("page.cursor", cursor)
+	if (creatorId) params.set("creatorId", creatorId)
 	return `${BASE}/ai-optimizer/v1beta/organizations/${ORG_ID}/sessions?${params.toString()}`
 }
 
@@ -579,6 +580,67 @@ describe("listRemoteSessions", () => {
 		expect(result).toHaveLength(10)
 		// 1 verify + 10 list pages = 11 total fetches
 		expect(mockFetch).toHaveBeenCalledTimes(11)
+	})
+
+	it("passes creatorId as a query param when provided", async () => {
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValueOnce(verifyResponse())
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ items: [], totalCount: 0 }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			)
+
+		await listRemoteSessions("key1", { endpoint: BASE, fetch: mockFetch, creatorId: "user-42" })
+
+		expect(mockFetch.mock.calls[1][0]).toBe(listUrl(undefined, "user-42"))
+	})
+})
+
+describe("getMe", () => {
+	it("returns the user payload on success", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(
+			new Response(
+				JSON.stringify({
+					id: "user-42",
+					username: "ada",
+					name: "Ada Lovelace",
+					email: "ada@example.com",
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			),
+		)
+
+		const me = await getMe("key1", { endpoint: BASE, fetch: mockFetch })
+
+		expect(me.id).toBe("user-42")
+		expect(me.email).toBe("ada@example.com")
+		expect(mockFetch).toHaveBeenCalledTimes(1)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/v1/me`)
+		expect(mockFetch.mock.calls[0][1]).toMatchObject({
+			method: "GET",
+			headers: expect.objectContaining({
+				Authorization: "Bearer key1",
+				Accept: "application/json",
+			}),
+		})
+	})
+
+	it("throws RemoteAuthError on 401", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(new Response("", { status: 401 }))
+		await expect(getMe("badkey", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteAuthError)
+	})
+
+	it("throws RemoteNetworkError when id is missing from response", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(
+			new Response(JSON.stringify({ email: "x@y.z" }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			}),
+		)
+		await expect(getMe("key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 })
 
