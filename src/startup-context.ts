@@ -37,23 +37,47 @@ export function getSessionName(): string | undefined {
 }
 
 /**
+ * Parse the --name flag from raw CLI args.
+ * Returns the name value and the indices of arguments that should be stripped
+ * from the args list.
+ * Only consumes the next token as the value if it does not start with "-".
+ */
+export function parseNameArg(rawArgs: string[]): { name: string | undefined; stripIndices: number[] } {
+	let name: string | undefined
+	const stripIndices: number[] = []
+
+	for (let i = 0; i < rawArgs.length; i++) {
+		const arg = rawArgs[i]
+		if (arg === "--name") {
+			stripIndices.push(i)
+			const next = rawArgs[i + 1]
+			if (next !== undefined && !next.startsWith("-")) {
+				name = next
+				stripIndices.push(i + 1)
+				i++ // skip the value in the loop
+			}
+			break
+		}
+		if (arg?.startsWith("--name=")) {
+			name = arg.slice("--name=".length)
+			stripIndices.push(i)
+			break
+		}
+	}
+
+	return { name, stripIndices }
+}
+
+/**
  * Parse startup context from raw CLI args.
  * NOTE: This does NOT mutate rawArgs — the --name stripping happens in cli.ts.
  */
 export function resolveStartupContext(rawArgs: string[]): StartupContext {
 	const context: StartupContext = {}
 
-	// Look for --name <value> in rawArgs
-	for (let i = 0; i < rawArgs.length; i++) {
-		if (rawArgs[i] === "--name" && rawArgs[i + 1] !== undefined) {
-			context.sessionName = rawArgs[i + 1]
-			break
-		}
-		// Handle --name=<value> format
-		if (rawArgs[i]?.startsWith("--name=")) {
-			context.sessionName = rawArgs[i].slice("--name=".length)
-			break
-		}
+	const { name } = parseNameArg(rawArgs)
+	if (name) {
+		context.sessionName = name
 	}
 
 	// Also load available models (set by cli.ts before extensions run)

@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest"
-import { getSessionName, resolveStartupContext, setSessionName } from "../startup-context.js"
+import { getSessionName, parseNameArg, resolveStartupContext, setSessionName } from "../startup-context.js"
 import { deterministicFallback, extractFirstUserMessage } from "./session-name.js"
 
 describe("session-name", () => {
@@ -48,6 +48,44 @@ describe("session-name", () => {
 		it("should handle names with special characters", () => {
 			const context = resolveStartupContext(["--name", "feature/ABC-123"])
 			expect(context.sessionName).toBe("feature/ABC-123")
+		})
+	})
+
+	describe("parseNameArg", () => {
+		it("should parse --name <value>", () => {
+			const result = parseNameArg(["--name", "my-session", "other"])
+			expect(result.name).toBe("my-session")
+			expect(result.stripIndices).toEqual([0, 1])
+		})
+
+		it("should parse --name=<value>", () => {
+			const result = parseNameArg(["--name=my-session", "other"])
+			expect(result.name).toBe("my-session")
+			expect(result.stripIndices).toEqual([0])
+		})
+
+		it("should NOT consume the next token if it starts with -", () => {
+			const result = parseNameArg(["--name", "--model", "claude"])
+			expect(result.name).toBeUndefined()
+			expect(result.stripIndices).toEqual([0])
+		})
+
+		it("should handle --name as last argument", () => {
+			const result = parseNameArg(["--model", "claude", "--name"])
+			expect(result.name).toBeUndefined()
+			expect(result.stripIndices).toEqual([2])
+		})
+
+		it("should handle empty args", () => {
+			const result = parseNameArg([])
+			expect(result.name).toBeUndefined()
+			expect(result.stripIndices).toEqual([])
+		})
+
+		it("should handle args without --name", () => {
+			const result = parseNameArg(["--model", "claude-3-opus"])
+			expect(result.name).toBeUndefined()
+			expect(result.stripIndices).toEqual([])
 		})
 	})
 

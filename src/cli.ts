@@ -49,7 +49,7 @@ import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { updateModelsConfig } from "./models.js"
 import { runSetupWizard } from "./setup-wizard.js"
-import { resolveStartupContext, setAvailableModels, setSessionName } from "./startup-context.js"
+import { parseNameArg, resolveStartupContext, setAvailableModels, setSessionName } from "./startup-context.js"
 import { detectColorMode, hexToBgAnsi, probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
 import { getVersion } from "./utils.js"
@@ -312,24 +312,17 @@ try {
 
 		const rawArgs = process.argv.slice(2)
 
-		// Parse startup context and extract --name flag
-		const startupContext = resolveStartupContext(rawArgs)
+		// Parse --name from rawArgs and determine what to strip before main()
+		const { name: sessionNameArg, stripIndices } = parseNameArg(rawArgs)
 
-		// Strip --name and its value from rawArgs before passing to main()
-		const strippedArgs = rawArgs.filter((arg, index) => {
-			// Skip --name
-			if (arg === "--name") return false
-			// Skip the value after --name
-			if (index > 0 && rawArgs[index - 1] === "--name") return false
-			// Skip --name=<value> format
-			if (arg.startsWith("--name=")) return false
-			return true
-		})
+		const strippedArgs = rawArgs.filter((_, i) => !stripIndices.includes(i))
 
 		// Store session name for extension
-		if (startupContext.sessionName) {
-			setSessionName(startupContext.sessionName)
+		if (sessionNameArg) {
+			setSessionName(sessionNameArg)
 		}
+
+		const startupContext = resolveStartupContext(rawArgs)
 
 		const extensionFactories = [
 			startupUpdateExtension,
