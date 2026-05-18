@@ -65,9 +65,58 @@ describe("renderSessionsTable", () => {
 		expect(lines[1].startsWith("*")).toBe(false)
 	})
 
-	it("truncates long names with an ellipsis", () => {
-		const out = renderSessionsTable([makeRow({ name: "this-is-a-very-long-feature-name" })], NOW)
-		expect(out).toContain("this-is-a-very-…")
+	it("truncates long names with an ellipsis when name budget is exceeded", () => {
+		// Pin a narrow width so the NAME budget is ~8 chars (the floor) and the
+		// long name has to truncate.
+		const out = renderSessionsTable([makeRow({ name: "this-is-a-very-long-feature-name" })], NOW, 60)
+		expect(out).toContain("…")
+		const lines = out.split("\n")
+		// No row overflows the configured width.
+		for (const line of lines) expect(line.length).toBeLessThanOrEqual(60)
+	})
+
+	it("expands NAME to consume the available width", () => {
+		const out = renderSessionsTable([makeRow({ name: "fairly-long-but-fits-easily" })], NOW, 160)
+		// At 160 cols there's plenty of room — the name should appear in full.
+		expect(out).toContain("fairly-long-but-fits-easily")
+		expect(out).not.toContain("fairly-long-…")
+		const lines = out.split("\n")
+		for (const line of lines) expect(line.length).toBeLessThanOrEqual(160)
+	})
+
+	it("shrinks STATE column to fit actual content (not the worst-case state label)", () => {
+		// All rows are 'detached' (8 chars). State column should pack to 8, not
+		// the 22 chars 'detached (this kimchi)' would have required.
+		const out = renderSessionsTable(
+			[
+				makeRow({ id: "11111111", name: "alpha", state: "detached" }),
+				makeRow({ id: "22222222", name: "beta", state: "detached" }),
+			],
+			NOW,
+			120,
+		)
+		const headerLine = out.split("\n")[0]
+		// "STATE" is 5 chars but the header column floor is max(header, content).
+		// We expect 8 (length of "detached") since that's the widest content.
+		// Verify by checking the gap between "STATE" and "ID" headers.
+		const stateIdx = headerLine.indexOf("STATE")
+		const idIdx = headerLine.indexOf("ID")
+		expect(idIdx - stateIdx).toBe("STATE".length + (8 - "STATE".length) + 1) // STATE + pad-to-8 + 1 separator
+	})
+
+	it("renders the full session id (no 8-char prefix truncation)", () => {
+		const fullId = "s-aee85ef3-501b-4e6c-bfff-37556b224dae"
+		const out = renderSessionsTable([makeRow({ id: fullId, name: "n" })], NOW, 200)
+		expect(out).toContain(fullId)
+		// And explicitly that the prefix isn't followed by an ellipsis or padding gap.
+		expect(out).not.toMatch(/s-aee85ef3 /)
+	})
+
+	it("never shrinks NAME below the floor (MIN_NAME_WIDTH = 8)", () => {
+		// Force a tiny width — NAME should still be 8 chars wide minimum.
+		const out = renderSessionsTable([makeRow({ name: "abcdefghijklmnop" })], NOW, 20)
+		// The NAME cell will contain a 7-char prefix + "…" = 8 chars.
+		expect(out).toContain("abcdefg…")
 	})
 
 	it("renders empty names as '-'", () => {
@@ -125,6 +174,7 @@ describe("renderSessionsTable", () => {
 				lastActivityAt: new Date(NOW.getTime() - 30_000),
 			}),
 		]
-		expect(renderSessionsTable(rows, NOW)).toMatchSnapshot()
+		// Pin width so the snapshot is deterministic regardless of the runner's terminal.
+		expect(renderSessionsTable(rows, NOW, 100)).toMatchSnapshot()
 	})
 })
