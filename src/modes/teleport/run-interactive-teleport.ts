@@ -57,6 +57,7 @@ export async function runTeleportSession(options: RunTeleportSessionOptions): Pr
 	// Without this pass the chat container, ext shortcut handler, and
 	// extension overlays stay wired to the previous foreground and the editor
 	// looks unresponsive (text accepted but no visible response).
+	// biome-ignore lint/style/useConst: forward reference — captured by the teleportExtension closure below, then assigned after `new InteractiveMode(...)`.
 	let interactiveModeRef: InteractiveMode | undefined
 
 	const teleportExtension = makeTeleportExtension({
