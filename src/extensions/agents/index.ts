@@ -65,6 +65,7 @@ import {
 	type AgentDetails,
 	AgentWidget,
 	SPINNER,
+	type Theme,
 	type UICtx,
 	describeActivity,
 	formatDuration,
@@ -77,7 +78,7 @@ import {
 
 // ---- Shared helpers ----
 
-function textResult(msg: string, details?: unknown) {
+function textResult<T = AgentDetails>(msg: string, details?: T) {
 	return { content: [{ type: "text" as const, text: msg }], details: details as unknown }
 }
 
@@ -93,12 +94,48 @@ interface GetSubagentResultDetails {
 	durationMs?: number
 	error?: string
 	bodyText: string
-	spinnerFrame?: number
 }
 
 function formatAgentBodyForDisplay(raw: string): string {
 	const cleaned = filterThinkingForDisplay(raw)
 	return cleaned.replace(/\n{3,}/g, "\n\n").trimEnd()
+}
+
+function getSubagentResultIcon(status: string, theme: Theme): string {
+	switch (status) {
+		case "running":
+		case "queued":
+			return theme.fg("accent", SPINNER[0])
+		case "error":
+		case "aborted":
+			return theme.fg("error", "✗")
+		case "stopped":
+			return theme.fg("dim", "■")
+		case "steered":
+			return theme.fg("warning", "✓")
+		default:
+			return theme.fg("success", "✓")
+	}
+}
+
+function summaryForStatus(status: string, error?: string): string {
+	switch (status) {
+		case "running":
+		case "queued":
+			return "Still running"
+		case "completed":
+			return "Done"
+		case "steered":
+			return "Wrapped up (turn limit)"
+		case "aborted":
+			return "Aborted (max turns exceeded)"
+		case "stopped":
+			return "Stopped"
+		case "error":
+			return `Error: ${error?.split("\n")[0]?.trim() || "unknown"}`
+		default:
+			return status
+	}
 }
 
 function formatLifetimeTokens(o: { lifetimeUsage: LifetimeUsage }): string {
@@ -1083,16 +1120,7 @@ Model selection — YOU choose based on task complexity:
 					return parts.map((p) => theme.fg("dim", p)).join(` ${theme.fg("dim", "·")} `)
 				}
 
-				const icon =
-					details.status === "running" || details.status === "queued"
-						? theme.fg("accent", SPINNER[0])
-						: details.status === "error"
-							? theme.fg("error", "✗")
-							: details.status === "stopped"
-								? theme.fg("dim", "■")
-								: details.status === "steered" || details.status === "aborted"
-									? theme.fg("warning", "✓")
-									: theme.fg("success", "✓")
+				const icon = getSubagentResultIcon(details.status, theme)
 
 				const headerName = theme.fg("toolTitle", theme.bold("Get Agent Result"))
 				const headerDesc = details.description ? `  ${theme.fg("muted", details.description)}` : ""
@@ -1115,13 +1143,7 @@ Model selection — YOU choose based on task complexity:
 						line += `\n${theme.fg("muted", `  … (${lines.length - maxLines} more lines — use verbose: true for full output)`)}`
 					}
 				} else if (!expanded) {
-					const firstErrLine = details.error?.split("\n")[0]?.trim() || "unknown"
-					const summary =
-						details.status === "running" || details.status === "queued"
-							? "Still running"
-							: details.status === "error"
-								? `Error: ${firstErrLine.slice(0, 80)}`
-								: "Done"
+					const summary = summaryForStatus(details.status, details.error)
 					line += `\n${theme.fg("dim", `  ⎿  ${summary}`)}`
 				}
 
@@ -1182,7 +1204,7 @@ Model selection — YOU choose based on task complexity:
 				}
 
 				const completedAt = record.completedAt ?? Date.now()
-				const durationMs = completedAt - record.startedAt
+				const durationMs = record.startedAt != null ? completedAt - record.startedAt : undefined
 				const details: GetSubagentResultDetails = {
 					agentId: record.id,
 					displayName,
