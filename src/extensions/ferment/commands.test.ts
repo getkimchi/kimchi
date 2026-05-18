@@ -481,7 +481,7 @@ describe("registerFermentCommands", () => {
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Progress Ferment"))
 	})
 
-	it("/ferment auto at a phase boundary kicks automated continuation without changing lifecycle state", async () => {
+	it("/ferment auto at a phase boundary only changes continuation policy", async () => {
 		const h = createHarness()
 		const applyAndPersist = createApplyAndPersist(h.runtime)
 		const ferment = h.storage.create("Boundary Ferment")
@@ -527,18 +527,7 @@ describe("registerFermentCommands", () => {
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
 		expect(active.status).toBe("planned")
 		expect(active.phases[1].status).toBe("planned")
-		expect(h.pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				customType: "ferment_continuation_nudge",
-				content: [
-					expect.objectContaining({
-						text: expect.stringContaining("Re-read the current persisted ferment state"),
-					}),
-				],
-				details: expect.objectContaining({ action: "wake_up", expectedAction: "activate_phase" }),
-			}),
-			{ triggerTurn: true, deliverAs: "followUp" },
-		)
+		expect(h.pi.sendMessage).not.toHaveBeenCalled()
 	})
 
 	it("/ferment list Continue on the active ferment kicks continuation", async () => {
@@ -814,7 +803,7 @@ describe("registerFermentCommands", () => {
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
 		expect(active.status).toBe("running")
 		expect(active.phases[0].status).toBe("active")
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "create_ferment", "start_ferment_step"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "start_ferment_step"])
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
@@ -934,7 +923,7 @@ describe("registerFermentCommands", () => {
 			"ferment_breadcrumb",
 			expect.objectContaining({ text: expect.stringContaining("Manual policy waiting at phase boundary") }),
 		)
-		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining('is waiting before "Next". Run /ferment auto'))
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining('is waiting before "Next". Choose Continue'))
 	})
 
 	it("/ferment resume in manual policy asks before crossing a phase boundary", async () => {

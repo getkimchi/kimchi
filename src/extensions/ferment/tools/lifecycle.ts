@@ -445,7 +445,9 @@ export async function completeFerment(
 		runtime.clearFermentState(params.ferment_id)
 		resetReactiveContinuationNudgeCount(params.ferment_id)
 		runtime.setActive(undefined)
-		return toolOk(`Ferment "${fSnapshot.name}" is already complete. No further lifecycle action is available.`)
+		return toolOk(
+			`Ferment "${fSnapshot.name}" is already complete. No further lifecycle action is available. Do not act on this ferment again without clear user consent.`,
+		)
 	}
 	if (fSnapshot.status === "abandoned") {
 		runtime.clearFermentState(params.ferment_id)
@@ -582,9 +584,11 @@ export async function completeFerment(
 	const failedNote = failedPhases > 0 ? ` (${failedPhases} phase(s) failed)` : ""
 	const gateLines = gates.map((g) => `  ${g.id} (${g.verdict}): ${g.rationale}`).join("\n")
 	const gradeLabel = resolvedGrade.unavailable ? `${resolvedGrade.grade} (unavailable)` : resolvedGrade.grade
+	const terminalNotice =
+		"This ferment is complete and terminal. Do not call bash/read/list_ferments or any ferment tools for this ferment again without clear user consent."
 
 	return toolOk(
-		`Ferment "${fresh.name}" complete${failedNote}.\n\nFinal gates:\n${gateLines}\n\nFinal grade: ${gradeLabel} — ${resolvedGrade.rationale}\n\n${params.final_summary ?? ""}`,
+		`Ferment "${fresh.name}" complete${failedNote}.\n\nFinal gates:\n${gateLines}\n\nFinal grade: ${gradeLabel} — ${resolvedGrade.rationale}\n\n${params.final_summary ?? ""}\n\n${terminalNotice}`,
 	)
 }
 
@@ -593,7 +597,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: "create_ferment",
 		label: "Create Ferment",
-		description: "Create a new ferment at draft status.",
+		description: "Create a new ferment at draft status. Use only when no ferment is already active.",
 		parameters: CreateFermentParams,
 		async execute(_, params) {
 			// Creation is special — no existing ferment to transition from.

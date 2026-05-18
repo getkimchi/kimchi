@@ -429,11 +429,13 @@ describe("completeFerment", () => {
 			{ pi: h.pi },
 		)
 		expect(okText(first)).toContain('Ferment "Lifecycle Test" complete')
+		expect(okText(first)).toContain("Do not call bash/read/list_ferments or any ferment tools")
 		expect(mockJudgeJourneyGrade).toHaveBeenCalledTimes(1)
 
 		const second = await completeFerment(h.runtime, { ferment_id: h.fermentId }, { pi: h.pi })
 
 		expect(okText(second)).toContain('Ferment "Lifecycle Test" is already complete')
+		expect(okText(second)).toContain("without clear user consent")
 		expect(mockJudgeJourneyGrade).toHaveBeenCalledTimes(1)
 		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
 	})

@@ -148,7 +148,7 @@ export async function runScopingFlow(
 			content: [
 				{
 					type: "text",
-					text: `User wants to ferment "${f.name}": ${intent}\n\nDraft a complete Scoping (goal, success_criteria, constraints, assumptions) AND 3-7 phases AND clarifying questions ONLY where you're genuinely uncertain. Call propose_ferment_scoping with everything. Don't research with file/bash tools first.`,
+					text: `User wants to ferment "${f.name}" (ferment_id "${f.id}"): ${intent}\n\nThe host has already created this draft ferment. Do NOT call create_ferment. Draft a complete Scoping (goal, success_criteria, constraints, assumptions) AND 3-7 phases AND clarifying questions ONLY where you're genuinely uncertain. Call propose_ferment_scoping with ferment_id "${f.id}" and everything. Don't research with file/bash tools first.`,
 				},
 			],
 			display: false,

@@ -180,7 +180,39 @@ describe("completePhase", () => {
 		expect(errResult.content.map((c) => c.text).join("\n")).toContain("rationale")
 	})
 
-	it("manual policy stops at the boundary and pauses when the user chooses Pause here", async () => {
+	it("manual policy asks at the boundary and continues when selected", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("manual")
+		const selectSpy = vi.fn(async () => "Continue to next phase")
+		const services = createServices()
+
+		const result = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
+			{
+				pi: h.pi,
+				ctx: { ui: { select: selectSpy } },
+			},
+			services,
+		)
+
+		const text = okText(result)
+		expect(selectSpy).toHaveBeenCalledWith('Phase "Phase 1" done.\nContinue "Phase Test" to "Phase 2"?', [
+			"Continue to next phase",
+			"Pause here",
+		])
+		expect(text).toContain("User chose to continue to the next phase")
+		expect(text).toContain('Next: "Phase 2"')
+		expect(text).toContain("Next action: call `activate_ferment_phase`")
+		const stored = h.storage.get(h.fermentId)
+		expect(stored?.status).toBe("planned")
+		expect(stored?.phases[0].status).toBe("completed")
+		expect(stored?.phases[1].status).toBe("planned")
+		expect(stored?.activePhaseId).toBeUndefined()
+		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
+	})
+
+	it("manual policy pauses when the user chooses pause at the boundary", async () => {
 		const h = createHarness()
 		h.runtime.setContinuationPolicy("manual")
 		const selectSpy = vi.fn(async () => "Pause here")
@@ -209,27 +241,45 @@ describe("completePhase", () => {
 		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
 	})
 
-	it("manual policy consumes host UI confirmation at the phase boundary", async () => {
+	it("manual policy pauses at the boundary when no UI is available", async () => {
 		const h = createHarness()
 		h.runtime.setContinuationPolicy("manual")
-		const selectSpy = vi.fn(async () => "Continue to next phase")
 		const services = createServices()
 
 		const result = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
-			{
-				pi: h.pi,
-				ctx: { ui: { select: selectSpy } },
-			},
+			{ pi: h.pi },
 			services,
 		)
 
 		const text = okText(result)
-		expect(selectSpy).toHaveBeenCalled()
-		expect(text).toContain("User confirmed continuing")
-		expect(text).toContain("Next action: call `activate_ferment_phase`")
+		expect(text).toContain("Manual continuation policy stopped here")
+		expect(text).toContain('Next: "Phase 2"')
+		expect(text).not.toContain("Next action: call `activate_ferment_phase`")
+		const stored = h.storage.get(h.fermentId)
+		expect(stored?.status).toBe("paused")
+		expect(stored?.phases[0].status).toBe("completed")
+		expect(stored?.phases[1].status).toBe("planned")
+		expect(stored?.activePhaseId).toBeUndefined()
 		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
+	})
+
+	it("manual policy still allows final ferment completion at the last boundary", async () => {
+		const h = createHarness({ phases: 1 })
+		h.runtime.setContinuationPolicy("manual")
+		const services = createServices()
+
+		const result = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
+			{ pi: h.pi },
+			services,
+		)
+
+		const text = okText(result)
+		expect(text).toContain("All phases terminal")
+		expect(text).toContain("Next action: call `complete_ferment`")
 	})
 
 	it("automated policy keeps the next phase activation hint", async () => {
@@ -247,23 +297,6 @@ describe("completePhase", () => {
 		const text = okText(result)
 		expect(text).toContain('Next: "Phase 2"')
 		expect(text).toContain("Next action: call `activate_ferment_phase`")
-	})
-
-	it("manual policy does not block the final ferment completion hint", async () => {
-		const h = createHarness({ phases: 1 })
-		h.runtime.setContinuationPolicy("manual")
-		const services = createServices()
-
-		const result = await completePhase(
-			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
-			{ pi: h.pi },
-			services,
-		)
-
-		const text = okText(result)
-		expect(text).toContain("All phases terminal")
-		expect(text).toContain("Next action: call `complete_ferment`")
 	})
 })
 

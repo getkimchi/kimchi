@@ -9,7 +9,7 @@ import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { decideContinuation } from "./continuation.js"
 import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
-import { appendRefEntry, injectAutomatedContinuationNudge } from "./nudge.js"
+import { appendRefEntry } from "./nudge.js"
 import { maybeRunOnboarding } from "./onboarding.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import {
@@ -183,7 +183,7 @@ function setAutomatedContinuationPolicy(pi: ExtensionAPI, ctx: FermentUiContext,
 	}
 
 	ctx.ui.notify(`Continuation policy set to automated for "${active.name}".`)
-	injectAutomatedContinuationNudge(pi, runtime)
+	applyFermentRuntimeToolProfile(pi, runtime)
 }
 
 async function confirmManualPhaseBoundaryForCommand(
@@ -227,7 +227,7 @@ async function confirmManualPhaseBoundaryForCommand(
 	}
 
 	ctx.ui.notify(
-		`"${active.name}" is waiting before "${nextPhaseName}". Run /ferment auto to continue automatically, or choose Continue from /ferment list.`,
+		`"${active.name}" is waiting before "${nextPhaseName}". Choose Continue from /ferment list to continue now, or run /ferment auto to make future phase boundaries automatic.`,
 	)
 	return true
 }

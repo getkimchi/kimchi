@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import {
-	injectAutomatedContinuationNudge,
 	maybeInjectReactiveContinuationNudge,
 	onStepCompleted,
 	resetAllReactiveContinuationNudgeCounts,
@@ -45,53 +44,6 @@ afterEach(() => {
 })
 
 describe("ferment nudges", () => {
-	it("does not send hidden scoping nudges from automated wake-up", () => {
-		const pi = createPi()
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getActive: () => makeDraftFerment(),
-			getContinuationPolicy: () => "automated",
-			isAutomatedContinuationEnabled: () => true,
-		}
-
-		injectAutomatedContinuationNudge(pi, runtime)
-
-		expect(pi.appendEntry).not.toHaveBeenCalled()
-		expect(pi.sendMessage).not.toHaveBeenCalled()
-	})
-
-	it("/ferment auto kicks a ferment waiting at a manual phase boundary", () => {
-		const pi = createPi()
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getActive: () =>
-				makeDraftFerment({
-					status: "planned",
-					phases: [
-						{ id: "phase-1", index: 1, name: "Done", goal: "Build", status: "completed", steps: [] },
-						{ id: "phase-2", index: 2, name: "Next", goal: "Continue", status: "planned", steps: [] },
-					],
-				}),
-			getContinuationPolicy: () => "automated",
-			isAutomatedContinuationEnabled: () => true,
-		}
-
-		injectAutomatedContinuationNudge(pi, runtime)
-
-		expect(pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				customType: "ferment_continuation_nudge",
-				content: [
-					expect.objectContaining({
-						text: expect.stringContaining("Re-read the current persisted ferment state"),
-					}),
-				],
-				details: expect.objectContaining({ action: "wake_up", expectedAction: "activate_phase" }),
-			}),
-			{ triggerTurn: true, deliverAs: "followUp" },
-		)
-	})
-
 	it("syncs active state from injected storage on step completion", () => {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-nudge-test-")))
 		const setActiveSpy = vi.fn()
@@ -315,29 +267,33 @@ describe("ferment nudges", () => {
 		expect(pi.sendMessage).toHaveBeenCalledTimes(4)
 	})
 
-	it("nudges failed phase recovery with retry and bypass actions", () => {
+	it("reactively nudges failed phase recovery with retry and bypass actions", () => {
 		const pi = createPi()
+		const failed = makeDraftFerment({
+			status: "planned",
+			phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "failed", steps: [] }],
+		})
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
-			getActive: () =>
-				makeDraftFerment({
-					status: "planned",
-					phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "failed", steps: [] }],
-				}),
+			getActiveId: () => failed.id,
+			getStorage: () =>
+				({
+					get: () => failed,
+				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
 			getContinuationPolicy: () => "automated",
 			isAutomatedContinuationEnabled: () => true,
 		}
 
-		injectAutomatedContinuationNudge(pi, runtime)
+		maybeInjectReactiveContinuationNudge(pi, runtime)
 
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				content: [
 					expect.objectContaining({
-						text: expect.stringContaining("Re-read the current persisted ferment state"),
+						text: expect.stringContaining("recover_phase: handle failed phase"),
 					}),
 				],
-				details: expect.objectContaining({ action: "wake_up", expectedAction: "recover_phase" }),
+				details: expect.objectContaining({ action: "recover_phase" }),
 			}),
 			{ triggerTurn: true, deliverAs: "followUp" },
 		)

@@ -11,6 +11,7 @@ import type { Static } from "typebox"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
 import type { Ferment, Phase } from "../../../ferment/types.js"
 import { askUser } from "../ask-user.js"
+import { decideContinuation } from "../continuation.js"
 import { formatDecisionsAndMemories } from "../format.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { flaggedVerdicts, renderGateGuidance } from "../gate-registry.js"
@@ -108,62 +109,46 @@ function formatManualPhaseBoundaryWait(
 	projectChecksLine: string,
 	warnSection: string,
 	reason?: string,
+	summaryLine = `Phase "${completedPhase.name}" done.`,
 ): string {
 	const reasonLine = reason ? `\n\n${reason}` : ""
 	return (
 		[
-			`Phase "${completedPhase.name}" done.${projectChecksLine}${warnSection}`,
+			`${summaryLine}${projectChecksLine}${warnSection}`,
 			`Next: "${nextPhase.name}".`,
 			"",
 			"Manual continuation policy stopped here.",
-			`The ferment is paused. Do not call activate_ferment_phase yet. To continue later, the user can run /ferment resume for ferment_id "${ferment.id}" and phase_id "${nextPhase.id}".`,
+			`The ferment is paused. Do not call activate_ferment_phase yet. To continue later, the user can run /ferment resume for ferment_id "${ferment.id}", or choose Continue from /ferment list.`,
 			"Do not ask a generic follow-up question in chat.",
 		].join("\n") + reasonLine
 	)
 }
 
-async function completeManualPhaseBoundary(
+function pauseForManualPhaseBoundary(
 	runtime: FermentRuntime,
-	{ pi, ctx }: PhaseExecutionContext,
 	ferment: Ferment,
 	completedPhase: Phase,
 	nextPhase: Phase,
 	projectChecksLine: string,
 	warnSection: string,
-): Promise<ToolResult> {
-	const response = await askUser(
-		`Phase "${completedPhase.name}" is complete. Continue to "${nextPhase.name}"?`,
-		[
-			{ id: "continue", label: "Continue to next phase" },
-			{ id: "stop", label: "Pause here" },
-		],
-		{ ferment, pi, ctx, runtime },
-	)
-
-	if (!response.failed && response.choice === "continue") {
-		return toolOk(
-			withNextActionHint(
-				`Phase "${completedPhase.name}" done.${projectChecksLine}${warnSection}\nUser confirmed continuing to "${nextPhase.name}".`,
-				ferment,
-			),
-		)
-	}
-
-	if (!response.failed && response.choice === "stop") {
-		const pauseOutcome = createApplyAndPersist(runtime)(ferment.id, { type: "pause" })
-		if (pauseOutcome.ok) {
-			runtime.setActive(pauseOutcome.ferment)
-			return toolOk(
-				formatManualPhaseBoundaryWait(pauseOutcome.ferment, completedPhase, nextPhase, projectChecksLine, warnSection),
-			)
-		}
-	}
-
+	copy: {
+		summaryLine?: string
+	} = {},
+): ToolResult {
+	const summaryLine = copy.summaryLine ?? `Phase "${completedPhase.name}" done.`
 	const pauseOutcome = createApplyAndPersist(runtime)(ferment.id, { type: "pause" })
 	if (pauseOutcome.ok) {
 		runtime.setActive(pauseOutcome.ferment)
 		return toolOk(
-			formatManualPhaseBoundaryWait(pauseOutcome.ferment, completedPhase, nextPhase, projectChecksLine, warnSection),
+			formatManualPhaseBoundaryWait(
+				pauseOutcome.ferment,
+				completedPhase,
+				nextPhase,
+				projectChecksLine,
+				warnSection,
+				undefined,
+				summaryLine,
+			),
 		)
 	}
 	return toolOk(
@@ -174,8 +159,63 @@ async function completeManualPhaseBoundary(
 			projectChecksLine,
 			warnSection,
 			`Could not pause automatically: ${pauseOutcome.error.message}`,
+			summaryLine,
 		),
 	)
+}
+
+function formatManualPhaseBoundaryContinue(
+	ferment: Ferment,
+	completedPhase: Phase,
+	nextPhase: Phase,
+	projectChecksLine: string,
+	warnSection: string,
+	summaryLine = `Phase "${completedPhase.name}" done.`,
+): string {
+	return withNextActionHint(
+		[
+			`${summaryLine}${projectChecksLine}${warnSection}`,
+			`Next: "${nextPhase.name}".`,
+			"",
+			"User chose to continue to the next phase.",
+		].join("\n"),
+		ferment,
+	)
+}
+
+async function maybeCompleteManualPhaseBoundary(
+	runtime: FermentRuntime,
+	ferment: Ferment,
+	completedPhase: Phase,
+	projectChecksLine: string,
+	warnSection: string,
+	ctx?: PhaseUiContext,
+	copy?: Parameters<typeof pauseForManualPhaseBoundary>[6],
+): Promise<ToolResult | undefined> {
+	const decision = decideContinuation(ferment, runtime.getContinuationPolicy())
+	if (decision.type !== "wait_manual_boundary") return undefined
+	const nextPhase = ferment.phases.find((phase) => phase.id === decision.action.phaseId)
+	if (!nextPhase) return undefined
+	const summaryLine = copy?.summaryLine ?? `Phase "${completedPhase.name}" done.`
+	if (ctx?.ui?.select) {
+		const choice = await ctx.ui.select(`${summaryLine}\nContinue "${ferment.name}" to "${nextPhase.name}"?`, [
+			"Continue to next phase",
+			"Pause here",
+		])
+		if (choice === "Continue to next phase") {
+			return toolOk(
+				formatManualPhaseBoundaryContinue(
+					ferment,
+					completedPhase,
+					nextPhase,
+					projectChecksLine,
+					warnSection,
+					summaryLine,
+				),
+			)
+		}
+	}
+	return pauseForManualPhaseBoundary(runtime, ferment, completedPhase, nextPhase, projectChecksLine, warnSection, copy)
 }
 
 export async function completePhase(
@@ -366,25 +406,45 @@ export async function completePhase(
 
 	services.onPhaseCompleted(runtime)
 	const fresh = completeOutcome.ferment
-	const next = fresh.phases.find((p) => p.status === "planned")
 	const warnSection =
 		warnFlags.length > 0
 			? `\n\nAdvisory warnings carried over:\n${warnFlags.map((fl) => `  ⚠ ${fl.problem} — ${fl.redirect}`).join("\n")}`
 			: ""
 	const projectChecksLine = projectChecks.discovered ? `\n${projectCheckSummary}` : ""
 
-	if (!next) {
+	const manualBoundary = await maybeCompleteManualPhaseBoundary(
+		runtime,
+		fresh,
+		phase,
+		projectChecksLine,
+		warnSection,
+		ctx,
+	)
+	if (manualBoundary) return manualBoundary
+
+	const continuation = decideContinuation(fresh, runtime.getContinuationPolicy())
+	const activateAction =
+		continuation.type === "continue" && continuation.action.kind === "activate_phase" ? continuation.action : undefined
+	const nextPhase = activateAction ? fresh.phases.find((p) => p.id === activateAction.phaseId) : undefined
+
+	if (!nextPhase) {
 		return toolOk(
-			withNextActionHint(`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nAll phases terminal.`, fresh),
+			withNextActionHint(
+				`Phase "${phase.name}" done.${projectChecksLine}${warnSection}${
+					continuation.type === "idle" && continuation.action?.kind === "complete_ferment"
+						? "\nAll phases terminal."
+						: ""
+				}`,
+				fresh,
+			),
 		)
 	}
 
-	if (runtime.getContinuationPolicy() === "manual") {
-		return completeManualPhaseBoundary(runtime, { pi, ctx }, fresh, phase, next, projectChecksLine, warnSection)
-	}
-
 	return toolOk(
-		withNextActionHint(`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nNext: "${next.name}".`, fresh),
+		withNextActionHint(
+			`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nNext: "${nextPhase.name}".`,
+			fresh,
+		),
 	)
 }
 
@@ -552,7 +612,7 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 		label: "Skip Phase",
 		description: "Skip a phase.",
 		parameters: SkipPhaseParams,
-		async execute(_, params) {
+		async execute(_, params, _signal, _onUpdate, ctx) {
 			// Resolve via fuzzy first (LLM may pass partial id).
 			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
@@ -569,6 +629,12 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 				reason: params.reason,
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error, f)
+
+			const manualBoundary = await maybeCompleteManualPhaseBoundary(runtime, outcome.ferment, phase, "", "", ctx, {
+				summaryLine: `Phase "${phase.name}" skipped.`,
+			})
+			if (manualBoundary) return manualBoundary
+
 			return toolOk(withNextActionHint("Phase skipped.", outcome.ferment))
 		},
 	})

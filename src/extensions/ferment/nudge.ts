@@ -3,8 +3,6 @@
  *
  * - `appendRefEntry`: writes a hidden session entry that survives compaction —
  *   used so resumed sessions can find the active ferment.
- * - `injectAutomatedContinuationNudge`: injects a generic wake-up prompt for
- *   explicit host-side continuation kicks such as /ferment auto.
  * - `maybeInjectReactiveContinuationNudge`: under automated policy, injects an
  *   action-specific prompt only after an assistant turn stalls without tool calls.
  * - `onStepCompleted` / `onPhaseCompleted`: stable post-mutation hooks tools
@@ -20,7 +18,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
 import { decideContinuation } from "./continuation.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
-import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
+import { scheduleNextFermentAction } from "./scheduler.js"
 
 export function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
 	void pi.sendMessage({
@@ -48,23 +46,6 @@ export function refreshActiveFermentFromStorage(runtime: FermentRuntime): Fermen
 	const fresh = runtime.getStorage().get(id)
 	if (fresh) runtime.setActive(fresh)
 	return fresh
-}
-
-/**
- * Inject a generic automated wake-up into the next agent turn.
- * The wake-up intentionally avoids embedding a specific lifecycle action; the
- * reactive path below is responsible for action-specific recovery nudges.
- */
-export function injectAutomatedContinuationNudge(
-	pi: ExtensionAPI,
-	runtime: FermentRuntime = defaultFermentRuntime,
-): void {
-	if (!runtime.isAutomatedContinuationEnabled()) return
-	const f = runtime.getActive()
-	if (!f) return
-
-	resetReactiveContinuationNudgeCount(f.id)
-	scheduleFermentWakeUp(pi, runtime, { fermentId: f.id, deliverAsFollowUp: true, tag: "Automated wake-up" })
 }
 
 export function maybeInjectReactiveContinuationNudge(
