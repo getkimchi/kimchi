@@ -333,7 +333,7 @@ export default function sessionNameExtension(initialName?: string) {
 						ctx.ui.notify("Session rename with auto-suggestion requires interactive mode.", "error")
 						return
 					}
-					const suggestion = await suggestSessionName(ctx as ExtensionContext)
+					const suggestion = await suggestSessionName(ctx)
 					const accepted = await ctx.ui.confirm("Rename Session", `Suggested name: "${suggestion}"\n\nUse this name?`)
 					if (!accepted) {
 						ctx.ui.notify("Rename cancelled", "info")
@@ -353,7 +353,7 @@ export default function sessionNameExtension(initialName?: string) {
 				}
 
 				// Set the new name using the closure pi reference
-				setAndUpdateSessionName(name, { value: currentSessionName }, pi, ctx as ExtensionContext)
+				setAndUpdateSessionName(name, { value: currentSessionName }, pi, ctx)
 
 				// Notify user
 				if (ctx.hasUI) {
