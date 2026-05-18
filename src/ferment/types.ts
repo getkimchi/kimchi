@@ -162,11 +162,6 @@ export interface Step {
 	startedAt?: string
 	completedAt?: string
 
-	/** Worker model to use when spawning a subagent for this step. */
-	workerModel?: "minimax-m2.7" | "kimi-k2.5"
-	/** Whether this step requires vision (images/screenshots). Determines worker model selection. */
-	needsVision?: boolean
-
 	// Parallel execution — symmetric with Phase. Steps that share groupIndex
 	// inside the same phase run concurrently; `parallel` is the derived "this
 	// step is a member of a cohort of size ≥ 2" flag.

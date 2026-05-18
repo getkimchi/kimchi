@@ -9,7 +9,7 @@
  *
  * Used by:
  *   - `custom-agents.ts` — to load <pkg>/agents/*.md
- *   - `extensions/orchestration/prompt-enrichment.ts` — to load <pkg>/skills/...
+ *   - `extensions/prompt-construction/prompt-enrichment.ts` — to load <pkg>/skills/...
  *
  * Errors are swallowed (with `console.warn`) — a single misconfigured package
  * should not block the entire harness.

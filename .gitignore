@@ -11,6 +11,7 @@ src/core/export-html/
 # IDE
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 

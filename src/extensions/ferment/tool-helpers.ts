@@ -7,10 +7,12 @@
  * a success response.
  */
 
+import { determineNextAction } from "../../ferment/engine.js"
 import { commandToEvents } from "../../ferment/event-mapper.js"
 import type { Command, TransitionError } from "../../ferment/state-machine.js"
 import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
+import { publicToolNameForActionKind } from "./action-tool-names.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 
 // ─── Tool result builders ─────────────────────────────────────────────────────
@@ -23,6 +25,47 @@ export function toolOk(text: string) {
 
 export function toolErr(text: string) {
 	return { details: undefined, content: [{ type: "text" as const, text }], isError: true }
+}
+
+export function formatNextActionHint(ferment: Ferment): string | undefined {
+	const action = determineNextAction(ferment)
+	const toolName = publicToolNameForActionKind(action.kind)
+
+	switch (action.kind) {
+		case "scope":
+			return `Next action: call \`${toolName}\` with ferment_id "${ferment.id}" after the goal, criteria, constraints, phases, and plan gates are ready.`
+		case "activate_phase":
+			return `Next action: call \`${toolName}\` with ferment_id "${ferment.id}" and phase_id "${action.phaseId}".`
+		case "refine":
+			return `Next action: call \`${toolName}\` with ferment_id "${ferment.id}" and phase_id "${action.phaseId}" to add concrete steps.`
+		case "start_step":
+			return `Next action: call \`${toolName}\` with ferment_id "${ferment.id}", phase_id "${action.phaseId}", and step_id "${action.stepId}".`
+		case "complete_step":
+			return `Next action: when the delegated work is done, call \`${toolName}\` with ferment_id "${ferment.id}", phase_id "${action.phaseId}", and step_id "${action.stepId}".`
+		case "verify_step":
+			return `Next action: call \`${toolName}\` with ferment_id "${ferment.id}", phase_id "${action.phaseId}", and step_id "${action.stepId}".`
+		case "complete_phase":
+			return `Next action: call \`${toolName}\` with ferment_id "${ferment.id}" and phase_id "${action.phaseId}" after phase gates are ready.`
+		case "complete_ferment":
+			return `Next action: call \`${toolName}\` with ferment_id "${ferment.id}" after final gates are ready.`
+		case "recover_step":
+			return `Next action: resolve failed step "${action.stepId}" in phase "${action.phaseId}", then call \`start_ferment_step\`, \`skip_ferment_step\`, or \`fail_ferment_step\` with explicit evidence.`
+		case "recover_phase":
+			return `Next action: resolve failed phase "${action.phaseId}", then call \`activate_ferment_phase\` to retry, \`skip_ferment_phase\` to bypass, or ask the user whether to abandon.`
+		case "pause":
+			return "Next action: wait for the user to run /auto; do not call ferment lifecycle tools while paused."
+		case "noop":
+			return undefined
+	}
+}
+
+export function withNextActionHint(text: string, ferment: Ferment | undefined): string {
+	const hint = ferment ? formatNextActionHint(ferment) : undefined
+	return hint ? `${text}\n\n${hint}` : text
+}
+
+export function toolErrWithNextAction(text: string, ferment: Ferment | undefined) {
+	return toolErr(withNextActionHint(text, ferment))
 }
 
 // ─── Resolvers ────────────────────────────────────────────────────────────────
@@ -125,6 +168,6 @@ export function applyAndPersist(fermentId: string, cmd: Command): ApplyOutcome {
  * Convert any error with a `message` field into a tool-error result.
  * Centralized so error wording stays consistent across all tool handlers.
  */
-export function failedToolResult(error: { message: string }) {
-	return toolErr(error.message)
+export function failedToolResult(error: { message: string }, ferment?: Ferment) {
+	return toolErr(withNextActionHint(error.message, ferment))
 }

@@ -10,6 +10,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { TriggerEngine } from "./engine.js"
 import { EvalEngine } from "./eval-engine.js"
 import { type ResolverIO, resolveSessionContext } from "./session-context.js"
@@ -42,7 +43,7 @@ export interface WireOptions {
 function buildRulesBlock(all: readonly Behaviour[]): string {
 	const baseline = all.filter((b) => b.kind === "baseline").map((b) => b.body.trim())
 	if (baseline.length === 0) return ""
-	return `\n\n${RULES_HEADER}\n\n${baseline.join("\n\n")}\n`
+	return `${RULES_HEADER}\n\n${baseline.join("\n\n")}`
 }
 
 function collectSessionSpecs(triggered: readonly TriggeredBehaviour[]): ProbeSpec[] {
@@ -179,8 +180,10 @@ export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[
 	})
 
 	if (rulesBlock) {
-		pi.on("before_agent_start", async (event) => {
-			return { systemPrompt: event.systemPrompt + rulesBlock }
+		const blocks = createSystemPromptBlocks(pi, "behaviours")
+		blocks.register({
+			id: "rules",
+			render: () => rulesBlock.trim(),
 		})
 	}
 

@@ -857,6 +857,23 @@ function normalizeFerment(f: Ferment): void {
 	if (!f.worktree) {
 		f.worktree = { path: detectProjectRoot() ?? process.cwd() }
 	}
+	// Strip deprecated model-policy keys from steps on legacy snapshots. The
+	// fold path has its own normalizer for phase_refined events; this one
+	// covers the snapshot-load path so writes that spread step objects (e.g.
+	// setStep) cannot perpetuate the old vocabulary.
+	for (const phase of f.phases ?? []) {
+		phase.steps = (phase.steps ?? []).map((step) => {
+			const {
+				workerModel: _wm,
+				needsVision: _nv,
+				...rest
+			} = step as Step & {
+				workerModel?: unknown
+				needsVision?: unknown
+			}
+			return rest
+		})
+	}
 	if (!f.scoping) {
 		f.scoping = {}
 	} else if ("goalAnswered" in f.scoping) {

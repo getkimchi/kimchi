@@ -9,6 +9,7 @@ import { runClaude } from "./claude.js"
 import { runConfig } from "./config.js"
 import { runCursor } from "./cursor.js"
 import { runGsd2 } from "./gsd2.js"
+import { runLogin } from "./login.js"
 import { runOpenClaw } from "./openclaw.js"
 import { runOpenCode } from "./opencode.js"
 import { runSetup } from "./setup.js"
@@ -17,6 +18,7 @@ import { runVersion } from "./version.js"
 
 export const COMMANDS: CommandDefinition[] = [
 	{ name: "setup", summary: "Run the interactive setup wizard", run: runSetup },
+	{ name: "login", summary: "Log in via browser and update your API key", run: runLogin },
 	{ name: "claude", summary: "Configure Claude Code to use Kimchi (and launch it)", run: runClaude },
 	{ name: "opencode", summary: "Configure OpenCode to use Kimchi (and launch it)", run: runOpenCode },
 	{ name: "cursor", summary: "Configure Cursor to use Kimchi", run: runCursor },

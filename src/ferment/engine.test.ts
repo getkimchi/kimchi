@@ -68,8 +68,8 @@ describe("whatNext", () => {
 			expect(a.kind).toBe("recover_phase")
 			if (a.kind === "recover_phase") {
 				expect(a.phaseId).toBe("p1")
-				expect(a.message).toContain("activate_phase")
-				expect(a.message).toContain("skip_phase")
+				expect(a.message).toContain("activate_ferment_phase")
+				expect(a.message).toContain("skip_ferment_phase")
 			}
 		})
 

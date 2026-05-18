@@ -13,8 +13,10 @@
 import type { ExtensionAPI, MessageRenderer } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import type { Step } from "../../ferment/types.js"
+import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { registerFermentCommands } from "./commands.js"
 import { registerFermentEvents } from "./events.js"
+import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { FERMENT_REQUEST_MESSAGE_TYPE, type FermentRequestMessageDetails } from "./scoping.js"
 import { getActive, getActiveId } from "./state.js"
@@ -87,6 +89,11 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	pi.registerMessageRenderer(FERMENT_REQUEST_MESSAGE_TYPE, fermentRequestRenderer)
 	registerFermentEvents(pi, runtime)
 	registerFermentCommands(pi, runtime)
+
+	createSystemPromptBlocks(pi, "ferment").register({
+		id: "ferment-supplement",
+		render: () => buildFermentPromptBlock(pi, runtime),
+	})
 
 	// ─── Tool registrations ───────────────────────────────────────────────────
 	registerLifecycleTools(pi, runtime)

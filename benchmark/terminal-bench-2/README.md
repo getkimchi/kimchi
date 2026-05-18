@@ -91,7 +91,7 @@ The kwarg is named `disable-multi-model` (not `multi-model=false`) because harbo
 
 ### One-shot ferment per task
 
-Pass `ferment-oneshot=true` to wrap each trial in a one-shot exec-mode ferment. The agent boots into kimchi's progressive-refinement project mode and runs `scope_ferment` → `activate_phase` → `start_step` → `complete_step` → `complete_ferment` autonomously, delegating each step's implementation to a subagent worker.
+Pass `ferment-oneshot=true` to wrap each trial in a one-shot exec-mode ferment. The agent boots into kimchi's progressive-refinement project mode and runs `scope_ferment` → `activate_ferment_phase` → `start_ferment_step` → `complete_ferment_step` → `complete_ferment` autonomously, delegating each step's implementation to a subagent worker. One-shot uses a static planner tool profile for the whole run, so current-ferment lifecycle tools are present from the first model call.
 
 ```bash
 ./scripts/run-local.sh -i terminal-bench/fix-git --agent-kwarg ferment-oneshot=true

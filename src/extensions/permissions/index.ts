@@ -3,6 +3,7 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
+import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { resolveClassifierModel } from "./classifier-model.js"
 import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
@@ -72,20 +73,20 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 	"create_ferment",
 	"list_ferments",
 	"scope_ferment",
-	"update_scope_field",
-	"activate_phase",
-	"refine_phase",
-	"start_step",
-	"complete_step",
-	"verify_step",
-	"skip_step",
-	"complete_phase",
-	"skip_phase",
+	"update_ferment_scope_field",
+	"activate_ferment_phase",
+	"refine_ferment_phase",
+	"start_ferment_step",
+	"complete_ferment_step",
+	"verify_ferment_step",
+	"skip_ferment_step",
+	"complete_ferment_phase",
+	"skip_ferment_phase",
 	"complete_ferment",
-	"fail_step",
-	"fail_phase",
-	"add_decision",
-	"add_memory",
+	"fail_ferment_step",
+	"fail_ferment_phase",
+	"add_ferment_decision",
+	"add_ferment_memory",
 	"set_ferment_mode",
 ]
 
@@ -375,9 +376,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		maybeShowYoloWarning(ctx, currentMode())
 	})
 
-	pi.on("before_agent_start", async (event): Promise<{ systemPrompt?: string }> => {
-		if (currentMode() !== "plan") return {}
-		return { systemPrompt: `${event.systemPrompt}\n\n${planModeSupplement.trim()}` }
+	const blocks = createSystemPromptBlocks(pi, "permissions")
+	blocks.register({
+		id: "plan-mode-supplement",
+		render: () => {
+			if (currentMode() !== "plan") return undefined
+			return planModeSupplement.trim()
+		},
 	})
 
 	// Reset plan-completion tracking on every new user input.

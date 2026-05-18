@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import type { Ferment } from "../../ferment/types.js"
-import { type AskUserOption, askJudge, askUser } from "./ask-user.js"
+import { type AskUserOption, askJudge, askJudgeForm, askUser, askUserForm } from "./ask-user.js"
 import type { JudgeApiResult } from "./judge.js"
 
 function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
@@ -101,6 +101,7 @@ describe("askUser routing", () => {
 		const select = vi.fn(async () => "Proceed")
 		const fakeJudge = vi.fn(async () => ({
 			choice: "pause",
+			response_type: "single" as const,
 			answered_by: "judge" as const,
 			rationale: "Preserves optionality.",
 		}))
@@ -120,6 +121,92 @@ describe("askUser routing", () => {
 		expect(result.choice).toBe("pause")
 		expect(result.answered_by).toBe("judge")
 		expect(result.rationale).toBe("Preserves optionality.")
+	})
+
+	it("routes text questions to TUI input", async () => {
+		const input = vi.fn(async () => "Use the conservative path.")
+		const result = await askUser(
+			"What else should I know?",
+			[],
+			{
+				ferment: makeFerment(),
+				pi: makePi(),
+				ctx: { ui: { input } as never },
+			},
+			"text",
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.response_type).toBe("text")
+		expect(result.text).toBe("Use the conservative path.")
+		expect(result.answered_by).toBe("user")
+	})
+
+	it("routes multi questions through comma-separated input fallback when custom UI is unavailable", async () => {
+		const input = vi.fn(async () => "1, Abandon")
+		const result = await askUser(
+			"Pick all acceptable actions.",
+			opts,
+			{
+				ferment: makeFerment(),
+				pi: makePi(),
+				ctx: { ui: { input } as never },
+			},
+			"multi",
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.response_type).toBe("multi")
+		expect(result.choices).toEqual(["proceed", "abandon"])
+	})
+
+	it("routes form questions through fallback UI when custom UI is unavailable", async () => {
+		const select = vi.fn(async () => "Type your own answer")
+		const input = vi
+			.fn<() => Promise<string>>()
+			.mockResolvedValueOnce("custom answer")
+			.mockResolvedValueOnce("1, Type your own answer")
+			.mockResolvedValueOnce("custom answer")
+		const result = await askUserForm(
+			"Clarify plan",
+			"Pick the shape.",
+			[
+				{
+					id: "approach",
+					type: "radio",
+					prompt: "Which approach?",
+					options: [{ id: "safe", label: "Safe path" }],
+					allowOther: true,
+				},
+				{
+					id: "scope",
+					type: "checkbox",
+					prompt: "What is in scope?",
+					options: [{ id: "tests", label: "Tests" }],
+					allowOther: true,
+				},
+			],
+			{
+				ferment: makeFerment(),
+				pi: makePi(),
+				ctx: { ui: { select, input } as never },
+			},
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.response_type).toBe("form")
+		expect(result.answers).toEqual([
+			{ id: "approach", type: "radio", value: "custom answer", label: "custom answer", wasCustom: true },
+			{
+				id: "scope",
+				type: "checkbox",
+				value: "tests, custom answer",
+				label: "Tests, custom answer",
+				wasCustom: true,
+				values: ["tests", "custom answer"],
+				labels: ["Tests", "custom answer"],
+			},
+		])
 	})
 })
 
@@ -181,6 +268,92 @@ describe("askJudge", () => {
 		expect(result.failed).toBe(true)
 		if (!result.failed) return
 		expect(result.detail).toContain("timeout after 45s")
+	})
+
+	it("parses multi-select judge responses", async () => {
+		const apiCall = vi.fn(async () => ok('{"choices":["proceed","pause"],"rationale":"both are acceptable"}'))
+		const result = await askJudge("What now?", opts, makeFerment(), "multi", apiCall)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.response_type).toBe("multi")
+		expect(result.choices).toEqual(["proceed", "pause"])
+	})
+
+	it("parses text judge responses", async () => {
+		const apiCall = vi.fn(async () => ok('{"text":"Ask for a reversible plan.","rationale":"safer"}'))
+		const result = await askJudge("What should the user say?", [], makeFerment(), "text", apiCall)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.response_type).toBe("text")
+		expect(result.text).toBe("Ask for a reversible plan.")
+	})
+
+	it("parses structured form judge responses", async () => {
+		const apiCall = vi.fn(async () =>
+			ok(
+				'{"answers":[{"id":"approach","value":"safe"},{"id":"scope","value":["tests","extra docs"]},{"id":"note","value":"Keep it reversible."}],"rationale":"safer"}',
+			),
+		)
+		const result = await askJudgeForm(
+			"Clarify plan",
+			undefined,
+			[
+				{
+					id: "approach",
+					type: "radio",
+					prompt: "Which approach?",
+					options: [{ id: "safe", label: "Safe path" }],
+				},
+				{
+					id: "scope",
+					type: "checkbox",
+					prompt: "What is in scope?",
+					options: [{ id: "tests", label: "Tests" }],
+					allowOther: true,
+				},
+				{ id: "note", type: "text", prompt: "Anything else?" },
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.response_type).toBe("form")
+		expect(result.answered_by).toBe("judge")
+		expect(result.answers).toEqual([
+			{ id: "approach", type: "radio", value: "safe", label: "Safe path", wasCustom: false },
+			{
+				id: "scope",
+				type: "checkbox",
+				value: "tests, extra docs",
+				label: "Tests, extra docs",
+				wasCustom: true,
+				values: ["tests", "extra docs"],
+				labels: ["Tests", "extra docs"],
+			},
+			{ id: "note", type: "text", value: "Keep it reversible.", label: "Keep it reversible.", wasCustom: true },
+		])
+	})
+
+	it("rejects form judge responses with invalid non-custom options", async () => {
+		const apiCall = vi.fn(async () => ok('{"answers":[{"id":"approach","value":"made_up"}],"rationale":"bad"}'))
+		const result = await askJudgeForm(
+			"Clarify plan",
+			undefined,
+			[
+				{
+					id: "approach",
+					type: "radio",
+					prompt: "Which approach?",
+					options: [{ id: "safe", label: "Safe path" }],
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(result.failed).toBe(true)
+		if (!result.failed) return
+		expect(result.reason).toBe("judge_unparseable")
 	})
 
 	it("includes ferment goal and active phase in the judge prompt", async () => {

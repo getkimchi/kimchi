@@ -5,6 +5,7 @@ import type { DirectToolSpec, ToolMetadata } from "./types.js"
 import { formatToolName } from "./types.js"
 import { type Component, Text } from "@earendil-works/pi-tui"
 import { registerToolCall, isToolExpanded } from "../../expand-state.js"
+import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { authenticateServer, openMcpPanel, reconnectServers, showStatus, showTools } from "./commands.js"
 import { loadConfig } from "../../config.js"
 import { BM25_DEFAULTS, buildStrategy, buildToolEntries } from "./bm25.js"
@@ -27,6 +28,12 @@ import {
 } from "./proxy-modes.js"
 import type { McpExtensionState } from "./state.js"
 import { getConfigPathFromArgv, truncateAtWord } from "./utils.js"
+
+const TOOL_AND_MCP_DISCOVERY_PROMPT = `## Tool and MCP Discovery
+
+- Before resorting to web search, web fetch, or giving up on accessing external data, check your Available Tools list for a more direct way to get the information. MCP (Model Context Protocol) integrations often provide authenticated access to services like Jira, Confluence, GitHub, GitLab, and others that are inaccessible via unauthenticated web requests.
+- If you see an mcp tool in your tool list, use mcp({ search: "query" }) to discover what MCP servers and tools are available before assuming you have no way to access a service.
+- Prefer MCP tools over web_fetch for any service that requires authentication (Jira, Confluence, internal wikis, etc.). MCP tools already have credentials configured.`
 
 export default function mcpAdapter(pi: ExtensionAPI) {
 	let state: McpExtensionState | null = null
@@ -217,6 +224,11 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 	pi.registerFlag("mcp-config", {
 		description: "Path to MCP config file",
 		type: "string",
+	})
+
+	createSystemPromptBlocks(pi, "mcp-adapter").register({
+		id: "tool-and-mcp-discovery",
+		render: () => TOOL_AND_MCP_DISCOVERY_PROMPT,
 	})
 
 	pi.on("session_start", async (_event, ctx) => {

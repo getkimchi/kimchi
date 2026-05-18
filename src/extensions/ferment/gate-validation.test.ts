@@ -10,21 +10,21 @@ const validPhaseGates = () => [
 describe("validateGatesOrErr", () => {
 	it("returns null when coverage is complete, shapes are valid, and no flags (block-on-flag policy)", () => {
 		const result = validateGatesOrErr(validPhaseGates(), {
-			turn: "complete_phase",
+			turn: "complete_ferment_phase",
 			flagPolicy: "block-on-flag",
 		})
 		expect(result).toBeNull()
 	})
 
 	it("returns a tool error when gates is undefined", () => {
-		const result = validateGatesOrErr(undefined, { turn: "complete_phase", flagPolicy: "block-on-flag" })
+		const result = validateGatesOrErr(undefined, { turn: "complete_ferment_phase", flagPolicy: "block-on-flag" })
 		expect(result && "isError" in result && result.isError).toBe(true)
 		expect(result?.content.map((c) => c.text).join("\n")).toContain("requires a 'gates' array")
 	})
 
 	it("returns a tool error when a required gate id is missing", () => {
 		const result = validateGatesOrErr([{ id: "F1", verdict: "pass", rationale: "ok", evidence: "n/a" }], {
-			turn: "complete_phase",
+			turn: "complete_ferment_phase",
 			flagPolicy: "block-on-flag",
 		})
 		expect(result && "isError" in result && result.isError).toBe(true)
@@ -39,7 +39,7 @@ describe("validateGatesOrErr", () => {
 			{ id: "F2", verdict: "pass", rationale: "ok", evidence: "n/a" },
 			{ id: "F3", verdict: "pass", rationale: "ok", evidence: "n/a" },
 		]
-		const result = validateGatesOrErr(malformed, { turn: "complete_phase", flagPolicy: "block-on-flag" })
+		const result = validateGatesOrErr(malformed, { turn: "complete_ferment_phase", flagPolicy: "block-on-flag" })
 		expect(result && "isError" in result && result.isError).toBe(true)
 		expect(result?.content.map((c) => c.text).join("\n")).toMatch(/rationale/)
 	})
@@ -51,7 +51,7 @@ describe("validateGatesOrErr", () => {
 			{ id: "S3", verdict: "pass", rationale: "edge case covered", evidence: "empty input" },
 		]
 
-		const result = validateGatesOrErr(gates, { turn: "complete_step", flagPolicy: "block-on-flag" })
+		const result = validateGatesOrErr(gates, { turn: "complete_ferment_step", flagPolicy: "block-on-flag" })
 
 		expect(result).toBeNull()
 		expect(gates[1].verdict).toBe("pass")
@@ -64,20 +64,20 @@ describe("validateGatesOrErr", () => {
 			{ id: "S3", verdict: "pass", rationale: "edge case covered", evidence: "empty input" },
 		]
 
-		const result = validateGatesOrErr(gates, { turn: "complete_step", flagPolicy: "block-on-flag" })
+		const result = validateGatesOrErr(gates, { turn: "complete_ferment_step", flagPolicy: "block-on-flag" })
 
 		expect(result && "isError" in result && result.isError).toBe(true)
 		expect(gates[1].verdict).toBe("flag")
 	})
 
-	it("does not normalize verification labels outside complete_step S2", () => {
+	it("does not normalize verification labels outside complete_ferment_step S2", () => {
 		const gates = [
 			{ id: "F1", verdict: "smoke", rationale: "ran a smoke check", evidence: "browser smoke" },
 			{ id: "F2", verdict: "pass", rationale: "ok", evidence: "n/a" },
 			{ id: "F3", verdict: "pass", rationale: "ok", evidence: "n/a" },
 		]
 
-		const result = validateGatesOrErr(gates, { turn: "complete_phase", flagPolicy: "coverage-only" })
+		const result = validateGatesOrErr(gates, { turn: "complete_ferment_phase", flagPolicy: "coverage-only" })
 
 		expect(result && "isError" in result && result.isError).toBe(true)
 		expect(result?.content.map((c) => c.text).join("\n")).toContain("invalid verdict: smoke")
@@ -91,7 +91,7 @@ describe("validateGatesOrErr", () => {
 			{ id: "F3", verdict: "pass", rationale: "ok", evidence: "n/a" },
 		]
 		const result = validateGatesOrErr(flagged, {
-			turn: "complete_phase",
+			turn: "complete_ferment_phase",
 			flagPolicy: "block-on-flag",
 			renderFlagError: (count, lines) => `custom refusal: ${count} flag(s)\n${lines}`,
 		})
@@ -103,20 +103,20 @@ describe("validateGatesOrErr", () => {
 	})
 
 	it("under coverage-only policy, a flag verdict does NOT refuse — returns null", () => {
-		// complete_phase uses coverage-only because phase flags feed the
+		// complete_ferment_phase uses coverage-only because phase flags feed the
 		// retry/escalation pipeline downstream, not an immediate refusal.
 		const flagged = [
 			{ id: "F1", verdict: "flag", rationale: "proxy verify", evidence: "step-1 grep" },
 			{ id: "F2", verdict: "pass", rationale: "ok", evidence: "n/a" },
 			{ id: "F3", verdict: "pass", rationale: "ok", evidence: "n/a" },
 		]
-		const result = validateGatesOrErr(flagged, { turn: "complete_phase", flagPolicy: "coverage-only" })
+		const result = validateGatesOrErr(flagged, { turn: "complete_ferment_phase", flagPolicy: "coverage-only" })
 		expect(result).toBeNull()
 	})
 
 	it("under coverage-only policy, coverage failures STILL refuse", () => {
 		const result = validateGatesOrErr([{ id: "F1", verdict: "pass", rationale: "ok", evidence: "n/a" }], {
-			turn: "complete_phase",
+			turn: "complete_ferment_phase",
 			flagPolicy: "coverage-only",
 		})
 		expect(result && "isError" in result && result.isError).toBe(true)
@@ -128,7 +128,7 @@ describe("validateGatesOrErr", () => {
 			{ id: "F2", verdict: "pass", rationale: "ok", evidence: "n/a" },
 			{ id: "F3", verdict: "pass", rationale: "ok", evidence: "n/a" },
 		]
-		const result = validateGatesOrErr(flagged, { turn: "complete_phase", flagPolicy: "block-on-flag" })
+		const result = validateGatesOrErr(flagged, { turn: "complete_ferment_phase", flagPolicy: "block-on-flag" })
 		expect(result && "isError" in result && result.isError).toBe(true)
 		expect(result?.content.map((c) => c.text).join("\n")).toContain("Call refused — agent self-flagged on 1 gate(s)")
 	})

@@ -3,7 +3,7 @@
 	"version": "0.0.0",
 	"description": "kimchi — a coding agent CLI powered by Cast AI",
 	"type": "module",
-	"license": "MIT",
+	"license": "Apache-2.0",
 	"bin": {
 		"kimchi": "src/entry.ts"
 	},

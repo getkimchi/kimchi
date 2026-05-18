@@ -204,12 +204,9 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 			return b.events
 
 		case "start_step": {
-			const phase = post.phases.find((p) => p.id === cmd.phaseId)
-			const step = phase?.steps.find((s) => s.id === cmd.stepId)
 			b.push("step_started", {
 				phaseId: cmd.phaseId,
 				stepId: cmd.stepId,
-				workerModel: step?.workerModel,
 				startedAt: ctx.now,
 			})
 			return b.events

@@ -16,7 +16,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { Editor, type EditorTheme, Key, Text, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
+import { Input, Key, Text, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
 
 import {
@@ -175,17 +175,8 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				let state: QuestionnaireState = initialState(questions)
 				let cachedLines: string[] | undefined
 
-				const editorTheme: EditorTheme = {
-					borderColor: (s) => theme.fg("accent", s),
-					selectList: {
-						selectedPrefix: (t) => theme.fg("accent", t),
-						selectedText: (t) => theme.fg("accent", t),
-						description: (t) => theme.fg("muted", t),
-						scrollInfo: (t) => theme.fg("dim", t),
-						noMatch: (t) => theme.fg("warning", t),
-					},
-				}
-				const editor = new Editor(tui, editorTheme)
+				const editor = new Input()
+				editor.focused = true
 
 				// ── Effects & dispatch ──
 				function applyEffects(effects: QuestionnaireEffect[]): void {
@@ -196,7 +187,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 								tui.requestRender()
 								break
 							case "editor-set-text":
-								editor.setText(eff.text)
+								editor.setValue(eff.text)
 								break
 							case "editor-handle-input":
 								editor.handleInput(eff.data)
@@ -214,7 +205,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 					applyEffects(result.effects)
 				}
 
-				// ── Editor wiring ──
+				// ── Text input wiring ──
 				editor.onSubmit = (value: string) => dispatch({ kind: "editor-submit", value })
 
 				// ── Input handling (pure key→event mapper) ──
@@ -277,7 +268,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 					add(theme.fg("accent", "\u2500".repeat(width)))
 
 					// Header
-					if (params.header && state.currentTab === 0 && !state.inputMode) {
+					if (params.header) {
 						add(` ${theme.fg("text", params.header)}`)
 						lines.push("")
 					}
@@ -397,10 +388,18 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 					lines.push("")
 					if (!state.inputMode) {
 						let help: string
-						if (q?.type === "multi") {
+						if (isSubmitTab(state)) {
+							help = isMulti
+								? " Tab/\u2190\u2192 navigate \u2022 Enter submit \u2022 Esc cancel"
+								: " Enter submit \u2022 Esc cancel"
+						} else if (q?.type === "multi") {
 							help = isMulti
 								? " Tab/\u2190\u2192 navigate \u2022 \u2191\u2193 select \u2022 Space toggle \u2022 Enter submit \u2022 Esc cancel"
 								: " \u2191\u2193 navigate \u2022 Space toggle \u2022 Enter submit \u2022 Esc cancel"
+						} else if (q?.type === "text") {
+							help = isMulti
+								? " Tab/\u2190\u2192 navigate \u2022 Type answer \u2022 Enter edit \u2022 Esc cancel"
+								: " Type answer \u2022 Enter edit \u2022 Esc cancel"
 						} else {
 							help = isMulti
 								? " Tab/\u2190\u2192 navigate \u2022 \u2191\u2193 select \u2022 Enter confirm \u2022 Esc cancel"

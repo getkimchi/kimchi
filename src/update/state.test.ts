@@ -169,17 +169,17 @@ describe("update state cache", () => {
 })
 
 describe("isStale", () => {
-	const day = 24 * 60 * 60 * 1000
+	const hour = 60 * 60 * 1000
 	const t0 = Date.parse("2026-01-01T00:00:00Z")
 
 	it("returns false for a fresh check", () => {
 		expect(isStale({ checked_at: "2026-01-01T00:00:00Z", latest_version: "1" }, t0)).toBe(false)
 	})
-	it("returns false within 24h", () => {
-		expect(isStale({ checked_at: "2026-01-01T00:00:00Z", latest_version: "1" }, t0 + day - 1)).toBe(false)
+	it("returns false within 1h", () => {
+		expect(isStale({ checked_at: "2026-01-01T00:00:00Z", latest_version: "1" }, t0 + hour - 1)).toBe(false)
 	})
-	it("returns true past 24h", () => {
-		expect(isStale({ checked_at: "2026-01-01T00:00:00Z", latest_version: "1" }, t0 + day + 1)).toBe(true)
+	it("returns true past 1h", () => {
+		expect(isStale({ checked_at: "2026-01-01T00:00:00Z", latest_version: "1" }, t0 + hour + 1)).toBe(true)
 	})
 	it("returns true when checked_at is unparseable (defensive)", () => {
 		expect(isStale({ checked_at: "garbage", latest_version: "1" }, t0)).toBe(true)

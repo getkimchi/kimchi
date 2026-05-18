@@ -363,13 +363,13 @@ const TRANSITIONS: TransitionMap = {
  */
 const RECOVERY_HINTS: Partial<Record<string, string>> = {
 	[`${FSM_STATES.PHASE_ACTIVE}:${FSM_EVENTS.ACTIVATE_PHASE}`]:
-		"A phase is already active. Call start_step to begin its work, or complete_phase / skip_phase / fail_phase to finish it before activating another.",
+		"A phase is already active. Call start_ferment_step to begin its work, or complete_ferment_phase / skip_ferment_phase / fail_ferment_phase to finish it before activating another.",
 	[`${FSM_STATES.STEP_RUNNING}:${FSM_EVENTS.ACTIVATE_PHASE}`]:
-		"A step is currently running in the active phase. Call complete_step / skip_step / fail_step first, then complete_phase, then activate the next phase.",
+		"A step is currently running in the active phase. Call complete_ferment_step / skip_ferment_step / fail_ferment_step first, then complete_ferment_phase, then activate the next phase.",
 	[`${FSM_STATES.PHASE_ACTIVE}:${FSM_EVENTS.COMPLETE_STEP}`]:
-		"No step is currently running. Call start_step to begin a step before completing it.",
+		"No step is currently running. Call start_ferment_step to begin a step before completing it.",
 	[`${FSM_STATES.PHASE_ACTIVE}:${FSM_EVENTS.VERIFY_STEP}`]:
-		"No step is currently running. Call start_step to begin a step before verifying it.",
+		"No step is currently running. Call start_ferment_step to begin a step before verifying it.",
 	[`${FSM_STATES.PHASE_ACTIVE}:${FSM_EVENTS.SET_MODE}`]:
 		"set_mode is only valid before a phase is active. Pause the ferment first if you need to change mode.",
 	[`${FSM_STATES.STEP_RUNNING}:${FSM_EVENTS.SET_MODE}`]:

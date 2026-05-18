@@ -12,7 +12,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import type { Command, ScopePhaseInput } from "../../../ferment/state-machine.js"
 import type { Grade, ScopingQuestion } from "../../../ferment/types.js"
-import { askUser } from "../ask-user.js"
+import { askUser, askUserForm } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
@@ -21,11 +21,18 @@ import { autoInitFromEnv, ensureGitRepo } from "../git-init.js"
 import { judgeJourneyGrade } from "../judge.js"
 import { appendRefEntry, injectResumeAutoNudge, resetReactiveAutoNudgeCount } from "../nudge.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
-import { getPromptUi, promptInput, promptSelect } from "../prompt-ui.js"
+import { getPromptUi, promptForm, promptInput, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
-import { createApplyAndPersist, failedToolResult, toolErr, toolOk } from "../tool-helpers.js"
+import {
+	createApplyAndPersist,
+	failedToolResult,
+	toolErr,
+	toolErrWithNextAction,
+	toolOk,
+	withNextActionHint,
+} from "../tool-helpers.js"
 import {
 	AskUserParams,
 	CompleteFermentParams,
@@ -36,7 +43,7 @@ import {
 	SetModeParams,
 	UpdateScopeFieldParams,
 } from "../tool-schemas.js"
-import { setActiveFerment, syncFermentToolScope } from "../tool-scope.js"
+import { setActiveFermentState } from "../tool-scope.js"
 
 type ScopeArgs = Static<typeof ScopeParams>
 type ProposeScopingArgs = Static<typeof ProposeScopingParams>
@@ -230,8 +237,8 @@ function normalizeQuestions(value: ProposeScopingArgs["questions"]): ScopingQues
 		if (typeof q.id !== "string") return `questions.${questionIndex}.id must be a string.`
 		if (typeof q.text !== "string") return `questions.${questionIndex}.text must be a string.`
 		if (!Array.isArray(q.options)) return `questions.${questionIndex}.options must be an array.`
-		if (q.options.length < 2 || q.options.length > 4) {
-			return `questions.${questionIndex}.options must contain 2-4 options.`
+		if (q.options.length < 2 || q.options.length > 5) {
+			return `questions.${questionIndex}.options must contain 2-5 options.`
 		}
 		for (const [optionIndex, rawOption] of q.options.entries()) {
 			if (!rawOption || typeof rawOption !== "object") {
@@ -321,19 +328,20 @@ function buildPlanEntry(fermentName: string, params: NormalizedProposeScopingArg
 
 function buildAnswersEntry(questions: ScopingQuestion[], answers: ScopingAnswer[]): string {
 	const answerLines = answers.map((a, i) => {
+		const q = questions.find((question) => question.id === a.questionId) ?? questions[i]
 		const recMarker = a.recommended ? " ★" : ""
-		return `Q${i + 1}: ${questions[i].text}\n    · ${a.label}${recMarker}`
+		return `Q${i + 1}: ${q.text}\n    · ${a.label}${recMarker}`
 	})
 	return `${pr_bold("Your answers")}\n${answerLines.join("\n")}`
 }
 
 function buildScopingIterationMessage(questions: ScopingQuestion[], answers: ScopingAnswer[]): string {
 	const bundledAnswerLines = answers.map((a, i) => {
-		const q = questions[i]
+		const q = questions.find((question) => question.id === a.questionId) ?? questions[i]
 		const answerText = a.optionId === "custom" ? `free-form: "${a.label}"` : `option "${a.optionId}" ("${a.label}")`
 		return `- "${q.text}" → ${answerText}`
 	})
-	return `The user reviewed your draft and chose these answers (which OVERRIDE your recommendations):\n${bundledAnswerLines.join("\n")}\n\nRe-emit propose_scoping ONCE with updated goal/criteria/constraints/assumptions/phases reflecting these answers. Usually emit \`questions: []\` so the user can review the final plan. You may emit new questions only if these answers reveal a genuinely new, decision-blocking ambiguity; never repeat or rephrase any question answered above. Do NOT ask questions in chat — call the tool directly.`
+	return `The user reviewed your draft and chose these answers (which OVERRIDE your recommendations):\n${bundledAnswerLines.join("\n")}\n\nRe-emit propose_ferment_scoping ONCE with updated goal/criteria/constraints/assumptions/phases reflecting these answers. Usually emit \`questions: []\` so the user can review the final plan. You may emit new questions only if these answers reveal a genuinely new, decision-blocking ambiguity; never repeat or rephrase any question answered above. Do NOT ask questions in chat — call the tool directly.`
 }
 
 export async function scopeFerment(
@@ -368,7 +376,7 @@ export async function scopeFerment(
 
 	// FSM validation: ensure the scope transition is allowed before applying it.
 	const fsmError = validateFsmTransition(fGate, "SCOPE_FERMENT")
-	if (fsmError) return toolErr(fsmError)
+	if (fsmError) return toolErrWithNextAction(fsmError, fGate)
 
 	const cmd: Command = {
 		type: "scope",
@@ -382,11 +390,16 @@ export async function scopeFerment(
 	const outcome = applyAndPersist(params.ferment_id, cmd)
 	if (!outcome.ok) {
 		// Special-case: ferment-not-in-status with current "planned"/"running" maps
-		// to the user-friendly "use update_scope_field to revise" hint.
+		// to the user-friendly "use update_ferment_scope_field to revise" hint.
 		if (outcome.error.code === "FERMENT_NOT_IN_STATUS" && outcome.error.actual !== "draft") {
-			return toolErr(`Ferment is already ${outcome.error.actual}. Use update_scope_field to revise individual fields.`)
+			return toolErr(
+				withNextActionHint(
+					`Ferment is already ${outcome.error.actual}. Use update_ferment_scope_field to revise individual fields.`,
+					fGate,
+				),
+			)
 		}
-		return failedToolResult(outcome.error)
+		return failedToolResult(outcome.error, fGate)
 	}
 	// Discard any stale pending-scope buffer — its phases were either applied
 	// here or are no longer relevant (the ferment is now planned).
@@ -403,7 +416,10 @@ export async function scopeFerment(
 	}
 
 	return toolOk(
-		`Ferment "${fresh.name}" scoped and ready.\nferment_id: ${fresh.id}\nGoal: ${params.goal}\nPhases:\n${phaseList}`,
+		withNextActionHint(
+			`Ferment "${fresh.name}" scoped and ready.\nferment_id: ${fresh.id}\nGoal: ${params.goal}\nPhases:\n${phaseList}`,
+			fresh,
+		),
 	)
 }
 
@@ -436,7 +452,7 @@ export async function completeFerment(
 
 	// Gates pass → proceed with completion.
 	const completeOutcome = applyAndPersist(params.ferment_id, { type: "complete_ferment" })
-	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
+	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, fSnapshot)
 
 	// Journey-grade judge: reads per-phase F-gate verdicts from the on-disk
 	// review-evidence sidecars, the C-gates the agent just provided, the goal
@@ -537,7 +553,7 @@ export async function completeFerment(
 			unavailable: resolvedGrade.unavailable,
 		},
 	})
-	if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error)
+	if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error, ferment)
 
 	// Cleanup in-memory state.
 	runtime.clearFermentState(params.ferment_id)
@@ -570,15 +586,20 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 				autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
 			})
 			const f = runtime.getStorage().create(params.name, params.description)
-			setActiveFerment(pi, runtime, f)
+			setActiveFermentState(runtime, f)
 			appendRefEntry(pi, f.id)
 			const branch = f.worktree.branch ?? "(no git)"
-			return toolOk(`Created "${f.name}".  Mode: ${f.mode}  •  Branch: ${branch}  •  Path: ${f.worktree.path}`)
+			return toolOk(
+				withNextActionHint(
+					`Created "${f.name}".  Mode: ${f.mode}  •  Branch: ${branch}  •  Path: ${f.worktree.path}`,
+					f,
+				),
+			)
 		},
 	})
 
 	pi.registerTool({
-		name: "propose_scoping",
+		name: "propose_ferment_scoping",
 		label: "Propose Scoping",
 		description: `Single combined emission of the full scoping draft after the user's free-form intent. Includes goal, success criteria, constraints, assumptions, phases (3-7), and optional clarifying questions (≤3) with one option \`recommended: true\` per question. Replaces previous draft wholesale.
 
@@ -594,7 +615,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				turn: "scope_ferment",
 				flagPolicy: "block-on-flag",
 				renderFlagError: (count, lines) =>
-					`Cannot propose scoping — agent self-flagged on ${count} plan gate(s):\n\n${lines}\n\nRevise the plan and call propose_scoping again with passing P-gate verdicts.`,
+					`Cannot propose scoping — agent self-flagged on ${count} plan gate(s):\n\n${lines}\n\nRevise the plan and call propose_ferment_scoping again with passing P-gate verdicts.`,
 			})
 			if (gateError) return gateError
 
@@ -607,9 +628,13 @@ ${renderGateGuidance("scope_ferment")}`,
 			const ferment = runtime.getStorage().get(params.ferment_id)
 			if (!ferment) return toolErr(`Ferment "${params.ferment_id}" not found.`)
 			if (ferment.status !== "draft") {
-				const nextAction = ferment.status === "planned" ? "call activate_phase" : "continue the current ferment action"
+				const nextAction =
+					ferment.status === "planned" ? "call activate_ferment_phase" : "continue the current ferment action"
 				return toolOk(
-					`Ferment "${ferment.name}" is already ${ferment.status}; ignore this duplicate propose_scoping call and ${nextAction}.`,
+					withNextActionHint(
+						`Ferment "${ferment.name}" is already ${ferment.status}; ignore this duplicate propose_ferment_scoping call and ${nextAction}.`,
+						ferment,
+					),
 				)
 			}
 
@@ -619,12 +644,12 @@ ${renderGateGuidance("scope_ferment")}`,
 				runtime.setPendingScope(params.ferment_id, { goal: "", successCriteria: "", constraints: [] })
 			}
 
-			// Iteration cap: prevent infinite propose_scoping loops.
+			// Iteration cap: prevent infinite propose_ferment_scoping loops.
 			const currentIterations = pending?.proposeIterations ?? 0
 			const nextIterations = currentIterations + 1
 			if (currentIterations >= 3 && questions.length > 0) {
 				return toolErr(
-					"You've proposed scoping 3 times. Pick the best draft and emit propose_scoping with questions=[] to let the user confirm.",
+					"You've proposed scoping 3 times. Pick the best draft and emit propose_ferment_scoping with questions=[] to let the user confirm.",
 				)
 			}
 
@@ -654,12 +679,12 @@ ${renderGateGuidance("scope_ferment")}`,
 						runtime,
 						params.ferment_id,
 						params.phases,
-						"propose_scoping",
+						"propose_ferment_scoping",
 						params.title,
 						pi,
 					)
-					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
-					return planToolOk("Plan saved.", { includePlan: true })
+					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
+					return planToolOk(withNextActionHint("Plan saved.", scopeOutcome.outcome.ferment), { includePlan: true })
 				}
 				const recSummary = questions
 					.map((q) => {
@@ -668,7 +693,7 @@ ${renderGateGuidance("scope_ferment")}`,
 					})
 					.join(", ")
 				return toolErr(
-					`Cannot ask scoping questions without an interactive UI. Re-emit propose_scoping with those recommendations folded into goal/criteria/constraints/assumptions/phases and questions=[].\nRecommended answers: ${recSummary}`,
+					`Cannot ask scoping questions without an interactive UI. Re-emit propose_ferment_scoping with those recommendations folded into goal/criteria/constraints/assumptions/phases and questions=[].\nRecommended answers: ${recSummary}`,
 				)
 			}
 
@@ -688,13 +713,16 @@ ${renderGateGuidance("scope_ferment")}`,
 						runtime,
 						params.ferment_id,
 						params.phases,
-						"propose_scoping",
+						"propose_ferment_scoping",
 						params.title,
 						pi,
 					)
-					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
+					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
 					return planToolOk(
-						`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
+						withNextActionHint(
+							`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
+							scopeOutcome.outcome.ferment,
+						),
 						{ includePlan: true },
 					)
 				}
@@ -703,7 +731,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				if (!userText) {
 					return planToolOk("No changes made. Waiting for your next instruction.")
 				}
-				const sayMoreContent = `User said: ${userText}. Re-run propose_scoping incorporating this direction.`
+				const sayMoreContent = `User said: ${userText}. Re-run propose_ferment_scoping incorporating this direction.`
 				void pi.sendMessage(
 					{ content: sayMoreContent, customType: "ferment_scoping_iteration", display: false },
 					{ triggerTurn: true },
@@ -711,47 +739,74 @@ ${renderGateGuidance("scope_ferment")}`,
 				return planToolOk("Got it. Updating the plan with your direction...")
 			}
 
-			// 7. Sequential per-question screens + review loop.
-			const N = questions.length
-			const CUSTOM_LABEL = `✎ ${pr_dim("Custom answer...")}`
-
+			// 7. Tabbed question form + review loop.
 			const runQuestions = async (): Promise<ScopingAnswer[] | "cancelled" | { kind: "dismiss"; qn: number }> => {
-				const answers: ScopingAnswer[] = []
-				for (let n = 0; n < N; n++) {
-					const q = questions[n]
-					const labeledOptions = q.options.map((o) => ({
-						option: o,
-						label: o.recommended === true ? `${o.label}  ★ Recommended` : o.label,
-					}))
-					const optionLabels = labeledOptions.map((o) => o.label)
-					optionLabels.push(CUSTOM_LABEL)
+				if (!getPromptUi(ctx)?.custom) {
+					const answers: ScopingAnswer[] = []
+					const customLabel = `✎ ${pr_dim("Custom answer...")}`
+					for (let n = 0; n < questions.length; n++) {
+						const q = questions[n]
+						const labeledOptions = q.options.map((o) => ({
+							option: o,
+							label: o.recommended === true ? `${o.label}  ★ Recommended` : o.label,
+						}))
+						const optionLabels = labeledOptions.map((o) => o.label)
+						optionLabels.push(customLabel)
 
-					const title = `[Q${n + 1}/${N}] ${q.text}`
-					const chosen = await promptSelect(ctx, title, optionLabels)
-
-					if (chosen === undefined) {
-						return { kind: "dismiss", qn: n + 1 }
-					}
-
-					if (chosen === CUSTOM_LABEL) {
-						const freeForm = await promptInput(ctx, `[Q${n + 1}/${N}] Your answer for: ${q.text}`, "")
-						if (!freeForm) {
-							return "cancelled"
+						const title = `[Q${n + 1}/${questions.length}] ${q.text}`
+						const chosen = await promptSelect(ctx, title, optionLabels)
+						if (chosen === undefined) return { kind: "dismiss", qn: n + 1 }
+						if (chosen === customLabel) {
+							const freeForm = await promptInput(ctx, `[Q${n + 1}/${questions.length}] Your answer for: ${q.text}`, "")
+							if (!freeForm) return "cancelled"
+							answers.push({ questionId: q.id, optionId: "custom", label: freeForm, recommended: false })
+							continue
 						}
-						answers.push({ questionId: q.id, optionId: "custom", label: freeForm, recommended: false })
+						const matched = labeledOptions.find((o) => o.label === chosen)
+						if (matched) {
+							answers.push({
+								questionId: q.id,
+								optionId: matched.option.id,
+								label: matched.option.label,
+								recommended: matched.option.recommended === true,
+							})
+						}
+					}
+					return answers
+				}
+
+				const result = await promptForm(ctx, {
+					questions: questions.map((q, index) => ({
+						id: q.id,
+						type: "radio",
+						label: `Q${index + 1}`,
+						prompt: q.text,
+						options: q.options.map((o) => ({
+							id: o.id,
+							label: o.recommended === true ? `${o.label}  ★ Recommended` : o.label,
+						})),
+						allowOther: true,
+					})),
+				})
+				if (!result) return { kind: "dismiss", qn: 1 }
+				if (result.cancelled) return "cancelled"
+
+				const answers: ScopingAnswer[] = []
+				for (const q of questions) {
+					const answer = result.answers.find((a) => a.id === q.id)
+					if (!answer) return { kind: "dismiss", qn: questions.indexOf(q) + 1 }
+					if (answer.wasCustom) {
+						answers.push({ questionId: q.id, optionId: "custom", label: answer.label, recommended: false })
 						continue
 					}
-
-					// Decode which real option was chosen.
-					const matched = labeledOptions.find((o) => o.label === chosen)
-					if (matched) {
-						answers.push({
-							questionId: q.id,
-							optionId: matched.option.id,
-							label: matched.option.label,
-							recommended: matched.option.recommended === true,
-						})
-					}
+					const matched = q.options.find((o) => o.id === answer.value)
+					if (!matched) return { kind: "dismiss", qn: questions.indexOf(q) + 1 }
+					answers.push({
+						questionId: q.id,
+						optionId: matched.id,
+						label: matched.label,
+						recommended: matched.recommended === true,
+					})
 				}
 				return answers
 			}
@@ -771,6 +826,34 @@ ${renderGateGuidance("scope_ferment")}`,
 
 				const answersEntry = buildAnswersEntry(questions, answers)
 				const allRecommended = answers.every((a) => a.recommended === true)
+				if (getPromptUi(ctx)?.custom) {
+					if (allRecommended) {
+						const scopeOutcome = confirmPendingScope(
+							runtime,
+							params.ferment_id,
+							params.phases,
+							"propose_ferment_scoping",
+							params.title,
+							pi,
+						)
+						if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
+						return planToolOk(
+							withNextActionHint(
+								`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
+								scopeOutcome.outcome.ferment,
+							),
+							{ includePlan: true, suffix: answersEntry },
+						)
+					}
+
+					const content = buildScopingIterationMessage(questions, answers)
+					void pi.sendMessage(
+						{ content, customType: "ferment_scoping_iteration", display: false },
+						{ triggerTurn: true },
+					)
+					return planToolOk(`${answersEntry}\n\nAnswers recorded. Updating the plan with your choices...`)
+				}
+
 				const continueLabel = allRecommended ? "Start execution  ✓" : "Update plan  ✓"
 				const reviewOptions = [continueLabel, "Restart questions", "Let me say something"]
 
@@ -792,7 +875,7 @@ ${renderGateGuidance("scope_ferment")}`,
 					if (!userText) {
 						return planToolOk(`${answersEntry}\n\nNo changes made. Waiting for your next instruction.`)
 					}
-					const sayMoreContent = `User said: ${userText}. Re-run propose_scoping incorporating this direction.`
+					const sayMoreContent = `User said: ${userText}. Re-run propose_ferment_scoping incorporating this direction.`
 					void pi.sendMessage(
 						{ content: sayMoreContent, customType: "ferment_scoping_iteration", display: false },
 						{ triggerTurn: true },
@@ -806,13 +889,16 @@ ${renderGateGuidance("scope_ferment")}`,
 						runtime,
 						params.ferment_id,
 						params.phases,
-						"propose_scoping",
+						"propose_ferment_scoping",
 						params.title,
 						pi,
 					)
-					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error)
+					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
 					return planToolOk(
-						`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
+						withNextActionHint(
+							`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
+							scopeOutcome.outcome.ferment,
+						),
 						{ includePlan: true, suffix: answersEntry },
 					)
 				}
@@ -860,7 +946,7 @@ ${renderGateGuidance("scope_ferment")}`,
 	})
 
 	pi.registerTool({
-		name: "update_scope_field",
+		name: "update_ferment_scope_field",
 		label: "Update Scope Field",
 		description:
 			"Revise a single scoping field (goal, criteria, constraints, assumptions) on an already-planned ferment.",
@@ -880,7 +966,9 @@ ${renderGateGuidance("scope_ferment")}`,
 				value: params.value,
 			})
 			if (!outcome.ok) return failedToolResult(outcome.error)
-			return toolOk(`Field "${params.field}" updated for "${outcome.ferment.name}".`)
+			return toolOk(
+				withNextActionHint(`Field "${params.field}" updated for "${outcome.ferment.name}".`, outcome.ferment),
+			)
 		},
 	})
 
@@ -896,14 +984,14 @@ ${renderGateGuidance("scope_ferment")}`,
 			// FSM validation: ensure mode change is allowed
 			const f = runtime.getStorage().get(params.ferment_id)
 			const fsmError = validateFsmTransition(f, "SET_MODE", { mode: params.mode })
-			if (fsmError) return toolErr(fsmError)
+			if (fsmError) return toolErrWithNextAction(fsmError, f)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "set_mode",
 				mode: params.mode as "plan" | "exec" | "auto",
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error)
-			return toolOk(`Mode set to ${params.mode} for "${outcome.ferment.name}".`)
+			if (!outcome.ok) return failedToolResult(outcome.error, f)
+			return toolOk(withNextActionHint(`Mode set to ${params.mode} for "${outcome.ferment.name}".`, outcome.ferment))
 		},
 	})
 
@@ -915,42 +1003,59 @@ ${renderGateGuidance("scope_ferment")}`,
 ${renderGateGuidance("complete_ferment")}`,
 		parameters: CompleteFermentParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
-			const result = await completeFerment(runtime, params, { pi, ctx })
-			if (!("isError" in result) || result.isError !== true) syncFermentToolScope(pi, runtime.getActive())
-			return result
+			return completeFerment(runtime, params, { pi, ctx })
 		},
 	})
 
 	pi.registerTool({
 		name: "ask_user",
 		label: "Ask User",
-		description: `Ask the user a structured question with a small set of options. Use ONLY at genuine decision points the agent cannot resolve from context (e.g. ambiguous requirements, choice between two viable approaches, user-only authorization).
+		description: `Ask the user a structured question. Use ONLY at genuine decision points the agent cannot resolve from context (e.g. ambiguous requirements, choice between viable approaches, user-only authorization).
 
 Behavior depends on session mode:
-  - Interactive (with TUI): the user picks an option. Returns { choice, answered_by: "user" }.
-  - One-shot (no human attached): an Opus judge stands in for the user. Returns { choice, answered_by: "judge", rationale }.
+  - Interactive (with TUI): the user answers in a structured TUI. Returns { choice | choices | text | answers, answered_by: "user" }.
+  - One-shot (no human attached): an Opus judge stands in for the user. Returns { choice | choices | text | answers, answered_by: "judge", rationale }.
 
 Hard contract: in one-shot mode, if the judge is unreachable (no API key, timeout, unparseable response) the ferment is ABANDONED — there is no fallback. False-pass is the worst outcome.
 
 The agent should:
-  1. Frame the question concretely. The user/judge sees only the question + options.
-  2. Provide 2–5 options with stable snake-case ids and short labels.
-  3. Include "pause" or "abandon" as an explicit option when one is appropriate — the judge prefers these when uncertain.
-  4. Act on the returned \`choice\` field.
+  1. Frame the question concretely. The user/judge sees only the question plus options/context in this call.
+  2. Prefer questions[] for the full TUI: radio, checkbox, text; allowOther enables a custom free-text option.
+  3. Use response_type="single" | "multi" | "text" only as a compatibility shorthand for one question.
+  4. For radio/checkbox, provide stable snake-case option ids and short labels.
+  5. Include "pause" or "abandon" as an explicit option when one is appropriate — the judge prefers these when uncertain.
+  6. Act on the returned \`answers\`, \`choice\`, \`choices\`, or \`text\` field.
 
-Returns: { choice, answered_by, rationale? } on success, or a tool error if no audience can be reached.`,
+TUI controls for questions[]:
+  - Tab / Shift+Tab moves between questions
+  - Up/Down navigates options
+  - Space toggles checkboxes
+  - Enter selects radio / submits text / advances
+  - Esc cancels
+
+Returns structured answer fields on success, or a tool error if no audience can be reached.`,
 		parameters: AskUserParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
 			const applyAndPersist = createApplyAndPersist(runtime)
 			const ferment = runtime.getStorage().get(params.ferment_id)
 			if (!ferment) return toolErr("Ferment not found.")
 
-			const response = await askUser(params.question, params.options, {
+			const askContext = {
 				ferment,
 				pi,
 				ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined,
 				runtime,
-			})
+			}
+			const response =
+				params.questions && params.questions.length > 0
+					? await askUserForm(params.title ?? params.question, params.description, params.questions, askContext)
+					: params.question
+						? await askUser(params.question, params.options ?? [], askContext, params.response_type ?? "single")
+						: undefined
+
+			if (!response) {
+				return toolErr("ask_user requires either question or questions[].")
+			}
 
 			if (response.failed) {
 				// One-shot hard-fail: when the judge is the only legitimate audience
@@ -972,9 +1077,20 @@ Returns: { choice, answered_by, rationale? } on success, or a tool error if no a
 			}
 
 			const rationaleLine = response.rationale ? `\nRationale: ${response.rationale}` : ""
-			return toolOk(
-				`Answer received.\nChoice: ${response.choice}\nAnswered by: ${response.answered_by}${rationaleLine}`,
-			)
+			const answerLine =
+				response.response_type === "form"
+					? `Answers:\n${(response.answers ?? [])
+							.map((answer) => {
+								const value = answer.values ? answer.values.join(", ") : answer.value
+								return `- ${answer.id}: ${value}${answer.wasCustom ? " (custom)" : ""}`
+							})
+							.join("\n")}`
+					: response.response_type === "multi"
+						? `Choices: ${(response.choices ?? []).join(", ")}`
+						: response.response_type === "text"
+							? `Text: ${response.text ?? ""}`
+							: `Choice: ${response.choice ?? ""}`
+			return toolOk(`Answer received.\n${answerLine}\nAnswered by: ${response.answered_by}${rationaleLine}`)
 		},
 	})
 }

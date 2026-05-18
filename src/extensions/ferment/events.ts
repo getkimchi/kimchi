@@ -4,20 +4,19 @@ import { clearFermentCache } from "../../ferment/store.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { appendRefEntry, maybeInjectReactiveAutoNudge, resetReactiveAutoNudgeCount } from "./nudge.js"
-import {
-	buildOneshotPlannerSystemPrompt,
-	extractBaseSystemPromptFromPayload,
-	rewriteSystemPromptInPayload,
-} from "./oneshot-prompt.js"
 import { buildOneshotNudge } from "./oneshot.js"
-import { buildPlannerSupplement } from "./planner-supplement.js"
 import { promptInput, promptSelect } from "./prompt-ui.js"
 import { resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import { isRestoringModel, setRestoringModel } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
-import { applyPlannerOneshotAllowlist, disableFermentTools, setActiveFerment } from "./tool-scope.js"
+import {
+	applyFermentRuntimeToolProfile,
+	applyFermentToolProfile,
+	setActiveFermentAndApplyProfile,
+	setActiveFermentState,
+} from "./tool-scope.js"
 
 type AssistantContentPart = { type: string; text?: string; name?: string }
 type TurnEndContext = Partial<Pick<ExtensionContext, "ui">>
@@ -60,7 +59,7 @@ async function maybeRunPlanModeDropdown(
 	if (f.status !== "draft" && f.status !== "running") return
 	if (!ctx.ui.input) return
 
-	if (hasToolCall(content, "propose_scoping")) return
+	if (hasToolCall(content, "propose_ferment_scoping")) return
 	const text = extractPromptTextAfterLastToolCall(content)
 	if (!text) return
 
@@ -93,13 +92,13 @@ async function maybeRunPlanModeDropdown(
 			ctx.ui.notify?.(
 				`Plan saved for "${outcome.outcome.ferment.name}". ${outcome.outcome.ferment.phases.length} phase(s) ready.`,
 			)
-			reply = `Plan saved by user confirmation — ${outcome.outcome.ferment.phases.length} phase(s) now in "planned" status. You can proceed with activate_phase when the user is ready, or wait for further instructions.`
+			reply = `Plan saved by user confirmation — ${outcome.outcome.ferment.phases.length} phase(s) now in "planned" status. You can proceed with activate_ferment_phase when the user is ready, or wait for further instructions.`
 		} else if (outcome.error.code !== "MISSING_PENDING_PHASES" && outcome.error.code !== "MISSING_PENDING_SCOPE") {
 			ctx.ui.notify?.(`Failed to save plan: ${outcome.error.message}`)
 			reply = `Plan save failed: ${outcome.error.message}. Investigate the ferment state and try again.`
 		} else {
 			reply =
-				"User confirmed the plan but you never called propose_scoping — there's nothing structured for the host to save. Call propose_scoping now with the same plan you just showed; propose_scoping will handle confirmation via its own dropdown — do not append a trailing question."
+				"User confirmed the plan but you never called propose_ferment_scoping — there's nothing structured for the host to save. Call propose_ferment_scoping now with the same plan you just showed; propose_ferment_scoping will handle confirmation via its own dropdown — do not append a trailing question."
 		}
 	} else {
 		reply = "Yes, proceed."
@@ -144,8 +143,10 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		disableFermentTools(pi)
-		if (process.env.KIMCHI_SUBAGENT === "1") return
+		if (process.env.KIMCHI_SUBAGENT === "1") {
+			applyFermentToolProfile(pi, "worker")
+			return
+		}
 		runtime.clearAllStepStarts()
 		runtime.clearAllScopingGates()
 		runtime.clearAllPendingScopes()
@@ -167,9 +168,11 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
 		} else if (pi.getFlag("ferment-oneshot") === true) {
 			pendingOneshot = true
-			setActiveFerment(pi, runtime, undefined)
+			setActiveFermentState(runtime, undefined)
+			applyFermentToolProfile(pi, "oneshot-planner")
 		} else {
-			setActiveFerment(pi, runtime, undefined)
+			pendingOneshot = false
+			setActiveFermentAndApplyProfile(pi, runtime, undefined)
 		}
 	})
 
@@ -214,7 +217,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			const f = storage.create(shortName, intent)
 			const modeOut = applyAndPersist(f.id, { type: "set_mode", mode: "exec" })
 			const updated = modeOut.ok ? modeOut.ferment : f
-			setActiveFerment(pi, runtime, updated)
+			setActiveFermentState(runtime, updated)
 			appendRefEntry(pi, updated.id)
 			pi.appendEntry("ferment_ack", {
 				text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nMode: exec (fully autonomous)`,
@@ -228,47 +231,20 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		}
 	})
 
-	pi.on("before_agent_start", async (event) => {
-		// In ferment-oneshot planner mode, restrict the active tool set to the
-		// allowlist. The orchestrator base prompt is overridden separately in
-		// `before_provider_request` so the planner's outbound LLM call gets the
-		// planner-only frame *without* mutating the parent session's effective
-		// system prompt (which workers inherit via `ctx.getSystemPrompt()`).
-		// Subagent processes (KIMCHI_SUBAGENT=1) keep the full toolset.
-		const isOneshotPlanner = process.env.KIMCHI_SUBAGENT !== "1" && pi.getFlag("ferment-oneshot") === true
-		if (isOneshotPlanner) {
-			applyPlannerOneshotAllowlist(pi)
+	pi.on("before_agent_start", async () => {
+		// pi-mono snapshots the active tool list when an agent run starts. Apply
+		// only run-static profiles here; lifecycle tools remain visible for the
+		// whole active planner run and invalid transitions are rejected by tools.
+		if (process.env.KIMCHI_SUBAGENT === "1") {
+			applyFermentToolProfile(pi, "worker")
 			return {}
 		}
-		const f = runtime.getActive()
-		if (!f) return {}
-		if (f.status === "paused") {
-			const pausedSupplement = `\n\n## Ferment Paused\n\nFerment "${f.name}" is paused by the user. Do NOT call any ferment tools (activate_phase, start_step, complete_step, etc.) — they will be rejected. Acknowledge any pending question briefly and wait for the user to resume with /auto.`
-			return { systemPrompt: `${event.systemPrompt}${pausedSupplement}` }
+		if (pi.getFlag("ferment-oneshot") === true) {
+			applyFermentToolProfile(pi, "oneshot-planner")
+			return {}
 		}
-		if (f.status !== "running" && f.status !== "planned") return {}
-		const supplement = buildPlannerSupplement(runtime)
-		return { systemPrompt: `${event.systemPrompt}${supplement}` }
-	})
-
-	let oneshotPromptRewriteSkipLogged = false
-	pi.on("before_provider_request", async (event) => {
-		if (process.env.KIMCHI_SUBAGENT === "1") return undefined
-		if (pi.getFlag("ferment-oneshot") !== true) return undefined
-
-		const base = extractBaseSystemPromptFromPayload(event.payload)
-		if (base === undefined) {
-			if (!oneshotPromptRewriteSkipLogged) {
-				oneshotPromptRewriteSkipLogged = true
-				pi.appendEntry("ferment_oneshot_prompt_rewrite_skipped", {
-					text: "Could not rewrite ferment-oneshot planner prompt: unrecognized provider payload shape.",
-				})
-			}
-			return undefined
-		}
-
-		const overridden = buildOneshotPlannerSystemPrompt(base, runtime)
-		return rewriteSystemPromptInPayload(event.payload, overridden)
+		applyFermentRuntimeToolProfile(pi, runtime)
+		return {}
 	})
 
 	pi.on("model_select", async (event, ctx) => {

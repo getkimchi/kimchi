@@ -459,7 +459,7 @@ function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
 }
 
 // Mirrors the tool names kimchi actually exposes: pi-coding-agent core tools
-// plus the kimchi extensions in src/extensions (web-fetch, web-search, subagent).
+// plus the kimchi extensions in src/extensions (web-fetch, web-search, Agent).
 // ACP clients key UI affordances (icon, grouping, permission messaging) off the
 // kind field, so every registered tool should map to the most specific kind in
 // the ToolKind vocabulary before falling back to "other". MCP tools arrive with
@@ -475,6 +475,7 @@ const TOOL_KINDS: Record<string, ToolKind> = {
 	write: "edit",
 	web_fetch: "fetch",
 	web_search: "search",
+	Agent: "think",
 	subagent: "think",
 }
 const TITLE_MAX = 80

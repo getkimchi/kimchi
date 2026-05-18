@@ -52,8 +52,13 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 			registeredFlags.add(name)
 		}),
 		getFlag: vi.fn((name: string) => (registeredFlags.has(name) ? flagValues[name] : undefined)),
-		getActiveTools: vi.fn(() => ["read", "bash", "create_ferment", "start_step"]),
-		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "create_ferment" }, { name: "start_step" }]),
+		getActiveTools: vi.fn(() => ["read", "bash", "create_ferment", "start_ferment_step"]),
+		getAllTools: vi.fn(() => [
+			{ name: "read" },
+			{ name: "bash" },
+			{ name: "create_ferment" },
+			{ name: "start_ferment_step" },
+		]),
 		setActiveTools: vi.fn(),
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
@@ -342,7 +347,7 @@ describe("fermentExtension question dropdown", () => {
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_automode_nudge",
-				content: [expect.objectContaining({ text: "activate_phase: activate the first planned phase" })],
+				content: [expect.objectContaining({ text: "activate_ferment_phase: activate the first planned phase" })],
 			}),
 			{ triggerTurn: true, deliverAs: "followUp" },
 		)
@@ -682,7 +687,7 @@ Does this plan look right?`,
 		expect(pi.sendUserMessage).toHaveBeenCalledWith("No — please revise.", { deliverAs: "followUp" })
 	})
 
-	it("does not show a second draft confirmation after propose_scoping already asked", async () => {
+	it("does not show a second draft confirmation after propose_ferment_scoping already asked", async () => {
 		setActive(makeActivePlanFerment({ status: "draft" }))
 		const { handlers, pi } = registerFermentExtension()
 		const turnEnd = handlers.get("turn_end")
@@ -701,7 +706,7 @@ Does this plan look right?`,
 					role: "assistant",
 					content: [
 						{ type: "text", text: "1. Phase one\n2. Phase two\n" },
-						{ type: "toolCall", name: "propose_scoping" },
+						{ type: "toolCall", name: "propose_ferment_scoping" },
 						{ type: "text", text: "Does this plan look right?" },
 					],
 				},

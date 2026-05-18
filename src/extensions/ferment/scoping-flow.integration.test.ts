@@ -1,9 +1,9 @@
 /**
- * End-to-end integration test: runScopingFlow → propose_scoping → planned.
+ * End-to-end integration test: runScopingFlow → propose_ferment_scoping → planned.
  *
  * Exercises the full single-input scoping handshake:
  *   1. runScopingFlow(ferment, pi, ctx) with a mocked ctx.ui.input returning intent.
- *   2. Agent calls propose_scoping via the registered tool with a full payload.
+ *   2. Agent calls propose_ferment_scoping via the registered tool with a full payload.
  *   3. ctx.ui.select returns "Continue with recommendations".
  *   4. Assert ferment.status === "planned", phases populated, pendingScope cleared.
  */
@@ -90,8 +90,8 @@ const passingPlanGates = () => [
 	{ id: "P3", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
 ]
 
-describe("runScopingFlow → propose_scoping end-to-end", () => {
-	it("single input → sendMessage with intent; propose_scoping → planned with 3 phases", async () => {
+describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
+	it("single input → sendMessage with intent; propose_ferment_scoping → planned with 3 phases", async () => {
 		// Setup
 		const ferment = h.eventStorage.create("OAuth Integration")
 		h.runtime.setActive(ferment)
@@ -133,7 +133,7 @@ describe("runScopingFlow → propose_scoping end-to-end", () => {
 		// Pending scope seeded
 		expect(getPendingScope(ferment.id)).toBeDefined()
 
-		// Step 2: simulate agent calling propose_scoping with full payload
+		// Step 2: simulate agent calling propose_ferment_scoping with full payload
 		const proposeScopingPayload = {
 			ferment_id: ferment.id,
 			goal: "Users can sign in with Google OAuth",
@@ -159,17 +159,17 @@ describe("runScopingFlow → propose_scoping end-to-end", () => {
 		}
 
 		const toolCtx = { ui: { select: selectMock, input: vi.fn() } }
-		const result = await h.callTool("propose_scoping", proposeScopingPayload, toolCtx)
+		const result = await h.callTool("propose_ferment_scoping", proposeScopingPayload, toolCtx)
 
 		// Tool should succeed (not error)
 		if (result.isError) {
-			throw new Error(`propose_scoping returned error: ${result.content[0]?.text}`)
+			throw new Error(`propose_ferment_scoping returned error: ${result.content[0]?.text}`)
 		}
 
 		// Step 3: assert ferment is now planned
 		clearFermentCache()
 		const planned = h.eventStorage.get(ferment.id)
-		if (!planned) throw new Error("Ferment not found after propose_scoping")
+		if (!planned) throw new Error("Ferment not found after propose_ferment_scoping")
 
 		expect(planned.status).toBe("planned")
 		expect(planned.phases).toHaveLength(3)

@@ -7,8 +7,8 @@
  *   - blockRetries           (phaseId → int)         retry budget per phase
  *   - lastBlockHashes        (phaseId → string)      same-failure-twice detector
  *   - stepCompleteAttempts   (phaseId:stepId → int)  symmetric with stepStartCounts
- *   - phaseStartRefs         (phaseId → git sha)     captured at activate_phase, consumed at complete_phase for diff evidence
- *   - stepStartRefs          (phaseId:stepId → sha)  captured at start_step, consumed at complete_step for diff evidence
+ *   - phaseStartRefs         (phaseId → git sha)     captured at activate_ferment_phase, consumed at complete_ferment_phase for diff evidence
+ *   - stepStartRefs          (phaseId:stepId → sha)  captured at start_ferment_step, consumed at complete_ferment_step for diff evidence
  *
  * What's NOT persisted (single-CLI-session only):
  *   - scopingInteractive / scopingConfirmed (TUI flow; local-only)
@@ -39,9 +39,9 @@ export interface PersistedRuntimeState {
 	lastBlockHashes: Record<string, string>
 	/** Key: `${phaseId}:${stepId}`. */
 	stepCompleteAttempts: Record<string, number>
-	/** Key: `${phaseId}`. Git sha captured at activate_phase. */
+	/** Key: `${phaseId}`. Git sha captured at activate_ferment_phase. */
 	phaseStartRefs: Record<string, string>
-	/** Key: `${phaseId}:${stepId}`. Git sha captured at start_step. */
+	/** Key: `${phaseId}:${stepId}`. Git sha captured at start_ferment_step. */
 	stepStartRefs: Record<string, string>
 }
 

@@ -7,7 +7,8 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
+import { type EnvironmentInfo, buildSystemPrompt } from "../prompt-construction/system-prompt.js"
 import type { ResolverIO } from "./session-context.js"
 import {
 	BEHAVIOUR_EVAL_TYPE,
@@ -69,6 +70,8 @@ class FakePi {
 	}
 }
 
+const activePis: FakePi[] = []
+
 const stubIO: ResolverIO = {
 	hasCli: (name) => name === "gh",
 	readGitRemoteHost: () => undefined,
@@ -105,8 +108,26 @@ const glabCli: Behaviour = {
 
 function setupWired(behaviours: Behaviour[]): FakePi {
 	const pi = new FakePi()
+	activePis.push(pi)
 	wireBehaviours(pi.asExtensionAPI(), behaviours, { resolverIO: stubIO })
 	return pi
+}
+
+afterEach(async () => {
+	for (const pi of activePis.splice(0)) {
+		await pi.fire("session_shutdown", {})
+	}
+})
+
+const testEnv: EnvironmentInfo = {
+	os: "Linux",
+	username: "testuser",
+	homeDir: "/home/testuser",
+	cwd: "/home/testuser/project",
+	documentsDir: "/home/testuser/project/.kimchi/docs",
+	currentTime: "2026-01-01T00:00:00.000Z",
+	localDate: "2026-01-01",
+	isGitRepo: false,
 }
 
 describe("wireBehaviours — session_start", () => {
@@ -213,18 +234,42 @@ describe("wireBehaviours — tool_result", () => {
 })
 
 describe("wireBehaviours — before_agent_start", () => {
-	it("appends the rules block for baseline behaviours to the system prompt", async () => {
-		const pi = setupWired([baseline])
-		await pi.fire("session_start", {}, { cwd: "/tmp" })
-		const results = await pi.fire<{ systemPrompt?: string }>("before_agent_start", {
-			prompt: "hi",
-			systemPrompt: "BASE",
+	it("leaves the system prompt unaffected when no baseline rules exist", async () => {
+		const basePrompt = buildSystemPrompt({
+			tools: [{ name: "read", description: "Read file contents" }],
+			env: testEnv,
+			contextFiles: [{ path: "/repo/AGENTS.md", content: "Project rule." }],
+			mode: "orchestrator",
 		})
 
-		const sp = results.find((r) => r.systemPrompt !== undefined)?.systemPrompt
+		setupWired([ghCli])
+		const promptAfterWiring = buildSystemPrompt({
+			tools: [{ name: "read", description: "Read file contents" }],
+			env: testEnv,
+			contextFiles: [{ path: "/repo/AGENTS.md", content: "Project rule." }],
+			mode: "orchestrator",
+		})
+
+		expect(promptAfterWiring).toBe(basePrompt)
+		expect(promptAfterWiring).not.toContain("## Rules")
+	})
+
+	it("registers the rules block for baseline behaviours in the system prompt", async () => {
+		const pi = setupWired([baseline])
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+
+		const sp = buildSystemPrompt({
+			pi: pi.asExtensionAPI(),
+			tools: [{ name: "read", description: "Read file contents" }],
+			env: testEnv,
+			contextFiles: [{ path: "/repo/AGENTS.md", content: "Project rule." }],
+			mode: "orchestrator",
+		})
+
 		expect(sp).toContain("## Rules")
 		expect(sp).toContain("Always do X.")
-		expect(sp?.startsWith("BASE")).toBe(true)
+		expect(sp.indexOf("Project rule.")).toBeLessThan(sp.indexOf("## Rules"))
+		expect(sp.indexOf("## Rules")).toBeLessThan(sp.indexOf("## Available Tools"))
 	})
 
 	it("delivers the body of a loaded triggered behaviour as a hidden message, exactly once", async () => {

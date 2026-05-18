@@ -1,7 +1,7 @@
 /**
- * Step tools: start_step, complete_step, verify_step, skip_step, fail_step.
+ * Step tools: start_ferment_step, complete_ferment_step, verify_ferment_step, skip_ferment_step, fail_ferment_step.
  *
- * complete_step is the largest — it auto-runs the verification command (with
+ * complete_ferment_step is the largest — it auto-runs the verification command (with
  * a 60s timeout), routes non-zero exits through the judge for pass/retry/fail
  * classification, then grades the step.
  */
@@ -17,9 +17,17 @@ import { type JudgeVerdict, judgeStepVerification } from "../judge.js"
 import { onStepCompleted } from "../nudge.js"
 import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
-import { createApplyAndPersist, failedToolResult, resolvePhase, resolveStep, toolErr, toolOk } from "../tool-helpers.js"
+import {
+	createApplyAndPersist,
+	failedToolResult,
+	resolvePhase,
+	resolveStep,
+	toolErr,
+	toolErrWithNextAction,
+	toolOk,
+	withNextActionHint,
+} from "../tool-helpers.js"
 import { CompleteStepParams, FailStepParams, StepActionParams, VerifyParams } from "../tool-schemas.js"
-import { syncFermentToolScope } from "../tool-scope.js"
 import type { FermentUi, FermentUiContext } from "../ui.js"
 import { buildWorkerContext } from "../worker-prompt.js"
 
@@ -133,7 +141,7 @@ export async function startStep(
 	}
 
 	const fsmError = validateFsmTransition(f, "START_STEP", { phaseId: phase.id, stepId: step.id })
-	if (fsmError) return toolErr(fsmError)
+	if (fsmError) return toolErrWithNextAction(fsmError, f)
 
 	const startCount = runtime.bumpStepStart(f.id, phase.id, step.id)
 	if (startCount >= 3) {
@@ -159,15 +167,14 @@ What should we do?
 2) Skip this step and move on
 3) Pause the ferment for now
 
-Do NOT call start_step again without user input.`,
+Do NOT call start_ferment_step again without user input.`,
 			)
 		}
 
 		if (response.choice === "pause") {
 			const pauseOutcome = applyAndPersist(f.id, { type: "pause" })
 			if (!pauseOutcome.ok) return failedToolResult(pauseOutcome.error)
-			syncFermentToolScope(pi, pauseOutcome.ferment)
-			return toolOk("Ferment paused at user request.")
+			return toolOk(withNextActionHint("Ferment paused at user request.", pauseOutcome.ferment))
 		}
 
 		if (response.choice === "skip") {
@@ -179,7 +186,9 @@ Do NOT call start_step again without user input.`,
 			if (!skipOutcome.ok) return failedToolResult(skipOutcome.error)
 			runtime.clearStepStart(f.id, phase.id, step.id)
 			services.onStepCompleted(runtime)
-			return toolOk(`Step ${step.index}: "${step.description}" skipped at user request.`)
+			return toolOk(
+				withNextActionHint(`Step ${step.index}: "${step.description}" skipped at user request.`, skipOutcome.ferment),
+			)
 		}
 
 		// choice === "retry"
@@ -193,11 +202,12 @@ Do NOT call start_step again without user input.`,
 	})
 	if (!outcome.ok) {
 		if (outcome.error.code === "CONCURRENT_NON_PARALLEL_STEP") {
-			return toolErr(
+			return toolErrWithNextAction(
 				`Cannot start step ${step.index} — step ${outcome.error.runningStepIndex} ("${outcome.error.runningDescription}") is already running and is not parallel-safe. Complete or skip it first.`,
+				f,
 			)
 		}
-		return failedToolResult(outcome.error)
+		return failedToolResult(outcome.error, f)
 	}
 
 	const stepHeadRef = services.captureGitHead()
@@ -205,7 +215,6 @@ Do NOT call start_step again without user input.`,
 
 	const freshPhase = outcome.ferment.phases.find((p) => p.id === phase.id)
 	const freshStep = freshPhase?.steps.find((s) => s.id === step.id)
-	const workerModel = freshStep?.workerModel ?? "minimax-m2.7"
 
 	const prevStep = freshPhase?.steps.find((st) => st.index === step.index - 1)
 	const lowGradeCaution =
@@ -223,13 +232,12 @@ Do NOT call start_step again without user input.`,
 					.map((st) => ({
 						step_id: st.id,
 						description: st.description,
-						worker_model: st.workerModel ?? "minimax-m2.7",
 					}))
 			: []
 
 	const parallelNote =
 		parallelSiblings.length > 0
-			? `\nparallel_siblings: ${JSON.stringify(parallelSiblings)}\n\nThese steps are independent — call start_step for each one now and launch their Agents concurrently. Do not wait for one to finish before starting the next.`
+			? `\nparallel_siblings: ${JSON.stringify(parallelSiblings)}\n\nThese steps are independent — call start_ferment_step for each one now and launch their Agents concurrently. Do not wait for one to finish before starting the next.`
 			: ""
 
 	const workerContext =
@@ -239,7 +247,10 @@ Do NOT call start_step again without user input.`,
 		: ""
 
 	return toolOk(
-		`Step ${step.index}: "${step.description}" started.\nphase_id: ${phase.id}\nstep_id: ${step.id}\nworker_model: ${workerModel}\n\nLaunch an Agent now with subagent_type "general-purpose" and model "kimchi-dev/${workerModel}". When it returns, call complete_step with its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
+		withNextActionHint(
+			`Step ${step.index}: "${step.description}" started.\nphase_id: ${phase.id}\nstep_id: ${step.id}\n\nLaunch an Agent now with subagent_type "general-purpose". When it returns, call complete_ferment_step with its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
+			outcome.ferment,
+		),
 	)
 }
 
@@ -260,16 +271,16 @@ export async function completeStep(
 	if (!step) return toolErr("Step not found.")
 
 	const fsmError = validateFsmTransition(f, "COMPLETE_STEP", { phaseId: phase.id, stepId: step.id })
-	if (fsmError) return toolErr(fsmError)
+	if (fsmError) return toolErrWithNextAction(fsmError, f)
 
 	// Gate validation runs BEFORE any state mutation. Step-level flags don't
 	// feed the phase retry/escalation pipeline — they just refuse this single
 	// call, and the agent has to fix the underlying issue and re-call.
 	const gateError = validateGatesOrErr(params.gates, {
-		turn: "complete_step",
+		turn: "complete_ferment_step",
 		flagPolicy: "block-on-flag",
 		renderFlagError: (count, lines) =>
-			`Step ${step.index}: "${step.description}" cannot complete — agent self-flagged on ${count} step gate(s):\n\n${lines}\n\nResolve the underlying issue and re-call complete_step with verdicts of 'pass' (or 'omitted' with rationale if a gate truly does not apply).`,
+			`Step ${step.index}: "${step.description}" cannot complete — agent self-flagged on ${count} step gate(s):\n\n${lines}\n\nResolve the underlying issue and re-call complete_ferment_step with verdicts of 'pass' (or 'omitted' with rationale if a gate truly does not apply).`,
 	})
 	if (gateError) return gateError
 
@@ -283,11 +294,16 @@ export async function completeStep(
 			stepId: step.id,
 			summary: params.summary,
 		})
-		if (!completeOutcome.ok) return failedToolResult(completeOutcome.error)
+		if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f)
 		runtime.clearStepStart(f.id, phase.id, step.id)
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
 		services.onStepCompleted(runtime)
-		return toolOk(`Step ${step.index}: "${step.description}" done.  ${params.summary ?? ""}`)
+		return toolOk(
+			withNextActionHint(
+				`Step ${step.index}: "${step.description}" done.  ${params.summary ?? ""}`,
+				completeOutcome.ferment,
+			),
+		)
 	}
 
 	const { exitCode, stdout, stderr } = await services.runVerification({
@@ -311,14 +327,16 @@ export async function completeStep(
 		result: verifyResult,
 		summary: params.summary,
 	})
-	if (!verifyOutcome.ok) return failedToolResult(verifyOutcome.error)
+	if (!verifyOutcome.ok) return failedToolResult(verifyOutcome.error, f)
 	runtime.clearStepStart(f.id, phase.id, step.id)
 
 	if (exitCode === 0) {
 		// Verification passed + all gates pass → silent advance. No LLM call.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
 		services.onStepCompleted(runtime)
-		return toolOk(`Step ${step.index}: "${step.description}" done and verified ✓`)
+		return toolOk(
+			withNextActionHint(`Step ${step.index}: "${step.description}" done and verified ✓`, verifyOutcome.ferment),
+		)
 	}
 
 	// Non-zero verify exit. judgeStepVerification is tactical (pass/retry/fail
@@ -337,7 +355,12 @@ export async function completeStep(
 		// verdicts already passed above, so advance.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
 		services.onStepCompleted(runtime)
-		return toolOk(`Step ${step.index}: "${step.description}" done ✓  Judge: ${judgeVerdict.reason}`)
+		return toolOk(
+			withNextActionHint(
+				`Step ${step.index}: "${step.description}" done ✓  Judge: ${judgeVerdict.reason}`,
+				verifyOutcome.ferment,
+			),
+		)
 	}
 
 	const failOutcome = applyAndPersist(params.ferment_id, {
@@ -346,7 +369,7 @@ export async function completeStep(
 		stepId: step.id,
 		error: `Verification failed (exit ${exitCode}): ${judgeVerdict.reason}`,
 	})
-	if (!failOutcome.ok) return failedToolResult(failOutcome.error)
+	if (!failOutcome.ok) return failedToolResult(failOutcome.error, f)
 
 	if (judgeVerdict.verdict === "retry") {
 		return toolErr(
@@ -365,10 +388,10 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 		onStepCompleted: () => onStepCompleted(runtime),
 	}
 	pi.registerTool({
-		name: "start_step",
+		name: "start_ferment_step",
 		label: "Start Step",
 		description:
-			"Mark a step as running. Returns worker_model and parallel_siblings. See planner instructions in the system prompt for orchestration details.",
+			"Mark a step as running. Returns parallel_siblings. See planner instructions in the system prompt for orchestration details.",
 		parameters: StepActionParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
 			return startStep(runtime, params, { pi, ctx }, stepServices)
@@ -376,11 +399,11 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 	})
 
 	pi.registerTool({
-		name: "complete_step",
+		name: "complete_ferment_step",
 		label: "Complete Step",
-		description: `Mark step as done. If the step has a verification command it runs automatically — no need to call verify_step separately. You must produce verdicts for the three step-scope gates below. A "flag" verdict blocks step completion.
+		description: `Mark step as done. If the step has a verification command it runs automatically — no need to call verify_ferment_step separately. You must produce verdicts for the three step-scope gates below. A "flag" verdict blocks step completion.
 
-${renderGateGuidance("complete_step")}`,
+${renderGateGuidance("complete_ferment_step")}`,
 		parameters: CompleteStepParams,
 		async execute(_, params, signal, onUpdate, ctx) {
 			return completeStep(runtime, params, { pi, ctx, signal, onUpdate }, stepServices)
@@ -388,7 +411,7 @@ ${renderGateGuidance("complete_step")}`,
 	})
 
 	pi.registerTool({
-		name: "verify_step",
+		name: "verify_ferment_step",
 		label: "Verify Step",
 		description: "Run verification command and record result.",
 		parameters: VerifyParams,
@@ -402,7 +425,7 @@ ${renderGateGuidance("complete_step")}`,
 
 			// FSM validation: ensure step verification is allowed
 			const fsmError = validateFsmTransition(f, "VERIFY_STEP", { phaseId: phase.id, stepId: step.id })
-			if (fsmError) return toolErr(fsmError)
+			if (fsmError) return toolErrWithNextAction(fsmError, f)
 
 			let exitCode = 0
 			let stdout = ""
@@ -448,16 +471,16 @@ ${renderGateGuidance("complete_step")}`,
 				result,
 				summary: params.summary,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error)
+			if (!outcome.ok) return failedToolResult(outcome.error, f)
 			onStepCompleted(runtime)
 
-			if (result.success) return toolOk(`✓ "${step.description}" verified.`)
-			return toolErr(`✗ "${step.description}" failed (exit ${exitCode}).`)
+			if (result.success) return toolOk(withNextActionHint(`✓ "${step.description}" verified.`, outcome.ferment))
+			return toolErrWithNextAction(`✗ "${step.description}" failed (exit ${exitCode}).`, outcome.ferment)
 		},
 	})
 
 	pi.registerTool({
-		name: "skip_step",
+		name: "skip_ferment_step",
 		label: "Skip Step",
 		description: "Skip a step.",
 		parameters: StepActionParams,
@@ -471,22 +494,22 @@ ${renderGateGuidance("complete_step")}`,
 
 			// FSM validation: ensure step skip is allowed
 			const fsmError = validateFsmTransition(f, "SKIP_STEP", { phaseId: phase.id, stepId: step.id })
-			if (fsmError) return toolErr(fsmError)
+			if (fsmError) return toolErrWithNextAction(fsmError, f)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "skip_step",
 				phaseId: phase.id,
 				stepId: step.id,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error)
+			if (!outcome.ok) return failedToolResult(outcome.error, f)
 			runtime.clearStepStart(f.id, phase.id, step.id)
 			onStepCompleted(runtime)
-			return toolOk("Step skipped.")
+			return toolOk(withNextActionHint("Step skipped.", outcome.ferment))
 		},
 	})
 
 	pi.registerTool({
-		name: "fail_step",
+		name: "fail_ferment_step",
 		label: "Fail Step",
 		description: "Mark a step as failed with an error message.",
 		parameters: FailStepParams,
@@ -500,7 +523,7 @@ ${renderGateGuidance("complete_step")}`,
 
 			// FSM validation: ensure step fail is allowed
 			const fsmError = validateFsmTransition(f, "FAIL_STEP", { phaseId: phase.id, stepId: step.id })
-			if (fsmError) return toolErr(fsmError)
+			if (fsmError) return toolErrWithNextAction(fsmError, f)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "fail_step",
@@ -508,10 +531,13 @@ ${renderGateGuidance("complete_step")}`,
 				stepId: step.id,
 				error: params.error,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error)
+			if (!outcome.ok) return failedToolResult(outcome.error, f)
 			onStepCompleted(runtime)
 			return toolOk(
-				`Step ${step.index}: "${step.description}" marked as failed. Use skip_step to skip it, or retry the work and call start_step again.`,
+				withNextActionHint(
+					`Step ${step.index}: "${step.description}" marked as failed. Use skip_ferment_step to skip it, or retry the work and call start_ferment_step again.`,
+					outcome.ferment,
+				),
 			)
 		},
 	})

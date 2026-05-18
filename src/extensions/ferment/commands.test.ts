@@ -4,6 +4,7 @@ import { join } from "node:path"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
+import type { Ferment } from "../../ferment/types.js"
 import { FermentCommandController, registerFermentCommands } from "./commands.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
@@ -34,17 +35,28 @@ interface RegisteredCommand {
 
 function createHarness() {
 	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-command-controller-test-")))
+	let activeRef: Ferment | undefined
 	const runtime: FermentRuntime = {
 		...createDefaultFermentRuntime(),
 		getStorage: () => storage,
-		setActive: vi.fn(),
+		getActive: vi.fn(() => activeRef),
+		getActiveId: vi.fn(() => activeRef?.id),
+		setActive: vi.fn((ferment: Ferment | undefined) => {
+			activeRef = ferment
+		}),
 	}
 	const pi = {
+		on: vi.fn(),
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		getActiveTools: vi.fn(() => ["read", "bash"]),
-		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "create_ferment" }, { name: "start_step" }]),
+		getAllTools: vi.fn(() => [
+			{ name: "read" },
+			{ name: "bash" },
+			{ name: "create_ferment" },
+			{ name: "start_ferment_step" },
+		]),
 		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
 	const ctx = {
@@ -200,7 +212,7 @@ describe("registerFermentCommands", () => {
 		await autoCommand.handler("", h.ctx)
 
 		expect(active.status).toBe("running")
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "create_ferment", "start_step"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "create_ferment", "start_ferment_step"])
 	})
 
 	it("/pause transitions running ferment to paused status", async () => {
@@ -338,7 +350,7 @@ describe("registerFermentCommands", () => {
 		expect(h.runtime.setAutoModeEnabled).toHaveBeenCalledWith(true)
 		expect(active.status).toBe("running")
 		expect(active.phases[0].status).toBe("active")
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "create_ferment", "start_step"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "create_ferment", "start_ferment_step"])
 
 		// Step 4: Verify setAutoModeEnabled was called with both false and true
 		expect(h.runtime.setAutoModeEnabled).toHaveBeenCalledTimes(2)

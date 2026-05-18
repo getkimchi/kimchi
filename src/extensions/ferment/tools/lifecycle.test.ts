@@ -292,7 +292,7 @@ describe("registerLifecycleTools", () => {
 	})
 })
 
-describe("update_scope_field via registerLifecycleTools", () => {
+describe("update_ferment_scope_field via registerLifecycleTools", () => {
 	function createRegisteredHarness() {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-update-scope-test-")))
 		const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
@@ -308,7 +308,7 @@ describe("update_scope_field via registerLifecycleTools", () => {
 			setActiveTools: vi.fn(),
 		} as unknown as ExtensionAPI
 		registerLifecycleTools(pi, runtime)
-		// Create and scope a ferment so update_scope_field has something to revise.
+		// Create and scope a ferment so update_ferment_scope_field has something to revise.
 		const applyAndPersist = createApplyAndPersist(runtime)
 		const ferment = storage.create("Update Scope Test")
 		const scoped = applyAndPersist(ferment.id, {
@@ -322,10 +322,10 @@ describe("update_scope_field via registerLifecycleTools", () => {
 		return { storage, runtime, tools, fermentId: ferment.id }
 	}
 
-	it("update_scope_field with field 'assumptions' writes scoping.assumptions via the tool", async () => {
+	it("update_ferment_scope_field with field 'assumptions' writes scoping.assumptions via the tool", async () => {
 		const { tools, fermentId, storage } = createRegisteredHarness()
-		const tool = tools.get("update_scope_field")
-		if (!tool) throw new Error("update_scope_field was not registered")
+		const tool = tools.get("update_ferment_scope_field")
+		if (!tool) throw new Error("update_ferment_scope_field was not registered")
 
 		const result = (await tool.execute("test-call-id", {
 			ferment_id: fermentId,
@@ -337,10 +337,10 @@ describe("update_scope_field via registerLifecycleTools", () => {
 		expect(storage.get(fermentId)?.scoping.assumptions?.answer).toBe("k8s cluster exists and is reachable")
 	})
 
-	it("update_scope_field rejects unknown fields with a message listing assumptions", async () => {
+	it("update_ferment_scope_field rejects unknown fields with a message listing assumptions", async () => {
 		const { tools, fermentId } = createRegisteredHarness()
-		const tool = tools.get("update_scope_field")
-		if (!tool) throw new Error("update_scope_field was not registered")
+		const tool = tools.get("update_ferment_scope_field")
+		if (!tool) throw new Error("update_ferment_scope_field was not registered")
 
 		const result = (await tool.execute("test-call-id", {
 			ferment_id: fermentId,

@@ -462,8 +462,8 @@ describe("applyCommand: refine_phase", () => {
 					phaseId: "phase-1",
 					steps: [
 						{ description: "first" },
-						{ description: "second", verify: "test", needs_vision: true, parallel_group: 1 },
-						{ description: "third", needs_vision: false, parallel_group: 1 },
+						{ description: "second", verify: "test", parallel_group: 1 },
+						{ description: "third", parallel_group: 1 },
 					],
 				},
 				ctx,
@@ -474,8 +474,6 @@ describe("applyCommand: refine_phase", () => {
 		expect(result.phases[0].steps[1]).toMatchObject({
 			id: "step-2",
 			index: 2,
-			needsVision: true,
-			workerModel: "kimi-k2.5",
 			parallel: true,
 			groupIndex: 1,
 		})
@@ -503,14 +501,6 @@ describe("applyCommand: refine_phase", () => {
 		)
 		expect(result.phases[0].steps[0]).toMatchObject({ parallel: false })
 		expect(result.phases[0].steps[0].groupIndex).toBeUndefined()
-	})
-
-	it("defaults workerModel to minimax-m2.7 when needs_vision is false", () => {
-		const f = makeFerment({ phases: [makePhase({ status: "active" })] })
-		const result = expectOk(
-			applyCommand(f, { type: "refine_phase", phaseId: "phase-1", steps: [{ description: "x" }] }, ctx),
-		)
-		expect(result.phases[0].steps[0].workerModel).toBe("minimax-m2.7")
 	})
 
 	it("rejects when phase is not active", () => {

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { commandToEvents } from "./event-mapper.js"
-import { FermentEventStore, stateHash } from "./event-store.js"
+import { type FermentEvent, FermentEventStore, applyFermentEvent, stateHash } from "./event-store.js"
 import { applyCommand } from "./state-machine.js"
 import { FermentStorage, clearFermentCache } from "./store.js"
 import type { Phase } from "./types.js"
@@ -671,6 +671,53 @@ describe("FermentEventStore", () => {
 			const folded = eventStore.get(f.id)
 			expect(folded?.goal).toBe("g2")
 			expect(folded?.successCriteria).toBe("c2")
+		})
+	})
+
+	// Historic event logs may carry deprecated `workerModel`/`needsVision`
+	// keys on phase_refined step payloads from when ferment encoded model
+	// policy. The fold's normalizer must strip them so they never leak into
+	// reconstructed `Step` objects.
+	describe("phase_refined replay tolerance for deprecated keys", () => {
+		it("drops legacy workerModel and needsVision keys from refined steps when applyFermentEvent folds them", () => {
+			const baseFerment = eventStore.create("Legacy Replay")
+			exec(eventStore, baseFerment.id, {
+				type: "scope",
+				goal: "g",
+				successCriteria: "c",
+				constraints: [],
+				phases: [{ name: "P", goal: "build", steps: [{ description: "stub" }] }],
+			})
+			exec(eventStore, baseFerment.id, { type: "activate_phase", phaseId: "phase-1" })
+			const current = eventStore.get(baseFerment.id)
+			if (!current) throw new Error("setup ferment missing")
+
+			// Hand-craft a phase_refined event whose steps[] payload carries the
+			// legacy keys, mimicking pre-removal disk state.
+			const legacyEvent = {
+				type: "phase_refined",
+				timestamp: "2026-01-01T00:00:00.000Z",
+				payload: {
+					phaseId: "phase-1",
+					steps: [
+						{
+							id: "step-1",
+							index: 1,
+							description: "legacy task",
+							status: "pending",
+							workerModel: "minimax-m2.7",
+							needsVision: true,
+						},
+					],
+				},
+				// biome-ignore lint/suspicious/noExplicitAny: synthetic legacy payload
+			} as any as FermentEvent
+
+			const folded = applyFermentEvent(current, legacyEvent)
+			const step = folded.phases[0].steps[0] as unknown as Record<string, unknown>
+			expect(step.description).toBe("legacy task")
+			expect(step).not.toHaveProperty("workerModel")
+			expect(step).not.toHaveProperty("needsVision")
 		})
 	})
 })

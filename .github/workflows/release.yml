@@ -177,7 +177,7 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
-      - name: Update Formula/kimchi-dev.rb
+      - name: Update Formula/kimchi.rb
         env:
           VERSION: ${{ github.ref_name }}
           SHA_DARWIN_AMD64: ${{ steps.sha.outputs.darwin_amd64 }}
@@ -185,7 +185,7 @@ jobs:
           SHA_LINUX_AMD64: ${{ steps.sha.outputs.linux_amd64 }}
           SHA_LINUX_ARM64: ${{ steps.sha.outputs.linux_arm64 }}
         run: |
-          FORMULA=homebrew-tap/Formula/kimchi-dev.rb
+          FORMULA=homebrew-tap/Formula/kimchi.rb
           # Strip leading 'v' from tag (e.g. v1.2.3 → 1.2.3)
           VER="${VERSION#v}"
 
@@ -202,8 +202,8 @@ jobs:
           cd homebrew-tap
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/kimchi-dev.rb
-          git commit -m "kimchi-dev ${GITHUB_REF_NAME}"
+          git add Formula/kimchi.rb
+          git commit -m "kimchi ${GITHUB_REF_NAME}"
           git push
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}

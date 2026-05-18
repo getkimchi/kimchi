@@ -11,6 +11,10 @@ export const ALWAYS_SHOWN_SKILL_PATHS = [join(".config", "kimchi", "harness", "s
 
 export const OPTIONAL_SKILL_PATHS = [join(".pi", "agent", "skills"), join(".claude", "skills")]
 
+export const envConfig = {
+	KIMCHI_WEB_APP_URL: process.env.KIMCHI_WEB_APP_URL ?? "https://app.kimchi.dev",
+}
+
 export const DEFAULT_SKILL_PATHS = [...ALWAYS_SHOWN_SKILL_PATHS, ...OPTIONAL_SKILL_PATHS]
 
 export function buildSkillPathOptions(discoveredDirs: string[]): string[] {
@@ -249,7 +253,10 @@ export function getAgentConfigDir(): string {
 function writeConfigField(key: string, value: unknown, configPath: string): void {
 	let raw: Record<string, unknown> = {}
 	try {
-		raw = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>
+		const parsed = JSON.parse(readFileSync(configPath, "utf-8"))
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			raw = parsed as Record<string, unknown>
+		}
 	} catch {
 		// file missing or invalid — start fresh
 	}
@@ -269,7 +276,24 @@ export function writeSkillPaths(paths: string[], configPath?: string): void {
 }
 
 export function writeApiKey(key: string, configPath?: string): void {
-	writeConfigField("apiKey", key, configPath ?? KIMCHI_CONFIG_PATH)
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	let raw: Record<string, unknown> = {}
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf-8"))
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			raw = parsed as Record<string, unknown>
+		}
+	} catch {
+		// file missing or invalid — start fresh
+	}
+	raw.apiKey = key
+	// Clear legacy snake_case key so we don't keep stale data
+	// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
+	delete raw.api_key
+	mkdirSync(dirname(path), { recursive: true })
+	const tmp = `${path}.${process.pid}.tmp`
+	writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
+	renameSync(tmp, path)
 }
 
 /**
@@ -283,7 +307,10 @@ export function writeTelemetryEnabled(enabled: boolean, configPath?: string): vo
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	let raw: Record<string, unknown> = {}
 	try {
-		raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>
+		const parsed = JSON.parse(readFileSync(path, "utf-8"))
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			raw = parsed as Record<string, unknown>
+		}
 	} catch {
 		// file missing or invalid — start fresh
 	}
@@ -300,7 +327,10 @@ export function clearApiKey(configPath?: string): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	let raw: Record<string, unknown> = {}
 	try {
-		raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>
+		const parsed = JSON.parse(readFileSync(path, "utf-8"))
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			raw = parsed as Record<string, unknown>
+		}
 	} catch {
 		return
 	}

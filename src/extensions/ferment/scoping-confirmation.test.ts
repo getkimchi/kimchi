@@ -42,7 +42,7 @@ describe("confirmPendingScope", () => {
 		expect(storage.get(ferment.id)?.phases).toHaveLength(1)
 	})
 
-	it("uses explicit phases from propose_scoping and preserves pending user answers", () => {
+	it("uses explicit phases from propose_ferment_scoping and preserves pending user answers", () => {
 		const { runtime, storage } = createRuntime()
 		const ferment = storage.create("Explicit")
 		runtime.setPendingScope(ferment.id, {
@@ -55,7 +55,7 @@ describe("confirmPendingScope", () => {
 			runtime,
 			ferment.id,
 			[{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
-			"propose_scoping",
+			"propose_ferment_scoping",
 		)
 
 		expect(result.ok).toBe(true)
@@ -101,7 +101,7 @@ describe("confirmPendingScope", () => {
 		}
 	})
 
-	it("accepts propose_scoping as a valid source and applies pending scope", () => {
+	it("accepts propose_ferment_scoping as a valid source and applies pending scope", () => {
 		const { runtime, storage } = createRuntime()
 		const ferment = storage.create("Scoping Source Test")
 		runtime.setPendingScope(ferment.id, {
@@ -111,7 +111,7 @@ describe("confirmPendingScope", () => {
 			phases: [{ name: "P1", goal: "Implement OAuth", steps: [{ description: "Add handler" }] }],
 		})
 
-		const result = confirmPendingScope(runtime, ferment.id, undefined, "propose_scoping")
+		const result = confirmPendingScope(runtime, ferment.id, undefined, "propose_ferment_scoping")
 
 		expect(result.ok).toBe(true)
 		if (result.ok) {

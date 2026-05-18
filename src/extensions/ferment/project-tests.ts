@@ -1,7 +1,7 @@
 /**
  * Project test/lint/typecheck *validation*.
  *
- * Originally this module ran the project's own checks at complete_phase time.
+ * Originally this module ran the project's own checks at complete_ferment_phase time.
  * That had a fatal flaw: when ferment runs against its own repo (kimchi-dev),
  * `npm test` shells back into vitest, which re-imports phases.ts, which calls
  * `runProjectChecks` again — recursive vitest spawning, fork-bomb territory.

@@ -12,7 +12,7 @@ interface PersistedState {
 	repos?: Record<string, unknown>
 }
 
-const TTL_MS = 24 * 60 * 60 * 1_000
+const TTL_MS = 60 * 60 * 1_000 // 1 Hour
 
 export function isStale(rs: RepoState, now: number = Date.now()): boolean {
 	const t = Date.parse(rs.checked_at)
