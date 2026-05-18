@@ -66,6 +66,20 @@ export async function runChildWithTTYHandoff(opts: RunChildOptions): Promise<num
 	}
 	opts.signal?.addEventListener("abort", onAbort, { once: true })
 
+	// Silence pi-tui's continuous renders for the duration of the child.
+	// `stdio: "inherit"` plumbs the child's stdout directly to the parent's fd
+	// at the OS level, bypassing JS — so a no-op here suppresses pi-tui without
+	// affecting the child's output.
+	const realStdoutWrite = process.stdout.write.bind(process.stdout)
+	const realStderrWrite = process.stderr.write.bind(process.stderr)
+	const noopWrite: typeof process.stdout.write = ((..._args: unknown[]) => true) as typeof process.stdout.write
+	try {
+		;(process.stdout as { write: typeof process.stdout.write }).write = noopWrite
+		;(process.stderr as { write: typeof process.stderr.write }).write = noopWrite
+	} catch {
+		// best-effort
+	}
+
 	try {
 		return await new Promise<number>((resolve, reject) => {
 			child = spawner(opts.cmd, opts.args, {
@@ -77,6 +91,12 @@ export async function runChildWithTTYHandoff(opts: RunChildOptions): Promise<num
 		})
 	} finally {
 		opts.signal?.removeEventListener("abort", onAbort)
+		try {
+			;(process.stdout as { write: typeof process.stdout.write }).write = realStdoutWrite
+			;(process.stderr as { write: typeof process.stderr.write }).write = realStderrWrite
+		} catch {
+			// best-effort
+		}
 		try {
 			stdin.resume()
 		} catch {
