@@ -1,10 +1,9 @@
-import { spawn } from "node:child_process"
 import { appendFileSync, closeSync, openSync, readFileSync, unlinkSync } from "node:fs"
 import { readFile } from "node:fs/promises"
-import { dirname, join, resolve } from "node:path"
+import { join } from "node:path"
 import { convertToLlm } from "@earendil-works/pi-coding-agent"
 import { parse as parseYaml } from "yaml"
-import { isBunBinary, isRunningUnderBun } from "../../env.js"
+import { spawnKimchiSubprocess } from "../../utils/spawn-kimchi-subprocess.js"
 import type { SkillManager } from "../skills-manager/skill-manager.js"
 import { agentCreatedReport } from "../skills-manager/usage.js"
 import { loadState, saveState } from "./state.js"
@@ -136,39 +135,6 @@ function collectExtensionArgs(): string[] {
 	return result
 }
 
-function resolveTsx(): string | undefined {
-	let dir = dirname(process.argv[1])
-	while (true) {
-		const candidate = resolve(dir, "node_modules/.bin/tsx")
-		if (readablePath(candidate)) return candidate
-		if (readablePath(resolve(dir, "package.json"))) break
-		const parent = dirname(dir)
-		if (parent === dir) break
-		dir = parent
-	}
-	return undefined
-}
-
-function readablePath(path: string): boolean {
-	try {
-		readFileSync(path)
-		return true
-	} catch {
-		return false
-	}
-}
-
-function getReviewAgentInvocation(args: string[]): { command: string; args: string[] } {
-	if (isBunBinary) return { command: process.execPath, args }
-	if (isRunningUnderBun) return { command: process.execPath, args: [process.argv[1], ...args] }
-	if (process.argv[1].endsWith(".ts")) {
-		const tsx = resolveTsx()
-		if (tsx) return { command: tsx, args: [process.argv[1], ...args] }
-		throw new Error("Dev mode requires tsx to spawn curator review agents, but node_modules/.bin/tsx was not found.")
-	}
-	return { command: process.execPath, args: [process.argv[1], ...args] }
-}
-
 function buildReviewAgentArgs(provider: string, model: string, prompt: string): string[] {
 	return [
 		"--mode",
@@ -203,12 +169,14 @@ function spawnReviewAgent(
 	prompt: string,
 	opts?: { detached?: boolean; stdout?: "pipe" | "ignore" | number; stderr?: "pipe" | "ignore" | number },
 ) {
-	const invocation = getReviewAgentInvocation(buildReviewAgentArgs(provider, model, prompt))
-	debugLog(`spawning review agent: ${invocation.command} ${invocation.args.slice(0, 6).join(" ")} ...`)
-	return spawn(invocation.command, invocation.args, {
-		stdio: ["ignore", opts?.stdout ?? "pipe", opts?.stderr ?? "pipe"],
-		detached: opts?.detached ?? false,
-		env: { ...process.env, KIMCHI_SUBAGENT: "1", KIMCHI_SESSION_REVIEW: "1" },
+	const args = buildReviewAgentArgs(provider, model, prompt)
+	debugLog(`spawning review agent with args: ${args.slice(0, 6).join(" ")} ...`)
+	return spawnKimchiSubprocess({
+		args,
+		stdout: opts?.stdout,
+		stderr: opts?.stderr,
+		detached: opts?.detached,
+		env: { KIMCHI_SUBAGENT: "1", KIMCHI_SESSION_REVIEW: "1" },
 	})
 }
 

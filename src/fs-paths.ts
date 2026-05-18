@@ -1,4 +1,4 @@
-// Resolves attachment paths the same way pi's @file loader does, so pre-spawn validation accepts anything pi would accept.
+// Resolves attachment paths the same way pi's @file loader does, so kimchi accepts anything pi would accept.
 // Ported from pi-mono: packages/coding-agent/src/core/tools/path-utils.ts — keep in sync manually if pi's rules evolve.
 // The macOS-specific variants below exist because typing a screenshot's filename rarely produces the exact bytes the filesystem stored; see findExistingFile.
 

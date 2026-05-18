@@ -717,6 +717,33 @@ describe("KimchiAcpAgent tool execution stream", () => {
 	})
 })
 
+describe("isHiddenToolCall", () => {
+	it("returns false for non-Agent tool names", () => {
+		expect(isHiddenToolCall("bash", {})).toBe(false)
+		expect(isHiddenToolCall("read", { visibility: "system" })).toBe(false)
+	})
+
+	it("returns false when visibility is missing", () => {
+		expect(isHiddenToolCall("Agent", {})).toBe(false)
+		expect(isHiddenToolCall("Agent", { prompt: "hello" })).toBe(false)
+	})
+
+	it("returns false when visibility is not 'system' (any casing)", () => {
+		expect(isHiddenToolCall("Agent", { visibility: "public" })).toBe(false)
+		expect(isHiddenToolCall("Agent", { visibility: "private" })).toBe(false)
+	})
+
+	it("returns true when visibility is 'system' (case-insensitive)", () => {
+		expect(isHiddenToolCall("Agent", { visibility: "system" })).toBe(true)
+		expect(isHiddenToolCall("Agent", { visibility: "System" })).toBe(true)
+		expect(isHiddenToolCall("Agent", { visibility: "SYSTEM" })).toBe(true)
+	})
+
+	it("returns true for Agent with mixed-case 'System' visibility", () => {
+		expect(isHiddenToolCall("Agent", { visibility: "SyStEm" })).toBe(true)
+	})
+})
+
 // Coverage for assertSessionHasModel: ACP clients (Zed) should see authRequired
 // (-32000), not a generic internal error, when the model is unavailable — that
 // error code routes to the client's auth UI instead of an opaque failure toast.

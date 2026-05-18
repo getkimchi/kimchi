@@ -502,9 +502,13 @@ const asString = (v: unknown): string | undefined => (typeof v === "string" ? v 
 const truncate = (s: string): string => (s.length > TITLE_MAX ? `${s.slice(0, TITLE_MAX)}…` : s)
 
 export function isHiddenToolCall(toolName: string, args: unknown): boolean {
+	// Defense-in-depth: the Agent tool's public schema deliberately omits `visibility`
+	// (see src/extensions/agents/index.ts:execute), so this normally returns false. If a
+	// misbehaving LLM emits the field anyway, we hide the ACP-side tool_call rather than
+	// trust the schema to have caught it.
 	if (toolName !== "Agent") return false
 	const a = (args ?? {}) as Record<string, unknown>
-	return a.visibility === "system"
+	return typeof a.visibility === "string" && a.visibility.toLowerCase() === "system"
 }
 
 export function describeToolCall(

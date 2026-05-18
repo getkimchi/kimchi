@@ -685,16 +685,12 @@ Model selection — YOU choose based on task complexity:
 						description: "If true, fork parent conversation into the agent. Default: false (fresh context).",
 					}),
 				),
-				visibility: Type.Optional(
-					Type.String({
-						description:
-							'Visibility for this agent. Use "user" (default) for normal user-facing delegation. Use "system" for technical/internal background work that must be hidden from user-facing UI and completion notifications.',
-					}),
-				),
 			}),
 
 			renderCall(args, theme) {
-				if (args.visibility === "system") return new Text("", 0, 0)
+				// Defense-in-depth: `visibility` is not in this tool's public schema (see execute()),
+				// but if an LLM hallucinates the arg we'd rather hide the tool call than render it.
+				if ((args as Record<string, unknown>).visibility === "system") return new Text("", 0, 0)
 				const displayName = args.subagent_type ? getDisplayName(args.subagent_type as string) : "Agent"
 				const desc = (args.description as string) ?? ""
 				return new Text(
@@ -818,9 +814,13 @@ Model selection — YOU choose based on task complexity:
 				const thinking = resolvedConfig.thinking
 				const inheritContext = resolvedConfig.inheritContext
 				const isolated = resolvedConfig.isolated
-				const visibility: AgentVisibility = params.visibility === "system" ? "system" : "user"
-				const isSystemAgent = visibility === "system"
-				const runInBackground = isSystemAgent ? true : resolvedConfig.runInBackground
+				// The `visibility` field is intentionally NOT exposed in this tool's public schema —
+				// LLMs and personas cannot create hidden agents. Internal kimchi callers (e.g. permission
+				// classifiers, future MCP adapters) spawn hidden agents directly via `AgentManager.spawn(..., { visibility: "system" })`,
+				// which bypasses the tool layer entirely. Hardcoding "user" here ensures any defiant
+				// LLM that hallucinates a `visibility` arg gets ignored at the source.
+				const visibility: AgentVisibility = "user"
+				const runInBackground = resolvedConfig.runInBackground
 
 				const parentModelId = ctx.model?.id
 				const effectiveModelId = (model as { id?: string } | undefined)?.id
@@ -913,24 +913,22 @@ Model selection — YOU choose based on task complexity:
 
 					const joinMode = resolveJoinMode(getDefaultJoinMode(), true)
 					const record = manager.getRecord(id)
-					if (record && joinMode && !isSystemAgent) {
+					if (record && joinMode) {
 						record.joinMode = joinMode
 						record.toolCallId = toolCallId
 						record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
 						writeInitialEntry(record.outputFile, id, params.prompt as string, ctx.cwd)
 					}
 
-					if (!isSystemAgent && joinMode != null && joinMode !== "async") {
+					if (joinMode != null && joinMode !== "async") {
 						currentBatchAgents.push({ id, joinMode })
 						if (batchFinalizeTimer) clearTimeout(batchFinalizeTimer)
 						batchFinalizeTimer = setTimeout(finalizeBatch, 100)
 					}
 
-					if (!isSystemAgent) {
-						agentActivity.set(id, bgState)
-						widget.ensureTimer()
-						widget.update()
-					}
+					agentActivity.set(id, bgState)
+					widget.ensureTimer()
+					widget.update()
 
 					pi.events.emit("subagents:created", {
 						id,
@@ -941,12 +939,6 @@ Model selection — YOU choose based on task complexity:
 					})
 
 					const isQueued = record?.status === "queued"
-					if (isSystemAgent) {
-						return textResult(
-							`System agent ${isQueued ? "queued" : "started"}.\nAgent ID: ${id}\nUse get_subagent_result to retrieve the result.`,
-							{ ...detailBase, toolUses: 0, tokens: "", durationMs: 0, status: "background" as const, agentId: id },
-						)
-					}
 					return textResult(
 						`Agent ${isQueued ? "queued" : "started"} in background.\nAgent ID: ${id}\nType: ${displayName}\nDescription: ${params.description}\n${record?.outputFile ? `Output file: ${record.outputFile}\n` : ""}${isQueued ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n` : ""}\nYou will be notified when this agent completes.\nUse get_subagent_result to retrieve full results, or steer_subagent to send it messages.\nDo not duplicate this agent's work.`,
 						{ ...detailBase, toolUses: 0, tokens: "", durationMs: 0, status: "background" as const, agentId: id },
