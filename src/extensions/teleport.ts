@@ -20,6 +20,14 @@ import type { TeleportableAgentSession } from "../modes/teleport/teleportable-ag
 export interface TeleportExtensionDeps {
 	getWrapper: () => TeleportableAgentSession | undefined
 	getServices: () => AgentSessionServices | undefined
+	/**
+	 * Lazy getter for the InteractiveMode rebind trigger captured in
+	 * run-interactive-teleport.ts. We call this after `wrapper.foregroundRemote`
+	 * / `detachToHomeBase` so the TUI re-binds to the swapped foreground;
+	 * without it the prompt stays wired to the original session and input
+	 * appears to do nothing.
+	 */
+	getTriggerRebind: () => (() => Promise<void>) | undefined
 	apiKey: string
 	endpoint?: string
 }
@@ -39,6 +47,7 @@ function buildCtx(ctx: ExtensionCommandContext, deps: TeleportExtensionDeps): Te
 		cwd: ctx.cwd,
 		ui: ctx.ui,
 		signal: ctx.signal,
+		triggerRebind: deps.getTriggerRebind(),
 	}
 }
 
