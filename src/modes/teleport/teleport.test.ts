@@ -443,6 +443,7 @@ describe("runTeleport", () => {
 		// triggerRebind is invoked — must be false (already swapped to
 		// remote) otherwise InteractiveMode rebinds to the wrong session.
 		let observedIsHomeBaseAtRebind: boolean | "not-called" = "not-called"
+		// biome-ignore lint/style/useConst: forward reference — captured by triggerRebind before setup.wrapper exists.
 		let wrapperRef: TeleportableAgentSession | undefined
 		const triggerRebind = vi.fn(async () => {
 			observedIsHomeBaseAtRebind = wrapperRef?.isForegroundHomeBase ?? true
@@ -560,6 +561,7 @@ describe("runDetach", () => {
 	it("calls triggerRebind AFTER detachToHomeBase (TUI re-binds to home base)", async () => {
 		const home = new FakeSession("local-1")
 		let observedIsHomeBaseAtRebind: boolean | "not-called" = "not-called"
+		// biome-ignore lint/style/useConst: forward reference — captured by triggerRebind before setup.wrapper exists.
 		let wrapperRef: TeleportableAgentSession | undefined
 		const triggerRebind = vi.fn(async () => {
 			observedIsHomeBaseAtRebind = wrapperRef?.isForegroundHomeBase ?? false
