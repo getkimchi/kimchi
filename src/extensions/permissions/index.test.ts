@@ -1,6 +1,7 @@
-import type { ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolInfo } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { checkCompoundCommand, handleCompoundConfirm } from "./index.js"
+import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import permissionsExtension, { checkCompoundCommand, handleCompoundConfirm } from "./index.js"
 import { SessionMemory } from "./session-memory.js"
 import type { Rule } from "./types.js"
 
@@ -29,6 +30,7 @@ function createMockContext(
 			setStatus: vi.fn(),
 			theme: {
 				fg: vi.fn((_, s) => s),
+				getFgAnsi: vi.fn(() => ""),
 			},
 			onTerminalInput: vi.fn(() => () => {}),
 		},
@@ -43,6 +45,103 @@ function createMockEvent(): ToolCallEvent {
 		cwd: "/test",
 	} as unknown as ToolCallEvent
 }
+
+type ExtensionHandler = (event: unknown, ctx: ExtensionContext) => unknown | Promise<unknown>
+type RegisteredCommand = {
+	handler: (args: string, ctx: ExtensionContext) => unknown | Promise<unknown>
+}
+
+function createPermissionsHarness(
+	toolNames: string[],
+	flags: Record<string, boolean | string | undefined> = {},
+	initialActiveTools: string[] = toolNames,
+) {
+	const handlers = new Map<string, ExtensionHandler[]>()
+	const commands = new Map<string, RegisteredCommand>()
+	const tools = toolNames.map((name) => ({ name, description: `${name} tool` }) as ToolInfo)
+	let activeTools = [...initialActiveTools]
+
+	const pi = {
+		registerFlag: vi.fn(),
+		getFlag: vi.fn((name: string) => flags[name]),
+		registerCommand: vi.fn((name: string, command: RegisteredCommand) => {
+			commands.set(name, command)
+		}),
+		on: vi.fn((event: string, handler: ExtensionHandler) => {
+			const list = handlers.get(event) ?? []
+			list.push(handler)
+			handlers.set(event, list)
+		}),
+		getAllTools: vi.fn(() => tools),
+		getActiveTools: vi.fn(() => activeTools),
+		setActiveTools: vi.fn((names: string[]) => {
+			const known = new Set(toolNames)
+			activeTools = names.filter((name) => known.has(name))
+		}),
+		sendMessage: vi.fn(),
+	} as unknown as ExtensionAPI
+
+	permissionsExtension(pi)
+
+	return {
+		pi,
+		commands,
+		activeTools: () => activeTools,
+		async fire(event: string, payload: unknown, ctx: ExtensionContext = createMockContext([])) {
+			for (const handler of handlers.get(event) ?? []) {
+				await handler(payload, ctx)
+			}
+		},
+	}
+}
+
+describe("permissions plan-mode tool visibility", () => {
+	it("leaving plan mode does not restore tools hidden by another extension", async () => {
+		const previousEnv = process.env.KIMCHI_PERMISSIONS
+		try {
+			const harness = createPermissionsHarness(["read", "bash", "write", "edit", "grep"], { plan: true })
+			const peerVisibility = createToolVisibility(harness.pi)
+			peerVisibility.disable(["bash"])
+
+			await harness.fire("session_start", {}, createMockContext([]))
+			expect(harness.activeTools().sort()).toEqual(["grep", "read"])
+
+			const command = harness.commands.get("permissions")
+			expect(command).toBeDefined()
+			await command?.handler("mode default", createMockContext([]))
+
+			expect(harness.activeTools().sort()).toEqual(["edit", "grep", "read", "write"])
+
+			peerVisibility.enable(["bash"])
+			expect(harness.activeTools().sort()).toEqual(["bash", "edit", "grep", "read", "write"])
+		} finally {
+			process.env.KIMCHI_PERMISSIONS = previousEnv
+		}
+	})
+
+	it("leaving plan mode does not activate mutating tools that were already inactive", async () => {
+		const previousEnv = process.env.KIMCHI_PERMISSIONS
+		try {
+			const harness = createPermissionsHarness(["read", "bash", "write", "edit", "grep"], { plan: true }, [
+				"read",
+				"bash",
+				"write",
+				"grep",
+			])
+
+			await harness.fire("session_start", {}, createMockContext([]))
+			expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
+
+			const command = harness.commands.get("permissions")
+			expect(command).toBeDefined()
+			await command?.handler("mode default", createMockContext([]))
+
+			expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read", "write"])
+		} finally {
+			process.env.KIMCHI_PERMISSIONS = previousEnv
+		}
+	})
+})
 
 describe("checkCompoundCommand", () => {
 	it("returns prompt for compound command with no rules", () => {
@@ -394,7 +493,7 @@ describe("handleCompoundConfirm", () => {
 				input: vi.fn(async () => ""),
 				notify: vi.fn(),
 				setStatus: vi.fn(),
-				theme: { fg: vi.fn((_, s) => s) },
+				theme: { fg: vi.fn((_, s) => s), getFgAnsi: vi.fn(() => "") },
 				onTerminalInput: vi.fn(() => () => {}),
 			},
 		} as unknown as ExtensionContext

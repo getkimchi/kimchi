@@ -4,6 +4,7 @@ import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-wo
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
+import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { resolveClassifierModel } from "./classifier-model.js"
 import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
@@ -55,6 +56,7 @@ const EMPTY_LOADED_CONFIG: LoadedConfig = {
 
 // bash is allowed but gated per-command by isReadOnlyBashCommand.
 const PLAN_MODE_TOOLS = ["read", "grep", "find", "ls", "web_search", "web_fetch", "questionnaire", "bash"]
+const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 
 // Tools that auto-approve in headless/auto modes without LLM classification.
 // `set_phase` is a kimchi built-in. `agent`/`get_subagent_result`/`steer_subagent`
@@ -154,8 +156,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	let configRules: Rule[] = []
 	let runtimeMode: PermissionMode | undefined
 	let cliMode: PermissionMode | undefined
-	let originalActiveTools: string[] | null = null
 	let planModeApplied = false
+	let planModeHiddenTools: string[] = []
+	const planToolVisibility: ToolVisibilityAPI = createToolVisibility(pi)
 	/** Tracks all active permission prompt abort controllers for concurrent tool calls. */
 	const activeAbortControllers = new Set<AbortController>()
 	let unsubscribeTerminalInput: (() => void) | null = null
@@ -195,35 +198,29 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		return [...session.all(), ...configRules, ...builtinRules]
 	}
 
+	function isPlanModeTool(name: string): boolean {
+		return PLAN_MODE_TOOL_SET.has(name) || isReadOnlyTool(name)
+	}
+
 	function applyPlanModeTools(): void {
 		if (planModeApplied) return
 		try {
-			if (originalActiveTools === null) {
-				originalActiveTools = pi.getActiveTools()
-			}
-			const allTools = pi.getAllTools()
-			const planTools = new Set<string>()
-			for (const tool of allTools) {
-				if (PLAN_MODE_TOOLS.includes(tool.name) || isReadOnlyTool(tool.name)) {
-					planTools.add(tool.name)
-				}
-			}
-			pi.setActiveTools([...planTools])
+			planModeHiddenTools = pi.getActiveTools().filter((name) => !isPlanModeTool(name))
+			planToolVisibility.disable(planModeHiddenTools)
 			planModeApplied = true
 		} catch {
-			// setActiveTools may be unavailable; tool_call handler still enforces the policy.
+			// Tool visibility may be unavailable; tool_call handler still enforces the policy.
 		}
 	}
 
 	function restoreToolsFromPlanMode(): void {
 		if (!planModeApplied) return
-		if (originalActiveTools) {
-			try {
-				pi.setActiveTools(originalActiveTools)
-			} catch {
-				// best-effort restore
-			}
+		try {
+			planToolVisibility.enable(planModeHiddenTools)
+		} catch {
+			// best-effort restore
 		}
+		planModeHiddenTools = []
 		planModeApplied = false
 	}
 
