@@ -15,7 +15,7 @@ const PROMISIFY_CUSTOM = Symbol.for("nodejs.util.promisify.custom")
 
 type ExecAsyncImpl = (cmd: string, opts?: unknown) => Promise<{ stdout: string; stderr: string }>
 
-const { execAsyncMock, execMock, authMock, listMock, buildMock, rsyncMock } = vi.hoisted(() => {
+const { execAsyncMock, execMock, authMock, listMock, buildMock, rsyncMock, waitMock } = vi.hoisted(() => {
 	const execAsyncMock = vi.fn<ExecAsyncImpl>(async () => ({ stdout: "", stderr: "" }))
 	const PROMISIFY = Symbol.for("nodejs.util.promisify.custom")
 	const execMock: { (...args: unknown[]): void; [PROMISIFY]?: typeof execAsyncMock } = Object.assign(vi.fn(), {
@@ -28,6 +28,7 @@ const { execAsyncMock, execMock, authMock, listMock, buildMock, rsyncMock } = vi
 		listMock: vi.fn(),
 		buildMock: vi.fn(),
 		rsyncMock: vi.fn(),
+		waitMock: vi.fn(),
 	}
 })
 
@@ -35,6 +36,7 @@ vi.mock("node:child_process", () => ({ exec: execMock }))
 vi.mock("../remote/auth.js", () => ({
 	authenticateRemoteSession: authMock,
 	listRemoteSessions: listMock,
+	waitForSessionReady: waitMock,
 }))
 vi.mock("../remote/build-remote-session.js", () => ({
 	buildRemoteAgentSession: buildMock,
@@ -55,7 +57,15 @@ vi.mock("./rsync-transport.js", () => ({
 }))
 
 // Imported after vi.mock so module resolution sees the mocks.
-import { TeleportRefusal, runAttach, runConnect, runDetach, runListSessions, runTeleport } from "./teleport.js"
+import {
+	TeleportRefusal,
+	deriveSandboxDest,
+	runAttach,
+	runConnect,
+	runDetach,
+	runListSessions,
+	runTeleport,
+} from "./teleport.js"
 
 class FakeSession {
 	readonly sessionId: string
@@ -110,13 +120,15 @@ function makeUI() {
 	}
 }
 
-function makeCtx(homeBase: FakeSession) {
+function makeCtx(homeBase: FakeSession, opts: { triggerRebind?: () => Promise<void> } = {}) {
 	const wrapper = TeleportableAgentSession.create(asSession(homeBase))
 	const ui = makeUI()
 	const services = {} as unknown as AgentSessionServices
+	const triggerRebind = opts.triggerRebind ?? vi.fn(async () => {})
 	return {
 		wrapper,
 		ui,
+		triggerRebind,
 		ctx: {
 			wrapper,
 			services,
@@ -124,6 +136,7 @@ function makeCtx(homeBase: FakeSession) {
 			endpoint: "https://api.example.com",
 			cwd: "/work/proj",
 			ui,
+			triggerRebind,
 		},
 	}
 }
@@ -161,6 +174,14 @@ beforeEach(() => {
 	listMock.mockReset()
 	buildMock.mockReset()
 	rsyncMock.mockReset()
+	waitMock.mockReset()
+	waitMock.mockResolvedValue({
+		id: "sess",
+		organizationId: "org",
+		status: "ACTIVE",
+		uri: "wss://host.example.com",
+		createTime: "2026-01-01T00:00:00Z",
+	})
 	setExecOutputs(HAPPY_EXEC)
 	authMock.mockResolvedValue(AUTH_OK)
 	listMock.mockResolvedValue([])
@@ -189,7 +210,20 @@ describe("runTeleport", () => {
 		expect(rsyncMock).toHaveBeenCalledOnce()
 		expect(buildMock).toHaveBeenCalledOnce()
 		expect(wrapper.foreground).toBe(asRemote(remote))
-		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/^Teleported/), "info")
+		// Short final notification — just the session id, no extra hints.
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/^Teleported to remote session [\w-]+\.$/), "info")
+		// Session summary surfaces immediately after auth, before the wait.
+		// Carries the target path so the user knows where their files live
+		// (the agent's CWD is still /home/sandbox).
+		expect(ui.notify).toHaveBeenCalledWith(
+			expect.stringMatching(
+				/Created remote session:[\s\S]*id:[\s\S]*host:[\s\S]*port:[\s\S]*url:[\s\S]*target:\s+\/home\/sandbox\/proj\//,
+			),
+			"info",
+		)
+		// runRsync was called with the per-teleport subdir as the destination.
+		const rsyncCall = rsyncMock.mock.calls[0][0] as { destination?: string }
+		expect(rsyncCall.destination).toBe("/home/sandbox/proj/")
 	})
 
 	it("refuses when already foregrounded on a remote", async () => {
@@ -345,6 +379,108 @@ describe("runTeleport", () => {
 		expect(wrapper.foreground).toBe(asRemote(remote))
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Could not set session name/), "warning")
 	})
+
+	it("waits for the sandbox to become ready between auth and rsync", async () => {
+		const home = new FakeSession("local-1")
+		const { ctx } = makeCtx(home)
+		buildMock.mockResolvedValueOnce(asRemote(new FakeSession("remote-1")))
+
+		await runTeleport(
+			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false },
+			ctx,
+		)
+
+		expect(waitMock).toHaveBeenCalledOnce()
+		const authOrder = authMock.mock.invocationCallOrder[0]
+		const waitOrder = waitMock.mock.invocationCallOrder[0]
+		const rsyncOrder = rsyncMock.mock.invocationCallOrder[0]
+		expect(waitOrder).toBeGreaterThan(authOrder)
+		expect(rsyncOrder).toBeGreaterThan(waitOrder)
+	})
+
+	it("refuses when the sandbox never becomes ready", async () => {
+		const home = new FakeSession("local-1")
+		const { wrapper, ctx } = makeCtx(home)
+		waitMock.mockRejectedValueOnce(new Error("Session did not become ACTIVE within 90s (last status: INITIALIZING)"))
+
+		await expect(
+			runTeleport({ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false }, ctx),
+		).rejects.toThrow(/Sandbox never became ready.*INITIALIZING/s)
+		expect(rsyncMock).not.toHaveBeenCalled()
+		expect(wrapper.isForegroundHomeBase).toBe(true)
+	})
+
+	it("passes onPhase to runRsync and drives per-step status text", async () => {
+		const home = new FakeSession("local-1")
+		const { ctx, ui } = makeCtx(home)
+		buildMock.mockResolvedValueOnce(asRemote(new FakeSession("remote-1")))
+		rsyncMock.mockImplementationOnce(async (opts: { onPhase?: (p: "mkdir" | "rsync") => void }) => {
+			opts.onPhase?.("mkdir")
+			opts.onPhase?.("rsync")
+			return { fileCount: 1, totalBytes: 0, durationMs: 1 }
+		})
+
+		await runTeleport(
+			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false },
+			ctx,
+		)
+
+		const rsyncCallArgs = rsyncMock.mock.calls[0][0] as { onPhase?: unknown }
+		expect(typeof rsyncCallArgs.onPhase).toBe("function")
+		expect(ui.setStatus).toHaveBeenCalledWith("teleport", "Preparing remote directory…")
+		expect(ui.setStatus).toHaveBeenCalledWith("teleport", "Syncing workspace…")
+		// Order matters: mkdir before rsync.
+		const calls = ui.setStatus.mock.calls as Array<[string, string | undefined]>
+		const mkdirIdx = calls.findIndex((c) => c[1] === "Preparing remote directory…")
+		const rsyncIdx = calls.findIndex((c) => c[1] === "Syncing workspace…")
+		expect(mkdirIdx).toBeGreaterThanOrEqual(0)
+		expect(rsyncIdx).toBeGreaterThan(mkdirIdx)
+	})
+
+	it("calls triggerRebind AFTER foregroundRemote (TUI re-binds to remote)", async () => {
+		const home = new FakeSession("local-1")
+		// Record what wrapper.isForegroundHomeBase reads as at the moment
+		// triggerRebind is invoked — must be false (already swapped to
+		// remote) otherwise InteractiveMode rebinds to the wrong session.
+		let observedIsHomeBaseAtRebind: boolean | "not-called" = "not-called"
+		let wrapperRef: TeleportableAgentSession | undefined
+		const triggerRebind = vi.fn(async () => {
+			observedIsHomeBaseAtRebind = wrapperRef?.isForegroundHomeBase ?? true
+		})
+		const setup = makeCtx(home, { triggerRebind })
+		wrapperRef = setup.wrapper
+		buildMock.mockResolvedValueOnce(asRemote(new FakeSession("remote-1")))
+
+		await runTeleport(
+			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false },
+			setup.ctx,
+		)
+
+		expect(triggerRebind).toHaveBeenCalledOnce()
+		expect(observedIsHomeBaseAtRebind).toBe(false)
+	})
+
+	it("treats a triggerRebind failure as non-fatal (warns but doesn't refuse)", async () => {
+		const home = new FakeSession("local-1")
+		const setup = makeCtx(home, {
+			triggerRebind: vi.fn(async () => {
+				throw new Error("rebind boom")
+			}),
+		})
+		buildMock.mockResolvedValueOnce(asRemote(new FakeSession("remote-1")))
+
+		// runTeleport should still resolve; the wrapper swap already happened
+		// by the time triggerRebind threw.
+		await runTeleport(
+			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false },
+			setup.ctx,
+		)
+
+		expect(setup.wrapper.isForegroundHomeBase).toBe(false)
+		expect(setup.ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Session rebind failed: rebind boom/), "warning")
+		// Final "Teleported …" info still fires (user sees the success path).
+		expect(setup.ui.notify).toHaveBeenCalledWith(expect.stringMatching(/^Teleported/), "info")
+	})
 })
 
 // ───────────────────────── runDetach ─────────────────────────
@@ -419,6 +555,23 @@ describe("runDetach", () => {
 
 		await runDetach({ abandonPending: false }, ctx)
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("/attach named-remote"), "info")
+	})
+
+	it("calls triggerRebind AFTER detachToHomeBase (TUI re-binds to home base)", async () => {
+		const home = new FakeSession("local-1")
+		let observedIsHomeBaseAtRebind: boolean | "not-called" = "not-called"
+		let wrapperRef: TeleportableAgentSession | undefined
+		const triggerRebind = vi.fn(async () => {
+			observedIsHomeBaseAtRebind = wrapperRef?.isForegroundHomeBase ?? false
+		})
+		const setup = makeCtx(home, { triggerRebind })
+		wrapperRef = setup.wrapper
+		setup.wrapper.foregroundRemote(asRemote(new FakeSession("remote-1")))
+
+		await runDetach({ abandonPending: false }, setup.ctx)
+
+		expect(triggerRebind).toHaveBeenCalledOnce()
+		expect(observedIsHomeBaseAtRebind).toBe(true)
 	})
 })
 
@@ -756,5 +909,36 @@ describe("runConnect", () => {
 		await runConnect({}, ctx, { _runChildWithTTYHandoff: runChild })
 
 		expect(wrapper.foreground).toBe(asRemote(fg))
+	})
+})
+
+// ───────────────────────── deriveSandboxDest ─────────────────────────
+
+describe("deriveSandboxDest", () => {
+	it("uses the basename of the local source cwd", () => {
+		expect(deriveSandboxDest("/Users/me/projects/my-app")).toBe("/home/sandbox/my-app/")
+	})
+
+	it("strips trailing slashes before taking the basename", () => {
+		expect(deriveSandboxDest("/Users/me/projects/my-app/")).toBe("/home/sandbox/my-app/")
+		expect(deriveSandboxDest("/Users/me/projects/my-app///")).toBe("/home/sandbox/my-app/")
+	})
+
+	it("falls back to 'workspace' when basename would be empty", () => {
+		expect(deriveSandboxDest("/")).toBe("/home/sandbox/workspace/")
+		expect(deriveSandboxDest("")).toBe("/home/sandbox/workspace/")
+	})
+
+	it("preserves spaces and unusual chars (shellEscape handles them downstream)", () => {
+		expect(deriveSandboxDest("/Users/me/my project")).toBe("/home/sandbox/my project/")
+		expect(deriveSandboxDest("/Users/me/proj v2.0")).toBe("/home/sandbox/proj v2.0/")
+	})
+
+	it("uses the deepest path component for nested sources", () => {
+		expect(deriveSandboxDest("/Users/me/work/clients/acme/api-v3")).toBe("/home/sandbox/api-v3/")
+	})
+
+	it("keeps leading-dot names (e.g. .dotfiles dir is valid)", () => {
+		expect(deriveSandboxDest("/Users/me/.dotfiles")).toBe("/home/sandbox/.dotfiles/")
 	})
 })

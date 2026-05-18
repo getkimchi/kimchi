@@ -1,5 +1,6 @@
 import { exec } from "node:child_process"
 import { randomUUID } from "node:crypto"
+import { basename } from "node:path"
 import { promisify } from "node:util"
 import type {
 	AgentSession,
@@ -7,12 +8,13 @@ import type {
 	ExtensionUIContext,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent"
-import { authenticateRemoteSession, listRemoteSessions } from "../remote/auth.js"
+import { authenticateRemoteSession, listRemoteSessions, waitForSessionReady } from "../remote/auth.js"
 import { buildRemoteAgentSession } from "../remote/build-remote-session.js"
 import type { RemoteAgentSession } from "../remote/remote-agent-session.js"
 import { RemoteAuthError } from "../remote/types.js"
 import type { AuthenticateResponse, RemoteSessionStatus, RemoteSessionSummary } from "../remote/types.js"
 import type { AttachArgs, ConnectArgs, DetachArgs, TeleportArgs } from "./args.js"
+import { getTeleportProxyPath } from "./proxy-path.js"
 import { BASE_EXCLUDE_GLOBS, RsyncError, runRsync } from "./rsync-transport.js"
 import { type SessionRow, renderSessionsTable } from "./sessions-table.js"
 import type { TeleportableAgentSession } from "./teleportable-agent-session.js"
@@ -22,7 +24,40 @@ const execAsync = promisify(exec)
 
 const STATUS_KEY = "teleport"
 const SANDBOX_USER = "sandbox"
-const SANDBOX_DEST = "/home/sandbox/"
+const SANDBOX_HOME = "/home/sandbox"
+const FALLBACK_TARGET_NAME = "workspace"
+
+/**
+ * Pick the subdirectory inside SANDBOX_HOME that we rsync into. The
+ * default is the basename of the local source cwd, so teleport from
+ * `~/Work/my-app` lands files at `/home/sandbox/my-app/`. We sync
+ * into a subdir rather than directly into `/home/sandbox` for two
+ * reasons:
+ *
+ *   1. `/home/sandbox` is owned by `root:sandbox`, so rsync's
+ *      `--archive`-implied `--times` fails with `Operation not
+ *      permitted` on the destination dir itself (exit 23). Creating
+ *      our own subdir as the `sandbox` user means we own it and
+ *      `utimes()` succeeds.
+ *   2. Keeps the user's home dotfiles (`.config`, `.local`, etc.)
+ *      separate from project files, and prevents `--delete` from
+ *      sweeping anything outside our subdir.
+ *
+ * NOTE: the kimchi agent's process CWD on the sandbox is still
+ * `/home/sandbox` (server-baked in `kimchi-bridge`), so the user has
+ * to `cd <basename>` after connecting. Aligning the agent CWD needs
+ * a worker-side change.
+ */
+export function deriveSandboxDest(localCwd: string): string {
+	const trimmed = localCwd.replace(/\/+$/, "")
+	const raw = basename(trimmed)
+	// `/` and NUL are the only path-illegal bytes on Unix; replace
+	// defensively. Everything else (spaces, quotes, etc.) is handled
+	// by `shellEscape` further down the pipeline.
+	const cleaned = raw.replace(/[/\0]/g, "_")
+	const name = cleaned.length > 0 && cleaned !== "." ? cleaned : FALLBACK_TARGET_NAME
+	return `${SANDBOX_HOME}/${name}/`
+}
 const WORKSPACE_WARN_BYTES = 500 * 1024 * 1024
 const WORKSPACE_REFUSE_BYTES = 5 * 1024 * 1024 * 1024
 const BUSY_WAIT_MS_LOCAL = 5_000
@@ -36,6 +71,13 @@ export interface TeleportContext {
 	cwd: string
 	ui: ExtensionUIContext
 	signal?: AbortSignal
+	/**
+	 * Asks InteractiveMode to re-bind its session listeners to the wrapper's
+	 * current foreground. Must be invoked after `wrapper.foregroundRemote` or
+	 * `wrapper.detachToHomeBase`, otherwise the TUI stays bound to the old
+	 * session and the editor appears frozen. Captured by run-interactive-teleport.
+	 */
+	triggerRebind?: () => Promise<void>
 }
 
 export class TeleportRefusal extends Error {
@@ -61,6 +103,22 @@ function info(ctx: TeleportContext, message: string) {
 
 function status(ctx: TeleportContext, text: string | undefined) {
 	ctx.ui.setStatus(STATUS_KEY, text)
+}
+
+/**
+ * Ask InteractiveMode to rebind to the wrapper's current foreground. Call this
+ * after every `wrapper.foregroundRemote` / `wrapper.detachToHomeBase` swap.
+ * The rebind is non-fatal: if it throws (e.g., extension reload glitch), the
+ * wrapper transition has already happened and the user can still type — we
+ * just warn so the failure is visible.
+ */
+async function rebindAfterSwap(ctx: TeleportContext): Promise<void> {
+	if (!ctx.triggerRebind) return
+	try {
+		await ctx.triggerRebind()
+	} catch (err) {
+		warn(ctx, `Session rebind failed: ${err instanceof Error ? err.message : String(err)}`)
+	}
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -223,6 +281,23 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 		refuse(ctx, `Authentication failed: ${err instanceof Error ? err.message : String(err)}`)
 	}
 
+	// ── 2.5. Session summary ──
+	// Per-teleport target directory inside the sandbox. See
+	// `deriveSandboxDest` for why we sync into a subdir rather than
+	// /home/sandbox directly.
+	const sandboxDest = deriveSandboxDest(ctx.cwd)
+	info(
+		ctx,
+		[
+			"Created remote session:",
+			`  id:     ${sessionId}`,
+			`  host:   ${authResult.host}`,
+			`  port:   ${authResult.port}`,
+			`  url:    ${authResult.wsUrl}`,
+			`  target: ${sandboxDest}`,
+		].join("\n"),
+	)
+
 	// ── 3. Name uniqueness ──
 	if (args.name) {
 		status(ctx, "Checking name availability…")
@@ -237,12 +312,47 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 		}
 	}
 
+	// ── 3.5. Wait for sandbox to become ACTIVE ──
+	status(ctx, "Waiting for sandbox…")
+	try {
+		await waitForSessionReady({
+			host: authResult.host,
+			port: authResult.port,
+			connectToken: authResult.connectToken,
+			signal: ctx.signal,
+			onTick: ({ elapsedMs }) => {
+				status(ctx, `Waiting for sandbox… (${Math.round(elapsedMs / 1000)}s)`)
+			},
+		})
+	} catch (err) {
+		refuse(
+			ctx,
+			`Sandbox never became ready: ${err instanceof Error ? err.message : String(err)}\nRemote session ${sessionId} will be cleaned up automatically.`,
+		)
+	}
+
 	// ── 4. rsync ──
-	status(ctx, "Syncing workspace…")
+	// Each step (mkdir, rsync) shares a heartbeat that keeps the UI alive
+	// during silent intervals. The phase label switches when runRsync calls
+	// onPhase so the user can tell which step is running.
+	const PHASE_LABEL = {
+		mkdir: "Preparing remote directory…",
+		rsync: "Syncing workspace…",
+	} as const
+	let currentPhase: "mkdir" | "rsync" = "mkdir"
+	let phaseStartedAt = Date.now()
+	let lastProgressAt = phaseStartedAt
+	status(ctx, PHASE_LABEL.mkdir)
+	const heartbeat = setInterval(() => {
+		if (Date.now() - lastProgressAt > 1500) {
+			const elapsed = Math.round((Date.now() - phaseStartedAt) / 1000)
+			status(ctx, `${PHASE_LABEL[currentPhase]} (${elapsed}s)`)
+		}
+	}, 1000)
 	try {
 		await runRsync({
 			source: ctx.cwd,
-			destination: SANDBOX_DEST,
+			destination: sandboxDest,
 			remoteHost: authResult.host,
 			remotePort: authResult.port,
 			remoteUser: SANDBOX_USER,
@@ -250,11 +360,31 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 			excludeGlobs: [...BASE_EXCLUDE_GLOBS, ...args.exclude],
 			includeIgnored: args.includeIgnored,
 			signal: ctx.signal,
-			onProgress: (pct) => status(ctx, `Syncing… ${pct}%`),
+			onPhase: (phase) => {
+				currentPhase = phase
+				phaseStartedAt = Date.now()
+				lastProgressAt = phaseStartedAt
+				status(ctx, PHASE_LABEL[phase])
+			},
+			onProgress: (pct) => {
+				lastProgressAt = Date.now()
+				status(ctx, `Syncing… ${pct}%`)
+			},
 		})
 	} catch (err) {
-		const msg = err instanceof RsyncError ? err.message : err instanceof Error ? err.message : String(err)
-		refuse(ctx, `rsync failed: ${msg}. Remote session ${sessionId} will be cleaned up automatically.`)
+		let msg: string
+		if (err instanceof RsyncError) {
+			// Slice the head — rsync writes its actual error first, then dumps usage
+			// on syntax errors. The trailing usage dump isn't useful and can drown
+			// out the diagnostic.
+			const stderrHead = err.stderr?.trim().slice(0, 1500) ?? ""
+			msg = stderrHead ? `${err.message}\nstderr:\n${stderrHead}` : err.message
+		} else {
+			msg = err instanceof Error ? err.message : String(err)
+		}
+		refuse(ctx, `rsync failed: ${msg}\nRemote session ${sessionId} will be cleaned up automatically.`)
+	} finally {
+		clearInterval(heartbeat)
 	}
 
 	// ── 5. Build the RemoteAgentSession ──
@@ -284,10 +414,11 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 
 	// ── 7. Swap ──
 	wrapper.foregroundRemote(remote)
+	await rebindAfterSwap(ctx)
 
 	// ── 8. Notify ──
 	status(ctx, undefined)
-	info(ctx, `Teleported to remote session ${sessionId}${args.name ? ` (${args.name})` : ""}. Continue typing.`)
+	info(ctx, `Teleported to remote session ${sessionId}${args.name ? ` (${args.name})` : ""}.`)
 }
 
 // ───────────────────────── runDetach ─────────────────────────
@@ -330,6 +461,7 @@ export async function runDetach(args: DetachArgs, ctx: TeleportContext): Promise
 	}
 
 	wrapper.detachToHomeBase()
+	await rebindAfterSwap(ctx)
 
 	status(ctx, undefined)
 	const hint = name ? `/attach ${name}` : `/attach ${sessionId.slice(0, 8)}`
@@ -388,6 +520,7 @@ export async function runAttach(args: AttachArgs, ctx: TeleportContext): Promise
 	}
 
 	wrapper.foregroundRemote(remote)
+	await rebindAfterSwap(ctx)
 	status(ctx, undefined)
 	info(ctx, `Attached to remote session ${sessionId}.`)
 }
@@ -423,8 +556,6 @@ async function resolveSessionTarget(
 }
 
 // ───────────────────────── runConnect ─────────────────────────
-
-const TELEPORT_PROXY_PATH = new URL("./teleport-proxy.js", import.meta.url).pathname
 
 type RunChildFn = typeof runChildWithTTYHandoffImpl
 
@@ -467,11 +598,12 @@ export async function runConnect(
 	}
 	status(ctx, undefined)
 
+	const proxyPath = getTeleportProxyPath()
 	const sshArgs = [
 		"-p",
 		String(auth.port),
 		"-o",
-		`ProxyCommand=node ${TELEPORT_PROXY_PATH} %h %p`,
+		`ProxyCommand=node ${proxyPath} %h %p`,
 		"-o",
 		"StrictHostKeyChecking=no",
 		"-o",

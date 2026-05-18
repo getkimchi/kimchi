@@ -17,6 +17,52 @@ import {
 	runRsync,
 } from "./rsync-transport.js"
 
+// POSIX-ish word splitter that honors single quotes the way rsync's `-e`
+// parser does. Sufficient for what buildSshOption produces — we control
+// the inputs and never emit double-quoted or backslash-escaped strings.
+function posixSplit(input: string): string[] {
+	const out: string[] = []
+	let cur = ""
+	let inSingle = false
+	let i = 0
+	while (i < input.length) {
+		const c = input[i]
+		if (inSingle) {
+			if (c === "'") {
+				// POSIX `'\''` escape: close-quote, escaped quote, re-open.
+				if (input.slice(i, i + 4) === "'\\''") {
+					cur += "'"
+					i += 4
+					continue
+				}
+				inSingle = false
+				i += 1
+				continue
+			}
+			cur += c
+			i += 1
+			continue
+		}
+		if (c === "'") {
+			inSingle = true
+			i += 1
+			continue
+		}
+		if (c === " " || c === "\t") {
+			if (cur.length > 0 || /\S/.test(cur)) {
+				out.push(cur)
+				cur = ""
+			}
+			i += 1
+			continue
+		}
+		cur += c
+		i += 1
+	}
+	if (cur.length > 0) out.push(cur)
+	return out
+}
+
 // ─── Pure-helper tests ─────────────────────────────────────────────────────
 
 describe("buildSshOption", () => {
@@ -24,19 +70,42 @@ describe("buildSshOption", () => {
 		const got = buildSshOption({
 			proxyPath: "/usr/local/lib/kimchi/teleport-proxy.js",
 			knownHostsFile: "/tmp/known_hosts",
+			remotePort: 443,
 		})
 		expect(got).toBe(
-			"ssh -o ProxyCommand=node /usr/local/lib/kimchi/teleport-proxy.js %h %p -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/known_hosts -o BatchMode=yes -o ServerAliveInterval=15",
+			"ssh -p 443 -o ProxyCommand='node /usr/local/lib/kimchi/teleport-proxy.js %h %p' -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile='/tmp/known_hosts' -o BatchMode=yes -o ServerAliveInterval=15",
 		)
 	})
 
-	it("shell-escapes proxy paths containing spaces or special chars", () => {
+	it("single-quote-wraps proxy paths and known_hosts paths containing spaces or special chars", () => {
 		const got = buildSshOption({
 			proxyPath: "/path with spaces/teleport-proxy.js",
 			knownHostsFile: "/tmp/it's mine/known_hosts",
+			remotePort: 443,
 		})
-		expect(got).toContain("'/path with spaces/teleport-proxy.js'")
-		expect(got).toContain("'/tmp/it'\\''s mine/known_hosts'")
+		// ProxyCommand value is always wrapped — inner path with spaces is
+		// preserved inside the single quotes intact.
+		expect(got).toContain("ProxyCommand='node /path with spaces/teleport-proxy.js %h %p'")
+		// Inner single quote in the known_hosts path is escaped as '\''
+		// (POSIX single-quote escaping).
+		expect(got).toContain("UserKnownHostsFile='/tmp/it'\\''s mine/known_hosts'")
+	})
+
+	it("survives rsync's -e word splitter as one ProxyCommand token", () => {
+		// Regression for the bug where rsync re-split the -e value on
+		// whitespace and turned `ProxyCommand=node /path/proxy.js %h %p`
+		// into five separate ssh args (ssh ended up with bare `node` as
+		// its ProxyCommand and deadlocked).
+		const got = buildSshOption({
+			proxyPath: "/opt/kimchi/teleport-proxy.js",
+			knownHostsFile: "/tmp/k/known_hosts",
+			remotePort: 443,
+		})
+		const tokens = posixSplit(got)
+		const proxyTokens = tokens.filter((t) => t.startsWith("ProxyCommand="))
+		expect(proxyTokens).toEqual(["ProxyCommand=node /opt/kimchi/teleport-proxy.js %h %p"])
+		const knownHostsTokens = tokens.filter((t) => t.startsWith("UserKnownHostsFile="))
+		expect(knownHostsTokens).toEqual(["UserKnownHostsFile=/tmp/k/known_hosts"])
 	})
 })
 
@@ -55,15 +124,13 @@ describe("buildRsyncArgv", () => {
 		expect(argv).toMatchInlineSnapshot(`
 			[
 			  "-az",
-			  "--info=progress2",
+			  "--progress",
 			  "--stats",
 			  "--partial",
-			  "--port",
-			  "443",
 			  "--exclude-from",
 			  "/tmp/k/excludes",
 			  "-e",
-			  "ssh -o ProxyCommand=node /opt/kimchi/teleport-proxy.js %h %p -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/k/known_hosts -o BatchMode=yes -o ServerAliveInterval=15",
+			  "ssh -p 443 -o ProxyCommand='node /opt/kimchi/teleport-proxy.js %h %p' -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile='/tmp/k/known_hosts' -o BatchMode=yes -o ServerAliveInterval=15",
 			  "--delete",
 			  "/home/dev/project/",
 			  "sandbox@session-host.example.com:/home/sandbox/",
@@ -421,6 +488,48 @@ exec node ${shellEscape(FAKE_RSYNC)} "$@"
 			exitCode: 23,
 			stderr: expect.stringContaining("connection unexpectedly closed"),
 		})
+	})
+
+	it("fires onPhase with 'mkdir' then 'rsync' in order", async () => {
+		const phases: Array<"mkdir" | "rsync"> = []
+		await runRsync({
+			source: "/a",
+			destination: "/b",
+			remoteHost: "h",
+			remotePort: 443,
+			remoteUser: "u",
+			authToken: "tok",
+			includeIgnored: true,
+			proxyPath: "/p",
+			onPhase: (phase) => phases.push(phase),
+			_spawn: makePathSpawner(fixture.binDir, {
+				FAKE_RSYNC_RECORD: fixture.recordRsync,
+				FAKE_SSH_RECORD: fixture.recordSsh,
+			}),
+		})
+		expect(phases).toEqual(["mkdir", "rsync"])
+	})
+
+	it("fires onPhase with 'mkdir' only when the mkdir step fails", async () => {
+		const phases: Array<"mkdir" | "rsync"> = []
+		await expect(
+			runRsync({
+				source: "/a",
+				destination: "/b",
+				remoteHost: "h",
+				remotePort: 443,
+				remoteUser: "u",
+				authToken: "tok",
+				includeIgnored: true,
+				proxyPath: "/p",
+				onPhase: (phase) => phases.push(phase),
+				_spawn: makePathSpawner(fixture.binDir, {
+					FAKE_SSH_EXIT: "255",
+					FAKE_SSH_STDERR: "ssh: connect to host h port 443: Connection refused",
+				}),
+			}),
+		).rejects.toBeInstanceOf(RsyncError)
+		expect(phases).toEqual(["mkdir"])
 	})
 
 	it("aborts the child when the AbortSignal fires", async () => {

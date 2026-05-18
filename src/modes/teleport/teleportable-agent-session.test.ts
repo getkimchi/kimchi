@@ -22,6 +22,10 @@ class FakeAgentSession {
 	systemPrompt = ""
 	// `prompt` is replaceable per-test (e.g. deferred for in-flight tests)
 	promptImpl: (text: string) => Promise<unknown> = async () => "default"
+	// Mirrors the shape the wrapper reads off `homeBase` to decide whether a
+	// slash command should be routed locally. Tests that exercise routing
+	// configure this; everything else can leave it undefined.
+	extensionRunner?: { getCommand: (name: string) => unknown }
 
 	constructor(sessionId: string, tag = sessionId) {
 		this.sessionId = sessionId
@@ -345,6 +349,123 @@ describe("TeleportableAgentSession", () => {
 			remote.promptImpl = async (t) => `remote-resolved:${t}`
 			const afterSwap = await wrapper.prompt("second")
 			expect(afterSwap).toBe("remote-resolved:second")
+		})
+	})
+
+	describe("prompt routing", () => {
+		// Build a homeBase with a fake extensionRunner that recognises the given
+		// command names. Mirrors how the real home-base AgentSession looks up
+		// local slash commands.
+		function buildHomeWithCommands(...names: string[]): FakeAgentSession {
+			const home = new FakeAgentSession("home")
+			home.extensionRunner = {
+				getCommand: (name: string) => (names.includes(name) ? { name } : undefined),
+			}
+			return home
+		}
+
+		it("routes a slash command recognised by homeBase to homeBase, not foreground", async () => {
+			const home = buildHomeWithCommands("connect")
+			home.promptImpl = async (t) => `home:${t}`
+			const remote = new FakeAgentSession("remote-A")
+			const remoteSpy = vi.fn(async (t: string) => `remote:${t}`)
+			remote.promptImpl = remoteSpy
+
+			const wrapper = asPassthrough(TeleportableAgentSession.create(asSession(home)))
+			wrapper.foregroundRemote(asRemote(remote))
+
+			const result = await wrapper.prompt("/connect abc123")
+			expect(result).toBe("home:/connect abc123")
+			expect(remoteSpy).not.toHaveBeenCalled()
+		})
+
+		it("routes an unknown slash command to the foreground", async () => {
+			const home = buildHomeWithCommands("connect") // only /connect is local
+			const homeSpy = vi.fn(async (t: string) => `home:${t}`)
+			home.promptImpl = homeSpy
+			const remote = new FakeAgentSession("remote-A")
+			remote.promptImpl = async (t) => `remote:${t}`
+
+			const wrapper = asPassthrough(TeleportableAgentSession.create(asSession(home)))
+			wrapper.foregroundRemote(asRemote(remote))
+
+			const result = await wrapper.prompt("/permissions mode allow")
+			expect(result).toBe("remote:/permissions mode allow")
+			expect(homeSpy).not.toHaveBeenCalled()
+		})
+
+		it("routes plain (non-slash) text to the foreground", async () => {
+			const home = buildHomeWithCommands("connect")
+			const homeSpy = vi.fn(async () => "home")
+			home.promptImpl = homeSpy
+			const remote = new FakeAgentSession("remote-A")
+			remote.promptImpl = async (t) => `remote:${t}`
+
+			const wrapper = asPassthrough(TeleportableAgentSession.create(asSession(home)))
+			wrapper.foregroundRemote(asRemote(remote))
+
+			const result = await wrapper.prompt("just a chat message")
+			expect(result).toBe("remote:just a chat message")
+			expect(homeSpy).not.toHaveBeenCalled()
+		})
+
+		it("tolerates leading whitespace before the slash", async () => {
+			const home = buildHomeWithCommands("connect")
+			home.promptImpl = async (t) => `home:${t}`
+			const remote = new FakeAgentSession("remote-A")
+			const remoteSpy = vi.fn(async () => "remote")
+			remote.promptImpl = remoteSpy
+
+			const wrapper = asPassthrough(TeleportableAgentSession.create(asSession(home)))
+			wrapper.foregroundRemote(asRemote(remote))
+
+			const result = await wrapper.prompt("  /connect xyz  ")
+			expect(result).toBe("home:  /connect xyz  ")
+			expect(remoteSpy).not.toHaveBeenCalled()
+		})
+
+		it("treats bare '/' (no command name) as a non-local message", async () => {
+			const home = buildHomeWithCommands("connect")
+			const homeSpy = vi.fn(async () => "home")
+			home.promptImpl = homeSpy
+			const remote = new FakeAgentSession("remote-A")
+			remote.promptImpl = async (t) => `remote:${t}`
+
+			const wrapper = asPassthrough(TeleportableAgentSession.create(asSession(home)))
+			wrapper.foregroundRemote(asRemote(remote))
+
+			const result = await wrapper.prompt("/")
+			expect(result).toBe("remote:/")
+			expect(homeSpy).not.toHaveBeenCalled()
+		})
+
+		it("forwards options on the local-route as well", async () => {
+			const home = buildHomeWithCommands("connect")
+			const homeSpy = vi.fn(async (_t: string, _o?: unknown) => "home")
+			// Replace prompt entirely so we can assert the options argument.
+			;(home as unknown as { prompt: (t: string, o?: unknown) => Promise<unknown> }).prompt = async (
+				t: string,
+				o?: unknown,
+			) => homeSpy(t, o)
+			const remote = new FakeAgentSession("remote-A")
+
+			const wrapper = asPassthrough(TeleportableAgentSession.create(asSession(home)))
+			wrapper.foregroundRemote(asRemote(remote))
+
+			await (wrapper as unknown as { prompt: (t: string, o?: unknown) => Promise<unknown> }).prompt("/connect abc", {
+				streamingBehavior: "steer",
+			})
+			expect(homeSpy).toHaveBeenCalledWith("/connect abc", { streamingBehavior: "steer" })
+		})
+
+		it("when foreground === homeBase, behaves identically (always to homeBase)", async () => {
+			const home = buildHomeWithCommands("connect")
+			home.promptImpl = async (t) => `home:${t}`
+			const wrapper = asPassthrough(TeleportableAgentSession.create(asSession(home)))
+
+			// Both branches converge on home before any swap.
+			expect(await wrapper.prompt("/connect abc")).toBe("home:/connect abc")
+			expect(await wrapper.prompt("hello")).toBe("home:hello")
 		})
 	})
 
