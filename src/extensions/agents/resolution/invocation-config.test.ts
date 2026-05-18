@@ -49,6 +49,27 @@ describe("resolveAgentInvocationConfig — model fallback chain", () => {
 		expect(mockRecommend).not.toHaveBeenCalled()
 	})
 
+	it("step 1b: locked profile model wins over params.model", () => {
+		mockPickFromList.mockImplementation((list) => list[0])
+		const result = resolveAgentInvocationConfig(
+			{
+				name: "test",
+				description: "t",
+				extensions: true,
+				skills: true,
+				systemPrompt: "",
+				promptMode: "replace",
+				models: ["kimchi-dev/claude-opus-4-7"],
+				modelLocked: true,
+			},
+			{ model: "kimchi-dev/nemotron-3-super-fp4" },
+		)
+		expect(result.modelInput).toBe("kimchi-dev/claude-opus-4-7")
+		expect(result.modelFromParams).toBe(false)
+		expect(mockPickFromList).toHaveBeenCalledWith(["kimchi-dev/claude-opus-4-7"], "standard")
+		expect(mockRecommend).not.toHaveBeenCalled()
+	})
+
 	it("step 2: agentConfig.models[0] used when no params.model", () => {
 		const result = resolveAgentInvocationConfig(
 			{

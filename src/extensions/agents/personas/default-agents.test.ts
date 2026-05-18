@@ -2,8 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import { DEFAULT_AGENTS } from "./default-agents.js"
 import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER } from "./types.js"
 
-// Stub pickFromModelListByTier and recommendModel so snapshots are deterministic
-// and don't depend on the live model registry insertion order.
+// Stub pickFromModelListByTier and recommendModel so snapshots are deterministic.
 // We cannot import the real implementations here because default-agents.ts calls
 // modelsForStrength/modelsForAnyStrength at module load time (before any mock can
 // intercept), so DEFAULT_AGENTS.models[] is already populated with real strings.
@@ -11,12 +10,18 @@ import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER } fr
 //   - pickFromModelListByTier (used when models[] is populated — all 4 default agents)
 //   - recommendModel          (only reachable when models[] is absent — never for defaults)
 //   - getCurrentPhase         (only reachable when both models[] and strengths are absent)
-// Because all four default agents have models[] pre-populated, pickFromModelListByTier
-// is the only stub that actually fires.  We pin it to return the first entry of the
-// list so the snapshot reflects the tier-unaware stable default.
 vi.mock("../../orchestration/model-registry/recommend.js", () => ({
 	recommendModel: vi.fn().mockReturnValue(undefined),
-	pickFromModelListByTier: vi.fn().mockImplementation((list: readonly string[]) => list[0]),
+	pickFromModelListByTier: vi.fn().mockImplementation((list: readonly string[], preferTier?: string) => {
+		if (preferTier === "heavy") {
+			return (
+				list.find((model) => model.includes("kimi-k2.6")) ??
+				list.find((model) => model.includes("claude-opus")) ??
+				list[0]
+			)
+		}
+		return list[0]
+	}),
 }))
 
 vi.mock("../../tags.js", () => ({
@@ -89,6 +94,7 @@ describe("default agents — resolved invocation config snapshot", () => {
 		expect({
 			name: agent.name,
 			modelId: resolved.modelInput,
+			modelLocked: agent.modelLocked,
 			thinking: resolved.thinking,
 			maxTurns: resolved.maxTurns,
 			tokenBudget: resolved.tokenBudget,
@@ -105,6 +111,7 @@ describe("default agents — resolved invocation config snapshot", () => {
 		expect({
 			name: agent.name,
 			modelId: resolved.modelInput,
+			modelLocked: agent.modelLocked,
 			thinking: resolved.thinking,
 			maxTurns: resolved.maxTurns,
 			tokenBudget: resolved.tokenBudget,
@@ -121,6 +128,7 @@ describe("default agents — resolved invocation config snapshot", () => {
 		expect({
 			name: agent.name,
 			modelId: resolved.modelInput,
+			modelLocked: agent.modelLocked,
 			thinking: resolved.thinking,
 			maxTurns: resolved.maxTurns,
 			tokenBudget: resolved.tokenBudget,
@@ -137,6 +145,7 @@ describe("default agents — resolved invocation config snapshot", () => {
 		expect({
 			name: agent.name,
 			modelId: resolved.modelInput,
+			modelLocked: agent.modelLocked,
 			thinking: resolved.thinking,
 			maxTurns: resolved.maxTurns,
 			tokenBudget: resolved.tokenBudget,

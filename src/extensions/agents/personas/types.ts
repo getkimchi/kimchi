@@ -58,6 +58,8 @@ export interface AgentConfig {
 	 * auto-promoted to a single-element array on load.
 	 */
 	models?: string[]
+	/** true = profile model selection wins over caller-provided model. */
+	modelLocked?: boolean
 	thinking?: ThinkingLevel
 	maxTurns?: number
 	tokenBudget?: number

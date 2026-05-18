@@ -664,8 +664,8 @@ Guidelines:
 Model selection — YOU choose based on task complexity:
 - Each agent type's listing above shows the set of models it can use. The list order has no semantics — it is not a tier ranking.
 - Assess the task (single lookup vs. multi-step refactor vs. deep architectural analysis) and pick the model whose capabilities (tier, strengths) best match. Refer to your knowledge of the kimchi-dev models or to your initial system-prompt model section.
-- Pass your choice via the \`model\` parameter as "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7"). Fuzzy names like "kimi" or "minimax" also work.
-- If \`model\` is omitted and the persona has no \`models[]\`, the orchestrator picks the best model based on the persona's strengths. Override by passing \`model:\` explicitly.`,
+- Pass \`model\` only when the user explicitly asks for a specific model or the profile does not lock model selection.
+- If \`model\` is omitted, the runtime uses the persona's profile model. Profiles with locked model selection ignore caller model overrides.`,
 			parameters: Type.Object({
 				prompt: Type.String({
 					description: "The task for the agent to perform.",

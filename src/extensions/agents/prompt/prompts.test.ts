@@ -79,6 +79,7 @@ describe("default agents — subagent system prompt snapshot", () => {
 			Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find, cat, head, tail.
 
 			# Tool Usage
+			- For repository inspection tasks, always use at least one read-only tool before answering
 			- Use the find tool for file pattern matching (NOT the bash find command)
 			- Use the grep tool for content search (NOT bash grep/rg command)
 			- Use the read tool for reading files (NOT bash cat/head/tail)
