@@ -6,6 +6,7 @@ import { RemoteAgentSession } from "./remote-agent-session.js"
 export interface BuildRemoteAgentSessionOptions {
 	sessionId: string
 	apiKey: string
+	description: string
 	endpoint?: string
 	services: AgentSessionServices
 	sessionManager: SessionManager
@@ -27,6 +28,7 @@ export async function buildRemoteAgentSession(options: BuildRemoteAgentSessionOp
 	const supervisor = new ReconnectSupervisor({
 		sessionId: options.sessionId,
 		apiKey: options.apiKey,
+		description: options.description,
 		endpoint: options.endpoint,
 	})
 

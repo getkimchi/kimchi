@@ -44,7 +44,7 @@ describe("authenticateRemoteSession", () => {
 				),
 			)
 
-		const result = await authenticateRemoteSession("sess-123", "key1", {
+		const result = await authenticateRemoteSession("sess-123", "key1", "test session", {
 			endpoint: BASE,
 			fetch: mockFetch,
 		})
@@ -106,7 +106,10 @@ describe("authenticateRemoteSession", () => {
 				}),
 			)
 
-		await authenticateRemoteSession("s1", "key1", { endpoint: "https://override.example.com", fetch: mockFetch })
+		await authenticateRemoteSession("s1", "key1", "test session", {
+			endpoint: "https://override.example.com",
+			fetch: mockFetch,
+		})
 		for (const call of mockFetch.mock.calls) {
 			const url = call[0] as string
 			expect(url.startsWith("https://override.example.com/")).toBe(true)
@@ -115,9 +118,9 @@ describe("authenticateRemoteSession", () => {
 
 	it("throws RemoteAuthError for 401 on verify", async () => {
 		const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 401 }))
-		await expect(authenticateRemoteSession("s1", "key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
-			RemoteAuthError,
-		)
+		await expect(
+			authenticateRemoteSession("s1", "key1", "test session", { endpoint: BASE, fetch: mockFetch }),
+		).rejects.toBeInstanceOf(RemoteAuthError)
 	})
 
 	it("throws RemoteAuthError for 401 on create session", async () => {
@@ -131,9 +134,9 @@ describe("authenticateRemoteSession", () => {
 			)
 			.mockResolvedValueOnce(new Response(null, { status: 401 }))
 
-		await expect(authenticateRemoteSession("s1", "key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
-			RemoteAuthError,
-		)
+		await expect(
+			authenticateRemoteSession("s1", "key1", "test session", { endpoint: BASE, fetch: mockFetch }),
+		).rejects.toBeInstanceOf(RemoteAuthError)
 	})
 
 	it("throws RemoteAuthError for 401 on exchange token", async () => {
@@ -153,44 +156,44 @@ describe("authenticateRemoteSession", () => {
 			)
 			.mockResolvedValueOnce(new Response(null, { status: 401 }))
 
-		await expect(authenticateRemoteSession("s1", "key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
-			RemoteAuthError,
-		)
+		await expect(
+			authenticateRemoteSession("s1", "key1", "test session", { endpoint: BASE, fetch: mockFetch }),
+		).rejects.toBeInstanceOf(RemoteAuthError)
 	})
 
 	it("throws RemoteAuthError for 403", async () => {
 		const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 403 }))
-		await expect(authenticateRemoteSession("s1", "key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
-			RemoteAuthError,
-		)
+		await expect(
+			authenticateRemoteSession("s1", "key1", "test session", { endpoint: BASE, fetch: mockFetch }),
+		).rejects.toBeInstanceOf(RemoteAuthError)
 	})
 
 	it("throws RemoteAuthError for 404", async () => {
 		const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 404 }))
-		await expect(authenticateRemoteSession("s1", "key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
-			RemoteAuthError,
-		)
+		await expect(
+			authenticateRemoteSession("s1", "key1", "test session", { endpoint: BASE, fetch: mockFetch }),
+		).rejects.toBeInstanceOf(RemoteAuthError)
 	})
 
 	it("throws RemoteAuthError for 409", async () => {
 		const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 409 }))
-		await expect(authenticateRemoteSession("s1", "key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
-			RemoteAuthError,
-		)
+		await expect(
+			authenticateRemoteSession("s1", "key1", "test session", { endpoint: BASE, fetch: mockFetch }),
+		).rejects.toBeInstanceOf(RemoteAuthError)
 	})
 
 	it("throws RemoteNetworkError for other HTTP status", async () => {
 		const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 500 }))
-		await expect(authenticateRemoteSession("s1", "key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
-			RemoteNetworkError,
-		)
+		await expect(
+			authenticateRemoteSession("s1", "key1", "test session", { endpoint: BASE, fetch: mockFetch }),
+		).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 
 	it("throws RemoteNetworkError on fetch failure", async () => {
 		const mockFetch = vi.fn().mockRejectedValue(new TypeError("fetch failed"))
-		await expect(authenticateRemoteSession("s1", "key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
-			RemoteNetworkError,
-		)
+		await expect(
+			authenticateRemoteSession("s1", "key1", "test session", { endpoint: BASE, fetch: mockFetch }),
+		).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 
 	it("throws RemoteNetworkError when verify response is missing organizationId", async () => {
@@ -201,9 +204,9 @@ describe("authenticateRemoteSession", () => {
 			}),
 		)
 
-		await expect(authenticateRemoteSession("s1", "key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
-			RemoteNetworkError,
-		)
+		await expect(
+			authenticateRemoteSession("s1", "key1", "test session", { endpoint: BASE, fetch: mockFetch }),
+		).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 
 	it("throws RemoteNetworkError when session response is missing uri", async () => {
@@ -222,9 +225,9 @@ describe("authenticateRemoteSession", () => {
 				}),
 			)
 
-		await expect(authenticateRemoteSession("s1", "key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
-			RemoteNetworkError,
-		)
+		await expect(
+			authenticateRemoteSession("s1", "key1", "test session", { endpoint: BASE, fetch: mockFetch }),
+		).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 
 	it("throws RemoteNetworkError when exchange response is missing token", async () => {
@@ -249,9 +252,9 @@ describe("authenticateRemoteSession", () => {
 				}),
 			)
 
-		await expect(authenticateRemoteSession("s1", "key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
-			RemoteNetworkError,
-		)
+		await expect(
+			authenticateRemoteSession("s1", "key1", "test session", { endpoint: BASE, fetch: mockFetch }),
+		).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 
 	function mockAuthFlow(uri: string) {
@@ -280,7 +283,7 @@ describe("authenticateRemoteSession", () => {
 	it("accepts a bare-hostname WS uri from the server and normalizes it", async () => {
 		const bare = "trusting-expensive-titan-e0baa2-a980.remote.kimchi.dev"
 		const mockFetch = mockAuthFlow(bare)
-		const result = await authenticateRemoteSession("s1", "key1", { endpoint: BASE, fetch: mockFetch })
+		const result = await authenticateRemoteSession("s1", "key1", "test session", { endpoint: BASE, fetch: mockFetch })
 
 		expect(result.wsUrl).toBe(`wss://${bare}`)
 		expect(result.host).toBe(bare)
@@ -289,7 +292,7 @@ describe("authenticateRemoteSession", () => {
 
 	it("preserves an explicit non-default port", async () => {
 		const mockFetch = mockAuthFlow("wss://host.example.com:9443")
-		const result = await authenticateRemoteSession("s1", "key1", { endpoint: BASE, fetch: mockFetch })
+		const result = await authenticateRemoteSession("s1", "key1", "test session", { endpoint: BASE, fetch: mockFetch })
 
 		expect(result.wsUrl).toBe("wss://host.example.com:9443")
 		expect(result.host).toBe("host.example.com")
@@ -298,7 +301,7 @@ describe("authenticateRemoteSession", () => {
 
 	it("strips the default :443 from a fully qualified wss URI", async () => {
 		const mockFetch = mockAuthFlow("wss://host.example.com:443")
-		const result = await authenticateRemoteSession("s1", "key1", { endpoint: BASE, fetch: mockFetch })
+		const result = await authenticateRemoteSession("s1", "key1", "test session", { endpoint: BASE, fetch: mockFetch })
 
 		expect(result.wsUrl).toBe("wss://host.example.com")
 		expect(result.host).toBe("host.example.com")
@@ -307,9 +310,9 @@ describe("authenticateRemoteSession", () => {
 
 	it("rejects a non-WS protocol with a RemoteNetworkError", async () => {
 		const mockFetch = mockAuthFlow("https://host.example.com")
-		await expect(authenticateRemoteSession("s1", "key1", { endpoint: BASE, fetch: mockFetch })).rejects.toThrow(
-			/Unexpected protocol/,
-		)
+		await expect(
+			authenticateRemoteSession("s1", "key1", "test session", { endpoint: BASE, fetch: mockFetch }),
+		).rejects.toThrow(/Unexpected protocol/)
 	})
 })
 

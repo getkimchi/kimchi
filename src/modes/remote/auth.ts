@@ -99,8 +99,9 @@ async function createOrUpdateSession(
 	orgId: string,
 	sessionId: string,
 	apiKey: string,
+	description: string,
 	options?: AuthenticateOptions,
-): Promise<{ uri: string }> {
+): Promise<{ uri: string; description: string }> {
 	const endpoint = resolveEndpoint(options)
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 
@@ -113,7 +114,7 @@ async function createOrUpdateSession(
 				Authorization: `Bearer ${apiKey}`,
 				"Content-Type": "application/json",
 			},
-			body: JSON.stringify({ description: "kimchi remote session", options: { agentApiKey: apiKey } }),
+			body: JSON.stringify({ description, options: { agentApiKey: apiKey } }),
 		},
 		fetchImpl,
 	)
@@ -129,7 +130,7 @@ async function createOrUpdateSession(
 		throw new RemoteNetworkError(`Missing uri in session response from ${endpoint}`)
 	}
 
-	return { uri }
+	return { uri, description: typeof data.description === "string" ? data.description : description }
 }
 
 async function exchangeSessionToken(
@@ -181,16 +182,20 @@ async function exchangeSessionToken(
 export async function authenticateRemoteSession(
 	sessionId: string,
 	apiKey: string,
+	description: string,
 	options?: AuthenticateOptions,
 ): Promise<AuthenticateResponse> {
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 
 	try {
 		const orgId = await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })
-		const { uri } = await createOrUpdateSession(orgId, sessionId, apiKey, { ...options, fetch: fetchImpl })
+		const session = await createOrUpdateSession(orgId, sessionId, apiKey, description, {
+			...options,
+			fetch: fetchImpl,
+		})
 		const { token, expireTime } = await exchangeSessionToken(apiKey, sessionId, { ...options, fetch: fetchImpl })
 
-		const { wsUrl, host, port } = normalizeWsUri(uri)
+		const { wsUrl, host, port } = normalizeWsUri(session.uri)
 
 		return {
 			connectToken: token,
@@ -198,6 +203,7 @@ export async function authenticateRemoteSession(
 			wsUrl,
 			host,
 			port,
+			description: session.description,
 		}
 	} catch (err) {
 		if (err instanceof RemoteAuthError || err instanceof RemoteNetworkError) {

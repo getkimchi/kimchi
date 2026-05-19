@@ -14,33 +14,6 @@ export interface WebSocketTransportOptions {
 const DEFAULT_MAX_RETRY_MS = 60_000
 const DEFAULT_INITIAL_DELAY_MS = 1000
 
-// Braille spinner frames for the retry progress indicator
-const BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-const SPINNER_INTERVAL_MS = 80
-
-interface RetrySpinner {
-	stop(): void
-}
-
-function startRetrySpinner(): RetrySpinner {
-	let frameIdx = 0
-	const startTime = Date.now()
-	const render = () => {
-		const elapsed = Math.floor((Date.now() - startTime) / 1000)
-		const frame = BRAILLE_FRAMES[frameIdx]
-		process.stderr.write(`\r\x1b[K${frame} Waiting for remote sandbox… (${elapsed}s)`)
-		frameIdx = (frameIdx + 1) % BRAILLE_FRAMES.length
-	}
-	const id = setInterval(render, SPINNER_INTERVAL_MS)
-	render()
-	return {
-		stop() {
-			clearInterval(id)
-			process.stderr.write("\r\x1b[K")
-		},
-	}
-}
-
 export async function createWebSocketTransport(
 	wsUrl: string,
 	connectToken: string,
@@ -74,26 +47,19 @@ export async function createWebSocketTransport(
 	const startTime = Date.now()
 	let attempt = 0
 	let lastError: unknown
-	let spinner: RetrySpinner | undefined
 
 	while (true) {
 		try {
-			spinner?.stop()
 			return await createTransportOnce(WS, url, headers)
 		} catch (err) {
 			lastError = err
 			const elapsed = Date.now() - startTime
 			if (elapsed >= maxRetryMs) {
-				spinner?.stop()
 				const status = await probeHttpStatus(url, fetchImpl)
 				const statusInfo = status === undefined ? "" : ` (HTTP ${status})`
 				const reason = lastError instanceof Error ? lastError.message : String(lastError)
 				log(`kimchi: WebSocket handshake failed${statusInfo}: ${reason}`)
 				break
-			}
-
-			if (!spinner) {
-				spinner = startRetrySpinner()
 			}
 
 			const delay = Math.min(initialDelayMs * 2 ** attempt, maxRetryMs - elapsed)

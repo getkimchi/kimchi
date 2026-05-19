@@ -75,6 +75,7 @@ describe("RemoteAgentSession WebSocket integration", () => {
 		const supervisor = new ReconnectSupervisor({
 			sessionId: "test-session",
 			apiKey: "key",
+			description: "test session",
 		})
 
 		const session = new RemoteAgentSession({
@@ -157,6 +158,7 @@ describe("RemoteAgentSession WebSocket integration", () => {
 		const supervisor = new ReconnectSupervisor({
 			sessionId: "test-session",
 			apiKey: "key",
+			description: "test session",
 		})
 
 		const session = new RemoteAgentSession({
