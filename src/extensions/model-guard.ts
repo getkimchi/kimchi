@@ -218,13 +218,15 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 		// Store reference to latest messages for /strip-images command
 		latestMessages = messages
 
-		// Always update the session-level image flag before any other processing
-		// If images were stripped, we consider them conceptually gone
-		if (imagesStripped) {
-			imagesDetected = false
-		} else {
-			imagesDetected = hasImages(messages)
+		// Always scan for images in the current context.
+		// If new images appear after a previous strip, reset the stripped flag
+		// so the guards re-engage for the fresh images.
+		const currentlyHasImages = hasImages(messages)
+		if (imagesStripped && currentlyHasImages) {
+			imagesStripped = false
+			imageDescriptions.clear()
 		}
+		imagesDetected = currentlyHasImages
 
 		let modified = false
 		let result = messages

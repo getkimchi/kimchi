@@ -121,9 +121,13 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 					? `\n\nNote: Switched from a ${currentTier}-tier to a ${targetTier}-tier model. Reasoning and planning quality may be reduced for complex tasks.`
 					: ""
 
+			let ok: boolean
 			suppressModelSelectGuard = true
-			const ok = await pi.setModel(target)
-			suppressModelSelectGuard = false
+			try {
+				ok = await pi.setModel(target)
+			} finally {
+				suppressModelSelectGuard = false
+			}
 			if (!ok) {
 				return {
 					content: [

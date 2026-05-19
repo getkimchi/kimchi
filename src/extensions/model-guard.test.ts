@@ -644,25 +644,40 @@ describe("markImagesAsStripped", () => {
 		expect(sessionHasImages()).toBe(false)
 	})
 
-	it("strips images even when target model supports vision after markImagesAsStripped", async () => {
+	it("strips images on non-vision model after markImagesAsStripped", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const ctx = makeMockCtx({
+			model: { id: "minimax", input: ["text"], contextWindow: 100_000 } as ExtensionContext["model"],
+		})
+		const msgs: ContextEvent["messages"] = [makeUser("look", [makeImageBlock()])]
+
+		await trigger("context", { messages: msgs }, ctx)
+		expect(sessionHasImages()).toBe(true)
+
+		markImagesAsStripped()
+
+		// On a non-vision model, images are stripped in the context handler
+		const result = (await trigger("context", { messages: msgs }, ctx)) as { messages: ContextEvent["messages"] }
+		expect(result).toBeDefined()
+		expect(hasImages(result.messages)).toBe(false)
+	})
+
+	it("re-detects images when new images appear after stripping", async () => {
 		const { pi, trigger } = makeMockPI()
 		modelGuardExtension(pi)
 		const ctx = makeMockCtx({
 			model: { id: "claude", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
 		})
-		const msgs: ContextEvent["messages"] = [makeUser("look", [makeImageBlock()])]
-
-		// First verify images are detected
-		await trigger("context", { messages: msgs }, ctx)
+		await trigger("context", { messages: [makeUser("look", [makeImageBlock()])] }, ctx)
 		expect(sessionHasImages()).toBe(true)
 
-		// Mark images as stripped
 		markImagesAsStripped()
+		expect(sessionHasImages()).toBe(false)
 
-		// Trigger context again with the same messages
-		const result = (await trigger("context", { messages: msgs }, ctx)) as { messages: ContextEvent["messages"] }
-		expect(result).toBeDefined()
-		expect(hasImages(result.messages)).toBe(false)
+		// User pastes a new image — context event fires with images again
+		await trigger("context", { messages: [makeUser("new image", [makeImageBlock()])] }, ctx)
+		expect(sessionHasImages()).toBe(true)
 	})
 
 	it("resets imagesStripped flag when __resetImagesDetectedForTest is called", async () => {

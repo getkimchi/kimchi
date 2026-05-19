@@ -1,6 +1,5 @@
 import { complete } from "@earendil-works/pi-ai"
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai"
-import type { ImageContent as ImageContentType } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import {
 	getImageDataHash,
@@ -16,8 +15,8 @@ const IMAGE_DESCRIPTION_PROMPT = "Describe this image concisely. Include key vis
 /**
  * Collect all unique image blocks from messages.
  */
-function collectImages(messages: ReturnType<typeof getLatestMessages>): Map<string, ImageContentType> {
-	const images = new Map<string, ImageContentType>()
+function collectImages(messages: ReturnType<typeof getLatestMessages>): Map<string, ImageContent> {
+	const images = new Map<string, ImageContent>()
 
 	for (const msg of messages) {
 		if (!("content" in msg)) continue
@@ -27,7 +26,7 @@ function collectImages(messages: ReturnType<typeof getLatestMessages>): Map<stri
 
 		for (const block of content) {
 			if (block.type === "image") {
-				const img = block as ImageContentType
+				const img = block as ImageContent
 				const hash = getImageDataHash(img.data)
 				if (!images.has(hash)) {
 					images.set(hash, img)
@@ -96,10 +95,9 @@ export default function stripImagesExtension(pi: ExtensionAPI) {
 
 			// Collect all unique images
 			const images = collectImages(messages)
-			const imageCount = images.size
 
-			// Process each image
 			let processedCount = 0
+			const errors: string[] = []
 			for (const [hash, img] of images) {
 				try {
 					const response = await complete(
@@ -139,8 +137,8 @@ export default function stripImagesExtension(pi: ExtensionAPI) {
 						storeImageDescription(hash, description)
 						processedCount++
 					}
-				} catch (_err) {
-					// Continue processing other images if one fails
+				} catch (err) {
+					errors.push(err instanceof Error ? err.message : String(err))
 				}
 			}
 
@@ -148,8 +146,9 @@ export default function stripImagesExtension(pi: ExtensionAPI) {
 			markImagesAsStripped()
 
 			if (processedCount === 0) {
+				const detail = errors.length > 0 ? ` Error: ${errors[0]}` : ""
 				ctx.ui.notify(
-					"Images stripped without descriptions due to processing errors. Non-vision models are now available.",
+					`Images stripped without descriptions due to processing errors.${detail} Non-vision models are now available.`,
 					"warning",
 				)
 			} else {

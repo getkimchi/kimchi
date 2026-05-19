@@ -134,32 +134,30 @@ function extractImagePathsFromSession(ctx: ExtensionContext): string[] {
 	const imagePaths = new Set<string>()
 	let lastReadCallPath: string | null = null
 
-	for (let i = entries.length - 1; i >= 0; i--) {
-		const entry = entries[i]
+	for (const entry of entries) {
 		if (entry.type !== "message") continue
 		const msg = entry.message
 
-		if (msg.role === "toolResult") {
+		if (msg.role === "assistant") {
+			const content = msg.content
+			if (Array.isArray(content)) {
+				for (const block of content) {
+					if (block.type !== "toolCall") continue
+					const toolBlock = block as { name?: string; arguments?: Record<string, unknown> }
+					if (toolBlock.name === "read" && typeof toolBlock.arguments?.path === "string") {
+						lastReadCallPath = toolBlock.arguments.path
+					}
+				}
+			}
+		} else if (msg.role === "toolResult") {
 			const content = msg.content
 			if (Array.isArray(content)) {
 				const hasImage = content.some((block) => block.type === "image")
 				if (hasImage && lastReadCallPath) {
 					imagePaths.add(lastReadCallPath)
-					lastReadCallPath = null
 				}
 			}
-		} else if (msg.role === "assistant") {
-			const content = msg.content
-			if (Array.isArray(content)) {
-				for (const block of content) {
-					if (block.type === "toolCall" && (block as { name?: string }).name === "read") {
-						const args = (block as { arguments?: Record<string, unknown> }).arguments
-						if (args?.path && typeof args.path === "string") {
-							lastReadCallPath = args.path
-						}
-					}
-				}
-			}
+			lastReadCallPath = null
 		} else if (msg.role === "user") {
 			lastReadCallPath = null
 		}
