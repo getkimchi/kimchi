@@ -113,7 +113,7 @@ async function createOrUpdateSession(
 				Authorization: `Bearer ${apiKey}`,
 				"Content-Type": "application/json",
 			},
-			body: JSON.stringify({ description: "kimchi remote session" }),
+			body: JSON.stringify({ description: "kimchi remote session", options: { agentApiKey: apiKey } }),
 		},
 		fetchImpl,
 	)
