@@ -90,10 +90,16 @@ export const ScopeParams = Type.Object({
 	success_criteria: Type.Optional(Type.String()),
 	constraints: Type.Optional(Type.Array(Type.String())),
 	assumptions: Type.Optional(
-		Type.String({
-			description:
-				"Upfront assumptions the plan rests on. Will be surfaced to the planner. If the agent later discovers an assumption is false, record a decision and continue rather than asking the user.",
-		}),
+		Type.Union([
+			Type.String({
+				description:
+					"A single concise prose paragraph covering all upfront assumptions the plan rests on. Prefer prose over a bullet list. If the agent later discovers an assumption is false, record a decision and continue rather than asking the user.",
+			}),
+			Type.Array(Type.String(), {
+				description:
+					"Compatibility fallback: a real JSON array of assumption strings. The tool concatenates these into the stored assumptions prose.",
+			}),
+		]),
 	),
 	phases: Type.Optional(Type.Array(PhaseProposalSchema)),
 	gates: Type.Array(GateVerdictSchema, {
@@ -140,10 +146,16 @@ export const ProposeScopingParams = Type.Object({
 		]),
 	),
 	assumptions: Type.Optional(
-		Type.String({
-			description:
-				"Upfront assumptions the plan rests on. Will be surfaced to the planner. If the agent later discovers an assumption is false, record a decision and continue rather than asking the user.",
-		}),
+		Type.Union([
+			Type.String({
+				description:
+					"A single concise prose paragraph covering all upfront assumptions the plan rests on. Prefer prose over a bullet list. If the agent later discovers an assumption is false, record a decision and continue rather than asking the user.",
+			}),
+			Type.Array(Type.String(), {
+				description:
+					"Compatibility fallback: a real JSON array of assumption strings. Prefer concise prose, but the tool concatenates arrays into the stored assumptions prose.",
+			}),
+		]),
 	),
 	phases: Type.Union([
 		Type.Array(PhaseProposalSchema, {

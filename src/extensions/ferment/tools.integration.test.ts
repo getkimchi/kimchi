@@ -1130,11 +1130,33 @@ describe("propose_ferment_scoping", () => {
 		const f = loadFerment(id)
 		expect(f.status).toBe("planned")
 		expect(f.phases).toHaveLength(3)
-		expect(f.scoping?.assumptions?.answer).toBe("A web app exists; Local-first is acceptable")
+		expect(f.scoping?.assumptions?.answer).toBe("A web app exists. Local-first is acceptable.")
 		expect(result).toContain("Plan saved")
 		expect(result).toContain("## Constraints")
 		expect(result).toContain("- no backend")
 		expect(result).toContain("Here is the proposed plan")
+	})
+
+	it("normalizes assumption arrays before persisting a proposed scope", async () => {
+		const id = await createFerment("Array Assumptions")
+		seedPending(id)
+		const ctx = { ui: { select: vi.fn().mockResolvedValue("Start execution  ✓"), input: vi.fn() } }
+
+		const result = ok(
+			await h.call(
+				"propose_ferment_scoping",
+				basePayload(id, {
+					assumptions: ["Go toolchain is installed", "The current directory is writable"],
+				}),
+				ctx,
+			),
+		)
+
+		const f = loadFerment(id)
+		expect(f.status).toBe("planned")
+		expect(f.scoping?.assumptions?.answer).toBe("Go toolchain is installed. The current directory is writable.")
+		expect(result).toContain("Plan saved")
+		expect(result).toContain("- Go toolchain is installed. The current directory is writable.")
 	})
 
 	it("treats duplicate propose_ferment_scoping after plan save as a no-op", async () => {

@@ -159,14 +159,25 @@ function renderStep(index: number, description: string): string {
 	return lines.map((line, lineIndex) => (lineIndex === 0 ? `${index}. ${line}` : `   ${line}`)).join("\n")
 }
 
+function concatenateAssumptionStrings(items: string[]): string | undefined {
+	const fragments = items.map((item) => item.trim()).filter(Boolean)
+	if (fragments.length === 0) return undefined
+	return fragments.map((item) => (/[\.\?!]$/.test(item) ? item : `${item}.`)).join(" ")
+}
+
 function normalizeAssumptions(value: unknown): string | undefined {
-	if (value === undefined || typeof value !== "string") return value as string | undefined
+	if (value === undefined) return undefined
+	if (Array.isArray(value)) {
+		if (!value.every((item) => typeof item === "string")) return undefined
+		return concatenateAssumptionStrings(value)
+	}
+	if (typeof value !== "string") return undefined
 	const trimmed = value.trim()
 	if (!trimmed.startsWith("[")) return value
 	try {
 		const parsed = JSON.parse(trimmed)
 		if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
-			return parsed.join("; ")
+			return concatenateAssumptionStrings(parsed)
 		}
 	} catch {
 		// Leave the original text alone. `assumptions` is a string field, so a
@@ -393,7 +404,7 @@ export async function scopeFerment(
 		goal: params.goal,
 		successCriteria: params.success_criteria,
 		constraints: params.constraints,
-		assumptions: params.assumptions,
+		assumptions: normalizeAssumptions(params.assumptions),
 		phases: params.phases ?? [],
 	}
 	const outcome = applyAndPersist(params.ferment_id, cmd)

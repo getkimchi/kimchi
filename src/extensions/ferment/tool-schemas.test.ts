@@ -5,7 +5,7 @@
 
 import { Value } from "typebox/value"
 import { describe, expect, it } from "vitest"
-import { CompleteStepParams, ProposeScopingParams } from "./tool-schemas.js"
+import { CompleteStepParams, ProposeScopingParams, ScopeParams } from "./tool-schemas.js"
 
 // Minimal valid payload fixtures
 const passingGates = () => [
@@ -72,6 +72,18 @@ describe("ProposeScopingParams schema", () => {
 					],
 				},
 			]),
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
+	})
+
+	it("accepts assumptions as a real string array compatibility fallback", () => {
+		const payload = {
+			ferment_id: "f-123",
+			goal: "Do something",
+			assumptions: ["Go toolchain is installed", "The current directory is writable"],
+			phases: minimalPhases(),
 			gates: passingGates(),
 		}
 
@@ -189,6 +201,22 @@ describe("ProposeScopingParams schema", () => {
 		}
 
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
+	})
+})
+
+describe("ScopeParams schema", () => {
+	it("accepts assumptions as either text or a string array", () => {
+		const basePayload = {
+			ferment_id: "f-123",
+			goal: "Do something",
+			phases: [{ name: "Build", goal: "Implement" }],
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ScopeParams, { ...basePayload, assumptions: "Go is installed" })).toBe(true)
+		expect(Value.Check(ScopeParams, { ...basePayload, assumptions: ["Go is installed", "Repo is writable"] })).toBe(
+			true,
+		)
 	})
 })
 
