@@ -115,6 +115,28 @@ describe("findNextCompatibleModel", () => {
 		expect(result.skipped[1].reason).toContain("vision")
 	})
 
+	it("allows switching to non-vision models when current model also lacks vision", () => {
+		const noVision = makeModel("current-no-vision", 100_000, ["text"])
+		const models = [noVision, makeModel("text-only-a", 100_000, ["text"]), makeModel("text-only-b", 100_000, ["text"])]
+		const result = findNextCompatibleModel(models, 0, 50_000, true, noVision)
+		expect(result.model).toBe(models[1])
+		expect(result.skipped).toHaveLength(0)
+	})
+
+	it("blocks non-vision models when current model has vision and images are present", () => {
+		const visionModel = makeModel("current-vision", 100_000, ["text", "image"])
+		const models = [
+			visionModel,
+			makeModel("text-only", 100_000, ["text"]),
+			makeModel("other-vision", 100_000, ["text", "image"]),
+		]
+		const result = findNextCompatibleModel(models, 0, 50_000, true, visionModel)
+		expect(result.model).toBe(models[2])
+		expect(result.skipped).toHaveLength(1)
+		expect(result.skipped[0].model).toBe(models[1])
+		expect(result.skipped[0].reason).toContain("no vision support")
+	})
+
 	it("returns empty skipped array for an empty list", () => {
 		const result = findNextCompatibleModel([], 0, null, false)
 		expect(result.model).toBeUndefined()

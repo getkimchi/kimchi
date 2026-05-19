@@ -101,7 +101,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 			}
 
 			// Vision compatibility guard
-			if (sessionHasImages() && !target.input.includes("image")) {
+			if (sessionHasImages() && !target.input.includes("image") && ctx.model?.input.includes("image")) {
 				return {
 					content: [
 						{
@@ -175,7 +175,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 		}
 
 		// Vision guard — block if session has images but target lacks vision support
-		if (sessionHasImages() && !event.model.input.includes("image")) {
+		if (sessionHasImages() && !event.model.input.includes("image") && event.previousModel?.input.includes("image")) {
 			isRevertingModel = true
 			await pi.setModel(event.previousModel)
 			isRevertingModel = false

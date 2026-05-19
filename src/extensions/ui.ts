@@ -53,10 +53,12 @@ export function findNextCompatibleModel(
 	currentIndex: number,
 	currentTokens: number | null,
 	hasImages: boolean,
+	currentModel?: Model<Api> | null,
 ): NextModelResult {
 	const len = available.length
 	if (len === 0) return { model: undefined, skipped: [] }
 
+	const currentModelHasVision = currentModel?.input.includes("image") ?? true
 	const skipped: SkippedModel[] = []
 
 	for (let offset = 1; offset < len; offset++) {
@@ -71,7 +73,7 @@ export function findNextCompatibleModel(
 			continue
 		}
 
-		if (hasImages && !candidate.input.includes("image")) {
+		if (hasImages && !candidate.input.includes("image") && currentModelHasVision) {
 			skipped.push({
 				model: candidate,
 				reason: "no vision support \u2014 run /strip-images to unlock",
@@ -306,6 +308,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 								idx,
 								usage?.tokens ?? null,
 								sessionHasImages(),
+								current,
 							)
 							if (!next) {
 								const lines = skipped.map((s) => `  • ${s.model.id}: ${s.reason}`)

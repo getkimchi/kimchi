@@ -561,6 +561,23 @@ describe("model_select handler", () => {
 		expect(notifyMock).toHaveBeenCalledWith(expect.stringContaining("does not support vision input"), "warning")
 	})
 
+	it("does not warn when switching between non-vision models with images in session", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		await trigger("context", { messages: [makeUser("look", [makeImageBlock()])] }, ctx)
+		expect(sessionHasImages()).toBe(true)
+
+		const event: ModelSelectEvent = {
+			type: "model_select",
+			model: { id: "text-only-b", input: ["text"], contextWindow: 100_000 } as never,
+			previousModel: { id: "text-only-a", input: ["text"], contextWindow: 100_000 } as never,
+			source: "set",
+		}
+		notifyMock.mockClear()
+		await trigger("model_select", event, ctx)
+		expect(notifyMock).not.toHaveBeenCalledWith(expect.stringContaining("does not support vision input"), "warning")
+	})
+
 	it("warns on tier downgrade (heavy → standard)", async () => {
 		const { pi, trigger } = makeMockPI()
 		modelGuardExtension(pi)
