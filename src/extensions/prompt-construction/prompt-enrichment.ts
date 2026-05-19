@@ -1,15 +1,15 @@
 /**
  * Orchestration prompt enrichment extension.
  *
- * Behavior depends on whether this process is the main model or an Agent worker
- * (detected via Agent worker context or the legacy KIMCHI_SUBAGENT env var).
+ * Behavior depends on whether this process is the main model or a subagent
+ * (detected via the KIMCHI_SUBAGENT env var set during subagent spawning).
  *
  * Main model mode:
  * - "input": wraps the user prompt with the current model's own capabilities
  *   and the available delegated-agent models so the model can self-classify the task
  *   and decide which steps to execute itself vs. delegate.
  * - "before_agent_start": injects the self-classification system prompt with
- *   full tool access (read, write, edit, bash, Agent).
+ *   full tool access, including the active delegation tool.
  *
  * Subagent mode:
  * - "input": passes through unchanged.
@@ -30,7 +30,6 @@ import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendi
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
-import { isAgentWorker } from "../agent-worker-context.js"
 import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
 import {
 	CONTINUATION_NUDGE_TEXT,
@@ -116,15 +115,13 @@ function readMultiModelArgv(): boolean {
 
 let multiModelEnabled = readMultiModelArgv()
 
-const DELEGATION_TOOL_NAMES = new Set(["Agent"])
+const DELEGATION_TOOL_NAMES = new Set(["Agent", "subagent"])
 
 function isDelegationToolCallName(name: string | undefined): boolean {
 	return name != null && DELEGATION_TOOL_NAMES.has(name)
 }
 
-// macOS terminals send the legacy escape sequence \x1b\t for Option+Tab
-// instead of the Kitty protocol / CSI-u sequences handled by matchesKey()
-const LEGACY_MACOS_ALT_TAB_SEQUENCE = "\x1b\t"
+export const MULTI_MODEL_SHORTCUT = process.platform === "darwin" ? "option+m" : "alt+m"
 
 /**
  * Shape of a tool-call content block as emitted in assistant messages.
@@ -208,7 +205,7 @@ export function getMultiModelEnabled(): boolean {
 }
 
 export function isSubagent(): boolean {
-	return isAgentWorker()
+	return process.env.KIMCHI_SUBAGENT === "1"
 }
 
 export default function (skillPaths: string[]) {
@@ -223,21 +220,21 @@ export default function (skillPaths: string[]) {
 
 		pi.registerFlag("multi-model", {
 			type: "boolean",
-			description: "Enable multi-model orchestration (default: enabled). Toggle with alt+tab.",
+			description: `Enable multi-model orchestration (default: enabled). Toggle with ${MULTI_MODEL_SHORTCUT}.`,
 			default: true,
 		})
 
 		// For sub agents we don't want to transform the prompt sent from parent with model capabilities
 		const registry = new ModelRegistry(getAvailableModels())
 		if (!subagentMode) {
-			// Global terminal input listener so alt+tab works even when a
+			// Global terminal input listener so alt+m works even when a
 			// dialog (e.g. permission prompt) has focus instead of the editor.
-			let unsubAltTab: (() => void) | null = null
+			let unsubMultiModelToggle: (() => void) | null = null
 			pi.on("session_start", async (_event, ctx) => {
-				if (unsubAltTab) unsubAltTab()
+				if (unsubMultiModelToggle) unsubMultiModelToggle()
 				if (ctx.hasUI) {
-					unsubAltTab = ctx.ui.onTerminalInput((data) => {
-						if (matchesKey(data, "alt+tab") || data === LEGACY_MACOS_ALT_TAB_SEQUENCE) {
+					unsubMultiModelToggle = ctx.ui.onTerminalInput((data) => {
+						if (matchesKey(data, MULTI_MODEL_SHORTCUT) || data === "µ") {
 							if (!isKeyRelease(data)) {
 								multiModelEnabled = !multiModelEnabled
 								ctx.ui.setStatus("multi-model", undefined)
@@ -263,10 +260,10 @@ export default function (skillPaths: string[]) {
 			const emptyTurnNudge = new EmptyTurnNudge()
 			pi.on("input", async (event) => {
 				if (event.source === "extension") {
-					// Agent result arriving. Clear the delegation-pending flag so the
+					// Subagent result arriving. Clear the subagent-pending flag so the
 					// continuation nudge can fire normally once the model has processed
 					// the output (at the next turn_end, after any tool calls it makes).
-					continuationNudge.clearDelegationPending()
+					continuationNudge.clearSubagentPending()
 					return
 				}
 				continuationNudge.resetForNewUserInput()
@@ -297,7 +294,7 @@ export default function (skillPaths: string[]) {
 				// A single turn may contain multiple parallel agent calls.
 				for (const c of event.message.content) {
 					if (c.type === "toolCall" && isDelegationToolCallName((c as { name?: string }).name)) {
-						continuationNudge.markDelegationCall()
+						continuationNudge.markSubagentCall()
 					}
 				}
 
