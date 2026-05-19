@@ -322,7 +322,7 @@ function hashText(text: string): string {
 }
 
 function expandHint(theme: Theme): string {
-	return theme.fg("muted", " • Ctrl+O to expand")
+	return theme.fg("muted", " • ctrl+o to expand")
 }
 
 function clearStateKeys(state: Record<string, unknown> | undefined, ...keys: string[]): void {
@@ -1228,7 +1228,7 @@ function buildPreviewText(lines: string[], expanded: boolean, theme: Theme, fall
 	let text = shown.join("\n")
 	const remaining = lines.length - shown.length
 	if (remaining > 0) {
-		text += `\n${theme.fg("muted", `... (${remaining} more lines${expanded ? "" : " • Ctrl+O to expand"})`)}`
+		text += `\n${theme.fg("muted", `... (${remaining} more lines${expanded ? "" : " • ctrl+o to expand"})`)}`
 	}
 	if (expanded && lines.length > maxLines) {
 		text += `\n${theme.fg("warning", `(display capped at ${maxLines} lines)`)}`
@@ -1924,7 +1924,7 @@ function diffSummaryWithMeta(added: number, removed: number, hunks: number, mode
 function collapsedDiffHint(remainingLines: number, hiddenHunks: number): string {
 	const width = termW()
 	const candidates = [
-		`… (${remainingLines} more diff lines${hiddenHunks > 0 ? ` • ${hiddenHunks} more hunks` : ""} • Ctrl+O to expand)`,
+		`… (${remainingLines} more diff lines${hiddenHunks > 0 ? ` • ${hiddenHunks} more hunks` : ""} • ctrl+o to expand)`,
 		`… (${remainingLines} more lines${hiddenHunks > 0 ? ` • ${hiddenHunks} hunks` : ""})`,
 		`… (+${remainingLines}${hiddenHunks > 0 ? ` • +${hiddenHunks}h` : ""})`,
 		"…",
@@ -2658,7 +2658,7 @@ function renderEditPreviewBody(
 			const remainder = operations.length - maxShown
 			const suffix =
 				remainder > 0
-					? `\n${theme.fg("muted", `… ${remainder} more edit blocks${ctx.expanded ? "" : " • Ctrl+O to expand"}`)}`
+					? `\n${theme.fg("muted", `… ${remainder} more edit blocks${ctx.expanded ? "" : " • ctrl+o to expand"}`)}`
 					: ""
 			ctx.state._ptBody = `${operations.length} edits ${summary}\n\n${sections.join("\n\n")}${suffix}`
 			ctx.state._ptDisplay = indentBranchBlock(withBranch(ctx.state._ptBody, theme, false, true))
@@ -3300,7 +3300,7 @@ function renderApplyPatchCall(args: any, theme: Theme, ctx: any, sp: (path: stri
 					const remainder = preview.changes.length - maxShown
 					const suffix =
 						remainder > 0
-							? `\n${theme.fg("muted", `… ${remainder} more file patches${ctx.expanded ? "" : " • Ctrl+O to expand"}`)}`
+							? `\n${theme.fg("muted", `… ${remainder} more file patches${ctx.expanded ? "" : " • ctrl+o to expand"}`)}`
 							: ""
 					const summary = `${preview.changes.length} files ${preview.summary}`
 					ctx.state._applyPatchPreviewBody = `${summary}\n\n${sections.join("\n\n")}${suffix}`
@@ -3406,7 +3406,7 @@ function renderMcpToolResult(result: any, expanded: boolean, isPartial: boolean,
 		: theme.fg("muted", `${lines.length} line${lines.length === 1 ? "" : "s"} returned`)
 	if (mode === "summary") return makeText(ctx.lastComponent, withBranch(statusText, theme))
 	if (!expanded)
-		return makeText(ctx.lastComponent, withBranch(`${statusText}${theme.fg("muted", " • Ctrl+O to expand")}`, theme))
+		return makeText(ctx.lastComponent, withBranch(`${statusText}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
 	const preview = buildPreviewText(
 		lines.map((line) => theme.fg(ctx.isError ? "error" : "toolOutput", line || " ")),
 		true,
@@ -3593,7 +3593,7 @@ function renderTaskListResult(lines: string[], expanded: boolean, theme: Theme, 
 	if (parts.length > 0) summary += ` ${theme.fg("muted", "•")} ${parts.join(` ${theme.fg("muted", "•")} `)}`
 
 	if (!expanded) {
-		return makeText(ctx.lastComponent, withBranch(`${summary}${theme.fg("muted", " • Ctrl+O to expand")}`, theme))
+		return makeText(ctx.lastComponent, withBranch(`${summary}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
 	}
 
 	const shown = tasks.slice(0, previewLimit())
@@ -3632,7 +3632,7 @@ function renderReadImageResult(result: any, expanded: boolean, theme: Theme, ctx
 	const mimeType = image?.mimeType ?? "image"
 	const summary = `${theme.fg("success", "Image loaded")} ${theme.fg("muted", `[${mimeType}]`)}`
 	if (!expanded) {
-		return makeText(ctx.lastComponent, withBranch(`${summary}${theme.fg("muted", " • Ctrl+O to show")}`, theme))
+		return makeText(ctx.lastComponent, withBranch(`${summary}${theme.fg("muted", " • ctrl+o to show")}`, theme))
 	}
 
 	const noteLines = getTextContent(result)
@@ -3691,7 +3691,7 @@ function renderOpenAiToolResult(
 		? theme.fg("error", lines[0])
 		: theme.fg("muted", `${lines.length} line${lines.length === 1 ? "" : "s"} returned`)
 	if (!expanded) {
-		return makeText(ctx.lastComponent, withBranch(`${statusText}${theme.fg("muted", " • Ctrl+O to expand")}`, theme))
+		return makeText(ctx.lastComponent, withBranch(`${statusText}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
 	}
 
 	if (!ctx.isError && lines.length === 1) {
@@ -4009,10 +4009,15 @@ export default function (pi: ExtensionAPI) {
 			if (content?.type !== "text")
 				return makeText(ctx.lastComponent, withBranch(theme.fg("error", "No text content"), theme))
 			const lines = content.text.split("\n")
+			if (ctx.isError) {
+				const header = theme.fg("muted", `${lines.length} lines loaded`)
+				const body = lines.map((line) => theme.fg("error", line || " ")).join("\n")
+				return makeText(ctx.lastComponent, withBranch(`${header}\n${body}`, theme))
+			}
 			let text = theme.fg("muted", `${lines.length} lines loaded`)
 			if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)")
 			if (!expanded)
-				return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • Ctrl+O to expand")}`, theme))
+				return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
 			const shown = lines.slice(0, previewLimit())
 			text += `\n${buildPreviewText(
 				shown.map((line) => theme.fg("dim", line || " ")),
@@ -4058,7 +4063,7 @@ export default function (pi: ExtensionAPI) {
 			text += theme.fg("muted", ` (${nonEmpty.length} lines)`)
 			if (details?.truncation?.truncated) text += theme.fg("warning", " [truncated]")
 			if (!expanded && nonEmpty.length > 0)
-				return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • Ctrl+O to expand")}`, theme))
+				return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
 			if (!expanded) return makeText(ctx.lastComponent, withBranch(text, theme))
 			const collapsed = bashCollapsedLimit()
 			text += `\n${buildPreviewText(
@@ -4104,7 +4109,7 @@ export default function (pi: ExtensionAPI) {
 			let text = theme.fg("muted", `${matches.length} matches`)
 			if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)")
 			if (!expanded)
-				return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • Ctrl+O to expand")}`, theme))
+				return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
 			text += `\n${buildPreviewText(
 				matches.map((line) => theme.fg("dim", line)),
 				false,
@@ -4146,7 +4151,7 @@ export default function (pi: ExtensionAPI) {
 			if (items.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no files found"), theme))
 			let text = theme.fg("muted", `${items.length} files`)
 			if (!expanded)
-				return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • Ctrl+O to expand")}`, theme))
+				return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
 			// Expanded: grouped find results with icons
 			const maxShow = previewLimit()
 			const shown = items.slice(0, maxShow)
@@ -4193,7 +4198,7 @@ export default function (pi: ExtensionAPI) {
 				return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "empty directory"), theme))
 			let text = theme.fg("muted", `${items.length} entries`)
 			if (!expanded)
-				return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • Ctrl+O to expand")}`, theme))
+				return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
 			// Expanded: tree-view with icons
 			const maxShow = previewLimit()
 			const shown = items.slice(0, maxShow)
