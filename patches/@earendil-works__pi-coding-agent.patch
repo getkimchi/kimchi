@@ -22,3 +22,29 @@ index 3ffb1439bf059d787aee4bf314c89cb28b6b4959..275c5dc3c02bdba4932fd14587c70ca8
      "cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.6",
      "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
      xiaomi: "mimo-v2.5-pro",
+diff --git a/dist/core/slash-commands.js b/dist/core/slash-commands.js
+--- a/dist/core/slash-commands.js
++++ b/dist/core/slash-commands.js
+@@ -17,6 +17,7 @@
+     { name: "login", description: "Configure provider authentication" },
+     { name: "logout", description: "Remove provider authentication" },
+     { name: "new", description: "Start a new session" },
++    { name: "clear", description: "Start a new session (alias for /new)" },
+     { name: "compact", description: "Manually compact the session context" },
+     { name: "resume", description: "Resume a different session" },
+     { name: "reload", description: "Reload keybindings, extensions, skills, prompts, and themes" },
+diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
+--- a/dist/modes/interactive/interactive-mode.js
++++ b/dist/modes/interactive/interactive-mode.js
+@@ -2042,6 +2042,11 @@
+                 await this.handleClearCommand();
+                 return;
+             }
++            if (text === "/clear") {
++                this.editor.setText("");
++                await this.handleClearCommand();
++                return;
++            }
+             if (text === "/compact" || text.startsWith("/compact ")) {
+                 const customInstructions = text.startsWith("/compact ") ? text.slice(9).trim() : undefined;
+                 this.editor.setText("");
