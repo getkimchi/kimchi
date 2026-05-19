@@ -237,7 +237,6 @@ Pause/resume is separate lifecycle control: `/ferment pause` stops the ferment, 
 | `/ferment auto` | Set automated continuation policy |
 | `/ferment pause` | Pause the active ferment lifecycle |
 | `/ferment resume` | Resume the active ferment lifecycle |
-| `/status` | Full status dump with phases, steps, decisions |
 
 ### Recovery
 
