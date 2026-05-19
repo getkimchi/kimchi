@@ -208,6 +208,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	let thinkingStatus: "thinking" | number | null = null
 	let thinkingStartMs = 0
 	let workedForTimer: ReturnType<typeof setTimeout> | undefined
+	let piToolsExpanded = false
 
 	const refresh = (status: "idle" | "generating") => {
 		if (!currentCtx?.hasUI || !scriptFooter || !scriptTui || !scriptCmd) return
@@ -366,10 +367,13 @@ export default function uiExtension(pi: ExtensionAPI) {
 			tui.setShowHardwareCursor(true)
 			const editor = new PromptEditor(tui, editorTheme, keybindings, ctx.ui.theme)
 			editor.setExpandHandler(() => {
-				if (!expandNext()) {
+				piToolsExpanded = !piToolsExpanded
+				ctx.ui.setToolsExpanded(piToolsExpanded)
+				if (piToolsExpanded) {
+					expandNext()
+				} else {
 					collapseAll()
 				}
-				ctx.ui.setToolsExpanded(false)
 			})
 			currentEditor = editor
 			if (pasteImageHandler) {

@@ -81,13 +81,14 @@ export class ToolBlockView extends Container {
 		if (this.footerLeft || this.footerRight) {
 			if (this.branchColorFn) {
 				const footerLines = this.footerLeft.split("\n")
+				const terminator = this.extraLines.length > 0 ? "├─" : "└─"
 				if (footerLines.length === 1) {
-					const connector = `${this.branchColorFn("└─")} `
+					const connector = `${this.branchColorFn(terminator)} `
 					lines.push(buildAlignedLine(connector + this.footerLeft, this.footerRight, width))
 				} else {
 					for (let i = 0; i < footerLines.length; i++) {
 						const isLast = i === footerLines.length - 1
-						const pfx = `${this.branchColorFn(isLast ? "└─" : "│ ")} `
+						const pfx = `${this.branchColorFn(isLast ? terminator : "│ ")} `
 						lines.push(truncateLine(pfx + footerLines[i], width))
 					}
 				}

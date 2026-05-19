@@ -39,6 +39,6 @@
 		}
 	],
 	"files": {
-		"ignore": ["dist/", "node_modules/", "src/core/export-html/", "src/extensions/mcp-adapter/"]
+		"ignore": ["dist/", "node_modules/", "src/core/export-html/", "src/extensions/mcp-adapter/", "src/extensions/tool-rendering.ts"]
 	}
 }
