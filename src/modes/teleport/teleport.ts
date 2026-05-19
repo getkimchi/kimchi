@@ -137,15 +137,23 @@ async function rebindAfterSwap(ctx: TeleportContext): Promise<void> {
  * handler are wired to the new foreground from a clean slate. Failure of the
  * UI reset is non-fatal — we surface a warning so the user sees that the swap
  * itself happened.
+ *
+ * Order matters: `triggerFreshUI` must run **before** `rebindAfterSwap`. The
+ * fresh-UI pass first clears old extension UI (widgets, shortcuts, footer,
+ * autocomplete) and re-renders the chat. `rebindCurrentSession` then binds
+ * extensions and sets up new shortcuts/widgets on the clean slate. If
+ * rebind ran first, `resetExtensionUI` would immediately wipe everything that
+ * `bindCurrentSessionExtensions` just configured.
  */
 async function refreshUIAfterSwap(ctx: TeleportContext): Promise<void> {
-	await rebindAfterSwap(ctx)
-	if (!ctx.triggerFreshUI) return
-	try {
-		ctx.triggerFreshUI()
-	} catch (err) {
-		warn(ctx, `UI refresh failed: ${err instanceof Error ? err.message : String(err)}`)
+	if (ctx.triggerFreshUI) {
+		try {
+			ctx.triggerFreshUI()
+		} catch (err) {
+			warn(ctx, `UI refresh failed: ${err instanceof Error ? err.message : String(err)}`)
+		}
 	}
+	await rebindAfterSwap(ctx)
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
