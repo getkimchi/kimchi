@@ -121,7 +121,7 @@ function isDelegationToolCallName(name: string | undefined): boolean {
 	return name != null && DELEGATION_TOOL_NAMES.has(name)
 }
 
-export const MULTI_MODEL_SHORTCUT = "alt+m"
+export const MULTI_MODEL_SHORTCUT = process.platform === "darwin" ? "option+m" : "alt+m"
 
 /**
  * Shape of a tool-call content block as emitted in assistant messages.
@@ -234,7 +234,7 @@ export default function (skillPaths: string[]) {
 				if (unsubMultiModelToggle) unsubMultiModelToggle()
 				if (ctx.hasUI) {
 					unsubMultiModelToggle = ctx.ui.onTerminalInput((data) => {
-						if (matchesKey(data, MULTI_MODEL_SHORTCUT)) {
+						if (matchesKey(data, MULTI_MODEL_SHORTCUT) || data === "µ") {
 							if (!isKeyRelease(data)) {
 								multiModelEnabled = !multiModelEnabled
 								ctx.ui.setStatus("multi-model", undefined)
