@@ -113,14 +113,6 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 				}
 			}
 
-			// Tier-downgrade warning (informational, not a blocker)
-			const currentTier = getModelTier(ctx.model)
-			const targetTier = getModelTier(target)
-			const tierWarning =
-				currentTier && targetTier && TIER_ORDER.indexOf(currentTier) < TIER_ORDER.indexOf(targetTier)
-					? `\n\nNote: Switched from a ${currentTier}-tier to a ${targetTier}-tier model. Reasoning and planning quality may be reduced for complex tasks.`
-					: ""
-
 			let ok: boolean
 			suppressModelSelectGuard = true
 			try {
@@ -144,7 +136,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text" as const,
-						text: `Switched to model ${target.provider}/${target.id} (${target.name})${tierWarning}`,
+						text: `Switched to model ${target.provider}/${target.id} (${target.name})`,
 					},
 				],
 				details: null,

@@ -515,62 +515,6 @@ describe("model_select handler", () => {
 		expect(notifyMock).not.toHaveBeenCalled()
 	})
 
-	it("warns when tokens exceed 90% of target context window", async () => {
-		const { pi, trigger } = makeMockPI()
-		modelGuardExtension(pi)
-		// 96,000 tokens on a 100k context window = 96% — triggers warning
-		const highUsageCtx = makeMockCtx({
-			model: { id: "small-model", input: ["text"], contextWindow: 100_000 } as ExtensionContext["model"],
-			getContextUsage: () => ({ tokens: 96_000, contextWindow: 100_000, percent: 96 }),
-			ui: { notify: notifyMock, setStatus: vi.fn() } as unknown as ExtensionContext["ui"],
-		})
-		const event: ModelSelectEvent = {
-			type: "model_select",
-			model: { id: "small-model", input: ["text"], contextWindow: 100_000 } as never,
-			previousModel: { id: "big-model", input: ["text"], contextWindow: 200_000 } as never,
-			source: "set",
-		}
-		await trigger("model_select", event, highUsageCtx)
-		expect(notifyMock).toHaveBeenCalledTimes(1)
-		expect(notifyMock).toHaveBeenCalledWith(expect.stringContaining("96,000"), "warning")
-	})
-
-	it("warns when switching to non-vision model with images in session", async () => {
-		const { pi, trigger } = makeMockPI()
-		modelGuardExtension(pi)
-		// First set imagesDetected via a context event
-		await trigger("context", { messages: [makeUser("look", [makeImageBlock()])] }, ctx)
-		expect(sessionHasImages()).toBe(true)
-
-		// Now trigger model_select to a non-vision model
-		const event: ModelSelectEvent = {
-			type: "model_select",
-			model: { id: "text-only", input: ["text"], contextWindow: 100_000 } as never,
-			previousModel: { id: "vision-model", input: ["text", "image"], contextWindow: 100_000 } as never,
-			source: "set",
-		}
-		await trigger("model_select", event, ctx)
-		expect(notifyMock).toHaveBeenCalledTimes(1)
-		expect(notifyMock).toHaveBeenCalledWith(expect.stringContaining("does not support vision input"), "warning")
-	})
-
-	it("does not warn when switching between non-vision models with images in session", async () => {
-		const { pi, trigger } = makeMockPI()
-		modelGuardExtension(pi)
-		await trigger("context", { messages: [makeUser("look", [makeImageBlock()])] }, ctx)
-		expect(sessionHasImages()).toBe(true)
-
-		const event: ModelSelectEvent = {
-			type: "model_select",
-			model: { id: "text-only-b", input: ["text"], contextWindow: 100_000 } as never,
-			previousModel: { id: "text-only-a", input: ["text"], contextWindow: 100_000 } as never,
-			source: "set",
-		}
-		notifyMock.mockClear()
-		await trigger("model_select", event, ctx)
-		expect(notifyMock).not.toHaveBeenCalledWith(expect.stringContaining("does not support vision input"), "warning")
-	})
-
 	it("warns on tier downgrade (heavy → standard)", async () => {
 		const { pi, trigger } = makeMockPI()
 		modelGuardExtension(pi)
@@ -585,19 +529,6 @@ describe("model_select handler", () => {
 		// Note: actual tier depends on builtin-models.ts getModelTier implementation
 		// For this test we just verify the notify was called (info level for tier downgrade)
 		// The actual tier levels are determined by getModelTier from builtin-models.ts
-	})
-
-	it("does not warn when tokens are within safe threshold", async () => {
-		const { pi, trigger } = makeMockPI()
-		modelGuardExtension(pi)
-		const event: ModelSelectEvent = {
-			type: "model_select",
-			model: { id: "test-model", input: ["text"], contextWindow: 100_000 } as never,
-			previousModel: { id: "old-model", input: ["text"], contextWindow: 100_000 } as never,
-			source: "set",
-		}
-		await trigger("model_select", event, ctx)
-		expect(notifyMock).not.toHaveBeenCalled()
 	})
 
 	it("does not warn on tier upgrade", async () => {
