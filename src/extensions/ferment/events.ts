@@ -2,12 +2,14 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { shortenTitle } from "../../ferment/shorten-title.js"
 import { clearFermentCache } from "../../ferment/store.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
+import { decideContinuation } from "./continuation.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
-import { appendRefEntry, maybeInjectReactiveAutoNudge, resetReactiveAutoNudgeCount } from "./nudge.js"
+import { appendRefEntry, maybeInjectReactiveContinuationNudge, resetReactiveContinuationNudgeCount } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import { promptInput, promptSelect } from "./prompt-ui.js"
 import { resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { scheduleFermentWakeUp } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import { isRestoringModel, setRestoringModel } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
@@ -47,46 +49,108 @@ function extractPromptTextAfterLastToolCall(content: AssistantContentPart[]): st
 		.trimEnd()
 }
 
-async function maybeRunPlanModeDropdown(
+interface UserInputPrompt {
+	text: string
+	title: string
+	options: string[]
+	isDraft: boolean
+	contextualOptions: string[] | undefined
+	yesLabel: string
+	noLabel: string
+}
+
+function findUserInputPrompt(
+	content: AssistantContentPart[],
+	f: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
+): UserInputPrompt | undefined {
+	if (f.status !== "draft" && f.status !== "planned" && f.status !== "running") return undefined
+	if (hasToolCall(content, "propose_ferment_scoping")) return undefined
+	const text = extractPromptTextAfterLastToolCall(content)
+	if (!text) return undefined
+
+	const title = extractTrailingQuestion(text)
+	const contextualOptions = extractContextualOptions(text)
+	if (!text.endsWith("?") && !contextualOptions) return undefined
+
+	const isDraft = f.status === "draft"
+	const yesLabel = isDraft ? "Yes, this looks right" : "Yes, proceed"
+	const noLabel = isDraft ? "No, revise" : "No, pause"
+	const options = contextualOptions
+		? [...contextualOptions, "Let me say something else"]
+		: [yesLabel, noLabel, "Let me say something else"]
+
+	return { text, title, options, isDraft, contextualOptions, yesLabel, noLabel }
+}
+
+async function maybeRunManualBoundaryDropdown(
+	pi: ExtensionAPI,
+	ctx: TurnEndContext | undefined,
+	prompt: UserInputPrompt,
+	f: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
+	runtime: FermentRuntime,
+): Promise<boolean> {
+	const decision = decideContinuation(f, runtime.getContinuationPolicy())
+	if (decision.type !== "wait_manual_boundary") return false
+	if (!ctx?.ui?.select) return true
+
+	const nextPhase = f.phases.find((phase) => phase.id === decision.action.phaseId)
+	const nextPhaseName = nextPhase?.name ?? decision.action.phaseId
+	const choice = await promptSelect(ctx, prompt.title || `Continue to "${nextPhaseName}"?`, [
+		"Continue to next phase",
+		"Pause here",
+	])
+	if (!choice) return true
+
+	if (choice === "Continue to next phase") {
+		scheduleFermentWakeUp(pi, runtime, {
+			allowManualPhaseBoundary: true,
+			deliverAsFollowUp: true,
+			fermentId: f.id,
+			tag: "Manual boundary wake-up",
+		})
+		return true
+	}
+
+	if (choice === "Pause here") {
+		const outcome = createApplyAndPersist(runtime)(f.id, { type: "pause" })
+		if (!outcome.ok) {
+			ctx.ui.notify?.(`Failed to pause: ${outcome.error.message}`)
+			return true
+		}
+		setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
+		ctx.ui.notify?.(`Paused "${outcome.ferment.name}". Type /ferment resume to resume.`)
+		return true
+	}
+	return true
+}
+
+async function maybeRunUserInputDropdown(
 	pi: ExtensionAPI,
 	ctx: TurnEndContext | undefined,
 	content: AssistantContentPart[],
 	f: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
 	runtime: FermentRuntime,
-): Promise<void> {
-	if (!ctx?.ui?.select) return
+): Promise<boolean> {
+	const prompt = findUserInputPrompt(content, f)
+	if (!prompt) return false
+	const boundaryHandled = await maybeRunManualBoundaryDropdown(pi, ctx, prompt, f, runtime)
+	if (boundaryHandled) return true
+	if (!ctx?.ui?.select || !ctx.ui.input) return true
 
-	if (f.status !== "draft" && f.status !== "running") return
-	if (!ctx.ui.input) return
-
-	if (hasToolCall(content, "propose_ferment_scoping")) return
-	const text = extractPromptTextAfterLastToolCall(content)
-	if (!text) return
-
-	const isDraft = f.status === "draft"
-	const yesLabel = isDraft ? "Yes, this looks right" : "Yes, proceed"
-	const noLabel = isDraft ? "No, revise" : "No, pause"
-
-	const title = extractTrailingQuestion(text)
-	const contextualOptions = extractContextualOptions(text)
-	if (!text.endsWith("?") && !contextualOptions) return
-	const options = contextualOptions
-		? [...contextualOptions, "Let me say something else"]
-		: [yesLabel, noLabel, "Let me say something else"]
-	const choice = await promptSelect(ctx, title, options)
-	if (!choice) return
+	const choice = await promptSelect(ctx, prompt.title, prompt.options)
+	if (!choice) return true
 
 	let reply: string
 
 	if (choice === "Let me say something else") {
 		const custom = await promptInput(ctx, "Your message:", "")
-		if (!custom) return
+		if (!custom) return true
 		reply = custom
-	} else if (choice === noLabel) {
-		reply = isDraft ? "No — please revise." : "No, pause for now."
-	} else if (contextualOptions?.includes(choice)) {
+	} else if (choice === prompt.noLabel) {
+		reply = prompt.isDraft ? "No — please revise." : "No, pause for now."
+	} else if (prompt.contextualOptions?.includes(choice)) {
 		reply = choice
-	} else if (isDraft && choice === yesLabel) {
+	} else if (prompt.isDraft && choice === prompt.yesLabel) {
 		const outcome = confirmPendingScope(runtime, f.id, undefined, "turn_end", f.name, pi)
 		if (outcome.ok) {
 			ctx.ui.notify?.(
@@ -106,6 +170,7 @@ async function maybeRunPlanModeDropdown(
 
 	runtime.markHumanInput()
 	void pi.sendUserMessage(reply, { deliverAs: "followUp" })
+	return true
 }
 
 export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
@@ -113,7 +178,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	let pendingOneshot = false
 	pi.registerFlag("ferment-oneshot", {
 		type: "boolean",
-		description: "Bootstrap the initial prompt as a one-shot exec-mode ferment.",
+		description: "Bootstrap the initial prompt as an automated one-shot ferment.",
 	})
 	pi.registerFlag("init-git", {
 		type: "boolean",
@@ -147,6 +212,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			applyFermentToolProfile(pi, "worker")
 			return
 		}
+		runtime.setContinuationPolicy(ctx?.hasUI ? "manual" : "automated")
 		runtime.clearAllStepStarts()
 		runtime.clearAllScopingGates()
 		runtime.clearAllPendingScopes()
@@ -204,6 +270,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		try {
 			// Bootstrap path: no UI available yet, so only auto-init when the user
 			// opted in via --init-git or KIMCHI_AUTO_GIT_INIT=1.
+			runtime.setContinuationPolicy("automated")
 			await ensureGitRepo({
 				autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
 			})
@@ -215,12 +282,11 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 				shortName = intent.length > 60 ? `${intent.slice(0, 57).trimEnd()}...` : intent
 			}
 			const f = storage.create(shortName, intent)
-			const modeOut = applyAndPersist(f.id, { type: "set_mode", mode: "exec" })
-			const updated = modeOut.ok ? modeOut.ferment : f
+			const updated = f
 			setActiveFermentState(runtime, updated)
 			appendRefEntry(pi, updated.id)
 			pi.appendEntry("ferment_ack", {
-				text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nMode: exec (fully autonomous)`,
+				text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nPolicy: automated`,
 			})
 			return { action: "transform" as const, text: buildOneshotNudge(updated, intent), images: event.images }
 		} catch (err) {
@@ -274,14 +340,12 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		const content = getAssistantContentParts(event.message.content)
 		const activeId = runtime.getActiveId()
 		const toolCallSeen = hasAnyToolCall(content)
-		if (toolCallSeen && activeId) resetReactiveAutoNudgeCount(activeId)
+		if (toolCallSeen && activeId) resetReactiveContinuationNudgeCount(activeId)
 
 		const f = runtime.getActive()
 		if (!f) return
-		if (f.mode === "exec") {
-			if (!toolCallSeen) maybeInjectReactiveAutoNudge(pi, runtime)
-			return
-		}
-		await maybeRunPlanModeDropdown(pi, ctx, content, f, runtime)
+		const userInputHandled = await maybeRunUserInputDropdown(pi, ctx, content, f, runtime)
+		if (userInputHandled) return
+		if (!toolCallSeen) maybeInjectReactiveContinuationNudge(pi, runtime)
 	})
 }

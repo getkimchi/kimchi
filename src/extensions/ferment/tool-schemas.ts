@@ -258,10 +258,12 @@ export const SkipPhaseParams = Type.Object({
 export const CompleteFermentParams = Type.Object({
 	ferment_id: Type.String(),
 	final_summary: Type.Optional(Type.String()),
-	gates: Type.Array(GateVerdictSchema, {
-		description:
-			"Ferment-scope gate verdicts. Required ids: C1 (every plan success criterion satisfied with evidence), C2 (no unresolved F3 deferrals), C3 (real verification actually executed the artifact). A 'flag' verdict refuses ship.",
-	}),
+	gates: Type.Optional(
+		Type.Array(GateVerdictSchema, {
+			description:
+				"Ferment-scope gate verdicts. Required ids: C1 (every plan success criterion satisfied with evidence), C2 (no unresolved F3 deferrals), C3 (real verification actually executed the artifact). A 'flag' verdict refuses ship. May be omitted only when checking an already-complete ferment.",
+		}),
+	),
 })
 
 export const DecisionParams = Type.Object({
@@ -281,11 +283,6 @@ export const MemoryParams = Type.Object({
 })
 
 export const ShowParams = Type.Object({ ferment_id: Type.String() })
-
-export const SetModeParams = Type.Object({
-	ferment_id: Type.String(),
-	mode: Type.String({ description: "plan | exec | auto" }),
-})
 
 export const FailStepParams = Type.Object({
 	ferment_id: Type.String(),

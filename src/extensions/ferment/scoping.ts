@@ -21,7 +21,6 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { determineNextAction } from "../../ferment/engine.js"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
-import { exitSplashMode } from "../ui.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 
 // ─── Pending scope buffer ─────────────────────────────────────────────────────
@@ -103,7 +102,7 @@ function buildScopePrompt(runtime: FermentRuntime, fermentId: string): string {
 	const f = runtime.getStorage().get(fermentId)
 	if (!f) return ""
 	const action = determineNextAction(f)
-	return `Scope: ${action.reason}`
+	return `Scope: ${action?.reason ?? "no lifecycle action remains"}`
 }
 
 export async function runScopingFlow(
@@ -134,7 +133,6 @@ export async function runScopingFlow(
 	}
 	if (intent === undefined || intent === "") return
 
-	exitSplashMode(ctx)
 	runtime.markScopingInteractive(f.id)
 	// Seed an empty buffer so propose_ferment_scoping detects the interactive flow is active.
 	runtime.setPendingScope(f.id, { goal: "", successCriteria: "", constraints: [] })
@@ -148,7 +146,7 @@ export async function runScopingFlow(
 			content: [
 				{
 					type: "text",
-					text: `User wants to ferment "${f.name}": ${intent}\n\nDraft a complete Scoping (goal, success_criteria, constraints, assumptions) AND 3-7 phases AND clarifying questions ONLY where you're genuinely uncertain. Call propose_ferment_scoping with everything. Don't research with file/bash tools first.`,
+					text: `User wants to ferment "${f.name}" (ferment_id "${f.id}"): ${intent}\n\nThe host has already created this draft ferment. Do NOT call create_ferment. Draft a complete Scoping (goal, success_criteria, constraints, assumptions) AND 3-7 phases AND clarifying questions ONLY where you're genuinely uncertain. Call propose_ferment_scoping with ferment_id "${f.id}" and everything. Don't research with file/bash tools first.`,
 				},
 			],
 			display: false,

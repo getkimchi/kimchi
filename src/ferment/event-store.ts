@@ -55,6 +55,7 @@ function canonicalizeForHash(value: unknown): unknown {
 	if (value && typeof value === "object") {
 		const out: Record<string, unknown> = {}
 		for (const key of Object.keys(value).sort()) {
+			if (key === "mode") continue
 			const v = (value as Record<string, unknown>)[key]
 			if (v !== undefined) out[key] = canonicalizeForHash(v)
 		}
@@ -112,7 +113,8 @@ export interface FermentCreatedPayload {
 	id: string
 	name: string
 	description?: string
-	mode: FermentWorkMode
+	/** @deprecated Legacy event logs may carry this, but fold ignores it. */
+	mode?: FermentWorkMode
 	/** Initial worktree captured by `FermentStorage.create()`. Folded back into the
 	 *  reconstructed ferment so the event log produces the same state as the
 	 *  snapshot — without this, fold leaves worktree at `{ path: "" }` while the
@@ -604,7 +606,6 @@ export class FermentEventStore {
 					id: ferment.id,
 					name: ferment.name,
 					description: ferment.description,
-					mode: ferment.mode,
 					worktree: ferment.worktree,
 					createdAt: ferment.createdAt,
 				},
@@ -704,7 +705,6 @@ export class FermentEventStore {
 				id: ferment.id,
 				name: ferment.name,
 				description: ferment.description,
-				mode: ferment.mode,
 			},
 		})
 
@@ -745,10 +745,7 @@ export class FermentEventStore {
 			pending.push({ timestamp: ferment.createdAt, type: "ferment_planned", payload: {} })
 		}
 
-		// Stage 2: mode (if non-default)
-		pending.push({ timestamp: ferment.updatedAt, type: "ferment_mode_set", payload: { mode: ferment.mode } })
-
-		// Stage 3: per-phase + per-step events in temporal order
+		// Stage 2: per-phase + per-step events in temporal order
 		for (const phase of ferment.phases) {
 			if (phase.startedAt) {
 				pending.push({
@@ -955,7 +952,6 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 				name: p.name,
 				description: p.description,
 				status: "draft",
-				mode: p.mode,
 				worktree: p.worktree ?? { path: "" },
 				scoping: {},
 				phases: [],
@@ -1066,8 +1062,7 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 		}
 		case "ferment_mode_set": {
 			if (!state) throw new Error("ferment_mode_set requires existing state")
-			const p = event.payload as FermentModeSetPayload
-			return { ...state, mode: p.mode, updatedAt: event.timestamp }
+			return { ...state, updatedAt: event.timestamp }
 		}
 		case "phase_activated": {
 			if (!state) throw new Error("phase_activated requires existing state")

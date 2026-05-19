@@ -2,15 +2,16 @@
  * Formatters that produce plain-text representations of ferment state.
  *
  * Used by:
- * - `/progress` headless fallback (formatFermentStatus)
+ * - `/ferment progress` headless fallback (formatFermentStatus)
  * - planner system-prompt supplement (formatDecisionsAndMemories, formatScopingContext)
- * - resume nudges in plan mode (stripToolRefs)
+ * - continuation nudges in manual policy (stripToolRefs)
  */
 
 import { computeStats } from "../../ferment/stats.js"
 import type { Ferment } from "../../ferment/types.js"
+import type { ContinuationPolicy } from "./state.js"
 
-export function formatFermentStatus(f: Ferment): string {
+export function formatFermentStatus(f: Ferment, continuationPolicy?: ContinuationPolicy): string {
 	const total = f.phases.length
 	const done = f.phases.filter((p) => p.status === "completed").length
 	const active = f.phases.filter((p) => p.status === "active").length
@@ -23,7 +24,7 @@ export function formatFermentStatus(f: Ferment): string {
 	const stats = computeStats(f)
 
 	const lines: string[] = [
-		`🍺 Ferment: "${f.name}"  •  ${f.status.toUpperCase()}  •  ${f.mode} mode`,
+		`🍺 Ferment: "${f.name}"  •  ${f.status.toUpperCase()}${continuationPolicy ? `  •  ${continuationPolicy} policy` : ""}`,
 		`   📍 ${wtBranch} @ ${wtCommit} — ${wtPath}`,
 		`   Phases: ${total} total, ${planned} planned, ${active} active, ${done} done`,
 	]
@@ -98,7 +99,7 @@ export function formatScopingContext(f: Ferment): string {
 }
 
 /**
- * Strip references to specific tool names from engine messages, for plan mode.
+ * Strip references to specific tool names from engine messages for user-facing nudges.
  * Match "Use <tool_name> to ..." up to the next sentence boundary or newline —
  * `[^.\n]*` so we never swallow across sentences.
  */

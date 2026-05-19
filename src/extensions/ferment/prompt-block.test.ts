@@ -4,6 +4,7 @@ import type { Ferment, FermentStatus } from "../../ferment/types.js"
 import { registerAgents } from "../agents/personas/agent-types.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
+import type { ContinuationPolicy } from "./state.js"
 
 function makePi(oneshot: boolean): ExtensionAPI {
 	return {
@@ -21,7 +22,6 @@ function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 		id: "ferment-1",
 		name: "Runtime Plan",
 		status: "running",
-		mode: "plan",
 		worktree: { path: "/repo" },
 		scoping: {},
 		phases: [
@@ -55,11 +55,12 @@ function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 	}
 }
 
-function makeRuntime(fermentOverrides: Partial<Ferment> = {}): FermentRuntime {
+function makeRuntime(fermentOverrides: Partial<Ferment> = {}, policy: ContinuationPolicy = "manual"): FermentRuntime {
 	const ferment = makeFerment(fermentOverrides)
 	return {
 		...createDefaultFermentRuntime(),
 		getActive: () => ferment,
+		getContinuationPolicy: () => policy,
 	}
 }
 
@@ -182,9 +183,9 @@ describe("buildFermentPromptBlock", () => {
 		})
 
 		it("includes Upfront Contract directives mentioning propose_ferment_scoping", () => {
-			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime()) ?? ""
+			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime({}, "automated")) ?? ""
 			expect(out).toContain("Upfront Contract")
-			expect(out).toContain("Do not ask the user to confirm")
+			expect(out).toContain("do not ask the user to confirm phase advancement")
 			expect(out).toContain("propose_ferment_scoping")
 			expect(out).toContain("Emit clarifying questions when the user's intent is short, vague")
 			expect(out).toContain("recommended: true")
@@ -193,6 +194,21 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("Ask follow-up questions only for genuinely new")
 			expect(out).toContain("Never repeat, rephrase")
 			expect(out).toContain('After `propose_ferment_scoping` returns "Plan saved"')
+		})
+
+		it("uses manual phase-boundary instructions under manual continuation policy", () => {
+			const out = buildFermentPromptBlock(PI_NORMAL, makeRuntime({}, "manual")) ?? ""
+			expect(out).toContain("Manual continuation policy is active")
+			expect(out).toContain("ask the user before activating the next phase")
+			expect(out).toContain("do not call `activate_ferment_phase` until they say continue")
+			expect(out).not.toContain("do not ask the user to confirm phase advancement")
+		})
+
+		it("uses automated cross-phase instructions under automated continuation policy", () => {
+			const out = buildFermentPromptBlock(PI_NORMAL, makeRuntime({}, "automated")) ?? ""
+			expect(out).toContain("Automated continuation policy is active")
+			expect(out).toContain("continue across phase boundaries")
+			expect(out).toContain("do not ask the user to confirm phase advancement")
 		})
 
 		it("lists default subagent types when the registry is populated", () => {

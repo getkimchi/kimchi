@@ -58,6 +58,10 @@ describe("FermentEventStore", () => {
 		it("is stable for equivalent object shapes with different key insertion order", () => {
 			expect(stateHash({ a: 1, b: { c: 2 }, d: undefined })).toBe(stateHash({ d: undefined, b: { c: 2 }, a: 1 }))
 		})
+
+		it("ignores legacy mode fields when comparing canonical ferment state", () => {
+			expect(stateHash({ id: "f1", status: "planned", mode: "exec" })).toBe(stateHash({ id: "f1", status: "planned" }))
+		})
 	})
 
 	describe("create", () => {
@@ -577,6 +581,33 @@ describe("FermentEventStore", () => {
 	// ─── compatibility ─────────────────────────────────────────────────────────
 
 	describe("backward compatibility", () => {
+		it("folds legacy mode-bearing events without restoring mode", () => {
+			const created = applyFermentEvent(undefined, {
+				id: "event-1",
+				timestamp: "2026-01-01T00:00:00.000Z",
+				type: "ferment_created",
+				preStateHash: "0".repeat(16),
+				postStateHash: "legacy",
+				payload: { id: "legacy-events", name: "Legacy Events", mode: "exec" },
+			} as FermentEvent)
+
+			expect(created.name).toBe("Legacy Events")
+			expect(created).not.toHaveProperty("mode")
+
+			const modeSet = applyFermentEvent(created, {
+				id: "event-2",
+				timestamp: "2026-01-02T00:00:00.000Z",
+				type: "ferment_mode_set",
+				preStateHash: "legacy",
+				postStateHash: "legacy-2",
+				payload: { mode: "auto" },
+			} as FermentEvent)
+
+			expect(modeSet.status).toBe("draft")
+			expect(modeSet.updatedAt).toBe("2026-01-02T00:00:00.000Z")
+			expect(modeSet).not.toHaveProperty("mode")
+		})
+
 		it("list() returns ferments", () => {
 			eventStore.create("Alpha")
 			eventStore.create("Beta")

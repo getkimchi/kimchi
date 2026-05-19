@@ -9,7 +9,6 @@ export const FERMENT_TOOL_NAMES = [
 	"list_ferments",
 	"scope_ferment",
 	"update_ferment_scope_field",
-	"set_ferment_mode",
 	"complete_ferment",
 	"activate_ferment_phase",
 	"refine_ferment_phase",
@@ -30,6 +29,7 @@ const FERMENT_TOOL_NAME_SET = new Set<string>(FERMENT_TOOL_NAMES)
 export type FermentToolProfile = "idle" | "planner-active" | "paused-terminal" | "worker" | "oneshot-planner"
 
 const IDLE_FERMENT_TOOL_NAMES = ["create_ferment", "list_ferments"] as const
+const PLANNER_ACTIVE_FERMENT_TOOL_NAMES = FERMENT_TOOL_NAMES.filter((name) => name !== "create_ferment")
 const PAUSED_TERMINAL_FERMENT_TOOL_NAMES = ["list_ferments"] as const
 
 /**
@@ -75,7 +75,7 @@ function allowedFermentToolNamesForProfile(profile: FermentToolProfile): readonl
 		case "idle":
 			return IDLE_FERMENT_TOOL_NAMES
 		case "planner-active":
-			return FERMENT_TOOL_NAMES
+			return PLANNER_ACTIVE_FERMENT_TOOL_NAMES
 		case "oneshot-planner":
 			return PLANNER_ONESHOT_FERMENT_TOOL_NAMES
 		case "paused-terminal":

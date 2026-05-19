@@ -5,7 +5,7 @@
  * FsmContext, it answers "is this transition legal?" and "what's the new
  * state?". It does NOT compute a "what next?" suggestion — that lives in
  * `engine.determineNextAction`, which the planner system prompt and the
- * resume nudges actually consume.
+ * continuation nudges actually consume.
  *
  * Earlier versions of this file shipped:
  *   1. `fsmConfig` — a parallel XState-style declaration of the same
@@ -49,7 +49,6 @@ export type FsmState = (typeof FSM_STATES)[keyof typeof FSM_STATES]
 export const FSM_EVENTS = {
 	CREATE_FERMENT: "create_ferment",
 	SCOPE_FERMENT: "scope_ferment",
-	SET_MODE: "set_mode",
 	ACTIVATE_PHASE: "activate_phase",
 	REFINE_PHASE: "refine_phase",
 	COMPLETE_PHASE: "complete_phase",
@@ -109,7 +108,6 @@ export interface FsmTransitionResult {
 export interface EventParams {
 	phaseId?: string
 	stepId?: string
-	mode?: string
 }
 
 // ─── Guard helpers ────────────────────────────────────────────────────────────
@@ -272,7 +270,6 @@ const TRANSITIONS: TransitionMap = {
 		// needs to skip FSM validation when status === "draft" (the previous
 		// duct-tape workaround in lifecycle.ts is gone).
 		[FSM_EVENTS.SCOPE_FERMENT]: { target: FSM_STATES.PLANNED },
-		[FSM_EVENTS.SET_MODE]: { target: FSM_STATES.DRAFT },
 		[FSM_EVENTS.ABANDON]: { target: FSM_STATES.ABANDONED },
 	},
 
@@ -286,7 +283,6 @@ const TRANSITIONS: TransitionMap = {
 		[FSM_EVENTS.REFINE_PHASE]: { target: FSM_STATES.PLANNED },
 		[FSM_EVENTS.SKIP_PHASE]: { target: FSM_STATES.PLANNED },
 		[FSM_EVENTS.SCOPE_FERMENT]: { target: FSM_STATES.PLANNED },
-		[FSM_EVENTS.SET_MODE]: { target: FSM_STATES.PLANNED },
 		[FSM_EVENTS.ABANDON]: { target: FSM_STATES.ABANDONED },
 	},
 
@@ -370,10 +366,6 @@ const RECOVERY_HINTS: Partial<Record<string, string>> = {
 		"No step is currently running. Call start_ferment_step to begin a step before completing it.",
 	[`${FSM_STATES.PHASE_ACTIVE}:${FSM_EVENTS.VERIFY_STEP}`]:
 		"No step is currently running. Call start_ferment_step to begin a step before verifying it.",
-	[`${FSM_STATES.PHASE_ACTIVE}:${FSM_EVENTS.SET_MODE}`]:
-		"set_mode is only valid before a phase is active. Pause the ferment first if you need to change mode.",
-	[`${FSM_STATES.STEP_RUNNING}:${FSM_EVENTS.SET_MODE}`]:
-		"set_mode is only valid before a phase is active. Pause the ferment first if you need to change mode.",
 	[`${FSM_STATES.STEP_RUNNING}:${FSM_EVENTS.COMPLETE_PHASE}`]:
 		"A step is still running in this phase. Finish or fail the running step before completing the phase.",
 	[`${FSM_STATES.PLANNED}:${FSM_EVENTS.START_STEP}`]: "No phase is active. Call activate_phase first, then start_step.",

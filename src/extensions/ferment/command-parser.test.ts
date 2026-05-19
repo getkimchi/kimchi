@@ -7,12 +7,20 @@ describe("parseFermentCommand", () => {
 		expect(parseFermentCommand("   ")).toEqual({ type: "interactive" })
 	})
 
-	it("strips the add subcommand from quoted titles", () => {
-		expect(parseFermentCommand('add "Rewrite login"')).toEqual({ type: "add", title: "Rewrite login" })
+	it("strips the new subcommand from quoted titles", () => {
+		expect(parseFermentCommand('new "Rewrite login"')).toEqual({ type: "new", title: "Rewrite login" })
 	})
 
-	it("keeps bare text as add shorthand", () => {
-		expect(parseFermentCommand("Rewrite login")).toEqual({ type: "add", title: "Rewrite login" })
+	it("treats bare text as an unknown command", () => {
+		expect(parseFermentCommand("Rewrite login")).toEqual({ type: "unknown", input: "Rewrite login" })
+	})
+
+	it("does not accept the old add alias", () => {
+		expect(parseFermentCommand('add "Rewrite login"')).toEqual({ type: "unknown", input: 'add "Rewrite login"' })
+	})
+
+	it("does not accept the old mode command", () => {
+		expect(parseFermentCommand("mode exec")).toEqual({ type: "unknown", input: "mode exec" })
 	})
 
 	it("parses switch force before the target", () => {
@@ -25,12 +33,40 @@ describe("parseFermentCommand", () => {
 	})
 
 	it("parses switch force after the target", () => {
-		expect(parseFermentCommand('resume "Rewrite login" --force')).toEqual({
+		expect(parseFermentCommand('switch "Rewrite login" --force')).toEqual({
 			type: "switch",
-			verb: "resume",
+			verb: "switch",
 			target: "Rewrite login",
 			force: true,
 		})
+	})
+
+	it("does not treat resume with a target as switch shorthand", () => {
+		expect(parseFermentCommand('resume "Rewrite login" --force')).toEqual({
+			type: "unknown",
+			input: 'resume "Rewrite login" --force',
+		})
+	})
+
+	it("does not treat use as switch shorthand", () => {
+		expect(parseFermentCommand('use "Rewrite login"')).toEqual({ type: "unknown", input: 'use "Rewrite login"' })
+	})
+
+	it("parses bare pause as active ferment lifecycle pause", () => {
+		expect(parseFermentCommand("pause")).toEqual({ type: "pause-lifecycle" })
+	})
+
+	it("parses bare resume as active ferment lifecycle resume", () => {
+		expect(parseFermentCommand("resume")).toEqual({ type: "resume-lifecycle" })
+	})
+
+	it("parses nested continuation policy commands", () => {
+		expect(parseFermentCommand("manual")).toEqual({ type: "manual-policy" })
+		expect(parseFermentCommand("auto")).toEqual({ type: "auto-policy" })
+	})
+
+	it("parses nested progress command", () => {
+		expect(parseFermentCommand("progress")).toEqual({ type: "progress" })
 	})
 
 	it("parses one-shot intent", () => {

@@ -89,7 +89,6 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 	"fail_ferment_phase",
 	"add_ferment_decision",
 	"add_ferment_memory",
-	"set_ferment_mode",
 ]
 
 const MODES: Array<{ mode: PermissionMode; label: string; color: "success" | "warning" | "error" }> = [
