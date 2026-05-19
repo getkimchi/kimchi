@@ -48,7 +48,7 @@ import webSearchExtension from "./extensions/web-search/index.js"
 import { updateModelsConfig } from "./models.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
-import { detectColorMode, hexToBgAnsi, probeTerminalBackground } from "./terminal-bg-probe.js"
+import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
 import { getVersion } from "./utils.js"
 
@@ -259,35 +259,9 @@ try {
 			if (destContent !== srcContent) writeFileSync(dest, srcContent)
 		}
 
-		// Paint the initial viewport background before pi-mono renders its first frame.
-		// This ensures blank areas of the terminal reflect the theme color from the start,
-		// on every terminal regardless of OSC 10/11 support.
+		// Clear the visible viewport and home the cursor so kimchi renders at the top.
 		if (!acpMode && process.stdout.isTTY) {
-			try {
-				const settings = JSON.parse(readFileSync(settingsPath, "utf-8"))
-				const themeName: string = settings.theme ?? "kimchi-minimal"
-				const themeRaw = readFileSync(resolve(themesDir, `${basename(themeName)}.json`), "utf-8")
-				const theme = JSON.parse(themeRaw)
-				const vars: Record<string, string> = theme.vars ?? {}
-				const oscBgRaw: string = theme.colors?.oscBg ?? ""
-				if (oscBgRaw) {
-					const bgHex: string = vars[oscBgRaw] ?? oscBgRaw
-					if (/^#[0-9a-fA-F]{6}$/.test(bgHex)) {
-						const bgAnsi = hexToBgAnsi(bgHex, detectColorMode())
-						const cols = process.stdout.columns || 80
-						const rows = process.stdout.rows || 24
-						const line = `${bgAnsi}${" ".repeat(cols)}`
-						process.stdout.write(`\x1b[H${Array.from({ length: rows }, () => line).join("\r\n")}\x1b[H\x1b[0m`)
-					}
-				}
-			} catch (err) {
-				// ENOENT is the expected first-run case (no settings.json or theme file yet);
-				// pi-mono will render normally. Surface anything else so corrupt JSON or
-				// unexpected I/O errors don't disappear silently.
-				if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-					console.warn(`Warning: startup viewport paint failed: ${(err as Error).message}`)
-				}
-			}
+			process.stdout.write("\x1b[2J\x1b[H")
 		}
 
 		// Suppress Node.js warnings (same as pi-mono's own cli.js)

@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { shortenTitle } from "../../ferment/shorten-title.js"
 import { clearFermentCache } from "../../ferment/store.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { isStaleCtxError } from "../stale-ctx.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { decideContinuation } from "./continuation.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
