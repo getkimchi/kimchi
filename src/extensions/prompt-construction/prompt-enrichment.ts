@@ -121,7 +121,9 @@ function isDelegationToolCallName(name: string | undefined): boolean {
 	return name != null && DELEGATION_TOOL_NAMES.has(name)
 }
 
-export const MULTI_MODEL_SHORTCUT = "alt+m"
+// macOS terminals send the legacy escape sequence \x1b\t for Option+Tab
+// instead of the Kitty protocol / CSI-u sequences handled by matchesKey()
+const LEGACY_MACOS_ALT_TAB_SEQUENCE = "\x1b\t"
 
 /**
  * Shape of a tool-call content block as emitted in assistant messages.
@@ -220,21 +222,21 @@ export default function (skillPaths: string[]) {
 
 		pi.registerFlag("multi-model", {
 			type: "boolean",
-			description: `Enable multi-model orchestration (default: enabled). Toggle with ${MULTI_MODEL_SHORTCUT}.`,
+			description: "Enable multi-model orchestration (default: enabled). Toggle with alt+tab.",
 			default: true,
 		})
 
 		// For sub agents we don't want to transform the prompt sent from parent with model capabilities
 		const registry = new ModelRegistry(getAvailableModels())
 		if (!subagentMode) {
-			// Global terminal input listener so alt+m works even when a
+			// Global terminal input listener so alt+tab works even when a
 			// dialog (e.g. permission prompt) has focus instead of the editor.
-			let unsubMultiModelToggle: (() => void) | null = null
+			let unsubAltTab: (() => void) | null = null
 			pi.on("session_start", async (_event, ctx) => {
-				if (unsubMultiModelToggle) unsubMultiModelToggle()
+				if (unsubAltTab) unsubAltTab()
 				if (ctx.hasUI) {
-					unsubMultiModelToggle = ctx.ui.onTerminalInput((data) => {
-						if (matchesKey(data, MULTI_MODEL_SHORTCUT)) {
+					unsubAltTab = ctx.ui.onTerminalInput((data) => {
+						if (matchesKey(data, "alt+tab") || data === LEGACY_MACOS_ALT_TAB_SEQUENCE) {
 							if (!isKeyRelease(data)) {
 								multiModelEnabled = !multiModelEnabled
 								ctx.ui.setStatus("multi-model", undefined)
