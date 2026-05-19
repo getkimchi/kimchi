@@ -1,5 +1,5 @@
 import { resolve } from "node:path"
-import { log, note, outro } from "@clack/prompts"
+import { log, note, outro, spinner } from "@clack/prompts"
 import { byId } from "../../integrations/registry.js"
 import type { ToolId } from "../../integrations/types.js"
 import { updateModelsConfig } from "../../models.js"
@@ -36,12 +36,15 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 		process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(process.env.HOME ?? "~", ".config/kimchi-coding-agent")
 	const modelsJsonPath = resolve(agentDir, "models.json")
 	let models: readonly import("../../models.js").ModelMetadata[] = []
+	const modelSpinner = spinner()
+	modelSpinner.start("Fetching available models…")
 	try {
 		const result = await updateModelsConfig(modelsJsonPath, state.apiKey)
 		models = result.models
+		modelSpinner.stop("Models fetched.")
 	} catch (err) {
 		const msg = (err as Error).message
-		log.error(`Could not fetch available models: ${msg}`)
+		modelSpinner.stop(`Could not fetch available models: ${msg}`)
 		outcome.failures.push({ id: "*", error: `model fetch failed: ${msg}` })
 		outro("Aborted.")
 		return outcome
@@ -68,14 +71,16 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 			log.info(`${tool.name}: ready (launch via 'kimchi ${launchCmd}')`)
 			continue
 		}
+		const s = spinner()
+		s.start(`Configuring ${tool.name}…`)
 		try {
 			await tool.write(state.scope, state.apiKey, models, { telemetryEnabled: state.telemetryEnabled })
 			outcome.successes.push(tool.name)
-			log.success(`${tool.name}: configured`)
+			s.stop(`${tool.name}: configured`)
 		} catch (err) {
 			const msg = (err as Error).message
 			outcome.failures.push({ id, error: msg })
-			log.error(`${tool.name}: ${msg}`)
+			s.stop(`${tool.name}: ${msg}`)
 		}
 	}
 
