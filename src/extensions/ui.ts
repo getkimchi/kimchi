@@ -58,7 +58,7 @@ export function findNextCompatibleModel(
 	const len = available.length
 	if (len === 0) return { model: undefined, skipped: [] }
 
-	const currentModelHasVision = currentModel?.input.includes("image") ?? false
+	const currentModelHasVision = currentModel?.input.includes("image") ?? true
 	const skipped: SkippedModel[] = []
 
 	for (let offset = 1; offset < len; offset++) {
