@@ -291,7 +291,7 @@ function getStatusNote(status: string, abortReason?: AgentAbortReason): string {
 
 function getStatusInstruction(status: string, abortReason?: AgentAbortReason): string {
 	if (status === "aborted" && abortReason === "token_budget") {
-		return "\nThis completes the requested Agent call under the supplied budget. Do not call Agent again with a higher token_budget in this user turn."
+		return "\nThe agent ran out of its token budget. Do NOT retry the same task with a higher budget. If the work is incomplete, you may spawn a NEW follow-up Agent scoped to only the remaining unfinished work — keep the same or lower budget."
 	}
 	return ""
 }
