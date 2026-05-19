@@ -413,6 +413,37 @@ export class RemoteAgentSession {
 	getFollowUpMessages() {
 		return [...this._followUp]
 	}
+
+	/**
+	 * Ask the remote server to switch to a different session file.
+	 * Used after teleporting with `--with-session` to load the rsynced
+	 * session export.
+	 */
+	switchSession(sessionPath: string) {
+		return this._rpcClient.send("switch_session", { sessionPath })
+	}
+
+	/**
+	 * Fetch the current messages array from the remote session and sync our
+	 * local cache. Useful after `switchSession` to refresh client state.
+	 */
+	getMessages() {
+		return this._rpcClient.send("get_messages", {}).then((res: unknown) => {
+			const maybe = res as { messages?: Array<Record<string, unknown>> }
+			if (maybe?.messages) {
+				this._messages = maybe.messages
+			}
+			return maybe
+		})
+	}
+
+	/**
+	 * Fetch the current remote session state (model, thinking level, …).
+	 * Useful after `switchSession` to sync local client state.
+	 */
+	getState() {
+		return this._rpcClient.send("get_state", {})
+	}
 	navigateTree() {
 		return Promise.reject(new Error("navigateTree is not supported in remote mode"))
 	}

@@ -47,12 +47,16 @@ export interface RsyncOptions {
 	onProgress?: (pct: number, bytes: number) => void
 	/** Optional phase callback. Fires once with "mkdir" immediately before the
 	 *  pre-flight ssh mkdir step, and once with "rsync" immediately before the
-	 *  rsync child is spawned. Lets the caller switch status text per step. */
+	 *  rsync child is spawned. Lets the caller switch status text per step.
+	 */
 	onPhase?: (phase: "mkdir" | "rsync") => void
 	/** Cancellation. Kills the running ssh/rsync children if it fires. */
 	signal?: AbortSignal
+	/** If false, omits the `--delete` flag so the remote keeps pre-existing files. */
+	deleteExtraneous?: boolean
 	/** Override path to the vendored teleport-proxy.js. Defaults to the one
-	 *  shipped with this module. Tests inject a stub. */
+	 *  shipped with this module. Tests inject a stub.
+	 */
 	proxyPath?: string
 	/** Test seam: injectable spawner. Defaults to `child_process.spawn`. */
 	_spawn?: typeof spawn
@@ -301,6 +305,7 @@ export async function runRsync(opts: RsyncOptions): Promise<RsyncResult> {
 			proxyPath,
 			knownHostsFile,
 			excludeFile,
+			deleteExtraneous: opts.deleteExtraneous,
 		})
 		const stats = await runRsyncChild({
 			spawner,
