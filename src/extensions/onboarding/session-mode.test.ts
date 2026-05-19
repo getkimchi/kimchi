@@ -13,7 +13,7 @@ import sessionModeOnboardingExtension, {
 	type SessionModeOnboardingDecision,
 } from "./session-mode.js"
 
-const interactive = { stdinIsTTY: true, stdoutIsTTY: true, isAcpMode: false }
+const interactive = { stdinIsTTY: true, stdoutIsTTY: true, nonInteractiveMode: false }
 
 function theme(): Theme {
 	return {
@@ -85,7 +85,7 @@ describe("buildSessionModeLaunchContext", () => {
 		expect(launch([])).toEqual({
 			stdinIsTTY: true,
 			stdoutIsTTY: true,
-			automationMode: false,
+			nonInteractiveMode: false,
 			explicitSession: false,
 			explicitDefaultIntent: false,
 		})
@@ -104,11 +104,11 @@ describe("buildSessionModeLaunchContext", () => {
 		["--mode", "json", "fix tests"],
 		["--mode", "rpc"],
 	])("detects automation mode for %s", (...args) => {
-		expect(launch(args).automationMode).toBe(true)
+		expect(launch(args).nonInteractiveMode).toBe(true)
 	})
 
-	it("uses Kimchi's ACP pre-dispatch sniff", () => {
-		expect(launch(["--mode", "acp"], { isAcpMode: true }).automationMode).toBe(true)
+	it("uses Kimchi's non-interactive pre-dispatch classification", () => {
+		expect(launch(["--mode", "acp"], { nonInteractiveMode: true }).nonInteractiveMode).toBe(true)
 	})
 
 	it.each([["--continue"], ["-c"], ["--resume"], ["--session", "abc123"], ["--fork", "abc123"]])(

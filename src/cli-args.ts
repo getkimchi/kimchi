@@ -6,3 +6,7 @@ export function getCliModeArg(args: string[]): string | undefined {
 	}
 	return undefined
 }
+
+export function isHelpOrVersionArgs(args: string[]): boolean {
+	return args.some((a) => a === "--help" || a === "-h" || a === "--version" || a === "-v")
+}

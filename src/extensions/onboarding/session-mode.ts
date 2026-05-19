@@ -22,7 +22,13 @@ export interface SessionModeOnboardingDecision {
 export interface SessionModeLaunchContext {
 	stdinIsTTY: boolean
 	stdoutIsTTY: boolean
-	automationMode: boolean
+	// JSON/RPC/print/ACP-style launches are controlled by another process or
+	// stream protocol. They must not render interactive onboarding or persist a
+	// first-run choice.
+	nonInteractiveMode: boolean
+	// Resume, continue, session selection, and fork launches already name an
+	// existing session flow. Skip onboarding without marking it seen so the
+	// user's explicit session intent is not interrupted or consumed as Default.
 	explicitSession: boolean
 	explicitDefaultIntent: boolean
 }
@@ -165,13 +171,13 @@ function showSessionModeWizard(
 
 export function buildSessionModeLaunchContext(
 	rawArgs: string[],
-	options: { stdinIsTTY: boolean; stdoutIsTTY: boolean; isAcpMode: boolean },
+	options: { stdinIsTTY: boolean; stdoutIsTTY: boolean; nonInteractiveMode: boolean },
 ): SessionModeLaunchContext {
 	const flags = scanLaunchArgs(rawArgs)
 	return {
 		stdinIsTTY: options.stdinIsTTY,
 		stdoutIsTTY: options.stdoutIsTTY,
-		automationMode: options.isAcpMode || flags.automationMode,
+		nonInteractiveMode: options.nonInteractiveMode || flags.nonInteractiveMode,
 		explicitSession: flags.explicitSession,
 		explicitDefaultIntent: flags.explicitDefaultIntent,
 	}
@@ -185,7 +191,7 @@ export function decideSessionModeOnboarding(input: SessionModeOnboardingInput): 
 	if (!input.hasUI || !input.launchContext.stdinIsTTY || !input.launchContext.stdoutIsTTY) {
 		return { action: "skip", reason: "not-interactive-tty" }
 	}
-	if (input.launchContext.automationMode) return { action: "skip", reason: "automation-mode" }
+	if (input.launchContext.nonInteractiveMode) return { action: "skip", reason: "automation-mode" }
 	if (input.launchContext.explicitSession) return { action: "skip", reason: "explicit-session" }
 	if (input.launchContext.explicitDefaultIntent) {
 		return { action: "skip-and-mark-seen", reason: "explicit-default-session" }
@@ -208,23 +214,23 @@ export function markSessionModeWizardSeen(options?: { configPath?: string; now?:
 }
 
 function scanLaunchArgs(rawArgs: string[]): {
-	automationMode: boolean
+	nonInteractiveMode: boolean
 	explicitSession: boolean
 	explicitDefaultIntent: boolean
 } {
-	let automationMode = false
+	let nonInteractiveMode = false
 	let explicitSession = false
 	let explicitDefaultIntent = false
 
 	for (let i = 0; i < rawArgs.length; i += 1) {
 		const arg = rawArgs[i]
 		if (arg === "--mode") {
-			if (isAutomationModeArg(getCliModeArg(rawArgs))) automationMode = true
+			if (isNonInteractiveModeArg(getCliModeArg(rawArgs))) nonInteractiveMode = true
 			if (i + 1 < rawArgs.length) i += 1
 		} else if (arg.startsWith("--mode=")) {
-			if (isAutomationModeArg(getCliModeArg(rawArgs))) automationMode = true
+			if (isNonInteractiveModeArg(getCliModeArg(rawArgs))) nonInteractiveMode = true
 		} else if (arg === "--print" || arg === "-p") {
-			automationMode = true
+			nonInteractiveMode = true
 			if (looksLikeInlinePrintPrompt(rawArgs[i + 1])) i += 1
 		} else if (arg === "--continue" || arg === "-c" || arg === "--resume" || arg === "-r") {
 			explicitSession = true
@@ -242,10 +248,10 @@ function scanLaunchArgs(rawArgs: string[]): {
 		}
 	}
 
-	return { automationMode, explicitSession, explicitDefaultIntent }
+	return { nonInteractiveMode, explicitSession, explicitDefaultIntent }
 }
 
-function isAutomationModeArg(mode: string | undefined): boolean {
+function isNonInteractiveModeArg(mode: string | undefined): boolean {
 	return mode === "json" || mode === "rpc"
 }
 
