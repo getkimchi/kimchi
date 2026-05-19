@@ -4,7 +4,7 @@ import { join } from "node:path"
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { writeSessionModeWizardSeenAt } from "../../config.js"
+import { writeHideSessionModeDialog, writeSessionModeWizardSeenAt } from "../../config.js"
 import { createSessionModeOnboardingForStartup } from "./session-mode-startup.js"
 import { SESSION_MODE_WIDGET_KEY } from "./session-mode.js"
 
@@ -103,8 +103,21 @@ describe("session mode startup integration", () => {
 		expect(harness.ui.onTerminalInput).toHaveBeenCalled()
 	})
 
-	it("skips returning launches with existing onboarding state", async () => {
+	it("shows returning launches with existing onboarding state", async () => {
 		writeSessionModeWizardSeenAt("2026-05-19T08:00:00.000Z", configPath)
+		const harness = createHarness({ configPath, now })
+
+		await harness.start()
+
+		expect(harness.ui.setWidget).toHaveBeenCalledWith(SESSION_MODE_WIDGET_KEY, expect.any(Function), {
+			placement: "aboveEditor",
+		})
+		expect(harness.ui.onTerminalInput).toHaveBeenCalled()
+	})
+
+	it("skips launches when the session mode dialog has been hidden", async () => {
+		writeSessionModeWizardSeenAt("2026-05-19T08:00:00.000Z", configPath)
+		writeHideSessionModeDialog(true, configPath)
 		const harness = createHarness({ configPath, now })
 
 		await harness.start()
@@ -150,6 +163,24 @@ describe("session mode startup integration", () => {
 
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
+		expect(startFerment).not.toHaveBeenCalled()
+		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(SESSION_MODE_WIDGET_KEY, undefined, {
+			placement: "aboveEditor",
+		})
+	})
+
+	it("choosing Hide this dialog persists the hidden user config without starting Ferment", async () => {
+		writeSessionModeWizardSeenAt("2026-05-19T08:00:00.000Z", configPath)
+		const startFerment = vi.fn()
+		const harness = createHarness({ configPath, now, startFerment })
+		await harness.start()
+
+		harness.input(" ")
+		harness.input("\x1b[B")
+		harness.input("\r")
+
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.onboarding.hideSessionModeDialog).toBe(true)
 		expect(startFerment).not.toHaveBeenCalled()
 		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(SESSION_MODE_WIDGET_KEY, undefined, {
 			placement: "aboveEditor",

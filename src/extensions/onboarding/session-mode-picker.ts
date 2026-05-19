@@ -1,9 +1,17 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
-import { type Component, Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import {
+	type Component,
+	Key,
+	isKeyRelease,
+	isKeyRepeat,
+	matchesKey,
+	truncateToWidth,
+	wrapTextWithAnsi,
+} from "@earendil-works/pi-tui"
 
 export type SessionModePickerChoice = "ferment" | "default"
-export type SessionModePickerResult = SessionModePickerChoice | "cancelled"
-export type SessionModePickerEvent = "up" | "down" | "select" | "cancel"
+export type SessionModePickerResult = { choice: SessionModePickerChoice; hideDialog: boolean } | "cancelled"
+export type SessionModePickerEvent = "up" | "down" | "select" | "cancel" | "toggle-hide"
 
 export interface SessionModePickerOption {
 	value: SessionModePickerChoice
@@ -13,6 +21,7 @@ export interface SessionModePickerOption {
 
 export interface SessionModePickerState {
 	selectedIndex: number
+	hideDialog: boolean
 }
 
 export interface SessionModePickerReduceResult {
@@ -36,26 +45,39 @@ export const SESSION_MODE_PICKER_OPTIONS: SessionModePickerOption[] = [
 	},
 ]
 
+export const SESSION_MODE_PICKER_HIDE_LABEL = "Hide this dialog"
+
+export interface SessionModePickerOptions {
+	showHideCheckbox?: boolean
+}
+
 export function initialSessionModePickerState(): SessionModePickerState {
-	return { selectedIndex: 0 }
+	return { selectedIndex: 0, hideDialog: false }
 }
 
 export function reduceSessionModePicker(
 	state: SessionModePickerState,
 	event: SessionModePickerEvent,
+	options: SessionModePickerOptions = {},
 ): SessionModePickerReduceResult {
 	if (event === "cancel") return { state, result: "cancelled" }
 	if (event === "select") {
 		const option = SESSION_MODE_PICKER_OPTIONS[state.selectedIndex]
-		return { state, result: option?.value }
+		return {
+			state,
+			result: { choice: option.value, hideDialog: options.showHideCheckbox === true && state.hideDialog },
+		}
 	}
 	if (event === "up") {
-		return { state: { selectedIndex: Math.max(0, state.selectedIndex - 1) } }
+		return { state: { ...state, selectedIndex: Math.max(0, state.selectedIndex - 1) } }
 	}
 	if (event === "down") {
 		return {
-			state: { selectedIndex: Math.min(SESSION_MODE_PICKER_OPTIONS.length - 1, state.selectedIndex + 1) },
+			state: { ...state, selectedIndex: Math.min(SESSION_MODE_PICKER_OPTIONS.length - 1, state.selectedIndex + 1) },
 		}
+	}
+	if (event === "toggle-hide" && options.showHideCheckbox === true) {
+		return { state: { ...state, hideDialog: !state.hideDialog } }
 	}
 	return { state }
 }
@@ -64,11 +86,17 @@ export function keyToSessionModePickerEvent(data: string): SessionModePickerEven
 	if (matchesKey(data, Key.up)) return "up"
 	if (matchesKey(data, Key.down)) return "down"
 	if (matchesKey(data, Key.enter)) return "select"
+	if (matchesKey(data, Key.space) && !isKeyRelease(data) && !isKeyRepeat(data)) return "toggle-hide"
 	if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) return "cancel"
 	return undefined
 }
 
-export function renderSessionModePickerLines(state: SessionModePickerState, theme: Theme, width: number): string[] {
+export function renderSessionModePickerLines(
+	state: SessionModePickerState,
+	theme: Theme,
+	width: number,
+	options: SessionModePickerOptions = {},
+): string[] {
 	const lines: string[] = []
 	const innerWidth = Math.max(1, width - 2)
 	const add = (line = "") => lines.push(truncateToWidth(line, width, ""))
@@ -91,6 +119,15 @@ export function renderSessionModePickerLines(state: SessionModePickerState, them
 		if (i < SESSION_MODE_PICKER_OPTIONS.length - 1) add("")
 	}
 
+	if (options.showHideCheckbox === true) {
+		add("")
+		const checkbox = state.hideDialog ? theme.fg("success", "[x]") : theme.fg("dim", "[ ]")
+		const label = state.hideDialog
+			? theme.fg("success", SESSION_MODE_PICKER_HIDE_LABEL)
+			: theme.fg("text", SESSION_MODE_PICKER_HIDE_LABEL)
+		add(`${indent}${checkbox} ${label}`)
+	}
+
 	add("")
 	add(`${indent}${theme.fg("success", SESSION_MODE_PICKER_TIP)}`)
 	add("")
@@ -104,6 +141,7 @@ export class SessionModePickerComponent implements Component {
 		private readonly theme: Theme,
 		private readonly onDone: (result: SessionModePickerResult) => void,
 		private readonly requestRender: () => void,
+		private readonly options: SessionModePickerOptions = {},
 	) {}
 
 	getState(): SessionModePickerState {
@@ -113,13 +151,13 @@ export class SessionModePickerComponent implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		return renderSessionModePickerLines(this.state, this.theme, width)
+		return renderSessionModePickerLines(this.state, this.theme, width, this.options)
 	}
 
 	handleInput(data: string): void {
 		const event = keyToSessionModePickerEvent(data)
 		if (!event) return
-		const next = reduceSessionModePicker(this.state, event)
+		const next = reduceSessionModePicker(this.state, event, this.options)
 		this.state = next.state
 		if (next.result) {
 			this.onDone(next.result)

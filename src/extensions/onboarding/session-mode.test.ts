@@ -128,11 +128,15 @@ describe("decideSessionModeOnboarding", () => {
 		expect(decide([])).toEqual({ action: "show", reason: "eligible" })
 	})
 
-	it("skips when the wizard was already seen", () => {
-		expect(decide([], { seenAt: "2026-05-19T08:00:00.000Z" })).toEqual({
+	it("skips when the session mode dialog is hidden", () => {
+		expect(decide([], { hideSessionModeDialog: true })).toEqual({
 			action: "skip",
-			reason: "already-seen",
+			reason: "hidden",
 		})
+	})
+
+	it("shows returning launches when the dialog has been seen but not hidden", () => {
+		expect(decide([], { seenAt: "2026-05-19T08:00:00.000Z" })).toEqual({ action: "show", reason: "eligible" })
 	})
 
 	it("marks an explicit prompt launch as Default-session intent", () => {
@@ -185,6 +189,15 @@ describe("session-mode onboarding persistence", () => {
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 	})
 
+	it("persists the hide setting when the checkbox is selected", () => {
+		const seenAt = recordSessionModeWizardOutcome("default", { configPath, now, hideDialog: true })
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+
+		expect(seenAt).toBe("2026-05-19T09:30:00.000Z")
+		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
+		expect(raw.onboarding.hideSessionModeDialog).toBe(true)
+	})
+
 	it("does not mark cancellation as seen", () => {
 		const seenAt = recordSessionModeWizardOutcome("cancelled", { configPath, now })
 
@@ -216,12 +229,14 @@ describe("session-mode onboarding persistence", () => {
 			placement: "aboveEditor",
 		})
 		expect(harness.ui.onTerminalInput).toHaveBeenCalled()
+		let raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 
 		expect(harness.input("\x1b[B")).toEqual({ consume: true })
 		expect(harness.tui.requestRender).toHaveBeenCalled()
 		expect(harness.input("\r")).toEqual({ consume: true })
 
-		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(SESSION_MODE_WIDGET_KEY, undefined, {
 			placement: "aboveEditor",
@@ -229,7 +244,7 @@ describe("session-mode onboarding persistence", () => {
 		expect(harness.unsubscribe).toHaveBeenCalled()
 	})
 
-	it("extension cancellation clears the picker without marking seen", async () => {
+	it("extension cancellation clears the picker after recording that the first dialog was shown", async () => {
 		const harness = createExtensionHarness()
 
 		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
@@ -239,7 +254,8 @@ describe("session-mode onboarding persistence", () => {
 		await harness.start()
 		harness.input("\x1b")
 
-		expect(existsSync(configPath)).toBe(false)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(SESSION_MODE_WIDGET_KEY, undefined, {
 			placement: "aboveEditor",
 		})
@@ -259,5 +275,27 @@ describe("session-mode onboarding persistence", () => {
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 		expect(onOutcome).toHaveBeenCalledWith("ferment", expect.objectContaining({ ui: harness.ui }), harness.api)
+	})
+
+	it("extension lets returning users hide the dialog while selecting a mode", async () => {
+		const harness = createExtensionHarness()
+		const onOutcome = vi.fn()
+
+		recordSessionModeWizardOutcome("default", { configPath, now })
+		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now, onOutcome })(
+			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+		)
+
+		await harness.start()
+		harness.input(" ")
+		harness.input("\x1b[B")
+		harness.input("\r")
+
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.onboarding.hideSessionModeDialog).toBe(true)
+		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(SESSION_MODE_WIDGET_KEY, undefined, {
+			placement: "aboveEditor",
+		})
+		expect(onOutcome).toHaveBeenCalledWith("default", expect.objectContaining({ ui: harness.ui }), harness.api)
 	})
 })

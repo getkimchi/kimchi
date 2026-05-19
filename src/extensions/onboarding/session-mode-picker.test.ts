@@ -2,6 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import {
 	SESSION_MODE_PICKER_HEADING,
+	SESSION_MODE_PICKER_HIDE_LABEL,
 	SESSION_MODE_PICKER_TIP,
 	SessionModePickerComponent,
 	initialSessionModePickerState,
@@ -27,7 +28,7 @@ function theme(): Theme {
 
 describe("session mode picker reducer", () => {
 	it("starts on Ferment session", () => {
-		expect(initialSessionModePickerState()).toEqual({ selectedIndex: 0 })
+		expect(initialSessionModePickerState()).toEqual({ selectedIndex: 0, hideDialog: false })
 	})
 
 	it("moves selection down and up", () => {
@@ -47,12 +48,27 @@ describe("session mode picker reducer", () => {
 		expect(state.selectedIndex).toBe(1)
 	})
 
+	it("supports the returning-launch hide checkbox", () => {
+		let state = initialSessionModePickerState()
+
+		state = reduceSessionModePicker(state, "down", { showHideCheckbox: true }).state
+		state = reduceSessionModePicker(state, "down", { showHideCheckbox: true }).state
+		expect(state.selectedIndex).toBe(1)
+
+		state = reduceSessionModePicker(state, "toggle-hide", { showHideCheckbox: true }).state
+		expect(state.hideDialog).toBe(true)
+		expect(reduceSessionModePicker(state, "select", { showHideCheckbox: true }).result).toEqual({
+			choice: "default",
+			hideDialog: true,
+		})
+	})
+
 	it("returns the selected option on select", () => {
 		let state = initialSessionModePickerState()
-		expect(reduceSessionModePicker(state, "select").result).toBe("ferment")
+		expect(reduceSessionModePicker(state, "select").result).toEqual({ choice: "ferment", hideDialog: false })
 
 		state = reduceSessionModePicker(state, "down").state
-		expect(reduceSessionModePicker(state, "select").result).toBe("default")
+		expect(reduceSessionModePicker(state, "select").result).toEqual({ choice: "default", hideDialog: false })
 	})
 
 	it("returns cancellation on cancel", () => {
@@ -65,12 +81,18 @@ describe("session mode picker key mapping", () => {
 		expect(keyToSessionModePickerEvent("\x1b[A")).toBe("up")
 		expect(keyToSessionModePickerEvent("\x1b[B")).toBe("down")
 		expect(keyToSessionModePickerEvent("\r")).toBe("select")
+		expect(keyToSessionModePickerEvent(" ")).toBe("toggle-hide")
 		expect(keyToSessionModePickerEvent("\x1b")).toBe("cancel")
 		expect(keyToSessionModePickerEvent("\x03")).toBe("cancel")
 	})
 
 	it("ignores unrelated input", () => {
 		expect(keyToSessionModePickerEvent("x")).toBeUndefined()
+	})
+
+	it("ignores space repeat and release events", () => {
+		expect(keyToSessionModePickerEvent("\x1b[32;1:2u")).toBeUndefined()
+		expect(keyToSessionModePickerEvent("\x1b[32;1:3u")).toBeUndefined()
 	})
 })
 
@@ -84,7 +106,17 @@ describe("session mode picker rendering", () => {
 		expect(text).toContain("Agent runs the full task end-to-end. You review the result.")
 		expect(text).toContain("Default session")
 		expect(text).toContain("Standard coding harness experience outside of the active ferment.")
+		expect(text).not.toContain(SESSION_MODE_PICKER_HIDE_LABEL)
 		expect(text).toContain(SESSION_MODE_PICKER_TIP)
+	})
+
+	it("renders the hide checkbox only when requested", () => {
+		const lines = renderSessionModePickerLines(initialSessionModePickerState(), theme(), 100, {
+			showHideCheckbox: true,
+		})
+		const text = lines.join("\n")
+
+		expect(text).toContain(`[ ] ${SESSION_MODE_PICKER_HIDE_LABEL}`)
 	})
 
 	it("marks the selected option", () => {
@@ -109,7 +141,19 @@ describe("SessionModePickerComponent", () => {
 		expect(requestRender).toHaveBeenCalledTimes(1)
 
 		component.handleInput("\r")
-		expect(onDone).toHaveBeenCalledWith("default")
+		expect(onDone).toHaveBeenCalledWith({ choice: "default", hideDialog: false })
+	})
+
+	it("handles the hide checkbox when enabled", () => {
+		const onDone = vi.fn()
+		const component = new SessionModePickerComponent(theme(), onDone, vi.fn(), { showHideCheckbox: true })
+
+		component.handleInput(" ")
+		component.handleInput("\x1b[32;1:3u")
+		component.handleInput("\x1b[B")
+		component.handleInput("\r")
+
+		expect(onDone).toHaveBeenCalledWith({ choice: "default", hideDialog: true })
 	})
 
 	it("calls onDone for cancellation", () => {

@@ -1,6 +1,11 @@
 import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { getCliModeArg } from "../../cli-args.js"
-import { readSessionModeWizardSeenAt, writeSessionModeWizardSeenAt } from "../../config.js"
+import {
+	readHideSessionModeDialog,
+	readSessionModeWizardSeenAt,
+	writeHideSessionModeDialog,
+	writeSessionModeWizardSeenAt,
+} from "../../config.js"
 import { setSessionModeOnboardingFooterSuppressed } from "../ui.js"
 import { SessionModePickerComponent, type SessionModePickerResult } from "./session-mode-picker.js"
 
@@ -8,7 +13,7 @@ export type SessionModeOnboardingAction = "show" | "skip" | "skip-and-mark-seen"
 
 export type SessionModeOnboardingReason =
 	| "eligible"
-	| "already-seen"
+	| "hidden"
 	| "not-interactive-tty"
 	| "automation-mode"
 	| "explicit-session"
@@ -37,6 +42,7 @@ export interface SessionModeOnboardingInput {
 	launchContext: SessionModeLaunchContext
 	hasUI: boolean
 	seenAt?: string
+	hideSessionModeDialog?: boolean
 	sessionStartReason?: SessionStartEvent["reason"]
 }
 
@@ -47,7 +53,7 @@ export interface SessionModeOnboardingExtensionOptions {
 	configPath?: string
 	now?: () => Date
 	onOutcome?: (
-		outcome: Exclude<SessionModeWizardOutcome, "cancelled">,
+		outcome: Extract<SessionModeWizardOutcome, "default" | "ferment">,
 		ctx: ExtensionContext,
 		pi: ExtensionAPI,
 	) => void | Promise<void>
@@ -83,10 +89,12 @@ export default function sessionModeOnboardingExtension(options: SessionModeOnboa
 		pi.on("session_start", (event, ctx) => {
 			cleanupActiveWizard?.()
 			cleanupActiveWizard = undefined
+			const seenAt = readSessionModeWizardSeenAt(options.configPath)
 			const decision = decideSessionModeOnboarding({
 				launchContext: options.launchContext,
 				hasUI: ctx.hasUI,
-				seenAt: readSessionModeWizardSeenAt(options.configPath),
+				seenAt,
+				hideSessionModeDialog: readHideSessionModeDialog(options.configPath),
 				sessionStartReason: event.reason,
 			})
 			if (decision.action === "skip-and-mark-seen") {
@@ -94,7 +102,18 @@ export default function sessionModeOnboardingExtension(options: SessionModeOnboa
 				return
 			}
 			if (decision.action === "show") {
-				cleanupActiveWizard = showSessionModeWizard(pi, ctx, options, () => {
+				const showHideOption = seenAt !== undefined
+				if (!showHideOption) {
+					try {
+						markSessionModeWizardSeen({ configPath: options.configPath, now: options.now })
+					} catch (err) {
+						ctx.ui.notify(
+							`Could not save session mode onboarding state: ${err instanceof Error ? err.message : String(err)}`,
+							"warning",
+						)
+					}
+				}
+				cleanupActiveWizard = showSessionModeWizard(pi, ctx, options, showHideOption, () => {
 					cleanupActiveWizard = undefined
 				})
 			}
@@ -111,6 +130,7 @@ function showSessionModeWizard(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	options: SessionModeOnboardingExtensionOptions,
+	showHideOption: boolean,
 	onCleanup: () => void,
 ): () => void {
 	let finished = false
@@ -130,7 +150,11 @@ function showSessionModeWizard(
 		finished = true
 		try {
 			if (result !== "cancelled") {
-				recordSessionModeWizardOutcome(result, { configPath: options.configPath, now: options.now })
+				recordSessionModeWizardOutcome(result.choice, {
+					configPath: options.configPath,
+					now: options.now,
+					hideDialog: result.hideDialog,
+				})
 			}
 		} catch (err) {
 			cleanup()
@@ -142,7 +166,7 @@ function showSessionModeWizard(
 		}
 		cleanup()
 		if (result !== "cancelled" && options.onOutcome) {
-			Promise.resolve(options.onOutcome(result, ctx, pi)).catch((err: unknown) => {
+			Promise.resolve(options.onOutcome(result.choice, ctx, pi)).catch((err: unknown) => {
 				ctx.ui.notify(`Session mode startup failed: ${err instanceof Error ? err.message : String(err)}`, "warning")
 			})
 		}
@@ -152,7 +176,9 @@ function showSessionModeWizard(
 	ctx.ui.setWidget(
 		SESSION_MODE_WIDGET_KEY,
 		(tui, theme) => {
-			component = new SessionModePickerComponent(theme, finish, () => tui.requestRender())
+			component = new SessionModePickerComponent(theme, finish, () => tui.requestRender(), {
+				showHideCheckbox: showHideOption,
+			})
 			return component
 		},
 		SESSION_MODE_WIDGET_OPTIONS,
@@ -184,7 +210,7 @@ export function buildSessionModeLaunchContext(
 }
 
 export function decideSessionModeOnboarding(input: SessionModeOnboardingInput): SessionModeOnboardingDecision {
-	if (input.seenAt) return { action: "skip", reason: "already-seen" }
+	if (input.hideSessionModeDialog) return { action: "skip", reason: "hidden" }
 	if (input.sessionStartReason !== undefined && input.sessionStartReason !== "startup") {
 		return { action: "skip", reason: "explicit-session" }
 	}
@@ -201,10 +227,12 @@ export function decideSessionModeOnboarding(input: SessionModeOnboardingInput): 
 
 export function recordSessionModeWizardOutcome(
 	outcome: SessionModeWizardOutcome,
-	options?: { configPath?: string; now?: () => Date },
+	options?: { configPath?: string; now?: () => Date; hideDialog?: boolean },
 ): string | undefined {
 	if (outcome === "cancelled") return undefined
-	return markSessionModeWizardSeen(options)
+	const seenAt = markSessionModeWizardSeen(options)
+	if (options?.hideDialog === true) writeHideSessionModeDialog(true, options.configPath)
+	return seenAt
 }
 
 export function markSessionModeWizardSeen(options?: { configPath?: string; now?: () => Date }): string {
