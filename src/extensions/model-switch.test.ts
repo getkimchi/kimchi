@@ -390,28 +390,15 @@ describe("modelSwitchExtension", () => {
 			expect(targetTier).toBe("light")
 		})
 
-		it("appends a warning when switching from heavy to light tier (kimi-k2.6 → nemotron)", async () => {
+		it("does not include tier warning in tool result (handled by model-guard notification)", async () => {
 			const h = createHarness()
 			const result = await h.exec("kimchi-dev/nemotron-3-super-fp4", {
 				currentModel: { id: "kimi-k2.6", provider: "kimchi-dev", name: "Kimi K2.6" },
 			})
 			expect(h.setModel).toHaveBeenCalled()
 			expect(textOf(result)).toContain("Switched to model")
-			expect(textOf(result)).toContain("heavy")
-			expect(textOf(result)).toContain("light")
-			expect(textOf(result)).toContain("Reasoning and planning quality may be reduced")
-		})
-
-		it("appends a warning when switching from heavy to standard tier (kimi-k2.6 → minimax)", async () => {
-			const h = createHarness()
-			const result = await h.exec("kimchi-dev/minimax-m2.7", {
-				currentModel: { id: "kimi-k2.6", provider: "kimchi-dev", name: "Kimi K2.6" },
-			})
-			expect(h.setModel).toHaveBeenCalled()
-			expect(textOf(result)).toContain("Switched to model kimchi-dev/minimax-m2.7")
-			expect(textOf(result)).toContain("heavy")
-			expect(textOf(result)).toContain("standard")
-			expect(textOf(result)).toContain("Reasoning and planning quality may be reduced")
+			expect(textOf(result)).not.toContain("tier")
+			expect(textOf(result)).not.toContain("Reasoning and planning quality may be reduced")
 		})
 
 		it("does NOT append a warning when current model is not in MODEL_CAPABILITIES", async () => {

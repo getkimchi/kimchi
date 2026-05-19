@@ -255,35 +255,25 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 	})
 
 	_pi.on("model_select", async (event: ModelSelectEvent, ctx: ExtensionContext) => {
-		// Skip restore events — these are automatic reversions, not user-initiated
 		if (event.source === "restore") return
 
 		const model = ctx.model
 
-		// Guard 1: context overflow — warn when current tokens exceed 90% of target
-		const usage = ctx.getContextUsage()
-		if (model && usage?.tokens != null && usage.tokens > model.contextWindow * 0.9) {
-			ctx.ui.notify(
-				`Current context (${usage.tokens.toLocaleString()} tokens) exceeds 90% of "${model.id}" context window (${model.contextWindow.toLocaleString()} tokens). Use /compact to reduce context size.`,
-				"warning",
-			)
-		}
+		// Context and vision guards are handled by the originating switch path:
+		// - "cycle" (ctrl+p): findNextCompatibleModel pre-filters incompatible models
+		// - "set" (set_model tool): blocks and reports to user before switching
+		// - "restore": skipped above (automatic reversion)
+		// Only tier-downgrade notifications remain here as they are informational
+		// and not checked by any pre-switch path.
 
-		// Guard 2: vision incompatibility — warn when switching away from a vision model
-		// while session contains images (they would be stripped)
-		if (sessionHasImages() && model && !model.input.includes("image") && event.previousModel?.input.includes("image")) {
-			ctx.ui.notify(`Switching to "${model.id}" will strip images since it does not support vision input.`, "warning")
-		}
-
-		// Guard 3: tier downgrade — warn when switching to a lower reasoning tier
 		if (event.previousModel) {
 			const prevTier = getModelTier(event.previousModel as never, MODEL_CAPABILITIES)
 			const nextTier = getModelTier(model as never, MODEL_CAPABILITIES)
 			if (prevTier && nextTier) {
-				const TIER_ORDER = ["light", "standard", "heavy"]
+				const TIER_ORDER = ["heavy", "standard", "light"]
 				const prevIdx = TIER_ORDER.indexOf(prevTier)
 				const nextIdx = TIER_ORDER.indexOf(nextTier)
-				if (prevIdx > nextIdx) {
+				if (prevIdx < nextIdx) {
 					ctx.ui.notify(
 						`Switching from ${prevTier} → ${nextTier} tier. Reasoning and planning quality may be reduced.`,
 						"info",

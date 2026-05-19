@@ -74,7 +74,7 @@ describe("findNextCompatibleModel", () => {
 			makeModel("text-only", 100_000, ["text"]),
 			makeModel("other-vision", 100_000, ["text", "image"]),
 		]
-		const result = findNextCompatibleModel(models, 0, 50_000, true)
+		const result = findNextCompatibleModel(models, 0, 50_000, true, models[0])
 		expect(result.model).toBe(models[2])
 		expect(result.skipped).toHaveLength(1)
 		expect(result.skipped[0].model).toBe(models[1])
@@ -96,7 +96,7 @@ describe("findNextCompatibleModel", () => {
 			makeModel("big-vision", 100_000, ["text", "image"]),
 		]
 		// currentTokens=50_000 → "small-text" fails context check, "no-vision" fails vision check
-		const result = findNextCompatibleModel(models, 0, 50_000, true)
+		const result = findNextCompatibleModel(models, 0, 50_000, true, models[0])
 		expect(result.model).toBe(models[3])
 		expect(result.skipped).toHaveLength(2)
 	})
@@ -108,7 +108,7 @@ describe("findNextCompatibleModel", () => {
 			makeModel("text-only", 100_000, ["text"]),
 		]
 		// 50k tokens exceeds "small"; hasImages=true blocks "text-only"
-		const result = findNextCompatibleModel(models, 0, 50_000, true)
+		const result = findNextCompatibleModel(models, 0, 50_000, true, models[0])
 		expect(result.model).toBeUndefined()
 		expect(result.skipped).toHaveLength(2)
 		expect(result.skipped[0].reason).toContain("context")
