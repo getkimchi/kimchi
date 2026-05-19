@@ -74,7 +74,7 @@ Run the steps in order. For steps you own, use your tools directly. For steps yo
 
 When Step 1 classified the task as **complex**, you MUST execute it as a phased pipeline — never lump everything into a single Agent call or do it all yourself. The phases below are sequential; each one produces an artefact the next one consumes.
 
-1. **Plan phase** — Produce a Markdown spec file in the Documents directory. The spec MUST break the work into **small, independently-buildable chunks** — each chunk should touch 1–2 files and be completable by a subagent in under 150k tokens. Include for each chunk: the file path(s), method signatures / interfaces, expected behaviour, and acceptance criteria. Chunks must be ordered so each one can build on the previous. If plan is in your strengths, write it yourself; otherwise delegate to a Plan agent (heavy-tier model with plan strength).
+1. **Plan phase** — Produce a Markdown spec file in the Documents directory. The spec MUST break the work into **small, independently-buildable chunks** — each chunk should touch 1–3 files and be completable by a subagent in under 300k tokens. Include for each chunk: the file path(s), method signatures / interfaces, expected behaviour, and acceptance criteria. Chunks must be ordered so each one can build on the previous. If plan is in your strengths, write it yourself; otherwise delegate to a Plan agent (heavy-tier model with plan strength).
 2. **Build phase** — Delegate **one Agent call per chunk** from the plan, not one Agent for the entire build. Each agent gets the spec file path and is told which chunk(s) to implement. Use a model with build strength, different from the planner. If chunks are independent (no data dependency), run up to 3 build agents in parallel with run_in_background. If chunks are sequential, run them one at a time, passing the previous chunk's output as context to the next.
 3. **Review phase** — After all build chunks complete, delegate a single review agent whose model has review strength (different model than build). Pass the spec file path and the full list of created files. The review agent runs tests, checks lint, and verifies the implementation matches the spec. If the review agent finds issues, delegate a targeted fix to a new build agent — do NOT fix issues yourself.
 
@@ -123,8 +123,8 @@ If the user explicitly asks for the Agent tool with a specific \`token_budget\`,
 
 | Agent task scope | token_budget |
 |---|---|
-| Single file (one module, one test file, one doc) | 150000 |
-| Multi-file implementation (2–5 files, one layer) | 200000 |
+| Single file (one module, one test file, one doc) | 200000 |
+| Multi-file implementation (2–5 files, one layer) | 300000 |
 | Full project or large codebase exploration | 500000 |
 | Plan or research document (writing, not coding) | 200000 |
 
