@@ -276,7 +276,8 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 				const activeStep = activePhase?.steps.find((s) => s.status === "running" || s.status === "pending")
 				const phaseInfo = activePhase ? ` — Phase ${activePhase.index}/${ferment.phases.length}` : ""
 				const stepInfo = activeStep ? ` · step ${activeStep.index}/${activePhase?.steps.length ?? 0}` : ""
-				const updatedMs = ferment.updatedAt ? new Date(ferment.updatedAt).getTime() : Date.now()
+				const parsed = ferment.updatedAt ? Date.parse(ferment.updatedAt) : Number.NaN
+				const updatedMs = Number.isFinite(parsed) ? parsed : runtime.now().getTime()
 				const ago = formatDuration(runtime.now().getTime() - updatedMs)
 				const banner = `🍺  Active ferment "${ferment.name}"${phaseInfo}${stepInfo} · ${ago}. Resume?`
 				const choice = await ctx.ui.select(banner, ["Resume", "Leave paused"])

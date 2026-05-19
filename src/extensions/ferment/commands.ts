@@ -409,8 +409,9 @@ export class FermentCommandController {
 
 				await runScopingFlow(f, pi, ctx, runtime, rawIntent)
 			} catch (err) {
-				ctx.ui.setStatus?.("ferment-scoping", undefined)
 				ctx.ui.notify(err instanceof FermentError ? err.message : "Create failed.")
+			} finally {
+				ctx.ui.setStatus?.("ferment-scoping", undefined)
 			}
 			return { handled: true }
 		}
@@ -827,8 +828,9 @@ export class FermentCommandController {
 
 			await runScopingFlow(f, pi, ctx, runtime)
 		} catch (err) {
-			ctx.ui.setStatus?.("ferment-scoping", undefined)
 			ctx.ui.notify(err instanceof FermentError ? err.message : "Create failed.")
+		} finally {
+			ctx.ui.setStatus?.("ferment-scoping", undefined)
 		}
 		return { handled: true }
 	}

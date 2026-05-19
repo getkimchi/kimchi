@@ -69,7 +69,7 @@ async function editPhaseDetails(
 	if (choice === deleteLabel) {
 		const confirmed = ui.confirm
 			? await ui.confirm(`Delete phase "${phase.name}"?`, "This cannot be undone within the editor.")
-			: true
+			: false
 		runtime?.markHumanInput()
 		if (confirmed) return { action: "delete", phase }
 	}
