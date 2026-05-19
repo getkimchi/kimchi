@@ -1,6 +1,6 @@
 import { exec } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { basename } from "node:path"
+import { basename, dirname } from "node:path"
 import { promisify } from "node:util"
 import type {
 	AgentSession,
@@ -16,6 +16,7 @@ import type { AuthenticateResponse, RemoteSessionStatus, RemoteSessionSummary } 
 import type { AttachArgs, ConnectArgs, DetachArgs, TeleportArgs } from "./args.js"
 import { getTeleportProxyPath } from "./proxy-path.js"
 import { BASE_EXCLUDE_GLOBS, RsyncError, runRsync } from "./rsync-transport.js"
+import { exportSessionForTeleport } from "./session-export.js"
 import { type SessionRow, renderSessionsTable } from "./sessions-table.js"
 import type { TeleportableAgentSession } from "./teleportable-agent-session.js"
 import { runChildWithTTYHandoff as runChildWithTTYHandoffImpl } from "./tty-handoff.js"
@@ -366,6 +367,24 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 		)
 	}
 
+	// ── 3.75. Optional session export ──
+	let sessionExport: { localDir: string; remotePath: string } | undefined
+	if (args.withSession) {
+		status(ctx, "Exporting session…")
+		try {
+			sessionExport = exportSessionForTeleport({
+				homeBase: homeBase as AgentSession,
+				localCwd: ctx.cwd,
+				sandboxDest,
+			})
+		} catch (err) {
+			warn(
+				ctx,
+				`Session export failed: ${err instanceof Error ? err.message : String(err)}. Continuing without session.`,
+			)
+		}
+	}
+
 	// ── 4. rsync ──
 	// Each step (mkdir, rsync) shares a heartbeat that keeps the UI alive
 	// during silent intervals. The phase label switches when runRsync calls
@@ -422,6 +441,26 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 		clearInterval(heartbeat)
 	}
 
+	// ── 4.5. rsync session file ──
+	if (args.withSession && sessionExport) {
+		status(ctx, "Syncing session…")
+		try {
+			await runRsync({
+				source: sessionExport.localDir,
+				destination: dirname(sessionExport.remotePath),
+				remoteHost: authResult.host,
+				remotePort: authResult.port,
+				remoteUser: SANDBOX_USER,
+				authToken: authResult.connectToken,
+				signal: ctx.signal,
+				deleteExtraneous: false,
+			})
+		} catch (err) {
+			warn(ctx, `Session sync failed: ${err instanceof Error ? err.message : String(err)}. Continuing without session.`)
+			sessionExport = undefined
+		}
+	}
+
 	// ── 5. Build the RemoteAgentSession ──
 	status(ctx, "Connecting…")
 	let remote: RemoteAgentSession
@@ -444,6 +483,18 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 			await (remote as unknown as { setSessionName: (name: string) => Promise<unknown> }).setSessionName(args.name)
 		} catch (err) {
 			warn(ctx, `Could not set session name: ${err instanceof Error ? err.message : String(err)}`)
+		}
+	}
+
+	// ── 6.5. Load session on remote (if exported) ──
+	if (args.withSession && sessionExport) {
+		status(ctx, "Loading session…")
+		try {
+			await remote.switchSession(sessionExport.remotePath)
+			await remote.getMessages()
+			await remote.getState()
+		} catch (err) {
+			warn(ctx, `Could not load session on remote: ${err instanceof Error ? err.message : String(err)}`)
 		}
 	}
 

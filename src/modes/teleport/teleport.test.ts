@@ -81,6 +81,28 @@ class FakeSession {
 	abortRetry = vi.fn()
 	dispose = vi.fn()
 	setSessionName = vi.fn(async (_n: string) => undefined)
+	exportToJsonl = vi.fn((path: string) => {
+		const header = JSON.stringify({
+			type: "session",
+			version: 3,
+			id: this.sessionId,
+			timestamp: new Date().toISOString(),
+			cwd: "/work/proj",
+		})
+		const entry = JSON.stringify({
+			type: "message",
+			id: "e1",
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: { role: "user", content: "hi" },
+		})
+		const fs = require("node:fs")
+		fs.writeFileSync(path, `${header}\n${entry}\n`, "utf-8")
+		return path
+	})
+	switchSession = vi.fn(async (_path: string) => undefined)
+	getMessages = vi.fn(async () => ({ messages: [] }))
+	getState = vi.fn(async () => ({}))
 	private listeners = new Set<AgentSessionEventListener>()
 
 	constructor(sessionId: string, name?: string) {
@@ -228,6 +250,76 @@ describe("runTeleport", () => {
 		// runRsync was called with the per-teleport subdir as the destination.
 		const rsyncCall = rsyncMock.mock.calls[0][0] as { destination?: string }
 		expect(rsyncCall.destination).toBe("/home/sandbox/proj/")
+	})
+
+	it("--with-session exports, syncs, and loads the session on the remote", async () => {
+		const home = new FakeSession("local-1")
+		const { wrapper, ctx } = makeCtx(home)
+		const remote = new FakeSession("remote-1")
+		buildMock.mockResolvedValueOnce(asRemote(remote))
+
+		await runTeleport(
+			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false, withSession: true },
+			ctx,
+		)
+
+		// Two rsync calls: workspace + session file.
+		expect(rsyncMock).toHaveBeenCalledTimes(2)
+
+		// Second rsync is the session file going to the remote session dir.
+		const sessionRsyncCall = rsyncMock.mock.calls[1][0] as { destination?: string; deleteExtraneous?: boolean }
+		expect(sessionRsyncCall.destination).toBe("/home/sandbox/.pi/agent/sessions/--home-sandbox-proj--")
+		expect(sessionRsyncCall.deleteExtraneous).toBe(false)
+
+		// Remote received switchSession + getMessages + getState.
+		expect(remote.switchSession).toHaveBeenCalledOnce()
+		const switchedPath = (remote.switchSession.mock.calls[0] as [string])[0]
+		expect(switchedPath).toBe("/home/sandbox/.pi/agent/sessions/--home-sandbox-proj--/teleport-session-export.jsonl")
+		expect(remote.getMessages).toHaveBeenCalledOnce()
+		expect(remote.getState).toHaveBeenCalledOnce()
+		expect(wrapper.foreground).toBe(asRemote(remote))
+	})
+
+	it("--with-session tolerates session-sync failure and continues", async () => {
+		const home = new FakeSession("local-1")
+		const { wrapper, ctx, ui } = makeCtx(home)
+		const remote = new FakeSession("remote-1")
+		buildMock.mockResolvedValueOnce(asRemote(remote))
+		// First rsync (workspace) succeeds, second (session file) fails.
+		rsyncMock.mockResolvedValueOnce({ fileCount: 1, totalBytes: 0, durationMs: 1 })
+		rsyncMock.mockRejectedValueOnce(new Error("session sync fail"))
+
+		await runTeleport(
+			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false, withSession: true },
+			ctx,
+		)
+
+		// Only workspace rsync succeeded; session sync failed.
+		expect(rsyncMock).toHaveBeenCalledTimes(2)
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Session sync failed/), "warning")
+		// Should NOT call switchSession because sessionExport was cleared on failure.
+		expect(remote.switchSession).not.toHaveBeenCalled()
+		expect(wrapper.foreground).toBe(asRemote(remote))
+	})
+
+	it("--with-session tolerates remote session-load failure and continues", async () => {
+		const home = new FakeSession("local-1")
+		const { wrapper, ctx, ui } = makeCtx(home)
+		const remote = new FakeSession("remote-1")
+		remote.switchSession = vi.fn(async () => {
+			throw new Error("switchSession boom")
+		})
+		buildMock.mockResolvedValueOnce(asRemote(remote))
+
+		await runTeleport(
+			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false, withSession: true },
+			ctx,
+		)
+
+		expect(rsyncMock).toHaveBeenCalledTimes(2)
+		expect(remote.switchSession).toHaveBeenCalledOnce()
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Could not load session on remote/), "warning")
+		expect(wrapper.foreground).toBe(asRemote(remote))
 	})
 
 	it("refuses when already foregrounded on a remote", async () => {
