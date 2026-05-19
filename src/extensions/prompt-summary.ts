@@ -1,4 +1,4 @@
-import type { AssistantMessage, Usage } from "@earendil-works/pi-ai"
+import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { formatCount } from "./format.js"
@@ -11,7 +11,8 @@ interface UsageTotals {
 	cacheWrite: number
 }
 
-interface SubagentStats {
+interface AgentStats {
+	agentId?: string
 	tokenUsage: {
 		input: number
 		output: number
@@ -38,7 +39,7 @@ function emptyTotals(): UsageTotals {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 }
 
-function addUsage(totals: UsageTotals, usage: Usage): void {
+function addUsage(totals: UsageTotals, usage: UsageTotals): void {
 	totals.input += usage.input
 	totals.output += usage.output
 	totals.cacheRead += usage.cacheRead
@@ -126,11 +127,13 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 
 	const orchestrator = emptyTotals()
 	const subagents = emptyTotals()
+	const countedAgentUsage = new Map<string, UsageTotals>()
 	let startedAt = Date.now()
 
 	pi.on("agent_start", () => {
 		Object.assign(orchestrator, emptyTotals())
 		Object.assign(subagents, emptyTotals())
+		countedAgentUsage.clear()
 		startedAt = Date.now()
 	})
 
@@ -141,9 +144,21 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 	})
 
 	pi.on("tool_result", (event) => {
-		if (event.toolName !== "subagent") return
-		const stats = event.details as SubagentStats | undefined
+		if (event.toolName !== "Agent" && event.toolName !== "get_subagent_result") return
+		const stats = event.details as AgentStats | undefined
 		if (!stats?.tokenUsage) return
+		if (stats.agentId) {
+			const previous = countedAgentUsage.get(stats.agentId) ?? emptyTotals()
+			const delta = {
+				input: Math.max(0, stats.tokenUsage.input - previous.input),
+				output: Math.max(0, stats.tokenUsage.output - previous.output),
+				cacheRead: Math.max(0, stats.tokenUsage.cacheRead - previous.cacheRead),
+				cacheWrite: Math.max(0, stats.tokenUsage.cacheWrite - previous.cacheWrite),
+			}
+			countedAgentUsage.set(stats.agentId, { ...stats.tokenUsage })
+			addUsage(subagents, delta)
+			return
+		}
 		subagents.input += stats.tokenUsage.input
 		subagents.output += stats.tokenUsage.output
 		subagents.cacheRead += stats.tokenUsage.cacheRead

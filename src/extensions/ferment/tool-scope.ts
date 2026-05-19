@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
+import { isAgentWorker } from "../agent-worker-context.js"
 import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import type { FermentRuntime } from "./runtime.js"
 
@@ -51,9 +52,8 @@ export const PLANNER_ONESHOT_ALLOWLIST = new Set<string>([
 	// Delegation tool: the higher-level persona-based `Agent`
 	// (`src/extensions/agents/index.ts:590`). The orchestrator picks the
 	// worker model from its registry; ferment no longer prescribes it.
-	// `Agent` uses the same prepareChildSessionFile pattern as the legacy
-	// `subagent` primitive, so bench session-linkage and token aggregation
-	// remain intact.
+	// `Agent` persists child sessions through the agents manager, so bench
+	// session-linkage and token aggregation remain intact.
 	"Agent",
 	"get_subagent_result",
 	"read",
@@ -86,7 +86,7 @@ function allowedFermentToolNamesForProfile(profile: FermentToolProfile): readonl
 }
 
 export function profileForFerment(ferment: Ferment | undefined): FermentToolProfile {
-	if (process.env.KIMCHI_SUBAGENT === "1") return "worker"
+	if (isAgentWorker()) return "worker"
 	if (!ferment) return "idle"
 	if (ferment.status === "paused" || ferment.status === "complete" || ferment.status === "abandoned") {
 		return "paused-terminal"
@@ -160,8 +160,8 @@ export function setActiveFermentAndApplyProfile(
  * via `Agent` instead of doing the work itself.
  *
  * Must be called after ferment tools are enabled (the allowlist includes
- * them) and only in the planner process — subagents run with
- * `KIMCHI_SUBAGENT=1` and need the full toolset to do the actual work.
+ * them) and only in the planner process — Agent workers need the full toolset
+ * to do the actual work.
  */
 export function applyPlannerOneshotAllowlist(pi: ExtensionAPI): void {
 	const allowed = pi

@@ -93,6 +93,7 @@ type Subscriber = (event: SessionEvent) => void
 function makeFakeSession({
 	promptTokens = 0,
 	outputTokens = 0,
+	cacheReadTokens = 0,
 	cacheWriteTokens = 0,
 	abortSpy = vi.fn(),
 	emitUsage = true,
@@ -102,16 +103,24 @@ function makeFakeSession({
 }: {
 	promptTokens?: number
 	outputTokens?: number
+	cacheReadTokens?: number
 	cacheWriteTokens?: number
 	abortSpy?: ReturnType<typeof vi.fn>
 	emitUsage?: boolean
 	events?: SessionEvent[]
-	statsTokens?: { input: number; output: number; cacheWrite: number }
+	statsTokens?: { input: number; output: number; cacheRead: number; cacheWrite: number }
 	activeToolNames?: string[]
 } = {}) {
 	const subscribers: Subscriber[] = []
 	let promptCalled = false
-	const sessionStatsTokens = statsTokens ?? { input: promptTokens, output: outputTokens, cacheWrite: cacheWriteTokens }
+	const sessionStatsTokens =
+		statsTokens ??
+		({
+			input: promptTokens,
+			output: outputTokens,
+			cacheRead: cacheReadTokens,
+			cacheWrite: cacheWriteTokens,
+		} as { input: number; output: number; cacheRead: number; cacheWrite: number })
 
 	const session = {
 		subscribe: vi.fn((cb: Subscriber) => {
@@ -147,7 +156,12 @@ function makeFakeSession({
 							type: "message_end",
 							message: {
 								role: "assistant",
-								usage: { input: promptTokens, output: outputTokens, cacheWrite: cacheWriteTokens },
+								usage: {
+									input: promptTokens,
+									output: outputTokens,
+									cacheRead: cacheReadTokens,
+									cacheWrite: cacheWriteTokens,
+								},
 							},
 						})
 					}
@@ -317,16 +331,16 @@ describe("runAgent — tokenBudget forwarding", () => {
 
 	it("reconciles final session stats against the current post-compaction window", async () => {
 		const abortSpy = vi.fn()
-		const usageEvents: Array<{ input: number; output: number; cacheWrite: number }> = []
+		const usageEvents: Array<{ input: number; output: number; cacheRead: number; cacheWrite: number }> = []
 		const session = makeFakeSession({
 			abortSpy,
-			statsTokens: { input: 1_000, output: 500, cacheWrite: 0 },
+			statsTokens: { input: 1_000, output: 500, cacheRead: 0, cacheWrite: 0 },
 			events: [
 				{
 					type: "message_end",
 					message: {
 						role: "assistant",
-						usage: { input: 9_000, output: 1_000, cacheWrite: 0 },
+						usage: { input: 9_000, output: 1_000, cacheRead: 0, cacheWrite: 0 },
 					},
 				},
 				{
@@ -354,8 +368,8 @@ describe("runAgent — tokenBudget forwarding", () => {
 
 		expect(abortSpy).not.toHaveBeenCalled()
 		expect(usageEvents).toEqual([
-			{ input: 9_000, output: 1_000, cacheWrite: 0 },
-			{ input: 1_000, output: 500, cacheWrite: 0 },
+			{ input: 9_000, output: 1_000, cacheRead: 0, cacheWrite: 0 },
+			{ input: 1_000, output: 500, cacheRead: 0, cacheWrite: 0 },
 		])
 		expect(result.aborted).toBe(true)
 		expect(result.abortReason).toBe("token_budget")

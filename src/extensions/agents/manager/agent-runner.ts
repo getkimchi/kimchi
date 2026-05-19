@@ -13,6 +13,7 @@ import {
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
 import { getAvailableModels } from "../../../startup-context.js"
+import { runAsAgentWorker } from "../../agent-worker-context.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
@@ -141,7 +142,7 @@ export interface RunOptions {
 	/** Called at the end of each agentic turn with the cumulative count. */
 	onTurnEnd?: (turnCount: number) => void
 	/** Called once per assistant message_end with that message's usage delta. */
-	onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void
+	onAssistantUsage?: (usage: LifetimeUsage) => void
 	/** Called when the session successfully compacts. */
 	onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void
 	/** Maximum cumulative tokens this agent is allowed to consume. Overrides agentConfig.tokenBudget. */
@@ -186,6 +187,7 @@ function usageDelta(total: LifetimeUsage | undefined, observed: LifetimeUsage): 
 	const delta = {
 		input: Math.max(0, total.input - observed.input),
 		output: Math.max(0, total.output - observed.output),
+		cacheRead: Math.max(0, total.cacheRead - observed.cacheRead),
 		cacheWrite: Math.max(0, total.cacheWrite - observed.cacheWrite),
 	}
 	return getLifetimeTotal(delta) > 0 ? delta : undefined
@@ -194,6 +196,7 @@ function usageDelta(total: LifetimeUsage | undefined, observed: LifetimeUsage): 
 function resetUsage(usage: LifetimeUsage): void {
 	usage.input = 0
 	usage.output = 0
+	usage.cacheRead = 0
 	usage.cacheWrite = 0
 }
 
@@ -209,6 +212,15 @@ function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => 
 }
 
 export async function runAgent(
+	ctx: ExtensionContext,
+	type: SubagentType,
+	prompt: string,
+	options: RunOptions,
+): Promise<RunResult> {
+	return runAsAgentWorker(() => runAgentInner(ctx, type, prompt, options))
+}
+
+async function runAgentInner(
 	ctx: ExtensionContext,
 	type: SubagentType,
 	prompt: string,
@@ -365,8 +377,8 @@ export async function runAgent(
 	const maxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
 	const effectiveTokenBudget = options.tokenBudget ?? agentConfig?.tokenBudget
 	let cumulativeTokens = 0
-	const observedUsage: LifetimeUsage = { input: 0, output: 0, cacheWrite: 0 }
-	const windowObservedUsage: LifetimeUsage = { input: 0, output: 0, cacheWrite: 0 }
+	const observedUsage: LifetimeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+	const windowObservedUsage: LifetimeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 	let softLimitReached = false
 	let aborted = false
 	let abortReason: AgentAbortReason | undefined
@@ -404,11 +416,16 @@ export async function runAgent(
 			options.onToolActivity?.({ type: "end", toolName: event.toolName })
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
-			const u = (event.message as unknown as { usage?: { input: number; output: number; cacheWrite: number } }).usage
+			const u = (
+				event.message as unknown as {
+					usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
+				}
+			).usage
 			if (u) {
 				const usage = {
 					input: u.input ?? 0,
 					output: u.output ?? 0,
+					cacheRead: u.cacheRead ?? 0,
 					cacheWrite: u.cacheWrite ?? 0,
 				}
 				addUsage(observedUsage, usage)
@@ -446,7 +463,7 @@ export async function runAgent(
 
 	const promptEstimate = estimateTextTokens(systemPrompt) + estimateTextTokens(effectivePrompt)
 	if (effectiveTokenBudget != null && promptEstimate > effectiveTokenBudget) {
-		const usage = { input: promptEstimate, output: 0, cacheWrite: 0 }
+		const usage = { input: promptEstimate, output: 0, cacheRead: 0, cacheWrite: 0 }
 		addUsage(observedUsage, usage)
 		addUsage(windowObservedUsage, usage)
 		cumulativeTokens += getLifetimeTotal(usage)
@@ -521,7 +538,7 @@ export async function resumeAgent(
 	prompt: string,
 	options: {
 		onToolActivity?: (activity: ToolActivity) => void
-		onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void
+		onAssistantUsage?: (usage: LifetimeUsage) => void
 		onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void
 		signal?: AbortSignal
 	} = {},
@@ -536,12 +553,16 @@ export async function resumeAgent(
 						options.onToolActivity?.({ type: "start", toolName: event.toolName })
 					if (event.type === "tool_execution_end") options.onToolActivity?.({ type: "end", toolName: event.toolName })
 					if (event.type === "message_end" && event.message.role === "assistant") {
-						const u = (event.message as unknown as { usage?: { input: number; output: number; cacheWrite: number } })
-							.usage
+						const u = (
+							event.message as unknown as {
+								usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
+							}
+						).usage
 						if (u)
 							options.onAssistantUsage?.({
 								input: u.input ?? 0,
 								output: u.output ?? 0,
+								cacheRead: u.cacheRead ?? 0,
 								cacheWrite: u.cacheWrite ?? 0,
 							})
 					}

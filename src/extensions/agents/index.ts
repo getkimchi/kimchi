@@ -60,6 +60,7 @@ import {
 	type AgentAbortReason,
 	type AgentConfig,
 	type AgentRecord,
+	type AgentVisibility,
 	type JoinMode,
 	type NotificationDetails,
 	type SubagentType,
@@ -94,6 +95,7 @@ interface GetSubagentResultDetails {
 	displayName: string
 	description: string
 	status: string
+	visibility?: AgentVisibility
 	abortReason?: AgentAbortReason
 	toolUses: number
 	tokens: string
@@ -159,7 +161,7 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 		maxTurns,
 		responseText: "",
 		session: undefined,
-		lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
+		lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	}
 
 	const callbacks = {
@@ -188,7 +190,7 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 		onSessionCreated: (session: unknown) => {
 			state.session = session as AgentActivity["session"]
 		},
-		onAssistantUsage: (usage: { input: number; output: number; cacheWrite: number }) => {
+		onAssistantUsage: (usage: LifetimeUsage) => {
 			addUsage(state.lifetimeUsage, usage)
 			onStreamUpdate?.()
 		},
@@ -288,7 +290,7 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
 }
 
 function buildDetails(
-	base: Pick<AgentDetails, "displayName" | "description" | "subagentType" | "modelName" | "tags">,
+	base: Pick<AgentDetails, "displayName" | "description" | "subagentType" | "modelName" | "tags" | "visibility">,
 	record: {
 		toolUses: number
 		startedAt: number
@@ -297,6 +299,7 @@ function buildDetails(
 		abortReason?: AgentAbortReason
 		error?: string
 		id?: string
+		sessionFile?: string
 		session?: unknown
 		lifetimeUsage: LifetimeUsage
 	},
@@ -307,11 +310,18 @@ function buildDetails(
 		...base,
 		toolUses: record.toolUses,
 		tokens: formatLifetimeTokens(record),
+		tokenUsage: {
+			input: record.lifetimeUsage.input,
+			output: record.lifetimeUsage.output,
+			cacheRead: record.lifetimeUsage.cacheRead,
+			cacheWrite: record.lifetimeUsage.cacheWrite,
+		},
 		turnCount: activity?.turnCount,
 		maxTurns: activity?.maxTurns,
 		durationMs: (record.completedAt ?? Date.now()) - record.startedAt,
 		status: record.status as AgentDetails["status"],
 		agentId: record.id,
+		sessionFile: record.sessionFile,
 		error: record.error,
 		abortReason: record.abortReason,
 		...overrides,
@@ -443,6 +453,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function emitIndividualNudge(record: AgentRecord) {
+		if (record.visibility === "system") return
 		if (record.resultConsumed) return
 
 		const notification = formatTaskNotification(record, 500)
@@ -517,6 +528,7 @@ export default function (pi: ExtensionAPI) {
 			result: record.result,
 			error: record.error,
 			status: record.status,
+			visibility: record.visibility,
 			abortReason: record.abortReason,
 			toolUses: record.toolUses,
 			durationMs,
@@ -574,6 +586,7 @@ export default function (pi: ExtensionAPI) {
 				id: record.id,
 				type: record.type,
 				description: record.description,
+				visibility: record.visibility,
 				status: record.status,
 				abortReason: record.abortReason,
 				result: record.result,
@@ -586,6 +599,15 @@ export default function (pi: ExtensionAPI) {
 				agentActivity.delete(record.id)
 				widget.markFinished(record.id)
 				widget.update()
+				return
+			}
+
+			if (record.visibility === "system") {
+				// System agents never appear in the widget (AgentWidget filters them
+				// out at render time), so markFinished/update are no-ops that would
+				// just accrue dead state in `finishedTurnAge` and trigger spurious
+				// repaints. Just drop the activity entry and bail.
+				agentActivity.delete(record.id)
 				return
 			}
 
@@ -606,6 +628,7 @@ export default function (pi: ExtensionAPI) {
 				id: record.id,
 				type: record.type,
 				description: record.description,
+				visibility: record.visibility,
 			})
 		},
 		(record, info) => {
@@ -613,6 +636,7 @@ export default function (pi: ExtensionAPI) {
 				id: record.id,
 				type: record.type,
 				description: record.description,
+				visibility: record.visibility,
 				reason: info.reason,
 				tokensBefore: info.tokensBefore,
 				compactionCount: record.compactionCount,
@@ -644,6 +668,7 @@ export default function (pi: ExtensionAPI) {
 	})
 
 	const widget = new AgentWidget(manager, agentActivity)
+	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
 
 	let defaultJoinMode: JoinMode = "smart"
 	function getDefaultJoinMode(): JoinMode {
@@ -800,6 +825,9 @@ Model selection — YOU choose based on task complexity:
 			}),
 
 			renderCall(args, theme) {
+				// Defense-in-depth: `visibility` is not in this tool's public schema (see execute()),
+				// but if an LLM hallucinates the arg we'd rather hide the tool call than render it.
+				if ((args as Record<string, unknown>).visibility === "system") return new Text("", 0, 0)
 				const displayName = args.subagent_type ? getDisplayName(args.subagent_type as string) : "Agent"
 				const desc = (args.description as string) ?? ""
 				return new Text(
@@ -816,6 +844,7 @@ Model selection — YOU choose based on task complexity:
 				const expanded = piExpanded || (context?.toolCallId ? isToolExpanded(context.toolCallId) : false)
 
 				const details = result.details as AgentDetails | undefined
+				if (details?.visibility === "system") return new Text("", 0, 0)
 				if (!details) {
 					const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 					return new Text(text, 0, 0)
@@ -939,8 +968,14 @@ Model selection — YOU choose based on task complexity:
 
 				const thinking = resolvedConfig.thinking
 				const inheritContext = resolvedConfig.inheritContext
-				const runInBackground = resolvedConfig.runInBackground
 				const isolated = resolvedConfig.isolated
+				// The `visibility` field is intentionally NOT exposed in this tool's public schema —
+				// LLMs and personas cannot create hidden agents. Internal kimchi callers (e.g. permission
+				// classifiers, future MCP adapters) spawn hidden agents directly via `AgentManager.spawn(..., { visibility: "system" })`,
+				// which bypasses the tool layer entirely. Hardcoding "user" here ensures any defiant
+				// LLM that hallucinates a `visibility` arg gets ignored at the source.
+				const visibility: AgentVisibility = "user"
+				const runInBackground = resolvedConfig.runInBackground
 
 				const parentModelId = ctx.model?.id
 				const effectiveModelId = (model as { id?: string } | undefined)?.id
@@ -961,6 +996,7 @@ Model selection — YOU choose based on task complexity:
 					displayName,
 					description: params.description as string,
 					subagentType,
+					visibility,
 					modelName: agentModelName,
 					tags: agentTags.length > 0 ? agentTags : undefined,
 				}
@@ -979,7 +1015,7 @@ Model selection — YOU choose based on task complexity:
 					}
 					return textResult(
 						record.result?.trim() || record.error?.trim() || "No output.",
-						buildDetails(detailBase, record),
+						buildDetails({ ...detailBase, visibility: existing.visibility }, record),
 					)
 				}
 
@@ -1016,6 +1052,7 @@ Model selection — YOU choose based on task complexity:
 					try {
 						id = manager.spawn(pi, ctx, subagentType, params.prompt as string, {
 							description: params.description as string,
+							visibility,
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
 							maxTurns: effectiveMaxTurns,
 							tokenBudget: resolvedConfig.tokenBudget,
@@ -1063,6 +1100,7 @@ Model selection — YOU choose based on task complexity:
 						type: subagentType,
 						description: params.description,
 						isBackground: true,
+						visibility,
 					})
 
 					const isQueued = record?.status === "queued"
@@ -1134,6 +1172,7 @@ Model selection — YOU choose based on task complexity:
 				try {
 					record = await manager.spawnAndWait(pi, ctx, subagentType, params.prompt as string, {
 						description: params.description as string,
+						visibility,
 						model: model as Parameters<typeof manager.spawnAndWait>[4]["model"],
 						maxTurns: effectiveMaxTurns,
 						tokenBudget: resolvedConfig.tokenBudget,
@@ -1221,6 +1260,9 @@ Model selection — YOU choose based on task complexity:
 				const expanded = piExpanded || (context?.toolCallId ? isToolExpanded(context.toolCallId) : false)
 
 				const details = result.details as GetSubagentResultDetails | undefined
+				// Defense-in-depth: hide get_subagent_result output for system agents in the TUI
+				// (consistency with the Agent tool's renderCall/renderResult short-circuits).
+				if (details?.visibility === "system") return new Text("", 0, 0)
 				if (!details) {
 					const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 					return new Text(text, 0, 0)
@@ -1327,6 +1369,7 @@ Model selection — YOU choose based on task complexity:
 					displayName,
 					description: record.description,
 					status: record.status,
+					visibility: record.visibility,
 					abortReason: record.abortReason,
 					toolUses: record.toolUses,
 					tokens,
@@ -1437,7 +1480,7 @@ Model selection — YOU choose based on task complexity:
 
 		const options: string[] = []
 
-		const agents = manager.listAgents()
+		const agents = listUserVisibleAgents()
 		if (agents.length > 0) {
 			const running = agents.filter((a) => a.status === "running" || a.status === "queued").length
 			const done = agents.filter((a) => a.status === "completed" || a.status === "steered").length
@@ -1532,7 +1575,7 @@ Model selection — YOU choose based on task complexity:
 	}
 
 	async function showRunningAgents(ctx: ExtensionCommandContext) {
-		const agents = manager.listAgents()
+		const agents = listUserVisibleAgents()
 		if (agents.length === 0) {
 			ctx.ui.notify("No agents.", "info")
 			return

@@ -1,15 +1,15 @@
 /**
  * Orchestration prompt enrichment extension.
  *
- * Behavior depends on whether this process is the main model or a subagent
- * (detected via the KIMCHI_SUBAGENT env var set during subagent spawning).
+ * Behavior depends on whether this process is the main model or an Agent worker
+ * (detected via Agent worker context or the legacy KIMCHI_SUBAGENT env var).
  *
  * Main model mode:
  * - "input": wraps the user prompt with the current model's own capabilities
  *   and the available delegated-agent models so the model can self-classify the task
  *   and decide which steps to execute itself vs. delegate.
  * - "before_agent_start": injects the self-classification system prompt with
- *   full tool access, including the active delegation tool.
+ *   full tool access (read, write, edit, bash, Agent).
  *
  * Subagent mode:
  * - "input": passes through unchanged.
@@ -30,6 +30,7 @@ import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendi
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
+import { isAgentWorker } from "../agent-worker-context.js"
 import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
 import {
 	CONTINUATION_NUDGE_TEXT,
@@ -115,7 +116,7 @@ function readMultiModelArgv(): boolean {
 
 let multiModelEnabled = readMultiModelArgv()
 
-const DELEGATION_TOOL_NAMES = new Set(["Agent", "subagent"])
+const DELEGATION_TOOL_NAMES = new Set(["Agent"])
 
 function isDelegationToolCallName(name: string | undefined): boolean {
 	return name != null && DELEGATION_TOOL_NAMES.has(name)
@@ -207,7 +208,7 @@ export function getMultiModelEnabled(): boolean {
 }
 
 export function isSubagent(): boolean {
-	return process.env.KIMCHI_SUBAGENT === "1"
+	return isAgentWorker()
 }
 
 export default function (skillPaths: string[]) {
@@ -262,10 +263,10 @@ export default function (skillPaths: string[]) {
 			const emptyTurnNudge = new EmptyTurnNudge()
 			pi.on("input", async (event) => {
 				if (event.source === "extension") {
-					// Subagent result arriving. Clear the subagent-pending flag so the
+					// Agent result arriving. Clear the delegation-pending flag so the
 					// continuation nudge can fire normally once the model has processed
 					// the output (at the next turn_end, after any tool calls it makes).
-					continuationNudge.clearSubagentPending()
+					continuationNudge.clearDelegationPending()
 					return
 				}
 				continuationNudge.resetForNewUserInput()
@@ -296,7 +297,7 @@ export default function (skillPaths: string[]) {
 				// A single turn may contain multiple parallel agent calls.
 				for (const c of event.message.content) {
 					if (c.type === "toolCall" && isDelegationToolCallName((c as { name?: string }).name)) {
-						continuationNudge.markSubagentCall()
+						continuationNudge.markDelegationCall()
 					}
 				}
 
