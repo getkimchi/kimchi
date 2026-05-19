@@ -6,7 +6,7 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
-import type { TUI } from "@earendil-works/pi-tui"
+import type { Component, TUI } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
 import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } from "../components/footer.js"
@@ -38,6 +38,41 @@ function getEnabledModelIds(): Set<string> | null {
 // Track current editor for indicator updates
 let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
+let sessionModeOnboardingFooterSuppressed = false
+const sessionModeFooterRenderers = new Set<() => void>()
+
+type DisposableComponent = Component & { dispose?(): void }
+
+class SuppressibleFooter implements Component {
+	private readonly requestRender: () => void
+
+	constructor(
+		private readonly inner: DisposableComponent,
+		tui: TUI,
+	) {
+		this.requestRender = () => tui.requestRender()
+		sessionModeFooterRenderers.add(this.requestRender)
+	}
+
+	dispose(): void {
+		sessionModeFooterRenderers.delete(this.requestRender)
+		this.inner.dispose?.()
+	}
+
+	invalidate(): void {
+		this.inner.invalidate()
+	}
+
+	render(width: number): string[] {
+		return sessionModeOnboardingFooterSuppressed ? [] : this.inner.render(width)
+	}
+}
+
+export function setSessionModeOnboardingFooterSuppressed(suppressed: boolean): void {
+	if (sessionModeOnboardingFooterSuppressed === suppressed) return
+	sessionModeOnboardingFooterSuppressed = suppressed
+	for (const requestRender of sessionModeFooterRenderers) requestRender()
+}
 
 export function setPasteImageHandler(handler: () => void): void {
 	pasteImageHandler = handler
@@ -123,6 +158,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", (event, ctx) => {
+		setSessionModeOnboardingFooterSuppressed(false)
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
 		toolsInFlight = 0
@@ -140,7 +176,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 			const cmd = readStatusLineCommand()
 			if (!cmd) {
 				scriptCmd = null
-				return new StatsFooter(ctx, theme, footerData)
+				return new SuppressibleFooter(new StatsFooter(ctx, theme, footerData), tui)
 			}
 			scriptCmd = cmd
 			const getControlsLine = (): string | null => {
@@ -166,7 +202,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 					if (scriptGeneration === gen) scriptPending = false
 				},
 			)
-			return scriptFooter
+			return new SuppressibleFooter(scriptFooter, tui)
 		})
 
 		ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
@@ -283,6 +319,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 		currentCtx = ctx
 		refresh("idle")
 		uiTui?.requestRender()
+	})
+	pi.on("session_shutdown", () => {
+		setSessionModeOnboardingFooterSuppressed(false)
 	})
 
 	pi.on("tool_result", (event) => {

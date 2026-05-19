@@ -1,6 +1,8 @@
-import type { ExtensionAPI, SessionStartEvent } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { getCliModeArg } from "../../cli-args.js"
 import { readSessionModeWizardSeenAt, writeSessionModeWizardSeenAt } from "../../config.js"
+import { setSessionModeOnboardingFooterSuppressed } from "../ui.js"
+import { SessionModePickerComponent, type SessionModePickerResult } from "./session-mode-picker.js"
 
 export type SessionModeOnboardingAction = "show" | "skip" | "skip-and-mark-seen"
 
@@ -38,7 +40,15 @@ export interface SessionModeOnboardingExtensionOptions {
 	launchContext: SessionModeLaunchContext
 	configPath?: string
 	now?: () => Date
+	onOutcome?: (
+		outcome: Exclude<SessionModeWizardOutcome, "cancelled">,
+		ctx: ExtensionContext,
+		pi: ExtensionAPI,
+	) => void | Promise<void>
 }
+
+export const SESSION_MODE_WIDGET_KEY = "kimchi-session-mode-onboarding"
+const SESSION_MODE_WIDGET_OPTIONS = { placement: "aboveEditor" } as const
 
 const VALUE_FLAGS = new Set([
 	"--provider",
@@ -62,7 +72,11 @@ const VALUE_FLAGS = new Set([
 
 export default function sessionModeOnboardingExtension(options: SessionModeOnboardingExtensionOptions) {
 	return (pi: ExtensionAPI) => {
+		let cleanupActiveWizard: (() => void) | undefined
+
 		pi.on("session_start", (event, ctx) => {
+			cleanupActiveWizard?.()
+			cleanupActiveWizard = undefined
 			const decision = decideSessionModeOnboarding({
 				launchContext: options.launchContext,
 				hasUI: ctx.hasUI,
@@ -71,8 +85,81 @@ export default function sessionModeOnboardingExtension(options: SessionModeOnboa
 			})
 			if (decision.action === "skip-and-mark-seen") {
 				markSessionModeWizardSeen({ configPath: options.configPath, now: options.now })
+				return
+			}
+			if (decision.action === "show") {
+				cleanupActiveWizard = showSessionModeWizard(pi, ctx, options, () => {
+					cleanupActiveWizard = undefined
+				})
 			}
 		})
+
+		pi.on("session_shutdown", () => {
+			cleanupActiveWizard?.()
+			cleanupActiveWizard = undefined
+		})
+	}
+}
+
+function showSessionModeWizard(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	options: SessionModeOnboardingExtensionOptions,
+	onCleanup: () => void,
+): () => void {
+	let finished = false
+	let unsubscribeInput: (() => void) | undefined
+	let component: SessionModePickerComponent | undefined
+
+	const cleanup = () => {
+		unsubscribeInput?.()
+		unsubscribeInput = undefined
+		ctx.ui.setWidget(SESSION_MODE_WIDGET_KEY, undefined, SESSION_MODE_WIDGET_OPTIONS)
+		setSessionModeOnboardingFooterSuppressed(false)
+		onCleanup()
+	}
+
+	const finish = (result: SessionModePickerResult) => {
+		if (finished) return
+		finished = true
+		try {
+			if (result !== "cancelled") {
+				recordSessionModeWizardOutcome(result, { configPath: options.configPath, now: options.now })
+			}
+		} catch (err) {
+			cleanup()
+			ctx.ui.notify(
+				`Could not save session mode onboarding state: ${err instanceof Error ? err.message : String(err)}`,
+				"warning",
+			)
+			return
+		}
+		cleanup()
+		if (result !== "cancelled" && options.onOutcome) {
+			Promise.resolve(options.onOutcome(result, ctx, pi)).catch((err: unknown) => {
+				ctx.ui.notify(`Session mode startup failed: ${err instanceof Error ? err.message : String(err)}`, "warning")
+			})
+		}
+	}
+
+	setSessionModeOnboardingFooterSuppressed(true)
+	ctx.ui.setWidget(
+		SESSION_MODE_WIDGET_KEY,
+		(tui, theme) => {
+			component = new SessionModePickerComponent(theme, finish, () => tui.requestRender())
+			return component
+		},
+		SESSION_MODE_WIDGET_OPTIONS,
+	)
+	unsubscribeInput = ctx.ui.onTerminalInput((data) => {
+		component?.handleInput(data)
+		return { consume: true }
+	})
+
+	return () => {
+		if (finished) return
+		finished = true
+		cleanup()
 	}
 }
 

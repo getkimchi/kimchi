@@ -5,7 +5,12 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
-import { FermentCommandController, getFermentArgumentCompletions, registerFermentCommands } from "./commands.js"
+import {
+	FermentCommandController,
+	getFermentArgumentCompletions,
+	registerFermentCommands,
+	startInteractiveFerment,
+} from "./commands.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 
@@ -123,6 +128,38 @@ describe("FermentCommandController", () => {
 			expect.objectContaining({
 				customType: "ferment_created_nudge",
 				content: [expect.objectContaining({ text: expect.stringContaining("make the todo app glassy") })],
+			}),
+			{ triggerTurn: true },
+		)
+	})
+
+	it("exposes the interactive request flow as a reusable helper", async () => {
+		const h = createHarness()
+		const ctx = {
+			hasUI: true,
+			ui: {
+				notify: vi.fn(),
+				input: vi.fn().mockResolvedValueOnce("make settings searchable"),
+				select: vi.fn().mockResolvedValue("No, I know what I'm doing"),
+			},
+		} as unknown as ExtensionCommandContext
+
+		await startInteractiveFerment({ pi: h.pi, ctx, runtime: h.runtime })
+
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_request",
+				display: true,
+				details: { intent: "make settings searchable" },
+			}),
+		)
+		expect(h.runtime.setActive).toHaveBeenCalledWith(
+			expect.objectContaining({ description: "make settings searchable" }),
+		)
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_created_nudge",
+				content: [expect.objectContaining({ text: expect.stringContaining("make settings searchable") })],
 			}),
 			{ triggerTurn: true },
 		)

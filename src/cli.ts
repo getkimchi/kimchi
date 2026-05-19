@@ -22,6 +22,7 @@ import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
 import curatorExtension from "./extensions/curator/index.js"
+import { startInteractiveFerment } from "./extensions/ferment/commands.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import improveExtension from "./extensions/improve/index.js"
@@ -286,6 +287,9 @@ try {
 				stdinIsTTY: process.stdin.isTTY === true,
 				stdoutIsTTY: process.stdout.isTTY === true,
 			}),
+			onOutcome: (outcome, ctx, pi) => {
+				if (outcome === "ferment") return startInteractiveFerment({ pi, ctx })
+			},
 		})
 
 		const extensionFactories = [

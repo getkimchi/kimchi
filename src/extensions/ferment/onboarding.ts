@@ -15,7 +15,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
+import type { FermentUiContext } from "./ui.js"
 
 interface OnboardingFlag {
 	seenAt: string
@@ -62,7 +62,7 @@ function markOnboardingSeen(choseWalkthrough: boolean): void {
  * Returns true if the walkthrough completed (or the user skipped it
  * partway). Always marks the flag as seen so the user isn't asked again.
  */
-async function runWalkthrough(ctx: ExtensionCommandContext): Promise<void> {
+async function runWalkthrough(ctx: FermentUiContext): Promise<void> {
 	if (!ctx.ui.select) return
 
 	const screens: Array<{ title: string; next: string }> = [
@@ -163,7 +163,7 @@ That's the whole loop. You're ready — let's start your first ferment.`,
  *
  * Headless sessions skip the prompt entirely — there's no UI to ask.
  */
-export async function maybeRunOnboarding(ctx: ExtensionCommandContext): Promise<void> {
+export async function maybeRunOnboarding(ctx: FermentUiContext): Promise<void> {
 	if (!ctx.ui?.select) return
 	if (hasSeenOnboarding()) return
 

@@ -1,8 +1,11 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { Theme } from "@earendil-works/pi-coding-agent"
+import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import sessionModeOnboardingExtension, {
+	SESSION_MODE_WIDGET_KEY,
 	buildSessionModeLaunchContext,
 	decideSessionModeOnboarding,
 	recordSessionModeWizardOutcome,
@@ -11,6 +14,21 @@ import sessionModeOnboardingExtension, {
 } from "./session-mode.js"
 
 const interactive = { stdinIsTTY: true, stdoutIsTTY: true, isAcpMode: false }
+
+function theme(): Theme {
+	return {
+		fg: vi.fn((_color: string, text: string) => text),
+		bg: vi.fn((_color: string, text: string) => text),
+		bold: vi.fn((text: string) => text),
+		getFgAnsi: vi.fn(),
+		getBgAnsi: vi.fn(),
+		fgColors: {},
+		bgColors: {},
+		mode: "dark",
+		preproc: vi.fn(),
+		extensions: {},
+	} as unknown as Theme
+}
 
 function launch(rawArgs: string[], overrides: Partial<typeof interactive> = {}): SessionModeLaunchContext {
 	return buildSessionModeLaunchContext(rawArgs, { ...interactive, ...overrides })
@@ -26,6 +44,40 @@ function decide(
 		sessionStartReason: "startup",
 		...overrides,
 	})
+}
+
+type SessionStartHandler = (event: unknown, ctx: unknown) => unknown
+type TerminalInputHandler = (data: string) => { consume?: boolean } | undefined
+
+function createExtensionHarness() {
+	const handlers = new Map<string, SessionStartHandler>()
+	const api = {
+		on: vi.fn((event: string, handler: SessionStartHandler) => {
+			handlers.set(event, handler)
+		}),
+	}
+	const tui = { requestRender: vi.fn() } as unknown as TUI
+	let inputHandler: TerminalInputHandler | undefined
+	const unsubscribe = vi.fn()
+	const ui = {
+		setWidget: vi.fn((_: string, content: unknown) => {
+			if (typeof content === "function") content(tui, theme())
+		}),
+		onTerminalInput: vi.fn((handler: TerminalInputHandler) => {
+			inputHandler = handler
+			return unsubscribe
+		}),
+		notify: vi.fn(),
+	}
+	const ctx = { hasUI: true, ui }
+	return {
+		api,
+		ui,
+		tui,
+		unsubscribe,
+		start: () => handlers.get("session_start")?.({ reason: "startup" }, ctx),
+		input: (data: string) => inputHandler?.(data),
+	}
 }
 
 describe("buildSessionModeLaunchContext", () => {
@@ -141,19 +193,71 @@ describe("session-mode onboarding persistence", () => {
 	})
 
 	it("extension marks explicit Default-session launches on startup", async () => {
-		const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>()
-		const api = {
-			on: vi.fn((event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
-				handlers.set(event, handler)
-			}),
-		}
+		const harness = createExtensionHarness()
 		sessionModeOnboardingExtension({ launchContext: launch(["fix tests"]), configPath, now })(
-			api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
 		)
 
-		await handlers.get("session_start")?.({ reason: "startup" }, { hasUI: true })
+		await harness.start()
 
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
+	})
+
+	it("extension mounts the picker and records Default selection", async () => {
+		const harness = createExtensionHarness()
+
+		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
+			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+		)
+
+		await harness.start()
+		expect(harness.ui.setWidget).toHaveBeenCalledWith(SESSION_MODE_WIDGET_KEY, expect.any(Function), {
+			placement: "aboveEditor",
+		})
+		expect(harness.ui.onTerminalInput).toHaveBeenCalled()
+
+		expect(harness.input("\x1b[B")).toEqual({ consume: true })
+		expect(harness.tui.requestRender).toHaveBeenCalled()
+		expect(harness.input("\r")).toEqual({ consume: true })
+
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
+		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(SESSION_MODE_WIDGET_KEY, undefined, {
+			placement: "aboveEditor",
+		})
+		expect(harness.unsubscribe).toHaveBeenCalled()
+	})
+
+	it("extension cancellation clears the picker without marking seen", async () => {
+		const harness = createExtensionHarness()
+
+		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
+			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+		)
+
+		await harness.start()
+		harness.input("\x1b")
+
+		expect(existsSync(configPath)).toBe(false)
+		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(SESSION_MODE_WIDGET_KEY, undefined, {
+			placement: "aboveEditor",
+		})
+	})
+
+	it("extension exposes Ferment selection through the outcome callback", async () => {
+		const harness = createExtensionHarness()
+		const onOutcome = vi.fn()
+
+		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now, onOutcome })(
+			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+		)
+
+		await harness.start()
+		harness.input("\r")
+
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
+		expect(onOutcome).toHaveBeenCalledWith("ferment", expect.objectContaining({ ui: harness.ui }), harness.api)
 	})
 })

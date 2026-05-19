@@ -17,15 +17,16 @@
  * unchanged — the LLM handles scoping conversationally.
  */
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import type { FermentUiContext } from "./ui.js"
 
 const STATUS_KEY = "ferment-scoping"
 
-function setCookingStatus(ctx: ExtensionCommandContext, message: string | undefined): void {
+function setCookingStatus(ctx: FermentUiContext, message: string | undefined): void {
 	ctx.ui.setStatus?.(STATUS_KEY, message)
 }
 
@@ -126,7 +127,7 @@ function buildScopePrompt(runtime: FermentRuntime, fermentId: string): string {
 export async function runScopingFlow(
 	f: Ferment,
 	pi: ExtensionAPI,
-	ctx: ExtensionCommandContext,
+	ctx: FermentUiContext,
 	runtime: FermentRuntime = defaultFermentRuntime,
 	preIntent?: string,
 ): Promise<void> {
