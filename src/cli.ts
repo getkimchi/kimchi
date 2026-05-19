@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { validateApiKey } from "./auth/validator.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import {
 	DEFAULT_SKILL_PATHS,
@@ -47,6 +48,7 @@ import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { updateModelsConfig } from "./models.js"
 import { runSetupWizard } from "./setup-wizard.js"
+import { runWizard } from "./setup-wizard/index.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
@@ -174,7 +176,37 @@ try {
 			throw new Error("KIMCHI_CODING_AGENT_DIR is not set; cli.ts must be entered via entry.ts")
 		}
 		const modelsJsonPath = resolve(agentDir, "models.json")
-		const { models } = await updateModelsConfig(modelsJsonPath, apiKey)
+
+		// If we have an API key, validate it before trying to fetch models.
+		// If validation fails (e.g., 401 Unauthorized), clear the invalid key
+		// and redirect to setup for re-authentication.
+		let validatedApiKey = apiKey
+		if (apiKey) {
+			const validation = await validateApiKey(apiKey)
+			if (!validation.valid) {
+				console.warn(`API key validation failed: ${validation.error ?? "unknown error"}`)
+				if (validation.suggestions) {
+					for (const suggestion of validation.suggestions) {
+						console.warn(`  - ${suggestion}`)
+					}
+				}
+				// Clear the invalid key and redirect to setup wizard for re-authentication
+				writeApiKey("")
+				config = loadConfig()
+				validatedApiKey = ""
+				console.warn("\nRedirecting to setup wizard to re-authenticate...")
+				const wizardResult = await runWizard()
+				if (wizardResult.cancelled) {
+					process.exit(130) // User cancelled
+				}
+				// Update apiKey with the new value from wizard
+				if (wizardResult.apiKey) {
+					validatedApiKey = wizardResult.apiKey
+				}
+			}
+		}
+
+		const { models } = await updateModelsConfig(modelsJsonPath, validatedApiKey)
 
 		// Must run before main() so the keybindings file is loaded with the
 		// override in place.
