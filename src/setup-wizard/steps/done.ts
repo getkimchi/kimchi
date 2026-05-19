@@ -73,6 +73,9 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 		}
 		const s = spinner()
 		s.start(`Configuring ${tool.name}…`)
+		// Yield briefly so clack can render the first spinner frame before
+		// potentially blocking sync work (e.g. spawnSync calls).
+		await new Promise<void>((resolve) => setTimeout(() => resolve(), 80))
 		try {
 			await tool.write(state.scope, state.apiKey, models, { telemetryEnabled: state.telemetryEnabled })
 			outcome.successes.push(tool.name)
