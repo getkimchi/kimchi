@@ -161,7 +161,7 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 		maxTurns,
 		responseText: "",
 		session: undefined,
-		lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
+		lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	}
 
 	const callbacks = {
@@ -190,7 +190,7 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 		onSessionCreated: (session: unknown) => {
 			state.session = session as AgentActivity["session"]
 		},
-		onAssistantUsage: (usage: { input: number; output: number; cacheWrite: number }) => {
+		onAssistantUsage: (usage: LifetimeUsage) => {
 			addUsage(state.lifetimeUsage, usage)
 			onStreamUpdate?.()
 		},
@@ -313,7 +313,7 @@ function buildDetails(
 		tokenUsage: {
 			input: record.lifetimeUsage.input,
 			output: record.lifetimeUsage.output,
-			cacheRead: 0,
+			cacheRead: record.lifetimeUsage.cacheRead,
 			cacheWrite: record.lifetimeUsage.cacheWrite,
 		},
 		turnCount: activity?.turnCount,
@@ -603,9 +603,11 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (record.visibility === "system") {
+				// System agents never appear in the widget (AgentWidget filters them
+				// out at render time), so markFinished/update are no-ops that would
+				// just accrue dead state in `finishedTurnAge` and trigger spurious
+				// repaints. Just drop the activity entry and bail.
 				agentActivity.delete(record.id)
-				widget.markFinished(record.id)
-				widget.update()
 				return
 			}
 

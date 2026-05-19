@@ -180,27 +180,83 @@ function spawnReviewAgent(
 	})
 }
 
+// Mirrors the legacy `subagent.ts` foreground guards: a long-stalled review
+// agent (no stdout for 3 minutes) or a runaway one (>30 minutes wall clock)
+// must reject the promise rather than hang. The deleted subprocess primitive
+// enforced these; keeping them here so curator session reviews don't pin a
+// process indefinitely if the model hangs.
+const REVIEW_TIMEOUT_MS = 30 * 60 * 1000
+const REVIEW_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000
+
 function runReviewAgent(provider: string, model: string, prompt: string): Promise<string> {
 	return new Promise((resolvePromise, reject) => {
 		const proc = spawnReviewAgent(provider, model, prompt)
 		let output = ""
 		let stderr = ""
 		let buffer = ""
+		let closed = false
+		let killReason: "timeout" | "output_stalled" | undefined
+
+		// Force-kill the spawned process and disarm both watchdogs. Called from
+		// either the hard wall-clock timeout or the inactivity watchdog below.
+		// SIGTERM gives the child a chance to flush; we don't escalate to
+		// SIGKILL because curator review is short-lived and SIGTERM is
+		// universally honored by node/bun/tsx targets.
+		const kill = (reason: "timeout" | "output_stalled") => {
+			if (closed) return
+			killReason = reason
+			try {
+				proc.kill("SIGTERM")
+			} catch {
+				// Process may already be gone; ignore.
+			}
+		}
+
+		const hardTimeout = setTimeout(() => kill("timeout"), REVIEW_TIMEOUT_MS)
+		let inactivityHandle = setTimeout(() => kill("output_stalled"), REVIEW_INACTIVITY_TIMEOUT_MS)
+		// Reset on every stdout chunk; stderr does NOT reset because a hung
+		// model still typically emits stderr noise (provider keep-alives, log
+		// lines from the bun shim) — counting those would defeat the watchdog.
+		const resetInactivity = () => {
+			if (closed) return
+			clearTimeout(inactivityHandle)
+			inactivityHandle = setTimeout(() => kill("output_stalled"), REVIEW_INACTIVITY_TIMEOUT_MS)
+		}
+
 		proc.stdout?.on("data", (chunk: Buffer) => {
 			buffer += chunk.toString()
 			const lines = buffer.split("\n")
 			buffer = lines.pop() ?? ""
 			for (const line of lines) output += parseReviewAgentDelta(line)
+			resetInactivity()
 		})
 		proc.stderr?.on("data", (chunk: Buffer) => {
 			stderr += chunk.toString()
 		})
 		proc.on("close", (code) => {
+			if (closed) return
+			closed = true
+			clearTimeout(hardTimeout)
+			clearTimeout(inactivityHandle)
 			if (buffer.trim()) output += parseReviewAgentDelta(buffer)
+			if (killReason === "timeout") {
+				reject(new Error(`review agent timed out after ${REVIEW_TIMEOUT_MS / 60000} minutes`))
+				return
+			}
+			if (killReason === "output_stalled") {
+				reject(new Error(`review agent stalled — no output for ${REVIEW_INACTIVITY_TIMEOUT_MS / 60000} minutes`))
+				return
+			}
 			if (code === 0) resolvePromise(output)
 			else reject(new Error(stderr.trim() || `review agent exited with code ${code}`))
 		})
-		proc.on("error", reject)
+		proc.on("error", (err) => {
+			if (closed) return
+			closed = true
+			clearTimeout(hardTimeout)
+			clearTimeout(inactivityHandle)
+			reject(err)
+		})
 	})
 }
 
