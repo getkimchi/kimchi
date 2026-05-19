@@ -37,7 +37,7 @@ import {
 import { buildParentContext, extractText } from "../prompt/context.js"
 import { type PromptExtras, buildAgentPrompt } from "../prompt/prompts.js"
 import { preloadSkills } from "../prompt/skill-loader.js"
-import { type LifetimeUsage, addUsage, getLifetimeTotal, getSessionUsage } from "./usage.js"
+import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage } from "./usage.js"
 
 /** Names of tools registered by this extension that subagents must NOT inherit. */
 const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"]
@@ -145,7 +145,7 @@ export interface RunOptions {
 	onAssistantUsage?: (usage: LifetimeUsage) => void
 	/** Called when the session successfully compacts. */
 	onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void
-	/** Maximum cumulative tokens this agent is allowed to consume. Overrides agentConfig.tokenBudget. */
+	/** Maximum cumulative output tokens this agent is allowed to generate. Overrides agentConfig.tokenBudget. */
 	tokenBudget?: number
 }
 
@@ -198,10 +198,6 @@ function resetUsage(usage: LifetimeUsage): void {
 	usage.output = 0
 	usage.cacheRead = 0
 	usage.cacheWrite = 0
-}
-
-function estimateTextTokens(text: string): number {
-	return Math.ceil(text.length / 4)
 }
 
 function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => void {
@@ -432,7 +428,7 @@ async function runAgentInner(
 				addUsage(windowObservedUsage, usage)
 				options.onAssistantUsage?.(usage)
 				if (effectiveTokenBudget != null && !budgetAborted) {
-					cumulativeTokens += getLifetimeTotal(usage)
+					cumulativeTokens += getOutputTotal(usage)
 					if (cumulativeTokens > effectiveTokenBudget) {
 						budgetAborted = true
 						abortReason = "token_budget"
@@ -461,24 +457,6 @@ async function runAgentInner(
 		}
 	}
 
-	const promptEstimate = estimateTextTokens(systemPrompt) + estimateTextTokens(effectivePrompt)
-	if (effectiveTokenBudget != null && promptEstimate > effectiveTokenBudget) {
-		const usage = { input: promptEstimate, output: 0, cacheRead: 0, cacheWrite: 0 }
-		addUsage(observedUsage, usage)
-		addUsage(windowObservedUsage, usage)
-		cumulativeTokens += getLifetimeTotal(usage)
-		options.onAssistantUsage?.(usage)
-		unsubTurns()
-		collector.unsubscribe()
-		cleanupAbort()
-		return {
-			responseText: `Token budget exceeded before agent start: estimated prompt cost is ${promptEstimate} tokens, budget is ${effectiveTokenBudget}.`,
-			session,
-			aborted: true,
-			abortReason: "token_budget",
-			steered: false,
-		}
-	}
 
 	// Propagate agent persona to child environment so permission rules can
 	// apply persona-specific path scopes (e.g. plan persona → .kimchi/plans/).
@@ -517,11 +495,11 @@ async function runAgentInner(
 	if (finalUsageDelta) {
 		addUsage(observedUsage, finalUsageDelta)
 		addUsage(windowObservedUsage, finalUsageDelta)
-		cumulativeTokens += getLifetimeTotal(finalUsageDelta)
+		cumulativeTokens += getOutputTotal(finalUsageDelta)
 		options.onAssistantUsage?.(finalUsageDelta)
 	}
 
-	if (effectiveTokenBudget != null && !budgetAborted && getLifetimeTotal(observedUsage) > effectiveTokenBudget) {
+	if (effectiveTokenBudget != null && !budgetAborted && getOutputTotal(observedUsage) > effectiveTokenBudget) {
 		budgetAborted = true
 		abortReason = "token_budget"
 	}

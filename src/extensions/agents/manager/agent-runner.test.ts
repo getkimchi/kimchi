@@ -252,7 +252,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 		vi.clearAllMocks()
 	})
 
-	it("aborts the session when cumulative token usage exceeds tokenBudget", async () => {
+	it("aborts the session when cumulative output token usage exceeds tokenBudget", async () => {
 		const abortSpy = vi.fn()
 		const session = makeFakeSession({
 			promptTokens: 10_000,
@@ -269,7 +269,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 
 		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
 			pi: pi as unknown as RunOptions["pi"],
-			tokenBudget: 12_345,
+			tokenBudget: 4_999,
 		})
 
 		expect(abortSpy).toHaveBeenCalled()
@@ -295,7 +295,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 
 		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
 			pi: pi as unknown as RunOptions["pi"],
-			tokenBudget: 10_000,
+			tokenBudget: 4_999,
 		})
 
 		expect(abortSpy).toHaveBeenCalled()
@@ -321,7 +321,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 
 		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
 			pi: pi as unknown as RunOptions["pi"],
-			tokenBudget: 100,
+			tokenBudget: 4_999,
 		})
 
 		expect(abortSpy).not.toHaveBeenCalled()
@@ -362,7 +362,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 
 		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
 			pi: pi as unknown as RunOptions["pi"],
-			tokenBudget: 11_000,
+			tokenBudget: 1_499,
 			onAssistantUsage: (usage) => usageEvents.push(usage),
 		})
 
@@ -373,29 +373,6 @@ describe("runAgent — tokenBudget forwarding", () => {
 		])
 		expect(result.aborted).toBe(true)
 		expect(result.abortReason).toBe("token_budget")
-	})
-
-	it("aborts before prompting when the estimated prompt already exceeds tokenBudget", async () => {
-		const abortSpy = vi.fn()
-		const session = makeFakeSession({ abortSpy })
-
-		mockCreateAgentSession.mockResolvedValue({
-			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
-			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
-				ReturnType<typeof createAgentSession>
-			>["extensionsResult"],
-		})
-
-		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
-			pi: pi as unknown as RunOptions["pi"],
-			tokenBudget: 1,
-		})
-
-		expect(session.prompt).not.toHaveBeenCalled()
-		expect(abortSpy).not.toHaveBeenCalled()
-		expect(result.aborted).toBe(true)
-		expect(result.abortReason).toBe("token_budget")
-		expect(result.responseText).toContain("Token budget exceeded before agent start")
 	})
 
 	it("does NOT abort when token usage stays below tokenBudget", async () => {
@@ -454,7 +431,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 			disallowedTools: undefined,
 			strengths: ["explore"],
 			models: undefined,
-			tokenBudget: 40_000,
+			tokenBudget: 19_999,
 			extensions: false,
 			skills: false,
 			promptMode: "replace",
@@ -510,7 +487,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 
 		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Explore", "explore it", {
 			pi: pi as unknown as RunOptions["pi"],
-			tokenBudget: 30_000,
+			tokenBudget: 19_999,
 		})
 
 		expect(abortSpy).toHaveBeenCalled()
