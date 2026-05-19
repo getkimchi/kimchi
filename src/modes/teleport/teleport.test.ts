@@ -137,7 +137,9 @@ function makeUI() {
 		editor: vi.fn(),
 		setTitle: vi.fn(),
 		setWidget: vi.fn(),
+		setHeader: vi.fn(),
 		setEditorText: vi.fn(),
+		onTerminalInput: vi.fn(() => vi.fn()),
 	} as unknown as ExtensionUIContext & {
 		notify: ReturnType<typeof vi.fn>
 		setStatus: ReturnType<typeof vi.fn>
@@ -237,17 +239,6 @@ describe("runTeleport", () => {
 		expect(rsyncMock).toHaveBeenCalledTimes(2)
 		expect(buildMock).toHaveBeenCalledOnce()
 		expect(wrapper.foreground).toBe(asRemote(remote))
-		// Short final notification — just the session id, no extra hints.
-		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/^Teleported to remote session [\w-]+\.$/), "info")
-		// Session summary surfaces immediately after auth, before the wait.
-		// Carries the target path so the user knows where their files live
-		// (the agent's CWD is still /home/sandbox).
-		expect(ui.notify).toHaveBeenCalledWith(
-			expect.stringMatching(
-				/Created remote session:[\s\S]*id:[\s\S]*host:[\s\S]*port:[\s\S]*url:[\s\S]*target:\s+\/home\/sandbox\/proj\//,
-			),
-			"info",
-		)
 		// runRsync was called with the per-teleport subdir as the destination.
 		const rsyncCall = rsyncMock.mock.calls[0][0] as { destination?: string }
 		expect(rsyncCall.destination).toBe("/home/sandbox/proj/")
@@ -510,31 +501,21 @@ describe("runTeleport", () => {
 		expect(wrapper.isForegroundHomeBase).toBe(true)
 	})
 
-	it("passes onPhase to runRsync and drives per-step status text", async () => {
+	it("rsync runs after auth and before build", async () => {
 		const home = new FakeSession("local-1")
-		const { ctx, ui } = makeCtx(home)
+		const { ctx } = makeCtx(home)
 		buildMock.mockResolvedValueOnce(asRemote(new FakeSession("remote-1")))
-		rsyncMock.mockImplementationOnce(async (opts: { onPhase?: (p: "mkdir" | "rsync") => void }) => {
-			opts.onPhase?.("mkdir")
-			opts.onPhase?.("rsync")
-			return { fileCount: 1, totalBytes: 0, durationMs: 1 }
-		})
 
 		await runTeleport(
 			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false },
 			ctx,
 		)
 
-		const rsyncCallArgs = rsyncMock.mock.calls[0][0] as { onPhase?: unknown }
-		expect(typeof rsyncCallArgs.onPhase).toBe("function")
-		expect(ui.setStatus).toHaveBeenCalledWith("teleport", "Preparing remote directory…")
-		expect(ui.setStatus).toHaveBeenCalledWith("teleport", "Syncing workspace…")
-		// Order matters: mkdir before rsync.
-		const calls = ui.setStatus.mock.calls as Array<[string, string | undefined]>
-		const mkdirIdx = calls.findIndex((c) => c[1] === "Preparing remote directory…")
-		const rsyncIdx = calls.findIndex((c) => c[1] === "Syncing workspace…")
-		expect(mkdirIdx).toBeGreaterThanOrEqual(0)
-		expect(rsyncIdx).toBeGreaterThan(mkdirIdx)
+		const authOrder = authMock.mock.invocationCallOrder[0]
+		const rsyncOrder = rsyncMock.mock.invocationCallOrder[0]
+		const buildOrder = buildMock.mock.invocationCallOrder[0]
+		expect(rsyncOrder).toBeGreaterThan(authOrder)
+		expect(buildOrder).toBeGreaterThan(rsyncOrder)
 	})
 
 	it("calls triggerRebind AFTER foregroundRemote (TUI re-binds to remote)", async () => {
@@ -579,8 +560,6 @@ describe("runTeleport", () => {
 
 		expect(setup.wrapper.isForegroundHomeBase).toBe(false)
 		expect(setup.ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Session rebind failed: rebind boom/), "warning")
-		// Final "Teleported …" info still fires (user sees the success path).
-		expect(setup.ui.notify).toHaveBeenCalledWith(expect.stringMatching(/^Teleported/), "info")
 	})
 })
 
@@ -931,7 +910,9 @@ describe("runConnect", () => {
 
 		await runConnect({}, ctx, { _runChildWithTTYHandoff: runChild })
 
-		expect(authMock).toHaveBeenCalledWith("fg-id-1234567890", "test-key", { endpoint: "https://api.example.com" })
+		expect(authMock).toHaveBeenCalledWith("fg-id-1234567890", "test-key", "Remote session for proj", {
+			endpoint: "https://api.example.com",
+		})
 		expect(listMock).not.toHaveBeenCalled()
 		expect(calls).toHaveLength(1)
 		expect(calls[0].cmd).toBe("ssh")
@@ -951,7 +932,7 @@ describe("runConnect", () => {
 		await runConnect({ target: "named-one" }, ctx, { _runChildWithTTYHandoff: runChild })
 
 		expect(listMock).not.toHaveBeenCalled()
-		expect(authMock).toHaveBeenCalledWith("det-id-abc", expect.anything(), expect.anything())
+		expect(authMock).toHaveBeenCalledWith("det-id-abc", expect.anything(), expect.anything(), expect.anything())
 		expect(calls).toHaveLength(1)
 		// /connect does not promote the detached entry — kimchi's foreground stays unchanged.
 		expect(wrapper.isForegroundHomeBase).toBe(true)
@@ -976,7 +957,7 @@ describe("runConnect", () => {
 		await runConnect({ target: "beta" }, ctx, { _runChildWithTTYHandoff: runChild })
 
 		expect(listMock).toHaveBeenCalledOnce()
-		expect(authMock).toHaveBeenCalledWith("srvr-1", expect.anything(), expect.anything())
+		expect(authMock).toHaveBeenCalledWith("srvr-1", expect.anything(), expect.anything(), expect.anything())
 		expect(calls).toHaveLength(1)
 	})
 
