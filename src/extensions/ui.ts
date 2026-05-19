@@ -11,10 +11,9 @@ import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
 import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } from "../components/footer.js"
 import { LogoHeader } from "../components/logo.js"
-import { SplashHeader } from "../components/splash-header.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { isBareExitAlias } from "./exit-utils.js"
-import { getMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
+import { MULTI_MODEL_SHORTCUT, getMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
 import { createWorkingAnimator } from "./spinner.js"
 
 function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {
@@ -36,8 +35,7 @@ function getEnabledModelIds(): Set<string> | null {
 	return null
 }
 
-// Track splash state globally so other extensions can reset it
-let splashActive = false
+// Track current editor for indicator updates
 let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
 
@@ -52,26 +50,6 @@ export function setPasteImageHandler(handler: () => void): void {
  */
 export function setPendingImageIndicator(text: string | null): void {
 	currentEditor?.setPendingImageIndicator(text)
-}
-
-/**
- * Reset splash mode and switch to chat view.
- * Call this from command handlers that need to exit splash mode.
- */
-export function exitSplashMode(ctx: {
-	ui: {
-		setHeader: (
-			factory: (
-				tui: TUI,
-				theme: import("@earendil-works/pi-coding-agent").Theme,
-			) => import("@earendil-works/pi-tui").Component,
-		) => void
-	}
-}): void {
-	if (!splashActive) return
-	splashActive = false
-	ctx.ui.setHeader((_tui, theme) => new LogoHeader(theme))
-	currentEditor?.setSplashMode(false)
 }
 
 function runScript(scriptPath: string, payload: object, tui: TUI, footer: ScriptFooter, onDone: () => void): void {
@@ -156,10 +134,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 		scriptGeneration++
 		scriptPending = false
 
-		const isSplash = event.reason === "startup"
-		splashActive = isSplash
-
-		ctx.ui.setHeader((_tui, theme) => (isSplash ? new SplashHeader(theme) : new LogoHeader(theme)))
+		ctx.ui.setHeader((_tui, theme) => new LogoHeader(theme))
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			uiTui = tui
 			const cmd = readStatusLineCommand()
@@ -174,7 +149,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 				if (perm) parts.push(perm)
 				const enabled = getMultiModelEnabled()
 				const label = enabled ? `${resolvedAccentFg(theme)}on${RST_FG}` : theme.fg("dim", "off")
-				const shortcut = process.platform === "darwin" ? "option+tab" : "alt+tab"
+				const shortcut = MULTI_MODEL_SHORTCUT
 				parts.push(`${theme.fg("dim", "multi-model:")} ${label} ${theme.fg("dim", `→ ${shortcut}`)}`)
 				return parts.join(` ${theme.fg("dim", "·")} `)
 			}
@@ -197,7 +172,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 		ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
 			tui.setShowHardwareCursor(true)
 			const editor = new PromptEditor(tui, editorTheme, keybindings, ctx.ui.theme)
-			editor.setSplashMode(isSplash)
 			editor.setExpandHandler(() => {
 				if (!expandNext()) {
 					collapseAll()
@@ -244,11 +218,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 		if (isBareExitAlias(event.text)) {
 			ctx.shutdown()
 		}
-
-		if (!splashActive) return
-		splashActive = false
-		ctx.ui.setHeader((_tui, theme) => new LogoHeader(theme))
-		currentEditor?.setSplashMode(false)
 	})
 
 	let stopWorkingAnimation: (() => void) | undefined

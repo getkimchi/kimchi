@@ -1,13 +1,11 @@
 import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent"
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent"
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui"
-import { Editor, isKittyProtocolActive, visibleWidth } from "@earendil-works/pi-tui"
-import { RST_FG, TEAL_FG } from "../ansi.js"
-import { clampLines, splashBottomPaddingFor } from "./splash-layout.js"
+import { Editor, isKittyProtocolActive, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { RST_FG } from "../ansi.js"
 
 const CHEVRON_WIDTH = 2
 const PLACEHOLDER_TEXT = "ask anything or type / for commands"
-const EDITOR_WIDTH = 60
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: strip ANSI escapes
 const ANSI_RE = /\x1b\[[^m]*m/g
@@ -27,7 +25,6 @@ export class PromptEditor extends CustomEditor {
 	private readonly appTheme: Theme
 	private readonly kb: KeybindingsManager
 	private expandHandler?: () => void
-	private _splashMode = false
 	private _pendingImageIndicator: string | null = null
 
 	/**
@@ -51,10 +48,6 @@ export class PromptEditor extends CustomEditor {
 		super(tui, editorTheme, keybindings)
 		this.appTheme = appTheme
 		this.kb = keybindings
-	}
-
-	setSplashMode(enabled: boolean) {
-		this._splashMode = enabled
 	}
 
 	setExpandHandler(handler: () => void) {
@@ -98,7 +91,7 @@ export class PromptEditor extends CustomEditor {
 		const textColor = this.appTheme.getFgAnsi("text")
 		const muted = this.appTheme.getFgAnsi("muted")
 
-		const innerWidth = this._splashMode ? Math.min(EDITOR_WIDTH, width - 4) : width
+		const innerWidth = width
 		const contentWidth = innerWidth - CHEVRON_WIDTH
 
 		// When an attachment indicator is shown, the editor body must wrap one
@@ -112,8 +105,6 @@ export class PromptEditor extends CustomEditor {
 		const indicatorVisibleWidth = indicatorRaw ? visibleWidth(indicatorRaw) : 0
 		const indicatorGutter = indicatorVisibleWidth > 0 ? 1 : 0
 
-		const leftPad = this._splashMode ? Math.max(0, Math.floor((width - innerWidth) / 2)) : 0
-		const pad = leftPad > 0 ? " ".repeat(leftPad) : ""
 		// Find bottom border: scan backwards for a line starting with ─
 		let bottomIdx = Math.min(2, lines.length - 1)
 		for (let i = lines.length - 1; i >= 2; i--) {
@@ -124,8 +115,8 @@ export class PromptEditor extends CustomEditor {
 			}
 		}
 
-		const topBorder = pad + rebuildBorder(lines[0], innerWidth, border)
-		const bottomBorder = pad + rebuildBorder(lines[bottomIdx], innerWidth, border)
+		const topBorder = rebuildBorder(lines[0], innerWidth, border)
+		const bottomBorder = rebuildBorder(lines[bottomIdx], innerWidth, border)
 		const result: string[] = [topBorder]
 
 		// Right-aligned status segment pinned to the first content row of the
@@ -150,7 +141,7 @@ export class PromptEditor extends CustomEditor {
 			const usedWidth = leadWidth + visibleWidth(placeholderText) + indicatorVisibleWidth + indicatorGutter
 			const middlePad = " ".repeat(Math.max(0, innerWidth - usedWidth))
 			result.push(
-				`${pad}${chevronColor}❯${RST_FG} ${cursor}${placeholderRendered}${middlePad}${indicatorStyled}${indicatorGutter > 0 ? " " : ""}`,
+				`${chevronColor}❯${RST_FG} ${cursor}${placeholderRendered}${middlePad}${indicatorStyled}${indicatorGutter > 0 ? " " : ""}`,
 			)
 		} else {
 			const contentLines = lines.slice(1, bottomIdx)
@@ -167,10 +158,10 @@ export class PromptEditor extends CustomEditor {
 					// contentRenderWidth so styledWidth <= contentRenderWidth and the
 					// gap below is always non-negative.
 					const gap = " ".repeat(Math.max(0, contentWidth - styledWidth - indicatorVisibleWidth))
-					result.push(`${pad}${prefix}${textColor}${styled}${RST_FG}${gap}${indicatorStyled}`)
+					result.push(`${prefix}${textColor}${styled}${RST_FG}${gap}${indicatorStyled}`)
 				} else {
 					const rightPad = " ".repeat(Math.max(0, contentWidth - styledWidth))
-					result.push(`${pad}${prefix}${textColor}${styled}${rightPad}${RST_FG}`)
+					result.push(`${prefix}${textColor}${styled}${rightPad}${RST_FG}`)
 				}
 			}
 		}
@@ -178,21 +169,9 @@ export class PromptEditor extends CustomEditor {
 		result.push(bottomBorder)
 
 		for (let i = bottomIdx + 1; i < lines.length; i++) {
-			result.push(pad + lines[i])
+			result.push(lines[i])
 		}
 
-		if (this._splashMode) {
-			const muted = (s: string) => this.appTheme.fg("muted", s)
-			const accent = (s: string) => `${TEAL_FG}${s}${RST_FG}`
-			const hintText = `${accent("/")} ${muted("commands")}  ${accent("Ctrl+p")} ${muted("agents")}`
-			const hintWidth = visibleWidth(hintText)
-			const hintLine = pad + " ".repeat(Math.max(0, innerWidth - hintWidth)) + hintText
-			result.push(hintLine)
-
-			const bottomPad = splashBottomPaddingFor(result.length)
-			for (let i = 0; i < bottomPad; i++) result.push("")
-		}
-
-		return clampLines(result, width)
+		return result.map((line) => truncateToWidth(line, width))
 	}
 }

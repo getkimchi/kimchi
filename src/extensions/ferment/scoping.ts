@@ -21,7 +21,6 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { determineNextAction } from "../../ferment/engine.js"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
-import { exitSplashMode } from "../ui.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 
 // ─── Pending scope buffer ─────────────────────────────────────────────────────
@@ -134,7 +133,6 @@ export async function runScopingFlow(
 	}
 	if (intent === undefined || intent === "") return
 
-	exitSplashMode(ctx)
 	runtime.markScopingInteractive(f.id)
 	// Seed an empty buffer so propose_ferment_scoping detects the interactive flow is active.
 	runtime.setPendingScope(f.id, { goal: "", successCriteria: "", constraints: [] })

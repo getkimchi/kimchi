@@ -9,7 +9,6 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
-import { exitSplashMode } from "../ui.js"
 import { CastAiStatsApi, getTimeRange } from "./api.js"
 import { formatError, formatHelp } from "./display.js"
 import { type SortBy, formatAnalyticsVisual, formatProductivityVisual } from "./visual.js"
@@ -54,9 +53,6 @@ async function handleStatsCommand(args: string, ctx: ExtensionCommandContext): P
 	}
 
 	const trimmed = args.trim().toLowerCase()
-
-	// Exit splash mode and switch to chat view (do this early for all commands)
-	exitSplashMode(ctx)
 
 	// Show help if requested
 	if (trimmed === "help" || trimmed === "--help" || trimmed === "-h") {

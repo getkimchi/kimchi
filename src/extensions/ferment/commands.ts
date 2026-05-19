@@ -3,7 +3,6 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { shortenTitle } from "../../ferment/shorten-title.js"
 import { computeStats, serializeStats } from "../../ferment/stats.js"
 import { FermentError } from "../../ferment/store.js"
-import { exitSplashMode } from "../ui.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { decideContinuation } from "./continuation.js"
@@ -374,7 +373,6 @@ export class FermentCommandController {
 				"e.g. 'Rewrite login flow' or 'Add OAuth support'",
 			)
 			if (!rawIntent) return { handled: true }
-			exitSplashMode(ctx)
 			sendFermentRequestMessage(pi, rawIntent)
 			try {
 				const shortName = await shortenTitle(rawIntent)
