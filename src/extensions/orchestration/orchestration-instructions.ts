@@ -70,6 +70,16 @@ The goal is to use the model best suited for each step, not the one already runn
 
 Run the steps in order. For steps you own, use your tools directly. For steps you delegate, call the Agent tool and wait for it to complete before proceeding unless you explicitly run it in the background. Never perform a step yourself while an Agent for that step is running or after you have delegated it.
 
+#### Mandatory pipeline for complex tasks
+
+When Step 1 classified the task as **complex**, you MUST execute it as a phased pipeline — never lump everything into a single Agent call or do it all yourself. The phases below are sequential; each one produces an artefact the next one consumes.
+
+1. **Plan phase** — Produce a Markdown spec file in the Documents directory. The spec must include: numbered chunks of work, file paths, method signatures / interfaces, and per-chunk acceptance criteria. If plan is in your strengths, write it yourself; otherwise delegate to a Plan agent (heavy-tier model with plan strength).
+2. **Build phase** — Delegate to a General-Purpose agent whose model has build strength. Pass the spec file path in the prompt. The build agent implements the spec — it must not re-discover what was already decided. Use a DIFFERENT model than the one that wrote the plan. If the spec has independent chunks, run up to 3 build agents in parallel.
+3. **Review phase** — Delegate to an agent whose model has review strength, using a DIFFERENT model than the build agent. Pass the spec file path and the list of files the build agent created. The review agent runs tests, checks lint, and verifies the implementation matches the spec. If the review agent finds issues, delegate a fix to a new build agent — do NOT fix issues yourself.
+
+**Orchestrator discipline**: Between delegation calls, you may do at most 5 tool calls (e.g. reading the spec file, setting the phase, checking a subagent result). If you find yourself doing reads, edits, bash calls, or writes on implementation files, STOP — you are doing a subagent's job. Delegate it instead.
+
 ### Sharing context between agents
 
 Pass plans and structured findings as Markdown files in the Documents directory, not as inline blobs in prompts.
