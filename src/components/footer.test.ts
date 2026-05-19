@@ -300,7 +300,7 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		expect(visibleWidth(raw)).toBeLessThanOrEqual(60)
 		expect(visible).not.toContain("/ for commands")
 		expect(visible).not.toContain("shift+tab")
-		expect(visible).not.toContain("option+tab")
+		expect(visible).not.toContain(ORCHESTRATION.MULTI_MODEL_SHORTCUT)
 		// multi-model label is abbreviated to `m-m:`.
 		expect(visible).toContain("m-m:")
 		expect(visible).not.toContain("multi-model:")

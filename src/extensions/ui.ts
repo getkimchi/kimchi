@@ -13,7 +13,7 @@ import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } 
 import { LogoHeader } from "../components/logo.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { isBareExitAlias } from "./exit-utils.js"
-import { getMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
+import { MULTI_MODEL_SHORTCUT, getMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
 import { createWorkingAnimator } from "./spinner.js"
 
 function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {
@@ -149,7 +149,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 				if (perm) parts.push(perm)
 				const enabled = getMultiModelEnabled()
 				const label = enabled ? `${resolvedAccentFg(theme)}on${RST_FG}` : theme.fg("dim", "off")
-				const shortcut = process.platform === "darwin" ? "option+tab" : "alt+tab"
+				const shortcut = MULTI_MODEL_SHORTCUT
 				parts.push(`${theme.fg("dim", "multi-model:")} ${label} ${theme.fg("dim", `→ ${shortcut}`)}`)
 				return parts.join(` ${theme.fg("dim", "·")} `)
 			}
