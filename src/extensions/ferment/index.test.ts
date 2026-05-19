@@ -186,9 +186,11 @@ describe("fermentExtension one-shot bootstrap", () => {
 		const next = await input({ type: "input", text: "follow-up", source: "interactive" }, {})
 		expect(next).toBeUndefined()
 
-		// Side-effects: ack entry + ferment_reference entry get appended.
-		const calls = (pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])
-		expect(calls).toContain("ferment_ack")
+		// Side-effects: ack message sent + ferment_reference entry recorded.
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_ack" }),
+			expect.anything(),
+		)
 	})
 
 	it("records a diagnostic when one-shot bootstrap fails", async () => {
@@ -208,9 +210,12 @@ describe("fermentExtension one-shot bootstrap", () => {
 		const result = await input({ type: "input", text: "Fix the task", source: "interactive" }, {})
 
 		expect(result).toBeUndefined()
-		expect(pi.appendEntry).toHaveBeenCalledWith(
-			"ferment_oneshot_failed",
-			expect.objectContaining({ text: expect.stringContaining("storage unavailable") }),
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_oneshot_failed",
+				details: expect.objectContaining({ text: expect.stringContaining("storage unavailable") }),
+			}),
+			expect.anything(),
 		)
 	})
 

@@ -23,6 +23,24 @@ import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 
+const STATUS_KEY = "ferment-scoping"
+
+function setCookingStatus(ctx: ExtensionCommandContext, message: string | undefined): void {
+	ctx.ui.setStatus?.(STATUS_KEY, message)
+}
+
+function sendScopingBreadcrumb(pi: ExtensionAPI, text: string): void {
+	void pi.sendMessage(
+		{
+			customType: "ferment_breadcrumb",
+			content: [{ type: "text", text }],
+			display: true,
+			details: { text, variant: "step" },
+		},
+		{ triggerTurn: false },
+	)
+}
+
 // ─── Pending scope buffer ─────────────────────────────────────────────────────
 // Seeded as an empty buffer by runScopingFlow, then replaced wholesale by
 // propose_ferment_scoping on each call. Held until the user confirms via dropdown.
@@ -139,6 +157,9 @@ export async function runScopingFlow(
 	if (preIntent === undefined) {
 		sendFermentRequestMessage(pi, intent)
 	}
+
+	setCookingStatus(ctx, "Fermenting · drafting scope…")
+	sendScopingBreadcrumb(pi, "Scoping · drafting…")
 
 	void pi.sendMessage(
 		{

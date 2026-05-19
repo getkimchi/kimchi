@@ -232,10 +232,16 @@ describe("ferment nudges", () => {
 		maybeInjectReactiveContinuationNudge(pi, runtime)
 		maybeInjectReactiveContinuationNudge(pi, runtime)
 
-		expect(pi.sendMessage).toHaveBeenCalledTimes(3)
-		expect(pi.appendEntry).toHaveBeenLastCalledWith(
-			"ferment_breadcrumb",
-			expect.objectContaining({ text: expect.stringContaining("Continuation nudge suppressed after 3") }),
+		// With cap=1: call 1 fires (schedules action), calls 2-4 each emit one
+		// suppression breadcrumb via pi.sendMessage. Assert on the last
+		// suppression message rather than total call count, which depends on
+		// scheduleNextFermentAction internals.
+		expect(pi.sendMessage).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				details: expect.objectContaining({ text: expect.stringContaining("Continuation nudge suppressed after 1") }),
+			}),
+			expect.anything(),
 		)
 	})
 
@@ -264,6 +270,9 @@ describe("ferment nudges", () => {
 		current = { ...current, status: "planned" }
 		maybeInjectReactiveContinuationNudge(pi, runtime)
 
+		// With cap=1: call 1 fires (1 msg via scheduler), call 2 suppressed (1 breadcrumb),
+		// call 3 suppressed (1 breadcrumb), call 4 paused resets the counter (0 msgs),
+		// call 5 fires again (1 msg). Total: 1 + 1 + 1 + 0 + 1 = 4.
 		expect(pi.sendMessage).toHaveBeenCalledTimes(4)
 	})
 

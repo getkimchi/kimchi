@@ -93,6 +93,7 @@ export type FermentEventType =
 	| "step_failed"
 	| "step_verified"
 	| "step_graded"
+	| "step_description_updated"
 	| "ferment_graded"
 	| "decision_added"
 	| "memory_added"
@@ -270,6 +271,12 @@ export interface StepGradedPayload {
 	gradedAt: string
 }
 
+export interface StepDescriptionUpdatedPayload {
+	phaseId: string
+	stepId: string
+	description: string
+}
+
 export interface FermentGradedPayload {
 	grade: JudgeGrade
 }
@@ -333,6 +340,10 @@ export type StepSkippedEvent = FermentEventBase & { type: "step_skipped"; payloa
 export type StepFailedEvent = FermentEventBase & { type: "step_failed"; payload: StepFailedPayload }
 export type StepVerifiedEvent = FermentEventBase & { type: "step_verified"; payload: StepVerifiedPayload }
 export type StepGradedEvent = FermentEventBase & { type: "step_graded"; payload: StepGradedPayload }
+export type StepDescriptionUpdatedEvent = FermentEventBase & {
+	type: "step_description_updated"
+	payload: StepDescriptionUpdatedPayload
+}
 export type FermentGradedEvent = FermentEventBase & { type: "ferment_graded"; payload: FermentGradedPayload }
 export type DecisionAddedEvent = FermentEventBase & { type: "decision_added"; payload: DecisionAddedPayload }
 export type MemoryAddedEvent = FermentEventBase & { type: "memory_added"; payload: MemoryAddedPayload }
@@ -367,6 +378,7 @@ export type FermentEvent =
 	| StepFailedEvent
 	| StepVerifiedEvent
 	| StepGradedEvent
+	| StepDescriptionUpdatedEvent
 	| FermentGradedEvent
 	| DecisionAddedEvent
 	| MemoryAddedEvent
@@ -1262,6 +1274,19 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 				phases: state.phases.map((ph) =>
 					ph.id === p.phaseId
 						? { ...ph, steps: ph.steps.map((s) => (s.id === p.stepId ? { ...s, grade: p.grade } : s)) }
+						: ph,
+				),
+				updatedAt: event.timestamp,
+			}
+		}
+		case "step_description_updated": {
+			if (!state) throw new Error("step_description_updated requires existing state")
+			const p = event.payload as StepDescriptionUpdatedPayload
+			return {
+				...state,
+				phases: state.phases.map((ph) =>
+					ph.id === p.phaseId
+						? { ...ph, steps: ph.steps.map((s) => (s.id === p.stepId ? { ...s, description: p.description } : s)) }
 						: ph,
 				),
 				updatedAt: event.timestamp,

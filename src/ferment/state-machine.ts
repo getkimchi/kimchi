@@ -91,6 +91,7 @@ export type Command =
 	| { type: "verify_step"; phaseId: string; stepId: string; result: StepResult; summary?: string }
 	| { type: "skip_step"; phaseId: string; stepId: string }
 	| { type: "fail_step"; phaseId: string; stepId: string; error?: string }
+	| { type: "update_step_description"; phaseId: string; stepId: string; description: string }
 	| { type: "complete_ferment"; finalSummary?: string; grade?: JudgeGrade }
 	| { type: "pause" }
 	| { type: "resume" }
@@ -142,6 +143,7 @@ export type TransitionError =
 			runningDescription: string
 			message: string
 	  }
+	| { code: "INVALID_STEP_DESCRIPTION"; message: string }
 
 export interface TransitionContext {
 	/** ISO timestamp; injected so transitions are deterministic. */
@@ -191,6 +193,8 @@ export function applyCommand(ferment: Ferment, cmd: Command, ctx: TransitionCont
 			return handleSkipStep(ferment, cmd, ctx)
 		case "fail_step":
 			return handleFailStep(ferment, cmd, ctx)
+		case "update_step_description":
+			return handleUpdateStepDescription(ferment, cmd, ctx)
 		case "complete_ferment":
 			return handleCompleteFerment(ferment, cmd, ctx)
 		case "pause":
@@ -694,6 +698,36 @@ function handleFailStep(
 				completedAt: ctx.now,
 				result,
 			}),
+		}),
+	)
+}
+
+// ─── update_step_description ──────────────────────────────────────────────────
+
+function handleUpdateStepDescription(
+	ferment: Ferment,
+	cmd: Extract<Command, { type: "update_step_description" }>,
+	ctx: TransitionContext,
+): TransitionResult {
+	const phaseFound = requirePhase(ferment, cmd.phaseId)
+	if (isTransitionError(phaseFound)) return fail(phaseFound)
+	const { phase, index: phaseIndex } = phaseFound
+
+	const stepFound = requireStep(phase, cmd.stepId)
+	if (isTransitionError(stepFound)) return fail(stepFound)
+	const { index: stepIndex } = stepFound
+
+	const trimmed = cmd.description.trim()
+	if (!trimmed) {
+		return fail({
+			code: "INVALID_STEP_DESCRIPTION",
+			message: "Step description must not be empty.",
+		})
+	}
+
+	return ok(
+		touch(ferment, ctx, {
+			phases: setStep(ferment, phaseIndex, stepIndex, { description: trimmed }),
 		}),
 	)
 }

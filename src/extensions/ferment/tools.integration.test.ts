@@ -511,16 +511,16 @@ describe("start_ferment_step", () => {
 
 		const ctx = {
 			ui: {
-				select: vi.fn().mockResolvedValue("Skip this step and move on"),
+				select: vi.fn().mockResolvedValue("Skip step"),
 			},
 		}
 		const result = await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }, ctx)
 
 		expect(ok(result)).toMatch(/skipped at user request/i)
 		expect(ctx.ui.select).toHaveBeenCalledWith(expect.stringContaining("has been started 3 times"), [
-			"Retry with a revised approach",
-			"Skip this step and move on",
-			"Pause the ferment for now",
+			"Retry",
+			"Skip step",
+			"Pause ferment",
 		])
 		expect(loadFerment(id).phases[0].steps[0].status).toBe("skipped")
 	})
@@ -532,7 +532,7 @@ describe("start_ferment_step", () => {
 
 		const ctx = {
 			ui: {
-				select: vi.fn().mockResolvedValue("Pause the ferment for now"),
+				select: vi.fn().mockResolvedValue("Pause ferment"),
 			},
 		}
 		const result = await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }, ctx)
@@ -548,7 +548,7 @@ describe("start_ferment_step", () => {
 
 		const ctx = {
 			ui: {
-				select: vi.fn().mockResolvedValue("Retry with a revised approach"),
+				select: vi.fn().mockResolvedValue("Retry"),
 			},
 		}
 		const result = await h.call("start_ferment_step", { ferment_id: id, phase_id: "phase-1", step_id: "step-1" }, ctx)

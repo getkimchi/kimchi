@@ -391,10 +391,15 @@ describe("registerFermentCommands", () => {
 		await fermentCommand.handler("manual", h.ctx)
 
 		expect(h.runtime.getContinuationPolicy()).toBe("manual")
-		expect(h.pi.sendMessage).not.toHaveBeenCalled()
-		expect(h.pi.appendEntry).toHaveBeenCalledWith(
-			"ferment_breadcrumb",
-			expect.objectContaining({ text: expect.stringContaining("Manual policy waiting at phase boundary") }),
+		expect(h.pi.appendEntry).not.toHaveBeenCalled()
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				details: expect.objectContaining({
+					text: expect.stringContaining("Manual policy waiting at phase boundary"),
+				}),
+			}),
+			expect.anything(),
 		)
 	})
 
@@ -918,10 +923,15 @@ describe("registerFermentCommands", () => {
 		active = h.storage.get(active.id) ?? active
 		expect(active.status).toBe("planned")
 		expect(active.phases[1].status).toBe("planned")
-		expect(h.pi.sendMessage).not.toHaveBeenCalled()
-		expect(h.pi.appendEntry).toHaveBeenCalledWith(
-			"ferment_breadcrumb",
-			expect.objectContaining({ text: expect.stringContaining("Manual policy waiting at phase boundary") }),
+		expect(h.pi.appendEntry).not.toHaveBeenCalled()
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				details: expect.objectContaining({
+					text: expect.stringContaining("Manual policy waiting at phase boundary"),
+				}),
+			}),
+			expect.anything(),
 		)
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining('is waiting before "Next". Choose Continue'))
 	})

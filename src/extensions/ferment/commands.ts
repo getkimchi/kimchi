@@ -31,6 +31,27 @@ import { applyFermentRuntimeToolProfile, setActiveFermentAndApplyProfile } from 
 import type { FermentUiContext } from "./ui.js"
 import { checkWorktree } from "./worktree.js"
 
+function sendBreadcrumb(
+	pi: ExtensionAPI,
+	text: string,
+	variant: "step" | "answer" | "ack" | "warning" = "step",
+	customType:
+		| "ferment_breadcrumb"
+		| "ferment_ack"
+		| "ferment_worktree_warning"
+		| "ferment_oneshot_failed" = "ferment_breadcrumb",
+): void {
+	void pi.sendMessage(
+		{
+			customType,
+			content: [{ type: "text", text }],
+			display: true,
+			details: { text, variant },
+		},
+		{ triggerTurn: false },
+	)
+}
+
 export type FermentCliCommand = FermentCommand
 
 interface FermentArgumentCompletion {
@@ -161,9 +182,7 @@ function recordManualBoundaryBreadcrumb(
 ): void {
 	const decision = decideContinuation(active, runtime.getContinuationPolicy())
 	if (decision.type !== "wait_manual_boundary") return
-	pi.appendEntry("ferment_breadcrumb", {
-		text: `Manual policy waiting at phase boundary for "${active.name}".`,
-	})
+	sendBreadcrumb(pi, `Manual policy waiting at phase boundary for "${active.name}".`, "step")
 }
 
 function setAutomatedContinuationPolicy(pi: ExtensionAPI, ctx: FermentUiContext, runtime: FermentRuntime): void {
@@ -354,15 +373,15 @@ export class FermentCommandController {
 		const storage = runtime.getStorage()
 
 		if (command.type === "interactive") {
+			if (!ctx.ui.input) {
+				ctx.ui.notify('No UI available. Use /ferment add "Name" instead.')
+				return { handled: true }
+			}
 			const active = runtime.getActive()
 			if (active && active.status === "running") {
 				ctx.ui.notify(
 					`A ferment is already running: "${active.name}". Use /ferment progress to check status or /ferment switch to change.`,
 				)
-				return { handled: true }
-			}
-			if (!ctx.ui.input) {
-				ctx.ui.notify('No UI available. Use /ferment new "Name" instead.')
 				return { handled: true }
 			}
 
@@ -373,6 +392,7 @@ export class FermentCommandController {
 				"e.g. 'Rewrite login flow' or 'Add OAuth support'",
 			)
 			if (!rawIntent) return { handled: true }
+			ctx.ui.setStatus?.("ferment-scoping", "Fermenting · naming…")
 			sendFermentRequestMessage(pi, rawIntent)
 			try {
 				const shortName = await shortenTitle(rawIntent)
@@ -380,12 +400,16 @@ export class FermentCommandController {
 				setActiveFermentAndApplyProfile(pi, runtime, f)
 				appendRefEntry(pi, f.id)
 
-				pi.appendEntry("ferment_ack", {
-					text: `🍺  Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nPolicy: ${runtime.getContinuationPolicy()}`,
-				})
+				sendBreadcrumb(
+					pi,
+					`Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nPolicy: ${runtime.getContinuationPolicy()}`,
+					"ack",
+					"ferment_ack",
+				)
 
 				await runScopingFlow(f, pi, ctx, runtime, rawIntent)
 			} catch (err) {
+				ctx.ui.setStatus?.("ferment-scoping", undefined)
 				ctx.ui.notify(err instanceof FermentError ? err.message : "Create failed.")
 			}
 			return { handled: true }
@@ -580,7 +604,7 @@ export class FermentCommandController {
 				}
 
 				const wtWarning = wtCheck.severity === "warn" ? `\n⚠️  ${wtCheck.message}` : ""
-				ctx.ui.notify(`Switched to "${f.name}" (${f.id}) [${f.status}].${wtWarning}`)
+				sendBreadcrumb(pi, `Switched to "${f.name}" [${f.status}]${wtWarning}`, "ack", "ferment_ack")
 				resumeFerment(pi, f.id, ctx, runtime)
 			} catch (err) {
 				ctx.ui.notify(err instanceof FermentError ? err.message : "Switch failed.")
@@ -729,6 +753,7 @@ export class FermentCommandController {
 				ctx.ui.notify('Usage: /ferment one-shot "description of what to build"')
 				return { handled: true }
 			}
+			ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · naming…")
 			try {
 				// One-shot is non-interactive by definition — only auto-init when the
 				// user opted in via flag or env var. Otherwise skip silently.
@@ -742,9 +767,12 @@ export class FermentCommandController {
 				const updated = f
 				setActiveFermentAndApplyProfile(pi, runtime, updated)
 				appendRefEntry(pi, updated.id)
-				pi.appendEntry("ferment_ack", {
-					text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nPolicy: automated`,
-				})
+				sendBreadcrumb(
+					pi,
+					`One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nPolicy: automated`,
+					"ack",
+					"ferment_ack",
+				)
 				const nudge = buildOneshotNudge(updated, resolvedIntent)
 
 				void pi.sendMessage(
@@ -758,6 +786,8 @@ export class FermentCommandController {
 				)
 			} catch (err) {
 				ctx.ui.notify(err instanceof FermentError ? err.message : "One-shot create failed.")
+			} finally {
+				ctx.ui.setStatus?.("ferment-scoping", undefined)
 			}
 			return { handled: true }
 		}
@@ -778,6 +808,7 @@ export class FermentCommandController {
 			ctx.ui.notify('Usage: /ferment new "Name"')
 			return { handled: true }
 		}
+		ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · naming…")
 		try {
 			// Interactive path: ui.confirm is available, so ensureGitRepo will ask.
 			// User can decline; ferment still proceeds with no branch/commit info.
@@ -787,12 +818,16 @@ export class FermentCommandController {
 			setActiveFermentAndApplyProfile(pi, runtime, f)
 			appendRefEntry(pi, f.id)
 
-			pi.appendEntry("ferment_ack", {
-				text: `🍺  Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nPolicy: ${runtime.getContinuationPolicy()}`,
-			})
+			sendBreadcrumb(
+				pi,
+				`Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nPolicy: ${runtime.getContinuationPolicy()}`,
+				"ack",
+				"ferment_ack",
+			)
 
 			await runScopingFlow(f, pi, ctx, runtime)
 		} catch (err) {
+			ctx.ui.setStatus?.("ferment-scoping", undefined)
 			ctx.ui.notify(err instanceof FermentError ? err.message : "Create failed.")
 		}
 		return { handled: true }

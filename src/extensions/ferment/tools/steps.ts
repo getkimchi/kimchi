@@ -33,6 +33,18 @@ import { buildWorkerContext } from "../worker-prompt.js"
 
 const VERIFY_TIMEOUT_MS = 60_000
 
+function sendStepBreadcrumb(pi: ExtensionAPI, text: string, variant: "step" | "warning" = "step"): void {
+	void pi.sendMessage(
+		{
+			customType: "ferment_breadcrumb",
+			content: [{ type: "text", text }],
+			display: true,
+			details: { text, variant },
+		},
+		{ triggerTurn: false },
+	)
+}
+
 type StepActionArgs = Static<typeof StepActionParams>
 type CompleteStepArgs = Static<typeof CompleteStepParams>
 
@@ -149,9 +161,9 @@ export async function startStep(
 		const response = await askUser(
 			title,
 			[
-				{ id: "retry", label: "Retry with a revised approach" },
-				{ id: "skip", label: "Skip this step and move on" },
-				{ id: "pause", label: "Pause the ferment for now" },
+				{ id: "retry", label: "Retry" },
+				{ id: "skip", label: "Skip step" },
+				{ id: "pause", label: "Pause ferment" },
 			],
 			{ ferment: f, pi, ctx, runtime },
 		)
@@ -163,9 +175,9 @@ export async function startStep(
 
 What should we do?
 
-1) Retry with a revised approach
-2) Skip this step and move on
-3) Pause the ferment for now
+1) Retry
+2) Skip step
+3) Pause ferment
 
 Do NOT call start_ferment_step again without user input.`,
 			)
@@ -242,13 +254,11 @@ Do NOT call start_ferment_step again without user input.`,
 
 	const workerContext =
 		freshPhase && freshStep ? services.buildWorkerContext(outcome.ferment, freshPhase, freshStep) : ""
-	const contextBlock = workerContext
-		? `\n\n--- BEGIN WORKER PROMPT ---\n${workerContext}\n--- END WORKER PROMPT ---\n\nPaste the block above into the Agent's prompt. You may add a single concrete implementation directive at the end if the step description is ambiguous, but do NOT remove, summarize, or contradict the context block.`
-		: ""
+	const contextBlock = workerContext ? `\n\nWorker context (pass to subagent verbatim):\n${workerContext}` : ""
 
 	return toolOk(
 		withNextActionHint(
-			`Step ${step.index}: "${step.description}" started.\nphase_id: ${phase.id}\nstep_id: ${step.id}\n\nLaunch an Agent now with subagent_type "general-purpose". When it returns, call complete_ferment_step with its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
+			`Step ${step.index}: "${step.description}" started. Spawn a subagent with subagent_type "general-purpose". When it returns, call complete_ferment_step with its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
 			outcome.ferment,
 		),
 	)
@@ -298,6 +308,7 @@ export async function completeStep(
 		runtime.clearStepStart(f.id, phase.id, step.id)
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
 		services.onStepCompleted(runtime)
+		sendStepBreadcrumb(pi, `Step ${step.index} ✓ ${step.description}`)
 		return toolOk(
 			withNextActionHint(
 				`Step ${step.index}: "${step.description}" done.  ${params.summary ?? ""}`,
@@ -334,6 +345,7 @@ export async function completeStep(
 		// Verification passed + all gates pass → silent advance. No LLM call.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
 		services.onStepCompleted(runtime)
+		sendStepBreadcrumb(pi, `Step ${step.index} ✓ verified — ${step.description}`)
 		return toolOk(
 			withNextActionHint(`Step ${step.index}: "${step.description}" done and verified ✓`, verifyOutcome.ferment),
 		)
@@ -355,6 +367,7 @@ export async function completeStep(
 		// verdicts already passed above, so advance.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
 		services.onStepCompleted(runtime)
+		sendStepBreadcrumb(pi, `Step ${step.index} ✓  Judge passed: ${judgeVerdict.reason}`)
 		return toolOk(
 			withNextActionHint(
 				`Step ${step.index}: "${step.description}" done ✓  Judge: ${judgeVerdict.reason}`,
@@ -370,6 +383,88 @@ export async function completeStep(
 		error: `Verification failed (exit ${exitCode}): ${judgeVerdict.reason}`,
 	})
 	if (!failOutcome.ok) return failedToolResult(failOutcome.error, f)
+
+	sendStepBreadcrumb(pi, `Step ${step.index} ✗ failed verification — ${judgeVerdict.reason}`, "warning")
+
+	// D19: surface a recovery dropdown so the user picks an action explicitly
+	// instead of leaving the planner guessing.
+	if (ctx?.ui?.select) {
+		const retryLabel = "Retry"
+		const skipLabel = "Skip step"
+		const editLabel = "Edit prompt and retry"
+		const abandonLabel = "Abandon phase"
+		const cancelLabel = "Cancel (keep step failed)"
+		const title = `Step ${step.index} "${step.description}" failed verification.\nJudge: ${judgeVerdict.reason}`
+		const choice = await ctx.ui.select(title, [retryLabel, skipLabel, editLabel, abandonLabel, cancelLabel])
+		runtime.markHumanInput()
+
+		if (choice === retryLabel) {
+			const retryOut = applyAndPersist(params.ferment_id, {
+				type: "start_step",
+				phaseId: phase.id,
+				stepId: step.id,
+			})
+			if (!retryOut.ok) return failedToolResult(retryOut.error)
+			runtime.clearStepStart(f.id, phase.id, step.id)
+			return toolOk(
+				`Step ${step.index} reset to running at user request. Retry the work — spawn a worker and call complete_step when done.`,
+			)
+		}
+
+		if (choice === skipLabel) {
+			const skipOut = applyAndPersist(params.ferment_id, {
+				type: "skip_step",
+				phaseId: phase.id,
+				stepId: step.id,
+			})
+			if (!skipOut.ok) return failedToolResult(skipOut.error)
+			services.onStepCompleted(runtime)
+			return toolOk(`Step ${step.index} skipped at user request.`)
+		}
+
+		if (choice === editLabel && ctx.ui.input) {
+			const newPrompt = await ctx.ui.input("Revised step description:", step.description)
+			runtime.markHumanInput()
+			if (newPrompt?.trim()) {
+				const editOut = applyAndPersist(params.ferment_id, {
+					type: "update_step_description",
+					phaseId: phase.id,
+					stepId: step.id,
+					description: newPrompt.trim(),
+				})
+				if (!editOut.ok) return failedToolResult(editOut.error)
+				const retryOut = applyAndPersist(params.ferment_id, {
+					type: "start_step",
+					phaseId: phase.id,
+					stepId: step.id,
+				})
+				if (!retryOut.ok) return failedToolResult(retryOut.error)
+				runtime.clearStepStart(f.id, phase.id, step.id)
+				await pi.sendUserMessage(`Retry step ${step.index} with this revised approach: ${newPrompt.trim()}`, {
+					deliverAs: "followUp",
+				})
+				return toolOk(`Step ${step.index} reset with revised approach. Awaiting planner re-execution.`)
+			}
+			return toolOk(`Step ${step.index} remains failed (no revised approach provided).`)
+		}
+
+		if (choice === abandonLabel) {
+			const phaseFailOut = applyAndPersist(params.ferment_id, {
+				type: "fail_phase",
+				phaseId: phase.id,
+				reason: `Step ${step.index} failed: ${judgeVerdict.reason}`,
+			})
+			if (!phaseFailOut.ok) return failedToolResult(phaseFailOut.error)
+			return toolOk(`Phase ${phase.index} marked failed at user request after step ${step.index} verification failure.`)
+		}
+
+		// Cancel, Esc/dismiss, or any unrecognised choice → no-op. The step is
+		// already in failed state from the fail_step above; preserve the phase
+		// and let the planner decide the next move.
+		return toolOk(
+			`Step ${step.index} remains failed. User dismissed the recovery dropdown without choosing an action — phase preserved.`,
+		)
+	}
 
 	if (judgeVerdict.verdict === "retry") {
 		return toolErr(

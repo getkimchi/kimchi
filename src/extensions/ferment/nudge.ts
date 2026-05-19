@@ -29,7 +29,7 @@ export function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
 	})
 }
 
-const MAX_CONSECUTIVE_REACTIVE_NUDGES = 3
+const MAX_CONSECUTIVE_REACTIVE_NUDGES = 1
 const reactiveNudgeCounts = new Map<string, number>()
 
 export function resetReactiveContinuationNudgeCount(fermentId: string): void {
@@ -68,9 +68,16 @@ export function maybeInjectReactiveContinuationNudge(
 
 	const count = reactiveNudgeCounts.get(fresh.id) ?? 0
 	if (count >= MAX_CONSECUTIVE_REACTIVE_NUDGES) {
-		pi.appendEntry("ferment_breadcrumb", {
-			text: `Continuation nudge suppressed after ${count} consecutive text-only assistant turns for "${fresh.name}".`,
-		})
+		const suppressionText = `Continuation nudge suppressed after ${count} consecutive text-only assistant turns for "${fresh.name}".`
+		void pi.sendMessage(
+			{
+				customType: "ferment_breadcrumb",
+				content: [{ type: "text", text: suppressionText }],
+				display: true,
+				details: { text: suppressionText, variant: "step" },
+			},
+			{ triggerTurn: false },
+		)
 		return
 	}
 

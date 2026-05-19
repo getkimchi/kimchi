@@ -246,6 +246,14 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 			b.push("step_failed", { phaseId: cmd.phaseId, stepId: cmd.stepId, error: cmd.error, completedAt: ctx.now })
 			return b.events
 
+		case "update_step_description":
+			b.push("step_description_updated", {
+				phaseId: cmd.phaseId,
+				stepId: cmd.stepId,
+				description: cmd.description.trim(),
+			})
+			return b.events
+
 		case "complete_ferment": {
 			b.push("ferment_completed", { finalSummary: cmd.finalSummary, completedAt: ctx.now })
 			if (cmd.grade) {

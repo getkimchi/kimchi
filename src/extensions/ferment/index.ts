@@ -14,6 +14,7 @@ import type { ExtensionAPI, MessageRenderer } from "@earendil-works/pi-coding-ag
 import { Container, Text } from "@earendil-works/pi-tui"
 import type { Step } from "../../ferment/types.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
+import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
 import { registerFermentEvents } from "./events.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
@@ -93,6 +94,12 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	pi.registerMessageRenderer(FERMENT_REQUEST_MESSAGE_TYPE, fermentRequestRenderer)
 	registerFermentEvents(pi, runtime)
 	registerFermentCommands(pi, runtime)
+
+	// ─── Message renderers ────────────────────────────────────────────────────
+	pi.registerMessageRenderer("ferment_breadcrumb", fermentBreadcrumbRenderer)
+	pi.registerMessageRenderer("ferment_ack", fermentBreadcrumbRenderer)
+	pi.registerMessageRenderer("ferment_worktree_warning", fermentBreadcrumbRenderer)
+	pi.registerMessageRenderer("ferment_oneshot_failed", fermentBreadcrumbRenderer)
 
 	createSystemPromptBlocks(pi, "ferment").register({
 		id: "ferment-supplement",
