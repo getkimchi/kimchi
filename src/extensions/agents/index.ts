@@ -132,7 +132,7 @@ function getSubagentResultIcon(status: string, theme: Theme): string {
 function extractImagePathsFromSession(ctx: ExtensionContext): string[] {
 	const entries = ctx.sessionManager.getBranch()
 	const imagePaths = new Set<string>()
-	let lastReadCallPath: string | null = null
+	const readPathsByToolCallId = new Map<string, string>()
 
 	for (const entry of entries) {
 		if (entry.type !== "message") continue
@@ -143,23 +143,25 @@ function extractImagePathsFromSession(ctx: ExtensionContext): string[] {
 			if (Array.isArray(content)) {
 				for (const block of content) {
 					if (block.type !== "toolCall") continue
-					const toolBlock = block as { name?: string; arguments?: Record<string, unknown> }
-					if (toolBlock.name === "read" && typeof toolBlock.arguments?.path === "string") {
-						lastReadCallPath = toolBlock.arguments.path
+					const toolBlock = block as { id?: string; name?: string; arguments?: Record<string, unknown> }
+					if (toolBlock.name === "read" && toolBlock.id && typeof toolBlock.arguments?.path === "string") {
+						readPathsByToolCallId.set(toolBlock.id, toolBlock.arguments.path)
 					}
 				}
 			}
 		} else if (msg.role === "toolResult") {
-			const content = msg.content
+			const toolResultMsg = msg as { toolCallId?: string; content?: unknown[] }
+			const content = toolResultMsg.content
 			if (Array.isArray(content)) {
-				const hasImage = content.some((block) => block.type === "image")
-				if (hasImage && lastReadCallPath) {
-					imagePaths.add(lastReadCallPath)
+				const hasImage = content.some((block) => (block as { type?: string }).type === "image")
+				const path = toolResultMsg.toolCallId ? readPathsByToolCallId.get(toolResultMsg.toolCallId) : undefined
+				if (hasImage && path) {
+					imagePaths.add(path)
 				}
 			}
-			lastReadCallPath = null
-		} else if (msg.role === "user") {
-			lastReadCallPath = null
+			if (toolResultMsg.toolCallId) {
+				readPathsByToolCallId.delete(toolResultMsg.toolCallId)
+			}
 		}
 	}
 

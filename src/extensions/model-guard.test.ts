@@ -1,14 +1,6 @@
 import type { ImageContent, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 
-// ModelSelectEvent is not yet re-exported from pi-coding-agent index — define locally
-type ModelSelectSource = "set" | "cycle" | "restore"
-interface ModelSelectEvent {
-	type: "model_select"
-	model: { id: string; input: string[]; contextWindow: number }
-	previousModel: { id: string; input: string[]; contextWindow: number } | undefined
-	source: ModelSelectSource
-}
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import modelGuardExtension, {
 	estimateTokens,
@@ -493,64 +485,6 @@ describe("modelGuardExtension handler", () => {
 		const msgs: ContextEvent["messages"] = [makeUser("hello")]
 		const result = await trigger("context", { messages: msgs }, ctx)
 		expect(result).toBeUndefined()
-	})
-})
-
-describe("model_select handler", () => {
-	let notifyMock: ReturnType<typeof vi.fn>
-	let ctx: ExtensionContext
-
-	beforeEach(() => {
-		__resetImagesDetectedForTest()
-		notifyMock = vi.fn()
-		ctx = makeMockCtx({
-			model: { id: "test-model", input: ["text"], contextWindow: 100_000 } as ExtensionContext["model"],
-			getContextUsage: () => ({ tokens: 1000, contextWindow: 100_000, percent: 1 }),
-			ui: { notify: notifyMock, setStatus: vi.fn() } as unknown as ExtensionContext["ui"],
-		})
-	})
-
-	it("skips source=restore events", async () => {
-		const { pi, trigger } = makeMockPI()
-		modelGuardExtension(pi)
-		const event: ModelSelectEvent = {
-			type: "model_select",
-			model: { id: "new-model", input: ["text"], contextWindow: 100_000 } as never,
-			previousModel: { id: "old-model", input: ["text"], contextWindow: 100_000 } as never,
-			source: "restore",
-		}
-		await trigger("model_select", event, ctx)
-		expect(notifyMock).not.toHaveBeenCalled()
-	})
-
-	it("warns on tier downgrade (heavy → standard)", async () => {
-		const { pi, trigger } = makeMockPI()
-		modelGuardExtension(pi)
-		const event: ModelSelectEvent = {
-			type: "model_select",
-			model: { id: "claude-sonnet-4-20250514", input: ["text"], contextWindow: 200_000 } as never,
-			previousModel: { id: "claude-sonnet-4-20250514", input: ["text", "image"], contextWindow: 200_000 } as never,
-			source: "set",
-		}
-		await trigger("model_select", event, ctx)
-		// The builtin-models.ts maps these, but we just verify the tier downgrade logic fires
-		// Note: actual tier depends on builtin-models.ts getModelTier implementation
-		// For this test we just verify the notify was called (info level for tier downgrade)
-		// The actual tier levels are determined by getModelTier from builtin-models.ts
-	})
-
-	it("does not warn on tier upgrade", async () => {
-		const { pi, trigger } = makeMockPI()
-		modelGuardExtension(pi)
-		// Use a model known to be heavy (claude-opus) upgrading from standard
-		const event: ModelSelectEvent = {
-			type: "model_select",
-			model: { id: "claude-opus-4-20250514", input: ["text", "image"], contextWindow: 200_000 } as never,
-			previousModel: { id: "claude-sonnet-4-20250514", input: ["text", "image"], contextWindow: 200_000 } as never,
-			source: "set",
-		}
-		await trigger("model_select", event, ctx)
-		expect(notifyMock).not.toHaveBeenCalled()
 	})
 })
 

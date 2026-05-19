@@ -3,19 +3,16 @@ import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-wor
 
 /** Messages that have a content array we can inspect for images. */
 type ContentMessage = UserMessage | AssistantMessage | ToolResultMessage
-import { getModelTier } from "./model-switch.js"
-import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 
-// ModelSelectEvent is not yet re-exported from pi-coding-agent index — define locally
-type ModelSelectSource = "set" | "cycle" | "restore"
-interface ModelSelectEvent {
-	type: "model_select"
-	model: { id: string; input: string[]; contextWindow: number }
-	previousModel: { id: string; input: string[]; contextWindow: number } | undefined
-	source: ModelSelectSource
+export const SAFETY_MARGIN = 0.95
+
+export function getSafeContextWindow(contextWindow: number): number {
+	return Math.floor(contextWindow * SAFETY_MARGIN)
 }
 
-const SAFETY_MARGIN = 0.95
+export function contextFitsModel(tokens: number, contextWindow: number): boolean {
+	return tokens <= getSafeContextWindow(contextWindow)
+}
 
 /** Module-level flag tracking whether the current session contains image blocks. */
 let imagesDetected = false
@@ -71,17 +68,17 @@ export function getLatestMessages(): ContextEvent["messages"] {
 	return latestMessages
 }
 
-/**
- * Resets the module-level flags to their initial state.
- * Exported exclusively for use in unit tests — do not call in production code.
- * @internal
- */
-export function __resetImagesDetectedForTest(): void {
+function resetImageState(): void {
 	imagesDetected = false
 	imagesStripped = false
 	latestMessages = []
 	imageDescriptions.clear()
 }
+
+/**
+ * @internal Exported for unit tests — production code uses session_start/session_shutdown hooks.
+ */
+export const __resetImagesDetectedForTest = resetImageState
 
 /**
  * Rough token estimation: 4 chars per token for text, images counted separately.
@@ -136,6 +133,23 @@ export function hasImages(messages: ContextEvent["messages"]): boolean {
 		if (Array.isArray(content)) {
 			for (const block of content) {
 				if (block.type === "image") return true
+			}
+		}
+	}
+	return false
+}
+
+function hasUndescribedImages(messages: ContextEvent["messages"]): boolean {
+	for (const msg of messages) {
+		if (!("content" in msg)) continue
+		const content = (msg as ContentMessage).content
+		if (typeof content === "string") continue
+		if (Array.isArray(content)) {
+			for (const block of content) {
+				if (block.type === "image") {
+					const hash = getImageDataHash((block as ImageContent).data)
+					if (!imageDescriptions.has(hash)) return true
+				}
 			}
 		}
 	}
@@ -229,6 +243,9 @@ export function truncateMessages(messages: ContextEvent["messages"], maxTokens: 
 }
 
 export default function createModelGuardExtension(_pi: ExtensionAPI) {
+	_pi.on("session_start", resetImageState)
+	_pi.on("session_shutdown", resetImageState)
+
 	_pi.on("context", async (event, ctx: ExtensionContext) => {
 		const model = ctx.model
 		const usage = ctx.getContextUsage()
@@ -242,7 +259,7 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 		// If new images appear after a previous strip, reset the stripped flag
 		// so the guards re-engage for the fresh images.
 		const currentlyHasImages = hasImages(messages)
-		if (imagesStripped && currentlyHasImages) {
+		if (imagesStripped && currentlyHasImages && hasUndescribedImages(messages)) {
 			imagesStripped = false
 			imageDescriptions.clear()
 		}
@@ -272,34 +289,5 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 		}
 
 		if (modified) return { messages: result }
-	})
-
-	_pi.on("model_select", async (event: ModelSelectEvent, ctx: ExtensionContext) => {
-		if (event.source === "restore") return
-
-		const model = ctx.model
-
-		// Context and vision guards are handled by the originating switch path:
-		// - "cycle" (ctrl+p): findNextCompatibleModel pre-filters incompatible models
-		// - "set" (set_model tool): blocks and reports to user before switching
-		// - "restore": skipped above (automatic reversion)
-		// Only tier-downgrade notifications remain here as they are informational
-		// and not checked by any pre-switch path.
-
-		if (event.previousModel) {
-			const prevTier = getModelTier(event.previousModel as never, MODEL_CAPABILITIES)
-			const nextTier = getModelTier(model as never, MODEL_CAPABILITIES)
-			if (prevTier && nextTier) {
-				const TIER_ORDER = ["heavy", "standard", "light"]
-				const prevIdx = TIER_ORDER.indexOf(prevTier)
-				const nextIdx = TIER_ORDER.indexOf(nextTier)
-				if (prevIdx < nextIdx) {
-					ctx.ui.notify(
-						`Switching from ${prevTier} → ${nextTier} tier. Reasoning and planning quality may be reduced.`,
-						"info",
-					)
-				}
-			}
-		}
 	})
 }
