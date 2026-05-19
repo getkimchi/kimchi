@@ -105,18 +105,20 @@ describe("FermentCommandController", () => {
 	it("echoes the interactive request before starting the hidden scoping turn", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
+		const ui = {
+			notify: vi.fn(),
+			input: vi.fn().mockResolvedValueOnce("make the todo app glassy"),
+			select: vi.fn(),
+		}
 		const ctx = {
 			hasUI: true,
-			ui: {
-				notify: vi.fn(),
-				input: vi.fn().mockResolvedValueOnce("make the todo app glassy"),
-				select: vi.fn().mockResolvedValue("No, I know what I'm doing"),
-			},
+			ui,
 		} as unknown as ExtensionCommandContext
 
 		const result = await controller.execute({ type: "interactive" }, { raw: "", pi: h.pi, ctx, runtime: h.runtime })
 
 		expect(result).toEqual({ handled: true })
+		expect(ui.select).not.toHaveBeenCalled()
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_request",
@@ -135,17 +137,19 @@ describe("FermentCommandController", () => {
 
 	it("exposes the interactive request flow as a reusable helper", async () => {
 		const h = createHarness()
+		const ui = {
+			notify: vi.fn(),
+			input: vi.fn().mockResolvedValueOnce("make settings searchable"),
+			select: vi.fn(),
+		}
 		const ctx = {
 			hasUI: true,
-			ui: {
-				notify: vi.fn(),
-				input: vi.fn().mockResolvedValueOnce("make settings searchable"),
-				select: vi.fn().mockResolvedValue("No, I know what I'm doing"),
-			},
+			ui,
 		} as unknown as ExtensionCommandContext
 
 		await startInteractiveFerment({ pi: h.pi, ctx, runtime: h.runtime })
 
+		expect(ui.select).not.toHaveBeenCalled()
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_request",

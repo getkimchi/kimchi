@@ -9,7 +9,6 @@ import { decideContinuation } from "./continuation.js"
 import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { appendRefEntry } from "./nudge.js"
-import { maybeRunOnboarding } from "./onboarding.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import {
 	buildPhaseActionOptions,
@@ -178,8 +177,6 @@ export async function startInteractiveFerment({
 		ctx.ui.notify('No UI available. Use /ferment new "Name" instead.')
 		return
 	}
-
-	await maybeRunOnboarding(ctx)
 
 	const rawIntent = await ctx.ui.input(
 		"🍺  What would you like to ferment?",
