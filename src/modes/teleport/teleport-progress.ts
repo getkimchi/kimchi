@@ -122,7 +122,19 @@ export function createTeleportProgress(ui: ExtensionUIContext) {
 		headerTui?.requestRender()
 	}, PHASE_CYCLE_MS)
 
-	const unsubInput = ui.onTerminalInput(() => ({ consume: true }))
+	const unsubInput = ui.onTerminalInput((data) => {
+		if (data === "\x03" || data === "\x04") return undefined
+		return { consume: true }
+	})
+
+	ui.setWidget(
+		"teleport-lock",
+		(_tui, theme) => ({
+			render: () => [theme.fg("dim", "🔒 Input sealed - in transit…")],
+			invalidate: () => {},
+		}),
+		{ placement: "aboveEditor" },
+	)
 
 	function stopTimers() {
 		if (phaseSpinId) clearInterval(phaseSpinId)
@@ -150,12 +162,14 @@ export function createTeleportProgress(ui: ExtensionUIContext) {
 			sessionInfo = info
 			stopTimers()
 			unsubInput()
+			ui.setWidget("teleport-lock", undefined)
 			setTeleportHeader()
 		},
 		stop() {
 			if (finished) return
 			stopTimers()
 			unsubInput()
+			ui.setWidget("teleport-lock", undefined)
 			ui.setHeader((_tui, theme) => new LogoHeader(theme))
 		},
 	}
