@@ -91,7 +91,8 @@
 			"protobufjs"
 		],
 		"patchedDependencies": {
-			"@earendil-works/pi-coding-agent": "patches/@earendil-works__pi-coding-agent.patch"
+			"@earendil-works/pi-coding-agent": "patches/@earendil-works__pi-coding-agent.patch",
+			"@earendil-works/pi-tui": "patches/@earendil-works__pi-tui.patch"
 		}
 	}
 }

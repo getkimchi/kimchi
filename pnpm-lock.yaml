@@ -6,8 +6,11 @@ settings:
 
 patchedDependencies:
   '@earendil-works/pi-coding-agent':
-    hash: 33a0c3e13cc04cb66302023b9c7d9ae5af70a78c076e88c8b1124de922cd94e9
+    hash: bfe614021e3f7c6dd196bece1a61f27bf88584dae8e2cebc720678f890d287ab
     path: patches/@earendil-works__pi-coding-agent.patch
+  '@earendil-works/pi-tui':
+    hash: 5dfec780267db30afaf01840baeb4234972b936747325f0fdbab743775faa80f
+    path: patches/@earendil-works__pi-tui.patch
 
 importers:
 
@@ -21,10 +24,10 @@ importers:
         version: 1.3.0
       '@earendil-works/pi-coding-agent':
         specifier: ^0.75.1
-        version: 0.75.1(patch_hash=33a0c3e13cc04cb66302023b9c7d9ae5af70a78c076e88c8b1124de922cd94e9)(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)
+        version: 0.75.1(patch_hash=bfe614021e3f7c6dd196bece1a61f27bf88584dae8e2cebc720678f890d287ab)(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-tui':
         specifier: ^0.75.1
-        version: 0.75.1
+        version: 0.75.1(patch_hash=5dfec780267db30afaf01840baeb4234972b936747325f0fdbab743775faa80f)
       '@modelcontextprotocol/ext-apps':
         specifier: ^1.7.1
         version: 1.7.1(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(zod@4.4.3)
@@ -2186,11 +2189,11 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-coding-agent@0.75.1(patch_hash=33a0c3e13cc04cb66302023b9c7d9ae5af70a78c076e88c8b1124de922cd94e9)(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)':
+  '@earendil-works/pi-coding-agent@0.75.1(patch_hash=bfe614021e3f7c6dd196bece1a61f27bf88584dae8e2cebc720678f890d287ab)(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)':
     dependencies:
       '@earendil-works/pi-agent-core': 0.75.1(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-ai': 0.75.1(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)
-      '@earendil-works/pi-tui': 0.75.1
+      '@earendil-works/pi-tui': 0.75.1(patch_hash=5dfec780267db30afaf01840baeb4234972b936747325f0fdbab743775faa80f)
       '@silvia-odwyer/photon-node': 0.3.4
       chalk: 5.6.2
       diff: 8.0.4
@@ -2214,7 +2217,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-tui@0.75.1':
+  '@earendil-works/pi-tui@0.75.1(patch_hash=5dfec780267db30afaf01840baeb4234972b936747325f0fdbab743775faa80f)':
     dependencies:
       get-east-asian-width: 1.6.0
       marked: 15.0.12

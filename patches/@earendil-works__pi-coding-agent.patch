@@ -1,8 +1,8 @@
 diff --git a/dist/cli/args.js b/dist/cli/args.js
-index c9f34fef8e473c203dbbfc1603b69beb8f5d8d2b..bec90c470284e05946e4c6e9c0ae95952d7a3b8e 100644
+index d9722b792a5e2c0020bd842ea6ddb1754a51b44c..6d64db9876b8be6ae6af34322d5748cfcbbe06a7 100644
 --- a/dist/cli/args.js
 +++ b/dist/cli/args.js
-@@ -281,6 +281,7 @@ ${chalk.bold("Examples:")}
+@@ -286,6 +286,7 @@ ${chalk.bold("Examples:")}
    ${APP_NAME} --export session.jsonl output.html
  
  ${chalk.bold("Environment Variables:")}
@@ -11,10 +11,10 @@ index c9f34fef8e473c203dbbfc1603b69beb8f5d8d2b..bec90c470284e05946e4c6e9c0ae9595
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
    OPENAI_API_KEY                   - OpenAI GPT API key
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
-index 3ffb1439bf059d787aee4bf314c89cb28b6b4959..275c5dc3c02bdba4932fd14587c70ca8f08e9333 100644
+index afdb0b720f9e57875d9493fe932b4912afa9807f..c644bee905695ca37f4d124cc81fd327840e6911 100644
 --- a/dist/core/model-resolver.js
 +++ b/dist/core/model-resolver.js
-@@ -33,6 +33,7 @@ export const defaultModelPerProvider = {
+@@ -34,6 +34,7 @@ export const defaultModelPerProvider = {
      opencode: "kimi-k2.6",
      "opencode-go": "kimi-k2.6",
      "kimi-coding": "kimi-for-coding",
@@ -22,3 +22,129 @@ index 3ffb1439bf059d787aee4bf314c89cb28b6b4959..275c5dc3c02bdba4932fd14587c70ca8
      "cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.6",
      "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
      xiaomi: "mimo-v2.5-pro",
+diff --git a/dist/core/tools/edit.js b/dist/core/tools/edit.js
+index 62002dd1fa751ac168165a26b68561c2e95f6637..001ac31848098104ca4f127ce65931917bc1b292 100644
+--- a/dist/core/tools/edit.js
++++ b/dist/core/tools/edit.js
+@@ -55,7 +55,7 @@ function validateEditInput(input) {
+     return { path: input.path, edits: input.edits };
+ }
+ function createEditCallRenderComponent() {
+-    return Object.assign(new Box(1, 1, (text) => text), {
++    return Object.assign(new Box(1, 1), {
+         preview: undefined,
+         previewArgsKey: undefined,
+         previewPending: false,
+@@ -123,14 +123,14 @@ function formatEditResult(args, preview, result, theme, isError) {
+ function getEditHeaderBg(preview, settledError, theme) {
+     if (preview) {
+         if ("error" in preview) {
+-            return (text) => theme.bg("toolErrorBg", text);
++            return (text) => theme.fg("error", text);
+         }
+-        return (text) => theme.bg("toolSuccessBg", text);
++        return (text) => theme.fg("success", text);
+     }
+     if (settledError) {
+-        return (text) => theme.bg("toolErrorBg", text);
++        return (text) => theme.fg("error", text);
+     }
+-    return (text) => theme.bg("toolPendingBg", text);
++    return (text) => theme.fg("accent", text);
+ }
+ function buildEditCallComponent(component, args, theme) {
+     component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
+diff --git a/dist/modes/interactive/components/branch-summary-message.js b/dist/modes/interactive/components/branch-summary-message.js
+index e23ca6db02a29814112dd4945bd868604eb6676f..d0f6fd7aeb79c6a20655805152a30970f1b4cc2a 100644
+--- a/dist/modes/interactive/components/branch-summary-message.js
++++ b/dist/modes/interactive/components/branch-summary-message.js
+@@ -10,7 +10,7 @@ export class BranchSummaryMessageComponent extends Box {
+     message;
+     markdownTheme;
+     constructor(message, markdownTheme = getMarkdownTheme()) {
+-        super(1, 1, (t) => theme.bg("customMessageBg", t));
++        super(1, 1, (t) => theme.fg("accent", t));
+         this.message = message;
+         this.markdownTheme = markdownTheme;
+         this.updateDisplay();
+diff --git a/dist/modes/interactive/components/compaction-summary-message.js b/dist/modes/interactive/components/compaction-summary-message.js
+index 48c22718e1dff7cf4faa4cc09b8a917301b0d892..93b59defc4ecc9caf7faf907230260a1a3f7c477 100644
+--- a/dist/modes/interactive/components/compaction-summary-message.js
++++ b/dist/modes/interactive/components/compaction-summary-message.js
+@@ -10,7 +10,7 @@ export class CompactionSummaryMessageComponent extends Box {
+     message;
+     markdownTheme;
+     constructor(message, markdownTheme = getMarkdownTheme()) {
+-        super(1, 1, (t) => theme.bg("customMessageBg", t));
++        super(1, 1, (t) => theme.fg("accent", t));
+         this.message = message;
+         this.markdownTheme = markdownTheme;
+         this.updateDisplay();
+diff --git a/dist/modes/interactive/components/custom-message.js b/dist/modes/interactive/components/custom-message.js
+index 2d54902da1800044206eb1f00ca07501a7310145..44daf4982a5ab6f671f5bce373a94a310a52fc73 100644
+--- a/dist/modes/interactive/components/custom-message.js
++++ b/dist/modes/interactive/components/custom-message.js
+@@ -18,7 +18,7 @@ export class CustomMessageComponent extends Container {
+         this.markdownTheme = markdownTheme;
+         this.addChild(new Spacer(1));
+         // Create box with purple background (used for default rendering)
+-        this.box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
++        this.box = new Box(1, 1, (t) => theme.fg("accent", t));
+         this.rebuild();
+     }
+     setExpanded(expanded) {
+diff --git a/dist/modes/interactive/components/skill-invocation-message.js b/dist/modes/interactive/components/skill-invocation-message.js
+index 561f3d2540db0a8d934bc2bbecb097aaa7c88458..da4601b0aa0ea1145505300ba77485cfc5c48bb0 100644
+--- a/dist/modes/interactive/components/skill-invocation-message.js
++++ b/dist/modes/interactive/components/skill-invocation-message.js
+@@ -11,7 +11,7 @@ export class SkillInvocationMessageComponent extends Box {
+     skillBlock;
+     markdownTheme;
+     constructor(skillBlock, markdownTheme = getMarkdownTheme()) {
+-        super(1, 1, (t) => theme.bg("customMessageBg", t));
++        super(1, 1, (t) => theme.fg("accent", t));
+         this.skillBlock = skillBlock;
+         this.markdownTheme = markdownTheme;
+         this.updateDisplay();
+diff --git a/dist/modes/interactive/components/tool-execution.js b/dist/modes/interactive/components/tool-execution.js
+index e099877c0c53ea52f26eb1034ef7cd631371603f..69bf8eedf74f7f241b0136e844dad8a5144bc451 100644
+--- a/dist/modes/interactive/components/tool-execution.js
++++ b/dist/modes/interactive/components/tool-execution.js
+@@ -43,8 +43,8 @@ export class ToolExecutionComponent extends Container {
+         // Always create all shell variants. contentBox is used for default renderer-based composition.
+         // selfRenderContainer is used when the tool renders its own framing.
+         // contentText is reserved for generic fallback rendering when no tool definition exists.
+-        this.contentBox = new Box(1, 1, (text) => theme.bg("toolPendingBg", text));
+-        this.contentText = new Text("", 1, 1, (text) => theme.bg("toolPendingBg", text));
++        this.contentBox = new Box(1, 1, (text) => theme.fg("accent", text));
++        this.contentText = new Text("", 1, 1, (text) => theme.fg("accent", text));
+         this.selfRenderContainer = new Container();
+         if (this.hasRendererDefinition()) {
+             this.addChild(this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox);
+@@ -182,10 +182,10 @@ export class ToolExecutionComponent extends Container {
+     }
+     updateDisplay() {
+         const bgFn = this.isPartial
+-            ? (text) => theme.bg("toolPendingBg", text)
++            ? (text) => theme.fg("accent", text)
+             : this.result?.isError
+-                ? (text) => theme.bg("toolErrorBg", text)
+-                : (text) => theme.bg("toolSuccessBg", text);
++                ? (text) => theme.fg("error", text)
++                : (text) => theme.fg("success", text);
+         let hasContent = false;
+         this.hideComponent = false;
+         if (this.hasRendererDefinition()) {
+diff --git a/dist/modes/interactive/components/user-message.js b/dist/modes/interactive/components/user-message.js
+index fe7086d4b68a38a945016ea4274f6c6a8093f5b5..2880acd74317eddfce891ef935fa16f093d45ade 100644
+--- a/dist/modes/interactive/components/user-message.js
++++ b/dist/modes/interactive/components/user-message.js
+@@ -10,7 +10,7 @@ export class UserMessageComponent extends Container {
+     contentBox;
+     constructor(text, markdownTheme = getMarkdownTheme()) {
+         super();
+-        this.contentBox = new Box(1, 1, (content) => theme.bg("userMessageBg", content));
++        this.contentBox = new Box(1, 1, (content) => theme.fg("accent", content));
+         this.contentBox.addChild(new Markdown(text, 0, 0, markdownTheme, {
+             color: (content) => theme.fg("userMessageText", content),
+         }));
