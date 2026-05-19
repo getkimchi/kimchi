@@ -139,6 +139,12 @@ KIMCHI_RTK=0 kimchi   # disable for this session
 
 Set `KIMCHI_RTK` to `0`, `false`, or `off` to disable rewriting even when RTK is installed.
 
+You can also disable persistently in `~/.config/kimchi/harness/settings.json`:
+
+```json
+{ "rtk": false }
+```
+
 ### Subagent sessions
 
 Every `subagent` invocation writes its own persistent session file alongside the parent's, in the same session directory. The child's session header back-references its parent, and the parent's tool-result records the child's session id and file path. Nested subagents (sub-subagents) follow the same rule at any depth — all descendants land next to the original top-level parent.

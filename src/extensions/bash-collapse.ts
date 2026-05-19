@@ -1,4 +1,7 @@
 import { execFile, execFileSync } from "node:child_process"
+import { readFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import type { BashSpawnContext, BashToolDetails, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent"
 import { Container, Spacer, Text } from "@earendil-works/pi-tui"
@@ -16,35 +19,63 @@ export function collapseCommand(command: string | undefined): string {
 // `rtk rewrite <cmd>` before execution.  This reduces LLM token consumption
 // by 60-90% on common dev commands (git, cargo, npm, etc.).
 //
-// Set KIMCHI_RTK=0 to disable even when rtk is installed.
+// Disable via:
+//   - KIMCHI_RTK=0 environment variable, or
+//   - "rtk": false  in ~/.config/kimchi/harness/settings.json (/settings)
+//
 // See https://github.com/rtk-ai/rtk
 // ---------------------------------------------------------------------------
 
+const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
+
 /** Tri-state: undefined = not yet probed, true/false = cached result. */
 let rtkAvailable: boolean | undefined
+
+/** Cached in-flight detection promise to avoid concurrent spawns. */
+let rtkDetectPromise: Promise<boolean> | undefined
 
 function isRtkDisabledByEnv(): boolean {
 	const v = process.env.KIMCHI_RTK
 	return v === "0" || v === "false" || v === "off"
 }
 
+function isRtkDisabledBySettings(): boolean {
+	try {
+		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
+		const parsed = JSON.parse(raw)
+		if ("rtk" in parsed) return parsed.rtk === false
+	} catch {
+		// settings.json absent or unreadable — not disabled
+	}
+	return false
+}
+
+function isRtkDisabled(): boolean {
+	return isRtkDisabledByEnv() || isRtkDisabledBySettings()
+}
+
 /**
  * Probe for the `rtk` binary once per process.  Caches the result so
- * subsequent calls are free.  Returns true when rtk is installed and
- * responds to `--version` within 1 s.
+ * subsequent calls are free.  The in-flight promise is also cached so
+ * concurrent callers share a single `rtk --version` subprocess.
+ *
+ * Returns true when rtk is installed and responds to `--version` within 1 s.
  */
 export function detectRtk(): Promise<boolean> {
 	if (rtkAvailable !== undefined) return Promise.resolve(rtkAvailable)
-	if (isRtkDisabledByEnv()) {
+	if (isRtkDisabled()) {
 		rtkAvailable = false
 		return Promise.resolve(false)
 	}
-	return new Promise<boolean>((resolve) => {
+	if (rtkDetectPromise) return rtkDetectPromise
+	rtkDetectPromise = new Promise<boolean>((resolve) => {
 		execFile("rtk", ["--version"], { timeout: 1000 }, (err) => {
 			rtkAvailable = !err
+			rtkDetectPromise = undefined
 			resolve(rtkAvailable)
 		})
 	})
+	return rtkDetectPromise
 }
 
 /**
@@ -52,12 +83,12 @@ export function detectRtk(): Promise<boolean> {
  * Used as a pi-mono BashSpawnHook (which must be synchronous).
  *
  * Returns the original command unchanged when:
- *   - rtk is not available or disabled via KIMCHI_RTK
+ *   - rtk is not available or disabled via KIMCHI_RTK / settings.json
  *   - rtk returns empty output or the same string
  *   - the subprocess times out or fails to spawn
  */
 export function rewriteWithRtk(command: string): string {
-	if (isRtkDisabledByEnv()) return command
+	if (isRtkDisabled()) return command
 	if (rtkAvailable === false) return command
 
 	try {
@@ -80,18 +111,25 @@ export function rewriteWithRtk(command: string): string {
 	}
 }
 
+/** Cache of rewrite results so renderCall never spawns a subprocess. */
+const rewriteCache = new Map<string, string>()
+
 /**
  * BashSpawnHook for pi-mono's createBashToolDefinition.
  * Rewrites the command through `rtk rewrite` before the shell spawns.
+ * Caches the result so renderCall can display it without a subprocess.
  */
 export function rtkSpawnHook(context: BashSpawnContext): BashSpawnContext {
 	const rewritten = rewriteWithRtk(context.command)
+	rewriteCache.set(context.command, rewritten)
 	return rewritten !== context.command ? { ...context, command: rewritten } : context
 }
 
 /** Reset cached detection state (for tests). */
 export function _resetRtkState(): void {
 	rtkAvailable = undefined
+	rtkDetectPromise = undefined
+	rewriteCache.clear()
 }
 
 export default function (pi: ExtensionAPI) {
@@ -115,11 +153,10 @@ export default function (pi: ExtensionAPI) {
 
 		renderCall(args, theme, ctx) {
 			const view = ctx.lastComponent instanceof ToolBlockView ? ctx.lastComponent : new ToolBlockView()
-			// Show the rewritten command (if rtk is active) so the user sees
-			// exactly what will be executed.  rewriteWithRtk is synchronous and
-			// returns the original string unchanged when rtk is unavailable.
-			const rewritten = rewriteWithRtk(args.command ?? "")
-			const command = collapseCommand(rewritten)
+			// Use the cached rewrite result if available (populated by rtkSpawnHook
+			// during execute).  This avoids spawning a subprocess on the render path.
+			// Falls back to the original command when no cached result exists yet.
+			const command = collapseCommand(rewriteCache.get(args.command ?? "") ?? args.command ?? "")
 			buildToolCallHeader(view, "bash", command, theme, ctx)
 			return view
 		},
@@ -158,9 +195,4 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.registerTool(def)
-
-	// Log RTK availability once at session start (informational only).
-	pi.on("session_start", async () => {
-		await detectRtk()
-	})
 }

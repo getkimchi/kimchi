@@ -83,6 +83,19 @@ describe("detectRtk", () => {
 		expect(mockExecFile).toHaveBeenCalledTimes(1)
 	})
 
+	it("shares the in-flight promise for concurrent callers", async () => {
+		mockExecFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: ExecFileCb) => {
+			// Simulate a slow response.
+			setTimeout(() => cb(null, "rtk 0.40.0\n", ""), 10)
+		})
+		// Fire two concurrent calls before the first resolves.
+		const [a, b] = await Promise.all([detectRtk(), detectRtk()])
+		expect(a).toBe(true)
+		expect(b).toBe(true)
+		// Only one execFile call — the second caller shares the in-flight promise.
+		expect(mockExecFile).toHaveBeenCalledTimes(1)
+	})
+
 	it("returns false immediately when KIMCHI_RTK=0", async () => {
 		process.env.KIMCHI_RTK = "0"
 		expect(await detectRtk()).toBe(false)
