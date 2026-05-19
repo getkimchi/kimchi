@@ -5,6 +5,7 @@ import { RemoteNetworkError, WsCloseCode } from "./types.js"
 
 export interface ReconnectSupervisorOptions {
 	sessionId: string
+	description: string
 	apiKey: string
 	endpoint?: string
 }
@@ -27,9 +28,14 @@ export class ReconnectSupervisor {
 	constructor(private readonly options: ReconnectSupervisorOptions) {}
 
 	async connect(): Promise<RemoteRpcClient> {
-		const { connectToken, wsUrl } = await authenticateRemoteSession(this.options.sessionId, this.options.apiKey, {
-			endpoint: this.options.endpoint,
-		})
+		const { connectToken, wsUrl } = await authenticateRemoteSession(
+			this.options.sessionId,
+			this.options.apiKey,
+			this.options.description,
+			{
+				endpoint: this.options.endpoint,
+			},
+		)
 
 		const transport = await createWebSocketTransport(wsUrl, connectToken)
 		const client = new RemoteRpcClient(transport)
@@ -99,10 +105,6 @@ export class ReconnectSupervisor {
 		}
 
 		tryReconnect()
-	}
-
-	get isReconnecting(): boolean {
-		return this.reconnecting
 	}
 
 	dispose(): void {

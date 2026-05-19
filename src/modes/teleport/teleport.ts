@@ -18,12 +18,14 @@ import { getTeleportProxyPath } from "./proxy-path.js"
 import { BASE_EXCLUDE_GLOBS, RsyncError, runRsync } from "./rsync-transport.js"
 import { exportSessionForTeleport } from "./session-export.js"
 import { type SessionRow, renderSessionsTable } from "./sessions-table.js"
+import { type SessionInfo, createTeleportProgress } from "./teleport-progress.js"
 import type { TeleportableAgentSession } from "./teleportable-agent-session.js"
 import { runChildWithTTYHandoff as runChildWithTTYHandoffImpl } from "./tty-handoff.js"
 
 const execAsync = promisify(exec)
 
 const STATUS_KEY = "teleport"
+
 const SANDBOX_USER = "sandbox"
 const SANDBOX_HOME = "/home/sandbox"
 const FALLBACK_TARGET_NAME = "workspace"
@@ -307,204 +309,177 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 		warn(ctx, `Workspace is ${mb} MB — sync may take a while.`)
 	}
 
-	// ── 2. Auth ──
-	const sessionId = randomUUID()
-	status(ctx, "Authenticating…")
-	let authResult: AuthenticateResponse
+	// ── 2. Progress widget (spinner + input lock + step tracker) ──
+	const progress = createTeleportProgress(ctx.ui)
+
 	try {
-		authResult = await authenticateRemoteSession(sessionId, ctx.apiKey, { endpoint: ctx.endpoint })
-	} catch (err) {
-		refuse(ctx, `Authentication failed: ${err instanceof Error ? err.message : String(err)}`)
-	}
-
-	// ── 2.5. Session summary ──
-	// Per-teleport target directory inside the sandbox. See
-	// `deriveSandboxDest` for why we sync into a subdir rather than
-	// /home/sandbox directly.
-	const sandboxDest = deriveSandboxDest(ctx.cwd)
-	info(
-		ctx,
-		[
-			"Created remote session:",
-			`  id:     ${sessionId}`,
-			`  host:   ${authResult.host}`,
-			`  port:   ${authResult.port}`,
-			`  url:    ${authResult.wsUrl}`,
-			`  target: ${sandboxDest}`,
-		].join("\n"),
-	)
-
-	// ── 3. Name uniqueness ──
-	if (args.name) {
-		status(ctx, "Checking name availability…")
+		// ── 3. Auth ──
+		progress.step("Authenticating")
+		const sessionId = randomUUID()
+		let authResult: AuthenticateResponse
 		try {
-			const sessions = await listRemoteSessions(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal })
-			if (sessions.some((s) => s.name === args.name)) {
-				refuse(ctx, `A session named "${args.name}" already exists. Try /attach ${args.name}.`)
-			}
-		} catch (err) {
-			if (err instanceof TeleportRefusal) throw err
-			warn(ctx, `Could not verify name uniqueness: ${err instanceof Error ? err.message : String(err)}`)
-		}
-	}
-
-	// ── 3.5. Wait for sandbox to become ACTIVE ──
-	status(ctx, "Waiting for sandbox…")
-	try {
-		await waitForSessionReady({
-			host: authResult.host,
-			port: authResult.port,
-			connectToken: authResult.connectToken,
-			signal: ctx.signal,
-			onTick: ({ elapsedMs }) => {
-				status(ctx, `Waiting for sandbox… (${Math.round(elapsedMs / 1000)}s)`)
-			},
-		})
-	} catch (err) {
-		refuse(
-			ctx,
-			`Sandbox never became ready: ${err instanceof Error ? err.message : String(err)}\nRemote session ${sessionId} will be cleaned up automatically.`,
-		)
-	}
-
-	// ── 3.75. Optional session export ──
-	let sessionExport: { localDir: string; remotePath: string } | undefined
-	if (!args.skipSession) {
-		status(ctx, "Exporting session…")
-		try {
-			sessionExport = exportSessionForTeleport({
-				homeBase: homeBase as AgentSession,
-				localCwd: ctx.cwd,
-				sandboxDest,
+			authResult = await authenticateRemoteSession(sessionId, ctx.apiKey, `Remote session for ${basename(ctx.cwd)}`, {
+				endpoint: ctx.endpoint,
 			})
 		} catch (err) {
-			warn(
+			refuse(ctx, `Authentication failed: ${err instanceof Error ? err.message : String(err)}`)
+		}
+		progress.complete("Authenticated")
+
+		const sandboxDest = deriveSandboxDest(ctx.cwd)
+
+		if (args.name) {
+			try {
+				const sessions = await listRemoteSessions(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal })
+				if (sessions.some((s) => s.name === args.name)) {
+					refuse(ctx, `A session named "${args.name}" already exists. Try /attach ${args.name}.`)
+				}
+			} catch (err) {
+				if (err instanceof TeleportRefusal) throw err
+				warn(ctx, `Could not verify name uniqueness: ${err instanceof Error ? err.message : String(err)}`)
+			}
+		}
+
+		// ── 4. Wait for sandbox ──
+		progress.step("Preparing sandbox")
+		try {
+			await waitForSessionReady({
+				host: authResult.host,
+				port: authResult.port,
+				connectToken: authResult.connectToken,
+				signal: ctx.signal,
+			})
+		} catch (err) {
+			refuse(
 				ctx,
-				`Session export failed: ${err instanceof Error ? err.message : String(err)}. Continuing without session.`,
+				`Sandbox never became ready: ${err instanceof Error ? err.message : String(err)}\nRemote session ${sessionId} will be cleaned up automatically.`,
 			)
 		}
-	}
+		progress.complete("Sandbox ready")
 
-	// ── 4. rsync ──
-	// Each step (mkdir, rsync) shares a heartbeat that keeps the UI alive
-	// during silent intervals. The phase label switches when runRsync calls
-	// onPhase so the user can tell which step is running.
-	const PHASE_LABEL = {
-		mkdir: "Preparing remote directory…",
-		rsync: "Syncing workspace…",
-	} as const
-	let currentPhase: "mkdir" | "rsync" = "mkdir"
-	let phaseStartedAt = Date.now()
-	let lastProgressAt = phaseStartedAt
-	status(ctx, PHASE_LABEL.mkdir)
-	const heartbeat = setInterval(() => {
-		if (Date.now() - lastProgressAt > 1500) {
-			const elapsed = Math.round((Date.now() - phaseStartedAt) / 1000)
-			status(ctx, `${PHASE_LABEL[currentPhase]} (${elapsed}s)`)
+		// ── 3.75. Optional session export ──
+		let sessionExport: { localDir: string; remotePath: string } | undefined
+		if (!args.skipSession) {
+			progress.step("Exporting session")
+			try {
+				sessionExport = exportSessionForTeleport({
+					homeBase: homeBase as AgentSession,
+					localCwd: ctx.cwd,
+					sandboxDest,
+				})
+			} catch (err) {
+				warn(
+					ctx,
+					`Session export failed: ${err instanceof Error ? err.message : String(err)}. Continuing without session.`,
+				)
+			}
+			progress.complete(sessionExport ? "Session exported" : "Session export skipped")
 		}
-	}, 1000)
-	try {
-		await runRsync({
-			source: ctx.cwd,
-			destination: sandboxDest,
-			remoteHost: authResult.host,
-			remotePort: authResult.port,
-			remoteUser: SANDBOX_USER,
-			authToken: authResult.connectToken,
-			excludeGlobs: [...BASE_EXCLUDE_GLOBS, ...args.exclude],
-			includeIgnored: args.includeIgnored,
-			signal: ctx.signal,
-			onPhase: (phase) => {
-				currentPhase = phase
-				phaseStartedAt = Date.now()
-				lastProgressAt = phaseStartedAt
-				status(ctx, PHASE_LABEL[phase])
-			},
-			onProgress: (pct) => {
-				lastProgressAt = Date.now()
-				status(ctx, `Syncing… ${pct}%`)
-			},
-		})
-	} catch (err) {
-		let msg: string
-		if (err instanceof RsyncError) {
-			// Slice the head — rsync writes its actual error first, then dumps usage
-			// on syntax errors. The trailing usage dump isn't useful and can drown
-			// out the diagnostic.
-			const stderrHead = err.stderr?.trim().slice(0, 1500) ?? ""
-			msg = stderrHead ? `${err.message}\nstderr:\n${stderrHead}` : err.message
-		} else {
-			msg = err instanceof Error ? err.message : String(err)
-		}
-		refuse(ctx, `rsync failed: ${msg}\nRemote session ${sessionId} will be cleaned up automatically.`)
-	} finally {
-		clearInterval(heartbeat)
-	}
 
-	// ── 4.5. rsync session file ──
-	if (!args.skipSession && sessionExport) {
-		status(ctx, "Syncing session…")
+		// ── 5. Rsync ──
+		progress.step("Syncing workspace")
 		try {
 			await runRsync({
-				source: sessionExport.localDir,
-				destination: dirname(sessionExport.remotePath),
+				source: ctx.cwd,
+				destination: sandboxDest,
 				remoteHost: authResult.host,
 				remotePort: authResult.port,
 				remoteUser: SANDBOX_USER,
 				authToken: authResult.connectToken,
+				excludeGlobs: [...BASE_EXCLUDE_GLOBS, ...args.exclude],
+				includeIgnored: args.includeIgnored,
 				signal: ctx.signal,
-				deleteExtraneous: false,
 			})
 		} catch (err) {
-			warn(ctx, `Session sync failed: ${err instanceof Error ? err.message : String(err)}. Continuing without session.`)
-			sessionExport = undefined
+			let msg: string
+			if (err instanceof RsyncError) {
+				const stderrHead = err.stderr?.trim().slice(0, 1500) ?? ""
+				msg = stderrHead ? `${err.message}\nstderr:\n${stderrHead}` : err.message
+			} else {
+				msg = err instanceof Error ? err.message : String(err)
+			}
+			refuse(ctx, `rsync failed: ${msg}\nRemote session ${sessionId} will be cleaned up automatically.`)
 		}
-	}
+		progress.complete("Workspace synced")
 
-	// ── 5. Build the RemoteAgentSession ──
-	status(ctx, "Connecting…")
-	let remote: RemoteAgentSession
-	try {
-		remote = await buildRemoteAgentSession({
-			sessionId,
-			apiKey: ctx.apiKey,
-			endpoint: ctx.endpoint,
-			services: ctx.services,
-			sessionManager: (homeBase as { sessionManager: SessionManager }).sessionManager,
-			cwd: ctx.cwd,
+		// ── 4.5. rsync session file ──
+		if (!args.skipSession && sessionExport) {
+			progress.step("Syncing session")
+			try {
+				await runRsync({
+					source: sessionExport.localDir,
+					destination: dirname(sessionExport.remotePath),
+					remoteHost: authResult.host,
+					remotePort: authResult.port,
+					remoteUser: SANDBOX_USER,
+					authToken: authResult.connectToken,
+					signal: ctx.signal,
+					deleteExtraneous: false,
+				})
+				progress.complete("Session synced")
+			} catch (err) {
+				warn(
+					ctx,
+					`Session sync failed: ${err instanceof Error ? err.message : String(err)}. Continuing without session.`,
+				)
+				progress.complete("Session sync skipped")
+				sessionExport = undefined
+			}
+		}
+
+		// ── 6. Connect (WS handshake retries inside) ──
+		progress.step("Connecting")
+		let remote: RemoteAgentSession
+		try {
+			remote = await buildRemoteAgentSession({
+				sessionId,
+				apiKey: ctx.apiKey,
+				description: authResult.description,
+				endpoint: ctx.endpoint,
+				services: ctx.services,
+				sessionManager: (homeBase as { sessionManager: SessionManager }).sessionManager,
+				cwd: ctx.cwd,
+			})
+		} catch (err) {
+			refuse(ctx, `Could not connect to remote session: ${err instanceof Error ? err.message : String(err)}`)
+		}
+		progress.complete("Connected")
+
+		if (args.name) {
+			try {
+				await (remote as unknown as { setSessionName: (name: string) => Promise<unknown> }).setSessionName(args.name)
+			} catch (err) {
+				warn(ctx, `Could not set session name: ${err instanceof Error ? err.message : String(err)}`)
+			}
+		}
+
+		// ── 6.5. Load session on remote (if exported) ──
+		if (!args.skipSession && sessionExport) {
+			progress.step("Loading session")
+			try {
+				await remote.switchSession(sessionExport.remotePath)
+				await remote.getMessages()
+				await remote.getState()
+				progress.complete("Session loaded")
+			} catch (err) {
+				warn(ctx, `Could not load session on remote: ${err instanceof Error ? err.message : String(err)}`)
+				progress.complete("Session load failed")
+			}
+		}
+
+		// ── 7. Swap ──
+		wrapper.foregroundRemote(remote)
+		await refreshUIAfterSwap(ctx)
+
+		progress.finish({
+			id: sessionId,
+			url: authResult.wsUrl,
+			description: authResult.description,
 		})
-	} catch (err) {
-		refuse(ctx, `Could not connect to remote session: ${err instanceof Error ? err.message : String(err)}`)
+	} finally {
+		progress.stop()
+		status(ctx, undefined)
 	}
-
-	// ── 6. Optional name set ──
-	if (args.name) {
-		try {
-			await (remote as unknown as { setSessionName: (name: string) => Promise<unknown> }).setSessionName(args.name)
-		} catch (err) {
-			warn(ctx, `Could not set session name: ${err instanceof Error ? err.message : String(err)}`)
-		}
-	}
-
-	// ── 6.5. Load session on remote (if exported) ──
-	if (!args.skipSession && sessionExport) {
-		status(ctx, "Loading session…")
-		try {
-			await remote.switchSession(sessionExport.remotePath)
-			await remote.getMessages()
-			await remote.getState()
-		} catch (err) {
-			warn(ctx, `Could not load session on remote: ${err instanceof Error ? err.message : String(err)}`)
-		}
-	}
-
-	// ── 7. Swap ──
-	wrapper.foregroundRemote(remote)
-	await refreshUIAfterSwap(ctx)
-
-	// ── 8. Notify ──
-	status(ctx, undefined)
-	info(ctx, `Teleported to remote session ${sessionId}${args.name ? ` (${args.name})` : ""}.`)
 }
 
 // ───────────────────────── runDetach ─────────────────────────
@@ -567,48 +542,65 @@ export async function runAttach(args: AttachArgs, ctx: TeleportContext): Promise
 		refuse(ctx, "Usage: /attach <name-or-id>")
 	}
 
-	const resolved = await resolveSessionTarget(target, ctx)
-	const sessionId = resolved.sessionId
+	const progress = createTeleportProgress(ctx.ui)
 
-	// Discard any disposed instance in the detached map — we always build fresh.
-	if (resolved.knownLocally) {
+	try {
+		progress.step("Looking up session")
+		const resolved = await resolveSessionTarget(target, ctx)
+		const sessionId = resolved.sessionId
+		progress.complete("Session found")
+
+		if (resolved.knownLocally) {
+			try {
+				wrapper.promoteFromDetached(sessionId)
+			} catch {
+				// already removed or never there — fine
+			}
+		}
+
+		progress.step("Authenticating")
+		let authResult: AuthenticateResponse
 		try {
-			wrapper.promoteFromDetached(sessionId)
-		} catch {
-			// already removed or never there — fine
+			authResult = await authenticateRemoteSession(sessionId, ctx.apiKey, `Remote session for ${basename(ctx.cwd)}`, {
+				endpoint: ctx.endpoint,
+			})
+		} catch (err) {
+			if (err instanceof RemoteAuthError) {
+				refuse(ctx, `Authentication failed for ${sessionId}: ${err.message}`)
+			}
+			refuse(ctx, `Authentication failed: ${err instanceof Error ? err.message : String(err)}`)
 		}
-	}
+		progress.complete("Authenticated")
 
-	// 3. Auth + build fresh remote.
-	status(ctx, "Authenticating…")
-	try {
-		await authenticateRemoteSession(sessionId, ctx.apiKey, { endpoint: ctx.endpoint })
-	} catch (err) {
-		if (err instanceof RemoteAuthError) {
-			refuse(ctx, `Authentication failed for ${sessionId}: ${err.message}`)
+		progress.step("Connecting")
+		let remote: RemoteAgentSession
+		try {
+			remote = await buildRemoteAgentSession({
+				sessionId,
+				apiKey: ctx.apiKey,
+				description: authResult.description,
+				endpoint: ctx.endpoint,
+				services: ctx.services,
+				sessionManager: (wrapper.homeBase as { sessionManager: SessionManager }).sessionManager,
+				cwd: ctx.cwd,
+			})
+		} catch (err) {
+			refuse(ctx, `Could not connect to remote session: ${err instanceof Error ? err.message : String(err)}`)
 		}
-		refuse(ctx, `Authentication failed: ${err instanceof Error ? err.message : String(err)}`)
-	}
+		progress.complete("Connected")
 
-	status(ctx, "Loading session state…")
-	let remote: RemoteAgentSession
-	try {
-		remote = await buildRemoteAgentSession({
-			sessionId,
-			apiKey: ctx.apiKey,
-			endpoint: ctx.endpoint,
-			services: ctx.services,
-			sessionManager: (wrapper.homeBase as { sessionManager: SessionManager }).sessionManager,
-			cwd: ctx.cwd,
+		wrapper.foregroundRemote(remote)
+		await refreshUIAfterSwap(ctx)
+
+		progress.finish({
+			id: sessionId,
+			url: authResult.wsUrl,
+			description: authResult.description,
 		})
-	} catch (err) {
-		refuse(ctx, `Could not connect to remote session: ${err instanceof Error ? err.message : String(err)}`)
+	} finally {
+		progress.stop()
+		status(ctx, undefined)
 	}
-
-	wrapper.foregroundRemote(remote)
-	await refreshUIAfterSwap(ctx)
-	status(ctx, undefined)
-	info(ctx, `Attached to remote session ${sessionId}.`)
 }
 
 async function resolveSessionTarget(
@@ -622,7 +614,6 @@ async function resolveSessionTarget(
 		}
 	}
 
-	status(ctx, "Looking up session…")
 	let sessions: RemoteSessionSummary[]
 	try {
 		sessions = await listRemoteSessions(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal })
@@ -675,7 +666,9 @@ export async function runConnect(
 	status(ctx, "Authenticating SSH…")
 	let auth: AuthenticateResponse
 	try {
-		auth = await authenticateRemoteSession(sessionId, ctx.apiKey, { endpoint: ctx.endpoint })
+		auth = await authenticateRemoteSession(sessionId, ctx.apiKey, `Remote session for ${basename(ctx.cwd)}`, {
+			endpoint: ctx.endpoint,
+		})
 	} catch (err) {
 		if (err instanceof RemoteAuthError) {
 			refuse(ctx, `Authentication failed for ${sessionId}: ${err.message}`)

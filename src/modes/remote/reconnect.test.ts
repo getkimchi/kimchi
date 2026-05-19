@@ -49,6 +49,7 @@ describe("ReconnectSupervisor", () => {
 		const supervisor = new ReconnectSupervisor({
 			sessionId: "s1",
 			apiKey: "key",
+			description: "test session",
 		})
 
 		const client = await supervisor.connect()
@@ -78,6 +79,7 @@ describe("ReconnectSupervisor", () => {
 		const supervisor = new ReconnectSupervisor({
 			sessionId: "s1",
 			apiKey: "key",
+			description: "test session",
 		})
 		supervisor.onFatal = onFatal
 

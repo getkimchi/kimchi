@@ -4,6 +4,7 @@ export interface AuthenticateResponse {
 	wsUrl: string
 	host: string
 	port: number
+	description: string
 }
 
 export type RemoteSessionStatus = "active" | "idle" | "completed"
@@ -16,8 +17,6 @@ export interface RemoteSessionSummary {
 	status: RemoteSessionStatus
 	hasConnectedClient: boolean
 }
-
-export const REMOTE_ENDPOINT = "https://app.kimchi.dev"
 
 export enum WsCloseCode {
 	Normal = 1000,
@@ -41,21 +40,6 @@ export class RemoteNetworkError extends Error {
 		this.name = "RemoteNetworkError"
 	}
 }
-
-/** Minimal AgentEvent shape — remote events have arbitrary shape per type */
-export interface AgentEvent {
-	type: string
-	[key: string]: unknown
-}
-
-export interface RpcResponse {
-	id?: string
-	type?: string
-	success: boolean
-	data?: unknown
-	error?: string
-}
-
 /**
  * Transport for NDJSON-RPC.  The readable stream yields lines of JSON.
  * The writable stream receives lines to send.
