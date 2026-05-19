@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
-import { getCliModeArg } from "../../cli-args.js"
+import { getCliModeArg, isPreDispatchValueFlag } from "../../cli-args.js"
 import {
 	readHideSessionModeDialog,
 	readSessionModeWizardSeenAt,
@@ -61,26 +61,6 @@ export interface SessionModeOnboardingExtensionOptions {
 
 export const SESSION_MODE_WIDGET_KEY = "kimchi-session-mode-onboarding"
 const SESSION_MODE_WIDGET_OPTIONS = { placement: "aboveEditor" } as const
-
-const VALUE_FLAGS = new Set([
-	"--provider",
-	"--model",
-	"--api-key",
-	"--system-prompt",
-	"--append-system-prompt",
-	"--session",
-	"--fork",
-	"--session-dir",
-	"--models",
-	"--tools",
-	"-t",
-	"--export",
-	"--extension",
-	"-e",
-	"--skill",
-	"--prompt-template",
-	"--theme",
-])
 
 export default function sessionModeOnboardingExtension(options: SessionModeOnboardingExtensionOptions) {
 	return (pi: ExtensionAPI) => {
@@ -267,7 +247,7 @@ function scanLaunchArgs(rawArgs: string[]): {
 			if (i + 1 < rawArgs.length) i += 1
 		} else if (arg.startsWith("@")) {
 			explicitDefaultIntent = true
-		} else if (VALUE_FLAGS.has(arg)) {
+		} else if (isPreDispatchValueFlag(arg)) {
 			if (i + 1 < rawArgs.length) i += 1
 		} else if (arg.startsWith("--")) {
 			if (!arg.includes("=") && isPotentialUnknownFlagValue(rawArgs[i + 1])) i += 1

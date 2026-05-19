@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { getCliModeArg, isHelpOrVersionArgs } from "./cli-args.js"
+import { getCliModeArg, isHelpOrVersionArgs, isPreDispatchValueFlag } from "./cli-args.js"
 
 describe("getCliModeArg", () => {
 	it("reads --mode value", () => {
@@ -28,4 +28,36 @@ describe("isHelpOrVersionArgs", () => {
 	it("returns false without help or version flags", () => {
 		expect(isHelpOrVersionArgs(["--mode", "json"])).toBe(false)
 	})
+})
+
+describe("isPreDispatchValueFlag", () => {
+	it.each([
+		["--provider"],
+		["--model"],
+		["--api-key"],
+		["--system-prompt"],
+		["--append-system-prompt"],
+		["--session"],
+		["--fork"],
+		["--session-dir"],
+		["--models"],
+		["--tools"],
+		["-t"],
+		["--thinking"],
+		["--export"],
+		["--extension"],
+		["-e"],
+		["--skill"],
+		["--prompt-template"],
+		["--theme"],
+	])("detects %s as consuming a value during pre-dispatch scans", (arg) => {
+		expect(isPreDispatchValueFlag(arg)).toBe(true)
+	})
+
+	it.each([["--continue"], ["--resume"], ["--no-tools"], ["--no-themes"], ["fix tests"]])(
+		"does not treat %s as a value flag",
+		(arg) => {
+			expect(isPreDispatchValueFlag(arg)).toBe(false)
+		},
+	)
 })
