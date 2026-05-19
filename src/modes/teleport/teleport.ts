@@ -369,7 +369,7 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 
 	// ── 3.75. Optional session export ──
 	let sessionExport: { localDir: string; remotePath: string } | undefined
-	if (args.withSession) {
+	if (!args.skipSession) {
 		status(ctx, "Exporting session…")
 		try {
 			sessionExport = exportSessionForTeleport({
@@ -442,7 +442,7 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 	}
 
 	// ── 4.5. rsync session file ──
-	if (args.withSession && sessionExport) {
+	if (!args.skipSession && sessionExport) {
 		status(ctx, "Syncing session…")
 		try {
 			await runRsync({
@@ -487,7 +487,7 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 	}
 
 	// ── 6.5. Load session on remote (if exported) ──
-	if (args.withSession && sessionExport) {
+	if (!args.skipSession && sessionExport) {
 		status(ctx, "Loading session…")
 		try {
 			await remote.switchSession(sessionExport.remotePath)
