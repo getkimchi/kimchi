@@ -28,6 +28,7 @@ import { isAbsolute, join, normalize, resolve } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
+import { readMultiModelShortcutFromConfig } from "../../config.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
@@ -121,7 +122,10 @@ function isDelegationToolCallName(name: string | undefined): boolean {
 	return name != null && DELEGATION_TOOL_NAMES.has(name)
 }
 
-export const MULTI_MODEL_SHORTCUT = process.platform === "darwin" ? "option+m" : "alt+m"
+const DEFAULT_MULTI_MODEL_KEY = "ctrl+n"
+const MULTI_MODEL_KEY = readMultiModelShortcutFromConfig() ?? DEFAULT_MULTI_MODEL_KEY
+export const MULTI_MODEL_SHORTCUT =
+	process.platform === "darwin" ? MULTI_MODEL_KEY.replace(/\balt\b/, "option") : MULTI_MODEL_KEY
 
 /**
  * Shape of a tool-call content block as emitted in assistant messages.
@@ -234,7 +238,7 @@ export default function (skillPaths: string[]) {
 				if (unsubMultiModelToggle) unsubMultiModelToggle()
 				if (ctx.hasUI) {
 					unsubMultiModelToggle = ctx.ui.onTerminalInput((data) => {
-						if (matchesKey(data, MULTI_MODEL_SHORTCUT) || data === "µ") {
+						if (matchesKey(data, MULTI_MODEL_KEY)) {
 							if (!isKeyRelease(data)) {
 								multiModelEnabled = !multiModelEnabled
 								ctx.ui.setStatus("multi-model", undefined)

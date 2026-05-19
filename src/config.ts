@@ -78,12 +78,25 @@ export interface KimchiConfig {
 	mcpSearch: SearchStrategyConfig
 	skillPaths?: string[]
 	migrationState?: MigrationState
+	multiModelShortcut?: string
 }
 
 /**
  * Read the Cast AI API key from the kimchi CLI config file.
  * Returns undefined if the file doesn't exist or the field is missing.
  */
+export function readMultiModelShortcutFromConfig(configPath: string = KIMCHI_CONFIG_PATH): string | undefined {
+	try {
+		const parsed = JSON.parse(readFileSync(configPath, "utf-8"))
+		if (typeof parsed.multiModelShortcut === "string" && parsed.multiModelShortcut.length > 0) {
+			return parsed.multiModelShortcut
+		}
+	} catch {
+		// config absent or unreadable
+	}
+	return undefined
+}
+
 export function readApiKeyFromConfigFile(configPath: string = KIMCHI_CONFIG_PATH): string | undefined {
 	try {
 		const raw = readFileSync(configPath, "utf-8")
