@@ -35,7 +35,7 @@ import {
 	type ThinkingLevel,
 } from "../personas/types.js"
 import { buildParentContext, extractText } from "../prompt/context.js"
-import { type PromptExtras, buildAgentPrompt } from "../prompt/prompts.js"
+import { type PromptExtras, buildAgentPrompt, formatTokenBudget } from "../prompt/prompts.js"
 import { preloadSkills } from "../prompt/skill-loader.js"
 import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage } from "./usage.js"
 
@@ -43,7 +43,7 @@ import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSess
 const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"]
 
 /** Default max turns. undefined = unlimited (no turn limit). */
-let defaultMaxTurns: number | undefined
+let defaultMaxTurns: number | undefined = 30
 
 /** Normalize max turns. undefined or 0 = unlimited, otherwise minimum 1. */
 export function normalizeMaxTurns(n: number | undefined): number | undefined {
@@ -266,6 +266,12 @@ async function runAgentInner(
 	const guidelinesBlock = buildPhaseGuidelinesSection(modelId, getCurrentPhase(), getGuidelinesRegistry())
 	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
 
+	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
+	const effectiveTokenBudget = options.tokenBudget ?? agentConfig?.tokenBudget
+	if (effectiveMaxTurns != null || effectiveTokenBudget != null) {
+		extras.budget = { maxTurns: effectiveMaxTurns, tokenBudget: effectiveTokenBudget }
+	}
+
 	let systemPrompt: string
 	if (agentConfig) {
 		systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras)
@@ -370,8 +376,6 @@ async function runAgentInner(
 	options.onSessionCreated?.(session)
 
 	let turnCount = 0
-	const maxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
-	const effectiveTokenBudget = options.tokenBudget ?? agentConfig?.tokenBudget
 	let cumulativeTokens = 0
 	const observedUsage: LifetimeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 	const windowObservedUsage: LifetimeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
@@ -380,21 +384,44 @@ async function runAgentInner(
 	let abortReason: AgentAbortReason | undefined
 	let budgetAborted = false
 
+	const progressSteerThresholds = [0.5, 0.75]
+	let nextProgressIdx = 0
+	let tokenSoftLimitSteered = false
+
+	function buildProgressSummary(): string {
+		const parts: string[] = []
+		if (effectiveMaxTurns != null) parts.push(`Turn ${turnCount}/${effectiveMaxTurns}`)
+		if (effectiveTokenBudget != null) {
+			parts.push(
+				`~${formatTokenBudget(cumulativeTokens)}/${formatTokenBudget(effectiveTokenBudget)} output tokens used`,
+			)
+		}
+		return parts.join(", ")
+	}
+
 	let currentMessageText = ""
 	const unsubTurns = session.subscribe((event: AgentSessionEvent) => {
 		if (event.type === "turn_end") {
 			turnCount++
 			options.onTurnEnd?.(turnCount)
-			if (maxTurns != null) {
-				if (!softLimitReached && turnCount >= maxTurns) {
+			if (effectiveMaxTurns != null) {
+				if (!softLimitReached && turnCount >= effectiveMaxTurns) {
 					softLimitReached = true
 					session.steer(
 						"You have reached your turn limit. Stop exploring. Complete your current edit, ensure file syntax is valid, undo any git state mutations so your work is visible on the filesystem, and summarize progress for the orchestrator. Do not start new edits.",
 					)
-				} else if (softLimitReached && turnCount >= maxTurns + graceTurns) {
+				} else if (softLimitReached && turnCount >= effectiveMaxTurns + graceTurns) {
 					aborted = true
 					abortReason = "max_turns"
 					session.abort()
+				} else if (!softLimitReached && nextProgressIdx < progressSteerThresholds.length) {
+					const threshold = progressSteerThresholds[nextProgressIdx] ?? 1
+					if (turnCount >= effectiveMaxTurns * threshold) {
+						nextProgressIdx++
+						session.steer(
+							`Budget check: ${buildProgressSummary()}. Prioritize completing the most important remaining work.`,
+						)
+					}
 				}
 			}
 		}
@@ -436,6 +463,11 @@ async function runAgentInner(
 							`[agent-runner] token budget exceeded (cumulative=${cumulativeTokens}, budget=${effectiveTokenBudget}); aborting`,
 						)
 						session.abort()
+					} else if (!tokenSoftLimitSteered && cumulativeTokens >= effectiveTokenBudget * 0.8) {
+						tokenSoftLimitSteered = true
+						session.steer(
+							`Budget check: ${buildProgressSummary()}. You are approaching your output token limit. Wrap up your current work and summarize any remaining tasks.`,
+						)
 					}
 				}
 			}
