@@ -14,6 +14,7 @@ import modelGuardExtension, {
 	estimateTokens,
 	hasImages,
 	__resetImagesDetectedForTest,
+	markImagesAsStripped,
 	sessionHasImages,
 	stripImages,
 	truncateMessages,
@@ -252,7 +253,7 @@ describe("stripImages", () => {
 		expect(content[0]).toHaveProperty("type", "text")
 		expect((content[0] as TextContent).text).toBe("look at this")
 		expect(content[1]).toHaveProperty("type", "text")
-		expect((content[1] as TextContent).text).toContain("image placeholder")
+		expect((content[1] as TextContent).text).toContain("image removed")
 		expect((content[1] as TextContent).text).toContain("image/png")
 	})
 
@@ -273,7 +274,7 @@ describe("stripImages", () => {
 		expect(result).not.toBe(msgs)
 		const content = (result[0] as ToolResultMessage).content as TextContent[]
 		expect(content[0]).toHaveProperty("type", "text")
-		expect((content[0] as TextContent).text).toContain("image placeholder")
+		expect((content[0] as TextContent).text).toContain("image removed")
 		expect(content[1]).toHaveProperty("type", "text")
 		expect((content[1] as TextContent).text).toBe("screenshot description")
 	})
@@ -601,5 +602,71 @@ describe("model_select handler", () => {
 		}
 		await trigger("model_select", event, ctx)
 		expect(notifyMock).not.toHaveBeenCalled()
+	})
+})
+
+// ── markImagesAsStripped ─────────────────────────────────────────────────────
+
+describe("markImagesAsStripped", () => {
+	beforeEach(() => {
+		__resetImagesDetectedForTest()
+	})
+
+	it("returns false from sessionHasImages after markImagesAsStripped even when images are present", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const ctx = makeMockCtx({
+			model: { id: "claude", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
+		})
+		// First, trigger context with images to set imagesDetected = true
+		await trigger("context", { messages: [makeUser("look", [makeImageBlock()])] }, ctx)
+		expect(sessionHasImages()).toBe(true)
+
+		// Now mark images as stripped
+		markImagesAsStripped()
+		expect(sessionHasImages()).toBe(false)
+	})
+
+	it("strips images even when target model supports vision after markImagesAsStripped", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const ctx = makeMockCtx({
+			model: { id: "claude", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
+		})
+		const msgs: ContextEvent["messages"] = [makeUser("look", [makeImageBlock()])]
+
+		// First verify images are detected
+		await trigger("context", { messages: msgs }, ctx)
+		expect(sessionHasImages()).toBe(true)
+
+		// Mark images as stripped
+		markImagesAsStripped()
+
+		// Trigger context again with the same messages
+		const result = (await trigger("context", { messages: msgs }, ctx)) as { messages: ContextEvent["messages"] }
+		expect(result).toBeDefined()
+		expect(hasImages(result.messages)).toBe(false)
+	})
+
+	it("resets imagesStripped flag when __resetImagesDetectedForTest is called", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const ctx = makeMockCtx({
+			model: { id: "claude", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
+		})
+		// Set up images detected
+		await trigger("context", { messages: [makeUser("look", [makeImageBlock()])] }, ctx)
+		expect(sessionHasImages()).toBe(true)
+
+		// Mark images as stripped
+		markImagesAsStripped()
+		expect(sessionHasImages()).toBe(false)
+
+		// Reset should restore initial state (images still present but not stripped)
+		__resetImagesDetectedForTest()
+
+		// After reset, triggering context with images should detect them again
+		await trigger("context", { messages: [makeUser("look", [makeImageBlock()])] }, ctx)
+		expect(sessionHasImages()).toBe(true)
 	})
 })

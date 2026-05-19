@@ -310,14 +310,14 @@ export default function uiExtension(pi: ExtensionAPI) {
 							if (!next) {
 								const lines = skipped.map((s) => `  • ${s.model.id}: ${s.reason}`)
 								ctx.ui.notify(
-									`No compatible model available.\n${lines.join("\n")}\n\nUse /compact to unlock models blocked by context size, or /strip-images to unlock models without vision support.`,
+									`No compatible model available.\n${lines.join("\n")}\n\nUse /compact to unlock models blocked by context size, or /strip-images for models without vision support.`,
 									"warning",
 								)
 							} else if (!modelsAreEqual(next, current)) {
 								if (skipped.length > 0) {
 									const lines = skipped.map((s) => `  • ${s.model.id}: ${s.reason}`)
 									ctx.ui.notify(
-										`Skipped ${skipped.length} model${skipped.length > 1 ? "s" : ""}:\n${lines.join("\n")}\n\nUse /compact to unlock models blocked by context size, or /strip-images to unlock models without vision support.`,
+										`Skipped ${skipped.length} model${skipped.length > 1 ? "s" : ""}:\n${lines.join("\n")}\n\nUse /compact to unlock models blocked by context size, or /strip-images for models without vision support.`,
 										"info",
 									)
 								}

@@ -41,6 +41,7 @@ import questionnaireExtension from "./extensions/questionnaire.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
+import stripImagesExtension from "./extensions/strip-images.js"
 import tagsExtension from "./extensions/tags.js"
 import telemetryExtension from "./extensions/telemetry.js"
 import terminalColorsExtension from "./extensions/terminal-colors.js"
@@ -318,6 +319,7 @@ try {
 			curatorExtension,
 			modelSwitchExtension,
 			modelGuardExtension,
+			stripImagesExtension,
 		]
 
 		if (acpMode) {

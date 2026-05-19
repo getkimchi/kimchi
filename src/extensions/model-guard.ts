@@ -1,5 +1,8 @@
-import type { ImageContent, TextContent, UserMessage } from "@earendil-works/pi-ai"
+import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+
+/** Messages that have a content array we can inspect for images. */
+type ContentMessage = UserMessage | AssistantMessage | ToolResultMessage
 import { getModelTier } from "./model-switch.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 
@@ -17,21 +20,67 @@ const SAFETY_MARGIN = 0.95
 /** Module-level flag tracking whether the current session contains image blocks. */
 let imagesDetected = false
 
+/** Module-level flag tracking whether images have been stripped for non-vision model compatibility. */
+let imagesStripped = false
+
+/** Reference to the latest context messages (stored for /strip-images command). */
+let latestMessages: ContextEvent["messages"] = []
+
+/** Map storing image descriptions keyed by data hash (for replacing images with descriptions). */
+const imageDescriptions = new Map<string, string>()
+
 /**
  * Returns true if the most recent `context` event contained image blocks.
  * Updated automatically by the extension's `context` handler.
+ * Returns false if images have been stripped (conceptually gone).
  */
 export function sessionHasImages(): boolean {
-	return imagesDetected
+	return imagesDetected && !imagesStripped
 }
 
 /**
- * Resets the module-level imagesDetected flag to false.
+ * Marks images as stripped for the current session.
+ * Called by the /strip-images command after processing.
+ * After calling this, sessionHasImages() returns false and the context handler will apply stripping.
+ */
+export function markImagesAsStripped(): void {
+	imagesStripped = true
+}
+
+/**
+ * Stores a text description for an image, keyed by its data hash.
+ * Used by the context handler to replace image blocks with their descriptions.
+ */
+export function storeImageDescription(dataHash: string, description: string): void {
+	imageDescriptions.set(dataHash, description)
+}
+
+/**
+ * Computes a hash from image data for consistent lookup.
+ * Uses base64 data directly as the key (sufficient for our purposes).
+ */
+export function getImageDataHash(imageData: string): string {
+	return `img_${imageData.slice(0, 32)}_${imageData.length}`
+}
+
+/**
+ * Returns the latest context messages reference.
+ * Used by the /strip-images command to process images.
+ */
+export function getLatestMessages(): ContextEvent["messages"] {
+	return latestMessages
+}
+
+/**
+ * Resets the module-level flags to their initial state.
  * Exported exclusively for use in unit tests — do not call in production code.
  * @internal
  */
 export function __resetImagesDetectedForTest(): void {
 	imagesDetected = false
+	imagesStripped = false
+	latestMessages = []
+	imageDescriptions.clear()
 }
 
 /**
@@ -46,8 +95,9 @@ export function estimateTokens(messages: ContextEvent["messages"]): number {
 			tokens += msg.usage.totalTokens
 			continue
 		}
-		// Fall back to char-based estimation
-		const content = (msg as UserMessage).content
+		// Fall back to char-based estimation - only for messages with content
+		if (!("content" in msg)) continue
+		const content = (msg as ContentMessage).content
 		if (typeof content === "string") {
 			tokens += Math.ceil(content.length / 4)
 		} else if (Array.isArray(content)) {
@@ -66,10 +116,12 @@ export function estimateTokens(messages: ContextEvent["messages"]): number {
 
 /**
  * Detect whether any message in the array contains ImageContent blocks.
+ * Checks all message types (user messages, tool results, etc.).
  */
 export function hasImages(messages: ContextEvent["messages"]): boolean {
 	for (const msg of messages) {
-		const content = (msg as UserMessage).content
+		if (!("content" in msg)) continue
+		const content = (msg as ContentMessage).content
 		if (typeof content === "string") continue
 		if (Array.isArray(content)) {
 			for (const block of content) {
@@ -81,31 +133,38 @@ export function hasImages(messages: ContextEvent["messages"]): boolean {
 }
 
 /**
- * Replace ImageContent blocks with text placeholders, preserving message shape.
+ * Replace ImageContent blocks with text placeholders or descriptions, preserving message shape.
  * Returns the original reference when there is nothing to strip.
+ * If an image description was stored via storeImageDescription(), uses that instead of placeholder.
  */
 export function stripImages(messages: ContextEvent["messages"]): ContextEvent["messages"] {
 	let changed = false
 	const result = messages.map((msg) => {
-		const content = (msg as UserMessage).content
+		if (!("content" in msg)) return msg
+		const content = (msg as ContentMessage).content
 		if (typeof content === "string") return msg
 		if (!Array.isArray(content)) return msg
 
 		const stripped = content.map((block) => {
 			if (block.type === "image") {
-				changed = true
 				const img = block as ImageContent
+				const hash = getImageDataHash(img.data)
+				const description = imageDescriptions.get(hash)
+				const text: string = description
+					? `[Image description: ${description}]`
+					: `[image removed: ${img.mimeType ?? "image"} — stripped for non-vision model compatibility]`
 				const placeholder: TextContent = {
 					type: "text",
-					text: `[image placeholder: ${img.mimeType ?? "image"} (base64, omitted for non-vision model)]`,
+					text,
 				}
 				return placeholder
 			}
 			return block
 		})
 
-		if (!changed) return msg
-		return { ...msg, content: stripped }
+		const messageChanged = stripped.some((block, i) => block !== content[i])
+		if (messageChanged) changed = true
+		return messageChanged ? { ...msg, content: stripped } : msg
 	})
 
 	return changed ? (result as ContextEvent["messages"]) : messages
@@ -156,15 +215,23 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 
 		const messages = event.messages
 
+		// Store reference to latest messages for /strip-images command
+		latestMessages = messages
+
 		// Always update the session-level image flag before any other processing
-		imagesDetected = hasImages(messages)
+		// If images were stripped, we consider them conceptually gone
+		if (imagesStripped) {
+			imagesDetected = false
+		} else {
+			imagesDetected = hasImages(messages)
+		}
 
 		let modified = false
 		let result = messages
 
-		// Strip images when target model does not support vision input
-		if (model && !model.input.includes("image")) {
-			if (imagesDetected) {
+		// Strip images when: (a) target model does not support vision input, OR (b) imagesStripped flag is set
+		if (imagesStripped || (model && !model.input.includes("image"))) {
+			if (hasImages(result)) {
 				result = stripImages(result)
 				modified = true
 			}

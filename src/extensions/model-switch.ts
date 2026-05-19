@@ -106,7 +106,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text" as const,
-							text: `Current conversation contains images but target model "${model}" does not support vision input. Run /strip-images first to generate text descriptions, then retry the switch.`,
+							text: `Current conversation contains images but target model "${model}" does not support vision input. Run /strip-images to replace images with text descriptions, then retry.`,
 						},
 					],
 					details: null,
@@ -180,7 +180,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 			await pi.setModel(event.previousModel)
 			isRevertingModel = false
 			ctx.ui?.notify(
-				`Session contains images but ${event.model.id} does not support vision. Switch rejected — run /strip-images first to generate text descriptions, then retry.`,
+				`Session contains images but ${event.model.id} does not support vision. Run /strip-images to unlock non-vision models, or use a vision-capable model.`,
 				"error",
 			)
 			return
