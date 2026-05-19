@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { getCliModeArg } from "./cli-args.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import {
 	DEFAULT_SKILL_PATHS,
@@ -30,6 +31,7 @@ import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
+import sessionModeOnboardingExtension, { buildSessionModeLaunchContext } from "./extensions/onboarding/session-mode.js"
 import permissionsExtension from "./extensions/permissions/index.js"
 import { reserveShiftTabForPermissions } from "./extensions/permissions/keybindings.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
@@ -106,12 +108,7 @@ function isHelpOrVersionArgs(args: string[]): boolean {
 }
 
 function isAcpMode(args: string[]): boolean {
-	for (let i = 0; i < args.length; i++) {
-		const a = args[i]
-		if (a === "--mode" && args[i + 1] === "acp") return true
-		if (a === "--mode=acp") return true
-	}
-	return false
+	return getCliModeArg(args) === "acp"
 }
 
 try {
@@ -283,6 +280,13 @@ try {
 		}
 
 		const rawArgs = process.argv.slice(2)
+		const sessionModeOnboarding = sessionModeOnboardingExtension({
+			launchContext: buildSessionModeLaunchContext(rawArgs, {
+				isAcpMode: acpMode,
+				stdinIsTTY: process.stdin.isTTY === true,
+				stdoutIsTTY: process.stdout.isTTY === true,
+			}),
+		})
 
 		const extensionFactories = [
 			startupUpdateExtension,
@@ -306,6 +310,7 @@ try {
 			hideThinkingExtension,
 			clipboardImageExtension,
 			uiExtension,
+			sessionModeOnboarding,
 			agentsExtension,
 			tagsExtension,
 			telemetryExtension(telemetryConfig),

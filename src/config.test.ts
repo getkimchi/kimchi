@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { clearApiKey, loadConfig, writeApiKey } from "./config.js"
+import { clearApiKey, loadConfig, writeApiKey, writeSessionModeWizardSeenAt } from "./config.js"
 
 describe("loadConfig", () => {
 	let tempDir: string
@@ -179,6 +179,31 @@ describe("loadConfig", () => {
 		rmSync(globalDir, { recursive: true, force: true })
 		rmSync(rootDir, { recursive: true, force: true })
 	})
+
+	it("reads global onboarding state", () => {
+		writeFileSync(configPath, JSON.stringify({ onboarding: { sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z" } }))
+
+		const config = loadConfig({ configPath })
+
+		expect(config.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
+	})
+
+	it("does not read project onboarding state as global first-run state", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ apiKey: "global-key" }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ onboarding: { sessionModeWizardSeenAt: "project" } }))
+
+		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+		expect(config.onboarding.sessionModeWizardSeenAt).toBeUndefined()
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
 })
 
 describe("writeApiKey", () => {
@@ -244,5 +269,46 @@ describe("clearApiKey", () => {
 
 	it("is a no-op when config file does not exist", () => {
 		expect(() => clearApiKey(configPath)).not.toThrow()
+	})
+})
+
+describe("writeSessionModeWizardSeenAt", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("writes onboarding.sessionModeWizardSeenAt", () => {
+		writeSessionModeWizardSeenAt("2026-05-19T09:30:00.000Z", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
+	})
+
+	it("preserves unrelated fields and existing onboarding fields", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				apiKey: "key",
+				onboarding: { otherWizardSeenAt: "2026-05-18T10:00:00.000Z" },
+			}),
+		)
+
+		writeSessionModeWizardSeenAt("2026-05-19T09:30:00.000Z", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+
+		expect(raw).toEqual({
+			apiKey: "key",
+			onboarding: {
+				otherWizardSeenAt: "2026-05-18T10:00:00.000Z",
+				sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z",
+			},
+		})
 	})
 })
