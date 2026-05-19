@@ -88,14 +88,25 @@ export function __resetImagesDetectedForTest(): void {
  * Accumulates from assistant message usage when available for higher accuracy.
  */
 export function estimateTokens(messages: ContextEvent["messages"]): number {
-	let tokens = 0
-	for (const msg of messages) {
-		// Use precise usage from assistant messages when available
+	let lastAssistantIdx = -1
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i]
 		if (msg.role === "assistant" && "usage" in msg && msg.usage?.totalTokens) {
-			tokens += msg.usage.totalTokens
-			continue
+			lastAssistantIdx = i
+			break
 		}
-		// Fall back to char-based estimation - only for messages with content
+	}
+
+	let tokens = 0
+
+	if (lastAssistantIdx >= 0) {
+		const lastAssistant = messages[lastAssistantIdx]
+		tokens = (lastAssistant as AssistantMessage).usage?.totalTokens ?? 0
+	}
+
+	for (let i = lastAssistantIdx >= 0 ? lastAssistantIdx + 1 : 0; i < messages.length; i++) {
+		const msg = messages[i]
+		if (msg.role === "assistant" && "usage" in msg && msg.usage?.totalTokens) continue
 		if (!("content" in msg)) continue
 		const content = (msg as ContentMessage).content
 		if (typeof content === "string") {
@@ -105,7 +116,6 @@ export function estimateTokens(messages: ContextEvent["messages"]): number {
 				if (block.type === "text") {
 					tokens += Math.ceil(block.text.length / 4)
 				} else if (block.type === "image") {
-					// Conservative overestimate — a typical screenshot is ~1k tokens
 					tokens += 1000
 				}
 			}
@@ -138,36 +148,30 @@ export function hasImages(messages: ContextEvent["messages"]): boolean {
  * If an image description was stored via storeImageDescription(), uses that instead of placeholder.
  */
 export function stripImages(messages: ContextEvent["messages"]): ContextEvent["messages"] {
-	let changed = false
+	let anyChanged = false
 	const result = messages.map((msg) => {
 		if (!("content" in msg)) return msg
 		const content = (msg as ContentMessage).content
 		if (typeof content === "string") return msg
 		if (!Array.isArray(content)) return msg
+		if (!content.some((block) => block.type === "image")) return msg
 
 		const stripped = content.map((block) => {
-			if (block.type === "image") {
-				const img = block as ImageContent
-				const hash = getImageDataHash(img.data)
-				const description = imageDescriptions.get(hash)
-				const text: string = description
-					? `[Image description: ${description}]`
-					: `[image removed: ${img.mimeType ?? "image"} — stripped for non-vision model compatibility]`
-				const placeholder: TextContent = {
-					type: "text",
-					text,
-				}
-				return placeholder
-			}
-			return block
+			if (block.type !== "image") return block
+			const img = block as ImageContent
+			const hash = getImageDataHash(img.data)
+			const description = imageDescriptions.get(hash)
+			const text: string = description
+				? `[Image description: ${description}]`
+				: `[image removed: ${img.mimeType ?? "image"} — stripped for non-vision model compatibility]`
+			return { type: "text", text } as TextContent
 		})
 
-		const messageChanged = stripped.some((block, i) => block !== content[i])
-		if (messageChanged) changed = true
-		return messageChanged ? { ...msg, content: stripped } : msg
+		anyChanged = true
+		return { ...msg, content: stripped }
 	})
 
-	return changed ? (result as ContextEvent["messages"]) : messages
+	return anyChanged ? (result as ContextEvent["messages"]) : messages
 }
 
 const TRUNCATE_NOTICE = "⚠️ Context truncated to fit model context window.\n\n"
@@ -177,6 +181,22 @@ const TRUNCATE_NOTICE = "⚠️ Context truncated to fit model context window.\n
  * Preserves at least the last 2 messages unconditionally.
  * Returns the original reference when nothing is truncated.
  */
+export function estimateMessageTokens(msg: ContextEvent["messages"][number]): number {
+	if (msg.role === "assistant" && "usage" in msg && msg.usage?.totalTokens) {
+		return msg.usage.totalTokens
+	}
+	if (!("content" in msg)) return 0
+	const content = (msg as ContentMessage).content
+	if (typeof content === "string") return Math.ceil(content.length / 4)
+	if (!Array.isArray(content)) return 0
+	let t = 0
+	for (const block of content) {
+		if (block.type === "text") t += Math.ceil(block.text.length / 4)
+		else if (block.type === "image") t += 1000
+	}
+	return t
+}
+
 export function truncateMessages(messages: ContextEvent["messages"], maxTokens: number): ContextEvent["messages"] {
 	const noticeTokens = Math.ceil(TRUNCATE_NOTICE.length / 4)
 	const effectiveMax = Math.floor(maxTokens * SAFETY_MARGIN) - noticeTokens
@@ -184,16 +204,16 @@ export function truncateMessages(messages: ContextEvent["messages"], maxTokens: 
 	if (estimateTokens(messages) <= effectiveMax) return messages
 	if (messages.length <= 2) return messages
 
-	// Walk backwards to find the smallest index i such that messages[i..] fits
-	// within effectiveMax AND has at least 2 messages. Start from the minimum
-	// cutoff that preserves 2 messages (length - 2).
-	let cutoff = messages.length
-	for (let i = messages.length - 2; i >= 0; i--) {
-		const candidate = messages.slice(i)
-		if (estimateTokens(candidate) <= effectiveMax) {
-			cutoff = i
+	let runningTokens = 0
+	let cutoff = messages.length - 2
+
+	for (let i = messages.length - 1; i >= 0; i--) {
+		runningTokens += estimateMessageTokens(messages[i])
+		if (runningTokens > effectiveMax) {
+			cutoff = Math.min(Math.max(i + 1, 0), messages.length - 2)
 			break
 		}
+		cutoff = i
 	}
 
 	const pruned = messages.slice(cutoff)

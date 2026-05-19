@@ -85,14 +85,16 @@ describe("estimateTokens", () => {
 		expect(estimateTokens(msgs)).toBe(500)
 	})
 
-	it("accumulates usage across multiple assistant messages", () => {
+	it("uses only the last assistant message usage as baseline (no double-counting)", () => {
 		const msgs: ContextEvent["messages"] = [makeAssistant(200), makeAssistant(300)]
-		expect(estimateTokens(msgs)).toBe(500)
+		// Only the last assistant (300) is used as baseline; earlier ones are covered by it
+		expect(estimateTokens(msgs)).toBe(300)
 	})
 
-	it("falls back to char/4 for user messages even when later assistant messages have usage", () => {
-		const msgs: ContextEvent["messages"] = [makeUser("hello world"), makeAssistant(500)]
-		// user: 3 tokens (chars/4) + assistant: 500 = 503
+	it("adds incremental estimates for messages after the last assistant usage", () => {
+		// "hello world" = 11 chars -> ceil(11/4) = 3
+		const msgs: ContextEvent["messages"] = [makeAssistant(500), makeUser("hello world")]
+		// baseline: 500 (last assistant) + user: 3 = 503
 		expect(estimateTokens(msgs)).toBe(503)
 	})
 
@@ -309,37 +311,36 @@ describe("truncateMessages", () => {
 	})
 
 	it("drops oldest messages when over budget", () => {
-		// Each makeUser("x"*1000) ≈ 250 tokens; 10 messages = ~2500 tokens
-		// Default window 10_000 with 0.95 margin = 9500; should fit 10 short messages
-		// Use makeAssistant(500) per message to get 5000 tokens for 10 messages
-		const msgs: ContextEvent["messages"] = Array.from({ length: 10 }, () => makeAssistant(500))
-		// 10 * 500 = 5000 tokens < 9500 → no truncation
+		// Each user message with 2000 chars = 500 tokens; 10 x 500 = 5000 < 9500 → no truncation
+		const msgs: ContextEvent["messages"] = Array.from({ length: 10 }, (_, i) => makeUser("x".repeat(2000)))
 		expect(truncateMessages(msgs, DEFAULT_WINDOW)).toBe(msgs)
 
-		// With 30 messages at 500 tokens each = 15,000 tokens > 9,500
-		const long: ContextEvent["messages"] = Array.from({ length: 30 }, () => makeAssistant(500))
+		// 30 x 500 = 15,000 tokens > 9,500 → truncation
+		const long: ContextEvent["messages"] = Array.from({ length: 30 }, (_, i) => makeUser("x".repeat(2000)))
 		const result = truncateMessages(long, DEFAULT_WINDOW)
 		expect(result).not.toBe(long)
 		expect(result.length).toBeLessThan(30)
 	})
 
-	it("always preserves at least the last 2 messages", () => {
+	it("always preserves at least the last 2 messages even when they exceed budget", () => {
+		const bigText = "x".repeat(4000)
 		const msgs: ContextEvent["messages"] = [
-			makeUser("old"),
-			makeUser("older"),
-			makeUser("recent"),
-			makeUser("most recent"),
+			makeUser(`old ${bigText}`),
+			makeUser(`older ${bigText}`),
+			makeUser(`recent ${bigText}`),
+			makeUser(`most recent ${bigText}`),
 		]
-		// Very low maxTokens to force aggressive truncation
-		const result = truncateMessages(msgs, 100)
-		expect(result.length).toBeGreaterThanOrEqual(2)
-		// The last 2 original messages should be in the result
+		// maxTokens=1 forces aggressive truncation — even last 2 exceed budget
+		const result = truncateMessages(msgs, 1)
+		// notice + last 2 messages = 3
+		expect(result).toHaveLength(3)
 		const texts = result.map((m) => {
 			const c = (m as UserMessage).content
 			return typeof c === "string" ? c : (c as TextContent[])[0]?.text
 		})
-		expect(texts).toContain("most recent")
-		expect(texts).toContain("recent")
+		expect(texts[0]).toContain("Context truncated")
+		expect(texts[1]).toContain("recent")
+		expect(texts[2]).toContain("most recent")
 	})
 
 	it("prepends a truncation notice as first message", () => {
@@ -446,8 +447,8 @@ describe("modelGuardExtension handler", () => {
 			model: { id: "claude", input: ["text"], contextWindow: 10_000 } as ExtensionContext["model"],
 			getContextUsage: () => ({ tokens: 9_600, contextWindow: 10_000, percent: 96 }),
 		})
-		// 30 messages at 500 tokens each = 15,000 tokens — will be truncated
-		const msgs: ContextEvent["messages"] = Array.from({ length: 30 }, () => makeAssistant(500))
+		// 30 user messages at ~500 tokens each (2000 chars) = 15,000 tokens — will be truncated
+		const msgs: ContextEvent["messages"] = Array.from({ length: 30 }, (_, i) => makeUser("x".repeat(2000)))
 		const result = (await trigger("context", { messages: msgs }, ctx)) as { messages: ContextEvent["messages"] }
 		expect(result).toBeDefined()
 		expect(result.messages.length).toBeLessThan(30)
