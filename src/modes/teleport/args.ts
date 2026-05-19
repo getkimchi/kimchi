@@ -5,6 +5,7 @@ export interface TeleportArgs {
 	includeIgnored: boolean
 	abandonPending: boolean
 	force: boolean
+	withSession?: boolean
 }
 
 export interface DetachArgs {
@@ -38,6 +39,7 @@ export function parseTeleportArgs(raw: string): TeleportArgs {
 		includeIgnored: false,
 		abandonPending: false,
 		force: false,
+		withSession: false,
 	}
 	for (let i = 0; i < tokens.length; i++) {
 		const t = tokens[i]
@@ -53,6 +55,9 @@ export function parseTeleportArgs(raw: string): TeleportArgs {
 				break
 			case "--force":
 				result.force = true
+				break
+			case "--with-session":
+				result.withSession = true
 				break
 			case "--exclude": {
 				const next = tokens[i + 1]
