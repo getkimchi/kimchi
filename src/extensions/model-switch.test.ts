@@ -61,6 +61,7 @@ function createHarness(options: { setModelResult?: boolean } = {}): Harness {
 			registered = tool
 		},
 		setModel,
+		registerCommand: vi.fn(),
 	} as unknown as ExtensionAPI
 
 	modelSwitchExtension(pi)
@@ -101,7 +102,7 @@ function createHarnessWithTrigger(options: { setModelResult?: boolean } = {}) {
 		const set = handlers.get(event)
 		if (set) for (const h of set) await h(data, ctx)
 	}
-	const pi = { on, setModel, registerTool: vi.fn() } as unknown as ExtensionAPI
+	const pi = { on, setModel, registerTool: vi.fn(), registerCommand: vi.fn() } as unknown as ExtensionAPI
 	return { pi, trigger, setModel }
 }
 

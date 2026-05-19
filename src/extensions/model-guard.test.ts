@@ -386,6 +386,7 @@ function makeMockPI() {
 			on(event: string, handler: (e: unknown, ctx?: ExtensionContext) => unknown) {
 				handlers[event] = handler
 			},
+			registerCommand: () => {},
 		} as unknown as ExtensionAPI,
 		async trigger(event: string, payload: unknown, ctx?: ExtensionContext) {
 			return handlers[event]?.(payload, ctx)
@@ -556,7 +557,7 @@ describe("model_select handler", () => {
 		}
 		await trigger("model_select", event, ctx)
 		expect(notifyMock).toHaveBeenCalledTimes(1)
-		expect(notifyMock).toHaveBeenCalledWith(expect.stringContaining("does not support image input"), "warning")
+		expect(notifyMock).toHaveBeenCalledWith(expect.stringContaining("does not support vision input"), "warning")
 	})
 
 	it("warns on tier downgrade (heavy → standard)", async () => {

@@ -185,6 +185,19 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 		if (modified) return { messages: result }
 	})
 
+	_pi.registerCommand("strip-images", {
+		description: "Remove all images from the conversation so non-vision models can process it",
+		handler: async (_args, ctx) => {
+			if (!sessionHasImages()) {
+				ctx.ui.notify("No images in session — nothing to strip.", "info")
+				return
+			}
+			ctx.ui.notify("Stripping images from context…", "info")
+			await ctx.compact()
+			ctx.ui.notify("Images removed. The conversation can now be processed by models without vision input.", "info")
+		},
+	})
+
 	_pi.on("model_select", async (event: ModelSelectEvent, ctx: ExtensionContext) => {
 		// Skip restore events — these are automatic reversions, not user-initiated
 		if (event.source === "restore") return
@@ -203,10 +216,7 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 		// Guard 2: vision incompatibility — warn when switching away from a vision model
 		// while session contains images (they would be stripped)
 		if (sessionHasImages() && model && !model.input.includes("image")) {
-			ctx.ui.notify(
-				`Switching to "${model.id}" will strip ${model.provider}/${model.id} does not support image input.`,
-				"warning",
-			)
+			ctx.ui.notify(`Switching to "${model.id}" will strip images since it does not support vision input.`, "warning")
 		}
 
 		// Guard 3: tier downgrade — warn when switching to a lower reasoning tier
