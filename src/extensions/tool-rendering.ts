@@ -833,11 +833,22 @@ function toolHeader(tool: string, summary: string, theme: Theme, prefix = ""): s
 }
 
 function setToolStatus(ctx: any, status: "pending" | "success" | "error"): void {
+	const prev = ctx?.state?._toolStatus
 	ctx.state._toolStatus = status
+	// When a tool transitions to a final status for the first time, the call
+	// header may have already been rendered with a pending dot. Invalidate the
+	// component so renderCall re-runs and picks up the correct dot.
+	if (status !== "pending" && prev !== status) {
+		ctx.invalidate?.()
+	}
 }
 
 function syncToolCallStatus(ctx: any): void {
-	if (!ctx?.executionStarted || ctx?.isPartial) {
+	// Preserve a final status already set by renderResult (e.g. after a chat
+	// rebuild where executionStarted is never set on the new component).
+	const existing = ctx?.state?._toolStatus
+	if (existing === "success" || existing === "error") return
+	if (ctx?.isPartial || !ctx?.executionStarted) {
 		setToolStatus(ctx, "pending")
 		return
 	}
