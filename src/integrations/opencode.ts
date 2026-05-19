@@ -38,9 +38,32 @@ async function writeOpenCode(scope: ConfigScope, apiKey: string, models: readonl
 		existing.compaction = { auto: true }
 	}
 
-	// Remove stale plugin field that was written by the now-unmaintained
-	// @kimchi-dev/opencode-kimchi package.
-	existing.plugin = undefined
+	// Strip any @kimchi-dev/opencode-kimchi entry (string or array form) from
+	// the plugin list. The plugin is no longer maintained — we only wrote it
+	// to inject telemetry config, which is now gone. Other plugin entries are
+	// preserved untouched.
+	const KIMCHI_PLUGIN = "@kimchi-dev/opencode-kimchi"
+	const plugin = (existing as Record<string, unknown>).plugin
+	if (Array.isArray(plugin)) {
+		const filtered = plugin.filter((entry) => {
+			if (!entry) return true
+			if (typeof entry === "string") {
+				return !(entry === KIMCHI_PLUGIN || entry.startsWith(`${KIMCHI_PLUGIN}@`))
+			}
+			if (Array.isArray(entry) && typeof entry[0] === "string") {
+				const pkgName = entry[0]
+				return !(pkgName === KIMCHI_PLUGIN || pkgName.startsWith(`${KIMCHI_PLUGIN}@`))
+			}
+			return true
+		})
+		if (filtered.length === 0) {
+			existing.plugin = undefined
+		} else {
+			existing.plugin = filtered
+		}
+	} else if (plugin === KIMCHI_PLUGIN || (typeof plugin === "string" && plugin.startsWith(`${KIMCHI_PLUGIN}@`))) {
+		existing.plugin = undefined
+	}
 
 	writeJson(path, existing)
 }

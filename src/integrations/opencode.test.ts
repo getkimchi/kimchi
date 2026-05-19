@@ -73,4 +73,22 @@ describe("opencode tool registration", () => {
 		expect(written.plugin).toBeUndefined()
 		expect(written.provider.kimchi).toBeDefined()
 	})
+
+	it("write() strips only the Kimchi entry when other plugins are present", async () => {
+		const path = `${scratchHome}/.config/opencode/opencode.json`
+		mkdirSync(`${scratchHome}/.config/opencode`, { recursive: true })
+		writeFileSync(
+			path,
+			JSON.stringify({
+				plugin: ["@other/plugin@1.0.0", ["@kimchi-dev/opencode-kimchi@1.14.0", { telemetry: true }], "@another/plugin"],
+			}),
+			"utf-8",
+		)
+
+		const tool = byId("opencode")
+		await tool?.write("global", "test-key-123", TEST_MODELS)
+
+		const written = JSON.parse(readFileSync(path, "utf-8"))
+		expect(written.plugin).toEqual(["@other/plugin@1.0.0", "@another/plugin"])
+	})
 })
