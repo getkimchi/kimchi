@@ -1,4 +1,4 @@
-import { resolve } from "node:path"
+import { basename, resolve } from "node:path"
 import { AuthStorage, createAgentSessionServices } from "@earendil-works/pi-coding-agent"
 import type { AgentSession, CreateAgentSessionRuntimeFactory, ExtensionFactory } from "@earendil-works/pi-coding-agent"
 import { onPermissionsModeChange } from "../../extensions/permissions/index.js"
@@ -42,6 +42,7 @@ export function createRemoteRuntimeFactory(
 		const session = await buildRemoteAgentSession({
 			sessionId: sessionManager.getSessionId() ?? "remote-session",
 			apiKey: options.apiKey,
+			description: `Remote session for ${basename(cwd)}`,
 			endpoint: options.endpoint,
 			services,
 			sessionManager,
