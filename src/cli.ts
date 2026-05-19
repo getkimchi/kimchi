@@ -69,6 +69,10 @@ const cliMode = getCliModeArg(process.argv.slice(2))
 const acpMode = cliMode === "acp"
 const helpOrVersion = isHelpOrVersionArgs(process.argv.slice(2))
 
+// Internal control signal: setup cancellation must skip harness/extensions
+// without a hard process.exit(), so clack can restore terminal state normally.
+class SetupCancelled extends Error {}
+
 process.on("exit", (code) => {
 	// Only print the resume hint after a real harness session ran. Subcommands
 	// (kimchi setup, kimchi version, …) and --help/--version short-circuit
@@ -142,6 +146,11 @@ try {
 				writeMigrationState("done")
 			} else {
 				const result = await runSetupWizard({ needsSkillsSetup, needsMigrationCheck })
+				if (result.cancelled) {
+					sessionStarted = false
+					process.exitCode = 130
+					throw new SetupCancelled()
+				}
 				if (needsSkillsSetup) {
 					skillPaths = result.skillPaths
 					writeSkillPaths(skillPaths)
@@ -319,6 +328,10 @@ try {
 		}
 	}
 } catch (err) {
-	console.error(err instanceof Error ? err.message : String(err))
-	process.exit(1)
+	if (err instanceof SetupCancelled) {
+		process.exitCode = 130
+	} else {
+		console.error(err instanceof Error ? err.message : String(err))
+		process.exit(1)
+	}
 }
