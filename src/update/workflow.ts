@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { compareSemverGte } from "../integrations/opencode.js"
+import { compareSemverGte } from "../utils/semver.js"
 import { extractTarGz, verifyChecksum } from "./extract.js"
 import { GitHubClient, KIMCHI_REPO, type Repo } from "./github.js"
 import { atomicInstall, copySupportingFiles, macosCodesignReSign, smokeTestBinary } from "./install.js"
