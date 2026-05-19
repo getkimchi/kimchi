@@ -140,10 +140,6 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 			return b.events
 		}
 
-		case "set_mode":
-			b.push("ferment_mode_set", { mode: cmd.mode })
-			return b.events
-
 		case "activate_phase": {
 			const phase = post.phases.find((p) => p.id === cmd.phaseId)
 			if (!phase) return []

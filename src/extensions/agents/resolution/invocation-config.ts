@@ -7,12 +7,23 @@ interface AgentInvocationParams {
 	model?: string
 	thinking?: string
 	max_turns?: number
+	token_budget?: number
+	tokenBudget?: number
 	run_in_background?: boolean
 	inherit_context?: boolean
 	isolated?: boolean
 	isolation?: IsolationMode
 }
 
+/**
+ * Resolves agent invocation config by merging caller params with persona defaults.
+ *
+ * Precedence by field:
+ * - model: caller override first, unless the persona locks model selection.
+ * - tokenBudget: caller override first, then persona default.
+ * - thinking, maxTurns, isolation, inheritContext, runInBackground: persona
+ *   policy first, then caller value.
+ */
 export function resolveAgentInvocationConfig(
 	agentConfig: AgentConfig | undefined,
 	params: AgentInvocationParams,
@@ -21,6 +32,7 @@ export function resolveAgentInvocationConfig(
 	modelFromParams: boolean
 	thinking?: ThinkingLevel
 	maxTurns?: number
+	tokenBudget?: number
 	inheritContext: boolean
 	runInBackground: boolean
 	isolated: boolean
@@ -29,33 +41,38 @@ export function resolveAgentInvocationConfig(
 	let modelInput: string | undefined
 	let modelFromParams = false
 
-	if (params.model) {
+	const resolveProfileModel = () => {
+		if (agentConfig?.models?.length) {
+			// Persona declared a list. Pick the entry whose capability tier best
+			// matches the persona's preferTier.
+			return pickFromModelListByTier(agentConfig.models, agentConfig.preferTier ?? "standard")
+		}
+		if (agentConfig?.strengths?.length) {
+			// Persona has strengths but no explicit models[] — let the orchestrator
+			// auto-pick based on those strengths.
+			const rec = recommendModel({
+				strengths: agentConfig.strengths,
+				preferTier: agentConfig.preferTier ?? "standard",
+			})
+			return rec ? `${rec.provider}/${rec.modelId}` : undefined
+		}
+		return undefined
+	}
+
+	if (agentConfig?.modelLocked) {
+		modelInput = resolveProfileModel()
+	} else if (params.model) {
 		// Caller's explicit override — the LLM judges task complexity and picks
 		// from the persona's `models` list (or any model id). This is the
 		// preferred path for personas with multi-model arrays: the calling LLM
 		// is in a far better position to assess complexity than any heuristic.
 		modelInput = params.model
 		modelFromParams = true
-	} else if (agentConfig?.models?.length) {
-		// No caller override and persona declared a list. Pick the entry whose
-		// capability tier best matches the persona's preferTier (with the same
-		// light→standard→heavy fallback as recommendModel). If preferTier is
-		// not declared, defaults to "standard". The calling LLM is still
-		// expected to pass `model` for non-trivial task complexity overrides;
-		// this is the no-override default, not a complexity classifier.
-		modelInput = pickFromModelListByTier(agentConfig.models, agentConfig.preferTier ?? "standard")
-	} else if (agentConfig?.strengths?.length) {
-		// Persona has strengths but no explicit models[] — let the orchestrator
-		// auto-pick based on those strengths.
-		const rec = recommendModel({
-			strengths: agentConfig.strengths,
-			preferTier: agentConfig.preferTier ?? "standard",
-		})
-		if (rec) {
-			modelInput = `${rec.provider}/${rec.modelId}`
-		}
-		// else: fall through to inherit parent
 	} else {
+		modelInput = resolveProfileModel()
+	}
+
+	if (!modelInput && !agentConfig?.models?.length && !agentConfig?.strengths?.length) {
 		// Phase-aware fallback: if current phase is a known strength, recommend
 		// a model for that phase.
 		const phase = getCurrentPhase()
@@ -75,7 +92,6 @@ export function resolveAgentInvocationConfig(
 				modelInput = `${rec.provider}/${rec.modelId}`
 			}
 		}
-		// else: undefined → inherit parent
 	}
 
 	return {
@@ -83,6 +99,7 @@ export function resolveAgentInvocationConfig(
 		modelFromParams,
 		thinking: (agentConfig?.thinking ?? params.thinking) as ThinkingLevel | undefined,
 		maxTurns: agentConfig?.maxTurns ?? params.max_turns,
+		tokenBudget: params.token_budget ?? params.tokenBudget ?? agentConfig?.tokenBudget,
 		inheritContext: agentConfig?.inheritContext ?? params.inherit_context ?? false,
 		runInBackground: agentConfig?.runInBackground ?? params.run_in_background ?? false,
 		isolated: agentConfig?.isolated ?? params.isolated ?? false,

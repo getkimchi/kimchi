@@ -4,7 +4,7 @@
  * Wires together:
  * - Event handlers (session_start, session_shutdown, input, before_agent_start,
  *   model_select, turn_end)
- * - Slash commands (/ferment, /auto, /pause, /progress)
+ * - Slash command (/ferment)
  * - All ferment tools (registered via tools/ submodules)
  *
  * Public exports re-export from ./state.ts for cli.ts and components/footer.ts.
@@ -19,7 +19,7 @@ import { registerFermentEvents } from "./events.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { FERMENT_REQUEST_MESSAGE_TYPE, type FermentRequestMessageDetails } from "./scoping.js"
-import { getActive, getActiveId } from "./state.js"
+import { getActive, getActiveId, getContinuationPolicy } from "./state.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { registerLifecycleTools } from "./tools/lifecycle.js"
 import { registerPhaseTools } from "./tools/phases.js"
@@ -30,6 +30,10 @@ import { registerStepTools } from "./tools/steps.js"
 
 export function getActiveFerment() {
 	return getActive()
+}
+
+export function getFermentContinuationPolicy() {
+	return getContinuationPolicy()
 }
 
 /** 1-based phase index or undefined */

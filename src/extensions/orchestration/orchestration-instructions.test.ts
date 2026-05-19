@@ -30,10 +30,10 @@ describe("resolveOrchestrationInstructions", () => {
 		})
 		expect(result).toContain("Orchestrate the work")
 		expect(result).toContain("Sharing context between agents")
-		expect(result).toContain("Subagent delegation rules")
+		expect(result).toContain("Agent delegation rules")
 		expect(result).toContain("Model selection for delegation")
 		expect(result).toContain("Token budgets")
-		expect(result).toContain("Inactivity timeout")
+		expect(result).toContain("token_budget")
 	})
 
 	it("includes model capabilities and available models in orchestrator mode", () => {
@@ -68,7 +68,7 @@ describe("resolveOrchestrationInstructions", () => {
 		})
 		expect(result).toContain("Subagent response protocol")
 		expect(result).toContain('{"summary":')
-		expect(result).not.toContain("Subagent delegation rules")
+		expect(result).not.toContain("Agent delegation rules")
 	})
 
 	it("includes model-specific orchestration guidelines when provided", () => {

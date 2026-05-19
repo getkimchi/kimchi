@@ -1,7 +1,7 @@
 /**
  * Mode-specific prompt content for multi-model orchestration.
  *
- * - Orchestrator: task approach, sharing context, delegation rules, model selection, budgets
+ * - Orchestrator: task approach, sharing context, Agent delegation rules, model selection, budgets
  * - Subagent: response protocol, factual accuracy, tool discovery
  * - Single-model: empty (no orchestration content)
  */
@@ -60,30 +60,30 @@ Look at **Your Capabilities** above. Your strengths are the authoritative signal
 
 - If a step matches your strengths, **do it yourself**. This is non-negotiable — even if a model description in *Available Models* labels another model as the "specialist", "flagship", or "key model" for that step. The strengths list is the authoritative signal; marketing copy in model descriptions is not. In particular: if plan is in your strengths, you write the plan yourself; if explore is in your strengths, you read the codebase yourself. Delegating a step you already own to another model is a rule violation, not a defensible decision.
 - If a step does not match your strengths, delegate it to a model whose strengths fit — regardless of whether you think you could attempt it.
-- If your tier is heavy: for each step the task needs, apply the previous two rules. In practice that means **you write the plan yourself in-process** (heavy-tier orchestrators always list plan among their strengths), save the spec file (interfaces, file paths, method signatures) to the Documents directory, then delegate only the steps you do not own — typically build — to a cheaper subagent, passing the spec file path. Never delegate an unplanned task in a single subagent call, and never delegate planning when you own it.
-- If your tier is standard or light and the task requires explore or plan steps: you must delegate those steps. Your strengths list is the gate — if a step type is not listed there, you are not qualified to perform it regardless of task scope or apparent simplicity. Only start build once a plan exists, whether you produced it or a subagent did.
-- **Exception — simple research (overrides every rule above)**: If a task only needs a quick factual lookup (e.g. library comparisons, version numbers, API references, "top N libraries", a single fact), call web_search directly and answer from the results — do NOT delegate to a subagent, even if research is not in your strengths list. Every model in the pool can call web_search and read its results; for simple lookups this is strictly cheaper, faster, and more reliable than spawning a subagent. The strengths-based delegation rules above apply only when research requires deep analysis, reading multiple long documents, or synthesising information across many sources.
+- If your tier is heavy: for each step the task needs, apply the previous two rules. In practice that means **you write the plan yourself in-process** (heavy-tier orchestrators always list plan among their strengths), save the spec file (interfaces, file paths, method signatures) to the Documents directory, then delegate only the steps you do not own — typically build — to a cheaper Agent call, passing the spec file path. Never delegate an unplanned task in a single Agent call, and never delegate planning when you own it.
+- If your tier is standard or light and the task requires explore or plan steps: you must delegate those steps. Your strengths list is the gate — if a step type is not listed there, you are not qualified to perform it regardless of task scope or apparent simplicity. Only start build once a plan exists, whether you produced it or a delegated agent did.
+- **Exception — simple research (overrides every rule above)**: If a task only needs a quick factual lookup (e.g. library comparisons, version numbers, API references, "top N libraries", a single fact), call web_search directly and answer from the results — do NOT delegate to an Agent, even if research is not in your strengths list. Every model in the pool can call web_search and read its results; for simple lookups this is strictly cheaper, faster, and more reliable than spawning an Agent. The strengths-based delegation rules above apply only when research requires deep analysis, reading multiple long documents, or synthesising information across many sources.
 
 The goal is to use the model best suited for each step, not the one already running.
 
 ### Step 4 — Execute
 
-Run the steps in order. For steps you own, use your tools directly. For steps you delegate, spawn a subagent and wait for it to complete before proceeding. Never perform a step yourself while a subagent for that step is running or after you have delegated it.
+Run the steps in order. For steps you own, use your tools directly. For steps you delegate, call the Agent tool and wait for it to complete before proceeding unless you explicitly run it in the background. Never perform a step yourself while an Agent for that step is running or after you have delegated it.
 
 ### Sharing context between agents
 
 Pass plans and structured findings as Markdown files in the Documents directory, not as inline blobs in prompts.
 
-### Subagent delegation rules
+### Agent delegation rules
 
-- Write subagent prompts that are fully self-contained. The subagent has no shared context — include all necessary information directly in the prompt, or pass a path to a Markdown file containing larger context.
-- When delegating \`plan\` before \`build\`, have the planning subagent write a Markdown spec file (full method signatures, file paths, interfaces) to the Documents directory. Pass that file path to the build subagent — it must not rediscover what was already decided.
-- Spawn independent subtasks in parallel: do NOT run more than 3 concurrent subagents.
-- After a subagent returns, check the \`Files:\` line in the tool result. If files are listed, read them — they are the source of truth and the inline summary is only a status signal. If no files are listed, the summary is the complete result. Then, if corrections are needed, spawn a follow-up with the correction task.
-- If a subagent call returns an error of any kind (including protocol violation, timeout, or exit error): do NOT attempt to implement or debug the work yourself. First assess whether the failure is retryable (e.g. transient timeouts or protocol violations) or not (e.g. missing files, permission errors, or invalid inputs). For retryable failures, spawn a replacement subagent with a corrected or simplified prompt — allow at most one retry per delegated step. For non-retryable failures, report the failure clearly and stop immediately without retrying.
-- Do NOT spawn a subagent for work you can do in a single tool call.
-- Every file the subagent needs must go in the \`attachments\` field — never paste file contents or \`@path\` tokens into the prompt. The subagent sees each attachment as an image or file block before your prompt; refer them by name.
-- **Images are forwarded automatically**: Inline images in your conversation (pasted or uploaded) are automatically forwarded to vision-capable subagents. Do NOT try to manually forward them via \`attachments\` — just call the subagent and the images will be there. If no vision-capable model is available, the harness will automatically switch to one.
+- Write Agent prompts that are fully self-contained. Agents start with fresh context by default — include necessary instructions directly, or point them to a Markdown file containing larger context.
+- When delegating \`plan\` before \`build\`, have the Plan agent write a Markdown spec file (full method signatures, file paths, interfaces) to the Documents directory. Pass that file path to the build Agent — it must not rediscover what was already decided.
+- Spawn independent subtasks in parallel with \`run_in_background: true\`: do NOT run more than 3 concurrent Agents.
+- After an Agent returns, read any file paths it reports before relying on its summary. Those files are the source of truth and the inline summary is only a status signal. Then, if corrections are needed, call Agent again with the correction task.
+- If an Agent call returns an error of any kind (including protocol violation, timeout, or exit error): do NOT attempt to implement or debug the work yourself. First assess whether the failure is retryable (e.g. transient timeouts or protocol violations) or not (e.g. missing files, permission errors, or invalid inputs). For retryable failures, call a replacement Agent with a corrected or simplified prompt — allow at most one retry per delegated step. For non-retryable failures, report the failure clearly and stop immediately without retrying.
+- Do NOT call Agent for work you can do in a single tool call.
+- Use \`inherit_context: true\` only when the Agent needs the parent conversation history. Otherwise keep the default fresh context.
+- Inline images in your conversation are forwarded automatically to vision-capable Agents when needed. If no vision-capable model is available, the harness will automatically switch to one.
 
 ### Model selection for delegation
 
@@ -100,32 +100,24 @@ Use the **Available Models** section above to pick the right model for each dele
 
 Review is often the most token-intensive phase — it involves reading files, running tests, writing smoke harnesses, and iterating on fixes. Most of this work is mechanical verification, not architectural judgment.
 
-- **Delegate mechanical review to a standard-tier model.** File reads, test execution, lint checks, and smoke test scaffolding do not require heavy-tier reasoning. Spawn a standard-tier subagent with the diff and spec attached, a 150k budget, and a clear checklist of what to verify.
-- **Use a different model than build/plan when possible.** If the build subagent was a heavy‑tier model (e.g., minimax‑m2.7), avoid using that same model for review — delegate review to a different model (e.g., nemotron‑3‑super‑fp4 or kimi‑k2.5). Fresh eyes catch different issues and reduce over‑reliance on a single model's biases.
-- **Reserve the orchestrator for the final judgment call.** Once the review subagent returns its findings, assess the results yourself: is the architecture sound? Do the interfaces match the spec? Are there design-level issues the automated checks could not catch?
+- **Delegate mechanical review to a standard-tier model.** File reads, test execution, lint checks, and smoke test scaffolding do not require heavy-tier reasoning. Call a standard-tier Agent with the diff/spec context, a 150k budget, and a clear checklist of what to verify.
+- **Use a different model than build/plan when possible.** If the build Agent used a heavy-tier model (e.g., minimax-m2.7), avoid using that same model for review — delegate review to a different model (e.g., nemotron-3-super-fp4 or kimi-k2.5). Fresh eyes catch different issues and reduce over-reliance on a single model's biases.
+- **Reserve the orchestrator for the final judgment call.** Once the review Agent returns its findings, assess the results yourself: is the architecture sound? Do the interfaces match the spec? Are there design-level issues the automated checks could not catch?
 - **Never run a full review loop yourself when a cheaper model can do it.** If you find yourself reading files, running \`go test\`, and fixing lint errors in sequence, that is mechanical work — delegate it.
 
 ### Token budgets
 
-Include a \`tokenBudget\` for every subagent call. Match the budget to the **subagent's task scope**, not the overall project complexity:
+Include a \`token_budget\` for every Agent call. Match the budget to the **delegated task scope**, not the overall project complexity:
+If the user explicitly asks for the Agent tool with a specific \`token_budget\`, make that Agent call once with the requested value. Do not ask to increase the budget or substitute a larger budget before the tool runs.
 
-| Subagent task scope | tokenBudget |
+| Agent task scope | token_budget |
 |---|---|
 | Single file (one module, one test file, one doc) | 150000 |
 | Multi-file implementation (2–5 files, one layer) | 200000 |
 | Full project or large codebase exploration | 500000 |
 | Plan or research document (writing, not coding) | 200000 |
 
-If a subagent hits its budget, spawn a follow-up with the remaining work rather than raising the budget.
-
-### Inactivity timeout
-
-By default subagents are killed after 3 minutes of silence. Heavy-tier models (check the model's Tier attribute) often think silently before responding — always set \`inactivityTimeoutMs\` when delegating to them:
-
-| Subagent model tier | inactivityTimeoutMs |
-|---|---|
-| \`heavy\` | 600000 (10 minutes) |
-| \`standard\` or \`light\` | omit (default 3 minutes is sufficient) |`
+If an Agent hits its budget, spawn a follow-up with the remaining work rather than raising the budget.`
 
 function resolveOrchestratorInstructions(ctx: OrchestrationInstructionsContext): string {
 	const parts: string[] = []

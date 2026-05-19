@@ -65,7 +65,6 @@ function createServices(overrides: Partial<PhaseHandlerServices> = {}): PhaseHan
 		gatherEvidence: vi.fn(() => ({ filesChanged: "file.ts", diffSnippet: "+change", available: true })),
 		runProjectChecks: vi.fn(() => ({ cwd: "/tmp", discovered: false, anyFailed: false, checks: [] })),
 		onPhaseCompleted: vi.fn(),
-		isPlanMode: vi.fn(() => false),
 		...overrides,
 	}
 }
@@ -181,10 +180,11 @@ describe("completePhase", () => {
 		expect(errResult.content.map((c) => c.text).join("\n")).toContain("rationale")
 	})
 
-	it("in plan mode, completePhase does NOT show a review dropdown", async () => {
+	it("manual policy asks at the boundary and continues when selected", async () => {
 		const h = createHarness()
-		const selectSpy = vi.fn()
-		const services = createServices({ isPlanMode: vi.fn(() => true) })
+		h.runtime.setContinuationPolicy("manual")
+		const selectSpy = vi.fn(async () => "Continue to next phase")
+		const services = createServices()
 
 		const result = await completePhase(
 			h.runtime,
@@ -196,18 +196,27 @@ describe("completePhase", () => {
 			services,
 		)
 
-		// No dropdown shown — silent fall-through to toolOk.
-		expect(selectSpy).not.toHaveBeenCalled()
-		// Phase is completed, not paused.
-		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("completed")
-		// No follow-up user message queued.
+		const text = okText(result)
+		expect(selectSpy).toHaveBeenCalledWith('Phase "Phase 1" done.\nContinue "Phase Test" to "Phase 2"?', [
+			"Continue to next phase",
+			"Pause here",
+		])
+		expect(text).toContain("User chose to continue to the next phase")
+		expect(text).toContain('Next: "Phase 2"')
+		expect(text).toContain("Next action: call `activate_ferment_phase`")
+		const stored = h.storage.get(h.fermentId)
+		expect(stored?.status).toBe("planned")
+		expect(stored?.phases[0].status).toBe("completed")
+		expect(stored?.phases[1].status).toBe("planned")
+		expect(stored?.activePhaseId).toBeUndefined()
 		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
 	})
 
-	it("in plan mode, completePhase returns a tool message and does not queue follow-up dropdown actions", async () => {
+	it("manual policy pauses when the user chooses pause at the boundary", async () => {
 		const h = createHarness()
-		const selectSpy = vi.fn()
-		const services = createServices({ isPlanMode: vi.fn(() => true) })
+		h.runtime.setContinuationPolicy("manual")
+		const selectSpy = vi.fn(async () => "Pause here")
+		const services = createServices()
 
 		const result = await completePhase(
 			h.runtime,
@@ -219,18 +228,82 @@ describe("completePhase", () => {
 			services,
 		)
 
-		// The silent toolOk result contains next-phase reference, no "User confirmed" dropdown text.
-		expect(okText(result)).toContain("Phase")
-		expect(okText(result)).not.toContain("User confirmed")
-		expect(okText(result)).not.toContain("Proceed to Phase")
-		expect(selectSpy).not.toHaveBeenCalled()
+		const text = okText(result)
+		expect(selectSpy).toHaveBeenCalled()
+		expect(text).toContain("Manual continuation policy stopped here")
+		expect(text).toContain('Next: "Phase 2"')
+		expect(text).not.toContain("Next action: call `activate_ferment_phase`")
+		const stored = h.storage.get(h.fermentId)
+		expect(stored?.status).toBe("paused")
+		expect(stored?.phases[0].status).toBe("completed")
+		expect(stored?.phases[1].status).toBe("planned")
+		expect(stored?.activePhaseId).toBeUndefined()
 		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
+	})
+
+	it("manual policy pauses at the boundary when no UI is available", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("manual")
+		const services = createServices()
+
+		const result = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
+			{ pi: h.pi },
+			services,
+		)
+
+		const text = okText(result)
+		expect(text).toContain("Manual continuation policy stopped here")
+		expect(text).toContain('Next: "Phase 2"')
+		expect(text).not.toContain("Next action: call `activate_ferment_phase`")
+		const stored = h.storage.get(h.fermentId)
+		expect(stored?.status).toBe("paused")
+		expect(stored?.phases[0].status).toBe("completed")
+		expect(stored?.phases[1].status).toBe("planned")
+		expect(stored?.activePhaseId).toBeUndefined()
+		expect(h.pi.sendUserMessage).not.toHaveBeenCalled()
+	})
+
+	it("manual policy still allows final ferment completion at the last boundary", async () => {
+		const h = createHarness({ phases: 1 })
+		h.runtime.setContinuationPolicy("manual")
+		const services = createServices()
+
+		const result = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
+			{ pi: h.pi },
+			services,
+		)
+
+		const text = okText(result)
+		expect(text).toContain("All phases terminal")
+		expect(text).toContain("Next action: call `complete_ferment`")
+	})
+
+	it("automated policy keeps the next phase activation hint", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("automated")
+		const services = createServices()
+
+		const result = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
+			{ pi: h.pi },
+			services,
+		)
+
+		const text = okText(result)
+		expect(text).toContain('Next: "Phase 2"')
+		expect(text).toContain("Next action: call `activate_ferment_phase`")
 	})
 })
 
 describe("registerPhaseTools", () => {
-	it("uses the injected runtime, not the global active ferment, for plan-mode phase completion", async () => {
+	it("uses the injected runtime, not the global active ferment, for phase completion", async () => {
 		const h = createHarness()
+		h.runtime.setContinuationPolicy("automated")
 		let injectedActive = h.storage.get(h.fermentId)
 		if (!injectedActive) throw new Error("Expected active ferment in injected storage")
 		h.runtime.getActive = () => injectedActive
@@ -262,7 +335,7 @@ describe("registerPhaseTools", () => {
 		const completePhaseTool = tools.get("complete_ferment_phase")
 		if (!completePhaseTool) throw new Error("complete_ferment_phase was not registered")
 
-		// Call with plan-mode UI injected — runtime uses injected storage (not global active).
+		// Call with UI injected - runtime uses injected storage (not global active).
 		const result = (await completePhaseTool.execute(
 			"test-call-id",
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },

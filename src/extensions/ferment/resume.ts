@@ -1,8 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { determineNextAction, getScopingProgress } from "../../ferment/engine.js"
-import { formatActionNudgeLine } from "./action-tool-names.js"
 import { appendRefEntry } from "./nudge.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { scheduleFermentWakeUp } from "./scheduler.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { setActiveFermentAndApplyProfile } from "./tool-scope.js"
 import { checkWorktree } from "./worktree.js"
@@ -10,13 +9,14 @@ import { checkWorktree } from "./worktree.js"
 /**
  * Shared by session_start (env-var path) and the /ferment Continue picker.
  * Flips paused to running, validates worktree, re-arms the scoping gate for
- * drafts, and fires an imperative resume nudge so the planner picks up work.
+ * drafts, and schedules the next legal action so the planner picks up work.
  */
 export function resumeFerment(
 	pi: ExtensionAPI,
 	fermentId: string,
 	ctx: ExtensionContext,
 	runtime: FermentRuntime = defaultFermentRuntime,
+	opts: { allowManualPhaseBoundary?: boolean } = {},
 ): void {
 	const storage = runtime.getStorage()
 	const applyAndPersist = createApplyAndPersist(runtime)
@@ -53,24 +53,5 @@ export function resumeFerment(
 		runtime.markScopingInteractive(existing.id)
 	}
 
-	const action = determineNextAction(existing)
-	const baseMsg = formatActionNudgeLine(action)
-	const scopeProgress = getScopingProgress(existing)
-	const breadcrumb = `Resumed ferment: "${existing.name}" [${existing.status}] ${existing.mode} mode · scoping ${scopeProgress.answered}/${scopeProgress.total}`
-
-	const imperative =
-		existing.status === "running"
-			? `RESUMING ferment "${existing.name}" — the previous session was interrupted. Pick up the work immediately. Do NOT explain or summarize — execute the next action below.\n\n${baseMsg}`
-			: baseMsg
-
-	pi.appendEntry("ferment_breadcrumb", { text: breadcrumb })
-	void pi.sendMessage(
-		{
-			customType: "ferment_resume_nudge",
-			content: [{ type: "text", text: imperative }],
-			display: false,
-			details: undefined,
-		},
-		{ triggerTurn: true },
-	)
+	scheduleFermentWakeUp(pi, runtime, { ...opts, fermentId: existing.id, tag: "Resume wake-up" })
 }

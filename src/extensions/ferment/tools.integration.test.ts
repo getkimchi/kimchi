@@ -220,12 +220,12 @@ function loadFerment(id: string): Ferment {
 // ─── create_ferment ───────────────────────────────────────────────────────────
 
 describe("create_ferment", () => {
-	it("creates a ferment in draft status with plan mode", async () => {
+	it("creates a mode-less ferment in draft status", async () => {
 		const id = await createFerment("Test Project")
 		const f = loadFerment(id)
 		expect(f.name).toBe("Test Project")
 		expect(f.status).toBe("draft")
-		expect(f.mode).toBe("plan")
+		expect(f).not.toHaveProperty("mode")
 		expect(f.phases).toEqual([])
 	})
 
@@ -240,6 +240,7 @@ describe("create_ferment", () => {
 describe("list_ferments", () => {
 	it("lists all ferments when no filter", async () => {
 		await createFerment("Alpha")
+		setActive(undefined)
 		await createFerment("Beta")
 		const result = ok(await h.call("list_ferments", {}))
 		expect(result).toContain("Alpha")
@@ -248,6 +249,7 @@ describe("list_ferments", () => {
 
 	it("filters by status", async () => {
 		const alphaId = await createFerment("Alpha")
+		setActive(undefined)
 		await createFerment("Beta")
 		// Move alpha to running
 		const s = h.storage
@@ -310,22 +312,24 @@ describe("scope_ferment", () => {
 			phases: [],
 			gates: passingPlanGates(),
 		})
-		expect(err(result)).toMatch(/waiting for user confirmation/i)
+		expect(err(result)).toMatch(/propose_ferment_scoping/i)
+		expect(err(result)).toMatch(/do not call scope_ferment directly/i)
+		expect(err(result)).not.toMatch(/present the plan summary/i)
 	})
 
-	it("bypasses gate when ferment is in exec mode", async () => {
+	it("does not let legacy mode bypass an interactive scoping gate", async () => {
 		const id = await createFerment("Exec Gate Test")
 		h.storage.updateMode(id, "exec")
 		markScopingInteractive(id)
-		// Don't confirm — exec mode should bypass
+		// Don't confirm — legacy mode is inert and cannot bypass this gate.
 		const result = await h.call("scope_ferment", {
 			ferment_id: id,
 			goal: "X",
 			phases: [{ name: "P1", goal: "G", steps: [{ description: "S" }] }],
 			gates: passingPlanGates(),
 		})
-		ok(result)
-		expect(loadFerment(id).status).toBe("planned")
+		expect(err(result)).toMatch(/propose_ferment_scoping/i)
+		expect(err(result)).toMatch(/do not call scope_ferment directly/i)
 	})
 
 	it("returns error when ferment not found", async () => {
@@ -723,6 +727,7 @@ describe("skip_ferment_phase", () => {
 	it("marks phase as skipped", async () => {
 		const id = await createFerment("Skip Phase Test")
 		await scopeFerment(id)
+		h.runtime.setContinuationPolicy("automated")
 		ok(
 			await h.call("skip_ferment_phase", {
 				ferment_id: id,
@@ -733,6 +738,60 @@ describe("skip_ferment_phase", () => {
 		const f = loadFerment(id)
 		expect(f.phases[0].status).toBe("skipped")
 		expect(f.phases[0].summary).toBe("not needed")
+	})
+
+	it("manual policy pauses after skipping a phase boundary", async () => {
+		const id = await createFerment("Manual Skip Phase Test")
+		await scopeFerment(id)
+		h.runtime.setContinuationPolicy("manual")
+
+		const text = ok(
+			await h.call("skip_ferment_phase", {
+				ferment_id: id,
+				phase_id: "phase-1",
+				reason: "not needed",
+			}),
+		)
+
+		expect(text).toContain("Manual continuation policy stopped here")
+		expect(text).toContain('Next: "Phase B"')
+		expect(text).not.toContain("Next action: call `activate_ferment_phase`")
+		const f = loadFerment(id)
+		expect(f.status).toBe("paused")
+		expect(f.phases[0].status).toBe("skipped")
+		expect(f.phases[1].status).toBe("planned")
+		expect(f.activePhaseId).toBeUndefined()
+	})
+
+	it("manual policy can continue after skipping a phase boundary when user chooses continue", async () => {
+		const id = await createFerment("Manual Skip Continue Test")
+		await scopeFerment(id)
+		h.runtime.setContinuationPolicy("manual")
+		const select = vi.fn(async () => "Continue to next phase")
+
+		const text = ok(
+			await h.call(
+				"skip_ferment_phase",
+				{
+					ferment_id: id,
+					phase_id: "phase-1",
+					reason: "not needed",
+				},
+				{ ui: { select } },
+			),
+		)
+
+		expect(select).toHaveBeenCalledWith(
+			'Phase "Phase A" skipped.\nContinue "Manual Skip Continue Test" to "Phase B"?',
+			["Continue to next phase", "Pause here"],
+		)
+		expect(text).toContain("User chose to continue to the next phase")
+		expect(text).toContain("Next action: call `activate_ferment_phase`")
+		const f = loadFerment(id)
+		expect(f.status).toBe("planned")
+		expect(f.phases[0].status).toBe("skipped")
+		expect(f.phases[1].status).toBe("planned")
+		expect(f.activePhaseId).toBeUndefined()
 	})
 })
 
@@ -888,19 +947,11 @@ describe("add_ferment_memory", () => {
 	})
 })
 
-// ─── set_ferment_mode ─────────────────────────────────────────────────────────
+// ─── retired mode tool ────────────────────────────────────────────────────────
 
-describe("set_ferment_mode", () => {
-	it("changes work mode", async () => {
-		const id = await createFerment("Mode Test")
-		ok(await h.call("set_ferment_mode", { ferment_id: id, mode: "exec" }))
-		expect(loadFerment(id).mode).toBe("exec")
-	})
-
-	it("rejects invalid modes", async () => {
-		const id = await createFerment("Invalid Mode Test")
-		const result = await h.call("set_ferment_mode", { ferment_id: id, mode: "rocket" })
-		expect(err(result)).toMatch(/invalid mode/i)
+describe("retired mode tool", () => {
+	it("does not expose set_ferment_mode on the tool surface", () => {
+		expect(h.tools.has("set_ferment_mode")).toBe(false)
 	})
 })
 
@@ -994,12 +1045,6 @@ describe("paused ferment blocks tool calls at the bridge", () => {
 			title: "Decision while paused",
 			description: "should be rejected",
 		})
-		expect(err(result)).toMatch(/paused/i)
-	})
-
-	it("refuses set_ferment_mode when ferment is paused", async () => {
-		const id = await setupPaused()
-		const result = await h.call("set_ferment_mode", { ferment_id: id, mode: "exec" })
 		expect(err(result)).toMatch(/paused/i)
 	})
 })

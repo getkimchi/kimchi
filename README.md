@@ -181,8 +181,8 @@ kimchi --ferment "Build Tetris"
 Or inside an active session:
 
 ```
-/ferment add "Build Tetris"    # creates with mode: plan
-/ferment mode exec              # switch to autonomous execution
+/ferment new "Build Tetris"    # create a ferment
+/ferment auto                   # keep going until done or blocked
 ```
 
 ### Concepts
@@ -201,10 +201,10 @@ All lifecycle transitions (create → scope → activate → start → complete)
 draft → planned → running → [paused] → complete
 ```
 
-1. **draft** — created via `/ferment add`, agent collects goal + phases conversationally
+1. **draft** — created via `/ferment new`, agent collects goal + phases conversationally
 2. **planned** — `scope_ferment` sets goal, criteria, constraints, phase breakdown
 3. **running** — `activate_ferment_phase` starts a phase, agent executes steps
-4. **paused** — user intervention required (plan mode, or `/pause`)
+4. **paused** — user intervention required, or paused with `/ferment pause`
 5. **complete** — all phases terminal, done
 
 Ferment tool visibility is session-profile based. Active planners see the full
@@ -212,34 +212,31 @@ namespaced lifecycle surface for a whole run, and the FSM/tool result text says
 which call is legal next; worker subagents do not receive ferment lifecycle
 tools.
 
-### Three work modes
+### Continuation policy
 
-| Mode | Behavior | Use when |
-|------|----------|----------|
-| **plan** | Agent asks permission, proposes, explains. No tool enforcement. | Scoping, ambiguous problems, complex architecture |
-| **exec** | Agent acts immediately. Strips coaching text. Auto-advance. | Clear tasks, iterating fast, trusted execution |
-| **auto** (default) | Full coaching. User decides when to act. | Mixed, exploring, learning |
+Continuation policy controls whether the active ferment advances across phase boundaries.
 
-```
-/ferment mode plan     ← ask the agent to coach you
-/ferment mode exec     ← let the agent run autonomously
-/ferment mode auto     ← coaching mode (default)
-```
+| Policy | Behavior | Command |
+|--------|----------|---------|
+| **manual** | Ask before moving to the next phase. | `/ferment manual` |
+| **automated** | Keep going until complete, blocked, paused, or user input is needed. | `/ferment auto` |
+
+Pause/resume is separate lifecycle control: `/ferment pause` stops the ferment, and `/ferment resume` continues it using the current policy.
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `/ferment` | List all ferments with status |
-| `/ferment add "Name"` | Create new ferment (draft, plan mode) |
+| `/ferment` | Start a new ferment via prompt |
+| `/ferment new "Name"` | Create new ferment |
 | `/ferment switch <id>` | Resume by ID prefix or name |
 | `/ferment delete <id>` | Delete permanently |
 | `/ferment export` | Export stats to JSON for analysis |
-| `/ferment mode` | Show current mode + help |
-| `/ferment mode plan/exec/auto` | Change mode |
-| `/auto` | Enable auto-mode |
-| `/pause` | Disable auto-mode |
-| `/status` | Full status dump with phases, steps, decisions |
+| `/ferment progress` | Open phase/step navigator overlay |
+| `/ferment manual` | Set manual continuation policy |
+| `/ferment auto` | Set automated continuation policy |
+| `/ferment pause` | Pause the active ferment lifecycle |
+| `/ferment resume` | Resume the active ferment lifecycle |
 
 ### Recovery
 

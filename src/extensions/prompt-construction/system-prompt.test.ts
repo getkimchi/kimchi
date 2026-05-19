@@ -66,10 +66,10 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("## Guidelines")
 			expect(result).toContain("Orchestrate the work")
 			expect(result).toContain("Sharing context between agents")
-			expect(result).toContain("Subagent delegation rules")
+			expect(result).toContain("Agent delegation rules")
 			expect(result).toContain("Model selection for delegation")
 			expect(result).toContain("Token budgets")
-			expect(result).toContain("Inactivity timeout")
+			expect(result).toContain("token_budget")
 		})
 
 		it("includes all tool names and descriptions", () => {
@@ -278,7 +278,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "subagent",
 			})
-			expect(result).not.toContain("Subagent delegation rules")
+			expect(result).not.toContain("Agent delegation rules")
 			expect(result).not.toContain("Model selection for delegation")
 		})
 
@@ -357,7 +357,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "single",
 			})
-			expect(result).not.toContain("Subagent delegation rules")
+			expect(result).not.toContain("Agent delegation rules")
 			expect(result).not.toContain("Model selection for delegation")
 			expect(result).not.toContain("Token budgets")
 			expect(result).not.toContain("Orchestrate the work")

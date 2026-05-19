@@ -12,7 +12,6 @@ function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 		successCriteria: "Tests pass; lint clean.",
 		constraints: [],
 		status: "running",
-		mode: "auto",
 		worktree: { path: "/tmp/test", branch: undefined, commit: undefined },
 		scoping: {},
 		phases: [],

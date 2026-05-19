@@ -29,6 +29,7 @@ export function toolErr(text: string) {
 
 export function formatNextActionHint(ferment: Ferment): string | undefined {
 	const action = determineNextAction(ferment)
+	if (!action) return undefined
 	const toolName = publicToolNameForActionKind(action.kind)
 
 	switch (action.kind) {
@@ -53,9 +54,7 @@ export function formatNextActionHint(ferment: Ferment): string | undefined {
 		case "recover_phase":
 			return `Next action: resolve failed phase "${action.phaseId}", then call \`activate_ferment_phase\` to retry, \`skip_ferment_phase\` to bypass, or ask the user whether to abandon.`
 		case "pause":
-			return "Next action: wait for the user to run /auto; do not call ferment lifecycle tools while paused."
-		case "noop":
-			return undefined
+			return "Next action: wait for the user to run /ferment resume; do not call ferment lifecycle tools while paused."
 	}
 }
 
@@ -143,7 +142,7 @@ export function createApplyAndPersist(runtime: FermentRuntime) {
 							ok: false,
 							error: {
 								code: "FERMENT_PAUSED",
-								message: `Ferment "${current.name}" is paused. The user must resume with /auto before any further ferment tool calls. Acknowledge the pause and wait — do NOT call ferment tools.`,
+								message: `Ferment "${current.name}" is paused. The user must resume with /ferment resume before any further ferment tool calls. Acknowledge the pause and wait — do NOT call ferment tools.`,
 							},
 						},
 					}

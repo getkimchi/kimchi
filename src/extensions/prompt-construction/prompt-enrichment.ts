@@ -6,7 +6,7 @@
  *
  * Main model mode:
  * - "input": wraps the user prompt with the current model's own capabilities
- *   and the available Agent worker models so the model can self-classify the task
+ *   and the available delegated-agent models so the model can self-classify the task
  *   and decide which steps to execute itself vs. delegate.
  * - "before_agent_start": injects the self-classification system prompt with
  *   full tool access (read, write, edit, bash, Agent).
@@ -115,6 +115,12 @@ function readMultiModelArgv(): boolean {
 }
 
 let multiModelEnabled = readMultiModelArgv()
+
+const DELEGATION_TOOL_NAMES = new Set(["Agent"])
+
+function isDelegationToolCallName(name: string | undefined): boolean {
+	return name != null && DELEGATION_TOOL_NAMES.has(name)
+}
 
 // macOS terminals send the legacy escape sequence \x1b\t for Option+Tab
 // instead of the Kitty protocol / CSI-u sequences handled by matchesKey()
@@ -244,8 +250,8 @@ export default function (skillPaths: string[]) {
 			})
 
 			// Detect the inverse of the context-event nudge below: the orchestrator reasons
-			// in prose, announces it will delegate, and ends its turn without emitting the
-			// `Agent` tool call. The agent loop would otherwise exit and wait for another
+			// in prose, announces it will delegate, and ends its turn without emitting a
+			// delegation tool call. The agent loop would otherwise exit and wait for another
 			// user prompt. Nudge once per user-input cycle, and only when no tool has fired
 			// that cycle — so genuine end-of-task summaries are left alone. Mirrors AISI
 			// Inspect's `on_continue`.
@@ -286,11 +292,11 @@ export default function (skillPaths: string[]) {
 			pi.on("turn_end", async (event) => {
 				if (event.message.role !== "assistant") return
 
-				// Mark each Agent tool call so the continuation nudge stays
-				// suppressed until all Agent results have been received.
-				// A single turn may contain multiple parallel Agent calls.
+				// Mark each delegation tool call so the continuation nudge stays
+				// suppressed until all delegated-agent results have been received.
+				// A single turn may contain multiple parallel agent calls.
 				for (const c of event.message.content) {
-					if (c.type === "toolCall" && (c as { name?: string }).name === "Agent") {
+					if (c.type === "toolCall" && isDelegationToolCallName((c as { name?: string }).name)) {
 						continuationNudge.markDelegationCall()
 					}
 				}

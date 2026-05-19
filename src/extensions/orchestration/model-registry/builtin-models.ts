@@ -13,12 +13,15 @@ import {
 	DEFAULT_BUILD_GUIDELINES,
 	DEFAULT_EXPLORE_GUIDELINES,
 	DEFAULT_PLAN_GUIDELINES,
+	DEFAULT_RESEARCH_GUIDELINES,
 	DEFAULT_REVIEW_GUIDELINES,
 } from "./guidelines/default-phase-guidelines.js"
 import {
 	KIMI_FAMILY_BUILD,
 	KIMI_FAMILY_ORCHESTRATION,
 	KIMI_FAMILY_PLAN,
+	KIMI_FAMILY_RESEARCH,
+	KIMI_FAMILY_REVIEW,
 	KIMI_K25_BUILD,
 	KIMI_K25_ORCHESTRATION,
 	KIMI_K26_ORCHESTRATION,
@@ -124,7 +127,9 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			tier: "heavy",
 			description: KIMI_K26_DESCRIPTION,
 			guidelines: {
+				research: concatGuidelines(DEFAULT_RESEARCH_GUIDELINES, KIMI_FAMILY_RESEARCH),
 				plan: concatGuidelines(DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN, KIMI_K26_PLAN),
+				review: concatGuidelines(DEFAULT_REVIEW_GUIDELINES, KIMI_FAMILY_REVIEW),
 			},
 			orchestrationGuidelines: optionalGuidelines(
 				DEFAULT_ORCHESTRATION_GUIDELINES,
@@ -142,7 +147,9 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			description: KIMI_K25_DESCRIPTION,
 			guidelines: {
 				build: concatGuidelines(DEFAULT_BUILD_GUIDELINES, KIMI_FAMILY_BUILD, KIMI_K25_BUILD),
+				research: concatGuidelines(DEFAULT_RESEARCH_GUIDELINES, KIMI_FAMILY_RESEARCH),
 				plan: concatGuidelines(DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN),
+				review: concatGuidelines(DEFAULT_REVIEW_GUIDELINES, KIMI_FAMILY_REVIEW),
 			},
 			orchestrationGuidelines: optionalGuidelines(
 				DEFAULT_ORCHESTRATION_GUIDELINES,
@@ -195,8 +202,9 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			tier: "heavy",
 			description: CLAUDE_OPUS_47_DESCRIPTION,
 			guidelines: {
-				plan: concatGuidelines(DEFAULT_PLAN_GUIDELINES, CLAUDE_FAMILY_PLAN, CLAUDE_OPUS_47_PLAN),
 				explore: concatGuidelines(DEFAULT_EXPLORE_GUIDELINES, CLAUDE_FAMILY_EXPLORE, CLAUDE_OPUS_47_EXPLORE),
+				research: DEFAULT_RESEARCH_GUIDELINES,
+				plan: concatGuidelines(DEFAULT_PLAN_GUIDELINES, CLAUDE_FAMILY_PLAN, CLAUDE_OPUS_47_PLAN),
 				review: concatGuidelines(DEFAULT_REVIEW_GUIDELINES, CLAUDE_FAMILY_REVIEW, CLAUDE_OPUS_47_REVIEW),
 			},
 			orchestrationGuidelines: optionalGuidelines(

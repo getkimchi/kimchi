@@ -6,7 +6,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui"
 import type { AgentManager } from "../manager/agent-manager.js"
 import { type LifetimeUsage, type SessionLike, getLifetimeTotal, getSessionContextPercent } from "../manager/usage.js"
 import { getConfig } from "../personas/agent-types.js"
-import type { SubagentType } from "../personas/types.js"
+import type { AgentAbortReason, SubagentType } from "../personas/types.js"
 
 const MAX_WIDGET_LINES = 12
 
@@ -67,6 +67,7 @@ export interface AgentDetails {
 	agentId?: string
 	sessionFile?: string
 	error?: string
+	abortReason?: AgentAbortReason
 }
 
 export function formatTokens(count: number): string {
@@ -207,6 +208,7 @@ export class AgentWidget {
 			startedAt: number
 			completedAt?: number
 			error?: string
+			abortReason?: AgentAbortReason
 		},
 		theme: Theme,
 	): string {
@@ -231,7 +233,9 @@ export class AgentWidget {
 			statusText = theme.fg("error", ` error${errMsg}`)
 		} else {
 			icon = theme.fg("error", "✗")
-			statusText = theme.fg("warning", " aborted")
+			const reason =
+				a.abortReason === "token_budget" ? " (token budget)" : a.abortReason === "max_turns" ? " (max turns)" : ""
+			statusText = theme.fg("warning", ` aborted${reason}`)
 		}
 
 		const parts: string[] = []

@@ -2,6 +2,50 @@ import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../../models.js"
 import { MODEL_CAPABILITIES } from "./builtin-models.js"
 import { ModelRegistry } from "./model-registry.js"
+import type { ModelStrength, ModelTier } from "./types.js"
+
+const ALLOWED_TIERS: ModelTier[] = ["light", "standard", "heavy"]
+const ALLOWED_STRENGTHS: ModelStrength[] = ["build", "explore", "plan", "review", "research"]
+
+const LIVE_ENTRIES = Object.entries(Object.fromEntries(MODEL_CAPABILITIES)).filter(
+	([, value]) => value !== "ignored",
+) as [string, Exclude<typeof MODEL_CAPABILITIES extends ReadonlyMap<string, infer V> ? V : never, "ignored">][]
+
+describe("MODEL_CAPABILITIES completeness invariants", () => {
+	it.each(LIVE_ENTRIES)("%s — description is a non-empty string", (_id, cap) => {
+		expect(typeof cap.description).toBe("string")
+		expect(cap.description.trim().length).toBeGreaterThan(0)
+	})
+
+	it.each(LIVE_ENTRIES)("%s — tier is one of light | standard | heavy", (_id, cap) => {
+		expect(ALLOWED_TIERS).toContain(cap.tier)
+	})
+
+	it.each(LIVE_ENTRIES)("%s — strengths is a non-empty array of valid ModelStrength values", (_id, cap) => {
+		expect(Array.isArray(cap.strengths)).toBe(true)
+		expect(cap.strengths.length).toBeGreaterThanOrEqual(1)
+		for (const s of cap.strengths) {
+			expect(ALLOWED_STRENGTHS).toContain(s)
+		}
+	})
+
+	it.each(LIVE_ENTRIES)("%s — orchestrationGuidelines is a non-empty string", (_id, cap) => {
+		expect(typeof cap.orchestrationGuidelines).toBe("string")
+		expect((cap.orchestrationGuidelines as string).trim().length).toBeGreaterThan(0)
+	})
+
+	it.each(LIVE_ENTRIES)("%s — every declared strength phase has a non-empty guidelines entry", (_id, cap) => {
+		for (const strength of cap.strengths) {
+			const guidelineValue = cap.guidelines?.[strength]
+			expect(
+				guidelineValue,
+				`guidelines["${strength}"] must be a non-empty string (strength declared in strengths[])`,
+			).toBeTruthy()
+			expect(typeof guidelineValue).toBe("string")
+			expect((guidelineValue as string).trim().length).toBeGreaterThan(0)
+		}
+	})
+})
 
 const KNOWN_IDS = [...MODEL_CAPABILITIES.keys()]
 const ACTIVE_IDS = KNOWN_IDS.filter((id) => MODEL_CAPABILITIES.get(id) !== "ignored")

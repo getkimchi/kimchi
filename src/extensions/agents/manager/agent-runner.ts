@@ -1,7 +1,3 @@
-/**
- * agent-runner.ts — Core execution engine: creates sessions, runs agents, collects results.
- */
-
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
@@ -24,6 +20,7 @@ import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
 import {
+	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
 	getConfig,
 	getMemoryToolNames,
@@ -31,10 +28,16 @@ import {
 	getToolNamesForType,
 } from "../personas/agent-types.js"
 import { DEFAULT_AGENTS } from "../personas/default-agents.js"
-import { AGENT_GENERAL_PURPOSE, type SubagentType, type ThinkingLevel } from "../personas/types.js"
+import {
+	AGENT_GENERAL_PURPOSE,
+	type AgentAbortReason,
+	type SubagentType,
+	type ThinkingLevel,
+} from "../personas/types.js"
 import { buildParentContext, extractText } from "../prompt/context.js"
 import { type PromptExtras, buildAgentPrompt } from "../prompt/prompts.js"
 import { preloadSkills } from "../prompt/skill-loader.js"
+import { type LifetimeUsage, addUsage, getLifetimeTotal, getSessionUsage } from "./usage.js"
 
 /** Names of tools registered by this extension that subagents must NOT inherit. */
 const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"]
@@ -142,13 +145,16 @@ export interface RunOptions {
 	onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void
 	/** Called when the session successfully compacts. */
 	onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void
+	/** Maximum cumulative tokens this agent is allowed to consume. Overrides agentConfig.tokenBudget. */
+	tokenBudget?: number
 }
 
 export interface RunResult {
 	responseText: string
 	session: AgentSession
-	/** True if the agent was hard-aborted (max_turns + grace exceeded). */
+	/** True if the agent was hard-aborted by max turns or token budget. */
 	aborted: boolean
+	abortReason?: AgentAbortReason
 	/** True if the agent was steered to wrap up (hit soft turn limit) but finished in time. */
 	steered: boolean
 }
@@ -174,6 +180,26 @@ function getLastAssistantText(session: AgentSession): string {
 		if (text) return text
 	}
 	return ""
+}
+
+function usageDelta(total: LifetimeUsage | undefined, observed: LifetimeUsage): LifetimeUsage | undefined {
+	if (!total) return undefined
+	const delta = {
+		input: Math.max(0, total.input - observed.input),
+		output: Math.max(0, total.output - observed.output),
+		cacheWrite: Math.max(0, total.cacheWrite - observed.cacheWrite),
+	}
+	return getLifetimeTotal(delta) > 0 ? delta : undefined
+}
+
+function resetUsage(usage: LifetimeUsage): void {
+	usage.input = 0
+	usage.output = 0
+	usage.cacheWrite = 0
+}
+
+function estimateTextTokens(text: string): number {
+	return Math.ceil(text.length / 4)
 }
 
 function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => void {
@@ -302,8 +328,10 @@ async function runAgentInner(
 		settingsManager: SettingsManager.create(effectiveCwd, agentDir),
 		modelRegistry: ctx.modelRegistry,
 		model,
-		tools: toolNames,
 		resourceLoader: loader,
+	}
+	if (extensions === false) {
+		sessionOpts.tools = toolNames
 	}
 	if (thinkingLevel) {
 		sessionOpts.thinkingLevel = thinkingLevel
@@ -313,12 +341,23 @@ async function runAgentInner(
 
 	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
 
+	await session.bindExtensions({
+		onError: (err) => {
+			options.onToolActivity?.({
+				type: "end",
+				toolName: `extension-error:${err.extensionPath}`,
+			})
+		},
+	})
+
 	if (extensions !== false) {
 		const builtinToolNameSet = new Set(toolNames)
+		const allBuiltinToolNames = new Set(BUILTIN_TOOL_NAMES)
 		const activeTools = session.getActiveToolNames().filter((t) => {
 			if (EXCLUDED_TOOL_NAMES.includes(t)) return false
 			if (disallowedSet?.has(t)) return false
 			if (builtinToolNameSet.has(t)) return true
+			if (allBuiltinToolNames.has(t)) return false
 			if (Array.isArray(extensions)) {
 				return extensions.some((ext) => t.startsWith(ext) || t.includes(ext))
 			}
@@ -330,21 +369,18 @@ async function runAgentInner(
 		session.setActiveToolsByName(activeTools)
 	}
 
-	await session.bindExtensions({
-		onError: (err) => {
-			options.onToolActivity?.({
-				type: "end",
-				toolName: `extension-error:${err.extensionPath}`,
-			})
-		},
-	})
-
 	options.onSessionCreated?.(session)
 
 	let turnCount = 0
 	const maxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
+	const effectiveTokenBudget = options.tokenBudget ?? agentConfig?.tokenBudget
+	let cumulativeTokens = 0
+	const observedUsage: LifetimeUsage = { input: 0, output: 0, cacheWrite: 0 }
+	const windowObservedUsage: LifetimeUsage = { input: 0, output: 0, cacheWrite: 0 }
 	let softLimitReached = false
 	let aborted = false
+	let abortReason: AgentAbortReason | undefined
+	let budgetAborted = false
 
 	let currentMessageText = ""
 	const unsubTurns = session.subscribe((event: AgentSessionEvent) => {
@@ -359,6 +395,7 @@ async function runAgentInner(
 					)
 				} else if (softLimitReached && turnCount >= maxTurns + graceTurns) {
 					aborted = true
+					abortReason = "max_turns"
 					session.abort()
 				}
 			}
@@ -378,14 +415,30 @@ async function runAgentInner(
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			const u = (event.message as unknown as { usage?: { input: number; output: number; cacheWrite: number } }).usage
-			if (u)
-				options.onAssistantUsage?.({
+			if (u) {
+				const usage = {
 					input: u.input ?? 0,
 					output: u.output ?? 0,
 					cacheWrite: u.cacheWrite ?? 0,
-				})
+				}
+				addUsage(observedUsage, usage)
+				addUsage(windowObservedUsage, usage)
+				options.onAssistantUsage?.(usage)
+				if (effectiveTokenBudget != null && !budgetAborted) {
+					cumulativeTokens += getLifetimeTotal(usage)
+					if (cumulativeTokens > effectiveTokenBudget) {
+						budgetAborted = true
+						abortReason = "token_budget"
+						console.warn(
+							`[agent-runner] token budget exceeded (cumulative=${cumulativeTokens}, budget=${effectiveTokenBudget}); aborting`,
+						)
+						session.abort()
+					}
+				}
+			}
 		}
 		if (event.type === "compaction_end" && !event.aborted && event.result) {
+			resetUsage(windowObservedUsage)
 			options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore })
 		}
 	})
@@ -398,6 +451,25 @@ async function runAgentInner(
 		const parentContext = buildParentContext(ctx)
 		if (parentContext) {
 			effectivePrompt = parentContext + prompt
+		}
+	}
+
+	const promptEstimate = estimateTextTokens(systemPrompt) + estimateTextTokens(effectivePrompt)
+	if (effectiveTokenBudget != null && promptEstimate > effectiveTokenBudget) {
+		const usage = { input: promptEstimate, output: 0, cacheWrite: 0 }
+		addUsage(observedUsage, usage)
+		addUsage(windowObservedUsage, usage)
+		cumulativeTokens += getLifetimeTotal(usage)
+		options.onAssistantUsage?.(usage)
+		unsubTurns()
+		collector.unsubscribe()
+		cleanupAbort()
+		return {
+			responseText: `Token budget exceeded before agent start: estimated prompt cost is ${promptEstimate} tokens, budget is ${effectiveTokenBudget}.`,
+			session,
+			aborted: true,
+			abortReason: "token_budget",
+			steered: false,
 		}
 	}
 
@@ -434,8 +506,21 @@ async function runAgentInner(
 		}
 	}
 
+	const finalUsageDelta = usageDelta(getSessionUsage(session), windowObservedUsage)
+	if (finalUsageDelta) {
+		addUsage(observedUsage, finalUsageDelta)
+		addUsage(windowObservedUsage, finalUsageDelta)
+		cumulativeTokens += getLifetimeTotal(finalUsageDelta)
+		options.onAssistantUsage?.(finalUsageDelta)
+	}
+
+	if (effectiveTokenBudget != null && !budgetAborted && getLifetimeTotal(observedUsage) > effectiveTokenBudget) {
+		budgetAborted = true
+		abortReason = "token_budget"
+	}
+
 	const responseText = collector.getText().trim() || getLastAssistantText(session)
-	return { responseText, session, aborted, steered: softLimitReached }
+	return { responseText, session, aborted: aborted || budgetAborted, abortReason, steered: softLimitReached }
 }
 
 /**

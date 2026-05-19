@@ -100,7 +100,7 @@ describe("system prompt blocks", () => {
 
 		const result = prompt(pi)
 		expect(result).not.toContain("inactive")
-		expect(result).toContain("Subagent delegation rules")
+		expect(result).toContain("Agent delegation rules")
 	})
 
 	it("skips whitespace-only rendered content", () => {
@@ -143,7 +143,7 @@ describe("system prompt blocks", () => {
 
 		const result = prompt(pi)
 		expect(result).toContain("## Bad Suppress Block")
-		expect(result).toContain("Subagent delegation rules")
+		expect(result).toContain("Agent delegation rules")
 		expect(warn).toHaveBeenCalledWith("system-prompt-blocks: test/bad-suppress suppress failed: nope")
 	})
 
@@ -182,7 +182,7 @@ describe("system prompt blocks", () => {
 
 		expect(result).toContain("## A Block")
 		expect(result).toContain("## B Block")
-		expect(result).not.toContain("Subagent delegation rules")
+		expect(result).not.toContain("Agent delegation rules")
 		expect(result).not.toContain("Project rule.")
 		expect(result).not.toContain("available_skills")
 	})
@@ -206,7 +206,7 @@ describe("system prompt blocks", () => {
 		expect(result).toContain("## A Block")
 		expect(result).toContain("## B Block")
 		expect(result).not.toContain("Project rule.")
-		expect(result).toContain("Subagent delegation rules")
+		expect(result).toContain("Agent delegation rules")
 		expect(result).toContain("## Available Tools")
 	})
 

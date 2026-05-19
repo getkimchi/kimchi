@@ -22,6 +22,7 @@ import {
 import { Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
+import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
 import { AgentManager } from "./manager/agent-manager.js"
 import {
@@ -33,6 +34,12 @@ import {
 	setGraceTurns,
 	steerAgent,
 } from "./manager/agent-runner.js"
+import {
+	type BudgetRetryBlock,
+	type BudgetRetryCandidate,
+	createBudgetRetryBlockFromCompletion,
+	shouldBlockBudgetRetry,
+} from "./manager/budget-retry-guard.js"
 import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
@@ -50,6 +57,7 @@ import {
 import { loadCustomAgents } from "./personas/custom-agents.js"
 import {
 	AGENT_GENERAL_PURPOSE,
+	type AgentAbortReason,
 	type AgentConfig,
 	type AgentRecord,
 	type AgentVisibility,
@@ -65,6 +73,7 @@ import {
 	type AgentDetails,
 	AgentWidget,
 	SPINNER,
+	type Theme,
 	type UICtx,
 	describeActivity,
 	formatDuration,
@@ -77,8 +86,66 @@ import {
 
 // ---- Shared helpers ----
 
-function textResult(msg: string, details?: AgentDetails) {
+function textResult<T = AgentDetails>(msg: string, details?: T) {
 	return { content: [{ type: "text" as const, text: msg }], details: details as unknown }
+}
+
+interface GetSubagentResultDetails {
+	agentId: string
+	displayName: string
+	description: string
+	status: string
+	visibility?: AgentVisibility
+	abortReason?: AgentAbortReason
+	toolUses: number
+	tokens: string
+	contextPercent: number | null
+	compactionCount?: number
+	durationMs?: number
+	error?: string
+	bodyText: string
+}
+
+function formatAgentBodyForDisplay(raw: string): string {
+	const cleaned = filterThinkingForDisplay(raw)
+	return cleaned.replace(/\n{3,}/g, "\n\n").trimEnd()
+}
+
+function getSubagentResultIcon(status: string, theme: Theme): string {
+	switch (status) {
+		case "running":
+		case "queued":
+			return theme.fg("accent", SPINNER[0])
+		case "error":
+		case "aborted":
+			return theme.fg("error", "✗")
+		case "stopped":
+			return theme.fg("dim", "■")
+		case "steered":
+			return theme.fg("warning", "✓")
+		default:
+			return theme.fg("success", "✓")
+	}
+}
+
+export function summaryForStatus(status: string, error?: string, abortReason?: AgentAbortReason): string {
+	switch (status) {
+		case "running":
+		case "queued":
+			return "Still running"
+		case "completed":
+			return "Done"
+		case "steered":
+			return "Wrapped up (turn limit)"
+		case "aborted":
+			return getAbortLabel(abortReason)
+		case "stopped":
+			return "Stopped"
+		case "error":
+			return `Error: ${error?.split("\n")[0]?.trim() || "unknown"}`
+		default:
+			return status
+	}
 }
 
 function formatLifetimeTokens(o: { lifetimeUsage: LifetimeUsage }): string {
@@ -132,12 +199,34 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 	return { state, callbacks }
 }
 
-function getStatusLabel(status: string, error?: string): string {
+function getAbortLabel(reason?: AgentAbortReason): string {
+	switch (reason) {
+		case "max_turns":
+			return "Aborted (max turns exceeded)"
+		case "token_budget":
+			return "Aborted (token budget exceeded)"
+		default:
+			return "Aborted"
+	}
+}
+
+function getAbortNote(reason?: AgentAbortReason): string {
+	switch (reason) {
+		case "max_turns":
+			return " (aborted — max turns exceeded, output may be incomplete)"
+		case "token_budget":
+			return " (aborted — token budget exceeded, output may be incomplete)"
+		default:
+			return " (aborted, output may be incomplete)"
+	}
+}
+
+function getStatusLabel(status: string, error?: string, abortReason?: AgentAbortReason): string {
 	switch (status) {
 		case "error":
 			return `Error: ${error ?? "unknown"}`
 		case "aborted":
-			return "Aborted (max turns exceeded)"
+			return getAbortLabel(abortReason)
 		case "steered":
 			return "Wrapped up (turn limit)"
 		case "stopped":
@@ -147,10 +236,10 @@ function getStatusLabel(status: string, error?: string): string {
 	}
 }
 
-function getStatusNote(status: string): string {
+function getStatusNote(status: string, abortReason?: AgentAbortReason): string {
 	switch (status) {
 		case "aborted":
-			return " (aborted — max turns exceeded, output may be incomplete)"
+			return getAbortNote(abortReason)
 		case "steered":
 			return " (wrapped up — reached turn limit)"
 		case "stopped":
@@ -160,12 +249,19 @@ function getStatusNote(status: string): string {
 	}
 }
 
+function getStatusInstruction(status: string, abortReason?: AgentAbortReason): string {
+	if (status === "aborted" && abortReason === "token_budget") {
+		return "\nThis completes the requested Agent call under the supplied budget. Do not call Agent again with a higher token_budget in this user turn."
+	}
+	return ""
+}
+
 function escapeXml(s: string): string {
 	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
 }
 
 function formatTaskNotification(record: AgentRecord, resultMaxLen: number): string {
-	const status = getStatusLabel(record.status, record.error)
+	const status = getStatusLabel(record.status, record.error, record.abortReason)
 	const durationMs = record.completedAt ? record.completedAt - record.startedAt : 0
 	const totalTokens = getLifetimeTotal(record.lifetimeUsage)
 	const contextPercent = getSessionContextPercent(record.session)
@@ -200,6 +296,7 @@ function buildDetails(
 		startedAt: number
 		completedAt?: number
 		status: string
+		abortReason?: AgentAbortReason
 		error?: string
 		id?: string
 		sessionFile?: string
@@ -226,6 +323,7 @@ function buildDetails(
 		agentId: record.id,
 		sessionFile: record.sessionFile,
 		error: record.error,
+		abortReason: record.abortReason,
 		...overrides,
 	}
 }
@@ -241,6 +339,7 @@ function buildNotificationDetails(
 		id: record.id,
 		description: record.description,
 		status: record.status,
+		abortReason: record.abortReason,
 		toolUses: record.toolUses,
 		turnCount: activity?.turnCount ?? 0,
 		maxTurns: activity?.maxTurns,
@@ -257,12 +356,23 @@ function buildNotificationDetails(
 }
 
 let activeManager: AgentManager | undefined
+let budgetRetryBlock: BudgetRetryBlock | undefined
+const budgetRetryCandidates = new Map<string, BudgetRetryCandidate>()
+
+function blockBudgetRetryIfNeeded(record: AgentRecord, candidate: BudgetRetryCandidate | undefined): void {
+	const block = createBudgetRetryBlockFromCompletion(candidate, record)
+	if (block) budgetRetryBlock = block
+}
 
 export function getActiveAgentCount(): number {
 	return activeManager?.getRunningCount() ?? 0
 }
 
 export default function (pi: ExtensionAPI) {
+	pi.on("message_start", (event) => {
+		if (event.message.role === "user") budgetRetryBlock = undefined
+	})
+
 	// ---- Register custom notification renderer ----
 	pi.registerMessageRenderer<NotificationDetails>("subagent-notification", (message, { expanded }, theme) => {
 		const d = message.details
@@ -271,7 +381,14 @@ export default function (pi: ExtensionAPI) {
 		function renderOne(d: NotificationDetails): string {
 			const isError = d.status === "error" || d.status === "stopped" || d.status === "aborted"
 			const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓")
-			const statusText = isError ? d.status : d.status === "steered" ? "completed (steered)" : "completed"
+			const statusText =
+				d.status === "aborted"
+					? getAbortLabel(d.abortReason)
+					: isError
+						? d.status
+						: d.status === "steered"
+							? "completed (steered)"
+							: "completed"
 
 			let line = `${icon} ${theme.bold(d.description)} ${theme.fg("dim", statusText)}`
 
@@ -412,6 +529,7 @@ export default function (pi: ExtensionAPI) {
 			error: record.error,
 			status: record.status,
 			visibility: record.visibility,
+			abortReason: record.abortReason,
 			toolUses: record.toolUses,
 			durationMs,
 			tokens,
@@ -452,6 +570,10 @@ export default function (pi: ExtensionAPI) {
 
 	const manager = new AgentManager(
 		(record) => {
+			const retryCandidate = budgetRetryCandidates.get(record.id)
+			budgetRetryCandidates.delete(record.id)
+			blockBudgetRetryIfNeeded(record, retryCandidate)
+
 			const isError = record.status === "error" || record.status === "stopped" || record.status === "aborted"
 			const eventData = buildEventData(record)
 			if (isError) {
@@ -466,6 +588,7 @@ export default function (pi: ExtensionAPI) {
 				description: record.description,
 				visibility: record.visibility,
 				status: record.status,
+				abortReason: record.abortReason,
 				result: record.result,
 				error: record.error,
 				startedAt: record.startedAt,
@@ -536,6 +659,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async () => {
 		manager.abortAll()
+		budgetRetryCandidates.clear()
 		for (const timer of pendingNudges.values()) clearTimeout(timer)
 		pendingNudges.clear()
 		manager.dispose()
@@ -619,6 +743,7 @@ Available agent types:
 ${typeListText}
 
 Guidelines:
+- If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
 - For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
 - Use Explore for codebase searches and code understanding.
 - Use Plan for architecture and implementation planning.
@@ -629,14 +754,16 @@ Guidelines:
 - Use run_in_background for work you don't need immediately. You will be notified when it completes.
 - Use resume with an agent ID to continue a previous agent's work.
 - Use steer_subagent to send mid-run messages to a running background agent.
-- Use thinking to control extended thinking level.
+- Use thinking to request an extended thinking level when the selected agent profile does not fix one.
+- Use token_budget to cap the agent's total token usage when the task scope is small or bounded.
+- Treat token_budget as a hard caller constraint. If an agent aborts because of token_budget, do not retry with a higher budget unless the user explicitly asks.
 - Use inherit_context if the agent needs the parent conversation history.
 
 Model selection — YOU choose based on task complexity:
 - Each agent type's listing above shows the set of models it can use. The list order has no semantics — it is not a tier ranking.
 - Assess the task (single lookup vs. multi-step refactor vs. deep architectural analysis) and pick the model whose capabilities (tier, strengths) best match. Refer to your knowledge of the kimchi-dev models or to your initial system-prompt model section.
-- Pass your choice via the \`model\` parameter as "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7"). Fuzzy names like "kimi" or "minimax" also work.
-- If \`model\` is omitted and the persona has no \`models[]\`, the orchestrator picks the best model based on the persona's strengths. Override by passing \`model:\` explicitly.`,
+- Pass \`model\` only when the user explicitly asks for a specific model or the profile does not lock model selection.
+- If \`model\` is omitted, the runtime uses the persona's profile model. Profiles with locked model selection ignore caller model overrides.`,
 			parameters: Type.Object({
 				prompt: Type.String({
 					description: "The task for the agent to perform.",
@@ -655,12 +782,20 @@ Model selection — YOU choose based on task complexity:
 				),
 				thinking: Type.Optional(
 					Type.String({
-						description: "Thinking level: off, minimal, low, medium, high, xhigh. Overrides agent default.",
+						description:
+							"Requested thinking level: off, minimal, low, medium, high, xhigh. Agent profiles with fixed thinking keep their profile value.",
 					}),
 				),
 				max_turns: Type.Optional(
 					Type.Number({
-						description: "Maximum number of agentic turns before stopping. Omit for unlimited (default).",
+						description:
+							"Requested maximum agentic turns before stopping. Agent profiles with fixed maxTurns keep their profile value.",
+						minimum: 1,
+					}),
+				),
+				token_budget: Type.Optional(
+					Type.Integer({
+						description: "Maximum number of tokens this agent is allowed to consume in total.",
 						minimum: 1,
 					}),
 				),
@@ -776,7 +911,7 @@ Model selection — YOU choose based on task complexity:
 				if (details.status === "error") {
 					line += `\n${theme.fg("error", `  ⎿  Error: ${details.error ?? "unknown"}`)}`
 				} else {
-					line += `\n${theme.fg("warning", "  ⎿  Aborted (max turns exceeded)")}`
+					line += `\n${theme.fg("warning", `  ⎿  ${getAbortLabel(details.abortReason)}`)}`
 				}
 
 				return new Text(line, 0, 0)
@@ -811,6 +946,24 @@ Model selection — YOU choose based on task complexity:
 					}
 				}
 
+				const explicitTokenBudget =
+					(params as { token_budget?: number; tokenBudget?: number }).token_budget ??
+					(params as { token_budget?: number; tokenBudget?: number }).tokenBudget
+				const activeBudgetRetryBlock = budgetRetryBlock
+				if (
+					activeBudgetRetryBlock &&
+					shouldBlockBudgetRetry(activeBudgetRetryBlock, {
+						tokenBudget: resolvedConfig.tokenBudget,
+						subagentType,
+						description: params.description as string,
+						prompt: params.prompt as string,
+					})
+				) {
+					return textResult(
+						`Agent retry blocked: the previous Agent call for "${activeBudgetRetryBlock.description}" already aborted because the user-supplied token_budget (${formatTokens(activeBudgetRetryBlock.budget)}) was too small. Do not raise the budget or retry the Agent tool unless the user explicitly asks.`,
+					)
+				}
+
 				const thinking = resolvedConfig.thinking
 				const inheritContext = resolvedConfig.inheritContext
 				const isolated = resolvedConfig.isolated
@@ -834,6 +987,7 @@ Model selection — YOU choose based on task complexity:
 				const modeLabel = getPromptModeLabel(subagentType)
 				if (modeLabel) agentTags.push(modeLabel)
 				if (thinking) agentTags.push(`thinking: ${thinking}`)
+				if (resolvedConfig.tokenBudget != null) agentTags.push(`budget: ${formatTokens(resolvedConfig.tokenBudget)}`)
 				if (isolated) agentTags.push("isolated")
 				const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns ?? getDefaultMaxTurns())
 				const detailBase = {
@@ -899,6 +1053,7 @@ Model selection — YOU choose based on task complexity:
 							visibility,
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
 							maxTurns: effectiveMaxTurns,
+							tokenBudget: resolvedConfig.tokenBudget,
 							isolated,
 							inheritContext,
 							thinkingLevel: thinking,
@@ -918,6 +1073,14 @@ Model selection — YOU choose based on task complexity:
 						record.toolCallId = toolCallId
 						record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
 						writeInitialEntry(record.outputFile, id, params.prompt as string, ctx.cwd)
+					}
+					if (explicitTokenBudget != null) {
+						budgetRetryCandidates.set(id, {
+							budget: explicitTokenBudget,
+							subagentType,
+							description: params.description as string,
+							prompt: params.prompt as string,
+						})
 					}
 
 					if (joinMode != null && joinMode !== "async") {
@@ -1010,6 +1173,7 @@ Model selection — YOU choose based on task complexity:
 						visibility,
 						model: model as Parameters<typeof manager.spawnAndWait>[4]["model"],
 						maxTurns: effectiveMaxTurns,
+						tokenBudget: resolvedConfig.tokenBudget,
 						isolated,
 						inheritContext,
 						thinkingLevel: thinking,
@@ -1041,12 +1205,24 @@ Model selection — YOU choose based on task complexity:
 				if (record.status === "error") {
 					return textResult(`${fallbackNote}Agent failed: ${record.error}`, details)
 				}
+				blockBudgetRetryIfNeeded(
+					record,
+					explicitTokenBudget != null
+						? {
+								budget: explicitTokenBudget,
+								subagentType,
+								description: params.description as string,
+								prompt: params.prompt as string,
+							}
+						: undefined,
+				)
 
 				const durationMs = (record.completedAt ?? Date.now()) - record.startedAt
 				const statsParts = [`${record.toolUses} tool uses`]
 				if (tokenText) statsParts.push(tokenText)
+				const outcome = record.status === "aborted" ? "aborted" : record.status === "stopped" ? "stopped" : "completed"
 				return textResult(
-					`${fallbackNote}Agent completed in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status)}.\n\n${record.result?.trim() || "No output."}`,
+					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.${getStatusInstruction(record.status, record.abortReason)}\n\n${record.result?.trim() || "No output."}`,
 					details,
 				)
 			},
@@ -1076,6 +1252,61 @@ Model selection — YOU choose based on task complexity:
 					}),
 				),
 			}),
+
+			renderResult(result, { expanded: piExpanded }, theme, context) {
+				if (context?.toolCallId) registerToolCall(context.toolCallId)
+				const expanded = piExpanded || (context?.toolCallId ? isToolExpanded(context.toolCallId) : false)
+
+				const details = result.details as GetSubagentResultDetails | undefined
+				// Defense-in-depth: hide get_subagent_result output for system agents in the TUI
+				// (consistency with the Agent tool's renderCall/renderResult short-circuits).
+				if (details?.visibility === "system") return new Text("", 0, 0)
+				if (!details) {
+					const text = result.content[0]?.type === "text" ? result.content[0].text : ""
+					return new Text(text, 0, 0)
+				}
+
+				const statsLine = (d: GetSubagentResultDetails) => {
+					const parts: string[] = [d.status]
+					if (d.toolUses > 0) parts.push(`${d.toolUses} tool use${d.toolUses === 1 ? "" : "s"}`)
+					if (d.tokens) parts.push(d.tokens)
+					if (d.contextPercent != null) parts.push(`${Math.round(d.contextPercent)}% ctx`)
+					if (d.compactionCount && d.compactionCount > 0) {
+						parts.push(`${d.compactionCount} compaction${d.compactionCount === 1 ? "" : "s"}`)
+					}
+					return parts.map((p) => theme.fg("dim", p)).join(` ${theme.fg("dim", "·")} `)
+				}
+
+				const icon = getSubagentResultIcon(details.status, theme)
+
+				const headerName = theme.fg("toolTitle", theme.bold("Get Agent Result"))
+				const headerDesc = details.description ? `  ${theme.fg("muted", details.description)}` : ""
+				const durationTail =
+					details.durationMs != null ? ` ${theme.fg("dim", "·")} ${theme.fg("dim", formatMs(details.durationMs))}` : ""
+
+				let line = `${icon} ${headerName}${headerDesc}${durationTail}`
+				const stats = statsLine(details)
+				if (stats) line += `\n${theme.fg("dim", "  ⎿  ")}${stats}`
+
+				const bodyText = details.bodyText ?? ""
+				if (expanded && bodyText) {
+					const lines = bodyText.split("\n")
+					const maxLines = 50
+					const visible = lines.slice(0, maxLines)
+					for (const l of visible) {
+						line += `\n${theme.fg("dim", `  ${l}`)}`
+					}
+					if (lines.length > maxLines) {
+						line += `\n${theme.fg("muted", `  … (${lines.length - maxLines} more lines — use verbose: true for full output)`)}`
+					}
+				} else if (!expanded) {
+					const summary = summaryForStatus(details.status, details.error, details.abortReason)
+					line += `\n${theme.fg("dim", `  ⎿  ${summary}`)}`
+				}
+
+				return new Text(line, 0, 0)
+			},
+
 			execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
 				const record = manager.getRecord(params.agent_id as string)
 				if (!record) {
@@ -1103,12 +1334,16 @@ Model selection — YOU choose based on task complexity:
 					`Type: ${displayName} | Status: ${record.status} | ${statsParts.join(" | ")}\n` +
 					`Description: ${record.description}\n\n`
 
+				let bodyForDisplay: string
 				if (record.status === "running") {
-					output += "Agent is still running. Use wait: true or check back later."
+					bodyForDisplay = "Agent is still running. Use wait: true or check back later."
+					output += bodyForDisplay
 				} else if (record.status === "error") {
-					output += `Error: ${record.error}`
+					bodyForDisplay = `Error: ${record.error}`
+					output += bodyForDisplay
 				} else {
-					output += record.result?.trim() || "No output."
+					bodyForDisplay = record.result?.trim() || "No output."
+					output += bodyForDisplay
 				}
 
 				if (record.status !== "running" && record.status !== "queued") {
@@ -1119,24 +1354,31 @@ Model selection — YOU choose based on task complexity:
 				if (params.verbose && record.session) {
 					const conversation = getAgentConversation(record.session)
 					if (conversation) {
-						output += `\n\n--- Agent Conversation ---\n${conversation}`
+						const verboseTail = `\n\n--- Agent Conversation ---\n${conversation}`
+						output += verboseTail
+						bodyForDisplay += verboseTail
 					}
 				}
 
-				return textResult(
-					output,
-					buildDetails(
-						{
-							displayName,
-							description: record.description,
-							subagentType: record.type,
-							visibility: record.visibility,
-							modelName: undefined,
-							tags: undefined,
-						},
-						record,
-					),
-				)
+				const completedAt = record.completedAt ?? Date.now()
+				const durationMs = record.startedAt != null ? completedAt - record.startedAt : undefined
+				const details: GetSubagentResultDetails = {
+					agentId: record.id,
+					displayName,
+					description: record.description,
+					status: record.status,
+					visibility: record.visibility,
+					abortReason: record.abortReason,
+					toolUses: record.toolUses,
+					tokens,
+					contextPercent,
+					compactionCount: record.compactionCount,
+					durationMs,
+					error: record.error,
+					bodyText: formatAgentBodyForDisplay(bodyForDisplay),
+				}
+
+				return textResult(output, details)
 			},
 		}),
 	)
@@ -1582,6 +1824,7 @@ tools: <comma-separated built-in tools: read, bash, edit, write, grep, find, ls.
 models: <optional ordered list of models, e.g. ["kimchi-dev/minimax-m2.7"]. Omit to inherit parent model>
 thinking: <optional thinking level: off, minimal, low, medium, high, xhigh. Omit to inherit>
 max_turns: <optional max agentic turns. 0 or omit for unlimited (default)>
+token_budget: <optional maximum total tokens for this agent. Omit for no profile budget>
 prompt_mode: <"replace" (body IS the full system prompt) or "append" (body is appended to default prompt). Default: replace>
 extensions: <true (inherit all MCP/extension tools), false (none), or comma-separated names. Default: true>
 skills: <true (inherit all), false (none), or comma-separated skill names to preload into prompt. Default: true>
@@ -1674,12 +1917,40 @@ Write the file using the write tool. Only write the file, nothing else.`
 		let thinkingLine = ""
 		if (thinkingChoice !== "inherit") thinkingLine = `\nthinking: ${thinkingChoice}`
 
+		const maxTurnsInput = await ctx.ui.input("Max turns (optional, blank for unlimited)", "")
+		let maxTurnsLine = ""
+		if (maxTurnsInput?.trim()) {
+			const trimmed = maxTurnsInput.trim()
+			if (!/^\d+$/.test(trimmed)) {
+				ctx.ui.notify("Max turns must be a non-negative integer.", "warning")
+				return
+			}
+			const maxTurns = Number.parseInt(trimmed, 10)
+			maxTurnsLine = `\nmax_turns: ${maxTurns}`
+		}
+
+		const tokenBudgetInput = await ctx.ui.input("Token budget (optional, blank for none)", "")
+		let tokenBudgetLine = ""
+		if (tokenBudgetInput?.trim()) {
+			const trimmed = tokenBudgetInput.trim()
+			if (!/^\d+$/.test(trimmed)) {
+				ctx.ui.notify("Token budget must be a positive integer.", "warning")
+				return
+			}
+			const tokenBudget = Number.parseInt(trimmed, 10)
+			if (tokenBudget <= 0) {
+				ctx.ui.notify("Token budget must be a positive integer.", "warning")
+				return
+			}
+			tokenBudgetLine = `\ntoken_budget: ${tokenBudget}`
+		}
+
 		const systemPrompt = await ctx.ui.editor("System prompt", "")
 		if (systemPrompt === undefined) return
 
 		const content = `---
 description: ${description}
-tools: ${tools}${modelLine}${thinkingLine}
+tools: ${tools}${modelLine}${thinkingLine}${maxTurnsLine}${tokenBudgetLine}
 prompt_mode: replace
 ---
 

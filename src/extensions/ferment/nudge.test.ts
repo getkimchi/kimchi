@@ -6,10 +6,9 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import {
-	injectResumeAutoNudge,
-	maybeInjectReactiveAutoNudge,
+	maybeInjectReactiveContinuationNudge,
 	onStepCompleted,
-	resetAllReactiveAutoNudgeCounts,
+	resetAllReactiveContinuationNudgeCounts,
 } from "./nudge.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { getActive, setActive } from "./state.js"
@@ -28,7 +27,6 @@ function makeDraftFerment(overrides: Partial<Ferment> = {}): Ferment {
 		id: "ferment-1",
 		name: "Injected Nudge",
 		status: "draft",
-		mode: "plan",
 		worktree: { path: "/repo" },
 		scoping: {},
 		phases: [],
@@ -42,33 +40,10 @@ function makeDraftFerment(overrides: Partial<Ferment> = {}): Ferment {
 
 afterEach(() => {
 	setActive(undefined)
-	resetAllReactiveAutoNudgeCounts()
+	resetAllReactiveContinuationNudgeCounts()
 })
 
 describe("ferment nudges", () => {
-	it("reads active and auto-mode state from the injected runtime", () => {
-		const pi = createPi()
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getActive: () => makeDraftFerment(),
-			isAutoModeEnabled: () => true,
-		}
-
-		injectResumeAutoNudge(pi, runtime)
-
-		expect(pi.appendEntry).toHaveBeenCalledWith(
-			"ferment_breadcrumb",
-			expect.objectContaining({ text: expect.stringContaining('Resume [scope]: "Injected Nudge"') }),
-		)
-		expect(pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				customType: "ferment_automode_nudge",
-				content: [expect.objectContaining({ text: expect.stringContaining("RESUMING ferment after /auto") })],
-			}),
-			{ triggerTurn: true, deliverAs: "followUp" },
-		)
-	})
-
 	it("syncs active state from injected storage on step completion", () => {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-nudge-test-")))
 		const setActiveSpy = vi.fn()
@@ -77,7 +52,7 @@ describe("ferment nudges", () => {
 			getStorage: () => storage,
 			getActiveId: () => "ferment-1",
 			setActive: setActiveSpy,
-			isAutoModeEnabled: () => false,
+			isAutomatedContinuationEnabled: () => false,
 		}
 		const applyAndPersist = createApplyAndPersist(runtime)
 		const draft = storage.create("Injected Store")
@@ -104,7 +79,8 @@ describe("ferment nudges", () => {
 			...createDefaultFermentRuntime(),
 			getStorage: () => storage,
 			getActiveId: () => "ferment-1",
-			isAutoModeEnabled: () => true,
+			getContinuationPolicy: () => "automated",
+			isAutomatedContinuationEnabled: () => true,
 		}
 		const applyAndPersist = createApplyAndPersist(runtime)
 		const draft = storage.create("Reactive Nudge")
@@ -116,15 +92,44 @@ describe("ferment nudges", () => {
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
 		if (!scoped.ok) throw new Error(scoped.error.message)
-		const mode = applyAndPersist(draft.id, { type: "set_mode", mode: "exec" })
-		if (!mode.ok) throw new Error(mode.error.message)
 		runtime.getActiveId = () => draft.id
 
-		maybeInjectReactiveAutoNudge(pi, runtime)
+		maybeInjectReactiveContinuationNudge(pi, runtime)
 
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
-				customType: "ferment_automode_nudge",
+				customType: "ferment_continuation_nudge",
+				content: [expect.objectContaining({ text: "activate_ferment_phase: activate the first planned phase" })],
+			}),
+			{ triggerTurn: true, deliverAs: "followUp" },
+		)
+	})
+
+	it("reactively nudges an automated ferment across a completed phase boundary", () => {
+		const pi = createPi()
+		const boundary = makeDraftFerment({
+			status: "planned",
+			phases: [
+				{ id: "phase-1", index: 1, name: "Done", goal: "Build", status: "completed", steps: [] },
+				{ id: "phase-2", index: 2, name: "Next", goal: "Continue", status: "planned", steps: [] },
+			],
+		})
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getActiveId: () => boundary.id,
+			getStorage: () =>
+				({
+					get: () => boundary,
+				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+			getContinuationPolicy: () => "automated",
+			isAutomatedContinuationEnabled: () => true,
+		}
+
+		maybeInjectReactiveContinuationNudge(pi, runtime)
+
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_continuation_nudge",
 				content: [expect.objectContaining({ text: "activate_ferment_phase: activate the first planned phase" })],
 			}),
 			{ triggerTurn: true, deliverAs: "followUp" },
@@ -140,7 +145,8 @@ describe("ferment nudges", () => {
 			getStorage: () => storage,
 			getActiveId: () => "ferment-1",
 			setActive: setActiveSpy,
-			isAutoModeEnabled: () => true,
+			getContinuationPolicy: () => "automated",
+			isAutomatedContinuationEnabled: () => true,
 		}
 		const applyAndPersist = createApplyAndPersist(runtime)
 		const draft = storage.create("Complete Nudge")
@@ -164,10 +170,39 @@ describe("ferment nudges", () => {
 		if (!completed.ok) throw new Error(completed.error.message)
 		runtime.getActiveId = () => draft.id
 
-		maybeInjectReactiveAutoNudge(pi, runtime)
+		maybeInjectReactiveContinuationNudge(pi, runtime)
 
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 		expect(setActiveSpy).toHaveBeenCalledWith(undefined)
+	})
+
+	it("does not count idle reactive checks toward the loop guard", () => {
+		const pi = createPi()
+		const readyToComplete = makeDraftFerment({
+			status: "planned",
+			phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "completed", steps: [] }],
+		})
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getActiveId: () => readyToComplete.id,
+			getStorage: () =>
+				({
+					get: () => readyToComplete,
+				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+			getContinuationPolicy: () => "automated",
+			isAutomatedContinuationEnabled: () => true,
+		}
+
+		maybeInjectReactiveContinuationNudge(pi, runtime)
+		maybeInjectReactiveContinuationNudge(pi, runtime)
+		maybeInjectReactiveContinuationNudge(pi, runtime)
+		maybeInjectReactiveContinuationNudge(pi, runtime)
+
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi.appendEntry).not.toHaveBeenCalledWith(
+			"ferment_breadcrumb",
+			expect.objectContaining({ text: expect.stringContaining("Continuation nudge suppressed") }),
+		)
 	})
 
 	it("suppresses repeated reactive nudges after the loop guard cap", () => {
@@ -177,7 +212,6 @@ describe("ferment nudges", () => {
 			getActive: () =>
 				makeDraftFerment({
 					status: "planned",
-					mode: "exec",
 					phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "planned", steps: [] }],
 				}),
 			getActiveId: () => "ferment-1",
@@ -186,22 +220,22 @@ describe("ferment nudges", () => {
 					get: () =>
 						makeDraftFerment({
 							status: "planned",
-							mode: "exec",
 							phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "planned", steps: [] }],
 						}),
 				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
-			isAutoModeEnabled: () => true,
+			getContinuationPolicy: () => "automated",
+			isAutomatedContinuationEnabled: () => true,
 		}
 
-		maybeInjectReactiveAutoNudge(pi, runtime)
-		maybeInjectReactiveAutoNudge(pi, runtime)
-		maybeInjectReactiveAutoNudge(pi, runtime)
-		maybeInjectReactiveAutoNudge(pi, runtime)
+		maybeInjectReactiveContinuationNudge(pi, runtime)
+		maybeInjectReactiveContinuationNudge(pi, runtime)
+		maybeInjectReactiveContinuationNudge(pi, runtime)
+		maybeInjectReactiveContinuationNudge(pi, runtime)
 
 		expect(pi.sendMessage).toHaveBeenCalledTimes(3)
 		expect(pi.appendEntry).toHaveBeenLastCalledWith(
 			"ferment_breadcrumb",
-			expect.objectContaining({ text: expect.stringContaining("Auto-nudge suppressed after 3") }),
+			expect.objectContaining({ text: expect.stringContaining("Continuation nudge suppressed after 3") }),
 		)
 	})
 
@@ -209,7 +243,6 @@ describe("ferment nudges", () => {
 		const pi = createPi()
 		let current = makeDraftFerment({
 			status: "planned",
-			mode: "exec",
 			phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "planned", steps: [] }],
 		})
 		const runtime: FermentRuntime = {
@@ -219,43 +252,48 @@ describe("ferment nudges", () => {
 				({
 					get: () => current,
 				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
-			isAutoModeEnabled: () => true,
+			getContinuationPolicy: () => "automated",
+			isAutomatedContinuationEnabled: () => true,
 		}
 
-		maybeInjectReactiveAutoNudge(pi, runtime)
-		maybeInjectReactiveAutoNudge(pi, runtime)
-		maybeInjectReactiveAutoNudge(pi, runtime)
+		maybeInjectReactiveContinuationNudge(pi, runtime)
+		maybeInjectReactiveContinuationNudge(pi, runtime)
+		maybeInjectReactiveContinuationNudge(pi, runtime)
 		current = { ...current, status: "paused" }
-		maybeInjectReactiveAutoNudge(pi, runtime)
+		maybeInjectReactiveContinuationNudge(pi, runtime)
 		current = { ...current, status: "planned" }
-		maybeInjectReactiveAutoNudge(pi, runtime)
+		maybeInjectReactiveContinuationNudge(pi, runtime)
 
 		expect(pi.sendMessage).toHaveBeenCalledTimes(4)
 	})
 
-	it("nudges failed phase recovery with retry and bypass actions", () => {
+	it("reactively nudges failed phase recovery with retry and bypass actions", () => {
 		const pi = createPi()
+		const failed = makeDraftFerment({
+			status: "planned",
+			phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "failed", steps: [] }],
+		})
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
-			getActive: () =>
-				makeDraftFerment({
-					status: "planned",
-					phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "failed", steps: [] }],
-				}),
-			isAutoModeEnabled: () => true,
+			getActiveId: () => failed.id,
+			getStorage: () =>
+				({
+					get: () => failed,
+				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+			getContinuationPolicy: () => "automated",
+			isAutomatedContinuationEnabled: () => true,
 		}
 
-		injectResumeAutoNudge(pi, runtime)
+		maybeInjectReactiveContinuationNudge(pi, runtime)
 
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				content: [
 					expect.objectContaining({
-						text: expect.stringContaining(
-							"call activate_ferment_phase to retry, call skip_ferment_phase to bypass, or ask the user to run /ferment abandon",
-						),
+						text: expect.stringContaining("recover_phase: handle failed phase"),
 					}),
 				],
+				details: expect.objectContaining({ action: "recover_phase" }),
 			}),
 			{ triggerTurn: true, deliverAs: "followUp" },
 		)

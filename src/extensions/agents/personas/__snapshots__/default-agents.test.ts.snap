@@ -1,0 +1,83 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`default agents — resolved invocation config snapshot > Explore 1`] = `
+{
+  "builtinToolNames": [
+    "read",
+    "bash",
+    "grep",
+    "find",
+    "ls",
+  ],
+  "maxTurns": undefined,
+  "modelId": "kimchi-dev/nemotron-3-super-fp4",
+  "modelLocked": undefined,
+  "name": "Explore",
+  "preferTier": "light",
+  "strengths": [
+    "explore",
+  ],
+  "thinking": "low",
+  "tokenBudget": 120000,
+}
+`;
+
+exports[`default agents — resolved invocation config snapshot > General-Purpose 1`] = `
+{
+  "builtinToolNames": undefined,
+  "maxTurns": undefined,
+  "modelId": "kimchi-dev/kimi-k2.6",
+  "modelLocked": undefined,
+  "name": "General-Purpose",
+  "preferTier": undefined,
+  "strengths": undefined,
+  "thinking": undefined,
+  "tokenBudget": undefined,
+}
+`;
+
+exports[`default agents — resolved invocation config snapshot > Plan 1`] = `
+{
+  "builtinToolNames": [
+    "read",
+    "bash",
+    "grep",
+    "find",
+    "ls",
+    "write",
+    "edit",
+  ],
+  "maxTurns": undefined,
+  "modelId": "kimchi-dev/kimi-k2.6",
+  "modelLocked": undefined,
+  "name": "Plan",
+  "preferTier": "heavy",
+  "strengths": [
+    "plan",
+  ],
+  "thinking": "high",
+  "tokenBudget": 120000,
+}
+`;
+
+exports[`default agents — resolved invocation config snapshot > Researcher 1`] = `
+{
+  "builtinToolNames": [
+    "read",
+    "bash",
+    "grep",
+    "find",
+    "ls",
+  ],
+  "maxTurns": undefined,
+  "modelId": "kimchi-dev/kimi-k2.6",
+  "modelLocked": undefined,
+  "name": "Researcher",
+  "preferTier": "heavy",
+  "strengths": [
+    "research",
+  ],
+  "thinking": "medium",
+  "tokenBudget": 80000,
+}
+`;

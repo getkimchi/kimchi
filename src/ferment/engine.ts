@@ -1,13 +1,16 @@
 /**
  * Ferment Engine v4 — Progressive Refinement
  *
- * Reads the ferment JSON state and returns the next Action for the LLM.
- * Mode-aware: plan mode (coaching), exec mode (auto-advance), auto mode (mixed).
+ * Reads canonical ferment state and returns the next action for the LLM.
+ * Runtime continuation policy decides whether callers act on that action
+ * automatically or wait for user confirmation.
  *
  * Two output modes:
  * - `determineNextAction` — declarative, state-based. Returns a `DeclarativeAction`
- *   with a one-sentence reason. No prose instructions.
- * - `whatNext` — prose-driven (legacy). Returns `FermentAction` with LLM prose.
+ *   with a one-sentence reason, or undefined when no lifecycle action remains.
+ *   No prose instructions.
+ * - `whatNext` — prose-driven (legacy). Returns `FermentAction` with LLM prose,
+ *   or undefined when no lifecycle action remains.
  *   Used by callers that need the full coaching message.
  */
 
@@ -27,7 +30,6 @@ export type DeclarativeAction =
 	| { kind: "complete_ferment"; reason: string }
 	| { kind: "recover_step"; phaseId: string; stepId: string; reason: string }
 	| { kind: "recover_phase"; phaseId: string; reason: string }
-	| { kind: "noop"; reason: string }
 
 // ─── Main Entry Point ──────────────────────────────────────────────────────────
 
@@ -36,15 +38,13 @@ export type DeclarativeAction =
  * Reads ferment state and returns the next action without prose.
  * Reason is a one-sentence objective, not an instruction.
  */
-export function determineNextAction(ferment: Ferment): DeclarativeAction {
+export function determineNextAction(ferment: Ferment): DeclarativeAction | undefined {
 	const active = findActivePhase(ferment)
 
 	// Priority-ordered conditions (higher priority first)
 
-	// 0. Terminal ferment status → complete_ferment
-	if (ferment.status === "complete" || ferment.status === "abandoned") {
-		return { kind: "complete_ferment", reason: `ferment is ${ferment.status}` }
-	}
+	// 0. Terminal ferment status → no lifecycle action remains.
+	if (ferment.status === "complete" || ferment.status === "abandoned") return undefined
 
 	// 1. No phases defined → scope (only if not paused)
 	if (ferment.phases.length === 0) {
@@ -144,15 +144,16 @@ export function determineNextAction(ferment: Ferment): DeclarativeAction {
 		}
 	}
 
-	// 12. Noop
-	return { kind: "noop", reason: "no action needed" }
+	// 12. No lifecycle action remains.
+	return undefined
 }
 
 /**
  * Legacy prose-driven action. Prefer `determineNextAction` for new code.
  */
-export function whatNext(ferment: Ferment): FermentAction {
+export function whatNext(ferment: Ferment): FermentAction | undefined {
 	const action = determineNextAction(ferment)
+	if (!action) return undefined
 	return toFermentAction(action, ferment)
 }
 
@@ -234,10 +235,6 @@ function toFermentAction(action: DeclarativeAction, ferment: Ferment): FermentAc
 				phaseId: action.phaseId,
 				message: `Phase ${phase?.index} "${phase?.name}" failed. Retry it with activate_ferment_phase, bypass it with skip_ferment_phase, or ask the user to run /ferment abandon if the ferment should stop.`,
 			}
-
-		case "noop":
-			// noop maps to paused with a "nothing to do" message
-			return { kind: "paused", message: "Nothing to do." }
 	}
 }
 
