@@ -14,13 +14,16 @@ import type { ExtensionAPI, MessageRenderer } from "@earendil-works/pi-coding-ag
 import { Container, Text } from "@earendil-works/pi-tui"
 import type { Step } from "../../ferment/types.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
+import { requestSharedFooterRender } from "../shared-footer.js"
 import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
 import { registerFermentEvents } from "./events.js"
+import { FERMENT_STOP_POLICY_SHORTCUT, canToggleFermentStopPolicy } from "./footer-status.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { FERMENT_REQUEST_MESSAGE_TYPE, type FermentRequestMessageDetails } from "./scoping.js"
 import { getActive, getActiveId, getContinuationPolicy } from "./state.js"
+import { applyFermentRuntimeToolProfile } from "./tool-scope.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { registerLifecycleTools } from "./tools/lifecycle.js"
 import { registerPhaseTools } from "./tools/phases.js"
@@ -69,6 +72,21 @@ export function getCurrentRecipe(): Step[] {
 	return f?.phases.find((p) => p.id === f.activePhaseId)?.steps ?? []
 }
 
+function registerFermentStopPolicyShortcut(pi: ExtensionAPI, runtime: FermentRuntime): void {
+	pi.registerShortcut(FERMENT_STOP_POLICY_SHORTCUT, {
+		description: "Toggle Ferment stop policy",
+		handler: () => {
+			const active = runtime.getActive()
+			if (!canToggleFermentStopPolicy(active)) return
+
+			const next = runtime.getContinuationPolicy() === "manual" ? "automated" : "manual"
+			runtime.setContinuationPolicy(next)
+			applyFermentRuntimeToolProfile(pi, runtime)
+			requestSharedFooterRender()
+		},
+	})
+}
+
 const fermentRequestRenderer: MessageRenderer<FermentRequestMessageDetails> = (message, _options, theme) => {
 	const intent =
 		message.details?.intent ??
@@ -92,6 +110,7 @@ const fermentRequestRenderer: MessageRenderer<FermentRequestMessageDetails> = (m
 
 export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime) {
 	pi.registerMessageRenderer(FERMENT_REQUEST_MESSAGE_TYPE, fermentRequestRenderer)
+	registerFermentStopPolicyShortcut(pi, runtime)
 	registerFermentEvents(pi, runtime)
 	registerFermentCommands(pi, runtime)
 

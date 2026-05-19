@@ -7,7 +7,8 @@ import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
-import { getActiveFerment, getCurrentPhaseIndex, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
+import { formatFermentFooterDisplay } from "../extensions/ferment/footer-status.js"
+import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatCount } from "../extensions/format.js"
 import { getCurrentPermissionsMode } from "../extensions/permissions/index.js"
 import { getMultiModelEnabled } from "../extensions/prompt-construction/prompt-enrichment.js"
@@ -30,7 +31,7 @@ type SegmentId =
  *  steps can rebuild the colorized text without round-tripping through ANSI.
  *
  *  `ferment` is the odd one out: instead of storing inputs and rebuilding the
- *  whole segment, it just stashes the leading colorized `ferment:` substring
+ *  whole segment, it just stashes the leading colorized `Ferment: ` substring
  *  so the compaction step can slice it off in place. Cheaper than a rebuild
  *  and the segment's tail is identical in both forms anyway. */
 type SegmentRaw =
@@ -239,7 +240,7 @@ function stripShortcutHintsAcross(segments: Segment[], ids: SegmentId[]): boolea
 		if (i === -1) continue
 		const stripped = segments[i].text.replace(SHORTCUT_TAIL, "")
 		if (stripped !== segments[i].text) {
-			segments[i] = { id, text: stripped, width: visibleWidth(stripped) }
+			segments[i] = { ...segments[i], text: stripped, width: visibleWidth(stripped) }
 			changed = true
 		}
 	}
@@ -290,7 +291,7 @@ const STEPS: CompactionStep[] = [
 	},
 	{
 		name: "drop-shortcut-hints",
-		apply: (segs) => stripShortcutHintsAcross(segs, ["permissions", "multi-model"]),
+		apply: (segs) => stripShortcutHintsAcross(segs, ["permissions", "multi-model", "ferment"]),
 	},
 	{
 		name: "drop-phase-prefix",
@@ -457,39 +458,17 @@ export class StatsFooter implements Component {
 	}
 
 	private fermentSegment(): Segment | null {
-		const ferment = getActiveFerment()
-		if (!ferment) return null
-		const phaseIdx = getCurrentPhaseIndex()
-		const totalPhases = ferment.phases.length
-		const activePhase = ferment.activePhaseId ? ferment.phases.find((p) => p.id === ferment.activePhaseId) : undefined
-		const activeStep = activePhase?.steps.find(
-			(s) => s.status === "running" || s.status === "pending" || s.status === "failed",
-		)
+		const display = formatFermentFooterDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
+			dim: (s) => this.dim(s),
+			accent: (s) => this.accent(s),
+		})
+		if (!display) return null
 
-		// Capture the colorized `ferment:` prefix so the compaction step can
-		// slice it off in place. `visibleWidth("ferment:")` is 8 (ASCII).
-		const prefix = this.dim("ferment:")
-		const PREFIX_WIDTH = visibleWidth(prefix)
-
-		const parts: string[] = [`${prefix}${this.accent(ferment.name)}`]
-		parts.push(this.dim(`[${ferment.status}]`))
-		parts.push(this.dim(`policy:${getFermentContinuationPolicy()}`))
-
-		if (phaseIdx !== undefined && totalPhases > 0) {
-			const phaseName = activePhase?.name ?? ""
-			const phaseInfo = phaseName ? ` "${phaseName}"` : ""
-			parts.push(this.dim(`· phase ${phaseIdx}/${totalPhases}${phaseInfo}`))
-		}
-		if (activeStep && activePhase) {
-			parts.push(this.dim(`· step ${activeStep.index}/${activePhase.steps.length}`))
-		}
-
-		const text = parts.join(" ")
 		return {
 			id: "ferment",
-			text,
-			width: visibleWidth(text),
-			raw: { kind: "ferment", prefix, prefixWidth: PREFIX_WIDTH },
+			text: display.text,
+			width: display.width,
+			raw: { kind: "ferment", prefix: display.prefix, prefixWidth: display.prefixWidth },
 		}
 	}
 
@@ -515,10 +494,10 @@ export class StatsFooter implements Component {
 			.filter((t): t is { key: string; value: string } => t !== null)
 
 		const segments: Segment[] = [
+			this.fermentSegment(),
 			this.permissionsSegment(),
 			this.multiModelSegment(),
 			this.modelSegment(),
-			this.fermentSegment(),
 			this.subagentSegment(),
 			this.contextSegment(),
 			this.usageSegment(),

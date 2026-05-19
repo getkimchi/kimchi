@@ -13,8 +13,17 @@ import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } 
 import { LogoHeader } from "../components/logo.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { isBareExitAlias } from "./exit-utils.js"
+import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
+import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
 import { getMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
+import {
+	isSessionModeOnboardingFooterSuppressed,
+	registerSharedFooterRenderer,
+	setSessionModeOnboardingFooterSuppressed,
+} from "./shared-footer.js"
 import { createWorkingAnimator } from "./spinner.js"
+
+export { requestSharedFooterRender, setSessionModeOnboardingFooterSuppressed } from "./shared-footer.js"
 
 function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {
 	return a.provider === b.provider && a.id === b.id
@@ -38,24 +47,23 @@ function getEnabledModelIds(): Set<string> | null {
 // Track current editor for indicator updates
 let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
-let sessionModeOnboardingFooterSuppressed = false
-const sessionModeFooterRenderers = new Set<() => void>()
 
 type DisposableComponent = Component & { dispose?(): void }
 
 class SuppressibleFooter implements Component {
 	private readonly requestRender: () => void
+	private readonly unregisterRequestRender: () => void
 
 	constructor(
 		private readonly inner: DisposableComponent,
 		tui: TUI,
 	) {
 		this.requestRender = () => tui.requestRender()
-		sessionModeFooterRenderers.add(this.requestRender)
+		this.unregisterRequestRender = registerSharedFooterRenderer(this.requestRender)
 	}
 
 	dispose(): void {
-		sessionModeFooterRenderers.delete(this.requestRender)
+		this.unregisterRequestRender()
 		this.inner.dispose?.()
 	}
 
@@ -64,14 +72,8 @@ class SuppressibleFooter implements Component {
 	}
 
 	render(width: number): string[] {
-		return sessionModeOnboardingFooterSuppressed ? [] : this.inner.render(width)
+		return isSessionModeOnboardingFooterSuppressed() ? [] : this.inner.render(width)
 	}
-}
-
-export function setSessionModeOnboardingFooterSuppressed(suppressed: boolean): void {
-	if (sessionModeOnboardingFooterSuppressed === suppressed) return
-	sessionModeOnboardingFooterSuppressed = suppressed
-	for (const requestRender of sessionModeFooterRenderers) requestRender()
 }
 
 export function setPasteImageHandler(handler: () => void): void {
@@ -181,6 +183,11 @@ export default function uiExtension(pi: ExtensionAPI) {
 			scriptCmd = cmd
 			const getControlsLine = (): string | null => {
 				const parts: string[] = []
+				const ferment = formatFermentFooterDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
+					dim: (s) => theme.fg("dim", s),
+					accent: (s) => `${resolvedAccentFg(theme)}${s}${RST_FG}`,
+				})
+				if (ferment) parts.push(ferment.text)
 				const perm = footerData.getExtensionStatuses().get("permissions-mode")
 				if (perm) parts.push(perm)
 				const enabled = getMultiModelEnabled()
