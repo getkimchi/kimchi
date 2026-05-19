@@ -9,7 +9,7 @@ describe("parseTeleportArgs", () => {
 			includeIgnored: false,
 			abandonPending: false,
 			force: false,
-			withSession: false,
+			skipSession: false,
 		})
 	})
 
@@ -19,12 +19,12 @@ describe("parseTeleportArgs", () => {
 	})
 
 	it("parses every boolean flag", () => {
-		const r = parseTeleportArgs("--allow-dirty --include-ignored --abandon-pending --force --with-session")
+		const r = parseTeleportArgs("--allow-dirty --include-ignored --abandon-pending --force --skip-session")
 		expect(r.allowDirty).toBe(true)
 		expect(r.includeIgnored).toBe(true)
 		expect(r.abandonPending).toBe(true)
 		expect(r.force).toBe(true)
-		expect(r.withSession).toBe(true)
+		expect(r.skipSession).toBe(true)
 	})
 
 	it("collects repeated --exclude globs in order", () => {

@@ -233,7 +233,8 @@ describe("runTeleport", () => {
 		)
 
 		expect(authMock).toHaveBeenCalledOnce()
-		expect(rsyncMock).toHaveBeenCalledOnce()
+		// Two rsync calls: workspace + session file.
+		expect(rsyncMock).toHaveBeenCalledTimes(2)
 		expect(buildMock).toHaveBeenCalledOnce()
 		expect(wrapper.foreground).toBe(asRemote(remote))
 		// Short final notification — just the session id, no extra hints.
@@ -250,23 +251,8 @@ describe("runTeleport", () => {
 		// runRsync was called with the per-teleport subdir as the destination.
 		const rsyncCall = rsyncMock.mock.calls[0][0] as { destination?: string }
 		expect(rsyncCall.destination).toBe("/home/sandbox/proj/")
-	})
 
-	it("--with-session exports, syncs, and loads the session on the remote", async () => {
-		const home = new FakeSession("local-1")
-		const { wrapper, ctx } = makeCtx(home)
-		const remote = new FakeSession("remote-1")
-		buildMock.mockResolvedValueOnce(asRemote(remote))
-
-		await runTeleport(
-			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false, withSession: true },
-			ctx,
-		)
-
-		// Two rsync calls: workspace + session file.
-		expect(rsyncMock).toHaveBeenCalledTimes(2)
-
-		// Second rsync is the session file going to the remote session dir.
+		// Session file was also synced to the remote session dir.
 		const sessionRsyncCall = rsyncMock.mock.calls[1][0] as { destination?: string; deleteExtraneous?: boolean }
 		expect(sessionRsyncCall.destination).toBe("/home/sandbox/.pi/agent/sessions/--home-sandbox-proj--")
 		expect(sessionRsyncCall.deleteExtraneous).toBe(false)
@@ -277,10 +263,28 @@ describe("runTeleport", () => {
 		expect(switchedPath).toBe("/home/sandbox/.pi/agent/sessions/--home-sandbox-proj--/teleport-session-export.jsonl")
 		expect(remote.getMessages).toHaveBeenCalledOnce()
 		expect(remote.getState).toHaveBeenCalledOnce()
+	})
+
+	it("--skip-session omits session copy and only rsyncs workspace", async () => {
+		const home = new FakeSession("local-1")
+		const { wrapper, ctx } = makeCtx(home)
+		const remote = new FakeSession("remote-1")
+		buildMock.mockResolvedValueOnce(asRemote(remote))
+
+		await runTeleport(
+			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false, skipSession: true },
+			ctx,
+		)
+
+		// Only workspace rsync — no session export or sync.
+		expect(rsyncMock).toHaveBeenCalledTimes(1)
+		expect(remote.switchSession).not.toHaveBeenCalled()
+		expect(remote.getMessages).not.toHaveBeenCalled()
+		expect(remote.getState).not.toHaveBeenCalled()
 		expect(wrapper.foreground).toBe(asRemote(remote))
 	})
 
-	it("--with-session tolerates session-sync failure and continues", async () => {
+	it("tolerates session-sync failure and continues", async () => {
 		const home = new FakeSession("local-1")
 		const { wrapper, ctx, ui } = makeCtx(home)
 		const remote = new FakeSession("remote-1")
@@ -290,7 +294,7 @@ describe("runTeleport", () => {
 		rsyncMock.mockRejectedValueOnce(new Error("session sync fail"))
 
 		await runTeleport(
-			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false, withSession: true },
+			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false },
 			ctx,
 		)
 
@@ -302,7 +306,7 @@ describe("runTeleport", () => {
 		expect(wrapper.foreground).toBe(asRemote(remote))
 	})
 
-	it("--with-session tolerates remote session-load failure and continues", async () => {
+	it("tolerates remote session-load failure and continues", async () => {
 		const home = new FakeSession("local-1")
 		const { wrapper, ctx, ui } = makeCtx(home)
 		const remote = new FakeSession("remote-1")
@@ -312,7 +316,7 @@ describe("runTeleport", () => {
 		buildMock.mockResolvedValueOnce(asRemote(remote))
 
 		await runTeleport(
-			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false, withSession: true },
+			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false },
 			ctx,
 		)
 
