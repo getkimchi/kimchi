@@ -4,6 +4,19 @@ import { dirname, resolve } from "node:path"
 // Unbind pi-mono's `app.thinking.cycle` so shift+tab is free for the
 // permissions extension to register. Must run before main() loads the
 // keybindings file. Idempotent.
+export function readMultiModelShortcutFromKeybindings(agentDir: string): string | undefined {
+	const keybindingsPath = resolve(agentDir, "keybindings.json")
+	try {
+		if (!existsSync(keybindingsPath)) return undefined
+		const parsed = JSON.parse(readFileSync(keybindingsPath, "utf-8"))
+		const val = parsed?.["app.multiModel.toggle"]
+		if (typeof val === "string" && val.length > 0) return val
+	} catch {
+		// missing or malformed
+	}
+	return undefined
+}
+
 export function reserveShiftTabForPermissions(agentDir: string): void {
 	const keybindingsPath = resolve(agentDir, "keybindings.json")
 	try {

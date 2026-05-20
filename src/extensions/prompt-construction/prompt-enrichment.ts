@@ -28,7 +28,7 @@ import { isAbsolute, join, normalize, resolve } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
 import { type KeyId, isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
-import { readMultiModelShortcutFromConfig } from "../../config.js"
+import { getAgentConfigDir } from "../../config.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -43,6 +43,7 @@ import {
 	stripStaleNudges,
 } from "../orchestration/continuation-nudge.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
+import { readMultiModelShortcutFromKeybindings } from "../permissions/keybindings.js"
 import { getCurrentPhase } from "../tags.js"
 import { type ContextFile, loadProjectContextFiles } from "./context-files.js"
 import { type EnvironmentInfo, type PromptMode, type ToolInfo, buildSystemPrompt } from "./system-prompt.js"
@@ -124,7 +125,7 @@ function isDelegationToolCallName(name: string | undefined): boolean {
 }
 
 const DEFAULT_MULTI_MODEL_KEY = "ctrl+n"
-const MULTI_MODEL_KEY = readMultiModelShortcutFromConfig() ?? DEFAULT_MULTI_MODEL_KEY
+const MULTI_MODEL_KEY = readMultiModelShortcutFromKeybindings(getAgentConfigDir()) ?? DEFAULT_MULTI_MODEL_KEY
 export const MULTI_MODEL_SHORTCUT =
 	process.platform === "darwin" ? MULTI_MODEL_KEY.replace(/\balt\b/, "option") : MULTI_MODEL_KEY
 
