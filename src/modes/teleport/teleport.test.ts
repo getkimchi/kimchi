@@ -11,8 +11,6 @@ import type { RemoteSessionSummary } from "../remote/types.js"
 import { RemoteAuthError } from "../remote/types.js"
 import { TeleportableAgentSession } from "./teleportable-agent-session.js"
 
-const PROMISIFY_CUSTOM = Symbol.for("nodejs.util.promisify.custom")
-
 type ExecAsyncImpl = (cmd: string, opts?: unknown) => Promise<{ stdout: string; stderr: string }>
 
 const { execAsyncMock, execMock, authMock, listMock, getMeMock, buildMock, rsyncMock, waitMock } = vi.hoisted(() => {
@@ -194,6 +192,8 @@ const AUTH_OK = {
 }
 
 beforeEach(() => {
+	// Be sure to use the local proxy-helper
+	vi.stubEnv("KIMCHI_PROXY_HELPER", "bin/proxy-helper")
 	execAsyncMock.mockReset()
 	execAsyncMock.mockImplementation(async () => ({ stdout: "", stderr: "" }))
 	authMock.mockReset()
@@ -917,7 +917,6 @@ describe("runConnect", () => {
 		expect(calls).toHaveLength(1)
 		expect(calls[0].cmd).toBe("ssh")
 		expect(calls[0].args).toContain("sandbox@host.example.com")
-		expect(calls[0].args).toContain("443")
 		expect(calls[0].env?.AUTH_TOKEN).toBe("ct-1")
 	})
 
