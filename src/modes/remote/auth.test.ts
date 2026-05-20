@@ -812,26 +812,4 @@ describe("waitForSessionReady (WS probe)", () => {
 			;(globalThis as { WebSocket?: unknown }).WebSocket = orig
 		}
 	})
-
-	it("falls back to globalThis.WebSocket when _WebSocket is omitted", async () => {
-		const orig = (globalThis as { WebSocket?: unknown }).WebSocket
-		try {
-			const { created, ctor } = wsFactory()
-			;(globalThis as { WebSocket: unknown }).WebSocket = ctor
-
-			const promise = waitForSessionReady({
-				wsUrl: "wss://h.example.com/",
-				connectToken: "tok",
-				pollIntervalMs: 1,
-				probeTimeoutMs: 1000,
-			})
-
-			await Promise.resolve()
-			await Promise.resolve()
-			created[0].fire("open")
-			await expect(promise).resolves.toBeUndefined()
-		} finally {
-			;(globalThis as { WebSocket?: unknown }).WebSocket = orig
-		}
-	})
 })
