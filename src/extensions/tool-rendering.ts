@@ -184,7 +184,6 @@ function setThemeBg(theme: unknown, key: string, value: string): void {
 
 function applyToolBackgroundMode(theme: unknown): void {
 	syncToolBackgroundMode()
-	setThemeBg(theme, "userMessageBg", TRANSPARENT_BG)
 	if (toolBackgroundMode === "default") return
 
 	setThemeBg(theme, "toolPendingBg", TRANSPARENT_BG)
@@ -602,30 +601,41 @@ function borderedUserMessageLine(line: string, width: number): string {
 	return `${BORDER_COLOR}│${TRANSPARENT_RESET} ${content}${padding} ${BORDER_COLOR}│${TRANSPARENT_RESET}`
 }
 
+function insertUserPromptPrefix(line: string): string {
+	// Each Box content line is: [ANSI bg escapes...][paddingX spaces][content][trailing spaces]
+	// We replace the first 2 leading spaces (paddingX=2) with "> " keeping visible width constant.
+	let i = 0
+	while (i < line.length) {
+		if (line[i] === "\x1b") {
+			const m = line.indexOf("m", i)
+			if (m === -1) break
+			i = m + 1
+		} else break
+	}
+	if (i < line.length && line[i] === " " && line[i + 1] === " ") {
+		return `${line.slice(0, i)}> ${line.slice(i + 2)}`
+	}
+	return line
+}
+
 function patchUserMessageRender(): void {
 	const proto = UserMessageComponent.prototype as any
 	if (proto[USER_MESSAGE_PATCH_FLAG]) return
 	const originalRender = proto.render
 	if (typeof originalRender !== "function") return
 	proto.render = function patchedUserMessageRender(width: number) {
-		for (const child of (this as any).children ?? []) {
-			if (child instanceof Markdown && (child as any).defaultTextStyle?.bgColor) {
-				;(child as any).defaultTextStyle.bgColor = undefined
-				child.invalidate?.()
-			}
+		const box = (this as any).contentBox
+		if (box) {
+			box.paddingX = 2
+			box.invalidateCache?.()
 		}
-		const borderWidth = Math.max(1, width)
-		const contentWidth = Math.max(1, borderWidth - 4)
-		const lines = originalRender.call(this, contentWidth)
+		const lines: string[] = originalRender.call(this, width)
 		if (!Array.isArray(lines) || lines.length === 0) return lines
-		const rendered = [
-			roundedUserBorder(borderWidth, true),
-			...lines.map((line: string) => borderedUserMessageLine(line, borderWidth)),
-			roundedUserBorder(borderWidth, false),
-		]
-		rendered[0] = OSC133_ZONE_START + rendered[0]
-		rendered[rendered.length - 1] += OSC133_ZONE_END + OSC133_ZONE_FINAL
-		return rendered
+		// Padding lines (top/bottom) have no visible content — skip the prefix on those
+		return lines.map((line, i) => {
+			const ispad = i === 0 || i === lines.length - 1
+			return ispad ? line : insertUserPromptPrefix(line)
+		})
 	}
 	proto[USER_MESSAGE_PATCH_FLAG] = true
 }
@@ -3704,6 +3714,7 @@ export default function (pi: ExtensionAPI) {
 	patchReadImageExpansion()
 	patchGlobalToolBorders()
 	patchToolExecutionRenderers()
+	patchUserMessageRender()
 	applyDiffPalette()
 
 	// /cc-tools command — toggle tool border style at runtime
