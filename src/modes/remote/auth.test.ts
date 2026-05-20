@@ -53,7 +53,6 @@ describe("authenticateRemoteSession", () => {
 		expect(result.expiresAt).toBe("2026-05-15T12:44:51.521Z")
 		expect(result.wsUrl).toBe("wss://s-3380b7aa-981b-4272-8f7d-d6e41f62139f.remote.kimchi.dev")
 		expect(result.host).toBe("s-3380b7aa-981b-4272-8f7d-d6e41f62139f.remote.kimchi.dev")
-		expect(result.port).toBe(443)
 
 		expect(mockFetch).toHaveBeenCalledTimes(3)
 		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/ai-optimizer/v1beta/api-keys:verify`)
@@ -287,7 +286,6 @@ describe("authenticateRemoteSession", () => {
 
 		expect(result.wsUrl).toBe(`wss://${bare}`)
 		expect(result.host).toBe(bare)
-		expect(result.port).toBe(443)
 	})
 
 	it("preserves an explicit non-default port", async () => {
@@ -296,7 +294,6 @@ describe("authenticateRemoteSession", () => {
 
 		expect(result.wsUrl).toBe("wss://host.example.com:9443")
 		expect(result.host).toBe("host.example.com")
-		expect(result.port).toBe(9443)
 	})
 
 	it("strips the default :443 from a fully qualified wss URI", async () => {
@@ -305,7 +302,6 @@ describe("authenticateRemoteSession", () => {
 
 		expect(result.wsUrl).toBe("wss://host.example.com")
 		expect(result.host).toBe("host.example.com")
-		expect(result.port).toBe(443)
 	})
 
 	it("rejects a non-WS protocol with a RemoteNetworkError", async () => {
@@ -695,8 +691,7 @@ describe("waitForSessionReady (WS probe)", () => {
 		const { created, ctor } = wsFactory()
 
 		const promise = waitForSessionReady({
-			host: "h.example.com",
-			port: 443,
+			wsUrl: "wss://h.example.com/",
 			connectToken: "tok-1",
 			pollIntervalMs: 1,
 			probeTimeoutMs: 1000,
@@ -707,7 +702,7 @@ describe("waitForSessionReady (WS probe)", () => {
 		await Promise.resolve()
 		await Promise.resolve()
 		expect(created).toHaveLength(1)
-		expect(created[0].url).toBe("wss://h.example.com:443/connect?token=tok-1")
+		expect(created[0].url).toBe("wss://h.example.com//connect")
 		expect(created[0].opts?.headers).toEqual({ Authorization: "Bearer tok-1" })
 
 		created[0].fire("open")
@@ -719,8 +714,7 @@ describe("waitForSessionReady (WS probe)", () => {
 		const { created, ctor } = wsFactory()
 
 		const promise = waitForSessionReady({
-			host: "h.example.com",
-			port: 443,
+			wsUrl: "wss://h.example.com/",
 			connectToken: "tok",
 			pollIntervalMs: 1,
 			probeTimeoutMs: 1000,
@@ -745,8 +739,7 @@ describe("waitForSessionReady (WS probe)", () => {
 		const ticks: Array<{ elapsedMs: number; lastError?: string }> = []
 
 		const promise = waitForSessionReady({
-			host: "h.example.com",
-			port: 443,
+			wsUrl: "wss://h.example.com/",
 			connectToken: "tok",
 			pollIntervalMs: 1,
 			probeTimeoutMs: 1000,
@@ -770,8 +763,7 @@ describe("waitForSessionReady (WS probe)", () => {
 		const { created, ctor } = wsFactory()
 
 		const promise = waitForSessionReady({
-			host: "h.example.com",
-			port: 443,
+			wsUrl: "wss://h.example.com/",
 			connectToken: "tok",
 			pollIntervalMs: 5,
 			probeTimeoutMs: 2,
@@ -794,8 +786,7 @@ describe("waitForSessionReady (WS probe)", () => {
 		const ctrl = new AbortController()
 
 		const promise = waitForSessionReady({
-			host: "h.example.com",
-			port: 443,
+			wsUrl: "wss://h.example.com/",
 			connectToken: "tok",
 			pollIntervalMs: 60_000,
 			probeTimeoutMs: 60_000,
@@ -813,8 +804,7 @@ describe("waitForSessionReady (WS probe)", () => {
 			;(globalThis as { WebSocket?: unknown }).WebSocket = undefined
 			await expect(
 				waitForSessionReady({
-					host: "h.example.com",
-					port: 443,
+					wsUrl: "wss://h.example.com/",
 					connectToken: "tok",
 				}),
 			).rejects.toThrow(/WebSocket is not available/)
@@ -830,8 +820,7 @@ describe("waitForSessionReady (WS probe)", () => {
 			;(globalThis as { WebSocket: unknown }).WebSocket = ctor
 
 			const promise = waitForSessionReady({
-				host: "h.example.com",
-				port: 443,
+				wsUrl: "wss://h.example.com/",
 				connectToken: "tok",
 				pollIntervalMs: 1,
 				probeTimeoutMs: 1000,

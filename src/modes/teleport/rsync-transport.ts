@@ -33,8 +33,6 @@ export interface RsyncOptions {
 	destination: string
 	/** Hostname of the session host (expanded by ssh's %h in ProxyCommand). */
 	remoteHost: string
-	/** Port the WebSocket endpoint serves on (expanded by ssh's %p). */
-	remotePort: number
 	/** SSH user to log in as on the sandbox. */
 	remoteUser: string
 	/** Bearer token surfaced to teleport-proxy via the AUTH_TOKEN env var. */
@@ -57,7 +55,7 @@ export interface RsyncOptions {
 	/** Override path to the vendored teleport-proxy.js. Defaults to the one
 	 *  shipped with this module. Tests inject a stub.
 	 */
-	proxyPath?: string
+	proxyCommand?: string
 	/** Test seam: injectable spawner. Defaults to `child_process.spawn`. */
 	_spawn?: typeof spawn
 }
@@ -79,12 +77,11 @@ export class RsyncError extends Error {
 	}
 }
 
-import { getTeleportProxyPath } from "./proxy-path.js"
+import { buildProxyCommand } from "./teleport-proxy.js"
 
 interface BuildSshOptionInput {
-	proxyPath: string
+	proxyCommand: string
 	knownHostsFile: string
-	remotePort: number
 }
 
 /**
@@ -103,13 +100,10 @@ export function buildSshOption(input: BuildSshOptionInput): string {
 	// to be single-quoted or rsync turns the trailing words into stray
 	// positional ssh args. UserKnownHostsFile gets the same treatment as a
 	// defensive measure (some $TMPDIR layouts have spaces).
-	const proxyCmd = `node ${input.proxyPath} %h %p`
 	return [
 		"ssh",
-		"-p",
-		String(input.remotePort),
 		"-o",
-		`ProxyCommand=${rsyncShellQuote(proxyCmd)}`,
+		`ProxyCommand=${rsyncShellQuote(input.proxyCommand)}`,
 		"-o",
 		"StrictHostKeyChecking=accept-new",
 		"-o",
@@ -126,8 +120,7 @@ interface BuildRsyncArgvInput {
 	destination: string
 	remoteHost: string
 	remoteUser: string
-	remotePort: number
-	proxyPath: string
+	proxyCommand: string
 	knownHostsFile: string
 	excludeFile: string
 	deleteExtraneous?: boolean
@@ -138,9 +131,8 @@ interface BuildRsyncArgvInput {
  */
 export function buildRsyncArgv(input: BuildRsyncArgvInput): string[] {
 	const sshOption = buildSshOption({
-		proxyPath: input.proxyPath,
+		proxyCommand: input.proxyCommand,
 		knownHostsFile: input.knownHostsFile,
-		remotePort: input.remotePort,
 	})
 	// `--progress` works on both GNU rsync 3.x and the BSD rsync 2.6.9 shipped on
 	// macOS. The newer `--info=progress2` would give nicer multi-file totals but
@@ -166,8 +158,7 @@ export function buildRsyncArgv(input: BuildRsyncArgvInput): string[] {
 interface BuildMkdirArgvInput {
 	remoteHost: string
 	remoteUser: string
-	remotePort: number
-	proxyPath: string
+	proxyCommand: string
 	knownHostsFile: string
 	destination: string
 }
@@ -178,18 +169,16 @@ interface BuildMkdirArgvInput {
  */
 export function buildMkdirArgv(input: BuildMkdirArgvInput): string[] {
 	return [
-		"-p",
-		String(input.remotePort),
 		"-o",
-		`ProxyCommand=node ${shellEscape(input.proxyPath)} %h %p`,
+		`ProxyCommand=${input.proxyCommand}`,
 		"-o",
 		"StrictHostKeyChecking=accept-new",
 		"-o",
-		`UserKnownHostsFile=${shellEscape(input.knownHostsFile)}`,
+		`UserKnownHostsFile=${input.knownHostsFile}`,
 		"-o",
 		"BatchMode=yes",
 		`${input.remoteUser}@${input.remoteHost}`,
-		`mkdir -p ${shellEscape(input.destination)}`,
+		`mkdir -p ${input.destination}`,
 	]
 }
 
@@ -262,7 +251,6 @@ export async function resolveGitIgnored(
 export async function runRsync(opts: RsyncOptions): Promise<RsyncResult> {
 	const startedAt = Date.now()
 	const spawner = opts._spawn ?? spawn
-	const proxyPath = opts.proxyPath ?? getTeleportProxyPath()
 	const sessionDir = join(tmpdir(), `kimchi-teleport-${randomUUID()}`)
 	const knownHostsFile = join(sessionDir, "known_hosts")
 	const excludeFile = join(sessionDir, "excludes")
@@ -277,6 +265,8 @@ export async function runRsync(opts: RsyncOptions): Promise<RsyncResult> {
 
 		const env: NodeJS.ProcessEnv = { ...process.env, AUTH_TOKEN: opts.authToken }
 
+		const proxyCommand = opts.proxyCommand ?? buildProxyCommand()
+
 		// 1) mkdir -p destination on the sandbox.
 		opts.onPhase?.("mkdir")
 		await runChild({
@@ -285,8 +275,7 @@ export async function runRsync(opts: RsyncOptions): Promise<RsyncResult> {
 			args: buildMkdirArgv({
 				remoteHost: opts.remoteHost,
 				remoteUser: opts.remoteUser,
-				remotePort: opts.remotePort,
-				proxyPath,
+				proxyCommand,
 				knownHostsFile,
 				destination: opts.destination,
 			}),
@@ -301,8 +290,7 @@ export async function runRsync(opts: RsyncOptions): Promise<RsyncResult> {
 			destination: opts.destination,
 			remoteHost: opts.remoteHost,
 			remoteUser: opts.remoteUser,
-			remotePort: opts.remotePort,
-			proxyPath,
+			proxyCommand,
 			knownHostsFile,
 			excludeFile,
 			deleteExtraneous: opts.deleteExtraneous,

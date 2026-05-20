@@ -68,20 +68,18 @@ function posixSplit(input: string): string[] {
 describe("buildSshOption", () => {
 	it("composes the ssh command rsync's -e flag uses", () => {
 		const got = buildSshOption({
-			proxyPath: "/usr/local/lib/kimchi/teleport-proxy.js",
+			proxyCommand: "node /usr/local/lib/kimchi/teleport-proxy.js %h %p",
 			knownHostsFile: "/tmp/known_hosts",
-			remotePort: 443,
 		})
 		expect(got).toBe(
-			"ssh -p 443 -o ProxyCommand='node /usr/local/lib/kimchi/teleport-proxy.js %h %p' -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile='/tmp/known_hosts' -o BatchMode=yes -o ServerAliveInterval=15",
+			"ssh -o ProxyCommand='node /usr/local/lib/kimchi/teleport-proxy.js %h %p' -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile='/tmp/known_hosts' -o BatchMode=yes -o ServerAliveInterval=15",
 		)
 	})
 
 	it("single-quote-wraps proxy paths and known_hosts paths containing spaces or special chars", () => {
 		const got = buildSshOption({
-			proxyPath: "/path with spaces/teleport-proxy.js",
+			proxyCommand: "node /path with spaces/teleport-proxy.js %h %p",
 			knownHostsFile: "/tmp/it's mine/known_hosts",
-			remotePort: 443,
 		})
 		// ProxyCommand value is always wrapped — inner path with spaces is
 		// preserved inside the single quotes intact.
@@ -97,9 +95,8 @@ describe("buildSshOption", () => {
 		// into five separate ssh args (ssh ended up with bare `node` as
 		// its ProxyCommand and deadlocked).
 		const got = buildSshOption({
-			proxyPath: "/opt/kimchi/teleport-proxy.js",
+			proxyCommand: "node /opt/kimchi/teleport-proxy.js %h %p",
 			knownHostsFile: "/tmp/k/known_hosts",
-			remotePort: 443,
 		})
 		const tokens = posixSplit(got)
 		const proxyTokens = tokens.filter((t) => t.startsWith("ProxyCommand="))
@@ -116,8 +113,7 @@ describe("buildRsyncArgv", () => {
 			destination: "/home/sandbox",
 			remoteHost: "session-host.example.com",
 			remoteUser: "sandbox",
-			remotePort: 443,
-			proxyPath: "/opt/kimchi/teleport-proxy.js",
+			proxyCommand: "node /opt/kimchi/teleport-proxy.js %h %p",
 			knownHostsFile: "/tmp/k/known_hosts",
 			excludeFile: "/tmp/k/excludes",
 		})
@@ -130,7 +126,7 @@ describe("buildRsyncArgv", () => {
 			  "--exclude-from",
 			  "/tmp/k/excludes",
 			  "-e",
-			  "ssh -p 443 -o ProxyCommand='node /opt/kimchi/teleport-proxy.js %h %p' -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile='/tmp/k/known_hosts' -o BatchMode=yes -o ServerAliveInterval=15",
+			  "ssh -o ProxyCommand='node /opt/kimchi/teleport-proxy.js %h %p' -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile='/tmp/k/known_hosts' -o BatchMode=yes -o ServerAliveInterval=15",
 			  "--delete",
 			  "/home/dev/project/",
 			  "sandbox@session-host.example.com:/home/sandbox/",
@@ -144,8 +140,7 @@ describe("buildRsyncArgv", () => {
 			destination: "/b",
 			remoteHost: "h",
 			remoteUser: "u",
-			remotePort: 1,
-			proxyPath: "/p",
+			proxyCommand: "node /p %h %p",
 			knownHostsFile: "/k",
 			excludeFile: "/e",
 		})
@@ -155,8 +150,7 @@ describe("buildRsyncArgv", () => {
 			destination: "/b",
 			remoteHost: "h",
 			remoteUser: "u",
-			remotePort: 1,
-			proxyPath: "/p",
+			proxyCommand: "node /p %h %p",
 			knownHostsFile: "/k",
 			excludeFile: "/e",
 			deleteExtraneous: false,
@@ -170,8 +164,7 @@ describe("buildRsyncArgv", () => {
 			destination: "/also-no-slash",
 			remoteHost: "h",
 			remoteUser: "u",
-			remotePort: 22,
-			proxyPath: "/p",
+			proxyCommand: "node /p %h %p",
 			knownHostsFile: "/k",
 			excludeFile: "/e",
 		})
@@ -185,14 +178,11 @@ describe("buildMkdirArgv", () => {
 		const argv = buildMkdirArgv({
 			remoteHost: "h",
 			remoteUser: "u",
-			remotePort: 443,
-			proxyPath: "/p",
+			proxyCommand: "node /p %h %p",
 			knownHostsFile: "/k",
 			destination: "/home/sandbox",
 		})
 		expect(argv).toEqual([
-			"-p",
-			"443",
 			"-o",
 			"ProxyCommand=node /p %h %p",
 			"-o",
@@ -339,7 +329,7 @@ describe("runRsync", () => {
 			remoteUser: "sandbox",
 			authToken: "tok-abc",
 			includeIgnored: true,
-			proxyPath: "/opt/kimchi/teleport-proxy.js",
+			proxyCommand: "node /opt/kimchi/teleport-proxy.js %h %p",
 			onProgress: (pct, bytes) => progress.push({ pct, bytes }),
 			_spawn: makePathSpawner(fixture.binDir, {
 				FAKE_RSYNC_RECORD: fixture.recordRsync,
@@ -375,7 +365,7 @@ describe("runRsync", () => {
 			authToken: "tok",
 			excludeGlobs: ["my-private/"],
 			includeIgnored: true,
-			proxyPath: "/p",
+			proxyCommand: "node /p %h %p",
 			_spawn: makePathSpawner(fixture.binDir, {
 				FAKE_RSYNC_RECORD: fixture.recordRsync,
 				FAKE_SSH_RECORD: fixture.recordSsh,
@@ -444,7 +434,7 @@ exec node ${shellEscape(FAKE_RSYNC)} "$@"
 			remoteUser: "u",
 			authToken: "tok",
 			includeIgnored: false,
-			proxyPath: "/p",
+			proxyCommand: "node /p %h %p",
 			_spawn: ((cmd: string, args: readonly string[], opts: Record<string, unknown>) => {
 				if (cmd === "git") {
 					gitCalled = true
@@ -477,7 +467,7 @@ exec node ${shellEscape(FAKE_RSYNC)} "$@"
 				remoteUser: "u",
 				authToken: "tok",
 				includeIgnored: true,
-				proxyPath: "/p",
+				proxyCommand: "node /p %h %p",
 				_spawn: makePathSpawner(fixture.binDir, {
 					FAKE_RSYNC_EXIT: "23",
 					FAKE_RSYNC_STDERR: "rsync: connection unexpectedly closed",
@@ -500,7 +490,7 @@ exec node ${shellEscape(FAKE_RSYNC)} "$@"
 			remoteUser: "u",
 			authToken: "tok",
 			includeIgnored: true,
-			proxyPath: "/p",
+			proxyCommand: "node /p %h %p",
 			onPhase: (phase) => phases.push(phase),
 			_spawn: makePathSpawner(fixture.binDir, {
 				FAKE_RSYNC_RECORD: fixture.recordRsync,
@@ -521,7 +511,7 @@ exec node ${shellEscape(FAKE_RSYNC)} "$@"
 				remoteUser: "u",
 				authToken: "tok",
 				includeIgnored: true,
-				proxyPath: "/p",
+				proxyCommand: "node /p %h %p",
 				onPhase: (phase) => phases.push(phase),
 				_spawn: makePathSpawner(fixture.binDir, {
 					FAKE_SSH_EXIT: "255",
@@ -542,7 +532,7 @@ exec node ${shellEscape(FAKE_RSYNC)} "$@"
 			remoteUser: "u",
 			authToken: "tok",
 			includeIgnored: true,
-			proxyPath: "/p",
+			proxyCommand: "node /p %h %p",
 			signal: controller.signal,
 			_spawn: makePathSpawner(fixture.binDir, {
 				FAKE_RSYNC_HANG: "1",
@@ -564,7 +554,7 @@ exec node ${shellEscape(FAKE_RSYNC)} "$@"
 			remoteUser: "u",
 			authToken: "tok",
 			includeIgnored: true,
-			proxyPath: "/p",
+			proxyCommand: "node /p %h %p",
 			_spawn: makePathSpawner(fixture.binDir, {
 				FAKE_RSYNC_RECORD: fixture.recordRsync,
 				FAKE_SSH_RECORD: fixture.recordSsh,
@@ -590,7 +580,7 @@ exec node ${shellEscape(FAKE_RSYNC)} "$@"
 				remoteUser: "u",
 				authToken: "tok",
 				includeIgnored: true,
-				proxyPath: "/p",
+				proxyCommand: "node /p %h %p",
 				_spawn: makePathSpawner(fixture.binDir, { FAKE_RSYNC_EXIT: "1" }),
 			}),
 		).rejects.toBeInstanceOf(RsyncError)
