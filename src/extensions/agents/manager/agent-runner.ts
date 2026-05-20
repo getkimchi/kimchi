@@ -267,7 +267,9 @@ async function runAgentInner(
 	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
 
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
-	const effectiveTokenBudget = options.tokenBudget ?? agentConfig?.tokenBudget
+	const MIN_TOKEN_BUDGET = 1024
+	const rawTokenBudget = options.tokenBudget ?? agentConfig?.tokenBudget
+	const effectiveTokenBudget = rawTokenBudget != null ? Math.max(rawTokenBudget, MIN_TOKEN_BUDGET) : undefined
 	if (effectiveMaxTurns != null || effectiveTokenBudget != null) {
 		extras.budget = { maxTurns: effectiveMaxTurns, tokenBudget: effectiveTokenBudget }
 	}
@@ -488,7 +490,6 @@ async function runAgentInner(
 			effectivePrompt = parentContext + prompt
 		}
 	}
-
 
 	// Propagate agent persona to child environment so permission rules can
 	// apply persona-specific path scopes (e.g. plan persona → .kimchi/plans/).

@@ -49,9 +49,8 @@ export const MINIMAX_FAMILY_REVIEW = `During **review** phase (MiniMax M2 family
  * Sources: benchmark sessions 01-05 (M2.7 does 0 Agent calls for many tasks,
  *          causing 300k-1.5M token overruns). */
 export const MINIMAX_M27_ORCHESTRATION = `When orchestrating (minimax-m2.7 specific):
-- Your strengths are build and review, but as orchestrator you must NOT do build or review work yourself for complex tasks. Your role is to coordinate: write a plan that splits work into small chunks (1-2 files each), delegate each chunk to a separate build agent, then delegate review.
-- For simple tasks (single file, straightforward): you may do the build yourself without delegation.
-- For any task involving 2+ files: follow the mandatory pipeline (plan -> build chunks -> review) with separate agents. Do NOT implement multi-file tasks yourself.
+- Your strengths include build and review. For simple tasks (single file, straightforward change) you may do the build or review yourself per the general orchestration rule (if a step matches your strengths, do it yourself).
+- For complex tasks (2+ files or multi-step): split the work into small chunks (1-2 files each) and delegate each chunk to a separate build agent, then delegate review. Do NOT implement multi-file tasks yourself — M2.7 tends to produce 300k-1.5M token overruns when it tries.
 - After delegating, do NOT re-read the files the subagent created or re-run its tests. Trust the subagent result unless it explicitly reported an error.`
 
 /** M2.7 build: Go-specific concurrency pattern observed in M2.7. */

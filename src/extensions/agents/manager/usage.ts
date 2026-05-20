@@ -12,7 +12,7 @@ export function getLifetimeTotal(u?: LifetimeUsage): number {
 }
 
 export function getOutputTotal(u?: LifetimeUsage): number {
-	return u ? u.output + u.cacheWrite : 0
+	return u ? u.output : 0
 }
 
 export function addUsage(into: LifetimeUsage, delta: LifetimeUsage): void {

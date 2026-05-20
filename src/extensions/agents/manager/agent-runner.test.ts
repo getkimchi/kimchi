@@ -282,7 +282,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 		expect(result.abortReason).toBe("token_budget")
 	})
 
-	it("counts cacheWrite tokens toward tokenBudget", async () => {
+	it("does NOT count cacheWrite tokens toward tokenBudget", async () => {
 		const abortSpy = vi.fn()
 		const session = makeFakeSession({
 			promptTokens: 8_000,
@@ -303,9 +303,8 @@ describe("runAgent — tokenBudget forwarding", () => {
 			tokenBudget: 4_999,
 		})
 
-		expect(abortSpy).toHaveBeenCalled()
-		expect(result.aborted).toBe(true)
-		expect(result.abortReason).toBe("token_budget")
+		expect(abortSpy).not.toHaveBeenCalled()
+		expect(result.aborted).toBe(false)
 	})
 
 	it("checks final session stats when message_end usage is not emitted", async () => {
