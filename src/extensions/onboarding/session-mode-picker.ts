@@ -30,7 +30,6 @@ export interface SessionModePickerReduceResult {
 }
 
 export const SESSION_MODE_PICKER_HEADING = "Choose your session mode"
-export const SESSION_MODE_PICKER_TIP = "Tip: you can start a ferment session with /ferment anytime"
 
 export const SESSION_MODE_PICKER_OPTIONS: SessionModePickerOption[] = [
 	{
@@ -128,8 +127,6 @@ export function renderSessionModePickerLines(
 		add(`${indent}${checkbox} ${label}`)
 	}
 
-	add("")
-	add(`${indent}${theme.fg("success", SESSION_MODE_PICKER_TIP)}`)
 	add("")
 	return lines
 }

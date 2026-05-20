@@ -9,6 +9,7 @@ function theme(): Theme {
 		fg: vi.fn((color: string, text: string) => {
 			if (color === "accent") return `\x1b[36m${text}\x1b[39m`
 			if (color === "dim") return `\x1b[2m${text}\x1b[22m`
+			if (color === "success") return `\x1b[32m${text}\x1b[39m`
 			return `\x1b[90m${text}\x1b[39m`
 		}),
 		bg: vi.fn((_color: string, text: string) => text),
@@ -31,7 +32,7 @@ const tip: TipCandidate = {
 }
 
 describe("TipRow", () => {
-	it("renders one right-aligned line within narrow, normal, and wide widths", () => {
+	it("renders one left-aligned line within narrow, normal, and wide widths", () => {
 		for (const width of [1, 4, 12, 40, 80, 120, 160]) {
 			const lines = renderTipRow(tip, theme(), width)
 
@@ -41,11 +42,26 @@ describe("TipRow", () => {
 		}
 	})
 
-	it("caps visible content width and pads wider rows to the right edge", () => {
+	it("caps visible content width without padding wider rows", () => {
 		const [line] = renderTipRow(tip, theme(), 160)
 
-		expect(line.startsWith(" ")).toBe(true)
-		expect(visibleWidth(line)).toBe(160)
+		expect(line.startsWith(" ")).toBe(false)
+		expect(visibleWidth(line)).toBeLessThanOrEqual(96)
+	})
+
+	it("keeps tip text anchored to the left edge at the current row position", () => {
+		const [wideLine] = renderTipRow(tip, theme(), 120)
+		const [narrowerLine] = renderTipRow(tip, theme(), 80)
+
+		expect(wideLine.match(/^ */)?.[0].length).toBe(0)
+		expect(narrowerLine.match(/^ */)?.[0].length).toBe(0)
+		expect(wideLine).toBe(narrowerLine)
+	})
+
+	it("renders the Tip label with success styling", () => {
+		const [line] = renderTipRow(tip, theme(), 120)
+
+		expect(line).toContain("\x1b[32mTip:\x1b[39m")
 	})
 
 	it("renders nothing when no tip is selected", () => {

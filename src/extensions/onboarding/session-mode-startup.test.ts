@@ -5,6 +5,7 @@ import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { writeHideSessionModeDialog, writeSessionModeWizardSeenAt } from "../../config.js"
+import { globalTipRegistry } from "../tips/registry.js"
 import { createSessionModeOnboardingForStartup } from "./session-mode-startup.js"
 import { SESSION_MODE_WIDGET_KEY } from "./session-mode.js"
 
@@ -89,6 +90,7 @@ describe("session mode startup integration", () => {
 	})
 
 	afterEach(() => {
+		globalTipRegistry.clear()
 		rmSync(tempDir, { recursive: true, force: true })
 	})
 

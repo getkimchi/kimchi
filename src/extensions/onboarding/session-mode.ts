@@ -6,8 +6,10 @@ import {
 	writeHideSessionModeDialog,
 	writeSessionModeWizardSeenAt,
 } from "../../config.js"
+import { registerTipProvider } from "../tips/registry.js"
 import { setSessionModeOnboardingFooterSuppressed } from "../ui.js"
 import { SessionModePickerComponent, type SessionModePickerResult } from "./session-mode-picker.js"
+import { createSessionModeTipProvider } from "./session-mode-tips.js"
 
 export type SessionModeOnboardingAction = "show" | "skip" | "skip-and-mark-seen"
 
@@ -65,10 +67,19 @@ const SESSION_MODE_WIDGET_OPTIONS = { placement: "aboveEditor" } as const
 export default function sessionModeOnboardingExtension(options: SessionModeOnboardingExtensionOptions) {
 	return (pi: ExtensionAPI) => {
 		let cleanupActiveWizard: (() => void) | undefined
+		let pickerVisible = false
+		let unregisterSessionModeTips: (() => void) | undefined
+
+		const clearSessionModeTips = () => {
+			pickerVisible = false
+			unregisterSessionModeTips?.()
+			unregisterSessionModeTips = undefined
+		}
 
 		pi.on("session_start", (event, ctx) => {
 			cleanupActiveWizard?.()
 			cleanupActiveWizard = undefined
+			clearSessionModeTips()
 			const seenAt = readSessionModeWizardSeenAt(options.configPath)
 			const decision = decideSessionModeOnboarding({
 				launchContext: options.launchContext,
@@ -93,8 +104,11 @@ export default function sessionModeOnboardingExtension(options: SessionModeOnboa
 						)
 					}
 				}
+				pickerVisible = true
+				unregisterSessionModeTips = registerTipProvider(createSessionModeTipProvider(() => pickerVisible))
 				cleanupActiveWizard = showSessionModeWizard(pi, ctx, options, showHideOption, () => {
 					cleanupActiveWizard = undefined
+					clearSessionModeTips()
 				})
 			}
 		})
@@ -102,6 +116,7 @@ export default function sessionModeOnboardingExtension(options: SessionModeOnboa
 		pi.on("session_shutdown", () => {
 			cleanupActiveWizard?.()
 			cleanupActiveWizard = undefined
+			clearSessionModeTips()
 		})
 	}
 }

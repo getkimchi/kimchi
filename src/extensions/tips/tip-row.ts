@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { truncateToWidth } from "@earendil-works/pi-tui"
 import type { TipCandidate } from "./types.js"
 
 const MAX_TIP_WIDTH = 96
@@ -26,13 +26,12 @@ export function renderTipRow(tip: TipCandidate, theme: Theme, width: number): st
 	const contentWidth = Math.min(availableWidth, MAX_TIP_WIDTH)
 	const content = formatTipContent(tip, theme)
 	const truncated = truncateToWidth(content, contentWidth, "...")
-	const padding = Math.max(0, availableWidth - visibleWidth(truncated))
 
-	return [`${" ".repeat(padding)}${truncated}`]
+	return [truncated]
 }
 
 function formatTipContent(tip: TipCandidate, theme: Theme): string {
-	return `${theme.fg("dim", "Tip:")} ${formatTipMessage(tip, theme)}`
+	return `${theme.fg("success", "Tip:")} ${formatTipMessage(tip, theme)}`
 }
 
 function formatTipMessage(tip: TipCandidate, theme: Theme): string {
