@@ -141,7 +141,7 @@ for task in "${TASKS[@]}"; do
   echo "${task} session: ${JSONL_FILES["$task"]}"
 done
 
-# --- Step 5: Run audits with Claude Opus 4.7 in separate iTerm2 tabs ---
+# --- Step 5: Run audits with Claude Opus 4.6 in separate iTerm2 tabs ---
 echo "=== Spawning iTerm2 tabs for audits ==="
 
 # Build expected output paths that match audit-session.sh naming.
@@ -153,7 +153,7 @@ for task in "${TASKS[@]}"; do
   jsonl_basename=$(basename "${JSONL_FILES["$task"]}")
   session_id="${jsonl_basename%.jsonl}"
   audit_runner="kimchi"
-  audit_model="kimchi-dev/claude-opus-4-7"
+  audit_model="kimchi-dev/claude-opus-4-6"
   model_slug="$(echo "$audit_model" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')"
   audit_name="${session_id}-${audit_runner}-${model_slug}-AUDIT"
   AUDIT_MD_FILES["$task"]="${REPO_ROOT}/.kimchi/audits/${audit_name}.md"
@@ -161,7 +161,7 @@ for task in "${TASKS[@]}"; do
 done
 
 for task in "${TASKS[@]}"; do
-  audit_cmd="cd \"$REPO_ROOT\" && \"$AUDIT_SCRIPT\" -m kimchi-dev/claude-opus-4-7 \"${JSONL_FILES[\"$task\"]}\""
+  audit_cmd="cd \"$REPO_ROOT\" && \"$AUDIT_SCRIPT\" -m kimchi-dev/claude-opus-4-6 \"${JSONL_FILES[\"$task\"]}\""
   audit_cmd_escaped=${audit_cmd//\"/\\\"}
   osascript <<EOF
 tell application "iTerm2"

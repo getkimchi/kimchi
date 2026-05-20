@@ -293,7 +293,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 								settingsData = JSON.parse(readFileSync(settingsPath, "utf-8"))
 							} catch {}
 						}
-						if (!settingsData.newlineHintDismissed && typeof nl === "string" && nl.includes("ctrl+j")) {
+						const nlHasCtrlJ =
+							(typeof nl === "string" && nl.includes("ctrl+j")) ||
+							(Array.isArray(nl) && nl.some((k: unknown) => typeof k === "string" && k.includes("ctrl+j")))
+						if (!settingsData.newlineHintDismissed && nlHasCtrlJ) {
 							ctx.ui.custom(
 								(_tui, theme, _kb, done) => {
 									const settingsFile = settingsPath

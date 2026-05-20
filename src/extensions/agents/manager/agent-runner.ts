@@ -152,6 +152,8 @@ export interface RunOptions {
 	tokenBudget?: number
 	/** Inactivity timeout in milliseconds. After this period of no session events, the agent is steered; after another period, aborted. */
 	inactivityTimeout?: number
+	/** Maximum wall-clock duration in seconds. The agent is aborted when this limit is exceeded. */
+	maxDuration?: number
 }
 
 export interface RunResult {
@@ -503,6 +505,15 @@ async function runAgentInner(
 		}
 	}, INACTIVITY_CHECK_INTERVAL)
 
+	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration
+	const durationTimer = effectiveMaxDuration
+		? setTimeout(() => {
+				aborted = true
+				abortReason = "max_duration"
+				session.abort()
+			}, effectiveMaxDuration * 1000)
+		: undefined
+
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
 
@@ -531,6 +542,7 @@ async function runAgentInner(
 		await session.prompt(effectivePrompt)
 	} finally {
 		clearInterval(inactivityInterval)
+		if (durationTimer) clearTimeout(durationTimer)
 		unsubTurns()
 		collector.unsubscribe()
 		cleanupAbort()

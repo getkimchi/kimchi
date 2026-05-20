@@ -43,7 +43,9 @@ describe("writeKimchiKeybindingDefaults", () => {
 		expect(existsSync(keybindingsPath)).toBe(true)
 		const content = JSON.parse(readFileSync(keybindingsPath, "utf-8"))
 		expect(content["app.thinking.cycle"]).toBe("")
-		expect(content["tui.input.newLine"]).toBe("shift+enter,ctrl+j")
+		// Must be an array so pi-tui parses each key separately (a comma-separated
+		// string like "shift+enter,ctrl+j" is misread as "shift+j" by parseKeyId).
+		expect(content["tui.input.newLine"]).toEqual(["shift+enter", "ctrl+j"])
 	})
 
 	it("is idempotent - does not duplicate ctrl+j on re-run", () => {
@@ -53,10 +55,9 @@ describe("writeKimchiKeybindingDefaults", () => {
 		writeKimchiKeybindingDefaults(testDir)
 
 		const content = JSON.parse(readFileSync(keybindingsPath, "utf-8"))
-		expect(content["tui.input.newLine"]).toBe("shift+enter,ctrl+j")
-		// Should only have shift+enter and ctrl+j, no duplicates
-		const parts = content["tui.input.newLine"].split(",")
-		expect(parts.filter((p: string) => p === "ctrl+j").length).toBe(1)
+		expect(content["tui.input.newLine"]).toEqual(["shift+enter", "ctrl+j"])
+		// Should only have ctrl+j once — no duplicates
+		expect((content["tui.input.newLine"] as string[]).filter((p) => p === "ctrl+j").length).toBe(1)
 	})
 
 	it("preserves existing custom newLine binding and appends ctrl+j", () => {
@@ -66,7 +67,7 @@ describe("writeKimchiKeybindingDefaults", () => {
 		writeKimchiKeybindingDefaults(testDir)
 
 		const content = JSON.parse(readFileSync(keybindingsPath, "utf-8"))
-		expect(content["tui.input.newLine"]).toBe("alt+enter,ctrl+j")
+		expect(content["tui.input.newLine"]).toEqual(["alt+enter", "ctrl+j"])
 	})
 
 	it("does NOT add ctrl+j if it's already bound elsewhere", () => {
@@ -81,16 +82,27 @@ describe("writeKimchiKeybindingDefaults", () => {
 		expect(content["tui.input.newLine"]).toBeUndefined()
 	})
 
-	it("does NOT add ctrl+j if newLine already contains it", () => {
+	it("migrates legacy comma-separated string to array and does not duplicate ctrl+j", () => {
 		const keybindingsPath = resolve(testDir, "keybindings.json")
+		// Old broken format: comma-separated string (parsed by pi-tui as "shift+j")
 		writeFileSync(keybindingsPath, JSON.stringify({ "tui.input.newLine": "shift+enter,ctrl+j" }))
 
 		writeKimchiKeybindingDefaults(testDir)
 
 		const content = JSON.parse(readFileSync(keybindingsPath, "utf-8"))
-		expect(content["tui.input.newLine"]).toBe("shift+enter,ctrl+j")
-		const parts = content["tui.input.newLine"].split(",")
-		expect(parts.filter((p: string) => p === "ctrl+j").length).toBe(1)
+		expect(content["tui.input.newLine"]).toEqual(["shift+enter", "ctrl+j"])
+		expect((content["tui.input.newLine"] as string[]).filter((p) => p === "ctrl+j").length).toBe(1)
+	})
+
+	it("does NOT add ctrl+j if newLine array already contains it", () => {
+		const keybindingsPath = resolve(testDir, "keybindings.json")
+		writeFileSync(keybindingsPath, JSON.stringify({ "tui.input.newLine": ["shift+enter", "ctrl+j"] }))
+
+		writeKimchiKeybindingDefaults(testDir)
+
+		const content = JSON.parse(readFileSync(keybindingsPath, "utf-8"))
+		expect(content["tui.input.newLine"]).toEqual(["shift+enter", "ctrl+j"])
+		expect((content["tui.input.newLine"] as string[]).filter((p) => p === "ctrl+j").length).toBe(1)
 	})
 
 	it("handles malformed existing keybindings.json gracefully", () => {
@@ -102,7 +114,7 @@ describe("writeKimchiKeybindingDefaults", () => {
 
 		const content = JSON.parse(readFileSync(keybindingsPath, "utf-8"))
 		expect(content["app.thinking.cycle"]).toBe("")
-		expect(content["tui.input.newLine"]).toBe("shift+enter,ctrl+j")
+		expect(content["tui.input.newLine"]).toEqual(["shift+enter", "ctrl+j"])
 	})
 
 	it("preserves other existing bindings", () => {

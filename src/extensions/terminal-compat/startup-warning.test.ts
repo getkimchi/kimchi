@@ -203,6 +203,32 @@ describe("emitTerminalCompatWarning", () => {
 		}
 	})
 
+	it("does not show warning in JetBrains terminals", async () => {
+		const originalTermEmulator = process.env.TERMINAL_EMULATOR
+		try {
+			process.env.TERMINAL_EMULATOR = "JetBrains-JediTerm"
+			Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true })
+
+			const warnings: string[] = []
+			vi.spyOn(console, "warn").mockImplementation((msg: string) => {
+				warnings.push(msg)
+			})
+
+			const { emitTerminalCompatWarning } = await import("./startup-warning.js")
+			emitTerminalCompatWarning(testDir)
+
+			expect(warnings.length).toBe(0)
+		} finally {
+			if (originalTermEmulator !== undefined) {
+				process.env.TERMINAL_EMULATOR = originalTermEmulator
+			} else {
+				// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
+				delete process.env.TERMINAL_EMULATOR
+			}
+			Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true })
+		}
+	})
+
 	it("preserves existing settings.json fields", async () => {
 		const originalTmux = process.env.TMUX
 		const originalTermProgram = process.env.TERM_PROGRAM

@@ -41,6 +41,7 @@ interface SpawnOptions {
 	signal?: AbortSignal
 	tokenBudget?: number
 	inactivityTimeout?: number
+	maxDuration?: number
 	onToolActivity?: (activity: ToolActivity) => void
 	onTextDelta?: (delta: string, fullText: string) => void
 	onSessionCreated?: (session: AgentSession) => void
@@ -139,6 +140,7 @@ export class AgentManager {
 			maxTurns: options.maxTurns,
 			tokenBudget: options.tokenBudget,
 			inactivityTimeout: options.inactivityTimeout,
+			maxDuration: options.maxDuration,
 			isolated: options.isolated,
 			inheritContext: options.inheritContext,
 			thinkingLevel: options.thinkingLevel,

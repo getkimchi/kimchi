@@ -9,6 +9,7 @@ interface AgentInvocationParams {
 	max_turns?: number
 	token_budget?: number
 	tokenBudget?: number
+	max_duration?: number
 	run_in_background?: boolean
 	inherit_context?: boolean
 	isolated?: boolean
@@ -33,6 +34,7 @@ export function resolveAgentInvocationConfig(
 	thinking?: ThinkingLevel
 	maxTurns?: number
 	tokenBudget?: number
+	maxDuration?: number
 	inheritContext: boolean
 	runInBackground: boolean
 	isolated: boolean
@@ -100,6 +102,7 @@ export function resolveAgentInvocationConfig(
 		thinking: (agentConfig?.thinking ?? params.thinking) as ThinkingLevel | undefined,
 		maxTurns: agentConfig?.maxTurns ?? params.max_turns,
 		tokenBudget: params.token_budget ?? params.tokenBudget ?? agentConfig?.tokenBudget,
+		maxDuration: params.max_duration ?? agentConfig?.maxDuration,
 		inheritContext: agentConfig?.inheritContext ?? params.inherit_context ?? false,
 		runInBackground: agentConfig?.runInBackground ?? params.run_in_background ?? false,
 		isolated: agentConfig?.isolated ?? params.isolated ?? false,

@@ -11,5 +11,7 @@ export default defineConfig({
 			// so vi.mock() can target it without a "missing specifier" error.
 			"@earendil-works/pi-coding-agent/dist/utils/clipboard-image.js": stubPath,
 		},
+		// Isolate test files to prevent mock leakage between tests
+		pool: "forks",
 	},
 })
