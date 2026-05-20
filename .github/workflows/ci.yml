@@ -41,7 +41,7 @@ jobs:
         run: pnpm run build:binary
 
       - name: Test
-        run: pnpm run test
+        run: KIMCHI_PROXY_HELPER=$(pwd)/bin/proxy-helper pnpm run test
 
       - name: Smoke tests
         run: pnpm run test:smoke
