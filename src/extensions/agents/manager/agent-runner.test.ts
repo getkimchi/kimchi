@@ -691,3 +691,167 @@ describe("runAgent — budget awareness steers", () => {
 		expect(tokenSteer).toBeUndefined()
 	})
 })
+
+describe("runAgent — maxDuration enforcement", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		vi.useFakeTimers()
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+		mockGetToolNamesForType.mockReturnValue([])
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+	})
+
+	const cases: Record<
+		string,
+		{
+			maxDuration: number
+			advanceMs: number
+			expectAborted: boolean
+			expectReason: string | undefined
+		}
+	> = {
+		"aborts when wall-clock duration exceeds maxDuration": {
+			maxDuration: 30,
+			advanceMs: 31_000,
+			expectAborted: true,
+			expectReason: "max_duration",
+		},
+		"does not abort when duration stays within maxDuration": {
+			maxDuration: 30,
+			advanceMs: 10_000,
+			expectAborted: false,
+			expectReason: undefined,
+		},
+	}
+
+	for (const [name, tc] of Object.entries(cases)) {
+		it(name, async () => {
+			const abortSpy = vi.fn()
+			let resolvePrompt: (() => void) | undefined
+			const promptPromise = new Promise<void>((resolve) => {
+				resolvePrompt = resolve
+			})
+
+			const subscribers: Subscriber[] = []
+			const session = {
+				subscribe: vi.fn((cb: Subscriber) => {
+					subscribers.push(cb)
+					return () => {
+						const idx = subscribers.indexOf(cb)
+						if (idx !== -1) subscribers.splice(idx, 1)
+					}
+				}),
+				abort: abortSpy.mockImplementation(() => {
+					resolvePrompt?.()
+				}),
+				steer: vi.fn(),
+				getActiveToolNames: vi.fn().mockReturnValue([]),
+				setActiveToolsByName: vi.fn(),
+				bindExtensions: vi.fn().mockResolvedValue(undefined),
+				messages: [],
+				getSessionStats: vi.fn().mockReturnValue({
+					tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				}),
+				prompt: vi.fn().mockImplementation(async () => {
+					await promptPromise
+				}),
+			}
+
+			mockCreateAgentSession.mockResolvedValue({
+				session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+				extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+					ReturnType<typeof createAgentSession>
+				>["extensionsResult"],
+			})
+
+			const resultPromise = runAgent(
+				ctx as unknown as Parameters<typeof runAgent>[0],
+				"General-Purpose",
+				"do something",
+				{
+					pi: pi as unknown as RunOptions["pi"],
+					maxDuration: tc.maxDuration,
+				},
+			)
+
+			await vi.advanceTimersByTimeAsync(tc.advanceMs)
+
+			if (!tc.expectAborted) {
+				resolvePrompt?.()
+			}
+
+			const result = await resultPromise
+
+			if (tc.expectAborted) {
+				expect(abortSpy).toHaveBeenCalled()
+				expect(result.aborted).toBe(true)
+				expect(result.abortReason).toBe(tc.expectReason)
+			} else {
+				expect(abortSpy).not.toHaveBeenCalled()
+				expect(result.aborted).toBe(false)
+			}
+		})
+	}
+
+	it("uses agentConfig.maxDuration when no param override", async () => {
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ maxDuration: 20 }))
+		const abortSpy = vi.fn()
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+
+		const session = {
+			subscribe: vi.fn((cb: Subscriber) => {
+				return () => {}
+			}),
+			abort: abortSpy.mockImplementation(() => {
+				resolvePrompt?.()
+			}),
+			steer: vi.fn(),
+			getActiveToolNames: vi.fn().mockReturnValue([]),
+			setActiveToolsByName: vi.fn(),
+			bindExtensions: vi.fn().mockResolvedValue(undefined),
+			messages: [],
+			getSessionStats: vi.fn().mockReturnValue({
+				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			prompt: vi.fn().mockImplementation(async () => {
+				await promptPromise
+			}),
+		}
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const resultPromise = runAgent(
+			ctx as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"do something",
+			{
+				pi: pi as unknown as RunOptions["pi"],
+			},
+		)
+
+		await vi.advanceTimersByTimeAsync(21_000)
+		const result = await resultPromise
+
+		expect(abortSpy).toHaveBeenCalled()
+		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("max_duration")
+	})
+})
