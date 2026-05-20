@@ -303,4 +303,11 @@ export default function uiExtension(pi: ExtensionAPI) {
 			ctx.shutdown()
 		},
 	})
+
+	pi.registerCommand("clear", {
+		description: "Start a new session (alias for /new)",
+		handler: async (_args, ctx) => {
+			await ctx.newSession()
+		},
+	})
 }
