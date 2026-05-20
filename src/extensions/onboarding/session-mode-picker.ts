@@ -8,6 +8,7 @@ import {
 	truncateToWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui"
+import { renderTipText } from "../tips/tip-row.js"
 
 export type SessionModePickerChoice = "ferment" | "default"
 export type SessionModePickerResult = { choice: SessionModePickerChoice; hideDialog: boolean } | "cancelled"
@@ -30,6 +31,7 @@ export interface SessionModePickerReduceResult {
 }
 
 export const SESSION_MODE_PICKER_HEADING = "Choose your workflow"
+export const SESSION_MODE_PICKER_HINT = "Use `/ferment` anytime to start a Ferment workflow."
 
 export const SESSION_MODE_PICKER_OPTIONS: SessionModePickerOption[] = [
 	{
@@ -128,6 +130,10 @@ export function renderSessionModePickerLines(
 		add(`${indent}${checkbox} ${label}`)
 	}
 
+	add("")
+	for (const line of renderTipText(SESSION_MODE_PICKER_HINT, theme, innerWidth)) {
+		add(`${indent}${line}`)
+	}
 	add("")
 	return lines
 }

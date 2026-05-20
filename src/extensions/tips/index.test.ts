@@ -1,12 +1,13 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { visibleWidth } from "@earendil-works/pi-tui"
-import { describe, expect, it, vi } from "vitest"
-import tipsExtension, { TIPS_WIDGET_KEY } from "./index.js"
-import { setTipWidgetPlacementOverride } from "./placement.js"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import tipsExtension, { TIPS_WIDGET_KEY, setTipWidgetLocation } from "./index.js"
 import { TipRegistry } from "./registry.js"
 
 type Handler = (event: unknown, ctx: unknown) => unknown
+const harnesses: Array<{ shutdown: () => unknown }> = []
+const restoreLocations: Array<() => void> = []
 
 function theme(): Theme {
 	return {
@@ -26,7 +27,8 @@ function theme(): Theme {
 function createHarness(options: { hasUI: boolean }) {
 	const handlers = new Map<string, Handler>()
 	let component: { render(width: number): string[] } | undefined
-	const tui = { requestRender: vi.fn() } as unknown as TUI
+	const requestRender = vi.fn()
+	const tui = { requestRender } as unknown as TUI
 	const ui = {
 		setWidget: vi.fn((_key: string, content: unknown) => {
 			if (typeof content === "function") {
@@ -44,17 +46,25 @@ function createHarness(options: { hasUI: boolean }) {
 	const registry = new TipRegistry()
 	tipsExtension({ registry })(api)
 
-	return {
+	const harness = {
 		component: () => component,
 		ctx,
 		registry,
 		start: () => handlers.get("session_start")?.({ reason: "startup" }, ctx),
 		shutdown: () => handlers.get("session_shutdown")?.({ reason: "quit" }, ctx),
 		turnEnd: () => handlers.get("turn_end")?.({ message: { role: "assistant" } }, ctx),
+		requestRender,
 		tui,
 		ui,
 	}
+	harnesses.push(harness)
+	return harness
 }
+
+afterEach(() => {
+	for (const harness of harnesses.splice(0)) harness.shutdown()
+	for (const restore of restoreLocations.splice(0).reverse()) restore()
+})
 
 describe("tips extension", () => {
 	it("mounts a general tip widget in interactive sessions", () => {
@@ -74,48 +84,14 @@ describe("tips extension", () => {
 		const harness = createHarness({ hasUI: true })
 		harness.start()
 		harness.ui.setWidget.mockClear()
+		harness.requestRender.mockClear()
 
 		harness.turnEnd()
 
-		expect(harness.ui.setWidget).not.toHaveBeenCalledWith(TIPS_WIDGET_KEY, undefined)
-		expect(harness.tui.requestRender).toHaveBeenCalledTimes(1)
-	})
-
-	it("mounts below the editor when a placement override is already active", () => {
-		const clearPlacementOverride = setTipWidgetPlacementOverride("belowEditor")
-		try {
-			const harness = createHarness({ hasUI: true })
-
-			harness.start()
-
-			expect(harness.ui.setWidget).toHaveBeenCalledWith(TIPS_WIDGET_KEY, expect.any(Function), {
-				placement: "belowEditor",
-			})
-		} finally {
-			clearPlacementOverride()
-		}
-	})
-
-	it("remounts tips when placement override changes during a session", () => {
-		const harness = createHarness({ hasUI: true })
-		harness.start()
-		harness.ui.setWidget.mockClear()
-
-		const clearPlacementOverride = setTipWidgetPlacementOverride("belowEditor")
-		try {
-			expect(harness.ui.setWidget).toHaveBeenNthCalledWith(1, TIPS_WIDGET_KEY, undefined)
-			expect(harness.ui.setWidget).toHaveBeenNthCalledWith(2, TIPS_WIDGET_KEY, expect.any(Function), {
-				placement: "belowEditor",
-			})
-			harness.ui.setWidget.mockClear()
-		} finally {
-			clearPlacementOverride()
-		}
-
-		expect(harness.ui.setWidget).toHaveBeenNthCalledWith(1, TIPS_WIDGET_KEY, undefined)
-		expect(harness.ui.setWidget).toHaveBeenNthCalledWith(2, TIPS_WIDGET_KEY, expect.any(Function), {
+		expect(harness.ui.setWidget).not.toHaveBeenCalledWith(TIPS_WIDGET_KEY, undefined, {
 			placement: "aboveEditor",
 		})
+		expect(harness.requestRender).toHaveBeenCalledTimes(1)
 	})
 
 	it("does not render tips when UI is unavailable", () => {
@@ -126,13 +102,35 @@ describe("tips extension", () => {
 		expect(harness.ui.setWidget).not.toHaveBeenCalled()
 	})
 
+	it("hides and restores the mounted tip widget while hidden", () => {
+		const harness = createHarness({ hasUI: true })
+		harness.start()
+		harness.ui.setWidget.mockClear()
+
+		const restoreLocation = setTipWidgetLocation("hidden")
+		restoreLocations.push(restoreLocation)
+
+		expect(harness.ui.setWidget).toHaveBeenCalledWith(TIPS_WIDGET_KEY, undefined, {
+			placement: "aboveEditor",
+		})
+		harness.ui.setWidget.mockClear()
+
+		restoreLocation()
+
+		expect(harness.ui.setWidget).toHaveBeenCalledWith(TIPS_WIDGET_KEY, expect.any(Function), {
+			placement: "aboveEditor",
+		})
+	})
+
 	it("clears the widget and unregisters its general provider on shutdown", () => {
 		const harness = createHarness({ hasUI: true })
 		harness.start()
 
 		harness.shutdown()
 
-		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(TIPS_WIDGET_KEY, undefined)
+		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(TIPS_WIDGET_KEY, undefined, {
+			placement: "aboveEditor",
+		})
 		expect(harness.registry.getFirstTip("general")).toBeUndefined()
 	})
 })

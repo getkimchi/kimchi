@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import {
 	SESSION_MODE_PICKER_HEADING,
 	SESSION_MODE_PICKER_HIDE_LABEL,
+	SESSION_MODE_PICKER_HINT,
 	SessionModePickerComponent,
 	initialSessionModePickerState,
 	keyToSessionModePickerEvent,
@@ -96,7 +97,7 @@ describe("session mode picker key mapping", () => {
 })
 
 describe("session mode picker rendering", () => {
-	it("renders the exact PRD copy", () => {
+	it("renders the workflow copy and bottom hint", () => {
 		const lines = renderSessionModePickerLines(initialSessionModePickerState(), theme(), 140)
 		const text = lines.join("\n")
 
@@ -110,6 +111,8 @@ describe("session mode picker rendering", () => {
 			"    Coding session",
 			"    Chat with the agent and steer it as it goes. Stay in the loop.",
 			"",
+			"  Tip: Use /ferment anytime to start a Ferment workflow.",
+			"",
 		])
 		expect(text).toContain(SESSION_MODE_PICKER_HEADING)
 		expect(text).toContain("Ferment")
@@ -118,8 +121,9 @@ describe("session mode picker rendering", () => {
 		)
 		expect(text).toContain("Coding session")
 		expect(text).toContain("Chat with the agent and steer it as it goes. Stay in the loop.")
+		expect(text).toContain(`Tip: ${SESSION_MODE_PICKER_HINT.replaceAll("`", "")}`)
+		expect(text).not.toContain("`")
 		expect(text).not.toContain(SESSION_MODE_PICKER_HIDE_LABEL)
-		expect(text).not.toContain("Tip:")
 	})
 
 	it("renders the hide checkbox only when requested", () => {

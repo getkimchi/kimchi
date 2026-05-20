@@ -1,15 +1,45 @@
-import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, ExtensionFactory, WidgetPlacement } from "@earendil-works/pi-coding-agent"
 import { createGeneralTipProvider } from "./general-tips.js"
-import { type TipWidgetPlacement, getTipWidgetPlacement, onTipWidgetPlacementChange } from "./placement.js"
 import { TipPresenter } from "./presenter.js"
 import { type TipRegistry, globalTipRegistry } from "./registry.js"
 import { TipRow } from "./tip-row.js"
 import type { TipProvider } from "./types.js"
 
 export const TIPS_WIDGET_KEY = "kimchi-tips"
+type VisibleTipWidgetLocation = Extract<WidgetPlacement, "aboveEditor">
+export type TipWidgetLocation = VisibleTipWidgetLocation | "hidden"
 
-function tipsWidgetOptions(placement: TipWidgetPlacement = getTipWidgetPlacement()): { placement: TipWidgetPlacement } {
-	return { placement }
+const DEFAULT_TIP_WIDGET_LOCATION: TipWidgetLocation = "aboveEditor"
+let tipWidgetLocation: TipWidgetLocation = DEFAULT_TIP_WIDGET_LOCATION
+let onLocationChange: (() => void) | undefined
+
+export function setTipWidgetLocation(location: TipWidgetLocation): () => void {
+	const previous = tipWidgetLocation
+	updateTipWidgetLocation(location)
+
+	let restored = false
+	return () => {
+		if (restored) return
+		restored = true
+		updateTipWidgetLocation(previous)
+	}
+}
+
+function tipWidgetOptions(location: VisibleTipWidgetLocation): { placement: VisibleTipWidgetLocation } {
+	return { placement: location }
+}
+
+function updateTipWidgetLocation(location: TipWidgetLocation): void {
+	if (tipWidgetLocation === location) return
+	tipWidgetLocation = location
+	onLocationChange?.()
+}
+
+function onTipWidgetLocationChange(listener: () => void): () => void {
+	onLocationChange = listener
+	return () => {
+		if (onLocationChange === listener) onLocationChange = undefined
+	}
 }
 
 export interface TipsExtensionOptions {
@@ -23,53 +53,53 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 		const generalProvider = options.generalProvider ?? createGeneralTipProvider()
 		const presenter = new TipPresenter(registry)
 		let unregisterGeneral: (() => void) | undefined
-		let unregisterPlacementChange: (() => void) | undefined
+		let unregisterLocationChange: (() => void) | undefined
 		let activeCtx: ExtensionContext | undefined
 		let activeTui: { requestRender?(): void } | undefined
 		let widgetMounted = false
-		let widgetPlacement: TipWidgetPlacement | undefined
+		let mountedLocation: VisibleTipWidgetLocation | undefined
+
+		const unmountWidget = (ctx: ExtensionContext | undefined = activeCtx) => {
+			if (widgetMounted && ctx?.hasUI && mountedLocation) {
+				ctx.ui.setWidget(TIPS_WIDGET_KEY, undefined, tipWidgetOptions(mountedLocation))
+			}
+			widgetMounted = false
+			mountedLocation = undefined
+			activeTui = undefined
+		}
 
 		const clearWidget = () => {
-			if (widgetMounted && activeCtx?.hasUI) activeCtx.ui.setWidget(TIPS_WIDGET_KEY, undefined)
-			widgetMounted = false
-			widgetPlacement = undefined
-			activeTui = undefined
+			unmountWidget()
 			activeCtx = undefined
 		}
 
 		const mountWidget = (ctx: ExtensionContext) => {
+			const location = tipWidgetLocation
+			if (location === "hidden") return
 			if (widgetMounted) return
 			if (!presenter.getCurrentTip()) return
 
-			widgetPlacement = getTipWidgetPlacement()
 			ctx.ui.setWidget(
 				TIPS_WIDGET_KEY,
 				(tui, theme) => {
 					activeTui = tui
 					return new TipRow(() => presenter.getCurrentTip(), theme)
 				},
-				tipsWidgetOptions(widgetPlacement),
+				tipWidgetOptions(location),
 			)
 			widgetMounted = true
-		}
-
-		const remountWidget = (ctx: ExtensionContext) => {
-			if (widgetMounted) ctx.ui.setWidget(TIPS_WIDGET_KEY, undefined)
-			widgetMounted = false
-			widgetPlacement = undefined
-			activeTui = undefined
-			mountWidget(ctx)
+			mountedLocation = location
 		}
 
 		const updateWidget = (ctx: ExtensionContext) => {
 			if (!ctx.hasUI) return
 			activeCtx = ctx
-			if (!presenter.getCurrentTip()) {
-				clearWidget()
+			if (tipWidgetLocation === "hidden") {
+				unmountWidget(ctx)
 				return
 			}
-			if (widgetMounted && widgetPlacement !== getTipWidgetPlacement()) {
-				remountWidget(ctx)
+			if (!presenter.getCurrentTip()) {
+				unmountWidget(ctx)
 				return
 			}
 			mountWidget(ctx)
@@ -80,16 +110,14 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 			clearWidget()
 			presenter.clear()
 			unregisterGeneral?.()
-			unregisterPlacementChange?.()
+			unregisterLocationChange?.()
 			unregisterGeneral = registry.registerProvider(generalProvider)
-			unregisterPlacementChange = onTipWidgetPlacementChange(() => {
+			unregisterLocationChange = onTipWidgetLocationChange(() => {
 				if (activeCtx) updateWidget(activeCtx)
 			})
 			activeCtx = ctx
 
-			if (!ctx.hasUI) return
-
-			mountWidget(ctx)
+			updateWidget(ctx)
 		})
 
 		pi.on("turn_end", (_event, ctx) => {
@@ -102,8 +130,8 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 			presenter.clear()
 			unregisterGeneral?.()
 			unregisterGeneral = undefined
-			unregisterPlacementChange?.()
-			unregisterPlacementChange = undefined
+			unregisterLocationChange?.()
+			unregisterLocationChange = undefined
 		})
 	}
 }

@@ -4,9 +4,8 @@ import { join } from "node:path"
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { getTipWidgetPlacement } from "../tips/placement.js"
 import { globalTipRegistry } from "../tips/registry.js"
-import { SESSION_MODE_TIP } from "./session-mode-tips.js"
+import { SESSION_MODE_PICKER_HINT } from "./session-mode-picker.js"
 import sessionModeOnboardingExtension, {
 	buildSessionModeLaunchContext,
 	decideSessionModeOnboarding,
@@ -50,10 +49,10 @@ function decide(
 
 type SessionStartHandler = (event: unknown, ctx: unknown) => unknown
 type TerminalInputHandler = (data: string) => { consume?: boolean } | undefined
-type CustomComponent = { handleInput?(data: string): void }
+type CustomComponent = { handleInput?(data: string): void; render?(width: number): string[] }
 const extensionHarnesses: Array<{ shutdown: () => unknown; settle: () => Promise<void> }> = []
 
-function createExtensionHarness() {
+function createExtensionHarness(options: { deferCustomFactory?: boolean } = {}) {
 	const handlers = new Map<string, SessionStartHandler>()
 	const api = {
 		on: vi.fn((event: string, handler: SessionStartHandler) => {
@@ -81,14 +80,21 @@ function createExtensionHarness() {
 					activeComponent = undefined
 					resolve(result)
 				}
-				try {
+				const mount = () => {
 					const content = factory(tui, theme(), {}, done)
 					if (content && typeof (content as Promise<CustomComponent>).then === "function") {
 						;(content as Promise<CustomComponent>).then((component) => {
 							if (!doneCalled) activeComponent = component
 						}, reject)
-					} else {
+					} else if (!doneCalled) {
 						activeComponent = content as CustomComponent
+					}
+				}
+				try {
+					if (options.deferCustomFactory === true) {
+						void Promise.resolve().then(mount).catch(reject)
+					} else {
+						mount()
 					}
 				} catch (err) {
 					reject(err)
@@ -271,7 +277,6 @@ describe("session-mode onboarding persistence", () => {
 		expect(harness.ui.custom).toHaveBeenCalled()
 		expect(harness.ui.setWidget).not.toHaveBeenCalled()
 		expect(harness.ui.onTerminalInput).not.toHaveBeenCalled()
-		expect(getTipWidgetPlacement()).toBe("belowEditor")
 		let raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 
@@ -283,7 +288,6 @@ describe("session-mode onboarding persistence", () => {
 		raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 		expect(harness.activeComponent()).toBeUndefined()
-		expect(getTipWidgetPlacement()).toBe("aboveEditor")
 	})
 
 	it("extension replaces the editor while the picker is visible", async () => {
@@ -304,7 +308,7 @@ describe("session-mode onboarding persistence", () => {
 		expect(harness.activeComponent()).toBeDefined()
 	})
 
-	it("extension registers the session mode tip while the picker is visible", async () => {
+	it("extension renders the workflow hint inside the picker", async () => {
 		const harness = createExtensionHarness()
 
 		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
@@ -313,13 +317,13 @@ describe("session-mode onboarding persistence", () => {
 
 		await harness.start()
 
-		const provider = globalTipRegistry.getProviders().find((candidate) => candidate.source === "kimchi.session-mode")
-		expect(provider?.getTips()).toEqual([SESSION_MODE_TIP])
+		const text = harness.activeComponent()?.render?.(140).join("\n")
+		expect(text).toContain(`Tip: ${SESSION_MODE_PICKER_HINT.replaceAll("`", "")}`)
+		expect(text).not.toContain("`")
+		expect(globalTipRegistry.getProviders().some((candidate) => candidate.source === "kimchi.session-mode")).toBe(false)
 
 		harness.input("\x1b")
 		await harness.settle()
-		expect(globalTipRegistry.getProviders().some((candidate) => candidate.source === "kimchi.session-mode")).toBe(false)
-		expect(getTipWidgetPlacement()).toBe("aboveEditor")
 	})
 
 	it("extension cancellation clears the picker after recording that the first dialog was shown", async () => {
@@ -336,7 +340,20 @@ describe("session-mode onboarding persistence", () => {
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 		expect(harness.activeComponent()).toBeUndefined()
-		expect(getTipWidgetPlacement()).toBe("aboveEditor")
+	})
+
+	it("does not mount the picker after cancellation when the host delays the custom factory", async () => {
+		const harness = createExtensionHarness({ deferCustomFactory: true })
+
+		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
+			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+		)
+
+		harness.start()
+		harness.shutdown()
+		await harness.settle()
+
+		expect(harness.activeComponent()).toBeUndefined()
 	})
 
 	it("extension exposes Ferment selection through the outcome callback", async () => {
@@ -354,6 +371,24 @@ describe("session-mode onboarding persistence", () => {
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 		expect(onOutcome).toHaveBeenCalledWith("ferment", expect.objectContaining({ ui: harness.ui }), harness.api)
+	})
+
+	it("reports synchronous errors from the outcome callback", async () => {
+		const harness = createExtensionHarness()
+		const onOutcome = vi.fn(() => {
+			throw new Error("sync boom")
+		})
+
+		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now, onOutcome })(
+			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+		)
+
+		await harness.start()
+		harness.input("\r")
+		await harness.settle()
+
+		expect(onOutcome).toHaveBeenCalledWith("ferment", expect.objectContaining({ ui: harness.ui }), harness.api)
+		expect(harness.ui.notify).toHaveBeenCalledWith("Session mode startup failed: sync boom", "warning")
 	})
 
 	it("extension lets returning users hide the dialog while selecting a mode", async () => {

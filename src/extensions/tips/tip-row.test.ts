@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
-import { TipRow, renderTipRow } from "./tip-row.js"
+import { TipRow, renderTipRow, renderTipText } from "./tip-row.js"
 import type { TipCandidate } from "./types.js"
 
 function theme(): Theme {
@@ -84,6 +84,14 @@ describe("TipRow", () => {
 
 		expect(line).toContain("\x1b[36m/ferment auto\x1b[39m")
 		expect(line).toContain("\x1b[36m/ferment manual\x1b[39m")
+		expect(line).not.toContain("`")
+	})
+
+	it("renders a standalone tip message with the shared styling", () => {
+		const [line] = renderTipText("Use `/ferment` anytime.", theme(), 120)
+
+		expect(line).toContain("\x1b[32mTip:\x1b[39m")
+		expect(line).toContain("\x1b[36m/ferment\x1b[39m")
 		expect(line).not.toContain("`")
 	})
 })

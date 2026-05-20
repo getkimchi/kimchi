@@ -21,6 +21,7 @@ import {
 	handlePhaseAction,
 	handleStepAction,
 } from "./progress-overlay.js"
+import { promptInput } from "./prompt-ui.js"
 import { resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
@@ -178,7 +179,8 @@ export async function startInteractiveFerment({
 		return
 	}
 
-	const rawIntent = await ctx.ui.input(
+	const rawIntent = await promptInput(
+		ctx,
 		"🍺  What would you like to ferment?",
 		"e.g. 'Rewrite login flow' or 'Add OAuth support'",
 	)

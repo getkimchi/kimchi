@@ -21,6 +21,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
+import { promptInput } from "./prompt-ui.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import type { FermentUiContext } from "./ui.js"
 
@@ -148,7 +149,7 @@ export async function runScopingFlow(
 
 	let intent: string | undefined = preIntent
 	if (!intent) {
-		intent = await ctx.ui.input("What do you want to do?", "Describe what you want to accomplish…")
+		intent = await promptInput(ctx, "What do you want to do?", "Describe what you want to accomplish…")
 	}
 	if (intent === undefined || intent === "") return
 

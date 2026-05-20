@@ -6,11 +6,9 @@ import {
 	writeHideSessionModeDialog,
 	writeSessionModeWizardSeenAt,
 } from "../../config.js"
-import { setTipWidgetPlacementOverride } from "../tips/placement.js"
-import { registerTipProvider } from "../tips/registry.js"
+import { setTipWidgetLocation } from "../tips/index.js"
 import { setSessionModeOnboardingFooterSuppressed } from "../ui.js"
 import { SessionModePickerComponent, type SessionModePickerResult } from "./session-mode-picker.js"
-import { createSessionModeTipProvider } from "./session-mode-tips.js"
 
 export type SessionModeOnboardingAction = "show" | "skip" | "skip-and-mark-seen"
 
@@ -65,19 +63,10 @@ export interface SessionModeOnboardingExtensionOptions {
 export default function sessionModeOnboardingExtension(options: SessionModeOnboardingExtensionOptions) {
 	return (pi: ExtensionAPI) => {
 		let cleanupActiveWizard: (() => void) | undefined
-		let pickerVisible = false
-		let unregisterSessionModeTips: (() => void) | undefined
-
-		const clearSessionModeTips = () => {
-			pickerVisible = false
-			unregisterSessionModeTips?.()
-			unregisterSessionModeTips = undefined
-		}
 
 		pi.on("session_start", (event, ctx) => {
 			cleanupActiveWizard?.()
 			cleanupActiveWizard = undefined
-			clearSessionModeTips()
 			const seenAt = readSessionModeWizardSeenAt(options.configPath)
 			const decision = decideSessionModeOnboarding({
 				launchContext: options.launchContext,
@@ -102,11 +91,8 @@ export default function sessionModeOnboardingExtension(options: SessionModeOnboa
 						)
 					}
 				}
-				pickerVisible = true
-				unregisterSessionModeTips = registerTipProvider(createSessionModeTipProvider(() => pickerVisible))
 				cleanupActiveWizard = showSessionModeWizard(pi, ctx, options, showHideOption, () => {
 					cleanupActiveWizard = undefined
-					clearSessionModeTips()
 				})
 			}
 		})
@@ -114,7 +100,6 @@ export default function sessionModeOnboardingExtension(options: SessionModeOnboa
 		pi.on("session_shutdown", () => {
 			cleanupActiveWizard?.()
 			cleanupActiveWizard = undefined
-			clearSessionModeTips()
 		})
 	}
 }
@@ -128,11 +113,12 @@ function showSessionModeWizard(
 ): () => void {
 	let finished = false
 	let closePicker: ((result: SessionModePickerResult) => void) | undefined
-	let clearTipPlacementOverride: (() => void) | undefined
+	let restoreTips: (() => void) | undefined
+	let cancelBeforePickerReady = false
 
 	const cleanup = () => {
-		clearTipPlacementOverride?.()
-		clearTipPlacementOverride = undefined
+		restoreTips?.()
+		restoreTips = undefined
 		setSessionModeOnboardingFooterSuppressed(false)
 		onCleanup()
 	}
@@ -158,9 +144,11 @@ function showSessionModeWizard(
 		}
 		cleanup()
 		if (result !== "cancelled" && options.onOutcome) {
-			Promise.resolve(options.onOutcome(result.choice, ctx, pi)).catch((err: unknown) => {
-				ctx.ui.notify(`Session mode startup failed: ${err instanceof Error ? err.message : String(err)}`, "warning")
-			})
+			Promise.resolve()
+				.then(() => options.onOutcome?.(result.choice, ctx, pi))
+				.catch((err: unknown) => {
+					ctx.ui.notify(`Session mode startup failed: ${err instanceof Error ? err.message : String(err)}`, "warning")
+				})
 		}
 	}
 
@@ -171,13 +159,16 @@ function showSessionModeWizard(
 		ctx.ui.notify(`Session mode picker failed: ${err instanceof Error ? err.message : String(err)}`, "warning")
 	}
 
-	clearTipPlacementOverride = setTipWidgetPlacementOverride("belowEditor")
+	restoreTips = setTipWidgetLocation("hidden")
 	setSessionModeOnboardingFooterSuppressed(true)
 	try {
 		ctx.ui
 			.custom<SessionModePickerResult>(
 				(tui, theme, _keybindings, done) => {
 					closePicker = done
+					if (cancelBeforePickerReady || finished) {
+						done("cancelled")
+					}
 					return new SessionModePickerComponent(theme, done, () => tui.requestRender(), {
 						showHideCheckbox: showHideOption,
 					})
@@ -193,6 +184,7 @@ function showSessionModeWizard(
 	return () => {
 		if (finished) return
 		finished = true
+		if (!closePicker) cancelBeforePickerReady = true
 		closePicker?.("cancelled")
 		cleanup()
 	}

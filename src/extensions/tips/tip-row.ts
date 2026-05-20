@@ -20,22 +20,26 @@ export class TipRow {
 }
 
 export function renderTipRow(tip: TipCandidate, theme: Theme, width: number): string[] {
+	return renderTipText(tip.message, theme, width)
+}
+
+export function renderTipText(message: string, theme: Theme, width: number): string[] {
 	const availableWidth = Math.max(0, Math.floor(width))
 	if (availableWidth === 0) return []
 
 	const contentWidth = Math.min(availableWidth, MAX_TIP_WIDTH)
-	const content = formatTipContent(tip, theme)
+	const content = formatTipContent(message, theme)
 	const truncated = truncateToWidth(content, contentWidth, "...")
 
 	return [truncated]
 }
 
-function formatTipContent(tip: TipCandidate, theme: Theme): string {
-	return `${theme.fg("success", "Tip:")} ${formatTipMessage(tip, theme)}`
+function formatTipContent(message: string, theme: Theme): string {
+	return `${theme.fg("success", "Tip:")} ${formatTipMessage(message, theme)}`
 }
 
-function formatTipMessage(tip: TipCandidate, theme: Theme): string {
-	return tip.message
+function formatTipMessage(message: string, theme: Theme): string {
+	return message
 		.split(/(`[^`\n]+`)/g)
 		.map((part) =>
 			part.startsWith("`") && part.endsWith("`") ? theme.fg("accent", part.slice(1, -1)) : theme.fg("muted", part),
