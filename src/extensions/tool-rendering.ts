@@ -4,15 +4,12 @@ import { extname, relative, resolve } from "node:path"
 
 import type {
 	BashToolDetails,
-	EditToolDetails,
 	ExtensionAPI,
 	GrepToolDetails,
 	ReadToolDetails,
 	Theme,
 } from "@earendil-works/pi-coding-agent"
 import {
-	AssistantMessageComponent,
-	CustomMessageComponent,
 	ToolExecutionComponent,
 	UserMessageComponent,
 	createBashTool,
@@ -24,10 +21,7 @@ import {
 	createWriteTool,
 } from "@earendil-works/pi-coding-agent"
 import {
-	Box,
 	Container,
-	Markdown,
-	Spacer,
 	Text,
 	deleteAllKittyImages,
 	getCapabilities,
@@ -55,7 +49,6 @@ const PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-container-render")
 const TOOL_RENDER_CACHE = Symbol.for("pi-claude-style-tools:tool-render-cache")
 const TOOL_CACHE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-tool-cache-invalidation")
 const TOOL_IMAGE_EXPAND_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-read-image-expansion")
-const CUSTOM_MESSAGE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-custom-message-render")
 const USER_MESSAGE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-user-message-render")
 const WRAP_MARK = "\uE000"
 const KITTY_IMAGE_PREFIX = "\x1b_G"
@@ -195,23 +188,6 @@ function stripAnsi(text: string): string {
 	return text.replace(ANSI_RE, "")
 }
 
-function stripRenderedHeadingMarkers(line: string): string {
-	return line.replace(/^((?:\x1b\[[0-9;]*m|[ \t])*)#{3,6}[ \t]*((?:\x1b\[[0-9;]*m)*)/, "$1$2")
-}
-
-function sanitizeRenderedTextBlockLines(lines: string[]): string[] {
-	let inFence = false
-	return lines.map((line) => {
-		const plain = stripAnsi(line).trimStart()
-		if (plain.startsWith("```")) {
-			inFence = !inFence
-			return line
-		}
-		if (inFence) return line
-		return stripRenderedHeadingMarkers(line).replace(/###/g, "")
-	})
-}
-
 function isBlankLine(text: string): boolean {
 	return stripAnsi(text).trim().length === 0
 }
@@ -320,17 +296,6 @@ function hashText(text: string): string {
 	return (hash >>> 0).toString(36)
 }
 
-function expandHint(theme: Theme): string {
-	return theme.fg("muted", " • ctrl+o to expand")
-}
-
-function clearStateKeys(state: Record<string, unknown> | undefined, ...keys: string[]): void {
-	if (!state) return
-	for (const key of keys) {
-		delete state[key]
-	}
-}
-
 function clearToolRenderCache(value: unknown): void {
 	if (!value || typeof value !== "object") return
 	delete (value as any)[TOOL_RENDER_CACHE]
@@ -340,11 +305,7 @@ function unrefTimer(timer: ReturnType<typeof setTimeout> | null | undefined): vo
 	;(timer as any)?.unref?.()
 }
 
-const ASSISTANT_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-assistant-message")
 const TOOL_EXECUTION_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-tool-execution")
-const OSC133_ZONE_START = "\x1b]133;A\x07"
-const OSC133_ZONE_END = "\x1b]133;B\x07"
-const OSC133_ZONE_FINAL = "\x1b]133;C\x07"
 const WORKED_DURATION_KEY = "_piClaudeStyleWorkedDurationMs"
 const WORKED_START_KEY = "_piClaudeStyleWorkedStartMs"
 const WORKED_DURATION_MARKER = "Worked for"
@@ -379,10 +340,6 @@ function formatWorkedDuration(ms: number): string {
 	return `${minutes}m ${seconds}s`
 }
 
-function workedDurationText(ms: number): string {
-	return `${WORKED_LINE_FG}✻ Worked for ${formatWorkedDuration(ms)}${RESET}`
-}
-
 function inlineWorkedDurationText(ms: number): string {
 	return `${WORKED_LINE_FG}✻ Worked for ${formatWorkedDuration(ms)}${RESET}`
 }
@@ -400,15 +357,6 @@ function stripWorkedDurationLine(text: string): string {
 		.replace(/\n{3,}/g, "\n\n")
 }
 
-function hasWorkedDurationLine(message: any): boolean {
-	if (!Array.isArray(message?.content)) return false
-	return message.content.some((block: any) => {
-		if (block?.type !== "text" || typeof block.text !== "string" || !block.text.includes(WORKED_DURATION_MARKER))
-			return false
-		return block.text.split(/\r?\n/).some(isWorkedDurationLine)
-	})
-}
-
 function appendWorkedDurationLine(message: any, durationMs: number): void {
 	if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return
 	const textBlocks = message.content.filter(
@@ -418,187 +366,6 @@ function appendWorkedDurationLine(message: any, durationMs: number): void {
 	if (!lastText) return
 	const text = lastText.text.includes(WORKED_DURATION_MARKER) ? stripWorkedDurationLine(lastText.text) : lastText.text
 	lastText.text = `${text.trimEnd()}\n\n${inlineWorkedDurationText(durationMs)}`
-}
-
-class DottedParagraph {
-	private md: InstanceType<typeof Markdown>
-	private cachedWidth?: number
-	private cachedLines?: string[]
-
-	constructor(text: string, markdownTheme: ConstructorParameters<typeof Markdown>[3]) {
-		this.md = new Markdown(text, 0, 0, markdownTheme)
-	}
-
-	invalidate(): void {
-		this.cachedWidth = undefined
-		this.cachedLines = undefined
-		this.md.invalidate()
-	}
-
-	render(width: number): string[] {
-		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines
-		// " ● " = 1 margin + dot + space = 3 visible chars
-		const PREFIX_W = 3
-		if (width <= PREFIX_W) {
-			this.cachedWidth = width
-			this.cachedLines = [" ● "]
-			return this.cachedLines
-		}
-		const lines = sanitizeRenderedTextBlockLines(this.md.render(width - PREFIX_W))
-		const looksLikeTaskStatus = lines.some((line) => /\b(?:transcript:|No output\.|Wrapped up)/.test(stripAnsi(line)))
-		const displayLines = looksLikeTaskStatus ? lines.map(normalizeLeadingCheckGlyph) : lines
-		let dotPlaced = false
-		const rendered = displayLines.map((line: string) => {
-			if (!dotPlaced && stripAnsi(line).trim()) {
-				dotPlaced = true
-				return ` ● ${line}`
-			}
-			return `   ${line}`
-		})
-		this.cachedWidth = width
-		this.cachedLines = rendered
-		return rendered
-	}
-}
-
-class ThinkingParagraph {
-	private md: InstanceType<typeof Markdown>
-	private cachedWidth?: number
-	private cachedLines?: string[]
-
-	constructor(
-		text: string,
-		_markdownTheme: ConstructorParameters<typeof Markdown>[3],
-		_defaultTextStyle?: ConstructorParameters<typeof Markdown>[4],
-	) {
-		// Use a plain theme that strips all color/formatting from thinking blocks.
-		// Every element gets the same dim italic treatment, tracking the active
-		// pi theme's "muted" color (falls back to the previous gray when no theme).
-		const DIM_FG = WORKED_LINE_FG
-		const ITALIC = "\x1b[3m"
-		const wrap = (s: string) => `${DIM_FG}${ITALIC}${s}`
-		const plainTheme: ConstructorParameters<typeof Markdown>[3] = {
-			heading: wrap,
-			link: wrap,
-			linkUrl: wrap,
-			code: wrap,
-			codeBlock: wrap,
-			codeBlockBorder: wrap,
-			quote: wrap,
-			quoteBorder: wrap,
-			hr: wrap,
-			listBullet: wrap,
-			bold: wrap,
-			italic: wrap,
-			strikethrough: wrap,
-			underline: wrap,
-			// Override code highlighting to return plain lines (no syntax colors)
-			highlightCode: (code: string, _lang?: string) => code.split("\n").map((line) => `${DIM_FG}${ITALIC}${line}`),
-		}
-		// Same dim gray italic as the base style for all inline text
-		const plainStyle: ConstructorParameters<typeof Markdown>[4] = {
-			italic: true,
-			color: (s: string) => `${DIM_FG}${ITALIC}${s}`,
-		}
-		this.md = new Markdown(text, 0, 0, plainTheme, plainStyle)
-	}
-
-	invalidate(): void {
-		this.cachedWidth = undefined
-		this.cachedLines = undefined
-		this.md.invalidate()
-	}
-
-	render(width: number): string[] {
-		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines
-		// " ✻ " = 1 margin + symbol + space = 3 visible chars
-		const PREFIX_W = 3
-		const prefix = `${WORKED_LINE_FG}✻${RESET}`
-		if (width <= PREFIX_W) {
-			this.cachedWidth = width
-			this.cachedLines = [` ${prefix} `]
-			return this.cachedLines
-		}
-		const lines = sanitizeRenderedTextBlockLines(this.md.render(width - PREFIX_W))
-		let symbolPlaced = false
-		const rendered = lines.map((line: string) => {
-			if (!symbolPlaced && stripAnsi(line).trim()) {
-				symbolPlaced = true
-				return ` ${prefix} ${line}`
-			}
-			return `   ${line}`
-		})
-		this.cachedWidth = width
-		this.cachedLines = rendered
-		return rendered
-	}
-}
-
-function patchCustomMessageRender(): void {
-	const proto = CustomMessageComponent.prototype as any
-	if (proto[CUSTOM_MESSAGE_PATCH_FLAG]) return
-	const originalRender = proto.render
-	if (typeof originalRender !== "function") return
-	proto.render = function patchedCustomMessageRender(width: number) {
-		const lines = originalRender.call(this, width)
-		return Array.isArray(lines) ? lines.map(normalizeLeadingCheckGlyph) : lines
-	}
-	proto[CUSTOM_MESSAGE_PATCH_FLAG] = true
-}
-
-function stripOsc133Zones(line: string): string {
-	return line.replace(OSC133_ZONE_START, "").replace(OSC133_ZONE_END, "").replace(OSC133_ZONE_FINAL, "")
-}
-
-function stripBackgroundAnsi(text: string): string {
-	return text.replace(/\x1b\[([0-9;]*)m/g, (match, paramsText: string) => {
-		const params = paramsText === "" ? ["0"] : paramsText.split(";")
-		const kept: string[] = []
-		for (let i = 0; i < params.length; i++) {
-			const code = Number(params[i] || "0")
-			if (code === 48) {
-				const mode = Number(params[i + 1] || "0")
-				i += mode === 2 ? 4 : mode === 5 ? 2 : 0
-				continue
-			}
-			if (code === 49 || (code >= 40 && code <= 47) || (code >= 100 && code <= 107)) continue
-			kept.push(params[i])
-		}
-		return kept.length === 0 ? "" : `\x1b[${kept.join(";")}m`
-	})
-}
-
-function roundedUserBorder(width: number, top: boolean): string {
-	if (width <= 1) return `${BORDER_COLOR}│${TRANSPARENT_RESET}`
-	const left = top ? "╭" : "╰"
-	const right = top ? "╮" : "╯"
-	if (!top || width < 10) {
-		return `${BORDER_COLOR}${left}${"─".repeat(Math.max(0, width - 2))}${right}${TRANSPARENT_RESET}`
-	}
-	const label = " User "
-	const prefix = "─"
-	const suffixWidth = Math.max(0, width - 2 - visibleWidth(prefix) - visibleWidth(label))
-	return `${BORDER_COLOR}${left}${prefix}${TRANSPARENT_RESET}${label}${BORDER_COLOR}${"─".repeat(suffixWidth)}${right}${TRANSPARENT_RESET}`
-}
-
-function trimAnsiRight(text: string): string {
-	let trimmed = text
-	while (true) {
-		const next = trimmed.replace(/[ \t]+((?:\x1b\[[0-9;]*m)*)$/g, "$1")
-		if (next === trimmed) return trimmed
-		trimmed = next
-	}
-}
-
-function cleanUserMessageLine(line: string): string {
-	return `${TRANSPARENT_BG}${trimAnsiRight(stripBackgroundAnsi(stripOsc133Zones(line)))}${TRANSPARENT_BG}`
-}
-
-function borderedUserMessageLine(line: string, width: number): string {
-	const innerWidth = Math.max(1, width - 4)
-	const content = clampLineWidth(cleanUserMessageLine(line), innerWidth)
-	const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(content)))
-	return `${BORDER_COLOR}│${TRANSPARENT_RESET} ${content}${padding} ${BORDER_COLOR}│${TRANSPARENT_RESET}`
 }
 
 function insertUserPromptPrefix(line: string): string {
@@ -638,63 +405,6 @@ function patchUserMessageRender(): void {
 		})
 	}
 	proto[USER_MESSAGE_PATCH_FLAG] = true
-}
-
-function patchAssistantMessages(): void {
-	const proto = AssistantMessageComponent.prototype as any
-	if (proto[ASSISTANT_PATCH_FLAG]) return
-	const originalUpdateContent = proto.updateContent
-	proto.updateContent = function patchedUpdateContent(message: any) {
-		if (!(this as any)[WORKED_START_KEY]) {
-			;(this as any)[WORKED_START_KEY] = Date.now()
-		}
-		if (!message || !Array.isArray(message.content)) {
-			return originalUpdateContent.call(this, message)
-		}
-		// Call original to build all children (text, thinking, spacers, errors)
-		originalUpdateContent.call(this, message)
-		// Replace text-block Markdown children with DottedParagraph wrappers
-		const container = (this as any).contentContainer
-		if (!container?.children) return
-		const mdTheme = (this as any).markdownTheme
-		for (let i = container.children.length - 1; i >= 0; i--) {
-			const child = container.children[i]
-			if (child instanceof Markdown) {
-				const text = (child as any).text
-				if (!text) continue
-				const isThinking = !!(child as any).defaultTextStyle?.italic
-				if (isThinking) {
-					const style = (child as any).defaultTextStyle
-					container.children[i] = new ThinkingParagraph(text, mdTheme, style)
-				} else {
-					container.children[i] = new DottedParagraph(text, mdTheme)
-				}
-			}
-		}
-		const explicitDuration = (message as any)[WORKED_DURATION_KEY]
-		const componentStart = (this as any)[WORKED_START_KEY]
-		const isFinished = typeof message.stopReason === "string" && message.stopReason.length > 0
-		const isFinalAssistantMessage = isFinished && message.stopReason !== "toolUse"
-		const fallbackStart = typeof currentAgentWorkStartMs === "number" ? currentAgentWorkStartMs : componentStart
-		const workedDuration =
-			typeof explicitDuration === "number"
-				? explicitDuration
-				: isFinalAssistantMessage && typeof fallbackStart === "number"
-					? Date.now() - fallbackStart
-					: undefined
-		const hasAssistantText = message.content.some(
-			(block: any) => block?.type === "text" && typeof block.text === "string" && block.text.trim(),
-		)
-		if (
-			typeof workedDuration === "number" &&
-			isFinalAssistantMessage &&
-			hasAssistantText &&
-			!hasWorkedDurationLine(message)
-		) {
-			container.children.push(new Spacer(1), new Text(workedDurationText(workedDuration), 1, 0))
-		}
-	}
-	proto[ASSISTANT_PATCH_FLAG] = true
 }
 
 function patchToolRenderCacheInvalidation(): void {
@@ -831,10 +541,6 @@ function shortPath(cwd: string, filePath: string): string {
 // Status dot — flickers green/gray while pending
 // ---------------------------------------------------------------------------
 
-function isBlinkOn(): boolean {
-	return Math.floor(Date.now() / 500) % 2 === 0
-}
-
 function toolHeader(tool: string, summary: string, theme: Theme, prefix = ""): string {
 	applyThemePaletteIfNeeded(theme)
 	const label = theme.fg("toolTitle", theme.bold(tool))
@@ -923,7 +629,7 @@ function withBranch(content: string, _theme: Theme, _isError = false, continued 
 	return `${branchLead(first, continued)}\n${rest.join("\n")}`
 }
 
-function withFinalBranchBlock(content: string, theme: Theme, isError = false): string {
+function withFinalBranchBlock(content: string): string {
 	if (!content || !content.trim()) return ""
 	const lines = content.split("\n")
 	const first = lines[0] ?? ""
@@ -1491,17 +1197,6 @@ interface DiffColors {
 let DEFAULT_DIFF_COLORS: DiffColors = { fgAdd: FG_ADD, fgDel: FG_DEL, fgCtx: FG_DIM }
 let autoDerivePending = true
 let hasExplicitBgConfig = false
-
-function mixBg(
-	base: { r: number; g: number; b: number },
-	accent: { r: number; g: number; b: number },
-	intensity: number,
-): string {
-	const r = Math.round(base.r + (accent.r - base.r) * intensity)
-	const g = Math.round(base.g + (accent.g - base.g) * intensity)
-	const b = Math.round(base.b + (accent.b - base.b) * intensity)
-	return `\x1b[48;2;${r};${g};${b}m`
-}
 
 // pi-tool-display tint targets for diff palette derivation
 const ADDITION_TINT_TARGET = { r: 84, g: 190, b: 118 }
@@ -2642,7 +2337,7 @@ function renderEditPreviewBody(
 	const previewLines = ctx.expanded
 		? Math.max(6, Math.floor(MAX_RENDER_LINES / Math.max(1, maxShown)))
 		: Math.max(8, Math.floor(MAX_PREVIEW_LINES / Math.max(1, maxShown)))
-	Promise.all(
+	void Promise.all(
 		diffs.slice(0, maxShown).map((diff, index) => {
 			const line = lines[index] ?? getFirstChangedNewLine(diff)
 			return renderSplit(diff, language, previewLines, dc, branchWidth)
@@ -3716,6 +3411,7 @@ export default function (pi: ExtensionAPI) {
 	patchToolExecutionRenderers()
 	patchUserMessageRender()
 	applyDiffPalette()
+	registerThinkingLabels(pi)
 
 	// /cc-tools command — toggle tool border style at runtime
 	const TOOL_MODES = ["outlines", "transparent", "default"] as const
@@ -4285,12 +3981,12 @@ export default function (pi: ExtensionAPI) {
 				const key = `wd:${diffWidth}:${d.summary}:${d.diff?.lines?.length ?? 0}:${d.language ?? ""}:${ctx.expanded ? 1 : 0}`
 				if (ctx.state._wdk !== key) {
 					ctx.state._wdk = key
-					ctx.state._wdt = withFinalBranchBlock(`${richSummary}\n${theme.fg("muted", "rendering diff…")}`, theme)
+					ctx.state._wdt = withFinalBranchBlock(`${richSummary}\n${theme.fg("muted", "rendering diff…")}`)
 					const dc = resolveDiffColors(theme)
 					renderSplit(d.diff, d.language, previewLines, dc, diffWidth)
 						.then((rendered) => {
 							if (ctx.state._wdk !== key) return
-							ctx.state._wdt = withFinalBranchBlock(`${richSummary}\n${rendered}`, theme)
+							ctx.state._wdt = withFinalBranchBlock(`${richSummary}\n${rendered}`)
 							ctx.invalidate()
 						})
 						.catch(() => {
@@ -4314,12 +4010,12 @@ export default function (pi: ExtensionAPI) {
 				const pk = `nf:${d.filePath}:${contentHash}:${diffWidth}:${ctx.expanded ? 1 : 0}`
 				if (ctx.state._nfk !== pk) {
 					ctx.state._nfk = pk
-					ctx.state._nft = withFinalBranchBlock(`${richSummary}\n${theme.fg("muted", "rendering diff…")}`, theme)
+					ctx.state._nft = withFinalBranchBlock(`${richSummary}\n${theme.fg("muted", "rendering diff…")}`)
 					const dc = resolveDiffColors(theme)
 					renderUnified(syntheticDiff, lang(d.filePath), previewLines, dc, diffWidth)
 						.then((rendered) => {
 							if (ctx.state._nfk !== pk) return
-							ctx.state._nft = withFinalBranchBlock(`${richSummary}\n${rendered}`, theme)
+							ctx.state._nft = withFinalBranchBlock(`${richSummary}\n${rendered}`)
 							ctx.invalidate()
 						})
 						.catch(() => {
