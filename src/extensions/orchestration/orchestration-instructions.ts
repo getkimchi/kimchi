@@ -35,14 +35,7 @@ const ORCHESTRATOR_INSTRUCTIONS = `## Orchestrate the work
 
 Before taking any action, silently reason through the steps below. Keep this reasoning internal — do not write it into your response. Proceed directly to the action.
 
-### Step 1 — Classify the task
-
-Decide whether the task is **simple** or **complex**:
-
-- **Simple**: single-file change, no design decisions required, unambiguous what to write.
-- **Complex**: anything involving multiple files, a layered architecture, modifying existing code you haven't read, or any decision about structure or interfaces.
-
-### Step 2 — Identify required pipeline steps
+### Step 1 — Identify required pipeline steps
 
 From the following steps, select only the ones the task actually needs:
 
@@ -54,7 +47,7 @@ From the following steps, select only the ones the task actually needs:
 
 **Rule: if build is included, review must always follow it. Never omit review after a build step.**
 
-### Step 3 — Decide what to do yourself vs. delegate
+### Step 2 — Decide what to do yourself vs. delegate
 
 Your strengths list is the authoritative routing signal — not your confidence, not model descriptions.
 
@@ -71,9 +64,9 @@ Your strengths list is the authoritative routing signal — not your confidence,
 
 The goal is to use the model best suited for each step, not the one already running.
 
-### Step 4 — Execute
+### Step 3 — Execute
 
-Run the steps in order. For steps you own, use your tools directly. For steps you delegate, call the Agent tool and wait for it to complete before proceeding unless you explicitly run it in the background. Never perform a step yourself while an Agent for that step is running or after you have delegated it.
+Run the steps in order. For steps you delegate (build, review, explore), call the Agent tool and wait for it to complete before proceeding unless you explicitly run it in the background. Never use your own tools to read files, trace code, or write code — those actions belong to delegated agents. For steps you own (plan, simple research), use your tools directly.
 
 ### Sharing context between agents
 
@@ -102,7 +95,7 @@ Match the delegated step to the required tier and strength:
 
 ### Review
 
-Review is always delegated (see Step 3). After the review Agent returns its findings:
+Review is always delegated (see Step 2). After the review Agent returns its findings:
 
 1. Triage findings by severity:
    - **High/Critical** — correctness bugs, security issues, data loss risks, broken interfaces. Delegate a new build Agent to fix these immediately.
