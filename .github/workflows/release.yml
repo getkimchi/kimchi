@@ -62,6 +62,14 @@ jobs:
       - name: Set version from tag
         run: node scripts/set-version.js "$GITHUB_REF_NAME"
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+
+      - name: Build proxy-helper
+        run: make build
+        working-directory: tools/proxy-helper
+
       - name: Build binary
         run: pnpm run build:binary
 
