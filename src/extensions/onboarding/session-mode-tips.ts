@@ -1,9 +1,9 @@
 import type { Tip, TipProvider } from "../tips/types.js"
 
 export const SESSION_MODE_TIP = {
-	id: "choose-session-mode",
+	id: "choose-workflow",
 	scope: "contextual",
-	message: "You can start a ferment session with `/ferment` anytime.",
+	message: "Use `/ferment` anytime to start a Ferment workflow.",
 } as const satisfies Tip
 
 export function createSessionModeTipProvider(isPickerVisible: () => boolean): TipProvider {

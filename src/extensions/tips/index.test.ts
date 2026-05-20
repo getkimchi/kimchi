@@ -3,6 +3,7 @@ import type { TUI } from "@earendil-works/pi-tui"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
 import tipsExtension, { TIPS_WIDGET_KEY } from "./index.js"
+import { setTipWidgetPlacementOverride } from "./placement.js"
 import { TipRegistry } from "./registry.js"
 
 type Handler = (event: unknown, ctx: unknown) => unknown
@@ -76,10 +77,45 @@ describe("tips extension", () => {
 
 		harness.turnEnd()
 
-		expect(harness.ui.setWidget).not.toHaveBeenCalledWith(TIPS_WIDGET_KEY, undefined, {
+		expect(harness.ui.setWidget).not.toHaveBeenCalledWith(TIPS_WIDGET_KEY, undefined)
+		expect(harness.tui.requestRender).toHaveBeenCalledTimes(1)
+	})
+
+	it("mounts below the editor when a placement override is already active", () => {
+		const clearPlacementOverride = setTipWidgetPlacementOverride("belowEditor")
+		try {
+			const harness = createHarness({ hasUI: true })
+
+			harness.start()
+
+			expect(harness.ui.setWidget).toHaveBeenCalledWith(TIPS_WIDGET_KEY, expect.any(Function), {
+				placement: "belowEditor",
+			})
+		} finally {
+			clearPlacementOverride()
+		}
+	})
+
+	it("remounts tips when placement override changes during a session", () => {
+		const harness = createHarness({ hasUI: true })
+		harness.start()
+		harness.ui.setWidget.mockClear()
+
+		const clearPlacementOverride = setTipWidgetPlacementOverride("belowEditor")
+		try {
+			expect(harness.ui.setWidget).toHaveBeenNthCalledWith(1, TIPS_WIDGET_KEY, undefined)
+			expect(harness.ui.setWidget).toHaveBeenNthCalledWith(2, TIPS_WIDGET_KEY, expect.any(Function), {
+				placement: "belowEditor",
+			})
+			harness.ui.setWidget.mockClear()
+		} finally {
+			clearPlacementOverride()
+		}
+
+		expect(harness.ui.setWidget).toHaveBeenNthCalledWith(1, TIPS_WIDGET_KEY, undefined)
+		expect(harness.ui.setWidget).toHaveBeenNthCalledWith(2, TIPS_WIDGET_KEY, expect.any(Function), {
 			placement: "aboveEditor",
 		})
-		expect(harness.tui.requestRender).toHaveBeenCalledTimes(1)
 	})
 
 	it("does not render tips when UI is unavailable", () => {
@@ -96,9 +132,7 @@ describe("tips extension", () => {
 
 		harness.shutdown()
 
-		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(TIPS_WIDGET_KEY, undefined, {
-			placement: "aboveEditor",
-		})
+		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(TIPS_WIDGET_KEY, undefined)
 		expect(harness.registry.getFirstTip("general")).toBeUndefined()
 	})
 })

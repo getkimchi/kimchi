@@ -7,10 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { writeHideSessionModeDialog, writeSessionModeWizardSeenAt } from "../../config.js"
 import { globalTipRegistry } from "../tips/registry.js"
 import { createSessionModeOnboardingForStartup } from "./session-mode-startup.js"
-import { SESSION_MODE_WIDGET_KEY } from "./session-mode.js"
 
 type SessionStartHandler = (event: unknown, ctx: unknown) => unknown
 type TerminalInputHandler = (data: string) => { consume?: boolean } | undefined
+type CustomComponent = { handleInput?(data: string): void }
+const startupHarnesses: Array<{ shutdown: () => unknown; settle: () => Promise<void> }> = []
 
 function theme(): Theme {
 	return {
@@ -43,6 +44,7 @@ function createHarness(options: {
 		}),
 	} as unknown as ExtensionAPI
 	const tui = { requestRender: vi.fn() } as unknown as TUI
+	let activeComponent: CustomComponent | undefined
 	let inputHandler: TerminalInputHandler | undefined
 	const unsubscribe = vi.fn()
 	const ui = {
@@ -52,6 +54,29 @@ function createHarness(options: {
 		onTerminalInput: vi.fn((handler: TerminalInputHandler) => {
 			inputHandler = handler
 			return unsubscribe
+		}),
+		custom: vi.fn((factory: (...args: unknown[]) => CustomComponent | Promise<CustomComponent>) => {
+			return new Promise((resolve, reject) => {
+				let doneCalled = false
+				const done = (result: unknown) => {
+					if (doneCalled) return
+					doneCalled = true
+					activeComponent = undefined
+					resolve(result)
+				}
+				try {
+					const content = factory(tui, theme(), {}, done)
+					if (content && typeof (content as Promise<CustomComponent>).then === "function") {
+						;(content as Promise<CustomComponent>).then((component) => {
+							if (!doneCalled) activeComponent = component
+						}, reject)
+					} else {
+						activeComponent = content as CustomComponent
+					}
+				} catch (err) {
+					reject(err)
+				}
+			})
 		}),
 		notify: vi.fn(),
 	}
@@ -68,15 +93,22 @@ function createHarness(options: {
 
 	extension(api)
 
-	return {
+	const harness = {
 		api,
 		ctx,
 		ui,
 		tui,
 		unsubscribe,
 		start: () => handlers.get("session_start")?.({ reason: "startup" }, ctx),
-		input: (data: string) => inputHandler?.(data),
+		shutdown: () => handlers.get("session_shutdown")?.({ reason: "quit" }, ctx),
+		input: (data: string) => inputHandler?.(data) ?? activeComponent?.handleInput?.(data),
+		activeComponent: () => activeComponent,
+		settle: async () => {
+			for (let i = 0; i < 4; i += 1) await Promise.resolve()
+		},
 	}
+	startupHarnesses.push(harness)
+	return harness
 }
 
 describe("session mode startup integration", () => {
@@ -89,7 +121,11 @@ describe("session mode startup integration", () => {
 		configPath = join(tempDir, "config.json")
 	})
 
-	afterEach(() => {
+	afterEach(async () => {
+		for (const harness of startupHarnesses.splice(0)) {
+			harness.shutdown()
+			await harness.settle()
+		}
 		globalTipRegistry.clear()
 		rmSync(tempDir, { recursive: true, force: true })
 	})
@@ -99,10 +135,9 @@ describe("session mode startup integration", () => {
 
 		await harness.start()
 
-		expect(harness.ui.setWidget).toHaveBeenCalledWith(SESSION_MODE_WIDGET_KEY, expect.any(Function), {
-			placement: "aboveEditor",
-		})
-		expect(harness.ui.onTerminalInput).toHaveBeenCalled()
+		expect(harness.ui.custom).toHaveBeenCalled()
+		expect(harness.ui.setWidget).not.toHaveBeenCalled()
+		expect(harness.ui.onTerminalInput).not.toHaveBeenCalled()
 	})
 
 	it("shows returning launches with existing onboarding state", async () => {
@@ -111,10 +146,9 @@ describe("session mode startup integration", () => {
 
 		await harness.start()
 
-		expect(harness.ui.setWidget).toHaveBeenCalledWith(SESSION_MODE_WIDGET_KEY, expect.any(Function), {
-			placement: "aboveEditor",
-		})
-		expect(harness.ui.onTerminalInput).toHaveBeenCalled()
+		expect(harness.ui.custom).toHaveBeenCalled()
+		expect(harness.ui.setWidget).not.toHaveBeenCalled()
+		expect(harness.ui.onTerminalInput).not.toHaveBeenCalled()
 	})
 
 	it("skips launches when the session mode dialog has been hidden", async () => {
@@ -126,6 +160,7 @@ describe("session mode startup integration", () => {
 
 		expect(harness.ui.setWidget).not.toHaveBeenCalled()
 		expect(harness.ui.onTerminalInput).not.toHaveBeenCalled()
+		expect(harness.ui.custom).not.toHaveBeenCalled()
 	})
 
 	it("treats an explicit prompt launch as Default without mounting the picker", async () => {
@@ -136,6 +171,7 @@ describe("session mode startup integration", () => {
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 		expect(harness.ui.setWidget).not.toHaveBeenCalled()
+		expect(harness.ui.custom).not.toHaveBeenCalled()
 	})
 
 	it("stays silent for automation and non-interactive launches", async () => {
@@ -162,13 +198,12 @@ describe("session mode startup integration", () => {
 
 		harness.input("\x1b[B")
 		harness.input("\r")
+		await harness.settle()
 
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 		expect(startFerment).not.toHaveBeenCalled()
-		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(SESSION_MODE_WIDGET_KEY, undefined, {
-			placement: "aboveEditor",
-		})
+		expect(harness.activeComponent()).toBeUndefined()
 	})
 
 	it("choosing Hide this dialog persists the hidden user config without starting Ferment", async () => {
@@ -180,13 +215,12 @@ describe("session mode startup integration", () => {
 		harness.input(" ")
 		harness.input("\x1b[B")
 		harness.input("\r")
+		await harness.settle()
 
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.hideSessionModeDialog).toBe(true)
 		expect(startFerment).not.toHaveBeenCalled()
-		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(SESSION_MODE_WIDGET_KEY, undefined, {
-			placement: "aboveEditor",
-		})
+		expect(harness.activeComponent()).toBeUndefined()
 	})
 
 	it("choosing Ferment starts the shared interactive Ferment entry", async () => {
@@ -195,6 +229,7 @@ describe("session mode startup integration", () => {
 		await harness.start()
 
 		harness.input("\r")
+		await harness.settle()
 
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")

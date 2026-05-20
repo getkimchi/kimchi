@@ -29,18 +29,19 @@ export interface SessionModePickerReduceResult {
 	result?: SessionModePickerResult
 }
 
-export const SESSION_MODE_PICKER_HEADING = "Choose your session mode"
+export const SESSION_MODE_PICKER_HEADING = "Choose your workflow"
 
 export const SESSION_MODE_PICKER_OPTIONS: SessionModePickerOption[] = [
 	{
 		value: "ferment",
-		label: "Ferment session",
-		description: "Agent runs the full task end-to-end. You review the result.",
+		label: "Ferment",
+		description:
+			"Start a new ferment workflow. Agent plans and executes multi-step tasks end-to-end. You review the result.",
 	},
 	{
 		value: "default",
-		label: "Default session",
-		description: "Standard coding harness experience outside of the active ferment.",
+		label: "Coding session",
+		description: "Chat with the agent and steer it as it goes. Stay in the loop.",
 	},
 ]
 

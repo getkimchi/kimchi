@@ -4,10 +4,10 @@ import { join } from "node:path"
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { getTipWidgetPlacement } from "../tips/placement.js"
 import { globalTipRegistry } from "../tips/registry.js"
 import { SESSION_MODE_TIP } from "./session-mode-tips.js"
 import sessionModeOnboardingExtension, {
-	SESSION_MODE_WIDGET_KEY,
 	buildSessionModeLaunchContext,
 	decideSessionModeOnboarding,
 	recordSessionModeWizardOutcome,
@@ -50,6 +50,8 @@ function decide(
 
 type SessionStartHandler = (event: unknown, ctx: unknown) => unknown
 type TerminalInputHandler = (data: string) => { consume?: boolean } | undefined
+type CustomComponent = { handleInput?(data: string): void }
+const extensionHarnesses: Array<{ shutdown: () => unknown; settle: () => Promise<void> }> = []
 
 function createExtensionHarness() {
 	const handlers = new Map<string, SessionStartHandler>()
@@ -59,6 +61,7 @@ function createExtensionHarness() {
 		}),
 	}
 	const tui = { requestRender: vi.fn() } as unknown as TUI
+	let activeComponent: CustomComponent | undefined
 	let inputHandler: TerminalInputHandler | undefined
 	const unsubscribe = vi.fn()
 	const ui = {
@@ -69,21 +72,54 @@ function createExtensionHarness() {
 			inputHandler = handler
 			return unsubscribe
 		}),
+		custom: vi.fn((factory: (...args: unknown[]) => CustomComponent | Promise<CustomComponent>) => {
+			return new Promise((resolve, reject) => {
+				let doneCalled = false
+				const done = (result: unknown) => {
+					if (doneCalled) return
+					doneCalled = true
+					activeComponent = undefined
+					resolve(result)
+				}
+				try {
+					const content = factory(tui, theme(), {}, done)
+					if (content && typeof (content as Promise<CustomComponent>).then === "function") {
+						;(content as Promise<CustomComponent>).then((component) => {
+							if (!doneCalled) activeComponent = component
+						}, reject)
+					} else {
+						activeComponent = content as CustomComponent
+					}
+				} catch (err) {
+					reject(err)
+				}
+			})
+		}),
 		notify: vi.fn(),
 	}
 	const ctx = { hasUI: true, ui }
-	return {
+	const harness = {
 		api,
 		ui,
 		tui,
 		unsubscribe,
 		start: () => handlers.get("session_start")?.({ reason: "startup" }, ctx),
 		shutdown: () => handlers.get("session_shutdown")?.({ reason: "quit" }, ctx),
-		input: (data: string) => inputHandler?.(data),
+		input: (data: string) => inputHandler?.(data) ?? activeComponent?.handleInput?.(data),
+		activeComponent: () => activeComponent,
+		settle: async () => {
+			for (let i = 0; i < 4; i += 1) await Promise.resolve()
+		},
 	}
+	extensionHarnesses.push(harness)
+	return harness
 }
 
-afterEach(() => {
+afterEach(async () => {
+	for (const harness of extensionHarnesses.splice(0)) {
+		harness.shutdown()
+		await harness.settle()
+	}
 	globalTipRegistry.clear()
 })
 
@@ -232,26 +268,43 @@ describe("session-mode onboarding persistence", () => {
 		)
 
 		await harness.start()
-		expect(harness.ui.setWidget).toHaveBeenCalledWith(SESSION_MODE_WIDGET_KEY, expect.any(Function), {
-			placement: "aboveEditor",
-		})
-		expect(harness.ui.onTerminalInput).toHaveBeenCalled()
+		expect(harness.ui.custom).toHaveBeenCalled()
+		expect(harness.ui.setWidget).not.toHaveBeenCalled()
+		expect(harness.ui.onTerminalInput).not.toHaveBeenCalled()
+		expect(getTipWidgetPlacement()).toBe("belowEditor")
 		let raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 
-		expect(harness.input("\x1b[B")).toEqual({ consume: true })
+		harness.input("\x1b[B")
 		expect(harness.tui.requestRender).toHaveBeenCalled()
-		expect(harness.input("\r")).toEqual({ consume: true })
+		harness.input("\r")
+		await harness.settle()
 
 		raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
-		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(SESSION_MODE_WIDGET_KEY, undefined, {
-			placement: "aboveEditor",
-		})
-		expect(harness.unsubscribe).toHaveBeenCalled()
+		expect(harness.activeComponent()).toBeUndefined()
+		expect(getTipWidgetPlacement()).toBe("aboveEditor")
 	})
 
-	it("extension registers a contextual tip only while the picker is visible", async () => {
+	it("extension replaces the editor while the picker is visible", async () => {
+		const harness = createExtensionHarness()
+
+		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
+			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+		)
+
+		await harness.start()
+
+		harness.input("hello")
+		harness.input("x")
+
+		expect(harness.ui.custom).toHaveBeenCalled()
+		expect(harness.ui.setWidget).not.toHaveBeenCalled()
+		expect(harness.ui.onTerminalInput).not.toHaveBeenCalled()
+		expect(harness.activeComponent()).toBeDefined()
+	})
+
+	it("extension registers the session mode tip while the picker is visible", async () => {
 		const harness = createExtensionHarness()
 
 		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
@@ -262,11 +315,11 @@ describe("session-mode onboarding persistence", () => {
 
 		const provider = globalTipRegistry.getProviders().find((candidate) => candidate.source === "kimchi.session-mode")
 		expect(provider?.getTips()).toEqual([SESSION_MODE_TIP])
-		expect(provider?.getTips()[0]?.message).toContain("`/ferment`")
 
 		harness.input("\x1b")
-
+		await harness.settle()
 		expect(globalTipRegistry.getProviders().some((candidate) => candidate.source === "kimchi.session-mode")).toBe(false)
+		expect(getTipWidgetPlacement()).toBe("aboveEditor")
 	})
 
 	it("extension cancellation clears the picker after recording that the first dialog was shown", async () => {
@@ -278,12 +331,12 @@ describe("session-mode onboarding persistence", () => {
 
 		await harness.start()
 		harness.input("\x1b")
+		await harness.settle()
 
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
-		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(SESSION_MODE_WIDGET_KEY, undefined, {
-			placement: "aboveEditor",
-		})
+		expect(harness.activeComponent()).toBeUndefined()
+		expect(getTipWidgetPlacement()).toBe("aboveEditor")
 	})
 
 	it("extension exposes Ferment selection through the outcome callback", async () => {
@@ -296,6 +349,7 @@ describe("session-mode onboarding persistence", () => {
 
 		await harness.start()
 		harness.input("\r")
+		await harness.settle()
 
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
@@ -315,12 +369,11 @@ describe("session-mode onboarding persistence", () => {
 		harness.input(" ")
 		harness.input("\x1b[B")
 		harness.input("\r")
+		await harness.settle()
 
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.hideSessionModeDialog).toBe(true)
-		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(SESSION_MODE_WIDGET_KEY, undefined, {
-			placement: "aboveEditor",
-		})
+		expect(harness.activeComponent()).toBeUndefined()
 		expect(onOutcome).toHaveBeenCalledWith("default", expect.objectContaining({ ui: harness.ui }), harness.api)
 	})
 })
