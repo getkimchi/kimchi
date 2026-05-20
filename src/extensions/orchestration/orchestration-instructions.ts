@@ -111,7 +111,7 @@ If the user explicitly asks for the Agent tool with a specific \`token_budget\`,
 |---|---|
 | Single file (one module, one test file, one doc) | 150000 |
 | Multi-file implementation (2–5 files, one layer) | 200000 |
-| Full project or large codebase exploration | 500000 |
+| Full project or large codebase exploration | 1000000 |
 | Plan or research document (writing, not coding) | 200000 |
 
 If an Agent hits its budget, spawn a follow-up with the remaining work rather than raising the budget.`
