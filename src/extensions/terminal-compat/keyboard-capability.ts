@@ -23,6 +23,20 @@ export function getKittyKeyboardSupport(): boolean | undefined {
 	return cachedSupportsKittyKeyboard
 }
 
+function isJetBrainsTerminal(): boolean {
+	// JetBrains IDEs (GoLand, IntelliJ, etc.) intercept Shift+Enter at the
+	// terminal level and send ESC+CR (\x1b\r) when the setting is enabled,
+	// which our editor already handles. This works out of the box in
+	// 2025.3.3+ where the setting is enabled by default.
+	//
+	// We cannot reliably detect the IDE version from env vars, so we treat
+	// ALL JetBrains terminals as capable. The only downside is a missing
+	// warning on older versions where Shift+Enter genuinely doesn't work.
+	//
+	// https://github.com/JetBrains/intellij-community/blob/52370805ee903d9b3d38c2b0be72db34702bbc83/plugins/terminal/frontend/src/com/intellij/terminal/frontend/view/impl/TerminalKeyEventsHandlerImpl.kt#L113-L117
+	return process.env.TERMINAL_EMULATOR?.startsWith("JetBrains-") ?? false
+}
+
 function shouldSkipProbe(): boolean {
 	if (!process.stdin.isTTY || !process.stdout.isTTY) return true
 	// tmux intercepts and may not forward the query correctly.
@@ -37,6 +51,10 @@ export async function probeKittyKeyboardSupport(): Promise<boolean> {
 	if (inFlightProbe) return inFlightProbe
 
 	inFlightProbe = (async () => {
+		if (isJetBrainsTerminal()) {
+			cachedSupportsKittyKeyboard = true
+			return true
+		}
 		if (shouldSkipProbe()) {
 			cachedSupportsKittyKeyboard = false
 			return false

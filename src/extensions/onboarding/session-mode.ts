@@ -8,7 +8,11 @@ import {
 } from "../../config.js"
 import { registerTipProvider } from "../tips/registry.js"
 import { setSessionModeOnboardingFooterSuppressed } from "../ui.js"
-import { SessionModePickerComponent, type SessionModePickerResult } from "./session-mode-picker.js"
+import {
+	SessionModePickerComponent,
+	type SessionModePickerResult,
+	keyToSessionModePickerEvent,
+} from "./session-mode-picker.js"
 import { createSessionModeTipProvider } from "./session-mode-tips.js"
 
 export type SessionModeOnboardingAction = "show" | "skip" | "skip-and-mark-seen"
@@ -168,9 +172,14 @@ function showSessionModeWizard(
 	}
 
 	setSessionModeOnboardingFooterSuppressed(true)
+	interface TuiWithOverlay {
+		hasOverlay(): boolean
+	}
+	let tuiRef: TuiWithOverlay | null = null
 	ctx.ui.setWidget(
 		SESSION_MODE_WIDGET_KEY,
 		(tui, theme) => {
+			tuiRef = tui as unknown as TuiWithOverlay
 			component = new SessionModePickerComponent(theme, finish, () => tui.requestRender(), {
 				showHideCheckbox: showHideOption,
 			})
@@ -179,8 +188,18 @@ function showSessionModeWizard(
 		SESSION_MODE_WIDGET_OPTIONS,
 	)
 	unsubscribeInput = ctx.ui.onTerminalInput((data) => {
-		component?.handleInput(data)
-		return { consume: true }
+		// When an overlay is visible (e.g. keyboard warning), let it receive
+		// input instead of the widget. Overlays are modal and should take
+		// precedence over background widgets.
+		if (typeof tuiRef?.hasOverlay === "function" && tuiRef.hasOverlay()) {
+			return undefined
+		}
+		const event = keyToSessionModePickerEvent(data)
+		if (event) {
+			component?.handleInput(data)
+			return { consume: true }
+		}
+		return undefined
 	})
 
 	return () => {
