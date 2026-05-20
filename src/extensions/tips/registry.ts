@@ -1,4 +1,4 @@
-import type { Tip, TipCandidate, TipProvider, TipProviderKind } from "./types.js"
+import type { Tip, TipCandidate, TipProvider, TipScope } from "./types.js"
 
 interface ProviderRecord {
 	owner: symbol
@@ -21,15 +21,14 @@ export class TipRegistry {
 		}
 	}
 
-	getProviders(kind?: TipProviderKind): readonly TipProvider[] {
-		const providers = Array.from(this.providers.values(), (record) => record.provider)
-		return kind === undefined ? providers : providers.filter((provider) => provider.kind === kind)
+	getProviders(): readonly TipProvider[] {
+		return Array.from(this.providers.values(), (record) => record.provider)
 	}
 
-	getEligibleTips(kind?: TipProviderKind): TipCandidate[] {
+	getEligibleTips(scope?: TipScope): TipCandidate[] {
 		const candidates: TipCandidate[] = []
 
-		for (const provider of this.getProviders(kind)) {
+		for (const provider of this.getProviders()) {
 			let tips: readonly Tip[]
 			try {
 				tips = provider.getTips()
@@ -38,12 +37,12 @@ export class TipRegistry {
 			}
 
 			for (const tip of tips) {
+				if (scope !== undefined && tip.scope !== scope) continue
 				candidates.push({
 					source: provider.source,
-					kind: provider.kind,
 					id: tip.id,
+					scope: tip.scope,
 					message: tip.message,
-					command: tip.command,
 				})
 			}
 		}
@@ -51,8 +50,8 @@ export class TipRegistry {
 		return candidates
 	}
 
-	getFirstTip(kind: TipProviderKind = "general"): TipCandidate | undefined {
-		return this.getEligibleTips(kind)[0]
+	getFirstTip(scope: TipScope = "general"): TipCandidate | undefined {
+		return this.getEligibleTips(scope)[0]
 	}
 
 	clear(): void {

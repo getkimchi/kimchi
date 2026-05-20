@@ -6,12 +6,11 @@ import type { TipProvider } from "./types.js"
 function provider(
 	source: string,
 	tips: readonly { id: string; message?: string }[],
-	kind: "general" | "contextual" = "general",
+	scope: "general" | "contextual" = "general",
 ) {
 	return {
 		source,
-		kind,
-		getTips: () => tips.map((tip) => ({ id: tip.id, message: tip.message ?? tip.id })),
+		getTips: () => tips.map((tip) => ({ id: tip.id, scope, message: tip.message ?? tip.id })),
 	} satisfies TipProvider
 }
 
@@ -22,8 +21,7 @@ describe("TipPresenter", () => {
 		registry.registerProvider(provider("general", [{ id: "general" }]))
 		registry.registerProvider({
 			source: "contextual",
-			kind: "contextual",
-			getTips: () => (contextualActive ? [{ id: "contextual", message: "contextual" }] : []),
+			getTips: () => (contextualActive ? [{ id: "contextual", scope: "contextual", message: "contextual" }] : []),
 		})
 		const presenter = new TipPresenter(registry)
 
@@ -53,10 +51,9 @@ describe("TipPresenter", () => {
 		let message = "first message"
 		registry.registerProvider({
 			source: "general",
-			kind: "general",
 			getTips: () => [
-				{ id: "stable", message },
-				{ id: "next", message: "next message" },
+				{ id: "stable", scope: "general", message },
+				{ id: "next", scope: "general", message: "next message" },
 			],
 		})
 		const presenter = new TipPresenter(registry)
@@ -94,11 +91,39 @@ describe("TipPresenter", () => {
 		expect(presenter.getCurrentTip()?.id).toBe("b1")
 	})
 
+	it("restarts a provider's tip order when its context becomes active again", () => {
+		const registry = new TipRegistry()
+		let contextualActive = false
+		registry.registerProvider(provider("general", [{ id: "general" }]))
+		registry.registerProvider({
+			source: "contextual",
+			getTips: () =>
+				contextualActive
+					? [
+							{ id: "first", scope: "contextual", message: "first" },
+							{ id: "second", scope: "contextual", message: "second" },
+						]
+					: [],
+		})
+		const presenter = new TipPresenter(registry)
+
+		expect(presenter.getCurrentTip()?.id).toBe("general")
+
+		contextualActive = true
+
+		expect(presenter.getCurrentTip()?.id).toBe("first")
+
+		contextualActive = false
+		expect(presenter.getCurrentTip()?.id).toBe("general")
+
+		contextualActive = true
+		expect(presenter.getCurrentTip()?.id).toBe("first")
+	})
+
 	it("skips providers that throw while computing tips", () => {
 		const registry = new TipRegistry()
 		registry.registerProvider({
 			source: "broken",
-			kind: "contextual",
 			getTips: () => {
 				throw new Error("broken provider")
 			},

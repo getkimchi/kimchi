@@ -15,6 +15,7 @@ import { Container, Text } from "@earendil-works/pi-tui"
 import type { Step } from "../../ferment/types.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { requestSharedFooterRender } from "../shared-footer.js"
+import { registerTipProvider } from "../tips/registry.js"
 import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
 import { registerFermentEvents } from "./events.js"
@@ -23,6 +24,7 @@ import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { FERMENT_REQUEST_MESSAGE_TYPE, type FermentRequestMessageDetails } from "./scoping.js"
 import { getActive, getActiveId, getContinuationPolicy } from "./state.js"
+import { createFermentTipProvider } from "./tips.js"
 import { applyFermentRuntimeToolProfile } from "./tool-scope.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { registerLifecycleTools } from "./tools/lifecycle.js"
@@ -109,6 +111,11 @@ const fermentRequestRenderer: MessageRenderer<FermentRequestMessageDetails> = (m
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime) {
+	const unregisterFermentTips = registerTipProvider(createFermentTipProvider(runtime))
+	pi.on("session_shutdown", () => {
+		unregisterFermentTips()
+	})
+
 	pi.registerMessageRenderer(FERMENT_REQUEST_MESSAGE_TYPE, fermentRequestRenderer)
 	registerFermentStopPolicyShortcut(pi, runtime)
 	registerFermentEvents(pi, runtime)

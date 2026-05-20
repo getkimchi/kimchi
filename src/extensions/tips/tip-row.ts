@@ -36,13 +36,10 @@ function formatTipContent(tip: TipCandidate, theme: Theme): string {
 }
 
 function formatTipMessage(tip: TipCandidate, theme: Theme): string {
-	const command = tip.command
-	if (!command) return theme.fg("muted", tip.message)
-
-	const index = tip.message.indexOf(command)
-	if (index === -1) return `${theme.fg("muted", tip.message)} ${theme.fg("accent", command)}`
-
-	const before = tip.message.slice(0, index)
-	const after = tip.message.slice(index + command.length)
-	return `${theme.fg("muted", before)}${theme.fg("accent", command)}${theme.fg("muted", after)}`
+	return tip.message
+		.split(/(`[^`\n]+`)/g)
+		.map((part) =>
+			part.startsWith("`") && part.endsWith("`") ? theme.fg("accent", part.slice(1, -1)) : theme.fg("muted", part),
+		)
+		.join("")
 }

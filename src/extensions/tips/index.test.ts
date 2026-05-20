@@ -49,6 +49,8 @@ function createHarness(options: { hasUI: boolean }) {
 		registry,
 		start: () => handlers.get("session_start")?.({ reason: "startup" }, ctx),
 		shutdown: () => handlers.get("session_shutdown")?.({ reason: "quit" }, ctx),
+		turnEnd: () => handlers.get("turn_end")?.({ message: { role: "assistant" } }, ctx),
+		tui,
 		ui,
 	}
 }
@@ -65,6 +67,19 @@ describe("tips extension", () => {
 		const lines = harness.component()?.render(32)
 		expect(lines).toHaveLength(1)
 		expect(visibleWidth(lines?.[0] ?? "")).toBeLessThanOrEqual(32)
+	})
+
+	it("keeps the mounted widget visible and rerenders after turns while tips remain eligible", () => {
+		const harness = createHarness({ hasUI: true })
+		harness.start()
+		harness.ui.setWidget.mockClear()
+
+		harness.turnEnd()
+
+		expect(harness.ui.setWidget).not.toHaveBeenCalledWith(TIPS_WIDGET_KEY, undefined, {
+			placement: "aboveEditor",
+		})
+		expect(harness.tui.requestRender).toHaveBeenCalledTimes(1)
 	})
 
 	it("does not render tips when UI is unavailable", () => {

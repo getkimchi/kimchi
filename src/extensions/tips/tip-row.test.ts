@@ -25,15 +25,14 @@ function theme(): Theme {
 
 const tip: TipCandidate = {
 	source: "test.general",
-	kind: "general",
 	id: "export",
-	message: "Run /export to save this session as HTML.",
-	command: "/export",
+	scope: "general",
+	message: "Run `/export` to save this session as HTML.",
 }
 
 describe("TipRow", () => {
-	it("renders one right-aligned line that never exceeds the supplied width", () => {
-		for (const width of [1, 4, 12, 40, 80, 160]) {
+	it("renders one right-aligned line within narrow, normal, and wide widths", () => {
+		for (const width of [1, 4, 12, 40, 80, 120, 160]) {
 			const lines = renderTipRow(tip, theme(), width)
 
 			expect(lines).toHaveLength(1)
@@ -53,5 +52,22 @@ describe("TipRow", () => {
 		const row = new TipRow(() => undefined, theme())
 
 		expect(row.render(80)).toEqual([])
+	})
+
+	it("highlights every markdown inline-code span and strips the delimiters", () => {
+		const [line] = renderTipRow(
+			{
+				source: "test.contextual",
+				id: "policy",
+				scope: "contextual",
+				message: "Use `/ferment auto` or `/ferment manual`.",
+			},
+			theme(),
+			120,
+		)
+
+		expect(line).toContain("\x1b[36m/ferment auto\x1b[39m")
+		expect(line).toContain("\x1b[36m/ferment manual\x1b[39m")
+		expect(line).not.toContain("`")
 	})
 })

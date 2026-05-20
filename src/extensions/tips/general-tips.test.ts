@@ -11,19 +11,19 @@ describe("GENERAL_TIPS", () => {
 	it("uses concrete Kimchi workflows instead of generic placeholders", () => {
 		const messages = GENERAL_TIPS.map((tip) => tip.message)
 
-		expect(messages).toContain("Press shift+tab to change permissions mode.")
-		expect(messages).toContain("Run /settings > Themes to change colors.")
-		expect(messages).toContain("Press ctrl+p to choose a model from multi-model mode.")
-		expect(messages).toContain("Tag requests with /tags add key:value, e.g. project:myapp team:backend.")
-		expect(messages).toContain('Set default tags: export KIMCHI_TAGS="team:backend,project:api".')
-		expect(messages).toContain("Resume the latest session with kimchi --continue.")
-		expect(messages).toContain("Use kimchi --verbose when output looks off.")
-		expect(messages).toContain("Run /export to save HTML for a bug report.")
+		expect(messages).toContain("Press `shift+tab` to change permissions mode.")
+		expect(messages).toContain("Run `/settings > Themes` to change colors.")
+		expect(messages).toContain("Press `ctrl+p` to choose a model from multi-model mode.")
+		expect(messages).toContain("Tag requests with `/tags add key:value`, e.g. `project:myapp` `team:backend`.")
+		expect(messages).toContain('Set default tags: `export KIMCHI_TAGS="team:backend,project:api"`.')
+		expect(messages).toContain("Resume the latest session with `kimchi --continue`.")
+		expect(messages).toContain("Use `kimchi --verbose` when output looks off.")
+		expect(messages).toContain("Run `/export` to save HTML for a bug report.")
 	})
 
 	it("fits every built-in tip in an 80-column row without truncation", () => {
 		for (const tip of GENERAL_TIPS) {
-			const [line] = renderTipRow({ ...tip, source: "kimchi.general", kind: "general" } as TipCandidate, plainTheme, 80)
+			const [line] = renderTipRow({ ...tip, source: "kimchi.general" } as TipCandidate, plainTheme, 80)
 
 			expect(line, tip.id).not.toContain("...")
 		}

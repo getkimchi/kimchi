@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { globalTipRegistry } from "../tips/registry.js"
 import fermentExtension from "./index.js"
 import { resetAllReactiveContinuationNudgeCounts } from "./nudge.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
@@ -83,6 +84,7 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 afterEach(() => {
 	setActive(undefined)
 	setContinuationPolicy("manual")
+	globalTipRegistry.clear()
 	requestSharedFooterRenderMock.mockClear()
 	resetAllReactiveContinuationNudgeCounts()
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
@@ -108,6 +110,22 @@ function makeActiveFerment(status: Ferment["status"]): Ferment {
 		updatedAt: "2026-01-01T00:00:00.000Z",
 	}
 }
+
+describe("fermentExtension tips", () => {
+	it("registers a contextual provider backed by the active Ferment state", () => {
+		globalTipRegistry.clear()
+
+		registerFermentExtension()
+
+		const provider = globalTipRegistry.getProviders().find((candidate) => candidate.source === "kimchi.ferment")
+		expect(provider).toBeDefined()
+		expect(provider?.getTips()).toHaveLength(0)
+
+		setActive(makeActiveFerment("running"))
+
+		expect(provider?.getTips().map((tip) => tip.id)).toContain("progress-navigation")
+	})
+})
 
 describe("fermentExtension stop-policy shortcut", () => {
 	it("registers f6 for toggling the active ferment stop policy", () => {

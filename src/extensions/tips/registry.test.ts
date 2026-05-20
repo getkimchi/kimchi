@@ -6,16 +6,14 @@ describe("TipRegistry", () => {
 		const registry = new TipRegistry()
 		const unregister = registry.registerProvider({
 			source: "test.general",
-			kind: "general",
-			getTips: () => [{ id: "one", message: "Run /help.", command: "/help" }],
+			getTips: () => [{ id: "one", scope: "general", message: "Run `/help`." }],
 		})
 
 		expect(registry.getFirstTip("general")).toEqual({
 			source: "test.general",
-			kind: "general",
 			id: "one",
-			message: "Run /help.",
-			command: "/help",
+			scope: "general",
+			message: "Run `/help`.",
 		})
 
 		unregister()
@@ -27,13 +25,11 @@ describe("TipRegistry", () => {
 		const registry = new TipRegistry()
 		const unregisterOld = registry.registerProvider({
 			source: "test.general",
-			kind: "general",
-			getTips: () => [{ id: "old", message: "Old tip." }],
+			getTips: () => [{ id: "old", scope: "general", message: "Old tip." }],
 		})
 		const unregisterNew = registry.registerProvider({
 			source: "test.general",
-			kind: "general",
-			getTips: () => [{ id: "new", message: "New tip." }],
+			getTips: () => [{ id: "new", scope: "general", message: "New tip." }],
 		})
 
 		unregisterOld()
@@ -49,15 +45,13 @@ describe("TipRegistry", () => {
 		const registry = new TipRegistry()
 		registry.registerProvider({
 			source: "throwing",
-			kind: "general",
 			getTips: () => {
 				throw new Error("provider failed")
 			},
 		})
 		registry.registerProvider({
 			source: "valid",
-			kind: "general",
-			getTips: () => [{ id: "valid", message: "Valid tip." }],
+			getTips: () => [{ id: "valid", scope: "general", message: "Valid tip." }],
 		})
 
 		expect(registry.getFirstTip("general")?.source).toBe("valid")

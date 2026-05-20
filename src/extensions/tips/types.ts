@@ -1,23 +1,21 @@
-export type TipProviderKind = "contextual" | "general"
+export type TipScope = "contextual" | "general"
 
 export interface Tip {
 	id: string
+	scope: TipScope
+	/** Markdown inline-code spans in message are highlighted in the tip row. */
 	message: string
-	/** Optional command/action token. If present in message, the tip row highlights that substring. */
-	command?: string
 }
 
 export interface TipProvider {
 	source: string
-	kind: TipProviderKind
 	getTips: () => readonly Tip[]
 }
 
 /**
  * Internal resolved tip shape. Providers return plain Tip objects; the registry
- * attaches source/kind so arbitration can track ownership and contextual scope.
+ * attaches source so arbitration can track ownership.
  */
 export interface TipCandidate extends Tip {
 	source: string
-	kind: TipProviderKind
 }
