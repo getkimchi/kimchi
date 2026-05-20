@@ -144,15 +144,16 @@ export class TeleportableAgentSession {
 	}
 
 	/**
-	 * Route slash commands the home base's extension runner knows about back
-	 * through home base, regardless of which inner is foregrounded. Everything
-	 * else flows to the foreground unchanged.
+	 * Route teleport-management slash commands back through home base regardless
+	 * of which inner is foregrounded. Everything else flows to the foreground
+	 * unchanged so it executes on the remote worker when attached.
 	 *
 	 * Why: after /teleport, foreground is a RemoteAgentSession whose `prompt`
-	 * is a thin RPC to the cloud — local-only commands like /connect, /detach,
-	 * /attach, /sessions would be shipped to a server that has no handler for
-	 * them and silently vanish. The TUI editor accepts the keystrokes and
-	 * clears on Enter, so to the user the command simply "does nothing".
+	 * is a thin RPC to the cloud. We want *most* slash commands (/permissions,
+	 * /tags, etc.) to run on the remote worker where the agent's tools and
+	 * extensions have the sandbox context. Only the teleport orchestration
+	 * commands must stay local because they mutate the wrapper itself
+	 * (foregroundRemote / detachToHomeBase) and need local state.
 	 */
 	prompt(text: string, options?: Record<string, unknown>): unknown {
 		const target = this._isLocalSlashCommand(text) ? this._homeBase : this._foreground
@@ -166,18 +167,16 @@ export class TeleportableAgentSession {
 		this._innerUnsub = undefined
 	}
 
+	/** Commands that must always execute locally because they manage the wrapper. */
+	private static readonly _LOCAL_COMMANDS = new Set(["teleport", "attach", "detach", "connect", "sessions"])
+
 	private _isLocalSlashCommand(text: string): boolean {
 		const trimmed = text.trim()
 		if (!trimmed.startsWith("/")) return false
 		const spaceIndex = trimmed.indexOf(" ")
 		const name = spaceIndex === -1 ? trimmed.slice(1) : trimmed.slice(1, spaceIndex)
 		if (!name) return false
-		const runner = (
-			this._homeBase as unknown as {
-				extensionRunner?: { getCommand?: (n: string) => unknown }
-			}
-		).extensionRunner
-		return !!runner?.getCommand?.(name)
+		return TeleportableAgentSession._LOCAL_COMMANDS.has(name)
 	}
 
 	private _attachToForeground(inner: Inner): void {

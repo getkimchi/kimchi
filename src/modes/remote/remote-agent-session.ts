@@ -23,6 +23,16 @@ export class RemoteAgentSession {
 	private _thinkingLevel = "disabled"
 	private _isCompacting = false
 	private _isRetrying = false
+	private _isBashRunning = false
+	/** Accumulated token usage observed from remote message_end events. */
+	private _totalInput = 0
+	private _totalOutput = 0
+	private _totalCacheRead = 0
+	private _totalCacheWrite = 0
+	/** Cached context usage refreshed periodically via get_session_stats RPC. */
+	private _cachedContextUsage?: { tokens: number | null; contextWindow: number | null; percent: number | null }
+	private _pollTimer?: ReturnType<typeof setInterval>
+	private readonly _pollIntervalMs = 30_000
 	private _unsubscribeEvent?: () => void
 
 	constructor(options: {
@@ -45,6 +55,7 @@ export class RemoteAgentSession {
 		this._modelRegistry = options.modelRegistry
 		this._extensionRunner = options.extensionRunner
 		this._attachToClient(this._rpcClient)
+		this._startContextUsagePolling()
 	}
 
 	/**
@@ -96,11 +107,24 @@ export class RemoteAgentSession {
 					this._messages = event.messages as Array<Record<string, unknown>>
 				}
 				break
-			case "message_end":
-				if (event.message) {
-					this._messages = [...this._messages, event.message as Record<string, unknown>]
+			case "message_end": {
+				const msg = event.message
+				if (msg) {
+					this._messages = [...this._messages, msg as Record<string, unknown>]
+				}
+				// Accumulate token usage from assistant messages so the footer can
+				// display input/output counts synchronously (without waiting for
+				// an RPC round-trip).
+				const role = (msg as { role?: unknown }).role
+				const usage = (msg as { usage?: Record<string, number> }).usage
+				if (role === "assistant" && usage) {
+					this._totalInput += usage.input ?? 0
+					this._totalOutput += usage.output ?? 0
+					this._totalCacheRead += usage.cacheRead ?? 0
+					this._totalCacheWrite += usage.cacheWrite ?? 0
 				}
 				break
+			}
 			case "model_selected":
 				this._model = {
 					id: event.modelId,
@@ -121,6 +145,16 @@ export class RemoteAgentSession {
 				break
 			case "auto_retry_end":
 				this._isRetrying = false
+				break
+			case "tool_execution_start":
+				if ((event as { toolName?: unknown }).toolName === "bash") {
+					this._isBashRunning = true
+				}
+				break
+			case "tool_execution_end":
+				if ((event as { toolName?: unknown }).toolName === "bash") {
+					this._isBashRunning = false
+				}
 				break
 			case "extension_ui_request":
 				void this._handleExtensionUiRequest(event)
@@ -246,7 +280,10 @@ export class RemoteAgentSession {
 				toolCallCount: 0,
 				isStreaming: this._isStreaming,
 			},
-			abort: () => {},
+			abort: () => {
+				void this.abort()
+			},
+			signal: new AbortController().signal,
 		}
 	}
 	get isStreaming() {
@@ -286,7 +323,7 @@ export class RemoteAgentSession {
 		return this._steering.length + this._followUp.length
 	}
 	get isBashRunning() {
-		return false
+		return this._isBashRunning
 	}
 	get hasPendingBashMessages() {
 		return false
@@ -320,6 +357,32 @@ export class RemoteAgentSession {
 		this._listeners.clear()
 		this._unsubscribeEvent?.()
 		this._supervisor.dispose()
+		if (this._pollTimer) {
+			clearInterval(this._pollTimer)
+			this._pollTimer = undefined
+		}
+	}
+
+	private _startContextUsagePolling(): void {
+		// Fire one initial refresh.
+		void this._refreshContextUsage()
+		// Repeating poll so the footer metric stays warm.
+		this._pollTimer = setInterval(() => {
+			void this._refreshContextUsage()
+		}, this._pollIntervalMs)
+	}
+
+	private async _refreshContextUsage(): Promise<void> {
+		try {
+			const stats = (await this._rpcClient.send("get_session_stats", {})) as {
+				contextUsage?: { tokens: number | null; contextWindow: number | null; percent: number | null }
+			}
+			if (stats?.contextUsage) {
+				this._cachedContextUsage = stats.contextUsage
+			}
+		} catch {
+			// Keep previous cached value on failure.
+		}
 	}
 
 	// ─── Methods forwarded to RPC client ───
@@ -379,8 +442,24 @@ export class RemoteAgentSession {
 	abortRetry() {
 		return this._rpcClient.send("abort_retry", {})
 	}
-	executeBash(command: string) {
-		return this._rpcClient.send("bash", { command })
+	executeBash(
+		command: string,
+		onChunk?: (chunk: string) => void,
+		_options?: { excludeFromContext?: boolean; operations?: unknown },
+	) {
+		return this._rpcClient.send("bash", { command }).then((data: unknown) => {
+			if (data && typeof data === "object") {
+				const result = data as { output?: unknown; exitCode?: unknown; cancelled?: unknown }
+				if (typeof result.output === "string" && onChunk) {
+					onChunk(result.output)
+				}
+				return data
+			}
+			// Server acknowledged without a data payload; bash output streams
+			// via tool_execution_* events. Return a placeholder so upstream
+			// handleBashCommand doesn't crash when reading result.exitCode.
+			return { output: "", exitCode: 0, cancelled: false }
+		})
 	}
 	abortBash() {
 		return this._rpcClient.send("abort_bash", {})
@@ -389,7 +468,41 @@ export class RemoteAgentSession {
 		return this._rpcClient.send("set_session_name", { name })
 	}
 	getSessionStats() {
-		return this._rpcClient.send("get_session_stats", {})
+		// Synchronous, computed from locally-accumulated data + cached context
+		// usage so upstream footer / extensions can read without an async hop.
+		let toolCalls = 0
+		for (const msg of this._messages) {
+			if (msg.role === "assistant") {
+				const content = msg.content
+				if (Array.isArray(content)) {
+					toolCalls += content.filter((c) => (c as { type?: string })?.type === "toolCall").length
+				}
+			}
+		}
+		return {
+			sessionFile: undefined,
+			sessionId: this._sessionId,
+			userMessages: this._messages.filter((m) => m.role === "user").length,
+			assistantMessages: this._messages.filter((m) => m.role === "assistant").length,
+			toolCalls,
+			toolResults: this._messages.filter((m) => m.role === "toolResult").length,
+			totalMessages: this._messages.length,
+			tokens: {
+				input: this._totalInput,
+				output: this._totalOutput,
+				cacheRead: this._totalCacheRead,
+				cacheWrite: this._totalCacheWrite,
+				total: this._totalInput + this._totalOutput + this._totalCacheRead + this._totalCacheWrite,
+			},
+			cost: 0,
+			contextUsage: this._cachedContextUsage
+				? {
+						percent: this._cachedContextUsage.percent,
+						tokens: this._cachedContextUsage.tokens,
+						contextWindow: this._cachedContextUsage.contextWindow,
+					}
+				: undefined,
+		}
 	}
 	exportToHtml(outputPath?: string) {
 		return this._rpcClient.send("export_html", { outputPath })
@@ -569,7 +682,12 @@ export class RemoteAgentSession {
 		return this._rpcClient.send("reload", {})
 	}
 	getContextUsage() {
-		return undefined
+		if (!this._cachedContextUsage || this._cachedContextUsage.percent == null) return undefined
+		return {
+			tokens: this._cachedContextUsage.tokens,
+			contextWindow: this._cachedContextUsage.contextWindow,
+			percent: this._cachedContextUsage.percent,
+		}
 	}
 	getAvailableThinkingLevels(): string[] {
 		return ["disabled", "low", "medium", "high"]

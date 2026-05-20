@@ -94,7 +94,8 @@ describe("RemoteAgentSession WebSocket integration", () => {
 		// Give a tick for asynchronous event delivery
 		await new Promise((r) => setTimeout(r, 40))
 
-		expect(requestCount).toBe(1)
+		// prompt + initial get_session_stats poll from constructor
+		expect(requestCount).toBe(2)
 		expect(events).toContain("agent_start")
 		expect(events).toContain("agent_end")
 		expect(events).toContain("message_end")

@@ -353,19 +353,8 @@ describe("TeleportableAgentSession", () => {
 	})
 
 	describe("prompt routing", () => {
-		// Build a homeBase with a fake extensionRunner that recognises the given
-		// command names. Mirrors how the real home-base AgentSession looks up
-		// local slash commands.
-		function buildHomeWithCommands(...names: string[]): FakeAgentSession {
+		it("routes allowlisted teleport commands to homeBase", async () => {
 			const home = new FakeAgentSession("home")
-			home.extensionRunner = {
-				getCommand: (name: string) => (names.includes(name) ? { name } : undefined),
-			}
-			return home
-		}
-
-		it("routes a slash command recognised by homeBase to homeBase, not foreground", async () => {
-			const home = buildHomeWithCommands("connect")
 			home.promptImpl = async (t) => `home:${t}`
 			const remote = new FakeAgentSession("remote-A")
 			const remoteSpy = vi.fn(async (t: string) => `remote:${t}`)
@@ -374,13 +363,17 @@ describe("TeleportableAgentSession", () => {
 			const wrapper = asPassthrough(TeleportableAgentSession.create(asSession(home)))
 			wrapper.foregroundRemote(asRemote(remote))
 
+			// /connect is in the local allowlist.
 			const result = await wrapper.prompt("/connect abc123")
 			expect(result).toBe("home:/connect abc123")
 			expect(remoteSpy).not.toHaveBeenCalled()
 		})
 
-		it("routes an unknown slash command to the foreground", async () => {
-			const home = buildHomeWithCommands("connect") // only /connect is local
+		it("routes non-allowlisted commands to foreground even if homeBase recognises them", async () => {
+			const home = new FakeAgentSession("home")
+			home.extensionRunner = {
+				getCommand: (name: string) => (name === "permissions" ? { name } : undefined),
+			}
 			const homeSpy = vi.fn(async (t: string) => `home:${t}`)
 			home.promptImpl = homeSpy
 			const remote = new FakeAgentSession("remote-A")
@@ -389,13 +382,14 @@ describe("TeleportableAgentSession", () => {
 			const wrapper = asPassthrough(TeleportableAgentSession.create(asSession(home)))
 			wrapper.foregroundRemote(asRemote(remote))
 
+			// /permissions is registered locally but NOT in the allowlist.
 			const result = await wrapper.prompt("/permissions mode allow")
 			expect(result).toBe("remote:/permissions mode allow")
 			expect(homeSpy).not.toHaveBeenCalled()
 		})
 
 		it("routes plain (non-slash) text to the foreground", async () => {
-			const home = buildHomeWithCommands("connect")
+			const home = new FakeAgentSession("home")
 			const homeSpy = vi.fn(async () => "home")
 			home.promptImpl = homeSpy
 			const remote = new FakeAgentSession("remote-A")
@@ -410,7 +404,7 @@ describe("TeleportableAgentSession", () => {
 		})
 
 		it("tolerates leading whitespace before the slash", async () => {
-			const home = buildHomeWithCommands("connect")
+			const home = new FakeAgentSession("home")
 			home.promptImpl = async (t) => `home:${t}`
 			const remote = new FakeAgentSession("remote-A")
 			const remoteSpy = vi.fn(async () => "remote")
@@ -425,7 +419,7 @@ describe("TeleportableAgentSession", () => {
 		})
 
 		it("treats bare '/' (no command name) as a non-local message", async () => {
-			const home = buildHomeWithCommands("connect")
+			const home = new FakeAgentSession("home")
 			const homeSpy = vi.fn(async () => "home")
 			home.promptImpl = homeSpy
 			const remote = new FakeAgentSession("remote-A")
@@ -440,7 +434,7 @@ describe("TeleportableAgentSession", () => {
 		})
 
 		it("forwards options on the local-route as well", async () => {
-			const home = buildHomeWithCommands("connect")
+			const home = new FakeAgentSession("home")
 			const homeSpy = vi.fn(async (_t: string, _o?: unknown) => "home")
 			// Replace prompt entirely so we can assert the options argument.
 			;(home as unknown as { prompt: (t: string, o?: unknown) => Promise<unknown> }).prompt = async (
@@ -459,7 +453,7 @@ describe("TeleportableAgentSession", () => {
 		})
 
 		it("when foreground === homeBase, behaves identically (always to homeBase)", async () => {
-			const home = buildHomeWithCommands("connect")
+			const home = new FakeAgentSession("home")
 			home.promptImpl = async (t) => `home:${t}`
 			const wrapper = asPassthrough(TeleportableAgentSession.create(asSession(home)))
 
