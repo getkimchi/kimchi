@@ -4,7 +4,7 @@
  * Exercises the full single-input scoping handshake:
  *   1. runScopingFlow(ferment, pi, ctx) with a mocked ctx.ui.input returning intent.
  *   2. Agent calls propose_ferment_scoping via the registered tool with a full payload.
- *   3. ctx.ui.select returns "Continue with recommendations".
+ *   3. ctx.ui.select returns "Start execution  ✓".
  *   4. Assert ferment.status === "planned", phases populated, pendingScope cleared.
  */
 
@@ -91,12 +91,12 @@ const passingPlanGates = () => [
 ]
 
 describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
-	it("single input → sendMessage with intent; propose_ferment_scoping → planned with 3 phases", async () => {
+	it("single input → sendMessage with intent; propose_ferment_scoping → planned with one phase", async () => {
 		// Setup
 		const ferment = h.eventStorage.create("OAuth Integration")
 		h.runtime.setActive(ferment)
 
-		const selectMock = vi.fn().mockResolvedValue("Continue with recommendations")
+		const selectMock = vi.fn().mockResolvedValue("Start execution  ✓")
 		const ctx = {
 			hasUI: true,
 			ui: {
@@ -144,17 +144,13 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 			constraints: ["No external auth libraries beyond Google SDK"],
 			assumptions: "Google API credentials are already provisioned",
 			phases: [
-				{ name: "Setup", goal: "Configure OAuth credentials", steps: [{ description: "Add Google SDK" }] },
-				{ name: "Implement", goal: "Build login endpoint", steps: [{ description: "Create /auth/google route" }] },
-				{ name: "Test", goal: "Verify end-to-end flow", steps: [{ description: "Write E2E test" }] },
-			],
-			questions: [
 				{
-					id: "q1",
-					text: "Which OAuth library?",
-					options: [
-						{ id: "google-sdk", label: "Official Google SDK", recommended: true },
-						{ id: "passport", label: "Passport.js" },
+					name: "Google OAuth Vertical Slice",
+					goal: "Implement and verify the OAuth login flow end to end",
+					steps: [
+						{ description: "Configure Google OAuth credentials and SDK wiring" },
+						{ description: "Create the login route and callback handling" },
+						{ description: "Write and run an end-to-end test for the OAuth login flow" },
 					],
 				},
 			],
@@ -175,7 +171,7 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 		if (!planned) throw new Error("Ferment not found after propose_ferment_scoping")
 
 		expect(planned.status).toBe("planned")
-		expect(planned.phases).toHaveLength(3)
+		expect(planned.phases).toHaveLength(1)
 		expect(planned.scoping.assumptions?.answer).toBe("Google API credentials are already provisioned")
 
 		// Pending scope should be cleared

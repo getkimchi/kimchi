@@ -4,6 +4,8 @@ import { join } from "node:path"
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { globalTipRegistry } from "../tips/registry.js"
+import { SESSION_MODE_TIP } from "./session-mode-tips.js"
 import sessionModeOnboardingExtension, {
 	SESSION_MODE_WIDGET_KEY,
 	buildSessionModeLaunchContext,
@@ -76,9 +78,14 @@ function createExtensionHarness() {
 		tui,
 		unsubscribe,
 		start: () => handlers.get("session_start")?.({ reason: "startup" }, ctx),
+		shutdown: () => handlers.get("session_shutdown")?.({ reason: "quit" }, ctx),
 		input: (data: string) => inputHandler?.(data),
 	}
 }
+
+afterEach(() => {
+	globalTipRegistry.clear()
+})
 
 describe("buildSessionModeLaunchContext", () => {
 	it("classifies a plain interactive launch as eligible launch context", () => {
@@ -242,6 +249,24 @@ describe("session-mode onboarding persistence", () => {
 			placement: "aboveEditor",
 		})
 		expect(harness.unsubscribe).toHaveBeenCalled()
+	})
+
+	it("extension registers a contextual tip only while the picker is visible", async () => {
+		const harness = createExtensionHarness()
+
+		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
+			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+		)
+
+		await harness.start()
+
+		const provider = globalTipRegistry.getProviders().find((candidate) => candidate.source === "kimchi.session-mode")
+		expect(provider?.getTips()).toEqual([SESSION_MODE_TIP])
+		expect(provider?.getTips()[0]?.message).toContain("`/ferment`")
+
+		harness.input("\x1b")
+
+		expect(globalTipRegistry.getProviders().some((candidate) => candidate.source === "kimchi.session-mode")).toBe(false)
 	})
 
 	it("extension cancellation clears the picker after recording that the first dialog was shown", async () => {

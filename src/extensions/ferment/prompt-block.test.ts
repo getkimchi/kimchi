@@ -187,8 +187,17 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("Upfront Contract")
 			expect(out).toContain("do not ask the user to confirm phase advancement")
 			expect(out).toContain("propose_ferment_scoping")
-			expect(out).toContain("Emit clarifying questions when the user's intent is short, vague")
+			expect(out).toContain("Ask clarifying questions only when the answer is decision-blocking")
+			expect(out).toContain('If the user asks to "be thorough with questions"')
+			expect(out).toContain(
+				'for "Create a TODO app", do not ask tech stack, persistence, platform, or extra-feature questions',
+			)
+			expect(out).toContain("If all recommended answers are generic defaults, emit `questions: []`")
 			expect(out).toContain("recommended: true")
+			expect(out).toContain("Scoping questions render as single-select choices")
+			expect(out).toContain("outcome boundary")
+			expect(out).toContain("risk/tradeoff")
+			expect(out).toContain("verification standard")
 			expect(out).toContain("reason text")
 			expect(out).toContain("markdown style")
 			expect(out).toContain("Ask follow-up questions only for genuinely new")

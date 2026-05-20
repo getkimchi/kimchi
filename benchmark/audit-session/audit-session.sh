@@ -20,13 +20,13 @@ Options:
   -n, --last N        Show only the last N sessions (default: all)
   -d, --dir DIR       Use DIR to find sessions (default: current directory)
   -r, --runner CMD    Harness to use: kimchi or claude (default: kimchi)
-  -m, --model MODEL   Model to use (default: kimchi-dev/claude-opus-4-7)
+  -m, --model MODEL   Model to use (default: kimchi-dev/claude-opus-4-6)
   -h, --help          Show this help
 
 Examples:
   $(basename "$0")                              # pick session, run with kimchi
   $(basename "$0") -r claude                    # run with claude-code
-  $(basename "$0") -m claude-opus-4-7           # custom model
+  $(basename "$0") -m claude-opus-4-6           # custom model
   $(basename "$0") -r claude -m opus            # claude-code with opus
   $(basename "$0") -n 5                         # pick from last 5 sessions
   $(basename "$0") -l                           # list all sessions
@@ -192,8 +192,8 @@ fi
 SESSION_ID="$(basename "$SESSION_FILE" .jsonl)"
 
 case "$RUNNER" in
-    kimchi)  EFFECTIVE_MODEL="${MODEL:-kimchi-dev/claude-opus-4-7}" ;;
-    claude)  EFFECTIVE_MODEL="${MODEL:-claude-opus-4-7}" ;;
+    kimchi)  EFFECTIVE_MODEL="${MODEL:-kimchi-dev/claude-opus-4-6}" ;;
+    claude)  EFFECTIVE_MODEL="${MODEL:-claude-opus-4-6}" ;;
     *)       echo "Unknown runner: $RUNNER (use 'kimchi' or 'claude')" >&2; exit 1 ;;
 esac
 

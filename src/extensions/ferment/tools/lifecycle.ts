@@ -159,14 +159,25 @@ function renderStep(index: number, description: string): string {
 	return lines.map((line, lineIndex) => (lineIndex === 0 ? `${index}. ${line}` : `   ${line}`)).join("\n")
 }
 
+function concatenateAssumptionStrings(items: string[]): string | undefined {
+	const fragments = items.map((item) => item.trim()).filter(Boolean)
+	if (fragments.length === 0) return undefined
+	return fragments.join("; ")
+}
+
 function normalizeAssumptions(value: unknown): string | undefined {
-	if (value === undefined || typeof value !== "string") return value as string | undefined
+	if (value === undefined) return undefined
+	if (Array.isArray(value)) {
+		if (!value.every((item) => typeof item === "string")) return undefined
+		return concatenateAssumptionStrings(value)
+	}
+	if (typeof value !== "string") return undefined
 	const trimmed = value.trim()
 	if (!trimmed.startsWith("[")) return value
 	try {
 		const parsed = JSON.parse(trimmed)
 		if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
-			return parsed.join("; ")
+			return concatenateAssumptionStrings(parsed)
 		}
 	} catch {
 		// Leave the original text alone. `assumptions` is a string field, so a
@@ -178,7 +189,7 @@ function normalizeAssumptions(value: unknown): string | undefined {
 function normalizePhases(value: ProposeScopingArgs["phases"]): ScopePhaseInput[] | string {
 	const parsed = parseJsonArray(value, "phases")
 	if (typeof parsed === "string") return parsed
-	if (parsed.length < 3) return 'Field "phases" must contain at least 3 phases.'
+	if (parsed.length < 1) return 'Field "phases" must contain at least 1 phase.'
 	if (parsed.length > 7) return 'Field "phases" must contain at most 7 phases.'
 	const phases: ScopePhaseInput[] = []
 	for (const [phaseIndex, raw] of parsed.entries()) {
@@ -393,7 +404,7 @@ export async function scopeFerment(
 		goal: params.goal,
 		successCriteria: params.success_criteria,
 		constraints: params.constraints,
-		assumptions: params.assumptions,
+		assumptions: normalizeAssumptions(params.assumptions),
 		phases: params.phases ?? [],
 	}
 	const outcome = applyAndPersist(params.ferment_id, cmd)
@@ -622,7 +633,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: "propose_ferment_scoping",
 		label: "Propose Scoping",
-		description: `Single combined emission of the full scoping draft after the user's free-form intent. Includes goal, success criteria, constraints, assumptions, phases (3-7), and optional clarifying questions (≤3) with one option \`recommended: true\` per question. Replaces previous draft wholesale.
+		description: `Emit the full scoping draft: goal, criteria, constraints, assumptions, 1-7 phases, optional decision-blocking questions. Questions pause planning; after answers, re-emit the updated proposal with questions: []. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
@@ -846,27 +857,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				const answers = answersResult
 
 				const answersEntry = buildAnswersEntry(questions, answers)
-				const allRecommended = answers.every((a) => a.recommended === true)
 				if (getPromptUi(ctx)?.custom) {
-					if (allRecommended) {
-						const scopeOutcome = confirmPendingScope(
-							runtime,
-							params.ferment_id,
-							params.phases,
-							"propose_ferment_scoping",
-							params.title,
-							pi,
-						)
-						if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
-						return planToolOk(
-							withNextActionHint(
-								`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
-								scopeOutcome.outcome.ferment,
-							),
-							{ includePlan: true, suffix: answersEntry },
-						)
-					}
-
 					const content = buildScopingIterationMessage(questions, answers)
 					void pi.sendMessage(
 						{ content, customType: "ferment_scoping_iteration", display: false },
@@ -875,12 +866,10 @@ ${renderGateGuidance("scope_ferment")}`,
 					return planToolOk(`${answersEntry}\n\nAnswers recorded. Updating the plan with your choices...`)
 				}
 
-				const continueLabel = allRecommended ? "Start execution  ✓" : "Update plan  ✓"
+				const continueLabel = "Update plan  ✓"
 				const reviewOptions = [continueLabel, "Restart questions", "Let me say something"]
 
-				const reviewTitle = allRecommended
-					? `${formatPlanEntry(answersEntry)}\n\nProceed with this plan?`
-					: `${answersEntry}\n\nUpdate the plan with these answers?`
+				const reviewTitle = `${answersEntry}\n\nUpdate the plan with these answers?`
 				const reviewChoice = await promptSelect(ctx, reviewTitle, reviewOptions)
 
 				if (reviewChoice === undefined) {
@@ -902,26 +891,6 @@ ${renderGateGuidance("scope_ferment")}`,
 						{ triggerTurn: true },
 					)
 					return planToolOk(`${answersEntry}\n\nGot it. Updating the plan with your direction...`)
-				}
-
-				// Start immediately only when the user accepted every recommendation.
-				if (allRecommended) {
-					const scopeOutcome = confirmPendingScope(
-						runtime,
-						params.ferment_id,
-						params.phases,
-						"propose_ferment_scoping",
-						params.title,
-						pi,
-					)
-					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
-					return planToolOk(
-						withNextActionHint(
-							`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
-							scopeOutcome.outcome.ferment,
-						),
-						{ includePlan: true, suffix: answersEntry },
-					)
 				}
 
 				const content = buildScopingIterationMessage(questions, answers)

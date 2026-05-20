@@ -10,7 +10,6 @@ const testEnv: EnvironmentInfo = {
 	homeDir: "/home/testuser",
 	cwd: "/home/testuser/projects/myapp",
 	documentsDir: "/home/testuser/projects/myapp/.kimchi/docs",
-	currentTime: "2026-01-01T00:00:00.000Z",
 	localDate: "2026-01-01",
 	isGitRepo: false,
 }
@@ -152,7 +151,8 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain(`Username: ${testEnv.username}`)
 			expect(result).toContain(`Home directory: "${testEnv.homeDir}"`)
 			expect(result).toContain(`Working directory: "${testEnv.cwd}"`)
-			expect(result).toContain(`Current time: ${testEnv.currentTime} (local date: ${testEnv.localDate})`)
+			expect(result).toContain(`Current date: ${testEnv.localDate}`)
+			expect(result).not.toContain("Current time:")
 			expect(result).toContain("Git repository: no")
 		})
 
@@ -328,7 +328,8 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain(`Username: ${testEnv.username}`)
 			expect(result).toContain(`Home directory: "${testEnv.homeDir}"`)
 			expect(result).toContain(`Working directory: "${testEnv.cwd}"`)
-			expect(result).toContain(`Current time: ${testEnv.currentTime} (local date: ${testEnv.localDate})`)
+			expect(result).toContain(`Current date: ${testEnv.localDate}`)
+			expect(result).not.toContain("Current time:")
 			expect(result).toContain("Git repository: no")
 		})
 

@@ -20,10 +20,8 @@ import {
 	MINIMAX_M27_REVIEW,
 } from "./guidelines/minimax-family.js"
 import {
-	NEMOTRON_3_SUPER_BUILD,
 	NEMOTRON_3_SUPER_EXPLORE,
 	NEMOTRON_3_SUPER_RESEARCH,
-	NEMOTRON_FAMILY_BUILD,
 	NEMOTRON_FAMILY_EXPLORE,
 } from "./guidelines/nemotron-family.js"
 import type { ModelCapabilities } from "./types.js"
@@ -96,10 +94,9 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		"nemotron-3-super-fp4",
 		{
 			vision: false,
-			strengths: ["build", "explore", "research"],
+			strengths: ["explore", "research"],
 			tier: "light",
 			guidelines: {
-				build: concatGuidelines(DEFAULT_BUILD_GUIDELINES, NEMOTRON_FAMILY_BUILD, NEMOTRON_3_SUPER_BUILD),
 				explore: concatGuidelines(DEFAULT_EXPLORE_GUIDELINES, NEMOTRON_FAMILY_EXPLORE, NEMOTRON_3_SUPER_EXPLORE),
 				research: concatGuidelines(DEFAULT_RESEARCH_GUIDELINES, NEMOTRON_3_SUPER_RESEARCH),
 			},

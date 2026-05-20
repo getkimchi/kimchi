@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest"
 import {
 	SESSION_MODE_PICKER_HEADING,
 	SESSION_MODE_PICKER_HIDE_LABEL,
-	SESSION_MODE_PICKER_TIP,
 	SessionModePickerComponent,
 	initialSessionModePickerState,
 	keyToSessionModePickerEvent,
@@ -107,7 +106,7 @@ describe("session mode picker rendering", () => {
 		expect(text).toContain("Default session")
 		expect(text).toContain("Standard coding harness experience outside of the active ferment.")
 		expect(text).not.toContain(SESSION_MODE_PICKER_HIDE_LABEL)
-		expect(text).toContain(SESSION_MODE_PICKER_TIP)
+		expect(text).not.toContain("Tip:")
 	})
 
 	it("renders the hide checkbox only when requested", () => {

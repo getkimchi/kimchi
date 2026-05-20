@@ -58,13 +58,16 @@ interface PiModelConfig {
 	cost: { input: number; output: number; cacheRead: number; cacheWrite: number }
 	// Persisted so telemetry can resolve the actual upstream provider after cache round-trip.
 	provider: string
-	compat?: { supportsReasoningEffort?: boolean }
+	compat?: { supportsReasoningEffort?: boolean; cacheControlFormat?: "anthropic" }
 }
 
 function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// TODO: our LiteLLM gateway does not support `thinking.type.enabled` for Anthropic >Opus 4.6 models
 	// Therefore, we disable it for now. Revisit, once we upgrade our LiteLLM version.
-	const compat = m.provider === "anthropic" ? { supportsReasoningEffort: false } : undefined
+	const compat =
+		m.provider === "anthropic"
+			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic" } as const)
+			: undefined
 	return {
 		id: m.slug,
 		name: m.display_name.trim().length > 0 ? m.display_name : m.slug,

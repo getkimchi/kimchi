@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process"
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
+import { Box, Text } from "@earendil-works/pi-tui"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
@@ -23,6 +24,7 @@ import {
 	setSessionModeOnboardingFooterSuppressed,
 } from "./shared-footer.js"
 import { createWorkingAnimator } from "./spinner.js"
+import { getKittyKeyboardSupport } from "./terminal-compat/keyboard-capability.js"
 
 export { requestSharedFooterRender, setSessionModeOnboardingFooterSuppressed } from "./shared-footer.js"
 
@@ -200,6 +202,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	let sessionStartMs = 0
 	let linesAdded = 0
 	let linesRemoved = 0
+	let newlineHintHandle: { hide(): void } | null = null
 
 	const refresh = (status: "idle" | "generating") => {
 		if (!currentCtx?.hasUI || !scriptFooter || !scriptTui || !scriptCmd) return
@@ -269,6 +272,87 @@ export default function uiExtension(pi: ExtensionAPI) {
 			)
 			return new SuppressibleFooter(scriptFooter, tui)
 		})
+
+		// Surface the Ctrl+J newline tip inside the TUI for terminals that don't
+		// support the Kitty keyboard protocol (the real root-cause behind Shift+Enter
+		// not working). The startup console warning is easy to miss (nag-throttled
+		// and swallowed by TUI init), so a persistent per-session widget is more
+		// visible than a one-time notification.
+		if (getKittyKeyboardSupport() === false && ctx.hasUI) {
+			const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+			if (agentDir) {
+				try {
+					const kbPath = resolve(agentDir, "keybindings.json")
+					if (existsSync(kbPath)) {
+						const kb = JSON.parse(readFileSync(kbPath, "utf-8"))
+						const nl = kb["tui.input.newLine"]
+						const settingsPath = resolve(agentDir, "settings.json")
+						let settingsData: Record<string, unknown> = {}
+						if (existsSync(settingsPath)) {
+							try {
+								settingsData = JSON.parse(readFileSync(settingsPath, "utf-8"))
+							} catch {}
+						}
+						if (!settingsData.newlineHintDismissed && typeof nl === "string" && nl.includes("ctrl+j")) {
+							ctx.ui.custom(
+								(_tui, theme, _kb, done) => {
+									const settingsFile = settingsPath
+									return {
+										render(width: number): string[] {
+											const box = new Box(2, 1)
+											box.addChild(new Text(theme.inverse("  ⚠  Shift+Enter doesn't work in this terminal  ")))
+											box.addChild(new Text(""))
+											box.addChild(new Text(`${theme.bold("Ctrl+J")}${" ".padEnd(13)}→  insert a newline`))
+											box.addChild(new Text(`\\ + Enter${" ".padEnd(10)}→  insert a newline`))
+											box.addChild(new Text(""))
+											box.addChild(new Text(theme.fg("muted", "Enter - dismiss   d - don't remind again")))
+											const accent = theme.getFgAnsi("accent")
+											const reset = "\x1b[0m"
+											const hbar = "─"
+											const inner = width - 2
+											const lines = box.render(inner)
+											const bordered = lines.map((l: string, i: number) => {
+												if (i === 0) return `${accent}┌${hbar.repeat(inner)}┐${reset}`
+												if (i === lines.length - 1) return `${accent}└${hbar.repeat(inner)}┘${reset}`
+												return `${accent}│${reset}${l}${accent}│${reset}`
+											})
+											return bordered
+										},
+										invalidate() {},
+										handleInput(data: string): void {
+											if (matchesKey(data, "enter")) done(undefined)
+											if (data === "d") {
+												try {
+													const s: Record<string, unknown> = {}
+													if (existsSync(settingsFile)) {
+														try {
+															Object.assign(s, JSON.parse(readFileSync(settingsFile, "utf-8")))
+														} catch {}
+													}
+													s.newlineHintDismissed = true
+													writeFileSync(settingsFile, JSON.stringify(s, null, 2))
+												} catch {}
+												done(undefined)
+											}
+										},
+										wantsKeyRelease: false,
+									}
+								},
+								{
+									overlay: true,
+									overlayOptions: { anchor: "center" },
+									onHandle: (handle) => {
+										newlineHintHandle = handle
+									},
+								},
+							)
+						}
+					}
+				} catch {
+					// best-effort; don't break startup if keybindings are unreadable
+				}
+			}
+		}
 
 		ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
 			tui.setShowHardwareCursor(true)
@@ -347,6 +431,11 @@ export default function uiExtension(pi: ExtensionAPI) {
 	pi.on("input", (event, ctx) => {
 		if (isBareExitAlias(event.text)) {
 			ctx.shutdown()
+		}
+
+		if (newlineHintHandle) {
+			newlineHintHandle.hide()
+			newlineHintHandle = null
 		}
 	})
 
@@ -428,6 +517,13 @@ export default function uiExtension(pi: ExtensionAPI) {
 		description: "Exit the application (alias for /quit)",
 		handler: async (_args, ctx) => {
 			ctx.shutdown()
+		},
+	})
+
+	pi.registerCommand("clear", {
+		description: "Start a new session (alias for /new)",
+		handler: async (_args, ctx) => {
+			await ctx.newSession()
 		},
 	})
 }
