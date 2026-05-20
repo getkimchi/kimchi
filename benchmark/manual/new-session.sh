@@ -72,7 +72,7 @@ tasks = [
     ("complex",        complex_prompt, [],                      True,  None),
     ("complex-single", complex_prompt, ["--multi-model=false"], True,  None),
     ("research",       research_prompt,[],                      True,  None),
-    ("explore",        explore_prompt, [],                      True,  f'mkdir -p "$DIR/usermgmt" && cp -R "{explore_seed}/"* "$DIR/usermgmt/"'),
+    ("explore",        explore_prompt, [],                      True,  f'mkdir -p "$DIR/usermgmt" && cp -R "{explore_seed}/." "$DIR/usermgmt/" && ls -la "$DIR/usermgmt/"'),
     ("mega",           mega_prompt,    [],                      False, None),
 ]
 
@@ -125,7 +125,8 @@ for r in range(rows):
     for c in range(cols):
         i = r * cols + c
         if i < len(run_all_scripts):
-            as_lines.append(f'      tell g{c}_{r} to write text "{run_all_scripts[i]}"')
+            script_path_escaped = run_all_scripts[i].replace('"', '""')
+            as_lines.append(f'      tell g{c}_{r} to write text "{script_path_escaped}"')
 as_body = "\n".join(as_lines)
 
 bg_lines = []

@@ -84,7 +84,7 @@ bench_task_setup() {
       # The explore seed is expected to be at $IMPROVEMENT_DIR/seeds/explore-refactor
       # The calling script should set EXPLORE_SEED before calling this.
       if [[ -n "${EXPLORE_SEED:-}" && -d "$EXPLORE_SEED" ]]; then
-        echo "mkdir -p \"\$$dir_var/usermgmt\" && cp -R \"$EXPLORE_SEED/\"* \"\$$dir_var/usermgmt/\""
+        echo "mkdir -p \"\$$dir_var/usermgmt\" && cp -R \"$EXPLORE_SEED/.\" \"\$$dir_var/usermgmt/\" && ls -la \"\$$dir_var/usermgmt/\""
       fi
       ;;
     *)
@@ -236,8 +236,9 @@ bench_generate_run_all_script() {
     for (( c=0; c<cols; c++ )); do
       if (( i <= num_scripts )); then
         local script_escaped="${scripts[$i]}"
-        # Escape double quotes for AppleScript
-        script_escaped="${script_escaped//\"/\\\\\"}"
+        # In AppleScript string literals, a literal double-quote is escaped by
+        # doubling it (""), not with a backslash.
+        script_escaped="${script_escaped//\"/\"\"}"
         as_lines+=("      tell g${c}_${r} to write text \"${script_escaped}\"")
         (( i++ ))
       fi
