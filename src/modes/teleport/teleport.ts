@@ -586,6 +586,14 @@ export async function runAttach(args: AttachArgs, ctx: TeleportContext): Promise
 		}
 		progress.complete("Connected")
 
+		// Backfill remote message history so the upcoming renderCurrentSessionState
+		// (triggered by refreshUIAfterSwap) has something to render.
+		try {
+			await remote.getMessages()
+		} catch {
+			// Non-fatal: the chat will be empty but the session is still usable.
+		}
+
 		wrapper.foregroundRemote(remote)
 		await refreshUIAfterSwap(ctx)
 

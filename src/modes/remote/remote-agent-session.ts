@@ -34,6 +34,11 @@ export class RemoteAgentSession {
 	private _pollTimer?: ReturnType<typeof setInterval>
 	private readonly _pollIntervalMs = 30_000
 	private _unsubscribeEvent?: () => void
+	/** Buffered extension_ui_request events that arrived before _uiContext was bound. */
+	private readonly _pendingUiRequests: Array<{
+		event: RpcAgentEventLike
+		sendResponse: (resp: Record<string, unknown>) => void
+	}> = []
 
 	constructor(options: {
 		rpcClient: RemoteRpcClient
@@ -111,6 +116,7 @@ export class RemoteAgentSession {
 				const msg = event.message
 				if (msg) {
 					this._messages = [...this._messages, msg as Record<string, unknown>]
+					this._persistMessage(msg)
 				}
 				// Accumulate token usage from assistant messages so the footer can
 				// display input/output counts synchronously (without waiting for
@@ -189,8 +195,9 @@ export class RemoteAgentSession {
 			void this._rpcClient.sendOneWay({ type: "extension_ui_response", id, ...resp })
 		}
 		if (!ui) {
-			// No UI bound yet — cancel so the server doesn't hang.
-			sendResponse({ cancelled: true })
+			// No UI bound yet — buffer the request so it can be replayed once
+			// bindExtensions wires the UI context (fixes the attach race).
+			this._pendingUiRequests.push({ event, sendResponse })
 			return
 		}
 		try {
@@ -255,6 +262,46 @@ export class RemoteAgentSession {
 				listener(event)
 			} catch {
 				/* swallow */
+			}
+		}
+	}
+
+	/**
+	 * Persist a message to the local sessionManager so InteractiveMode can
+	 * render historical messages after re-attaching or swapping foreground.
+	 */
+	private _persistMessage(msg: unknown): void {
+		const sm = this._sessionManager as
+			| {
+					appendMessage?: (m: unknown) => void
+					getEntries?: () => Array<{ type?: string }>
+			  }
+			| undefined
+		if (!sm?.appendMessage) return
+		const role = (msg as { role?: unknown }).role
+		if (role !== "user" && role !== "assistant" && role !== "toolResult" && role !== "bashExecution") return
+		sm.appendMessage(msg)
+	}
+
+	/**
+	 * Backfill any messages from a fetched array that are not yet present in
+	 * the local sessionManager.  Uses a simple count heuristic so we don't
+	 * double-append messages that were already persisted via live events.
+	 */
+	private _syncMessagesToSessionManager(messages: Array<Record<string, unknown>>): void {
+		const sm = this._sessionManager as
+			| {
+					appendMessage?: (m: unknown) => void
+					getEntries?: () => Array<{ type?: string }>
+			  }
+			| undefined
+		if (!sm?.appendMessage || !sm.getEntries) return
+		const existingMessageCount = sm.getEntries().filter((e) => e.type === "message").length
+		for (let i = existingMessageCount; i < messages.length; i++) {
+			const msg = messages[i]
+			const role = msg.role
+			if (role === "user" || role === "assistant" || role === "toolResult") {
+				sm.appendMessage(msg)
 			}
 		}
 	}
@@ -545,6 +592,7 @@ export class RemoteAgentSession {
 			const maybe = res as { messages?: Array<Record<string, unknown>> }
 			if (maybe?.messages) {
 				this._messages = maybe.messages
+				this._syncMessagesToSessionManager(maybe.messages)
 			}
 			return maybe
 		})
@@ -578,6 +626,14 @@ export class RemoteAgentSession {
 		shutdownHandler?: unknown
 		onError?: (error: unknown) => void
 	}) {
+		this._uiContext = bindings?.uiContext as ExtensionUIContext | undefined
+		// Flush any extension_ui_request events that arrived before the UI
+		// context was bound (e.g. during attach while the TUI is rebinding).
+		const buffered = this._pendingUiRequests.splice(0, this._pendingUiRequests.length)
+		for (const pending of buffered) {
+			void this._handleExtensionUiRequest(pending.event)
+		}
+
 		const runner = this._extensionRunner as
 			| {
 					setUIContext?: (ctx: unknown) => void
@@ -588,9 +644,6 @@ export class RemoteAgentSession {
 			  }
 			| undefined
 		if (!runner) return
-
-		// Replace the loader-time "not initialized" stubs with real actions
-		// before any extension's session_start handler runs.
 		const sessionManager = this._sessionManager as
 			| {
 					appendCustomEntry?: (type: string, data: unknown) => void
@@ -672,7 +725,6 @@ export class RemoteAgentSession {
 			},
 		)
 
-		this._uiContext = bindings?.uiContext as ExtensionUIContext | undefined
 		runner.setUIContext?.(bindings?.uiContext)
 		runner.bindCommandContext?.(bindings?.commandContextActions)
 		if (bindings?.onError) runner.onError?.(bindings.onError)
@@ -701,8 +753,13 @@ export class RemoteAgentSession {
 	setScopedModels(models: unknown[]) {
 		return this._rpcClient.send("set_scoped_models", { models })
 	}
-	recordBashResult(_result: unknown) {
-		/* no-op — bash commands stream results via events */
+	recordBashResult(result: unknown) {
+		const bashMessage = {
+			role: "bashExecution",
+			...(result as Record<string, unknown>),
+			timestamp: Date.now(),
+		}
+		this._persistMessage(bashMessage)
 	}
 	abortBranchSummary() {
 		return this._rpcClient.send("abort_branch_summary", {})
@@ -733,6 +790,7 @@ export class RemoteAgentSession {
 				}
 				if (maybe?.messages) {
 					this._messages = maybe.messages
+					this._syncMessagesToSessionManager(maybe.messages)
 				}
 			})
 			.catch(() => {})
