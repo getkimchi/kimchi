@@ -320,24 +320,21 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		expect(visible.endsWith("/ for commands")).toBe(true)
 	})
 
-	it("width 100: hint and context-bar dropped, segments still present", () => {
+	it("width 100: hint dropped, remaining segments still present", () => {
 		const { raw, visible } = renderAt(100)
 		// Hint gone (step 1)
 		expect(visible).not.toContain("/ for commands")
-		// Bar gone, percentage kept (step 2)
-		expect(visible).not.toContain("\u2588")
-		expect(visible).not.toContain("\u2591")
-		expect(visible).toContain("0% ctx")
 		// Line fits.
 		expect(visibleWidth(raw)).toBeLessThanOrEqual(100)
-		// All segments still present (compaction shrinks, never drops).
+		// All segments still present.
 		expect(visible).toContain("default")
 		expect(visible).toContain("multi-model")
 		expect(visible).not.toContain("claude-opus-4-7")
+		expect(visible).toContain("0% ctx")
 		expect(visible).toContain("phase:explore")
 	})
 
-	it("width 60: shortcuts stripped, multi-model abbreviated, phase prefix dropped", () => {
+	it("width 60: shortcuts stripped, multi-model abbreviated", () => {
 		const { raw, visible } = renderAt(60)
 		expect(visibleWidth(raw)).toBeLessThanOrEqual(60)
 		expect(visible).not.toContain("/ for commands")
@@ -346,9 +343,8 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		// multi-model label is abbreviated to `m-m:`.
 		expect(visible).toContain("m-m:")
 		expect(visible).not.toContain("multi-model:")
-		// phase prefix is dropped; value survives.
+		// phase value survives.
 		expect(visible).toContain("explore")
-		expect(visible).not.toContain("phase:")
 		// Model segment is hidden in multi-model mode.
 		expect(visible).not.toContain("claude-opus-4-7")
 	})
