@@ -370,13 +370,13 @@ function appendWorkedDurationLine(message: any, durationMs: number): void {
 
 // Cached accent-colored › prefix — same glyph+color the prompt editor uses.
 // Rebuilt whenever the theme changes (visibleWidth is always 2: "› " + reset).
-let _userPromptPrefix = "› "
+let _userPromptPrefix = "❯ "
 let _userPromptPrefixTheme: unknown = null
 
 function getUserPromptPrefix(theme: any): string {
 	if (theme !== _userPromptPrefixTheme) {
 		_userPromptPrefixTheme = theme
-		_userPromptPrefix = typeof theme?.fg === "function" ? `${theme.fg("accent", "›")} ` : "› "
+		_userPromptPrefix = typeof theme?.fg === "function" ? `${theme.fg("accent", "❯")} ` : "❯ "
 	}
 	return _userPromptPrefix
 }
