@@ -9,7 +9,7 @@ import type { LifetimeUsage } from "../manager/usage.js"
 /** Thinking/reasoning level for models that support it. */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
 
-export type AgentAbortReason = "max_turns" | "token_budget"
+export type AgentAbortReason = "max_turns" | "token_budget" | "inactivity"
 
 /** Agent type: any string name (built-in defaults or user-defined). */
 export type SubagentType = string

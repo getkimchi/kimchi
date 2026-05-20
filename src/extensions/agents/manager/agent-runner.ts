@@ -63,6 +63,9 @@ export function setDefaultMaxTurns(n: number | undefined): void {
 /** Additional turns allowed after the soft limit steer message. */
 let graceTurns = 5
 
+const INACTIVITY_CHECK_INTERVAL = 10_000
+const DEFAULT_INACTIVITY_TIMEOUT = 120_000
+
 /** Get the grace turns value. */
 export function getGraceTurns(): number {
 	return graceTurns
@@ -147,6 +150,8 @@ export interface RunOptions {
 	onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void
 	/** Maximum cumulative output tokens this agent is allowed to generate. Overrides agentConfig.tokenBudget. */
 	tokenBudget?: number
+	/** Inactivity timeout in milliseconds. After this period of no session events, the agent is steered; after another period, aborted. */
+	inactivityTimeout?: number
 }
 
 export interface RunResult {
@@ -386,6 +391,9 @@ async function runAgentInner(
 	let abortReason: AgentAbortReason | undefined
 	let budgetAborted = false
 
+	const inactivity = { lastActivityAt: Date.now(), steered: false }
+	const inactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
+
 	const progressSteerThresholds = [0.5, 0.75]
 	let nextProgressIdx = 0
 	let tokenSoftLimitSteered = false
@@ -403,6 +411,9 @@ async function runAgentInner(
 
 	let currentMessageText = ""
 	const unsubTurns = session.subscribe((event: AgentSessionEvent) => {
+		inactivity.lastActivityAt = Date.now()
+		if (inactivity.steered) inactivity.steered = false
+
 		if (event.type === "turn_end") {
 			turnCount++
 			options.onTurnEnd?.(turnCount)
@@ -480,6 +491,18 @@ async function runAgentInner(
 		}
 	})
 
+	const inactivityInterval = setInterval(() => {
+		const elapsed = Date.now() - inactivity.lastActivityAt
+		if (inactivity.steered && elapsed >= inactivityTimeout) {
+			aborted = true
+			abortReason = "inactivity"
+			session.abort()
+		} else if (!inactivity.steered && elapsed >= inactivityTimeout) {
+			inactivity.steered = true
+			session.steer("You appear to be stalled. Resume work immediately or summarize your progress.")
+		}
+	}, INACTIVITY_CHECK_INTERVAL)
+
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
 
@@ -507,6 +530,7 @@ async function runAgentInner(
 	try {
 		await session.prompt(effectivePrompt)
 	} finally {
+		clearInterval(inactivityInterval)
 		unsubTurns()
 		collector.unsubscribe()
 		cleanupAbort()
@@ -552,40 +576,54 @@ export async function resumeAgent(
 		onAssistantUsage?: (usage: LifetimeUsage) => void
 		onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void
 		signal?: AbortSignal
+		inactivityTimeout?: number
 	} = {},
 ): Promise<string> {
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
 
-	const unsubEvents =
-		options.onToolActivity || options.onAssistantUsage || options.onCompaction
-			? session.subscribe((event: AgentSessionEvent) => {
-					if (event.type === "tool_execution_start")
-						options.onToolActivity?.({ type: "start", toolName: event.toolName })
-					if (event.type === "tool_execution_end") options.onToolActivity?.({ type: "end", toolName: event.toolName })
-					if (event.type === "message_end" && event.message.role === "assistant") {
-						const u = (
-							event.message as unknown as {
-								usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
-							}
-						).usage
-						if (u)
-							options.onAssistantUsage?.({
-								input: u.input ?? 0,
-								output: u.output ?? 0,
-								cacheRead: u.cacheRead ?? 0,
-								cacheWrite: u.cacheWrite ?? 0,
-							})
-					}
-					if (event.type === "compaction_end" && !event.aborted && event.result) {
-						options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore })
-					}
+	const resumeInactivity = { lastActivityAt: Date.now(), steered: false }
+	const resumeInactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
+
+	const unsubEvents = session.subscribe((event: AgentSessionEvent) => {
+		resumeInactivity.lastActivityAt = Date.now()
+		if (resumeInactivity.steered) resumeInactivity.steered = false
+
+		if (event.type === "tool_execution_start") options.onToolActivity?.({ type: "start", toolName: event.toolName })
+		if (event.type === "tool_execution_end") options.onToolActivity?.({ type: "end", toolName: event.toolName })
+		if (event.type === "message_end" && event.message.role === "assistant") {
+			const u = (
+				event.message as unknown as {
+					usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
+				}
+			).usage
+			if (u)
+				options.onAssistantUsage?.({
+					input: u.input ?? 0,
+					output: u.output ?? 0,
+					cacheRead: u.cacheRead ?? 0,
+					cacheWrite: u.cacheWrite ?? 0,
 				})
-			: () => {}
+		}
+		if (event.type === "compaction_end" && !event.aborted && event.result) {
+			options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore })
+		}
+	})
+
+	const resumeInactivityInterval = setInterval(() => {
+		const elapsed = Date.now() - resumeInactivity.lastActivityAt
+		if (resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
+			session.abort()
+		} else if (!resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
+			resumeInactivity.steered = true
+			session.steer("You appear to be stalled. Resume work immediately or summarize your progress.")
+		}
+	}, INACTIVITY_CHECK_INTERVAL)
 
 	try {
 		await session.prompt(prompt)
 	} finally {
+		clearInterval(resumeInactivityInterval)
 		collector.unsubscribe()
 		unsubEvents()
 		cleanupAbort()
