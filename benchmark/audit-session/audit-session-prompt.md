@@ -465,8 +465,8 @@ Classify each model as OSS or non-OSS using this mapping:
 | kimi-k2.5 | Kimi | No |
 | kimi-k2.6 | Kimi | No |
 | nemotron-3-super-120b | NVIDIA | Yes |
-| claude-opus-4-7 | Anthropic | No |
-| claude-sonnet-4-7 | Anthropic | No |
+| claude-opus-4-6 | Anthropic | No |
+| claude-sonnet-4-6 | Anthropic | No |
 
 If a model is not in this table, classify it based on provider (Qwen/NVIDIA = OSS; others = non-OSS) unless you have specific knowledge.
 

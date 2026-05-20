@@ -23,6 +23,11 @@ vi.mock("../../env.js", () => ({
 
 vi.mock("../prompt/prompts.js", () => ({
 	buildAgentPrompt: vi.fn().mockReturnValue("System prompt text"),
+	formatTokenBudget: vi.fn().mockImplementation((n: number) => {
+		if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+		if (n >= 1_000) return `${Math.round(n / 1_000)}k`
+		return String(n)
+	}),
 }))
 
 vi.mock("../prompt/skill-loader.js", () => ({
@@ -252,7 +257,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 		vi.clearAllMocks()
 	})
 
-	it("aborts the session when cumulative token usage exceeds tokenBudget", async () => {
+	it("aborts the session when cumulative output token usage exceeds tokenBudget", async () => {
 		const abortSpy = vi.fn()
 		const session = makeFakeSession({
 			promptTokens: 10_000,
@@ -269,7 +274,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 
 		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
 			pi: pi as unknown as RunOptions["pi"],
-			tokenBudget: 12_345,
+			tokenBudget: 4_999,
 		})
 
 		expect(abortSpy).toHaveBeenCalled()
@@ -277,7 +282,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 		expect(result.abortReason).toBe("token_budget")
 	})
 
-	it("counts cacheWrite tokens toward tokenBudget", async () => {
+	it("does NOT count cacheWrite tokens toward tokenBudget", async () => {
 		const abortSpy = vi.fn()
 		const session = makeFakeSession({
 			promptTokens: 8_000,
@@ -295,12 +300,11 @@ describe("runAgent — tokenBudget forwarding", () => {
 
 		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
 			pi: pi as unknown as RunOptions["pi"],
-			tokenBudget: 10_000,
+			tokenBudget: 4_999,
 		})
 
-		expect(abortSpy).toHaveBeenCalled()
-		expect(result.aborted).toBe(true)
-		expect(result.abortReason).toBe("token_budget")
+		expect(abortSpy).not.toHaveBeenCalled()
+		expect(result.aborted).toBe(false)
 	})
 
 	it("checks final session stats when message_end usage is not emitted", async () => {
@@ -321,7 +325,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 
 		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
 			pi: pi as unknown as RunOptions["pi"],
-			tokenBudget: 100,
+			tokenBudget: 4_999,
 		})
 
 		expect(abortSpy).not.toHaveBeenCalled()
@@ -362,7 +366,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 
 		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
 			pi: pi as unknown as RunOptions["pi"],
-			tokenBudget: 11_000,
+			tokenBudget: 1_499,
 			onAssistantUsage: (usage) => usageEvents.push(usage),
 		})
 
@@ -373,29 +377,6 @@ describe("runAgent — tokenBudget forwarding", () => {
 		])
 		expect(result.aborted).toBe(true)
 		expect(result.abortReason).toBe("token_budget")
-	})
-
-	it("aborts before prompting when the estimated prompt already exceeds tokenBudget", async () => {
-		const abortSpy = vi.fn()
-		const session = makeFakeSession({ abortSpy })
-
-		mockCreateAgentSession.mockResolvedValue({
-			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
-			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
-				ReturnType<typeof createAgentSession>
-			>["extensionsResult"],
-		})
-
-		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
-			pi: pi as unknown as RunOptions["pi"],
-			tokenBudget: 1,
-		})
-
-		expect(session.prompt).not.toHaveBeenCalled()
-		expect(abortSpy).not.toHaveBeenCalled()
-		expect(result.aborted).toBe(true)
-		expect(result.abortReason).toBe("token_budget")
-		expect(result.responseText).toContain("Token budget exceeded before agent start")
 	})
 
 	it("does NOT abort when token usage stays below tokenBudget", async () => {
@@ -454,7 +435,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 			disallowedTools: undefined,
 			strengths: ["explore"],
 			models: undefined,
-			tokenBudget: 40_000,
+			tokenBudget: 19_999,
 			extensions: false,
 			skills: false,
 			promptMode: "replace",
@@ -510,7 +491,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 
 		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Explore", "explore it", {
 			pi: pi as unknown as RunOptions["pi"],
-			tokenBudget: 30_000,
+			tokenBudget: 19_999,
 		})
 
 		expect(abortSpy).toHaveBeenCalled()
@@ -588,5 +569,125 @@ describe("runAgent — profile tool access", () => {
 		})
 
 		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "grep", "web_search"])
+	})
+})
+
+function turnEvents(outputTokens: number): SessionEvent[] {
+	return [
+		{
+			type: "message_end",
+			message: { role: "assistant", usage: { input: 1_000, output: outputTokens, cacheWrite: 0 } },
+		},
+		{ type: "turn_end" },
+	]
+}
+
+function multiTurnEvents(turnCount: number, outputTokensPerTurn: number): SessionEvent[] {
+	const events: SessionEvent[] = []
+	for (let i = 0; i < turnCount; i++) {
+		events.push(...turnEvents(outputTokensPerTurn))
+	}
+	return events
+}
+
+describe("runAgent — budget awareness steers", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetToolNamesForType.mockReturnValue([])
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	const steerCases: Record<string, { maxTurns: number; turns: number; expectedSteerCount: number; pattern?: RegExp }> =
+		{
+			"steers at 50% of turn budget": {
+				maxTurns: 10,
+				turns: 5,
+				expectedSteerCount: 1,
+				pattern: /Budget check.*Turn 5\/10/,
+			},
+			"steers at 75% of turn budget": {
+				maxTurns: 10,
+				turns: 8,
+				expectedSteerCount: 2,
+				pattern: /Budget check.*Turn 8\/10/,
+			},
+			"does not steer before 50% of turn budget": {
+				maxTurns: 10,
+				turns: 4,
+				expectedSteerCount: 0,
+			},
+		}
+
+	for (const [name, tc] of Object.entries(steerCases)) {
+		it(name, async () => {
+			mockGetAgentConfig.mockReturnValue(makeAgentConfig({ maxTurns: tc.maxTurns }))
+			const session = makeFakeSession({ events: multiTurnEvents(tc.turns, 100) })
+			mockCreateAgentSession.mockResolvedValue({
+				session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+				extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+					ReturnType<typeof createAgentSession>
+				>["extensionsResult"],
+			})
+
+			await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+				pi: pi as unknown as RunOptions["pi"],
+			})
+
+			const steerCalls = session.steer.mock.calls
+			expect(steerCalls.length).toBe(tc.expectedSteerCount)
+			if (tc.pattern && steerCalls.length > 0) {
+				expect(steerCalls[steerCalls.length - 1]?.[0]).toMatch(tc.pattern)
+			}
+		})
+	}
+
+	it("steers at 80% of token budget before hard abort", async () => {
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ maxTurns: undefined }))
+		const session = makeFakeSession({ events: multiTurnEvents(5, 2_000) })
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			tokenBudget: 10_000,
+		})
+
+		const steerCalls = session.steer.mock.calls
+		const tokenSteer = steerCalls.find((c: string[]) => c[0].includes("output token limit"))
+		expect(tokenSteer).toBeDefined()
+		expect(tokenSteer?.[0]).toMatch(/Budget check/)
+	})
+
+	it("does not token-steer when usage stays below 80%", async () => {
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ maxTurns: undefined }))
+		const session = makeFakeSession({ events: multiTurnEvents(3, 1_000) })
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			tokenBudget: 10_000,
+		})
+
+		const steerCalls = session.steer.mock.calls
+		const tokenSteer = steerCalls.find((c: string[]) => c[0].includes("output token limit"))
+		expect(tokenSteer).toBeUndefined()
 	})
 })

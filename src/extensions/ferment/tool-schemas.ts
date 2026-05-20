@@ -63,7 +63,7 @@ export const PhaseProposalSchema = Type.Object({
 	parallel_group: Type.Optional(
 		Type.Number({
 			description:
-				"Phases with the same parallel_group integer run CONCURRENTLY. Use for phases whose outputs are not consumed by their siblings: independent surveys, codebase mapping over disjoint subtrees, parallel audits. Good fit: three 'survey X' phases → all get parallel_group: 1. BAD fit (keep sequential, omit parallel_group): 'Survey files' → 'Edit those files' → 'Verify edits' is a pipeline — each phase consumes the previous phase's output. Same rule as steps: pipelines stay sequential, only independent siblings get the same parallel_group. Singleton groups auto-collapse.",
+				"Phases with the same parallel_group integer run CONCURRENTLY. Use for phases whose outputs are not consumed by their siblings: independent surveys, codebase mapping over disjoint subtrees, parallel audits. Good fit: multiple independent 'survey X' phases → all get parallel_group: 1. BAD fit (keep sequential, omit parallel_group): 'Survey files' → 'Edit those files' → 'Verify edits' is a pipeline — each phase consumes the previous phase's output. Same rule as steps: pipelines stay sequential, only independent siblings get the same parallel_group. Singleton groups auto-collapse.",
 		}),
 	),
 	steps: Type.Optional(
@@ -121,11 +121,15 @@ export const ScopingQuestionOptionSchema = Type.Object({
 
 export const ScopingQuestionSchema = Type.Object({
 	id: Type.String({ description: "Stable identifier for this question." }),
-	text: Type.String({ description: "The question text shown to the user." }),
+	text: Type.String({
+		description:
+			"The decision-blocking question shown to the user. Do not ask preference-survey questions when a safe default can be assumed; a user request to be thorough with questions does not make default choices decision-blocking.",
+	}),
 	options: Type.Array(ScopingQuestionOptionSchema, {
 		minItems: 2,
 		maxItems: 5,
-		description: "2–5 candidate options for the question.",
+		description:
+			"2–5 concrete options for one decision-blocking single-select question. Vary question framing across outcome boundary, risk/tradeoff, integration/deployment target, verification standard, and non-goal/scope-cut decisions. Avoid feature-shopping options; scope extras out unless requested.",
 	}),
 })
 
@@ -159,10 +163,10 @@ export const ProposeScopingParams = Type.Object({
 	),
 	phases: Type.Union([
 		Type.Array(PhaseProposalSchema, {
-			minItems: 3,
+			minItems: 1,
 			maxItems: 7,
 			description:
-				"3–7 ordered phase OBJECTS that will become the project plan. Emit as a real JSON array, not a quoted string, markdown block, or prose.",
+				"1–7 ordered phase OBJECTS that will become the project plan. Default to ONE phase for simple tasks and put setup, implementation, persistence, filtering, polish, and verification in that phase's steps. Add another phase only for a real vertical slice/tracer bullet, materially different complexity/risk tier, independent parallel workstream, or distinct code locality that should be planned/executed separately. Do not create phases just for setup, directory creation, CRUD vs polish, or to make the plan look organized. Emit as a real JSON array, not a quoted string, markdown block, or prose.",
 		}),
 		Type.String({
 			description:
@@ -174,7 +178,7 @@ export const ProposeScopingParams = Type.Object({
 			Type.Array(ScopingQuestionSchema, {
 				maxItems: 3,
 				description:
-					"Emit ONLY when truly uncertain. At most 3. Must be a real JSON array of question objects, never a quoted string. Each question needs 2-5 options in the display order you want; the host preserves that order and appends Custom answer last. Mark at most ONE option per question with `recommended: true`. No reason text. On replans after user answers, ask only NEW decision-blocking questions; never repeat answered questions.",
+					"Emit ONLY for decision-blocking uncertainty where the answer materially changes architecture, dependencies, data model, user-facing scope, security posture, deployment/runtime assumptions, or verification strategy. At most 3. Do not ask about defaults you can safely choose. If the user asks to be thorough with questions, be thorough in assumptions, success criteria, constraints, and verification steps; do not add default-choice questions unless implementation is blocked. Do not ask preference-survey or feature-shopping questions like tech stack, platform, persistence, or extra features for a simple greenfield app; record safe defaults in assumptions instead. If all recommended answers are generic defaults, emit questions: []. Must be a real JSON array of question objects, never a quoted string. Each question needs 2-5 options in the display order you want; the host preserves that order and appends Custom answer last. Mark at most ONE option per question with `recommended: true`. No reason text. On replans after user answers, ask only NEW decision-blocking questions; never repeat answered questions.",
 			}),
 			Type.String({
 				description:

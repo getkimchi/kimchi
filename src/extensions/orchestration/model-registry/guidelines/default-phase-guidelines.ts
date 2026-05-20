@@ -2,6 +2,7 @@ import type { Phase } from "../types.js"
 
 export const DEFAULT_EXPLORE_GUIDELINES = `During **explore** phase:
 - Goal: build a mental map, not a solution. Do NOT modify files. Do NOT write a plan yet.
+- **Skip explore for greenfield projects** (empty directory, no existing code). There is nothing to explore — proceed directly to plan. A trivial 1-turn explore that only runs \`ls\` on an empty directory wastes a turn and adds no value.
 - Start broad with \`grep\`/\`find\`/\`ls\`; then \`read\` the 3–5 most relevant files in full.
 - Trace imports and call chains across module boundaries — note the actual entry points and seams, not every file you saw.
 - Batch independent reads in a single turn to minimise round-trips.
@@ -22,7 +23,8 @@ export const DEFAULT_PLAN_GUIDELINES = `During **plan** phase:
 - Identify test files that need creation or update. State the testing strategy.
 - Call out non-obvious decisions and the alternatives you rejected — one line each.
 - Keep the spec focused. Interfaces and file paths beat prose. Long plans waste downstream tokens.
-- Do NOT start build until the spec is written and saved.`
+- **Plan validation (mandatory)**: After writing the spec, re-read it in a separate turn and cross-check every requirement from the original task. Flag any gap — missing features, ambiguous API choices, unhandled edge cases (signals, timeouts, concurrency). A second pass costs negligible tokens and catches downstream rework.
+- Do NOT start build until the spec is written, validated, and saved.`
 
 /** Co-author trailer appended to every commit message. Defined once here so
  *  it can be referenced consistently from any guideline that mentions commits. */
@@ -35,6 +37,7 @@ export const DEFAULT_BUILD_GUIDELINES = `During **build** phase:
 - Stay in scope: do NOT add features, refactors, or "improvements" beyond what the spec asks for.
 - If the same code pattern is needed >2 times, extract an abstraction first instead of duplicating.
 - After each meaningful change, run the type-checker / linter / tests. Fix errors before moving on.
+- Always use a timeout when running tests to prevent hanging on deadlocks (e.g. \`go test -timeout 60s\`, \`pytest --timeout=60\`, \`jest --testTimeout=60000\`). Default to 60 seconds unless the task explicitly requires longer.
 - If a tool call fails, diagnose the root cause before retrying — do not retry blindly.
 - Keep diffs minimal and reviewable.
 - **Git commits**: Always end every commit message with a blank line followed by \`${KIMCHI_COAUTHOR}\`.`

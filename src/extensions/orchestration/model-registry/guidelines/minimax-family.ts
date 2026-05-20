@@ -45,8 +45,13 @@ export const MINIMAX_FAMILY_REVIEW = `During **review** phase (MiniMax M2 family
 // ── MiniMax M2.7 per-model overrides ──────────────────────────────────
 // Sources: session-01-findings (Go mutex over-use observed in M2.7 benchmarks)
 
-/** Reserved: no M2.7-specific orchestration override identified yet. */
-export const MINIMAX_M27_ORCHESTRATION = ""
+/** M2.7 orchestration: delegation reinforcement.
+ * Sources: benchmark sessions 01-05 (M2.7 does 0 Agent calls for many tasks,
+ *          causing 300k-1.5M token overruns). */
+export const MINIMAX_M27_ORCHESTRATION = `When orchestrating (minimax-m2.7 specific):
+- For simple tasks (single file, straightforward change): you may do the work yourself if the step matches your strengths.
+- For complex tasks (2+ files or multi-step): delegate ALL steps — build, exploration, and review — to separate agents. Do NOT do any of these yourself for complex tasks, even if they match your strengths. Split the work into small chunks (1-2 files each) and delegate each chunk. M2.7 produces 300k-1.5M token overruns when it tries complex work inline.
+- After delegating, do NOT re-read the files the subagent created or re-run its tests. Trust the subagent result unless it explicitly reported an error.`
 
 /** M2.7 build: Go-specific concurrency pattern observed in M2.7. */
 export const MINIMAX_M27_BUILD = `During **build** phase (minimax-m2.7 specific):

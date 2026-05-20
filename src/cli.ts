@@ -34,7 +34,7 @@ import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import permissionsExtension from "./extensions/permissions/index.js"
-import { reserveShiftTabForPermissions } from "./extensions/permissions/keybindings.js"
+import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire.js"
@@ -45,6 +45,8 @@ import stripImagesExtension from "./extensions/strip-images.js"
 import tagsExtension from "./extensions/tags.js"
 import telemetryExtension from "./extensions/telemetry.js"
 import terminalColorsExtension from "./extensions/terminal-colors.js"
+import { probeKittyKeyboardSupport } from "./extensions/terminal-compat/keyboard-capability.js"
+import { emitTerminalCompatWarning } from "./extensions/terminal-compat/startup-warning.js"
 import tipsExtension from "./extensions/tips/index.js"
 import toolRendererExtension from "./extensions/tool-renderer.js"
 import uiExtension from "./extensions/ui.js"
@@ -174,7 +176,7 @@ try {
 
 		// Must run before main() so the keybindings file is loaded with the
 		// override in place.
-		reserveShiftTabForPermissions(agentDir)
+		writeKimchiKeybindingDefaults(agentDir)
 
 		// Share the discovered model metadata with extensions before main() runs.
 		// prompt-enrichment reads this to build ModelRegistry with live model IDs.
@@ -226,7 +228,14 @@ try {
 		// the kimchi-minimal-tints and terminal-colors extensions. Skip in ACP mode —
 		// stdout is the JSON-RPC channel and OSC escapes would corrupt the IDE's
 		// input stream.
-		if (!acpMode) await probeTerminalBackground()
+		if (!acpMode) {
+			await probeTerminalBackground()
+			await probeKittyKeyboardSupport()
+		}
+
+		// Emit warnings for terminals that don't support modifier-aware Enter.
+		// Runs after the keyboard-capability probe so the result is available.
+		emitTerminalCompatWarning(agentDir)
 
 		// Compare contents and only write when they differ. Restarts in a second
 		// terminal must be byte-identical no-ops because pi runs `fs.watch` on the

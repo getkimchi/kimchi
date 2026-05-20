@@ -39,15 +39,15 @@ Audits a completed kimchi harness session, analyzing phase discipline, code qual
 | `-n`, `--last N` | Show only the last N sessions (default: all) |
 | `-d`, `--dir DIR` | Use DIR instead of cwd to locate sessions |
 | `-r`, `--runner CMD` | Harness to use: `kimchi` (default) or `claude` |
-| `-m`, `--model MODEL` | Model override (default: `kimchi-dev/claude-opus-4-7` for kimchi, `claude-opus-4-7` for claude) |
+| `-m`, `--model MODEL` | Model override (default: `kimchi-dev/claude-opus-4-6` for kimchi, `claude-opus-4-6` for claude) |
 | `-h`, `--help` | Show help |
 
 ## Runners
 
 | Runner | Mode | Permissions | Default model |
 |--------|------|-------------|---------------|
-| `kimchi` | interactive, yolo | all tools allowed | `kimchi-dev/claude-opus-4-7` |
-| `claude` | interactive | `--dangerously-skip-permissions` | `claude-opus-4-7` |
+| `kimchi` | interactive, yolo | all tools allowed | `kimchi-dev/claude-opus-4-6` |
+| `claude` | interactive | `--dangerously-skip-permissions` | `claude-opus-4-6` |
 
 ## What the audit evaluates
 

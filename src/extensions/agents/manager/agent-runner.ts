@@ -35,15 +35,15 @@ import {
 	type ThinkingLevel,
 } from "../personas/types.js"
 import { buildParentContext, extractText } from "../prompt/context.js"
-import { type PromptExtras, buildAgentPrompt } from "../prompt/prompts.js"
+import { type PromptExtras, buildAgentPrompt, formatTokenBudget } from "../prompt/prompts.js"
 import { preloadSkills } from "../prompt/skill-loader.js"
-import { type LifetimeUsage, addUsage, getLifetimeTotal, getSessionUsage } from "./usage.js"
+import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage } from "./usage.js"
 
 /** Names of tools registered by this extension that subagents must NOT inherit. */
 const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"]
 
 /** Default max turns. undefined = unlimited (no turn limit). */
-let defaultMaxTurns: number | undefined
+let defaultMaxTurns: number | undefined = 30
 
 /** Normalize max turns. undefined or 0 = unlimited, otherwise minimum 1. */
 export function normalizeMaxTurns(n: number | undefined): number | undefined {
@@ -62,6 +62,9 @@ export function setDefaultMaxTurns(n: number | undefined): void {
 
 /** Additional turns allowed after the soft limit steer message. */
 let graceTurns = 5
+
+const INACTIVITY_CHECK_INTERVAL = 10_000
+const DEFAULT_INACTIVITY_TIMEOUT = 120_000
 
 /** Get the grace turns value. */
 export function getGraceTurns(): number {
@@ -145,8 +148,10 @@ export interface RunOptions {
 	onAssistantUsage?: (usage: LifetimeUsage) => void
 	/** Called when the session successfully compacts. */
 	onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void
-	/** Maximum cumulative tokens this agent is allowed to consume. Overrides agentConfig.tokenBudget. */
+	/** Maximum cumulative output tokens this agent is allowed to generate. Overrides agentConfig.tokenBudget. */
 	tokenBudget?: number
+	/** Inactivity timeout in milliseconds. After this period of no session events, the agent is steered; after another period, aborted. */
+	inactivityTimeout?: number
 }
 
 export interface RunResult {
@@ -198,10 +203,6 @@ function resetUsage(usage: LifetimeUsage): void {
 	usage.output = 0
 	usage.cacheRead = 0
 	usage.cacheWrite = 0
-}
-
-function estimateTextTokens(text: string): number {
-	return Math.ceil(text.length / 4)
 }
 
 function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => void {
@@ -269,6 +270,14 @@ async function runAgentInner(
 	const modelId = (options.model as { id?: string } | undefined)?.id
 	const guidelinesBlock = buildPhaseGuidelinesSection(modelId, getCurrentPhase(), getGuidelinesRegistry())
 	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
+
+	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
+	const MIN_TOKEN_BUDGET = 1024
+	const rawTokenBudget = options.tokenBudget ?? agentConfig?.tokenBudget
+	const effectiveTokenBudget = rawTokenBudget != null ? Math.max(rawTokenBudget, MIN_TOKEN_BUDGET) : undefined
+	if (effectiveMaxTurns != null || effectiveTokenBudget != null) {
+		extras.budget = { maxTurns: effectiveMaxTurns, tokenBudget: effectiveTokenBudget }
+	}
 
 	let systemPrompt: string
 	if (agentConfig) {
@@ -374,8 +383,6 @@ async function runAgentInner(
 	options.onSessionCreated?.(session)
 
 	let turnCount = 0
-	const maxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
-	const effectiveTokenBudget = options.tokenBudget ?? agentConfig?.tokenBudget
 	let cumulativeTokens = 0
 	const observedUsage: LifetimeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 	const windowObservedUsage: LifetimeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
@@ -384,21 +391,50 @@ async function runAgentInner(
 	let abortReason: AgentAbortReason | undefined
 	let budgetAborted = false
 
+	const inactivity = { lastActivityAt: Date.now(), steered: false }
+	const inactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
+
+	const progressSteerThresholds = [0.5, 0.75]
+	let nextProgressIdx = 0
+	let tokenSoftLimitSteered = false
+
+	function buildProgressSummary(): string {
+		const parts: string[] = []
+		if (effectiveMaxTurns != null) parts.push(`Turn ${turnCount}/${effectiveMaxTurns}`)
+		if (effectiveTokenBudget != null) {
+			parts.push(
+				`~${formatTokenBudget(cumulativeTokens)}/${formatTokenBudget(effectiveTokenBudget)} output tokens used`,
+			)
+		}
+		return parts.join(", ")
+	}
+
 	let currentMessageText = ""
 	const unsubTurns = session.subscribe((event: AgentSessionEvent) => {
+		inactivity.lastActivityAt = Date.now()
+		if (inactivity.steered) inactivity.steered = false
+
 		if (event.type === "turn_end") {
 			turnCount++
 			options.onTurnEnd?.(turnCount)
-			if (maxTurns != null) {
-				if (!softLimitReached && turnCount >= maxTurns) {
+			if (effectiveMaxTurns != null) {
+				if (!softLimitReached && turnCount >= effectiveMaxTurns) {
 					softLimitReached = true
 					session.steer(
 						"You have reached your turn limit. Stop exploring. Complete your current edit, ensure file syntax is valid, undo any git state mutations so your work is visible on the filesystem, and summarize progress for the orchestrator. Do not start new edits.",
 					)
-				} else if (softLimitReached && turnCount >= maxTurns + graceTurns) {
+				} else if (softLimitReached && turnCount >= effectiveMaxTurns + graceTurns) {
 					aborted = true
 					abortReason = "max_turns"
 					session.abort()
+				} else if (!softLimitReached && nextProgressIdx < progressSteerThresholds.length) {
+					const threshold = progressSteerThresholds[nextProgressIdx] ?? 1
+					if (turnCount >= effectiveMaxTurns * threshold) {
+						nextProgressIdx++
+						session.steer(
+							`Budget check: ${buildProgressSummary()}. Prioritize completing the most important remaining work.`,
+						)
+					}
 				}
 			}
 		}
@@ -432,7 +468,7 @@ async function runAgentInner(
 				addUsage(windowObservedUsage, usage)
 				options.onAssistantUsage?.(usage)
 				if (effectiveTokenBudget != null && !budgetAborted) {
-					cumulativeTokens += getLifetimeTotal(usage)
+					cumulativeTokens += getOutputTotal(usage)
 					if (cumulativeTokens > effectiveTokenBudget) {
 						budgetAborted = true
 						abortReason = "token_budget"
@@ -440,6 +476,11 @@ async function runAgentInner(
 							`[agent-runner] token budget exceeded (cumulative=${cumulativeTokens}, budget=${effectiveTokenBudget}); aborting`,
 						)
 						session.abort()
+					} else if (!tokenSoftLimitSteered && cumulativeTokens >= effectiveTokenBudget * 0.8) {
+						tokenSoftLimitSteered = true
+						session.steer(
+							`Budget check: ${buildProgressSummary()}. You are approaching your output token limit. Wrap up your current work and summarize any remaining tasks.`,
+						)
 					}
 				}
 			}
@@ -450,6 +491,18 @@ async function runAgentInner(
 		}
 	})
 
+	const inactivityInterval = setInterval(() => {
+		const elapsed = Date.now() - inactivity.lastActivityAt
+		if (inactivity.steered && elapsed >= inactivityTimeout) {
+			aborted = true
+			abortReason = "inactivity"
+			session.abort()
+		} else if (!inactivity.steered && elapsed >= inactivityTimeout) {
+			inactivity.steered = true
+			session.steer("You appear to be stalled. Resume work immediately or summarize your progress.")
+		}
+	}, INACTIVITY_CHECK_INTERVAL)
+
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
 
@@ -458,25 +511,6 @@ async function runAgentInner(
 		const parentContext = buildParentContext(ctx)
 		if (parentContext) {
 			effectivePrompt = parentContext + prompt
-		}
-	}
-
-	const promptEstimate = estimateTextTokens(systemPrompt) + estimateTextTokens(effectivePrompt)
-	if (effectiveTokenBudget != null && promptEstimate > effectiveTokenBudget) {
-		const usage = { input: promptEstimate, output: 0, cacheRead: 0, cacheWrite: 0 }
-		addUsage(observedUsage, usage)
-		addUsage(windowObservedUsage, usage)
-		cumulativeTokens += getLifetimeTotal(usage)
-		options.onAssistantUsage?.(usage)
-		unsubTurns()
-		collector.unsubscribe()
-		cleanupAbort()
-		return {
-			responseText: `Token budget exceeded before agent start: estimated prompt cost is ${promptEstimate} tokens, budget is ${effectiveTokenBudget}.`,
-			session,
-			aborted: true,
-			abortReason: "token_budget",
-			steered: false,
 		}
 	}
 
@@ -496,6 +530,7 @@ async function runAgentInner(
 	try {
 		await session.prompt(effectivePrompt)
 	} finally {
+		clearInterval(inactivityInterval)
 		unsubTurns()
 		collector.unsubscribe()
 		cleanupAbort()
@@ -517,11 +552,11 @@ async function runAgentInner(
 	if (finalUsageDelta) {
 		addUsage(observedUsage, finalUsageDelta)
 		addUsage(windowObservedUsage, finalUsageDelta)
-		cumulativeTokens += getLifetimeTotal(finalUsageDelta)
+		cumulativeTokens += getOutputTotal(finalUsageDelta)
 		options.onAssistantUsage?.(finalUsageDelta)
 	}
 
-	if (effectiveTokenBudget != null && !budgetAborted && getLifetimeTotal(observedUsage) > effectiveTokenBudget) {
+	if (effectiveTokenBudget != null && !budgetAborted && getOutputTotal(observedUsage) > effectiveTokenBudget) {
 		budgetAborted = true
 		abortReason = "token_budget"
 	}
@@ -541,40 +576,54 @@ export async function resumeAgent(
 		onAssistantUsage?: (usage: LifetimeUsage) => void
 		onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void
 		signal?: AbortSignal
+		inactivityTimeout?: number
 	} = {},
 ): Promise<string> {
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
 
-	const unsubEvents =
-		options.onToolActivity || options.onAssistantUsage || options.onCompaction
-			? session.subscribe((event: AgentSessionEvent) => {
-					if (event.type === "tool_execution_start")
-						options.onToolActivity?.({ type: "start", toolName: event.toolName })
-					if (event.type === "tool_execution_end") options.onToolActivity?.({ type: "end", toolName: event.toolName })
-					if (event.type === "message_end" && event.message.role === "assistant") {
-						const u = (
-							event.message as unknown as {
-								usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
-							}
-						).usage
-						if (u)
-							options.onAssistantUsage?.({
-								input: u.input ?? 0,
-								output: u.output ?? 0,
-								cacheRead: u.cacheRead ?? 0,
-								cacheWrite: u.cacheWrite ?? 0,
-							})
-					}
-					if (event.type === "compaction_end" && !event.aborted && event.result) {
-						options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore })
-					}
+	const resumeInactivity = { lastActivityAt: Date.now(), steered: false }
+	const resumeInactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
+
+	const unsubEvents = session.subscribe((event: AgentSessionEvent) => {
+		resumeInactivity.lastActivityAt = Date.now()
+		if (resumeInactivity.steered) resumeInactivity.steered = false
+
+		if (event.type === "tool_execution_start") options.onToolActivity?.({ type: "start", toolName: event.toolName })
+		if (event.type === "tool_execution_end") options.onToolActivity?.({ type: "end", toolName: event.toolName })
+		if (event.type === "message_end" && event.message.role === "assistant") {
+			const u = (
+				event.message as unknown as {
+					usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
+				}
+			).usage
+			if (u)
+				options.onAssistantUsage?.({
+					input: u.input ?? 0,
+					output: u.output ?? 0,
+					cacheRead: u.cacheRead ?? 0,
+					cacheWrite: u.cacheWrite ?? 0,
 				})
-			: () => {}
+		}
+		if (event.type === "compaction_end" && !event.aborted && event.result) {
+			options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore })
+		}
+	})
+
+	const resumeInactivityInterval = setInterval(() => {
+		const elapsed = Date.now() - resumeInactivity.lastActivityAt
+		if (resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
+			session.abort()
+		} else if (!resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
+			resumeInactivity.steered = true
+			session.steer("You appear to be stalled. Resume work immediately or summarize your progress.")
+		}
+	}, INACTIVITY_CHECK_INTERVAL)
 
 	try {
 		await session.prompt(prompt)
 	} finally {
+		clearInterval(resumeInactivityInterval)
 		collector.unsubscribe()
 		unsubEvents()
 		cleanupAbort()
