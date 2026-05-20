@@ -48,7 +48,8 @@ describe("buildSystemPrompt", () => {
 		{ name: "read", description: "Read file contents" },
 		{ name: "bash", description: "Execute bash commands" },
 		{ name: "Agent", description: "Launch a specialized agent" },
-		{ name: "subagent", description: "Spawn an isolated subagent process" },
+		{ name: "get_subagent_result", description: "Get background agent result" },
+		{ name: "steer_subagent", description: "Steer a running background agent" },
 	]
 
 	describe("orchestrator mode", () => {
@@ -79,7 +80,6 @@ describe("buildSystemPrompt", () => {
 			})
 			expect(result).toContain('<tool name="read">')
 			expect(result).toContain('<tool name="Agent">')
-			expect(result).toContain('<tool name="subagent">')
 		})
 
 		it("does not include phase tagging instructions without the tags extension", () => {
@@ -246,7 +246,8 @@ describe("buildSystemPrompt", () => {
 				mode: "subagent",
 			})
 			expect(result).not.toContain('<tool name="Agent">')
-			expect(result).not.toContain("subagent")
+			expect(result).not.toContain('<tool name="get_subagent_result">')
+			expect(result).not.toContain('<tool name="steer_subagent">')
 		})
 
 		it("includes all other tools", () => {
@@ -285,7 +286,7 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools: [
 					{ name: "Agent", description: "Launch" },
-					{ name: "subagent", description: "Spawn" },
+					{ name: "get_subagent_result", description: "Get result" },
 				],
 				env: testEnv,
 				mode: "subagent",
@@ -385,7 +386,7 @@ describe("buildSystemPrompt", () => {
 			})
 			expect(result).toContain('<tool name="read">')
 			expect(result).toContain('<tool name="bash">')
-			expect(result).toContain('<tool name="subagent">')
+			expect(result).toContain('<tool name="Agent">')
 		})
 
 		it("includes phase guidelines when phase is provided", () => {

@@ -11,6 +11,7 @@ import type { Static } from "typebox"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
 import type { Ferment, Phase } from "../../../ferment/types.js"
 import { askUser } from "../ask-user.js"
+import { gradeColor } from "../colors.js"
 import { decideContinuation } from "../continuation.js"
 import { formatDecisionsAndMemories } from "../format.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
@@ -34,6 +35,25 @@ import {
 } from "../tool-helpers.js"
 import { ActivateParams, CompletePhaseParams, FailPhaseParams, RefineParams, SkipPhaseParams } from "../tool-schemas.js"
 import type { FermentUi, FermentUiContext } from "../ui.js"
+
+function sendPhaseAck(pi: ExtensionAPI, text: string): void {
+	void pi.sendMessage(
+		{
+			customType: "ferment_ack",
+			content: [{ type: "text", text }],
+			display: true,
+			details: { text, variant: "ack" },
+		},
+		{ triggerTurn: false },
+	)
+}
+
+function countFilesChanged(evidence: PhaseEvidence | undefined): number {
+	if (!evidence?.available) return 0
+	const raw = evidence.filesChanged
+	if (!raw || raw === "(no changes)" || raw === "(git unavailable)") return 0
+	return raw.split("\n").filter((line) => line.trim().length > 0).length
+}
 
 type CompletePhaseArgs = Static<typeof CompletePhaseParams>
 type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
@@ -406,6 +426,15 @@ export async function completePhase(
 
 	services.onPhaseCompleted(runtime)
 	const fresh = completeOutcome.ferment
+
+	// Visual ack mirrors the step ✓ breadcrumb in steps.ts. The grade letter is
+	// the deterministic derivedGrade (A/B/F) from gate verdicts + project
+	// checks (post-#230 no LLM judge per phase), colorized via gradeColor for
+	// terminal output.
+	const filesCount = countFilesChanged(evidence)
+	const summaryLines = [`Phase ${phase.index} ✓  Grade ${gradeColor(derivedGrade)} — ${rationale}`]
+	if (filesCount > 0) summaryLines.push(`${filesCount} file${filesCount === 1 ? "" : "s"} touched`)
+	sendPhaseAck(pi, summaryLines.join("\n"))
 	const warnSection =
 		warnFlags.length > 0
 			? `\n\nAdvisory warnings carried over:\n${warnFlags.map((fl) => `  ⚠ ${fl.problem} — ${fl.redirect}`).join("\n")}`

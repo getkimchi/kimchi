@@ -88,14 +88,16 @@ describe("runScopingFlow", () => {
 		await runScopingFlow(ferment, pi, ctx, runtime)
 
 		expect(markSpy).toHaveBeenCalledWith(ferment.id)
-		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
-		expect(pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				customType: "ferment_request",
-				display: true,
-				details: { intent: "I want to build a login system" },
-			}),
-		)
+		// Now sends 3 messages: breadcrumb + request + nudge
+		expect(pi.sendMessage).toHaveBeenCalledTimes(3)
+		const requestCall = vi
+			.mocked(pi.sendMessage)
+			.mock.calls.find((call) => (call[0] as { customType?: string }).customType === "ferment_request")
+		expect(requestCall?.[0]).toMatchObject({
+			customType: "ferment_request",
+			display: true,
+			details: { intent: "I want to build a login system" },
+		})
 		const nudgeCall = vi
 			.mocked(pi.sendMessage)
 			.mock.calls.find((call) => (call[0] as { customType?: string }).customType === "ferment_created_nudge")
@@ -165,10 +167,13 @@ describe("runScopingFlow", () => {
 
 		expect(inputSpy).not.toHaveBeenCalled()
 		expect(markSpy).toHaveBeenCalledWith(ferment.id)
-		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		// Now sends 2 messages: breadcrumb + nudge
+		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
 		expect(pi.sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ customType: "ferment_request" }))
-		const call = vi.mocked(pi.sendMessage).mock.calls[0]
-		const msg = call[0] as { content: { type: string; text: string }[] }
+		const nudgeCall = vi
+			.mocked(pi.sendMessage)
+			.mock.calls.find((call) => (call[0] as { customType?: string }).customType === "ferment_created_nudge")
+		const msg = nudgeCall?.[0] as { content: { type: string; text: string }[] }
 		const text = msg.content.map((c) => c.text).join("")
 		expect(text).toContain("Pre-captured intent text")
 	})

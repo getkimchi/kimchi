@@ -20,7 +20,7 @@ const NPM_REQUEST_TIMEOUT_MS = 10_000
 const TELEMETRY_LOGS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
 const TELEMETRY_METRICS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest"
 
-const OPENCODE_VERSION_REGEX = /opencode\s+v?(\d+\.\d+\.\d+)/
+const OPENCODE_VERSION_REGEX = /^(?:opencode\s+)?v?(\d+\.\d+\.\d+)/m
 
 /**
  * Run `opencode --version` and parse out the SemVer. Returns null when the
@@ -143,6 +143,12 @@ export function buildUpdatedPlugins(inputs: PluginUpdateInputs): PluginUpdateRes
 			const pkgName = entry[0]
 			if (pkgName === OPENCODE_PLUGIN_PACKAGE || pkgName.startsWith(`${OPENCODE_PLUGIN_PACKAGE}@`)) {
 				existingVersion = extractVersionFromPluginName(pkgName)
+				continue
+			}
+		} else if (typeof entry === "string") {
+			// Legacy string format: "@kimchi-dev/opencode-kimchi" or "@kimchi-dev/opencode-kimchi@1.14.0"
+			if (entry === OPENCODE_PLUGIN_PACKAGE || entry.startsWith(`${OPENCODE_PLUGIN_PACKAGE}@`)) {
+				existingVersion = extractVersionFromPluginName(entry)
 				continue
 			}
 		}

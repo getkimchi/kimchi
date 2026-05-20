@@ -28,6 +28,7 @@ function createMockContext(
 			input: vi.fn(async () => ""),
 			notify: vi.fn(),
 			setStatus: vi.fn(),
+			setWorkingVisible: vi.fn(),
 			theme: {
 				fg: vi.fn((_, s) => s),
 				getFgAnsi: vi.fn(() => ""),
@@ -493,6 +494,7 @@ describe("handleCompoundConfirm", () => {
 				input: vi.fn(async () => ""),
 				notify: vi.fn(),
 				setStatus: vi.fn(),
+				setWorkingVisible: vi.fn(),
 				theme: { fg: vi.fn((_, s) => s), getFgAnsi: vi.fn(() => "") },
 				onTerminalInput: vi.fn(() => () => {}),
 			},

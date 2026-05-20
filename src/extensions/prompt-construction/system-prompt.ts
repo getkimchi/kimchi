@@ -48,7 +48,7 @@ export interface SystemPromptBuildOptions {
 	mode: PromptMode
 }
 
-const DELEGATION_TOOL_NAMES = new Set(["Agent", "subagent"])
+const DELEGATION_TOOL_NAMES = new Set(["Agent", "get_subagent_result", "steer_subagent"])
 
 export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	const { pi, tools, env, contextFiles, skills, currentModelId, currentPhase, registry, mode } = options

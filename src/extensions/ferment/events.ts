@@ -1,13 +1,16 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { shortenTitle } from "../../ferment/shorten-title.js"
 import { clearFermentCache } from "../../ferment/store.js"
+import { isAgentWorker } from "../agent-worker-context.js"
+import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { decideContinuation } from "./continuation.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { appendRefEntry, maybeInjectReactiveContinuationNudge, resetReactiveContinuationNudgeCount } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
+import { editPhaseProposal } from "./phase-editor.js"
 import { promptInput, promptSelect } from "./prompt-ui.js"
-import { resumeFerment } from "./resume.js"
+import { loadFermentSilently, resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
@@ -151,7 +154,35 @@ async function maybeRunUserInputDropdown(
 	} else if (prompt.contextualOptions?.includes(choice)) {
 		reply = choice
 	} else if (prompt.isDraft && choice === prompt.yesLabel) {
-		const outcome = confirmPendingScope(runtime, f.id, undefined, "turn_end", f.name, pi)
+		// Open the phase editor so the user can rename/reorder/delete/add
+		// before we persist. The pending phases are the LLM's proposal.
+		const pending = runtime.getPendingScope(f.id)
+		const startingPhases = pending?.phases
+		let edited = startingPhases
+		if (startingPhases && startingPhases.length > 0 && ctx) {
+			let result: typeof startingPhases | undefined
+			try {
+				result = await editPhaseProposal(ctx, startingPhases, runtime)
+			} catch (err) {
+				runtime.markHumanInput()
+				const msg = err instanceof Error ? err.message : String(err)
+				ctx.ui?.notify?.(`Phase editor failed: ${msg} — plan not saved.`)
+				void pi.sendUserMessage(
+					"Phase editor errored before the user could confirm. Ask the user to retry confirmation explicitly.",
+					{ deliverAs: "followUp" },
+				)
+				return true
+			}
+			if (!result) {
+				runtime.markHumanInput()
+				void pi.sendUserMessage("User chose to keep editing the phases — revise the plan in your next response.", {
+					deliverAs: "followUp",
+				})
+				return true
+			}
+			edited = result
+		}
+		const outcome = confirmPendingScope(runtime, f.id, edited, "turn_end", f.name, pi)
 		if (outcome.ok) {
 			ctx.ui.notify?.(
 				`Plan saved for "${outcome.outcome.ferment.name}". ${outcome.outcome.ferment.phases.length} phase(s) ready.`,
@@ -208,7 +239,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		if (process.env.KIMCHI_SUBAGENT === "1") {
+		if (isAgentWorker()) {
 			applyFermentToolProfile(pi, "worker")
 			return
 		}
@@ -230,8 +261,35 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 
 		if (envId) {
 			pendingOneshot = false
-			resumeFerment(pi, envId, ctx, runtime)
 			Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
+
+			if (ctx?.hasUI && ctx.ui?.select) {
+				// F27: ask user before auto-resuming so the planner doesn't
+				// hijack the session before they're ready.
+				const storage = runtime.getStorage()
+				const ferment = storage.get(envId)
+				if (!ferment) {
+					setActiveFermentAndApplyProfile(pi, runtime, undefined)
+					return
+				}
+				const activePhase = ferment.phases.find((p) => p.id === ferment.activePhaseId)
+				const activeStep = activePhase?.steps.find((s) => s.status === "running" || s.status === "pending")
+				const phaseInfo = activePhase ? ` — Phase ${activePhase.index}/${ferment.phases.length}` : ""
+				const stepInfo = activeStep ? ` · step ${activeStep.index}/${activePhase?.steps.length ?? 0}` : ""
+				const parsed = ferment.updatedAt ? Date.parse(ferment.updatedAt) : Number.NaN
+				const updatedMs = Number.isFinite(parsed) ? parsed : runtime.now().getTime()
+				const ago = formatDuration(runtime.now().getTime() - updatedMs)
+				const banner = `🍺  Active ferment "${ferment.name}"${phaseInfo}${stepInfo} · ${ago}. Resume?`
+				const choice = await ctx.ui.select(banner, ["Resume", "Leave paused"])
+				runtime.markHumanInput()
+				if (choice === "Resume") {
+					resumeFerment(pi, envId, ctx, runtime)
+				} else {
+					loadFermentSilently(pi, envId, runtime)
+				}
+			} else {
+				resumeFerment(pi, envId, ctx, runtime)
+			}
 		} else if (pi.getFlag("ferment-oneshot") === true) {
 			pendingOneshot = true
 			setActiveFermentState(runtime, undefined)
@@ -243,7 +301,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	})
 
 	pi.on("session_shutdown", async () => {
-		if (process.env.KIMCHI_SUBAGENT === "1") return
+		if (isAgentWorker()) return
 		const f = runtime.getActive()
 		if (!f) return
 		if (f.status === "running" || f.status === "planned") {
@@ -285,14 +343,28 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			const updated = f
 			setActiveFermentState(runtime, updated)
 			appendRefEntry(pi, updated.id)
-			pi.appendEntry("ferment_ack", {
-				text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nPolicy: automated`,
-			})
+			const ackText = `One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nPolicy: automated`
+			void pi.sendMessage(
+				{
+					customType: "ferment_ack",
+					content: [{ type: "text", text: ackText }],
+					display: true,
+					details: { text: ackText, variant: "ack" },
+				},
+				{ triggerTurn: false },
+			)
 			return { action: "transform" as const, text: buildOneshotNudge(updated, intent), images: event.images }
 		} catch (err) {
-			pi.appendEntry("ferment_oneshot_failed", {
-				text: `One-shot ferment bootstrap failed: ${err instanceof Error ? err.message : String(err)}`,
-			})
+			const failText = `One-shot ferment bootstrap failed: ${err instanceof Error ? err.message : String(err)}`
+			void pi.sendMessage(
+				{
+					customType: "ferment_oneshot_failed",
+					content: [{ type: "text", text: failText }],
+					display: true,
+					details: { text: failText, variant: "warning" },
+				},
+				{ triggerTurn: false },
+			)
 			return
 		}
 	})
@@ -301,7 +373,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		// pi-mono snapshots the active tool list when an agent run starts. Apply
 		// only run-static profiles here; lifecycle tools remain visible for the
 		// whole active planner run and invalid transitions are rejected by tools.
-		if (process.env.KIMCHI_SUBAGENT === "1") {
+		if (isAgentWorker()) {
 			applyFermentToolProfile(pi, "worker")
 			return {}
 		}
@@ -334,7 +406,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	})
 
 	pi.on("turn_end", async (event, ctx) => {
-		if (process.env.KIMCHI_SUBAGENT === "1") return
+		if (isAgentWorker()) return
 		runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry)
 		if (event.message.role !== "assistant") return
 		const content = getAssistantContentParts(event.message.content)

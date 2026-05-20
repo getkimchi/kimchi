@@ -3,6 +3,15 @@ import { numberedChoices, stripChoiceNumber } from "./select-utils.js"
 import { suggestScope } from "./session-memory.js"
 import type { Rule } from "./types.js"
 
+export async function withWorkingHidden<T>(ctx: ExtensionContext, fn: () => Promise<T>): Promise<T> {
+	ctx.ui.setWorkingVisible?.(false)
+	try {
+		return await fn()
+	} finally {
+		ctx.ui.setWorkingVisible?.(true)
+	}
+}
+
 export type ApprovalOutcome =
 	| { kind: "allow-once" }
 	| { kind: "allow-remember"; rule: Rule }
@@ -56,9 +65,7 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 		yesWildcard ? [yesOnce, yesRemember, yesWildcard, noWithFeedback] : [yesOnce, yesRemember, noWithFeedback],
 	)
 
-	const choice = await ctx.ui.select(lines.join("\n"), choices, {
-		signal: opts.signal,
-	})
+	const choice = await withWorkingHidden(ctx, () => ctx.ui.select(lines.join("\n"), choices, { signal: opts.signal }))
 
 	if (choice === undefined && opts.signal?.aborted) return { kind: "aborted" }
 
@@ -88,7 +95,7 @@ export async function promptForApproval(opts: PromptOptions): Promise<ApprovalOu
 	}
 
 	if (selected === noWithFeedback) {
-		const feedback = await ctx.ui.input("Tell the assistant what to do differently:")
+		const feedback = await withWorkingHidden(ctx, () => ctx.ui.input("Tell the assistant what to do differently:"))
 		const text = feedback?.trim()
 		if (text) return { kind: "deny-with-feedback", feedback: text }
 		return { kind: "deny" }
@@ -126,9 +133,7 @@ export async function promptForCompoundApproval(opts: {
 	]
 	const choices = numberedChoices(compoundChoices)
 
-	const choice = await ctx.ui.select(lines.join("\n"), choices, {
-		signal: opts.signal,
-	})
+	const choice = await withWorkingHidden(ctx, () => ctx.ui.select(lines.join("\n"), choices, { signal: opts.signal }))
 
 	if (choice === undefined && opts.signal?.aborted) return { kind: "aborted" }
 
@@ -146,7 +151,7 @@ export async function promptForCompoundApproval(opts: {
 	}
 	if (selected === compoundChoices[2]) return { kind: "pick-per-subcommand" }
 	if (selected === compoundChoices[3]) {
-		const feedback = await ctx.ui.input("Tell the assistant what to do differently:")
+		const feedback = await withWorkingHidden(ctx, () => ctx.ui.input("Tell the assistant what to do differently:"))
 		const text = feedback?.trim()
 		if (text) return { kind: "deny-with-feedback", feedback: text }
 		return { kind: "deny" }

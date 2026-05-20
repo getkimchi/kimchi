@@ -48,7 +48,7 @@ def summarize(path: str):
                 orch_input += usage.get("input", 0)
                 orch_output += usage.get("output", 0)
 
-            if role == "toolResult" and msg.get("toolName") == "subagent":
+            if role == "toolResult" and msg.get("toolName") in {"Agent", "get_subagent_result"}:
                 details = msg.get("details") or {}
                 tu = details.get("tokenUsage", {})
                 subagents.append({

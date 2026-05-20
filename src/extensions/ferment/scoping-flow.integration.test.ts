@@ -109,15 +109,16 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 		// Step 1: invoke runScopingFlow
 		await runScopingFlow(ferment, h.pi, ctx, h.runtime)
 
-		// Assert the visible request echo and the hidden planning nudge both fire.
-		expect(h.pi.sendMessage).toHaveBeenCalledTimes(2)
-		expect(h.pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				customType: "ferment_request",
-				display: true,
-				details: { intent: "I want to add Google OAuth" },
-			}),
+		// Assert the breadcrumb + visible request echo + hidden planning nudge all fire.
+		expect(h.pi.sendMessage).toHaveBeenCalledTimes(3)
+		const requestCall = (h.pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls.find(
+			(call) => (call[0] as { customType?: string }).customType === "ferment_request",
 		)
+		expect(requestCall?.[0]).toMatchObject({
+			customType: "ferment_request",
+			display: true,
+			details: { intent: "I want to add Google OAuth" },
+		})
 		const nudgeCall = (h.pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls.find(
 			(call) => (call[0] as { customType?: string }).customType === "ferment_created_nudge",
 		)

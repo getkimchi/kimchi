@@ -17,11 +17,30 @@
  * unchanged — the LLM handles scoping conversationally.
  */
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import type { FermentUiContext } from "./ui.js"
+
+const STATUS_KEY = "ferment-scoping"
+
+function setCookingStatus(ctx: FermentUiContext, message: string | undefined): void {
+	ctx.ui.setStatus?.(STATUS_KEY, message)
+}
+
+function sendScopingBreadcrumb(pi: ExtensionAPI, text: string): void {
+	void pi.sendMessage(
+		{
+			customType: "ferment_breadcrumb",
+			content: [{ type: "text", text }],
+			display: true,
+			details: { text, variant: "step" },
+		},
+		{ triggerTurn: false },
+	)
+}
 
 // ─── Pending scope buffer ─────────────────────────────────────────────────────
 // Seeded as an empty buffer by runScopingFlow, then replaced wholesale by
@@ -108,7 +127,7 @@ function buildScopePrompt(runtime: FermentRuntime, fermentId: string): string {
 export async function runScopingFlow(
 	f: Ferment,
 	pi: ExtensionAPI,
-	ctx: ExtensionCommandContext,
+	ctx: FermentUiContext,
 	runtime: FermentRuntime = defaultFermentRuntime,
 	preIntent?: string,
 ): Promise<void> {
@@ -139,6 +158,9 @@ export async function runScopingFlow(
 	if (preIntent === undefined) {
 		sendFermentRequestMessage(pi, intent)
 	}
+
+	setCookingStatus(ctx, "Fermenting · drafting scope…")
+	sendScopingBreadcrumb(pi, "Scoping · drafting…")
 
 	void pi.sendMessage(
 		{

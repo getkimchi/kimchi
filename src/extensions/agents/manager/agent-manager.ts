@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import type { AgentRecord, IsolationMode, SubagentType, ThinkingLevel } from "../personas/types.js"
+import type { AgentRecord, AgentVisibility, IsolationMode, SubagentType, ThinkingLevel } from "../personas/types.js"
 import { type ToolActivity, resumeAgent, runAgent } from "./agent-runner.js"
-import { addUsage } from "./usage.js"
+import { type LifetimeUsage, addUsage } from "./usage.js"
 
 export type OnAgentComplete = (record: AgentRecord) => void
 export type OnAgentStart = (record: AgentRecord) => void
@@ -23,6 +23,7 @@ interface SpawnArgs {
 
 interface SpawnOptions {
 	description: string
+	visibility?: AgentVisibility
 	model?: Model<Api>
 	maxTurns?: number
 	isolated?: boolean
@@ -43,7 +44,7 @@ interface SpawnOptions {
 	onTextDelta?: (delta: string, fullText: string) => void
 	onSessionCreated?: (session: AgentSession) => void
 	onTurnEnd?: (turnCount: number) => void
-	onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void
+	onAssistantUsage?: (usage: LifetimeUsage) => void
 	onCompaction?: (info: CompactionInfo) => void
 }
 
@@ -87,11 +88,13 @@ export class AgentManager {
 			id,
 			type,
 			description: options.description,
+			visibility: options.visibility ?? "user",
 			status: options.isBackground ? "queued" : "running",
 			toolUses: 0,
 			startedAt: Date.now(),
 			abortController,
-			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
+			sessionFile: options.sessionFile,
+			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			compactionCount: 0,
 		}
 		this.agents.set(id, record)

@@ -1,12 +1,11 @@
-import { spawn } from "node:child_process"
 import { appendFileSync, closeSync, openSync, readFileSync, unlinkSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { convertToLlm } from "@earendil-works/pi-coding-agent"
 import { parse as parseYaml } from "yaml"
+import { spawnKimchiSubprocess } from "../../utils/spawn-kimchi-subprocess.js"
 import type { SkillManager } from "../skills-manager/skill-manager.js"
 import { agentCreatedReport } from "../skills-manager/usage.js"
-import { buildSubagentArgs, getSubagentInvocation, spawnSubagent } from "../subagent.js"
 import { loadState, saveState } from "./state.js"
 
 export interface CuratorCandidate {
@@ -136,6 +135,131 @@ function collectExtensionArgs(): string[] {
 	return result
 }
 
+function buildReviewAgentArgs(provider: string, model: string, prompt: string): string[] {
+	return [
+		"--mode",
+		"json",
+		"-p",
+		"--no-session",
+		"--provider",
+		provider,
+		"--model",
+		model,
+		...collectExtensionArgs(),
+		prompt,
+	]
+}
+
+function parseReviewAgentDelta(line: string): string {
+	if (!line.trim()) return ""
+	try {
+		const event = JSON.parse(line) as { type?: string; assistantMessageEvent?: { type?: string; delta?: string } }
+		if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
+			return event.assistantMessageEvent.delta ?? ""
+		}
+	} catch {
+		return ""
+	}
+	return ""
+}
+
+function spawnReviewAgent(
+	provider: string,
+	model: string,
+	prompt: string,
+	opts?: { detached?: boolean; stdout?: "pipe" | "ignore" | number; stderr?: "pipe" | "ignore" | number },
+) {
+	const args = buildReviewAgentArgs(provider, model, prompt)
+	debugLog(`spawning review agent with args: ${args.slice(0, 6).join(" ")} ...`)
+	return spawnKimchiSubprocess({
+		args,
+		stdout: opts?.stdout,
+		stderr: opts?.stderr,
+		detached: opts?.detached,
+		env: { KIMCHI_SUBAGENT: "1", KIMCHI_SESSION_REVIEW: "1" },
+	})
+}
+
+// Mirrors the legacy `subagent.ts` foreground guards: a long-stalled review
+// agent (no stdout for 3 minutes) or a runaway one (>30 minutes wall clock)
+// must reject the promise rather than hang. The deleted subprocess primitive
+// enforced these; keeping them here so curator session reviews don't pin a
+// process indefinitely if the model hangs.
+const REVIEW_TIMEOUT_MS = 30 * 60 * 1000
+const REVIEW_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000
+
+function runReviewAgent(provider: string, model: string, prompt: string): Promise<string> {
+	return new Promise((resolvePromise, reject) => {
+		const proc = spawnReviewAgent(provider, model, prompt)
+		let output = ""
+		let stderr = ""
+		let buffer = ""
+		let closed = false
+		let killReason: "timeout" | "output_stalled" | undefined
+
+		// Force-kill the spawned process and disarm both watchdogs. Called from
+		// either the hard wall-clock timeout or the inactivity watchdog below.
+		// SIGTERM gives the child a chance to flush; we don't escalate to
+		// SIGKILL because curator review is short-lived and SIGTERM is
+		// universally honored by node/bun/tsx targets.
+		const kill = (reason: "timeout" | "output_stalled") => {
+			if (closed) return
+			killReason = reason
+			try {
+				proc.kill("SIGTERM")
+			} catch {
+				// Process may already be gone; ignore.
+			}
+		}
+
+		const hardTimeout = setTimeout(() => kill("timeout"), REVIEW_TIMEOUT_MS)
+		let inactivityHandle = setTimeout(() => kill("output_stalled"), REVIEW_INACTIVITY_TIMEOUT_MS)
+		// Reset on every stdout chunk; stderr does NOT reset because a hung
+		// model still typically emits stderr noise (provider keep-alives, log
+		// lines from the bun shim) — counting those would defeat the watchdog.
+		const resetInactivity = () => {
+			if (closed) return
+			clearTimeout(inactivityHandle)
+			inactivityHandle = setTimeout(() => kill("output_stalled"), REVIEW_INACTIVITY_TIMEOUT_MS)
+		}
+
+		proc.stdout?.on("data", (chunk: Buffer) => {
+			buffer += chunk.toString()
+			const lines = buffer.split("\n")
+			buffer = lines.pop() ?? ""
+			for (const line of lines) output += parseReviewAgentDelta(line)
+			resetInactivity()
+		})
+		proc.stderr?.on("data", (chunk: Buffer) => {
+			stderr += chunk.toString()
+		})
+		proc.on("close", (code) => {
+			if (closed) return
+			closed = true
+			clearTimeout(hardTimeout)
+			clearTimeout(inactivityHandle)
+			if (buffer.trim()) output += parseReviewAgentDelta(buffer)
+			if (killReason === "timeout") {
+				reject(new Error(`review agent timed out after ${REVIEW_TIMEOUT_MS / 60000} minutes`))
+				return
+			}
+			if (killReason === "output_stalled") {
+				reject(new Error(`review agent stalled — no output for ${REVIEW_INACTIVITY_TIMEOUT_MS / 60000} minutes`))
+				return
+			}
+			if (code === 0) resolvePromise(output)
+			else reject(new Error(stderr.trim() || `review agent exited with code ${code}`))
+		})
+		proc.on("error", (err) => {
+			if (closed) return
+			closed = true
+			clearTimeout(hardTimeout)
+			clearTimeout(inactivityHandle)
+			reject(err)
+		})
+	})
+}
+
 export async function runCuratorReview(opts: RunCuratorReviewOptions): Promise<CuratorSummary | null> {
 	const { provider, model, statePath, manager, background = false } = opts
 
@@ -163,19 +287,18 @@ export async function runCuratorReview(opts: RunCuratorReviewOptions): Promise<C
 	}
 
 	if (background) {
-		const args = buildSubagentArgs({ provider, model, prompt }, [], collectExtensionArgs())
-		const invocation = getSubagentInvocation(args)
-		const proc = spawn(invocation.command, invocation.args, {
-			stdio: ["ignore", "pipe", "pipe"],
-			detached: true,
-			env: { ...process.env, KIMCHI_SUBAGENT: "1" },
-		})
+		const proc = spawnReviewAgent(provider, model, prompt, { detached: true, stderr: "ignore" })
 		proc.unref()
 		let output = ""
+		let buffer = ""
 		proc.stdout?.on("data", (chunk: Buffer) => {
-			output += chunk.toString()
+			buffer += chunk.toString()
+			const lines = buffer.split("\n")
+			buffer = lines.pop() ?? ""
+			for (const line of lines) output += parseReviewAgentDelta(line)
 		})
 		proc.on("close", () => {
+			if (buffer.trim()) output += parseReviewAgentDelta(buffer)
 			void finalize(output)
 		})
 		proc.on("error", (err) => {
@@ -185,7 +308,7 @@ export async function runCuratorReview(opts: RunCuratorReviewOptions): Promise<C
 	}
 
 	try {
-		const output = await spawnSubagent({ provider, model, prompt })
+		const output = await runReviewAgent(provider, model, prompt)
 		return finalize(output)
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err)
@@ -291,11 +414,6 @@ export function spawnSessionReview(opts: RunSessionReviewOptions): void {
 	debugLog(`transcript serialized: ${transcript.length} chars, ${transcript.split("\n\n").length} turns`)
 
 	const prompt = `${transcript}\n\n---\n\n${SESSION_REVIEW_PROMPT}`
-	const args = buildSubagentArgs({ provider, model, prompt }, [], collectExtensionArgs())
-	const invocation = getSubagentInvocation(args)
-
-	debugLog(`spawning subagent: ${invocation.command} ${invocation.args.slice(0, 4).join(" ")} ...`)
-
 	const reviewLogPath = process.env.KIMCHI_REVIEW_LOG
 	let stdoutOption: "ignore" | number = "ignore"
 	let logFd: number | undefined
@@ -305,11 +423,7 @@ export function spawnSessionReview(opts: RunSessionReviewOptions): void {
 		stdoutOption = logFd
 	}
 
-	const proc = spawn(invocation.command, invocation.args, {
-		stdio: ["ignore", stdoutOption, "ignore"],
-		detached: true,
-		env: { ...process.env, KIMCHI_SUBAGENT: "1", KIMCHI_SESSION_REVIEW: "1" },
-	})
+	const proc = spawnReviewAgent(provider, model, prompt, { detached: true, stdout: stdoutOption, stderr: "ignore" })
 
 	if (logFd !== undefined) {
 		closeSync(logFd)
@@ -317,8 +431,8 @@ export function spawnSessionReview(opts: RunSessionReviewOptions): void {
 
 	proc.unref()
 	proc.on("error", (err) => {
-		debugLog(`subagent spawn error: ${err.message}`)
+		debugLog(`review agent spawn error: ${err.message}`)
 	})
 
-	debugLog(`subagent spawned pid=${proc.pid ?? "unknown"}`)
+	debugLog(`review agent spawned pid=${proc.pid ?? "unknown"}`)
 }

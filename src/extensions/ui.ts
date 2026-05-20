@@ -6,15 +6,24 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
-import type { TUI } from "@earendil-works/pi-tui"
+import type { Component, TUI } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
 import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } from "../components/footer.js"
 import { LogoHeader } from "../components/logo.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { isBareExitAlias } from "./exit-utils.js"
-import { MULTI_MODEL_SHORTCUT, getMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
+import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
+import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
+import { getMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
+import {
+	isSessionModeOnboardingFooterSuppressed,
+	registerSharedFooterRenderer,
+	setSessionModeOnboardingFooterSuppressed,
+} from "./shared-footer.js"
 import { createWorkingAnimator } from "./spinner.js"
+
+export { requestSharedFooterRender, setSessionModeOnboardingFooterSuppressed } from "./shared-footer.js"
 
 function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {
 	return a.provider === b.provider && a.id === b.id
@@ -38,6 +47,34 @@ function getEnabledModelIds(): Set<string> | null {
 // Track current editor for indicator updates
 let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
+
+type DisposableComponent = Component & { dispose?(): void }
+
+class SuppressibleFooter implements Component {
+	private readonly requestRender: () => void
+	private readonly unregisterRequestRender: () => void
+
+	constructor(
+		private readonly inner: DisposableComponent,
+		tui: TUI,
+	) {
+		this.requestRender = () => tui.requestRender()
+		this.unregisterRequestRender = registerSharedFooterRenderer(this.requestRender)
+	}
+
+	dispose(): void {
+		this.unregisterRequestRender()
+		this.inner.dispose?.()
+	}
+
+	invalidate(): void {
+		this.inner.invalidate()
+	}
+
+	render(width: number): string[] {
+		return isSessionModeOnboardingFooterSuppressed() ? [] : this.inner.render(width)
+	}
+}
 
 export function setPasteImageHandler(handler: () => void): void {
 	pasteImageHandler = handler
@@ -123,6 +160,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", (event, ctx) => {
+		setSessionModeOnboardingFooterSuppressed(false)
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
 		toolsInFlight = 0
@@ -140,16 +178,21 @@ export default function uiExtension(pi: ExtensionAPI) {
 			const cmd = readStatusLineCommand()
 			if (!cmd) {
 				scriptCmd = null
-				return new StatsFooter(ctx, theme, footerData)
+				return new SuppressibleFooter(new StatsFooter(ctx, theme, footerData), tui)
 			}
 			scriptCmd = cmd
 			const getControlsLine = (): string | null => {
 				const parts: string[] = []
+				const ferment = formatFermentFooterDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
+					dim: (s) => theme.fg("dim", s),
+					accent: (s) => `${resolvedAccentFg(theme)}${s}${RST_FG}`,
+				})
+				if (ferment) parts.push(ferment.text)
 				const perm = footerData.getExtensionStatuses().get("permissions-mode")
 				if (perm) parts.push(perm)
 				const enabled = getMultiModelEnabled()
 				const label = enabled ? `${resolvedAccentFg(theme)}on${RST_FG}` : theme.fg("dim", "off")
-				const shortcut = MULTI_MODEL_SHORTCUT
+				const shortcut = process.platform === "darwin" ? "option+tab" : "alt+tab"
 				parts.push(`${theme.fg("dim", "multi-model:")} ${label} ${theme.fg("dim", `→ ${shortcut}`)}`)
 				return parts.join(` ${theme.fg("dim", "·")} `)
 			}
@@ -166,7 +209,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 					if (scriptGeneration === gen) scriptPending = false
 				},
 			)
-			return scriptFooter
+			return new SuppressibleFooter(scriptFooter, tui)
 		})
 
 		ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
@@ -213,6 +256,12 @@ export default function uiExtension(pi: ExtensionAPI) {
 				return undefined
 			})
 		}
+	})
+
+	pi.on("session_shutdown", () => {
+		stopWorkingAnimation?.()
+		stopWorkingAnimation = undefined
+		currentCtx = null
 	})
 
 	pi.on("input", (event, ctx) => {
@@ -278,6 +327,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 		currentCtx = ctx
 		refresh("idle")
 		uiTui?.requestRender()
+	})
+	pi.on("session_shutdown", () => {
+		setSessionModeOnboardingFooterSuppressed(false)
 	})
 
 	pi.on("tool_result", (event) => {

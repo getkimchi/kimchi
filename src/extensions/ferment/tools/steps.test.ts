@@ -133,9 +133,9 @@ describe("startStep", () => {
 		)
 
 		const text = okText(result)
-		expect(text).toContain("Ferment goal:")
+		expect(text).toContain("Goal:")
 		expect(text).toContain("/app/output.toml")
-		expect(text).toContain("do NOT remove, summarize, or contradict the context block")
+		expect(text).toContain("Worker context (pass to subagent verbatim):")
 	})
 
 	it("maps concurrent non-parallel starts to the existing tool error", async () => {
@@ -182,7 +182,7 @@ describe("startStep", () => {
 		const pauseResult = await startStep(
 			pauseHarness.runtime,
 			{ ferment_id: pauseHarness.fermentId, phase_id: "phase-1", step_id: "step-1" },
-			{ pi: pauseHarness.pi, ctx: { ui: { select: vi.fn(async () => "Pause the ferment for now") } } },
+			{ pi: pauseHarness.pi, ctx: { ui: { select: vi.fn(async () => "Pause ferment") } } },
 			createServices(),
 		)
 		expect(okText(pauseResult)).toContain("paused")
@@ -196,7 +196,7 @@ describe("startStep", () => {
 		const skipResult = await startStep(
 			skipHarness.runtime,
 			{ ferment_id: skipHarness.fermentId, phase_id: "phase-1", step_id: "step-1" },
-			{ pi: skipHarness.pi, ctx: { ui: { select: vi.fn(async () => "Skip this step and move on") } } },
+			{ pi: skipHarness.pi, ctx: { ui: { select: vi.fn(async () => "Skip step") } } },
 			skipServices,
 		)
 		expect(okText(skipResult)).toContain("skipped")

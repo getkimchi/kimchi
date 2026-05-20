@@ -54,8 +54,10 @@ export interface AgentDetails {
 	subagentType: string
 	toolUses: number
 	tokens: string
+	tokenUsage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
 	durationMs: number
 	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error" | "background"
+	visibility?: "user" | "system"
 	activity?: string
 	spinnerFrame?: number
 	modelName?: string
@@ -63,6 +65,7 @@ export interface AgentDetails {
 	turnCount?: number
 	maxTurns?: number
 	agentId?: string
+	sessionFile?: string
 	error?: string
 	abortReason?: AgentAbortReason
 }
@@ -246,7 +249,7 @@ export class AgentWidget {
 	}
 
 	private renderWidget(theme: Theme, width: number): string[] {
-		const allAgents = this.manager.listAgents()
+		const allAgents = this.manager.listAgents().filter((a) => a.visibility !== "system")
 		const running = allAgents.filter((a) => a.status === "running")
 		const queued = allAgents.filter((a) => a.status === "queued")
 		const finished = allAgents.filter(
@@ -368,7 +371,7 @@ export class AgentWidget {
 
 	update() {
 		if (!this.uiCtx) return
-		const allAgents = this.manager.listAgents()
+		const allAgents = this.manager.listAgents().filter((a) => a.visibility !== "system")
 
 		let runningCount = 0
 		let queuedCount = 0

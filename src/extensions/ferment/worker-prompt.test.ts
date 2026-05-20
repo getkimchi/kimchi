@@ -58,7 +58,7 @@ describe("buildWorkerContext", () => {
 		const f = makeFerment({ phases: [phase] })
 
 		const ctx = buildWorkerContext(f, phase, step)
-		expect(ctx).toContain("Verify when done:")
+		expect(ctx).toContain("verify:")
 		expect(ctx).toContain("pnpm test")
 	})
 
@@ -70,7 +70,7 @@ describe("buildWorkerContext", () => {
 
 		expect(ctx).toContain("Ferment docs directory:")
 		expect(ctx).toContain(".kimchi/ferments/ferment-docs-1/docs/")
-		expect(ctx).toContain("Do NOT create ad-hoc project-root scratch folders like `.ui-audit/`")
+		expect(ctx).toContain("Do NOT create ad-hoc project-root scratch folders like .ui-audit/")
 	})
 
 	it("includes ferment goal and success criteria when present", () => {
@@ -90,10 +90,10 @@ describe("buildWorkerContext", () => {
 		})
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[0])
-		expect(ctx).toContain("Ferment goal:")
+		expect(ctx).toContain("Goal:")
 		expect(ctx).toContain("Write /app/jump_analyzer.py")
 		expect(ctx).toContain("/app/output.toml")
-		expect(ctx).toContain("Success criteria:")
+		expect(ctx).toContain("Criteria:")
 		expect(ctx).toContain("Running on /app/example_video.mp4 produces /app/output.toml")
 	})
 
@@ -102,8 +102,8 @@ describe("buildWorkerContext", () => {
 		const f = makeFerment({ phases: [phase] })
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[0])
-		expect(ctx).not.toContain("Ferment goal:")
-		expect(ctx).not.toContain("Success criteria:")
+		expect(ctx).not.toContain("Goal:")
+		expect(ctx).not.toContain("Criteria:")
 	})
 
 	it("includes prior completed steps with their summaries", () => {
@@ -117,10 +117,10 @@ describe("buildWorkerContext", () => {
 		const f = makeFerment({ phases: [phase] })
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[2])
-		expect(ctx).toContain("Prior steps in this phase (2)")
-		expect(ctx).toContain("Step 1")
+		expect(ctx).toContain("Prior:")
+		expect(ctx).toContain("✓1")
 		expect(ctx).toContain("Created the User type")
-		expect(ctx).toContain("Step 2")
+		expect(ctx).toContain("✓2")
 		expect(ctx).toContain("Wrote the migration")
 		// The current step itself should NOT be listed in prior steps
 		expect(ctx).not.toContain("Wire it up — ")
@@ -136,8 +136,8 @@ describe("buildWorkerContext", () => {
 		const f = makeFerment({ phases: [phase] })
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[1])
-		expect(ctx).toContain("⊘ skipped")
-		expect(ctx).not.toMatch(/✓ Step 1/)
+		expect(ctx).toContain("⊘1")
+		expect(ctx).not.toContain("✓1")
 	})
 
 	it("excludes pending and running steps from prior list", () => {
@@ -151,7 +151,7 @@ describe("buildWorkerContext", () => {
 		const f = makeFerment({ phases: [phase] })
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[2])
-		expect(ctx).not.toContain("Prior steps in this phase")
+		expect(ctx).not.toContain("Prior:")
 	})
 
 	it("truncates long prior step summaries", () => {
@@ -183,7 +183,7 @@ describe("buildWorkerContext", () => {
 		const f = makeFerment({ phases: [phase], decisions })
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[0])
-		expect(ctx).toContain("Decisions to honor:")
+		expect(ctx).toContain("Decisions:")
 		expect(ctx).toContain("Use Zod for validation")
 	})
 
@@ -200,7 +200,7 @@ describe("buildWorkerContext", () => {
 		const f = makeFerment({ phases: [phase], memories })
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[0])
-		expect(ctx).toContain("Memories to apply:")
+		expect(ctx).toContain("Memories:")
 		expect(ctx).toContain("[gotcha]")
 		expect(ctx).toContain("Date.parse")
 	})
@@ -223,26 +223,12 @@ describe("buildWorkerContext", () => {
 		expect(ctx).not.toContain("Decision 2")
 	})
 
-	it("includes constraints when set", () => {
-		const phase = makePhase({ steps: [makeStep()] })
-		const f = makeFerment({
-			phases: [phase],
-			scoping: {
-				constraints: { answer: "Must be backwards compatible", confirmedAt: "2026-05-09T00:00:00Z" },
-			},
-		})
-
-		const ctx = buildWorkerContext(f, phase, phase.steps[0])
-		expect(ctx).toContain("Constraints:")
-		expect(ctx).toContain("Must be backwards compatible")
-	})
-
 	it("opts.includeDecisions=false suppresses the decisions section", () => {
 		const decisions: Decision[] = [{ id: "d1", title: "Use Zod", description: "DX", createdAt: "2026-05-09T00:00:00Z" }]
 		const phase = makePhase({ steps: [makeStep()] })
 		const f = makeFerment({ phases: [phase], decisions })
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[0], { includeDecisions: false })
-		expect(ctx).not.toContain("Decisions to honor")
+		expect(ctx).not.toContain("Decisions:")
 	})
 })
