@@ -3760,13 +3760,15 @@ export default function (pi: ExtensionAPI) {
 			const exitMatch = output.match(/exit code: (\d+)/)
 			const exitCode = exitMatch ? Number.parseInt(exitMatch[1], 10) : null
 			const isExitError = exitCode !== null && exitCode !== 0
-			let text =
-				exitCode === null || exitCode === 0 ? theme.fg("success", "Done") : theme.fg("error", `Exit ${exitCode}`)
+			const isError = ctx.isError || isExitError
+			let text = isError
+				? theme.fg("error", exitCode != null ? `Exit ${exitCode}` : "Failed")
+				: theme.fg("success", "Done")
 			text += theme.fg("muted", ` (${nonEmpty.length} lines)`)
 			if (details?.truncation?.truncated) text += theme.fg("warning", " [truncated]")
-			if (!expanded && !isExitError && nonEmpty.length > 0)
+			if (!expanded && !isError && nonEmpty.length > 0)
 				return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
-			if (!expanded && !isExitError) return makeText(ctx.lastComponent, withBranch(text, theme))
+			if (!expanded && !isError) return makeText(ctx.lastComponent, withBranch(text, theme))
 			const collapsed = bashCollapsedLimit()
 			text += `\n${buildPreviewText(
 				nonEmpty.map((line) => theme.fg("dim", line)),
