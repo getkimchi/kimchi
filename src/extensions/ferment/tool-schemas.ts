@@ -121,11 +121,15 @@ export const ScopingQuestionOptionSchema = Type.Object({
 
 export const ScopingQuestionSchema = Type.Object({
 	id: Type.String({ description: "Stable identifier for this question." }),
-	text: Type.String({ description: "The question text shown to the user." }),
+	text: Type.String({
+		description:
+			"The decision-blocking question shown to the user. Do not ask preference-survey questions when a safe default can be assumed; a user request to be thorough with questions does not make default choices decision-blocking.",
+	}),
 	options: Type.Array(ScopingQuestionOptionSchema, {
 		minItems: 2,
 		maxItems: 5,
-		description: "2–5 candidate options for the question.",
+		description:
+			"2–5 concrete options for one decision-blocking single-select question. Vary question framing across outcome boundary, risk/tradeoff, integration/deployment target, verification standard, and non-goal/scope-cut decisions. Avoid feature-shopping options; scope extras out unless requested.",
 	}),
 })
 
@@ -174,7 +178,7 @@ export const ProposeScopingParams = Type.Object({
 			Type.Array(ScopingQuestionSchema, {
 				maxItems: 3,
 				description:
-					"Emit ONLY when truly uncertain. At most 3. Must be a real JSON array of question objects, never a quoted string. Each question needs 2-5 options in the display order you want; the host preserves that order and appends Custom answer last. Mark at most ONE option per question with `recommended: true`. No reason text. On replans after user answers, ask only NEW decision-blocking questions; never repeat answered questions.",
+					"Emit ONLY for decision-blocking uncertainty where the answer materially changes architecture, dependencies, data model, user-facing scope, security posture, deployment/runtime assumptions, or verification strategy. At most 3. Do not ask about defaults you can safely choose. If the user asks to be thorough with questions, be thorough in assumptions, success criteria, constraints, and verification steps; do not add default-choice questions unless implementation is blocked. Do not ask preference-survey or feature-shopping questions like tech stack, platform, persistence, or extra features for a simple greenfield app; record safe defaults in assumptions instead. If all recommended answers are generic defaults, emit questions: []. Must be a real JSON array of question objects, never a quoted string. Each question needs 2-5 options in the display order you want; the host preserves that order and appends Custom answer last. Mark at most ONE option per question with `recommended: true`. No reason text. On replans after user answers, ask only NEW decision-blocking questions; never repeat answered questions.",
 			}),
 			Type.String({
 				description:

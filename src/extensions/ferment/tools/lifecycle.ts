@@ -633,11 +633,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: "propose_ferment_scoping",
 		label: "Propose Scoping",
-		description: `Single combined emission of the full scoping draft after the user's free-form intent. Includes goal, success criteria, constraints, assumptions, phases (1-7), and optional clarifying questions (≤3) with one option \`recommended: true\` per question. Replaces previous draft wholesale. 
-		If questions is non-empty, the host asks those questions first and returns the answers; the plan is NOT saved from that call. 
-		After answers are recorded, re-emit the final updated proposal with questions: [] so the user reviews a plan that reflects their answers. 
-		Default to one phase for simple tasks. Add phases only for real vertical slices/tracer bullets, materially different complexity/risk tiers, independent parallel workstreams, or distinct code localities. 
-		Do not split phases just for setup, directory creation, CRUD vs polish, or to make the plan look organized.
+		description: `Emit the full scoping draft: goal, criteria, constraints, assumptions, 1-7 phases, optional decision-blocking questions. Questions pause planning; after answers, re-emit the updated proposal with questions: []. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,

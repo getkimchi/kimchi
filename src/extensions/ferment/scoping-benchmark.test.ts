@@ -28,7 +28,20 @@ const simpleTodoOnePhasePayload = {
 			],
 		},
 	],
+	questions: [],
 	gates: passingPlanGates(),
+}
+
+const thoroughQuestionsTodoPayload = {
+	...simpleTodoOnePhasePayload,
+	ferment_id: "f-todo-thorough",
+	title: "Create a TODO app with thorough questions",
+	assumptions: [
+		"User asked for thorough questions, but no decision-blocking uncertainty is present",
+		"Thoroughness is captured in assumptions, success criteria, constraints, and verification steps",
+		"Static browser app, vanilla JavaScript, localStorage persistence, and basic MVP scope are safe defaults",
+	],
+	questions: [],
 }
 
 const manualRunTwoPhasePayload = {
@@ -69,6 +82,18 @@ const manualRunTwoPhasePayload = {
 describe("Ferment scoping benchmark cases", () => {
 	it("accepts a simple TODO app as one vertical-slice phase", () => {
 		expect(Value.Check(ProposeScopingParams, simpleTodoOnePhasePayload)).toBe(true)
+		expect(simpleTodoOnePhasePayload.questions).toEqual([])
+		expect(simpleTodoOnePhasePayload.assumptions).toContain("Browser-based app")
+		expect(simpleTodoOnePhasePayload.assumptions).toContain("Standard TODO UX is acceptable")
+	})
+
+	it("treats a request to be thorough with TODO questions as no-question defaults", () => {
+		expect(Value.Check(ProposeScopingParams, thoroughQuestionsTodoPayload)).toBe(true)
+		expect(thoroughQuestionsTodoPayload.questions).toEqual([])
+		expect(thoroughQuestionsTodoPayload.assumptions).toContain(
+			"Thoroughness is captured in assumptions, success criteria, constraints, and verification steps",
+		)
+		expect(thoroughQuestionsTodoPayload.assumptions.join("\n")).toContain("safe defaults")
 	})
 
 	it("accepts the observed manual-run payload shape with assumptions as an array", () => {
@@ -80,6 +105,15 @@ describe("Ferment scoping benchmark cases", () => {
 
 		expect(schemaText).toContain('"minItems":1')
 		expect(schemaText).toContain("Default to ONE phase for simple tasks")
+		expect(schemaText).toContain("decision-blocking uncertainty")
+		expect(schemaText).toContain("be thorough in assumptions, success criteria, constraints, and verification steps")
+		expect(schemaText).toContain("Do not ask about defaults you can safely choose")
+		expect(schemaText).toContain("single-select question")
+		expect(schemaText).toContain("outcome boundary")
+		expect(schemaText).toContain("risk/tradeoff")
+		expect(schemaText).toContain("verification standard")
+		expect(schemaText).toContain("feature-shopping questions")
+		expect(schemaText).toContain("tech stack, platform, persistence, or extra features")
 		expect(schemaText).toContain("vertical slice/tracer bullet")
 		expect(schemaText).toContain("Do not create phases just for setup")
 		expect(schemaText).toContain("CRUD vs polish")
