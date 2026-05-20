@@ -230,6 +230,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		let sessionStartNano = String(sessionStartMs * 1_000_000)
 		const sentMessages = new Set<string>()
 		const pendingArgs = new Map<string, { toolName: string; args: unknown }>()
+		const messageStartTimes = new Map<string, number>()
 		const inFlight = new Set<Promise<void>>()
 		let shuttingDown = false
 
@@ -264,7 +265,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 						name: "claude_code.token.usage",
 						type: "Sum",
 						value: tokens.input,
-						attrs: { type: "input", model, provider: "ai-enabler" },
+						attrs: { type: "input", model },
 					})
 				}
 				if (tokens.output > 0) {
@@ -272,7 +273,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 						name: "claude_code.token.usage",
 						type: "Sum",
 						value: tokens.output,
-						attrs: { type: "output", model, provider: "ai-enabler" },
+						attrs: { type: "output", model },
 					})
 				}
 				if (tokens.cacheRead > 0) {
@@ -280,7 +281,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 						name: "claude_code.token.usage",
 						type: "Sum",
 						value: tokens.cacheRead,
-						attrs: { type: "cacheRead", model, provider: "ai-enabler" },
+						attrs: { type: "cacheRead", model },
 					})
 				}
 				if (tokens.cacheWrite > 0) {
@@ -288,7 +289,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 						name: "claude_code.token.usage",
 						type: "Sum",
 						value: tokens.cacheWrite,
-						attrs: { type: "cacheCreation", model, provider: "ai-enabler" },
+						attrs: { type: "cacheCreation", model },
 					})
 				}
 			}
@@ -300,7 +301,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 						name: "claude_code.cost.usage",
 						type: "Sum",
 						value: cost,
-						attrs: { model, provider: "ai-enabler" },
+						attrs: { model },
 					})
 				}
 			}
@@ -366,11 +367,18 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			}
 		}
 
+		pi.on("message_start", async (event) => {
+			const msg = event.message as AssistantMessage
+			const id = msg.responseId ? String(msg.responseId) : String(msg.timestamp)
+			messageStartTimes.set(id, Date.now())
+		})
+
 		pi.on("session_start", async () => {
 			sessionId = crypto.randomUUID()
 			sessionStartMs = Date.now()
 			sessionStartNano = String(sessionStartMs * 1_000_000)
 			sentMessages.clear()
+			messageStartTimes.clear()
 			pendingArgs.clear()
 			shuttingDown = false
 
@@ -390,6 +398,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		})
 
 		pi.on("session_shutdown", async () => {
+			messageStartTimes.clear()
 			shuttingDown = true
 			if (flushTimer) clearInterval(flushTimer)
 			flushMetrics()
@@ -423,7 +432,9 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				const cacheRead = assistant.usage?.cacheRead ?? 0
 				const cacheWrite = assistant.usage?.cacheWrite ?? 0
 				const costTotal = assistant.usage?.cost?.total ?? 0
-				const sessionUptimeMs = Date.now() - sessionStartMs
+				const startMs = messageStartTimes.get(msgId) ?? sessionStartMs
+				const durationMs = Date.now() - startMs
+				messageStartTimes.delete(msgId)
 
 				track(
 					sendLog(config, sessionId, "api_request", {
@@ -434,7 +445,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 						cache_read_tokens: cacheRead,
 						cache_creation_tokens: cacheWrite,
 						cost_usd: costTotal,
-						session_uptime_ms: sessionUptimeMs,
+						duration_ms: durationMs,
 					}),
 				)
 
@@ -470,16 +481,10 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			if (toolName === "bash") {
 				const command = String(args?.command ?? "")
 				if (/git\s+commit\b/.test(command) && !/--dry-run/.test(command)) {
-					track(sendLog(config, sessionId, "tool_usage", { tool_name: "bash", decision: "git_commit" }))
 					cumulativeCommitCount++
-					const key = ["bash", "git_commit", "", "auto", "applied"].join("|")
-					cumulativeEditDecisions[key] = (cumulativeEditDecisions[key] || 0) + 1
 				}
 				if (/gh\s+pr\s+create\b/.test(command)) {
-					track(sendLog(config, sessionId, "tool_usage", { tool_name: "bash", decision: "gh_pr_create" }))
 					cumulativePRCount++
-					const key = ["bash", "gh_pr_create", "", "auto", "applied"].join("|")
-					cumulativeEditDecisions[key] = (cumulativeEditDecisions[key] || 0) + 1
 				}
 			}
 
@@ -487,14 +492,6 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				const filePath = String(args?.filePath ?? "")
 				const language = inferLanguage(filePath)
 				const changes = countLineChanges(String(args?.oldString ?? ""), String(args?.newString ?? ""))
-				track(
-					sendLog(config, sessionId, "tool_usage", {
-						tool_name: "edit",
-						language,
-						lines_added: changes.added,
-						lines_removed: changes.removed,
-					}),
-				)
 				if (!cumulativeLocByLanguage[language]) cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
 				cumulativeLocByLanguage[language].added += changes.added
 				cumulativeLocByLanguage[language].removed += changes.removed
@@ -508,13 +505,6 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				const content = String(args?.content ?? "")
 				const trimmedContent = content.endsWith("\n") ? content.replace(/\n+$/, "") : content
 				const actualLines = trimmedContent ? trimmedContent.split("\n").length : 1
-				track(
-					sendLog(config, sessionId, "tool_usage", {
-						tool_name: "write",
-						language,
-						lines_added: actualLines,
-					}),
-				)
 				if (!cumulativeLocByLanguage[language]) cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
 				cumulativeLocByLanguage[language].added += actualLines
 				const key = ["write", "write_created", language, "auto", "applied"].join("|")
@@ -530,19 +520,25 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				if (!cumulativeLocByLanguage[language]) cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
 				for (const edit of edits) {
 					const changes = countLineChanges(String(edit.oldString ?? ""), String(edit.newString ?? ""))
-					track(
-						sendLog(config, sessionId, "tool_usage", {
-							tool_name: "multiedit",
-							language,
-							lines_added: changes.added,
-							lines_removed: changes.removed,
-						}),
-					)
 					cumulativeLocByLanguage[language].added += changes.added
 					cumulativeLocByLanguage[language].removed += changes.removed
 				}
 				const key = ["multiedit", "edit_applied", language, "auto", "applied"].join("|")
 				cumulativeEditDecisions[key] = (cumulativeEditDecisions[key] || 0) + 1
+			}
+
+			if (toolName === "patch") {
+				const oldString = args?.oldString
+				const newString = args?.newString
+				if (typeof oldString === "string" && typeof newString === "string") {
+					const changes = countLineChanges(oldString, newString)
+					const language = "patch"
+					if (!cumulativeLocByLanguage[language]) cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
+					cumulativeLocByLanguage[language].added += changes.added || 1
+					cumulativeLocByLanguage[language].removed += changes.removed
+					const key = ["patch", "patch", language, "auto", "applied"].join("|")
+					cumulativeEditDecisions[key] = (cumulativeEditDecisions[key] || 0) + 1
+				}
 			}
 		})
 	}
