@@ -1,10 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 
-// Check if a key is used as a binding value in any other binding.
-// Returns true if the key appears in any binding value.
+// Check if a key is used as a binding value in any binding OTHER than
+// "tui.input.newLine" (which is the one we are trying to fix).
 function isKeyBoundElsewhere(current: Record<string, unknown>, key: string): boolean {
-	for (const [, value] of Object.entries(current)) {
+	for (const [bindingName, value] of Object.entries(current)) {
+		if (bindingName === "tui.input.newLine") continue
 		if (typeof value === "string") {
 			const parts = value.split(",").map((s) => s.trim())
 			if (parts.includes(key)) return true
@@ -18,6 +19,11 @@ function isKeyBoundElsewhere(current: Record<string, unknown>, key: string): boo
 
 // Add ctrl+j as a fallback to tui.input.newLine if not already present
 // and not already bound elsewhere.
+//
+// IMPORTANT: bindings must be stored as a JSON array, not a comma-separated
+// string. pi-tui's parseKeyId splits on "+" and takes the last segment, so
+// "shift+enter,ctrl+j" (string) is parsed as "shift+j" instead of two
+// separate bindings.
 function addNewlineFallback(current: Record<string, unknown>): boolean {
 	const fallback = "ctrl+j"
 	const existing = current["tui.input.newLine"]
@@ -26,19 +32,21 @@ function addNewlineFallback(current: Record<string, unknown>): boolean {
 	if (isKeyBoundElsewhere(current, fallback)) return false
 
 	if (typeof existing === "string") {
+		// Comma-separated strings are misread by pi-tui ("shift+enter,ctrl+j"
+		// becomes "shift+j"). Always convert to array format.
 		const parts = existing.split(",").map((s) => s.trim())
-		if (!parts.includes(fallback)) {
-			current["tui.input.newLine"] = `${existing},${fallback}`
-			return true
-		}
-	} else if (Array.isArray(existing)) {
+		const keys = parts.includes(fallback) ? parts : [...parts, fallback]
+		current["tui.input.newLine"] = keys
+		return true // always rewrite: string format must become an array
+	}
+	if (Array.isArray(existing)) {
 		const list = existing.filter((s) => typeof s === "string") as string[]
 		if (!list.includes(fallback)) {
-			existing.push(fallback)
+			current["tui.input.newLine"] = [...list, fallback]
 			return true
 		}
 	} else {
-		current["tui.input.newLine"] = "shift+enter,ctrl+j"
+		current["tui.input.newLine"] = ["shift+enter", fallback]
 		return true
 	}
 	return false
