@@ -689,6 +689,155 @@ describe("telemetryExtension", () => {
 			expect(costMetric.sum).toBeDefined() // Should be Sum, not Gauge
 			expect(costMetric.gauge).toBeUndefined()
 		})
+
+		it("accumulates multiple edit decisions into a single metric", async () => {
+			const { handlers, api } = createMockApi()
+			const ext = telemetryExtension(makeConfig())
+			ext(api)
+
+			await getHandler(handlers, "session_start")()
+
+			const toolStart = getHandler(handlers, "tool_execution_start")
+			const toolEnd = getHandler(handlers, "tool_execution_end")
+
+			// First edit
+			await toolStart({ toolCallId: "e1", toolName: "edit", args: { filePath: "a.ts" } })
+			await toolEnd({ toolCallId: "e1", result: { ok: true, value: "" } })
+
+			// Second edit to same file
+			await toolStart({ toolCallId: "e2", toolName: "edit", args: { filePath: "a.ts" } })
+			await toolEnd({ toolCallId: "e2", result: { ok: true, value: "" } })
+
+			await getHandler(handlers, "session_shutdown")()
+
+			const metricsCalls = fetchMock.mock.calls.filter(
+				([url]) => String(url) === "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest",
+			)
+			const payload = JSON.parse(String((metricsCalls[0][1] as RequestInit).body))
+			const decisionMetrics = payload.resourceMetrics[0].scopeMetrics[0].metrics.filter(
+				(m: { name: string }) => m.name === "claude_code.code_edit_tool.decision",
+			)
+			// Should be a single metric, not two
+			expect(decisionMetrics).toHaveLength(1)
+			expect(decisionMetrics[0].sum.dataPoints[0].asInt).toBe("2")
+		})
+
+		it("includes language on all lines_of_code.count metrics", async () => {
+			const { handlers, api } = createMockApi()
+			const ext = telemetryExtension(makeConfig())
+			ext(api)
+
+			await getHandler(handlers, "session_start")()
+
+			const toolStart = getHandler(handlers, "tool_execution_start")
+			const toolEnd = getHandler(handlers, "tool_execution_end")
+
+			await toolStart({ toolCallId: "e1", toolName: "edit", args: { filePath: "a.ts" } })
+			await toolEnd({ toolCallId: "e1", result: { ok: true, value: "" } })
+
+			await toolStart({ toolCallId: "w1", toolName: "write", args: { filePath: "b.py", content: "x\ny\n" } })
+			await toolEnd({ toolCallId: "w1", result: { ok: true, value: "" } })
+
+			await getHandler(handlers, "session_shutdown")()
+
+			const metricsCalls = fetchMock.mock.calls.filter(
+				([url]) => String(url) === "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest",
+			)
+			const payload = JSON.parse(String((metricsCalls[0][1] as RequestInit).body))
+			const locMetrics = payload.resourceMetrics[0].scopeMetrics[0].metrics.filter(
+				(m: { name: string }) => m.name === "claude_code.lines_of_code.count",
+			)
+			expect(locMetrics.length).toBeGreaterThan(0)
+			for (const m of locMetrics) {
+				const attrs = m.sum.dataPoints[0].attributes as Array<{ key: string; value: { stringValue: string } }>
+				const attrKeys = attrs.map((a) => a.key)
+				expect(attrKeys).toContain("language")
+			}
+		})
+
+		it("emits cacheRead metrics when cacheRead is non-zero", async () => {
+			const { handlers, api } = createMockApi()
+			const ext = telemetryExtension(makeConfig())
+			ext(api)
+
+			await getHandler(handlers, "session_start")()
+
+			const msgEnd = getHandler(handlers, "message_end")
+			await msgEnd({
+				message: {
+					role: "assistant",
+					model: "test-model",
+					provider: "test-provider",
+					timestamp: Date.now(),
+					usage: {
+						input: 1,
+						output: 1,
+						cacheRead: 5,
+						cacheWrite: 0,
+						cost: { total: 0.001 },
+					},
+				},
+			})
+
+			await getHandler(handlers, "session_shutdown")()
+
+			const metricsCalls = fetchMock.mock.calls.filter(
+				([url]) => String(url) === "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest",
+			)
+			const payload = JSON.parse(String((metricsCalls[0][1] as RequestInit).body))
+			const cacheReadMetric = payload.resourceMetrics[0].scopeMetrics[0].metrics.find(
+				(m: {
+					name: string
+					sum?: {
+						dataPoints: Array<{ asInt?: string; attributes?: Array<{ key: string; value?: { stringValue?: string } }> }>
+					}
+				}) => {
+					const typeAttr = m.sum?.dataPoints[0]?.attributes?.find((a: { key: string }) => a.key === "type")
+					return m.name === "claude_code.token.usage" && typeAttr?.value?.stringValue === "cacheRead"
+				},
+			)
+			expect(cacheReadMetric).toBeDefined()
+			expect(cacheReadMetric.sum.dataPoints[0].asInt).toBe("5")
+		})
+
+		it("periodic flush sends accumulated metrics", async () => {
+			vi.useFakeTimers()
+			const { handlers, api } = createMockApi()
+			const ext = telemetryExtension(makeConfig())
+			ext(api)
+
+			await getHandler(handlers, "session_start")()
+
+			const toolStart = getHandler(handlers, "tool_execution_start")
+			const toolEnd = getHandler(handlers, "tool_execution_end")
+
+			await toolStart({ toolCallId: "e1", toolName: "edit", args: { filePath: "a.ts" } })
+			await toolEnd({ toolCallId: "e1", result: { ok: true, value: "" } })
+
+			// No metrics should be sent yet
+			let metricsCalls = fetchMock.mock.calls.filter(
+				([url]) => String(url) === "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest",
+			)
+			expect(metricsCalls).toHaveLength(0)
+
+			// Advance timer past the flush interval
+			await vi.advanceTimersByTimeAsync(30_001)
+
+			// Now metrics should have been flushed
+			metricsCalls = fetchMock.mock.calls.filter(
+				([url]) => String(url) === "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest",
+			)
+			expect(metricsCalls).toHaveLength(1)
+
+			const payload = JSON.parse(String((metricsCalls[0][1] as RequestInit).body))
+			const metrics = payload.resourceMetrics[0].scopeMetrics[0].metrics
+			expect(metrics.length).toBeGreaterThan(0)
+
+			// Clean up: advance past another interval so shutdown doesn't race with timer
+			await vi.advanceTimersByTimeAsync(30_001)
+			await getHandler(handlers, "session_shutdown")()
+			vi.useRealTimers()
+		})
 	})
 
 	describe("fetch error handling", () => {

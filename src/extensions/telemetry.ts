@@ -241,9 +241,10 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		const cumulativeCostByModel: Record<string, number> = {}
 		let cumulativeCommitCount = 0
 		let cumulativePRCount = 0
-		let cumulativeLinesAdded = 0
-		let cumulativeLinesRemoved = 0
-		const cumulativeEditDecisionsFull: MetricData[] = []
+		// Accumulate lines of code per language
+		const cumulativeLocByLanguage: Record<string, { added: number; removed: number }> = {}
+		// Accumulate edit decisions keyed by dimension group
+		const cumulativeEditDecisions: Record<string, number> = {}
 
 		let flushTimer: NodeJS.Timeout | undefined
 
@@ -324,26 +325,41 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				})
 			}
 
-			// Flush lines of code (separate added/removed)
-			if (cumulativeLinesAdded > 0) {
-				allMetrics.push({
-					name: "claude_code.lines_of_code.count",
-					type: "Sum",
-					value: cumulativeLinesAdded,
-					attrs: { type: "added" },
-				})
-			}
-			if (cumulativeLinesRemoved > 0) {
-				allMetrics.push({
-					name: "claude_code.lines_of_code.count",
-					type: "Sum",
-					value: cumulativeLinesRemoved,
-					attrs: { type: "removed" },
-				})
+			// Flush lines of code per language
+			for (const [language, counts] of Object.entries(cumulativeLocByLanguage)) {
+				if (counts.added > 0) {
+					allMetrics.push({
+						name: "claude_code.lines_of_code.count",
+						type: "Sum",
+						value: counts.added,
+						attrs: { type: "added", language },
+					})
+				}
+				if (counts.removed > 0) {
+					allMetrics.push({
+						name: "claude_code.lines_of_code.count",
+						type: "Sum",
+						value: counts.removed,
+						attrs: { type: "removed", language },
+					})
+				}
 			}
 
 			// Flush edit decisions with full attributes (language when known)
-			allMetrics.push(...cumulativeEditDecisionsFull)
+			for (const [key, count] of Object.entries(cumulativeEditDecisions)) {
+				const parts = key.split("|")
+				const toolName = parts[0]
+				const decision = parts[1]
+				const language = parts[2]
+				const source = parts[3]
+				const decisionType = parts[4]
+				allMetrics.push({
+					name: "claude_code.code_edit_tool.decision",
+					type: "Sum",
+					value: count,
+					attrs: { tool_name: toolName, decision, language, source, decision_type: decisionType },
+				})
+			}
 
 			if (allMetrics.length > 0) {
 				track(sendMetrics(config, sessionId, allMetrics, sessionStartNano))
@@ -363,9 +379,8 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			for (const key of Object.keys(cumulativeCostByModel)) delete cumulativeCostByModel[key]
 			cumulativeCommitCount = 0
 			cumulativePRCount = 0
-			cumulativeLinesAdded = 0
-			cumulativeLinesRemoved = 0
-			cumulativeEditDecisionsFull.length = 0
+			for (const key of Object.keys(cumulativeLocByLanguage)) delete cumulativeLocByLanguage[key]
+			for (const key of Object.keys(cumulativeEditDecisions)) delete cumulativeEditDecisions[key]
 
 			// Start periodic flush timer
 			if (flushTimer) clearInterval(flushTimer)
@@ -403,7 +418,10 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				const meta = availableModels.find((m) => m.slug === model)
 				const rawProvider = String(assistant.provider ?? "unknown")
 				const provider = meta?.provider ? meta.provider : rawProvider === "kimchi-dev" ? "ai-enabler" : rawProvider
-				const { input, output, cacheRead, cacheWrite } = assistant.usage
+				const input = assistant.usage?.input ?? 0
+				const output = assistant.usage?.output ?? 0
+				const cacheRead = assistant.usage?.cacheRead ?? 0
+				const cacheWrite = assistant.usage?.cacheWrite ?? 0
 				const costTotal = assistant.usage?.cost?.total ?? 0
 				const sessionUptimeMs = Date.now() - sessionStartMs
 
@@ -454,22 +472,14 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				if (/git\s+commit\b/.test(command) && !/--dry-run/.test(command)) {
 					track(sendLog(config, sessionId, "tool_usage", { tool_name: "bash", decision: "git_commit" }))
 					cumulativeCommitCount++
-					cumulativeEditDecisionsFull.push({
-						name: "claude_code.code_edit_tool.decision",
-						type: "Sum",
-						value: 1,
-						attrs: { tool_name: "bash", decision: "git_commit", source: "auto", decision_type: "applied" },
-					})
+					const key = ["bash", "git_commit", "", "auto", "applied"].join("|")
+					cumulativeEditDecisions[key] = (cumulativeEditDecisions[key] || 0) + 1
 				}
 				if (/gh\s+pr\s+create\b/.test(command)) {
 					track(sendLog(config, sessionId, "tool_usage", { tool_name: "bash", decision: "gh_pr_create" }))
 					cumulativePRCount++
-					cumulativeEditDecisionsFull.push({
-						name: "claude_code.code_edit_tool.decision",
-						type: "Sum",
-						value: 1,
-						attrs: { tool_name: "bash", decision: "gh_pr_create", source: "auto", decision_type: "applied" },
-					})
+					const key = ["bash", "gh_pr_create", "", "auto", "applied"].join("|")
+					cumulativeEditDecisions[key] = (cumulativeEditDecisions[key] || 0) + 1
 				}
 			}
 
@@ -485,14 +495,11 @@ export default function telemetryExtension(config: TelemetryConfig) {
 						lines_removed: changes.removed,
 					}),
 				)
-				cumulativeLinesAdded += changes.added
-				cumulativeLinesRemoved += changes.removed
-				cumulativeEditDecisionsFull.push({
-					name: "claude_code.code_edit_tool.decision",
-					type: "Sum",
-					value: 1,
-					attrs: { tool_name: "edit", decision: "edit_applied", language, source: "auto", decision_type: "applied" },
-				})
+				if (!cumulativeLocByLanguage[language]) cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
+				cumulativeLocByLanguage[language].added += changes.added
+				cumulativeLocByLanguage[language].removed += changes.removed
+				const key = ["edit", "edit_applied", language, "auto", "applied"].join("|")
+				cumulativeEditDecisions[key] = (cumulativeEditDecisions[key] || 0) + 1
 			}
 
 			if (toolName === "write") {
@@ -508,20 +515,10 @@ export default function telemetryExtension(config: TelemetryConfig) {
 						lines_added: actualLines,
 					}),
 				)
-				// Emit lines_of_code.count directly with language attribute
-				cumulativeEditDecisionsFull.push({
-					name: "claude_code.lines_of_code.count",
-					type: "Sum",
-					value: actualLines,
-					attrs: { type: "added", language },
-				})
-				// Emit code_edit_tool.decision with full attributes
-				cumulativeEditDecisionsFull.push({
-					name: "claude_code.code_edit_tool.decision",
-					type: "Sum",
-					value: 1,
-					attrs: { tool_name: "write", decision: "write_created", language, source: "auto", decision_type: "applied" },
-				})
+				if (!cumulativeLocByLanguage[language]) cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
+				cumulativeLocByLanguage[language].added += actualLines
+				const key = ["write", "write_created", language, "auto", "applied"].join("|")
+				cumulativeEditDecisions[key] = (cumulativeEditDecisions[key] || 0) + 1
 			}
 
 			if (toolName === "multiedit") {
@@ -530,6 +527,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				const edits = Array.isArray(args?.edits)
 					? (args.edits as Array<{ oldString?: string; newString?: string }>)
 					: []
+				if (!cumulativeLocByLanguage[language]) cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
 				for (const edit of edits) {
 					const changes = countLineChanges(String(edit.oldString ?? ""), String(edit.newString ?? ""))
 					track(
@@ -540,21 +538,11 @@ export default function telemetryExtension(config: TelemetryConfig) {
 							lines_removed: changes.removed,
 						}),
 					)
-					cumulativeLinesAdded += changes.added
-					cumulativeLinesRemoved += changes.removed
+					cumulativeLocByLanguage[language].added += changes.added
+					cumulativeLocByLanguage[language].removed += changes.removed
 				}
-				cumulativeEditDecisionsFull.push({
-					name: "claude_code.code_edit_tool.decision",
-					type: "Sum",
-					value: 1,
-					attrs: {
-						tool_name: "multiedit",
-						decision: "edit_applied",
-						language,
-						source: "auto",
-						decision_type: "applied",
-					},
-				})
+				const key = ["multiedit", "edit_applied", language, "auto", "applied"].join("|")
+				cumulativeEditDecisions[key] = (cumulativeEditDecisions[key] || 0) + 1
 			}
 		})
 	}
