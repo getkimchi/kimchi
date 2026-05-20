@@ -39,6 +39,7 @@ process.env.KIMCHI_CODING_AGENT_DIR = agentDir
 
 process.title = "kimchi"
 process.env.PI_SKIP_VERSION_CHECK = "1"
+process.env.KIMCHI_DISABLE_BUILTIN_PROVIDERS = "1"
 
 installProxyAgent()
 

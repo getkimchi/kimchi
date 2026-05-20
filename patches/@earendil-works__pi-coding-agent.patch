@@ -10,6 +10,20 @@ index d9722b792a5e2c0020bd842ea6ddb1754a51b44c..6d64db9876b8be6ae6af34322d5748cf
    ANTHROPIC_API_KEY                - Anthropic Claude API key
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
    OPENAI_API_KEY                   - OpenAI GPT API key
+diff --git a/dist/core/model-registry.js b/dist/core/model-registry.js
+index 2d88adfd072b1f656f4f82a24f2df5ae6984287b..ec99d306d53a8753c52d2f5f8df190c716356375 100644
+--- a/dist/core/model-registry.js
++++ b/dist/core/model-registry.js
+@@ -292,7 +292,8 @@ export class ModelRegistry {
+     }
+     /** Load built-in models and apply provider/model overrides */
+     loadBuiltInModels(overrides, modelOverrides) {
+-        return getProviders().flatMap((provider) => {
++        const allowed = process.env.KIMCHI_DISABLE_BUILTIN_PROVIDERS ? new Set(["kimchi-dev"]) : null;
++        return getProviders().filter((p) => !allowed || allowed.has(p)).flatMap((provider) => {
+             const models = getModels(provider);
+             const providerOverride = overrides.get(provider);
+             const perModelOverrides = modelOverrides.get(provider);
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
 index afdb0b720f9e57875d9493fe932b4912afa9807f..c644bee905695ca37f4d124cc81fd327840e6911 100644
 --- a/dist/core/model-resolver.js
@@ -18,7 +32,7 @@ index afdb0b720f9e57875d9493fe932b4912afa9807f..c644bee905695ca37f4d124cc81fd327
      opencode: "kimi-k2.6",
      "opencode-go": "kimi-k2.6",
      "kimi-coding": "kimi-for-coding",
-+    "kimchi-dev": "kimi-k2.5",
++    "kimchi-dev": "kimi-k2.6",
      "cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.6",
      "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
      xiaomi: "mimo-v2.5-pro",
