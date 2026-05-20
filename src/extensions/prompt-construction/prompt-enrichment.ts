@@ -115,6 +115,8 @@ function readMultiModelArgv(): boolean {
 
 let multiModelEnabled = readMultiModelArgv()
 
+export const ORCHESTRATOR_MODEL_ID = "kimi-k2.6"
+
 const DELEGATION_TOOL_NAMES = new Set(["Agent", "subagent"])
 
 function isDelegationToolCallName(name: string | undefined): boolean {
@@ -390,7 +392,7 @@ export default function (skillPaths: string[]) {
 				env,
 				contextFiles: cachedContextFiles,
 				skills: cachedSkills,
-				currentModelId: ctx.model?.id,
+				currentModelId: mode === "orchestrator" ? ORCHESTRATOR_MODEL_ID : ctx.model?.id,
 				currentPhase: getCurrentPhase(),
 				registry: registry,
 				mode,

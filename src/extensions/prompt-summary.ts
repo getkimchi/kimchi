@@ -2,7 +2,7 @@ import type { AssistantMessage, Usage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { formatCount } from "./format.js"
-import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
+import { ORCHESTRATOR_MODEL_ID, getMultiModelEnabled, isSubagent } from "./prompt-construction/prompt-enrichment.js"
 
 interface UsageTotals {
 	input: number
@@ -20,10 +20,16 @@ interface SubagentStats {
 	}
 }
 
+interface AgentToolDetails {
+	modelName?: string
+}
+
 interface PromptSummaryData {
 	elapsed: string
 	orchestrator: UsageTotals | null
+	orchestratorModel?: string
 	subagents: UsageTotals | null
+	subagentModels?: string[]
 	total: UsageTotals
 	extras?: string[]
 }
@@ -99,11 +105,15 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 		if (t.cacheRead > 0 || t.cacheWrite > 0) {
 			values += `${COL_GAP}cache-read ${formatCount(t.cacheRead)}${COL_GAP}cache-write ${formatCount(t.cacheWrite)}`
 		}
-		container.addChild(new Text(INDENT + theme.fg("dim", "tokens".padEnd(LABEL_WIDTH)) + values, 0, 0))
+		const tokensLabel = data.orchestratorModel ? `${data.orchestratorModel}:` : "tokens"
+		container.addChild(new Text(INDENT + theme.fg("dim", tokensLabel.padEnd(LABEL_WIDTH)) + values, 0, 0))
 	} else {
 		// Multi-row breakdown when subagents were involved
 		const rows: Array<{ label: string; totals: UsageTotals }> = []
-		if (data.orchestrator) rows.push({ label: "main model:", totals: data.orchestrator })
+		if (data.orchestrator) {
+			const label = data.orchestratorModel ? `${data.orchestratorModel}:` : "main model:"
+			rows.push({ label, totals: data.orchestrator })
+		}
 		rows.push({ label: "subagents:", totals: data.subagents })
 		rows.push({ label: "total:", totals: data.total })
 
@@ -112,7 +122,11 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 		}
 	}
 
-	for (const extra of data.extras ?? []) {
+	const allExtras = [
+		...(data.subagentModels?.length ? [`subagent models: ${data.subagentModels.join(", ")}`] : []),
+		...(data.extras ?? []),
+	]
+	for (const extra of allExtras) {
 		container.addChild(new Text(INDENT + theme.fg("dim", "note:".padEnd(LABEL_WIDTH)) + extra, 0, 0))
 	}
 
@@ -126,11 +140,13 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 
 	const orchestrator = emptyTotals()
 	const subagents = emptyTotals()
+	const subagentModelNames = new Set<string>()
 	let startedAt = Date.now()
 
 	pi.on("agent_start", () => {
 		Object.assign(orchestrator, emptyTotals())
 		Object.assign(subagents, emptyTotals())
+		subagentModelNames.clear()
 		startedAt = Date.now()
 	})
 
@@ -148,6 +164,8 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 		subagents.output += stats.tokenUsage.output
 		subagents.cacheRead += stats.tokenUsage.cacheRead
 		subagents.cacheWrite += stats.tokenUsage.cacheWrite
+		const agentDetails = event.details as AgentToolDetails | undefined
+		if (agentDetails?.modelName) subagentModelNames.add(agentDetails.modelName)
 	})
 
 	pi.on("agent_end", async () => {
@@ -164,7 +182,9 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 		const data: PromptSummaryData = {
 			elapsed: formatDuration(Date.now() - startedAt),
 			orchestrator: orchestrator.input + orchestrator.output > 0 ? { ...orchestrator } : null,
+			orchestratorModel: getMultiModelEnabled() ? ORCHESTRATOR_MODEL_ID : undefined,
 			subagents: subagents.input + subagents.output > 0 ? { ...subagents } : null,
+			subagentModels: subagentModelNames.size > 0 ? [...subagentModelNames] : undefined,
 			total: grandTotal,
 			extras: extras.length > 0 ? extras : undefined,
 		}

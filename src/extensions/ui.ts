@@ -192,6 +192,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 			unsubModelCycleInput = ctx.ui.onTerminalInput((data) => {
 				if (matchesKey(data, "ctrl+p")) {
 					if (!isKeyRelease(data)) {
+						if (getMultiModelEnabled()) return { consume: true }
 						const allAvailable = ctx.modelRegistry.getAvailable()
 						const enabledIds = getEnabledModelIds()
 						const available = enabledIds
