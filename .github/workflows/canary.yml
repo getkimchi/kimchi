@@ -12,6 +12,7 @@ on:
       - 'tsconfig.json'
       - 'biome.json'
       - 'scripts/**'
+      - 'tools/proxy-helper/**'
   workflow_dispatch:
     inputs:
       force:
@@ -113,6 +114,17 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           bun: "true"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+          cache-dependency-path: tools/proxy-helper/go.sum
+
+      - name: Build proxy-helper
+        run: make -C tools/proxy-helper build
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
 
       - name: Set version
         run: node scripts/set-version.js "${{ needs.preflight.outputs.version }}"

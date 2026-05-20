@@ -12,6 +12,15 @@ import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import { validateAuxiliaryFiles } from "./auxiliary-files/validator.js"
 import { installPasteInterceptor } from "./paste-interceptor.js"
 import { installProxyAgent } from "./proxy.js"
+import { isProxyMode, runProxy } from "./ssh-proxy.js"
+
+// Must happen before installPasteInterceptor / installProxyAgent touch stdin/stdout.
+// SSH ProxyCommand wires stdin/stdout as a raw binary pipe — any bytes written
+// before exec corrupts the handshake.
+const rawArgv = process.argv.slice(2)
+if (isProxyMode(rawArgv)) {
+	runProxy(rawArgv[rawArgv.indexOf("--ssh-proxy") + 1])
+}
 
 const preSet = !!process.env.PI_PACKAGE_DIR
 const auxiliaryDir = resolveAuxiliaryFilesDir(process.env, homedir(), process.execPath)

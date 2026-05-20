@@ -30,6 +30,7 @@ import loginExtension from "./extensions/login/index.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
+import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import permissionsExtension from "./extensions/permissions/index.js"
@@ -40,6 +41,7 @@ import questionnaireExtension from "./extensions/questionnaire.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
+import stripImagesExtension from "./extensions/strip-images.js"
 import tagsExtension from "./extensions/tags.js"
 import telemetryExtension from "./extensions/telemetry.js"
 import terminalColorsExtension from "./extensions/terminal-colors.js"
@@ -316,6 +318,8 @@ try {
 			improveExtension,
 			curatorExtension,
 			modelSwitchExtension,
+			modelGuardExtension,
+			stripImagesExtension,
 		]
 
 		if (acpMode) {
