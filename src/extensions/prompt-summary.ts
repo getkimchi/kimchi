@@ -30,7 +30,7 @@ interface PromptSummaryData {
 	orchestrator: UsageTotals | null
 	orchestratorModel?: string
 	subagents: UsageTotals | null
-	subagentModels?: string[]
+	subagentsByModel?: Array<{ model: string; totals: UsageTotals }>
 	total: UsageTotals
 	extras?: string[]
 }
@@ -106,16 +106,22 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 		if (t.cacheRead > 0 || t.cacheWrite > 0) {
 			values += `${COL_GAP}cache-read ${formatCount(t.cacheRead)}${COL_GAP}cache-write ${formatCount(t.cacheWrite)}`
 		}
-		const tokensLabel = data.orchestratorModel ? `${data.orchestratorModel}:` : "tokens"
+		const tokensLabel = data.orchestratorModel ? `main (${data.orchestratorModel}):` : "tokens"
 		container.addChild(new Text(INDENT + theme.fg("dim", tokensLabel.padEnd(LABEL_WIDTH)) + values, 0, 0))
 	} else {
 		// Multi-row breakdown when subagents were involved
 		const rows: Array<{ label: string; totals: UsageTotals }> = []
 		if (data.orchestrator) {
-			const label = data.orchestratorModel ? `${data.orchestratorModel}:` : "main model:"
+			const label = data.orchestratorModel ? `main (${data.orchestratorModel}):` : "main model:"
 			rows.push({ label, totals: data.orchestrator })
 		}
-		rows.push({ label: "subagents:", totals: data.subagents })
+		if (data.subagentsByModel?.length) {
+			for (const { model, totals } of data.subagentsByModel) {
+				rows.push({ label: `↳ ${model}:`, totals })
+			}
+		} else if (data.subagents) {
+			rows.push({ label: "↳ subagents:", totals: data.subagents })
+		}
 		rows.push({ label: "total:", totals: data.total })
 
 		for (const line of formatUsageRows(rows, theme)) {
@@ -123,11 +129,7 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 		}
 	}
 
-	const allExtras = [
-		...(data.subagentModels?.length ? [`subagent models: ${data.subagentModels.join(", ")}`] : []),
-		...(data.extras ?? []),
-	]
-	for (const extra of allExtras) {
+	for (const extra of data.extras ?? []) {
 		container.addChild(new Text(INDENT + theme.fg("dim", "note:".padEnd(LABEL_WIDTH)) + extra, 0, 0))
 	}
 
@@ -142,14 +144,14 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 	const orchestrator = emptyTotals()
 	const subagents = emptyTotals()
 	const countedAgentUsage = new Map<string, UsageTotals>()
-	const subagentModelNames = new Set<string>()
+	const subagentModelTotals = new Map<string, UsageTotals>()
 	let startedAt = Date.now()
 
 	pi.on("agent_start", () => {
 		Object.assign(orchestrator, emptyTotals())
 		Object.assign(subagents, emptyTotals())
 		countedAgentUsage.clear()
-		subagentModelNames.clear()
+		subagentModelTotals.clear()
 		startedAt = Date.now()
 	})
 
@@ -173,6 +175,12 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 			}
 			countedAgentUsage.set(stats.agentId, { ...stats.tokenUsage })
 			addUsage(subagents, delta)
+			const agentDetails = event.details as AgentToolDetails | undefined
+			if (agentDetails?.modelName) {
+				const modelTotals = subagentModelTotals.get(agentDetails.modelName) ?? emptyTotals()
+				addUsage(modelTotals, delta)
+				subagentModelTotals.set(agentDetails.modelName, modelTotals)
+			}
 			return
 		}
 		subagents.input += stats.tokenUsage.input
@@ -180,7 +188,11 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 		subagents.cacheRead += stats.tokenUsage.cacheRead
 		subagents.cacheWrite += stats.tokenUsage.cacheWrite
 		const agentDetails = event.details as AgentToolDetails | undefined
-		if (agentDetails?.modelName) subagentModelNames.add(agentDetails.modelName)
+		if (agentDetails?.modelName) {
+			const modelTotals = subagentModelTotals.get(agentDetails.modelName) ?? emptyTotals()
+			addUsage(modelTotals, stats.tokenUsage)
+			subagentModelTotals.set(agentDetails.modelName, modelTotals)
+		}
 	})
 
 	pi.on("agent_end", async () => {
@@ -194,12 +206,17 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 
 		const extras = pendingExtras.splice(0)
 
+		const subagentsByModel =
+			subagentModelTotals.size > 0
+				? [...subagentModelTotals.entries()].map(([model, totals]) => ({ model, totals }))
+				: undefined
+
 		const data: PromptSummaryData = {
 			elapsed: formatDuration(Date.now() - startedAt),
 			orchestrator: orchestrator.input + orchestrator.output > 0 ? { ...orchestrator } : null,
 			orchestratorModel: getMultiModelEnabled() ? ORCHESTRATOR_MODEL_ID : undefined,
 			subagents: subagents.input + subagents.output > 0 ? { ...subagents } : null,
-			subagentModels: subagentModelNames.size > 0 ? [...subagentModelNames] : undefined,
+			subagentsByModel,
 			total: grandTotal,
 			extras: extras.length > 0 ? extras : undefined,
 		}
