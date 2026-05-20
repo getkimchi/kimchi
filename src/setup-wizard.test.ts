@@ -3,6 +3,37 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+const clackMock = vi.hoisted(() => {
+	const cancelValue = Symbol("cancelled prompt")
+	return {
+		cancelValue,
+		cancel: vi.fn(),
+		intro: vi.fn(),
+		note: vi.fn(),
+		outro: vi.fn(),
+		select: vi.fn(),
+		multiselect: vi.fn(),
+		text: vi.fn(),
+		log: {
+			success: vi.fn(),
+		},
+		isCancel: (value: unknown) => value === cancelValue,
+	}
+})
+
+vi.mock("@clack/prompts", () => ({
+	cancel: clackMock.cancel,
+	intro: clackMock.intro,
+	note: clackMock.note,
+	outro: clackMock.outro,
+	select: clackMock.select,
+	multiselect: clackMock.multiselect,
+	text: clackMock.text,
+	log: clackMock.log,
+	isCancel: clackMock.isCancel,
+}))
+
 import {
 	type DiscoveredCommand,
 	deriveDescription,
@@ -10,8 +41,20 @@ import {
 	discoverSubdirectoryCommandFiles,
 	extractExistingFrontmatter,
 	migrateCommandToPrompt,
+	runSetupWizard,
 	toSkillName,
 } from "./setup-wizard.js"
+
+beforeEach(() => {
+	clackMock.cancel.mockClear()
+	clackMock.intro.mockClear()
+	clackMock.note.mockClear()
+	clackMock.outro.mockClear()
+	clackMock.select.mockReset()
+	clackMock.multiselect.mockReset()
+	clackMock.text.mockReset()
+	clackMock.log.success.mockClear()
+})
 
 describe("toSkillName", () => {
 	const cases: Record<string, string> = {
@@ -292,5 +335,42 @@ describe("migrateCommandToPrompt", () => {
 		const result = migrateCommandToPrompt(cmd)
 
 		expect(result).toBe(false)
+	})
+})
+
+describe("runSetupWizard", () => {
+	it("returns a cancelled result when skill selection is cancelled", async () => {
+		clackMock.multiselect.mockResolvedValueOnce(clackMock.cancelValue)
+
+		const result = await runSetupWizard({ needsSkillsSetup: true, needsMigrationCheck: false })
+
+		expect(result.cancelled).toBe(true)
+		expect(clackMock.cancel).toHaveBeenCalledWith("Cancelled.")
+		expect(clackMock.outro).not.toHaveBeenCalled()
+	})
+
+	it("returns a cancelled result when optional custom skill input is cancelled", async () => {
+		clackMock.multiselect.mockResolvedValueOnce([".config/kimchi/harness/skills"])
+		clackMock.text.mockResolvedValueOnce(clackMock.cancelValue)
+
+		const result = await runSetupWizard({ needsSkillsSetup: true, needsMigrationCheck: false })
+
+		expect(result.cancelled).toBe(true)
+		expect(clackMock.cancel).toHaveBeenCalledWith("Cancelled.")
+		expect(clackMock.outro).not.toHaveBeenCalled()
+	})
+
+	it("marks successful setup results as not cancelled", async () => {
+		clackMock.multiselect.mockResolvedValueOnce([".config/kimchi/harness/skills"])
+		clackMock.text.mockResolvedValueOnce("")
+
+		const result = await runSetupWizard({ needsSkillsSetup: true, needsMigrationCheck: false })
+
+		expect(result).toEqual({
+			cancelled: false,
+			skillPaths: [".config/kimchi/harness/skills"],
+			migrationState: undefined,
+		})
+		expect(clackMock.outro).toHaveBeenCalledWith("Setup complete.")
 	})
 })

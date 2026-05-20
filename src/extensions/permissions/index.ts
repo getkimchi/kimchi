@@ -10,7 +10,7 @@ import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
 import { resolveMode } from "./mode.js"
-import { type CompoundSubcommand, promptForApproval, promptForCompoundApproval } from "./prompts.js"
+import { type CompoundSubcommand, promptForApproval, promptForCompoundApproval, withWorkingHidden } from "./prompts.js"
 import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import { evaluateRules, parseRules, stringifyRule } from "./rules.js"
 import { SessionMemory } from "./session-memory.js"
@@ -420,11 +420,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const EXECUTE_AUTO = "Yes — execute (auto-approve)"
 		const DECLINE = "No, do something else"
 
-		const choice = await ctx.ui.select("Plan complete. How would you like to proceed?", [
-			EXECUTE,
-			EXECUTE_AUTO,
-			DECLINE,
-		])
+		const choice = await withWorkingHidden(ctx, () =>
+			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, EXECUTE_AUTO, DECLINE]),
+		)
 
 		if (choice === EXECUTE) {
 			switchFromPlanAndExecute(ctx, "default")

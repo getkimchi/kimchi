@@ -23,6 +23,7 @@ import { Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
+import { sessionHasImages } from "../model-guard.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
 import { AgentManager } from "./manager/agent-manager.js"
 import {
@@ -126,6 +127,45 @@ function getSubagentResultIcon(status: string, theme: Theme): string {
 		default:
 			return theme.fg("success", "✓")
 	}
+}
+
+function extractImagePathsFromSession(ctx: ExtensionContext): string[] {
+	const entries = ctx.sessionManager.getBranch()
+	const imagePaths = new Set<string>()
+	const readPathsByToolCallId = new Map<string, string>()
+
+	for (const entry of entries) {
+		if (entry.type !== "message") continue
+		const msg = entry.message
+
+		if (msg.role === "assistant") {
+			const content = msg.content
+			if (Array.isArray(content)) {
+				for (const block of content) {
+					if (block.type !== "toolCall") continue
+					const toolBlock = block as { id?: string; name?: string; arguments?: Record<string, unknown> }
+					if (toolBlock.name === "read" && toolBlock.id && typeof toolBlock.arguments?.path === "string") {
+						readPathsByToolCallId.set(toolBlock.id, toolBlock.arguments.path)
+					}
+				}
+			}
+		} else if (msg.role === "toolResult") {
+			const toolResultMsg = msg as { toolCallId?: string; content?: unknown[] }
+			const content = toolResultMsg.content
+			if (Array.isArray(content)) {
+				const hasImage = content.some((block) => (block as { type?: string }).type === "image")
+				const path = toolResultMsg.toolCallId ? readPathsByToolCallId.get(toolResultMsg.toolCallId) : undefined
+				if (hasImage && path) {
+					imagePaths.add(path)
+				}
+			}
+			if (toolResultMsg.toolCallId) {
+				readPathsByToolCallId.delete(toolResultMsg.toolCallId)
+			}
+		}
+	}
+
+	return Array.from(imagePaths)
 }
 
 export function summaryForStatus(status: string, error?: string, abortReason?: AgentAbortReason): string {
@@ -977,6 +1017,21 @@ Model selection — YOU choose based on task complexity:
 				const visibility: AgentVisibility = "user"
 				const runInBackground = resolvedConfig.runInBackground
 
+				// Image forwarding: when session has images and subagent model supports vision,
+				// extract image paths from read tool calls and prepend them to the prompt.
+				const effectivePrompt = (() => {
+					const base = params.prompt as string
+					if (!sessionHasImages()) return base
+					const modelInput = (model as { input?: string[] } | undefined)?.input
+					if (!modelInput?.includes("image")) return base
+
+					const imagePaths = extractImagePathsFromSession(ctx)
+					if (imagePaths.length === 0) return base
+
+					const pathList = imagePaths.join(", ")
+					return `Context images from parent session: ${pathList}. Read them if needed for your task.\n\n${base}`
+				})()
+
 				const parentModelId = ctx.model?.id
 				const effectiveModelId = (model as { id?: string } | undefined)?.id
 				const agentModelName =
@@ -1050,7 +1105,7 @@ Model selection — YOU choose based on task complexity:
 					}
 
 					try {
-						id = manager.spawn(pi, ctx, subagentType, params.prompt as string, {
+						id = manager.spawn(pi, ctx, subagentType, effectivePrompt, {
 							description: params.description as string,
 							visibility,
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
@@ -1170,7 +1225,7 @@ Model selection — YOU choose based on task complexity:
 					return textResult(`Failed to pre-write Agent session file under ${parentSessionDir}: ${detail}`)
 				}
 				try {
-					record = await manager.spawnAndWait(pi, ctx, subagentType, params.prompt as string, {
+					record = await manager.spawnAndWait(pi, ctx, subagentType, effectivePrompt, {
 						description: params.description as string,
 						visibility,
 						model: model as Parameters<typeof manager.spawnAndWait>[4]["model"],

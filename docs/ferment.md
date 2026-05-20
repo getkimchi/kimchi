@@ -102,23 +102,30 @@ ferment, and `/ferment resume` continues it using the current policy.
 /ferment new "Build Tetris"
 ```
 
-Or type `/ferment` with no arguments for an input prompt.
+Or type `/ferment` with no arguments for the same guided input prompt used by
+the first-run session-mode wizard. Enter a rough goal; the agent turns it into
+scoping answers and a phase plan.
 
-The agent immediately begins scoping — one question at a time:
+What happens next:
+
+- Kimchi asks what you want to ferment.
+- The agent drafts the goal, success criteria, constraints, assumptions, and
+  3-7 phases.
+- If the request is ambiguous, the agent asks focused scoping questions with
+  recommended answers.
+- Kimchi shows the proposed markdown plan for review.
+- Choose Start execution to save the plan and begin work.
+
+Other creation forms:
 
 ```
-Agent: What does "done" look like for "Build Tetris"?
-You:   Single HTML file, keyboard controls, scoring
-Agent: What are the success criteria — how will you know it's done?
-You:   Can play one full game without errors
-Agent: Any constraints — things to avoid or non-negotiables?
-You:   No libraries, vanilla JS only
-Agent: Proposing 4 phases: Canvas & Grid / Pieces / Movement / Scoring
-       Does this look right? Type yes to confirm.
-You:   yes
+/ferment list                    # pick from existing ferments
+/ferment new "Build Tetris"      # start with a known name
+/ferment one-shot "task"         # automated one-shot run, no confirmations
 ```
 
-The agent calls `scope_ferment` → status transitions to `planned`.
+After you confirm the plan, the agent calls `scope_ferment` and the ferment
+transitions to `planned`.
 
 ### 2. Execute
 
@@ -177,6 +184,26 @@ Run `/ferment progress` for full phase/step navigation with grades and actions.
 the lifecycle and continues according to the current continuation policy.
 
 Sessions resume automatically. When you close and reopen Kimchi with an active ferment, the agent picks up exactly where it left off.
+
+### Example flow
+
+```
+> /ferment
+What would you like to ferment? Add Google OAuth login
+
+[agent drafts goal, criteria, constraints, assumptions, and 4 phases]
+[agent asks any needed scoping questions with recommended answers]
+[you review the markdown plan and choose Start execution]
+
+[agent runs phase 1 step 1, returns with a summary]
+[agent runs phase 1 step 2 ...]
+
+> /ferment pause
+[you check something outside Kimchi]
+
+> /ferment resume
+[agent picks up at the next step with full ferment context]
+```
 
 ---
 

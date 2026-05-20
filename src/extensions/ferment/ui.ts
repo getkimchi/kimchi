@@ -7,6 +7,7 @@ export interface FermentUi {
 	select?(title: string, options: string[]): Promise<string | undefined>
 	custom?: ExtensionUIContext["custom"]
 	confirm?(title: string, description?: string): Promise<boolean>
+	setStatus?: ExtensionUIContext["setStatus"]
 }
 
 export interface FermentUiContext {

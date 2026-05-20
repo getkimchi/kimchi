@@ -215,6 +215,12 @@ describe("SHORTCUT_TAIL regex", () => {
 		expect(text.replace(SHORTCUT_TAIL, "")).toBe("multi-model: on")
 	})
 
+	it("matches the ferment trailing shortcut", () => {
+		const text = "Ferment: my-ferment \u00b7 Running \u00b7 Stop: Phase Boundary \x1b[38;5;242m\u2192 F6\x1b[39m"
+		expect(SHORTCUT_TAIL.test(text)).toBe(true)
+		expect(text.replace(SHORTCUT_TAIL, "")).toBe("Ferment: my-ferment \u00b7 Running \u00b7 Stop: Phase Boundary")
+	})
+
 	it("does NOT match text that has no trailing arrow", () => {
 		const text = "claude-opus-4-7"
 		expect(SHORTCUT_TAIL.test(text)).toBe(false)
@@ -340,7 +346,7 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		}
 	})
 
-	it("with an active ferment, drops the `ferment:` prefix when overflowing", () => {
+	it("with an active ferment, drops the `Ferment: ` prefix when overflowing", () => {
 		const ferment = {
 			id: "f-1",
 			name: "my-ferment",
@@ -351,16 +357,19 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		} as unknown as ReturnType<typeof FERMENT.getActiveFerment>
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(ferment)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
+		vi.spyOn(FERMENT, "getFermentContinuationPolicy").mockReturnValue("manual")
 
-		// At a generous width every compaction is unneeded and `ferment:` shows.
+		// At a generous width every compaction is unneeded and `Ferment: ` shows.
 		const wide = renderAt(200)
-		expect(wide.visible).toContain("ferment:my-ferment")
+		expect(wide.visible).toContain("Ferment: my-ferment")
+		expect(wide.visible).toContain("Stop: Phase Boundary \u2192 F6")
+		expect(wide.visible.indexOf("Ferment: my-ferment")).toBeLessThan(wide.visible.indexOf("\u25cf default"))
 
 		// At a narrow width all earlier compactions have fired and the ferment
 		// prefix has also been dropped.
 		const narrow = renderAt(70)
 		expect(narrow.visible).toContain("my-ferment")
-		expect(narrow.visible).not.toContain("ferment:")
+		expect(narrow.visible).not.toContain("Ferment:")
 	})
 })
 

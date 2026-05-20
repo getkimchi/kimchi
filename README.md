@@ -117,6 +117,34 @@ When multi-model is off the agent uses a single-model system prompt: environment
 
 kimchi respects `HTTP_PROXY` / `HTTPS_PROXY` environment variables for network requests.
 
+### Token optimization (RTK)
+
+When [RTK](https://github.com/rtk-ai/rtk) (`rtk`) is installed and on your `PATH`, kimchi automatically rewrites bash tool calls through `rtk rewrite` before execution. This compresses command output (git, cargo, npm, docker, etc.) by 60-90%, significantly reducing LLM context usage.
+
+**How it works:** before every bash tool execution, kimchi calls `rtk rewrite "<command>"`. If RTK returns a rewritten command (e.g. `git status` becomes `rtk git status`), the rewritten version is executed instead. The agent receives compact, filtered output without any workflow changes.
+
+**Installation:**
+
+```bash
+brew install rtk    # macOS / Linux
+```
+
+RTK is auto-detected at startup. No configuration is needed — if `rtk` is on your PATH, it's active.
+
+**Disabling:**
+
+```bash
+KIMCHI_RTK=0 kimchi   # disable for this session
+```
+
+Set `KIMCHI_RTK` to `0`, `false`, or `off` to disable rewriting even when RTK is installed.
+
+You can also disable persistently in `~/.config/kimchi/harness/settings.json`:
+
+```json
+{ "rtk": false }
+```
+
 ### Subagent sessions
 
 Every `subagent` invocation writes its own persistent session file alongside the parent's, in the same session directory. The child's session header back-references its parent, and the parent's tool-result records the child's session id and file path. Nested subagents (sub-subagents) follow the same rule at any depth — all descendants land next to the original top-level parent.

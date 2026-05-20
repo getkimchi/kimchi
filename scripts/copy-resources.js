@@ -52,4 +52,10 @@ for (const file of kimchiThemeFiles) {
 
 if (!isDev) {
 	cpSync(join(projectRoot, "package.json"), join(projectRoot, "dist", "share", "kimchi", "package.json"))
+
+	// Copy proxy-helper binary built by tools/proxy-helper/Makefile
+	const proxyHelperSrc = join(projectRoot, "tools", "proxy-helper", "bin", "proxy-helper")
+	const proxyHelperBinDest = join(projectRoot, "dist", "share", "kimchi", "bin")
+	mkdirSync(proxyHelperBinDest, { recursive: true })
+	cpSync(proxyHelperSrc, join(proxyHelperBinDest, "proxy-helper"))
 }

@@ -6,18 +6,85 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
-import type { TUI } from "@earendil-works/pi-tui"
+import type { Component, TUI } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
 import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } from "../components/footer.js"
 import { LogoHeader } from "../components/logo.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { isBareExitAlias } from "./exit-utils.js"
+import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
+import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
+import { sessionHasImages } from "./model-guard.js"
 import { MULTI_MODEL_SHORTCUT, getMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
+import {
+	isSessionModeOnboardingFooterSuppressed,
+	registerSharedFooterRenderer,
+	setSessionModeOnboardingFooterSuppressed,
+} from "./shared-footer.js"
 import { createWorkingAnimator } from "./spinner.js"
+
+export { requestSharedFooterRender, setSessionModeOnboardingFooterSuppressed } from "./shared-footer.js"
 
 function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {
 	return a.provider === b.provider && a.id === b.id
+}
+
+/** Reason a model was skipped during ctrl+p cycle. */
+export interface SkippedModel {
+	model: Model<Api>
+	reason: string
+}
+
+/** Result of findNextCompatibleModel — the selected model plus any skipped candidates. */
+export interface NextModelResult {
+	model: Model<Api> | undefined
+	skipped: SkippedModel[]
+}
+
+/**
+ * Iterates through the model list starting after currentIndex, wrapping around,
+ * and returns the first model compatible with the current context (token count
+ * and vision requirements). Also collects a list of all skipped models with
+ * human-readable reasons, which the caller can surface in a notification.
+ */
+export function findNextCompatibleModel(
+	available: readonly Model<Api>[],
+	currentIndex: number,
+	currentTokens: number | null,
+	hasImages: boolean,
+	currentModel?: Model<Api> | null,
+): NextModelResult {
+	const len = available.length
+	if (len === 0) return { model: undefined, skipped: [] }
+
+	const currentModelHasVision = currentModel?.input.includes("image") ?? false
+	const skipped: SkippedModel[] = []
+
+	for (let offset = 1; offset < len; offset++) {
+		const idx = (currentIndex + offset) % len
+		const candidate = available[idx]
+
+		if (currentTokens !== null && candidate.contextWindow < currentTokens) {
+			skipped.push({
+				model: candidate,
+				reason: `${(candidate.contextWindow / 1000).toFixed(0)}K context \u2014 current usage (${(currentTokens / 1000).toFixed(0)}K tokens) exceeds its window`,
+			})
+			continue
+		}
+
+		if (hasImages && !candidate.input.includes("image") && currentModelHasVision) {
+			skipped.push({
+				model: candidate,
+				reason: "no vision support \u2014 run /strip-images to unlock",
+			})
+			continue
+		}
+
+		return { model: candidate, skipped }
+	}
+
+	return { model: undefined, skipped }
 }
 
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
@@ -38,6 +105,34 @@ function getEnabledModelIds(): Set<string> | null {
 // Track current editor for indicator updates
 let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
+
+type DisposableComponent = Component & { dispose?(): void }
+
+class SuppressibleFooter implements Component {
+	private readonly requestRender: () => void
+	private readonly unregisterRequestRender: () => void
+
+	constructor(
+		private readonly inner: DisposableComponent,
+		tui: TUI,
+	) {
+		this.requestRender = () => tui.requestRender()
+		this.unregisterRequestRender = registerSharedFooterRenderer(this.requestRender)
+	}
+
+	dispose(): void {
+		this.unregisterRequestRender()
+		this.inner.dispose?.()
+	}
+
+	invalidate(): void {
+		this.inner.invalidate()
+	}
+
+	render(width: number): string[] {
+		return isSessionModeOnboardingFooterSuppressed() ? [] : this.inner.render(width)
+	}
+}
 
 export function setPasteImageHandler(handler: () => void): void {
 	pasteImageHandler = handler
@@ -123,6 +218,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", (event, ctx) => {
+		setSessionModeOnboardingFooterSuppressed(false)
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
 		toolsInFlight = 0
@@ -140,11 +236,16 @@ export default function uiExtension(pi: ExtensionAPI) {
 			const cmd = readStatusLineCommand()
 			if (!cmd) {
 				scriptCmd = null
-				return new StatsFooter(ctx, theme, footerData)
+				return new SuppressibleFooter(new StatsFooter(ctx, theme, footerData), tui)
 			}
 			scriptCmd = cmd
 			const getControlsLine = (): string | null => {
 				const parts: string[] = []
+				const ferment = formatFermentFooterDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
+					dim: (s) => theme.fg("dim", s),
+					accent: (s) => `${resolvedAccentFg(theme)}${s}${RST_FG}`,
+				})
+				if (ferment) parts.push(ferment.text)
 				const perm = footerData.getExtensionStatuses().get("permissions-mode")
 				if (perm) parts.push(perm)
 				const enabled = getMultiModelEnabled()
@@ -166,7 +267,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 					if (scriptGeneration === gen) scriptPending = false
 				},
 			)
-			return scriptFooter
+			return new SuppressibleFooter(scriptFooter, tui)
 		})
 
 		ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
@@ -201,10 +302,32 @@ export default function uiExtension(pi: ExtensionAPI) {
 						if (available.length > 1 && current) {
 							let idx = available.findIndex((m) => modelsAreEqual(m, current))
 							if (idx === -1) idx = 0
-							const next = available[(idx + 1) % available.length]
-							pi.setModel(next).catch((err) => {
-								ctx.ui.notify(`Failed to cycle model: ${err instanceof Error ? err.message : String(err)}`, "warning")
-							})
+							const usage = ctx.getContextUsage()
+							const { model: next, skipped } = findNextCompatibleModel(
+								available,
+								idx,
+								usage?.tokens ?? null,
+								sessionHasImages(),
+								current,
+							)
+							if (!next) {
+								const lines = skipped.map((s) => `  • ${s.model.id}: ${s.reason}`)
+								ctx.ui.notify(
+									`No compatible model available.\n${lines.join("\n")}\n\nUse /compact to unlock models blocked by context size, or /strip-images for models without vision support.`,
+									"warning",
+								)
+							} else if (!modelsAreEqual(next, current)) {
+								if (skipped.length > 0) {
+									const lines = skipped.map((s) => `  • ${s.model.id}: ${s.reason}`)
+									ctx.ui.notify(
+										`Skipped ${skipped.length} model${skipped.length > 1 ? "s" : ""}:\n${lines.join("\n")}\n\nUse /compact to unlock models blocked by context size, or /strip-images for models without vision support.`,
+										"info",
+									)
+								}
+								pi.setModel(next).catch((err) => {
+									ctx.ui.notify(`Failed to cycle model: ${err instanceof Error ? err.message : String(err)}`, "warning")
+								})
+							}
 						}
 					}
 					return { consume: true }
@@ -283,6 +406,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 		currentCtx = ctx
 		refresh("idle")
 		uiTui?.requestRender()
+	})
+	pi.on("session_shutdown", () => {
+		setSessionModeOnboardingFooterSuppressed(false)
 	})
 
 	pi.on("tool_result", (event) => {
