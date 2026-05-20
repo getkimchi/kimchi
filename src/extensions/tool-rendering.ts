@@ -832,28 +832,6 @@ function toolHeader(tool: string, summary: string, theme: Theme, prefix = ""): s
 	return `${prefix}${label} ${WRAP_MARK}${theme.fg("accent", summary)}`
 }
 
-function setToolStatus(ctx: any, status: "pending" | "success" | "error"): void {
-	const prev = ctx?.state?._toolStatus
-	ctx.state._toolStatus = status
-	// When a tool transitions to a final status for the first time, the call
-	// header may have already been rendered with a pending dot. Invalidate the
-	// component so renderCall re-runs and picks up the correct dot.
-	if (status !== "pending" && prev !== status) {
-		ctx.invalidate?.()
-	}
-}
-
-function syncToolCallStatus(ctx: any): void {
-	// Preserve a final status already set by renderResult (e.g. after a chat
-	// rebuild where executionStarted is never set on the new component).
-	const existing = ctx?.state?._toolStatus
-	if (existing === "success" || existing === "error") return
-	if (ctx?.isPartial || !ctx?.executionStarted) {
-		setToolStatus(ctx, "pending")
-		return
-	}
-	setToolStatus(ctx, ctx.isError ? "error" : "success")
-}
 
 function shouldRevealCallArgs(ctx: any): boolean {
 	if (ctx?.argsComplete === true || ctx?.executionStarted === true) return true
@@ -908,9 +886,8 @@ function getWriteWasNewFile(
 }
 
 function toolStatusDot(ctx: any, theme: Theme): string {
-	const status = ctx.state?._toolStatus as "pending" | "success" | "error" | undefined
-	if (status === "success") return `${theme.fg("success", "●")} `
-	if (status === "error") return `${theme.fg("error", "●")} `
+	if (!ctx.isPartial && !ctx.isError) return `${theme.fg("success", "●")} `
+	if (!ctx.isPartial && ctx.isError) return `${theme.fg("error", "●")} `
 	return `${blinkDot(ctx, theme)} `
 }
 
@@ -1141,8 +1118,10 @@ function padToWidth(line: string, width: number): string {
 
 function markedContinuationPrefix(prefix: string): string {
 	const plain = stripAnsi(prefix)
-	const branchMatch = /^(\s*)(?:│ {2}|├─ |└─ )/.exec(plain)
+	const branchMatch = /^(\s*)(│ {2}|├─ |└─ )/.exec(plain)
 	if (branchMatch) {
+		const connector = branchMatch[2]
+		if (connector === "└─ ") return `${branchMatch[1]}   `
 		return `${branchMatch[1]}${TOOL_RULE}│${TRANSPARENT_RESET}  `
 	}
 	return " ".repeat(visibleWidth(prefix))
@@ -2859,7 +2838,6 @@ function genericToolLabel(name: string): string {
 }
 
 function renderGenericToolCall(name: string, args: any, theme: Theme, ctx: any): Text {
-	syncToolCallStatus(ctx)
 	ctx.state._openAiPatchFiles = []
 	const sp = (path: string) => shortPath(ctx.cwd ?? process.cwd(), path)
 	const summary = stableCallSummary(ctx, "_callSummary", () => summarizeGenericToolCall(name, args, theme, sp))
@@ -3253,7 +3231,6 @@ function getApplyPatchResultMeta(args: any, ctx: any, sp: (path: string) => stri
 }
 
 function renderApplyPatchCall(args: any, theme: Theme, ctx: any, sp: (path: string) => string): Text {
-	syncToolCallStatus(ctx)
 	const patchText = getStringArg(args, "patchText", "patch_text")
 	const summary = stableCallSummary(ctx, "_callSummary", () => summarizeOpenAiToolCall("apply_patch", args, theme, sp))
 	const hdr = toolHeader("Apply Patch", summary, theme, toolStatusDot(ctx, theme))
@@ -3337,7 +3314,6 @@ function renderApplyPatchResult(result: any, isPartial: boolean, theme: Theme, c
 		return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Applying Patch..."), theme))
 	}
 	clearBlinkTimer(ctx)
-	setToolStatus(ctx, ctx.isError ? "error" : "success")
 
 	if (ctx.isError) {
 		const raw = getTextContent(result).trim()
@@ -3398,7 +3374,6 @@ function renderMcpToolResult(result: any, expanded: boolean, isPartial: boolean,
 		return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "MCP running..."), theme))
 	}
 	clearBlinkTimer(ctx)
-	setToolStatus(ctx, ctx.isError ? "error" : "success")
 
 	const mode = getMode(readSettings().mcpOutputMode, ["hidden", "summary", "preview"] as const, "preview")
 	if (mode === "hidden") return makeText(ctx.lastComponent, "")
@@ -3671,7 +3646,6 @@ function renderOpenAiToolResult(
 		return makeText(ctx.lastComponent, withBranch(theme.fg("dim", `${humanizeToolName(name)}...`), theme))
 	}
 	clearBlinkTimer(ctx)
-	setToolStatus(ctx, ctx.isError ? "error" : "success")
 
 	const raw = getTextContent(result).trim()
 	const lines = raw ? raw.split("\n") : []
@@ -3994,7 +3968,6 @@ export default function (pi: ExtensionAPI) {
 			return readTool.execute(toolCallId, params, signal, onUpdate)
 		},
 		renderCall(args, theme, ctx) {
-			syncToolCallStatus(ctx)
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
 				let value = sp(args.path ?? "")
 				if (args.offset || args.limit) {
@@ -4013,7 +3986,6 @@ export default function (pi: ExtensionAPI) {
 				return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Reading..."), theme))
 			}
 			clearBlinkTimer(ctx)
-			setToolStatus(ctx, ctx.isError ? "error" : "success")
 			if (getFirstImageBlock(result)) return renderReadImageResult(result, expanded, theme, ctx)
 			const details = result.details as ReadToolDetails | undefined
 			const content = result.content.find((block: any) => block?.type === "text")
@@ -4050,7 +4022,6 @@ export default function (pi: ExtensionAPI) {
 			return bashTool.execute(toolCallId, params, signal, onUpdate)
 		},
 		renderCall(args, theme, ctx) {
-			syncToolCallStatus(ctx)
 			const summary = stableCallSummary(ctx, "_callSummary", () => summarizeText(args.command, 72))
 			return makeText(ctx.lastComponent, toolHeader("Bash", summary, theme, toolStatusDot(ctx, theme)))
 		},
@@ -4066,7 +4037,6 @@ export default function (pi: ExtensionAPI) {
 				)
 			}
 			clearBlinkTimer(ctx)
-			setToolStatus(ctx, ctx.isError ? "error" : "success")
 			const exitMatch = output.match(/exit code: (\d+)/)
 			const exitCode = exitMatch ? Number.parseInt(exitMatch[1], 10) : null
 			let text =
@@ -4097,7 +4067,6 @@ export default function (pi: ExtensionAPI) {
 			return grepTool.execute(toolCallId, params, signal, onUpdate)
 		},
 		renderCall(args, theme, ctx) {
-			syncToolCallStatus(ctx)
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
 				let value = `\"${summarizeText(args.pattern, 40)}\"`
 				if (args.path) value += ` in ${args.path}`
@@ -4111,7 +4080,6 @@ export default function (pi: ExtensionAPI) {
 				return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Searching..."), theme))
 			}
 			clearBlinkTimer(ctx)
-			setToolStatus(ctx, ctx.isError ? "error" : "success")
 			const details = result.details as GrepToolDetails | undefined
 			const matches = (result.content[0]?.type === "text" ? result.content[0].text : "")
 				.split("\n")
@@ -4141,7 +4109,6 @@ export default function (pi: ExtensionAPI) {
 			return findTool.execute(toolCallId, params, signal, onUpdate)
 		},
 		renderCall(args, theme, ctx) {
-			syncToolCallStatus(ctx)
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
 				let value = `\"${summarizeText(args.pattern, 40)}\"`
 				if (args.path) value += ` in ${args.path}`
@@ -4155,7 +4122,6 @@ export default function (pi: ExtensionAPI) {
 				return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Finding..."), theme))
 			}
 			clearBlinkTimer(ctx)
-			setToolStatus(ctx, ctx.isError ? "error" : "success")
 			const items = (result.content[0]?.type === "text" ? result.content[0].text : "")
 				.split("\n")
 				.filter((line) => line.trim().length > 0)
@@ -4191,7 +4157,6 @@ export default function (pi: ExtensionAPI) {
 			return lsTool.execute(toolCallId, params, signal, onUpdate)
 		},
 		renderCall(args, theme, ctx) {
-			syncToolCallStatus(ctx)
 			const summary = stableCallSummary(ctx, "_callSummary", () => sp(args.path ?? "."))
 			return makeText(ctx.lastComponent, toolHeader("List", summary, theme, toolStatusDot(ctx, theme)))
 		},
@@ -4201,7 +4166,6 @@ export default function (pi: ExtensionAPI) {
 				return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Listing..."), theme))
 			}
 			clearBlinkTimer(ctx)
-			setToolStatus(ctx, ctx.isError ? "error" : "success")
 			const items = (result.content[0]?.type === "text" ? result.content[0].text : "")
 				.split("\n")
 				.filter((line) => line.trim().length > 0)
@@ -4269,7 +4233,6 @@ export default function (pi: ExtensionAPI) {
 		renderCall(args, theme, ctx) {
 			const fp = args?.path ?? (args as any)?.file_path ?? ""
 			const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "content"))
-			syncToolCallStatus(ctx)
 			const wasNew = getWriteWasNewFile(ctx, cwd, fp, revealSummary)
 			const label = wasNew === true ? "Create" : "Write"
 			const summary = stableCallSummary(
@@ -4292,7 +4255,6 @@ export default function (pi: ExtensionAPI) {
 				return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Writing..."), theme))
 			}
 			clearBlinkTimer(ctx)
-			setToolStatus(ctx, ctx.isError ? "error" : "success")
 			if (typeof ctx?.toolCallId === "string") WRITE_EXISTED_BEFORE.delete(ctx.toolCallId)
 			if (ctx.isError) {
 				const e =
@@ -4419,7 +4381,6 @@ export default function (pi: ExtensionAPI) {
 						: sp(fp),
 				revealSummary,
 			)
-			syncToolCallStatus(ctx)
 			const hdr = toolHeader("Edit", summary, theme, ` ${toolStatusDot(ctx, theme)}`)
 			if (!(ctx.argsComplete && operations.length > 0)) return makeText(ctx.lastComponent, hdr)
 			const diffWidth = branchDiffWidth()
@@ -4461,7 +4422,6 @@ export default function (pi: ExtensionAPI) {
 				return makeText(ctx.lastComponent, indentBranchBlock(withBranch(theme.fg("dim", "Editing..."), theme)))
 			}
 			clearBlinkTimer(ctx)
-			setToolStatus(ctx, ctx.isError ? "error" : "success")
 			if (ctx.isError) {
 				const e =
 					result.content
@@ -4522,7 +4482,6 @@ export default function (pi: ExtensionAPI) {
 				},
 				renderCall(args: any, theme: Theme, ctx: any) {
 					if (name === "apply_patch") return renderApplyPatchCall(args, theme, ctx, sp)
-					syncToolCallStatus(ctx)
 					ctx.state._openAiPatchFiles = []
 					const summary = stableCallSummary(ctx, "_callSummary", () => summarizeOpenAiToolCall(name, args, theme, sp))
 					return makeText(ctx.lastComponent, toolHeader(label, summary, theme, toolStatusDot(ctx, theme)))

@@ -7,6 +7,7 @@ import type { DerivedThinkingStep, ThinkingSemanticRole, ThinkingSourceBlock, Th
 interface RenderOptions {
 	mode: "collapsed" | "summary" | "expanded"
 	steps: DerivedThinkingStep[]
+	blocks: ThinkingSourceBlock[]
 	activeStepId?: string
 	isActive: boolean
 	nowMs?: number
@@ -212,9 +213,12 @@ function stripInlineFormattingMarkers(text: string): string {
 		.replace(/(?<![\w/.-])_(?!_)(?=\S)([\s\S]*?\S)(?<!_)_(?![\w/.-])/g, "$1")
 }
 
+const COLLAPSED_LIVE_LINES = 5
+
 function renderCollapsed(
 	theme: ThinkingThemeLike,
 	width: number,
+	blocks: ThinkingSourceBlock[],
 	steps: DerivedThinkingStep[],
 	activeStepId?: string,
 	isActive = false,
@@ -226,6 +230,22 @@ function renderCollapsed(
 	const label = "Thinking"
 	const icon = theme.fg(roleColor(step.role), step.icon)
 	const activity = isActive ? pulseGlyph(theme, nowMs) : theme.fg("dim", "·")
+
+	if (isActive) {
+		const fullText = blocks
+			.map((b) => b.text)
+			.join("\n")
+			.trim()
+		if (fullText) {
+			const headerPrefix = `${theme.fg("muted", "│")} `
+			const header = truncateToWidth(`${headerPrefix}${theme.fg("dim", label)} ${icon} ${activity}`, width, "")
+			const bodyPrefix = `${theme.fg("muted", "│")} `
+			const allBodyLines = renderWrappedRawText(theme, fullText, width, bodyPrefix)
+			const bodyLines = allBodyLines.slice(-COLLAPSED_LIVE_LINES)
+			return [header, ...bodyLines]
+		}
+	}
+
 	const activitySuffix = ` ${activity}`
 	const activityWidth = visibleWidth(activitySuffix)
 	const prefix = `${theme.fg("muted", "│")} ${theme.fg("dim", label)} ${icon} `
@@ -402,7 +422,15 @@ function renderExpanded(
 export function renderThinkingStepsLines(theme: ThinkingThemeLike, width: number, options: RenderOptions): string[] {
 	if (options.steps.length === 0) return []
 	if (options.mode === "collapsed") {
-		return renderCollapsed(theme, width, options.steps, options.activeStepId, options.isActive, options.nowMs)
+		return renderCollapsed(
+			theme,
+			width,
+			options.blocks,
+			options.steps,
+			options.activeStepId,
+			options.isActive,
+			options.nowMs,
+		)
 	}
 	if (options.mode === "expanded") {
 		return renderExpanded(theme, width, options.steps, options.activeStepId)
@@ -411,6 +439,7 @@ export function renderThinkingStepsLines(theme: ThinkingThemeLike, width: number
 }
 
 export class ThinkingStepsComponent implements Component {
+	private readonly blocks: ThinkingSourceBlock[]
 	private steps: DerivedThinkingStep[]
 	private cacheKey?: string
 	private cachedLines?: string[]
@@ -422,6 +451,7 @@ export class ThinkingStepsComponent implements Component {
 		blocks: ThinkingSourceBlock[],
 		scopeKey?: string,
 	) {
+		this.blocks = blocks
 		this.steps = deriveThinkingSteps(blocks)
 		this.scopeKey = scopeKey ?? getCurrentThinkingScopeKey()
 	}
@@ -441,6 +471,7 @@ export class ThinkingStepsComponent implements Component {
 
 		const lines = renderThinkingStepsLines(this.theme, width, {
 			mode,
+			blocks: this.blocks,
 			steps: this.steps,
 			activeStepId,
 			isActive: active.active,

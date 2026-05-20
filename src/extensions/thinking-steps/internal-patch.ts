@@ -1,10 +1,12 @@
 import type { AssistantMessage, ThinkingContent } from "@earendil-works/pi-ai"
 import { AssistantMessageComponent as _AssistantMessageComponent } from "@earendil-works/pi-coding-agent"
 import { Markdown, Spacer, Text } from "@earendil-works/pi-tui"
-import type { MarkdownTheme } from "@earendil-works/pi-tui"
+import type { Component, MarkdownTheme } from "@earendil-works/pi-tui"
+import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { ThinkingStepsComponent } from "./render.js"
 import {
 	decrementPatchRefCount,
+	getActiveThinkingState,
 	getLastThinkingDuration,
 	getPatchCleanup,
 	incrementPatchRefCount,
@@ -83,6 +85,53 @@ function hasPatchableContentContainer(value: AssistantMessageComponentPrototype)
 			typeof value.contentContainer.clear === "function" &&
 			typeof value.contentContainer.addChild === "function",
 	)
+}
+
+const LIVE_PREVIEW_LINES = 5
+
+class LiveThinkingPreview implements Component {
+	constructor(
+		private readonly theme: ThinkingThemeLike,
+		private readonly blocks: ThinkingSourceBlock[],
+	) {}
+
+	render(width: number): string[] {
+		const nowMs = Date.now()
+		const pulseFrames = [
+			this.theme.fg("dim", "·"),
+			this.theme.fg("muted", "•"),
+			this.theme.fg("accent", "•"),
+			this.theme.fg("muted", "•"),
+		]
+		const pulse = pulseFrames[Math.floor(nowMs / 180) % pulseFrames.length] ?? pulseFrames[0]!
+		const header = truncateToWidth(
+			`${this.theme.fg("muted", "│")} ${this.theme.fg("dim", "Thinking")} ${pulse}`,
+			width,
+			"",
+		)
+
+		const prefix = `${this.theme.fg("muted", "│")} `
+		const innerWidth = Math.max(1, width - 2)
+		const fullText = this.blocks
+			.map((b) => b.text)
+			.join("\n")
+			.trim()
+		const separator = truncateToWidth(prefix, width, "")
+		if (!fullText) return [header, separator]
+		const allLines: string[] = []
+		for (const rawLine of fullText.replace(/\t/g, "    ").split("\n")) {
+			if (rawLine.trim().length === 0) {
+				allLines.push(truncateToWidth(prefix, width, ""))
+				continue
+			}
+			for (const wrapped of wrapTextWithAnsi(this.theme.fg("dim", rawLine), innerWidth)) {
+				allLines.push(truncateToWidth(`${prefix}${wrapped}`, width, ""))
+			}
+		}
+		return [header, separator, ...allLines.slice(-LIVE_PREVIEW_LINES)]
+	}
+
+	invalidate(): void {}
 }
 
 function hasVisibleThinking(content: ThinkingContent): boolean {
@@ -268,15 +317,23 @@ function installPatch(theme: ThinkingThemeLike): () => void {
 
 				if (content.type === "thinking" && thinkingBlocks.length > 0 && !renderedThinking) {
 					if (this.hideThinkingBlock) {
-						const lastDuration = getLastThinkingDuration()
-						const usesDuration = lastDuration !== undefined && message.timestamp === lastDuration.messageTimestamp
-						const rawLabel = usesDuration
-							? lastDuration.durationMs < 1000
-								? "Thought for <1s"
-								: `Thought for ${Math.round(lastDuration.durationMs / 1000)}s`
-							: this.hiddenThinkingLabel
-						const styledLabel = theme.bold ? theme.bold(rawLabel) : rawLabel
-						this.contentContainer.addChild(new Text(`${theme.fg("muted", "│")} ${theme.fg("dim", styledLabel)}`, 1, 0))
+						const scopeKey = resolveThinkingMessageScope(message)
+						const activeState = getActiveThinkingState(message.timestamp, scopeKey)
+						if (activeState.active) {
+							this.contentContainer.addChild(new LiveThinkingPreview(theme, thinkingBlocks))
+						} else {
+							const lastDuration = getLastThinkingDuration()
+							const usesDuration = lastDuration !== undefined && message.timestamp === lastDuration.messageTimestamp
+							const rawLabel = usesDuration
+								? lastDuration.durationMs < 1000
+									? "Thought for <1s"
+									: `Thought for ${Math.round(lastDuration.durationMs / 1000)}s`
+								: this.hiddenThinkingLabel
+							const styledLabel = theme.bold ? theme.bold(rawLabel) : rawLabel
+							this.contentContainer.addChild(
+								new Text(`${theme.fg("muted", "│")} ${theme.fg("dim", styledLabel)}`, 1, 0),
+							)
+						}
 					} else {
 						this.contentContainer.addChild(
 							new ThinkingStepsComponent(
