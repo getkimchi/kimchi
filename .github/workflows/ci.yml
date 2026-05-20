@@ -24,9 +24,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: tools/proxy-helper/go.mod
+          cache-dependency-path: tools/proxy-helper/go.sum
 
       - name: Build proxy-helper
         run: make build
+        working-directory: tools/proxy-helper
+
+      - name: Test proxy-helper
+        run: make test
         working-directory: tools/proxy-helper
 
       - name: Check (lint + type check)
@@ -59,9 +64,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: tools/proxy-helper/go.mod
+          cache-dependency-path: tools/proxy-helper/go.sum
 
       - name: Build proxy-helper
         run: make build
+        working-directory: tools/proxy-helper
+
+      - name: Test proxy-helper
+        run: make test
         working-directory: tools/proxy-helper
 
       - name: Check (lint + type check)

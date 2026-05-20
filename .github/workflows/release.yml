@@ -82,6 +82,13 @@ jobs:
             *) echo "Unsupported arch: ${{ matrix.arch }}" >&2; exit 1 ;;
           esac
 
+          file dist/share/kimchi/bin/proxy-helper
+          case "${{ matrix.arch }}" in
+            amd64) file dist/share/kimchi/bin/proxy-helper | grep -Eq 'x86[_-]64|x86-64' ;;
+            arm64) file dist/share/kimchi/bin/proxy-helper | grep -Eq 'arm64|aarch64' ;;
+            *) echo "Unsupported arch: ${{ matrix.arch }}" >&2; exit 1 ;;
+          esac
+
       - name: Package binary
         run: tar -czf kimchi_${{ matrix.os }}_${{ matrix.arch }}.tar.gz -C dist bin share
 

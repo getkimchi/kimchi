@@ -1,4 +1,7 @@
 build:
-	go build -o bin/proxy-helper .
+	go build -ldflags="-s -w" -o bin/proxy-helper .
 
-.PHONY: build
+test:
+	go test ./...
+
+.PHONY: build test
