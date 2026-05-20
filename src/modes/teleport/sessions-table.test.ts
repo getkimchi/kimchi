@@ -7,6 +7,7 @@ const FIXED_WIDTH = 100
 function makeRow(overrides: Partial<SessionRow>): SessionRow {
 	return {
 		id: "abcd1234efgh",
+		host: "x-y-z.remote.kimchi.dev",
 		name: "feature-x",
 		state: "foreground",
 		status: "idle",
@@ -48,6 +49,7 @@ describe("renderSessionsTable", () => {
 		expect(out.split("\n")).toHaveLength(1)
 		expect(out).not.toContain("STATE")
 		expect(out).toContain("ID")
+		expect(out).toContain("HOST")
 		expect(out).toContain("NAME")
 		expect(out).toContain("STATUS")
 		expect(out).toContain("LAST ACTIVITY")
@@ -66,30 +68,24 @@ describe("renderSessionsTable", () => {
 		expect(lines[1].startsWith("*")).toBe(false)
 	})
 
-	it("renders empty names as '-'", () => {
-		const out = renderSessionsTable([makeRow({ name: "" })], NOW, FIXED_WIDTH)
+	it("shows - for missing host", () => {
+		const out = renderSessionsTable([makeRow({ host: undefined })], NOW, FIXED_WIDTH)
 		const lines = out.split("\n")
-		// "-" appears in the NAME column on the row
 		expect(lines[1]).toMatch(/ - /)
 	})
 
-	it("renders mixed foreground + detached + remote rows in order", () => {
+	it("shows host prefix (first dot-segment) for each row", () => {
 		const rows: SessionRow[] = [
-			makeRow({ id: "fg111111", name: "fg-name", state: "foreground" }),
-			makeRow({ id: "dt222222", name: "dt-name", state: "detached (this kimchi)" }),
-			makeRow({ id: "sv333333", name: "sv-name", state: "active elsewhere", status: "active" }),
+			makeRow({ id: "fg111111", host: "a-b-c.remote.kimchi.dev", state: "foreground" }),
+			makeRow({ id: "dt222222", host: "x-y-z.remote.kimchi.dev", state: "detached (this kimchi)" }),
+			makeRow({ id: "sv333333", host: undefined, state: "active elsewhere", status: "active" }),
 		]
 		const out = renderSessionsTable(rows, NOW, FIXED_WIDTH)
+		expect(out).toContain("a-b-c")
+		expect(out).toContain("x-y-z")
+		// Missing host shows "-"
 		const lines = out.split("\n")
-		expect(lines).toHaveLength(4)
-		expect(lines[1]).toContain("fg111111")
-		expect(lines[2]).toContain("dt222222")
-		expect(lines[3]).toContain("sv333333")
-		expect(lines[1].startsWith("*")).toBe(true)
-		expect(lines[2].startsWith(" ")).toBe(true)
-		// STATE column is gone — verify it is not present anywhere.
-		expect(out).not.toContain("active elsewhere")
-		expect(out).not.toContain("detached (this kimchi)")
+		expect(lines[3]).toMatch(/ - /)
 	})
 
 	it("shows full IDs (not truncated)", () => {

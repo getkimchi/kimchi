@@ -387,6 +387,15 @@ function mapSessionToSummary(raw: unknown, endpoint: string): RemoteSessionSumma
 	const name = typeof r.description === "string" ? r.description : ""
 	const status = mapSessionStatus(r.status)
 
+	let host: string | undefined
+	if (typeof r.uri === "string") {
+		try {
+			host = normalizeWsUri(r.uri).host
+		} catch {
+			host = undefined
+		}
+	}
+
 	// Server proto has no last_activity_time / has_connected_client fields yet — placeholder for v1.
 	return {
 		id,
@@ -395,6 +404,7 @@ function mapSessionToSummary(raw: unknown, endpoint: string): RemoteSessionSumma
 		lastActivityAt: createdAt,
 		status,
 		hasConnectedClient: false,
+		host,
 	}
 }
 
