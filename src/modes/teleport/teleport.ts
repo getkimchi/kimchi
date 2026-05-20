@@ -14,11 +14,11 @@ import type { RemoteAgentSession } from "../remote/remote-agent-session.js"
 import { RemoteAuthError } from "../remote/types.js"
 import type { AuthenticateResponse, RemoteSessionStatus, RemoteSessionSummary } from "../remote/types.js"
 import type { AttachArgs, ConnectArgs, DetachArgs, TeleportArgs } from "./args.js"
-import { getTeleportProxyPath } from "./proxy-path.js"
 import { BASE_EXCLUDE_GLOBS, RsyncError, runRsync } from "./rsync-transport.js"
 import { exportSessionForTeleport } from "./session-export.js"
 import { type SessionRow, renderSessionsTable } from "./sessions-table.js"
-import { type SessionInfo, createTeleportProgress } from "./teleport-progress.js"
+import { createTeleportProgress } from "./teleport-progress.js"
+import { buildProxyCommand } from "./teleport-proxy.js"
 import type { TeleportableAgentSession } from "./teleportable-agent-session.js"
 import { runChildWithTTYHandoff as runChildWithTTYHandoffImpl } from "./tty-handoff.js"
 
@@ -344,8 +344,7 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 		progress.step("Preparing sandbox")
 		try {
 			await waitForSessionReady({
-				host: authResult.host,
-				port: authResult.port,
+				wsUrl: authResult.wsUrl,
 				connectToken: authResult.connectToken,
 				signal: ctx.signal,
 			})
@@ -383,7 +382,6 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 				source: ctx.cwd,
 				destination: sandboxDest,
 				remoteHost: authResult.host,
-				remotePort: authResult.port,
 				remoteUser: SANDBOX_USER,
 				authToken: authResult.connectToken,
 				excludeGlobs: [...BASE_EXCLUDE_GLOBS, ...args.exclude],
@@ -410,7 +408,6 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 					source: sessionExport.localDir,
 					destination: dirname(sessionExport.remotePath),
 					remoteHost: authResult.host,
-					remotePort: authResult.port,
 					remoteUser: SANDBOX_USER,
 					authToken: authResult.connectToken,
 					signal: ctx.signal,
@@ -677,12 +674,11 @@ export async function runConnect(
 	}
 	status(ctx, undefined)
 
-	const proxyPath = getTeleportProxyPath()
+	const proxyCommand = buildProxyCommand()
+
 	const sshArgs = [
-		"-p",
-		String(auth.port),
 		"-o",
-		`ProxyCommand=node ${proxyPath} %h %p`,
+		`ProxyCommand=${proxyCommand}`,
 		"-o",
 		"StrictHostKeyChecking=no",
 		"-o",

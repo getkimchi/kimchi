@@ -359,7 +359,7 @@ try {
 			})
 		} else if (remoteMode) {
 			// --remote runs the same TUI as local mode but with the agent loop
-			// living in the cloud. See docs/remote-acp-agents-plan.md and
+			// living in the cloud.
 			// src/modes/remote/run-interactive.ts.
 			if (!apiKey) {
 				console.error("Error: --remote requires an API key — run 'kimchi setup' first.")

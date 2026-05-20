@@ -3,7 +3,6 @@ export interface AuthenticateResponse {
 	expiresAt: string
 	wsUrl: string
 	host: string
-	port: number
 	description: string
 }
 

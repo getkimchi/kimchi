@@ -62,8 +62,8 @@ if (!isDev) {
 	// teleport-proxy.js is invoked by `node` (spawned via ssh ProxyCommand), so it
 	// has to live on the real filesystem next to the binary's share assets — it
 	// can't be served from bun's compiled-binary virtual fs.
-	cpSync(
-		join(projectRoot, "src", "modes", "teleport", "teleport-proxy.js"),
-		join(projectRoot, "dist", "share", "kimchi", "teleport-proxy.js"),
-	)
+	// cpSync(
+	// 	join(projectRoot, "src", "modes", "teleport", "teleport-proxy.js"),
+	// 	join(projectRoot, "dist", "share", "kimchi", "teleport-proxy.js"),
+	// )
 }
