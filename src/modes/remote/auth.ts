@@ -195,14 +195,13 @@ export async function authenticateRemoteSession(
 		})
 		const { token, expireTime } = await exchangeSessionToken(apiKey, sessionId, { ...options, fetch: fetchImpl })
 
-		const { wsUrl, host, port } = normalizeWsUri(session.uri)
+		const { wsUrl, host } = normalizeWsUri(session.uri)
 
 		return {
 			connectToken: token,
 			expiresAt: expireTime,
 			wsUrl,
 			host,
-			port,
 			description: session.description,
 		}
 	} catch (err) {
@@ -421,9 +420,8 @@ function mapSessionStatus(raw: unknown): RemoteSessionStatus {
 }
 
 export interface WaitForSessionReadyOptions {
-	host: string
-	port: number
 	connectToken: string
+	wsUrl: string
 	signal?: AbortSignal
 	timeoutMs?: number
 	pollIntervalMs?: number
@@ -473,9 +471,8 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * return so we don't accumulate connections during the polling loop.
  */
 function probeSessionWsOnce(opts: {
-	host: string
-	port: number
 	connectToken: string
+	wsURL: string
 	wsPath: string
 	probeTimeoutMs: number
 	signal?: AbortSignal
@@ -496,7 +493,7 @@ function probeSessionWsOnce(opts: {
 			resolve(result)
 		}
 
-		const url = `wss://${opts.host}:${opts.port}${opts.wsPath}?token=${encodeURIComponent(opts.connectToken)}`
+		const url = `${opts.wsURL}${opts.wsPath}`
 		const headers = { Authorization: `Bearer ${opts.connectToken}` }
 		let ws: { close(): void; addEventListener: (t: string, cb: (e: unknown) => void) => void }
 		try {
@@ -566,9 +563,8 @@ export async function waitForSessionReady(options: WaitForSessionReadyOptions): 
 		}
 
 		const probe = await probeSessionWsOnce({
-			host: options.host,
-			port: options.port,
 			connectToken: options.connectToken,
+			wsURL: options.wsUrl,
 			wsPath,
 			probeTimeoutMs,
 			signal,

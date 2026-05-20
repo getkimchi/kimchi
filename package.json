@@ -14,7 +14,7 @@
 		"install:local": "node scripts/install-local.js",
 		"build:binary-linux-arm64": "node scripts/build-binary.js --target linux-arm64",
 		"build:binary-linux-x64": "node scripts/build-binary.js --target linux-x64",
-		"dev": "bun run --preload ./src/set-package-dir.ts src/entry.ts",
+		"dev": "make -C tools/proxy-helper/ copy-for-dev && bun run --preload ./src/set-package-dir.ts src/entry.ts",
 		"dev:setup": "bun run --preload ./src/set-package-dir.ts src/entry.ts setup",
 		"lint": "biome check src/ scripts/",
 		"lint:fix": "biome check --write src/ scripts/",

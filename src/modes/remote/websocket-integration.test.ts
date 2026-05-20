@@ -1,6 +1,6 @@
 import type { AddressInfo } from "node:net"
 import { describe, expect, it } from "vitest"
-import { WebSocketServer } from "ws"
+import { type WebSocket, WebSocketServer } from "ws"
 import { RemoteRpcClient } from "./rpc-client.js"
 import { createWebSocketTransport } from "./transport-ws.js"
 import { WsCloseCode } from "./types.js"
@@ -11,8 +11,8 @@ describe("WebSocket integration", () => {
 		const port = (wss.address() as AddressInfo).port
 		const wsUrl = `ws://127.0.0.1:${port}`
 
-		wss.on("connection", (ws) => {
-			ws.on("message", (data) => {
+		wss.on("connection", (ws: WebSocket) => {
+			ws.on("message", (data: WebSocket.RawData) => {
 				const line = String(data)
 				const req = JSON.parse(line)
 				ws.send(JSON.stringify({ type: "response", id: req.id, success: true, data: { pong: 1 } }))
@@ -36,8 +36,8 @@ describe("WebSocket integration", () => {
 		const port = (wss.address() as AddressInfo).port
 		const wsUrl = `ws://127.0.0.1:${port}`
 
-		wss.on("connection", (ws) => {
-			ws.on("message", (data) => {
+		wss.on("connection", (ws: WebSocket) => {
+			ws.on("message", (data: WebSocket.RawData) => {
 				const line = String(data)
 				const req = JSON.parse(line)
 
@@ -72,8 +72,8 @@ describe("WebSocket integration", () => {
 		const port = (wss.address() as AddressInfo).port
 		const wsUrl = `ws://127.0.0.1:${port}`
 
-		wss.on("connection", (ws) => {
-			ws.on("message", (data) => {
+		wss.on("connection", (ws: WebSocket) => {
+			ws.on("message", (data: WebSocket.RawData) => {
 				const line = String(data)
 				const req = JSON.parse(line)
 				ws.send(JSON.stringify({ type: "response", id: req.id, success: true, data: null }))
