@@ -369,10 +369,12 @@ describe("listRemoteSessions", () => {
 			name: "feature-x",
 			status: "active",
 			hasConnectedClient: false,
+			host: "s-1.remote.kimchi.dev",
 		})
 		expect(result[0].createdAt).toBeInstanceOf(Date)
 		expect(result[0].lastActivityAt).toBeInstanceOf(Date)
 		expect(result[0].createdAt.toISOString()).toBe("2026-05-17T10:30:00.000Z")
+		expect(result[0].host).toBe("s-1.remote.kimchi.dev")
 
 		expect(mockFetch).toHaveBeenCalledTimes(2)
 		expect(mockFetch.mock.calls[1][0]).toBe(listUrl())

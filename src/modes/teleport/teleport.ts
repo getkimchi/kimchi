@@ -746,6 +746,7 @@ export async function runListSessions(ctx: TeleportContext): Promise<void> {
 			rows.push({
 				id,
 				name: readSessionName(fg) ?? match?.name ?? "",
+				host: match?.host,
 				state: "foreground",
 				status: match?.status,
 				createdAt: match?.createdAt,
@@ -760,6 +761,7 @@ export async function runListSessions(ctx: TeleportContext): Promise<void> {
 		rows.push({
 			id,
 			name: readSessionName(remote) ?? match?.name ?? "",
+			host: match?.host,
 			state: "detached (this kimchi)",
 			status: match?.status,
 			createdAt: match?.createdAt,
@@ -773,6 +775,7 @@ export async function runListSessions(ctx: TeleportContext): Promise<void> {
 		rows.push({
 			id: s.id,
 			name: s.name,
+			host: s.host,
 			state: s.hasConnectedClient ? "active elsewhere" : "detached",
 			status: s.status,
 			createdAt: s.createdAt,

@@ -16,6 +16,7 @@ export interface RemoteSessionSummary {
 	lastActivityAt: Date
 	status: RemoteSessionStatus
 	hasConnectedClient: boolean
+	host?: string
 }
 
 export enum WsCloseCode {
