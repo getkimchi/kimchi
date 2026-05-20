@@ -16,7 +16,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { Input, Key, Text, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
+import { Input, Key, Text, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
 
 import {
@@ -174,6 +174,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				// ── State ──
 				let state: QuestionnaireState = initialState(questions)
 				let cachedLines: string[] | undefined
+				let cachedWidth = 0
 
 				const editor = new Input()
 				editor.focused = true
@@ -258,13 +259,17 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 
 				// ── Rendering ──
 				function render(width: number): string[] {
-					if (cachedLines) return cachedLines
+					if (cachedLines && cachedWidth === width) return cachedLines
 
 					const lines: string[] = []
 					const q = currentQuestion(state)
 					const opts = currentOptions(state)
 
-					const add = (s: string) => lines.push(truncateToWidth(s, width))
+					const add = (s: string) => {
+						for (const line of wrapTextWithAnsi(s, width)) {
+							lines.push(line)
+						}
+					}
 					add(theme.fg("accent", "\u2500".repeat(width)))
 
 					// Header
@@ -410,6 +415,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 					add(theme.fg("accent", "\u2500".repeat(width)))
 
 					cachedLines = lines
+					cachedWidth = width
 					return lines
 				}
 
@@ -417,6 +423,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 					render,
 					invalidate: () => {
 						cachedLines = undefined
+						cachedWidth = 0
 					},
 					handleInput,
 				}
