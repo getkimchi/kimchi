@@ -26,10 +26,8 @@ export const DEFAULT_AGENTS: Map<string, AgentConfig> = new Map([
 			extensions: true,
 			skills: true,
 			models: pick(["build", "explore", "plan", "review", "research"]),
-			systemPrompt: `You are a general-purpose coding agent. You have full access to read, write, edit files, and execute commands.
-Do exactly what has been asked — nothing more, nothing less.
-Stay in scope. Do not add features, refactors, or improvements beyond what the task asks for.`,
-			promptMode: "replace",
+			systemPrompt: "",
+			promptMode: "append",
 			isDefault: true,
 		},
 	],
