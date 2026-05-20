@@ -1,0 +1,48 @@
+import type { Theme } from "@earendil-works/pi-coding-agent"
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import type { TipCandidate } from "./types.js"
+
+const MAX_TIP_WIDTH = 96
+
+export class TipRow {
+	constructor(
+		private readonly getTip: () => TipCandidate | undefined,
+		private readonly theme: Theme,
+	) {}
+
+	render(width: number): string[] {
+		const tip = this.getTip()
+		if (!tip) return []
+		return renderTipRow(tip, this.theme, width)
+	}
+
+	invalidate(): void {}
+}
+
+export function renderTipRow(tip: TipCandidate, theme: Theme, width: number): string[] {
+	const availableWidth = Math.max(0, Math.floor(width))
+	if (availableWidth === 0) return []
+
+	const contentWidth = Math.min(availableWidth, MAX_TIP_WIDTH)
+	const content = formatTipContent(tip, theme)
+	const truncated = truncateToWidth(content, contentWidth, "...")
+	const padding = Math.max(0, availableWidth - visibleWidth(truncated))
+
+	return [`${" ".repeat(padding)}${truncated}`]
+}
+
+function formatTipContent(tip: TipCandidate, theme: Theme): string {
+	return `${theme.fg("dim", "Tip:")} ${formatTipMessage(tip, theme)}`
+}
+
+function formatTipMessage(tip: TipCandidate, theme: Theme): string {
+	const command = tip.command
+	if (!command) return theme.fg("muted", tip.message)
+
+	const index = tip.message.indexOf(command)
+	if (index === -1) return `${theme.fg("muted", tip.message)} ${theme.fg("accent", command)}`
+
+	const before = tip.message.slice(0, index)
+	const after = tip.message.slice(index + command.length)
+	return `${theme.fg("muted", before)}${theme.fg("accent", command)}${theme.fg("muted", after)}`
+}
