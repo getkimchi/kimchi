@@ -22,7 +22,6 @@ export interface EnvironmentInfo {
 	homeDir: string
 	cwd: string
 	documentsDir: string
-	currentTime: string
 	localDate: string
 	isGitRepo: boolean
 	gitBranch?: string
@@ -179,7 +178,7 @@ function formatEnvironmentSection(env: EnvironmentInfo): string {
 		`- Home directory: "${env.homeDir}"`,
 		`- Working directory: "${env.cwd}"`,
 		`- Documents directory: "${env.documentsDir}"`,
-		`- Current time: ${env.currentTime} (local date: ${env.localDate})`,
+		`- Current date: ${env.localDate}`,
 		`- Git repository: ${env.isGitRepo ? "yes" : "no"}`,
 	]
 	if (env.gitBranch !== undefined) lines.push(`- Git branch: ${env.gitBranch}`)

@@ -378,7 +378,6 @@ export default function (skillPaths: string[]) {
 				homeDir: cachedHomeDir,
 				cwd: ctx.cwd,
 				documentsDir: join(ctx.cwd, ".kimchi", "docs"),
-				currentTime: now.toISOString(),
 				localDate: now.toLocaleDateString("en-CA"),
 				isGitRepo,
 				gitBranch: isGitRepo ? getGitBranch(ctx.cwd) : undefined,
