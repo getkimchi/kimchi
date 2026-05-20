@@ -26,6 +26,7 @@ import {
 	type ToolKind,
 	ndJsonStream,
 } from "@agentclientprotocol/sdk"
+import type { ImageContent } from "@earendil-works/pi-ai"
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -90,7 +91,7 @@ export class KimchiAcpAgent implements Agent {
 			protocolVersion: PROTOCOL_VERSION,
 			agentCapabilities: {
 				loadSession: false,
-				promptCapabilities: { image: false, audio: false, embeddedContext: false },
+				promptCapabilities: { image: true, audio: false, embeddedContext: false },
 			},
 			authMethods: [],
 		}
@@ -163,12 +164,10 @@ export class KimchiAcpAgent implements Agent {
 		if (entry.turn) {
 			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
 		}
-		// Capabilities declare image/audio/embeddedContext: false, so a compliant
-		// client will only send text blocks. A misbehaving client that sends other
-		// block types gets them dropped — warn once per unseen type so the silent
-		// empty-turn isn't confusing to debug.
+		// Warn about unsupported block types (audio, embeddedContext) once per type.
+		// Image blocks are supported and processed below.
 		for (const b of params.prompt) {
-			if (b.type !== "text" && !this.warnedBlockTypes.has(b.type)) {
+			if (b.type !== "text" && b.type !== "image" && !this.warnedBlockTypes.has(b.type)) {
 				this.warnedBlockTypes.add(b.type)
 				process.stderr.write(`acp prompt: dropping unsupported block type "${b.type}"\n`)
 			}
@@ -177,7 +176,15 @@ export class KimchiAcpAgent implements Agent {
 			.map((b: ContentBlock) => (b.type === "text" ? b.text : ""))
 			.join("")
 			.trim()
-		if (!text) {
+		// Extract image blocks from the prompt.
+		const images: ImageContent[] = params.prompt
+			.filter((b: ContentBlock): b is ContentBlock & { type: "image" } => b.type === "image")
+			.map((b) => ({
+				type: "image" as const,
+				data: b.data,
+				mimeType: b.mimeType,
+			}))
+		if (!text && images.length === 0) {
 			return { stopReason: "end_turn" }
 		}
 		let turnResolve!: (r: PromptResponse) => void
@@ -199,7 +206,7 @@ export class KimchiAcpAgent implements Agent {
 		// paused on `await session.prompt()`. Instead, attach handlers that drive
 		// finalizeTurn/failTurn and return `result` directly; settling `result`
 		// propagates to the caller regardless of whether session.prompt ever resolves.
-		entry.session.prompt(text, { source: "rpc" }).then(
+		entry.session.prompt(text, { source: "rpc", images }).then(
 			() => {
 				// pi-coding-agent's session.prompt() short-circuits for extension commands,
 				// input-handler intercepts, and no-op paths — in those cases agent.prompt()

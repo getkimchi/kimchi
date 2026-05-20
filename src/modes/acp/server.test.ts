@@ -20,8 +20,9 @@ class FakeAgentSession {
 	aborted = false
 	model?: { provider: string; id: string }
 	modelRegistry = { getAvailable: () => [] as Array<{ provider: string; id: string; name: string }> }
-	promptImpl: (text: string) => Promise<void> = async () => {}
+	promptImpl: (text: string, opts?: { images?: unknown[] }) => Promise<void> = async () => {}
 	abortImpl: () => Promise<void> = async () => {}
+	lastPromptImages?: unknown[]
 
 	constructor(sessionId: string) {
 		this.sessionId = sessionId
@@ -38,8 +39,9 @@ class FakeAgentSession {
 		for (const l of [...this.listeners]) l(event)
 	}
 
-	async prompt(text: string, _opts?: unknown): Promise<void> {
-		await this.promptImpl(text)
+	async prompt(text: string, opts?: { images?: unknown[] }): Promise<void> {
+		this.lastPromptImages = opts?.images
+		await this.promptImpl(text, opts)
 	}
 
 	async setModel(model: { provider: string; id: string }): Promise<void> {
@@ -335,21 +337,21 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			const r1 = await agent.prompt({
 				sessionId,
 				// biome-ignore lint/suspicious/noExplicitAny: unsupported block on purpose
-				prompt: [{ type: "image" as any, data: "x" } as any],
+				prompt: [{ type: "audio" as any, data: "x" } as any],
 			})
 			expect(r1.stopReason).toBe("end_turn")
 			// Second call with same unsupported type: no new warning (deduped).
 			const r2 = await agent.prompt({
 				sessionId,
 				// biome-ignore lint/suspicious/noExplicitAny: unsupported block on purpose
-				prompt: [{ type: "image" as any, data: "y" } as any],
+				prompt: [{ type: "audio" as any, data: "y" } as any],
 			})
 			expect(r2.stopReason).toBe("end_turn")
 			// New unsupported type: warns again.
 			const r3 = await agent.prompt({
 				sessionId,
 				// biome-ignore lint/suspicious/noExplicitAny: unsupported block on purpose
-				prompt: [{ type: "audio" as any, data: "z" } as any],
+				prompt: [{ type: "embeddedContext" as any, data: "z" } as any],
 			})
 			expect(r3.stopReason).toBe("end_turn")
 		} finally {
@@ -357,8 +359,34 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		}
 		const matches = writes.filter((w) => w.includes("acp prompt: dropping unsupported block type"))
 		expect(matches).toHaveLength(2)
-		expect(matches.some((w) => w.includes('"image"'))).toBe(true)
 		expect(matches.some((w) => w.includes('"audio"'))).toBe(true)
+		expect(matches.some((w) => w.includes('"embeddedContext"'))).toBe(true)
+	})
+
+	// Image blocks are supported: they should be extracted and passed to
+	// session.prompt() without warnings, and the turn should proceed normally.
+	it("accepts image blocks and passes them to session.prompt", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			await delay(5)
+			fake.emit({ type: "agent_end", messages: [] })
+		}
+
+		const result = await agent.prompt({
+			sessionId,
+			prompt: [
+				{ type: "text", text: "describe this image" },
+				{ type: "image", data: "base64data", mimeType: "image/png" },
+			],
+		})
+		expect(result.stopReason).toBe("end_turn")
+		// Verify images were passed to session.prompt
+		expect(fake.lastPromptImages).toHaveLength(1)
+		expect(fake.lastPromptImages?.[0]).toMatchObject({
+			type: "image",
+			data: "base64data",
+			mimeType: "image/png",
+		})
 	})
 
 	// Defensive: once a turn is finalized (short-circuit, shutdown, cancel),
