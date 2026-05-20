@@ -31,9 +31,11 @@ describe("MODEL_CAPABILITIES completeness invariants", () => {
 		}
 	})
 
-	it.each(LIVE_ENTRIES)("%s — orchestrationGuidelines is a non-empty string", (_id, cap) => {
-		expect(typeof cap.orchestrationGuidelines).toBe("string")
-		expect((cap.orchestrationGuidelines as string).trim().length).toBeGreaterThan(0)
+	it.each(LIVE_ENTRIES)("%s — orchestrationGuidelines is undefined or a non-empty string", (_id, cap) => {
+		if (cap.orchestrationGuidelines !== undefined) {
+			expect(typeof cap.orchestrationGuidelines).toBe("string")
+			expect((cap.orchestrationGuidelines as string).trim().length).toBeGreaterThan(0)
+		}
 	})
 
 	it.each(LIVE_ENTRIES)("%s — every declared strength phase has a non-empty guidelines entry", (_id, cap) => {

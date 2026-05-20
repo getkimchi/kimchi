@@ -59,7 +59,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("You are an expert coding assistant")
+			expect(result).toContain("You are Kimchi, an AI coding agent")
 			expect(result).toContain("# Environment")
 			expect(result).toContain("## Available Tools")
 			expect(result).toContain("## Documents")
@@ -213,20 +213,20 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
+				currentModelId: "kimi-k2.6",
 				registry,
 				mode: "orchestrator",
 			})
 			expect(result).toContain("### Orchestration Guidelines")
-			expect(result).toContain("MiniMax M2 family")
+			expect(result).toContain("Kimi family")
 		})
 
 		it("places orchestration section before phase section", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
-				currentPhase: "build",
+				currentModelId: "kimi-k2.6",
+				currentPhase: "plan",
 				registry,
 				mode: "orchestrator",
 			})
@@ -371,7 +371,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "single",
 			})
-			expect(result).toContain("You are an expert coding assistant")
+			expect(result).toContain("You are Kimchi, an AI coding agent")
 			expect(result).toContain("# Environment")
 			expect(result).toContain("## Available Tools")
 			expect(result).toContain("## Documents")

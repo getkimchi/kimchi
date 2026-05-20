@@ -21,32 +21,22 @@ function getRequired(name: string): ReturnType<typeof DEFAULT_AGENTS.get> & obje
 }
 
 describe("default agents — subagent system prompt snapshot", () => {
-	it("General-Purpose agent assembles expected prompt (append mode)", () => {
+	it("General-Purpose agent assembles expected prompt (replace mode)", () => {
 		const agent = getRequired(AGENT_GENERAL_PURPOSE)
 		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
 		expect(output).toMatchInlineSnapshot(`
-			"# Environment
+			"You are a kimchi coding agent sub-agent.
+			You have been invoked to handle a specific task autonomously.
+
+			# Environment
 			Working directory: /home/testuser/projects/myapp
 			Git repository: yes
 			Branch: main
 			Platform: linux
 
-			<inherited_system_prompt>
-			You are a kimchi coding agent. You orchestrate sub-agents and tools to solve complex tasks.
-			</inherited_system_prompt>
-
-			<sub_agent_context>
-			You are operating as a sub-agent invoked to handle a specific task.
-			- Use the read tool instead of cat/head/tail
-			- Use the edit tool instead of sed/awk
-			- Use the write tool instead of echo/heredoc
-			- Use the find tool instead of bash find/ls for file search
-			- Use the grep tool instead of bash grep/rg for content search
-			- Make independent tool calls in parallel
-			- Use absolute file paths
-			- Do not use emojis
-			- Be concise but complete
-			</sub_agent_context>"
+			You are a general-purpose coding agent. You have full access to read, write, edit files, and execute commands.
+			Do exactly what has been asked — nothing more, nothing less.
+			Stay in scope. Do not add features, refactors, or improvements beyond what the task asks for."
 		`)
 	})
 

@@ -73,11 +73,11 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("includes model-specific orchestration guidelines when provided", () => {
 		const result = resolveOrchestrationInstructions({
-			currentModelId: "minimax-m2.7",
+			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
 		})
 		expect(result).toContain("### Orchestration Guidelines")
-		expect(result).toContain("MiniMax M2 family")
+		expect(result).toContain("Kimi family")
 	})
 })

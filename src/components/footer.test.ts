@@ -309,7 +309,7 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		const { raw, visible } = renderAt(160)
 		expect(visible).toContain("\u25cf default \u2192 shift+tab")
 		expect(visible).toContain("multi-model: on \u2192 option+tab")
-		expect(visible).toContain("claude-opus-4-7")
+		expect(visible).not.toContain("claude-opus-4-7")
 		expect(visible).toContain("0% ctx")
 		expect(visible).toContain("phase:explore")
 		expect(visible).toContain("/ for commands")
@@ -333,7 +333,7 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		// All segments still present (compaction shrinks, never drops).
 		expect(visible).toContain("default")
 		expect(visible).toContain("multi-model")
-		expect(visible).toContain("claude-opus-4-7")
+		expect(visible).not.toContain("claude-opus-4-7")
 		expect(visible).toContain("phase:explore")
 	})
 
@@ -349,8 +349,8 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		// phase prefix is dropped; value survives.
 		expect(visible).toContain("explore")
 		expect(visible).not.toContain("phase:")
-		// The model is the highest-priority segment and should survive.
-		expect(visible).toContain("claude-opus-4-7")
+		// Model segment is hidden in multi-model mode.
+		expect(visible).not.toContain("claude-opus-4-7")
 	})
 
 	it("width 20: line is hard-truncated to fit, leftmost content survives", () => {

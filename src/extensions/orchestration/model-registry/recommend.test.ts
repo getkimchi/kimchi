@@ -20,8 +20,8 @@ describe("recommendModel", () => {
 	})
 
 	it("returns undefined when no model matches the strengths", () => {
-		// No model has both "build" and "research" as strengths simultaneously
-		const result = recommendModel({ strengths: ["build", "research"] })
+		// No model has both "review" and "plan" as strengths simultaneously
+		const result = recommendModel({ strengths: ["review", "plan"] })
 		expect(result).toBeUndefined()
 	})
 
@@ -38,13 +38,13 @@ describe("recommendModel", () => {
 		expect(result).toBeUndefined()
 	})
 
-	it("multi-strength filter: plan + review have overlapping heavy models", () => {
-		// kimi-k2.6 has both plan and review, tier heavy
-		const result = recommendModel({ strengths: ["plan", "review"], preferTier: "heavy" })
+	it("multi-strength filter: build + explore have overlapping light models", () => {
+		// nemotron-3-super-fp4 has both build and explore, tier light
+		const result = recommendModel({ strengths: ["build", "explore"], preferTier: "light" })
 		expect(result).toBeDefined()
-		expect(result?.capabilities.tier).toBe("heavy")
-		expect(result?.capabilities.strengths).toContain("plan")
-		expect(result?.capabilities.strengths).toContain("review")
+		expect(result?.capabilities.tier).toBe("light")
+		expect(result?.capabilities.strengths).toContain("build")
+		expect(result?.capabilities.strengths).toContain("explore")
 	})
 
 	it("ignored entries are excluded", () => {
