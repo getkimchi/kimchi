@@ -1,5 +1,7 @@
-import type { ImageContent, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
+import type { Api, ImageContent, Model, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+
+type ModelSelectEvent = { type: string; source: string; model: Model<Api>; previousModel?: Model<Api> }
 
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import modelGuardExtension, {

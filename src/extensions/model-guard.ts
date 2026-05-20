@@ -1,5 +1,15 @@
-import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
+import type {
+	Api,
+	AssistantMessage,
+	ImageContent,
+	Model,
+	TextContent,
+	ToolResultMessage,
+	UserMessage,
+} from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { getModelTier } from "./model-switch.js"
+import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 
 /** Messages that have a content array we can inspect for images. */
 type ContentMessage = UserMessage | AssistantMessage | ToolResultMessage
@@ -291,7 +301,7 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 		if (modified) return { messages: result }
 	})
 
-	_pi.on("model_select", async (event: ModelSelectEvent, ctx: ExtensionContext) => {
+	_pi.on("model_select", async (event: { source: string; previousModel?: Model<Api> }, ctx: ExtensionContext) => {
 		if (event.source === "restore") return
 
 		const model = ctx.model
@@ -304,8 +314,8 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 		// and not checked by any pre-switch path.
 
 		if (event.previousModel) {
-			const prevTier = getModelTier(event.previousModel as never, MODEL_CAPABILITIES)
-			const nextTier = getModelTier(model as never, MODEL_CAPABILITIES)
+			const prevTier = getModelTier(event.previousModel, MODEL_CAPABILITIES)
+			const nextTier = getModelTier(ctx.model, MODEL_CAPABILITIES)
 			if (prevTier && nextTier) {
 				const TIER_ORDER = ["heavy", "standard", "light"]
 				const prevIdx = TIER_ORDER.indexOf(prevTier)
