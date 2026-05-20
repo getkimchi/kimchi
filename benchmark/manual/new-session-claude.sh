@@ -77,11 +77,9 @@ for idx in "${SELECTED[@]}"; do
   echo "  created: run-claude-${task}.sh"
 done
 
-if [[ ${#ALL_SCRIPTS[@]} -gt 1 ]]; then
-  RUN_ALL="$SESSION_DIR/run-all-claude.sh"
-  bench_generate_run_all_script "$RUN_ALL" "${ALL_SCRIPTS[@]}"
-  echo "  created: run-all-claude.sh"
-fi
+RUN_ALL="$SESSION_DIR/run-all-claude.sh"
+bench_generate_run_all_script "$RUN_ALL" "${ALL_SCRIPTS[@]}"
+echo "  created: run-all-claude.sh"
 
 echo ""
 echo "Done. ${#ALL_SCRIPTS[@]} script(s) created in $SESSION_DIR/"
