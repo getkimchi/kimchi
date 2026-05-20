@@ -74,7 +74,11 @@ function usageRawCols(totals: UsageTotals): string[] {
 	return cols
 }
 
-function formatUsageRows(rows: Array<{ label: string; totals: UsageTotals }>, theme: Theme): string[] {
+function formatUsageRows(
+	rows: Array<{ label: string; totals: UsageTotals }>,
+	theme: Theme,
+	labelWidth: number,
+): string[] {
 	const colSets = rows.map((r) => usageRawCols(r.totals))
 	const colCount = Math.max(...colSets.map((c) => c.length))
 	const colWidths = Array.from({ length: colCount }, (_, i) => Math.max(...colSets.map((c) => (c[i] ?? "").length)))
@@ -83,7 +87,7 @@ function formatUsageRows(rows: Array<{ label: string; totals: UsageTotals }>, th
 		const cols = colSets[ri]
 		const padded = colWidths.map((width, i) => (cols[i] ?? "").padEnd(width))
 		const values = padded.join(COL_GAP)
-		return INDENT + theme.fg("dim", row.label.padEnd(LABEL_WIDTH)) + values
+		return INDENT + theme.fg("dim", row.label.padEnd(labelWidth)) + values
 	})
 }
 
@@ -97,17 +101,17 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 	const header = theme.bold(theme.fg("toolTitle", "Prompt summary"))
 	container.addChild(new Text(dash + header, 0, 0))
 
-	container.addChild(new Text(INDENT + theme.fg("dim", "execution".padEnd(LABEL_WIDTH)) + data.elapsed, 0, 0))
-
 	if (!data.subagents) {
-		// No subagents — single compact "tokens" row
+		// No subagents — single compact row
+		const tokensLabel = data.orchestratorModel ? `main (${data.orchestratorModel}):` : "tokens"
+		const labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, tokensLabel.length + 1)
+		container.addChild(new Text(INDENT + theme.fg("dim", "execution".padEnd(labelWidth)) + data.elapsed, 0, 0))
 		const t = data.total
 		let values = `↑${formatCount(t.input)}${COL_GAP}↓${formatCount(t.output)}`
 		if (t.cacheRead > 0 || t.cacheWrite > 0) {
 			values += `${COL_GAP}cache-read ${formatCount(t.cacheRead)}${COL_GAP}cache-write ${formatCount(t.cacheWrite)}`
 		}
-		const tokensLabel = data.orchestratorModel ? `main (${data.orchestratorModel}):` : "tokens"
-		container.addChild(new Text(INDENT + theme.fg("dim", tokensLabel.padEnd(LABEL_WIDTH)) + values, 0, 0))
+		container.addChild(new Text(INDENT + theme.fg("dim", tokensLabel.padEnd(labelWidth)) + values, 0, 0))
 	} else {
 		// Multi-row breakdown when subagents were involved
 		const rows: Array<{ label: string; totals: UsageTotals }> = []
@@ -124,7 +128,9 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 		}
 		rows.push({ label: "total:", totals: data.total })
 
-		for (const line of formatUsageRows(rows, theme)) {
+		const labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, ...rows.map((r) => r.label.length + 1))
+		container.addChild(new Text(INDENT + theme.fg("dim", "execution".padEnd(labelWidth)) + data.elapsed, 0, 0))
+		for (const line of formatUsageRows(rows, theme, labelWidth)) {
 			container.addChild(new Text(line, 0, 0))
 		}
 	}
