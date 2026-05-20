@@ -6,6 +6,8 @@ import {
 	type RemoteSessionSummary,
 } from "./types.js"
 
+import { WebSocket } from "ws"
+
 export interface AuthenticateOptions {
 	/**
 	 * Override the remote endpoint (used by tests).  Resolution order:
@@ -542,11 +544,7 @@ export async function waitForSessionReady(options: WaitForSessionReadyOptions): 
 	const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
 	const probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS
 	const wsPath = options.wsPath ?? DEFAULT_WS_PATH
-	// biome-ignore lint/suspicious/noExplicitAny: globalThis.WebSocket type varies across runtimes
-	const WS = options._WebSocket ?? (globalThis as any).WebSocket
-	if (!WS) {
-		throw new RemoteNetworkError("WebSocket is not available. Node 22+ is required.")
-	}
+	const WS = options._WebSocket ?? WebSocket
 
 	const startedAt = Date.now()
 	let lastError: string | undefined

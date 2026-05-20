@@ -114,7 +114,7 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4)
       ws:
-        specifier: ^8.20.0
+        specifier: ^8.20.1
         version: 8.20.1
     optionalDependencies:
       '@mariozechner/clipboard-darwin-arm64':

@@ -350,6 +350,11 @@ try {
 			const { runAcpMode } = await import("./modes/acp/server.js")
 			await runAcpMode({ extensionFactories, agentDir })
 		} else if (teleportMode) {
+			if (!apiKey) {
+				console.error("Error: --teleport requires an API key — run 'kimchi setup' first.")
+				process.exit(1)
+			}
+
 			const { runTeleportSession } = await import("./modes/teleport/run-interactive-teleport.js")
 			await runTeleportSession({
 				extensionFactories,
