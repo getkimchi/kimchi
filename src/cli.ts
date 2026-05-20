@@ -69,7 +69,6 @@ let sessionStarted = false
 // at module load, before anything else runs.
 const cliMode = getCliModeArg(process.argv.slice(2))
 const acpMode = cliMode === "acp"
-const acpMode = isAcpMode(process.argv.slice(2))
 const remoteMode = isRemoteFlag(process.argv.slice(2))
 const teleportMode = isTeleportFlag(process.argv.slice(2))
 const helpOrVersion = isHelpOrVersionArgs(process.argv.slice(2))
@@ -106,7 +105,6 @@ function sessionIdCaptureExtension(pi: ExtensionAPI) {
 		}
 	})
 }
-
 
 // Sniff the args for --remote before pi-mono's main()
 // (or our runRemoteSession) takes over. The agent loop runs server-side, but
@@ -342,7 +340,6 @@ try {
 			stripImagesExtension,
 		]
 
-		const rawArgs = process.argv.slice(2)
 		if (teleportMode && remoteMode) {
 			process.stderr.write(
 				"`--teleport` and `--remote` are mutually exclusive. Use `--remote --session <id>` to attach to a remote at startup, or `--teleport` to enable session multiplex from local.\n",
