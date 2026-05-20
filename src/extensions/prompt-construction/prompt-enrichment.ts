@@ -248,6 +248,15 @@ export default function (skillPaths: string[]) {
 						return undefined
 					})
 				}
+
+				// In multi-model mode the orchestrator must always be kimi-k2.6.
+				// Force-switch if the user has a different model selected via /models.
+				if (multiModelEnabled && ctx.model?.id !== ORCHESTRATOR_MODEL_ID) {
+					const orchestratorModel = ctx.modelRegistry?.find("kimchi-dev", ORCHESTRATOR_MODEL_ID)
+					if (orchestratorModel) {
+						await pi.setModel(orchestratorModel)
+					}
+				}
 			})
 
 			// Detect the inverse of the context-event nudge below: the orchestrator reasons
