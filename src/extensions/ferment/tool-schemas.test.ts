@@ -14,11 +14,7 @@ const passingGates = () => [
 	{ id: "P3", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
 ]
 
-const minimalPhases = () => [
-	{ name: "P1", goal: "Phase 1 goal", steps: [{ description: "Step 1" }] },
-	{ name: "P2", goal: "Phase 2 goal", steps: [{ description: "Step 2" }] },
-	{ name: "P3", goal: "Phase 3 goal", steps: [{ description: "Step 3" }] },
-]
+const minimalPhases = () => [{ name: "P1", goal: "Phase 1 goal", steps: [{ description: "Step 1" }] }]
 
 describe("ProposeScopingParams schema", () => {
 	it("accepts full payload with questions", () => {
@@ -147,18 +143,15 @@ describe("ProposeScopingParams schema", () => {
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
 	})
 
-	it("rejects fewer than 3 phases (minItems: 3)", () => {
+	it("accepts a single phase for simple tasks (minItems: 1)", () => {
 		const payload = {
 			ferment_id: "f-123",
 			goal: "Do something",
-			phases: [
-				{ name: "P1", goal: "Phase 1 goal", steps: [{ description: "Step 1" }] },
-				{ name: "P2", goal: "Phase 2 goal", steps: [{ description: "Step 2" }] },
-			],
+			phases: minimalPhases(),
 			gates: passingGates(),
 		}
 
-		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 
 	it("rejects more than 7 phases (maxItems: 7)", () => {

@@ -63,7 +63,7 @@ export const PhaseProposalSchema = Type.Object({
 	parallel_group: Type.Optional(
 		Type.Number({
 			description:
-				"Phases with the same parallel_group integer run CONCURRENTLY. Use for phases whose outputs are not consumed by their siblings: independent surveys, codebase mapping over disjoint subtrees, parallel audits. Good fit: three 'survey X' phases → all get parallel_group: 1. BAD fit (keep sequential, omit parallel_group): 'Survey files' → 'Edit those files' → 'Verify edits' is a pipeline — each phase consumes the previous phase's output. Same rule as steps: pipelines stay sequential, only independent siblings get the same parallel_group. Singleton groups auto-collapse.",
+				"Phases with the same parallel_group integer run CONCURRENTLY. Use for phases whose outputs are not consumed by their siblings: independent surveys, codebase mapping over disjoint subtrees, parallel audits. Good fit: multiple independent 'survey X' phases → all get parallel_group: 1. BAD fit (keep sequential, omit parallel_group): 'Survey files' → 'Edit those files' → 'Verify edits' is a pipeline — each phase consumes the previous phase's output. Same rule as steps: pipelines stay sequential, only independent siblings get the same parallel_group. Singleton groups auto-collapse.",
 		}),
 	),
 	steps: Type.Optional(
@@ -159,10 +159,10 @@ export const ProposeScopingParams = Type.Object({
 	),
 	phases: Type.Union([
 		Type.Array(PhaseProposalSchema, {
-			minItems: 3,
+			minItems: 1,
 			maxItems: 7,
 			description:
-				"3–7 ordered phase OBJECTS that will become the project plan. Emit as a real JSON array, not a quoted string, markdown block, or prose.",
+				"1–7 ordered phase OBJECTS that will become the project plan. Default to ONE phase for simple tasks and put setup, implementation, persistence, filtering, polish, and verification in that phase's steps. Add another phase only for a real vertical slice/tracer bullet, materially different complexity/risk tier, independent parallel workstream, or distinct code locality that should be planned/executed separately. Do not create phases just for setup, directory creation, CRUD vs polish, or to make the plan look organized. Emit as a real JSON array, not a quoted string, markdown block, or prose.",
 		}),
 		Type.String({
 			description:
