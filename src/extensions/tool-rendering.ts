@@ -368,9 +368,22 @@ function appendWorkedDurationLine(message: any, durationMs: number): void {
 	lastText.text = `${text.trimEnd()}\n\n${inlineWorkedDurationText(durationMs)}`
 }
 
-function insertUserPromptPrefix(line: string): string {
+// Cached accent-colored › prefix — same glyph+color the prompt editor uses.
+// Rebuilt whenever the theme changes (visibleWidth is always 2: "› " + reset).
+let _userPromptPrefix = "› "
+let _userPromptPrefixTheme: unknown = null
+
+function getUserPromptPrefix(theme: any): string {
+	if (theme !== _userPromptPrefixTheme) {
+		_userPromptPrefixTheme = theme
+		_userPromptPrefix = typeof theme?.fg === "function" ? `${theme.fg("accent", "›")} ` : "› "
+	}
+	return _userPromptPrefix
+}
+
+function insertUserPromptPrefix(line: string, theme: any): string {
 	// Each Box content line is: [ANSI bg escapes...][paddingX spaces][content][trailing spaces]
-	// We replace the first 2 leading spaces (paddingX=2) with "> " keeping visible width constant.
+	// We replace the first 2 leading spaces (paddingX=2) with "› " keeping visible width constant.
 	let i = 0
 	while (i < line.length) {
 		if (line[i] === "\x1b") {
@@ -380,7 +393,7 @@ function insertUserPromptPrefix(line: string): string {
 		} else break
 	}
 	if (i < line.length && line[i] === " " && line[i + 1] === " ") {
-		return `${line.slice(0, i)}> ${line.slice(i + 2)}`
+		return `${line.slice(0, i)}${getUserPromptPrefix(theme)}${line.slice(i + 2)}`
 	}
 	return line
 }
@@ -401,7 +414,7 @@ function patchUserMessageRender(): void {
 		// Padding lines (top/bottom) have no visible content — skip the prefix on those
 		return lines.map((line, i) => {
 			const ispad = i === 0 || i === lines.length - 1
-			return ispad ? line : insertUserPromptPrefix(line)
+			return ispad ? line : insertUserPromptPrefix(line, _themePaletteCacheTheme)
 		})
 	}
 	proto[USER_MESSAGE_PATCH_FLAG] = true
