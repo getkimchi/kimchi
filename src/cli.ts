@@ -17,6 +17,7 @@ import {
 	writeSkillPaths,
 } from "./config.js"
 import { isBunBinary } from "./env.js"
+import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
@@ -428,6 +429,7 @@ try {
 			modelGuardExtension,
 			stripImagesExtension,
 			traceIdExtension,
+			activityExtension,
 		]
 
 		if (acpMode) {
