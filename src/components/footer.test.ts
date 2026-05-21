@@ -273,7 +273,7 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 	it("width 160: full footer + `/ for commands` hint, padded to width", () => {
 		const { raw, visible } = renderAt(160)
 		expect(visible).toContain("\u25cf default \u2192 shift+tab")
-		expect(visible).toContain("multi-model (claude-opus-4-7) \u2192 ctrl+p")
+		expect(visible).toContain("multi-model (claude-opus-4-6) \u2192 ctrl+p")
 		expect(visible).toContain("0% ctx")
 		expect(visible).toContain("phase:explore")
 		expect(visible).toContain("/ for commands")
