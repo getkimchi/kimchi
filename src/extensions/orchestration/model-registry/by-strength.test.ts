@@ -14,7 +14,7 @@ describe("modelsForStrength", () => {
 		expect(new Set(result)).toEqual(new Set(["kimchi-dev/minimax-m2.7"]))
 	})
 
-	it("review strength returns kimchi-dev/* models", () => {
+	it("review strength returns multiple kimchi-dev/* models", () => {
 		const result = modelsForStrength("review")
 		expect(result.length).toBeGreaterThanOrEqual(1)
 		for (const m of result) {

@@ -87,14 +87,17 @@ describe("orchestration guideline resolution", () => {
 		expect(result).toContain("chunk")
 	})
 
-	it("returns empty string for ignored models (kimi-k2.5)", () => {
+	it("returns composed orchestration guideline for kimi-k2.5", () => {
 		const result = resolveOrchestrationGuideline("kimi-k2.5", registry)
-		expect(result).toBe("")
+		expect(result).toContain("Kimi family")
+		expect(result).toContain("kimi-k2.5 specific")
+		expect(result).toContain("tool-call reliability")
 	})
 
-	it("returns empty string for ignored models (claude-opus-4-6)", () => {
-		const result = resolveOrchestrationGuideline("claude-opus-4-6", registry)
-		expect(result).toBe("")
+	it("returns composed orchestration guideline for claude-opus-4-7", () => {
+		const result = resolveOrchestrationGuideline("claude-opus-4-7", registry)
+		expect(result).toContain("Claude family")
+		expect(result).toContain("delegation granularity")
 	})
 
 	it("returns composed orchestration guideline for nemotron-3-super-fp4", () => {
@@ -138,15 +141,17 @@ describe("guideline section building", () => {
 describe("builtin-model guideline content", () => {
 	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
 
-	it("kimi-k2.5 build: falls back to default (ignored model)", () => {
+	it("kimi-k2.5 build: contains default, family, and per-model layers", () => {
 		const result = resolvePhaseGuideline("build", "kimi-k2.5", registry)
 		expect(result).toContain("During **build** phase:")
-		expect(result).not.toContain("Plan-first")
+		expect(result).toContain("Plan-first")
+		expect(result).toContain("well-formed tool calls")
 	})
 
-	it("kimi-k2.5 explore: falls back to default (ignored model)", () => {
+	it("kimi-k2.5 explore: falls back to default (no per-model explore)", () => {
 		const result = resolvePhaseGuideline("explore", "kimi-k2.5", registry)
 		expect(result).toContain("During **explore** phase:")
+		expect(result).not.toContain("Plan-first")
 	})
 
 	it("kimi-k2.6 plan: contains default, family, and per-model layers", () => {

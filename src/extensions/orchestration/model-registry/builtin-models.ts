@@ -7,10 +7,13 @@ import {
 	DEFAULT_REVIEW_GUIDELINES,
 } from "./guidelines/default-phase-guidelines.js"
 import {
+	KIMI_FAMILY_BUILD,
 	KIMI_FAMILY_ORCHESTRATION,
 	KIMI_FAMILY_PLAN,
 	KIMI_FAMILY_RESEARCH,
 	KIMI_FAMILY_REVIEW,
+	KIMI_K25_BUILD,
+	KIMI_K25_ORCHESTRATION,
 	KIMI_K26_ORCHESTRATION,
 	KIMI_K26_PLAN,
 } from "./guidelines/kimi-family.js"
@@ -102,7 +105,7 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		"kimi-k2.6",
 		{
 			vision: true,
-			strengths: ["research", "plan"],
+			strengths: ["research", "plan", "review"],
 			tier: "heavy",
 			description: KIMI_K26_DESCRIPTION,
 			guidelines: {
@@ -114,6 +117,26 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 				DEFAULT_ORCHESTRATION_GUIDELINES,
 				KIMI_FAMILY_ORCHESTRATION,
 				KIMI_K26_ORCHESTRATION,
+			),
+		},
+	],
+	[
+		"kimi-k2.5",
+		{
+			vision: true,
+			strengths: ["research", "plan", "review"],
+			tier: "heavy",
+			description: KIMI_K25_DESCRIPTION,
+			guidelines: {
+				build: concatGuidelines(DEFAULT_BUILD_GUIDELINES, KIMI_FAMILY_BUILD, KIMI_K25_BUILD),
+				research: concatGuidelines(DEFAULT_RESEARCH_GUIDELINES, KIMI_FAMILY_RESEARCH),
+				plan: concatGuidelines(DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN),
+				review: concatGuidelines(DEFAULT_REVIEW_GUIDELINES, KIMI_FAMILY_REVIEW),
+			},
+			orchestrationGuidelines: optionalGuidelines(
+				DEFAULT_ORCHESTRATION_GUIDELINES,
+				KIMI_FAMILY_ORCHESTRATION,
+				KIMI_K25_ORCHESTRATION,
 			),
 		},
 	],
@@ -154,8 +177,6 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			),
 		},
 	],
-	// kimi-k2.5 — overlaps with k2.6 in every dimension; excluded to reduce decision latency.
-	["kimi-k2.5", "ignored"],
 	// Proprietary (Anthropic) models — excluded from OSS subagent routing.
 	// Capability metadata is preserved in claude-family.ts for reference.
 	["claude-opus-4-6", "ignored"],
