@@ -89,15 +89,6 @@ describe("fsmStateToFermentStatus", () => {
 // ─── Valid Transitions ────────────────────────────────────────────────────────
 
 describe("Valid Transitions", () => {
-	describe("IDLE state", () => {
-		it("handles CREATE_FERMENT → DRAFT", () => {
-			const ctx = makeContext()
-			const result = transition(FSM_STATES.IDLE, FSM_EVENTS.CREATE_FERMENT, ctx)
-			expect(result.state).toBe(FSM_STATES.DRAFT)
-			expect(result.error).toBeUndefined()
-		})
-	})
-
 	describe("DRAFT state", () => {
 		it("handles SCOPE_FERMENT → PLANNED when phases exist", () => {
 			const ctx = makeContext({
@@ -494,17 +485,13 @@ describe("Parallel Phase Group Transitions", () => {
 
 describe("Pause/Resume Cycle", () => {
 	it("full pause/resume cycle: DRAFT → PLANNED → PHASE_ACTIVE → PAUSED → RESUME", () => {
-		// Step 1: Create and scope
-		let ctx = makeContext()
-		let result = transition(FSM_STATES.IDLE, FSM_EVENTS.CREATE_FERMENT, ctx)
-		expect(result.state).toBe(FSM_STATES.DRAFT)
-
-		// Step 2: Scope with phases
-		ctx = makeContext({ phases: [makePhaseContext("phase-1", 1, "planned")] })
-		result = transition(FSM_STATES.DRAFT, FSM_EVENTS.SCOPE_FERMENT, ctx)
+		// Step 1: Scope with phases. Draft creation is host-owned and does not
+		// go through an agent-visible FSM event.
+		let ctx = makeContext({ phases: [makePhaseContext("phase-1", 1, "planned")] })
+		let result = transition(FSM_STATES.DRAFT, FSM_EVENTS.SCOPE_FERMENT, ctx)
 		expect(result.state).toBe(FSM_STATES.PLANNED)
 
-		// Step 3: Activate phase
+		// Step 2: Activate phase
 		result = transition(FSM_STATES.PLANNED, FSM_EVENTS.ACTIVATE_PHASE, ctx, {
 			phaseId: "phase-1",
 		})

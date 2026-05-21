@@ -72,7 +72,6 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 	"agent",
 	"get_subagent_result",
 	"steer_subagent",
-	"create_ferment",
 	"list_ferments",
 	"scope_ferment",
 	"update_ferment_scope_field",

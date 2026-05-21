@@ -60,7 +60,7 @@ before an agent run starts and stay fixed for that run. Kimchi therefore uses
 static session profiles instead of changing lifecycle tool visibility after
 each FSM transition.
 
-- Idle sessions expose discovery tools (`create_ferment`, `list_ferments`).
+- Idle sessions expose discovery tools (`list_ferments`).
 - Active planner sessions expose the current-ferment lifecycle tool surface;
   tool handlers and result text decide which transition is legal now.
 - Paused or terminal ferments hide mutating lifecycle tools.
@@ -355,7 +355,6 @@ These tools are available to the agent during a ferment session. They are not me
 
 | Tool | Description |
 |------|-------------|
-| `create_ferment` | Create a new ferment at `draft` status |
 | `propose_ferment_scoping` | Draft scoping for interactive confirmation |
 | `scope_ferment` | Save confirmed scoping answers → `draft` to `planned` |
 | `update_ferment_scope_field` | Update a single scoping field mid-draft |

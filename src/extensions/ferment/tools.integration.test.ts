@@ -169,14 +169,11 @@ const passingFermentGates = () => [
 	{ id: "C3", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
 ]
 
-// Helper: create a ferment via the tool, then return its id from the harness
-// temp storage used by the registered tool runtime.
+// Helper: create a deliberate host-owned draft, matching /ferment and one-shot
+// bootstrap behavior.
 async function createFerment(name: string, description?: string): Promise<string> {
-	const result = await h.call("create_ferment", { name, description })
-	ok(result)
-	const items = h.storage.list()
-	const created = items.find((f) => f.name === name)
-	if (!created) throw new Error(`Ferment "${name}" not found after create`)
+	const created = h.runtime.getStorage().create(name, description)
+	setActive(created)
 	return created.id
 }
 
@@ -216,24 +213,6 @@ function loadFerment(id: string): Ferment {
 	if (!f) throw new Error(`Ferment ${id} not found`)
 	return f
 }
-
-// ─── create_ferment ───────────────────────────────────────────────────────────
-
-describe("create_ferment", () => {
-	it("creates a mode-less ferment in draft status", async () => {
-		const id = await createFerment("Test Project")
-		const f = loadFerment(id)
-		expect(f.name).toBe("Test Project")
-		expect(f.status).toBe("draft")
-		expect(f).not.toHaveProperty("mode")
-		expect(f.phases).toEqual([])
-	})
-
-	it("captures description when provided", async () => {
-		const id = await createFerment("Described", "A description")
-		expect(loadFerment(id).description).toBe("A description")
-	})
-})
 
 // ─── list_ferments ────────────────────────────────────────────────────────────
 

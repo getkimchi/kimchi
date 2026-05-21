@@ -42,11 +42,6 @@ export const GateVerdictSchema = Type.Object({
 	}),
 })
 
-export const CreateFermentParams = Type.Object({
-	name: Type.String(),
-	description: Type.Optional(Type.String()),
-})
-
 export const ListParams = Type.Object({
 	filter: Type.Optional(Type.String({ description: "Optional status filter" })),
 })
