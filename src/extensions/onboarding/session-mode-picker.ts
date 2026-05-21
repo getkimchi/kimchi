@@ -9,7 +9,7 @@ export type SessionModePickerEvent = "up" | "down" | "select" | "cancel"
 export interface SessionModePickerOption {
 	value: SessionModePickerChoice
 	label: string
-	description: string
+	description?: string
 	hideDialog?: boolean
 }
 
@@ -40,7 +40,6 @@ export const SESSION_MODE_PICKER_OPTIONS: SessionModePickerOption[] = [
 	{
 		value: "default",
 		label: "Coding session, don't show this dialog again",
-		description: "Start a normal coding session and skip this chooser on future launches.",
 		hideDialog: true,
 	},
 ]
@@ -95,10 +94,12 @@ export function renderSessionModePickerLines(state: SessionModePickerState, them
 		const selected = i === state.selectedIndex
 		const marker = selected ? "> " : "  "
 		const label = selected ? theme.fg("accent", option.label) : theme.fg("dim", option.label)
-		const description = selected ? theme.fg("text", option.description) : theme.fg("dim", option.description)
 		add(`${indent}${theme.fg(selected ? "accent" : "dim", marker)}${label}`)
-		for (const wrapped of wrapTextWithAnsi(description, Math.max(1, innerWidth - 4))) {
-			add(`${indent}  ${wrapped}`)
+		if (option.description) {
+			const description = selected ? theme.fg("text", option.description) : theme.fg("dim", option.description)
+			for (const wrapped of wrapTextWithAnsi(description, Math.max(1, innerWidth - 4))) {
+				add(`${indent}  ${wrapped}`)
+			}
 		}
 		if (i < SESSION_MODE_PICKER_OPTIONS.length - 1) add("")
 	}

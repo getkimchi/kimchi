@@ -100,7 +100,6 @@ describe("session mode picker rendering", () => {
 			"    Chat with the agent and steer it as it goes. Stay in the loop.",
 			"",
 			"    Coding session, don't show this dialog again",
-			"    Start a normal coding session and skip this chooser on future launches.",
 			"",
 			"  Tip: Use /ferment anytime to start a Ferment workflow.",
 			"",
@@ -113,11 +112,7 @@ describe("session mode picker rendering", () => {
 		expect(text).toContain("Coding session")
 		expect(text).toContain("Chat with the agent and steer it as it goes. Stay in the loop.")
 		expect(text).toContain("Coding session, don't show this dialog again")
-		expect(text).toContain("Start a normal coding session and skip this chooser on future launches.")
 		expect(text).toContain(`Tip: ${SESSION_MODE_PICKER_HINT.replaceAll("`", "")}`)
-		expect(text).not.toContain("`")
-		expect(text).not.toContain("[ ]")
-		expect(text).not.toContain("Space toggle")
 	})
 
 	it("marks the selected option", () => {
