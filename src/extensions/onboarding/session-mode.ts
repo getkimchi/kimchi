@@ -80,8 +80,7 @@ export default function sessionModeOnboardingExtension(options: SessionModeOnboa
 				return
 			}
 			if (decision.action === "show") {
-				const showHideOption = seenAt !== undefined
-				if (!showHideOption) {
+				if (seenAt === undefined) {
 					try {
 						markSessionModeWizardSeen({ configPath: options.configPath, now: options.now })
 					} catch (err) {
@@ -91,7 +90,7 @@ export default function sessionModeOnboardingExtension(options: SessionModeOnboa
 						)
 					}
 				}
-				cleanupActiveWizard = showSessionModeWizard(pi, ctx, options, showHideOption, () => {
+				cleanupActiveWizard = showSessionModeWizard(pi, ctx, options, () => {
 					cleanupActiveWizard = undefined
 				})
 			}
@@ -108,7 +107,6 @@ function showSessionModeWizard(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	options: SessionModeOnboardingExtensionOptions,
-	showHideOption: boolean,
 	onCleanup: () => void,
 ): () => void {
 	let finished = false
@@ -169,9 +167,7 @@ function showSessionModeWizard(
 					if (cancelBeforePickerReady || finished) {
 						done("cancelled")
 					}
-					return new SessionModePickerComponent(theme, done, () => tui.requestRender(), {
-						showHideCheckbox: showHideOption,
-					})
+					return new SessionModePickerComponent(theme, done, () => tui.requestRender())
 				},
 				{ overlay: false },
 			)

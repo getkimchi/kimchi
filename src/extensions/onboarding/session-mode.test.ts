@@ -391,7 +391,7 @@ describe("session-mode onboarding persistence", () => {
 		expect(harness.ui.notify).toHaveBeenCalledWith("Session mode startup failed: sync boom", "warning")
 	})
 
-	it("extension lets returning users hide the dialog while selecting a mode", async () => {
+	it("extension lets users choose Coding session and hide future dialogs", async () => {
 		const harness = createExtensionHarness()
 		const onOutcome = vi.fn()
 
@@ -401,7 +401,7 @@ describe("session-mode onboarding persistence", () => {
 		)
 
 		await harness.start()
-		harness.input(" ")
+		harness.input("\x1b[B")
 		harness.input("\x1b[B")
 		harness.input("\r")
 		await harness.settle()

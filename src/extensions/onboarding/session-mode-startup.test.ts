@@ -206,13 +206,13 @@ describe("session mode startup integration", () => {
 		expect(harness.activeComponent()).toBeUndefined()
 	})
 
-	it("choosing Hide this dialog persists the hidden user config without starting Ferment", async () => {
+	it("choosing Coding session with hide persists the hidden user config without starting Ferment", async () => {
 		writeSessionModeWizardSeenAt("2026-05-19T08:00:00.000Z", configPath)
 		const startFerment = vi.fn()
 		const harness = createHarness({ configPath, now, startFerment })
 		await harness.start()
 
-		harness.input(" ")
+		harness.input("\x1b[B")
 		harness.input("\x1b[B")
 		harness.input("\r")
 		await harness.settle()
