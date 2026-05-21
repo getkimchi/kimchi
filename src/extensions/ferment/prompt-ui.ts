@@ -1,6 +1,7 @@
 import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
 import { Input, Key, type TUI, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
 import type { Component } from "@earendil-works/pi-tui"
+import type { ScopingQuestionType } from "../../ferment/types.js"
 import {
 	type Answer,
 	type Question,
@@ -28,7 +29,7 @@ export interface PromptChoiceOption {
 	description?: string
 }
 
-export type PromptFormQuestionType = "radio" | "checkbox" | "text"
+export type PromptFormQuestionType = ScopingQuestionType
 
 export interface PromptFormOption {
 	id: string

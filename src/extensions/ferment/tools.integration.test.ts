@@ -1091,6 +1091,12 @@ describe("propose_ferment_scoping", () => {
 		expect(tool?.description).toContain("Partial gates are rejected")
 	})
 
+	it("tells the planner to keep phases provisional when scoping questions are pending", () => {
+		const tool = h.tools.get("propose_ferment_scoping")
+		expect(tool?.description).toContain("If questions is non-empty")
+		expect(tool?.description).toContain("answer-agnostic")
+	})
+
 	// (a) zero-questions + Continue → planned
 	it("(a) zero-questions + Continue → ferment becomes planned", async () => {
 		const id = await createFerment("ZeroQ Continue")
@@ -1337,6 +1343,109 @@ describe("propose_ferment_scoping", () => {
 		const triggerTurn = iterCalls[0][1]?.triggerTurn ?? iterCalls[0][0]?.triggerTurn
 		expect(triggerTurn).toBe(true)
 		expect(result).toMatch(/updating the plan/i)
+	})
+
+	it("supports checkbox and text scoping question styles", async () => {
+		const id = await createFerment("Question Styles")
+		seedPending(id)
+		const questions = [
+			{
+				id: "surfaces",
+				type: "checkbox",
+				text: "Which surfaces must be included?",
+				options: [
+					{ id: "cli", label: "CLI" },
+					{ id: "docs", label: "Docs" },
+					{ id: "web", label: "Web" },
+				],
+			},
+			{
+				id: "acceptance",
+				type: "text",
+				text: "What proof should complete mean?",
+			},
+		]
+		const ctx = {
+			ui: {
+				select: vi.fn().mockResolvedValueOnce("Update plan  ✓"),
+				input: vi.fn().mockResolvedValueOnce("1, 2").mockResolvedValueOnce("Browser smoke test passes"),
+			},
+		}
+
+		const result = ok(await h.call("propose_ferment_scoping", basePayload(id, { questions }), ctx))
+
+		expect(loadFerment(id).status).toBe("draft")
+		expect(result).toContain("Your answers")
+		expect(ctx.ui.input).toHaveBeenCalledTimes(2)
+
+		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>
+		const iterCalls = sendMsg.mock.calls.filter(
+			(c: unknown[]) => (c[0] as { customType?: string })?.customType === "ferment_scoping_iteration",
+		)
+		expect(iterCalls).toHaveLength(1)
+		const msgContent: string =
+			typeof iterCalls[0][0].content === "string" ? iterCalls[0][0].content : (iterCalls[0][0].content?.[0]?.text ?? "")
+		expect(msgContent).toContain("Which surfaces must be included?")
+		expect(msgContent).toContain("cli, docs")
+		expect(msgContent).toContain("CLI, Docs")
+		expect(msgContent).toContain("What proof should complete mean?")
+		expect(msgContent).toContain('free-form: "Browser smoke test passes"')
+	})
+
+	it("returns a focused runtime validation error for too many scoping questions", async () => {
+		const id = await createFerment("Too Many Questions")
+		seedPending(id)
+		const question = (questionId: string) => ({
+			id: questionId,
+			text: `Question ${questionId}?`,
+			options: [
+				{ id: "a", label: "A" },
+				{ id: "b", label: "B" },
+			],
+		})
+		const ctx = { ui: { select: vi.fn(), input: vi.fn() } }
+
+		const result = await h.call(
+			"propose_ferment_scoping",
+			basePayload(id, { questions: [question("q1"), question("q2"), question("q3"), question("q4")] }),
+			ctx,
+		)
+
+		expect(result.isError).toBe(true)
+		expect(err(result)).toContain('Field "questions" must contain at most 3 questions.')
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+	})
+
+	it("returns a focused runtime validation error for too many question options", async () => {
+		const id = await createFerment("Too Many Options")
+		seedPending(id)
+		const ctx = { ui: { select: vi.fn(), input: vi.fn() } }
+
+		const result = await h.call(
+			"propose_ferment_scoping",
+			basePayload(id, {
+				questions: [
+					{
+						id: "target",
+						type: "checkbox",
+						text: "Which target environments are in scope?",
+						options: [
+							{ id: "ssh", label: "SSH" },
+							{ id: "docker", label: "Docker" },
+							{ id: "kubernetes", label: "Kubernetes" },
+							{ id: "static", label: "Static hosting" },
+							{ id: "serverless", label: "Serverless" },
+							{ id: "cloud", label: "Cloud PaaS" },
+						],
+					},
+				],
+			}),
+			ctx,
+		)
+
+		expect(result.isError).toBe(true)
+		expect(err(result)).toContain("questions.0.options must contain 2-5 options.")
+		expect(ctx.ui.select).not.toHaveBeenCalled()
 	})
 
 	// (d) say more → ctx.ui.input invoked, message echoed with triggerTurn

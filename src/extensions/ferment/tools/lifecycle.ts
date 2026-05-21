@@ -11,7 +11,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import type { Command, ScopePhaseInput } from "../../../ferment/state-machine.js"
-import type { Grade, ScopingQuestion } from "../../../ferment/types.js"
+import {
+	DEFAULT_SCOPING_QUESTION_TYPE,
+	type Grade,
+	SCOPING_QUESTION_TYPES,
+	type ScopingQuestion,
+	type ScopingQuestionType,
+} from "../../../ferment/types.js"
 import { askUser, askUserForm } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
@@ -246,7 +252,16 @@ function normalizeQuestions(value: ProposeScopingArgs["questions"]): ScopingQues
 		const q = raw as Record<string, unknown>
 		if (typeof q.id !== "string") return `questions.${questionIndex}.id must be a string.`
 		if (typeof q.text !== "string") return `questions.${questionIndex}.text must be a string.`
-		if (!Array.isArray(q.options)) return `questions.${questionIndex}.options must be an array.`
+		const questionType = normalizeScopingQuestionType(q.type)
+		if (!questionType.ok) return `questions.${questionIndex}.type ${questionType.error}`
+		const type = questionType.type
+		if (type === "text") {
+			if (q.options !== undefined && (!Array.isArray(q.options) || q.options.length > 0)) {
+				return `questions.${questionIndex}.options must be omitted or empty for text questions.`
+			}
+			continue
+		}
+		if (!Array.isArray(q.options)) return `questions.${questionIndex}.options must be an array for ${type} questions.`
 		if (q.options.length < 2 || q.options.length > 5) {
 			return `questions.${questionIndex}.options must contain 2-5 options.`
 		}
@@ -265,6 +280,20 @@ function normalizeQuestions(value: ProposeScopingArgs["questions"]): ScopingQues
 		}
 	}
 	return parsed as ScopingQuestion[]
+}
+
+function getScopingQuestionType(question: ScopingQuestion): ScopingQuestionType {
+	return question.type ?? DEFAULT_SCOPING_QUESTION_TYPE
+}
+
+function normalizeScopingQuestionType(
+	value: unknown,
+): { ok: true; type: ScopingQuestionType } | { ok: false; error: string } {
+	if (value === undefined) return { ok: true, type: DEFAULT_SCOPING_QUESTION_TYPE }
+	if (typeof value === "string" && SCOPING_QUESTION_TYPES.includes(value as ScopingQuestionType)) {
+		return { ok: true, type: value as ScopingQuestionType }
+	}
+	return { ok: false, error: `must be ${SCOPING_QUESTION_TYPES.join(", ")}.` }
 }
 
 function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizeProposeScopingResult {
@@ -287,16 +316,17 @@ function validateScopingQuestions(questions: ScopingQuestion[]): string | null {
 	}
 
 	for (const q of questions) {
-		const recommendedCount = q.options.filter((o) => o.recommended === true).length
+		const options = q.options ?? []
+		const recommendedCount = options.filter((o) => o.recommended === true).length
 		if (recommendedCount > 1) {
 			return `Question "${q.id}" has ${recommendedCount} options with recommended: true. At most one option per question may be recommended.`
 		}
 
-		const optionIds = q.options.map((o) => o.id)
+		const optionIds = options.map((o) => o.id)
 		if (new Set(optionIds).size !== optionIds.length) {
 			return `Question "${q.id}" has duplicate option ids.`
 		}
-		const optionLabels = q.options.map((o) => o.label)
+		const optionLabels = options.map((o) => o.label)
 		if (new Set(optionLabels).size !== optionLabels.length) {
 			return `Question "${q.id}" has duplicate option labels — labels must be distinct.`
 		}
@@ -633,7 +663,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: "propose_ferment_scoping",
 		label: "Propose Scoping",
-		description: `Emit the full scoping draft: goal, criteria, constraints, assumptions, 1-7 phases, questions, and gates. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; do not ask scoping questions in chat after calling this tool. Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
+		description: `Emit the full scoping draft: goal, criteria, constraints, assumptions, 1-7 phases, questions, and gates. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; do not ask scoping questions in chat after calling this tool. Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
@@ -720,8 +750,9 @@ ${renderGateGuidance("scope_ferment")}`,
 				}
 				const recSummary = questions
 					.map((q) => {
-						const rec = q.options.find((o) => o.recommended) ?? q.options[0]
-						return `${q.id}: ${rec.id}`
+						if (getScopingQuestionType(q) === "text") return `${q.id}: custom text required`
+						const rec = (q.options ?? []).find((o) => o.recommended) ?? (q.options ?? [])[0]
+						return `${q.id}: ${rec?.id ?? "no recommendation"}`
 					})
 					.join(", ")
 				return toolErr(
@@ -773,12 +804,12 @@ ${renderGateGuidance("scope_ferment")}`,
 
 			// 7. Tabbed question form + review loop.
 			const runQuestions = async (): Promise<ScopingAnswer[] | "cancelled" | { kind: "dismiss"; qn: number }> => {
-				if (!getPromptUi(ctx)?.custom) {
+				if (!getPromptUi(ctx)?.custom && questions.every((q) => getScopingQuestionType(q) === "radio")) {
 					const answers: ScopingAnswer[] = []
 					const customLabel = `✎ ${pr_dim("Custom answer...")}`
 					for (let n = 0; n < questions.length; n++) {
 						const q = questions[n]
-						const labeledOptions = q.options.map((o) => ({
+						const labeledOptions = (q.options ?? []).map((o) => ({
 							option: o,
 							label: o.recommended === true ? `${o.label}  ★ Recommended` : o.label,
 						}))
@@ -810,14 +841,14 @@ ${renderGateGuidance("scope_ferment")}`,
 				const result = await promptForm(ctx, {
 					questions: questions.map((q, index) => ({
 						id: q.id,
-						type: "radio",
+						type: getScopingQuestionType(q),
 						label: `Q${index + 1}`,
 						prompt: q.text,
-						options: q.options.map((o) => ({
+						options: (q.options ?? []).map((o) => ({
 							id: o.id,
 							label: o.recommended === true ? `${o.label}  ★ Recommended` : o.label,
 						})),
-						allowOther: true,
+						allowOther: getScopingQuestionType(q) !== "text",
 					})),
 				})
 				if (!result) return { kind: "dismiss", qn: 1 }
@@ -827,11 +858,28 @@ ${renderGateGuidance("scope_ferment")}`,
 				for (const q of questions) {
 					const answer = result.answers.find((a) => a.id === q.id)
 					if (!answer) return { kind: "dismiss", qn: questions.indexOf(q) + 1 }
+					const questionType = getScopingQuestionType(q)
+					if (questionType === "text") {
+						answers.push({ questionId: q.id, optionId: "custom", label: answer.label, recommended: false })
+						continue
+					}
+					if (questionType === "checkbox") {
+						const values = answer.values ?? [answer.value]
+						const labels = answer.labels ?? [answer.label]
+						const selectedOptions = (q.options ?? []).filter((o) => values.includes(o.id))
+						answers.push({
+							questionId: q.id,
+							optionId: values.join(", "),
+							label: labels.join(", "),
+							recommended: selectedOptions.some((o) => o.recommended === true),
+						})
+						continue
+					}
 					if (answer.wasCustom) {
 						answers.push({ questionId: q.id, optionId: "custom", label: answer.label, recommended: false })
 						continue
 					}
-					const matched = q.options.find((o) => o.id === answer.value)
+					const matched = (q.options ?? []).find((o) => o.id === answer.value)
 					if (!matched) return { kind: "dismiss", qn: questions.indexOf(q) + 1 }
 					answers.push({
 						questionId: q.id,
