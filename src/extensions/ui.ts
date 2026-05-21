@@ -306,17 +306,23 @@ export default function uiExtension(pi: ExtensionAPI) {
 							ctx.ui.custom(
 								(_tui, theme, _kb, done) => {
 									const settingsFile = settingsPath
+									const dismiss = () => {
+										_tui.setShowHardwareCursor(true)
+										done(undefined)
+									}
 									return {
 										render(width: number): string[] {
+											_tui.setShowHardwareCursor(false)
+											const accent = theme.getFgAnsi("accent")
+											const reset = "\x1b[0m"
 											const box = new Box(2, 1)
 											box.addChild(new Text(theme.inverse("  ⚠  Shift+Enter doesn't work in this terminal  ")))
 											box.addChild(new Text(""))
-											box.addChild(new Text(`${theme.bold("Ctrl+J")}${" ".padEnd(13)}→  insert a newline`))
+											box.addChild(new Text(`Ctrl+J${" ".padEnd(13)}→  insert a newline`))
 											box.addChild(new Text(`\\ + Enter${" ".padEnd(10)}→  insert a newline`))
 											box.addChild(new Text(""))
-											box.addChild(new Text(theme.fg("muted", "Enter - dismiss   d - don't remind again")))
-											const accent = theme.getFgAnsi("accent")
-											const reset = "\x1b[0m"
+											box.addChild(new Text(`Any key${" ".padEnd(12)}→  dismiss`))
+											box.addChild(new Text(`${accent}d${" ".padEnd(18)}→  don't remind again${reset}`))
 											const hbar = "─"
 											const inner = width - 2
 											const lines = box.render(inner)
@@ -329,7 +335,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 										},
 										invalidate() {},
 										handleInput(data: string): void {
-											if (matchesKey(data, "enter")) done(undefined)
 											if (data === "d") {
 												try {
 													const s: Record<string, unknown> = {}
@@ -341,8 +346,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 													s.newlineHintDismissed = true
 													writeFileSync(settingsFile, JSON.stringify(s, null, 2))
 												} catch {}
-												done(undefined)
 											}
+											dismiss()
 										},
 										wantsKeyRelease: false,
 									}
