@@ -43,6 +43,8 @@ import {
 	stripStaleNudges,
 } from "../orchestration/continuation-nudge.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
+import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
+import { getModelRoles, modelIdFromRef, splitModelRef, validateModelRoles } from "../orchestration/model-roles.js"
 import { readMultiModelShortcutFromKeybindings } from "../permissions/keybindings.js"
 import { getCurrentPhase } from "../tags.js"
 import { type ContextFile, loadProjectContextFiles } from "./context-files.js"
@@ -118,7 +120,18 @@ function readMultiModelArgv(): boolean {
 
 let multiModelEnabled = readMultiModelArgv()
 
-export const ORCHESTRATOR_MODEL_ID = "kimi-k2.6"
+/** @deprecated Use `getOrchestratorModelId()` for the role-based model ID. Kept for backward compat in tests/imports. */
+export const ORCHESTRATOR_MODEL_ID = modelIdFromRef(getModelRoles().orchestrator)
+
+/** Resolved orchestrator model reference (provider/model-id). */
+function getOrchestratorModelRef(): string {
+	return getModelRoles().orchestrator
+}
+
+/** Resolved orchestrator model ID (without provider prefix). */
+function getOrchestratorModelId(): string {
+	return modelIdFromRef(getOrchestratorModelRef())
+}
 const DELEGATION_TOOL_NAMES = new Set(["Agent", "subagent"])
 
 function isDelegationToolCallName(name: string | undefined): boolean {
@@ -231,9 +244,22 @@ export default function (skillPaths: string[]) {
 			default: true,
 		})
 
+		if (!subagentMode) {
+			registerModelRolesCommand(pi)
+		}
+
 		// For sub agents we don't want to transform the prompt sent from parent with model capabilities
 		const registry = new ModelRegistry(getAvailableModels())
+
 		if (!subagentMode) {
+			// Validate model roles against available API models at startup
+			const availableIds = new Set(getAvailableModels().map((m) => m.slug))
+			const validation = validateModelRoles(getModelRoles(), availableIds)
+			for (const { role, configuredModel } of validation.unavailable) {
+				console.warn(
+					`[model-roles] Warning: ${role} model "${configuredModel}" is not available. Subagents for this role will fall back to the parent model.`,
+				)
+			}
 			// Global terminal input listener so the shortcut works even when a
 			// dialog (e.g. permission prompt) has focus instead of the editor.
 			let unsubMultiModelToggle: (() => void) | null = null
@@ -252,10 +278,12 @@ export default function (skillPaths: string[]) {
 					})
 				}
 
-				// In multi-model mode the orchestrator must always be kimi-k2.6.
-				// Force-switch if the user has a different model selected via /models.
-				if (multiModelEnabled && ctx.model?.id !== ORCHESTRATOR_MODEL_ID) {
-					const orchestratorModel = ctx.modelRegistry?.find("kimchi-dev", ORCHESTRATOR_MODEL_ID)
+				// In multi-model mode the orchestrator must always be the configured
+				// orchestrator model. Force-switch if the user has a different model
+				// selected via /models.
+				if (multiModelEnabled && ctx.model?.id !== getOrchestratorModelId()) {
+					const ref = splitModelRef(getOrchestratorModelRef())
+					const orchestratorModel = ref ? ctx.modelRegistry?.find(ref.provider, ref.modelId) : undefined
 					if (orchestratorModel) {
 						try {
 							await pi.setModel(orchestratorModel)
@@ -402,6 +430,7 @@ export default function (skillPaths: string[]) {
 			}
 
 			const mode: PromptMode = subagentMode ? "subagent" : multiModelEnabled ? "orchestrator" : "single"
+			const roles = mode === "orchestrator" ? getModelRoles() : undefined
 
 			const systemPrompt = buildSystemPrompt({
 				pi,
@@ -409,10 +438,11 @@ export default function (skillPaths: string[]) {
 				env,
 				contextFiles: cachedContextFiles,
 				skills: cachedSkills,
-				currentModelId: mode === "orchestrator" ? ORCHESTRATOR_MODEL_ID : ctx.model?.id,
+				currentModelId: mode === "orchestrator" ? getOrchestratorModelId() : ctx.model?.id,
 				currentPhase: getCurrentPhase(),
 				registry: registry,
 				mode,
+				roles,
 			})
 
 			const debugSession = process.env.KIMCHI_DEBUG_SESSION

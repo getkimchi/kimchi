@@ -1,7 +1,7 @@
 /**
  * Mode-specific prompt content for multi-model orchestration.
  *
- * - Orchestrator: task approach, sharing context, Agent delegation rules, model selection, budgets
+ * - Orchestrator: task approach, sharing context, Agent delegation rules, role-based model assignment, budgets
  * - Subagent: response protocol, factual accuracy, tool discovery
  * - Single-model: empty (no orchestration content)
  */
@@ -9,12 +9,15 @@
 import type { PromptMode } from "../prompt-construction/system-prompt.js"
 import { buildOrchestrationGuidelinesSection } from "./model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "./model-registry/index.js"
-import type { OrchestrationModelDescriptor } from "./model-registry/types.js"
+import type { ModelRoles } from "./model-roles.js"
+import { modelIdFromRef, splitModelRef } from "./model-roles.js"
 
 export interface OrchestrationInstructionsContext {
 	currentModelId?: string
 	registry?: ModelRegistry
 	mode: PromptMode
+	/** Role-based model assignments for orchestrator mode. */
+	roles?: ModelRoles
 }
 
 export function resolveOrchestrationInstructions(ctx: OrchestrationInstructionsContext): string {
@@ -50,17 +53,16 @@ Omit steps that add no value. A simple fix may need only build. A complex featur
 ### Step 2 — Decide what to do yourself vs. delegate
 
 **Always delegate — no exceptions:**
-- **build** — always delegate to a standard-tier model with \`build\` strength. Never write or edit code yourself, even for a one-line fix.
-- **review** — always delegate to a standard-tier model with \`review\` strength. Never run review yourself.
-- **explore** — always delegate to a light-tier model with \`explore\` strength. Never read files or trace code yourself.
+- **build** — always delegate to the **Builder** model. Never write or edit code yourself, even for a one-line fix.
+- **review** — always delegate to the **Reviewer** model. Never run review yourself.
+- **explore** — always delegate to the **Explorer** model. Never read files or trace code yourself.
 
 **Delegate for large inputs, self-serve for small:**
-- **research** — a single \`web_search\` answer suffices: call it directly. Reading long documentation pages, multiple external sources, or synthesising across many pages: delegate to a light-tier model with \`research\` strength.
+- **research** — a single \`web_search\` answer suffices: call it directly. Reading long documentation pages, multiple external sources, or synthesising across many pages: delegate to the **Explorer** model.
 
-**Always self-serve:**
-- **plan** — always write the plan yourself in-process. Save the spec (interfaces, file paths, method signatures) to the Documents directory. Never delegate planning.
+PLAN_RULE_PLACEHOLDER
 
-If the subtask involves images or visual content, you MUST select a model with \`Vision: yes\`. The goal is to use the model best suited for each step, not the one already running.
+The model for each role is listed in the **Your Team** section above. Always use \`subagent_type: "General-Purpose"\` and pass the exact \`id\` shown there as the \`model\` parameter in your Agent tool call. Do not use other subagent types (Explore, Plan, Researcher) — the model assignment handles specialisation.
 
 **When delegating:**
 
@@ -104,14 +106,28 @@ Use the **multi-file package** tier when a build chunk involves concurrency prim
 
 The turn cap prevents debug-loop budget exhaustion — an agent that hasn't converged in 12 turns is unlikely to converge in 20. If an Agent hits its budget or turn cap, spawn a follow-up with the remaining work rather than raising the budget. The follow-up prompt must list what the first agent completed and what remains.`
 
+/**
+ * When planner === orchestrator, the orchestrator plans itself.
+ * When planner !== orchestrator, planning is delegated to the Planner model.
+ */
+function resolvePlanRule(roles?: ModelRoles): string {
+	if (!roles || roles.planner === roles.orchestrator) {
+		return `**Always self-serve:**
+- **plan** — always write the plan yourself in-process. Save the spec (interfaces, file paths, method signatures) to the Documents directory. Never delegate planning.`
+	}
+	return `**Always delegate:**
+- **plan** — always delegate to the **Planner** model. Never write the plan yourself.`
+}
+
 function resolveOrchestratorInstructions(ctx: OrchestrationInstructionsContext): string {
 	const parts: string[] = []
 
-	if (ctx.registry) {
-		parts.push(buildModelCapabilitiesSection(ctx.registry, ctx.currentModelId))
+	if (ctx.roles) {
+		parts.push(buildRoleAssignmentsSection(ctx.roles, ctx.registry))
 	}
 
-	parts.push(ORCHESTRATOR_INSTRUCTIONS)
+	const planRule = resolvePlanRule(ctx.roles)
+	parts.push(ORCHESTRATOR_INSTRUCTIONS.replace("PLAN_RULE_PLACEHOLDER", planRule))
 
 	const orchGuidelines = buildOrchestrationGuidelinesSection(ctx.currentModelId, ctx.registry)
 	if (orchGuidelines) parts.push(orchGuidelines)
@@ -119,39 +135,54 @@ function resolveOrchestratorInstructions(ctx: OrchestrationInstructionsContext):
 	return parts.join("\n\n")
 }
 
-function formatModel(model: OrchestrationModelDescriptor): string {
-	const strengths = model.capabilities.strengths.join(", ")
-	const vision = model.capabilities.vision ? "yes" : "no"
-	return `- **${model.name}** (id: \`${model.id}\`, provider: \`${model.provider}\`)\n  Tier: ${model.capabilities.tier} | Strengths: ${strengths} | Vision: ${vision}`
+// ---------------------------------------------------------------------------
+// Role-based model assignments (new)
+// ---------------------------------------------------------------------------
+
+function resolveModelDisplayName(ref: string, registry?: ModelRegistry): string {
+	const modelId = modelIdFromRef(ref)
+	const descriptor = registry?.getModelById(modelId)
+	if (descriptor) return descriptor.name
+	// Fallback: derive a display name from the model ID
+	return modelId
+		.split(/[-_]/)
+		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+		.join(" ")
 }
 
-function formatCurrentModelCapabilities(model: OrchestrationModelDescriptor): string {
-	const strengths = model.capabilities.strengths.join(", ")
-	const vision = model.capabilities.vision ? "yes" : "no"
-	return `Tier: ${model.capabilities.tier} | Strengths: ${strengths} | Vision: ${vision}`
+function formatRoleModel(role: string, description: string, ref: string, registry?: ModelRegistry): string {
+	const displayName = resolveModelDisplayName(ref, registry)
+	const modelId = modelIdFromRef(ref)
+	const parsed = splitModelRef(ref)
+	const descriptor = registry?.getModelById(modelId)
+	const vision = descriptor?.capabilities.vision ? " | Vision: yes" : ""
+	const providerInfo = parsed ? ` provider: \`${parsed.provider}\`` : ""
+	return `- **${role}**: ${displayName} (id: \`${ref}\`,${providerInfo}) — ${description}${vision}`
 }
 
-function buildModelCapabilitiesSection(registry: ModelRegistry, currentModelId?: string): string {
-	const currentDescriptor = currentModelId
-		? registry.getModelsWithCapabilities().find((m) => m.id === currentModelId)
-		: undefined
-	const currentModelCapabilities = currentDescriptor
-		? formatCurrentModelCapabilities(currentDescriptor)
-		: "No capability information available for this model."
-
-	const subagentModels = registry.getModelsWithCapabilities().filter((m) => m.id !== currentModelId)
-	const modelsSection =
-		subagentModels.length > 0 ? subagentModels.map(formatModel).join("\n\n") : "(No models available)"
-
-	return `## Available Models
-
-Each model is described with: **Tier** (heavy/standard/light — cost vs capability), **Strengths** (build, explore, review, plan, research), **Vision** (image input support).
-
-${modelsSection}
-
-## Your Capabilities
-
-${currentModelCapabilities}`
+function buildRoleAssignmentsSection(roles: ModelRoles, registry?: ModelRegistry): string {
+	const lines: string[] = []
+	if (roles.planner !== roles.orchestrator) {
+		lines.push(
+			formatRoleModel(
+				"Planner",
+				"designing the approach, writing specs, deciding on interfaces",
+				roles.planner,
+				registry,
+			),
+		)
+	}
+	lines.push(formatRoleModel("Builder", "code writing, refactoring, implementation", roles.builder, registry))
+	lines.push(formatRoleModel("Reviewer", "code review, finding bugs, verifying correctness", roles.reviewer, registry))
+	lines.push(
+		formatRoleModel(
+			"Explorer",
+			"codebase exploration, reading files, tracing architecture, research",
+			roles.explorer,
+			registry,
+		),
+	)
+	return `## Your Team\n\n${lines.join("\n")}`
 }
 
 // ---------------------------------------------------------------------------

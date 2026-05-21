@@ -174,6 +174,7 @@ describe("prompt enrichment tool visibility", () => {
 		let activeTools = tools.map((tool) => tool.name)
 		const pi = {
 			registerFlag: () => {},
+			registerCommand: () => {},
 			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
 				handlers.set(event, handler)
 			},
@@ -217,6 +218,7 @@ describe("prompt enrichment tool visibility", () => {
 		] as ToolInfo[]
 		const pi = {
 			registerFlag: () => {},
+			registerCommand: () => {},
 			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
 				handlers.set(event, handler)
 			},
