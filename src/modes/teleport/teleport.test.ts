@@ -6,10 +6,10 @@ import type {
 	ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { RemoteAgentSession } from "../remote/remote-agent-session.js"
-import type { RemoteSessionSummary } from "../remote/types.js"
-import { RemoteAuthError } from "../remote/types.js"
-import { TeleportableAgentSession } from "./teleportable-agent-session.js"
+import { RemoteAuthError } from "./api/types.js"
+import type { RemoteAgentSession } from "./proxy/agent-session.js"
+import { TeleportableAgentSession } from "./proxy/teleportable-session.js"
+import type { RemoteSessionSummary } from "./types.js"
 
 type ExecAsyncImpl = (cmd: string, opts?: unknown) => Promise<{ stdout: string; stderr: string }>
 
@@ -32,16 +32,25 @@ const { execAsyncMock, execMock, authMock, listMock, getMeMock, buildMock, rsync
 })
 
 vi.mock("node:child_process", () => ({ exec: execMock }))
-vi.mock("../remote/auth.js", () => ({
+vi.mock("./api/index.js", () => ({
 	authenticateRemoteSession: authMock,
 	listRemoteSessions: listMock,
 	getMe: getMeMock,
 	waitForSessionReady: waitMock,
+	RemoteAuthError: class RemoteAuthError extends Error {
+		constructor(
+			message: string,
+			public readonly statusCode: number,
+		) {
+			super(message)
+			this.name = "RemoteAuthError"
+		}
+	},
 }))
-vi.mock("../remote/build-remote-session.js", () => ({
+vi.mock("./proxy/builder.js", () => ({
 	buildRemoteAgentSession: buildMock,
 }))
-vi.mock("./rsync-transport.js", () => ({
+vi.mock("./sync/rsync.js", () => ({
 	runRsync: rsyncMock,
 	BASE_EXCLUDE_GLOBS: [],
 	RsyncError: class RsyncError extends Error {
@@ -65,7 +74,7 @@ import {
 	runDetach,
 	runListSessions,
 	runTeleport,
-} from "./teleport.js"
+} from "./commands/index.js"
 
 class FakeSession {
 	readonly sessionId: string

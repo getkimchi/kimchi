@@ -69,7 +69,6 @@ let sessionStarted = false
 // at module load, before anything else runs.
 const cliMode = getCliModeArg(process.argv.slice(2))
 const acpMode = cliMode === "acp"
-const remoteMode = isRemoteFlag(process.argv.slice(2))
 const teleportMode = isTeleportFlag(process.argv.slice(2))
 const helpOrVersion = isHelpOrVersionArgs(process.argv.slice(2))
 
@@ -104,16 +103,6 @@ function sessionIdCaptureExtension(pi: ExtensionAPI) {
 			// ignore — exit handler falls back to --continue
 		}
 	})
-}
-
-// Sniff the args for --remote before pi-mono's main()
-// (or our runRemoteSession) takes over. The agent loop runs server-side, but
-// the local TUI is still the entry point — see src/modes/remote/run-interactive.ts.
-function isRemoteFlag(args: string[]): boolean {
-	for (const a of args) {
-		if (a === "--remote") return true
-	}
-	return false
 }
 
 function isTeleportFlag(args: string[]): boolean {
@@ -340,12 +329,6 @@ try {
 			stripImagesExtension,
 		]
 
-		if (teleportMode && remoteMode) {
-			process.stderr.write(
-				"`--teleport` and `--remote` are mutually exclusive. Use `--remote --session <id>` to attach to a remote at startup, or `--teleport` to enable session multiplex from local.\n",
-			)
-			process.exit(1)
-		}
 		if (acpMode) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
 			await runAcpMode({ extensionFactories, agentDir })
@@ -360,22 +343,6 @@ try {
 				extensionFactories,
 				agentDir,
 				apiKey: apiKey ?? "",
-				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
-			})
-		} else if (remoteMode) {
-			// --remote runs the same TUI as local mode but with the agent loop
-			// living in the cloud.
-			// src/modes/remote/run-interactive.ts.
-			if (!apiKey) {
-				console.error("Error: --remote requires an API key — run 'kimchi setup' first.")
-				process.exit(1)
-			}
-			const { runRemoteSession } = await import("./modes/remote/index.js")
-			await runRemoteSession({
-				kimchiConfig: config,
-				extensionFactories,
-				agentDir,
-				apiKey,
 				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 			})
 		} else {
