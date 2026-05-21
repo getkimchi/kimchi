@@ -168,10 +168,10 @@ describe("builtin-model guideline content", () => {
 		expect(result).toContain("inappropriate concurrency")
 	})
 
-	it("nemotron-3-super-fp4 build: contains default, family, and per-model layers", () => {
-		const result = resolvePhaseGuideline("build", "nemotron-3-super-fp4", registry)
-		expect(result).toContain("long context window")
-		expect(result).toContain("strictly within the spec")
+	it("nemotron-3-super-fp4 explore: contains default and per-model layers", () => {
+		const result = resolvePhaseGuideline("explore", "nemotron-3-super-fp4", registry)
+		expect(result).toContain("During **explore** phase:")
+		expect(result).toContain("1M token context window")
 	})
 
 	it("claude-opus-4-7 plan: falls back to default (ignored model)", () => {

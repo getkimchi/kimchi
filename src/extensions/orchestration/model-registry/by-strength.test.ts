@@ -11,7 +11,7 @@ describe("modelsForStrength", () => {
 
 	it("build strength returns build-capable models", () => {
 		const result = modelsForStrength("build")
-		expect(new Set(result)).toEqual(new Set(["kimchi-dev/nemotron-3-super-fp4", "kimchi-dev/minimax-m2.7"]))
+		expect(new Set(result)).toEqual(new Set(["kimchi-dev/minimax-m2.7"]))
 	})
 
 	it("review strength returns kimchi-dev/* models", () => {
@@ -48,7 +48,7 @@ describe("modelsForAnyStrength", () => {
 
 	it("combines build and review without duplicates", () => {
 		const result = modelsForAnyStrength(["build", "review"])
-		expect(new Set(result)).toEqual(new Set(["kimchi-dev/nemotron-3-super-fp4", "kimchi-dev/minimax-m2.7"]))
+		expect(new Set(result)).toEqual(new Set(["kimchi-dev/minimax-m2.7"]))
 	})
 
 	it("returns all models for all strengths combined, deduplicated", () => {

@@ -29,9 +29,9 @@ describe("resolveOrchestrationInstructions", () => {
 			mode: "orchestrator",
 		})
 		expect(result).toContain("Orchestrate the work")
-		expect(result).toContain("Sharing context between agents")
+		expect(result).toContain("Step 2 — Decide what to do yourself vs. delegate")
 		expect(result).toContain("Agent delegation rules")
-		expect(result).toContain("Model selection for delegation")
+		expect(result).toContain("Mandatory pipeline for complex tasks")
 		expect(result).toContain("Token budgets")
 		expect(result).toContain("token_budget")
 	})

@@ -64,9 +64,9 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("## Documents")
 			expect(result).toContain("## Guidelines")
 			expect(result).toContain("Orchestrate the work")
-			expect(result).toContain("Sharing context between agents")
+			expect(result).toContain("Step 2 — Decide what to do yourself vs. delegate")
 			expect(result).toContain("Agent delegation rules")
-			expect(result).toContain("Model selection for delegation")
+			expect(result).toContain("Mandatory pipeline for complex tasks")
 			expect(result).toContain("Token budgets")
 			expect(result).toContain("token_budget")
 		})
@@ -279,7 +279,7 @@ describe("buildSystemPrompt", () => {
 				mode: "subagent",
 			})
 			expect(result).not.toContain("Agent delegation rules")
-			expect(result).not.toContain("Model selection for delegation")
+			expect(result).not.toContain("Mandatory pipeline for complex tasks")
 		})
 
 		it("handles tools list with only delegation tools", () => {
@@ -359,10 +359,10 @@ describe("buildSystemPrompt", () => {
 				mode: "single",
 			})
 			expect(result).not.toContain("Agent delegation rules")
-			expect(result).not.toContain("Model selection for delegation")
+			expect(result).not.toContain("Mandatory pipeline for complex tasks")
 			expect(result).not.toContain("Token budgets")
 			expect(result).not.toContain("Orchestrate the work")
-			expect(result).not.toContain("Sharing context between agents")
+			expect(result).not.toContain("Step 2 — Decide what to do yourself vs. delegate")
 			expect(result).not.toContain("Subagent response protocol")
 		})
 
