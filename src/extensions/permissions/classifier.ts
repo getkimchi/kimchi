@@ -67,10 +67,22 @@ export async function classifyToolCall(
 			.map((c) => c.text)
 			.join("\n")
 
-		return parseClassifierOutput(text)
+		const result = parseClassifierOutput(text)
+
+		if (!result.ok) {
+			const diag = [
+				`model=${model.id}`,
+				`stopReason=${response.stopReason}`,
+				`text=${truncate(text, 200) || "(empty)"}`,
+			].join(" ")
+			return unavailable(`${result.reason} (${diag})`)
+		}
+
+		return result
 	} catch (err) {
 		const aborted = (err as Error)?.name === "AbortError" || controller.signal.aborted
-		return unavailable(aborted ? "classifier timeout" : `classifier error: ${(err as Error).message}`)
+		const reason = aborted ? "classifier timeout" : `classifier error: ${(err as Error).message}`
+		return unavailable(`${reason} (model=${model.id} tool=${call.toolName})`)
 	} finally {
 		clearTimeout(timeoutHandle)
 		signal?.removeEventListener("abort", onOuterAbort)
@@ -90,11 +102,11 @@ export function parseClassifierOutput(raw: string): ClassifierResult {
 	if (!verdict) return unavailable("classifier returned unknown verdict")
 
 	const reason = typeof json.reason === "string" && json.reason.trim() ? json.reason.trim() : "no reason provided"
-	return { verdict, reason }
+	return { verdict, reason, ok: true }
 }
 
 function unavailable(reason: string): ClassifierResult {
-	return { verdict: "requires-confirmation", reason }
+	return { verdict: "requires-confirmation", reason, ok: false }
 }
 
 function normalizeVerdict(v: unknown): ClassifierVerdict | undefined {

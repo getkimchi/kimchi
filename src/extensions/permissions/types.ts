@@ -18,6 +18,8 @@ export type ClassifierVerdict = "safe" | "requires-confirmation" | "blocked"
 export interface ClassifierResult {
 	verdict: ClassifierVerdict
 	reason: string
+	/** True when the classifier LLM returned a parseable, well-formed verdict. */
+	ok: boolean
 }
 
 export interface PermissionsConfig {
