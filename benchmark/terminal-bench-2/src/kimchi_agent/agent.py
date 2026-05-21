@@ -224,10 +224,11 @@ class Kimchi(BaseInstalledAgent):
             # $! is the pid of the most recent background job, here the kimchi
             # pipeline leader as seen by the shell.
             "agent_pid=$!; "
-            # Linux /proc/<pid>/stat field 5 is the process-group id. If the
-            # process exits too quickly, keep going and fall back to agent_pid.
-            "agent_pgid=$(awk '{print $5}' \"/proc/$agent_pid/stat\" 2>/dev/null || true); "
-            "agent_pgid=${agent_pgid//[[:space:]]/}; "
+            # ps -o pgid= prints just the process-group id with no header. Stay
+            # POSIX so this also works under dash (Debian/Ubuntu /bin/sh) and
+            # avoid parsing /proc/<pid>/stat, whose comm field can contain
+            # whitespace and shift downstream field indices.
+            'agent_pgid=$(ps -o pgid= -p "$agent_pid" 2>/dev/null | tr -d "[:space:]" || true); '
             # Persist the pgid in /logs/agent so cancellation cleanup, which
             # runs in a separate docker exec, can find the process group.
             f"printf '%s\\n' \"${{agent_pgid:-$agent_pid}}\" > {shlex.quote(CONTAINER_AGENT_PGID_FILE)}; "
@@ -258,10 +259,13 @@ class Kimchi(BaseInstalledAgent):
             "*[!0-9]*|'') ;; "
             "*) "
             # Terminate the whole process group: kimchi, tools, and subagents.
-            'kill -TERM -- -"$pgid" 2>/dev/null || true; '
+            # The -PGID target is already unambiguously numeric, so no `--`
+            # end-of-options marker is needed (and dash's kill builtin doesn't
+            # consistently honor one).
+            'kill -TERM "-$pgid" 2>/dev/null || true; '
             "sleep 2; "
             # Escalate if anything ignored SIGTERM.
-            'kill -KILL -- -"$pgid" 2>/dev/null || true; '
+            'kill -KILL "-$pgid" 2>/dev/null || true; '
             ";; "
             "esac; "
             "fi; "

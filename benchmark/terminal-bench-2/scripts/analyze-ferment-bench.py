@@ -172,7 +172,6 @@ def iter_jsonl(path: Path | None) -> Iterator[dict[str, Any]]:
 
 def load_jsonl(path: Path | None) -> list[dict[str, Any]]:
     return list(iter_jsonl(path))
-    return rows
 
 
 def get_path(value: dict[str, Any], *keys: str) -> Any:
@@ -336,6 +335,7 @@ def resolve_trials(targets: list[str], run_raw: str | None, runs_raw: list[str] 
         return sorted(dict.fromkeys(trials))
 
     run_dir = resolve_run_dir(run_raw) if run_raw else None
+    trial_targets: list[str] = []
     for target in targets:
         path = Path(target)
         if is_trial_dir(path):
@@ -344,12 +344,14 @@ def resolve_trials(targets: list[str], run_raw: str | None, runs_raw: list[str] 
         if run_dir is None and path.is_dir() and not is_trial_dir(path):
             run_dir = resolve_run_dir(str(path))
             continue
+        trial_targets.append(target)
+    for target in trial_targets:
         effective_run = run_dir or resolve_run_dir(None)
         matches = match_trials_in_run(effective_run, target)
         if not matches:
             raise SystemExit(f"error: trial target not found in {effective_run}: {target}")
         trials.extend(matches)
-    if run_dir is not None and not targets:
+    if run_dir is not None and not trials and not trial_targets:
         trials.extend(sorted(p.resolve() for p in run_dir.iterdir() if "__" in p.name and is_trial_dir(p)))
     return sorted(dict.fromkeys(trials))
 
@@ -753,7 +755,7 @@ def print_task_consistency(trials: list[TrialSummary]) -> None:
 
 
 def print_run_summary(run_dir: Path, max_list: int) -> None:
-    trials = [summarize_trial(load_trial_evidence(p)) for p in sorted(run_dir.iterdir()) if p.is_dir() and "__" in p.name]
+    trials = [summarize_trial(load_trial_evidence(p)) for p in sorted(run_dir.iterdir()) if "__" in p.name and is_trial_dir(p)]
     print_run_section(run_dir, trials)
     print_artifact_counts(run_dir)
     print_counter("Reward / Exception Breakdown", Counter(f"{t.reward}\t{t.exception}" for t in trials))

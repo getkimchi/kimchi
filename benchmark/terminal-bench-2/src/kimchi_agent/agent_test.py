@@ -50,7 +50,9 @@ class KimchiHarnessTest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(len(agent.agent_commands), 1)
             self.assertIn("set -m", agent.agent_commands[0])
-            self.assertIn("/proc/$agent_pid/stat", agent.agent_commands[0])
+            self.assertIn('ps -o pgid= -p "$agent_pid"', agent.agent_commands[0])
+            self.assertNotIn("/proc/$agent_pid/stat", agent.agent_commands[0])
+            self.assertNotIn("${agent_pgid//", agent.agent_commands[0])
             self.assertIn(CONTAINER_AGENT_PGID_FILE, agent.agent_commands[0])
             self.assertIn(f"rm -f {CONTAINER_AGENT_PGID_FILE}", agent.agent_commands[0])
             self.assertIn("--session /logs/agent/sessions/main.jsonl", agent.agent_commands[0])
@@ -58,8 +60,9 @@ class KimchiHarnessTest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(len(agent.root_commands), 1)
             self.assertIn(f"cat {CONTAINER_AGENT_PGID_FILE}", agent.root_commands[0])
-            self.assertIn('kill -TERM -- -"$pgid"', agent.root_commands[0])
-            self.assertIn('kill -KILL -- -"$pgid"', agent.root_commands[0])
+            self.assertIn('kill -TERM "-$pgid"', agent.root_commands[0])
+            self.assertIn('kill -KILL "-$pgid"', agent.root_commands[0])
+            self.assertNotIn("kill -TERM -- ", agent.root_commands[0])
             self.assertIn(f"rm -f {CONTAINER_AGENT_PGID_FILE}", agent.root_commands[0])
             self.assertNotIn("pkill", agent.root_commands[0])
 
