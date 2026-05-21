@@ -229,6 +229,10 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("resolve codebase facts that materially determine the plan shape")
 			expect(out).toContain("Small, targeted direct reads are allowed")
 			expect(out).toContain("file listing plus concise manifest/README/package/config reads")
+			expect(out).toContain("immediately spawn 1-4 narrow Explore subagents")
+			expect(out).toContain(
+				"The next action after file listing plus concise README/manifest/package/config reads is Agent",
+			)
 			expect(out).toContain("For broad improvement/audit/planning requests over an existing codebase")
 			expect(out).toContain("you MUST run a delegation checkpoint")
 			expect(out).toContain("spawn 1-4 narrow Explore subagents")
@@ -236,6 +240,8 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("use multiple only when there are genuinely independent areas")
 			expect(out).toContain("wait for their results, then synthesize")
 			expect(out).toContain("Do not skip this checkpoint just because the direct scan feels sufficient")
+			expect(out).toContain("If you accidentally read a large implementation file before the checkpoint")
+			expect(out).toContain("stop direct reads immediately")
 			expect(out).toContain("Skip only when the task is simple/greenfield")
 			expect(out).toContain("record that reason in `assumptions`")
 			expect(out).toContain("Use Explore subagents for broader or parallel discovery")
