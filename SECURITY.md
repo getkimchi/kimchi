@@ -25,14 +25,6 @@ We are committed to responding within the timelines below.
 
 We will keep you informed of our progress throughout the process. If the timeline changes, we will communicate the updated estimate.
 
-## Supported Versions
-
-Kimchi is currently in early development (`0.0.0`). Until a stable release is published, **the latest commit on the `main` branch is the only supported version**.
-
-| Version  | Supported          |
-|----------|--------------------|
-| `0.0.0` (latest `main`) | :white_check_mark: |
-| Older commits / branches | :x:                |
 
 ## Responsible Disclosure
 
