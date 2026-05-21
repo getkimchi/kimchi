@@ -11,7 +11,7 @@
  * Only activates in sandbox environments (SANDBOX_ID env var must be set).
  */
 
-import { mkdirSync, unlinkSync } from "node:fs"
+import { chmodSync, mkdirSync, unlinkSync } from "node:fs"
 import net from "node:net"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 
@@ -79,10 +79,20 @@ export class ActivityBus {
 		this.server = server
 
 		await new Promise<void>((resolve, reject) => {
-			server.listen(sockPath, resolve)
+			server.on("error", (err) => {
+				console.error("ActivityBus server error:", err)
+			})
+			server.listen(sockPath, () => {
+				try {
+					chmodSync(sockPath, 0o600)
+				} catch {
+					// best-effort — chmod may fail on some platforms
+				}
+				resolve()
+			})
 			server.once("error", reject)
-		}).catch(() => {
-			// Never crash kimchi — if listen fails, disable cleanly.
+		}).catch((err) => {
+			console.error("ActivityBus listen failed:", err)
 			this.server = null
 			this.sockPath = null
 		})
@@ -110,7 +120,7 @@ export class ActivityBus {
 		this.send({ type: "session_shutdown" })
 		for (const socket of this.sockets) {
 			try {
-				socket.destroy()
+				socket.end()
 			} catch {
 				// best-effort
 			}

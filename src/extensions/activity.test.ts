@@ -36,16 +36,32 @@ describe("ActivityBus – SANDBOX_ID guard", () => {
 })
 
 describe("ActivityBus – send and broadcast", () => {
+	let bus: ActivityBus | null = null
+	let client: net.Socket | null = null
+
 	afterEach(() => {
 		vi.unstubAllEnvs()
+		try {
+			client?.destroy()
+		} catch {
+			/* best-effort */
+		}
+		client = null
+		if (bus) {
+			bus.stop().catch(() => {
+				/* best-effort */
+			})
+			bus = null
+		}
 	})
 
 	it("broadcasts JSON events as NDJSON lines to connected clients", async () => {
 		vi.stubEnv("SANDBOX_ID", "sb-broadcast")
-		const bus = new ActivityBus()
+		bus = new ActivityBus()
 		await bus.start("sess-broadcast")
 
-		const { received, client, connected } = connectClient("/tmp/kimchi/sess-broadcast.sock")
+		const { received, client: c, connected } = connectClient("/tmp/kimchi/sess-broadcast.sock")
+		client = c
 		await connected
 
 		bus.send({ type: "agent_start" })
@@ -54,22 +70,20 @@ describe("ActivityBus – send and broadcast", () => {
 
 		expect(received).toContain(JSON.stringify({ type: "agent_start" }))
 		expect(received).toContain(JSON.stringify({ type: "agent_end" }))
-
-		client.destroy()
-		await bus.stop()
 	})
 
 	it("does not throw when no clients are connected", async () => {
 		vi.stubEnv("SANDBOX_ID", "sb-noconn")
-		const bus = new ActivityBus()
-		await bus.start("sess-noconn")
-		expect(() => bus.send({ type: "agent_start" })).not.toThrow()
-		await bus.stop()
+		bus = new ActivityBus()
+		const b = bus
+		await b.start("sess-noconn")
+		expect(() => b.send({ type: "agent_start" })).not.toThrow()
 	})
 
 	it("does not throw when bus is inactive (SANDBOX_ID absent)", () => {
-		const bus = new ActivityBus()
-		expect(() => bus.send({ type: "agent_start" })).not.toThrow()
+		bus = new ActivityBus()
+		const b = bus
+		expect(() => b.send({ type: "agent_start" })).not.toThrow()
 	})
 })
 
@@ -109,24 +123,38 @@ describe("ActivityBus – lifecycle", () => {
 })
 
 describe("ActivityBus – incoming NDJSON no-op", () => {
+	let bus: ActivityBus | null = null
+	let client: net.Socket | null = null
+
 	afterEach(() => {
 		vi.unstubAllEnvs()
+		try {
+			client?.destroy()
+		} catch {
+			/* best-effort */
+		}
+		client = null
+		if (bus) {
+			bus.stop().catch(() => {
+				/* best-effort */
+			})
+			bus = null
+		}
 	})
 
 	it("does not crash on malformed or valid incoming data", async () => {
 		vi.stubEnv("SANDBOX_ID", "sb-incoming")
-		const bus = new ActivityBus()
+		bus = new ActivityBus()
 		await bus.start("sess-incoming")
 
-		const client = net.createConnection("/tmp/kimchi/sess-incoming.sock")
-		await new Promise<void>((resolve) => client.once("connect", resolve))
+		client = net.createConnection("/tmp/kimchi/sess-incoming.sock")
+		const c = client
+		await new Promise<void>((resolve) => c.once("connect", resolve))
 
 		client.write('{"type":"hibernate_warning"}\n')
 		client.write("not-json\n")
 		await new Promise<void>((resolve) => setTimeout(resolve, 50))
 
 		expect(bus.isActive()).toBe(true)
-		client.destroy()
-		await bus.stop()
 	})
 })
