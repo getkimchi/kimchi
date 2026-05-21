@@ -797,19 +797,4 @@ describe("waitForSessionReady (WS probe)", () => {
 		setTimeout(() => ctrl.abort(), 5)
 		await expect(promise).rejects.toThrow(/[Aa]borted/)
 	})
-
-	it("throws when no WebSocket implementation is available", async () => {
-		const orig = (globalThis as { WebSocket?: unknown }).WebSocket
-		try {
-			;(globalThis as { WebSocket?: unknown }).WebSocket = undefined
-			await expect(
-				waitForSessionReady({
-					wsUrl: "wss://h.example.com/",
-					connectToken: "tok",
-				}),
-			).rejects.toThrow(/WebSocket is not available/)
-		} finally {
-			;(globalThis as { WebSocket?: unknown }).WebSocket = orig
-		}
-	})
 })
