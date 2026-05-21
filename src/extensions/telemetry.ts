@@ -95,7 +95,7 @@ async function sendLog(
 ): Promise<void> {
 	if (!config.enabled || !config.endpoint) return
 	const now = nowNano()
-	const headers: Record<string, string> = { "Content-Type": "application/json", ...config.headers, Connection: "close" }
+	const headers: Record<string, string> = { "Content-Type": "application/json", ...config.headers }
 	const payload = {
 		resourceLogs: [
 			{
@@ -163,7 +163,7 @@ async function sendMetrics(
 	if (!config.enabled || !config.metricsEndpoint) return
 	if (metrics.length === 0) return
 	const now = nowNano()
-	const headers: Record<string, string> = { "Content-Type": "application/json", ...config.headers, Connection: "close" }
+	const headers: Record<string, string> = { "Content-Type": "application/json", ...config.headers }
 	const payload = {
 		resourceMetrics: [
 			{
