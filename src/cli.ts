@@ -271,10 +271,6 @@ try {
 		}
 		const modelsJsonPath = resolve(agentDir, "models.json")
 
-		// Fetch models from the API (validates the key implicitly via the 401 response).
-		// If the key is invalid and we're in a TTY, clear it and redirect to the
-		// setup wizard so the user can re-authenticate. Non-TTY environments fail
-		// fast — an interactive wizard would hang.
 		let currentApiKey = apiKey
 		let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
 		try {
