@@ -75,6 +75,11 @@ describe("DEFAULT_AGENTS", () => {
 		expect(plan.strengths).toContain("plan")
 	})
 
+	it("Plan agent has includeContextFiles set to true", () => {
+		const plan = DEFAULT_AGENTS.get(AGENT_PLAN) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(plan.includeContextFiles).toBe(true)
+	})
+
 	it("Explore agent has strengths set to explore", () => {
 		const explore = DEFAULT_AGENTS.get(AGENT_EXPLORE) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
 		expect(explore.strengths).toContain("explore")

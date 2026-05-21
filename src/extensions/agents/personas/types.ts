@@ -73,6 +73,8 @@ export interface AgentConfig {
 	runInBackground?: boolean
 	/** Default for spawn: no extension tools. undefined = caller decides. */
 	isolated?: boolean
+	/** Whether to inject project context files (CLAUDE.md, AGENTS.md) into the system prompt. Default: false. */
+	includeContextFiles?: boolean
 	/** Persistent memory scope — agents with memory get a persistent directory and MEMORY.md */
 	memory?: MemoryScope
 	/** Isolation mode — "worktree" runs the agent in a temporary git worktree */
