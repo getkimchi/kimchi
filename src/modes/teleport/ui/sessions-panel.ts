@@ -96,8 +96,12 @@ export class SessionsPanel implements Component {
 
 	render(width: number): string[] {
 		const { rows } = this
+		const b = (s: string) => fg("2", s) // border color (dim)
+		// Inner width = total width minus 2 border columns (│ left + │ right)
+		const innerW = Math.max(20, width - 2)
 
-		// Column widths
+		// Column widths (content sits inside the border with 1-char padding each side)
+		const contentW = innerW - 2 // subtract left/right padding space
 		const idWidth = Math.max(HEADERS.id.length, ...rows.map((r) => r.id.length))
 		const hostWidth = Math.max(HEADERS.host.length, ...rows.map((r) => (r.host ? r.host.split(".")[0] : "-").length))
 		const statusWidth = Math.max(HEADERS.status.length, ...rows.map((r) => (r.status ?? "-").length))
@@ -105,7 +109,7 @@ export class SessionsPanel implements Component {
 		// prefix "> " / "  " = 2 chars
 		const fixed = 2 + idWidth + 1 + hostWidth + 1 + statusWidth + 1 + lastWidth
 		const longestName = Math.max(HEADERS.name.length, ...rows.map((r) => (r.name || "-").length))
-		const available = Math.max(MIN_NAME_WIDTH, width - fixed - 2)
+		const available = Math.max(MIN_NAME_WIDTH, contentW - fixed)
 		const nameWidth = Math.min(longestName, available)
 
 		const formatRow = (row: SessionRow): string => {
@@ -118,11 +122,20 @@ export class SessionsPanel implements Component {
 			return [id, host, name, status, lastActivity].join(" ")
 		}
 
+		// Wrap a text line inside border │ ... │, padded to innerW
+		const row = (content: string) => `${b("│")} ${pad(content, contentW)}${b("│")}`
+		const ansiRow = (content: string, rawLen: number) =>
+			`${b("│")} ${content}${" ".repeat(Math.max(0, contentW - rawLen))}${b("│")}`
+		const emptyRow = () => `${b("│")}${" ".repeat(innerW)}${b("│")}`
+
 		const lines: string[] = []
 
-		// Title
-		lines.push(dim(" Sessions"))
-		lines.push("")
+		// Top border with title
+		const titleText = " Sessions "
+		const borderLen = innerW - titleText.length
+		const leftB = Math.floor(borderLen / 2)
+		const rightB = borderLen - leftB
+		lines.push(`${b(`╭${"─".repeat(leftB)}`)}${dim(titleText)}${b(`${"─".repeat(rightB)}╮`)}`)
 
 		// Header
 		const header = [
@@ -132,35 +145,42 @@ export class SessionsPanel implements Component {
 			pad(HEADERS.status, statusWidth),
 			HEADERS.lastActivity,
 		].join(" ")
-		lines.push(dim(`  ${header}`))
+		lines.push(ansiRow(dim(`  ${header}`), header.length + 2))
+
+		// Divider under header
+		lines.push(b(`├${"─".repeat(innerW)}┤`))
 
 		// Scrolling
-		// Reserve: title(1) + blank(1) + header(1) + blank(1) + hint(1) = 5
-		// Plus up to 2 lines for scroll indicators
-		const maxVisibleRows = Math.max(1, this.tui.terminal.rows - 7)
+		// Reserve: top border(1) + header(1) + divider(1) + bottom border(1) + hint(1) + empty(1) = 6
+		// Plus up to 2 for scroll indicators
+		const maxVisibleRows = Math.max(1, this.tui.terminal.rows - 8)
 		const { start, end } = computeVisibleWindow(this.selectedIndex, rows.length, maxVisibleRows)
 
 		if (start > 0) {
-			lines.push(dim(`  ↑ ${start} more`))
+			lines.push(ansiRow(dim(`  ↑ ${start} more`), `  ↑ ${start} more`.length))
 		}
 
 		for (let i = start; i < end; i++) {
-			const row = rows[i]
-			const content = formatRow(row)
+			const content = formatRow(rows[i])
 			if (i === this.selectedIndex) {
-				lines.push(fg("36", `> ${content}`))
+				const raw = `> ${content}`
+				lines.push(ansiRow(fg("36", raw), raw.length))
 			} else {
-				lines.push(`  ${content}`)
+				lines.push(row(`  ${content}`))
 			}
 		}
 
 		if (end < rows.length) {
-			lines.push(dim(`  ↓ ${rows.length - end} more`))
+			lines.push(ansiRow(dim(`  ↓ ${rows.length - end} more`), `  ↓ ${rows.length - end} more`.length))
 		}
 
-		// Footer
-		lines.push("")
-		lines.push(dim("  ↑/↓ j/k: navigate  a: attach  s: connect  esc: close"))
+		// Hint
+		emptyRow() // spacing
+		const hintText = "↑/↓ j/k: navigate  a: attach  s: connect  esc: close"
+		lines.push(ansiRow(dim(`  ${hintText}`), hintText.length + 2))
+
+		// Bottom border
+		lines.push(b(`╰${"─".repeat(innerW)}╯`))
 
 		return lines
 	}

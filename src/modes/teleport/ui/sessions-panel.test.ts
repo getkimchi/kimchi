@@ -67,16 +67,32 @@ describe("SessionsPanel", () => {
 			expect(text).toContain("close")
 		})
 
-		it("selects the first row by default with > prefix", () => {
+		it("renders box-drawing border around the panel", () => {
+			const { panel } = makePanel()
+			const lines = panel.render(120).map(stripAnsi)
+			// Top border
+			expect(lines[0]).toMatch(/^╭─.*Sessions.*─╮$/)
+			// Bottom border
+			expect(lines[lines.length - 1]).toMatch(/^╰─+╯$/)
+			// Side borders on content lines
+			const contentLines = lines.slice(1, -1)
+			for (const line of contentLines) {
+				if (line.includes("├") || line.includes("┤")) continue // divider line
+				expect(line.startsWith("│")).toBe(true)
+				expect(line.endsWith("│")).toBe(true)
+			}
+		})
+
+		it("selects the first row by default with > marker", () => {
 			const { panel } = makePanel()
 			const lines = panel.render(120).map(stripAnsi)
 			const sess1Line = lines.find((l) => l.includes("sess-1"))
 			expect(sess1Line).toBeDefined()
-			expect(sess1Line?.startsWith(">")).toBe(true)
+			expect(sess1Line).toMatch(/> .*sess-1/)
 
 			const sess2Line = lines.find((l) => l.includes("sess-2"))
 			expect(sess2Line).toBeDefined()
-			expect(sess2Line?.startsWith(">")).toBe(false)
+			expect(sess2Line).not.toMatch(/> .*sess-2/)
 		})
 
 		it("shows host prefix (first dot-segment)", () => {
@@ -99,7 +115,7 @@ describe("SessionsPanel", () => {
 			panel.handleInput("\x1b[B") // down arrow
 			const lines = panel.render(120).map(stripAnsi)
 			const sess2Line = lines.find((l) => l.includes("sess-2"))
-			expect(sess2Line?.startsWith(">")).toBe(true)
+			expect(sess2Line).toMatch(/> .*sess-2/)
 			expect(tui.requestRender).toHaveBeenCalled()
 		})
 
@@ -108,7 +124,7 @@ describe("SessionsPanel", () => {
 			panel.handleInput("j")
 			const lines = panel.render(120).map(stripAnsi)
 			const sess2Line = lines.find((l) => l.includes("sess-2"))
-			expect(sess2Line?.startsWith(">")).toBe(true)
+			expect(sess2Line).toMatch(/> .*sess-2/)
 		})
 
 		it("up arrow moves selection up", () => {
@@ -117,7 +133,7 @@ describe("SessionsPanel", () => {
 			panel.handleInput("\x1b[A") // up arrow
 			const lines = panel.render(120).map(stripAnsi)
 			const sess1Line = lines.find((l) => l.includes("sess-1"))
-			expect(sess1Line?.startsWith(">")).toBe(true)
+			expect(sess1Line).toMatch(/> .*sess-1/)
 		})
 
 		it("k key moves selection up", () => {
@@ -126,7 +142,7 @@ describe("SessionsPanel", () => {
 			panel.handleInput("k") // back up
 			const lines = panel.render(120).map(stripAnsi)
 			const sess1Line = lines.find((l) => l.includes("sess-1"))
-			expect(sess1Line?.startsWith(">")).toBe(true)
+			expect(sess1Line).toMatch(/> .*sess-1/)
 		})
 
 		it("clamps at top when pressing up at index 0", () => {
@@ -134,7 +150,7 @@ describe("SessionsPanel", () => {
 			panel.handleInput("\x1b[A") // up at first item
 			const lines = panel.render(120).map(stripAnsi)
 			const sess1Line = lines.find((l) => l.includes("sess-1"))
-			expect(sess1Line?.startsWith(">")).toBe(true)
+			expect(sess1Line).toMatch(/> .*sess-1/)
 		})
 
 		it("clamps at bottom when pressing down at last item", () => {
@@ -144,7 +160,7 @@ describe("SessionsPanel", () => {
 			panel.handleInput("j") // should stay at sess-3
 			const lines = panel.render(120).map(stripAnsi)
 			const sess3Line = lines.find((l) => l.includes("sess-3"))
-			expect(sess3Line?.startsWith(">")).toBe(true)
+			expect(sess3Line).toMatch(/> .*sess-3/)
 		})
 	})
 
