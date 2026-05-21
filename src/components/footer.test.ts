@@ -5,7 +5,7 @@ import * as AGENTS from "../extensions/agents/index.js"
 import * as FERMENT from "../extensions/ferment/index.js"
 import * as ORCHESTRATION from "../extensions/prompt-construction/prompt-enrichment.js"
 import * as TAGS from "../extensions/tags.js"
-import { SHORTCUT_TAIL, StatsFooter, buildContextCompact, buildMultiModelAbbrev, buildPhaseCompact } from "./footer.js"
+import { SHORTCUT_TAIL, StatsFooter, buildContextCompact, buildModelAbbrev, buildPhaseCompact } from "./footer.js"
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape stripping in test assertions
 const ANSI_ESCAPE = /\x1b\[[\d;]*m/g
@@ -172,17 +172,18 @@ describe("compact-form builders", () => {
 		})
 	})
 
-	describe("buildMultiModelAbbrev", () => {
-		it("uses `m-m:` instead of `multi-model:` when enabled", () => {
-			const seg = buildMultiModelAbbrev(compactCtx, true)
-			expect(seg.id).toBe("multi-model")
-			expect(seg.text).toBe(`m-m: on \u2192 ${ORCHESTRATION.MULTI_MODEL_SHORTCUT}`)
-			expect(seg.raw).toEqual({ kind: "multi-model", enabled: true })
+	describe("buildModelAbbrev", () => {
+		it("abbreviates multi-model label", () => {
+			const seg = buildModelAbbrev(compactCtx, true, "kimi-k2.6")
+			expect(seg.id).toBe("model")
+			expect(seg.text).toBe("m-m (kimi-k2.6) \u2192 ctrl+p")
+			expect(seg.raw).toEqual({ kind: "model", multiModel: true, modelId: "kimi-k2.6" })
 		})
 
-		it("shows `off` when disabled", () => {
-			const seg = buildMultiModelAbbrev(compactCtx, false)
-			expect(seg.text).toBe(`m-m: off \u2192 ${ORCHESTRATION.MULTI_MODEL_SHORTCUT}`)
+		it("keeps model id when not multi-model", () => {
+			const seg = buildModelAbbrev(compactCtx, false, "claude-opus-4-7")
+			expect(seg.text).toBe("claude-opus-4-7 \u2192 ctrl+p")
+			expect(seg.raw).toEqual({ kind: "model", multiModel: false, modelId: "claude-opus-4-7" })
 		})
 	})
 
@@ -209,10 +210,10 @@ describe("SHORTCUT_TAIL regex", () => {
 		expect(text.replace(SHORTCUT_TAIL, "")).toBe("\u25cf default")
 	})
 
-	it("matches the multi-model trailing shortcut", () => {
-		const text = "multi-model: on \x1b[38;5;242m\u2192 alt+m\x1b[39m"
+	it("matches the model segment trailing shortcut", () => {
+		const text = "multi-model (kimi-k2.6) \x1b[38;5;242m\u2192 ctrl+p\x1b[39m"
 		expect(SHORTCUT_TAIL.test(text)).toBe(true)
-		expect(text.replace(SHORTCUT_TAIL, "")).toBe("multi-model: on")
+		expect(text.replace(SHORTCUT_TAIL, "")).toBe("multi-model (kimi-k2.6)")
 	})
 
 	it("matches the ferment trailing shortcut", () => {
@@ -272,45 +273,34 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 	it("width 160: full footer + `/ for commands` hint, padded to width", () => {
 		const { raw, visible } = renderAt(160)
 		expect(visible).toContain("\u25cf default \u2192 shift+tab")
-		expect(visible).toContain(`multi-model: on \u2192 ${ORCHESTRATION.MULTI_MODEL_SHORTCUT}`)
-		expect(visible).not.toContain("claude-opus-4-6")
+		expect(visible).toContain("multi-model (claude-opus-4-7) \u2192 ctrl+p")
 		expect(visible).toContain("0% ctx")
 		expect(visible).toContain("phase:explore")
 		expect(visible).toContain("/ for commands")
-		// When the hint fits, the line is padded to exactly `width` columns
-		// (with whitespace between the segments and the right-aligned hint).
 		expect(visibleWidth(raw)).toBe(160)
-		// The hint sits at the right edge.
 		expect(visible.endsWith("/ for commands")).toBe(true)
 	})
 
 	it("width 100: hint dropped, remaining segments still present", () => {
 		const { raw, visible } = renderAt(100)
-		// Hint gone (step 1)
 		expect(visible).not.toContain("/ for commands")
-		// Line fits.
 		expect(visibleWidth(raw)).toBeLessThanOrEqual(100)
-		// All segments still present.
 		expect(visible).toContain("default")
 		expect(visible).toContain("multi-model")
-		expect(visible).not.toContain("claude-opus-4-6")
 		expect(visible).toContain("0% ctx")
 		expect(visible).toContain("phase:explore")
 	})
 
-	it("width 60: shortcuts stripped, multi-model abbreviated", () => {
+	it("width 60: shortcuts stripped, model abbreviated", () => {
 		const { raw, visible } = renderAt(60)
 		expect(visibleWidth(raw)).toBeLessThanOrEqual(60)
 		expect(visible).not.toContain("/ for commands")
 		expect(visible).not.toContain("shift+tab")
-		expect(visible).not.toContain(ORCHESTRATION.MULTI_MODEL_SHORTCUT)
-		// multi-model label is abbreviated to `m-m:`.
-		expect(visible).toContain("m-m:")
-		expect(visible).not.toContain("multi-model:")
+		expect(visible).not.toContain("ctrl+p")
+		// multi-model label is abbreviated to `m-m`.
+		expect(visible).toContain("m-m")
 		// phase value survives.
 		expect(visible).toContain("explore")
-		// Model segment is hidden in multi-model mode.
-		expect(visible).not.toContain("claude-opus-4-6")
 	})
 
 	it("width 20: line is hard-truncated to fit, leftmost content survives", () => {

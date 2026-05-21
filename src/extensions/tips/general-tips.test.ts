@@ -13,7 +13,8 @@ describe("GENERAL_TIPS", () => {
 
 		expect(messages).toContain("Press `shift+tab` to change permissions mode.")
 		expect(messages).toContain("Run `/settings > Themes` to change colors.")
-		expect(messages).toContain("Press `ctrl+p` to choose a model from multi-model mode.")
+		expect(messages).toContain("Use `ctrl+p` or `/model` to select multi-model for auto routing.")
+		expect(messages).toContain("Use `/model` to select single model for entire session")
 		expect(messages).toContain("Tag requests with `/tags add key:value`, e.g. `project:myapp` `team:backend`.")
 		expect(messages).toContain('Set default tags: `export KIMCHI_TAGS="team:backend,project:api"`.')
 		expect(messages).toContain("Resume the latest session with `kimchi --continue`.")

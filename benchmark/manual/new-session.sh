@@ -70,7 +70,7 @@ binary           = os.environ["BINARY"]
 tasks = [
     ("simple",         simple_prompt,  [],                      True,  None),
     ("complex",        complex_prompt, [],                      True,  None),
-    ("complex-single", complex_prompt, ["--multi-model=false"], True,  None),
+    ("complex-single", complex_prompt, [], True,  None),
     ("research",       research_prompt,[],                      True,  None),
     ("explore",        explore_prompt, [],                      True,  f'mkdir -p "$DIR/usermgmt" && cp -R "{explore_seed}/." "$DIR/usermgmt/" && ls -la "$DIR/usermgmt/"'),
     ("mega",           mega_prompt,    [],                      False, None),

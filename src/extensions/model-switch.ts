@@ -5,6 +5,7 @@ import { isRestoringModel } from "./ferment/state.js"
 import { contextFitsModel, getSafeContextWindow, sessionHasImages } from "./model-guard.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
+import { ORCHESTRATOR_MODEL_ID, setMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
 
 /** Tier ordering for downgrade detection: higher index = lower tier. */
 const TIER_ORDER: ModelTier[] = ["heavy", "standard", "light"]
@@ -49,6 +50,33 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const { model } = params
+
+			if (model === "multi-model") {
+				const orchestrator = ctx.modelRegistry?.find("kimchi-dev", ORCHESTRATOR_MODEL_ID)
+				if (!orchestrator) {
+					return {
+						content: [{ type: "text" as const, text: "Multi-model orchestrator (kimi-k2.6) is not available." }],
+						details: null,
+					}
+				}
+				setMultiModelEnabled(true)
+				suppressModelSelectGuard = true
+				try {
+					await pi.setModel(orchestrator)
+				} finally {
+					suppressModelSelectGuard = false
+				}
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Switched to multi-model mode (orchestrator: ${ORCHESTRATOR_MODEL_ID})`,
+						},
+					],
+					details: null,
+				}
+			}
+
 			const parts = model.split("/")
 			if (parts.length !== 2 || !parts[0] || !parts[1]) {
 				const available =
@@ -60,7 +88,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text" as const,
-							text: `Invalid model format: "${model}". Expected "provider/modelId".\n\nAvailable models:\n${available.join("\n")}`,
+							text: `Invalid model format: "${model}". Expected "provider/modelId" or "multi-model".\n\nAvailable models:\nmulti-model\n${available.join("\n")}`,
 						},
 					],
 					details: null,
@@ -113,6 +141,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 				}
 			}
 
+			setMultiModelEnabled(false)
 			let ok: boolean
 			suppressModelSelectGuard = true
 			try {
@@ -153,6 +182,20 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 		if (event.source === "cycle" || event.source === "restore") return
 		// Skip if ferment is reverting (its own rollback path)
 		if (isRestoringModel()) return
+
+		// Detect multi-model selection from the /model picker (framework patch sets this flag)
+		const proc = process as NodeJS.Process & { __kimchiMultiModelPending?: boolean }
+		if (proc.__kimchiMultiModelPending) {
+			proc.__kimchiMultiModelPending = undefined
+			setMultiModelEnabled(true)
+			return
+		}
+
+		// User explicitly selected a specific model via /model picker — exit multi-model mode
+		if (event.source === "set") {
+			setMultiModelEnabled(false)
+		}
+
 		// Nothing to revert to
 		if (!event.previousModel) return
 
