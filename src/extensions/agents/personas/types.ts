@@ -9,6 +9,8 @@ import type { LifetimeUsage } from "../manager/usage.js"
 /** Thinking/reasoning level for models that support it. */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
 
+export type AgentAbortReason = "max_turns" | "token_budget" | "inactivity" | "max_duration"
+
 /** Agent type: any string name (built-in defaults or user-defined). */
 export type SubagentType = string
 
@@ -56,8 +58,13 @@ export interface AgentConfig {
 	 * auto-promoted to a single-element array on load.
 	 */
 	models?: string[]
+	/** true = profile model selection wins over caller-provided model. */
+	modelLocked?: boolean
 	thinking?: ThinkingLevel
 	maxTurns?: number
+	tokenBudget?: number
+	/** Maximum wall-clock duration in seconds before the agent is aborted. */
+	maxDuration?: number
 	systemPrompt: string
 	promptMode: "replace" | "append"
 	/** Default for spawn: fork parent conversation. undefined = caller decides. */
@@ -89,12 +96,16 @@ export interface AgentConfig {
 }
 
 export type JoinMode = "async" | "group" | "smart"
+export type AgentVisibility = "user" | "system"
 
 export interface AgentRecord {
 	id: string
 	type: SubagentType
 	description: string
+	/** user = visible in UI/notifications; system = hidden technical/background work. */
+	visibility: AgentVisibility
 	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error"
+	abortReason?: AgentAbortReason
 	result?: string
 	error?: string
 	toolUses: number
@@ -113,6 +124,8 @@ export interface AgentRecord {
 	toolCallId?: string
 	/** Path to the streaming output transcript file. */
 	outputFile?: string
+	/** Persisted session file for this agent run, when the parent session is persisted. */
+	sessionFile?: string
 	/** Cleanup function for the output file stream subscription. */
 	outputCleanup?: () => void
 	/**
@@ -130,6 +143,7 @@ export interface NotificationDetails {
 	id: string
 	description: string
 	status: string
+	abortReason?: AgentAbortReason
 	toolUses: number
 	turnCount: number
 	maxTurns?: number

@@ -32,12 +32,12 @@ describe("ferment tool scope", () => {
 		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
 	})
 
-	it("applies the planner-active profile without duplicating active tools", () => {
+	it("applies the planner-active profile without duplicate creation", () => {
 		const pi = createPi(["read", "create_ferment", "bash"], ["read", "bash", "create_ferment", "start_ferment_step"])
 
 		applyFermentToolProfile(pi, "planner-active")
 
-		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "create_ferment", "start_ferment_step"])
+		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "start_ferment_step"])
 	})
 
 	it("applies the idle profile as discovery-only ferment tools", () => {
@@ -51,7 +51,7 @@ describe("ferment tool scope", () => {
 		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "create_ferment", "list_ferments"])
 	})
 
-	it("keeps the full lifecycle surface for an active planner profile", () => {
+	it("keeps the existing-ferment lifecycle surface for an active planner profile", () => {
 		const allTools = ["read", "bash", ...FERMENT_TOOL_NAMES]
 		const pi = createPi(["read", "bash", "create_ferment"], allTools)
 
@@ -59,8 +59,11 @@ describe("ferment tool scope", () => {
 
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
 		for (const name of FERMENT_TOOL_NAMES) {
+			if (name === "create_ferment") continue
 			expect(lastCall).toContain(name)
 		}
+		expect(lastCall).not.toContain("create_ferment")
+		expect(lastCall).not.toContain("set_ferment_mode")
 	})
 
 	it("keeps only non-mutating ferment discovery while paused or terminal", () => {

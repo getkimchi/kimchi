@@ -1,24 +1,93 @@
 import { spawn } from "node:child_process"
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
+import { Box, Text } from "@earendil-works/pi-tui"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
-import type { TUI } from "@earendil-works/pi-tui"
+import type { Component, TUI } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
 import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } from "../components/footer.js"
 import { LogoHeader } from "../components/logo.js"
-import { SplashHeader } from "../components/splash-header.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { isBareExitAlias } from "./exit-utils.js"
-import { getMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
+import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
+import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
+import { formatDuration } from "./format.js"
+import { sessionHasImages } from "./model-guard.js"
+import { MULTI_MODEL_SHORTCUT, getMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
+import {
+	isSessionModeOnboardingFooterSuppressed,
+	registerSharedFooterRenderer,
+	setSessionModeOnboardingFooterSuppressed,
+} from "./shared-footer.js"
 import { createWorkingAnimator } from "./spinner.js"
+import { getKittyKeyboardSupport } from "./terminal-compat/keyboard-capability.js"
+
+export { requestSharedFooterRender, setSessionModeOnboardingFooterSuppressed } from "./shared-footer.js"
 
 function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {
 	return a.provider === b.provider && a.id === b.id
+}
+
+/** Reason a model was skipped during ctrl+p cycle. */
+export interface SkippedModel {
+	model: Model<Api>
+	reason: string
+}
+
+/** Result of findNextCompatibleModel — the selected model plus any skipped candidates. */
+export interface NextModelResult {
+	model: Model<Api> | undefined
+	skipped: SkippedModel[]
+}
+
+/**
+ * Iterates through the model list starting after currentIndex, wrapping around,
+ * and returns the first model compatible with the current context (token count
+ * and vision requirements). Also collects a list of all skipped models with
+ * human-readable reasons, which the caller can surface in a notification.
+ */
+export function findNextCompatibleModel(
+	available: readonly Model<Api>[],
+	currentIndex: number,
+	currentTokens: number | null,
+	hasImages: boolean,
+	currentModel?: Model<Api> | null,
+): NextModelResult {
+	const len = available.length
+	if (len === 0) return { model: undefined, skipped: [] }
+
+	const currentModelHasVision = currentModel?.input.includes("image") ?? false
+	const skipped: SkippedModel[] = []
+
+	for (let offset = 1; offset < len; offset++) {
+		const idx = (currentIndex + offset) % len
+		const candidate = available[idx]
+
+		if (currentTokens !== null && candidate.contextWindow < currentTokens) {
+			skipped.push({
+				model: candidate,
+				reason: `${(candidate.contextWindow / 1000).toFixed(0)}K context \u2014 current usage (${(currentTokens / 1000).toFixed(0)}K tokens) exceeds its window`,
+			})
+			continue
+		}
+
+		if (hasImages && !candidate.input.includes("image") && currentModelHasVision) {
+			skipped.push({
+				model: candidate,
+				reason: "no vision support \u2014 run /strip-images to unlock",
+			})
+			continue
+		}
+
+		return { model: candidate, skipped }
+	}
+
+	return { model: undefined, skipped }
 }
 
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
@@ -36,10 +105,37 @@ function getEnabledModelIds(): Set<string> | null {
 	return null
 }
 
-// Track splash state globally so other extensions can reset it
-let splashActive = false
+// Track current editor for indicator updates
 let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
+
+type DisposableComponent = Component & { dispose?(): void }
+
+class SuppressibleFooter implements Component {
+	private readonly requestRender: () => void
+	private readonly unregisterRequestRender: () => void
+
+	constructor(
+		private readonly inner: DisposableComponent,
+		tui: TUI,
+	) {
+		this.requestRender = () => tui.requestRender()
+		this.unregisterRequestRender = registerSharedFooterRenderer(this.requestRender)
+	}
+
+	dispose(): void {
+		this.unregisterRequestRender()
+		this.inner.dispose?.()
+	}
+
+	invalidate(): void {
+		this.inner.invalidate()
+	}
+
+	render(width: number): string[] {
+		return isSessionModeOnboardingFooterSuppressed() ? [] : this.inner.render(width)
+	}
+}
 
 export function setPasteImageHandler(handler: () => void): void {
 	pasteImageHandler = handler
@@ -52,26 +148,6 @@ export function setPasteImageHandler(handler: () => void): void {
  */
 export function setPendingImageIndicator(text: string | null): void {
 	currentEditor?.setPendingImageIndicator(text)
-}
-
-/**
- * Reset splash mode and switch to chat view.
- * Call this from command handlers that need to exit splash mode.
- */
-export function exitSplashMode(ctx: {
-	ui: {
-		setHeader: (
-			factory: (
-				tui: TUI,
-				theme: import("@earendil-works/pi-coding-agent").Theme,
-			) => import("@earendil-works/pi-tui").Component,
-		) => void
-	}
-}): void {
-	if (!splashActive) return
-	splashActive = false
-	ctx.ui.setHeader((_tui, theme) => new LogoHeader(theme))
-	currentEditor?.setSplashMode(false)
 }
 
 function runScript(scriptPath: string, payload: object, tui: TUI, footer: ScriptFooter, onDone: () => void): void {
@@ -125,8 +201,14 @@ export default function uiExtension(pi: ExtensionAPI) {
 	let scriptGeneration = 0
 	let currentCtx: ExtensionContext | null = null
 	let sessionStartMs = 0
+	let turnStartMs = 0
 	let linesAdded = 0
 	let linesRemoved = 0
+	let newlineHintHandle: { hide(): void } | null = null
+	let thinkingStatus: "thinking" | number | null = null
+	let thinkingStartMs = 0
+	let workedForTimer: ReturnType<typeof setTimeout> | undefined
+	let piToolsExpanded = false
 
 	const refresh = (status: "idle" | "generating") => {
 		if (!currentCtx?.hasUI || !scriptFooter || !scriptTui || !scriptCmd) return
@@ -145,6 +227,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", (event, ctx) => {
+		setSessionModeOnboardingFooterSuppressed(false)
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
 		toolsInFlight = 0
@@ -156,25 +239,27 @@ export default function uiExtension(pi: ExtensionAPI) {
 		scriptGeneration++
 		scriptPending = false
 
-		const isSplash = event.reason === "startup"
-		splashActive = isSplash
-
-		ctx.ui.setHeader((_tui, theme) => (isSplash ? new SplashHeader(theme) : new LogoHeader(theme)))
+		ctx.ui.setHeader((_tui, theme) => new LogoHeader(theme))
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			uiTui = tui
 			const cmd = readStatusLineCommand()
 			if (!cmd) {
 				scriptCmd = null
-				return new StatsFooter(ctx, theme, footerData)
+				return new SuppressibleFooter(new StatsFooter(ctx, theme, footerData), tui)
 			}
 			scriptCmd = cmd
 			const getControlsLine = (): string | null => {
 				const parts: string[] = []
+				const ferment = formatFermentFooterDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
+					dim: (s) => theme.fg("dim", s),
+					accent: (s) => `${resolvedAccentFg(theme)}${s}${RST_FG}`,
+				})
+				if (ferment) parts.push(ferment.text)
 				const perm = footerData.getExtensionStatuses().get("permissions-mode")
 				if (perm) parts.push(perm)
 				const enabled = getMultiModelEnabled()
 				const label = enabled ? `${resolvedAccentFg(theme)}on${RST_FG}` : theme.fg("dim", "off")
-				const shortcut = process.platform === "darwin" ? "option+tab" : "alt+tab"
+				const shortcut = MULTI_MODEL_SHORTCUT
 				parts.push(`${theme.fg("dim", "multi-model:")} ${label} ${theme.fg("dim", `→ ${shortcut}`)}`)
 				return parts.join(` ${theme.fg("dim", "·")} `)
 			}
@@ -191,18 +276,104 @@ export default function uiExtension(pi: ExtensionAPI) {
 					if (scriptGeneration === gen) scriptPending = false
 				},
 			)
-			return scriptFooter
+			return new SuppressibleFooter(scriptFooter, tui)
 		})
+
+		// Surface the Ctrl+J newline tip inside the TUI for terminals that don't
+		// support the Kitty keyboard protocol (the real root-cause behind Shift+Enter
+		// not working). The startup console warning is easy to miss (nag-throttled
+		// and swallowed by TUI init), so a persistent per-session widget is more
+		// visible than a one-time notification.
+		if (getKittyKeyboardSupport() === false && ctx.hasUI) {
+			const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+			if (agentDir) {
+				try {
+					const kbPath = resolve(agentDir, "keybindings.json")
+					if (existsSync(kbPath)) {
+						const kb = JSON.parse(readFileSync(kbPath, "utf-8"))
+						const nl = kb["tui.input.newLine"]
+						const settingsPath = resolve(agentDir, "settings.json")
+						let settingsData: Record<string, unknown> = {}
+						if (existsSync(settingsPath)) {
+							try {
+								settingsData = JSON.parse(readFileSync(settingsPath, "utf-8"))
+							} catch {}
+						}
+						const nlHasCtrlJ =
+							(typeof nl === "string" && nl.includes("ctrl+j")) ||
+							(Array.isArray(nl) && nl.some((k: unknown) => typeof k === "string" && k.includes("ctrl+j")))
+						if (!settingsData.newlineHintDismissed && nlHasCtrlJ) {
+							ctx.ui.custom(
+								(_tui, theme, _kb, done) => {
+									const settingsFile = settingsPath
+									return {
+										render(width: number): string[] {
+											const box = new Box(2, 1)
+											box.addChild(new Text(theme.inverse("  ⚠  Shift+Enter doesn't work in this terminal  ")))
+											box.addChild(new Text(""))
+											box.addChild(new Text(`${theme.bold("Ctrl+J")}${" ".padEnd(13)}→  insert a newline`))
+											box.addChild(new Text(`\\ + Enter${" ".padEnd(10)}→  insert a newline`))
+											box.addChild(new Text(""))
+											box.addChild(new Text(theme.fg("muted", "Enter - dismiss   d - don't remind again")))
+											const accent = theme.getFgAnsi("accent")
+											const reset = "\x1b[0m"
+											const hbar = "─"
+											const inner = width - 2
+											const lines = box.render(inner)
+											const bordered = lines.map((l: string, i: number) => {
+												if (i === 0) return `${accent}┌${hbar.repeat(inner)}┐${reset}`
+												if (i === lines.length - 1) return `${accent}└${hbar.repeat(inner)}┘${reset}`
+												return `${accent}│${reset}${l}${accent}│${reset}`
+											})
+											return bordered
+										},
+										invalidate() {},
+										handleInput(data: string): void {
+											if (matchesKey(data, "enter")) done(undefined)
+											if (data === "d") {
+												try {
+													const s: Record<string, unknown> = {}
+													if (existsSync(settingsFile)) {
+														try {
+															Object.assign(s, JSON.parse(readFileSync(settingsFile, "utf-8")))
+														} catch {}
+													}
+													s.newlineHintDismissed = true
+													writeFileSync(settingsFile, JSON.stringify(s, null, 2))
+												} catch {}
+												done(undefined)
+											}
+										},
+										wantsKeyRelease: false,
+									}
+								},
+								{
+									overlay: true,
+									overlayOptions: { anchor: "center" },
+									onHandle: (handle) => {
+										newlineHintHandle = handle
+									},
+								},
+							)
+						}
+					}
+				} catch {
+					// best-effort; don't break startup if keybindings are unreadable
+				}
+			}
+		}
 
 		ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
 			tui.setShowHardwareCursor(true)
 			const editor = new PromptEditor(tui, editorTheme, keybindings, ctx.ui.theme)
-			editor.setSplashMode(isSplash)
 			editor.setExpandHandler(() => {
-				if (!expandNext()) {
+				piToolsExpanded = !piToolsExpanded
+				ctx.ui.setToolsExpanded(piToolsExpanded)
+				if (piToolsExpanded) {
+					expandNext()
+				} else {
 					collapseAll()
 				}
-				ctx.ui.setToolsExpanded(false)
 			})
 			currentEditor = editor
 			if (pasteImageHandler) {
@@ -218,6 +389,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 			unsubModelCycleInput = ctx.ui.onTerminalInput((data) => {
 				if (matchesKey(data, "ctrl+p")) {
 					if (!isKeyRelease(data)) {
+						if (getMultiModelEnabled()) return { consume: true }
 						const allAvailable = ctx.modelRegistry.getAvailable()
 						const enabledIds = getEnabledModelIds()
 						const available = enabledIds
@@ -227,10 +399,32 @@ export default function uiExtension(pi: ExtensionAPI) {
 						if (available.length > 1 && current) {
 							let idx = available.findIndex((m) => modelsAreEqual(m, current))
 							if (idx === -1) idx = 0
-							const next = available[(idx + 1) % available.length]
-							pi.setModel(next).catch((err) => {
-								ctx.ui.notify(`Failed to cycle model: ${err instanceof Error ? err.message : String(err)}`, "warning")
-							})
+							const usage = ctx.getContextUsage()
+							const { model: next, skipped } = findNextCompatibleModel(
+								available,
+								idx,
+								usage?.tokens ?? null,
+								sessionHasImages(),
+								current,
+							)
+							if (!next) {
+								const lines = skipped.map((s) => `  • ${s.model.id}: ${s.reason}`)
+								ctx.ui.notify(
+									`No compatible model available.\n${lines.join("\n")}\n\nUse /compact to unlock models blocked by context size, or /strip-images for models without vision support.`,
+									"warning",
+								)
+							} else if (!modelsAreEqual(next, current)) {
+								if (skipped.length > 0) {
+									const lines = skipped.map((s) => `  • ${s.model.id}: ${s.reason}`)
+									ctx.ui.notify(
+										`Skipped ${skipped.length} model${skipped.length > 1 ? "s" : ""}:\n${lines.join("\n")}\n\nUse /compact to unlock models blocked by context size, or /strip-images for models without vision support.`,
+										"info",
+									)
+								}
+								pi.setModel(next).catch((err) => {
+									ctx.ui.notify(`Failed to cycle model: ${err instanceof Error ? err.message : String(err)}`, "warning")
+								})
+							}
 						}
 					}
 					return { consume: true }
@@ -240,15 +434,21 @@ export default function uiExtension(pi: ExtensionAPI) {
 		}
 	})
 
+	pi.on("session_shutdown", () => {
+		stopWorkingAnimation?.()
+		stopWorkingAnimation = undefined
+		currentCtx = null
+	})
+
 	pi.on("input", (event, ctx) => {
 		if (isBareExitAlias(event.text)) {
 			ctx.shutdown()
 		}
 
-		if (!splashActive) return
-		splashActive = false
-		ctx.ui.setHeader((_tui, theme) => new LogoHeader(theme))
-		currentEditor?.setSplashMode(false)
+		if (newlineHintHandle) {
+			newlineHintHandle.hide()
+			newlineHintHandle = null
+		}
 	})
 
 	let stopWorkingAnimation: (() => void) | undefined
@@ -260,15 +460,39 @@ export default function uiExtension(pi: ExtensionAPI) {
 		stopWorkingAnimation = createWorkingAnimator((char, message) => {
 			const accent = resolvedAccentFg(ctx.ui.theme)
 			ctx.ui.setWorkingIndicator({ frames: [`${accent}${char}${RST_FG}`] })
-			ctx.ui.setWorkingMessage(`${accent}${message}${RST_FG}`)
+			let suffix = ""
+			if (thinkingStatus === "thinking") {
+				suffix = ` ${ctx.ui.theme.fg("dim", "(thinking…)")}`
+			} else if (typeof thinkingStatus === "number") {
+				const secs = Math.max(1, Math.round(thinkingStatus / 1000))
+				suffix = ` ${ctx.ui.theme.fg("dim", `(thought for ${secs}s)`)}`
+			}
+			ctx.ui.setWorkingMessage(`${accent}${message}${RST_FG}${suffix}`)
 		})
 	}
 
 	pi.on("turn_start", (_, ctx) => {
+		clearTimeout(workedForTimer)
+		workedForTimer = undefined
 		currentCtx = ctx
 		toolsInFlight = 0
+		turnStartMs = Date.now()
+		thinkingStatus = null
+		thinkingStartMs = 0
 		refresh("generating")
 		startIndicator(ctx)
+	})
+	pi.on("message_update", (event) => {
+		const evt = event.assistantMessageEvent as { type: string }
+		if (evt.type === "thinking_start") {
+			thinkingStartMs = Date.now()
+			thinkingStatus = "thinking"
+		} else if (evt.type === "thinking_end") {
+			if (thinkingStatus === "thinking") {
+				const duration = Date.now() - thinkingStartMs
+				thinkingStatus = duration > 100 ? duration : null
+			}
+		}
 	})
 	pi.on("message_start", (event, ctx) => {
 		if (event.message.role !== "assistant") return
@@ -297,8 +521,20 @@ export default function uiExtension(pi: ExtensionAPI) {
 	pi.on("turn_end", (_, ctx) => {
 		currentCtx = ctx
 		refresh("idle")
+		if (ctx.hasUI && turnStartMs > 0) {
+			clearTimeout(workedForTimer)
+			const elapsed = Date.now() - turnStartMs
+			ctx.ui.setWorkingVisible(true)
+			ctx.ui.setWorkingMessage(ctx.ui.theme.fg("dim", `✻ Worked for ${formatDuration(elapsed)}`))
+			workedForTimer = setTimeout(() => {
+				workedForTimer = undefined
+				ctx.ui.setWorkingVisible(false)
+			}, 2500)
+		}
 	})
 	pi.on("agent_end", (_, ctx) => {
+		clearTimeout(workedForTimer)
+		workedForTimer = undefined
 		toolsInFlight = 0
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
@@ -308,6 +544,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 		currentCtx = ctx
 		refresh("idle")
 		uiTui?.requestRender()
+	})
+	pi.on("session_shutdown", () => {
+		setSessionModeOnboardingFooterSuppressed(false)
 	})
 
 	pi.on("tool_result", (event) => {
@@ -326,6 +565,13 @@ export default function uiExtension(pi: ExtensionAPI) {
 		description: "Exit the application (alias for /quit)",
 		handler: async (_args, ctx) => {
 			ctx.shutdown()
+		},
+	})
+
+	pi.registerCommand("clear", {
+		description: "Start a new session (alias for /new)",
+		handler: async (_args, ctx) => {
+			await ctx.newSession()
 		},
 	})
 }

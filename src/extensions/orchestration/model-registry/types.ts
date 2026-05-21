@@ -3,13 +3,13 @@
  * to the nature of the work.
  *
  *  - "build"    — writing, modifying, and refactoring code.
- *  - "explore"  — navigating codebases, searching for information,
- *                  answering questions about code.
+ *  - "explore"  — local codebase: reading files, tracing imports, understanding
+ *                  existing code structure. Source: files on disk.
  *  - "review"   — code review, finding bugs, and suggesting improvements.
  *  - "plan"     — architectural planning, breaking down complex tasks,
  *                  writing specs.
- *  - "research" — researching and investigating code, tracing dependencies,
- *                  understanding large codebases.
+ *  - "research" — external sources: web docs, library APIs, version changelogs,
+ *                  RFCs, long internet pages. Source: web / external.
  */
 export type ModelStrength = "review" | "build" | "plan" | "explore" | "research"
 
@@ -34,7 +34,7 @@ export interface ModelCapabilities {
 	vision: boolean
 	strengths: ModelStrength[]
 	tier: ModelTier
-	description: string
+	description?: string
 	/** Phase-specific guideline annexes. If a phase key is present, its value
 	 *  REPLACES the default guideline for that phase. If absent, the default
 	 *  guideline is used. */

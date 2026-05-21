@@ -4,6 +4,12 @@
 
 import type { AgentConfig, EnvInfo } from "../personas/types.js"
 
+/** Budget limits communicated to the agent so it can plan its work. */
+export interface BudgetInfo {
+	maxTurns?: number
+	tokenBudget?: number
+}
+
 /** Extra sections to inject into the system prompt (memory, skills, etc.). */
 export interface PromptExtras {
 	/** Persistent memory content to inject (first 200 lines of MEMORY.md + instructions). */
@@ -12,6 +18,8 @@ export interface PromptExtras {
 	skillBlocks?: { name: string; content: string }[]
 	/** Model-specific phase guidelines resolved from the model registry. */
 	guidelinesBlock?: string
+	/** Turn and token budget limits for agent self-regulation. */
+	budget?: BudgetInfo
 }
 
 /**
@@ -35,6 +43,8 @@ Platform: ${env.platform}`
 
 	// Build optional extras suffix
 	const extraSections: string[] = []
+	const budgetBlock = buildBudgetBlock(extras?.budget)
+	if (budgetBlock) extraSections.push(budgetBlock)
 	if (extras?.guidelinesBlock) {
 		extraSections.push(extras.guidelinesBlock)
 	}
@@ -78,6 +88,25 @@ You have been invoked to handle a specific task autonomously.
 ${envBlock}`
 
 	return `${replaceHeader}\n\n${config.systemPrompt}${extrasSuffix}`
+}
+
+export function formatTokenBudget(tokens: number): string {
+	if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
+	if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`
+	return String(tokens)
+}
+
+function buildBudgetBlock(budget?: BudgetInfo): string | undefined {
+	if (!budget) return undefined
+	const lines: string[] = []
+	if (budget.maxTurns != null) lines.push(`- Turn limit: ${budget.maxTurns} turns`)
+	if (budget.tokenBudget != null) lines.push(`- Output token budget: ~${formatTokenBudget(budget.tokenBudget)}`)
+	if (lines.length === 0) return undefined
+	return `<budget>
+You are operating under the following resource budget. Plan your work accordingly — prioritize the most important changes first and avoid unnecessary exploration.
+${lines.join("\n")}
+If you cannot complete the task within your budget, finish whatever is in progress cleanly and summarize remaining work for the orchestrator.
+</budget>`
 }
 
 /** Fallback base prompt when parent system prompt is unavailable in append mode. */

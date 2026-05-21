@@ -62,6 +62,14 @@ jobs:
       - name: Set version from tag
         run: node scripts/set-version.js "$GITHUB_REF_NAME"
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+
+      - name: Build proxy-helper
+        run: make build
+        working-directory: tools/proxy-helper
+
       - name: Build binary
         run: pnpm run build:binary
 
@@ -71,6 +79,13 @@ jobs:
           case "${{ matrix.arch }}" in
             amd64) file dist/bin/kimchi | grep -Eq 'x86[_-]64|x86-64' ;;
             arm64) file dist/bin/kimchi | grep -Eq 'arm64|aarch64' ;;
+            *) echo "Unsupported arch: ${{ matrix.arch }}" >&2; exit 1 ;;
+          esac
+
+          file dist/share/kimchi/bin/proxy-helper
+          case "${{ matrix.arch }}" in
+            amd64) file dist/share/kimchi/bin/proxy-helper | grep -Eq 'x86[_-]64|x86-64' ;;
+            arm64) file dist/share/kimchi/bin/proxy-helper | grep -Eq 'arm64|aarch64' ;;
             *) echo "Unsupported arch: ${{ matrix.arch }}" >&2; exit 1 ;;
           esac
 

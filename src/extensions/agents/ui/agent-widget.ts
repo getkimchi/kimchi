@@ -6,7 +6,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui"
 import type { AgentManager } from "../manager/agent-manager.js"
 import { type LifetimeUsage, type SessionLike, getLifetimeTotal, getSessionContextPercent } from "../manager/usage.js"
 import { getConfig } from "../personas/agent-types.js"
-import type { SubagentType } from "../personas/types.js"
+import type { AgentAbortReason, SubagentType } from "../personas/types.js"
 
 const MAX_WIDGET_LINES = 12
 
@@ -54,8 +54,10 @@ export interface AgentDetails {
 	subagentType: string
 	toolUses: number
 	tokens: string
+	tokenUsage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
 	durationMs: number
 	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error" | "background"
+	visibility?: "user" | "system"
 	activity?: string
 	spinnerFrame?: number
 	modelName?: string
@@ -63,7 +65,9 @@ export interface AgentDetails {
 	turnCount?: number
 	maxTurns?: number
 	agentId?: string
+	sessionFile?: string
 	error?: string
+	abortReason?: AgentAbortReason
 }
 
 export function formatTokens(count: number): string {
@@ -204,6 +208,7 @@ export class AgentWidget {
 			startedAt: number
 			completedAt?: number
 			error?: string
+			abortReason?: AgentAbortReason
 		},
 		theme: Theme,
 	): string {
@@ -228,7 +233,9 @@ export class AgentWidget {
 			statusText = theme.fg("error", ` error${errMsg}`)
 		} else {
 			icon = theme.fg("error", "✗")
-			statusText = theme.fg("warning", " aborted")
+			const reason =
+				a.abortReason === "token_budget" ? " (token budget)" : a.abortReason === "max_turns" ? " (max turns)" : ""
+			statusText = theme.fg("warning", ` aborted${reason}`)
 		}
 
 		const parts: string[] = []
@@ -242,7 +249,7 @@ export class AgentWidget {
 	}
 
 	private renderWidget(theme: Theme, width: number): string[] {
-		const allAgents = this.manager.listAgents()
+		const allAgents = this.manager.listAgents().filter((a) => a.visibility !== "system")
 		const running = allAgents.filter((a) => a.status === "running")
 		const queued = allAgents.filter((a) => a.status === "queued")
 		const finished = allAgents.filter(
@@ -364,7 +371,7 @@ export class AgentWidget {
 
 	update() {
 		if (!this.uiCtx) return
-		const allAgents = this.manager.listAgents()
+		const allAgents = this.manager.listAgents().filter((a) => a.visibility !== "system")
 
 		let runningCount = 0
 		let queuedCount = 0

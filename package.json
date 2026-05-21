@@ -14,7 +14,7 @@
 		"install:local": "node scripts/install-local.js",
 		"build:binary-linux-arm64": "node scripts/build-binary.js --target linux-arm64",
 		"build:binary-linux-x64": "node scripts/build-binary.js --target linux-x64",
-		"dev": "bun run --preload ./src/set-package-dir.ts src/entry.ts",
+		"dev": "make -C tools/proxy-helper/ copy-for-dev && bun run --preload ./src/set-package-dir.ts src/entry.ts",
 		"dev:setup": "bun run --preload ./src/set-package-dir.ts src/entry.ts setup",
 		"lint": "biome check src/ scripts/",
 		"lint:fix": "biome check --write src/ scripts/",
@@ -36,11 +36,15 @@
 		"@earendil-works/pi-tui": "^0.75.1",
 		"@modelcontextprotocol/ext-apps": "^1.7.1",
 		"@modelcontextprotocol/sdk": "^1.29.0",
+		"@shikijs/cli": "^4.0.2",
+		"@types/diff": "^8.0.0",
 		"@types/proper-lockfile": "^4.1.4",
+		"diff": "^9.0.0",
 		"micromatch": "^4.0.8",
 		"open": "^10.2.0",
 		"proper-lockfile": "^4.1.2",
 		"shell-quote": "^1.8.3",
+		"shiki": "^4.0.2",
 		"tar": "^7.5.15",
 		"undici": "^8.2.0",
 		"uuid": "^14.0.0",
@@ -70,13 +74,15 @@
 		"@types/shell-quote": "^1.7.5",
 		"@types/tar": "^7.0.87",
 		"@types/turndown": "^5.0.6",
+		"@types/ws": "^8.18.1",
 		"husky": "^9.1.7",
 		"node-pty": "^1.1.0",
 		"playwright": "^1.59.1",
 		"tsx": "^4.21.0",
 		"turndown": "^7.2.4",
 		"typescript": "^5.9.3",
-		"vitest": "^3.2.4"
+		"vitest": "^3.2.4",
+		"ws": "^8.20.1"
 	},
 	"engines": {
 		"node": ">=22.0.0"
@@ -85,7 +91,8 @@
 	"pnpm": {
 		"onlyBuiltDependencies": ["@biomejs/biome", "esbuild", "koffi", "node-pty", "protobufjs"],
 		"patchedDependencies": {
-			"@earendil-works/pi-coding-agent": "patches/@earendil-works__pi-coding-agent.patch"
+			"@earendil-works/pi-coding-agent": "patches/@earendil-works__pi-coding-agent.patch",
+			"@earendil-works/pi-tui": "patches/@earendil-works__pi-tui.patch"
 		}
 	}
 }

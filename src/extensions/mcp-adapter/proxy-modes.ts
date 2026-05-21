@@ -84,7 +84,7 @@ function applyOffload(
 Format: ${format}
 - To search: use bash with grep on the file directly
 - To read in chunks: bash -c "python3 -c \\"print(open('${path}').read()[A:B])\\""
-- For analysis requiring full content: use a subagent with the file path`
+- For analysis requiring full content: launch an Agent with the file path`
 
 	return [...nonText, { type: "text" as const, text: message }]
 }

@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
-import { injectResumeAutoNudge } from "./nudge.js"
 import type { FermentRuntime } from "./runtime.js"
 import { type ApplyOutcome, createApplyAndPersist } from "./tool-helpers.js"
 
@@ -63,12 +62,8 @@ export function confirmPendingScope(
 	if (!outcome.ok) return { ok: false, error: outcome.error }
 	runtime.clearPendingScope(fermentId)
 
-	// In plan mode, inject the resume nudge exactly once here — at the moment of
-	// successful scope confirmation — so the planner is kicked forward without a
-	// TUI dropdown.
-	if (pi && outcome.ferment.mode === "plan") {
+	if (pi) {
 		runtime.setActive(outcome.ferment)
-		injectResumeAutoNudge(pi, runtime)
 	}
 
 	return { ok: true, outcome }

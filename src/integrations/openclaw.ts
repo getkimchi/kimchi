@@ -37,7 +37,7 @@ export function buildOpenClawProviderBlock(
 		api: "openai-completions",
 		models: models.map((m) => ({
 			id: `${PROVIDER_NAME}/${m.slug}`,
-			name: m.display_name,
+			name: (m.display_name ?? "").trim().length > 0 ? m.display_name : m.slug,
 			reasoning: m.reasoning,
 			input: m.input_modalities,
 			contextWindow: m.limits.context_window,
@@ -52,7 +52,8 @@ export function buildOpenClawModelsCatalog(
 ): Record<string, unknown> {
 	const out: Record<string, unknown> = {}
 	for (const m of models) {
-		out[`${PROVIDER_NAME}/${m.slug}`] = { alias: m.display_name }
+		const alias = (m.display_name ?? "").trim().length > 0 ? m.display_name : m.slug
+		out[`${PROVIDER_NAME}/${m.slug}`] = { alias }
 	}
 	return out
 }
@@ -134,7 +135,7 @@ async function writeOpenClawViaCLI(
 	runOpenClawCmd(["config", "set", "agents.defaults.model.primary", primary])
 	// Merge fields that may conflict with existing user config.
 	runOpenClawMerge("agents.defaults.model.fallbacks", (existing) => mergeFallbacks(existing, fallbacks))
-	runOpenClawCmd(["config", "set", "--merge", "agents.defaults.models", JSON.stringify(modelsCatalog)])
+	runOpenClawMerge("agents.defaults.models", (existing) => mergeModelsCatalog(existing, modelsCatalog))
 
 	writeOpenClawEnv(apiKey)
 
@@ -255,11 +256,11 @@ export function mergeModelsCatalog(existing: unknown, catalog: Record<string, un
 	return { ...asObject(existing), ...catalog }
 }
 
-/** Read existing value, merge it, and write back with `--replace`. */
+/** Read existing value, merge it, and write back. */
 function runOpenClawMerge(path: string, merger: (existing: unknown) => unknown): void {
 	const existing = openClawConfigGet(path)
 	const merged = merger(existing)
-	runOpenClawCmd(["config", "set", "--replace", path, JSON.stringify(merged)])
+	runOpenClawCmd(["config", "set", path, JSON.stringify(merged)])
 }
 
 register({

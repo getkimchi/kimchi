@@ -94,7 +94,7 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev"].models[0].input).toEqual(["text"])
 	})
 
-	it("disables supportsReasoningEffort for anthropic models", async () => {
+	it("sets Anthropic compat flags for anthropic models", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [OPUS_47] }),
@@ -103,7 +103,10 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		expect(config.providers["kimchi-dev"].models[0].compat).toEqual({ supportsReasoningEffort: false })
+		expect(config.providers["kimchi-dev"].models[0].compat).toEqual({
+			supportsReasoningEffort: false,
+			cacheControlFormat: "anthropic",
+		})
 	})
 
 	it("omits compat for non-anthropic models", async () => {

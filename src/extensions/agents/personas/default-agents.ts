@@ -43,6 +43,8 @@ export const DEFAULT_AGENTS: Map<string, AgentConfig> = new Map([
 			models: pick(["explore"]),
 			strengths: ["explore"],
 			preferTier: "light",
+			thinking: "low",
+			tokenBudget: 120_000,
 			systemPrompt: `# CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS
 You are a file search specialist. You excel at thoroughly navigating and exploring files/directories.
 Your role is EXCLUSIVELY to search and analyze existing code. You do NOT have access to file editing tools.
@@ -59,6 +61,7 @@ You are STRICTLY PROHIBITED from:
 Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find, cat, head, tail.
 
 # Tool Usage
+- For repository inspection tasks, always use at least one read-only tool before answering
 - Use the find tool for file pattern matching (NOT the bash find command)
 - Use the grep tool for content search (NOT bash grep/rg command)
 - Use the read tool for reading files (NOT bash cat/head/tail)
@@ -87,6 +90,8 @@ Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find,
 			models: pick(["plan"]),
 			strengths: ["plan"],
 			preferTier: "heavy",
+			thinking: "high",
+			tokenBudget: 120_000,
 			systemPrompt: `# Plan Agent — Write Access Scoped to .kimchi/plans/
 You are a software architect and planning specialist.
 Your role is to explore the codebase and design implementation plans, capturing them as plan files.
@@ -148,6 +153,8 @@ List 3-5 files most critical for implementing this plan:
 			models: pick(["research"]),
 			strengths: ["research"],
 			preferTier: "heavy",
+			thinking: "medium",
+			tokenBudget: 80_000,
 			systemPrompt: `You are a research specialist. Your job is to find accurate, well-sourced answers from the web, documentation, and the local codebase.
 
 Focus areas:

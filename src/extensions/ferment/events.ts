@@ -1,13 +1,18 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { shortenTitle } from "../../ferment/shorten-title.js"
 import { clearFermentCache } from "../../ferment/store.js"
+import { isAgentWorker } from "../agent-worker-context.js"
+import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
+import { decideContinuation } from "./continuation.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
-import { appendRefEntry, maybeInjectReactiveAutoNudge, resetReactiveAutoNudgeCount } from "./nudge.js"
+import { appendRefEntry, maybeInjectReactiveContinuationNudge, resetReactiveContinuationNudgeCount } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
+import { editPhaseProposal } from "./phase-editor.js"
 import { promptInput, promptSelect } from "./prompt-ui.js"
-import { resumeFerment } from "./resume.js"
+import { loadFermentSilently, resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { scheduleFermentWakeUp } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import { isRestoringModel, setRestoringModel } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
@@ -47,47 +52,137 @@ function extractPromptTextAfterLastToolCall(content: AssistantContentPart[]): st
 		.trimEnd()
 }
 
-async function maybeRunPlanModeDropdown(
+interface UserInputPrompt {
+	text: string
+	title: string
+	options: string[]
+	isDraft: boolean
+	contextualOptions: string[] | undefined
+	yesLabel: string
+	noLabel: string
+}
+
+function findUserInputPrompt(
+	content: AssistantContentPart[],
+	f: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
+): UserInputPrompt | undefined {
+	if (f.status !== "draft" && f.status !== "planned" && f.status !== "running") return undefined
+	if (hasToolCall(content, "propose_ferment_scoping")) return undefined
+	const text = extractPromptTextAfterLastToolCall(content)
+	if (!text) return undefined
+
+	const title = extractTrailingQuestion(text)
+	const contextualOptions = extractContextualOptions(text)
+	if (!text.endsWith("?") && !contextualOptions) return undefined
+
+	const isDraft = f.status === "draft"
+	const yesLabel = isDraft ? "Yes, this looks right" : "Yes, proceed"
+	const noLabel = isDraft ? "No, revise" : "No, pause"
+	const options = contextualOptions
+		? [...contextualOptions, "Let me say something else"]
+		: [yesLabel, noLabel, "Let me say something else"]
+
+	return { text, title, options, isDraft, contextualOptions, yesLabel, noLabel }
+}
+
+async function maybeRunManualBoundaryDropdown(
+	pi: ExtensionAPI,
+	ctx: TurnEndContext | undefined,
+	prompt: UserInputPrompt,
+	f: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
+	runtime: FermentRuntime,
+): Promise<boolean> {
+	const decision = decideContinuation(f, runtime.getContinuationPolicy())
+	if (decision.type !== "wait_manual_boundary") return false
+	if (!ctx?.ui?.select) return true
+
+	const nextPhase = f.phases.find((phase) => phase.id === decision.action.phaseId)
+	const nextPhaseName = nextPhase?.name ?? decision.action.phaseId
+	const choice = await promptSelect(ctx, prompt.title || `Continue to "${nextPhaseName}"?`, [
+		"Continue to next phase",
+		"Pause here",
+	])
+	if (!choice) return true
+
+	if (choice === "Continue to next phase") {
+		scheduleFermentWakeUp(pi, runtime, {
+			allowManualPhaseBoundary: true,
+			deliverAsFollowUp: true,
+			fermentId: f.id,
+			tag: "Manual boundary wake-up",
+		})
+		return true
+	}
+
+	if (choice === "Pause here") {
+		const outcome = createApplyAndPersist(runtime)(f.id, { type: "pause" })
+		if (!outcome.ok) {
+			ctx.ui.notify?.(`Failed to pause: ${outcome.error.message}`)
+			return true
+		}
+		setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
+		ctx.ui.notify?.(`Paused "${outcome.ferment.name}". Type /ferment resume to resume.`)
+		return true
+	}
+	return true
+}
+
+async function maybeRunUserInputDropdown(
 	pi: ExtensionAPI,
 	ctx: TurnEndContext | undefined,
 	content: AssistantContentPart[],
 	f: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
 	runtime: FermentRuntime,
-): Promise<void> {
-	if (!ctx?.ui?.select) return
+): Promise<boolean> {
+	const prompt = findUserInputPrompt(content, f)
+	if (!prompt) return false
+	const boundaryHandled = await maybeRunManualBoundaryDropdown(pi, ctx, prompt, f, runtime)
+	if (boundaryHandled) return true
+	if (!ctx?.ui?.select || !ctx.ui.input) return true
 
-	if (f.status !== "draft" && f.status !== "running") return
-	if (!ctx.ui.input) return
-
-	if (hasToolCall(content, "propose_ferment_scoping")) return
-	const text = extractPromptTextAfterLastToolCall(content)
-	if (!text) return
-
-	const isDraft = f.status === "draft"
-	const yesLabel = isDraft ? "Yes, this looks right" : "Yes, proceed"
-	const noLabel = isDraft ? "No, revise" : "No, pause"
-
-	const title = extractTrailingQuestion(text)
-	const contextualOptions = extractContextualOptions(text)
-	if (!text.endsWith("?") && !contextualOptions) return
-	const options = contextualOptions
-		? [...contextualOptions, "Let me say something else"]
-		: [yesLabel, noLabel, "Let me say something else"]
-	const choice = await promptSelect(ctx, title, options)
-	if (!choice) return
+	const choice = await promptSelect(ctx, prompt.title, prompt.options)
+	if (!choice) return true
 
 	let reply: string
 
 	if (choice === "Let me say something else") {
 		const custom = await promptInput(ctx, "Your message:", "")
-		if (!custom) return
+		if (!custom) return true
 		reply = custom
-	} else if (choice === noLabel) {
-		reply = isDraft ? "No — please revise." : "No, pause for now."
-	} else if (contextualOptions?.includes(choice)) {
+	} else if (choice === prompt.noLabel) {
+		reply = prompt.isDraft ? "No — please revise." : "No, pause for now."
+	} else if (prompt.contextualOptions?.includes(choice)) {
 		reply = choice
-	} else if (isDraft && choice === yesLabel) {
-		const outcome = confirmPendingScope(runtime, f.id, undefined, "turn_end", f.name, pi)
+	} else if (prompt.isDraft && choice === prompt.yesLabel) {
+		// Open the phase editor so the user can rename/reorder/delete/add
+		// before we persist. The pending phases are the LLM's proposal.
+		const pending = runtime.getPendingScope(f.id)
+		const startingPhases = pending?.phases
+		let edited = startingPhases
+		if (startingPhases && startingPhases.length > 0 && ctx) {
+			let result: typeof startingPhases | undefined
+			try {
+				result = await editPhaseProposal(ctx, startingPhases, runtime)
+			} catch (err) {
+				runtime.markHumanInput()
+				const msg = err instanceof Error ? err.message : String(err)
+				ctx.ui?.notify?.(`Phase editor failed: ${msg} — plan not saved.`)
+				void pi.sendUserMessage(
+					"Phase editor errored before the user could confirm. Ask the user to retry confirmation explicitly.",
+					{ deliverAs: "followUp" },
+				)
+				return true
+			}
+			if (!result) {
+				runtime.markHumanInput()
+				void pi.sendUserMessage("User chose to keep editing the phases — revise the plan in your next response.", {
+					deliverAs: "followUp",
+				})
+				return true
+			}
+			edited = result
+		}
+		const outcome = confirmPendingScope(runtime, f.id, edited, "turn_end", f.name, pi)
 		if (outcome.ok) {
 			ctx.ui.notify?.(
 				`Plan saved for "${outcome.outcome.ferment.name}". ${outcome.outcome.ferment.phases.length} phase(s) ready.`,
@@ -106,6 +201,7 @@ async function maybeRunPlanModeDropdown(
 
 	runtime.markHumanInput()
 	void pi.sendUserMessage(reply, { deliverAs: "followUp" })
+	return true
 }
 
 export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
@@ -113,7 +209,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	let pendingOneshot = false
 	pi.registerFlag("ferment-oneshot", {
 		type: "boolean",
-		description: "Bootstrap the initial prompt as a one-shot exec-mode ferment.",
+		description: "Bootstrap the initial prompt as an automated one-shot ferment.",
 	})
 	pi.registerFlag("init-git", {
 		type: "boolean",
@@ -143,10 +239,11 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		if (process.env.KIMCHI_SUBAGENT === "1") {
+		if (isAgentWorker()) {
 			applyFermentToolProfile(pi, "worker")
 			return
 		}
+		runtime.setContinuationPolicy(ctx?.hasUI ? "manual" : "automated")
 		runtime.clearAllStepStarts()
 		runtime.clearAllScopingGates()
 		runtime.clearAllPendingScopes()
@@ -164,8 +261,35 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 
 		if (envId) {
 			pendingOneshot = false
-			resumeFerment(pi, envId, ctx, runtime)
 			Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
+
+			if (ctx?.hasUI && ctx.ui?.select) {
+				// F27: ask user before auto-resuming so the planner doesn't
+				// hijack the session before they're ready.
+				const storage = runtime.getStorage()
+				const ferment = storage.get(envId)
+				if (!ferment) {
+					setActiveFermentAndApplyProfile(pi, runtime, undefined)
+					return
+				}
+				const activePhase = ferment.phases.find((p) => p.id === ferment.activePhaseId)
+				const activeStep = activePhase?.steps.find((s) => s.status === "running" || s.status === "pending")
+				const phaseInfo = activePhase ? ` — Phase ${activePhase.index}/${ferment.phases.length}` : ""
+				const stepInfo = activeStep ? ` · step ${activeStep.index}/${activePhase?.steps.length ?? 0}` : ""
+				const parsed = ferment.updatedAt ? Date.parse(ferment.updatedAt) : Number.NaN
+				const updatedMs = Number.isFinite(parsed) ? parsed : runtime.now().getTime()
+				const ago = formatDuration(runtime.now().getTime() - updatedMs)
+				const banner = `🍺  Active ferment "${ferment.name}"${phaseInfo}${stepInfo} · ${ago}. Resume?`
+				const choice = await ctx.ui.select(banner, ["Resume", "Leave paused"])
+				runtime.markHumanInput()
+				if (choice === "Resume") {
+					resumeFerment(pi, envId, ctx, runtime)
+				} else {
+					loadFermentSilently(pi, envId, runtime)
+				}
+			} else {
+				resumeFerment(pi, envId, ctx, runtime)
+			}
 		} else if (pi.getFlag("ferment-oneshot") === true) {
 			pendingOneshot = true
 			setActiveFermentState(runtime, undefined)
@@ -177,7 +301,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	})
 
 	pi.on("session_shutdown", async () => {
-		if (process.env.KIMCHI_SUBAGENT === "1") return
+		if (isAgentWorker()) return
 		const f = runtime.getActive()
 		if (!f) return
 		if (f.status === "running" || f.status === "planned") {
@@ -204,6 +328,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		try {
 			// Bootstrap path: no UI available yet, so only auto-init when the user
 			// opted in via --init-git or KIMCHI_AUTO_GIT_INIT=1.
+			runtime.setContinuationPolicy("automated")
 			await ensureGitRepo({
 				autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
 			})
@@ -215,18 +340,31 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 				shortName = intent.length > 60 ? `${intent.slice(0, 57).trimEnd()}...` : intent
 			}
 			const f = storage.create(shortName, intent)
-			const modeOut = applyAndPersist(f.id, { type: "set_mode", mode: "exec" })
-			const updated = modeOut.ok ? modeOut.ferment : f
+			const updated = f
 			setActiveFermentState(runtime, updated)
 			appendRefEntry(pi, updated.id)
-			pi.appendEntry("ferment_ack", {
-				text: `🍺  One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nMode: exec (fully autonomous)`,
-			})
+			const ackText = `One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nPolicy: automated`
+			void pi.sendMessage(
+				{
+					customType: "ferment_ack",
+					content: [{ type: "text", text: ackText }],
+					display: true,
+					details: { text: ackText, variant: "ack" },
+				},
+				{ triggerTurn: false },
+			)
 			return { action: "transform" as const, text: buildOneshotNudge(updated, intent), images: event.images }
 		} catch (err) {
-			pi.appendEntry("ferment_oneshot_failed", {
-				text: `One-shot ferment bootstrap failed: ${err instanceof Error ? err.message : String(err)}`,
-			})
+			const failText = `One-shot ferment bootstrap failed: ${err instanceof Error ? err.message : String(err)}`
+			void pi.sendMessage(
+				{
+					customType: "ferment_oneshot_failed",
+					content: [{ type: "text", text: failText }],
+					display: true,
+					details: { text: failText, variant: "warning" },
+				},
+				{ triggerTurn: false },
+			)
 			return
 		}
 	})
@@ -235,7 +373,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		// pi-mono snapshots the active tool list when an agent run starts. Apply
 		// only run-static profiles here; lifecycle tools remain visible for the
 		// whole active planner run and invalid transitions are rejected by tools.
-		if (process.env.KIMCHI_SUBAGENT === "1") {
+		if (isAgentWorker()) {
 			applyFermentToolProfile(pi, "worker")
 			return {}
 		}
@@ -268,20 +406,18 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	})
 
 	pi.on("turn_end", async (event, ctx) => {
-		if (process.env.KIMCHI_SUBAGENT === "1") return
+		if (isAgentWorker()) return
 		runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry)
 		if (event.message.role !== "assistant") return
 		const content = getAssistantContentParts(event.message.content)
 		const activeId = runtime.getActiveId()
 		const toolCallSeen = hasAnyToolCall(content)
-		if (toolCallSeen && activeId) resetReactiveAutoNudgeCount(activeId)
+		if (toolCallSeen && activeId) resetReactiveContinuationNudgeCount(activeId)
 
 		const f = runtime.getActive()
 		if (!f) return
-		if (f.mode === "exec") {
-			if (!toolCallSeen) maybeInjectReactiveAutoNudge(pi, runtime)
-			return
-		}
-		await maybeRunPlanModeDropdown(pi, ctx, content, f, runtime)
+		const userInputHandled = await maybeRunUserInputDropdown(pi, ctx, content, f, runtime)
+		if (userInputHandled) return
+		if (!toolCallSeen) maybeInjectReactiveContinuationNudge(pi, runtime)
 	})
 }

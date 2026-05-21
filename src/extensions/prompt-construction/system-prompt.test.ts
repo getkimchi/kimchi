@@ -10,7 +10,6 @@ const testEnv: EnvironmentInfo = {
 	homeDir: "/home/testuser",
 	cwd: "/home/testuser/projects/myapp",
 	documentsDir: "/home/testuser/projects/myapp/.kimchi/docs",
-	currentTime: "2026-01-01T00:00:00.000Z",
 	localDate: "2026-01-01",
 	isGitRepo: false,
 }
@@ -47,7 +46,9 @@ describe("buildSystemPrompt", () => {
 	const tools = [
 		{ name: "read", description: "Read file contents" },
 		{ name: "bash", description: "Execute bash commands" },
-		{ name: "subagent", description: "Spawn an isolated subagent process" },
+		{ name: "Agent", description: "Launch a specialized agent" },
+		{ name: "get_subagent_result", description: "Get background agent result" },
+		{ name: "steer_subagent", description: "Steer a running background agent" },
 	]
 
 	describe("orchestrator mode", () => {
@@ -57,17 +58,12 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("You are an expert coding assistant")
+			expect(result).toContain("You are Kimchi, an AI coding agent")
 			expect(result).toContain("# Environment")
 			expect(result).toContain("## Available Tools")
 			expect(result).toContain("## Documents")
 			expect(result).toContain("## Guidelines")
 			expect(result).toContain("Orchestrate the work")
-			expect(result).toContain("Sharing context between agents")
-			expect(result).toContain("Subagent delegation rules")
-			expect(result).toContain("Model selection for delegation")
-			expect(result).toContain("Token budgets")
-			expect(result).toContain("Inactivity timeout")
 		})
 
 		it("includes all tool names and descriptions", () => {
@@ -77,7 +73,7 @@ describe("buildSystemPrompt", () => {
 				mode: "orchestrator",
 			})
 			expect(result).toContain('<tool name="read">')
-			expect(result).toContain('<tool name="subagent">')
+			expect(result).toContain('<tool name="Agent">')
 		})
 
 		it("does not include phase tagging instructions without the tags extension", () => {
@@ -150,7 +146,8 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain(`Username: ${testEnv.username}`)
 			expect(result).toContain(`Home directory: "${testEnv.homeDir}"`)
 			expect(result).toContain(`Working directory: "${testEnv.cwd}"`)
-			expect(result).toContain(`Current time: ${testEnv.currentTime} (local date: ${testEnv.localDate})`)
+			expect(result).toContain(`Current date: ${testEnv.localDate}`)
+			expect(result).not.toContain("Current time:")
 			expect(result).toContain("Git repository: no")
 		})
 
@@ -211,20 +208,20 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
+				currentModelId: "kimi-k2.6",
 				registry,
 				mode: "orchestrator",
 			})
 			expect(result).toContain("### Orchestration Guidelines")
-			expect(result).toContain("MiniMax M2 family")
+			expect(result).toContain("Kimi family")
 		})
 
 		it("places orchestration section before phase section", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
-				currentPhase: "build",
+				currentModelId: "kimi-k2.6",
+				currentPhase: "plan",
 				registry,
 				mode: "orchestrator",
 			})
@@ -237,13 +234,15 @@ describe("buildSystemPrompt", () => {
 	})
 
 	describe("subagent mode", () => {
-		it("excludes the subagent tool", () => {
+		it("excludes delegation tools", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
 				mode: "subagent",
 			})
-			expect(result).not.toContain("subagent")
+			expect(result).not.toContain('<tool name="Agent">')
+			expect(result).not.toContain('<tool name="get_subagent_result">')
+			expect(result).not.toContain('<tool name="steer_subagent">')
 		})
 
 		it("includes all other tools", () => {
@@ -274,13 +273,15 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "subagent",
 			})
-			expect(result).not.toContain("Subagent delegation rules")
-			expect(result).not.toContain("Model selection for delegation")
+			expect(result).not.toContain("Orchestrate the work")
 		})
 
-		it("handles tools list with only the subagent tool", () => {
+		it("handles tools list with only delegation tools", () => {
 			const result = buildSystemPrompt({
-				tools: [{ name: "subagent", description: "Spawn" }],
+				tools: [
+					{ name: "Agent", description: "Launch" },
+					{ name: "get_subagent_result", description: "Get result" },
+				],
 				env: testEnv,
 				mode: "subagent",
 			})
@@ -321,7 +322,8 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain(`Username: ${testEnv.username}`)
 			expect(result).toContain(`Home directory: "${testEnv.homeDir}"`)
 			expect(result).toContain(`Working directory: "${testEnv.cwd}"`)
-			expect(result).toContain(`Current time: ${testEnv.currentTime} (local date: ${testEnv.localDate})`)
+			expect(result).toContain(`Current date: ${testEnv.localDate}`)
+			expect(result).not.toContain("Current time:")
 			expect(result).toContain("Git repository: no")
 		})
 
@@ -350,11 +352,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "single",
 			})
-			expect(result).not.toContain("Subagent delegation rules")
-			expect(result).not.toContain("Model selection for delegation")
-			expect(result).not.toContain("Token budgets")
 			expect(result).not.toContain("Orchestrate the work")
-			expect(result).not.toContain("Sharing context between agents")
 			expect(result).not.toContain("Subagent response protocol")
 		})
 
@@ -364,7 +362,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "single",
 			})
-			expect(result).toContain("You are an expert coding assistant")
+			expect(result).toContain("You are Kimchi, an AI coding agent")
 			expect(result).toContain("# Environment")
 			expect(result).toContain("## Available Tools")
 			expect(result).toContain("## Documents")
@@ -379,7 +377,7 @@ describe("buildSystemPrompt", () => {
 			})
 			expect(result).toContain('<tool name="read">')
 			expect(result).toContain('<tool name="bash">')
-			expect(result).toContain('<tool name="subagent">')
+			expect(result).toContain('<tool name="Agent">')
 		})
 
 		it("includes phase guidelines when phase is provided", () => {

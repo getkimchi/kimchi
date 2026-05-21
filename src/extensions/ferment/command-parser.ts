@@ -1,14 +1,19 @@
 export type FermentCommand =
 	| { type: "interactive" }
 	| { type: "list" }
-	| { type: "mode"; mode?: string }
+	| { type: "manual-policy" }
+	| { type: "auto-policy" }
+	| { type: "progress" }
+	| { type: "pause-lifecycle" }
+	| { type: "resume-lifecycle" }
 	| { type: "delete"; target: string }
-	| { type: "switch"; verb: "switch" | "use" | "resume"; target: string; force: boolean }
+	| { type: "switch"; verb: "switch"; target: string; force: boolean }
 	| { type: "abandon"; reason?: string }
 	| { type: "revise"; field: string }
 	| { type: "export" }
 	| { type: "one-shot"; intent: string }
-	| { type: "add"; title: string }
+	| { type: "new"; title: string }
+	| { type: "unknown"; input: string }
 
 export function stripOuterQuotes(value: string): string {
 	const trimmed = value.trim()
@@ -22,7 +27,8 @@ export function stripOuterQuotes(value: string): string {
 	return trimmed
 }
 
-function parseSwitch(raw: string, verb: "switch" | "use" | "resume"): FermentCommand {
+function parseSwitch(raw: string): FermentCommand {
+	const verb = "switch"
 	const rest = raw.slice(verb.length).trim()
 	const force = /(?:^|\s)--force(?:\s|$)/.test(rest)
 	const target = stripOuterQuotes(rest.replace(/(?:^|\s)--force(?:\s|$)/g, " ").trim())
@@ -35,18 +41,20 @@ export function parseFermentCommand(args: string): FermentCommand {
 
 	if (raw === "") return { type: "interactive" }
 	if (lo === "list") return { type: "list" }
-	if (lo === "mode") return { type: "mode" }
-	if (lo.startsWith("mode ")) return { type: "mode", mode: lo.slice("mode ".length).trim() }
+	if (lo === "manual") return { type: "manual-policy" }
+	if (lo === "auto") return { type: "auto-policy" }
+	if (lo === "progress") return { type: "progress" }
+	if (lo === "pause") return { type: "pause-lifecycle" }
+	if (lo === "resume") return { type: "resume-lifecycle" }
 	if (lo.startsWith("delete ")) return { type: "delete", target: stripOuterQuotes(raw.slice("delete ".length)) }
-	if (lo.startsWith("switch ")) return parseSwitch(raw, "switch")
-	if (lo.startsWith("use ")) return parseSwitch(raw, "use")
-	if (lo.startsWith("resume ")) return parseSwitch(raw, "resume")
+	if (lo.startsWith("switch ")) return parseSwitch(raw)
 	if (lo === "abandon") return { type: "abandon" }
 	if (lo.startsWith("abandon ")) return { type: "abandon", reason: stripOuterQuotes(raw.slice("abandon".length)) }
 	if (lo.startsWith("revise ")) return { type: "revise", field: lo.slice("revise ".length).trim() }
 	if (lo === "export" || lo.startsWith("export ")) return { type: "export" }
-	if (lo.startsWith("one-shot")) return { type: "one-shot", intent: stripOuterQuotes(raw.slice("one-shot".length)) }
-	if (lo === "add") return { type: "add", title: "" }
-	if (lo.startsWith("add ")) return { type: "add", title: stripOuterQuotes(raw.slice("add ".length)) }
-	return { type: "add", title: stripOuterQuotes(raw) }
+	if (lo === "one-shot" || lo.startsWith("one-shot "))
+		return { type: "one-shot", intent: stripOuterQuotes(raw.slice("one-shot".length)) }
+	if (lo === "new") return { type: "new", title: "" }
+	if (lo.startsWith("new ")) return { type: "new", title: stripOuterQuotes(raw.slice("new ".length)) }
+	return { type: "unknown", input: raw }
 }

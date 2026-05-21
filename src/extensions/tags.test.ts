@@ -12,7 +12,6 @@ const testEnv: EnvironmentInfo = {
 	homeDir: "/home/testuser",
 	cwd: "/home/testuser/project",
 	documentsDir: "/home/testuser/project/.kimchi/docs",
-	currentTime: "2026-01-01T00:00:00.000Z",
 	localDate: "2026-01-01",
 	isGitRepo: false,
 }

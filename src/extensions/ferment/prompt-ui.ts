@@ -14,6 +14,7 @@ import {
 	isSubmitTab,
 	reduce,
 } from "../questionnaire-reducer.js"
+import { setTipWidgetLocation } from "../tips/index.js"
 
 export type PromptUi = {
 	select?: (title: string, options: string[]) => Promise<string | undefined>
@@ -66,11 +67,16 @@ export function getPromptUi(ctx: unknown): PromptUi | undefined {
 }
 
 export async function withWorkingHidden<T>(ui: PromptUi, fn: () => Promise<T>): Promise<T> {
-	ui.setWorkingVisible?.(false)
+	const restoreTips = setTipWidgetLocation("hidden")
 	try {
+		ui.setWorkingVisible?.(false)
 		return await fn()
 	} finally {
-		ui.setWorkingVisible?.(true)
+		try {
+			ui.setWorkingVisible?.(true)
+		} finally {
+			restoreTips()
+		}
 	}
 }
 

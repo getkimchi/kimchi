@@ -47,19 +47,29 @@ export function setActive(f: Ferment | undefined): void {
 	notifyFermentActive(isResumable)
 }
 
-// ─── Auto-mode toggle (set by /pause and /auto commands) ──────────────────────
+// ─── Runtime continuation policy ──────────────────────────────────────────────
 
-let autoModeEnabled = true
+export type ContinuationPolicy = "manual" | "automated"
 
-export function isAutoModeEnabled(): boolean {
-	return autoModeEnabled
+let continuationPolicy: ContinuationPolicy = "manual"
+
+export function getContinuationPolicy(): ContinuationPolicy {
+	return continuationPolicy
 }
 
-export function setAutoModeEnabled(v: boolean): void {
-	autoModeEnabled = v
+export function setContinuationPolicy(policy: ContinuationPolicy): void {
+	continuationPolicy = policy
 }
 
-// ─── Last human input timestamp (used by the /progress dialog title) ─────────
+export function isAutomatedContinuationEnabled(): boolean {
+	return continuationPolicy === "automated"
+}
+
+export function setAutomatedContinuationEnabled(v: boolean): void {
+	continuationPolicy = v ? "automated" : "manual"
+}
+
+// ─── Last human input timestamp (used by the /ferment progress dialog title) ─
 
 let lastHumanInputAt: Date | undefined
 

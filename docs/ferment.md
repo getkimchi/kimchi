@@ -73,22 +73,24 @@ ferment tools directly and follow each tool result's `Next action:` hint.
 
 ---
 
-## Work modes
+## Continuation Policy
 
-Three modes control how much the agent asks versus acts autonomously.
+Continuation policy controls whether the active ferment advances across phase
+boundaries.
 
-| Mode | Behavior |
-|------|----------|
-| **plan** | Conversational. Shows dropdowns at phase boundaries. Asks before every step. Explains decisions. Best for complex or high-stakes work. |
-| **exec** | Fully autonomous. No confirmations. Strips coaching text. Best for well-understood work or CI pipelines. |
-| **auto** | Balanced (default). Full instructions visible. User chooses when to act. No forced gates. |
+| Policy | Behavior |
+|--------|----------|
+| **manual** | Ask before moving to the next phase. Work inside the current phase can continue autonomously. |
+| **automated** | Keep going until the ferment is complete, blocked, paused, or needs user input. |
 
-Switch modes at any time:
+Switch continuation policy at any time:
 ```
-/ferment mode plan
-/ferment mode exec
-/ferment mode auto
+/ferment manual
+/ferment auto
 ```
+
+Pause and resume are separate lifecycle controls: `/ferment pause` stops the
+ferment, and `/ferment resume` continues it using the current policy.
 
 ---
 
@@ -97,37 +99,45 @@ Switch modes at any time:
 ### 1. Create a ferment
 
 ```
-/ferment add "Build Tetris"
+/ferment new "Build Tetris"
 ```
 
-Or type `/ferment` with no arguments for an input prompt.
+Or type `/ferment` with no arguments for the same guided input prompt used by
+the first-run session-mode wizard. Enter a rough goal; the agent turns it into
+scoping answers and a phase plan.
 
-The agent immediately begins scoping — one question at a time:
+What happens next:
+
+- Kimchi asks what you want to ferment.
+- The agent drafts the goal, success criteria, constraints, assumptions, and
+  1-7 phases grouped by vertical slices/tracer bullets, complexity, or code
+  locality.
+- If the request is ambiguous, the agent asks focused scoping questions with
+  recommended answers.
+- Kimchi shows the proposed markdown plan for review.
+- Choose Start execution to save the plan and begin work.
+
+Other creation forms:
 
 ```
-Agent: What does "done" look like for "Build Tetris"?
-You:   Single HTML file, keyboard controls, scoring
-Agent: What are the success criteria — how will you know it's done?
-You:   Can play one full game without errors
-Agent: Any constraints — things to avoid or non-negotiables?
-You:   No libraries, vanilla JS only
-Agent: Proposing 4 phases: Canvas & Grid / Pieces / Movement / Scoring
-       Does this look right? Type yes to confirm.
-You:   yes
+/ferment list                    # pick from existing ferments
+/ferment new "Build Tetris"      # start with a known name
+/ferment one-shot "task"         # automated one-shot run, no confirmations
 ```
 
-The agent calls `scope_ferment` → status transitions to `planned`.
+After you confirm the plan, the agent calls `scope_ferment` and the ferment
+transitions to `planned`.
 
 ### 2. Execute
 
-In **exec** mode the agent runs fully autonomously:
+In automated policy, the agent runs across phases autonomously:
 ```
-/ferment mode exec
+/ferment auto
 ```
 
 It activates phases, refines them into steps, spawns subagent workers for each step, grades the results, and moves to the next phase — no input needed until it's done.
 
-In **plan** mode you get a dropdown at every phase boundary:
+In manual policy, you get a dropdown at every phase boundary:
 ```
 ┌──────────────────────────────────────┐
 │ Phase 1 "Canvas & Grid" complete  A  │
@@ -157,23 +167,44 @@ The dashboard widget is always visible above the editor:
   ○  Scoring  0/3
 
 context: 14 turns
-/progress · /pause · /auto
+/ferment progress · /ferment manual · /ferment auto · /ferment pause
 ```
 
-Run `/progress` for full phase/step navigation with grades and actions.
+Run `/ferment progress` for full phase/step navigation with grades and actions.
 
 ### 4. Pause and resume
 
 ```
-/pause     ← stop auto-mode (ferment stays "running")
-/auto      ← resume
+/ferment pause   ← pause the ferment lifecycle
+/ferment resume  ← resume the ferment lifecycle
+/ferment manual  ← ask before moving to the next phase
+/ferment auto    ← keep going until done or blocked
 ```
 
-`/pause` only disables auto-mode. It does not persist the ferment as `paused`.
-The persisted `paused` status is reserved for internal user-intervention and
-session-resume paths.
+`/ferment pause` persists the ferment as `paused`. `/ferment resume` resumes
+the lifecycle and continues according to the current continuation policy.
 
 Sessions resume automatically. When you close and reopen Kimchi with an active ferment, the agent picks up exactly where it left off.
+
+### Example flow
+
+```
+> /ferment
+What would you like to ferment? Add Google OAuth login
+
+[agent drafts goal, criteria, constraints, assumptions, and 4 phases]
+[agent asks any needed scoping questions with recommended answers]
+[you review the markdown plan and choose Start execution]
+
+[agent runs phase 1 step 1, returns with a summary]
+[agent runs phase 1 step 2 ...]
+
+> /ferment pause
+[you check something outside Kimchi]
+
+> /ferment resume
+[agent picks up at the next step with full ferment context]
+```
 
 ---
 
@@ -189,7 +220,7 @@ After every step and phase completes, an autonomous judge (Claude Opus 4.7) eval
 | D | Poor — objective barely met |
 | F | Failed — objective not met |
 
-Grades are shown in the dashboard widget, `/progress` overlay, and injected back into the planner's context so later phases can learn from earlier ones.
+Grades are shown in the dashboard widget, `/ferment progress` overlay, and injected back into the planner's context so later phases can learn from earlier ones.
 
 ---
 
@@ -301,17 +332,18 @@ The file is the authoritative source of truth. You can inspect it directly, back
 | Command | Description |
 |---------|-------------|
 | `/ferment` | Interactive picker — create or switch |
-| `/ferment add "Name"` | Create a new ferment |
+| `/ferment new "Name"` | Create a new ferment |
 | `/ferment list` | List all ferments |
 | `/ferment switch <id>` | Switch active ferment by ID prefix or name |
 | `/ferment delete <id>` | Delete a ferment permanently |
-| `/ferment mode <plan\|exec\|auto>` | Change work mode |
 | `/ferment abandon` | Abandon the active ferment (terminal — cannot resume) |
 | `/ferment revise goal` | Revise a scoping field |
 | `/ferment one-shot "task"` | Create and auto-execute a single task ferment |
-| `/progress` | Open phase/step navigator overlay (toggle) |
-| `/pause` | Pause auto-mode |
-| `/auto` | Resume auto-mode |
+| `/ferment progress` | Open phase/step navigator overlay (toggle) |
+| `/ferment manual` | Set manual continuation policy |
+| `/ferment auto` | Set automated continuation policy |
+| `/ferment pause` | Pause the active ferment lifecycle |
+| `/ferment resume` | Resume the active ferment lifecycle |
 
 ---
 
@@ -327,7 +359,6 @@ These tools are available to the agent during a ferment session. They are not me
 | `propose_ferment_scoping` | Draft scoping for interactive confirmation |
 | `scope_ferment` | Save confirmed scoping answers → `draft` to `planned` |
 | `update_ferment_scope_field` | Update a single scoping field mid-draft |
-| `set_ferment_mode` | Change work mode (`plan` / `exec` / `auto`) |
 | `complete_ferment` | Mark the ferment `complete` after all phases are terminal |
 | `list_ferments` | List ferments, optionally filtered by status |
 

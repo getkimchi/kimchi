@@ -11,6 +11,10 @@
 
 export type FermentStatus = "draft" | "planned" | "running" | "paused" | "complete" | "abandoned"
 
+/**
+ * @deprecated Persisted ferment work mode is legacy read-compatibility data.
+ * Runtime continuation policy now owns manual/automated behavior.
+ */
 export type FermentWorkMode = "plan" | "exec" | "auto"
 
 export interface FermentWorktree {
@@ -63,7 +67,6 @@ export interface Ferment {
 	constraints?: string[]
 
 	status: FermentStatus
-	mode: FermentWorkMode
 	activePhaseId?: string
 	lastActiveAt?: string
 

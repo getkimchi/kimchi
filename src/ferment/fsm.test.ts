@@ -114,13 +114,6 @@ describe("Valid Transitions", () => {
 			expect(result.state).toBe(FSM_STATES.ABANDONED)
 			expect(result.error).toBeUndefined()
 		})
-
-		it("handles SET_MODE without state change", () => {
-			const ctx = makeContext()
-			const result = transition(FSM_STATES.DRAFT, FSM_EVENTS.SET_MODE, ctx)
-			expect(result.state).toBe(FSM_STATES.DRAFT)
-			expect(result.error).toBeUndefined()
-		})
 	})
 
 	describe("PLANNED state", () => {
@@ -584,7 +577,7 @@ describe("Utility Functions", () => {
 			const events = getValidEvents(FSM_STATES.DRAFT)
 			expect(events).toContain(FSM_EVENTS.SCOPE_FERMENT)
 			expect(events).toContain(FSM_EVENTS.ABANDON)
-			expect(events).toContain(FSM_EVENTS.SET_MODE)
+			expect(events).not.toContain("set_mode")
 		})
 
 		it("returns valid events for PHASE_ACTIVE", () => {

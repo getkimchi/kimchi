@@ -21,6 +21,19 @@ jobs:
           bun: "true"
           playwright: "true"
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+          cache-dependency-path: tools/proxy-helper/go.sum
+
+      - name: Build proxy-helper
+        run: make copy-for-dev # This builds the binary and puts it into a location kimchi can find it
+        working-directory: tools/proxy-helper
+
+      - name: Test proxy-helper
+        run: make test
+        working-directory: tools/proxy-helper
+
       - name: Check (lint + type check)
         run: pnpm run check
 
@@ -28,7 +41,7 @@ jobs:
         run: pnpm run build:binary
 
       - name: Test
-        run: pnpm run test
+        run: KIMCHI_PROXY_HELPER=$(pwd)/bin/proxy-helper pnpm run test
 
       - name: Smoke tests
         run: pnpm run test:smoke
@@ -47,6 +60,19 @@ jobs:
         with:
           bun: "true"
           playwright: "true"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+          cache-dependency-path: tools/proxy-helper/go.sum
+
+      - name: Build proxy-helper
+        run: make build
+        working-directory: tools/proxy-helper
+
+      - name: Test proxy-helper
+        run: make test
+        working-directory: tools/proxy-helper
 
       - name: Check (lint + type check)
         run: pnpm run check

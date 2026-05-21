@@ -200,7 +200,7 @@ describe("registerFermentEvents", () => {
 		expect(lastCall).not.toContain("scope_ferment")
 	})
 
-	it("active planner first snapshot includes the complete ferment lifecycle profile", async () => {
+	it("active planner first snapshot includes existing-ferment lifecycle tools", async () => {
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
 			getActive: vi.fn(
@@ -227,8 +227,10 @@ describe("registerFermentEvents", () => {
 
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
 		for (const name of FERMENT_TOOL_NAMES) {
+			if (name === "create_ferment") continue
 			expect(lastCall).toContain(name)
 		}
+		expect(lastCall).not.toContain("create_ferment")
 	})
 
 	it("hides ferment tools in subagent processes (KIMCHI_SUBAGENT=1)", async () => {

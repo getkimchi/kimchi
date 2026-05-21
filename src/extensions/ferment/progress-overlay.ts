@@ -1,5 +1,5 @@
 /**
- * /progress overlay — four-layer navigation through ferment state.
+ * /ferment progress overlay — four-layer navigation through ferment state.
  *
  * - L1 phase list   (name + bullet + step count + grade)
  * - L2 phase detail (goal, summary, step list)
@@ -256,7 +256,11 @@ export async function handlePhaseAction(
 			ctx.ui.notify(`Tell the agent: refine_ferment_phase for phase ${p.index} "${p.name}"`)
 			break
 		case "Mark phase complete": {
-			const out = applyAndPersist(f.id, { type: "complete_phase", phaseId: p.id, summary: "Completed via /progress" })
+			const out = applyAndPersist(f.id, {
+				type: "complete_phase",
+				phaseId: p.id,
+				summary: "Completed via /ferment progress",
+			})
 			if (out.ok) runtime.setActive(out.ferment)
 			ctx.ui.notify(out.ok ? `Phase "${p.name}" complete.` : `Could not complete: ${out.error.message}`)
 			break
@@ -266,14 +270,18 @@ export async function handlePhaseAction(
 			const out = applyAndPersist(f.id, {
 				type: "fail_phase",
 				phaseId: p.id,
-				reason: reason || "Failed via /progress",
+				reason: reason || "Failed via /ferment progress",
 			})
 			if (out.ok) runtime.setActive(out.ferment)
 			ctx.ui.notify(out.ok ? `Phase "${p.name}" marked failed.` : `Could not fail: ${out.error.message}`)
 			break
 		}
 		case "Skip phase": {
-			const out = applyAndPersist(f.id, { type: "skip_phase", phaseId: p.id, reason: "Skipped via /progress" })
+			const out = applyAndPersist(f.id, {
+				type: "skip_phase",
+				phaseId: p.id,
+				reason: "Skipped via /ferment progress",
+			})
 			if (out.ok) runtime.setActive(out.ferment)
 			ctx.ui.notify(out.ok ? `Phase "${p.name}" skipped.` : `Could not skip: ${out.error.message}`)
 			break

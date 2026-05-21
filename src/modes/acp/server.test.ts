@@ -7,6 +7,7 @@ import {
 	assertSessionHasModel,
 	buildSessionModelState,
 	describeToolCall,
+	isHiddenToolCall,
 } from "./server.js"
 
 // Minimal fake of AgentSession surface used by KimchiAcpAgent. The factory seam
@@ -656,6 +657,91 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		const terminal = toolCallUpdates.find((u) => (u.update as { status?: string }).status === "completed")
 		expect(terminal).toBeDefined()
 	})
+
+	it("suppresses ACP tool notifications for system Agent tool calls", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-system-agent",
+				toolName: "Agent",
+				args: { prompt: "classify", description: "permission classifier", visibility: "system" },
+			})
+			fake.emit({
+				type: "tool_execution_update",
+				toolCallId: "tc-system-agent",
+				toolName: "Agent",
+				args: { prompt: "classify", description: "permission classifier", visibility: "system" },
+				partialResult: { content: [{ type: "text", text: "System agent started." }] },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-system-agent",
+				toolName: "Agent",
+				result: { content: [{ type: "text", text: "System agent started." }] },
+				isError: false,
+			})
+			fake.emit({ type: "agent_end", messages: [] })
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+		expect(updates.some((u) => u.update.sessionUpdate === "tool_call")).toBe(false)
+		expect(updates.some((u) => u.update.sessionUpdate === "tool_call_update")).toBe(false)
+	})
+
+	it("suppresses system Agent updates even if an update arrives before the start event", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_update",
+				toolCallId: "tc-system-agent-update-first",
+				toolName: "Agent",
+				args: { prompt: "classify", description: "permission classifier", visibility: "system" },
+				partialResult: { content: [{ type: "text", text: "System agent started." }] },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-system-agent-update-first",
+				toolName: "Agent",
+				result: { content: [{ type: "text", text: "System agent started." }] },
+				isError: false,
+			})
+			fake.emit({ type: "agent_end", messages: [] })
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+		expect(updates.some((u) => u.update.sessionUpdate === "tool_call")).toBe(false)
+		expect(updates.some((u) => u.update.sessionUpdate === "tool_call_update")).toBe(false)
+	})
+})
+
+describe("isHiddenToolCall", () => {
+	it("returns false for non-Agent tool names", () => {
+		expect(isHiddenToolCall("bash", {})).toBe(false)
+		expect(isHiddenToolCall("read", { visibility: "system" })).toBe(false)
+	})
+
+	it("returns false when visibility is missing", () => {
+		expect(isHiddenToolCall("Agent", {})).toBe(false)
+		expect(isHiddenToolCall("Agent", { prompt: "hello" })).toBe(false)
+	})
+
+	it("returns false when visibility is not 'system' (any casing)", () => {
+		expect(isHiddenToolCall("Agent", { visibility: "public" })).toBe(false)
+		expect(isHiddenToolCall("Agent", { visibility: "private" })).toBe(false)
+	})
+
+	it("returns true when visibility is 'system' (case-insensitive)", () => {
+		expect(isHiddenToolCall("Agent", { visibility: "system" })).toBe(true)
+		expect(isHiddenToolCall("Agent", { visibility: "System" })).toBe(true)
+		expect(isHiddenToolCall("Agent", { visibility: "SYSTEM" })).toBe(true)
+	})
+
+	it("returns true for Agent with mixed-case 'System' visibility", () => {
+		expect(isHiddenToolCall("Agent", { visibility: "SyStEm" })).toBe(true)
+	})
 })
 
 // Coverage for assertSessionHasModel: ACP clients (Zed) should see authRequired
@@ -836,6 +922,12 @@ describe("unstable_setSessionModel", () => {
 // off these. Two recent fixes (064ff92, 00f58f3) landed on it; table-driven
 // cases here keep the title/kind matrix from silently drifting.
 describe("describeToolCall", () => {
+	it("detects hidden system Agent calls", () => {
+		expect(isHiddenToolCall("Agent", { visibility: "system" })).toBe(true)
+		expect(isHiddenToolCall("Agent", { visibility: "user" })).toBe(false)
+		expect(isHiddenToolCall("bash", { visibility: "system" })).toBe(false)
+	})
+
 	const longCommand = "a".repeat(120)
 	const longPath = `/tmp/${"x".repeat(120)}`
 	const longPattern = "p".repeat(120)
@@ -912,10 +1004,10 @@ describe("describeToolCall", () => {
 			expect: { title: "web_search", kind: "search", locations: [] },
 		},
 		{
-			name: "subagent maps to think kind",
-			toolName: "subagent",
-			args: { prompt: "go" },
-			expect: { title: "subagent", kind: "think", locations: [] },
+			name: "Agent maps to think kind",
+			toolName: "Agent",
+			args: { prompt: "go", visibility: "user" },
+			expect: { title: "Agent", kind: "think", locations: [] },
 		},
 		{
 			name: "unknown tool falls back to other kind",

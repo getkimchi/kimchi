@@ -173,46 +173,16 @@ describe("compact-form builders", () => {
 	})
 
 	describe("buildMultiModelAbbrev", () => {
-		it("uses `m-m:` instead of `multi-model:` when enabled (darwin)", () => {
-			const restore = stubPlatform("darwin")
-			try {
-				const seg = buildMultiModelAbbrev(compactCtx, true)
-				expect(seg.id).toBe("multi-model")
-				expect(seg.text).toBe("m-m: on \u2192 option+tab")
-				expect(seg.raw).toEqual({ kind: "multi-model", enabled: true })
-			} finally {
-				restore()
-			}
+		it("uses `m-m:` instead of `multi-model:` when enabled", () => {
+			const seg = buildMultiModelAbbrev(compactCtx, true)
+			expect(seg.id).toBe("multi-model")
+			expect(seg.text).toBe(`m-m: on \u2192 ${ORCHESTRATION.MULTI_MODEL_SHORTCUT}`)
+			expect(seg.raw).toEqual({ kind: "multi-model", enabled: true })
 		})
 
-		it("shows `off` when disabled (darwin)", () => {
-			const restore = stubPlatform("darwin")
-			try {
-				const seg = buildMultiModelAbbrev(compactCtx, false)
-				expect(seg.text).toBe("m-m: off \u2192 option+tab")
-			} finally {
-				restore()
-			}
-		})
-
-		it("uses `alt+tab` shortcut on non-darwin (enabled)", () => {
-			const restore = stubPlatform("linux")
-			try {
-				const seg = buildMultiModelAbbrev(compactCtx, true)
-				expect(seg.text).toBe("m-m: on \u2192 alt+tab")
-			} finally {
-				restore()
-			}
-		})
-
-		it("uses `alt+tab` shortcut on non-darwin (disabled)", () => {
-			const restore = stubPlatform("linux")
-			try {
-				const seg = buildMultiModelAbbrev(compactCtx, false)
-				expect(seg.text).toBe("m-m: off \u2192 alt+tab")
-			} finally {
-				restore()
-			}
+		it("shows `off` when disabled", () => {
+			const seg = buildMultiModelAbbrev(compactCtx, false)
+			expect(seg.text).toBe(`m-m: off \u2192 ${ORCHESTRATION.MULTI_MODEL_SHORTCUT}`)
 		})
 	})
 
@@ -239,16 +209,16 @@ describe("SHORTCUT_TAIL regex", () => {
 		expect(text.replace(SHORTCUT_TAIL, "")).toBe("\u25cf default")
 	})
 
-	it("matches the multi-model trailing shortcut (darwin)", () => {
-		const text = "multi-model: on \x1b[38;5;242m\u2192 option+tab\x1b[39m"
+	it("matches the multi-model trailing shortcut", () => {
+		const text = "multi-model: on \x1b[38;5;242m\u2192 alt+m\x1b[39m"
 		expect(SHORTCUT_TAIL.test(text)).toBe(true)
 		expect(text.replace(SHORTCUT_TAIL, "")).toBe("multi-model: on")
 	})
 
-	it("matches the multi-model trailing shortcut (linux)", () => {
-		const text = "multi-model: on \x1b[38;5;242m\u2192 alt+tab\x1b[39m"
+	it("matches the ferment trailing shortcut", () => {
+		const text = "Ferment: my-ferment \u00b7 Running \u00b7 Stop: Phase Boundary \x1b[38;5;242m\u2192 F6\x1b[39m"
 		expect(SHORTCUT_TAIL.test(text)).toBe(true)
-		expect(text.replace(SHORTCUT_TAIL, "")).toBe("multi-model: on")
+		expect(text.replace(SHORTCUT_TAIL, "")).toBe("Ferment: my-ferment \u00b7 Running \u00b7 Stop: Phase Boundary")
 	})
 
 	it("does NOT match text that has no trailing arrow", () => {
@@ -302,8 +272,8 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 	it("width 160: full footer + `/ for commands` hint, padded to width", () => {
 		const { raw, visible } = renderAt(160)
 		expect(visible).toContain("\u25cf default \u2192 shift+tab")
-		expect(visible).toContain("multi-model: on \u2192 option+tab")
-		expect(visible).toContain("claude-opus-4-7")
+		expect(visible).toContain(`multi-model: on \u2192 ${ORCHESTRATION.MULTI_MODEL_SHORTCUT}`)
+		expect(visible).not.toContain("claude-opus-4-7")
 		expect(visible).toContain("0% ctx")
 		expect(visible).toContain("phase:explore")
 		expect(visible).toContain("/ for commands")
@@ -314,37 +284,33 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		expect(visible.endsWith("/ for commands")).toBe(true)
 	})
 
-	it("width 100: hint and context-bar dropped, segments still present", () => {
+	it("width 100: hint dropped, remaining segments still present", () => {
 		const { raw, visible } = renderAt(100)
 		// Hint gone (step 1)
 		expect(visible).not.toContain("/ for commands")
-		// Bar gone, percentage kept (step 2)
-		expect(visible).not.toContain("\u2588")
-		expect(visible).not.toContain("\u2591")
-		expect(visible).toContain("0% ctx")
 		// Line fits.
 		expect(visibleWidth(raw)).toBeLessThanOrEqual(100)
-		// All segments still present (compaction shrinks, never drops).
+		// All segments still present.
 		expect(visible).toContain("default")
 		expect(visible).toContain("multi-model")
-		expect(visible).toContain("claude-opus-4-7")
+		expect(visible).not.toContain("claude-opus-4-7")
+		expect(visible).toContain("0% ctx")
 		expect(visible).toContain("phase:explore")
 	})
 
-	it("width 60: shortcuts stripped, multi-model abbreviated, phase prefix dropped", () => {
+	it("width 60: shortcuts stripped, multi-model abbreviated", () => {
 		const { raw, visible } = renderAt(60)
 		expect(visibleWidth(raw)).toBeLessThanOrEqual(60)
 		expect(visible).not.toContain("/ for commands")
 		expect(visible).not.toContain("shift+tab")
-		expect(visible).not.toContain("option+tab")
+		expect(visible).not.toContain(ORCHESTRATION.MULTI_MODEL_SHORTCUT)
 		// multi-model label is abbreviated to `m-m:`.
 		expect(visible).toContain("m-m:")
 		expect(visible).not.toContain("multi-model:")
-		// phase prefix is dropped; value survives.
+		// phase value survives.
 		expect(visible).toContain("explore")
-		expect(visible).not.toContain("phase:")
-		// The model is the highest-priority segment and should survive.
-		expect(visible).toContain("claude-opus-4-7")
+		// Model segment is hidden in multi-model mode.
+		expect(visible).not.toContain("claude-opus-4-7")
 	})
 
 	it("width 20: line is hard-truncated to fit, leftmost content survives", () => {
@@ -376,7 +342,7 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		}
 	})
 
-	it("with an active ferment, drops the `ferment:` prefix when overflowing", () => {
+	it("with an active ferment, drops the `Ferment: ` prefix when overflowing", () => {
 		const ferment = {
 			id: "f-1",
 			name: "my-ferment",
@@ -387,16 +353,19 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		} as unknown as ReturnType<typeof FERMENT.getActiveFerment>
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(ferment)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
+		vi.spyOn(FERMENT, "getFermentContinuationPolicy").mockReturnValue("manual")
 
-		// At a generous width every compaction is unneeded and `ferment:` shows.
+		// At a generous width every compaction is unneeded and `Ferment: ` shows.
 		const wide = renderAt(200)
-		expect(wide.visible).toContain("ferment:my-ferment")
+		expect(wide.visible).toContain("Ferment: my-ferment")
+		expect(wide.visible).toContain("Stop: Phase Boundary \u2192 F6")
+		expect(wide.visible.indexOf("Ferment: my-ferment")).toBeLessThan(wide.visible.indexOf("\u25cf default"))
 
 		// At a narrow width all earlier compactions have fired and the ferment
 		// prefix has also been dropped.
 		const narrow = renderAt(70)
 		expect(narrow.visible).toContain("my-ferment")
-		expect(narrow.visible).not.toContain("ferment:")
+		expect(narrow.visible).not.toContain("Ferment:")
 	})
 })
 

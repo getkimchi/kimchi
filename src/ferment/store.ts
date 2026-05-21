@@ -210,7 +210,6 @@ function upgradeV3toV4(raw: FermentV3): Ferment {
 		name: raw.name,
 		description: raw.description,
 		status: statusMap[raw.status] ?? "draft",
-		mode: "auto",
 		activePhaseId,
 		goal: raw.goal,
 		successCriteria: raw.successCriteria,
@@ -380,7 +379,6 @@ export class FermentStorage {
 			name: shortName,
 			description,
 			status: "draft",
-			mode: "plan",
 			worktree: captureWorktree(),
 			scoping: {},
 			phases: [],
@@ -408,6 +406,7 @@ export class FermentStorage {
 	/** Atomic write of a ferment. Public so callers can persist results from
 	 *  the pure state machine without going through storage's mutation helpers. */
 	write(ferment: Ferment): void {
+		normalizeFerment(ferment)
 		const path = this.filePath(ferment.id)
 		const tmp = `${path}.${process.pid}.tmp`
 		mkdirSync(dirname(path), { recursive: true })
@@ -435,7 +434,8 @@ export class FermentStorage {
 	updateMode(id: string, mode: FermentWorkMode): Ferment | undefined {
 		const f = this.get(id)
 		if (!f) return undefined
-		const updated: Ferment = { ...f, mode, updatedAt: new Date().toISOString() }
+		void mode
+		const updated: Ferment = { ...f, updatedAt: new Date().toISOString() }
 		this.write(updated)
 		return updated
 	}
@@ -819,6 +819,7 @@ export class FermentStorage {
 				const raw = readFileSync(src, "utf-8")
 				const parsed = JSON.parse(raw) as unknown
 				const ferment = hasV3Shape(parsed) ? upgradeV3toV4(parsed as FermentV3) : (parsed as Ferment)
+				normalizeFerment(ferment)
 				const dest = resolve(projectDir, file)
 				writeFileSync(dest, `${JSON.stringify(ferment, null, 2)}\n`, "utf-8")
 				migrated++
@@ -854,6 +855,7 @@ function hasV4Shape(v: unknown): boolean {
 }
 
 function normalizeFerment(f: Ferment): void {
+	Reflect.deleteProperty(f, "mode")
 	if (!f.worktree) {
 		f.worktree = { path: detectProjectRoot() ?? process.cwd() }
 	}

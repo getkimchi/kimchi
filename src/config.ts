@@ -62,6 +62,11 @@ export interface SearchStrategyConfig {
 	fieldWeights: { name: number; description: number; schemaKey: number }
 }
 
+export interface OnboardingConfig {
+	sessionModeWizardSeenAt?: string
+	hideSessionModeDialog?: boolean
+}
+
 export const SEARCH_STRATEGY_DEFAULTS: SearchStrategyConfig = {
 	strategy: "bm25",
 	bm25K1: 1.2,
@@ -80,6 +85,7 @@ export interface KimchiConfig {
 	mcpSearch: SearchStrategyConfig
 	skillPaths?: string[]
 	migrationState?: MigrationState
+	onboarding: OnboardingConfig
 }
 
 /**
@@ -110,6 +116,7 @@ function readConfigExtras(configPath: string): {
 	mcpSearch?: Partial<SearchStrategyConfig>
 	skillPaths?: string[]
 	migrationState?: MigrationState
+	onboarding?: OnboardingConfig
 } {
 	try {
 		const raw = readFileSync(configPath, "utf-8")
@@ -155,6 +162,7 @@ function readConfigExtras(configPath: string): {
 			parsed.migrationState === "done" || parsed.migrationState === "skip-forever"
 				? (parsed.migrationState as MigrationState)
 				: undefined
+		const onboarding = parseOnboardingConfig(parsed.onboarding)
 		// Read apiKey (prefer camelCase, fall back to snake_case)
 		let apiKey: string | undefined
 		if (typeof parsed.apiKey === "string" && parsed.apiKey.length > 0) {
@@ -167,9 +175,46 @@ function readConfigExtras(configPath: string): {
 		const llmEndpoint =
 			typeof parsed.llmEndpoint === "string" && parsed.llmEndpoint.length > 0 ? parsed.llmEndpoint : undefined
 
-		return { apiKey, llmEndpoint, maxToolResultChars, mcpSearchLimit, mcpSearch, skillPaths, migrationState }
+		return {
+			apiKey,
+			llmEndpoint,
+			maxToolResultChars,
+			mcpSearchLimit,
+			mcpSearch,
+			skillPaths,
+			migrationState,
+			onboarding,
+		}
 	} catch {
 		return {}
+	}
+}
+
+function readConfigObject(configPath: string): Record<string, unknown> | undefined {
+	try {
+		const parsed = JSON.parse(readFileSync(configPath, "utf-8"))
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			return parsed as Record<string, unknown>
+		}
+	} catch {
+		// file missing or invalid
+	}
+	return undefined
+}
+
+function parseOnboardingConfig(value: unknown): OnboardingConfig | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+	const raw = value as Record<string, unknown>
+	const sessionModeWizardSeenAt =
+		typeof raw.sessionModeWizardSeenAt === "string" && raw.sessionModeWizardSeenAt.length > 0
+			? raw.sessionModeWizardSeenAt
+			: undefined
+	const hideSessionModeDialogValue = raw.hideSessionModeDialog ?? raw["hide-session-mode-dialog"]
+	const hideSessionModeDialog = typeof hideSessionModeDialogValue === "boolean" ? hideSessionModeDialogValue : undefined
+
+	return {
+		...(sessionModeWizardSeenAt ? { sessionModeWizardSeenAt } : {}),
+		...(hideSessionModeDialog !== undefined ? { hideSessionModeDialog } : {}),
 	}
 }
 
@@ -268,6 +313,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		mcpSearch: { ...globalExtras.mcpSearch, ...projectExtras.mcpSearch },
 		skillPaths: projectExtras.skillPaths ?? globalExtras.skillPaths,
 		migrationState: projectExtras.migrationState ?? globalExtras.migrationState,
+		onboarding: globalExtras.onboarding,
 	}
 
 	return {
@@ -279,6 +325,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		mcpSearch: { ...SEARCH_STRATEGY_DEFAULTS, ...extras.mcpSearch },
 		skillPaths: extras.skillPaths,
 		migrationState: extras.migrationState,
+		onboarding: extras.onboarding ?? {},
 	}
 }
 
@@ -286,21 +333,62 @@ export function getAgentConfigDir(): string {
 	return AGENT_CONFIG_DIR
 }
 
-function writeConfigField(key: string, value: unknown, configPath: string): void {
-	let raw: Record<string, unknown> = {}
-	try {
-		const parsed = JSON.parse(readFileSync(configPath, "utf-8"))
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			raw = parsed as Record<string, unknown>
-		}
-	} catch {
-		// file missing or invalid — start fresh
-	}
-	raw[key] = value
+function writeConfigObject(configPath: string, raw: Record<string, unknown>): void {
 	mkdirSync(dirname(configPath), { recursive: true })
 	const tmp = `${configPath}.${process.pid}.tmp`
 	writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
 	renameSync(tmp, configPath)
+}
+
+function updateConfigFile(
+	configPath: string,
+	update: (raw: Record<string, unknown>) => void,
+	options?: { createIfMissing?: boolean },
+): void {
+	const raw = readConfigObject(configPath)
+	if (!raw && options?.createIfMissing === false) return
+	const next = raw ?? {}
+	update(next)
+	writeConfigObject(configPath, next)
+}
+
+function writeConfigField(key: string, value: unknown, configPath: string): void {
+	updateConfigFile(configPath, (raw) => {
+		raw[key] = value
+	})
+}
+
+function updateOnboardingConfig(configPath: string, update: (onboarding: Record<string, unknown>) => void): void {
+	updateConfigFile(configPath, (raw) => {
+		const onboarding =
+			raw.onboarding && typeof raw.onboarding === "object" && !Array.isArray(raw.onboarding)
+				? { ...(raw.onboarding as Record<string, unknown>) }
+				: {}
+		update(onboarding)
+		raw.onboarding = onboarding
+	})
+}
+
+export function readSessionModeWizardSeenAt(configPath?: string): string | undefined {
+	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.sessionModeWizardSeenAt
+}
+
+export function writeSessionModeWizardSeenAt(seenAt: string, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateOnboardingConfig(path, (onboarding) => {
+		onboarding.sessionModeWizardSeenAt = seenAt
+	})
+}
+
+export function readHideSessionModeDialog(configPath?: string): boolean {
+	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.hideSessionModeDialog === true
+}
+
+export function writeHideSessionModeDialog(hidden: boolean, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateOnboardingConfig(path, (onboarding) => {
+		onboarding.hideSessionModeDialog = hidden
+	})
 }
 
 export function writeMigrationState(state: MigrationState, configPath?: string): void {
@@ -313,23 +401,12 @@ export function writeSkillPaths(paths: string[], configPath?: string): void {
 
 export function writeApiKey(key: string, configPath?: string): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
-	let raw: Record<string, unknown> = {}
-	try {
-		const parsed = JSON.parse(readFileSync(path, "utf-8"))
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			raw = parsed as Record<string, unknown>
-		}
-	} catch {
-		// file missing or invalid — start fresh
-	}
-	raw.apiKey = key
-	// Clear legacy snake_case key so we don't keep stale data
-	// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
-	delete raw.api_key
-	mkdirSync(dirname(path), { recursive: true })
-	const tmp = `${path}.${process.pid}.tmp`
-	writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
-	renameSync(tmp, path)
+	updateConfigFile(path, (raw) => {
+		raw.apiKey = key
+		// Clear legacy snake_case key so we don't keep stale data
+		// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
+		delete raw.api_key
+	})
 }
 
 /**
@@ -341,40 +418,23 @@ export function writeApiKey(key: string, configPath?: string): void {
  */
 export function writeTelemetryEnabled(enabled: boolean, configPath?: string): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
-	let raw: Record<string, unknown> = {}
-	try {
-		const parsed = JSON.parse(readFileSync(path, "utf-8"))
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			raw = parsed as Record<string, unknown>
-		}
-	} catch {
-		// file missing or invalid — start fresh
-	}
-	const t = (raw.telemetry as Record<string, unknown> | undefined) ?? {}
-	t.enabled = enabled
-	raw.telemetry = t
-	mkdirSync(dirname(path), { recursive: true })
-	const tmp = `${path}.${process.pid}.tmp`
-	writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
-	renameSync(tmp, path)
+	updateConfigFile(path, (raw) => {
+		const t = (raw.telemetry as Record<string, unknown> | undefined) ?? {}
+		t.enabled = enabled
+		raw.telemetry = t
+	})
 }
 
 export function clearApiKey(configPath?: string): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
-	let raw: Record<string, unknown> = {}
-	try {
-		const parsed = JSON.parse(readFileSync(path, "utf-8"))
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			raw = parsed as Record<string, unknown>
-		}
-	} catch {
-		return
-	}
-	// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
-	delete raw.apiKey
-	// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
-	delete raw.api_key
-	const tmp = `${path}.${process.pid}.tmp`
-	writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
-	renameSync(tmp, path)
+	updateConfigFile(
+		path,
+		(raw) => {
+			// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
+			delete raw.apiKey
+			// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
+			delete raw.api_key
+		},
+		{ createIfMissing: false },
+	)
 }

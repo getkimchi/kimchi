@@ -61,6 +61,14 @@ describe("getOpenCodeVersion", () => {
 		const exec = vi.fn().mockReturnValue("opencode 1.13.0") as unknown as ExecFile
 		expect(getOpenCodeVersion(exec)).toBe("1.13.0")
 	})
+	it("parses bare version output (no opencode prefix)", () => {
+		const exec = vi.fn().mockReturnValue("1.15.5\n") as unknown as ExecFile
+		expect(getOpenCodeVersion(exec)).toBe("1.15.5")
+	})
+	it("parses bare version with v prefix", () => {
+		const exec = vi.fn().mockReturnValue("v1.16.0\n") as unknown as ExecFile
+		expect(getOpenCodeVersion(exec)).toBe("1.16.0")
+	})
 	it("returns null when the binary is missing", () => {
 		const exec = vi.fn().mockImplementation(() => {
 			throw new Error("ENOENT")
@@ -122,6 +130,23 @@ describe("buildUpdatedPlugins", () => {
 		const existing = [[KIMCHI, { stale: true }]]
 		const r = buildUpdatedPlugins({ plugins: existing, telemetryEnabled: false, latestVersion: "1.14.0" })
 		expect(r.plugins).toEqual([[`${KIMCHI}@1.14.0`, {}]])
+	})
+	it("handles legacy string format (no version pin) and re-adds with pinned version", () => {
+		const existing = ["@other/plugin", KIMCHI]
+		const r = buildUpdatedPlugins({ plugins: existing, telemetryEnabled: false, latestVersion: "1.14.0" })
+		expect(r.plugins).toEqual(["@other/plugin", [`${KIMCHI}@1.14.0`, {}]])
+		expect(r.skippedKimchiPlugin).toBe(false)
+	})
+	it("handles legacy string format with existing version and falls back to it when npm unavailable", () => {
+		const existing = ["@other/plugin", `${KIMCHI}@1.13.0`]
+		const r = buildUpdatedPlugins({ plugins: existing, telemetryEnabled: false, latestVersion: null })
+		expect(r.plugins).toEqual(["@other/plugin", [`${KIMCHI}@1.13.0`, {}]])
+		expect(r.skippedKimchiPlugin).toBe(false)
+	})
+	it("skips legacy string Kimchi plugin when no version anywhere (npm + no prior entry)", () => {
+		const r = buildUpdatedPlugins({ plugins: ["@other/plugin", KIMCHI], telemetryEnabled: false, latestVersion: null })
+		expect(r.plugins).toEqual(["@other/plugin"])
+		expect(r.skippedKimchiPlugin).toBe(true)
 	})
 })
 

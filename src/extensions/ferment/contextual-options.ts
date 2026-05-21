@@ -1,5 +1,5 @@
 /**
- * Helpers for the plan-mode question dropdown.
+ * Helpers for interactive question dropdowns.
  *
  * Ferment-owned decisions should use structured host UI in the relevant tool
  * handler. These helpers are only a fallback for generic assistant questions.

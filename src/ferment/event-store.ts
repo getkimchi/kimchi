@@ -55,6 +55,7 @@ function canonicalizeForHash(value: unknown): unknown {
 	if (value && typeof value === "object") {
 		const out: Record<string, unknown> = {}
 		for (const key of Object.keys(value).sort()) {
+			if (key === "mode") continue
 			const v = (value as Record<string, unknown>)[key]
 			if (v !== undefined) out[key] = canonicalizeForHash(v)
 		}
@@ -92,6 +93,7 @@ export type FermentEventType =
 	| "step_failed"
 	| "step_verified"
 	| "step_graded"
+	| "step_description_updated"
 	| "ferment_graded"
 	| "decision_added"
 	| "memory_added"
@@ -112,7 +114,8 @@ export interface FermentCreatedPayload {
 	id: string
 	name: string
 	description?: string
-	mode: FermentWorkMode
+	/** @deprecated Legacy event logs may carry this, but fold ignores it. */
+	mode?: FermentWorkMode
 	/** Initial worktree captured by `FermentStorage.create()`. Folded back into the
 	 *  reconstructed ferment so the event log produces the same state as the
 	 *  snapshot — without this, fold leaves worktree at `{ path: "" }` while the
@@ -268,6 +271,12 @@ export interface StepGradedPayload {
 	gradedAt: string
 }
 
+export interface StepDescriptionUpdatedPayload {
+	phaseId: string
+	stepId: string
+	description: string
+}
+
 export interface FermentGradedPayload {
 	grade: JudgeGrade
 }
@@ -331,6 +340,10 @@ export type StepSkippedEvent = FermentEventBase & { type: "step_skipped"; payloa
 export type StepFailedEvent = FermentEventBase & { type: "step_failed"; payload: StepFailedPayload }
 export type StepVerifiedEvent = FermentEventBase & { type: "step_verified"; payload: StepVerifiedPayload }
 export type StepGradedEvent = FermentEventBase & { type: "step_graded"; payload: StepGradedPayload }
+export type StepDescriptionUpdatedEvent = FermentEventBase & {
+	type: "step_description_updated"
+	payload: StepDescriptionUpdatedPayload
+}
 export type FermentGradedEvent = FermentEventBase & { type: "ferment_graded"; payload: FermentGradedPayload }
 export type DecisionAddedEvent = FermentEventBase & { type: "decision_added"; payload: DecisionAddedPayload }
 export type MemoryAddedEvent = FermentEventBase & { type: "memory_added"; payload: MemoryAddedPayload }
@@ -365,6 +378,7 @@ export type FermentEvent =
 	| StepFailedEvent
 	| StepVerifiedEvent
 	| StepGradedEvent
+	| StepDescriptionUpdatedEvent
 	| FermentGradedEvent
 	| DecisionAddedEvent
 	| MemoryAddedEvent
@@ -604,7 +618,6 @@ export class FermentEventStore {
 					id: ferment.id,
 					name: ferment.name,
 					description: ferment.description,
-					mode: ferment.mode,
 					worktree: ferment.worktree,
 					createdAt: ferment.createdAt,
 				},
@@ -704,7 +717,6 @@ export class FermentEventStore {
 				id: ferment.id,
 				name: ferment.name,
 				description: ferment.description,
-				mode: ferment.mode,
 			},
 		})
 
@@ -745,10 +757,7 @@ export class FermentEventStore {
 			pending.push({ timestamp: ferment.createdAt, type: "ferment_planned", payload: {} })
 		}
 
-		// Stage 2: mode (if non-default)
-		pending.push({ timestamp: ferment.updatedAt, type: "ferment_mode_set", payload: { mode: ferment.mode } })
-
-		// Stage 3: per-phase + per-step events in temporal order
+		// Stage 2: per-phase + per-step events in temporal order
 		for (const phase of ferment.phases) {
 			if (phase.startedAt) {
 				pending.push({
@@ -955,7 +964,6 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 				name: p.name,
 				description: p.description,
 				status: "draft",
-				mode: p.mode,
 				worktree: p.worktree ?? { path: "" },
 				scoping: {},
 				phases: [],
@@ -1066,8 +1074,7 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 		}
 		case "ferment_mode_set": {
 			if (!state) throw new Error("ferment_mode_set requires existing state")
-			const p = event.payload as FermentModeSetPayload
-			return { ...state, mode: p.mode, updatedAt: event.timestamp }
+			return { ...state, updatedAt: event.timestamp }
 		}
 		case "phase_activated": {
 			if (!state) throw new Error("phase_activated requires existing state")
@@ -1267,6 +1274,19 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 				phases: state.phases.map((ph) =>
 					ph.id === p.phaseId
 						? { ...ph, steps: ph.steps.map((s) => (s.id === p.stepId ? { ...s, grade: p.grade } : s)) }
+						: ph,
+				),
+				updatedAt: event.timestamp,
+			}
+		}
+		case "step_description_updated": {
+			if (!state) throw new Error("step_description_updated requires existing state")
+			const p = event.payload as StepDescriptionUpdatedPayload
+			return {
+				...state,
+				phases: state.phases.map((ph) =>
+					ph.id === p.phaseId
+						? { ...ph, steps: ph.steps.map((s) => (s.id === p.stepId ? { ...s, description: p.description } : s)) }
 						: ph,
 				),
 				updatedAt: event.timestamp,

@@ -23,6 +23,7 @@ import { Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
+import { sessionHasImages } from "../model-guard.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
 import { AgentManager } from "./manager/agent-manager.js"
 import {
@@ -34,6 +35,12 @@ import {
 	setGraceTurns,
 	steerAgent,
 } from "./manager/agent-runner.js"
+import {
+	type BudgetRetryBlock,
+	type BudgetRetryCandidate,
+	createBudgetRetryBlockFromCompletion,
+	shouldBlockBudgetRetry,
+} from "./manager/budget-retry-guard.js"
 import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
@@ -51,8 +58,10 @@ import {
 import { loadCustomAgents } from "./personas/custom-agents.js"
 import {
 	AGENT_GENERAL_PURPOSE,
+	type AgentAbortReason,
 	type AgentConfig,
 	type AgentRecord,
+	type AgentVisibility,
 	type JoinMode,
 	type NotificationDetails,
 	type SubagentType,
@@ -87,6 +96,8 @@ interface GetSubagentResultDetails {
 	displayName: string
 	description: string
 	status: string
+	visibility?: AgentVisibility
+	abortReason?: AgentAbortReason
 	toolUses: number
 	tokens: string
 	contextPercent: number | null
@@ -118,7 +129,46 @@ function getSubagentResultIcon(status: string, theme: Theme): string {
 	}
 }
 
-function summaryForStatus(status: string, error?: string): string {
+function extractImagePathsFromSession(ctx: ExtensionContext): string[] {
+	const entries = ctx.sessionManager.getBranch()
+	const imagePaths = new Set<string>()
+	const readPathsByToolCallId = new Map<string, string>()
+
+	for (const entry of entries) {
+		if (entry.type !== "message") continue
+		const msg = entry.message
+
+		if (msg.role === "assistant") {
+			const content = msg.content
+			if (Array.isArray(content)) {
+				for (const block of content) {
+					if (block.type !== "toolCall") continue
+					const toolBlock = block as { id?: string; name?: string; arguments?: Record<string, unknown> }
+					if (toolBlock.name === "read" && toolBlock.id && typeof toolBlock.arguments?.path === "string") {
+						readPathsByToolCallId.set(toolBlock.id, toolBlock.arguments.path)
+					}
+				}
+			}
+		} else if (msg.role === "toolResult") {
+			const toolResultMsg = msg as { toolCallId?: string; content?: unknown[] }
+			const content = toolResultMsg.content
+			if (Array.isArray(content)) {
+				const hasImage = content.some((block) => (block as { type?: string }).type === "image")
+				const path = toolResultMsg.toolCallId ? readPathsByToolCallId.get(toolResultMsg.toolCallId) : undefined
+				if (hasImage && path) {
+					imagePaths.add(path)
+				}
+			}
+			if (toolResultMsg.toolCallId) {
+				readPathsByToolCallId.delete(toolResultMsg.toolCallId)
+			}
+		}
+	}
+
+	return Array.from(imagePaths)
+}
+
+export function summaryForStatus(status: string, error?: string, abortReason?: AgentAbortReason): string {
 	switch (status) {
 		case "running":
 		case "queued":
@@ -128,7 +178,7 @@ function summaryForStatus(status: string, error?: string): string {
 		case "steered":
 			return "Wrapped up (turn limit)"
 		case "aborted":
-			return "Aborted (max turns exceeded)"
+			return getAbortLabel(abortReason)
 		case "stopped":
 			return "Stopped"
 		case "error":
@@ -151,7 +201,7 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 		maxTurns,
 		responseText: "",
 		session: undefined,
-		lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
+		lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	}
 
 	const callbacks = {
@@ -180,7 +230,7 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 		onSessionCreated: (session: unknown) => {
 			state.session = session as AgentActivity["session"]
 		},
-		onAssistantUsage: (usage: { input: number; output: number; cacheWrite: number }) => {
+		onAssistantUsage: (usage: LifetimeUsage) => {
 			addUsage(state.lifetimeUsage, usage)
 			onStreamUpdate?.()
 		},
@@ -189,12 +239,42 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 	return { state, callbacks }
 }
 
-function getStatusLabel(status: string, error?: string): string {
+function getAbortLabel(reason?: AgentAbortReason): string {
+	switch (reason) {
+		case "max_turns":
+			return "Aborted (max turns exceeded)"
+		case "token_budget":
+			return "Aborted (token budget exceeded)"
+		case "inactivity":
+			return "Aborted (inactivity timeout)"
+		case "max_duration":
+			return "Aborted (duration limit exceeded)"
+		default:
+			return "Aborted"
+	}
+}
+
+function getAbortNote(reason?: AgentAbortReason): string {
+	switch (reason) {
+		case "max_turns":
+			return " (aborted — max turns exceeded, output may be incomplete)"
+		case "token_budget":
+			return " (aborted — token budget exceeded, output may be incomplete)"
+		case "inactivity":
+			return " (aborted — agent became unresponsive, output may be incomplete)"
+		case "max_duration":
+			return " (aborted — wall-clock duration limit exceeded, output may be incomplete)"
+		default:
+			return " (aborted, output may be incomplete)"
+	}
+}
+
+function getStatusLabel(status: string, error?: string, abortReason?: AgentAbortReason): string {
 	switch (status) {
 		case "error":
 			return `Error: ${error ?? "unknown"}`
 		case "aborted":
-			return "Aborted (max turns exceeded)"
+			return getAbortLabel(abortReason)
 		case "steered":
 			return "Wrapped up (turn limit)"
 		case "stopped":
@@ -204,10 +284,10 @@ function getStatusLabel(status: string, error?: string): string {
 	}
 }
 
-function getStatusNote(status: string): string {
+function getStatusNote(status: string, abortReason?: AgentAbortReason): string {
 	switch (status) {
 		case "aborted":
-			return " (aborted — max turns exceeded, output may be incomplete)"
+			return getAbortNote(abortReason)
 		case "steered":
 			return " (wrapped up — reached turn limit)"
 		case "stopped":
@@ -217,12 +297,25 @@ function getStatusNote(status: string): string {
 	}
 }
 
+function getStatusInstruction(status: string, abortReason?: AgentAbortReason): string {
+	if (status === "aborted" && abortReason === "token_budget") {
+		return "\nThe agent ran out of its token budget. Do NOT retry the same task with a higher budget. If the work is incomplete, you may spawn a NEW follow-up Agent scoped to only the remaining unfinished work — keep the same or lower budget."
+	}
+	if (status === "aborted" && abortReason === "inactivity") {
+		return "\nThe agent stopped producing output and was terminated. Review any partial results. If the work is incomplete, you may spawn a follow-up Agent to continue from where this one left off."
+	}
+	if (status === "aborted" && abortReason === "max_duration") {
+		return "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Review any partial results. If the work is incomplete, you may spawn a follow-up Agent scoped to only the remaining unfinished work."
+	}
+	return ""
+}
+
 function escapeXml(s: string): string {
 	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
 }
 
 function formatTaskNotification(record: AgentRecord, resultMaxLen: number): string {
-	const status = getStatusLabel(record.status, record.error)
+	const status = getStatusLabel(record.status, record.error, record.abortReason)
 	const durationMs = record.completedAt ? record.completedAt - record.startedAt : 0
 	const totalTokens = getLifetimeTotal(record.lifetimeUsage)
 	const contextPercent = getSessionContextPercent(record.session)
@@ -251,14 +344,16 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
 }
 
 function buildDetails(
-	base: Pick<AgentDetails, "displayName" | "description" | "subagentType" | "modelName" | "tags">,
+	base: Pick<AgentDetails, "displayName" | "description" | "subagentType" | "modelName" | "tags" | "visibility">,
 	record: {
 		toolUses: number
 		startedAt: number
 		completedAt?: number
 		status: string
+		abortReason?: AgentAbortReason
 		error?: string
 		id?: string
+		sessionFile?: string
 		session?: unknown
 		lifetimeUsage: LifetimeUsage
 	},
@@ -269,12 +364,20 @@ function buildDetails(
 		...base,
 		toolUses: record.toolUses,
 		tokens: formatLifetimeTokens(record),
+		tokenUsage: {
+			input: record.lifetimeUsage.input,
+			output: record.lifetimeUsage.output,
+			cacheRead: record.lifetimeUsage.cacheRead,
+			cacheWrite: record.lifetimeUsage.cacheWrite,
+		},
 		turnCount: activity?.turnCount,
 		maxTurns: activity?.maxTurns,
 		durationMs: (record.completedAt ?? Date.now()) - record.startedAt,
 		status: record.status as AgentDetails["status"],
 		agentId: record.id,
+		sessionFile: record.sessionFile,
 		error: record.error,
+		abortReason: record.abortReason,
 		...overrides,
 	}
 }
@@ -290,6 +393,7 @@ function buildNotificationDetails(
 		id: record.id,
 		description: record.description,
 		status: record.status,
+		abortReason: record.abortReason,
 		toolUses: record.toolUses,
 		turnCount: activity?.turnCount ?? 0,
 		maxTurns: activity?.maxTurns,
@@ -306,12 +410,23 @@ function buildNotificationDetails(
 }
 
 let activeManager: AgentManager | undefined
+let budgetRetryBlock: BudgetRetryBlock | undefined
+const budgetRetryCandidates = new Map<string, BudgetRetryCandidate>()
+
+function blockBudgetRetryIfNeeded(record: AgentRecord, candidate: BudgetRetryCandidate | undefined): void {
+	const block = createBudgetRetryBlockFromCompletion(candidate, record)
+	if (block) budgetRetryBlock = block
+}
 
 export function getActiveAgentCount(): number {
 	return activeManager?.getRunningCount() ?? 0
 }
 
 export default function (pi: ExtensionAPI) {
+	pi.on("message_start", (event) => {
+		if (event.message.role === "user") budgetRetryBlock = undefined
+	})
+
 	// ---- Register custom notification renderer ----
 	pi.registerMessageRenderer<NotificationDetails>("subagent-notification", (message, { expanded }, theme) => {
 		const d = message.details
@@ -320,7 +435,14 @@ export default function (pi: ExtensionAPI) {
 		function renderOne(d: NotificationDetails): string {
 			const isError = d.status === "error" || d.status === "stopped" || d.status === "aborted"
 			const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓")
-			const statusText = isError ? d.status : d.status === "steered" ? "completed (steered)" : "completed"
+			const statusText =
+				d.status === "aborted"
+					? getAbortLabel(d.abortReason)
+					: isError
+						? d.status
+						: d.status === "steered"
+							? "completed (steered)"
+							: "completed"
 
 			let line = `${icon} ${theme.bold(d.description)} ${theme.fg("dim", statusText)}`
 
@@ -385,6 +507,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function emitIndividualNudge(record: AgentRecord) {
+		if (record.visibility === "system") return
 		if (record.resultConsumed) return
 
 		const notification = formatTaskNotification(record, 500)
@@ -459,6 +582,8 @@ export default function (pi: ExtensionAPI) {
 			result: record.result,
 			error: record.error,
 			status: record.status,
+			visibility: record.visibility,
+			abortReason: record.abortReason,
 			toolUses: record.toolUses,
 			durationMs,
 			tokens,
@@ -499,6 +624,10 @@ export default function (pi: ExtensionAPI) {
 
 	const manager = new AgentManager(
 		(record) => {
+			const retryCandidate = budgetRetryCandidates.get(record.id)
+			budgetRetryCandidates.delete(record.id)
+			blockBudgetRetryIfNeeded(record, retryCandidate)
+
 			const isError = record.status === "error" || record.status === "stopped" || record.status === "aborted"
 			const eventData = buildEventData(record)
 			if (isError) {
@@ -511,7 +640,9 @@ export default function (pi: ExtensionAPI) {
 				id: record.id,
 				type: record.type,
 				description: record.description,
+				visibility: record.visibility,
 				status: record.status,
+				abortReason: record.abortReason,
 				result: record.result,
 				error: record.error,
 				startedAt: record.startedAt,
@@ -522,6 +653,15 @@ export default function (pi: ExtensionAPI) {
 				agentActivity.delete(record.id)
 				widget.markFinished(record.id)
 				widget.update()
+				return
+			}
+
+			if (record.visibility === "system") {
+				// System agents never appear in the widget (AgentWidget filters them
+				// out at render time), so markFinished/update are no-ops that would
+				// just accrue dead state in `finishedTurnAge` and trigger spurious
+				// repaints. Just drop the activity entry and bail.
+				agentActivity.delete(record.id)
 				return
 			}
 
@@ -542,6 +682,7 @@ export default function (pi: ExtensionAPI) {
 				id: record.id,
 				type: record.type,
 				description: record.description,
+				visibility: record.visibility,
 			})
 		},
 		(record, info) => {
@@ -549,6 +690,7 @@ export default function (pi: ExtensionAPI) {
 				id: record.id,
 				type: record.type,
 				description: record.description,
+				visibility: record.visibility,
 				reason: info.reason,
 				tokensBefore: info.tokensBefore,
 				compactionCount: record.compactionCount,
@@ -573,12 +715,14 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async () => {
 		manager.abortAll()
+		budgetRetryCandidates.clear()
 		for (const timer of pendingNudges.values()) clearTimeout(timer)
 		pendingNudges.clear()
 		manager.dispose()
 	})
 
 	const widget = new AgentWidget(manager, agentActivity)
+	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
 
 	let defaultJoinMode: JoinMode = "smart"
 	function getDefaultJoinMode(): JoinMode {
@@ -655,6 +799,7 @@ Available agent types:
 ${typeListText}
 
 Guidelines:
+- If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
 - For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
 - Use Explore for codebase searches and code understanding.
 - Use Plan for architecture and implementation planning.
@@ -665,14 +810,17 @@ Guidelines:
 - Use run_in_background for work you don't need immediately. You will be notified when it completes.
 - Use resume with an agent ID to continue a previous agent's work.
 - Use steer_subagent to send mid-run messages to a running background agent.
-- Use thinking to control extended thinking level.
+- Use thinking to request an extended thinking level when the selected agent profile does not fix one.
+- Use token_budget to cap the agent's cumulative output token usage when the task scope is small or bounded. Only output tokens (tokens generated by the agent) count toward the budget; input tokens do not.
+- Treat token_budget as a hard caller constraint. If an agent aborts because of token_budget, do not retry with a higher budget unless the user explicitly asks.
+- Use max_duration for long-running agents that might hang or run indefinitely (e.g., build tasks with many test iterations, background tasks with unpredictable completion times). Timeouts protect against stalled work without relying on token budgets. Short-lived agents (single queries, simple edits) typically do not need a duration limit.
 - Use inherit_context if the agent needs the parent conversation history.
 
 Model selection — YOU choose based on task complexity:
 - Each agent type's listing above shows the set of models it can use. The list order has no semantics — it is not a tier ranking.
 - Assess the task (single lookup vs. multi-step refactor vs. deep architectural analysis) and pick the model whose capabilities (tier, strengths) best match. Refer to your knowledge of the kimchi-dev models or to your initial system-prompt model section.
-- Pass your choice via the \`model\` parameter as "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7"). Fuzzy names like "kimi" or "minimax" also work.
-- If \`model\` is omitted and the persona has no \`models[]\`, the orchestrator picks the best model based on the persona's strengths. Override by passing \`model:\` explicitly.`,
+- Pass \`model\` only when the user explicitly asks for a specific model or the profile does not lock model selection.
+- If \`model\` is omitted, the runtime uses the persona's profile model. Profiles with locked model selection ignore caller model overrides.`,
 			parameters: Type.Object({
 				prompt: Type.String({
 					description: "The task for the agent to perform.",
@@ -691,12 +839,27 @@ Model selection — YOU choose based on task complexity:
 				),
 				thinking: Type.Optional(
 					Type.String({
-						description: "Thinking level: off, minimal, low, medium, high, xhigh. Overrides agent default.",
+						description:
+							"Requested thinking level: off, minimal, low, medium, high, xhigh. Agent profiles with fixed thinking keep their profile value.",
 					}),
 				),
 				max_turns: Type.Optional(
 					Type.Number({
-						description: "Maximum number of agentic turns before stopping. Omit for unlimited (default).",
+						description:
+							"Requested maximum agentic turns before stopping. Agent profiles with fixed maxTurns keep their profile value.",
+						minimum: 1,
+					}),
+				),
+				token_budget: Type.Optional(
+					Type.Integer({
+						description:
+							"Maximum cumulative output tokens this agent is allowed to generate. Input tokens are not counted.",
+						minimum: 1,
+					}),
+				),
+				max_duration: Type.Optional(
+					Type.Integer({
+						description: "Maximum wall-clock duration in seconds. The agent is aborted when this limit is exceeded.",
 						minimum: 1,
 					}),
 				),
@@ -724,6 +887,9 @@ Model selection — YOU choose based on task complexity:
 			}),
 
 			renderCall(args, theme) {
+				// Defense-in-depth: `visibility` is not in this tool's public schema (see execute()),
+				// but if an LLM hallucinates the arg we'd rather hide the tool call than render it.
+				if ((args as Record<string, unknown>).visibility === "system") return new Text("", 0, 0)
 				const displayName = args.subagent_type ? getDisplayName(args.subagent_type as string) : "Agent"
 				const desc = (args.description as string) ?? ""
 				return new Text(
@@ -740,6 +906,7 @@ Model selection — YOU choose based on task complexity:
 				const expanded = piExpanded || (context?.toolCallId ? isToolExpanded(context.toolCallId) : false)
 
 				const details = result.details as AgentDetails | undefined
+				if (details?.visibility === "system") return new Text("", 0, 0)
 				if (!details) {
 					const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 					return new Text(text, 0, 0)
@@ -808,7 +975,7 @@ Model selection — YOU choose based on task complexity:
 				if (details.status === "error") {
 					line += `\n${theme.fg("error", `  ⎿  Error: ${details.error ?? "unknown"}`)}`
 				} else {
-					line += `\n${theme.fg("warning", "  ⎿  Aborted (max turns exceeded)")}`
+					line += `\n${theme.fg("warning", `  ⎿  ${getAbortLabel(details.abortReason)}`)}`
 				}
 
 				return new Text(line, 0, 0)
@@ -843,10 +1010,49 @@ Model selection — YOU choose based on task complexity:
 					}
 				}
 
+				const explicitTokenBudget =
+					(params as { token_budget?: number; tokenBudget?: number }).token_budget ??
+					(params as { token_budget?: number; tokenBudget?: number }).tokenBudget
+				const activeBudgetRetryBlock = budgetRetryBlock
+				if (
+					activeBudgetRetryBlock &&
+					shouldBlockBudgetRetry(activeBudgetRetryBlock, {
+						tokenBudget: resolvedConfig.tokenBudget,
+						subagentType,
+						description: params.description as string,
+						prompt: params.prompt as string,
+					})
+				) {
+					return textResult(
+						`Agent retry blocked: the previous Agent call for "${activeBudgetRetryBlock.description}" already aborted because the user-supplied token_budget (${formatTokens(activeBudgetRetryBlock.budget)}) was too small. Do not raise the budget or retry the Agent tool unless the user explicitly asks.`,
+					)
+				}
+
 				const thinking = resolvedConfig.thinking
 				const inheritContext = resolvedConfig.inheritContext
-				const runInBackground = resolvedConfig.runInBackground
 				const isolated = resolvedConfig.isolated
+				// The `visibility` field is intentionally NOT exposed in this tool's public schema —
+				// LLMs and personas cannot create hidden agents. Internal kimchi callers (e.g. permission
+				// classifiers, future MCP adapters) spawn hidden agents directly via `AgentManager.spawn(..., { visibility: "system" })`,
+				// which bypasses the tool layer entirely. Hardcoding "user" here ensures any defiant
+				// LLM that hallucinates a `visibility` arg gets ignored at the source.
+				const visibility: AgentVisibility = "user"
+				const runInBackground = resolvedConfig.runInBackground
+
+				// Image forwarding: when session has images and subagent model supports vision,
+				// extract image paths from read tool calls and prepend them to the prompt.
+				const effectivePrompt = (() => {
+					const base = params.prompt as string
+					if (!sessionHasImages()) return base
+					const modelInput = (model as { input?: string[] } | undefined)?.input
+					if (!modelInput?.includes("image")) return base
+
+					const imagePaths = extractImagePathsFromSession(ctx)
+					if (imagePaths.length === 0) return base
+
+					const pathList = imagePaths.join(", ")
+					return `Context images from parent session: ${pathList}. Read them if needed for your task.\n\n${base}`
+				})()
 
 				const parentModelId = ctx.model?.id
 				const effectiveModelId = (model as { id?: string } | undefined)?.id
@@ -860,12 +1066,14 @@ Model selection — YOU choose based on task complexity:
 				const modeLabel = getPromptModeLabel(subagentType)
 				if (modeLabel) agentTags.push(modeLabel)
 				if (thinking) agentTags.push(`thinking: ${thinking}`)
+				if (resolvedConfig.tokenBudget != null) agentTags.push(`budget: ${formatTokens(resolvedConfig.tokenBudget)}`)
 				if (isolated) agentTags.push("isolated")
 				const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns ?? getDefaultMaxTurns())
 				const detailBase = {
 					displayName,
 					description: params.description as string,
 					subagentType,
+					visibility,
 					modelName: agentModelName,
 					tags: agentTags.length > 0 ? agentTags : undefined,
 				}
@@ -884,7 +1092,7 @@ Model selection — YOU choose based on task complexity:
 					}
 					return textResult(
 						record.result?.trim() || record.error?.trim() || "No output.",
-						buildDetails(detailBase, record),
+						buildDetails({ ...detailBase, visibility: existing.visibility }, record),
 					)
 				}
 
@@ -919,10 +1127,13 @@ Model selection — YOU choose based on task complexity:
 					}
 
 					try {
-						id = manager.spawn(pi, ctx, subagentType, params.prompt as string, {
+						id = manager.spawn(pi, ctx, subagentType, effectivePrompt, {
 							description: params.description as string,
+							visibility,
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
 							maxTurns: effectiveMaxTurns,
+							tokenBudget: resolvedConfig.tokenBudget,
+							maxDuration: resolvedConfig.maxDuration,
 							isolated,
 							inheritContext,
 							thinkingLevel: thinking,
@@ -943,6 +1154,14 @@ Model selection — YOU choose based on task complexity:
 						record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
 						writeInitialEntry(record.outputFile, id, params.prompt as string, ctx.cwd)
 					}
+					if (explicitTokenBudget != null) {
+						budgetRetryCandidates.set(id, {
+							budget: explicitTokenBudget,
+							subagentType,
+							description: params.description as string,
+							prompt: params.prompt as string,
+						})
+					}
 
 					if (joinMode != null && joinMode !== "async") {
 						currentBatchAgents.push({ id, joinMode })
@@ -959,6 +1178,7 @@ Model selection — YOU choose based on task complexity:
 						type: subagentType,
 						description: params.description,
 						isBackground: true,
+						visibility,
 					})
 
 					const isQueued = record?.status === "queued"
@@ -1028,10 +1248,13 @@ Model selection — YOU choose based on task complexity:
 					return textResult(`Failed to pre-write Agent session file under ${parentSessionDir}: ${detail}`)
 				}
 				try {
-					record = await manager.spawnAndWait(pi, ctx, subagentType, params.prompt as string, {
+					record = await manager.spawnAndWait(pi, ctx, subagentType, effectivePrompt, {
 						description: params.description as string,
+						visibility,
 						model: model as Parameters<typeof manager.spawnAndWait>[4]["model"],
 						maxTurns: effectiveMaxTurns,
+						tokenBudget: resolvedConfig.tokenBudget,
+						maxDuration: resolvedConfig.maxDuration,
 						isolated,
 						inheritContext,
 						thinkingLevel: thinking,
@@ -1063,12 +1286,24 @@ Model selection — YOU choose based on task complexity:
 				if (record.status === "error") {
 					return textResult(`${fallbackNote}Agent failed: ${record.error}`, details)
 				}
+				blockBudgetRetryIfNeeded(
+					record,
+					explicitTokenBudget != null
+						? {
+								budget: explicitTokenBudget,
+								subagentType,
+								description: params.description as string,
+								prompt: params.prompt as string,
+							}
+						: undefined,
+				)
 
 				const durationMs = (record.completedAt ?? Date.now()) - record.startedAt
 				const statsParts = [`${record.toolUses} tool uses`]
 				if (tokenText) statsParts.push(tokenText)
+				const outcome = record.status === "aborted" ? "aborted" : record.status === "stopped" ? "stopped" : "completed"
 				return textResult(
-					`${fallbackNote}Agent completed in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status)}.\n\n${record.result?.trim() || "No output."}`,
+					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.${getStatusInstruction(record.status, record.abortReason)}\n\n${record.result?.trim() || "No output."}`,
 					details,
 				)
 			},
@@ -1104,6 +1339,9 @@ Model selection — YOU choose based on task complexity:
 				const expanded = piExpanded || (context?.toolCallId ? isToolExpanded(context.toolCallId) : false)
 
 				const details = result.details as GetSubagentResultDetails | undefined
+				// Defense-in-depth: hide get_subagent_result output for system agents in the TUI
+				// (consistency with the Agent tool's renderCall/renderResult short-circuits).
+				if (details?.visibility === "system") return new Text("", 0, 0)
 				if (!details) {
 					const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 					return new Text(text, 0, 0)
@@ -1143,7 +1381,7 @@ Model selection — YOU choose based on task complexity:
 						line += `\n${theme.fg("muted", `  … (${lines.length - maxLines} more lines — use verbose: true for full output)`)}`
 					}
 				} else if (!expanded) {
-					const summary = summaryForStatus(details.status, details.error)
+					const summary = summaryForStatus(details.status, details.error, details.abortReason)
 					line += `\n${theme.fg("dim", `  ⎿  ${summary}`)}`
 				}
 
@@ -1210,6 +1448,8 @@ Model selection — YOU choose based on task complexity:
 					displayName,
 					description: record.description,
 					status: record.status,
+					visibility: record.visibility,
+					abortReason: record.abortReason,
 					toolUses: record.toolUses,
 					tokens,
 					contextPercent,
@@ -1319,7 +1559,7 @@ Model selection — YOU choose based on task complexity:
 
 		const options: string[] = []
 
-		const agents = manager.listAgents()
+		const agents = listUserVisibleAgents()
 		if (agents.length > 0) {
 			const running = agents.filter((a) => a.status === "running" || a.status === "queued").length
 			const done = agents.filter((a) => a.status === "completed" || a.status === "steered").length
@@ -1414,7 +1654,7 @@ Model selection — YOU choose based on task complexity:
 	}
 
 	async function showRunningAgents(ctx: ExtensionCommandContext) {
-		const agents = manager.listAgents()
+		const agents = listUserVisibleAgents()
 		if (agents.length === 0) {
 			ctx.ui.notify("No agents.", "info")
 			return
@@ -1665,6 +1905,7 @@ tools: <comma-separated built-in tools: read, bash, edit, write, grep, find, ls.
 models: <optional ordered list of models, e.g. ["kimchi-dev/minimax-m2.7"]. Omit to inherit parent model>
 thinking: <optional thinking level: off, minimal, low, medium, high, xhigh. Omit to inherit>
 max_turns: <optional max agentic turns. 0 or omit for unlimited (default)>
+token_budget: <optional maximum total tokens for this agent. Omit for no profile budget>
 prompt_mode: <"replace" (body IS the full system prompt) or "append" (body is appended to default prompt). Default: replace>
 extensions: <true (inherit all MCP/extension tools), false (none), or comma-separated names. Default: true>
 skills: <true (inherit all), false (none), or comma-separated skill names to preload into prompt. Default: true>
@@ -1757,12 +1998,40 @@ Write the file using the write tool. Only write the file, nothing else.`
 		let thinkingLine = ""
 		if (thinkingChoice !== "inherit") thinkingLine = `\nthinking: ${thinkingChoice}`
 
+		const maxTurnsInput = await ctx.ui.input("Max turns (optional, blank for unlimited)", "")
+		let maxTurnsLine = ""
+		if (maxTurnsInput?.trim()) {
+			const trimmed = maxTurnsInput.trim()
+			if (!/^\d+$/.test(trimmed)) {
+				ctx.ui.notify("Max turns must be a non-negative integer.", "warning")
+				return
+			}
+			const maxTurns = Number.parseInt(trimmed, 10)
+			maxTurnsLine = `\nmax_turns: ${maxTurns}`
+		}
+
+		const tokenBudgetInput = await ctx.ui.input("Token budget (optional, blank for none)", "")
+		let tokenBudgetLine = ""
+		if (tokenBudgetInput?.trim()) {
+			const trimmed = tokenBudgetInput.trim()
+			if (!/^\d+$/.test(trimmed)) {
+				ctx.ui.notify("Token budget must be a positive integer.", "warning")
+				return
+			}
+			const tokenBudget = Number.parseInt(trimmed, 10)
+			if (tokenBudget <= 0) {
+				ctx.ui.notify("Token budget must be a positive integer.", "warning")
+				return
+			}
+			tokenBudgetLine = `\ntoken_budget: ${tokenBudget}`
+		}
+
 		const systemPrompt = await ctx.ui.editor("System prompt", "")
 		if (systemPrompt === undefined) return
 
 		const content = `---
 description: ${description}
-tools: ${tools}${modelLine}${thinkingLine}
+tools: ${tools}${modelLine}${thinkingLine}${maxTurnsLine}${tokenBudgetLine}
 prompt_mode: replace
 ---
 

@@ -126,13 +126,14 @@ describe("scopeFerment", () => {
 
 		expect(okText(result)).toContain("scoped and ready")
 		expect(h.storage.get(h.fermentId)?.status).toBe("planned")
+		expect(h.pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+			expect.anything(),
+		)
 	})
 
-	it("scopes exec-mode ferments without the continuation subsystem", async () => {
+	it("scopes non-interactive ferments without the confirmation subsystem", async () => {
 		const h = createHarness()
-		const applyAndPersist = createApplyAndPersist(h.runtime)
-		const mode = applyAndPersist(h.fermentId, { type: "set_mode", mode: "exec" })
-		if (!mode.ok) throw new Error(mode.error.message)
 
 		const result = await scopeFerment(
 			h.runtime,
@@ -199,7 +200,7 @@ describe("scopeFerment", () => {
 		expect(h.storage.get(h.fermentId)?.status).toBe("draft")
 	})
 
-	it("keeps the interactive scoping confirmation gate (after gate validation)", async () => {
+	it("points blocked interactive scope_ferment calls back to propose_ferment_scoping", async () => {
 		const h = createHarness()
 		h.runtime.markScopingInteractive(h.fermentId)
 
@@ -214,7 +215,9 @@ describe("scopeFerment", () => {
 			{ pi: h.pi },
 		)
 
-		expect(errText(result)).toContain("waiting for user confirmation")
+		expect(errText(result)).toContain("propose_ferment_scoping")
+		expect(errText(result)).toContain("Do not call scope_ferment directly")
+		expect(errText(result)).not.toContain("Present the plan summary")
 		expect(h.storage.get(h.fermentId)?.status).toBe("draft")
 	})
 
@@ -415,6 +418,39 @@ describe("completeFerment", () => {
 		expect(errText(result)).toContain("C2")
 		expect(errText(result)).toContain("C3")
 		expect(h.storage.get(h.fermentId)?.status).not.toBe("complete")
+	})
+
+	it("treats complete_ferment on an already-complete ferment as an inert no-op", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const first = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ pi: h.pi },
+		)
+		expect(okText(first)).toContain('Ferment "Lifecycle Test" complete')
+		expect(okText(first)).toContain("Do not call bash/read/list_ferments or any ferment tools")
+		expect(mockJudgeJourneyGrade).toHaveBeenCalledTimes(1)
+
+		const second = await completeFerment(h.runtime, { ferment_id: h.fermentId }, { pi: h.pi })
+
+		expect(okText(second)).toContain('Ferment "Lifecycle Test" is already complete')
+		expect(okText(second)).toContain("without clear user consent")
+		expect(mockJudgeJourneyGrade).toHaveBeenCalledTimes(1)
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+	})
+
+	it("refuses complete_ferment on an abandoned ferment without grading", async () => {
+		const h = createHarness()
+		const applyAndPersist = createApplyAndPersist(h.runtime)
+		const abandoned = applyAndPersist(h.fermentId, { type: "abandon", reason: "user stopped" })
+		if (!abandoned.ok) throw new Error(abandoned.error.message)
+
+		const result = await completeFerment(h.runtime, { ferment_id: h.fermentId }, { pi: h.pi })
+
+		expect(errText(result)).toContain('Ferment "Lifecycle Test" is abandoned and cannot be completed')
+		expect(mockJudgeJourneyGrade).not.toHaveBeenCalled()
+		expect(h.storage.get(h.fermentId)?.status).toBe("abandoned")
 	})
 
 	it("persists the journey grade from the judge into ferment.grade", async () => {

@@ -1,7 +1,3 @@
-/**
- * agent-runner.ts — Core execution engine: creates sessions, runs agents, collects results.
- */
-
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
@@ -17,12 +13,14 @@ import {
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
 import { getAvailableModels } from "../../../startup-context.js"
+import { runAsAgentWorker } from "../../agent-worker-context.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
 import {
+	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
 	getConfig,
 	getMemoryToolNames,
@@ -30,16 +28,22 @@ import {
 	getToolNamesForType,
 } from "../personas/agent-types.js"
 import { DEFAULT_AGENTS } from "../personas/default-agents.js"
-import { AGENT_GENERAL_PURPOSE, type SubagentType, type ThinkingLevel } from "../personas/types.js"
+import {
+	AGENT_GENERAL_PURPOSE,
+	type AgentAbortReason,
+	type SubagentType,
+	type ThinkingLevel,
+} from "../personas/types.js"
 import { buildParentContext, extractText } from "../prompt/context.js"
-import { type PromptExtras, buildAgentPrompt } from "../prompt/prompts.js"
+import { type PromptExtras, buildAgentPrompt, formatTokenBudget } from "../prompt/prompts.js"
 import { preloadSkills } from "../prompt/skill-loader.js"
+import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage } from "./usage.js"
 
 /** Names of tools registered by this extension that subagents must NOT inherit. */
 const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"]
 
 /** Default max turns. undefined = unlimited (no turn limit). */
-let defaultMaxTurns: number | undefined
+let defaultMaxTurns: number | undefined = 30
 
 /** Normalize max turns. undefined or 0 = unlimited, otherwise minimum 1. */
 export function normalizeMaxTurns(n: number | undefined): number | undefined {
@@ -58,6 +62,9 @@ export function setDefaultMaxTurns(n: number | undefined): void {
 
 /** Additional turns allowed after the soft limit steer message. */
 let graceTurns = 5
+
+const INACTIVITY_CHECK_INTERVAL = 10_000
+const DEFAULT_INACTIVITY_TIMEOUT = 120_000
 
 /** Get the grace turns value. */
 export function getGraceTurns(): number {
@@ -138,16 +145,23 @@ export interface RunOptions {
 	/** Called at the end of each agentic turn with the cumulative count. */
 	onTurnEnd?: (turnCount: number) => void
 	/** Called once per assistant message_end with that message's usage delta. */
-	onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void
+	onAssistantUsage?: (usage: LifetimeUsage) => void
 	/** Called when the session successfully compacts. */
 	onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void
+	/** Maximum cumulative output tokens this agent is allowed to generate. Overrides agentConfig.tokenBudget. */
+	tokenBudget?: number
+	/** Inactivity timeout in milliseconds. After this period of no session events, the agent is steered; after another period, aborted. */
+	inactivityTimeout?: number
+	/** Maximum wall-clock duration in seconds. The agent is aborted when this limit is exceeded. */
+	maxDuration?: number
 }
 
 export interface RunResult {
 	responseText: string
 	session: AgentSession
-	/** True if the agent was hard-aborted (max_turns + grace exceeded). */
+	/** True if the agent was hard-aborted by max turns or token budget. */
 	aborted: boolean
+	abortReason?: AgentAbortReason
 	/** True if the agent was steered to wrap up (hit soft turn limit) but finished in time. */
 	steered: boolean
 }
@@ -175,6 +189,24 @@ function getLastAssistantText(session: AgentSession): string {
 	return ""
 }
 
+function usageDelta(total: LifetimeUsage | undefined, observed: LifetimeUsage): LifetimeUsage | undefined {
+	if (!total) return undefined
+	const delta = {
+		input: Math.max(0, total.input - observed.input),
+		output: Math.max(0, total.output - observed.output),
+		cacheRead: Math.max(0, total.cacheRead - observed.cacheRead),
+		cacheWrite: Math.max(0, total.cacheWrite - observed.cacheWrite),
+	}
+	return getLifetimeTotal(delta) > 0 ? delta : undefined
+}
+
+function resetUsage(usage: LifetimeUsage): void {
+	usage.input = 0
+	usage.output = 0
+	usage.cacheRead = 0
+	usage.cacheWrite = 0
+}
+
 function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => void {
 	if (!signal) return () => {}
 	const onAbort = () => session.abort()
@@ -183,6 +215,15 @@ function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => 
 }
 
 export async function runAgent(
+	ctx: ExtensionContext,
+	type: SubagentType,
+	prompt: string,
+	options: RunOptions,
+): Promise<RunResult> {
+	return runAsAgentWorker(() => runAgentInner(ctx, type, prompt, options))
+}
+
+async function runAgentInner(
 	ctx: ExtensionContext,
 	type: SubagentType,
 	prompt: string,
@@ -231,6 +272,14 @@ export async function runAgent(
 	const modelId = (options.model as { id?: string } | undefined)?.id
 	const guidelinesBlock = buildPhaseGuidelinesSection(modelId, getCurrentPhase(), getGuidelinesRegistry())
 	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
+
+	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
+	const MIN_TOKEN_BUDGET = 1024
+	const rawTokenBudget = options.tokenBudget ?? agentConfig?.tokenBudget
+	const effectiveTokenBudget = rawTokenBudget != null ? Math.max(rawTokenBudget, MIN_TOKEN_BUDGET) : undefined
+	if (effectiveMaxTurns != null || effectiveTokenBudget != null) {
+		extras.budget = { maxTurns: effectiveMaxTurns, tokenBudget: effectiveTokenBudget }
+	}
 
 	let systemPrompt: string
 	if (agentConfig) {
@@ -292,8 +341,10 @@ export async function runAgent(
 		settingsManager: SettingsManager.create(effectiveCwd, agentDir),
 		modelRegistry: ctx.modelRegistry,
 		model,
-		tools: toolNames,
 		resourceLoader: loader,
+	}
+	if (extensions === false) {
+		sessionOpts.tools = toolNames
 	}
 	if (thinkingLevel) {
 		sessionOpts.thinkingLevel = thinkingLevel
@@ -303,12 +354,23 @@ export async function runAgent(
 
 	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
 
+	await session.bindExtensions({
+		onError: (err) => {
+			options.onToolActivity?.({
+				type: "end",
+				toolName: `extension-error:${err.extensionPath}`,
+			})
+		},
+	})
+
 	if (extensions !== false) {
 		const builtinToolNameSet = new Set(toolNames)
+		const allBuiltinToolNames = new Set(BUILTIN_TOOL_NAMES)
 		const activeTools = session.getActiveToolNames().filter((t) => {
 			if (EXCLUDED_TOOL_NAMES.includes(t)) return false
 			if (disallowedSet?.has(t)) return false
 			if (builtinToolNameSet.has(t)) return true
+			if (allBuiltinToolNames.has(t)) return false
 			if (Array.isArray(extensions)) {
 				return extensions.some((ext) => t.startsWith(ext) || t.includes(ext))
 			}
@@ -320,36 +382,61 @@ export async function runAgent(
 		session.setActiveToolsByName(activeTools)
 	}
 
-	await session.bindExtensions({
-		onError: (err) => {
-			options.onToolActivity?.({
-				type: "end",
-				toolName: `extension-error:${err.extensionPath}`,
-			})
-		},
-	})
-
 	options.onSessionCreated?.(session)
 
 	let turnCount = 0
-	const maxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
+	let cumulativeTokens = 0
+	const observedUsage: LifetimeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+	const windowObservedUsage: LifetimeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 	let softLimitReached = false
 	let aborted = false
+	let abortReason: AgentAbortReason | undefined
+	let budgetAborted = false
+
+	const inactivity = { lastActivityAt: Date.now(), steered: false }
+	const inactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
+
+	const progressSteerThresholds = [0.5, 0.75]
+	let nextProgressIdx = 0
+	let tokenSoftLimitSteered = false
+
+	function buildProgressSummary(): string {
+		const parts: string[] = []
+		if (effectiveMaxTurns != null) parts.push(`Turn ${turnCount}/${effectiveMaxTurns}`)
+		if (effectiveTokenBudget != null) {
+			parts.push(
+				`~${formatTokenBudget(cumulativeTokens)}/${formatTokenBudget(effectiveTokenBudget)} output tokens used`,
+			)
+		}
+		return parts.join(", ")
+	}
 
 	let currentMessageText = ""
 	const unsubTurns = session.subscribe((event: AgentSessionEvent) => {
+		inactivity.lastActivityAt = Date.now()
+		if (inactivity.steered) inactivity.steered = false
+
 		if (event.type === "turn_end") {
 			turnCount++
 			options.onTurnEnd?.(turnCount)
-			if (maxTurns != null) {
-				if (!softLimitReached && turnCount >= maxTurns) {
+			if (effectiveMaxTurns != null) {
+				if (!softLimitReached && turnCount >= effectiveMaxTurns) {
 					softLimitReached = true
 					session.steer(
 						"You have reached your turn limit. Stop exploring. Complete your current edit, ensure file syntax is valid, undo any git state mutations so your work is visible on the filesystem, and summarize progress for the orchestrator. Do not start new edits.",
 					)
-				} else if (softLimitReached && turnCount >= maxTurns + graceTurns) {
+				} else if (softLimitReached && turnCount >= effectiveMaxTurns + graceTurns) {
 					aborted = true
+					abortReason = "max_turns"
 					session.abort()
+				} else if (!softLimitReached && nextProgressIdx < progressSteerThresholds.length) {
+					const threshold = progressSteerThresholds[nextProgressIdx] ?? 1
+					if (turnCount >= effectiveMaxTurns * threshold) {
+						nextProgressIdx++
+						session.steer(
+							`Budget check: ${buildProgressSummary()}. Prioritize completing the most important remaining work.`,
+						)
+					}
 				}
 			}
 		}
@@ -367,18 +454,65 @@ export async function runAgent(
 			options.onToolActivity?.({ type: "end", toolName: event.toolName })
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
-			const u = (event.message as unknown as { usage?: { input: number; output: number; cacheWrite: number } }).usage
-			if (u)
-				options.onAssistantUsage?.({
+			const u = (
+				event.message as unknown as {
+					usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
+				}
+			).usage
+			if (u) {
+				const usage = {
 					input: u.input ?? 0,
 					output: u.output ?? 0,
+					cacheRead: u.cacheRead ?? 0,
 					cacheWrite: u.cacheWrite ?? 0,
-				})
+				}
+				addUsage(observedUsage, usage)
+				addUsage(windowObservedUsage, usage)
+				options.onAssistantUsage?.(usage)
+				if (effectiveTokenBudget != null && !budgetAborted) {
+					cumulativeTokens += getOutputTotal(usage)
+					if (cumulativeTokens > effectiveTokenBudget) {
+						budgetAborted = true
+						abortReason = "token_budget"
+						console.warn(
+							`[agent-runner] token budget exceeded (cumulative=${cumulativeTokens}, budget=${effectiveTokenBudget}); aborting`,
+						)
+						session.abort()
+					} else if (!tokenSoftLimitSteered && cumulativeTokens >= effectiveTokenBudget * 0.8) {
+						tokenSoftLimitSteered = true
+						session.steer(
+							`Budget check: ${buildProgressSummary()}. You are approaching your output token limit. Wrap up your current work and summarize any remaining tasks.`,
+						)
+					}
+				}
+			}
 		}
 		if (event.type === "compaction_end" && !event.aborted && event.result) {
+			resetUsage(windowObservedUsage)
 			options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore })
 		}
 	})
+
+	const inactivityInterval = setInterval(() => {
+		const elapsed = Date.now() - inactivity.lastActivityAt
+		if (inactivity.steered && elapsed >= inactivityTimeout) {
+			aborted = true
+			abortReason = "inactivity"
+			session.abort()
+		} else if (!inactivity.steered && elapsed >= inactivityTimeout) {
+			inactivity.steered = true
+			session.steer("You appear to be stalled. Resume work immediately or summarize your progress.")
+		}
+	}, INACTIVITY_CHECK_INTERVAL)
+
+	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration
+	const durationTimer = effectiveMaxDuration
+		? setTimeout(() => {
+				aborted = true
+				abortReason = "max_duration"
+				session.abort()
+			}, effectiveMaxDuration * 1000)
+		: undefined
 
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
@@ -407,6 +541,8 @@ export async function runAgent(
 	try {
 		await session.prompt(effectivePrompt)
 	} finally {
+		clearInterval(inactivityInterval)
+		if (durationTimer) clearTimeout(durationTimer)
 		unsubTurns()
 		collector.unsubscribe()
 		cleanupAbort()
@@ -424,8 +560,21 @@ export async function runAgent(
 		}
 	}
 
+	const finalUsageDelta = usageDelta(getSessionUsage(session), windowObservedUsage)
+	if (finalUsageDelta) {
+		addUsage(observedUsage, finalUsageDelta)
+		addUsage(windowObservedUsage, finalUsageDelta)
+		cumulativeTokens += getOutputTotal(finalUsageDelta)
+		options.onAssistantUsage?.(finalUsageDelta)
+	}
+
+	if (effectiveTokenBudget != null && !budgetAborted && getOutputTotal(observedUsage) > effectiveTokenBudget) {
+		budgetAborted = true
+		abortReason = "token_budget"
+	}
+
 	const responseText = collector.getText().trim() || getLastAssistantText(session)
-	return { responseText, session, aborted, steered: softLimitReached }
+	return { responseText, session, aborted: aborted || budgetAborted, abortReason, steered: softLimitReached }
 }
 
 /**
@@ -436,39 +585,57 @@ export async function resumeAgent(
 	prompt: string,
 	options: {
 		onToolActivity?: (activity: ToolActivity) => void
-		onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void
+		onAssistantUsage?: (usage: LifetimeUsage) => void
 		onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void
 		signal?: AbortSignal
+		inactivityTimeout?: number
 	} = {},
 ): Promise<string> {
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
 
-	const unsubEvents =
-		options.onToolActivity || options.onAssistantUsage || options.onCompaction
-			? session.subscribe((event: AgentSessionEvent) => {
-					if (event.type === "tool_execution_start")
-						options.onToolActivity?.({ type: "start", toolName: event.toolName })
-					if (event.type === "tool_execution_end") options.onToolActivity?.({ type: "end", toolName: event.toolName })
-					if (event.type === "message_end" && event.message.role === "assistant") {
-						const u = (event.message as unknown as { usage?: { input: number; output: number; cacheWrite: number } })
-							.usage
-						if (u)
-							options.onAssistantUsage?.({
-								input: u.input ?? 0,
-								output: u.output ?? 0,
-								cacheWrite: u.cacheWrite ?? 0,
-							})
-					}
-					if (event.type === "compaction_end" && !event.aborted && event.result) {
-						options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore })
-					}
+	const resumeInactivity = { lastActivityAt: Date.now(), steered: false }
+	const resumeInactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
+
+	const unsubEvents = session.subscribe((event: AgentSessionEvent) => {
+		resumeInactivity.lastActivityAt = Date.now()
+		if (resumeInactivity.steered) resumeInactivity.steered = false
+
+		if (event.type === "tool_execution_start") options.onToolActivity?.({ type: "start", toolName: event.toolName })
+		if (event.type === "tool_execution_end") options.onToolActivity?.({ type: "end", toolName: event.toolName })
+		if (event.type === "message_end" && event.message.role === "assistant") {
+			const u = (
+				event.message as unknown as {
+					usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
+				}
+			).usage
+			if (u)
+				options.onAssistantUsage?.({
+					input: u.input ?? 0,
+					output: u.output ?? 0,
+					cacheRead: u.cacheRead ?? 0,
+					cacheWrite: u.cacheWrite ?? 0,
 				})
-			: () => {}
+		}
+		if (event.type === "compaction_end" && !event.aborted && event.result) {
+			options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore })
+		}
+	})
+
+	const resumeInactivityInterval = setInterval(() => {
+		const elapsed = Date.now() - resumeInactivity.lastActivityAt
+		if (resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
+			session.abort()
+		} else if (!resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
+			resumeInactivity.steered = true
+			session.steer("You appear to be stalled. Resume work immediately or summarize your progress.")
+		}
+	}, INACTIVITY_CHECK_INTERVAL)
 
 	try {
 		await session.prompt(prompt)
 	} finally {
+		clearInterval(resumeInactivityInterval)
 		collector.unsubscribe()
 		unsubEvents()
 		cleanupAbort()

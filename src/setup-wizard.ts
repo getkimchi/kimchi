@@ -9,11 +9,12 @@ import type { ServerEntry } from "./extensions/mcp-adapter/types.js"
 export type MigrationState = "done" | "skip-forever"
 
 export interface SetupResult {
+	cancelled: boolean
 	skillPaths: string[]
 	migrationState?: MigrationState
 }
 
-type MigrationAction = "migrate" | "skip-once" | "skip-forever"
+type MigrationAction = "migrate" | "skip-once" | "skip-forever" | "cancelled"
 
 interface MergedDiscovery {
 	mcpServers: Record<string, ServerEntry>
@@ -84,7 +85,7 @@ async function runMigrationPhase(d: MergedDiscovery): Promise<MigrationPhaseResu
 	})
 
 	if (clack.isCancel(action)) {
-		return { action: "skip-once", selectedServers: {} }
+		return { action: "cancelled", selectedServers: {} }
 	}
 
 	const validActions: MigrationAction[] = ["migrate", "skip-once", "skip-forever"]
@@ -106,7 +107,7 @@ async function runMigrationPhase(d: MergedDiscovery): Promise<MigrationPhaseResu
 	})
 
 	if (clack.isCancel(chosen) || !Array.isArray(chosen)) {
-		return { action: "skip-once", selectedServers: {} }
+		return { action: "cancelled", selectedServers: {} }
 	}
 
 	const selectedServers = Object.fromEntries(chosen.map((name) => [name, d.mcpServers[name]]))
@@ -306,7 +307,7 @@ async function runCommandsMigrationPhase(agents: AgentDiscovery[]): Promise<numb
 	return migrated
 }
 
-async function runSkillsPhase(discoveredSkillDirs: string[]): Promise<string[]> {
+async function runSkillsPhase(discoveredSkillDirs: string[]): Promise<string[] | "cancelled"> {
 	const options = buildSkillPathOptions(discoveredSkillDirs)
 
 	const selected = await clack.multiselect<string>({
@@ -316,7 +317,7 @@ async function runSkillsPhase(discoveredSkillDirs: string[]): Promise<string[]> 
 	})
 
 	if (clack.isCancel(selected) || !Array.isArray(selected)) {
-		return options
+		return "cancelled"
 	}
 
 	const paths = selected
@@ -326,11 +327,18 @@ async function runSkillsPhase(discoveredSkillDirs: string[]): Promise<string[]> 
 		placeholder: "e.g. .my-skills or /absolute/path/to/skills",
 	})
 
-	if (!clack.isCancel(customInput) && typeof customInput === "string" && customInput.trim().length > 0) {
+	if (clack.isCancel(customInput)) return "cancelled"
+
+	if (typeof customInput === "string" && customInput.trim().length > 0) {
 		paths.push(customInput.trim())
 	}
 
 	return paths
+}
+
+function cancelSetup(skillPaths: string[] = []): SetupResult {
+	clack.cancel("Cancelled.")
+	return { cancelled: true, skillPaths }
 }
 
 export async function runSetupWizard(options: {
@@ -345,6 +353,9 @@ export async function runSetupWizard(options: {
 
 	if (merged?.hasAnythingMigratable) {
 		const { action, selectedServers } = await runMigrationPhase(merged)
+		if (action === "cancelled") {
+			return cancelSetup()
+		}
 		if (action === "migrate") {
 			const serverCount = Object.keys(selectedServers).length
 			if (serverCount > 0) {
@@ -353,13 +364,12 @@ export async function runSetupWizard(options: {
 			}
 			const commandsCopied = await runCommandsMigrationPhase(merged.agents)
 			if (commandsCopied === "cancelled") {
-				migrationRan = false
-			} else {
-				if (commandsCopied > 0) {
-					clack.log.success(`Migrated ${commandsCopied} command(s) to Kimchi prompts.`)
-				}
-				migrationRan = true
+				return cancelSetup()
 			}
+			if (commandsCopied > 0) {
+				clack.log.success(`Migrated ${commandsCopied} command(s) to Kimchi prompts.`)
+			}
+			migrationRan = true
 		} else if (action === "skip-forever") {
 			migrationState = "skip-forever"
 		}
@@ -381,7 +391,9 @@ export async function runSetupWizard(options: {
 				"Each relative path is scanned under both ~ and the current project.",
 			"Skills",
 		)
-		skillPaths = await runSkillsPhase(discoveredSkillDirs)
+		const selectedSkillPaths = await runSkillsPhase(discoveredSkillDirs)
+		if (selectedSkillPaths === "cancelled") return cancelSetup(skillPaths)
+		skillPaths = selectedSkillPaths
 	}
 
 	if (migrationRan) {
@@ -389,5 +401,5 @@ export async function runSetupWizard(options: {
 	}
 
 	clack.outro("Setup complete.")
-	return { skillPaths, migrationState }
+	return { cancelled: false, skillPaths, migrationState }
 }

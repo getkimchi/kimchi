@@ -30,6 +30,24 @@ kimchi         # launch the coding harness
 
 Run `kimchi --help` to see all available subcommands and flags.
 
+## Remote teleport (preview)
+
+Launch with `kimchi --teleport` to enable the session-multiplex commands. The local TUI stays the home base; remote workers are spawned, detached, and re-attached without restarting kimchi.
+
+```bash
+kimchi --teleport
+```
+
+Four slash commands are available inside the TUI:
+
+- `/teleport [name] [--allow-dirty] [--exclude <glob>] [--include-ignored] [--abandon-pending] [--force]` — rsync the working tree to a fresh remote sandbox and foreground it. The remote starts with an empty conversation in this release (session import is deferred); the workspace is canonical on the remote from that point on.
+- `/detach [--abandon-pending]` — drop the WebSocket to the foreground remote (the server keeps the session running) and return to the local home base.
+- `/attach <name-or-id>` — re-attach to a previously detached remote, either one from this kimchi run or one running server-side from a prior session. Server state is canonical; no rsync.
+- `/sessions` — list everything: the foreground remote (if any), in-process detached remotes, and other server-side sessions.
+- `/connect [name-or-id]` — open an interactive ssh shell on the sandbox via the teleport proxy. With no argument, connects to the currently foregrounded remote. With a name or id, resolves like `/attach` but only opens a shell — kimchi's session state is unchanged when ssh exits. Auth uses a freshly-minted connect token; the proxy bridges your local ssh to the sandbox over the same `/ssh` WebSocket endpoint rsync uses.
+
+`--teleport` and `--remote` are mutually exclusive. Use `--remote --session <id>` to attach to a single remote at startup; use `--teleport` to multiplex from a local home base.
+
 ## Configuration
 
 ### Authentication
@@ -117,6 +135,34 @@ When multi-model is off the agent uses a single-model system prompt: environment
 
 kimchi respects `HTTP_PROXY` / `HTTPS_PROXY` environment variables for network requests.
 
+### Token optimization (RTK)
+
+When [RTK](https://github.com/rtk-ai/rtk) (`rtk`) is installed and on your `PATH`, kimchi automatically rewrites bash tool calls through `rtk rewrite` before execution. This compresses command output (git, cargo, npm, docker, etc.) by 60-90%, significantly reducing LLM context usage.
+
+**How it works:** before every bash tool execution, kimchi calls `rtk rewrite "<command>"`. If RTK returns a rewritten command (e.g. `git status` becomes `rtk git status`), the rewritten version is executed instead. The agent receives compact, filtered output without any workflow changes.
+
+**Installation:**
+
+```bash
+brew install rtk    # macOS / Linux
+```
+
+RTK is auto-detected at startup. No configuration is needed — if `rtk` is on your PATH, it's active.
+
+**Disabling:**
+
+```bash
+KIMCHI_RTK=0 kimchi   # disable for this session
+```
+
+Set `KIMCHI_RTK` to `0`, `false`, or `off` to disable rewriting even when RTK is installed.
+
+You can also disable persistently in `~/.config/kimchi/harness/settings.json`:
+
+```json
+{ "rtk": false }
+```
+
 ### Subagent sessions
 
 Every `subagent` invocation writes its own persistent session file alongside the parent's, in the same session directory. The child's session header back-references its parent, and the parent's tool-result records the child's session id and file path. Nested subagents (sub-subagents) follow the same rule at any depth — all descendants land next to the original top-level parent.
@@ -181,8 +227,8 @@ kimchi --ferment "Build Tetris"
 Or inside an active session:
 
 ```
-/ferment add "Build Tetris"    # creates with mode: plan
-/ferment mode exec              # switch to autonomous execution
+/ferment new "Build Tetris"    # create a ferment
+/ferment auto                   # keep going until done or blocked
 ```
 
 ### Concepts
@@ -201,10 +247,10 @@ All lifecycle transitions (create → scope → activate → start → complete)
 draft → planned → running → [paused] → complete
 ```
 
-1. **draft** — created via `/ferment add`, agent collects goal + phases conversationally
+1. **draft** — created via `/ferment new`, agent collects goal + phases conversationally
 2. **planned** — `scope_ferment` sets goal, criteria, constraints, phase breakdown
 3. **running** — `activate_ferment_phase` starts a phase, agent executes steps
-4. **paused** — user intervention required (plan mode, or `/pause`)
+4. **paused** — user intervention required, or paused with `/ferment pause`
 5. **complete** — all phases terminal, done
 
 Ferment tool visibility is session-profile based. Active planners see the full
@@ -212,34 +258,31 @@ namespaced lifecycle surface for a whole run, and the FSM/tool result text says
 which call is legal next; worker subagents do not receive ferment lifecycle
 tools.
 
-### Three work modes
+### Continuation policy
 
-| Mode | Behavior | Use when |
-|------|----------|----------|
-| **plan** | Agent asks permission, proposes, explains. No tool enforcement. | Scoping, ambiguous problems, complex architecture |
-| **exec** | Agent acts immediately. Strips coaching text. Auto-advance. | Clear tasks, iterating fast, trusted execution |
-| **auto** (default) | Full coaching. User decides when to act. | Mixed, exploring, learning |
+Continuation policy controls whether the active ferment advances across phase boundaries.
 
-```
-/ferment mode plan     ← ask the agent to coach you
-/ferment mode exec     ← let the agent run autonomously
-/ferment mode auto     ← coaching mode (default)
-```
+| Policy | Behavior | Command |
+|--------|----------|---------|
+| **manual** | Ask before moving to the next phase. | `/ferment manual` |
+| **automated** | Keep going until complete, blocked, paused, or user input is needed. | `/ferment auto` |
+
+Pause/resume is separate lifecycle control: `/ferment pause` stops the ferment, and `/ferment resume` continues it using the current policy.
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `/ferment` | List all ferments with status |
-| `/ferment add "Name"` | Create new ferment (draft, plan mode) |
+| `/ferment` | Start a new ferment via prompt |
+| `/ferment new "Name"` | Create new ferment |
 | `/ferment switch <id>` | Resume by ID prefix or name |
 | `/ferment delete <id>` | Delete permanently |
 | `/ferment export` | Export stats to JSON for analysis |
-| `/ferment mode` | Show current mode + help |
-| `/ferment mode plan/exec/auto` | Change mode |
-| `/auto` | Enable auto-mode |
-| `/pause` | Disable auto-mode |
-| `/status` | Full status dump with phases, steps, decisions |
+| `/ferment progress` | Open phase/step navigator overlay |
+| `/ferment manual` | Set manual continuation policy |
+| `/ferment auto` | Set automated continuation policy |
+| `/ferment pause` | Pause the active ferment lifecycle |
+| `/ferment resume` | Resume the active ferment lifecycle |
 
 ### Recovery
 

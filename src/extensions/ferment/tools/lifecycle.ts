@@ -1,5 +1,5 @@
 /**
- * Ferment lifecycle tools: create, list, scope, update fields, set mode, complete.
+ * Ferment lifecycle tools: create, list, scope, update fields, complete.
  *
  * Tool handlers follow the pattern:
  *   1. Validate UI-flow gates (scoping confirmation, etc.) — host concern
@@ -19,7 +19,7 @@ import { renderGateGuidance } from "../gate-registry.js"
 import { validateGatesOrErr } from "../gate-validation.js"
 import { autoInitFromEnv, ensureGitRepo } from "../git-init.js"
 import { judgeJourneyGrade } from "../judge.js"
-import { appendRefEntry, injectResumeAutoNudge, resetReactiveAutoNudgeCount } from "../nudge.js"
+import { appendRefEntry, resetReactiveContinuationNudgeCount } from "../nudge.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
 import { getPromptUi, promptForm, promptInput, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
@@ -40,7 +40,6 @@ import {
 	ListParams,
 	ProposeScopingParams,
 	ScopeParams,
-	SetModeParams,
 	UpdateScopeFieldParams,
 } from "../tool-schemas.js"
 import { setActiveFermentState } from "../tool-scope.js"
@@ -160,14 +159,25 @@ function renderStep(index: number, description: string): string {
 	return lines.map((line, lineIndex) => (lineIndex === 0 ? `${index}. ${line}` : `   ${line}`)).join("\n")
 }
 
+function concatenateAssumptionStrings(items: string[]): string | undefined {
+	const fragments = items.map((item) => item.trim()).filter(Boolean)
+	if (fragments.length === 0) return undefined
+	return fragments.join("; ")
+}
+
 function normalizeAssumptions(value: unknown): string | undefined {
-	if (value === undefined || typeof value !== "string") return value as string | undefined
+	if (value === undefined) return undefined
+	if (Array.isArray(value)) {
+		if (!value.every((item) => typeof item === "string")) return undefined
+		return concatenateAssumptionStrings(value)
+	}
+	if (typeof value !== "string") return undefined
 	const trimmed = value.trim()
 	if (!trimmed.startsWith("[")) return value
 	try {
 		const parsed = JSON.parse(trimmed)
 		if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
-			return parsed.join("; ")
+			return concatenateAssumptionStrings(parsed)
 		}
 	} catch {
 		// Leave the original text alone. `assumptions` is a string field, so a
@@ -179,7 +189,7 @@ function normalizeAssumptions(value: unknown): string | undefined {
 function normalizePhases(value: ProposeScopingArgs["phases"]): ScopePhaseInput[] | string {
 	const parsed = parseJsonArray(value, "phases")
 	if (typeof parsed === "string") return parsed
-	if (parsed.length < 3) return 'Field "phases" must contain at least 3 phases.'
+	if (parsed.length < 1) return 'Field "phases" must contain at least 1 phase.'
 	if (parsed.length > 7) return 'Field "phases" must contain at most 7 phases.'
 	const phases: ScopePhaseInput[] = []
 	for (const [phaseIndex, raw] of parsed.entries()) {
@@ -362,14 +372,24 @@ export async function scopeFerment(
 	})
 	if (gateError) return gateError
 
-	// Hard gate: only enforced for ferments scoped interactively (TUI path)
-	// in plan mode. Headless, conversational, exec, and auto modes bypass —
-	// the LLM is trusted there and one-shot/auto-execution should not stall.
+	// Hard gate: only enforced for ferments scoped through the interactive TUI
+	// path. Headless and one-shot scoping never mark this gate as interactive.
 	const fGate = runtime.getStorage().get(params.ferment_id)
-	const gateActive = runtime.isScopingInteractive(params.ferment_id) && fGate?.mode === "plan"
+	const gateActive = runtime.isScopingInteractive(params.ferment_id)
 	if (gateActive && !runtime.isScopingConfirmed(params.ferment_id)) {
+		const pending = runtime.getPendingScope(params.ferment_id)
+		const pendingHint =
+			pending?.phases && pending.phases.length > 0
+				? "A structured proposal is pending in the interactive scoping flow. Do not call scope_ferment directly; the host confirmation must come from propose_ferment_scoping."
+				: "No valid structured proposal has reached the host yet. Call propose_ferment_scoping with the full payload so the host can render the confirmation dropdown."
 		return toolErr(
-			`Cannot scope ferment "${params.ferment_id}" yet — waiting for user confirmation. Present the plan summary to the user and wait for them to confirm before calling scope_ferment.`,
+			[
+				`Cannot call scope_ferment for interactive ferment "${params.ferment_id}" before host confirmation.`,
+				pendingHint,
+				"Retry by calling propose_ferment_scoping with the full valid payload: goal, success_criteria, constraints, assumptions, phases, questions, and gates.",
+				"If a previous propose_ferment_scoping call failed validation, fix that schema error and re-emit the same plan.",
+				"Do not summarize the plan in chat. Do not call scope_ferment directly.",
+			].join("\n"),
 		)
 	}
 	runtime.consumeScopingGate(params.ferment_id)
@@ -384,7 +404,7 @@ export async function scopeFerment(
 		goal: params.goal,
 		successCriteria: params.success_criteria,
 		constraints: params.constraints,
-		assumptions: params.assumptions,
+		assumptions: normalizeAssumptions(params.assumptions),
 		phases: params.phases ?? [],
 	}
 	const outcome = applyAndPersist(params.ferment_id, cmd)
@@ -408,12 +428,7 @@ export async function scopeFerment(
 	const fresh = outcome.ferment
 	const phaseList = fresh.phases.map((p) => `  [${p.id}] ${p.index}. ${p.name} — ${p.goal}`).join("\n") || "(none)"
 
-	// In plan mode, inject the resume nudge exactly once here — at the moment of
-	// successful scoping — so the planner is kicked forward without a TUI dropdown.
-	if (fresh.mode === "plan") {
-		runtime.setActive(fresh)
-		injectResumeAutoNudge(pi, runtime)
-	}
+	runtime.setActive(fresh)
 
 	return toolOk(
 		withNextActionHint(
@@ -437,6 +452,20 @@ export async function completeFerment(
 
 	const fSnapshot = runtime.getStorage().get(params.ferment_id)
 	if (!fSnapshot) return toolErr("Ferment not found.")
+	if (fSnapshot.status === "complete") {
+		runtime.clearFermentState(params.ferment_id)
+		resetReactiveContinuationNudgeCount(params.ferment_id)
+		runtime.setActive(undefined)
+		return toolOk(
+			`Ferment "${fSnapshot.name}" is already complete. No further lifecycle action is available. Do not act on this ferment again without clear user consent.`,
+		)
+	}
+	if (fSnapshot.status === "abandoned") {
+		runtime.clearFermentState(params.ferment_id)
+		resetReactiveContinuationNudgeCount(params.ferment_id)
+		runtime.setActive(undefined)
+		return toolErr(`Ferment "${fSnapshot.name}" is abandoned and cannot be completed.`)
+	}
 
 	// Ferment-scope gate validation runs BEFORE any state mutation. The agent
 	// must answer C1 (success criteria satisfied), C2 (no unresolved F3
@@ -449,6 +478,7 @@ export async function completeFerment(
 			`complete_ferment refused — agent self-flagged on ${count} ferment gate(s):\n\n${lines}\n\nAddress the concern(s) and call complete_ferment again with passing C-gate verdicts.`,
 	})
 	if (gateError) return gateError
+	const gates = params.gates ?? []
 
 	// Gates pass → proceed with completion.
 	const completeOutcome = applyAndPersist(params.ferment_id, { type: "complete_ferment" })
@@ -480,7 +510,7 @@ export async function completeFerment(
 				})),
 			}
 		}),
-		fermentGates: params.gates.map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
+		fermentGates: gates.map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
 		totalDiff: totalDiff
 			? { available: totalDiff.available, filesChanged: totalDiff.filesChanged, diffSnippet: totalDiff.diffSnippet }
 			: { available: false },
@@ -557,17 +587,19 @@ export async function completeFerment(
 
 	// Cleanup in-memory state.
 	runtime.clearFermentState(params.ferment_id)
-	resetReactiveAutoNudgeCount(params.ferment_id)
+	resetReactiveContinuationNudgeCount(params.ferment_id)
 	runtime.setActive(undefined)
 
 	const fresh = gradeOutcome.ferment
 	const failedPhases = fresh.phases.filter((p) => p.status === "failed").length
 	const failedNote = failedPhases > 0 ? ` (${failedPhases} phase(s) failed)` : ""
-	const gateLines = params.gates.map((g) => `  ${g.id} (${g.verdict}): ${g.rationale}`).join("\n")
+	const gateLines = gates.map((g) => `  ${g.id} (${g.verdict}): ${g.rationale}`).join("\n")
 	const gradeLabel = resolvedGrade.unavailable ? `${resolvedGrade.grade} (unavailable)` : resolvedGrade.grade
+	const terminalNotice =
+		"This ferment is complete and terminal. Do not call bash/read/list_ferments or any ferment tools for this ferment again without clear user consent."
 
 	return toolOk(
-		`Ferment "${fresh.name}" complete${failedNote}.\n\nFinal gates:\n${gateLines}\n\nFinal grade: ${gradeLabel} — ${resolvedGrade.rationale}\n\n${params.final_summary ?? ""}`,
+		`Ferment "${fresh.name}" complete${failedNote}.\n\nFinal gates:\n${gateLines}\n\nFinal grade: ${gradeLabel} — ${resolvedGrade.rationale}\n\n${params.final_summary ?? ""}\n\n${terminalNotice}`,
 	)
 }
 
@@ -576,7 +608,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: "create_ferment",
 		label: "Create Ferment",
-		description: "Create a new ferment at draft status.",
+		description: "Create a new ferment at draft status. Use only when no ferment is already active.",
 		parameters: CreateFermentParams,
 		async execute(_, params) {
 			// Creation is special — no existing ferment to transition from.
@@ -591,7 +623,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 			const branch = f.worktree.branch ?? "(no git)"
 			return toolOk(
 				withNextActionHint(
-					`Created "${f.name}".  Mode: ${f.mode}  •  Branch: ${branch}  •  Path: ${f.worktree.path}`,
+					`Created "${f.name}".  Policy: ${runtime.getContinuationPolicy()}  •  Branch: ${branch}  •  Path: ${f.worktree.path}`,
 					f,
 				),
 			)
@@ -601,7 +633,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: "propose_ferment_scoping",
 		label: "Propose Scoping",
-		description: `Single combined emission of the full scoping draft after the user's free-form intent. Includes goal, success criteria, constraints, assumptions, phases (3-7), and optional clarifying questions (≤3) with one option \`recommended: true\` per question. Replaces previous draft wholesale.
+		description: `Emit the full scoping draft: goal, criteria, constraints, assumptions, 1-7 phases, optional decision-blocking questions. Questions pause planning; after answers, re-emit the updated proposal with questions: []. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
@@ -825,27 +857,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				const answers = answersResult
 
 				const answersEntry = buildAnswersEntry(questions, answers)
-				const allRecommended = answers.every((a) => a.recommended === true)
 				if (getPromptUi(ctx)?.custom) {
-					if (allRecommended) {
-						const scopeOutcome = confirmPendingScope(
-							runtime,
-							params.ferment_id,
-							params.phases,
-							"propose_ferment_scoping",
-							params.title,
-							pi,
-						)
-						if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
-						return planToolOk(
-							withNextActionHint(
-								`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
-								scopeOutcome.outcome.ferment,
-							),
-							{ includePlan: true, suffix: answersEntry },
-						)
-					}
-
 					const content = buildScopingIterationMessage(questions, answers)
 					void pi.sendMessage(
 						{ content, customType: "ferment_scoping_iteration", display: false },
@@ -854,12 +866,10 @@ ${renderGateGuidance("scope_ferment")}`,
 					return planToolOk(`${answersEntry}\n\nAnswers recorded. Updating the plan with your choices...`)
 				}
 
-				const continueLabel = allRecommended ? "Start execution  ✓" : "Update plan  ✓"
+				const continueLabel = "Update plan  ✓"
 				const reviewOptions = [continueLabel, "Restart questions", "Let me say something"]
 
-				const reviewTitle = allRecommended
-					? `${formatPlanEntry(answersEntry)}\n\nProceed with this plan?`
-					: `${answersEntry}\n\nUpdate the plan with these answers?`
+				const reviewTitle = `${answersEntry}\n\nUpdate the plan with these answers?`
 				const reviewChoice = await promptSelect(ctx, reviewTitle, reviewOptions)
 
 				if (reviewChoice === undefined) {
@@ -881,26 +891,6 @@ ${renderGateGuidance("scope_ferment")}`,
 						{ triggerTurn: true },
 					)
 					return planToolOk(`${answersEntry}\n\nGot it. Updating the plan with your direction...`)
-				}
-
-				// Start immediately only when the user accepted every recommendation.
-				if (allRecommended) {
-					const scopeOutcome = confirmPendingScope(
-						runtime,
-						params.ferment_id,
-						params.phases,
-						"propose_ferment_scoping",
-						params.title,
-						pi,
-					)
-					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
-					return planToolOk(
-						withNextActionHint(
-							`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
-							scopeOutcome.outcome.ferment,
-						),
-						{ includePlan: true, suffix: answersEntry },
-					)
 				}
 
 				const content = buildScopingIterationMessage(questions, answers)
@@ -936,7 +926,7 @@ ${renderGateGuidance("scope_ferment")}`,
 	pi.registerTool({
 		name: "scope_ferment",
 		label: "Scope Ferment",
-		description: `Save scoping answers and transition ferment from draft to planned. In plan mode, the harness gates this call until the user has confirmed the proposed plan via TUI dropdown. You must produce verdicts for the three plan-scope gates below. A "flag" verdict refuses scoping.
+		description: `Save scoping answers and transition ferment from draft to planned. In interactive scoping, the harness gates this call until the user has confirmed the proposed plan via TUI dropdown. You must produce verdicts for the three plan-scope gates below. A "flag" verdict refuses scoping.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ScopeParams,
@@ -969,29 +959,6 @@ ${renderGateGuidance("scope_ferment")}`,
 			return toolOk(
 				withNextActionHint(`Field "${params.field}" updated for "${outcome.ferment.name}".`, outcome.ferment),
 			)
-		},
-	})
-
-	pi.registerTool({
-		name: "set_ferment_mode",
-		label: "Set Ferment Mode",
-		description: "Change the work mode of a ferment.",
-		parameters: SetModeParams,
-		async execute(_, params) {
-			if (!["plan", "exec", "auto"].includes(params.mode)) {
-				return toolErr(`Invalid mode: ${params.mode}. Use plan, exec, or auto.`)
-			}
-			// FSM validation: ensure mode change is allowed
-			const f = runtime.getStorage().get(params.ferment_id)
-			const fsmError = validateFsmTransition(f, "SET_MODE", { mode: params.mode })
-			if (fsmError) return toolErrWithNextAction(fsmError, f)
-
-			const outcome = applyAndPersist(params.ferment_id, {
-				type: "set_mode",
-				mode: params.mode as "plan" | "exec" | "auto",
-			})
-			if (!outcome.ok) return failedToolResult(outcome.error, f)
-			return toolOk(withNextActionHint(`Mode set to ${params.mode} for "${outcome.ferment.name}".`, outcome.ferment))
 		},
 	})
 

@@ -194,7 +194,7 @@ Direct tools register from the metadata cache (`~/.pi/agent/mcp-cache.json`), so
 
 **Interactive configuration:** Run `/mcp` to open an interactive panel showing all servers with connection status, tools, and direct/proxy toggles. You can reconnect servers, initiate OAuth, and toggle tools between direct and proxy — all from one overlay. Changes are written to your config file; restart Pi to apply.
 
-**Subagent integration:** If you use the subagent extension, agents can request direct MCP tools in their frontmatter with `mcp:server-name` syntax. See the subagent README for details.
+**Agent integration:** Agents can request direct MCP tools in their frontmatter with `mcp:server-name` syntax.
 
 ### MCP UI Integration
 

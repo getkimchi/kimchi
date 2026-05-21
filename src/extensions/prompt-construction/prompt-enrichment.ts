@@ -1,20 +1,20 @@
 /**
  * Orchestration prompt enrichment extension.
  *
- * Behavior depends on whether this process is the main model or a subagent
- * (detected via the KIMCHI_SUBAGENT env var set during subagent spawning).
+ * Behavior depends on whether this process is the main model or an Agent worker
+ * (detected via Agent worker context or the legacy KIMCHI_SUBAGENT env var).
  *
  * Main model mode:
  * - "input": wraps the user prompt with the current model's own capabilities
- *   and the available subagent models so the model can self-classify the task
+ *   and the available delegated-agent models so the model can self-classify the task
  *   and decide which steps to execute itself vs. delegate.
  * - "before_agent_start": injects the self-classification system prompt with
- *   full tool access (read, write, edit, bash, subagent).
+ *   full tool access (read, write, edit, bash, Agent).
  *
  * Subagent mode:
  * - "input": passes through unchanged.
  * - "before_agent_start": injects the pure worker system prompt. Filters out
- *   the subagent tool to prevent infinite delegation chains.
+ *   delegation tools to prevent infinite delegation chains.
  *
  * Steering messages are excluded — when the agent is streaming, the handler
  * returns "continue" so the message passes through unchanged.
@@ -27,9 +27,11 @@ import { homedir, platform, userInfo } from "node:os"
 import { isAbsolute, join, normalize, resolve } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
-import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
+import { type KeyId, isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
+import { getAgentConfigDir } from "../../config.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
+import { isAgentWorker } from "../agent-worker-context.js"
 import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
 import {
 	CONTINUATION_NUDGE_TEXT,
@@ -41,6 +43,7 @@ import {
 	stripStaleNudges,
 } from "../orchestration/continuation-nudge.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
+import { readMultiModelShortcutFromKeybindings } from "../permissions/keybindings.js"
 import { getCurrentPhase } from "../tags.js"
 import { type ContextFile, loadProjectContextFiles } from "./context-files.js"
 import { type EnvironmentInfo, type PromptMode, type ToolInfo, buildSystemPrompt } from "./system-prompt.js"
@@ -115,9 +118,17 @@ function readMultiModelArgv(): boolean {
 
 let multiModelEnabled = readMultiModelArgv()
 
-// macOS terminals send the legacy escape sequence \x1b\t for Option+Tab
-// instead of the Kitty protocol / CSI-u sequences handled by matchesKey()
-const LEGACY_MACOS_ALT_TAB_SEQUENCE = "\x1b\t"
+export const ORCHESTRATOR_MODEL_ID = "kimi-k2.6"
+const DELEGATION_TOOL_NAMES = new Set(["Agent", "subagent"])
+
+function isDelegationToolCallName(name: string | undefined): boolean {
+	return name != null && DELEGATION_TOOL_NAMES.has(name)
+}
+
+const DEFAULT_MULTI_MODEL_KEY = "ctrl+n"
+const MULTI_MODEL_KEY = readMultiModelShortcutFromKeybindings(getAgentConfigDir()) ?? DEFAULT_MULTI_MODEL_KEY
+export const MULTI_MODEL_SHORTCUT =
+	process.platform === "darwin" ? MULTI_MODEL_KEY.replace(/\balt\b/, "option") : MULTI_MODEL_KEY
 
 /**
  * Shape of a tool-call content block as emitted in assistant messages.
@@ -201,7 +212,7 @@ export function getMultiModelEnabled(): boolean {
 }
 
 export function isSubagent(): boolean {
-	return process.env.KIMCHI_SUBAGENT === "1"
+	return isAgentWorker()
 }
 
 export default function (skillPaths: string[]) {
@@ -216,21 +227,21 @@ export default function (skillPaths: string[]) {
 
 		pi.registerFlag("multi-model", {
 			type: "boolean",
-			description: "Enable multi-model orchestration (default: enabled). Toggle with alt+tab.",
+			description: `Enable multi-model orchestration (default: enabled). Toggle with ${MULTI_MODEL_SHORTCUT}.`,
 			default: true,
 		})
 
 		// For sub agents we don't want to transform the prompt sent from parent with model capabilities
 		const registry = new ModelRegistry(getAvailableModels())
 		if (!subagentMode) {
-			// Global terminal input listener so alt+tab works even when a
+			// Global terminal input listener so the shortcut works even when a
 			// dialog (e.g. permission prompt) has focus instead of the editor.
-			let unsubAltTab: (() => void) | null = null
+			let unsubMultiModelToggle: (() => void) | null = null
 			pi.on("session_start", async (_event, ctx) => {
-				if (unsubAltTab) unsubAltTab()
+				if (unsubMultiModelToggle) unsubMultiModelToggle()
 				if (ctx.hasUI) {
-					unsubAltTab = ctx.ui.onTerminalInput((data) => {
-						if (matchesKey(data, "alt+tab") || data === LEGACY_MACOS_ALT_TAB_SEQUENCE) {
+					unsubMultiModelToggle = ctx.ui.onTerminalInput((data) => {
+						if (matchesKey(data, MULTI_MODEL_KEY as KeyId)) {
 							if (!isKeyRelease(data)) {
 								multiModelEnabled = !multiModelEnabled
 								ctx.ui.setStatus("multi-model", undefined)
@@ -240,11 +251,24 @@ export default function (skillPaths: string[]) {
 						return undefined
 					})
 				}
+
+				// In multi-model mode the orchestrator must always be kimi-k2.6.
+				// Force-switch if the user has a different model selected via /models.
+				if (multiModelEnabled && ctx.model?.id !== ORCHESTRATOR_MODEL_ID) {
+					const orchestratorModel = ctx.modelRegistry?.find("kimchi-dev", ORCHESTRATOR_MODEL_ID)
+					if (orchestratorModel) {
+						try {
+							await pi.setModel(orchestratorModel)
+						} catch (err) {
+							console.warn("failed to force orchestrator model:", err)
+						}
+					}
+				}
 			})
 
 			// Detect the inverse of the context-event nudge below: the orchestrator reasons
-			// in prose, announces it will delegate, and ends its turn without emitting the
-			// `subagent` tool call. The agent loop would otherwise exit and wait for another
+			// in prose, announces it will delegate, and ends its turn without emitting a
+			// delegation tool call. The agent loop would otherwise exit and wait for another
 			// user prompt. Nudge once per user-input cycle, and only when no tool has fired
 			// that cycle — so genuine end-of-task summaries are left alone. Mirrors AISI
 			// Inspect's `on_continue`.
@@ -256,10 +280,10 @@ export default function (skillPaths: string[]) {
 			const emptyTurnNudge = new EmptyTurnNudge()
 			pi.on("input", async (event) => {
 				if (event.source === "extension") {
-					// Subagent result arriving. Clear the subagent-pending flag so the
+					// Agent result arriving. Clear the delegation-pending flag so the
 					// continuation nudge can fire normally once the model has processed
 					// the output (at the next turn_end, after any tool calls it makes).
-					continuationNudge.clearSubagentPending()
+					continuationNudge.clearDelegationPending()
 					return
 				}
 				continuationNudge.resetForNewUserInput()
@@ -285,12 +309,12 @@ export default function (skillPaths: string[]) {
 			pi.on("turn_end", async (event) => {
 				if (event.message.role !== "assistant") return
 
-				// Mark each subagent tool call so the continuation nudge stays
-				// suppressed until all subagent results have been received.
-				// A single turn may contain multiple parallel subagent calls.
+				// Mark each delegation tool call so the continuation nudge stays
+				// suppressed until all delegated-agent results have been received.
+				// A single turn may contain multiple parallel agent calls.
 				for (const c of event.message.content) {
-					if (c.type === "toolCall" && (c as { name?: string }).name === "subagent") {
-						continuationNudge.markSubagentCall()
+					if (c.type === "toolCall" && isDelegationToolCallName((c as { name?: string }).name)) {
+						continuationNudge.markDelegationCall()
 					}
 				}
 
@@ -371,7 +395,6 @@ export default function (skillPaths: string[]) {
 				homeDir: cachedHomeDir,
 				cwd: ctx.cwd,
 				documentsDir: join(ctx.cwd, ".kimchi", "docs"),
-				currentTime: now.toISOString(),
 				localDate: now.toLocaleDateString("en-CA"),
 				isGitRepo,
 				gitBranch: isGitRepo ? getGitBranch(ctx.cwd) : undefined,
@@ -386,7 +409,7 @@ export default function (skillPaths: string[]) {
 				env,
 				contextFiles: cachedContextFiles,
 				skills: cachedSkills,
-				currentModelId: ctx.model?.id,
+				currentModelId: mode === "orchestrator" ? ORCHESTRATOR_MODEL_ID : ctx.model?.id,
 				currentPhase: getCurrentPhase(),
 				registry: registry,
 				mode,

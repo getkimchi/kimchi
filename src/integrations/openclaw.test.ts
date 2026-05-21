@@ -53,6 +53,18 @@ describe("buildOpenClawProviderBlock", () => {
 		expect(main?.contextWindow).toBe(262_144)
 		expect(main?.maxTokens).toBe(32_768)
 	})
+
+	it("falls back to slug when display_name is empty", () => {
+		const modelsWithEmptyName = [
+			{ ...TEST_MODELS[0], display_name: "" },
+			{ ...TEST_MODELS[1], display_name: "   " },
+		]
+		const block = buildOpenClawProviderBlock(modelsWithEmptyName) as {
+			models: Array<{ id: string; name: string }>
+		}
+		expect(block.models[0].name).toBe(modelsWithEmptyName[0].slug)
+		expect(block.models[1].name).toBe(modelsWithEmptyName[1].slug)
+	})
 })
 
 describe("buildOpenClawModelsCatalog", () => {
@@ -62,6 +74,16 @@ describe("buildOpenClawModelsCatalog", () => {
 		expect(catalog["kimchi/kimi-k2.5"]).toEqual({ alias: "Kimi K2.5" })
 		expect(catalog["kimchi/nemotron-3-super-fp4"]).toEqual({ alias: "Nemotron 3 Super FP4" })
 		expect(catalog["kimchi/minimax-m2.7"]).toEqual({ alias: "MiniMax M2.7" })
+	})
+
+	it("falls back to slug when display_name is empty", () => {
+		const modelsWithEmptyName = [
+			{ ...TEST_MODELS[0], display_name: "" },
+			{ ...TEST_MODELS[1], display_name: "   " },
+		]
+		const catalog = buildOpenClawModelsCatalog(modelsWithEmptyName)
+		expect(catalog["kimchi/kimi-k2.6"]).toEqual({ alias: "kimi-k2.6" })
+		expect(catalog["kimchi/kimi-k2.5"]).toEqual({ alias: "kimi-k2.5" })
 	})
 })
 
@@ -244,6 +266,11 @@ describe("writeOpenClawViaCLI integration", () => {
 					typeof childProcess.spawnSync
 				>
 			}
+			if (cmdArgs[0] === "config" && cmdArgs[1] === "get" && cmdArgs[2] === "agents.defaults.models") {
+				return { status: 0, stdout: JSON.stringify({ "other/model": { alias: "Other" } }), stderr: "" } as ReturnType<
+					typeof childProcess.spawnSync
+				>
+			}
 			return { status: 0, stdout: "", stderr: "" } as ReturnType<typeof childProcess.spawnSync>
 		})
 	})
@@ -264,30 +291,22 @@ describe("writeOpenClawViaCLI integration", () => {
 		const calls = vi.mocked(childProcess.spawnSync).mock.calls
 		const fallbackSetCall = calls.find((c) => {
 			const args = c[1] as string[] | undefined
-			return (
-				args &&
-				args[0] === "config" &&
-				args[1] === "set" &&
-				args[2] === "--replace" &&
-				args[3] === "agents.defaults.model.fallbacks"
-			)
+			return args && args[0] === "config" && args[1] === "set" && args[2] === "agents.defaults.model.fallbacks"
 		})
 		expect(fallbackSetCall).toBeDefined()
-		const mergedFallbacks = JSON.parse((fallbackSetCall?.[1] as string[])[4])
+		const mergedFallbacks = JSON.parse((fallbackSetCall?.[1] as string[])[3])
 		expect(mergedFallbacks).toContain("existing/model")
 		expect(mergedFallbacks).toContain("kimchi/nemotron-3-super-fp4")
 
 		const modelsSetCall = calls.find((c) => {
 			const args = c[1] as string[] | undefined
-			return (
-				args &&
-				args[0] === "config" &&
-				args[1] === "set" &&
-				args[2] === "--merge" &&
-				args[3] === "agents.defaults.models"
-			)
+			return args && args[0] === "config" && args[1] === "set" && args[2] === "agents.defaults.models"
 		})
 		expect(modelsSetCall).toBeDefined()
+		const mergedModels = JSON.parse((modelsSetCall?.[1] as string[])[3]) as Record<string, unknown>
+		expect(mergedModels["other/model"]).toEqual({ alias: "Other" })
+		expect(mergedModels["kimchi/kimi-k2.6"]).toBeDefined()
+		expect(mergedModels["kimchi/nemotron-3-super-fp4"]).toBeDefined()
 
 		const envContent = readFileSync(join(tmp, ".openclaw", ".env"), "utf-8")
 		expect(envContent).toBe("KIMCHI_API_KEY=test-key-123\n")

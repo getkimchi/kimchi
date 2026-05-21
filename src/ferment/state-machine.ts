@@ -27,7 +27,6 @@ import {
 	type Decision,
 	type Ferment,
 	type FermentStatus,
-	type FermentWorkMode,
 	type JudgeGrade,
 	type Memory,
 	type MemoryCategory,
@@ -72,7 +71,6 @@ export type Command =
 			field: "goal" | "criteria" | "constraints" | "assumptions"
 			value: string
 	  }
-	| { type: "set_mode"; mode: FermentWorkMode }
 	| { type: "activate_phase"; phaseId: string }
 	| { type: "activate_phase_group"; groupIndex: number }
 	| { type: "refine_phase"; phaseId: string; steps: RefineStepInput[] }
@@ -93,6 +91,7 @@ export type Command =
 	| { type: "verify_step"; phaseId: string; stepId: string; result: StepResult; summary?: string }
 	| { type: "skip_step"; phaseId: string; stepId: string }
 	| { type: "fail_step"; phaseId: string; stepId: string; error?: string }
+	| { type: "update_step_description"; phaseId: string; stepId: string; description: string }
 	| { type: "complete_ferment"; finalSummary?: string; grade?: JudgeGrade }
 	| { type: "pause" }
 	| { type: "resume" }
@@ -133,7 +132,6 @@ export type TransitionError =
 	  }
 	| { code: "PHASES_NOT_TERMINAL"; nonTerminalIds: string[]; message: string }
 	| { code: "NO_PLANNED_PHASES"; message: string }
-	| { code: "INVALID_MODE"; mode: string; message: string }
 	| { code: "INVALID_FIELD"; field: string; message: string }
 	| { code: "INVALID_CATEGORY"; category: string; message: string }
 	| { code: "PHASE_GROUP_EMPTY"; groupIndex: number; message: string }
@@ -145,6 +143,7 @@ export type TransitionError =
 			runningDescription: string
 			message: string
 	  }
+	| { code: "INVALID_STEP_DESCRIPTION"; message: string }
 
 export interface TransitionContext {
 	/** ISO timestamp; injected so transitions are deterministic. */
@@ -172,8 +171,6 @@ export function applyCommand(ferment: Ferment, cmd: Command, ctx: TransitionCont
 			return handleScope(ferment, cmd, ctx)
 		case "update_scope_field":
 			return handleUpdateScopeField(ferment, cmd, ctx)
-		case "set_mode":
-			return handleSetMode(ferment, cmd, ctx)
 		case "activate_phase":
 			return handleActivatePhase(ferment, cmd, ctx)
 		case "activate_phase_group":
@@ -196,6 +193,8 @@ export function applyCommand(ferment: Ferment, cmd: Command, ctx: TransitionCont
 			return handleSkipStep(ferment, cmd, ctx)
 		case "fail_step":
 			return handleFailStep(ferment, cmd, ctx)
+		case "update_step_description":
+			return handleUpdateStepDescription(ferment, cmd, ctx)
 		case "complete_ferment":
 			return handleCompleteFerment(ferment, cmd, ctx)
 		case "pause":
@@ -442,23 +441,6 @@ function handleUpdateScopeField(
 	}
 
 	return ok(touch(ferment, ctx, { ...patch, scoping }))
-}
-
-// ─── set_mode ─────────────────────────────────────────────────────────────────
-
-function handleSetMode(
-	ferment: Ferment,
-	cmd: Extract<Command, { type: "set_mode" }>,
-	ctx: TransitionContext,
-): TransitionResult {
-	if (!["plan", "exec", "auto"].includes(cmd.mode)) {
-		return fail({
-			code: "INVALID_MODE",
-			mode: cmd.mode,
-			message: `Invalid mode: "${cmd.mode}". Use plan, exec, or auto.`,
-		})
-	}
-	return ok(touch(ferment, ctx, { mode: cmd.mode }))
 }
 
 // ─── rename ───────────────────────────────────────────────────────────────────
@@ -720,6 +702,36 @@ function handleFailStep(
 	)
 }
 
+// ─── update_step_description ──────────────────────────────────────────────────
+
+function handleUpdateStepDescription(
+	ferment: Ferment,
+	cmd: Extract<Command, { type: "update_step_description" }>,
+	ctx: TransitionContext,
+): TransitionResult {
+	const phaseFound = requirePhase(ferment, cmd.phaseId)
+	if (isTransitionError(phaseFound)) return fail(phaseFound)
+	const { phase, index: phaseIndex } = phaseFound
+
+	const stepFound = requireStep(phase, cmd.stepId)
+	if (isTransitionError(stepFound)) return fail(stepFound)
+	const { index: stepIndex } = stepFound
+
+	const trimmed = cmd.description.trim()
+	if (!trimmed) {
+		return fail({
+			code: "INVALID_STEP_DESCRIPTION",
+			message: "Step description must not be empty.",
+		})
+	}
+
+	return ok(
+		touch(ferment, ctx, {
+			phases: setStep(ferment, phaseIndex, stepIndex, { description: trimmed }),
+		}),
+	)
+}
+
 // ─── complete_phase ───────────────────────────────────────────────────────────
 
 function handleCompletePhase(
@@ -792,6 +804,23 @@ function handleCompleteFerment(
 	cmd: Extract<Command, { type: "complete_ferment" }>,
 	ctx: TransitionContext,
 ): TransitionResult {
+	if (ferment.status === "complete") {
+		return fail({
+			code: "FERMENT_NOT_IN_STATUS",
+			expected: ["planned", "running"],
+			actual: ferment.status,
+			message: `Ferment "${ferment.name}" is already complete.`,
+		})
+	}
+	if (ferment.status === "abandoned") {
+		return fail({
+			code: "FERMENT_NOT_IN_STATUS",
+			expected: ["planned", "running"],
+			actual: ferment.status,
+			message: `Ferment "${ferment.name}" is abandoned and cannot be completed.`,
+		})
+	}
+
 	const nonTerminal = ferment.phases.filter((p) => !TERMINAL_PHASE_STATUSES.includes(p.status))
 	if (nonTerminal.length > 0) {
 		return fail({
