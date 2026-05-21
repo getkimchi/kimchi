@@ -177,6 +177,19 @@ describe("SessionsPanel", () => {
 			expect(done).toHaveBeenCalledWith({ action: "connect", sessionId: "sess-1" })
 		})
 
+		it("enter key triggers attach action with selected session", () => {
+			const { panel, done } = makePanel()
+			panel.handleInput("\r") // enter
+			expect(done).toHaveBeenCalledWith({ action: "attach", sessionId: "sess-1" })
+		})
+
+		it("enter key after navigation selects correct session", () => {
+			const { panel, done } = makePanel()
+			panel.handleInput("j") // move to sess-2
+			panel.handleInput("\r")
+			expect(done).toHaveBeenCalledWith({ action: "attach", sessionId: "sess-2" })
+		})
+
 		it("a key after navigation selects correct session", () => {
 			const { panel, done } = makePanel()
 			panel.handleInput("j") // move to sess-2

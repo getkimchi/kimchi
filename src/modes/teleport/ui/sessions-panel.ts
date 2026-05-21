@@ -79,7 +79,7 @@ export class SessionsPanel implements Component {
 			this.tui.requestRender()
 			return
 		}
-		if (matchesKey(data, "a")) {
+		if (matchesKey(data, "a") || matchesKey(data, "return")) {
 			this.done({ action: "attach", sessionId: this.rows[this.selectedIndex].id })
 			return
 		}
@@ -176,7 +176,7 @@ export class SessionsPanel implements Component {
 
 		// Hint
 		emptyRow() // spacing
-		const hintText = "↑/↓ j/k: navigate  a: attach  s: connect  esc: close"
+		const hintText = "↑/↓ j/k: navigate  enter/a: attach  s: connect  esc: close"
 		lines.push(ansiRow(dim(`  ${hintText}`), hintText.length + 2))
 
 		// Bottom border
