@@ -65,7 +65,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("## Guidelines")
 			expect(result).toContain("Orchestrate the work")
 			expect(result).toContain("Step 2 — Decide what to do yourself vs. delegate")
-			expect(result).toContain("Agent delegation rules")
+			expect(result).toContain("When delegating:")
 			expect(result).toContain("Mandatory pipeline for complex tasks")
 			expect(result).toContain("Token budgets")
 			expect(result).toContain("token_budget")
@@ -278,7 +278,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "subagent",
 			})
-			expect(result).not.toContain("Agent delegation rules")
+			expect(result).not.toContain("When delegating:")
 			expect(result).not.toContain("Mandatory pipeline for complex tasks")
 		})
 
@@ -358,7 +358,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "single",
 			})
-			expect(result).not.toContain("Agent delegation rules")
+			expect(result).not.toContain("When delegating:")
 			expect(result).not.toContain("Mandatory pipeline for complex tasks")
 			expect(result).not.toContain("Token budgets")
 			expect(result).not.toContain("Orchestrate the work")
