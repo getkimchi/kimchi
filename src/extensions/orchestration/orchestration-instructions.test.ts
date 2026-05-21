@@ -29,6 +29,11 @@ describe("resolveOrchestrationInstructions", () => {
 			mode: "orchestrator",
 		})
 		expect(result).toContain("Orchestrate the work")
+		expect(result).toContain("Plan self-validation")
+		expect(result).toContain("Plan verification")
+		expect(result).toContain("What makes a good plan")
+		expect(result).toContain("Skip verification when")
+		expect(result).toContain("Require verification when")
 	})
 
 	it("includes model capabilities and available models in orchestrator mode", () => {

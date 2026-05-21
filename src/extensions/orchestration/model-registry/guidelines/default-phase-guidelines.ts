@@ -23,8 +23,8 @@ export const DEFAULT_PLAN_GUIDELINES = `During **plan** phase:
 - Identify test files that need creation or update. State the testing strategy.
 - Call out non-obvious decisions and the alternatives you rejected — one line each.
 - Keep the spec focused. Interfaces and file paths beat prose. Long plans waste downstream tokens.
-- **Plan validation (mandatory)**: After writing the spec, re-read it in a separate turn and cross-check every requirement from the original task. Flag any gap — missing features, ambiguous API choices, unhandled edge cases (signals, timeouts, concurrency). A second pass costs negligible tokens and catches downstream rework.
-- Do NOT start build until the spec is written, validated, and saved.`
+- **Plan self-validation**: After writing the spec, re-read it in a separate turn and cross-check every requirement. Flag gaps — missing features, ambiguous API choices, unhandled edge cases. This is a lightweight self check; it does not replace external verification for complex tasks.
+- **Plan verification (complex tasks only)**: If the plan is complex (3+ files, new architecture, unclear requirements, or any uncertainty), have a different model with \`plan\` or \`review\` strength verify the spec before build. See the orchestration instructions for skip/verify criteria and verifier selection.`
 
 /** Co-author trailer appended to every commit message. Defined once here so
  *  it can be referenced consistently from any guideline that mentions commits. */
