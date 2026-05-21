@@ -76,12 +76,15 @@ const deviceId = ensureDeviceId()
 // app_started has no per-event properties — default properties (cli_version,
 // os, arch) are attached automatically by capturePostHogEvent, matching the
 // DefaultEventProperties behaviour.
-const phPending = telemetryConfig.enabled
-	? capturePostHogEvent({
+const phPending: Promise<void>[] = []
+if (telemetryConfig.enabled) {
+	phPending.push(
+		capturePostHogEvent({
 			event: "app_started",
 			distinctId: deviceId,
-		})
-	: Promise.resolve()
+		}),
+	)
+}
 
 let sessionId: string | undefined
 let sessionFile: string | undefined
@@ -157,11 +160,13 @@ try {
 
 		// Fire harness_launched (one shot per harness session; respects telemetry opt-out)
 		if (telemetryConfig.enabled) {
-			capturePostHogEvent({
-				event: "harness_launched",
-				distinctId: deviceId,
-				properties: { version: getVersion() },
-			}).catch(() => {})
+			phPending.push(
+				capturePostHogEvent({
+					event: "harness_launched",
+					distinctId: deviceId,
+					properties: { version: getVersion() },
+				}),
+			)
 		}
 
 		let config = loadConfig()
@@ -394,9 +399,9 @@ try {
 		}
 	}
 	// Await pending PostHog sends before exiting to reduce truncated requests.
-	await phPending.catch(() => {})
+	await Promise.allSettled(phPending)
 } catch (err) {
-	await phPending.catch(() => {})
+	await Promise.allSettled(phPending)
 	if (err instanceof SetupCancelled) {
 		process.exitCode = 130
 	} else {

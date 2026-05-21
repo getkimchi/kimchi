@@ -82,19 +82,18 @@ export async function capturePostHogEvent(evt: PostHogEvent): Promise<void> {
 		timestamp: new Date().toISOString(),
 	}
 
+	const controller = new AbortController()
+	const timeout = setTimeout(() => controller.abort(), 5_000)
 	try {
-		const controller = new AbortController()
-		const timeout = setTimeout(() => controller.abort(), 5_000)
-
 		await fetch(POSTHOG_ENDPOINT, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(payload),
 			signal: controller.signal,
 		})
-
-		clearTimeout(timeout)
 	} catch {
 		// Swallow all errors — analytics must never affect CLI operation.
+	} finally {
+		clearTimeout(timeout)
 	}
 }
