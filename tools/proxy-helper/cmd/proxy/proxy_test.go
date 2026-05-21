@@ -176,7 +176,7 @@ func TestProxyConnect_HappyPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	origBuildWSURL := buildWSURL
-	buildWSURL = func(sandboxURL string) string {
+	buildWSURL = func(sandboxURL string, _ int) string {
 		if sandboxURL != fb.sessionURI {
 			t.Errorf("buildWSURL: got %q want %q", sandboxURL, fb.sessionURI)
 		}
@@ -195,7 +195,7 @@ func TestProxyConnect_HappyPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := proxyConnectIO(ctx, fb.sessionURI, fb.apiKey, srv.URL, stdinR, &stdout); err != nil {
+	if err := proxyConnectIO(ctx, fb.sessionURI, fb.apiKey, srv.URL, 443, stdinR, &stdout); err != nil {
 		t.Fatalf("proxyConnectIO: %v", err)
 	}
 
@@ -221,7 +221,7 @@ func TestProxyConnect_BadAPIKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := proxyConnectIO(ctx, fb.sessionURI, "wrong-key", srv.URL, strings.NewReader(""), io.Discard)
+	err := proxyConnectIO(ctx, fb.sessionURI, "wrong-key", srv.URL, 443, strings.NewReader(""), io.Discard)
 	if err == nil {
 		t.Fatal("expected error for bad API key")
 	}
@@ -239,7 +239,7 @@ func TestProxyConnect_SessionNotFound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := proxyConnectIO(ctx, "nonexistent.example.test", fb.apiKey, srv.URL, strings.NewReader(""), io.Discard)
+	err := proxyConnectIO(ctx, "nonexistent.example.test", fb.apiKey, srv.URL, 443, strings.NewReader(""), io.Discard)
 	if err == nil {
 		t.Fatal("expected error for missing session URI")
 	}
@@ -261,7 +261,7 @@ func TestProxyConnect_ServerCloseExitsCleanly(t *testing.T) {
 
 	u, _ := url.Parse(srv.URL)
 	origBuildWSURL := buildWSURL
-	buildWSURL = func(string) string { return "ws://" + u.Host + "/ssh" }
+	buildWSURL = func(_ string, _ int) string { return "ws://" + u.Host + "/ssh" }
 	defer func() { buildWSURL = origBuildWSURL }()
 
 	// Use a stdin that blocks forever so the read goroutine doesn't race the
@@ -275,7 +275,7 @@ func TestProxyConnect_ServerCloseExitsCleanly(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- proxyConnectIO(ctx, fb.sessionURI, fb.apiKey, srv.URL, stdin, &stdout)
+		done <- proxyConnectIO(ctx, fb.sessionURI, fb.apiKey, srv.URL, 443, stdin, &stdout)
 	}()
 
 	select {

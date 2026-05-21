@@ -111,6 +111,20 @@ export function notifyFermentActive(hasActiveFerment: boolean): void {
 	_onFermentActiveChange?.(hasActiveFerment)
 }
 
+let _modeChangeListener: ((mode: PermissionMode) => void) | undefined
+
+/**
+ * Subscribe to permission mode changes (CLI flag init + shift+tab cycling).
+ * Used by --remote to forward the client's mode to the server so the
+ * server-side permissions instance gates tool calls under the same mode.
+ */
+export function onPermissionsModeChange(listener: (mode: PermissionMode) => void): () => void {
+	_modeChangeListener = listener
+	return () => {
+		if (_modeChangeListener === listener) _modeChangeListener = undefined
+	}
+}
+
 export default function permissionsExtension(pi: ExtensionAPI): void {
 	pi.registerFlag("plan", {
 		description: "Start in plan mode (read-only exploration).",
@@ -253,6 +267,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		for (const ctrl of activeAbortControllers) ctrl.abort()
 		activeAbortControllers.clear()
 		maybeShowYoloWarning(ctx, next)
+		_modeChangeListener?.(next)
 	}
 
 	// Wire the cross-extension callback: ferment calls notifyFermentActive() when
@@ -370,6 +385,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		updateStatus(ctx)
 
 		maybeShowYoloWarning(ctx, currentMode())
+		_modeChangeListener?.(currentMode())
 	})
 
 	const blocks = createSystemPromptBlocks(pi, "permissions")

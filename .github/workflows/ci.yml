@@ -27,7 +27,7 @@ jobs:
           cache-dependency-path: tools/proxy-helper/go.sum
 
       - name: Build proxy-helper
-        run: make build
+        run: make copy-for-dev # This builds the binary and puts it into a location kimchi can find it
         working-directory: tools/proxy-helper
 
       - name: Test proxy-helper
@@ -41,7 +41,7 @@ jobs:
         run: pnpm run build:binary
 
       - name: Test
-        run: pnpm run test
+        run: KIMCHI_PROXY_HELPER=$(pwd)/bin/proxy-helper pnpm run test
 
       - name: Smoke tests
         run: pnpm run test:smoke
