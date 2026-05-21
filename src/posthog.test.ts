@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { arch, platform } from "node:os"
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { capturePostHogEvent } from "./posthog.js"
 
@@ -14,7 +15,7 @@ describe("capturePostHogEvent", () => {
 		vi.unstubAllEnvs()
 	})
 
-	it("sends a POST to the PostHog capture endpoint", async () => {
+	it("sends a POST to the PostHog capture endpoint with default properties", async () => {
 		const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200 })
 		// @ts-ignore — replace global fetch for the test
 		const originalFetch = globalThis.fetch
@@ -24,7 +25,6 @@ describe("capturePostHogEvent", () => {
 		await capturePostHogEvent({
 			event: "app_started",
 			distinctId: testDeviceId,
-			properties: { cli_version: "0.0.64", os: "darwin", arch: "arm64" },
 		})
 
 		expect(mockFetch).toHaveBeenCalledOnce()
@@ -36,8 +36,44 @@ describe("capturePostHogEvent", () => {
 		expect(body.api_key).toBe(testApiKey)
 		expect(body.event).toBe("app_started")
 		expect(body.distinct_id).toBe(testDeviceId)
-		expect(body.properties).toEqual({ cli_version: "0.0.64", os: "darwin", arch: "arm64" })
 		expect(body.timestamp).toBeTruthy()
+
+		// Default properties (cli_version, os, arch) are always present
+		expect(body.properties.os).toBe(platform())
+		// arch is mapped to Go-compatible values (x64 → amd64)
+		const expectedArch = arch() === "x64" ? "amd64" : arch()
+		expect(body.properties.arch).toBe(expectedArch)
+		expect(body.properties.cli_version).toBeTruthy()
+
+		// @ts-ignore
+		globalThis.fetch = originalFetch
+	})
+
+	it("merges per-event properties over defaults", async () => {
+		const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200 })
+		// @ts-ignore
+		const originalFetch = globalThis.fetch
+		// @ts-ignore
+		globalThis.fetch = mockFetch
+
+		await capturePostHogEvent({
+			event: "harness_launched",
+			distinctId: testDeviceId,
+			properties: { version: "1.2.3" },
+		})
+
+		expect(mockFetch).toHaveBeenCalledOnce()
+		expect(mockFetch.mock.calls[0]).toBeDefined()
+		const [, options] = mockFetch.mock.calls[0]
+		const body = JSON.parse(options.body as string)
+
+		// Per-event property
+		expect(body.properties.version).toBe("1.2.3")
+		// Default properties still present
+		expect(body.properties.os).toBe(platform())
+		const expectedArch = arch() === "x64" ? "amd64" : arch()
+		expect(body.properties.arch).toBe(expectedArch)
+		expect(body.properties.cli_version).toBeTruthy()
 
 		// @ts-ignore
 		globalThis.fetch = originalFetch
@@ -98,26 +134,6 @@ describe("capturePostHogEvent", () => {
 		globalThis.fetch = mockFetch
 
 		await expect(capturePostHogEvent({ event: "app_started", distinctId: testDeviceId })).resolves.toBeUndefined()
-
-		// @ts-ignore
-		globalThis.fetch = originalFetch
-	})
-
-	it("handles missing optional properties gracefully", async () => {
-		const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200 })
-		// @ts-ignore
-		const originalFetch = globalThis.fetch
-		// @ts-ignore
-		globalThis.fetch = mockFetch
-
-		// @ts-ignore
-		await capturePostHogEvent({ event: "minimal_event", distinctId: testDeviceId })
-
-		expect(mockFetch).toHaveBeenCalledOnce()
-		expect(mockFetch.mock.calls[0]).toBeDefined()
-		const [, options] = mockFetch.mock.calls[0]
-		const body = JSON.parse(options.body as string)
-		expect(body.properties).toEqual({})
 
 		// @ts-ignore
 		globalThis.fetch = originalFetch

@@ -49,7 +49,7 @@ describe("loadConfig", () => {
 		expect(config.deviceId).toBe("550e8400-e29b-41d4-a716-446655440000")
 	})
 
-	it("reads device_id from config file for backward compatibility with Go CLI", () => {
+	it("reads device_id from config file for backward compatibility", () => {
 		writeFileSync(configPath, JSON.stringify({ device_id: "550e8400-e29b-41d4-a716-446655440000" }))
 		const config = loadConfig({ configPath })
 		expect(config.deviceId).toBe("550e8400-e29b-41d4-a716-446655440000")

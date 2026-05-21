@@ -1,7 +1,6 @@
 // CLI logic — imported dynamically by entry.ts after PI_PACKAGE_DIR is set.
 // All static imports here (extensions, pi-mono) are safe because the env is already configured.
 
-import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -13,7 +12,6 @@ import {
 	loadConfig,
 	readTelemetryConfig,
 	writeApiKey,
-	writeDeviceId,
 	writeMigrationState,
 	writeSkillPaths,
 } from "./config.js"
@@ -56,6 +54,7 @@ import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { updateModelsConfig } from "./models.js"
+import { ensureDeviceId } from "./posthog-device.js"
 import { capturePostHogEvent } from "./posthog.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
@@ -67,29 +66,20 @@ installCloudflare524RetryPatch()
 
 // --- PostHog device ID & analytics ---
 // Read or generate device ID (persisted; reused across invocations for
-// consistent unique-user counts in PostHog). Also used by the Go CLI
-// (stored as device_id in config.json) — reads snake_case for backwards
-// compat.
+// consistent unique-user counts in PostHog). Reads both camelCase and
+// snake_case (device_id) from config.json for backwards compatibility.
 const telemetryConfig = readTelemetryConfig()
-let config = loadConfig()
-let deviceId = config.deviceId
-if (!deviceId) {
-	deviceId = randomUUID()
-	writeDeviceId(deviceId)
-	config = loadConfig()
-}
+const deviceId = ensureDeviceId()
 
 // Fire-and-forget app_started on every invocation (respects telemetry opt-out).
 // Stash the promise so we can await it on shutdown to reduce truncated sends.
+// app_started has no per-event properties — default properties (cli_version,
+// os, arch) are attached automatically by capturePostHogEvent, matching the
+// DefaultEventProperties behaviour.
 const phPending = telemetryConfig.enabled
 	? capturePostHogEvent({
 			event: "app_started",
 			distinctId: deviceId,
-			properties: {
-				cli_version: getVersion(),
-				os: process.platform,
-				arch: process.arch,
-			},
 		})
 	: Promise.resolve()
 
@@ -170,11 +160,7 @@ try {
 			capturePostHogEvent({
 				event: "harness_launched",
 				distinctId: deviceId,
-				properties: {
-					cli_version: getVersion(),
-					os: process.platform,
-					arch: process.arch,
-				},
+				properties: { version: getVersion() },
 			}).catch(() => {})
 		}
 

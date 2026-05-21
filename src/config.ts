@@ -177,7 +177,7 @@ function readConfigExtras(configPath: string): {
 		const llmEndpoint =
 			typeof parsed.llmEndpoint === "string" && parsed.llmEndpoint.length > 0 ? parsed.llmEndpoint : undefined
 
-		// Read deviceId (camelCase, then snake_case for Go CLI backwards compat)
+		// Read deviceId (camelCase, then snake_case for backwards compat)
 		const deviceId =
 			(typeof parsed.deviceId === "string" && parsed.deviceId.length > 0 && parsed.deviceId) ||
 			(typeof parsed.device_id === "string" && parsed.device_id.length > 0 && parsed.device_id) ||

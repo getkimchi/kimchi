@@ -51,12 +51,14 @@ export async function runWizard(): Promise<WizardResult> {
 		back: false,
 	}
 
-	const partial = (): WizardResult => ({
+	const partial = (stepName?: string): WizardResult => ({
 		cancelled: true,
+		cancelledStep: stepName,
 		apiKey: state.apiKey || undefined,
 		mode: state.mode,
 		scope: state.scope,
 		telemetryEnabled: state.telemetryEnabled,
+		selectedTools: [...state.selectedTools],
 		configuredTools: [],
 	})
 
@@ -76,7 +78,7 @@ export async function runWizard(): Promise<WizardResult> {
 
 		if (state.cancelled) {
 			clackCancel("Cancelled.")
-			return partial()
+			return partial(step.name)
 		}
 		if (state.back) {
 			const prev = previousActiveStep(state, i)
@@ -93,6 +95,7 @@ export async function runWizard(): Promise<WizardResult> {
 		mode: state.mode,
 		scope: state.scope,
 		telemetryEnabled: state.telemetryEnabled,
+		selectedTools: [...state.selectedTools],
 		configuredTools: state.selectedTools.filter((id) =>
 			outcome.successes.some((name) => name.toLowerCase().includes(id)),
 		),
