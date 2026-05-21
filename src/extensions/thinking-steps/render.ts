@@ -237,9 +237,9 @@ function renderCollapsed(
 			.join("\n")
 			.trim()
 		if (fullText) {
-			const headerPrefix = `${theme.fg("muted", "│")} `
+			const headerPrefix = `${theme.fg("muted", "▍")} `
 			const header = truncateToWidth(`${headerPrefix}${theme.fg("dim", label)} ${icon} ${activity}`, width, "")
-			const bodyPrefix = `${theme.fg("muted", "│")} `
+			const bodyPrefix = `${theme.fg("muted", "▍")} `
 			const allBodyLines = renderWrappedRawText(theme, fullText, width, bodyPrefix)
 			const bodyLines = allBodyLines.slice(-COLLAPSED_LIVE_LINES)
 			return [header, ...bodyLines]
@@ -248,8 +248,8 @@ function renderCollapsed(
 
 	const activitySuffix = ` ${activity}`
 	const activityWidth = visibleWidth(activitySuffix)
-	const prefix = `${theme.fg("muted", "│")} ${theme.fg("dim", label)} ${icon} `
-	const continuationPrefix = `${theme.fg("muted", "│")} ${" ".repeat(visibleWidth(`${label} ${step.icon} `))}`
+	const prefix = `${theme.fg("muted", "▍")} ${theme.fg("dim", label)} ${icon} `
+	const continuationPrefix = `${theme.fg("muted", "▍")} ${" ".repeat(visibleWidth(`${label} ${step.icon} `))}`
 	const summaryLines = wrapCollapsedSummaryText(
 		theme,
 		step.summary,
@@ -342,7 +342,7 @@ function renderSummary(
 	steps: DerivedThinkingStep[],
 	activeStepId?: string,
 ): string[] {
-	const lines = [truncateToWidth(`${theme.fg("muted", "┆")} ${theme.fg("dim", "Thinking Steps · Summary")}`, width)]
+	const lines = [truncateToWidth(`${theme.fg("muted", "▍")} ${theme.fg("dim", "Thinking Steps · Summary")}`, width)]
 	const visibleSteps = selectSummarySteps(steps, activeStepId)
 	for (let index = 0; index < visibleSteps.length; index++) {
 		const step = visibleSteps[index]!
@@ -404,7 +404,7 @@ function renderExpanded(
 	steps: DerivedThinkingStep[],
 	_activeStepId?: string,
 ): string[] {
-	const prefix = `${theme.fg("muted", "│")} `
+	const prefix = `${theme.fg("muted", "▍")} `
 	const lines: string[] = []
 
 	for (let index = 0; index < steps.length; index++) {
@@ -412,7 +412,7 @@ function renderExpanded(
 		const normalizedBody = step.body.trim()
 		if (!normalizedBody) continue
 
-		if (index > 0) lines.push(theme.fg("muted", "│"))
+		if (index > 0) lines.push(theme.fg("muted", "▍"))
 		lines.push(...renderWrappedRawText(theme, normalizedBody, width, prefix))
 	}
 
@@ -469,14 +469,15 @@ export class ThinkingStepsComponent implements Component {
 			return this.cachedLines
 		}
 
-		const lines = renderThinkingStepsLines(this.theme, width, {
+		const innerWidth = Math.max(1, width - 1)
+		const lines = renderThinkingStepsLines(this.theme, innerWidth, {
 			mode,
 			blocks: this.blocks,
 			steps: this.steps,
 			activeStepId,
 			isActive: active.active,
 			nowMs: Date.now(),
-		})
+		}).map((line) => ` ${line}`)
 
 		if (!shouldBypassCache) {
 			this.cacheKey = nextCacheKey

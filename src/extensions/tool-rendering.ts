@@ -381,21 +381,46 @@ function getUserPromptPrefix(theme: any): string {
 	return _userPromptPrefix
 }
 
+function skipAnsiEscapes(line: string, i: number): number {
+	while (i < line.length && line[i] === "\x1b") {
+		const m = line.indexOf("m", i)
+		if (m === -1) return i
+		i = m + 1
+	}
+	return i
+}
+
 function insertUserPromptPrefix(line: string, theme: any): string {
-	// Each Box content line is: [ANSI bg escapes...][paddingX spaces][content][trailing spaces]
-	// We replace the first 2 leading spaces (paddingX=2) with "› " keeping visible width constant.
+	// Line structure from Box(paddingX=1, bgFn):
+	//   [1 plain space][ANSI color][▍ ][ANSI reset][content][1+ trailing spaces]
+	// We insert "❯ " right after the stroke and trim trailing spaces to maintain width.
 	let i = 0
-	while (i < line.length) {
-		if (line[i] === "\x1b") {
-			const m = line.indexOf("m", i)
-			if (m === -1) break
-			i = m + 1
-		} else break
+
+	// Skip leading plain spaces (leftPad = paddingX = 1)
+	while (i < line.length && line[i] === " ") i++
+
+	// Skip ANSI color for stroke
+	i = skipAnsiEscapes(line, i)
+
+	// Skip STROKE_PREFIX "▍ " (2 chars: the bar glyph + a space)
+	if (i >= line.length) return line
+	i++ // skip "▍"
+	if (i < line.length && line[i] === " ") i++ // skip the space in STROKE_PREFIX
+
+	// Skip ANSI reset after stroke
+	i = skipAnsiEscapes(line, i)
+
+	// Insert "❯ " here and remove 2 trailing spaces to keep visible width constant
+	const prefix = getUserPromptPrefix(theme)
+	const inserted = line.slice(0, i) + prefix + line.slice(i)
+	// Drop 2 trailing spaces (Box always pads paddingX=2 spaces at the end)
+	let end = inserted.length
+	let removed = 0
+	while (end > i && removed < 2 && inserted[end - 1] === " ") {
+		end--
+		removed++
 	}
-	if (i < line.length && line[i] === " " && line[i + 1] === " ") {
-		return `${line.slice(0, i)}${getUserPromptPrefix(theme)}${line.slice(i + 2)}`
-	}
-	return line
+	return inserted.slice(0, end)
 }
 
 function patchUserMessageRender(): void {
@@ -406,16 +431,13 @@ function patchUserMessageRender(): void {
 	proto.render = function patchedUserMessageRender(width: number) {
 		const box = (this as any).contentBox
 		if (box) {
-			box.paddingX = 2
+			box.paddingX = 1
 			box.invalidateCache?.()
 		}
 		const lines: string[] = originalRender.call(this, width)
 		if (!Array.isArray(lines) || lines.length === 0) return lines
-		// Padding lines (top/bottom) have no visible content — skip the prefix on those
-		return lines.map((line, i) => {
-			const ispad = i === 0 || i === lines.length - 1
-			return ispad ? line : insertUserPromptPrefix(line, _themePaletteCacheTheme)
-		})
+		// Only the first content line (index 1) gets the ❯ prefix; padding and continuation lines are unchanged.
+		return lines.map((line, i) => (i === 1 ? insertUserPromptPrefix(line, _themePaletteCacheTheme) : line))
 	}
 	proto[USER_MESSAGE_PATCH_FLAG] = true
 }
