@@ -37,4 +37,6 @@ kimchi-session-*.html
 /__mocks__/
 
 *.bun-build
+
+.memory
 bin

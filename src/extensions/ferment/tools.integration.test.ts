@@ -56,6 +56,7 @@ import { registerStepTools } from "./tools/steps.js"
 
 interface RegisteredTool {
 	name: string
+	description?: string
 	// biome-ignore lint/suspicious/noExplicitAny: mock harness
 	execute: (toolCallId: string, params: any, signal?: AbortSignal, onUpdate?: any, ctx?: any) => Promise<any>
 }
@@ -1074,6 +1075,21 @@ describe("propose_ferment_scoping", () => {
 		setPendingScope(id, { goal: "", successCriteria: "", constraints: [] })
 		markScopingInteractive(id)
 	}
+
+	it("tells the planner to route scoping questions through the questions array, not chat", () => {
+		const tool = h.tools.get("propose_ferment_scoping")
+		expect(tool?.description).toContain("questions array")
+		expect(tool?.description).toContain("do not ask scoping questions in chat")
+		expect(tool?.description).toContain("Use questions: [] when no decision-blocking question remains")
+	})
+
+	it("tells the planner to include the complete plan gates in every scoping proposal", () => {
+		const tool = h.tools.get("propose_ferment_scoping")
+		expect(tool?.description).toContain("full gates array")
+		expect(tool?.description).toContain("exactly P1, P2, and P3")
+		expect(tool?.description).toContain("id, verdict, rationale, and evidence")
+		expect(tool?.description).toContain("Partial gates are rejected")
+	})
 
 	// (a) zero-questions + Continue → planned
 	it("(a) zero-questions + Continue → ferment becomes planned", async () => {
