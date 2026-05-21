@@ -112,6 +112,7 @@ function getEnabledModelIds(): Set<string> | null {
 // Track current editor for indicator updates
 let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
+let currentSessionIndicatorText: string | null = null
 
 type DisposableComponent = Component & { dispose?(): void }
 
@@ -152,6 +153,16 @@ export function setPasteImageHandler(handler: () => void): void {
  */
 export function setPendingImageIndicator(text: string | null): void {
 	currentEditor?.setPendingImageIndicator(text)
+}
+
+/**
+ * Show or clear a short session label right-aligned on the prompt's first row.
+ * Used by the teleport extension to surface a persistent "(host)" indicator
+ * while attached to a remote worker. Pass `null` to clear.
+ */
+export function setSessionIndicator(text: string | null): void {
+	currentSessionIndicatorText = text
+	currentEditor?.setSessionIndicator(text)
 }
 
 function runScript(scriptPath: string, payload: object, tui: TUI, footer: ScriptFooter, onDone: () => void): void {
@@ -385,6 +396,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 			currentEditor = editor
 			if (pasteImageHandler) {
 				editor.onPasteImage = pasteImageHandler
+			}
+			if (currentSessionIndicatorText) {
+				editor.setSessionIndicator(currentSessionIndicatorText)
 			}
 			return editor
 		})

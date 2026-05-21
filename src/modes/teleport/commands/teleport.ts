@@ -48,7 +48,7 @@ async function refreshUIAfterSwap(ctx: TeleportContext): Promise<void> {
 	await rebindAfterSwap(ctx)
 }
 
-export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Promise<void> {
+export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Promise<{ host: string }> {
 	const wrapper = ctx.wrapper
 	const homeBase = wrapper.homeBase as AgentSession
 
@@ -242,6 +242,7 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 		await refreshUIAfterSwap(ctx)
 
 		progress.finish({ id: sessionId, url: authResult.wsUrl, description: authResult.description })
+		return { host: authResult.host }
 	} finally {
 		progress.stop()
 		status(ctx, undefined)

@@ -26,6 +26,7 @@ export class PromptEditor extends CustomEditor {
 	private readonly kb: KeybindingsManager
 	private expandHandler?: () => void
 	private _pendingImageIndicator: string | null = null
+	private _sessionIndicator: string | null = null
 
 	/**
 	 * Computes the width available for the editor's content text when a
@@ -66,6 +67,17 @@ export class PromptEditor extends CustomEditor {
 		this.tui.requestRender()
 	}
 
+	/**
+	 * Show a short session label right-aligned on the prompt's first line.
+	 * Used by the teleport extension to remind the user they are connected
+	 * to a remote worker. Pass `null` to clear.
+	 */
+	setSessionIndicator(text: string | null) {
+		if (this._sessionIndicator === text) return
+		this._sessionIndicator = text
+		this.tui.requestRender()
+	}
+
 	override handleInput(data: string) {
 		if (this.expandHandler && this.kb.matches(data, "app.tools.expand")) {
 			this.expandHandler()
@@ -98,7 +110,10 @@ export class PromptEditor extends CustomEditor {
 		// indicator-width earlier on every row so the indicator (always pinned to
 		// the first row's right edge) never collides with typed text. Computed
 		// before super.render() because we need the *narrower* layout up front.
-		const indicatorRaw = this._pendingImageIndicator
+		const indicatorParts: string[] = []
+		if (this._sessionIndicator) indicatorParts.push(this._sessionIndicator)
+		if (this._pendingImageIndicator) indicatorParts.push(this._pendingImageIndicator)
+		const indicatorRaw = indicatorParts.length > 0 ? indicatorParts.join(" ") : null
 		const contentRenderWidth = this.computeContentWidth(contentWidth, indicatorRaw)
 		const lines = super.render(contentRenderWidth)
 

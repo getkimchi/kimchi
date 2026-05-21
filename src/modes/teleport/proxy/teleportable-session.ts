@@ -161,6 +161,20 @@ export class TeleportableAgentSession {
 		return fn.call(target, text, options)
 	}
 
+	/**
+	 * Always route reload to home base. InteractiveMode calls
+	 * `session.reload()` directly (not via prompt), so the proxy would
+	 * otherwise forward it to the remote foreground. Reloading must
+	 * happen locally — it tears down the extension runner, reloads
+	 * settings/resources, and re-emits session_start events that the
+	 * local TUI depends on. The remote RPC mode has no "reload" command
+	 * handler anyway, so sending it there would just error.
+	 */
+	reload(): unknown {
+		const fn = (this._homeBase as unknown as { reload: () => unknown }).reload
+		return fn.call(this._homeBase)
+	}
+
 	dispose(): void {
 		this._listeners.clear()
 		this._innerUnsub?.()

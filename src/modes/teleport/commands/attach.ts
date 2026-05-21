@@ -29,7 +29,7 @@ async function refreshUIAfterSwap(ctx: TeleportContext): Promise<void> {
 	await rebindAfterSwap(ctx)
 }
 
-export async function runAttach(args: AttachArgs, ctx: TeleportContext): Promise<void> {
+export async function runAttach(args: AttachArgs, ctx: TeleportContext): Promise<{ host: string }> {
 	const wrapper = ctx.wrapper
 	if (!wrapper.isForegroundHomeBase) {
 		refuse(ctx, "Already on a remote session. Use /detach first.")
@@ -100,6 +100,7 @@ export async function runAttach(args: AttachArgs, ctx: TeleportContext): Promise
 		await refreshUIAfterSwap(ctx)
 
 		progress.finish({ id: sessionId, url: authResult.wsUrl, description: authResult.description })
+		return { host: authResult.host }
 	} finally {
 		progress.stop()
 		status(ctx, undefined)
