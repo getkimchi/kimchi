@@ -6,7 +6,7 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
 import { Box, Text } from "@earendil-works/pi-tui"
-import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
+import { Key, isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
@@ -392,6 +392,16 @@ export default function uiExtension(pi: ExtensionAPI) {
 		if (unsubModelCycleInput) unsubModelCycleInput()
 		if (ctx.hasUI) {
 			unsubModelCycleInput = ctx.ui.onTerminalInput((data) => {
+				// In raw-mode terminals Ctrl+C arrives as \x03 rather than raising
+				// SIGINT.  The upstream TUI already maps Escape to abort, but does
+				// not handle Ctrl+C.  Bridge the gap so both keys cancel the active
+				// turn while the agent is working.
+				if (matchesKey(data, Key.ctrl("c")) && !isKeyRelease(data)) {
+					if (currentCtx && !currentCtx.isIdle()) {
+						currentCtx.abort()
+					}
+					return undefined
+				}
 				if (matchesKey(data, "ctrl+p")) {
 					if (!isKeyRelease(data)) {
 						if (getMultiModelEnabled()) return { consume: true }
