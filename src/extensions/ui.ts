@@ -405,23 +405,29 @@ export default function uiExtension(pi: ExtensionAPI) {
 						const current = ctx.model
 						const orchestratorModel = ctx.modelRegistry.find("kimchi-dev", ORCHESTRATOR_MODEL_ID)
 
+						// Cycle order: model[0] → ... → model[last] → multi-model → model[0]
+						// kimi-k2.6 appears as a regular model AND multi-model appears
+						// as a separate virtual entry right after the last real model.
 						if (getMultiModelEnabled()) {
-							// Currently in multi-model mode — cycle to first compatible real model
-							const usage = ctx.getContextUsage()
-							const orchIdx = orchestratorModel ? available.findIndex((m) => modelsAreEqual(m, orchestratorModel)) : -1
-							const startIdx = orchIdx !== -1 ? orchIdx : available.length - 1
-							const { model: firstReal } = findNextCompatibleModel(
-								available,
-								startIdx,
-								usage?.tokens ?? null,
-								sessionHasImages(),
-								current ?? undefined,
-							)
-							if (firstReal) {
-								setMultiModelEnabled(false)
-								pi.setModel(firstReal).catch((err) => {
-									ctx.ui.notify(`Failed to cycle model: ${err instanceof Error ? err.message : String(err)}`, "warning")
-								})
+							// Currently on the virtual multi-model entry — wrap to first real model
+							if (available.length > 0) {
+								const usage = ctx.getContextUsage()
+								const { model: firstReal } = findNextCompatibleModel(
+									available,
+									available.length - 1,
+									usage?.tokens ?? null,
+									sessionHasImages(),
+									current ?? undefined,
+								)
+								if (firstReal) {
+									setMultiModelEnabled(false)
+									pi.setModel(firstReal).catch((err) => {
+										ctx.ui.notify(
+											`Failed to cycle model: ${err instanceof Error ? err.message : String(err)}`,
+											"warning",
+										)
+									})
+								}
 							}
 						} else if (available.length > 0 && current) {
 							let idx = available.findIndex((m) => modelsAreEqual(m, current))
@@ -436,10 +442,11 @@ export default function uiExtension(pi: ExtensionAPI) {
 								current,
 							)
 
-							// If the next compatible model would wrap around (its index <= current),
-							// insert multi-model before the wrap.
 							const nextIdx = next ? available.findIndex((m) => modelsAreEqual(m, next)) : -1
-							if (orchestratorModel && (next === undefined || nextIdx <= idx)) {
+							const wouldWrap = next === undefined || nextIdx <= idx
+
+							if (wouldWrap && orchestratorModel) {
+								// Reached end of real models — enter multi-model
 								setMultiModelEnabled(true)
 								if (!modelsAreEqual(current, orchestratorModel)) {
 									pi.setModel(orchestratorModel).catch((err) => {

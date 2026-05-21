@@ -208,17 +208,12 @@ index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..91401aa8880f52d847605a27a920b2d6
                  const providerBadge = theme.fg("muted", `[${item.provider}]`);
                  const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
                  line = `${modelText} ${providerBadge}${checkmark}`;
-@@ -267,6 +281,13 @@ export class ModelSelectorComponent extends Container {
+@@ -267,6 +281,8 @@ export class ModelSelectorComponent extends Container {
          }
      }
      handleSelect(model) {
-+        // Signal multi-model selection so kimchi can detect it
 +        const selectedItem = this.filteredModels[this.selectedIndex];
-+        if (selectedItem?._isMultiModel) {
-+            process.__kimchiMultiModelPending = true;
-+        } else {
-+            process.__kimchiMultiModelEnabled = false;
-+        }
++        process.__kimchiMultiModelEnabled = !!selectedItem?._isMultiModel;
          // Save as new default
          this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
          this.onSelectCallback(model);
@@ -234,14 +229,14 @@ index 408e38417da84ba9e729cfd5f3dd95b285e57e91..5d4225f409fd7e4ef7dfcbda5e16fded
 +        if (searchTerm === "multi-model") {
 +            const orchestratorModel = this.session.modelRegistry.find("kimchi-dev", "kimi-k2.6");
 +            if (orchestratorModel) {
-+                process.__kimchiMultiModelPending = true;
++                process.__kimchiMultiModelEnabled = true;
 +                try {
 +                    await this.session.setModel(orchestratorModel);
 +                    this.footer.invalidate();
 +                    this.updateEditorBorderColor();
 +                    this.showStatus("Model: multi-model");
 +                } catch (error) {
-+                    delete process.__kimchiMultiModelPending;
++                    process.__kimchiMultiModelEnabled = false;
 +                    this.showError(error instanceof Error ? error.message : String(error));
 +                }
 +            } else {

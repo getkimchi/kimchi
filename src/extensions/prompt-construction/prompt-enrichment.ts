@@ -22,7 +22,7 @@
 
 import { execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir, platform, userInfo } from "node:os"
 import { isAbsolute, join, normalize, resolve } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
@@ -82,6 +82,36 @@ function readGitRemote(cwd: string): string | undefined {
 	}
 }
 
+const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
+
+function readMultiModelSetting(): boolean {
+	try {
+		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
+		const parsed = JSON.parse(raw)
+		if (typeof parsed.multiModel === "boolean") return parsed.multiModel
+	} catch {
+		// absent or unreadable
+	}
+	return true
+}
+
+function writeMultiModelSetting(enabled: boolean): void {
+	try {
+		let current: Record<string, unknown> = {}
+		try {
+			current = JSON.parse(readFileSync(HARNESS_SETTINGS_PATH, "utf-8"))
+		} catch {
+			// absent or malformed — start fresh
+		}
+		current.multiModel = enabled
+		const dir = join(homedir(), ".config", "kimchi", "harness")
+		if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+		writeFileSync(HARNESS_SETTINGS_PATH, `${JSON.stringify(current, null, 2)}\n`)
+	} catch {
+		// best-effort
+	}
+}
+
 function hasExplicitModelFlag(): boolean {
 	const args = process.argv
 	for (let i = 0; i < args.length; i++) {
@@ -90,7 +120,7 @@ function hasExplicitModelFlag(): boolean {
 	return false
 }
 
-const initialMultiModel = !hasExplicitModelFlag()
+const initialMultiModel = hasExplicitModelFlag() ? false : readMultiModelSetting()
 let multiModelEnabled = initialMultiModel
 ;(process as NodeJS.Process & { __kimchiMultiModelEnabled?: boolean }).__kimchiMultiModelEnabled = initialMultiModel
 
@@ -178,13 +208,21 @@ export function stripEmptyToolCalls(messages: OrchestratorMessages): Orchestrato
 	return changed ? filtered : messages
 }
 
+type ProcessWithMultiModel = NodeJS.Process & { __kimchiMultiModelEnabled?: boolean }
+
 export function getMultiModelEnabled(): boolean {
+	const processFlag = (process as ProcessWithMultiModel).__kimchiMultiModelEnabled
+	if (processFlag !== undefined && processFlag !== multiModelEnabled) {
+		multiModelEnabled = processFlag
+		writeMultiModelSetting(processFlag)
+	}
 	return multiModelEnabled
 }
 
 export function setMultiModelEnabled(enabled: boolean): void {
 	multiModelEnabled = enabled
-	;(process as NodeJS.Process & { __kimchiMultiModelEnabled?: boolean }).__kimchiMultiModelEnabled = enabled
+	;(process as ProcessWithMultiModel).__kimchiMultiModelEnabled = enabled
+	writeMultiModelSetting(enabled)
 }
 
 export function isSubagent(): boolean {

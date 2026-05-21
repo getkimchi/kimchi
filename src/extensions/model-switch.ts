@@ -183,19 +183,6 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 		// Skip if ferment is reverting (its own rollback path)
 		if (isRestoringModel()) return
 
-		// Detect multi-model selection from the /model picker (framework patch sets this flag)
-		const proc = process as NodeJS.Process & { __kimchiMultiModelPending?: boolean }
-		if (proc.__kimchiMultiModelPending) {
-			proc.__kimchiMultiModelPending = undefined
-			setMultiModelEnabled(true)
-			return
-		}
-
-		// User explicitly selected a specific model via /model picker — exit multi-model mode
-		if (event.source === "set") {
-			setMultiModelEnabled(false)
-		}
-
 		// Nothing to revert to
 		if (!event.previousModel) return
 
