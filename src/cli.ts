@@ -6,7 +6,6 @@ import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
-import { validateApiKey } from "./auth/validator.js"
 import { getCliModeArg, isHelpOrVersionArgs } from "./cli-args.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import {
@@ -57,7 +56,6 @@ import webSearchExtension from "./extensions/web-search/index.js"
 import { updateModelsConfig } from "./models.js"
 import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./modes/teleport/sync/session-export.js"
 import { runSetupWizard } from "./setup-wizard.js"
-import { runWizard } from "./setup-wizard/index.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
@@ -273,36 +271,31 @@ try {
 		}
 		const modelsJsonPath = resolve(agentDir, "models.json")
 
-		// If we have an API key, validate it before trying to fetch models.
-		// If validation fails (e.g., 401 Unauthorized), clear the invalid key
-		// and redirect to setup for re-authentication.
-		let validatedApiKey = apiKey
-		if (apiKey) {
-			const validation = await validateApiKey(apiKey)
-			if (!validation.valid) {
-				console.warn(`API key validation failed: ${validation.error ?? "unknown error"}`)
-				if (validation.suggestions) {
-					for (const suggestion of validation.suggestions) {
-						console.warn(`  - ${suggestion}`)
-					}
-				}
-				// Clear the invalid key and redirect to setup wizard for re-authentication
+		// Fetch models from the API (validates the key implicitly via the 401 response).
+		// If the key is invalid and we're in a TTY, clear it and redirect to the
+		// setup wizard so the user can re-authenticate. Non-TTY environments fail
+		// fast — an interactive wizard would hang.
+		let currentApiKey = apiKey
+		let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
+		try {
+			;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
+		} catch (err) {
+			const is401 = err instanceof Error && err.message.includes("401")
+			if (is401 && process.stdin.isTTY) {
+				console.warn("API key is invalid or expired. Redirecting to setup...")
 				writeApiKey("")
 				config = loadConfig()
-				validatedApiKey = ""
-				console.warn("\nRedirecting to setup wizard to re-authenticate...")
+				const { runWizard } = await import("./setup-wizard/index.js")
 				const wizardResult = await runWizard()
 				if (wizardResult.cancelled) {
-					process.exit(130) // User cancelled
+					process.exit(130)
 				}
-				// Update apiKey with the new value from wizard
-				if (wizardResult.apiKey) {
-					validatedApiKey = wizardResult.apiKey
-				}
+				currentApiKey = wizardResult.apiKey ?? ""
+				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
+			} else {
+				throw err
 			}
 		}
-
-		const { models } = await updateModelsConfig(modelsJsonPath, validatedApiKey)
 
 		// Must run before main() so the keybindings file is loaded with the
 		// override in place.
@@ -466,7 +459,7 @@ try {
 			const { runAcpMode } = await import("./modes/acp/server.js")
 			await runAcpMode({ extensionFactories, agentDir })
 		} else if (teleportMode) {
-			if (!apiKey) {
+			if (!currentApiKey) {
 				console.error("Error: --teleport requires an API key — run 'kimchi setup' first.")
 				process.exit(1)
 			}
@@ -475,7 +468,7 @@ try {
 			await runTeleportSession({
 				extensionFactories,
 				agentDir,
-				apiKey: apiKey ?? "",
+				apiKey: currentApiKey,
 				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 			})
 		} else {
