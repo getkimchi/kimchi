@@ -5,7 +5,11 @@ import { isRestoringModel } from "./ferment/state.js"
 import { contextFitsModel, getSafeContextWindow, sessionHasImages } from "./model-guard.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
-import { ORCHESTRATOR_MODEL_ID, setMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
+import {
+	ORCHESTRATOR_MODEL_ID,
+	getMultiModelEnabled,
+	setMultiModelEnabled,
+} from "./prompt-construction/prompt-enrichment.js"
 
 /** Tier ordering for downgrade detection: higher index = lower tier. */
 const TIER_ORDER: ModelTier[] = ["heavy", "standard", "light"]
@@ -182,6 +186,13 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 		if (event.source === "cycle" || event.source === "restore") return
 		// Skip if ferment is reverting (its own rollback path)
 		if (isRestoringModel()) return
+
+		// Flush the multi-model flag that the harness /models UI sets via
+		// process.__kimchiMultiModelEnabled.  getMultiModelEnabled() detects a
+		// mismatch between the process flag and the extension variable and
+		// persists it to disk.  Without this, the disk value can go stale if the
+		// session ends before the footer polls the flag.
+		getMultiModelEnabled()
 
 		// Nothing to revert to
 		if (!event.previousModel) return
