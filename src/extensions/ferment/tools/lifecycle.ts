@@ -70,8 +70,17 @@ type ScopingAnswer = {
 	recommended: boolean
 }
 
+const SCOPING_STATUS_KEY = "ferment-scoping"
+
 export interface LifecycleExecutionContext {
 	pi: ExtensionAPI
+}
+
+function clearScopingStatus(ctx: unknown): void {
+	;(ctx as { ui?: { setStatus?: (key: string, message: string | undefined) => void } } | undefined)?.ui?.setStatus?.(
+		SCOPING_STATUS_KEY,
+		undefined,
+	)
 }
 
 const validateFsmTransition = (
@@ -668,6 +677,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
 		async execute(_, rawParams, _signal, _onUpdate, ctx) {
+			clearScopingStatus(ctx)
 			const normalized = normalizeProposeScopingParams(rawParams)
 			if (!normalized.ok) return normalized.error
 			const params = normalized.params

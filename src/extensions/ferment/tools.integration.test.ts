@@ -1101,7 +1101,7 @@ describe("propose_ferment_scoping", () => {
 	it("(a) zero-questions + Continue → ferment becomes planned", async () => {
 		const id = await createFerment("ZeroQ Continue")
 		seedPending(id)
-		const ctx = { ui: { select: vi.fn().mockResolvedValue("Start execution  ✓"), input: vi.fn() } }
+		const ctx = { ui: { select: vi.fn().mockResolvedValue("Start execution  ✓"), input: vi.fn(), setStatus: vi.fn() } }
 
 		const result = ok(await h.call("propose_ferment_scoping", basePayload(id), ctx))
 
@@ -1113,6 +1113,7 @@ describe("propose_ferment_scoping", () => {
 		expect(result).toContain("Plan saved")
 		expect(result).toContain("Here is the proposed plan")
 		expect(result).toContain("# Plan:")
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith("ferment-scoping", undefined)
 		expect(ctx.ui.select).toHaveBeenCalledWith(expect.stringContaining("# Plan:"), expect.any(Array))
 	})
 
