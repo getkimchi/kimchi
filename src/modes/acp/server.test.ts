@@ -123,30 +123,43 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 
 		it("declares image: true when cached models include vision models", async () => {
-			const modelsJson = {
-				providers: {
-					"kimchi-dev": {
-						models: [
-							{
-								id: "gpt-4o",
-								name: "GPT-4o",
-								provider: "openai",
-								input: ["text", "image"],
-							},
-						],
-					},
-				},
+			// Stub API key so models are considered "available" (configured auth)
+			const restoreEnv = (key: string, value: string | undefined) => {
+				const original = process.env[key]
+				process.env[key] = value
+				return () => {
+					process.env[key] = original
+				}
 			}
-			writeFileSync(resolve(tempAgentDir, "models.json"), JSON.stringify(modelsJson))
+			const cleanup = restoreEnv("OPENAI_API_KEY", "fake-key-for-testing")
 
-			const testAgent = new KimchiAcpAgent(makeConn(), {
-				extensionFactories: [],
-				agentDir: tempAgentDir,
-				sessionFactory: async () => asSession(fake),
-			})
+			try {
+				const modelsJson = {
+					providers: {
+						openai: {
+							models: [
+								{
+									id: "gpt-4o",
+									name: "GPT-4o",
+									input: ["text", "image"],
+								},
+							],
+						},
+					},
+				}
+				writeFileSync(resolve(tempAgentDir, "models.json"), JSON.stringify(modelsJson))
 
-			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.agentCapabilities?.promptCapabilities?.image).toBe(true)
+				const testAgent = new KimchiAcpAgent(makeConn(), {
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				})
+
+				const response = await testAgent.initialize({ protocolVersion: 1 })
+				expect(response.agentCapabilities?.promptCapabilities?.image).toBe(true)
+			} finally {
+				cleanup()
+			}
 		})
 
 		it("declares image capability based on available models", async () => {

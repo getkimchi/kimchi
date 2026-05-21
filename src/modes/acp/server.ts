@@ -1,6 +1,7 @@
 // ACP (Agent Client Protocol) mode: JSON-RPC 2.0 over stdio using
 // @agentclientprotocol/sdk. Lets Zed / openclaw drive kimchi in-process.
 
+import { join } from "node:path"
 import { Readable, Writable } from "node:stream"
 import {
 	type Agent,
@@ -91,8 +92,8 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async initialize(_: InitializeRequest): Promise<InitializeResponse> {
-		const authStorage = AuthStorage.create(this.agentDir)
-		const modelRegistry = ModelRegistry.create(authStorage)
+		const authStorage = AuthStorage.create(join(this.agentDir, "auth.json"))
+		const modelRegistry = ModelRegistry.create(authStorage, join(this.agentDir, "models.json"))
 		const supportsImages = modelRegistry.getAvailable().some((m) => m.input?.includes("image"))
 		return {
 			protocolVersion: PROTOCOL_VERSION,
