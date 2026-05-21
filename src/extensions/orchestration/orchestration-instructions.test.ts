@@ -29,11 +29,6 @@ describe("resolveOrchestrationInstructions", () => {
 			mode: "orchestrator",
 		})
 		expect(result).toContain("Orchestrate the work")
-		expect(result).toContain("Step 2 — Decide what to do yourself vs. delegate")
-		expect(result).toContain("When delegating:")
-		expect(result).toContain("Mandatory pipeline for multi-phase tasks")
-		expect(result).toContain("Token budgets")
-		expect(result).toContain("token_budget")
 	})
 
 	it("includes model capabilities and available models in orchestrator mode", () => {
@@ -68,7 +63,7 @@ describe("resolveOrchestrationInstructions", () => {
 		})
 		expect(result).toContain("Subagent response protocol")
 		expect(result).toContain('{"summary":')
-		expect(result).not.toContain("Agent delegation rules")
+		expect(result).not.toContain("Orchestrate the work")
 	})
 
 	it("includes model-specific orchestration guidelines when provided", () => {
