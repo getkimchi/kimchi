@@ -331,7 +331,7 @@ function installPatch(theme: ThinkingThemeLike): () => void {
 								: this.hiddenThinkingLabel
 							const styledLabel = theme.bold ? theme.bold(rawLabel) : rawLabel
 							this.contentContainer.addChild(
-								new Text(`${theme.fg("muted", "│")} ${theme.fg("dim", styledLabel)}`, 1, 0),
+								new Text(`${theme.fg("muted", "│")} ${theme.fg("dim", styledLabel)}`, 0, 0),
 							)
 						}
 					} else {
