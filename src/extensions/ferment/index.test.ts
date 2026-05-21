@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { globalTipRegistry } from "../tips/registry.js"
 import fermentExtension from "./index.js"
 import { resetAllReactiveContinuationNudgeCounts } from "./nudge.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
@@ -16,6 +17,12 @@ import { completeFerment, scopeFerment } from "./tools/lifecycle.js"
 
 vi.mock("../../ferment/shorten-title.js", () => ({
 	shortenTitle: vi.fn(async (input: string) => input),
+}))
+
+const requestSharedFooterRenderMock = vi.hoisted(() => vi.fn())
+
+vi.mock("../shared-footer.js", () => ({
+	requestSharedFooterRender: requestSharedFooterRenderMock,
 }))
 
 // Stub the journey-grade judge so completeFerment doesn't try to call a real
@@ -34,10 +41,12 @@ vi.mock("./judge.js", async () => {
 
 type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown
 type CommandHandler = (args: string, ctx: unknown) => Promise<unknown> | unknown
+type ShortcutHandler = (ctx: unknown) => Promise<unknown> | unknown
 
 function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<string, boolean | string> = {}) {
 	const handlers = new Map<string, EventHandler>()
 	const commands = new Map<string, CommandHandler>()
+	const shortcuts = new Map<string, { description?: string; handler: ShortcutHandler }>()
 	const registeredFlags = new Set<string>()
 	const pi = {
 		on: (event: string, handler: EventHandler) => {
@@ -46,19 +55,17 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 		registerCommand: (name: string, command: { handler: CommandHandler }) => {
 			commands.set(name, command.handler)
 		},
+		registerShortcut: (shortcut: string, options: { description?: string; handler: ShortcutHandler }) => {
+			shortcuts.set(shortcut, options)
+		},
 		registerTool: vi.fn(),
 		registerMessageRenderer: vi.fn(),
 		registerFlag: vi.fn((name: string) => {
 			registeredFlags.add(name)
 		}),
 		getFlag: vi.fn((name: string) => (registeredFlags.has(name) ? flagValues[name] : undefined)),
-		getActiveTools: vi.fn(() => ["read", "bash", "create_ferment", "start_ferment_step"]),
-		getAllTools: vi.fn(() => [
-			{ name: "read" },
-			{ name: "bash" },
-			{ name: "create_ferment" },
-			{ name: "start_ferment_step" },
-		]),
+		getActiveTools: vi.fn(() => ["read", "bash", "start_ferment_step"]),
+		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "start_ferment_step" }]),
 		setActiveTools: vi.fn(),
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
@@ -66,12 +73,14 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 	} as unknown as ExtensionAPI
 
 	fermentExtension(pi, runtime)
-	return { commands, handlers, pi }
+	return { commands, handlers, pi, shortcuts }
 }
 
 afterEach(() => {
 	setActive(undefined)
 	setContinuationPolicy("manual")
+	globalTipRegistry.clear()
+	requestSharedFooterRenderMock.mockClear()
 	resetAllReactiveContinuationNudgeCounts()
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
@@ -80,6 +89,92 @@ afterEach(() => {
 	for (const item of storage.list()) {
 		storage.delete(item.id)
 	}
+})
+
+function makeActiveFerment(status: Ferment["status"]): Ferment {
+	return {
+		id: `shortcut-${status}`,
+		name: "Shortcut Ferment",
+		status,
+		worktree: { path: "/tmp/project" },
+		scoping: {},
+		phases: [],
+		decisions: [],
+		memories: [],
+		createdAt: "2026-01-01T00:00:00.000Z",
+		updatedAt: "2026-01-01T00:00:00.000Z",
+	}
+}
+
+describe("fermentExtension tips", () => {
+	it("registers a contextual provider backed by the active Ferment state", () => {
+		globalTipRegistry.clear()
+
+		registerFermentExtension()
+
+		const provider = globalTipRegistry.getProviders().find((candidate) => candidate.source === "kimchi.ferment")
+		expect(provider).toBeDefined()
+		expect(provider?.getTips()).toHaveLength(0)
+
+		setActive(makeActiveFerment("running"))
+
+		expect(provider?.getTips().map((tip) => tip.id)).toContain("progress-navigation")
+	})
+})
+
+describe("fermentExtension stop-policy shortcut", () => {
+	it("registers f6 for toggling the active ferment stop policy", () => {
+		const { shortcuts } = registerFermentExtension()
+
+		expect(shortcuts.get("f6")).toEqual(expect.objectContaining({ description: "Toggle Ferment stop policy" }))
+	})
+
+	it("toggles manual and automated policies for active executable ferments without notifying", async () => {
+		const { shortcuts } = registerFermentExtension()
+		const shortcut = shortcuts.get("f6")
+		if (!shortcut) throw new Error("f6 shortcut was not registered")
+		const notify = vi.fn()
+
+		setActive(makeActiveFerment("running"))
+		setContinuationPolicy("manual")
+
+		await shortcut.handler({ hasUI: true, ui: { notify } })
+		expect(isAutomatedContinuationEnabled()).toBe(true)
+		expect(notify).not.toHaveBeenCalled()
+		expect(requestSharedFooterRenderMock).toHaveBeenCalledTimes(1)
+
+		await shortcut.handler({ hasUI: true, ui: { notify } })
+		expect(isAutomatedContinuationEnabled()).toBe(false)
+		expect(notify).not.toHaveBeenCalled()
+		expect(requestSharedFooterRenderMock).toHaveBeenCalledTimes(2)
+	})
+
+	it("allows toggling while the active ferment is paused", async () => {
+		const { shortcuts } = registerFermentExtension()
+		const shortcut = shortcuts.get("f6")
+		if (!shortcut) throw new Error("f6 shortcut was not registered")
+
+		setActive(makeActiveFerment("paused"))
+		setContinuationPolicy("manual")
+
+		await shortcut.handler({ hasUI: true, ui: { notify: vi.fn() } })
+
+		expect(isAutomatedContinuationEnabled()).toBe(true)
+		expect(requestSharedFooterRenderMock).toHaveBeenCalledTimes(1)
+	})
+
+	it("silently no-ops when no executable ferment is active", async () => {
+		const { shortcuts } = registerFermentExtension()
+		const shortcut = shortcuts.get("f6")
+		if (!shortcut) throw new Error("f6 shortcut was not registered")
+
+		await shortcut.handler({ hasUI: true, ui: { notify: vi.fn() } })
+		setActive(makeActiveFerment("draft"))
+		await shortcut.handler({ hasUI: true, ui: { notify: vi.fn() } })
+
+		expect(isAutomatedContinuationEnabled()).toBe(false)
+		expect(requestSharedFooterRenderMock).not.toHaveBeenCalled()
+	})
 })
 
 describe("fermentExtension session resume", () => {

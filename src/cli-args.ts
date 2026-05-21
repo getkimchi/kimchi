@@ -1,0 +1,40 @@
+// Pre-dispatch scanners need to skip values for known CLI flags before the
+// upstream pi-coding-agent parser runs. Keep this mirrored with the upstream
+// parser because that parser is not exported through the package API.
+const PRE_DISPATCH_VALUE_FLAGS = new Set([
+	"--provider",
+	"--model",
+	"--api-key",
+	"--system-prompt",
+	"--append-system-prompt",
+	"--session",
+	"--fork",
+	"--session-dir",
+	"--models",
+	"--tools",
+	"-t",
+	"--thinking",
+	"--export",
+	"--extension",
+	"-e",
+	"--skill",
+	"--prompt-template",
+	"--theme",
+])
+
+export function isPreDispatchValueFlag(arg: string): boolean {
+	return PRE_DISPATCH_VALUE_FLAGS.has(arg)
+}
+
+export function getCliModeArg(args: string[]): string | undefined {
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i]
+		if (arg === "--mode" && i + 1 < args.length) return args[i + 1]
+		if (arg.startsWith("--mode=")) return arg.slice("--mode=".length)
+	}
+	return undefined
+}
+
+export function isHelpOrVersionArgs(args: string[]): boolean {
+	return args.some((a) => a === "--help" || a === "-h" || a === "--version" || a === "-v")
+}

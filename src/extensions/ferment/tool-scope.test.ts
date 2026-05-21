@@ -22,18 +22,15 @@ function createPi(activeTools: string[], allTools: string[]) {
 
 describe("ferment tool scope", () => {
 	it("applies the worker profile by removing ferment tools from the active set", () => {
-		const pi = createPi(
-			["read", "create_ferment", "bash", "start_ferment_step"],
-			["read", "bash", "create_ferment", "start_ferment_step"],
-		)
+		const pi = createPi(["read", "bash", "start_ferment_step"], ["read", "bash", "start_ferment_step"])
 
 		applyFermentToolProfile(pi, "worker")
 
 		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
 	})
 
-	it("applies the planner-active profile without duplicate creation", () => {
-		const pi = createPi(["read", "create_ferment", "bash"], ["read", "bash", "create_ferment", "start_ferment_step"])
+	it("applies the planner-active profile", () => {
+		const pi = createPi(["read", "bash"], ["read", "bash", "start_ferment_step"])
 
 		applyFermentToolProfile(pi, "planner-active")
 
@@ -42,34 +39,32 @@ describe("ferment tool scope", () => {
 
 	it("applies the idle profile as discovery-only ferment tools", () => {
 		const pi = createPi(
-			["read", "bash", "create_ferment", "scope_ferment", "activate_ferment_phase", "list_ferments"],
-			["read", "bash", "create_ferment", "scope_ferment", "activate_ferment_phase", "list_ferments"],
+			["read", "bash", "scope_ferment", "activate_ferment_phase", "list_ferments"],
+			["read", "bash", "scope_ferment", "activate_ferment_phase", "list_ferments"],
 		)
 
 		applyFermentToolProfile(pi, "idle")
 
-		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "create_ferment", "list_ferments"])
+		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "list_ferments"])
 	})
 
 	it("keeps the existing-ferment lifecycle surface for an active planner profile", () => {
 		const allTools = ["read", "bash", ...FERMENT_TOOL_NAMES]
-		const pi = createPi(["read", "bash", "create_ferment"], allTools)
+		const pi = createPi(["read", "bash"], allTools)
 
 		applyFermentToolProfile(pi, "planner-active")
 
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
 		for (const name of FERMENT_TOOL_NAMES) {
-			if (name === "create_ferment") continue
 			expect(lastCall).toContain(name)
 		}
-		expect(lastCall).not.toContain("create_ferment")
 		expect(lastCall).not.toContain("set_ferment_mode")
 	})
 
 	it("keeps only non-mutating ferment discovery while paused or terminal", () => {
 		const pi = createPi(
-			["read", "bash", "create_ferment", "list_ferments", "complete_ferment"],
-			["read", "bash", "create_ferment", "list_ferments", "complete_ferment"],
+			["read", "bash", "list_ferments", "complete_ferment"],
+			["read", "bash", "list_ferments", "complete_ferment"],
 		)
 
 		applyFermentToolProfile(pi, "paused-terminal")
@@ -89,7 +84,7 @@ describe("ferment tool scope", () => {
 })
 
 describe("applyPlannerOneshotAllowlist", () => {
-	it("strips inline implementation tools and create_ferment, keeping orchestration tools", () => {
+	it("strips inline implementation tools, keeping orchestration tools", () => {
 		const allTools = [
 			"bash",
 			"edit",
@@ -103,7 +98,6 @@ describe("applyPlannerOneshotAllowlist", () => {
 			"Agent",
 			"get_subagent_result",
 			"set_phase",
-			"create_ferment",
 			"scope_ferment",
 			"activate_ferment_phase",
 			"start_ferment_step",
@@ -115,7 +109,6 @@ describe("applyPlannerOneshotAllowlist", () => {
 		applyPlannerOneshotAllowlist(pi)
 
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		expect(lastCall).not.toContain("create_ferment")
 		expect(pi.setActiveTools).toHaveBeenLastCalledWith([
 			"read",
 			"Agent",
@@ -147,9 +140,7 @@ describe("applyPlannerOneshotAllowlist", () => {
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
 		expect(lastCall).not.toContain("bash")
 		expect(lastCall).not.toContain("edit")
-		expect(lastCall).not.toContain("create_ferment")
 		for (const name of FERMENT_TOOL_NAMES) {
-			if (name === "create_ferment") continue
 			expect(lastCall).toContain(name)
 		}
 	})

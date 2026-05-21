@@ -9,7 +9,6 @@ import { decideContinuation } from "./continuation.js"
 import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { appendRefEntry } from "./nudge.js"
-import { maybeRunOnboarding } from "./onboarding.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import {
 	buildPhaseActionOptions,
@@ -22,6 +21,7 @@ import {
 	handlePhaseAction,
 	handleStepAction,
 } from "./progress-overlay.js"
+import { promptInput } from "./prompt-ui.js"
 import { resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
@@ -154,6 +154,60 @@ export interface FermentCommandDeps {
 
 export interface FermentCommandResult {
 	handled: true
+}
+
+export interface StartInteractiveFermentDeps {
+	pi: ExtensionAPI
+	ctx: FermentUiContext
+	runtime?: FermentRuntime
+}
+
+export async function startInteractiveFerment({
+	pi,
+	ctx,
+	runtime = defaultFermentRuntime,
+}: StartInteractiveFermentDeps): Promise<void> {
+	const active = runtime.getActive()
+	if (active && active.status === "running") {
+		ctx.ui.notify(
+			`A ferment is already running: "${active.name}". Use /ferment progress to check status or /ferment switch to change.`,
+		)
+		return
+	}
+	if (!ctx.ui.input) {
+		ctx.ui.notify('No UI available. Use /ferment new "Name" instead.')
+		return
+	}
+
+	const rawIntent = await promptInput(
+		ctx,
+		"🍺  What would you like to ferment?",
+		"e.g. 'Rewrite login flow' or 'Add OAuth support'",
+	)
+	if (!rawIntent) return
+
+	const storage = runtime.getStorage()
+	ctx.ui.setStatus?.("ferment-scoping", "Fermenting · naming…")
+	sendFermentRequestMessage(pi, rawIntent)
+	try {
+		const shortName = await shortenTitle(rawIntent)
+		const f = storage.create(shortName, rawIntent)
+		setActiveFermentAndApplyProfile(pi, runtime, f)
+		appendRefEntry(pi, f.id)
+
+		sendBreadcrumb(
+			pi,
+			`Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nPolicy: ${runtime.getContinuationPolicy()}`,
+			"ack",
+			"ferment_ack",
+		)
+
+		await runScopingFlow(f, pi, ctx, runtime, rawIntent)
+	} catch (err) {
+		ctx.ui.notify(err instanceof FermentError ? err.message : "Create failed.")
+	} finally {
+		ctx.ui.setStatus?.("ferment-scoping", undefined)
+	}
 }
 
 function setManualContinuationPolicy(pi: ExtensionAPI, ctx: FermentUiContext, runtime: FermentRuntime): void {
@@ -368,51 +422,12 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: FermentUiContext, runt
 
 export class FermentCommandController {
 	async execute(command: FermentCliCommand, deps: FermentCommandDeps): Promise<FermentCommandResult> {
-		const { raw, pi, ctx, runtime } = deps
+		const { pi, ctx, runtime } = deps
 		const applyAndPersist = createApplyAndPersist(runtime)
 		const storage = runtime.getStorage()
 
 		if (command.type === "interactive") {
-			if (!ctx.ui.input) {
-				ctx.ui.notify('No UI available. Use /ferment add "Name" instead.')
-				return { handled: true }
-			}
-			const active = runtime.getActive()
-			if (active && active.status === "running") {
-				ctx.ui.notify(
-					`A ferment is already running: "${active.name}". Use /ferment progress to check status or /ferment switch to change.`,
-				)
-				return { handled: true }
-			}
-
-			await maybeRunOnboarding(ctx)
-
-			const rawIntent = await ctx.ui.input(
-				"🍺  What would you like to ferment?",
-				"e.g. 'Rewrite login flow' or 'Add OAuth support'",
-			)
-			if (!rawIntent) return { handled: true }
-			ctx.ui.setStatus?.("ferment-scoping", "Fermenting · naming…")
-			sendFermentRequestMessage(pi, rawIntent)
-			try {
-				const shortName = await shortenTitle(rawIntent)
-				const f = storage.create(shortName, rawIntent)
-				setActiveFermentAndApplyProfile(pi, runtime, f)
-				appendRefEntry(pi, f.id)
-
-				sendBreadcrumb(
-					pi,
-					`Started ferment: "${f.name}"\nBranch: ${f.worktree.branch ?? "n/a"}  Path: ${f.worktree.path}\nPolicy: ${runtime.getContinuationPolicy()}`,
-					"ack",
-					"ferment_ack",
-				)
-
-				await runScopingFlow(f, pi, ctx, runtime, rawIntent)
-			} catch (err) {
-				ctx.ui.notify(err instanceof FermentError ? err.message : "Create failed.")
-			} finally {
-				ctx.ui.setStatus?.("ferment-scoping", undefined)
-			}
+			await startInteractiveFerment({ pi, ctx, runtime })
 			return { handled: true }
 		}
 

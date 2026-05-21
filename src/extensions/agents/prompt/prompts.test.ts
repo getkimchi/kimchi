@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { DEFAULT_AGENTS } from "../personas/default-agents.js"
 import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER, type EnvInfo } from "../personas/types.js"
-import { buildAgentPrompt } from "./prompts.js"
+import { buildAgentPrompt, formatTokenBudget } from "./prompts.js"
 
 const FIXED_ENV: EnvInfo = {
 	isGitRepo: true,
@@ -180,5 +180,69 @@ describe("default agents — subagent system prompt snapshot", () => {
 
 			Deliver a structured report: summary first, then supporting evidence with citations."
 		`)
+	})
+})
+
+describe("formatTokenBudget", () => {
+	const cases: Record<string, { input: number; expected: string }> = {
+		"formats millions": { input: 1_500_000, expected: "1.5M" },
+		"formats thousands": { input: 200_000, expected: "200k" },
+		"formats small numbers as-is": { input: 500, expected: "500" },
+		"formats exact million": { input: 1_000_000, expected: "1.0M" },
+		"formats exact thousand": { input: 1_000, expected: "1k" },
+	}
+
+	for (const [name, tc] of Object.entries(cases)) {
+		it(name, () => {
+			expect(formatTokenBudget(tc.input)).toBe(tc.expected)
+		})
+	}
+})
+
+describe("budget block in system prompt", () => {
+	it("includes budget section when maxTurns is provided", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			budget: { maxTurns: 30 },
+		})
+		expect(output).toContain("<budget>")
+		expect(output).toContain("Turn limit: 30 turns")
+		expect(output).not.toContain("Output token budget")
+	})
+
+	it("includes both turn and token budget when both are provided", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			budget: { maxTurns: 30, tokenBudget: 200_000 },
+		})
+		expect(output).toContain("Turn limit: 30 turns")
+		expect(output).toContain("Output token budget: ~200k")
+	})
+
+	it("includes only token budget when maxTurns is not set", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			budget: { tokenBudget: 1_500_000 },
+		})
+		expect(output).toContain("Output token budget: ~1.5M")
+		expect(output).not.toContain("Turn limit")
+	})
+
+	it("does not include budget section when budget is empty", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			budget: {},
+		})
+		expect(output).not.toContain("<budget>")
+	})
+
+	it("includes budget section in replace mode too", () => {
+		const agent = getRequired(AGENT_EXPLORE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			budget: { maxTurns: 15, tokenBudget: 100_000 },
+		})
+		expect(output).toContain("<budget>")
+		expect(output).toContain("Turn limit: 15 turns")
+		expect(output).toContain("Output token budget: ~100k")
 	})
 })

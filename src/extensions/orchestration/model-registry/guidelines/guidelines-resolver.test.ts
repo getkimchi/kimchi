@@ -94,10 +94,9 @@ describe("orchestration guideline resolution", () => {
 		expect(result).toContain("tool-call reliability")
 	})
 
-	it("returns composed orchestration guideline for claude-opus-4-7", () => {
-		const result = resolveOrchestrationGuideline("claude-opus-4-7", registry)
-		expect(result).toContain("Claude family")
-		expect(result).toContain("delegation granularity")
+	it("returns empty string for ignored model claude-opus-4-6", () => {
+		const result = resolveOrchestrationGuideline("claude-opus-4-6", registry)
+		expect(result).toBe("")
 	})
 
 	it("returns composed orchestration guideline for nemotron-3-super-fp4", () => {
@@ -176,23 +175,22 @@ describe("builtin-model guideline content", () => {
 		expect(result).toContain("inappropriate concurrency")
 	})
 
-	it("nemotron-3-super-fp4 build: contains default, family, and per-model layers", () => {
-		const result = resolvePhaseGuideline("build", "nemotron-3-super-fp4", registry)
-		expect(result).toContain("long context window")
-		expect(result).toContain("strictly within the spec")
-	})
-
-	it("claude-opus-4-7 plan: contains default, family, and per-model layers", () => {
-		const result = resolvePhaseGuideline("plan", "claude-opus-4-7", registry)
-		expect(result).toContain("Design BEFORE coding")
-		expect(result).toContain("Match plan depth")
-		expect(result).toContain("Don't relitigate")
-	})
-
-	it("claude-opus-4-7 explore: contains default, family, and per-model layers", () => {
-		const result = resolvePhaseGuideline("explore", "claude-opus-4-7", registry)
+	it("nemotron-3-super-fp4 explore: contains default and per-model layers", () => {
+		const result = resolvePhaseGuideline("explore", "nemotron-3-super-fp4", registry)
 		expect(result).toContain("During **explore** phase:")
-		expect(result).toContain("Resist over-exploration")
+		expect(result).toContain("1M token context window")
+	})
+
+	it("claude-opus-4-6 plan: falls back to default (ignored model)", () => {
+		const result = resolvePhaseGuideline("plan", "claude-opus-4-6", registry)
+		expect(result).toContain("Design BEFORE coding")
+		expect(result).not.toContain("Match plan depth")
+	})
+
+	it("claude-opus-4-6 explore: falls back to default (ignored model)", () => {
+		const result = resolvePhaseGuideline("explore", "claude-opus-4-6", registry)
+		expect(result).toContain("During **explore** phase:")
+		expect(result).not.toContain("Resist over-exploration")
 	})
 
 	it("default build guidelines contain the co-author trailer", () => {

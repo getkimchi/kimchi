@@ -11,6 +11,10 @@ export function getLifetimeTotal(u?: LifetimeUsage): number {
 	return u ? u.input + u.output + u.cacheWrite : 0
 }
 
+export function getOutputTotal(u?: LifetimeUsage): number {
+	return u ? u.output : 0
+}
+
 export function addUsage(into: LifetimeUsage, delta: LifetimeUsage): void {
 	into.input += delta.input
 	into.output += delta.output

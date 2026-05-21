@@ -184,10 +184,10 @@ export default function (pi: ExtensionAPI) {
 			const lineCount = trimmed ? trimmed.split("\n").length : 0
 
 			view.setHeader("", "")
-			view.setDivider((s: string) => theme.fg("borderMuted", s))
+			view.setBranchMode((s: string) => theme.fg("borderMuted", s))
 			view.setFooter(
 				theme.fg("dim", `${lineCount} line${lineCount === 1 ? "" : "s"} of output`),
-				theme.fg("dim", "ctrl+o to expand"),
+				theme.fg("dim", "ctrl+o"),
 			)
 			view.setExtra([])
 			return view

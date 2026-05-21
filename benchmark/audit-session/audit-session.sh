@@ -20,13 +20,13 @@ Options:
   -n, --last N        Show only the last N sessions (default: all)
   -d, --dir DIR       Use DIR to find sessions (default: current directory)
   -r, --runner CMD    Harness to use: kimchi or claude (default: kimchi)
-  -m, --model MODEL   Model to use (default: kimchi-dev/claude-opus-4-7)
+  -m, --model MODEL   Model to use (default: kimchi-dev/claude-opus-4-6)
   -h, --help          Show this help
 
 Examples:
   $(basename "$0")                              # pick session, run with kimchi
   $(basename "$0") -r claude                    # run with claude-code
-  $(basename "$0") -m claude-opus-4-7           # custom model
+  $(basename "$0") -m claude-opus-4-6           # custom model
   $(basename "$0") -r claude -m opus            # claude-code with opus
   $(basename "$0") -n 5                         # pick from last 5 sessions
   $(basename "$0") -l                           # list all sessions
@@ -54,6 +54,22 @@ find_sessions_dir() {
         exit 1
     fi
     echo "$sessions_path"
+}
+
+extract_task_type() {
+    local file="$1"
+    local parent_dir
+    parent_dir="$(basename "$(dirname "$file")")"
+    # Known task names; longer prefixes first to avoid partial matches
+    local -a tasks=("complex-single" "simple" "complex" "research" "explore" "mega")
+    for task in "${tasks[@]}"; do
+        if [[ "$parent_dir" == "${task}-"* ]]; then
+            echo "$task"
+            return 0
+        fi
+    done
+    # Fallback: if nothing matched, return empty
+    echo ""
 }
 
 first_user_prompt() {
@@ -192,13 +208,18 @@ fi
 SESSION_ID="$(basename "$SESSION_FILE" .jsonl)"
 
 case "$RUNNER" in
-    kimchi)  EFFECTIVE_MODEL="${MODEL:-kimchi-dev/claude-opus-4-7}" ;;
-    claude)  EFFECTIVE_MODEL="${MODEL:-claude-opus-4-7}" ;;
+    kimchi)  EFFECTIVE_MODEL="${MODEL:-kimchi-dev/claude-opus-4-6}" ;;
+    claude)  EFFECTIVE_MODEL="${MODEL:-claude-opus-4-6}" ;;
     *)       echo "Unknown runner: $RUNNER (use 'kimchi' or 'claude')" >&2; exit 1 ;;
 esac
 
 MODEL_SLUG="$(echo "$EFFECTIVE_MODEL" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')"
-AUDIT_FILENAME="${SESSION_ID}-${RUNNER}-${MODEL_SLUG}-AUDIT.md"
+TASK_TYPE="$(extract_task_type "$SESSION_FILE")"
+if [[ -n "$TASK_TYPE" ]]; then
+    AUDIT_FILENAME="${SESSION_ID}-${TASK_TYPE}-${RUNNER}-${MODEL_SLUG}-AUDIT.md"
+else
+    AUDIT_FILENAME="${SESSION_ID}-${RUNNER}-${MODEL_SLUG}-AUDIT.md"
+fi
 
 echo "Auditing session: $SESSION_FILE"
 echo "Session ID: $SESSION_ID"

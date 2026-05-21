@@ -9,7 +9,7 @@ import type { LifetimeUsage } from "../manager/usage.js"
 /** Thinking/reasoning level for models that support it. */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
 
-export type AgentAbortReason = "max_turns" | "token_budget"
+export type AgentAbortReason = "max_turns" | "token_budget" | "inactivity" | "max_duration"
 
 /** Agent type: any string name (built-in defaults or user-defined). */
 export type SubagentType = string
@@ -63,6 +63,8 @@ export interface AgentConfig {
 	thinking?: ThinkingLevel
 	maxTurns?: number
 	tokenBudget?: number
+	/** Maximum wall-clock duration in seconds before the agent is aborted. */
+	maxDuration?: number
 	systemPrompt: string
 	promptMode: "replace" | "append"
 	/** Default for spawn: fork parent conversation. undefined = caller decides. */
@@ -103,6 +105,7 @@ export interface AgentRecord {
 	/** user = visible in UI/notifications; system = hidden technical/background work. */
 	visibility: AgentVisibility
 	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error"
+	modelId?: string
 	abortReason?: AgentAbortReason
 	result?: string
 	error?: string

@@ -39,15 +39,15 @@ Audits a completed kimchi harness session, analyzing phase discipline, code qual
 | `-n`, `--last N` | Show only the last N sessions (default: all) |
 | `-d`, `--dir DIR` | Use DIR instead of cwd to locate sessions |
 | `-r`, `--runner CMD` | Harness to use: `kimchi` (default) or `claude` |
-| `-m`, `--model MODEL` | Model override (default: `kimchi-dev/claude-opus-4-7` for kimchi, `claude-opus-4-7` for claude) |
+| `-m`, `--model MODEL` | Model override (default: `kimchi-dev/claude-opus-4-6` for kimchi, `claude-opus-4-6` for claude) |
 | `-h`, `--help` | Show help |
 
 ## Runners
 
 | Runner | Mode | Permissions | Default model |
 |--------|------|-------------|---------------|
-| `kimchi` | interactive, yolo | all tools allowed | `kimchi-dev/claude-opus-4-7` |
-| `claude` | interactive | `--dangerously-skip-permissions` | `claude-opus-4-7` |
+| `kimchi` | interactive, yolo | all tools allowed | `kimchi-dev/claude-opus-4-6` |
+| `claude` | interactive | `--dangerously-skip-permissions` | `claude-opus-4-6` |
 
 ## What the audit evaluates
 
@@ -64,7 +64,7 @@ The agent grades the session across 6 dimensions:
 
 ## Output
 
-The audit report is written to `.kimchi/audits/{sessionId}-AUDIT.md` in the project directory. It includes:
+The audit report is written to `.kimchi/audits/{sessionId}-{task}-{runner}-{model}-AUDIT.md` in the project directory. It includes:
 
 - Summary grade table
 - Phase timeline with duration, model, turn count, and cost per phase
@@ -119,7 +119,7 @@ Or use claude-code with Opus for the audit:
 The audit agent writes its findings to:
 
 ```
-.kimchi/audits/session-20260511-124841-AUDIT.md
+.kimchi/audits/session-20260511-124841-complex-kimi-k2.6-AUDIT.md
 ```
 
 The report contains phase-by-phase cost breakdown, grade summary, and actionable improvements. Use it to decide whether to adjust model assignments, phase transitions, or task decomposition for future sessions.
@@ -157,8 +157,8 @@ Every audit run produces two files:
 
 | File | Description |
 |------|-------------|
-| `.kimchi/audits/{sessionId}-{runner}-{model}-AUDIT.md` | Human-readable graded report |
-| `.kimchi/audits/{sessionId}-{runner}-{model}-AUDIT.json` | Machine-readable sidecar for automated comparison |
+| `.kimchi/audits/{sessionId}-{task}-{runner}-{model}-AUDIT.md` | Human-readable graded report |
+| `.kimchi/audits/{sessionId}-{task}-{runner}-{model}-AUDIT.json` | Machine-readable sidecar for automated comparison |
 
 The JSON sidecar conforms to schema version `1.0.0` with these top-level keys:
 

@@ -30,6 +30,13 @@ function run(label, cmd) {
 	}
 }
 
+const isCI = !!process.env.CI
+
+// In CI the binary will be build in its own step.
+if (!isCI) {
+	run("build proxy-helper", "make -C tools/proxy-helper build")
+}
+
 run("clean", "pnpm run clean")
 run("typecheck", "pnpm run typecheck")
 

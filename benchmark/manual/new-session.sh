@@ -2,6 +2,7 @@
 set -e
 
 IMPROVEMENT_DIR="${0:A:h}"
+source "${IMPROVEMENT_DIR}/lib.sh"
 
 # Check for local override first, then fall back to default config
 if [[ -f "$IMPROVEMENT_DIR/benchmark.local.json" ]]; then
@@ -23,98 +24,55 @@ if [[ ! -f "$BINARY" ]]; then
 fi
 
 SESSIONS_DIR="$IMPROVEMENT_DIR/sessions"
+EXPLORE_SEED="$IMPROVEMENT_DIR/seeds/explore-refactor"
 mkdir -p "$SESSIONS_DIR"
 
-# Determine next session number
-LAST=$(ls -d "$SESSIONS_DIR"/session-* 2>/dev/null | grep -oE '[0-9]+$' | sort -n | tail -1)
-N=$(( ${LAST:-0} + 1 ))
-SESSION="session-$(printf '%02d' $N)"
-SESSION_DIR="$SESSIONS_DIR/$SESSION"
+SESSION_DIR=$(bench_next_session_dir "$SESSIONS_DIR")
+N=$(basename "$SESSION_DIR" | grep -oE '[0-9]+$')
 
-echo "Creating $SESSION..."
+echo "Creating $(basename "$SESSION_DIR")..."
 
-# Generate all scripts via Python
-python3 - "$SESSION_DIR" "$N" "$BENCHMARK_JSON" "$HOME" "$BINARY" <<'PYEOF'
+# Export prompts as environment variables for the Python block
+export BENCH_PROMPT_SIMPLE
+export BENCH_PROMPT_COMPLEX
+export BENCH_PROMPT_RESEARCH
+export BENCH_PROMPT_EXPLORE
+export BENCH_PROMPT_MEGA
+export EXPLORE_SEED
+export SESSION_DIR
+export N
+export BINARY
+export IMPROVEMENT_DIR
+
+# Generate all scripts via Python (handles 2D grid generation)
+python3 - "$BENCHMARK_JSON" "$HOME" <<'PYEOF'
 import json, os, sys, stat
 
-session_dir, n, benchmark_json, home, binary = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
+benchmark_json = sys.argv[1]
+home = sys.argv[2]
 
 cfg = json.load(open(benchmark_json))
 models = cfg.get("models", [])
 if not models:
     sys.exit("No models configured. Set 'models' array in benchmark.json.")
 
-simple_prompt = (
-    "Implement a Go HTTP middleware that rate-limits requests per client IP using a token bucket algorithm. "
-    "Requirements: Each IP gets 10 requests per second. Respond with HTTP 429 when limit is exceeded. "
-    "Thread-safe implementation. Include tests with map-based test cases. "
-    "Put the code in directory: $DIR/rate-limiter/. Include a README.md explaining usage."
-)
+simple_prompt    = os.environ["BENCH_PROMPT_SIMPLE"]
+complex_prompt   = os.environ["BENCH_PROMPT_COMPLEX"]
+research_prompt  = os.environ["BENCH_PROMPT_RESEARCH"]
+explore_prompt   = os.environ["BENCH_PROMPT_EXPLORE"]
+mega_prompt      = os.environ["BENCH_PROMPT_MEGA"]
+explore_seed     = os.environ["EXPLORE_SEED"]
+session_dir      = os.environ["SESSION_DIR"]
+n                = int(os.environ["N"])
+binary           = os.environ["BINARY"]
 
-complex_prompt = (
-    "Implement a Go REST API for a task management system. "
-    "This is a multi-layer project — start with a plan before writing any code. "
-    "Requirements: Use standard library only (no frameworks, no external dependencies). "
-    "Layered architecture: handler -> service -> repository. In-memory repository. "
-    "Endpoints: POST /tasks (create, fields: title+description), GET /tasks (list all), "
-    "GET /tasks/{id} (get by id), PATCH /tasks/{id} (update status: todo/in-progress/done), DELETE /tasks/{id} (delete). "
-    "Proper HTTP status codes and JSON responses. "
-    "Unit tests for the service layer using map-based test cases. "
-    "Put all code in directory: $DIR/task-api/"
-)
-
-research_prompt = (
-    "What are the most popular third-party HTTP router libraries for Go? "
-    "List the top 3 with: GitHub stars (approximate), key differentiators, "
-    "and a one-line example of defining a route with a path parameter."
-)
-
-explore_seed = os.path.join(os.path.dirname(benchmark_json), "seeds", "explore-refactor")
-explore_prompt = (
-    "The directory $DIR/usermgmt/ contains an existing Go HTTP API for user and team management. "
-    "Explore the codebase, find all HTTP handlers that are missing input validation, and fix them. "
-    "Requirements: "
-    "- First explore the entire codebase to build a map of all handlers and their validation status. "
-    "- Write a plan listing every handler endpoint, what validation is missing, and what you will add. "
-    "- Implement the validation fixes. Specific issues to find and fix: "
-    "  - Handlers that accept arbitrary strings for fields with a fixed set of valid values (e.g. roles) "
-    "  - Handlers that accept zero or negative integers for fields that must be positive "
-    "  - Handlers that accept empty strings for required fields at the HTTP layer (even if the service layer also checks) "
-    "  - Search/filter endpoints with no length limit on query parameters "
-    "  - Pagination parameters with no bounds checking (negative offsets, excessively large limits) "
-    "- Add unit tests for the validation logic using map-based test cases. "
-    "- Do not change the project structure or add external dependencies."
-)
-
-mega_prompt = (
-    "Implement a Go CLI application that acts as a concurrent build system, similar to a simplified Make. "
-    "This is a multi-layer project — start with a plan before writing any code. "
-    "Requirements: Use standard library only (no frameworks, no external dependencies). "
-    "Parse a declarative build file (buildfile.txt) with this format:\n"
-    "    target: dep1 dep2\n"
-    "        command1\n"
-    "        command2\n"
-    "Indented lines under a target are shell commands. Dependencies are space-separated after the colon. "
-    "Resolve the full dependency graph using topological sort. Detect and report cycles with a clear error message listing the cycle path. "
-    "Execute independent targets concurrently using a worker pool. Targets whose dependencies are all satisfied should start immediately. "
-    "Stream command output per target with prefixed labels, e.g. '[compile] go build ./...'. "
-    "Graceful shutdown on SIGINT: finish in-progress targets, skip pending ones, print a summary of what completed and what was skipped. "
-    "CLI flags: -f <file> (build file path, default: buildfile.txt), -j <N> (max parallel workers, default: number of CPUs), "
-    "-target <name> (build a specific target and its transitive deps only, default: build all root targets). "
-    "Fail fast: on the first target error, cancel pending targets and report which target and command failed. "
-    "Layered architecture: separate packages for parsing, graph resolution, execution engine, and CLI. "
-    "Unit tests for: build file parsing (valid and malformed input), dependency resolution (diamond deps, cycle detection, single target extraction), "
-    "and execution ordering (verify concurrency-safe ordering). Use map-based test cases. "
-    "Put all code in directory: $DIR/buildtool/"
-)
-
-# Fields: (name, prompt, extra_flags, include_in_run_all, setup_cmd or None)
+# Fields: (name, prompt, extra_flags, in_run_all, setup_cmd or None)
 tasks = [
     ("simple",         simple_prompt,  [],                      True,  None),
     ("complex",        complex_prompt, [],                      True,  None),
-    ("complex-single", complex_prompt, ["--multi-model=false"], True,  None),
+    ("complex-single", complex_prompt, [], True,  None),
     ("research",       research_prompt,[],                      True,  None),
-    ("explore",        explore_prompt, [],                      True,  f'mkdir -p "$DIR/usermgmt" && cp -R "{explore_seed}/"* "$DIR/usermgmt/"'),
+    ("explore",        explore_prompt, [],                      True,  f'mkdir -p "$DIR/usermgmt" && cp -R "{explore_seed}/." "$DIR/usermgmt/" && ls -la "$DIR/usermgmt/"'),
     ("mega",           mega_prompt,    [],                      False, None),
 ]
 
@@ -129,9 +87,7 @@ for model in models:
         script_path = os.path.join(session_dir, f"run-{task}-{model}.sh")
         flags = "\n".join(f"  {flag} \\" for flag in extra_flags)
         flags_block = (flags + "\n") if flags else ""
-        setup_block = ""
-        if setup_cmd:
-            setup_block = f"{setup_cmd}\n"
+        setup_block = (setup_cmd + "\n") if setup_cmd else ""
         content = f"""#!/bin/zsh
 TS=$(date +%Y%m%d-%H%M%S)
 SESSION_FILE="{session_dir}/runs/{run_dir}/session-${{TS}}.jsonl"
@@ -153,34 +109,26 @@ cd "$DIR"
             run_all_scripts.append(script_path)
 
 # run-all.sh — iTerm2 grid (cols=tasks, rows=models) with background fallback
-# Only includes tasks marked with in_run_all=True
 run_all = os.path.join(session_dir, "run-all.sh")
 run_all_tasks = [t for t in tasks if t[3]]
 cols = len(run_all_tasks)
 rows = len(models)
 
-# Build AppleScript: create a NEW TAB, then split into a grid (cols=tasks, rows=models)
 as_lines = []
-# First pane in the new tab
 as_lines.append("      set g0_0 to current session of newTab")
-# Create remaining columns via vertical splits
 for c in range(1, cols):
     as_lines.append(f"      set g{c}_0 to (split vertically with default profile of g{c-1}_0)")
-# Create rows via horizontal splits
 for r in range(1, rows):
     for c in range(cols):
         as_lines.append(f"      set g{c}_{r} to (split horizontally with default profile of g{c}_{r-1})")
-# Write commands
 for r in range(rows):
     for c in range(cols):
         i = r * cols + c
         if i < len(run_all_scripts):
-                # NOTE: iTerm2's `write text` sends keystrokes and returns immediately —
-            # it does NOT wait for the command to finish.
-            as_lines.append(f'      tell g{c}_{r} to write text "{run_all_scripts[i]}"')
+            script_path_escaped = run_all_scripts[i].replace('"', '""')
+            as_lines.append(f'      tell g{c}_{r} to write text "{script_path_escaped}"')
 as_body = "\n".join(as_lines)
 
-# Background fallback: run each script with output to a per-script log file
 bg_lines = []
 for script in run_all_scripts:
     name = os.path.basename(script).replace(".sh", "")

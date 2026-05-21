@@ -7,35 +7,26 @@ import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
-import { getActiveFerment, getCurrentPhaseIndex, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
+import { formatFermentFooterDisplay } from "../extensions/ferment/footer-status.js"
+import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatCount } from "../extensions/format.js"
 import { getCurrentPermissionsMode } from "../extensions/permissions/index.js"
-import { getMultiModelEnabled } from "../extensions/prompt-construction/prompt-enrichment.js"
+import { ORCHESTRATOR_MODEL_ID, getMultiModelEnabled } from "../extensions/prompt-construction/prompt-enrichment.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
-type SegmentId =
-	| "permissions"
-	| "multi-model"
-	| "model"
-	| "ferment"
-	| "agents"
-	| "context"
-	| "usage"
-	| "phase"
-	| "tags"
-	| "team"
+type SegmentId = "permissions" | "model" | "ferment" | "agents" | "context" | "usage" | "phase" | "tags" | "team"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
  *
  *  `ferment` is the odd one out: instead of storing inputs and rebuilding the
- *  whole segment, it just stashes the leading colorized `ferment:` substring
+ *  whole segment, it just stashes the leading colorized `Ferment: ` substring
  *  so the compaction step can slice it off in place. Cheaper than a rebuild
  *  and the segment's tail is identical in both forms anyway. */
 type SegmentRaw =
 	| { kind: "context"; percent: number; pctColor?: "error" | "warning" }
-	| { kind: "multi-model"; enabled: boolean }
+	| { kind: "model"; multiModel: boolean; modelId: string }
 	| { kind: "phase"; phase: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
 
@@ -189,16 +180,15 @@ export function buildContextCompact(ctx: CompactionContext, percent: number, pct
 	}
 }
 
-/** Compact form for multi-model: replaces "multi-model:" with "m-m:". */
-export function buildMultiModelAbbrev(ctx: CompactionContext, enabled: boolean): Segment {
-	const label = enabled ? ctx.accent("on") : ctx.dim("off")
-	const shortcut = process.platform === "darwin" ? "option+tab" : "alt+tab"
-	const text = `${ctx.dim("m-m:")} ${label} ${ctx.dim(`→ ${shortcut}`)}`
+/** Compact form for model: abbreviates "multi-model (kimi-k2.6)" to "m-m (kimi-k2.6)". */
+export function buildModelAbbrev(ctx: CompactionContext, multiModel: boolean, modelId: string): Segment {
+	const label = multiModel ? `m-m (${modelId})` : modelId
+	const text = `${ctx.accent(label)} ${ctx.dim("→ ctrl+p")}`
 	return {
-		id: "multi-model",
+		id: "model",
 		text,
 		width: visibleWidth(text),
-		raw: { kind: "multi-model", enabled },
+		raw: { kind: "model", multiModel, modelId },
 	}
 }
 
@@ -239,7 +229,7 @@ function stripShortcutHintsAcross(segments: Segment[], ids: SegmentId[]): boolea
 		if (i === -1) continue
 		const stripped = segments[i].text.replace(SHORTCUT_TAIL, "")
 		if (stripped !== segments[i].text) {
-			segments[i] = { id, text: stripped, width: visibleWidth(stripped) }
+			segments[i] = { ...segments[i], text: stripped, width: visibleWidth(stripped) }
 			changed = true
 		}
 	}
@@ -284,13 +274,13 @@ const STEPS: CompactionStep[] = [
 			recompactSegment(segs, "context", "context", (raw) => buildContextCompact(ctx, raw.percent, raw.pctColor)),
 	},
 	{
-		name: "abbrev-multi-model-label",
+		name: "abbrev-model-label",
 		apply: (segs, ctx) =>
-			recompactSegment(segs, "multi-model", "multi-model", (raw) => buildMultiModelAbbrev(ctx, raw.enabled)),
+			recompactSegment(segs, "model", "model", (raw) => buildModelAbbrev(ctx, raw.multiModel, raw.modelId)),
 	},
 	{
 		name: "drop-shortcut-hints",
-		apply: (segs) => stripShortcutHintsAcross(segs, ["permissions", "multi-model"]),
+		apply: (segs) => stripShortcutHintsAcross(segs, ["permissions", "model", "ferment"]),
 	},
 	{
 		name: "drop-phase-prefix",
@@ -375,9 +365,11 @@ export class StatsFooter implements Component {
 	}
 
 	private modelSegment(): Segment {
-		const modelId = this.ctx.model?.id ?? "n/a"
-		const text = this.accent(modelId)
-		return { id: "model", text, width: visibleWidth(text) }
+		const multiModel = getMultiModelEnabled()
+		const rawModelId = this.ctx.model?.id ?? "n/a"
+		const label = multiModel ? `multi-model (${rawModelId})` : rawModelId
+		const text = `${this.accent(label)} ${this.dim("→ ctrl+p")}`
+		return { id: "model", text, width: visibleWidth(text), raw: { kind: "model", multiModel, modelId: rawModelId } }
 	}
 
 	private usageSegment(): Segment | null {
@@ -441,14 +433,6 @@ export class StatsFooter implements Component {
 		return { id: "permissions", text: mode, width: visibleWidth(mode) }
 	}
 
-	private multiModelSegment(): Segment {
-		const enabled = getMultiModelEnabled()
-		const label = enabled ? this.accent("on") : this.dim("off")
-		const shortcut = process.platform === "darwin" ? "option+tab" : "alt+tab"
-		const text = `${this.dim("multi-model:")} ${label} ${this.dim(`→ ${shortcut}`)}`
-		return { id: "multi-model", text, width: visibleWidth(text), raw: { kind: "multi-model", enabled } }
-	}
-
 	private subagentSegment(): Segment | null {
 		const count = getActiveAgentCount()
 		if (count === 0) return null
@@ -457,39 +441,17 @@ export class StatsFooter implements Component {
 	}
 
 	private fermentSegment(): Segment | null {
-		const ferment = getActiveFerment()
-		if (!ferment) return null
-		const phaseIdx = getCurrentPhaseIndex()
-		const totalPhases = ferment.phases.length
-		const activePhase = ferment.activePhaseId ? ferment.phases.find((p) => p.id === ferment.activePhaseId) : undefined
-		const activeStep = activePhase?.steps.find(
-			(s) => s.status === "running" || s.status === "pending" || s.status === "failed",
-		)
+		const display = formatFermentFooterDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
+			dim: (s) => this.dim(s),
+			accent: (s) => this.accent(s),
+		})
+		if (!display) return null
 
-		// Capture the colorized `ferment:` prefix so the compaction step can
-		// slice it off in place. `visibleWidth("ferment:")` is 8 (ASCII).
-		const prefix = this.dim("ferment:")
-		const PREFIX_WIDTH = visibleWidth(prefix)
-
-		const parts: string[] = [`${prefix}${this.accent(ferment.name)}`]
-		parts.push(this.dim(`[${ferment.status}]`))
-		parts.push(this.dim(`policy:${getFermentContinuationPolicy()}`))
-
-		if (phaseIdx !== undefined && totalPhases > 0) {
-			const phaseName = activePhase?.name ?? ""
-			const phaseInfo = phaseName ? ` "${phaseName}"` : ""
-			parts.push(this.dim(`· phase ${phaseIdx}/${totalPhases}${phaseInfo}`))
-		}
-		if (activeStep && activePhase) {
-			parts.push(this.dim(`· step ${activeStep.index}/${activePhase.steps.length}`))
-		}
-
-		const text = parts.join(" ")
 		return {
 			id: "ferment",
-			text,
-			width: visibleWidth(text),
-			raw: { kind: "ferment", prefix, prefixWidth: PREFIX_WIDTH },
+			text: display.text,
+			width: display.width,
+			raw: { kind: "ferment", prefix: display.prefix, prefixWidth: display.prefixWidth },
 		}
 	}
 
@@ -515,10 +477,9 @@ export class StatsFooter implements Component {
 			.filter((t): t is { key: string; value: string } => t !== null)
 
 		const segments: Segment[] = [
-			this.permissionsSegment(),
-			this.multiModelSegment(),
-			this.modelSegment(),
 			this.fermentSegment(),
+			this.permissionsSegment(),
+			this.modelSegment(),
 			this.subagentSegment(),
 			this.contextSegment(),
 			this.usageSegment(),

@@ -10,7 +10,7 @@ import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
 import { resolveMode } from "./mode.js"
-import { type CompoundSubcommand, promptForApproval, promptForCompoundApproval } from "./prompts.js"
+import { type CompoundSubcommand, promptForApproval, promptForCompoundApproval, withWorkingHidden } from "./prompts.js"
 import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import { evaluateRules, parseRules, stringifyRule } from "./rules.js"
 import { SessionMemory } from "./session-memory.js"
@@ -72,7 +72,6 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 	"agent",
 	"get_subagent_result",
 	"steer_subagent",
-	"create_ferment",
 	"list_ferments",
 	"scope_ferment",
 	"update_ferment_scope_field",
@@ -109,6 +108,20 @@ let _onFermentActiveChange: ((hasActiveFerment: boolean) => void) | undefined
 
 export function notifyFermentActive(hasActiveFerment: boolean): void {
 	_onFermentActiveChange?.(hasActiveFerment)
+}
+
+let _modeChangeListener: ((mode: PermissionMode) => void) | undefined
+
+/**
+ * Subscribe to permission mode changes (CLI flag init + shift+tab cycling).
+ * Used by --remote to forward the client's mode to the server so the
+ * server-side permissions instance gates tool calls under the same mode.
+ */
+export function onPermissionsModeChange(listener: (mode: PermissionMode) => void): () => void {
+	_modeChangeListener = listener
+	return () => {
+		if (_modeChangeListener === listener) _modeChangeListener = undefined
+	}
 }
 
 export default function permissionsExtension(pi: ExtensionAPI): void {
@@ -253,6 +266,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		for (const ctrl of activeAbortControllers) ctrl.abort()
 		activeAbortControllers.clear()
 		maybeShowYoloWarning(ctx, next)
+		_modeChangeListener?.(next)
 	}
 
 	// Wire the cross-extension callback: ferment calls notifyFermentActive() when
@@ -370,6 +384,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		updateStatus(ctx)
 
 		maybeShowYoloWarning(ctx, currentMode())
+		_modeChangeListener?.(currentMode())
 	})
 
 	const blocks = createSystemPromptBlocks(pi, "permissions")
@@ -420,11 +435,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const EXECUTE_AUTO = "Yes — execute (auto-approve)"
 		const DECLINE = "No, do something else"
 
-		const choice = await ctx.ui.select("Plan complete. How would you like to proceed?", [
-			EXECUTE,
-			EXECUTE_AUTO,
-			DECLINE,
-		])
+		const choice = await withWorkingHidden(ctx, () =>
+			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, EXECUTE_AUTO, DECLINE]),
+		)
 
 		if (choice === EXECUTE) {
 			switchFromPlanAndExecute(ctx, "default")

@@ -39,6 +39,7 @@ export class ToolBlockView extends Container {
 	private footerLeft = ""
 	private footerRight = ""
 	private extraLines: string[] = []
+	private branchColorFn: ((s: string) => string) | null = null
 
 	setHeader(left: string, right: string): void {
 		this.headerLeft = left
@@ -63,6 +64,12 @@ export class ToolBlockView extends Container {
 		this.extraLines = lines
 	}
 
+	/** When set, footer renders as `└─ summary` instead of a horizontal divider + footer line. */
+	setBranchMode(colorFn: (s: string) => string): void {
+		this.branchColorFn = colorFn
+		this.showDivider = false
+	}
+
 	override render(width: number): string[] {
 		const lines: string[] = []
 		if (this.headerLeft || this.headerRight) {
@@ -72,17 +79,40 @@ export class ToolBlockView extends Container {
 			lines.push(this.dividerColorFn("─".repeat(width)))
 		}
 		if (this.footerLeft || this.footerRight) {
-			const footerLines = this.footerLeft.split("\n")
-			if (footerLines.length === 1) {
-				lines.push(buildAlignedLine(this.footerLeft, this.footerRight, width))
+			if (this.branchColorFn) {
+				const footerLines = this.footerLeft.split("\n")
+				const terminator = this.extraLines.length > 0 ? "├─" : "└─"
+				if (footerLines.length === 1) {
+					const connector = `${this.branchColorFn(terminator)} `
+					lines.push(buildAlignedLine(connector + this.footerLeft, this.footerRight, width))
+				} else {
+					for (let i = 0; i < footerLines.length; i++) {
+						const isLast = i === footerLines.length - 1
+						const pfx = `${this.branchColorFn(isLast ? terminator : "│ ")} `
+						lines.push(truncateLine(pfx + footerLines[i], width))
+					}
+				}
 			} else {
-				for (const fl of footerLines) {
-					lines.push(truncateLine(fl, width))
+				const footerLines = this.footerLeft.split("\n")
+				if (footerLines.length === 1) {
+					lines.push(buildAlignedLine(this.footerLeft, this.footerRight, width))
+				} else {
+					for (const fl of footerLines) {
+						lines.push(truncateLine(fl, width))
+					}
 				}
 			}
 		}
-		for (const line of this.extraLines) {
-			lines.push(truncateLine(line, width))
+		if (this.branchColorFn && this.extraLines.length > 0) {
+			for (let i = 0; i < this.extraLines.length; i++) {
+				const isLast = i === this.extraLines.length - 1
+				const pfx = `${this.branchColorFn(isLast ? "└─" : "│ ")} `
+				lines.push(truncateLine(pfx + this.extraLines[i], width))
+			}
+		} else {
+			for (const line of this.extraLines) {
+				lines.push(truncateLine(line, width))
+			}
 		}
 		return lines
 	}

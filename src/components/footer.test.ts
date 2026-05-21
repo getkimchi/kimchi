@@ -5,7 +5,7 @@ import * as AGENTS from "../extensions/agents/index.js"
 import * as FERMENT from "../extensions/ferment/index.js"
 import * as ORCHESTRATION from "../extensions/prompt-construction/prompt-enrichment.js"
 import * as TAGS from "../extensions/tags.js"
-import { SHORTCUT_TAIL, StatsFooter, buildContextCompact, buildMultiModelAbbrev, buildPhaseCompact } from "./footer.js"
+import { SHORTCUT_TAIL, StatsFooter, buildContextCompact, buildModelAbbrev, buildPhaseCompact } from "./footer.js"
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape stripping in test assertions
 const ANSI_ESCAPE = /\x1b\[[\d;]*m/g
@@ -47,7 +47,7 @@ interface MockContextOpts {
 
 function createMockContext(opts?: MockContextOpts): ExtensionContext {
 	const percent = opts?.percent ?? 0
-	const modelId = opts?.modelId ?? "claude-opus-4-7"
+	const modelId = opts?.modelId ?? "claude-opus-4-6"
 	const entries = (opts?.assistantMessages ?? []).map((u) => ({
 		type: "message" as const,
 		message: { role: "assistant", usage: { input: u.input, output: u.output } },
@@ -172,47 +172,18 @@ describe("compact-form builders", () => {
 		})
 	})
 
-	describe("buildMultiModelAbbrev", () => {
-		it("uses `m-m:` instead of `multi-model:` when enabled (darwin)", () => {
-			const restore = stubPlatform("darwin")
-			try {
-				const seg = buildMultiModelAbbrev(compactCtx, true)
-				expect(seg.id).toBe("multi-model")
-				expect(seg.text).toBe("m-m: on \u2192 option+tab")
-				expect(seg.raw).toEqual({ kind: "multi-model", enabled: true })
-			} finally {
-				restore()
-			}
+	describe("buildModelAbbrev", () => {
+		it("abbreviates multi-model label", () => {
+			const seg = buildModelAbbrev(compactCtx, true, "kimi-k2.6")
+			expect(seg.id).toBe("model")
+			expect(seg.text).toBe("m-m (kimi-k2.6) \u2192 ctrl+p")
+			expect(seg.raw).toEqual({ kind: "model", multiModel: true, modelId: "kimi-k2.6" })
 		})
 
-		it("shows `off` when disabled (darwin)", () => {
-			const restore = stubPlatform("darwin")
-			try {
-				const seg = buildMultiModelAbbrev(compactCtx, false)
-				expect(seg.text).toBe("m-m: off \u2192 option+tab")
-			} finally {
-				restore()
-			}
-		})
-
-		it("uses `alt+tab` shortcut on non-darwin (enabled)", () => {
-			const restore = stubPlatform("linux")
-			try {
-				const seg = buildMultiModelAbbrev(compactCtx, true)
-				expect(seg.text).toBe("m-m: on \u2192 alt+tab")
-			} finally {
-				restore()
-			}
-		})
-
-		it("uses `alt+tab` shortcut on non-darwin (disabled)", () => {
-			const restore = stubPlatform("linux")
-			try {
-				const seg = buildMultiModelAbbrev(compactCtx, false)
-				expect(seg.text).toBe("m-m: off \u2192 alt+tab")
-			} finally {
-				restore()
-			}
+		it("keeps model id when not multi-model", () => {
+			const seg = buildModelAbbrev(compactCtx, false, "claude-opus-4-7")
+			expect(seg.text).toBe("claude-opus-4-7 \u2192 ctrl+p")
+			expect(seg.raw).toEqual({ kind: "model", multiModel: false, modelId: "claude-opus-4-7" })
 		})
 	})
 
@@ -239,20 +210,20 @@ describe("SHORTCUT_TAIL regex", () => {
 		expect(text.replace(SHORTCUT_TAIL, "")).toBe("\u25cf default")
 	})
 
-	it("matches the multi-model trailing shortcut (darwin)", () => {
-		const text = "multi-model: on \x1b[38;5;242m\u2192 option+tab\x1b[39m"
+	it("matches the model segment trailing shortcut", () => {
+		const text = "multi-model (kimi-k2.6) \x1b[38;5;242m\u2192 ctrl+p\x1b[39m"
 		expect(SHORTCUT_TAIL.test(text)).toBe(true)
-		expect(text.replace(SHORTCUT_TAIL, "")).toBe("multi-model: on")
+		expect(text.replace(SHORTCUT_TAIL, "")).toBe("multi-model (kimi-k2.6)")
 	})
 
-	it("matches the multi-model trailing shortcut (linux)", () => {
-		const text = "multi-model: on \x1b[38;5;242m\u2192 alt+tab\x1b[39m"
+	it("matches the ferment trailing shortcut", () => {
+		const text = "Ferment: my-ferment \u00b7 Running \u00b7 Stop: Phase Boundary \x1b[38;5;242m\u2192 F6\x1b[39m"
 		expect(SHORTCUT_TAIL.test(text)).toBe(true)
-		expect(text.replace(SHORTCUT_TAIL, "")).toBe("multi-model: on")
+		expect(text.replace(SHORTCUT_TAIL, "")).toBe("Ferment: my-ferment \u00b7 Running \u00b7 Stop: Phase Boundary")
 	})
 
 	it("does NOT match text that has no trailing arrow", () => {
-		const text = "claude-opus-4-7"
+		const text = "claude-opus-4-6"
 		expect(SHORTCUT_TAIL.test(text)).toBe(false)
 	})
 
@@ -302,49 +273,34 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 	it("width 160: full footer + `/ for commands` hint, padded to width", () => {
 		const { raw, visible } = renderAt(160)
 		expect(visible).toContain("\u25cf default \u2192 shift+tab")
-		expect(visible).toContain("multi-model: on \u2192 option+tab")
-		expect(visible).toContain("claude-opus-4-7")
+		expect(visible).toContain("multi-model (claude-opus-4-6) \u2192 ctrl+p")
 		expect(visible).toContain("0% ctx")
 		expect(visible).toContain("phase:explore")
 		expect(visible).toContain("/ for commands")
-		// When the hint fits, the line is padded to exactly `width` columns
-		// (with whitespace between the segments and the right-aligned hint).
 		expect(visibleWidth(raw)).toBe(160)
-		// The hint sits at the right edge.
 		expect(visible.endsWith("/ for commands")).toBe(true)
 	})
 
-	it("width 100: hint and context-bar dropped, segments still present", () => {
+	it("width 100: hint dropped, remaining segments still present", () => {
 		const { raw, visible } = renderAt(100)
-		// Hint gone (step 1)
 		expect(visible).not.toContain("/ for commands")
-		// Bar gone, percentage kept (step 2)
-		expect(visible).not.toContain("\u2588")
-		expect(visible).not.toContain("\u2591")
-		expect(visible).toContain("0% ctx")
-		// Line fits.
 		expect(visibleWidth(raw)).toBeLessThanOrEqual(100)
-		// All segments still present (compaction shrinks, never drops).
 		expect(visible).toContain("default")
 		expect(visible).toContain("multi-model")
-		expect(visible).toContain("claude-opus-4-7")
+		expect(visible).toContain("0% ctx")
 		expect(visible).toContain("phase:explore")
 	})
 
-	it("width 60: shortcuts stripped, multi-model abbreviated, phase prefix dropped", () => {
+	it("width 60: shortcuts stripped, model abbreviated", () => {
 		const { raw, visible } = renderAt(60)
 		expect(visibleWidth(raw)).toBeLessThanOrEqual(60)
 		expect(visible).not.toContain("/ for commands")
 		expect(visible).not.toContain("shift+tab")
-		expect(visible).not.toContain("option+tab")
-		// multi-model label is abbreviated to `m-m:`.
-		expect(visible).toContain("m-m:")
-		expect(visible).not.toContain("multi-model:")
-		// phase prefix is dropped; value survives.
+		expect(visible).not.toContain("ctrl+p")
+		// multi-model label is abbreviated to `m-m`.
+		expect(visible).toContain("m-m")
+		// phase value survives.
 		expect(visible).toContain("explore")
-		expect(visible).not.toContain("phase:")
-		// The model is the highest-priority segment and should survive.
-		expect(visible).toContain("claude-opus-4-7")
 	})
 
 	it("width 20: line is hard-truncated to fit, leftmost content survives", () => {
@@ -376,7 +332,7 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		}
 	})
 
-	it("with an active ferment, drops the `ferment:` prefix when overflowing", () => {
+	it("with an active ferment, drops the `Ferment: ` prefix when overflowing", () => {
 		const ferment = {
 			id: "f-1",
 			name: "my-ferment",
@@ -387,16 +343,19 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		} as unknown as ReturnType<typeof FERMENT.getActiveFerment>
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(ferment)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
+		vi.spyOn(FERMENT, "getFermentContinuationPolicy").mockReturnValue("manual")
 
-		// At a generous width every compaction is unneeded and `ferment:` shows.
+		// At a generous width every compaction is unneeded and `Ferment: ` shows.
 		const wide = renderAt(200)
-		expect(wide.visible).toContain("ferment:my-ferment")
+		expect(wide.visible).toContain("Ferment: my-ferment")
+		expect(wide.visible).toContain("Stop: Phase Boundary \u2192 F6")
+		expect(wide.visible.indexOf("Ferment: my-ferment")).toBeLessThan(wide.visible.indexOf("\u25cf default"))
 
 		// At a narrow width all earlier compactions have fired and the ferment
 		// prefix has also been dropped.
 		const narrow = renderAt(70)
 		expect(narrow.visible).toContain("my-ferment")
-		expect(narrow.visible).not.toContain("ferment:")
+		expect(narrow.visible).not.toContain("Ferment:")
 	})
 })
 

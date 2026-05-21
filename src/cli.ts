@@ -5,7 +5,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { AgentSession } from "@earendil-works/pi-coding-agent"
 import { validateApiKey } from "./auth/validator.js"
+import { getCliModeArg, isHelpOrVersionArgs } from "./cli-args.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import {
 	DEFAULT_SKILL_PATHS,
@@ -17,36 +19,43 @@ import {
 } from "./config.js"
 import { isBunBinary } from "./env.js"
 import agentsExtension from "./extensions/agents/index.js"
-import bashCollapseExtension from "./extensions/bash-collapse.js"
+import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
-import curatorExtension from "./extensions/curator/index.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
-import improveExtension from "./extensions/improve/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import loginExtension from "./extensions/login/index.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
+import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
+import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import permissionsExtension from "./extensions/permissions/index.js"
-import { reserveShiftTabForPermissions } from "./extensions/permissions/keybindings.js"
+import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
+import stripImagesExtension from "./extensions/strip-images.js"
 import tagsExtension from "./extensions/tags.js"
 import telemetryExtension from "./extensions/telemetry.js"
 import terminalColorsExtension from "./extensions/terminal-colors.js"
-import toolRendererExtension from "./extensions/tool-renderer.js"
+import { probeKittyKeyboardSupport } from "./extensions/terminal-compat/keyboard-capability.js"
+import { emitTerminalCompatWarning } from "./extensions/terminal-compat/startup-warning.js"
+import thinkingStepsExtension from "./extensions/thinking-steps/index.js"
+import tipsExtension from "./extensions/tips/index.js"
+import toolRenderingExtension from "./extensions/tool-rendering.js"
+import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { updateModelsConfig } from "./models.js"
+import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./modes/teleport/sync/session-export.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { runWizard } from "./setup-wizard/index.js"
 import { setAvailableModels } from "./startup-context.js"
@@ -65,8 +74,102 @@ let sessionStarted = false
 // stderr via console.log = console.error inside runAcpMode) is noise in IDE
 // logs and not actionable — the IDE owns session continuation. Decide once,
 // at module load, before anything else runs.
-const acpMode = isAcpMode(process.argv.slice(2))
+const cliMode = getCliModeArg(process.argv.slice(2))
+const acpMode = cliMode === "acp"
+const teleportMode = isTeleportFlag(process.argv.slice(2))
+
+// Monkey-patch AgentSession.prototype.exportToJsonl so ALL JSONL exports
+// (interactive, ACP, and teleport mode) get trace IDs injected inline.
+// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
+const _origExportToJsonl = (AgentSession as any).prototype.exportToJsonl
+// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
+;(AgentSession as any).prototype.exportToJsonl = function (outputPath?: string) {
+	const filePath = _origExportToJsonl.call(this, outputPath)
+	try {
+		const raw = readFileSync(filePath, "utf-8")
+		const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0)
+		const processed = injectTraceIdsIntoExport(lines)
+		writeFileSync(filePath, `${processed.join("\n")}\n`, "utf-8")
+	} catch (err) {
+		console.warn("[trace-id] Failed to inject trace IDs into JSONL export:", err)
+	}
+	return filePath
+}
+
+// Monkey-patch AgentSession.prototype.exportToHtml so HTML exports get
+// trace IDs injected into assistant message entries the same way JSONL does.
+// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
+const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
+// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
+;(AgentSession as any).prototype.exportToHtml = async function (outputPath?: string) {
+	const filePath = await _origExportToHtml.call(this, outputPath)
+	try {
+		let html = readFileSync(filePath, "utf-8")
+		const match = html.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
+		if (match) {
+			const base64 = match[1]
+			const json = Buffer.from(base64, "base64").toString("utf-8")
+			const data = JSON.parse(json) as Record<string, unknown>
+			if (Array.isArray(data.entries)) {
+				injectTraceIdsIntoEntries(data.entries as import("./modes/teleport/sync/session-export.js").ExportEntry[])
+				const modified = JSON.stringify(data)
+				const modifiedBase64 = Buffer.from(modified).toString("base64")
+				html = html.replace(
+					/<script id="session-data" type="application\/json">[\s\S]*?<\/script>/,
+					`<script id="session-data" type="application/json">${modifiedBase64}</script>`,
+				)
+			}
+		}
+
+		// Inject the trace ID renderer script before </body> (idempotent).
+		if (!html.includes('id="trace-id-renderer"')) {
+			const traceIdScript = `<script id="trace-id-renderer">
+(function() {
+    var el = document.getElementById('session-data');
+    if (!el) return;
+    var base64 = el.textContent;
+    var binary = atob(base64);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    var data = JSON.parse(new TextDecoder('utf-8').decode(bytes));
+    var entriesWithTraceIds = [];
+    for (var i = 0; i < data.entries.length; i++) {
+        var e = data.entries[i];
+        if (e.traceIds && e.traceIds.length > 0) entriesWithTraceIds.push(e);
+    }
+    if (entriesWithTraceIds.length === 0) return;
+    function inject() {
+        for (var i = 0; i < entriesWithTraceIds.length; i++) {
+            var entry = entriesWithTraceIds[i];
+            var el = document.getElementById('entry-' + entry.id);
+            if (!el) continue;
+            if (el.querySelector('.trace-ids')) continue;
+            var d = document.createElement('div');
+            d.className = 'trace-ids';
+            d.textContent = 'Trace IDs: ' + entry.traceIds.join(', ');
+            d.style.cssText = 'font-size:0.75rem;color:#666;margin-top:0.25rem;font-family:monospace';
+            el.appendChild(d);
+        }
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', inject);
+    } else { inject(); }
+})();
+</script>`
+			html = html.replace("</body>", `${traceIdScript}\n</body>`)
+		}
+
+		writeFileSync(filePath, html, "utf-8")
+	} catch (err) {
+		console.warn("[trace-id] Failed to inject trace IDs into HTML export:", err)
+	}
+	return filePath
+}
 const helpOrVersion = isHelpOrVersionArgs(process.argv.slice(2))
+
+// Internal control signal: setup cancellation must skip harness/extensions
+// without a hard process.exit(), so clack can restore terminal state normally.
+class SetupCancelled extends Error {}
 
 process.on("exit", (code) => {
 	// Only print the resume hint after a real harness session ran. Subcommands
@@ -97,21 +200,9 @@ function sessionIdCaptureExtension(pi: ExtensionAPI) {
 	})
 }
 
-// Intentionally minimal pre-dispatch sniff: we need to know whether to enter
-// ACP stdio mode BEFORE pi-mono's main() takes over (which would otherwise
-// print a banner, wire up the TUI, and corrupt the JSON-RPC stream). The
-// canonical --mode parser lives in pi-mono; this only looks for the one value
-// that forces a different entrypoint. Don't extend this sniff for new flags —
-// thread them through pi-mono's parser instead.
-function isHelpOrVersionArgs(args: string[]): boolean {
-	return args.some((a) => a === "--help" || a === "-h" || a === "--version" || a === "-v")
-}
-
-function isAcpMode(args: string[]): boolean {
-	for (let i = 0; i < args.length; i++) {
-		const a = args[i]
-		if (a === "--mode" && args[i + 1] === "acp") return true
-		if (a === "--mode=acp") return true
+function isTeleportFlag(args: string[]): boolean {
+	for (const a of args) {
+		if (a === "--teleport") return true
 	}
 	return false
 }
@@ -160,6 +251,11 @@ try {
 				writeMigrationState("done")
 			} else {
 				const result = await runSetupWizard({ needsSkillsSetup, needsMigrationCheck })
+				if (result.cancelled) {
+					sessionStarted = false
+					process.exitCode = 130
+					throw new SetupCancelled()
+				}
 				if (needsSkillsSetup) {
 					skillPaths = result.skillPaths
 					writeSkillPaths(skillPaths)
@@ -210,7 +306,7 @@ try {
 
 		// Must run before main() so the keybindings file is loaded with the
 		// override in place.
-		reserveShiftTabForPermissions(agentDir)
+		writeKimchiKeybindingDefaults(agentDir)
 
 		// Share the discovered model metadata with extensions before main() runs.
 		// prompt-enrichment reads this to build ModelRegistry with live model IDs.
@@ -262,7 +358,14 @@ try {
 		// the kimchi-minimal-tints and terminal-colors extensions. Skip in ACP mode —
 		// stdout is the JSON-RPC channel and OSC escapes would corrupt the IDE's
 		// input stream.
-		if (!acpMode) await probeTerminalBackground()
+		if (!acpMode) {
+			await probeTerminalBackground()
+			await probeKittyKeyboardSupport()
+		}
+
+		// Emit warnings for terminals that don't support modifier-aware Enter.
+		// Runs after the keyboard-capability probe so the result is available.
+		emitTerminalCompatWarning(agentDir)
 
 		// Compare contents and only write when they differ. Restarts in a second
 		// terminal must be byte-identical no-ops because pi runs `fs.watch` on the
@@ -315,7 +418,12 @@ try {
 		}
 
 		const rawArgs = process.argv.slice(2)
-
+		const sessionModeOnboarding = createSessionModeOnboardingForStartup({
+			rawArgs,
+			nonInteractiveMode: acpMode,
+			stdinIsTTY: process.stdin.isTTY === true,
+			stdoutIsTTY: process.stdout.isTTY === true,
+		})
 		const extensionFactories = [
 			startupUpdateExtension,
 			sessionIdCaptureExtension,
@@ -323,7 +431,6 @@ try {
 			statsExtension,
 			terminalColorsExtension,
 			kimchiMinimalTintsExtension,
-			bashCollapseExtension,
 			loopGuardExtension,
 			lspExtension,
 			mcpAdapterExtension,
@@ -336,23 +443,41 @@ try {
 			promptSummaryExtension,
 			contextCompactorExtension,
 			hideThinkingExtension,
+			thinkingStepsExtension,
+			assistantPrefixExtension,
 			clipboardImageExtension,
 			uiExtension,
+			sessionModeOnboarding,
+			tipsExtension(),
 			agentsExtension,
 			tagsExtension,
 			telemetryExtension(telemetryConfig),
-			toolRendererExtension,
+			toolRenderingExtension,
 			webFetchExtension,
 			webSearchExtension,
 			loginExtension,
-			improveExtension,
-			curatorExtension,
 			modelSwitchExtension,
+			modelGuardExtension,
+			stripImagesExtension,
+			traceIdExtension,
 		]
 
 		if (acpMode) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
 			await runAcpMode({ extensionFactories, agentDir })
+		} else if (teleportMode) {
+			if (!apiKey) {
+				console.error("Error: --teleport requires an API key — run 'kimchi setup' first.")
+				process.exit(1)
+			}
+
+			const { runTeleportSession } = await import("./modes/teleport/run-interactive-teleport.js")
+			await runTeleportSession({
+				extensionFactories,
+				agentDir,
+				apiKey: apiKey ?? "",
+				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+			})
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
 			const { main } = await import("@earendil-works/pi-coding-agent")
@@ -360,6 +485,10 @@ try {
 		}
 	}
 } catch (err) {
-	console.error(err instanceof Error ? err.message : String(err))
-	process.exit(1)
+	if (err instanceof SetupCancelled) {
+		process.exitCode = 130
+	} else {
+		console.error(err instanceof Error ? err.message : String(err))
+		process.exit(1)
+	}
 }

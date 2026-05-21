@@ -10,7 +10,6 @@ const testEnv: EnvironmentInfo = {
 	homeDir: "/home/testuser",
 	cwd: "/home/testuser/projects/myapp",
 	documentsDir: "/home/testuser/projects/myapp/.kimchi/docs",
-	currentTime: "2026-01-01T00:00:00.000Z",
 	localDate: "2026-01-01",
 	isGitRepo: false,
 }
@@ -59,14 +58,14 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("You are an expert coding assistant")
+			expect(result).toContain("You are Kimchi, an AI coding agent")
 			expect(result).toContain("# Environment")
 			expect(result).toContain("## Available Tools")
 			expect(result).toContain("## Documents")
 			expect(result).toContain("## Guidelines")
 			expect(result).toContain("Orchestrate the work")
 			expect(result).toContain("Sharing context between agents")
-			expect(result).toContain("Agent delegation rules")
+			expect(result).toContain("Orchestrate the work")
 			expect(result).toContain("Model selection for delegation")
 			expect(result).toContain("Token budgets")
 			expect(result).toContain("token_budget")
@@ -152,7 +151,8 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain(`Username: ${testEnv.username}`)
 			expect(result).toContain(`Home directory: "${testEnv.homeDir}"`)
 			expect(result).toContain(`Working directory: "${testEnv.cwd}"`)
-			expect(result).toContain(`Current time: ${testEnv.currentTime} (local date: ${testEnv.localDate})`)
+			expect(result).toContain(`Current date: ${testEnv.localDate}`)
+			expect(result).not.toContain("Current time:")
 			expect(result).toContain("Git repository: no")
 		})
 
@@ -278,7 +278,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "subagent",
 			})
-			expect(result).not.toContain("Agent delegation rules")
+			expect(result).not.toContain("Orchestrate the work")
 			expect(result).not.toContain("Model selection for delegation")
 		})
 
@@ -328,7 +328,8 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain(`Username: ${testEnv.username}`)
 			expect(result).toContain(`Home directory: "${testEnv.homeDir}"`)
 			expect(result).toContain(`Working directory: "${testEnv.cwd}"`)
-			expect(result).toContain(`Current time: ${testEnv.currentTime} (local date: ${testEnv.localDate})`)
+			expect(result).toContain(`Current date: ${testEnv.localDate}`)
+			expect(result).not.toContain("Current time:")
 			expect(result).toContain("Git repository: no")
 		})
 
@@ -357,7 +358,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "single",
 			})
-			expect(result).not.toContain("Agent delegation rules")
+			expect(result).not.toContain("Orchestrate the work")
 			expect(result).not.toContain("Model selection for delegation")
 			expect(result).not.toContain("Token budgets")
 			expect(result).not.toContain("Orchestrate the work")
@@ -371,7 +372,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "single",
 			})
-			expect(result).toContain("You are an expert coding assistant")
+			expect(result).toContain("You are Kimchi, an AI coding agent")
 			expect(result).toContain("# Environment")
 			expect(result).toContain("## Available Tools")
 			expect(result).toContain("## Documents")

@@ -169,14 +169,11 @@ const passingFermentGates = () => [
 	{ id: "C3", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
 ]
 
-// Helper: create a ferment via the tool, then return its id from the harness
-// temp storage used by the registered tool runtime.
+// Helper: create a deliberate host-owned draft, matching /ferment and one-shot
+// bootstrap behavior.
 async function createFerment(name: string, description?: string): Promise<string> {
-	const result = await h.call("create_ferment", { name, description })
-	ok(result)
-	const items = h.storage.list()
-	const created = items.find((f) => f.name === name)
-	if (!created) throw new Error(`Ferment "${name}" not found after create`)
+	const created = h.runtime.getStorage().create(name, description)
+	setActive(created)
 	return created.id
 }
 
@@ -216,24 +213,6 @@ function loadFerment(id: string): Ferment {
 	if (!f) throw new Error(`Ferment ${id} not found`)
 	return f
 }
-
-// ─── create_ferment ───────────────────────────────────────────────────────────
-
-describe("create_ferment", () => {
-	it("creates a mode-less ferment in draft status", async () => {
-		const id = await createFerment("Test Project")
-		const f = loadFerment(id)
-		expect(f.name).toBe("Test Project")
-		expect(f.status).toBe("draft")
-		expect(f).not.toHaveProperty("mode")
-		expect(f.phases).toEqual([])
-	})
-
-	it("captures description when provided", async () => {
-		const id = await createFerment("Described", "A description")
-		expect(loadFerment(id).description).toBe("A description")
-	})
-})
 
 // ─── list_ferments ────────────────────────────────────────────────────────────
 
@@ -1094,22 +1073,12 @@ describe("propose_ferment_scoping", () => {
 		expect(ctx.ui.select).toHaveBeenCalledWith(expect.stringContaining("# Plan:"), expect.any(Array))
 	})
 
-	it("normalizes stringified phases/questions before rendering the plan UI", async () => {
+	it("normalizes stringified phases before rendering the plan UI", async () => {
 		const id = await createFerment("Stringified")
 		seedPending(id)
-		const questions = [
-			{
-				id: "q1",
-				text: "Approach?",
-				options: [
-					{ id: "opt-a", label: "Option A", recommended: true },
-					{ id: "opt-b", label: "Option B" },
-				],
-			},
-		]
 		const ctx = {
 			ui: {
-				select: vi.fn().mockResolvedValueOnce("Option A  ★ Recommended").mockResolvedValueOnce("Start execution  ✓"),
+				select: vi.fn().mockResolvedValueOnce("Start execution  ✓"),
 				input: vi.fn(),
 			},
 		}
@@ -1121,7 +1090,6 @@ describe("propose_ferment_scoping", () => {
 					assumptions: JSON.stringify(["A web app exists", "Local-first is acceptable"]),
 					constraints: "no backend",
 					phases: JSON.stringify(threePhases),
-					questions: JSON.stringify(questions),
 				}),
 				ctx,
 			),
@@ -1137,6 +1105,52 @@ describe("propose_ferment_scoping", () => {
 		expect(result).toContain("Here is the proposed plan")
 	})
 
+	it("normalizes assumption arrays before persisting a proposed scope", async () => {
+		const id = await createFerment("Array Assumptions")
+		seedPending(id)
+		const ctx = { ui: { select: vi.fn().mockResolvedValue("Start execution  ✓"), input: vi.fn() } }
+
+		const result = ok(
+			await h.call(
+				"propose_ferment_scoping",
+				basePayload(id, {
+					assumptions: ["Go toolchain is installed", "The current directory is writable"],
+				}),
+				ctx,
+			),
+		)
+
+		const f = loadFerment(id)
+		expect(f.status).toBe("planned")
+		expect(f.scoping?.assumptions?.answer).toBe("Go toolchain is installed; The current directory is writable")
+		expect(result).toContain("Plan saved")
+		expect(result).toContain("- Go toolchain is installed")
+		expect(result).toContain("- The current directory is writable")
+	})
+
+	it("normalizes string-array assumptions before rendering the plan UI", async () => {
+		const id = await createFerment("AssumptionArray")
+		seedPending(id)
+		const ctx = { ui: { select: vi.fn().mockResolvedValue("Start execution  ✓"), input: vi.fn() } }
+
+		const result = ok(
+			await h.call(
+				"propose_ferment_scoping",
+				basePayload(id, {
+					assumptions: ["Browser-based web app", "No auth needed", "Standard TODO UX is acceptable"],
+				}),
+				ctx,
+			),
+		)
+
+		const f = loadFerment(id)
+		expect(f.status).toBe("planned")
+		expect(f.scoping?.assumptions?.answer).toBe("Browser-based web app; No auth needed; Standard TODO UX is acceptable")
+		expect(result).toContain("## Assumptions")
+		expect(result).toContain("Browser-based web app")
+		expect(result).toContain("Standard TODO UX is acceptable")
+	})
+
 	it("treats duplicate propose_ferment_scoping after plan save as a no-op", async () => {
 		const id = await createFerment("DuplicatePropose")
 		seedPending(id)
@@ -1150,22 +1164,12 @@ describe("propose_ferment_scoping", () => {
 		expect(loadFerment(id).status).toBe("planned")
 	})
 
-	it("normalizes fenced JSON array strings for phases/questions", async () => {
+	it("normalizes fenced JSON array strings for phases", async () => {
 		const id = await createFerment("FencedJson")
 		seedPending(id)
-		const questions = [
-			{
-				id: "q1",
-				text: "Approach?",
-				options: [
-					{ id: "opt-a", label: "Option A", recommended: true },
-					{ id: "opt-b", label: "Option B" },
-				],
-			},
-		]
 		const ctx = {
 			ui: {
-				select: vi.fn().mockResolvedValueOnce("Option A  ★ Recommended").mockResolvedValueOnce("Start execution  ✓"),
+				select: vi.fn().mockResolvedValueOnce("Start execution  ✓"),
 				input: vi.fn(),
 			},
 		}
@@ -1176,7 +1180,6 @@ describe("propose_ferment_scoping", () => {
 				basePayload(id, {
 					constraints: ["- preserve data"],
 					phases: `Here is the plan:\n\`\`\`json\n${JSON.stringify(threePhases)}\n\`\`\``,
-					questions: `Questions:\n${JSON.stringify(questions)}`,
 				}),
 				ctx,
 			),
@@ -1189,8 +1192,8 @@ describe("propose_ferment_scoping", () => {
 		expect(result).not.toContain("- - preserve data")
 	})
 
-	// (b) with questions + all recommended picks → planned, no sendMessage re-emit
-	it("(b) with questions + all recommended picks → planned, no feedback message", async () => {
+	// (b) with questions + all recommended picks → draft, sendMessage asks agent to replan
+	it("(b) with questions + all recommended picks → draft status, sendMessage asks for final plan", async () => {
 		const id = await createFerment("WithQ Continue")
 		seedPending(id)
 		const questions = [
@@ -1211,10 +1214,10 @@ describe("propose_ferment_scoping", () => {
 				],
 			},
 		]
-		// Q1: pick recommended, Q2: pick recommended, then review → Continue
+		// Q1: pick recommended, Q2: pick recommended, then review → Update plan
 		const q1RecLabel = "Option A  ★ Recommended"
 		const q2RecLabel = "Narrow  ★ Recommended"
-		const continueLabel = "Start execution  ✓"
+		const continueLabel = "Update plan  ✓"
 		const ctx = {
 			ui: {
 				select: vi
@@ -1229,21 +1232,28 @@ describe("propose_ferment_scoping", () => {
 		const result = ok(await h.call("propose_ferment_scoping", basePayload(id, { questions }), ctx))
 
 		const f = loadFerment(id)
-		expect(f.status).toBe("planned")
-		expect(f.phases).toHaveLength(3)
-		expect(result).toContain("Here is the proposed plan")
+		expect(f.status).toBe("draft")
+		expect(result).not.toContain("Here is the proposed plan")
 		expect(result).toContain("Your answers")
 		expect(ctx.ui.select).toHaveBeenNthCalledWith(2, "[Q2/2] Scope?", [
 			"Wide",
 			q2RecLabel,
 			`✎ ${pr_dim("Custom answer...")}`,
 		])
-		// All recommended → confirmPendingScope directly, no sendMessage re-emit
 		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>
 		const feedbackCalls = sendMsg.mock.calls.filter(
 			(c: unknown[]) => (c[0] as { customType?: string })?.customType === "ferment_scoping_iteration",
 		)
-		expect(feedbackCalls).toHaveLength(0)
+		expect(feedbackCalls).toHaveLength(1)
+		const msgContent: string =
+			typeof feedbackCalls[0][0].content === "string"
+				? feedbackCalls[0][0].content
+				: (feedbackCalls[0][0].content?.[0]?.text ?? "")
+		expect(msgContent).toContain("Approach?")
+		expect(msgContent).toContain("opt-a")
+		expect(msgContent).toContain("Scope?")
+		expect(msgContent).toContain("narrow")
+		expect(msgContent).toContain("Usually emit `questions: []`")
 	})
 
 	// (c) per-question non-recommended pick → ferment stays draft, ONE sendMessage with all answers

@@ -2,7 +2,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { clearApiKey, loadConfig, writeApiKey } from "./config.js"
+import {
+	clearApiKey,
+	loadConfig,
+	readTelemetryConfig,
+	writeApiKey,
+	writeHideSessionModeDialog,
+	writeSessionModeWizardSeenAt,
+} from "./config.js"
 
 describe("loadConfig", () => {
 	let tempDir: string
@@ -179,6 +186,48 @@ describe("loadConfig", () => {
 		rmSync(globalDir, { recursive: true, force: true })
 		rmSync(rootDir, { recursive: true, force: true })
 	})
+
+	it("reads global onboarding state", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				onboarding: {
+					sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z",
+					hideSessionModeDialog: true,
+				},
+			}),
+		)
+
+		const config = loadConfig({ configPath })
+
+		expect(config.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
+		expect(config.onboarding.hideSessionModeDialog).toBe(true)
+	})
+
+	it("reads hyphenated hide session mode dialog config for compatibility", () => {
+		writeFileSync(configPath, JSON.stringify({ onboarding: { "hide-session-mode-dialog": true } }))
+
+		const config = loadConfig({ configPath })
+
+		expect(config.onboarding.hideSessionModeDialog).toBe(true)
+	})
+
+	it("does not read project onboarding state as global first-run state", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ apiKey: "global-key" }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ onboarding: { sessionModeWizardSeenAt: "project" } }))
+
+		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+		expect(config.onboarding.sessionModeWizardSeenAt).toBeUndefined()
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
 })
 
 describe("writeApiKey", () => {
@@ -194,17 +243,17 @@ describe("writeApiKey", () => {
 		rmSync(tempDir, { recursive: true, force: true })
 	})
 
-	it("writes apiKey to config file", () => {
-		writeApiKey("new-key-789", configPath)
-		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
-		expect(raw.apiKey).toBe("new-key-789")
+	it("round-trips the API key", () => {
+		writeApiKey("sekrit-42", configPath)
+		const raw = readFileSync(configPath, "utf-8")
+		expect(JSON.parse(raw).apiKey).toBe("sekrit-42")
 	})
 
-	it("preserves existing fields when writing apiKey", () => {
-		writeFileSync(configPath, JSON.stringify({ migrationState: "done" }))
-		writeApiKey("new-key-789", configPath)
-		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
-		expect(raw).toEqual({ migrationState: "done", apiKey: "new-key-789" })
+	it("overwrites any previous value", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "first" }))
+		writeApiKey("second", configPath)
+		const raw = readFileSync(configPath, "utf-8")
+		expect(JSON.parse(raw).apiKey).toBe("second")
 	})
 })
 
@@ -221,28 +270,146 @@ describe("clearApiKey", () => {
 		rmSync(tempDir, { recursive: true, force: true })
 	})
 
-	it("removes apiKey from config file", () => {
-		writeFileSync(configPath, JSON.stringify({ apiKey: "key-to-clear", migrationState: "done" }))
+	it("removes both apiKey and api_key fields", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "a", api_key: "b", other: 1 }))
 		clearApiKey(configPath)
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
-		expect(raw).toEqual({ migrationState: "done" })
+		expect(raw).not.toHaveProperty("apiKey")
+		expect(raw).not.toHaveProperty("api_key")
+		expect(raw.other).toBe(1)
 	})
 
-	it("removes legacy api_key from config file", () => {
-		writeFileSync(configPath, JSON.stringify({ api_key: "key-to-clear", migrationState: "done" }))
-		clearApiKey(configPath)
+	it("is a no-op when the file does not exist", () => {
+		expect(() => clearApiKey(join(tempDir, "missing.json"))).not.toThrow()
+	})
+})
+
+describe("readTelemetryConfig", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-telemetry-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("picks up telemetry.metricsEndpoint when present", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				telemetry: {
+					enabled: true,
+					metricsEndpoint: "https://custom.example.com/metrics:ingest",
+				},
+			}),
+		)
+		const config = readTelemetryConfig(configPath)
+		expect(config.metricsEndpoint).toBe("https://custom.example.com/metrics:ingest")
+	})
+
+	it("falls back to default metrics endpoint when absent", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				telemetry: {
+					enabled: true,
+				},
+			}),
+		)
+		const config = readTelemetryConfig(configPath)
+		expect(config.metricsEndpoint).toBe("https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest")
+	})
+
+	it("disabled telemetry still returns defaults", () => {
+		writeFileSync(configPath, JSON.stringify({}))
+		const config = readTelemetryConfig(configPath)
+		expect(config.enabled).toBe(false)
+		expect(config.metricsEndpoint).toBe("https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest")
+	})
+})
+
+describe("writeSessionModeWizardSeenAt", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("writes onboarding.sessionModeWizardSeenAt", () => {
+		writeSessionModeWizardSeenAt("2026-05-19T09:30:00.000Z", configPath)
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
-		expect(raw).toEqual({ migrationState: "done" })
+		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 	})
 
-	it("removes both apiKey and api_key when both are present", () => {
-		writeFileSync(configPath, JSON.stringify({ apiKey: "new-key", api_key: "old-key", migrationState: "done" }))
-		clearApiKey(configPath)
+	it("preserves unrelated fields and existing onboarding fields", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				apiKey: "key",
+				onboarding: { otherWizardSeenAt: "2026-05-18T10:00:00.000Z" },
+			}),
+		)
+
+		writeSessionModeWizardSeenAt("2026-05-19T09:30:00.000Z", configPath)
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
-		expect(raw).toEqual({ migrationState: "done" })
+
+		expect(raw).toEqual({
+			apiKey: "key",
+			onboarding: {
+				otherWizardSeenAt: "2026-05-18T10:00:00.000Z",
+				sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z",
+			},
+		})
+	})
+})
+
+describe("writeHideSessionModeDialog", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
 	})
 
-	it("is a no-op when config file does not exist", () => {
-		expect(() => clearApiKey(configPath)).not.toThrow()
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("writes onboarding.hideSessionModeDialog", () => {
+		writeHideSessionModeDialog(true, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.onboarding.hideSessionModeDialog).toBe(true)
+	})
+
+	it("preserves unrelated fields and existing onboarding fields", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				apiKey: "key",
+				onboarding: { sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z" },
+			}),
+		)
+
+		writeHideSessionModeDialog(true, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+
+		expect(raw).toEqual({
+			apiKey: "key",
+			onboarding: {
+				sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z",
+				hideSessionModeDialog: true,
+			},
+		})
 	})
 })

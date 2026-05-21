@@ -2,7 +2,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { formatCount } from "./format.js"
-import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
+import { ORCHESTRATOR_MODEL_ID, getMultiModelEnabled, isSubagent } from "./prompt-construction/prompt-enrichment.js"
 
 interface UsageTotals {
 	input: number
@@ -21,10 +21,16 @@ interface AgentStats {
 	}
 }
 
+interface AgentToolDetails {
+	modelName?: string
+}
+
 interface PromptSummaryData {
 	elapsed: string
 	orchestrator: UsageTotals | null
+	orchestratorModel?: string
 	subagents: UsageTotals | null
+	subagentsByModel?: Array<{ model: string; totals: UsageTotals }>
 	total: UsageTotals
 	extras?: string[]
 }
@@ -68,7 +74,11 @@ function usageRawCols(totals: UsageTotals): string[] {
 	return cols
 }
 
-function formatUsageRows(rows: Array<{ label: string; totals: UsageTotals }>, theme: Theme): string[] {
+function formatUsageRows(
+	rows: Array<{ label: string; totals: UsageTotals }>,
+	theme: Theme,
+	labelWidth: number,
+): string[] {
 	const colSets = rows.map((r) => usageRawCols(r.totals))
 	const colCount = Math.max(...colSets.map((c) => c.length))
 	const colWidths = Array.from({ length: colCount }, (_, i) => Math.max(...colSets.map((c) => (c[i] ?? "").length)))
@@ -77,7 +87,7 @@ function formatUsageRows(rows: Array<{ label: string; totals: UsageTotals }>, th
 		const cols = colSets[ri]
 		const padded = colWidths.map((width, i) => (cols[i] ?? "").padEnd(width))
 		const values = padded.join(COL_GAP)
-		return INDENT + theme.fg("dim", row.label.padEnd(LABEL_WIDTH)) + values
+		return INDENT + theme.fg("dim", row.label.padEnd(labelWidth)) + values
 	})
 }
 
@@ -91,24 +101,36 @@ const promptSummaryRenderer: MessageRenderer<PromptSummaryData> = (message, _opt
 	const header = theme.bold(theme.fg("toolTitle", "Prompt summary"))
 	container.addChild(new Text(dash + header, 0, 0))
 
-	container.addChild(new Text(INDENT + theme.fg("dim", "execution".padEnd(LABEL_WIDTH)) + data.elapsed, 0, 0))
-
 	if (!data.subagents) {
-		// No subagents — single compact "tokens" row
+		// No subagents — single compact row
+		const tokensLabel = data.orchestratorModel ? `main (${data.orchestratorModel}):` : "tokens"
+		const labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, tokensLabel.length + 1)
+		container.addChild(new Text(INDENT + theme.fg("dim", "execution".padEnd(labelWidth)) + data.elapsed, 0, 0))
 		const t = data.total
 		let values = `↑${formatCount(t.input)}${COL_GAP}↓${formatCount(t.output)}`
 		if (t.cacheRead > 0 || t.cacheWrite > 0) {
 			values += `${COL_GAP}cache-read ${formatCount(t.cacheRead)}${COL_GAP}cache-write ${formatCount(t.cacheWrite)}`
 		}
-		container.addChild(new Text(INDENT + theme.fg("dim", "tokens".padEnd(LABEL_WIDTH)) + values, 0, 0))
+		container.addChild(new Text(INDENT + theme.fg("dim", tokensLabel.padEnd(labelWidth)) + values, 0, 0))
 	} else {
 		// Multi-row breakdown when subagents were involved
 		const rows: Array<{ label: string; totals: UsageTotals }> = []
-		if (data.orchestrator) rows.push({ label: "main model:", totals: data.orchestrator })
-		rows.push({ label: "subagents:", totals: data.subagents })
+		if (data.orchestrator) {
+			const label = data.orchestratorModel ? `main (${data.orchestratorModel}):` : "main model:"
+			rows.push({ label, totals: data.orchestrator })
+		}
+		if (data.subagentsByModel?.length) {
+			for (const { model, totals } of data.subagentsByModel) {
+				rows.push({ label: `↳ ${model}:`, totals })
+			}
+		} else if (data.subagents) {
+			rows.push({ label: "↳ subagents:", totals: data.subagents })
+		}
 		rows.push({ label: "total:", totals: data.total })
 
-		for (const line of formatUsageRows(rows, theme)) {
+		const labelWidth = Math.max(LABEL_WIDTH, "execution".length + 1, ...rows.map((r) => r.label.length + 1))
+		container.addChild(new Text(INDENT + theme.fg("dim", "execution".padEnd(labelWidth)) + data.elapsed, 0, 0))
+		for (const line of formatUsageRows(rows, theme, labelWidth)) {
 			container.addChild(new Text(line, 0, 0))
 		}
 	}
@@ -128,12 +150,14 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 	const orchestrator = emptyTotals()
 	const subagents = emptyTotals()
 	const countedAgentUsage = new Map<string, UsageTotals>()
+	const subagentModelTotals = new Map<string, UsageTotals>()
 	let startedAt = Date.now()
 
 	pi.on("agent_start", () => {
 		Object.assign(orchestrator, emptyTotals())
 		Object.assign(subagents, emptyTotals())
 		countedAgentUsage.clear()
+		subagentModelTotals.clear()
 		startedAt = Date.now()
 	})
 
@@ -157,12 +181,24 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 			}
 			countedAgentUsage.set(stats.agentId, { ...stats.tokenUsage })
 			addUsage(subagents, delta)
+			const agentDetails = event.details as AgentToolDetails | undefined
+			if (agentDetails?.modelName) {
+				const modelTotals = subagentModelTotals.get(agentDetails.modelName) ?? emptyTotals()
+				addUsage(modelTotals, delta)
+				subagentModelTotals.set(agentDetails.modelName, modelTotals)
+			}
 			return
 		}
 		subagents.input += stats.tokenUsage.input
 		subagents.output += stats.tokenUsage.output
 		subagents.cacheRead += stats.tokenUsage.cacheRead
 		subagents.cacheWrite += stats.tokenUsage.cacheWrite
+		const agentDetails = event.details as AgentToolDetails | undefined
+		if (agentDetails?.modelName) {
+			const modelTotals = subagentModelTotals.get(agentDetails.modelName) ?? emptyTotals()
+			addUsage(modelTotals, stats.tokenUsage)
+			subagentModelTotals.set(agentDetails.modelName, modelTotals)
+		}
 	})
 
 	pi.on("agent_end", async () => {
@@ -176,10 +212,17 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 
 		const extras = pendingExtras.splice(0)
 
+		const subagentsByModel =
+			subagentModelTotals.size > 0
+				? [...subagentModelTotals.entries()].map(([model, totals]) => ({ model, totals }))
+				: undefined
+
 		const data: PromptSummaryData = {
 			elapsed: formatDuration(Date.now() - startedAt),
 			orchestrator: orchestrator.input + orchestrator.output > 0 ? { ...orchestrator } : null,
+			orchestratorModel: getMultiModelEnabled() ? ORCHESTRATOR_MODEL_ID : undefined,
 			subagents: subagents.input + subagents.output > 0 ? { ...subagents } : null,
+			subagentsByModel,
 			total: grandTotal,
 			extras: extras.length > 0 ? extras : undefined,
 		}

@@ -30,6 +30,24 @@ kimchi         # launch the coding harness
 
 Run `kimchi --help` to see all available subcommands and flags.
 
+## Remote teleport (preview)
+
+Launch with `kimchi --teleport` to enable the session-multiplex commands. The local TUI stays the home base; remote workers are spawned, detached, and re-attached without restarting kimchi.
+
+```bash
+kimchi --teleport
+```
+
+Four slash commands are available inside the TUI:
+
+- `/teleport [name] [--allow-dirty] [--exclude <glob>] [--include-ignored] [--abandon-pending] [--force]` — rsync the working tree to a fresh remote sandbox and foreground it. The remote starts with an empty conversation in this release (session import is deferred); the workspace is canonical on the remote from that point on.
+- `/detach [--abandon-pending]` — drop the WebSocket to the foreground remote (the server keeps the session running) and return to the local home base.
+- `/attach <name-or-id>` — re-attach to a previously detached remote, either one from this kimchi run or one running server-side from a prior session. Server state is canonical; no rsync.
+- `/sessions` — list everything: the foreground remote (if any), in-process detached remotes, and other server-side sessions.
+- `/connect [name-or-id]` — open an interactive ssh shell on the sandbox via the teleport proxy. With no argument, connects to the currently foregrounded remote. With a name or id, resolves like `/attach` but only opens a shell — kimchi's session state is unchanged when ssh exits. Auth uses a freshly-minted connect token; the proxy bridges your local ssh to the sandbox over the same `/ssh` WebSocket endpoint rsync uses.
+
+`--teleport` and `--remote` are mutually exclusive. Use `--remote --session <id>` to attach to a single remote at startup; use `--teleport` to multiplex from a local home base.
+
 ## Configuration
 
 ### Authentication
@@ -97,21 +115,15 @@ Adding support for another coding agent (Cursor, Cline, Aider, Cody, ...) is a s
 
 The supported model list is fetched at startup from the kimchi metadata service.
 
-Use `/model` in the interactive CLI to switch between available models.
+Use `/model` or `ctrl+p` in the interactive CLI to switch between available models.
 
 ### Multi-model orchestration
 
-By default, kimchi runs in multi-model mode: the main agent classifies each task, executes what it can directly, and delegates the rest to specialised subagents picked from the available model roster.
+By default, kimchi runs in multi-model mode: the main agent classifies each task, executes what it can directly, and delegates the rest to specialised subagents picked from the available model roster. The footer shows `multi-model (kimi-k2.6)` when this mode is active.
 
-To disable orchestration and run as a single, direct coding assistant:
+To switch to single-model mode, use `ctrl+p` to cycle through models or open the `/model` picker and select a specific model. To re-enable multi-model, cycle with `ctrl+p` past the last model or select `multi-model` from the `/model` picker.
 
-```bash
-kimchi --multi-model=false
-```
-
-You can also toggle the mode at any time during a session with the **option/alt+tab** keyboard shortcut. The current state is shown in the footer (`multi-model: on` / `multi-model: off`).
-
-When multi-model is off the agent uses a single-model system prompt: environment, tools, research rules, guidelines, and phase tagging are all active, but task classification and delegation logic are disabled. The subagent tool is still available if you explicitly ask the agent to delegate a task.
+When using a single model the agent uses a single-model system prompt: environment, tools, research rules, guidelines, and phase tagging are all active, but task classification and delegation logic are disabled. The subagent tool is still available if you explicitly ask the agent to delegate a task.
 
 ### HTTP proxy
 

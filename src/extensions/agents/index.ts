@@ -23,6 +23,7 @@ import { Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
+import { sessionHasImages } from "../model-guard.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
 import { AgentManager } from "./manager/agent-manager.js"
 import {
@@ -128,6 +129,45 @@ function getSubagentResultIcon(status: string, theme: Theme): string {
 	}
 }
 
+function extractImagePathsFromSession(ctx: ExtensionContext): string[] {
+	const entries = ctx.sessionManager.getBranch()
+	const imagePaths = new Set<string>()
+	const readPathsByToolCallId = new Map<string, string>()
+
+	for (const entry of entries) {
+		if (entry.type !== "message") continue
+		const msg = entry.message
+
+		if (msg.role === "assistant") {
+			const content = msg.content
+			if (Array.isArray(content)) {
+				for (const block of content) {
+					if (block.type !== "toolCall") continue
+					const toolBlock = block as { id?: string; name?: string; arguments?: Record<string, unknown> }
+					if (toolBlock.name === "read" && toolBlock.id && typeof toolBlock.arguments?.path === "string") {
+						readPathsByToolCallId.set(toolBlock.id, toolBlock.arguments.path)
+					}
+				}
+			}
+		} else if (msg.role === "toolResult") {
+			const toolResultMsg = msg as { toolCallId?: string; content?: unknown[] }
+			const content = toolResultMsg.content
+			if (Array.isArray(content)) {
+				const hasImage = content.some((block) => (block as { type?: string }).type === "image")
+				const path = toolResultMsg.toolCallId ? readPathsByToolCallId.get(toolResultMsg.toolCallId) : undefined
+				if (hasImage && path) {
+					imagePaths.add(path)
+				}
+			}
+			if (toolResultMsg.toolCallId) {
+				readPathsByToolCallId.delete(toolResultMsg.toolCallId)
+			}
+		}
+	}
+
+	return Array.from(imagePaths)
+}
+
 export function summaryForStatus(status: string, error?: string, abortReason?: AgentAbortReason): string {
 	switch (status) {
 		case "running":
@@ -205,6 +245,10 @@ function getAbortLabel(reason?: AgentAbortReason): string {
 			return "Aborted (max turns exceeded)"
 		case "token_budget":
 			return "Aborted (token budget exceeded)"
+		case "inactivity":
+			return "Aborted (inactivity timeout)"
+		case "max_duration":
+			return "Aborted (duration limit exceeded)"
 		default:
 			return "Aborted"
 	}
@@ -216,6 +260,10 @@ function getAbortNote(reason?: AgentAbortReason): string {
 			return " (aborted — max turns exceeded, output may be incomplete)"
 		case "token_budget":
 			return " (aborted — token budget exceeded, output may be incomplete)"
+		case "inactivity":
+			return " (aborted — agent became unresponsive, output may be incomplete)"
+		case "max_duration":
+			return " (aborted — wall-clock duration limit exceeded, output may be incomplete)"
 		default:
 			return " (aborted, output may be incomplete)"
 	}
@@ -251,7 +299,13 @@ function getStatusNote(status: string, abortReason?: AgentAbortReason): string {
 
 function getStatusInstruction(status: string, abortReason?: AgentAbortReason): string {
 	if (status === "aborted" && abortReason === "token_budget") {
-		return "\nThis completes the requested Agent call under the supplied budget. Do not call Agent again with a higher token_budget in this user turn."
+		return "\nThe agent ran out of its token budget. Do NOT retry the same task with a higher budget. If the work is incomplete, you may spawn a NEW follow-up Agent scoped to only the remaining unfinished work — keep the same or lower budget."
+	}
+	if (status === "aborted" && abortReason === "inactivity") {
+		return "\nThe agent stopped producing output and was terminated. Review any partial results. If the work is incomplete, you may spawn a follow-up Agent to continue from where this one left off."
+	}
+	if (status === "aborted" && abortReason === "max_duration") {
+		return "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Review any partial results. If the work is incomplete, you may spawn a follow-up Agent scoped to only the remaining unfinished work."
 	}
 	return ""
 }
@@ -366,6 +420,15 @@ function blockBudgetRetryIfNeeded(record: AgentRecord, candidate: BudgetRetryCan
 
 export function getActiveAgentCount(): number {
 	return activeManager?.getRunningCount() ?? 0
+}
+
+export function getActiveAgentModelIds(): string[] {
+	if (!activeManager) return []
+	return activeManager
+		.listAgents()
+		.filter((a) => a.status === "running" || a.status === "queued")
+		.map((a) => a.modelId)
+		.filter((id): id is string => id != null)
 }
 
 export default function (pi: ExtensionAPI) {
@@ -757,8 +820,9 @@ Guidelines:
 - Use resume with an agent ID to continue a previous agent's work.
 - Use steer_subagent to send mid-run messages to a running background agent.
 - Use thinking to request an extended thinking level when the selected agent profile does not fix one.
-- Use token_budget to cap the agent's total token usage when the task scope is small or bounded.
+- Use token_budget to cap the agent's cumulative output token usage when the task scope is small or bounded. Only output tokens (tokens generated by the agent) count toward the budget; input tokens do not.
 - Treat token_budget as a hard caller constraint. If an agent aborts because of token_budget, do not retry with a higher budget unless the user explicitly asks.
+- Use max_duration for long-running agents that might hang or run indefinitely (e.g., build tasks with many test iterations, background tasks with unpredictable completion times). Timeouts protect against stalled work without relying on token budgets. Short-lived agents (single queries, simple edits) typically do not need a duration limit.
 - Use inherit_context if the agent needs the parent conversation history.
 
 Model selection — YOU choose based on task complexity:
@@ -797,7 +861,14 @@ Model selection — YOU choose based on task complexity:
 				),
 				token_budget: Type.Optional(
 					Type.Integer({
-						description: "Maximum number of tokens this agent is allowed to consume in total.",
+						description:
+							"Maximum cumulative output tokens this agent is allowed to generate. Input tokens are not counted.",
+						minimum: 1,
+					}),
+				),
+				max_duration: Type.Optional(
+					Type.Integer({
+						description: "Maximum wall-clock duration in seconds. The agent is aborted when this limit is exceeded.",
 						minimum: 1,
 					}),
 				),
@@ -977,6 +1048,21 @@ Model selection — YOU choose based on task complexity:
 				const visibility: AgentVisibility = "user"
 				const runInBackground = resolvedConfig.runInBackground
 
+				// Image forwarding: when session has images and subagent model supports vision,
+				// extract image paths from read tool calls and prepend them to the prompt.
+				const effectivePrompt = (() => {
+					const base = params.prompt as string
+					if (!sessionHasImages()) return base
+					const modelInput = (model as { input?: string[] } | undefined)?.input
+					if (!modelInput?.includes("image")) return base
+
+					const imagePaths = extractImagePathsFromSession(ctx)
+					if (imagePaths.length === 0) return base
+
+					const pathList = imagePaths.join(", ")
+					return `Context images from parent session: ${pathList}. Read them if needed for your task.\n\n${base}`
+				})()
+
 				const parentModelId = ctx.model?.id
 				const effectiveModelId = (model as { id?: string } | undefined)?.id
 				const agentModelName =
@@ -1050,12 +1136,13 @@ Model selection — YOU choose based on task complexity:
 					}
 
 					try {
-						id = manager.spawn(pi, ctx, subagentType, params.prompt as string, {
+						id = manager.spawn(pi, ctx, subagentType, effectivePrompt, {
 							description: params.description as string,
 							visibility,
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
 							maxTurns: effectiveMaxTurns,
 							tokenBudget: resolvedConfig.tokenBudget,
+							maxDuration: resolvedConfig.maxDuration,
 							isolated,
 							inheritContext,
 							thinkingLevel: thinking,
@@ -1170,12 +1257,13 @@ Model selection — YOU choose based on task complexity:
 					return textResult(`Failed to pre-write Agent session file under ${parentSessionDir}: ${detail}`)
 				}
 				try {
-					record = await manager.spawnAndWait(pi, ctx, subagentType, params.prompt as string, {
+					record = await manager.spawnAndWait(pi, ctx, subagentType, effectivePrompt, {
 						description: params.description as string,
 						visibility,
 						model: model as Parameters<typeof manager.spawnAndWait>[4]["model"],
 						maxTurns: effectiveMaxTurns,
 						tokenBudget: resolvedConfig.tokenBudget,
+						maxDuration: resolvedConfig.maxDuration,
 						isolated,
 						inheritContext,
 						thinkingLevel: thinking,

@@ -28,12 +28,16 @@ describe("resolveOrchestrationInstructions", () => {
 			registry,
 			mode: "orchestrator",
 		})
-		expect(result).toContain("Orchestrate the work")
 		expect(result).toContain("Sharing context between agents")
-		expect(result).toContain("Agent delegation rules")
+		expect(result).toContain("Orchestrate the work")
 		expect(result).toContain("Model selection for delegation")
 		expect(result).toContain("Token budgets")
 		expect(result).toContain("token_budget")
+		expect(result).toContain("Plan self-validation")
+		expect(result).toContain("Plan verification")
+		expect(result).toContain("What makes a good plan")
+		expect(result).toContain("Skip verification when")
+		expect(result).toContain("Require verification when")
 	})
 
 	it("includes model capabilities and available models in orchestrator mode", () => {
@@ -68,7 +72,7 @@ describe("resolveOrchestrationInstructions", () => {
 		})
 		expect(result).toContain("Subagent response protocol")
 		expect(result).toContain('{"summary":')
-		expect(result).not.toContain("Agent delegation rules")
+		expect(result).not.toContain("Orchestrate the work")
 	})
 
 	it("includes model-specific orchestration guidelines when provided", () => {
