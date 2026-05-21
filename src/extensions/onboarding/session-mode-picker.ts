@@ -48,6 +48,7 @@ export const SESSION_MODE_PICKER_OPTIONS: SessionModePickerOption[] = [
 ]
 
 export const SESSION_MODE_PICKER_HIDE_LABEL = "Hide this dialog"
+export const SESSION_MODE_PICKER_HIDE_HINT = "Space toggle"
 
 export interface SessionModePickerOptions {
 	showHideCheckbox?: boolean
@@ -127,7 +128,7 @@ export function renderSessionModePickerLines(
 		const label = state.hideDialog
 			? theme.fg("success", SESSION_MODE_PICKER_HIDE_LABEL)
 			: theme.fg("text", SESSION_MODE_PICKER_HIDE_LABEL)
-		add(`${indent}${checkbox} ${label}`)
+		add(`${indent}${checkbox} ${label}  ${theme.fg("dim", SESSION_MODE_PICKER_HIDE_HINT)}`)
 	}
 
 	add("")

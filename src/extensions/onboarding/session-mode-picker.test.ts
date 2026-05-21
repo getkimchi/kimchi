@@ -2,6 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import {
 	SESSION_MODE_PICKER_HEADING,
+	SESSION_MODE_PICKER_HIDE_HINT,
 	SESSION_MODE_PICKER_HIDE_LABEL,
 	SESSION_MODE_PICKER_HINT,
 	SessionModePickerComponent,
@@ -132,7 +133,17 @@ describe("session mode picker rendering", () => {
 		})
 		const text = lines.join("\n")
 
-		expect(text).toContain(`[ ] ${SESSION_MODE_PICKER_HIDE_LABEL}`)
+		expect(text).toContain(`[ ] ${SESSION_MODE_PICKER_HIDE_LABEL}  ${SESSION_MODE_PICKER_HIDE_HINT}`)
+	})
+
+	it("renders the hide checkbox hint with the dim theme color", () => {
+		const t = theme()
+
+		renderSessionModePickerLines(initialSessionModePickerState(), t, 100, {
+			showHideCheckbox: true,
+		})
+
+		expect(t.fg).toHaveBeenCalledWith("dim", SESSION_MODE_PICKER_HIDE_HINT)
 	})
 
 	it("marks the selected option", () => {
