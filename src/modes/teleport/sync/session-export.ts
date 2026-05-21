@@ -86,33 +86,8 @@ export function injectTraceIdsIntoEntries(entries: ExportEntry[]): ExportEntry[]
  */
 export function injectTraceIdsIntoExport(lines: string[]): string[] {
 	if (lines.length === 0) return lines
-
-	// Parse all lines and build an id → index map for fast parent lookup.
 	const parsed = lines.map((l) => JSON.parse(l) as ExportEntry)
-	const idToIndex = new Map<string, number>()
-	for (let i = 0; i < parsed.length; i++) {
-		idToIndex.set(parsed[i].id, i)
-	}
-
-	// Inject trace IDs from trace_ids entries into their parents.
-	for (const entry of parsed) {
-		if (entry.type === "custom" && entry.customType === "trace_ids") {
-			const data = entry.data as { traceIds?: string[] } | undefined
-			const traceIds = data?.traceIds
-			if (!traceIds || traceIds.length === 0) continue
-			if (entry.parentId == null) continue
-
-			const parentIdx = idToIndex.get(entry.parentId)
-			if (parentIdx == null) continue
-
-			const parent = parsed[parentIdx]
-			const existing = parent.traceIds ?? []
-			const merged = [...new Set([...existing, ...traceIds])]
-			parent.traceIds = merged
-		}
-	}
-
-	// Re-stringify all lines (including trace_ids entries).
+	injectTraceIdsIntoEntries(parsed)
 	return parsed.map((p) => JSON.stringify(p))
 }
 

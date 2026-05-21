@@ -88,8 +88,8 @@ const _origExportToJsonl = (AgentSession as any).prototype.exportToJsonl
 		const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0)
 		const processed = injectTraceIdsIntoExport(lines)
 		writeFileSync(filePath, `${processed.join("\n")}\n`, "utf-8")
-	} catch {
-		// best-effort — don't break exports if post-processing fails
+	} catch (err) {
+		console.warn("[trace-id] Failed to inject trace IDs into JSONL export:", err)
 	}
 	return filePath
 }
@@ -123,7 +123,9 @@ const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
 		if (!html.includes('id="trace-id-renderer"')) {
 			const traceIdScript = `<script id="trace-id-renderer">
 (function() {
-    var base64 = document.getElementById('session-data').textContent;
+    var el = document.getElementById('session-data');
+    if (!el) return;
+    var base64 = el.textContent;
     var binary = atob(base64);
     var bytes = new Uint8Array(binary.length);
     for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -156,8 +158,8 @@ const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
 		}
 
 		writeFileSync(filePath, html, "utf-8")
-	} catch {
-		// best-effort — don't break exports if post-processing fails
+	} catch (err) {
+		console.warn("[trace-id] Failed to inject trace IDs into HTML export:", err)
 	}
 	return filePath
 }

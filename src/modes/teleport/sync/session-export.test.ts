@@ -155,6 +155,36 @@ describe("injectTraceIdsIntoExport", () => {
 		expect(JSON.parse(result[3]).customType).toBe("trace_ids")
 	})
 
+	it("walks parent chain past tool_result to land trace IDs on the assistant message", () => {
+		const lines = [
+			JSON.stringify({ type: "session", version: 3, id: "s1", cwd: "/local" }),
+			JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "user", content: "use a tool" } }),
+			JSON.stringify({
+				type: "message",
+				id: "e2",
+				parentId: "e1",
+				message: { role: "assistant", content: "using tool" },
+			}),
+			JSON.stringify({ type: "tool_use", id: "tool1", parentId: "e2", data: { name: "bash" } }),
+			JSON.stringify({ type: "tool_result", id: "res1", parentId: "tool1", data: { output: "ok" } }),
+			JSON.stringify({
+				type: "custom",
+				id: "t1",
+				parentId: "res1",
+				customType: "trace_ids",
+				data: { traceIds: ["trace-through-tool"] },
+			}),
+		]
+		const result = injectTraceIdsIntoExport(lines)
+		// Assistant message (e2, index 2) gets the trace ID, not tool_result (res1, index 4).
+		const assistantEntry = JSON.parse(result[2])
+		expect(assistantEntry.traceIds).toEqual(["trace-through-tool"])
+		// tool_result should NOT have trace IDs.
+		expect(JSON.parse(result[4]).traceIds).toBeUndefined()
+		// trace_ids entry is preserved.
+		expect(JSON.parse(result[5]).customType).toBe("trace_ids")
+	})
+
 	it("deduplicates when multiple trace_ids entries target the same parent", () => {
 		const lines = [
 			JSON.stringify({ type: "session", version: 3, id: "s1", cwd: "/local" }),
