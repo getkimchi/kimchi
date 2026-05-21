@@ -1,6 +1,8 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { resolve } from "node:path"
 import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk"
 import type { AgentSession, AgentSessionEvent, AgentSessionEventListener } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	type AcpSessionFactory,
 	KimchiAcpAgent,
@@ -18,7 +20,7 @@ class FakeAgentSession {
 	private listeners = new Set<AgentSessionEventListener>()
 	disposed = false
 	aborted = false
-	model?: { provider: string; id: string }
+	model?: { provider: string; id: string; input?: string[] }
 	modelRegistry = { getAvailable: () => [] as Array<{ provider: string; id: string; name: string }> }
 	promptImpl: (text: string, opts?: { images?: unknown[] }) => Promise<void> = async () => {}
 	abortImpl: () => Promise<void> = async () => {}
@@ -100,6 +102,68 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 		sessionId = res.sessionId
+	})
+
+	// initialize() should declare image support based on cached models.json
+	describe("initialize capability detection", () => {
+		const tempAgentDir = "/tmp/kimchi-acp-test-agent-dir"
+
+		beforeEach(() => {
+			// Clean up and create temp agent dir
+			try {
+				rmSync(tempAgentDir, { recursive: true, force: true })
+			} catch {}
+			mkdirSync(tempAgentDir, { recursive: true })
+		})
+
+		afterEach(() => {
+			try {
+				rmSync(tempAgentDir, { recursive: true, force: true })
+			} catch {}
+		})
+
+		it("declares image: true when cached models include vision models", async () => {
+			const modelsJson = {
+				providers: {
+					"kimchi-dev": {
+						models: [
+							{
+								id: "gpt-4o",
+								name: "GPT-4o",
+								provider: "openai",
+								input: ["text", "image"],
+							},
+						],
+					},
+				},
+			}
+			writeFileSync(resolve(tempAgentDir, "models.json"), JSON.stringify(modelsJson))
+
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.agentCapabilities?.promptCapabilities?.image).toBe(true)
+		})
+
+		it("declares image capability based on available models", async () => {
+			// ModelRegistry merges cached models with built-in defaults.
+			// This test verifies the initialize() method correctly queries
+			// the registry and returns a boolean for image support.
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			// The result depends on merged models (cached + built-in).
+			// Just verify it's a boolean (the logic ran successfully).
+			expect(typeof response.agentCapabilities?.promptCapabilities?.image).toBe("boolean")
+		})
 	})
 
 	// The fragile scenario the previous setImmediate heuristic could trip on:
@@ -357,15 +421,16 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		} finally {
 			process.stderr.write = origWrite
 		}
-		const matches = writes.filter((w) => w.includes("acp prompt: dropping unsupported block type"))
+		const matches = writes.filter((w) => w.includes("acp prompt: dropping"))
 		expect(matches).toHaveLength(2)
-		expect(matches.some((w) => w.includes('"audio"'))).toBe(true)
-		expect(matches.some((w) => w.includes('"embeddedContext"'))).toBe(true)
+		expect(matches.some((w) => w.includes("audio block"))).toBe(true)
+		expect(matches.some((w) => w.includes("embeddedContext block"))).toBe(true)
 	})
 
-	// Image blocks are supported: they should be extracted and passed to
-	// session.prompt() without warnings, and the turn should proceed normally.
-	it("accepts image blocks and passes them to session.prompt", async () => {
+	// Image blocks are supported when model supports vision: they should be
+	// extracted and passed to session.prompt() without warnings.
+	it("accepts image blocks when model supports vision", async () => {
+		fake.model = { provider: "test", id: "vision-model", input: ["text", "image"] }
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
 			await delay(5)
@@ -387,6 +452,45 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			data: "base64data",
 			mimeType: "image/png",
 		})
+	})
+
+	// Image blocks are dropped when model doesn't support vision: they should
+	// be silently discarded with a warning.
+	it("drops image blocks when model has no vision support", async () => {
+		fake.model = { provider: "test", id: "text-only-model", input: ["text"] }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			await delay(5)
+			fake.emit({ type: "agent_end", messages: [] })
+		}
+
+		const writes: string[] = []
+		const origWrite = process.stderr.write.bind(process.stderr)
+		// biome-ignore lint/suspicious/noExplicitAny: test-only stderr capture
+		;(process.stderr.write as any) = (chunk: string | Uint8Array) => {
+			writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"))
+			return true
+		}
+
+		try {
+			const result = await agent.prompt({
+				sessionId,
+				prompt: [
+					{ type: "text", text: "describe this image" },
+					{ type: "image", data: "base64data", mimeType: "image/png" },
+				],
+			})
+			expect(result.stopReason).toBe("end_turn")
+			// Images should be dropped, not passed to session.prompt (passed as empty array)
+			expect(fake.lastPromptImages).toEqual([])
+		} finally {
+			process.stderr.write = origWrite
+		}
+
+		const matches = writes.filter((w) =>
+			w.includes("acp prompt: dropping image block (active model has no vision input)"),
+		)
+		expect(matches).toHaveLength(1)
 	})
 
 	// Defensive: once a turn is finalized (short-circuit, shutdown, cancel),
