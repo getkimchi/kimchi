@@ -11,7 +11,7 @@ import { formatFermentFooterDisplay } from "../extensions/ferment/footer-status.
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatCount } from "../extensions/format.js"
 import { getCurrentPermissionsMode } from "../extensions/permissions/index.js"
-import { getMultiModelEnabled } from "../extensions/prompt-construction/prompt-enrichment.js"
+import { MULTI_MODEL_SHORTCUT, getMultiModelEnabled } from "../extensions/prompt-construction/prompt-enrichment.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
@@ -193,7 +193,7 @@ export function buildContextCompact(ctx: CompactionContext, percent: number, pct
 /** Compact form for multi-model: replaces "multi-model:" with "m-m:". */
 export function buildMultiModelAbbrev(ctx: CompactionContext, enabled: boolean): Segment {
 	const label = enabled ? ctx.accent("on") : ctx.dim("off")
-	const shortcut = process.platform === "darwin" ? "option+tab" : "alt+tab"
+	const shortcut = MULTI_MODEL_SHORTCUT
 	const text = `${ctx.dim("m-m:")} ${label} ${ctx.dim(`→ ${shortcut}`)}`
 	return {
 		id: "multi-model",
@@ -446,7 +446,7 @@ export class StatsFooter implements Component {
 	private multiModelSegment(): Segment {
 		const enabled = getMultiModelEnabled()
 		const label = enabled ? this.accent("on") : this.dim("off")
-		const shortcut = process.platform === "darwin" ? "option+tab" : "alt+tab"
+		const shortcut = MULTI_MODEL_SHORTCUT
 		const text = `${this.dim("multi-model:")} ${label} ${this.dim(`→ ${shortcut}`)}`
 		return { id: "multi-model", text, width: visibleWidth(text), raw: { kind: "multi-model", enabled } }
 	}
