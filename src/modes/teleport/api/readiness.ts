@@ -105,7 +105,10 @@ export async function waitForSessionReady(options: WaitForSessionReadyOptions): 
 	const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
 	const probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS
 	const wsPath = options.wsPath ?? DEFAULT_WS_PATH
-	const WS = options._WebSocket ?? WebSocket
+	const WS = "_WebSocket" in options ? options._WebSocket : WebSocket
+	if (!WS) {
+		throw new RemoteNetworkError("WebSocket is not available in this environment")
+	}
 
 	const startedAt = Date.now()
 	let lastError: string | undefined

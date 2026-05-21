@@ -800,17 +800,13 @@ describe("waitForSessionReady (WS probe)", () => {
 	})
 
 	it("throws when no WebSocket implementation is available", async () => {
-		const orig = (globalThis as { WebSocket?: unknown }).WebSocket
-		try {
-			;(globalThis as { WebSocket?: unknown }).WebSocket = undefined
-			await expect(
-				waitForSessionReady({
-					wsUrl: "wss://h.example.com/",
-					connectToken: "tok",
-				}),
-			).rejects.toThrow(/WebSocket is not available/)
-		} finally {
-			;(globalThis as { WebSocket?: unknown }).WebSocket = orig
-		}
+		await expect(
+			waitForSessionReady({
+				wsUrl: "wss://h.example.com/",
+				connectToken: "tok",
+				// biome-ignore lint/suspicious/noExplicitAny: simulate missing WebSocket
+				_WebSocket: undefined as any,
+			}),
+		).rejects.toThrow(/WebSocket is not available/)
 	})
 })
