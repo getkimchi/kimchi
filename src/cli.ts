@@ -21,10 +21,8 @@ import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
-import curatorExtension from "./extensions/curator/index.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
-import improveExtension from "./extensions/improve/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import loginExtension from "./extensions/login/index.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
@@ -335,8 +333,6 @@ try {
 			webFetchExtension,
 			webSearchExtension,
 			loginExtension,
-			improveExtension,
-			curatorExtension,
 			modelSwitchExtension,
 			modelGuardExtension,
 			stripImagesExtension,
