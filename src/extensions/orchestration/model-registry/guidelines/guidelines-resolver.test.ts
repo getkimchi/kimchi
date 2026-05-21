@@ -94,10 +94,9 @@ describe("orchestration guideline resolution", () => {
 		expect(result).toContain("tool-call reliability")
 	})
 
-	it("returns composed orchestration guideline for claude-opus-4-7", () => {
-		const result = resolveOrchestrationGuideline("claude-opus-4-7", registry)
-		expect(result).toContain("Claude family")
-		expect(result).toContain("delegation granularity")
+	it("returns empty string for ignored model claude-opus-4-6", () => {
+		const result = resolveOrchestrationGuideline("claude-opus-4-6", registry)
+		expect(result).toBe("")
 	})
 
 	it("returns composed orchestration guideline for nemotron-3-super-fp4", () => {
