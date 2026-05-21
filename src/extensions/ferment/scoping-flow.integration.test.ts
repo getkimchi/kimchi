@@ -134,7 +134,13 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 		expect(contentText).toContain("I want to add Google OAuth")
 		expect(contentText).toContain(`ferment_id "${ferment.id}"`)
 		expect(contentText).toContain("Do NOT call create_ferment")
-		expect(contentText).toContain("Discovery sequence:")
+		expect(contentText).toContain('<phase_0_inventory required="true"')
+		expect(contentText).toContain(
+			"First response action: print a concise inventory of all available skills and subagent types",
+		)
+		expect(contentText).toContain("if skills are not exposed in this environment, say that explicitly")
+		expect(contentText).toContain("Agent tool subagent_type options")
+		expect(contentText).toContain('<discovery_sequence required="true">')
 		expect(contentText).toContain(
 			"For broad improvement/audit/planning requests over an existing codebase, even when the user asks with a simple prompt",
 		)

@@ -193,6 +193,10 @@ describe("buildFermentPromptBlock", () => {
 				'for "Create a TODO app", do not ask tech stack, persistence, platform, or extra-feature questions',
 			)
 			expect(out).toContain("If all recommended answers are generic defaults, emit `questions: []`")
+			expect(out).toContain('<phase_0_inventory required="true"')
+			expect(out).toContain("First response action: print a concise list of all available skills and subagent types")
+			expect(out).toContain("if skills are not exposed in this environment, say that explicitly")
+			expect(out).toContain("Do not start direct reads, Explore agents, or scoping synthesis")
 			expect(out).toContain("recommended: true")
 			expect(out).toContain("Scoping questions render as single-select choices")
 			expect(out).toContain("outcome boundary")

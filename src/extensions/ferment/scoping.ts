@@ -28,15 +28,23 @@ import type { FermentUiContext } from "./ui.js"
 const STATUS_KEY = "ferment-scoping"
 const SCOPING_EXPLORE_TOKEN_BUDGET = 120_000
 
-const SCOPING_DISCOVERY_GUIDANCE = `Discovery sequence:
+const SCOPING_DISCOVERY_GUIDANCE = `<phase_0_inventory required="true" before="any filesystem read, list, grep, bash, or codebase discovery">
+First response action: print a concise inventory of all available skills and subagent types so the user can see what delegation surface exists.
+Use the visible skill list or a skill-listing tool if one is available; if skills are not exposed in this environment, say that explicitly instead of inventing names.
+For subagents, inspect the Agent tool subagent_type options or the available-subagent prompt section.
+Do not call List, Read, Grep, Bash, or any codebase discovery tool before this inventory is printed.
+</phase_0_inventory>
+
+<discovery_sequence required="true">
 For broad improvement/audit/planning requests over an existing codebase, even when the user asks with a simple prompt:
 1. Do a small direct scan only to identify the project shape. This means file listing plus concise manifest/README/package/config reads and, if needed, short entrypoint snippets. Do not read large source files end-to-end before the delegation checkpoint.
 2. Spawn 1-4 narrow Explore subagents for independent areas that could change the recommendations. One Explore subagent is valid when there is only one broad unknown; use 2-4 only when there are genuinely independent areas.
 3. Wait for their results.
 4. Synthesize findings before calling propose_ferment_scoping.
+</discovery_sequence>
 
 Explore subagent contract:
-- subagent_type: "Explore" (if not availble use most fitting one)
+- subagent_type: "Explore" (if not available, use the closest fitting subagent type)
 - start with token_budget: ${SCOPING_EXPLORE_TOKEN_BUDGET}; increase only if the user explicitly asks or the missing fact is genuinely plan-blocking
 - run_in_background: true when multiple independent unknowns exist
 - Prefer several narrow Explore probes over one broad "understand the whole project" scan.
@@ -50,7 +58,8 @@ Good Explore areas:
 - repo-specific architecture patterns
 
 Direct-read boundary:
-Use direct reads for narrow facts; use Explore for broader areas that could change the plan.
+Use direct reads for narrow facts and short snippets only; use Explore for broader areas that could change the plan.
+Forbidden pattern: reading popup.js, popup.css, background.js, or similarly large files end-to-end before the delegation checkpoint, then claiming direct analysis was sufficient.
 
 Skip rule:
 Do not skip this checkpoint just because the direct scan feels sufficient. Skip only when the task is simple/greenfield or the user explicitly asks not to delegate; record that reason in assumptions.`

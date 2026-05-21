@@ -108,7 +108,13 @@ describe("runScopingFlow", () => {
 		expect(text).toContain("I want to build a login system")
 		expect(text).toContain(`ferment_id "${ferment.id}"`)
 		expect(text).toContain("Do NOT call create_ferment")
-		expect(text).toContain("Discovery sequence:")
+		expect(text).toContain('<phase_0_inventory required="true"')
+		expect(text).toContain(
+			"First response action: print a concise inventory of all available skills and subagent types",
+		)
+		expect(text).toContain("if skills are not exposed in this environment, say that explicitly")
+		expect(text).toContain("Agent tool subagent_type options")
+		expect(text).toContain('<discovery_sequence required="true">')
 		expect(text).toContain(
 			"For broad improvement/audit/planning requests over an existing codebase, even when the user asks with a simple prompt",
 		)
@@ -123,7 +129,8 @@ describe("runScopingFlow", () => {
 		expect(text).toContain("increase only if the user explicitly asks or the missing fact is genuinely plan-blocking")
 		expect(text).toContain("run_in_background: true")
 		expect(text).toContain("Direct-read boundary:")
-		expect(text).toContain("Use direct reads for narrow facts")
+		expect(text).toContain("Use direct reads for narrow facts and short snippets only")
+		expect(text).toContain("Forbidden pattern: reading popup.js, popup.css, background.js")
 		expect(text).toContain("use Explore for broader areas that could change the plan")
 		expect(text).toContain("Skip rule:")
 		expect(text).toContain("Do not skip this checkpoint just because the direct scan feels sufficient")
