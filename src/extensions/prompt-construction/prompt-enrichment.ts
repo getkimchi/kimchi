@@ -254,7 +254,11 @@ export default function (skillPaths: string[]) {
 				if (multiModelEnabled && ctx.model?.id !== ORCHESTRATOR_MODEL_ID) {
 					const orchestratorModel = ctx.modelRegistry?.find("kimchi-dev", ORCHESTRATOR_MODEL_ID)
 					if (orchestratorModel) {
-						await pi.setModel(orchestratorModel)
+						try {
+							await pi.setModel(orchestratorModel)
+						} catch (err) {
+							console.warn("failed to force orchestrator model:", err)
+						}
 					}
 				}
 			})
