@@ -38,3 +38,6 @@ kimchi-session-*.html
 
 *.bun-build
 bin
+
+# LLM tools
+.codegraph/
