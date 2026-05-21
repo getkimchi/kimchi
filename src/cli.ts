@@ -234,6 +234,7 @@ try {
 	// the version using piConfig.name = "kimchi".
 	const dispatch = await dispatchSubcommand(process.argv.slice(2))
 	if (dispatch.kind === "handled") {
+		await Promise.allSettled(phPending)
 		process.exit(dispatch.exitCode)
 	}
 
@@ -470,6 +471,7 @@ try {
 		} else if (teleportMode) {
 			if (!apiKey) {
 				console.error("Error: --teleport requires an API key — run 'kimchi setup' first.")
+				await Promise.allSettled(phPending)
 				process.exit(1)
 			}
 
@@ -494,6 +496,7 @@ try {
 		process.exitCode = 130
 	} else {
 		console.error(err instanceof Error ? err.message : String(err))
+		await Promise.allSettled(phPending)
 		process.exit(1)
 	}
 }
