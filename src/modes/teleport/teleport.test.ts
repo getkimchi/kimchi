@@ -6,10 +6,10 @@ import type {
 	ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { RemoteAgentSession } from "../remote/remote-agent-session.js"
-import type { RemoteSessionSummary } from "../remote/types.js"
-import { RemoteAuthError } from "../remote/types.js"
-import { TeleportableAgentSession } from "./teleportable-agent-session.js"
+import { RemoteAuthError } from "./api/types.js"
+import type { RemoteAgentSession } from "./proxy/agent-session.js"
+import { TeleportableAgentSession } from "./proxy/teleportable-session.js"
+import type { RemoteSessionSummary } from "./types.js"
 
 type ExecAsyncImpl = (cmd: string, opts?: unknown) => Promise<{ stdout: string; stderr: string }>
 
@@ -32,16 +32,25 @@ const { execAsyncMock, execMock, authMock, listMock, getMeMock, buildMock, rsync
 })
 
 vi.mock("node:child_process", () => ({ exec: execMock }))
-vi.mock("../remote/auth.js", () => ({
+vi.mock("./api/index.js", () => ({
 	authenticateRemoteSession: authMock,
 	listRemoteSessions: listMock,
 	getMe: getMeMock,
 	waitForSessionReady: waitMock,
+	RemoteAuthError: class RemoteAuthError extends Error {
+		constructor(
+			message: string,
+			public readonly statusCode: number,
+		) {
+			super(message)
+			this.name = "RemoteAuthError"
+		}
+	},
 }))
-vi.mock("../remote/build-remote-session.js", () => ({
+vi.mock("./proxy/builder.js", () => ({
 	buildRemoteAgentSession: buildMock,
 }))
-vi.mock("./rsync-transport.js", () => ({
+vi.mock("./sync/rsync.js", () => ({
 	runRsync: rsyncMock,
 	BASE_EXCLUDE_GLOBS: [],
 	RsyncError: class RsyncError extends Error {
@@ -65,7 +74,7 @@ import {
 	runDetach,
 	runListSessions,
 	runTeleport,
-} from "./teleport.js"
+} from "./commands/index.js"
 
 class FakeSession {
 	readonly sessionId: string
@@ -138,9 +147,11 @@ function makeUI() {
 		setHeader: vi.fn(),
 		setEditorText: vi.fn(),
 		onTerminalInput: vi.fn(() => vi.fn()),
+		custom: vi.fn(async () => undefined),
 	} as unknown as ExtensionUIContext & {
 		notify: ReturnType<typeof vi.fn>
 		setStatus: ReturnType<typeof vi.fn>
+		custom: ReturnType<typeof vi.fn>
 	}
 }
 
@@ -824,16 +835,26 @@ describe("runListSessions", () => {
 
 		await runListSessions(ctx)
 		expect(listMock).toHaveBeenCalledOnce()
-		const tableCall = ui.notify.mock.calls.find(
-			(c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("LAST ACTIVITY"),
-		)
-		expect(tableCall).toBeDefined()
-		const out = tableCall?.[0] as string
-		expect(out).toContain("fg-id")
-		expect(out).toContain("det-id")
-		expect(out).toContain("srvr1234")
+		expect(ui.custom).toHaveBeenCalledOnce()
+
+		// Invoke the factory to verify rendered content
+		const factory = ui.custom.mock.calls[0][0] as (
+			tui: unknown,
+			theme: unknown,
+			keybindings: unknown,
+			done: (r: unknown) => void,
+		) => { render(w: number): string[] }
+		let captured: unknown
+		const mockTui = { requestRender: vi.fn(), terminal: { rows: 40, cols: 120 } }
+		const panel = factory(mockTui, {}, {}, (r) => {
+			captured = r
+		})
+		const lines = panel.render(120).join("\n")
+		expect(lines).toContain("fg-id")
+		expect(lines).toContain("det-id")
+		expect(lines).toContain("srvr1234")
 		// fg-id appears exactly once (no duplicate from server list)
-		expect((out.match(/fg-id/g) ?? []).length).toBe(1)
+		expect((lines.match(/fg-id/g) ?? []).length).toBe(1)
 	})
 
 	it("falls back to local state when listRemoteSessions fails", async () => {
@@ -846,11 +867,19 @@ describe("runListSessions", () => {
 
 		await runListSessions(ctx)
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Could not fetch server sessions/), "warning")
-		const tableCall = ui.notify.mock.calls.find(
-			(c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("LAST ACTIVITY"),
-		)
-		expect(tableCall).toBeDefined()
-		expect(tableCall?.[0] as string).toContain("fg-id")
+		expect(ui.custom).toHaveBeenCalledOnce()
+
+		// Invoke the factory to verify rendered content
+		const factory = ui.custom.mock.calls[0][0] as (
+			tui: unknown,
+			theme: unknown,
+			keybindings: unknown,
+			done: (r: unknown) => void,
+		) => { render(w: number): string[] }
+		const mockTui = { requestRender: vi.fn(), terminal: { rows: 40, cols: 120 } }
+		const panel = factory(mockTui, {}, {}, vi.fn())
+		const lines = panel.render(120).join("\n")
+		expect(lines).toContain("fg-id")
 	})
 
 	it("calls getMe and forwards id as creatorId to listRemoteSessions", async () => {
