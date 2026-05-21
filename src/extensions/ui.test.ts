@@ -166,4 +166,23 @@ describe("findNextCompatibleModel", () => {
 		const result = findNextCompatibleModel(models, 1, null, false)
 		expect(result.model).toBe(models[0])
 	})
+
+	it("orchestration entry is never skipped by context or vision checks", () => {
+		const visionModel = makeModel("current-vision", 100_000, ["text", "image"])
+		const orchestrationEntry = {
+			id: "orchestration",
+			provider: "orchestration",
+			name: "orchestration",
+			contextWindow: Number.MAX_SAFE_INTEGER,
+			input: ["text", "image"],
+			output: ["text"],
+		} as import("@earendil-works/pi-ai").Model<import("@earendil-works/pi-ai").Api>
+		const models = [visionModel, orchestrationEntry]
+
+		// High token count would skip contextWindow=0; images+vision would skip non-vision entries.
+		// Orchestration must survive both checks.
+		const result = findNextCompatibleModel(models, 0, 500_000, true, visionModel)
+		expect(result.model).toBe(orchestrationEntry)
+		expect(result.skipped).toHaveLength(0)
+	})
 })

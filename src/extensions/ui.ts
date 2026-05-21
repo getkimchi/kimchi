@@ -21,7 +21,6 @@ import { sessionHasImages } from "./model-guard.js"
 import { splitModelRef } from "./orchestration/model-roles.js"
 import {
 	getMultiModelEnabled,
-	getOrchestratorModelId,
 	getOrchestratorModelRef,
 	setMultiModelEnabled,
 } from "./prompt-construction/prompt-enrichment.js"
@@ -274,7 +273,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 				if (ferment) parts.push(ferment.text)
 				const perm = footerData.getExtensionStatuses().get("permissions-mode")
 				if (perm) parts.push(perm)
-				const modelId = getMultiModelEnabled() ? `multi-model (${getOrchestratorModelId()})` : (ctx.model?.id ?? "n/a")
+				const modelId = getMultiModelEnabled() ? "orchestration" : (ctx.model?.id ?? "n/a")
 				parts.push(`${resolvedAccentFg(theme)}${modelId}${RST_FG} ${theme.fg("dim", "→ ctrl+p")}`)
 				return parts.join(` ${theme.fg("dim", "·")} `)
 			}
@@ -407,7 +406,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 		// Register a global terminal input listener so ctrl+p (model cycle forward)
 		// works even when a permission prompt or other dialog has focus.
-		// The cycle includes a virtual "multi-model" entry after the last real model.
+		// Wrapping past the last real model enters orchestration mode.
 		if (unsubModelCycleInput) unsubModelCycleInput()
 		if (ctx.hasUI) {
 			unsubModelCycleInput = ctx.ui.onTerminalInput((data) => {
@@ -425,9 +424,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 					if (!isKeyRelease(data)) {
 						const allAvailable = ctx.modelRegistry.getAvailable()
 						const enabledIds = getEnabledModelIds()
-						const available = enabledIds
+						const concrete = enabledIds
 							? allAvailable.filter((m) => enabledIds.has(`${m.provider}/${m.id}`))
 							: allAvailable
+
 						const current = ctx.model
 						const orchRef = getOrchestratorModelRef()
 						const orchParsed = splitModelRef(orchRef)
@@ -435,16 +435,13 @@ export default function uiExtension(pi: ExtensionAPI) {
 							? ctx.modelRegistry.find(orchParsed.provider, orchParsed.modelId)
 							: undefined
 
-						// Cycle order: model[0] → ... → model[last] → multi-model → model[0]
-						// kimi-k2.6 appears as a regular model AND multi-model appears
-						// as a separate virtual entry right after the last real model.
 						if (getMultiModelEnabled()) {
-							// Currently on the virtual multi-model entry — wrap to first real model
-							if (available.length > 0) {
+							// In orchestration mode — wrap back to first real model
+							if (concrete.length > 0) {
 								const usage = ctx.getContextUsage()
 								const { model: firstReal } = findNextCompatibleModel(
-									available,
-									available.length - 1,
+									concrete,
+									concrete.length - 1,
 									usage?.tokens ?? null,
 									sessionHasImages(),
 									current ?? undefined,
@@ -459,29 +456,29 @@ export default function uiExtension(pi: ExtensionAPI) {
 									})
 								}
 							}
-						} else if (available.length > 0 && current) {
-							let idx = available.findIndex((m) => modelsAreEqual(m, current))
+						} else if (concrete.length > 0 && current) {
+							let idx = concrete.findIndex((m) => modelsAreEqual(m, current))
 							if (idx === -1) idx = 0
 
 							const usage = ctx.getContextUsage()
 							const { model: next, skipped } = findNextCompatibleModel(
-								available,
+								concrete,
 								idx,
 								usage?.tokens ?? null,
 								sessionHasImages(),
 								current,
 							)
 
-							const nextIdx = next ? available.findIndex((m) => modelsAreEqual(m, next)) : -1
+							const nextIdx = next ? concrete.findIndex((m) => modelsAreEqual(m, next)) : -1
 							const wouldWrap = next === undefined || nextIdx <= idx
 
-							if (wouldWrap && orchestratorModel) {
-								// Reached end of real models — enter multi-model
+							if (wouldWrap) {
+								// Reached end of real models — enter orchestration mode
 								setMultiModelEnabled(true)
-								if (!modelsAreEqual(current, orchestratorModel)) {
+								if (orchestratorModel && !modelsAreEqual(current, orchestratorModel)) {
 									pi.setModel(orchestratorModel).catch((err) => {
 										ctx.ui.notify(
-											`Failed to switch to multi-model: ${err instanceof Error ? err.message : String(err)}`,
+											`Failed to switch to orchestration: ${err instanceof Error ? err.message : String(err)}`,
 											"warning",
 										)
 									})

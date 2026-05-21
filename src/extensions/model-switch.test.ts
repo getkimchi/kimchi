@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import createModelGuardExtension from "./model-guard.js"
 import { __resetImagesDetectedForTest, sessionHasImages } from "./model-guard.js"
 import modelSwitchExtension, { __resetModelSwitchStateForTest, getModelTier } from "./model-switch.js"
-import { getMultiModelEnabled, setMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
+import * as enrichment from "./prompt-construction/prompt-enrichment.js"
 
 type RegisteredTool = {
 	name: string
@@ -72,7 +72,7 @@ function createHarness(options: { setModelResult?: boolean } = {}): Harness {
 
 	const exec: Harness["exec"] = (model, opts = {}) => {
 		const ctx = opts.omitRegistry
-			? { getContextUsage: () => undefined, model: undefined }
+			? { getContextUsage: () => undefined, model: undefined, setModel: vi.fn() }
 			: {
 					modelRegistry: { find, getAvailable },
 					getContextUsage: () => undefined,
@@ -83,6 +83,7 @@ function createHarness(options: { setModelResult?: boolean } = {}): Harness {
 								input: opts.currentModel.input ?? ["text", "image"],
 							}
 						: { id: MODELS[0].id, provider: MODELS[0].provider, input: ["text", "image"] },
+					setModel: vi.fn(),
 				}
 		return tool.execute("test-call-id", { model }, undefined, undefined, ctx)
 	}
@@ -132,6 +133,17 @@ describe("modelSwitchExtension", () => {
 		expect(tool.description).toContain("provider/id format")
 		expect(tool.description).toContain("pi.setModel")
 		expect(tool.parameters).toBeDefined()
+	})
+
+	it('enables orchestration mode when model is "orchestration"', async () => {
+		const { setModel, exec } = createHarness()
+		const setSpy = vi.spyOn(enrichment, "setMultiModelEnabled")
+		vi.spyOn(enrichment, "getOrchestratorModelRef").mockReturnValue("kimchi-dev/kimi-k2.6")
+		vi.spyOn(enrichment, "getOrchestratorModelId").mockReturnValue("kimi-k2.6")
+		const result = await exec("orchestration")
+		expect(setSpy).toHaveBeenCalledWith(true)
+		expect(setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "kimi-k2.6", provider: "kimchi-dev" }))
+		expect(textOf(result)).toContain("orchestration mode")
 	})
 
 	describe("input validation", () => {
@@ -742,7 +754,7 @@ describe("modelSwitchExtension", () => {
 			const { pi, trigger } = createHarnessWithTrigger()
 			modelSwitchExtension(pi)
 
-			setMultiModelEnabled(true)
+			enrichment.setMultiModelEnabled(true)
 			;(process as NodeJS.Process & { __kimchiMultiModelEnabled?: boolean }).__kimchiMultiModelEnabled = false
 
 			await trigger(
@@ -756,7 +768,7 @@ describe("modelSwitchExtension", () => {
 				mockCtx({ tokens: 10_000 }),
 			)
 
-			expect(getMultiModelEnabled()).toBe(false)
+			expect(enrichment.getMultiModelEnabled()).toBe(false)
 		})
 	})
 })

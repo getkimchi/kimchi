@@ -57,31 +57,27 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const { model } = params
 
-			if (model === "multi-model") {
+			// Special case: "orchestration" enters multi-model orchestration mode
+			if (model === "orchestration") {
 				const orchRef = getOrchestratorModelRef()
 				const orchId = getOrchestratorModelId()
 				const parsed = splitModelRef(orchRef)
 				const orchestrator = parsed ? ctx.modelRegistry?.find(parsed.provider, parsed.modelId) : undefined
-				if (!orchestrator) {
+				setMultiModelEnabled(true)
+				if (orchestrator) {
+					suppressModelSelectGuard = true
+					try {
+						await pi.setModel(orchestrator)
+					} finally {
+						suppressModelSelectGuard = false
+					}
 					return {
-						content: [{ type: "text" as const, text: `Multi-model orchestrator (${orchRef}) is not available.` }],
+						content: [{ type: "text" as const, text: `Switched to orchestration mode (model: ${orchId})` }],
 						details: null,
 					}
 				}
-				setMultiModelEnabled(true)
-				suppressModelSelectGuard = true
-				try {
-					await pi.setModel(orchestrator)
-				} finally {
-					suppressModelSelectGuard = false
-				}
 				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Switched to multi-model mode (orchestrator: ${orchId})`,
-						},
-					],
+					content: [{ type: "text" as const, text: "Switched to orchestration mode" }],
 					details: null,
 				}
 			}
@@ -97,7 +93,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text" as const,
-							text: `Invalid model format: "${model}". Expected "provider/modelId" or "multi-model".\n\nAvailable models:\nmulti-model\n${available.join("\n")}`,
+							text: `Invalid model format: "${model}". Expected "provider/modelId" or "orchestration".\n\nAvailable models:\norchestration\n${available.join("\n")}`,
 						},
 					],
 					details: null,
@@ -169,6 +165,9 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 					details: null,
 				}
 			}
+
+			// Selecting a concrete model exits orchestration mode
+			setMultiModelEnabled(false)
 
 			return {
 				content: [

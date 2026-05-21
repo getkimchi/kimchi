@@ -26,7 +26,6 @@ type SegmentId = "permissions" | "model" | "ferment" | "agents" | "context" | "u
  *  and the segment's tail is identical in both forms anyway. */
 type SegmentRaw =
 	| { kind: "context"; percent: number; pctColor?: "error" | "warning" }
-	| { kind: "model"; multiModel: boolean; modelId: string }
 	| { kind: "phase"; phase: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
 
@@ -180,18 +179,6 @@ export function buildContextCompact(ctx: CompactionContext, percent: number, pct
 	}
 }
 
-/** Compact form for model: abbreviates "multi-model (kimi-k2.6)" to "m-m (kimi-k2.6)". */
-export function buildModelAbbrev(ctx: CompactionContext, multiModel: boolean, modelId: string): Segment {
-	const label = multiModel ? `m-m (${modelId})` : modelId
-	const text = `${ctx.accent(label)} ${ctx.dim("→ ctrl+p")}`
-	return {
-		id: "model",
-		text,
-		width: visibleWidth(text),
-		raw: { kind: "model", multiModel, modelId },
-	}
-}
-
 /** Compact form for phase: drops the "phase:" prefix, keeps just the value. */
 export function buildPhaseCompact(ctx: CompactionContext, phase: string): Segment {
 	const text = ctx.accent(phase)
@@ -274,13 +261,8 @@ const STEPS: CompactionStep[] = [
 			recompactSegment(segs, "context", "context", (raw) => buildContextCompact(ctx, raw.percent, raw.pctColor)),
 	},
 	{
-		name: "abbrev-model-label",
-		apply: (segs, ctx) =>
-			recompactSegment(segs, "model", "model", (raw) => buildModelAbbrev(ctx, raw.multiModel, raw.modelId)),
-	},
-	{
 		name: "drop-shortcut-hints",
-		apply: (segs) => stripShortcutHintsAcross(segs, ["permissions", "model", "ferment"]),
+		apply: (segs) => stripShortcutHintsAcross(segs, ["permissions", "ferment", "model"]),
 	},
 	{
 		name: "drop-phase-prefix",
@@ -365,11 +347,11 @@ export class StatsFooter implements Component {
 	}
 
 	private modelSegment(): Segment {
-		const multiModel = getMultiModelEnabled()
-		const rawModelId = this.ctx.model?.id ?? "n/a"
-		const label = multiModel ? `multi-model (${rawModelId})` : rawModelId
-		const text = `${this.accent(label)} ${this.dim("→ ctrl+p")}`
-		return { id: "model", text, width: visibleWidth(text), raw: { kind: "model", multiModel, modelId: rawModelId } }
+		const orchestrated = getMultiModelEnabled()
+		const label = orchestrated
+			? `${this.accent("orchestration")} ${this.dim("→ ctrl+p")}`
+			: `${this.accent(this.ctx.model?.id ?? "n/a")} ${this.dim("→ ctrl+p")}`
+		return { id: "model", text: label, width: visibleWidth(label) }
 	}
 
 	private usageSegment(): Segment | null {
