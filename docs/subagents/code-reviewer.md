@@ -4,7 +4,7 @@ display_name: Code Reviewer
 tools: read, grep, find, ls, bash
 disallowed_tools: write, edit, web_fetch
 models:
-  - kimchi-dev/claude-opus-4-7
+  - kimchi-dev/claude-opus-4-6
   - kimchi-dev/kimi-k2.6
 strengths:
   - review

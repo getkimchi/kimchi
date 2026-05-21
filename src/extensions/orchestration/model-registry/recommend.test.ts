@@ -26,7 +26,7 @@ describe("recommendModel", () => {
 	})
 
 	it("respects vision filter — excludes non-vision models", () => {
-		// research + vision: kimi-k2.6, kimi-k2.5, claude-opus-4-7 have research with vision
+		// research + vision: kimi-k2.6 has research with vision
 		const result = recommendModel({ strengths: ["research"], needsVision: true })
 		expect(result).toBeDefined()
 		expect(result?.capabilities.vision).toBe(true)
@@ -38,13 +38,13 @@ describe("recommendModel", () => {
 		expect(result).toBeUndefined()
 	})
 
-	it("multi-strength filter: plan + review have overlapping heavy models", () => {
-		// kimi-k2.6 has both plan and review, tier heavy
-		const result = recommendModel({ strengths: ["plan", "review"], preferTier: "heavy" })
+	it("multi-strength filter: explore + research have overlapping light models", () => {
+		// nemotron-3-super-fp4 has both explore and research, tier light
+		const result = recommendModel({ strengths: ["explore", "research"], preferTier: "light" })
 		expect(result).toBeDefined()
-		expect(result?.capabilities.tier).toBe("heavy")
-		expect(result?.capabilities.strengths).toContain("plan")
-		expect(result?.capabilities.strengths).toContain("review")
+		expect(result?.capabilities.tier).toBe("light")
+		expect(result?.capabilities.strengths).toContain("explore")
+		expect(result?.capabilities.strengths).toContain("research")
 	})
 
 	it("ignored entries are excluded", () => {
@@ -54,16 +54,15 @@ describe("recommendModel", () => {
 	})
 
 	it("light tier preference returns the lightest model", () => {
-		// build + light → nemotron-3-super-fp4
-		const result = recommendModel({ strengths: ["build"], preferTier: "light" })
+		// explore + light → nemotron-3-super-fp4
+		const result = recommendModel({ strengths: ["explore"], preferTier: "light" })
 		expect(result).toBeDefined()
 		expect(result?.modelId).toBe("nemotron-3-super-fp4")
 		expect(result?.capabilities.tier).toBe("light")
 	})
 
 	it("returns first by registry insertion order when multiple match same tier", () => {
-		// plan + heavy: kimi-k2.6 and kimi-k2.5 and claude-opus-4-7 have plan at heavy tier.
-		// First by registry insertion order is kimi-k2.6.
+		// plan + heavy: kimi-k2.6 has plan at heavy tier.
 		const result = recommendModel({ strengths: ["plan"], preferTier: "heavy" })
 		expect(result).toBeDefined()
 		expect(result?.modelId).toBe("kimi-k2.6")

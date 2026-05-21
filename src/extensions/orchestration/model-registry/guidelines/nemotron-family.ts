@@ -38,6 +38,11 @@ export const NEMOTRON_3_SUPER_EXPLORE = `During **explore** phase (nemotron-3-su
 - Batch independent reads in a single turn to minimise round-trips.
 - Produce a concise summary of paths, key types, and integration points — not a transcript of everything you read.`
 
+/** Nemotron 3 Super research: leverage 1M context for long external docs and pages. */
+export const NEMOTRON_3_SUPER_RESEARCH = `During **research** phase (nemotron-3-super-fp4 specific):
+- Your 1M token context window lets you ingest entire documentation pages or long web resources in a single pass. Prefer \`web_fetch\` for long pages rather than skimming search snippets.
+- Produce a concise structured summary — extract the key facts, not a transcript.`
+
 /** Reserved: no Nemotron 3 Super-specific orchestration override identified yet. */
 export const NEMOTRON_3_SUPER_ORCHESTRATION = ""
 

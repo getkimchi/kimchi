@@ -24,8 +24,8 @@ const GLM: unknown = {
 	limits: { context_window: 202752, max_output_tokens: 202752 },
 }
 
-const OPUS_47: unknown = {
-	slug: "claude-opus-4-7",
+const SONNET_46: unknown = {
+	slug: "claude-sonnet-4-6",
 	display_name: "",
 	provider: "anthropic",
 	reasoning: true,
@@ -97,7 +97,7 @@ describe("updateModelsConfig", () => {
 	it("sets Anthropic compat flags for anthropic models", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
-			json: async () => ({ models: [OPUS_47] }),
+			json: async () => ({ models: [SONNET_46] }),
 		} as Response)
 
 		await updateModelsConfig(modelsJsonPath, "test-key")
@@ -124,7 +124,7 @@ describe("updateModelsConfig", () => {
 	it("puts AI-Enabler models first and preserves API order for others, all under kimchi-dev", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
-			json: async () => ({ models: [OPUS_46, GLM, OPUS_47, KIMI] }),
+			json: async () => ({ models: [OPUS_46, GLM, SONNET_46, KIMI] }),
 		} as Response)
 
 		await updateModelsConfig(modelsJsonPath, "test-key")
@@ -132,7 +132,7 @@ describe("updateModelsConfig", () => {
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
 		expect(Object.keys(config.providers)).toEqual(["kimchi-dev"])
 		const ids = config.providers["kimchi-dev"].models.map((m: { id: string }) => m.id)
-		expect(ids).toEqual(["glm-5-fp8", "kimi-k2.5", "claude-opus-4-6", "claude-opus-4-7"])
+		expect(ids).toEqual(["glm-5-fp8", "kimi-k2.5", "claude-opus-4-6", "claude-sonnet-4-6"])
 	})
 
 	it("uses correct URL, Authorization header, and timeout", async () => {
@@ -215,14 +215,14 @@ describe("updateModelsConfig", () => {
 		// Seed a successful fetch so the cache is populated.
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
-			json: async () => ({ models: [KIMI, OPUS_47] }),
+			json: async () => ({ models: [KIMI, SONNET_46] }),
 		} as Response)
 		await updateModelsConfig(modelsJsonPath, "test-key")
 		vi.mocked(fetch).mockRejectedValueOnce(new Error("network down"))
 
 		const result = await updateModelsConfig(modelsJsonPath, "test-key")
 
-		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5", "claude-opus-4-7"])
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5", "claude-sonnet-4-6"])
 	})
 
 	it("falls back to cached metadata when API returns empty list", async () => {

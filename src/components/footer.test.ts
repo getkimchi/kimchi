@@ -47,7 +47,7 @@ interface MockContextOpts {
 
 function createMockContext(opts?: MockContextOpts): ExtensionContext {
 	const percent = opts?.percent ?? 0
-	const modelId = opts?.modelId ?? "claude-opus-4-7"
+	const modelId = opts?.modelId ?? "claude-opus-4-6"
 	const entries = (opts?.assistantMessages ?? []).map((u) => ({
 		type: "message" as const,
 		message: { role: "assistant", usage: { input: u.input, output: u.output } },
@@ -222,7 +222,7 @@ describe("SHORTCUT_TAIL regex", () => {
 	})
 
 	it("does NOT match text that has no trailing arrow", () => {
-		const text = "claude-opus-4-7"
+		const text = "claude-opus-4-6"
 		expect(SHORTCUT_TAIL.test(text)).toBe(false)
 	})
 
@@ -273,7 +273,7 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		const { raw, visible } = renderAt(160)
 		expect(visible).toContain("\u25cf default \u2192 shift+tab")
 		expect(visible).toContain(`multi-model: on \u2192 ${ORCHESTRATION.MULTI_MODEL_SHORTCUT}`)
-		expect(visible).not.toContain("claude-opus-4-7")
+		expect(visible).not.toContain("claude-opus-4-6")
 		expect(visible).toContain("0% ctx")
 		expect(visible).toContain("phase:explore")
 		expect(visible).toContain("/ for commands")
@@ -293,7 +293,7 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		// All segments still present.
 		expect(visible).toContain("default")
 		expect(visible).toContain("multi-model")
-		expect(visible).not.toContain("claude-opus-4-7")
+		expect(visible).not.toContain("claude-opus-4-6")
 		expect(visible).toContain("0% ctx")
 		expect(visible).toContain("phase:explore")
 	})
@@ -310,7 +310,7 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		// phase value survives.
 		expect(visible).toContain("explore")
 		// Model segment is hidden in multi-model mode.
-		expect(visible).not.toContain("claude-opus-4-7")
+		expect(visible).not.toContain("claude-opus-4-6")
 	})
 
 	it("width 20: line is hard-truncated to fit, leftmost content survives", () => {

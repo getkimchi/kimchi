@@ -111,7 +111,7 @@ When Step 1 classified the task as **complex**, you MUST execute it as a phased 
 
 Pass plans and structured findings as Markdown files in the Documents directory, not as inline blobs in prompts.
 
-### Agent delegation rules
+### Orchestrate the work
 
 - Write Agent prompts that are fully self-contained. Agents start with fresh context by default — include necessary instructions directly, or point them to a Markdown file containing larger context.
 - When delegating \`plan\` before \`build\`, have the Plan agent write a Markdown spec file (full method signatures, file paths, interfaces) to the Documents directory. Pass that file path to the build Agent — it must not rediscover what was already decided.
