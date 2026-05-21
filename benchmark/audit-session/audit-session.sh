@@ -56,6 +56,22 @@ find_sessions_dir() {
     echo "$sessions_path"
 }
 
+extract_task_type() {
+    local file="$1"
+    local parent_dir
+    parent_dir="$(basename "$(dirname "$file")")"
+    # Known task names; longer prefixes first to avoid partial matches
+    local -a tasks=("complex-single" "simple" "complex" "research" "explore" "mega")
+    for task in "${tasks[@]}"; do
+        if [[ "$parent_dir" == "${task}-"* ]]; then
+            echo "$task"
+            return 0
+        fi
+    done
+    # Fallback: if nothing matched, return empty
+    echo ""
+}
+
 first_user_prompt() {
     local file="$1"
     local max_chars="${2:-80}"
@@ -198,7 +214,12 @@ case "$RUNNER" in
 esac
 
 MODEL_SLUG="$(echo "$EFFECTIVE_MODEL" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')"
-AUDIT_FILENAME="${SESSION_ID}-${RUNNER}-${MODEL_SLUG}-AUDIT.md"
+TASK_TYPE="$(extract_task_type "$SESSION_FILE")"
+if [[ -n "$TASK_TYPE" ]]; then
+    AUDIT_FILENAME="${SESSION_ID}-${TASK_TYPE}-${RUNNER}-${MODEL_SLUG}-AUDIT.md"
+else
+    AUDIT_FILENAME="${SESSION_ID}-${RUNNER}-${MODEL_SLUG}-AUDIT.md"
+fi
 
 echo "Auditing session: $SESSION_FILE"
 echo "Session ID: $SESSION_ID"
