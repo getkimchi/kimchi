@@ -15,7 +15,7 @@
 		"content": [{ "type": "text", "text": "OK — picking up from before the branch." }],
 		"api": "anthropic-messages",
 		"provider": "anthropic",
-		"model": "claude-opus-4-7",
+		"model": "claude-opus-4-6",
 		"usage": {
 			"input": 900,
 			"output": 25,

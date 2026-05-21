@@ -1,5 +1,5 @@
 /**
- * Ferment lifecycle tools: create, list, scope, update fields, complete.
+ * Ferment lifecycle tools: list, scope, update fields, complete.
  *
  * Tool handlers follow the pattern:
  *   1. Validate UI-flow gates (scoping confirmation, etc.) — host concern
@@ -17,9 +17,8 @@ import { pr_bold, pr_dim } from "../colors.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { validateGatesOrErr } from "../gate-validation.js"
-import { autoInitFromEnv, ensureGitRepo } from "../git-init.js"
 import { judgeJourneyGrade } from "../judge.js"
-import { appendRefEntry, resetReactiveContinuationNudgeCount } from "../nudge.js"
+import { resetReactiveContinuationNudgeCount } from "../nudge.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
 import { getPromptUi, promptForm, promptInput, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
@@ -36,13 +35,11 @@ import {
 import {
 	AskUserParams,
 	CompleteFermentParams,
-	CreateFermentParams,
 	ListParams,
 	ProposeScopingParams,
 	ScopeParams,
 	UpdateScopeFieldParams,
 } from "../tool-schemas.js"
-import { setActiveFermentState } from "../tool-scope.js"
 
 type ScopeArgs = Static<typeof ScopeParams>
 type ProposeScopingArgs = Static<typeof ProposeScopingParams>
@@ -605,31 +602,6 @@ export async function completeFerment(
 
 export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
-	pi.registerTool({
-		name: "create_ferment",
-		label: "Create Ferment",
-		description: "Create a new ferment at draft status. Use only when no ferment is already active.",
-		parameters: CreateFermentParams,
-		async execute(_, params) {
-			// Creation is special — no existing ferment to transition from.
-			// Storage's create() handles uuid generation and worktree capture.
-			// LLM-driven, so no interactive prompt; opt-in auto-init only.
-			await ensureGitRepo({
-				autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
-			})
-			const f = runtime.getStorage().create(params.name, params.description)
-			setActiveFermentState(runtime, f)
-			appendRefEntry(pi, f.id)
-			const branch = f.worktree.branch ?? "(no git)"
-			return toolOk(
-				withNextActionHint(
-					`Created "${f.name}".  Policy: ${runtime.getContinuationPolicy()}  •  Branch: ${branch}  •  Path: ${f.worktree.path}`,
-					f,
-				),
-			)
-		},
-	})
-
 	pi.registerTool({
 		name: "propose_ferment_scoping",
 		label: "Propose Scoping",

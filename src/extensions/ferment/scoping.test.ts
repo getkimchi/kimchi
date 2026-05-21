@@ -105,7 +105,6 @@ describe("runScopingFlow", () => {
 		const text = msg.content.map((c) => c.text).join("")
 		expect(text).toContain("I want to build a login system")
 		expect(text).toContain(`ferment_id "${ferment.id}"`)
-		expect(text).toContain("Do NOT call create_ferment")
 		expect(text).toContain("Call propose_ferment_scoping")
 	})
 

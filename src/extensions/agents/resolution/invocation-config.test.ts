@@ -59,14 +59,14 @@ describe("resolveAgentInvocationConfig — model fallback chain", () => {
 				skills: true,
 				systemPrompt: "",
 				promptMode: "replace",
-				models: ["kimchi-dev/claude-opus-4-7"],
+				models: ["kimchi-dev/claude-opus-4-6"],
 				modelLocked: true,
 			},
 			{ model: "kimchi-dev/nemotron-3-super-fp4" },
 		)
-		expect(result.modelInput).toBe("kimchi-dev/claude-opus-4-7")
+		expect(result.modelInput).toBe("kimchi-dev/claude-opus-4-6")
 		expect(result.modelFromParams).toBe(false)
-		expect(mockPickFromList).toHaveBeenCalledWith(["kimchi-dev/claude-opus-4-7"], "standard")
+		expect(mockPickFromList).toHaveBeenCalledWith(["kimchi-dev/claude-opus-4-6"], "standard")
 		expect(mockRecommend).not.toHaveBeenCalled()
 	})
 

@@ -115,21 +115,15 @@ Adding support for another coding agent (Cursor, Cline, Aider, Cody, ...) is a s
 
 The supported model list is fetched at startup from the kimchi metadata service.
 
-Use `/model` in the interactive CLI to switch between available models.
+Use `/model` or `ctrl+p` in the interactive CLI to switch between available models.
 
 ### Multi-model orchestration
 
-By default, kimchi runs in multi-model mode: the main agent classifies each task, executes what it can directly, and delegates the rest to specialised subagents picked from the available model roster.
+By default, kimchi runs in multi-model mode: the main agent classifies each task, executes what it can directly, and delegates the rest to specialised subagents picked from the available model roster. The footer shows `multi-model (kimi-k2.6)` when this mode is active.
 
-To disable orchestration and run as a single, direct coding assistant:
+To switch to single-model mode, use `ctrl+p` to cycle through models or open the `/model` picker and select a specific model. To re-enable multi-model, cycle with `ctrl+p` past the last model or select `multi-model` from the `/model` picker.
 
-```bash
-kimchi --multi-model=false
-```
-
-You can also toggle the mode at any time during a session with the **option/alt+tab** keyboard shortcut. The current state is shown in the footer (`multi-model: on` / `multi-model: off`).
-
-When multi-model is off the agent uses a single-model system prompt: environment, tools, research rules, guidelines, and phase tagging are all active, but task classification and delegation logic are disabled. The subagent tool is still available if you explicitly ask the agent to delegate a task.
+When using a single model the agent uses a single-model system prompt: environment, tools, research rules, guidelines, and phase tagging are all active, but task classification and delegation logic are disabled. The subagent tool is still available if you explicitly ask the agent to delegate a task.
 
 ### HTTP proxy
 

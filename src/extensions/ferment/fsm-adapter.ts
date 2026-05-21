@@ -29,9 +29,7 @@ import { publicToolNameForActionKind } from "./action-tool-names.js"
  * - PHASE_ACTIVE: ferment status is "running" and no step is currently running
  * - STEP_RUNNING: ferment status is "running" and a step IS currently running
  */
-export function computeFsmState(ferment: Ferment | undefined | null): FsmState {
-	if (!ferment) return FSM_STATES.IDLE
-
+export function computeFsmState(ferment: Ferment): FsmState {
 	const baseState = fermentStatusToFsmState(ferment.status)
 
 	// If not in PHASE_ACTIVE, just return the base state
@@ -48,10 +46,7 @@ export function computeFsmState(ferment: Ferment | undefined | null): FsmState {
 /**
  * Build an FSM context from a Ferment for transition validation.
  */
-export function buildFsmContext(f: Ferment | undefined | null): FermentFsmContext {
-	if (!f) {
-		return { fermentStatus: "draft", phases: [] }
-	}
+export function buildFsmContext(f: Ferment): FermentFsmContext {
 	return {
 		fermentStatus: f.status,
 		activePhaseId: f.activePhaseId,

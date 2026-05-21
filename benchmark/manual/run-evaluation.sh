@@ -145,8 +145,8 @@ done
 echo "=== Spawning iTerm2 tabs for audits ==="
 
 # Build expected output paths that match audit-session.sh naming.
-# audit-session.sh writes: <sessionId>-<runner>-<model_slug>-AUDIT.md
-# and its JSON sidecar:   <sessionId>-<runner>-<model_slug>-AUDIT.json
+# audit-session.sh writes: <sessionId>-<task>-<runner>-<model_slug>-AUDIT.md
+# and its JSON sidecar:   <sessionId>-<task>-<runner>-<model_slug>-AUDIT.json
 declare -A AUDIT_MD_FILES
 declare -A AUDIT_JSON_FILES
 for task in "${TASKS[@]}"; do
@@ -155,7 +155,7 @@ for task in "${TASKS[@]}"; do
   audit_runner="kimchi"
   audit_model="kimchi-dev/claude-opus-4-6"
   model_slug="$(echo "$audit_model" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')"
-  audit_name="${session_id}-${audit_runner}-${model_slug}-AUDIT"
+  audit_name="${session_id}-${task}-${audit_runner}-${model_slug}-AUDIT"
   AUDIT_MD_FILES["$task"]="${REPO_ROOT}/.kimchi/audits/${audit_name}.md"
   AUDIT_JSON_FILES["$task"]="${REPO_ROOT}/.kimchi/audits/${audit_name}.json"
 done

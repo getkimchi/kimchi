@@ -422,6 +422,15 @@ export function getActiveAgentCount(): number {
 	return activeManager?.getRunningCount() ?? 0
 }
 
+export function getActiveAgentModelIds(): string[] {
+	if (!activeManager) return []
+	return activeManager
+		.listAgents()
+		.filter((a) => a.status === "running" || a.status === "queued")
+		.map((a) => a.modelId)
+		.filter((id): id is string => id != null)
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.on("message_start", (event) => {
 		if (event.message.role === "user") budgetRetryBlock = undefined

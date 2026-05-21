@@ -27,8 +27,6 @@ import { homedir, platform, userInfo } from "node:os"
 import { isAbsolute, join, normalize, resolve } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
-import { type KeyId, isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
-import { getAgentConfigDir } from "../../config.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -43,7 +41,6 @@ import {
 	stripStaleNudges,
 } from "../orchestration/continuation-nudge.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
-import { readMultiModelShortcutFromKeybindings } from "../permissions/keybindings.js"
 import { getCurrentPhase } from "../tags.js"
 import { type ContextFile, loadProjectContextFiles } from "./context-files.js"
 import { type EnvironmentInfo, type PromptMode, type ToolInfo, buildSystemPrompt } from "./system-prompt.js"
@@ -85,38 +82,47 @@ function readGitRemote(cwd: string): string | undefined {
 	}
 }
 
-// Workaround: pi-mono's applyExtensionFlagValues ignores the actual value for boolean flags (always sets true). Read argv directly until upstream is fixed.
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
 
-function readHarnessSetting<T>(key: string, fallback: T): T {
+function readMultiModelSetting(): boolean {
 	try {
 		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
 		const parsed = JSON.parse(raw)
-		if (key in parsed) return parsed[key] as T
+		if (typeof parsed.multiModel === "boolean") return parsed.multiModel
 	} catch {
-		// settings.json absent or unreadable — use fallback
+		// absent or unreadable
 	}
-	return fallback
+	return true
 }
 
-function readMultiModelArgv(): boolean {
+function writeMultiModelSetting(enabled: boolean): void {
+	try {
+		let current: Record<string, unknown> = {}
+		try {
+			current = JSON.parse(readFileSync(HARNESS_SETTINGS_PATH, "utf-8"))
+		} catch {
+			// absent or malformed — start fresh
+		}
+		current.multiModel = enabled
+		const dir = join(homedir(), ".config", "kimchi", "harness")
+		if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+		writeFileSync(HARNESS_SETTINGS_PATH, `${JSON.stringify(current, null, 2)}\n`)
+	} catch {
+		// best-effort
+	}
+}
+
+function hasExplicitModelFlag(): boolean {
 	const args = process.argv
 	for (let i = 0; i < args.length; i++) {
-		const arg = args[i]
-		if (arg === "--multi-model=false") return false
-		if (arg === "--multi-model=true") return true
-		if (arg === "--multi-model") {
-			const next = args[i + 1]
-			if (next === "false") return false
-			if (next === "true") return true
-			return true
-		}
+		if (args[i] === "--model" || args[i]?.startsWith("--model=")) return true
 	}
-	// No CLI flag — fall back to settings.json, then hard-coded default
-	return readHarnessSetting("multiModel", true)
+	return false
 }
 
-let multiModelEnabled = readMultiModelArgv()
+const initialMultiModel = hasExplicitModelFlag() ? false : readMultiModelSetting()
+let multiModelEnabled = initialMultiModel
+;(process as NodeJS.Process & { __kimchiMultiModelEnabled?: boolean }).__kimchiMultiModelEnabled = initialMultiModel
 
 export const ORCHESTRATOR_MODEL_ID = "kimi-k2.6"
 const DELEGATION_TOOL_NAMES = new Set(["Agent", "subagent"])
@@ -124,11 +130,6 @@ const DELEGATION_TOOL_NAMES = new Set(["Agent", "subagent"])
 function isDelegationToolCallName(name: string | undefined): boolean {
 	return name != null && DELEGATION_TOOL_NAMES.has(name)
 }
-
-const DEFAULT_MULTI_MODEL_KEY = "ctrl+n"
-const MULTI_MODEL_KEY = readMultiModelShortcutFromKeybindings(getAgentConfigDir()) ?? DEFAULT_MULTI_MODEL_KEY
-export const MULTI_MODEL_SHORTCUT =
-	process.platform === "darwin" ? MULTI_MODEL_KEY.replace(/\balt\b/, "option") : MULTI_MODEL_KEY
 
 /**
  * Shape of a tool-call content block as emitted in assistant messages.
@@ -207,8 +208,21 @@ export function stripEmptyToolCalls(messages: OrchestratorMessages): Orchestrato
 	return changed ? filtered : messages
 }
 
+type ProcessWithMultiModel = NodeJS.Process & { __kimchiMultiModelEnabled?: boolean }
+
 export function getMultiModelEnabled(): boolean {
+	const processFlag = (process as ProcessWithMultiModel).__kimchiMultiModelEnabled
+	if (processFlag !== undefined && processFlag !== multiModelEnabled) {
+		multiModelEnabled = processFlag
+		writeMultiModelSetting(processFlag)
+	}
 	return multiModelEnabled
+}
+
+export function setMultiModelEnabled(enabled: boolean): void {
+	multiModelEnabled = enabled
+	;(process as ProcessWithMultiModel).__kimchiMultiModelEnabled = enabled
+	writeMultiModelSetting(enabled)
 }
 
 export function isSubagent(): boolean {
@@ -225,33 +239,10 @@ export default function (skillPaths: string[]) {
 			default: process.env.KIMCHI_DEBUG_PROMPTS === "1",
 		})
 
-		pi.registerFlag("multi-model", {
-			type: "boolean",
-			description: `Enable multi-model orchestration (default: enabled). Toggle with ${MULTI_MODEL_SHORTCUT}.`,
-			default: true,
-		})
-
 		// For sub agents we don't want to transform the prompt sent from parent with model capabilities
 		const registry = new ModelRegistry(getAvailableModels())
 		if (!subagentMode) {
-			// Global terminal input listener so the shortcut works even when a
-			// dialog (e.g. permission prompt) has focus instead of the editor.
-			let unsubMultiModelToggle: (() => void) | null = null
 			pi.on("session_start", async (_event, ctx) => {
-				if (unsubMultiModelToggle) unsubMultiModelToggle()
-				if (ctx.hasUI) {
-					unsubMultiModelToggle = ctx.ui.onTerminalInput((data) => {
-						if (matchesKey(data, MULTI_MODEL_KEY as KeyId)) {
-							if (!isKeyRelease(data)) {
-								multiModelEnabled = !multiModelEnabled
-								ctx.ui.setStatus("multi-model", undefined)
-							}
-							return { consume: true }
-						}
-						return undefined
-					})
-				}
-
 				// In multi-model mode the orchestrator must always be kimi-k2.6.
 				// Force-switch if the user has a different model selected via /models.
 				if (multiModelEnabled && ctx.model?.id !== ORCHESTRATOR_MODEL_ID) {

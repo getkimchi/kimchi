@@ -5,7 +5,6 @@ import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construc
 import type { FermentRuntime } from "./runtime.js"
 
 export const FERMENT_TOOL_NAMES = [
-	"create_ferment",
 	"propose_ferment_scoping",
 	"list_ferments",
 	"scope_ferment",
@@ -29,8 +28,7 @@ const FERMENT_TOOL_NAME_SET = new Set<string>(FERMENT_TOOL_NAMES)
 
 export type FermentToolProfile = "idle" | "planner-active" | "paused-terminal" | "worker" | "oneshot-planner"
 
-const IDLE_FERMENT_TOOL_NAMES = ["create_ferment", "list_ferments"] as const
-const PLANNER_ACTIVE_FERMENT_TOOL_NAMES = FERMENT_TOOL_NAMES.filter((name) => name !== "create_ferment")
+const IDLE_FERMENT_TOOL_NAMES = ["list_ferments"] as const
 const PAUSED_TERMINAL_FERMENT_TOOL_NAMES = ["list_ferments"] as const
 
 /**
@@ -39,16 +37,14 @@ const PAUSED_TERMINAL_FERMENT_TOOL_NAMES = ["list_ferments"] as const
  * to a subagent worker — the whole point of one-shot orchestration is that
  * the planner orchestrates and workers execute.
  *
- * `create_ferment` is intentionally excluded: one-shot bootstraps exactly one
- * ferment before the planner run starts.
  * `read` stays available so `complete_ferment_step` can sanity-check a worker's diff
  * without spawning a verification subagent.
  * `get_subagent_result` is required for background Agent calls.
+ * The ferment lifecycle surface itself is the same existing-ferment surface
+ * used by normal active planners; creation is host-owned before either run starts.
  */
-const PLANNER_ONESHOT_FERMENT_TOOL_NAMES = FERMENT_TOOL_NAMES.filter((name) => name !== "create_ferment")
-
 export const PLANNER_ONESHOT_ALLOWLIST = new Set<string>([
-	...PLANNER_ONESHOT_FERMENT_TOOL_NAMES,
+	...FERMENT_TOOL_NAMES,
 	// Delegation tool: the higher-level persona-based `Agent`
 	// (`src/extensions/agents/index.ts:590`). The orchestrator picks the
 	// worker model from its registry; ferment no longer prescribes it.
@@ -75,9 +71,9 @@ function allowedFermentToolNamesForProfile(profile: FermentToolProfile): readonl
 		case "idle":
 			return IDLE_FERMENT_TOOL_NAMES
 		case "planner-active":
-			return PLANNER_ACTIVE_FERMENT_TOOL_NAMES
+			return FERMENT_TOOL_NAMES
 		case "oneshot-planner":
-			return PLANNER_ONESHOT_FERMENT_TOOL_NAMES
+			return FERMENT_TOOL_NAMES
 		case "paused-terminal":
 			return PAUSED_TERMINAL_FERMENT_TOOL_NAMES
 		case "worker":

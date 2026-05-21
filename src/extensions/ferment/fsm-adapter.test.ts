@@ -27,6 +27,12 @@ function makeCompleteFerment(): Ferment {
 }
 
 describe("validateFsmTransitionWithFerment", () => {
+	it("handles a missing ferment before entering the FSM", () => {
+		const result = validateFsmTransitionWithFerment(undefined, "ACTIVATE_PHASE", { phaseId: "phase-1" })
+
+		expect(result.error).toBe("Ferment not found.")
+	})
+
 	it("does not recommend another lifecycle action for complete ferments", () => {
 		const result = validateFsmTransitionWithFerment(makeCompleteFerment(), "ACTIVATE_PHASE", { phaseId: "phase-1" })
 

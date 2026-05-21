@@ -92,6 +92,7 @@ export class AgentManager {
 			description: options.description,
 			visibility: options.visibility ?? "user",
 			status: options.isBackground ? "queued" : "running",
+			modelId: (options.model as { id?: string } | undefined)?.id,
 			toolUses: 0,
 			startedAt: Date.now(),
 			abortController,

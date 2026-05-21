@@ -23,7 +23,7 @@ import { complete } from "@earendil-works/pi-ai"
 import type { Grade } from "../../ferment/types.js"
 import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
 
-const JUDGE_MODEL_ID = "claude-opus-4-7"
+const JUDGE_MODEL_ID = "claude-opus-4-6"
 const JUDGE_PROVIDER = "kimchi-dev"
 
 const GRADES: Grade[] = ["A", "B", "C", "D", "F"]
