@@ -482,6 +482,149 @@ describe("telemetryExtension", () => {
 			expect(totalAdded).toBe(2)
 		})
 
+		it("sends lines_of_code and decision metrics for patch tool", async () => {
+			const { handlers, api } = createMockApi()
+			const ext = telemetryExtension(makeConfig())
+			ext(api)
+
+			await getHandler(handlers, "session_start")()
+
+			const toolStart = getHandler(handlers, "tool_execution_start")
+			const toolEnd = getHandler(handlers, "tool_execution_end")
+
+			toolStart({
+				toolCallId: "p1",
+				toolName: "patch",
+				args: {
+					filePath: "/tmp/server.go",
+					oldString: "line1\nline2\n",
+					newString: "line1\nline2\nline3\n",
+				},
+			})
+			await toolEnd({ toolCallId: "p1" })
+
+			await getHandler(handlers, "session_shutdown")()
+
+			const metricsCalls = fetchMock.mock.calls.filter(
+				([url]) => String(url) === "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest",
+			)
+			const payload = JSON.parse(String((metricsCalls[0][1] as RequestInit).body))
+			const metrics = payload.resourceMetrics[0].scopeMetrics[0].metrics
+
+			// lines_of_code: 1 added (3 lines vs 2 lines after trimming), 0 removed
+			const addedMetric = metrics.find(
+				(m: {
+					name: string
+					sum?: {
+						dataPoints: Array<{ asInt?: string; attributes: Array<{ key: string; value: { stringValue: string } }> }>
+					}
+				}) =>
+					m.name === "claude_code.lines_of_code.count" &&
+					m.sum?.dataPoints[0]?.attributes?.some((a) => a.key === "type" && a.value.stringValue === "added"),
+			)
+			expect(addedMetric).toBeDefined()
+			expect(addedMetric.sum.dataPoints[0].asInt).toBe("1")
+
+			// language should be inferred from filePath, not hardcoded "patch"
+			const langAttr = addedMetric.sum.dataPoints[0].attributes.find(
+				(a: { key: string; value: { stringValue: string } }) => a.key === "language",
+			)
+			expect(langAttr?.value.stringValue).toBe("Go")
+
+			// decision metric with accept
+			const decisionMetric = metrics.find((m: { name: string }) => m.name === "claude_code.code_edit_tool.decision")
+			expect(decisionMetric).toBeDefined()
+			const decisionAttrs = decisionMetric.sum.dataPoints[0].attributes as Array<{
+				key: string
+				value: { stringValue: string }
+			}>
+			expect(decisionAttrs.find((a) => a.key === "tool_name")?.value.stringValue).toBe("patch")
+			expect(decisionAttrs.find((a) => a.key === "decision")?.value.stringValue).toBe("accept")
+			expect(decisionAttrs.find((a) => a.key === "language")?.value.stringValue).toBe("Go")
+		})
+
+		it("patch tool with no-op (identical strings) emits zero line changes", async () => {
+			const { handlers, api } = createMockApi()
+			const ext = telemetryExtension(makeConfig())
+			ext(api)
+
+			await getHandler(handlers, "session_start")()
+
+			const toolStart = getHandler(handlers, "tool_execution_start")
+			const toolEnd = getHandler(handlers, "tool_execution_end")
+
+			toolStart({
+				toolCallId: "p2",
+				toolName: "patch",
+				args: {
+					filePath: "/tmp/main.py",
+					oldString: "same content\n",
+					newString: "same content\n",
+				},
+			})
+			await toolEnd({ toolCallId: "p2" })
+
+			await getHandler(handlers, "session_shutdown")()
+
+			const metricsCalls = fetchMock.mock.calls.filter(
+				([url]) => String(url) === "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest",
+			)
+			const payload = JSON.parse(String((metricsCalls[0][1] as RequestInit).body))
+			const metrics = payload.resourceMetrics[0].scopeMetrics[0].metrics
+
+			// no lines_of_code metrics (nothing changed)
+			const locMetrics = metrics.filter((m: { name: string }) => m.name === "claude_code.lines_of_code.count")
+			expect(locMetrics).toHaveLength(0)
+
+			// decision metric still emitted (the tool was used)
+			const decisionMetric = metrics.find((m: { name: string }) => m.name === "claude_code.code_edit_tool.decision")
+			expect(decisionMetric).toBeDefined()
+			expect(decisionMetric.sum.dataPoints[0].asInt).toBe("1")
+		})
+
+		it("patch tool with no filePath uses unknown language", async () => {
+			const { handlers, api } = createMockApi()
+			const ext = telemetryExtension(makeConfig())
+			ext(api)
+
+			await getHandler(handlers, "session_start")()
+
+			const toolStart = getHandler(handlers, "tool_execution_start")
+			const toolEnd = getHandler(handlers, "tool_execution_end")
+
+			toolStart({
+				toolCallId: "p3",
+				toolName: "patch",
+				args: {
+					oldString: "a\n",
+					newString: "a\nb\n",
+				},
+			})
+			await toolEnd({ toolCallId: "p3" })
+
+			await getHandler(handlers, "session_shutdown")()
+
+			const metricsCalls = fetchMock.mock.calls.filter(
+				([url]) => String(url) === "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest",
+			)
+			const payload = JSON.parse(String((metricsCalls[0][1] as RequestInit).body))
+			const metrics = payload.resourceMetrics[0].scopeMetrics[0].metrics
+
+			const addedMetric = metrics.find(
+				(m: {
+					name: string
+					sum?: { dataPoints: Array<{ attributes: Array<{ key: string; value: { stringValue: string } }> }> }
+				}) =>
+					m.name === "claude_code.lines_of_code.count" &&
+					m.sum?.dataPoints[0]?.attributes?.some((a) => a.key === "type" && a.value.stringValue === "added"),
+			)
+			expect(addedMetric).toBeDefined()
+			const langAttr = addedMetric.sum.dataPoints[0].attributes.find(
+				(a: { key: string; value: { stringValue: string } }) => a.key === "language",
+			)
+			expect(langAttr?.value.stringValue).toBe("unknown")
+		})
+
 		it("sends code_edit_tool.decision metric", async () => {
 			const { handlers, api } = createMockApi()
 			const ext = telemetryExtension(makeConfig())
@@ -513,17 +656,14 @@ describe("telemetryExtension", () => {
 
 			const decisionMetric = metrics.find((m: { name: string }) => m.name === "claude_code.code_edit_tool.decision")
 			expect(decisionMetric).toBeDefined()
-			expect(
-				decisionMetric.sum.dataPoints[0].attributes.some(
-					(a: { key: string; value: { stringValue: string } }) =>
-						a.key === "tool_name" && a.value.stringValue === "edit",
-				),
-			).toBe(true)
-			expect(
-				decisionMetric.sum.dataPoints[0].attributes.some(
-					(a: { key: string; value: { stringValue: string } }) => a.key === "decision",
-				),
-			).toBe(true)
+			const decisionAttrs = decisionMetric.sum.dataPoints[0].attributes as Array<{
+				key: string
+				value: { stringValue: string }
+			}>
+			expect(decisionAttrs.find((a) => a.key === "tool_name")?.value.stringValue).toBe("edit")
+			expect(decisionAttrs.find((a) => a.key === "decision")?.value.stringValue).toBe("accept")
+			expect(decisionAttrs.find((a) => a.key === "source")?.value.stringValue).toBe("auto")
+			expect(decisionAttrs.some((a) => a.key === "decision_type")).toBe(false)
 		})
 	})
 
@@ -565,12 +705,14 @@ describe("telemetryExtension", () => {
 		})
 
 		it("includes startTimeUnixNano on every data point", async () => {
+			vi.useFakeTimers()
+			const fixedMs = 1_700_000_000_000
+			vi.setSystemTime(fixedMs)
+
 			const { handlers, api } = createMockApi()
 			const ext = telemetryExtension(makeConfig())
 			ext(api)
 
-			// Capture session start time before calling session_start
-			const startTimeMs = Date.now()
 			await getHandler(handlers, "session_start")()
 
 			const msgEnd = getHandler(handlers, "message_end")
@@ -579,7 +721,7 @@ describe("telemetryExtension", () => {
 					role: "assistant",
 					model: "test-model",
 					provider: "test-provider",
-					timestamp: Date.now(),
+					timestamp: fixedMs,
 					usage: {
 						input: 1,
 						output: 1,
@@ -606,14 +748,15 @@ describe("telemetryExtension", () => {
 				],
 			)
 
-			// Verify startTimeUnixNano equals startTimeMs * 1_000_000 (nanoseconds)
-			const expectedStartTimeNano = String(startTimeMs * 1_000_000)
+			const expectedStartTimeNano = String(fixedMs * 1_000_000)
 			for (const dp of dataPoints) {
 				expect(dp.startTimeUnixNano).toBeDefined()
 				expect(typeof dp.startTimeUnixNano).toBe("string")
 				expect(dp.startTimeUnixNano.length).toBeGreaterThan(0)
 				expect(dp.startTimeUnixNano).toBe(expectedStartTimeNano)
 			}
+
+			vi.useRealTimers()
 		})
 
 		it("uses isMonotonic: true for all Sum metrics", async () => {
@@ -833,8 +976,6 @@ describe("telemetryExtension", () => {
 			const metrics = payload.resourceMetrics[0].scopeMetrics[0].metrics
 			expect(metrics.length).toBeGreaterThan(0)
 
-			// Clean up: advance past another interval so shutdown doesn't race with timer
-			await vi.advanceTimersByTimeAsync(30_001)
 			await getHandler(handlers, "session_shutdown")()
 			vi.useRealTimers()
 		})

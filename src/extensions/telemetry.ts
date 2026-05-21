@@ -346,19 +346,18 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				}
 			}
 
-			// Flush edit decisions with full attributes (language when known)
+			// Flush edit decisions
 			for (const [key, count] of Object.entries(cumulativeEditDecisions)) {
 				const parts = key.split("|")
 				const toolName = parts[0]
 				const decision = parts[1]
 				const language = parts[2]
 				const source = parts[3]
-				const decisionType = parts[4]
 				allMetrics.push({
 					name: "claude_code.code_edit_tool.decision",
 					type: "Sum",
 					value: count,
-					attrs: { tool_name: toolName, decision, language, source, decision_type: decisionType },
+					attrs: { tool_name: toolName, decision, language, source },
 				})
 			}
 
@@ -369,6 +368,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 
 		pi.on("message_start", async (event) => {
 			const msg = event.message as AssistantMessage
+			if (msg.role !== "assistant") return
 			const id = msg.responseId ? String(msg.responseId) : String(msg.timestamp)
 			messageStartTimes.set(id, Date.now())
 		})
@@ -399,9 +399,9 @@ export default function telemetryExtension(config: TelemetryConfig) {
 
 		pi.on("session_shutdown", async () => {
 			messageStartTimes.clear()
-			shuttingDown = true
 			if (flushTimer) clearInterval(flushTimer)
 			flushMetrics()
+			shuttingDown = true
 			if (inFlight.size === 0) return
 			const drain = Promise.allSettled([...inFlight])
 			let timer: NodeJS.Timeout | undefined
@@ -495,7 +495,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				if (!cumulativeLocByLanguage[language]) cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
 				cumulativeLocByLanguage[language].added += changes.added
 				cumulativeLocByLanguage[language].removed += changes.removed
-				const key = ["edit", "edit_applied", language, "auto", "applied"].join("|")
+				const key = ["edit", "accept", language, "auto"].join("|")
 				cumulativeEditDecisions[key] = (cumulativeEditDecisions[key] || 0) + 1
 			}
 
@@ -507,7 +507,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				const actualLines = trimmedContent ? trimmedContent.split("\n").length : 1
 				if (!cumulativeLocByLanguage[language]) cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
 				cumulativeLocByLanguage[language].added += actualLines
-				const key = ["write", "write_created", language, "auto", "applied"].join("|")
+				const key = ["write", "accept", language, "auto"].join("|")
 				cumulativeEditDecisions[key] = (cumulativeEditDecisions[key] || 0) + 1
 			}
 
@@ -523,20 +523,21 @@ export default function telemetryExtension(config: TelemetryConfig) {
 					cumulativeLocByLanguage[language].added += changes.added
 					cumulativeLocByLanguage[language].removed += changes.removed
 				}
-				const key = ["multiedit", "edit_applied", language, "auto", "applied"].join("|")
+				const key = ["multiedit", "accept", language, "auto"].join("|")
 				cumulativeEditDecisions[key] = (cumulativeEditDecisions[key] || 0) + 1
 			}
 
 			if (toolName === "patch") {
+				const filePath = String(args?.filePath ?? "")
 				const oldString = args?.oldString
 				const newString = args?.newString
 				if (typeof oldString === "string" && typeof newString === "string") {
 					const changes = countLineChanges(oldString, newString)
-					const language = "patch"
+					const language = inferLanguage(filePath)
 					if (!cumulativeLocByLanguage[language]) cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
-					cumulativeLocByLanguage[language].added += changes.added || 1
+					cumulativeLocByLanguage[language].added += changes.added
 					cumulativeLocByLanguage[language].removed += changes.removed
-					const key = ["patch", "patch", language, "auto", "applied"].join("|")
+					const key = ["patch", "accept", language, "auto"].join("|")
 					cumulativeEditDecisions[key] = (cumulativeEditDecisions[key] || 0) + 1
 				}
 			}
