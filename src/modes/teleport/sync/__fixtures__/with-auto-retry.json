@@ -9,7 +9,7 @@
 		"content": [],
 		"api": "anthropic-messages",
 		"provider": "anthropic",
-		"model": "claude-opus-4-7",
+		"model": "claude-opus-4-6",
 		"usage": {
 			"input": 800,
 			"output": 0,
@@ -27,7 +27,7 @@
 		"content": [{ "type": "text", "text": "Here is the summary: the project is a CLI..." }],
 		"api": "anthropic-messages",
 		"provider": "anthropic",
-		"model": "claude-opus-4-7",
+		"model": "claude-opus-4-6",
 		"usage": {
 			"input": 800,
 			"output": 60,

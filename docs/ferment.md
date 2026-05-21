@@ -210,7 +210,7 @@ What would you like to ferment? Add Google OAuth login
 
 ## Grading
 
-After every step and phase completes, an autonomous judge (Claude Opus 4.7) evaluates the work and assigns a letter grade.
+After every step and phase completes, an autonomous judge (Claude Opus 4.6) evaluates the work and assigns a letter grade.
 
 | Grade | Meaning |
 |-------|---------|

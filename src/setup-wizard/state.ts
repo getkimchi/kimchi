@@ -30,9 +30,14 @@ export interface WizardState {
 
 export interface WizardResult {
 	cancelled: boolean
+	/** Name of the step where the user cancelled (e.g. "auth", "tools"). Only set when cancelled is true. */
+	cancelledStep?: string
 	apiKey?: string
 	mode?: ConfigMode
 	scope?: ConfigScope
 	telemetryEnabled?: boolean
+	/** Tools that were selected by the user (including ones that failed to configure). */
+	selectedTools: ToolId[]
+	/** Tools that were successfully configured (subset of selectedTools). */
 	configuredTools: ToolId[]
 }

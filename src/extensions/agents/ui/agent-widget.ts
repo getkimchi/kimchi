@@ -209,6 +209,7 @@ export class AgentWidget {
 			completedAt?: number
 			error?: string
 			abortReason?: AgentAbortReason
+			modelId?: string
 		},
 		theme: Theme,
 	): string {
@@ -245,7 +246,8 @@ export class AgentWidget {
 		parts.push(duration)
 
 		const modeTag = modeLabel ? ` ${theme.fg("dim", `(${modeLabel})`)}` : ""
-		return `${icon} ${theme.fg("dim", name)}${modeTag}  ${theme.fg("dim", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}${statusText}`
+		const modelTag = a.modelId ? ` ${theme.fg("dim", `[${a.modelId}]`)}` : ""
+		return `${icon} ${theme.fg("dim", name)}${modeTag}${modelTag}  ${theme.fg("dim", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}${statusText}`
 	}
 
 	private renderWidget(theme: Theme, width: number): string[] {
@@ -294,9 +296,10 @@ export class AgentWidget {
 
 			const activity = bg ? describeActivity(bg.activeTools, bg.responseText) : "thinking…"
 
+			const modelTag = a.modelId ? ` ${theme.fg("dim", `[${a.modelId}]`)}` : ""
 			runningLines.push([
 				truncate(
-					`${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modeTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
+					`${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modeTag}${modelTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
 				),
 				truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`)),
 			])

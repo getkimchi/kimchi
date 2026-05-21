@@ -7,6 +7,7 @@ import {
 	loadConfig,
 	readTelemetryConfig,
 	writeApiKey,
+	writeDeviceId,
 	writeHideSessionModeDialog,
 	writeSessionModeWizardSeenAt,
 } from "./config.js"
@@ -40,6 +41,35 @@ describe("loadConfig", () => {
 		writeFileSync(configPath, JSON.stringify({ apiKey: "new-key", api_key: "old-key" }))
 		const config = loadConfig({ configPath })
 		expect(config.apiKey).toBe("new-key")
+	})
+
+	it("reads deviceId from config file", () => {
+		writeFileSync(configPath, JSON.stringify({ deviceId: "550e8400-e29b-41d4-a716-446655440000" }))
+		const config = loadConfig({ configPath })
+		expect(config.deviceId).toBe("550e8400-e29b-41d4-a716-446655440000")
+	})
+
+	it("reads device_id from config file for backward compatibility", () => {
+		writeFileSync(configPath, JSON.stringify({ device_id: "550e8400-e29b-41d4-a716-446655440000" }))
+		const config = loadConfig({ configPath })
+		expect(config.deviceId).toBe("550e8400-e29b-41d4-a716-446655440000")
+	})
+
+	it("prefers deviceId over device_id when both are set", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				deviceId: "preferred-uuid",
+				device_id: "legacy-uuid",
+			}),
+		)
+		const config = loadConfig({ configPath })
+		expect(config.deviceId).toBe("preferred-uuid")
+	})
+
+	it("returns empty deviceId when no device ID is found", () => {
+		const config = loadConfig({ configPath })
+		expect(config.deviceId).toBe("")
 	})
 
 	it("returns empty apiKey when no key is found", () => {
@@ -281,6 +311,41 @@ describe("clearApiKey", () => {
 
 	it("is a no-op when the file does not exist", () => {
 		expect(() => clearApiKey(join(tempDir, "missing.json"))).not.toThrow()
+	})
+})
+
+describe("writeDeviceId", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-device-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("writes deviceId field", () => {
+		writeDeviceId("550e8400-e29b-41d4-a716-446655440000", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.deviceId).toBe("550e8400-e29b-41d4-a716-446655440000")
+	})
+
+	it("clears legacy device_id field", () => {
+		writeFileSync(configPath, JSON.stringify({ device_id: "old-uuid", other: 1 }))
+		writeDeviceId("new-uuid", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.deviceId).toBe("new-uuid")
+		expect(raw).not.toHaveProperty("device_id")
+	})
+
+	it("overwrites any previous value", () => {
+		writeDeviceId("first-uuid", configPath)
+		writeDeviceId("second-uuid", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.deviceId).toBe("second-uuid")
 	})
 })
 

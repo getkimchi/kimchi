@@ -1,0 +1,24 @@
+diff --git a/lib/server/utils/nodePlatform.js b/lib/server/utils/nodePlatform.js
+index 80d88fedf2c4d2b7bea8cfd4b9c8db454dedaa1d..670f37ff62fd984361b7cfac62e54064a416139d 100644
+--- a/lib/server/utils/nodePlatform.js
++++ b/lib/server/utils/nodePlatform.js
+@@ -64,7 +64,18 @@ let boxedStackPrefixes = [];
+ function setBoxedStackPrefixes(prefixes) {
+   boxedStackPrefixes = prefixes;
+ }
+-const coreDir = import_path.default.dirname(require.resolve("../../../package.json"));
++// Wrapped in try-catch for Bun compiled binaries: require.resolve() with
++// relative paths gets converted to absolute build-machine paths that don't
++// exist at runtime. The __dirname fallback computes the same playwright-core
++// root structurally (this file lives at playwright-core/lib/server/utils/).
++// Upstream: https://github.com/oven-sh/bun/pull/29066
++let coreDir;
++try {
++  coreDir = import_path.default.dirname(require.resolve("../../../package.json"));
++} catch (e) {
++  if (e.code !== 'MODULE_NOT_FOUND') throw e;
++  coreDir = import_path.default.resolve(__dirname, "../../..");
++}
+ const nodePlatform = {
+   name: "node",
+   boxedStackPrefixes: () => {

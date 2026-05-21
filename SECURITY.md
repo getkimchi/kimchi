@@ -14,26 +14,6 @@ When reporting, please include as much of the following as possible:
 
 We are committed to responding within the timelines below.
 
-## Response Timeline
-
-| Stage                      | Commitment                                                   |
-|----------------------------|--------------------------------------------------------------|
-| Acknowledgment             | Within **3 business days** of report confirmation            |
-| Initial investigation      | Within **7 business days** of acknowledgment                 |
-| Fix development & testing  | Depends on complexity; we aim for the shortest reasonable time |
-| Coordinated disclosure     | Fix shipped before or alongside public disclosure            |
-
-We will keep you informed of our progress throughout the process. If the timeline changes, we will communicate the updated estimate.
-
-## Supported Versions
-
-Kimchi is currently in early development (`0.0.0`). Until a stable release is published, **the latest commit on the `main` branch is the only supported version**.
-
-| Version  | Supported          |
-|----------|--------------------|
-| `0.0.0` (latest `main`) | :white_check_mark: |
-| Older commits / branches | :x:                |
-
 ## Responsible Disclosure
 
 - **No public disclosure before a fix is available.** Please do not discuss the vulnerability in public issues, forums, or social media until we have had a reasonable opportunity to address it.

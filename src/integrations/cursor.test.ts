@@ -44,7 +44,7 @@ describe("mergeCursorConfig", () => {
 			"kimchi/kimi-k2.5",
 			"kimchi/nemotron-3-super-fp4",
 			"kimchi/minimax-m2.7",
-			"kimchi/claude-op-4-7",
+			"kimchi/claude-op-4-6",
 			"kimchi/claude-so-4-7",
 		])
 	})
@@ -55,7 +55,7 @@ describe("mergeCursorConfig", () => {
 				modelOverrideDisabled: [
 					"kimchi/kimi-k2.6",
 					"other/keep-me",
-					"kimchi/claude-op-4-7",
+					"kimchi/claude-op-4-6",
 					"kimchi/nemotron-3-super-fp4",
 				],
 			},
