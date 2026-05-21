@@ -92,7 +92,8 @@
 		"onlyBuiltDependencies": ["@biomejs/biome", "esbuild", "koffi", "node-pty", "protobufjs"],
 		"patchedDependencies": {
 			"@earendil-works/pi-coding-agent": "patches/@earendil-works__pi-coding-agent.patch",
-			"@earendil-works/pi-tui": "patches/@earendil-works__pi-tui.patch"
+			"@earendil-works/pi-tui": "patches/@earendil-works__pi-tui.patch",
+			"playwright-core@1.59.1": "patches/playwright-core@1.59.1.patch"
 		}
 	}
 }

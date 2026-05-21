@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import createModelGuardExtension from "./model-guard.js"
 import { __resetImagesDetectedForTest, sessionHasImages } from "./model-guard.js"
 import modelSwitchExtension, { __resetModelSwitchStateForTest, getModelTier } from "./model-switch.js"
+import { getMultiModelEnabled, setMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
 
 type RegisteredTool = {
 	name: string
@@ -735,6 +736,27 @@ describe("modelSwitchExtension", () => {
 				mockCtx({ tokens: 10_000, ui: { notify } }),
 			)
 			expect(notify).not.toHaveBeenCalled()
+		})
+
+		it("syncs multi-model process flag to extension state on model_select from /models UI", async () => {
+			const { pi, trigger } = createHarnessWithTrigger()
+			modelSwitchExtension(pi)
+
+			setMultiModelEnabled(true)
+			;(process as NodeJS.Process & { __kimchiMultiModelEnabled?: boolean }).__kimchiMultiModelEnabled = false
+
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: { id: "nemotron-3-super-fp4", provider: "kimchi-dev", input: ["text"], contextWindow: 1_000_000 },
+					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					source: "set",
+				},
+				mockCtx({ tokens: 10_000 }),
+			)
+
+			expect(getMultiModelEnabled()).toBe(false)
 		})
 	})
 })

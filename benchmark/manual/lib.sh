@@ -121,11 +121,7 @@ bench_generate_runner_script() {
   local content
 
   if [[ "$runner_type" == "kimchi" ]]; then
-    # Determine extra flags per task
     local extra_flags=""
-    if [[ "$task_name" == "complex-single" ]]; then
-      extra_flags='  --multi-model=false \'
-    fi
 
     local setup_block=""
     if [[ -n "$setup_cmd" ]]; then

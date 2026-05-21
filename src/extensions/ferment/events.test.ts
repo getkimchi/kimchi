@@ -10,7 +10,7 @@ type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown
 
 function createPi() {
 	const handlers = new Map<string, EventHandler>()
-	let activeTools = ["read", "bash", "create_ferment", "start_ferment_step"]
+	let activeTools = ["read", "bash", "start_ferment_step"]
 	const pi = {
 		on: (event: string, handler: EventHandler) => {
 			handlers.set(event, handler)
@@ -22,7 +22,6 @@ function createPi() {
 		getAllTools: vi.fn(() => [
 			{ name: "read" },
 			{ name: "bash" },
-			{ name: "create_ferment" },
 			{ name: "list_ferments" },
 			{ name: "scope_ferment" },
 			{ name: "activate_ferment_phase" },
@@ -88,7 +87,6 @@ describe("registerFermentEvents", () => {
 			{ name: "Agent" },
 			{ name: "get_subagent_result" },
 			{ name: "set_phase" },
-			{ name: "create_ferment" },
 			{ name: "list_ferments" },
 			{ name: "scope_ferment" },
 			{ name: "activate_ferment_phase" },
@@ -104,7 +102,6 @@ describe("registerFermentEvents", () => {
 		expect(runtime.setActive).toHaveBeenCalledWith(undefined)
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
 		expect(lastCall).not.toContain("bash")
-		expect(lastCall).not.toContain("create_ferment")
 		expect(lastCall).toContain("read")
 		expect(lastCall).toContain("Agent")
 		expect(lastCall).toContain("get_subagent_result")
@@ -128,7 +125,6 @@ describe("registerFermentEvents", () => {
 			{ name: "read" },
 			{ name: "Agent" },
 			{ name: "get_subagent_result" },
-			{ name: "create_ferment" },
 			{ name: "scope_ferment" },
 			{ name: "start_ferment_step" },
 		])
@@ -144,7 +140,6 @@ describe("registerFermentEvents", () => {
 		expect(lastCall).not.toContain("bash")
 		expect(lastCall).not.toContain("edit")
 		expect(lastCall).not.toContain("web_search")
-		expect(lastCall).not.toContain("create_ferment")
 		expect(lastCall).toContain("read")
 		expect(lastCall).toContain("Agent")
 		expect(lastCall).toContain("get_subagent_result")
@@ -183,7 +178,6 @@ describe("registerFermentEvents", () => {
 			{ name: "edit" },
 			{ name: "read" },
 			{ name: "Agent" },
-			{ name: "create_ferment" },
 			{ name: "list_ferments" },
 			{ name: "scope_ferment" },
 		])
@@ -195,7 +189,6 @@ describe("registerFermentEvents", () => {
 		await beforeAgentStart({ systemPrompt: "base" }, {})
 
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		expect(lastCall).toContain("create_ferment")
 		expect(lastCall).toContain("list_ferments")
 		expect(lastCall).not.toContain("scope_ferment")
 	})
@@ -227,10 +220,8 @@ describe("registerFermentEvents", () => {
 
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
 		for (const name of FERMENT_TOOL_NAMES) {
-			if (name === "create_ferment") continue
 			expect(lastCall).toContain(name)
 		}
-		expect(lastCall).not.toContain("create_ferment")
 	})
 
 	it("hides ferment tools in subagent processes (KIMCHI_SUBAGENT=1)", async () => {
@@ -243,7 +234,6 @@ describe("registerFermentEvents", () => {
 			{ name: "bash" },
 			{ name: "read" },
 			{ name: "Agent" },
-			{ name: "create_ferment" },
 			{ name: "scope_ferment" },
 			{ name: "start_ferment_step" },
 		])
@@ -256,7 +246,6 @@ describe("registerFermentEvents", () => {
 		try {
 			await beforeAgentStart({ systemPrompt: "base" }, {})
 			const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-			expect(lastCall).not.toContain("create_ferment")
 			expect(lastCall).not.toContain("scope_ferment")
 			expect(lastCall).not.toContain("start_ferment_step")
 		} finally {

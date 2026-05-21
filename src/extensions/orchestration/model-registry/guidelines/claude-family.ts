@@ -2,7 +2,7 @@
  * Claude family phase-guideline overrides.
  *
  * Sourced from:
- * - docs/phase-guidelines-research.md §3.5 (Claude Opus 4.7)
+ * - docs/phase-guidelines-research.md §3.5 (Claude Opus 4.6)
  * - Anthropic — "Claude Code: best practices for agentic coding"
  * - Anthropic — prompt-engineering guide
  *
@@ -36,14 +36,14 @@ export const CLAUDE_FAMILY_EXPLORE = `During **explore** phase (Claude family):
 export const CLAUDE_FAMILY_REVIEW = `During **review** phase (Claude family):
 - Be decisive — call out the top 3–5 issues, not every observation.`
 
-// ── Claude Opus 4.7 per-model overrides ───────────────────────────────
+// ── Claude Opus 4.6 per-model overrides ───────────────────────────────
 // Sources: Anthropic "Claude Code" best practices
 
-export const CLAUDE_OPUS_47_ORCHESTRATION = ""
+export const CLAUDE_OPUS_46_ORCHESTRATION = ""
 
-/** Opus 4.7 plan: version-specific addition to family guidelines. */
-export const CLAUDE_OPUS_47_PLAN = `During **plan** phase (claude-opus-4-7 specific):
+/** Opus 4.6 plan: version-specific addition to family guidelines. */
+export const CLAUDE_OPUS_46_PLAN = `During **plan** phase (claude-opus-4-6 specific):
 - Don't relitigate decisions in build.`
 
-export const CLAUDE_OPUS_47_EXPLORE = ""
-export const CLAUDE_OPUS_47_REVIEW = ""
+export const CLAUDE_OPUS_46_EXPLORE = ""
+export const CLAUDE_OPUS_46_REVIEW = ""

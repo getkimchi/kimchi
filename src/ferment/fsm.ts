@@ -21,9 +21,9 @@
  * of docs/ferment-review.md for the full audit trail.
  *
  * States:
- *   IDLE → DRAFT → PLANNED → PHASE_ACTIVE → STEP_RUNNING → COMPLETE
- *                ↘         ↘             ↘
- *                ABANDONED  PAUSED       PAUSED
+ *   DRAFT → PLANNED → PHASE_ACTIVE → STEP_RUNNING → COMPLETE
+ *       ↘          ↘             ↘
+ *       ABANDONED   PAUSED       PAUSED
  */
 
 import { type FermentStatus, type PhaseStatus, type StepStatus, inSameParallelCohort } from "./types.js"
@@ -31,7 +31,6 @@ import { type FermentStatus, type PhaseStatus, type StepStatus, inSameParallelCo
 // ─── FSM States ───────────────────────────────────────────────────────────────
 
 export const FSM_STATES = {
-	IDLE: "IDLE",
 	DRAFT: "DRAFT",
 	SCOPING: "SCOPING",
 	PLANNED: "PLANNED",
@@ -47,7 +46,6 @@ export type FsmState = (typeof FSM_STATES)[keyof typeof FSM_STATES]
 // ─── FSM Events ───────────────────────────────────────────────────────────────
 
 export const FSM_EVENTS = {
-	CREATE_FERMENT: "create_ferment",
 	SCOPE_FERMENT: "scope_ferment",
 	ACTIVATE_PHASE: "activate_phase",
 	REFINE_PHASE: "refine_phase",
@@ -256,15 +254,11 @@ interface TransitionEntry {
 	guard?: string
 }
 
-type TransitionMap = Partial<Record<FsmState, Partial<Record<string, TransitionEntry>>>>
+type TransitionMap = Record<FsmState, Partial<Record<FsmEvent, TransitionEntry>>>
 
 // ─── Transition Table ─────────────────────────────────────────────────────────
 
 const TRANSITIONS: TransitionMap = {
-	[FSM_STATES.IDLE]: {
-		[FSM_EVENTS.CREATE_FERMENT]: { target: FSM_STATES.DRAFT },
-	},
-
 	[FSM_STATES.DRAFT]: {
 		// scope creates phases; no `hasPhases` precondition. Tool-layer no longer
 		// needs to skip FSM validation when status === "draft" (the previous
@@ -378,7 +372,6 @@ const RECOVERY_HINTS: Partial<Record<string, string>> = {
 
 function describeValidEvents(state: FsmState): string {
 	const stateTransitions = TRANSITIONS[state]
-	if (!stateTransitions) return ""
 	const valid = Object.keys(stateTransitions).sort()
 	if (valid.length === 0) return ""
 	return `Valid events in state "${state}": ${valid.join(", ")}.`
@@ -395,10 +388,6 @@ export function transition(
 	params: EventParams = {},
 ): FsmTransitionResult {
 	const stateTransitions = TRANSITIONS[state]
-	if (!stateTransitions) {
-		return { state, error: `No transitions defined for state "${state}" with event "${event}".` }
-	}
-
 	const transitionEntry = stateTransitions[event]
 	if (!transitionEntry) {
 		const base = `Event "${event}" is not valid in state "${state}".`
@@ -423,6 +412,10 @@ export function transition(
 
 // ─── Status mapping ───────────────────────────────────────────────────────────
 
+function assertNever(value: never): never {
+	throw new Error(`Unhandled FSM value: ${String(value)}`)
+}
+
 /** Maps a Ferment's domain status to its FSM state. */
 export function fermentStatusToFsmState(fermentStatus: FermentStatus): FsmState {
 	switch (fermentStatus) {
@@ -438,16 +431,13 @@ export function fermentStatusToFsmState(fermentStatus: FermentStatus): FsmState 
 			return FSM_STATES.COMPLETE
 		case "abandoned":
 			return FSM_STATES.ABANDONED
-		default:
-			return FSM_STATES.IDLE
 	}
+	return assertNever(fermentStatus)
 }
 
 /** Maps an FSM state back to a Ferment domain status. */
 export function fsmStateToFermentStatus(fsmState: FsmState): FermentStatus {
 	switch (fsmState) {
-		case FSM_STATES.IDLE:
-			return "draft"
 		case FSM_STATES.DRAFT:
 		case FSM_STATES.SCOPING:
 		case FSM_STATES.PLANNED:
@@ -461,9 +451,8 @@ export function fsmStateToFermentStatus(fsmState: FsmState): FermentStatus {
 			return "complete"
 		case FSM_STATES.ABANDONED:
 			return "abandoned"
-		default:
-			return "draft"
 	}
+	return assertNever(fsmState)
 }
 
 // ─── Utility helpers ──────────────────────────────────────────────────────────
@@ -473,7 +462,5 @@ export function isTerminalState(state: FsmState): boolean {
 }
 
 export function getValidEvents(state: FsmState): FsmEvent[] {
-	const stateTransitions = TRANSITIONS[state]
-	if (!stateTransitions) return []
-	return Object.keys(stateTransitions) as FsmEvent[]
+	return Object.keys(TRANSITIONS[state]) as FsmEvent[]
 }

@@ -162,3 +162,88 @@ index fe7086d4b68a38a945016ea4274f6c6a8093f5b5..2880acd74317eddfce891ef935fa16f0
          this.contentBox.addChild(new Markdown(text, 0, 0, markdownTheme, {
              color: (content) => theme.fg("userMessageText", content),
          }));
+diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
+index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..91401aa8880f52d847605a27a920b2d6e9cb6505 100644
+--- a/dist/modes/interactive/components/model-selector.js
++++ b/dist/modes/interactive/components/model-selector.js
+@@ -117,6 +117,16 @@ export class ModelSelectorComponent extends Container {
+             return;
+         }
+         this.allModels = this.sortModels(models);
++        // Inject multi-model orchestration entry at the top
++        const orchestratorEntry = models.find(m => m.id === "kimi-k2.6");
++        if (orchestratorEntry) {
++            this.allModels.unshift({
++                provider: "orchestration",
++                id: "multi-model",
++                model: orchestratorEntry.model,
++                _isMultiModel: true,
++            });
++        }
+         this.scopedModels = this.scopedModels.map((scoped) => {
+             const refreshed = this.modelRegistry.find(scoped.model.provider, scoped.model.id);
+             return refreshed ? { ...scoped, model: refreshed } : scoped;
+@@ -184,17 +194,21 @@ export class ModelSelectorComponent extends Container {
+             if (!item)
+                 continue;
+             const isSelected = i === this.selectedIndex;
+-            const isCurrent = modelsAreEqual(this.currentModel, item.model);
++            const isMultiModelEnabled = !!process.__kimchiMultiModelEnabled;
++            const isCurrent = item._isMultiModel
++                ? isMultiModelEnabled
++                : !isMultiModelEnabled && modelsAreEqual(this.currentModel, item.model);
++            const displayId = item._isMultiModel ? "multi-model" : item.id;
+             let line = "";
+             if (isSelected) {
+                 const prefix = theme.fg("accent", "→ ");
+-                const modelText = `${item.id}`;
++                const modelText = `${displayId}`;
+                 const providerBadge = theme.fg("muted", `[${item.provider}]`);
+                 const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
+                 line = `${prefix + theme.fg("accent", modelText)} ${providerBadge}${checkmark}`;
+             }
+             else {
+-                const modelText = `  ${item.id}`;
++                const modelText = `  ${displayId}`;
+                 const providerBadge = theme.fg("muted", `[${item.provider}]`);
+                 const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
+                 line = `${modelText} ${providerBadge}${checkmark}`;
+@@ -267,6 +281,8 @@ export class ModelSelectorComponent extends Container {
+         }
+     }
+     handleSelect(model) {
++        const selectedItem = this.filteredModels[this.selectedIndex];
++        process.__kimchiMultiModelEnabled = !!selectedItem?._isMultiModel;
+         // Save as new default
+         this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+         this.onSelectCallback(model);
+diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
+index 408e38417da84ba9e729cfd5f3dd95b285e57e91..5d4225f409fd7e4ef7dfcbda5e16fded6910a5ed 100644
+--- a/dist/modes/interactive/interactive-mode.js
++++ b/dist/modes/interactive/interactive-mode.js
+@@ -3301,6 +3301,25 @@ ${chalk.cyan("Tip:")} ${this.getTip()}`;
+             this.showModelSelector();
+             return;
+         }
++        // Handle "multi-model" as a virtual model selection
++        if (searchTerm === "multi-model") {
++            const orchestratorModel = this.session.modelRegistry.find("kimchi-dev", "kimi-k2.6");
++            if (orchestratorModel) {
++                process.__kimchiMultiModelEnabled = true;
++                try {
++                    await this.session.setModel(orchestratorModel);
++                    this.footer.invalidate();
++                    this.updateEditorBorderColor();
++                    this.showStatus("Model: multi-model");
++                } catch (error) {
++                    process.__kimchiMultiModelEnabled = false;
++                    this.showError(error instanceof Error ? error.message : String(error));
++                }
++            } else {
++                this.showError("Multi-model orchestrator (kimi-k2.6) is not available.");
++            }
++            return;
++        }
+         const model = await this.findExactModelMatch(searchTerm);
+         if (model) {
+             try {

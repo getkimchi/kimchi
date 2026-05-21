@@ -105,6 +105,7 @@ export interface AgentRecord {
 	/** user = visible in UI/notifications; system = hidden technical/background work. */
 	visibility: AgentVisibility
 	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error"
+	modelId?: string
 	abortReason?: AgentAbortReason
 	result?: string
 	error?: string

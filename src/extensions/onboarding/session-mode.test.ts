@@ -65,7 +65,11 @@ function createExtensionHarness(options: { deferCustomFactory?: boolean } = {}) 
 	const unsubscribe = vi.fn()
 	const ui = {
 		setWidget: vi.fn((_: string, content: unknown) => {
-			if (typeof content === "function") content(tui, theme())
+			if (typeof content === "function") {
+				activeComponent = content(tui, theme()) as CustomComponent
+			} else {
+				activeComponent = undefined
+			}
 		}),
 		onTerminalInput: vi.fn((handler: TerminalInputHandler) => {
 			inputHandler = handler
@@ -274,9 +278,8 @@ describe("session-mode onboarding persistence", () => {
 		)
 
 		await harness.start()
-		expect(harness.ui.custom).toHaveBeenCalled()
-		expect(harness.ui.setWidget).not.toHaveBeenCalled()
-		expect(harness.ui.onTerminalInput).not.toHaveBeenCalled()
+		expect(harness.ui.setWidget).toHaveBeenCalled()
+		expect(harness.ui.onTerminalInput).toHaveBeenCalled()
 		let raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 
@@ -302,9 +305,8 @@ describe("session-mode onboarding persistence", () => {
 		harness.input("hello")
 		harness.input("x")
 
-		expect(harness.ui.custom).toHaveBeenCalled()
-		expect(harness.ui.setWidget).not.toHaveBeenCalled()
-		expect(harness.ui.onTerminalInput).not.toHaveBeenCalled()
+		expect(harness.ui.setWidget).toHaveBeenCalled()
+		expect(harness.ui.onTerminalInput).toHaveBeenCalled()
 		expect(harness.activeComponent()).toBeDefined()
 	})
 
@@ -342,14 +344,15 @@ describe("session-mode onboarding persistence", () => {
 		expect(harness.activeComponent()).toBeUndefined()
 	})
 
-	it("does not mount the picker after cancellation when the host delays the custom factory", async () => {
-		const harness = createExtensionHarness({ deferCustomFactory: true })
+	it("shutdown cleans up the picker", async () => {
+		const harness = createExtensionHarness()
 
 		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
 			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
 		)
 
-		harness.start()
+		await harness.start()
+		expect(harness.activeComponent()).toBeDefined()
 		harness.shutdown()
 		await harness.settle()
 
