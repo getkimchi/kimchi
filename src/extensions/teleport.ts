@@ -5,7 +5,7 @@ import {
 	parseConnectArgs,
 	parseDetachArgs,
 	parseTeleportArgs,
-} from "../modes/teleport/args.js"
+} from "../modes/teleport/commands/args.js"
 import {
 	TeleportRefusal,
 	runAttach,
@@ -13,9 +13,9 @@ import {
 	runDetach,
 	runListSessions,
 	runTeleport,
-} from "../modes/teleport/teleport.js"
-import type { TeleportContext } from "../modes/teleport/teleport.js"
-import type { TeleportableAgentSession } from "../modes/teleport/teleportable-agent-session.js"
+} from "../modes/teleport/commands/index.js"
+import type { TeleportContext } from "../modes/teleport/commands/index.js"
+import type { TeleportableAgentSession } from "../modes/teleport/proxy/teleportable-session.js"
 
 export interface TeleportExtensionDeps {
 	getWrapper: () => TeleportableAgentSession | undefined

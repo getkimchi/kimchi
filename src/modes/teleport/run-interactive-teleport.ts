@@ -16,7 +16,7 @@ import type {
 	ExtensionFactory,
 } from "@earendil-works/pi-coding-agent"
 import makeTeleportExtension from "../../extensions/teleport.js"
-import { TeleportableAgentSession } from "./teleportable-agent-session.js"
+import { TeleportableAgentSession } from "./proxy/teleportable-session.js"
 
 export interface RunTeleportSessionOptions {
 	extensionFactories: ExtensionFactory[]
@@ -27,7 +27,7 @@ export interface RunTeleportSessionOptions {
 
 /**
  * Entry point for `kimchi --teleport`. Mirrors the local-mode interactive
- * bootstrap (and the structural pattern in `src/modes/remote/run-interactive.ts`)
+ * bootstrap (and the structural pattern in `src/modes/teleport/run-remote.ts`)
  * but wraps the freshly-built local AgentSession in a
  * `TeleportableAgentSession` so the TUI holds a swappable foreground from the
  * very first frame.
