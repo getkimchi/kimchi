@@ -95,7 +95,7 @@ async function sendLog(
 ): Promise<void> {
 	if (!config.enabled || !config.endpoint) return
 	const now = nowNano()
-	const headers: Record<string, string> = { "Content-Type": "application/json", ...config.headers }
+	const headers: Record<string, string> = { "Content-Type": "application/json", ...config.headers, Connection: "close" }
 	const payload = {
 		resourceLogs: [
 			{
@@ -132,6 +132,8 @@ async function sendLog(
 			method: "POST",
 			headers,
 			body: JSON.stringify(payload),
+			// @ts-ignore — Bun-only option for detailed socket error messages
+			verbose: true,
 		})
 		if (!res.ok) {
 			console.error(`[telemetry] send failed: ${res.status} ${await res.text()}`)
@@ -161,7 +163,7 @@ async function sendMetrics(
 	if (!config.enabled || !config.metricsEndpoint) return
 	if (metrics.length === 0) return
 	const now = nowNano()
-	const headers: Record<string, string> = { "Content-Type": "application/json", ...config.headers }
+	const headers: Record<string, string> = { "Content-Type": "application/json", ...config.headers, Connection: "close" }
 	const payload = {
 		resourceMetrics: [
 			{
@@ -205,6 +207,8 @@ async function sendMetrics(
 			method: "POST",
 			headers,
 			body: JSON.stringify(payload),
+			// @ts-ignore — Bun-only option for detailed socket error messages
+			verbose: true,
 		})
 		if (!res.ok) {
 			console.error(`[telemetry] metrics send failed: ${res.status} ${await res.text()}`)
