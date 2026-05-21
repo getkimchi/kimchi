@@ -66,7 +66,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("Orchestrate the work")
 			expect(result).toContain("Step 2 — Decide what to do yourself vs. delegate")
 			expect(result).toContain("When delegating:")
-			expect(result).toContain("Mandatory pipeline for complex tasks")
+			expect(result).toContain("Mandatory pipeline for multi-phase tasks")
 			expect(result).toContain("Token budgets")
 			expect(result).toContain("token_budget")
 		})
@@ -279,7 +279,7 @@ describe("buildSystemPrompt", () => {
 				mode: "subagent",
 			})
 			expect(result).not.toContain("When delegating:")
-			expect(result).not.toContain("Mandatory pipeline for complex tasks")
+			expect(result).not.toContain("Mandatory pipeline for multi-phase tasks")
 		})
 
 		it("handles tools list with only delegation tools", () => {
@@ -359,7 +359,7 @@ describe("buildSystemPrompt", () => {
 				mode: "single",
 			})
 			expect(result).not.toContain("When delegating:")
-			expect(result).not.toContain("Mandatory pipeline for complex tasks")
+			expect(result).not.toContain("Mandatory pipeline for multi-phase tasks")
 			expect(result).not.toContain("Token budgets")
 			expect(result).not.toContain("Orchestrate the work")
 			expect(result).not.toContain("Step 2 — Decide what to do yourself vs. delegate")

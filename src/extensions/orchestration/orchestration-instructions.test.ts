@@ -31,7 +31,7 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("Orchestrate the work")
 		expect(result).toContain("Step 2 — Decide what to do yourself vs. delegate")
 		expect(result).toContain("When delegating:")
-		expect(result).toContain("Mandatory pipeline for complex tasks")
+		expect(result).toContain("Mandatory pipeline for multi-phase tasks")
 		expect(result).toContain("Token budgets")
 		expect(result).toContain("token_budget")
 	})
