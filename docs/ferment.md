@@ -110,7 +110,8 @@ What happens next:
 
 - Kimchi asks what you want to ferment.
 - The agent drafts the goal, success criteria, constraints, assumptions, and
-  3-7 phases.
+  1-7 phases grouped by vertical slices/tracer bullets, complexity, or code
+  locality.
 - If the request is ambiguous, the agent asks focused scoping questions with
   recommended answers.
 - Kimchi shows the proposed markdown plan for review.

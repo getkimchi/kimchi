@@ -1,5 +1,15 @@
-import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
+import type {
+	Api,
+	AssistantMessage,
+	ImageContent,
+	Model,
+	TextContent,
+	ToolResultMessage,
+	UserMessage,
+} from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { getModelTier } from "./model-switch.js"
+import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 
 /** Messages that have a content array we can inspect for images. */
 type ContentMessage = UserMessage | AssistantMessage | ToolResultMessage
@@ -289,5 +299,34 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 		}
 
 		if (modified) return { messages: result }
+	})
+
+	_pi.on("model_select", async (event: { source: string; previousModel?: Model<Api> }, ctx: ExtensionContext) => {
+		if (event.source === "restore") return
+
+		const model = ctx.model
+
+		// Context and vision guards are handled by the originating switch path:
+		// - "cycle" (ctrl+p): findNextCompatibleModel pre-filters incompatible models
+		// - "set" (set_model tool): blocks and reports to user before switching
+		// - "restore": skipped above (automatic reversion)
+		// Only tier-downgrade notifications remain here as they are informational
+		// and not checked by any pre-switch path.
+
+		if (event.previousModel) {
+			const prevTier = getModelTier(event.previousModel, MODEL_CAPABILITIES)
+			const nextTier = getModelTier(ctx.model, MODEL_CAPABILITIES)
+			if (prevTier && nextTier) {
+				const TIER_ORDER = ["heavy", "standard", "light"]
+				const prevIdx = TIER_ORDER.indexOf(prevTier)
+				const nextIdx = TIER_ORDER.indexOf(nextTier)
+				if (prevIdx < nextIdx) {
+					ctx.ui.notify(
+						`Switching from ${prevTier} → ${nextTier} tier. Reasoning and planning quality may be reduced.`,
+						"info",
+					)
+				}
+			}
+		}
 	})
 }

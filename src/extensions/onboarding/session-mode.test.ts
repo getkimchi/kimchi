@@ -4,8 +4,9 @@ import { join } from "node:path"
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { globalTipRegistry } from "../tips/registry.js"
+import { SESSION_MODE_PICKER_HINT } from "./session-mode-picker.js"
 import sessionModeOnboardingExtension, {
-	SESSION_MODE_WIDGET_KEY,
 	buildSessionModeLaunchContext,
 	decideSessionModeOnboarding,
 	recordSessionModeWizardOutcome,
@@ -48,8 +49,10 @@ function decide(
 
 type SessionStartHandler = (event: unknown, ctx: unknown) => unknown
 type TerminalInputHandler = (data: string) => { consume?: boolean } | undefined
+type CustomComponent = { handleInput?(data: string): void; render?(width: number): string[] }
+const extensionHarnesses: Array<{ shutdown: () => unknown; settle: () => Promise<void> }> = []
 
-function createExtensionHarness() {
+function createExtensionHarness(options: { deferCustomFactory?: boolean } = {}) {
 	const handlers = new Map<string, SessionStartHandler>()
 	const api = {
 		on: vi.fn((event: string, handler: SessionStartHandler) => {
@@ -57,6 +60,7 @@ function createExtensionHarness() {
 		}),
 	}
 	const tui = { requestRender: vi.fn() } as unknown as TUI
+	let activeComponent: CustomComponent | undefined
 	let inputHandler: TerminalInputHandler | undefined
 	const unsubscribe = vi.fn()
 	const ui = {
@@ -67,18 +71,63 @@ function createExtensionHarness() {
 			inputHandler = handler
 			return unsubscribe
 		}),
+		custom: vi.fn((factory: (...args: unknown[]) => CustomComponent | Promise<CustomComponent>) => {
+			return new Promise((resolve, reject) => {
+				let doneCalled = false
+				const done = (result: unknown) => {
+					if (doneCalled) return
+					doneCalled = true
+					activeComponent = undefined
+					resolve(result)
+				}
+				const mount = () => {
+					const content = factory(tui, theme(), {}, done)
+					if (content && typeof (content as Promise<CustomComponent>).then === "function") {
+						;(content as Promise<CustomComponent>).then((component) => {
+							if (!doneCalled) activeComponent = component
+						}, reject)
+					} else if (!doneCalled) {
+						activeComponent = content as CustomComponent
+					}
+				}
+				try {
+					if (options.deferCustomFactory === true) {
+						void Promise.resolve().then(mount).catch(reject)
+					} else {
+						mount()
+					}
+				} catch (err) {
+					reject(err)
+				}
+			})
+		}),
 		notify: vi.fn(),
 	}
 	const ctx = { hasUI: true, ui }
-	return {
+	const harness = {
 		api,
 		ui,
 		tui,
 		unsubscribe,
 		start: () => handlers.get("session_start")?.({ reason: "startup" }, ctx),
-		input: (data: string) => inputHandler?.(data),
+		shutdown: () => handlers.get("session_shutdown")?.({ reason: "quit" }, ctx),
+		input: (data: string) => inputHandler?.(data) ?? activeComponent?.handleInput?.(data),
+		activeComponent: () => activeComponent,
+		settle: async () => {
+			for (let i = 0; i < 4; i += 1) await Promise.resolve()
+		},
 	}
+	extensionHarnesses.push(harness)
+	return harness
 }
+
+afterEach(async () => {
+	for (const harness of extensionHarnesses.splice(0)) {
+		harness.shutdown()
+		await harness.settle()
+	}
+	globalTipRegistry.clear()
+})
 
 describe("buildSessionModeLaunchContext", () => {
 	it("classifies a plain interactive launch as eligible launch context", () => {
@@ -225,23 +274,56 @@ describe("session-mode onboarding persistence", () => {
 		)
 
 		await harness.start()
-		expect(harness.ui.setWidget).toHaveBeenCalledWith(SESSION_MODE_WIDGET_KEY, expect.any(Function), {
-			placement: "aboveEditor",
-		})
-		expect(harness.ui.onTerminalInput).toHaveBeenCalled()
+		expect(harness.ui.custom).toHaveBeenCalled()
+		expect(harness.ui.setWidget).not.toHaveBeenCalled()
+		expect(harness.ui.onTerminalInput).not.toHaveBeenCalled()
 		let raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 
-		expect(harness.input("\x1b[B")).toEqual({ consume: true })
+		harness.input("\x1b[B")
 		expect(harness.tui.requestRender).toHaveBeenCalled()
-		expect(harness.input("\r")).toEqual({ consume: true })
+		harness.input("\r")
+		await harness.settle()
 
 		raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
-		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(SESSION_MODE_WIDGET_KEY, undefined, {
-			placement: "aboveEditor",
-		})
-		expect(harness.unsubscribe).toHaveBeenCalled()
+		expect(harness.activeComponent()).toBeUndefined()
+	})
+
+	it("extension replaces the editor while the picker is visible", async () => {
+		const harness = createExtensionHarness()
+
+		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
+			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+		)
+
+		await harness.start()
+
+		harness.input("hello")
+		harness.input("x")
+
+		expect(harness.ui.custom).toHaveBeenCalled()
+		expect(harness.ui.setWidget).not.toHaveBeenCalled()
+		expect(harness.ui.onTerminalInput).not.toHaveBeenCalled()
+		expect(harness.activeComponent()).toBeDefined()
+	})
+
+	it("extension renders the workflow hint inside the picker", async () => {
+		const harness = createExtensionHarness()
+
+		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
+			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+		)
+
+		await harness.start()
+
+		const text = harness.activeComponent()?.render?.(140).join("\n")
+		expect(text).toContain(`Tip: ${SESSION_MODE_PICKER_HINT.replaceAll("`", "")}`)
+		expect(text).not.toContain("`")
+		expect(globalTipRegistry.getProviders().some((candidate) => candidate.source === "kimchi.session-mode")).toBe(false)
+
+		harness.input("\x1b")
+		await harness.settle()
 	})
 
 	it("extension cancellation clears the picker after recording that the first dialog was shown", async () => {
@@ -253,12 +335,25 @@ describe("session-mode onboarding persistence", () => {
 
 		await harness.start()
 		harness.input("\x1b")
+		await harness.settle()
 
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
-		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(SESSION_MODE_WIDGET_KEY, undefined, {
-			placement: "aboveEditor",
-		})
+		expect(harness.activeComponent()).toBeUndefined()
+	})
+
+	it("does not mount the picker after cancellation when the host delays the custom factory", async () => {
+		const harness = createExtensionHarness({ deferCustomFactory: true })
+
+		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
+			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+		)
+
+		harness.start()
+		harness.shutdown()
+		await harness.settle()
+
+		expect(harness.activeComponent()).toBeUndefined()
 	})
 
 	it("extension exposes Ferment selection through the outcome callback", async () => {
@@ -271,10 +366,29 @@ describe("session-mode onboarding persistence", () => {
 
 		await harness.start()
 		harness.input("\r")
+		await harness.settle()
 
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 		expect(onOutcome).toHaveBeenCalledWith("ferment", expect.objectContaining({ ui: harness.ui }), harness.api)
+	})
+
+	it("reports synchronous errors from the outcome callback", async () => {
+		const harness = createExtensionHarness()
+		const onOutcome = vi.fn(() => {
+			throw new Error("sync boom")
+		})
+
+		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now, onOutcome })(
+			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+		)
+
+		await harness.start()
+		harness.input("\r")
+		await harness.settle()
+
+		expect(onOutcome).toHaveBeenCalledWith("ferment", expect.objectContaining({ ui: harness.ui }), harness.api)
+		expect(harness.ui.notify).toHaveBeenCalledWith("Session mode startup failed: sync boom", "warning")
 	})
 
 	it("extension lets returning users hide the dialog while selecting a mode", async () => {
@@ -290,12 +404,11 @@ describe("session-mode onboarding persistence", () => {
 		harness.input(" ")
 		harness.input("\x1b[B")
 		harness.input("\r")
+		await harness.settle()
 
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.hideSessionModeDialog).toBe(true)
-		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(SESSION_MODE_WIDGET_KEY, undefined, {
-			placement: "aboveEditor",
-		})
+		expect(harness.activeComponent()).toBeUndefined()
 		expect(onOutcome).toHaveBeenCalledWith("default", expect.objectContaining({ ui: harness.ui }), harness.api)
 	})
 })

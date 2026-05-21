@@ -6,6 +6,7 @@ import {
 	writeHideSessionModeDialog,
 	writeSessionModeWizardSeenAt,
 } from "../../config.js"
+import { setTipWidgetLocation } from "../tips/index.js"
 import { setSessionModeOnboardingFooterSuppressed } from "../ui.js"
 import { SessionModePickerComponent, type SessionModePickerResult } from "./session-mode-picker.js"
 
@@ -59,9 +60,6 @@ export interface SessionModeOnboardingExtensionOptions {
 	) => void | Promise<void>
 }
 
-export const SESSION_MODE_WIDGET_KEY = "kimchi-session-mode-onboarding"
-const SESSION_MODE_WIDGET_OPTIONS = { placement: "aboveEditor" } as const
-
 export default function sessionModeOnboardingExtension(options: SessionModeOnboardingExtensionOptions) {
 	return (pi: ExtensionAPI) => {
 		let cleanupActiveWizard: (() => void) | undefined
@@ -114,13 +112,13 @@ function showSessionModeWizard(
 	onCleanup: () => void,
 ): () => void {
 	let finished = false
-	let unsubscribeInput: (() => void) | undefined
-	let component: SessionModePickerComponent | undefined
+	let closePicker: ((result: SessionModePickerResult) => void) | undefined
+	let restoreTips: (() => void) | undefined
+	let cancelBeforePickerReady = false
 
 	const cleanup = () => {
-		unsubscribeInput?.()
-		unsubscribeInput = undefined
-		ctx.ui.setWidget(SESSION_MODE_WIDGET_KEY, undefined, SESSION_MODE_WIDGET_OPTIONS)
+		restoreTips?.()
+		restoreTips = undefined
 		setSessionModeOnboardingFooterSuppressed(false)
 		onCleanup()
 	}
@@ -146,31 +144,48 @@ function showSessionModeWizard(
 		}
 		cleanup()
 		if (result !== "cancelled" && options.onOutcome) {
-			Promise.resolve(options.onOutcome(result.choice, ctx, pi)).catch((err: unknown) => {
-				ctx.ui.notify(`Session mode startup failed: ${err instanceof Error ? err.message : String(err)}`, "warning")
-			})
+			Promise.resolve()
+				.then(() => options.onOutcome?.(result.choice, ctx, pi))
+				.catch((err: unknown) => {
+					ctx.ui.notify(`Session mode startup failed: ${err instanceof Error ? err.message : String(err)}`, "warning")
+				})
 		}
 	}
 
+	const fail = (err: unknown) => {
+		if (finished) return
+		finished = true
+		cleanup()
+		ctx.ui.notify(`Session mode picker failed: ${err instanceof Error ? err.message : String(err)}`, "warning")
+	}
+
+	restoreTips = setTipWidgetLocation("hidden")
 	setSessionModeOnboardingFooterSuppressed(true)
-	ctx.ui.setWidget(
-		SESSION_MODE_WIDGET_KEY,
-		(tui, theme) => {
-			component = new SessionModePickerComponent(theme, finish, () => tui.requestRender(), {
-				showHideCheckbox: showHideOption,
-			})
-			return component
-		},
-		SESSION_MODE_WIDGET_OPTIONS,
-	)
-	unsubscribeInput = ctx.ui.onTerminalInput((data) => {
-		component?.handleInput(data)
-		return { consume: true }
-	})
+	try {
+		ctx.ui
+			.custom<SessionModePickerResult>(
+				(tui, theme, _keybindings, done) => {
+					closePicker = done
+					if (cancelBeforePickerReady || finished) {
+						done("cancelled")
+					}
+					return new SessionModePickerComponent(theme, done, () => tui.requestRender(), {
+						showHideCheckbox: showHideOption,
+					})
+				},
+				{ overlay: false },
+			)
+			.then(finish)
+			.catch(fail)
+	} catch (err) {
+		fail(err)
+	}
 
 	return () => {
 		if (finished) return
 		finished = true
+		if (!closePicker) cancelBeforePickerReady = true
+		closePicker?.("cancelled")
 		cleanup()
 	}
 }

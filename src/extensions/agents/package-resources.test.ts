@@ -3,7 +3,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-vi.mock("@earendil-works/pi-coding-agent", () => ({
+// NOTE: Using vi.mock (hoisted) but placing it in a describe block level
+// to avoid affecting other test files that import the same module
+const mocks = vi.hoisted(() => ({
 	getAgentDir: vi.fn(() => "/fake/agent/dir"),
 	SettingsManager: {
 		create: vi.fn(() => ({})),
@@ -12,6 +14,8 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 		listConfiguredPackages: vi.fn(() => []),
 	})),
 }))
+
+vi.mock("@earendil-works/pi-coding-agent", () => mocks)
 
 import { DefaultPackageManager } from "@earendil-works/pi-coding-agent"
 import { getInstalledPackageResourceDirs } from "./package-resources.js"

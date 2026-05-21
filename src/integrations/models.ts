@@ -136,12 +136,18 @@ export function resolveModelRole(
 	const main =
 		precomputedMain ??
 		((): ModelMetadata | undefined => {
+			// 1. Preferred orchestrator slug — always try this first.
+			const preferred = serverless.find((m) => m.slug === "kimi-k2.6")
+			if (preferred) return preferred
+			// 2. Any vision-capable Kimi model as a fallback.
 			const vision = serverless.find(
 				(m) =>
 					m.input_modalities.includes("image") &&
 					(m.display_name.toLowerCase().includes("kimi") || m.slug.toLowerCase().includes("kimi")),
 			)
-			return vision ?? serverless[0] ?? models[0]
+			// 3. Any vision-capable serverless model — avoid text-only models as main.
+			const anyVision = serverless.find((m) => m.input_modalities.includes("image"))
+			return vision ?? anyVision ?? serverless[0] ?? models[0]
 		})()
 
 	switch (role) {

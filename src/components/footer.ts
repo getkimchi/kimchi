@@ -375,7 +375,8 @@ export class StatsFooter implements Component {
 		return `${ansi}${s}${RST_FG}`
 	}
 
-	private modelSegment(): Segment {
+	private modelSegment(): Segment | null {
+		if (getMultiModelEnabled()) return null
 		const modelId = this.ctx.model?.id ?? "n/a"
 		const text = this.accent(modelId)
 		return { id: "model", text, width: visibleWidth(text) }

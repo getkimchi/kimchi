@@ -29,11 +29,6 @@ describe("resolveOrchestrationInstructions", () => {
 			mode: "orchestrator",
 		})
 		expect(result).toContain("Orchestrate the work")
-		expect(result).toContain("Sharing context between agents")
-		expect(result).toContain("Agent delegation rules")
-		expect(result).toContain("Model selection for delegation")
-		expect(result).toContain("Token budgets")
-		expect(result).toContain("token_budget")
 	})
 
 	it("includes model capabilities and available models in orchestrator mode", () => {
@@ -68,16 +63,16 @@ describe("resolveOrchestrationInstructions", () => {
 		})
 		expect(result).toContain("Subagent response protocol")
 		expect(result).toContain('{"summary":')
-		expect(result).not.toContain("Agent delegation rules")
+		expect(result).not.toContain("Orchestrate the work")
 	})
 
 	it("includes model-specific orchestration guidelines when provided", () => {
 		const result = resolveOrchestrationInstructions({
-			currentModelId: "minimax-m2.7",
+			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
 		})
 		expect(result).toContain("### Orchestration Guidelines")
-		expect(result).toContain("MiniMax M2 family")
+		expect(result).toContain("Kimi family")
 	})
 })

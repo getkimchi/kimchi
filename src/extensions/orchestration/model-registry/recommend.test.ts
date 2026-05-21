@@ -3,7 +3,7 @@ import { pickFromModelListByTier, recommendModel } from "./recommend.js"
 
 describe("recommendModel", () => {
 	it("returns a result for a single strength with exact tier match", () => {
-		// build strength has standard (minimax-m2.7) and light (nemotron-3-super-fp4)
+		// build strength has only standard (minimax-m2.7)
 		const result = recommendModel({ strengths: ["build"], preferTier: "standard" })
 		expect(result).toBeDefined()
 		expect(result?.provider).toBe("kimchi-dev")
@@ -20,8 +20,8 @@ describe("recommendModel", () => {
 	})
 
 	it("returns undefined when no model matches the strengths", () => {
-		// No model has both "build" and "research" as strengths simultaneously
-		const result = recommendModel({ strengths: ["build", "research"] })
+		// No model has both "review" and "plan" as strengths simultaneously
+		const result = recommendModel({ strengths: ["review", "plan"] })
 		expect(result).toBeUndefined()
 	})
 
@@ -38,13 +38,13 @@ describe("recommendModel", () => {
 		expect(result).toBeUndefined()
 	})
 
-	it("multi-strength filter: plan + review have overlapping heavy models", () => {
-		// kimi-k2.6 has both plan and review, tier heavy
-		const result = recommendModel({ strengths: ["plan", "review"], preferTier: "heavy" })
+	it("multi-strength filter: explore + research have overlapping light models", () => {
+		// nemotron-3-super-fp4 has both explore and research, tier light
+		const result = recommendModel({ strengths: ["explore", "research"], preferTier: "light" })
 		expect(result).toBeDefined()
-		expect(result?.capabilities.tier).toBe("heavy")
-		expect(result?.capabilities.strengths).toContain("plan")
-		expect(result?.capabilities.strengths).toContain("review")
+		expect(result?.capabilities.tier).toBe("light")
+		expect(result?.capabilities.strengths).toContain("explore")
+		expect(result?.capabilities.strengths).toContain("research")
 	})
 
 	it("ignored entries are excluded", () => {
@@ -54,8 +54,8 @@ describe("recommendModel", () => {
 	})
 
 	it("light tier preference returns the lightest model", () => {
-		// build + light → nemotron-3-super-fp4
-		const result = recommendModel({ strengths: ["build"], preferTier: "light" })
+		// explore + light → nemotron-3-super-fp4
+		const result = recommendModel({ strengths: ["explore"], preferTier: "light" })
 		expect(result).toBeDefined()
 		expect(result?.modelId).toBe("nemotron-3-super-fp4")
 		expect(result?.capabilities.tier).toBe("light")

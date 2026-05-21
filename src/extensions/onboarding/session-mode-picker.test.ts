@@ -2,8 +2,9 @@ import type { Theme } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import {
 	SESSION_MODE_PICKER_HEADING,
+	SESSION_MODE_PICKER_HIDE_HINT,
 	SESSION_MODE_PICKER_HIDE_LABEL,
-	SESSION_MODE_PICKER_TIP,
+	SESSION_MODE_PICKER_HINT,
 	SessionModePickerComponent,
 	initialSessionModePickerState,
 	keyToSessionModePickerEvent,
@@ -27,7 +28,7 @@ function theme(): Theme {
 }
 
 describe("session mode picker reducer", () => {
-	it("starts on Ferment session", () => {
+	it("starts on Ferment", () => {
 		expect(initialSessionModePickerState()).toEqual({ selectedIndex: 0, hideDialog: false })
 	})
 
@@ -97,17 +98,33 @@ describe("session mode picker key mapping", () => {
 })
 
 describe("session mode picker rendering", () => {
-	it("renders the exact PRD copy", () => {
-		const lines = renderSessionModePickerLines(initialSessionModePickerState(), theme(), 100)
+	it("renders the workflow copy and bottom hint", () => {
+		const lines = renderSessionModePickerLines(initialSessionModePickerState(), theme(), 140)
 		const text = lines.join("\n")
 
+		expect(lines).toEqual([
+			"",
+			"  Choose your workflow",
+			"",
+			"  > Ferment",
+			"    Start a new ferment workflow. Agent plans and executes multi-step tasks end-to-end. You review the result.",
+			"",
+			"    Coding session",
+			"    Chat with the agent and steer it as it goes. Stay in the loop.",
+			"",
+			"  Tip: Use /ferment anytime to start a Ferment workflow.",
+			"",
+		])
 		expect(text).toContain(SESSION_MODE_PICKER_HEADING)
-		expect(text).toContain("Ferment session")
-		expect(text).toContain("Agent runs the full task end-to-end. You review the result.")
-		expect(text).toContain("Default session")
-		expect(text).toContain("Standard coding harness experience outside of the active ferment.")
+		expect(text).toContain("Ferment")
+		expect(text).toContain(
+			"Start a new ferment workflow. Agent plans and executes multi-step tasks end-to-end. You review the result.",
+		)
+		expect(text).toContain("Coding session")
+		expect(text).toContain("Chat with the agent and steer it as it goes. Stay in the loop.")
+		expect(text).toContain(`Tip: ${SESSION_MODE_PICKER_HINT.replaceAll("`", "")}`)
+		expect(text).not.toContain("`")
 		expect(text).not.toContain(SESSION_MODE_PICKER_HIDE_LABEL)
-		expect(text).toContain(SESSION_MODE_PICKER_TIP)
 	})
 
 	it("renders the hide checkbox only when requested", () => {
@@ -116,17 +133,27 @@ describe("session mode picker rendering", () => {
 		})
 		const text = lines.join("\n")
 
-		expect(text).toContain(`[ ] ${SESSION_MODE_PICKER_HIDE_LABEL}`)
+		expect(text).toContain(`[ ] ${SESSION_MODE_PICKER_HIDE_LABEL}  ${SESSION_MODE_PICKER_HIDE_HINT}`)
+	})
+
+	it("renders the hide checkbox hint with the dim theme color", () => {
+		const t = theme()
+
+		renderSessionModePickerLines(initialSessionModePickerState(), t, 100, {
+			showHideCheckbox: true,
+		})
+
+		expect(t.fg).toHaveBeenCalledWith("dim", SESSION_MODE_PICKER_HIDE_HINT)
 	})
 
 	it("marks the selected option", () => {
 		let lines = renderSessionModePickerLines(initialSessionModePickerState(), theme(), 100)
-		expect(lines.some((line) => line.includes("> Ferment session"))).toBe(true)
-		expect(lines.some((line) => line.includes("> Default session"))).toBe(false)
+		expect(lines.some((line) => line.includes("> Ferment"))).toBe(true)
+		expect(lines.some((line) => line.includes("> Coding session"))).toBe(false)
 
 		const state = reduceSessionModePicker(initialSessionModePickerState(), "down").state
 		lines = renderSessionModePickerLines(state, theme(), 100)
-		expect(lines.some((line) => line.includes("> Default session"))).toBe(true)
+		expect(lines.some((line) => line.includes("> Coding session"))).toBe(true)
 	})
 })
 

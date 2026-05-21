@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import { readApiKeyFromConfigFile } from "./config.js"
 
-function findProxyHelper(override?: string): string {
+export function findProxyHelper(override?: string): string {
 	const explicit = override ?? process.env.KIMCHI_PROXY_HELPER
 	if (explicit) {
 		return explicit
@@ -25,7 +25,7 @@ function findProxyHelper(override?: string): string {
 	}
 
 	throw new Error(
-		`proxy-helper binary not found. Checked bundled path: ${bundled}\nRun 'make build' in tools/proxy-helper/ or ensure proxy-helper is on PATH.`,
+		`proxy-helper binary not found. Checked bundled path: ${bundled}\nRun 'make copy-for-dev' in tools/proxy-helper/ or ensure proxy-helper is on PATH.`,
 	)
 }
 

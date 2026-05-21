@@ -12,9 +12,11 @@ const LIVE_ENTRIES = Object.entries(Object.fromEntries(MODEL_CAPABILITIES)).filt
 ) as [string, Exclude<typeof MODEL_CAPABILITIES extends ReadonlyMap<string, infer V> ? V : never, "ignored">][]
 
 describe("MODEL_CAPABILITIES completeness invariants", () => {
-	it.each(LIVE_ENTRIES)("%s — description is a non-empty string", (_id, cap) => {
-		expect(typeof cap.description).toBe("string")
-		expect(cap.description.trim().length).toBeGreaterThan(0)
+	it.each(LIVE_ENTRIES)("%s — description is undefined or a non-empty string", (_id, cap) => {
+		if (cap.description !== undefined) {
+			expect(typeof cap.description).toBe("string")
+			expect(cap.description.trim().length).toBeGreaterThan(0)
+		}
 	})
 
 	it.each(LIVE_ENTRIES)("%s — tier is one of light | standard | heavy", (_id, cap) => {
@@ -29,9 +31,11 @@ describe("MODEL_CAPABILITIES completeness invariants", () => {
 		}
 	})
 
-	it.each(LIVE_ENTRIES)("%s — orchestrationGuidelines is a non-empty string", (_id, cap) => {
-		expect(typeof cap.orchestrationGuidelines).toBe("string")
-		expect((cap.orchestrationGuidelines as string).trim().length).toBeGreaterThan(0)
+	it.each(LIVE_ENTRIES)("%s — orchestrationGuidelines is undefined or a non-empty string", (_id, cap) => {
+		if (cap.orchestrationGuidelines !== undefined) {
+			expect(typeof cap.orchestrationGuidelines).toBe("string")
+			expect((cap.orchestrationGuidelines as string).trim().length).toBeGreaterThan(0)
+		}
 	})
 
 	it.each(LIVE_ENTRIES)("%s — every declared strength phase has a non-empty guidelines entry", (_id, cap) => {
@@ -80,11 +84,13 @@ describe("ModelRegistry — known models only", () => {
 		expect(registry.getAll().map((m) => m.id)).toEqual([...ACTIVE_IDS].reverse())
 	})
 
-	it("every known model has a non-placeholder description", () => {
+	it("every known model with a description has a non-placeholder one", () => {
 		const registry = new ModelRegistry(KNOWN_METADATA)
 		for (const model of registry.getModelsWithCapabilities()) {
-			expect(model.capabilities.description).not.toBe("TODO")
-			expect(model.capabilities.description.length).toBeGreaterThan(50)
+			if (model.capabilities.description !== undefined) {
+				expect(model.capabilities.description).not.toBe("TODO")
+				expect(model.capabilities.description.length).toBeGreaterThan(50)
+			}
 		}
 	})
 

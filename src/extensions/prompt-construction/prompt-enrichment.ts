@@ -118,7 +118,8 @@ function readMultiModelArgv(): boolean {
 
 let multiModelEnabled = readMultiModelArgv()
 
-const DELEGATION_TOOL_NAMES = new Set(["Agent"])
+export const ORCHESTRATOR_MODEL_ID = "kimi-k2.6"
+const DELEGATION_TOOL_NAMES = new Set(["Agent", "subagent"])
 
 function isDelegationToolCallName(name: string | undefined): boolean {
 	return name != null && DELEGATION_TOOL_NAMES.has(name)
@@ -249,6 +250,19 @@ export default function (skillPaths: string[]) {
 						}
 						return undefined
 					})
+				}
+
+				// In multi-model mode the orchestrator must always be kimi-k2.6.
+				// Force-switch if the user has a different model selected via /models.
+				if (multiModelEnabled && ctx.model?.id !== ORCHESTRATOR_MODEL_ID) {
+					const orchestratorModel = ctx.modelRegistry?.find("kimchi-dev", ORCHESTRATOR_MODEL_ID)
+					if (orchestratorModel) {
+						try {
+							await pi.setModel(orchestratorModel)
+						} catch (err) {
+							console.warn("failed to force orchestrator model:", err)
+						}
+					}
 				}
 			})
 
@@ -381,7 +395,6 @@ export default function (skillPaths: string[]) {
 				homeDir: cachedHomeDir,
 				cwd: ctx.cwd,
 				documentsDir: join(ctx.cwd, ".kimchi", "docs"),
-				currentTime: now.toISOString(),
 				localDate: now.toLocaleDateString("en-CA"),
 				isGitRepo,
 				gitBranch: isGitRepo ? getGitBranch(ctx.cwd) : undefined,
@@ -396,7 +409,7 @@ export default function (skillPaths: string[]) {
 				env,
 				contextFiles: cachedContextFiles,
 				skills: cachedSkills,
-				currentModelId: ctx.model?.id,
+				currentModelId: mode === "orchestrator" ? ORCHESTRATOR_MODEL_ID : ctx.model?.id,
 				currentPhase: getCurrentPhase(),
 				registry: registry,
 				mode,

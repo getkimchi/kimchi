@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import {
@@ -26,8 +26,23 @@ vi.mock("../../ferment/shorten-title.js", () => ({
 	shortenTitle: vi.fn(async (input: string) => input),
 }))
 
+const tipWidgetLocationMock = vi.hoisted(() => ({
+	restore: vi.fn(),
+	set: vi.fn(),
+}))
+
+vi.mock("../tips/index.js", () => ({
+	setTipWidgetLocation: tipWidgetLocationMock.set,
+}))
+
 const writeFileSyncMock = vi.mocked(writeFileSync)
 const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs")
+
+beforeEach(() => {
+	tipWidgetLocationMock.restore.mockReset()
+	tipWidgetLocationMock.set.mockReset()
+	tipWidgetLocationMock.set.mockReturnValue(tipWidgetLocationMock.restore)
+})
 
 afterEach(() => {
 	writeFileSyncMock.mockReset()
@@ -149,6 +164,8 @@ describe("FermentCommandController", () => {
 
 		await startInteractiveFerment({ pi: h.pi, ctx, runtime: h.runtime })
 
+		expect(tipWidgetLocationMock.set).toHaveBeenCalledWith("hidden")
+		expect(tipWidgetLocationMock.restore).toHaveBeenCalled()
 		expect(ui.select).not.toHaveBeenCalled()
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({

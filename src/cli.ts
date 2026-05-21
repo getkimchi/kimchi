@@ -17,7 +17,7 @@ import {
 } from "./config.js"
 import { isBunBinary } from "./env.js"
 import agentsExtension from "./extensions/agents/index.js"
-import bashCollapseExtension from "./extensions/bash-collapse.js"
+import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
@@ -34,7 +34,7 @@ import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import permissionsExtension from "./extensions/permissions/index.js"
-import { reserveShiftTabForPermissions } from "./extensions/permissions/keybindings.js"
+import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire.js"
@@ -45,7 +45,11 @@ import stripImagesExtension from "./extensions/strip-images.js"
 import tagsExtension from "./extensions/tags.js"
 import telemetryExtension from "./extensions/telemetry.js"
 import terminalColorsExtension from "./extensions/terminal-colors.js"
-import toolRendererExtension from "./extensions/tool-renderer.js"
+import { probeKittyKeyboardSupport } from "./extensions/terminal-compat/keyboard-capability.js"
+import { emitTerminalCompatWarning } from "./extensions/terminal-compat/startup-warning.js"
+import thinkingStepsExtension from "./extensions/thinking-steps/index.js"
+import tipsExtension from "./extensions/tips/index.js"
+import toolRenderingExtension from "./extensions/tool-rendering.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
@@ -69,6 +73,7 @@ let sessionStarted = false
 // at module load, before anything else runs.
 const cliMode = getCliModeArg(process.argv.slice(2))
 const acpMode = cliMode === "acp"
+const teleportMode = isTeleportFlag(process.argv.slice(2))
 const helpOrVersion = isHelpOrVersionArgs(process.argv.slice(2))
 
 // Internal control signal: setup cancellation must skip harness/extensions
@@ -102,6 +107,13 @@ function sessionIdCaptureExtension(pi: ExtensionAPI) {
 			// ignore — exit handler falls back to --continue
 		}
 	})
+}
+
+function isTeleportFlag(args: string[]): boolean {
+	for (const a of args) {
+		if (a === "--teleport") return true
+	}
+	return false
 }
 
 try {
@@ -173,7 +185,7 @@ try {
 
 		// Must run before main() so the keybindings file is loaded with the
 		// override in place.
-		reserveShiftTabForPermissions(agentDir)
+		writeKimchiKeybindingDefaults(agentDir)
 
 		// Share the discovered model metadata with extensions before main() runs.
 		// prompt-enrichment reads this to build ModelRegistry with live model IDs.
@@ -225,7 +237,14 @@ try {
 		// the kimchi-minimal-tints and terminal-colors extensions. Skip in ACP mode —
 		// stdout is the JSON-RPC channel and OSC escapes would corrupt the IDE's
 		// input stream.
-		if (!acpMode) await probeTerminalBackground()
+		if (!acpMode) {
+			await probeTerminalBackground()
+			await probeKittyKeyboardSupport()
+		}
+
+		// Emit warnings for terminals that don't support modifier-aware Enter.
+		// Runs after the keyboard-capability probe so the result is available.
+		emitTerminalCompatWarning(agentDir)
 
 		// Compare contents and only write when they differ. Restarts in a second
 		// terminal must be byte-identical no-ops because pi runs `fs.watch` on the
@@ -284,7 +303,6 @@ try {
 			stdinIsTTY: process.stdin.isTTY === true,
 			stdoutIsTTY: process.stdout.isTTY === true,
 		})
-
 		const extensionFactories = [
 			startupUpdateExtension,
 			sessionIdCaptureExtension,
@@ -292,7 +310,6 @@ try {
 			statsExtension,
 			terminalColorsExtension,
 			kimchiMinimalTintsExtension,
-			bashCollapseExtension,
 			loopGuardExtension,
 			lspExtension,
 			mcpAdapterExtension,
@@ -305,13 +322,16 @@ try {
 			promptSummaryExtension,
 			contextCompactorExtension,
 			hideThinkingExtension,
+			thinkingStepsExtension,
+			assistantPrefixExtension,
 			clipboardImageExtension,
 			uiExtension,
 			sessionModeOnboarding,
+			tipsExtension(),
 			agentsExtension,
 			tagsExtension,
 			telemetryExtension(telemetryConfig),
-			toolRendererExtension,
+			toolRenderingExtension,
 			webFetchExtension,
 			webSearchExtension,
 			loginExtension,
@@ -325,6 +345,19 @@ try {
 		if (acpMode) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
 			await runAcpMode({ extensionFactories, agentDir })
+		} else if (teleportMode) {
+			if (!apiKey) {
+				console.error("Error: --teleport requires an API key — run 'kimchi setup' first.")
+				process.exit(1)
+			}
+
+			const { runTeleportSession } = await import("./modes/teleport/run-interactive-teleport.js")
+			await runTeleportSession({
+				extensionFactories,
+				agentDir,
+				apiKey: apiKey ?? "",
+				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+			})
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
 			const { main } = await import("@earendil-works/pi-coding-agent")

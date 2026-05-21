@@ -8,6 +8,7 @@ import {
 	truncateToWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui"
+import { renderTipText } from "../tips/tip-row.js"
 
 export type SessionModePickerChoice = "ferment" | "default"
 export type SessionModePickerResult = { choice: SessionModePickerChoice; hideDialog: boolean } | "cancelled"
@@ -29,23 +30,25 @@ export interface SessionModePickerReduceResult {
 	result?: SessionModePickerResult
 }
 
-export const SESSION_MODE_PICKER_HEADING = "Choose your session mode"
-export const SESSION_MODE_PICKER_TIP = "Tip: you can start a ferment session with /ferment anytime"
+export const SESSION_MODE_PICKER_HEADING = "Choose your workflow"
+export const SESSION_MODE_PICKER_HINT = "Use `/ferment` anytime to start a Ferment workflow."
 
 export const SESSION_MODE_PICKER_OPTIONS: SessionModePickerOption[] = [
 	{
 		value: "ferment",
-		label: "Ferment session",
-		description: "Agent runs the full task end-to-end. You review the result.",
+		label: "Ferment",
+		description:
+			"Start a new ferment workflow. Agent plans and executes multi-step tasks end-to-end. You review the result.",
 	},
 	{
 		value: "default",
-		label: "Default session",
-		description: "Standard coding harness experience outside of the active ferment.",
+		label: "Coding session",
+		description: "Chat with the agent and steer it as it goes. Stay in the loop.",
 	},
 ]
 
 export const SESSION_MODE_PICKER_HIDE_LABEL = "Hide this dialog"
+export const SESSION_MODE_PICKER_HIDE_HINT = "Space toggle"
 
 export interface SessionModePickerOptions {
 	showHideCheckbox?: boolean
@@ -125,11 +128,13 @@ export function renderSessionModePickerLines(
 		const label = state.hideDialog
 			? theme.fg("success", SESSION_MODE_PICKER_HIDE_LABEL)
 			: theme.fg("text", SESSION_MODE_PICKER_HIDE_LABEL)
-		add(`${indent}${checkbox} ${label}`)
+		add(`${indent}${checkbox} ${label}  ${theme.fg("dim", SESSION_MODE_PICKER_HIDE_HINT)}`)
 	}
 
 	add("")
-	add(`${indent}${theme.fg("success", SESSION_MODE_PICKER_TIP)}`)
+	for (const line of renderTipText(SESSION_MODE_PICKER_HINT, theme, innerWidth)) {
+		add(`${indent}${line}`)
+	}
 	add("")
 	return lines
 }
