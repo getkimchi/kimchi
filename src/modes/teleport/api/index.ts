@@ -2,7 +2,7 @@
 
 export { authenticateRemoteSession } from "./authenticate.js"
 export { getMe } from "./me.js"
-export { listRemoteSessions } from "./sessions.js"
+export { deleteRemoteSession, listRemoteSessions } from "./sessions.js"
 export { waitForSessionReady } from "./readiness.js"
 export { verifyApiKey } from "./keys.js"
 export { resolveEndpoint } from "./http.js"

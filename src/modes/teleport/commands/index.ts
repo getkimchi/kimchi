@@ -1,8 +1,8 @@
 // Re-export all commands and foundations
 export { TeleportRefusal, refuse, warn, info, status } from "./errors.js"
 export { resolveSessionTarget, readSessionId, readSessionName } from "./session-resolve.js"
+export type { TeleportContext } from "./types.js"
 export {
-	TeleportContext,
 	STATUS_KEY,
 	SANDBOX_USER,
 	SANDBOX_HOME,
@@ -25,5 +25,5 @@ export {
 export { runTeleport } from "./teleport.js"
 export { runAttach } from "./attach.js"
 export { runDetach } from "./detach.js"
-export { runConnect, RunConnectInternals } from "./connect.js"
+export { runConnect, type RunConnectInternals } from "./connect.js"
 export { runListSessions } from "./sessions.js"

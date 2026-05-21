@@ -1,4 +1,4 @@
-import { getMe, listRemoteSessions } from "../api/index.js"
+import { deleteRemoteSession, getMe, listRemoteSessions } from "../api/index.js"
 import type { RemoteAgentSession } from "../proxy/agent-session.js"
 import type { RemoteSessionSummary } from "../types.js"
 import { createSessionsPanel } from "../ui/sessions-panel.js"
@@ -104,5 +104,17 @@ export async function runListSessions(ctx: TeleportContext): Promise<void> {
 		await runAttach({ target: result.sessionId }, ctx)
 	} else if (result.action === "connect") {
 		await runConnect({ target: result.sessionId }, ctx)
+	} else if (result.action === "delete") {
+		const confirmed = await ctx.ui.confirm(
+			"Delete session",
+			`Are you sure you want to delete session "${result.sessionId}"?`,
+		)
+		if (!confirmed) return
+		try {
+			await deleteRemoteSession(ctx.apiKey, result.sessionId, { endpoint: ctx.endpoint })
+			info(ctx, `Session "${result.sessionId}" deleted.`)
+		} catch (err) {
+			warn(ctx, `Failed to delete session: ${err instanceof Error ? err.message : String(err)}`)
+		}
 	}
 }

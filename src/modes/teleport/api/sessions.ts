@@ -204,6 +204,31 @@ function mapSessionToSummary(raw: unknown, endpoint: string): RemoteSessionSumma
 	}
 }
 
+export async function deleteRemoteSession(
+	apiKey: string,
+	sessionId: string,
+	options?: AuthenticateOptions,
+): Promise<void> {
+	const fetchImpl = options?.fetch ?? globalThis.fetch
+	const endpoint = resolveEndpoint(options)
+
+	const orgId = await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })
+
+	const url = `${endpoint}/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/sessions/${encodeURIComponent(sessionId)}`
+	const resp = await fetchWithTimeout(
+		url,
+		{
+			method: "DELETE",
+			headers: {
+				Authorization: `Bearer ${apiKey}`,
+			},
+		},
+		fetchImpl,
+	)
+
+	await checkResponse(resp, url)
+}
+
 function mapSessionStatus(raw: unknown): RemoteSessionStatus {
 	switch (raw) {
 		case "ACTIVE":

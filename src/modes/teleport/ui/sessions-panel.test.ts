@@ -205,6 +205,19 @@ describe("SessionsPanel", () => {
 			expect(done).toHaveBeenCalledWith({ action: "connect", sessionId: "sess-3" })
 		})
 
+		it("Shift+D triggers delete action with selected session", () => {
+			const { panel, done } = makePanel()
+			panel.handleInput("D") // Shift+D
+			expect(done).toHaveBeenCalledWith({ action: "delete", sessionId: "sess-1" })
+		})
+
+		it("Shift+D after navigation selects correct session", () => {
+			const { panel, done } = makePanel()
+			panel.handleInput("j") // move to sess-2
+			panel.handleInput("D") // Shift+D
+			expect(done).toHaveBeenCalledWith({ action: "delete", sessionId: "sess-2" })
+		})
+
 		it("escape closes without action", () => {
 			const { panel, done } = makePanel()
 			panel.handleInput("\x1b") // escape

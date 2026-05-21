@@ -6,7 +6,7 @@ import { formatRelativeTime } from "./sessions-table.js"
 
 // ── Types ──────────────────────────────────────────────────────────
 
-export type SessionPickerAction = "attach" | "connect"
+export type SessionPickerAction = "attach" | "connect" | "delete"
 
 export interface SessionPickerResult {
 	action: SessionPickerAction
@@ -85,6 +85,10 @@ export class SessionsPanel implements Component {
 		}
 		if (matchesKey(data, "s")) {
 			this.done({ action: "connect", sessionId: this.rows[this.selectedIndex].id })
+			return
+		}
+		if (matchesKey(data, "shift+d")) {
+			this.done({ action: "delete", sessionId: this.rows[this.selectedIndex].id })
 			return
 		}
 		if (matchesKey(data, "escape") || matchesKey(data, "q")) {
@@ -176,7 +180,7 @@ export class SessionsPanel implements Component {
 
 		// Hint
 		emptyRow() // spacing
-		const hintText = "↑/↓ j/k: navigate  enter/a: attach  s: connect  esc: close"
+		const hintText = "↑/↓ j/k: navigate  enter/a: attach  s: connect  D: delete  esc: close"
 		lines.push(ansiRow(dim(`  ${hintText}`), hintText.length + 2))
 
 		// Bottom border
