@@ -49,7 +49,11 @@ function createHarness(options: {
 	const unsubscribe = vi.fn()
 	const ui = {
 		setWidget: vi.fn((_: string, content: unknown) => {
-			if (typeof content === "function") content(tui, theme())
+			if (typeof content === "function") {
+				activeComponent = content(tui, theme()) as CustomComponent
+			} else {
+				activeComponent = undefined
+			}
 		}),
 		onTerminalInput: vi.fn((handler: TerminalInputHandler) => {
 			inputHandler = handler
@@ -135,9 +139,8 @@ describe("session mode startup integration", () => {
 
 		await harness.start()
 
-		expect(harness.ui.custom).toHaveBeenCalled()
-		expect(harness.ui.setWidget).not.toHaveBeenCalled()
-		expect(harness.ui.onTerminalInput).not.toHaveBeenCalled()
+		expect(harness.ui.setWidget).toHaveBeenCalled()
+		expect(harness.ui.onTerminalInput).toHaveBeenCalled()
 	})
 
 	it("shows returning launches with existing onboarding state", async () => {
@@ -146,9 +149,8 @@ describe("session mode startup integration", () => {
 
 		await harness.start()
 
-		expect(harness.ui.custom).toHaveBeenCalled()
-		expect(harness.ui.setWidget).not.toHaveBeenCalled()
-		expect(harness.ui.onTerminalInput).not.toHaveBeenCalled()
+		expect(harness.ui.setWidget).toHaveBeenCalled()
+		expect(harness.ui.onTerminalInput).toHaveBeenCalled()
 	})
 
 	it("skips launches when the session mode dialog has been hidden", async () => {
