@@ -23,9 +23,8 @@ export {
 	rsyncInstallHint,
 	sleep,
 } from "./teleport-helpers.js"
-export { runTeleport, deriveSandboxDestFromRepoUrl } from "./teleport.js"
-export { runAttach } from "./attach.js"
-export { runDetach } from "./detach.js"
+export { runTeleport, deriveSandboxDestFromRepoUrl, type RunTeleportInternals } from "./teleport.js"
+export { runAttach, type RunAttachInternals } from "./attach.js"
 export { runConnect, type RunConnectInternals } from "./connect.js"
 export { runListSessions } from "./sessions.js"
 export { runSync } from "./sync.js"

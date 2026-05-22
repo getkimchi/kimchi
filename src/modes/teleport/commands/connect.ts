@@ -5,7 +5,6 @@ import { buildProxyCommand } from "../proxy/proxy-command.js"
 import { runChildWithTTYHandoff as runChildWithTTYHandoffImpl } from "../ui/tty-handoff.js"
 import type { ConnectArgs } from "./args.js"
 import { info, refuse, status, warn } from "./errors.js"
-import { readSessionId } from "./session-resolve.js"
 import { resolveSessionTarget } from "./session-resolve.js"
 import { propagateGitCredentialToSandbox } from "./teleport-helpers.js"
 import { SANDBOX_USER, type TeleportContext } from "./types.js"
@@ -21,22 +20,16 @@ export async function runConnect(
 	ctx: TeleportContext,
 	internals: RunConnectInternals = {},
 ): Promise<void> {
-	const wrapper = ctx.wrapper
 	const runChild = internals._runChildWithTTYHandoff ?? runChildWithTTYHandoffImpl
 
 	let sessionId: string
 	if (args.target) {
 		const resolved = await resolveSessionTarget(args.target.trim(), ctx)
 		sessionId = resolved.sessionId
+	} else if (ctx.lastSessionId) {
+		sessionId = ctx.lastSessionId
 	} else {
-		if (wrapper.isForegroundHomeBase) {
-			refuse(ctx, "Not connected to a remote session. Pass a name/id to /connect, or use /teleport or /attach first.")
-		}
-		const fgId = readSessionId(wrapper.foreground as unknown as import("../proxy/agent-session.js").RemoteAgentSession)
-		if (!fgId) {
-			refuse(ctx, "Foreground remote has no session id; cannot connect.")
-		}
-		sessionId = fgId
+		refuse(ctx, "No active remote session. Pass a name/id to /connect, or use /teleport or /attach first.")
 	}
 
 	status(ctx, "Authenticating SSH…")
@@ -57,7 +50,7 @@ export async function runConnect(
 	status(ctx, undefined)
 
 	// ── Git credentials propagation (once per session per CLI run) ──
-	if (!wrapper.hasGitCredentialsSynced(sessionId)) {
+	if (!ctx.gitCredentialsSynced.has(sessionId)) {
 		const gitHost = await getGitRemoteHost(ctx.cwd)
 		if (gitHost) {
 			const gitToken = readGitToken(gitHost, ctx.configPath)
@@ -71,7 +64,7 @@ export async function runConnect(
 						gitToken,
 						signal: ctx.signal,
 					})
-					wrapper.markGitCredentialsSynced(sessionId)
+					ctx.gitCredentialsSynced.add(sessionId)
 				} catch (err) {
 					warn(
 						ctx,

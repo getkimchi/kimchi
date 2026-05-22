@@ -9,7 +9,7 @@ function makeRow(overrides: Partial<SessionRow>): SessionRow {
 		id: "abcd1234efgh",
 		host: "x-y-z.remote.kimchi.dev",
 		name: "feature-x",
-		state: "foreground",
+		state: "active (this kimchi)",
 		status: "idle",
 		createdAt: new Date(NOW.getTime() - 60_000),
 		lastActivityAt: new Date(NOW.getTime() - 60_000),
@@ -19,12 +19,12 @@ function makeRow(overrides: Partial<SessionRow>): SessionRow {
 
 const testRows: SessionRow[] = [
 	makeRow({ id: "sess-1", host: "host-a.example.com", name: "my-session", status: "active" }),
-	makeRow({ id: "sess-2", host: "host-b.example.com", name: "other-session", state: "detached", status: "idle" }),
+	makeRow({ id: "sess-2", host: "host-b.example.com", name: "other-session", state: "available", status: "idle" }),
 	makeRow({
 		id: "sess-3",
 		host: undefined,
 		name: "third",
-		state: "detached (this kimchi)",
+		state: "active (this kimchi)",
 		status: "idle",
 	}),
 ]

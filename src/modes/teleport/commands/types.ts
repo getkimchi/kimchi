@@ -1,13 +1,7 @@
-import type {
-	AgentSession,
-	AgentSessionServices,
-	ExtensionUIContext,
-	SessionManager,
-} from "@earendil-works/pi-coding-agent"
-import type { TeleportableAgentSession } from "../proxy/teleportable-session.js"
+import type { AgentSession, AgentSessionServices, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 
 export interface TeleportContext {
-	wrapper: TeleportableAgentSession
+	session: AgentSession
 	services: AgentSessionServices
 	apiKey: string
 	endpoint?: string
@@ -17,29 +11,16 @@ export interface TeleportContext {
 	/** Path to the global config file (for git token persistence). */
 	configPath?: string
 	/**
-	 * Asks InteractiveMode to re-bind its session listeners to the wrapper's
-	 * current foreground. Must be invoked after `wrapper.foregroundRemote` or
-	 * `wrapper.detachToHomeBase`, otherwise the TUI stays bound to the old
-	 * session and the editor appears frozen. Captured by run-interactive-teleport.
+	 * Tracks which remote session IDs have had git credentials synced
+	 * during this CLI run. Prevents redundant SSH calls on repeated
+	 * /attach or /connect invocations to the same session.
 	 */
-	triggerRebind?: () => Promise<void>
+	gitCredentialsSynced: Set<string>
 	/**
-	 * Mirrors pi-mono's post-`switchSession` UI reset: clears extension
-	 * overlays/shortcuts/widgets and resets the chat container to the new
-	 * foreground's message history. Required *after* `triggerRebind` so the
-	 * editor reflects the swapped foreground; without it the chat keeps
-	 * showing the previous session's state and submits look like they do
-	 * nothing.
+	 * The most recently used remote session ID, set by /teleport and /attach.
+	 * Used by /connect and /sync when invoked without an explicit target.
 	 */
-	triggerFreshUI?: () => void
-	/**
-	 * Called with the resolved host string right before the UI refresh that
-	 * follows a foreground swap. The teleport extension uses this to set the
-	 * session indicator **before** `resetExtensionUI` + `rebindCurrentSession`
-	 * re-create the prompt editor, so the editor factory picks up the
-	 * indicator text from the module-level cache on first render.
-	 */
-	onHostResolved?: (host: string) => void
+	lastSessionId?: string
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────

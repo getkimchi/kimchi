@@ -210,6 +210,17 @@ function mapSessionToSummary(raw: unknown, endpoint: string): RemoteSessionSumma
 	}
 }
 
+export async function renameRemoteSession(
+	apiKey: string,
+	sessionId: string,
+	newName: string,
+	options?: AuthenticateOptions,
+): Promise<void> {
+	const fetchImpl = options?.fetch ?? globalThis.fetch
+	const orgId = await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })
+	await createOrUpdateSession(orgId, sessionId, apiKey, newName, { ...options, fetch: fetchImpl })
+}
+
 export async function deleteRemoteSession(
 	apiKey: string,
 	sessionId: string,

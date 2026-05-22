@@ -6,8 +6,6 @@ import type {
 	ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { RemoteAgentSession } from "../proxy/agent-session.js"
-import { TeleportableAgentSession } from "../proxy/teleportable-session.js"
 
 const { authMock, rsyncMock } = vi.hoisted(() => ({
 	authMock: vi.fn(),
@@ -95,9 +93,6 @@ class FakeSession {
 function asSession(f: FakeSession): AgentSession {
 	return f as unknown as AgentSession
 }
-function asRemote(f: FakeSession): RemoteAgentSession {
-	return f as unknown as RemoteAgentSession
-}
 
 function makeUI() {
 	return {
@@ -119,22 +114,20 @@ function makeUI() {
 	}
 }
 
-function makeCtx(homeBase: FakeSession) {
-	const wrapper = TeleportableAgentSession.create(asSession(homeBase))
+function makeCtx(homeBase: FakeSession, lastSessionId?: string) {
 	const ui = makeUI()
 	const services = {} as unknown as AgentSessionServices
-	return {
-		wrapper,
+	const ctx: import("./types.js").TeleportContext = {
+		session: asSession(homeBase),
+		services,
+		apiKey: "test-key",
+		endpoint: "https://api.example.com",
+		cwd: "/work/proj",
 		ui,
-		ctx: {
-			wrapper,
-			services,
-			apiKey: "test-key",
-			endpoint: "https://api.example.com",
-			cwd: "/work/proj",
-			ui,
-		},
+		gitCredentialsSynced: new Set(),
+		lastSessionId,
 	}
+	return { ui, ctx }
 }
 
 const AUTH_OK = {
@@ -183,7 +176,7 @@ afterEach(() => {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe("runSync", () => {
-	it("refuses when on home base (no remote session)", async () => {
+	it("refuses when no lastSessionId (no remote session)", async () => {
 		const home = new FakeSession("local-1")
 		const { ctx } = makeCtx(home)
 
@@ -193,9 +186,7 @@ describe("runSync", () => {
 
 	it("refuses when rsync is not on PATH", async () => {
 		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
+		const { ctx } = makeCtx(home, "remote-1")
 
 		execAsyncMock.mockImplementation(async (cmd: string) => {
 			if (cmd.includes("command -v rsync")) throw new Error("not found")
@@ -207,9 +198,7 @@ describe("runSync", () => {
 
 	it("syncs up: calls runRsync with direction=up and correct paths", async () => {
 		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
+		const { ctx } = makeCtx(home, "remote-1")
 
 		await runSync(DEFAULT_UP_ARGS, ctx)
 
@@ -230,9 +219,7 @@ describe("runSync", () => {
 
 	it("syncs down: calls runRsync with direction=down and correct paths", async () => {
 		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
+		const { ctx } = makeCtx(home, "remote-1")
 
 		await runSync(DEFAULT_DOWN_ARGS, ctx)
 
@@ -246,9 +233,7 @@ describe("runSync", () => {
 
 	it("passes sub-path when specified", async () => {
 		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
+		const { ctx } = makeCtx(home, "remote-1")
 
 		await runSync({ ...DEFAULT_UP_ARGS, path: "src/lib" }, ctx)
 
@@ -259,9 +244,7 @@ describe("runSync", () => {
 
 	it("uses parent directory and fileFilter for single-file down sync", async () => {
 		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
+		const { ctx } = makeCtx(home, "remote-1")
 
 		// Path with a dot in the last segment and no trailing slash → treated as a file
 		await runSync({ ...DEFAULT_DOWN_ARGS, path: "src/main.go" }, ctx)
@@ -277,9 +260,7 @@ describe("runSync", () => {
 
 	it("treats paths ending with / as directories even if they contain a dot", async () => {
 		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
+		const { ctx } = makeCtx(home, "remote-1")
 
 		await runSync({ ...DEFAULT_DOWN_ARGS, path: "src/v2.0/" }, ctx)
 
@@ -290,9 +271,7 @@ describe("runSync", () => {
 
 	it("forwards --delete flag", async () => {
 		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
+		const { ctx } = makeCtx(home, "remote-1")
 
 		await runSync({ ...DEFAULT_UP_ARGS, delete: true }, ctx)
 
@@ -302,9 +281,7 @@ describe("runSync", () => {
 
 	it("forwards --dry-run flag", async () => {
 		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
+		const { ctx } = makeCtx(home, "remote-1")
 
 		await runSync({ ...DEFAULT_UP_ARGS, dryRun: true }, ctx)
 
@@ -314,9 +291,7 @@ describe("runSync", () => {
 
 	it("forwards --exclude globs", async () => {
 		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
+		const { ctx } = makeCtx(home, "remote-1")
 
 		await runSync({ ...DEFAULT_UP_ARGS, exclude: ["*.bak", "tmp/"] }, ctx)
 
@@ -327,9 +302,7 @@ describe("runSync", () => {
 
 	it("forwards --include-ignored flag", async () => {
 		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
+		const { ctx } = makeCtx(home, "remote-1")
 
 		await runSync({ ...DEFAULT_UP_ARGS, includeIgnored: true }, ctx)
 
@@ -339,9 +312,7 @@ describe("runSync", () => {
 
 	it("reports success info to the UI", async () => {
 		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		const { wrapper, ctx, ui } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
+		const { ctx, ui } = makeCtx(home, "remote-1")
 
 		await runSync(DEFAULT_UP_ARGS, ctx)
 
@@ -355,9 +326,7 @@ describe("runSync", () => {
 
 	it("reports dry-run prefix on completion", async () => {
 		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		const { wrapper, ctx, ui } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
+		const { ctx, ui } = makeCtx(home, "remote-1")
 
 		await runSync({ ...DEFAULT_UP_ARGS, dryRun: true }, ctx)
 
@@ -368,9 +337,7 @@ describe("runSync", () => {
 
 	it("refuses cleanly when rsync fails", async () => {
 		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
+		const { ctx } = makeCtx(home, "remote-1")
 
 		rsyncMock.mockRejectedValueOnce(new Error("connection closed"))
 
@@ -379,9 +346,7 @@ describe("runSync", () => {
 
 	it("refuses cleanly when auth fails", async () => {
 		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
+		const { ctx } = makeCtx(home, "remote-1")
 
 		authMock.mockRejectedValueOnce(new Error("forbidden"))
 
@@ -390,9 +355,7 @@ describe("runSync", () => {
 
 	it("clears status after sync (success path)", async () => {
 		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		const { wrapper, ctx, ui } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
+		const { ctx, ui } = makeCtx(home, "remote-1")
 
 		await runSync(DEFAULT_UP_ARGS, ctx)
 
@@ -404,9 +367,7 @@ describe("runSync", () => {
 
 	it("clears status after sync (failure path)", async () => {
 		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		const { wrapper, ctx, ui } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
+		const { ctx, ui } = makeCtx(home, "remote-1")
 
 		rsyncMock.mockRejectedValueOnce(new Error("oops"))
 

@@ -1,5 +1,7 @@
 export interface TeleportArgs {
 	name?: string
+	/** Tmux session name to create or attach to (default: "main"). */
+	tmuxSession?: string
 	allowDirty: boolean
 	exclude: string[]
 	includeIgnored: boolean
@@ -21,6 +23,8 @@ export interface DetachArgs {
 
 export interface AttachArgs {
 	target: string
+	/** Specific tmux session name to attach to (default: "main"). */
+	tmuxSession?: string
 }
 
 export interface ConnectArgs {
@@ -108,10 +112,13 @@ export function parseTeleportArgs(raw: string): TeleportArgs {
 				if (t.startsWith("--")) {
 					throw new TeleportArgsError(`Unknown flag: ${t}`)
 				}
-				if (result.name !== undefined) {
+				if (result.name === undefined) {
+					result.name = t
+				} else if (result.tmuxSession === undefined) {
+					result.tmuxSession = t
+				} else {
 					throw new TeleportArgsError(`Unexpected positional argument: ${t}`)
 				}
-				result.name = t
 		}
 	}
 	if (result.gitBranch && !result.gitRepo) {
@@ -168,6 +175,8 @@ export type SyncDirection = "up" | "down"
 
 export interface SyncArgs {
 	direction: SyncDirection
+	/** Optional session name, id, or host prefix to sync with. Falls back to lastSessionId. */
+	target?: string
 	/** Optional relative path within the workspace to sync (instead of the entire workspace). */
 	path?: string
 	exclude: string[]
@@ -212,6 +221,15 @@ export function parseSyncArgs(raw: string): SyncArgs {
 			case "--dry-run":
 				result.dryRun = true
 				break
+			case "--target": {
+				const next = tokens[i + 1]
+				if (!next || next.startsWith("--")) {
+					throw new TeleportArgsError("--target requires a session name, id, or host prefix")
+				}
+				result.target = next
+				i++
+				break
+			}
 			case "--exclude": {
 				const next = tokens[i + 1]
 				if (!next || next.startsWith("--")) {

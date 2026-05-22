@@ -1,139 +1,113 @@
-import type { SessionManager } from "@earendil-works/pi-coding-agent"
 import { readGitToken } from "../../../config.js"
 import { RemoteAuthError, authenticateRemoteSession } from "../api/index.js"
-import type { AuthenticateResponse } from "../api/types.js"
 import { getGitRemoteHost } from "../git-credentials.js"
-import type { RemoteAgentSession } from "../proxy/agent-session.js"
-import { buildRemoteAgentSession } from "../proxy/builder.js"
-import { createTeleportProgress } from "../ui/progress.js"
+import { buildProxyCommand } from "../proxy/proxy-command.js"
+import { runChildWithTTYHandoff as runChildWithTTYHandoffImpl } from "../ui/tty-handoff.js"
 import type { AttachArgs } from "./args.js"
-import { TeleportRefusal, info, refuse, status, warn } from "./errors.js"
+import { info, refuse, status, warn } from "./errors.js"
 import { resolveSessionTarget } from "./session-resolve.js"
 import { propagateGitCredentialToSandbox } from "./teleport-helpers.js"
-import { SANDBOX_USER, type TeleportContext } from "./types.js"
+import { SANDBOX_HOME, SANDBOX_USER, type TeleportContext } from "./types.js"
 
-async function rebindAfterSwap(ctx: TeleportContext): Promise<void> {
-	if (!ctx.triggerRebind) return
-	try {
-		await ctx.triggerRebind()
-	} catch (err) {
-		warn(ctx, `Session rebind failed: ${err instanceof Error ? err.message : String(err)}`)
-	}
+const SANDBOX_KIMCHI_BIN = `${SANDBOX_HOME}/.local/bin/kimchi`
+
+type RunChildFn = typeof runChildWithTTYHandoffImpl
+
+export interface RunAttachInternals {
+	_runChildWithTTYHandoff?: RunChildFn
 }
 
-async function refreshUIAfterSwap(ctx: TeleportContext): Promise<void> {
-	if (ctx.triggerFreshUI) {
-		try {
-			ctx.triggerFreshUI()
-		} catch (err) {
-			warn(ctx, `UI refresh failed: ${err instanceof Error ? err.message : String(err)}`)
-		}
-	}
-	await rebindAfterSwap(ctx)
-}
-
-export async function runAttach(args: AttachArgs, ctx: TeleportContext): Promise<{ host: string }> {
-	const wrapper = ctx.wrapper
-	if (!wrapper.isForegroundHomeBase) {
-		refuse(ctx, "Already on a remote session. Use /detach first.")
-	}
+export async function runAttach(
+	args: AttachArgs,
+	ctx: TeleportContext,
+	internals: RunAttachInternals = {},
+): Promise<void> {
+	const runChild = internals._runChildWithTTYHandoff ?? runChildWithTTYHandoffImpl
 
 	const target = args.target.trim()
 	if (!target) {
 		refuse(ctx, "Usage: /attach <name-or-id>")
 	}
 
-	const progress = createTeleportProgress(ctx.ui)
+	status(ctx, "Looking up session…")
+	const resolved = await resolveSessionTarget(target, ctx)
+	const sessionId = resolved.sessionId
+	status(ctx, undefined)
 
+	status(ctx, "Authenticating SSH…")
+	let auth: import("../api/types.js").AuthenticateResponse
 	try {
-		progress.step("Looking up session")
-		const resolved = await resolveSessionTarget(target, ctx)
-		const sessionId = resolved.sessionId
-		progress.complete("Session found")
-
-		if (resolved.knownLocally) {
-			try {
-				wrapper.promoteFromDetached(sessionId)
-			} catch {
-				// already removed or never there — fine
-			}
+		auth = await authenticateRemoteSession(
+			sessionId,
+			ctx.apiKey,
+			`Remote session for ${require("node:path").basename(ctx.cwd)}`,
+			{ endpoint: ctx.endpoint },
+		)
+	} catch (err) {
+		if (err instanceof RemoteAuthError) {
+			refuse(ctx, `Authentication failed for ${sessionId}: ${err.message}`)
 		}
+		refuse(ctx, `Authentication failed: ${err instanceof Error ? err.message : String(err)}`)
+	}
+	status(ctx, undefined)
 
-		progress.step("Authenticating")
-		let authResult: AuthenticateResponse
-		try {
-			authResult = await authenticateRemoteSession(
-				sessionId,
-				ctx.apiKey,
-				`Remote session for ${require("node:path").basename(ctx.cwd)}`,
-				{ endpoint: ctx.endpoint },
-			)
-		} catch (err) {
-			if (err instanceof RemoteAuthError) {
-				refuse(ctx, `Authentication failed for ${sessionId}: ${err.message}`)
-			}
-			refuse(ctx, `Authentication failed: ${err instanceof Error ? err.message : String(err)}`)
-		}
-		progress.complete("Authenticated")
-
-		// ── Git credentials propagation (once per session per CLI run) ──
-		if (!wrapper.hasGitCredentialsSynced(sessionId)) {
-			const gitHost = await getGitRemoteHost(ctx.cwd)
-			if (gitHost) {
-				const gitToken = readGitToken(gitHost, ctx.configPath)
-				if (gitToken) {
-					progress.step("Configuring git credentials")
-					try {
-						await propagateGitCredentialToSandbox({
-							remoteHost: authResult.host,
-							remoteUser: SANDBOX_USER,
-							authToken: authResult.connectToken,
-							gitHost,
-							gitToken,
-							signal: ctx.signal,
-						})
-						wrapper.markGitCredentialsSynced(sessionId)
-						progress.complete("Git credentials configured")
-					} catch (err) {
-						const msg = err instanceof Error ? err.message : String(err)
-						warn(ctx, `Could not configure git credentials on sandbox: ${msg}`)
-						progress.complete("Git credentials skipped")
-					}
+	// ── Git credentials propagation (once per session per CLI run) ──
+	if (!ctx.gitCredentialsSynced.has(sessionId)) {
+		const gitHost = await getGitRemoteHost(ctx.cwd)
+		if (gitHost) {
+			const gitToken = readGitToken(gitHost, ctx.configPath)
+			if (gitToken) {
+				try {
+					await propagateGitCredentialToSandbox({
+						remoteHost: auth.host,
+						remoteUser: SANDBOX_USER,
+						authToken: auth.connectToken,
+						gitHost,
+						gitToken,
+						signal: ctx.signal,
+					})
+					ctx.gitCredentialsSynced.add(sessionId)
+				} catch (err) {
+					warn(
+						ctx,
+						`Could not configure git credentials on sandbox: ${err instanceof Error ? err.message : String(err)}`,
+					)
 				}
 			}
 		}
+	}
 
-		progress.step("Connecting")
-		let remote: RemoteAgentSession
-		try {
-			remote = await buildRemoteAgentSession({
-				sessionId,
-				apiKey: ctx.apiKey,
-				description: authResult.description,
-				endpoint: ctx.endpoint,
-				services: ctx.services,
-				sessionManager: (wrapper.homeBase as { sessionManager: SessionManager }).sessionManager,
-				cwd: ctx.cwd,
-			})
-		} catch (err) {
-			refuse(ctx, `Could not connect to remote session: ${err instanceof Error ? err.message : String(err)}`)
-		}
-		progress.complete("Connected")
+	const proxyCommand = buildProxyCommand()
 
-		try {
-			await remote.getMessages()
-		} catch {
-			// Non-fatal: the chat will be empty but the session is still usable.
-		}
+	const sshArgs = [
+		"-t", // force TTY allocation — required for tmux
+		"-o",
+		`ProxyCommand=${proxyCommand}`,
+		"-o",
+		"StrictHostKeyChecking=no",
+		"-o",
+		"UserKnownHostsFile=/dev/null",
+		"-o",
+		"LogLevel=ERROR",
+		`${SANDBOX_USER}@${auth.host}`,
+		"tmux",
+		"new",
+		"-A",
+		"-s",
+		args.tmuxSession ?? "main",
+		SANDBOX_KIMCHI_BIN,
+	]
+	const env: NodeJS.ProcessEnv = { ...process.env, AUTH_TOKEN: auth.connectToken }
 
-		wrapper.foregroundRemote(remote)
-		ctx.onHostResolved?.(authResult.host)
-		await refreshUIAfterSwap(ctx)
-
-		progress.finish({ id: sessionId, url: authResult.wsUrl, description: authResult.description })
-		return { host: authResult.host }
-	} finally {
-		progress.stop()
-		status(ctx, undefined)
+	ctx.lastSessionId = sessionId
+	info(ctx, `Attaching to ${sessionId.slice(0, 8)}…`)
+	let code = 0
+	try {
+		code = await runChild({ cmd: "ssh", args: sshArgs, env, signal: ctx.signal })
+	} catch (err) {
+		refuse(ctx, `Failed to launch ssh: ${err instanceof Error ? err.message : String(err)}`)
+	}
+	if (code !== 0) {
+		warn(ctx, `ssh exited with code ${code}.`)
 	}
 }

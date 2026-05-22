@@ -2,45 +2,42 @@ import { existsSync, statSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { RemoteAuthError, authenticateRemoteSession } from "../api/index.js"
 import type { AuthenticateResponse } from "../api/types.js"
-import type { RemoteAgentSession } from "../proxy/agent-session.js"
 import { BASE_EXCLUDE_GLOBS, RsyncError, runRsync } from "../sync/rsync.js"
 import type { SyncArgs } from "./args.js"
 import { info, refuse, status, warn } from "./errors.js"
-import { readSessionId } from "./session-resolve.js"
+import { resolveSessionTarget } from "./session-resolve.js"
 import { deriveSandboxDest, rsyncInstallHint, whichRsync } from "./teleport-helpers.js"
 import { SANDBOX_USER, type TeleportContext } from "./types.js"
 
 /**
- * Rsync files between the local workspace and the foregrounded remote sandbox.
+ * Rsync files between the local workspace and a remote sandbox.
  *
  * - `/sync up`   — push local changes to the remote.
  * - `/sync down` — pull remote changes to local.
  *
  * An optional `path` narrows the sync to a sub-directory or file relative to
- * the workspace root.
+ * the workspace root. Uses the most recently teleported/attached session.
  */
 export async function runSync(args: SyncArgs, ctx: TeleportContext): Promise<void> {
-	const wrapper = ctx.wrapper
-
 	// ── Pre-flight ──
 
-	if (wrapper.isForegroundHomeBase) {
-		refuse(ctx, "Not attached to a remote session. Use /attach first, then /sync.")
+	let sessionId: string
+	if (args.target) {
+		const resolved = await resolveSessionTarget(args.target, ctx)
+		sessionId = resolved.sessionId
+	} else if (ctx.lastSessionId) {
+		sessionId = ctx.lastSessionId
+	} else {
+		refuse(ctx, "No active remote session. Pass --target <name>, or use /teleport or /attach first.")
 	}
 
 	if (!(await whichRsync())) {
 		refuse(ctx, `rsync is not on PATH. ${rsyncInstallHint()}`)
 	}
 
-	const remote = wrapper.foreground as unknown as RemoteAgentSession
-	const sessionId = readSessionId(remote)
-	if (!sessionId) {
-		refuse(ctx, "Foreground remote has no session id; cannot sync.")
-	}
-
 	// ── Authenticate for a connect token ──
 
-	status(ctx, `Syncing ${args.direction}\u2026`)
+	status(ctx, `Syncing ${args.direction}…`)
 	let authResult: AuthenticateResponse
 	try {
 		authResult = await authenticateRemoteSession(sessionId, ctx.apiKey, `Sync for ${basename(ctx.cwd)}`, {
@@ -60,7 +57,7 @@ export async function runSync(args: SyncArgs, ctx: TeleportContext): Promise<voi
 	// Detect whether the sub-path targets a single file.
 	// For "up" we can stat locally. For "down" we cannot stat the remote side,
 	// so we treat paths that don't end with "/" and whose last segment contains
-	// a dot as files (heuristic \u2014 covers the vast majority of real filenames).
+	// a dot as files (heuristic — covers the vast majority of real filenames).
 	let singleFile = false
 	if (args.path) {
 		if (args.direction === "up") {
@@ -92,10 +89,10 @@ export async function runSync(args: SyncArgs, ctx: TeleportContext): Promise<voi
 
 	// ── Rsync ──
 
-	const dirLabel = args.direction === "up" ? "local \u2192 remote" : "remote \u2192 local"
+	const dirLabel = args.direction === "up" ? "local → remote" : "remote → local"
 	const dryLabel = args.dryRun ? " (dry run)" : ""
 	const pathLabel = args.path ? ` [${args.path}]` : ""
-	info(ctx, `Syncing ${dirLabel}${pathLabel}${dryLabel}\u2026`)
+	info(ctx, `Syncing ${dirLabel}${pathLabel}${dryLabel}…`)
 
 	try {
 		const result = await runRsync({

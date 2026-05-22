@@ -7,15 +7,13 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { RemoteAuthError } from "./api/types.js"
-import type { RemoteAgentSession } from "./proxy/agent-session.js"
-import { TeleportableAgentSession } from "./proxy/teleportable-session.js"
 import type { RemoteSessionSummary } from "./types.js"
 
 type ExecAsyncImpl = (cmd: string, opts?: unknown) => Promise<{ stdout: string; stderr: string }>
 
 const cloneMock = vi.hoisted(() => vi.fn())
 
-const { execAsyncMock, execMock, authMock, listMock, getMeMock, buildMock, rsyncMock, waitMock } = vi.hoisted(() => {
+const { execAsyncMock, execMock, authMock, listMock, getMeMock, rsyncMock, waitMock } = vi.hoisted(() => {
 	const execAsyncMock = vi.fn<ExecAsyncImpl>(async () => ({ stdout: "", stderr: "" }))
 	const PROMISIFY = Symbol.for("nodejs.util.promisify.custom")
 	const execMock: { (...args: unknown[]): void; [PROMISIFY]?: typeof execAsyncMock } = Object.assign(vi.fn(), {
@@ -27,7 +25,6 @@ const { execAsyncMock, execMock, authMock, listMock, getMeMock, buildMock, rsync
 		authMock: vi.fn(),
 		listMock: vi.fn(),
 		getMeMock: vi.fn(),
-		buildMock: vi.fn(),
 		rsyncMock: vi.fn(),
 		waitMock: vi.fn(),
 	}
@@ -48,9 +45,6 @@ vi.mock("./api/index.js", () => ({
 			this.name = "RemoteAuthError"
 		}
 	},
-}))
-vi.mock("./proxy/builder.js", () => ({
-	buildRemoteAgentSession: buildMock,
 }))
 vi.mock("./sync/rsync.js", () => ({
 	runRsync: rsyncMock,
@@ -82,10 +76,10 @@ import {
 	deriveSandboxDestFromRepoUrl,
 	runAttach,
 	runConnect,
-	runDetach,
 	runListSessions,
 	runTeleport,
 } from "./commands/index.js"
+import { clearSessionCache } from "./commands/sessions.js"
 
 class FakeSession {
 	readonly sessionId: string
@@ -141,9 +135,6 @@ class FakeSession {
 function asSession(f: FakeSession): AgentSession {
 	return f as unknown as AgentSession
 }
-function asRemote(f: FakeSession): RemoteAgentSession {
-	return f as unknown as RemoteAgentSession
-}
 
 function makeUI() {
 	return {
@@ -166,30 +157,19 @@ function makeUI() {
 	}
 }
 
-function makeCtx(homeBase: FakeSession, opts: { triggerRebind?: () => Promise<void> } = {}) {
-	const wrapper = TeleportableAgentSession.create(asSession(homeBase))
+function makeCtx(homeBase: FakeSession) {
 	const ui = makeUI()
 	const services = {} as unknown as AgentSessionServices
-	const triggerRebind = opts.triggerRebind ?? vi.fn(async () => {})
-	const ctx: {
-		wrapper: TeleportableAgentSession
-		services: AgentSessionServices
-		apiKey: string
-		endpoint: string
-		cwd: string
-		ui: ReturnType<typeof makeUI>
-		triggerRebind: () => Promise<void>
-		onHostResolved?: (host: string) => void
-	} = {
-		wrapper,
+	const ctx: import("./commands/types.js").TeleportContext = {
+		session: asSession(homeBase),
 		services,
 		apiKey: "test-key",
 		endpoint: "https://api.example.com",
 		cwd: "/work/proj",
 		ui,
-		triggerRebind,
+		gitCredentialsSynced: new Set(),
 	}
-	return { wrapper, ui, triggerRebind, ctx }
+	return { ui, ctx }
 }
 
 function setExecOutputs(map: Record<string, { stdout?: string; err?: Error }>) {
@@ -219,6 +199,7 @@ const AUTH_OK = {
 }
 
 beforeEach(() => {
+	clearSessionCache()
 	// Be sure to use the local proxy-helper
 	vi.stubEnv("KIMCHI_PROXY_HELPER", "bin/proxy-helper")
 	execAsyncMock.mockReset()
@@ -227,18 +208,11 @@ beforeEach(() => {
 	listMock.mockReset()
 	getMeMock.mockReset()
 	getMeMock.mockResolvedValue({ id: "test-user" })
-	buildMock.mockReset()
 	rsyncMock.mockReset()
 	waitMock.mockReset()
+	waitMock.mockResolvedValue(undefined)
 	cloneMock.mockReset()
 	cloneMock.mockResolvedValue(undefined)
-	waitMock.mockResolvedValue({
-		id: "sess",
-		organizationId: "org",
-		status: "ACTIVE",
-		uri: "wss://host.example.com",
-		createTime: "2026-01-01T00:00:00Z",
-	})
 	setExecOutputs(HAPPY_EXEC)
 	authMock.mockResolvedValue(AUTH_OK)
 	listMock.mockResolvedValue([])
@@ -252,63 +226,69 @@ afterEach(() => {
 // ───────────────────────── runTeleport ─────────────────────────
 
 describe("runTeleport", () => {
-	it("happy path: auth → rsync → build → swap → notify", async () => {
+	function makeRunChildMock() {
+		const calls: Array<{ cmd: string; args: string[]; env?: NodeJS.ProcessEnv }> = []
+		const runChild = vi.fn(async (opts: { cmd: string; args: string[]; env?: NodeJS.ProcessEnv }) => {
+			calls.push({ cmd: opts.cmd, args: opts.args, env: opts.env })
+			return 0
+		})
+		return { runChild, calls }
+	}
+
+	it("happy path: auth → rsync → ssh+tmux", async () => {
 		const home = new FakeSession("local-1")
-		const { wrapper, ctx, ui } = makeCtx(home)
-		const remote = new FakeSession("remote-1")
-		buildMock.mockResolvedValueOnce(asRemote(remote))
+		const { ctx } = makeCtx(home)
+		const { runChild, calls } = makeRunChildMock()
 
 		await runTeleport(
 			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false },
 			ctx,
+			{ _runChildWithTTYHandoff: runChild },
 		)
 
 		expect(authMock).toHaveBeenCalledOnce()
 		// Two rsync calls: workspace + session file.
 		expect(rsyncMock).toHaveBeenCalledTimes(2)
-		expect(buildMock).toHaveBeenCalledOnce()
-		expect(wrapper.foreground).toBe(asRemote(remote))
 		// runRsync was called with the per-teleport subdir as the destination.
 		const rsyncCall = rsyncMock.mock.calls[0][0] as { destination?: string }
 		expect(rsyncCall.destination).toBe("/home/sandbox/proj/")
 
 		// Session file was also synced to the remote session dir.
-		const sessionRsyncCall = rsyncMock.mock.calls[1][0] as { destination?: string; deleteExtraneous?: boolean }
+		const sessionRsyncCall = rsyncMock.mock.calls[1][0] as {
+			destination?: string
+			deleteExtraneous?: boolean
+		}
 		expect(sessionRsyncCall.destination).toBe("/home/sandbox/.pi/agent/sessions/--home-sandbox-proj--")
 		expect(sessionRsyncCall.deleteExtraneous).toBe(false)
 
-		// Remote received switchSession + getMessages + getState.
-		expect(remote.switchSession).toHaveBeenCalledOnce()
-		const switchedPath = (remote.switchSession.mock.calls[0] as [string])[0]
-		expect(switchedPath).toBe("/home/sandbox/.pi/agent/sessions/--home-sandbox-proj--/teleport-session-export.jsonl")
-		expect(remote.getMessages).toHaveBeenCalledOnce()
-		expect(remote.getState).toHaveBeenCalledOnce()
+		// SSH was spawned for interactive shell.
+		expect(calls).toHaveLength(1)
+		expect(calls[0].cmd).toBe("ssh")
+		expect(calls[0].args).toContain("-t")
+		expect(calls[0].args).toContain("sandbox@host.example.com")
+		expect(calls[0].env?.AUTH_TOKEN).toBe("ct-1")
 	})
 
 	it("--skip-session omits session copy and only rsyncs workspace", async () => {
 		const home = new FakeSession("local-1")
-		const { wrapper, ctx } = makeCtx(home)
-		const remote = new FakeSession("remote-1")
-		buildMock.mockResolvedValueOnce(asRemote(remote))
+		const { ctx } = makeCtx(home)
+		const { runChild } = makeRunChildMock()
 
 		await runTeleport(
 			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false, skipSession: true },
 			ctx,
+			{ _runChildWithTTYHandoff: runChild },
 		)
 
 		// Only workspace rsync — no session export or sync.
 		expect(rsyncMock).toHaveBeenCalledTimes(1)
-		expect(remote.switchSession).not.toHaveBeenCalled()
-		expect(remote.getMessages).not.toHaveBeenCalled()
-		expect(remote.getState).not.toHaveBeenCalled()
-		expect(wrapper.foreground).toBe(asRemote(remote))
+		expect(runChild).toHaveBeenCalledOnce()
 	})
 
 	it("tolerates session-sync failure and continues", async () => {
 		const home = new FakeSession("local-1")
-		const { wrapper, ctx, ui } = makeCtx(home)
-		const remote = new FakeSession("remote-1")
-		buildMock.mockResolvedValueOnce(asRemote(remote))
+		const { ctx, ui } = makeCtx(home)
+		const { runChild } = makeRunChildMock()
 		// First rsync (workspace) succeeds, second (session file) fails.
 		rsyncMock.mockResolvedValueOnce({ fileCount: 1, totalBytes: 0, durationMs: 1 })
 		rsyncMock.mockRejectedValueOnce(new Error("session sync fail"))
@@ -316,45 +296,14 @@ describe("runTeleport", () => {
 		await runTeleport(
 			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false },
 			ctx,
+			{ _runChildWithTTYHandoff: runChild },
 		)
 
 		// Only workspace rsync succeeded; session sync failed.
 		expect(rsyncMock).toHaveBeenCalledTimes(2)
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Session sync failed/), "warning")
-		// Should NOT call switchSession because sessionExport was cleared on failure.
-		expect(remote.switchSession).not.toHaveBeenCalled()
-		expect(wrapper.foreground).toBe(asRemote(remote))
-	})
-
-	it("tolerates remote session-load failure and continues", async () => {
-		const home = new FakeSession("local-1")
-		const { wrapper, ctx, ui } = makeCtx(home)
-		const remote = new FakeSession("remote-1")
-		remote.switchSession = vi.fn(async () => {
-			throw new Error("switchSession boom")
-		})
-		buildMock.mockResolvedValueOnce(asRemote(remote))
-
-		await runTeleport(
-			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false },
-			ctx,
-		)
-
-		expect(rsyncMock).toHaveBeenCalledTimes(2)
-		expect(remote.switchSession).toHaveBeenCalledOnce()
-		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Could not load session on remote/), "warning")
-		expect(wrapper.foreground).toBe(asRemote(remote))
-	})
-
-	it("refuses when already foregrounded on a remote", async () => {
-		const home = new FakeSession("local-1")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(new FakeSession("remote-existing")))
-
-		await expect(
-			runTeleport({ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false }, ctx),
-		).rejects.toBeInstanceOf(TeleportRefusal)
-		expect(authMock).not.toHaveBeenCalled()
+		// SSH+tmux still launched despite session sync failure.
+		expect(runChild).toHaveBeenCalledOnce()
 	})
 
 	it("refuses when home base is busy without --abandon-pending", async () => {
@@ -374,11 +323,12 @@ describe("runTeleport", () => {
 			home.isStreaming = false
 		})
 		const { ctx } = makeCtx(home)
-		buildMock.mockResolvedValueOnce(asRemote(new FakeSession("remote-1")))
+		const { runChild } = makeRunChildMock()
 
 		await runTeleport(
 			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: true, force: false },
 			ctx,
+			{ _runChildWithTTYHandoff: runChild },
 		)
 		expect(home.abortBash).toHaveBeenCalled()
 		expect(rsyncMock).toHaveBeenCalled()
@@ -424,10 +374,10 @@ describe("runTeleport", () => {
 		).rejects.toThrow(/--force/)
 	})
 
-	it("refuses on name collision", async () => {
+	it("reuses an existing session when name matches", async () => {
 		listMock.mockResolvedValueOnce([
 			{
-				id: "x",
+				id: "existing-id",
 				name: "feature-x",
 				createdAt: new Date(),
 				lastActivityAt: new Date(),
@@ -437,32 +387,25 @@ describe("runTeleport", () => {
 		] satisfies RemoteSessionSummary[])
 		const home = new FakeSession("local-1")
 		const { ctx } = makeCtx(home)
+		const { runChild, calls } = makeRunChildMock()
 
-		await expect(
-			runTeleport(
-				{
-					name: "feature-x",
-					allowDirty: false,
-					exclude: [],
-					includeIgnored: false,
-					abandonPending: false,
-					force: false,
-				},
-				ctx,
-			),
-		).rejects.toThrow(/already exists/)
-	})
+		await runTeleport(
+			{
+				name: "feature-x",
+				allowDirty: false,
+				exclude: [],
+				includeIgnored: false,
+				abandonPending: false,
+				force: false,
+			},
+			ctx,
+			{ _runChildWithTTYHandoff: runChild },
+		)
 
-	it("rolls back to home base when rsync fails", async () => {
-		rsyncMock.mockRejectedValueOnce(new Error("rsync boom"))
-		const home = new FakeSession("local-1")
-		const { wrapper, ctx } = makeCtx(home)
-
-		await expect(
-			runTeleport({ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false }, ctx),
-		).rejects.toThrow(/rsync failed/)
-		expect(wrapper.isForegroundHomeBase).toBe(true)
-		expect(buildMock).not.toHaveBeenCalled()
+		// Should authenticate with the existing session ID, not create a new one.
+		expect(authMock).toHaveBeenCalledWith("existing-id", expect.anything(), expect.anything(), expect.anything())
+		expect(calls).toHaveLength(1)
+		expect(ctx.lastSessionId).toBe("existing-id")
 	})
 
 	it("refuses cleanly on auth failure without attempting rsync", async () => {
@@ -476,38 +419,15 @@ describe("runTeleport", () => {
 		expect(rsyncMock).not.toHaveBeenCalled()
 	})
 
-	it("setSessionName failure is non-fatal", async () => {
-		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		remote.setSessionName = vi.fn(async () => {
-			throw new Error("server full")
-		})
-		const { wrapper, ctx, ui } = makeCtx(home)
-		buildMock.mockResolvedValueOnce(asRemote(remote))
-
-		await runTeleport(
-			{
-				name: "named-one",
-				allowDirty: false,
-				exclude: [],
-				includeIgnored: false,
-				abandonPending: false,
-				force: false,
-			},
-			ctx,
-		)
-		expect(wrapper.foreground).toBe(asRemote(remote))
-		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Could not set session name/), "warning")
-	})
-
 	it("waits for the sandbox to become ready between auth and rsync", async () => {
 		const home = new FakeSession("local-1")
 		const { ctx } = makeCtx(home)
-		buildMock.mockResolvedValueOnce(asRemote(new FakeSession("remote-1")))
+		const { runChild } = makeRunChildMock()
 
 		await runTeleport(
 			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false },
 			ctx,
+			{ _runChildWithTTYHandoff: runChild },
 		)
 
 		expect(waitMock).toHaveBeenCalledOnce()
@@ -520,224 +440,60 @@ describe("runTeleport", () => {
 
 	it("refuses when the sandbox never becomes ready", async () => {
 		const home = new FakeSession("local-1")
-		const { wrapper, ctx } = makeCtx(home)
-		waitMock.mockRejectedValueOnce(new Error("Session did not become ACTIVE within 90s (last status: INITIALIZING)"))
+		const { ctx } = makeCtx(home)
+		waitMock.mockRejectedValueOnce(new Error("Session did not become ready within 90s (last probe: timeout)"))
 
 		await expect(
 			runTeleport({ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false }, ctx),
-		).rejects.toThrow(/Sandbox never became ready.*INITIALIZING/s)
+		).rejects.toThrow(/Sandbox never became ready/)
 		expect(rsyncMock).not.toHaveBeenCalled()
-		expect(wrapper.isForegroundHomeBase).toBe(true)
 	})
 
-	it("rsync runs after auth and before build", async () => {
+	it("rsync runs after auth", async () => {
 		const home = new FakeSession("local-1")
 		const { ctx } = makeCtx(home)
-		buildMock.mockResolvedValueOnce(asRemote(new FakeSession("remote-1")))
+		const { runChild } = makeRunChildMock()
 
 		await runTeleport(
 			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false },
 			ctx,
+			{ _runChildWithTTYHandoff: runChild },
 		)
 
 		const authOrder = authMock.mock.invocationCallOrder[0]
 		const rsyncOrder = rsyncMock.mock.invocationCallOrder[0]
-		const buildOrder = buildMock.mock.invocationCallOrder[0]
 		expect(rsyncOrder).toBeGreaterThan(authOrder)
-		expect(buildOrder).toBeGreaterThan(rsyncOrder)
 	})
 
-	it("calls triggerRebind AFTER foregroundRemote (TUI re-binds to remote)", async () => {
+	it("surfaces a warning when ssh exits non-zero", async () => {
 		const home = new FakeSession("local-1")
-		// Record what wrapper.isForegroundHomeBase reads as at the moment
-		// triggerRebind is invoked — must be false (already swapped to
-		// remote) otherwise InteractiveMode rebinds to the wrong session.
-		let observedIsHomeBaseAtRebind: boolean | "not-called" = "not-called"
-		// biome-ignore lint/style/useConst: forward reference — captured by triggerRebind before setup.wrapper exists.
-		let wrapperRef: TeleportableAgentSession | undefined
-		const triggerRebind = vi.fn(async () => {
-			observedIsHomeBaseAtRebind = wrapperRef?.isForegroundHomeBase ?? true
-		})
-		const setup = makeCtx(home, { triggerRebind })
-		wrapperRef = setup.wrapper
-		buildMock.mockResolvedValueOnce(asRemote(new FakeSession("remote-1")))
+		const { ctx, ui } = makeCtx(home)
+		const runChild = vi.fn(async () => 255)
 
 		await runTeleport(
 			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false },
-			setup.ctx,
+			ctx,
+			{ _runChildWithTTYHandoff: runChild },
 		)
 
-		expect(triggerRebind).toHaveBeenCalledOnce()
-		expect(observedIsHomeBaseAtRebind).toBe(false)
-	})
-
-	it("treats a triggerRebind failure as non-fatal (warns but doesn't refuse)", async () => {
-		const home = new FakeSession("local-1")
-		const setup = makeCtx(home, {
-			triggerRebind: vi.fn(async () => {
-				throw new Error("rebind boom")
-			}),
-		})
-		buildMock.mockResolvedValueOnce(asRemote(new FakeSession("remote-1")))
-
-		// runTeleport should still resolve; the wrapper swap already happened
-		// by the time triggerRebind threw.
-		await runTeleport(
-			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false },
-			setup.ctx,
-		)
-
-		expect(setup.wrapper.isForegroundHomeBase).toBe(false)
-		expect(setup.ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Session rebind failed: rebind boom/), "warning")
-	})
-
-	it("calls onHostResolved BEFORE triggerRebind so the session indicator is set before UI refresh", async () => {
-		const home = new FakeSession("local-1")
-		const callOrder: string[] = []
-		const triggerRebind = vi.fn(async () => {
-			callOrder.push("rebind")
-		})
-		const setup = makeCtx(home, { triggerRebind })
-		setup.ctx.onHostResolved = vi.fn((host: string) => {
-			callOrder.push(`onHostResolved:${host}`)
-		})
-		buildMock.mockResolvedValueOnce(asRemote(new FakeSession("remote-1")))
-
-		const result = await runTeleport(
-			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false },
-			setup.ctx,
-		)
-
-		expect(setup.ctx.onHostResolved).toHaveBeenCalledOnce()
-		expect(setup.ctx.onHostResolved).toHaveBeenCalledWith(result.host)
-		expect(callOrder.indexOf(`onHostResolved:${result.host}`)).toBeLessThan(callOrder.indexOf("rebind"))
-	})
-})
-
-// ───────────────────────── runDetach ─────────────────────────
-
-describe("runDetach", () => {
-	it("happy path: dispose remote, transition wrapper to home base", async () => {
-		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		const { wrapper, ctx, ui } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
-
-		await runDetach({ abandonPending: false }, ctx)
-
-		expect(remote.dispose).toHaveBeenCalled()
-		expect(wrapper.isForegroundHomeBase).toBe(true)
-		expect(wrapper.getDetached().get("remote-1")).toBe(asRemote(remote))
-		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Detached from session remote-1/), "info")
-	})
-
-	it("refuses on home base", async () => {
-		const home = new FakeSession("local-1")
-		const { ctx } = makeCtx(home)
-		await expect(runDetach({ abandonPending: false }, ctx)).rejects.toBeInstanceOf(TeleportRefusal)
-	})
-
-	it("detaches immediately even when the remote is streaming", async () => {
-		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		remote.isStreaming = true
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
-
-		await runDetach({ abandonPending: false }, ctx)
-		expect(remote.dispose).toHaveBeenCalled()
-		expect(wrapper.isForegroundHomeBase).toBe(true)
-	})
-
-	it("survives a dispose() error and still transitions", async () => {
-		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		remote.dispose = vi.fn(() => {
-			throw new Error("ws already dead")
-		})
-		const { wrapper, ctx, ui } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
-
-		await runDetach({ abandonPending: false }, ctx)
-		expect(wrapper.isForegroundHomeBase).toBe(true)
-		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/WS shutdown error/), "warning")
-	})
-
-	it("uses session name in the hint when available", async () => {
-		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1", "named-remote")
-		const { wrapper, ctx, ui } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
-
-		await runDetach({ abandonPending: false }, ctx)
-		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("/attach named-remote"), "info")
-	})
-
-	it("calls triggerRebind AFTER detachToHomeBase (TUI re-binds to home base)", async () => {
-		const home = new FakeSession("local-1")
-		let observedIsHomeBaseAtRebind: boolean | "not-called" = "not-called"
-		// biome-ignore lint/style/useConst: forward reference — captured by triggerRebind before setup.wrapper exists.
-		let wrapperRef: TeleportableAgentSession | undefined
-		const triggerRebind = vi.fn(async () => {
-			observedIsHomeBaseAtRebind = wrapperRef?.isForegroundHomeBase ?? false
-		})
-		const setup = makeCtx(home, { triggerRebind })
-		wrapperRef = setup.wrapper
-		setup.wrapper.foregroundRemote(asRemote(new FakeSession("remote-1")))
-
-		await runDetach({ abandonPending: false }, setup.ctx)
-
-		expect(triggerRebind).toHaveBeenCalledOnce()
-		expect(observedIsHomeBaseAtRebind).toBe(true)
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/ssh exited with code 255/), "warning")
 	})
 })
 
 // ───────────────────────── runAttach ─────────────────────────
 
 describe("runAttach", () => {
-	it("refuses when already foregrounded on a remote", async () => {
+	function makeRunChildMock() {
+		const calls: Array<{ cmd: string; args: string[]; env?: NodeJS.ProcessEnv }> = []
+		const runChild = vi.fn(async (opts: { cmd: string; args: string[]; env?: NodeJS.ProcessEnv }) => {
+			calls.push({ cmd: opts.cmd, args: opts.args, env: opts.env })
+			return 0
+		})
+		return { runChild, calls }
+	}
+
+	it("resolves a server-side session by id and spawns ssh", async () => {
 		const home = new FakeSession("local-1")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(new FakeSession("remote-existing")))
-
-		await expect(runAttach({ target: "remote-1" }, ctx)).rejects.toBeInstanceOf(TeleportRefusal)
-	})
-
-	it("attaches to in-process detached by sessionId without hitting listRemoteSessions", async () => {
-		const home = new FakeSession("local-1")
-		const detached = new FakeSession("remote-1")
-		const fresh = new FakeSession("remote-1")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(detached))
-		wrapper.detachToHomeBase()
-
-		buildMock.mockResolvedValueOnce(asRemote(fresh))
-
-		await runAttach({ target: "remote-1" }, ctx)
-
-		expect(listMock).not.toHaveBeenCalled()
-		expect(wrapper.foreground).toBe(asRemote(fresh))
-		expect(wrapper.getDetached().has("remote-1")).toBe(false)
-	})
-
-	it("attaches to in-process detached by name", async () => {
-		const home = new FakeSession("local-1")
-		const detached = new FakeSession("remote-1", "alpha")
-		const fresh = new FakeSession("remote-1")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(detached))
-		wrapper.detachToHomeBase()
-		buildMock.mockResolvedValueOnce(asRemote(fresh))
-
-		await runAttach({ target: "alpha" }, ctx)
-
-		expect(listMock).not.toHaveBeenCalled()
-		expect(wrapper.foreground).toBe(asRemote(fresh))
-	})
-
-	it("attaches to server-side session by id", async () => {
-		const home = new FakeSession("local-1")
-		const fresh = new FakeSession("remote-server")
 		listMock.mockResolvedValueOnce([
 			{
 				id: "remote-server",
@@ -748,16 +504,19 @@ describe("runAttach", () => {
 				hasConnectedClient: false,
 			},
 		] satisfies RemoteSessionSummary[])
-		buildMock.mockResolvedValueOnce(asRemote(fresh))
-		const { wrapper, ctx } = makeCtx(home)
+		const { ctx } = makeCtx(home)
+		const { runChild, calls } = makeRunChildMock()
 
-		await runAttach({ target: "remote-server" }, ctx)
-		expect(wrapper.foreground).toBe(asRemote(fresh))
+		await runAttach({ target: "remote-server" }, ctx, { _runChildWithTTYHandoff: runChild })
+
+		expect(listMock).toHaveBeenCalledOnce()
+		expect(authMock).toHaveBeenCalledWith("remote-server", expect.anything(), expect.anything(), expect.anything())
+		expect(calls).toHaveLength(1)
+		expect(calls[0].args).toContain("-t")
 	})
 
-	it("attaches to server-side session by name", async () => {
+	it("resolves a server-side session by name", async () => {
 		const home = new FakeSession("local-1")
-		const fresh = new FakeSession("remote-server")
 		listMock.mockResolvedValueOnce([
 			{
 				id: "remote-server",
@@ -768,11 +527,13 @@ describe("runAttach", () => {
 				hasConnectedClient: false,
 			},
 		] satisfies RemoteSessionSummary[])
-		buildMock.mockResolvedValueOnce(asRemote(fresh))
-		const { wrapper, ctx } = makeCtx(home)
+		const { ctx } = makeCtx(home)
+		const { runChild, calls } = makeRunChildMock()
 
-		await runAttach({ target: "beta" }, ctx)
-		expect(wrapper.foreground).toBe(asRemote(fresh))
+		await runAttach({ target: "beta" }, ctx, { _runChildWithTTYHandoff: runChild })
+
+		expect(authMock).toHaveBeenCalledWith("remote-server", expect.anything(), expect.anything(), expect.anything())
+		expect(calls).toHaveLength(1)
 	})
 
 	it("refuses on unknown target and offers close matches", async () => {
@@ -788,9 +549,13 @@ describe("runAttach", () => {
 		] satisfies RemoteSessionSummary[])
 		const home = new FakeSession("local-1")
 		const { ctx, ui } = makeCtx(home)
+		const { runChild } = makeRunChildMock()
 
-		await expect(runAttach({ target: "feature-xz" }, ctx)).rejects.toThrow(/feature-xy/)
+		await expect(runAttach({ target: "feature-xz" }, ctx, { _runChildWithTTYHandoff: runChild })).rejects.toThrow(
+			/feature-xy/,
+		)
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Did you mean/), "error")
+		expect(runChild).not.toHaveBeenCalled()
 	})
 
 	it("refuses on completed session", async () => {
@@ -806,128 +571,65 @@ describe("runAttach", () => {
 		] satisfies RemoteSessionSummary[])
 		const home = new FakeSession("local-1")
 		const { ctx } = makeCtx(home)
+		const { runChild } = makeRunChildMock()
 
-		await expect(runAttach({ target: "done" }, ctx)).rejects.toThrow(/completed/)
+		await expect(runAttach({ target: "done" }, ctx, { _runChildWithTTYHandoff: runChild })).rejects.toThrow(/completed/)
+		expect(runChild).not.toHaveBeenCalled()
 	})
 
-	it("calls onHostResolved BEFORE triggerRebind so the session indicator is set before UI refresh", async () => {
+	it("refuses on auth failure and does not spawn ssh", async () => {
 		const home = new FakeSession("local-1")
-		const detached = new FakeSession("remote-1")
-		const fresh = new FakeSession("remote-1")
-		const callOrder: string[] = []
-		const triggerRebind = vi.fn(async () => {
-			callOrder.push("rebind")
-		})
-		const setup = makeCtx(home, { triggerRebind })
-		setup.wrapper.foregroundRemote(asRemote(detached))
-		setup.wrapper.detachToHomeBase()
-		buildMock.mockResolvedValueOnce(asRemote(fresh))
-		setup.ctx.onHostResolved = vi.fn((host: string) => {
-			callOrder.push(`onHostResolved:${host}`)
-		})
-
-		const result = await runAttach({ target: "remote-1" }, setup.ctx)
-
-		expect(setup.ctx.onHostResolved).toHaveBeenCalledOnce()
-		expect(setup.ctx.onHostResolved).toHaveBeenCalledWith(result.host)
-		expect(callOrder.indexOf(`onHostResolved:${result.host}`)).toBeLessThan(callOrder.indexOf("rebind"))
-	})
-})
-
-// ───────────────────────── runListSessions ─────────────────────────
-
-describe("runListSessions", () => {
-	it("notifies 'No remote sessions.' when everything is empty", async () => {
-		const home = new FakeSession("local-1")
-		const { ctx, ui } = makeCtx(home)
-
-		await runListSessions(ctx)
-		expect(ui.notify).toHaveBeenCalledWith("No remote sessions.", "info")
-	})
-
-	it("renders foreground + detached + server-only rows without duplicates", async () => {
-		const home = new FakeSession("local-1")
-		const fg = new FakeSession("fg-id", "fg")
-		const detached = new FakeSession("det-id", "det")
-		const { wrapper, ctx, ui } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(detached))
-		wrapper.detachToHomeBase()
-		wrapper.foregroundRemote(asRemote(fg))
-
 		listMock.mockResolvedValueOnce([
 			{
-				id: "fg-id",
-				name: "fg-server-name",
-				createdAt: new Date(),
-				lastActivityAt: new Date(),
-				status: "idle",
-				hasConnectedClient: true,
-			},
-			{
-				id: "det-id",
-				name: "det-server-name",
-				createdAt: new Date(),
-				lastActivityAt: new Date(),
-				status: "idle",
-				hasConnectedClient: false,
-			},
-			{
-				id: "srvr1234",
-				name: "remote-only",
+				id: "remote-1",
+				name: "test",
 				createdAt: new Date(),
 				lastActivityAt: new Date(),
 				status: "idle",
 				hasConnectedClient: false,
 			},
 		] satisfies RemoteSessionSummary[])
+		const { ctx } = makeCtx(home)
+		authMock.mockRejectedValueOnce(new RemoteAuthError("bad token", 401))
+		const { runChild } = makeRunChildMock()
 
-		await runListSessions(ctx)
-		expect(listMock).toHaveBeenCalledOnce()
-		expect(ui.custom).toHaveBeenCalledOnce()
-
-		// Invoke the factory to verify rendered content
-		const factory = ui.custom.mock.calls[0][0] as (
-			tui: unknown,
-			theme: unknown,
-			keybindings: unknown,
-			done: (r: unknown) => void,
-		) => { render(w: number): string[] }
-		let captured: unknown
-		const mockTui = { requestRender: vi.fn(), terminal: { rows: 40, cols: 120 } }
-		const panel = factory(mockTui, {}, {}, (r) => {
-			captured = r
-		})
-		const lines = panel.render(120).join("\n")
-		expect(lines).toContain("fg-id")
-		expect(lines).toContain("det-id")
-		expect(lines).toContain("srvr1234")
-		// fg-id appears exactly once (no duplicate from server list)
-		expect((lines.match(/fg-id/g) ?? []).length).toBe(1)
+		await expect(runAttach({ target: "remote-1" }, ctx, { _runChildWithTTYHandoff: runChild })).rejects.toThrow(
+			/Authentication failed/,
+		)
+		expect(runChild).not.toHaveBeenCalled()
 	})
 
-	it("falls back to local state when listRemoteSessions fails", async () => {
+	it("surfaces a warning when ssh exits non-zero", async () => {
 		const home = new FakeSession("local-1")
-		const fg = new FakeSession("fg-id", "fg")
-		const { wrapper, ctx, ui } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(fg))
+		listMock.mockResolvedValueOnce([
+			{
+				id: "remote-1",
+				name: "test",
+				createdAt: new Date(),
+				lastActivityAt: new Date(),
+				status: "idle",
+				hasConnectedClient: false,
+			},
+		] satisfies RemoteSessionSummary[])
+		const { ctx, ui } = makeCtx(home)
+		const runChild = vi.fn(async () => 255)
 
-		listMock.mockRejectedValueOnce(new Error("network down"))
+		await runAttach({ target: "remote-1" }, ctx, { _runChildWithTTYHandoff: runChild })
+
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/ssh exited with code 255/), "warning")
+	})
+})
+
+// ───────────────────────── runListSessions ─────────────────────────
+
+describe("runListSessions", () => {
+	it("always opens the panel (even when empty)", async () => {
+		const home = new FakeSession("local-1")
+		const { ctx, ui } = makeCtx(home)
 
 		await runListSessions(ctx)
-		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Could not fetch server sessions/), "warning")
+		// Panel is always shown — data arrives asynchronously.
 		expect(ui.custom).toHaveBeenCalledOnce()
-
-		// Invoke the factory to verify rendered content
-		const factory = ui.custom.mock.calls[0][0] as (
-			tui: unknown,
-			theme: unknown,
-			keybindings: unknown,
-			done: (r: unknown) => void,
-		) => { render(w: number): string[] }
-		const mockTui = { requestRender: vi.fn(), terminal: { rows: 40, cols: 120 } }
-		const panel = factory(mockTui, {}, {}, vi.fn())
-		const lines = panel.render(120).join("\n")
-		expect(lines).toContain("fg-id")
 	})
 
 	it("calls getMe and forwards id as creatorId to listRemoteSessions", async () => {
@@ -968,7 +670,7 @@ describe("runConnect", () => {
 		return { runChild, calls }
 	}
 
-	it("refuses when on home base with no target", async () => {
+	it("refuses when no target and no lastSessionId", async () => {
 		const home = new FakeSession("local-1")
 		const { ctx } = makeCtx(home)
 		const { runChild } = makeRunChildMock()
@@ -978,16 +680,15 @@ describe("runConnect", () => {
 		expect(runChild).not.toHaveBeenCalled()
 	})
 
-	it("uses the foreground sessionId when no target is given", async () => {
+	it("uses lastSessionId when no target is given", async () => {
 		const home = new FakeSession("local-1")
-		const fg = new FakeSession("fg-id-1234567890")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(fg))
+		const { ctx } = makeCtx(home)
+		ctx.lastSessionId = "last-1234567890"
 		const { runChild, calls } = makeRunChildMock()
 
 		await runConnect({}, ctx, { _runChildWithTTYHandoff: runChild })
 
-		expect(authMock).toHaveBeenCalledWith("fg-id-1234567890", "test-key", "Remote session for proj", {
+		expect(authMock).toHaveBeenCalledWith("last-1234567890", "test-key", "Remote session for proj", {
 			endpoint: "https://api.example.com",
 		})
 		expect(listMock).not.toHaveBeenCalled()
@@ -995,24 +696,6 @@ describe("runConnect", () => {
 		expect(calls[0].cmd).toBe("ssh")
 		expect(calls[0].args).toContain("sandbox@host.example.com")
 		expect(calls[0].env?.AUTH_TOKEN).toBe("ct-1")
-	})
-
-	it("resolves an in-process detached target by name without listRemoteSessions", async () => {
-		const home = new FakeSession("local-1")
-		const detached = new FakeSession("det-id-abc", "named-one")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(detached))
-		wrapper.detachToHomeBase()
-		const { runChild, calls } = makeRunChildMock()
-
-		await runConnect({ target: "named-one" }, ctx, { _runChildWithTTYHandoff: runChild })
-
-		expect(listMock).not.toHaveBeenCalled()
-		expect(authMock).toHaveBeenCalledWith("det-id-abc", expect.anything(), expect.anything(), expect.anything())
-		expect(calls).toHaveLength(1)
-		// /connect does not promote the detached entry — kimchi's foreground stays unchanged.
-		expect(wrapper.isForegroundHomeBase).toBe(true)
-		expect(wrapper.getDetached().get("det-id-abc")).toBe(asRemote(detached))
 	})
 
 	it("resolves a server-side target by name", async () => {
@@ -1061,9 +744,8 @@ describe("runConnect", () => {
 
 	it("refuses on auth failure and does not spawn ssh", async () => {
 		const home = new FakeSession("local-1")
-		const fg = new FakeSession("fg-id")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(fg))
+		const { ctx } = makeCtx(home)
+		ctx.lastSessionId = "fg-id"
 		authMock.mockRejectedValueOnce(new RemoteAuthError("bad token", 401))
 		const { runChild } = makeRunChildMock()
 
@@ -1073,26 +755,13 @@ describe("runConnect", () => {
 
 	it("surfaces a warning when ssh exits non-zero", async () => {
 		const home = new FakeSession("local-1")
-		const fg = new FakeSession("fg-id")
-		const { wrapper, ctx, ui } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(fg))
+		const { ctx, ui } = makeCtx(home)
+		ctx.lastSessionId = "fg-id"
 		const runChild = vi.fn(async () => 255)
 
 		await runConnect({}, ctx, { _runChildWithTTYHandoff: runChild })
 
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/ssh exited with code 255/), "warning")
-	})
-
-	it("does not change wrapper foreground after ssh exits", async () => {
-		const home = new FakeSession("local-1")
-		const fg = new FakeSession("fg-id")
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(fg))
-		const { runChild } = makeRunChildMock()
-
-		await runConnect({}, ctx, { _runChildWithTTYHandoff: runChild })
-
-		expect(wrapper.foreground).toBe(asRemote(fg))
 	})
 })
 

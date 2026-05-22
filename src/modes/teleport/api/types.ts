@@ -46,16 +46,3 @@ export interface ListRemoteSessionsOptions extends AuthenticateOptions {
 	signal?: AbortSignal
 	creatorId?: string
 }
-
-export interface WaitForSessionReadyOptions {
-	connectToken: string
-	wsUrl: string
-	signal?: AbortSignal
-	timeoutMs?: number
-	pollIntervalMs?: number
-	probeTimeoutMs?: number
-	wsPath?: string
-	onTick?: (info: { elapsedMs: number; lastError?: string }) => void
-	// biome-ignore lint/suspicious/noExplicitAny: tests inject a fake WebSocket constructor
-	_WebSocket?: any
-}

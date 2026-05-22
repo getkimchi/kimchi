@@ -9,7 +9,7 @@ function makeRow(overrides: Partial<SessionRow>): SessionRow {
 		id: "abcd1234efgh",
 		host: "x-y-z.remote.kimchi.dev",
 		name: "feature-x",
-		state: "foreground",
+		state: "active (this kimchi)",
 		status: "idle",
 		createdAt: new Date(NOW.getTime() - 60_000),
 		lastActivityAt: new Date(NOW.getTime() - 60_000),
@@ -55,14 +55,14 @@ describe("renderSessionsTable", () => {
 		expect(out).toContain("LAST ACTIVITY")
 	})
 
-	it("prefixes the foreground row with a *", () => {
+	it("prefixes the active (this kimchi) row with a *", () => {
 		const out = renderSessionsTable([makeRow({})], NOW, FIXED_WIDTH)
 		const lines = out.split("\n")
 		expect(lines[1].startsWith("*")).toBe(true)
 	})
 
-	it("uses a leading space for non-foreground rows", () => {
-		const out = renderSessionsTable([makeRow({ state: "detached" })], NOW, FIXED_WIDTH)
+	it("uses a leading space for non-active rows", () => {
+		const out = renderSessionsTable([makeRow({ state: "available" })], NOW, FIXED_WIDTH)
 		const lines = out.split("\n")
 		expect(lines[1].startsWith(" ")).toBe(true)
 		expect(lines[1].startsWith("*")).toBe(false)
@@ -76,9 +76,9 @@ describe("renderSessionsTable", () => {
 
 	it("shows host prefix (first dot-segment) for each row", () => {
 		const rows: SessionRow[] = [
-			makeRow({ id: "fg111111", host: "a-b-c.remote.kimchi.dev", state: "foreground" }),
-			makeRow({ id: "dt222222", host: "x-y-z.remote.kimchi.dev", state: "detached (this kimchi)" }),
-			makeRow({ id: "sv333333", host: undefined, state: "active elsewhere", status: "active" }),
+			makeRow({ id: "fg111111", host: "a-b-c.remote.kimchi.dev", state: "active (this kimchi)" }),
+			makeRow({ id: "dt222222", host: "x-y-z.remote.kimchi.dev", state: "active elsewhere" }),
+			makeRow({ id: "sv333333", host: undefined, state: "available", status: "active" }),
 		]
 		const out = renderSessionsTable(rows, NOW, FIXED_WIDTH)
 		expect(out).toContain("a-b-c")
@@ -126,21 +126,21 @@ describe("renderSessionsTable", () => {
 			makeRow({
 				id: "abcd1234",
 				name: "feature-x",
-				state: "foreground",
+				state: "active (this kimchi)",
 				status: "idle",
 				lastActivityAt: new Date(NOW.getTime() - 2 * 60_000),
 			}),
 			makeRow({
 				id: "ef567890",
 				name: "bugfix-y",
-				state: "detached (this kimchi)",
+				state: "active elsewhere",
 				status: "idle",
 				lastActivityAt: new Date(NOW.getTime() - 15 * 60_000),
 			}),
 			makeRow({
 				id: "12345678",
 				name: "exp-z",
-				state: "detached",
+				state: "available",
 				status: "idle",
 				lastActivityAt: new Date(NOW.getTime() - 3 * 60 * 60_000),
 			}),

@@ -1,23 +1,19 @@
 # Teleport Mode
 
-Teleport mode lets you spawn cloud sandboxes that mirror your local workspace. The agent runs remotely with full tool access while you stay in your local terminal. You can detach from a running session, reattach later, manage multiple sessions, sync files back and forth, and open interactive SSH shells on the remote sandbox.
+Teleport mode lets you spawn cloud sandboxes that mirror your local workspace. You connect to the remote sandbox over SSH, with kimchi running inside a tmux session for persistence. You can disconnect and reconnect at any time, manage multiple sessions, sync files, and open interactive shells.
 
 ## Prerequisites
 
-Before using teleport mode you need:
-
 - **An API key** — run `kimchi setup` if you haven't already.
-- **rsync** — must be on your `PATH`. Install with `brew install rsync` (macOS) or `apt install rsync` (Linux).
+- **rsync** — must be on your `PATH` for workspace sync. Install with `brew install rsync` (macOS) or `apt install rsync` (Linux).
 
 ## Launching teleport mode
-
-Start kimchi with the `--teleport` flag:
 
 ```
 kimchi --teleport
 ```
 
-This opens the normal interactive session but with teleport capabilities enabled. You start on your local machine (the "home base"). From here you can use any of the teleport slash commands to spawn, manage, and interact with remote sandboxes.
+This opens the normal interactive session with teleport slash commands enabled. You start on your local machine. From here you can spawn, manage, and connect to remote sandboxes.
 
 ### Environment variables
 
@@ -32,133 +28,114 @@ This opens the normal interactive session but with teleport capabilities enabled
 
 ### `/teleport`
 
-Spawn a new remote worker with a copy of your current workspace.
+Spawn a new remote sandbox or connect to an existing one.
 
 ```
-/teleport [name] [flags]
+/teleport [name] [tmux-session] [flags]
 ```
 
-**What it does (rsync mode — default):**
+**Behaviour:**
 
-1. Checks pre-flight conditions (idle session, rsync available, API key present, clean working tree).
-2. Prompts for a git token if a git remote is detected (see [Git credentials prompt](#git-credentials-prompt)).
+- If `name` matches an **existing** session (by name, ID, or host prefix), kimchi reuses that sandbox: authenticates, syncs workspace, then SSHes in with tmux.
+- If `name` does **not** match any existing session, kimchi creates a **new** sandbox with that name.
+- If no `name` is given, a new unnamed sandbox is created.
+
+**What happens (rsync mode — default):**
+
+1. Pre-flight checks (idle session, rsync available, API key, clean working tree).
+2. Git token prompt if a git remote is detected.
+3. Authenticates and provisions a cloud sandbox (or reuses an existing one).
+4. Waits for the sandbox to become ready.
+5. Rsyncs workspace to the remote.
+6. Exports and syncs session history so the remote kimchi has context.
+7. Propagates git identity and credentials.
+8. SSHes into the sandbox and runs `tmux new -A -s <tmux-session> kimchi`.
+
+**What happens (git-clone mode — with `--git-repo`):**
+
+1. Pre-flight checks (idle session, API key). Rsync, dirty tree, and workspace size checks are skipped.
+2. Git token prompt based on the repository URL.
 3. Authenticates and provisions a cloud sandbox.
-4. Rsyncs your workspace to the remote.
-5. Exports and loads your current session history so the remote agent has full context.
-6. Propagates your local git identity (`user.name`, `user.email`) and credentials to the sandbox.
-7. Connects and switches the foreground to the remote session.
+4. Propagates git identity and credentials (before clone, so private repos work).
+5. Shallow-clones the repository on the sandbox.
+6. SSHes into the sandbox and runs `tmux new -A -s <tmux-session> kimchi`.
 
-**What it does (git-clone mode — with `--git-repo`):**
-
-1. Checks pre-flight conditions (idle session, API key present). Rsync, dirty tree, and workspace size checks are skipped.
-2. Prompts for a git token based on the repository URL's host (see [Git credentials prompt](#git-credentials-prompt)).
-3. Authenticates and provisions a cloud sandbox.
-4. Propagates git identity and credentials to the sandbox (before the clone, so private repos work).
-5. Shallow-clones the repository on the sandbox (`--depth 1`). If `--git-branch` is set, checks out that branch. Use `--no-shallow` for full history.
-6. Connects and switches the foreground to the remote session.
-
-Session history is not transferred in git-clone mode — the remote agent starts fresh.
-
-A progress indicator shows each stage as it completes. Input is locked during the teleport to prevent interference.
+Session history is not transferred in git-clone mode — the remote kimchi starts fresh.
 
 **Arguments:**
 
 | Argument | Description |
 |---|---|
-| `name` | Optional. Give the session a name for easy reattachment later (e.g. `/teleport my-feature`). Names must be unique across your active sessions. |
+| `name` | Optional. Session name, ID, or host prefix. If it matches an existing session, that sandbox is reused. Otherwise a new sandbox is created with this name. |
+| `tmux-session` | Optional. Name of the tmux session to create or attach to. Defaults to `main`. |
 
 **Flags:**
 
 | Flag | Description |
 |---|---|
-| `--allow-dirty` | Proceed even if the git working tree has uncommitted changes. Without this flag, teleport refuses if there are uncommitted changes. |
-| `--abandon-pending` | Force-abort a busy local session before teleporting. Without this flag, teleport refuses if the session is currently streaming or running a bash command. |
+| `--allow-dirty` | Proceed even if the git working tree has uncommitted changes. |
+| `--abandon-pending` | Force-abort a busy local session before teleporting. |
 | `--force` | Proceed even if the workspace exceeds the 5 GB size limit. |
-| `--skip-session` | Don't export or load the current session history on the remote. The remote agent starts fresh with no conversation context. |
-| `--no-git-token` | Skip the git token prompt entirely. The remote sandbox won't be able to push/pull from private repositories. |
-| `--git-repo <url>` | Clone from a git repository URL instead of rsyncing the local workspace. The sandbox will `git clone` the repository. Supports both HTTPS and SSH URLs. When this flag is set, rsync is not needed, and dirty-tree/workspace-size checks are skipped. |
-| `--git-branch <branch>` | Branch to check out after cloning. Requires `--git-repo`. When specified, the clone uses `--single-branch` for faster cloning. If omitted, the repository's default branch is used. |
-| `--no-shallow` | Clone the full git history instead of a shallow clone. Requires `--git-repo`. By default, git-clone mode uses `--depth 1` (only the latest commit) for speed. Use this flag if the agent needs access to git history (e.g. `git log`, `git blame`). |
-| `--exclude <glob>` | Exclude files matching the glob from the rsync. Can be specified multiple times (e.g. `--exclude "*.log" --exclude "tmp/"`). Applied on top of the default excludes (`.git/`, `node_modules/`, etc.). Only applies in rsync mode (without `--git-repo`). |
-| `--include-ignored` | Include files that are normally excluded by `.gitignore`. By default, gitignored files are not synced. Only applies in rsync mode (without `--git-repo`). |
+| `--skip-session` | Don't export or load session history on the remote. |
+| `--no-git-token` | Skip the git token prompt. |
+| `--git-repo <url>` | Clone from a git repository URL instead of rsyncing. |
+| `--git-branch <branch>` | Branch to check out after cloning (requires `--git-repo`). |
+| `--no-shallow` | Clone full git history instead of `--depth 1` (requires `--git-repo`). |
+| `--exclude <glob>` | Exclude files matching the glob from rsync. Repeatable. |
+| `--include-ignored` | Include gitignored files in the rsync. |
 
 **Examples:**
 
 ```
-/teleport                              # spawn with defaults (rsync local workspace)
-/teleport my-feature                   # spawn with a name
-/teleport --allow-dirty                # ship uncommitted changes
-/teleport backend --exclude "*.log"    # named session, skip log files
-/teleport --skip-session --no-git-token  # minimal: no session history, no git credentials
-/teleport --git-repo https://github.com/org/repo.git                    # clone a repo instead of rsyncing
-/teleport --git-repo https://github.com/org/repo.git --git-branch main  # clone and check out a specific branch
-/teleport my-task --git-repo git@github.com:org/repo.git --git-branch feature-x  # named session with git clone
-```
-
-After a successful teleport, a session indicator appears in the prompt (e.g. `(my-feature)` or `(remote)`) showing you're on a remote session.
-
----
-
-### `/detach`
-
-Disconnect from the foreground remote session. The remote sandbox keeps running on the server — you can reattach later.
-
-```
-/detach [flags]
-```
-
-After detaching you return to home base (your local session). The session indicator disappears.
-
-**Flags:**
-
-| Flag | Description |
-|---|---|
-| `--abandon-pending` | Force-abort a busy remote session before detaching. Without this flag, detach refuses if the remote is currently streaming or running a command. The remote has up to 10 seconds to become idle. |
-
-After detaching, you'll see a hint like:
-
-```
-Detached from session abc12345. Reattach with /attach my-feature.
+/teleport                              # new sandbox, tmux session "main"
+/teleport my-feature                   # new sandbox named "my-feature"
+/teleport my-feature work              # new sandbox, tmux session "work"
+/teleport my-feature                   # if "my-feature" already exists → reuse it
+/teleport my-feature hotfix            # reuse "my-feature", tmux session "hotfix"
+/teleport --git-repo https://github.com/org/repo.git
+/teleport my-task --git-repo git@github.com:org/repo.git --git-branch feature-x
 ```
 
 ---
 
 ### `/attach`
 
-Re-attach to a previously-detached remote session by name or ID.
+Attach to a remote session via SSH+tmux.
 
 ```
-/attach <name-or-id>
+/attach <name-or-id> [--tmux-session via sessions panel]
 ```
 
 **Arguments:**
 
 | Argument | Description |
 |---|---|
-| `name-or-id` | **Required.** The session name you gave at `/teleport` time, or the session UUID (a prefix is enough). |
+| `name-or-id` | **Required.** Session name, UUID, or host prefix (the part before `.remote.kimchi.dev`). |
 
 **What it does:**
 
-1. Looks up the session — first in locally-known detached sessions, then on the server.
-2. Authenticates and reconnects.
-3. Syncs git credentials if they haven't been propagated to this session yet.
-4. Loads the remote session's message history.
-5. Switches the foreground to the remote.
+1. Resolves the session (by name, ID, or host prefix).
+2. Authenticates.
+3. Syncs git credentials if needed.
+4. SSHes into the sandbox and runs `tmux new -A -s <session> kimchi`.
 
-If the name doesn't match any session, kimchi suggests close matches (fuzzy matching).
+If the tmux session already exists (e.g. from a previous `/teleport`), it reattaches to it. If not, a new tmux session is created running kimchi.
+
+If the name doesn't match any session, kimchi suggests close matches.
 
 **Examples:**
 
 ```
-/attach my-feature          # by name
-/attach abc12345            # by ID prefix
+/attach my-feature
+/attach abc12345
+/attach outrageous-unwelcome-pirate-486e4e-e6e1
 ```
 
 ---
 
 ### `/connect`
 
-Open an interactive SSH shell on the remote sandbox. This gives you direct terminal access to the sandbox environment — useful for debugging, inspecting files, or running commands manually.
+Open an interactive SSH shell on a remote sandbox. Gives you direct terminal access for debugging, inspecting files, or running commands.
 
 ```
 /connect [target]
@@ -168,54 +145,61 @@ Open an interactive SSH shell on the remote sandbox. This gives you direct termi
 
 | Argument | Description |
 |---|---|
-| `target` | Optional. A session name or ID to connect to. If omitted, connects to the current foreground remote session. |
+| `target` | Optional. Session name, ID, or host prefix. If omitted, connects to the most recently teleported/attached session. |
 
-When you're done, exit the SSH session normally (`exit` or Ctrl-D) to return to kimchi.
-
-If you're on home base (no foreground remote) and don't specify a target, `/connect` will tell you to provide a name/ID or use `/teleport` or `/attach` first.
+Exit the SSH session normally (`exit` or Ctrl-D) to return to kimchi.
 
 **Examples:**
 
 ```
-/connect                    # SSH into the current foreground remote
+/connect                    # SSH into the last used session
 /connect my-feature         # SSH into a specific session by name
-/connect abc12345           # SSH into a specific session by ID prefix
+/connect abc12345           # by ID
 ```
 
 ---
 
 ### `/sessions`
 
-List all remote sessions and manage them through an interactive panel.
+List all remote sessions in an interactive panel.
 
 ```
 /sessions
 ```
 
-This opens a full-screen TUI panel showing all your sessions grouped by state:
+The panel opens immediately. Sessions are fetched in the background — cached results are shown first, then updated live as fresh data arrives.
 
-- **foreground** — the session currently wired to your terminal.
-- **detached (this kimchi)** — sessions you detached from during this CLI run.
-- **active elsewhere** — sessions that have another client connected.
-- **detached** — sessions on the server with no connected client.
+For each active sandbox, kimchi probes for running tmux sessions (3 at a time) and shows them as expandable sub-items:
 
-Each row shows the session ID, host, name, status, and last activity time.
+```
+╭─────────── Sessions ⠹ ────────────╮
+│  ID       HOST     NAME    STATUS  │
+├────────────────────────────────────┤
+│  abc123   pirate   my-app  active  │
+│    ├─ main                         │
+│    ├─ work (attached)              │
+│  def456   clever   api     active  │
+│    ├─ main                         │
+╰────────────────────────────────────╯
+```
+
+A spinner in the title bar indicates background loading.
 
 **Panel keybindings:**
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` or `j` / `k` | Navigate the session list |
-| `Enter` or `a` | Attach to the selected session |
-| `s` | Open an SSH shell on the selected session (`/connect`) |
-| `D` (Shift+D) | Delete the selected session (with confirmation) |
+| `↑` / `↓` or `j` / `k` | Navigate |
+| `Enter` or `a` | Attach to the selected session or tmux session |
+| `s` | Open an SSH shell on the selected session |
+| `D` (Shift+D) | On a session row: delete the sandbox. On a tmux row: stop that kimchi session. |
 | `Esc` or `q` | Close the panel |
 
 ---
 
 ### `/sync`
 
-Rsync files between your local workspace and the remote sandbox.
+Rsync files between your local workspace and a remote sandbox.
 
 ```
 /sync <up|down> [path] [flags]
@@ -225,55 +209,58 @@ Rsync files between your local workspace and the remote sandbox.
 
 | Direction | Description |
 |---|---|
-| `up` | Push local changes to the remote sandbox. |
-| `down` | Pull remote changes to your local workspace. |
+| `up` | Push local changes to the remote. |
+| `down` | Pull remote changes to local. |
 
 **Arguments:**
 
 | Argument | Description |
 |---|---|
-| `path` | Optional. A relative path within the workspace to sync (file or directory). If omitted, syncs the entire workspace. Can also be provided via `--path <path>`. |
+| `path` | Optional. Relative path to sync (file or directory). If omitted, syncs the entire workspace. |
 
 **Flags:**
 
 | Flag | Description |
 |---|---|
-| `--exclude <glob>` | Exclude files matching the glob. Can be specified multiple times. Applied on top of default excludes. |
-| `--include-ignored` | Include gitignored files in the sync. |
-| `--delete` | Delete extraneous files at the destination that don't exist at the source. |
-| `--no-delete` | Explicitly don't delete extraneous files (this is the default). |
-| `--dry-run` | Show what would be transferred without actually doing it. |
+| `--target <name>` | Session name, ID, or host prefix to sync with. If omitted, uses the most recently teleported/attached session. |
+| `--exclude <glob>` | Exclude files matching the glob. Repeatable. |
+| `--include-ignored` | Include gitignored files. |
+| `--delete` | Delete extraneous files at the destination. |
+| `--no-delete` | Don't delete extraneous files (default). |
+| `--dry-run` | Preview what would be transferred. |
 | `--path <path>` | Alternative to the positional path argument. |
-
-On completion, a summary shows the number of files and bytes transferred.
 
 **Examples:**
 
 ```
-/sync up                              # push entire workspace to remote
-/sync down                            # pull entire workspace from remote
-/sync up src/                         # push only the src/ directory
-/sync down --path dist/               # pull only the dist/ directory
-/sync up --dry-run                    # preview what would be pushed
-/sync down --delete                   # pull and remove local files not on remote
-/sync up --exclude "*.log" --exclude "tmp/"  # push, skipping logs and tmp
+/sync up                              # push entire workspace
+/sync down                            # pull entire workspace
+/sync up src/                         # push only src/
+/sync down --path dist/               # pull only dist/
+/sync up --dry-run                    # preview
+/sync down --delete                   # pull and remove extra local files
+/sync up --target my-feature          # sync to a specific session
+/sync up --target outrageous-unwelcome-pirate  # sync by host prefix
 ```
 
-**Note:** You must be attached to a remote session to use `/sync`. If you're on home base, attach first with `/attach`.
+---
+
+## Session resolution
+
+All commands that accept a session target (`/teleport`, `/attach`, `/connect`, `/sync --target`) resolve it using these matchers, in order:
+
+1. **Full session ID** — exact UUID match.
+2. **Session name** — the name given at `/teleport` time.
+3. **Full host** — e.g. `outrageous-unwelcome-pirate-486e4e-e6e1.remote.kimchi.dev`.
+4. **Short host prefix** — the part before `.remote.kimchi.dev`, e.g. `outrageous-unwelcome-pirate-486e4e-e6e1`.
+
+If no match is found, close name matches are suggested.
 
 ---
 
 ## Git credentials prompt
 
-When you run `/teleport` and kimchi detects a git remote (e.g. `github.com`), it shows an interactive prompt asking for a personal access token. This token is forwarded to the sandbox so the remote agent can push and pull from your private repositories.
-
-**The prompt offers:**
-
-- **Token input** — paste or type your token. The display is masked for security.
-- **Save for future sessions** — toggle with `Tab`. When enabled, the token is saved locally so you won't be prompted again for the same host.
-- **Skip** — press `Esc` to continue without git credentials. The remote won't be able to access private repos.
-
-**Keybindings:**
+When you run `/teleport` and kimchi detects a git remote, it prompts for a personal access token. This is forwarded to the sandbox so the remote agent can push/pull from private repositories.
 
 | Key | Action |
 |---|---|
@@ -281,81 +268,74 @@ When you run `/teleport` and kimchi detects a git remote (e.g. `github.com`), it
 | `Tab` | Toggle "Save for future sessions" |
 | `Esc` | Skip (no git credentials) |
 
-If you previously saved a token for the detected host, kimchi uses it automatically without prompting.
+Previously saved tokens are used automatically. Use `--no-git-token` to skip entirely.
 
-To skip the prompt entirely, use `/teleport --no-git-token`.
-
-On subsequent `/attach` or `/connect` calls, kimchi automatically propagates saved credentials to the session if they haven't been synced yet — no re-prompting.
+On subsequent `/attach` or `/connect` calls, saved credentials are propagated automatically — no re-prompting.
 
 ---
 
 ## Common workflows
+
+### Spawn, work, and sync back
+
+```
+/teleport my-task
+# ... kimchi works on the remote ...
+# Ctrl-G to detach from tmux (returns to local kimchi)
+/sync down                     # pull changes back
+```
+
+### Reattach to a running session
+
+```
+/teleport my-task              # spawn and work
+# Ctrl-G to detach from tmux
+# ... later ...
+/attach my-task                # reattaches to the tmux session
+```
+
+### Multiple tmux sessions on one sandbox
+
+```
+/teleport my-project           # spawns sandbox, tmux session "main"
+# Ctrl-G to detach
+/teleport my-project work      # reuses sandbox, tmux session "work"
+# Ctrl-G to detach
+/sessions                      # see both tmux sessions, pick one
+```
 
 ### Clone a repo on a remote sandbox
 
 ```
 /teleport --git-repo https://github.com/org/repo.git --git-branch feature-x
 # ... agent works on the cloned repo ...
-/sync down                     # pull changes back to local
-/detach
+/sync down
 ```
 
-This is useful when:
-- You want the agent to work on a different repository than your current workspace.
-- You don't have the repo cloned locally.
-- You want a clean checkout without local modifications.
-
-### Spawn, work, and return
-
-```
-/teleport my-task              # spawn a named remote session
-# ... agent works on the remote ...
-/sync down                     # pull changes back to local
-/detach                        # disconnect (remote keeps running)
-```
-
-### Detach and reattach
-
-```
-/teleport my-task              # spawn
-# ... work ...
-/detach                        # go back to home base
-# ... do something else locally ...
-/attach my-task                # pick up where you left off
-```
-
-### Multiple sessions
-
-You can run multiple remote sessions. Detach from one and teleport or attach to another:
-
-```
-/teleport frontend             # spawn first session
-/detach                        # back to home base
-/teleport backend              # spawn second session
-/detach                        # back to home base
-/sessions                      # see both sessions, pick one to attach
-```
-
-### Syncing specific files
+### Sync specific files
 
 ```
 /sync up src/config.ts         # push a single file
-/sync down dist/               # pull an entire directory
+/sync down dist/               # pull a directory
 /sync up --dry-run             # preview before pushing
 ```
 
-### Inspecting the sandbox
+### Inspect the sandbox
 
 ```
-/connect                       # SSH into the current remote
-# run commands, inspect files, check processes
+/connect my-task               # SSH shell on the sandbox
+# run commands, inspect files
 exit                           # return to kimchi
 ```
 
-Or connect to a specific session while on home base:
+### Use host prefix as a shorthand
+
+The host prefix from the session indicator works as a target everywhere:
 
 ```
-/connect my-task               # SSH into a named session
+/attach outrageous-unwelcome-pirate-486e4e-e6e1
+/connect outrageous-unwelcome-pirate-486e4e-e6e1
+/sync up --target outrageous-unwelcome-pirate-486e4e-e6e1
 ```
 
 ---
@@ -366,29 +346,27 @@ Or connect to a specific session while on home base:
 
 | Threshold | Behaviour |
 |---|---|
-| > 500 MB | Warning shown but teleport proceeds. Sync may take a while. |
-| > 5 GB | Teleport refused. Use `--force` to override. |
+| > 500 MB | Warning shown, teleport proceeds. |
+| > 5 GB | Refused. Use `--force` to override. |
 
-**Tip:** Use `--exclude` to skip large directories you don't need on the remote (build artifacts, data files, etc.).
+Use `--exclude` to skip large directories.
 
 ### Dirty working tree
 
-By default, `/teleport` refuses if `git status --porcelain` shows uncommitted changes. This prevents accidentally shipping work-in-progress. Use `--allow-dirty` to override.
+`/teleport` refuses uncommitted changes by default. Use `--allow-dirty` to override.
 
 ### Busy session
 
-If the local session is streaming or running a bash command, `/teleport` refuses. Similarly, `/detach` refuses if the remote is busy. In both cases, use `--abandon-pending` to force-abort the in-progress work and proceed.
-
-For `/teleport`, the local session has 5 seconds to become idle. For `/detach`, the remote has 10 seconds.
+`/teleport` refuses if the local session is busy. Use `--abandon-pending` to force-abort and proceed.
 
 ### rsync not found
 
-If `rsync` is not on your `PATH`, teleport and sync commands will fail with an install hint. On macOS: `brew install rsync`. On Linux: use your package manager (e.g. `apt install rsync`).
+Install rsync: `brew install rsync` (macOS) or `apt install rsync` (Linux).
 
 ### Session not found
 
-If `/attach` or `/connect` can't find a session matching your input, kimchi will suggest close matches by name. You can also run `/sessions` to see all available sessions and pick one interactively.
+If a target doesn't match, kimchi suggests close name matches. Use `/sessions` to browse interactively.
 
 ### Completed sessions
 
-Sessions that have finished and been cleaned up server-side cannot be reattached. You'll see: "Session has completed and is no longer reachable."
+Finished sessions that were cleaned up server-side cannot be reattached: "Session has completed and is no longer reachable."

@@ -1,11 +1,20 @@
-import { WebSocket } from "ws"
 import { RemoteNetworkError } from "../types.js"
-import type { WaitForSessionReadyOptions } from "./types.js"
 
 const DEFAULT_READY_TIMEOUT_MS = 90_000
 const DEFAULT_POLL_INTERVAL_MS = 1_500
 const DEFAULT_PROBE_TIMEOUT_MS = 5_000
-const DEFAULT_WS_PATH = "/connect"
+
+export interface WaitForSessionReadyOptions {
+	connectToken: string
+	wsUrl: string
+	signal?: AbortSignal
+	timeoutMs?: number
+	pollIntervalMs?: number
+	probeTimeoutMs?: number
+	onTick?: (info: { elapsedMs: number; lastError?: string }) => void
+	/** Override fetch for testing. */
+	_fetch?: typeof globalThis.fetch
+}
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 	return new Promise((resolve, reject) => {
@@ -32,83 +41,64 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Probe the WS endpoint once. Resolves with `{ ready: true }` if the upgrade
- * completes, `{ ready: false, error }` otherwise. Never throws.
+ * Probe the `/connect` endpoint once via HTTP. Any response (even 4xx)
+ * means the agentgateway is routing traffic to this session — the sandbox
+ * is ready. Only network errors / timeouts count as "not ready".
  */
-function probeSessionWsOnce(opts: {
+async function probeOnce(opts: {
+	url: string
 	connectToken: string
-	wsURL: string
-	wsPath: string
 	probeTimeoutMs: number
 	signal?: AbortSignal
-	// biome-ignore lint/suspicious/noExplicitAny: injectable WebSocket constructor
-	WS: any
+	fetchImpl: typeof globalThis.fetch
 }): Promise<{ ready: boolean; error?: string }> {
-	return new Promise((resolve) => {
-		let settled = false
-		const settle = (result: { ready: boolean; error?: string }) => {
-			if (settled) return
-			settled = true
-			cleanup()
-			try {
-				ws.close()
-			} catch {
-				// ignore
-			}
-			resolve(result)
-		}
+	const controller = new AbortController()
+	const timer = setTimeout(() => controller.abort(), opts.probeTimeoutMs)
 
-		const url = `${opts.wsURL}${opts.wsPath}`
-		const headers = { Authorization: `Bearer ${opts.connectToken}` }
-		let ws: { close(): void; addEventListener: (t: string, cb: (e: unknown) => void) => void }
-		try {
-			ws = new opts.WS(url, { headers })
-		} catch (err) {
-			resolve({ ready: false, error: err instanceof Error ? err.message : String(err) })
-			return
-		}
+	// Forward parent signal
+	const onParentAbort = () => controller.abort()
+	opts.signal?.addEventListener("abort", onParentAbort, { once: true })
 
-		const timer = setTimeout(() => settle({ ready: false, error: "probe timeout" }), opts.probeTimeoutMs)
-		const onAbort = () => settle({ ready: false, error: "aborted" })
-		const cleanup = () => {
-			clearTimeout(timer)
-			opts.signal?.removeEventListener("abort", onAbort)
-		}
-
-		if (opts.signal?.aborted) {
-			settle({ ready: false, error: "aborted" })
-			return
-		}
-		opts.signal?.addEventListener("abort", onAbort, { once: true })
-
-		ws.addEventListener("open", () => settle({ ready: true }))
-		ws.addEventListener("error", (e: unknown) => {
-			const msg = (e as { message?: string })?.message ?? "websocket error"
-			settle({ ready: false, error: msg })
+	try {
+		const resp = await opts.fetchImpl(opts.url, {
+			method: "GET",
+			headers: { Authorization: `Bearer ${opts.connectToken}` },
+			signal: controller.signal,
 		})
-		ws.addEventListener("close", (e: unknown) => {
-			const code = (e as { code?: number })?.code
-			const reason = (e as { reason?: string })?.reason
-			settle({ ready: false, error: code ? `closed code=${code}${reason ? ` reason=${reason}` : ""}` : "closed" })
-		})
-	})
+		// Consume body to avoid leaking connections.
+		const body = await resp.text().catch(() => "")
+		// 5xx means the gateway can't reach the sandbox yet.
+		if (resp.status >= 500) {
+			return { ready: false, error: `HTTP ${resp.status}: ${body.slice(0, 200)}` }
+		}
+		// Any non-5xx response (even 4xx) means the sandbox is routable.
+		return { ready: true }
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err)
+		return { ready: false, error: msg }
+	} finally {
+		clearTimeout(timer)
+		opts.signal?.removeEventListener("abort", onParentAbort)
+	}
 }
 
 /**
- * Poll a WebSocket probe to `wss://<host>:<port>/connect` until the upgrade
- * succeeds, which signals that the agentgateway has attached the session
- * policy and traffic is routable.
+ * Poll `https://<host>/connect` until the agentgateway responds, which
+ * signals that the session is routable and the sandbox is ready for
+ * SSH / rsync traffic.
  */
 export async function waitForSessionReady(options: WaitForSessionReadyOptions): Promise<void> {
 	const signal = options.signal
 	const timeoutMs = options.timeoutMs ?? DEFAULT_READY_TIMEOUT_MS
 	const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
 	const probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS
-	const wsPath = options.wsPath ?? DEFAULT_WS_PATH
-	const WS = "_WebSocket" in options ? options._WebSocket : WebSocket
-	if (!WS) {
-		throw new RemoteNetworkError("WebSocket is not available in this environment")
-	}
+	const fetchImpl = options._fetch ?? globalThis.fetch
+
+	// Convert wss:// to https:// and append /connect
+	const httpUrl = `${options.wsUrl
+		.replace(/^wss:\/\//, "https://")
+		.replace(/^ws:\/\//, "http://")
+		.replace(/\/$/, "")}/connect`
 
 	const startedAt = Date.now()
 	let lastError: string | undefined
@@ -124,13 +114,12 @@ export async function waitForSessionReady(options: WaitForSessionReadyOptions): 
 			)
 		}
 
-		const probe = await probeSessionWsOnce({
+		const probe = await probeOnce({
+			url: httpUrl,
 			connectToken: options.connectToken,
-			wsURL: options.wsUrl,
-			wsPath,
 			probeTimeoutMs,
 			signal,
-			WS,
+			fetchImpl,
 		})
 
 		options.onTick?.({ elapsedMs, lastError: probe.error })

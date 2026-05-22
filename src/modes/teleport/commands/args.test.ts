@@ -53,8 +53,14 @@ describe("parseTeleportArgs", () => {
 		expect(r.exclude).toEqual(["tmp"])
 	})
 
-	it("throws on a second positional argument", () => {
-		expect(() => parseTeleportArgs("first second")).toThrow(TeleportArgsError)
+	it("accepts a second positional as tmuxSession", () => {
+		const r = parseTeleportArgs("my-session work")
+		expect(r.name).toBe("my-session")
+		expect(r.tmuxSession).toBe("work")
+	})
+
+	it("throws on a third positional argument", () => {
+		expect(() => parseTeleportArgs("first second third")).toThrow(TeleportArgsError)
 	})
 
 	it("throws when --exclude has no argument", () => {

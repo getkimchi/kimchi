@@ -209,6 +209,100 @@ function runSshCommandOnSandbox(opts: RunSshCommandOptions): Promise<void> {
 	})
 }
 
+/**
+ * Run a command on the remote sandbox and return its stdout.
+ * Resolves with stdout on exit code 0, returns `undefined` on any failure.
+ */
+export function runSshCommandWithOutput(opts: Omit<RunSshCommandOptions, "stdin">): Promise<string | undefined> {
+	const proxyCommand = opts.proxyCommand ?? buildProxyCommand()
+	const sshArgs = [
+		"-T",
+		"-o",
+		`ProxyCommand=${proxyCommand}`,
+		"-o",
+		"StrictHostKeyChecking=no",
+		"-o",
+		"UserKnownHostsFile=/dev/null",
+		"-o",
+		"BatchMode=yes",
+		"-o",
+		"LogLevel=ERROR",
+		`${opts.remoteUser}@${opts.remoteHost}`,
+		opts.remoteCommand,
+	]
+	const env: NodeJS.ProcessEnv = { ...process.env, AUTH_TOKEN: opts.authToken }
+	const spawner = opts._spawn ?? spawn
+
+	return new Promise((resolve) => {
+		let stdout = ""
+		const child = spawner("ssh", sshArgs, {
+			env,
+			signal: opts.signal,
+			stdio: ["ignore", "pipe", "pipe"],
+		})
+		child.stdout?.on("data", (chunk: Buffer) => {
+			stdout += chunk.toString("utf-8")
+		})
+		child.on("error", () => resolve(undefined))
+		child.on("close", (code) => {
+			resolve(code === 0 ? stdout : undefined)
+		})
+	})
+}
+
+// ── Tmux session listing ─────────────────────────────────────────────────
+
+export interface TmuxSession {
+	name: string
+	windows: number
+	attached: boolean
+}
+
+/**
+ * List active tmux sessions on the remote sandbox by running `tmux ls`.
+ * Returns an empty array if tmux is not running or the command fails.
+ *
+ * Expected `tmux ls` output format:
+ * ```
+ * main: 1 windows (created Thu May 22 20:00:00 2025) (attached)
+ * work: 3 windows (created Thu May 22 18:30:00 2025)
+ * ```
+ */
+export async function listTmuxSessions(opts: {
+	remoteHost: string
+	remoteUser: string
+	authToken: string
+	signal?: AbortSignal
+	proxyCommand?: string
+	_spawn?: typeof spawn
+}): Promise<TmuxSession[]> {
+	const raw = await runSshCommandWithOutput({
+		remoteHost: opts.remoteHost,
+		remoteUser: opts.remoteUser,
+		authToken: opts.authToken,
+		remoteCommand: "tmux ls",
+		signal: opts.signal,
+		proxyCommand: opts.proxyCommand,
+		_spawn: opts._spawn,
+	})
+	if (!raw) return []
+
+	const sessions: TmuxSession[] = []
+	for (const line of raw.trim().split("\n")) {
+		if (!line.trim()) continue
+		// e.g. "main: 1 windows (created ...) (attached)"
+		const match = line.match(/^([^:]+):\s+(\d+)\s+windows?/)
+		if (match) {
+			sessions.push({
+				name: match[1],
+				windows: Number.parseInt(match[2], 10),
+				attached: line.includes("(attached)"),
+			})
+		}
+	}
+	return sessions
+}
+
 export interface PropagateGitConfigOptions {
 	remoteHost: string
 	remoteUser: string

@@ -1,9 +1,13 @@
-import type { AgentSessionServices, ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
+import type {
+	AgentSession,
+	AgentSessionServices,
+	ExtensionAPI,
+	ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent"
 import {
 	TeleportArgsError,
 	parseAttachArgs,
 	parseConnectArgs,
-	parseDetachArgs,
 	parseSyncArgs,
 	parseTeleportArgs,
 } from "../modes/teleport/commands/args.js"
@@ -11,58 +15,47 @@ import {
 	TeleportRefusal,
 	runAttach,
 	runConnect,
-	runDetach,
 	runListSessions,
 	runSync,
 	runTeleport,
 } from "../modes/teleport/commands/index.js"
 import type { TeleportContext } from "../modes/teleport/commands/index.js"
-import type { TeleportableAgentSession } from "../modes/teleport/proxy/teleportable-session.js"
-import { setSessionIndicator } from "./ui.js"
 
 export interface TeleportExtensionDeps {
-	getWrapper: () => TeleportableAgentSession | undefined
+	getSession: () => AgentSession | undefined
 	getServices: () => AgentSessionServices | undefined
-	/**
-	 * Lazy getter for the InteractiveMode rebind trigger captured in
-	 * run-interactive-teleport.ts. We call this after `wrapper.foregroundRemote`
-	 * / `detachToHomeBase` so the TUI re-binds to the swapped foreground;
-	 * without it the prompt stays wired to the original session and input
-	 * appears to do nothing.
-	 */
-	getTriggerRebind: () => (() => Promise<void>) | undefined
-	/**
-	 * Lazy getter for the "fresh UI" trigger captured in run-interactive-teleport.ts.
-	 * Mirrors pi-mono's own post-`switchSession` sequence (`resetExtensionUI` +
-	 * `renderCurrentSessionState`). The rebind alone re-attaches listeners and
-	 * bindings but leaves the chat container and extension overlays from the
-	 * previous foreground in place — that staleness manifests as "I can type
-	 * but nothing happens" after `/teleport`.
-	 */
-	getTriggerFreshUI: () => (() => void) | undefined
 	apiKey: string
 	endpoint?: string
 }
 
+/** Shared mutable state for the teleport extension within a single CLI run. */
+const sharedState = {
+	gitCredentialsSynced: new Set<string>(),
+	lastSessionId: undefined as string | undefined,
+}
+
 function buildCtx(ctx: ExtensionCommandContext, deps: TeleportExtensionDeps): TeleportContext | undefined {
-	const wrapper = deps.getWrapper()
+	const session = deps.getSession()
 	const services = deps.getServices()
-	if (!wrapper || !services) {
+	if (!session || !services) {
 		if (ctx.hasUI) ctx.ui.notify("Teleport is not ready yet — try again in a moment.", "warning")
 		return undefined
 	}
 	return {
-		wrapper,
+		session,
 		services,
 		apiKey: deps.apiKey,
 		endpoint: deps.endpoint,
 		cwd: ctx.cwd,
 		ui: ctx.ui,
 		signal: ctx.signal,
-		triggerRebind: deps.getTriggerRebind(),
-		triggerFreshUI: deps.getTriggerFreshUI(),
-		onHostResolved: (host: string) => setSessionIndicator(formatSessionLabel(host)),
+		gitCredentialsSynced: sharedState.gitCredentialsSynced,
+		lastSessionId: sharedState.lastSessionId,
 	}
+}
+
+function syncBackState(tctx: TeleportContext): void {
+	sharedState.lastSessionId = tctx.lastSessionId
 }
 
 function asString(args: unknown): string {
@@ -76,12 +69,6 @@ function handleError(ctx: ExtensionCommandContext, err: unknown) {
 		return
 	}
 	if (ctx.hasUI) ctx.ui.notify(err instanceof Error ? err.message : String(err), "error")
-}
-
-export function formatSessionLabel(host: string | undefined): string {
-	if (!host) return "(remote)"
-	const stripped = host.replace(/\.remote\.kimchi\.dev$/, "")
-	return stripped ? `(${stripped})` : "(remote)"
 }
 
 export default function makeTeleportExtension(deps: TeleportExtensionDeps): (pi: ExtensionAPI) => void {
@@ -101,39 +88,17 @@ export default function makeTeleportExtension(deps: TeleportExtensionDeps): (pi:
 				const tctx = buildCtx(ctx, deps)
 				if (!tctx) return
 				try {
-					const result = await runTeleport(parsed, tctx)
-					setSessionIndicator(formatSessionLabel(result.host))
+					await runTeleport(parsed, tctx)
 				} catch (err) {
 					handleError(ctx, err)
-				}
-			},
-		})
-
-		pi.registerCommand("detach", {
-			description: "Disconnect from the foreground remote (server keeps it running).",
-			handler: async (args, ctx) => {
-				const parsed = (() => {
-					try {
-						return parseDetachArgs(asString(args))
-					} catch (err) {
-						handleError(ctx, err)
-						return undefined
-					}
-				})()
-				if (!parsed) return
-				const tctx = buildCtx(ctx, deps)
-				if (!tctx) return
-				try {
-					await runDetach(parsed, tctx)
-					setSessionIndicator(null)
-				} catch (err) {
-					handleError(ctx, err)
+				} finally {
+					syncBackState(tctx)
 				}
 			},
 		})
 
 		pi.registerCommand("attach", {
-			description: "Re-attach to a previously-detached remote by name or id.",
+			description: "Attach to a remote session via SSH+tmux by name or id.",
 			handler: async (args, ctx) => {
 				const parsed = (() => {
 					try {
@@ -147,10 +112,11 @@ export default function makeTeleportExtension(deps: TeleportExtensionDeps): (pi:
 				const tctx = buildCtx(ctx, deps)
 				if (!tctx) return
 				try {
-					const result = await runAttach(parsed, tctx)
-					setSessionIndicator(formatSessionLabel(result.host))
+					await runAttach(parsed, tctx)
 				} catch (err) {
 					handleError(ctx, err)
+				} finally {
+					syncBackState(tctx)
 				}
 			},
 		})
@@ -178,7 +144,7 @@ export default function makeTeleportExtension(deps: TeleportExtensionDeps): (pi:
 		})
 
 		pi.registerCommand("sessions", {
-			description: "List remote sessions (foreground, detached in-process, and on the server).",
+			description: "List remote sessions.",
 			handler: async (_args, ctx) => {
 				const tctx = buildCtx(ctx, deps)
 				if (!tctx) return
@@ -186,6 +152,8 @@ export default function makeTeleportExtension(deps: TeleportExtensionDeps): (pi:
 					await runListSessions(tctx)
 				} catch (err) {
 					handleError(ctx, err)
+				} finally {
+					syncBackState(tctx)
 				}
 			},
 		})

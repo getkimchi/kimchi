@@ -1,6 +1,12 @@
 import type { RemoteSessionStatus } from "../types.js"
 
-export type SessionRowState = "foreground" | "detached (this kimchi)" | "detached" | "active elsewhere"
+export type SessionRowState = "active (this kimchi)" | "active elsewhere" | "available"
+
+export interface TmuxSessionInfo {
+	name: string
+	windows: number
+	attached: boolean
+}
 
 export interface SessionRow {
 	id: string
@@ -10,6 +16,7 @@ export interface SessionRow {
 	status?: RemoteSessionStatus
 	createdAt?: Date
 	lastActivityAt?: Date
+	tmuxSessions?: TmuxSessionInfo[]
 }
 
 const HEADERS = {
@@ -50,7 +57,7 @@ export function renderSessionsTable(
 
 	const lines: string[] = [header]
 	for (const row of rows) {
-		const marker = row.state === "foreground" ? "*" : " "
+		const marker = row.state === "active (this kimchi)" ? "*" : " "
 		const id = pad(row.id, idWidth)
 		const hostPrefix = row.host ? row.host.split(".")[0] : "-"
 		const host = pad(hostPrefix, hostWidth)
