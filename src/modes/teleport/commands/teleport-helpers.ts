@@ -7,8 +7,6 @@ import { FALLBACK_TARGET_NAME, SANDBOX_HOME } from "./types.js"
 
 const execAsync = promisify(exec)
 
-export const TELEPORT_DEBUG_LOG = "/tmp/kimchi-teleport-debug.log"
-
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 	return new Promise((resolve, reject) => {
 		const t = setTimeout(resolve, ms)
