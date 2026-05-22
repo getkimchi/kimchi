@@ -53,6 +53,7 @@ import { probeKittyKeyboardSupport } from "./extensions/terminal-compat/keyboard
 import { emitTerminalCompatWarning } from "./extensions/terminal-compat/startup-warning.js"
 import thinkingStepsExtension from "./extensions/thinking-steps/index.js"
 import tipsExtension from "./extensions/tips/index.js"
+import toolGroupingExtension from "./extensions/tool-grouping.js"
 import toolRenderingExtension from "./extensions/tool-rendering.js"
 import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
@@ -496,6 +497,7 @@ try {
 			tagsExtension,
 			telemetryExtension(telemetryConfig),
 			toolRenderingExtension,
+			toolGroupingExtension,
 			...enabledExtensionFactories([
 				{ id: "tools.web_fetch", factory: webFetchExtension },
 				{ id: "tools.web_search", factory: webSearchExtension },

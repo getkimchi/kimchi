@@ -100,7 +100,9 @@ export function patchAddChild(): void {
 // findToolGroup
 // ---------------------------------------------------------------------------
 
-function isToolLike(v: unknown): v is { toolName: string; toolCallId: string; isPartial: boolean; args: Record<string, unknown> } {
+function isToolLike(
+	v: unknown,
+): v is { toolName: string; toolCallId: string; isPartial: boolean; args: Record<string, unknown> } {
 	if (!v || typeof v !== "object") return false
 	const c = v as Record<string, unknown>
 	return typeof c.toolName === "string" && typeof c.toolCallId === "string"
@@ -215,10 +217,7 @@ function buildGroupView(run: object[], theme: any): ToolBlockView {
 		view.setExtra([theme?.fg?.("dim", buildCurrentToolLine(last)) ?? buildCurrentToolLine(last)])
 	} else {
 		const icon = theme?.fg?.("success", "✓") ?? "✓"
-		view.setHeader(
-			`${icon} ${summaryText}`,
-			theme?.fg?.("dim", "ctrl+o") ?? "ctrl+o",
-		)
+		view.setHeader(`${icon} ${summaryText}`, theme?.fg?.("dim", "ctrl+o") ?? "ctrl+o")
 		view.hideDivider()
 		view.setFooter("", "")
 		view.setExtra([])
@@ -254,4 +253,13 @@ export function patchToolGroupRendering(): void {
 	}
 
 	proto[GROUP_RENDER_PATCH_FLAG] = true
+}
+
+// ---------------------------------------------------------------------------
+// Extension entry point
+// ---------------------------------------------------------------------------
+
+export default function registerToolGrouping(_pi: ExtensionAPI): void {
+	patchAddChild()
+	patchToolGroupRendering()
 }

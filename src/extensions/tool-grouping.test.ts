@@ -1,6 +1,14 @@
-import { describe, expect, it } from "vitest"
-import { classifyTool, formatSummary, getParent, patchAddChild, findToolGroup, buildGroupSummaryText, buildCurrentToolLine } from "./tool-grouping.js"
 import { Container, Spacer } from "@earendil-works/pi-tui"
+import { describe, expect, it } from "vitest"
+import {
+	buildCurrentToolLine,
+	buildGroupSummaryText,
+	classifyTool,
+	findToolGroup,
+	formatSummary,
+	getParent,
+	patchAddChild,
+} from "./tool-grouping.js"
 
 describe("classifyTool", () => {
 	it("classifies read tool as file", () => {
@@ -104,7 +112,13 @@ describe("formatSummary", () => {
 	})
 	it("joins multiple categories with comma", () => {
 		expect(
-			formatSummary(new Map([["file", 2], ["pattern", 1]]), false)
+			formatSummary(
+				new Map([
+					["file", 2],
+					["pattern", 1],
+				]),
+				false,
+			),
 		).toBe("read 2 files, searched for 1 pattern")
 	})
 })
@@ -230,11 +244,7 @@ describe("findToolGroup", () => {
 	})
 })
 
-function mockToolFull(
-	toolName: string,
-	args: Record<string, unknown>,
-	opts: { isPartial?: boolean } = {},
-): object {
+function mockToolFull(toolName: string, args: Record<string, unknown>, opts: { isPartial?: boolean } = {}): object {
 	return {
 		toolName,
 		toolCallId: Math.random().toString(36),
@@ -254,16 +264,11 @@ describe("buildGroupSummaryText", () => {
 			mockToolFull("read", { path: "b.ts" }),
 			mockToolFull("grep", { pattern: "foo" }),
 		]
-		expect(buildGroupSummaryText(run, false)).toBe(
-			"read 2 files, listed 1 directory, searched for 1 pattern",
-		)
+		expect(buildGroupSummaryText(run, false)).toBe("read 2 files, listed 1 directory, searched for 1 pattern")
 	})
 
 	it("uses continuous tense when isInProgress is true", () => {
-		const run = [
-			mockToolFull("read", { path: "a.ts" }),
-			mockToolFull("bash", { command: "git status" }),
-		]
+		const run = [mockToolFull("read", { path: "a.ts" }), mockToolFull("bash", { command: "git status" })]
 		expect(buildGroupSummaryText(run, true)).toBe("reading 1 file, running 1 command")
 	})
 })
