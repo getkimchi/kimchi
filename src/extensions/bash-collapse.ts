@@ -157,7 +157,9 @@ export default function (pi: ExtensionAPI) {
 		const command = event.input.command
 		if (typeof command !== "string") return
 		const rewritten = rewriteWithRtk(command)
-		const hooked = applyEnabledBashHooks(rewritten)
+		const cwd =
+			typeof (event.input as { cwd?: unknown }).cwd === "string" ? (event.input as { cwd: string }).cwd : process.cwd()
+		const hooked = applyEnabledBashHooks(rewritten, cwd)
 		if (hooked.block) return { block: true, reason: hooked.reason }
 		rewriteCache.set(command, hooked.command)
 		if (rewritten !== hooked.command) rewriteCache.set(rewritten, hooked.command)

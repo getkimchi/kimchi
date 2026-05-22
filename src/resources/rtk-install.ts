@@ -7,9 +7,9 @@ import {
 	mkdtempSync,
 	readFileSync,
 	readdirSync,
+	renameSync,
 	rmSync,
 	symlinkSync,
-	unlinkSync,
 	writeFileSync,
 } from "node:fs"
 import { chmod, writeFile } from "node:fs/promises"
@@ -35,6 +35,8 @@ export interface RtkInstallResult {
 	linkPath: string
 }
 
+let installPromise: Promise<RtkInstallResult> | undefined
+
 export function managedRtkPath(): string {
 	return join(rtkInstallDir(), process.platform === "win32" ? "rtk.exe" : "rtk")
 }
@@ -54,6 +56,14 @@ export function isRtkInstalled(): boolean {
 	}
 }
 
+export function installedRtkVersion(): string | undefined {
+	for (const binary of [globalRtkLinkPath(), managedRtkPath(), "rtk"]) {
+		const version = rtkVersion(binary)
+		if (version) return version
+	}
+	return undefined
+}
+
 export function shouldCheckRtkAutoInstall(now = Date.now(), path = settingsPath()): boolean {
 	const settings = readFullSettings(path)
 	const checkedAt = typeof settings.rtkAutoInstallCheckedAt === "number" ? settings.rtkAutoInstallCheckedAt : 0
@@ -67,7 +77,27 @@ export function markRtkAutoInstallChecked(now = Date.now(), path = settingsPath(
 }
 
 export async function installRtk(): Promise<RtkInstallResult> {
+	if (installPromise) return installPromise
+	installPromise = installRtkUnlocked().finally(() => {
+		installPromise = undefined
+	})
+	return installPromise
+}
+
+async function installRtkUnlocked(): Promise<RtkInstallResult> {
 	const release = await fetchJson<GitHubRelease>(LATEST_RELEASE_URL)
+	const managedPath = managedRtkPath()
+	const globalPath = globalRtkLinkPath()
+	const managedVersion = rtkVersion(managedPath)
+	const globalVersion = rtkVersion(globalPath)
+	if (managedVersion === release.tag_name) {
+		const linkPath = globalVersion === release.tag_name ? globalPath : linkGlobalRtk(managedPath)
+		return { version: release.tag_name, binaryPath: managedPath, linkPath }
+	}
+	if (globalVersion === release.tag_name) {
+		return { version: release.tag_name, binaryPath: globalPath, linkPath: globalPath }
+	}
+
 	const asset = selectAsset(release)
 	const archive = await download(asset.browser_download_url)
 	verifyDigest(asset, archive)
@@ -82,7 +112,7 @@ export async function installRtk(): Promise<RtkInstallResult> {
 		const extracted = findExtractedRtk(extractDir)
 		const target = managedRtkPath()
 		mkdirSync(dirname(target), { recursive: true })
-		copyFileSync(extracted, target)
+		replaceFile(extracted, target)
 		if (process.platform !== "win32") await chmod(target, 0o755)
 		const linkPath = linkGlobalRtk(target)
 		return { version: release.tag_name, binaryPath: target, linkPath }
@@ -105,15 +135,33 @@ function globalBinDir(): string {
 function linkGlobalRtk(target: string): string {
 	const linkPath = globalRtkLinkPath()
 	mkdirSync(dirname(linkPath), { recursive: true })
-	if (existsSync(linkPath)) unlinkSync(linkPath)
 
 	if (process.platform === "win32") {
-		copyFileSync(target, linkPath)
+		replaceFile(target, linkPath)
 		return linkPath
 	}
 
-	symlinkSync(target, linkPath)
+	const tmpLink = `${linkPath}.${process.pid}.${Date.now()}.tmp`
+	rmSync(tmpLink, { force: true })
+	symlinkSync(target, tmpLink)
+	renameSync(tmpLink, linkPath)
 	return linkPath
+}
+
+function replaceFile(src: string, dest: string): void {
+	const tmp = `${dest}.${process.pid}.${Date.now()}.tmp`
+	copyFileSync(src, tmp)
+	renameSync(tmp, dest)
+}
+
+function rtkVersion(binary: string): string | undefined {
+	try {
+		const output = execFileSync(binary, ["--version"], { encoding: "utf-8", timeout: 1000 })
+		const match = output.match(/\d+\.\d+\.\d+/)
+		return match ? `v${match[0]}` : undefined
+	} catch {
+		return undefined
+	}
 }
 
 function readFullSettings(path: string): Record<string, unknown> {
@@ -163,7 +211,8 @@ async function download(url: string): Promise<Buffer> {
 }
 
 function verifyDigest(asset: GitHubRelease["assets"][number], archive: Buffer): void {
-	if (!asset.digest?.startsWith("sha256:")) return
+	if (!asset.digest?.startsWith("sha256:"))
+		throw new Error(`RTK release asset ${asset.name} is missing a sha256 digest`)
 	const expected = asset.digest.slice("sha256:".length)
 	const actual = createHash("sha256").update(archive).digest("hex")
 	if (actual !== expected) throw new Error(`RTK checksum mismatch for ${asset.name}`)

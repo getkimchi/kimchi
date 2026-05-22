@@ -282,6 +282,12 @@ Or persistently in `~/.config/kimchi/harness/settings.json`:
 { "rtk": false }
 ```
 
+### Hooks
+
+Users can add custom Bash hooks to rewrite or block shell commands before they run. Global hooks live in `~/.config/kimchi/harness/hooks/bash/`; project hooks live in `.kimchi/hooks/bash/` and default to disabled until enabled from `/resources` or `kimchi resources enable ...`.
+
+See `docs/hooks.md` for the hook protocol and examples.
+
 ### Migrating from another coding agent
 
 On first run, kimchi looks for an existing **Claude Code** or **OpenCode** installation and offers to migrate its MCP servers. If anything is migratable you will see a one-shot prompt:

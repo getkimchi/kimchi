@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
-import { getResourceOverride } from "./store.js"
+import { readResourceSettings } from "./store.js"
+import type { ResourceId } from "./types.js"
 
 export interface BashHookResult {
 	command: string
@@ -18,8 +19,9 @@ interface HookJsonOutput {
 
 export function applyEnabledBashHooks(command: string, cwd = process.cwd()): BashHookResult {
 	let current = command
+	const settings = readResourceSettings()
 	for (const hook of discoverBashHookResources(cwd)) {
-		if ((getResourceOverride(hook.id) ?? hook.defaultEnabled) !== true) continue
+		if ((settings.resources[hook.id as ResourceId] ?? hook.defaultEnabled) !== true) continue
 		const result = runBashHook(hook.path, current, cwd)
 		if (result.block) return result
 		current = result.command

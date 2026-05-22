@@ -68,9 +68,10 @@ function parseSwitch(value: string): boolean | null {
 
 function usage(code: number): number {
 	const out = code === 0 ? console.log : console.error
-	out("Usage: kimchi resources [list]")
+	out("Usage: kimchi resources [list|status]")
 	out("       kimchi resources enable <resource-id>")
 	out("       kimchi resources disable <resource-id>")
+	out("       kimchi resources set <resource-id> on|off")
 	out("       kimchi resources reset <resource-id>")
 	return code
 }
