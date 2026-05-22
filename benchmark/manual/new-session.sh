@@ -66,29 +66,30 @@ session_dir      = os.environ["SESSION_DIR"]
 n                = int(os.environ["N"])
 binary           = os.environ["BINARY"]
 
-# Fields: (name, prompt, extra_flags, in_run_all, setup_cmd or None)
-tasks = [
-    ("simple",         simple_prompt,  [],                      True,  None),
-    ("complex",        complex_prompt, [],                      True,  None),
-    ("complex-single", complex_prompt, [], True,  None),
-    ("research",       research_prompt,[],                      True,  None),
-    ("explore",        explore_prompt, [],                      True,  f'mkdir -p "$DIR/usermgmt" && cp -R "{explore_seed}/." "$DIR/usermgmt/" && ls -la "$DIR/usermgmt/"'),
-    ("mega",           mega_prompt,    [],                      False, None),
+# Fields: (name, prompt, extra_flags, in_run_all, setup_cmd)
+# All tasks run in multi-model mode (no --model flag) except complex-single,
+# which is generated once per configured model with --model to force single-model mode.
+multi_model_tasks = [
+    ("simple",   simple_prompt,   [], True,  None),
+    ("complex",  complex_prompt,  [], True,  None),
+    ("research", research_prompt, [], True,  None),
+    ("explore",  explore_prompt,  [], True,  f'mkdir -p "$DIR/usermgmt" && cp -R "{explore_seed}/." "$DIR/usermgmt/" && ls -la "$DIR/usermgmt/"'),
+    ("mega",     mega_prompt,     [], False, None),
 ]
 
 all_scripts = []
 run_all_scripts = []
-for model in models:
-    print(f"model: kimchi-dev/{model}")
-    for task, task_prompt, extra_flags, in_run_all, setup_cmd in tasks:
-        run_dir = f"{task}-{model}"
-        os.makedirs(os.path.join(session_dir, "runs", run_dir), exist_ok=True)
-        slug = f"s{n}-{task}-{model}"
-        script_path = os.path.join(session_dir, f"run-{task}-{model}.sh")
-        flags = "\n".join(f"  {flag} \\" for flag in extra_flags)
-        flags_block = (flags + "\n") if flags else ""
-        setup_block = (setup_cmd + "\n") if setup_cmd else ""
-        content = f"""#!/bin/zsh
+
+# Generate multi-model task scripts (one per task, no --model flag)
+for task, task_prompt, extra_flags, in_run_all, setup_cmd in multi_model_tasks:
+    run_dir = task
+    os.makedirs(os.path.join(session_dir, "runs", run_dir), exist_ok=True)
+    slug = f"s{n}-{task}"
+    script_path = os.path.join(session_dir, f"run-{task}.sh")
+    flags = "\n".join(f"  {flag} \\" for flag in extra_flags)
+    flags_block = (flags + "\n") if flags else ""
+    setup_block = (setup_cmd + "\n") if setup_cmd else ""
+    content = f"""#!/bin/zsh
 TS=$(date +%Y%m%d-%H%M%S)
 SESSION_FILE="{session_dir}/runs/{run_dir}/session-${{TS}}.jsonl"
 DIR=$(mktemp -d /private/tmp/kimchi-{slug}-XXXXXX)
@@ -97,22 +98,45 @@ echo "Session file: $SESSION_FILE"
 cd "$DIR"
 {setup_block}{binary} \\
   --yolo \\
-  --model kimchi-dev/{model} \\
 {flags_block}  --session "$SESSION_FILE" \\
   "{task_prompt}"
 """
-        with open(script_path, "w") as f:
-            f.write(content)
-        os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        all_scripts.append(script_path)
-        if in_run_all:
-            run_all_scripts.append(script_path)
+    with open(script_path, "w") as f:
+        f.write(content)
+    os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    all_scripts.append(script_path)
+    if in_run_all:
+        run_all_scripts.append(script_path)
 
-# run-all.sh — iTerm2 grid (cols=tasks, rows=models) with background fallback
+# Generate complex-single scripts (one per model, with --model flag)
+for model in models:
+    run_dir = f"complex-single-{model}"
+    os.makedirs(os.path.join(session_dir, "runs", run_dir), exist_ok=True)
+    slug = f"s{n}-complex-single-{model}"
+    script_path = os.path.join(session_dir, f"run-complex-single-{model}.sh")
+    content = f"""#!/bin/zsh
+TS=$(date +%Y%m%d-%H%M%S)
+SESSION_FILE="{session_dir}/runs/{run_dir}/session-${{TS}}.jsonl"
+DIR=$(mktemp -d /private/tmp/kimchi-{slug}-XXXXXX)
+echo "Working directory: $DIR"
+echo "Session file: $SESSION_FILE"
+cd "$DIR"
+{binary} \\
+  --yolo \\
+  --model kimchi-dev/{model} \\
+  --session "$SESSION_FILE" \\
+  "{complex_prompt}"
+"""
+    with open(script_path, "w") as f:
+        f.write(content)
+    os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    all_scripts.append(script_path)
+    run_all_scripts.append(script_path)
+
+# run-all.sh — iTerm2 grid with background fallback
 run_all = os.path.join(session_dir, "run-all.sh")
-run_all_tasks = [t for t in tasks if t[3]]
-cols = len(run_all_tasks)
-rows = len(models)
+cols = 3
+rows = 2
 
 as_lines = []
 as_lines.append("      set g0_0 to current session of newTab")
