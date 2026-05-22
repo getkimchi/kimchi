@@ -140,8 +140,8 @@ export function getConfig(type: string): {
 	}
 
 	return {
-		displayName: "Agent",
-		description: "General-purpose agent for complex, multi-step tasks",
+		displayName: "General Purpose",
+		description: "General purpose agent for all kind of tasks.",
 		builtinToolNames: BUILTIN_TOOL_NAMES,
 		extensions: true,
 		skills: true,

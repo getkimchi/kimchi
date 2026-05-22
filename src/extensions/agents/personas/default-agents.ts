@@ -37,7 +37,7 @@ function buildDefaultAgents(): Map<string, AgentConfig> {
 			AGENT_GENERAL_PURPOSE,
 			{
 				name: AGENT_GENERAL_PURPOSE,
-				displayName: "Agent",
+				displayName: "General Purpose",
 				description: "General-purpose agent for complex, multi-step tasks",
 				extensions: true,
 				skills: true,

@@ -107,11 +107,6 @@ export function getDisplayName(type: SubagentType): string {
 	return getConfig(type).displayName
 }
 
-export function getPromptModeLabel(type: SubagentType): string | undefined {
-	const config = getConfig(type)
-	return config.promptMode === "append" ? "twin" : undefined
-}
-
 function truncateLine(text: string, len = 60): string {
 	const line =
 		text
@@ -214,7 +209,6 @@ export class AgentWidget {
 		theme: Theme,
 	): string {
 		const name = getDisplayName(a.type)
-		const modeLabel = getPromptModeLabel(a.type)
 		const duration = formatMs((a.completedAt ?? Date.now()) - a.startedAt)
 
 		let icon: string
@@ -245,9 +239,8 @@ export class AgentWidget {
 		if (a.toolUses > 0) parts.push(`${a.toolUses} tool use${a.toolUses === 1 ? "" : "s"}`)
 		parts.push(duration)
 
-		const modeTag = modeLabel ? ` ${theme.fg("dim", `(${modeLabel})`)}` : ""
 		const modelTag = a.modelId ? ` ${theme.fg("dim", `[${a.modelId}]`)}` : ""
-		return `${icon} ${theme.fg("dim", name)}${modeTag}${modelTag}  ${theme.fg("dim", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}${statusText}`
+		return `${icon} ${theme.fg("dim", name)}${modelTag}  ${theme.fg("dim", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}${statusText}`
 	}
 
 	private renderWidget(theme: Theme, width: number): string[] {
@@ -277,8 +270,6 @@ export class AgentWidget {
 		const runningLines: string[][] = []
 		for (const a of running) {
 			const name = getDisplayName(a.type)
-			const modeLabel = getPromptModeLabel(a.type)
-			const modeTag = modeLabel ? ` ${theme.fg("dim", `(${modeLabel})`)}` : ""
 			const elapsed = formatMs(Date.now() - a.startedAt)
 
 			const bg = this.agentActivity.get(a.id)
@@ -299,7 +290,7 @@ export class AgentWidget {
 			const modelTag = a.modelId ? ` ${theme.fg("dim", `[${a.modelId}]`)}` : ""
 			runningLines.push([
 				truncate(
-					`${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modeTag}${modelTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
+					`${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modelTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
 				),
 				truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`)),
 			])
