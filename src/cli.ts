@@ -306,7 +306,30 @@ try {
 			throw new Error("KIMCHI_CODING_AGENT_DIR is not set; cli.ts must be entered via entry.ts")
 		}
 		const modelsJsonPath = resolve(agentDir, "models.json")
-		const { models } = await updateModelsConfig(modelsJsonPath, apiKey)
+
+		let currentApiKey = apiKey
+		let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
+		try {
+			;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
+		} catch (err) {
+			const is401 = err instanceof Error && err.message.includes("401")
+			if (is401 && process.stdin.isTTY) {
+				console.warn("API key is invalid or expired. Redirecting to setup...")
+				writeApiKey("")
+				config = loadConfig()
+				const { runWizard } = await import("./setup-wizard/index.js")
+				const wizardResult = await runWizard()
+				if (wizardResult.cancelled) {
+					process.exit(130)
+				}
+				currentApiKey = wizardResult.apiKey ?? ""
+				writeApiKey(currentApiKey)
+				config = loadConfig()
+				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
+			} else {
+				throw err
+			}
+		}
 
 		// Must run before main() so the keybindings file is loaded with the
 		// override in place.
@@ -471,7 +494,7 @@ try {
 			const { runAcpMode } = await import("./modes/acp/server.js")
 			await runAcpMode({ extensionFactories, agentDir })
 		} else if (teleportMode) {
-			if (!apiKey) {
+			if (!currentApiKey) {
 				console.error("Error: --teleport requires an API key — run 'kimchi setup' first.")
 				await Promise.allSettled(phPending)
 				process.exit(1)
@@ -481,7 +504,7 @@ try {
 			await runTeleportSession({
 				extensionFactories,
 				agentDir,
-				apiKey: apiKey ?? "",
+				apiKey: currentApiKey,
 				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 			})
 		} else {
