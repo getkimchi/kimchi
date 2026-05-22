@@ -43,9 +43,18 @@ run("typecheck", "pnpm run typecheck")
 // Externalize packages that cannot be bundled into a Bun compiled binary (native addons, browser automation harnesses).
 // If a new dependency causes a build failure, check whether it also needs --external here.
 const targetFlag = crossTarget ? ` --target=${crossTarget}` : ""
+
+// Inline build-time env vars so they are baked into the compiled binary.
+// Without --define, process.env lookups resolve at runtime where the var is absent.
+const defineFlags = []
+const posthogKey = process.env.KIMCHI_POSTHOG_API_KEY ?? ""
+if (posthogKey) {
+	defineFlags.push(`--define 'process.env.KIMCHI_POSTHOG_API_KEY=${JSON.stringify(posthogKey)}'`)
+}
+
 run(
 	"compile",
-	`bun build src/entry.ts --compile${targetFlag} --outfile dist/bin/kimchi --external chromium-bidi --external electron`,
+	`bun build src/entry.ts --compile${targetFlag} --outfile dist/bin/kimchi --external chromium-bidi --external electron ${defineFlags.join(" ")}`.trim(),
 )
 
 // Bun --compile produces binaries with an invalid code signature on macOS.

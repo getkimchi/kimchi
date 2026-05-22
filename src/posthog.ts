@@ -37,16 +37,18 @@ interface PostHogEvent {
 }
 
 /**
- * Read the PostHog API key at call time, not module-load time.
- * Allows tests to stub the env var before the first call.
+ * Read the PostHog API key.
+ *
+ * In release builds, `process.env.KIMCHI_POSTHOG_API_KEY` is replaced at
+ * compile time via `bun build --define` (see scripts/build-binary.js), so
+ * the key is baked into the binary and available without any runtime env var.
+ *
+ * In dev/test builds the expression is NOT replaced, so it falls through to
+ * an actual `process.env` lookup — tests can stub it, and dev runs are no-ops
+ * (empty string → events silently dropped).
  */
 function getApiKey(): string {
-	return (
-		process.env.KIMCHI_POSTHOG_API_KEY ??
-		// Injected at build time by the release workflow (see release.yml).
-		// Empty string means dev build — events are silently dropped.
-		""
-	)
+	return process.env.KIMCHI_POSTHOG_API_KEY ?? ""
 }
 
 /**
