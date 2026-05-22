@@ -183,6 +183,55 @@ describe("default agents — subagent system prompt snapshot", () => {
 	})
 })
 
+describe("contextFiles injection", () => {
+	it("includes ## Project Guidelines block when contextFiles are provided", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			contextFiles: [{ path: "/home/testuser/AGENTS.md", content: "# My Project\nSome guidelines." }],
+		})
+		expect(output).toContain("## Project Guidelines")
+		expect(output).toContain("Some guidelines.")
+	})
+
+	it("shifts top-level headings down one level in context file content", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			contextFiles: [{ path: "/repo/AGENTS.md", content: "# Top\n## Second\n### Third" }],
+		})
+		// # Top → ## Top, ## Second → ### Second, ### Third → #### Third
+		expect(output).toContain("## Top")
+		expect(output).toContain("### Second")
+		expect(output).toContain("#### Third")
+		expect(output).not.toMatch(/^# Top/m)
+	})
+
+	it("concatenates multiple context files separated by a blank line", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			contextFiles: [
+				{ path: "/AGENTS.md", content: "Root guidelines." },
+				{ path: "/home/testuser/projects/myapp/AGENTS.md", content: "Project guidelines." },
+			],
+		})
+		expect(output).toContain("Root guidelines.")
+		expect(output).toContain("Project guidelines.")
+	})
+
+	it("does not include ## Project Guidelines block when contextFiles is empty", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			contextFiles: [],
+		})
+		expect(output).not.toContain("## Project Guidelines")
+	})
+
+	it("does not include ## Project Guidelines block when contextFiles is absent", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
+		expect(output).not.toContain("## Project Guidelines")
+	})
+})
+
 describe("formatTokenBudget", () => {
 	const cases: Record<string, { input: number; expected: string }> = {
 		"formats millions": { input: 1_500_000, expected: "1.5M" },

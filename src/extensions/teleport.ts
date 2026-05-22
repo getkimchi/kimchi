@@ -4,6 +4,7 @@ import {
 	parseAttachArgs,
 	parseConnectArgs,
 	parseDetachArgs,
+	parseSyncArgs,
 	parseTeleportArgs,
 } from "../modes/teleport/commands/args.js"
 import {
@@ -12,10 +13,12 @@ import {
 	runConnect,
 	runDetach,
 	runListSessions,
+	runSync,
 	runTeleport,
 } from "../modes/teleport/commands/index.js"
 import type { TeleportContext } from "../modes/teleport/commands/index.js"
 import type { TeleportableAgentSession } from "../modes/teleport/proxy/teleportable-session.js"
+import { setSessionIndicator } from "./ui.js"
 
 export interface TeleportExtensionDeps {
 	getWrapper: () => TeleportableAgentSession | undefined
@@ -74,6 +77,12 @@ function handleError(ctx: ExtensionCommandContext, err: unknown) {
 	if (ctx.hasUI) ctx.ui.notify(err instanceof Error ? err.message : String(err), "error")
 }
 
+export function formatSessionLabel(host: string | undefined): string {
+	if (!host) return "(remote)"
+	const stripped = host.replace(/\.remote\.kimchi\.dev$/, "")
+	return stripped ? `(${stripped})` : "(remote)"
+}
+
 export default function makeTeleportExtension(deps: TeleportExtensionDeps): (pi: ExtensionAPI) => void {
 	return (pi: ExtensionAPI): void => {
 		pi.registerCommand("teleport", {
@@ -91,7 +100,8 @@ export default function makeTeleportExtension(deps: TeleportExtensionDeps): (pi:
 				const tctx = buildCtx(ctx, deps)
 				if (!tctx) return
 				try {
-					await runTeleport(parsed, tctx)
+					const result = await runTeleport(parsed, tctx)
+					setSessionIndicator(formatSessionLabel(result.host))
 				} catch (err) {
 					handleError(ctx, err)
 				}
@@ -114,6 +124,7 @@ export default function makeTeleportExtension(deps: TeleportExtensionDeps): (pi:
 				if (!tctx) return
 				try {
 					await runDetach(parsed, tctx)
+					setSessionIndicator(null)
 				} catch (err) {
 					handleError(ctx, err)
 				}
@@ -135,7 +146,8 @@ export default function makeTeleportExtension(deps: TeleportExtensionDeps): (pi:
 				const tctx = buildCtx(ctx, deps)
 				if (!tctx) return
 				try {
-					await runAttach(parsed, tctx)
+					const result = await runAttach(parsed, tctx)
+					setSessionIndicator(formatSessionLabel(result.host))
 				} catch (err) {
 					handleError(ctx, err)
 				}
@@ -171,6 +183,28 @@ export default function makeTeleportExtension(deps: TeleportExtensionDeps): (pi:
 				if (!tctx) return
 				try {
 					await runListSessions(tctx)
+				} catch (err) {
+					handleError(ctx, err)
+				}
+			},
+		})
+
+		pi.registerCommand("sync", {
+			description: "Rsync files between local and remote: /sync up [path] or /sync down [path].",
+			handler: async (args, ctx) => {
+				const parsed = (() => {
+					try {
+						return parseSyncArgs(asString(args))
+					} catch (err) {
+						handleError(ctx, err)
+						return undefined
+					}
+				})()
+				if (!parsed) return
+				const tctx = buildCtx(ctx, deps)
+				if (!tctx) return
+				try {
+					await runSync(parsed, tctx)
 				} catch (err) {
 					handleError(ctx, err)
 				}

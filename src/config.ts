@@ -459,3 +459,42 @@ export function clearApiKey(configPath?: string): void {
 		{ createIfMissing: false },
 	)
 }
+
+/**
+ * Read a stored git token for a specific host from the global config.
+ * Tokens are stored under `gitTokens.<host>` (e.g. `gitTokens["github.com"]`).
+ */
+export function readGitToken(host: string, configPath?: string): string | undefined {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	try {
+		const raw = readFileSync(path, "utf-8")
+		const parsed = JSON.parse(raw)
+		const tokens = parsed.gitTokens
+		if (tokens && typeof tokens === "object" && !Array.isArray(tokens)) {
+			const token = (tokens as Record<string, unknown>)[host]
+			if (typeof token === "string" && token.length > 0) {
+				return token
+			}
+		}
+		return undefined
+	} catch {
+		return undefined
+	}
+}
+
+/**
+ * Persist a git token for a specific host in the global config.
+ * Stored under `gitTokens.<host>` alongside the API key, following the same
+ * security model (plaintext in `~/.config/kimchi/config.json`).
+ */
+export function writeGitToken(host: string, token: string, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateConfigFile(path, (raw) => {
+		const gitTokens =
+			raw.gitTokens && typeof raw.gitTokens === "object" && !Array.isArray(raw.gitTokens)
+				? { ...(raw.gitTokens as Record<string, unknown>) }
+				: {}
+		gitTokens[host] = token
+		raw.gitTokens = gitTokens
+	})
+}

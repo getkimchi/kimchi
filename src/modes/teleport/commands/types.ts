@@ -14,6 +14,8 @@ export interface TeleportContext {
 	cwd: string
 	ui: ExtensionUIContext
 	signal?: AbortSignal
+	/** Path to the global config file (for git token persistence). */
+	configPath?: string
 	/**
 	 * Asks InteractiveMode to re-bind its session listeners to the wrapper's
 	 * current foreground. Must be invoked after `wrapper.foregroundRemote` or

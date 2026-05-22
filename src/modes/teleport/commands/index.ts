@@ -13,6 +13,7 @@ export {
 	BUSY_WAIT_MS_REMOTE,
 } from "./types.js"
 export {
+	cloneRepoOnSandbox,
 	deriveSandboxDest,
 	isBusy,
 	waitUntilIdle,
@@ -22,8 +23,9 @@ export {
 	rsyncInstallHint,
 	sleep,
 } from "./teleport-helpers.js"
-export { runTeleport } from "./teleport.js"
+export { runTeleport, deriveSandboxDestFromRepoUrl } from "./teleport.js"
 export { runAttach } from "./attach.js"
 export { runDetach } from "./detach.js"
 export { runConnect, type RunConnectInternals } from "./connect.js"
 export { runListSessions } from "./sessions.js"
+export { runSync } from "./sync.js"

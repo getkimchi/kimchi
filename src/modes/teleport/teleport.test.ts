@@ -13,6 +13,8 @@ import type { RemoteSessionSummary } from "./types.js"
 
 type ExecAsyncImpl = (cmd: string, opts?: unknown) => Promise<{ stdout: string; stderr: string }>
 
+const cloneMock = vi.hoisted(() => vi.fn())
+
 const { execAsyncMock, execMock, authMock, listMock, getMeMock, buildMock, rsyncMock, waitMock } = vi.hoisted(() => {
 	const execAsyncMock = vi.fn<ExecAsyncImpl>(async () => ({ stdout: "", stderr: "" }))
 	const PROMISIFY = Symbol.for("nodejs.util.promisify.custom")
@@ -65,10 +67,19 @@ vi.mock("./sync/rsync.js", () => ({
 	},
 }))
 
+vi.mock("./commands/teleport-helpers.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./commands/teleport-helpers.js")>()
+	return {
+		...original,
+		cloneRepoOnSandbox: cloneMock,
+	}
+})
+
 // Imported after vi.mock so module resolution sees the mocks.
 import {
 	TeleportRefusal,
 	deriveSandboxDest,
+	deriveSandboxDestFromRepoUrl,
 	runAttach,
 	runConnect,
 	runDetach,
@@ -214,6 +225,8 @@ beforeEach(() => {
 	buildMock.mockReset()
 	rsyncMock.mockReset()
 	waitMock.mockReset()
+	cloneMock.mockReset()
+	cloneMock.mockResolvedValue(undefined)
 	waitMock.mockResolvedValue({
 		id: "sess",
 		organizationId: "org",
@@ -1076,5 +1089,33 @@ describe("deriveSandboxDest", () => {
 
 	it("keeps leading-dot names (e.g. .dotfiles dir is valid)", () => {
 		expect(deriveSandboxDest("/Users/me/.dotfiles")).toBe("/home/sandbox/.dotfiles/")
+	})
+})
+
+// ───────────────────────── deriveSandboxDestFromRepoUrl ─────────────────────────
+
+describe("deriveSandboxDestFromRepoUrl", () => {
+	it("extracts repo name from HTTPS URL", () => {
+		expect(deriveSandboxDestFromRepoUrl("https://github.com/org/my-repo.git")).toBe("/home/sandbox/my-repo/")
+	})
+
+	it("extracts repo name from HTTPS URL without .git", () => {
+		expect(deriveSandboxDestFromRepoUrl("https://github.com/org/my-repo")).toBe("/home/sandbox/my-repo/")
+	})
+
+	it("extracts repo name from SSH shorthand", () => {
+		expect(deriveSandboxDestFromRepoUrl("git@github.com:org/my-repo.git")).toBe("/home/sandbox/my-repo/")
+	})
+
+	it("extracts repo name from SSH shorthand without .git", () => {
+		expect(deriveSandboxDestFromRepoUrl("git@github.com:org/my-repo")).toBe("/home/sandbox/my-repo/")
+	})
+
+	it("handles nested paths in HTTPS URLs", () => {
+		expect(deriveSandboxDestFromRepoUrl("https://gitlab.com/group/subgroup/project.git")).toBe("/home/sandbox/project/")
+	})
+
+	it("falls back to workspace for unparseable URLs", () => {
+		expect(deriveSandboxDestFromRepoUrl("")).toBe("/home/sandbox/workspace/")
 	})
 })

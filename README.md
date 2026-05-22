@@ -21,151 +21,49 @@ brew install castai/tap/kimchi
 curl -fsSL https://github.com/castai/kimchi/releases/latest/download/install.sh | bash
 ```
 
-Then configure your API key and tools, and launch:
+Then configure your API key and launch:
 
 ```bash
 kimchi setup   # one-time interactive setup
-kimchi         # launch the coding harness
+kimchi         # launch the coding agent
 ```
 
 Run `kimchi --help` to see all available subcommands and flags.
 
-## Remote teleport (preview)
+## Models
 
-Launch with `kimchi --teleport` to enable the session-multiplex commands. The local TUI stays the home base; remote workers are spawned, detached, and re-attached without restarting kimchi.
+### Model selection
 
-```bash
-kimchi --teleport
-```
+The supported model list is fetched at startup from the kimchi metadata service. Use `/model` or `ctrl+p` in the interactive CLI to switch between available models.
 
-Four slash commands are available inside the TUI:
+Kimchi operates in one of two modes:
 
-- `/teleport [name] [--allow-dirty] [--exclude <glob>] [--include-ignored] [--abandon-pending] [--force]` — rsync the working tree to a fresh remote sandbox and foreground it. The remote starts with an empty conversation in this release (session import is deferred); the workspace is canonical on the remote from that point on.
-- `/detach [--abandon-pending]` — drop the WebSocket to the foreground remote (the server keeps the session running) and return to the local home base.
-- `/attach <name-or-id>` — re-attach to a previously detached remote, either one from this kimchi run or one running server-side from a prior session. Server state is canonical; no rsync.
-- `/sessions` — list everything: the foreground remote (if any), in-process detached remotes, and other server-side sessions.
-- `/connect [name-or-id]` — open an interactive ssh shell on the sandbox via the teleport proxy. With no argument, connects to the currently foregrounded remote. With a name or id, resolves like `/attach` but only opens a shell — kimchi's session state is unchanged when ssh exits. Auth uses a freshly-minted connect token; the proxy bridges your local ssh to the sandbox over the same `/ssh` WebSocket endpoint rsync uses.
+| Mode | Footer indicator | Behavior |
+|------|-----------------|----------|
+| **Multi-model** | `multi-model (kimi-k2.6)` | The orchestrator classifies each task and delegates to the best-fit model from the roster |
+| **Single-model** | model name | All work runs on the selected model directly |
 
-`--teleport` and `--remote` are mutually exclusive. Use `--remote --session <id>` to attach to a single remote at startup; use `--teleport` to multiplex from a local home base.
+Use `ctrl+p` to cycle through models. The last entry in the cycle is `multi-model`. You can also open the `/model` picker and select a specific model or `multi-model` from the list.
 
-## Configuration
+In single-model mode the orchestration system prompt (environment, tools, research rules, guidelines, phase tagging) stays active, but task classification and delegation are disabled. The subagent tool remains available if you explicitly ask the agent to delegate.
 
-### Authentication
+### Phase tracking
 
-The API key is resolved in this order:
+Kimchi tags every LLM request with a `phase:{name}` label for usage analytics and cost attribution. The orchestrator sets the phase as work progresses and it is displayed in the footer.
 
-1. `KIMCHI_API_KEY` environment variable (takes precedence)
-2. `~/.config/kimchi/config.json` field `api_key`
+| Phase | Description |
+|-------|-------------|
+| `explore` | Navigating the codebase, reading files to understand structure |
+| `plan` | Designing, breaking down tasks, writing specs |
+| `build` | Writing, modifying, or refactoring code |
+| `review` | Analyzing output, verifying correctness |
+| `research` | Investigating documentation, researching issues |
 
-Run `kimchi setup` for an interactive first-time configuration.
-
-### Agent config
-
-kimchi stores its own configuration (settings, sessions, models) under:
-
-```
-~/.config/kimchi/harness/
-```
-
-### Migrating from another coding agent
-
-On first run, kimchi-code looks for an existing **Claude Code** or **OpenCode** installation on your machine and offers to migrate its MCP servers and report any user-level skills it finds. If anything is migratable you'll see a one-shot prompt:
-
-```
-┌  Claude Code + OpenCode configuration found
-│
-│  MCP servers: filesystem, github, ripgrep
-│  Claude Code skills: 4 in ~/.claude/skills
-│  OpenCode skills: 2 in ~/.config/opencode/skills
-│
-◇  Migrate MCP servers to Kimchi?
-│  ● Migrate now
-│  ○ Skip this time
-│  ○ Never ask again
-```
-
-When you accept, the discovered MCP servers are merged into `~/.config/kimchi/harness/mcp.json`. Existing Kimchi entries always win on name collisions, so re-running the migration is safe — your hand-edited Kimchi config is never overwritten.
-
-The prompt is only shown when something is actually worth migrating (at least one MCP server, or at least one skill subdirectory). If neither agent is installed, or both are installed but empty, the wizard skips the migration step silently and never asks again.
-
-#### Sources scanned
-
-| Agent | Config files (read in order, results merged) | Skills directory |
-|---|---|---|
-| Claude Code | `~/.claude.json` (top-level `mcpServers` + per-project `projects[*].mcpServers`) | `~/.claude/skills/` |
-| OpenCode | `$OPENCODE_CONFIG`, then `~/.config/opencode/opencode.json`, `opencode.jsonc`, `config.json`, `~/.opencode.json` | `~/.config/opencode/skills/` (with `skill/` as a fallback) |
-
-For OpenCode, both the modern (`mcp` block, `type: "local" \| "remote"`, `command: string[]`, `environment`, `enabled`) and legacy Go-binary (`mcpServers` block, `type: "stdio" \| "sse"`, `env` as either an object or a `KEY=VAL` array) schemas are supported. Servers with `enabled: false` are skipped. Files that don't exist are silently ignored; files that fail to read or parse emit a warning and the wizard moves on.
-
-#### Conflict resolution
-
-If the same MCP server name shows up in more than one place, the first one wins, deduplicated at the **server-name** level rather than the file level:
-
-1. **Within one agent**: earlier files in the agent's path list win over later files; within a single Claude Code config, project-level entries win over top-level; within a single OpenCode config, the modern `mcp` block wins over the legacy `mcpServers` block.
-2. **Across agents**: Claude Code wins over OpenCode (same default as the historical migration).
-3. **Against your existing Kimchi config**: your existing entries in `~/.config/kimchi/harness/mcp.json` always win.
-
-#### Choosing "Never ask again"
-
-Kimchi remembers your choice in `~/.config/kimchi/config.json` (`migrationState: "skip-forever"`) and won't prompt again on future runs, even if you later install another supported agent. To re-trigger the prompt, delete that field from the config file.
-
-Adding support for another coding agent (Cursor, Cline, Aider, Cody, ...) is a small change — drop a new `AgentDefinition` into [`src/agent-discovery/agents/`](src/agent-discovery/) and append it to `AGENT_DEFINITIONS`; the wizard, merging, prompt gating, and migration write all pick it up automatically.
-
-### Models
-
-The supported model list is fetched at startup from the kimchi metadata service.
-
-Use `/model` or `ctrl+p` in the interactive CLI to switch between available models.
-
-### Multi-model orchestration
-
-By default, kimchi runs in multi-model mode: the main agent classifies each task, executes what it can directly, and delegates the rest to specialised subagents picked from the available model roster. The footer shows `multi-model (kimi-k2.6)` when this mode is active.
-
-To switch to single-model mode, use `ctrl+p` to cycle through models or open the `/model` picker and select a specific model. To re-enable multi-model, cycle with `ctrl+p` past the last model or select `multi-model` from the `/model` picker.
-
-When using a single model the agent uses a single-model system prompt: environment, tools, research rules, guidelines, and phase tagging are all active, but task classification and delegation logic are disabled. The subagent tool is still available if you explicitly ask the agent to delegate a task.
-
-### HTTP proxy
-
-kimchi respects `HTTP_PROXY` / `HTTPS_PROXY` environment variables for network requests.
-
-### Token optimization (RTK)
-
-When [RTK](https://github.com/rtk-ai/rtk) (`rtk`) is installed and on your `PATH`, kimchi automatically rewrites bash tool calls through `rtk rewrite` before execution. This compresses command output (git, cargo, npm, docker, etc.) by 60-90%, significantly reducing LLM context usage.
-
-**How it works:** before every bash tool execution, kimchi calls `rtk rewrite "<command>"`. If RTK returns a rewritten command (e.g. `git status` becomes `rtk git status`), the rewritten version is executed instead. The agent receives compact, filtered output without any workflow changes.
-
-**Installation:**
-
-```bash
-brew install rtk    # macOS / Linux
-```
-
-RTK is auto-detected at startup. No configuration is needed — if `rtk` is on your PATH, it's active.
-
-**Disabling:**
-
-```bash
-KIMCHI_RTK=0 kimchi   # disable for this session
-```
-
-Set `KIMCHI_RTK` to `0`, `false`, or `off` to disable rewriting even when RTK is installed.
-
-You can also disable persistently in `~/.config/kimchi/harness/settings.json`:
-
-```json
-{ "rtk": false }
-```
-
-### Subagent sessions
-
-Every `subagent` invocation writes its own persistent session file alongside the parent's, in the same session directory. The child's session header back-references its parent, and the parent's tool-result records the child's session id and file path. Nested subagents (sub-subagents) follow the same rule at any depth — all descendants land next to the original top-level parent.
-
-This means subagent runs are fully recoverable from disk: open the parent's `.jsonl`, follow the `sessionFile` on any `subagent` tool-result to the child, and replay it like any other session. In pi's session-selector, children render under their parent as a tree. Deleting the parent's session directory removes its children automatically.
+Subagents inherit the current phase from the orchestrator but cannot change it.
 
 ## Tags
 
-kimchi supports tagging LLM requests for usage tracking and cost attribution. Tags are automatically included with every LLM request and displayed in the footer of the interactive UI.
+Kimchi supports tagging LLM requests for usage tracking and cost attribution. Tags are included with every request and displayed in the footer, grouped by key with color coding.
 
 ### Commands
 
@@ -176,41 +74,32 @@ kimchi supports tagging LLM requests for usage tracking and cost attribution. Ta
 | `/tags remove tag ...` | Remove one or more user-defined tags |
 | `/tags clear` | Remove all user-defined tags |
 
-Use `/tags` without arguments to see help and current static tag configuration.
-
 ### Tag format
 
-Tags use `key:value` format with these rules:
-- Must start and end with alphanumeric characters
-- Middle characters can include hyphens (`-`), underscores (`_`), and dots (`.`) 
-- Key and value must each be 64 characters or less
-- Maximum 10 tags total (including static tags and the auto-added model tag)
-
-**Valid examples:** `project:myapp`, `team:backend`
+Tags use `key:value` format. Key and value must start and end with alphanumeric characters (middle characters may include `-`, `_`, `.`), each 64 characters max, 10 tags total.
 
 ### Static tags
 
-Static tags are set via the `KIMCHI_TAGS` environment variable (comma-separated):
+Set via the `KIMCHI_TAGS` environment variable (comma-separated). Static tags are read-only within the session and shown with a `[static]` marker.
 
 ```bash
 export KIMCHI_TAGS="team:backend,project:api"
 ```
 
-Static tags are read-only within the session and cannot be added, removed, or cleared via `/tags` commands. They are displayed with a `[static]` marker when listing tags.
+### Auto-tags
+
+Two tags are added automatically to every request and do not count toward the 10 tag limit:
+
+- `model:{model_id}` -- the model handling the request
+- `phase:{phase}` -- the current work phase
 
 ### Persistence
 
-User-defined tags (those added via `/tags add`) are automatically persisted to:
+User-defined tags (added via `/tags add`) are persisted to `~/.config/kimchi/tags.json` and survive across sessions. Static tags from `KIMCHI_TAGS` must be set each session.
 
-```
-~/.config/kimchi/tags.json
-```
+## Ferment -- cross-session project management
 
-These tags persist across sessions. Static tags from `KIMCHI_TAGS` are not persisted and must be set via environment variable each session.
-
-## Ferment — Cross-Session Project Management
-
-Ferment is Kimchi's progressive-refinement project mode for multi-session work. Instead of starting from scratch each chat, Ferment persists a structured plan (goal, phases, steps) across sessions as a JSON state file.
+Ferment is Kimchi's progressive-refinement project mode for multi-session work. Instead of starting from scratch each chat, Ferment persists a structured plan (goal, phases, steps) as a JSON state file.
 
 ### Quick start
 
@@ -227,41 +116,36 @@ Or inside an active session:
 
 ### Concepts
 
-- **Ferment** — the top-level project (e.g. "Build Tetris", "Auth rewrite")
-- **Phase** — a milestone within the project (e.g. "Canvas & Grid", "Movement")
-- **Step** — a single executable task within a phase (e.g. "Create index.html")
-- **Decision** — an architectural choice recorded for posterity
-- **Memory** — a gotcha, convention, or pattern encountered during work
+- **Ferment** -- the top-level project (e.g. "Build Tetris", "Auth rewrite")
+- **Phase** -- a milestone within the project (e.g. "Canvas & Grid", "Movement")
+- **Step** -- a single executable task within a phase (e.g. "Create index.html")
+- **Decision** -- an architectural choice recorded for posterity
+- **Memory** -- a gotcha, convention, or pattern encountered during work
 
 ### State machine
 
-All lifecycle transitions (create → scope → activate → start → complete) are validated by a **deterministic finite state machine** that enforces valid state changes and prevents illegal operations (e.g., completing a step before it starts, skipping an already-completed phase). The FSM produces declarative next-action guidance so the harness derives behavior directly from state.
+All lifecycle transitions are validated by a deterministic finite state machine that enforces valid state changes and prevents illegal operations (e.g. completing a step before it starts, skipping an already-completed phase).
 
 ```
-draft → planned → running → [paused] → complete
+draft -> planned -> running -> [paused] -> complete
 ```
 
-1. **draft** — created via `/ferment new`, agent collects goal + phases conversationally
-2. **planned** — `scope_ferment` sets goal, criteria, constraints, phase breakdown
-3. **running** — `activate_ferment_phase` starts a phase, agent executes steps
-4. **paused** — user intervention required, or paused with `/ferment pause`
-5. **complete** — all phases terminal, done
-
-Ferment tool visibility is session-profile based. Active planners see the full
-namespaced lifecycle surface for a whole run, and the FSM/tool result text says
-which call is legal next; worker subagents do not receive ferment lifecycle
-tools.
+1. **draft** -- created via `/ferment new`, agent collects goal and phases conversationally
+2. **planned** -- `scope_ferment` sets goal, criteria, constraints, phase breakdown
+3. **running** -- `activate_ferment_phase` starts a phase, agent executes steps
+4. **paused** -- user intervention required, or paused with `/ferment pause`
+5. **complete** -- all phases terminal
 
 ### Continuation policy
 
-Continuation policy controls whether the active ferment advances across phase boundaries.
+Controls whether the active ferment advances across phase boundaries.
 
 | Policy | Behavior | Command |
 |--------|----------|---------|
-| **manual** | Ask before moving to the next phase. | `/ferment manual` |
-| **automated** | Keep going until complete, blocked, paused, or user input is needed. | `/ferment auto` |
+| **manual** | Ask before moving to the next phase | `/ferment manual` |
+| **automated** | Keep going until complete, blocked, paused, or user input is needed | `/ferment auto` |
 
-Pause/resume is separate lifecycle control: `/ferment pause` stops the ferment, and `/ferment resume` continues it using the current policy.
+Pause/resume is separate: `/ferment pause` stops the ferment, `/ferment resume` continues it using the current policy.
 
 ### Commands
 
@@ -271,7 +155,7 @@ Pause/resume is separate lifecycle control: `/ferment pause` stops the ferment, 
 | `/ferment new "Name"` | Create new ferment |
 | `/ferment switch <id>` | Resume by ID prefix or name |
 | `/ferment delete <id>` | Delete permanently |
-| `/ferment export` | Export stats to JSON for analysis |
+| `/ferment export` | Export stats to JSON |
 | `/ferment progress` | Open phase/step navigator overlay |
 | `/ferment manual` | Set manual continuation policy |
 | `/ferment auto` | Set automated continuation policy |
@@ -280,154 +164,158 @@ Pause/resume is separate lifecycle control: `/ferment pause` stops the ferment, 
 
 ### Recovery
 
-Every session writes a `ferment_reference` entry in the session log. On next start, the harness reads this entry, loads the JSON state from `.kimchi/ferments/<uuid>.json`, and immediately tells the agent what to do next.
+Every session writes a `ferment_reference` entry in the session log. On next start, the harness reads this entry and resumes from the exact state.
 
 ```bash
 # Day 1
 $ kimchi --ferment "Build Tetris"
-# … agent works, crashes, terminal closes …
+# ... agent works, crashes, terminal closes ...
 
 # Day 2
 $ kimchi --ferment "Build Tetris"
-# → Rehydrates state, continues Phase 2 exactly where it left off
+# -> Rehydrates state, continues Phase 2 exactly where it left off
 ```
 
 ### Where state lives
 
 ```
 .kimchi/
-├── ferments/
-│   ├── <uuid>.json          ← snapshot cache (machine-readable plan state)
-│   └── <uuid>.events.jsonl  ← append-only audit log of every transition
-├── sessions/
-│   └── <timestamp>.jsonl    ← chat history + tool calls
-└── .<uuid>.progress.log     ← human-readable audit trail
+  ferments/
+    <uuid>.json          -- snapshot (machine-readable plan state)
+    <uuid>.events.jsonl  -- append-only audit log of every transition
+  sessions/
+    <timestamp>.jsonl    -- chat history + tool calls
 ```
 
-Every mutate operation is persisted as an **append-only event** with pre/post state hashes, enabling full auditability. A deterministic **finite state machine (FSM)** validates all lifecycle transitions and prevents illegal operations (e.g., completing a step before it starts). Stats (aggregate phase/step counts, timing percentiles, worker model usage, grade distributions) are computed on demand from the snapshot — surfaced inline (elapsed time, model, grade per step) and exported via `/ferment export` to a JSON file in the cwd.
+Every mutation is persisted as an append-only event with pre/post state hashes, enabling full auditability. Stats (phase/step counts, timing, model usage, grade distributions) are computed on demand from the snapshot and exported via `/ferment export`.
 
 For full documentation see `docs/ferment.md` and `docs/ferment-storage-schema.md`.
 
-### Visual display
+## Remote teleport (preview)
 
-Active ferment is shown in the footer:
-```
-ferment: Build Tetris [running] phase 2/5 "Pieces"
-```
-
----
-
-### Visual display
-
-Active tags are displayed in the footer, grouped by key with color coding for visual distinction. Tags with the same key are shown together (e.g., `project:api,web`).
-
-## Auto-tagging
-
-A `model:{model_id}` tag is automatically added to every LLM request (e.g., `model:kimi-k2.5`). This tag does not count toward the 10 tag limit and cannot be removed.
-
-A `phase:{phase}` tag is automatically added since kimchi supports phase tracking for usage analytics and cost attribution. Phases represent the high-level type of work being done (exploration, planning, building, reviewing, or researching).
-
-### Available phases
-
-| Phase | Description |
-|-------|-------------|
-| `explore` | Exploring/navigating the codebase, reading files to understand structure |
-| `plan` | Planning, designing, breaking down tasks, writing specs |
-| `build` | Writing, modifying, or refactoring code |
-| `review` | Code review, analyzing output, verifying correctness |
-| `research` | Researching documentation, investigating issues |
-
-### Setting phases
-
-Use the `set_phase` tool to set the current phase:
-
-```
-set_phase({"phase": "explore"})
-```
-
-**Important:** Only the orchestrator (main agent) can set phases. Subagents receive the current phase from the orchestrator but cannot change it.
-
-### Phase lifecycle
-
-1. The orchestrator sets the phase at the start of work and when transitioning between activities
-2. The phase is displayed in the footer (e.g., `↳ explore`)
-3. The phase is included as a `phase:{name}` tag in all LLM requests for analytics
-4. When delegating to subagents, the current phase is passed automatically
-
-### Example workflow
-
-```
-User: "Add user authentication"
-→ set_phase({"phase": "explore"})     # Understand existing auth code
-→ set_phase({"phase": "plan"})        # Design auth flow
-→ set_phase({"phase": "build"})       # Implement the auth code
-→ set_phase({"phase": "review"})      # Verify the implementation
-```
-
-## Benchmarking
-
-The `benchmark/` directory contains tools for smoke-testing kimchi sessions and auditing their quality.
-
-### Manual benchmarks
-
-Run predefined tasks (simple, complex, research) against different models and compare results:
+Launch with `kimchi --teleport` to enable session-multiplex commands. The local TUI stays the home base; remote workers are spawned, detached, and re-attached without restarting kimchi.
 
 ```bash
-cd benchmark/manual
-./new-session.sh                              # create a new session with run scripts
-./sessions/session-01/run-all.sh              # run all task x model combinations
-python3 analyze-session.py                    # analyze the latest session
-python3 compare-sessions.py 1 2              # compare two sessions
+kimchi --teleport
 ```
 
-See `benchmark/manual/README.md` for full documentation on tasks, session structure, and analysis.
+Slash commands available inside the TUI:
 
-### Terminal-bench-2
+| Command | Description |
+|---------|-------------|
+| `/teleport [name] [flags]` | Rsync the working tree to a fresh remote sandbox and foreground it. Flags: `--allow-dirty`, `--exclude <glob>`, `--include-ignored`, `--abandon-pending`, `--force` |
+| `/detach [--abandon-pending]` | Drop the WebSocket to the foreground remote and return to the local home base. The server keeps the session running. |
+| `/attach <name-or-id>` | Re-attach to a previously detached remote |
+| `/sessions` | List everything: foreground remote, detached remotes, server-side sessions |
+| `/connect [name-or-id]` | Open an interactive SSH shell on the sandbox via the teleport proxy |
 
-Run the [terminal-bench](https://www.harborframework.com/) suite (89 tasks) against kimchi inside Docker containers. The agent is installed in each task container and runs non-interactively; token and cost counters are parsed from the JSONL output.
+`--teleport` and `--remote` are mutually exclusive. Use `--remote --session <id>` to attach to a single remote at startup; use `--teleport` to multiplex from a local home base.
+
+## Configuration
+
+### Authentication
+
+The API key is resolved in this order:
+
+1. `KIMCHI_API_KEY` environment variable (takes precedence)
+2. `~/.config/kimchi/config.json` field `api_key`
+
+Run `kimchi setup` for an interactive first-time configuration.
+
+### Agent config
+
+Kimchi stores its configuration (settings, sessions, models) under:
+
+```
+~/.config/kimchi/harness/
+```
+
+### HTTP proxy
+
+Kimchi respects `HTTP_PROXY` / `HTTPS_PROXY` environment variables for network requests.
+
+### Token optimization (RTK)
+
+When [RTK](https://github.com/rtk-ai/rtk) is installed and on your `PATH`, kimchi automatically rewrites bash tool calls through `rtk rewrite` before execution. This compresses command output (git, cargo, npm, docker, etc.) by 60-90%, reducing LLM context usage.
+
+Before every bash tool execution, kimchi calls `rtk rewrite "<command>"`. If RTK returns a rewritten command (e.g. `git status` becomes `rtk git status`), the rewritten version is executed instead.
 
 ```bash
-cd benchmark/terminal-bench-2
-export KIMCHI_API_KEY=...
-
-# Single task (from local build)
-./scripts/run-local.sh -i terminal-bench/fix-git
-
-# Full suite, 8 parallel trials (from latest release)
-./scripts/run-release.sh -n 8
+brew install rtk    # macOS / Linux
 ```
 
-See `benchmark/terminal-bench-2/README.md` for Apple Silicon caveats, timeout tuning, and result interpretation.
+RTK is auto-detected at startup. No configuration needed. To disable:
 
-### Session phase audit
+```bash
+KIMCHI_RTK=0 kimchi   # disable for this session
+```
 
-Audit a completed session for phase discipline, code quality, architecture, testing, model alignment, and cost efficiency. The audit agent parses the session JSONL, reconstructs the phase timeline, and produces a graded report.
-See `benchmark/audit-session/README.md` for the full evaluation criteria and an end-to-end example.
+Or persistently in `~/.config/kimchi/harness/settings.json`:
+
+```json
+{ "rtk": false }
+```
+
+### Migrating from another coding agent
+
+On first run, kimchi looks for an existing **Claude Code** or **OpenCode** installation and offers to migrate its MCP servers. If anything is migratable you will see a one-shot prompt:
+
+```
++  Claude Code + OpenCode configuration found
+|
+|  MCP servers: filesystem, github, ripgrep
+|  Claude Code skills: 4 in ~/.claude/skills
+|  OpenCode skills: 2 in ~/.config/opencode/skills
+|
+*  Migrate MCP servers to Kimchi?
+|  * Migrate now
+|  * Skip this time
+|  * Never ask again
+```
+
+Discovered MCP servers are merged into `~/.config/kimchi/harness/mcp.json`. Existing Kimchi entries always win on name collisions, so re-running the migration is safe.
+
+The prompt is only shown when something is actually worth migrating. If neither agent is installed or both are empty, the wizard skips silently.
+
+#### Sources scanned
+
+| Agent | Config files (read in order, results merged) | Skills directory |
+|---|---|---|
+| Claude Code | `~/.claude.json` (top-level `mcpServers` + per-project `projects[*].mcpServers`) | `~/.claude/skills/` |
+| OpenCode | `$OPENCODE_CONFIG`, then `~/.config/opencode/opencode.json`, `opencode.jsonc`, `config.json`, `~/.opencode.json` | `~/.config/opencode/skills/` |
+
+For OpenCode, both the modern (`mcp` block) and legacy Go-binary (`mcpServers` block) schemas are supported. Servers with `enabled: false` are skipped.
+
+#### Conflict resolution
+
+When the same MCP server name appears in multiple sources:
+
+1. **Within one agent**: earlier files win; project-level entries win over top-level (Claude Code); modern `mcp` block wins over legacy `mcpServers` (OpenCode).
+2. **Across agents**: Claude Code wins over OpenCode.
+3. **Against existing Kimchi config**: your entries in `~/.config/kimchi/harness/mcp.json` always win.
+
+#### "Never ask again"
+
+Stored in `~/.config/kimchi/config.json` (`migrationState: "skip-forever"`). Delete that field to re-trigger the prompt. Adding support for another agent is a small change -- drop a new definition into `src/agent-discovery/agents/` and append it to the registry.
 
 ## Development
 
 ### Prerequisites
 
 - Node.js 22 (LTS)
-- [Bun](https://bun.sh/) (used for dev server and binary compilation)
+- [Bun](https://bun.sh/) (dev server and binary compilation)
 - [corepack](https://nodejs.org/api/corepack.html) enabled (`corepack enable`)
 - pnpm (installed automatically via corepack)
 
-### Quick Setup (Automated)
-
-Use the dev startup script to automatically set up the environment and start the harness:
+### Quick setup
 
 ```bash
 ./scripts/dev-startup.sh
 ```
 
-This script will:
-- Check and install node, pnpm, and bun (if missing)
-- Install dependencies with `pnpm install`
-- Copy necessary resources
-- Start the harness with `pnpm run dev`
+This script checks and installs node, pnpm, and bun if missing, runs `pnpm install`, copies resources, and starts the harness with `pnpm run dev`.
 
-### Manual Setup
+### Manual setup
 
 ```bash
 git clone git@github.com:castai/kimchi.git
@@ -446,11 +334,13 @@ pnpm install
 | `pnpm run lint` | Biome lint only |
 | `pnpm run lint:fix` | Biome lint with auto-fix |
 | `pnpm run test` | Run tests with vitest |
+| `pnpm run test:smoke` | End-to-end smoke tests |
 
 ### Running locally
 
-Run the folling script to propagate all necessary resources:
-```
+Propagate resources before first run:
+
+```bash
 node ./scripts/copy-resources.js --dev
 ```
 
@@ -460,7 +350,7 @@ Run the CLI directly via Bun:
 pnpm run dev
 ```
 
-Or build a standalone binary and run it:
+Or build a standalone binary:
 
 ```bash
 pnpm run build:binary
@@ -471,13 +361,43 @@ pnpm run build:binary
 
 ```
 src/
-  cli.ts          — Entry point
-  config.ts       — Auth & config loading
-  env.ts          — Environment variable helpers
-  models.ts       — Default model definitions
-  extensions/     — Agent extensions (orchestration, web-fetch)
-  modes/          — Interactive mode & theme assets
+  entry.ts              -- Entry point
+  cli.ts                -- CLI logic & harness initialization
+  cli-args.ts           -- Argument parsing
+  config.ts             -- Auth & config loading
+  models.ts             -- Model metadata fetching & registration
+  setup-wizard.ts       -- First-run wizard
+  commands/             -- CLI subcommands (setup, login, config, update, ...)
+  extensions/           -- Agent extensions
+    agents/             -- Subagent system (personas, manager, memory)
+    orchestration/      -- Task classification, model registry, delegation
+    ferment/            -- Ferment lifecycle tools & UI
+    mcp-adapter/        -- MCP server integration
+    permissions/        -- Tool auth flows
+    behaviours/         -- Contextual prompt behaviours
+    web-fetch/          -- Web content fetching
+    web-search/         -- Web search
+    lsp/                -- Language Server Protocol
+    login/              -- OAuth flows
+    onboarding/         -- Session mode startup wizard
+  ferment/              -- Ferment state machine, event store, stats
+  modes/
+    interactive/        -- TUI harness
+    acp/                -- JSON-RPC over stdio (IDE integration)
+    teleport/           -- Remote session multiplexing
+  agent-discovery/      -- Detection & migration of other coding agents
+  config/               -- Config loading & merging
+  auth/                 -- API key management
+  utils/                -- Shared helpers
 ```
+
+## Benchmarking
+
+The `benchmark/` directory contains tools for smoke-testing kimchi sessions and auditing their quality.
+
+- **Manual benchmarks** (`benchmark/manual/`) -- run predefined tasks against different models and compare results. See `benchmark/manual/README.md`.
+- **Terminal-bench-2** (`benchmark/terminal-bench-2/`) -- run the [terminal-bench](https://www.harborframework.com/) suite (89 tasks) against kimchi inside Docker containers. See `benchmark/terminal-bench-2/README.md`.
+- **Session audit** (`benchmark/audit-session/`) -- audit a completed session for phase discipline, code quality, architecture, testing, model alignment, and cost efficiency. See `benchmark/audit-session/README.md`.
 
 ## Release
 
@@ -492,4 +412,4 @@ Release assets follow the naming convention `kimchi_{os}_{arch}.tar.gz` with a `
 
 ## License
 
-[Apache License 2.0](LICENSE) — see [CONTRIBUTING.md](CONTRIBUTING.md) for the CLA and contributor guidelines.
+[Apache License 2.0](LICENSE) -- see [CONTRIBUTING.md](CONTRIBUTING.md) for the CLA and contributor guidelines.

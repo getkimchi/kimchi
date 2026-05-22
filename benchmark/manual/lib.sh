@@ -102,6 +102,7 @@ bench_task_setup() {
 #   bench_generate_runner_script <output_path> <runner_type> <task_name> <model/cli_name> <session_dir> <session_num> <binary_or_cli> <temp_prefix>
 #
 # runner_type = "kimchi" | "claude"
+# model_name: for kimchi type, pass "" to run in multi-model mode (no --model flag).
 bench_generate_runner_script() {
   local output_path="$1"
   local runner_type="$2"
@@ -129,17 +130,24 @@ bench_generate_runner_script() {
 "
     fi
 
+    local run_dir_name="${task_name}"
+    local model_flag_line=""
+    if [[ -n "$model_name" ]]; then
+      run_dir_name="${task_name}-${model_name}"
+      model_flag_line="  --model kimchi-dev/${model_name} \\
+"
+    fi
+
     content="#!/bin/zsh
 TS=\$(date +%Y%m%d-%H%M%S)
-SESSION_FILE=\"${session_dir}/runs/${task_name}-${model_name}/session-\${TS}.jsonl\"
+SESSION_FILE=\"${session_dir}/runs/${run_dir_name}/session-\${TS}.jsonl\"
 DIR=\$(mktemp -d /private/tmp/${temp_prefix}-XXXXXX)
 echo \"Working directory: \$DIR\"
 echo \"Session file: \$SESSION_FILE\"
 cd \"\$DIR\"
 ${setup_block}${binary} \\
   --yolo \\
-  --model kimchi-dev/${model_name} \\
-${extra_flags}  --session \"\$SESSION_FILE\" \\
+${model_flag_line}${extra_flags}  --session \"\$SESSION_FILE\" \\
   \"${prompt}\"
 "
   elif [[ "$runner_type" == "claude" ]]; then

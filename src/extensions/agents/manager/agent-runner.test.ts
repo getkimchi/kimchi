@@ -83,14 +83,22 @@ vi.mock("../../memory/memory.js", () => ({
 	buildReadOnlyMemoryBlock: vi.fn().mockReturnValue(""),
 }))
 
+vi.mock("../../prompt-construction/context-files.js", () => ({
+	loadProjectContextFiles: vi.fn().mockReturnValue([]),
+}))
+
 import { createAgentSession } from "@earendil-works/pi-coding-agent"
+import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
+import { buildAgentPrompt } from "../prompt/prompts.js"
 import { type RunOptions, runAgent } from "./agent-runner.js"
 
 const mockCreateAgentSession = vi.mocked(createAgentSession)
 const mockGetConfig = vi.mocked(getConfig)
 const mockGetAgentConfig = vi.mocked(getAgentConfig)
 const mockGetToolNamesForType = vi.mocked(getToolNamesForType)
+const mockLoadProjectContextFiles = vi.mocked(loadProjectContextFiles)
+const mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
 
 type SessionEvent = { type: string; [k: string]: unknown }
 type Subscriber = (event: SessionEvent) => void
@@ -812,7 +820,7 @@ describe("runAgent — maxDuration enforcement", () => {
 		})
 
 		const session = {
-			subscribe: vi.fn((cb: Subscriber) => {
+			subscribe: vi.fn((_cb: Subscriber) => {
 				return () => {}
 			}),
 			abort: abortSpy.mockImplementation(() => {
@@ -853,5 +861,88 @@ describe("runAgent — maxDuration enforcement", () => {
 		expect(abortSpy).toHaveBeenCalled()
 		expect(result.aborted).toBe(true)
 		expect(result.abortReason).toBe("max_duration")
+	})
+})
+
+describe("runAgent — includeContextFiles", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockLoadProjectContextFiles.mockReset()
+		mockBuildAgentPrompt.mockReset()
+		mockBuildAgentPrompt.mockReturnValue("System prompt text")
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetToolNamesForType.mockReturnValue([])
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("passes context files to buildAgentPrompt when includeContextFiles is true", async () => {
+		const fakeContextFiles = [{ path: "/repo/AGENTS.md", content: "# Guidelines" }]
+		mockLoadProjectContextFiles.mockReturnValue(fakeContextFiles)
+		mockGetAgentConfig.mockReturnValue(
+			makeAgentConfig({ name: "Plan", description: "Plan agent", includeContextFiles: true }),
+		)
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Plan", "write a plan", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockLoadProjectContextFiles).toHaveBeenCalledWith(ctx.cwd)
+		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
+		expect(extras?.contextFiles).toEqual(fakeContextFiles)
+	})
+
+	it("does not load context files when includeContextFiles is false", async () => {
+		mockGetAgentConfig.mockReturnValue(
+			makeAgentConfig({ name: "General-Purpose", description: "General purpose", includeContextFiles: false }),
+		)
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockLoadProjectContextFiles).not.toHaveBeenCalled()
+		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
+		expect(extras?.contextFiles).toBeUndefined()
+	})
+
+	it("does not load context files when includeContextFiles is absent", async () => {
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockLoadProjectContextFiles).not.toHaveBeenCalled()
+		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
+		expect(extras?.contextFiles).toBeUndefined()
 	})
 })

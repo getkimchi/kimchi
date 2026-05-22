@@ -84,18 +84,18 @@ cd benchmark/manual
 ./new-session.sh
 ```
 
-This creates `sessions/session-NN/` with run scripts for every task x model combination.
+This creates `sessions/session-NN/` with run scripts. Most tasks run in multi-model mode (no `--model` flag); `complex-single` is generated once per configured model with `--model` to force single-model mode.
 
 ### 2. Run the complex task
 
 ```sh
-./sessions/session-02/run-complex-kimi-k2.6.sh
+./sessions/session-02/run-complex.sh
 ```
 
 Wait for completion. The JSONL transcript is saved to:
 
 ```
-sessions/session-02/runs/complex-kimi-k2.6/session-YYYYMMDD-HHMMSS.jsonl
+sessions/session-02/runs/complex/session-YYYYMMDD-HHMMSS.jsonl
 ```
 
 ### 3. Audit the session
@@ -104,14 +104,14 @@ Pass the session file directly:
 
 ```sh
 ./benchmark/audit-session/audit-session.sh \
-    benchmark/manual/sessions/session-02/runs/complex-kimi-k2.6/session-20260511-124841.jsonl
+    benchmark/manual/sessions/session-02/runs/complex/session-20260511-124841.jsonl
 ```
 
 Or use claude-code with Opus for the audit:
 
 ```sh
 ./benchmark/audit-session/audit-session.sh -r claude -m opus \
-    benchmark/manual/sessions/session-02/runs/complex-kimi-k2.6/session-20260511-124841.jsonl
+    benchmark/manual/sessions/session-02/runs/complex/session-20260511-124841.jsonl
 ```
 
 ### 4. Review the report
@@ -119,7 +119,7 @@ Or use claude-code with Opus for the audit:
 The audit agent writes its findings to:
 
 ```
-.kimchi/audits/session-20260511-124841-complex-kimi-k2.6-AUDIT.md
+.kimchi/audits/session-20260511-124841-complex-AUDIT.md
 ```
 
 The report contains phase-by-phase cost breakdown, grade summary, and actionable improvements. Use it to decide whether to adjust model assignments, phase transitions, or task decomposition for future sessions.

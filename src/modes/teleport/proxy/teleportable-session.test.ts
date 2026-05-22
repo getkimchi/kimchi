@@ -459,6 +459,37 @@ describe("TeleportableAgentSession", () => {
 		})
 	})
 
+	describe("reload routing", () => {
+		it("always routes reload() to homeBase, even when a remote is foregrounded", async () => {
+			const home = new FakeAgentSession("home")
+			const homeSpy = vi.fn(async () => "home-reloaded")
+			;(home as unknown as { reload: () => Promise<unknown> }).reload = homeSpy
+
+			const remote = new FakeAgentSession("remote-A")
+			const remoteSpy = vi.fn(async () => "remote-reloaded")
+			;(remote as unknown as { reload: () => Promise<unknown> }).reload = remoteSpy
+
+			const wrapper = TeleportableAgentSession.create(asSession(home))
+			wrapper.foregroundRemote(asRemote(remote))
+
+			const result = await (wrapper as unknown as { reload: () => Promise<unknown> }).reload()
+			expect(result).toBe("home-reloaded")
+			expect(homeSpy).toHaveBeenCalledTimes(1)
+			expect(remoteSpy).not.toHaveBeenCalled()
+		})
+
+		it("routes reload() to homeBase when foreground IS homeBase", async () => {
+			const home = new FakeAgentSession("home")
+			const homeSpy = vi.fn(async () => "home-reloaded")
+			;(home as unknown as { reload: () => Promise<unknown> }).reload = homeSpy
+
+			const wrapper = TeleportableAgentSession.create(asSession(home))
+			const result = await (wrapper as unknown as { reload: () => Promise<unknown> }).reload()
+			expect(result).toBe("home-reloaded")
+			expect(homeSpy).toHaveBeenCalledTimes(1)
+		})
+	})
+
 	describe("dispose", () => {
 		it("clears wrapper listeners and unsubscribes from the current foreground; does not dispose inner", () => {
 			const home = new FakeAgentSession("home")

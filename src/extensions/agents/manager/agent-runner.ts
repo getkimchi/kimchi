@@ -16,6 +16,7 @@ import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
+import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
@@ -238,10 +239,13 @@ async function runAgentInner(
 
 	const parentSystemPrompt = ctx.getSystemPrompt()
 
-	const extras: PromptExtras = {}
-
 	const extensions = options.isolated ? false : config.extensions
 	const skills = options.isolated ? false : config.skills
+
+	const extras: PromptExtras = {
+		contextFiles:
+			agentConfig?.includeContextFiles && !options.isolated ? loadProjectContextFiles(effectiveCwd) : undefined,
+	}
 
 	if (Array.isArray(skills)) {
 		const loaded = preloadSkills(skills, effectiveCwd)

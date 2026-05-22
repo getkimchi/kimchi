@@ -10,6 +10,7 @@
  */
 
 import { arch, platform } from "node:os"
+import { KIMCHI_POSTHOG_API_KEY } from "./generated/posthog-key.generated.js"
 import { getVersion } from "./utils.js"
 
 /**
@@ -37,16 +38,18 @@ interface PostHogEvent {
 }
 
 /**
- * Read the PostHog API key at call time, not module-load time.
- * Allows tests to stub the env var before the first call.
+ * Read the PostHog API key.
+ *
+ * In release builds, `scripts/build-binary.js` generates
+ * `src/generated/posthog-key.generated.ts` with the real key before compiling,
+ * so the key is baked into the binary and available without any runtime env var.
+ *
+ * In dev/test builds the generated file contains an empty string, so it falls
+ * through to `process.env.KIMCHI_POSTHOG_API_KEY` — tests can stub it, and dev
+ * runs are no-ops (empty string → events silently dropped).
  */
 function getApiKey(): string {
-	return (
-		process.env.KIMCHI_POSTHOG_API_KEY ??
-		// Injected at build time by the release workflow (see release.yml).
-		// Empty string means dev build — events are silently dropped.
-		""
-	)
+	return KIMCHI_POSTHOG_API_KEY || process.env.KIMCHI_POSTHOG_API_KEY || ""
 }
 
 /**

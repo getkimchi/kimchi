@@ -6,7 +6,7 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
 import { Box, Text } from "@earendil-works/pi-tui"
-import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
+import { Key, isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
@@ -114,6 +114,7 @@ function getEnabledModelIds(): Set<string> | null {
 // Track current editor for indicator updates
 let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
+let currentSessionIndicatorText: string | null = null
 
 type DisposableComponent = Component & { dispose?(): void }
 
@@ -154,6 +155,16 @@ export function setPasteImageHandler(handler: () => void): void {
  */
 export function setPendingImageIndicator(text: string | null): void {
 	currentEditor?.setPendingImageIndicator(text)
+}
+
+/**
+ * Show or clear a short session label right-aligned on the prompt's first row.
+ * Used by the teleport extension to surface a persistent "(host)" indicator
+ * while attached to a remote worker. Pass `null` to clear.
+ */
+export function setSessionIndicator(text: string | null): void {
+	currentSessionIndicatorText = text
+	currentEditor?.setSessionIndicator(text)
 }
 
 function runScript(scriptPath: string, payload: object, tui: TUI, footer: ScriptFooter, onDone: () => void): void {
@@ -388,6 +399,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 			if (pasteImageHandler) {
 				editor.onPasteImage = pasteImageHandler
 			}
+			if (currentSessionIndicatorText) {
+				editor.setSessionIndicator(currentSessionIndicatorText)
+			}
 			return editor
 		})
 
@@ -397,6 +411,16 @@ export default function uiExtension(pi: ExtensionAPI) {
 		if (unsubModelCycleInput) unsubModelCycleInput()
 		if (ctx.hasUI) {
 			unsubModelCycleInput = ctx.ui.onTerminalInput((data) => {
+				// In raw-mode terminals Ctrl+C arrives as \x03 rather than raising
+				// SIGINT.  The upstream TUI already maps Escape to abort, but does
+				// not handle Ctrl+C.  Bridge the gap so both keys cancel the active
+				// turn while the agent is working.
+				if (matchesKey(data, Key.ctrl("c")) && !isKeyRelease(data)) {
+					if (currentCtx && !currentCtx.isIdle()) {
+						currentCtx.abort()
+					}
+					return undefined
+				}
 				if (matchesKey(data, "ctrl+p")) {
 					if (!isKeyRelease(data)) {
 						const allAvailable = ctx.modelRegistry.getAvailable()
