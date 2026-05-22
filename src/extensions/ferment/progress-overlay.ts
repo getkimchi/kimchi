@@ -29,7 +29,7 @@ import {
 	stepBulletChar,
 	truncateLabel,
 } from "./colors.js"
-import { promptInput } from "./prompt-ui.js"
+import { promptEditor } from "./prompt-ui.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import type { FermentUiContext } from "./ui.js"
@@ -266,7 +266,7 @@ export async function handlePhaseAction(
 			break
 		}
 		case "Mark phase failed": {
-			const reason = await promptInput(ctx, "Reason for failure:", "")
+			const reason = await promptEditor(ctx, "Reason for failure:")
 			const out = applyAndPersist(f.id, {
 				type: "fail_phase",
 				phaseId: p.id,

@@ -21,7 +21,7 @@ import {
 	handlePhaseAction,
 	handleStepAction,
 } from "./progress-overlay.js"
-import { promptEditor } from "./prompt-ui.js"
+import { promptEditor, promptEditorPrefill } from "./prompt-ui.js"
 import { resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
@@ -662,11 +662,11 @@ export class FermentCommandController {
 			const field = command.field
 
 			if (field === "goal") {
-				if (!ctx.ui.input) {
+				if (!ctx.ui.editor && !ctx.ui.input) {
 					ctx.ui.notify("No UI available for interactive revision. Ask the agent to update the goal.")
 					return { handled: true }
 				}
-				const newGoal = await ctx.ui.input("Revise goal:", active.goal ?? "")
+				const newGoal = await promptEditorPrefill(ctx, "Revise goal:", active.goal ?? "")
 				if (newGoal) {
 					const out = applyAndPersist(active.id, { type: "update_scope_field", field: "goal", value: newGoal })
 					if (out.ok) {
@@ -680,11 +680,11 @@ export class FermentCommandController {
 			}
 
 			if (field === "criteria") {
-				if (!ctx.ui.input) {
+				if (!ctx.ui.editor && !ctx.ui.input) {
 					ctx.ui.notify("No UI available for interactive revision.")
 					return { handled: true }
 				}
-				const newCriteria = await ctx.ui.input("Revise success criteria:", active.successCriteria ?? "")
+				const newCriteria = await promptEditorPrefill(ctx, "Revise success criteria:", active.successCriteria ?? "")
 				if (newCriteria) {
 					const out = applyAndPersist(active.id, {
 						type: "update_scope_field",
@@ -761,17 +761,13 @@ export class FermentCommandController {
 			const intent = command.intent
 			let resolvedIntent = intent
 			if (!resolvedIntent) {
-				if (!ctx.hasUI) {
+				if (!ctx.hasUI || (!ctx.ui.editor && !ctx.ui.input)) {
 					ctx.ui.notify('Usage: /ferment one-shot "description of what to build"')
 					return { handled: true }
 				}
 				const typed = await promptEditor(ctx, "🍺  One-shot: what should be done?", "Describe the full task…")
 				if (!typed) return { handled: true }
 				resolvedIntent = typed
-			}
-			if (!resolvedIntent) {
-				ctx.ui.notify('Usage: /ferment one-shot "description of what to build"')
-				return { handled: true }
 			}
 			ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · naming…")
 			try {
@@ -838,6 +834,7 @@ export class FermentCommandController {
 			if (!typed) return { handled: true }
 			rawName = typed
 			scopingIntent = typed
+			sendFermentRequestMessage(pi, typed)
 		}
 		ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · naming…")
 		try {

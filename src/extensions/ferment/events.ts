@@ -9,7 +9,7 @@ import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { appendRefEntry, maybeInjectReactiveContinuationNudge, resetReactiveContinuationNudgeCount } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import { editPhaseProposal } from "./phase-editor.js"
-import { promptInput, promptSelect } from "./prompt-ui.js"
+import { promptEditor, promptSelect } from "./prompt-ui.js"
 import { loadFermentSilently, resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
@@ -138,7 +138,7 @@ async function maybeRunUserInputDropdown(
 	if (!prompt) return false
 	const boundaryHandled = await maybeRunManualBoundaryDropdown(pi, ctx, prompt, f, runtime)
 	if (boundaryHandled) return true
-	if (!ctx?.ui?.select || !ctx.ui.input) return true
+	if (!ctx?.ui?.select || (!ctx.ui.editor && !ctx.ui.input)) return true
 
 	const choice = await promptSelect(ctx, prompt.title, prompt.options)
 	if (!choice) return true
@@ -146,7 +146,7 @@ async function maybeRunUserInputDropdown(
 	let reply: string
 
 	if (choice === "Let me say something else") {
-		const custom = await promptInput(ctx, "Your message:", "")
+		const custom = await promptEditor(ctx, "Your message:")
 		if (!custom) return true
 		reply = custom
 	} else if (choice === prompt.noLabel) {

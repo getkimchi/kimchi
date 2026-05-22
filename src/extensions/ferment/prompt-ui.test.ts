@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { createPromptFormComponent, promptEditor, promptInput, promptSelect } from "./prompt-ui.js"
+import { createPromptFormComponent, promptEditor, promptEditorPrefill, promptInput, promptSelect } from "./prompt-ui.js"
 
 const tipWidgetLocationMock = vi.hoisted(() => ({
 	restore: vi.fn(),
@@ -56,6 +56,23 @@ describe("ferment prompt UI", () => {
 		)
 
 		expect(ui.editor).toHaveBeenCalledWith("What would you like to ferment?\nDescribe it", "")
+		expect(ui.input).not.toHaveBeenCalled()
+		expect(tipWidgetLocationMock.set).toHaveBeenCalledWith("hidden")
+		expect(ui.setWorkingVisible).toHaveBeenNthCalledWith(1, false)
+		expect(ui.setWorkingVisible).toHaveBeenNthCalledWith(2, true)
+		expect(tipWidgetLocationMock.restore).toHaveBeenCalledTimes(1)
+	})
+
+	it("passes existing content as editor prefill for edit prompts", async () => {
+		const ui = {
+			editor: vi.fn(async () => "updated\ncontent"),
+			input: vi.fn(async () => "single line"),
+			setWorkingVisible: vi.fn(),
+		}
+
+		await expect(promptEditorPrefill({ ui }, "Revise goal:", "old\ncontent")).resolves.toBe("updated\ncontent")
+
+		expect(ui.editor).toHaveBeenCalledWith("Revise goal:", "old\ncontent")
 		expect(ui.input).not.toHaveBeenCalled()
 		expect(tipWidgetLocationMock.set).toHaveBeenCalledWith("hidden")
 		expect(ui.setWorkingVisible).toHaveBeenNthCalledWith(1, false)

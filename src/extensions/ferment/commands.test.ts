@@ -175,6 +175,13 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ id: created?.id }))
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
+				customType: "ferment_request",
+				display: true,
+				details: { intent: "make reports better\ninclude tests" },
+			}),
+		)
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
 				customType: "ferment_created_nudge",
 				content: [expect.objectContaining({ text: expect.stringContaining("make reports better\ninclude tests") })],
 			}),
@@ -295,6 +302,52 @@ describe("FermentCommandController", () => {
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith('Usage: /ferment one-shot "description of what to build"')
 		expect(h.storage.list()).toHaveLength(0)
 		expect(h.pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("keeps UI one-shot without prompt handlers on the usage path", async () => {
+		const h = createHarness()
+		const controller = new FermentCommandController()
+		const ctx = {
+			hasUI: true,
+			ui: { notify: vi.fn() },
+		} as unknown as ExtensionCommandContext
+
+		const result = await controller.execute(
+			{ type: "one-shot", intent: "" },
+			{ raw: "one-shot", pi: h.pi, ctx, runtime: h.runtime },
+		)
+
+		expect(result).toEqual({ handled: true })
+		expect(ctx.ui.notify).toHaveBeenCalledWith('Usage: /ferment one-shot "description of what to build"')
+		expect(h.storage.list()).toHaveLength(0)
+		expect(h.pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("uses the multi-line editor for free-form goal revisions", async () => {
+		const h = createHarness()
+		const controller = new FermentCommandController()
+		const active = h.storage.create("Revise Goal")
+		h.runtime.setActive(active)
+		const ui = {
+			notify: vi.fn(),
+			editor: vi.fn().mockResolvedValueOnce("new goal\nwith detail"),
+			input: vi.fn().mockResolvedValueOnce("single-line fallback"),
+		}
+		const ctx = {
+			hasUI: true,
+			ui,
+		} as unknown as ExtensionCommandContext
+
+		const result = await controller.execute(
+			{ type: "revise", field: "goal" },
+			{ raw: "revise goal", pi: h.pi, ctx, runtime: h.runtime },
+		)
+
+		expect(result).toEqual({ handled: true })
+		expect(ui.editor).toHaveBeenCalledWith("Revise goal:", "")
+		expect(ui.input).not.toHaveBeenCalled()
+		expect(h.storage.get(active.id)?.goal).toBe("new goal\nwith detail")
+		expect(ui.notify).toHaveBeenCalledWith('Goal updated: "new goal\nwith detail"')
 	})
 
 	it("reports export write failures without throwing", async () => {

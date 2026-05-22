@@ -13,7 +13,7 @@
  *      wholesale, shows a combined dropdown, and either confirms the scope or
  *      queues a re-run turn for iteration.
  *
- * In headless sessions (no `ctx.ui.input`), the existing nudge path fires
+ * In headless sessions (no prompt UI), the existing nudge path fires
  * unchanged — the LLM handles scoping conversationally.
  */
 

@@ -1631,8 +1631,7 @@ describe("propose_ferment_scoping", () => {
 		expect(ctx4.ui.select).not.toHaveBeenCalled()
 	})
 
-	// New: Custom answer option opens ctx.ui.input and free-form text is recorded
-	it("Custom answer option opens ctx.ui.input and free-form text is included in sendMessage", async () => {
+	it("Custom answer option opens ctx.ui.editor and free-form text is included in sendMessage", async () => {
 		const id = await createFerment("CustomAnswer")
 		seedPending(id)
 		const questions = [
@@ -1650,14 +1649,16 @@ describe("propose_ferment_scoping", () => {
 		const ctx = {
 			ui: {
 				select: vi.fn().mockResolvedValueOnce(customLabel).mockResolvedValueOnce(continueLabel),
-				input: vi.fn().mockResolvedValue("my custom thing"),
+				editor: vi.fn().mockResolvedValue("my custom thing"),
+				input: vi.fn().mockResolvedValue("single-line fallback"),
 				setWorkingVisible: vi.fn(),
 			},
 		}
 
 		ok(await h.call("propose_ferment_scoping", basePayload(id, { questions }), ctx))
 
-		expect(ctx.ui.input).toHaveBeenCalledWith(expect.stringContaining("Approach?"), "")
+		expect(ctx.ui.editor).toHaveBeenCalledWith(expect.stringContaining("Approach?"), "")
+		expect(ctx.ui.input).not.toHaveBeenCalled()
 		expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(false)
 		expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(true)
 		expect(loadFerment(id).status).toBe("draft")

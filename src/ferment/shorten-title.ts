@@ -6,8 +6,9 @@ const SYSTEM_PROMPT =
 /** Deterministic fallback when LLM is unavailable. */
 function autoShortTitle(name: string): string {
 	const max = 35
-	if (name.length <= max) return name.trim()
-	const truncated = name.slice(0, max)
+	const normalized = name.replace(/\s+/g, " ").trim()
+	if (normalized.length <= max) return normalized
+	const truncated = normalized.slice(0, max)
 	const lastSpace = truncated.lastIndexOf(" ")
 	return (lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated).trim()
 }

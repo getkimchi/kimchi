@@ -26,7 +26,7 @@ import { validateGatesOrErr } from "../gate-validation.js"
 import { judgeJourneyGrade } from "../judge.js"
 import { resetReactiveContinuationNudgeCount } from "../nudge.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
-import { getPromptUi, promptForm, promptInput, promptSelect } from "../prompt-ui.js"
+import { getPromptUi, promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
@@ -803,7 +803,7 @@ ${renderGateGuidance("scope_ferment")}`,
 						const chosen = await promptSelect(ctx, title, optionLabels)
 						if (chosen === undefined) return { kind: "dismiss", qn: n + 1 }
 						if (chosen === customLabel) {
-							const freeForm = await promptInput(ctx, `[Q${n + 1}/${questions.length}] Your answer for: ${q.text}`, "")
+							const freeForm = await promptEditor(ctx, `[Q${n + 1}/${questions.length}] Your answer for: ${q.text}`)
 							if (!freeForm) return "cancelled"
 							answers.push({ questionId: q.id, optionId: "custom", label: freeForm, recommended: false })
 							continue
@@ -913,7 +913,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				}
 
 				if (reviewChoice === "Let me say something") {
-					const userText = await promptInput(ctx, "Your direction:", "")
+					const userText = await promptEditor(ctx, "Your direction:")
 					if (!userText) {
 						return planToolOk(`${answersEntry}\n\nNo changes made. Waiting for your next instruction.`)
 					}

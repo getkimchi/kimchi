@@ -107,6 +107,18 @@ export function promptEditor(ctx: unknown, title: string, placeholder?: string):
 	return Promise.resolve(undefined)
 }
 
+export function promptEditorPrefill(ctx: unknown, title: string, prefill?: string): Promise<string | undefined> {
+	const ui = getPromptUi(ctx)
+	if (!ui) return Promise.resolve(undefined)
+	if (ui.editor) {
+		return withWorkingHidden(ui, () => ui.editor?.(title, prefill ?? "") ?? Promise.resolve(undefined))
+	}
+	if (ui.input) {
+		return withWorkingHidden(ui, () => ui.input?.(title, prefill) ?? Promise.resolve(undefined))
+	}
+	return Promise.resolve(undefined)
+}
+
 export async function promptForm(ctx: unknown, spec: PromptFormSpec): Promise<PromptFormResult | undefined> {
 	const ui = getPromptUi(ctx)
 	if (!ui) return undefined
