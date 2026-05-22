@@ -230,10 +230,19 @@ function buildGroupView(run: object[], theme: any): ToolBlockView {
 // patchToolGroupRendering
 // ---------------------------------------------------------------------------
 
+// Symbol key for the render cache managed by tool-rendering.ts — we need to
+// bust it when we inject a temporary group view so the real content isn't
+// evicted from the cache and the injected lines don't persist across renders.
+const TOOL_RENDER_CACHE_KEY = Symbol.for("pi-claude-style-tools:tool-render-cache")
+
 export function patchToolGroupRendering(): void {
 	const proto = ToolExecutionComponent.prototype as any
 	if (proto[GROUP_RENDER_PATCH_FLAG]) return
 
+	// originalRender resolves via the prototype chain to Container.prototype.render,
+	// which has already been patched by tool-rendering.ts to apply the ▍ stroke
+	// (via contentBox / Box) and the spacing/border wrapper.  Calling it with a
+	// temporarily-swapped contentBox lets us reuse that full pipeline.
 	const originalRender = proto.render
 
 	proto.render = function patchedGroupRender(width: number): string[] {
@@ -249,7 +258,42 @@ export function patchToolGroupRendering(): void {
 		if (run[run.length - 1] !== this) return []
 
 		const theme = (this as any).ui?.theme
-		return buildGroupView(run, theme).render(width)
+		const groupView = buildGroupView(run, theme)
+
+		// Inject groupView into contentBox so the full render pipeline applies the
+		// ▍ stroke (Box) and spacing/border wrapper (patchedContainerRender).
+		const contentBox = (this as any).contentBox
+		const usingSelf = typeof (this as any).getRenderShell === "function" && (this as any).getRenderShell() === "self"
+
+		if (!contentBox || usingSelf) {
+			// Fallback: no contentBox available — return raw lines without stroke.
+			return groupView.render(width)
+		}
+
+		const isInProgress = (run[run.length - 1] as any).isPartial === true
+		const savedChildren = contentBox.children.slice() as object[]
+		const savedBgFn = contentBox.bgFn as unknown
+
+		// Swap in group view with the appropriate accent color.
+		contentBox.children = [groupView]
+		contentBox.bgFn = isInProgress
+			? (s: string) => theme?.fg?.("accent", s) ?? s
+			: (s: string) => theme?.fg?.("success", s) ?? s
+
+		// Bypass render caches so the patched Container render actually runs.
+		delete (this as any)[TOOL_RENDER_CACHE_KEY]
+		contentBox.invalidate()
+
+		const result = originalRender.call(this, width)
+
+		// Restore original state and bust caches again so the next real render
+		// goes through a full re-render instead of serving our injected lines.
+		contentBox.children = savedChildren
+		contentBox.bgFn = savedBgFn
+		contentBox.invalidate()
+		delete (this as any)[TOOL_RENDER_CACHE_KEY]
+
+		return result
 	}
 
 	proto[GROUP_RENDER_PATCH_FLAG] = true
