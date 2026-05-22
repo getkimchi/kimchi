@@ -10,7 +10,7 @@ import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { appendRefEntry } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
-import { clearAllPendingPlanReviews, clearPendingPlanReview } from "./plan-review.js"
+import { clearPendingPlanReview } from "./plan-review.js"
 import {
 	buildPhaseActionOptions,
 	buildPhaseDetailTitle,
@@ -626,7 +626,8 @@ export class FermentCommandController {
 				}
 
 				const wtWarning = wtCheck.severity === "warn" ? `\n⚠️  ${wtCheck.message}` : ""
-				clearAllPendingPlanReviews()
+				const previousActiveId = runtime.getActiveId()
+				if (previousActiveId && previousActiveId !== f.id) clearPendingPlanReview(previousActiveId)
 				sendBreadcrumb(pi, `Switched to "${f.name}" [${f.status}]${wtWarning}`, "ack", "ferment_ack")
 				resumeFerment(pi, f.id, ctx, runtime)
 			} catch (err) {

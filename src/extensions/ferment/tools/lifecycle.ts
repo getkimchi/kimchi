@@ -370,10 +370,6 @@ export function buildPlanMarkdown(fermentName: string, params: NormalizedPropose
 	].join("\n")
 }
 
-function buildPlanEntry(fermentName: string, params: NormalizedProposeScopingArgs): string {
-	return buildPlanMarkdown(fermentName, params)
-}
-
 function buildAnswersEntry(questions: ScopingQuestion[], answers: ScopingAnswer[]): string {
 	const answerLines = answers.map((a, i) => {
 		const q = questions.find((question) => question.id === a.questionId) ?? questions[i]
@@ -714,7 +710,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			})
 
 			// 4. Build clean markdown for final/headless tool output and local review UI.
-			const planEntry = buildPlanEntry(ferment.name, params)
+			const planEntry = buildPlanMarkdown(ferment.name, params)
 			const formatPlanEntry = (suffix?: string): string => (suffix ? `${planEntry}\n\n${suffix}` : planEntry)
 			const planToolOk = (message: string, options: { includePlan?: boolean; suffix?: string } = {}) =>
 				toolOk(options.includePlan ? `${formatPlanEntry(options.suffix)}\n\n${message}` : message)
@@ -751,6 +747,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			// progress writes.
 			if (questions.length === 0) {
 				if (!promptUi?.custom) {
+					// Some hosts expose select/input without custom components; keep them on the pre-review confirmation path.
 					const scopeOutcome = confirmPendingScope(
 						runtime,
 						params.ferment_id,

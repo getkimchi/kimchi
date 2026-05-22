@@ -21,11 +21,12 @@ import { registerFermentCommands } from "./commands.js"
 import { registerFermentEvents } from "./events.js"
 import { FERMENT_STOP_POLICY_SHORTCUT, canToggleFermentStopPolicy } from "./footer-status.js"
 import {
+	type PendingPlanReview,
 	clearAllPendingPlanReviews,
 	clearPendingPlanReview,
 	getCurrentPendingPlanReview,
+	getPendingPlanReview,
 	promptPlanReview,
-	stripFermentPlanReviewDisplayMessages,
 } from "./plan-review.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
@@ -131,19 +132,22 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		}
 	}
 
-	const runPendingPlanReview = async (ctx: Pick<ExtensionContext, "ui"> | undefined) => {
+	const isCurrentPendingReview = (review: PendingPlanReview): boolean =>
+		getPendingPlanReview(review.fermentId) === review
+
+	const runPendingPlanReview = async (ctx: Pick<ExtensionContext, "ui"> | undefined, review: PendingPlanReview) => {
 		if (planReviewRunning) return
-		const review = getCurrentPendingPlanReview(runtime)
-		if (!review) return
+		if (!isCurrentPendingReview(review)) return
 
 		planReviewRunning = true
 		try {
 			const outcome = await promptPlanReview(ctx, { planMarkdown: review.planMarkdown })
 			if (!outcome) return
 			if (outcome.kind === "cancelled") {
-				clearPendingPlanReview(review.fermentId)
 				return
 			}
+
+			if (!isCurrentPendingReview(review)) return
 
 			if (outcome.kind === "start") {
 				const scopeOutcome = confirmPendingScope(runtime, review.fermentId, undefined, "turn_end", review.title, pi)
@@ -180,18 +184,13 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	})
 
 	pi.on("agent_end", (_event, ctx) => {
-		if (planReviewRunning || !getCurrentPendingPlanReview(runtime)) return
+		const review = getCurrentPendingPlanReview(runtime)
+		if (planReviewRunning || !review) return
 		clearPlanReviewTimer()
 		planReviewTimer = setTimeout(() => {
 			planReviewTimer = undefined
-			void runPendingPlanReview(ctx)
+			void runPendingPlanReview(ctx, review)
 		}, 0)
-	})
-
-	pi.on("context", (event) => ({ messages: stripFermentPlanReviewDisplayMessages(event.messages) }))
-	pi.on("session_before_compact", (event) => {
-		event.preparation.messagesToSummarize = stripFermentPlanReviewDisplayMessages(event.preparation.messagesToSummarize)
-		event.preparation.turnPrefixMessages = stripFermentPlanReviewDisplayMessages(event.preparation.turnPrefixMessages)
 	})
 
 	pi.registerMessageRenderer(FERMENT_REQUEST_MESSAGE_TYPE, fermentRequestRenderer)

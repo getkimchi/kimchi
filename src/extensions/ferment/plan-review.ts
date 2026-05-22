@@ -9,8 +9,6 @@ import { type Component, Container, Key, Markdown, Spacer, type TUI, Text, match
 import { getPromptUi, withWorkingHidden } from "./prompt-ui.js"
 import type { FermentRuntime } from "./runtime.js"
 
-export const FERMENT_PLAN_REVIEW_DISPLAY_MESSAGE_TYPE = "ferment_plan_review_display"
-
 export interface PendingPlanReview {
 	fermentId: string
 	fermentName: string
@@ -44,19 +42,6 @@ export function clearPendingPlanReview(fermentId: string): void {
 
 export function clearAllPendingPlanReviews(): void {
 	pendingPlanReviews.clear()
-}
-
-type CustomMessageLike = { role?: string; customType?: string }
-
-export function stripFermentPlanReviewDisplayMessages<T extends CustomMessageLike>(messages: T[]): T[] {
-	return messages.filter(
-		(message) =>
-			!(
-				message.role === "custom" &&
-				"customType" in message &&
-				message.customType === FERMENT_PLAN_REVIEW_DISPLAY_MESSAGE_TYPE
-			),
-	)
 }
 
 export async function promptPlanReview(

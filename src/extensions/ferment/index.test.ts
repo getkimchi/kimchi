@@ -912,6 +912,65 @@ describe("fermentExtension question dropdown", () => {
 		}
 	})
 
+	it("runs the pending plan review captured before the agent_end timer", async () => {
+		vi.useFakeTimers()
+		try {
+			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-plan-review-race-test-")))
+			const runtime: FermentRuntime = {
+				...createDefaultFermentRuntime(),
+				getStorage: () => storage,
+			}
+			runtime.setContinuationPolicy("automated")
+			const firstDraft = storage.create("First Deferred Review")
+			const secondDraft = storage.create("Second Deferred Review")
+			runtime.setActive(firstDraft)
+			runtime.setPendingScope(firstDraft.id, {
+				goal: "First goal",
+				successCriteria: "First works",
+				constraints: [],
+				phases: [{ name: "First phase", goal: "Build first", steps: [] }],
+			})
+			runtime.setPendingScope(secondDraft.id, {
+				goal: "Second goal",
+				successCriteria: "Second works",
+				constraints: [],
+				phases: [{ name: "Second phase", goal: "Build second", steps: [] }],
+			})
+			setPendingPlanReview({
+				fermentId: firstDraft.id,
+				fermentName: firstDraft.name,
+				planMarkdown: "# Plan: First Deferred Review",
+			})
+			setPendingPlanReview({
+				fermentId: secondDraft.id,
+				fermentName: secondDraft.name,
+				planMarkdown: "# Plan: Second Deferred Review",
+			})
+
+			const { handlers } = registerFermentExtension(runtime)
+			const agentEnd = handlers.get("agent_end")
+			if (!agentEnd) throw new Error("agent_end handler was not registered")
+			const ctx = {
+				ui: {
+					custom: vi.fn().mockResolvedValue({ kind: "start" }),
+					notify: vi.fn(),
+					setWorkingVisible: vi.fn(),
+				},
+			}
+
+			await agentEnd({ type: "agent_end" }, ctx)
+			runtime.setActive(secondDraft)
+			await vi.runOnlyPendingTimersAsync()
+
+			expect(storage.get(firstDraft.id)?.status).toBe("planned")
+			expect(storage.get(secondDraft.id)?.status).toBe("draft")
+			expect(getPendingPlanReview(firstDraft.id)).toBeUndefined()
+			expect(getPendingPlanReview(secondDraft.id)).toBeDefined()
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
 	it("routes pending plan review feedback as hidden replanning input after agent_end", async () => {
 		vi.useFakeTimers()
 		try {
@@ -969,6 +1028,49 @@ describe("fermentExtension question dropdown", () => {
 				}),
 				expect.anything(),
 			)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("keeps pending plan review when the review dialog is cancelled", async () => {
+		vi.useFakeTimers()
+		try {
+			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-plan-review-cancel-test-")))
+			const runtime: FermentRuntime = {
+				...createDefaultFermentRuntime(),
+				getStorage: () => storage,
+			}
+			const draft = storage.create("Cancelled Review")
+			runtime.setActive(draft)
+			runtime.setPendingScope(draft.id, {
+				goal: "Goal",
+				successCriteria: "Works",
+				constraints: [],
+				phases: [{ name: "Phase", goal: "Build", steps: [] }],
+			})
+			setPendingPlanReview({
+				fermentId: draft.id,
+				fermentName: draft.name,
+				planMarkdown: "# Plan: Cancelled Review",
+			})
+
+			const { handlers, pi } = registerFermentExtension(runtime)
+			const agentEnd = handlers.get("agent_end")
+			if (!agentEnd) throw new Error("agent_end handler was not registered")
+			const ctx = {
+				ui: {
+					custom: vi.fn().mockResolvedValue({ kind: "cancelled", reason: "decision_cancelled" }),
+					setWorkingVisible: vi.fn(),
+				},
+			}
+
+			await agentEnd({ type: "agent_end" }, ctx)
+			await vi.runOnlyPendingTimersAsync()
+
+			expect(storage.get(draft.id)?.status).toBe("draft")
+			expect(getPendingPlanReview(draft.id)).toBeDefined()
+			expect(pi.sendMessage).not.toHaveBeenCalled()
 		} finally {
 			vi.useRealTimers()
 		}
