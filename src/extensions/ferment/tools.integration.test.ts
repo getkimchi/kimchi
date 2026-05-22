@@ -1355,7 +1355,7 @@ describe("propose_ferment_scoping", () => {
 				type: "checkbox",
 				text: "Which surfaces must be included?",
 				options: [
-					{ id: "cli", label: "CLI" },
+					{ id: "cli", label: "CLI", recommended: true },
 					{ id: "docs", label: "Docs" },
 					{ id: "web", label: "Web" },
 				],
@@ -1377,6 +1377,8 @@ describe("propose_ferment_scoping", () => {
 
 		expect(loadFerment(id).status).toBe("draft")
 		expect(result).toContain("Your answers")
+		expect(result).toContain("CLI, Docs")
+		expect(result).not.toContain("CLI, Docs ★")
 		expect(ctx.ui.input).toHaveBeenCalledTimes(2)
 
 		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>

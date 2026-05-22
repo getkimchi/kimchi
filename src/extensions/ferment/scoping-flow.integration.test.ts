@@ -145,7 +145,8 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 			"For broad improvement/audit/planning requests over an existing codebase, even when the user asks with a simple prompt",
 		)
 		expect(contentText).toContain("file listing plus concise manifest/README/package/config reads")
-		expect(contentText).toContain("Do not read large source files end-to-end before the delegation checkpoint")
+		expect(contentText).toContain("Before reading an implementation file end-to-end")
+		expect(contentText).toContain("inspecting size/length or searching for the specific symbols")
 		expect(contentText).toContain("Immediately spawn 1-4 narrow Explore subagents")
 		expect(contentText).toContain("One Explore subagent is valid when there is only one broad unknown")
 		expect(contentText).toContain("Explore subagent contract:")

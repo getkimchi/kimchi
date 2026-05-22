@@ -119,7 +119,8 @@ describe("runScopingFlow", () => {
 			"For broad improvement/audit/planning requests over an existing codebase, even when the user asks with a simple prompt",
 		)
 		expect(text).toContain("file listing plus concise manifest/README/package/config reads")
-		expect(text).toContain("Do not read large source files end-to-end before the delegation checkpoint")
+		expect(text).toContain("Before reading an implementation file end-to-end")
+		expect(text).toContain("inspecting size/length or searching for the specific symbols")
 		expect(text).toContain("Immediately spawn 1-4 narrow Explore subagents")
 		expect(text).toContain("One Explore subagent is valid when there is only one broad unknown")
 		expect(text).toContain("use 2-4 only when there are genuinely independent areas")
@@ -131,7 +132,7 @@ describe("runScopingFlow", () => {
 		expect(text).toContain("Direct-read boundary:")
 		expect(text).toContain("Use direct reads for narrow facts and short snippets only")
 		expect(text).toContain("The next action after that scan is Agent, not more Read calls")
-		expect(text).toContain("Forbidden pattern: reading popup.js, popup.css, background.js")
+		expect(text).toContain("Forbidden pattern: reading entire implementation files")
 		expect(text).toContain("Self-correction:")
 		expect(text).toContain("stop direct reads immediately")
 		expect(text).toContain("Spawn the required Explore subagent(s)")

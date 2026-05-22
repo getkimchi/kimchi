@@ -875,13 +875,14 @@ ${renderGateGuidance("scope_ferment")}`,
 					}
 					if (questionType === "checkbox") {
 						const values = answer.values ?? [answer.value]
-						const labels = answer.labels ?? [answer.label]
-						const selectedOptions = (q.options ?? []).filter((o) => values.includes(o.id))
+						const labels = values.map(
+							(value, index) => (q.options ?? []).find((o) => o.id === value)?.label ?? answer.labels?.[index] ?? value,
+						)
 						answers.push({
 							questionId: q.id,
 							optionId: values.join(", "),
 							label: labels.join(", "),
-							recommended: selectedOptions.some((o) => o.recommended === true),
+							recommended: false,
 						})
 						continue
 					}
