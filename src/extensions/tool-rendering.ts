@@ -33,6 +33,7 @@ import {
 } from "@earendil-works/pi-tui"
 
 import * as Diff from "diff"
+import { getBashCommandForDisplay } from "./bash-collapse.js"
 import type { BundledLanguage, BundledTheme } from "shiki"
 
 const RESET = "\x1b[0m"
@@ -3764,7 +3765,7 @@ export default function (pi: ExtensionAPI) {
 			return bashTool.execute(toolCallId, params, signal, onUpdate)
 		},
 		renderCall(args, theme, ctx) {
-			const summary = stableCallSummary(ctx, "_callSummary", () => summarizeText(args.command, 72))
+			const summary = summarizeText(getBashCommandForDisplay(args.command) ?? args.command, 72)
 			return makeText(ctx.lastComponent, toolHeader("Bash", summary, theme, toolStatusDot(ctx, theme)))
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {

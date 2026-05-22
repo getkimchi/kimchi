@@ -1,5 +1,12 @@
 import { type MockInstance, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { _resetRtkState, collapseCommand, detectRtk, rewriteWithRtk, rtkSpawnHook } from "./bash-collapse.js"
+import {
+	_resetRtkState,
+	collapseCommand,
+	detectRtk,
+	getBashCommandForDisplay,
+	rewriteWithRtk,
+	rtkSpawnHook,
+} from "./bash-collapse.js"
 
 // ---------------------------------------------------------------------------
 // collapseCommand
@@ -238,6 +245,7 @@ describe("rtkSpawnHook", () => {
 		const result = rtkSpawnHook(ctx)
 		expect(result.command).toBe("rtk git status")
 		expect(result.cwd).toBe("/tmp")
+		expect(getBashCommandForDisplay("git status")).toBe("rtk git status")
 	})
 
 	it("returns the original context when command is unchanged", async () => {

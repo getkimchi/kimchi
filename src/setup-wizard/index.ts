@@ -12,6 +12,7 @@ import type { WizardResult, WizardState } from "./state.js"
 import { runAuthStep } from "./steps/auth.js"
 import { runDoneStep } from "./steps/done.js"
 import { runModeStep } from "./steps/mode.js"
+import { runRtkStep } from "./steps/rtk.js"
 import { runTelemetryStep } from "./steps/telemetry.js"
 import { runToolsStep } from "./steps/tools.js"
 import { runWelcomeStep } from "./steps/welcome.js"
@@ -25,6 +26,7 @@ interface Step {
 const STEPS: Step[] = [
 	{ name: "auth", run: runAuthStep },
 	{ name: "tools", run: runToolsStep },
+	{ name: "rtk", run: runRtkStep },
 	{ name: "mode", run: runModeStep },
 	{ name: "telemetry", skip: (s) => !s.selectedTools.includes("claudecode"), run: runTelemetryStep },
 ]
@@ -46,6 +48,7 @@ export async function runWizard(): Promise<WizardResult> {
 		mode: "override",
 		scope: "global",
 		selectedTools: [],
+		installRtk: false,
 		telemetryEnabled: true,
 		cancelled: false,
 		back: false,
@@ -60,6 +63,7 @@ export async function runWizard(): Promise<WizardResult> {
 		telemetryEnabled: state.telemetryEnabled,
 		selectedTools: [...state.selectedTools],
 		configuredTools: [],
+		rtkInstalled: false,
 	})
 
 	runWelcomeStep()
@@ -99,6 +103,7 @@ export async function runWizard(): Promise<WizardResult> {
 		configuredTools: state.selectedTools.filter((id) =>
 			outcome.successes.some((name) => name.toLowerCase().includes(id)),
 		),
+		rtkInstalled: outcome.rtkInstalled,
 	}
 }
 

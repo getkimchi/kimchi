@@ -20,6 +20,7 @@ import { isBunBinary } from "./env.js"
 import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
+import bashCollapseExtension from "./extensions/bash-collapse.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
@@ -58,6 +59,9 @@ import { updateModelsConfig } from "./models.js"
 import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./modes/teleport/sync/session-export.js"
 import { ensureDeviceId } from "./posthog-device.js"
 import { capturePostHogEvent } from "./posthog.js"
+import resourcesExtension from "./resources/extension.js"
+import { type ManagedExtensionFactory, enabledExtensionFactories } from "./resources/filter.js"
+import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
@@ -460,12 +464,19 @@ try {
 			kimchiMinimalTintsExtension,
 			loopGuardExtension,
 			lspExtension,
-			mcpAdapterExtension,
+			...enabledExtensionFactories([
+				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
+			] satisfies ManagedExtensionFactory[]),
 			// Ferment must see raw input before prompt enrichment rewrites print-mode text.
-			fermentExtension,
+			...enabledExtensionFactories([
+				{ id: "extensions.ferment", factory: fermentExtension },
+			] satisfies ManagedExtensionFactory[]),
 			questionnaireExtension,
 			promptEnrichmentExtension(skillPaths),
+			bashCollapseExtension,
 			permissionsExtension,
+			resourcesExtension,
+			resourceToolBlockerExtension,
 			behavioursExtension,
 			promptSummaryExtension,
 			contextCompactorExtension,
@@ -476,12 +487,16 @@ try {
 			uiExtension,
 			sessionModeOnboarding,
 			tipsExtension(),
-			agentsExtension,
+			...enabledExtensionFactories([
+				{ id: "extensions.agents", factory: agentsExtension },
+			] satisfies ManagedExtensionFactory[]),
 			tagsExtension,
 			telemetryExtension(telemetryConfig),
 			toolRenderingExtension,
-			webFetchExtension,
-			webSearchExtension,
+			...enabledExtensionFactories([
+				{ id: "tools.web_fetch", factory: webFetchExtension },
+				{ id: "tools.web_search", factory: webSearchExtension },
+			] satisfies ManagedExtensionFactory[]),
 			loginExtension,
 			modelSwitchExtension,
 			modelGuardExtension,
