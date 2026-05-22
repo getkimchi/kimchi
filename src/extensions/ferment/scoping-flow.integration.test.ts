@@ -139,8 +139,11 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 			"First response action: print a concise inventory of all available skills and subagent types",
 		)
 		expect(contentText).toContain('<discovery_sequence required="true">')
-		expect(contentText).toContain("Before reading an implementation file end-to-end")
-		expect(contentText).toContain("inspecting size/length or searching for the specific symbols")
+		expect(contentText).toContain("Do not use unbounded Read calls")
+		expect(contentText).toContain("first get the file's line count or tool-reported length")
+		expect(contentText).toContain("read at most a short snippet, about 60 lines or less")
+		expect(contentText).toContain("Only read an implementation/UI/style file end-to-end")
+		expect(contentText).toContain("If a file is longer than about 120 lines")
 		expect(contentText).toContain("Immediately spawn 1-4 narrow Explore subagents")
 		expect(contentText).toContain('subagent_type: "Explore"')
 		expect(contentText).toContain("start with token_budget: 120000")
