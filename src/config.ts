@@ -218,8 +218,7 @@ function parseOnboardingConfig(value: unknown): OnboardingConfig | undefined {
 		typeof raw.sessionModeWizardSeenAt === "string" && raw.sessionModeWizardSeenAt.length > 0
 			? raw.sessionModeWizardSeenAt
 			: undefined
-	const hideSessionModeDialogValue = raw.hideSessionModeDialog ?? raw["hide-session-mode-dialog"]
-	const hideSessionModeDialog = typeof hideSessionModeDialogValue === "boolean" ? hideSessionModeDialogValue : undefined
+	const hideSessionModeDialog = typeof raw.hideSessionModeDialog === "boolean" ? raw.hideSessionModeDialog : undefined
 
 	return {
 		...(sessionModeWizardSeenAt ? { sessionModeWizardSeenAt } : {}),
@@ -393,13 +392,6 @@ export function writeSessionModeWizardSeenAt(seenAt: string, configPath?: string
 
 export function readHideSessionModeDialog(configPath?: string): boolean {
 	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.hideSessionModeDialog === true
-}
-
-export function writeHideSessionModeDialog(hidden: boolean, configPath?: string): void {
-	const path = configPath ?? KIMCHI_CONFIG_PATH
-	updateOnboardingConfig(path, (onboarding) => {
-		onboarding.hideSessionModeDialog = hidden
-	})
 }
 
 export function writeMigrationState(state: MigrationState, configPath?: string): void {

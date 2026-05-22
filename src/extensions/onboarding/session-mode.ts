@@ -2,12 +2,7 @@ import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendi
 
 type EditorFactory = ReturnType<ExtensionContext["ui"]["getEditorComponent"]>
 import { getCliModeArg, isPreDispatchValueFlag } from "../../cli-args.js"
-import {
-	readHideSessionModeDialog,
-	readSessionModeWizardSeenAt,
-	writeHideSessionModeDialog,
-	writeSessionModeWizardSeenAt,
-} from "../../config.js"
+import { readHideSessionModeDialog, readSessionModeWizardSeenAt, writeSessionModeWizardSeenAt } from "../../config.js"
 
 import { setTipWidgetLocation } from "../tips/index.js"
 import { setSessionModeOnboardingFooterSuppressed } from "../ui.js"
@@ -205,11 +200,7 @@ function showSessionModeWizard(
 		finished = true
 		try {
 			if (result !== "cancelled") {
-				recordSessionModeWizardOutcome(result.choice, {
-					configPath: options.configPath,
-					now: options.now,
-					hideDialog: result.hideDialog,
-				})
+				recordSessionModeWizardOutcome(result, { configPath: options.configPath, now: options.now })
 			}
 		} catch (err) {
 			cleanup()
@@ -222,7 +213,7 @@ function showSessionModeWizard(
 		cleanup()
 		if (result !== "cancelled" && options.onOutcome) {
 			Promise.resolve()
-				.then(() => options.onOutcome?.(result.choice, ctx, pi))
+				.then(() => options.onOutcome?.(result, ctx, pi))
 				.catch((err: unknown) => {
 					ctx.ui.notify(`Session mode startup failed: ${err instanceof Error ? err.message : String(err)}`, "warning")
 				})
@@ -308,12 +299,10 @@ export function decideSessionModeOnboarding(input: SessionModeOnboardingInput): 
 
 export function recordSessionModeWizardOutcome(
 	outcome: SessionModeWizardOutcome,
-	options?: { configPath?: string; now?: () => Date; hideDialog?: boolean },
+	options?: { configPath?: string; now?: () => Date },
 ): string | undefined {
 	if (outcome === "cancelled") return undefined
-	const seenAt = markSessionModeWizardSeen(options)
-	if (options?.hideDialog === true) writeHideSessionModeDialog(true, options.configPath)
-	return seenAt
+	return markSessionModeWizardSeen(options)
 }
 
 export function markSessionModeWizardSeen(options?: { configPath?: string; now?: () => Date }): string {

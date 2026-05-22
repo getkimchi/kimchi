@@ -254,15 +254,6 @@ describe("session-mode onboarding persistence", () => {
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 	})
 
-	it("persists the hide setting when the checkbox is selected", () => {
-		const seenAt = recordSessionModeWizardOutcome("default", { configPath, now, hideDialog: true })
-		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
-
-		expect(seenAt).toBe("2026-05-19T09:30:00.000Z")
-		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
-		expect(raw.onboarding.hideSessionModeDialog).toBe(true)
-	})
-
 	it("does not mark cancellation as seen", () => {
 		const seenAt = recordSessionModeWizardOutcome("cancelled", { configPath, now })
 
@@ -492,8 +483,6 @@ describe("session-mode onboarding persistence", () => {
 		harness.input("\r")
 		await harness.settle()
 
-		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
-		expect(raw.onboarding.hideSessionModeDialog).toBeUndefined()
 		expect(harness.activeComponent()).toBeUndefined()
 		expect(onOutcome).toHaveBeenCalledWith("default", expect.objectContaining({ ui: harness.ui }), harness.api)
 	})

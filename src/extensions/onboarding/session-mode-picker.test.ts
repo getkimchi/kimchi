@@ -47,10 +47,10 @@ describe("session mode picker reducer", () => {
 
 	it("returns the selected option on select", () => {
 		let state = initialSessionModePickerState()
-		expect(reduceSessionModePicker(state, "select").result).toEqual({ choice: "ferment", hideDialog: false })
+		expect(reduceSessionModePicker(state, "select").result).toBe("ferment")
 
 		state = reduceSessionModePicker(state, "down").state
-		expect(reduceSessionModePicker(state, "select").result).toEqual({ choice: "default", hideDialog: false })
+		expect(reduceSessionModePicker(state, "select").result).toBe("default")
 	})
 
 	it("returns cancellation on cancel", () => {
@@ -121,7 +121,7 @@ describe("SessionModePickerComponent", () => {
 		expect(requestRender).toHaveBeenCalledTimes(1)
 
 		component.handleInput("\r")
-		expect(onDone).toHaveBeenCalledWith({ choice: "default", hideDialog: false })
+		expect(onDone).toHaveBeenCalledWith("default")
 	})
 
 	it("calls onDone for cancellation", () => {

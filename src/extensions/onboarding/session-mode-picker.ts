@@ -2,14 +2,13 @@ import type { Theme } from "@earendil-works/pi-coding-agent"
 import { type Component, Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 
 export type SessionModePickerChoice = "ferment" | "default"
-export type SessionModePickerResult = { choice: SessionModePickerChoice; hideDialog: boolean } | "cancelled"
+export type SessionModePickerResult = SessionModePickerChoice | "cancelled"
 export type SessionModePickerEvent = "up" | "down" | "select" | "cancel"
 
 export interface SessionModePickerOption {
 	value: SessionModePickerChoice
 	label: string
 	description?: string
-	hideDialog?: boolean
 }
 
 export interface SessionModePickerState {
@@ -45,10 +44,7 @@ export function reduceSessionModePicker(
 	if (event === "cancel") return { state, result: "cancelled" }
 	if (event === "select") {
 		const option = SESSION_MODE_PICKER_OPTIONS[state.selectedIndex]
-		return {
-			state,
-			result: { choice: option.value, hideDialog: option.hideDialog === true },
-		}
+		return { state, result: option.value }
 	}
 	if (event === "up") {
 		return { state: { ...state, selectedIndex: Math.max(0, state.selectedIndex - 1) } }

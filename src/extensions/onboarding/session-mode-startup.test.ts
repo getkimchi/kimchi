@@ -1,10 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { writeHideSessionModeDialog, writeSessionModeWizardSeenAt } from "../../config.js"
+import { writeSessionModeWizardSeenAt } from "../../config.js"
 import { globalTipRegistry } from "../tips/registry.js"
 import { createSessionModeOnboardingForStartup } from "./session-mode-startup.js"
 
@@ -158,9 +158,18 @@ describe("session mode startup integration", () => {
 		expect(harness.ui.onTerminalInput).not.toHaveBeenCalled()
 	})
 
-	it("skips launches when the session mode dialog has been hidden", async () => {
-		writeSessionModeWizardSeenAt("2026-05-19T08:00:00.000Z", configPath)
-		writeHideSessionModeDialog(true, configPath)
+	it("skips launches when the session mode dialog has been hidden via manual config edit", async () => {
+		// hideSessionModeDialog is an escape-hatch flag: users opt out by
+		// editing the config file directly. No code path sets it from the UI.
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				onboarding: {
+					sessionModeWizardSeenAt: "2026-05-19T08:00:00.000Z",
+					hideSessionModeDialog: true,
+				},
+			}),
+		)
 		const harness = createHarness({ configPath, now })
 
 		await harness.start()
