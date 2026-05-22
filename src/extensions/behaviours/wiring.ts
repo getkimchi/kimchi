@@ -117,13 +117,16 @@ export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[
 		}
 	})
 
-	// Drain any pending bodies as steer messages right after the tool result so
-	// the model sees them before its next inference within the same turn.
+	// Drain tool-triggered bodies as steer messages right after the tool result
+	// so the model sees them before its next inference within the same turn.
 	// `before_agent_start` only fires per user prompt, so without this hook a
 	// behaviour that loads on a tool_call mid-turn would never reach the model
-	// in that session.
+	// in that session. Session-triggered bodies stay on the normal
+	// before_agent_start path; injecting them here can wake custom-message
+	// workflows after a host handoff, such as Ferment plan review.
 	pi.on("tool_result", async () => {
 		for (const b of triggered) {
+			if (engine.loadRecord(b.name)?.trigger !== "tool") continue
 			if (!engine.takePending(b.name)) continue
 			pi.sendMessage(
 				{
