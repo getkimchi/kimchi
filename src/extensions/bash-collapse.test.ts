@@ -128,13 +128,16 @@ describe("detectRtk", () => {
 describe("rewriteWithRtk", () => {
 	let tmpRtkRoot: string | undefined
 	let previousKimchiDir: string | undefined
+	let previousHome: string | undefined
 
 	beforeEach(() => {
 		_resetRtkState()
 		clearEnv()
 		previousKimchiDir = process.env.KIMCHI_CODING_AGENT_DIR
+		previousHome = process.env.HOME
 		tmpRtkRoot = mkdtempSync(join(tmpdir(), "kimchi-rtk-collapse-test-"))
 		process.env.KIMCHI_CODING_AGENT_DIR = tmpRtkRoot
+		process.env.HOME = tmpRtkRoot
 		mockExecFileSync.mockReset()
 		// Pre-seed rtkAvailable = true for most tests (detectRtk already passed).
 		mockExecFile.mockReset()
@@ -146,6 +149,9 @@ describe("rewriteWithRtk", () => {
 		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete.
 		if (previousKimchiDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
 		else process.env.KIMCHI_CODING_AGENT_DIR = previousKimchiDir
+		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete.
+		if (previousHome === undefined) delete process.env.HOME
+		else process.env.HOME = previousHome
 		clearEnv()
 	})
 
@@ -250,13 +256,16 @@ describe("rewriteWithRtk", () => {
 describe("rtkSpawnHook", () => {
 	let tmpRtkRoot: string | undefined
 	let previousKimchiDir: string | undefined
+	let previousHome: string | undefined
 
 	beforeEach(() => {
 		_resetRtkState()
 		clearEnv()
 		previousKimchiDir = process.env.KIMCHI_CODING_AGENT_DIR
+		previousHome = process.env.HOME
 		tmpRtkRoot = mkdtempSync(join(tmpdir(), "kimchi-rtk-spawn-test-"))
 		process.env.KIMCHI_CODING_AGENT_DIR = tmpRtkRoot
+		process.env.HOME = tmpRtkRoot
 		mockExecFileSync.mockReset()
 		mockExecFile.mockReset()
 	})
@@ -267,6 +276,9 @@ describe("rtkSpawnHook", () => {
 		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete.
 		if (previousKimchiDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
 		else process.env.KIMCHI_CODING_AGENT_DIR = previousKimchiDir
+		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete.
+		if (previousHome === undefined) delete process.env.HOME
+		else process.env.HOME = previousHome
 		clearEnv()
 	})
 
