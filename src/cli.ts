@@ -63,6 +63,7 @@ import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
 import { getVersion } from "./utils.js"
+import { isInSandboxCluster } from "./utils/sandbox.js"
 
 installCloudflare524RetryPatch()
 
@@ -464,7 +465,7 @@ try {
 			modelGuardExtension,
 			stripImagesExtension,
 			traceIdExtension,
-			activityExtension,
+			...(isInSandboxCluster() ? [activityExtension] : []),
 		]
 
 		if (acpMode) {
