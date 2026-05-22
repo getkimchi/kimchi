@@ -1,10 +1,8 @@
-import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import type { RemoteAgentSession } from "../proxy/agent-session.js"
 import type { DetachArgs } from "./args.js"
 import { info, refuse, status, warn } from "./errors.js"
 import { readSessionId, readSessionName } from "./session-resolve.js"
-import { isBusy, waitUntilIdle } from "./teleport-helpers.js"
-import { BUSY_WAIT_MS_REMOTE, type TeleportContext } from "./types.js"
+import type { TeleportContext } from "./types.js"
 
 async function rebindAfterSwap(ctx: TeleportContext): Promise<void> {
 	if (!ctx.triggerRebind) return
@@ -26,7 +24,7 @@ async function refreshUIAfterSwap(ctx: TeleportContext): Promise<void> {
 	await rebindAfterSwap(ctx)
 }
 
-export async function runDetach(args: DetachArgs, ctx: TeleportContext): Promise<void> {
+export async function runDetach(_args: DetachArgs, ctx: TeleportContext): Promise<void> {
 	const wrapper = ctx.wrapper
 	if (wrapper.isForegroundHomeBase) {
 		refuse(ctx, "Not connected to a remote session.")
@@ -36,27 +34,12 @@ export async function runDetach(args: DetachArgs, ctx: TeleportContext): Promise
 	const sessionId = readSessionId(remote) ?? "<unknown>"
 	const name = readSessionName(remote)
 
-	if (isBusy(remote as unknown as AgentSession)) {
-		if (!args.abandonPending) {
-			refuse(ctx, "Remote session is busy. Use /detach --abandon-pending to abort and detach.")
-		}
-		try {
-			;(remote as { abortBash?: () => void }).abortBash?.()
-			;(remote as { abortRetry?: () => void }).abortRetry?.()
-		} catch {
-			// best effort
-		}
-		const becameIdle = await waitUntilIdle(
-			() => !isBusy(remote as unknown as AgentSession),
-			BUSY_WAIT_MS_REMOTE,
-			ctx.signal,
-		)
-		if (!becameIdle) {
-			refuse(ctx, "Remote did not become idle within 10s. Try again.")
-		}
-	}
+	// Detach immediately regardless of whether the remote agent is streaming,
+	// running bash, or has pending messages. The server-side session continues
+	// working independently; /attach reconnects and replays full message
+	// history via getMessages(). No need to wait or abort.
 
-	status(ctx, "Disconnecting…")
+	status(ctx, "Disconnecting\u2026")
 	try {
 		;(remote as unknown as { dispose: () => void }).dispose()
 	} catch (err) {

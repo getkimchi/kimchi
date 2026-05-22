@@ -637,29 +637,14 @@ describe("runDetach", () => {
 		await expect(runDetach({ abandonPending: false }, ctx)).rejects.toBeInstanceOf(TeleportRefusal)
 	})
 
-	it("refuses when remote is busy without --abandon-pending", async () => {
+	it("detaches immediately even when the remote is streaming", async () => {
 		const home = new FakeSession("local-1")
 		const remote = new FakeSession("remote-1")
 		remote.isStreaming = true
 		const { wrapper, ctx } = makeCtx(home)
 		wrapper.foregroundRemote(asRemote(remote))
 
-		await expect(runDetach({ abandonPending: false }, ctx)).rejects.toThrow(/busy/)
-		expect(remote.dispose).not.toHaveBeenCalled()
-	})
-
-	it("--abandon-pending aborts then detaches", async () => {
-		const home = new FakeSession("local-1")
-		const remote = new FakeSession("remote-1")
-		remote.isStreaming = true
-		remote.abortBash = vi.fn(() => {
-			remote.isStreaming = false
-		})
-		const { wrapper, ctx } = makeCtx(home)
-		wrapper.foregroundRemote(asRemote(remote))
-
-		await runDetach({ abandonPending: true }, ctx)
-		expect(remote.abortBash).toHaveBeenCalled()
+		await runDetach({ abandonPending: false }, ctx)
 		expect(remote.dispose).toHaveBeenCalled()
 		expect(wrapper.isForegroundHomeBase).toBe(true)
 	})
