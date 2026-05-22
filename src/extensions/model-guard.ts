@@ -24,6 +24,22 @@ export function contextFitsModel(tokens: number, contextWindow: number): boolean
 	return tokens <= getSafeContextWindow(contextWindow)
 }
 
+/**
+ * Returns the best available token count for the current context.
+ * Prefers the upstream getContextUsage().tokens (provider-accurate);
+ * falls back to the local estimateTokens() heuristic when upstream
+ * returns null (e.g. post-compaction, pre-first-response, fresh session).
+ * Returns null when no data is available at all.
+ */
+export function resolveContextTokens(
+	usage: { tokens: number | null } | undefined,
+	messages: ContextEvent["messages"],
+): number | null {
+	if (usage?.tokens != null) return usage.tokens
+	if (messages.length === 0) return null
+	return estimateTokens(messages)
+}
+
 /** Module-level flag tracking whether the current session contains image blocks. */
 let imagesDetected = false
 
@@ -286,10 +302,12 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 			}
 		}
 
-		// Truncate when context usage exceeds the target model's context window
-		if (model && usage?.tokens != null) {
+		// Truncate when context usage exceeds the target model's context window.
+		// Falls back to local estimate when upstream tokens are null (post-compaction).
+		if (model) {
+			const tokens = resolveContextTokens(usage, result)
 			const threshold = Math.floor(model.contextWindow * SAFETY_MARGIN)
-			if (usage.tokens > threshold) {
+			if (tokens != null && tokens > threshold) {
 				const truncated = truncateMessages(result, model.contextWindow)
 				if (truncated !== result) {
 					result = truncated
@@ -329,4 +347,13 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 			}
 		}
 	})
+}
+
+/**
+ * Test-only helper to directly set latestMessages from tests.
+ * Bypasses the context event so tests can control state without
+ * needing to fire a context event or mock getLatestMessages.
+ */
+export function __setLatestMessagesForTest(messages: ContextEvent["messages"]): void {
+	latestMessages = messages
 }

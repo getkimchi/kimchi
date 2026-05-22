@@ -12,6 +12,7 @@ import modelGuardExtension, {
 	sessionHasImages,
 	stripImages,
 	truncateMessages,
+	resolveContextTokens,
 } from "./model-guard.js"
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -121,6 +122,36 @@ describe("estimateTokens", () => {
 		const msgs: ContextEvent["messages"] = [userWithUsage]
 		// Should count chars, not usage.totalTokens
 		expect(estimateTokens(msgs)).toBe(1)
+	})
+})
+
+// ── resolveContextTokens ─────────────────────────────────────────────────────
+
+describe("resolveContextTokens", () => {
+	it("returns usage.tokens when available (non-null)", () => {
+		const usage = { tokens: 42_000 }
+		const msgs: ContextEvent["messages"] = [makeUser("hi")]
+		expect(resolveContextTokens(usage, msgs)).toBe(42_000)
+	})
+
+	it("falls back to estimateTokens(messages) when usage.tokens is null", () => {
+		const usage = { tokens: null }
+		// 30 msgs × 2000 chars each → ceil(2000/4)=500 tokens each → 15,000 total
+		const msgs: ContextEvent["messages"] = Array.from({ length: 30 }, () => makeUser("x".repeat(2000)))
+		expect(resolveContextTokens(usage, msgs)).toBe(15_000)
+	})
+
+	it("falls back to estimateTokens(messages) when usage is undefined", () => {
+		const usage = undefined
+		const msgs: ContextEvent["messages"] = [makeUser("hello world")]
+		// "hello world" (11 chars) → ceil(11/4)=3
+		expect(resolveContextTokens(usage, msgs)).toBe(3)
+	})
+
+	it("returns null when usage is undefined AND messages are empty", () => {
+		const usage = undefined
+		const msgs: ContextEvent["messages"] = []
+		expect(resolveContextTokens(usage, msgs)).toBeNull()
 	})
 })
 
@@ -487,6 +518,21 @@ describe("modelGuardExtension handler", () => {
 		const msgs: ContextEvent["messages"] = [makeUser("hello")]
 		const result = await trigger("context", { messages: msgs }, ctx)
 		expect(result).toBeUndefined()
+	})
+
+	it("truncates when usage.tokens is null but local estimate exceeds model context window", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const ctx = makeMockCtx({
+			model: { id: "kimi-k2.6", input: ["text"], contextWindow: 10_000 } as ExtensionContext["model"],
+			getContextUsage: () => ({ tokens: null, contextWindow: 10_000, percent: null }),
+		})
+		// 30 messages × 2000 chars each → ceil(2000/4)=500 tokens each = 15,000 tokens
+		// This exceeds 10_000 * 0.95 = 9,500, so truncation should fire
+		const msgs: ContextEvent["messages"] = Array.from({ length: 30 }, () => makeUser("x".repeat(2000)))
+		const result = (await trigger("context", { messages: msgs }, ctx)) as { messages: ContextEvent["messages"] }
+		expect(result).toBeDefined()
+		expect(result.messages.length).toBeLessThan(30)
 	})
 })
 
