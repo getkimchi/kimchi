@@ -63,6 +63,7 @@ import resourcesExtension from "./resources/extension.js"
 import { type ManagedExtensionFactory, enabledExtensionFactories } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
+import { ensureAuthenticated } from "./startup-auth.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
@@ -312,21 +313,21 @@ try {
 		const modelsJsonPath = resolve(agentDir, "models.json")
 
 		let currentApiKey = apiKey
+		if (!currentApiKey && process.stdin.isTTY) {
+			currentApiKey = await ensureAuthenticated()
+			writeApiKey(currentApiKey)
+			config = loadConfig()
+		}
+
 		let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
 		try {
 			;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
 		} catch (err) {
 			const is401 = err instanceof Error && err.message.includes("401")
 			if (is401 && process.stdin.isTTY) {
-				console.warn("API key is invalid or expired. Redirecting to setup...")
 				writeApiKey("")
 				config = loadConfig()
-				const { runWizard } = await import("./setup-wizard/index.js")
-				const wizardResult = await runWizard()
-				if (wizardResult.cancelled) {
-					process.exit(130)
-				}
-				currentApiKey = wizardResult.apiKey ?? ""
+				currentApiKey = await ensureAuthenticated("expired")
 				writeApiKey(currentApiKey)
 				config = loadConfig()
 				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
