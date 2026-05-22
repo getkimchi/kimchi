@@ -14,7 +14,12 @@ export const GENERAL_TIPS = [
 	{
 		id: "multi-model-switch",
 		scope: "general",
-		message: "Press `ctrl+p` to choose a model from multi-model mode.",
+		message: "Use `ctrl+p` or `/model` to select multi-model for auto routing.",
+	},
+	{
+		id: "single-model-mode",
+		scope: "general",
+		message: "Use `/model` to select single model for entire session",
 	},
 	{
 		id: "add-tags",

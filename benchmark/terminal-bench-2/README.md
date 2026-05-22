@@ -83,13 +83,11 @@ MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-local.sh -i terminal-bench/fix-git
 
 ### Single-model run (no orchestration)
 
-To benchmark a model on its own, bypassing kimchi's multi-model orchestration, pass `disable-multi-model=true`. The agent forwards `--multi-model=false` to kimchi.
+To benchmark a model on its own, bypassing kimchi's multi-model orchestration, pass `--model <provider>/<id>` to select a specific model. This starts kimchi in single-model mode.
 
 ```bash
-MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-local.sh -n 8 --agent-kwarg disable-multi-model=true
+MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-local.sh -n 8
 ```
-
-The kwarg is named `disable-multi-model` (not `multi-model=false`) because harbor's `parse_kwargs` JSON-decodes `false` into Python `bool`, which the `str`/`enum` `CliFlag` coercers reject — and `bool`-typed flags only emit when truthy, so they can't render `--multi-model=false` directly.
 
 ### One-shot ferment per task
 

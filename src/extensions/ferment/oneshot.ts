@@ -24,5 +24,5 @@ Your task — execute ALL of the following steps WITHOUT pausing to ask the user
 
 CRITICAL: Do NOT ask for confirmation, do not narrate progress to the user, and do not create extra process work. Scope from the provided task, delegate implementation to workers, verify with the cheapest task-relevant commands, and execute autonomously until complete_ferment is called. After complete_ferment returns, produce one concise final assistant message with no tool calls.
 
-Only the ferment lifecycle tools for this existing ferment, "Agent", "get_subagent_result", "read", and metadata-only "set_phase" are available — launch an Agent for any implementation or verification work. You cannot create another ferment in this one-shot run. Use get_subagent_result to collect background Agent results. There is no shell CLI for ferment phase or step transitions; use the ferment tools directly.`
+Only the ferment lifecycle tools for this existing ferment, "Agent", "get_subagent_result", "read", and metadata-only "set_phase" are available — launch an Agent for any implementation or verification work. Do not start another ferment in this one-shot run. Use get_subagent_result to collect background Agent results. There is no shell CLI for ferment phase or step transitions; use the ferment tools directly.`
 }

@@ -260,41 +260,6 @@ describe("scopeFerment", () => {
 	})
 })
 
-describe("registerLifecycleTools", () => {
-	it("registers create_ferment against the injected runtime storage", async () => {
-		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-lifecycle-registered-test-")))
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getStorage: () => storage,
-			setActive: vi.fn(),
-		}
-		const tools = new Map<string, RegisteredTool>()
-		const pi = {
-			registerTool: (tool: RegisteredTool) => {
-				tools.set(tool.name, tool)
-			},
-			sendMessage: vi.fn(),
-			appendEntry: vi.fn(),
-			getActiveTools: vi.fn(() => ["read", "bash"]),
-			getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "create_ferment" }]),
-			setActiveTools: vi.fn(),
-		} as unknown as ExtensionAPI
-		registerLifecycleTools(pi, runtime)
-
-		const createTool = tools.get("create_ferment")
-		if (!createTool) throw new Error("create_ferment was not registered")
-		const result = (await createTool.execute("test-call-id", {
-			name: "Registered Lifecycle",
-			description: "uses injected storage",
-		})) as { content: { text: string }[]; isError?: boolean }
-
-		expect(okText(result)).toContain('Created "Registered Lifecycle"')
-		const created = storage.list().find((f) => f.name === "Registered Lifecycle")
-		expect(created).toBeDefined()
-		expect(runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ id: created?.id }))
-	})
-})
-
 describe("update_ferment_scope_field via registerLifecycleTools", () => {
 	function createRegisteredHarness() {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-update-scope-test-")))

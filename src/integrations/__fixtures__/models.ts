@@ -46,8 +46,8 @@ export const TEST_MODELS: readonly ModelMetadata[] = [
 		limits: { context_window: 196_608, max_output_tokens: 32_768 },
 	},
 	{
-		slug: "claude-opus-4-7",
-		display_name: "Claude Opus 4.7",
+		slug: "claude-opus-4-6",
+		display_name: "Claude Opus 4.6",
 		provider: "anthropic",
 		reasoning: true,
 		input_modalities: ["text"],

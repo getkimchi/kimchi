@@ -79,12 +79,7 @@ function createHarness() {
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		getActiveTools: vi.fn(() => ["read", "bash"]),
-		getAllTools: vi.fn(() => [
-			{ name: "read" },
-			{ name: "bash" },
-			{ name: "create_ferment" },
-			{ name: "start_ferment_step" },
-		]),
+		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "start_ferment_step" }]),
 		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
 	const ctx = {

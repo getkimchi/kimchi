@@ -122,7 +122,15 @@ describe("resolveOrchestrationInstructions", () => {
 			registry,
 			mode: "orchestrator",
 		})
+		expect(result).toContain("Sharing context between agents")
 		expect(result).toContain("Orchestrate the work")
+		expect(result).toContain("Token budgets")
+		expect(result).toContain("token_budget")
+		expect(result).toContain("Plan self-validation")
+		expect(result).toContain("Plan verification")
+		expect(result).toContain("What makes a good plan")
+		expect(result).toContain("Skip verification when")
+		expect(result).toContain("Require verification when")
 		expect(result).not.toContain("## Your Team")
 	})
 
@@ -169,12 +177,12 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("includes model-specific orchestration guidelines when provided", () => {
 		const result = resolveOrchestrationInstructions({
-			currentModelId: "kimi-k2.6",
+			currentModelId: "minimax-m2.7",
 			registry,
 			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("### Orchestration Guidelines")
-		expect(result).toContain("Kimi family")
+		expect(result).toContain("MiniMax M2 family")
 	})
 })

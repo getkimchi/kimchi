@@ -131,7 +131,6 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 			: String(msgArg.content)
 		expect(contentText).toContain("I want to add Google OAuth")
 		expect(contentText).toContain(`ferment_id "${ferment.id}"`)
-		expect(contentText).toContain("Do NOT call create_ferment")
 
 		// Pending scope seeded
 		expect(getPendingScope(ferment.id)).toBeDefined()

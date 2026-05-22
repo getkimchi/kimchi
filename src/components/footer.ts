@@ -11,21 +11,11 @@ import { formatFermentFooterDisplay } from "../extensions/ferment/footer-status.
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatCount } from "../extensions/format.js"
 import { getCurrentPermissionsMode } from "../extensions/permissions/index.js"
-import { MULTI_MODEL_SHORTCUT, getMultiModelEnabled } from "../extensions/prompt-construction/prompt-enrichment.js"
+import { ORCHESTRATOR_MODEL_ID, getMultiModelEnabled } from "../extensions/prompt-construction/prompt-enrichment.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
-type SegmentId =
-	| "permissions"
-	| "multi-model"
-	| "model"
-	| "ferment"
-	| "agents"
-	| "context"
-	| "usage"
-	| "phase"
-	| "tags"
-	| "team"
+type SegmentId = "permissions" | "model" | "ferment" | "agents" | "context" | "usage" | "phase" | "tags" | "team"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -36,7 +26,7 @@ type SegmentId =
  *  and the segment's tail is identical in both forms anyway. */
 type SegmentRaw =
 	| { kind: "context"; percent: number; pctColor?: "error" | "warning" }
-	| { kind: "multi-model"; enabled: boolean }
+	| { kind: "model"; multiModel: boolean; modelId: string }
 	| { kind: "phase"; phase: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
 
@@ -190,16 +180,15 @@ export function buildContextCompact(ctx: CompactionContext, percent: number, pct
 	}
 }
 
-/** Compact form for multi-model: replaces "multi-model:" with "m-m:". */
-export function buildMultiModelAbbrev(ctx: CompactionContext, enabled: boolean): Segment {
-	const label = enabled ? ctx.accent("on") : ctx.dim("off")
-	const shortcut = MULTI_MODEL_SHORTCUT
-	const text = `${ctx.dim("m-m:")} ${label} ${ctx.dim(`→ ${shortcut}`)}`
+/** Compact form for model: abbreviates "multi-model (kimi-k2.6)" to "m-m (kimi-k2.6)". */
+export function buildModelAbbrev(ctx: CompactionContext, multiModel: boolean, modelId: string): Segment {
+	const label = multiModel ? `m-m (${modelId})` : modelId
+	const text = `${ctx.accent(label)} ${ctx.dim("→ ctrl+p")}`
 	return {
-		id: "multi-model",
+		id: "model",
 		text,
 		width: visibleWidth(text),
-		raw: { kind: "multi-model", enabled },
+		raw: { kind: "model", multiModel, modelId },
 	}
 }
 
@@ -285,13 +274,13 @@ const STEPS: CompactionStep[] = [
 			recompactSegment(segs, "context", "context", (raw) => buildContextCompact(ctx, raw.percent, raw.pctColor)),
 	},
 	{
-		name: "abbrev-multi-model-label",
+		name: "abbrev-model-label",
 		apply: (segs, ctx) =>
-			recompactSegment(segs, "multi-model", "multi-model", (raw) => buildMultiModelAbbrev(ctx, raw.enabled)),
+			recompactSegment(segs, "model", "model", (raw) => buildModelAbbrev(ctx, raw.multiModel, raw.modelId)),
 	},
 	{
 		name: "drop-shortcut-hints",
-		apply: (segs) => stripShortcutHintsAcross(segs, ["permissions", "multi-model", "ferment"]),
+		apply: (segs) => stripShortcutHintsAcross(segs, ["permissions", "model", "ferment"]),
 	},
 	{
 		name: "drop-phase-prefix",
@@ -375,11 +364,12 @@ export class StatsFooter implements Component {
 		return `${ansi}${s}${RST_FG}`
 	}
 
-	private modelSegment(): Segment | null {
-		if (getMultiModelEnabled()) return null
-		const modelId = this.ctx.model?.id ?? "n/a"
-		const text = this.accent(modelId)
-		return { id: "model", text, width: visibleWidth(text) }
+	private modelSegment(): Segment {
+		const multiModel = getMultiModelEnabled()
+		const rawModelId = this.ctx.model?.id ?? "n/a"
+		const label = multiModel ? `multi-model (${rawModelId})` : rawModelId
+		const text = `${this.accent(label)} ${this.dim("→ ctrl+p")}`
+		return { id: "model", text, width: visibleWidth(text), raw: { kind: "model", multiModel, modelId: rawModelId } }
 	}
 
 	private usageSegment(): Segment | null {
@@ -443,14 +433,6 @@ export class StatsFooter implements Component {
 		return { id: "permissions", text: mode, width: visibleWidth(mode) }
 	}
 
-	private multiModelSegment(): Segment {
-		const enabled = getMultiModelEnabled()
-		const label = enabled ? this.accent("on") : this.dim("off")
-		const shortcut = MULTI_MODEL_SHORTCUT
-		const text = `${this.dim("multi-model:")} ${label} ${this.dim(`→ ${shortcut}`)}`
-		return { id: "multi-model", text, width: visibleWidth(text), raw: { kind: "multi-model", enabled } }
-	}
-
 	private subagentSegment(): Segment | null {
 		const count = getActiveAgentCount()
 		if (count === 0) return null
@@ -497,7 +479,6 @@ export class StatsFooter implements Component {
 		const segments: Segment[] = [
 			this.fermentSegment(),
 			this.permissionsSegment(),
-			this.multiModelSegment(),
 			this.modelSegment(),
 			this.subagentSegment(),
 			this.contextSegment(),

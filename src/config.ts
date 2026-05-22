@@ -86,6 +86,7 @@ export interface KimchiConfig {
 	skillPaths?: string[]
 	migrationState?: MigrationState
 	onboarding: OnboardingConfig
+	deviceId: string
 }
 
 /**
@@ -117,6 +118,7 @@ function readConfigExtras(configPath: string): {
 	skillPaths?: string[]
 	migrationState?: MigrationState
 	onboarding?: OnboardingConfig
+	deviceId?: string
 } {
 	try {
 		const raw = readFileSync(configPath, "utf-8")
@@ -175,6 +177,12 @@ function readConfigExtras(configPath: string): {
 		const llmEndpoint =
 			typeof parsed.llmEndpoint === "string" && parsed.llmEndpoint.length > 0 ? parsed.llmEndpoint : undefined
 
+		// Read deviceId (camelCase, then snake_case for backwards compat)
+		const deviceId =
+			(typeof parsed.deviceId === "string" && parsed.deviceId.length > 0 && parsed.deviceId) ||
+			(typeof parsed.device_id === "string" && parsed.device_id.length > 0 && parsed.device_id) ||
+			undefined
+
 		return {
 			apiKey,
 			llmEndpoint,
@@ -184,6 +192,7 @@ function readConfigExtras(configPath: string): {
 			skillPaths,
 			migrationState,
 			onboarding,
+			deviceId,
 		}
 	} catch {
 		return {}
@@ -314,6 +323,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		skillPaths: projectExtras.skillPaths ?? globalExtras.skillPaths,
 		migrationState: projectExtras.migrationState ?? globalExtras.migrationState,
 		onboarding: globalExtras.onboarding,
+		deviceId: projectExtras.deviceId ?? globalExtras.deviceId,
 	}
 
 	return {
@@ -326,6 +336,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		skillPaths: extras.skillPaths,
 		migrationState: extras.migrationState,
 		onboarding: extras.onboarding ?? {},
+		deviceId: extras.deviceId ?? "",
 	}
 }
 
@@ -406,6 +417,16 @@ export function writeApiKey(key: string, configPath?: string): void {
 		// Clear legacy snake_case key so we don't keep stale data
 		// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
 		delete raw.api_key
+	})
+}
+
+export function writeDeviceId(id: string, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateConfigFile(path, (raw) => {
+		raw.deviceId = id
+		// Clear legacy snake_case key so we don't keep stale data
+		// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
+		delete raw.device_id
 	})
 }
 

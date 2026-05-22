@@ -49,7 +49,11 @@ function createHarness(options: {
 	const unsubscribe = vi.fn()
 	const ui = {
 		setWidget: vi.fn((_: string, content: unknown) => {
-			if (typeof content === "function") content(tui, theme())
+			if (typeof content === "function") {
+				activeComponent = content(tui, theme()) as CustomComponent
+			} else {
+				activeComponent = undefined
+			}
 		}),
 		onTerminalInput: vi.fn((handler: TerminalInputHandler) => {
 			inputHandler = handler
@@ -135,9 +139,8 @@ describe("session mode startup integration", () => {
 
 		await harness.start()
 
-		expect(harness.ui.custom).toHaveBeenCalled()
-		expect(harness.ui.setWidget).not.toHaveBeenCalled()
-		expect(harness.ui.onTerminalInput).not.toHaveBeenCalled()
+		expect(harness.ui.setWidget).toHaveBeenCalled()
+		expect(harness.ui.onTerminalInput).toHaveBeenCalled()
 	})
 
 	it("shows returning launches with existing onboarding state", async () => {
@@ -146,9 +149,8 @@ describe("session mode startup integration", () => {
 
 		await harness.start()
 
-		expect(harness.ui.custom).toHaveBeenCalled()
-		expect(harness.ui.setWidget).not.toHaveBeenCalled()
-		expect(harness.ui.onTerminalInput).not.toHaveBeenCalled()
+		expect(harness.ui.setWidget).toHaveBeenCalled()
+		expect(harness.ui.onTerminalInput).toHaveBeenCalled()
 	})
 
 	it("skips launches when the session mode dialog has been hidden", async () => {
@@ -206,13 +208,13 @@ describe("session mode startup integration", () => {
 		expect(harness.activeComponent()).toBeUndefined()
 	})
 
-	it("choosing Hide this dialog persists the hidden user config without starting Ferment", async () => {
+	it("choosing Coding session with hide persists the hidden user config without starting Ferment", async () => {
 		writeSessionModeWizardSeenAt("2026-05-19T08:00:00.000Z", configPath)
 		const startFerment = vi.fn()
 		const harness = createHarness({ configPath, now, startFerment })
 		await harness.start()
 
-		harness.input(" ")
+		harness.input("\x1b[B")
 		harness.input("\x1b[B")
 		harness.input("\r")
 		await harness.settle()

@@ -3,7 +3,7 @@ import { pickFromModelListByTier, recommendModel } from "./recommend.js"
 
 describe("recommendModel", () => {
 	it("returns a result for a single strength with exact tier match", () => {
-		// build strength has only standard (minimax-m2.7)
+		// build strength has standard (minimax-m2.7) and light (nemotron-3-super-fp4)
 		const result = recommendModel({ strengths: ["build"], preferTier: "standard" })
 		expect(result).toBeDefined()
 		expect(result?.provider).toBe("kimchi-dev")
@@ -20,13 +20,13 @@ describe("recommendModel", () => {
 	})
 
 	it("returns undefined when no model matches the strengths", () => {
-		// No model has both "review" and "plan" as strengths simultaneously
-		const result = recommendModel({ strengths: ["review", "plan"] })
+		// No model has both "build" and "research" as strengths simultaneously
+		const result = recommendModel({ strengths: ["build", "research"] })
 		expect(result).toBeUndefined()
 	})
 
 	it("respects vision filter — excludes non-vision models", () => {
-		// research + vision: kimi-k2.6, kimi-k2.5, claude-opus-4-7 have research with vision
+		// research + vision: kimi-k2.6 has research with vision
 		const result = recommendModel({ strengths: ["research"], needsVision: true })
 		expect(result).toBeDefined()
 		expect(result?.capabilities.vision).toBe(true)
@@ -62,8 +62,7 @@ describe("recommendModel", () => {
 	})
 
 	it("returns first by registry insertion order when multiple match same tier", () => {
-		// plan + heavy: kimi-k2.6 and kimi-k2.5 and claude-opus-4-7 have plan at heavy tier.
-		// First by registry insertion order is kimi-k2.6.
+		// plan + heavy: kimi-k2.6 has plan at heavy tier.
 		const result = recommendModel({ strengths: ["plan"], preferTier: "heavy" })
 		expect(result).toBeDefined()
 		expect(result?.modelId).toBe("kimi-k2.6")

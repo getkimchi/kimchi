@@ -7,7 +7,7 @@ skills:
   - web-research-discipline
   - citation-format
 models:
-  - kimchi-dev/claude-opus-4-7
+  - kimchi-dev/claude-opus-4-6
   - kimchi-dev/kimi-k2.6
 strengths:
   - research

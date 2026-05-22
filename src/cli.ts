@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { AgentSession } from "@earendil-works/pi-coding-agent"
 import { getCliModeArg, isHelpOrVersionArgs } from "./cli-args.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import {
@@ -16,15 +17,14 @@ import {
 	writeSkillPaths,
 } from "./config.js"
 import { isBunBinary } from "./env.js"
+import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
-import curatorExtension from "./extensions/curator/index.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
-import improveExtension from "./extensions/improve/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import loginExtension from "./extensions/login/index.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
@@ -50,10 +50,14 @@ import { emitTerminalCompatWarning } from "./extensions/terminal-compat/startup-
 import thinkingStepsExtension from "./extensions/thinking-steps/index.js"
 import tipsExtension from "./extensions/tips/index.js"
 import toolRenderingExtension from "./extensions/tool-rendering.js"
+import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { updateModelsConfig } from "./models.js"
+import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./modes/teleport/sync/session-export.js"
+import { ensureDeviceId } from "./posthog-device.js"
+import { capturePostHogEvent } from "./posthog.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
@@ -62,7 +66,27 @@ import { getVersion } from "./utils.js"
 
 installCloudflare524RetryPatch()
 
+// --- PostHog device ID & analytics ---
+// Read or generate device ID (persisted; reused across invocations for
+// consistent unique-user counts in PostHog). Reads both camelCase and
+// snake_case (device_id) from config.json for backwards compatibility.
 const telemetryConfig = readTelemetryConfig()
+const deviceId = ensureDeviceId()
+
+// Fire-and-forget app_started on every invocation (respects telemetry opt-out).
+// Stash the promise so we can await it on shutdown to reduce truncated sends.
+// app_started has no per-event properties — default properties (cli_version,
+// os, arch) are attached automatically by capturePostHogEvent, matching the
+// DefaultEventProperties behaviour.
+const phPending: Promise<void>[] = []
+if (telemetryConfig.enabled) {
+	phPending.push(
+		capturePostHogEvent({
+			event: "app_started",
+			distinctId: deviceId,
+		}),
+	)
+}
 
 let sessionId: string | undefined
 let sessionFile: string | undefined
@@ -74,6 +98,94 @@ let sessionStarted = false
 const cliMode = getCliModeArg(process.argv.slice(2))
 const acpMode = cliMode === "acp"
 const teleportMode = isTeleportFlag(process.argv.slice(2))
+
+// Monkey-patch AgentSession.prototype.exportToJsonl so ALL JSONL exports
+// (interactive, ACP, and teleport mode) get trace IDs injected inline.
+// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
+const _origExportToJsonl = (AgentSession as any).prototype.exportToJsonl
+// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
+;(AgentSession as any).prototype.exportToJsonl = function (outputPath?: string) {
+	const filePath = _origExportToJsonl.call(this, outputPath)
+	try {
+		const raw = readFileSync(filePath, "utf-8")
+		const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0)
+		const processed = injectTraceIdsIntoExport(lines)
+		writeFileSync(filePath, `${processed.join("\n")}\n`, "utf-8")
+	} catch (err) {
+		console.warn("[trace-id] Failed to inject trace IDs into JSONL export:", err)
+	}
+	return filePath
+}
+
+// Monkey-patch AgentSession.prototype.exportToHtml so HTML exports get
+// trace IDs injected into assistant message entries the same way JSONL does.
+// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
+const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
+// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
+;(AgentSession as any).prototype.exportToHtml = async function (outputPath?: string) {
+	const filePath = await _origExportToHtml.call(this, outputPath)
+	try {
+		let html = readFileSync(filePath, "utf-8")
+		const match = html.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
+		if (match) {
+			const base64 = match[1]
+			const json = Buffer.from(base64, "base64").toString("utf-8")
+			const data = JSON.parse(json) as Record<string, unknown>
+			if (Array.isArray(data.entries)) {
+				injectTraceIdsIntoEntries(data.entries as import("./modes/teleport/sync/session-export.js").ExportEntry[])
+				const modified = JSON.stringify(data)
+				const modifiedBase64 = Buffer.from(modified).toString("base64")
+				html = html.replace(
+					/<script id="session-data" type="application\/json">[\s\S]*?<\/script>/,
+					`<script id="session-data" type="application/json">${modifiedBase64}</script>`,
+				)
+			}
+		}
+
+		// Inject the trace ID renderer script before </body> (idempotent).
+		if (!html.includes('id="trace-id-renderer"')) {
+			const traceIdScript = `<script id="trace-id-renderer">
+(function() {
+    var el = document.getElementById('session-data');
+    if (!el) return;
+    var base64 = el.textContent;
+    var binary = atob(base64);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    var data = JSON.parse(new TextDecoder('utf-8').decode(bytes));
+    var entriesWithTraceIds = [];
+    for (var i = 0; i < data.entries.length; i++) {
+        var e = data.entries[i];
+        if (e.traceIds && e.traceIds.length > 0) entriesWithTraceIds.push(e);
+    }
+    if (entriesWithTraceIds.length === 0) return;
+    function inject() {
+        for (var i = 0; i < entriesWithTraceIds.length; i++) {
+            var entry = entriesWithTraceIds[i];
+            var el = document.getElementById('entry-' + entry.id);
+            if (!el) continue;
+            if (el.querySelector('.trace-ids')) continue;
+            var d = document.createElement('div');
+            d.className = 'trace-ids';
+            d.textContent = 'Trace IDs: ' + entry.traceIds.join(', ');
+            d.style.cssText = 'font-size:0.75rem;color:#666;margin-top:0.25rem;font-family:monospace';
+            el.appendChild(d);
+        }
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', inject);
+    } else { inject(); }
+})();
+</script>`
+			html = html.replace("</body>", `${traceIdScript}\n</body>`)
+		}
+
+		writeFileSync(filePath, html, "utf-8")
+	} catch (err) {
+		console.warn("[trace-id] Failed to inject trace IDs into HTML export:", err)
+	}
+	return filePath
+}
 const helpOrVersion = isHelpOrVersionArgs(process.argv.slice(2))
 
 // Internal control signal: setup cancellation must skip harness/extensions
@@ -123,6 +235,7 @@ try {
 	// the version using piConfig.name = "kimchi".
 	const dispatch = await dispatchSubcommand(process.argv.slice(2))
 	if (dispatch.kind === "handled") {
+		await Promise.allSettled(phPending)
 		process.exit(dispatch.exitCode)
 	}
 
@@ -135,6 +248,18 @@ try {
 		// hook keys off this flag instead of just running unconditionally on a
 		// 0-status exit.
 		sessionStarted = true
+
+		// Fire harness_launched (one shot per harness session; respects telemetry opt-out)
+		if (telemetryConfig.enabled) {
+			phPending.push(
+				capturePostHogEvent({
+					event: "harness_launched",
+					distinctId: deviceId,
+					properties: { version: getVersion() },
+				}),
+			)
+		}
+
 		let config = loadConfig()
 
 		const envKey = process.env.KIMCHI_API_KEY || undefined
@@ -335,11 +460,11 @@ try {
 			webFetchExtension,
 			webSearchExtension,
 			loginExtension,
-			improveExtension,
-			curatorExtension,
 			modelSwitchExtension,
 			modelGuardExtension,
 			stripImagesExtension,
+			traceIdExtension,
+			activityExtension,
 		]
 
 		if (acpMode) {
@@ -348,6 +473,7 @@ try {
 		} else if (teleportMode) {
 			if (!apiKey) {
 				console.error("Error: --teleport requires an API key — run 'kimchi setup' first.")
+				await Promise.allSettled(phPending)
 				process.exit(1)
 			}
 
@@ -364,11 +490,15 @@ try {
 			await main(rawArgs, { extensionFactories })
 		}
 	}
+	// Await pending PostHog sends before exiting to reduce truncated requests.
+	await Promise.allSettled(phPending)
 } catch (err) {
+	await Promise.allSettled(phPending)
 	if (err instanceof SetupCancelled) {
 		process.exitCode = 130
 	} else {
 		console.error(err instanceof Error ? err.message : String(err))
+		await Promise.allSettled(phPending)
 		process.exit(1)
 	}
 }

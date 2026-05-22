@@ -26,7 +26,7 @@ exports[`default agents — resolved invocation config snapshot > General-Purpos
 {
   "builtinToolNames": undefined,
   "maxTurns": undefined,
-  "modelId": "kimchi-dev/kimi-k2.6",
+  "modelId": "kimchi-dev/claude-sonnet-4-6",
   "modelLocked": undefined,
   "name": "General-Purpose",
   "preferTier": undefined,
@@ -48,7 +48,7 @@ exports[`default agents — resolved invocation config snapshot > Plan 1`] = `
     "edit",
   ],
   "maxTurns": undefined,
-  "modelId": "kimchi-dev/kimi-k2.6",
+  "modelId": "kimchi-dev/claude-opus-4-6",
   "modelLocked": undefined,
   "name": "Plan",
   "preferTier": "heavy",
