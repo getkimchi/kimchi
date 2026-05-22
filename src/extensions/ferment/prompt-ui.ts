@@ -25,6 +25,11 @@ export type PromptUi = {
 	setWorkingVisible?: (visible: boolean) => void
 }
 
+export interface PromptEditorOptions {
+	placeholder?: string
+	prefill?: string
+}
+
 export interface PromptChoiceOption {
 	label: string
 	description?: string
@@ -94,27 +99,22 @@ export function promptInput(ctx: unknown, title: string, placeholder?: string): 
 	return withWorkingHidden(ui, () => ui.input?.(title, placeholder) ?? Promise.resolve(undefined))
 }
 
-export function promptEditor(ctx: unknown, title: string, placeholder?: string): Promise<string | undefined> {
+export function promptEditor(
+	ctx: unknown,
+	title: string,
+	options: PromptEditorOptions = {},
+): Promise<string | undefined> {
 	const ui = getPromptUi(ctx)
 	if (!ui) return Promise.resolve(undefined)
 	if (ui.editor) {
-		const editorTitle = placeholder ? `${title}\n${placeholder}` : title
-		return withWorkingHidden(ui, () => ui.editor?.(editorTitle, "") ?? Promise.resolve(undefined))
+		const editorTitle = options.placeholder ? `${title}\n${options.placeholder}` : title
+		return withWorkingHidden(ui, () => ui.editor?.(editorTitle, options.prefill ?? "") ?? Promise.resolve(undefined))
 	}
 	if (ui.input) {
-		return withWorkingHidden(ui, () => ui.input?.(title, placeholder) ?? Promise.resolve(undefined))
-	}
-	return Promise.resolve(undefined)
-}
-
-export function promptEditorPrefill(ctx: unknown, title: string, prefill?: string): Promise<string | undefined> {
-	const ui = getPromptUi(ctx)
-	if (!ui) return Promise.resolve(undefined)
-	if (ui.editor) {
-		return withWorkingHidden(ui, () => ui.editor?.(title, prefill ?? "") ?? Promise.resolve(undefined))
-	}
-	if (ui.input) {
-		return withWorkingHidden(ui, () => ui.input?.(title, prefill) ?? Promise.resolve(undefined))
+		return withWorkingHidden(
+			ui,
+			() => ui.input?.(title, options.prefill ?? options.placeholder) ?? Promise.resolve(undefined),
+		)
 	}
 	return Promise.resolve(undefined)
 }

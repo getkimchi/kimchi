@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { createPromptFormComponent, promptEditor, promptEditorPrefill, promptInput, promptSelect } from "./prompt-ui.js"
+import { createPromptFormComponent, promptEditor, promptInput, promptSelect } from "./prompt-ui.js"
 
 const tipWidgetLocationMock = vi.hoisted(() => ({
 	restore: vi.fn(),
@@ -51,7 +51,7 @@ describe("ferment prompt UI", () => {
 			setWorkingVisible: vi.fn(),
 		}
 
-		await expect(promptEditor({ ui }, "What would you like to ferment?", "Describe it")).resolves.toBe(
+		await expect(promptEditor({ ui }, "What would you like to ferment?", { placeholder: "Describe it" })).resolves.toBe(
 			"line one\nline two",
 		)
 
@@ -70,7 +70,7 @@ describe("ferment prompt UI", () => {
 			setWorkingVisible: vi.fn(),
 		}
 
-		await expect(promptEditorPrefill({ ui }, "Revise goal:", "old\ncontent")).resolves.toBe("updated\ncontent")
+		await expect(promptEditor({ ui }, "Revise goal:", { prefill: "old\ncontent" })).resolves.toBe("updated\ncontent")
 
 		expect(ui.editor).toHaveBeenCalledWith("Revise goal:", "old\ncontent")
 		expect(ui.input).not.toHaveBeenCalled()

@@ -16,7 +16,7 @@ import { validateGatesOrErr } from "../gate-validation.js"
 import { type JudgeVerdict, judgeStepVerification } from "../judge.js"
 import { onStepCompleted } from "../nudge.js"
 import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
-import { promptEditorPrefill } from "../prompt-ui.js"
+import { promptEditor } from "../prompt-ui.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import {
 	createApplyAndPersist,
@@ -424,7 +424,7 @@ export async function completeStep(
 		}
 
 		if (choice === editLabel && (ctx.ui.editor || ctx.ui.input)) {
-			const newPrompt = await promptEditorPrefill(ctx, "Revised step description:", step.description)
+			const newPrompt = await promptEditor(ctx, "Revised step description:", { prefill: step.description })
 			runtime.markHumanInput()
 			if (newPrompt?.trim()) {
 				const editOut = applyAndPersist(params.ferment_id, {

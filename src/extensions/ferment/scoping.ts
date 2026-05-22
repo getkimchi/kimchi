@@ -150,7 +150,9 @@ export async function runScopingFlow(
 
 	let intent: string | undefined = preIntent
 	if (!intent) {
-		intent = await promptEditor(ctx, "What do you want to do?", "Describe what you want to accomplish…")
+		intent = await promptEditor(ctx, "What do you want to do?", {
+			placeholder: "Describe what you want to accomplish…",
+		})
 	}
 	if (intent === undefined || intent === "") return
 

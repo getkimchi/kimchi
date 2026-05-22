@@ -21,7 +21,7 @@ import {
 	handlePhaseAction,
 	handleStepAction,
 } from "./progress-overlay.js"
-import { promptEditor, promptEditorPrefill } from "./prompt-ui.js"
+import { promptEditor } from "./prompt-ui.js"
 import { resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
@@ -179,11 +179,9 @@ export async function startInteractiveFerment({
 		return
 	}
 
-	const rawIntent = await promptEditor(
-		ctx,
-		"🍺  What would you like to ferment?",
-		"e.g. 'Rewrite login flow' or 'Add OAuth support'",
-	)
+	const rawIntent = await promptEditor(ctx, "🍺  What would you like to ferment?", {
+		placeholder: "e.g. 'Rewrite login flow' or 'Add OAuth support'",
+	})
 	if (!rawIntent) return
 
 	const storage = runtime.getStorage()
@@ -666,7 +664,7 @@ export class FermentCommandController {
 					ctx.ui.notify("No UI available for interactive revision. Ask the agent to update the goal.")
 					return { handled: true }
 				}
-				const newGoal = await promptEditorPrefill(ctx, "Revise goal:", active.goal ?? "")
+				const newGoal = await promptEditor(ctx, "Revise goal:", { prefill: active.goal ?? "" })
 				if (newGoal) {
 					const out = applyAndPersist(active.id, { type: "update_scope_field", field: "goal", value: newGoal })
 					if (out.ok) {
@@ -684,7 +682,9 @@ export class FermentCommandController {
 					ctx.ui.notify("No UI available for interactive revision.")
 					return { handled: true }
 				}
-				const newCriteria = await promptEditorPrefill(ctx, "Revise success criteria:", active.successCriteria ?? "")
+				const newCriteria = await promptEditor(ctx, "Revise success criteria:", {
+					prefill: active.successCriteria ?? "",
+				})
 				if (newCriteria) {
 					const out = applyAndPersist(active.id, {
 						type: "update_scope_field",
@@ -765,7 +765,9 @@ export class FermentCommandController {
 					ctx.ui.notify('Usage: /ferment one-shot "description of what to build"')
 					return { handled: true }
 				}
-				const typed = await promptEditor(ctx, "🍺  One-shot: what should be done?", "Describe the full task…")
+				const typed = await promptEditor(ctx, "🍺  One-shot: what should be done?", {
+					placeholder: "Describe the full task…",
+				})
 				if (!typed) return { handled: true }
 				resolvedIntent = typed
 			}
@@ -826,11 +828,9 @@ export class FermentCommandController {
 				ctx.ui.notify('Usage: /ferment new "Name"')
 				return { handled: true }
 			}
-			const typed = await promptEditor(
-				ctx,
-				"🍺  What would you like to ferment?",
-				"e.g. 'Rewrite login flow' or 'Add OAuth support'",
-			)
+			const typed = await promptEditor(ctx, "🍺  What would you like to ferment?", {
+				placeholder: "e.g. 'Rewrite login flow' or 'Add OAuth support'",
+			})
 			if (!typed) return { handled: true }
 			rawName = typed
 			scopingIntent = typed
