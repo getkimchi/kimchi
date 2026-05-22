@@ -222,4 +222,10 @@ describe("findToolGroup", () => {
 		const children = [a, b]
 		expect(findToolGroup(other, children)).toEqual([other])
 	})
+
+	it("returns [] when self is a failed tool not present in children", () => {
+		const failed = mockTool("z", { isError: true })
+		const children: object[] = []
+		expect(findToolGroup(failed, children)).toEqual([])
+	})
 })
