@@ -87,7 +87,18 @@ vi.mock("../../prompt-construction/context-files.js", () => ({
 	loadProjectContextFiles: vi.fn().mockReturnValue([]),
 }))
 
-import { createAgentSession } from "@earendil-works/pi-coding-agent"
+vi.mock("../../../config.js", () => ({
+	readTelemetryConfig: vi.fn().mockReturnValue({
+		enabled: true,
+		endpoint: "https://test/logs",
+		metricsEndpoint: "https://test/metrics",
+		headers: { Authorization: "Bearer test" },
+	}),
+}))
+
+import { DefaultResourceLoader, createAgentSession } from "@earendil-works/pi-coding-agent"
+import { readTelemetryConfig } from "../../../config.js"
+import telemetryExtension from "../../telemetry.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"

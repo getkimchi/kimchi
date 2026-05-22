@@ -18,6 +18,7 @@ import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
+import telemetryExtension from "../../telemetry.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
 import {
