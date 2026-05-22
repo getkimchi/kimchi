@@ -69,6 +69,7 @@ const CONTINUOUS: Record<Category, (n: number) => string> = {
 export function formatSummary(counts: Map<Category, number>, isInProgress: boolean): string {
 	const table = isInProgress ? CONTINUOUS : PAST
 	return Array.from(counts.entries())
+		.filter(([, n]) => n > 0)
 		.map(([cat, n]) => table[cat](n))
 		.join(", ")
 }
