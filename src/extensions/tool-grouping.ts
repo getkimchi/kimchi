@@ -195,3 +195,63 @@ export function buildCurrentToolLine(tool: object): string {
 			return `${toolName} …`
 	}
 }
+
+// ---------------------------------------------------------------------------
+// buildGroupView
+// ---------------------------------------------------------------------------
+
+const GROUP_RENDER_PATCH_FLAG = Symbol.for("pi-tool-grouping:patched-render")
+
+function buildGroupView(run: object[], theme: any): ToolBlockView {
+	const view = new ToolBlockView()
+	const last = run[run.length - 1] as any
+	const isInProgress = last?.isPartial === true
+	const summaryText = buildGroupSummaryText(run, isInProgress)
+
+	if (isInProgress) {
+		const icon = theme?.fg?.("accent", "⟳") ?? "⟳"
+		view.setHeader(`${icon} ${summaryText}…`, theme?.fg?.("dim", "(ctrl+o to expand)") ?? "(ctrl+o)")
+		view.setBranchMode((s: string) => theme?.fg?.("borderMuted", s) ?? s)
+		view.setExtra([theme?.fg?.("dim", buildCurrentToolLine(last)) ?? buildCurrentToolLine(last)])
+	} else {
+		const icon = theme?.fg?.("success", "✓") ?? "✓"
+		view.setHeader(
+			`${icon} ${summaryText}`,
+			theme?.fg?.("dim", "ctrl+o") ?? "ctrl+o",
+		)
+		view.hideDivider()
+		view.setFooter("", "")
+		view.setExtra([])
+	}
+
+	return view
+}
+
+// ---------------------------------------------------------------------------
+// patchToolGroupRendering
+// ---------------------------------------------------------------------------
+
+export function patchToolGroupRendering(): void {
+	const proto = ToolExecutionComponent.prototype as any
+	if (proto[GROUP_RENDER_PATCH_FLAG]) return
+
+	const originalRender = proto.render
+
+	proto.render = function patchedGroupRender(width: number): string[] {
+		const parent = getParent(this)
+		if (!parent) return originalRender.call(this, width)
+
+		const run = findToolGroup(this, parent.children)
+		if (run.length < 2) return originalRender.call(this, width)
+
+		const groupKey = (run[run.length - 1] as any).toolCallId
+		if (isToolExpanded(groupKey)) return originalRender.call(this, width)
+
+		if (run[run.length - 1] !== this) return []
+
+		const theme = (this as any).ui?.theme
+		return buildGroupView(run, theme).render(width)
+	}
+
+	proto[GROUP_RENDER_PATCH_FLAG] = true
+}
