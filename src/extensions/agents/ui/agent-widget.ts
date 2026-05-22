@@ -158,6 +158,8 @@ export class AgentWidget {
 	private widgetRegistered = false
 	private tui: unknown = undefined
 	private lastStatusText: string | undefined
+	private footerVisible = false
+	public onFooterVisibilityChange?: (visible: boolean) => void
 
 	constructor(
 		private manager: AgentManager,
@@ -171,6 +173,10 @@ export class AgentWidget {
 			this.tui = undefined
 			this.lastStatusText = undefined
 		}
+	}
+
+	isFooterVisible(): boolean {
+		return this.footerVisible
 	}
 
 	onTurnStart() {
@@ -396,6 +402,10 @@ export class AgentWidget {
 				this.widgetRegistered = false
 				this.tui = undefined
 			}
+			if (this.footerVisible) {
+				this.footerVisible = false
+				this.onFooterVisibilityChange?.(false)
+			}
 			if (this.lastStatusText !== undefined) {
 				this.uiCtx.setStatus("subagents", undefined)
 				this.lastStatusText = undefined
@@ -441,6 +451,10 @@ export class AgentWidget {
 				{ placement: "aboveEditor" },
 			)
 			this.widgetRegistered = true
+			if (!this.footerVisible) {
+				this.footerVisible = true
+				this.onFooterVisibilityChange?.(true)
+			}
 		} else {
 			;(this.tui as { requestRender?(): void } | undefined)?.requestRender?.()
 		}
