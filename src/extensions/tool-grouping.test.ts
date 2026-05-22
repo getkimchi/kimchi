@@ -62,6 +62,9 @@ describe("formatSummary", () => {
 	it("formats past tense plural files", () => {
 		expect(formatSummary(new Map([["file", 3]]), false)).toBe("read 3 files")
 	})
+	it("formats past tense pattern singular", () => {
+		expect(formatSummary(new Map([["pattern", 1]]), false)).toBe("searched for 1 pattern")
+	})
 	it("formats past tense pattern", () => {
 		expect(formatSummary(new Map([["pattern", 2]]), false)).toBe("searched for 2 patterns")
 	})
@@ -94,6 +97,9 @@ describe("formatSummary", () => {
 	})
 	it("formats continuous tense edit", () => {
 		expect(formatSummary(new Map([["edit", 1]]), true)).toBe("editing 1 file")
+	})
+	it("formats continuous tense operation", () => {
+		expect(formatSummary(new Map([["operation", 2]]), true)).toBe("2 operations")
 	})
 	it("joins multiple categories with comma", () => {
 		expect(
