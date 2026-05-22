@@ -17,7 +17,7 @@
 		],
 		"api": "anthropic-messages",
 		"provider": "anthropic",
-		"model": "claude-opus-4-7",
+		"model": "claude-opus-4-6",
 		"usage": {
 			"input": 1200,
 			"output": 80,
@@ -42,7 +42,7 @@
 		"content": [{ "type": "text", "text": "It has loopback entries for localhost over IPv4 and IPv6." }],
 		"api": "anthropic-messages",
 		"provider": "anthropic",
-		"model": "claude-opus-4-7",
+		"model": "claude-opus-4-6",
 		"usage": {
 			"input": 1300,
 			"output": 30,

@@ -1,7 +1,4 @@
 {
-  "binary": "~/.local/bin/kimchi",
-  "models": [
-    "kimi-k2.6",
-    "minimax-m2.7"
-  ]
+	"binary": "~/.local/bin/kimchi",
+	"models": ["kimi-k2.6", "minimax-m2.7"]
 }

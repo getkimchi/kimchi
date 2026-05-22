@@ -2,8 +2,6 @@ import type { Theme } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import {
 	SESSION_MODE_PICKER_HEADING,
-	SESSION_MODE_PICKER_HIDE_HINT,
-	SESSION_MODE_PICKER_HIDE_LABEL,
 	SESSION_MODE_PICKER_HINT,
 	SessionModePickerComponent,
 	initialSessionModePickerState,
@@ -29,7 +27,7 @@ function theme(): Theme {
 
 describe("session mode picker reducer", () => {
 	it("starts on Ferment", () => {
-		expect(initialSessionModePickerState()).toEqual({ selectedIndex: 0, hideDialog: false })
+		expect(initialSessionModePickerState()).toEqual({ selectedIndex: 0 })
 	})
 
 	it("moves selection down and up", () => {
@@ -46,22 +44,8 @@ describe("session mode picker reducer", () => {
 		expect(state.selectedIndex).toBe(0)
 		state = reduceSessionModePicker(state, "down").state
 		state = reduceSessionModePicker(state, "down").state
-		expect(state.selectedIndex).toBe(1)
-	})
-
-	it("supports the returning-launch hide checkbox", () => {
-		let state = initialSessionModePickerState()
-
-		state = reduceSessionModePicker(state, "down", { showHideCheckbox: true }).state
-		state = reduceSessionModePicker(state, "down", { showHideCheckbox: true }).state
-		expect(state.selectedIndex).toBe(1)
-
-		state = reduceSessionModePicker(state, "toggle-hide", { showHideCheckbox: true }).state
-		expect(state.hideDialog).toBe(true)
-		expect(reduceSessionModePicker(state, "select", { showHideCheckbox: true }).result).toEqual({
-			choice: "default",
-			hideDialog: true,
-		})
+		state = reduceSessionModePicker(state, "down").state
+		expect(state.selectedIndex).toBe(2)
 	})
 
 	it("returns the selected option on select", () => {
@@ -70,6 +54,9 @@ describe("session mode picker reducer", () => {
 
 		state = reduceSessionModePicker(state, "down").state
 		expect(reduceSessionModePicker(state, "select").result).toEqual({ choice: "default", hideDialog: false })
+
+		state = reduceSessionModePicker(state, "down").state
+		expect(reduceSessionModePicker(state, "select").result).toEqual({ choice: "default", hideDialog: true })
 	})
 
 	it("returns cancellation on cancel", () => {
@@ -82,7 +69,6 @@ describe("session mode picker key mapping", () => {
 		expect(keyToSessionModePickerEvent("\x1b[A")).toBe("up")
 		expect(keyToSessionModePickerEvent("\x1b[B")).toBe("down")
 		expect(keyToSessionModePickerEvent("\r")).toBe("select")
-		expect(keyToSessionModePickerEvent(" ")).toBe("toggle-hide")
 		expect(keyToSessionModePickerEvent("\x1b")).toBe("cancel")
 		expect(keyToSessionModePickerEvent("\x03")).toBe("cancel")
 	})
@@ -91,7 +77,8 @@ describe("session mode picker key mapping", () => {
 		expect(keyToSessionModePickerEvent("x")).toBeUndefined()
 	})
 
-	it("ignores space repeat and release events", () => {
+	it("ignores space input", () => {
+		expect(keyToSessionModePickerEvent(" ")).toBeUndefined()
 		expect(keyToSessionModePickerEvent("\x1b[32;1:2u")).toBeUndefined()
 		expect(keyToSessionModePickerEvent("\x1b[32;1:3u")).toBeUndefined()
 	})
@@ -112,6 +99,8 @@ describe("session mode picker rendering", () => {
 			"    Coding session",
 			"    Chat with the agent and steer it as it goes. Stay in the loop.",
 			"",
+			"    Coding session, don't show this dialog again",
+			"",
 			"  Tip: Use /ferment anytime to start a Ferment workflow.",
 			"",
 		])
@@ -122,28 +111,8 @@ describe("session mode picker rendering", () => {
 		)
 		expect(text).toContain("Coding session")
 		expect(text).toContain("Chat with the agent and steer it as it goes. Stay in the loop.")
+		expect(text).toContain("Coding session, don't show this dialog again")
 		expect(text).toContain(`Tip: ${SESSION_MODE_PICKER_HINT.replaceAll("`", "")}`)
-		expect(text).not.toContain("`")
-		expect(text).not.toContain(SESSION_MODE_PICKER_HIDE_LABEL)
-	})
-
-	it("renders the hide checkbox only when requested", () => {
-		const lines = renderSessionModePickerLines(initialSessionModePickerState(), theme(), 100, {
-			showHideCheckbox: true,
-		})
-		const text = lines.join("\n")
-
-		expect(text).toContain(`[ ] ${SESSION_MODE_PICKER_HIDE_LABEL}  ${SESSION_MODE_PICKER_HIDE_HINT}`)
-	})
-
-	it("renders the hide checkbox hint with the dim theme color", () => {
-		const t = theme()
-
-		renderSessionModePickerLines(initialSessionModePickerState(), t, 100, {
-			showHideCheckbox: true,
-		})
-
-		expect(t.fg).toHaveBeenCalledWith("dim", SESSION_MODE_PICKER_HIDE_HINT)
 	})
 
 	it("marks the selected option", () => {
@@ -154,6 +123,10 @@ describe("session mode picker rendering", () => {
 		const state = reduceSessionModePicker(initialSessionModePickerState(), "down").state
 		lines = renderSessionModePickerLines(state, theme(), 100)
 		expect(lines.some((line) => line.includes("> Coding session"))).toBe(true)
+
+		const hiddenState = reduceSessionModePicker(state, "down").state
+		lines = renderSessionModePickerLines(hiddenState, theme(), 100)
+		expect(lines.some((line) => line.includes("> Coding session, don't show this dialog again"))).toBe(true)
 	})
 })
 
@@ -171,12 +144,11 @@ describe("SessionModePickerComponent", () => {
 		expect(onDone).toHaveBeenCalledWith({ choice: "default", hideDialog: false })
 	})
 
-	it("handles the hide checkbox when enabled", () => {
+	it("handles the hide dialog option", () => {
 		const onDone = vi.fn()
-		const component = new SessionModePickerComponent(theme(), onDone, vi.fn(), { showHideCheckbox: true })
+		const component = new SessionModePickerComponent(theme(), onDone, vi.fn())
 
-		component.handleInput(" ")
-		component.handleInput("\x1b[32;1:3u")
+		component.handleInput("\x1b[B")
 		component.handleInput("\x1b[B")
 		component.handleInput("\r")
 

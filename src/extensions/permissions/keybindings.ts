@@ -52,24 +52,6 @@ function addNewlineFallback(current: Record<string, unknown>): boolean {
 	return false
 }
 
-// Unbind pi-mono's `app.thinking.cycle` so shift+tab is free for the
-// permissions extension to register. Also adds ctrl+j as a fallback for
-// newlines since many terminals (tmux, Terminal.app, VS Code terminal, etc.)
-// don't send modifier-aware Enter sequences. Must run before main() loads the
-// keybindings file. Idempotent.
-export function readMultiModelShortcutFromKeybindings(agentDir: string): string | undefined {
-	const keybindingsPath = resolve(agentDir, "keybindings.json")
-	try {
-		if (!existsSync(keybindingsPath)) return undefined
-		const parsed = JSON.parse(readFileSync(keybindingsPath, "utf-8"))
-		const val = parsed?.["app.multiModel.toggle"]
-		if (typeof val === "string" && val.length > 0) return val
-	} catch {
-		// missing or malformed
-	}
-	return undefined
-}
-
 export function writeKimchiKeybindingDefaults(agentDir: string): void {
 	const keybindingsPath = resolve(agentDir, "keybindings.json")
 	try {

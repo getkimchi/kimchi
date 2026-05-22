@@ -131,6 +131,8 @@ jobs:
 
       - name: Build binary
         run: pnpm run build:binary
+        env:
+          KIMCHI_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
 
       - name: Verify binary architecture
         run: |

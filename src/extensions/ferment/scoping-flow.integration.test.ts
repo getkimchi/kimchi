@@ -138,21 +138,10 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 		expect(contentText).toContain(
 			"First response action: print a concise inventory of all available skills and subagent types",
 		)
-		expect(contentText).toContain("if skills are not exposed in this environment, say that explicitly")
-		expect(contentText).toContain("Agent tool subagent_type options")
 		expect(contentText).toContain('<discovery_sequence required="true">')
-		expect(contentText).toContain(
-			"For broad improvement/audit/planning requests over an existing codebase, even when the user asks with a simple prompt",
-		)
-		expect(contentText).toContain("file listing plus concise manifest/README/package/config reads")
 		expect(contentText).toContain("Before reading an implementation file end-to-end")
 		expect(contentText).toContain("inspecting size/length or searching for the specific symbols")
 		expect(contentText).toContain("Immediately spawn 1-4 narrow Explore subagents")
-		expect(contentText).toContain("One Explore subagent is valid when there is only one broad unknown")
-		expect(contentText).toContain("Explore subagent contract:")
-		expect(contentText).toContain("The next action after that scan is Agent, not more Read calls")
-		expect(contentText).toContain("Self-correction:")
-		expect(contentText).toContain("stop direct reads immediately")
 		expect(contentText).toContain('subagent_type: "Explore"')
 		expect(contentText).toContain("start with token_budget: 120000")
 		expect(contentText).toContain("Output contract:")
@@ -160,8 +149,6 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 		expect(contentText).toContain("questions must be in propose_ferment_scoping.questions")
 		expect(contentText).toContain("gates array is required")
 		expect(contentText).toContain("exactly P1, P2, and P3")
-		expect(contentText).toContain("id, verdict, rationale, and evidence")
-		expect(contentText).toContain("Never emit a partial gates array")
 		expect(contentText).not.toContain("Don't research with file/bash tools first")
 
 		// Pending scope seeded

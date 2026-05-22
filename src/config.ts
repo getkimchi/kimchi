@@ -5,7 +5,8 @@ import { dirname, join, relative, resolve } from "node:path"
 const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
 const AGENT_CONFIG_DIR = resolve(homedir(), ".config", "kimchi", "harness")
 const CAST_AI_LLM_ENDPOINT = "https://llm.cast.ai/openai/v1"
-const DEFAULT_TELEMETRY_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
+const DEFAULT_TELEMETRY_LOGS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
+const DEFAULT_TELEMETRY_METRICS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest"
 
 export const ALWAYS_SHOWN_SKILL_PATHS = [join(".config", "kimchi", "harness", "skills")]
 
@@ -50,6 +51,7 @@ export function buildSkillPathOptions(discoveredDirs: string[]): string[] {
 export interface TelemetryConfig {
 	enabled: boolean
 	endpoint: string
+	metricsEndpoint: string
 	headers: Record<string, string>
 }
 
@@ -84,6 +86,7 @@ export interface KimchiConfig {
 	skillPaths?: string[]
 	migrationState?: MigrationState
 	onboarding: OnboardingConfig
+	deviceId: string
 }
 
 /**
@@ -115,6 +118,7 @@ function readConfigExtras(configPath: string): {
 	skillPaths?: string[]
 	migrationState?: MigrationState
 	onboarding?: OnboardingConfig
+	deviceId?: string
 } {
 	try {
 		const raw = readFileSync(configPath, "utf-8")
@@ -173,6 +177,12 @@ function readConfigExtras(configPath: string): {
 		const llmEndpoint =
 			typeof parsed.llmEndpoint === "string" && parsed.llmEndpoint.length > 0 ? parsed.llmEndpoint : undefined
 
+		// Read deviceId (camelCase, then snake_case for backwards compat)
+		const deviceId =
+			(typeof parsed.deviceId === "string" && parsed.deviceId.length > 0 && parsed.deviceId) ||
+			(typeof parsed.device_id === "string" && parsed.device_id.length > 0 && parsed.device_id) ||
+			undefined
+
 		return {
 			apiKey,
 			llmEndpoint,
@@ -182,6 +192,7 @@ function readConfigExtras(configPath: string): {
 			skillPaths,
 			migrationState,
 			onboarding,
+			deviceId,
 		}
 	} catch {
 		return {}
@@ -234,6 +245,7 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 	const envEnabled = process.env.KIMCHI_TELEMETRY_ENABLED
 	let fileEnabled: boolean | undefined
 	let fileEndpoint: string | undefined
+	let fileMetricsEndpoint: string | undefined
 	let fileHeaders: Record<string, string> | undefined
 
 	try {
@@ -243,6 +255,7 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 		if (t && typeof t === "object") {
 			if (typeof t.enabled === "boolean") fileEnabled = t.enabled
 			if (typeof t.endpoint === "string" && t.endpoint.length > 0) fileEndpoint = t.endpoint
+			if (typeof t.metricsEndpoint === "string" && t.metricsEndpoint.length > 0) fileMetricsEndpoint = t.metricsEndpoint
 			if (t.headers && typeof t.headers === "object" && !Array.isArray(t.headers)) {
 				fileHeaders = t.headers as Record<string, string>
 			}
@@ -271,7 +284,8 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 
 	return {
 		enabled,
-		endpoint: fileEndpoint ?? DEFAULT_TELEMETRY_ENDPOINT,
+		endpoint: fileEndpoint ?? DEFAULT_TELEMETRY_LOGS_ENDPOINT,
+		metricsEndpoint: fileMetricsEndpoint ?? DEFAULT_TELEMETRY_METRICS_ENDPOINT,
 		headers,
 	}
 }
@@ -309,6 +323,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		skillPaths: projectExtras.skillPaths ?? globalExtras.skillPaths,
 		migrationState: projectExtras.migrationState ?? globalExtras.migrationState,
 		onboarding: globalExtras.onboarding,
+		deviceId: projectExtras.deviceId ?? globalExtras.deviceId,
 	}
 
 	return {
@@ -321,6 +336,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		skillPaths: extras.skillPaths,
 		migrationState: extras.migrationState,
 		onboarding: extras.onboarding ?? {},
+		deviceId: extras.deviceId ?? "",
 	}
 }
 
@@ -401,6 +417,16 @@ export function writeApiKey(key: string, configPath?: string): void {
 		// Clear legacy snake_case key so we don't keep stale data
 		// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
 		delete raw.api_key
+	})
+}
+
+export function writeDeviceId(id: string, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateConfigFile(path, (raw) => {
+		raw.deviceId = id
+		// Clear legacy snake_case key so we don't keep stale data
+		// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
+		delete raw.device_id
 	})
 }
 

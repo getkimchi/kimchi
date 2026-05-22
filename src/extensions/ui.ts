@@ -6,7 +6,7 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
 import { Box, Text } from "@earendil-works/pi-tui"
-import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
+import { Key, isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
@@ -18,7 +18,11 @@ import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
-import { MULTI_MODEL_SHORTCUT, getMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
+import {
+	ORCHESTRATOR_MODEL_ID,
+	getMultiModelEnabled,
+	setMultiModelEnabled,
+} from "./prompt-construction/prompt-enrichment.js"
 import {
 	isSessionModeOnboardingFooterSuppressed,
 	registerSharedFooterRenderer,
@@ -257,10 +261,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 				if (ferment) parts.push(ferment.text)
 				const perm = footerData.getExtensionStatuses().get("permissions-mode")
 				if (perm) parts.push(perm)
-				const enabled = getMultiModelEnabled()
-				const label = enabled ? `${resolvedAccentFg(theme)}on${RST_FG}` : theme.fg("dim", "off")
-				const shortcut = MULTI_MODEL_SHORTCUT
-				parts.push(`${theme.fg("dim", "multi-model:")} ${label} ${theme.fg("dim", `→ ${shortcut}`)}`)
+				const modelId = getMultiModelEnabled() ? `multi-model (${ORCHESTRATOR_MODEL_ID})` : (ctx.model?.id ?? "n/a")
+				parts.push(`${resolvedAccentFg(theme)}${modelId}${RST_FG} ${theme.fg("dim", "→ ctrl+p")}`)
 				return parts.join(` ${theme.fg("dim", "·")} `)
 			}
 			scriptFooter = new ScriptFooter(getControlsLine)
@@ -306,17 +308,23 @@ export default function uiExtension(pi: ExtensionAPI) {
 							ctx.ui.custom(
 								(_tui, theme, _kb, done) => {
 									const settingsFile = settingsPath
+									const dismiss = () => {
+										_tui.setShowHardwareCursor(true)
+										done(undefined)
+									}
 									return {
 										render(width: number): string[] {
+											_tui.setShowHardwareCursor(false)
+											const accent = theme.getFgAnsi("accent")
+											const reset = "\x1b[0m"
 											const box = new Box(2, 1)
 											box.addChild(new Text(theme.inverse("  ⚠  Shift+Enter doesn't work in this terminal  ")))
 											box.addChild(new Text(""))
-											box.addChild(new Text(`${theme.bold("Ctrl+J")}${" ".padEnd(13)}→  insert a newline`))
+											box.addChild(new Text(`Ctrl+J${" ".padEnd(13)}→  insert a newline`))
 											box.addChild(new Text(`\\ + Enter${" ".padEnd(10)}→  insert a newline`))
 											box.addChild(new Text(""))
-											box.addChild(new Text(theme.fg("muted", "Enter - dismiss   d - don't remind again")))
-											const accent = theme.getFgAnsi("accent")
-											const reset = "\x1b[0m"
+											box.addChild(new Text(`Any key${" ".padEnd(12)}→  dismiss`))
+											box.addChild(new Text(`${accent}d${" ".padEnd(18)}→  don't remind again${reset}`))
 											const hbar = "─"
 											const inner = width - 2
 											const lines = box.render(inner)
@@ -329,7 +337,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 										},
 										invalidate() {},
 										handleInput(data: string): void {
-											if (matchesKey(data, "enter")) done(undefined)
 											if (data === "d") {
 												try {
 													const s: Record<string, unknown> = {}
@@ -341,8 +348,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 													s.newlineHintDismissed = true
 													writeFileSync(settingsFile, JSON.stringify(s, null, 2))
 												} catch {}
-												done(undefined)
 											}
+											dismiss()
 										},
 										wantsKeyRelease: false,
 									}
@@ -384,21 +391,58 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 		// Register a global terminal input listener so ctrl+p (model cycle forward)
 		// works even when a permission prompt or other dialog has focus.
+		// The cycle includes a virtual "multi-model" entry after the last real model.
 		if (unsubModelCycleInput) unsubModelCycleInput()
 		if (ctx.hasUI) {
 			unsubModelCycleInput = ctx.ui.onTerminalInput((data) => {
+				// In raw-mode terminals Ctrl+C arrives as \x03 rather than raising
+				// SIGINT.  The upstream TUI already maps Escape to abort, but does
+				// not handle Ctrl+C.  Bridge the gap so both keys cancel the active
+				// turn while the agent is working.
+				if (matchesKey(data, Key.ctrl("c")) && !isKeyRelease(data)) {
+					if (currentCtx && !currentCtx.isIdle()) {
+						currentCtx.abort()
+					}
+					return undefined
+				}
 				if (matchesKey(data, "ctrl+p")) {
 					if (!isKeyRelease(data)) {
-						if (getMultiModelEnabled()) return { consume: true }
 						const allAvailable = ctx.modelRegistry.getAvailable()
 						const enabledIds = getEnabledModelIds()
 						const available = enabledIds
 							? allAvailable.filter((m) => enabledIds.has(`${m.provider}/${m.id}`))
 							: allAvailable
 						const current = ctx.model
-						if (available.length > 1 && current) {
+						const orchestratorModel = ctx.modelRegistry.find("kimchi-dev", ORCHESTRATOR_MODEL_ID)
+
+						// Cycle order: model[0] → ... → model[last] → multi-model → model[0]
+						// kimi-k2.6 appears as a regular model AND multi-model appears
+						// as a separate virtual entry right after the last real model.
+						if (getMultiModelEnabled()) {
+							// Currently on the virtual multi-model entry — wrap to first real model
+							if (available.length > 0) {
+								const usage = ctx.getContextUsage()
+								const { model: firstReal } = findNextCompatibleModel(
+									available,
+									available.length - 1,
+									usage?.tokens ?? null,
+									sessionHasImages(),
+									current ?? undefined,
+								)
+								if (firstReal) {
+									setMultiModelEnabled(false)
+									pi.setModel(firstReal).catch((err) => {
+										ctx.ui.notify(
+											`Failed to cycle model: ${err instanceof Error ? err.message : String(err)}`,
+											"warning",
+										)
+									})
+								}
+							}
+						} else if (available.length > 0 && current) {
 							let idx = available.findIndex((m) => modelsAreEqual(m, current))
 							if (idx === -1) idx = 0
+
 							const usage = ctx.getContextUsage()
 							const { model: next, skipped } = findNextCompatibleModel(
 								available,
@@ -407,13 +451,22 @@ export default function uiExtension(pi: ExtensionAPI) {
 								sessionHasImages(),
 								current,
 							)
-							if (!next) {
-								const lines = skipped.map((s) => `  • ${s.model.id}: ${s.reason}`)
-								ctx.ui.notify(
-									`No compatible model available.\n${lines.join("\n")}\n\nUse /compact to unlock models blocked by context size, or /strip-images for models without vision support.`,
-									"warning",
-								)
-							} else if (!modelsAreEqual(next, current)) {
+
+							const nextIdx = next ? available.findIndex((m) => modelsAreEqual(m, next)) : -1
+							const wouldWrap = next === undefined || nextIdx <= idx
+
+							if (wouldWrap && orchestratorModel) {
+								// Reached end of real models — enter multi-model
+								setMultiModelEnabled(true)
+								if (!modelsAreEqual(current, orchestratorModel)) {
+									pi.setModel(orchestratorModel).catch((err) => {
+										ctx.ui.notify(
+											`Failed to switch to multi-model: ${err instanceof Error ? err.message : String(err)}`,
+											"warning",
+										)
+									})
+								}
+							} else if (next && !modelsAreEqual(next, current)) {
 								if (skipped.length > 0) {
 									const lines = skipped.map((s) => `  • ${s.model.id}: ${s.reason}`)
 									ctx.ui.notify(

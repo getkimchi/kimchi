@@ -142,7 +142,7 @@ describe.skip("interactive multi-line paste (LLM-1358)", () => {
 			await waitForPrompt(session)
 
 			// Main paste-burst: A\rB\r…\rY\r — meets the seeding heuristic (24 \r, 48 bytes).
-			const mainChunk = "ABCDEFGHIJKLMNOPQRSTUVWXY".split("").join("\r") + "\r"
+			const mainChunk = `${"ABCDEFGHIJKLMNOPQRSTUVWXY".split("").join("\r")}\r`
 			session.pty.write(mainChunk)
 			// 1 ms gap simulates the kernel TTY scheduling delay between adjacent reads of one OS-level paste burst. Far below the 100 ms TRAILING_WINDOW_MS.
 			await new Promise((r) => setTimeout(r, 1))

@@ -111,7 +111,7 @@ export class SessionsPanel implements Component {
 		const statusWidth = Math.max(HEADERS.status.length, ...rows.map((r) => (r.status ?? "-").length))
 		const lastWidth = HEADERS.lastActivity.length
 		// prefix "> " / "  " = 2 chars
-		const fixed = 2 + idWidth + 1 + hostWidth + 1 + statusWidth + 1 + lastWidth
+		const fixed = 2 + idWidth + 1 + hostWidth + 1 + 1 + statusWidth + 1 + lastWidth
 		const longestName = Math.max(HEADERS.name.length, ...rows.map((r) => (r.name || "-").length))
 		const available = Math.max(MIN_NAME_WIDTH, contentW - fixed)
 		const nameWidth = Math.min(longestName, available)
@@ -127,9 +127,9 @@ export class SessionsPanel implements Component {
 		}
 
 		// Wrap a text line inside border │ ... │, padded to innerW
-		const row = (content: string) => `${b("│")} ${pad(content, contentW)}${b("│")}`
+		const row = (content: string) => `${b("│")} ${pad(content, contentW)} ${b("│")}`
 		const ansiRow = (content: string, rawLen: number) =>
-			`${b("│")} ${content}${" ".repeat(Math.max(0, contentW - rawLen))}${b("│")}`
+			`${b("│")} ${content}${" ".repeat(Math.max(0, contentW - rawLen))} ${b("│")}`
 		const emptyRow = () => `${b("│")}${" ".repeat(innerW)}${b("│")}`
 
 		const lines: string[] = []
@@ -179,7 +179,7 @@ export class SessionsPanel implements Component {
 		}
 
 		// Hint
-		emptyRow() // spacing
+		lines.push(emptyRow()) // spacing
 		const hintText = "↑/↓ j/k: navigate  enter/a: attach  s: connect  D: delete  esc: close"
 		lines.push(ansiRow(dim(`  ${hintText}`), hintText.length + 2))
 

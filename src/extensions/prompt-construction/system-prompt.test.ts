@@ -64,6 +64,11 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("## Documents")
 			expect(result).toContain("## Guidelines")
 			expect(result).toContain("Orchestrate the work")
+			expect(result).toContain("Sharing context between agents")
+			expect(result).toContain("Orchestrate the work")
+			expect(result).toContain("Model selection for delegation")
+			expect(result).toContain("Token budgets")
+			expect(result).toContain("token_budget")
 		})
 
 		it("includes all tool names and descriptions", () => {
@@ -208,20 +213,20 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "kimi-k2.6",
+				currentModelId: "minimax-m2.7",
 				registry,
 				mode: "orchestrator",
 			})
 			expect(result).toContain("### Orchestration Guidelines")
-			expect(result).toContain("Kimi family")
+			expect(result).toContain("MiniMax M2 family")
 		})
 
 		it("places orchestration section before phase section", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "kimi-k2.6",
-				currentPhase: "plan",
+				currentModelId: "minimax-m2.7",
+				currentPhase: "build",
 				registry,
 				mode: "orchestrator",
 			})
@@ -274,6 +279,7 @@ describe("buildSystemPrompt", () => {
 				mode: "subagent",
 			})
 			expect(result).not.toContain("Orchestrate the work")
+			expect(result).not.toContain("Model selection for delegation")
 		})
 
 		it("handles tools list with only delegation tools", () => {
@@ -353,6 +359,10 @@ describe("buildSystemPrompt", () => {
 				mode: "single",
 			})
 			expect(result).not.toContain("Orchestrate the work")
+			expect(result).not.toContain("Model selection for delegation")
+			expect(result).not.toContain("Token budgets")
+			expect(result).not.toContain("Orchestrate the work")
+			expect(result).not.toContain("Sharing context between agents")
 			expect(result).not.toContain("Subagent response protocol")
 		})
 
