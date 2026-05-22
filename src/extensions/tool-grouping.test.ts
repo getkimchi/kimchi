@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { classifyTool, formatSummary, getParent, patchAddChild, findToolGroup } from "./tool-grouping.js"
+import { classifyTool, formatSummary, getParent, patchAddChild, findToolGroup, buildGroupSummaryText, buildCurrentToolLine } from "./tool-grouping.js"
 import { Container, Spacer } from "@earendil-works/pi-tui"
 
 describe("classifyTool", () => {
@@ -227,5 +227,83 @@ describe("findToolGroup", () => {
 		const failed = mockTool("z", { isError: true })
 		const children: object[] = []
 		expect(findToolGroup(failed, children)).toEqual([])
+	})
+})
+
+function mockToolFull(
+	toolName: string,
+	args: Record<string, unknown>,
+	opts: { isPartial?: boolean } = {},
+): object {
+	return {
+		toolName,
+		toolCallId: Math.random().toString(36),
+		args,
+		isPartial: opts.isPartial ?? false,
+		result: undefined,
+		render: (_width: number) => [],
+		invalidate: () => {},
+	}
+}
+
+describe("buildGroupSummaryText", () => {
+	it("aggregates by category, first-appearance order", () => {
+		const run = [
+			mockToolFull("read", { path: "a.ts" }),
+			mockToolFull("bash", { command: "ls src/" }),
+			mockToolFull("read", { path: "b.ts" }),
+			mockToolFull("grep", { pattern: "foo" }),
+		]
+		expect(buildGroupSummaryText(run, false)).toBe(
+			"read 2 files, listed 1 directory, searched for 1 pattern",
+		)
+	})
+
+	it("uses continuous tense when isInProgress is true", () => {
+		const run = [
+			mockToolFull("read", { path: "a.ts" }),
+			mockToolFull("bash", { command: "git status" }),
+		]
+		expect(buildGroupSummaryText(run, true)).toBe("reading 1 file, running 1 command")
+	})
+})
+
+describe("buildCurrentToolLine", () => {
+	it("bash tool shows $ prefix with command", () => {
+		const tool = mockToolFull("bash", { command: "git diff HEAD~1" })
+		expect(buildCurrentToolLine(tool)).toBe("$ git diff HEAD~1")
+	})
+
+	it("bash command truncated to 60 chars", () => {
+		const long = "x".repeat(80)
+		const tool = mockToolFull("bash", { command: long })
+		const line = buildCurrentToolLine(tool)
+		expect(line.startsWith("$ ")).toBe(true)
+		expect(line.length).toBeLessThanOrEqual(62) // "$ " + 60
+	})
+
+	it("read tool shows reading prefix with path", () => {
+		const tool = mockToolFull("read", { path: "src/foo.ts" })
+		expect(buildCurrentToolLine(tool)).toBe("reading src/foo.ts")
+	})
+
+	it("grep tool shows searching prefix with pattern", () => {
+		const tool = mockToolFull("grep", { pattern: "TODO" })
+		expect(buildCurrentToolLine(tool)).toBe('searching "TODO"')
+	})
+
+	it("ls tool shows ls prefix with path", () => {
+		const tool = mockToolFull("ls", { path: "src/" })
+		expect(buildCurrentToolLine(tool)).toBe("ls src/")
+	})
+
+	it("ls tool defaults to . when no path", () => {
+		const tool = mockToolFull("ls", {})
+		expect(buildCurrentToolLine(tool)).toBe("ls .")
+	})
+
+	it("unknown tool shows toolName …", () => {
+		const tool = mockToolFull("some_mcp_tool", {})
+		expect(buildCurrentToolLine(tool)).toBe("some_mcp_tool …")
 	})
 })

@@ -148,3 +148,50 @@ export function findToolGroup(self: object, children: object[]): object[] {
 
 	return tools
 }
+
+// ---------------------------------------------------------------------------
+// buildGroupSummaryText
+// ---------------------------------------------------------------------------
+
+export function buildGroupSummaryText(run: object[], isInProgress: boolean): string {
+	const order: Category[] = []
+	const counts = new Map<Category, number>()
+	for (const tool of run) {
+		if (!isToolLike(tool)) continue
+		const cat = classifyTool(tool.toolName, tool.args)
+		if (!counts.has(cat)) order.push(cat)
+		counts.set(cat, (counts.get(cat) ?? 0) + 1)
+	}
+	const orderedCounts = new Map(order.map((cat) => [cat, counts.get(cat)!]))
+	return formatSummary(orderedCounts, isInProgress)
+}
+
+// ---------------------------------------------------------------------------
+// buildCurrentToolLine
+// ---------------------------------------------------------------------------
+
+export function buildCurrentToolLine(tool: object): string {
+	if (!isToolLike(tool)) return "…"
+	const { toolName, args } = tool
+	switch (toolName) {
+		case "bash": {
+			const cmd = typeof args.command === "string" ? args.command.slice(0, 60) : ""
+			return `$ ${cmd}`
+		}
+		case "read": {
+			const path = typeof args.path === "string" ? args.path : ""
+			return `reading ${path}`
+		}
+		case "grep":
+		case "find": {
+			const pattern = typeof args.pattern === "string" ? args.pattern : ""
+			return `searching "${pattern}"`
+		}
+		case "ls": {
+			const path = typeof args.path === "string" ? args.path : "."
+			return `ls ${path}`
+		}
+		default:
+			return `${toolName} …`
+	}
+}
