@@ -6,6 +6,7 @@ export interface TeleportArgs {
 	abandonPending: boolean
 	force: boolean
 	skipSession?: boolean
+	noGitToken?: boolean
 }
 
 export interface DetachArgs {
@@ -40,6 +41,7 @@ export function parseTeleportArgs(raw: string): TeleportArgs {
 		abandonPending: false,
 		force: false,
 		skipSession: false,
+		noGitToken: false,
 	}
 	for (let i = 0; i < tokens.length; i++) {
 		const t = tokens[i]
@@ -58,6 +60,9 @@ export function parseTeleportArgs(raw: string): TeleportArgs {
 				break
 			case "--skip-session":
 				result.skipSession = true
+				break
+			case "--no-git-token":
+				result.noGitToken = true
 				break
 			case "--exclude": {
 				const next = tokens[i + 1]

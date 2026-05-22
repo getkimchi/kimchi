@@ -24,7 +24,13 @@ export async function createOrUpdateSession(
 				Authorization: `Bearer ${apiKey}`,
 				"Content-Type": "application/json",
 			},
-			body: JSON.stringify({ description, options: { agentApiKey: apiKey } }),
+			body: JSON.stringify({
+				description,
+				options: {
+					agentApiKey: apiKey,
+					...(options?.gitToken ? { gitToken: options.gitToken } : {}),
+				},
+			}),
 		},
 		fetchImpl,
 	)

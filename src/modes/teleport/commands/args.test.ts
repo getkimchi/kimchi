@@ -10,6 +10,7 @@ describe("parseTeleportArgs", () => {
 			abandonPending: false,
 			force: false,
 			skipSession: false,
+			noGitToken: false,
 		})
 	})
 
@@ -19,12 +20,15 @@ describe("parseTeleportArgs", () => {
 	})
 
 	it("parses every boolean flag", () => {
-		const r = parseTeleportArgs("--allow-dirty --include-ignored --abandon-pending --force --skip-session")
+		const r = parseTeleportArgs(
+			"--allow-dirty --include-ignored --abandon-pending --force --skip-session --no-git-token",
+		)
 		expect(r.allowDirty).toBe(true)
 		expect(r.includeIgnored).toBe(true)
 		expect(r.abandonPending).toBe(true)
 		expect(r.force).toBe(true)
 		expect(r.skipSession).toBe(true)
+		expect(r.noGitToken).toBe(true)
 	})
 
 	it("collects repeated --exclude globs in order", () => {

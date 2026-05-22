@@ -5,9 +5,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	clearApiKey,
 	loadConfig,
+	readGitToken,
 	readTelemetryConfig,
 	writeApiKey,
 	writeDeviceId,
+	writeGitToken,
 	writeHideSessionModeDialog,
 	writeSessionModeWizardSeenAt,
 } from "./config.js"
@@ -476,5 +478,74 @@ describe("writeHideSessionModeDialog", () => {
 				hideSessionModeDialog: true,
 			},
 		})
+	})
+})
+
+describe("readGitToken / writeGitToken", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("returns undefined when config file does not exist", () => {
+		expect(readGitToken("github.com", configPath)).toBeUndefined()
+	})
+
+	it("returns undefined when gitTokens section is missing", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "key" }))
+		expect(readGitToken("github.com", configPath)).toBeUndefined()
+	})
+
+	it("returns undefined when host is not in gitTokens", () => {
+		writeFileSync(configPath, JSON.stringify({ gitTokens: { "gitlab.com": "tok" } }))
+		expect(readGitToken("github.com", configPath)).toBeUndefined()
+	})
+
+	it("reads a stored token for a host", () => {
+		writeFileSync(configPath, JSON.stringify({ gitTokens: { "github.com": "ghp_abc" } }))
+		expect(readGitToken("github.com", configPath)).toBe("ghp_abc")
+	})
+
+	it("ignores empty string tokens", () => {
+		writeFileSync(configPath, JSON.stringify({ gitTokens: { "github.com": "" } }))
+		expect(readGitToken("github.com", configPath)).toBeUndefined()
+	})
+
+	it("ignores non-string token values", () => {
+		writeFileSync(configPath, JSON.stringify({ gitTokens: { "github.com": 12345 } }))
+		expect(readGitToken("github.com", configPath)).toBeUndefined()
+	})
+
+	it("writes a token for a new host", () => {
+		writeGitToken("github.com", "ghp_new", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.gitTokens["github.com"]).toBe("ghp_new")
+	})
+
+	it("writes a token preserving existing config", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "key", gitTokens: { "gitlab.com": "gl_tok" } }))
+		writeGitToken("github.com", "ghp_abc", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("key")
+		expect(raw.gitTokens["gitlab.com"]).toBe("gl_tok")
+		expect(raw.gitTokens["github.com"]).toBe("ghp_abc")
+	})
+
+	it("overwrites an existing token for the same host", () => {
+		writeFileSync(configPath, JSON.stringify({ gitTokens: { "github.com": "old" } }))
+		writeGitToken("github.com", "new", configPath)
+		expect(readGitToken("github.com", configPath)).toBe("new")
+	})
+
+	it("round-trips write then read", () => {
+		writeGitToken("github.com", "ghp_roundtrip", configPath)
+		expect(readGitToken("github.com", configPath)).toBe("ghp_roundtrip")
 	})
 })
