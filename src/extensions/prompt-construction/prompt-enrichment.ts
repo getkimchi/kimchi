@@ -126,17 +126,20 @@ const initialMultiModel = hasExplicitModelFlag() ? false : readMultiModelSetting
 let multiModelEnabled = initialMultiModel
 ;(process as NodeJS.Process & { __kimchiMultiModelEnabled?: boolean }).__kimchiMultiModelEnabled = initialMultiModel
 
-/** @deprecated Use `getOrchestratorModelId()` for the role-based model ID. Kept for backward compat in tests/imports. */
-export const ORCHESTRATOR_MODEL_ID = modelIdFromRef(getModelRoles().orchestrator)
-
-/** Resolved orchestrator model reference (provider/model-id). */
-function getOrchestratorModelRef(): string {
-	return getModelRoles().orchestrator
+/**
+ * Orchestrator model ID (without provider prefix).
+ * Reads from the live model-roles config — updates when `/multi-model` changes roles.
+ */
+export function getOrchestratorModelId(): string {
+	return modelIdFromRef(getModelRoles().orchestrator)
 }
 
-/** Resolved orchestrator model ID (without provider prefix). */
-function getOrchestratorModelId(): string {
-	return modelIdFromRef(getOrchestratorModelRef())
+/**
+ * Orchestrator model reference (provider/model-id).
+ * Reads from the live model-roles config — updates when `/multi-model` changes roles.
+ */
+export function getOrchestratorModelRef(): string {
+	return getModelRoles().orchestrator
 }
 const DELEGATION_TOOL_NAMES = new Set(["Agent", "subagent"])
 

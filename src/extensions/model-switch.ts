@@ -6,8 +6,9 @@ import { contextFitsModel, getSafeContextWindow, sessionHasImages } from "./mode
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
 import {
-	ORCHESTRATOR_MODEL_ID,
 	getMultiModelEnabled,
+	getOrchestratorModelId,
+	getOrchestratorModelRef,
 	setMultiModelEnabled,
 } from "./prompt-construction/prompt-enrichment.js"
 
@@ -56,10 +57,14 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 			const { model } = params
 
 			if (model === "multi-model") {
-				const orchestrator = ctx.modelRegistry?.find("kimchi-dev", ORCHESTRATOR_MODEL_ID)
+				const orchRef = getOrchestratorModelRef()
+				const orchId = getOrchestratorModelId()
+				const slashIdx = orchRef.indexOf("/")
+				const orchProvider = slashIdx > 0 ? orchRef.slice(0, slashIdx) : "kimchi-dev"
+				const orchestrator = ctx.modelRegistry?.find(orchProvider, orchId)
 				if (!orchestrator) {
 					return {
-						content: [{ type: "text" as const, text: "Multi-model orchestrator (kimi-k2.6) is not available." }],
+						content: [{ type: "text" as const, text: `Multi-model orchestrator (${orchRef}) is not available.` }],
 						details: null,
 					}
 				}
@@ -74,7 +79,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text" as const,
-							text: `Switched to multi-model mode (orchestrator: ${ORCHESTRATOR_MODEL_ID})`,
+							text: `Switched to multi-model mode (orchestrator: ${orchId})`,
 						},
 					],
 					details: null,

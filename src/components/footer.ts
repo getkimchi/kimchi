@@ -11,7 +11,7 @@ import { formatFermentFooterDisplay } from "../extensions/ferment/footer-status.
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatCount } from "../extensions/format.js"
 import { getCurrentPermissionsMode } from "../extensions/permissions/index.js"
-import { ORCHESTRATOR_MODEL_ID, getMultiModelEnabled } from "../extensions/prompt-construction/prompt-enrichment.js"
+import { getMultiModelEnabled } from "../extensions/prompt-construction/prompt-enrichment.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */

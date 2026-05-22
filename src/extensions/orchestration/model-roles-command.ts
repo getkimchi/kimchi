@@ -64,9 +64,25 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				if (!choice) return
 
 				if (choice === "Reset all to defaults") {
+					const prevOrchestrator = roles.orchestrator
 					Object.assign(roles, DEFAULT_MODEL_ROLES)
 					saveModelRoles(roles)
 					ctx.ui.notify("Model roles reset to defaults.", "info")
+
+					// Switch the active model if the orchestrator changed
+					if (prevOrchestrator !== DEFAULT_MODEL_ROLES.orchestrator) {
+						const parsed = splitModelRef(DEFAULT_MODEL_ROLES.orchestrator)
+						if (parsed) {
+							const target = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
+							if (target) {
+								try {
+									await pi.setModel(target)
+								} catch {
+									// best-effort
+								}
+							}
+						}
+					}
 					return
 				}
 
@@ -131,6 +147,21 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				roles[roleKey] = newRef
 				saveModelRoles(roles)
 				ctx.ui.notify(`${info.label} set to ${newRef}`, "info")
+
+				// When the orchestrator role changes, switch the active model to match
+				if (roleKey === "orchestrator") {
+					const parsed = splitModelRef(newRef)
+					if (parsed) {
+						const target = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
+						if (target) {
+							try {
+								await pi.setModel(target)
+							} catch {
+								ctx.ui.notify(`Could not switch to ${newRef}. The model will be used next session.`, "warning")
+							}
+						}
+					}
+				}
 			}
 
 			await showMainMenu()
