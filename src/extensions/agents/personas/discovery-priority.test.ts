@@ -14,13 +14,13 @@ function writeAgentMd(dir: string, name: string, description: string): void {
 
 describe("discovery-priority: project agents override global", () => {
 	beforeEach(() => {
-		process.env.PI_CODING_AGENT_DIR = FAKE_AGENT_DIR
+		process.env.KIMCHI_CODING_AGENT_DIR = FAKE_AGENT_DIR
 		mkdirSync(FAKE_AGENT_DIR, { recursive: true })
 	})
 
 	afterEach(() => {
 		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
-		delete process.env.PI_CODING_AGENT_DIR
+		delete process.env.KIMCHI_CODING_AGENT_DIR
 	})
 
 	it("project .kimchi/agents/ overrides global agent with same name", () => {

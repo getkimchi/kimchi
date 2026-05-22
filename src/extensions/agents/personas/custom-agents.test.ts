@@ -22,7 +22,7 @@ describe("AgentConfig.tokenBudget parsing", () => {
 	let projectAgentsDir: string
 
 	beforeEach(() => {
-		process.env.PI_CODING_AGENT_DIR = FAKE_AGENT_DIR
+		process.env.KIMCHI_CODING_AGENT_DIR = FAKE_AGENT_DIR
 		mkdirSync(FAKE_AGENT_DIR, { recursive: true })
 		projectDir = join(tmpdir(), `kimchi-project-token-budget-${Date.now()}`)
 		projectAgentsDir = join(projectDir, ".kimchi", "agents")
@@ -30,7 +30,7 @@ describe("AgentConfig.tokenBudget parsing", () => {
 
 	afterEach(() => {
 		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
-		delete process.env.PI_CODING_AGENT_DIR
+		delete process.env.KIMCHI_CODING_AGENT_DIR
 	})
 
 	it("parses token_budget: 50000 into tokenBudget === 50000", () => {
@@ -99,7 +99,7 @@ describe("custom agents — user override hierarchy preserves new fields", () =>
 
 		globalAgentsDir = join(tmpRoot, "global", "agents")
 		mkdirSync(globalAgentsDir, { recursive: true })
-		process.env.PI_CODING_AGENT_DIR = join(tmpRoot, "global")
+		process.env.KIMCHI_CODING_AGENT_DIR = join(tmpRoot, "global")
 
 		projectDir = join(tmpRoot, "project")
 		projectAgentsDir = join(projectDir, ".kimchi", "agents")
@@ -110,7 +110,7 @@ describe("custom agents — user override hierarchy preserves new fields", () =>
 
 	afterEach(() => {
 		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
-		delete process.env.PI_CODING_AGENT_DIR
+		delete process.env.KIMCHI_CODING_AGENT_DIR
 		rmSync(tmpRoot, { recursive: true, force: true })
 		vi.mocked(getInstalledPackageResourceDirs).mockReturnValue([])
 	})
