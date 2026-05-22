@@ -10,6 +10,7 @@ import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { appendRefEntry } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
+import { clearAllPendingPlanReviews, clearPendingPlanReview } from "./plan-review.js"
 import {
 	buildPhaseActionOptions,
 	buildPhaseDetailTitle,
@@ -293,6 +294,7 @@ async function confirmManualPhaseBoundaryForCommand(
 				return true
 			}
 			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
+			clearPendingPlanReview(active.id)
 			ctx.ui.notify(`Paused "${outcome.ferment.name}". Type /ferment resume to resume.`)
 			return true
 		}
@@ -342,6 +344,7 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: FermentUiContext, runt
 				if (outcome.ok) setActiveFermentAndApplyProfile(pi, runtime, undefined)
 				runtime.clearFermentState(f.id)
 				runtime.clearPendingScope(f.id)
+				clearPendingPlanReview(f.id)
 				atPhaseList = false
 			}
 			continue
@@ -495,6 +498,7 @@ export class FermentCommandController {
 				storage.delete(selected.id)
 				runtime.clearFermentState(selected.id)
 				runtime.clearPendingScope(selected.id)
+				clearPendingPlanReview(selected.id)
 				if (runtime.getActiveId() === selected.id) setActiveFermentAndApplyProfile(pi, runtime, undefined)
 				ctx.ui.notify(`Deleted "${selected.name}"`)
 				return { handled: true }
@@ -542,6 +546,7 @@ export class FermentCommandController {
 			}
 
 			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
+			clearPendingPlanReview(active.id)
 			ctx.ui.notify(`Paused "${outcome.ferment.name}". Type /ferment resume to resume.`)
 			ctx.abort()
 			return { handled: true }
@@ -590,6 +595,7 @@ export class FermentCommandController {
 				storage.delete(f.id)
 				runtime.clearFermentState(f.id)
 				runtime.clearPendingScope(f.id)
+				clearPendingPlanReview(f.id)
 				if (runtime.getActiveId() === f.id) {
 					setActiveFermentAndApplyProfile(pi, runtime, undefined)
 				}
@@ -620,6 +626,7 @@ export class FermentCommandController {
 				}
 
 				const wtWarning = wtCheck.severity === "warn" ? `\n⚠️  ${wtCheck.message}` : ""
+				clearAllPendingPlanReviews()
 				sendBreadcrumb(pi, `Switched to "${f.name}" [${f.status}]${wtWarning}`, "ack", "ferment_ack")
 				resumeFerment(pi, f.id, ctx, runtime)
 			} catch (err) {
@@ -648,6 +655,7 @@ export class FermentCommandController {
 				setActiveFermentAndApplyProfile(pi, runtime, undefined)
 				runtime.clearFermentState(abandonedId)
 				runtime.clearPendingScope(abandonedId)
+				clearPendingPlanReview(abandonedId)
 				ctx.ui.notify(`Ferment "${out.ferment.name}" abandoned.`)
 			}
 			return { handled: true }

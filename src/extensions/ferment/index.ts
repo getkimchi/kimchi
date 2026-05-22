@@ -10,7 +10,7 @@
  * Public exports re-export from ./state.ts for cli.ts and components/footer.ts.
  */
 
-import type { ExtensionAPI, MessageRenderer } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, MessageRenderer } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import type { Step } from "../../ferment/types.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
@@ -20,14 +20,23 @@ import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
 import { registerFermentEvents } from "./events.js"
 import { FERMENT_STOP_POLICY_SHORTCUT, canToggleFermentStopPolicy } from "./footer-status.js"
+import {
+	clearAllPendingPlanReviews,
+	clearPendingPlanReview,
+	getCurrentPendingPlanReview,
+	promptPlanReview,
+	stripFermentPlanReviewDisplayMessages,
+} from "./plan-review.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { scheduleFermentWakeUp } from "./scheduler.js"
+import { confirmPendingScope } from "./scoping-confirmation.js"
 import { FERMENT_REQUEST_MESSAGE_TYPE, type FermentRequestMessageDetails } from "./scoping.js"
 import { getActive, getActiveId, getContinuationPolicy } from "./state.js"
 import { createFermentTipProvider } from "./tips.js"
 import { applyFermentRuntimeToolProfile } from "./tool-scope.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
-import { registerLifecycleTools } from "./tools/lifecycle.js"
+import { buildFreeformScopingFeedbackMessage, registerLifecycleTools } from "./tools/lifecycle.js"
 import { registerPhaseTools } from "./tools/phases.js"
 import { registerStepTools } from "./tools/steps.js"
 
@@ -112,8 +121,77 @@ const fermentRequestRenderer: MessageRenderer<FermentRequestMessageDetails> = (m
 
 export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime) {
 	const unregisterFermentTips = registerTipProvider(createFermentTipProvider(runtime))
+	let planReviewTimer: ReturnType<typeof setTimeout> | undefined
+	let planReviewRunning = false
+
+	const clearPlanReviewTimer = () => {
+		if (planReviewTimer) {
+			clearTimeout(planReviewTimer)
+			planReviewTimer = undefined
+		}
+	}
+
+	const runPendingPlanReview = async (ctx: Pick<ExtensionContext, "ui"> | undefined) => {
+		if (planReviewRunning) return
+		const review = getCurrentPendingPlanReview(runtime)
+		if (!review) return
+
+		planReviewRunning = true
+		try {
+			const outcome = await promptPlanReview(ctx, { planMarkdown: review.planMarkdown })
+			if (!outcome) return
+			if (outcome.kind === "cancelled") {
+				clearPendingPlanReview(review.fermentId)
+				return
+			}
+
+			if (outcome.kind === "start") {
+				const scopeOutcome = confirmPendingScope(runtime, review.fermentId, undefined, "turn_end", review.title, pi)
+				if (!scopeOutcome.ok) {
+					ctx?.ui?.notify?.(`Failed to save plan: ${scopeOutcome.error.message}`, "error")
+					return
+				}
+				clearPendingPlanReview(review.fermentId)
+				scheduleFermentWakeUp(pi, runtime, {
+					deliverAsFollowUp: true,
+					fermentId: review.fermentId,
+					tag: "Plan review start",
+				})
+				return
+			}
+
+			void pi.sendMessage(
+				{
+					content: buildFreeformScopingFeedbackMessage(review.fermentId, outcome.text),
+					customType: "ferment_scoping_iteration",
+					display: false,
+				},
+				{ triggerTurn: true, deliverAs: "followUp" },
+			)
+		} finally {
+			planReviewRunning = false
+		}
+	}
+
 	pi.on("session_shutdown", () => {
+		clearPlanReviewTimer()
+		clearAllPendingPlanReviews()
 		unregisterFermentTips()
+	})
+
+	pi.on("agent_end", (_event, ctx) => {
+		if (planReviewRunning || !getCurrentPendingPlanReview(runtime)) return
+		clearPlanReviewTimer()
+		planReviewTimer = setTimeout(() => {
+			planReviewTimer = undefined
+			void runPendingPlanReview(ctx)
+		}, 0)
+	})
+
+	pi.on("context", (event) => ({ messages: stripFermentPlanReviewDisplayMessages(event.messages) }))
+	pi.on("session_before_compact", (event) => {
+		event.preparation.messagesToSummarize = stripFermentPlanReviewDisplayMessages(event.preparation.messagesToSummarize)
+		event.preparation.turnPrefixMessages = stripFermentPlanReviewDisplayMessages(event.preparation.turnPrefixMessages)
 	})
 
 	pi.registerMessageRenderer(FERMENT_REQUEST_MESSAGE_TYPE, fermentRequestRenderer)

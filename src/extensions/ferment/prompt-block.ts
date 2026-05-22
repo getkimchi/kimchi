@@ -72,6 +72,8 @@ Every \`propose_ferment_scoping\` call must include the full \`gates\` array for
 
 Do NOT call \`scope_ferment\` directly in the interactive flow — only \`propose_ferment_scoping\`. If a tool call fails (e.g. missing gate verdicts or invalid step shape), re-emit the FULL payload INCLUDING the questions you drafted and all P1/P2/P3 gates — never silently drop them on retry.
 
+After \`propose_ferment_scoping\` returns "Plan ready for review", the host will collect the user's review after your turn ends. Do not call \`propose_ferment_scoping\` again, do not summarize the plan in chat, and do not tell the user to wait for the TUI.
+
 After \`propose_ferment_scoping\` returns "Plan saved", the host confirmation already happened. Do not call \`propose_ferment_scoping\` again, do not tell the user the draft is waiting in the TUI, and do not summarize the plan in chat. Continue with the next state-machine action (usually \`activate_ferment_phase\`).`
 
 	const agentsSection = buildAgentsSection()

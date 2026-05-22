@@ -9,6 +9,7 @@ import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { appendRefEntry, maybeInjectReactiveContinuationNudge, resetReactiveContinuationNudgeCount } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import { editPhaseProposal } from "./phase-editor.js"
+import { clearAllPendingPlanReviews } from "./plan-review.js"
 import { promptInput, promptSelect } from "./prompt-ui.js"
 import { loadFermentSilently, resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
@@ -247,6 +248,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		runtime.clearAllStepStarts()
 		runtime.clearAllScopingGates()
 		runtime.clearAllPendingScopes()
+		clearAllPendingPlanReviews()
 		clearFermentCache()
 
 		const envId = process.env.KIMCHI_ACTIVE_FERMENT
@@ -302,6 +304,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 
 	pi.on("session_shutdown", async () => {
 		if (isAgentWorker()) return
+		clearAllPendingPlanReviews()
 		const f = runtime.getActive()
 		if (!f) return
 		if (f.status === "running" || f.status === "planned") {

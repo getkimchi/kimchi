@@ -631,9 +631,7 @@ describe("registerFermentCommands", () => {
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [
-					expect.objectContaining({ text: expect.stringContaining("Re-read the current persisted ferment state") }),
-				],
+				content: [expect.objectContaining({ text: expect.stringContaining("Do not call list_ferments first") })],
 				details: expect.objectContaining({ action: "wake_up", expectedAction: "start_step" }),
 			}),
 			{ triggerTurn: true },
@@ -694,9 +692,7 @@ describe("registerFermentCommands", () => {
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [
-					expect.objectContaining({ text: expect.stringContaining("Re-read the current persisted ferment state") }),
-				],
+				content: [expect.objectContaining({ text: expect.stringContaining("Do not call list_ferments first") })],
 				details: expect.objectContaining({ action: "wake_up", expectedAction: "activate_phase" }),
 			}),
 			{ triggerTurn: true },
@@ -865,9 +861,7 @@ describe("registerFermentCommands", () => {
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [
-					expect.objectContaining({ text: expect.stringContaining("Re-read the current persisted ferment state") }),
-				],
+				content: [expect.objectContaining({ text: expect.stringContaining("Do not call list_ferments first") })],
 				details: expect.objectContaining({ action: "wake_up", expectedAction: "start_step" }),
 			}),
 			{ triggerTurn: true },
@@ -918,9 +912,7 @@ describe("registerFermentCommands", () => {
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [
-					expect.objectContaining({ text: expect.stringContaining("Re-read the current persisted ferment state") }),
-				],
+				content: [expect.objectContaining({ text: expect.stringContaining("Do not call list_ferments first") })],
 				details: expect.objectContaining({ action: "wake_up", expectedAction: "start_step" }),
 			}),
 			{ triggerTurn: true },
@@ -1047,9 +1039,7 @@ describe("registerFermentCommands", () => {
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [
-					expect.objectContaining({ text: expect.stringContaining("Re-read the current persisted ferment state") }),
-				],
+				content: [expect.objectContaining({ text: expect.stringContaining("Do not call list_ferments first") })],
 				details: expect.objectContaining({ action: "wake_up", expectedAction: "activate_phase" }),
 			}),
 			{ triggerTurn: true },
