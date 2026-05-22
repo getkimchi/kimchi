@@ -431,30 +431,30 @@ describe("modelSwitchExtension", () => {
 			it("rejects switch to kimi-k2.6 when large context accumulated (null upstream tokens)", async () => {
 				// Simulate a large conversation: 30 messages × 2000 chars → ~15,000 tokens estimated.
 				// The guard checks against the found model's contextWindow (from MODELS registry).
-				// Temporarily override MODELS to use a small context window so the guard fires.
-				const kimiDescriptor = MODELS.find((m) => m.id === "kimi-k2.6")
-				if (!kimiDescriptor) throw new Error("kimi-k2.6 not found in MODELS")
-				const savedContextWindow = kimiDescriptor.contextWindow
-				kimiDescriptor.contextWindow = 10_000
-				try {
-					__setLatestMessagesForTest(
-						Array.from({ length: 30 }, () => ({
-							role: "user" as const,
-							content: [{ type: "text" as const, text: "x".repeat(2000) }],
-							timestamp: 0 as const,
-						})),
-					)
-					const h = createHarness()
-					const result = await h.exec("kimchi-dev/kimi-k2.6")
+				// Override the harness find mock to return a kimi with a small context window
+				// so the guard fires, without mutating the global MODELS array.
+				__setLatestMessagesForTest(
+					Array.from({ length: 30 }, () => ({
+						role: "user" as const,
+						content: [{ type: "text" as const, text: "x".repeat(2000) }],
+						timestamp: 0 as const,
+					})),
+				)
+				const h = createHarness()
+				h.find.mockImplementation((provider: string, id: string) => {
+					const found = MODELS.find((m) => m.provider === provider && m.id === id)
+					if (found && found.id === "kimi-k2.6" && found.provider === "kimchi-dev") {
+						return { ...found, contextWindow: 10_000 }
+					}
+					return found
+				})
+				const result = await h.exec("kimchi-dev/kimi-k2.6")
 
-					expect(h.setModel).not.toHaveBeenCalled()
-					const text = textOf(result)
-					expect(text).toContain("15000 tokens")
-					expect(text).toContain("Switch rejected")
-					expect(text).toContain("Use /compact")
-				} finally {
-					kimiDescriptor.contextWindow = savedContextWindow
-				}
+				expect(h.setModel).not.toHaveBeenCalled()
+				const text = textOf(result)
+				expect(text).toContain("15000 tokens")
+				expect(text).toContain("Switch rejected")
+				expect(text).toContain("Use /compact")
 			})
 
 			it("allows switch when local estimate is small even if getContextUsage returns null", async () => {

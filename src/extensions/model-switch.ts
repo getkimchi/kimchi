@@ -5,6 +5,7 @@ import { isRestoringModel } from "./ferment/state.js"
 import {
 	contextFitsModel,
 	getLatestMessages,
+	getLatestMessagesTimestamp,
 	getSafeContextWindow,
 	resolveContextTokens,
 	sessionHasImages,
@@ -126,7 +127,16 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 			}
 
 			const usage = ctx.getContextUsage()
-			const tokens = resolveContextTokens(usage, getLatestMessages())
+			// getLatestMessages() returns the most recent context from model-guard's
+			// "context" handler. It is updated on every LLM call, so data is fresh
+			// as long as the session has processed at least one context event.
+			const messages = getLatestMessages()
+			if (messages.length > 0 && getLatestMessagesTimestamp() === 0) {
+				// Defensive: messages array is non-empty but timestamp is unset
+				// (should never happen). Treat as stale and skip local estimate.
+				console.warn("[model-switch] getLatestMessages() has messages but no timestamp — treating as stale")
+			}
+			const tokens = resolveContextTokens(usage, messages)
 			if (tokens != null && !contextFitsModel(tokens, target.contextWindow)) {
 				return {
 					content: [
@@ -208,7 +218,8 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 
 		// Context window guard — block if current tokens exceed target safe context window.
 		// Falls back to local estimate when upstream tokens are null (post-compaction).
-		const tokens = resolveContextTokens(usage, getLatestMessages())
+		const messages = getLatestMessages()
+		const tokens = resolveContextTokens(usage, messages)
 		if (tokens != null && !contextFitsModel(tokens, event.model.contextWindow)) {
 			isRevertingModel = true
 			await pi.setModel(event.previousModel)

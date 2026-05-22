@@ -49,6 +49,9 @@ let imagesStripped = false
 /** Reference to the latest context messages (stored for /strip-images command). */
 let latestMessages: ContextEvent["messages"] = []
 
+/** Timestamp of the last context event that updated latestMessages (ms since epoch). */
+let latestMessagesTimestamp = 0
+
 /** Map storing image descriptions keyed by data hash (for replacing images with descriptions). */
 const imageDescriptions = new Map<string, string>()
 
@@ -94,10 +97,19 @@ export function getLatestMessages(): ContextEvent["messages"] {
 	return latestMessages
 }
 
+/**
+ * Returns the timestamp (ms since epoch) of the most recent context event.
+ * If no context event has fired yet, returns 0.
+ */
+export function getLatestMessagesTimestamp(): number {
+	return latestMessagesTimestamp
+}
+
 function resetImageState(): void {
 	imagesDetected = false
 	imagesStripped = false
 	latestMessages = []
+	latestMessagesTimestamp = 0
 	imageDescriptions.clear()
 }
 
@@ -280,6 +292,7 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 
 		// Store reference to latest messages for /strip-images command
 		latestMessages = messages
+		latestMessagesTimestamp = Date.now()
 
 		// Always scan for images in the current context.
 		// If new images appear after a previous strip, reset the stripped flag
@@ -353,7 +366,12 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
  * Test-only helper to directly set latestMessages from tests.
  * Bypasses the context event so tests can control state without
  * needing to fire a context event or mock getLatestMessages.
+ *
+ * No-op in production; only mutates state when running under vitest.
  */
 export function __setLatestMessagesForTest(messages: ContextEvent["messages"]): void {
-	latestMessages = messages
+	if (typeof process !== "undefined" && process.env?.VITEST) {
+		latestMessages = messages
+		latestMessagesTimestamp = Date.now()
+	}
 }
