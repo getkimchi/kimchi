@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { classifyTool, formatSummary } from "./tool-grouping.js"
+import { classifyTool, formatSummary, getParent, patchAddChild } from "./tool-grouping.js"
+import { Container } from "@earendil-works/pi-tui"
 
 describe("classifyTool", () => {
 	it("classifies read tool as file", () => {
@@ -105,5 +106,40 @@ describe("formatSummary", () => {
 		expect(
 			formatSummary(new Map([["file", 2], ["pattern", 1]]), false)
 		).toBe("read 2 files, searched for 1 pattern")
+	})
+})
+
+describe("patchAddChild / getParent", () => {
+	it("returns undefined for a component with no parent", () => {
+		patchAddChild()
+		const child = new Container()
+		expect(getParent(child)).toBeUndefined()
+	})
+
+	it("records parent when addChild is called", () => {
+		patchAddChild()
+		const parent = new Container()
+		const child = new Container()
+		parent.addChild(child)
+		expect(getParent(child)).toBe(parent)
+	})
+
+	it("is idempotent — calling patchAddChild twice does not double-wrap", () => {
+		patchAddChild()
+		patchAddChild()
+		const parent = new Container()
+		const child = new Container()
+		parent.addChild(child)
+		expect(getParent(child)).toBe(parent)
+	})
+
+	it("returns the closest parent when re-added to a different container", () => {
+		patchAddChild()
+		const parent1 = new Container()
+		const parent2 = new Container()
+		const child = new Container()
+		parent1.addChild(child)
+		parent2.addChild(child)
+		expect(getParent(child)).toBe(parent2)
 	})
 })

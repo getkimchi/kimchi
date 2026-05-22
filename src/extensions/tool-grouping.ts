@@ -73,3 +73,25 @@ export function formatSummary(counts: Map<Category, number>, isInProgress: boole
 		.map(([cat, n]) => table[cat](n))
 		.join(", ")
 }
+
+// ---------------------------------------------------------------------------
+// Parent tracking via WeakMap
+// ---------------------------------------------------------------------------
+
+const ADDCHILD_PATCH_FLAG = Symbol.for("pi-tool-grouping:patched-addchild")
+const parentMap = new WeakMap<object, Container>()
+
+export function getParent(component: object): Container | undefined {
+	return parentMap.get(component)
+}
+
+export function patchAddChild(): void {
+	const proto = Container.prototype as any
+	if (proto[ADDCHILD_PATCH_FLAG]) return
+	const original = proto.addChild
+	proto.addChild = function patchedAddChild(component: object) {
+		parentMap.set(component, this)
+		return original.call(this, component)
+	}
+	proto[ADDCHILD_PATCH_FLAG] = true
+}
