@@ -304,6 +304,54 @@ describe("scopeFerment", () => {
 	})
 })
 
+describe("propose_ferment_scoping via registerLifecycleTools", () => {
+	it("normalizes legacy question prompt aliases before runtime validation", async () => {
+		const h = createHarness()
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			...h.pi,
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+			getActiveTools: vi.fn(() => ["read", "bash"]),
+			getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }]),
+			setActiveTools: vi.fn(),
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, h.runtime)
+
+		const tool = tools.get("propose_ferment_scoping")
+		if (!tool) throw new Error("propose_ferment_scoping not registered")
+
+		const result = await (
+			tool.execute as unknown as (...args: unknown[]) => Promise<{ content: { text: string }[]; isError?: boolean }>
+		)(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [
+					{
+						id: "q1",
+						prompt: "Which path?",
+						options: [
+							{ id: "a", label: "A", recommended: true },
+							{ id: "b", label: "B" },
+						],
+					},
+				],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			{ ui: {} },
+		)
+
+		expect(errText(result)).toContain("Cannot ask scoping questions without an interactive UI")
+		expect(errText(result)).not.toContain("questions.0.text")
+	})
+})
+
 describe("update_ferment_scope_field via registerLifecycleTools", () => {
 	function createRegisteredHarness() {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-update-scope-test-")))
@@ -482,7 +530,7 @@ describe("completeFerment", () => {
 		expect(h.storage.get(h.fermentId)?.grade?.unavailable).toBeUndefined()
 	})
 
-	it("interactive: judge unavailable + user chooses ship_no_grade → ships with unavailable=true", async () => {
+	it("judge unavailable → ships with unavailable=true without prompting", async () => {
 		const h = createHarness()
 		createTerminalFerment(h)
 		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
@@ -490,8 +538,7 @@ describe("completeFerment", () => {
 			reason: "no_auth",
 			detail: "missing api key",
 		})
-		// pi.getFlag returns undefined (no ferment-oneshot) → askUser routes to TUI.
-		const select = vi.fn(async () => "Ship without a grade")
+		const select = vi.fn()
 		const piWithUi = { ...h.pi, getFlag: vi.fn(() => undefined) } as unknown as ExtensionAPI
 		const ctx = { ui: { select } }
 
@@ -501,37 +548,14 @@ describe("completeFerment", () => {
 			{ pi: piWithUi, ctx },
 		)
 
-		expect(select).toHaveBeenCalled()
+		expect(select).not.toHaveBeenCalled()
 		expect(okText(result)).toContain("Final grade: B (unavailable)")
 		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
 		expect(h.storage.get(h.fermentId)?.grade?.unavailable).toBe(true)
-		expect(h.storage.get(h.fermentId)?.grade?.rationale).toContain("user authorized ship")
+		expect(h.storage.get(h.fermentId)?.grade?.rationale).toContain("shipped without a graded review")
 	})
 
-	it("interactive: judge unavailable + user chooses abandon → ferment abandoned", async () => {
-		const h = createHarness()
-		createTerminalFerment(h)
-		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
-			ok: false,
-			reason: "api_error",
-			detail: "timeout after 45s",
-		})
-		const select = vi.fn(async () => "Abandon ferment")
-		const piWithUi = { ...h.pi, getFlag: vi.fn(() => undefined) } as unknown as ExtensionAPI
-		const ctx = { ui: { select } }
-
-		const result = await completeFerment(
-			h.runtime,
-			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
-			{ pi: piWithUi, ctx },
-		)
-
-		expect(errText(result)).toContain("user declined ungraded ship")
-		expect(h.storage.get(h.fermentId)?.status).toBe("abandoned")
-		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
-	})
-
-	it("one-shot: judge unavailable → abandon directly without prompting", async () => {
+	it("one-shot: judge unavailable → ships with unavailable=true without prompting", async () => {
 		const h = createHarness()
 		createTerminalFerment(h)
 		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
@@ -551,7 +575,8 @@ describe("completeFerment", () => {
 		)
 
 		expect(select).not.toHaveBeenCalled()
-		expect(errText(result)).toContain("one-shot mode")
-		expect(h.storage.get(h.fermentId)?.status).toBe("abandoned")
+		expect(okText(result)).toContain("Final grade: B (unavailable)")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade?.unavailable).toBe(true)
 	})
 })

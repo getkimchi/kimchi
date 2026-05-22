@@ -126,10 +126,18 @@ export const ScopingQuestionSchema = Type.Object({
 			},
 		),
 	),
-	text: Type.String({
-		description:
-			"The decision-blocking question shown to the user. Do not ask preference-survey questions when a safe default can be assumed; a user request to be thorough with questions does not make default choices decision-blocking.",
-	}),
+	text: Type.Optional(
+		Type.String({
+			description:
+				"Required question text shown to the user. Use this field name exactly; do not use `prompt`. Do not ask preference-survey questions when a safe default can be assumed; a user request to be thorough with questions does not make default choices decision-blocking.",
+		}),
+	),
+	prompt: Type.Optional(
+		Type.String({
+			description:
+				"Deprecated compatibility alias for `text`. Prefer `text`; the host normalizes `prompt` to `text` only to recover from older tool-call shapes.",
+		}),
+	),
 	options: Type.Optional(
 		Type.Array(ScopingQuestionOptionSchema, {
 			description:

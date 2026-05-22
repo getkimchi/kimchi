@@ -253,11 +253,13 @@ function normalizeQuestions(value: ProposeScopingArgs["questions"]): ScopingQues
 	const parsed = parseJsonArray(value, "questions")
 	if (typeof parsed === "string") return parsed
 	if (parsed.length > 3) return 'Field "questions" must contain at most 3 questions.'
+	const questions: ScopingQuestion[] = []
 	for (const [questionIndex, raw] of parsed.entries()) {
 		if (!raw || typeof raw !== "object") return `questions.${questionIndex} must be an object.`
 		const q = raw as Record<string, unknown>
 		if (typeof q.id !== "string") return `questions.${questionIndex}.id must be a string.`
-		if (typeof q.text !== "string") return `questions.${questionIndex}.text must be a string.`
+		const text = typeof q.text === "string" ? q.text : typeof q.prompt === "string" ? q.prompt : undefined
+		if (!text) return `questions.${questionIndex}.text must be a string.`
 		const questionType = normalizeScopingQuestionType(q.type)
 		if (!questionType.ok) return `questions.${questionIndex}.type ${questionType.error}`
 		const type = questionType.type
@@ -265,6 +267,7 @@ function normalizeQuestions(value: ProposeScopingArgs["questions"]): ScopingQues
 			if (q.options !== undefined && (!Array.isArray(q.options) || q.options.length > 0)) {
 				return `questions.${questionIndex}.options must be omitted or empty for text questions.`
 			}
+			questions.push({ id: q.id, text, type })
 			continue
 		}
 		if (!Array.isArray(q.options)) return `questions.${questionIndex}.options must be an array for ${type} questions.`
@@ -284,8 +287,14 @@ function normalizeQuestions(value: ProposeScopingArgs["questions"]): ScopingQues
 				return `questions.${questionIndex}.options.${optionIndex}.recommended must be boolean.`
 			}
 		}
+		questions.push({
+			id: q.id,
+			text,
+			type: q.type === undefined ? undefined : type,
+			options: q.options as ScopingQuestion["options"],
+		})
 	}
-	return parsed as ScopingQuestion[]
+	return questions
 }
 
 function getScopingQuestionType(question: ScopingQuestion): ScopingQuestionType {
@@ -569,53 +578,13 @@ export async function completeFerment(
 	if (journeyResult.ok) {
 		resolvedGrade = { grade: journeyResult.grade, rationale: journeyResult.rationale }
 	} else {
-		// Judge failed. In interactive sessions, ask the user whether to ship
-		// without a grade or abandon. In one-shot, the judge is also the
-		// stand-in for the user — asking is circular — so we abandon directly
-		// and leave an artifact for /ferment resume.
-		const isOneShot = pi.getFlag?.("ferment-oneshot") === true
+		// Judge failure should not block completion. Store an unavailable grade
+		// marker so stats/reporting can skip it instead of asking the operator
+		// an obvious fallback question at the very end of the flow.
 		const failureDetail = `${journeyResult.reason}${journeyResult.detail ? `: ${journeyResult.detail}` : ""}`
-
-		if (isOneShot) {
-			const abandonOutcome = applyAndPersist(params.ferment_id, {
-				type: "abandon",
-				reason: `final grade judge unreachable (${failureDetail})`,
-			})
-			if (abandonOutcome.ok) runtime.setActive(abandonOutcome.ferment)
-			return toolErr(
-				`complete_ferment refused — final grade judge unreachable in one-shot mode (${failureDetail}).\nFerment abandoned. Restart with a reachable judge or resume interactively.`,
-			)
-		}
-
-		// Interactive: askUser routes to TUI here. Two options: ship without
-		// a grade, or abandon. Failed routing (e.g. no TUI) defaults to
-		// abandon — safer when we can't be sure the user saw the prompt.
-		const choice = await askUser(
-			`Final grade judge unreachable (${failureDetail}). Ship without a grade or abandon?`,
-			[
-				{
-					id: "ship_no_grade",
-					label: "Ship without a grade",
-					description: "Mark complete; grade will be recorded as unavailable.",
-				},
-				{ id: "abandon", label: "Abandon ferment", description: "Discard completion; the work stays on disk." },
-			],
-			{ ferment, pi, ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined, runtime },
-		)
-
-		if (choice.failed || choice.choice === "abandon") {
-			const reason = choice.failed
-				? `judge unreachable and no audience to authorize ungraded ship (${choice.reason})`
-				: "judge unreachable; user declined ungraded ship"
-			const abandonOutcome = applyAndPersist(params.ferment_id, { type: "abandon", reason })
-			if (abandonOutcome.ok) runtime.setActive(abandonOutcome.ferment)
-			return toolErr(`complete_ferment refused — ${reason}.`)
-		}
-
-		// choice === "ship_no_grade"
 		resolvedGrade = {
 			grade: "B",
-			rationale: `Judge unreachable (${failureDetail}); user authorized ship without a graded review.`,
+			rationale: `Judge unreachable (${failureDetail}); shipped without a graded review.`,
 			unavailable: true,
 		}
 	}

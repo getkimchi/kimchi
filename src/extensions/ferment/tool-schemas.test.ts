@@ -158,6 +158,27 @@ describe("ProposeScopingParams schema", () => {
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 
+	it("accepts legacy prompt alias at the schema boundary", () => {
+		const payload = {
+			ferment_id: "f-123",
+			goal: "Do something",
+			phases: minimalPhases(),
+			questions: [
+				{
+					id: "q1",
+					prompt: "Which path?",
+					options: [
+						{ id: "a", label: "A" },
+						{ id: "b", label: "B" },
+					],
+				},
+			],
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
+	})
+
 	it("allows more than 3 questions through schema so runtime can return a focused validation error", () => {
 		const question = (id: string) => ({
 			id,
