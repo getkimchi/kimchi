@@ -61,6 +61,7 @@ function buildCtx(ctx: ExtensionCommandContext, deps: TeleportExtensionDeps): Te
 		signal: ctx.signal,
 		triggerRebind: deps.getTriggerRebind(),
 		triggerFreshUI: deps.getTriggerFreshUI(),
+		onHostResolved: (host: string) => setSessionIndicator(formatSessionLabel(host)),
 	}
 }
 

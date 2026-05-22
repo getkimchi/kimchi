@@ -127,6 +127,7 @@ export async function runAttach(args: AttachArgs, ctx: TeleportContext): Promise
 		}
 
 		wrapper.foregroundRemote(remote)
+		ctx.onHostResolved?.(authResult.host)
 		await refreshUIAfterSwap(ctx)
 
 		progress.finish({ id: sessionId, url: authResult.wsUrl, description: authResult.description })

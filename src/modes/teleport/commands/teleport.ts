@@ -421,6 +421,7 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 		}
 
 		wrapper.foregroundRemote(remote)
+		ctx.onHostResolved?.(authResult.host)
 		await refreshUIAfterSwap(ctx)
 
 		progress.finish({ id: sessionId, url: authResult.wsUrl, description: authResult.description })

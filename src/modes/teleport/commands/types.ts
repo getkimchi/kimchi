@@ -32,6 +32,14 @@ export interface TeleportContext {
 	 * nothing.
 	 */
 	triggerFreshUI?: () => void
+	/**
+	 * Called with the resolved host string right before the UI refresh that
+	 * follows a foreground swap. The teleport extension uses this to set the
+	 * session indicator **before** `resetExtensionUI` + `rebindCurrentSession`
+	 * re-create the prompt editor, so the editor factory picks up the
+	 * indicator text from the module-level cache on first render.
+	 */
+	onHostResolved?: (host: string) => void
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────

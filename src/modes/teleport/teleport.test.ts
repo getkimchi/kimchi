@@ -171,20 +171,25 @@ function makeCtx(homeBase: FakeSession, opts: { triggerRebind?: () => Promise<vo
 	const ui = makeUI()
 	const services = {} as unknown as AgentSessionServices
 	const triggerRebind = opts.triggerRebind ?? vi.fn(async () => {})
-	return {
+	const ctx: {
+		wrapper: TeleportableAgentSession
+		services: AgentSessionServices
+		apiKey: string
+		endpoint: string
+		cwd: string
+		ui: ReturnType<typeof makeUI>
+		triggerRebind: () => Promise<void>
+		onHostResolved?: (host: string) => void
+	} = {
 		wrapper,
+		services,
+		apiKey: "test-key",
+		endpoint: "https://api.example.com",
+		cwd: "/work/proj",
 		ui,
 		triggerRebind,
-		ctx: {
-			wrapper,
-			services,
-			apiKey: "test-key",
-			endpoint: "https://api.example.com",
-			cwd: "/work/proj",
-			ui,
-			triggerRebind,
-		},
 	}
+	return { wrapper, ui, triggerRebind, ctx }
 }
 
 function setExecOutputs(map: Record<string, { stdout?: string; err?: Error }>) {
@@ -585,6 +590,28 @@ describe("runTeleport", () => {
 		expect(setup.wrapper.isForegroundHomeBase).toBe(false)
 		expect(setup.ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Session rebind failed: rebind boom/), "warning")
 	})
+
+	it("calls onHostResolved BEFORE triggerRebind so the session indicator is set before UI refresh", async () => {
+		const home = new FakeSession("local-1")
+		const callOrder: string[] = []
+		const triggerRebind = vi.fn(async () => {
+			callOrder.push("rebind")
+		})
+		const setup = makeCtx(home, { triggerRebind })
+		setup.ctx.onHostResolved = vi.fn((host: string) => {
+			callOrder.push(`onHostResolved:${host}`)
+		})
+		buildMock.mockResolvedValueOnce(asRemote(new FakeSession("remote-1")))
+
+		const result = await runTeleport(
+			{ allowDirty: false, exclude: [], includeIgnored: false, abandonPending: false, force: false },
+			setup.ctx,
+		)
+
+		expect(setup.ctx.onHostResolved).toHaveBeenCalledOnce()
+		expect(setup.ctx.onHostResolved).toHaveBeenCalledWith(result.host)
+		expect(callOrder.indexOf(`onHostResolved:${result.host}`)).toBeLessThan(callOrder.indexOf("rebind"))
+	})
 })
 
 // ───────────────────────── runDetach ─────────────────────────
@@ -796,6 +823,29 @@ describe("runAttach", () => {
 		const { ctx } = makeCtx(home)
 
 		await expect(runAttach({ target: "done" }, ctx)).rejects.toThrow(/completed/)
+	})
+
+	it("calls onHostResolved BEFORE triggerRebind so the session indicator is set before UI refresh", async () => {
+		const home = new FakeSession("local-1")
+		const detached = new FakeSession("remote-1")
+		const fresh = new FakeSession("remote-1")
+		const callOrder: string[] = []
+		const triggerRebind = vi.fn(async () => {
+			callOrder.push("rebind")
+		})
+		const setup = makeCtx(home, { triggerRebind })
+		setup.wrapper.foregroundRemote(asRemote(detached))
+		setup.wrapper.detachToHomeBase()
+		buildMock.mockResolvedValueOnce(asRemote(fresh))
+		setup.ctx.onHostResolved = vi.fn((host: string) => {
+			callOrder.push(`onHostResolved:${host}`)
+		})
+
+		const result = await runAttach({ target: "remote-1" }, setup.ctx)
+
+		expect(setup.ctx.onHostResolved).toHaveBeenCalledOnce()
+		expect(setup.ctx.onHostResolved).toHaveBeenCalledWith(result.host)
+		expect(callOrder.indexOf(`onHostResolved:${result.host}`)).toBeLessThan(callOrder.indexOf("rebind"))
 	})
 })
 
