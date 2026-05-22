@@ -1015,4 +1015,73 @@ describe("telemetryExtension", () => {
 			await getHandler(handlers, "session_shutdown")()
 		})
 	})
+
+	describe("shared accumulators across sub-agents", () => {
+		it("two extension instances with the same rootSessionId accumulate into shared state", async () => {
+			// Simulate main agent + sub-agent: two extension instances loaded for the same root session.
+			const { handlers: h1, api: api1 } = createMockApi()
+			const { handlers: h2, api: api2 } = createMockApi()
+			const ext1 = telemetryExtension(makeConfig())
+			const ext2 = telemetryExtension(makeConfig())
+			ext1(api1)
+			ext2(api2)
+
+			// Both session_start handlers fire (each agent starts its own session).
+			await getHandler(h1, "session_start")()
+			await getHandler(h2, "session_start")()
+
+			// Main agent records 100 output tokens.
+			await getHandler(
+				h1,
+				"message_end",
+			)({
+				message: {
+					role: "assistant",
+					model: "test-model",
+					provider: "test",
+					timestamp: 1,
+					usage: { input: 0, output: 100, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
+				},
+			})
+
+			// Sub-agent records 50 output tokens.
+			await getHandler(
+				h2,
+				"message_end",
+			)({
+				message: {
+					role: "assistant",
+					model: "test-model",
+					provider: "test",
+					timestamp: 2,
+					usage: { input: 0, output: 50, cacheRead: 0, cacheWrite: 0, cost: { total: 0.005 } },
+				},
+			})
+
+			// Flush both sessions.
+			await getHandler(h1, "session_shutdown")()
+			await getHandler(h2, "session_shutdown")()
+
+			// There should be exactly one metrics POST (last flush wins, which is the total).
+			const metricsCalls = fetchMock.mock.calls.filter(
+				([url]) => String(url) === "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest",
+			)
+			expect(metricsCalls.length).toBeGreaterThanOrEqual(1)
+
+			// The last flush must contain the combined 150 output tokens — not just 50.
+			const lastPayload = JSON.parse(String((metricsCalls[metricsCalls.length - 1][1] as RequestInit).body))
+			const metrics = lastPayload.resourceMetrics[0].scopeMetrics[0].metrics
+			const outputMetric = metrics.find(
+				(m: {
+					name: string
+					sum?: {
+						dataPoints: Array<{ asInt?: string; attributes: Array<{ key: string; value: { stringValue: string } }> }>
+					}
+				}) =>
+					m.name === "claude_code.token.usage" &&
+					m.sum?.dataPoints[0]?.attributes?.some((a) => a.key === "type" && a.value.stringValue === "output"),
+			)
+			expect(outputMetric?.sum?.dataPoints[0]?.asInt).toBe("150")
+		})
+	})
 })
