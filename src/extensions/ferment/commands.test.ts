@@ -114,12 +114,81 @@ describe("FermentCommandController", () => {
 		)
 	})
 
+	it("accepts an inline new title without opening an editor in UI mode", async () => {
+		const h = createHarness()
+		const controller = new FermentCommandController()
+		const ui = {
+			notify: vi.fn(),
+			editor: vi.fn().mockResolvedValueOnce("unexpected editor text"),
+			input: vi.fn().mockResolvedValueOnce("unexpected input text"),
+		}
+		const ctx = {
+			hasUI: true,
+			ui,
+		} as unknown as ExtensionCommandContext
+
+		const result = await controller.execute(
+			{ type: "new", title: "Inline Title" },
+			{ raw: 'new "Inline Title"', pi: h.pi, ctx, runtime: h.runtime },
+		)
+
+		const created = h.storage.list().find((f) => f.description === "Inline Title")
+		expect(result).toEqual({ handled: true })
+		expect(ui.editor).not.toHaveBeenCalled()
+		expect(ui.input).not.toHaveBeenCalled()
+		expect(created).toBeDefined()
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_created_nudge",
+				content: [expect.objectContaining({ text: expect.stringContaining("Inline Title") })],
+			}),
+			{ triggerTurn: true },
+		)
+	})
+
+	it("prompts bare new commands with the multi-line editor in UI mode", async () => {
+		const h = createHarness()
+		const controller = new FermentCommandController()
+		const ui = {
+			notify: vi.fn(),
+			editor: vi.fn().mockResolvedValueOnce("make reports better\ninclude tests"),
+			input: vi.fn().mockResolvedValueOnce("single-line fallback"),
+		}
+		const ctx = {
+			hasUI: true,
+			ui,
+		} as unknown as ExtensionCommandContext
+
+		const result = await controller.execute(
+			{ type: "new", title: "" },
+			{ raw: "new", pi: h.pi, ctx, runtime: h.runtime },
+		)
+
+		const created = h.storage.list().find((f) => f.description === "make reports better\ninclude tests")
+		expect(result).toEqual({ handled: true })
+		expect(ui.editor).toHaveBeenCalledWith(
+			"🍺  What would you like to ferment?\ne.g. 'Rewrite login flow' or 'Add OAuth support'",
+			"",
+		)
+		expect(ui.input).not.toHaveBeenCalled()
+		expect(created).toBeDefined()
+		expect(h.runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ id: created?.id }))
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_created_nudge",
+				content: [expect.objectContaining({ text: expect.stringContaining("make reports better\ninclude tests") })],
+			}),
+			{ triggerTurn: true },
+		)
+	})
+
 	it("echoes the interactive request before starting the hidden scoping turn", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
 		const ui = {
 			notify: vi.fn(),
-			input: vi.fn().mockResolvedValueOnce("make the todo app glassy"),
+			editor: vi.fn().mockResolvedValueOnce("make the todo app glassy\nwith tests"),
+			input: vi.fn().mockResolvedValueOnce("single-line fallback"),
 			select: vi.fn(),
 		}
 		const ctx = {
@@ -130,18 +199,23 @@ describe("FermentCommandController", () => {
 		const result = await controller.execute({ type: "interactive" }, { raw: "", pi: h.pi, ctx, runtime: h.runtime })
 
 		expect(result).toEqual({ handled: true })
+		expect(ui.editor).toHaveBeenCalledWith(
+			"🍺  What would you like to ferment?\ne.g. 'Rewrite login flow' or 'Add OAuth support'",
+			"",
+		)
+		expect(ui.input).not.toHaveBeenCalled()
 		expect(ui.select).not.toHaveBeenCalled()
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_request",
 				display: true,
-				details: { intent: "make the todo app glassy" },
+				details: { intent: "make the todo app glassy\nwith tests" },
 			}),
 		)
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_created_nudge",
-				content: [expect.objectContaining({ text: expect.stringContaining("make the todo app glassy") })],
+				content: [expect.objectContaining({ text: expect.stringContaining("make the todo app glassy\nwith tests") })],
 			}),
 			{ triggerTurn: true },
 		)
@@ -206,6 +280,21 @@ describe("FermentCommandController", () => {
 		expect(result).toEqual({ handled: true })
 		expect(h.storage.list()).toHaveLength(0)
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Unknown /ferment command"))
+	})
+
+	it("keeps headless one-shot without intent on the usage path", async () => {
+		const h = createHarness()
+		const controller = new FermentCommandController()
+
+		const result = await controller.execute(
+			{ type: "one-shot", intent: "" },
+			{ raw: "one-shot", pi: h.pi, ctx: h.ctx, runtime: h.runtime },
+		)
+
+		expect(result).toEqual({ handled: true })
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith('Usage: /ferment one-shot "description of what to build"')
+		expect(h.storage.list()).toHaveLength(0)
+		expect(h.pi.sendMessage).not.toHaveBeenCalled()
 	})
 
 	it("reports export write failures without throwing", async () => {

@@ -4,6 +4,7 @@ import type { ExtensionUIContext, ModelRegistry } from "@earendil-works/pi-codin
 export interface FermentUi {
 	notify(message: string, level?: string): void
 	input?(label: string, placeholder?: string): Promise<string | undefined>
+	editor?(title: string, prefill?: string): Promise<string | undefined>
 	select?(title: string, options: string[]): Promise<string | undefined>
 	custom?: ExtensionUIContext["custom"]
 	confirm?(title: string, description?: string): Promise<boolean>

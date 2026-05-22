@@ -21,7 +21,7 @@ import {
 	handlePhaseAction,
 	handleStepAction,
 } from "./progress-overlay.js"
-import { promptInput } from "./prompt-ui.js"
+import { promptEditor } from "./prompt-ui.js"
 import { resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
@@ -174,12 +174,12 @@ export async function startInteractiveFerment({
 		)
 		return
 	}
-	if (!ctx.ui.input) {
+	if (!ctx.ui.editor && !ctx.ui.input) {
 		ctx.ui.notify('No UI available. Use /ferment new "Name" instead.')
 		return
 	}
 
-	const rawIntent = await promptInput(
+	const rawIntent = await promptEditor(
 		ctx,
 		"🍺  What would you like to ferment?",
 		"e.g. 'Rewrite login flow' or 'Add OAuth support'",
@@ -760,8 +760,12 @@ export class FermentCommandController {
 			}
 			const intent = command.intent
 			let resolvedIntent = intent
-			if (!resolvedIntent && ctx.ui.input) {
-				const typed = await ctx.ui.input("🍺  One-shot: what should be done?", "Describe the full task…")
+			if (!resolvedIntent) {
+				if (!ctx.hasUI) {
+					ctx.ui.notify('Usage: /ferment one-shot "description of what to build"')
+					return { handled: true }
+				}
+				const typed = await promptEditor(ctx, "🍺  One-shot: what should be done?", "Describe the full task…")
 				if (!typed) return { handled: true }
 				resolvedIntent = typed
 			}
@@ -819,10 +823,21 @@ export class FermentCommandController {
 			ctx.ui.notify(FERMENT_COMMAND_USAGE)
 			return { handled: true }
 		}
-		const rawName = command.title
+		let rawName = command.title
+		let scopingIntent: string | undefined = rawName || undefined
 		if (!rawName) {
-			ctx.ui.notify('Usage: /ferment new "Name"')
-			return { handled: true }
+			if (!ctx.hasUI || (!ctx.ui.editor && !ctx.ui.input)) {
+				ctx.ui.notify('Usage: /ferment new "Name"')
+				return { handled: true }
+			}
+			const typed = await promptEditor(
+				ctx,
+				"🍺  What would you like to ferment?",
+				"e.g. 'Rewrite login flow' or 'Add OAuth support'",
+			)
+			if (!typed) return { handled: true }
+			rawName = typed
+			scopingIntent = typed
 		}
 		ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · naming…")
 		try {
@@ -841,7 +856,7 @@ export class FermentCommandController {
 				"ferment_ack",
 			)
 
-			await runScopingFlow(f, pi, ctx, runtime)
+			await runScopingFlow(f, pi, ctx, runtime, scopingIntent)
 		} catch (err) {
 			ctx.ui.notify(err instanceof FermentError ? err.message : "Create failed.")
 		} finally {

@@ -3,8 +3,8 @@
  *
  * Single-input handshake:
  *
- *   1. `runScopingFlow` shows ONE free-form text input ("What do you want to
- *      do?"). On non-empty input it seeds the pending-scope buffer and fires a
+ *   1. `runScopingFlow` shows ONE free-form editor prompt ("What do you want
+ *      to do?"). On non-empty input it seeds the pending-scope buffer and fires a
  *      single LLM turn asking the model to call `propose_ferment_scoping` with the
  *      full draft (goal, criteria, constraints, assumptions, phases, and
  *      optional clarifying questions).
@@ -22,7 +22,7 @@ import { determineNextAction } from "../../ferment/engine.js"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { SCOPING_DISCOVERY_GUIDANCE } from "./constants.js"
-import { promptInput } from "./prompt-ui.js"
+import { promptEditor } from "./prompt-ui.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import type { FermentUiContext } from "./ui.js"
 
@@ -133,7 +133,7 @@ export async function runScopingFlow(
 	runtime: FermentRuntime = defaultFermentRuntime,
 	preIntent?: string,
 ): Promise<void> {
-	if (!ctx.ui.input) {
+	if (!ctx.ui.editor && !ctx.ui.input) {
 		// Headless fallback: let the LLM handle scoping conversationally
 		const prompt = buildScopePrompt(runtime, f.id)
 		void pi.sendMessage(
@@ -150,7 +150,7 @@ export async function runScopingFlow(
 
 	let intent: string | undefined = preIntent
 	if (!intent) {
-		intent = await promptInput(ctx, "What do you want to do?", "Describe what you want to accomplish…")
+		intent = await promptEditor(ctx, "What do you want to do?", "Describe what you want to accomplish…")
 	}
 	if (intent === undefined || intent === "") return
 

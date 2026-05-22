@@ -134,6 +134,32 @@ describe("runScopingFlow", () => {
 		expect(text).toContain("Call propose_ferment_scoping")
 	})
 
+	it("prefers ctx.ui.editor for the free-form scoping prompt", async () => {
+		const { runtime, storage } = createRuntime()
+		const ferment = storage.create("My Ferment")
+		const pi = makePi()
+		const ui = {
+			notify: vi.fn(),
+			editor: vi.fn().mockResolvedValue("I want to build reports\nwith export tests"),
+			input: vi.fn().mockResolvedValue("single-line fallback"),
+		}
+		const ctx = {
+			hasUI: true,
+			ui,
+		} as unknown as ExtensionCommandContext
+
+		await runScopingFlow(ferment, pi, ctx, runtime)
+
+		expect(ui.editor).toHaveBeenCalledWith("What do you want to do?\nDescribe what you want to accomplish…", "")
+		expect(ui.input).not.toHaveBeenCalled()
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_request",
+				details: { intent: "I want to build reports\nwith export tests" },
+			}),
+		)
+	})
+
 	it("undefined input (Esc) → no sendMessage, no markScopingInteractive, no pendingScope", async () => {
 		const { runtime, storage } = createRuntime()
 		const ferment = storage.create("My Ferment")
