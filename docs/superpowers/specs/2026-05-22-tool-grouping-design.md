@@ -31,17 +31,21 @@ Exports a single entry point: `registerToolGrouping(pi: ExtensionAPI)`. Called f
 
 ### `patchAddChild()`
 
-Patches `Container.prototype.addChild` (idempotent) to set `child._piParent = parent` on every component. This gives each `ToolExecutionComponent` a reference to its parent container, required for sibling scanning.
+Patches `Container.prototype.addChild` (idempotent). Uses a `WeakMap<Component, Container>` to record `parent` for each `child` — avoids circular object references and GC issues. Exposed as `getParent(component): Container | undefined`. This gives each `ToolExecutionComponent` a reference to its parent container, required for sibling scanning.
 
 ### `patchToolGroupRendering()`
 
 Patches `ToolExecutionComponent.prototype.render`. On each call:
 
-1. Read `this._piParent`. If absent, fall through to original render.
-2. Scan `parent.children` to find the consecutive run of `ToolExecutionComponent` siblings that includes `this`. A run is broken by any child that is neither a `ToolExecutionComponent` nor a `Spacer`. Both completed **and** in-progress tools are included in the run.
+1. Read `getParent(this)`. If absent, fall through to original render.
+2. Scan `parent.children` to find the consecutive run of `ToolExecutionComponent` siblings that includes `this`. Rules:
+   - `Spacer` children are transparent — they don't break the run and are not included in the run array.
+   - Any non-`ToolExecutionComponent`, non-`Spacer` child breaks the run.
+   - A failed tool (`isError === true`) breaks the run — it is not included, and the run ends before it. The failed tool renders normally on its own.
+   - Both completed and in-progress tools are included in the run array.
 3. If run length < 2, fall through to original render.
 4. Derive `groupKey = run[last].toolCallId`.
-5. If `isToolExpanded(groupKey)`: fall through (each tool renders normally).
+5. If `isToolExpanded(groupKey)`: fall through (each tool renders normally; pressing ctrl+o on the last tool re-collapses the group).
 6. If `this !== run[last]`: return `[]` (hidden).
 7. If `this === run[last]`: return `buildGroupView(run).render(width)`.
 
@@ -52,7 +56,7 @@ Builds the visual component for the group. The last tool is the renderer; it has
 **Determine state:**
 - `isInProgress = run[last].isPartial === true`
 
-**Build header text** using `classifyTool()` on all tools in the run:
+**Build header text** using `classifyTool()` on all tools in the run. Categories are aggregated globally and ordered by first appearance in the run (e.g. `Read → Bash(ls) → Read → Grep` → "read 2 files, listed 1 directory, searched 1 pattern"):
 - In-progress: continuous tense — `"⟳ Searching for 1 pattern, reading 3 files…"`
 - Completed: past tense — `"✓ Searched for 1 pattern, read 3 files  ctrl+o"`
 
@@ -109,7 +113,9 @@ Pure function. Reads `(component as any).toolName` and `(component as any).args`
 
 ## Expand interaction
 
-ctrl+o is already wired per-`toolCallId` by the upstream framework. The last tool in a group is the only visible component, and its `toolCallId` is the group key. Pressing ctrl+o calls `setExpanded(true)` on that component. On next render, `isToolExpanded(groupKey)` is true → all tools in the group fall through to their normal individual renders (single-line collapsed headers; each can be further expanded with ctrl+o to show full output).
+ctrl+o is already wired per-`toolCallId` by the upstream framework. The last tool in a group is the only visible component when collapsed, and its `toolCallId` is the group key. Pressing ctrl+o calls `setExpanded(true)` on that component. On next render, `isToolExpanded(groupKey)` is true → all tools in the group fall through to their normal individual renders (single-line collapsed headers; each can be further expanded with ctrl+o to show full output).
+
+To re-collapse: press ctrl+o on the last tool in the expanded group. Since that tool's `toolCallId` is the group key, it toggles the whole group back to the summary view.
 
 ## What is not changing
 
