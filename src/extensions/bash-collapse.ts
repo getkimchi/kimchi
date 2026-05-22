@@ -1,7 +1,5 @@
 import { execFile, execFileSync } from "node:child_process"
-import { existsSync, readFileSync } from "node:fs"
-import { homedir } from "node:os"
-import { join } from "node:path"
+import { existsSync } from "node:fs"
 import {
 	type BashOperations,
 	type BashSpawnContext,
@@ -23,14 +21,10 @@ export function collapseCommand(command: string | undefined): string {
 // `rtk rewrite <cmd>` before execution.  This reduces LLM token consumption
 // by 60-90% on common dev commands (git, cargo, npm, etc.).
 //
-// Disable via:
-//   - KIMCHI_RTK=0 environment variable, or
-//   - "rtk": false  in ~/.config/kimchi/harness/settings.json (/settings)
+// Disable via hooks.rtk-rewrite in /resources.
 //
 // See https://github.com/rtk-ai/rtk
 // ---------------------------------------------------------------------------
-
-const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
 
 /** Tri-state: undefined = not yet probed, true/false = cached result. */
 let rtkAvailable: boolean | undefined
@@ -38,24 +32,8 @@ let rtkAvailable: boolean | undefined
 /** Cached in-flight detection promise to avoid concurrent spawns. */
 let rtkDetectPromise: Promise<boolean> | undefined
 
-function isRtkDisabledByEnv(): boolean {
-	const v = process.env.KIMCHI_RTK
-	return v === "0" || v === "false" || v === "off"
-}
-
-function isRtkDisabledBySettings(): boolean {
-	try {
-		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
-		const parsed = JSON.parse(raw)
-		if ("rtk" in parsed) return parsed.rtk === false
-	} catch {
-		// settings.json absent or unreadable — not disabled
-	}
-	return false
-}
-
 function isRtkDisabled(): boolean {
-	return isRtkDisabledByEnv() || isRtkDisabledBySettings() || !isResourceEnabled("hooks.rtk-rewrite")
+	return !isResourceEnabled("hooks.rtk-rewrite")
 }
 
 function rtkBinary(): string {
@@ -94,7 +72,7 @@ export function detectRtk(): Promise<boolean> {
  * Used as a pi-mono BashSpawnHook (which must be synchronous).
  *
  * Returns the original command unchanged when:
- *   - rtk is not available or disabled via KIMCHI_RTK / settings.json
+ *   - rtk is not available or hooks.rtk-rewrite is disabled
  *   - rtk returns empty output or the same string
  *   - the subprocess times out or fails to spawn
  */
@@ -180,13 +158,20 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (hooked.command === event.command) return
 		rewriteCache.set(event.command, hooked.command)
-		return { operations: fixedCommandOperations(hooked.command) }
+		return { operations: rewrittenCommandOperations(event.command, hooked.command) }
 	})
 }
 
-function fixedCommandOperations(command: string): BashOperations {
+function rewrittenCommandOperations(original: string, rewritten: string): BashOperations {
 	const local = createLocalBashOperations()
 	return {
-		exec: (_command, cwd, options) => local.exec(command, cwd, options),
+		exec: (command, cwd, options) => local.exec(rewritePreparedBashCommand(command, original, rewritten), cwd, options),
 	}
+}
+
+export function rewritePreparedBashCommand(prepared: string, original: string, rewritten: string): string {
+	if (prepared === original) return rewritten
+	const suffix = `\n${original}`
+	if (prepared.endsWith(suffix)) return `${prepared.slice(0, -original.length)}${rewritten}`
+	return rewritten
 }

@@ -7,6 +7,7 @@ import {
 	collapseCommand,
 	detectRtk,
 	getBashCommandForDisplay,
+	rewritePreparedBashCommand,
 	rewriteWithRtk,
 	rtkSpawnHook,
 } from "./bash-collapse.js"
@@ -34,6 +35,22 @@ describe("collapseCommand", () => {
 	})
 })
 
+describe("rewritePreparedBashCommand", () => {
+	it("rewrites the plain command when no shell prefix was applied", () => {
+		expect(rewritePreparedBashCommand("git status", "git status", "rtk git status")).toBe("rtk git status")
+	})
+
+	it("preserves shell setup before the original command", () => {
+		expect(rewritePreparedBashCommand("shopt -s expand_aliases\ngit status", "git status", "rtk git status")).toBe(
+			"shopt -s expand_aliases\nrtk git status",
+		)
+	})
+
+	it("falls back to the rewritten command when the prepared command cannot be matched", () => {
+		expect(rewritePreparedBashCommand("git status && echo done", "git status", "rtk git status")).toBe("rtk git status")
+	})
+})
+
 // ---------------------------------------------------------------------------
 // RTK integration
 // ---------------------------------------------------------------------------
@@ -52,20 +69,10 @@ import { execFile, execFileSync } from "node:child_process"
 const mockExecFile = execFile as unknown as MockInstance
 const mockExecFileSync = execFileSync as unknown as MockInstance
 
-function clearEnv(): void {
-	// biome-ignore lint/performance/noDelete: env vars must be fully removed, not set to "undefined" string
-	delete process.env.KIMCHI_RTK
-}
-
 describe("detectRtk", () => {
 	beforeEach(() => {
 		_resetRtkState()
-		clearEnv()
 		mockExecFile.mockReset()
-	})
-
-	afterEach(() => {
-		clearEnv()
 	})
 
 	it("returns true when rtk --version succeeds", async () => {
@@ -105,24 +112,6 @@ describe("detectRtk", () => {
 		// Only one execFile call — the second caller shares the in-flight promise.
 		expect(mockExecFile).toHaveBeenCalledTimes(1)
 	})
-
-	it("returns false immediately when KIMCHI_RTK=0", async () => {
-		process.env.KIMCHI_RTK = "0"
-		expect(await detectRtk()).toBe(false)
-		expect(mockExecFile).not.toHaveBeenCalled()
-	})
-
-	it("returns false immediately when KIMCHI_RTK=false", async () => {
-		process.env.KIMCHI_RTK = "false"
-		expect(await detectRtk()).toBe(false)
-		expect(mockExecFile).not.toHaveBeenCalled()
-	})
-
-	it("returns false immediately when KIMCHI_RTK=off", async () => {
-		process.env.KIMCHI_RTK = "off"
-		expect(await detectRtk()).toBe(false)
-		expect(mockExecFile).not.toHaveBeenCalled()
-	})
 })
 
 describe("rewriteWithRtk", () => {
@@ -132,7 +121,6 @@ describe("rewriteWithRtk", () => {
 
 	beforeEach(() => {
 		_resetRtkState()
-		clearEnv()
 		previousKimchiDir = process.env.KIMCHI_CODING_AGENT_DIR
 		previousHome = process.env.HOME
 		tmpRtkRoot = mkdtempSync(join(tmpdir(), "kimchi-rtk-collapse-test-"))
@@ -152,7 +140,6 @@ describe("rewriteWithRtk", () => {
 		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete.
 		if (previousHome === undefined) delete process.env.HOME
 		else process.env.HOME = previousHome
-		clearEnv()
 	})
 
 	function seedRtkAvailable(): void {
@@ -233,12 +220,6 @@ describe("rewriteWithRtk", () => {
 		expect(mockExecFileSync).not.toHaveBeenCalled()
 	})
 
-	it("short-circuits when KIMCHI_RTK=0 without spawning", () => {
-		process.env.KIMCHI_RTK = "0"
-		expect(rewriteWithRtk("git status")).toBe("git status")
-		expect(mockExecFileSync).not.toHaveBeenCalled()
-	})
-
 	it("passes the command as a single argv element (no shell injection)", async () => {
 		seedRtkAvailable()
 		await detectRtk()
@@ -260,7 +241,6 @@ describe("rtkSpawnHook", () => {
 
 	beforeEach(() => {
 		_resetRtkState()
-		clearEnv()
 		previousKimchiDir = process.env.KIMCHI_CODING_AGENT_DIR
 		previousHome = process.env.HOME
 		tmpRtkRoot = mkdtempSync(join(tmpdir(), "kimchi-rtk-spawn-test-"))
@@ -279,7 +259,6 @@ describe("rtkSpawnHook", () => {
 		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete.
 		if (previousHome === undefined) delete process.env.HOME
 		else process.env.HOME = previousHome
-		clearEnv()
 	})
 
 	it("rewrites the command in a BashSpawnContext", async () => {

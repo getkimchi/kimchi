@@ -212,15 +212,25 @@ function assetName(): string {
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
-	const res = await fetch(url, { headers: { "User-Agent": "kimchi" } })
+	const res = await fetch(url, { headers: requestHeaders() })
 	if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`)
 	return (await res.json()) as T
 }
 
 async function download(url: string): Promise<Buffer> {
-	const res = await fetch(url, { headers: { "User-Agent": "kimchi" } })
+	const res = await fetch(url, { headers: requestHeaders() })
 	if (!res.ok) throw new Error(`Failed to download ${basename(url)}: ${res.status}`)
 	return Buffer.from(await res.arrayBuffer())
+}
+
+function requestHeaders(): Record<string, string> {
+	const headers: Record<string, string> = {
+		Accept: "application/vnd.github+json",
+		"User-Agent": "kimchi",
+	}
+	const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
+	if (token) headers.Authorization = `Bearer ${token}`
+	return headers
 }
 
 function verifyDigest(asset: GitHubRelease["assets"][number], archive: Buffer): void {

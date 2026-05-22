@@ -12,6 +12,7 @@ const KIMCHI_API_KEY_ENV = "KIMCHI_API_KEY"
 interface ApplyOutcome {
 	successes: string[]
 	failures: Array<{ id: string; error: string }>
+	warnings: Array<{ id: string; error: string }>
 	rtkInstalled: boolean
 }
 
@@ -30,7 +31,7 @@ interface ApplyOutcome {
  * having to run `kimchi setup` again.
  */
 export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
-	const outcome: ApplyOutcome = { successes: [], failures: [], rtkInstalled: false }
+	const outcome: ApplyOutcome = { successes: [], failures: [], warnings: [], rtkInstalled: false }
 
 	// Fetch live models before writing any tool config.
 	// Throws if no key or network fails; surface the error and abort gracefully.
@@ -98,7 +99,7 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 			s.stop(`RTK ${result.version}: ready at ${result.linkPath}`)
 		} catch (err) {
 			const msg = (err as Error).message
-			outcome.failures.push({ id: "rtk", error: msg })
+			outcome.warnings.push({ id: "rtk", error: msg })
 			s.stop(`RTK: ${msg}`)
 		}
 	}
@@ -120,6 +121,7 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 		`Telemetry: ${state.telemetryEnabled ? "enabled" : "disabled"}`,
 		outcome.successes.length > 0 ? `Configured: ${outcome.successes.join(", ")}` : "",
 		outcome.rtkInstalled ? "RTK: installed" : "",
+		outcome.warnings.length > 0 ? `Warnings: ${outcome.warnings.map((f) => f.id).join(", ")}` : "",
 		outcome.failures.length > 0
 			? `Failed: ${outcome.failures.map((f) => byId(f.id as ToolId)?.name ?? f.id).join(", ")}`
 			: "",

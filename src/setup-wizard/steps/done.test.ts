@@ -122,6 +122,22 @@ describe("runDoneStep", () => {
 		writeSpy.mockRestore()
 	})
 
+	it("treats RTK install failure as a setup warning", async () => {
+		const tool = getClaudeCodeTool()
+		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()
+		installRtkMock.mockRejectedValueOnce(new Error("GitHub rate limited"))
+		const state = baseState()
+		state.installRtk = true
+
+		const outcome = await runDoneStep(state)
+
+		expect(outcome.successes).toEqual(["Claude Code"])
+		expect(outcome.failures).toEqual([])
+		expect(outcome.warnings).toEqual([{ id: "rtk", error: "GitHub rate limited" }])
+
+		writeSpy.mockRestore()
+	})
+
 	it("collects failures rather than aborting on a single broken writer", async () => {
 		const tool = getClaudeCodeTool()
 		const writeSpy = vi.spyOn(tool, "write").mockRejectedValue(new Error("disk full"))

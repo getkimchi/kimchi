@@ -262,7 +262,7 @@ Kimchi respects `HTTP_PROXY` / `HTTPS_PROXY` environment variables for network r
 
 ### Token optimization (RTK)
 
-When [RTK](https://github.com/rtk-ai/rtk) is installed and on your `PATH`, kimchi automatically rewrites bash tool calls through `rtk rewrite` before execution. This compresses command output (git, cargo, npm, docker, etc.) by 60-90%, reducing LLM context usage.
+Kimchi installs [RTK](https://github.com/rtk-ai/rtk) during setup and keeps the `rtk` command available on startup. When enabled, kimchi rewrites bash tool calls through `rtk rewrite` before execution. This compresses command output (git, cargo, npm, docker, etc.) by 60-90%, reducing LLM context usage.
 
 Before every bash tool execution, kimchi calls `rtk rewrite "<command>"`. If RTK returns a rewritten command (e.g. `git status` becomes `rtk git status`), the rewritten version is executed instead.
 
@@ -270,16 +270,11 @@ Before every bash tool execution, kimchi calls `rtk rewrite "<command>"`. If RTK
 brew install rtk    # macOS / Linux
 ```
 
-RTK is auto-detected at startup. No configuration needed. To disable:
+RTK rewrite is managed from resources:
 
 ```bash
-KIMCHI_RTK=0 kimchi   # disable for this session
-```
-
-Or persistently in `~/.config/kimchi/harness/settings.json`:
-
-```json
-{ "rtk": false }
+kimchi resources disable hooks.rtk-rewrite
+kimchi resources enable hooks.rtk-rewrite
 ```
 
 ### Hooks
