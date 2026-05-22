@@ -394,6 +394,7 @@ function insertUserPromptPrefix(line: string, theme: any): string {
 	// Line structure from Box(paddingX=1, bgFn):
 	//   [1 plain space][ANSI color][▍ ][ANSI reset][content][1+ trailing spaces]
 	// We insert "❯ " right after the stroke and trim trailing spaces to maintain width.
+	const originalWidth = visibleWidth(line)
 	let i = 0
 
 	// Skip leading plain spaces (leftPad = paddingX = 1)
@@ -420,7 +421,13 @@ function insertUserPromptPrefix(line: string, theme: any): string {
 		end--
 		removed++
 	}
-	return inserted.slice(0, end)
+	const result = inserted.slice(0, end)
+	// Guard: if content nearly filled the line and there were not enough trailing
+	// spaces to trim, the result could overflow. Truncate to the original width.
+	if (visibleWidth(result) > originalWidth) {
+		return truncateToWidth(result, originalWidth)
+	}
+	return result
 }
 
 function patchUserMessageRender(): void {
