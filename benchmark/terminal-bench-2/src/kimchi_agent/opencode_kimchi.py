@@ -221,7 +221,7 @@ class OpenCodeKimchi(OpenCode):
                 f"opencode --model={shlex.quote(self.model_name or '')} "
                 f"run --format=json{self._thinking_flag(api_key)} --dangerously-skip-permissions -- "
                 f"{escaped_instruction} "
-                f"2>&1 </dev/null | stdbuf -oL tee /logs/agent/{self._OUTPUT_FILENAME}"
+                f"2>&1 </dev/null | stdbuf -oL tee /logs/agent/{shlex.quote(self._OUTPUT_FILENAME)}"
             ),
             env=env,
         )
