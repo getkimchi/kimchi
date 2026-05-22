@@ -8,6 +8,9 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import { getCliModeArg, isHelpOrVersionArgs } from "./cli-args.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
+// IMPORTANT: must be first local import — patches InteractiveMode.prototype
+// before any module can construct an InteractiveMode instance.
+import "./login-command-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
 	loadConfig,
