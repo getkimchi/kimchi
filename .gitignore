@@ -38,3 +38,6 @@ kimchi-session-*.html
 
 *.bun-build
 bin
+
+# Generated PostHog key — overwritten during release builds
+src/generated/posthog-key.generated.ts
