@@ -10,8 +10,6 @@ import {
 	writeApiKey,
 	writeDeviceId,
 	writeGitToken,
-	writeHideSessionModeDialog,
-	writeSessionModeWizardSeenAt,
 } from "./config.js"
 
 describe("loadConfig", () => {
@@ -218,48 +216,6 @@ describe("loadConfig", () => {
 		rmSync(globalDir, { recursive: true, force: true })
 		rmSync(rootDir, { recursive: true, force: true })
 	})
-
-	it("reads global onboarding state", () => {
-		writeFileSync(
-			configPath,
-			JSON.stringify({
-				onboarding: {
-					sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z",
-					hideSessionModeDialog: true,
-				},
-			}),
-		)
-
-		const config = loadConfig({ configPath })
-
-		expect(config.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
-		expect(config.onboarding.hideSessionModeDialog).toBe(true)
-	})
-
-	it("reads hyphenated hide session mode dialog config for compatibility", () => {
-		writeFileSync(configPath, JSON.stringify({ onboarding: { "hide-session-mode-dialog": true } }))
-
-		const config = loadConfig({ configPath })
-
-		expect(config.onboarding.hideSessionModeDialog).toBe(true)
-	})
-
-	it("does not read project onboarding state as global first-run state", () => {
-		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
-		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
-		const globalPath = join(globalDir, "config.json")
-		const projectPath = join(projectDir, ".kimchi", "config.json")
-
-		writeFileSync(globalPath, JSON.stringify({ apiKey: "global-key" }))
-		mkdirSync(dirname(projectPath), { recursive: true })
-		writeFileSync(projectPath, JSON.stringify({ onboarding: { sessionModeWizardSeenAt: "project" } }))
-
-		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
-		expect(config.onboarding.sessionModeWizardSeenAt).toBeUndefined()
-
-		rmSync(globalDir, { recursive: true, force: true })
-		rmSync(projectDir, { recursive: true, force: true })
-	})
 })
 
 describe("writeApiKey", () => {
@@ -410,88 +366,6 @@ describe("readTelemetryConfig", () => {
 		const config = readTelemetryConfig(configPath)
 		expect(config.enabled).toBe(false)
 		expect(config.metricsEndpoint).toBe("https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest")
-	})
-})
-
-describe("writeSessionModeWizardSeenAt", () => {
-	let tempDir: string
-	let configPath: string
-
-	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
-		configPath = join(tempDir, "config.json")
-	})
-
-	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true })
-	})
-
-	it("writes onboarding.sessionModeWizardSeenAt", () => {
-		writeSessionModeWizardSeenAt("2026-05-19T09:30:00.000Z", configPath)
-		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
-		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
-	})
-
-	it("preserves unrelated fields and existing onboarding fields", () => {
-		writeFileSync(
-			configPath,
-			JSON.stringify({
-				apiKey: "key",
-				onboarding: { otherWizardSeenAt: "2026-05-18T10:00:00.000Z" },
-			}),
-		)
-
-		writeSessionModeWizardSeenAt("2026-05-19T09:30:00.000Z", configPath)
-		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
-
-		expect(raw).toEqual({
-			apiKey: "key",
-			onboarding: {
-				otherWizardSeenAt: "2026-05-18T10:00:00.000Z",
-				sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z",
-			},
-		})
-	})
-})
-
-describe("writeHideSessionModeDialog", () => {
-	let tempDir: string
-	let configPath: string
-
-	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
-		configPath = join(tempDir, "config.json")
-	})
-
-	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true })
-	})
-
-	it("writes onboarding.hideSessionModeDialog", () => {
-		writeHideSessionModeDialog(true, configPath)
-		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
-		expect(raw.onboarding.hideSessionModeDialog).toBe(true)
-	})
-
-	it("preserves unrelated fields and existing onboarding fields", () => {
-		writeFileSync(
-			configPath,
-			JSON.stringify({
-				apiKey: "key",
-				onboarding: { sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z" },
-			}),
-		)
-
-		writeHideSessionModeDialog(true, configPath)
-		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
-
-		expect(raw).toEqual({
-			apiKey: "key",
-			onboarding: {
-				sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z",
-				hideSessionModeDialog: true,
-			},
-		})
 	})
 })
 
