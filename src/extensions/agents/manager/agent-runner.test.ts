@@ -102,8 +102,8 @@ vi.mock("../../../config.js", () => ({
 
 import { DefaultResourceLoader, createAgentSession } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
-import telemetryExtension from "../../telemetry.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
+import telemetryExtension from "../../telemetry.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
 import { type RunOptions, runAgent } from "./agent-runner.js"
