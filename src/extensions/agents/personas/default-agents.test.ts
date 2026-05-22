@@ -1,12 +1,22 @@
 import { describe, expect, it, vi } from "vitest"
+
+// Mock getModelRoles BEFORE default-agents.ts is imported so buildDefaultAgents()
+// uses deterministic defaults instead of reading ~/.config/kimchi/harness/settings.json.
+vi.mock("../../orchestration/model-roles.js", async (importOriginal) => {
+	const actual = (await importOriginal()) as Record<string, unknown>
+	return {
+		...actual,
+		getModelRoles: vi.fn().mockReturnValue(actual.DEFAULT_MODEL_ROLES),
+	}
+})
+
 import { DEFAULT_AGENTS } from "./default-agents.js"
 import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER } from "./types.js"
 
 // Stub pickFromModelListByTier and recommendModel so snapshots are deterministic.
-// We cannot import the real implementations here because default-agents.ts calls
-// modelsForStrength/modelsForAnyStrength at module load time (before any mock can
-// intercept), so DEFAULT_AGENTS.models[] is already populated with real strings.
-// We therefore stub only the functions called at resolve-time:
+// default-agents.ts calls modelsForStrength/modelsForAnyStrength at module load time
+// (before any mock can intercept), so DEFAULT_AGENTS.models[] is already populated
+// with real strings. We therefore stub only the functions called at resolve-time:
 //   - pickFromModelListByTier (used when models[] is populated — all 4 default agents)
 //   - recommendModel          (only reachable when models[] is absent — never for defaults)
 //   - getCurrentPhase         (only reachable when both models[] and strengths are absent)
