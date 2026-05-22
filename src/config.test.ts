@@ -354,14 +354,28 @@ describe("writeDeviceId", () => {
 describe("readTelemetryConfig", () => {
 	let tempDir: string
 	let configPath: string
+	let savedApiKey: string | undefined
+	let savedTelemetryEnabled: string | undefined
 
 	beforeEach(() => {
 		tempDir = mkdtempSync(join(tmpdir(), "kimchi-telemetry-test-"))
 		configPath = join(tempDir, "config.json")
+		savedApiKey = process.env.KIMCHI_API_KEY
+		savedTelemetryEnabled = process.env.KIMCHI_TELEMETRY_ENABLED
+		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
+		delete process.env.KIMCHI_API_KEY
+		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
+		delete process.env.KIMCHI_TELEMETRY_ENABLED
 	})
 
 	afterEach(() => {
 		rmSync(tempDir, { recursive: true, force: true })
+		if (savedApiKey !== undefined) process.env.KIMCHI_API_KEY = savedApiKey
+		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
+		else delete process.env.KIMCHI_API_KEY
+		if (savedTelemetryEnabled !== undefined) process.env.KIMCHI_TELEMETRY_ENABLED = savedTelemetryEnabled
+		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
+		else delete process.env.KIMCHI_TELEMETRY_ENABLED
 	})
 
 	it("picks up telemetry.metricsEndpoint when present", () => {
