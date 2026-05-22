@@ -41,6 +41,11 @@ export const GENERAL_TIPS = [
 		scope: "general",
 		message: "Run `/export` to save HTML for a bug report.",
 	},
+	{
+		id: "multi-model-roles",
+		scope: "general",
+		message: "Run `/multi-model` to assign models to each role.",
+	},
 ] as const satisfies readonly Tip[]
 
 export function createGeneralTipProvider(): TipProvider {
