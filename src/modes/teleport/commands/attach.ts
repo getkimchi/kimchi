@@ -1,13 +1,16 @@
 import type { SessionManager } from "@earendil-works/pi-coding-agent"
+import { readGitToken } from "../../../config.js"
 import { RemoteAuthError, authenticateRemoteSession } from "../api/index.js"
 import type { AuthenticateResponse } from "../api/types.js"
+import { getGitRemoteHost } from "../git-credentials.js"
 import type { RemoteAgentSession } from "../proxy/agent-session.js"
 import { buildRemoteAgentSession } from "../proxy/builder.js"
 import { createTeleportProgress } from "../ui/progress.js"
 import type { AttachArgs } from "./args.js"
 import { TeleportRefusal, info, refuse, status, warn } from "./errors.js"
 import { resolveSessionTarget } from "./session-resolve.js"
-import type { TeleportContext } from "./types.js"
+import { propagateGitCredentialToSandbox } from "./teleport-helpers.js"
+import { SANDBOX_USER, type TeleportContext } from "./types.js"
 
 async function rebindAfterSwap(ctx: TeleportContext): Promise<void> {
 	if (!ctx.triggerRebind) return
@@ -72,6 +75,33 @@ export async function runAttach(args: AttachArgs, ctx: TeleportContext): Promise
 			refuse(ctx, `Authentication failed: ${err instanceof Error ? err.message : String(err)}`)
 		}
 		progress.complete("Authenticated")
+
+		// ── Git credentials propagation (once per session per CLI run) ──
+		if (!wrapper.hasGitCredentialsSynced(sessionId)) {
+			const gitHost = await getGitRemoteHost(ctx.cwd)
+			if (gitHost) {
+				const gitToken = readGitToken(gitHost, ctx.configPath)
+				if (gitToken) {
+					progress.step("Configuring git credentials")
+					try {
+						await propagateGitCredentialToSandbox({
+							remoteHost: authResult.host,
+							remoteUser: SANDBOX_USER,
+							authToken: authResult.connectToken,
+							gitHost,
+							gitToken,
+							signal: ctx.signal,
+						})
+						wrapper.markGitCredentialsSynced(sessionId)
+						progress.complete("Git credentials configured")
+					} catch (err) {
+						const msg = err instanceof Error ? err.message : String(err)
+						warn(ctx, `Could not configure git credentials on sandbox: ${msg}`)
+						progress.complete("Git credentials skipped")
+					}
+				}
+			}
+		}
 
 		progress.step("Connecting")
 		let remote: RemoteAgentSession

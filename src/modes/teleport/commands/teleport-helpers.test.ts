@@ -237,14 +237,14 @@ describe("propagateGitCredentialToSandbox", () => {
 		gitToken: "ghp_supersecret",
 	}
 
-	it("runs credential.helper store, credential approve, and insteadOf rewrite", async () => {
+	it("runs credential.helper cache, credential approve, and insteadOf rewrite", async () => {
 		const { spawner, calls } = createMockSpawn(0)
 		await propagateGitCredentialToSandbox({ ...baseOpts, _spawn: spawner })
 		expect(calls).toHaveLength(3)
-		// First call: credential.helper store with explicit file
+		// First call: credential.helper cache with 24h timeout
 		const cmd1 = calls[0].args[calls[0].args.length - 1]
 		expect(cmd1).toContain("git config --global credential.helper")
-		expect(cmd1).toContain("store --file=/home/sandbox/.git-credentials")
+		expect(cmd1).toContain("cache --timeout=86400")
 		// Second call: git credential approve
 		const cmd2 = calls[1].args[calls[1].args.length - 1]
 		expect(cmd2).toBe("git credential approve")

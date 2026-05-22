@@ -126,3 +126,91 @@ export function parseConnectArgs(raw: string): ConnectArgs {
 	}
 	return { target }
 }
+
+export type SyncDirection = "up" | "down"
+
+export interface SyncArgs {
+	direction: SyncDirection
+	/** Optional relative path within the workspace to sync (instead of the entire workspace). */
+	path?: string
+	exclude: string[]
+	includeIgnored: boolean
+	/** When true, extraneous files at the destination are deleted. Default: false. */
+	delete: boolean
+	/** When true, show what would be transferred without actually doing it. */
+	dryRun: boolean
+}
+
+export function parseSyncArgs(raw: string): SyncArgs {
+	const tokens = tokenize(raw)
+	const result: SyncArgs = {
+		direction: "up",
+		exclude: [],
+		includeIgnored: false,
+		delete: false,
+		dryRun: false,
+	}
+
+	let directionSet = false
+	for (let i = 0; i < tokens.length; i++) {
+		const t = tokens[i]
+		switch (t) {
+			case "up":
+			case "down":
+				if (directionSet) {
+					throw new TeleportArgsError(`Direction already set to "${result.direction}"; got "${t}".`)
+				}
+				result.direction = t
+				directionSet = true
+				break
+			case "--include-ignored":
+				result.includeIgnored = true
+				break
+			case "--delete":
+				result.delete = true
+				break
+			case "--no-delete":
+				result.delete = false
+				break
+			case "--dry-run":
+				result.dryRun = true
+				break
+			case "--exclude": {
+				const next = tokens[i + 1]
+				if (!next || next.startsWith("--")) {
+					throw new TeleportArgsError("--exclude requires a glob argument")
+				}
+				result.exclude.push(next)
+				i++
+				break
+			}
+			case "--path": {
+				const next = tokens[i + 1]
+				if (!next || next.startsWith("--")) {
+					throw new TeleportArgsError("--path requires an argument")
+				}
+				if (result.path !== undefined) {
+					throw new TeleportArgsError("--path specified more than once")
+				}
+				result.path = next
+				i++
+				break
+			}
+			default:
+				if (t.startsWith("--")) {
+					throw new TeleportArgsError(`Unknown flag: ${t}`)
+				}
+				// Treat bare positional as a path if direction is already set
+				if (directionSet && result.path === undefined) {
+					result.path = t
+				} else if (!directionSet) {
+					throw new TeleportArgsError(
+						`Expected "up" or "down" as the first argument; got "${t}". Usage: /sync <up|down> [path] [--flags]`,
+					)
+				} else {
+					throw new TeleportArgsError(`Unexpected positional argument: ${t}`)
+				}
+		}
+	}
+	return result
+}

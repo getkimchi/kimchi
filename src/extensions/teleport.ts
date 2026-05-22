@@ -4,6 +4,7 @@ import {
 	parseAttachArgs,
 	parseConnectArgs,
 	parseDetachArgs,
+	parseSyncArgs,
 	parseTeleportArgs,
 } from "../modes/teleport/commands/args.js"
 import {
@@ -12,6 +13,7 @@ import {
 	runConnect,
 	runDetach,
 	runListSessions,
+	runSync,
 	runTeleport,
 } from "../modes/teleport/commands/index.js"
 import type { TeleportContext } from "../modes/teleport/commands/index.js"
@@ -181,6 +183,28 @@ export default function makeTeleportExtension(deps: TeleportExtensionDeps): (pi:
 				if (!tctx) return
 				try {
 					await runListSessions(tctx)
+				} catch (err) {
+					handleError(ctx, err)
+				}
+			},
+		})
+
+		pi.registerCommand("sync", {
+			description: "Rsync files between local and remote: /sync up [path] or /sync down [path].",
+			handler: async (args, ctx) => {
+				const parsed = (() => {
+					try {
+						return parseSyncArgs(asString(args))
+					} catch (err) {
+						handleError(ctx, err)
+						return undefined
+					}
+				})()
+				if (!parsed) return
+				const tctx = buildCtx(ctx, deps)
+				if (!tctx) return
+				try {
+					await runSync(parsed, tctx)
 				} catch (err) {
 					handleError(ctx, err)
 				}

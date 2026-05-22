@@ -244,26 +244,28 @@ export interface PropagateGitCredentialOptions {
 /**
  * Configure git credentials on the remote sandbox via SSH so it can
  * push/pull without a prompt. Three SSH calls:
- *   1. `git config --global credential.helper store` with explicit file path
+ *   1. `git config --global credential.helper 'cache --timeout=86400'`
  *   2. `git credential approve` with the credential block piped via stdin
  *   3. `git config --global url.https://host/.insteadOf git@host:` to
  *      rewrite SSH remotes to HTTPS (so the stored credential is used)
  *
- * The credential is stored in `~/.git-credentials` (not in .gitconfig),
- * keeping tokens out of the git config file.
+ * Uses the git credential cache daemon (in-memory, 24h TTL) instead of
+ * the `store` helper so tokens are never persisted to disk on the sandbox.
+ * This function is safe to call on every attach/connect — the cache daemon
+ * is idempotent and successive `credential approve` calls simply refresh
+ * the cached entry.
  *
  * Throws on non-zero SSH exit (caller handles gracefully).
  */
 export async function propagateGitCredentialToSandbox(opts: PropagateGitCredentialOptions): Promise<void> {
 	const username = opts.gitUsername ?? "oauth2"
-	const credFilePath = `${SANDBOX_HOME}/.git-credentials`
 
-	// Step 1: set credential.helper = store with explicit file path
+	// Step 1: set credential.helper = cache with 24h timeout
 	await runSshCommandOnSandbox({
 		remoteHost: opts.remoteHost,
 		remoteUser: opts.remoteUser,
 		authToken: opts.authToken,
-		remoteCommand: `git config --global credential.helper ${shellEscapeValue(`store --file=${credFilePath}`)}`,
+		remoteCommand: `git config --global credential.helper ${shellEscapeValue("cache --timeout=86400")}`,
 		signal: opts.signal,
 		proxyCommand: opts.proxyCommand,
 		_spawn: opts._spawn,

@@ -27,9 +27,9 @@ export const BASE_EXCLUDE_GLOBS: readonly string[] = [
 ]
 
 export interface RsyncOptions {
-	/** Absolute path of the source directory on the local filesystem. */
+	/** Absolute path on the local filesystem (workspace root or sub-path). */
 	source: string
-	/** Destination directory on the remote, e.g. "/home/sandbox/". */
+	/** Path on the remote sandbox, e.g. "/home/sandbox/project/". */
 	destination: string
 	/** Hostname of the session host (expanded by ssh's %h in ProxyCommand). */
 	remoteHost: string
@@ -52,6 +52,24 @@ export interface RsyncOptions {
 	signal?: AbortSignal
 	/** If false, omits the `--delete` flag so the remote keeps pre-existing files. */
 	deleteExtraneous?: boolean
+	/**
+	 * Transfer direction.
+	 * - `"up"` (default): local `source` → remote `destination`.
+	 * - `"down"`: remote `source` → local `destination`.
+	 */
+	direction?: "up" | "down"
+	/**
+	 * When true, passes `--dry-run` to rsync so it reports what *would* be
+	 * transferred without actually writing anything.
+	 */
+	dryRun?: boolean
+	/**
+	 * When set, restricts the transfer to a single file with this name.
+	 * Injects `--include=<name> --exclude=*` before the exclude-from so that
+	 * only the named file is transferred while the source/destination remain
+	 * directories (avoiding rsync's "Not a directory" error).
+	 */
+	fileFilter?: string
 	/** Override path to the vendored teleport-proxy.js. Defaults to the one
 	 *  shipped with this module. Tests inject a stub.
 	 */
@@ -124,6 +142,17 @@ interface BuildRsyncArgvInput {
 	knownHostsFile: string
 	excludeFile: string
 	deleteExtraneous?: boolean
+	/** Transfer direction: "up" = local→remote (default), "down" = remote→local. */
+	direction?: "up" | "down"
+	/** When true, appends `--dry-run` so rsync previews without writing. */
+	dryRun?: boolean
+	/**
+	 * When set, restricts the transfer to a single file with this name.
+	 * Injects `--include=<name> --exclude=*` before the exclude-from so that
+	 * only the named file is transferred while the source/destination remain
+	 * directories (avoiding rsync's "Not a directory" error).
+	 */
+	fileFilter?: string
 }
 
 /**
@@ -137,21 +166,30 @@ export function buildRsyncArgv(input: BuildRsyncArgvInput): string[] {
 	// `--progress` works on both GNU rsync 3.x and the BSD rsync 2.6.9 shipped on
 	// macOS. The newer `--info=progress2` would give nicer multi-file totals but
 	// errors out on BSD rsync with a usage dump, which is way worse UX.
-	const args: string[] = [
-		"-az",
-		"--progress",
-		"--stats",
-		"--partial",
-		"--exclude-from",
-		input.excludeFile,
-		"-e",
-		sshOption,
-	]
+	const args: string[] = ["-az", "--progress", "--stats", "--partial"]
+	// Single-file filter: include only the target file, exclude everything
+	// else. Must come before --exclude-from so the include rule wins.
+	if (input.fileFilter) {
+		args.push("--include", input.fileFilter, "--exclude", "*")
+	}
+	args.push("--exclude-from", input.excludeFile, "-e", sshOption)
 	// `--delete` is safe in v1 because the sandbox is freshly minted before
 	// every teleport; v2 will revisit when /sync (workspace refresh) lands.
 	if (input.deleteExtraneous !== false) args.push("--delete")
-	args.push(ensureTrailingSlash(input.source))
-	args.push(`${input.remoteUser}@${input.remoteHost}:${ensureTrailingSlash(input.destination)}`)
+	if (input.dryRun) args.push("--dry-run")
+
+	const dir = input.direction ?? "up"
+	const remoteSpec = `${input.remoteUser}@${input.remoteHost}:${ensureTrailingSlash(input.destination)}`
+	const localSpec = ensureTrailingSlash(input.source)
+	if (dir === "down") {
+		// remote → local
+		args.push(remoteSpec)
+		args.push(localSpec)
+	} else {
+		// local → remote (default)
+		args.push(localSpec)
+		args.push(remoteSpec)
+	}
 	return args
 }
 
@@ -254,11 +292,14 @@ export async function runRsync(opts: RsyncOptions): Promise<RsyncResult> {
 	const sessionDir = join(tmpdir(), `kimchi-teleport-${randomUUID()}`)
 	const knownHostsFile = join(sessionDir, "known_hosts")
 	const excludeFile = join(sessionDir, "excludes")
+	const dir = opts.direction ?? "up"
 
 	try {
 		await mkdir(sessionDir, { recursive: true })
 		await writeFile(knownHostsFile, "", "utf-8")
 
+		// `opts.source` is always the local path — resolve gitignored from there
+		// regardless of direction so the same project-level .gitignore rules apply.
 		const gitignored = opts.includeIgnored ? [] : await resolveGitIgnored(opts.source, opts.signal, spawner)
 		const excludeList = buildExcludeList({ extras: opts.excludeGlobs, gitignored })
 		await writeFile(excludeFile, `${excludeList.join("\n")}\n`, "utf-8")
@@ -267,21 +308,26 @@ export async function runRsync(opts: RsyncOptions): Promise<RsyncResult> {
 
 		const proxyCommand = opts.proxyCommand ?? buildProxyCommand()
 
-		// 1) mkdir -p destination on the sandbox.
+		// 1) Pre-create the target directory.
+		// For "up" this is the remote path (via ssh); for "down" it's the local path.
 		opts.onPhase?.("mkdir")
-		await runChild({
-			spawner,
-			binary: "ssh",
-			args: buildMkdirArgv({
-				remoteHost: opts.remoteHost,
-				remoteUser: opts.remoteUser,
-				proxyCommand,
-				knownHostsFile,
-				destination: opts.destination,
-			}),
-			env,
-			signal: opts.signal,
-		})
+		if (dir === "down") {
+			await mkdir(opts.source, { recursive: true })
+		} else {
+			await runChild({
+				spawner,
+				binary: "ssh",
+				args: buildMkdirArgv({
+					remoteHost: opts.remoteHost,
+					remoteUser: opts.remoteUser,
+					proxyCommand,
+					knownHostsFile,
+					destination: opts.destination,
+				}),
+				env,
+				signal: opts.signal,
+			})
+		}
 
 		// 2) rsync.
 		opts.onPhase?.("rsync")
@@ -294,6 +340,9 @@ export async function runRsync(opts: RsyncOptions): Promise<RsyncResult> {
 			knownHostsFile,
 			excludeFile,
 			deleteExtraneous: opts.deleteExtraneous,
+			direction: dir,
+			dryRun: opts.dryRun,
+			fileFilter: opts.fileFilter,
 		})
 		const stats = await runRsyncChild({
 			spawner,

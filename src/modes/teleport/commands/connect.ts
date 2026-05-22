@@ -1,10 +1,13 @@
+import { readGitToken } from "../../../config.js"
 import { RemoteAuthError, authenticateRemoteSession } from "../api/index.js"
+import { getGitRemoteHost } from "../git-credentials.js"
 import { buildProxyCommand } from "../proxy/proxy-command.js"
 import { runChildWithTTYHandoff as runChildWithTTYHandoffImpl } from "../ui/tty-handoff.js"
 import type { ConnectArgs } from "./args.js"
 import { info, refuse, status, warn } from "./errors.js"
 import { readSessionId } from "./session-resolve.js"
 import { resolveSessionTarget } from "./session-resolve.js"
+import { propagateGitCredentialToSandbox } from "./teleport-helpers.js"
 import { SANDBOX_USER, type TeleportContext } from "./types.js"
 
 type RunChildFn = typeof runChildWithTTYHandoffImpl
@@ -52,6 +55,32 @@ export async function runConnect(
 		refuse(ctx, `Authentication failed: ${err instanceof Error ? err.message : String(err)}`)
 	}
 	status(ctx, undefined)
+
+	// ── Git credentials propagation (once per session per CLI run) ──
+	if (!wrapper.hasGitCredentialsSynced(sessionId)) {
+		const gitHost = await getGitRemoteHost(ctx.cwd)
+		if (gitHost) {
+			const gitToken = readGitToken(gitHost, ctx.configPath)
+			if (gitToken) {
+				try {
+					await propagateGitCredentialToSandbox({
+						remoteHost: auth.host,
+						remoteUser: SANDBOX_USER,
+						authToken: auth.connectToken,
+						gitHost,
+						gitToken,
+						signal: ctx.signal,
+					})
+					wrapper.markGitCredentialsSynced(sessionId)
+				} catch (err) {
+					warn(
+						ctx,
+						`Could not configure git credentials on sandbox: ${err instanceof Error ? err.message : String(err)}`,
+					)
+				}
+			}
+		}
+	}
 
 	const proxyCommand = buildProxyCommand()
 

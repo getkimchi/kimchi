@@ -265,6 +265,7 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 					gitToken,
 					signal: ctx.signal,
 				})
+				wrapper.markGitCredentialsSynced(sessionId)
 				progress.complete("Git credentials configured")
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err)

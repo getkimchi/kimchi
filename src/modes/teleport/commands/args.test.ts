@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { TeleportArgsError, parseAttachArgs, parseConnectArgs, parseDetachArgs, parseTeleportArgs } from "./args.js"
+import {
+	TeleportArgsError,
+	parseAttachArgs,
+	parseConnectArgs,
+	parseDetachArgs,
+	parseSyncArgs,
+	parseTeleportArgs,
+} from "./args.js"
 
 describe("parseTeleportArgs", () => {
 	it("returns defaults for empty input", () => {
@@ -107,5 +114,105 @@ describe("parseConnectArgs", () => {
 
 	it("throws when given a flag", () => {
 		expect(() => parseConnectArgs("--whatever")).toThrow(/flag/)
+	})
+})
+
+describe("parseSyncArgs", () => {
+	it("returns defaults for empty input (direction defaults to up)", () => {
+		expect(parseSyncArgs("")).toEqual({
+			direction: "up",
+			exclude: [],
+			includeIgnored: false,
+			delete: false,
+			dryRun: false,
+		})
+	})
+
+	it("parses 'up' direction", () => {
+		const r = parseSyncArgs("up")
+		expect(r.direction).toBe("up")
+	})
+
+	it("parses 'down' direction", () => {
+		const r = parseSyncArgs("down")
+		expect(r.direction).toBe("down")
+	})
+
+	it("parses direction with a positional path", () => {
+		const r = parseSyncArgs("down src/foo")
+		expect(r.direction).toBe("down")
+		expect(r.path).toBe("src/foo")
+	})
+
+	it("parses --path flag", () => {
+		const r = parseSyncArgs("up --path src/bar")
+		expect(r.path).toBe("src/bar")
+	})
+
+	it("parses --delete flag", () => {
+		const r = parseSyncArgs("up --delete")
+		expect(r.delete).toBe(true)
+	})
+
+	it("parses --no-delete flag (overrides --delete)", () => {
+		const r = parseSyncArgs("up --delete --no-delete")
+		expect(r.delete).toBe(false)
+	})
+
+	it("parses --dry-run flag", () => {
+		const r = parseSyncArgs("down --dry-run")
+		expect(r.dryRun).toBe(true)
+	})
+
+	it("parses --include-ignored flag", () => {
+		const r = parseSyncArgs("up --include-ignored")
+		expect(r.includeIgnored).toBe(true)
+	})
+
+	it("collects repeated --exclude globs", () => {
+		const r = parseSyncArgs("up --exclude *.log --exclude tmp/")
+		expect(r.exclude).toEqual(["*.log", "tmp/"])
+	})
+
+	it("handles all flags combined", () => {
+		const r = parseSyncArgs("down --delete --dry-run --include-ignored --exclude node_modules --path lib")
+		expect(r.direction).toBe("down")
+		expect(r.delete).toBe(true)
+		expect(r.dryRun).toBe(true)
+		expect(r.includeIgnored).toBe(true)
+		expect(r.exclude).toEqual(["node_modules"])
+		expect(r.path).toBe("lib")
+	})
+
+	it("throws when direction is specified twice", () => {
+		expect(() => parseSyncArgs("up down")).toThrow(/Direction already set/)
+	})
+
+	it("throws on unknown flag", () => {
+		expect(() => parseSyncArgs("up --bogus")).toThrow(/Unknown flag/)
+	})
+
+	it("throws when --exclude has no argument", () => {
+		expect(() => parseSyncArgs("up --exclude")).toThrow(/--exclude/)
+	})
+
+	it("throws when --exclude is followed by another flag", () => {
+		expect(() => parseSyncArgs("up --exclude --delete")).toThrow(/--exclude/)
+	})
+
+	it("throws when --path has no argument", () => {
+		expect(() => parseSyncArgs("up --path")).toThrow(/--path/)
+	})
+
+	it("throws when --path is specified twice", () => {
+		expect(() => parseSyncArgs("up --path a --path b")).toThrow(/--path/)
+	})
+
+	it("throws on positional before direction keyword", () => {
+		expect(() => parseSyncArgs("somefile")).toThrow(/Expected "up" or "down"/)
+	})
+
+	it("throws on second positional path", () => {
+		expect(() => parseSyncArgs("up first second")).toThrow(/Unexpected positional/)
 	})
 })
