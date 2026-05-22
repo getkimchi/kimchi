@@ -35,7 +35,14 @@ export function getVersion(): string {
 			? resolve(pkgDir, "package.json")
 			: resolve(dirname(fileURLToPath(import.meta.url)), "../package.json")
 		const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
-		cachedVersion = pkg.version ?? "unknown"
+		let version = pkg.version ?? "unknown"
+		// When the version field is the development placeholder (0.0.0)
+		// report a simple "dev" string so that the transform backend does
+		// not have to deal with stale/partial git-describe noise.
+		if (version === "0.0.0") {
+			version = "dev"
+		}
+		cachedVersion = version
 	} catch {
 		cachedVersion = "unknown"
 	}

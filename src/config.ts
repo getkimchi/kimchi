@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, relative, resolve } from "node:path"
+import { getVersion } from "./utils.js"
 
 const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
 const AGENT_CONFIG_DIR = resolve(homedir(), ".config", "kimchi", "harness")
@@ -262,6 +263,12 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 	const defaultEnabled = fileHeaders ? Object.keys(fileHeaders).length > 0 : !!apiKey
 	const enabled =
 		envEnabled !== undefined ? envEnabled !== "0" && envEnabled !== "false" : (fileEnabled ?? defaultEnabled)
+
+	// Always inject a User-Agent so telemetry is traceable on the server side.
+	const hasUserAgent = Object.keys(headers).some((k) => k.toLowerCase() === "user-agent")
+	if (!hasUserAgent) {
+		headers["User-Agent"] = `kimchi/${getVersion()}`
+	}
 
 	return {
 		enabled,

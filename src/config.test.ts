@@ -367,6 +367,68 @@ describe("readTelemetryConfig", () => {
 		expect(config.enabled).toBe(false)
 		expect(config.metricsEndpoint).toBe("https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest")
 	})
+
+	it("injects User-Agent into telemetry headers", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				telemetry: {
+					enabled: true,
+					apiKey: "test-api-key",
+				},
+			}),
+		)
+		const config = readTelemetryConfig(configPath)
+		expect(config.headers["User-Agent"]).toBeDefined()
+		expect(config.headers["User-Agent"]).toMatch(/^kimchi\//)
+	})
+
+	it("injects User-Agent even with no apiKey and no custom headers", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				telemetry: {
+					enabled: true,
+				},
+			}),
+		)
+		const config = readTelemetryConfig(configPath)
+		expect(config.headers["User-Agent"]).toBeDefined()
+		expect(config.headers["User-Agent"]).toMatch(/^kimchi\//)
+	})
+
+	it("preserves custom user-agent header when user sets one", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				telemetry: {
+					enabled: true,
+					headers: {
+						"user-agent": "my-custom-agent/1.0",
+					},
+				},
+			}),
+		)
+		const config = readTelemetryConfig(configPath)
+		expect(config.headers["user-agent"]).toBe("my-custom-agent/1.0")
+		expect(config.headers["User-Agent"]).toBeUndefined()
+	})
+
+	it("injects User-Agent even when telemetry is disabled (config still prepared)", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				telemetry: {
+					enabled: false,
+					apiKey: "test-api-key",
+				},
+			}),
+		)
+		const config = readTelemetryConfig(configPath)
+		expect(config.enabled).toBe(false)
+		expect(config.headers["User-Agent"]).toBeDefined()
+		expect(config.headers["User-Agent"]).toMatch(/^kimchi\//)
+	})
 })
 
 describe("readGitToken / writeGitToken", () => {

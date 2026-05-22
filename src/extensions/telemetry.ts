@@ -2,6 +2,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { TelemetryConfig } from "../config.js"
 import { getAvailableModels } from "../startup-context.js"
+import { getVersion } from "../utils.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -99,7 +100,10 @@ async function sendLog(
 	const payload = {
 		resourceLogs: [
 			{
-				resource: { attributes: [strAttr("service.name", "kimchi")], droppedAttributesCount: 0 },
+				resource: {
+					attributes: [strAttr("service.name", "kimchi"), strAttr("user_agent.original", `kimchi/${getVersion()}`)],
+					droppedAttributesCount: 0,
+				},
 				scopeLogs: [
 					{
 						scope: { name: "kimchi", version: "1.0.0" },
@@ -165,7 +169,10 @@ async function sendMetrics(
 	const payload = {
 		resourceMetrics: [
 			{
-				resource: { attributes: [strAttr("service.name", "kimchi")], droppedAttributesCount: 0 },
+				resource: {
+					attributes: [strAttr("service.name", "kimchi"), strAttr("user_agent.original", `kimchi/${getVersion()}`)],
+					droppedAttributesCount: 0,
+				},
 				scopeMetrics: [
 					{
 						scope: { name: "kimchi", version: "1.0.0" },

@@ -111,6 +111,86 @@ describe("telemetryExtension", () => {
 			expect(names).toContain("claude_code.cost.usage")
 		})
 
+		it("includes user_agent.original in metrics resource attributes", async () => {
+			const { handlers, api } = createMockApi()
+			const ext = telemetryExtension(makeConfig())
+			ext(api)
+
+			await getHandler(handlers, "session_start")()
+
+			await getHandler(
+				handlers,
+				"message_end",
+			)({
+				message: {
+					role: "assistant",
+					model: "test-model",
+					provider: "test-provider",
+					timestamp: Date.now(),
+					usage: {
+						input: 10,
+						output: 5,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: { total: 0.001 },
+					},
+				},
+			})
+
+			await getHandler(handlers, "session_shutdown")()
+
+			const metricsCalls = fetchMock.mock.calls.filter(
+				([url]) => String(url) === "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest",
+			)
+			expect(metricsCalls.length).toBe(1)
+
+			const payload = JSON.parse(String((metricsCalls[0][1] as RequestInit).body))
+			const resourceAttrs = payload.resourceMetrics[0].resource.attributes
+			const uaAttr = resourceAttrs.find((a: { key: string }) => a.key === "user_agent.original")
+			expect(uaAttr).toBeDefined()
+			expect(uaAttr.value.stringValue).toMatch(/^kimchi\//)
+		})
+
+		it("includes user_agent.original in logs resource attributes", async () => {
+			const { handlers, api } = createMockApi()
+			const ext = telemetryExtension(makeConfig())
+			ext(api)
+
+			await getHandler(handlers, "session_start")()
+
+			await getHandler(
+				handlers,
+				"message_end",
+			)({
+				message: {
+					role: "assistant",
+					model: "test-model",
+					provider: "test-provider",
+					timestamp: Date.now(),
+					usage: {
+						input: 10,
+						output: 5,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: { total: 0.001 },
+					},
+				},
+			})
+
+			await getHandler(handlers, "session_shutdown")()
+
+			const logCalls = fetchMock.mock.calls.filter(
+				([url]) => String(url) === "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest",
+			)
+			expect(logCalls.length).toBeGreaterThanOrEqual(1)
+
+			const payload = JSON.parse(String((logCalls[0][1] as RequestInit).body))
+			const resourceAttrs = payload.resourceLogs[0].resource.attributes
+			const uaAttr = resourceAttrs.find((a: { key: string }) => a.key === "user_agent.original")
+			expect(uaAttr).toBeDefined()
+			expect(uaAttr.value.stringValue).toMatch(/^kimchi\//)
+		})
+
 		it("deduplicates duplicate assistant messages using message id", async () => {
 			const { handlers, api } = createMockApi()
 			const ext = telemetryExtension(makeConfig())

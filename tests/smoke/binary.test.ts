@@ -56,7 +56,7 @@ describe("binary smoke tests", () => {
 			args: ["version"],
 			extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy" },
 		})
-		expect(result.stdout).toMatch(/^kimchi \d+\.\d+\.\d+/)
+		expect(result.stdout).toMatch(/^kimchi (?:dev|\d+\.\d+\.\d+)/)
 		expect(result.stdout).toContain("platform:")
 		// The harness exit hook prints "To resume:" on exit code 0; subcommands
 		// short-circuit before any session starts, so it must NOT appear.
