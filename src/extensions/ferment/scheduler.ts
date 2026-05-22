@@ -23,19 +23,19 @@ export function buildFermentWakeUpNudge(ferment: Ferment, action: DeclarativeAct
 	const prefix = `CONTINUING ferment "${ferment.name}" (${ferment.id}).`
 	switch (action.kind) {
 		case "activate_phase":
-			return `${prefix} Call activate_ferment_phase with ferment_id "${ferment.id}" and phase_id "${action.phaseId}". Do not call list_ferments first.`
+			return `${prefix} Call activate_ferment_phase with ferment_id "${ferment.id}" and phase_id "${action.phaseId}".`
 		case "refine":
-			return `${prefix} Call refine_ferment_phase with ferment_id "${ferment.id}" and phase_id "${action.phaseId}". Do not call list_ferments first.`
+			return `${prefix} Call refine_ferment_phase with ferment_id "${ferment.id}" and phase_id "${action.phaseId}".`
 		case "start_step":
-			return `${prefix} Call start_ferment_step with ferment_id "${ferment.id}", phase_id "${action.phaseId}", and step_id "${action.stepId}". Do not call list_ferments first.`
+			return `${prefix} Call start_ferment_step with ferment_id "${ferment.id}", phase_id "${action.phaseId}", and step_id "${action.stepId}".`
 		case "complete_step":
-			return `${prefix} Call complete_ferment_step with ferment_id "${ferment.id}", phase_id "${action.phaseId}", and step_id "${action.stepId}" when the step work is complete. Do not call list_ferments first.`
+			return `${prefix} Call complete_ferment_step with ferment_id "${ferment.id}", phase_id "${action.phaseId}", and step_id "${action.stepId}" when the step work is complete.`
 		case "verify_step":
-			return `${prefix} Call verify_ferment_step with ferment_id "${ferment.id}", phase_id "${action.phaseId}", and step_id "${action.stepId}". Do not call list_ferments first.`
+			return `${prefix} Call verify_ferment_step with ferment_id "${ferment.id}", phase_id "${action.phaseId}", and step_id "${action.stepId}".`
 		case "complete_phase":
-			return `${prefix} Call complete_ferment_phase with ferment_id "${ferment.id}" and phase_id "${action.phaseId}" when the phase is complete. Do not call list_ferments first.`
+			return `${prefix} Call complete_ferment_phase with ferment_id "${ferment.id}" and phase_id "${action.phaseId}" when the phase is complete.`
 		default:
-			return `${prefix} ${formatActionNudgeLine(action)}. Do not call list_ferments first.`
+			return `${prefix} ${formatActionNudgeLine(action)}.`
 	}
 }
 

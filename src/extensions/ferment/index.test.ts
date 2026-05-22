@@ -901,12 +901,6 @@ describe("fermentExtension question dropdown", () => {
 				}),
 				expect.anything(),
 			)
-			expect(pi.sendMessage).toHaveBeenCalledWith(
-				expect.objectContaining({
-					content: [expect.objectContaining({ text: expect.stringContaining("Do not call list_ferments first") })],
-				}),
-				expect.anything(),
-			)
 		} finally {
 			vi.useRealTimers()
 		}
@@ -1024,7 +1018,7 @@ describe("fermentExtension question dropdown", () => {
 			)
 			expect(pi.sendMessage).toHaveBeenCalledWith(
 				expect.objectContaining({
-					content: expect.stringContaining("Do not call list_ferments or scope_ferment"),
+					content: expect.stringContaining("Do not call scope_ferment"),
 				}),
 				expect.anything(),
 			)

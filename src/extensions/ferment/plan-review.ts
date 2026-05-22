@@ -7,7 +7,6 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { type Component, Container, Key, Markdown, Spacer, type TUI, Text, matchesKey } from "@earendil-works/pi-tui"
 import { getPromptUi, withWorkingHidden } from "./prompt-ui.js"
-import type { FermentRuntime } from "./runtime.js"
 
 export interface PendingPlanReview {
 	fermentId: string
@@ -31,7 +30,9 @@ export function getPendingPlanReview(fermentId: string): PendingPlanReview | und
 	return pendingPlanReviews.get(fermentId)
 }
 
-export function getCurrentPendingPlanReview(runtime: FermentRuntime): PendingPlanReview | undefined {
+export function getCurrentPendingPlanReview(runtime: { getActiveId(): string | undefined }):
+	| PendingPlanReview
+	| undefined {
 	const activeId = runtime.getActiveId()
 	return activeId ? pendingPlanReviews.get(activeId) : undefined
 }

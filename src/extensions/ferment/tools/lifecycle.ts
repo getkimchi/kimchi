@@ -26,7 +26,6 @@ import { validateGatesOrErr } from "../gate-validation.js"
 import { judgeJourneyGrade } from "../judge.js"
 import { resetReactiveContinuationNudgeCount } from "../nudge.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
-import { setPendingPlanReview } from "../plan-review.js"
 import { getPromptUi, promptForm, promptInput, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
@@ -388,8 +387,19 @@ function buildScopingIterationMessage(questions: ScopingQuestion[], answers: Sco
 	return `The user reviewed your draft and chose these answers (which OVERRIDE your recommendations):\n${bundledAnswerLines.join("\n")}\n\nRe-emit propose_ferment_scoping ONCE with updated goal/criteria/constraints/assumptions/phases reflecting these answers. Usually emit \`questions: []\` so the user can review the final plan. You may emit new questions only if these answers reveal a genuinely new, decision-blocking ambiguity; never repeat or rephrase any question answered above. Do NOT ask questions in chat — call the tool directly.`
 }
 
+function escapeXmlText(value: string): string {
+	return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+}
+
 export function buildFreeformScopingFeedbackMessage(fermentId: string, userText: string): string {
-	return `User reviewed the pending plan for ferment_id "${fermentId}" and said: ${userText}. Re-run propose_ferment_scoping for this same ferment_id, incorporating this direction. Do not call list_ferments or scope_ferment.`
+	return [
+		`User reviewed the pending plan for ferment_id "${fermentId}" and provided this feedback:`,
+		"<user_feedback>",
+		escapeXmlText(userText),
+		"</user_feedback>",
+		"",
+		"Re-run propose_ferment_scoping for this same ferment_id, incorporating this direction. Do not call scope_ferment.",
+	].join("\n")
 }
 
 export async function scopeFerment(
@@ -766,7 +776,7 @@ ${renderGateGuidance("scope_ferment")}`,
 					)
 				}
 
-				setPendingPlanReview({
+				runtime.setPendingPlanReview({
 					fermentId: params.ferment_id,
 					fermentName: ferment.name,
 					title: params.title,

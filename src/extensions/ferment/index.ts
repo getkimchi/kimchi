@@ -20,14 +20,7 @@ import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
 import { registerFermentEvents } from "./events.js"
 import { FERMENT_STOP_POLICY_SHORTCUT, canToggleFermentStopPolicy } from "./footer-status.js"
-import {
-	type PendingPlanReview,
-	clearAllPendingPlanReviews,
-	clearPendingPlanReview,
-	getCurrentPendingPlanReview,
-	getPendingPlanReview,
-	promptPlanReview,
-} from "./plan-review.js"
+import { type PendingPlanReview, promptPlanReview } from "./plan-review.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
@@ -133,7 +126,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	}
 
 	const isCurrentPendingReview = (review: PendingPlanReview): boolean =>
-		getPendingPlanReview(review.fermentId) === review
+		runtime.getPendingPlanReview(review.fermentId) === review
 
 	const runPendingPlanReview = async (ctx: Pick<ExtensionContext, "ui"> | undefined, review: PendingPlanReview) => {
 		if (planReviewRunning) return
@@ -155,7 +148,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 					ctx?.ui?.notify?.(`Failed to save plan: ${scopeOutcome.error.message}`, "error")
 					return
 				}
-				clearPendingPlanReview(review.fermentId)
+				runtime.clearPendingPlanReview(review.fermentId)
 				scheduleFermentWakeUp(pi, runtime, {
 					deliverAsFollowUp: true,
 					fermentId: review.fermentId,
@@ -179,12 +172,12 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 	pi.on("session_shutdown", () => {
 		clearPlanReviewTimer()
-		clearAllPendingPlanReviews()
+		runtime.clearAllPendingPlanReviews()
 		unregisterFermentTips()
 	})
 
 	pi.on("agent_end", (_event, ctx) => {
-		const review = getCurrentPendingPlanReview(runtime)
+		const review = runtime.getCurrentPendingPlanReview()
 		if (planReviewRunning || !review) return
 		clearPlanReviewTimer()
 		planReviewTimer = setTimeout(() => {

@@ -2,6 +2,13 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import type { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
+import {
+	type PendingPlanReview,
+	clearAllPendingPlanReviews,
+	clearPendingPlanReview,
+	getPendingPlanReview,
+	setPendingPlanReview,
+} from "./plan-review.js"
 import type { AttachPendingProposalPartial, PendingScope } from "./scoping.js"
 import {
 	attachPendingProposal,
@@ -18,7 +25,7 @@ import {
 	clearAllScopingGates,
 	clearAllStepStarts,
 	clearBlockRetry,
-	clearFermentState,
+	clearFermentState as clearStateForFerment,
 	clearStepCompleteAttempt,
 	clearStepStart,
 	consumeScopingGate,
@@ -73,6 +80,11 @@ export interface FermentRuntime {
 	attachPendingProposal(fermentId: string, partial: AttachPendingProposalPartial): boolean
 	clearPendingScope(fermentId: string): void
 	clearAllPendingScopes(): void
+	setPendingPlanReview(review: PendingPlanReview): void
+	getPendingPlanReview(fermentId: string): PendingPlanReview | undefined
+	getCurrentPendingPlanReview(): PendingPlanReview | undefined
+	clearPendingPlanReview(fermentId: string): void
+	clearAllPendingPlanReviews(): void
 	setPhaseStartRef(fermentId: string, phaseId: string, ref: string): void
 	getPhaseStartRef(fermentId: string, phaseId: string): string | undefined
 	setStepStartRef(fermentId: string, phaseId: string, stepId: string, ref: string): void
@@ -84,6 +96,17 @@ export interface FermentRuntime {
 	bumpStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): number
 	clearStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): void
 	clearFermentState(fermentId: string): void
+}
+
+function getCurrentPendingPlanReview(): PendingPlanReview | undefined {
+	const activeId = getActiveId()
+	return activeId ? getPendingPlanReview(activeId) : undefined
+}
+
+function clearFermentState(fermentId: string): void {
+	clearStateForFerment(fermentId)
+	clearPendingScope(fermentId)
+	clearPendingPlanReview(fermentId)
 }
 
 export function createDefaultFermentRuntime(): FermentRuntime {
@@ -115,6 +138,11 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		attachPendingProposal,
 		clearPendingScope,
 		clearAllPendingScopes,
+		setPendingPlanReview,
+		getPendingPlanReview,
+		getCurrentPendingPlanReview,
+		clearPendingPlanReview,
+		clearAllPendingPlanReviews,
 		setPhaseStartRef,
 		getPhaseStartRef,
 		setStepStartRef,
