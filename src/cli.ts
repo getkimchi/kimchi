@@ -287,6 +287,8 @@ try {
 					process.exit(130)
 				}
 				currentApiKey = wizardResult.apiKey ?? ""
+				writeApiKey(wizardResult.apiKey)
+				config = loadConfig()
 				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
 			} else {
 				throw err
