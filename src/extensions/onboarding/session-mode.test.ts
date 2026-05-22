@@ -71,7 +71,7 @@ function createExtensionHarness(options: { deferCustomFactory?: boolean; initial
 	const unsubscribe = vi.fn()
 	let storedEditorFactory: unknown = options.initialEditorFactory
 	const ui = {
-		setWidget: vi.fn((_: string, content: unknown) => {
+		setWidget: vi.fn((_key: string, content: unknown, _options?: unknown) => {
 			if (typeof content === "function") {
 				activeComponent = content(tui, theme()) as CustomComponent
 			} else {
@@ -404,6 +404,29 @@ describe("session-mode onboarding persistence", () => {
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 		expect(harness.activeComponent()).toBeUndefined()
+	})
+
+	it("preserves picker selection when pi-tui re-invokes the widget factory", async () => {
+		const harness = createExtensionHarness()
+
+		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
+			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+		)
+
+		await harness.start()
+		harness.input("\x1b[B")
+		const before = harness.activeComponent() as { getState(): { selectedIndex: number } } | undefined
+		expect(before?.getState().selectedIndex).toBe(1)
+
+		// Simulate a resize / theme swap that re-invokes the most recent
+		// widget factory. The new component must start from the existing
+		// selection, not reset to 0.
+		const calls = harness.ui.setWidget.mock.calls
+		const lastFactory = calls[calls.length - 1][1] as (...args: unknown[]) => unknown
+		harness.ui.setWidget("kimchi-session-mode-onboarding", lastFactory, calls[calls.length - 1][2])
+		const after = harness.activeComponent() as { getState(): { selectedIndex: number } } | undefined
+		expect(after).not.toBe(before)
+		expect(after?.getState().selectedIndex).toBe(1)
 	})
 
 	it("shutdown cleans up the picker", async () => {

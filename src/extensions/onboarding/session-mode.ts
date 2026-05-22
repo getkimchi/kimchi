@@ -15,8 +15,15 @@ import { NoOpPickerEditor } from "./picker-editor.js"
 import {
 	SessionModePickerComponent,
 	type SessionModePickerResult,
+	type SessionModePickerState,
+	initialSessionModePickerState,
 	keyToSessionModePickerEvent,
 } from "./session-mode-picker.js"
+
+// Stateless editor — share a single instance across factory invocations so
+// pi-tui doesn't churn allocations if it re-instantiates the editor on resize
+// or theme change.
+const NO_OP_EDITOR = new NoOpPickerEditor()
 
 export type SessionModeOnboardingAction = "show" | "skip" | "skip-and-mark-seen"
 
@@ -129,11 +136,18 @@ function showSessionModeWizard(
 	let tuiRef: { hasOverlay(): boolean } | null = null
 	let component: SessionModePickerComponent | undefined
 	let editorSwapped = false
-	// Captured from getEditorComponent() right before we swap. ui.ts registers its
-	// session_start handler before ours (see cli.ts extension order), so by the
-	// time we read this, the upstream PromptEditor factory is already installed.
-	// We restore exactly this value on cleanup — passing undefined to
-	// setEditorComponent would drop to the library default instead.
+	// Held in the wizard closure so pi-tui re-invoking the widget factory
+	// (resize, theme swap, etc.) re-creates the component without resetting
+	// the user's highlight.
+	let pickerState: SessionModePickerState = initialSessionModePickerState()
+	const onPickerStateChange = (next: SessionModePickerState): void => {
+		pickerState = next
+	}
+	// Captured from getEditorComponent() right before we swap. ui.ts registers
+	// its session_start handler before ours (see cli.ts extension order), so in
+	// the normal launch path this holds the upstream PromptEditor factory.
+	// If it's undefined (no upstream editor installed yet), cleanup will pass
+	// undefined back through, which restores pi-tui's library default.
 	let prevEditorFactory: EditorFactory | undefined
 
 	// Empty shim component mounted before activation. Renders nothing so the
@@ -148,21 +162,28 @@ function showSessionModeWizard(
 		// the editor (or mount a non-empty picker that consumes keys) while an
 		// overlay is up, the overlay loses its dismissal keys and becomes
 		// stuck. So we mount the picker + swap the editor atomically only once
-		// no overlay is present.
-		if (typeof tuiRef?.hasOverlay === "function" && tuiRef.hasOverlay()) return
+		// no overlay is present. If tuiRef hasn't been set yet (shim factory
+		// not invoked), treat that as "unknown overlay state" and bail; the
+		// next input retry will re-attempt.
+		if (!tuiRef || (typeof tuiRef.hasOverlay === "function" && tuiRef.hasOverlay())) return
 		activated = true
 		ctx.ui.setWidget(
 			SESSION_MODE_WIDGET_KEY,
 			(tui, theme) => {
 				tuiRef = tui as unknown as { hasOverlay(): boolean }
-				component = new SessionModePickerComponent(theme, finish, () => tui.requestRender())
+				component = new SessionModePickerComponent(theme, finish, () => tui.requestRender(), {
+					initialState: pickerState,
+					onStateChange: onPickerStateChange,
+				})
 				return component
 			},
 			SESSION_MODE_WIDGET_OPTIONS,
 		)
 		prevEditorFactory = ctx.ui.getEditorComponent()
-		ctx.ui.setEditorComponent(() => new NoOpPickerEditor())
+		// Flip editorSwapped before the call so a throw mid-mutation still
+		// triggers a restore on cleanup.
 		editorSwapped = true
+		ctx.ui.setEditorComponent(() => NO_OP_EDITOR)
 	}
 
 	const cleanup = () => {
@@ -225,7 +246,9 @@ function showSessionModeWizard(
 		SESSION_MODE_WIDGET_OPTIONS,
 	)
 	unsubscribeInput = ctx.ui.onTerminalInput((data) => {
-		if (typeof tuiRef?.hasOverlay === "function" && tuiRef.hasOverlay()) {
+		const overlayUnknown = !tuiRef
+		const overlayUp = !overlayUnknown && typeof tuiRef?.hasOverlay === "function" ? tuiRef.hasOverlay() : false
+		if (overlayUnknown || overlayUp) {
 			// The same keystroke that fires this handler may also dismiss the
 			// overlay (Mike's Shift+Enter warning dismisses on any key). Re-check
 			// on the next tick so the picker + editor swap happen as soon as the

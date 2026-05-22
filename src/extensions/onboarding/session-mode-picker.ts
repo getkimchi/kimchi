@@ -96,14 +96,24 @@ export function renderSessionModePickerLines(state: SessionModePickerState, them
 	return lines
 }
 
+export interface SessionModePickerComponentOptions {
+	initialState?: SessionModePickerState
+	onStateChange?: (state: SessionModePickerState) => void
+}
+
 export class SessionModePickerComponent implements Component {
-	private state = initialSessionModePickerState()
+	private state: SessionModePickerState
+	private readonly onStateChange?: (state: SessionModePickerState) => void
 
 	constructor(
 		private readonly theme: Theme,
 		private readonly onDone: (result: SessionModePickerResult) => void,
 		private readonly requestRender: () => void,
-	) {}
+		options: SessionModePickerComponentOptions = {},
+	) {
+		this.state = options.initialState ?? initialSessionModePickerState()
+		this.onStateChange = options.onStateChange
+	}
 
 	getState(): SessionModePickerState {
 		return this.state
@@ -120,6 +130,7 @@ export class SessionModePickerComponent implements Component {
 		if (!event) return
 		const next = reduceSessionModePicker(this.state, event)
 		this.state = next.state
+		this.onStateChange?.(this.state)
 		if (next.result) {
 			this.onDone(next.result)
 			return
