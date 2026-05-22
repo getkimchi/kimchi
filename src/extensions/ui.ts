@@ -18,6 +18,7 @@ import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
+import { splitModelRef } from "./orchestration/model-roles.js"
 import {
 	getMultiModelEnabled,
 	getOrchestratorModelId,
@@ -405,10 +406,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 							: allAvailable
 						const current = ctx.model
 						const orchRef = getOrchestratorModelRef()
-						const orchParts = orchRef.includes("/")
-							? { provider: orchRef.slice(0, orchRef.indexOf("/")), id: orchRef.slice(orchRef.indexOf("/") + 1) }
+						const orchParsed = splitModelRef(orchRef)
+						const orchestratorModel = orchParsed
+							? ctx.modelRegistry.find(orchParsed.provider, orchParsed.modelId)
 							: undefined
-						const orchestratorModel = orchParts ? ctx.modelRegistry.find(orchParts.provider, orchParts.id) : undefined
 
 						// Cycle order: model[0] → ... → model[last] → multi-model → model[0]
 						// kimi-k2.6 appears as a regular model AND multi-model appears

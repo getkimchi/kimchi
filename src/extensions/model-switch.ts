@@ -5,6 +5,7 @@ import { isRestoringModel } from "./ferment/state.js"
 import { contextFitsModel, getSafeContextWindow, sessionHasImages } from "./model-guard.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
+import { splitModelRef } from "./orchestration/model-roles.js"
 import {
 	getMultiModelEnabled,
 	getOrchestratorModelId,
@@ -59,9 +60,8 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 			if (model === "multi-model") {
 				const orchRef = getOrchestratorModelRef()
 				const orchId = getOrchestratorModelId()
-				const slashIdx = orchRef.indexOf("/")
-				const orchProvider = slashIdx > 0 ? orchRef.slice(0, slashIdx) : "kimchi-dev"
-				const orchestrator = ctx.modelRegistry?.find(orchProvider, orchId)
+				const parsed = splitModelRef(orchRef)
+				const orchestrator = parsed ? ctx.modelRegistry?.find(parsed.provider, parsed.modelId) : undefined
 				if (!orchestrator) {
 					return {
 						content: [{ type: "text" as const, text: `Multi-model orchestrator (${orchRef}) is not available.` }],

@@ -136,7 +136,8 @@ export function saveModelRoles(roles: ModelRoles, settingsPath?: string): void {
 
 	if (Object.keys(rolesObj).length === 0) {
 		// All defaults — remove the key entirely
-		existing.modelRoles = undefined
+		const { modelRoles: _, ...rest } = existing
+		existing = rest
 	} else {
 		existing.modelRoles = rolesObj
 	}
