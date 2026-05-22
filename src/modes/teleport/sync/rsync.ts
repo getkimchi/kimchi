@@ -397,14 +397,19 @@ interface RunRsyncChildInput {
 	onProgress?: (pct: number, bytes: number) => void
 }
 
-interface RsyncStats {
+export interface RsyncStats {
 	fileCount: number
 	totalBytes: number
 }
 
 const PROGRESS_LINE = /^\s*([\d,]+)\s+(\d+)%/
-const NUM_REGULAR_FILES = /^\s*Number of regular files transferred:\s*([\d,]+)/
-const TOTAL_TRANSFERRED = /^\s*Total transferred file size:\s*([\d,]+)\s*bytes?/
+// GNU rsync 3.x: "Number of regular files transferred: 24"
+// GNU rsync 2.x / openrsync: "Number of files transferred: 2"
+const NUM_FILES_TRANSFERRED = /^\s*Number of (?:regular )?files transferred:\s*([\d,]+)/
+// GNU rsync: "Total transferred file size: 121.67K bytes" or "… 12 bytes"
+// openrsync: "Total transferred file size: 12 B"
+// Capture the numeric part (possibly with decimal + suffix like 121.67K).
+const TOTAL_TRANSFERRED = /^\s*Total transferred file size:\s*([\d,.]+)\s*([KMGTP]?)\s*(?:bytes?|B)/i
 
 async function runRsyncChild(input: RunRsyncChildInput): Promise<RsyncStats> {
 	return new Promise((resolve, reject) => {
@@ -442,7 +447,18 @@ async function runRsyncChild(input: RunRsyncChildInput): Promise<RsyncStats> {
 	})
 }
 
-function handleLine(line: string, stats: RsyncStats, onProgress?: (pct: number, bytes: number) => void): void {
+/** SI suffix multipliers used by rsync's human-readable output. */
+const SUFFIX_MULTIPLIER: Record<string, number> = {
+	"": 1,
+	K: 1024,
+	M: 1024 ** 2,
+	G: 1024 ** 3,
+	T: 1024 ** 4,
+	P: 1024 ** 5,
+}
+
+/** Exported for testing — parses a single rsync stdout line and updates stats. */
+export function handleLine(line: string, stats: RsyncStats, onProgress?: (pct: number, bytes: number) => void): void {
 	const progress = line.match(PROGRESS_LINE)
 	if (progress) {
 		const bytes = Number(progress[1].replace(/,/g, ""))
@@ -450,14 +466,17 @@ function handleLine(line: string, stats: RsyncStats, onProgress?: (pct: number, 
 		if (!Number.isNaN(bytes) && !Number.isNaN(pct)) onProgress?.(pct, bytes)
 		return
 	}
-	const fileCountMatch = line.match(NUM_REGULAR_FILES)
+	const fileCountMatch = line.match(NUM_FILES_TRANSFERRED)
 	if (fileCountMatch) {
 		stats.fileCount = Number(fileCountMatch[1].replace(/,/g, ""))
 		return
 	}
 	const totalMatch = line.match(TOTAL_TRANSFERRED)
 	if (totalMatch) {
-		stats.totalBytes = Number(totalMatch[1].replace(/,/g, ""))
+		const raw = Number(totalMatch[1].replace(/,/g, ""))
+		const suffix = (totalMatch[2] ?? "").toUpperCase()
+		const multiplier = SUFFIX_MULTIPLIER[suffix] ?? 1
+		stats.totalBytes = Math.round(raw * multiplier)
 	}
 }
 
