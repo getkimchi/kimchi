@@ -158,7 +158,7 @@ describe("ProposeScopingParams schema", () => {
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 
-	it("accepts legacy prompt alias at the schema boundary", () => {
+	it("accepts prompt alias at the schema boundary", () => {
 		const payload = {
 			ferment_id: "f-123",
 			goal: "Do something",

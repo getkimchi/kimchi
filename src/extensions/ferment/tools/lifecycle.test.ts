@@ -305,7 +305,7 @@ describe("scopeFerment", () => {
 })
 
 describe("propose_ferment_scoping via registerLifecycleTools", () => {
-	it("normalizes legacy question prompt aliases before runtime validation", async () => {
+	it("normalizes question prompt aliases before runtime validation", async () => {
 		const h = createHarness()
 		const tools = new Map<string, RegisteredTool>()
 		const pi = {
@@ -530,7 +530,7 @@ describe("completeFerment", () => {
 		expect(h.storage.get(h.fermentId)?.grade?.unavailable).toBeUndefined()
 	})
 
-	it("judge unavailable → ships with unavailable=true without prompting", async () => {
+	it("interactive: judge unavailable + user chooses ship_no_grade → ships with unavailable=true", async () => {
 		const h = createHarness()
 		createTerminalFerment(h)
 		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
@@ -538,7 +538,7 @@ describe("completeFerment", () => {
 			reason: "no_auth",
 			detail: "missing api key",
 		})
-		const select = vi.fn()
+		const select = vi.fn(async () => "Ship without a grade")
 		const piWithUi = { ...h.pi, getFlag: vi.fn(() => undefined) } as unknown as ExtensionAPI
 		const ctx = { ui: { select } }
 
@@ -548,11 +548,35 @@ describe("completeFerment", () => {
 			{ pi: piWithUi, ctx },
 		)
 
-		expect(select).not.toHaveBeenCalled()
+		expect(select).toHaveBeenCalled()
 		expect(okText(result)).toContain("Final grade: B (unavailable)")
 		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
 		expect(h.storage.get(h.fermentId)?.grade?.unavailable).toBe(true)
-		expect(h.storage.get(h.fermentId)?.grade?.rationale).toContain("shipped without a graded review")
+		expect(h.storage.get(h.fermentId)?.grade?.rationale).toContain("user authorized ship")
+	})
+
+	it("interactive: judge unavailable + user chooses abandon → ferment abandoned", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: false,
+			reason: "api_error",
+			detail: "timeout after 45s",
+		})
+		const select = vi.fn(async () => "Abandon ferment")
+		const piWithUi = { ...h.pi, getFlag: vi.fn(() => undefined) } as unknown as ExtensionAPI
+		const ctx = { ui: { select } }
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ pi: piWithUi, ctx },
+		)
+
+		expect(select).toHaveBeenCalled()
+		expect(errText(result)).toContain("user declined ungraded ship")
+		expect(h.storage.get(h.fermentId)?.status).toBe("abandoned")
+		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
 	})
 
 	it("one-shot: judge unavailable → ships with unavailable=true without prompting", async () => {

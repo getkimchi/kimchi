@@ -129,13 +129,13 @@ export const ScopingQuestionSchema = Type.Object({
 	text: Type.Optional(
 		Type.String({
 			description:
-				"Required question text shown to the user. Use this field name exactly; do not use `prompt`. Do not ask preference-survey questions when a safe default can be assumed; a user request to be thorough with questions does not make default choices decision-blocking.",
+				"Canonical question text shown to the user. Prefer `text` in new propose_ferment_scoping calls; `prompt` is also accepted for compatibility with ask_user-style question objects. Do not ask preference-survey questions when a safe default can be assumed; a user request to be thorough with questions does not make default choices decision-blocking.",
 		}),
 	),
 	prompt: Type.Optional(
 		Type.String({
 			description:
-				"Deprecated compatibility alias for `text`. Prefer `text`; the host normalizes `prompt` to `text` only to recover from older tool-call shapes.",
+				"Compatibility alias for `text`, matching ask_user-style question objects. The host normalizes `prompt` to `text` before rendering.",
 		}),
 	),
 	options: Type.Optional(

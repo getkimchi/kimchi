@@ -578,14 +578,47 @@ export async function completeFerment(
 	if (journeyResult.ok) {
 		resolvedGrade = { grade: journeyResult.grade, rationale: journeyResult.rationale }
 	} else {
-		// Judge failure should not block completion. Store an unavailable grade
-		// marker so stats/reporting can skip it instead of asking the operator
-		// an obvious fallback question at the very end of the flow.
 		const failureDetail = `${journeyResult.reason}${journeyResult.detail ? `: ${journeyResult.detail}` : ""}`
-		resolvedGrade = {
-			grade: "B",
-			rationale: `Judge unreachable (${failureDetail}); shipped without a graded review.`,
-			unavailable: true,
+		const isOneShot = pi.getFlag?.("ferment-oneshot") === true
+		const choice = isOneShot
+			? { failed: false as const, choice: "ship_no_grade" }
+			: await askUser(
+					`Final grade judge unreachable (${failureDetail}). Ship without a grade or abandon?`,
+					[
+						{
+							id: "ship_no_grade",
+							label: "Ship without a grade",
+							description: "Mark complete; grade will be recorded as unavailable.",
+						},
+						{ id: "abandon", label: "Abandon ferment", description: "Discard completion; the work stays on disk." },
+					],
+					{ ferment, pi, ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined, runtime },
+				)
+
+		if (choice.failed || choice.choice === "abandon") {
+			if (choice.failed) {
+				// If no prompt audience exists, keep completion moving with an
+				// unavailable grade. The gates already passed; judge failure is
+				// infrastructure noise, not product evidence.
+				resolvedGrade = {
+					grade: "B",
+					rationale: `Judge unreachable (${failureDetail}); shipped without a graded review because no prompt audience was available (${choice.reason}).`,
+					unavailable: true,
+				}
+			} else {
+				const abandonOutcome = applyAndPersist(params.ferment_id, {
+					type: "abandon",
+					reason: "judge unreachable; user declined ungraded ship",
+				})
+				if (abandonOutcome.ok) runtime.setActive(abandonOutcome.ferment)
+				return toolErr("complete_ferment refused — judge unreachable; user declined ungraded ship.")
+			}
+		} else {
+			resolvedGrade = {
+				grade: "B",
+				rationale: `Judge unreachable (${failureDetail}); user authorized ship without a graded review.`,
+				unavailable: true,
+			}
 		}
 	}
 
