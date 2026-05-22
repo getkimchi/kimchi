@@ -135,15 +135,15 @@ describe("modelSwitchExtension", () => {
 		expect(tool.parameters).toBeDefined()
 	})
 
-	it('enables orchestration mode when model is "orchestration"', async () => {
+	it('enables multi-model mode when model is "multi-model"', async () => {
 		const { setModel, exec } = createHarness()
 		const setSpy = vi.spyOn(enrichment, "setMultiModelEnabled")
 		vi.spyOn(enrichment, "getOrchestratorModelRef").mockReturnValue("kimchi-dev/kimi-k2.6")
 		vi.spyOn(enrichment, "getOrchestratorModelId").mockReturnValue("kimi-k2.6")
-		const result = await exec("orchestration")
+		const result = await exec("multi-model")
 		expect(setSpy).toHaveBeenCalledWith(true)
 		expect(setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "kimi-k2.6", provider: "kimchi-dev" }))
-		expect(textOf(result)).toContain("orchestration mode")
+		expect(textOf(result)).toContain("multi-model mode")
 	})
 
 	describe("input validation", () => {

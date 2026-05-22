@@ -12,9 +12,9 @@ export const GENERAL_TIPS = [
 		message: "Run `/settings > Themes` to change colors.",
 	},
 	{
-		id: "orchestration-mode",
+		id: "multi-model-switch",
 		scope: "general",
-		message: "Press `ctrl+p` to cycle models. Pick orchestration to delegate.",
+		message: "Use `ctrl+p` or `/model` to select multi-model for auto routing.",
 	},
 	{
 		id: "single-model-mode",

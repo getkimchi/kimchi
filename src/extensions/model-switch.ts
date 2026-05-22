@@ -57,8 +57,8 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const { model } = params
 
-			// Special case: "orchestration" enters multi-model orchestration mode
-			if (model === "orchestration") {
+			// Special case: "multi-model" enters multi-model orchestration mode
+			if (model === "multi-model") {
 				const orchRef = getOrchestratorModelRef()
 				const orchId = getOrchestratorModelId()
 				const parsed = splitModelRef(orchRef)
@@ -72,12 +72,12 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 						suppressModelSelectGuard = false
 					}
 					return {
-						content: [{ type: "text" as const, text: `Switched to orchestration mode (model: ${orchId})` }],
+						content: [{ type: "text" as const, text: `Switched to multi-model mode (orchestrator: ${orchId})` }],
 						details: null,
 					}
 				}
 				return {
-					content: [{ type: "text" as const, text: "Switched to orchestration mode" }],
+					content: [{ type: "text" as const, text: "Switched to multi-model mode" }],
 					details: null,
 				}
 			}
@@ -93,7 +93,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text" as const,
-							text: `Invalid model format: "${model}". Expected "provider/modelId" or "orchestration".\n\nAvailable models:\norchestration\n${available.join("\n")}`,
+							text: `Invalid model format: "${model}". Expected "provider/modelId" or "multi-model".\n\nAvailable models:\nmulti-model\n${available.join("\n")}`,
 						},
 					],
 					details: null,

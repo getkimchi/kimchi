@@ -21,6 +21,7 @@ import { sessionHasImages } from "./model-guard.js"
 import { splitModelRef } from "./orchestration/model-roles.js"
 import {
 	getMultiModelEnabled,
+	getOrchestratorModelId,
 	getOrchestratorModelRef,
 	setMultiModelEnabled,
 } from "./prompt-construction/prompt-enrichment.js"
@@ -273,7 +274,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 				if (ferment) parts.push(ferment.text)
 				const perm = footerData.getExtensionStatuses().get("permissions-mode")
 				if (perm) parts.push(perm)
-				const modelId = getMultiModelEnabled() ? "orchestration" : (ctx.model?.id ?? "n/a")
+				const modelId = getMultiModelEnabled() ? `multi-model (${getOrchestratorModelId()})` : (ctx.model?.id ?? "n/a")
 				parts.push(`${resolvedAccentFg(theme)}${modelId}${RST_FG} ${theme.fg("dim", "→ ctrl+p")}`)
 				return parts.join(` ${theme.fg("dim", "·")} `)
 			}

@@ -251,7 +251,7 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 	it("width 160: full footer + `/ for commands` hint, padded to width", () => {
 		const { raw, visible } = renderAt(160)
 		expect(visible).toContain("\u25cf default \u2192 shift+tab")
-		expect(visible).toContain("orchestration")
+		expect(visible).toContain("multi-model")
 		expect(visible).not.toContain("claude-opus-4-7")
 		expect(visible).toContain("0% ctx")
 		expect(visible).toContain("phase:explore")
@@ -265,23 +265,23 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		expect(visible).not.toContain("/ for commands")
 		expect(visibleWidth(raw)).toBeLessThanOrEqual(100)
 		expect(visible).toContain("default")
-		expect(visible).toContain("orchestration")
+		expect(visible).toContain("multi-model")
 		expect(visible).not.toContain("claude-opus-4-7")
 		expect(visible).toContain("0% ctx")
 		expect(visible).toContain("phase:explore")
 	})
 
-	it("width 60: shortcuts stripped, orchestration survives", () => {
+	it("width 60: shortcuts stripped, multi-model survives", () => {
 		const { raw, visible } = renderAt(60)
 		expect(visibleWidth(raw)).toBeLessThanOrEqual(60)
 		expect(visible).not.toContain("/ for commands")
 		expect(visible).not.toContain("shift+tab")
 		expect(visible).not.toContain("ctrl+p")
-		// Orchestration model segment replaces the old multi-model toggle.
-		expect(visible).toContain("orchestration")
+		// Multi-model abbreviates to "m-m" at this width.
+		expect(visible).toContain("m-m")
 		// phase value survives.
 		expect(visible).toContain("explore")
-		// Concrete model segment is replaced by orchestration when enabled.
+		// Concrete model segment is replaced by multi-model when enabled.
 		expect(visible).not.toContain("claude-opus-4-7")
 	})
 

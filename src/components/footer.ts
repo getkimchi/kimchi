@@ -26,6 +26,7 @@ type SegmentId = "permissions" | "model" | "ferment" | "agents" | "context" | "u
  *  and the segment's tail is identical in both forms anyway. */
 type SegmentRaw =
 	| { kind: "context"; percent: number; pctColor?: "error" | "warning" }
+	| { kind: "model"; multiModel: boolean; modelId: string }
 	| { kind: "phase"; phase: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
 
@@ -190,6 +191,13 @@ export function buildPhaseCompact(ctx: CompactionContext, phase: string): Segmen
 	}
 }
 
+/** Compact form for model: abbreviates "multi-model (kimi-k2.6)" to "m-m (kimi-k2.6)". */
+export function buildModelAbbrev(ctx: CompactionContext, multiModel: boolean, modelId: string): Segment {
+	const label = multiModel ? `m-m (${modelId})` : modelId
+	const text = `${ctx.accent(label)} ${ctx.dim("→ ctrl+p")}`
+	return { id: "model", text, width: visibleWidth(text), raw: { kind: "model", multiModel, modelId } }
+}
+
 /** Compaction action for ferment: drop the leading colorized `ferment:`
  *  substring in place. The rest of the segment is unchanged, so no rebuild. */
 function dropFermentPrefix(segs: Segment[]): boolean {
@@ -259,6 +267,11 @@ const STEPS: CompactionStep[] = [
 		name: "drop-context-bar",
 		apply: (segs, ctx) =>
 			recompactSegment(segs, "context", "context", (raw) => buildContextCompact(ctx, raw.percent, raw.pctColor)),
+	},
+	{
+		name: "abbrev-model-label",
+		apply: (segs, ctx) =>
+			recompactSegment(segs, "model", "model", (raw) => buildModelAbbrev(ctx, raw.multiModel, raw.modelId)),
 	},
 	{
 		name: "drop-shortcut-hints",
@@ -347,11 +360,11 @@ export class StatsFooter implements Component {
 	}
 
 	private modelSegment(): Segment {
-		const orchestrated = getMultiModelEnabled()
-		const label = orchestrated
-			? `${this.accent("orchestration")} ${this.dim("→ ctrl+p")}`
-			: `${this.accent(this.ctx.model?.id ?? "n/a")} ${this.dim("→ ctrl+p")}`
-		return { id: "model", text: label, width: visibleWidth(label) }
+		const multiModel = getMultiModelEnabled()
+		const rawModelId = this.ctx.model?.id ?? "n/a"
+		const label = multiModel ? `multi-model (${rawModelId})` : rawModelId
+		const text = `${this.accent(label)} ${this.dim("→ ctrl+p")}`
+		return { id: "model", text, width: visibleWidth(text), raw: { kind: "model", multiModel, modelId: rawModelId } }
 	}
 
 	private usageSegment(): Segment | null {
