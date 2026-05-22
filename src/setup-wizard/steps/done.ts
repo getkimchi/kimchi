@@ -95,7 +95,7 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 		try {
 			const result = await installRtk()
 			outcome.rtkInstalled = true
-			s.stop(`RTK ${result.version}: installed at ${result.linkPath}`)
+			s.stop(`RTK ${result.version}: ready at ${result.linkPath}`)
 		} catch (err) {
 			const msg = (err as Error).message
 			outcome.failures.push({ id: "rtk", error: msg })

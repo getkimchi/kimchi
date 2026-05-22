@@ -100,7 +100,7 @@ export function detectRtk(): Promise<boolean> {
  */
 export function rewriteWithRtk(command: string): string {
 	if (isRtkDisabled()) return command
-	if (rtkAvailable === false) return command
+	if (rtkAvailable === false && rtkBinary() === "rtk") return command
 
 	try {
 		const stdout = execFileSync(rtkBinary(), ["rewrite", command], { timeout: 2000, encoding: "utf-8" })

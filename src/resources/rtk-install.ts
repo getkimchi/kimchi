@@ -14,7 +14,7 @@ import {
 } from "node:fs"
 import { chmod, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
-import { basename, dirname, join } from "node:path"
+import { basename, delimiter, dirname, join } from "node:path"
 import { settingsPath } from "./store.js"
 
 const LATEST_RELEASE_URL = "https://api.github.com/repos/rtk-ai/rtk/releases/latest"
@@ -45,15 +45,25 @@ export function globalRtkLinkPath(): string {
 	return join(globalBinDir(), process.platform === "win32" ? "rtk.exe" : "rtk")
 }
 
-export function isRtkInstalled(): boolean {
-	if (existsSync(globalRtkLinkPath())) return true
-	if (existsSync(managedRtkPath())) return true
+export function ensureRtkPath(): void {
+	const bin = globalBinDir()
+	const entries = (process.env.PATH ?? "").split(delimiter).filter(Boolean)
+	if (!entries.includes(bin)) process.env.PATH = [bin, ...entries].join(delimiter)
+}
+
+export function isRtkCommandAvailable(): boolean {
 	try {
 		execFileSync("rtk", ["--version"], { stdio: "ignore", timeout: 1000 })
 		return true
 	} catch {
 		return false
 	}
+}
+
+export function isRtkInstalled(): boolean {
+	if (existsSync(globalRtkLinkPath())) return true
+	if (existsSync(managedRtkPath())) return true
+	return isRtkCommandAvailable()
 }
 
 export function installedRtkVersion(): string | undefined {
@@ -92,9 +102,11 @@ async function installRtkUnlocked(): Promise<RtkInstallResult> {
 	const globalVersion = rtkVersion(globalPath)
 	if (managedVersion === release.tag_name) {
 		const linkPath = globalVersion === release.tag_name ? globalPath : linkGlobalRtk(managedPath)
+		ensureRtkPath()
 		return { version: release.tag_name, binaryPath: managedPath, linkPath }
 	}
 	if (globalVersion === release.tag_name) {
+		ensureRtkPath()
 		return { version: release.tag_name, binaryPath: globalPath, linkPath: globalPath }
 	}
 
@@ -115,6 +127,7 @@ async function installRtkUnlocked(): Promise<RtkInstallResult> {
 		replaceFile(extracted, target)
 		if (process.platform !== "win32") await chmod(target, 0o755)
 		const linkPath = linkGlobalRtk(target)
+		ensureRtkPath()
 		return { version: release.tag_name, binaryPath: target, linkPath }
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true })

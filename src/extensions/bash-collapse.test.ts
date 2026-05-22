@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { type MockInstance, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	_resetRtkState,
@@ -123,15 +126,26 @@ describe("detectRtk", () => {
 })
 
 describe("rewriteWithRtk", () => {
+	let tmpRtkRoot: string | undefined
+	let previousKimchiDir: string | undefined
+
 	beforeEach(() => {
 		_resetRtkState()
 		clearEnv()
+		previousKimchiDir = process.env.KIMCHI_CODING_AGENT_DIR
+		tmpRtkRoot = mkdtempSync(join(tmpdir(), "kimchi-rtk-collapse-test-"))
+		process.env.KIMCHI_CODING_AGENT_DIR = tmpRtkRoot
 		mockExecFileSync.mockReset()
 		// Pre-seed rtkAvailable = true for most tests (detectRtk already passed).
 		mockExecFile.mockReset()
 	})
 
 	afterEach(() => {
+		if (tmpRtkRoot) rmSync(tmpRtkRoot, { recursive: true, force: true })
+		tmpRtkRoot = undefined
+		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete.
+		if (previousKimchiDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
+		else process.env.KIMCHI_CODING_AGENT_DIR = previousKimchiDir
 		clearEnv()
 	})
 
@@ -160,6 +174,18 @@ describe("rewriteWithRtk", () => {
 			throw Object.assign(new Error("Command failed"), { status: 3, stdout: "rtk cargo test\n" })
 		})
 		expect(rewriteWithRtk("cargo test")).toBe("rtk cargo test")
+	})
+
+	it("keeps RTK rewrite output readable when it emits bare rtk", async () => {
+		if (!tmpRtkRoot) throw new Error("test rtk root missing")
+		const managed = join(tmpRtkRoot, "rtk", "rtk")
+		mkdirSync(join(tmpRtkRoot, "rtk"), { recursive: true })
+		writeFileSync(managed, "")
+		seedRtkAvailable()
+		await detectRtk()
+
+		mockExecFileSync.mockReturnValueOnce("rtk git status\n")
+		expect(rewriteWithRtk("git status")).toBe("rtk git status")
 	})
 
 	it("returns the original command when rtk output matches the input", async () => {
@@ -222,14 +248,25 @@ describe("rewriteWithRtk", () => {
 })
 
 describe("rtkSpawnHook", () => {
+	let tmpRtkRoot: string | undefined
+	let previousKimchiDir: string | undefined
+
 	beforeEach(() => {
 		_resetRtkState()
 		clearEnv()
+		previousKimchiDir = process.env.KIMCHI_CODING_AGENT_DIR
+		tmpRtkRoot = mkdtempSync(join(tmpdir(), "kimchi-rtk-spawn-test-"))
+		process.env.KIMCHI_CODING_AGENT_DIR = tmpRtkRoot
 		mockExecFileSync.mockReset()
 		mockExecFile.mockReset()
 	})
 
 	afterEach(() => {
+		if (tmpRtkRoot) rmSync(tmpRtkRoot, { recursive: true, force: true })
+		tmpRtkRoot = undefined
+		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete.
+		if (previousKimchiDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
+		else process.env.KIMCHI_CODING_AGENT_DIR = previousKimchiDir
 		clearEnv()
 	})
 

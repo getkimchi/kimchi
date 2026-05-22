@@ -1,6 +1,13 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getResourceDefinition, getResourceDefinitions } from "./definitions.js"
-import { installRtk, isRtkInstalled, markRtkAutoInstallChecked, shouldCheckRtkAutoInstall } from "./rtk-install.js"
+import {
+	ensureRtkPath,
+	installRtk,
+	isRtkCommandAvailable,
+	isRtkInstalled,
+	markRtkAutoInstallChecked,
+	shouldCheckRtkAutoInstall,
+} from "./rtk-install.js"
 import { isResourceEnabled, setResourceOverride } from "./store.js"
 import type { ResourceKind } from "./types.js"
 import { createResourceManager } from "./ui.js"
@@ -29,16 +36,19 @@ async function ensureRtkOnStartup(ctx: ExtensionContext): Promise<void> {
 	if (!isResourceEnabled("hooks.rtk-rewrite")) return
 	if (process.env.KIMCHI_RTK_AUTO_INSTALL === "0") return
 
+	ensureRtkPath()
 	const missing = !isRtkInstalled()
-	if (!missing && !shouldCheckRtkAutoInstall()) return
+	const commandMissing = !isRtkCommandAvailable()
+	if (!missing && !commandMissing && !shouldCheckRtkAutoInstall()) return
 
 	try {
 		const result = await installRtk()
 		markRtkAutoInstallChecked()
-		if (missing && ctx.hasUI) ctx.ui.notify(`RTK installed at ${result.linkPath}`, "info")
+		if ((missing || commandMissing) && ctx.hasUI) ctx.ui.notify(`RTK ready at ${result.linkPath}`, "info")
 	} catch (err) {
 		markRtkAutoInstallChecked()
-		if (missing && ctx.hasUI) ctx.ui.notify(`RTK install failed: ${(err as Error).message}`, "warning")
+		if ((missing || commandMissing) && ctx.hasUI)
+			ctx.ui.notify(`RTK install failed: ${(err as Error).message}`, "warning")
 	}
 }
 
