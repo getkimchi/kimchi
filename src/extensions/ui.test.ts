@@ -1,3 +1,4 @@
+import type { Api, Model } from "@earendil-works/pi-ai"
 import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { describe, expect, it } from "vitest"
 import { isBareExitAlias } from "./exit-utils.js"
@@ -5,9 +6,7 @@ import { findNextCompatibleModel } from "./ui.js"
 
 // Helper to create a minimal Model mock
 function makeModel(id: string, contextWindow: number, input: string[] = ["text", "image"]) {
-	return { id, provider: "test", name: id, contextWindow, input } as import("@earendil-works/pi-ai").Model<
-		import("@earendil-works/pi-ai").Api
-	>
+	return { id, provider: "test", name: id, contextWindow, input } as unknown as Model<Api>
 }
 
 describe("isBareExitAlias", () => {
@@ -176,7 +175,7 @@ describe("findNextCompatibleModel", () => {
 			contextWindow: Number.MAX_SAFE_INTEGER,
 			input: ["text", "image"],
 			output: ["text"],
-		} as import("@earendil-works/pi-ai").Model<import("@earendil-works/pi-ai").Api>
+		} as unknown as import("@earendil-works/pi-ai").Model<import("@earendil-works/pi-ai").Api>
 		const models = [visionModel, orchestrationEntry]
 
 		// High token count would skip contextWindow=0; images+vision would skip non-vision entries.
