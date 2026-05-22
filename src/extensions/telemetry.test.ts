@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../config.js"
-import telemetryExtension from "./telemetry.js"
+import telemetryExtension, { _resetRootSessionId } from "./telemetry.js"
 
 type Handler = (...args: unknown[]) => Promise<void> | void
 
@@ -43,6 +43,7 @@ describe("telemetryExtension", () => {
 
 	afterEach(() => {
 		globalThis.fetch = originalFetch
+		_resetRootSessionId()
 	})
 
 	describe("disabled telemetry", () => {

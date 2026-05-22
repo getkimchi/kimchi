@@ -218,6 +218,19 @@ const TELEMETRY_DRAIN_TIMEOUT_MS = 5_000
 const METRICS_FLUSH_INTERVAL_MS = 30_000
 
 // ---------------------------------------------------------------------------
+// Process-level root session ID
+// All agents (main + sub-agents) in the same process share this ID so that
+// telemetry for a single user request is rolled up under one session.
+// ---------------------------------------------------------------------------
+
+let rootSessionId: string | undefined
+
+/** @internal — exposed for testing only */
+export function _resetRootSessionId(): void {
+	rootSessionId = undefined
+}
+
+// ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
 
@@ -225,7 +238,8 @@ export default function telemetryExtension(config: TelemetryConfig) {
 	return (pi: ExtensionAPI) => {
 		if (!config.enabled) return
 
-		let sessionId = crypto.randomUUID()
+		if (!rootSessionId) rootSessionId = crypto.randomUUID()
+		let sessionId = rootSessionId
 		let sessionStartMs = Date.now()
 		let sessionStartNano = String(sessionStartMs * 1_000_000)
 		const sentMessages = new Set<string>()
@@ -374,7 +388,9 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		})
 
 		pi.on("session_start", async () => {
-			sessionId = crypto.randomUUID()
+			// Reuse the process-level root ID so all agents roll up under one session.
+			if (!rootSessionId) rootSessionId = crypto.randomUUID()
+			sessionId = rootSessionId
 			sessionStartMs = Date.now()
 			sessionStartNano = String(sessionStartMs * 1_000_000)
 			sentMessages.clear()

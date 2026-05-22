@@ -12,6 +12,7 @@ import {
 	createAgentSession,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
+import { readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
@@ -321,6 +322,7 @@ async function runAgentInner(
 		noContextFiles: true,
 		systemPromptOverride: () => systemPrompt,
 		appendSystemPromptOverride: () => [],
+		extensionFactories: [telemetryExtension(readTelemetryConfig())],
 	})
 	await loader.reload()
 
@@ -551,6 +553,9 @@ async function runAgentInner(
 		unsubTurns()
 		collector.unsubscribe()
 		cleanupAbort()
+		// Emit session_shutdown so extensions (e.g. telemetry) can flush and
+		// clear timers. Mirrors the ACP server pattern in modes/acp/server.ts.
+		await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 		// Restore persona env — important for sequential runs in the same process.
 		if (agentConfig?.name) {
 			if (prevPersona === undefined) {
