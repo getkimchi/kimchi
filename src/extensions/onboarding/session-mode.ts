@@ -1,15 +1,33 @@
-import type { ExtensionAPI, SessionStartEvent } from "@earendil-works/pi-coding-agent"
-import { getCliModeArg, isPreDispatchValueFlag } from "../../cli-args.js"
+import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 
-export type SessionModeOnboardingAction = "skip"
+type EditorFactory = ReturnType<ExtensionContext["ui"]["getEditorComponent"]>
+import { getCliModeArg, isPreDispatchValueFlag } from "../../cli-args.js"
+import {
+	readHideSessionModeDialog,
+	readSessionModeWizardSeenAt,
+	writeHideSessionModeDialog,
+	writeSessionModeWizardSeenAt,
+} from "../../config.js"
+
+import { setTipWidgetLocation } from "../tips/index.js"
+import { setSessionModeOnboardingFooterSuppressed } from "../ui.js"
+import { NoOpPickerEditor } from "./picker-editor.js"
+import {
+	SessionModePickerComponent,
+	type SessionModePickerResult,
+	keyToSessionModePickerEvent,
+} from "./session-mode-picker.js"
+
+export type SessionModeOnboardingAction = "show" | "skip" | "skip-and-mark-seen"
 
 export type SessionModeOnboardingReason =
+	| "eligible"
 	| "hidden"
+	| "already-seen"
 	| "not-interactive-tty"
 	| "automation-mode"
 	| "explicit-session"
 	| "explicit-default-session"
-	| "default-chat"
 
 export interface SessionModeOnboardingDecision {
 	action: SessionModeOnboardingAction
@@ -33,12 +51,201 @@ export interface SessionModeLaunchContext {
 export interface SessionModeOnboardingInput {
 	launchContext: SessionModeLaunchContext
 	hasUI: boolean
+	seenAt?: string
+	hideSessionModeDialog?: boolean
 	sessionStartReason?: SessionStartEvent["reason"]
 }
 
-export default function sessionModeOnboardingExtension(_options: unknown): (pi: ExtensionAPI) => void {
+const SESSION_MODE_WIDGET_KEY = "kimchi-session-mode-onboarding"
+const SESSION_MODE_WIDGET_OPTIONS = { placement: "aboveEditor" } as const
+
+export type SessionModeWizardOutcome = "default" | "ferment" | "cancelled"
+
+export interface SessionModeOnboardingExtensionOptions {
+	launchContext: SessionModeLaunchContext
+	configPath?: string
+	now?: () => Date
+	onOutcome?: (
+		outcome: Extract<SessionModeWizardOutcome, "default" | "ferment">,
+		ctx: ExtensionContext,
+		pi: ExtensionAPI,
+	) => void | Promise<void>
+}
+
+export default function sessionModeOnboardingExtension(options: SessionModeOnboardingExtensionOptions) {
+	return (pi: ExtensionAPI) => {
+		let cleanupActiveWizard: (() => void) | undefined
+
+		pi.on("session_start", (event, ctx) => {
+			cleanupActiveWizard?.()
+			cleanupActiveWizard = undefined
+			const seenAt = readSessionModeWizardSeenAt(options.configPath)
+			const decision = decideSessionModeOnboarding({
+				launchContext: options.launchContext,
+				hasUI: ctx.hasUI,
+				seenAt,
+				hideSessionModeDialog: readHideSessionModeDialog(options.configPath),
+				sessionStartReason: event.reason,
+			})
+			if (decision.action === "skip-and-mark-seen") {
+				markSessionModeWizardSeen({ configPath: options.configPath, now: options.now })
+				return
+			}
+			if (decision.action === "show") {
+				// Reaching "show" means seenAt was undefined (already-seen short-circuits
+				// above), so this is the first run — mark seen immediately so a crash or
+				// kill before selection doesn't re-show the picker next time.
+				try {
+					markSessionModeWizardSeen({ configPath: options.configPath, now: options.now })
+				} catch (err) {
+					ctx.ui.notify(
+						`Could not save session mode onboarding state: ${err instanceof Error ? err.message : String(err)}`,
+						"warning",
+					)
+				}
+				cleanupActiveWizard = showSessionModeWizard(pi, ctx, options, () => {
+					cleanupActiveWizard = undefined
+				})
+			}
+		})
+
+		pi.on("session_shutdown", () => {
+			cleanupActiveWizard?.()
+			cleanupActiveWizard = undefined
+		})
+	}
+}
+
+function showSessionModeWizard(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	options: SessionModeOnboardingExtensionOptions,
+	onCleanup: () => void,
+): () => void {
+	let finished = false
+	let activated = false
+	let unsubscribeInput: (() => void) | undefined
+	let restoreTips: (() => void) | undefined
+	let tuiRef: { hasOverlay(): boolean } | null = null
+	let component: SessionModePickerComponent | undefined
+	let editorSwapped = false
+	// Captured from getEditorComponent() right before we swap. ui.ts registers its
+	// session_start handler before ours (see cli.ts extension order), so by the
+	// time we read this, the upstream PromptEditor factory is already installed.
+	// We restore exactly this value on cleanup — passing undefined to
+	// setEditorComponent would drop to the library default instead.
+	let prevEditorFactory: EditorFactory | undefined
+
+	// Empty shim component mounted before activation. Renders nothing so the
+	// picker contributes zero visual footprint while we wait for any overlay
+	// (e.g. Mike's Shift+Enter terminal-compat warning) to clear. We still get
+	// the tui reference from setWidget's factory so we can poll hasOverlay().
+	const SHIM_COMPONENT = { render: () => [], invalidate: () => {} } as const
+
+	const activate = () => {
+		if (activated || finished) return
+		// pi-tui routes terminal input through the current editor. If we swap
+		// the editor (or mount a non-empty picker that consumes keys) while an
+		// overlay is up, the overlay loses its dismissal keys and becomes
+		// stuck. So we mount the picker + swap the editor atomically only once
+		// no overlay is present.
+		if (typeof tuiRef?.hasOverlay === "function" && tuiRef.hasOverlay()) return
+		activated = true
+		ctx.ui.setWidget(
+			SESSION_MODE_WIDGET_KEY,
+			(tui, theme) => {
+				tuiRef = tui as unknown as { hasOverlay(): boolean }
+				component = new SessionModePickerComponent(theme, finish, () => tui.requestRender())
+				return component
+			},
+			SESSION_MODE_WIDGET_OPTIONS,
+		)
+		prevEditorFactory = ctx.ui.getEditorComponent()
+		ctx.ui.setEditorComponent(() => new NoOpPickerEditor())
+		editorSwapped = true
+	}
+
+	const cleanup = () => {
+		unsubscribeInput?.()
+		unsubscribeInput = undefined
+		ctx.ui.setWidget(SESSION_MODE_WIDGET_KEY, undefined, SESSION_MODE_WIDGET_OPTIONS)
+		restoreTips?.()
+		restoreTips = undefined
+		setSessionModeOnboardingFooterSuppressed(false)
+		if (editorSwapped) {
+			ctx.ui.setEditorComponent(prevEditorFactory)
+			editorSwapped = false
+		}
+		onCleanup()
+	}
+
+	const finish = (result: SessionModePickerResult) => {
+		if (finished) return
+		finished = true
+		try {
+			if (result !== "cancelled") {
+				recordSessionModeWizardOutcome(result.choice, {
+					configPath: options.configPath,
+					now: options.now,
+					hideDialog: result.hideDialog,
+				})
+			}
+		} catch (err) {
+			cleanup()
+			ctx.ui.notify(
+				`Could not save session mode onboarding state: ${err instanceof Error ? err.message : String(err)}`,
+				"warning",
+			)
+			return
+		}
+		cleanup()
+		if (result !== "cancelled" && options.onOutcome) {
+			Promise.resolve()
+				.then(() => options.onOutcome?.(result.choice, ctx, pi))
+				.catch((err: unknown) => {
+					ctx.ui.notify(`Session mode startup failed: ${err instanceof Error ? err.message : String(err)}`, "warning")
+				})
+		}
+	}
+
+	restoreTips = setTipWidgetLocation("hidden")
+	setSessionModeOnboardingFooterSuppressed(true)
+	// Mount an invisible shim so we can capture the tui reference (needed for
+	// hasOverlay polling) without contributing any visual footprint. The shim
+	// is replaced by the real picker inside activate().
+	ctx.ui.setWidget(
+		SESSION_MODE_WIDGET_KEY,
+		(tui) => {
+			tuiRef = tui as unknown as { hasOverlay(): boolean }
+			// Defer the activation attempt to the next microtask so we don't
+			// recurse into setWidget from inside the factory call.
+			queueMicrotask(activate)
+			return SHIM_COMPONENT
+		},
+		SESSION_MODE_WIDGET_OPTIONS,
+	)
+	unsubscribeInput = ctx.ui.onTerminalInput((data) => {
+		if (typeof tuiRef?.hasOverlay === "function" && tuiRef.hasOverlay()) {
+			// The same keystroke that fires this handler may also dismiss the
+			// overlay (Mike's Shift+Enter warning dismisses on any key). Re-check
+			// on the next tick so the picker + editor swap happen as soon as the
+			// overlay clears — without requiring a second keypress.
+			if (!activated) setTimeout(activate, 0)
+			return undefined
+		}
+		if (!activated) activate()
+		const event = keyToSessionModePickerEvent(data)
+		if (event) {
+			component?.handleInput(data)
+			return { consume: true }
+		}
+		return undefined
+	})
+
 	return () => {
-		// No-op: the session-mode picker has been removed.
+		if (finished) return
+		finished = true
+		cleanup()
 	}
 }
 
@@ -57,6 +264,11 @@ export function buildSessionModeLaunchContext(
 }
 
 export function decideSessionModeOnboarding(input: SessionModeOnboardingInput): SessionModeOnboardingDecision {
+	if (input.hideSessionModeDialog) return { action: "skip", reason: "hidden" }
+	// Show-once semantics: once the picker has been displayed (sessionModeWizardSeenAt
+	// is written the moment the dialog mounts, even if the user cancels), never
+	// show it again on subsequent startups.
+	if (input.seenAt !== undefined) return { action: "skip", reason: "already-seen" }
 	if (input.sessionStartReason !== undefined && input.sessionStartReason !== "startup") {
 		return { action: "skip", reason: "explicit-session" }
 	}
@@ -66,9 +278,25 @@ export function decideSessionModeOnboarding(input: SessionModeOnboardingInput): 
 	if (input.launchContext.nonInteractiveMode) return { action: "skip", reason: "automation-mode" }
 	if (input.launchContext.explicitSession) return { action: "skip", reason: "explicit-session" }
 	if (input.launchContext.explicitDefaultIntent) {
-		return { action: "skip", reason: "explicit-default-session" }
+		return { action: "skip-and-mark-seen", reason: "explicit-default-session" }
 	}
-	return { action: "skip", reason: "default-chat" }
+	return { action: "show", reason: "eligible" }
+}
+
+export function recordSessionModeWizardOutcome(
+	outcome: SessionModeWizardOutcome,
+	options?: { configPath?: string; now?: () => Date; hideDialog?: boolean },
+): string | undefined {
+	if (outcome === "cancelled") return undefined
+	const seenAt = markSessionModeWizardSeen(options)
+	if (options?.hideDialog === true) writeHideSessionModeDialog(true, options.configPath)
+	return seenAt
+}
+
+export function markSessionModeWizardSeen(options?: { configPath?: string; now?: () => Date }): string {
+	const seenAt = (options?.now?.() ?? new Date()).toISOString()
+	writeSessionModeWizardSeenAt(seenAt, options?.configPath)
+	return seenAt
 }
 
 function scanLaunchArgs(rawArgs: string[]): {

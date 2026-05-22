@@ -62,7 +62,10 @@ export interface SearchStrategyConfig {
 	fieldWeights: { name: number; description: number; schemaKey: number }
 }
 
-export type OnboardingConfig = Record<string, unknown>
+export interface OnboardingConfig {
+	sessionModeWizardSeenAt?: string
+	hideSessionModeDialog?: boolean
+}
 
 export const SEARCH_STRATEGY_DEFAULTS: SearchStrategyConfig = {
 	strategy: "bm25",
@@ -161,7 +164,7 @@ function readConfigExtras(configPath: string): {
 			parsed.migrationState === "done" || parsed.migrationState === "skip-forever"
 				? (parsed.migrationState as MigrationState)
 				: undefined
-		const onboarding: OnboardingConfig = {}
+		const onboarding = parseOnboardingConfig(parsed.onboarding)
 		// Read apiKey (prefer camelCase, fall back to snake_case)
 		let apiKey: string | undefined
 		if (typeof parsed.apiKey === "string" && parsed.apiKey.length > 0) {
@@ -206,6 +209,22 @@ function readConfigObject(configPath: string): Record<string, unknown> | undefin
 		// file missing or invalid
 	}
 	return undefined
+}
+
+function parseOnboardingConfig(value: unknown): OnboardingConfig | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+	const raw = value as Record<string, unknown>
+	const sessionModeWizardSeenAt =
+		typeof raw.sessionModeWizardSeenAt === "string" && raw.sessionModeWizardSeenAt.length > 0
+			? raw.sessionModeWizardSeenAt
+			: undefined
+	const hideSessionModeDialogValue = raw.hideSessionModeDialog ?? raw["hide-session-mode-dialog"]
+	const hideSessionModeDialog = typeof hideSessionModeDialogValue === "boolean" ? hideSessionModeDialogValue : undefined
+
+	return {
+		...(sessionModeWizardSeenAt ? { sessionModeWizardSeenAt } : {}),
+		...(hideSessionModeDialog !== undefined ? { hideSessionModeDialog } : {}),
+	}
 }
 
 /**
@@ -347,6 +366,39 @@ function updateConfigFile(
 function writeConfigField(key: string, value: unknown, configPath: string): void {
 	updateConfigFile(configPath, (raw) => {
 		raw[key] = value
+	})
+}
+
+function updateOnboardingConfig(configPath: string, update: (onboarding: Record<string, unknown>) => void): void {
+	updateConfigFile(configPath, (raw) => {
+		const onboarding =
+			raw.onboarding && typeof raw.onboarding === "object" && !Array.isArray(raw.onboarding)
+				? { ...(raw.onboarding as Record<string, unknown>) }
+				: {}
+		update(onboarding)
+		raw.onboarding = onboarding
+	})
+}
+
+export function readSessionModeWizardSeenAt(configPath?: string): string | undefined {
+	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.sessionModeWizardSeenAt
+}
+
+export function writeSessionModeWizardSeenAt(seenAt: string, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateOnboardingConfig(path, (onboarding) => {
+		onboarding.sessionModeWizardSeenAt = seenAt
+	})
+}
+
+export function readHideSessionModeDialog(configPath?: string): boolean {
+	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.hideSessionModeDialog === true
+}
+
+export function writeHideSessionModeDialog(hidden: boolean, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateOnboardingConfig(path, (onboarding) => {
+		onboarding.hideSessionModeDialog = hidden
 	})
 }
 
