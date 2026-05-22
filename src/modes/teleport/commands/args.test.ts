@@ -18,6 +18,9 @@ describe("parseTeleportArgs", () => {
 			force: false,
 			skipSession: false,
 			noGitToken: false,
+			gitRepo: undefined,
+			gitBranch: undefined,
+			noShallow: false,
 		})
 	})
 
@@ -65,6 +68,60 @@ describe("parseTeleportArgs", () => {
 	it("throws on an unknown flag", () => {
 		expect(() => parseTeleportArgs("--what")).toThrow(/Unknown flag/)
 	})
+})
+
+it("parses --git-repo", () => {
+	const r = parseTeleportArgs("--git-repo https://github.com/org/repo.git")
+	expect(r.gitRepo).toBe("https://github.com/org/repo.git")
+})
+
+it("parses --git-repo with --git-branch", () => {
+	const r = parseTeleportArgs("--git-repo https://github.com/org/repo.git --git-branch feature-x")
+	expect(r.gitRepo).toBe("https://github.com/org/repo.git")
+	expect(r.gitBranch).toBe("feature-x")
+})
+
+it("parses --git-repo with SSH URL", () => {
+	const r = parseTeleportArgs("--git-repo git@github.com:org/repo.git")
+	expect(r.gitRepo).toBe("git@github.com:org/repo.git")
+})
+
+it("parses --git-repo with name and other flags", () => {
+	const r = parseTeleportArgs("my-session --git-repo https://github.com/org/repo.git --git-branch main --skip-session")
+	expect(r.name).toBe("my-session")
+	expect(r.gitRepo).toBe("https://github.com/org/repo.git")
+	expect(r.gitBranch).toBe("main")
+	expect(r.skipSession).toBe(true)
+})
+
+it("throws when --git-repo has no argument", () => {
+	expect(() => parseTeleportArgs("--git-repo")).toThrow(/--git-repo/)
+})
+
+it("throws when --git-repo is followed by a flag", () => {
+	expect(() => parseTeleportArgs("--git-repo --force")).toThrow(/--git-repo/)
+})
+
+it("throws when --git-branch has no argument", () => {
+	expect(() => parseTeleportArgs("--git-branch")).toThrow(/--git-branch/)
+})
+
+it("throws when --git-branch is used without --git-repo", () => {
+	expect(() => parseTeleportArgs("--git-branch feature-x")).toThrow(/--git-branch requires --git-repo/)
+})
+
+it("parses --no-shallow with --git-repo", () => {
+	const r = parseTeleportArgs("--git-repo https://github.com/org/repo.git --no-shallow")
+	expect(r.noShallow).toBe(true)
+})
+
+it("defaults noShallow to false", () => {
+	const r = parseTeleportArgs("--git-repo https://github.com/org/repo.git")
+	expect(r.noShallow).toBe(false)
+})
+
+it("throws when --no-shallow is used without --git-repo", () => {
+	expect(() => parseTeleportArgs("--no-shallow")).toThrow(/--no-shallow requires --git-repo/)
 })
 
 describe("parseDetachArgs", () => {

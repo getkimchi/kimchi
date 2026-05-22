@@ -38,7 +38,7 @@ Spawn a new remote worker with a copy of your current workspace.
 /teleport [name] [flags]
 ```
 
-**What it does:**
+**What it does (rsync mode — default):**
 
 1. Checks pre-flight conditions (idle session, rsync available, API key present, clean working tree).
 2. Prompts for a git token if a git remote is detected (see [Git credentials prompt](#git-credentials-prompt)).
@@ -47,6 +47,17 @@ Spawn a new remote worker with a copy of your current workspace.
 5. Exports and loads your current session history so the remote agent has full context.
 6. Propagates your local git identity (`user.name`, `user.email`) and credentials to the sandbox.
 7. Connects and switches the foreground to the remote session.
+
+**What it does (git-clone mode — with `--git-repo`):**
+
+1. Checks pre-flight conditions (idle session, API key present). Rsync, dirty tree, and workspace size checks are skipped.
+2. Prompts for a git token based on the repository URL's host (see [Git credentials prompt](#git-credentials-prompt)).
+3. Authenticates and provisions a cloud sandbox.
+4. Propagates git identity and credentials to the sandbox (before the clone, so private repos work).
+5. Shallow-clones the repository on the sandbox (`--depth 1`). If `--git-branch` is set, checks out that branch. Use `--no-shallow` for full history.
+6. Connects and switches the foreground to the remote session.
+
+Session history is not transferred in git-clone mode — the remote agent starts fresh.
 
 A progress indicator shows each stage as it completes. Input is locked during the teleport to prevent interference.
 
@@ -65,17 +76,23 @@ A progress indicator shows each stage as it completes. Input is locked during th
 | `--force` | Proceed even if the workspace exceeds the 5 GB size limit. |
 | `--skip-session` | Don't export or load the current session history on the remote. The remote agent starts fresh with no conversation context. |
 | `--no-git-token` | Skip the git token prompt entirely. The remote sandbox won't be able to push/pull from private repositories. |
-| `--exclude <glob>` | Exclude files matching the glob from the rsync. Can be specified multiple times (e.g. `--exclude "*.log" --exclude "tmp/"`). Applied on top of the default excludes (`.git/`, `node_modules/`, etc.). |
-| `--include-ignored` | Include files that are normally excluded by `.gitignore`. By default, gitignored files are not synced. |
+| `--git-repo <url>` | Clone from a git repository URL instead of rsyncing the local workspace. The sandbox will `git clone` the repository. Supports both HTTPS and SSH URLs. When this flag is set, rsync is not needed, and dirty-tree/workspace-size checks are skipped. |
+| `--git-branch <branch>` | Branch to check out after cloning. Requires `--git-repo`. When specified, the clone uses `--single-branch` for faster cloning. If omitted, the repository's default branch is used. |
+| `--no-shallow` | Clone the full git history instead of a shallow clone. Requires `--git-repo`. By default, git-clone mode uses `--depth 1` (only the latest commit) for speed. Use this flag if the agent needs access to git history (e.g. `git log`, `git blame`). |
+| `--exclude <glob>` | Exclude files matching the glob from the rsync. Can be specified multiple times (e.g. `--exclude "*.log" --exclude "tmp/"`). Applied on top of the default excludes (`.git/`, `node_modules/`, etc.). Only applies in rsync mode (without `--git-repo`). |
+| `--include-ignored` | Include files that are normally excluded by `.gitignore`. By default, gitignored files are not synced. Only applies in rsync mode (without `--git-repo`). |
 
 **Examples:**
 
 ```
-/teleport                              # spawn with defaults
+/teleport                              # spawn with defaults (rsync local workspace)
 /teleport my-feature                   # spawn with a name
 /teleport --allow-dirty                # ship uncommitted changes
 /teleport backend --exclude "*.log"    # named session, skip log files
 /teleport --skip-session --no-git-token  # minimal: no session history, no git credentials
+/teleport --git-repo https://github.com/org/repo.git                    # clone a repo instead of rsyncing
+/teleport --git-repo https://github.com/org/repo.git --git-branch main  # clone and check out a specific branch
+/teleport my-task --git-repo git@github.com:org/repo.git --git-branch feature-x  # named session with git clone
 ```
 
 After a successful teleport, a session indicator appears in the prompt (e.g. `(my-feature)` or `(remote)`) showing you're on a remote session.
@@ -273,6 +290,20 @@ On subsequent `/attach` or `/connect` calls, kimchi automatically propagates sav
 ---
 
 ## Common workflows
+
+### Clone a repo on a remote sandbox
+
+```
+/teleport --git-repo https://github.com/org/repo.git --git-branch feature-x
+# ... agent works on the cloned repo ...
+/sync down                     # pull changes back to local
+/detach
+```
+
+This is useful when:
+- You want the agent to work on a different repository than your current workspace.
+- You don't have the repo cloned locally.
+- You want a clean checkout without local modifications.
 
 ### Spawn, work, and return
 

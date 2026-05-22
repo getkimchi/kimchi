@@ -7,6 +7,12 @@ export interface TeleportArgs {
 	force: boolean
 	skipSession?: boolean
 	noGitToken?: boolean
+	/** Clone from a git repository URL instead of rsyncing the local workspace. */
+	gitRepo?: string
+	/** Branch to check out after cloning (requires --git-repo). */
+	gitBranch?: string
+	/** When true, clone the full history instead of a shallow (depth-1) clone. */
+	noShallow?: boolean
 }
 
 export interface DetachArgs {
@@ -42,6 +48,9 @@ export function parseTeleportArgs(raw: string): TeleportArgs {
 		force: false,
 		skipSession: false,
 		noGitToken: false,
+		gitRepo: undefined,
+		gitBranch: undefined,
+		noShallow: false,
 	}
 	for (let i = 0; i < tokens.length; i++) {
 		const t = tokens[i]
@@ -64,6 +73,28 @@ export function parseTeleportArgs(raw: string): TeleportArgs {
 			case "--no-git-token":
 				result.noGitToken = true
 				break
+			case "--git-repo": {
+				const next = tokens[i + 1]
+				if (!next || next.startsWith("--")) {
+					throw new TeleportArgsError("--git-repo requires a repository URL argument")
+				}
+				result.gitRepo = next
+				i++
+				break
+			}
+			case "--no-shallow": {
+				result.noShallow = true
+				break
+			}
+			case "--git-branch": {
+				const next = tokens[i + 1]
+				if (!next || next.startsWith("--")) {
+					throw new TeleportArgsError("--git-branch requires a branch name argument")
+				}
+				result.gitBranch = next
+				i++
+				break
+			}
 			case "--exclude": {
 				const next = tokens[i + 1]
 				if (!next || next.startsWith("--")) {
@@ -82,6 +113,12 @@ export function parseTeleportArgs(raw: string): TeleportArgs {
 				}
 				result.name = t
 		}
+	}
+	if (result.gitBranch && !result.gitRepo) {
+		throw new TeleportArgsError("--git-branch requires --git-repo")
+	}
+	if (result.noShallow && !result.gitRepo) {
+		throw new TeleportArgsError("--no-shallow requires --git-repo")
 	}
 	return result
 }

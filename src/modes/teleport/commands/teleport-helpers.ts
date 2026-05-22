@@ -333,3 +333,53 @@ export async function propagateGitConfigToSandbox(opts: PropagateGitConfigOption
 		})
 	}
 }
+
+// ── Git clone on sandbox ────────────────────────────────────────────────────
+
+export interface CloneRepoOnSandboxOptions {
+	remoteHost: string
+	remoteUser: string
+	authToken: string
+	/** Full git remote URL to clone (HTTPS or SSH). */
+	repoUrl: string
+	/** Destination directory on the sandbox. */
+	destination: string
+	/** Branch to check out after cloning. When omitted, the default branch is used. */
+	branch?: string
+	/** When true, perform a shallow clone (depth 1). Defaults to true. */
+	shallow?: boolean
+	signal?: AbortSignal
+	/** Override for the proxy command (test seam). */
+	proxyCommand?: string
+	/** Test seam: injectable spawner. */
+	_spawn?: typeof spawn
+}
+
+/**
+ * Clone a git repository on the remote sandbox via SSH.
+ *
+ * Runs `git clone <url> <dest>` and optionally `git checkout <branch>`.
+ * The clone uses `--single-branch` when a branch is specified for faster
+ * cloning. Throws on non-zero SSH exit (caller handles gracefully).
+ */
+export async function cloneRepoOnSandbox(opts: CloneRepoOnSandboxOptions): Promise<void> {
+	const shallow = opts.shallow ?? true
+	const cloneArgs = ["git clone"]
+	if (shallow) {
+		cloneArgs.push("--depth", "1")
+	}
+	if (opts.branch) {
+		cloneArgs.push("--branch", shellEscapeValue(opts.branch), "--single-branch")
+	}
+	cloneArgs.push(shellEscapeValue(opts.repoUrl), shellEscapeValue(opts.destination))
+
+	await runSshCommandOnSandbox({
+		remoteHost: opts.remoteHost,
+		remoteUser: opts.remoteUser,
+		authToken: opts.authToken,
+		remoteCommand: cloneArgs.join(" "),
+		signal: opts.signal,
+		proxyCommand: opts.proxyCommand,
+		_spawn: opts._spawn,
+	})
+}

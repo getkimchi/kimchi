@@ -4,8 +4,13 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { PassThrough } from "node:stream"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { propagateGitConfigToSandbox, propagateGitCredentialToSandbox, readLocalGitConfig } from "./teleport-helpers.js"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import {
+	cloneRepoOnSandbox,
+	propagateGitConfigToSandbox,
+	propagateGitCredentialToSandbox,
+	readLocalGitConfig,
+} from "./teleport-helpers.js"
 
 describe("readLocalGitConfig", () => {
 	let savedGlobal: string | undefined
@@ -294,5 +299,88 @@ describe("propagateGitCredentialToSandbox", () => {
 		await propagateGitCredentialToSandbox({ ...baseOpts, _spawn: spawner })
 		const opts = calls[0].opts as { env?: Record<string, string> }
 		expect(opts.env?.AUTH_TOKEN).toBe("test-token")
+	})
+})
+
+describe("cloneRepoOnSandbox", () => {
+	it("runs git clone with branch and --single-branch and --depth 1 by default", async () => {
+		const { spawner, calls } = createMockSpawn(0)
+
+		await cloneRepoOnSandbox({
+			remoteHost: "host.example.com",
+			remoteUser: "sandbox",
+			authToken: "test-token",
+			repoUrl: "https://github.com/org/repo.git",
+			destination: "/home/sandbox/repo/",
+			branch: "feature-x",
+			proxyCommand: "fake-proxy %h",
+			_spawn: spawner,
+		})
+
+		expect(calls).toHaveLength(1)
+		// The last SSH arg is the remote command
+		const remoteCmd = calls[0].args[calls[0].args.length - 1]
+		expect(remoteCmd).toContain("git clone")
+		expect(remoteCmd).toContain("--depth 1")
+		expect(remoteCmd).toContain("--branch")
+		expect(remoteCmd).toContain("'feature-x'")
+		expect(remoteCmd).toContain("--single-branch")
+		expect(remoteCmd).toContain("'https://github.com/org/repo.git'")
+		expect(remoteCmd).toContain("'/home/sandbox/repo/'")
+	})
+
+	it("runs git clone without branch flags when branch is omitted", async () => {
+		const { spawner, calls } = createMockSpawn(0)
+
+		await cloneRepoOnSandbox({
+			remoteHost: "host.example.com",
+			remoteUser: "sandbox",
+			authToken: "test-token",
+			repoUrl: "https://github.com/org/repo.git",
+			destination: "/home/sandbox/repo/",
+			proxyCommand: "fake-proxy %h",
+			_spawn: spawner,
+		})
+
+		const remoteCmd = calls[0].args[calls[0].args.length - 1]
+		expect(remoteCmd).toContain("git clone")
+		expect(remoteCmd).toContain("--depth 1")
+		expect(remoteCmd).not.toContain("--branch")
+		expect(remoteCmd).not.toContain("--single-branch")
+	})
+
+	it("omits --depth when shallow is false", async () => {
+		const { spawner, calls } = createMockSpawn(0)
+
+		await cloneRepoOnSandbox({
+			remoteHost: "host.example.com",
+			remoteUser: "sandbox",
+			authToken: "test-token",
+			repoUrl: "https://github.com/org/repo.git",
+			destination: "/home/sandbox/repo/",
+			shallow: false,
+			proxyCommand: "fake-proxy %h",
+			_spawn: spawner,
+		})
+
+		const remoteCmd = calls[0].args[calls[0].args.length - 1]
+		expect(remoteCmd).toContain("git clone")
+		expect(remoteCmd).not.toContain("--depth")
+	})
+
+	it("rejects when ssh exits non-zero", async () => {
+		const { spawner } = createMockSpawn(128)
+
+		await expect(
+			cloneRepoOnSandbox({
+				remoteHost: "host.example.com",
+				remoteUser: "sandbox",
+				authToken: "test-token",
+				repoUrl: "https://github.com/org/repo.git",
+				destination: "/home/sandbox/repo/",
+				proxyCommand: "fake-proxy %h",
+				_spawn: spawner,
+			}),
+		).rejects.toThrow(/ssh exited with code 128/)
 	})
 })
