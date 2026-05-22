@@ -66,7 +66,12 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				if (choice === "Reset all to defaults") {
 					const prevOrchestrator = roles.orchestrator
 					Object.assign(roles, DEFAULT_MODEL_ROLES)
-					saveModelRoles(roles)
+					try {
+						saveModelRoles(roles)
+					} catch (err) {
+						ctx.ui.notify(`Failed to save model roles: ${err instanceof Error ? err.message : err}`, "error")
+						return
+					}
 					ctx.ui.notify("Model roles reset to defaults.", "info")
 
 					// Switch the active model if the orchestrator changed
@@ -145,7 +150,12 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				}
 
 				roles[roleKey] = newRef
-				saveModelRoles(roles)
+				try {
+					saveModelRoles(roles)
+				} catch (err) {
+					ctx.ui.notify(`Failed to save model roles: ${err instanceof Error ? err.message : err}`, "error")
+					return
+				}
 				ctx.ui.notify(`${info.label} set to ${newRef}`, "info")
 
 				// When the orchestrator role changes, switch the active model to match
