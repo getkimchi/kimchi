@@ -1,19 +1,21 @@
 /**
  * activity — Unix domain socket activity bus.
  *
- * Creates /tmp/kimchi/{sessionId}.sock as a net.Server when SANDBOX_ID is set.
+ * Creates /tmp/kimchi/{sessionId}.sock as a net.Server when running inside a
+ * sandbox cluster (detected via isInSandboxCluster(): KIMCHI_SANDBOX=1 or both
+ * homedir() === "/home/sandbox" AND username === "sandbox" as security fallback).
+ *
  * Broadcasts NDJSON activity events to all connected clients (typically one:
  * the kimchi-sandbox-worker sidecar).
  *
  * Incoming NDJSON from clients is parsed but treated as a no-op for now
  * (reserved for future hibernate signals from the worker).
- *
- * Only activates in sandbox environments (SANDBOX_ID env var must be set).
  */
 
 import { chmodSync, mkdirSync, unlinkSync } from "node:fs"
 import net from "node:net"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { isInSandboxCluster } from "../utils/sandbox.js"
 
 const SOCKET_DIR = "/tmp/kimchi"
 
@@ -22,17 +24,17 @@ export class ActivityBus {
 	private sockets: Set<net.Socket> = new Set()
 	private sockPath: string | null = null
 
-	/** True when the server is running (SANDBOX_ID was set and start() succeeded). */
+	/** True when the server is running (sandbox detected and start() succeeded). */
 	isActive(): boolean {
 		return this.server?.listening ?? false
 	}
 
 	/**
 	 * Create the socket dir, unlink any stale socket, and start listening.
-	 * No-op when SANDBOX_ID is not set.
+	 * No-op when not in a sandbox cluster.
 	 */
 	async start(sessionId: string): Promise<void> {
-		if (!process.env.SANDBOX_ID) return
+		if (!isInSandboxCluster()) return
 
 		const sockPath = `${SOCKET_DIR}/${sessionId}.sock`
 		this.sockPath = sockPath
@@ -145,7 +147,7 @@ export class ActivityBus {
 
 export function createActivityExtension(): (pi: ExtensionAPI) => void {
 	return (pi: ExtensionAPI): void => {
-		if (!process.env.SANDBOX_ID) return
+		if (!isInSandboxCluster()) return
 
 		const bus = new ActivityBus()
 

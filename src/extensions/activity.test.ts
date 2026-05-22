@@ -14,7 +14,7 @@ function connectClient(sockPath: string): { received: string[]; client: net.Sock
 	return { received, client, connected }
 }
 
-describe("ActivityBus – SANDBOX_ID guard", () => {
+describe("ActivityBus – sandbox detection", () => {
 	afterEach(() => {
 		vi.unstubAllEnvs()
 	})
@@ -27,7 +27,7 @@ describe("ActivityBus – SANDBOX_ID guard", () => {
 	})
 
 	it("starts a server when SANDBOX_ID is present", async () => {
-		vi.stubEnv("SANDBOX_ID", "sb-guard")
+		vi.stubEnv("KIMCHI_SANDBOX", "1")
 		const bus = new ActivityBus()
 		await bus.start("session-guard-present")
 		expect(bus.isActive()).toBe(true)
@@ -56,7 +56,7 @@ describe("ActivityBus – send and broadcast", () => {
 	})
 
 	it("broadcasts JSON events as NDJSON lines to connected clients", async () => {
-		vi.stubEnv("SANDBOX_ID", "sb-broadcast")
+		vi.stubEnv("KIMCHI_SANDBOX", "1")
 		bus = new ActivityBus()
 		await bus.start("sess-broadcast")
 
@@ -73,7 +73,7 @@ describe("ActivityBus – send and broadcast", () => {
 	})
 
 	it("does not throw when no clients are connected", async () => {
-		vi.stubEnv("SANDBOX_ID", "sb-noconn")
+		vi.stubEnv("KIMCHI_SANDBOX", "1")
 		bus = new ActivityBus()
 		const b = bus
 		await b.start("sess-noconn")
@@ -93,7 +93,7 @@ describe("ActivityBus – lifecycle", () => {
 	})
 
 	it("cleans up socket file on stop()", async () => {
-		vi.stubEnv("SANDBOX_ID", "sb-cleanup")
+		vi.stubEnv("KIMCHI_SANDBOX", "1")
 		const bus = new ActivityBus()
 		await bus.start("sess-cleanup")
 		expect(existsSync("/tmp/kimchi/sess-cleanup.sock")).toBe(true)
@@ -102,7 +102,7 @@ describe("ActivityBus – lifecycle", () => {
 	})
 
 	it("sends session_shutdown before closing on stop()", async () => {
-		vi.stubEnv("SANDBOX_ID", "sb-shutdownmsg")
+		vi.stubEnv("KIMCHI_SANDBOX", "1")
 		const bus = new ActivityBus()
 		await bus.start("sess-shutdown-msg")
 
@@ -143,7 +143,7 @@ describe("ActivityBus – incoming NDJSON no-op", () => {
 	})
 
 	it("does not crash on malformed or valid incoming data", async () => {
-		vi.stubEnv("SANDBOX_ID", "sb-incoming")
+		vi.stubEnv("KIMCHI_SANDBOX", "1")
 		bus = new ActivityBus()
 		await bus.start("sess-incoming")
 
