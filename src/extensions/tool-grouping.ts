@@ -2,7 +2,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent"
 import { Container, Spacer } from "@earendil-works/pi-tui"
 import { ToolBlockView } from "../components/tool-block.js"
-import { isToolExpanded } from "../expand-state.js"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -252,10 +251,12 @@ export function patchToolGroupRendering(): void {
 		const run = findToolGroup(this, parent.children)
 		if (run.length < 2) return originalRender.call(this, width)
 
-		const groupKey = (run[run.length - 1] as any).toolCallId
-		if (isToolExpanded(groupKey)) return originalRender.call(this, width)
+		// ctrl+o wires to component.setExpanded() on ALL tools globally.
+		// Use the last tool's .expanded field as the group's expand state.
+		const lastTool = run[run.length - 1] as any
+		if (lastTool.expanded === true) return originalRender.call(this, width)
 
-		if (run[run.length - 1] !== this) return []
+		if (lastTool !== this) return []
 
 		const theme = (this as any).ui?.theme
 		const groupView = buildGroupView(run, theme)
@@ -270,15 +271,18 @@ export function patchToolGroupRendering(): void {
 			return groupView.render(width)
 		}
 
-		const isInProgress = (run[run.length - 1] as any).isPartial === true
+		const isInProgress = lastTool.isPartial === true
 		const savedChildren = contentBox.children.slice() as object[]
 		const savedBgFn = contentBox.bgFn as unknown
+		const savedPaddingY = contentBox.paddingY as number
 
-		// Swap in group view with the appropriate accent color.
+		// Swap in group view with the appropriate accent color and no vertical padding
+		// so the group summary takes a single content line instead of three.
 		contentBox.children = [groupView]
 		contentBox.bgFn = isInProgress
 			? (s: string) => theme?.fg?.("accent", s) ?? s
 			: (s: string) => theme?.fg?.("success", s) ?? s
+		contentBox.paddingY = 0
 
 		// Bypass render caches so the patched Container render actually runs.
 		delete (this as any)[TOOL_RENDER_CACHE_KEY]
@@ -290,6 +294,7 @@ export function patchToolGroupRendering(): void {
 		// goes through a full re-render instead of serving our injected lines.
 		contentBox.children = savedChildren
 		contentBox.bgFn = savedBgFn
+		contentBox.paddingY = savedPaddingY
 		contentBox.invalidate()
 		delete (this as any)[TOOL_RENDER_CACHE_KEY]
 
