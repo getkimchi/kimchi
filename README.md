@@ -40,12 +40,38 @@ Kimchi operates in one of two modes:
 
 | Mode | Footer indicator | Behavior |
 |------|-----------------|----------|
-| **Multi-model** | `multi-model (kimi-k2.6)` | The orchestrator classifies each task and delegates to the best-fit model from the roster |
+| **Multi-model** | `multi-model (orchestrator-id)` | The orchestrator delegates each task to the model assigned for that role |
 | **Single-model** | model name | All work runs on the selected model directly |
 
 Use `ctrl+p` to cycle through models. The last entry in the cycle is `multi-model`. You can also open the `/model` picker and select a specific model or `multi-model` from the list.
 
 In single-model mode the orchestration system prompt (environment, tools, research rules, guidelines, phase tagging) stays active, but task classification and delegation are disabled. The subagent tool remains available if you explicitly ask the agent to delegate.
+
+### Model roles
+
+In multi-model mode, each task type is handled by a specific role. Use `/multi-model` in the interactive CLI to assign models to roles, or edit `~/.config/kimchi/harness/settings.json` directly:
+
+```json
+{
+  "modelRoles": {
+    "orchestrator": "kimchi-dev/kimi-k2.6",
+    "planner": "kimchi-dev/kimi-k2.6",
+    "builder": "kimchi-dev/minimax-m2.7",
+    "reviewer": "kimchi-dev/minimax-m2.7",
+    "explorer": "kimchi-dev/nemotron-3-super-fp4"
+  }
+}
+```
+
+| Role | Default | Description |
+|------|---------|-------------|
+| **orchestrator** | `kimchi-dev/kimi-k2.6` | Runs the main loop, delegates work to other roles |
+| **planner** | `kimchi-dev/kimi-k2.6` | Designs the approach, writes specs. When set to the same model as orchestrator, planning is done in-process |
+| **builder** | `kimchi-dev/minimax-m2.7` | Code implementation, refactoring |
+| **reviewer** | `kimchi-dev/minimax-m2.7` | Code review, finding bugs, verifying correctness |
+| **explorer** | `kimchi-dev/nemotron-3-super-fp4` | Codebase exploration, reading files, tracing architecture, research |
+
+Roles accept any `provider/model-id` string — kimchi-dev models, or models from other providers configured in `models.json` (e.g. `anthropic/claude-sonnet-4-5`, `openai/gpt-4o`). Only non-default values need to be specified; missing keys fall back to the defaults above.
 
 ### Phase tracking
 
