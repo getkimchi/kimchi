@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { classifyTool, formatSummary, getParent, patchAddChild } from "./tool-grouping.js"
-import { Container } from "@earendil-works/pi-tui"
+import { classifyTool, formatSummary, getParent, patchAddChild, findToolGroup } from "./tool-grouping.js"
+import { Container, Spacer } from "@earendil-works/pi-tui"
 
 describe("classifyTool", () => {
 	it("classifies read tool as file", () => {
@@ -141,5 +141,85 @@ describe("patchAddChild / getParent", () => {
 		parent1.addChild(child)
 		parent2.addChild(child)
 		expect(getParent(child)).toBe(parent2)
+	})
+})
+
+function mockTool(id: string, opts: { isPartial?: boolean; isError?: boolean } = {}): object {
+	return {
+		toolName: "bash",
+		toolCallId: id,
+		args: { command: "git status" },
+		isPartial: opts.isPartial ?? false,
+		result: opts.isError ? { isError: true } : undefined,
+		render: (_width: number) => [],
+		invalidate: () => {},
+	}
+}
+
+describe("findToolGroup", () => {
+	it("returns [self] when alone in parent", () => {
+		const tool = mockTool("a")
+		const children = [tool]
+		expect(findToolGroup(tool, children)).toEqual([tool])
+	})
+
+	it("groups two consecutive completed tools", () => {
+		const a = mockTool("a")
+		const b = mockTool("b")
+		const children = [a, b]
+		expect(findToolGroup(a, children)).toEqual([a, b])
+		expect(findToolGroup(b, children)).toEqual([a, b])
+	})
+
+	it("spacers are transparent — do not break the run", () => {
+		const a = mockTool("a")
+		const spacer = new Spacer(1)
+		const b = mockTool("b")
+		const children = [a, spacer, b]
+		expect(findToolGroup(a, children)).toEqual([a, b])
+		expect(findToolGroup(b, children)).toEqual([a, b])
+	})
+
+	it("spacers are not included in the returned run array", () => {
+		const a = mockTool("a")
+		const spacer = new Spacer(1)
+		const b = mockTool("b")
+		const children = [a, spacer, b]
+		const group = findToolGroup(a, children)
+		expect(group).not.toContain(spacer)
+	})
+
+	it("non-tool, non-spacer breaks the run", () => {
+		const a = mockTool("a")
+		const b = mockTool("b")
+		const other = { render: () => [], invalidate: () => {} }
+		const c = mockTool("c")
+		const children = [a, b, other, c]
+		expect(findToolGroup(a, children)).toEqual([a, b])
+		expect(findToolGroup(c, children)).toEqual([c])
+	})
+
+	it("failed tool (isError) breaks the run — excluded from group", () => {
+		const a = mockTool("a")
+		const b = mockTool("b", { isError: true })
+		const c = mockTool("c")
+		const children = [a, b, c]
+		expect(findToolGroup(a, children)).toEqual([a])
+		expect(findToolGroup(c, children)).toEqual([c])
+	})
+
+	it("in-progress tools are included in the run", () => {
+		const a = mockTool("a")
+		const b = mockTool("b", { isPartial: true })
+		const children = [a, b]
+		expect(findToolGroup(b, children)).toEqual([a, b])
+	})
+
+	it("returns [self] when self is not present in children", () => {
+		const a = mockTool("a")
+		const b = mockTool("b")
+		const other = mockTool("x")
+		const children = [a, b]
+		expect(findToolGroup(other, children)).toEqual([other])
 	})
 })

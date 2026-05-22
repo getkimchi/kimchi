@@ -95,3 +95,56 @@ export function patchAddChild(): void {
 	}
 	proto[ADDCHILD_PATCH_FLAG] = true
 }
+
+// ---------------------------------------------------------------------------
+// findToolGroup
+// ---------------------------------------------------------------------------
+
+function isToolLike(v: unknown): v is { toolName: string; toolCallId: string; isPartial: boolean; args: Record<string, unknown> } {
+	if (!v || typeof v !== "object") return false
+	const c = v as Record<string, unknown>
+	return typeof c.toolName === "string" && typeof c.toolCallId === "string"
+}
+
+function isFailedTool(v: unknown): boolean {
+	if (!isToolLike(v)) return false
+	const c = v as any
+	return c.result?.isError === true
+}
+
+export function findToolGroup(self: object, children: object[]): object[] {
+	const selfIdx = children.indexOf(self)
+
+	if (selfIdx === -1) {
+		return isFailedTool(self) ? [] : [self]
+	}
+
+	// Walk backward to find start of run
+	let start = selfIdx
+	for (let i = selfIdx - 1; i >= 0; i--) {
+		const child = children[i]
+		if (child instanceof Spacer) continue
+		if (!isToolLike(child) || isFailedTool(child)) break
+		start = i
+	}
+
+	// Walk forward to find end of run
+	let end = selfIdx
+	for (let i = selfIdx + 1; i < children.length; i++) {
+		const child = children[i]
+		if (child instanceof Spacer) continue
+		if (!isToolLike(child) || isFailedTool(child)) break
+		end = i
+	}
+
+	// Collect tools in [start..end], excluding Spacers and failed tools
+	const tools: object[] = []
+	for (let i = start; i <= end; i++) {
+		const child = children[i]
+		if (child instanceof Spacer) continue
+		if (!isToolLike(child) || isFailedTool(child)) continue
+		tools.push(child)
+	}
+
+	return tools
+}
