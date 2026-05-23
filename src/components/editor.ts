@@ -3,35 +3,16 @@ import type { KeybindingsManager } from "@earendil-works/pi-coding-agent"
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui"
 import { isKittyProtocolActive, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { wordWrapLine } from "@earendil-works/pi-tui/dist/components/editor.js"
-import { extractAnsiCode } from "@earendil-works/pi-tui/dist/utils.js"
 import { RST_FG } from "../ansi.js"
+import { stripAnsi } from "../utils/strip-ansi.js"
 
 const CHEVRON_WIDTH = 2
 const PLACEHOLDER_TEXT = "ask anything or type / for commands"
 
 const SCROLL_INDICATOR_RE = /^─── ([↑↓] \d+ more )/
-// biome-ignore lint/suspicious/noControlCharactersInRegex: strip ANSI escapes
-const ANSI_RE = /\x1b\[[^m]*m/g
-
-/** Strip ANSI / OSC / APC escape sequences so the plain text can be compared. */
-function stripAnsi(s: string): string {
-	if (!s.includes("\x1b")) return s
-	let result = ""
-	let i = 0
-	while (i < s.length) {
-		const ansi = extractAnsiCode(s, i)
-		if (ansi) {
-			i += ansi.length
-			continue
-		}
-		result += s[i]
-		i++
-	}
-	return result
-}
 
 function rebuildBorder(baseLine: string, targetWidth: number, borderFn: (s: string) => string): string {
-	const raw = baseLine.replace(ANSI_RE, "")
+	const raw = stripAnsi(baseLine)
 	const match = raw.match(SCROLL_INDICATOR_RE)
 	if (match) {
 		const indicator = `─── ${match[1]}`
@@ -132,7 +113,7 @@ export class PromptEditor extends CustomEditor {
 		// Find bottom border: scan backwards for a line starting with ─
 		let bottomIdx = Math.min(2, lines.length - 1)
 		for (let i = lines.length - 1; i >= 2; i--) {
-			const stripped = lines[i].replace(ANSI_RE, "")
+			const stripped = stripAnsi(lines[i])
 			if (/^─/.test(stripped)) {
 				bottomIdx = i
 				break
@@ -314,21 +295,21 @@ export class PromptEditor extends CustomEditor {
 	 * Given a plain text string and a target visual column, count how many
 	 * graphemes fit within that column using visibleWidth().
 	 *
-	 * The returned value is a *byte* offset suitable for slicing the original
-	 * UTF-16 string (which is what the Editor's cursor col field expects).
+	 * The returned value is an offset into the original string (UTF-16 code
+	 * units), which is the format the Editor's cursor column field expects.
 	 */
 	private _graphemeOffsetAtCol(text: string, targetCol: number): number {
 		if (text.length === 0 || targetCol <= 0) return 0
 		const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" })
 		let col = 0
-		let byteOffset = 0
+		let offset = 0
 		for (const g of seg.segment(text)) {
 			const w = visibleWidth(g.segment)
 			if (col + w > targetCol) break
 			col += w
-			byteOffset += g.segment.length
+			offset += g.segment.length
 		}
-		return byteOffset
+		return offset
 	}
 
 	private _setCursor(line: number, col: number) {

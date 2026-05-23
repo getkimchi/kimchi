@@ -8,7 +8,6 @@ import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-a
 import { Box, Text } from "@earendil-works/pi-tui"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import type { Component, TUI } from "@earendil-works/pi-tui"
-import { extractAnsiCode } from "@earendil-works/pi-tui/dist/utils.js"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
 import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } from "../components/footer.js"
@@ -23,6 +22,7 @@ import {
 	onMouseUp,
 	parseSgrMouse,
 } from "../utils/mouse.js"
+import { stripAnsi } from "../utils/strip-ansi.js"
 import { isBareExitAlias } from "./exit-utils.js"
 import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
@@ -245,23 +245,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 	// ── Mouse-click helpers for upstream Input components ──
 
-	/** Strip ANSI / OSC / APC escape sequences from a string. */
-	function stripAnsi(s: string): string {
-		if (!s.includes("\x1b")) return s
-		let result = ""
-		let i = 0
-		while (i < s.length) {
-			const ansi = extractAnsiCode(s, i)
-			if (ansi) {
-				i += ansi.length
-				continue
-			}
-			result += s[i]
-			i++
-		}
-		return result
-	}
-
 	/** Duck-type check for an upstream pi-tui {@link Input} instance. */
 	function isInputLike(
 		obj: unknown,
@@ -334,13 +317,13 @@ export default function uiExtension(pi: ExtensionAPI) {
 			return false
 		}
 
-		// Map click column to a cursor position.
-		// promptCol is 0-based.  The text content starts right after "> ".
+		// NOTE: INPUT_PROMPT ("> ") is hardcoded to match the default prompt
+		// that upstream pi-tui {@link Input} renders.  If the upstream prompt
+		// changes, click positioning inside Inputs may break.
 		const textStartCol = promptCol + INPUT_PROMPT.length
 		const targetCol = Math.max(0, click.x - 1 - textStartCol)
 		const maxCursor = input.value.length
 		input.cursor = Math.min(targetCol, maxCursor)
-		input.tui?.requestRender()
 		return true
 	}
 
