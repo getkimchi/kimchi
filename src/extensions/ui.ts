@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
@@ -29,15 +29,6 @@ import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
 
-const MOUSE_DEBUG_LOG = process.env.KIMCHI_DEBUG_MOUSE ? join(process.cwd(), ".kimchi", "mouse-debug.log") : null
-
-function logMouse(msg: string) {
-	if (MOUSE_DEBUG_LOG) {
-		try {
-			appendFileSync(MOUSE_DEBUG_LOG, `${msg}\n`)
-		} catch {}
-	}
-}
 import {
 	ORCHESTRATOR_MODEL_ID,
 	getMultiModelEnabled,
@@ -313,7 +304,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 	): boolean {
 		const clickAbsRow = prevViewportTop + click.y - 1
 		if (clickAbsRow < 0 || clickAbsRow >= prevLines.length) {
-			logMouse(`[input-click] row out of bounds ${clickAbsRow}`)
 			return false
 		}
 
@@ -336,13 +326,11 @@ export default function uiExtension(pi: ExtensionAPI) {
 		}
 
 		if (inputRow === -1 || promptCol === -1) {
-			logMouse(`[input-click] prompt "${INPUT_PROMPT}" not found near row ${clickAbsRow}`)
 			return false
 		}
 
 		// Verify the click row is on or below the found prompt line.
 		if (clickAbsRow !== inputRow) {
-			logMouse(`[input-click] click row ${clickAbsRow} != input row ${inputRow}`)
 			return false
 		}
 
@@ -352,9 +340,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 		const targetCol = Math.max(0, click.x - 1 - textStartCol)
 		const maxCursor = input.value.length
 		input.cursor = Math.min(targetCol, maxCursor)
-
-		logMouse(`[input-click] row=${inputRow} promptCol=${promptCol} targetCol=${targetCol} cursor=${input.cursor}`)
-
 		input.tui?.requestRender()
 		return true
 	}
@@ -372,19 +357,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 		scriptGeneration++
 		scriptPending = false
 
-		if (MOUSE_DEBUG_LOG) {
-			try {
-				mkdirSync(join(process.cwd(), ".kimchi"), { recursive: true })
-			} catch {}
-			try {
-				writeFileSync(MOUSE_DEBUG_LOG, "", { flag: "w" })
-			} catch {}
-		}
-
 		// Enable SGR mouse mode so the terminal reports click coordinates.
 		// Mode 1000 (basic button tracking) + 1006 (SGR coordinate format).
 		process.stdout.write(enableMouseMode())
-		logMouse("[mouse] mode enabled")
 		mouseClickDetector = createClickDetector()
 
 		ctx.ui.setHeader((_tui, theme) => new LogoHeader(theme))
@@ -626,8 +601,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 				if (!isMouseEvent(data)) return undefined
 				const event = parseSgrMouse(data)
 				if (!event) return { consume: true }
-				// Debug: log mouse events
-				logMouse(`[mouse] btn=${event.button} x=${event.x} y=${event.y} press=${event.isPress}`)
 				// Ignore motion, scroll, or non-left buttons.
 				if (event.isMotion || event.isScroll) return { consume: true }
 				// Only left button press (0) or release (0 or 3). Ignore right

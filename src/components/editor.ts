@@ -1,5 +1,3 @@
-import { appendFileSync } from "node:fs"
-import { join } from "node:path"
 import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent"
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent"
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui"
@@ -14,15 +12,6 @@ const PLACEHOLDER_TEXT = "ask anything or type / for commands"
 const SCROLL_INDICATOR_RE = /^─── ([↑↓] \d+ more )/
 // biome-ignore lint/suspicious/noControlCharactersInRegex: strip ANSI escapes
 const ANSI_RE = /\x1b\[[^m]*m/g
-const EDITOR_DEBUG_LOG = process.env.KIMCHI_DEBUG_MOUSE ? join(process.cwd(), ".kimchi", "mouse-debug.log") : null
-
-function logMouse(msg: string) {
-	if (EDITOR_DEBUG_LOG) {
-		try {
-			appendFileSync(EDITOR_DEBUG_LOG, `${msg}\n`)
-		} catch {}
-	}
-}
 
 /** Strip ANSI / OSC / APC escape sequences so the plain text can be compared. */
 function stripAnsi(s: string): string {
@@ -235,18 +224,13 @@ export class PromptEditor extends CustomEditor {
 		const tui = (this as unknown as { tui: TUI }).tui
 		const prevLines: string[] | undefined = (tui as unknown as { previousLines?: string[] }).previousLines
 		const prevViewportTop: number = (tui as unknown as { previousViewportTop?: number }).previousViewportTop ?? 0
-		logMouse(
-			`[editor] click x=${screenX} y=${screenY} topBorder="${this._lastTopBorderPlain}" prevLines=${prevLines?.length ?? -1} viewportTop=${prevViewportTop}`,
-		)
 		if (!prevLines || prevLines.length === 0) {
-			logMouse("[editor] no prevLines")
 			return false
 		}
 
 		// Convert screen Y to absolute index in previousLines.
 		const clickAbsRow = prevViewportTop + screenY - 1
 		if (clickAbsRow < 0 || clickAbsRow >= prevLines.length) {
-			logMouse(`[editor] row out of bounds: ${clickAbsRow}`)
 			return false
 		}
 
@@ -267,15 +251,11 @@ export class PromptEditor extends CustomEditor {
 			}
 		}
 		if (editorTopRow === -1) {
-			logMouse(`[editor] top border not found (expected "${this._lastTopBorderPlain}" at rows 0..${clickAbsRow})`)
 			return false
 		}
 
 		const editorBottomRow = editorTopRow + this._lastRenderHeight - 1
 		if (clickAbsRow < editorTopRow || clickAbsRow > editorBottomRow) {
-			logMouse(
-				`[editor] outside bounds: ${clickAbsRow} not in ${editorTopRow}..${editorBottomRow} (renderHeight=${this._lastRenderHeight})`,
-			)
 			return false
 		}
 
@@ -300,7 +280,6 @@ export class PromptEditor extends CustomEditor {
 		const scrollOffset = (this as unknown as { scrollOffset: number }).scrollOffset ?? 0
 		const layoutIdx = contentRow + scrollOffset
 		if (layoutIdx < 0) {
-			logMouse(`[editor] negative layoutIdx: contentRow=${contentRow} scrollOffset=${scrollOffset}`)
 			return false
 		}
 
@@ -313,18 +292,13 @@ export class PromptEditor extends CustomEditor {
 		const marginCols = CHEVRON_WIDTH // our "❯ " prefix
 		const targetCol = Math.max(0, screenX - 1 - marginCols)
 
-		logMouse(
-			`[editor] contentRow=${contentRow} layoutIdx=${layoutIdx} layoutWidth=${this._lastLayoutWidth} targetCol=${targetCol}`,
-		)
 		for (let li = 0; li < editorLines.length; li++) {
 			const chunks = wordWrapLine(editorLines[li], this._lastLayoutWidth, [...segmenter.segment(editorLines[li])])
-			logMouse(`[editor] line ${li}: chunks=${chunks.length} currentLayoutIdx=${currentLayoutIdx}`)
 			for (const chunk of chunks) {
 				if (currentLayoutIdx === layoutIdx) {
 					// Found the visual line that was clicked.  Map click column to
 					// character offset inside this chunk.
 					const colInChunk = this._graphemeOffsetAtCol(chunk.text, targetCol)
-					logMouse(`[editor] HIT line=${li} start=${chunk.startIndex} colInChunk=${colInChunk} targetCol=${targetCol}`)
 					this._setCursor(li, chunk.startIndex + colInChunk)
 					this.tui.requestRender()
 					return true
@@ -333,7 +307,6 @@ export class PromptEditor extends CustomEditor {
 			}
 		}
 
-		logMouse(`[editor] layoutIdx ${layoutIdx} not found (max=${currentLayoutIdx})`)
 		return false
 	}
 
