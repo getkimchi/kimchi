@@ -488,7 +488,8 @@ function createPromptFormComponent(
 			cachedLines = undefined
 		},
 		handleInput,
-	}
+		editor,
+	} as Component & { editor: Input }
 }
 
 function wrapWords(text: string, width: number): string[] {

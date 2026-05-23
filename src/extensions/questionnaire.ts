@@ -16,7 +16,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { Input, Key, Text, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
+import { type Component, Input, Key, Text, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
 
 import {
@@ -419,7 +419,8 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 						cachedLines = undefined
 					},
 					handleInput,
-				}
+					editor,
+				} as Component & { editor: Input }
 			})
 
 			if (result.cancelled) {

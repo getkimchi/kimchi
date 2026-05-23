@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
@@ -8,16 +8,36 @@ import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-a
 import { Box, Text } from "@earendil-works/pi-tui"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import type { Component, TUI } from "@earendil-works/pi-tui"
+import { extractAnsiCode } from "@earendil-works/pi-tui/dist/utils.js"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
 import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } from "../components/footer.js"
 import { LogoHeader } from "../components/logo.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
+import {
+	createClickDetector,
+	disableMouseMode,
+	enableMouseMode,
+	isMouseEvent,
+	onMouseDown,
+	onMouseUp,
+	parseSgrMouse,
+} from "../utils/mouse.js"
 import { isBareExitAlias } from "./exit-utils.js"
 import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
+
+const MOUSE_DEBUG_LOG = process.env.KIMCHI_DEBUG_MOUSE ? join(process.cwd(), ".kimchi", "mouse-debug.log") : null
+
+function logMouse(msg: string) {
+	if (MOUSE_DEBUG_LOG) {
+		try {
+			appendFileSync(MOUSE_DEBUG_LOG, `${msg}\n`)
+		} catch {}
+	}
+}
 import {
 	ORCHESTRATOR_MODEL_ID,
 	getMultiModelEnabled,
@@ -197,6 +217,8 @@ function runScript(scriptPath: string, payload: object, tui: TUI, footer: Script
 
 export default function uiExtension(pi: ExtensionAPI) {
 	let unsubModelCycleInput: (() => void) | null = null
+	let unsubMouseInput: (() => void) | null = null
+	let mouseClickDetector = createClickDetector()
 	let scriptFooter: ScriptFooter | null = null
 	let scriptTui: TUI | null = null
 	let uiTui: TUI | null = null
@@ -230,6 +252,113 @@ export default function uiExtension(pi: ExtensionAPI) {
 		)
 	}
 
+	// ── Mouse-click helpers for upstream Input components ──
+
+	/** Strip ANSI / OSC / APC escape sequences from a string. */
+	function stripAnsi(s: string): string {
+		if (!s.includes("\x1b")) return s
+		let result = ""
+		let i = 0
+		while (i < s.length) {
+			const ansi = extractAnsiCode(s, i)
+			if (ansi) {
+				i += ansi.length
+				continue
+			}
+			result += s[i]
+			i++
+		}
+		return result
+	}
+
+	/** Duck-type check for an upstream pi-tui {@link Input} instance. */
+	function isInputLike(
+		obj: unknown,
+	): obj is { value: string; cursor: number; render: (w: number) => string[]; tui?: TUI } {
+		const o = obj as Record<string, unknown>
+		return typeof o?.value === "string" && typeof o?.cursor === "number" && typeof o?.render === "function"
+	}
+
+	/** Recursively look for an {@link Input} child inside a component tree. */
+	function findInputChild(component: unknown): unknown {
+		if (!component) return null
+		if (isInputLike(component)) return component
+		const o = component as Record<string, unknown>
+		if (isInputLike(o.searchInput)) return o.searchInput
+		if (isInputLike(o.editor)) return o.editor
+		if (isInputLike(o.input)) return o.input
+		if (isInputLike(o.renameInput)) return o.renameInput
+		if (Array.isArray(o.children)) {
+			for (const child of o.children) {
+				const found = findInputChild(child)
+				if (found) return found
+			}
+		}
+		return null
+	}
+
+	/**
+	 * Attempt to handle a mouse click on an {@link Input} component.
+	 *
+	 * Searches {@link prevLines} near the click coordinate for a rendered line
+	 * that contains the {@code "> "} prompt.  When found, the click column is
+	 * mapped to a cursor position inside {@link input.value} and the Input is
+	 * re-rendered.
+	 */
+	function tryHandleInputClick(
+		input: { value: string; cursor: number; tui?: TUI },
+		click: { x: number; y: number },
+		prevLines: string[],
+		prevViewportTop: number,
+	): boolean {
+		const clickAbsRow = prevViewportTop + click.y - 1
+		if (clickAbsRow < 0 || clickAbsRow >= prevLines.length) {
+			logMouse(`[input-click] row out of bounds ${clickAbsRow}`)
+			return false
+		}
+
+		const INPUT_PROMPT = "> "
+		let inputRow = -1
+		let promptCol = -1
+
+		// Search backwards from the click row for a line containing the prompt.
+		for (let i = Math.min(clickAbsRow, prevLines.length - 1); i >= 0; i--) {
+			const plain = stripAnsi(prevLines[i])
+			const idx = plain.indexOf(INPUT_PROMPT)
+			if (idx !== -1) {
+				// Make sure the line doesn't look like a border (heuristic).
+				if (!plain.startsWith("─")) {
+					inputRow = i
+					promptCol = idx
+					break
+				}
+			}
+		}
+
+		if (inputRow === -1 || promptCol === -1) {
+			logMouse(`[input-click] prompt "${INPUT_PROMPT}" not found near row ${clickAbsRow}`)
+			return false
+		}
+
+		// Verify the click row is on or below the found prompt line.
+		if (clickAbsRow !== inputRow) {
+			logMouse(`[input-click] click row ${clickAbsRow} != input row ${inputRow}`)
+			return false
+		}
+
+		// Map click column to a cursor position.
+		// promptCol is 0-based.  The text content starts right after "> ".
+		const textStartCol = promptCol + INPUT_PROMPT.length
+		const targetCol = Math.max(0, click.x - 1 - textStartCol)
+		const maxCursor = input.value.length
+		input.cursor = Math.min(targetCol, maxCursor)
+
+		logMouse(`[input-click] row=${inputRow} promptCol=${promptCol} targetCol=${targetCol} cursor=${input.cursor}`)
+
+		input.tui?.requestRender()
+		return true
+	}
+
 	pi.on("session_start", (event, ctx) => {
 		setSessionModeOnboardingFooterSuppressed(false)
 		stopWorkingAnimation?.()
@@ -242,6 +371,21 @@ export default function uiExtension(pi: ExtensionAPI) {
 		linesRemoved = 0
 		scriptGeneration++
 		scriptPending = false
+
+		if (MOUSE_DEBUG_LOG) {
+			try {
+				mkdirSync(join(process.cwd(), ".kimchi"), { recursive: true })
+			} catch {}
+			try {
+				writeFileSync(MOUSE_DEBUG_LOG, "", { flag: "w" })
+			} catch {}
+		}
+
+		// Enable SGR mouse mode so the terminal reports click coordinates.
+		// Mode 1000 (basic button tracking) + 1006 (SGR coordinate format).
+		process.stdout.write(enableMouseMode())
+		logMouse("[mouse] mode enabled")
+		mouseClickDetector = createClickDetector()
 
 		ctx.ui.setHeader((_tui, theme) => new LogoHeader(theme))
 		ctx.ui.setFooter((tui, theme, footerData) => {
@@ -475,12 +619,67 @@ export default function uiExtension(pi: ExtensionAPI) {
 				return undefined
 			})
 		}
+		// Mouse click → cursor positioning for prompt editor.
+		if (unsubMouseInput) unsubMouseInput()
+		if (ctx.hasUI) {
+			unsubMouseInput = ctx.ui.onTerminalInput((data) => {
+				if (!isMouseEvent(data)) return undefined
+				const event = parseSgrMouse(data)
+				if (!event) return { consume: true }
+				// Debug: log mouse events
+				logMouse(`[mouse] btn=${event.button} x=${event.x} y=${event.y} press=${event.isPress}`)
+				// Ignore motion, scroll, or non-left buttons.
+				if (event.isMotion || event.isScroll) return { consume: true }
+				// Only left button press (0) or release (0 or 3). Ignore right
+				// button (2).
+				if (event.button !== 0 && event.button !== 3) return { consume: true }
+				if (event.isPress) {
+					mouseClickDetector = onMouseDown(mouseClickDetector, event)
+					return { consume: true }
+				}
+				// Release — check whether this is a genuine click (same coords).
+				const clickResult = onMouseUp(mouseClickDetector, event)
+				if (clickResult.isClick && clickResult.click) {
+					const click = clickResult.click
+					// Route to the PromptEditor. handleMouseClick() itself verifies
+					// that the click is actually inside the editor bounds.
+					const focused = (uiTui as unknown as { focusedComponent?: unknown }).focusedComponent
+					if (currentEditor && focused === currentEditor) {
+						const handled = currentEditor.handleMouseClick(click.x, click.y)
+						if (handled) return { consume: true }
+					}
+					// Also try to route to any Input child of the focused component
+					if (focused && focused !== currentEditor) {
+						const input = findInputChild(focused)
+						if (input && isInputLike(input)) {
+							const prevLines: string[] | undefined = (uiTui as unknown as { previousLines?: string[] }).previousLines
+							const prevViewportTop: number =
+								(uiTui as unknown as { previousViewportTop?: number }).previousViewportTop ?? 0
+							if (prevLines && prevLines.length > 0) {
+								const handled = tryHandleInputClick(input, click, prevLines, prevViewportTop)
+								if (handled) {
+									uiTui?.requestRender()
+									return { consume: true }
+								}
+							}
+						}
+					}
+				}
+				return { consume: true }
+			})
+		}
 	})
 
 	pi.on("session_shutdown", () => {
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
 		currentCtx = null
+		// Disable mouse mode so the terminal restores native selection.
+		process.stdout.write(disableMouseMode())
+		if (unsubMouseInput) {
+			unsubMouseInput()
+			unsubMouseInput = null
+		}
 	})
 
 	pi.on("input", (event, ctx) => {
