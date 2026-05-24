@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
-import { SessionContext } from "../session-context.js"
+import { SessionContext, _resetSharedAccumulators } from "../session-context.js"
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./messages.js"
 
 vi.mock("../../../startup-context.js", () => ({
@@ -73,6 +73,7 @@ describe("handleMessageEnd", () => {
 
 	afterEach(() => {
 		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
 		vi.restoreAllMocks()
 	})
 
@@ -209,6 +210,7 @@ describe("handleBeforeAgentStart", () => {
 
 	afterEach(() => {
 		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
 		vi.restoreAllMocks()
 	})
 
@@ -241,6 +243,7 @@ describe("handleAgentEnd", () => {
 
 	afterEach(() => {
 		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
 		vi.restoreAllMocks()
 	})
 

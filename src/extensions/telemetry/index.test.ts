@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
 import telemetryExtension, { trackSubagentSpawned } from "./index.js"
+import { _resetSharedAccumulators } from "./session-context.js"
 
 vi.mock("../ferment/index.js", () => ({
 	getActiveFerment: vi.fn(() => undefined),
@@ -51,6 +52,7 @@ describe("telemetryExtension integration", () => {
 
 	afterEach(() => {
 		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
 	})
 
 	it("registers all expected event handlers when enabled", () => {

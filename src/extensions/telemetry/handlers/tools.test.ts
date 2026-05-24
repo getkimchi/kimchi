@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
-import { SessionContext } from "../session-context.js"
+import { SessionContext, _resetSharedAccumulators } from "../session-context.js"
 import { handleToolExecutionEnd, handleToolExecutionStart } from "./tools.js"
 
 function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
@@ -46,6 +46,7 @@ describe("handlers/tools", () => {
 
 	afterEach(() => {
 		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
 		vi.restoreAllMocks()
 	})
 

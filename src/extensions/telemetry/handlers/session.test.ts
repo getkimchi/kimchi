@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
-import { SessionContext } from "../session-context.js"
+import { SessionContext, _resetSharedAccumulators } from "../session-context.js"
 import { handleSessionShutdown, handleSessionStart } from "./session.js"
 
 vi.mock("../../ferment/index.js", () => ({
@@ -31,6 +31,7 @@ describe("handleSessionStart", () => {
 
 	afterEach(() => {
 		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
 		vi.restoreAllMocks()
 	})
 
@@ -83,6 +84,7 @@ describe("handleSessionShutdown", () => {
 
 	afterEach(() => {
 		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
 		vi.restoreAllMocks()
 	})
 

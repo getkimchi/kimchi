@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
-import { SessionContext } from "./session-context.js"
+import { SessionContext, _resetSharedAccumulators } from "./session-context.js"
 
 function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 	return {
@@ -26,6 +26,7 @@ describe("SessionContext", () => {
 
 	afterEach(() => {
 		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
 		vi.restoreAllMocks()
 	})
 
@@ -124,7 +125,7 @@ describe("SessionContext", () => {
 		expect(ctx.logBuffer).toHaveLength(0)
 	})
 
-	it("reset generates new sessionId and clears state", () => {
+	it("reset preserves rootSessionId and clears per-instance state", () => {
 		const ctx = new SessionContext(makeConfig(), "cli", "coding")
 		const originalId = ctx.sessionId
 
@@ -134,7 +135,7 @@ describe("SessionContext", () => {
 
 		ctx.reset("vscode", "ferment")
 
-		expect(ctx.sessionId).not.toBe(originalId)
+		expect(ctx.sessionId).toBe(originalId)
 		expect(ctx.source).toBe("vscode")
 		expect(ctx.mode).toBe("ferment")
 		expect(ctx.sentMessages.size).toBe(0)
@@ -191,5 +192,56 @@ describe("SessionContext", () => {
 
 		expect(ctx.messageStartTimes.size).toBe(0)
 		expect(ctx.flushTimer).toBeUndefined()
+	})
+
+	it("two instances share the same cumulative accumulator", () => {
+		const ctx1 = new SessionContext(makeConfig(), "cli", "coding")
+		const ctx2 = new SessionContext(makeConfig(), "cli", "coding")
+
+		expect(ctx1.sessionId).toBe(ctx2.sessionId)
+		expect(ctx1.cumulative).toBe(ctx2.cumulative)
+
+		ctx1.cumulative.commitCount += 3
+		expect(ctx2.cumulative.commitCount).toBe(3)
+	})
+
+	it("reset preserves shared accumulator data from other instances", () => {
+		const ctx1 = new SessionContext(makeConfig(), "cli", "coding")
+		const ctx2 = new SessionContext(makeConfig(), "cli", "coding")
+
+		ctx1.cumulative.tokensByModel["test-model"] = { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 }
+
+		ctx2.reset("cli", "coding")
+
+		expect(ctx2.cumulative.tokensByModel["test-model"]?.output).toBe(50)
+	})
+
+	it("shared accumulators produce combined metrics on flush", async () => {
+		const ctx1 = new SessionContext(makeConfig(), "cli", "coding")
+		const ctx2 = new SessionContext(makeConfig(), "cli", "coding")
+
+		ctx1.cumulative.tokensByModel.m1 = { input: 100, output: 200, cacheRead: 0, cacheWrite: 0 }
+		ctx2.cumulative.tokensByModel.m1.output += 50
+
+		ctx1.flushMetrics()
+		await Promise.allSettled([...ctx1.inFlight])
+
+		const metricsCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]: unknown[]) =>
+			String(url).includes("/metrics"),
+		)
+		expect(metricsCalls.length).toBe(1)
+		const body = JSON.parse((metricsCalls[0][1] as { body: string }).body)
+		const metrics = body.resourceMetrics[0].scopeMetrics[0].metrics
+		const outputMetric = metrics.find(
+			(m: {
+				name: string
+				sum?: { dataPoints: Array<{ attributes: Array<{ key: string; value: { stringValue: string } }> }> }
+			}) =>
+				m.name === "claude_code.token.usage" &&
+				m.sum?.dataPoints[0]?.attributes?.some(
+					(a: { key: string; value: { stringValue: string } }) => a.key === "type" && a.value.stringValue === "output",
+				),
+		)
+		expect(outputMetric?.sum?.dataPoints[0]?.asInt).toBe("250")
 	})
 })

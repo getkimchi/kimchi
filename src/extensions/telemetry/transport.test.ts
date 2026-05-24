@@ -111,7 +111,8 @@ describe("buildLogRecord", () => {
 		expect(keys).toContain("client")
 		expect(keys).toContain("language")
 		expect(keys).toContain("file_hash")
-		expect(record.attributes.find((a) => a.key === "session.id")?.value.stringValue).toBe("sess-1")
+		const sessionAttr = record.attributes.find((a) => a.key === "session.id")
+		expect(sessionAttr && "stringValue" in sessionAttr.value ? sessionAttr.value.stringValue : undefined).toBe("sess-1")
 	})
 })
 

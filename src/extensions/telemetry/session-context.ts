@@ -14,6 +14,36 @@ export const LOG_BATCH_FLUSH_INTERVAL_MS = 5_000
 export const LOG_BATCH_MAX_SIZE = 20
 
 // ---------------------------------------------------------------------------
+// Process-level root session ID + shared accumulators
+//
+// All agents (main + sub-agents) in the same process share rootSessionId so
+// that telemetry rolls up under one session in the backend.
+//
+// Accumulators are keyed by rootSessionId (not per-instance) so that every
+// flush sends the monotonically increasing total across ALL agents. This is
+// required because the backend uses ReplacingMergeTree: rows with the same
+// ORDER BY key are deduplicated and the latest write wins.
+// ---------------------------------------------------------------------------
+
+let rootSessionId: string | undefined
+const sharedAccumulators = new Map<string, CumulativeState>()
+
+function getOrCreateAccumulator(sessionId: string): CumulativeState {
+	let acc = sharedAccumulators.get(sessionId)
+	if (!acc) {
+		acc = createCumulativeState()
+		sharedAccumulators.set(sessionId, acc)
+	}
+	return acc
+}
+
+/** @internal — exposed for testing only */
+export function _resetSharedAccumulators(): void {
+	if (rootSessionId) sharedAccumulators.delete(rootSessionId)
+	rootSessionId = undefined
+}
+
+// ---------------------------------------------------------------------------
 // SessionContext — per-session telemetry state
 // ---------------------------------------------------------------------------
 
@@ -21,7 +51,6 @@ export class SessionContext {
 	config: TelemetryConfig
 	sessionId: string
 	sessionStartMs: number
-	sessionStartNano: string
 	source: string
 	mode: string
 
@@ -29,7 +58,7 @@ export class SessionContext {
 	sentMessages = new Set<string>()
 	pendingArgs = new Map<string, { toolName: string; args: unknown }>()
 	messageStartTimes = new Map<string, number>()
-	cumulative: CumulativeState = createCumulativeState()
+	cumulative: CumulativeState
 	inFlight = new Set<Promise<void>>()
 	shuttingDown = false
 	flushTimer: NodeJS.Timeout | undefined
@@ -40,22 +69,27 @@ export class SessionContext {
 		this.config = config
 		this.source = source
 		this.mode = mode
-		this.sessionId = crypto.randomUUID()
+		if (!rootSessionId) rootSessionId = crypto.randomUUID()
+		this.sessionId = rootSessionId
 		this.sessionStartMs = Date.now()
-		this.sessionStartNano = String(this.sessionStartMs * 1_000_000)
+		this.cumulative = getOrCreateAccumulator(this.sessionId)
+	}
+
+	get sessionStartNano(): string {
+		return this.cumulative.sessionStartNano
 	}
 
 	reset(source: string, mode: string): void {
 		this.source = source
 		this.mode = mode
-		this.sessionId = crypto.randomUUID()
+		if (!rootSessionId) rootSessionId = crypto.randomUUID()
+		this.sessionId = rootSessionId
 		this.sessionStartMs = Date.now()
-		this.sessionStartNano = String(this.sessionStartMs * 1_000_000)
 		this.currentModel = "unknown"
 		this.sentMessages.clear()
 		this.pendingArgs.clear()
 		this.messageStartTimes.clear()
-		this.cumulative = createCumulativeState()
+		this.cumulative = getOrCreateAccumulator(this.sessionId)
 		this.inFlight.clear()
 		this.shuttingDown = false
 		this.logBuffer = []

@@ -12,10 +12,19 @@ export interface CumulativeState {
 	prCount: number
 	locByLanguage: Record<string, { added: number; removed: number }>
 	editDecisions: Record<string, number>
+	sessionStartNano: string
 }
 
 export function createCumulativeState(): CumulativeState {
-	return { tokensByModel: {}, costByModel: {}, commitCount: 0, prCount: 0, locByLanguage: {}, editDecisions: {} }
+	return {
+		tokensByModel: {},
+		costByModel: {},
+		commitCount: 0,
+		prCount: 0,
+		locByLanguage: {},
+		editDecisions: {},
+		sessionStartNano: String(Date.now() * 1_000_000),
+	}
 }
 
 // ---------------------------------------------------------------------------
