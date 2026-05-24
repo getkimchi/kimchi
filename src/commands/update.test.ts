@@ -29,7 +29,8 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 			update: packageUpdateMock,
 		})),
 	}
-})
+})const ensureSuperpowersInstalledMock = vi.fn()
+
 vi.mock("../update/paths.js", () => ({
 	isHomebrewInstall: () => isHomebrewInstallMock(),
 }))
@@ -39,6 +40,9 @@ vi.mock("../update/workflow.js", () => ({
 }))
 vi.mock("../utils.js", () => ({
 	getVersion: () => getVersionMock(),
+}))
+vi.mock("../extensions/superpowers/installer.js", () => ({
+	ensureSuperpowersInstalled: (...args: unknown[]) => ensureSuperpowersInstalledMock(...args),
 }))
 
 const { runUpdate } = await import("./update.js")
@@ -181,6 +185,8 @@ describe("runUpdate non-interactive composition", () => {
 		setProgressCallbackMock.mockReset()
 		settingsManagerCreateMock.mockReset()
 		settingsManagerCreateMock.mockReturnValue({})
+		ensureSuperpowersInstalledMock.mockReset()
+		ensureSuperpowersInstalledMock.mockResolvedValue(true)
 	})
 
 	afterEach(() => {
