@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -134,5 +134,24 @@ describe("ensureSuperpowersInstalled", () => {
 		expect(insideVendor).toBe(false)
 		// Tarball must be a sibling ending in .download.tar.gz
 		expect(cwsPaths.some((p) => p.endsWith(".download.tar.gz"))).toBe(true)
+	})
+
+	it("cleans up tarball on download stream failure", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue({
+				ok: true,
+				body: new ReadableStream({
+					start(ctrl) {
+						ctrl.error(new Error("network dropped"))
+					},
+				}),
+			}),
+		)
+
+		await expect(ensureSuperpowersInstalled()).rejects.toThrow()
+
+		const tarballPath = join(mockHome, ".config", "kimchi", "vendor", "superpowers.download.tar.gz")
+		expect(existsSync(tarballPath)).toBe(false)
 	})
 })

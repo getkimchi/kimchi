@@ -26,36 +26,44 @@ export async function ensureSuperpowersInstalled(): Promise<boolean> {
 		throw new Error(`Failed to download superpowers: ${response.status} ${response.statusText}`)
 	}
 
-	// Stream response body to the temp tarball path
-	await new Promise<void>((resolve, reject) => {
-		const stream = createWriteStream(tarballPath)
-		stream.on("finish", resolve)
-		stream.on("error", reject)
-		// biome-ignore lint/style/noNonNullAssertion: fetch guarantees body when ok
-		const reader = response.body!.getReader()
-		function pump(): void {
-			reader.read().then(({ done, value }) => {
-				if (done) {
-					stream.end()
-					return
-				}
-				stream.write(value)
-				pump()
-			}, reject)
-		}
-		pump()
-	})
+	try {
+		// Stream response body to the temp tarball path
+		await new Promise<void>((resolve, reject) => {
+			const stream = createWriteStream(tarballPath)
+			stream.on("finish", resolve)
+			stream.on("error", reject)
+			// biome-ignore lint/style/noNonNullAssertion: fetch guarantees body when ok
+			const reader = response.body!.getReader()
+			function pump(): void {
+				reader.read().then(
+					({ done, value }) => {
+						if (done) {
+							stream.end()
+							return
+						}
+						stream.write(value)
+						pump()
+					},
+					(err) => {
+						stream.destroy()
+						reject(err)
+					},
+				)
+			}
+			pump()
+		})
 
-	// Download succeeded — now safe to wipe vendorDir and extract fresh
-	rmSync(vendorDir, { recursive: true, force: true })
-	mkdirSync(vendorDir, { recursive: true })
-	await extract({ file: tarballPath, cwd: vendorDir, strip: 1 })
+		// Download succeeded — now safe to wipe vendorDir and extract fresh
+		rmSync(vendorDir, { recursive: true, force: true })
+		mkdirSync(vendorDir, { recursive: true })
+		await extract({ file: tarballPath, cwd: vendorDir, strip: 1 })
 
-	// Write version marker only after successful extraction
-	writeFileSync(versionFile, SUPERPOWERS_VERSION)
-
-	// Best-effort cleanup of the temp tarball
-	await unlink(tarballPath).catch(() => undefined)
+		// Write version marker only after successful extraction
+		writeFileSync(versionFile, SUPERPOWERS_VERSION)
+	} finally {
+		// Always clean up the temp tarball — whether download/extract succeeded or failed
+		await unlink(tarballPath).catch(() => undefined)
+	}
 
 	return true
 }
