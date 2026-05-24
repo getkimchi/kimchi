@@ -46,6 +46,16 @@ export const GENERAL_TIPS = [
 		scope: "general",
 		message: "Run `/export` to save HTML for a bug report.",
 	},
+	{
+		id: "mouse-click-cursor",
+		scope: "general",
+		message: "Click anywhere in the chat to move the cursor.",
+	},
+	{
+		id: "mouse-drag-copy",
+		scope: "general",
+		message: "Select text to automatically copy it.",
+	},
 ] as const satisfies readonly Tip[]
 
 export function createGeneralTipProvider(): TipProvider {
