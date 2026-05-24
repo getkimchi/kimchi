@@ -36,7 +36,7 @@ export function classifyTool(toolName: string, args: Record<string, unknown>): C
 			if (BASH_DIRECTORY_CMDS.has(firstWord)) return "directory"
 			if (BASH_PATTERN_CMDS.has(firstWord)) return "pattern"
 			if (BASH_FILE_CMDS.has(firstWord)) return "file"
-			return "command"
+			return "operation"
 		}
 		default:
 			return "operation"

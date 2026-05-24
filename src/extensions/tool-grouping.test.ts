@@ -56,8 +56,8 @@ describe("classifyTool", () => {
 	it("classifies bash tail as file", () => {
 		expect(classifyTool("bash", { command: "tail -f log" })).toBe("file")
 	})
-	it("classifies bash git as command", () => {
-		expect(classifyTool("bash", { command: "git status" })).toBe("command")
+	it("classifies unrecognized bash as operation", () => {
+		expect(classifyTool("bash", { command: "git status" })).toBe("operation")
 	})
 	it("classifies unknown tool as operation", () => {
 		expect(classifyTool("some_mcp_tool", {})).toBe("operation")
@@ -160,9 +160,9 @@ describe("patchAddChild / getParent", () => {
 
 function mockTool(id: string, opts: { isPartial?: boolean; isError?: boolean } = {}): object {
 	return {
-		toolName: "bash",
+		toolName: "read",
 		toolCallId: id,
-		args: { command: "git status" },
+		args: { path: `file-${id}.ts` },
 		isPartial: opts.isPartial ?? false,
 		result: opts.isError ? { isError: true } : undefined,
 		render: (_width: number) => [],
@@ -282,8 +282,8 @@ describe("buildGroupSummaryText", () => {
 	})
 
 	it("uses continuous tense when isInProgress is true", () => {
-		const run = [mockToolFull("read", { path: "a.ts" }), mockToolFull("bash", { command: "git status" })]
-		expect(buildGroupSummaryText(run, true)).toBe("reading 1 file, running 1 command")
+		const run = [mockToolFull("read", { path: "a.ts" }), mockToolFull("bash", { command: "ls src/" })]
+		expect(buildGroupSummaryText(run, true)).toBe("reading 1 file, listing 1 directory")
 	})
 })
 
