@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process"
-import { copyFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs"
+import { chmodSync, copyFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { backupDir } from "./paths.js"
 
@@ -56,6 +56,11 @@ export function macosCodesignReSign(newPath: string): void {
  *   up the new one. ETXTBSY only fires on attempts to *write to* the
  *   running binary, which we never do.
  *
+ *   When source and destination are on different filesystems rename(2)
+ *   returns EXDEV. In that case we copy the new binary to a temp file on
+ *   the target filesystem and rename it into place — the final rename is
+ *   still atomic.
+ *
  * - **Windows**: cannot rename or delete a running .exe (the OS holds an
  *   exclusive lock). Strategy used by `bun upgrade` and `deno upgrade`:
  *   rename `kimchi.exe` → `kimchi.exe.old`, drop the new binary in as
@@ -107,7 +112,43 @@ export function atomicInstall(newPath: string, currentPath: string): { backupPat
 
 	// Atomic swap. fs.renameSync uses POSIX rename(2) under the hood.
 	mkdirSync(dirname(currentPath), { recursive: true })
-	renameSync(newPath, currentPath)
+	try {
+		renameSync(newPath, currentPath)
+	} catch (err) {
+		// EXDEV: source and destination are on different filesystems.
+		// rename(2) cannot cross mount points. Fall back to copying the
+		// new binary to a temp file on the target filesystem and then
+		// atomically renaming it into place.
+		if ((err as NodeJS.ErrnoException).code === "EXDEV") {
+			const tempPath = `${currentPath}.new.${Date.now()}`
+			const { mode } = statSync(newPath)
+			copyFileSync(newPath, tempPath)
+			// copyFileSync does not preserve the source mode. Restore the
+			// executable bit (and any other permissions) so the renamed
+			// binary remains runnable.
+			chmodSync(tempPath, mode)
+			try {
+				renameSync(tempPath, currentPath)
+			} catch (renameErr) {
+				// Clean up the temp file so we don't leave litter.
+				try {
+					unlinkSync(tempPath)
+				} catch {
+					// non-fatal — continue
+				}
+				throw renameErr
+			}
+			// Clean up the original extracted binary on the source fs.
+			try {
+				unlinkSync(newPath)
+			} catch {
+				// non-fatal — the extract cleanup in applyUpdate will
+				// handle the containing directory.
+			}
+			return { backupPath }
+		}
+		throw err
+	}
 
 	return { backupPath }
 }

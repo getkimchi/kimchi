@@ -106,7 +106,11 @@ export async function runUpdate(args: string[]): Promise<number> {
 	try {
 		await applyUpdate({ tag: check.tag })
 	} catch (err) {
-		console.error(`kimchi update: ${(err as Error).message}`)
+		console.error(`kimchi update: update failed — ${(err as Error).message}`)
+		console.error("")
+		console.error(
+			"Please copy the error message above and create a bug report at https://github.com/castai/kimchi/issues",
+		)
 		return 1
 	}
 
