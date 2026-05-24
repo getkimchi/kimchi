@@ -12,6 +12,10 @@ vi.mock("./config.js", async (importOriginal) => {
 	}
 })
 
+vi.mock("tar", () => ({
+	extract: vi.fn().mockResolvedValue(undefined),
+}))
+
 import { ensureSuperpowersInstalled } from "./installer.js"
 
 let mockHome: string
@@ -45,10 +49,6 @@ describe("ensureSuperpowersInstalled", () => {
 			}),
 		)
 
-		vi.mock("tar", () => ({
-			extract: vi.fn().mockResolvedValue(undefined),
-		}))
-
 		const result = await ensureSuperpowersInstalled()
 		expect(result).toBe(true)
 	})
@@ -80,8 +80,6 @@ describe("ensureSuperpowersInstalled", () => {
 				}),
 			}),
 		)
-		vi.mock("tar", () => ({ extract: vi.fn().mockResolvedValue(undefined) }))
-
 		const result = await ensureSuperpowersInstalled()
 		expect(result).toBe(true)
 	})
