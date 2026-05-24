@@ -1,6 +1,8 @@
+import json
 import shlex
+from typing import Any
 
-from harbor.agents.installed.base import with_prompt_template
+from harbor.agents.installed.base import NonZeroAgentExitCodeError, with_prompt_template
 from harbor.agents.installed.claude_code import ClaudeCode
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
@@ -12,7 +14,12 @@ from kimchi_agent.gateway import (
     KimchiModelMetadata,
 )
 
-CLAUDE_CODE_AUTO_COMPACT_PERCENT = 92
+CLAUDE_CODE_AUTO_COMPACT_PERCENT = 85
+CLAUDE_CODE_OUTPUT_RESERVE_TOKENS = 32_768
+CLAUDE_CODE_CONTEXT_SAFETY_MARGIN_TOKENS = 8_192
+CLAUDE_CODE_OUTPUT_PATH = "/logs/agent/claude-code.txt"
+RETRYABLE_API_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 524, 529})
+RETRYABLE_API_ERROR_MESSAGE_LIMIT = 2_000
 CLAUDE_PASSTHROUGH_ENV_PREFIXES = ("CLAUDE_CODE_", "OTEL_")
 CLAUDE_PASSTHROUGH_ENV_KEYS = {
     "API_TIMEOUT_MS",
@@ -60,6 +67,16 @@ FORCED_ENV_KEYS = {
 }
 
 
+class RetryableApiError(RuntimeError):
+    """Raised when the agent failed because an upstream API returned a transient error."""
+
+    def __init__(self, status: int, detail: str) -> None:
+        self.status = status
+        detail = detail.strip()
+        suffix = f": {detail}" if detail else ""
+        super().__init__(f"Retryable API error {status}{suffix}")
+
+
 class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
     """Harbor Claude Code agent wired to the Kimchi Anthropic gateway."""
 
@@ -69,7 +86,12 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
 
     @staticmethod
     def _auto_compact_window(model: KimchiModelMetadata) -> str:
-        return str(max(1, model.limits.context_window * CLAUDE_CODE_AUTO_COMPACT_PERCENT // 100))
+        context_window = model.limits.context_window
+        output_reserve = min(CLAUDE_CODE_OUTPUT_RESERVE_TOKENS, max(1, context_window // 4))
+        safety_margin = min(CLAUDE_CODE_CONTEXT_SAFETY_MARGIN_TOKENS, max(1, context_window // 16))
+        percent_window = context_window * CLAUDE_CODE_AUTO_COMPACT_PERCENT // 100
+        reserved_window = context_window - output_reserve - safety_margin
+        return str(max(1, min(percent_window, reserved_window)))
 
     def _build_env(self) -> dict[str, str]:
         api_key = self._required_kimchi_api_key()
@@ -145,8 +167,99 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
             f"--permission-mode=bypassPermissions "
             f"{extra_flags}"
             f"--print -- {shlex.quote(instruction)} 2>&1 </dev/null | tee "
-            "/logs/agent/claude-code.txt"
+            f"{shlex.quote(CLAUDE_CODE_OUTPUT_PATH)}"
         )
+
+    @staticmethod
+    def _coerce_status(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _event_text(event: dict[str, Any]) -> str:
+        result = event.get("result")
+        if isinstance(result, str):
+            return result
+
+        message = event.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts: list[str] = []
+                for item in content:
+                    if isinstance(item, dict):
+                        text = item.get("text")
+                        if isinstance(text, str):
+                            parts.append(text)
+                    elif isinstance(item, str):
+                        parts.append(item)
+                if parts:
+                    return "\n".join(parts)
+
+        error = event.get("error")
+        return error if isinstance(error, str) else ""
+
+    @classmethod
+    def _retryable_api_error_from_event(cls, event: dict[str, Any]) -> RetryableApiError | None:
+        status = cls._coerce_status(event.get("api_error_status"))
+        if status not in RETRYABLE_API_STATUSES:
+            return None
+
+        is_result_error = event.get("type") == "result" and event.get("is_error") is True
+        has_error_marker = event.get("error") is not None
+        if not is_result_error and not has_error_marker:
+            return None
+
+        detail = cls._event_text(event)
+        if len(detail) > RETRYABLE_API_ERROR_MESSAGE_LIMIT:
+            detail = f"{detail[:RETRYABLE_API_ERROR_MESSAGE_LIMIT]}..."
+        return RetryableApiError(status, detail)
+
+    @classmethod
+    def _retryable_api_error_from_stream(cls, stream: str) -> RetryableApiError | None:
+        retryable_error: RetryableApiError | None = None
+        for line in stream.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+
+            event_error = cls._retryable_api_error_from_event(event)
+            if event_error is not None:
+                retryable_error = event_error
+        return retryable_error
+
+    async def _retryable_api_error_from_remote_log(
+        self,
+        environment: BaseEnvironment,
+    ) -> RetryableApiError | None:
+        try:
+            result = await environment.exec(
+                f"cat {shlex.quote(CLAUDE_CODE_OUTPUT_PATH)}",
+                timeout_sec=10,
+            )
+        except Exception:
+            self.logger.debug("Failed to read Claude Code output for API error classification", exc_info=True)
+            return None
+
+        if result.return_code != 0 or not result.stdout:
+            return None
+        return self._retryable_api_error_from_stream(result.stdout)
 
     @with_prompt_template
     async def run(
@@ -162,8 +275,14 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
             command=self._build_setup_command(),
             env=env,
         )
-        await self.exec_as_agent(
-            environment,
-            command=self._build_run_command(instruction),
-            env=env,
-        )
+        try:
+            await self.exec_as_agent(
+                environment,
+                command=self._build_run_command(instruction),
+                env=env,
+            )
+        except NonZeroAgentExitCodeError as exc:
+            retryable_error = await self._retryable_api_error_from_remote_log(environment)
+            if retryable_error is not None:
+                raise retryable_error from exc
+            raise
