@@ -46,6 +46,7 @@ import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import stripImagesExtension from "./extensions/strip-images.js"
+import superpowersExtension from "./extensions/superpowers.js"
 import tagsExtension from "./extensions/tags.js"
 import telemetryExtension from "./extensions/telemetry.js"
 import terminalColorsExtension from "./extensions/terminal-colors.js"
@@ -460,6 +461,7 @@ try {
 		})
 		const extensionFactories = [
 			startupUpdateExtension,
+			superpowersExtension,
 			sessionIdCaptureExtension,
 			shutdownMarkerExtension,
 			statsExtension,
