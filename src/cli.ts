@@ -28,6 +28,7 @@ import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
 import fermentExtension from "./extensions/ferment/index.js"
+import helpExtension from "./extensions/help.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import loginExtension from "./extensions/login/index.js"
@@ -493,6 +494,7 @@ try {
 			...enabledExtensionFactories([
 				{ id: "extensions.agents", factory: agentsExtension },
 			] satisfies ManagedExtensionFactory[]),
+			helpExtension,
 			tagsExtension,
 			telemetryExtension(telemetryConfig),
 			toolRenderingExtension,
