@@ -59,6 +59,15 @@ describe("classifyTool", () => {
 	it("classifies unrecognized bash as operation", () => {
 		expect(classifyTool("bash", { command: "git status" })).toBe("operation")
 	})
+	it("classifies rtk grep as pattern", () => {
+		expect(classifyTool("bash", { command: 'rtk grep -n "foo" src/' })).toBe("pattern")
+	})
+	it("classifies rtk read as file", () => {
+		expect(classifyTool("bash", { command: "rtk read src/foo.ts" })).toBe("file")
+	})
+	it("classifies rtk with unrecognized subcommand as operation", () => {
+		expect(classifyTool("bash", { command: "rtk git status" })).toBe("operation")
+	})
 	it("classifies unknown tool as operation", () => {
 		expect(classifyTool("some_mcp_tool", {})).toBe("operation")
 	})
