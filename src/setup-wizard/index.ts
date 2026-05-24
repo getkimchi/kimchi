@@ -1,6 +1,7 @@
 // Side-effect imports register each integration. Import order doesn't matter
 // — the registry is a Map keyed by ToolId — but the imports themselves do,
 // otherwise byId() returns undefined for an unimported tool.
+import "../integrations/kimchi.js"
 import "../integrations/claude-code.js"
 import "../integrations/cursor.js"
 import "../integrations/gsd2.js"

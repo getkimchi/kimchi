@@ -1,7 +1,7 @@
 import type { ConfigScope } from "../config/scope.js"
 import type { ModelMetadata } from "../models.js"
 
-export type ToolId = "opencode" | "claudecode" | "cursor" | "openclaw" | "gsd2"
+export type ToolId = "opencode" | "claudecode" | "cursor" | "openclaw" | "gsd2" | "kimchi"
 
 /**
  * A configurable third-party tool that kimchi can point at the kimchi LLM

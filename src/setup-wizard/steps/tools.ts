@@ -15,6 +15,12 @@ import type { WizardState } from "../state.js"
  */
 export async function runToolsStep(state: WizardState, opts: { backable: boolean }): Promise<void> {
 	const tools = allTools()
+	// Move Kimchi to the top of the list
+	const kimchiIndex = tools.findIndex((t) => t.id === "kimchi")
+	if (kimchiIndex > 0) {
+		const kimchi = tools.splice(kimchiIndex, 1)[0]
+		tools.unshift(kimchi)
+	}
 	if (tools.length === 0) {
 		// Defensive: only reachable if no integration modules were imported,
 		// which means the wizard was wired wrong. Bail with a clear message
@@ -26,13 +32,17 @@ export async function runToolsStep(state: WizardState, opts: { backable: boolean
 
 	const installed = new Set(tools.filter((t) => t.isInstalled()).map((t) => t.id))
 	const initial = tools.filter((t) => installed.has(t.id)).map((t) => t.id)
+	// Kimchi is always selected and cannot be unselected
+	if (!initial.includes("kimchi")) {
+		initial.unshift("kimchi")
+	}
 
 	const r = await multiselect<ToolId>({
 		message: "Which tools should be configured?",
 		options: tools.map((t) => ({
 			value: t.id,
 			label: t.name,
-			hint: installed.has(t.id) ? "installed" : "not detected",
+			hint: t.id === "kimchi" ? "\x1b[36minstalled\x1b[39m" : installed.has(t.id) ? "installed" : "not detected",
 		})),
 		initialValues: initial,
 		required: false,
@@ -48,4 +58,8 @@ export async function runToolsStep(state: WizardState, opts: { backable: boolean
 		return
 	}
 	state.selectedTools = r.value
+	// Kimchi is always selected and cannot be unselected
+	if (!state.selectedTools.includes("kimchi")) {
+		state.selectedTools.unshift("kimchi")
+	}
 }

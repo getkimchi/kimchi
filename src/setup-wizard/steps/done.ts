@@ -69,9 +69,13 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 		if (state.mode === "inject") {
 			// No disk writes in inject mode — the launcher sets env per-process.
 			outcome.successes.push(tool.name)
-			// 'claudecode' is the tool ID but the CLI command is 'claude'
-			const launchCmd = id === "claudecode" ? "claude" : id
-			log.info(`${tool.name}: ready (launch via 'kimchi ${launchCmd}')`)
+			if (id === "kimchi") {
+				log.info(`${tool.name}: ready`)
+			} else {
+				// 'claudecode' is the tool ID but the CLI command is 'claude'
+				const launchCmd = id === "claudecode" ? "claude" : id
+				log.info(`${tool.name}: ready (launch via 'kimchi ${launchCmd}')`)
+			}
 			continue
 		}
 		const s = spinner()
