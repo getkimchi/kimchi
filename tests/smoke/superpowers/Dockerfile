@@ -7,7 +7,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 # Copy the Linux kimchi binary and its auxiliary share dir
-COPY dist/bin/kimchi-linux-arm64  /usr/local/bin/kimchi
+COPY dist/bin/kimchi          /usr/local/bin/kimchi
 COPY dist/share/kimchi/       /usr/local/share/kimchi/
 
 # Tell kimchi where its auxiliary files live
