@@ -18,9 +18,10 @@ from kimchi_agent.gateway import (
 from kimchi_agent.messages import SessionEntry
 
 CONTAINER_LOGS_DIR = "/logs/agent"
-CONTAINER_GSD_HOME = f"{CONTAINER_LOGS_DIR}/gsd-home"
+CONTAINER_GSD_HOME = "/tmp/terminal-bench-gsd-home"
 CONTAINER_GSD_AGENT_DIR = f"{CONTAINER_GSD_HOME}/agent"
 CONTAINER_GSD_SESSION_DIR = f"{CONTAINER_GSD_AGENT_DIR}/sessions"
+CONTAINER_CAPTURED_SESSION_DIR = f"{CONTAINER_LOGS_DIR}/gsd-sessions"
 # Keep the transcript as text. GSD JSON mode emits repeated partial state that
 # can grow to many GB, while Terminal Bench scoring only needs verifier results
 # plus the exit/status artifacts below.
@@ -184,7 +185,8 @@ git:
         gsd_snapshot_path = f"{CONTAINER_LOGS_DIR}/gsd"
         return (
             f"mkdir -p {shlex.quote(CONTAINER_LOGS_DIR)} "
-            f"{shlex.quote(CONTAINER_GSD_SESSION_DIR)} && "
+            f"{shlex.quote(CONTAINER_GSD_SESSION_DIR)} "
+            f"{shlex.quote(CONTAINER_CAPTURED_SESSION_DIR)} && "
             "project_dir=$(pwd -P) && "
             f"printf '%s' {shlex.quote(instruction_text)} > {shlex.quote(GSD_INSTRUCTION_PATH)} && "
             'export NVM_DIR="$HOME/.nvm" && '
@@ -206,6 +208,14 @@ git:
             "else gsd_status=error; fi; "
             f"printf '{{\"status\":\"%s\",\"exit_code\":%s}}\\n' \"$gsd_status\" \"$status\" "
             f"> {shlex.quote(status_path)}; "
+            # GSD has to populate its managed runtime home on launch. Keep that
+            # home in /tmp, then preserve only session JSONL needed for tokens.
+            f"rm -rf {shlex.quote(CONTAINER_CAPTURED_SESSION_DIR)} && "
+            f"if [ -d {shlex.quote(CONTAINER_GSD_SESSION_DIR)} ]; then "
+            f"mkdir -p {shlex.quote(CONTAINER_CAPTURED_SESSION_DIR)} && "
+            f"cp -a {shlex.quote(f'{CONTAINER_GSD_SESSION_DIR}/.')} "
+            f"{shlex.quote(CONTAINER_CAPTURED_SESSION_DIR)}; fi; "
+            f"rm -rf {shlex.quote(CONTAINER_GSD_HOME)}; "
             f"rm -rf {shlex.quote(gsd_snapshot_path)} && "
             f"if [ -d \"$project_dir/.gsd\" ]; then cp -a \"$project_dir/.gsd\" "
             f"{shlex.quote(gsd_snapshot_path)}; fi; "
@@ -218,15 +228,15 @@ git:
             KIMCHI_API_KEY_ENV: self._required_kimchi_api_key(),
             # GSD 3.x derives the embedded pi agent dir from GSD_HOME; older
             # gsd-pi builds used PI_CODING_AGENT_DIR directly. Pin both paths
-            # to the Harbor log mount so token sessions are captured.
+            # to a temporary home and copy only sessions into Harbor logs.
             "GSD_HOME": CONTAINER_GSD_HOME,
             "GSD_CODING_AGENT_DIR": CONTAINER_GSD_AGENT_DIR,
             "PI_CODING_AGENT_DIR": CONTAINER_GSD_AGENT_DIR,
         }
 
     def _force_session_env(self) -> None:
-        # Harbor merges _extra_env over env= at exec time. Keep the GSD/pi
-        # session store on the log mount even if --ae passes the same key.
+        # Harbor merges _extra_env over env= at exec time. Keep GSD's managed
+        # home temporary even if --ae passes the same keys.
         self._extra_env["GSD_HOME"] = CONTAINER_GSD_HOME
         self._extra_env["GSD_CODING_AGENT_DIR"] = CONTAINER_GSD_AGENT_DIR
         self._extra_env["PI_CODING_AGENT_DIR"] = CONTAINER_GSD_AGENT_DIR
@@ -273,7 +283,7 @@ git:
         return {"gsd_exit_code": exit_code, "gsd_status": status}
 
     def _session_files(self) -> list[Path]:
-        sessions_dir = self.logs_dir / "gsd-home" / "agent" / "sessions"
+        sessions_dir = self.logs_dir / "gsd-sessions"
         if not sessions_dir.is_dir():
             return []
         return sorted(sessions_dir.rglob("*.jsonl"))

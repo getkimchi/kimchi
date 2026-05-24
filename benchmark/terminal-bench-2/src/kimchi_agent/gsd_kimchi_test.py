@@ -14,8 +14,10 @@ from kimchi_agent.gateway import (
     KimchiModelsMetadataResponse,
 )
 from kimchi_agent.gsd_kimchi import (
+    CONTAINER_CAPTURED_SESSION_DIR,
     CONTAINER_GSD_AGENT_DIR,
     CONTAINER_GSD_HOME,
+    CONTAINER_GSD_SESSION_DIR,
     GSD_BLOCKED_EXIT_CODE,
     GSD_EXIT_CODE_FILENAME,
     GSD_OUTPUT_FILENAME,
@@ -115,12 +117,13 @@ class GsdKimchiTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(agent.agent_commands), 2)
         config_command, run_command = agent.agent_commands
-        self.assertIn("/logs/agent/gsd-home/agent/models.json", config_command)
-        self.assertIn("/logs/agent/gsd-home/agent/settings.json", config_command)
-        self.assertIn("/logs/agent/gsd-home/preferences.md", config_command)
+        self.assertIn("/tmp/terminal-bench-gsd-home/agent/models.json", config_command)
+        self.assertIn("/tmp/terminal-bench-gsd-home/agent/settings.json", config_command)
+        self.assertIn("/tmp/terminal-bench-gsd-home/preferences.md", config_command)
         self.assertIn("gsd --mode text --print --model kimchi-dev/minimax-m2.7", run_command)
         self.assertIn("Terminal Bench task. Work fully non-interactively.", run_command)
-        self.assertIn("mkdir -p /logs/agent /logs/agent/gsd-home/agent/sessions", run_command)
+        self.assertIn("mkdir -p /logs/agent /tmp/terminal-bench-gsd-home/agent/sessions", run_command)
+        self.assertIn("/logs/agent/gsd-sessions", run_command)
         self.assertIn("> /logs/agent/gsd.txt 2>&1 </dev/null || status=$?", run_command)
         self.assertNotIn("--no-session", run_command)
         self.assertNotIn("tee", run_command)
@@ -133,6 +136,10 @@ class GsdKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/logs/agent/gsd-status.json", run_command)
         self.assertIn("gsd_status=blocked", run_command)
         self.assertIn("/logs/agent/gsd", run_command)
+        self.assertIn(f"rm -rf {CONTAINER_CAPTURED_SESSION_DIR}", run_command)
+        self.assertIn(f"cp -a {CONTAINER_GSD_SESSION_DIR}/.", run_command)
+        self.assertIn(f"rm -rf {CONTAINER_GSD_HOME}", run_command)
+        self.assertNotIn("/logs/agent/gsd-home", run_command)
         self.assertEqual(
             agent.agent_envs[0],
             {
@@ -166,7 +173,6 @@ class GsdKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agent.agent_envs[0]["GSD_HOME"], CONTAINER_GSD_HOME)
         self.assertEqual(agent.agent_envs[0]["GSD_CODING_AGENT_DIR"], CONTAINER_GSD_AGENT_DIR)
         self.assertEqual(agent.agent_envs[0]["PI_CODING_AGENT_DIR"], CONTAINER_GSD_AGENT_DIR)
-
 
     async def test_models_config_contains_only_selected_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -255,7 +261,7 @@ class GsdKimchiTest(unittest.IsolatedAsyncioTestCase):
     def test_populate_context_aggregates_pi_session_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             logs_dir = Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent"
-            session_dir = logs_dir / "gsd-home" / "agent" / "sessions" / "--work--"
+            session_dir = logs_dir / "gsd-sessions" / "--work--"
             session_dir.mkdir(parents=True)
             entries = [
                 {"type": "session", "id": "session-1"},

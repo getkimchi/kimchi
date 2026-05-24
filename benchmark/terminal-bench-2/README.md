@@ -149,13 +149,13 @@ export KIMCHI_API_KEY=...
 MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-gsd-kimchi.sh -i terminal-bench/fix-git
 ```
 
-The GSD adapter accepts any `kimchi-dev/<model-id>` returned by Kimchi's model metadata endpoint (`/v1/models/metadata?include_in_cli=true`). It installs `gsd-pi@latest` by default, writes `~/.gsd/agent/models.json` with only the selected model, writes minimal GSD preferences that route every role to that model, and runs GSD in non-interactive print mode:
+The GSD adapter accepts any `kimchi-dev/<model-id>` returned by Kimchi's model metadata endpoint (`/v1/models/metadata?include_in_cli=true`). It installs `gsd-pi@latest` by default, writes a temporary GSD home with only the selected model, writes minimal GSD preferences that route every role to that model, and runs GSD in non-interactive print mode:
 
 ```bash
 gsd --mode text --print --model <MODEL> <instruction>
 ```
 
-GSD's text output is captured at `agent/gsd.txt`, the resolved version at `agent/gsd-version.txt`, and the per-task `.gsd/` directory is copied to `agent/gsd/` after the run. The adapter records GSD's raw exit code in `agent/gsd-exit-code.txt` and normalized status in `agent/gsd-status.json`; if GSD returns its blocked exit code, Harbor still proceeds to verification. GSD's home is pinned to `agent/gsd-home/`, and the underlying pi session JSONL is persisted under `agent/gsd-home/agent/sessions/` for token accounting. GSD stdout JSON event streams are intentionally not captured because they can grow very large and are not needed for Terminal Bench scoring.
+GSD's text output is captured at `agent/gsd.txt`, the resolved version at `agent/gsd-version.txt`, and the per-task `.gsd/` directory is copied to `agent/gsd/` after the run. The adapter records GSD's raw exit code in `agent/gsd-exit-code.txt` and normalized status in `agent/gsd-status.json`; if GSD returns its blocked exit code, Harbor still proceeds to verification. GSD's managed home stays under `/tmp` during execution and is removed before artifacts are collected; only the underlying pi session JSONL is copied to `agent/gsd-sessions/` for token accounting. GSD stdout JSON event streams are intentionally not captured because they can grow very large and are not needed for Terminal Bench scoring.
 
 To change models, change only `MODEL`:
 
