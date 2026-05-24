@@ -402,7 +402,20 @@ function patchUserMessageRender(): void {
 		const content = first.slice(osc.length)
 		const available = Math.max(0, width - prefixW)
 		const truncated = visibleWidth(content) > available ? truncateToWidth(content, available) : content
-		lines[0] = osc + prefix + truncated
+		const line0Content = prefix + truncated
+		// Pad to full width so background colour fills the whole line.
+		const pad = Math.max(0, width - prefixW - visibleWidth(truncated))
+		const paddedLine0 = typeof theme?.bg === "function"
+			? theme.bg("userMessageBg", line0Content + " ".repeat(pad))
+			: line0Content
+		lines[0] = osc + paddedLine0
+		// Apply background to continuation lines too.
+		for (let i = 1; i < lines.length; i++) {
+			if (typeof theme?.bg !== "function") break
+			const lw = visibleWidth(lines[i])
+			const lpad = Math.max(0, width - lw)
+			lines[i] = theme.bg("userMessageBg", lines[i] + " ".repeat(lpad))
+		}
 		return lines
 	}
 	proto[USER_MESSAGE_PATCH_FLAG] = true
