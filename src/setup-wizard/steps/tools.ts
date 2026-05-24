@@ -1,4 +1,4 @@
-import { log, note } from "@clack/prompts"
+import { note } from "@clack/prompts"
 import { all as allTools } from "../../integrations/registry.js"
 import type { ToolId } from "../../integrations/types.js"
 import { multiselect } from "../prompt.js"
@@ -6,8 +6,9 @@ import type { WizardState } from "../state.js"
 
 /**
  * Tools step — multi-select which tools to configure. Kimchi itself is
- * shown as a locked header above the list (always included, never
- * toggleable). The multiselect only contains third-party tools.
+ * shown as the first, locked option in the list (disabled in clack,
+ * rendered with a green checkmark and gray text). The user cannot
+ * navigate away from it or toggle it off — the checkbox is purely visual.
  *
  * Each option's hint reflects detection state (installed / not detected).
  * Pre-selects the tools we detect as installed; users can flip individual
@@ -19,11 +20,14 @@ import type { WizardState } from "../state.js"
 export async function runToolsStep(state: WizardState, opts: { backable: boolean }): Promise<void> {
 	const tools = allTools()
 
-	// Kimchi is always included and shown above the list as a locked item.
-	const kimchi = tools.find((t) => t.id === "kimchi")
-	const otherTools = tools.filter((t) => t.id !== "kimchi")
+	// Move Kimchi to the top of the list
+	const kimchiIndex = tools.findIndex((t) => t.id === "kimchi")
+	if (kimchiIndex > 0) {
+		const [kimchi] = tools.splice(kimchiIndex, 1)
+		tools.unshift(kimchi)
+	}
 
-	if (otherTools.length === 0) {
+	if (tools.length === 0) {
 		// Defensive: only reachable if no integration modules were imported,
 		// which means the wizard was wired wrong. Bail with a clear message
 		// rather than a silent empty selection.
@@ -32,20 +36,20 @@ export async function runToolsStep(state: WizardState, opts: { backable: boolean
 		return
 	}
 
-	// Show Kimchi as a locked header — always included, not in the list.
-	if (kimchi) {
-		log.step("Kimchi 🔒  already installed — will be configured")
+	const installed = new Set(tools.filter((t) => t.isInstalled()).map((t) => t.id))
+	const initial = tools.filter((t) => installed.has(t.id)).map((t) => t.id)
+	// Kimchi is always selected
+	if (!initial.includes("kimchi")) {
+		initial.unshift("kimchi")
 	}
 
-	const installed = new Set(otherTools.filter((t) => t.isInstalled()).map((t) => t.id))
-	const initial = otherTools.filter((t) => installed.has(t.id)).map((t) => t.id)
-
 	const r = await multiselect<ToolId>({
-		message: "Which additional tools should be configured?",
-		options: otherTools.map((t) => ({
+		message: "Which tools should be configured?",
+		options: tools.map((t) => ({
 			value: t.id,
-			label: t.name,
-			hint: installed.has(t.id) ? "installed" : "not detected",
+			label: t.id === "kimchi" ? "Kimchi 🔒" : t.name,
+			hint: t.id === "kimchi" ? "required" : installed.has(t.id) ? "installed" : "not detected",
+			disabled: t.id === "kimchi",
 		})),
 		initialValues: initial,
 		required: false,
@@ -60,6 +64,5 @@ export async function runToolsStep(state: WizardState, opts: { backable: boolean
 		state.cancelled = true
 		return
 	}
-	// Kimchi is always selected and cannot be unselected
-	state.selectedTools = ["kimchi", ...r.value]
+	state.selectedTools = r.value
 }
