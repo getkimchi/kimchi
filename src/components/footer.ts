@@ -12,10 +12,21 @@ import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/fe
 import { formatCount } from "../extensions/format.js"
 import { getCurrentPermissionsMode } from "../extensions/permissions/index.js"
 import { ORCHESTRATOR_MODEL_ID, getMultiModelEnabled } from "../extensions/prompt-construction/prompt-enrichment.js"
+import { getSelectionStatus } from "../extensions/selection-status.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
-type SegmentId = "permissions" | "model" | "ferment" | "agents" | "context" | "usage" | "phase" | "tags" | "team"
+type SegmentId =
+	| "permissions"
+	| "model"
+	| "ferment"
+	| "agents"
+	| "context"
+	| "usage"
+	| "phase"
+	| "tags"
+	| "team"
+	| "selection"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -461,6 +472,13 @@ export class StatsFooter implements Component {
 		return this.theme.fg("warning", text)
 	}
 
+	private selectionSegment(): Segment | null {
+		const status = getSelectionStatus()
+		if (!status) return null
+		const text = this.accent(status)
+		return { id: "selection", text, width: visibleWidth(status) }
+	}
+
 	private updateAvailableSegment(): { text: string; width: number } | null {
 		// Info-line segment (rendered above the status line), NOT one of the
 		// status-line `Segment`s above — it has no SegmentId because it never
@@ -481,6 +499,7 @@ export class StatsFooter implements Component {
 			this.permissionsSegment(),
 			this.modelSegment(),
 			this.subagentSegment(),
+			this.selectionSegment(),
 			this.contextSegment(),
 			this.usageSegment(),
 			this.phaseSegment(),

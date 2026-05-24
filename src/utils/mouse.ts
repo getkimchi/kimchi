@@ -1,21 +1,21 @@
 /**
  * SGR mouse-mode helpers for the TUI.
  *
- * Sends the standard xterm SGR mouse sequences so the terminal reports
- * button-press / button-release events.  Only mode 1000 (basic tracking)
- * + 1006 (SGR coordinates) is enabled — **not** mode 1002 (motion).
- * This means click-and-drag still works natively in most terminals if the
- * user holds Shift (iTerm2, kitty, Windows Terminal, etc.).
+ * Enables modes 1000 (basic tracking), 1002 (motion while button held),
+ * and 1006 (SGR coordinates).  When a button is pressed the terminal
+ * reports position on every movement so the harness can implement
+ * drag-to-select text copying.  Native terminal selection via Shift+drag
+ * is no longer available once these modes are active.
  */
 
 // ─── enable / disable ──────────────────────────────────────────────
 
 export function enableMouseMode(): string {
-	return "\x1b[?1000h\x1b[?1006h"
+	return "\x1b[?1000h\x1b[?1002h\x1b[?1006h"
 }
 
 export function disableMouseMode(): string {
-	return "\x1b[?1000l\x1b[?1006l"
+	return "\x1b[?1002l\x1b[?1000l\x1b[?1006l"
 }
 
 // ─── SGR event types ───────────────────────────────────────────────
@@ -112,7 +112,7 @@ export function createClickDetector(): ClickDetectorState {
 }
 
 const CLICK_THRESHOLD_MS = 500
-const CLICK_DISTANCE_THRESHOLD = 0
+const CLICK_DRAG_THRESHOLD = 2
 
 export function onMouseDown(state: ClickDetectorState, event: SgrMouseEvent): ClickDetectorState {
 	return {
@@ -123,6 +123,17 @@ export function onMouseDown(state: ClickDetectorState, event: SgrMouseEvent): Cl
 		lastPressTime: Date.now(),
 		sawMotion: false,
 	}
+}
+
+export function onMouseMotion(state: ClickDetectorState, event: SgrMouseEvent): ClickDetectorState {
+	if (!state.sawMotion) {
+		const dx = Math.abs(event.x - state.lastPressX)
+		const dy = Math.abs(event.y - state.lastPressY)
+		if (dx <= CLICK_DRAG_THRESHOLD && dy <= CLICK_DRAG_THRESHOLD) {
+			return state
+		}
+	}
+	return { ...state, sawMotion: true }
 }
 
 export function onMouseUp(
@@ -137,7 +148,7 @@ export function onMouseUp(
 	// older xterm builds). Treat that as matching a prior left-button press.
 	const sameButton = event.button === state.lastPressButton || (event.button === 3 && state.lastPressButton === 0)
 	const inTime = dt <= CLICK_THRESHOLD_MS
-	const inPlace = Math.abs(dx) <= CLICK_DISTANCE_THRESHOLD && Math.abs(dy) <= CLICK_DISTANCE_THRESHOLD
+	const inPlace = Math.abs(dx) <= CLICK_DRAG_THRESHOLD && Math.abs(dy) <= CLICK_DRAG_THRESHOLD
 	const noMotion = !state.sawMotion
 
 	if (sameButton && inTime && inPlace && noMotion) {

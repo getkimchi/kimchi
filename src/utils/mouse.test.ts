@@ -5,6 +5,7 @@ import {
 	enableMouseMode,
 	isMouseEvent,
 	onMouseDown,
+	onMouseMotion,
 	onMouseUp,
 	parseSgrMouse,
 } from "./mouse.js"
@@ -233,24 +234,62 @@ describe("click detector", () => {
 		const result = onMouseUp(state, release)
 		expect(result.isClick).toBe(false)
 	})
+
+	it("motion with button held marks sawMotion and breaks click detection", () => {
+		let state = createClickDetector()
+		state = onMouseDown(state, {
+			button: 0,
+			x: 5,
+			y: 10,
+			isPress: true,
+			isMotion: false,
+			isScroll: false,
+			shift: false,
+			ctrl: false,
+			meta: false,
+		})
+		state = onMouseMotion(state, {
+			button: 0,
+			x: 10,
+			y: 15,
+			isPress: true,
+			isMotion: true,
+			isScroll: false,
+			shift: false,
+			ctrl: false,
+			meta: false,
+		})
+		const result = onMouseUp(state, {
+			button: 0,
+			x: 5,
+			y: 10,
+			isPress: false,
+			isMotion: false,
+			isScroll: false,
+			shift: false,
+			ctrl: false,
+			meta: false,
+		})
+		expect(result.isClick).toBe(false)
+	})
 })
 
 describe("mouse mode sequences", () => {
 	it("enables mode 1000 + 1006 (basic tracking + SGR), NOT mode 1002 (motion tracking)", () => {
 		const seq = enableMouseMode()
-		// Mode 1000h = basic X11 tracking (press/release only).
+		// Mode 1000h = basic X11 tracking (press/release).
+		// Mode 1002h = button-event tracking (motion while pressed) needed for
+		// drag-to-select text copying.
 		// Mode 1006h = SGR coordinate format.
-		// Mode 1002h = button-event tracking (motion while pressed) — we MUST NOT
-		// enable this because it breaks native terminal selection in most emulators.
 		expect(seq).toContain("\x1b[?1000h")
+		expect(seq).toContain("\x1b[?1002h")
 		expect(seq).toContain("\x1b[?1006h")
-		expect(seq).not.toContain("\x1b[?1002h")
 	})
 
 	it("disables the same modes it enables", () => {
 		const disable = disableMouseMode()
 		expect(disable).toContain("\x1b[?1000l")
+		expect(disable).toContain("\x1b[?1002l")
 		expect(disable).toContain("\x1b[?1006l")
-		expect(disable).not.toContain("\x1b[?1002l")
 	})
 })

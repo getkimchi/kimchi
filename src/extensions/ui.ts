@@ -5,6 +5,7 @@ import { join, resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
+import { copyToClipboard } from "@earendil-works/pi-coding-agent"
 import { Box, Text } from "@earendil-works/pi-tui"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import type { Component, TUI } from "@earendil-works/pi-tui"
@@ -19,9 +20,11 @@ import {
 	enableMouseMode,
 	isMouseEvent,
 	onMouseDown,
+	onMouseMotion,
 	onMouseUp,
 	parseSgrMouse,
 } from "../utils/mouse.js"
+import { extractSelectionText } from "../utils/selection.js"
 import { stripAnsi } from "../utils/strip-ansi.js"
 import { isBareExitAlias } from "./exit-utils.js"
 import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
@@ -34,6 +37,7 @@ import {
 	getMultiModelEnabled,
 	setMultiModelEnabled,
 } from "./prompt-construction/prompt-enrichment.js"
+import { setSelectionStatus } from "./selection-status.js"
 import {
 	isSessionModeOnboardingFooterSuppressed,
 	registerSharedFooterRenderer,
@@ -210,6 +214,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 	let unsubModelCycleInput: (() => void) | null = null
 	let unsubMouseInput: (() => void) | null = null
 	let mouseClickDetector = createClickDetector()
+	let selectionStart: { x: number; y: number } | null = null
+	let selectionEnd: { x: number; y: number } | null = null
+	let copiedTimeout: ReturnType<typeof setTimeout> | null = null
 	let scriptFooter: ScriptFooter | null = null
 	let scriptTui: TUI | null = null
 	let uiTui: TUI | null = null
@@ -584,27 +591,47 @@ export default function uiExtension(pi: ExtensionAPI) {
 				if (!isMouseEvent(data)) return undefined
 				const event = parseSgrMouse(data)
 				if (!event) return { consume: true }
-				// Ignore motion, scroll, or non-left buttons.
-				if (event.isMotion || event.isScroll) return { consume: true }
-				// Only left button press (0) or release (0 or 3). Ignore right
-				// button (2).
+				// Ignore scroll events.
+				if (event.isScroll) return { consume: true }
+				// Track motion while a button is held (mode 1002) for drag-to-select.
+				if (event.isMotion) {
+					// Only track motion events that carry a button (raw 32/33/34).
+					if (event.isPress) {
+						mouseClickDetector = onMouseMotion(mouseClickDetector, event)
+						selectionEnd = { x: event.x, y: event.y }
+						if (selectionStart) {
+							setSelectionStatus(`Selecting (${selectionStart.x},${selectionStart.y}) → (${event.x},${event.y})`)
+							uiTui?.requestRender()
+						}
+					}
+					return { consume: true }
+				}
+				// Only left button press (0) or release (0 or 3).
 				if (event.button !== 0 && event.button !== 3) return { consume: true }
 				if (event.isPress) {
 					mouseClickDetector = onMouseDown(mouseClickDetector, event)
+					selectionStart = { x: event.x, y: event.y }
+					selectionEnd = null
+					if (copiedTimeout) {
+						clearTimeout(copiedTimeout)
+						copiedTimeout = null
+						setSelectionStatus(null)
+					}
 					return { consume: true }
 				}
-				// Release — check whether this is a genuine click (same coords).
+				// Release — check whether this is a click or a drag.
 				const clickResult = onMouseUp(mouseClickDetector, event)
 				if (clickResult.isClick && clickResult.click) {
 					const click = clickResult.click
-					// Route to the PromptEditor. handleMouseClick() itself verifies
-					// that the click is actually inside the editor bounds.
 					const focused = (uiTui as unknown as { focusedComponent?: unknown }).focusedComponent
 					if (currentEditor && focused === currentEditor) {
 						const handled = currentEditor.handleMouseClick(click.x, click.y)
-						if (handled) return { consume: true }
+						if (handled) {
+							setSelectionStatus(null)
+							uiTui?.requestRender()
+							return { consume: true }
+						}
 					}
-					// Also try to route to any Input child of the focused component
 					if (focused && focused !== currentEditor) {
 						const input = findInputChild(focused)
 						if (input && isInputLike(input)) {
@@ -614,19 +641,54 @@ export default function uiExtension(pi: ExtensionAPI) {
 							if (prevLines && prevLines.length > 0) {
 								const handled = tryHandleInputClick(input, click, prevLines, prevViewportTop)
 								if (handled) {
+									setSelectionStatus(null)
 									uiTui?.requestRender()
 									return { consume: true }
 								}
 							}
 						}
 					}
+					setSelectionStatus(null)
+					uiTui?.requestRender()
+					return { consume: true }
 				}
+				if (mouseClickDetector.sawMotion && selectionStart) {
+					// Drag-to-select: extract text and copy to clipboard.
+					const end = selectionEnd ?? { x: event.x, y: event.y }
+					const prevLines: string[] | undefined = (uiTui as unknown as { previousLines?: string[] }).previousLines
+					if (prevLines && prevLines.length > 0) {
+						const text = extractSelectionText(prevLines, selectionStart, end)
+						if (text) {
+							copyToClipboard(text).catch((err: unknown) => {
+								console.error("[mouse] copy failed:", err)
+							})
+							setSelectionStatus(`Copied ${text.length} characters`)
+							uiTui?.requestRender()
+							copiedTimeout = setTimeout(() => {
+								setSelectionStatus(null)
+								uiTui?.requestRender()
+								copiedTimeout = null
+							}, 3000)
+						}
+					}
+					selectionStart = null
+					selectionEnd = null
+					return { consume: true }
+				}
+				selectionStart = null
+				selectionEnd = null
+				setSelectionStatus(null)
+				uiTui?.requestRender()
 				return { consume: true }
 			})
 		}
 	})
 
 	pi.on("session_shutdown", () => {
+		if (copiedTimeout) {
+			clearTimeout(copiedTimeout)
+			copiedTimeout = null
+		}
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
 		currentCtx = null
