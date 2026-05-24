@@ -54,6 +54,7 @@ export async function runToolsStep(state: WizardState, opts: { backable: boolean
 		initialValues: initial,
 		required: false,
 		backable: opts.backable,
+		cursorAt: "claudecode",
 	})
 
 	if (r.kind === "back") {

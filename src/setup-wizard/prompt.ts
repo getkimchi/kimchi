@@ -91,6 +91,7 @@ export async function multiselect<T>(opts: {
 	initialValues?: T[]
 	required?: boolean
 	backable: boolean
+	cursorAt?: T
 }): Promise<Outcome<T[]>> {
 	return awaitWithCancelDetection(opts.backable, () =>
 		clackMultiselect<T>({
@@ -98,6 +99,7 @@ export async function multiselect<T>(opts: {
 			options: opts.options as Parameters<typeof clackMultiselect<T>>[0]["options"],
 			initialValues: opts.initialValues,
 			required: opts.required,
+			cursorAt: opts.cursorAt,
 		}),
 	)
 }
