@@ -242,6 +242,20 @@ describe("findToolGroup", () => {
 		const children: object[] = []
 		expect(findToolGroup(failed, children)).toEqual([])
 	})
+
+	it("operation tool breaks the run and renders on its own", () => {
+		const a = mockTool("a")
+		const op = { toolName: "some_mcp_tool", toolCallId: "op1", args: {}, isPartial: false }
+		const b = mockTool("b")
+		const children = [a, op, b]
+		expect(findToolGroup(a, children)).toEqual([a])
+		expect(findToolGroup(b, children)).toEqual([b])
+	})
+
+	it("operation tool not in children returns []", () => {
+		const op = { toolName: "some_mcp_tool", toolCallId: "op1", args: {}, isPartial: false }
+		expect(findToolGroup(op, [])).toEqual([])
+	})
 })
 
 function mockToolFull(toolName: string, args: Record<string, unknown>, opts: { isPartial?: boolean } = {}): object {

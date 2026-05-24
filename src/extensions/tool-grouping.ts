@@ -113,11 +113,20 @@ function isFailedTool(v: unknown): boolean {
 	return c.result?.isError === true
 }
 
+function isUngroupableTool(v: unknown): boolean {
+	if (!isToolLike(v)) return false
+	return classifyTool(v.toolName, v.args) === "operation"
+}
+
+function breaksRun(child: unknown): boolean {
+	return !isToolLike(child) || isFailedTool(child) || isUngroupableTool(child)
+}
+
 export function findToolGroup(self: object, children: object[]): object[] {
 	const selfIdx = children.indexOf(self)
 
 	if (selfIdx === -1) {
-		return isFailedTool(self) ? [] : [self]
+		return breaksRun(self) ? [] : [self]
 	}
 
 	// Walk backward to find start of run
@@ -125,7 +134,7 @@ export function findToolGroup(self: object, children: object[]): object[] {
 	for (let i = selfIdx - 1; i >= 0; i--) {
 		const child = children[i]
 		if (child instanceof Spacer) continue
-		if (!isToolLike(child) || isFailedTool(child)) break
+		if (breaksRun(child)) break
 		start = i
 	}
 
@@ -134,16 +143,16 @@ export function findToolGroup(self: object, children: object[]): object[] {
 	for (let i = selfIdx + 1; i < children.length; i++) {
 		const child = children[i]
 		if (child instanceof Spacer) continue
-		if (!isToolLike(child) || isFailedTool(child)) break
+		if (breaksRun(child)) break
 		end = i
 	}
 
-	// Collect tools in [start..end], excluding Spacers and failed tools
+	// Collect tools in [start..end], excluding Spacers and run-breakers
 	const tools: object[] = []
 	for (let i = start; i <= end; i++) {
 		const child = children[i]
 		if (child instanceof Spacer) continue
-		if (!isToolLike(child) || isFailedTool(child)) continue
+		if (breaksRun(child)) continue
 		tools.push(child)
 	}
 
