@@ -190,7 +190,8 @@ function stripAnsi(text: string): string {
 }
 
 function isBlankLine(text: string): boolean {
-	return stripAnsi(text).trim().length === 0
+	// Strip ANSI escapes and the ▍ stroke prefix (with its trailing space) before checking.
+	return stripAnsi(text).replace(/▍ ?/g, "").trim().length === 0
 }
 
 function borderLine(width: number): string {
