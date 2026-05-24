@@ -47,6 +47,7 @@ import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import stripImagesExtension from "./extensions/strip-images.js"
 import superpowersExtension from "./extensions/superpowers.js"
+import { ensureSuperpowersInstalled } from "./extensions/superpowers/installer.js"
 import tagsExtension from "./extensions/tags.js"
 import telemetryExtension from "./extensions/telemetry.js"
 import terminalColorsExtension from "./extensions/terminal-colors.js"
@@ -306,6 +307,13 @@ try {
 					writeMigrationState(result.migrationState)
 				}
 			}
+		}
+
+		// Install superpowers skills on first run (best-effort — don't block startup on failure)
+		try {
+			await ensureSuperpowersInstalled()
+		} catch {
+			// Silently ignore — offline or GitHub unreachable; skills will be absent this session
 		}
 
 		// Ensure models.json exists with Cast AI provider configuration

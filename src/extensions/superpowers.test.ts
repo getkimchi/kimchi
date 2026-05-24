@@ -1,9 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 
-vi.mock("./superpowers/installer.js", () => ({
-	ensureSuperpowersInstalled: vi.fn().mockResolvedValue(false),
-}))
 vi.mock("./superpowers/bootstrap.js", () => ({
 	buildSuperpowersBootstrap: vi.fn().mockReturnValue("bootstrap content"),
 }))
@@ -24,12 +21,6 @@ function makeApi(handlers: Record<string, HandlerFn>): ExtensionAPI {
 }
 
 describe("superpowersExtension", () => {
-	it("registers session_start handler", () => {
-		const onSpy = vi.fn()
-		superpowersExtension({ on: onSpy } as unknown as ExtensionAPI)
-		expect(onSpy).toHaveBeenCalledWith("session_start", expect.any(Function))
-	})
-
 	it("registers before_agent_start handler", () => {
 		const onSpy = vi.fn()
 		superpowersExtension({ on: onSpy } as unknown as ExtensionAPI)
