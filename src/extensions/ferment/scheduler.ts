@@ -19,8 +19,24 @@ export interface ScheduleFermentWakeUpOptions {
 	tag?: string
 }
 
-export function buildFermentWakeUpNudge(ferment: Ferment): string {
-	return `CONTINUING ferment "${ferment.name}" (${ferment.id}). Re-read the current persisted ferment state and take the next legal ferment action now. Do not rely on earlier next-action text if current state differs. If the ferment is complete, abandoned, paused, or has no legal next action, explain that briefly instead of calling lifecycle tools.`
+export function buildFermentWakeUpNudge(ferment: Ferment, action: DeclarativeAction): string {
+	const prefix = `CONTINUING ferment "${ferment.name}" (${ferment.id}).`
+	switch (action.kind) {
+		case "activate_phase":
+			return `${prefix} Call activate_ferment_phase with ferment_id "${ferment.id}" and phase_id "${action.phaseId}".`
+		case "refine":
+			return `${prefix} Call refine_ferment_phase with ferment_id "${ferment.id}" and phase_id "${action.phaseId}".`
+		case "start_step":
+			return `${prefix} Call start_ferment_step with ferment_id "${ferment.id}", phase_id "${action.phaseId}", and step_id "${action.stepId}".`
+		case "complete_step":
+			return `${prefix} Call complete_ferment_step with ferment_id "${ferment.id}", phase_id "${action.phaseId}", and step_id "${action.stepId}" when the step work is complete.`
+		case "verify_step":
+			return `${prefix} Call verify_ferment_step with ferment_id "${ferment.id}", phase_id "${action.phaseId}", and step_id "${action.stepId}".`
+		case "complete_phase":
+			return `${prefix} Call complete_ferment_phase with ferment_id "${ferment.id}" and phase_id "${action.phaseId}" when the phase is complete.`
+		default:
+			return `${prefix} ${formatActionNudgeLine(action)}.`
+	}
 }
 
 function freshFerment(runtime: FermentRuntime, fermentId?: string): Ferment | undefined {
@@ -106,7 +122,7 @@ export function scheduleFermentWakeUp(
 	void pi.sendMessage(
 		{
 			customType: "ferment_continuation_nudge",
-			content: [{ type: "text", text: buildFermentWakeUpNudge(ferment) }],
+			content: [{ type: "text", text: buildFermentWakeUpNudge(ferment, decision.action) }],
 			display: false,
 			details: { action: "wake_up", expectedAction: decision.action.kind },
 		},

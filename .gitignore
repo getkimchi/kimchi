@@ -37,4 +37,9 @@ kimchi-session-*.html
 /__mocks__/
 
 *.bun-build
+
+.memory
 bin
+
+# Generated PostHog key — overwritten during release builds
+src/generated/posthog-key.generated.ts

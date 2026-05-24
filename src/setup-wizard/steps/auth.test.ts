@@ -24,6 +24,7 @@ const { runAuthStep } = await import("./auth.js")
 
 describe("runAuthStep", () => {
 	let state: WizardState
+	let savedApiKey: string | undefined
 
 	beforeEach(() => {
 		state = {
@@ -35,6 +36,7 @@ describe("runAuthStep", () => {
 			back: false,
 			cancelled: false,
 		}
+		savedApiKey = process.env.KIMCHI_API_KEY
 		process.env.KIMCHI_API_KEY = ""
 		validateApiKeyMock.mockReset()
 		authenticateViaBrowserMock.mockReset()
@@ -47,6 +49,9 @@ describe("runAuthStep", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks()
+		if (savedApiKey !== undefined) process.env.KIMCHI_API_KEY = savedApiKey
+		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
+		else delete process.env.KIMCHI_API_KEY
 	})
 
 	it("validates and saves a pasted API key", async () => {

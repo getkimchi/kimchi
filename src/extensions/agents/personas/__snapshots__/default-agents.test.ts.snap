@@ -26,7 +26,7 @@ exports[`default agents — resolved invocation config snapshot > General-Purpos
 {
   "builtinToolNames": undefined,
   "maxTurns": undefined,
-  "modelId": "kimchi-dev/kimi-k2.6",
+  "modelId": "kimchi-dev/minimax-m2.7",
   "modelLocked": undefined,
   "name": "General-Purpose",
   "preferTier": undefined,

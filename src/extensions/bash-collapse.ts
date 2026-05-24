@@ -1,12 +1,14 @@
 import { execFile, execFileSync } from "node:child_process"
-import { readFileSync } from "node:fs"
-import { homedir } from "node:os"
-import { join } from "node:path"
-import type { BashSpawnContext, BashToolDetails, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
-import { createBashToolDefinition } from "@earendil-works/pi-coding-agent"
-import { Container, Spacer, Text } from "@earendil-works/pi-tui"
-import { ToolBlockView, buildToolCallHeader, getTextContent } from "../components/tool-block.js"
-import { isToolExpanded, registerToolCall } from "../expand-state.js"
+import { existsSync } from "node:fs"
+import {
+	type BashOperations,
+	type BashSpawnContext,
+	type ExtensionAPI,
+	createLocalBashOperations,
+} from "@earendil-works/pi-coding-agent"
+import { applyEnabledBashHooks } from "../resources/bash-hooks.js"
+import { globalRtkLinkPath, managedRtkPath } from "../resources/rtk-install.js"
+import { isResourceEnabled } from "../resources/store.js"
 
 export function collapseCommand(command: string | undefined): string {
 	return (command ?? "").replace(/\n+/g, " ⏎ ")
@@ -19,14 +21,10 @@ export function collapseCommand(command: string | undefined): string {
 // `rtk rewrite <cmd>` before execution.  This reduces LLM token consumption
 // by 60-90% on common dev commands (git, cargo, npm, etc.).
 //
-// Disable via:
-//   - KIMCHI_RTK=0 environment variable, or
-//   - "rtk": false  in ~/.config/kimchi/harness/settings.json (/settings)
+// Disable via hooks.rtk-rewrite in /resources.
 //
 // See https://github.com/rtk-ai/rtk
 // ---------------------------------------------------------------------------
-
-const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
 
 /** Tri-state: undefined = not yet probed, true/false = cached result. */
 let rtkAvailable: boolean | undefined
@@ -34,24 +32,15 @@ let rtkAvailable: boolean | undefined
 /** Cached in-flight detection promise to avoid concurrent spawns. */
 let rtkDetectPromise: Promise<boolean> | undefined
 
-function isRtkDisabledByEnv(): boolean {
-	const v = process.env.KIMCHI_RTK
-	return v === "0" || v === "false" || v === "off"
-}
-
-function isRtkDisabledBySettings(): boolean {
-	try {
-		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
-		const parsed = JSON.parse(raw)
-		if ("rtk" in parsed) return parsed.rtk === false
-	} catch {
-		// settings.json absent or unreadable — not disabled
-	}
-	return false
-}
-
 function isRtkDisabled(): boolean {
-	return isRtkDisabledByEnv() || isRtkDisabledBySettings()
+	return !isResourceEnabled("hooks.rtk-rewrite")
+}
+
+function rtkBinary(): string {
+	const global = globalRtkLinkPath()
+	if (existsSync(global)) return global
+	const managed = managedRtkPath()
+	return existsSync(managed) ? managed : "rtk"
 }
 
 /**
@@ -69,7 +58,7 @@ export function detectRtk(): Promise<boolean> {
 	}
 	if (rtkDetectPromise) return rtkDetectPromise
 	rtkDetectPromise = new Promise<boolean>((resolve) => {
-		execFile("rtk", ["--version"], { timeout: 1000 }, (err) => {
+		execFile(rtkBinary(), ["--version"], { timeout: 1000 }, (err) => {
 			rtkAvailable = !err
 			rtkDetectPromise = undefined
 			resolve(rtkAvailable)
@@ -83,16 +72,16 @@ export function detectRtk(): Promise<boolean> {
  * Used as a pi-mono BashSpawnHook (which must be synchronous).
  *
  * Returns the original command unchanged when:
- *   - rtk is not available or disabled via KIMCHI_RTK / settings.json
+ *   - rtk is not available or hooks.rtk-rewrite is disabled
  *   - rtk returns empty output or the same string
  *   - the subprocess times out or fails to spawn
  */
 export function rewriteWithRtk(command: string): string {
 	if (isRtkDisabled()) return command
-	if (rtkAvailable === false) return command
+	if (rtkAvailable === false && rtkBinary() === "rtk") return command
 
 	try {
-		const stdout = execFileSync("rtk", ["rewrite", command], { timeout: 2000, encoding: "utf-8" })
+		const stdout = execFileSync(rtkBinary(), ["rewrite", command], { timeout: 2000, encoding: "utf-8" })
 		const rewritten = stdout.trim()
 		return rewritten && rewritten !== command ? rewritten : command
 	} catch (err) {
@@ -114,6 +103,11 @@ export function rewriteWithRtk(command: string): string {
 /** Cache of rewrite results so renderCall never spawns a subprocess. */
 const rewriteCache = new Map<string, string>()
 
+export function getBashCommandForDisplay(command: string | undefined): string | undefined {
+	if (!command) return command
+	return rewriteCache.get(command) ?? command
+}
+
 /**
  * BashSpawnHook for pi-mono's createBashToolDefinition.
  * Rewrites the command through `rtk rewrite` before the shell spawns.
@@ -133,66 +127,51 @@ export function _resetRtkState(): void {
 }
 
 export default function (pi: ExtensionAPI) {
-	const baseDef = createBashToolDefinition(process.cwd(), { spawnHook: rtkSpawnHook })
-
 	// Eagerly probe for rtk at extension load time (non-blocking).
 	detectRtk()
 
-	const def: ToolDefinition<typeof baseDef.parameters, BashToolDetails | undefined> = {
-		...baseDef,
+	pi.on("tool_call", (event) => {
+		if (event.toolName !== "bash") return
+		const command = event.input.command
+		if (typeof command !== "string") return
+		const rewritten = rewriteWithRtk(command)
+		const cwd =
+			typeof (event.input as { cwd?: unknown }).cwd === "string" ? (event.input as { cwd: string }).cwd : process.cwd()
+		const hooked = applyEnabledBashHooks(rewritten, cwd)
+		if (hooked.block) return { block: true, reason: hooked.reason }
+		rewriteCache.set(command, hooked.command)
+		if (rewritten !== hooked.command) rewriteCache.set(rewritten, hooked.command)
+		event.input.command = hooked.command
+	})
 
-		execute(toolCallId, params, signal, onUpdate, ctx) {
-			return createBashToolDefinition(ctx.cwd, { spawnHook: rtkSpawnHook }).execute(
-				toolCallId,
-				params,
-				signal,
-				onUpdate,
-				ctx,
-			)
-		},
-
-		renderCall(args, theme, ctx) {
-			const view = ctx.lastComponent instanceof ToolBlockView ? ctx.lastComponent : new ToolBlockView()
-			// Use the cached rewrite result if available (populated by rtkSpawnHook
-			// during execute).  This avoids spawning a subprocess on the render path.
-			// Falls back to the original command when no cached result exists yet.
-			const command = collapseCommand(rewriteCache.get(args.command ?? "") ?? args.command ?? "")
-			buildToolCallHeader(view, "bash", command, theme, ctx)
-			return view
-		},
-
-		renderResult(result, options, theme, context) {
-			if (options.isPartial) {
-				const displayText = getTextContent(result).split("\n").slice(-5).join("\n")
-
-				const component = context.lastComponent instanceof Container ? context.lastComponent : new Container()
-				component.clear()
-				component.addChild(new Spacer(1))
-				component.addChild(new Text(theme.fg("toolOutput", displayText), 0, 0))
-				component.invalidate()
-				return component
+	pi.on("user_bash", (event) => {
+		const hooked = applyEnabledBashHooks(event.command, event.cwd)
+		if (hooked.block) {
+			return {
+				result: {
+					output: hooked.reason ?? "Bash hook blocked command",
+					exitCode: 2,
+					cancelled: false,
+					truncated: false,
+				},
 			}
+		}
+		if (hooked.command === event.command) return
+		rewriteCache.set(event.command, hooked.command)
+		return { operations: rewrittenCommandOperations(event.command, hooked.command) }
+	})
+}
 
-			registerToolCall(context.toolCallId)
-
-			if (isToolExpanded(context.toolCallId)) {
-				return baseDef.renderResult?.(result, options, theme, context) ?? new Text("", 0, 0)
-			}
-
-			const view = context.lastComponent instanceof ToolBlockView ? context.lastComponent : new ToolBlockView()
-			const trimmed = getTextContent(result).replace(/\n$/, "")
-			const lineCount = trimmed ? trimmed.split("\n").length : 0
-
-			view.setHeader("", "")
-			view.setBranchMode((s: string) => theme.fg("borderMuted", s))
-			view.setFooter(
-				theme.fg("dim", `${lineCount} line${lineCount === 1 ? "" : "s"} of output`),
-				theme.fg("dim", "ctrl+o"),
-			)
-			view.setExtra([])
-			return view
-		},
+function rewrittenCommandOperations(original: string, rewritten: string): BashOperations {
+	const local = createLocalBashOperations()
+	return {
+		exec: (command, cwd, options) => local.exec(rewritePreparedBashCommand(command, original, rewritten), cwd, options),
 	}
+}
 
-	pi.registerTool(def)
+export function rewritePreparedBashCommand(prepared: string, original: string, rewritten: string): string {
+	if (prepared === original) return rewritten
+	const suffix = `\n${original}`
+	if (prepared.endsWith(suffix)) return `${prepared.slice(0, -original.length)}${rewritten}`
+	return rewritten
 }

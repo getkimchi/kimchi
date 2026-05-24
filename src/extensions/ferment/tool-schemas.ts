@@ -6,6 +6,7 @@
  */
 
 import { Type } from "typebox"
+import { SCOPING_QUESTION_TYPES } from "../../ferment/types.js"
 
 /** Structured quality-gate verdict the agent must produce on every completion
  *  tool call. The set of valid `id`s, and which set is required for which
@@ -116,16 +117,25 @@ export const ScopingQuestionOptionSchema = Type.Object({
 
 export const ScopingQuestionSchema = Type.Object({
 	id: Type.String({ description: "Stable identifier for this question." }),
+	type: Type.Optional(
+		Type.Union(
+			SCOPING_QUESTION_TYPES.map((questionType) => Type.Literal(questionType)),
+			{
+				description:
+					"Question style. radio = one choice, checkbox = multiple choices, text = enter-your-own answer only. Omit for radio.",
+			},
+		),
+	),
 	text: Type.String({
 		description:
 			"The decision-blocking question shown to the user. Do not ask preference-survey questions when a safe default can be assumed; a user request to be thorough with questions does not make default choices decision-blocking.",
 	}),
-	options: Type.Array(ScopingQuestionOptionSchema, {
-		minItems: 2,
-		maxItems: 5,
-		description:
-			"2–5 concrete options for one decision-blocking single-select question. Vary question framing across outcome boundary, risk/tradeoff, integration/deployment target, verification standard, and non-goal/scope-cut decisions. Avoid feature-shopping options; scope extras out unless requested.",
-	}),
+	options: Type.Optional(
+		Type.Array(ScopingQuestionOptionSchema, {
+			description:
+				"2–5 concrete options for radio/checkbox questions. Omit for text questions. Vary question framing across outcome boundary, risk/tradeoff, integration/deployment target, verification standard, and non-goal/scope-cut decisions. Avoid feature-shopping options; scope extras out unless requested.",
+		}),
+	),
 })
 
 export const ProposeScopingParams = Type.Object({
@@ -161,7 +171,7 @@ export const ProposeScopingParams = Type.Object({
 			minItems: 1,
 			maxItems: 7,
 			description:
-				"1–7 ordered phase OBJECTS that will become the project plan. Default to ONE phase for simple tasks and put setup, implementation, persistence, filtering, polish, and verification in that phase's steps. Add another phase only for a real vertical slice/tracer bullet, materially different complexity/risk tier, independent parallel workstream, or distinct code locality that should be planned/executed separately. Do not create phases just for setup, directory creation, CRUD vs polish, or to make the plan look organized. Emit as a real JSON array, not a quoted string, markdown block, or prose.",
+				"1–7 ordered phase OBJECTS that will become the project plan. Default to ONE phase for simple tasks and put setup, implementation, persistence, filtering, polish, and verification in that phase's steps. Add another phase only for a real vertical slice/tracer bullet, materially different complexity/risk tier, independent parallel workstream, or distinct code locality that should be planned/executed separately. Do not create phases just for setup, directory creation, CRUD vs polish, asking/reading scoping answers, deciding scope, writing the plan, creating a design note, or to make the plan look organized. If questions is non-empty, keep phases answer-agnostic and provisional; do not bake in target-specific mechanics or verification commands that depend on unanswered choices. Emit as a real JSON array, not a quoted string, markdown block, or prose.",
 		}),
 		Type.String({
 			description:
@@ -171,9 +181,8 @@ export const ProposeScopingParams = Type.Object({
 	questions: Type.Optional(
 		Type.Union([
 			Type.Array(ScopingQuestionSchema, {
-				maxItems: 3,
 				description:
-					"Emit ONLY for decision-blocking uncertainty where the answer materially changes architecture, dependencies, data model, user-facing scope, security posture, deployment/runtime assumptions, or verification strategy. At most 3. Do not ask about defaults you can safely choose. If the user asks to be thorough with questions, be thorough in assumptions, success criteria, constraints, and verification steps; do not add default-choice questions unless implementation is blocked. Do not ask preference-survey or feature-shopping questions like tech stack, platform, persistence, or extra features for a simple greenfield app; record safe defaults in assumptions instead. If all recommended answers are generic defaults, emit questions: []. Must be a real JSON array of question objects, never a quoted string. Each question needs 2-5 options in the display order you want; the host preserves that order and appends Custom answer last. Mark at most ONE option per question with `recommended: true`. No reason text. On replans after user answers, ask only NEW decision-blocking questions; never repeat answered questions.",
+					"Emit ONLY for decision-blocking uncertainty where the answer materially changes architecture, dependencies, data model, user-facing scope, security posture, deployment/runtime assumptions, or verification strategy. Hard limits: at most 3 questions; radio/checkbox questions need 2-5 options. Do not ask about defaults you can safely choose. If the user asks to be thorough with questions, be thorough in assumptions, success criteria, constraints, and verification steps; do not add default-choice questions unless implementation is blocked. Do not ask preference-survey or feature-shopping questions like tech stack, platform, persistence, or extra features for a simple greenfield app; record safe defaults in assumptions instead. If all recommended answers are generic defaults, emit questions: []. Must be a real JSON array of question objects, never a quoted string. Use type radio for one choice or yes/no, checkbox for multi-select, and text for enter-your-own only. Put options in display order; text questions omit options. The host appends Custom answer to radio/checkbox. Mark at most ONE option per question with `recommended: true`. No reason text. On replans after user answers, ask only NEW decision-blocking questions; never repeat answered questions.",
 			}),
 			Type.String({
 				description:
@@ -328,9 +337,12 @@ const AskUserOptionSchema = Type.Object({
 
 const AskUserQuestionSchema = Type.Object({
 	id: Type.String({ description: "Stable identifier for this question. Returned with the answer." }),
-	type: Type.Union([Type.Literal("radio"), Type.Literal("checkbox"), Type.Literal("text")], {
-		description: "radio = single-select, checkbox = multi-select, text = free-form input.",
-	}),
+	type: Type.Union(
+		SCOPING_QUESTION_TYPES.map((questionType) => Type.Literal(questionType)),
+		{
+			description: "radio = single-select, checkbox = multi-select, text = free-form input.",
+		},
+	),
 	prompt: Type.String({ description: "The full question text shown to the user or judge." }),
 	label: Type.Optional(Type.String({ description: "Short label shown in the TUI tab bar. Defaults to Q1, Q2, etc." })),
 	options: Type.Optional(

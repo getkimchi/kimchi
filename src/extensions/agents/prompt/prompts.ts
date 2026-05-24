@@ -2,6 +2,7 @@
  * prompts.ts — System prompt builder for agents.
  */
 
+import type { ContextFile } from "../../prompt-construction/context-files.js"
 import type { AgentConfig, EnvInfo } from "../personas/types.js"
 
 /** Budget limits communicated to the agent so it can plan its work. */
@@ -20,6 +21,8 @@ export interface PromptExtras {
 	guidelinesBlock?: string
 	/** Turn and token budget limits for agent self-regulation. */
 	budget?: BudgetInfo
+	/** Project context files (AGENTS.md, CLAUDE.md) to inject. */
+	contextFiles?: ContextFile[]
 }
 
 /**
@@ -56,6 +59,8 @@ Platform: ${env.platform}`
 			extraSections.push(`\n# Preloaded Skill: ${skill.name}\n${skill.content}`)
 		}
 	}
+	const contextBlock = buildContextBlock(extras?.contextFiles)
+	if (contextBlock) extraSections.push(contextBlock)
 	const extrasSuffix = extraSections.length > 0 ? `\n\n${extraSections.join("\n")}` : ""
 
 	if (config.promptMode === "append") {
@@ -107,6 +112,17 @@ You are operating under the following resource budget. Plan your work accordingl
 ${lines.join("\n")}
 If you cannot complete the task within your budget, finish whatever is in progress cleanly and summarize remaining work for the orchestrator.
 </budget>`
+}
+
+/** Shift headings down one level (e.g. # becomes ##, ##### becomes ######) to avoid conflict with prompt headings. */
+function shiftHeadings(text: string): string {
+	return text.replace(/^(#{1,6}) /gm, (_, hashes: string) => `${"#".repeat(Math.min(hashes.length + 1, 6))} `)
+}
+
+function buildContextBlock(contextFiles?: ContextFile[]): string | undefined {
+	if (!contextFiles || contextFiles.length === 0) return undefined
+	const combined = contextFiles.map((f) => shiftHeadings(f.content)).join("\n\n")
+	return `## Project Guidelines\n\n${combined}`
 }
 
 /** Fallback base prompt when parent system prompt is unavailable in append mode. */

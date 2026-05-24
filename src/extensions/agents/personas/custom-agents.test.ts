@@ -3,14 +3,21 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+const FAKE_AGENT_DIR = join(tmpdir(), `kimchi-global-custom-agents-${Date.now()}`)
+
+const mockGetAgentDir = vi.hoisted(() => vi.fn())
+
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+	const actual = (await importOriginal()) as Record<string, unknown>
+	return { ...actual, getAgentDir: mockGetAgentDir }
+})
+
 vi.mock("../package-resources.js", () => ({
 	getInstalledPackageResourceDirs: vi.fn(() => []),
 }))
 
 import { getInstalledPackageResourceDirs } from "../package-resources.js"
 import { loadCustomAgents } from "./custom-agents.js"
-
-const FAKE_AGENT_DIR = join(tmpdir(), `kimchi-global-custom-agents-${Date.now()}`)
 
 function writeAgentMd(dir: string, name: string, frontmatter: string, body = "System prompt."): void {
 	mkdirSync(dir, { recursive: true })
@@ -22,15 +29,10 @@ describe("AgentConfig.tokenBudget parsing", () => {
 	let projectAgentsDir: string
 
 	beforeEach(() => {
-		process.env.PI_CODING_AGENT_DIR = FAKE_AGENT_DIR
+		mockGetAgentDir.mockReturnValue(FAKE_AGENT_DIR)
 		mkdirSync(FAKE_AGENT_DIR, { recursive: true })
 		projectDir = join(tmpdir(), `kimchi-project-token-budget-${Date.now()}`)
 		projectAgentsDir = join(projectDir, ".kimchi", "agents")
-	})
-
-	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
-		delete process.env.PI_CODING_AGENT_DIR
 	})
 
 	it("parses token_budget: 50000 into tokenBudget === 50000", () => {
@@ -99,7 +101,7 @@ describe("custom agents — user override hierarchy preserves new fields", () =>
 
 		globalAgentsDir = join(tmpRoot, "global", "agents")
 		mkdirSync(globalAgentsDir, { recursive: true })
-		process.env.PI_CODING_AGENT_DIR = join(tmpRoot, "global")
+		mockGetAgentDir.mockReturnValue(join(tmpRoot, "global"))
 
 		projectDir = join(tmpRoot, "project")
 		projectAgentsDir = join(projectDir, ".kimchi", "agents")
@@ -109,8 +111,6 @@ describe("custom agents — user override hierarchy preserves new fields", () =>
 	})
 
 	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
-		delete process.env.PI_CODING_AGENT_DIR
 		rmSync(tmpRoot, { recursive: true, force: true })
 		vi.mocked(getInstalledPackageResourceDirs).mockReturnValue([])
 	})

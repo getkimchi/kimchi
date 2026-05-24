@@ -1,16 +1,14 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { type Component, Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
-import { renderTipText } from "../tips/tip-row.js"
 
 export type SessionModePickerChoice = "ferment" | "default"
-export type SessionModePickerResult = { choice: SessionModePickerChoice; hideDialog: boolean } | "cancelled"
+export type SessionModePickerResult = SessionModePickerChoice | "cancelled"
 export type SessionModePickerEvent = "up" | "down" | "select" | "cancel"
 
 export interface SessionModePickerOption {
 	value: SessionModePickerChoice
 	label: string
 	description?: string
-	hideDialog?: boolean
 }
 
 export interface SessionModePickerState {
@@ -22,25 +20,16 @@ export interface SessionModePickerReduceResult {
 	result?: SessionModePickerResult
 }
 
-export const SESSION_MODE_PICKER_HEADING = "Choose your workflow"
-export const SESSION_MODE_PICKER_HINT = "Use `/ferment` anytime to start a Ferment workflow."
-
 export const SESSION_MODE_PICKER_OPTIONS: SessionModePickerOption[] = [
 	{
 		value: "ferment",
-		label: "Ferment",
+		label: "Try a /ferment workflow",
 		description:
-			"Start a new ferment workflow. Agent plans and executes multi-step tasks end-to-end. You review the result.",
+			"The agent breaks the task into phases, self-evaluates its output and delivers with minimal interruptions.",
 	},
 	{
 		value: "default",
-		label: "Coding session",
-		description: "Chat with the agent and steer it as it goes. Stay in the loop.",
-	},
-	{
-		value: "default",
-		label: "Coding session, don't show this dialog again",
-		hideDialog: true,
+		label: "Just chat and code",
 	},
 ]
 
@@ -55,10 +44,7 @@ export function reduceSessionModePicker(
 	if (event === "cancel") return { state, result: "cancelled" }
 	if (event === "select") {
 		const option = SESSION_MODE_PICKER_OPTIONS[state.selectedIndex]
-		return {
-			state,
-			result: { choice: option.value, hideDialog: option.hideDialog === true },
-		}
+		return { state, result: option.value }
 	}
 	if (event === "up") {
 		return { state: { ...state, selectedIndex: Math.max(0, state.selectedIndex - 1) } }
@@ -86,8 +72,6 @@ export function renderSessionModePickerLines(state: SessionModePickerState, them
 	const indent = "  "
 
 	add("")
-	add(`${indent}${theme.bold(theme.fg("accent", SESSION_MODE_PICKER_HEADING))}`)
-	add("")
 
 	for (let i = 0; i < SESSION_MODE_PICKER_OPTIONS.length; i += 1) {
 		const option = SESSION_MODE_PICKER_OPTIONS[i]
@@ -105,21 +89,27 @@ export function renderSessionModePickerLines(state: SessionModePickerState, them
 	}
 
 	add("")
-	for (const line of renderTipText(SESSION_MODE_PICKER_HINT, theme, innerWidth)) {
-		add(`${indent}${line}`)
-	}
-	add("")
 	return lines
 }
 
+export interface SessionModePickerComponentOptions {
+	initialState?: SessionModePickerState
+	onStateChange?: (state: SessionModePickerState) => void
+}
+
 export class SessionModePickerComponent implements Component {
-	private state = initialSessionModePickerState()
+	private state: SessionModePickerState
+	private readonly onStateChange?: (state: SessionModePickerState) => void
 
 	constructor(
 		private readonly theme: Theme,
 		private readonly onDone: (result: SessionModePickerResult) => void,
 		private readonly requestRender: () => void,
-	) {}
+		options: SessionModePickerComponentOptions = {},
+	) {
+		this.state = options.initialState ?? initialSessionModePickerState()
+		this.onStateChange = options.onStateChange
+	}
 
 	getState(): SessionModePickerState {
 		return this.state
@@ -136,6 +126,7 @@ export class SessionModePickerComponent implements Component {
 		if (!event) return
 		const next = reduceSessionModePicker(this.state, event)
 		this.state = next.state
+		this.onStateChange?.(this.state)
 		if (next.result) {
 			this.onDone(next.result)
 			return

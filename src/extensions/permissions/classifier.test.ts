@@ -6,6 +6,7 @@ describe("parseClassifierOutput", () => {
 		const r = parseClassifierOutput(`{ "verdict": "safe", "reason": "project build" }`)
 		expect(r.verdict).toBe("safe")
 		expect(r.reason).toBe("project build")
+		expect(r.ok).toBe(true)
 	})
 
 	it("parses requires-confirmation", () => {
@@ -27,11 +28,13 @@ describe("parseClassifierOutput", () => {
 		const r = parseClassifierOutput("not json at all")
 		expect(r.verdict).toBe("requires-confirmation")
 		expect(r.reason).toContain("unparseable")
+		expect(r.ok).toBe(false)
 	})
 
 	it("falls back on unknown verdict", () => {
 		const r = parseClassifierOutput(`{"verdict":"maybe","reason":"x"}`)
 		expect(r.verdict).toBe("requires-confirmation")
+		expect(r.ok).toBe(false)
 	})
 
 	it("defaults reason when missing", () => {

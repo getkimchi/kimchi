@@ -1,6 +1,7 @@
 import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
-import { Input, Key, type TUI, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
+import { Input, Key, type TUI, matchesKey, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import type { Component } from "@earendil-works/pi-tui"
+import type { ScopingQuestionType } from "../../ferment/types.js"
 import {
 	type Answer,
 	type Question,
@@ -19,8 +20,14 @@ import { setTipWidgetLocation } from "../tips/index.js"
 export type PromptUi = {
 	select?: (title: string, options: string[]) => Promise<string | undefined>
 	input?: (title: string, placeholder?: string) => Promise<string | undefined>
+	editor?: (title: string, prefill?: string) => Promise<string | undefined>
 	custom?: ExtensionUIContext["custom"]
 	setWorkingVisible?: (visible: boolean) => void
+}
+
+export interface PromptEditorOptions {
+	placeholder?: string
+	prefill?: string
 }
 
 export interface PromptChoiceOption {
@@ -28,7 +35,7 @@ export interface PromptChoiceOption {
 	description?: string
 }
 
-export type PromptFormQuestionType = "radio" | "checkbox" | "text"
+export type PromptFormQuestionType = ScopingQuestionType
 
 export interface PromptFormOption {
 	id: string
@@ -90,6 +97,26 @@ export function promptInput(ctx: unknown, title: string, placeholder?: string): 
 	const ui = getPromptUi(ctx)
 	if (!ui?.input) return Promise.resolve(undefined)
 	return withWorkingHidden(ui, () => ui.input?.(title, placeholder) ?? Promise.resolve(undefined))
+}
+
+export function promptEditor(
+	ctx: unknown,
+	title: string,
+	options: PromptEditorOptions = {},
+): Promise<string | undefined> {
+	const ui = getPromptUi(ctx)
+	if (!ui) return Promise.resolve(undefined)
+	if (ui.editor) {
+		const editorTitle = options.placeholder ? `${title}\n${options.placeholder}` : title
+		return withWorkingHidden(ui, () => ui.editor?.(editorTitle, options.prefill ?? "") ?? Promise.resolve(undefined))
+	}
+	if (ui.input) {
+		return withWorkingHidden(
+			ui,
+			() => ui.input?.(title, options.prefill ?? options.placeholder) ?? Promise.resolve(undefined),
+		)
+	}
+	return Promise.resolve(undefined)
 }
 
 export async function promptForm(ctx: unknown, spec: PromptFormSpec): Promise<PromptFormResult | undefined> {
@@ -244,7 +271,7 @@ async function promptMultiChoiceWithUi(
 	return labels.length > 0 ? labels : undefined
 }
 
-function createPromptFormComponent(
+export function createPromptFormComponent(
 	tui: TUI,
 	theme: Theme,
 	questions: Question[],
@@ -254,6 +281,7 @@ function createPromptFormComponent(
 ): Component {
 	let state: QuestionnaireState = initialState(questions)
 	let cachedLines: string[] | undefined
+	let cachedWidth = 0
 	const isMulti = questions.length > 1
 	const editor = new Input()
 	editor.focused = true
@@ -332,19 +360,23 @@ function createPromptFormComponent(
 	}
 
 	function render(width: number): string[] {
-		if (cachedLines) return cachedLines
+		if (cachedLines && cachedWidth === width) return cachedLines
 
 		const lines: string[] = []
 		const q = currentQuestion(state)
 		const opts = currentOptions(state)
-		const add = (s: string) => lines.push(truncateToWidth(s, width))
+		const add = (s: string) => {
+			for (const line of wrapTextWithAnsi(s, width)) {
+				lines.push(line)
+			}
+		}
 		const questionTitle = q ? `${isMulti ? `[${q.label}/${questions.length}] ` : ""}${q.prompt}` : ""
 		add(theme.fg("accent", "─".repeat(width)))
 
 		if (title || description) {
 			if (title) add(` ${theme.fg("text", theme.bold(title))}`)
 			if (description) {
-				for (const line of wrapWords(description, width - 2)) add(` ${theme.fg("muted", line)}`)
+				for (const line of wrapTextWithAnsi(description, Math.max(1, width - 2))) add(` ${theme.fg("muted", line)}`)
 			}
 			lines.push("")
 		}
@@ -402,7 +434,7 @@ function createPromptFormComponent(
 					}
 				}
 				if (opt.description) {
-					for (const descLine of wrapWords(opt.description, Math.max(12, width - 8))) {
+					for (const descLine of wrapTextWithAnsi(opt.description, Math.max(1, width - 8))) {
 						add(`     ${theme.fg("muted", descLine)}`)
 					}
 				}
@@ -479,6 +511,7 @@ function createPromptFormComponent(
 		add(theme.fg("accent", "─".repeat(width)))
 
 		cachedLines = lines
+		cachedWidth = width
 		return lines
 	}
 
@@ -486,39 +519,11 @@ function createPromptFormComponent(
 		render,
 		invalidate: () => {
 			cachedLines = undefined
+			cachedWidth = 0
 		},
 		handleInput,
 		editor,
 	} as Component & { editor: Input }
-}
-
-function wrapWords(text: string, width: number): string[] {
-	const limit = Math.max(8, width)
-	const words = text.trim().split(/\s+/).filter(Boolean)
-	if (words.length === 0) return [""]
-
-	const lines: string[] = []
-	let current = ""
-	for (const word of words) {
-		if (word.length > limit) {
-			if (current) {
-				lines.push(current)
-				current = ""
-			}
-			for (let i = 0; i < word.length; i += limit) lines.push(word.slice(i, i + limit))
-			continue
-		}
-		if (!current) {
-			current = word
-		} else if (current.length + 1 + word.length <= limit) {
-			current += ` ${word}`
-		} else {
-			lines.push(current)
-			current = word
-		}
-	}
-	if (current) lines.push(current)
-	return lines
 }
 
 function parseMultiChoiceInput(input: string, options: ReadonlyArray<PromptChoiceOption>): string[] {

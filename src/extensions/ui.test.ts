@@ -1,3 +1,4 @@
+import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { describe, expect, it } from "vitest"
 import { isBareExitAlias } from "./exit-utils.js"
 import { findNextCompatibleModel } from "./ui.js"
@@ -40,6 +41,23 @@ describe("isBareExitAlias", () => {
 		expect(isBareExitAlias("exit now")).toBe(false)
 		expect(isBareExitAlias("please exit")).toBe(false)
 		expect(isBareExitAlias("quit")).toBe(false)
+	})
+})
+
+describe("Ctrl+C abort key matching", () => {
+	it("matchesKey recognizes Ctrl+C raw byte (\\x03)", () => {
+		expect(matchesKey("\x03", Key.ctrl("c"))).toBe(true)
+	})
+
+	it("does not match other keys as Ctrl+C", () => {
+		expect(matchesKey("\x1b", Key.ctrl("c"))).toBe(false) // Escape
+		expect(matchesKey("\r", Key.ctrl("c"))).toBe(false) // Enter
+		expect(matchesKey("c", Key.ctrl("c"))).toBe(false) // plain c
+	})
+
+	it("matchesKey recognizes Escape separately from Ctrl+C", () => {
+		expect(matchesKey("\x1b", Key.escape)).toBe(true)
+		expect(matchesKey("\x03", Key.escape)).toBe(false)
 	})
 })
 

@@ -26,7 +26,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import type { Ferment } from "../../ferment/types.js"
+import type { Ferment, ScopingQuestionType } from "../../ferment/types.js"
 import { type JudgeApiResult, judgeApiCall } from "./judge.js"
 import { promptForm } from "./prompt-ui.js"
 import type { FermentRuntime } from "./runtime.js"
@@ -44,7 +44,7 @@ export interface AskUserOption {
 
 export type AskUserAnsweredBy = "user" | "judge"
 export type AskUserResponseType = "single" | "multi" | "text"
-export type AskUserQuestionType = "radio" | "checkbox" | "text"
+export type AskUserQuestionType = ScopingQuestionType
 
 export interface AskUserQuestion {
 	id: string

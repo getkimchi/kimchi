@@ -1,11 +1,17 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { loadCustomAgents } from "./custom-agents.js"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 // Point getAgentDir() to a temp dir so global agents don't pollute project-only tests
 const FAKE_AGENT_DIR = join(tmpdir(), `kimchi-global-${Date.now()}`)
+
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+	const actual = (await importOriginal()) as Record<string, unknown>
+	return { ...actual, getAgentDir: () => FAKE_AGENT_DIR }
+})
+
+import { loadCustomAgents } from "./custom-agents.js"
 
 function writeAgentMd(dir: string, name: string, description: string): void {
 	mkdirSync(dir, { recursive: true })
@@ -14,13 +20,7 @@ function writeAgentMd(dir: string, name: string, description: string): void {
 
 describe("discovery-priority: project agents override global", () => {
 	beforeEach(() => {
-		process.env.PI_CODING_AGENT_DIR = FAKE_AGENT_DIR
 		mkdirSync(FAKE_AGENT_DIR, { recursive: true })
-	})
-
-	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
-		delete process.env.PI_CODING_AGENT_DIR
 	})
 
 	it("project .kimchi/agents/ overrides global agent with same name", () => {

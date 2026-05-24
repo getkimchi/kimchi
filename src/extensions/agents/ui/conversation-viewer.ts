@@ -28,7 +28,6 @@ import {
 	formatDuration,
 	formatSessionTokens,
 	getDisplayName,
-	getPromptModeLabel,
 } from "./agent-widget.js"
 
 const CHROME_LINES = 6
@@ -107,8 +106,6 @@ export class ConversationViewer implements Component {
 
 		lines.push(hrTop)
 		const name = getDisplayName(this.record.type)
-		const modeLabel = getPromptModeLabel(this.record.type)
-		const modeTag = modeLabel ? ` ${th.fg("dim", `(${modeLabel})`)}` : ""
 		const statusIcon =
 			this.record.status === "running"
 				? th.fg("accent", "●")
@@ -130,7 +127,7 @@ export class ConversationViewer implements Component {
 
 		lines.push(
 			row(
-				`${statusIcon} ${th.bold(name)}${modeTag}  ${th.fg("muted", this.record.description)} ${th.fg("dim", "·")} ${th.fg("dim", headerParts.join(" · "))}`,
+				`${statusIcon} ${th.bold(name)}  ${th.fg("muted", this.record.description)} ${th.fg("dim", "·")} ${th.fg("dim", headerParts.join(" · "))}`,
 			),
 		)
 		lines.push(hrMid)

@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import createModelGuardExtension from "./model-guard.js"
-import { __resetImagesDetectedForTest, sessionHasImages } from "./model-guard.js"
+import { __resetImagesDetectedForTest, __setLatestMessagesForTest, sessionHasImages } from "./model-guard.js"
 import modelSwitchExtension, { __resetModelSwitchStateForTest, getModelTier } from "./model-switch.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
 
@@ -426,6 +426,51 @@ describe("modelSwitchExtension", () => {
 		})
 	})
 
+	describe("context overflow guard (null tokens fallback)", () => {
+		describe("set_model tool rejects when getContextUsage returns null but local estimate is too large", () => {
+			it("rejects switch to kimi-k2.6 when large context accumulated (null upstream tokens)", async () => {
+				// Simulate a large conversation: 30 messages × 2000 chars → ~15,000 tokens estimated.
+				// The guard checks against the found model's contextWindow (from MODELS registry).
+				// Override the harness find mock to return a kimi with a small context window
+				// so the guard fires, without mutating the global MODELS array.
+				__setLatestMessagesForTest(
+					Array.from({ length: 30 }, () => ({
+						role: "user" as const,
+						content: [{ type: "text" as const, text: "x".repeat(2000) }],
+						timestamp: 0 as const,
+					})),
+				)
+				const h = createHarness()
+				h.find.mockImplementation((provider: string, id: string) => {
+					const found = MODELS.find((m) => m.provider === provider && m.id === id)
+					if (found && found.id === "kimi-k2.6" && found.provider === "kimchi-dev") {
+						return { ...found, contextWindow: 10_000 }
+					}
+					return found
+				})
+				const result = await h.exec("kimchi-dev/kimi-k2.6")
+
+				expect(h.setModel).not.toHaveBeenCalled()
+				const text = textOf(result)
+				expect(text).toContain("15000 tokens")
+				expect(text).toContain("Switch rejected")
+				expect(text).toContain("Use /compact")
+			})
+
+			it("allows switch when local estimate is small even if getContextUsage returns null", async () => {
+				// Short session: few messages that fit within Kimi's safe context window
+				__setLatestMessagesForTest([
+					{ role: "user" as const, content: [{ type: "text" as const, text: "hello" }], timestamp: 0 as const },
+				])
+				const h = createHarness()
+				const result = await h.exec("kimchi-dev/kimi-k2.6")
+
+				expect(h.setModel).toHaveBeenCalledTimes(1)
+				expect(textOf(result)).toBe("Switched to model kimchi-dev/kimi-k2.6 (Kimi K2.6)")
+			})
+		})
+	})
+
 	describe("model_select handler", () => {
 		const mockCtx = (
 			overrides: Partial<{
@@ -757,6 +802,57 @@ describe("modelSwitchExtension", () => {
 			)
 
 			expect(getMultiModelEnabled()).toBe(false)
+		})
+
+		it("reverts when getContextUsage returns null but local estimate exceeds target context window", async () => {
+			// Simulate post-compaction: getContextUsage returns null, but accumulated messages
+			// are large enough to exceed the target context window.
+			// 30 messages × 2000 chars → ~15,000 tokens; 15,000 > 10,000 × 0.95 = 9,500 → guard fires.
+			__setLatestMessagesForTest(
+				Array.from({ length: 30 }, () => ({
+					role: "user" as const,
+					content: [{ type: "text" as const, text: "x".repeat(2000) }],
+					timestamp: 0 as const,
+				})),
+			)
+			const h = createHarnessWithTrigger()
+			modelSwitchExtension(h.pi)
+			await h.trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"], contextWindow: 10_000 },
+					previousModel: { id: "claude-opus-4.6", provider: "kimchi-dev", input: ["text", "image"] },
+					source: "set",
+				},
+				mockCtx({ getContextUsage: () => ({ tokens: null as unknown as number }) }),
+			)
+
+			expect(h.setModel).toHaveBeenCalledWith({
+				id: "claude-opus-4.6",
+				provider: "kimchi-dev",
+				input: ["text", "image"],
+			})
+		})
+
+		it("allows switch when getContextUsage returns null but local estimate fits within target context", async () => {
+			// Fresh session: no accumulated context, local estimate is tiny.
+			__setLatestMessagesForTest([
+				{ role: "user" as const, content: [{ type: "text" as const, text: "hi" }], timestamp: 0 as const },
+			])
+			const h = createHarnessWithTrigger()
+			await h.trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"], contextWindow: 262_144 },
+					previousModel: { id: "claude-opus-4.6", provider: "kimchi-dev", input: ["text", "image"] },
+					source: "set",
+				},
+				mockCtx({ getContextUsage: () => ({ tokens: null as unknown as number }) }),
+			)
+
+			expect(h.setModel).not.toHaveBeenCalled()
 		})
 	})
 })

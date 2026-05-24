@@ -9,10 +9,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	BASE_EXCLUDE_GLOBS,
 	RsyncError,
+	type RsyncStats,
 	buildExcludeList,
 	buildMkdirArgv,
 	buildRsyncArgv,
 	buildSshOption,
+	handleLine,
 	resolveGitIgnored,
 	runRsync,
 } from "./rsync.js"
@@ -577,6 +579,95 @@ exec node ${shellEscape(FAKE_RSYNC)} "$@"
 		).rejects.toBeInstanceOf(RsyncError)
 		const after = readdirSync(tmpdir()).filter((e) => /^kimchi-teleport-[0-9a-f-]+$/.test(e)).length
 		expect(after).toBeLessThanOrEqual(before + 1)
+	})
+})
+
+// ─── handleLine stat parsing (cross-platform rsync output) ─────────────────
+
+describe("handleLine", () => {
+	function fresh(): RsyncStats {
+		return { fileCount: 0, totalBytes: 0 }
+	}
+
+	// --- file count ---
+
+	it("parses GNU rsync 3.x: Number of regular files transferred", () => {
+		const s = fresh()
+		handleLine("Number of regular files transferred: 24", s)
+		expect(s.fileCount).toBe(24)
+	})
+
+	it("parses GNU rsync 2.x / openrsync: Number of files transferred", () => {
+		const s = fresh()
+		handleLine("Number of files transferred: 2", s)
+		expect(s.fileCount).toBe(2)
+	})
+
+	it("parses file count with commas (large transfer)", () => {
+		const s = fresh()
+		handleLine("Number of regular files transferred: 1,234", s)
+		expect(s.fileCount).toBe(1234)
+	})
+
+	// --- total transferred bytes ---
+
+	it("parses GNU rsync plain bytes", () => {
+		const s = fresh()
+		handleLine("Total transferred file size: 1234567 bytes", s)
+		expect(s.totalBytes).toBe(1234567)
+	})
+
+	it("parses openrsync 'B' suffix", () => {
+		const s = fresh()
+		handleLine("Total transferred file size: 12 B", s)
+		expect(s.totalBytes).toBe(12)
+	})
+
+	it("parses GNU rsync human-readable K suffix", () => {
+		const s = fresh()
+		handleLine("Total transferred file size: 121.67K bytes", s)
+		expect(s.totalBytes).toBe(Math.round(121.67 * 1024))
+	})
+
+	it("parses GNU rsync human-readable M suffix", () => {
+		const s = fresh()
+		handleLine("Total transferred file size: 4.50M bytes", s)
+		expect(s.totalBytes).toBe(Math.round(4.5 * 1024 * 1024))
+	})
+
+	it("parses GNU rsync human-readable G suffix", () => {
+		const s = fresh()
+		handleLine("Total transferred file size: 1.25G bytes", s)
+		expect(s.totalBytes).toBe(Math.round(1.25 * 1024 ** 3))
+	})
+
+	it("parses bytes with commas", () => {
+		const s = fresh()
+		handleLine("Total transferred file size: 2,048,000 bytes", s)
+		expect(s.totalBytes).toBe(2048000)
+	})
+
+	// --- progress ---
+
+	it("parses progress line and fires callback", () => {
+		const s = fresh()
+		let fired = false
+		handleLine("      1,048,576  50%   1.00MB/s", s, (pct, bytes) => {
+			expect(pct).toBe(50)
+			expect(bytes).toBe(1048576)
+			fired = true
+		})
+		expect(fired).toBe(true)
+	})
+
+	// --- no-match lines ---
+
+	it("ignores unrecognised lines without mutating stats", () => {
+		const s = fresh()
+		handleLine("sending incremental file list", s)
+		handleLine("", s)
+		handleLine("file.txt", s)
+		expect(s).toEqual({ fileCount: 0, totalBytes: 0 })
 	})
 })
 

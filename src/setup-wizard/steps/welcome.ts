@@ -16,6 +16,7 @@ export function runWelcomeStep(): void {
 			"  · setup your Kimchi API key",
 			"  · help you configure tools (Claude Code, OpenCode, Cursor, OpenClaw, GSD2)",
 			"  · setup tool configs so they talk to the Kimchi proxy",
+			"  · install/update RTK for bash command rewriting",
 			"",
 			"Controls:",
 			"  ↑/↓     navigate options",

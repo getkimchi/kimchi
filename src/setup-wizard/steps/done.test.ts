@@ -9,6 +9,12 @@ import * as modelsModule from "../../models.js"
 import type { WizardState } from "../state.js"
 import { runDoneStep } from "./done.js"
 
+const installRtkMock = vi.hoisted(() => vi.fn())
+
+vi.mock("../../resources/rtk-install.js", () => ({
+	installRtk: installRtkMock,
+}))
+
 describe("runDoneStep", () => {
 	let tmpHome: string
 	let prevHome: string | undefined
@@ -33,6 +39,12 @@ describe("runDoneStep", () => {
 		// Mock updateModelsConfig so we don't hit the real network.
 		vi.spyOn(modelsModule, "updateModelsConfig").mockResolvedValue({
 			models: TEST_MODELS as import("../../models.js").ModelMetadata[],
+		})
+		installRtkMock.mockReset()
+		installRtkMock.mockResolvedValue({
+			version: "v1.2.3",
+			binaryPath: "/tmp/kimchi-test/rtk",
+			linkPath: "/tmp/kimchi-test/bin/rtk",
 		})
 	})
 
@@ -91,6 +103,37 @@ describe("runDoneStep", () => {
 		// just via the launcher rather than a config file.
 		expect(outcome.successes).toEqual(["Claude Code"])
 		expect(outcome.failures).toEqual([])
+
+		writeSpy.mockRestore()
+	})
+
+	it("ensures RTK when setup requests it", async () => {
+		const tool = getClaudeCodeTool()
+		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()
+		const state = baseState()
+		state.installRtk = true
+
+		const outcome = await runDoneStep(state)
+
+		expect(installRtkMock).toHaveBeenCalledTimes(1)
+		expect(outcome.rtkInstalled).toBe(true)
+		expect(outcome.failures).toEqual([])
+
+		writeSpy.mockRestore()
+	})
+
+	it("treats RTK install failure as a setup warning", async () => {
+		const tool = getClaudeCodeTool()
+		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()
+		installRtkMock.mockRejectedValueOnce(new Error("GitHub rate limited"))
+		const state = baseState()
+		state.installRtk = true
+
+		const outcome = await runDoneStep(state)
+
+		expect(outcome.successes).toEqual(["Claude Code"])
+		expect(outcome.failures).toEqual([])
+		expect(outcome.warnings).toEqual([{ id: "rtk", error: "GitHub rate limited" }])
 
 		writeSpy.mockRestore()
 	})

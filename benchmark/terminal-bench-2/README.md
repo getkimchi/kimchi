@@ -38,6 +38,7 @@ You will hit one of two failure modes:
 | --- | --- |
 | `./scripts/run-local.sh` | Cross-builds `kimchi` for linux-amd64 from the current working tree (`pnpm run build:binary-linux-x64`) |
 | `./scripts/run-release.sh` | Downloads the latest release from `castai/kimchi` |
+| `./scripts/run-opencode-kimchi.sh` | Installs OpenCode in the task container and configures it to use the Kimchi gateway |
 
 Both scripts target the `terminal-bench/terminal-bench-2` dataset. Extra arguments are forwarded to `harbor run`, so everything below works for either script.
 
@@ -80,6 +81,38 @@ MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-local.sh -i terminal-bench/fix-git
 ```
 
 `MODEL` must be `<provider>/<id>`. Available `kimchi-dev` models include `kimi-k2.5`, `glm-5-fp8`, `minimax-m2.7`, `nemotron-3-super-fp4` (run `kimchi --list-models` for the live list). The qualifier is required because kimchi's built-in catalog also registers some IDs (notably `kimi-k2.5`) under the `opencode` provider — without `kimchi-dev/` the resolver picks `opencode` and fails auth with the kimchi key.
+
+### OpenCode with the Kimchi gateway
+
+Use `run-opencode-kimchi.sh` when the benchmark should evaluate the OpenCode scaffold while routing model calls through `llm.kimchi.dev`.
+
+```bash
+export KIMCHI_API_KEY=...
+MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-opencode-kimchi.sh -i terminal-bench/fix-git
+```
+
+The script requires `KIMCHI_API_KEY` in the host environment and forwards it to Harbor with `--ae KIMCHI_API_KEY=$KIMCHI_API_KEY`; you do not need to pass that `--ae` manually when using the script.
+
+The OpenCode adapter accepts any `kimchi-dev/<model-id>` returned by Kimchi's model metadata endpoint (`/v1/models/metadata?include_in_cli=true`). It writes an OpenCode provider config for the selected model at runtime, using the live model limits and reasoning flag, then runs OpenCode in JSON mode. Reasoning-capable models include `--thinking`:
+
+```bash
+opencode --model=<MODEL> run --format=json --thinking --dangerously-skip-permissions -- <instruction>
+```
+
+To change models, change only `MODEL`:
+
+```bash
+MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-opencode-kimchi.sh -i terminal-bench/fix-git
+```
+
+By default OpenCode uses the benchmark model for `small_model` too, keeping the whole run on the selected model. To use a cheaper Kimchi model for summary/title work, set `OPENCODE_SMALL_MODEL=kimchi-dev/<model-id>`; the adapter registers that model from the same metadata endpoint.
+
+By default Harbor installs the latest `opencode-ai` package. Pin OpenCode for reproducible runs with `OPENCODE_VERSION`:
+
+```bash
+OPENCODE_VERSION=1.14.33 MODEL=kimchi-dev/kimi-k2.5 \
+  ./scripts/run-opencode-kimchi.sh -i terminal-bench/fix-git
+```
 
 ### Single-model run (no orchestration)
 

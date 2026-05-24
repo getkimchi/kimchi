@@ -7,6 +7,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent"
 import type { KimchiConfig } from "../../config.js"
+import "../../login-command-patch.js"
 import { createRemoteRuntimeFactory } from "./proxy/runtime-factory.js"
 
 export interface RunRemoteSessionOptions {

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { TeleportArgsError, parseAttachArgs, parseConnectArgs, parseDetachArgs, parseTeleportArgs } from "./args.js"
+import {
+	TeleportArgsError,
+	parseAttachArgs,
+	parseConnectArgs,
+	parseDetachArgs,
+	parseSyncArgs,
+	parseTeleportArgs,
+} from "./args.js"
 
 describe("parseTeleportArgs", () => {
 	it("returns defaults for empty input", () => {
@@ -10,6 +17,10 @@ describe("parseTeleportArgs", () => {
 			abandonPending: false,
 			force: false,
 			skipSession: false,
+			noGitToken: false,
+			gitRepo: undefined,
+			gitBranch: undefined,
+			noShallow: false,
 		})
 	})
 
@@ -19,12 +30,15 @@ describe("parseTeleportArgs", () => {
 	})
 
 	it("parses every boolean flag", () => {
-		const r = parseTeleportArgs("--allow-dirty --include-ignored --abandon-pending --force --skip-session")
+		const r = parseTeleportArgs(
+			"--allow-dirty --include-ignored --abandon-pending --force --skip-session --no-git-token",
+		)
 		expect(r.allowDirty).toBe(true)
 		expect(r.includeIgnored).toBe(true)
 		expect(r.abandonPending).toBe(true)
 		expect(r.force).toBe(true)
 		expect(r.skipSession).toBe(true)
+		expect(r.noGitToken).toBe(true)
 	})
 
 	it("collects repeated --exclude globs in order", () => {
@@ -54,6 +68,60 @@ describe("parseTeleportArgs", () => {
 	it("throws on an unknown flag", () => {
 		expect(() => parseTeleportArgs("--what")).toThrow(/Unknown flag/)
 	})
+})
+
+it("parses --git-repo", () => {
+	const r = parseTeleportArgs("--git-repo https://github.com/org/repo.git")
+	expect(r.gitRepo).toBe("https://github.com/org/repo.git")
+})
+
+it("parses --git-repo with --git-branch", () => {
+	const r = parseTeleportArgs("--git-repo https://github.com/org/repo.git --git-branch feature-x")
+	expect(r.gitRepo).toBe("https://github.com/org/repo.git")
+	expect(r.gitBranch).toBe("feature-x")
+})
+
+it("parses --git-repo with SSH URL", () => {
+	const r = parseTeleportArgs("--git-repo git@github.com:org/repo.git")
+	expect(r.gitRepo).toBe("git@github.com:org/repo.git")
+})
+
+it("parses --git-repo with name and other flags", () => {
+	const r = parseTeleportArgs("my-session --git-repo https://github.com/org/repo.git --git-branch main --skip-session")
+	expect(r.name).toBe("my-session")
+	expect(r.gitRepo).toBe("https://github.com/org/repo.git")
+	expect(r.gitBranch).toBe("main")
+	expect(r.skipSession).toBe(true)
+})
+
+it("throws when --git-repo has no argument", () => {
+	expect(() => parseTeleportArgs("--git-repo")).toThrow(/--git-repo/)
+})
+
+it("throws when --git-repo is followed by a flag", () => {
+	expect(() => parseTeleportArgs("--git-repo --force")).toThrow(/--git-repo/)
+})
+
+it("throws when --git-branch has no argument", () => {
+	expect(() => parseTeleportArgs("--git-branch")).toThrow(/--git-branch/)
+})
+
+it("throws when --git-branch is used without --git-repo", () => {
+	expect(() => parseTeleportArgs("--git-branch feature-x")).toThrow(/--git-branch requires --git-repo/)
+})
+
+it("parses --no-shallow with --git-repo", () => {
+	const r = parseTeleportArgs("--git-repo https://github.com/org/repo.git --no-shallow")
+	expect(r.noShallow).toBe(true)
+})
+
+it("defaults noShallow to false", () => {
+	const r = parseTeleportArgs("--git-repo https://github.com/org/repo.git")
+	expect(r.noShallow).toBe(false)
+})
+
+it("throws when --no-shallow is used without --git-repo", () => {
+	expect(() => parseTeleportArgs("--no-shallow")).toThrow(/--no-shallow requires --git-repo/)
 })
 
 describe("parseDetachArgs", () => {
@@ -103,5 +171,105 @@ describe("parseConnectArgs", () => {
 
 	it("throws when given a flag", () => {
 		expect(() => parseConnectArgs("--whatever")).toThrow(/flag/)
+	})
+})
+
+describe("parseSyncArgs", () => {
+	it("returns defaults for empty input (direction defaults to up)", () => {
+		expect(parseSyncArgs("")).toEqual({
+			direction: "up",
+			exclude: [],
+			includeIgnored: false,
+			delete: false,
+			dryRun: false,
+		})
+	})
+
+	it("parses 'up' direction", () => {
+		const r = parseSyncArgs("up")
+		expect(r.direction).toBe("up")
+	})
+
+	it("parses 'down' direction", () => {
+		const r = parseSyncArgs("down")
+		expect(r.direction).toBe("down")
+	})
+
+	it("parses direction with a positional path", () => {
+		const r = parseSyncArgs("down src/foo")
+		expect(r.direction).toBe("down")
+		expect(r.path).toBe("src/foo")
+	})
+
+	it("parses --path flag", () => {
+		const r = parseSyncArgs("up --path src/bar")
+		expect(r.path).toBe("src/bar")
+	})
+
+	it("parses --delete flag", () => {
+		const r = parseSyncArgs("up --delete")
+		expect(r.delete).toBe(true)
+	})
+
+	it("parses --no-delete flag (overrides --delete)", () => {
+		const r = parseSyncArgs("up --delete --no-delete")
+		expect(r.delete).toBe(false)
+	})
+
+	it("parses --dry-run flag", () => {
+		const r = parseSyncArgs("down --dry-run")
+		expect(r.dryRun).toBe(true)
+	})
+
+	it("parses --include-ignored flag", () => {
+		const r = parseSyncArgs("up --include-ignored")
+		expect(r.includeIgnored).toBe(true)
+	})
+
+	it("collects repeated --exclude globs", () => {
+		const r = parseSyncArgs("up --exclude *.log --exclude tmp/")
+		expect(r.exclude).toEqual(["*.log", "tmp/"])
+	})
+
+	it("handles all flags combined", () => {
+		const r = parseSyncArgs("down --delete --dry-run --include-ignored --exclude node_modules --path lib")
+		expect(r.direction).toBe("down")
+		expect(r.delete).toBe(true)
+		expect(r.dryRun).toBe(true)
+		expect(r.includeIgnored).toBe(true)
+		expect(r.exclude).toEqual(["node_modules"])
+		expect(r.path).toBe("lib")
+	})
+
+	it("throws when direction is specified twice", () => {
+		expect(() => parseSyncArgs("up down")).toThrow(/Direction already set/)
+	})
+
+	it("throws on unknown flag", () => {
+		expect(() => parseSyncArgs("up --bogus")).toThrow(/Unknown flag/)
+	})
+
+	it("throws when --exclude has no argument", () => {
+		expect(() => parseSyncArgs("up --exclude")).toThrow(/--exclude/)
+	})
+
+	it("throws when --exclude is followed by another flag", () => {
+		expect(() => parseSyncArgs("up --exclude --delete")).toThrow(/--exclude/)
+	})
+
+	it("throws when --path has no argument", () => {
+		expect(() => parseSyncArgs("up --path")).toThrow(/--path/)
+	})
+
+	it("throws when --path is specified twice", () => {
+		expect(() => parseSyncArgs("up --path a --path b")).toThrow(/--path/)
+	})
+
+	it("throws on positional before direction keyword", () => {
+		expect(() => parseSyncArgs("somefile")).toThrow(/Expected "up" or "down"/)
+	})
+
+	it("throws on second positional path", () => {
+		expect(() => parseSyncArgs("up first second")).toThrow(/Unexpected positional/)
 	})
 })

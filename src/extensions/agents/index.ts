@@ -82,7 +82,6 @@ import {
 	formatTokens,
 	formatTurns,
 	getDisplayName,
-	getPromptModeLabel,
 } from "./ui/agent-widget.js"
 
 // ---- Shared helpers ----
@@ -1072,8 +1071,6 @@ Model selection — YOU choose based on task complexity:
 								.toLowerCase()
 						: undefined
 				const agentTags: string[] = []
-				const modeLabel = getPromptModeLabel(subagentType)
-				if (modeLabel) agentTags.push(modeLabel)
 				if (thinking) agentTags.push(`thinking: ${thinking}`)
 				if (resolvedConfig.tokenBudget != null) agentTags.push(`budget: ${formatTokens(resolvedConfig.tokenBudget)}`)
 				if (isolated) agentTags.push("isolated")

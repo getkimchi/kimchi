@@ -28,6 +28,11 @@ export interface AuthenticateOptions {
 	 * Override global fetch (used by tests).
 	 */
 	fetch?: typeof globalThis.fetch
+	/**
+	 * Git personal access token to forward to the remote session so it
+	 * can push/pull on behalf of the user.
+	 */
+	gitToken?: string
 }
 
 export interface MeResponse {

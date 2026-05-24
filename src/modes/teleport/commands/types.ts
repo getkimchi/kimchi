@@ -14,6 +14,8 @@ export interface TeleportContext {
 	cwd: string
 	ui: ExtensionUIContext
 	signal?: AbortSignal
+	/** Path to the global config file (for git token persistence). */
+	configPath?: string
 	/**
 	 * Asks InteractiveMode to re-bind its session listeners to the wrapper's
 	 * current foreground. Must be invoked after `wrapper.foregroundRemote` or
@@ -30,6 +32,14 @@ export interface TeleportContext {
 	 * nothing.
 	 */
 	triggerFreshUI?: () => void
+	/**
+	 * Called with the resolved host string right before the UI refresh that
+	 * follows a foreground swap. The teleport extension uses this to set the
+	 * session indicator **before** `resetExtensionUI` + `rebindCurrentSession`
+	 * re-create the prompt editor, so the editor factory picks up the
+	 * indicator text from the module-level cache on first render.
+	 */
+	onHostResolved?: (host: string) => void
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────

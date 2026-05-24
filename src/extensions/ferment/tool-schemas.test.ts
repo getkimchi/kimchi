@@ -42,6 +42,42 @@ describe("ProposeScopingParams schema", () => {
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 
+	it("accepts radio, checkbox, and text scoping question styles", () => {
+		const payload = {
+			ferment_id: "f-123",
+			goal: "Do something",
+			phases: minimalPhases(),
+			questions: [
+				{
+					id: "ship",
+					type: "radio",
+					text: "Ship this as a yes/no decision?",
+					options: [
+						{ id: "yes", label: "Yes", recommended: true },
+						{ id: "no", label: "No" },
+					],
+				},
+				{
+					id: "surfaces",
+					type: "checkbox",
+					text: "Which surfaces must be included?",
+					options: [
+						{ id: "cli", label: "CLI" },
+						{ id: "docs", label: "Docs" },
+					],
+				},
+				{
+					id: "acceptance",
+					type: "text",
+					text: "What exact acceptance phrase should be used?",
+				},
+			],
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
+	})
+
 	it("accepts payload without questions (questions is optional)", () => {
 		const payload = {
 			ferment_id: "f-123",
@@ -86,7 +122,7 @@ describe("ProposeScopingParams schema", () => {
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 
-	it("rejects question with fewer than 2 options (minItems: 2)", () => {
+	it("allows too-few options through schema so runtime can return a focused validation error", () => {
 		const payload = {
 			ferment_id: "f-123",
 			goal: "Do something",
@@ -101,10 +137,10 @@ describe("ProposeScopingParams schema", () => {
 			gates: passingGates(),
 		}
 
-		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 
-	it("rejects question with no options (empty array violates minItems: 2)", () => {
+	it("allows empty options through schema so runtime can return a focused validation error", () => {
 		const payload = {
 			ferment_id: "f-123",
 			goal: "Do something",
@@ -119,10 +155,10 @@ describe("ProposeScopingParams schema", () => {
 			gates: passingGates(),
 		}
 
-		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 
-	it("rejects more than 3 questions (maxItems: 3)", () => {
+	it("allows more than 3 questions through schema so runtime can return a focused validation error", () => {
 		const question = (id: string) => ({
 			id,
 			text: `Question ${id}`,
@@ -140,7 +176,7 @@ describe("ProposeScopingParams schema", () => {
 			gates: passingGates(),
 		}
 
-		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 
 	it("accepts a single phase for simple tasks (minItems: 1)", () => {
@@ -171,7 +207,7 @@ describe("ProposeScopingParams schema", () => {
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
 	})
 
-	it("rejects question with more than 5 options (maxItems: 5)", () => {
+	it("allows more than 5 options through schema so runtime can return a focused validation error", () => {
 		const payload = {
 			ferment_id: "f-123",
 			goal: "Do something",
@@ -193,7 +229,7 @@ describe("ProposeScopingParams schema", () => {
 			gates: passingGates(),
 		}
 
-		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 })
 

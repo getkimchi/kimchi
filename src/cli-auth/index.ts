@@ -18,6 +18,10 @@ export interface BrowserAuthOptions {
 	quiet?: boolean
 	/** Injected open function for testing */
 	_open?: (url: string) => Promise<ChildProcess | undefined>
+	/** Optional callback to receive status messages instead of console.log */
+	onMessage?: (message: string) => void
+	/** Optional callback invoked with the browser URL before the browser opens */
+	onBrowserUrl?: (url: string) => void
 }
 
 /**
@@ -35,6 +39,7 @@ export interface BrowserAuthResult {
 export async function authenticateViaBrowser(options: BrowserAuthOptions = {}): Promise<BrowserAuthResult> {
 	const webAppUrl = options.webAppUrl ?? envConfig.KIMCHI_WEB_APP_URL
 	const state = generateState()
+	const log = options.onMessage ?? console.log
 
 	const callbackServer = await startCallbackServer(state)
 
@@ -42,17 +47,18 @@ export async function authenticateViaBrowser(options: BrowserAuthOptions = {}): 
 		const callbackUrl = encodeURIComponent(callbackServer.url)
 		const browserUrl = `${webAppUrl}/cli-auth?callback=${callbackUrl}&state=${encodeURIComponent(state)}`
 
-		console.log(`Kimchi login: ${browserUrl}`)
+		log(`Kimchi login: ${browserUrl}`)
+		options.onBrowserUrl?.(browserUrl)
 
 		if (options.quiet) {
-			console.log("If the browser did not open automatically, visit the URL above.")
+			log("If the browser did not open automatically, visit the URL above.")
 		} else {
-			console.log("Opening your browser to complete login…")
+			log("Opening your browser to complete login…")
 			const opener = options._open ?? open
 			try {
 				await opener(browserUrl)
 			} catch {
-				console.log("Couldn't open your browser automatically. Please visit the URL above manually.")
+				log("Couldn't open your browser automatically. Please visit the URL above manually.")
 			}
 		}
 

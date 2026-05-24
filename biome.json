@@ -36,6 +36,16 @@
 					}
 				}
 			}
+		},
+		{
+			"include": ["src/extensions/pi-compat.test.ts"],
+			"linter": {
+				"rules": {
+					"suspicious": {
+						"noExplicitAny": "off"
+					}
+				}
+			}
 		}
 	],
 	"files": {

@@ -1,27 +1,35 @@
 import { randomUUID } from "node:crypto"
-import { dirname } from "node:path"
+import { basename, dirname } from "node:path"
 import type { AgentSession, SessionManager } from "@earendil-works/pi-coding-agent"
+import { readGitToken, writeGitToken } from "../../../config.js"
 import { authenticateRemoteSession, listRemoteSessions, waitForSessionReady } from "../api/index.js"
 import type { AuthenticateResponse } from "../api/types.js"
+import { getGitRemoteHost, parseHostFromRemoteUrl } from "../git-credentials.js"
 import type { RemoteAgentSession } from "../proxy/agent-session.js"
 import { buildRemoteAgentSession } from "../proxy/builder.js"
 import { BASE_EXCLUDE_GLOBS, RsyncError, runRsync } from "../sync/rsync.js"
 import { exportSessionForTeleport } from "../sync/session-export.js"
+import { promptForGitToken } from "../ui/git-token-prompt.js"
 import { createTeleportProgress } from "../ui/progress.js"
 import type { TeleportArgs } from "./args.js"
 import { TeleportRefusal, info, refuse, status, warn } from "./errors.js"
 import { resolveSessionTarget } from "./session-resolve.js"
 import {
+	cloneRepoOnSandbox,
 	deriveSandboxDest,
 	estimateWorkspaceBytes,
 	gitWorkingTreeDirty,
 	isBusy,
+	propagateGitConfigToSandbox,
+	propagateGitCredentialToSandbox,
+	readLocalGitConfig,
 	rsyncInstallHint,
 	waitUntilIdle,
 	whichRsync,
 } from "./teleport-helpers.js"
 import {
 	BUSY_WAIT_MS_LOCAL,
+	SANDBOX_HOME,
 	SANDBOX_USER,
 	type TeleportContext,
 	WORKSPACE_REFUSE_BYTES,
@@ -48,9 +56,39 @@ async function refreshUIAfterSwap(ctx: TeleportContext): Promise<void> {
 	await rebindAfterSwap(ctx)
 }
 
-export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Promise<void> {
+/**
+ * Derive a sandbox destination directory from a git remote URL.
+ * Extracts the repository name from the URL path, stripping `.git` suffix.
+ * Falls back to "workspace" if the name cannot be determined.
+ */
+export function deriveSandboxDestFromRepoUrl(repoUrl: string): string {
+	// Try SSH shorthand: git@github.com:org/repo.git
+	const sshMatch = repoUrl.match(/:([^/]+\/)?([^/]+?)(?:\.git)?$/)
+	if (sshMatch?.[2]) return `${SANDBOX_HOME}/${sshMatch[2]}/`
+
+	// Try URL-style
+	try {
+		const parsed = new URL(repoUrl)
+		const segments = parsed.pathname.split("/").filter(Boolean)
+		const last = segments.at(-1)
+		if (last) {
+			const name = last.replace(/\.git$/, "")
+			if (name) return `${SANDBOX_HOME}/${name}/`
+		}
+	} catch {
+		// not a valid URL
+	}
+
+	// Last resort: use basename heuristic
+	const raw = basename(repoUrl.replace(/\.git$/, "").replace(/\/+$/, ""))
+	return raw ? `${SANDBOX_HOME}/${raw}/` : `${SANDBOX_HOME}/workspace/`
+}
+
+export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Promise<{ host: string }> {
 	const wrapper = ctx.wrapper
 	const homeBase = wrapper.homeBase as AgentSession
+	const isGitCloneMode = !!args.gitRepo
+	const gitRepoUrl = args.gitRepo ?? ""
 
 	// ── 1. Pre-flight ──
 	if (!wrapper.isForegroundHomeBase) {
@@ -73,29 +111,64 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 		}
 	}
 
-	if (!(await whichRsync())) {
-		refuse(ctx, `rsync is not on PATH. ${rsyncInstallHint()}`)
+	// rsync pre-flight only applies in workspace-sync mode
+	if (!isGitCloneMode) {
+		if (!(await whichRsync())) {
+			refuse(ctx, `rsync is not on PATH. ${rsyncInstallHint()}`)
+		}
 	}
 
 	if (!ctx.apiKey) {
 		refuse(ctx, "No API key configured. Run `kimchi setup` to authenticate.")
 	}
 
-	if (!args.allowDirty && (await gitWorkingTreeDirty(ctx.cwd))) {
-		refuse(ctx, "Working tree has uncommitted changes. Re-run with --allow-dirty to ship them.")
+	// Dirty tree / workspace size checks only apply in workspace-sync mode
+	if (!isGitCloneMode) {
+		if (!args.allowDirty && (await gitWorkingTreeDirty(ctx.cwd))) {
+			refuse(ctx, "Working tree has uncommitted changes. Re-run with --allow-dirty to ship them.")
+		}
+
+		const wsBytes = await estimateWorkspaceBytes(ctx.cwd)
+		if (wsBytes > WORKSPACE_REFUSE_BYTES && !args.force) {
+			const gb = (wsBytes / 1024 / 1024 / 1024).toFixed(1)
+			refuse(ctx, `Workspace is large (${gb} GB). Re-run with --force to proceed.`)
+		}
+		if (wsBytes > WORKSPACE_WARN_BYTES) {
+			const mb = (wsBytes / 1024 / 1024).toFixed(0)
+			warn(ctx, `Workspace is ${mb} MB — sync may take a while.`)
+		}
 	}
 
-	const wsBytes = await estimateWorkspaceBytes(ctx.cwd)
-	if (wsBytes > WORKSPACE_REFUSE_BYTES && !args.force) {
-		const gb = (wsBytes / 1024 / 1024 / 1024).toFixed(1)
-		refuse(ctx, `Workspace is large (${gb} GB). Re-run with --force to proceed.`)
-	}
-	if (wsBytes > WORKSPACE_WARN_BYTES) {
-		const mb = (wsBytes / 1024 / 1024).toFixed(0)
-		warn(ctx, `Workspace is ${mb} MB — sync may take a while.`)
+	// ── 2. Git credentials resolution ──
+	let gitToken: string | undefined
+	// In git-clone mode, derive the host from the provided repo URL.
+	// In rsync mode, detect from the local git remote.
+	const gitHost = isGitCloneMode ? parseHostFromRemoteUrl(gitRepoUrl) : await getGitRemoteHost(ctx.cwd)
+	if (!args.noGitToken) {
+		if (gitHost) {
+			// Check if we already have a stored token for this host
+			gitToken = readGitToken(gitHost, ctx.configPath)
+			if (gitToken) {
+				info(ctx, `Using saved git token for ${gitHost}`)
+			} else {
+				// Show TUI prompt for the user to paste a token
+				const promptResult = await promptForGitToken(gitHost, ctx.ui)
+				if (promptResult.outcome === "submitted") {
+					gitToken = promptResult.token
+					if (promptResult.save) {
+						try {
+							writeGitToken(gitHost, promptResult.token, ctx.configPath)
+						} catch (err) {
+							warn(ctx, `Could not save git token: ${err instanceof Error ? err.message : String(err)}`)
+						}
+					}
+				}
+				// outcome === "skipped" → gitToken stays undefined, proceed without
+			}
+		}
 	}
 
-	// ── 2. Progress widget ──
+	// ── 3. Progress widget ──
 	const progress = createTeleportProgress(ctx.ui)
 
 	try {
@@ -106,7 +179,7 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 			authResult = await authenticateRemoteSession(
 				sessionId,
 				ctx.apiKey,
-				`Remote session for ${require("node:path").basename(ctx.cwd)}`,
+				`Remote session for ${isGitCloneMode ? gitRepoUrl : require("node:path").basename(ctx.cwd)}`,
 				{ endpoint: ctx.endpoint },
 			)
 		} catch (err) {
@@ -114,7 +187,7 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 		}
 		progress.complete("Authenticated")
 
-		const sandboxDest = deriveSandboxDest(ctx.cwd)
+		const sandboxDest = isGitCloneMode ? deriveSandboxDestFromRepoUrl(gitRepoUrl) : deriveSandboxDest(ctx.cwd)
 
 		if (args.name) {
 			try {
@@ -139,64 +212,173 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 		}
 		progress.complete("Sandbox ready")
 
+		// ── Git identity & credentials propagation ──
+		// In git-clone mode, credentials MUST be set up before the clone so
+		// private repositories can be accessed. In rsync mode, the original
+		// ordering (after workspace sync) is preserved.
+		const localGitConfig = await readLocalGitConfig(ctx.cwd)
+
+		// Session export variable — used by rsync mode only, but declared here
+		// so it is accessible after the if/else block for session loading.
 		let sessionExport: { localDir: string; remotePath: string } | undefined
-		if (!args.skipSession) {
-			progress.step("Exporting session")
-			try {
-				sessionExport = exportSessionForTeleport({ homeBase, localCwd: ctx.cwd, sandboxDest })
-			} catch (err) {
-				warn(
-					ctx,
-					`Session export failed: ${err instanceof Error ? err.message : String(err)}. Continuing without session.`,
-				)
-			}
-			progress.complete(sessionExport ? "Session exported" : "Session export skipped")
-		}
 
-		progress.step("Syncing workspace")
-		try {
-			await runRsync({
-				source: ctx.cwd,
-				destination: sandboxDest,
-				remoteHost: authResult.host,
-				remoteUser: SANDBOX_USER,
-				authToken: authResult.connectToken,
-				excludeGlobs: [...BASE_EXCLUDE_GLOBS, ...args.exclude],
-				includeIgnored: args.includeIgnored,
-				signal: ctx.signal,
-			})
-		} catch (err) {
-			let msg: string
-			if (err instanceof RsyncError) {
-				const stderrHead = err.stderr?.trim().slice(0, 1500) ?? ""
-				msg = stderrHead ? `${err.message}\nstderr:\n${stderrHead}` : err.message
-			} else {
-				msg = err instanceof Error ? err.message : String(err)
+		if (isGitCloneMode) {
+			// Set up identity and credentials before clone
+			if (localGitConfig.name || localGitConfig.email) {
+				progress.step("Setting git identity")
+				try {
+					await propagateGitConfigToSandbox({
+						remoteHost: authResult.host,
+						remoteUser: SANDBOX_USER,
+						authToken: authResult.connectToken,
+						gitName: localGitConfig.name,
+						gitEmail: localGitConfig.email,
+						signal: ctx.signal,
+					})
+					progress.complete("Git identity set")
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err)
+					warn(ctx, `Could not set git identity on sandbox: ${msg}`)
+					progress.complete("Git identity skipped")
+				}
 			}
-			refuse(ctx, `rsync failed: ${msg}\nRemote session ${sessionId} will be cleaned up automatically.`)
-		}
-		progress.complete("Workspace synced")
+			if (gitHost && gitToken) {
+				progress.step("Configuring git credentials")
+				try {
+					await propagateGitCredentialToSandbox({
+						remoteHost: authResult.host,
+						remoteUser: SANDBOX_USER,
+						authToken: authResult.connectToken,
+						gitHost,
+						gitToken,
+						signal: ctx.signal,
+					})
+					wrapper.markGitCredentialsSynced(sessionId)
+					progress.complete("Git credentials configured")
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err)
+					warn(ctx, `Could not configure git credentials on sandbox: ${msg}`)
+					progress.complete("Git credentials skipped")
+				}
+			}
 
-		if (!args.skipSession && sessionExport) {
-			progress.step("Syncing session")
+			// ── Clone repository ──
+			progress.step("Cloning repository")
 			try {
-				await runRsync({
-					source: sessionExport.localDir,
-					destination: dirname(sessionExport.remotePath),
+				await cloneRepoOnSandbox({
 					remoteHost: authResult.host,
 					remoteUser: SANDBOX_USER,
 					authToken: authResult.connectToken,
+					repoUrl: gitRepoUrl,
+					destination: sandboxDest,
+					branch: args.gitBranch,
+					shallow: !args.noShallow,
 					signal: ctx.signal,
-					deleteExtraneous: false,
 				})
-				progress.complete("Session synced")
 			} catch (err) {
-				warn(
-					ctx,
-					`Session sync failed: ${err instanceof Error ? err.message : String(err)}. Continuing without session.`,
-				)
-				progress.complete("Session sync skipped")
-				sessionExport = undefined
+				const msg = err instanceof Error ? err.message : String(err)
+				refuse(ctx, `git clone failed: ${msg}\nRemote session ${sessionId} will be cleaned up automatically.`)
+			}
+			progress.complete("Repository cloned")
+		} else {
+			// ── Rsync mode (original flow) ──
+			if (!args.skipSession) {
+				progress.step("Exporting session")
+				try {
+					sessionExport = exportSessionForTeleport({ homeBase, localCwd: ctx.cwd, sandboxDest })
+				} catch (err) {
+					warn(
+						ctx,
+						`Session export failed: ${err instanceof Error ? err.message : String(err)}. Continuing without session.`,
+					)
+				}
+				progress.complete(sessionExport ? "Session exported" : "Session export skipped")
+			}
+
+			progress.step("Syncing workspace")
+			try {
+				await runRsync({
+					source: ctx.cwd,
+					destination: sandboxDest,
+					remoteHost: authResult.host,
+					remoteUser: SANDBOX_USER,
+					authToken: authResult.connectToken,
+					excludeGlobs: [...BASE_EXCLUDE_GLOBS, ...args.exclude],
+					includeIgnored: args.includeIgnored,
+					signal: ctx.signal,
+				})
+			} catch (err) {
+				let msg: string
+				if (err instanceof RsyncError) {
+					const stderrHead = err.stderr?.trim().slice(0, 1500) ?? ""
+					msg = stderrHead ? `${err.message}\nstderr:\n${stderrHead}` : err.message
+				} else {
+					msg = err instanceof Error ? err.message : String(err)
+				}
+				refuse(ctx, `rsync failed: ${msg}\nRemote session ${sessionId} will be cleaned up automatically.`)
+			}
+			progress.complete("Workspace synced")
+
+			if (!args.skipSession && sessionExport) {
+				progress.step("Syncing session")
+				try {
+					await runRsync({
+						source: sessionExport.localDir,
+						destination: dirname(sessionExport.remotePath),
+						remoteHost: authResult.host,
+						remoteUser: SANDBOX_USER,
+						authToken: authResult.connectToken,
+						signal: ctx.signal,
+						deleteExtraneous: false,
+					})
+					progress.complete("Session synced")
+				} catch (err) {
+					warn(
+						ctx,
+						`Session sync failed: ${err instanceof Error ? err.message : String(err)}. Continuing without session.`,
+					)
+					progress.complete("Session sync skipped")
+					sessionExport = undefined
+				}
+			}
+
+			// Git identity & credentials (rsync mode — after workspace sync)
+			if (localGitConfig.name || localGitConfig.email) {
+				progress.step("Setting git identity")
+				try {
+					await propagateGitConfigToSandbox({
+						remoteHost: authResult.host,
+						remoteUser: SANDBOX_USER,
+						authToken: authResult.connectToken,
+						gitName: localGitConfig.name,
+						gitEmail: localGitConfig.email,
+						signal: ctx.signal,
+					})
+					progress.complete("Git identity set")
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err)
+					warn(ctx, `Could not set git identity on sandbox: ${msg}`)
+					progress.complete("Git identity skipped")
+				}
+			}
+			if (gitHost && gitToken) {
+				progress.step("Configuring git credentials")
+				try {
+					await propagateGitCredentialToSandbox({
+						remoteHost: authResult.host,
+						remoteUser: SANDBOX_USER,
+						authToken: authResult.connectToken,
+						gitHost,
+						gitToken,
+						signal: ctx.signal,
+					})
+					wrapper.markGitCredentialsSynced(sessionId)
+					progress.complete("Git credentials configured")
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err)
+					warn(ctx, `Could not configure git credentials on sandbox: ${msg}`)
+					progress.complete("Git credentials skipped")
+				}
 			}
 		}
 
@@ -225,7 +407,7 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 			}
 		}
 
-		if (!args.skipSession && sessionExport) {
+		if (!isGitCloneMode && !args.skipSession && sessionExport) {
 			progress.step("Loading session")
 			try {
 				await remote.switchSession(sessionExport.remotePath)
@@ -239,9 +421,11 @@ export async function runTeleport(args: TeleportArgs, ctx: TeleportContext): Pro
 		}
 
 		wrapper.foregroundRemote(remote)
+		ctx.onHostResolved?.(authResult.host)
 		await refreshUIAfterSwap(ctx)
 
 		progress.finish({ id: sessionId, url: authResult.wsUrl, description: authResult.description })
+		return { host: authResult.host }
 	} finally {
 		progress.stop()
 		status(ctx, undefined)

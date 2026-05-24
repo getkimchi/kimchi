@@ -7,13 +7,10 @@ import {
 	DEFAULT_REVIEW_GUIDELINES,
 } from "./guidelines/default-phase-guidelines.js"
 import {
-	KIMI_FAMILY_BUILD,
 	KIMI_FAMILY_ORCHESTRATION,
 	KIMI_FAMILY_PLAN,
 	KIMI_FAMILY_RESEARCH,
 	KIMI_FAMILY_REVIEW,
-	KIMI_K25_BUILD,
-	KIMI_K25_ORCHESTRATION,
 	KIMI_K26_ORCHESTRATION,
 	KIMI_K26_PLAN,
 } from "./guidelines/kimi-family.js"
@@ -52,12 +49,6 @@ Flagship Kimi model with vision support — the key model for complex planning d
 and deep research. Handles images, screenshots, and visual input with superior reasoning. \
 When a hard problem needs architectural planning, strategic analysis, or methodical \
 research, this is the model to delegate to. Best for complex multi-step tasks.`
-
-const KIMI_K25_DESCRIPTION = `\
-Kimi model with vision support — the workhorse for simpler execution tasks and \
-exploration. Handles images, screenshots, and visual input. Best for straightforward \
-coding tasks, quick exploration, and when vision input is needed but planning depth \
-isn't critical. Reliable and efficient for well-scoped subtasks.`
 
 const MINIMAX_M27_DESCRIPTION = `\
 The strongest coding model in the pool. \
@@ -120,26 +111,7 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			),
 		},
 	],
-	[
-		"kimi-k2.5",
-		{
-			vision: true,
-			strengths: ["research", "plan", "review"],
-			tier: "heavy",
-			description: KIMI_K25_DESCRIPTION,
-			guidelines: {
-				build: concatGuidelines(DEFAULT_BUILD_GUIDELINES, KIMI_FAMILY_BUILD, KIMI_K25_BUILD),
-				research: concatGuidelines(DEFAULT_RESEARCH_GUIDELINES, KIMI_FAMILY_RESEARCH),
-				plan: concatGuidelines(DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN),
-				review: concatGuidelines(DEFAULT_REVIEW_GUIDELINES, KIMI_FAMILY_REVIEW),
-			},
-			orchestrationGuidelines: optionalGuidelines(
-				DEFAULT_ORCHESTRATION_GUIDELINES,
-				KIMI_FAMILY_ORCHESTRATION,
-				KIMI_K25_ORCHESTRATION,
-			),
-		},
-	],
+	["kimi-k2.5", "ignored"],
 	[
 		"minimax-m2.7",
 		{

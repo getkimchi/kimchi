@@ -1,8 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import {
-	SESSION_MODE_PICKER_HEADING,
-	SESSION_MODE_PICKER_HINT,
 	SessionModePickerComponent,
 	initialSessionModePickerState,
 	keyToSessionModePickerEvent,
@@ -44,19 +42,15 @@ describe("session mode picker reducer", () => {
 		expect(state.selectedIndex).toBe(0)
 		state = reduceSessionModePicker(state, "down").state
 		state = reduceSessionModePicker(state, "down").state
-		state = reduceSessionModePicker(state, "down").state
-		expect(state.selectedIndex).toBe(2)
+		expect(state.selectedIndex).toBe(1)
 	})
 
 	it("returns the selected option on select", () => {
 		let state = initialSessionModePickerState()
-		expect(reduceSessionModePicker(state, "select").result).toEqual({ choice: "ferment", hideDialog: false })
+		expect(reduceSessionModePicker(state, "select").result).toBe("ferment")
 
 		state = reduceSessionModePicker(state, "down").state
-		expect(reduceSessionModePicker(state, "select").result).toEqual({ choice: "default", hideDialog: false })
-
-		state = reduceSessionModePicker(state, "down").state
-		expect(reduceSessionModePicker(state, "select").result).toEqual({ choice: "default", hideDialog: true })
+		expect(reduceSessionModePicker(state, "select").result).toBe("default")
 	})
 
 	it("returns cancellation on cancel", () => {
@@ -85,48 +79,34 @@ describe("session mode picker key mapping", () => {
 })
 
 describe("session mode picker rendering", () => {
-	it("renders the workflow copy and bottom hint", () => {
+	it("renders the two workflow options with no heading or tip", () => {
 		const lines = renderSessionModePickerLines(initialSessionModePickerState(), theme(), 140)
 		const text = lines.join("\n")
 
 		expect(lines).toEqual([
 			"",
-			"  Choose your workflow",
+			"  > Try a /ferment workflow",
+			"    The agent breaks the task into phases, self-evaluates its output and delivers with minimal interruptions.",
 			"",
-			"  > Ferment",
-			"    Start a new ferment workflow. Agent plans and executes multi-step tasks end-to-end. You review the result.",
-			"",
-			"    Coding session",
-			"    Chat with the agent and steer it as it goes. Stay in the loop.",
-			"",
-			"    Coding session, don't show this dialog again",
-			"",
-			"  Tip: Use /ferment anytime to start a Ferment workflow.",
+			"    Just chat and code",
 			"",
 		])
-		expect(text).toContain(SESSION_MODE_PICKER_HEADING)
-		expect(text).toContain("Ferment")
+		expect(text).toContain("Try a /ferment workflow")
 		expect(text).toContain(
-			"Start a new ferment workflow. Agent plans and executes multi-step tasks end-to-end. You review the result.",
+			"The agent breaks the task into phases, self-evaluates its output and delivers with minimal interruptions.",
 		)
-		expect(text).toContain("Coding session")
-		expect(text).toContain("Chat with the agent and steer it as it goes. Stay in the loop.")
-		expect(text).toContain("Coding session, don't show this dialog again")
-		expect(text).toContain(`Tip: ${SESSION_MODE_PICKER_HINT.replaceAll("`", "")}`)
+		expect(text).toContain("Just chat and code")
+		expect(text).not.toContain("Tip:")
 	})
 
 	it("marks the selected option", () => {
 		let lines = renderSessionModePickerLines(initialSessionModePickerState(), theme(), 100)
-		expect(lines.some((line) => line.includes("> Ferment"))).toBe(true)
-		expect(lines.some((line) => line.includes("> Coding session"))).toBe(false)
+		expect(lines.some((line) => line.includes("> Try a /ferment workflow"))).toBe(true)
+		expect(lines.some((line) => line.includes("> Just chat and code"))).toBe(false)
 
 		const state = reduceSessionModePicker(initialSessionModePickerState(), "down").state
 		lines = renderSessionModePickerLines(state, theme(), 100)
-		expect(lines.some((line) => line.includes("> Coding session"))).toBe(true)
-
-		const hiddenState = reduceSessionModePicker(state, "down").state
-		lines = renderSessionModePickerLines(hiddenState, theme(), 100)
-		expect(lines.some((line) => line.includes("> Coding session, don't show this dialog again"))).toBe(true)
+		expect(lines.some((line) => line.includes("> Just chat and code"))).toBe(true)
 	})
 })
 
@@ -141,18 +121,7 @@ describe("SessionModePickerComponent", () => {
 		expect(requestRender).toHaveBeenCalledTimes(1)
 
 		component.handleInput("\r")
-		expect(onDone).toHaveBeenCalledWith({ choice: "default", hideDialog: false })
-	})
-
-	it("handles the hide dialog option", () => {
-		const onDone = vi.fn()
-		const component = new SessionModePickerComponent(theme(), onDone, vi.fn())
-
-		component.handleInput("\x1b[B")
-		component.handleInput("\x1b[B")
-		component.handleInput("\r")
-
-		expect(onDone).toHaveBeenCalledWith({ choice: "default", hideDialog: true })
+		expect(onDone).toHaveBeenCalledWith("default")
 	})
 
 	it("calls onDone for cancellation", () => {

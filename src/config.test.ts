@@ -5,9 +5,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	clearApiKey,
 	loadConfig,
+	readGitToken,
 	readTelemetryConfig,
 	writeApiKey,
-	writeHideSessionModeDialog,
+	writeDeviceId,
+	writeGitToken,
 	writeSessionModeWizardSeenAt,
 } from "./config.js"
 
@@ -40,6 +42,35 @@ describe("loadConfig", () => {
 		writeFileSync(configPath, JSON.stringify({ apiKey: "new-key", api_key: "old-key" }))
 		const config = loadConfig({ configPath })
 		expect(config.apiKey).toBe("new-key")
+	})
+
+	it("reads deviceId from config file", () => {
+		writeFileSync(configPath, JSON.stringify({ deviceId: "550e8400-e29b-41d4-a716-446655440000" }))
+		const config = loadConfig({ configPath })
+		expect(config.deviceId).toBe("550e8400-e29b-41d4-a716-446655440000")
+	})
+
+	it("reads device_id from config file for backward compatibility", () => {
+		writeFileSync(configPath, JSON.stringify({ device_id: "550e8400-e29b-41d4-a716-446655440000" }))
+		const config = loadConfig({ configPath })
+		expect(config.deviceId).toBe("550e8400-e29b-41d4-a716-446655440000")
+	})
+
+	it("prefers deviceId over device_id when both are set", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				deviceId: "preferred-uuid",
+				device_id: "legacy-uuid",
+			}),
+		)
+		const config = loadConfig({ configPath })
+		expect(config.deviceId).toBe("preferred-uuid")
+	})
+
+	it("returns empty deviceId when no device ID is found", () => {
+		const config = loadConfig({ configPath })
+		expect(config.deviceId).toBe("")
 	})
 
 	it("returns empty apiKey when no key is found", () => {
@@ -204,14 +235,6 @@ describe("loadConfig", () => {
 		expect(config.onboarding.hideSessionModeDialog).toBe(true)
 	})
 
-	it("reads hyphenated hide session mode dialog config for compatibility", () => {
-		writeFileSync(configPath, JSON.stringify({ onboarding: { "hide-session-mode-dialog": true } }))
-
-		const config = loadConfig({ configPath })
-
-		expect(config.onboarding.hideSessionModeDialog).toBe(true)
-	})
-
 	it("does not read project onboarding state as global first-run state", () => {
 		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
 		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
@@ -284,17 +307,66 @@ describe("clearApiKey", () => {
 	})
 })
 
-describe("readTelemetryConfig", () => {
+describe("writeDeviceId", () => {
 	let tempDir: string
 	let configPath: string
 
 	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "kimchi-telemetry-test-"))
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-device-"))
 		configPath = join(tempDir, "config.json")
 	})
 
 	afterEach(() => {
 		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("writes deviceId field", () => {
+		writeDeviceId("550e8400-e29b-41d4-a716-446655440000", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.deviceId).toBe("550e8400-e29b-41d4-a716-446655440000")
+	})
+
+	it("clears legacy device_id field", () => {
+		writeFileSync(configPath, JSON.stringify({ device_id: "old-uuid", other: 1 }))
+		writeDeviceId("new-uuid", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.deviceId).toBe("new-uuid")
+		expect(raw).not.toHaveProperty("device_id")
+	})
+
+	it("overwrites any previous value", () => {
+		writeDeviceId("first-uuid", configPath)
+		writeDeviceId("second-uuid", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.deviceId).toBe("second-uuid")
+	})
+})
+
+describe("readTelemetryConfig", () => {
+	let tempDir: string
+	let configPath: string
+	let savedApiKey: string | undefined
+	let savedTelemetryEnabled: string | undefined
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-telemetry-test-"))
+		configPath = join(tempDir, "config.json")
+		savedApiKey = process.env.KIMCHI_API_KEY
+		savedTelemetryEnabled = process.env.KIMCHI_TELEMETRY_ENABLED
+		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
+		delete process.env.KIMCHI_API_KEY
+		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
+		delete process.env.KIMCHI_TELEMETRY_ENABLED
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+		if (savedApiKey !== undefined) process.env.KIMCHI_API_KEY = savedApiKey
+		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
+		else delete process.env.KIMCHI_API_KEY
+		if (savedTelemetryEnabled !== undefined) process.env.KIMCHI_TELEMETRY_ENABLED = savedTelemetryEnabled
+		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
+		else delete process.env.KIMCHI_TELEMETRY_ENABLED
 	})
 
 	it("picks up telemetry.metricsEndpoint when present", () => {
@@ -329,6 +401,68 @@ describe("readTelemetryConfig", () => {
 		const config = readTelemetryConfig(configPath)
 		expect(config.enabled).toBe(false)
 		expect(config.metricsEndpoint).toBe("https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest")
+	})
+
+	it("injects User-Agent into telemetry headers", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				telemetry: {
+					enabled: true,
+					apiKey: "test-api-key",
+				},
+			}),
+		)
+		const config = readTelemetryConfig(configPath)
+		expect(config.headers["User-Agent"]).toBeDefined()
+		expect(config.headers["User-Agent"]).toMatch(/^kimchi\//)
+	})
+
+	it("injects User-Agent even with no apiKey and no custom headers", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				telemetry: {
+					enabled: true,
+				},
+			}),
+		)
+		const config = readTelemetryConfig(configPath)
+		expect(config.headers["User-Agent"]).toBeDefined()
+		expect(config.headers["User-Agent"]).toMatch(/^kimchi\//)
+	})
+
+	it("preserves custom user-agent header when user sets one", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				telemetry: {
+					enabled: true,
+					headers: {
+						"user-agent": "my-custom-agent/1.0",
+					},
+				},
+			}),
+		)
+		const config = readTelemetryConfig(configPath)
+		expect(config.headers["user-agent"]).toBe("my-custom-agent/1.0")
+		expect(config.headers["User-Agent"]).toBeUndefined()
+	})
+
+	it("injects User-Agent even when telemetry is disabled (config still prepared)", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				telemetry: {
+					enabled: false,
+					apiKey: "test-api-key",
+				},
+			}),
+		)
+		const config = readTelemetryConfig(configPath)
+		expect(config.enabled).toBe(false)
+		expect(config.headers["User-Agent"]).toBeDefined()
+		expect(config.headers["User-Agent"]).toMatch(/^kimchi\//)
 	})
 })
 
@@ -373,7 +507,7 @@ describe("writeSessionModeWizardSeenAt", () => {
 	})
 })
 
-describe("writeHideSessionModeDialog", () => {
+describe("readGitToken / writeGitToken", () => {
 	let tempDir: string
 	let configPath: string
 
@@ -386,30 +520,58 @@ describe("writeHideSessionModeDialog", () => {
 		rmSync(tempDir, { recursive: true, force: true })
 	})
 
-	it("writes onboarding.hideSessionModeDialog", () => {
-		writeHideSessionModeDialog(true, configPath)
-		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
-		expect(raw.onboarding.hideSessionModeDialog).toBe(true)
+	it("returns undefined when config file does not exist", () => {
+		expect(readGitToken("github.com", configPath)).toBeUndefined()
 	})
 
-	it("preserves unrelated fields and existing onboarding fields", () => {
-		writeFileSync(
-			configPath,
-			JSON.stringify({
-				apiKey: "key",
-				onboarding: { sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z" },
-			}),
-		)
+	it("returns undefined when gitTokens section is missing", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "key" }))
+		expect(readGitToken("github.com", configPath)).toBeUndefined()
+	})
 
-		writeHideSessionModeDialog(true, configPath)
+	it("returns undefined when host is not in gitTokens", () => {
+		writeFileSync(configPath, JSON.stringify({ gitTokens: { "gitlab.com": "tok" } }))
+		expect(readGitToken("github.com", configPath)).toBeUndefined()
+	})
+
+	it("reads a stored token for a host", () => {
+		writeFileSync(configPath, JSON.stringify({ gitTokens: { "github.com": "ghp_abc" } }))
+		expect(readGitToken("github.com", configPath)).toBe("ghp_abc")
+	})
+
+	it("ignores empty string tokens", () => {
+		writeFileSync(configPath, JSON.stringify({ gitTokens: { "github.com": "" } }))
+		expect(readGitToken("github.com", configPath)).toBeUndefined()
+	})
+
+	it("ignores non-string token values", () => {
+		writeFileSync(configPath, JSON.stringify({ gitTokens: { "github.com": 12345 } }))
+		expect(readGitToken("github.com", configPath)).toBeUndefined()
+	})
+
+	it("writes a token for a new host", () => {
+		writeGitToken("github.com", "ghp_new", configPath)
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.gitTokens["github.com"]).toBe("ghp_new")
+	})
 
-		expect(raw).toEqual({
-			apiKey: "key",
-			onboarding: {
-				sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z",
-				hideSessionModeDialog: true,
-			},
-		})
+	it("writes a token preserving existing config", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "key", gitTokens: { "gitlab.com": "gl_tok" } }))
+		writeGitToken("github.com", "ghp_abc", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("key")
+		expect(raw.gitTokens["gitlab.com"]).toBe("gl_tok")
+		expect(raw.gitTokens["github.com"]).toBe("ghp_abc")
+	})
+
+	it("overwrites an existing token for the same host", () => {
+		writeFileSync(configPath, JSON.stringify({ gitTokens: { "github.com": "old" } }))
+		writeGitToken("github.com", "new", configPath)
+		expect(readGitToken("github.com", configPath)).toBe("new")
+	})
+
+	it("round-trips write then read", () => {
+		writeGitToken("github.com", "ghp_roundtrip", configPath)
+		expect(readGitToken("github.com", configPath)).toBe("ghp_roundtrip")
 	})
 })

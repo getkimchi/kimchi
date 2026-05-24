@@ -48,6 +48,7 @@ export class TeleportableAgentSession {
 	private _foreground: Inner
 	private readonly _detached = new Map<string, RemoteAgentSession>()
 	private readonly _listeners = new Set<AgentSessionEventListener>()
+	private readonly _gitCredentialsSynced = new Set<string>()
 	private _innerUnsub?: () => void
 
 	private constructor(homeBase: Inner) {
@@ -81,6 +82,16 @@ export class TeleportableAgentSession {
 
 	getDetached(): ReadonlyMap<string, RemoteAgentSession> {
 		return this._detached
+	}
+
+	/** Returns true if git credentials have already been synced to this session during this CLI run. */
+	hasGitCredentialsSynced(sessionId: string): boolean {
+		return this._gitCredentialsSynced.has(sessionId)
+	}
+
+	/** Mark that git credentials have been successfully synced to this session. */
+	markGitCredentialsSynced(sessionId: string): void {
+		this._gitCredentialsSynced.add(sessionId)
 	}
 
 	/**
@@ -161,6 +172,20 @@ export class TeleportableAgentSession {
 		return fn.call(target, text, options)
 	}
 
+	/**
+	 * Always route reload to home base. InteractiveMode calls
+	 * `session.reload()` directly (not via prompt), so the proxy would
+	 * otherwise forward it to the remote foreground. Reloading must
+	 * happen locally — it tears down the extension runner, reloads
+	 * settings/resources, and re-emits session_start events that the
+	 * local TUI depends on. The remote RPC mode has no "reload" command
+	 * handler anyway, so sending it there would just error.
+	 */
+	reload(): unknown {
+		const fn = (this._homeBase as unknown as { reload: () => unknown }).reload
+		return fn.call(this._homeBase)
+	}
+
 	dispose(): void {
 		this._listeners.clear()
 		this._innerUnsub?.()
@@ -168,7 +193,7 @@ export class TeleportableAgentSession {
 	}
 
 	/** Commands that must always execute locally because they manage the wrapper. */
-	private static readonly _LOCAL_COMMANDS = new Set(["teleport", "attach", "detach", "connect", "sessions"])
+	private static readonly _LOCAL_COMMANDS = new Set(["teleport", "attach", "detach", "connect", "sessions", "sync"])
 
 	private _isLocalSlashCommand(text: string): boolean {
 		const trimmed = text.trim()

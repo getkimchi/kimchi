@@ -66,7 +66,6 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("Orchestrate the work")
 			expect(result).toContain("Sharing context between agents")
 			expect(result).toContain("Orchestrate the work")
-			expect(result).toContain("Model selection for delegation")
 			expect(result).toContain("Token budgets")
 			expect(result).toContain("token_budget")
 		})

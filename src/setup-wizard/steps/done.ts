@@ -3,6 +3,7 @@ import { log, note, outro, spinner } from "@clack/prompts"
 import { byId } from "../../integrations/registry.js"
 import type { ToolId } from "../../integrations/types.js"
 import { updateModelsConfig } from "../../models.js"
+import { installRtk } from "../../resources/rtk-install.js"
 import { exportEnvToShellProfile } from "../shell-profile.js"
 import type { WizardState } from "../state.js"
 
@@ -11,6 +12,8 @@ const KIMCHI_API_KEY_ENV = "KIMCHI_API_KEY"
 interface ApplyOutcome {
 	successes: string[]
 	failures: Array<{ id: string; error: string }>
+	warnings: Array<{ id: string; error: string }>
+	rtkInstalled: boolean
 }
 
 /**
@@ -28,7 +31,7 @@ interface ApplyOutcome {
  * having to run `kimchi setup` again.
  */
 export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
-	const outcome: ApplyOutcome = { successes: [], failures: [] }
+	const outcome: ApplyOutcome = { successes: [], failures: [], warnings: [], rtkInstalled: false }
 
 	// Fetch live models before writing any tool config.
 	// Throws if no key or network fails; surface the error and abort gracefully.
@@ -87,6 +90,20 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 		}
 	}
 
+	if (state.installRtk) {
+		const s = spinner()
+		s.start("Installing RTK...")
+		try {
+			const result = await installRtk()
+			outcome.rtkInstalled = true
+			s.stop(`RTK ${result.version}: ready at ${result.linkPath}`)
+		} catch (err) {
+			const msg = (err as Error).message
+			outcome.warnings.push({ id: "rtk", error: msg })
+			s.stop(`RTK: ${msg}`)
+		}
+	}
+
 	// Best-effort: persist KIMCHI_API_KEY to the user's shell profile so
 	// it's available in future shells. We never fail the wizard on this —
 	// the API key already lives in ~/.config/kimchi/config.json, the env
@@ -103,6 +120,8 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 		`Scope: ${state.scope}`,
 		`Telemetry: ${state.telemetryEnabled ? "enabled" : "disabled"}`,
 		outcome.successes.length > 0 ? `Configured: ${outcome.successes.join(", ")}` : "",
+		outcome.rtkInstalled ? "RTK: installed" : "",
+		outcome.warnings.length > 0 ? `Warnings: ${outcome.warnings.map((f) => f.id).join(", ")}` : "",
 		outcome.failures.length > 0
 			? `Failed: ${outcome.failures.map((f) => byId(f.id as ToolId)?.name ?? f.id).join(", ")}`
 			: "",

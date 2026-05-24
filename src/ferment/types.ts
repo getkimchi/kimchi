@@ -37,10 +37,17 @@ export interface ScopingQuestionOption {
 	recommended?: boolean
 }
 
+export const SCOPING_QUESTION_TYPES = ["radio", "checkbox", "text"] as const
+export type ScopingQuestionType = (typeof SCOPING_QUESTION_TYPES)[number]
+export const DEFAULT_SCOPING_QUESTION_TYPE: ScopingQuestionType = "radio"
+
 export interface ScopingQuestion {
 	id: string
 	text: string
-	options: ScopingQuestionOption[]
+	/** Omitted means radio for backward compatibility with existing scoping questions. */
+	type?: ScopingQuestionType
+	/** Required for radio/checkbox; omitted for text questions. */
+	options?: ScopingQuestionOption[]
 }
 
 export interface Scoping {

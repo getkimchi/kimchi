@@ -222,13 +222,24 @@ describe("wireBehaviours — tool_result", () => {
 		expect(next.flatMap((r) => (r.message ? [r.message] : []))).toEqual([])
 	})
 
-	it("does not steer for session-triggered bodies (already drained by before_agent_start)", async () => {
+	it("does not steer for session-triggered bodies that are still pending", async () => {
 		const pi = setupWired([ghCli])
 		await pi.fire("session_start", {}, { cwd: "/tmp" })
-		await pi.fire("before_agent_start", { prompt: "x", systemPrompt: "BASE" })
 		await pi.fire("tool_result", { toolName: "bash", input: { command: "gh pr list" } })
 
 		expect(pi.sent).toEqual([])
+
+		const next = await pi.fire<{ message?: { customType: string; content: string; display: boolean } }>(
+			"before_agent_start",
+			{ prompt: "x", systemPrompt: "BASE" },
+		)
+		expect(next.flatMap((r) => (r.message ? [r.message] : []))).toEqual([
+			expect.objectContaining({
+				customType: BEHAVIOUR_BODY_TYPE,
+				content: "Use gh for GitHub.",
+				display: false,
+			}),
+		])
 	})
 })
 

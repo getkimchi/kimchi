@@ -17,6 +17,7 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import makeTeleportExtension from "../../extensions/teleport.js"
 import { TeleportableAgentSession } from "./proxy/teleportable-session.js"
+import "../../login-command-patch.js"
 
 export interface RunTeleportSessionOptions {
 	extensionFactories: ExtensionFactory[]

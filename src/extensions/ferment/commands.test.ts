@@ -11,6 +11,7 @@ import {
 	registerFermentCommands,
 	startInteractiveFerment,
 } from "./commands.js"
+import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 
@@ -47,6 +48,7 @@ beforeEach(() => {
 afterEach(() => {
 	writeFileSyncMock.mockReset()
 	writeFileSyncMock.mockImplementation(actualFs.writeFileSync)
+	clearAllPendingPlanReviews()
 })
 
 interface RegisteredCommand {
@@ -112,12 +114,88 @@ describe("FermentCommandController", () => {
 		)
 	})
 
+	it("accepts an inline new title without opening an editor in UI mode", async () => {
+		const h = createHarness()
+		const controller = new FermentCommandController()
+		const ui = {
+			notify: vi.fn(),
+			editor: vi.fn().mockResolvedValueOnce("unexpected editor text"),
+			input: vi.fn().mockResolvedValueOnce("unexpected input text"),
+		}
+		const ctx = {
+			hasUI: true,
+			ui,
+		} as unknown as ExtensionCommandContext
+
+		const result = await controller.execute(
+			{ type: "new", title: "Inline Title" },
+			{ raw: 'new "Inline Title"', pi: h.pi, ctx, runtime: h.runtime },
+		)
+
+		const created = h.storage.list().find((f) => f.description === "Inline Title")
+		expect(result).toEqual({ handled: true })
+		expect(ui.editor).not.toHaveBeenCalled()
+		expect(ui.input).not.toHaveBeenCalled()
+		expect(created).toBeDefined()
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_created_nudge",
+				content: [expect.objectContaining({ text: expect.stringContaining("Inline Title") })],
+			}),
+			{ triggerTurn: true },
+		)
+	})
+
+	it("prompts bare new commands with the multi-line editor in UI mode", async () => {
+		const h = createHarness()
+		const controller = new FermentCommandController()
+		const ui = {
+			notify: vi.fn(),
+			editor: vi.fn().mockResolvedValueOnce("make reports better\ninclude tests"),
+			input: vi.fn().mockResolvedValueOnce("single-line fallback"),
+		}
+		const ctx = {
+			hasUI: true,
+			ui,
+		} as unknown as ExtensionCommandContext
+
+		const result = await controller.execute(
+			{ type: "new", title: "" },
+			{ raw: "new", pi: h.pi, ctx, runtime: h.runtime },
+		)
+
+		const created = h.storage.list().find((f) => f.description === "make reports better\ninclude tests")
+		expect(result).toEqual({ handled: true })
+		expect(ui.editor).toHaveBeenCalledWith(
+			"🍺  What would you like to ferment?\ne.g. 'Rewrite login flow' or 'Add OAuth support'",
+			"",
+		)
+		expect(ui.input).not.toHaveBeenCalled()
+		expect(created).toBeDefined()
+		expect(h.runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ id: created?.id }))
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_request",
+				display: true,
+				details: { intent: "make reports better\ninclude tests" },
+			}),
+		)
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_created_nudge",
+				content: [expect.objectContaining({ text: expect.stringContaining("make reports better\ninclude tests") })],
+			}),
+			{ triggerTurn: true },
+		)
+	})
+
 	it("echoes the interactive request before starting the hidden scoping turn", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
 		const ui = {
 			notify: vi.fn(),
-			input: vi.fn().mockResolvedValueOnce("make the todo app glassy"),
+			editor: vi.fn().mockResolvedValueOnce("make the todo app glassy\nwith tests"),
+			input: vi.fn().mockResolvedValueOnce("single-line fallback"),
 			select: vi.fn(),
 		}
 		const ctx = {
@@ -128,18 +206,23 @@ describe("FermentCommandController", () => {
 		const result = await controller.execute({ type: "interactive" }, { raw: "", pi: h.pi, ctx, runtime: h.runtime })
 
 		expect(result).toEqual({ handled: true })
+		expect(ui.editor).toHaveBeenCalledWith(
+			"🍺  What would you like to ferment?\ne.g. 'Rewrite login flow' or 'Add OAuth support'",
+			"",
+		)
+		expect(ui.input).not.toHaveBeenCalled()
 		expect(ui.select).not.toHaveBeenCalled()
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_request",
 				display: true,
-				details: { intent: "make the todo app glassy" },
+				details: { intent: "make the todo app glassy\nwith tests" },
 			}),
 		)
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_created_nudge",
-				content: [expect.objectContaining({ text: expect.stringContaining("make the todo app glassy") })],
+				content: [expect.objectContaining({ text: expect.stringContaining("make the todo app glassy\nwith tests") })],
 			}),
 			{ triggerTurn: true },
 		)
@@ -204,6 +287,67 @@ describe("FermentCommandController", () => {
 		expect(result).toEqual({ handled: true })
 		expect(h.storage.list()).toHaveLength(0)
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Unknown /ferment command"))
+	})
+
+	it("keeps headless one-shot without intent on the usage path", async () => {
+		const h = createHarness()
+		const controller = new FermentCommandController()
+
+		const result = await controller.execute(
+			{ type: "one-shot", intent: "" },
+			{ raw: "one-shot", pi: h.pi, ctx: h.ctx, runtime: h.runtime },
+		)
+
+		expect(result).toEqual({ handled: true })
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith('Usage: /ferment one-shot "description of what to build"')
+		expect(h.storage.list()).toHaveLength(0)
+		expect(h.pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("keeps UI one-shot without prompt handlers on the usage path", async () => {
+		const h = createHarness()
+		const controller = new FermentCommandController()
+		const ctx = {
+			hasUI: true,
+			ui: { notify: vi.fn() },
+		} as unknown as ExtensionCommandContext
+
+		const result = await controller.execute(
+			{ type: "one-shot", intent: "" },
+			{ raw: "one-shot", pi: h.pi, ctx, runtime: h.runtime },
+		)
+
+		expect(result).toEqual({ handled: true })
+		expect(ctx.ui.notify).toHaveBeenCalledWith('Usage: /ferment one-shot "description of what to build"')
+		expect(h.storage.list()).toHaveLength(0)
+		expect(h.pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("uses the multi-line editor for free-form goal revisions", async () => {
+		const h = createHarness()
+		const controller = new FermentCommandController()
+		const active = h.storage.create("Revise Goal")
+		h.runtime.setActive(active)
+		const ui = {
+			notify: vi.fn(),
+			editor: vi.fn().mockResolvedValueOnce("new goal\nwith detail"),
+			input: vi.fn().mockResolvedValueOnce("single-line fallback"),
+		}
+		const ctx = {
+			hasUI: true,
+			ui,
+		} as unknown as ExtensionCommandContext
+
+		const result = await controller.execute(
+			{ type: "revise", field: "goal" },
+			{ raw: "revise goal", pi: h.pi, ctx, runtime: h.runtime },
+		)
+
+		expect(result).toEqual({ handled: true })
+		expect(ui.editor).toHaveBeenCalledWith("Revise goal:", "")
+		expect(ui.input).not.toHaveBeenCalled()
+		expect(h.storage.get(active.id)?.goal).toBe("new goal\nwith detail")
+		expect(ui.notify).toHaveBeenCalledWith('Goal updated: "new goal\nwith detail"')
 	})
 
 	it("reports export write failures without throwing", async () => {
@@ -318,6 +462,39 @@ describe("registerFermentCommands", () => {
 			}),
 		)
 		expect(getFermentArgumentCompletions("resume ", h.runtime)).toBeNull()
+	})
+
+	it("/ferment switch clears only the previous active pending plan review", async () => {
+		const h = createHarness()
+		const previous = h.storage.create("Previous Review")
+		const target = h.storage.create("Target Review")
+		h.runtime.setActive(previous)
+		setPendingPlanReview({
+			fermentId: previous.id,
+			fermentName: previous.name,
+			planMarkdown: "# Plan: Previous Review",
+		})
+		setPendingPlanReview({
+			fermentId: target.id,
+			fermentName: target.name,
+			planMarkdown: "# Plan: Target Review",
+		})
+
+		const commands = new Map<string, RegisteredCommand>()
+		const pi = {
+			...h.pi,
+			registerCommand: (name: string, command: RegisteredCommand) => {
+				commands.set(name, command)
+			},
+		} as unknown as ExtensionAPI
+		registerFermentCommands(pi, h.runtime)
+
+		const fermentCommand = commands.get("ferment")
+		if (!fermentCommand) throw new Error("ferment command was not registered")
+		await fermentCommand.handler(`switch "${target.name}"`, h.ctx)
+
+		expect(getPendingPlanReview(previous.id)).toBeUndefined()
+		expect(getPendingPlanReview(target.id)).toBeDefined()
 	})
 
 	it("completes /ferment nested static argument groups", () => {
@@ -631,9 +808,7 @@ describe("registerFermentCommands", () => {
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [
-					expect.objectContaining({ text: expect.stringContaining("Re-read the current persisted ferment state") }),
-				],
+				content: [expect.objectContaining({ text: expect.stringContaining("Call start_ferment_step") })],
 				details: expect.objectContaining({ action: "wake_up", expectedAction: "start_step" }),
 			}),
 			{ triggerTurn: true },
@@ -694,9 +869,7 @@ describe("registerFermentCommands", () => {
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [
-					expect.objectContaining({ text: expect.stringContaining("Re-read the current persisted ferment state") }),
-				],
+				content: [expect.objectContaining({ text: expect.stringContaining("Call activate_ferment_phase") })],
 				details: expect.objectContaining({ action: "wake_up", expectedAction: "activate_phase" }),
 			}),
 			{ triggerTurn: true },
@@ -865,9 +1038,7 @@ describe("registerFermentCommands", () => {
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [
-					expect.objectContaining({ text: expect.stringContaining("Re-read the current persisted ferment state") }),
-				],
+				content: [expect.objectContaining({ text: expect.stringContaining("Call start_ferment_step") })],
 				details: expect.objectContaining({ action: "wake_up", expectedAction: "start_step" }),
 			}),
 			{ triggerTurn: true },
@@ -918,9 +1089,7 @@ describe("registerFermentCommands", () => {
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [
-					expect.objectContaining({ text: expect.stringContaining("Re-read the current persisted ferment state") }),
-				],
+				content: [expect.objectContaining({ text: expect.stringContaining("Call start_ferment_step") })],
 				details: expect.objectContaining({ action: "wake_up", expectedAction: "start_step" }),
 			}),
 			{ triggerTurn: true },
@@ -1047,9 +1216,7 @@ describe("registerFermentCommands", () => {
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [
-					expect.objectContaining({ text: expect.stringContaining("Re-read the current persisted ferment state") }),
-				],
+				content: [expect.objectContaining({ text: expect.stringContaining("Call activate_ferment_phase") })],
 				details: expect.objectContaining({ action: "wake_up", expectedAction: "activate_phase" }),
 			}),
 			{ triggerTurn: true },

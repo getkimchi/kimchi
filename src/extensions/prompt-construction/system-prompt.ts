@@ -12,6 +12,7 @@ import { type ExtensionAPI, type Skill, formatSkillsForPrompt } from "@earendil-
 import { buildPhaseGuidelinesSection } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
 import type { Phase } from "../orchestration/model-registry/types.js"
+import type { ModelRoles } from "../orchestration/model-roles.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
 import type { ContextFile } from "./context-files.js"
 import { type SuppressibleSection, renderSystemPromptBlocks } from "./system-prompt-blocks.js"
@@ -45,12 +46,14 @@ export interface SystemPromptBuildOptions {
 	currentPhase?: Phase
 	registry?: ModelRegistry
 	mode: PromptMode
+	/** Role-based model assignments for orchestrator mode. */
+	roles?: ModelRoles
 }
 
 const DELEGATION_TOOL_NAMES = new Set(["Agent", "get_subagent_result", "steer_subagent"])
 
 export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
-	const { pi, tools, env, contextFiles, skills, currentModelId, currentPhase, registry, mode } = options
+	const { pi, tools, env, contextFiles, skills, currentModelId, currentPhase, registry, mode, roles } = options
 
 	const effectiveTools = mode === "subagent" ? tools.filter((t) => !DELEGATION_TOOL_NAMES.has(t.name)) : tools
 
@@ -59,12 +62,11 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	const projectContext = formatProjectContext(contextFiles)
 	const skillsSection = formatSkills(skills)
 
-	// TODO!!!
-	// In the future we will need to dynamically resolve orchestration instructions based on the user prompt "to do"
 	const orchestrationSection = resolveOrchestrationInstructions({
 		currentModelId,
 		registry,
 		mode,
+		roles,
 	})
 
 	const phaseSection = buildPhaseGuidelinesSection(currentModelId, currentPhase, registry)

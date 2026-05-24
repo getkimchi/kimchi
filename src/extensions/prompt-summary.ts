@@ -2,7 +2,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { formatCount } from "./format.js"
-import { ORCHESTRATOR_MODEL_ID, getMultiModelEnabled, isSubagent } from "./prompt-construction/prompt-enrichment.js"
+import { getMultiModelEnabled, getOrchestratorModelId, isSubagent } from "./prompt-construction/prompt-enrichment.js"
 
 interface UsageTotals {
 	input: number
@@ -220,7 +220,7 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 		const data: PromptSummaryData = {
 			elapsed: formatDuration(Date.now() - startedAt),
 			orchestrator: orchestrator.input + orchestrator.output > 0 ? { ...orchestrator } : null,
-			orchestratorModel: getMultiModelEnabled() ? ORCHESTRATOR_MODEL_ID : undefined,
+			orchestratorModel: getMultiModelEnabled() ? getOrchestratorModelId() : undefined,
 			subagents: subagents.input + subagents.output > 0 ? { ...subagents } : null,
 			subagentsByModel,
 			total: grandTotal,

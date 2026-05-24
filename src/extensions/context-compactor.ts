@@ -48,6 +48,21 @@ export function computeCutoff(
 }
 
 /**
+ * Find the index of the most recent message with role "user".
+ * This ensures the LLM always retains the user's language, tone,
+ * and task framing even during long tool-call chains.
+ */
+function findLastUserMessageIndex(messages: ContextEvent["messages"]): number {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i] as { role?: string }
+		if (m.role === "user") {
+			return i
+		}
+	}
+	return -1
+}
+
+/**
  * Return a pruned copy of a ToolResultMessage.
  * - Large text blocks are replaced with a placeholder (preserves all other fields).
  * - Error outputs keep the last 2000 chars so the agent can still read the crash reason.
@@ -90,8 +105,15 @@ export default function contextCompactorExtension(pi: ExtensionAPI) {
 		if (lastInputTokens < PRUNE_THRESHOLD) return
 
 		const { messages } = event
-		const cutoff = computeCutoff(messages, PROTECT_WINDOW, MAX_PROTECTED_CHARS)
-		if (cutoff === 0) return
+		const baseCutoff = computeCutoff(messages, PROTECT_WINDOW, MAX_PROTECTED_CHARS)
+		if (baseCutoff === 0) return
+
+		// If the most recent user message falls outside the protected window
+		// (i.e. it's before `baseCutoff`), extend the window backward so that
+		// the user message is still visible. This prevents the model from losing
+		// the user's language, tone, or task framing during long tool-call chains.
+		const lastUserIndex = findLastUserMessageIndex(messages)
+		const cutoff = lastUserIndex >= 0 ? Math.min(baseCutoff, lastUserIndex) : baseCutoff
 
 		let prunedCount = 0
 		let totalCharsRemoved = 0

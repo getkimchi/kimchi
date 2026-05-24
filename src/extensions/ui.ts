@@ -7,7 +7,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
 import { copyToClipboard } from "@earendil-works/pi-coding-agent"
 import { Box, Text } from "@earendil-works/pi-tui"
-import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
+import { Key, isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
@@ -31,10 +31,11 @@ import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
-
+import { splitModelRef } from "./orchestration/model-roles.js"
 import {
-	ORCHESTRATOR_MODEL_ID,
 	getMultiModelEnabled,
+	getOrchestratorModelId,
+	getOrchestratorModelRef,
 	setMultiModelEnabled,
 } from "./prompt-construction/prompt-enrichment.js"
 import { setSelectionStatus } from "./selection-status.js"
@@ -127,6 +128,7 @@ function getEnabledModelIds(): Set<string> | null {
 // Track current editor for indicator updates
 let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
+let currentSessionIndicatorText: string | null = null
 
 type DisposableComponent = Component & { dispose?(): void }
 
@@ -167,6 +169,16 @@ export function setPasteImageHandler(handler: () => void): void {
  */
 export function setPendingImageIndicator(text: string | null): void {
 	currentEditor?.setPendingImageIndicator(text)
+}
+
+/**
+ * Show or clear a short session label right-aligned on the prompt's first row.
+ * Used by the teleport extension to surface a persistent "(host)" indicator
+ * while attached to a remote worker. Pass `null` to clear.
+ */
+export function setSessionIndicator(text: string | null): void {
+	currentSessionIndicatorText = text
+	currentEditor?.setSessionIndicator(text)
 }
 
 function runScript(scriptPath: string, payload: object, tui: TUI, footer: ScriptFooter, onDone: () => void): void {
@@ -370,7 +382,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 				if (ferment) parts.push(ferment.text)
 				const perm = footerData.getExtensionStatuses().get("permissions-mode")
 				if (perm) parts.push(perm)
-				const modelId = getMultiModelEnabled() ? `multi-model (${ORCHESTRATOR_MODEL_ID})` : (ctx.model?.id ?? "n/a")
+				const modelId = getMultiModelEnabled() ? `multi-model (${getOrchestratorModelId()})` : (ctx.model?.id ?? "n/a")
 				parts.push(`${resolvedAccentFg(theme)}${modelId}${RST_FG} ${theme.fg("dim", "→ ctrl+p")}`)
 				return parts.join(` ${theme.fg("dim", "·")} `)
 			}
@@ -495,6 +507,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 			if (pasteImageHandler) {
 				editor.onPasteImage = pasteImageHandler
 			}
+			if (currentSessionIndicatorText) {
+				editor.setSessionIndicator(currentSessionIndicatorText)
+			}
 			return editor
 		})
 
@@ -504,6 +519,16 @@ export default function uiExtension(pi: ExtensionAPI) {
 		if (unsubModelCycleInput) unsubModelCycleInput()
 		if (ctx.hasUI) {
 			unsubModelCycleInput = ctx.ui.onTerminalInput((data) => {
+				// In raw-mode terminals Ctrl+C arrives as \x03 rather than raising
+				// SIGINT.  The upstream TUI already maps Escape to abort, but does
+				// not handle Ctrl+C.  Bridge the gap so both keys cancel the active
+				// turn while the agent is working.
+				if (matchesKey(data, Key.ctrl("c")) && !isKeyRelease(data)) {
+					if (currentCtx && !currentCtx.isIdle()) {
+						currentCtx.abort()
+					}
+					return undefined
+				}
 				if (matchesKey(data, "ctrl+p")) {
 					if (!isKeyRelease(data)) {
 						const allAvailable = ctx.modelRegistry.getAvailable()
@@ -512,7 +537,11 @@ export default function uiExtension(pi: ExtensionAPI) {
 							? allAvailable.filter((m) => enabledIds.has(`${m.provider}/${m.id}`))
 							: allAvailable
 						const current = ctx.model
-						const orchestratorModel = ctx.modelRegistry.find("kimchi-dev", ORCHESTRATOR_MODEL_ID)
+						const orchRef = getOrchestratorModelRef()
+						const orchParsed = splitModelRef(orchRef)
+						const orchestratorModel = orchParsed
+							? ctx.modelRegistry.find(orchParsed.provider, orchParsed.modelId)
+							: undefined
 
 						// Cycle order: model[0] → ... → model[last] → multi-model → model[0]
 						// kimi-k2.6 appears as a regular model AND multi-model appears

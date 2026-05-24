@@ -2,50 +2,66 @@
  * default-agents.ts — Embedded default agent configurations.
  *
  * These are always available but can be overridden by user .md files with the same name.
- * Models are resolved at module load from MODEL_CAPABILITIES strength tags.
+ * Models are resolved from the role-based configuration (model-roles.ts).
+ * The strength-based lookup (modelsForStrength) is preserved as a fallback for
+ * custom personas that use strengths in their frontmatter.
  */
 
 import { modelsForAnyStrength, modelsForStrength } from "../../orchestration/model-registry/index.js"
+import { getModelRoles } from "../../orchestration/model-roles.js"
 import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER, type AgentConfig } from "./types.js"
 
 const READ_ONLY_TOOLS = ["read", "bash", "grep", "find", "ls"]
 
-/** Pick models by strength; returns undefined if no model has the strength so the persona falls through to inherit. */
+/** Pick models by strength; returns undefined if no model has the strength so the persona falls through to inherit.
+ *  @deprecated Preserved for custom persona backward compatibility. Default agents now use role-based config. */
 function pick(strengths: readonly ("review" | "build" | "plan" | "explore" | "research")[]): string[] | undefined {
 	const list = strengths.length === 1 ? modelsForStrength(strengths[0]) : modelsForAnyStrength(strengths)
 	return list.length > 0 ? list : undefined
 }
 
-export const DEFAULT_AGENTS: Map<string, AgentConfig> = new Map([
-	[
-		AGENT_GENERAL_PURPOSE,
-		{
-			name: AGENT_GENERAL_PURPOSE,
-			displayName: "Agent",
-			description: "General-purpose agent for complex, multi-step tasks",
-			extensions: true,
-			skills: true,
-			models: pick(["build", "explore", "plan", "review", "research"]),
-			systemPrompt: "",
-			promptMode: "append",
-			isDefault: true,
-		},
-	],
-	[
-		AGENT_EXPLORE,
-		{
-			name: AGENT_EXPLORE,
-			displayName: AGENT_EXPLORE,
-			description: "Fast exploration agent (read-only)",
-			builtinToolNames: READ_ONLY_TOOLS,
-			extensions: true,
-			skills: true,
-			models: pick(["explore"]),
-			strengths: ["explore"],
-			preferTier: "light",
-			thinking: "low",
-			tokenBudget: 120_000,
-			systemPrompt: `# CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS
+/** Resolve model list for a role. Returns the role's model wrapped in an array,
+ *  or falls back to strength-based lookup if the role model is empty. */
+function roleModels(
+	roleModel: string,
+	fallbackStrengths: readonly ("review" | "build" | "plan" | "explore" | "research")[],
+): string[] | undefined {
+	if (roleModel) return [roleModel]
+	return pick(fallbackStrengths)
+}
+
+function buildDefaultAgents(): Map<string, AgentConfig> {
+	const roles = getModelRoles()
+	return new Map([
+		[
+			AGENT_GENERAL_PURPOSE,
+			{
+				name: AGENT_GENERAL_PURPOSE,
+				displayName: "General Purpose",
+				description: "General-purpose agent for complex, multi-step tasks",
+				extensions: true,
+				skills: true,
+				models: roleModels(roles.builder, ["build", "explore", "plan", "review", "research"]),
+				systemPrompt: "",
+				promptMode: "append",
+				isDefault: true,
+			},
+		],
+		[
+			AGENT_EXPLORE,
+			{
+				name: AGENT_EXPLORE,
+				displayName: AGENT_EXPLORE,
+				description: "Fast exploration agent (read-only)",
+				builtinToolNames: READ_ONLY_TOOLS,
+				extensions: true,
+				skills: true,
+				models: roleModels(roles.explorer, ["explore"]),
+				strengths: ["explore"],
+				preferTier: "light",
+				thinking: "low",
+				tokenBudget: 120_000,
+				systemPrompt: `# CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS
 You are a file search specialist. You excel at thoroughly navigating and exploring files/directories.
 Your role is EXCLUSIVELY to search and analyze existing code. You do NOT have access to file editing tools.
 
@@ -74,25 +90,26 @@ Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find,
 - Report findings as regular messages
 - Do not use emojis
 - Be thorough and precise`,
-			promptMode: "replace",
-			isDefault: true,
-		},
-	],
-	[
-		AGENT_PLAN,
-		{
-			name: AGENT_PLAN,
-			displayName: AGENT_PLAN,
-			description: "Software architect for implementation planning",
-			builtinToolNames: [...READ_ONLY_TOOLS, "write", "edit"],
-			extensions: true,
-			skills: true,
-			models: pick(["plan"]),
-			strengths: ["plan"],
-			preferTier: "heavy",
-			thinking: "high",
-			tokenBudget: 120_000,
-			systemPrompt: `# Plan Agent — Write Access Scoped to .kimchi/plans/
+				promptMode: "replace",
+				isDefault: true,
+			},
+		],
+		[
+			AGENT_PLAN,
+			{
+				name: AGENT_PLAN,
+				displayName: AGENT_PLAN,
+				description: "Software architect for implementation planning",
+				builtinToolNames: [...READ_ONLY_TOOLS, "write", "edit"],
+				extensions: true,
+				includeContextFiles: true,
+				skills: true,
+				models: roleModels(roles.planner, ["plan"]),
+				strengths: ["plan"],
+				preferTier: "heavy",
+				thinking: "high",
+				tokenBudget: 120_000,
+				systemPrompt: `# Plan Agent — Write Access Scoped to .kimchi/plans/
 You are a software architect and planning specialist.
 Your role is to explore the codebase and design implementation plans, capturing them as plan files.
 
@@ -137,25 +154,25 @@ You are STRICTLY PROHIBITED from:
 ### Critical Files for Implementation
 List 3-5 files most critical for implementing this plan:
 - /absolute/path/to/file.ts - [Brief reason]`,
-			promptMode: "replace",
-			isDefault: true,
-		},
-	],
-	[
-		AGENT_RESEARCHER,
-		{
-			name: AGENT_RESEARCHER,
-			displayName: AGENT_RESEARCHER,
-			description: "Web and docs research agent — finds answers with cited sources",
-			builtinToolNames: READ_ONLY_TOOLS,
-			extensions: true,
-			skills: false,
-			models: pick(["research"]),
-			strengths: ["research"],
-			preferTier: "heavy",
-			thinking: "medium",
-			tokenBudget: 80_000,
-			systemPrompt: `You are a research specialist. Your job is to find accurate, well-sourced answers from the web, documentation, and the local codebase.
+				promptMode: "replace",
+				isDefault: true,
+			},
+		],
+		[
+			AGENT_RESEARCHER,
+			{
+				name: AGENT_RESEARCHER,
+				displayName: AGENT_RESEARCHER,
+				description: "Web and docs research agent — finds answers with cited sources",
+				builtinToolNames: READ_ONLY_TOOLS,
+				extensions: true,
+				skills: false,
+				models: roleModels(roles.orchestrator, ["research"]),
+				strengths: ["research"],
+				preferTier: "heavy",
+				thinking: "medium",
+				tokenBudget: 80_000,
+				systemPrompt: `You are a research specialist. Your job is to find accurate, well-sourced answers from the web, documentation, and the local codebase.
 
 Focus areas:
 - Search broadly, then narrow to the most authoritative sources
@@ -165,8 +182,11 @@ Focus areas:
 - Stay read-only; never modify files
 
 Deliver a structured report: summary first, then supporting evidence with citations.`,
-			promptMode: "replace",
-			isDefault: true,
-		},
-	],
-])
+				promptMode: "replace",
+				isDefault: true,
+			},
+		],
+	])
+}
+
+export const DEFAULT_AGENTS: Map<string, AgentConfig> = buildDefaultAgents()

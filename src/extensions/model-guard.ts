@@ -24,6 +24,22 @@ export function contextFitsModel(tokens: number, contextWindow: number): boolean
 	return tokens <= getSafeContextWindow(contextWindow)
 }
 
+/**
+ * Returns the best available token count for the current context.
+ * Prefers the upstream getContextUsage().tokens (provider-accurate);
+ * falls back to the local estimateTokens() heuristic when upstream
+ * returns null (e.g. post-compaction, pre-first-response, fresh session).
+ * Returns null when no data is available at all.
+ */
+export function resolveContextTokens(
+	usage: { tokens: number | null } | undefined,
+	messages: ContextEvent["messages"],
+): number | null {
+	if (usage?.tokens != null) return usage.tokens
+	if (messages.length === 0) return null
+	return estimateTokens(messages)
+}
+
 /** Module-level flag tracking whether the current session contains image blocks. */
 let imagesDetected = false
 
@@ -32,6 +48,9 @@ let imagesStripped = false
 
 /** Reference to the latest context messages (stored for /strip-images command). */
 let latestMessages: ContextEvent["messages"] = []
+
+/** Timestamp of the last context event that updated latestMessages (ms since epoch). */
+let latestMessagesTimestamp = 0
 
 /** Map storing image descriptions keyed by data hash (for replacing images with descriptions). */
 const imageDescriptions = new Map<string, string>()
@@ -78,10 +97,19 @@ export function getLatestMessages(): ContextEvent["messages"] {
 	return latestMessages
 }
 
+/**
+ * Returns the timestamp (ms since epoch) of the most recent context event.
+ * If no context event has fired yet, returns 0.
+ */
+export function getLatestMessagesTimestamp(): number {
+	return latestMessagesTimestamp
+}
+
 function resetImageState(): void {
 	imagesDetected = false
 	imagesStripped = false
 	latestMessages = []
+	latestMessagesTimestamp = 0
 	imageDescriptions.clear()
 }
 
@@ -264,6 +292,7 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 
 		// Store reference to latest messages for /strip-images command
 		latestMessages = messages
+		latestMessagesTimestamp = Date.now()
 
 		// Always scan for images in the current context.
 		// If new images appear after a previous strip, reset the stripped flag
@@ -286,10 +315,12 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 			}
 		}
 
-		// Truncate when context usage exceeds the target model's context window
-		if (model && usage?.tokens != null) {
+		// Truncate when context usage exceeds the target model's context window.
+		// Falls back to local estimate when upstream tokens are null (post-compaction).
+		if (model) {
+			const tokens = resolveContextTokens(usage, result)
 			const threshold = Math.floor(model.contextWindow * SAFETY_MARGIN)
-			if (usage.tokens > threshold) {
+			if (tokens != null && tokens > threshold) {
 				const truncated = truncateMessages(result, model.contextWindow)
 				if (truncated !== result) {
 					result = truncated
@@ -329,4 +360,18 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 			}
 		}
 	})
+}
+
+/**
+ * Test-only helper to directly set latestMessages from tests.
+ * Bypasses the context event so tests can control state without
+ * needing to fire a context event or mock getLatestMessages.
+ *
+ * No-op in production; only mutates state when running under vitest.
+ */
+export function __setLatestMessagesForTest(messages: ContextEvent["messages"]): void {
+	if (typeof process !== "undefined" && process.env?.VITEST) {
+		latestMessages = messages
+		latestMessagesTimestamp = Date.now()
+	}
 }

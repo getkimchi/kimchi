@@ -87,11 +87,9 @@ describe("orchestration guideline resolution", () => {
 		expect(result).toContain("chunk")
 	})
 
-	it("returns composed orchestration guideline for kimi-k2.5", () => {
+	it("returns empty string for ignored model kimi-k2.5", () => {
 		const result = resolveOrchestrationGuideline("kimi-k2.5", registry)
-		expect(result).toContain("Kimi family")
-		expect(result).toContain("kimi-k2.5 specific")
-		expect(result).toContain("tool-call reliability")
+		expect(result).toBe("")
 	})
 
 	it("returns empty string for ignored model claude-opus-4-6", () => {
@@ -140,14 +138,13 @@ describe("guideline section building", () => {
 describe("builtin-model guideline content", () => {
 	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
 
-	it("kimi-k2.5 build: contains default, family, and per-model layers", () => {
+	it("kimi-k2.5 build: falls back to default (ignored model)", () => {
 		const result = resolvePhaseGuideline("build", "kimi-k2.5", registry)
 		expect(result).toContain("During **build** phase:")
-		expect(result).toContain("Plan-first")
-		expect(result).toContain("well-formed tool calls")
+		expect(result).not.toContain("Plan-first")
 	})
 
-	it("kimi-k2.5 explore: falls back to default (no per-model explore)", () => {
+	it("kimi-k2.5 explore: falls back to default (ignored model)", () => {
 		const result = resolvePhaseGuideline("explore", "kimi-k2.5", registry)
 		expect(result).toContain("During **explore** phase:")
 		expect(result).not.toContain("Plan-first")

@@ -103,9 +103,61 @@ describe("runScopingFlow", () => {
 			.mock.calls.find((call) => (call[0] as { customType?: string }).customType === "ferment_created_nudge")
 		const msg = nudgeCall?.[0] as { content: { type: string; text: string }[] }
 		const text = msg.content.map((c) => c.text).join("")
+		expect(text).toContain("Task:\nDraft a complete Ferment scoping proposal.")
+		expect(text).toContain("Context:")
 		expect(text).toContain("I want to build a login system")
 		expect(text).toContain(`ferment_id "${ferment.id}"`)
+		expect(text).toContain("Do NOT call create_ferment")
+		expect(text).toContain('<phase_0_inventory required="true"')
+		expect(text).toContain(
+			"First response action: print a concise inventory of all available skills and subagent types",
+		)
+		expect(text).toContain('<discovery_sequence required="true">')
+		expect(text).toContain("Do not use unbounded Read calls")
+		expect(text).toContain("first get the file's line count or tool-reported length")
+		expect(text).toContain("read at most a short snippet, about 60 lines or less")
+		expect(text).toContain("Only read an implementation/UI/style file end-to-end")
+		expect(text).toContain("If a file is longer than about 120 lines")
+		expect(text).toContain("Immediately spawn 1-4 narrow Explore subagents")
+		expect(text).toContain('subagent_type: "Explore"')
+		expect(text).toContain("start with token_budget: 120000")
+		expect(text).toContain('Do not "round out the initial scan"')
+		expect(text).toContain("Forbidden pattern: reading entire implementation, UI, or style files")
+		expect(text).toContain("Question policy:")
+		expect(text).toContain("Planning policy:")
+		expect(text).toContain("Output contract:")
+		expect(text).toContain("ask those questions through the propose_ferment_scoping questions array")
+		expect(text).toContain("questions must be in propose_ferment_scoping.questions")
+		expect(text).toContain("gates array is required")
+		expect(text).toContain("exactly P1, P2, and P3")
+		expect(text).not.toContain("Don't research with file/bash tools first")
 		expect(text).toContain("Call propose_ferment_scoping")
+	})
+
+	it("prefers ctx.ui.editor for the free-form scoping prompt", async () => {
+		const { runtime, storage } = createRuntime()
+		const ferment = storage.create("My Ferment")
+		const pi = makePi()
+		const ui = {
+			notify: vi.fn(),
+			editor: vi.fn().mockResolvedValue("I want to build reports\nwith export tests"),
+			input: vi.fn().mockResolvedValue("single-line fallback"),
+		}
+		const ctx = {
+			hasUI: true,
+			ui,
+		} as unknown as ExtensionCommandContext
+
+		await runScopingFlow(ferment, pi, ctx, runtime)
+
+		expect(ui.editor).toHaveBeenCalledWith("What do you want to do?\nDescribe what you want to accomplish…", "")
+		expect(ui.input).not.toHaveBeenCalled()
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_request",
+				details: { intent: "I want to build reports\nwith export tests" },
+			}),
+		)
 	})
 
 	it("undefined input (Esc) → no sendMessage, no markScopingInteractive, no pendingScope", async () => {

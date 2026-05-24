@@ -96,6 +96,7 @@ class LiveThinkingPreview implements Component {
 	) {}
 
 	render(width: number): string[] {
+		const innerWidth = Math.max(1, width - 1)
 		const nowMs = Date.now()
 		const pulseFrames = [
 			this.theme.fg("dim", "·"),
@@ -104,28 +105,28 @@ class LiveThinkingPreview implements Component {
 			this.theme.fg("muted", "•"),
 		]
 		const pulse = pulseFrames[Math.floor(nowMs / 180) % pulseFrames.length] ?? pulseFrames[0]!
-		const header = truncateToWidth(
-			`${this.theme.fg("muted", "│")} ${this.theme.fg("dim", "Thinking")} ${pulse}`,
-			width,
+		const header = ` ${truncateToWidth(
+			`${this.theme.fg("muted", "▍")} ${this.theme.fg("dim", "Thinking")} ${pulse}`,
+			innerWidth,
 			"",
-		)
+		)}`
 
-		const prefix = `${this.theme.fg("muted", "│")} `
-		const innerWidth = Math.max(1, width - 2)
+		const prefix = `${this.theme.fg("muted", "▍")} `
+		const bodyInnerWidth = Math.max(1, innerWidth - 2)
 		const fullText = this.blocks
 			.map((b) => b.text)
 			.join("\n")
 			.trim()
-		const separator = truncateToWidth(prefix, width, "")
+		const separator = ` ${truncateToWidth(prefix, innerWidth, "")}`
 		if (!fullText) return [header, separator]
 		const allLines: string[] = []
 		for (const rawLine of fullText.replace(/\t/g, "    ").split("\n")) {
 			if (rawLine.trim().length === 0) {
-				allLines.push(truncateToWidth(prefix, width, ""))
+				allLines.push(` ${truncateToWidth(prefix, innerWidth, "")}`)
 				continue
 			}
-			for (const wrapped of wrapTextWithAnsi(this.theme.fg("dim", rawLine), innerWidth)) {
-				allLines.push(truncateToWidth(`${prefix}${wrapped}`, width, ""))
+			for (const wrapped of wrapTextWithAnsi(this.theme.fg("dim", rawLine), bodyInnerWidth)) {
+				allLines.push(` ${truncateToWidth(`${prefix}${wrapped}`, innerWidth, "")}`)
 			}
 		}
 		return [header, separator, ...allLines.slice(-LIVE_PREVIEW_LINES)]
@@ -331,7 +332,7 @@ function installPatch(theme: ThinkingThemeLike): () => void {
 								: this.hiddenThinkingLabel
 							const styledLabel = theme.bold ? theme.bold(rawLabel) : rawLabel
 							this.contentContainer.addChild(
-								new Text(`${theme.fg("muted", "│")} ${theme.fg("dim", styledLabel)}`, 1, 0),
+								new Text(` ${theme.fg("muted", "▍")} ${theme.fg("dim", styledLabel)}`, 0, 0),
 							)
 						}
 					} else {

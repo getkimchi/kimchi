@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, relative, resolve } from "node:path"
+import { getVersion } from "./utils.js"
 
 const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
 const AGENT_CONFIG_DIR = resolve(homedir(), ".config", "kimchi", "harness")
@@ -86,6 +87,7 @@ export interface KimchiConfig {
 	skillPaths?: string[]
 	migrationState?: MigrationState
 	onboarding: OnboardingConfig
+	deviceId: string
 }
 
 /**
@@ -117,6 +119,7 @@ function readConfigExtras(configPath: string): {
 	skillPaths?: string[]
 	migrationState?: MigrationState
 	onboarding?: OnboardingConfig
+	deviceId?: string
 } {
 	try {
 		const raw = readFileSync(configPath, "utf-8")
@@ -175,6 +178,12 @@ function readConfigExtras(configPath: string): {
 		const llmEndpoint =
 			typeof parsed.llmEndpoint === "string" && parsed.llmEndpoint.length > 0 ? parsed.llmEndpoint : undefined
 
+		// Read deviceId (camelCase, then snake_case for backwards compat)
+		const deviceId =
+			(typeof parsed.deviceId === "string" && parsed.deviceId.length > 0 && parsed.deviceId) ||
+			(typeof parsed.device_id === "string" && parsed.device_id.length > 0 && parsed.device_id) ||
+			undefined
+
 		return {
 			apiKey,
 			llmEndpoint,
@@ -184,6 +193,7 @@ function readConfigExtras(configPath: string): {
 			skillPaths,
 			migrationState,
 			onboarding,
+			deviceId,
 		}
 	} catch {
 		return {}
@@ -209,8 +219,7 @@ function parseOnboardingConfig(value: unknown): OnboardingConfig | undefined {
 		typeof raw.sessionModeWizardSeenAt === "string" && raw.sessionModeWizardSeenAt.length > 0
 			? raw.sessionModeWizardSeenAt
 			: undefined
-	const hideSessionModeDialogValue = raw.hideSessionModeDialog ?? raw["hide-session-mode-dialog"]
-	const hideSessionModeDialog = typeof hideSessionModeDialogValue === "boolean" ? hideSessionModeDialogValue : undefined
+	const hideSessionModeDialog = typeof raw.hideSessionModeDialog === "boolean" ? raw.hideSessionModeDialog : undefined
 
 	return {
 		...(sessionModeWizardSeenAt ? { sessionModeWizardSeenAt } : {}),
@@ -273,6 +282,12 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 	const enabled =
 		envEnabled !== undefined ? envEnabled !== "0" && envEnabled !== "false" : (fileEnabled ?? defaultEnabled)
 
+	// Always inject a User-Agent so telemetry is traceable on the server side.
+	const hasUserAgent = Object.keys(headers).some((k) => k.toLowerCase() === "user-agent")
+	if (!hasUserAgent) {
+		headers["User-Agent"] = `kimchi/${getVersion()}`
+	}
+
 	return {
 		enabled,
 		endpoint: fileEndpoint ?? DEFAULT_TELEMETRY_LOGS_ENDPOINT,
@@ -314,6 +329,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		skillPaths: projectExtras.skillPaths ?? globalExtras.skillPaths,
 		migrationState: projectExtras.migrationState ?? globalExtras.migrationState,
 		onboarding: globalExtras.onboarding,
+		deviceId: projectExtras.deviceId ?? globalExtras.deviceId,
 	}
 
 	return {
@@ -326,6 +342,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		skillPaths: extras.skillPaths,
 		migrationState: extras.migrationState,
 		onboarding: extras.onboarding ?? {},
+		deviceId: extras.deviceId ?? "",
 	}
 }
 
@@ -384,13 +401,6 @@ export function readHideSessionModeDialog(configPath?: string): boolean {
 	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.hideSessionModeDialog === true
 }
 
-export function writeHideSessionModeDialog(hidden: boolean, configPath?: string): void {
-	const path = configPath ?? KIMCHI_CONFIG_PATH
-	updateOnboardingConfig(path, (onboarding) => {
-		onboarding.hideSessionModeDialog = hidden
-	})
-}
-
 export function writeMigrationState(state: MigrationState, configPath?: string): void {
 	writeConfigField("migrationState", state, configPath ?? KIMCHI_CONFIG_PATH)
 }
@@ -406,6 +416,16 @@ export function writeApiKey(key: string, configPath?: string): void {
 		// Clear legacy snake_case key so we don't keep stale data
 		// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
 		delete raw.api_key
+	})
+}
+
+export function writeDeviceId(id: string, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateConfigFile(path, (raw) => {
+		raw.deviceId = id
+		// Clear legacy snake_case key so we don't keep stale data
+		// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
+		delete raw.device_id
 	})
 }
 
@@ -437,4 +457,43 @@ export function clearApiKey(configPath?: string): void {
 		},
 		{ createIfMissing: false },
 	)
+}
+
+/**
+ * Read a stored git token for a specific host from the global config.
+ * Tokens are stored under `gitTokens.<host>` (e.g. `gitTokens["github.com"]`).
+ */
+export function readGitToken(host: string, configPath?: string): string | undefined {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	try {
+		const raw = readFileSync(path, "utf-8")
+		const parsed = JSON.parse(raw)
+		const tokens = parsed.gitTokens
+		if (tokens && typeof tokens === "object" && !Array.isArray(tokens)) {
+			const token = (tokens as Record<string, unknown>)[host]
+			if (typeof token === "string" && token.length > 0) {
+				return token
+			}
+		}
+		return undefined
+	} catch {
+		return undefined
+	}
+}
+
+/**
+ * Persist a git token for a specific host in the global config.
+ * Stored under `gitTokens.<host>` alongside the API key, following the same
+ * security model (plaintext in `~/.config/kimchi/config.json`).
+ */
+export function writeGitToken(host: string, token: string, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateConfigFile(path, (raw) => {
+		const gitTokens =
+			raw.gitTokens && typeof raw.gitTokens === "object" && !Array.isArray(raw.gitTokens)
+				? { ...(raw.gitTokens as Record<string, unknown>) }
+				: {}
+		gitTokens[host] = token
+		raw.gitTokens = gitTokens
+	})
 }

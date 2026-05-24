@@ -68,7 +68,7 @@ describe("dispatchSubcommand", () => {
 		// the merged help renderer. Either way is "handled", but checking
 		// stdout for the version banner confirms the dispatch order.
 		const printed = logSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
-		expect(printed).toMatch(/^kimchi \d+\.\d+\.\d+/m)
+		expect(printed).toMatch(/^kimchi (?:dev|\d+\.\d+\.\d+)/m)
 	})
 
 	it("update --help prints usage and returns 0", async () => {

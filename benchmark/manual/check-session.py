@@ -137,11 +137,12 @@ def main():
 
     total_runs = len(run_dirs)
 
-    # Filter runs by task substrings (case-insensitive)
+    # Filter runs by exact directory-name match (case-insensitive)
     if task_filters:
+        filters_lower = [f.lower() for f in task_filters]
         run_dirs = [
             d for d in run_dirs
-            if any(f.lower() in d.name.lower() for f in task_filters)
+            if d.name.lower() in filters_lower
         ]
         if not run_dirs:
             print("No runs matched the provided task filters.", file=sys.stderr)

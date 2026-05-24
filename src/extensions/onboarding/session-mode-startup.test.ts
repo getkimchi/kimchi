@@ -1,10 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { writeHideSessionModeDialog, writeSessionModeWizardSeenAt } from "../../config.js"
+import { writeSessionModeWizardSeenAt } from "../../config.js"
 import { globalTipRegistry } from "../tips/registry.js"
 import { createSessionModeOnboardingForStartup } from "./session-mode-startup.js"
 
@@ -47,6 +47,7 @@ function createHarness(options: {
 	let activeComponent: CustomComponent | undefined
 	let inputHandler: TerminalInputHandler | undefined
 	const unsubscribe = vi.fn()
+	let storedEditorFactory: unknown
 	const ui = {
 		setWidget: vi.fn((_: string, content: unknown) => {
 			if (typeof content === "function") {
@@ -58,6 +59,10 @@ function createHarness(options: {
 		onTerminalInput: vi.fn((handler: TerminalInputHandler) => {
 			inputHandler = handler
 			return unsubscribe
+		}),
+		getEditorComponent: vi.fn(() => storedEditorFactory),
+		setEditorComponent: vi.fn((factory: unknown) => {
+			storedEditorFactory = factory
 		}),
 		custom: vi.fn((factory: (...args: unknown[]) => CustomComponent | Promise<CustomComponent>) => {
 			return new Promise((resolve, reject) => {
@@ -143,19 +148,28 @@ describe("session mode startup integration", () => {
 		expect(harness.ui.onTerminalInput).toHaveBeenCalled()
 	})
 
-	it("shows returning launches with existing onboarding state", async () => {
+	it("skips returning launches once the dialog has been seen", async () => {
 		writeSessionModeWizardSeenAt("2026-05-19T08:00:00.000Z", configPath)
 		const harness = createHarness({ configPath, now })
 
 		await harness.start()
 
-		expect(harness.ui.setWidget).toHaveBeenCalled()
-		expect(harness.ui.onTerminalInput).toHaveBeenCalled()
+		expect(harness.ui.setWidget).not.toHaveBeenCalled()
+		expect(harness.ui.onTerminalInput).not.toHaveBeenCalled()
 	})
 
-	it("skips launches when the session mode dialog has been hidden", async () => {
-		writeSessionModeWizardSeenAt("2026-05-19T08:00:00.000Z", configPath)
-		writeHideSessionModeDialog(true, configPath)
+	it("skips launches when the session mode dialog has been hidden via manual config edit", async () => {
+		// hideSessionModeDialog is an escape-hatch flag: users opt out by
+		// editing the config file directly. No code path sets it from the UI.
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				onboarding: {
+					sessionModeWizardSeenAt: "2026-05-19T08:00:00.000Z",
+					hideSessionModeDialog: true,
+				},
+			}),
+		)
 		const harness = createHarness({ configPath, now })
 
 		await harness.start()
@@ -204,23 +218,6 @@ describe("session mode startup integration", () => {
 
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
-		expect(startFerment).not.toHaveBeenCalled()
-		expect(harness.activeComponent()).toBeUndefined()
-	})
-
-	it("choosing Coding session with hide persists the hidden user config without starting Ferment", async () => {
-		writeSessionModeWizardSeenAt("2026-05-19T08:00:00.000Z", configPath)
-		const startFerment = vi.fn()
-		const harness = createHarness({ configPath, now, startFerment })
-		await harness.start()
-
-		harness.input("\x1b[B")
-		harness.input("\x1b[B")
-		harness.input("\r")
-		await harness.settle()
-
-		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
-		expect(raw.onboarding.hideSessionModeDialog).toBe(true)
 		expect(startFerment).not.toHaveBeenCalled()
 		expect(harness.activeComponent()).toBeUndefined()
 	})

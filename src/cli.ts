@@ -8,6 +8,9 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import { getCliModeArg, isHelpOrVersionArgs } from "./cli-args.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
+// IMPORTANT: must be first local import — patches InteractiveMode.prototype
+// before any module can construct an InteractiveMode instance.
+import "./login-command-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
 	loadConfig,
@@ -17,8 +20,10 @@ import {
 	writeSkillPaths,
 } from "./config.js"
 import { isBunBinary } from "./env.js"
+import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
+import bashCollapseExtension from "./extensions/bash-collapse.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
@@ -55,6 +60,11 @@ import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { updateModelsConfig } from "./models.js"
 import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./modes/teleport/sync/session-export.js"
+import { ensureDeviceId } from "./posthog-device.js"
+import { capturePostHogEvent } from "./posthog.js"
+import resourcesExtension from "./resources/extension.js"
+import { type ManagedExtensionFactory, enabledExtensionFactories } from "./resources/filter.js"
+import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
@@ -63,7 +73,27 @@ import { getVersion } from "./utils.js"
 
 installCloudflare524RetryPatch()
 
+// --- PostHog device ID & analytics ---
+// Read or generate device ID (persisted; reused across invocations for
+// consistent unique-user counts in PostHog). Reads both camelCase and
+// snake_case (device_id) from config.json for backwards compatibility.
 const telemetryConfig = readTelemetryConfig()
+const deviceId = ensureDeviceId()
+
+// Fire-and-forget app_started on every invocation (respects telemetry opt-out).
+// Stash the promise so we can await it on shutdown to reduce truncated sends.
+// app_started has no per-event properties — default properties (cli_version,
+// os, arch) are attached automatically by capturePostHogEvent, matching the
+// DefaultEventProperties behaviour.
+const phPending: Promise<void>[] = []
+if (telemetryConfig.enabled) {
+	phPending.push(
+		capturePostHogEvent({
+			event: "app_started",
+			distinctId: deviceId,
+		}),
+	)
+}
 
 let sessionId: string | undefined
 let sessionFile: string | undefined
@@ -212,6 +242,7 @@ try {
 	// the version using piConfig.name = "kimchi".
 	const dispatch = await dispatchSubcommand(process.argv.slice(2))
 	if (dispatch.kind === "handled") {
+		await Promise.allSettled(phPending)
 		process.exit(dispatch.exitCode)
 	}
 
@@ -224,6 +255,18 @@ try {
 		// hook keys off this flag instead of just running unconditionally on a
 		// 0-status exit.
 		sessionStarted = true
+
+		// Fire harness_launched (one shot per harness session; respects telemetry opt-out)
+		if (telemetryConfig.enabled) {
+			phPending.push(
+				capturePostHogEvent({
+					event: "harness_launched",
+					distinctId: deviceId,
+					properties: { version: getVersion() },
+				}),
+			)
+		}
+
 		let config = loadConfig()
 
 		const envKey = process.env.KIMCHI_API_KEY || undefined
@@ -270,7 +313,30 @@ try {
 			throw new Error("KIMCHI_CODING_AGENT_DIR is not set; cli.ts must be entered via entry.ts")
 		}
 		const modelsJsonPath = resolve(agentDir, "models.json")
-		const { models } = await updateModelsConfig(modelsJsonPath, apiKey)
+
+		let currentApiKey = apiKey
+		let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
+		try {
+			;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
+		} catch (err) {
+			const is401 = err instanceof Error && err.message.includes("401")
+			if (is401 && process.stdin.isTTY) {
+				console.warn("API key is invalid or expired. Redirecting to setup...")
+				writeApiKey("")
+				config = loadConfig()
+				const { runWizard } = await import("./setup-wizard/index.js")
+				const wizardResult = await runWizard()
+				if (wizardResult.cancelled) {
+					process.exit(130)
+				}
+				currentApiKey = wizardResult.apiKey ?? ""
+				writeApiKey(currentApiKey)
+				config = loadConfig()
+				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
+			} else {
+				throw err
+			}
+		}
 
 		// Must run before main() so the keybindings file is loaded with the
 		// override in place.
@@ -401,12 +467,19 @@ try {
 			kimchiMinimalTintsExtension,
 			loopGuardExtension,
 			lspExtension,
-			mcpAdapterExtension,
+			...enabledExtensionFactories([
+				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
+			] satisfies ManagedExtensionFactory[]),
 			// Ferment must see raw input before prompt enrichment rewrites print-mode text.
-			fermentExtension,
+			...enabledExtensionFactories([
+				{ id: "extensions.ferment", factory: fermentExtension },
+			] satisfies ManagedExtensionFactory[]),
 			questionnaireExtension,
 			promptEnrichmentExtension(skillPaths),
+			bashCollapseExtension,
 			permissionsExtension,
+			resourcesExtension,
+			resourceToolBlockerExtension,
 			behavioursExtension,
 			promptSummaryExtension,
 			contextCompactorExtension,
@@ -417,25 +490,31 @@ try {
 			uiExtension,
 			sessionModeOnboarding,
 			tipsExtension(),
-			agentsExtension,
+			...enabledExtensionFactories([
+				{ id: "extensions.agents", factory: agentsExtension },
+			] satisfies ManagedExtensionFactory[]),
 			tagsExtension,
 			telemetryExtension(telemetryConfig),
 			toolRenderingExtension,
-			webFetchExtension,
-			webSearchExtension,
+			...enabledExtensionFactories([
+				{ id: "tools.web_fetch", factory: webFetchExtension },
+				{ id: "tools.web_search", factory: webSearchExtension },
+			] satisfies ManagedExtensionFactory[]),
 			loginExtension,
 			modelSwitchExtension,
 			modelGuardExtension,
 			stripImagesExtension,
 			traceIdExtension,
+			activityExtension,
 		]
 
 		if (acpMode) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
 			await runAcpMode({ extensionFactories, agentDir })
 		} else if (teleportMode) {
-			if (!apiKey) {
+			if (!currentApiKey) {
 				console.error("Error: --teleport requires an API key — run 'kimchi setup' first.")
+				await Promise.allSettled(phPending)
 				process.exit(1)
 			}
 
@@ -443,7 +522,7 @@ try {
 			await runTeleportSession({
 				extensionFactories,
 				agentDir,
-				apiKey: apiKey ?? "",
+				apiKey: currentApiKey,
 				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 			})
 		} else {
@@ -452,11 +531,15 @@ try {
 			await main(rawArgs, { extensionFactories })
 		}
 	}
+	// Await pending PostHog sends before exiting to reduce truncated requests.
+	await Promise.allSettled(phPending)
 } catch (err) {
+	await Promise.allSettled(phPending)
 	if (err instanceof SetupCancelled) {
 		process.exitCode = 130
 	} else {
 		console.error(err instanceof Error ? err.message : String(err))
+		await Promise.allSettled(phPending)
 		process.exit(1)
 	}
 }

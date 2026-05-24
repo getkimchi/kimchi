@@ -10,6 +10,7 @@ import type { Ferment } from "../../ferment/types.js"
 import { globalTipRegistry } from "../tips/registry.js"
 import fermentExtension from "./index.js"
 import { resetAllReactiveContinuationNudgeCounts } from "./nudge.js"
+import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { getActive, isAutomatedContinuationEnabled, setActive, setContinuationPolicy } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
@@ -80,6 +81,7 @@ afterEach(() => {
 	setActive(undefined)
 	setContinuationPolicy("manual")
 	globalTipRegistry.clear()
+	clearAllPendingPlanReviews()
 	requestSharedFooterRenderMock.mockClear()
 	resetAllReactiveContinuationNudgeCounts()
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
@@ -839,6 +841,280 @@ describe("fermentExtension question dropdown", () => {
 			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
 			expect.anything(),
 		)
+	})
+
+	it("opens pending plan review after agent_end macrotask and starts execution", async () => {
+		vi.useFakeTimers()
+		try {
+			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-plan-review-start-test-")))
+			const runtime: FermentRuntime = {
+				...createDefaultFermentRuntime(),
+				getStorage: () => storage,
+			}
+			runtime.setContinuationPolicy("automated")
+			const draft = storage.create("Deferred Review")
+			runtime.setActive(draft)
+			runtime.setPendingScope(draft.id, {
+				goal: "Goal",
+				successCriteria: "Works",
+				constraints: [],
+				phases: [{ name: "Phase", goal: "Build", steps: [] }],
+			})
+			setPendingPlanReview({
+				fermentId: draft.id,
+				fermentName: draft.name,
+				planMarkdown: "# Plan: Deferred Review",
+			})
+
+			const { handlers, pi } = registerFermentExtension(runtime)
+			const agentEnd = handlers.get("agent_end")
+			if (!agentEnd) throw new Error("agent_end handler was not registered")
+			const ctx = {
+				ui: {
+					custom: vi.fn().mockResolvedValue({ kind: "start" }),
+					notify: vi.fn(),
+					setWorkingVisible: vi.fn(),
+				},
+			}
+
+			await agentEnd({ type: "agent_end" }, ctx)
+			expect(ctx.ui.custom).not.toHaveBeenCalled()
+
+			await vi.runOnlyPendingTimersAsync()
+
+			expect(ctx.ui.custom).toHaveBeenCalled()
+			expect(storage.get(draft.id)?.status).toBe("planned")
+			expect(getPendingPlanReview(draft.id)).toBeUndefined()
+			expect(pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "ferment_continuation_nudge", display: false }),
+				expect.objectContaining({ triggerTurn: true, deliverAs: "followUp" }),
+			)
+			expect(pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					content: [
+						expect.objectContaining({
+							text: expect.stringContaining(
+								`Call activate_ferment_phase with ferment_id "${draft.id}" and phase_id "phase-1"`,
+							),
+						}),
+					],
+				}),
+				expect.anything(),
+			)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("runs the pending plan review captured before the agent_end timer", async () => {
+		vi.useFakeTimers()
+		try {
+			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-plan-review-race-test-")))
+			const runtime: FermentRuntime = {
+				...createDefaultFermentRuntime(),
+				getStorage: () => storage,
+			}
+			runtime.setContinuationPolicy("automated")
+			const firstDraft = storage.create("First Deferred Review")
+			const secondDraft = storage.create("Second Deferred Review")
+			runtime.setActive(firstDraft)
+			runtime.setPendingScope(firstDraft.id, {
+				goal: "First goal",
+				successCriteria: "First works",
+				constraints: [],
+				phases: [{ name: "First phase", goal: "Build first", steps: [] }],
+			})
+			runtime.setPendingScope(secondDraft.id, {
+				goal: "Second goal",
+				successCriteria: "Second works",
+				constraints: [],
+				phases: [{ name: "Second phase", goal: "Build second", steps: [] }],
+			})
+			setPendingPlanReview({
+				fermentId: firstDraft.id,
+				fermentName: firstDraft.name,
+				planMarkdown: "# Plan: First Deferred Review",
+			})
+			setPendingPlanReview({
+				fermentId: secondDraft.id,
+				fermentName: secondDraft.name,
+				planMarkdown: "# Plan: Second Deferred Review",
+			})
+
+			const { handlers } = registerFermentExtension(runtime)
+			const agentEnd = handlers.get("agent_end")
+			if (!agentEnd) throw new Error("agent_end handler was not registered")
+			const ctx = {
+				ui: {
+					custom: vi.fn().mockResolvedValue({ kind: "start" }),
+					notify: vi.fn(),
+					setWorkingVisible: vi.fn(),
+				},
+			}
+
+			await agentEnd({ type: "agent_end" }, ctx)
+			runtime.setActive(secondDraft)
+			await vi.runOnlyPendingTimersAsync()
+
+			expect(storage.get(firstDraft.id)?.status).toBe("planned")
+			expect(storage.get(secondDraft.id)?.status).toBe("draft")
+			expect(getPendingPlanReview(firstDraft.id)).toBeUndefined()
+			expect(getPendingPlanReview(secondDraft.id)).toBeDefined()
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("routes pending plan review feedback as hidden replanning input after agent_end", async () => {
+		vi.useFakeTimers()
+		try {
+			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-plan-review-feedback-test-")))
+			const runtime: FermentRuntime = {
+				...createDefaultFermentRuntime(),
+				getStorage: () => storage,
+			}
+			const draft = storage.create("Deferred Feedback")
+			runtime.setActive(draft)
+			runtime.setPendingScope(draft.id, {
+				goal: "Goal",
+				successCriteria: "Works",
+				constraints: [],
+				phases: [{ name: "Phase", goal: "Build", steps: [] }],
+			})
+			setPendingPlanReview({
+				fermentId: draft.id,
+				fermentName: draft.name,
+				planMarkdown: "# Plan: Deferred Feedback",
+			})
+
+			const { handlers, pi } = registerFermentExtension(runtime)
+			const agentEnd = handlers.get("agent_end")
+			if (!agentEnd) throw new Error("agent_end handler was not registered")
+			const ctx = {
+				ui: {
+					custom: vi.fn().mockResolvedValue({ kind: "feedback", text: "drop phase 2" }),
+					setWorkingVisible: vi.fn(),
+				},
+			}
+
+			await agentEnd({ type: "agent_end" }, ctx)
+			await vi.runOnlyPendingTimersAsync()
+
+			expect(storage.get(draft.id)?.status).toBe("draft")
+			expect(getPendingPlanReview(draft.id)).toBeDefined()
+			expect(pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					customType: "ferment_scoping_iteration",
+					display: false,
+					content: expect.stringContaining("drop phase 2"),
+				}),
+				{ triggerTurn: true, deliverAs: "followUp" },
+			)
+			expect(pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					content: expect.stringContaining(`ferment_id "${draft.id}"`),
+				}),
+				expect.anything(),
+			)
+			expect(pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					content: expect.stringContaining("Do not call scope_ferment"),
+				}),
+				expect.anything(),
+			)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("keeps pending plan review when the review dialog is cancelled", async () => {
+		vi.useFakeTimers()
+		try {
+			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-plan-review-cancel-test-")))
+			const runtime: FermentRuntime = {
+				...createDefaultFermentRuntime(),
+				getStorage: () => storage,
+			}
+			const draft = storage.create("Cancelled Review")
+			runtime.setActive(draft)
+			runtime.setPendingScope(draft.id, {
+				goal: "Goal",
+				successCriteria: "Works",
+				constraints: [],
+				phases: [{ name: "Phase", goal: "Build", steps: [] }],
+			})
+			setPendingPlanReview({
+				fermentId: draft.id,
+				fermentName: draft.name,
+				planMarkdown: "# Plan: Cancelled Review",
+			})
+
+			const { handlers, pi } = registerFermentExtension(runtime)
+			const agentEnd = handlers.get("agent_end")
+			if (!agentEnd) throw new Error("agent_end handler was not registered")
+			const ctx = {
+				ui: {
+					custom: vi.fn().mockResolvedValue({ kind: "cancelled", reason: "decision_cancelled" }),
+					setWorkingVisible: vi.fn(),
+				},
+			}
+
+			await agentEnd({ type: "agent_end" }, ctx)
+			await vi.runOnlyPendingTimersAsync()
+
+			expect(storage.get(draft.id)?.status).toBe("draft")
+			expect(getPendingPlanReview(draft.id)).toBeDefined()
+			expect(pi.sendMessage).not.toHaveBeenCalled()
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("keeps pending plan review when start confirmation fails", async () => {
+		vi.useFakeTimers()
+		try {
+			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-plan-review-fail-test-")))
+			const runtime: FermentRuntime = {
+				...createDefaultFermentRuntime(),
+				getStorage: () => storage,
+			}
+			const draft = storage.create("Failed Confirmation")
+			runtime.setActive(draft)
+			runtime.setPendingScope(draft.id, {
+				goal: "Goal",
+				successCriteria: "Works",
+				constraints: [],
+			})
+			setPendingPlanReview({
+				fermentId: draft.id,
+				fermentName: draft.name,
+				planMarkdown: "# Plan: Failed Confirmation",
+			})
+
+			const { handlers, pi } = registerFermentExtension(runtime)
+			const agentEnd = handlers.get("agent_end")
+			if (!agentEnd) throw new Error("agent_end handler was not registered")
+			const ctx = {
+				ui: {
+					custom: vi.fn().mockResolvedValue({ kind: "start" }),
+					notify: vi.fn(),
+					setWorkingVisible: vi.fn(),
+				},
+			}
+
+			await agentEnd({ type: "agent_end" }, ctx)
+			await vi.runOnlyPendingTimersAsync()
+
+			expect(storage.get(draft.id)?.status).toBe("draft")
+			expect(getPendingPlanReview(draft.id)).toBeDefined()
+			expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Failed to save plan"), "error")
+			expect(pi.sendMessage).not.toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+				expect.anything(),
+			)
+		} finally {
+			vi.useRealTimers()
+		}
 	})
 
 	it("intercepts a trailing confirmation question after tool calls", async () => {

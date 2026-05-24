@@ -1,4 +1,5 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
+import { truncateToWidth } from "@earendil-works/pi-tui"
 import { LogoHeader } from "../../../components/logo.js"
 
 const SPIN_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -47,24 +48,25 @@ export function createTeleportProgress(ui: ExtensionUIContext) {
 		return TELEPORT_FUN_PHASES[phaseIdx]
 	}
 
-	function renderProgress(theme: { fg(color: string, text: string): string }): string[] {
+	function renderProgress(theme: { fg(color: string, text: string): string }, width: number): string[] {
 		const lines: string[] = []
 		const dim = (t: string) => theme.fg("dim", t)
+		const trunc = (line: string) => truncateToWidth(line, width)
 
 		if (finished) {
-			lines.push(`${theme.fg("success", "✓")} ${theme.fg("success", "Teleported")}`)
+			lines.push(trunc(`${theme.fg("success", "✓")} ${theme.fg("success", "Teleported")}`))
 		} else {
 			const p = currentPhase()
 			const char = p.frames[phaseFrameIdx % p.frames.length]
-			lines.push(`${theme.fg("accent", char)} ${theme.fg("accent", p.message)}`)
+			lines.push(trunc(`${theme.fg("accent", char)} ${theme.fg("accent", p.message)}`))
 		}
 
 		for (const s of steps) {
 			if (s.done) {
-				lines.push(`  ${theme.fg("success", "✓")} ${dim(s.label)}`)
+				lines.push(trunc(`  ${theme.fg("success", "✓")} ${dim(s.label)}`))
 			} else {
 				const frame = SPIN_FRAMES[stepSpinIdx]
-				lines.push(`  ${theme.fg("accent", frame)} ${s.label}`)
+				lines.push(trunc(`  ${theme.fg("accent", frame)} ${s.label}`))
 			}
 		}
 
@@ -72,9 +74,9 @@ export function createTeleportProgress(ui: ExtensionUIContext) {
 			lines.push("")
 			const labelW = 4
 			const pad = (l: string) => l.padEnd(labelW)
-			lines.push(`  ${dim("┌")} ${theme.fg("success", sessionInfo.description)}`)
-			lines.push(`  ${dim("│")} ${dim(pad("id"))} ${sessionInfo.id}`)
-			lines.push(`  ${dim("└")} ${dim(pad("url"))} ${sessionInfo.url}`)
+			lines.push(trunc(`  ${dim("┌")} ${theme.fg("success", sessionInfo.description)}`))
+			lines.push(trunc(`  ${dim("│")} ${dim(pad("id"))} ${sessionInfo.id}`))
+			lines.push(trunc(`  ${dim("└")} ${dim(pad("url"))} ${sessionInfo.url}`))
 		}
 
 		return lines
@@ -91,7 +93,7 @@ export function createTeleportProgress(ui: ExtensionUIContext) {
 				render(width: number) {
 					headerTui = _tui
 					const lines = logo.render(width)
-					lines.push(...renderProgress(theme))
+					lines.push(...renderProgress(theme, width))
 					lines.push("")
 					return lines
 				},
@@ -130,7 +132,7 @@ export function createTeleportProgress(ui: ExtensionUIContext) {
 	ui.setWidget(
 		"teleport-lock",
 		(_tui, theme) => ({
-			render: () => [theme.fg("dim", "🔒 Input sealed - in transit…")],
+			render: (width: number) => [truncateToWidth(theme.fg("dim", "🔒 Input sealed - in transit…"), width)],
 			invalidate: () => {},
 		}),
 		{ placement: "aboveEditor" },

@@ -5,7 +5,6 @@ import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { globalTipRegistry } from "../tips/registry.js"
-import { SESSION_MODE_PICKER_HINT } from "./session-mode-picker.js"
 import sessionModeOnboardingExtension, {
 	buildSessionModeLaunchContext,
 	decideSessionModeOnboarding,
@@ -52,19 +51,27 @@ type TerminalInputHandler = (data: string) => { consume?: boolean } | undefined
 type CustomComponent = { handleInput?(data: string): void; render?(width: number): string[] }
 const extensionHarnesses: Array<{ shutdown: () => unknown; settle: () => Promise<void> }> = []
 
-function createExtensionHarness(options: { deferCustomFactory?: boolean } = {}) {
+function createExtensionHarness(options: { deferCustomFactory?: boolean; initialEditorFactory?: unknown } = {}) {
 	const handlers = new Map<string, SessionStartHandler>()
 	const api = {
 		on: vi.fn((event: string, handler: SessionStartHandler) => {
 			handlers.set(event, handler)
 		}),
 	}
-	const tui = { requestRender: vi.fn() } as unknown as TUI
+	let overlayActive = false
+	const setOverlay = (active: boolean) => {
+		overlayActive = active
+	}
+	const tui = {
+		requestRender: vi.fn(),
+		hasOverlay: vi.fn(() => overlayActive),
+	} as unknown as TUI
 	let activeComponent: CustomComponent | undefined
 	let inputHandler: TerminalInputHandler | undefined
 	const unsubscribe = vi.fn()
+	let storedEditorFactory: unknown = options.initialEditorFactory
 	const ui = {
-		setWidget: vi.fn((_: string, content: unknown) => {
+		setWidget: vi.fn((_key: string, content: unknown, _options?: unknown) => {
 			if (typeof content === "function") {
 				activeComponent = content(tui, theme()) as CustomComponent
 			} else {
@@ -74,6 +81,10 @@ function createExtensionHarness(options: { deferCustomFactory?: boolean } = {}) 
 		onTerminalInput: vi.fn((handler: TerminalInputHandler) => {
 			inputHandler = handler
 			return unsubscribe
+		}),
+		getEditorComponent: vi.fn(() => storedEditorFactory),
+		setEditorComponent: vi.fn((factory: unknown) => {
+			storedEditorFactory = factory
 		}),
 		custom: vi.fn((factory: (...args: unknown[]) => CustomComponent | Promise<CustomComponent>) => {
 			return new Promise((resolve, reject) => {
@@ -117,6 +128,7 @@ function createExtensionHarness(options: { deferCustomFactory?: boolean } = {}) 
 		shutdown: () => handlers.get("session_shutdown")?.({ reason: "quit" }, ctx),
 		input: (data: string) => inputHandler?.(data) ?? activeComponent?.handleInput?.(data),
 		activeComponent: () => activeComponent,
+		setOverlay,
 		settle: async () => {
 			for (let i = 0; i < 4; i += 1) await Promise.resolve()
 		},
@@ -188,8 +200,8 @@ describe("decideSessionModeOnboarding", () => {
 		})
 	})
 
-	it("shows returning launches when the dialog has been seen but not hidden", () => {
-		expect(decide([], { seenAt: "2026-05-19T08:00:00.000Z" })).toEqual({ action: "show", reason: "eligible" })
+	it("skips returning launches once the dialog has been seen", () => {
+		expect(decide([], { seenAt: "2026-05-19T08:00:00.000Z" })).toEqual({ action: "skip", reason: "already-seen" })
 	})
 
 	it("marks an explicit prompt launch as Default-session intent", () => {
@@ -242,15 +254,6 @@ describe("session-mode onboarding persistence", () => {
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 	})
 
-	it("persists the hide setting when the checkbox is selected", () => {
-		const seenAt = recordSessionModeWizardOutcome("default", { configPath, now, hideDialog: true })
-		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
-
-		expect(seenAt).toBe("2026-05-19T09:30:00.000Z")
-		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
-		expect(raw.onboarding.hideSessionModeDialog).toBe(true)
-	})
-
 	it("does not mark cancellation as seen", () => {
 		const seenAt = recordSessionModeWizardOutcome("cancelled", { configPath, now })
 
@@ -293,8 +296,9 @@ describe("session-mode onboarding persistence", () => {
 		expect(harness.activeComponent()).toBeUndefined()
 	})
 
-	it("extension replaces the editor while the picker is visible", async () => {
-		const harness = createExtensionHarness()
+	it("swaps the editor immediately when no overlay is active at mount", async () => {
+		const upstreamFactory = vi.fn()
+		const harness = createExtensionHarness({ initialEditorFactory: upstreamFactory })
 
 		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
 			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
@@ -302,30 +306,79 @@ describe("session-mode onboarding persistence", () => {
 
 		await harness.start()
 
-		harness.input("hello")
-		harness.input("x")
+		expect(harness.ui.getEditorComponent).toHaveBeenCalledTimes(1)
+		expect(harness.ui.setEditorComponent).toHaveBeenCalledTimes(1)
+		expect(harness.ui.setEditorComponent).not.toHaveBeenCalledWith(upstreamFactory)
+	})
 
-		expect(harness.ui.setWidget).toHaveBeenCalled()
-		expect(harness.ui.onTerminalInput).toHaveBeenCalled()
+	it("defers the editor swap while an overlay is up so the overlay keeps input focus", async () => {
+		// Swapping the editor while an overlay is up steals pi-tui's input
+		// routing and prevents overlay dismissal — keep the editor visible
+		// (even if visually noisy) until the overlay clears.
+		const upstreamFactory = vi.fn()
+		const harness = createExtensionHarness({ initialEditorFactory: upstreamFactory })
+		harness.setOverlay(true)
+
+		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
+			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+		)
+
+		await harness.start()
+
+		expect(harness.ui.setEditorComponent).not.toHaveBeenCalled()
 		expect(harness.activeComponent()).toBeDefined()
 	})
 
-	it("extension renders the workflow hint inside the picker", async () => {
-		const harness = createExtensionHarness()
+	it("swaps the editor on the first input after the overlay clears, then restores on cleanup", async () => {
+		const upstreamFactory = vi.fn()
+		const harness = createExtensionHarness({ initialEditorFactory: upstreamFactory })
+		harness.setOverlay(true)
 
 		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
 			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
 		)
 
 		await harness.start()
+		expect(harness.ui.setEditorComponent).not.toHaveBeenCalled()
 
-		const text = harness.activeComponent()?.render?.(140).join("\n")
-		expect(text).toContain(`Tip: ${SESSION_MODE_PICKER_HINT.replaceAll("`", "")}`)
-		expect(text).not.toContain("`")
-		expect(globalTipRegistry.getProviders().some((candidate) => candidate.source === "kimchi.session-mode")).toBe(false)
+		harness.setOverlay(false)
+		harness.input("\x1b[B")
 
-		harness.input("\x1b")
+		expect(harness.ui.setEditorComponent).toHaveBeenCalledTimes(1)
+		const swappedFactory = harness.ui.setEditorComponent.mock.calls[0][0]
+		expect(swappedFactory).not.toBe(upstreamFactory)
+
+		harness.shutdown()
 		await harness.settle()
+		expect(harness.ui.setEditorComponent).toHaveBeenLastCalledWith(upstreamFactory)
+	})
+
+	it("hides the editor on the same keystroke that dismisses the overlay (deferred via setTimeout)", async () => {
+		vi.useFakeTimers()
+		try {
+			const upstreamFactory = vi.fn()
+			const harness = createExtensionHarness({ initialEditorFactory: upstreamFactory })
+			harness.setOverlay(true)
+
+			sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
+				harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+			)
+
+			await harness.start()
+			expect(harness.ui.setEditorComponent).not.toHaveBeenCalled()
+
+			// Simulate the dismiss keystroke: our handler fires while overlay is
+			// still up (schedules setTimeout retry), then overlay flips off as a
+			// synchronous side effect of the same key.
+			harness.input("x")
+			harness.setOverlay(false)
+			expect(harness.ui.setEditorComponent).not.toHaveBeenCalled()
+
+			vi.runAllTimers()
+			expect(harness.ui.setEditorComponent).toHaveBeenCalledTimes(1)
+		} finally {
+			vi.useRealTimers()
+		}
 	})
 
 	it("extension cancellation clears the picker after recording that the first dialog was shown", async () => {
@@ -342,6 +395,29 @@ describe("session-mode onboarding persistence", () => {
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 		expect(harness.activeComponent()).toBeUndefined()
+	})
+
+	it("preserves picker selection when pi-tui re-invokes the widget factory", async () => {
+		const harness = createExtensionHarness()
+
+		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now })(
+			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+		)
+
+		await harness.start()
+		harness.input("\x1b[B")
+		const before = harness.activeComponent() as { getState(): { selectedIndex: number } } | undefined
+		expect(before?.getState().selectedIndex).toBe(1)
+
+		// Simulate a resize / theme swap that re-invokes the most recent
+		// widget factory. The new component must start from the existing
+		// selection, not reset to 0.
+		const calls = harness.ui.setWidget.mock.calls
+		const lastFactory = calls[calls.length - 1][1] as (...args: unknown[]) => unknown
+		harness.ui.setWidget("kimchi-session-mode-onboarding", lastFactory, calls[calls.length - 1][2])
+		const after = harness.activeComponent() as { getState(): { selectedIndex: number } } | undefined
+		expect(after).not.toBe(before)
+		expect(after?.getState().selectedIndex).toBe(1)
 	})
 
 	it("shutdown cleans up the picker", async () => {
@@ -394,23 +470,19 @@ describe("session-mode onboarding persistence", () => {
 		expect(harness.ui.notify).toHaveBeenCalledWith("Session mode startup failed: sync boom", "warning")
 	})
 
-	it("extension lets users choose Coding session and hide future dialogs", async () => {
+	it("extension exposes 'just chat and code' selection through the outcome callback", async () => {
 		const harness = createExtensionHarness()
 		const onOutcome = vi.fn()
 
-		recordSessionModeWizardOutcome("default", { configPath, now })
 		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now, onOutcome })(
 			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
 		)
 
 		await harness.start()
 		harness.input("\x1b[B")
-		harness.input("\x1b[B")
 		harness.input("\r")
 		await harness.settle()
 
-		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
-		expect(raw.onboarding.hideSessionModeDialog).toBe(true)
 		expect(harness.activeComponent()).toBeUndefined()
 		expect(onOutcome).toHaveBeenCalledWith("default", expect.objectContaining({ ui: harness.ui }), harness.api)
 	})
