@@ -26,7 +26,9 @@ class KimchiModelMetadata(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     slug: str = Field(min_length=1)
+    display_name: str | None = None
     reasoning: StrictBool = False
+    input_modalities: list[str] = Field(default_factory=lambda: ["text"])
     limits: KimchiModelLimits
 
 
