@@ -369,67 +369,8 @@ function appendWorkedDurationLine(message: any, durationMs: number): void {
 	lastText.text = `${text.trimEnd()}\n\n${inlineWorkedDurationText(durationMs)}`
 }
 
-// Cached accent-colored › prefix — same glyph+color the prompt editor uses.
-// Rebuilt whenever the theme changes (visibleWidth is always 2: "› " + reset).
-let _userPromptPrefix = "❯ "
-let _userPromptPrefixTheme: unknown = null
-
-function getUserPromptPrefix(theme: any): string {
-	if (theme !== _userPromptPrefixTheme) {
-		_userPromptPrefixTheme = theme
-		_userPromptPrefix = typeof theme?.fg === "function" ? `${theme.fg("accent", "❯")} ` : "❯ "
-	}
-	return _userPromptPrefix
-}
-
-function skipAnsiEscapes(line: string, i: number): number {
-	while (i < line.length && line[i] === "\x1b") {
-		const m = line.indexOf("m", i)
-		if (m === -1) return i
-		i = m + 1
-	}
-	return i
-}
-
-function insertUserPromptPrefix(line: string, theme: any): string {
-	// Line structure from Box(paddingX=1, bgFn):
-	//   [1 plain space][ANSI color][▍ ][ANSI reset][content][1+ trailing spaces]
-	// We insert "❯ " right after the stroke and trim trailing spaces to maintain width.
-	const originalWidth = visibleWidth(line)
-	let i = 0
-
-	// Skip leading plain spaces (leftPad = paddingX = 1)
-	while (i < line.length && line[i] === " ") i++
-
-	// Skip ANSI color for stroke
-	i = skipAnsiEscapes(line, i)
-
-	// Skip STROKE_PREFIX "▍ " (2 chars: the bar glyph + a space)
-	if (i >= line.length) return line
-	i++ // skip "▍"
-	if (i < line.length && line[i] === " ") i++ // skip the space in STROKE_PREFIX
-
-	// Skip ANSI reset after stroke
-	i = skipAnsiEscapes(line, i)
-
-	// Insert "❯ " here and remove 2 trailing spaces to keep visible width constant
-	const prefix = getUserPromptPrefix(theme)
-	const inserted = line.slice(0, i) + prefix + line.slice(i)
-	// Drop 2 trailing spaces (Box always pads paddingX=2 spaces at the end)
-	let end = inserted.length
-	let removed = 0
-	while (end > i && removed < 2 && inserted[end - 1] === " ") {
-		end--
-		removed++
-	}
-	const result = inserted.slice(0, end)
-	// Guard: if content nearly filled the line and there were not enough trailing
-	// spaces to trim, the result could overflow. Truncate to the original width.
-	if (visibleWidth(result) > originalWidth) {
-		return truncateToWidth(result, originalWidth)
-	}
-	return result
-}
+// OSC 133 zone marker that UserMessageComponent prepends to lines[0].
+const OSC133_ZONE_START = "\x1b]133;A\x07"
 
 function patchUserMessageRender(): void {
 	const proto = UserMessageComponent.prototype as any
@@ -439,13 +380,21 @@ function patchUserMessageRender(): void {
 	proto.render = function patchedUserMessageRender(width: number) {
 		const box = (this as any).contentBox
 		if (box) {
-			box.paddingX = 1
+			// Remove the ▍ stroke and blank padding lines. paddingX=2 gives content
+			// a 2-char left indent that aligns continuation lines under "> ".
+			box.bgFn = null
+			box.paddingY = 0
+			box.paddingX = 2
 			box.invalidateCache?.()
 		}
 		const lines: string[] = originalRender.call(this, width)
 		if (!Array.isArray(lines) || lines.length === 0) return lines
-		// Only the first content line (index 1) gets the ❯ prefix; padding and continuation lines are unchanged.
-		return lines.map((line, i) => (i === 1 ? insertUserPromptPrefix(line, _themePaletteCacheTheme) : line))
+		// Replace the 2 leading spaces on line 0 (after OSC133) with "> ".
+		const first = lines[0]
+		const osc = first.startsWith(OSC133_ZONE_START) ? OSC133_ZONE_START : ""
+		const rest = first.slice(osc.length)
+		lines[0] = osc + (rest.startsWith("  ") ? `> ${rest.slice(2)}` : `> ${rest}`)
+		return lines
 	}
 	proto[USER_MESSAGE_PATCH_FLAG] = true
 }
