@@ -2,8 +2,37 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+const clackMock = vi.hoisted(() => {
+	const spinnerInstance = {
+		start: vi.fn(),
+		stop: vi.fn(),
+		message: vi.fn(),
+	}
+	return {
+		spinner: vi.fn(() => spinnerInstance),
+		spinnerInstance,
+		log: {
+			info: vi.fn(),
+			error: vi.fn(),
+			warn: vi.fn(),
+		},
+		note: vi.fn(),
+		outro: vi.fn(),
+	}
+})
+
+vi.mock("@clack/prompts", () => ({
+	spinner: clackMock.spinner,
+	log: clackMock.log,
+	note: clackMock.note,
+	outro: clackMock.outro,
+	isCancel: vi.fn(() => false),
+}))
+
 import { TEST_MODELS } from "../../integrations/__fixtures__/models.js"
 import "../../integrations/claude-code.js"
+import "../../integrations/cursor.js"
 import { byId } from "../../integrations/registry.js"
 import * as modelsModule from "../../models.js"
 import type { WizardState } from "../state.js"
@@ -46,6 +75,16 @@ describe("runDoneStep", () => {
 			binaryPath: "/tmp/kimchi-test/rtk",
 			linkPath: "/tmp/kimchi-test/bin/rtk",
 		})
+
+		clackMock.spinnerInstance.start.mockClear()
+		clackMock.spinnerInstance.stop.mockClear()
+		clackMock.spinnerInstance.message.mockClear()
+		clackMock.spinner.mockClear()
+		clackMock.log.info.mockClear()
+		clackMock.log.error.mockClear()
+		clackMock.log.warn.mockClear()
+		clackMock.note.mockClear()
+		clackMock.outro.mockClear()
 	})
 
 	afterEach(() => {
@@ -168,6 +207,38 @@ describe("runDoneStep", () => {
 		const { readFileSync } = await import("node:fs")
 		const zshrc = readFileSync(join(tmpHome, ".zshrc"), "utf-8")
 		expect(zshrc).toContain("export KIMCHI_API_KEY=test-key")
+
+		writeSpy.mockRestore()
+	})
+
+	it("skips the spinner for interactive-write tools", async () => {
+		const tool = getClaudeCodeTool()
+		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()
+
+		await runDoneStep(baseState())
+		const toolSpinnerStarts = clackMock.spinnerInstance.start.mock.calls.filter(
+			(call: unknown[]) => typeof call[0] === "string" && call[0].includes("Claude Code"),
+		)
+		expect(toolSpinnerStarts).toEqual([])
+		expect(clackMock.log.info).toHaveBeenCalledWith("Configuring Claude Code…")
+		expect(clackMock.log.info).toHaveBeenCalledWith("Claude Code: configured")
+
+		writeSpy.mockRestore()
+	})
+
+	it("uses the spinner for non-interactive tools", async () => {
+		const state = baseState()
+		state.selectedTools = ["cursor"]
+
+		const tool = byId("cursor")
+		if (!tool) throw new Error("cursor integration not registered")
+		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()
+
+		await runDoneStep(state)
+		const toolSpinnerStarts = clackMock.spinnerInstance.start.mock.calls.filter(
+			(call: unknown[]) => typeof call[0] === "string" && call[0].includes("Cursor"),
+		)
+		expect(toolSpinnerStarts).toEqual([["Configuring Cursor…"]])
 
 		writeSpy.mockRestore()
 	})
