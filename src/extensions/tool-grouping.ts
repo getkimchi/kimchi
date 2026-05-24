@@ -85,6 +85,7 @@ export function getParent(component: object): Container | undefined {
 }
 
 export function patchAddChild(): void {
+	// biome-ignore lint/suspicious/noExplicitAny: prototype patching requires runtime property access
 	const proto = Container.prototype as any
 	if (proto[ADDCHILD_PATCH_FLAG]) return
 	const original = proto.addChild
@@ -109,6 +110,7 @@ function isToolLike(
 
 function isFailedTool(v: unknown): boolean {
 	if (!isToolLike(v)) return false
+	// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on unknown object
 	const c = v as any
 	return c.result?.isError === true
 }
@@ -172,7 +174,7 @@ export function buildGroupSummaryText(run: object[], isInProgress: boolean): str
 		if (!counts.has(cat)) order.push(cat)
 		counts.set(cat, (counts.get(cat) ?? 0) + 1)
 	}
-	const orderedCounts = new Map(order.map((cat) => [cat, counts.get(cat)!]))
+	const orderedCounts = new Map(order.map((cat) => [cat, counts.get(cat) ?? 0]))
 	return formatSummary(orderedCounts, isInProgress)
 }
 
@@ -212,8 +214,10 @@ export function buildCurrentToolLine(tool: object): string {
 
 const GROUP_RENDER_PATCH_FLAG = Symbol.for("pi-tool-grouping:patched-render")
 
+// biome-ignore lint/suspicious/noExplicitAny: theme comes from untyped external package
 function buildGroupView(run: object[], theme: any): ToolBlockView {
 	const view = new ToolBlockView()
+	// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on unknown object
 	const last = run[run.length - 1] as any
 	const isInProgress = last?.isPartial === true
 	const summaryText = buildGroupSummaryText(run, isInProgress)
@@ -244,6 +248,7 @@ function buildGroupView(run: object[], theme: any): ToolBlockView {
 const TOOL_RENDER_CACHE_KEY = Symbol.for("pi-claude-style-tools:tool-render-cache")
 
 export function patchToolGroupRendering(): void {
+	// biome-ignore lint/suspicious/noExplicitAny: prototype patching requires runtime property access
 	const proto = ToolExecutionComponent.prototype as any
 	if (proto[GROUP_RENDER_PATCH_FLAG]) return
 
@@ -262,17 +267,21 @@ export function patchToolGroupRendering(): void {
 
 		// ctrl+o wires to component.setExpanded() on ALL tools globally.
 		// Use the last tool's .expanded field as the group's expand state.
+		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
 		const lastTool = run[run.length - 1] as any
 		if (lastTool.expanded === true) return originalRender.call(this, width)
 
 		if (lastTool !== this) return []
 
+		// biome-ignore lint/suspicious/noExplicitAny: accessing private fields of untyped prototype
 		const theme = (this as any).ui?.theme
 		const groupView = buildGroupView(run, theme)
 
 		// Inject groupView into contentBox so the full render pipeline applies the
 		// ▍ stroke (Box) and spacing/border wrapper (patchedContainerRender).
+		// biome-ignore lint/suspicious/noExplicitAny: accessing private fields of untyped prototype
 		const contentBox = (this as any).contentBox
+		// biome-ignore lint/suspicious/noExplicitAny: accessing private fields of untyped prototype
 		const usingSelf = typeof (this as any).getRenderShell === "function" && (this as any).getRenderShell() === "self"
 
 		if (!contentBox || usingSelf) {
@@ -294,6 +303,7 @@ export function patchToolGroupRendering(): void {
 		contentBox.paddingY = 0
 
 		// Bypass render caches so the patched Container render actually runs.
+		// biome-ignore lint/suspicious/noExplicitAny: Symbol-keyed cache busting on untyped prototype
 		delete (this as any)[TOOL_RENDER_CACHE_KEY]
 		contentBox.invalidate()
 
@@ -305,6 +315,7 @@ export function patchToolGroupRendering(): void {
 		contentBox.bgFn = savedBgFn
 		contentBox.paddingY = savedPaddingY
 		contentBox.invalidate()
+		// biome-ignore lint/suspicious/noExplicitAny: Symbol-keyed cache busting on untyped prototype
 		delete (this as any)[TOOL_RENDER_CACHE_KEY]
 
 		return result
