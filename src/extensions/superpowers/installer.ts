@@ -1,8 +1,8 @@
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { unlink } from "node:fs/promises"
 import { join } from "node:path"
 import { extract } from "tar"
-import { SUPERPOWERS_VERSION, getSuperpowersVendorDir } from "./config.js"
+import { SUPERPOWERS_VERSION, getSuperpowersTarballUrl, getSuperpowersVendorDir } from "./config.js"
 
 export async function ensureSuperpowersInstalled(): Promise<boolean> {
 	const vendorDir = getSuperpowersVendorDir()
@@ -17,7 +17,7 @@ export async function ensureSuperpowersInstalled(): Promise<boolean> {
 
 	mkdirSync(vendorDir, { recursive: true })
 
-	const url = `https://github.com/obra/superpowers/archive/refs/tags/${SUPERPOWERS_VERSION}.tar.gz`
+	const url = getSuperpowersTarballUrl()
 	const tarballPath = join(vendorDir, "download.tar.gz")
 
 	const response = await fetch(url)
@@ -45,7 +45,9 @@ export async function ensureSuperpowersInstalled(): Promise<boolean> {
 		pump()
 	})
 
-	// Extract tarball, stripping the top-level "superpowers-5.1.0/" directory
+	// Extract tarball, stripping the top-level "superpowers-<version>/" directory
+	rmSync(vendorDir, { recursive: true, force: true })
+	mkdirSync(vendorDir, { recursive: true })
 	await extract({ file: tarballPath, cwd: vendorDir, strip: 1 })
 
 	// Write version marker after successful extraction
