@@ -9,23 +9,22 @@ export async function ensureSuperpowersInstalled(): Promise<boolean> {
 	const versionFile = join(vendorDir, ".version")
 	const skillsDir = join(vendorDir, "skills")
 
-	// Idempotency check: version file must exist AND match pinned version
+	// Idempotency check: both markers must exist and version must match
 	if (existsSync(versionFile) && existsSync(skillsDir)) {
 		const installed = readFileSync(versionFile, "utf-8").trim()
 		if (installed === SUPERPOWERS_VERSION) return false
 	}
 
-	mkdirSync(vendorDir, { recursive: true })
+	// Download to a sibling temp file OUTSIDE vendorDir.
+	// This ensures rmSync(vendorDir) below cannot delete the tarball.
+	const tarballPath = `${vendorDir}.download.tar.gz`
 
-	const url = getSuperpowersTarballUrl()
-	const tarballPath = join(vendorDir, "download.tar.gz")
-
-	const response = await fetch(url)
+	const response = await fetch(getSuperpowersTarballUrl())
 	if (!response.ok) {
 		throw new Error(`Failed to download superpowers: ${response.status} ${response.statusText}`)
 	}
 
-	// Stream response body to disk
+	// Stream response body to the temp tarball path
 	await new Promise<void>((resolve, reject) => {
 		const stream = createWriteStream(tarballPath)
 		stream.on("finish", resolve)
@@ -45,15 +44,15 @@ export async function ensureSuperpowersInstalled(): Promise<boolean> {
 		pump()
 	})
 
-	// Extract tarball, stripping the top-level "superpowers-<version>/" directory
+	// Download succeeded — now safe to wipe vendorDir and extract fresh
 	rmSync(vendorDir, { recursive: true, force: true })
 	mkdirSync(vendorDir, { recursive: true })
 	await extract({ file: tarballPath, cwd: vendorDir, strip: 1 })
 
-	// Write version marker after successful extraction
+	// Write version marker only after successful extraction
 	writeFileSync(versionFile, SUPERPOWERS_VERSION)
 
-	// Clean up tarball
+	// Best-effort cleanup of the temp tarball
 	await unlink(tarballPath).catch(() => undefined)
 
 	return true

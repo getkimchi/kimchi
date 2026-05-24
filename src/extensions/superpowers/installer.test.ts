@@ -3,6 +3,23 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+// Track tarball paths written via createWriteStream (module-level, populated by mock)
+const cwsPaths: string[] = []
+
+// Must mock node:fs before importing installer so createWriteStream is tracked.
+// Use importOriginal so all other fs exports (mkdirSync, mkdtempSync, etc.) stay real.
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>()
+	return {
+		...actual,
+		createWriteStream: vi.fn((path: string | Buffer | URL) => {
+			cwsPaths.push(String(path))
+			// Delegate to real createWriteStream so other tests aren't broken
+			return actual.createWriteStream("/dev/null")
+		}),
+	}
+})
+
 // Must mock config before importing installer so getSuperpowersVendorDir() resolves to mockHome
 vi.mock("./config.js", async (importOriginal) => {
 	const mod = await importOriginal<typeof import("./config.js")>()
@@ -22,9 +39,12 @@ let mockHome: string
 let originalHome: string | undefined
 
 beforeEach(() => {
+	cwsPaths.length = 0
 	originalHome = process.env.HOME
 	mockHome = mkdtempSync(join(tmpdir(), "sp-test-"))
 	process.env.HOME = mockHome
+	// Ensure parent of vendorDir exists so sibling tarball can be written there
+	mkdirSync(join(mockHome, ".config", "kimchi", "vendor"), { recursive: true })
 })
 
 afterEach(() => {
@@ -87,5 +107,32 @@ describe("ensureSuperpowersInstalled", () => {
 	it("throws when fetch returns non-ok", async () => {
 		vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404, statusText: "Not Found" }))
 		await expect(ensureSuperpowersInstalled()).rejects.toThrow("404")
+	})
+
+	it("downloads tarball to a sibling path outside vendorDir", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue({
+				ok: true,
+				body: new ReadableStream({
+					start(ctrl) {
+						ctrl.close()
+					},
+				}),
+			}),
+		)
+
+		try {
+			await ensureSuperpowersInstalled()
+		} catch {
+			// extract will fail on empty body — only the path matters
+		}
+
+		const vendorDir = join(mockHome, ".config", "kimchi", "vendor", "superpowers")
+		// Tarball must NOT be inside vendorDir
+		const insideVendor = cwsPaths.some((p) => p.startsWith(`${vendorDir}/`) || p.startsWith(`${vendorDir}\\`))
+		expect(insideVendor).toBe(false)
+		// Tarball must be a sibling ending in .download.tar.gz
+		expect(cwsPaths.some((p) => p.endsWith(".download.tar.gz"))).toBe(true)
 	})
 })
