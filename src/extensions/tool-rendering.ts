@@ -380,22 +380,28 @@ function patchUserMessageRender(): void {
 	proto.render = function patchedUserMessageRender(width: number) {
 		const box = (this as any).contentBox
 		if (box) {
-			// Remove the ▍ stroke and blank padding lines. paddingX=2 gives content
-			// a 2-char left indent that aligns continuation lines under "> ".
+			// Remove the ▍ stroke and blank padding lines. paddingX=0 lets content
+			// render at full width; we prepend the prefix and truncate explicitly.
 			box.bgFn = null
 			box.paddingY = 0
-			box.paddingX = 2
+			box.paddingX = 0
 			box.invalidateCache?.()
 		}
 		const lines: string[] = originalRender.call(this, width)
 		if (!Array.isArray(lines) || lines.length === 0) return lines
-		// Replace the 2 leading spaces on line 0 (after OSC133) with "❯ " in accent color.
+		// Prepend "❯ " in accent color to line 0 (after OSC133).
+		// Measure the prefix width and truncate content so the total never exceeds
+		// the terminal width — guards against ❯ being rendered as 2 cells wide.
 		const theme = _themePaletteCacheTheme as any
-		const prefix = typeof theme?.fg === "function" ? `${theme.fg("accent", "❯")} ` : "❯ "
+		const glyph = typeof theme?.fg === "function" ? theme.fg("accent", "❯") : "❯"
+		const prefix = `${glyph} `
+		const prefixW = visibleWidth(prefix)
 		const first = lines[0]
 		const osc = first.startsWith(OSC133_ZONE_START) ? OSC133_ZONE_START : ""
-		const rest = first.slice(osc.length)
-		lines[0] = osc + (rest.startsWith("  ") ? prefix + rest.slice(2) : prefix + rest)
+		const content = first.slice(osc.length)
+		const available = Math.max(0, width - prefixW)
+		const truncated = visibleWidth(content) > available ? truncateToWidth(content, available) : content
+		lines[0] = osc + prefix + truncated
 		return lines
 	}
 	proto[USER_MESSAGE_PATCH_FLAG] = true
