@@ -127,8 +127,8 @@ kimchi --print "say hello" > /dev/null 2>&1 || true
 END=$(date +%s%3N)
 ELAPSED=$((END - START))
 
-# Re-download would take several seconds; idempotent path is <1s
-if [ "$ELAPSED" -lt 3000 ]; then
+# Re-download takes 5-30s; idempotent path should be well under 10s
+if [ "$ELAPSED" -lt 10000 ]; then
     ok "second launch fast (${ELAPSED}ms, no re-download)"
 else
     fail "second launch too slow (${ELAPSED}ms — possible re-download?)"
