@@ -19,7 +19,7 @@ import { dispatchSubcommand } from "./commands/dispatch.js"
 import "./login-command-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
-	VENDOR_SKILL_PATHS,
+	getActiveVendorSkillPaths,
 	loadConfig,
 	readTelemetryConfig,
 	writeApiKey,
@@ -526,7 +526,7 @@ try {
 				{ id: "extensions.ferment", factory: fermentExtension },
 			] satisfies ManagedExtensionFactory[]),
 			questionnaireExtension,
-			promptEnrichmentExtension([...new Set([...skillPaths, ...VENDOR_SKILL_PATHS])]),
+			promptEnrichmentExtension([...new Set([...skillPaths, ...getActiveVendorSkillPaths()])]),
 			rtkRewriteExtension,
 			permissionsExtension,
 			resourcesExtension,

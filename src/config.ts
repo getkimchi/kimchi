@@ -20,6 +20,22 @@ export const OPTIONAL_SKILL_PATHS = [join(".pi", "agent", "skills"), join(".clau
  */
 export const VENDOR_SKILL_PATHS = [SUPERPOWERS_SKILL_PATH]
 
+/**
+ * Returns vendor skill paths that aren't already covered by the user's harness
+ * skills directory. Prevents duplicate skills when a user manually installed
+ * superpowers before we started vendoring it.
+ *
+ * The sentinel is a representative skill from each vendor package — if the user
+ * already has it in their harness skills dir, skip that vendor path entirely.
+ */
+export function getActiveVendorSkillPaths(): string[] {
+	const home = homedir()
+	const harnessSkillsDir = join(home, ".config", "kimchi", "harness", "skills")
+	const superPowersSentinel = join(harnessSkillsDir, "using-superpowers", "SKILL.md")
+	if (existsSync(superPowersSentinel)) return []
+	return VENDOR_SKILL_PATHS
+}
+
 export const envConfig = {
 	KIMCHI_WEB_APP_URL: process.env.KIMCHI_WEB_APP_URL ?? "https://app.kimchi.dev",
 }
