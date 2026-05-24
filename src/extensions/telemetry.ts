@@ -225,15 +225,52 @@ const TELEMETRY_DRAIN_TIMEOUT_MS = 5_000
 const METRICS_FLUSH_INTERVAL_MS = 30_000
 
 // ---------------------------------------------------------------------------
-// Process-level root session ID
-// All agents (main + sub-agents) in the same process share this ID so that
-// telemetry for a single user request is rolled up under one session.
+// Process-level root session ID + shared accumulators
+//
+// All agents (main + sub-agents) in the same process share rootSessionId so
+// that telemetry rolls up under one session in the backend.
+//
+// Accumulators are keyed by rootSessionId (not per-instance) so that every
+// flush sends the monotonically increasing total across ALL agents. This is
+// required because the backend uses ReplacingMergeTree: rows with the same
+// ORDER BY key are deduplicated and the latest write wins. If each agent
+// flushed from its own isolated counters, the latest sub-agent flush would
+// silently overwrite and discard the main agent's accumulated data.
 // ---------------------------------------------------------------------------
 
+interface SharedAccumulators {
+	cumulativeTokensByModel: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>
+	cumulativeCostByModel: Record<string, number>
+	cumulativeCommitCount: number
+	cumulativePRCount: number
+	cumulativeLocByLanguage: Record<string, { added: number; removed: number }>
+	cumulativeEditDecisions: Record<string, number>
+	sessionStartNano: string
+}
+
 let rootSessionId: string | undefined
+const sharedAccumulators = new Map<string, SharedAccumulators>()
+
+function getOrCreateAccumulators(sessionId: string): SharedAccumulators {
+	if (!sharedAccumulators.has(sessionId)) {
+		sharedAccumulators.set(sessionId, {
+			cumulativeTokensByModel: {},
+			cumulativeCostByModel: {},
+			cumulativeCommitCount: 0,
+			cumulativePRCount: 0,
+			cumulativeLocByLanguage: {},
+			cumulativeEditDecisions: {},
+			sessionStartNano: String(Date.now() * 1_000_000),
+		})
+	}
+	const result = sharedAccumulators.get(sessionId)
+	if (!result) throw new Error(`[telemetry] accumulator missing for sessionId: ${sessionId}`)
+	return result
+}
 
 /** @internal — exposed for testing only */
 export function _resetRootSessionId(): void {
+	if (rootSessionId) sharedAccumulators.delete(rootSessionId)
 	rootSessionId = undefined
 }
 
@@ -247,26 +284,15 @@ export default function telemetryExtension(config: TelemetryConfig) {
 
 		if (!rootSessionId) rootSessionId = crypto.randomUUID()
 		let sessionId = rootSessionId
-		let sessionStartMs = Date.now()
-		let sessionStartNano = String(sessionStartMs * 1_000_000)
+		let sessionStartMs = Date.now() // used for per-instance message duration tracking
 		const sentMessages = new Set<string>()
 		const pendingArgs = new Map<string, { toolName: string; args: unknown }>()
 		const messageStartTimes = new Map<string, number>()
 		const inFlight = new Set<Promise<void>>()
 		let shuttingDown = false
 
-		// Accumulation state for metrics
-		const cumulativeTokensByModel: Record<
-			string,
-			{ input: number; output: number; cacheRead: number; cacheWrite: number }
-		> = {}
-		const cumulativeCostByModel: Record<string, number> = {}
-		let cumulativeCommitCount = 0
-		let cumulativePRCount = 0
-		// Accumulate lines of code per language
-		const cumulativeLocByLanguage: Record<string, { added: number; removed: number }> = {}
-		// Accumulate edit decisions keyed by dimension group
-		const cumulativeEditDecisions: Record<string, number> = {}
+		// Accumulators are shared across all instances with the same rootSessionId.
+		const acc = getOrCreateAccumulators(sessionId)
 
 		let flushTimer: NodeJS.Timeout | undefined
 
@@ -280,7 +306,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			const allMetrics: MetricData[] = []
 
 			// Flush token metrics (keyed by model)
-			for (const [model, tokens] of Object.entries(cumulativeTokensByModel)) {
+			for (const [model, tokens] of Object.entries(acc.cumulativeTokensByModel)) {
 				if (tokens.input > 0) {
 					allMetrics.push({
 						name: "claude_code.token.usage",
@@ -316,7 +342,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			}
 
 			// Flush cost metrics (keyed by model)
-			for (const [model, cost] of Object.entries(cumulativeCostByModel)) {
+			for (const [model, cost] of Object.entries(acc.cumulativeCostByModel)) {
 				if (cost > 0) {
 					allMetrics.push({
 						name: "claude_code.cost.usage",
@@ -328,27 +354,27 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			}
 
 			// Flush commit count
-			if (cumulativeCommitCount > 0) {
+			if (acc.cumulativeCommitCount > 0) {
 				allMetrics.push({
 					name: "claude_code.commit.count",
 					type: "Sum",
-					value: cumulativeCommitCount,
+					value: acc.cumulativeCommitCount,
 					attrs: { tool_name: "bash", decision: "git_commit" },
 				})
 			}
 
 			// Flush PR count
-			if (cumulativePRCount > 0) {
+			if (acc.cumulativePRCount > 0) {
 				allMetrics.push({
 					name: "claude_code.pull_request.count",
 					type: "Sum",
-					value: cumulativePRCount,
+					value: acc.cumulativePRCount,
 					attrs: { tool_name: "bash", decision: "gh_pr_create" },
 				})
 			}
 
 			// Flush lines of code per language
-			for (const [language, counts] of Object.entries(cumulativeLocByLanguage)) {
+			for (const [language, counts] of Object.entries(acc.cumulativeLocByLanguage)) {
 				if (counts.added > 0) {
 					allMetrics.push({
 						name: "claude_code.lines_of_code.count",
@@ -368,7 +394,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			}
 
 			// Flush edit decisions
-			for (const [key, count] of Object.entries(cumulativeEditDecisions)) {
+			for (const [key, count] of Object.entries(acc.cumulativeEditDecisions)) {
 				const parts = key.split("|")
 				const toolName = parts[0]
 				const decision = parts[1]
@@ -383,7 +409,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			}
 
 			if (allMetrics.length > 0) {
-				track(sendMetrics(config, sessionId, allMetrics, sessionStartNano))
+				track(sendMetrics(config, sessionId, allMetrics, acc.sessionStartNano))
 			}
 		}
 
@@ -399,21 +425,14 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			if (!rootSessionId) rootSessionId = crypto.randomUUID()
 			sessionId = rootSessionId
 			sessionStartMs = Date.now()
-			sessionStartNano = String(sessionStartMs * 1_000_000)
 			sentMessages.clear()
 			messageStartTimes.clear()
 			pendingArgs.clear()
 			shuttingDown = false
+			// Do NOT reset shared accumulators here — other agents may already have
+			// accumulated data under this rootSessionId that must not be discarded.
 
-			// Reset accumulation state
-			for (const key of Object.keys(cumulativeTokensByModel)) delete cumulativeTokensByModel[key]
-			for (const key of Object.keys(cumulativeCostByModel)) delete cumulativeCostByModel[key]
-			cumulativeCommitCount = 0
-			cumulativePRCount = 0
-			for (const key of Object.keys(cumulativeLocByLanguage)) delete cumulativeLocByLanguage[key]
-			for (const key of Object.keys(cumulativeEditDecisions)) delete cumulativeEditDecisions[key]
-
-			// Start periodic flush timer
+			// Start periodic flush timer for this instance.
 			if (flushTimer) clearInterval(flushTimer)
 			flushTimer = setInterval(() => {
 				flushMetrics()
@@ -472,19 +491,19 @@ export default function telemetryExtension(config: TelemetryConfig) {
 					}),
 				)
 
-				// Accumulate tokens and costs per model
-				if (!cumulativeTokensByModel[model]) {
-					cumulativeTokensByModel[model] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+				// Accumulate tokens and costs per model into shared state.
+				if (!acc.cumulativeTokensByModel[model]) {
+					acc.cumulativeTokensByModel[model] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 				}
-				cumulativeTokensByModel[model].input += input
-				cumulativeTokensByModel[model].output += output
-				cumulativeTokensByModel[model].cacheRead += cacheRead
-				cumulativeTokensByModel[model].cacheWrite += cacheWrite
+				acc.cumulativeTokensByModel[model].input += input
+				acc.cumulativeTokensByModel[model].output += output
+				acc.cumulativeTokensByModel[model].cacheRead += cacheRead
+				acc.cumulativeTokensByModel[model].cacheWrite += cacheWrite
 
-				if (!cumulativeCostByModel[model]) {
-					cumulativeCostByModel[model] = 0
+				if (!acc.cumulativeCostByModel[model]) {
+					acc.cumulativeCostByModel[model] = 0
 				}
-				cumulativeCostByModel[model] += costTotal
+				acc.cumulativeCostByModel[model] += costTotal
 			} catch (err) {
 				console.error("[telemetry] message_end handler error:", err)
 			}
@@ -504,10 +523,10 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			if (toolName === "bash") {
 				const command = String(args?.command ?? "")
 				if (/git\s+commit\b/.test(command) && !/--dry-run/.test(command)) {
-					cumulativeCommitCount++
+					acc.cumulativeCommitCount++
 				}
 				if (/gh\s+pr\s+create\b/.test(command)) {
-					cumulativePRCount++
+					acc.cumulativePRCount++
 				}
 			}
 
@@ -515,11 +534,11 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				const filePath = String(args?.filePath ?? "")
 				const language = inferLanguage(filePath)
 				const changes = countLineChanges(String(args?.oldString ?? ""), String(args?.newString ?? ""))
-				if (!cumulativeLocByLanguage[language]) cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
-				cumulativeLocByLanguage[language].added += changes.added
-				cumulativeLocByLanguage[language].removed += changes.removed
+				if (!acc.cumulativeLocByLanguage[language]) acc.cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
+				acc.cumulativeLocByLanguage[language].added += changes.added
+				acc.cumulativeLocByLanguage[language].removed += changes.removed
 				const key = ["edit", "accept", language, "auto"].join("|")
-				cumulativeEditDecisions[key] = (cumulativeEditDecisions[key] || 0) + 1
+				acc.cumulativeEditDecisions[key] = (acc.cumulativeEditDecisions[key] || 0) + 1
 			}
 
 			if (toolName === "write") {
@@ -528,10 +547,10 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				const content = String(args?.content ?? "")
 				const trimmedContent = content.endsWith("\n") ? content.replace(/\n+$/, "") : content
 				const actualLines = trimmedContent ? trimmedContent.split("\n").length : 1
-				if (!cumulativeLocByLanguage[language]) cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
-				cumulativeLocByLanguage[language].added += actualLines
+				if (!acc.cumulativeLocByLanguage[language]) acc.cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
+				acc.cumulativeLocByLanguage[language].added += actualLines
 				const key = ["write", "accept", language, "auto"].join("|")
-				cumulativeEditDecisions[key] = (cumulativeEditDecisions[key] || 0) + 1
+				acc.cumulativeEditDecisions[key] = (acc.cumulativeEditDecisions[key] || 0) + 1
 			}
 
 			if (toolName === "multiedit") {
@@ -540,14 +559,14 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				const edits = Array.isArray(args?.edits)
 					? (args.edits as Array<{ oldString?: string; newString?: string }>)
 					: []
-				if (!cumulativeLocByLanguage[language]) cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
+				if (!acc.cumulativeLocByLanguage[language]) acc.cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
 				for (const edit of edits) {
 					const changes = countLineChanges(String(edit.oldString ?? ""), String(edit.newString ?? ""))
-					cumulativeLocByLanguage[language].added += changes.added
-					cumulativeLocByLanguage[language].removed += changes.removed
+					acc.cumulativeLocByLanguage[language].added += changes.added
+					acc.cumulativeLocByLanguage[language].removed += changes.removed
 				}
 				const key = ["multiedit", "accept", language, "auto"].join("|")
-				cumulativeEditDecisions[key] = (cumulativeEditDecisions[key] || 0) + 1
+				acc.cumulativeEditDecisions[key] = (acc.cumulativeEditDecisions[key] || 0) + 1
 			}
 
 			if (toolName === "patch") {
@@ -557,11 +576,11 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				if (typeof oldString === "string" && typeof newString === "string") {
 					const changes = countLineChanges(oldString, newString)
 					const language = inferLanguage(filePath)
-					if (!cumulativeLocByLanguage[language]) cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
-					cumulativeLocByLanguage[language].added += changes.added
-					cumulativeLocByLanguage[language].removed += changes.removed
+					if (!acc.cumulativeLocByLanguage[language]) acc.cumulativeLocByLanguage[language] = { added: 0, removed: 0 }
+					acc.cumulativeLocByLanguage[language].added += changes.added
+					acc.cumulativeLocByLanguage[language].removed += changes.removed
 					const key = ["patch", "accept", language, "auto"].join("|")
-					cumulativeEditDecisions[key] = (cumulativeEditDecisions[key] || 0) + 1
+					acc.cumulativeEditDecisions[key] = (acc.cumulativeEditDecisions[key] || 0) + 1
 				}
 			}
 		})
