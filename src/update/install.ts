@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process"
-import { copyFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs"
+import { chmodSync, copyFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { backupDir } from "./paths.js"
 
@@ -121,7 +121,12 @@ export function atomicInstall(newPath: string, currentPath: string): { backupPat
 		// atomically renaming it into place.
 		if ((err as NodeJS.ErrnoException).code === "EXDEV") {
 			const tempPath = `${currentPath}.new.${Date.now()}`
+			const { mode } = statSync(newPath)
 			copyFileSync(newPath, tempPath)
+			// copyFileSync does not preserve the source mode. Restore the
+			// executable bit (and any other permissions) so the renamed
+			// binary remains runnable.
+			chmodSync(tempPath, mode)
 			try {
 				renameSync(tempPath, currentPath)
 			} catch (renameErr) {
