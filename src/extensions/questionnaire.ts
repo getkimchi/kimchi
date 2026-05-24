@@ -427,7 +427,8 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 					},
 					handleInput,
 					editor,
-				} as Component & { editor: Input }
+					isEditorActive: () => state.inputMode,
+				} as Component & { editor: Input; isEditorActive: () => boolean }
 			})
 
 			if (result.cancelled) {

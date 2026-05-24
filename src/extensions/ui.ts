@@ -6,8 +6,7 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
 import { copyToClipboard } from "@earendil-works/pi-coding-agent"
-import { Box, Text } from "@earendil-works/pi-tui"
-import { Key, isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
+import { Box, Key, Text, isKeyRelease, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
@@ -262,7 +261,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 		)
 	}
 
-	// ── Mouse-click helpers for upstream Input components ──
+	// ── Mouse-click helpers for upstream Input / Editor components ──
 
 	/** Duck-type check for an upstream pi-tui {@link Input} instance. */
 	function isInputLike(
@@ -272,18 +271,82 @@ export default function uiExtension(pi: ExtensionAPI) {
 		return typeof o?.value === "string" && typeof o?.cursor === "number" && typeof o?.render === "function"
 	}
 
-	/** Recursively look for an {@link Input} child inside a component tree. */
+	/** Internal state shape of the upstream pi-tui {@link Editor}. */
+	interface EditorState {
+		lines: string[]
+		cursorLine: number
+		cursorCol: number
+	}
+
+	type EditorLike = {
+		state: EditorState
+		setCursorCol: (col: number) => void
+		lastWidth: number
+		paddingX: number
+		scrollOffset: number
+		render: (w: number) => string[]
+		buildVisualLineMap: (width: number) => Array<{ logicalLine: number; startCol: number; length: number }>
+		tui?: TUI
+	}
+
+	/** Duck-type check for an upstream pi-tui {@link Editor} instance
+	 *  (multi-line editor, as opposed to the single-line {@link Input}). */
+	function isEditorLike(obj: unknown): obj is EditorLike {
+		const o = obj as Record<string, unknown>
+		const state = o?.state as Record<string, unknown> | undefined
+		return (
+			Array.isArray(state?.lines) &&
+			typeof state?.cursorLine === "number" &&
+			typeof o?.setCursorCol === "function" &&
+			typeof o?.buildVisualLineMap === "function" &&
+			typeof o?.render === "function"
+		)
+	}
+
+	/** Recursively look for an {@link Input} child inside a component tree.
+	 *  Respects `isEditorActive()` on form components — returns `null` when
+	 *  the Input exists but isn't currently rendered / accepting keystrokes
+	 *  (e.g. the questionnaire is showing radio options, not the text editor). */
 	function findInputChild(component: unknown): unknown {
 		if (!component) return null
 		if (isInputLike(component)) return component
 		const o = component as Record<string, unknown>
 		if (isInputLike(o.searchInput)) return o.searchInput
-		if (isInputLike(o.editor)) return o.editor
+		if (isInputLike(o.editor)) {
+			// Form components expose isEditorActive() to signal whether the
+			// embedded Input is currently visible.  Skip the Input when it's
+			// hidden to avoid false-matching "> " option-selection arrows.
+			if (typeof o.isEditorActive === "function" && !(o.isEditorActive as () => boolean)()) {
+				return null
+			}
+			return o.editor
+		}
 		if (isInputLike(o.input)) return o.input
 		if (isInputLike(o.renameInput)) return o.renameInput
 		if (Array.isArray(o.children)) {
 			for (const child of o.children) {
 				const found = findInputChild(child)
+				if (found) return found
+			}
+		}
+		return null
+	}
+
+	/** Recursively look for a multi-line {@link Editor} child inside a
+	 *  component tree. Checked after {@link findInputChild} fails so that
+	 *  components like `ExtensionEditorComponent` (ferment text editor)
+	 *  can support mouse-click cursor positioning. */
+	function findEditorChild(component: unknown): unknown {
+		if (!component) return null
+		if (isEditorLike(component)) return component
+		const o = component as Record<string, unknown>
+		// ExtensionEditorComponent stores the Editor as a private field
+		// named `editor`.  It won't pass isInputLike (no .value/.cursor
+		// at the top level) but it will pass isEditorLike.
+		if (isEditorLike(o.editor)) return o.editor
+		if (Array.isArray(o.children)) {
+			for (const child of o.children) {
+				const found = findEditorChild(child)
 				if (found) return found
 			}
 		}
@@ -343,6 +406,110 @@ export default function uiExtension(pi: ExtensionAPI) {
 		const targetCol = Math.max(0, click.x - 1 - textStartCol)
 		const maxCursor = input.value.length
 		input.cursor = Math.min(targetCol, maxCursor)
+		return true
+	}
+
+	/**
+	 * Attempt to handle a mouse click on an upstream pi-tui {@link Editor}
+	 * component (multi-line).
+	 *
+	 * Re-renders the editor to derive its visual layout, then searches
+	 * {@link prevLines} for a matching sequence so the click row can be mapped
+	 * to a logical line and byte offset.
+	 */
+	function tryHandleEditorClick(
+		editor: EditorLike,
+		click: { x: number; y: number },
+		prevLines: string[],
+		prevViewportTop: number,
+		displayWidth: number,
+	): boolean {
+		const clickAbsRow = prevViewportTop + click.y - 1
+		if (clickAbsRow < 0 || clickAbsRow >= prevLines.length) {
+			return false
+		}
+
+		// Render the editor using its current state so the output matches
+		// what is (or was recently) in prevLines.
+		const editorLines = editor.render(displayWidth)
+		if (!editorLines || editorLines.length === 0) {
+			return false
+		}
+
+		const expected = editorLines.map(stripAnsi)
+		const topBorder = expected[0]
+
+		// Search closest to the click row for the editor's top border,
+		// then verify the full sequence matches.
+		let startRow = -1
+		const maxDistance = Math.max(clickAbsRow, prevLines.length - clickAbsRow)
+		for (let distance = 0; distance <= maxDistance; distance++) {
+			const candidates: number[] = []
+			if (clickAbsRow - distance >= 0) candidates.push(clickAbsRow - distance)
+			if (distance > 0 && clickAbsRow + distance < prevLines.length) {
+				candidates.push(clickAbsRow + distance)
+			}
+			for (const i of candidates) {
+				if (stripAnsi(prevLines[i]) !== topBorder) continue
+				let match = true
+				for (let j = 1; j < expected.length; j++) {
+					if (i + j >= prevLines.length || stripAnsi(prevLines[i + j]) !== expected[j]) {
+						match = false
+						break
+					}
+				}
+				if (match) {
+					startRow = i
+					break
+				}
+			}
+			if (startRow !== -1) break
+		}
+
+		if (startRow === -1) {
+			return false
+		}
+
+		// Skip the editor's top border to get to content area.
+		const contentStart = startRow + 1
+		const contentEnd = startRow + expected.length - 2
+		if (clickAbsRow < contentStart || clickAbsRow > contentEnd) {
+			return false
+		}
+
+		// Map click row to a visual line index, accounting for scroll offset.
+		const visualIndex = clickAbsRow - contentStart + editor.scrollOffset
+		const visualMap = editor.buildVisualLineMap(editor.lastWidth)
+		if (visualIndex < 0 || visualIndex >= visualMap.length) {
+			return false
+		}
+
+		const vLine = visualMap[visualIndex]
+		const logicalLine = editor.state.lines[vLine.logicalLine] || ""
+		const text = logicalLine.slice(vLine.startCol, vLine.startCol + vLine.length)
+
+		// Convert click column (1-based) to a byte offset within the visual
+		// line segment, accounting for left padding.
+		const paddingX = editor.paddingX ?? 0
+		const targetCol = Math.max(0, click.x - 1 - paddingX)
+
+		// Walk graphemes to compute byte offset for the target column.
+		let byteOffsetInSegment = 0
+		let visible = 0
+		const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+		for (const segment of segmenter.segment(text)) {
+			const segWidth = visibleWidth(segment.segment)
+			if (visible + segWidth > targetCol) {
+				break
+			}
+			visible += segWidth
+			byteOffsetInSegment += segment.segment.length
+		}
+
+		const cursorCol = vLine.startCol + byteOffsetInSegment
+		editor.state.cursorLine = vLine.logicalLine
+		editor.setCursorCol(cursorCol)
+
 		return true
 	}
 
@@ -670,9 +837,34 @@ export default function uiExtension(pi: ExtensionAPI) {
 							if (prevLines && prevLines.length > 0) {
 								const handled = tryHandleInputClick(input, click, prevLines, prevViewportTop)
 								if (handled) {
+									// Invalidate the parent component's render cache so
+									// the updated cursor position is reflected on screen.
+									const focusedComp = focused as { invalidate?: () => void }
+									focusedComp.invalidate?.()
 									setSelectionStatus(null)
 									uiTui?.requestRender()
 									return { consume: true }
+								}
+							}
+						} else {
+							const editor = findEditorChild(focused)
+							if (editor && isEditorLike(editor)) {
+								const paddingX = editor.paddingX ?? 0
+								// layoutWidth = displayWidth - paddingX*2 - (paddingX>0?0:1),
+								// so reverse: displayWidth = lastWidth + paddingX*2 + (paddingX>0?0:1)
+								const displayWidth = editor.lastWidth + paddingX * 2 + (paddingX > 0 ? 0 : 1)
+								const prevLines: string[] | undefined = (uiTui as unknown as { previousLines?: string[] }).previousLines
+								const prevViewportTop: number =
+									(uiTui as unknown as { previousViewportTop?: number }).previousViewportTop ?? 0
+								if (prevLines && prevLines.length > 0) {
+									const handled = tryHandleEditorClick(editor, click, prevLines, prevViewportTop, displayWidth)
+									if (handled) {
+										const focusedComp = focused as { invalidate?: () => void }
+										focusedComp.invalidate?.()
+										setSelectionStatus(null)
+										editor.tui?.requestRender()
+										return { consume: true }
+									}
 								}
 							}
 						}
