@@ -133,6 +133,7 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 	].filter((l) => l.length > 0)
 
 	note(summaryLines.join("\n"), "Summary")
+	log.step("Run `kimchi` to get started.")
 	outro(outcome.failures.length === 0 ? "Done." : "Done with errors. Check above for details.")
 	return outcome
 }

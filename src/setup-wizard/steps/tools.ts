@@ -47,7 +47,7 @@ export async function runToolsStep(state: WizardState, opts: { backable: boolean
 		message: "Which tools should be configured?",
 		options: tools.map((t) => ({
 			value: t.id,
-			label: t.id === "kimchi" ? "Kimchi 🔒" : t.name,
+			label: t.name,
 			hint: t.id === "kimchi" ? "required" : installed.has(t.id) ? "installed" : "not detected",
 			disabled: t.id === "kimchi",
 		})),
