@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, relative, resolve } from "node:path"
+import { SUPERPOWERS_SKILL_PATH } from "./extensions/superpowers/config.js"
 import { getVersion } from "./utils.js"
 
 const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
@@ -13,11 +14,17 @@ export const ALWAYS_SHOWN_SKILL_PATHS = [join(".config", "kimchi", "harness", "s
 
 export const OPTIONAL_SKILL_PATHS = [join(".pi", "agent", "skills"), join(".claude", "skills")]
 
+/**
+ * Relative-to-home skill paths for auto-installed vendor packages.
+ * Resolved to absolute by expandSkillPaths() at runtime.
+ */
+export const VENDOR_SKILL_PATHS = [SUPERPOWERS_SKILL_PATH]
+
 export const envConfig = {
 	KIMCHI_WEB_APP_URL: process.env.KIMCHI_WEB_APP_URL ?? "https://app.kimchi.dev",
 }
 
-export const DEFAULT_SKILL_PATHS = [...ALWAYS_SHOWN_SKILL_PATHS, ...OPTIONAL_SKILL_PATHS]
+export const DEFAULT_SKILL_PATHS = [...ALWAYS_SHOWN_SKILL_PATHS, ...OPTIONAL_SKILL_PATHS, ...VENDOR_SKILL_PATHS]
 
 export function buildSkillPathOptions(discoveredDirs: string[]): string[] {
 	const home = homedir()
@@ -32,6 +39,13 @@ export function buildSkillPathOptions(discoveredDirs: string[]): string[] {
 	}
 
 	for (const p of OPTIONAL_SKILL_PATHS) {
+		if (!seen.has(p) && existsSync(join(home, p))) {
+			seen.add(p)
+			result.push(p)
+		}
+	}
+
+	for (const p of VENDOR_SKILL_PATHS) {
 		if (!seen.has(p) && existsSync(join(home, p))) {
 			seen.add(p)
 			result.push(p)
