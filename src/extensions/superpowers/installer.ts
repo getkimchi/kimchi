@@ -17,7 +17,9 @@ export async function ensureSuperpowersInstalled(): Promise<boolean> {
 
 	// Download to a sibling temp file OUTSIDE vendorDir.
 	// This ensures rmSync(vendorDir) below cannot delete the tarball.
+	// Create the parent dir first so createWriteStream doesn't throw ENOENT.
 	const tarballPath = `${vendorDir}.download.tar.gz`
+	mkdirSync(vendorDir, { recursive: true })
 
 	const response = await fetch(getSuperpowersTarballUrl())
 	if (!response.ok) {
