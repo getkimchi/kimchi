@@ -106,7 +106,14 @@ export async function runUpdate(args: string[]): Promise<number> {
 	try {
 		await applyUpdate({ tag: check.tag })
 	} catch (err) {
-		console.error(`kimchi update: ${(err as Error).message}`)
+		console.error(`kimchi update: update failed — ${(err as Error).message}`)
+		console.error("")
+		console.error("Troubleshooting:")
+		console.error("  · Ensure the installation directory is writable")
+		console.error(
+			"  · If /tmp and the install path are on different filesystems, the installer now handles this automatically",
+		)
+		console.error("  · Report problems at: https://github.com/castai/kimchi-dev/issues")
 		return 1
 	}
 
