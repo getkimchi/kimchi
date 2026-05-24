@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -124,6 +124,7 @@ describe("atomicInstall", () => {
 		mkdirSync(join(tmp, "new"), { recursive: true })
 		writeFileSync(currentPath, "old-binary")
 		writeFileSync(newPath, "new-binary")
+		chmodSync(newPath, 0o755)
 
 		const { renameSync: realRename } = await vi.importActual<typeof import("node:fs")>("node:fs")
 		mocks.renameSync = (oldPath: string, newPathArg: string) => {
@@ -141,6 +142,9 @@ describe("atomicInstall", () => {
 		expect(readFileSync(currentPath, "utf-8")).toBe("new-binary")
 		expect(result.backupPath).toBeDefined()
 		expect(readFileSync(result.backupPath as string, "utf-8")).toBe("old-binary")
+
+		// The temp copy → rename fallback must preserve the executable bit.
+		expect(statSync(currentPath).mode & 0o111).toBeGreaterThan(0)
 	})
 
 	it("propagates non-EXDEV errors and leaves current binary intact", async () => {
