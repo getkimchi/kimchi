@@ -84,6 +84,41 @@ describe("parseSgrMouse", () => {
 		expect(e?.isScroll).toBe(true)
 		expect(e?.isPress).toBe(true)
 	})
+
+	it("parses shift+scroll as scroll (not motion)", () => {
+		// shift+scroll_up = 64 + 4 = 68
+		const e = parseSgrMouse("\x1b[<68;5;10M")
+		expect(e).not.toBeNull()
+		expect(e?.isScroll).toBe(true)
+		expect(e?.isMotion).toBe(false)
+		expect(e?.shift).toBe(true)
+	})
+
+	it("parses ctrl+scroll as scroll (not motion)", () => {
+		// ctrl+scroll_up = 64 + 16 = 80
+		const e = parseSgrMouse("\x1b[<80;5;10M")
+		expect(e).not.toBeNull()
+		expect(e?.isScroll).toBe(true)
+		expect(e?.isMotion).toBe(false)
+		expect(e?.ctrl).toBe(true)
+	})
+
+	it("parses meta+scroll_down as scroll", () => {
+		// meta+scroll_down = 65 + 8 = 73
+		const e = parseSgrMouse("\x1b[<73;5;10M")
+		expect(e).not.toBeNull()
+		expect(e?.isScroll).toBe(true)
+		expect(e?.isMotion).toBe(false)
+		expect(e?.meta).toBe(true)
+		expect(e?.button).toBe(1) // scroll down
+	})
+
+	it("does not flag scroll as motion", () => {
+		// Bare scroll_up (64): bit 6 set, bit 5 clear
+		const e = parseSgrMouse("\x1b[<64;1;1M")
+		expect(e?.isScroll).toBe(true)
+		expect(e?.isMotion).toBe(false)
+	})
 })
 
 describe("click detector", () => {

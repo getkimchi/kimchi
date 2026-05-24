@@ -37,4 +37,28 @@ describe("extractSelectionText", () => {
 		const text = extractSelectionText(lines, { x: 1, y: 1 }, { x: 5, y: 1 })
 		expect(text).toBe("")
 	})
+
+	it("handles backward multi-row drag (end above start)", () => {
+		const lines = ["first line", "second line", "third line"]
+		// Drag from row 3 col 5 upward to row 1 col 2
+		const text = extractSelectionText(lines, { x: 5, y: 3 }, { x: 2, y: 1 })
+		// startRow = min(3,1)-1 = 0, endRow = max(3,1)-1 = 2
+		// startCol = end.x-1 = 1 (top row), endCol = start.x-1 = 4 (bottom row)
+		expect(text).toBe("irst line\nsecond line\nthird")
+	})
+
+	it("works with viewport-adjusted coordinates (simulating scrolled view)", () => {
+		// Simulates what happens after the caller adjusts screen coords by
+		// viewport offset: e.g. screen Y=1 with prevViewportTop=50 → y=51
+		const lines = Array.from({ length: 55 }, (_, i) => `line ${i}`)
+		const text = extractSelectionText(lines, { x: 1, y: 51 }, { x: 6, y: 51 })
+		expect(text).toBe("line 5")
+	})
+
+	it("clamps selection to available lines when end exceeds array", () => {
+		const lines = ["only line"]
+		// Selection spans rows 1-3, but only 1 line exists
+		const text = extractSelectionText(lines, { x: 1, y: 1 }, { x: 5, y: 3 })
+		expect(text).toBe("only line")
+	})
 })

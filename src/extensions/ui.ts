@@ -686,7 +686,14 @@ export default function uiExtension(pi: ExtensionAPI) {
 					const end = selectionEnd ?? { x: event.x, y: event.y }
 					const prevLines: string[] | undefined = (uiTui as unknown as { previousLines?: string[] }).previousLines
 					if (prevLines && prevLines.length > 0) {
-						const text = extractSelectionText(prevLines, selectionStart, end)
+						// Mouse Y coordinates are screen-relative (1-indexed), but prevLines
+						// is the full render buffer. Offset Y by the viewport scroll position
+						// so extractSelectionText indexes the correct rows.
+						const prevViewportTop: number =
+							(uiTui as unknown as { previousViewportTop?: number }).previousViewportTop ?? 0
+						const adjustedStart = { x: selectionStart.x, y: selectionStart.y + prevViewportTop }
+						const adjustedEnd = { x: end.x, y: end.y + prevViewportTop }
+						const text = extractSelectionText(prevLines, adjustedStart, adjustedEnd)
 						if (text) {
 							copyToClipboard(text).catch((err: unknown) => {
 								console.error("[mouse] copy failed:", err)

@@ -35,7 +35,7 @@ export interface SgrMouseEvent {
 	ctrl: boolean
 	/** Set when the terminal reports a motion event (bit 5 set, 32-35). */
 	isMotion: boolean
-	/** Set when the terminal reports a scroll-wheel event (64/65). */
+	/** Set when the terminal reports a scroll-wheel event (bit 6 set: 64+). */
 	isScroll: boolean
 }
 
@@ -63,9 +63,9 @@ export function parseSgrMouse(data: string): SgrMouseEvent | null {
 	//   bit 3:     meta/alt
 	//   bit 4:     ctrl
 	//   bit 5 (32): motion event
-	//   64/65:     scroll up/down
-	const isMotion = (raw & 32) !== 0
-	const isScroll = raw >= 64 && raw <= 65
+	//   bit 6 (64): scroll event (0=up, 1=down in bit 0)
+	const isScroll = (raw & 64) !== 0
+	const isMotion = !isScroll && (raw & 32) !== 0
 	const buttonBits = raw & 3
 	const shift = (raw & 4) !== 0
 	const meta = (raw & 8) !== 0
