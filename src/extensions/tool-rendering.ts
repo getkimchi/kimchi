@@ -394,7 +394,7 @@ function patchUserMessageRender(): void {
 		// the terminal width — guards against ❯ being rendered as 2 cells wide.
 		const theme = _themePaletteCacheTheme as any
 		const glyph = typeof theme?.fg === "function" ? theme.fg("accent", "❯") : "❯"
-		const prefix = `${glyph} `
+		const prefix = ` ${glyph} `
 		const prefixW = visibleWidth(prefix)
 		const first = lines[0]
 		const osc = first.startsWith(OSC133_ZONE_START) ? OSC133_ZONE_START : ""
