@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 
-const KIMCHI_TOOL_MAPPING = `
-## Kimchi Platform Tool Mapping
+import { getSuperpowersVendorDir } from "./config.js"
+
+const KIMCHI_TOOL_MAPPING = `## Kimchi Platform Tool Mapping
 
 The following Claude Code tool references in these skills map to native Kimchi equivalents:
 
@@ -16,7 +17,7 @@ The following Claude Code tool references in these skills map to native Kimchi e
 
 /** Strip YAML frontmatter (--- block) from skill file content. */
 function stripFrontmatter(content: string): string {
-	const match = content.match(/^---[\s\S]*?---\n+([\s\S]*)$/)
+	const match = content.match(/^---[\s\S]*?---\r?\n+([\s\S]*)$/)
 	return match ? match[1] : content
 }
 
@@ -31,12 +32,14 @@ export function resetBootstrapCache(): void {
 /**
  * Build the superpowers bootstrap system prompt text.
  * Returns using-superpowers/SKILL.md body + Kimchi tool mapping table.
- * Returns empty string if the vendor dir is not yet installed.
- * Memoized — file is only read once per process.
+ * Returns empty string (without caching) if the vendor dir is not yet installed,
+ * so a subsequent call after installation will succeed and cache the result.
+ * Once the file is found, the result is memoized for the process lifetime.
  */
-export function buildSuperpowersBootstrap(vendorDir: string): string {
+export function buildSuperpowersBootstrap(): string {
 	if (_cache !== null) return _cache
 
+	const vendorDir = getSuperpowersVendorDir()
 	const skillPath = join(vendorDir, "skills", "using-superpowers", "SKILL.md")
 	if (!existsSync(skillPath)) {
 		return ""
