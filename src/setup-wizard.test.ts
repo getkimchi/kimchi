@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const clackMock = vi.hoisted(() => {
 	const cancelValue = Symbol("cancelled prompt")
+	const spinnerInstance = { start: vi.fn(), stop: vi.fn() }
 	return {
 		cancelValue,
 		cancel: vi.fn(),
@@ -18,6 +19,8 @@ const clackMock = vi.hoisted(() => {
 		log: {
 			success: vi.fn(),
 		},
+		spinner: vi.fn(() => spinnerInstance),
+		spinnerInstance,
 		isCancel: (value: unknown) => value === cancelValue,
 	}
 })
@@ -31,7 +34,12 @@ vi.mock("@clack/prompts", () => ({
 	multiselect: clackMock.multiselect,
 	text: clackMock.text,
 	log: clackMock.log,
+	spinner: clackMock.spinner,
 	isCancel: clackMock.isCancel,
+}))
+
+vi.mock("./extensions/superpowers/installer.js", () => ({
+	ensureSuperpowersInstalled: vi.fn().mockResolvedValue(true),
 }))
 
 import {
