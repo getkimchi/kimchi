@@ -10,6 +10,10 @@ import type { WizardState } from "../state.js"
  * detection state (installed / not detected). Pre-selects the tools we
  * detect as installed; users can flip individual toggles.
  *
+ * Kimchi itself is always at the top, always selected, and always locked
+ * (labelled with a 🔒 and hint). If the user somehow unchecks it, the
+ * selection is restored after the prompt closes.
+ *
  * Tools whose `isInstalled()` returns false are still selectable — useful
  * when the user is about to install the binary alongside.
  */
@@ -41,8 +45,8 @@ export async function runToolsStep(state: WizardState, opts: { backable: boolean
 		message: "Which tools should be configured?",
 		options: tools.map((t) => ({
 			value: t.id,
-			label: t.name,
-			hint: t.id === "kimchi" ? "\x1b[36minstalled\x1b[39m" : installed.has(t.id) ? "installed" : "not detected",
+			label: t.id === "kimchi" ? "Kimchi 🔒" : t.name,
+			hint: t.id === "kimchi" ? "\x1b[36mrequired\x1b[39m" : installed.has(t.id) ? "installed" : "not detected",
 		})),
 		initialValues: initial,
 		required: false,
