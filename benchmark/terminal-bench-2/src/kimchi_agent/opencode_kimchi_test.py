@@ -10,14 +10,13 @@ from unittest.mock import patch
 from harbor.models.agent.context import AgentContext
 from harbor.models.task.config import MCPServerConfig
 
-from kimchi_agent.opencode_kimchi import (
-    KIMCHI_BASE_URL,
+from kimchi_agent.gateway import (
     KIMCHI_MODELS_METADATA_URL,
-    KIMCHI_PROVIDER,
+    KIMCHI_OPENAI_BASE_URL,
     KimchiModelMetadata,
     KimchiModelsMetadataResponse,
-    OpenCodeKimchi,
 )
+from kimchi_agent.opencode_kimchi import KIMCHI_PROVIDER, OpenCodeKimchi
 
 
 class FakeMetadataResponse:
@@ -57,11 +56,15 @@ class RecordingOpenCodeKimchi(OpenCodeKimchi):
         super().__init__(*args, **kwargs)
         self.agent_commands: list[str] = []
         self.agent_envs: list[dict[str, str] | None] = []
+        self.effective_agent_envs: list[dict[str, str]] = []
         self.metadata_fetch_count = 0
 
     async def exec_as_agent(self, _environment, command: str, env=None, cwd=None, timeout_sec=None):
         self.agent_commands.append(command)
         self.agent_envs.append(env)
+        merged_env = dict(env) if env else {}
+        merged_env.update(self._extra_env)
+        self.effective_agent_envs.append(merged_env)
 
     def _fetch_model_metadata(self, api_key: str) -> list[KimchiModelMetadata]:
         self.metadata_fetch_count += 1
@@ -101,7 +104,7 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config["small_model"], "kimchi-dev/minimax-m2.7")
         self.assertIn("minimax-m2.7", config["provider"][KIMCHI_PROVIDER]["models"])
         self.assertNotIn("kimi-k2.5", config["provider"][KIMCHI_PROVIDER]["models"])
-        self.assertEqual(config["provider"][KIMCHI_PROVIDER]["options"]["baseURL"], KIMCHI_BASE_URL)
+        self.assertEqual(config["provider"][KIMCHI_PROVIDER]["options"]["baseURL"], KIMCHI_OPENAI_BASE_URL)
         self.assertEqual(config["provider"][KIMCHI_PROVIDER]["options"]["apiKey"], "{env:KIMCHI_API_KEY}")
 
         run_command = agent.agent_commands[1]
@@ -210,7 +213,7 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         config = extract_echo_json(agent.agent_commands[0])
         provider = config["provider"][KIMCHI_PROVIDER]
         self.assertEqual(config["share"], "disabled")
-        self.assertEqual(provider["options"]["baseURL"], KIMCHI_BASE_URL)
+        self.assertEqual(provider["options"]["baseURL"], KIMCHI_OPENAI_BASE_URL)
         self.assertEqual(provider["options"]["timeout"], 600000)
         self.assertFalse(provider["models"]["kimi-k2.5"]["reasoning"])
 
@@ -230,17 +233,30 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("opencode --model=kimchi-dev/kimi-k2.5", agent.agent_commands[2])
 
     async def test_opencode_extra_env_overrides_default_fake_vcs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        opencode_env = {
+            "OPENCODE_API_KEY": "wrong-key",
+            "OPENCODE_CLIENT": "host-client",
+            "OPENCODE_CONFIG": "/tmp/evil-config.json",
+        }
+        with patch.dict(os.environ, opencode_env), tempfile.TemporaryDirectory() as tmp:
             agent = RecordingOpenCodeKimchi(
                 logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
                 model_name="kimchi-dev/kimi-k2.5",
-                extra_env={"OPENCODE_FAKE_VCS": "none", "OPENCODE_CLIENT": "terminal-bench"},
+                extra_env={
+                    "OPENCODE_API_KEY": "wrong-extra-key",
+                    "OPENCODE_CLIENT": "terminal-bench",
+                    "OPENCODE_CONFIG": "/tmp/evil-extra-config.json",
+                    "OPENCODE_FAKE_VCS": "none",
+                },
             )
 
             await agent.run("solve it", object(), AgentContext())
 
         self.assertEqual(agent.agent_envs[0]["OPENCODE_FAKE_VCS"], "none")
         self.assertEqual(agent.agent_envs[0]["OPENCODE_CLIENT"], "terminal-bench")
+        effective_env = agent.effective_agent_envs[0]
+        self.assertNotIn("OPENCODE_API_KEY", effective_env)
+        self.assertNotIn("OPENCODE_CONFIG", effective_env)
 
     async def test_registers_distinct_small_model_from_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -257,6 +273,7 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config["small_model"], "kimchi-dev/minimax-m2.7")
         self.assertIn("kimi-k2.5", models)
         self.assertIn("minimax-m2.7", models)
+        self.assertNotIn("OPENCODE_SMALL_MODEL", agent.effective_agent_envs[0])
 
     async def test_rejects_invalid_metadata_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -275,7 +292,7 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
             })
 
             with (
-                patch("kimchi_agent.opencode_kimchi.httpx.get", return_value=response) as http_get,
+                patch("kimchi_agent.gateway.httpx.get", return_value=response) as http_get,
                 self.assertRaisesRegex(RuntimeError, "Failed to parse Kimchi model metadata"),
             ):
                 await agent.run("solve it", object(), AgentContext())

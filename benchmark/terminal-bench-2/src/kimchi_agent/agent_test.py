@@ -66,6 +66,101 @@ class KimchiHarnessTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn(f"rm -f {CONTAINER_AGENT_PGID_FILE}", agent.root_commands[0])
             self.assertNotIn("pkill", agent.root_commands[0])
 
+    async def test_single_model_run_passes_model_without_multi_model_cli_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="kimchi-dev/kimi-k2.6",
+            )
+
+            with self.assertRaises(asyncio.CancelledError):
+                await agent.run("hello", object(), AgentContext())
+
+            command = agent.agent_commands[0]
+            self.assertIn("--model kimchi-dev/kimi-k2.6", command)
+            self.assertNotIn("--multi-model", command)
+            self.assertNotIn(".config/kimchi/harness/settings.json", command)
+
+    async def test_multi_model_run_omits_model_and_enables_harness_setting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="kimchi-dev/kimi-k2.6",
+                **{"multi-model": True},
+            )
+
+            with self.assertRaises(asyncio.CancelledError):
+                await agent.run("hello", object(), AgentContext())
+
+            command = agent.agent_commands[0]
+            self.assertNotIn("--model", command)
+            self.assertNotIn("--multi-model", command)
+            self.assertIn("~/.config/kimchi/harness/settings.json", command)
+            self.assertIn('{"multiModel":true}', command)
+            self.assertEqual(agent.to_agent_info().model_info.provider, "kimchi")
+            self.assertEqual(agent.to_agent_info().model_info.name, "multi-model")
+
+    async def test_multi_model_run_does_not_require_model_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                **{"multi-model": "true"},
+            )
+
+            with self.assertRaises(asyncio.CancelledError):
+                await agent.run("hello", object(), AgentContext())
+
+            self.assertNotIn("--model", agent.agent_commands[0])
+
+    async def test_api_key_can_come_from_agent_extra_env(self) -> None:
+        os.environ.pop("KIMCHI_API_KEY", None)
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="kimchi-dev/kimi-k2.6",
+                extra_env={"KIMCHI_API_KEY": "extra-key"},
+            )
+
+            with self.assertRaises(asyncio.CancelledError):
+                await agent.run("hello", object(), AgentContext())
+
+            self.assertEqual(agent.agent_envs[0]["KIMCHI_API_KEY"], "extra-key")
+
+    async def test_legacy_disable_multi_model_kwarg_does_not_emit_removed_cli_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="kimchi-dev/kimi-k2.6",
+                **{"disable-multi-model": True},
+            )
+
+            with self.assertRaises(asyncio.CancelledError):
+                await agent.run("hello", object(), AgentContext())
+
+            command = agent.agent_commands[0]
+            self.assertIn("--model kimchi-dev/kimi-k2.6", command)
+            self.assertNotIn("--multi-model", command)
+
+    def test_multi_model_and_legacy_disable_multi_model_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(ValueError):
+            RecordingKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="kimchi-dev/kimi-k2.6",
+                **{"multi-model": True, "disable-multi-model": True},
+            )
+
+    async def test_single_model_rejects_empty_model_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="kimchi-dev/",
+            )
+
+            with self.assertRaisesRegex(ValueError, "<provider>/<id>"):
+                await agent.run("hello", object(), AgentContext())
+
+            self.assertEqual(agent.agent_commands, [])
+
     async def test_populate_context_skips_unreadable_session_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             logs_dir = Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent"
