@@ -389,11 +389,13 @@ function patchUserMessageRender(): void {
 		}
 		const lines: string[] = originalRender.call(this, width)
 		if (!Array.isArray(lines) || lines.length === 0) return lines
-		// Replace the 2 leading spaces on line 0 (after OSC133) with "> ".
+		// Replace the 2 leading spaces on line 0 (after OSC133) with "❯ " in accent color.
+		const theme = _themePaletteCacheTheme as any
+		const prefix = typeof theme?.fg === "function" ? `${theme.fg("accent", "❯")} ` : "❯ "
 		const first = lines[0]
 		const osc = first.startsWith(OSC133_ZONE_START) ? OSC133_ZONE_START : ""
 		const rest = first.slice(osc.length)
-		lines[0] = osc + (rest.startsWith("  ") ? `> ${rest.slice(2)}` : `> ${rest}`)
+		lines[0] = osc + (rest.startsWith("  ") ? prefix + rest.slice(2) : prefix + rest)
 		return lines
 	}
 	proto[USER_MESSAGE_PATCH_FLAG] = true
