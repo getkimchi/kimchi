@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { shortenTitle } from "../../ferment/shorten-title.js"
 import { clearFermentCache } from "../../ferment/store.js"
+import { deriveDraftFermentTitle } from "../../ferment/title.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
@@ -181,7 +181,7 @@ async function maybeRunUserInputDropdown(
 			}
 			edited = result
 		}
-		const outcome = confirmPendingScope(runtime, f.id, edited, "turn_end", pending?.title ?? f.name, pi)
+		const outcome = confirmPendingScope(runtime, f.id, edited, "turn_end", pi)
 		if (outcome.ok) {
 			ctx.ui.notify?.(
 				`Plan saved for "${outcome.outcome.ferment.name}". ${outcome.outcome.ferment.phases.length} phase(s) ready.`,
@@ -334,7 +334,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 				autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
 			})
 			const storage = runtime.getStorage()
-			const shortName = await shortenTitle(intent)
+			const shortName = deriveDraftFermentTitle(intent)
 			const f = storage.create(shortName, intent)
 			const updated = f
 			runtime.setActive(updated)

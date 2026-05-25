@@ -1,16 +1,6 @@
-const MAX_TITLE_LENGTH = 60
+import { stripOuterQuotes } from "./text.js"
 
-function stripOuterTitleQuotes(value: string): string {
-	const trimmed = value.trim()
-	if (trimmed.length >= 2) {
-		const first = trimmed[0]
-		const last = trimmed[trimmed.length - 1]
-		if ((first === `"` && last === `"`) || (first === `'` && last === `'`) || (first === "`" && last === "`")) {
-			return trimmed.slice(1, -1).trim()
-		}
-	}
-	return trimmed
-}
+const MAX_TITLE_LENGTH = 60
 
 function truncateTitle(value: string): string {
 	if (value.length <= MAX_TITLE_LENGTH) return value
@@ -20,7 +10,7 @@ function truncateTitle(value: string): string {
 }
 
 export function normalizeFermentTitle(value: string | undefined): string | undefined {
-	const stripped = stripOuterTitleQuotes(value ?? "")
+	const stripped = stripOuterQuotes(value ?? "")
 	const normalized = stripped.replace(/\s+/g, " ").trim()
 	if (!normalized) return undefined
 	return truncateTitle(normalized)
@@ -33,6 +23,6 @@ export function normalizeFermentTitle(value: string | undefined): string | undef
  * active Pi turn and normal tool contract. Draft creation must stay local so a
  * cosmetic title can never block Ferment startup.
  */
-export async function shortenTitle(rawIntent: string): Promise<string> {
+export function deriveDraftFermentTitle(rawIntent: string): string {
 	return normalizeFermentTitle(rawIntent) ?? "Untitled Ferment"
 }

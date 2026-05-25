@@ -462,12 +462,10 @@ describe("FermentCommandController", () => {
 		h.runtime.setActive(active)
 		setPendingPlanReview({
 			fermentId: active.id,
-			fermentName: active.name,
 			planMarkdown: "# Plan: Exit Pending State",
 		})
 		setPendingPlanReview({
 			fermentId: other.id,
-			fermentName: other.name,
 			planMarkdown: "# Plan: Other Pending State",
 		})
 		h.runtime.setPendingScope(active.id, { goal: "Goal", successCriteria: "Works", constraints: [] })
@@ -708,12 +706,10 @@ describe("registerFermentCommands", () => {
 		h.runtime.setActive(previous)
 		setPendingPlanReview({
 			fermentId: previous.id,
-			fermentName: previous.name,
 			planMarkdown: "# Plan: Previous Review",
 		})
 		setPendingPlanReview({
 			fermentId: target.id,
-			fermentName: target.name,
 			planMarkdown: "# Plan: Target Review",
 		})
 

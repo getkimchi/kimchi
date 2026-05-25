@@ -140,7 +140,6 @@ describe("FermentRuntime pending plan review cleanup", () => {
 		h.runtime.setPendingScope(h.fermentId, { goal: "Goal", successCriteria: "Done", constraints: [] })
 		h.runtime.setPendingPlanReview({
 			fermentId: h.fermentId,
-			fermentName: "Lifecycle Test",
 			planMarkdown: "# Plan",
 		})
 

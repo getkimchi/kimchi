@@ -1,3 +1,5 @@
+import { stripOuterQuotes } from "../../ferment/text.js"
+
 export type FermentCommand =
 	| { type: "interactive" }
 	| { type: "list" }
@@ -15,18 +17,6 @@ export type FermentCommand =
 	| { type: "one-shot"; intent: string }
 	| { type: "new"; title: string }
 	| { type: "unknown"; input: string }
-
-export function stripOuterQuotes(value: string): string {
-	const trimmed = value.trim()
-	if (trimmed.length >= 2) {
-		const first = trimmed[0]
-		const last = trimmed[trimmed.length - 1]
-		if ((first === `"` && last === `"`) || (first === `'` && last === `'`)) {
-			return trimmed.slice(1, -1).trim()
-		}
-	}
-	return trimmed
-}
 
 function parseSwitch(raw: string): FermentCommand {
 	const verb = "switch"

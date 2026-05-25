@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { normalizeFermentTitle } from "../../ferment/shorten-title.js"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
+import { normalizeFermentTitle } from "../../ferment/title.js"
 import type { FermentRuntime } from "./runtime.js"
 import { type ApplyOutcome, createApplyAndPersist } from "./tool-helpers.js"
 
@@ -21,7 +21,6 @@ export function confirmPendingScope(
 	fermentId: string,
 	phases: ScopePhaseInput[] | undefined,
 	source: ConfirmPendingScopeSource,
-	title?: string,
 	pi?: ExtensionAPI,
 ): ConfirmPendingScopeResult {
 	const pending = runtime.getPendingScope(fermentId)
@@ -54,7 +53,7 @@ export function confirmPendingScope(
 	const previous = runtime.getStorage().get(fermentId)
 	const outcome = applyAndPersist(fermentId, {
 		type: "scope",
-		title: normalizeFermentTitle(title),
+		title: normalizeFermentTitle(pending.title),
 		goal: pending.goal,
 		successCriteria: pending.successCriteria,
 		constraints: pending.constraints,

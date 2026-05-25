@@ -859,7 +859,6 @@ describe("fermentExtension question dropdown", () => {
 			})
 			setPendingPlanReview({
 				fermentId: draft.id,
-				fermentName: draft.name,
 				planMarkdown: "# Plan: Deferred Review",
 			})
 
@@ -929,12 +928,10 @@ describe("fermentExtension question dropdown", () => {
 			})
 			setPendingPlanReview({
 				fermentId: firstDraft.id,
-				fermentName: firstDraft.name,
 				planMarkdown: "# Plan: First Deferred Review",
 			})
 			setPendingPlanReview({
 				fermentId: secondDraft.id,
-				fermentName: secondDraft.name,
 				planMarkdown: "# Plan: Second Deferred Review",
 			})
 
@@ -980,7 +977,6 @@ describe("fermentExtension question dropdown", () => {
 			})
 			setPendingPlanReview({
 				fermentId: draft.id,
-				fermentName: draft.name,
 				planMarkdown: "# Plan: Deferred Feedback",
 			})
 
@@ -1042,7 +1038,6 @@ describe("fermentExtension question dropdown", () => {
 			})
 			setPendingPlanReview({
 				fermentId: draft.id,
-				fermentName: draft.name,
 				planMarkdown: "# Plan: Cancelled Review",
 			})
 
@@ -1084,7 +1079,6 @@ describe("fermentExtension question dropdown", () => {
 			})
 			setPendingPlanReview({
 				fermentId: draft.id,
-				fermentName: draft.name,
 				planMarkdown: "# Plan: Failed Confirmation",
 			})
 

@@ -10,8 +10,8 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
-import { normalizeFermentTitle } from "../../../ferment/shorten-title.js"
 import type { Command, ScopePhaseInput } from "../../../ferment/state-machine.js"
+import { normalizeFermentTitle } from "../../../ferment/title.js"
 import {
 	DEFAULT_SCOPING_QUESTION_TYPE,
 	type Grade,
@@ -362,8 +362,7 @@ function validateScopingQuestions(questions: ScopingQuestion[]): string | null {
 	return null
 }
 
-export function buildPlanMarkdown(fermentName: string, params: NormalizedProposeScopingArgs): string {
-	const planTitle = params.title ?? fermentName
+export function buildPlanMarkdown(params: NormalizedProposeScopingArgs): string {
 	const phaseBlocks = params.phases.map((p, i) => {
 		const goalLines = wrapText(p.goal, 86)
 		const stepLines = (p.steps ?? []).map((s, j) => renderStep(j + 1, s.description)).join("\n")
@@ -376,7 +375,7 @@ export function buildPlanMarkdown(fermentName: string, params: NormalizedPropose
 			.join("\n")
 	})
 	return [
-		`# Plan: ${planTitle}`,
+		`# Plan: ${params.title}`,
 		"",
 		renderWrapped("## Goal", params.goal),
 		"",
@@ -739,7 +738,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			})
 
 			// 4. Build clean markdown for final/headless tool output and local review UI.
-			const planEntry = buildPlanMarkdown(ferment.name, params)
+			const planEntry = buildPlanMarkdown(params)
 			const formatPlanEntry = (suffix?: string): string => (suffix ? `${planEntry}\n\n${suffix}` : planEntry)
 			const planToolOk = (message: string, options: { includePlan?: boolean; suffix?: string } = {}) =>
 				toolOk(options.includePlan ? `${formatPlanEntry(options.suffix)}\n\n${message}` : message)
@@ -753,7 +752,6 @@ ${renderGateGuidance("scope_ferment")}`,
 						params.ferment_id,
 						params.phases,
 						"propose_ferment_scoping",
-						params.title,
 						pi,
 					)
 					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
@@ -782,7 +780,6 @@ ${renderGateGuidance("scope_ferment")}`,
 						params.ferment_id,
 						params.phases,
 						"propose_ferment_scoping",
-						params.title,
 						pi,
 					)
 					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
@@ -797,8 +794,6 @@ ${renderGateGuidance("scope_ferment")}`,
 
 				runtime.setPendingPlanReview({
 					fermentId: params.ferment_id,
-					fermentName: ferment.name,
-					title: params.title,
 					planMarkdown: planEntry,
 				})
 				return planToolOk("Plan ready for review. The review dialog will open when this turn finishes.")

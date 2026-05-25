@@ -1,15 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { normalizeFermentTitle, shortenTitle } from "./shorten-title.js"
+import { deriveDraftFermentTitle, normalizeFermentTitle } from "./title.js"
 
 afterEach(() => {
 	vi.restoreAllMocks()
 })
 
-describe("shortenTitle", () => {
-	it("derives a deterministic local title without calling fetch", async () => {
+describe("deriveDraftFermentTitle", () => {
+	it("derives a deterministic local title without calling fetch", () => {
 		const fetchSpy = vi.spyOn(globalThis, "fetch")
 
-		await expect(shortenTitle("  Build   OAuth Login  ")).resolves.toBe("Build OAuth Login")
+		expect(deriveDraftFermentTitle("  Build   OAuth Login  ")).toBe("Build OAuth Login")
 
 		expect(fetchSpy).not.toHaveBeenCalled()
 	})
@@ -29,7 +29,7 @@ describe("shortenTitle", () => {
 		expect(title?.length).toBeLessThanOrEqual(60)
 	})
 
-	it("falls back for empty draft intents", async () => {
-		await expect(shortenTitle("   ")).resolves.toBe("Untitled Ferment")
+	it("falls back for empty draft intents", () => {
+		expect(deriveDraftFermentTitle("   ")).toBe("Untitled Ferment")
 	})
 })

@@ -143,7 +143,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 			if (!isCurrentPendingReview(review)) return
 
 			if (outcome.kind === "start") {
-				const scopeOutcome = confirmPendingScope(runtime, review.fermentId, undefined, "turn_end", review.title, pi)
+				const scopeOutcome = confirmPendingScope(runtime, review.fermentId, undefined, "turn_end", pi)
 				if (!scopeOutcome.ok) {
 					ctx?.ui?.notify?.(`Failed to save plan: ${scopeOutcome.error.message}`, "error")
 					return

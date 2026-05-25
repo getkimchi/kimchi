@@ -1108,7 +1108,6 @@ describe("propose_ferment_scoping", () => {
 		expect(ctx.ui.custom).not.toHaveBeenCalled()
 		expect(getPendingPlanReview(id)).toMatchObject({
 			fermentId: id,
-			fermentName: "ZeroQ Review",
 			planMarkdown: expect.stringContaining("# Plan: Proposed Ferment"),
 		})
 		expect(getPendingPlanReview(id)?.planMarkdown.includes(`${String.fromCharCode(27)}[`)).toBe(false)
