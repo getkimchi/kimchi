@@ -134,13 +134,17 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).not.toContain("## Your Team")
 	})
 
-	it("returns empty string in single-model mode", () => {
+	it("returns single-model instructions in single-model mode", () => {
 		const result = resolveOrchestrationInstructions({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "single",
 		})
-		expect(result).toBe("")
+		expect(result).toContain("single-model mode")
+		expect(result).toContain("same model")
+		expect(result).toContain("different model")
+		expect(result).toContain("asking the user for approval")
+		expect(result).toContain("Agent")
 	})
 
 	it("returns subagent instructions in subagent mode", () => {
@@ -172,7 +176,8 @@ describe("resolveOrchestrationInstructions", () => {
 			mode: "single",
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toBe("")
+		expect(result).toContain("single-model mode")
+		expect(result).not.toContain("Your Team")
 	})
 
 	it("includes model-specific orchestration guidelines when provided", () => {
