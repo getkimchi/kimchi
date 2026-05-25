@@ -48,7 +48,7 @@ async function fetchAvailableModels(apiKey: string): Promise<ModelMetadata[]> {
 	return body.models
 }
 
-interface PiModelConfig {
+export interface PiModelConfig {
 	id: string
 	name: string
 	reasoning: boolean
@@ -115,6 +115,16 @@ function modelToMetadata(m: PiModelConfig): ModelMetadata {
 	}
 }
 
+function extractModelsFromProviders(providers: Record<string, { models?: PiModelConfig[] }>): ModelMetadata[] {
+	const result: ModelMetadata[] = []
+	for (const [, provider] of Object.entries(providers)) {
+		if (Array.isArray(provider.models)) {
+			result.push(...provider.models.map(modelToMetadata))
+		}
+	}
+	return result
+}
+
 function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined {
 	try {
 		const raw = readFileSync(modelsJsonPath, "utf-8")
@@ -145,6 +155,24 @@ export async function validateApiKey(apiKey: string): Promise<void> {
 }
 
 /**
+ * Overwrite or insert a provider's models in models.json.
+ * Used after OAuth subscription login to persist upstream models into Kimchi's cache.
+ */
+export function syncProviderModels(
+	modelsJsonPath: string,
+	providerId: string,
+	models: PiModelConfig[],
+): void {
+	let config: { providers?: Record<string, { models?: PiModelConfig[] }> } = {}
+	if (existsSync(modelsJsonPath)) {
+		config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+	}
+	if (!config.providers) config.providers = {}
+	config.providers[providerId] = { models }
+	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
+}
+
+/**
  * Fetch available models from the kimchi metadata API and write the
  * configuration to modelsJsonPath. If no API key is configured, returns
  * cached models (if available) or an empty list without making a network call.
@@ -165,6 +193,8 @@ export async function updateModelsConfig(modelsJsonPath: string, apiKey: string)
 
 	const otherProviders = readExistingProviders(modelsJsonPath)
 
+	const otherModels = extractModelsFromProviders(otherProviders as Record<string, { models?: PiModelConfig[] }>)
+
 	let fetched: ModelMetadata[]
 	try {
 		fetched = await fetchAvailableModels(apiKey)
@@ -179,5 +209,5 @@ export async function updateModelsConfig(modelsJsonPath: string, apiKey: string)
 	const models = sortModels(fetched)
 	const merged = { providers: { ...otherProviders, ...buildModelsConfig(models).providers } }
 	writeFileSync(modelsJsonPath, JSON.stringify(merged, null, "\t"), "utf-8")
-	return { models }
+	return { models: sortModels([...fetched, ...otherModels]) }
 }

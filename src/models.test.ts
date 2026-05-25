@@ -177,6 +177,31 @@ describe("updateModelsConfig", () => {
 		expect(config.providers.custom).toEqual({ models: [] })
 	})
 
+	it("includes models from non-kimchi providers in the returned list", async () => {
+		const OPENAI_MODEL = {
+			id: "gpt-4",
+			name: "GPT-4",
+			reasoning: false,
+			input: ["text"],
+			contextWindow: 8192,
+			maxTokens: 4096,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			provider: "openai",
+		}
+
+		writeFileSync(modelsJsonPath, JSON.stringify({ providers: { openai: { models: [OPENAI_MODEL] } } }))
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const slugs = result.models.map((m) => m.slug)
+		expect(slugs).toContain("kimi-k2.5")
+		expect(slugs).toContain("gpt-4")
+	})
+
 	it("throws on fetch failure when no cached config exists", async () => {
 		vi.mocked(fetch).mockRejectedValueOnce(new Error("network error"))
 		await expect(updateModelsConfig(modelsJsonPath, "test-key")).rejects.toThrow("network error")
