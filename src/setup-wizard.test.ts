@@ -38,8 +38,15 @@ vi.mock("@clack/prompts", () => ({
 	isCancel: clackMock.isCancel,
 }))
 
+const ensureSuperpowersInstalledMock = vi.hoisted(() => vi.fn().mockResolvedValue(true))
+const getSuperpowersVendorDirMock = vi.hoisted(() => vi.fn().mockReturnValue("/nonexistent/vendor/superpowers"))
+
 vi.mock("./extensions/superpowers/installer.js", () => ({
-	ensureSuperpowersInstalled: vi.fn().mockResolvedValue(true),
+	ensureSuperpowersInstalled: ensureSuperpowersInstalledMock,
+}))
+
+vi.mock("./extensions/superpowers/config.js", () => ({
+	getSuperpowersVendorDir: getSuperpowersVendorDirMock,
 }))
 
 import {
@@ -347,6 +354,13 @@ describe("migrateCommandToPrompt", () => {
 })
 
 describe("runSetupWizard", () => {
+	beforeEach(() => {
+		// Default: vendor dir does not exist — superpowers select will be shown
+		getSuperpowersVendorDirMock.mockReturnValue("/nonexistent/vendor/superpowers")
+		ensureSuperpowersInstalledMock.mockReset()
+		ensureSuperpowersInstalledMock.mockResolvedValue(true)
+	})
+
 	it("returns a cancelled result when skill selection is cancelled", async () => {
 		clackMock.multiselect.mockResolvedValueOnce(clackMock.cancelValue)
 
@@ -371,6 +385,7 @@ describe("runSetupWizard", () => {
 	it("marks successful setup results as not cancelled", async () => {
 		clackMock.multiselect.mockResolvedValueOnce([".config/kimchi/harness/skills"])
 		clackMock.text.mockResolvedValueOnce("")
+		clackMock.select.mockResolvedValueOnce("no") // superpowers prompt — decline
 
 		const result = await runSetupWizard({ needsSkillsSetup: true, needsMigrationCheck: false })
 
@@ -380,5 +395,47 @@ describe("runSetupWizard", () => {
 			migrationState: undefined,
 		})
 		expect(clackMock.outro).toHaveBeenCalledWith("Setup complete.")
+	})
+
+	it("installs superpowers when user selects yes", async () => {
+		clackMock.multiselect.mockResolvedValueOnce([".config/kimchi/harness/skills"])
+		clackMock.text.mockResolvedValueOnce("")
+		clackMock.select.mockResolvedValueOnce("yes")
+
+		await runSetupWizard({ needsSkillsSetup: true, needsMigrationCheck: false })
+
+		expect(ensureSuperpowersInstalledMock).toHaveBeenCalledOnce()
+	})
+
+	it("skips install when user selects no", async () => {
+		clackMock.multiselect.mockResolvedValueOnce([".config/kimchi/harness/skills"])
+		clackMock.text.mockResolvedValueOnce("")
+		clackMock.select.mockResolvedValueOnce("no")
+
+		await runSetupWizard({ needsSkillsSetup: true, needsMigrationCheck: false })
+
+		expect(ensureSuperpowersInstalledMock).not.toHaveBeenCalled()
+	})
+
+	it("skips install when user cancels the superpowers prompt", async () => {
+		clackMock.multiselect.mockResolvedValueOnce([".config/kimchi/harness/skills"])
+		clackMock.text.mockResolvedValueOnce("")
+		clackMock.select.mockResolvedValueOnce(clackMock.cancelValue)
+
+		await runSetupWizard({ needsSkillsSetup: true, needsMigrationCheck: false })
+
+		expect(ensureSuperpowersInstalledMock).not.toHaveBeenCalled()
+		expect(clackMock.outro).toHaveBeenCalledWith("Setup complete.")
+	})
+
+	it("skips the superpowers prompt when vendor dir already exists", async () => {
+		getSuperpowersVendorDirMock.mockReturnValue("/tmp") // /tmp always exists
+		clackMock.multiselect.mockResolvedValueOnce([".config/kimchi/harness/skills"])
+		clackMock.text.mockResolvedValueOnce("")
+
+		await runSetupWizard({ needsSkillsSetup: true, needsMigrationCheck: false })
+
+		expect(clackMock.select).not.toHaveBeenCalled()
+		expect(ensureSuperpowersInstalledMock).not.toHaveBeenCalled()
 	})
 })
