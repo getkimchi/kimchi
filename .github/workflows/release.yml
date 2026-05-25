@@ -191,7 +191,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: getkimchi/homebrew-tap
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          ssh-key: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
           path: homebrew-tap
 
       - name: Update Formula/kimchi.rb
