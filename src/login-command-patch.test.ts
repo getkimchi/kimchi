@@ -1,9 +1,13 @@
-import { InteractiveMode } from "@earendil-works/pi-coding-agent"
+import { InteractiveMode, initTheme } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
-import { expect, it, vi } from "vitest"
+import { beforeAll, expect, it, vi } from "vitest"
 import * as loginPatch from "./login-command-patch.js"
 
 const { applyLoginCommandPatch, oauthDelegate } = loginPatch
+
+beforeAll(() => {
+	initTheme("default")
+})
 
 function makeFakeModelRegistry() {
 	return {
@@ -13,6 +17,7 @@ function makeFakeModelRegistry() {
 		},
 		refresh: vi.fn(),
 		getAvailable: vi.fn().mockReturnValue([]),
+		getProviderAuthStatus: vi.fn().mockReturnValue({ configured: false }),
 	}
 }
 
@@ -21,9 +26,11 @@ type FakeIm = Record<string, any>
 
 function makeFakeInteractiveMode(registry: ReturnType<typeof makeFakeModelRegistry>) {
 	const children: unknown[] = []
-	return {
+	const fakeIm: FakeIm = {
 		showError: vi.fn(),
 		showStatus: vi.fn(),
+		showLoginDialog: vi.fn().mockResolvedValue(undefined),
+		getLoginProviderOptions: vi.fn().mockReturnValue([]),
 		chatContainer: {
 			addChild: vi.fn((child: unknown) => children.push(child)),
 			children,
@@ -35,13 +42,37 @@ function makeFakeInteractiveMode(registry: ReturnType<typeof makeFakeModelRegist
 			modelRegistry: registry,
 			setModel: vi.fn().mockResolvedValue(undefined),
 		},
+		showSelector: vi.fn((build: (done: () => void) => { component: unknown; focus?: unknown }) => {
+			const result = build(() => {
+				fakeIm.selectorDone = true
+			})
+			fakeIm.selectorComponent = result.component
+			fakeIm.selectorFocus = result.focus
+		}),
 	}
+	return fakeIm
 }
 
 function getFeedbackMessages(fakeIm: FakeIm): string[] {
 	return fakeIm.chatContainer.children
 		.filter((c: unknown): c is Text => c instanceof Text)
 		.map((c: Text) => (c as unknown as { text: string }).text)
+}
+
+async function flushAsyncLogin(): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 0))
+	await Promise.resolve()
+}
+
+async function selectCurrentLoginOption(fakeIm: FakeIm): Promise<void> {
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+}
+
+async function selectSubscriptionLoginOption(fakeIm: FakeIm): Promise<void> {
+	fakeIm.selectorComponent.handleInput("j")
+	fakeIm.selectorComponent.handleInput("\n")
+	await Promise.resolve()
 }
 
 it("intercepts showOAuthSelector('login') and runs Kimchi browser auth", async () => {
@@ -57,7 +88,9 @@ it("intercepts showOAuthSelector('login') and runs Kimchi browser auth", async (
 	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
 	const patched = (InteractiveMode.prototype as any).showOAuthSelector
 	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
 
+	expect(fakeIm.showSelector).toHaveBeenCalledOnce()
 	expect(authSpy).toHaveBeenCalledOnce()
 	expect(fakeIm.showStatus).toHaveBeenCalledWith("Opening browser for Kimchi login...")
 	expect(registry.authStorage.set).toHaveBeenCalledWith("kimchi-dev", {
@@ -87,6 +120,7 @@ it("falls back to the first available model when the default is not present", as
 	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
 	const patched = (InteractiveMode.prototype as any).showOAuthSelector
 	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
 
 	expect(fakeIm.session.setModel).toHaveBeenCalledWith({
 		id: "other-model",
@@ -96,6 +130,13 @@ it("falls back to the first available model when the default is not present", as
 })
 
 it("shows generic success when no models are available for the provider", async () => {
+	const cliAuthModule = await import("./cli-auth/index.js")
+	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({
+		token: "test-token-789",
+	})
+	const configModule = await import("./config.js")
+	vi.spyOn(configModule, "writeApiKey").mockImplementation(() => {})
+
 	const registry = makeFakeModelRegistry()
 	registry.getAvailable.mockReturnValue([])
 
@@ -103,6 +144,7 @@ it("shows generic success when no models are available for the provider", async 
 	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
 	const patched = (InteractiveMode.prototype as any).showOAuthSelector
 	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
 
 	expect(getFeedbackMessages(fakeIm)).toContain("✓ Login successful. API key saved.")
 	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
@@ -117,9 +159,29 @@ it("shows error when browser auth fails", async () => {
 	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
 	const patched = (InteractiveMode.prototype as any).showOAuthSelector
 	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
 
 	expect(fakeIm.showError).toHaveBeenCalledWith("Kimchi login failed: Browser closed")
 	expect(registry.authStorage.set).not.toHaveBeenCalled()
+})
+
+it("routes the subscription option to upstream OAuth providers without showing Kimchi as a duplicate", async () => {
+	const registry = makeFakeModelRegistry()
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.getLoginProviderOptions.mockReturnValue([
+		{ id: "kimchi-dev", name: "Kimchi", authType: "oauth" },
+		{ id: "anthropic", name: "Claude", authType: "oauth" },
+	])
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectSubscriptionLoginOption(fakeIm)
+	fakeIm.selectorComponent.handleInput("\n")
+	await Promise.resolve()
+
+	expect(fakeIm.getLoginProviderOptions).toHaveBeenCalledWith("oauth")
+	expect(fakeIm.showLoginDialog).toHaveBeenCalledWith("anthropic", "Claude")
 })
 
 it("passes through to original showOAuthSelector for 'logout' mode", async () => {

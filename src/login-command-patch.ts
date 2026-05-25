@@ -1,21 +1,28 @@
 /**
- * Patches the upstream pi SDK's `/login` slash command to run Kimchi's browser
- * authentication flow instead of the generic OAuth provider selector.
+ * Patches the upstream pi SDK's `/login` slash command to offer Kimchi browser
+ * authentication first, while preserving upstream subscription login.
  *
  * This module is imported for side effects. It must be loaded **before** any
  * `InteractiveMode` instance is constructed so the prototype patch takes effect.
  */
 
-import { InteractiveMode } from "@earendil-works/pi-coding-agent"
+import {
+	type AuthStatus,
+	ExtensionSelectorComponent,
+	InteractiveMode,
+	OAuthSelectorComponent,
+} from "@earendil-works/pi-coding-agent"
 import { Spacer, Text } from "@earendil-works/pi-tui"
 import { authenticateViaBrowser } from "./cli-auth/index.js"
 import { writeApiKey } from "./config.js"
 
 const KIMCHI_PROVIDER_ID = "kimchi-dev"
 const KIMCHI_DEFAULT_MODEL_ID = "kimi-k2.6"
+const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
+const SUBSCRIPTION_LABEL = "Use a subscription"
 
 // ---------------------------------------------------------------------------
-// Intercept the upstream login flow and redirect to Kimchi browser auth
+// Intercept the upstream login flow to add the Kimchi browser auth choice
 // ---------------------------------------------------------------------------
 
 interface AuthStorage {
@@ -33,6 +40,7 @@ interface ModelRegistry {
 	refresh(): void
 	getAvailable(): ModelLike[]
 	getModelById(id: string): ModelLike | undefined
+	getProviderAuthStatus(providerId: string): AuthStatus
 }
 
 interface SessionLike {
@@ -46,6 +54,20 @@ type ChatContainerLike = {
 
 type UiLike = {
 	requestRender(): void
+}
+
+type SelectorResult = { component: unknown; focus?: unknown }
+type ShowSelector = (build: (done: () => void) => SelectorResult) => void
+type AuthSelectorProvider = ConstructorParameters<typeof OAuthSelectorComponent>[2][number]
+type OAuthSelectorAuthStorage = ConstructorParameters<typeof OAuthSelectorComponent>[1]
+
+type LoginModeLike = {
+	showSelector?: ShowSelector
+	showStatus?: (msg: string) => void
+	showLoginDialog?: (providerId: string, providerName: string) => Promise<void>
+	getLoginProviderOptions?: (authType: "oauth" | "api_key") => AuthSelectorProvider[]
+	session: SessionLike
+	ui?: UiLike
 }
 
 /**
@@ -135,9 +157,79 @@ async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 	}
 }
 
+function showSubscriptionLogin(im: InteractiveMode): void {
+	const modeLike = im as unknown as LoginModeLike
+	if (
+		!modeLike.showSelector ||
+		!modeLike.getLoginProviderOptions ||
+		!modeLike.showLoginDialog ||
+		!modeLike.session?.modelRegistry
+	) {
+		void oauthDelegate.original.call(im, "login")
+		return
+	}
+
+	const registry = modeLike.session.modelRegistry
+	const providerOptions = modeLike
+		.getLoginProviderOptions("oauth")
+		.filter((provider) => provider.id !== KIMCHI_PROVIDER_ID)
+	if (providerOptions.length === 0) {
+		modeLike.showStatus?.("No subscription providers available.")
+		return
+	}
+
+	modeLike.showSelector((done) => {
+		const selector = new OAuthSelectorComponent(
+			"login",
+			registry.authStorage as OAuthSelectorAuthStorage,
+			providerOptions,
+			async (providerId) => {
+				done()
+				const providerOption = providerOptions.find((provider) => provider.id === providerId)
+				if (!providerOption) return
+				await modeLike.showLoginDialog?.(providerOption.id, providerOption.name)
+			},
+			() => {
+				done()
+				showLoginChoiceSelector(im)
+			},
+			(providerId) => registry.getProviderAuthStatus(providerId),
+		)
+		return { component: selector, focus: selector }
+	})
+}
+
+function showLoginChoiceSelector(im: InteractiveMode): void {
+	const modeLike = im as unknown as LoginModeLike
+	if (!modeLike.showSelector) {
+		void handleKimchiLogin(im)
+		return
+	}
+
+	modeLike.showSelector((done) => {
+		const selector = new ExtensionSelectorComponent(
+			"Select authentication method:",
+			[KIMCHI_ACCOUNT_LABEL, SUBSCRIPTION_LABEL],
+			(option) => {
+				done()
+				if (option === SUBSCRIPTION_LABEL) {
+					showSubscriptionLogin(im)
+					return
+				}
+				void handleKimchiLogin(im)
+			},
+			() => {
+				done()
+				modeLike.ui?.requestRender()
+			},
+		)
+		return { component: selector, focus: selector }
+	})
+}
+
 async function patchedShowOAuthSelector(this: InteractiveMode, mode: "login" | "logout") {
 	if (mode === "login") {
-		await handleKimchiLogin(this)
+		showLoginChoiceSelector(this)
 		return
 	}
 	return oauthDelegate.original.call(this, mode)
