@@ -4,7 +4,7 @@ import type { FermentEventStore } from "../../ferment/event-store.js"
 import { registerFermentEvents } from "./events.js"
 import type { FermentRuntime } from "./runtime.js"
 import { createDefaultFermentRuntime } from "./runtime.js"
-import { FERMENT_TOOL_NAMES } from "./tool-scope.js"
+import { FERMENT_TOOL_NAMES } from "./tool-names.js"
 
 type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown
 

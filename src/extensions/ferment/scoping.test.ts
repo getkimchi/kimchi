@@ -17,13 +17,17 @@ function createRuntime(): { runtime: FermentRuntime; storage: FermentEventStore 
 }
 
 function makePi(): ExtensionAPI {
+	let activeTools: string[] = []
 	return {
+		on: vi.fn(),
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
-		getActiveTools: vi.fn(() => []),
-		getAllTools: vi.fn(() => []),
-		setActiveTools: vi.fn(),
+		getActiveTools: vi.fn(() => activeTools),
+		getAllTools: vi.fn(() => [{ name: "propose_ferment_scoping" }, { name: "list_ferments" }]),
+		setActiveTools: vi.fn((names: string[]) => {
+			activeTools = names
+		}),
 	} as unknown as ExtensionAPI
 }
 

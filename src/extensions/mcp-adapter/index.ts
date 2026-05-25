@@ -213,6 +213,11 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 	})
 
 	const getPiTools = (): ToolInfo[] => pi.getAllTools()
+	const getNativeToolStatus = (toolName: string): { tool: ToolInfo; active: boolean } | undefined => {
+		const tool = pi.getAllTools().find((candidate) => candidate.name === toolName)
+		if (!tool) return undefined
+		return { tool, active: pi.getActiveTools().includes(tool.name) }
+	}
 
 	pi.registerFlag("mcp-config", {
 		description: "Path to MCP config file",
@@ -456,14 +461,17 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 					// loadConfig throws when API key is missing; default is fine here
 				}
 				if (params.tool) {
-					return executeCall(state, params.tool, parsedArgs, params.server, ctx, maxToolResultChars)
+					return executeCall(state, params.tool, parsedArgs, params.server, ctx, maxToolResultChars, getNativeToolStatus)
 				}
 				if (params.connect) {
 					return executeConnect(state, params.connect)
 				}
 				if (params.describe) {
-					return executeDescribe(state, params.describe, (specs) =>
-						registerAndActivate(specs, undefined, ctx)
+					return executeDescribe(
+						state,
+						params.describe,
+						(specs) => registerAndActivate(specs, undefined, ctx),
+						getNativeToolStatus,
 					)
 				}
 				if (params.search) {

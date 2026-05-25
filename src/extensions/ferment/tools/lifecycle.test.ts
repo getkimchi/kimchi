@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
+import { FERMENT_TOOLS } from "../tool-names.js"
 import {
 	buildFreeformScopingFeedbackMessage,
 	completeFerment,
@@ -581,6 +582,8 @@ describe("completeFerment", () => {
 		)
 		expect(okText(first)).toContain('Ferment "Lifecycle Test" complete')
 		expect(okText(first)).toContain("Do not call bash/read/list_ferments or any ferment tools")
+		expect(okText(first)).toContain('/ferment new "..."')
+		expect(okText(first)).toContain("do not search MCP tools or invent a tool")
 		expect(mockJudgeJourneyGrade).toHaveBeenCalledTimes(1)
 
 		const second = await completeFerment(h.runtime, { ferment_id: h.fermentId }, { pi: h.pi })

@@ -75,14 +75,23 @@ function createHarness() {
 			activeRef = ferment
 		}),
 	}
+	let activeTools = ["read", "bash"]
+	const allTools = [
+		{ name: "read" },
+		{ name: "bash" },
+		{ name: "propose_ferment_scoping" },
+		{ name: "start_ferment_step" },
+	]
 	const pi = {
 		on: vi.fn(),
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
-		getActiveTools: vi.fn(() => ["read", "bash"]),
-		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "start_ferment_step" }]),
-		setActiveTools: vi.fn(),
+		getActiveTools: vi.fn(() => activeTools),
+		getAllTools: vi.fn(() => allTools),
+		setActiveTools: vi.fn((names: string[]) => {
+			activeTools = names
+		}),
 	} as unknown as ExtensionAPI
 	const ctx = {
 		hasUI: false,
@@ -1034,7 +1043,12 @@ describe("registerFermentCommands", () => {
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
 		expect(active.status).toBe("running")
 		expect(active.phases[0].status).toBe("active")
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "start_ferment_step"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith([
+			"read",
+			"bash",
+			"propose_ferment_scoping",
+			"start_ferment_step",
+		])
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",

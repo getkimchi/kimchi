@@ -38,6 +38,7 @@ import {
 	toolOk,
 	withNextActionHint,
 } from "../tool-helpers.js"
+import { FERMENT_TOOLS } from "../tool-names.js"
 import {
 	AskUserParams,
 	CompleteFermentParams,
@@ -647,8 +648,7 @@ export async function completeFerment(
 	const failedNote = failedPhases > 0 ? ` (${failedPhases} phase(s) failed)` : ""
 	const gateLines = gates.map((g) => `  ${g.id} (${g.verdict}): ${g.rationale}`).join("\n")
 	const gradeLabel = resolvedGrade.unavailable ? `${resolvedGrade.grade} (unavailable)` : resolvedGrade.grade
-	const terminalNotice =
-		"This ferment is complete and terminal. Do not call bash/read/list_ferments or any ferment tools for this ferment again without clear user consent."
+	const terminalNotice = `This ferment is complete and terminal. Do not call bash/read/list_ferments or any ferment tools for this ferment again without clear user consent. If the user wants a new ferment, tell them to run \`/ferment new "..."\` or \`/ferment one-shot "..."\` — do not search MCP tools or invent a tool.`
 
 	return toolOk(
 		`Ferment "${fresh.name}" complete${failedNote}.\n\nFinal gates:\n${gateLines}\n\nFinal grade: ${gradeLabel} — ${resolvedGrade.rationale}\n\n${params.final_summary ?? ""}\n\n${terminalNotice}`,
@@ -658,7 +658,7 @@ export async function completeFerment(
 export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
 	pi.registerTool({
-		name: "propose_ferment_scoping",
+		name: FERMENT_TOOLS.PROPOSE_SCOPING,
 		label: "Propose Scoping",
 		description: `Emit the full scoping draft: goal, criteria, constraints, assumptions, 1-7 phases, questions, and gates. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
@@ -937,7 +937,7 @@ ${renderGateGuidance("scope_ferment")}`,
 	})
 
 	pi.registerTool({
-		name: "list_ferments",
+		name: FERMENT_TOOLS.LIST,
 		label: "List Ferments",
 		description:
 			"List all ferments. Filter by status if needed (draft/planned/running/paused/complete/abandoned). The active ferment is marked.",
@@ -960,7 +960,7 @@ ${renderGateGuidance("scope_ferment")}`,
 	})
 
 	pi.registerTool({
-		name: "scope_ferment",
+		name: FERMENT_TOOLS.SCOPE,
 		label: "Scope Ferment",
 		description: `Save scoping answers and transition ferment from draft to planned. In interactive scoping, the harness gates this call until the user has confirmed the proposed plan via TUI dropdown. You must produce verdicts for the three plan-scope gates below. A "flag" verdict refuses scoping.
 
@@ -972,7 +972,7 @@ ${renderGateGuidance("scope_ferment")}`,
 	})
 
 	pi.registerTool({
-		name: "update_ferment_scope_field",
+		name: FERMENT_TOOLS.UPDATE_SCOPE_FIELD,
 		label: "Update Scope Field",
 		description:
 			"Revise a single scoping field (goal, criteria, constraints, assumptions) on an already-planned ferment.",
@@ -999,7 +999,7 @@ ${renderGateGuidance("scope_ferment")}`,
 	})
 
 	pi.registerTool({
-		name: "complete_ferment",
+		name: FERMENT_TOOLS.COMPLETE,
 		label: "Complete Ferment",
 		description: `Mark ferment as complete. All phases must be terminal (completed, skipped, or failed). You must produce verdicts for the three ferment-scope gates below. A "flag" verdict refuses ship.
 
@@ -1011,7 +1011,7 @@ ${renderGateGuidance("complete_ferment")}`,
 	})
 
 	pi.registerTool({
-		name: "ask_user",
+		name: FERMENT_TOOLS.ASK_USER,
 		label: "Ask User",
 		description: `Ask the user a structured question. Use ONLY at genuine decision points the agent cannot resolve from context (e.g. ambiguous requirements, choice between viable approaches, user-only authorization).
 

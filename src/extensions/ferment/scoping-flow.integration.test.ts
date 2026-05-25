@@ -38,17 +38,21 @@ function createHarness() {
 	const eventStorage = new FermentEventStore(tempDir)
 	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => eventStorage }
 	const tools = new Map<string, RegisteredTool>()
+	let activeTools: string[] = []
 
 	const pi = {
+		on: vi.fn(),
 		registerTool: (tool: RegisteredTool) => {
 			tools.set(tool.name, tool)
 		},
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		appendEntry: vi.fn(),
-		getActiveTools: vi.fn(() => []),
-		getAllTools: vi.fn(() => []),
-		setActiveTools: vi.fn(),
+		getActiveTools: vi.fn(() => activeTools),
+		getAllTools: vi.fn(() => Array.from(tools.keys()).map((name) => ({ name }))),
+		setActiveTools: vi.fn((names: string[]) => {
+			activeTools = names
+		}),
 		getFlag: vi.fn(() => undefined),
 	} as unknown as ExtensionAPI
 

@@ -3,6 +3,7 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
+import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { resolveClassifierModel } from "./classifier-model.js"
@@ -62,33 +63,10 @@ const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 // `set_phase` is a kimchi built-in. `agent`/`get_subagent_result`/`steer_subagent`
 // are the agents-extension surface — `agent` is the canonical delegation tool,
 // the other two are read-only/control-plane operations on already-approved spawns.
-// `ferment` tools are internal state-management operations from the ferment
-// extension — they never write user files or run shell commands.
 //
 // Names are lowercased because the tool_call handler lowercases event.toolName
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
-const BUILTIN_ALLOW_TOOL_NAMES = [
-	"set_phase",
-	"agent",
-	"get_subagent_result",
-	"steer_subagent",
-	"list_ferments",
-	"scope_ferment",
-	"update_ferment_scope_field",
-	"activate_ferment_phase",
-	"refine_ferment_phase",
-	"start_ferment_step",
-	"complete_ferment_step",
-	"verify_ferment_step",
-	"skip_ferment_step",
-	"complete_ferment_phase",
-	"skip_ferment_phase",
-	"complete_ferment",
-	"fail_ferment_step",
-	"fail_ferment_phase",
-	"add_ferment_decision",
-	"add_ferment_memory",
-]
+const BUILTIN_ALLOW_TOOL_NAMES = ["set_phase", "agent", "get_subagent_result", "steer_subagent"]
 
 const MODES: Array<{ mode: PermissionMode; label: string; color: "success" | "warning" | "error" }> = [
 	{ mode: "default", label: "default", color: "success" },
@@ -500,6 +478,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			}
 
 			if (BUILTIN_ALLOW_TOOL_NAMES.includes(toolName)) return undefined
+
+			// Ferment tools are internal state-management operations; bypass user rules and classifier prompts.
+			// User-facing ferment tools (`ask_user`) are listed in USER_FACING_FERMENT_TOOL_NAMES and skip this bypass.
+			if (isFermentToolName(toolName) && !isUserFacingFermentToolName(toolName)) return undefined
 
 			// Compound bash commands: early gate for deny/allow only.
 			// If the check returns "prompt", fall through to

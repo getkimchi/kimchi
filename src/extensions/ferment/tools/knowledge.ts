@@ -11,12 +11,13 @@ import { VALID_MEMORY_CATEGORIES } from "../../../ferment/state-machine.js"
 import type { MemoryCategory } from "../../../ferment/types.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { createApplyAndPersist, failedToolResult, toolErr, toolOk } from "../tool-helpers.js"
+import { FERMENT_TOOLS } from "../tool-names.js"
 import { DecisionParams, MemoryParams } from "../tool-schemas.js"
 
 export function registerKnowledgeTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
 	pi.registerTool({
-		name: "add_ferment_decision",
+		name: FERMENT_TOOLS.ADD_DECISION,
 		label: "Add Decision",
 		description: "Record a decision.",
 		parameters: DecisionParams,
@@ -35,7 +36,7 @@ export function registerKnowledgeTools(pi: ExtensionAPI, runtime: FermentRuntime
 	})
 
 	pi.registerTool({
-		name: "add_ferment_memory",
+		name: FERMENT_TOOLS.ADD_MEMORY,
 		label: "Add Memory",
 		description: "Record a memory.",
 		parameters: MemoryParams,

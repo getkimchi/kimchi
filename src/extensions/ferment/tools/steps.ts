@@ -28,6 +28,7 @@ import {
 	toolOk,
 	withNextActionHint,
 } from "../tool-helpers.js"
+import { FERMENT_TOOLS } from "../tool-names.js"
 import { CompleteStepParams, FailStepParams, StepActionParams, VerifyParams } from "../tool-schemas.js"
 import type { FermentUi, FermentUiContext } from "../ui.js"
 import { buildWorkerContext } from "../worker-prompt.js"
@@ -484,7 +485,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 		onStepCompleted: () => onStepCompleted(runtime),
 	}
 	pi.registerTool({
-		name: "start_ferment_step",
+		name: FERMENT_TOOLS.START_STEP,
 		label: "Start Step",
 		description:
 			"Mark a step as running. Returns parallel_siblings. See planner instructions in the system prompt for orchestration details.",
@@ -495,7 +496,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 	})
 
 	pi.registerTool({
-		name: "complete_ferment_step",
+		name: FERMENT_TOOLS.COMPLETE_STEP,
 		label: "Complete Step",
 		description: `Mark step as done. If the step has a verification command it runs automatically — no need to call verify_ferment_step separately. You must produce verdicts for the three step-scope gates below. A "flag" verdict blocks step completion.
 
@@ -507,7 +508,7 @@ ${renderGateGuidance("complete_ferment_step")}`,
 	})
 
 	pi.registerTool({
-		name: "verify_ferment_step",
+		name: FERMENT_TOOLS.VERIFY_STEP,
 		label: "Verify Step",
 		description: "Run verification command and record result.",
 		parameters: VerifyParams,
@@ -576,7 +577,7 @@ ${renderGateGuidance("complete_ferment_step")}`,
 	})
 
 	pi.registerTool({
-		name: "skip_ferment_step",
+		name: FERMENT_TOOLS.SKIP_STEP,
 		label: "Skip Step",
 		description: "Skip a step.",
 		parameters: StepActionParams,
@@ -605,7 +606,7 @@ ${renderGateGuidance("complete_ferment_step")}`,
 	})
 
 	pi.registerTool({
-		name: "fail_ferment_step",
+		name: FERMENT_TOOLS.FAIL_STEP,
 		label: "Fail Step",
 		description: "Mark a step as failed with an error message.",
 		parameters: FailStepParams,

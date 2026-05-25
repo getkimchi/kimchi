@@ -1,19 +1,20 @@
 import type { DeclarativeAction } from "../../ferment/engine.js"
+import { FERMENT_TOOLS } from "./tool-names.js"
 
 export function publicToolNameForActionKind(kind: DeclarativeAction["kind"]): string {
 	switch (kind) {
 		case "activate_phase":
-			return "activate_ferment_phase"
+			return FERMENT_TOOLS.ACTIVATE_PHASE
 		case "refine":
-			return "refine_ferment_phase"
+			return FERMENT_TOOLS.REFINE_PHASE
 		case "start_step":
-			return "start_ferment_step"
+			return FERMENT_TOOLS.START_STEP
 		case "complete_step":
-			return "complete_ferment_step"
+			return FERMENT_TOOLS.COMPLETE_STEP
 		case "verify_step":
-			return "verify_ferment_step"
+			return FERMENT_TOOLS.VERIFY_STEP
 		case "complete_phase":
-			return "complete_ferment_phase"
+			return FERMENT_TOOLS.COMPLETE_PHASE
 		default:
 			return kind
 	}
