@@ -143,7 +143,7 @@ describe("offset resolution: /rewind -1 on session with 3 messages", () => {
 		let capturedTarget: string | undefined
 		;(ctx.sessionManager as ReturnType<typeof makeMockSessionManager>).getBranch = vi.fn((targetId: string) => {
 			capturedTarget = targetId
-			const entries = (ctx.sessionManager as any).getEntries()
+			const entries = (ctx.sessionManager as ReturnType<typeof makeMockSessionManager>).getEntries()
 			const branch: SessionEntry[] = []
 			let currentId: string | null = targetId
 			while (currentId) {
