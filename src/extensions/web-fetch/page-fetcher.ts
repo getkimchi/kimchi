@@ -52,7 +52,7 @@ export interface FetchResult {
 export class FetchError extends Error {
 	constructor(
 		message: string,
-		public readonly category: "timeout" | "http" | "network" | "binary" | "too_large" | "unknown",
+		public readonly category: "timeout" | "cancelled" | "http" | "network" | "binary" | "too_large" | "unknown",
 	) {
 		super(message)
 		this.name = "FetchError"
@@ -106,6 +106,10 @@ async function fetchWithPlaywright(
 	const page = await browser.newPage()
 
 	if (options?.signal) {
+		if (options.signal.aborted) {
+			void page.close().catch(() => {})
+			throw new FetchError(`Fetch of "${url}" was cancelled`, "cancelled")
+		}
 		options.signal.addEventListener(
 			"abort",
 			() => {
@@ -218,6 +222,9 @@ async function fetchWithPlaywright(
 		}
 	} catch (err: unknown) {
 		if (err instanceof FetchError) throw err
+		if (options?.signal?.aborted) {
+			throw new FetchError(`Fetch of "${url}" was cancelled`, "cancelled")
+		}
 		const name = err instanceof Error ? err.name : ""
 		const message = err instanceof Error ? err.message : String(err)
 		if (name === "TimeoutError" || message.includes("Timeout") || message.includes("timeout")) {
@@ -268,6 +275,9 @@ async function fetchWithNative(url: string, options?: FetchOptions): Promise<Fet
 	} catch (err: unknown) {
 		clearTimeout(timer)
 		if (err instanceof DOMException && err.name === "AbortError") {
+			if (options?.signal?.aborted) {
+				throw new FetchError(`Fetch of "${url}" was cancelled`, "cancelled")
+			}
 			throw new FetchError(
 				`Timeout: request to "${url}" timed out after ${options?.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS} seconds`,
 				"timeout",
