@@ -63,6 +63,7 @@ export interface FetchOptions {
 	timeoutSeconds?: number
 	/** Requested output format — when "text" and Playwright is active, uses page.textContent(). */
 	format?: "markdown" | "text" | "html"
+	signal?: AbortSignal
 }
 
 function isBinaryContentType(ct: string): boolean {
@@ -103,6 +104,16 @@ async function fetchWithPlaywright(
 ): Promise<FetchResult> {
 	const timeoutMs = (options?.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000
 	const page = await browser.newPage()
+
+	if (options?.signal) {
+		options.signal.addEventListener(
+			"abort",
+			() => {
+				void page.close().catch(() => {})
+			},
+			{ once: true },
+		)
+	}
 
 	try {
 		const response = await page.goto(url, {
@@ -243,11 +254,12 @@ async function fetchWithNative(url: string, options?: FetchOptions): Promise<Fet
 	const timeoutMs = (options?.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000
 	const controller = new AbortController()
 	const timer = setTimeout(() => controller.abort(), timeoutMs)
+	const signal = options?.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal
 
 	let response: Response
 	try {
 		response = await fetch(url, {
-			signal: controller.signal,
+			signal,
 			redirect: "follow",
 			headers: {
 				Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
