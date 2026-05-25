@@ -409,12 +409,14 @@ function patchUserMessageRender(): void {
 			? theme.bg("userMessageBg", line0Content + " ".repeat(pad))
 			: line0Content
 		lines[0] = osc + paddedLine0
-		// Apply background to continuation lines too.
+		// Indent continuation lines to align with text after ❯, apply background.
+		const indent = " ".repeat(prefixW)
 		for (let i = 1; i < lines.length; i++) {
-			if (typeof theme?.bg !== "function") break
-			const lw = visibleWidth(lines[i])
-			const lpad = Math.max(0, width - lw)
-			lines[i] = theme.bg("userMessageBg", lines[i] + " ".repeat(lpad))
+			const indented = indent + truncateToWidth(lines[i], width - prefixW)
+			const ipad = Math.max(0, width - visibleWidth(indented))
+			lines[i] = typeof theme?.bg === "function"
+				? theme.bg("userMessageBg", indented + " ".repeat(ipad))
+				: indented
 		}
 		return lines
 	}
