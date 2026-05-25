@@ -348,8 +348,11 @@ function formatWorkedDuration(ms: number): string {
 	return `${minutes}m ${seconds}s`
 }
 
+// One space of indent — aligns the ✻ glyph with the assistant message body.
+const WORKED_DURATION_INDENT = " "
+
 function inlineWorkedDurationText(ms: number): string {
-	return `${WORKED_LINE_FG}✻ Worked for ${formatWorkedDuration(ms)}${RESET}`
+	return `${WORKED_DURATION_INDENT}${WORKED_LINE_FG}✻ Worked for ${formatWorkedDuration(ms)}${RESET}`
 }
 
 function patchAssistantMessageRender(): void {
@@ -367,12 +370,13 @@ function patchAssistantMessageRender(): void {
 		// (B = command end, C = command output). Strip them off, push the widget
 		// line, then reattach so the zone still brackets the full message.
 		const lastIdx = lines.length - 1
+		const widgetLine = inlineWorkedDurationText(durationMs)
 		if (lines[lastIdx].includes(OSC133_ZONE_END)) {
 			lines[lastIdx] = lines[lastIdx].replace(OSC133_ZONE_SUFFIX, "")
-			lines.push(inlineWorkedDurationText(durationMs))
+			lines.push("", widgetLine)
 			lines[lines.length - 1] += OSC133_ZONE_SUFFIX
 		} else {
-			lines.push(inlineWorkedDurationText(durationMs))
+			lines.push("", widgetLine)
 		}
 		return lines
 	}
