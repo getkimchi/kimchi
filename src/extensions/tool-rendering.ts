@@ -3219,21 +3219,21 @@ function mcpCallLabelAndSummary(
 		return { label, summary }
 	}
 	if (getStringArg(args, "connect")) {
-		return { label: "Tool connect", summary: getStringArg(args, "connect") }
+		return { label: "Tool connect", summary: theme.fg("muted", `(server=${getStringArg(args, "connect")})`) }
 	}
 	if (getStringArg(args, "describe")) {
-		return { label: "Tool describe", summary: summarizeText(getStringArg(args, "describe"), 72) }
+		return { label: "Tool describe", summary: theme.fg("muted", `(tool=${summarizeText(getStringArg(args, "describe"), 60)})`) }
 	}
 	if (getStringArg(args, "search")) {
-		return { label: "Tool search", summary: summarizeText(getStringArg(args, "search"), 72) }
+		return { label: "Tool search", summary: theme.fg("muted", `(query=${summarizeText(getStringArg(args, "search"), 60)})`) }
 	}
 	if (getStringArg(args, "server")) {
-		return { label: "Tool search", summary: summarizeText(getStringArg(args, "server"), 72) }
+		return { label: "Tool search", summary: theme.fg("muted", `(server=${summarizeText(getStringArg(args, "server"), 60)})`) }
 	}
 	if (getStringArg(args, "action")) {
-		return { label: "Tool action", summary: summarizeText(getStringArg(args, "action"), 72) }
+		return { label: "Tool action", summary: theme.fg("muted", `(action=${summarizeText(getStringArg(args, "action"), 60)})`) }
 	}
-	return { label: "MCP", summary: theme.fg("muted", "status") }
+	return { label: "MCP", summary: theme.fg("muted", "(status)") }
 }
 
 function summarizeGenericToolCall(name: string, args: any, theme: Theme, sp: (path: string) => string): string {
