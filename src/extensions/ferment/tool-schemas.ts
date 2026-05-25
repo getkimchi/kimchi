@@ -81,7 +81,9 @@ export const PhaseProposalSchema = Type.Object({
 
 export const ScopeParams = Type.Object({
 	ferment_id: Type.String(),
-	title: Type.Optional(Type.String({ description: "A short 3-5 word title for this ferment" })),
+	title: Type.String({
+		description: "Required concise 3-5 word title for this ferment. The host applies it when scoping is saved.",
+	}),
 	goal: Type.String(),
 	success_criteria: Type.Optional(Type.String()),
 	constraints: Type.Optional(Type.Array(Type.String())),
@@ -142,7 +144,10 @@ export const ProposeScopingParams = Type.Object({
 	ferment_id: Type.String({
 		description: "The ferment whose scoping you're proposing.",
 	}),
-	title: Type.Optional(Type.String({ description: "A short 3-5 word title for this ferment." })),
+	title: Type.String({
+		description:
+			"Required concise 3-5 word title for this ferment. The host applies it only after the user confirms/saves this proposal.",
+	}),
 	goal: Type.String({ description: "The ferment goal." }),
 	success_criteria: Type.Optional(Type.String()),
 	constraints: Type.Optional(

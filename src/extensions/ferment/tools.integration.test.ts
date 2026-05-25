@@ -183,13 +183,20 @@ async function createFerment(name: string, description?: string): Promise<string
 
 async function scopeFerment(
 	id: string,
-	overrides: Partial<{ goal: string; success_criteria: string; constraints: string[]; phases: unknown[] }> = {},
+	overrides: Partial<{
+		title: string
+		goal: string
+		success_criteria: string
+		constraints: string[]
+		phases: unknown[]
+	}> = {},
 ): Promise<void> {
 	// Bypass scoping gate — we test the gate explicitly below.
 	markScopingInteractive(id)
 	markScopingConfirmed(id)
 	const params = {
 		ferment_id: id,
+		title: overrides.title ?? h.runtime.getStorage().get(id)?.name ?? "Scoped Ferment",
 		goal: overrides.goal ?? "Make a thing",
 		success_criteria: overrides.success_criteria ?? "It works",
 		constraints: overrides.constraints ?? [],
@@ -278,6 +285,7 @@ describe("scope_ferment", () => {
 		markScopingConfirmed(id)
 		const result = await h.call("scope_ferment", {
 			ferment_id: id,
+			title: "Scoped Ferment",
 			goal: "Different goal",
 			phases: [],
 			gates: passingPlanGates(),
@@ -291,6 +299,7 @@ describe("scope_ferment", () => {
 		markScopingInteractive(id)
 		const result = await h.call("scope_ferment", {
 			ferment_id: id,
+			title: "Scoped Ferment",
 			goal: "X",
 			phases: [],
 			gates: passingPlanGates(),
@@ -307,6 +316,7 @@ describe("scope_ferment", () => {
 		// Don't confirm — legacy mode is inert and cannot bypass this gate.
 		const result = await h.call("scope_ferment", {
 			ferment_id: id,
+			title: "Scoped Ferment",
 			goal: "X",
 			phases: [{ name: "P1", goal: "G", steps: [{ description: "S" }] }],
 			gates: passingPlanGates(),
@@ -319,6 +329,7 @@ describe("scope_ferment", () => {
 		markScopingConfirmed("nonexistent")
 		const result = await h.call("scope_ferment", {
 			ferment_id: "nonexistent",
+			title: "Missing Ferment",
 			goal: "X",
 			phases: [],
 			gates: passingPlanGates(),
@@ -1043,6 +1054,7 @@ describe("propose_ferment_scoping", () => {
 
 	const basePayload = (ferment_id: string, overrides: Record<string, unknown> = {}) => ({
 		ferment_id,
+		title: "Proposed Ferment",
 		goal: "Build a thing",
 		success_criteria: "Tests pass",
 		constraints: ["no breaking changes"],
@@ -1097,7 +1109,7 @@ describe("propose_ferment_scoping", () => {
 		expect(getPendingPlanReview(id)).toMatchObject({
 			fermentId: id,
 			fermentName: "ZeroQ Review",
-			planMarkdown: expect.stringContaining("# Plan: ZeroQ Review"),
+			planMarkdown: expect.stringContaining("# Plan: Proposed Ferment"),
 		})
 		expect(getPendingPlanReview(id)?.planMarkdown.includes(`${String.fromCharCode(27)}[`)).toBe(false)
 	})

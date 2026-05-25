@@ -24,10 +24,6 @@ vi.mock("node:fs", async (importOriginal) => {
 	}
 })
 
-vi.mock("../../ferment/shorten-title.js", () => ({
-	shortenTitle: vi.fn(async (input: string) => input),
-}))
-
 const tipWidgetLocationMock = vi.hoisted(() => ({
 	restore: vi.fn(),
 	set: vi.fn(),

@@ -62,6 +62,49 @@ describe("confirmPendingScope", () => {
 		)
 	})
 
+	it("emits a visible rename acknowledgement when the confirmed title changes", () => {
+		const { runtime, storage } = createRuntime()
+		const pi = { appendEntry: vi.fn(), sendMessage: vi.fn() }
+		const ferment = storage.create("Draft OAuth Task")
+		runtime.setPendingScope(ferment.id, {
+			goal: "Goal",
+			successCriteria: "Works",
+			constraints: [],
+			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
+		})
+
+		const result = confirmPendingScope(runtime, ferment.id, undefined, "turn_end", "Google OAuth Login", pi as never)
+
+		expect(result.ok).toBe(true)
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_ack",
+				display: true,
+				details: expect.objectContaining({
+					text: 'Named ferment "Google OAuth Login" (was "Draft OAuth Task").',
+					variant: "ack",
+				}),
+			}),
+			{ triggerTurn: false },
+		)
+	})
+
+	it("preserves the draft name when the confirmed title is blank", () => {
+		const { runtime, storage } = createRuntime()
+		const ferment = storage.create("Draft Name")
+		runtime.setPendingScope(ferment.id, {
+			goal: "Goal",
+			successCriteria: "Works",
+			constraints: [],
+			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
+		})
+
+		const result = confirmPendingScope(runtime, ferment.id, undefined, "turn_end", '  ""  ')
+
+		expect(result.ok).toBe(true)
+		if (result.ok) expect(result.outcome.ferment.name).toBe("Draft Name")
+	})
+
 	it("uses explicit phases from propose_ferment_scoping and preserves pending user answers", () => {
 		const { runtime, storage } = createRuntime()
 		const ferment = storage.create("Explicit")

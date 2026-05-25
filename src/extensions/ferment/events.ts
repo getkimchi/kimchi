@@ -181,7 +181,7 @@ async function maybeRunUserInputDropdown(
 			}
 			edited = result
 		}
-		const outcome = confirmPendingScope(runtime, f.id, edited, "turn_end", f.name, pi)
+		const outcome = confirmPendingScope(runtime, f.id, edited, "turn_end", pending?.title ?? f.name, pi)
 		if (outcome.ok) {
 			ctx.ui.notify?.(
 				`Plan saved for "${outcome.outcome.ferment.name}". ${outcome.outcome.ferment.phases.length} phase(s) ready.`,
@@ -334,12 +334,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 				autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
 			})
 			const storage = runtime.getStorage()
-			let shortName: string
-			try {
-				shortName = await shortenTitle(intent)
-			} catch {
-				shortName = intent.length > 60 ? `${intent.slice(0, 57).trimEnd()}...` : intent
-			}
+			const shortName = await shortenTitle(intent)
 			const f = storage.create(shortName, intent)
 			const updated = f
 			runtime.setActive(updated)

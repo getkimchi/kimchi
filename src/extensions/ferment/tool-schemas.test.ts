@@ -45,6 +45,7 @@ describe("ProposeScopingParams schema", () => {
 	it("accepts radio, checkbox, and text scoping question styles", () => {
 		const payload = {
 			ferment_id: "f-123",
+			title: "Test Ferment",
 			goal: "Do something",
 			phases: minimalPhases(),
 			questions: [
@@ -81,6 +82,7 @@ describe("ProposeScopingParams schema", () => {
 	it("accepts payload without questions (questions is optional)", () => {
 		const payload = {
 			ferment_id: "f-123",
+			title: "Test Ferment",
 			goal: "Do something",
 			phases: minimalPhases(),
 			gates: passingGates(),
@@ -89,9 +91,21 @@ describe("ProposeScopingParams schema", () => {
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 
+	it("rejects payload without title", () => {
+		const payload = {
+			ferment_id: "f-123",
+			goal: "Do something",
+			phases: minimalPhases(),
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
+	})
+
 	it("accepts stringified phases/questions as a defensive fallback", () => {
 		const payload = {
 			ferment_id: "f-123",
+			title: "Test Ferment",
 			goal: "Do something",
 			phases: JSON.stringify(minimalPhases()),
 			questions: JSON.stringify([
@@ -113,6 +127,7 @@ describe("ProposeScopingParams schema", () => {
 	it("accepts assumptions as a real string array compatibility fallback", () => {
 		const payload = {
 			ferment_id: "f-123",
+			title: "Test Ferment",
 			goal: "Do something",
 			assumptions: ["Go toolchain is installed", "The current directory is writable"],
 			phases: minimalPhases(),
@@ -125,6 +140,7 @@ describe("ProposeScopingParams schema", () => {
 	it("allows too-few options through schema so runtime can return a focused validation error", () => {
 		const payload = {
 			ferment_id: "f-123",
+			title: "Test Ferment",
 			goal: "Do something",
 			phases: minimalPhases(),
 			questions: [
@@ -143,6 +159,7 @@ describe("ProposeScopingParams schema", () => {
 	it("allows empty options through schema so runtime can return a focused validation error", () => {
 		const payload = {
 			ferment_id: "f-123",
+			title: "Test Ferment",
 			goal: "Do something",
 			phases: minimalPhases(),
 			questions: [
@@ -161,6 +178,7 @@ describe("ProposeScopingParams schema", () => {
 	it("accepts question as the canonical schema field", () => {
 		const payload = {
 			ferment_id: "f-123",
+			title: "Test Ferment",
 			goal: "Do something",
 			phases: minimalPhases(),
 			questions: [
@@ -182,6 +200,7 @@ describe("ProposeScopingParams schema", () => {
 	it("rejects prompt at the schema boundary", () => {
 		const payload = {
 			ferment_id: "f-123",
+			title: "Test Ferment",
 			goal: "Do something",
 			phases: minimalPhases(),
 			questions: [
@@ -212,6 +231,7 @@ describe("ProposeScopingParams schema", () => {
 
 		const payload = {
 			ferment_id: "f-123",
+			title: "Test Ferment",
 			goal: "Do something",
 			phases: minimalPhases(),
 			questions: [question("q1"), question("q2"), question("q3"), question("q4")],
@@ -224,6 +244,7 @@ describe("ProposeScopingParams schema", () => {
 	it("accepts a single phase for simple tasks (minItems: 1)", () => {
 		const payload = {
 			ferment_id: "f-123",
+			title: "Test Ferment",
 			goal: "Do something",
 			phases: minimalPhases(),
 			gates: passingGates(),
@@ -241,6 +262,7 @@ describe("ProposeScopingParams schema", () => {
 
 		const payload = {
 			ferment_id: "f-123",
+			title: "Test Ferment",
 			goal: "Do something",
 			phases,
 			gates: passingGates(),
@@ -252,6 +274,7 @@ describe("ProposeScopingParams schema", () => {
 	it("allows more than 5 options through schema so runtime can return a focused validation error", () => {
 		const payload = {
 			ferment_id: "f-123",
+			title: "Test Ferment",
 			goal: "Do something",
 			phases: minimalPhases(),
 			questions: [
@@ -276,9 +299,21 @@ describe("ProposeScopingParams schema", () => {
 })
 
 describe("ScopeParams schema", () => {
+	it("rejects payload without title", () => {
+		const payload = {
+			ferment_id: "f-123",
+			goal: "Do something",
+			phases: [{ name: "Build", goal: "Implement" }],
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ScopeParams, payload)).toBe(false)
+	})
+
 	it("accepts assumptions as either text or a string array", () => {
 		const basePayload = {
 			ferment_id: "f-123",
+			title: "Test Ferment",
 			goal: "Do something",
 			phases: [{ name: "Build", goal: "Implement" }],
 			gates: passingGates(),

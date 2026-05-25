@@ -56,12 +56,14 @@ describe("attachPendingProposal", () => {
 
 		// Replace with only goal+phases; other fields should be cleared
 		const replaced = runtime.attachPendingProposal(ferment.id, {
+			title: "New Title",
 			goal: "new goal",
 			phases: [{ name: "P2", goal: "Ship", steps: [{ description: "Deploy" }] }],
 		})
 
 		expect(replaced).toBe(true)
 		const pending = runtime.getPendingScope(ferment.id)
+		expect(pending?.title).toBe("New Title")
 		expect(pending?.goal).toBe("new goal")
 		expect(pending?.successCriteria).toBe("")
 		expect(pending?.constraints).toEqual([])
@@ -126,6 +128,7 @@ describe("runScopingFlow", () => {
 		expect(text).toContain("Question policy:")
 		expect(text).toContain("Planning policy:")
 		expect(text).toContain("Output contract:")
+		expect(text).toContain("title is required")
 		expect(text).toContain("ask those questions through the propose_ferment_scoping questions array")
 		expect(text).toContain("questions must be in propose_ferment_scoping.questions")
 		expect(text).toContain("gates array is required")

@@ -111,6 +111,9 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 			) {
 				b.push("scoping_assumptions_set", { assumptions: post.scoping.assumptions })
 			}
+			if (pre.name !== post.name) {
+				b.push("ferment_renamed", { name: post.name })
+			}
 			if (pre.status !== post.status && post.status === "planned") {
 				b.push("ferment_planned", {})
 			}

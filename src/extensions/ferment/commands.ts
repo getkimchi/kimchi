@@ -187,7 +187,7 @@ export async function startInteractiveFerment({
 	if (!rawIntent) return
 
 	const storage = runtime.getStorage()
-	ctx.ui.setStatus?.("ferment-scoping", "Fermenting · naming…")
+	ctx.ui.setStatus?.("ferment-scoping", "Fermenting · creating…")
 	sendFermentRequestMessage(pi, rawIntent)
 	try {
 		const shortName = await shortenTitle(rawIntent)
@@ -820,7 +820,7 @@ export class FermentCommandController {
 				if (!typed) return { handled: true }
 				resolvedIntent = typed
 			}
-			ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · naming…")
+			ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · creating…")
 			try {
 				// One-shot is non-interactive by definition — only auto-init when the
 				// user opted in via flag or env var. Otherwise skip silently.
@@ -885,7 +885,7 @@ export class FermentCommandController {
 			scopingIntent = typed
 			sendFermentRequestMessage(pi, typed)
 		}
-		ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · naming…")
+		ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · creating…")
 		try {
 			// Interactive path: ui.confirm is available, so ensureGitRepo will ask.
 			// User can decline; ferment still proceeds with no branch/commit info.
