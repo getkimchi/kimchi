@@ -39,11 +39,11 @@ export default function terminalExtension(pi: ExtensionAPI): void {
 
           session.connect(parsed, {
             onData: (data) => {
-              component!.terminal.write(data)
+              component!.writeRemoteData(data)
               tui.requestRender()
             },
             onStderr: (data) => {
-              component!.terminal.write(data)
+              component!.writeRemoteData(data)
               tui.requestRender()
             },
             onError: (err) => {

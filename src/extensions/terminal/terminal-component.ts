@@ -94,12 +94,58 @@ function toCtrlChar(key: string): string | null {
   return null
 }
 
+/**
+ * Strip OSC sequences (both BEL and ST terminated). terminal.js only handles
+ * BEL-terminated OSC — ST-terminated sequences cause unbounded buffering.
+ */
+function stripOsc(data: string, prefix: string): { text: string; prefix: string } {
+  const buf = prefix + data
+  const out: string[] = []
+  let i = 0
+
+  while (i < buf.length) {
+    const start = buf.indexOf("\x1b]", i)
+    if (start === -1) {
+      out.push(buf.slice(i))
+      break
+    }
+
+    out.push(buf.slice(i, start))
+    i = start
+
+    let j = start + 2
+    let found = false
+    while (j < buf.length) {
+      if (buf[j] === "\x07") {
+        j++
+        found = true
+        break
+      }
+      if (buf[j] === "\x1b" && j + 1 < buf.length && buf[j + 1] === "\\") {
+        j += 2
+        found = true
+        break
+      }
+      j++
+    }
+
+    if (!found) {
+      return { text: out.join(""), prefix: buf.slice(start) }
+    }
+
+    i = j
+  }
+
+  return { text: out.join(""), prefix: "" }
+}
+
 export class TerminalComponent implements Component {
   terminal: Terminal
   prevWidth = 0
   prevRows = 0
   focused = false
   tui: TUI
+  private oscPrefix = ""
 
   constructor(
     tui: TUI,
@@ -109,8 +155,17 @@ export class TerminalComponent implements Component {
     this.terminal = new Terminal({ columns: 80, rows: 24 })
   }
 
+  writeRemoteData(data: string): void {
+    const { text, prefix } = stripOsc(data, this.oscPrefix)
+    this.oscPrefix = prefix
+    this.terminal.write(text)
+  }
+
   render(width: number): string[] {
-    const rows = this.tui.terminal.rows
+    let rows = this.tui.terminal.rows
+    if (rows <= 0 || Number.isNaN(rows)) rows = 24
+    if (width <= 0 || Number.isNaN(width)) width = 80
+
     if (width !== this.prevWidth || rows !== this.prevRows) {
       this.terminal.state.resize({ columns: width, rows })
       this.session.resize(rows, width)
