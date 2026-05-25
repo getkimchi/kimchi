@@ -3125,17 +3125,6 @@ const MCP_ARGS_SUFFIX_MAX = 120
  * raw content). These get truncated more aggressively or skipped when many
  * other keys are present.
  */
-const MCP_LONG_VALUE_KEYS = new Set([
-	"prompt",
-	"message",
-	"query",
-	"content",
-	"text",
-	"body",
-	"absolute_file_paths",
-	"file_paths",
-	"files",
-])
 
 /**
  * For an MCP gateway call whose args contain `tool`, parse the nested args
@@ -3154,15 +3143,8 @@ function summarizeMcpToolInvocationArgs(args: any, expanded = false): string {
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return ""
 
 		const parts: string[] = []
-		// Collapsed: short scalar keys first so they always appear within cap.
-		// Expanded: preserve original key order.
-		const entries = Object.entries(parsed as Record<string, unknown>)
-		const ordered = expanded
-			? entries
-			: [
-					...entries.filter(([k]) => !MCP_LONG_VALUE_KEYS.has(k)),
-					...entries.filter(([k]) => MCP_LONG_VALUE_KEYS.has(k)),
-				]
+		// Always use original key order — collapsed mode just stops at the cap.
+		const ordered = Object.entries(parsed as Record<string, unknown>)
 		for (const [key, val] of ordered) {
 			if (val === undefined || val === null) continue
 			let display: string
@@ -3180,8 +3162,7 @@ function summarizeMcpToolInvocationArgs(args: any, expanded = false): string {
 			} else if (typeof val === "object") {
 				continue // skip nested objects
 			} else {
-				const maxLen = expanded ? Number.POSITIVE_INFINITY : MCP_LONG_VALUE_KEYS.has(key) ? 40 : MCP_ARG_VALUE_MAX
-				display = expanded ? String(val) : summarizeText(String(val), maxLen)
+				display = expanded ? String(val) : summarizeText(String(val), MCP_ARG_VALUE_MAX)
 			}
 			const part = `${key}=${display}`
 			// In collapsed mode stop adding parts if we'd exceed the suffix cap.
