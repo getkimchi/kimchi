@@ -2587,8 +2587,11 @@ function renderGenericToolCall(name: string, args: any, theme: Theme, ctx: any):
 		// For MCP calls the summary may already contain ANSI color codes (muted
 		// for the args suffix) so we build the header line directly instead of
 		// passing it through toolHeader() which would re-wrap everything in accent.
-		const packed = stableCallSummary(ctx, "_mcpLabelSummary", () => {
-			const ls = mcpCallLabelAndSummary(args, theme)
+		// The cache key includes expanded state so ctrl+o triggers a full re-render.
+		const expanded = !!ctx.expanded
+		const cacheKey = `_mcpLabelSummary:${expanded ? 1 : 0}`
+		const packed = stableCallSummary(ctx, cacheKey, () => {
+			const ls = mcpCallLabelAndSummary(args, theme, expanded)
 			return `${ls.label}\x00${ls.summary}`
 		})
 		const sepIdx = packed.indexOf("\x00")
@@ -3138,10 +3141,12 @@ const MCP_LONG_VALUE_KEYS = new Set([
  * For an MCP gateway call whose args contain `tool`, parse the nested args
  * JSON and return a compact `(key=val, key=val)` style plain string (no ANSI),
  * matching the style used by the `read` tool for offset/limit.
- * Long values (prompts, file lists) are truncated. The whole suffix is capped
- * so the call header stays on one line.
+ *
+ * When `expanded` is false (collapsed view) long values are truncated and the
+ * whole suffix is capped at MCP_ARGS_SUFFIX_MAX chars so the header stays on
+ * one line. When `expanded` is true all values are shown in full.
  */
-function summarizeMcpToolInvocationArgs(args: any): string {
+function summarizeMcpToolInvocationArgs(args: any, expanded = false): string {
 	const rawArgs = getStringArg(args, "args")
 	if (!rawArgs) return ""
 	try {
@@ -3149,32 +3154,41 @@ function summarizeMcpToolInvocationArgs(args: any): string {
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return ""
 
 		const parts: string[] = []
-		// Prioritise short scalar keys first so they always appear.
+		// Collapsed: short scalar keys first so they always appear within cap.
+		// Expanded: preserve original key order.
 		const entries = Object.entries(parsed as Record<string, unknown>)
-		const shortFirst = [
-			...entries.filter(([k]) => !MCP_LONG_VALUE_KEYS.has(k)),
-			...entries.filter(([k]) => MCP_LONG_VALUE_KEYS.has(k)),
-		]
-		for (const [key, val] of shortFirst) {
+		const ordered = expanded
+			? entries
+			: [
+					...entries.filter(([k]) => !MCP_LONG_VALUE_KEYS.has(k)),
+					...entries.filter(([k]) => MCP_LONG_VALUE_KEYS.has(k)),
+				]
+		for (const [key, val] of ordered) {
 			if (val === undefined || val === null) continue
 			let display: string
 			if (Array.isArray(val)) {
 				if (val.length === 0) continue
-				const first = String(val[0])
-				display =
-					val.length === 1
-						? summarizeText(first, MCP_ARG_VALUE_MAX)
-						: `${summarizeText(first, 30)} +${val.length - 1}`
+				if (expanded) {
+					display = val.map((v) => String(v)).join(", ")
+				} else {
+					const first = String(val[0])
+					display =
+						val.length === 1
+							? summarizeText(first, MCP_ARG_VALUE_MAX)
+							: `${summarizeText(first, 30)} +${val.length - 1}`
+				}
 			} else if (typeof val === "object") {
 				continue // skip nested objects
 			} else {
-				const maxLen = MCP_LONG_VALUE_KEYS.has(key) ? 40 : MCP_ARG_VALUE_MAX
-				display = summarizeText(String(val), maxLen)
+				const maxLen = expanded ? Number.POSITIVE_INFINITY : MCP_LONG_VALUE_KEYS.has(key) ? 40 : MCP_ARG_VALUE_MAX
+				display = expanded ? String(val) : summarizeText(String(val), maxLen)
 			}
 			const part = `${key}=${display}`
-			// Stop adding parts if we'd exceed the suffix cap.
-			const currentLen = parts.reduce((n, p) => n + p.length + 2, 0)
-			if (currentLen + part.length > MCP_ARGS_SUFFIX_MAX) break
+			// In collapsed mode stop adding parts if we'd exceed the suffix cap.
+			if (!expanded) {
+				const currentLen = parts.reduce((n, p) => n + p.length + 2, 0)
+				if (currentLen + part.length > MCP_ARGS_SUFFIX_MAX) break
+			}
 			parts.push(part)
 		}
 
@@ -3186,10 +3200,10 @@ function summarizeMcpToolInvocationArgs(args: any): string {
 	return ""
 }
 
-function summarizeMcpToolCall(args: any, theme: Theme): string {
+function summarizeMcpToolCall(args: any, theme: Theme, expanded = false): string {
 	const tool = getStringArg(args, "tool")
 	if (tool) {
-		const argsSummary = summarizeMcpToolInvocationArgs(args)
+		const argsSummary = summarizeMcpToolInvocationArgs(args, expanded)
 		return argsSummary ? theme.fg("muted", argsSummary) : ""
 	}
 	const connect = getStringArg(args, "connect")
@@ -3208,13 +3222,14 @@ function summarizeMcpToolCall(args: any, theme: Theme): string {
 function mcpCallLabelAndSummary(
 	args: any,
 	theme: Theme,
+	expanded = false,
 ): { label: string; summary: string } {
 	const tool = getStringArg(args, "tool")
 	if (tool) {
 		const server = getStringArg(args, "server")
 		const toolDisplay = tool.replace(/_/g, " ")
 		const label = server ? `${server} - ${toolDisplay}` : toolDisplay
-		const rawSuffix = summarizeMcpToolInvocationArgs(args)
+		const rawSuffix = summarizeMcpToolInvocationArgs(args, expanded)
 		const summary = rawSuffix ? theme.fg("muted", rawSuffix) : ""
 		return { label, summary }
 	}
