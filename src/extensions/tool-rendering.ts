@@ -10,6 +10,7 @@ import type {
 	Theme,
 } from "@earendil-works/pi-coding-agent"
 import {
+	AssistantMessageComponent,
 	ToolExecutionComponent,
 	UserMessageComponent,
 	createBashTool,
@@ -310,7 +311,12 @@ function unrefTimer(timer: ReturnType<typeof setTimeout> | null | undefined): vo
 const TOOL_EXECUTION_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-tool-execution")
 const WORKED_DURATION_KEY = "_piClaudeStyleWorkedDurationMs"
 const WORKED_START_KEY = "_piClaudeStyleWorkedStartMs"
-const WORKED_DURATION_MARKER = "Worked for"
+const ASSISTANT_MESSAGE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-assistant-message-render")
+// OSC 133 zone markers applied by AssistantMessageComponent.render() — must be
+// reattached to the last line after we append the duration widget.
+const OSC133_ZONE_END = "\x1b]133;B\x07"
+const OSC133_ZONE_FINAL = "\x1b]133;C\x07"
+const OSC133_ZONE_SUFFIX = OSC133_ZONE_END + OSC133_ZONE_FINAL
 // WORKED_LINE_FG is theme-derived (from "muted") when themeAdaptive is on.
 let WORKED_LINE_FG = "\x1b[38;2;140;140;140m"
 let currentAgentWorkStartMs: number | undefined
@@ -346,28 +352,31 @@ function inlineWorkedDurationText(ms: number): string {
 	return `${WORKED_LINE_FG}✻ Worked for ${formatWorkedDuration(ms)}${RESET}`
 }
 
-function isWorkedDurationLine(line: string): boolean {
-	return line.includes(WORKED_DURATION_MARKER) && /^✻ Worked for [^\r\n]+$/.test(stripAnsi(line).trim())
-}
-
-function stripWorkedDurationLine(text: string): string {
-	if (!text.includes(WORKED_DURATION_MARKER)) return text
-	return text
-		.split(/\r?\n/)
-		.filter((line) => !isWorkedDurationLine(line))
-		.join("\n")
-		.replace(/\n{3,}/g, "\n\n")
-}
-
-function appendWorkedDurationLine(message: any, durationMs: number): void {
-	if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return
-	const textBlocks = message.content.filter(
-		(block: any) => block?.type === "text" && typeof block.text === "string" && block.text.trim(),
-	)
-	const lastText = textBlocks[textBlocks.length - 1]
-	if (!lastText) return
-	const text = lastText.text.includes(WORKED_DURATION_MARKER) ? stripWorkedDurationLine(lastText.text) : lastText.text
-	lastText.text = `${text.trimEnd()}\n\n${inlineWorkedDurationText(durationMs)}`
+function patchAssistantMessageRender(): void {
+	const proto = AssistantMessageComponent.prototype as any
+	if (proto[ASSISTANT_MESSAGE_PATCH_FLAG]) return
+	const originalRender = proto.render
+	if (typeof originalRender !== "function") return
+	proto.render = function patchedAssistantMessageRender(width: number) {
+		const lines: string[] = originalRender.call(this, width)
+		if (!Array.isArray(lines) || lines.length === 0) return lines
+		const message = (this as any).lastMessage
+		const durationMs = message?.[WORKED_DURATION_KEY]
+		if (typeof durationMs !== "number" || durationMs <= 0) return lines
+		// The original render() appends OSC 133 zone markers to the last line
+		// (B = command end, C = command output). Strip them off, push the widget
+		// line, then reattach so the zone still brackets the full message.
+		const lastIdx = lines.length - 1
+		if (lines[lastIdx].includes(OSC133_ZONE_END)) {
+			lines[lastIdx] = lines[lastIdx].replace(OSC133_ZONE_SUFFIX, "")
+			lines.push(inlineWorkedDurationText(durationMs))
+			lines[lines.length - 1] += OSC133_ZONE_SUFFIX
+		} else {
+			lines.push(inlineWorkedDurationText(durationMs))
+		}
+		return lines
+	}
+	proto[ASSISTANT_MESSAGE_PATCH_FLAG] = true
 }
 
 // OSC 133 zone markers that UserMessageComponent prepends/appends for shell integration.
@@ -2451,12 +2460,14 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 			const isFinalAssistantMessage = message.stopReason !== "toolUse"
 			if (started !== undefined && isFinalAssistantMessage) {
 				const durationMs = Date.now() - started
+				// Store duration as metadata on the message object. The patched
+				// AssistantMessageComponent.render() reads it and appends the widget
+				// line outside of the message content blocks — never injected into
+				// the text that gets sent to the model.
 				;(message as any)[WORKED_DURATION_KEY] = durationMs
-				// Mutate the message itself before pi renders/persists it. This is more
-				// reliable than the spinner because pi removes the loader on agent_end,
-				// and more reliable than component monkey-patching when extensions are
-				// loaded from a different package instance than the running TUI.
-				appendWorkedDurationLine(message, durationMs)
+				// Persist the duration as a sidecar entry in the JSONL session file
+				// (type: "custom", does not participate in LLM context).
+				pi.appendEntry("turn_duration", { durationMs })
 			}
 			currentAssistantMessageStartMs = undefined
 		}
@@ -2474,8 +2485,18 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 				if (block && block.type === "thinking" && typeof block.thinking === "string") {
 					block.thinking = stripThinkingPresentationArtifacts(block.thinking)
 				}
+					// Legacy sessions written before this change may have the duration
+				// text injected directly into content blocks. Strip it so it doesn't
+				// appear twice alongside the widget.
 				if (block && block.type === "text" && typeof block.text === "string") {
-					block.text = stripWorkedDurationLine(block.text)
+					const marker = "Worked for"
+					if (block.text.includes(marker)) {
+						block.text = block.text
+							.split(/\r?\n/)
+							.filter((l: string) => !(l.includes(marker) && /^✻ Worked for [^\r\n]+$/.test(l.replace(/\x1b\[[0-9;]*m/g, "").trim())))
+							.join("\n")
+							.replace(/\n{3,}/g, "\n\n")
+					}
 				}
 			}
 		}
@@ -3434,6 +3455,7 @@ export default function (pi: ExtensionAPI) {
 	patchGlobalToolBorders()
 	patchToolExecutionRenderers()
 	patchUserMessageRender()
+	patchAssistantMessageRender()
 	applyDiffPalette()
 	registerThinkingLabels(pi)
 
