@@ -1,4 +1,4 @@
-import { handleBashCumulativeMetrics, handleEditCumulativeMetrics } from "../accumulator.js"
+import { accumulateToolUsage, handleBashCumulativeMetrics, handleEditCumulativeMetrics } from "../accumulator.js"
 import {
 	type ToolArgs,
 	computeLineChanges,
@@ -18,6 +18,7 @@ export function handleToolExecutionStart(
 	event: { toolCallId: string; toolName: string; args: unknown },
 ): void {
 	ctx.pendingArgs.set(event.toolCallId, { toolName: event.toolName, args: event.args })
+	ctx.toolStartTimes.set(event.toolCallId, Date.now())
 }
 
 export function handleToolExecutionEnd(
@@ -31,6 +32,11 @@ export function handleToolExecutionEnd(
 	const { toolName, args: rawArgs } = pending
 	const args = (rawArgs ?? {}) as ToolArgs
 	const toolDurationMs = Date.now() - (ctx.messageStartTimes.get(event.toolCallId) ?? ctx.sessionStartMs)
+
+	// --- Tool usage & duration (all tools) ------------------------------------
+	const startMs = ctx.toolStartTimes.get(event.toolCallId) ?? Date.now()
+	ctx.toolStartTimes.delete(event.toolCallId)
+	accumulateToolUsage(ctx.cumulative, toolName, Date.now() - startMs)
 
 	// --- Cumulative metrics ---------------------------------------------------
 	if (toolName === "bash") {

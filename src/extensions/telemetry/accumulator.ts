@@ -12,6 +12,8 @@ export interface CumulativeState {
 	prCount: number
 	locByLanguage: Record<string, { added: number; removed: number }>
 	editDecisions: Record<string, number>
+	toolUsage: Record<string, number>
+	toolDurationMs: Record<string, number>
 	sessionStartNano: string
 }
 
@@ -23,6 +25,8 @@ export function createCumulativeState(): CumulativeState {
 		prCount: 0,
 		locByLanguage: {},
 		editDecisions: {},
+		toolUsage: {},
+		toolDurationMs: {},
 		sessionStartNano: String(Date.now() * 1_000_000),
 	}
 }
@@ -46,6 +50,13 @@ export function handleBashCumulativeMetrics(state: CumulativeState, args: ToolAr
 	const command = String(args?.command ?? "")
 	if (/git\s+commit\b/.test(command) && !/--dry-run/.test(command)) state.commitCount++
 	if (/gh\s+pr\s+create\b/.test(command)) state.prCount++
+}
+
+export function accumulateToolUsage(state: CumulativeState, toolName: string, durationMs: number): void {
+	if (!state.toolUsage[toolName]) state.toolUsage[toolName] = 0
+	state.toolUsage[toolName]++
+	if (!state.toolDurationMs[toolName]) state.toolDurationMs[toolName] = 0
+	state.toolDurationMs[toolName] += durationMs
 }
 
 export function handleEditCumulativeMetrics(state: CumulativeState, toolName: string, args: ToolArgs): void {
@@ -111,6 +122,16 @@ export function collectMetrics(state: CumulativeState): MetricData[] {
 				value: counts.removed,
 				attrs: { type: "removed", language },
 			})
+	}
+	for (const [toolName, count] of Object.entries(state.toolUsage)) {
+		if (count > 0) {
+			out.push({ name: "claude_code.tool.usage", type: "Sum", value: count, attrs: { tool_name: toolName } })
+		}
+	}
+	for (const [toolName, duration] of Object.entries(state.toolDurationMs)) {
+		if (duration > 0) {
+			out.push({ name: "claude_code.tool.duration_ms", type: "Sum", value: duration, attrs: { tool_name: toolName } })
+		}
 	}
 	for (const [key, count] of Object.entries(state.editDecisions)) {
 		const [toolName, decision, language, source] = key.split("|")

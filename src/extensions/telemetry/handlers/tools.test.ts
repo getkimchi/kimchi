@@ -258,6 +258,36 @@ describe("handlers/tools", () => {
 	})
 
 	// -----------------------------------------------------------------------
+	// tool usage & duration tracking
+	// -----------------------------------------------------------------------
+
+	describe("tool usage & duration tracking", () => {
+		it("accumulates tool usage count for each tool call", () => {
+			const ctx = new SessionContext(makeConfig(), "cli", "coding")
+
+			handleToolExecutionStart(ctx, { toolCallId: "b1", toolName: "bash", args: { command: "ls" } })
+			handleToolExecutionEnd(ctx, { toolCallId: "b1", isError: false })
+			handleToolExecutionStart(ctx, { toolCallId: "b2", toolName: "bash", args: { command: "pwd" } })
+			handleToolExecutionEnd(ctx, { toolCallId: "b2", isError: false })
+			handleToolExecutionStart(ctx, { toolCallId: "e1", toolName: "edit", args: { path: "a.ts" } })
+			handleToolExecutionEnd(ctx, { toolCallId: "e1", isError: false })
+
+			expect(ctx.cumulative.toolUsage.bash).toBe(2)
+			expect(ctx.cumulative.toolUsage.edit).toBe(1)
+		})
+
+		it("records tool start times and cleans them up on end", () => {
+			const ctx = new SessionContext(makeConfig(), "cli", "coding")
+
+			handleToolExecutionStart(ctx, { toolCallId: "b1", toolName: "bash", args: { command: "ls" } })
+			expect(ctx.toolStartTimes.has("b1")).toBe(true)
+
+			handleToolExecutionEnd(ctx, { toolCallId: "b1", isError: false })
+			expect(ctx.toolStartTimes.has("b1")).toBe(false)
+		})
+	})
+
+	// -----------------------------------------------------------------------
 	// edge cases
 	// -----------------------------------------------------------------------
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
 	accumulateLoc,
+	accumulateToolUsage,
 	collectMetrics,
 	createCumulativeState,
 	handleBashCumulativeMetrics,
@@ -17,6 +18,8 @@ describe("createCumulativeState", () => {
 		expect(state.prCount).toBe(0)
 		expect(state.locByLanguage).toEqual({})
 		expect(state.editDecisions).toEqual({})
+		expect(state.toolUsage).toEqual({})
+		expect(state.toolDurationMs).toEqual({})
 	})
 })
 
@@ -116,6 +119,26 @@ describe("handleEditCumulativeMetrics", () => {
 	})
 })
 
+describe("accumulateToolUsage", () => {
+	it("increments usage count and accumulates duration", () => {
+		const state = createCumulativeState()
+		accumulateToolUsage(state, "bash", 50)
+		accumulateToolUsage(state, "bash", 30)
+		expect(state.toolUsage.bash).toBe(2)
+		expect(state.toolDurationMs.bash).toBe(80)
+	})
+
+	it("tracks different tools separately", () => {
+		const state = createCumulativeState()
+		accumulateToolUsage(state, "bash", 50)
+		accumulateToolUsage(state, "edit", 200)
+		expect(state.toolUsage.bash).toBe(1)
+		expect(state.toolUsage.edit).toBe(1)
+		expect(state.toolDurationMs.bash).toBe(50)
+		expect(state.toolDurationMs.edit).toBe(200)
+	})
+})
+
 describe("collectMetrics", () => {
 	it("returns empty array for empty state", () => {
 		const state = createCumulativeState()
@@ -184,6 +207,41 @@ describe("collectMetrics", () => {
 		expect(added?.value).toBe(10)
 		expect(added?.attrs.language).toBe("Go")
 		expect(removed?.value).toBe(4)
+	})
+
+	it("produces tool.usage metrics per tool name", () => {
+		const state = createCumulativeState()
+		accumulateToolUsage(state, "bash", 50)
+		accumulateToolUsage(state, "bash", 30)
+		accumulateToolUsage(state, "edit", 200)
+		const metrics = collectMetrics(state)
+		const bashUsage = metrics.find((m) => m.name === "claude_code.tool.usage" && m.attrs.tool_name === "bash")
+		expect(bashUsage).toBeDefined()
+		expect(bashUsage?.value).toBe(2)
+		const editUsage = metrics.find((m) => m.name === "claude_code.tool.usage" && m.attrs.tool_name === "edit")
+		expect(editUsage).toBeDefined()
+		expect(editUsage?.value).toBe(1)
+	})
+
+	it("produces tool.duration_ms metrics per tool name", () => {
+		const state = createCumulativeState()
+		accumulateToolUsage(state, "bash", 50)
+		accumulateToolUsage(state, "bash", 30)
+		accumulateToolUsage(state, "edit", 200)
+		const metrics = collectMetrics(state)
+		const bashDuration = metrics.find((m) => m.name === "claude_code.tool.duration_ms" && m.attrs.tool_name === "bash")
+		expect(bashDuration).toBeDefined()
+		expect(bashDuration?.value).toBe(80)
+		const editDuration = metrics.find((m) => m.name === "claude_code.tool.duration_ms" && m.attrs.tool_name === "edit")
+		expect(editDuration).toBeDefined()
+		expect(editDuration?.value).toBe(200)
+	})
+
+	it("does not emit tool metrics when counts are zero", () => {
+		const state = createCumulativeState()
+		const metrics = collectMetrics(state)
+		expect(metrics.find((m) => m.name === "claude_code.tool.usage")).toBeUndefined()
+		expect(metrics.find((m) => m.name === "claude_code.tool.duration_ms")).toBeUndefined()
 	})
 
 	it("produces code_edit_tool.decision metrics", () => {

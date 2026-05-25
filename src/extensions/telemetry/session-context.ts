@@ -59,6 +59,7 @@ export class SessionContext {
 	sentMessages = new Set<string>()
 	pendingArgs = new Map<string, { toolName: string; args: unknown }>()
 	messageStartTimes = new Map<string, number>()
+	toolStartTimes = new Map<string, number>()
 	cumulative: CumulativeState
 	inFlight = new Set<Promise<void>>()
 	shuttingDown = false
@@ -100,6 +101,7 @@ export class SessionContext {
 		this.sentMessages.clear()
 		this.pendingArgs.clear()
 		this.messageStartTimes.clear()
+		this.toolStartTimes.clear()
 		this.cumulative = getOrCreateAccumulator(this.sessionId)
 		this.inFlight.clear()
 		this.shuttingDown = false
@@ -180,6 +182,7 @@ export class SessionContext {
 
 	async drain(): Promise<void> {
 		this.messageStartTimes.clear()
+		this.toolStartTimes.clear()
 		this.stopFlushTimer()
 		this.flushLogBuffer()
 		this.flushMetrics()
