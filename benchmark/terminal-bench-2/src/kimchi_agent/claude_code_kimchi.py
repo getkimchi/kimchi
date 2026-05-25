@@ -97,13 +97,20 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
         api_key = self._required_kimchi_api_key()
         model = self._selected_model_metadata(api_key)
         model_id = model.slug
+        blocked_env_keys = FORCED_ENV_KEYS | DENIED_ENV_KEYS
         env = self._passthrough_env(
             prefixes=CLAUDE_PASSTHROUGH_ENV_PREFIXES,
             keys=CLAUDE_PASSTHROUGH_ENV_KEYS,
             blocked_prefixes=BLOCKED_ENV_PREFIXES,
-            blocked_keys=FORCED_ENV_KEYS | DENIED_ENV_KEYS,
+            blocked_keys=blocked_env_keys,
         )
-        env.update(self._resolved_env_vars)
+        env.update(
+            {
+                key: value
+                for key, value in self._resolved_env_vars.items()
+                if key not in blocked_env_keys and not key.startswith(BLOCKED_ENV_PREFIXES)
+            }
+        )
         env.update({
             "ANTHROPIC_API_KEY": "",
             "ANTHROPIC_AUTH_TOKEN": api_key,
@@ -128,7 +135,7 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
         # Harbor merges _extra_env over env=. Remove keys from that channel so
         # per-call env= remains authoritative without copying secrets there.
         self._scrub_extra_env(
-            keys=FORCED_ENV_KEYS | DENIED_ENV_KEYS,
+            keys=blocked_env_keys,
             prefixes=BLOCKED_ENV_PREFIXES,
         )
 
@@ -163,6 +170,7 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
         extra_flags = (cli_flags + " ") if cli_flags else ""
         return (
             'export PATH="$HOME/.local/bin:$PATH"; '
+            "set -o pipefail; "
             f"claude --verbose --output-format=stream-json "
             f"--permission-mode=bypassPermissions "
             f"{extra_flags}"

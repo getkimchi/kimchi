@@ -97,6 +97,8 @@ class KimchiHarnessTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("--multi-model", command)
             self.assertIn("~/.config/kimchi/harness/settings.json", command)
             self.assertIn('{"multiModel":true}', command)
+            self.assertFalse(agent._multi_model_settings_command().endswith("&& "))
+            self.assertIn(f"{agent._multi_model_settings_command()} && set -m", command)
             self.assertEqual(agent.to_agent_info().model_info.provider, "kimchi")
             self.assertEqual(agent.to_agent_info().model_info.name, "multi-model")
 

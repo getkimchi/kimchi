@@ -120,6 +120,7 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("$CLAUDE_CONFIG_DIR/projects/-app", setup_command)
         self.assertIn("claude --verbose --output-format=stream-json", run_command)
+        self.assertIn("set -o pipefail", run_command)
         self.assertIn("--permission-mode=bypassPermissions", run_command)
         self.assertIn("--print -- 'solve it'", run_command)
         self.assertIn("| tee /logs/agent/claude-code.txt", run_command)
@@ -357,6 +358,7 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
                 model_name="kimchi-dev/kimi-k2.5",
                 extra_env=bash_env,
             )
+            agent._resolved_env_vars.update(bash_env)
 
             await agent.run("solve it", object(), AgentContext())
 

@@ -252,14 +252,19 @@ class Kimchi(BaseInstalledAgent):
 
     def _kimchi_launch_command(self, instruction: str, cli_flags: str) -> str:
         runner = self._kimchi_command(cli_flags)
-        return (
+        parts = [
             # Ensure kimchi has a stable location for the main session and any
             # subagent session files before the process starts.
-            f"mkdir -p {shlex.quote(CONTAINER_SESSIONS_DIR)} && "
+            f"mkdir -p {shlex.quote(CONTAINER_SESSIONS_DIR)}",
             # Drop stale state from a previous interrupted attempt in the same
             # mounted logs directory.
-            f"rm -f {shlex.quote(CONTAINER_AGENT_PGID_FILE)} && "
-            f"{self._multi_model_settings_command()}"
+            f"rm -f {shlex.quote(CONTAINER_AGENT_PGID_FILE)}",
+        ]
+        multi_model_settings = self._multi_model_settings_command()
+        if multi_model_settings:
+            parts.append(multi_model_settings)
+
+        parts.append(
             # Enable job control so the backgrounded kimchi pipeline gets a
             # process group that can be terminated as a unit on timeout.
             "set -m && { "
@@ -285,6 +290,7 @@ class Kimchi(BaseInstalledAgent):
             'exit "$agent_status"; '
             "}"
         )
+        return " && ".join(parts)
 
     def _multi_model_settings_command(self) -> str:
         if not self._multi_model_enabled:
@@ -293,7 +299,7 @@ class Kimchi(BaseInstalledAgent):
         settings_json = '{"multiModel":true}'
         return (
             f"mkdir -p {CONTAINER_HARNESS_SETTINGS_DIR} && "
-            f"printf '%s\\n' {shlex.quote(settings_json)} > {CONTAINER_HARNESS_SETTINGS} && "
+            f"printf '%s\\n' {shlex.quote(settings_json)} > {CONTAINER_HARNESS_SETTINGS}"
         )
 
     def _kimchi_command(self, cli_flags: str) -> str:
