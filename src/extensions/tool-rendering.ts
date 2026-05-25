@@ -388,35 +388,25 @@ function patchUserMessageRender(): void {
 			box.paddingX = 0
 			box.invalidateCache?.()
 		}
-		const lines: string[] = originalRender.call(this, width)
-		if (!Array.isArray(lines) || lines.length === 0) return lines
-		// Prepend "❯ " in accent color to line 0 (after OSC133).
-		// Measure the prefix width and truncate content so the total never exceeds
-		// the terminal width — guards against ❯ being rendered as 2 cells wide.
 		const theme = _themePaletteCacheTheme as any
 		const glyph = typeof theme?.fg === "function" ? theme.fg("accent", "❯") : "❯"
 		const prefix = ` ${glyph} `
 		const prefixW = visibleWidth(prefix)
+		// Render content narrower so all lines fit when we prepend the indent.
+		const innerWidth = Math.max(1, width - prefixW)
+		const lines: string[] = originalRender.call(this, innerWidth)
+		if (!Array.isArray(lines) || lines.length === 0) return lines
 		const first = lines[0]
 		const osc = first.startsWith(OSC133_ZONE_START) ? OSC133_ZONE_START : ""
-		const content = first.slice(osc.length)
-		const available = Math.max(0, width - prefixW)
-		const truncated = visibleWidth(content) > available ? truncateToWidth(content, available) : content
-		const line0Content = prefix + truncated
-		// Pad to full width so background colour fills the whole line.
-		const pad = Math.max(0, width - prefixW - visibleWidth(truncated))
-		const paddedLine0 = typeof theme?.bg === "function"
-			? theme.bg("userMessageBg", line0Content + " ".repeat(pad))
-			: line0Content
-		lines[0] = osc + paddedLine0
-		// Indent continuation lines to align with text after ❯, apply background.
 		const indent = " ".repeat(prefixW)
-		for (let i = 1; i < lines.length; i++) {
-			const indented = indent + truncateToWidth(lines[i], width - prefixW)
-			const ipad = Math.max(0, width - visibleWidth(indented))
-			lines[i] = typeof theme?.bg === "function"
-				? theme.bg("userMessageBg", indented + " ".repeat(ipad))
-				: indented
+		const hasBg = typeof theme?.bg === "function"
+		for (let i = 0; i < lines.length; i++) {
+			const linePrefix = i === 0 ? prefix : indent
+			const rawLine = i === 0 ? lines[0].slice(osc.length) : lines[i]
+			const composed = linePrefix + rawLine
+			const pad = Math.max(0, width - visibleWidth(composed))
+			const styled = hasBg ? theme.bg("userMessageBg", composed + " ".repeat(pad)) : composed
+			lines[i] = (i === 0 ? osc : "") + styled
 		}
 		return lines
 	}
