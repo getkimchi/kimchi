@@ -15,17 +15,13 @@ export function buildLogoLines(theme: Theme): string[] {
 	]
 }
 
-export function buildVersionLine(theme: Theme): string {
+export function buildInfoLine(theme: Theme): string {
 	if (!cachedVersion) cachedVersion = getVersion()
 	const dim = theme.getFgAnsi("dim")
-	return `${dim}v${cachedVersion}${RST_FG}`
-}
-
-export function buildPathLine(theme: Theme): string {
-	const dim = theme.getFgAnsi("dim")
 	const branchColor = theme.getFgAnsi("mdLink")
-	const branch = getGitBranch()
 	const folder = getFolder()
-	const branchPart = branch ? ` ${dim}·${RST_FG} ${branchColor}${branch}${RST_FG}` : ""
-	return `${dim}${folder}${RST_FG}${branchPart}`
+	const branch = getGitBranch()
+	const vdot = ` ${dim}·${RST_FG} `
+	const branchPart = branch ? `${vdot}${branchColor}${branch}${RST_FG}` : ""
+	return `${dim}v${cachedVersion}${RST_FG}${vdot}${dim}${folder}${RST_FG}${branchPart}`
 }

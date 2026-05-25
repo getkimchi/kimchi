@@ -2,7 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { RST_FG } from "../ansi.js"
-import { buildLogoLines, buildPathLine, buildVersionLine } from "./logo-art.js"
+import { buildInfoLine, buildLogoLines } from "./logo-art.js"
 
 export class LogoHeader implements Component {
 	private readonly theme: Theme
@@ -20,32 +20,33 @@ export class LogoHeader implements Component {
 	render(width: number): string[] {
 		const { theme } = this
 		const accentOpen = theme.getFgAnsi("accent")
-		const versionLine = buildVersionLine(theme)
-		const pathLine = buildPathLine(theme)
-		const versionWidth = visibleWidth(versionLine)
-		const pathWidth = visibleWidth(pathLine)
+		const infoLine = buildInfoLine(theme)
+		const infoWidth = visibleWidth(infoLine)
 
 		// Logo dimensions
 		const logoWidth = Math.max(...this.logoLines.map((l) => visibleWidth(l)))
 		const logoHeight = this.logoLines.length
-		const gapBelowLogo = 1
+		const midGap = 2
+
+		// Left column content width (widest of logo or info line)
+		const leftContentWidth = Math.max(logoWidth, infoWidth)
 
 		// Compute right column width with progressive padding reduction for narrow terminals
 		let leftPad = 1
 		let midPad = 1
 		let rightPad = 1
 		let endPad = 1
-		let rightColWidth = width - (2 + leftPad + logoWidth + midPad + 1 + rightPad + endPad)
+		let rightColWidth = width - (2 + leftPad + leftContentWidth + midPad + 1 + rightPad + endPad)
 
 		if (rightColWidth < 8) {
 			midPad = 0
 			rightPad = 0
-			rightColWidth = width - (2 + leftPad + logoWidth + 1 + endPad)
+			rightColWidth = width - (2 + leftPad + leftContentWidth + 1 + endPad)
 		}
 		if (rightColWidth < 8) {
 			leftPad = 0
 			endPad = 0
-			rightColWidth = width - (2 + logoWidth + 1)
+			rightColWidth = width - (2 + leftContentWidth + 1)
 		}
 		if (rightColWidth < 1) {
 			rightColWidth = 1
@@ -64,11 +65,13 @@ export class LogoHeader implements Component {
 
 		const rightLines: string[] = [...labelWrap, ...wrap1, hrLine, ...wrap2]
 
-		// Left column: logo centered vertically, version/path below
-		const leftContentHeight = logoHeight + gapBelowLogo + (versionWidth > 0 ? 1 : 0) + (pathWidth > 0 ? 1 : 0)
+		// Left column: center logo + info line as a unit vertically
+		const unitHeight = logoHeight + midGap + 1
+		const leftContentHeight = unitHeight
 		const totalHeight = Math.max(rightLines.length, leftContentHeight)
 
-		const logoTop = Math.min(Math.floor((totalHeight - logoHeight) / 2), totalHeight - leftContentHeight)
+		const logoTop = Math.floor((totalHeight - unitHeight) / 2)
+		const infoRow = logoTop + logoHeight + midGap
 
 		const accentBorder = (char: string) => accentOpen + char + RST_FG
 		const result: string[] = []
@@ -82,15 +85,14 @@ export class LogoHeader implements Component {
 			if (row >= logoTop && row < logoTop + logoHeight) {
 				leftContent = this.logoLines[row - logoTop]
 			}
-			if (versionWidth > 0 && row === logoTop + logoHeight + gapBelowLogo) {
-				leftContent = versionLine
-			}
-			if (pathWidth > 0 && row === logoTop + logoHeight + gapBelowLogo + 1) {
-				leftContent = pathLine
+			if (row === infoRow) {
+				leftContent = infoLine
 			}
 
-			const leftVisible = visibleWidth(leftContent)
-			const leftPadded = leftContent + " ".repeat(Math.max(0, logoWidth - leftVisible))
+			// Horizontally center content within leftContentWidth
+			const contentWidth = visibleWidth(leftContent)
+			const hPad = Math.floor((leftContentWidth - contentWidth) / 2)
+			const leftPadded = " ".repeat(hPad) + leftContent + " ".repeat(leftContentWidth - contentWidth - hPad)
 
 			const rightContent = rightLines[row] || ""
 			const rightVisible = visibleWidth(rightContent)
