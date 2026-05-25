@@ -33,7 +33,7 @@ import {
 } from "@earendil-works/pi-tui"
 
 import * as Diff from "diff"
-import { getBashCommandForDisplay } from "./bash-collapse.js"
+import { getBashCommandForDisplay } from "./rtk-rewrite.js"
 import type { BundledLanguage, BundledTheme } from "shiki"
 
 const RESET = "\x1b[0m"
