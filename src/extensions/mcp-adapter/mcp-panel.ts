@@ -1,4 +1,4 @@
-import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { fg } from "../../ansi.js"
 import type { CachedTool, MetadataCache, ServerCacheEntry } from "./metadata-cache.js"
 import { resourceNameToToolName } from "./resource-tools.js"
@@ -145,6 +145,8 @@ class McpPanel {
 	private discardSelected = 1
 	private importNotice: string | null = null
 	private authNotice: string | null = null
+	private saveNotice: string | null = null
+	private focusDescription: { serverName: string; toolName: string; text: string } | null = null
 	private inactivityTimeout: ReturnType<typeof setTimeout> | null = null
 	private visibleItems: VisibleItem[] = []
 	private tui: { requestRender(force?: boolean): void; terminal: { rows: number } }
@@ -311,6 +313,7 @@ class McpPanel {
 		this.resetInactivityTimeout()
 		this.importNotice = null
 		this.authNotice = null
+		this.saveNotice = null
 
 		if (this.confirmingDiscard) {
 			this.handleDiscardInput(data)
@@ -325,14 +328,22 @@ class McpPanel {
 		}
 
 		if (matchesKey(data, "ctrl+s")) {
-			this.cleanup()
-			this.done(this.buildResult())
+			const result = this.buildResult()
+			if (result.changes.size > 0) {
+				this.callbacks.onSave(result.changes)
+				// Commit saved values as the new baseline so dirty/unsaved clears.
+				this.servers.forEach((s) => s.tools.forEach((t) => { t.wasDirect = t.isDirect }))
+				this.updateDirty()
+				this.saveNotice = "Saved ✓"
+			}
+			this.tui.requestRender()
 			return
 		}
 
 		// Modal description search mode
 		if (this.descSearchActive) {
 			if (matchesKey(data, "escape") || matchesKey(data, "return")) {
+				this.focusDescription = null
 				this.descSearchActive = false
 				this.descQuery = ""
 				this.rebuildVisibleItems()
@@ -340,6 +351,7 @@ class McpPanel {
 				return
 			}
 			if (matchesKey(data, "backspace")) {
+				this.focusDescription = null
 				if (this.descQuery.length > 0) {
 					this.descQuery = this.descQuery.slice(0, -1)
 					this.rebuildVisibleItems()
@@ -348,20 +360,24 @@ class McpPanel {
 				return
 			}
 			if (matchesKey(data, "up")) {
+				this.focusDescription = null
 				this.moveCursor(-1)
 				return
 			}
 			if (matchesKey(data, "down")) {
+				this.focusDescription = null
 				this.moveCursor(1)
 				return
 			}
 			if (matchesKey(data, "space")) {
+				this.focusDescription = null
 				// Toggle even while in desc search
 				const item = this.visibleItems[this.cursorIndex]
 				if (item) this.toggleItem(item)
 				return
 			}
 			if (data.length === 1 && data.charCodeAt(0) >= 32) {
+				this.focusDescription = null
 				this.descQuery += data
 				this.rebuildVisibleItems()
 				this.cursorIndex = Math.min(this.cursorIndex, Math.max(0, this.visibleItems.length - 1))
@@ -371,6 +387,11 @@ class McpPanel {
 		}
 
 		if (matchesKey(data, "escape")) {
+			if (this.focusDescription) {
+				this.focusDescription = null
+				this.tui.requestRender()
+				return
+			}
 			if (this.nameQuery) {
 				this.nameQuery = ""
 				this.rebuildVisibleItems()
@@ -388,10 +409,12 @@ class McpPanel {
 		}
 
 		if (matchesKey(data, "up")) {
+			this.focusDescription = null
 			this.moveCursor(-1)
 			return
 		}
 		if (matchesKey(data, "down")) {
+			this.focusDescription = null
 			this.moveCursor(1)
 			return
 		}
@@ -399,6 +422,7 @@ class McpPanel {
 		if (matchesKey(data, "space")) {
 			const item = this.visibleItems[this.cursorIndex]
 			if (item) this.toggleItem(item)
+			this.focusDescription = null
 			return
 		}
 
@@ -416,16 +440,19 @@ class McpPanel {
 				this.cursorIndex = Math.min(this.cursorIndex, Math.max(0, this.visibleItems.length - 1))
 			} else if (item.toolIndex !== undefined) {
 				const tool = server.tools[item.toolIndex]
-				tool.isDirect = !tool.isDirect
-				if (tool.isDirect && server.source === "import") {
-					this.importNotice = `Imported from ${server.importKind ?? "external"} — will copy to user config on save`
+				const fd = this.focusDescription
+				if (fd && fd.serverName === server.name && fd.toolName === tool.name) {
+					this.focusDescription = null
+				} else {
+					this.focusDescription = { serverName: server.name, toolName: tool.name, text: tool.description }
 				}
-				this.updateDirty()
 			}
+			this.tui.requestRender()
 			return
 		}
 
 		if (matchesKey(data, "ctrl+r")) {
+			this.focusDescription = null
 			const item = this.visibleItems[this.cursorIndex]
 			if (!item) return
 			const server = this.servers[item.serverIndex]
@@ -454,6 +481,7 @@ class McpPanel {
 		}
 
 		if (data === "?") {
+			this.focusDescription = null
 			this.descSearchActive = true
 			this.descQuery = ""
 			this.rebuildVisibleItems()
@@ -463,6 +491,7 @@ class McpPanel {
 
 		// Backspace removes from name query
 		if (matchesKey(data, "backspace")) {
+			this.focusDescription = null
 			if (this.nameQuery.length > 0) {
 				this.nameQuery = this.nameQuery.slice(0, -1)
 				this.rebuildVisibleItems()
@@ -473,6 +502,7 @@ class McpPanel {
 
 		// All other printable chars → always-on name search
 		if (data.length === 1 && data.charCodeAt(0) >= 32) {
+			this.focusDescription = null
 			this.nameQuery += data
 			this.rebuildVisibleItems()
 			this.cursorIndex = Math.min(this.cursorIndex, Math.max(0, this.visibleItems.length - 1))
@@ -657,6 +687,19 @@ class McpPanel {
 			}
 			if (this.authNotice) {
 				lines.push(row(fg(t.needsAuth, italic(this.authNotice))))
+				lines.push(emptyRow())
+			}
+			if (this.saveNotice) {
+				lines.push(row(fg(t.direct, italic(this.saveNotice))))
+				lines.push(emptyRow())
+			}
+			if (this.focusDescription) {
+				const label = fg(t.description, `▼ ${this.focusDescription.serverName} — ${this.focusDescription.toolName}`)
+				lines.push(row(label))
+				const wrapped = wrapTextWithAnsi(this.focusDescription.text, innerW - 6)
+				for (const wl of wrapped) {
+					lines.push(row(fg(t.description, `     ${wl}`)))
+				}
 				lines.push(emptyRow())
 			}
 		}
