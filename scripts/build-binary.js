@@ -7,10 +7,7 @@
 //   node scripts/build-binary.js --target linux-x64     # cross-compile for Linux x86-64
 
 import { execSync } from "node:child_process"
-import { readFileSync } from "node:fs"
 import { platform } from "node:os"
-import { resolve } from "node:path"
-import { writePosthogKey } from "./generate-posthog-stub.js"
 
 const TARGET_MAP = {
 	"linux-arm64": "bun-linux-arm64",
@@ -35,10 +32,6 @@ function run(label, cmd) {
 
 const isCI = !!process.env.CI
 
-function generateApiKeyFile() {
-	writePosthogKey(process.env.KIMCHI_POSTHOG_API_KEY ?? "", "scripts/build-binary.js")
-}
-
 // In CI the binary will be build in its own step.
 if (!isCI) {
 	run("build proxy-helper", "make -C tools/proxy-helper build")
@@ -51,9 +44,6 @@ run("typecheck", "pnpm run typecheck")
 // If a new dependency causes a build failure, check whether it also needs --external here.
 const targetFlag = crossTarget ? ` --target=${crossTarget}` : ""
 
-// Generate the API key file with the real key before compiling.
-// The generated file is gitignored; dev/test scripts regenerate the empty stub.
-generateApiKeyFile()
 run(
 	"compile",
 	`bun build src/entry.ts --compile${targetFlag} --outfile dist/bin/kimchi --external chromium-bidi --external electron`.trim(),
