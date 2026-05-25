@@ -77,6 +77,9 @@ describe("LogoHeader", () => {
 			)
 		expect(infoRow).toBeDefined()
 
+		// Box should be taller due to generous vertical padding
+		expect(lines.length).toBeGreaterThan(35)
+
 		// Contains right column content
 		const rightText = lines.slice(1, -1).map(stripAnsi).join(" ")
 		expect(rightText).toContain("Kimchi's special:")
