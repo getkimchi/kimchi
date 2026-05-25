@@ -226,20 +226,20 @@ describe("computeWriteLines", () => {
 		expect(computeWriteLines({ content: "line1\nline2\n\n\n" })).toBe(2)
 	})
 
-	it("returns 1 for empty content", () => {
-		expect(computeWriteLines({ content: "" })).toBe(1)
+	it("returns 0 for empty content", () => {
+		expect(computeWriteLines({ content: "" })).toBe(0)
 	})
 
-	it("returns 1 for missing content", () => {
-		expect(computeWriteLines({})).toBe(1)
+	it("returns 0 for missing content", () => {
+		expect(computeWriteLines({})).toBe(0)
 	})
 
 	it("returns 1 for single-line content", () => {
 		expect(computeWriteLines({ content: "hello" })).toBe(1)
 	})
 
-	it("returns 1 for content that is only newlines", () => {
-		expect(computeWriteLines({ content: "\n\n\n" })).toBe(1)
+	it("returns 0 for content that is only newlines", () => {
+		expect(computeWriteLines({ content: "\n\n\n" })).toBe(0)
 	})
 })
 

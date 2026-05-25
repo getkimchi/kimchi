@@ -123,12 +123,12 @@ export function computeLineChanges(_toolName: string, args: ToolArgs): { added: 
 
 /**
  * Count lines in write content, ignoring trailing newlines.
- * Returns at least 1 for non-empty writes.
+ * Returns 0 for empty or whitespace-only content, at least 1 for non-empty writes.
  */
 export function computeWriteLines(args: ToolArgs): number {
 	const content = String(args?.content ?? "")
 	const trimmed = content.replace(/\n+$/, "")
-	return trimmed ? trimmed.split("\n").length : 1
+	return trimmed ? trimmed.split("\n").length : 0
 }
 
 // ---------------------------------------------------------------------------

@@ -72,15 +72,15 @@ export function handleBeforeAgentStart(ctx: SessionContext, event: { prompt: str
 
 export function handleAgentEnd(
 	ctx: SessionContext,
-	event: { messages?: { role?: string; content?: unknown[] }[] },
+	event: { messages?: { role?: string; content?: unknown[]; isError?: boolean }[] },
 ): void {
 	const messages = event.messages
 	if (!messages?.length) return
 	const last = messages[messages.length - 1]
-	if (last.role === "tool_result" && Array.isArray(last.content)) {
-		const text = (last.content[0] as { text?: string } | undefined)?.text ?? ""
-		if (text.toLowerCase().includes("error")) {
-			ctx.emit("error", { model: ctx.currentModel, error_type: "agent_error", error_message: text.slice(0, 300) })
-		}
+	if (last.role === "toolResult" && last.isError) {
+		const text = Array.isArray(last.content)
+			? ((last.content[0] as { text?: string } | undefined)?.text ?? "unknown error")
+			: "unknown error"
+		ctx.emit("error", { model: ctx.currentModel, error_type: "agent_error", error_message: text.slice(0, 300) })
 	}
 }

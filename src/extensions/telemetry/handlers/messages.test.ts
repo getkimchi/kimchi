@@ -247,7 +247,7 @@ describe("handleAgentEnd", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("emits kimchi.error when last message contains error text", () => {
+	it("emits kimchi.error when last message is a toolResult with isError=true", () => {
 		const ctx = makeCtx()
 		ctx.currentModel = "claude-3-5-sonnet"
 		const emitSpy = vi.spyOn(ctx, "emit")
@@ -255,7 +255,7 @@ describe("handleAgentEnd", () => {
 		handleAgentEnd(ctx, {
 			messages: [
 				{ role: "assistant", content: [{ text: "some output" }] },
-				{ role: "tool_result", content: [{ text: "Error: something went wrong" }] },
+				{ role: "toolResult", isError: true, content: [{ text: "Error: something went wrong" }] },
 			],
 		})
 
@@ -267,12 +267,23 @@ describe("handleAgentEnd", () => {
 		expect(attrs.model).toBe("claude-3-5-sonnet")
 	})
 
-	it("does not emit when last message does not contain error text", () => {
+	it("does not emit when last toolResult has isError=false", () => {
 		const ctx = makeCtx()
 		const emitSpy = vi.spyOn(ctx, "emit")
 
 		handleAgentEnd(ctx, {
-			messages: [{ role: "tool_result", content: [{ text: "Task completed successfully" }] }],
+			messages: [{ role: "toolResult", isError: false, content: [{ text: "Task completed successfully" }] }],
+		})
+
+		expect(emitSpy).not.toHaveBeenCalled()
+	})
+
+	it("does not false-positive on text containing the word error when isError=false", () => {
+		const ctx = makeCtx()
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		handleAgentEnd(ctx, {
+			messages: [{ role: "toolResult", isError: false, content: [{ text: "No errors found" }] }],
 		})
 
 		expect(emitSpy).not.toHaveBeenCalled()
@@ -296,7 +307,7 @@ describe("handleAgentEnd", () => {
 		expect(emitSpy).not.toHaveBeenCalled()
 	})
 
-	it("does not emit when last message is not tool_result", () => {
+	it("does not emit when last message is not toolResult", () => {
 		const ctx = makeCtx()
 		const emitSpy = vi.spyOn(ctx, "emit")
 
