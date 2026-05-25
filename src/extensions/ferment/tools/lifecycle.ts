@@ -258,8 +258,15 @@ function normalizeQuestions(value: ProposeScopingArgs["questions"]): ScopingQues
 		if (!raw || typeof raw !== "object") return `questions.${questionIndex} must be an object.`
 		const q = raw as Record<string, unknown>
 		if (typeof q.id !== "string") return `questions.${questionIndex}.id must be a string.`
-		const text = typeof q.text === "string" ? q.text : typeof q.prompt === "string" ? q.prompt : undefined
-		if (!text) return `questions.${questionIndex}.text must be a string.`
+		const hasText = Object.hasOwn(q, "text")
+		const hasPrompt = Object.hasOwn(q, "prompt")
+		if (hasText && typeof q.text !== "string") return `questions.${questionIndex}.text must be a string.`
+		if (hasPrompt && typeof q.prompt !== "string") return `questions.${questionIndex}.prompt must be a string.`
+		if (!hasText && !hasPrompt) return `questions.${questionIndex}.text must be a string.`
+		if (hasText && hasPrompt && q.text !== q.prompt) {
+			return `questions.${questionIndex} must not set both text and prompt with different values; use text as the canonical question text.`
+		}
+		const text = (hasText ? q.text : q.prompt) as string
 		const questionType = normalizeScopingQuestionType(q.type)
 		if (!questionType.ok) return `questions.${questionIndex}.type ${questionType.error}`
 		const type = questionType.type
@@ -537,16 +544,12 @@ export async function completeFerment(
 	if (gateError) return gateError
 	const gates = params.gates ?? []
 
-	// Gates pass → proceed with completion.
-	const completeOutcome = applyAndPersist(params.ferment_id, { type: "complete_ferment" })
-	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, fSnapshot)
-
 	// Journey-grade judge: reads per-phase F-gate verdicts from the on-disk
 	// review-evidence sidecars, the C-gates the agent just provided, the goal
 	// + success criteria, and the total diff. Produces a pessimistic A–F
 	// grade with rationale. C-gates already decided ship/refuse — the judge
 	// only measures HOW WELL the work was done.
-	const ferment = completeOutcome.ferment
+	const ferment = fSnapshot
 	const phaseReviews = readLatestPhaseReviews(ferment.id)
 	const totalDiff = ferment.worktree.commit ? gatherPhaseEvidence(ferment.worktree.commit) : undefined
 	const journeyResult = await judgeJourneyGrade({
@@ -597,9 +600,14 @@ export async function completeFerment(
 
 		if (choice.failed || choice.choice === "abandon") {
 			if (choice.failed) {
-				// If no prompt audience exists, keep completion moving with an
-				// unavailable grade. The gates already passed; judge failure is
-				// infrastructure noise, not product evidence.
+				if (choice.reason !== "no_ui_no_judge") {
+					return toolErr(
+						`complete_ferment paused — final grade judge unreachable and user did not authorize ungraded ship (${choice.reason}: ${choice.detail}).`,
+					)
+				}
+				// If no prompt audience exists, keep completion moving. The gates
+				// already passed; judge failure is infrastructure noise, not
+				// product evidence.
 				resolvedGrade = {
 					grade: "B",
 					rationale: `Judge unreachable (${failureDetail}); shipped without a graded review because no prompt audience was available (${choice.reason}).`,
@@ -622,10 +630,11 @@ export async function completeFerment(
 		}
 	}
 
-	// Persist the resolved grade. JudgeGrade requires a `grade` letter and
-	// `gradedAt` ISO timestamp; `unavailable` flags ungraded-but-shipped.
-	const gradeOutcome = applyAndPersist(params.ferment_id, {
-		type: "set_ferment_grade",
+	// Persist completion and grade together so a cancelled interactive fallback
+	// leaves the ferment uncompleted instead of half-complete without a grade.
+	const completeOutcome = applyAndPersist(params.ferment_id, {
+		type: "complete_ferment",
+		finalSummary: params.final_summary,
 		grade: {
 			grade: resolvedGrade.grade,
 			rationale: resolvedGrade.rationale,
@@ -633,14 +642,14 @@ export async function completeFerment(
 			unavailable: resolvedGrade.unavailable,
 		},
 	})
-	if (!gradeOutcome.ok) return failedToolResult(gradeOutcome.error, ferment)
+	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, ferment)
 
 	// Cleanup in-memory state.
 	runtime.clearFermentState(params.ferment_id)
 	resetReactiveContinuationNudgeCount(params.ferment_id)
 	runtime.setActive(undefined)
 
-	const fresh = gradeOutcome.ferment
+	const fresh = completeOutcome.ferment
 	const failedPhases = fresh.phases.filter((p) => p.status === "failed").length
 	const failedNote = failedPhases > 0 ? ` (${failedPhases} phase(s) failed)` : ""
 	const gateLines = gates.map((g) => `  ${g.id} (${g.verdict}): ${g.rationale}`).join("\n")
@@ -658,7 +667,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: "propose_ferment_scoping",
 		label: "Propose Scoping",
-		description: `Emit the full scoping draft: goal, criteria, constraints, assumptions, 1-7 phases, questions, and gates. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; do not ask scoping questions in chat after calling this tool. Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
+		description: `Emit the full scoping draft: goal, criteria, constraints, assumptions, 1-7 phases, questions, and gates. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name text for the user-visible question sentence. Do not ask scoping questions in chat after calling this tool. Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,

@@ -305,7 +305,7 @@ describe("scopeFerment", () => {
 })
 
 describe("propose_ferment_scoping via registerLifecycleTools", () => {
-	it("normalizes question prompt aliases before runtime validation", async () => {
+	function createProposeHarness() {
 		const h = createHarness()
 		const tools = new Map<string, RegisteredTool>()
 		const pi = {
@@ -321,10 +321,16 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 
 		const tool = tools.get("propose_ferment_scoping")
 		if (!tool) throw new Error("propose_ferment_scoping not registered")
+		const execute = tool.execute as unknown as (
+			...args: unknown[]
+		) => Promise<{ content: { text: string }[]; isError?: boolean }>
+		return { h, execute }
+	}
 
-		const result = await (
-			tool.execute as unknown as (...args: unknown[]) => Promise<{ content: { text: string }[]; isError?: boolean }>
-		)(
+	it("normalizes question prompt aliases before runtime validation", async () => {
+		const { h, execute } = createProposeHarness()
+
+		const result = await execute(
 			"tool-call-1",
 			{
 				ferment_id: h.fermentId,
@@ -349,6 +355,66 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 
 		expect(errText(result)).toContain("Cannot ask scoping questions without an interactive UI")
 		expect(errText(result)).not.toContain("questions.0.text")
+	})
+
+	it("allows empty question text because the schema only requires a string", async () => {
+		const { h, execute } = createProposeHarness()
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [
+					{
+						id: "q1",
+						text: "",
+						options: [
+							{ id: "a", label: "A", recommended: true },
+							{ id: "b", label: "B" },
+						],
+					},
+				],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			{ ui: {} },
+		)
+
+		expect(errText(result)).toContain("Cannot ask scoping questions without an interactive UI")
+		expect(errText(result)).not.toContain("questions.0.text must be a string")
+	})
+
+	it("rejects mismatched text and prompt values to avoid ambiguous question text", async () => {
+		const { h, execute } = createProposeHarness()
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [
+					{
+						id: "q1",
+						text: "Canonical text?",
+						prompt: "Different prompt?",
+						options: [
+							{ id: "a", label: "A", recommended: true },
+							{ id: "b", label: "B" },
+						],
+					},
+				],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			{ ui: {} },
+		)
+
+		expect(errText(result)).toContain("must not set both text and prompt with different values")
 	})
 })
 
@@ -576,6 +642,30 @@ describe("completeFerment", () => {
 		expect(select).toHaveBeenCalled()
 		expect(errText(result)).toContain("user declined ungraded ship")
 		expect(h.storage.get(h.fermentId)?.status).toBe("abandoned")
+		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
+	})
+
+	it("interactive: judge unavailable + user cancels prompt → leaves ferment uncompleted", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: false,
+			reason: "empty_response",
+		})
+		const select = vi.fn(async () => undefined)
+		const piWithUi = { ...h.pi, getFlag: vi.fn(() => undefined) } as unknown as ExtensionAPI
+		const ctx = { ui: { select } }
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ pi: piWithUi, ctx },
+		)
+
+		expect(select).toHaveBeenCalled()
+		expect(errText(result)).toContain("user did not authorize ungraded ship")
+		expect(h.storage.get(h.fermentId)?.status).not.toBe("complete")
+		expect(h.storage.get(h.fermentId)?.status).not.toBe("abandoned")
 		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
 	})
 
