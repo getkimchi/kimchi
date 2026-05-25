@@ -522,7 +522,9 @@ export function createPromptFormComponent(
 			cachedWidth = 0
 		},
 		handleInput,
-	}
+		editor,
+		isEditorActive: () => state.inputMode,
+	} as Component & { editor: Input; isEditorActive: () => boolean }
 }
 
 function parseMultiChoiceInput(input: string, options: ReadonlyArray<PromptChoiceOption>): string[] {

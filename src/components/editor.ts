@@ -1,18 +1,18 @@
 import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent"
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent"
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui"
-import { Editor, isKittyProtocolActive, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { isKittyProtocolActive, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { wordWrapLine } from "@earendil-works/pi-tui/dist/components/editor.js"
 import { RST_FG } from "../ansi.js"
+import { stripAnsi } from "../utils/strip-ansi.js"
 
 const CHEVRON_WIDTH = 2
 const PLACEHOLDER_TEXT = "ask anything or type / for commands"
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: strip ANSI escapes
-const ANSI_RE = /\x1b\[[^m]*m/g
 const SCROLL_INDICATOR_RE = /^─── ([↑↓] \d+ more )/
 
 function rebuildBorder(baseLine: string, targetWidth: number, borderFn: (s: string) => string): string {
-	const raw = baseLine.replace(ANSI_RE, "")
+	const raw = stripAnsi(baseLine)
 	const match = raw.match(SCROLL_INDICATOR_RE)
 	if (match) {
 		const indicator = `─── ${match[1]}`
@@ -27,6 +27,11 @@ export class PromptEditor extends CustomEditor {
 	private expandHandler?: () => void
 	private _pendingImageIndicator: string | null = null
 	private _sessionIndicator: string | null = null
+	// ─── mouse click tracking ──────────────────────────────────────────
+	private _lastTopBorderPlain = ""
+	private _lastRenderHeight = 0
+	private _lastInnerWidth = 0
+	private _lastLayoutWidth = 0
 
 	/**
 	 * Computes the width available for the editor's content text when a
@@ -123,7 +128,7 @@ export class PromptEditor extends CustomEditor {
 		// Find bottom border: scan backwards for a line starting with ─
 		let bottomIdx = Math.min(2, lines.length - 1)
 		for (let i = lines.length - 1; i >= 2; i--) {
-			const stripped = lines[i].replace(ANSI_RE, "")
+			const stripped = stripAnsi(lines[i])
 			if (/^─/.test(stripped)) {
 				bottomIdx = i
 				break
@@ -187,6 +192,147 @@ export class PromptEditor extends CustomEditor {
 			result.push(lines[i])
 		}
 
+		// ─── Store metadata for mouse click handling ─────────────────────
+		this._lastTopBorderPlain = stripAnsi(topBorder)
+		this._lastRenderHeight = result.length
+		this._lastInnerWidth = innerWidth
+		// layoutWidth is what super.render() uses for wrapping.
+		// Upstream paddingX defaults to 0, so:
+		//   contentWidth = contentRenderWidth
+		//   layoutWidth  = contentWidth - 1 = contentRenderWidth - 1
+		this._lastLayoutWidth = Math.max(1, contentRenderWidth - 1)
+
 		return result.map((line) => truncateToWidth(line, width))
+	}
+
+	// ═══════════════════════════════════════════════════════════════════
+	//  Mouse click → cursor positioning
+	// ═══════════════════════════════════════════════════════════════════
+
+	/**
+	 * Handle a mouse click inside the editor.
+	 *
+	 * @param screenX 1-indexed column (from SGR mouse report).
+	 * @param screenY 1-indexed row    (from SGR mouse report).
+	 * @returns `true` if the click was consumed (inside the editor).
+	 */
+	handleMouseClick(screenX: number, screenY: number): boolean {
+		const tui = (this as unknown as { tui: TUI }).tui
+		const prevLines: string[] | undefined = (tui as unknown as { previousLines?: string[] }).previousLines
+		const prevViewportTop: number = (tui as unknown as { previousViewportTop?: number }).previousViewportTop ?? 0
+		if (!prevLines || prevLines.length === 0) {
+			return false
+		}
+
+		// Convert screen Y to absolute index in previousLines.
+		const clickAbsRow = prevViewportTop + screenY - 1
+		if (clickAbsRow < 0 || clickAbsRow >= prevLines.length) {
+			return false
+		}
+
+		// Find our top border by matching the plain-text signature we stored
+		// during the last render().  We search backwards from the click because
+		// the editor is usually near the bottom.  Multiple borders can share the
+		// same plain text (LogoHeader, tool blocks, etc.), so we verify that the
+		// candidate's height range actually contains the click before accepting.
+		let editorTopRow = -1
+		for (let i = Math.min(clickAbsRow, prevLines.length - 1); i >= 0; i--) {
+			if (stripAnsi(prevLines[i]) === this._lastTopBorderPlain) {
+				const candidateBottom = i + this._lastRenderHeight - 1
+				if (clickAbsRow >= i && clickAbsRow <= candidateBottom) {
+					editorTopRow = i
+					break
+				}
+				// Wrong component — keep looking upward.
+			}
+		}
+		if (editorTopRow === -1) {
+			return false
+		}
+
+		const editorBottomRow = editorTopRow + this._lastRenderHeight - 1
+		if (clickAbsRow < editorTopRow || clickAbsRow > editorBottomRow) {
+			return false
+		}
+
+		// Click on borders: move cursor to start / end of content.
+		if (clickAbsRow === editorTopRow) {
+			this._setCursor(0, 0)
+			this.tui.requestRender()
+			return true
+		}
+		if (clickAbsRow === editorBottomRow) {
+			const lines = this.getLines()
+			const lastLine = lines.length > 0 ? lines[lines.length - 1] : ""
+			this._setCursor(lines.length - 1, [...lastLine].length)
+			this.tui.requestRender()
+			return true
+		}
+
+		// Content area click.
+		const contentRow = clickAbsRow - editorTopRow - 1 // 0-based inside visible content
+
+		// Account for vertical scroll inside the editor.
+		const scrollOffset = (this as unknown as { scrollOffset: number }).scrollOffset ?? 0
+		const layoutIdx = contentRow + scrollOffset
+		if (layoutIdx < 0) {
+			return false
+		}
+
+		// Reconstitute the full visual layout from logical lines using the same
+		// wrapping regime the Editor uses (wordWrapLine).
+		const editorLines = this.getLines()
+		const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+
+		let currentLayoutIdx = 0
+		const marginCols = CHEVRON_WIDTH // our "❯ " prefix
+		const targetCol = Math.max(0, screenX - 1 - marginCols)
+
+		for (let li = 0; li < editorLines.length; li++) {
+			const chunks = wordWrapLine(editorLines[li], this._lastLayoutWidth, [...segmenter.segment(editorLines[li])])
+			for (const chunk of chunks) {
+				if (currentLayoutIdx === layoutIdx) {
+					// Found the visual line that was clicked.  Map click column to
+					// character offset inside this chunk.
+					const colInChunk = this._graphemeOffsetAtCol(chunk.text, targetCol)
+					this._setCursor(li, chunk.startIndex + colInChunk)
+					this.tui.requestRender()
+					return true
+				}
+				currentLayoutIdx++
+			}
+		}
+
+		return false
+	}
+
+	/**
+	 * Given a plain text string and a target visual column, count how many
+	 * graphemes fit within that column using visibleWidth().
+	 *
+	 * The returned value is an offset into the original string (UTF-16 code
+	 * units), which is the format the Editor's cursor column field expects.
+	 */
+	private _graphemeOffsetAtCol(text: string, targetCol: number): number {
+		if (text.length === 0 || targetCol <= 0) return 0
+		const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+		let col = 0
+		let offset = 0
+		for (const g of seg.segment(text)) {
+			const w = visibleWidth(g.segment)
+			if (col + w > targetCol) break
+			col += w
+			offset += g.segment.length
+		}
+		return offset
+	}
+
+	private _setCursor(line: number, col: number) {
+		const state = (this as unknown as { state: { cursorLine: number; cursorCol: number; lines: string[] } }).state
+		const maxLine = Math.max(0, state.lines.length - 1)
+		state.cursorLine = Math.max(0, Math.min(line, maxLine))
+		const lineText = state.lines[state.cursorLine] ?? ""
+		const maxCol = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(lineText)].length
+		state.cursorCol = Math.max(0, Math.min(col, maxCol))
 	}
 }

@@ -5,14 +5,26 @@ import { join, resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
-import { Box, Text } from "@earendil-works/pi-tui"
-import { Key, isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
+import { copyToClipboard } from "@earendil-works/pi-coding-agent"
+import { Box, Key, Text, isKeyRelease, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
 import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } from "../components/footer.js"
 import { LogoHeader } from "../components/logo.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
+import {
+	createClickDetector,
+	disableMouseMode,
+	enableMouseMode,
+	isMouseEvent,
+	onMouseDown,
+	onMouseMotion,
+	onMouseUp,
+	parseSgrMouse,
+} from "../utils/mouse.js"
+import { extractSelectionText } from "../utils/selection.js"
+import { stripAnsi } from "../utils/strip-ansi.js"
 import { isBareExitAlias } from "./exit-utils.js"
 import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
@@ -25,6 +37,7 @@ import {
 	getOrchestratorModelRef,
 	setMultiModelEnabled,
 } from "./prompt-construction/prompt-enrichment.js"
+import { setSelectionStatus } from "./selection-status.js"
 import {
 	isSessionModeOnboardingFooterSuppressed,
 	registerSharedFooterRenderer,
@@ -210,6 +223,11 @@ function runScript(scriptPath: string, payload: object, tui: TUI, footer: Script
 
 export default function uiExtension(pi: ExtensionAPI) {
 	let unsubModelCycleInput: (() => void) | null = null
+	let unsubMouseInput: (() => void) | null = null
+	let mouseClickDetector = createClickDetector()
+	let selectionStart: { x: number; y: number } | null = null
+	let selectionEnd: { x: number; y: number } | null = null
+	let copiedTimeout: ReturnType<typeof setTimeout> | null = null
 	let scriptFooter: ScriptFooter | null = null
 	let scriptTui: TUI | null = null
 	let uiTui: TUI | null = null
@@ -243,6 +261,258 @@ export default function uiExtension(pi: ExtensionAPI) {
 		)
 	}
 
+	// ── Mouse-click helpers for upstream Input / Editor components ──
+
+	/** Duck-type check for an upstream pi-tui {@link Input} instance. */
+	function isInputLike(
+		obj: unknown,
+	): obj is { value: string; cursor: number; render: (w: number) => string[]; tui?: TUI } {
+		const o = obj as Record<string, unknown>
+		return typeof o?.value === "string" && typeof o?.cursor === "number" && typeof o?.render === "function"
+	}
+
+	/** Internal state shape of the upstream pi-tui {@link Editor}. */
+	interface EditorState {
+		lines: string[]
+		cursorLine: number
+		cursorCol: number
+	}
+
+	type EditorLike = {
+		state: EditorState
+		setCursorCol: (col: number) => void
+		lastWidth: number
+		paddingX: number
+		scrollOffset: number
+		render: (w: number) => string[]
+		buildVisualLineMap: (width: number) => Array<{ logicalLine: number; startCol: number; length: number }>
+		tui?: TUI
+	}
+
+	/** Duck-type check for an upstream pi-tui {@link Editor} instance
+	 *  (multi-line editor, as opposed to the single-line {@link Input}). */
+	function isEditorLike(obj: unknown): obj is EditorLike {
+		const o = obj as Record<string, unknown>
+		const state = o?.state as Record<string, unknown> | undefined
+		return (
+			Array.isArray(state?.lines) &&
+			typeof state?.cursorLine === "number" &&
+			typeof o?.setCursorCol === "function" &&
+			typeof o?.buildVisualLineMap === "function" &&
+			typeof o?.render === "function"
+		)
+	}
+
+	/** Recursively look for an {@link Input} child inside a component tree.
+	 *  Respects `isEditorActive()` on form components — returns `null` when
+	 *  the Input exists but isn't currently rendered / accepting keystrokes
+	 *  (e.g. the questionnaire is showing radio options, not the text editor). */
+	function findInputChild(component: unknown): unknown {
+		if (!component) return null
+		if (isInputLike(component)) return component
+		const o = component as Record<string, unknown>
+		if (isInputLike(o.searchInput)) return o.searchInput
+		if (isInputLike(o.editor)) {
+			// Form components expose isEditorActive() to signal whether the
+			// embedded Input is currently visible.  Skip the Input when it's
+			// hidden to avoid false-matching "> " option-selection arrows.
+			if (typeof o.isEditorActive === "function" && !(o.isEditorActive as () => boolean)()) {
+				return null
+			}
+			return o.editor
+		}
+		if (isInputLike(o.input)) return o.input
+		if (isInputLike(o.renameInput)) return o.renameInput
+		if (Array.isArray(o.children)) {
+			for (const child of o.children) {
+				const found = findInputChild(child)
+				if (found) return found
+			}
+		}
+		return null
+	}
+
+	/** Recursively look for a multi-line {@link Editor} child inside a
+	 *  component tree. Checked after {@link findInputChild} fails so that
+	 *  components like `ExtensionEditorComponent` (ferment text editor)
+	 *  can support mouse-click cursor positioning. */
+	function findEditorChild(component: unknown): unknown {
+		if (!component) return null
+		if (isEditorLike(component)) return component
+		const o = component as Record<string, unknown>
+		// ExtensionEditorComponent stores the Editor as a private field
+		// named `editor`.  It won't pass isInputLike (no .value/.cursor
+		// at the top level) but it will pass isEditorLike.
+		if (isEditorLike(o.editor)) return o.editor
+		if (Array.isArray(o.children)) {
+			for (const child of o.children) {
+				const found = findEditorChild(child)
+				if (found) return found
+			}
+		}
+		return null
+	}
+
+	/**
+	 * Attempt to handle a mouse click on an {@link Input} component.
+	 *
+	 * Searches {@link prevLines} near the click coordinate for a rendered line
+	 * that contains the {@code "> "} prompt.  When found, the click column is
+	 * mapped to a cursor position inside {@link input.value} and the Input is
+	 * re-rendered.
+	 */
+	function tryHandleInputClick(
+		input: { value: string; cursor: number; tui?: TUI },
+		click: { x: number; y: number },
+		prevLines: string[],
+		prevViewportTop: number,
+	): boolean {
+		const clickAbsRow = prevViewportTop + click.y - 1
+		if (clickAbsRow < 0 || clickAbsRow >= prevLines.length) {
+			return false
+		}
+
+		const INPUT_PROMPT = "> "
+		let inputRow = -1
+		let promptCol = -1
+
+		// Search backwards from the click row for a line containing the prompt.
+		for (let i = Math.min(clickAbsRow, prevLines.length - 1); i >= 0; i--) {
+			const plain = stripAnsi(prevLines[i])
+			const idx = plain.indexOf(INPUT_PROMPT)
+			if (idx !== -1) {
+				// Make sure the line doesn't look like a border (heuristic).
+				if (!plain.startsWith("─")) {
+					inputRow = i
+					promptCol = idx
+					break
+				}
+			}
+		}
+
+		if (inputRow === -1 || promptCol === -1) {
+			return false
+		}
+
+		// Verify the click row is on or below the found prompt line.
+		if (clickAbsRow !== inputRow) {
+			return false
+		}
+
+		// NOTE: INPUT_PROMPT ("> ") is hardcoded to match the default prompt
+		// that upstream pi-tui {@link Input} renders.  If the upstream prompt
+		// changes, click positioning inside Inputs may break.
+		const textStartCol = promptCol + INPUT_PROMPT.length
+		const targetCol = Math.max(0, click.x - 1 - textStartCol)
+		const maxCursor = input.value.length
+		input.cursor = Math.min(targetCol, maxCursor)
+		return true
+	}
+
+	/**
+	 * Attempt to handle a mouse click on an upstream pi-tui {@link Editor}
+	 * component (multi-line).
+	 *
+	 * Re-renders the editor to derive its visual layout, then searches
+	 * {@link prevLines} for a matching sequence so the click row can be mapped
+	 * to a logical line and byte offset.
+	 */
+	function tryHandleEditorClick(
+		editor: EditorLike,
+		click: { x: number; y: number },
+		prevLines: string[],
+		prevViewportTop: number,
+		displayWidth: number,
+	): boolean {
+		const clickAbsRow = prevViewportTop + click.y - 1
+		if (clickAbsRow < 0 || clickAbsRow >= prevLines.length) {
+			return false
+		}
+
+		// Render the editor using its current state so the output matches
+		// what is (or was recently) in prevLines.
+		const editorLines = editor.render(displayWidth)
+		if (!editorLines || editorLines.length === 0) {
+			return false
+		}
+
+		const expected = editorLines.map(stripAnsi)
+		const topBorder = expected[0]
+
+		// Search closest to the click row for the editor's top border,
+		// then verify the full sequence matches.
+		let startRow = -1
+		const maxDistance = Math.max(clickAbsRow, prevLines.length - clickAbsRow)
+		for (let distance = 0; distance <= maxDistance; distance++) {
+			const candidates: number[] = []
+			if (clickAbsRow - distance >= 0) candidates.push(clickAbsRow - distance)
+			if (distance > 0 && clickAbsRow + distance < prevLines.length) {
+				candidates.push(clickAbsRow + distance)
+			}
+			for (const i of candidates) {
+				if (stripAnsi(prevLines[i]) !== topBorder) continue
+				let match = true
+				for (let j = 1; j < expected.length; j++) {
+					if (i + j >= prevLines.length || stripAnsi(prevLines[i + j]) !== expected[j]) {
+						match = false
+						break
+					}
+				}
+				if (match) {
+					startRow = i
+					break
+				}
+			}
+			if (startRow !== -1) break
+		}
+
+		if (startRow === -1) {
+			return false
+		}
+
+		// Skip the editor's top border to get to content area.
+		const contentStart = startRow + 1
+		const contentEnd = startRow + expected.length - 2
+		if (clickAbsRow < contentStart || clickAbsRow > contentEnd) {
+			return false
+		}
+
+		// Map click row to a visual line index, accounting for scroll offset.
+		const visualIndex = clickAbsRow - contentStart + editor.scrollOffset
+		const visualMap = editor.buildVisualLineMap(editor.lastWidth)
+		if (visualIndex < 0 || visualIndex >= visualMap.length) {
+			return false
+		}
+
+		const vLine = visualMap[visualIndex]
+		const logicalLine = editor.state.lines[vLine.logicalLine] || ""
+		const text = logicalLine.slice(vLine.startCol, vLine.startCol + vLine.length)
+
+		// Convert click column (1-based) to a byte offset within the visual
+		// line segment, accounting for left padding.
+		const paddingX = editor.paddingX ?? 0
+		const targetCol = Math.max(0, click.x - 1 - paddingX)
+
+		// Walk graphemes to compute byte offset for the target column.
+		let byteOffsetInSegment = 0
+		let visible = 0
+		const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+		for (const segment of segmenter.segment(text)) {
+			const segWidth = visibleWidth(segment.segment)
+			if (visible + segWidth > targetCol) {
+				break
+			}
+			visible += segWidth
+			byteOffsetInSegment += segment.segment.length
+		}
+
+		const cursorCol = vLine.startCol + byteOffsetInSegment
+		editor.state.cursorLine = vLine.logicalLine
+		editor.setCursorCol(cursorCol)
+
+		return true
+	}
+
 	pi.on("session_start", (event, ctx) => {
 		setSessionModeOnboardingFooterSuppressed(false)
 		stopWorkingAnimation?.()
@@ -255,6 +525,11 @@ export default function uiExtension(pi: ExtensionAPI) {
 		linesRemoved = 0
 		scriptGeneration++
 		scriptPending = false
+
+		// Enable SGR mouse mode so the terminal reports click coordinates.
+		// Mode 1000 (basic button tracking) + 1006 (SGR coordinate format).
+		process.stdout.write(enableMouseMode())
+		mouseClickDetector = createClickDetector()
 
 		ctx.ui.setHeader((_tui, theme) => new LogoHeader(theme))
 		ctx.ui.setFooter((tui, theme, footerData) => {
@@ -505,12 +780,152 @@ export default function uiExtension(pi: ExtensionAPI) {
 				return undefined
 			})
 		}
+		// Mouse click → cursor positioning for prompt editor.
+		if (unsubMouseInput) unsubMouseInput()
+		if (ctx.hasUI) {
+			unsubMouseInput = ctx.ui.onTerminalInput((data) => {
+				if (!isMouseEvent(data)) return undefined
+				const event = parseSgrMouse(data)
+				if (!event) return { consume: true }
+				// Ignore scroll events.
+				if (event.isScroll) return { consume: true }
+				// Track motion while a button is held (mode 1002) for drag-to-select.
+				if (event.isMotion) {
+					// Only track motion events that carry a button (raw 32/33/34).
+					if (event.isPress) {
+						mouseClickDetector = onMouseMotion(mouseClickDetector, event)
+						selectionEnd = { x: event.x, y: event.y }
+						if (selectionStart) {
+							setSelectionStatus(`Selecting (${selectionStart.x},${selectionStart.y}) → (${event.x},${event.y})`)
+							uiTui?.requestRender()
+						}
+					}
+					return { consume: true }
+				}
+				// Only left button press (0) or release (0 or 3).
+				if (event.button !== 0 && event.button !== 3) return { consume: true }
+				if (event.isPress) {
+					mouseClickDetector = onMouseDown(mouseClickDetector, event)
+					selectionStart = { x: event.x, y: event.y }
+					selectionEnd = null
+					if (copiedTimeout) {
+						clearTimeout(copiedTimeout)
+						copiedTimeout = null
+						setSelectionStatus(null)
+					}
+					return { consume: true }
+				}
+				// Release — check whether this is a click or a drag.
+				const clickResult = onMouseUp(mouseClickDetector, event)
+				if (clickResult.isClick && clickResult.click) {
+					const click = clickResult.click
+					const focused = (uiTui as unknown as { focusedComponent?: unknown }).focusedComponent
+					if (currentEditor && focused === currentEditor) {
+						const handled = currentEditor.handleMouseClick(click.x, click.y)
+						if (handled) {
+							setSelectionStatus(null)
+							uiTui?.requestRender()
+							return { consume: true }
+						}
+					}
+					if (focused && focused !== currentEditor) {
+						const input = findInputChild(focused)
+						if (input && isInputLike(input)) {
+							const prevLines: string[] | undefined = (uiTui as unknown as { previousLines?: string[] }).previousLines
+							const prevViewportTop: number =
+								(uiTui as unknown as { previousViewportTop?: number }).previousViewportTop ?? 0
+							if (prevLines && prevLines.length > 0) {
+								const handled = tryHandleInputClick(input, click, prevLines, prevViewportTop)
+								if (handled) {
+									// Invalidate the parent component's render cache so
+									// the updated cursor position is reflected on screen.
+									const focusedComp = focused as { invalidate?: () => void }
+									focusedComp.invalidate?.()
+									setSelectionStatus(null)
+									uiTui?.requestRender()
+									return { consume: true }
+								}
+							}
+						} else {
+							const editor = findEditorChild(focused)
+							if (editor && isEditorLike(editor)) {
+								const paddingX = editor.paddingX ?? 0
+								// layoutWidth = displayWidth - paddingX*2 - (paddingX>0?0:1),
+								// so reverse: displayWidth = lastWidth + paddingX*2 + (paddingX>0?0:1)
+								const displayWidth = editor.lastWidth + paddingX * 2 + (paddingX > 0 ? 0 : 1)
+								const prevLines: string[] | undefined = (uiTui as unknown as { previousLines?: string[] }).previousLines
+								const prevViewportTop: number =
+									(uiTui as unknown as { previousViewportTop?: number }).previousViewportTop ?? 0
+								if (prevLines && prevLines.length > 0) {
+									const handled = tryHandleEditorClick(editor, click, prevLines, prevViewportTop, displayWidth)
+									if (handled) {
+										const focusedComp = focused as { invalidate?: () => void }
+										focusedComp.invalidate?.()
+										setSelectionStatus(null)
+										editor.tui?.requestRender()
+										return { consume: true }
+									}
+								}
+							}
+						}
+					}
+					setSelectionStatus(null)
+					uiTui?.requestRender()
+					return { consume: true }
+				}
+				if (mouseClickDetector.sawMotion && selectionStart) {
+					// Drag-to-select: extract text and copy to clipboard.
+					const end = selectionEnd ?? { x: event.x, y: event.y }
+					const prevLines: string[] | undefined = (uiTui as unknown as { previousLines?: string[] }).previousLines
+					if (prevLines && prevLines.length > 0) {
+						// Mouse Y coordinates are screen-relative (1-indexed), but prevLines
+						// is the full render buffer. Offset Y by the viewport scroll position
+						// so extractSelectionText indexes the correct rows.
+						const prevViewportTop: number =
+							(uiTui as unknown as { previousViewportTop?: number }).previousViewportTop ?? 0
+						const adjustedStart = { x: selectionStart.x, y: selectionStart.y + prevViewportTop }
+						const adjustedEnd = { x: end.x, y: end.y + prevViewportTop }
+						const text = extractSelectionText(prevLines, adjustedStart, adjustedEnd)
+						if (text) {
+							copyToClipboard(text).catch((err: unknown) => {
+								console.error("[mouse] copy failed:", err)
+							})
+							setSelectionStatus(`Copied ${text.length} characters`)
+							uiTui?.requestRender()
+							copiedTimeout = setTimeout(() => {
+								setSelectionStatus(null)
+								uiTui?.requestRender()
+								copiedTimeout = null
+							}, 3000)
+						}
+					}
+					selectionStart = null
+					selectionEnd = null
+					return { consume: true }
+				}
+				selectionStart = null
+				selectionEnd = null
+				setSelectionStatus(null)
+				uiTui?.requestRender()
+				return { consume: true }
+			})
+		}
 	})
 
 	pi.on("session_shutdown", () => {
+		if (copiedTimeout) {
+			clearTimeout(copiedTimeout)
+			copiedTimeout = null
+		}
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
 		currentCtx = null
+		// Disable mouse mode so the terminal restores native selection.
+		process.stdout.write(disableMouseMode())
+		if (unsubMouseInput) {
+			unsubMouseInput()
+			unsubMouseInput = null
+		}
 	})
 
 	pi.on("input", (event, ctx) => {
