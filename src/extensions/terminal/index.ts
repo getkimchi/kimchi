@@ -1,0 +1,78 @@
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent"
+import { TerminalComponent } from "./terminal-component.js"
+import { SshSession } from "./ssh-session.js"
+import { parseTerminalArgs } from "./args.js"
+
+export default function terminalExtension(pi: ExtensionAPI): void {
+	pi.registerCommand("terminal", {
+		description: "Open an SSH terminal overlay. Usage: /terminal [user@]host[:port]",
+		handler: async (
+			args: string,
+			ctx: ExtensionCommandContext,
+		): Promise<void> => {
+			const raw = args.trim()
+			let parsed
+			try {
+				parsed = parseTerminalArgs(raw)
+			} catch (e) {
+				ctx.ui.notify(String(e), "error")
+				return
+			}
+
+			const session = new SshSession()
+			let component: TerminalComponent | undefined
+
+			ctx.ui.custom(
+				async (tui, _theme, _kb, done) => {
+					component = new TerminalComponent(tui, session)
+
+					try {
+						await session.connect(parsed, {
+							onData: (data) => {
+								component!.terminal.feed(data)
+								tui.requestRender()
+							},
+							onError: (err) => {
+								component!.terminal.feed(
+									Buffer.from(`\r\nSSH error: ${err.message}\r\n`, "utf-8"),
+								)
+								tui.requestRender()
+							},
+							onClose: () => {
+								done(undefined)
+							},
+						})
+					} catch (err) {
+						component.terminal.feed(
+							Buffer.from(
+								`\r\nConnection failed: ${(err as Error).message}\r\n`,
+								"utf-8",
+							),
+						)
+						tui.requestRender()
+						// Auto-dismiss after a short delay so user sees the error
+						setTimeout(() => done(undefined), 3000)
+						// Return component so overlay still shows during delay
+						return component
+					}
+
+					tui.setShowHardwareCursor(true)
+					return component
+				},
+				{
+					overlay: true,
+					overlayOptions: {
+						anchor: "top-left",
+						width: "100%",
+						maxHeight: "100%",
+					},
+				},
+			).catch(() => {
+				// dismissed
+			})
+		},
+	})
+}

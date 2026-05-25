@@ -49,6 +49,7 @@ import stripImagesExtension from "./extensions/strip-images.js"
 import tagsExtension from "./extensions/tags.js"
 import telemetryExtension from "./extensions/telemetry.js"
 import terminalColorsExtension from "./extensions/terminal-colors.js"
+import terminalExtension from "./extensions/terminal/index.js"
 import { probeKittyKeyboardSupport } from "./extensions/terminal-compat/keyboard-capability.js"
 import { emitTerminalCompatWarning } from "./extensions/terminal-compat/startup-warning.js"
 import thinkingStepsExtension from "./extensions/thinking-steps/index.js"
@@ -495,6 +496,7 @@ try {
 				{ id: "extensions.agents", factory: agentsExtension },
 			] satisfies ManagedExtensionFactory[]),
 			tagsExtension,
+			terminalExtension,
 			telemetryExtension(telemetryConfig),
 			toolRenderingExtension,
 			toolGroupingExtension,

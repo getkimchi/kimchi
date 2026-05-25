@@ -56,7 +56,7 @@ const targetFlag = crossTarget ? ` --target=${crossTarget}` : ""
 generateApiKeyFile()
 run(
 	"compile",
-	`bun build src/entry.ts --compile${targetFlag} --outfile dist/bin/kimchi --external chromium-bidi --external electron`.trim(),
+	`bun build src/entry.ts --compile${targetFlag} --outfile dist/bin/kimchi --external chromium-bidi --external electron --external cpu-features`.trim(),
 )
 
 // Bun --compile produces binaries with an invalid code signature on macOS.
