@@ -25,6 +25,7 @@ import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
+import { setTipWidgetLocation } from "../tips/index.js"
 import { AgentManager } from "./manager/agent-manager.js"
 import {
 	getAgentConversation,
@@ -411,6 +412,11 @@ function buildNotificationDetails(
 let activeManager: AgentManager | undefined
 let budgetRetryBlock: BudgetRetryBlock | undefined
 const budgetRetryCandidates = new Map<string, BudgetRetryCandidate>()
+const agentFooterState = { visible: false }
+
+export function isAgentFooterVisible(): boolean {
+	return agentFooterState.visible
+}
 
 function blockBudgetRetryIfNeeded(record: AgentRecord, candidate: BudgetRetryCandidate | undefined): void {
 	const block = createBudgetRetryBlockFromCompletion(candidate, record)
@@ -721,7 +727,12 @@ export default function (pi: ExtensionAPI) {
 
 	pi.events.emit("subagents:ready", {})
 
+	let restoreTips: (() => void) | undefined
+
 	pi.on("session_shutdown", async () => {
+		restoreTips?.()
+		restoreTips = undefined
+		agentFooterState.visible = false
 		manager.abortAll()
 		budgetRetryCandidates.clear()
 		for (const timer of pendingNudges.values()) clearTimeout(timer)
@@ -730,6 +741,15 @@ export default function (pi: ExtensionAPI) {
 	})
 
 	const widget = new AgentWidget(manager, agentActivity)
+	widget.onFooterVisibilityChange = (visible) => {
+		agentFooterState.visible = visible
+		if (visible) {
+			restoreTips ??= setTipWidgetLocation("hidden")
+		} else {
+			restoreTips?.()
+			restoreTips = undefined
+		}
+	}
 	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
 
 	let defaultJoinMode: JoinMode = "smart"

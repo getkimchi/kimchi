@@ -35,6 +35,7 @@ import {
 import * as Diff from "diff"
 import { getBashCommandForDisplay } from "./bash-collapse.js"
 import type { BundledLanguage, BundledTheme } from "shiki"
+import { isAgentFooterVisible } from "./agents/index.js"
 
 const RESET = "\x1b[0m"
 const TRANSPARENT_BG = "\x1b[49m"
@@ -2544,6 +2545,7 @@ function genericToolLabel(name: string): string {
 }
 
 function renderGenericToolCall(name: string, args: any, theme: Theme, ctx: any): Text {
+	if (name === "Agent" && ctx.isPartial && isAgentFooterVisible()) return makeText(ctx.lastComponent, "")
 	ctx.state._openAiPatchFiles = []
 	const sp = (path: string) => shortPath(ctx.cwd ?? process.cwd(), path)
 	const summary = stableCallSummary(ctx, "_callSummary", () => summarizeGenericToolCall(name, args, theme, sp))
