@@ -192,4 +192,5 @@ register({
 	binaryName: "claude",
 	isInstalled: detectBinaryFactory("claude"),
 	write: writeClaudeCode,
+	interactiveWrite: true,
 })
