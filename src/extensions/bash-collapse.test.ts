@@ -7,10 +7,43 @@ import {
 	collapseCommand,
 	detectRtk,
 	getBashCommandForDisplay,
+	isRtkPassthrough,
 	rewritePreparedBashCommand,
 	rewriteWithRtk,
 	rtkSpawnHook,
 } from "./bash-collapse.js"
+
+// ---------------------------------------------------------------------------
+// isRtkPassthrough
+// ---------------------------------------------------------------------------
+
+describe("isRtkPassthrough", () => {
+	it.each([
+		"pnpm run lint",
+		"npm run lint",
+		"yarn run build",
+		"bun run test",
+		"pnpm run lint --fix",
+		"npm run lint:fix",
+		"npx eslint .",
+		"pnpm exec eslint .",
+		"bunx tsx script.ts",
+		"  pnpm run lint", // leading whitespace
+	])("returns true for %s", (cmd) => {
+		expect(isRtkPassthrough(cmd)).toBe(true)
+	})
+
+	it.each([
+		"git status",
+		"cargo test",
+		"pnpm install",
+		"npm install",
+		"pnpm add react",
+		"echo pnpm run lint", // pnpm run not at start
+	])("returns false for %s", (cmd) => {
+		expect(isRtkPassthrough(cmd)).toBe(false)
+	})
+})
 
 // ---------------------------------------------------------------------------
 // collapseCommand
@@ -179,6 +212,16 @@ describe("rewriteWithRtk", () => {
 
 		mockExecFileSync.mockReturnValueOnce("rtk git status\n")
 		expect(rewriteWithRtk("git status")).toBe("rtk git status")
+	})
+
+	it("does not call rtk for package-manager script invocations", async () => {
+		seedRtkAvailable()
+		await detectRtk()
+
+		expect(rewriteWithRtk("pnpm run lint")).toBe("pnpm run lint")
+		expect(rewriteWithRtk("npm run build")).toBe("npm run build")
+		expect(rewriteWithRtk("npx eslint .")).toBe("npx eslint .")
+		expect(mockExecFileSync).not.toHaveBeenCalled()
 	})
 
 	it("returns the original command when rtk output matches the input", async () => {

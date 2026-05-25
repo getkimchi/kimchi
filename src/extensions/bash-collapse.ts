@@ -68,16 +68,34 @@ export function detectRtk(): Promise<boolean> {
 }
 
 /**
+ * Package-manager script invocations that RTK must not rewrite.
+ *
+ * RTK maps `pnpm run lint` → `rtk lint` (its own lint subcommand) and
+ * similarly mangles other `<pm> run <script>` forms.  These commands must
+ * reach the package manager unchanged.
+ */
+const RTK_PASSTHROUGH_RE = /^\s*(pnpm|npm|yarn|bun)\s+run\b|^\s*(npx|bunx)\s|^\s*pnpm\s+exec\s/
+
+/**
+ * Returns true for commands that must bypass RTK rewriting entirely.
+ */
+export function isRtkPassthrough(command: string): boolean {
+	return RTK_PASSTHROUGH_RE.test(command)
+}
+
+/**
  * Synchronously ask `rtk rewrite` to compress / rewrite a command string.
  * Used as a pi-mono BashSpawnHook (which must be synchronous).
  *
  * Returns the original command unchanged when:
  *   - rtk is not available or hooks.rtk-rewrite is disabled
+ *   - the command is a package-manager script invocation (passthrough)
  *   - rtk returns empty output or the same string
  *   - the subprocess times out or fails to spawn
  */
 export function rewriteWithRtk(command: string): string {
 	if (isRtkDisabled()) return command
+	if (isRtkPassthrough(command)) return command
 	if (rtkAvailable === false && rtkBinary() === "rtk") return command
 
 	try {
