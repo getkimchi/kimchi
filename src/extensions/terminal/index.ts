@@ -6,6 +6,8 @@ import type { TUI } from "@earendil-works/pi-tui"
 import { TerminalComponent } from "./terminal-component.js"
 import { SshSession } from "./ssh-session.js"
 import { parseTerminalArgs } from "./args.js"
+import fs from 'node:fs'
+import { sleep } from "../../modes/teleport/index.js"
 
 export default function terminalExtension(pi: ExtensionAPI): void {
   pi.registerCommand("terminal", {
@@ -35,37 +37,25 @@ export default function terminalExtension(pi: ExtensionAPI): void {
           component!.terminal.write(`Connecting to ${parsed.host}...\r\n`)
           tui.requestRender()
 
-          try {
-            await session.connect(parsed, {
-              onData: (data) => {
-                component!.terminal.write(data)
-                tui.requestRender()
-              },
-              onStderr: (data) => {
-                component!.terminal.write(data)
-                tui.requestRender()
-              },
-              onError: (err) => {
-                component!.terminal.write(
-                  `\r\nSSH error: ${err.message}\r\n`,
-                )
-                tui.requestRender()
-              },
-              onClose: () => {
-                done(undefined)
-              },
-            })
-          } catch (err) {
+          session.connect(parsed, {
+            onData: (data) => {
+              component!.terminal.write(data)
+              tui.requestRender()
+            },
+            onStderr: (data) => {
+              component!.terminal.write(data)
+              tui.requestRender()
+            },
+            onError: (err) => {
+              ctx.ui.notify(`Connenction error: ${(err as Error).message}`, "error")
+              tui.requestRender()
+            },
+            onClose: () => {
+              done(undefined)
+            },
+          }).catch((err) => {
             ctx.ui.notify(`Connection failed: ${(err as Error).message}`, "error")
-            // component.terminal.write(
-            // 	`\r\nConnection failed: ${(err as Error).message}\r\n`,
-            // )
-            // tui.requestRender()
-            // Auto-dismiss after a short delay so user sees the error
-            // setTimeout(() => done(undefined), 3000)
-            // Return component so overlay still shows during delay
-            return component
-          }
+          })
 
           tui.setShowHardwareCursor(true)
           return component
@@ -79,8 +69,7 @@ export default function terminalExtension(pi: ExtensionAPI): void {
           },
         },
       ).catch((err) => {
-        console.log(err)
-        // dismissed
+        ctx.ui.notify(`Error: ${(err as Error).message}`, "error")
       }).finally(() => {
         overlayTui?.setShowHardwareCursor(false)
         session.close()
