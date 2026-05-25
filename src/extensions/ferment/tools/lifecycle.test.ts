@@ -327,7 +327,37 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		return { h, execute }
 	}
 
-	it("normalizes question prompt aliases before runtime validation", async () => {
+	it("normalizes canonical question fields before runtime validation", async () => {
+		const { h, execute } = createProposeHarness()
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [
+					{
+						id: "q1",
+						question: "Which path?",
+						options: [
+							{ id: "a", label: "A", recommended: true },
+							{ id: "b", label: "B" },
+						],
+					},
+				],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			{ ui: {} },
+		)
+
+		expect(errText(result)).toContain("Cannot ask scoping questions without an interactive UI")
+		expect(errText(result)).not.toContain("questions.0.question")
+	})
+
+	it("rejects prompt because question is the only public question text field", async () => {
 		const { h, execute } = createProposeHarness()
 
 		const result = await execute(
@@ -353,11 +383,10 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			{ ui: {} },
 		)
 
-		expect(errText(result)).toContain("Cannot ask scoping questions without an interactive UI")
-		expect(errText(result)).not.toContain("questions.0.text")
+		expect(errText(result)).toContain("questions.0.question must be a string")
 	})
 
-	it("allows empty question text because the schema only requires a string", async () => {
+	it("allows empty question because the schema only requires a string", async () => {
 		const { h, execute } = createProposeHarness()
 
 		const result = await execute(
@@ -369,7 +398,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 				questions: [
 					{
 						id: "q1",
-						text: "",
+						question: "",
 						options: [
 							{ id: "a", label: "A", recommended: true },
 							{ id: "b", label: "B" },
@@ -384,10 +413,10 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		)
 
 		expect(errText(result)).toContain("Cannot ask scoping questions without an interactive UI")
-		expect(errText(result)).not.toContain("questions.0.text must be a string")
+		expect(errText(result)).not.toContain("questions.0.question must be a string")
 	})
 
-	it("rejects mismatched text and prompt values to avoid ambiguous question text", async () => {
+	it("rejects text because question is the only public question text field", async () => {
 		const { h, execute } = createProposeHarness()
 
 		const result = await execute(
@@ -399,8 +428,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 				questions: [
 					{
 						id: "q1",
-						text: "Canonical text?",
-						prompt: "Different prompt?",
+						text: "Legacy text?",
 						options: [
 							{ id: "a", label: "A", recommended: true },
 							{ id: "b", label: "B" },
@@ -414,7 +442,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			{ ui: {} },
 		)
 
-		expect(errText(result)).toContain("must not set both text and prompt with different values")
+		expect(errText(result)).toContain("questions.0.question must be a string")
 	})
 })
 

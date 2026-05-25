@@ -29,7 +29,7 @@ describe("ProposeScopingParams schema", () => {
 			questions: [
 				{
 					id: "q1",
-					text: "Which OAuth provider first?",
+					question: "Which OAuth provider first?",
 					options: [
 						{ id: "google", label: "Google", recommended: true },
 						{ id: "github", label: "GitHub" },
@@ -51,7 +51,7 @@ describe("ProposeScopingParams schema", () => {
 				{
 					id: "ship",
 					type: "radio",
-					text: "Ship this as a yes/no decision?",
+					question: "Ship this as a yes/no decision?",
 					options: [
 						{ id: "yes", label: "Yes", recommended: true },
 						{ id: "no", label: "No" },
@@ -60,7 +60,7 @@ describe("ProposeScopingParams schema", () => {
 				{
 					id: "surfaces",
 					type: "checkbox",
-					text: "Which surfaces must be included?",
+					question: "Which surfaces must be included?",
 					options: [
 						{ id: "cli", label: "CLI" },
 						{ id: "docs", label: "Docs" },
@@ -69,7 +69,7 @@ describe("ProposeScopingParams schema", () => {
 				{
 					id: "acceptance",
 					type: "text",
-					text: "What exact acceptance phrase should be used?",
+					question: "What exact acceptance phrase should be used?",
 				},
 			],
 			gates: passingGates(),
@@ -97,7 +97,7 @@ describe("ProposeScopingParams schema", () => {
 			questions: JSON.stringify([
 				{
 					id: "q1",
-					text: "Which first?",
+					question: "Which first?",
 					options: [
 						{ id: "a", label: "A", recommended: true },
 						{ id: "b", label: "B" },
@@ -130,7 +130,7 @@ describe("ProposeScopingParams schema", () => {
 			questions: [
 				{
 					id: "q1",
-					text: "Only one option?",
+					question: "Only one option?",
 					options: [{ id: "a", label: "Only option" }],
 				},
 			],
@@ -148,7 +148,7 @@ describe("ProposeScopingParams schema", () => {
 			questions: [
 				{
 					id: "q1",
-					text: "No options?",
+					question: "No options?",
 					options: [],
 				},
 			],
@@ -158,7 +158,28 @@ describe("ProposeScopingParams schema", () => {
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 
-	it("accepts prompt alias at the schema boundary", () => {
+	it("accepts question as the canonical schema field", () => {
+		const payload = {
+			ferment_id: "f-123",
+			goal: "Do something",
+			phases: minimalPhases(),
+			questions: [
+				{
+					id: "q1",
+					question: "Which path?",
+					options: [
+						{ id: "a", label: "A" },
+						{ id: "b", label: "B" },
+					],
+				},
+			],
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
+	})
+
+	it("rejects prompt at the schema boundary", () => {
 		const payload = {
 			ferment_id: "f-123",
 			goal: "Do something",
@@ -176,13 +197,13 @@ describe("ProposeScopingParams schema", () => {
 			gates: passingGates(),
 		}
 
-		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
 	})
 
 	it("allows more than 3 questions through schema so runtime can return a focused validation error", () => {
 		const question = (id: string) => ({
 			id,
-			text: `Question ${id}`,
+			question: `Question ${id}`,
 			options: [
 				{ id: "a", label: "A" },
 				{ id: "b", label: "B" },
@@ -236,7 +257,7 @@ describe("ProposeScopingParams schema", () => {
 			questions: [
 				{
 					id: "q1",
-					text: "Too many choices?",
+					question: "Too many choices?",
 					options: [
 						{ id: "a", label: "A" },
 						{ id: "b", label: "B" },

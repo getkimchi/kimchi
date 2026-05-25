@@ -258,15 +258,8 @@ function normalizeQuestions(value: ProposeScopingArgs["questions"]): ScopingQues
 		if (!raw || typeof raw !== "object") return `questions.${questionIndex} must be an object.`
 		const q = raw as Record<string, unknown>
 		if (typeof q.id !== "string") return `questions.${questionIndex}.id must be a string.`
-		const hasText = Object.hasOwn(q, "text")
-		const hasPrompt = Object.hasOwn(q, "prompt")
-		if (hasText && typeof q.text !== "string") return `questions.${questionIndex}.text must be a string.`
-		if (hasPrompt && typeof q.prompt !== "string") return `questions.${questionIndex}.prompt must be a string.`
-		if (!hasText && !hasPrompt) return `questions.${questionIndex}.text must be a string.`
-		if (hasText && hasPrompt && q.text !== q.prompt) {
-			return `questions.${questionIndex} must not set both text and prompt with different values; use text as the canonical question text.`
-		}
-		const text = (hasText ? q.text : q.prompt) as string
+		if (typeof q.question !== "string") return `questions.${questionIndex}.question must be a string.`
+		const text = q.question
 		const questionType = normalizeScopingQuestionType(q.type)
 		if (!questionType.ok) return `questions.${questionIndex}.type ${questionType.error}`
 		const type = questionType.type
@@ -667,7 +660,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: "propose_ferment_scoping",
 		label: "Propose Scoping",
-		description: `Emit the full scoping draft: goal, criteria, constraints, assumptions, 1-7 phases, questions, and gates. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name text for the user-visible question sentence. Do not ask scoping questions in chat after calling this tool. Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
+		description: `Emit the full scoping draft: goal, criteria, constraints, assumptions, 1-7 phases, questions, and gates. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence. Do not ask scoping questions in chat after calling this tool. Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
