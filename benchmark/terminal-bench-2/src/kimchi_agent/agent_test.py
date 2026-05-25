@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from harbor.models.agent.context import AgentContext
 
-from kimchi_agent.agent import CONTAINER_AGENT_PGID_FILE, Kimchi
+from kimchi_agent.agent import CONTAINER_AGENT_PGID_FILE, CONTAINER_HARNESS_SKILLS_DIR, Kimchi
 
 
 class RecordingKimchi(Kimchi):
@@ -113,6 +113,38 @@ class KimchiHarnessTest(unittest.IsolatedAsyncioTestCase):
                 await agent.run("hello", object(), AgentContext())
 
             self.assertNotIn("--model", agent.agent_commands[0])
+
+    async def test_run_copies_harbor_skills_dir_into_kimchi_harness_skills_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="kimchi-dev/kimi-k2.6",
+                skills_dir="/task skills",
+            )
+
+            with self.assertRaises(asyncio.CancelledError):
+                await agent.run("hello", object(), AgentContext())
+
+            command = agent.agent_commands[0]
+            self.assertIn(f"mkdir -p {CONTAINER_HARNESS_SKILLS_DIR}", command)
+            self.assertIn(f"cp -a '/task skills'/. {CONTAINER_HARNESS_SKILLS_DIR}/", command)
+            self.assertNotIn("2>/dev/null", agent._skills_registration_command())
+            self.assertIn(f"{agent._skills_registration_command()} && set -m", command)
+            self.assertIn("--model kimchi-dev/kimi-k2.6", command)
+
+    async def test_run_omits_skills_copy_when_no_harbor_skills_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="kimchi-dev/kimi-k2.6",
+            )
+
+            with self.assertRaises(asyncio.CancelledError):
+                await agent.run("hello", object(), AgentContext())
+
+            command = agent.agent_commands[0]
+            self.assertNotIn(CONTAINER_HARNESS_SKILLS_DIR, command)
+            self.assertEqual(agent._skills_registration_command(), "")
 
     async def test_api_key_can_come_from_agent_extra_env(self) -> None:
         os.environ.pop("KIMCHI_API_KEY", None)
