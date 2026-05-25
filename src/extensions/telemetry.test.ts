@@ -746,6 +746,131 @@ describe("telemetryExtension", () => {
 			expect(decisionAttrs.find((a) => a.key === "source")?.value.stringValue).toBe("auto")
 			expect(decisionAttrs.some((a) => a.key === "decision_type")).toBe(false)
 		})
+
+		it("sends tool.usage and tool.duration_ms per tool type", async () => {
+			vi.useFakeTimers()
+			const { handlers, api } = createMockApi()
+			const ext = telemetryExtension(makeConfig())
+			ext(api)
+
+			await getHandler(handlers, "session_start")()
+
+			const toolStart = getHandler(handlers, "tool_execution_start")
+			const toolEnd = getHandler(handlers, "tool_execution_end")
+
+			// 3 bash calls, 2 edit calls with varying durations
+			await toolStart({ toolCallId: "b1", toolName: "bash", args: { command: "ls" } })
+			await vi.advanceTimersByTimeAsync(50)
+			await toolEnd({ toolCallId: "b1", result: { ok: true, value: "" } })
+
+			await toolStart({ toolCallId: "b2", toolName: "bash", args: { command: "pwd" } })
+			await vi.advanceTimersByTimeAsync(30)
+			await toolEnd({ toolCallId: "b2", result: { ok: true, value: "" } })
+
+			await toolStart({ toolCallId: "b3", toolName: "bash", args: { command: "echo hi" } })
+			await vi.advanceTimersByTimeAsync(20)
+			await toolEnd({ toolCallId: "b3", result: { ok: true, value: "" } })
+
+			await toolStart({ toolCallId: "e1", toolName: "edit", args: { filePath: "a.ts" } })
+			await vi.advanceTimersByTimeAsync(200)
+			await toolEnd({ toolCallId: "e1", result: { ok: true, value: "" } })
+
+			await toolStart({ toolCallId: "e2", toolName: "edit", args: { filePath: "b.ts" } })
+			await vi.advanceTimersByTimeAsync(150)
+			await toolEnd({ toolCallId: "e2", result: { ok: true, value: "" } })
+
+			await getHandler(handlers, "session_shutdown")()
+			vi.useRealTimers()
+
+			const metricsCalls = fetchMock.mock.calls.filter(
+				([url]) => String(url) === "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest",
+			)
+			const payload = JSON.parse(String((metricsCalls[0][1] as RequestInit).body))
+			const metrics = payload.resourceMetrics[0].scopeMetrics[0].metrics
+
+			// Verify per-tool usage counts
+			const usageMetrics = metrics.filter((m: { name: string }) => m.name === "claude_code.tool.usage")
+			expect(usageMetrics).toHaveLength(2) // bash + edit
+
+			const bashUsage = usageMetrics.find(
+				(m: { sum: { dataPoints: Array<{ attributes: Array<{ key: string; value: { stringValue: string } }> }> } }) =>
+					m.sum.dataPoints[0].attributes.some((a) => a.key === "tool_name" && a.value.stringValue === "bash"),
+			)
+			expect(bashUsage.sum.dataPoints[0].asInt).toBe("3")
+
+			const editUsage = usageMetrics.find(
+				(m: { sum: { dataPoints: Array<{ attributes: Array<{ key: string; value: { stringValue: string } }> }> } }) =>
+					m.sum.dataPoints[0].attributes.some((a) => a.key === "tool_name" && a.value.stringValue === "edit"),
+			)
+			expect(editUsage.sum.dataPoints[0].asInt).toBe("2")
+
+			// Verify per-tool duration sums
+			const durationMetrics = metrics.filter((m: { name: string }) => m.name === "claude_code.tool.duration_ms")
+			expect(durationMetrics).toHaveLength(2) // bash + edit
+
+			const bashDuration = durationMetrics.find(
+				(m: { sum: { dataPoints: Array<{ attributes: Array<{ key: string; value: { stringValue: string } }> }> } }) =>
+					m.sum.dataPoints[0].attributes.some((a) => a.key === "tool_name" && a.value.stringValue === "bash"),
+			)
+			expect(Number(bashDuration.sum.dataPoints[0].asInt)).toBe(100) // 50 + 30 + 20
+
+			const editDuration = durationMetrics.find(
+				(m: { sum: { dataPoints: Array<{ attributes: Array<{ key: string; value: { stringValue: string } }> }> } }) =>
+					m.sum.dataPoints[0].attributes.some((a) => a.key === "tool_name" && a.value.stringValue === "edit"),
+			)
+			expect(Number(editDuration.sum.dataPoints[0].asInt)).toBe(350) // 200 + 150
+		})
+
+		it("accumulates tool.usage across sub-agents with shared accumulators", async () => {
+			const { handlers: h1, api: api1 } = createMockApi()
+			const { handlers: h2, api: api2 } = createMockApi()
+			const ext1 = telemetryExtension(makeConfig())
+			const ext2 = telemetryExtension(makeConfig())
+			ext1(api1)
+			ext2(api2)
+
+			await getHandler(h1, "session_start")()
+			await getHandler(h2, "session_start")()
+
+			// Main agent: 2 bash calls
+			const toolStart1 = getHandler(h1, "tool_execution_start")
+			const toolEnd1 = getHandler(h1, "tool_execution_end")
+			await toolStart1({ toolCallId: "b1", toolName: "bash", args: { command: "ls" } })
+			await toolEnd1({ toolCallId: "b1", result: { ok: true, value: "" } })
+			await toolStart1({ toolCallId: "b2", toolName: "bash", args: { command: "pwd" } })
+			await toolEnd1({ toolCallId: "b2", result: { ok: true, value: "" } })
+
+			// Sub-agent: 3 bash calls
+			const toolStart2 = getHandler(h2, "tool_execution_start")
+			const toolEnd2 = getHandler(h2, "tool_execution_end")
+			await toolStart2({ toolCallId: "b3", toolName: "bash", args: { command: "echo a" } })
+			await toolEnd2({ toolCallId: "b3", result: { ok: true, value: "" } })
+			await toolStart2({ toolCallId: "b4", toolName: "bash", args: { command: "echo b" } })
+			await toolEnd2({ toolCallId: "b4", result: { ok: true, value: "" } })
+			await toolStart2({ toolCallId: "b5", toolName: "bash", args: { command: "echo c" } })
+			await toolEnd2({ toolCallId: "b5", result: { ok: true, value: "" } })
+
+			await getHandler(h1, "session_shutdown")()
+			await getHandler(h2, "session_shutdown")()
+
+			// Last flush should contain the combined total of 5 bash calls
+			const metricsCalls = fetchMock.mock.calls.filter(
+				([url]) => String(url) === "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest",
+			)
+			expect(metricsCalls.length).toBeGreaterThanOrEqual(1)
+
+			const lastPayload = JSON.parse(String((metricsCalls[metricsCalls.length - 1][1] as RequestInit).body))
+			const metrics = lastPayload.resourceMetrics[0].scopeMetrics[0].metrics
+			const bashUsage = metrics.find(
+				(m: {
+					name: string
+					sum?: { dataPoints: Array<{ attributes: Array<{ key: string; value: { stringValue: string } }> }> }
+				}) =>
+					m.name === "claude_code.tool.usage" &&
+					m.sum?.dataPoints[0]?.attributes?.some((a) => a.key === "tool_name" && a.value.stringValue === "bash"),
+			)
+			expect(bashUsage?.sum?.dataPoints[0]?.asInt).toBe("5")
+		})
 	})
 
 	describe("metrics payload shape", () => {
@@ -1036,6 +1161,7 @@ describe("telemetryExtension", () => {
 			const toolEnd = getHandler(handlers, "tool_execution_end")
 
 			await toolStart({ toolCallId: "e1", toolName: "edit", args: { filePath: "a.ts" } })
+			await vi.advanceTimersByTimeAsync(100)
 			await toolEnd({ toolCallId: "e1", result: { ok: true, value: "" } })
 
 			// No metrics should be sent yet
@@ -1056,6 +1182,26 @@ describe("telemetryExtension", () => {
 			const payload = JSON.parse(String((metricsCalls[0][1] as RequestInit).body))
 			const metrics = payload.resourceMetrics[0].scopeMetrics[0].metrics
 			expect(metrics.length).toBeGreaterThan(0)
+
+			// Verify tool.usage metric has correct value and tool_name attribute
+			const toolUsageMetric = metrics.find((m: { name: string }) => m.name === "claude_code.tool.usage")
+			expect(toolUsageMetric).toBeDefined()
+			expect(toolUsageMetric.sum.dataPoints[0].asInt).toBe("1")
+			const usageAttrs = toolUsageMetric.sum.dataPoints[0].attributes as Array<{
+				key: string
+				value: { stringValue: string }
+			}>
+			expect(usageAttrs.find((a) => a.key === "tool_name")?.value.stringValue).toBe("edit")
+
+			// Verify tool.duration_ms metric has correct value and tool_name attribute
+			const toolDurationMetric = metrics.find((m: { name: string }) => m.name === "claude_code.tool.duration_ms")
+			expect(toolDurationMetric).toBeDefined()
+			expect(Number(toolDurationMetric.sum.dataPoints[0].asInt)).toBe(100)
+			const durationAttrs = toolDurationMetric.sum.dataPoints[0].attributes as Array<{
+				key: string
+				value: { stringValue: string }
+			}>
+			expect(durationAttrs.find((a) => a.key === "tool_name")?.value.stringValue).toBe("edit")
 
 			await getHandler(handlers, "session_shutdown")()
 			vi.useRealTimers()

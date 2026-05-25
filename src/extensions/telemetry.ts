@@ -245,6 +245,8 @@ interface SharedAccumulators {
 	cumulativePRCount: number
 	cumulativeLocByLanguage: Record<string, { added: number; removed: number }>
 	cumulativeEditDecisions: Record<string, number>
+	cumulativeToolUsage: Record<string, number>
+	cumulativeToolDurationMs: Record<string, number>
 	sessionStartNano: string
 }
 
@@ -260,6 +262,8 @@ function getOrCreateAccumulators(sessionId: string): SharedAccumulators {
 			cumulativePRCount: 0,
 			cumulativeLocByLanguage: {},
 			cumulativeEditDecisions: {},
+			cumulativeToolUsage: {},
+			cumulativeToolDurationMs: {},
 			sessionStartNano: String(Date.now() * 1_000_000),
 		})
 	}
@@ -288,6 +292,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		const sentMessages = new Set<string>()
 		const pendingArgs = new Map<string, { toolName: string; args: unknown }>()
 		const messageStartTimes = new Map<string, number>()
+		const toolStartTimes = new Map<string, number>()
 		const inFlight = new Set<Promise<void>>()
 		let shuttingDown = false
 
@@ -393,6 +398,30 @@ export default function telemetryExtension(config: TelemetryConfig) {
 				}
 			}
 
+			// Flush tool usage counts
+			for (const [toolName, count] of Object.entries(acc.cumulativeToolUsage)) {
+				if (count > 0) {
+					allMetrics.push({
+						name: "claude_code.tool.usage",
+						type: "Sum",
+						value: count,
+						attrs: { tool_name: toolName },
+					})
+				}
+			}
+
+			// Flush tool durations
+			for (const [toolName, duration] of Object.entries(acc.cumulativeToolDurationMs)) {
+				if (duration > 0) {
+					allMetrics.push({
+						name: "claude_code.tool.duration_ms",
+						type: "Sum",
+						value: duration,
+						attrs: { tool_name: toolName },
+					})
+				}
+			}
+
 			// Flush edit decisions
 			for (const [key, count] of Object.entries(acc.cumulativeEditDecisions)) {
 				const parts = key.split("|")
@@ -427,6 +456,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			sessionStartMs = Date.now()
 			sentMessages.clear()
 			messageStartTimes.clear()
+			toolStartTimes.clear()
 			pendingArgs.clear()
 			shuttingDown = false
 			// Do NOT reset shared accumulators here — other agents may already have
@@ -441,6 +471,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 
 		pi.on("session_shutdown", async () => {
 			messageStartTimes.clear()
+			toolStartTimes.clear()
 			if (flushTimer) clearInterval(flushTimer)
 			flushMetrics()
 			shuttingDown = true
@@ -511,6 +542,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 
 		pi.on("tool_execution_start", async (event) => {
 			pendingArgs.set(event.toolCallId, { toolName: event.toolName, args: event.args })
+			toolStartTimes.set(event.toolCallId, Date.now())
 		})
 
 		pi.on("tool_execution_end", async (event) => {
@@ -519,6 +551,16 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			if (!pending) return
 
 			const { toolName, args } = pending as { toolName: string; args: Record<string, unknown> }
+
+			// Track tool usage and duration for all tools (before per-tool branch logic)
+			const startMs = toolStartTimes.get(event.toolCallId) ?? Date.now()
+			toolStartTimes.delete(event.toolCallId)
+			const durationMs = Date.now() - startMs
+
+			if (!acc.cumulativeToolUsage[toolName]) acc.cumulativeToolUsage[toolName] = 0
+			acc.cumulativeToolUsage[toolName]++
+			if (!acc.cumulativeToolDurationMs[toolName]) acc.cumulativeToolDurationMs[toolName] = 0
+			acc.cumulativeToolDurationMs[toolName] += durationMs
 
 			if (toolName === "bash") {
 				const command = String(args?.command ?? "")
