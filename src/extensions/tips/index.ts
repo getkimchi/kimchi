@@ -12,6 +12,7 @@ export type TipWidgetLocation = VisibleTipWidgetLocation | "hidden"
 const DEFAULT_TIP_WIDGET_LOCATION: TipWidgetLocation = "aboveEditor"
 let tipWidgetLocation: TipWidgetLocation = DEFAULT_TIP_WIDGET_LOCATION
 let onLocationChange: (() => void) | undefined
+let onRemountRequest: (() => void) | undefined
 
 export function setTipWidgetLocation(location: TipWidgetLocation): () => void {
 	const previous = tipWidgetLocation
@@ -40,6 +41,10 @@ function onTipWidgetLocationChange(listener: () => void): () => void {
 	return () => {
 		if (onLocationChange === listener) onLocationChange = undefined
 	}
+}
+
+export function remountTipWidget(): void {
+	onRemountRequest?.()
 }
 
 export interface TipsExtensionOptions {
@@ -115,6 +120,12 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 			unregisterLocationChange = onTipWidgetLocationChange(() => {
 				if (activeCtx) updateWidget(activeCtx)
 			})
+			onRemountRequest = () => {
+				if (activeCtx && widgetMounted) {
+					unmountWidget()
+					mountWidget(activeCtx)
+				}
+			}
 			activeCtx = ctx
 
 			updateWidget(ctx)
@@ -132,6 +143,7 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 			unregisterGeneral = undefined
 			unregisterLocationChange?.()
 			unregisterLocationChange = undefined
+			onRemountRequest = undefined
 		})
 	}
 }
