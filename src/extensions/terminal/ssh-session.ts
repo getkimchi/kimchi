@@ -2,7 +2,8 @@ import { Client, type ClientChannel } from "ssh2"
 import type { TerminalArgs } from "./types.js"
 
 export interface SshSessionCallbacks {
-	onData: (data: Buffer) => void
+	onData: (data: string) => void
+	onStderr: (data: string) => void
 	onError: (err: Error) => void
 	onClose: () => void
 }
@@ -29,7 +30,10 @@ export class SshSession {
 						return
 					}
 					this.stream = stream
+					stream.setEncoding("utf8")
 					stream.on("data", callbacks.onData)
+					stream.stderr.setEncoding("utf8")
+					stream.stderr.on("data", callbacks.onStderr)
 					stream.on("error", callbacks.onError)
 					stream.on("close", () => {
 						this.closed = true
@@ -46,6 +50,12 @@ export class SshSession {
 					this.closed = true
 					callbacks.onClose()
 				}
+			})
+
+			this.client.on("keyboard-interactive", (_name, _instructions, _instructionsLang, prompts, finish) => {
+				// For now, answer empty for all prompts. In a future iteration
+				// we could prompt the user via pi's UI.
+				finish(prompts.map(() => ""))
 			})
 
 			this.client.connect({
@@ -67,6 +77,7 @@ export class SshSession {
 	}
 
 	close(): void {
+		if (this.closed) return
 		this.closed = true
 		this.stream?.close()
 		this.client.end()
