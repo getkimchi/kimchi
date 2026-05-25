@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs"
-import { getSuperpowersVendorDir } from "../extensions/superpowers/config.js"
 import { ensureSuperpowersInstalled } from "../extensions/superpowers/installer.js"
 import { isHomebrewInstall } from "../update/paths.js"
 import { applyUpdate, checkForUpdate } from "../update/workflow.js"
@@ -117,13 +115,10 @@ export async function runUpdate(args: string[]): Promise<number> {
 		return 1
 	}
 
-	// Only update superpowers if the user previously opted in (vendor dir exists)
-	if (existsSync(getSuperpowersVendorDir())) {
-		try {
-			await ensureSuperpowersInstalled()
-		} catch {
-			// Non-fatal — skills can be refreshed by re-running kimchi update
-		}
+	try {
+		await ensureSuperpowersInstalled()
+	} catch {
+		// Non-fatal — skills can be refreshed by re-running kimchi update
 	}
 
 	if (process.platform === "win32") {
