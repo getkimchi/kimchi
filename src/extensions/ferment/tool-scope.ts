@@ -136,10 +136,6 @@ export function applyFermentRuntimeToolProfile(pi: ExtensionAPI, runtime: Fermen
 	applyFermentToolProfile(pi, profileForFerment(runtime.getActive()))
 }
 
-export function setActiveFermentState(runtime: FermentRuntime, ferment: Ferment | undefined): void {
-	runtime.setActive(ferment)
-}
-
 export function setActiveFermentAndApplyProfile(
 	pi: ExtensionAPI,
 	runtime: FermentRuntime,

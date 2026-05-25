@@ -20,7 +20,6 @@ import {
 	applyFermentRuntimeToolProfile,
 	applyFermentToolProfile,
 	setActiveFermentAndApplyProfile,
-	setActiveFermentState,
 } from "./tool-scope.js"
 
 type AssistantContentPart = { type: string; text?: string; name?: string }
@@ -293,7 +292,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			}
 		} else if (pi.getFlag("ferment-oneshot") === true) {
 			pendingOneshot = true
-			setActiveFermentState(runtime, undefined)
+			runtime.setActive(undefined)
 			applyFermentToolProfile(pi, "oneshot-planner")
 		} else {
 			pendingOneshot = false
@@ -343,7 +342,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			}
 			const f = storage.create(shortName, intent)
 			const updated = f
-			setActiveFermentState(runtime, updated)
+			runtime.setActive(updated)
 			appendRefEntry(pi, updated.id)
 			const ackText = `One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nPolicy: automated`
 			void pi.sendMessage(
