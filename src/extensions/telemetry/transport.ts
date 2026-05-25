@@ -55,10 +55,11 @@ export async function sendLog(
 	sessionId: string,
 	eventName: string,
 	attrs: Record<string, string | number>,
+	userEmail?: string,
 ): Promise<void> {
 	if (!config.enabled || !config.endpoint) return
 	const now = nowNano()
-	const payload = {
+	const payload: Record<string, unknown> = {
 		resourceLogs: [
 			{
 				resource: { attributes: resourceAttributes(), droppedAttributesCount: 0 },
@@ -89,6 +90,7 @@ export async function sendLog(
 			},
 		],
 	}
+	if (userEmail) payload.userEmail = userEmail
 	try {
 		await fetch(config.endpoint, {
 			method: "POST",
@@ -125,9 +127,9 @@ export function buildLogRecord(
 	}
 }
 
-export async function sendLogBatch(config: TelemetryConfig, records: LogRecord[]): Promise<void> {
+export async function sendLogBatch(config: TelemetryConfig, records: LogRecord[], userEmail?: string): Promise<void> {
 	if (!config.enabled || !config.endpoint || records.length === 0) return
-	const payload = {
+	const payload: Record<string, unknown> = {
 		resourceLogs: [
 			{
 				resource: { attributes: resourceAttributes(), droppedAttributesCount: 0 },
@@ -140,6 +142,7 @@ export async function sendLogBatch(config: TelemetryConfig, records: LogRecord[]
 			},
 		],
 	}
+	if (userEmail) payload.userEmail = userEmail
 	try {
 		await fetch(config.endpoint, {
 			method: "POST",
@@ -156,10 +159,11 @@ export async function sendMetrics(
 	sessionId: string,
 	metrics: MetricData[],
 	sessionStartNano: string,
+	userEmail?: string,
 ): Promise<void> {
 	if (!config.enabled || !config.metricsEndpoint || metrics.length === 0) return
 	const now = nowNano()
-	const payload = {
+	const payload: Record<string, unknown> = {
 		resourceMetrics: [
 			{
 				resource: { attributes: resourceAttributes(), droppedAttributesCount: 0 },
@@ -189,6 +193,7 @@ export async function sendMetrics(
 			},
 		],
 	}
+	if (userEmail) payload.userEmail = userEmail
 	try {
 		await fetch(config.metricsEndpoint, {
 			method: "POST",

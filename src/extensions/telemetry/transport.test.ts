@@ -9,6 +9,7 @@ function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 		endpoint: "https://test.example.com/logs",
 		metricsEndpoint: "https://test.example.com/metrics",
 		headers: { Authorization: "Bearer test" },
+		apiKey: "",
 		...overrides,
 	}
 }
@@ -97,6 +98,22 @@ describe("sendLog", () => {
 		const config = makeConfig()
 		await expect(sendLog(config, "session-123", "session.start", {})).resolves.toBeUndefined()
 	})
+
+	it("includes userEmail in payload when provided", async () => {
+		const config = makeConfig()
+		await sendLog(config, "session-123", "session.start", { source: "cli" }, "alice@test.com")
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		expect(body.userEmail).toBe("alice@test.com")
+	})
+
+	it("omits userEmail from payload when not provided", async () => {
+		const config = makeConfig()
+		await sendLog(config, "session-123", "session.start", {})
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		expect(body.userEmail).toBeUndefined()
+	})
 })
 
 describe("buildLogRecord", () => {
@@ -165,6 +182,22 @@ describe("sendLogBatch", () => {
 		globalThis.fetch = vi.fn().mockRejectedValue(new Error("network error"))
 		const record = buildLogRecord("s1", "test", {})
 		await expect(sendLogBatch(makeConfig(), [record])).resolves.toBeUndefined()
+	})
+
+	it("includes userEmail in batch payload when provided", async () => {
+		const records = [buildLogRecord("s1", "event.a", {})]
+		await sendLogBatch(makeConfig(), records, "bob@test.com")
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		expect(body.userEmail).toBe("bob@test.com")
+	})
+
+	it("omits userEmail from batch payload when not provided", async () => {
+		const records = [buildLogRecord("s1", "event.a", {})]
+		await sendLogBatch(makeConfig(), records)
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		expect(body.userEmail).toBeUndefined()
 	})
 })
 
@@ -242,5 +275,21 @@ describe("sendMetrics", () => {
 		const metrics: MetricData[] = [{ name: "claude_code.token.usage", type: "Sum", value: 100, attrs: {} }]
 		await sendMetrics(config, "session-abc", metrics, "1700000000000000000")
 		expect(globalThis.fetch).not.toHaveBeenCalled()
+	})
+
+	it("includes userEmail in metrics payload when provided", async () => {
+		const metrics: MetricData[] = [{ name: "claude_code.token.usage", type: "Sum", value: 50, attrs: {} }]
+		await sendMetrics(makeConfig(), "session-abc", metrics, "1700000000000000000", "carol@test.com")
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		expect(body.userEmail).toBe("carol@test.com")
+	})
+
+	it("omits userEmail from metrics payload when not provided", async () => {
+		const metrics: MetricData[] = [{ name: "claude_code.token.usage", type: "Sum", value: 50, attrs: {} }]
+		await sendMetrics(makeConfig(), "session-abc", metrics, "1700000000000000000")
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		expect(body.userEmail).toBeUndefined()
 	})
 })

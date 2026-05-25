@@ -3,12 +3,17 @@ import type { TelemetryConfig } from "../../../config.js"
 import { SessionContext, _resetSharedAccumulators } from "../session-context.js"
 import { handleToolExecutionEnd, handleToolExecutionStart } from "./tools.js"
 
+vi.mock("../../../api/me.js", () => ({
+	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
+}))
+
 function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 	return {
 		enabled: true,
 		endpoint: "https://test.example.com/logs",
 		metricsEndpoint: "https://test.example.com/metrics",
 		headers: { Authorization: "Bearer test" },
+		apiKey: "",
 		...overrides,
 	}
 }

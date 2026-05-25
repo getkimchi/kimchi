@@ -14,6 +14,7 @@ export function handleSessionStart(ctx: SessionContext, initialModel?: string): 
 export async function handleSessionShutdown(ctx: SessionContext, event: { reason?: string }): Promise<void> {
 	ctx.flushLogBuffer()
 	const endedBy = event?.reason ?? "unknown"
+	await ctx.userEmailReady
 	await sendLog(
 		ctx.config,
 		ctx.sessionId,
@@ -25,6 +26,7 @@ export async function handleSessionShutdown(ctx: SessionContext, event: { reason
 			source: ctx.source,
 			mode: ctx.mode,
 		}),
+		ctx.userEmail,
 	)
 	await ctx.drain()
 }

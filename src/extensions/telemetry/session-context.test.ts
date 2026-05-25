@@ -2,12 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
 import { SessionContext, _resetSharedAccumulators } from "./session-context.js"
 
+vi.mock("../../api/me.js", () => ({
+	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
+}))
+
 function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 	return {
 		enabled: true,
 		endpoint: "https://test.example.com/logs",
 		metricsEndpoint: "https://test.example.com/metrics",
 		headers: { Authorization: "Bearer test" },
+		apiKey: "",
 		...overrides,
 	}
 }
@@ -243,5 +248,43 @@ describe("SessionContext", () => {
 				),
 		)
 		expect(outputMetric?.sum?.dataPoints[0]?.asInt).toBe("250")
+	})
+
+	it("fetches userEmail in background and includes it in log batch payloads", async () => {
+		const { getMe } = await import("../../api/me.js")
+		vi.mocked(getMe).mockResolvedValue({ id: "u1", email: "alice@test.com" })
+
+		const ctx = new SessionContext(makeConfig({ apiKey: "my-key" }), "cli", "coding")
+		await ctx.userEmailReady
+
+		expect(ctx.userEmail).toBe("alice@test.com")
+
+		ctx.emit("test.event", { foo: "bar" })
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		expect(globalThis.fetch).toHaveBeenCalled()
+		const logCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]: unknown[]) =>
+			String(url).includes("/logs"),
+		)
+		expect(logCall).toBeDefined()
+		const body = JSON.parse((logCall?.[1] as { body: string }).body)
+		expect(body.userEmail).toBe("alice@test.com")
+	})
+
+	it("resolves userEmailReady even when getMe fails", async () => {
+		const { getMe } = await import("../../api/me.js")
+		vi.mocked(getMe).mockRejectedValue(new Error("network failure"))
+
+		const ctx = new SessionContext(makeConfig({ apiKey: "my-key" }), "cli", "coding")
+		await ctx.userEmailReady
+
+		expect(ctx.userEmail).toBeUndefined()
+	})
+
+	it("resolves userEmailReady immediately when no apiKey", async () => {
+		const ctx = new SessionContext(makeConfig({ apiKey: "" }), "cli", "coding")
+		await ctx.userEmailReady
+		expect(ctx.userEmail).toBeUndefined()
 	})
 })

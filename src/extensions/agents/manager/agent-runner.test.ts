@@ -97,6 +97,7 @@ vi.mock("../../../config.js", () => ({
 		endpoint: "https://test/logs",
 		metricsEndpoint: "https://test/metrics",
 		headers: { Authorization: "Bearer test" },
+		apiKey: "",
 	}),
 }))
 

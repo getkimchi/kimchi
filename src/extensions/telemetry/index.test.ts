@@ -12,6 +12,10 @@ vi.mock("../../startup-context.js", () => ({
 	getAvailableModels: vi.fn(() => []),
 }))
 
+vi.mock("../../api/me.js", () => ({
+	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
+}))
+
 type Handler = (...args: unknown[]) => Promise<void> | void
 
 function createMockApi() {
@@ -35,6 +39,7 @@ function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 		endpoint: "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest",
 		metricsEndpoint: "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest",
 		headers: { Authorization: "Bearer test-key" },
+		apiKey: "",
 		...overrides,
 	}
 }

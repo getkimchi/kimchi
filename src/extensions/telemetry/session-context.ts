@@ -1,4 +1,5 @@
 import crypto from "node:crypto"
+import { getMe } from "../../api/me.js"
 import type { TelemetryConfig } from "../../config.js"
 import { type CumulativeState, collectMetrics, createCumulativeState } from "./accumulator.js"
 import { toAttrs } from "./helpers.js"
@@ -65,6 +66,12 @@ export class SessionContext {
 	logBuffer: LogRecord[] = []
 	private logFlushTimer: NodeJS.Timeout | undefined
 
+	/** Cached user email from /v1/me — populated once in the background. */
+	userEmail: string | undefined
+	/** Resolves when the userEmail has been fetched (or the fetch failed). */
+	userEmailReady: Promise<void>
+	private resolveUserEmailReady!: () => void
+
 	constructor(config: TelemetryConfig, source: string, mode: string) {
 		this.config = config
 		this.source = source
@@ -73,6 +80,10 @@ export class SessionContext {
 		this.sessionId = rootSessionId
 		this.sessionStartMs = Date.now()
 		this.cumulative = getOrCreateAccumulator(this.sessionId)
+		this.userEmailReady = new Promise<void>((resolve) => {
+			this.resolveUserEmailReady = resolve
+		})
+		this.fetchUserEmail()
 	}
 
 	get sessionStartNano(): string {
@@ -116,7 +127,7 @@ export class SessionContext {
 		this.stopLogFlushTimer()
 		if (this.logBuffer.length === 0) return
 		const records = this.logBuffer.splice(0)
-		this.track(sendLogBatch(this.config, records))
+		this.track(this.userEmailReady.then(() => sendLogBatch(this.config, records, this.userEmail)))
 	}
 
 	private stopLogFlushTimer(): void {
@@ -129,7 +140,11 @@ export class SessionContext {
 	flushMetrics(): void {
 		const metrics = collectMetrics(this.cumulative)
 		if (metrics.length > 0) {
-			this.track(sendMetrics(this.config, this.sessionId, metrics, this.sessionStartNano))
+			this.track(
+				this.userEmailReady.then(() =>
+					sendMetrics(this.config, this.sessionId, metrics, this.sessionStartNano, this.userEmail),
+				),
+			)
 		}
 	}
 
@@ -143,6 +158,24 @@ export class SessionContext {
 			clearInterval(this.flushTimer)
 			this.flushTimer = undefined
 		}
+	}
+
+	private fetchUserEmail(): void {
+		const { apiKey } = this.config
+		if (!apiKey) {
+			this.resolveUserEmailReady()
+			return
+		}
+		getMe(apiKey)
+			.then((me) => {
+				this.userEmail = me.email
+			})
+			.catch(() => {
+				// best effort — telemetry continues without email
+			})
+			.finally(() => {
+				this.resolveUserEmailReady()
+			})
 	}
 
 	async drain(): Promise<void> {

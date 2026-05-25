@@ -35,12 +35,7 @@ export interface AuthenticateOptions {
 	gitToken?: string
 }
 
-export interface MeResponse {
-	id: string
-	username?: string
-	name?: string
-	email?: string
-}
+export type { MeResponse } from "../../../api/me.js"
 
 export interface ListRemoteSessionsOptions extends AuthenticateOptions {
 	signal?: AbortSignal

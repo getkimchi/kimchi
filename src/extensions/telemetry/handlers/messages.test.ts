@@ -7,12 +7,17 @@ vi.mock("../../../startup-context.js", () => ({
 	getAvailableModels: vi.fn(() => []),
 }))
 
+vi.mock("../../../api/me.js", () => ({
+	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
+}))
+
 function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 	return {
 		enabled: true,
 		endpoint: "https://test.example.com/logs",
 		metricsEndpoint: "https://test.example.com/metrics",
 		headers: { Authorization: "Bearer test" },
+		apiKey: "",
 		...overrides,
 	}
 }

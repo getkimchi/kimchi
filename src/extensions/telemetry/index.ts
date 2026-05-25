@@ -7,7 +7,7 @@ import { handleToolExecutionEnd, handleToolExecutionStart } from "./handlers/too
 import { SessionContext } from "./session-context.js"
 
 let _ctx: SessionContext | undefined
-let _telemetryConfig: TelemetryConfig = { enabled: false, endpoint: "", metricsEndpoint: "", headers: {} }
+let _telemetryConfig: TelemetryConfig = { enabled: false, endpoint: "", metricsEndpoint: "", headers: {}, apiKey: "" }
 
 export { _telemetryConfig }
 
