@@ -2583,6 +2583,16 @@ function genericToolLabel(name: string): string {
 function renderGenericToolCall(name: string, args: any, theme: Theme, ctx: any): Text {
 	ctx.state._openAiPatchFiles = []
 	const sp = (path: string) => shortPath(ctx.cwd ?? process.cwd(), path)
+	if (isMcpToolName(name)) {
+		const packed = stableCallSummary(ctx, "_mcpLabelSummary", () => {
+			const ls = mcpCallLabelAndSummary(args, theme)
+			return `${ls.label}\x00${ls.summary}`
+		})
+		const sepIdx = packed.indexOf("\x00")
+		const mcpLabel = sepIdx >= 0 ? packed.slice(0, sepIdx) : "MCP"
+		const mcpSummary = sepIdx >= 0 ? packed.slice(sepIdx + 1) : ""
+		return makeText(ctx.lastComponent, toolHeader(mcpLabel, mcpSummary, theme, toolStatusDot(ctx, theme)))
+	}
 	const summary = stableCallSummary(ctx, "_callSummary", () => summarizeGenericToolCall(name, args, theme, sp))
 	return makeText(ctx.lastComponent, toolHeader(genericToolLabel(name), summary, theme, toolStatusDot(ctx, theme)))
 }
@@ -3096,14 +3106,84 @@ function renderApplyPatchResult(result: any, isPartial: boolean, theme: Theme, c
 	)
 }
 
+/**
+ * For an MCP gateway call whose args contain `tool`, parse the nested args
+ * JSON and return a short summary of notable parameters (prompt, model, …).
+ */
+function summarizeMcpToolInvocationArgs(args: any, theme: Theme): string {
+	const rawArgs = getStringArg(args, "args")
+	if (!rawArgs) return ""
+	try {
+		const parsed = JSON.parse(rawArgs)
+		if (parsed && typeof parsed === "object") {
+			// Show model if present
+			const model = typeof parsed.model === "string" ? parsed.model : ""
+			// Show a truncated prompt snippet
+			const prompt =
+				typeof parsed.prompt === "string"
+					? parsed.prompt
+					: typeof parsed.message === "string"
+						? parsed.message
+						: typeof parsed.query === "string"
+							? parsed.query
+							: ""
+			if (model && prompt) {
+				return `${theme.fg("muted", model)} ${summarizeText(prompt, 48)}`
+			}
+			if (model) return theme.fg("muted", model)
+			if (prompt) return summarizeText(prompt, 60)
+		}
+	} catch {
+		// not valid JSON — ignore
+	}
+	return ""
+}
+
 function summarizeMcpToolCall(args: any, theme: Theme): string {
 	const tool = getStringArg(args, "tool")
-	if (tool) return args?.server ? `${args.server}:${tool}` : tool
+	if (tool) {
+		const argsSummary = summarizeMcpToolInvocationArgs(args, theme)
+		return argsSummary ? argsSummary : theme.fg("muted", "")
+	}
 	const connect = getStringArg(args, "connect")
-	if (connect) return `connect ${connect}`
+	if (connect) return connect
 	const search = getStringArg(args, "search", "describe", "server", "action")
 	if (search) return summarizeText(search, 72)
 	return theme.fg("muted", "status")
+}
+
+/**
+ * Returns the display label and summary for an MCP gateway call.
+ * - Tool invocation (`args.tool` present): label = humanized tool name, summary = args preview
+ * - Discovery (`args.search` / `args.describe` / …): label = "Tool search" / "Tool describe" / …
+ * - Connect: label = "Tool connect"
+ */
+function mcpCallLabelAndSummary(
+	args: any,
+	theme: Theme,
+): { label: string; summary: string } {
+	const tool = getStringArg(args, "tool")
+	if (tool) {
+		const label = humanizeToolName(tool)
+		const summary = summarizeMcpToolInvocationArgs(args, theme)
+		return { label, summary }
+	}
+	if (getStringArg(args, "connect")) {
+		return { label: "Tool connect", summary: getStringArg(args, "connect") }
+	}
+	if (getStringArg(args, "describe")) {
+		return { label: "Tool describe", summary: summarizeText(getStringArg(args, "describe"), 72) }
+	}
+	if (getStringArg(args, "search")) {
+		return { label: "Tool search", summary: summarizeText(getStringArg(args, "search"), 72) }
+	}
+	if (getStringArg(args, "server")) {
+		return { label: "Tool search", summary: summarizeText(getStringArg(args, "server"), 72) }
+	}
+	if (getStringArg(args, "action")) {
+		return { label: "Tool action", summary: summarizeText(getStringArg(args, "action"), 72) }
+	}
+	return { label: "MCP", summary: theme.fg("muted", "status") }
 }
 
 function summarizeGenericToolCall(name: string, args: any, theme: Theme, sp: (path: string) => string): string {
