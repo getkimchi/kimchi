@@ -144,24 +144,17 @@ done
 # --- Step 5: Run audits with Claude Opus 4.6 in separate iTerm2 tabs ---
 echo "=== Spawning iTerm2 tabs for audits ==="
 
-# Build expected output paths that match audit-session.sh naming.
-# audit-session.sh writes: <sessionId>-<task>-<runner>-<model_slug>-AUDIT.md
-# and its JSON sidecar:   <sessionId>-<task>-<runner>-<model_slug>-AUDIT.json
-declare -A AUDIT_MD_FILES
-declare -A AUDIT_JSON_FILES
+# Create audits directory and declare known audit session file paths.
+mkdir -p "${SESSION_DIR}/audits"
+declare -A AUDIT_SESSION_FILES
 for task in "${TASKS[@]}"; do
   jsonl_basename=$(basename "${JSONL_FILES["$task"]}")
   session_id="${jsonl_basename%.jsonl}"
-  audit_runner="kimchi"
-  audit_model="kimchi-dev/claude-opus-4-6"
-  model_slug="$(echo "$audit_model" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')"
-  audit_name="${session_id}-${task}-${audit_runner}-${model_slug}-AUDIT"
-  AUDIT_MD_FILES["$task"]="${REPO_ROOT}/.kimchi/audits/${audit_name}.md"
-  AUDIT_JSON_FILES["$task"]="${REPO_ROOT}/.kimchi/audits/${audit_name}.json"
+  AUDIT_SESSION_FILES["$task"]="${SESSION_DIR}/audits/audit-${session_id}.jsonl"
 done
 
 for task in "${TASKS[@]}"; do
-  audit_cmd="cd \"$REPO_ROOT\" && \"$AUDIT_SCRIPT\" -m kimchi-dev/claude-opus-4-6 \"${JSONL_FILES[\"$task\"]}\""
+  audit_cmd="cd \"$REPO_ROOT\" && \"$AUDIT_SCRIPT\" -m kimchi-dev/claude-opus-4-6 -s \"${AUDIT_SESSION_FILES["$task"]}\" \"${JSONL_FILES["$task"]}\""
   audit_cmd_escaped=${audit_cmd//\"/\\\"}
   osascript <<EOF
 tell application "iTerm2"
@@ -185,28 +178,18 @@ echo ""
 
 for ((i = 1; i <= 120; i++)); do
   echo "--- Audit poll $i/120 ---"
-  all_done=true
+  audit_jsonl_paths=()
   for task in "${TASKS[@]}"; do
-    md_file="${AUDIT_MD_FILES["$task"]}"
-    json_file="${AUDIT_JSON_FILES["$task"]}"
-    if [[ -f "$md_file" && -f "$json_file" ]]; then
-      echo "  ${task}: done (md + json sidecar)"
-    elif [[ -f "$md_file" ]]; then
-      echo "  ${task}: md done, json pending..."
-      all_done=false
-    else
-      echo "  ${task}: still running..."
-      all_done=false
-    fi
+    audit_jsonl_paths+=("${AUDIT_SESSION_FILES["$task"]}")
   done
-  if $all_done; then
+  if python3 "${SCRIPT_DIR}/check-session.py" --jsonl "${audit_jsonl_paths[@]}" 2>&1; then
     echo "=== All audits finished ==="
     break
   fi
   sleep 30
 done
 
-if ! $all_done; then
+if ! python3 "${SCRIPT_DIR}/check-session.py" --jsonl "${audit_jsonl_paths[@]}" 2>&1; then
   echo "WARNING: Timed out waiting for audits. Check iTerm2 tabs for status." >&2
 fi
 
