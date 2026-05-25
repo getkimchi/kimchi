@@ -1228,7 +1228,7 @@ describe("propose_ferment_scoping", () => {
 		const questions = [
 			{
 				id: "q1",
-				text: "Approach?",
+				question: "Approach?",
 				options: [
 					{ id: "opt-a", label: "Option A", recommended: true },
 					{ id: "opt-b", label: "Option B" },
@@ -1236,7 +1236,7 @@ describe("propose_ferment_scoping", () => {
 			},
 			{
 				id: "q2",
-				text: "Scope?",
+				question: "Scope?",
 				options: [
 					{ id: "wide", label: "Wide" },
 					{ id: "narrow", label: "Narrow", recommended: true },
@@ -1292,7 +1292,7 @@ describe("propose_ferment_scoping", () => {
 		const questions = [
 			{
 				id: "q1",
-				text: "Approach?",
+				question: "Approach?",
 				options: [
 					{ id: "opt-a", label: "Option A", recommended: true },
 					{ id: "opt-b", label: "Option B" },
@@ -1338,7 +1338,7 @@ describe("propose_ferment_scoping", () => {
 			{
 				id: "surfaces",
 				type: "checkbox",
-				text: "Which surfaces must be included?",
+				question: "Which surfaces must be included?",
 				options: [
 					{ id: "cli", label: "CLI", recommended: true },
 					{ id: "docs", label: "Docs" },
@@ -1348,7 +1348,7 @@ describe("propose_ferment_scoping", () => {
 			{
 				id: "acceptance",
 				type: "text",
-				text: "What proof should complete mean?",
+				question: "What proof should complete mean?",
 			},
 		]
 		const ctx = {
@@ -1416,7 +1416,7 @@ describe("propose_ferment_scoping", () => {
 					{
 						id: "target",
 						type: "checkbox",
-						text: "Which target environments are in scope?",
+						question: "Which target environments are in scope?",
 						options: [
 							{ id: "ssh", label: "SSH" },
 							{ id: "docker", label: "Docker" },
@@ -1504,7 +1504,7 @@ describe("propose_ferment_scoping", () => {
 		const questions = [
 			{
 				id: "q1",
-				text: "Approach?",
+				question: "Approach?",
 				options: [
 					{ id: "opt-a", label: "Option A", recommended: true },
 					{ id: "opt-b", label: "Option B" },
@@ -1512,7 +1512,7 @@ describe("propose_ferment_scoping", () => {
 			},
 			{
 				id: "q2",
-				text: "Scope?",
+				question: "Scope?",
 				options: [
 					{ id: "wide", label: "Wide" },
 					{ id: "narrow", label: "Narrow", recommended: true },
@@ -1580,7 +1580,7 @@ describe("propose_ferment_scoping", () => {
 		const questions = [
 			{
 				id: "q1",
-				text: "Approach?",
+				question: "Approach?",
 				options: [
 					{ id: "opt-a", label: "Yes", recommended: true },
 					{ id: "opt-b", label: "Yes" },
@@ -1603,7 +1603,7 @@ describe("propose_ferment_scoping", () => {
 		const questions = [
 			{
 				id: "q1",
-				text: "Approach?",
+				question: "Approach?",
 				options: [
 					{ id: "opt-a", label: "Option A", recommended: true },
 					{ id: "opt-b", label: "Option B" },
@@ -1638,7 +1638,7 @@ describe("propose_ferment_scoping", () => {
 		const questions = [
 			{
 				id: "q1",
-				text: "Approach?",
+				question: "Approach?",
 				options: [
 					{ id: "opt-a", label: "Option A", recommended: true },
 					{ id: "opt-b", label: "Option B" },
@@ -1679,7 +1679,7 @@ describe("propose_ferment_scoping", () => {
 		const questions = [
 			{
 				id: "q1",
-				text: "Approach?",
+				question: "Approach?",
 				options: [
 					{ id: "opt-a", label: "Option A", recommended: true },
 					{ id: "opt-b", label: "Option B" },
@@ -1724,7 +1724,7 @@ describe("propose_ferment_scoping", () => {
 		const questions = [
 			{
 				id: "q1",
-				text: "Approach?",
+				question: "Approach?",
 				options: [
 					{ id: "opt-a", label: "Option A", recommended: true },
 					{ id: "opt-b", label: "Option B" },
@@ -1732,7 +1732,7 @@ describe("propose_ferment_scoping", () => {
 			},
 			{
 				id: "q2",
-				text: "Scope?",
+				question: "Scope?",
 				options: [
 					{ id: "wide", label: "Wide" },
 					{ id: "narrow", label: "Narrow", recommended: true },
