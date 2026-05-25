@@ -2,7 +2,7 @@ import type { Phase } from "../types.js"
 
 export const DEFAULT_EXPLORE_GUIDELINES = `During **explore** phase:
 - Goal: build a mental map, not a solution. Do NOT modify files. Do NOT write a plan yet.
-- **Skip explore for greenfield projects** (empty directory, no existing code). There is nothing to explore — proceed directly to plan. A trivial 1-turn explore that only runs \`ls\` on an empty directory wastes a turn and adds no value.
+- **Skip explore for greenfield projects** (empty directory, no existing code). There is nothing to explore — proceed directly to plan. This includes reading skill files and reference documents — do that during the plan phase instead. A trivial 1-turn explore that only runs \`ls\` on an empty directory wastes a turn and adds no value.
 - Start broad with \`grep\`/\`find\`/\`ls\`; then \`read\` the 3–5 most relevant files in full.
 - Trace imports and call chains across module boundaries — note the actual entry points and seams, not every file you saw.
 - Batch independent reads in a single turn to minimise round-trips.
@@ -18,6 +18,7 @@ export const DEFAULT_RESEARCH_GUIDELINES = `During **research** phase:
 - If research output is non-trivial (more than one fact), save a short markdown note to the Documents directory and reference it from the next phase.`
 
 export const DEFAULT_PLAN_GUIDELINES = `During **plan** phase:
+- If a skill file or reference document exists for this task, read it at the start of the plan phase — not during explore. Skill files contain architectural patterns and conventions that inform the plan.
 - Design BEFORE coding: file paths, interfaces, function signatures, data flow.
 - Save the spec as a markdown file in the Documents directory. The build phase reads from there — do not redo discovery in build.
 - List every file that will be created, modified, or deleted, with concrete paths.
@@ -41,6 +42,7 @@ export const DEFAULT_BUILD_GUIDELINES = `During **build** phase:
 - Always use a timeout when running tests to prevent hanging on deadlocks (e.g. \`go test -timeout 60s\`, \`pytest --timeout=60\`, \`jest --testTimeout=60000\`). Default to 60 seconds unless the task explicitly requires longer.
 - If a tool call fails, diagnose the root cause before retrying — do not retry blindly.
 - Keep diffs minimal and reviewable.
+- Follow the test strategy from the spec exactly. If a specific test table format is requested, match it verbatim — deviating from an explicit testing convention is a spec violation, not a style choice. For example, in Go "map-based test cases" means \`map[string]struct{...}\`, not \`[]struct\`.
 - **Git commits**: Always end every commit message with a blank line followed by \`${KIMCHI_COAUTHOR}\`.`
 
 export const DEFAULT_REVIEW_GUIDELINES = `During **review** phase:
