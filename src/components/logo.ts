@@ -34,8 +34,8 @@ export class LogoHeader implements Component {
 		// Compute right column width with progressive padding reduction for narrow terminals
 		let leftPad = 10
 		let midPad = 10
-		let rightPad = 10
-		let endPad = 10
+		let rightPad = 1
+		let endPad = 1
 		let rightColWidth = width - (2 + leftPad + leftContentWidth + midPad + 1 + rightPad + endPad)
 
 		if (rightColWidth < 8) {
@@ -67,7 +67,7 @@ export class LogoHeader implements Component {
 
 		// Left column: generous vertical padding plus centered logo + info line
 		const unitHeight = logoHeight + midGap + 1
-		const minVerticalPad = 3
+		const minVerticalPad = 2
 		const leftContentHeight = unitHeight + 2 * minVerticalPad
 		const totalHeight = Math.max(rightLines.length, leftContentHeight)
 
