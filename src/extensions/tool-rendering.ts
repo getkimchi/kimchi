@@ -2577,6 +2577,9 @@ function renderGenericToolCall(name: string, args: any, theme: Theme, ctx: any):
 	ctx.state._openAiPatchFiles = []
 	const sp = (path: string) => shortPath(ctx.cwd ?? process.cwd(), path)
 	if (isMcpToolName(name)) {
+		// For MCP calls the summary may already contain ANSI color codes (muted
+		// for the args suffix) so we build the header line directly instead of
+		// passing it through toolHeader() which would re-wrap everything in accent.
 		const packed = stableCallSummary(ctx, "_mcpLabelSummary", () => {
 			const ls = mcpCallLabelAndSummary(args, theme)
 			return `${ls.label}\x00${ls.summary}`
@@ -2584,7 +2587,10 @@ function renderGenericToolCall(name: string, args: any, theme: Theme, ctx: any):
 		const sepIdx = packed.indexOf("\x00")
 		const mcpLabel = sepIdx >= 0 ? packed.slice(0, sepIdx) : "MCP"
 		const mcpSummary = sepIdx >= 0 ? packed.slice(sepIdx + 1) : ""
-		return makeText(ctx.lastComponent, toolHeader(mcpLabel, mcpSummary, theme, toolStatusDot(ctx, theme)))
+		const dot = toolStatusDot(ctx, theme)
+		const labelPart = theme.fg("toolTitle", theme.bold(mcpLabel))
+		const header = mcpSummary ? `${dot}${labelPart} ${WRAP_MARK}${mcpSummary}` : `${dot}${labelPart}`
+		return makeText(ctx.lastComponent, header)
 	}
 	const summary = stableCallSummary(ctx, "_callSummary", () => summarizeGenericToolCall(name, args, theme, sp))
 	return makeText(ctx.lastComponent, toolHeader(genericToolLabel(name), summary, theme, toolStatusDot(ctx, theme)))
@@ -3099,33 +3105,74 @@ function renderApplyPatchResult(result: any, isPartial: boolean, theme: Theme, c
 	)
 }
 
+/** Max chars shown for a single arg value before truncation. */
+const MCP_ARG_VALUE_MAX = 60
+/** Max total chars for the entire (key=val, …) suffix. */
+const MCP_ARGS_SUFFIX_MAX = 120
+
+/**
+ * Keys whose values are typically long blobs (file paths list, prompt text,
+ * raw content). These get truncated more aggressively or skipped when many
+ * other keys are present.
+ */
+const MCP_LONG_VALUE_KEYS = new Set([
+	"prompt",
+	"message",
+	"query",
+	"content",
+	"text",
+	"body",
+	"absolute_file_paths",
+	"file_paths",
+	"files",
+])
+
 /**
  * For an MCP gateway call whose args contain `tool`, parse the nested args
- * JSON and return a short summary of notable parameters (prompt, model, …).
+ * JSON and return a compact `(key=val, key=val)` style plain string (no ANSI),
+ * matching the style used by the `read` tool for offset/limit.
+ * Long values (prompts, file lists) are truncated. The whole suffix is capped
+ * so the call header stays on one line.
  */
-function summarizeMcpToolInvocationArgs(args: any, theme: Theme): string {
+function summarizeMcpToolInvocationArgs(args: any): string {
 	const rawArgs = getStringArg(args, "args")
 	if (!rawArgs) return ""
 	try {
 		const parsed = JSON.parse(rawArgs)
-		if (parsed && typeof parsed === "object") {
-			// Show model if present
-			const model = typeof parsed.model === "string" ? parsed.model : ""
-			// Show a truncated prompt snippet
-			const prompt =
-				typeof parsed.prompt === "string"
-					? parsed.prompt
-					: typeof parsed.message === "string"
-						? parsed.message
-						: typeof parsed.query === "string"
-							? parsed.query
-							: ""
-			if (model && prompt) {
-				return `${theme.fg("muted", model)} ${summarizeText(prompt, 48)}`
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return ""
+
+		const parts: string[] = []
+		// Prioritise short scalar keys first so they always appear.
+		const entries = Object.entries(parsed as Record<string, unknown>)
+		const shortFirst = [
+			...entries.filter(([k]) => !MCP_LONG_VALUE_KEYS.has(k)),
+			...entries.filter(([k]) => MCP_LONG_VALUE_KEYS.has(k)),
+		]
+		for (const [key, val] of shortFirst) {
+			if (val === undefined || val === null) continue
+			let display: string
+			if (Array.isArray(val)) {
+				if (val.length === 0) continue
+				const first = String(val[0])
+				display =
+					val.length === 1
+						? summarizeText(first, MCP_ARG_VALUE_MAX)
+						: `${summarizeText(first, 30)} +${val.length - 1}`
+			} else if (typeof val === "object") {
+				continue // skip nested objects
+			} else {
+				const maxLen = MCP_LONG_VALUE_KEYS.has(key) ? 40 : MCP_ARG_VALUE_MAX
+				display = summarizeText(String(val), maxLen)
 			}
-			if (model) return theme.fg("muted", model)
-			if (prompt) return summarizeText(prompt, 60)
+			const part = `${key}=${display}`
+			// Stop adding parts if we'd exceed the suffix cap.
+			const currentLen = parts.reduce((n, p) => n + p.length + 2, 0)
+			if (currentLen + part.length > MCP_ARGS_SUFFIX_MAX) break
+			parts.push(part)
 		}
+
+		if (parts.length === 0) return ""
+		return `(${parts.join(", ")})`
 	} catch {
 		// not valid JSON — ignore
 	}
@@ -3135,8 +3182,8 @@ function summarizeMcpToolInvocationArgs(args: any, theme: Theme): string {
 function summarizeMcpToolCall(args: any, theme: Theme): string {
 	const tool = getStringArg(args, "tool")
 	if (tool) {
-		const argsSummary = summarizeMcpToolInvocationArgs(args, theme)
-		return argsSummary ? argsSummary : theme.fg("muted", "")
+		const argsSummary = summarizeMcpToolInvocationArgs(args)
+		return argsSummary ? theme.fg("muted", argsSummary) : ""
 	}
 	const connect = getStringArg(args, "connect")
 	if (connect) return connect
@@ -3160,7 +3207,8 @@ function mcpCallLabelAndSummary(
 		const server = getStringArg(args, "server")
 		const toolDisplay = tool.replace(/_/g, " ")
 		const label = server ? `${server} - ${toolDisplay}` : toolDisplay
-		const summary = summarizeMcpToolInvocationArgs(args, theme)
+		const rawSuffix = summarizeMcpToolInvocationArgs(args)
+		const summary = rawSuffix ? theme.fg("muted", rawSuffix) : ""
 		return { label, summary }
 	}
 	if (getStringArg(args, "connect")) {
