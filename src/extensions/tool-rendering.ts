@@ -3164,7 +3164,9 @@ function mcpCallLabelAndSummary(
 ): { label: string; summary: string } {
 	const tool = getStringArg(args, "tool")
 	if (tool) {
-		const label = humanizeToolName(tool)
+		const server = getStringArg(args, "server")
+		const toolDisplay = tool.replace(/_/g, " ")
+		const label = server ? `${server} - ${toolDisplay}` : toolDisplay
 		const summary = summarizeMcpToolInvocationArgs(args, theme)
 		return { label, summary }
 	}
