@@ -54,6 +54,7 @@ export interface TelemetryConfig {
 	endpoint: string
 	metricsEndpoint: string
 	headers: Record<string, string>
+	apiKey: string
 }
 
 export interface SearchStrategyConfig {
@@ -266,14 +267,13 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 
 	// Resolve auth headers: explicit config override takes priority, then API key
 	let headers: Record<string, string>
-	let apiKey: string | undefined
+	const apiKey =
+		(typeof process.env.KIMCHI_API_KEY === "string" && process.env.KIMCHI_API_KEY.length > 0
+			? process.env.KIMCHI_API_KEY
+			: undefined) ?? readApiKeyFromConfigFile(path)
 	if (fileHeaders) {
 		headers = fileHeaders
 	} else {
-		apiKey =
-			(typeof process.env.KIMCHI_API_KEY === "string" && process.env.KIMCHI_API_KEY.length > 0
-				? process.env.KIMCHI_API_KEY
-				: undefined) ?? readApiKeyFromConfigFile(path)
 		headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : {}
 	}
 
@@ -293,6 +293,7 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 		endpoint: fileEndpoint ?? DEFAULT_TELEMETRY_LOGS_ENDPOINT,
 		metricsEndpoint: fileMetricsEndpoint ?? DEFAULT_TELEMETRY_METRICS_ENDPOINT,
 		headers,
+		apiKey: apiKey ?? "",
 	}
 }
 
