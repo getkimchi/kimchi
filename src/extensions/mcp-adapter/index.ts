@@ -2,7 +2,6 @@ import type { ExtensionAPI, ExtensionContext, ToolInfo, ToolRenderResultOptions 
 import { Theme, keyHint } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import type { DirectToolSpec, ToolMetadata } from "./types.js"
-import { formatToolName } from "./types.js"
 import { type Component, Text } from "@earendil-works/pi-tui"
 import { registerToolCall, isToolExpanded } from "../../expand-state.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
@@ -464,7 +463,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 				}
 				if (params.describe) {
 					return executeDescribe(state, params.describe, (specs) =>
-						registerAndActivate(specs.map((s) => ({ ...s, prefixedName: formatToolName(s.originalName, s.serverName, prefix) })), undefined, ctx)
+						registerAndActivate(specs, undefined, ctx)
 					)
 				}
 				if (params.search) {
@@ -476,7 +475,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 					// no API key configured; default is fine
 				}
 				return executeSearch(state, params.search, params.regex, params.server, params.includeSchemas, getPiTools, params.limit ?? mcpSearchLimit, state.searchStrategy, (specs) =>
-					registerAndActivate(specs.map((s) => ({ ...s, prefixedName: formatToolName(s.originalName, s.serverName, prefix) })), undefined, ctx)
+					registerAndActivate(specs, undefined, ctx)
 				)
 				}
 				return {

@@ -289,8 +289,8 @@ export function executeDescribe(
 		injectedNames = onInject([
 			{
 				serverName,
-				originalName: toolMeta.name,
-				prefixedName: toolName,
+				originalName: toolMeta.originalName,
+				prefixedName: toolMeta.name,
 				description: toolMeta.description ?? "",
 				inputSchema: toolMeta.inputSchema,
 				uiResourceUri: toolMeta.uiResourceUri,
@@ -315,7 +315,8 @@ export function executeDescribe(
 	}
 
 	if (injectedNames.length > 0) {
-		text += `\n\nInjected into context. Call it using the exact name shown above (do NOT add any prefix): ${injectedNames[0]}`
+		text += `\n\nInjected into context. Call using the exact name shown above: ${injectedNames[0]}`
+		text += `\n(Available from the next turn. To call now: mcp({ tool: "${toolMeta.originalName}", args: "..." }).)`
 	}
 
 	return {
@@ -439,7 +440,7 @@ export function executeSearch(
 			.filter((m) => !m.tool.resourceUri)
 			.map((m) => ({
 				serverName: m.server,
-				originalName: m.tool.name,
+				originalName: m.tool.originalName,
 				prefixedName: m.tool.name,
 				description: m.tool.description ?? "",
 				inputSchema: m.tool.inputSchema,
@@ -488,7 +489,8 @@ export function executeSearch(
 	}
 
 	if (injectedNames.length > 0) {
-		text += `\nInjected into context. Call using the exact names shown above (do NOT add any prefix): ${injectedNames.join(", ")}`
+		text += `\nInjected into context. Call using the exact name${injectedNames.length > 1 ? "s" : ""} shown above: ${injectedNames.join(", ")}`
+		text += `\n(Available from the next turn. To call now: mcp({ tool: "<name>", args: "..." }).)`
 	}
 
 	return {
