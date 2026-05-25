@@ -156,7 +156,7 @@ export default function helpExtension(pi: ExtensionAPI) {
 								done(undefined)
 								return
 							}
-							const contentLen = buildContentLines(24).length
+							const contentLen = HELP_ROWS.length
 							const vp = viewportHeight()
 							const maxScroll = Math.max(0, contentLen - vp)
 							if (matchesKey(data, Key.up) || data === "k") {
