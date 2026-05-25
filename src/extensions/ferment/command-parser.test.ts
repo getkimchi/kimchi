@@ -60,6 +60,10 @@ describe("parseFermentCommand", () => {
 		expect(parseFermentCommand("resume")).toEqual({ type: "resume-lifecycle" })
 	})
 
+	it("parses bare exit as Ferment mode exit", () => {
+		expect(parseFermentCommand("exit")).toEqual({ type: "exit" })
+	})
+
 	it("parses nested continuation policy commands", () => {
 		expect(parseFermentCommand("manual")).toEqual({ type: "manual-policy" })
 		expect(parseFermentCommand("auto")).toEqual({ type: "auto-policy" })

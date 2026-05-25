@@ -170,7 +170,7 @@ Controls whether the active ferment advances across phase boundaries.
 | **manual** | Ask before moving to the next phase | `/ferment manual` |
 | **automated** | Keep going until complete, blocked, paused, or user input is needed | `/ferment auto` |
 
-Pause/resume is separate: `/ferment pause` stops the ferment, `/ferment resume` continues it using the current policy.
+Pause/resume is separate: `/ferment pause` stops the ferment, `/ferment resume` continues it using the current policy. `/ferment exit` leaves Ferment mode without deleting or abandoning the ferment; planned/running work is paused first, active Ferment UI/tools are cleared, and you can later select it from `/ferment list` or `/ferment switch`.
 
 ### Commands
 
@@ -186,6 +186,7 @@ Pause/resume is separate: `/ferment pause` stops the ferment, `/ferment resume` 
 | `/ferment auto` | Set automated continuation policy |
 | `/ferment pause` | Pause the active ferment lifecycle |
 | `/ferment resume` | Resume the active ferment lifecycle |
+| `/ferment exit` | Leave Ferment mode without deleting the ferment |
 
 ### Recovery
 

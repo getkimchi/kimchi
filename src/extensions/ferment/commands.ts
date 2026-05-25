@@ -3,12 +3,13 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { shortenTitle } from "../../ferment/shorten-title.js"
 import { computeStats, serializeStats } from "../../ferment/stats.js"
 import { FermentError } from "../../ferment/store.js"
+import { requestSharedFooterRender } from "../shared-footer.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { decideContinuation } from "./continuation.js"
 import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
-import { appendRefEntry } from "./nudge.js"
+import { appendRefEntry, resetReactiveContinuationNudgeCount } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import {
 	buildPhaseActionOptions,
@@ -67,6 +68,7 @@ const FERMENT_SUBCOMMAND_COMPLETIONS: FermentArgumentCompletion[] = [
 	{ value: "progress", label: "progress", description: "Open phase/step progress" },
 	{ value: "pause", label: "pause", description: "Pause the active ferment lifecycle" },
 	{ value: "resume", label: "resume", description: "Resume the active ferment lifecycle" },
+	{ value: "exit", label: "exit", description: "Exit Ferment mode" },
 	{ value: "list", label: "list", description: "List ferments" },
 	{ value: "switch ", label: "switch", description: "Switch active ferment by id or name" },
 	{ value: "delete ", label: "delete", description: "Delete a ferment" },
@@ -77,7 +79,7 @@ const FERMENT_SUBCOMMAND_COMPLETIONS: FermentArgumentCompletion[] = [
 ]
 
 const FERMENT_COMMAND_USAGE =
-	'Unknown /ferment command. Use /ferment, /ferment new "Name", /ferment progress, /ferment list, /ferment switch <id-or-name>, /ferment pause, or /ferment resume.'
+	'Unknown /ferment command. Use /ferment, /ferment new "Name", /ferment progress, /ferment list, /ferment switch <id-or-name>, /ferment pause, /ferment resume, or /ferment exit.'
 
 const FERMENT_REVISE_COMPLETIONS: FermentArgumentCompletion[] = [
 	{ value: "revise goal", label: "goal", description: "Revise the ferment goal" },
@@ -418,6 +420,48 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: FermentUiContext, runt
 	}
 }
 
+function exitFermentMode(
+	pi: ExtensionAPI,
+	ctx: FermentUiContext & Pick<ExtensionCommandContext, "abort">,
+	runtime: FermentRuntime,
+): void {
+	const applyAndPersist = createApplyAndPersist(runtime)
+	const active = runtime.getActive()
+	if (!active) {
+		ctx.ui.notify("No active ferment to exit.")
+		return
+	}
+
+	let statusLabel = active.status
+	if (active.status === "running" || active.status === "planned") {
+		const outcome = applyAndPersist(active.id, { type: "pause" })
+		if (!outcome.ok) {
+			ctx.ui.notify(`Failed to exit "${active.name}": ${outcome.error.message}`)
+			return
+		}
+		statusLabel = "paused"
+	}
+
+	runtime.clearPendingPlanReview(active.id)
+	runtime.clearPendingScope(active.id)
+	runtime.consumeScopingGate(active.id)
+	resetReactiveContinuationNudgeCount(active.id)
+	setActiveFermentAndApplyProfile(pi, runtime, undefined)
+	const detail = formatExitDetail(statusLabel)
+	const message = `Exited Ferment mode for "${active.name}". ${detail}`
+	sendBreadcrumb(pi, message, "ack", "ferment_ack")
+	ctx.ui.notify(message)
+	requestSharedFooterRender()
+	ctx.abort()
+}
+
+function formatExitDetail(status: string): string {
+	if (status === "paused") return "It is paused and can be selected later from /ferment list or /ferment switch."
+	if (status === "complete" || status === "abandoned")
+		return `It remains ${status} and is still available from /ferment list.`
+	return `It remains ${status} and can be selected later from /ferment list or /ferment switch.`
+}
+
 export class FermentCommandController {
 	async execute(command: FermentCliCommand, deps: FermentCommandDeps): Promise<FermentCommandResult> {
 		const { pi, ctx, runtime } = deps
@@ -511,6 +555,11 @@ export class FermentCommandController {
 
 		if (command.type === "progress") {
 			await openFermentProgress(pi, ctx, runtime)
+			return { handled: true }
+		}
+
+		if (command.type === "exit") {
+			exitFermentMode(pi, ctx, runtime)
 			return { handled: true }
 		}
 
