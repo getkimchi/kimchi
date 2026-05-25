@@ -86,27 +86,27 @@ describe("session mode picker rendering", () => {
 		expect(lines).toEqual([
 			"",
 			"  > Try a /ferment workflow",
-			"    The agent breaks the task into phases, self-evaluates its output and delivers with minimal interruptions.",
+			"    The agent breaks the task into milestones, self-evaluates its output and delivers with minimal interruptions.",
 			"",
-			"    Just chat and code",
+			"    Skip",
 			"",
 		])
 		expect(text).toContain("Try a /ferment workflow")
 		expect(text).toContain(
-			"The agent breaks the task into phases, self-evaluates its output and delivers with minimal interruptions.",
+			"The agent breaks the task into milestones, self-evaluates its output and delivers with minimal interruptions.",
 		)
-		expect(text).toContain("Just chat and code")
+		expect(text).toContain("Skip")
 		expect(text).not.toContain("Tip:")
 	})
 
 	it("marks the selected option", () => {
 		let lines = renderSessionModePickerLines(initialSessionModePickerState(), theme(), 100)
 		expect(lines.some((line) => line.includes("> Try a /ferment workflow"))).toBe(true)
-		expect(lines.some((line) => line.includes("> Just chat and code"))).toBe(false)
+		expect(lines.some((line) => line.includes("> Skip"))).toBe(false)
 
 		const state = reduceSessionModePicker(initialSessionModePickerState(), "down").state
 		lines = renderSessionModePickerLines(state, theme(), 100)
-		expect(lines.some((line) => line.includes("> Just chat and code"))).toBe(true)
+		expect(lines.some((line) => line.includes("> Skip"))).toBe(true)
 	})
 })
 
