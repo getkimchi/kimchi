@@ -11,8 +11,7 @@ Install the latest release:
 **Homebrew (macOS / Linux):**
 
 ```bash
-brew tap castai/tap
-brew install castai/tap/kimchi
+brew install getkimchi/tap/kimchi
 ```
 
 **Install script:**
