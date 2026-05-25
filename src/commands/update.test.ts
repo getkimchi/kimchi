@@ -30,7 +30,6 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 		})),
 	}
 })const ensureSuperpowersInstalledMock = vi.fn()
-const getSuperpowersVendorDirMock = vi.fn(() => "/tmp") // default: exists
 
 vi.mock("../update/paths.js", () => ({
 	isHomebrewInstall: () => isHomebrewInstallMock(),
@@ -44,9 +43,6 @@ vi.mock("../utils.js", () => ({
 }))
 vi.mock("../extensions/superpowers/installer.js", () => ({
 	ensureSuperpowersInstalled: (...args: unknown[]) => ensureSuperpowersInstalledMock(...args),
-}))
-vi.mock("../extensions/superpowers/config.js", () => ({
-	getSuperpowersVendorDir: () => getSuperpowersVendorDirMock(),
 }))
 
 const { runUpdate } = await import("./update.js")
@@ -191,8 +187,6 @@ describe("runUpdate non-interactive composition", () => {
 		settingsManagerCreateMock.mockReturnValue({})
 		ensureSuperpowersInstalledMock.mockReset()
 		ensureSuperpowersInstalledMock.mockResolvedValue(true)
-		getSuperpowersVendorDirMock.mockReset()
-		getSuperpowersVendorDirMock.mockReturnValue("/tmp") // /tmp always exists
 	})
 
 	afterEach(() => {
@@ -310,18 +304,5 @@ describe("runUpdate package targets", () => {
 		ensureSuperpowersInstalledMock.mockRejectedValue(new Error("offline"))
 		const code = await runUpdate(["--force"])
 		expect(code).toBe(0)
-	})
-
-	it("skips superpowers install when vendor dir does not exist (user opted out)", async () => {
-		getSuperpowersVendorDirMock.mockReturnValue("/nonexistent/vendor/superpowers")
-		checkForUpdateMock.mockResolvedValue({
-			hasUpdate: true,
-			latestVersion: "v0.0.80",
-			tag: "v0.0.80",
-		})
-		applyUpdateMock.mockResolvedValue(undefined)
-		const code = await runUpdate(["--force"])
-		expect(code).toBe(0)
-		expect(ensureSuperpowersInstalledMock).not.toHaveBeenCalled()
 	})
 })
