@@ -70,37 +70,38 @@ function formatError(err: unknown): string {
 	return err instanceof Error ? err.message : String(err)
 }
 
-interface PiRecord {
-	handles: Set<BlocksHandle>
-}
-
-const recordsByPi = new WeakMap<ExtensionAPI, PiRecord>()
-
-function getRecord(pi: ExtensionAPI): PiRecord {
-	let record = recordsByPi.get(pi)
-	if (!record) {
-		record = { handles: new Set() }
-		recordsByPi.set(pi, record)
-		const recordForHandler = record
-		pi.on("session_shutdown", () => {
-			recordsByPi.delete(pi)
-			recordForHandler.handles.clear()
-		})
-	}
-	return record
-}
+// Each extension receives a unique ExtensionAPI object from pi-mono's loader
+// (createExtensionAPI is called once per factory, producing distinct references).
+// A WeakMap keyed by api-per-extension cannot be used for cross-extension lookup.
+// Instead use a global handle set; session cleanup tracks unique pi references so
+// the set is cleared exactly once when the last session shuts down.
+const globalHandles = new Set<BlocksHandle>()
+const cleanupRegisteredPis = new WeakSet<ExtensionAPI>()
+let activePiCount = 0
 
 export function createSystemPromptBlocks(pi: ExtensionAPI, owner: string): SystemPromptBlocksHandle {
 	const handle = new BlocksHandle(pi, owner)
-	getRecord(pi).handles.add(handle)
+	globalHandles.add(handle)
+	if (!cleanupRegisteredPis.has(pi)) {
+		cleanupRegisteredPis.add(pi)
+		activePiCount++
+		pi.on("session_shutdown", () => {
+			activePiCount--
+			if (activePiCount <= 0) {
+				globalHandles.clear()
+				activePiCount = 0
+			}
+		})
+	}
 	return handle
 }
 
-export function renderSystemPromptBlocks(pi: ExtensionAPI, ctx: SystemPromptBlockContext): RenderedSystemPromptBlock[] {
+export function renderSystemPromptBlocks(
+	_pi: ExtensionAPI,
+	ctx: SystemPromptBlockContext,
+): RenderedSystemPromptBlock[] {
 	const rendered: RenderedSystemPromptBlock[] = []
-	const record = recordsByPi.get(pi)
-	if (!record) return rendered
-	for (const handle of record.handles) {
+	for (const handle of globalHandles) {
 		rendered.push(...handle.render(ctx))
 	}
 	return rendered.sort((a, b) => {

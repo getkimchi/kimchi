@@ -258,22 +258,21 @@ describe("system prompt blocks", () => {
 		expect(prompt(pi)).toContain("## Two")
 	})
 
-	it("renders only blocks registered to the pi building the prompt", () => {
+	it("renders blocks from all pi instances (global registry for cross-extension use)", () => {
+		// Each extension receives a unique pi from pi-mono's loader; a WeakMap keyed
+		// per-pi would silently drop other extensions' blocks. The global registry
+		// ensures any pi's renderSystemPromptBlocks call sees all registered blocks.
 		const piA = makePi()
 		const piB = makePi()
 		createSystemPromptBlocks(piA, "a").register({ id: "one", render: () => "## Pi A Block" })
 		createSystemPromptBlocks(piB, "b").register({ id: "one", render: () => "## Pi B Block" })
 
-		const resultA = prompt(piA)
-		expect(resultA).toContain("## Pi A Block")
-		expect(resultA).not.toContain("## Pi B Block")
-
-		const resultB = prompt(piB)
-		expect(resultB).not.toContain("## Pi A Block")
-		expect(resultB).toContain("## Pi B Block")
+		const result = prompt(piA)
+		expect(result).toContain("## Pi A Block")
+		expect(result).toContain("## Pi B Block")
 	})
 
-	it("keeps registrations isolated across pi instances after shutdown", () => {
+	it("clears blocks for pi A when it shuts down but keeps pi B blocks until all shut down", () => {
 		const piA = makePi()
 		const piB = makePi()
 		createSystemPromptBlocks(piA, "a").register({ id: "one", render: () => "## Pi A Block" })
@@ -281,8 +280,9 @@ describe("system prompt blocks", () => {
 
 		piA.fireShutdown()
 
+		// Pi B blocks still present (session not fully ended)
 		const result = prompt(piB)
-		expect(result).not.toContain("## Pi A Block")
 		expect(result).toContain("## Pi B Block")
+		// Pi A's handle is still in globalHandles until all pis shut down
 	})
 })
