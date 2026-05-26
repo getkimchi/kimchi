@@ -1,9 +1,20 @@
 import type { TextContent, ToolResultMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
-import contextCompactorExtension, { computeCutoff, pruneToolResult } from "./context-compactor.js"
+import contextCompactorExtension, {
+	compactText,
+	computeCutoff,
+	pruneToolResult,
+	RETAIN_HEAD_LINES,
+	RETAIN_TAIL_LINES,
+} from "./context-compactor.js"
 
 // helpers
+/** Create multi-line text that will be compacted (>60 lines, >minChars chars) */
+function makeBigText(lines = 100): string {
+	return Array.from({ length: lines }, (_, i) => `line ${String(i + 1).padStart(4, "0")}: ${"x".repeat(20)}`).join("\n")
+}
+
 function makeToolResult(toolName: string, text: string, isError = false): ToolResultMessage {
 	return {
 		role: "toolResult",
@@ -92,6 +103,64 @@ describe("computeCutoff", () => {
 	})
 })
 
+// ── compactText ──────────────────────────────────────────────────────────────
+
+describe("compactText", () => {
+	it("returns text unchanged when total lines <= headLines + tailLines", () => {
+		const text = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join("\n")
+		const result = compactText(text, 30, 30)
+		expect(result.compacted).toBe(false)
+		expect(result.text).toBe(text)
+	})
+
+	it("returns text unchanged for fewer lines than head + tail", () => {
+		const text = "one\ntwo\nthree"
+		const result = compactText(text, 30, 30)
+		expect(result.compacted).toBe(false)
+		expect(result.text).toBe(text)
+	})
+
+	it("compacts text with more lines than head + tail", () => {
+		const lines = Array.from({ length: 100 }, (_, i) => `line ${i + 1}`)
+		const text = lines.join("\n")
+		const result = compactText(text, 5, 5)
+		expect(result.compacted).toBe(true)
+		// Should have first 5 lines
+		expect(result.text).toContain("line 1")
+		expect(result.text).toContain("line 5")
+		// Should have last 5 lines
+		expect(result.text).toContain("line 96")
+		expect(result.text).toContain("line 100")
+		// Should NOT have middle lines
+		expect(result.text).not.toContain("line 50")
+	})
+
+	it("shows correct omitted line count in separator", () => {
+		const lines = Array.from({ length: 100 }, (_, i) => `line ${i + 1}`)
+		const text = lines.join("\n")
+		const result = compactText(text, 5, 5)
+		expect(result.text).toContain("... [90 lines omitted] ...")
+	})
+
+	it("handles 61 lines (just over head + tail of 30+30) correctly", () => {
+		const lines = Array.from({ length: 61 }, (_, i) => `line ${i + 1}`)
+		const text = lines.join("\n")
+		const result = compactText(text, 30, 30)
+		expect(result.compacted).toBe(true)
+		expect(result.text).toContain("... [1 lines omitted] ...")
+		expect(result.text).toContain("line 1")
+		expect(result.text).toContain("line 30")
+		expect(result.text).toContain("line 32")
+		expect(result.text).toContain("line 61")
+		expect(result.text).not.toContain("\nline 31\n")
+	})
+
+	it("uses default RETAIN_HEAD_LINES and RETAIN_TAIL_LINES values of 30", () => {
+		expect(RETAIN_HEAD_LINES).toBe(30)
+		expect(RETAIN_TAIL_LINES).toBe(30)
+	})
+})
+
 // ── pruneToolResult ──────────────────────────────────────────────────────────
 
 describe("pruneToolResult", () => {
@@ -104,11 +173,29 @@ describe("pruneToolResult", () => {
 		expect(msg.content[0]).toHaveProperty("text", "x".repeat(20)) // original unchanged
 	})
 
-	it("replaces large text content with placeholder", () => {
-		const msg = makeToolResult("bash", "x".repeat(20))
-		const result = pruneToolResult(msg, MIN_PRUNE_CHARS)
-		expect(result.content[0]).toHaveProperty("type", "text")
-		expect((result.content[0] as TextContent).text).toContain("[compacted: bash output")
+	it("compacts large text content with head + tail retention", () => {
+		// 100 lines, each ~10 chars → well over MIN_PRUNE_CHARS
+		const lines = Array.from({ length: 100 }, (_, i) => `line ${String(i + 1).padStart(3, "0")}`)
+		const text = lines.join("\n")
+		const msg = makeToolResult("read", text)
+		const result = pruneToolResult(msg, MIN_PRUNE_CHARS, 5, 5)
+		const output = (result.content[0] as TextContent).text
+		expect(output).toContain("[compacted: read output")
+		expect(output).toContain("line 001")
+		expect(output).toContain("line 005")
+		expect(output).toContain("line 096")
+		expect(output).toContain("line 100")
+		expect(output).toContain("... [90 lines omitted] ...")
+		expect(output).not.toContain("line 050")
+	})
+
+	it("leaves text intact when lines fit within head + tail", () => {
+		// 8 lines, headLines=5 tailLines=5 → total 8 <= 10, no compaction
+		const lines = Array.from({ length: 8 }, (_, i) => `line ${i + 1}`)
+		const longLine = `${lines.join("\n")}\n${"x".repeat(200)}` // enough chars to exceed MIN_PRUNE_CHARS
+		const msg = makeToolResult("bash", longLine)
+		const result = pruneToolResult(msg, MIN_PRUNE_CHARS, 5, 5)
+		expect((result.content[0] as TextContent).text).toBe(longLine)
 	})
 
 	it("leaves small text content untouched", () => {
@@ -118,6 +205,7 @@ describe("pruneToolResult", () => {
 	})
 
 	it("preserves non-text content blocks unchanged", () => {
+		const bigText = Array.from({ length: 100 }, (_, i) => `line ${i + 1}`).join("\n")
 		const msg: ToolResultMessage = {
 			role: "toolResult",
 			toolCallId: "id-1",
@@ -125,13 +213,13 @@ describe("pruneToolResult", () => {
 			content: [
 				// biome-ignore lint/suspicious/noExplicitAny: image block not in TextContent union
 				{ type: "image", source: { type: "base64", mediaType: "image/png", data: "abc" } } as any,
-				{ type: "text", text: "x".repeat(20) },
+				{ type: "text", text: bigText },
 			],
 			details: undefined,
 			isError: false,
 			timestamp: 0,
 		}
-		const result = pruneToolResult(msg, MIN_PRUNE_CHARS)
+		const result = pruneToolResult(msg, MIN_PRUNE_CHARS, 5, 5)
 		expect(result.content[0]).toHaveProperty("type", "image") // untouched
 		expect((result.content[1] as TextContent).text).toContain("[compacted")
 	})
@@ -153,6 +241,20 @@ describe("pruneToolResult", () => {
 		expect(result.toolName).toBe(msg.toolName)
 		expect(result.isError).toBe(msg.isError)
 		expect(result.timestamp).toBe(msg.timestamp)
+	})
+
+	it("uses default head/tail line counts when not specified", () => {
+		// 100 lines → with defaults (30+30), 40 lines omitted
+		const lines = Array.from({ length: 100 }, (_, i) => `line ${String(i + 1).padStart(3, "0")}`)
+		const text = lines.join("\n")
+		const msg = makeToolResult("read", text)
+		const result = pruneToolResult(msg, MIN_PRUNE_CHARS)
+		const output = (result.content[0] as TextContent).text
+		expect(output).toContain("... [40 lines omitted] ...")
+		expect(output).toContain("line 001")
+		expect(output).toContain("line 030")
+		expect(output).toContain("line 071")
+		expect(output).toContain("line 100")
 	})
 })
 
@@ -222,7 +324,7 @@ describe("contextCompactorExtension", () => {
 		contextCompactorExtension(pi)
 		await trigger("message_end", makeMessageEndEvent(40_000))
 		// 1 old tool result + 30 recent messages → cutoff = 1, index 0 is pruned
-		const oldOutput = makeToolResult("bash", "x".repeat(600)) // > MIN_PRUNE_CHARS=500
+		const oldOutput = makeToolResult("bash", makeBigText()) // multi-line, > MIN_PRUNE_CHARS=500
 		const recent = Array.from({ length: 30 }, makeUser)
 		const messages = [oldOutput, ...recent] as ContextEvent["messages"]
 		const result = (await trigger("context", { messages })) as { messages: ContextEvent["messages"] }
@@ -248,7 +350,7 @@ describe("contextCompactorExtension", () => {
 		const { pi, trigger, entries } = makeMockPI()
 		contextCompactorExtension(pi)
 		await trigger("message_end", makeMessageEndEvent(40_000))
-		const oldOutput = makeToolResult("bash", "x".repeat(600)) // 600 chars, pruned to placeholder
+		const oldOutput = makeToolResult("bash", makeBigText()) // multi-line, pruned via graduated compaction
 		const recent = Array.from({ length: 30 }, makeUser)
 		const messages = [oldOutput, ...recent] as ContextEvent["messages"]
 		await trigger("context", { messages })
@@ -268,9 +370,9 @@ describe("contextCompactorExtension", () => {
 		// oldTool (index 0) is prunable, userMsg (index 1) must be preserved,
 		// and 30 tool results (indices 2-31) fill the protected window.
 		// baseCutoff = 2 would drop userMsg; floor brings it down to 1.
-		const oldTool = makeToolResult("bash", "x".repeat(600))
+		const oldTool = makeToolResult("bash", makeBigText())
 		const userMsg = makeUser()
-		const recent = Array.from({ length: 30 }, () => makeToolResult("bash", "x".repeat(600)))
+		const recent = Array.from({ length: 30 }, () => makeToolResult("bash", makeBigText()))
 		const messages = [oldTool, userMsg, ...recent] as ContextEvent["messages"]
 
 		const result = (await trigger("context", { messages })) as { messages: ContextEvent["messages"] }

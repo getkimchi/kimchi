@@ -7,6 +7,11 @@ const PROTECT_WINDOW = 30
 const MAX_PROTECTED_CHARS = 100_000
 const MIN_PRUNE_CHARS = 500
 
+/** Number of lines to retain from the start of a compacted text block. */
+export const RETAIN_HEAD_LINES = 30
+/** Number of lines to retain from the end of a compacted text block. */
+export const RETAIN_TAIL_LINES = 30
+
 /**
  * Walk backwards through messages to find the cutoff index.
  * Messages at index >= cutoff are kept; messages before cutoff are candidates for pruning.
@@ -63,12 +68,42 @@ function findLastUserMessageIndex(messages: ContextEvent["messages"]): number {
 }
 
 /**
+ * Compact a text block using graduated head+tail retention.
+ *
+ * If the text has more lines than headLines + tailLines, keeps the first
+ * headLines and the last tailLines with an informative separator showing
+ * how many lines were omitted. Otherwise returns the text unchanged.
+ */
+export function compactText(text: string, headLines: number, tailLines: number): { text: string; compacted: boolean } {
+	const lines = text.split("\n")
+	const totalLines = lines.length
+
+	if (totalLines <= headLines + tailLines) {
+		return { text, compacted: false }
+	}
+
+	const head = lines.slice(0, headLines).join("\n")
+	const tail = lines.slice(totalLines - tailLines).join("\n")
+	const omitted = totalLines - headLines - tailLines
+
+	return {
+		text: `${head}\n\n... [${omitted} lines omitted] ...\n\n${tail}`,
+		compacted: true,
+	}
+}
+
+/**
  * Return a pruned copy of a ToolResultMessage.
- * - Large text blocks are replaced with a placeholder (preserves all other fields).
+ * - Large text blocks are compacted to first N + last N lines with an omission separator.
  * - Error outputs keep the last 2000 chars so the agent can still read the crash reason.
  * - Non-text content blocks (images, etc.) are left untouched.
  */
-export function pruneToolResult(msg: ToolResultMessage, minPruneChars: number): ToolResultMessage {
+export function pruneToolResult(
+	msg: ToolResultMessage,
+	minPruneChars: number,
+	headLines = RETAIN_HEAD_LINES,
+	tailLines = RETAIN_TAIL_LINES,
+): ToolResultMessage {
 	return {
 		...msg,
 		content: msg.content.map((block) => {
@@ -81,9 +116,12 @@ export function pruneToolResult(msg: ToolResultMessage, minPruneChars: number): 
 					text: `[compacted: ${msg.toolName} error, ${block.text.length} chars]\n...\n${tail}`,
 				}
 			}
+			const result = compactText(block.text, headLines, tailLines)
 			return {
 				...block,
-				text: `[compacted: ${msg.toolName} output, ${block.text.length} chars]`,
+				text: result.compacted
+					? `[compacted: ${msg.toolName} output, ${block.text.length} chars]\n${result.text}`
+					: block.text,
 			}
 		}),
 	}
