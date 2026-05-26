@@ -49,6 +49,7 @@ describe("dispatchSubcommand", () => {
 		// Sections we expect from the custom renderer
 		expect(printed).toContain("Subcommands:")
 		expect(printed).toContain("kimchi setup")
+		expect(printed).toContain("kimchi setup-tools")
 		expect(printed).toContain("kimchi claude")
 		expect(printed).toContain("Harness flags")
 		expect(printed).toContain("--provider")

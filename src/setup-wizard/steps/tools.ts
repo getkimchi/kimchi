@@ -5,29 +5,27 @@ import { multiselect } from "../prompt.js"
 import type { WizardState } from "../state.js"
 
 /**
- * Tools step — multi-select which tools to configure. The list is built
- * from the integrations registry, with each option's hint reflecting
- * detection state (installed / not detected). Pre-selects the tools we
- * detect as installed; users can flip individual toggles.
+ * Standalone prompt for tool selection. Can be used both inside the setup
+ * wizard and by the `setup-tools` standalone command.
  *
- * Tools whose `isInstalled()` returns false are still selectable — useful
- * when the user is about to install the binary alongside.
+ * Returns the raw outcome so callers decide what to do with back/cancel.
  */
-export async function runToolsStep(state: WizardState, opts: { backable: boolean }): Promise<void> {
+export async function promptToolSelection(opts: {
+	backable: boolean
+}): Promise<{ kind: "next"; value: ToolId[] } | { kind: "back" } | { kind: "cancel" }> {
 	const tools = allTools()
 	if (tools.length === 0) {
 		// Defensive: only reachable if no integration modules were imported,
 		// which means the wizard was wired wrong. Bail with a clear message
 		// rather than a silent empty selection.
 		note("No integrations registered. This is a wiring bug; please report it.", "No tools available")
-		state.cancelled = true
-		return
+		return { kind: "cancel" }
 	}
 
 	const installed = new Set(tools.filter((t) => t.isInstalled()).map((t) => t.id))
 	const initial = tools.filter((t) => installed.has(t.id)).map((t) => t.id)
 
-	const r = await multiselect<ToolId>({
+	return await multiselect<ToolId>({
 		message: "Which tools should be configured?",
 		options: tools.map((t) => ({
 			value: t.id,
@@ -38,6 +36,19 @@ export async function runToolsStep(state: WizardState, opts: { backable: boolean
 		required: false,
 		backable: opts.backable,
 	})
+}
+
+/**
+ * Tools step — multi-select which tools to configure. The list is built
+ * from the integrations registry, with each option's hint reflecting
+ * detection state (installed / not detected). Pre-selects the tools we
+ * detect as installed; users can flip individual toggles.
+ *
+ * Tools whose `isInstalled()` returns false are still selectable — useful
+ * when the user is about to install the binary alongside.
+ */
+export async function runToolsStep(state: WizardState, opts: { backable: boolean }): Promise<void> {
+	const r = await promptToolSelection(opts)
 
 	if (r.kind === "back") {
 		state.back = true
