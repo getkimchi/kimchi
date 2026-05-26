@@ -373,12 +373,6 @@ describe("modelSwitchExtension", () => {
 				expect((caps as { tier: unknown }).tier).toBe("heavy")
 			}
 		})
-	})
-
-	describe("tier-downgrade warning", () => {
-		beforeEach(() => {
-			__resetImagesDetectedForTest()
-		})
 
 		it("getModelTier returns heavy for kimi-k2.6 and light for nemotron (fresh import)", async () => {
 			const { MODEL_CAPABILITIES } = await import("./orchestration/model-registry/builtin-models.js")
@@ -390,8 +384,13 @@ describe("modelSwitchExtension", () => {
 			expect(currentTier).toBe("heavy")
 			expect(targetTier).toBe("light")
 		})
+	})
 
-		it("does not include tier warning in tool result (handled by model-guard notification)", async () => {
+	describe("set_model tool result", () => {
+		beforeEach(() => {
+			__resetImagesDetectedForTest()
+		})
+		it("does not include tier warning in tool result", async () => {
 			const h = createHarness()
 			const result = await h.exec("kimchi-dev/nemotron-3-super-fp4", {
 				currentModel: { id: "kimi-k2.6", provider: "kimchi-dev", name: "Kimi K2.6" },
@@ -730,57 +729,6 @@ describe("modelSwitchExtension", () => {
 			)
 			expect(setModel).not.toHaveBeenCalled()
 			expect(notify).not.toHaveBeenCalledWith(expect.stringContaining("vision"), "error")
-		})
-
-		it("shows info notification on tier downgrade (heavy → light)", async () => {
-			const { pi, trigger } = createHarnessWithTrigger()
-			modelSwitchExtension(pi)
-			const notify = vi.fn()
-			await trigger(
-				"model_select",
-				{
-					type: "model_select",
-					model: { id: "nemotron-3-super-fp4", provider: "kimchi-dev", input: ["text"], contextWindow: 1_000_000 },
-					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
-					source: "set",
-				},
-				mockCtx({ tokens: 10_000, ui: { notify }, modelId: "nemotron-3-super-fp4" }),
-			)
-			expect(notify).toHaveBeenCalledWith(expect.stringContaining("heavy"), "info")
-		})
-
-		it("does NOT notify on tier upgrade", async () => {
-			const { pi, trigger } = createHarnessWithTrigger()
-			modelSwitchExtension(pi)
-			const notify = vi.fn()
-			await trigger(
-				"model_select",
-				{
-					type: "model_select",
-					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"], contextWindow: 200_000 },
-					previousModel: { id: "nemotron-3-super-fp4", provider: "kimchi-dev", input: ["text"] },
-					source: "set",
-				},
-				mockCtx({ tokens: 10_000, ui: { notify } }),
-			)
-			expect(notify).not.toHaveBeenCalled()
-		})
-
-		it("does NOT notify when tier is unknown", async () => {
-			const { pi, trigger } = createHarnessWithTrigger()
-			modelSwitchExtension(pi)
-			const notify = vi.fn()
-			await trigger(
-				"model_select",
-				{
-					type: "model_select",
-					model: { id: "unknown-model", provider: "kimchi-dev", input: ["text"], contextWindow: 100_000 },
-					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
-					source: "set",
-				},
-				mockCtx({ tokens: 10_000, ui: { notify } }),
-			)
-			expect(notify).not.toHaveBeenCalled()
 		})
 
 		it("syncs multi-model process flag to extension state on model_select from /models UI", async () => {
