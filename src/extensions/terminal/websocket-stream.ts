@@ -2,7 +2,7 @@
 'use strict';
 
 import WebSocket from 'ws'
-import { Duplex } from 'node:stream'
+import { Duplex, DuplexOptions } from 'node:stream'
 
 /**
  * Emits the `'close'` event on a stream.
@@ -15,32 +15,6 @@ function emitClose(stream: Duplex) {
 }
 
 /**
- * The listener of the `'end'` event.
- *
- * @private
- */
-function duplexOnEnd() {
-  if (!this.destroyed && this._writableState.finished) {
-    this.destroy();
-  }
-}
-
-/**
- * The listener of the `'error'` event.
- *
- * @param {Error} err The error
- * @private
- */
-function duplexOnError(err) {
-  this.removeListener('error', duplexOnError);
-  this.destroy();
-  if (this.listenerCount('error') === 0) {
-    // Do not suppress the throwing behavior.
-    this.emit('error', err);
-  }
-}
-
-/**
  * Wraps a `WebSocket` in a duplex stream.
  *
  * @param {WebSocket} ws The `WebSocket` to wrap
@@ -48,7 +22,7 @@ function duplexOnError(err) {
  * @return {Duplex} The duplex stream
  * @public
  */
-export function createWebSocketStream(ws: WebSocket, options: any) {
+export function createWebSocketStream(ws: WebSocket, options: DuplexOptions) {
   let terminateOnDestroy = true;
 
   const duplex = new Duplex({
@@ -61,12 +35,12 @@ export function createWebSocketStream(ws: WebSocket, options: any) {
 
   ws.on('message', function message(msg: any, isBinary: boolean) {
     const data =
-      !isBinary && duplex._readableState.objectMode ? msg.toString() : msg;
+      !isBinary && (duplex as any)._readableState.objectMode ? msg.toString() : msg;
 
     if (!duplex.push(data)) ws.pause();
   });
 
-  ws.once('error', function error(err) {
+  ws.once('error', function error(err: any) {
     if (duplex.destroyed) return;
 
     // Prevent `ws.terminate()` from being called by `duplex._destroy()`.
@@ -97,7 +71,7 @@ export function createWebSocketStream(ws: WebSocket, options: any) {
 
     let called = false;
 
-    ws.once('error', function error(err) {
+    ws.once('error', function error(err: any) {
       called = true;
       callback(err);
     });
@@ -122,13 +96,13 @@ export function createWebSocketStream(ws: WebSocket, options: any) {
     // client websocket and the handshake failed. In fact, when this happens, a
     // socket is never assigned to the websocket. Wait for the `'error'` event
     // that will be emitted by the websocket.
-    if (ws._socket === null) return;
+    if ((ws as any)._socket === null) return;
 
-    if (ws._socket._writableState.finished) {
+    if ((ws as any)._socket._writableState.finished) {
       callback();
-      if (duplex._readableState.endEmitted) duplex.destroy();
+      if ((duplex as any)._readableState.endEmitted) duplex.destroy();
     } else {
-      ws._socket.once('finish', function finish() {
+      (ws as any)._socket.once('finish', function finish() {
         // `duplex` is not destroyed here because the `'end'` event will be
         // emitted on `duplex` after this `'finish'` event. The EOF signaling
         // `null` chunk is, in fact, pushed when the websocket emits `'close'`.
@@ -153,7 +127,21 @@ export function createWebSocketStream(ws: WebSocket, options: any) {
     ws.send(chunk, callback);
   };
 
-  duplex.on('end', duplexOnEnd);
-  duplex.on('error', duplexOnError);
+  duplex.on('end', () => {
+    if (!duplex.destroyed && (duplex as any)._writableState.finished) {
+      duplex.destroy();
+    }
+  });
+  duplex.on('error', (err) => {
+    if (duplex.destroyed) {
+      return
+    }
+
+    duplex.destroy();
+    if (duplex.listenerCount('error') === 0) {
+      // Do not suppress the throwing behavior.
+      duplex.emit('error', err);
+    }
+  });
   return duplex;
 }

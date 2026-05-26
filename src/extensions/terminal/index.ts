@@ -4,6 +4,7 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { TerminalComponent } from "./terminal-component.js"
+import { createGhosttyCore } from "./ghostty-loader.js"
 import { SshSession } from "./ssh-session.js"
 import { parseTerminalArgs } from "./args.js"
 import fs from 'node:fs'
@@ -32,9 +33,10 @@ export default function terminalExtension(pi: ExtensionAPI): void {
       ctx.ui.custom(
         async (tui, _theme, _kb, done) => {
           overlayTui = tui
-          component = new TerminalComponent(tui, session)
+          const core = await createGhosttyCore()
+          component = new TerminalComponent(tui, session, core)
 
-          component!.terminal.write(`Connecting to ${parsed.host}...\r\n`)
+          component!.terminal.writeString(`Connecting to ${parsed.host}...\r\n`)
           tui.requestRender()
 
           session.connect(parsed, {
