@@ -207,6 +207,11 @@ class Kimchi(BaseInstalledAgent):
             _validate_model_name(self.model_name)
 
         cli_flags = self.build_cli_flags()
+        # KIMCHI_MULTI_MODEL=false (forwarded via --ae) → append --multi-model=false.
+        # Lets a single task be run in either orchestrator or single-model mode without
+        # duplicating the task definition; the mode is purely run-time config.
+        if self._extra_env.get("KIMCHI_MULTI_MODEL", "").strip().lower() in ("false", "0", "off", "no"):
+            cli_flags = f"{cli_flags} --multi-model=false" if cli_flags else "--multi-model=false"
         if cli_flags:
             cli_flags += " "
 

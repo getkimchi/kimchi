@@ -1,0 +1,33 @@
+version = "1.0"
+
+[task]
+name = "kimchi-smoke/go-router-research"
+description = "Research-style task: research the top 3 third-party Go HTTP router libraries and write a brief comparison."
+keywords = ["research", "web-search", "go", "non-coding"]
+[[task.authors]]
+name = "kimchi-dev"
+
+[metadata]
+difficulty = "easy"
+category = "research"
+tags = ["research", "smoke"]
+note = "Verifier only checks that the agent produced a non-trivial answer. Compare runs via session artifacts (tokens, subagent count, duration), not reward."
+
+[verifier]
+timeout_sec = 120.0
+
+[agent]
+timeout_sec = 300.0
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 1024
+storage_mb = 2048
+gpus = 0
+allow_internet = true
+mcp_servers = []
+
+[verifier.env]
+
+[solution.env]
