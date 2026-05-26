@@ -1163,5 +1163,44 @@ describe("telemetryExtension", () => {
 			)
 			expect(outputMetric?.sum?.dataPoints[0]?.asInt).toBe("150")
 		})
+		it("maps subscription provider IDs to canonical names in telemetry logs", async () => {
+			const { handlers, api } = createMockApi()
+			const ext = telemetryExtension(makeConfig())
+			ext(api)
+
+			await getHandler(handlers, "session_start")()
+
+			await getHandler(
+				handlers,
+				"message_end",
+			)({
+				message: {
+					role: "assistant",
+					model: "test-model",
+					provider: "openai-codex",
+					timestamp: Date.now(),
+					usage: {
+						input: 10,
+						output: 5,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: { total: 0.001 },
+					},
+				},
+			})
+
+			await getHandler(handlers, "session_shutdown")()
+
+			const logCalls = fetchMock.mock.calls.filter(
+				([url]) => String(url) === "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest",
+			)
+			expect(logCalls.length).toBeGreaterThanOrEqual(1)
+
+			const payload = JSON.parse(String((logCalls[0][1] as RequestInit).body))
+			const logRecord = payload.resourceLogs[0].scopeLogs[0].logRecords[0]
+			const providerAttr = logRecord.attributes.find((a: { key: string }) => a.key === "provider")
+			expect(providerAttr).toBeDefined()
+			expect(providerAttr.value.stringValue).toBe("openai")
+		})
 	})
 })
