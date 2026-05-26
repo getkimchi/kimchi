@@ -56,6 +56,7 @@ describe("parseModelRoles", () => {
 			orchestrator: "anthropic/claude-opus-4-7",
 			planner: "anthropic/claude-sonnet-4-5",
 			builder: "anthropic/claude-sonnet-4-5",
+			builderLite: "kimchi-dev/nemotron-3-super-fp4",
 			reviewer: "openai/gpt-4o",
 			explorer: "kimchi-dev/nemotron-3-super-fp4",
 		}
@@ -116,12 +117,14 @@ describe("parseModelRoles", () => {
 			orchestrator: "anthropic/claude-opus-4-7",
 			planner: "anthropic/claude-sonnet-4-5",
 			builder: null,
+			builderLite: "kimchi-dev/nemotron-3-super-fp4",
 			reviewer: 123,
 			explorer: "kimchi-dev/nemotron-3-super-fp4",
 		})
 		expect(roles.orchestrator).toBe("anthropic/claude-opus-4-7")
 		expect(roles.planner).toBe("anthropic/claude-sonnet-4-5")
 		expect(roles.builder).toBe(DEFAULT_MODEL_ROLES.builder)
+		expect(roles.builderLite).toBe("kimchi-dev/nemotron-3-super-fp4")
 		expect(roles.reviewer).toBe(DEFAULT_MODEL_ROLES.reviewer)
 		expect(roles.explorer).toBe("kimchi-dev/nemotron-3-super-fp4")
 		// null is skipped silently, number warns
@@ -177,6 +180,7 @@ describe("DEFAULT_MODEL_ROLES", () => {
 		expect(DEFAULT_MODEL_ROLES.orchestrator).toBe("kimchi-dev/kimi-k2.6")
 		expect(DEFAULT_MODEL_ROLES.planner).toBe("kimchi-dev/kimi-k2.6")
 		expect(DEFAULT_MODEL_ROLES.builder).toBe("kimchi-dev/minimax-m2.7")
+		expect(DEFAULT_MODEL_ROLES.builderLite).toBe("kimchi-dev/nemotron-3-super-fp4")
 		expect(DEFAULT_MODEL_ROLES.reviewer).toBe("kimchi-dev/kimi-k2.6")
 		expect(DEFAULT_MODEL_ROLES.explorer).toBe("kimchi-dev/nemotron-3-super-fp4")
 	})
@@ -259,6 +263,7 @@ describe("validateModelRoles", () => {
 			orchestrator: "openai/gpt-4o",
 			planner: "openai/gpt-4o",
 			builder: "anthropic/claude-sonnet-4-5",
+			builderLite: "kimchi-dev/nemotron-3-super-fp4",
 			reviewer: "kimchi-dev/minimax-m2.7",
 			explorer: "google/gemini-pro",
 		}
@@ -270,6 +275,7 @@ describe("validateModelRoles", () => {
 		expect(flaggedRoles).toContain("builder")
 		expect(flaggedRoles).toContain("explorer")
 		expect(flaggedRoles).not.toContain("reviewer")
+		expect(flaggedRoles).not.toContain("builderLite")
 	})
 
 	it("strips provider prefix when checking availability", () => {
@@ -284,6 +290,6 @@ describe("validateModelRoles", () => {
 
 	it("handles empty available set", () => {
 		const result = validateModelRoles(DEFAULT_MODEL_ROLES, new Set())
-		expect(result.unavailable).toHaveLength(5)
+		expect(result.unavailable).toHaveLength(6)
 	})
 })

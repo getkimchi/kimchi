@@ -21,11 +21,12 @@ const ROLE_LABELS: Record<keyof ModelRoles, { label: string; description: string
 	orchestrator: { label: "Orchestrator", description: "main model, delegates work" },
 	planner: { label: "Planner", description: "designs the approach, writes specs" },
 	builder: { label: "Builder", description: "code implementation" },
+	builderLite: { label: "Builder Lite", description: "simple build tasks: boilerplate, wiring, trivial CRUD" },
 	reviewer: { label: "Reviewer", description: "code review" },
 	explorer: { label: "Explorer", description: "codebase exploration, research" },
 }
 
-const ROLE_KEYS: (keyof ModelRoles)[] = ["orchestrator", "planner", "builder", "reviewer", "explorer"]
+const ROLE_KEYS: (keyof ModelRoles)[] = ["orchestrator", "planner", "builder", "builderLite", "reviewer", "explorer"]
 
 function formatRoleDisplay(role: keyof ModelRoles, modelRef: string): string {
 	const info = ROLE_LABELS[role]
