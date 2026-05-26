@@ -58,10 +58,10 @@ describe("TipRow", () => {
 		expect(wideLine).toBe(narrowerLine)
 	})
 
-	it("renders the Tip label with success styling", () => {
+	it("renders the Tip label with muted styling", () => {
 		const [line] = renderTipRow(tip, theme(), 120)
 
-		expect(line).toContain("\x1b[32mTip:\x1b[39m")
+		expect(line).toContain("\x1b[90mTip:\x1b[39m")
 	})
 
 	it("renders nothing when no tip is selected", () => {
@@ -90,7 +90,7 @@ describe("TipRow", () => {
 	it("renders a standalone tip message with the shared styling", () => {
 		const [line] = renderTipText("Use `/ferment` anytime.", theme(), 120)
 
-		expect(line).toContain("\x1b[32mTip:\x1b[39m")
+		expect(line).toContain("\x1b[90mTip:\x1b[39m")
 		expect(line).toContain("\x1b[36m/ferment\x1b[39m")
 		expect(line).not.toContain("`")
 	})
