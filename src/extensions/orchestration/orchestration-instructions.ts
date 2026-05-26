@@ -28,7 +28,7 @@ export function resolveOrchestrationInstructions(ctx: OrchestrationInstructionsC
 		return resolveOrchestratorInstructions(ctx)
 	}
 	if (ctx.mode === "single") {
-		return resolveSingleModelInstructions()
+		return resolveSingleModelInstructions(ctx.currentModelId)
 	}
 	return ""
 }
@@ -254,21 +254,16 @@ function buildRoleAssignmentsSection(roles: ModelRoles, registry?: ModelRegistry
 }
 
 // ---------------------------------------------------------------------------
-// Subagent Mode Instructions
+// Single-Model Mode Instructions
 // ---------------------------------------------------------------------------
 
-const SINGLE_MODEL_INSTRUCTIONS = `## Single-Model Mode
+function resolveSingleModelInstructions(currentModelId?: string): string {
+	const modelClause = currentModelId ? ` Your model ID is \`${currentModelId}\`.` : ""
+	return `## Single-Model Mode
 
-You are running in single-model mode. The promise to the user is that all work in this session runs on the currently selected model. Handle tasks directly yourself unless delegation is clearly beneficial.
+You are running in single-model mode.${modelClause} All work in this session runs on the currently selected model. Handle tasks directly yourself unless delegation is clearly beneficial.
 
-You may spawn a subagent with the \`Agent\` tool under these rules:
-
-- You may delegate to the **same** model you are running on without asking the user for permission. Only do this when the user explicitly requests delegation, or when parallel execution would genuinely save time.
-- You may **not** delegate to a different model without first asking the user for approval. If you think a different model would help, briefly explain why and wait for the user to agree.
-- When delegating to the same model, pass your own model ID in the \`model\` parameter.`
-
-function resolveSingleModelInstructions(): string {
-	return SINGLE_MODEL_INSTRUCTIONS
+You may spawn subagents with the \`Agent\` tool for parallel work or to isolate long-running tasks. When you do, you MUST always pass your own model ID in the \`model\` parameter — never delegate to a different model.`
 }
 
 // ---------------------------------------------------------------------------
