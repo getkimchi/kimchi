@@ -68,6 +68,28 @@ describe("classifyTool", () => {
 	it("classifies rtk with unrecognized subcommand as operation", () => {
 		expect(classifyTool("bash", { command: "rtk git status" })).toBe("operation")
 	})
+	// cd-prefixed compound commands — classified by effective subcommand
+	it("classifies cd /path && ls as directory", () => {
+		expect(classifyTool("bash", { command: "cd /path && ls src/" })).toBe("directory")
+	})
+	it("classifies cd /path && rtk ls as directory", () => {
+		expect(classifyTool("bash", { command: "cd /path && rtk ls src/" })).toBe("directory")
+	})
+	it("classifies cd /path && cat as file", () => {
+		expect(classifyTool("bash", { command: "cd /path && cat foo.ts" })).toBe("file")
+	})
+	it("classifies cd /path && grep as pattern", () => {
+		expect(classifyTool("bash", { command: "cd /path && grep foo src/" })).toBe("pattern")
+	})
+	it("classifies chained cd && cd && ls as directory", () => {
+		expect(classifyTool("bash", { command: "cd /a && cd /b && ls" })).toBe("directory")
+	})
+	it("classifies ls && cd /path as directory (cd at end)", () => {
+		expect(classifyTool("bash", { command: "ls && cd /path" })).toBe("directory")
+	})
+	it("classifies cd /path && git status as operation", () => {
+		expect(classifyTool("bash", { command: "cd /path && git status" })).toBe("operation")
+	})
 	it("classifies unknown tool as operation", () => {
 		expect(classifyTool("some_mcp_tool", {})).toBe("operation")
 	})
