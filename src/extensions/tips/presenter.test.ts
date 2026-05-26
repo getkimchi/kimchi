@@ -15,6 +15,10 @@ function provider(
 }
 
 describe("TipPresenter", () => {
+	function immediateRotationPresenter(registry: TipRegistry): TipPresenter {
+		return new TipPresenter(registry, { minCompletedTurnsVisible: 1, minVisibleMs: 0 })
+	}
+
 	it("prefers contextual tips and resumes general tips when contextual tips disappear", () => {
 		const registry = new TipRegistry()
 		let contextualActive = false
@@ -34,16 +38,36 @@ describe("TipPresenter", () => {
 		expect(presenter.getCurrentTip()?.id).toBe("general")
 	})
 
-	it("keeps the current tip stable until a turn_end rotation", () => {
+	it("keeps the current tip stable until three turns and one minute have elapsed", () => {
 		const registry = new TipRegistry()
 		registry.registerProvider(provider("general", [{ id: "first" }, { id: "second" }]))
-		const presenter = new TipPresenter(registry)
+		let now = 0
+		const presenter = new TipPresenter(registry, { now: () => now })
 
 		expect(presenter.getCurrentTip()?.id).toBe("first")
 		expect(presenter.getCurrentTip()?.id).toBe("first")
 
+		expect(presenter.onTurnEnd()?.id).toBe("first")
+		expect(presenter.onTurnEnd()?.id).toBe("first")
+		expect(presenter.onTurnEnd()?.id).toBe("first")
+
+		now = 60_000
 		expect(presenter.onTurnEnd()?.id).toBe("second")
 		expect(presenter.getCurrentTip()?.id).toBe("second")
+	})
+
+	it("does not rotate after one minute until the tip has been visible for three completed turns", () => {
+		const registry = new TipRegistry()
+		registry.registerProvider(provider("general", [{ id: "first" }, { id: "second" }]))
+		let now = 0
+		const presenter = new TipPresenter(registry, { now: () => now })
+
+		expect(presenter.getCurrentTip()?.id).toBe("first")
+
+		now = 60_000
+		expect(presenter.onTurnEnd()?.id).toBe("first")
+		expect(presenter.onTurnEnd()?.id).toBe("first")
+		expect(presenter.onTurnEnd()?.id).toBe("second")
 	})
 
 	it("refreshes current tip content from provider state without rotating", () => {
@@ -69,7 +93,7 @@ describe("TipPresenter", () => {
 		const registry = new TipRegistry()
 		registry.registerProvider(provider("alpha", [{ id: "a1" }, { id: "a2" }]))
 		registry.registerProvider(provider("beta", [{ id: "b1" }]))
-		const presenter = new TipPresenter(registry)
+		const presenter = immediateRotationPresenter(registry)
 
 		expect(presenter.getCurrentTip()?.id).toBe("a1")
 		expect(presenter.onTurnEnd()?.id).toBe("b1")
