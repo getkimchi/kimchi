@@ -64,31 +64,27 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const { model } = params
 
+			// Special case: "multi-model" enters multi-model orchestration mode
 			if (model === "multi-model") {
 				const orchRef = getOrchestratorModelRef()
 				const orchId = getOrchestratorModelId()
 				const parsed = splitModelRef(orchRef)
 				const orchestrator = parsed ? ctx.modelRegistry?.find(parsed.provider, parsed.modelId) : undefined
-				if (!orchestrator) {
+				setMultiModelEnabled(true)
+				if (orchestrator) {
+					suppressModelSelectGuard = true
+					try {
+						await pi.setModel(orchestrator)
+					} finally {
+						suppressModelSelectGuard = false
+					}
 					return {
-						content: [{ type: "text" as const, text: `Multi-model orchestrator (${orchRef}) is not available.` }],
+						content: [{ type: "text" as const, text: `Switched to multi-model mode (orchestrator: ${orchId})` }],
 						details: null,
 					}
 				}
-				setMultiModelEnabled(true)
-				suppressModelSelectGuard = true
-				try {
-					await pi.setModel(orchestrator)
-				} finally {
-					suppressModelSelectGuard = false
-				}
 				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Switched to multi-model mode (orchestrator: ${orchId})`,
-						},
-					],
+					content: [{ type: "text" as const, text: "Switched to multi-model mode" }],
 					details: null,
 				}
 			}
@@ -186,6 +182,9 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 					details: null,
 				}
 			}
+
+			// Selecting a concrete model exits orchestration mode
+			setMultiModelEnabled(false)
 
 			return {
 				content: [

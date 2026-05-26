@@ -180,18 +180,6 @@ export function buildContextCompact(ctx: CompactionContext, percent: number, pct
 	}
 }
 
-/** Compact form for model: abbreviates "multi-model (kimi-k2.6)" to "m-m (kimi-k2.6)". */
-export function buildModelAbbrev(ctx: CompactionContext, multiModel: boolean, modelId: string): Segment {
-	const label = multiModel ? `m-m (${modelId})` : modelId
-	const text = `${ctx.accent(label)} ${ctx.dim("→ ctrl+p")}`
-	return {
-		id: "model",
-		text,
-		width: visibleWidth(text),
-		raw: { kind: "model", multiModel, modelId },
-	}
-}
-
 /** Compact form for phase: drops the "phase:" prefix, keeps just the value. */
 export function buildPhaseCompact(ctx: CompactionContext, phase: string): Segment {
 	const text = ctx.accent(phase)
@@ -201,6 +189,13 @@ export function buildPhaseCompact(ctx: CompactionContext, phase: string): Segmen
 		width: visibleWidth(text),
 		raw: { kind: "phase", phase },
 	}
+}
+
+/** Compact form for model: abbreviates "multi-model (kimi-k2.6)" to "m-m (kimi-k2.6)". */
+export function buildModelAbbrev(ctx: CompactionContext, multiModel: boolean, modelId: string): Segment {
+	const label = multiModel ? `m-m (${modelId})` : modelId
+	const text = `${ctx.accent(label)} ${ctx.dim("→ ctrl+p")}`
+	return { id: "model", text, width: visibleWidth(text), raw: { kind: "model", multiModel, modelId } }
 }
 
 /** Compaction action for ferment: drop the leading colorized `ferment:`
@@ -280,7 +275,7 @@ const STEPS: CompactionStep[] = [
 	},
 	{
 		name: "drop-shortcut-hints",
-		apply: (segs) => stripShortcutHintsAcross(segs, ["permissions", "model", "ferment"]),
+		apply: (segs) => stripShortcutHintsAcross(segs, ["permissions", "ferment", "model"]),
 	},
 	{
 		name: "drop-phase-prefix",
