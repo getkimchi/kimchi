@@ -1,7 +1,14 @@
-import type { TextContent, ToolResultMessage } from "@earendil-works/pi-ai"
+import type { TextContent, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
-import contextCompactorExtension, { computeCutoff, pruneToolResult } from "./context-compactor.js"
+import contextCompactorExtension, {
+	computeCutoff,
+	pruneToolResult,
+	groupTurnsBeforeCutoff,
+	partitionDropZone,
+	buildActionLog,
+	ACTION_LOG_MARKER,
+} from "./context-compactor.js"
 
 // helpers
 function makeToolResult(toolName: string, text: string, isError = false): ToolResultMessage {
@@ -33,6 +40,47 @@ function makeAssistant() {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		model: "test",
+		timestamp: 0,
+	}
+}
+
+function makeToolCall(id: string, name: string, args: Record<string, unknown> = {}): ToolCall {
+	return { type: "toolCall", id, name, arguments: args }
+}
+
+// No explicit return type — avoids TS errors from missing optional fields.
+// Required fields (api, provider, stopReason) are stubbed with `as any`.
+function makeAssistantWithCalls(calls: ToolCall[]) {
+	return {
+		role: "assistant" as const,
+		content: calls,
+		// biome-ignore lint/suspicious/noExplicitAny: test stub
+		api: "openai-completions" as any,
+		// biome-ignore lint/suspicious/noExplicitAny: test stub
+		provider: "test" as any,
+		// biome-ignore lint/suspicious/noExplicitAny: test stub
+		stopReason: "toolUse" as any,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		model: "test",
+		timestamp: 0,
+	}
+}
+
+function makeToolResultFor(callId: string, toolName: string, text: string, isError = false) {
+	return {
+		role: "toolResult" as const,
+		toolCallId: callId,
+		toolName,
+		content: [{ type: "text" as const, text }],
+		details: undefined,
+		isError,
 		timestamp: 0,
 	}
 }
@@ -291,5 +339,210 @@ describe("contextCompactorExtension", () => {
 		const messages = [oldOutput, ...recent] as ContextEvent["messages"]
 		await trigger("context", { messages })
 		expect(entries).toHaveLength(0)
+	})
+})
+
+describe("groupTurnsBeforeCutoff", () => {
+	it("groups a single assistant+result pair into one turn", () => {
+		const call = makeToolCall("c1", "grep", { pattern: "foo" })
+		const assistant = makeAssistantWithCalls([call])
+		const result = makeToolResultFor("c1", "grep", "3 matches")
+		const messages = [assistant, result]
+		const turns = groupTurnsBeforeCutoff(messages as ContextEvent["messages"], 2)
+		expect(turns).toHaveLength(1)
+		expect(turns[0].assistant).toBe(assistant)
+		expect(turns[0].results).toHaveLength(1)
+		expect(turns[0].results[0]).toBe(result)
+	})
+
+	it("groups multi-tool-call turn: one assistant + 3 results", () => {
+		const calls = [
+			makeToolCall("c1", "grep", { pattern: "foo" }),
+			makeToolCall("c2", "read", { path: "a.ts" }),
+			makeToolCall("c3", "find", { pattern: "*.ts" }),
+		]
+		const assistant = makeAssistantWithCalls(calls)
+		const results = [
+			makeToolResultFor("c1", "grep", "5 matches"),
+			makeToolResultFor("c2", "read", "x".repeat(100)),
+			makeToolResultFor("c3", "find", "No files found matching pattern"),
+		]
+		const messages = [assistant, ...results]
+		const turns = groupTurnsBeforeCutoff(messages as ContextEvent["messages"], 4)
+		expect(turns).toHaveLength(1)
+		expect(turns[0].results).toHaveLength(3)
+	})
+
+	it("handles orphaned toolResult (no matching assistant) as standalone turn", () => {
+		const orphan = makeToolResultFor("missing", "bash", "output")
+		const messages = [orphan]
+		const turns = groupTurnsBeforeCutoff(messages as ContextEvent["messages"], 1)
+		expect(turns).toHaveLength(1)
+		expect(turns[0].assistant).toBeNull()
+		expect(turns[0].results[0]).toBe(orphan)
+	})
+
+	it("handles assistant with calls but missing results (aborted turn)", () => {
+		const call = makeToolCall("c1", "bash", { command: "pnpm test" })
+		const assistant = makeAssistantWithCalls([call])
+		const messages = [assistant] // no toolResult
+		const turns = groupTurnsBeforeCutoff(messages as ContextEvent["messages"], 1)
+		expect(turns).toHaveLength(1)
+		expect(turns[0].assistant).toBe(assistant)
+		expect(turns[0].results).toHaveLength(0)
+	})
+
+	it("only groups messages below the cutoff index", () => {
+		const call = makeToolCall("c1", "grep", { pattern: "foo" })
+		const assistant = makeAssistantWithCalls([call])
+		const result = makeToolResultFor("c1", "grep", "3 matches")
+		const user = makeUser()
+		const messages = [assistant, result, user]
+		const turns = groupTurnsBeforeCutoff(messages as ContextEvent["messages"], 2)
+		expect(turns).toHaveLength(1) // user at index 2 not included
+	})
+})
+
+describe("partitionDropZone", () => {
+	it("puts user messages into passthrough, not turns", () => {
+		const user = makeUser()
+		const call = makeToolCall("c1", "grep", { pattern: "foo" })
+		const assistant = makeAssistantWithCalls([call])
+		const result = makeToolResultFor("c1", "grep", "3 matches")
+		const messages = [user, assistant, result]
+		const { turns, passthrough } = partitionDropZone(messages as ContextEvent["messages"], 3)
+		expect(turns).toHaveLength(1)
+		expect(passthrough).toHaveLength(1)
+		expect(passthrough[0]).toBe(user)
+	})
+
+	it("puts reasoning-only assistant messages into passthrough", () => {
+		const reasoning = makeAssistant() // text-only, no tool calls
+		const call = makeToolCall("c1", "grep", { pattern: "foo" })
+		const assistant = makeAssistantWithCalls([call])
+		const result = makeToolResultFor("c1", "grep", "3 matches")
+		const messages = [reasoning, assistant, result]
+		const { turns, passthrough } = partitionDropZone(messages as ContextEvent["messages"], 3)
+		expect(turns).toHaveLength(1)
+		expect(passthrough).toHaveLength(1)
+		expect(passthrough[0]).toBe(reasoning)
+	})
+
+	it("returns empty passthrough when drop zone has only tool-call pairs", () => {
+		const call = makeToolCall("c1", "grep", { pattern: "foo" })
+		const assistant = makeAssistantWithCalls([call])
+		const result = makeToolResultFor("c1", "grep", "3 matches")
+		const messages = [assistant, result]
+		const { turns, passthrough } = partitionDropZone(messages as ContextEvent["messages"], 2)
+		expect(turns).toHaveLength(1)
+		expect(passthrough).toHaveLength(0)
+	})
+})
+
+describe("buildActionLog", () => {
+	it("returns a user-role message with ACTION_LOG_MARKER", () => {
+		const call = makeToolCall("c1", "grep", { pattern: "registerCommand" })
+		const assistant = makeAssistantWithCalls([call])
+		const result = makeToolResultFor("c1", "grep", "line1\nline2\nline3\nline4\nline5")
+		const turns = [{ assistant, results: [result] }]
+		const msg = buildActionLog(turns)
+		expect(msg.role).toBe("user")
+		const text = (msg.content as Array<{ type: string; text: string }>)[0].text
+		expect(text).toContain(ACTION_LOG_MARKER)
+		expect(text).toContain("grep")
+	})
+
+	it("formats grep result with match count", () => {
+		const call = makeToolCall("c1", "grep", { pattern: "foo" })
+		const assistant = makeAssistantWithCalls([call])
+		const result = makeToolResultFor("c1", "grep", "a.ts:1: foo\nb.ts:2: foo\nc.ts:3: foo")
+		const turns = [{ assistant, results: [result] }]
+		const msg = buildActionLog(turns)
+		const text = (msg.content as Array<{ type: string; text: string }>)[0].text
+		expect(text).toContain("3 match")
+	})
+
+	it("formats 'No matches found' for empty grep", () => {
+		const call = makeToolCall("c1", "grep", { pattern: "notfound" })
+		const assistant = makeAssistantWithCalls([call])
+		const result = makeToolResultFor("c1", "grep", "No matches found")
+		const turns = [{ assistant, results: [result] }]
+		const msg = buildActionLog(turns)
+		const text = (msg.content as Array<{ type: string; text: string }>)[0].text
+		expect(text).toContain("No matches found")
+	})
+
+	it("formats read result with char count", () => {
+		const call = makeToolCall("c1", "read", { path: "src/foo.ts" })
+		const assistant = makeAssistantWithCalls([call])
+		const result = makeToolResultFor("c1", "read", "x".repeat(2847))
+		const turns = [{ assistant, results: [result] }]
+		const msg = buildActionLog(turns)
+		const text = (msg.content as Array<{ type: string; text: string }>)[0].text
+		expect(text).toContain("2847 chars")
+	})
+
+	it("formats 'No files found' for empty find", () => {
+		const call = makeToolCall("c1", "find", { pattern: "*.test.ts" })
+		const assistant = makeAssistantWithCalls([call])
+		const result = makeToolResultFor("c1", "find", "No files found matching pattern")
+		const turns = [{ assistant, results: [result] }]
+		const msg = buildActionLog(turns)
+		const text = (msg.content as Array<{ type: string; text: string }>)[0].text
+		expect(text).toContain("No files found")
+	})
+
+	it("formats bash result with line count", () => {
+		const call = makeToolCall("c1", "bash", { command: "pnpm test" })
+		const assistant = makeAssistantWithCalls([call])
+		const result = makeToolResultFor("c1", "bash", "line1\nline2\nline3")
+		const turns = [{ assistant, results: [result] }]
+		const msg = buildActionLog(turns)
+		const text = (msg.content as Array<{ type: string; text: string }>)[0].text
+		expect(text).toContain("bash")
+		expect(text).toContain("3 lines")
+	})
+
+	it("formats aborted turn (no results) with [no result]", () => {
+		const call = makeToolCall("c1", "bash", { command: "pnpm test" })
+		const assistant = makeAssistantWithCalls([call])
+		const turns = [{ assistant, results: [] }]
+		const msg = buildActionLog(turns)
+		const text = (msg.content as Array<{ type: string; text: string }>)[0].text
+		expect(text).toContain("[no result]")
+	})
+
+	it("merges existing action log lines when previous log is in drop zone", () => {
+		const previousLogText = `${ACTION_LOG_MARKER}\n- grep("old") → 2 matches`
+		const existingLog = {
+			role: "user" as const,
+			content: [{ type: "text" as const, text: previousLogText }],
+			timestamp: 0,
+		}
+		const call = makeToolCall("c1", "read", { path: "new.ts" })
+		const assistant = makeAssistantWithCalls([call])
+		const result = makeToolResultFor("c1", "read", "x".repeat(100))
+		const turns = [{ assistant, results: [result] }]
+		const msg = buildActionLog(turns, existingLog as ContextEvent["messages"][number])
+		const text = (msg.content as Array<{ type: string; text: string }>)[0].text
+		expect(text).toContain('grep("old")')
+		expect(text).toContain("read")
+	})
+
+	it("ignores existing log when content is a plain string (not an array)", () => {
+		const existingLog = {
+			role: "user" as const,
+			content: `${ACTION_LOG_MARKER}\n- grep("old") → 2 matches`,
+			timestamp: 0,
+		}
+		const call = makeToolCall("c1", "read", { path: "new.ts" })
+		const assistant = makeAssistantWithCalls([call])
+		const result = makeToolResultFor("c1", "read", "x".repeat(100))
+		const turns = [{ assistant, results: [result] }]
+		// Should not throw, should not include old lines
+		const msg = buildActionLog(turns, existingLog as unknown as ContextEvent["messages"][number])
+		const text = (msg.content as Array<{ type: string; text: string }>)[0].text
+		expect(text).not.toContain('grep("old")')
+		expect(text).toContain("read")
 	})
 })
