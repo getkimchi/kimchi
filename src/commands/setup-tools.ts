@@ -1,5 +1,5 @@
 import { resolve } from "node:path"
-import { log, note, outro, spinner } from "@clack/prompts"
+import { intro, log, note, outro, spinner } from "@clack/prompts"
 import { updateModelsConfig } from "../models.js"
 import { applyToolConfigs } from "../setup-wizard/apply-tools.js"
 import type { ConfigMode } from "../setup-wizard/state.js"
@@ -32,6 +32,8 @@ export async function runSetupTools(args: string[]): Promise<number> {
 		console.error("kimchi: no API key configured. Run `kimchi setup` or set $KIMCHI_API_KEY.")
 		return 1
 	}
+
+	intro("kimchi setup-tools")
 
 	// Select tools.
 	const selection = await promptToolSelection({ backable: false })
