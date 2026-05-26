@@ -57,7 +57,7 @@ function ensureUserIdentity(apiKey: string): Promise<void> {
 	if (userFetched) return Promise.resolve()
 	if (userFetchPromise) return userFetchPromise
 
-	userFetchPromise = getMe(apiKey)
+	userFetchPromise = getMe(apiKey, { signal: AbortSignal.timeout(3000) })
 		.then((me) => {
 			cachedUserEmail = me.email
 			cachedUserId = me.id
