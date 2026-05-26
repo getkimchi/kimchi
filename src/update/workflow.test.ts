@@ -1,9 +1,34 @@
 import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { CanaryReleaseInfo, GitHubClient, ReleaseInfo, Repo } from "./github.js"
-import { checkForUpdate, parseCanarySha7 } from "./workflow.js"
+
+const mocks = vi.hoisted(() => ({
+	extractTarGz: vi.fn(),
+	verifyChecksum: vi.fn(),
+	fetchChecksum: vi.fn(),
+	downloadArchive: vi.fn(),
+	atomicInstall: vi.fn(),
+	copySupportingFiles: vi.fn(),
+	macosCodesignReSign: vi.fn(),
+	smokeTestBinary: vi.fn(),
+}))
+
+vi.mock("./extract.js", () => ({
+	extractTarGz: mocks.extractTarGz,
+	verifyChecksum: mocks.verifyChecksum,
+}))
+
+vi.mock("./install.js", () => ({
+	atomicInstall: mocks.atomicInstall,
+	copySupportingFiles: mocks.copySupportingFiles,
+	macosCodesignReSign: mocks.macosCodesignReSign,
+	smokeTestBinary: mocks.smokeTestBinary,
+}))
+
+const { checkForUpdate, parseCanarySha7, applyUpdate } = await import("./workflow.js")
 
 const REPO: Repo = { owner: "castai", name: "kimchi-dev", binary: "kimchi" }
 
@@ -236,5 +261,105 @@ describe("parseCanarySha7", () => {
 		// empty / unrelated
 		expect(parseCanarySha7("")).toBeNull()
 		expect(parseCanarySha7("canary")).toBeNull()
+	})
+})
+
+describe("applyUpdate share destination", () => {
+	let extractRoot: string
+	let fakePrefix: string
+	let fakeBinPath: string
+	let prevXdgData: string | undefined
+	let prevPiPackageDir: string | undefined
+
+	beforeEach(() => {
+		mocks.extractTarGz.mockReset()
+		mocks.verifyChecksum.mockReset()
+		mocks.fetchChecksum.mockReset()
+		mocks.downloadArchive.mockReset()
+		mocks.atomicInstall.mockReset()
+		mocks.copySupportingFiles.mockReset()
+		mocks.macosCodesignReSign.mockReset()
+		mocks.smokeTestBinary.mockReset()
+
+		// Create a fake install prefix (e.g. /usr/local or ~/.local).
+		fakePrefix = mkdtempSync(join(tmpdir(), "kimchi-prefix-test-"))
+		fakeBinPath = join(fakePrefix, "bin", "kimchi")
+		mkdirSync(join(fakePrefix, "bin"), { recursive: true })
+		writeFileSync(fakeBinPath, "")
+
+		// Create extracted archive root.
+		extractRoot = mkdtempSync(join(tmpdir(), "kimchi-extract-test-"))
+		mkdirSync(join(extractRoot, "bin"), { recursive: true })
+		mkdirSync(join(extractRoot, "share", "kimchi"), { recursive: true })
+		writeFileSync(join(extractRoot, "bin", "kimchi"), "")
+		writeFileSync(join(extractRoot, "share", "kimchi", "package.json"), "{}")
+
+		mocks.extractTarGz.mockResolvedValue(extractRoot)
+		mocks.verifyChecksum.mockResolvedValue(undefined)
+		mocks.fetchChecksum.mockResolvedValue("sha256:fff")
+		mocks.downloadArchive.mockResolvedValue(undefined)
+		mocks.atomicInstall.mockReturnValue({ backupPath: undefined })
+		mocks.copySupportingFiles.mockReturnValue(undefined)
+		mocks.macosCodesignReSign.mockReturnValue(undefined)
+		mocks.smokeTestBinary.mockReturnValue(undefined)
+
+		// Isolate from host env so resolution is deterministic.
+		prevXdgData = process.env.XDG_DATA_HOME
+		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
+		delete process.env.XDG_DATA_HOME
+		prevPiPackageDir = process.env.PI_PACKAGE_DIR
+		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
+		delete process.env.PI_PACKAGE_DIR
+	})
+
+	afterEach(() => {
+		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
+		if (prevXdgData === undefined) delete process.env.XDG_DATA_HOME
+		else process.env.XDG_DATA_HOME = prevXdgData
+		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
+		if (prevPiPackageDir === undefined) delete process.env.PI_PACKAGE_DIR
+		else process.env.PI_PACKAGE_DIR = prevPiPackageDir
+		rmSync(extractRoot, { recursive: true, force: true })
+		rmSync(fakePrefix, { recursive: true, force: true })
+	})
+
+	it("writes share files to the sibling share when it exists", async () => {
+		// Create the sibling share directory with package.json so
+		// resolveAuxiliaryFilesDir resolves to it.
+		const siblingShare = join(fakePrefix, "share", "kimchi")
+		mkdirSync(siblingShare, { recursive: true })
+		writeFileSync(join(siblingShare, "package.json"), "{}")
+
+		const client = {
+			fetchChecksum: mocks.fetchChecksum,
+			downloadArchive: mocks.downloadArchive,
+		} as unknown as GitHubClient
+
+		await applyUpdate({
+			tag: "v0.0.24",
+			executablePath: fakeBinPath,
+			client,
+		})
+
+		expect(mocks.copySupportingFiles).toHaveBeenCalledWith(join(extractRoot, "share", "kimchi"), siblingShare, "kimchi")
+	})
+
+	it("falls back to ~/.local/share/kimchi when the sibling share does not exist", async () => {
+		const client = {
+			fetchChecksum: mocks.fetchChecksum,
+			downloadArchive: mocks.downloadArchive,
+		} as unknown as GitHubClient
+
+		await applyUpdate({
+			tag: "v0.0.24",
+			executablePath: fakeBinPath,
+			client,
+		})
+
+		expect(mocks.copySupportingFiles).toHaveBeenCalledWith(
+			join(extractRoot, "share", "kimchi"),
+			expect.stringContaining(".local/share/kimchi"),
+			"kimchi",
+		)
 	})
 })
