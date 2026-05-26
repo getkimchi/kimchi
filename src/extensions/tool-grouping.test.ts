@@ -72,6 +72,12 @@ describe("classifyTool", () => {
 	it("classifies cd /path && ls as directory", () => {
 		expect(classifyTool("bash", { command: "cd /path && ls src/" })).toBe("directory")
 	})
+	it("classifies rtk cd /path && ls src/ as directory", () => {
+		expect(classifyTool("bash", { command: "rtk cd /path && ls src/" })).toBe("directory")
+	})
+	it("classifies cd /a && cd /b as operation", () => {
+		expect(classifyTool("bash", { command: "cd /a && cd /b" })).toBe("operation")
+	})
 	it("classifies cd /path && rtk ls as directory", () => {
 		expect(classifyTool("bash", { command: "cd /path && rtk ls src/" })).toBe("directory")
 	})
