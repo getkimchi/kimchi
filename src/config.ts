@@ -437,6 +437,26 @@ export function writeDeviceId(id: string, configPath?: string): void {
  * KIMCHI_TELEMETRY_ENABLED is set — but the persisted value is still useful
  * for fresh shells.
  */
+/**
+ * Check whether the user has explicitly set a telemetry preference —
+ * either via the KIMCHI_TELEMETRY_ENABLED env var or by persisting
+ * telemetry.enabled in config.json. Returns false when neither is set,
+ * meaning the user has never been asked / never chose.
+ */
+export function isTelemetryExplicitlyConfigured(configPath?: string): boolean {
+	if (process.env.KIMCHI_TELEMETRY_ENABLED !== undefined) return true
+	try {
+		const path = configPath ?? KIMCHI_CONFIG_PATH
+		const raw = readFileSync(path, "utf-8")
+		const parsed = JSON.parse(raw)
+		const t = parsed.telemetry
+		if (t && typeof t === "object" && typeof t.enabled === "boolean") return true
+	} catch {
+		// missing or invalid config — not configured
+	}
+	return false
+}
+
 export function writeTelemetryEnabled(enabled: boolean, configPath?: string): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateConfigFile(path, (raw) => {

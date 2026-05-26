@@ -2,11 +2,17 @@ import { note } from "@clack/prompts"
 import { all as allTools } from "../../integrations/registry.js"
 import type { ToolId } from "../../integrations/types.js"
 import { multiselect } from "../prompt.js"
-import type { WizardState } from "../state.js"
 
 /**
  * Standalone prompt for tool selection. Can be used both inside the setup
  * wizard and by the `setup-tools` standalone command.
+ *
+ * The list is built from the integrations registry, with each option's
+ * hint reflecting detection state (installed / not detected). Pre-selects
+ * the tools we detect as installed; users can flip individual toggles.
+ *
+ * Tools whose `isInstalled()` returns false are still selectable — useful
+ * when the user is about to install the binary alongside.
  *
  * Returns the raw outcome so callers decide what to do with back/cancel.
  */
@@ -36,27 +42,4 @@ export async function promptToolSelection(opts: {
 		required: false,
 		backable: opts.backable,
 	})
-}
-
-/**
- * Tools step — multi-select which tools to configure. The list is built
- * from the integrations registry, with each option's hint reflecting
- * detection state (installed / not detected). Pre-selects the tools we
- * detect as installed; users can flip individual toggles.
- *
- * Tools whose `isInstalled()` returns false are still selectable — useful
- * when the user is about to install the binary alongside.
- */
-export async function runToolsStep(state: WizardState, opts: { backable: boolean }): Promise<void> {
-	const r = await promptToolSelection(opts)
-
-	if (r.kind === "back") {
-		state.back = true
-		return
-	}
-	if (r.kind === "cancel") {
-		state.cancelled = true
-		return
-	}
-	state.selectedTools = r.value
 }

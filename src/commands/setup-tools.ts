@@ -1,8 +1,18 @@
+// Side-effect imports register each integration. Without these, all()
+// and byId() in the integrations registry return nothing.
+import "../integrations/claude-code.js"
+import "../integrations/cursor.js"
+import "../integrations/gsd2.js"
+import "../integrations/openclaw.js"
+import "../integrations/opencode.js"
+
 import { resolve } from "node:path"
 import { intro, log, note, outro, spinner } from "@clack/prompts"
+import { isTelemetryExplicitlyConfigured, readTelemetryConfig } from "../config.js"
 import { updateModelsConfig } from "../models.js"
 import { applyToolConfigs } from "../setup-wizard/apply-tools.js"
 import type { ConfigMode } from "../setup-wizard/state.js"
+import { promptTelemetry } from "../setup-wizard/steps/telemetry.js"
 import { promptToolSelection } from "../setup-wizard/steps/tools.js"
 import { popScope, resolveApiKey } from "./_helpers.js"
 
@@ -53,6 +63,22 @@ export async function runSetupTools(args: string[]): Promise<number> {
 		return 0
 	}
 
+	// Resolve telemetry preference. If the user has already chosen (via
+	// `kimchi setup`, `kimchi config telemetry`, or $KIMCHI_TELEMETRY_ENABLED)
+	// we respect that. Otherwise prompt — some tools (Claude Code) write
+	// telemetry settings into their config files.
+	let telemetryEnabled: boolean
+	if (isTelemetryExplicitlyConfigured()) {
+		telemetryEnabled = readTelemetryConfig().enabled
+	} else {
+		const telemetryResult = await promptTelemetry({ backable: false })
+		if (telemetryResult.kind === "cancel" || telemetryResult.kind === "back") {
+			outro("Cancelled.")
+			return 1
+		}
+		telemetryEnabled = telemetryResult.value
+	}
+
 	// Fetch live models.
 	const agentDir =
 		process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(process.env.HOME ?? "~", ".config/kimchi-coding-agent")
@@ -83,7 +109,7 @@ export async function runSetupTools(args: string[]): Promise<number> {
 		apiKey,
 		scope,
 		mode,
-		telemetryEnabled: false,
+		telemetryEnabled,
 		models,
 	})
 
@@ -91,6 +117,7 @@ export async function runSetupTools(args: string[]): Promise<number> {
 	const summaryLines = [
 		`Mode: ${mode}${mode === "override" ? " (configs written)" : " (runtime wrapper)"}`,
 		`Scope: ${scope}`,
+		`Telemetry: ${telemetryEnabled ? "enabled" : "disabled"}`,
 		outcome.successes.length > 0 ? `Configured: ${outcome.successes.join(", ")}` : "",
 		outcome.failures.length > 0 ? `Failed: ${outcome.failures.map((f) => f.id).join(", ")}` : "",
 	].filter((l) => l.length > 0)
