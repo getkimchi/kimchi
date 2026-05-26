@@ -70,29 +70,23 @@ function formatError(err: unknown): string {
 	return err instanceof Error ? err.message : String(err)
 }
 
-// Each extension receives a unique ExtensionAPI object from pi-mono's loader
-// (createExtensionAPI is called once per factory, producing distinct references).
-// A WeakMap keyed by api-per-extension cannot be used for cross-extension lookup.
-// Instead use a global handle set; session cleanup tracks unique pi references so
-// the set is cleared exactly once when the last session shuts down.
-const globalHandles = new Set<BlocksHandle>()
-const cleanupRegisteredPis = new WeakSet<ExtensionAPI>()
-let activePiCount = 0
+// Each extension receives a unique ExtensionAPI object from pi-mono's loader, so
+// blocks must be visible across pis (the renderer's pi differs from the registrar's).
+// One slot per pi; the slot is dropped when that pi's session shuts down — naturally
+// isolates parent vs. subagent sessions without reference counting.
+const handlesByPi = new Map<ExtensionAPI, Set<BlocksHandle>>()
 
 export function createSystemPromptBlocks(pi: ExtensionAPI, owner: string): SystemPromptBlocksHandle {
 	const handle = new BlocksHandle(pi, owner)
-	globalHandles.add(handle)
-	if (!cleanupRegisteredPis.has(pi)) {
-		cleanupRegisteredPis.add(pi)
-		activePiCount++
+	let handles = handlesByPi.get(pi)
+	if (!handles) {
+		handles = new Set()
+		handlesByPi.set(pi, handles)
 		pi.on("session_shutdown", () => {
-			activePiCount--
-			if (activePiCount <= 0) {
-				globalHandles.clear()
-				activePiCount = 0
-			}
+			handlesByPi.delete(pi)
 		})
 	}
+	handles.add(handle)
 	return handle
 }
 
@@ -101,8 +95,8 @@ export function renderSystemPromptBlocks(
 	ctx: SystemPromptBlockContext,
 ): RenderedSystemPromptBlock[] {
 	const rendered: RenderedSystemPromptBlock[] = []
-	for (const handle of globalHandles) {
-		rendered.push(...handle.render(ctx))
+	for (const handles of handlesByPi.values()) {
+		for (const handle of handles) rendered.push(...handle.render(ctx))
 	}
 	return rendered.sort((a, b) => {
 		if (a.owner < b.owner) return -1
