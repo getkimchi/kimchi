@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent"
 import { Container, Spacer } from "@earendil-works/pi-tui"
 import { ToolBlockView } from "../components/tool-block.js"
-import { splitCompoundCommand } from "../permissions/taxonomy.js"
+import { splitCompoundCommand } from "./permissions/taxonomy.js"
 
 // ---------------------------------------------------------------------------
 // Types
