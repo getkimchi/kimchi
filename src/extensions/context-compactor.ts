@@ -1,11 +1,11 @@
 import type { AssistantMessage, ToolCall, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
-import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
 
-const PRUNE_THRESHOLD = 35_000
-const PROTECT_WINDOW = 30
+const PRUNE_THRESHOLD_RATIO = 0.65 // fire at 65% of model context window
+const FALLBACK_THRESHOLD = 85_000 // used when ctx.model is unavailable
+const PROTECT_WINDOW = 50
 const MAX_PROTECTED_CHARS = 100_000
-const MIN_PRUNE_CHARS = 500
 
 /**
  * Walk backwards through messages to find the cutoff index.
@@ -45,48 +45,6 @@ export function computeCutoff(
 	// Clamp to last message: if recent outputs blew the char budget, still prune everything
 	// older than the final message rather than silently skipping compaction entirely.
 	return Math.min(cutoff, Math.max(0, messages.length - 1))
-}
-
-/**
- * Find the index of the most recent message with role "user".
- * This ensures the LLM always retains the user's language, tone,
- * and task framing even during long tool-call chains.
- */
-function findLastUserMessageIndex(messages: ContextEvent["messages"]): number {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const m = messages[i] as { role?: string }
-		if (m.role === "user") {
-			return i
-		}
-	}
-	return -1
-}
-
-/**
- * Return a pruned copy of a ToolResultMessage.
- * - Large text blocks are replaced with a placeholder (preserves all other fields).
- * - Error outputs keep the last 2000 chars so the agent can still read the crash reason.
- * - Non-text content blocks (images, etc.) are left untouched.
- */
-export function pruneToolResult(msg: ToolResultMessage, minPruneChars: number): ToolResultMessage {
-	return {
-		...msg,
-		content: msg.content.map((block) => {
-			if (block.type !== "text") return block
-			if (block.text.length < minPruneChars) return block
-			if (msg.isError) {
-				const tail = block.text.slice(-2000)
-				return {
-					...block,
-					text: `[compacted: ${msg.toolName} error, ${block.text.length} chars]\n...\n${tail}`,
-				}
-			}
-			return {
-				...block,
-				text: `[compacted: ${msg.toolName} output, ${block.text.length} chars]`,
-			}
-		}),
-	}
 }
 
 export const ACTION_LOG_MARKER = "[Context: earlier steps compacted]"
@@ -260,51 +218,84 @@ export function buildActionLog(turns: DroppedTurn[], existingLog?: ContextEvent[
 export default function contextCompactorExtension(pi: ExtensionAPI) {
 	if (isSubagent()) return
 
-	// Closure-scoped: independent per agent instance, safe if multiple are constructed.
 	let lastInputTokens = 0
 
 	pi.on("message_end", async (event) => {
-		const msg = event.message as AssistantMessage
+		const msg = (event as { message: AssistantMessage }).message
 		if (msg.role !== "assistant") return
 		lastInputTokens = msg.usage?.input ?? 0
 	})
 
-	pi.on("context", async (event) => {
-		if (lastInputTokens < PRUNE_THRESHOLD) return
+	pi.on("context", async (event, ctx: ExtensionContext) => {
+		const contextWindow = ctx?.model?.contextWindow
+		const threshold = contextWindow ? Math.floor(contextWindow * PRUNE_THRESHOLD_RATIO) : FALLBACK_THRESHOLD
 
-		const { messages } = event
-		const baseCutoff = computeCutoff(messages, PROTECT_WINDOW, MAX_PROTECTED_CHARS)
-		if (baseCutoff === 0) return
+		if (lastInputTokens < threshold) return
 
-		// If the most recent user message falls outside the protected window
-		// (i.e. it's before `baseCutoff`), extend the window backward so that
-		// the user message is still visible. This prevents the model from losing
-		// the user's language, tone, or task framing during long tool-call chains.
-		const lastUserIndex = findLastUserMessageIndex(messages)
-		const cutoff = lastUserIndex >= 0 ? Math.min(baseCutoff, lastUserIndex) : baseCutoff
+		const { messages } = event as ContextEvent
+		const cutoff = computeCutoff(messages, PROTECT_WINDOW, MAX_PROTECTED_CHARS)
+		if (cutoff === 0) return
 
-		let prunedCount = 0
-		let totalCharsRemoved = 0
+		// Partition the drop zone: tool-call pairs get dropped, everything else passes through.
+		// No lastUserIndex clamping — partitionDropZone preserves user messages via passthrough
+		// unconditionally. The old Math.min(baseCutoff, lastUserIndex) guard made cutoff=0
+		// when the only user message was at index 0, preventing compaction entirely.
+		const { turns, passthrough } = partitionDropZone(messages, cutoff)
+		if (turns.length === 0) return
 
-		const pruned = messages.map((msg, i) => {
-			if (i >= cutoff) return msg
-			// Explicit cast required: AgentMessage = Message | CustomAgentMessages union;
-			// role check alone does not narrow to ToolResultMessage in TypeScript.
-			const m = msg as ToolResultMessage
-			if (m.role !== "toolResult") return msg
-			const originalLen = m.content.reduce((sum, b) => sum + (b.type === "text" ? b.text.length : 0), 0)
-			const result = pruneToolResult(m, MIN_PRUNE_CHARS)
-			const newLen = result.content.reduce((sum, b) => sum + (b.type === "text" ? b.text.length : 0), 0)
-			if (newLen < originalLen) {
-				prunedCount++
-				totalCharsRemoved += originalLen - newLen
-			}
-			return result
+		// Detect existing action log in passthrough for merging across cycles
+		const existingLog = passthrough.find((m) => {
+			if (m.role !== "user") return false
+			const u = m as UserMessage
+			if (!Array.isArray(u.content)) return false
+			return u.content.some(
+				(c): c is { type: "text"; text: string } => c.type === "text" && c.text.includes(ACTION_LOG_MARKER),
+			)
 		})
 
-		if (prunedCount > 0) {
-			pi.appendEntry("tool_result_pruning", { prunedCount, totalCharsRemoved, cutoff })
+		const actionLog = buildActionLog(turns, existingLog)
+
+		// Remove the old action log from passthrough (its lines were merged into the new one).
+		// Use marker-string check (not reference equality) to be robust against message cloning.
+		const filteredPassthrough = existingLog
+			? passthrough.filter((m) => {
+					if (m.role !== "user") return true
+					const u = m as UserMessage
+					if (!Array.isArray(u.content)) return true
+					return !u.content.some(
+						(c): c is { type: "text"; text: string } => c.type === "text" && c.text.includes(ACTION_LOG_MARKER),
+					)
+				})
+			: passthrough
+
+		const kept = messages.slice(cutoff)
+
+		// Guard against consecutive user messages: some providers (e.g. Anthropic) require
+		// strictly alternating roles and will reject back-to-back user messages.
+		// If filteredPassthrough starts with a user message, merge the action log text
+		// into it instead of prepending a separate user message.
+		let pruned: ContextEvent["messages"]
+		const firstPassthrough = filteredPassthrough[0] as { role?: string } | undefined
+		if (firstPassthrough?.role === "user") {
+			const firstUser = firstPassthrough as UserMessage
+			const logText = (actionLog.content as Array<{ type: string; text: string }>)[0].text
+			const mergedContent = Array.isArray(firstUser.content)
+				? [{ type: "text" as const, text: logText }, ...firstUser.content]
+				: [{ type: "text" as const, text: logText }]
+			const mergedUser = { ...firstUser, content: mergedContent }
+			pruned = [mergedUser as unknown as ContextEvent["messages"][number], ...filteredPassthrough.slice(1), ...kept]
+		} else {
+			pruned = [actionLog as unknown as ContextEvent["messages"][number], ...filteredPassthrough, ...kept]
 		}
+
+		const droppedTurnCount = turns.filter((t) => t.assistant !== null || t.results.length > 0).length
+		const droppedMsgCount = turns.reduce((sum, t) => sum + (t.assistant ? 1 : 0) + t.results.length, 0)
+
+		pi.appendEntry("tool_result_pruning", {
+			droppedTurns: droppedTurnCount,
+			droppedMessages: droppedMsgCount,
+			cutoff,
+		})
 
 		return { messages: pruned }
 	})

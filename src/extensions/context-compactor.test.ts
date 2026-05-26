@@ -1,9 +1,8 @@
-import type { TextContent, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai"
+import type { ToolCall, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import contextCompactorExtension, {
 	computeCutoff,
-	pruneToolResult,
 	groupTurnsBeforeCutoff,
 	partitionDropZone,
 	buildActionLog,
@@ -85,6 +84,51 @@ function makeToolResultFor(callId: string, toolName: string, text: string, isErr
 	}
 }
 
+function makeMessageEndEvent(inputTokens: number) {
+	return {
+		message: {
+			role: "assistant" as const,
+			content: [{ type: "text" as const, text: "ok" }],
+			usage: {
+				input: inputTokens,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: inputTokens,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			// biome-ignore lint/suspicious/noExplicitAny: test stub
+			api: "openai-completions" as any,
+			// biome-ignore lint/suspicious/noExplicitAny: test stub
+			provider: "test" as any,
+			// biome-ignore lint/suspicious/noExplicitAny: test stub
+			stopReason: "endTurn" as any,
+			model: "test",
+			timestamp: 0,
+		},
+	}
+}
+
+function makeMockPI(contextWindow = 131_072) {
+	const handlers: Record<string, (event: unknown, ctx: unknown) => Promise<unknown>> = {}
+	const entries: Array<{ customType: string; data: unknown }> = []
+	const ctx = { model: { contextWindow } }
+	return {
+		pi: {
+			on(event: string, handler: (e: unknown, c: unknown) => Promise<unknown>) {
+				handlers[event] = handler
+			},
+			appendEntry(customType: string, data: unknown) {
+				entries.push({ customType, data })
+			},
+		} as unknown as ExtensionAPI,
+		async trigger(event: string, payload: unknown) {
+			return handlers[event]?.(payload, ctx)
+		},
+		entries,
+	}
+}
+
 // ── computeCutoff ────────────────────────────────────────────────────────────
 
 describe("computeCutoff", () => {
@@ -140,205 +184,216 @@ describe("computeCutoff", () => {
 	})
 })
 
-// ── pruneToolResult ──────────────────────────────────────────────────────────
+// ── contextCompactorExtension (pair-drop) ────────────────────────────────────
 
-describe("pruneToolResult", () => {
-	const MIN_PRUNE_CHARS = 10
-
-	it("returns a new object (no mutation)", () => {
-		const msg = makeToolResult("bash", "x".repeat(20))
-		const result = pruneToolResult(msg, MIN_PRUNE_CHARS)
-		expect(result).not.toBe(msg)
-		expect(msg.content[0]).toHaveProperty("text", "x".repeat(20)) // original unchanged
-	})
-
-	it("replaces large text content with placeholder", () => {
-		const msg = makeToolResult("bash", "x".repeat(20))
-		const result = pruneToolResult(msg, MIN_PRUNE_CHARS)
-		expect(result.content[0]).toHaveProperty("type", "text")
-		expect((result.content[0] as TextContent).text).toContain("[compacted: bash output")
-	})
-
-	it("leaves small text content untouched", () => {
-		const msg = makeToolResult("bash", "tiny")
-		const result = pruneToolResult(msg, MIN_PRUNE_CHARS)
-		expect((result.content[0] as TextContent).text).toBe("tiny")
-	})
-
-	it("preserves non-text content blocks unchanged", () => {
-		const msg: ToolResultMessage = {
-			role: "toolResult",
-			toolCallId: "id-1",
-			toolName: "bash",
-			content: [
-				// biome-ignore lint/suspicious/noExplicitAny: image block not in TextContent union
-				{ type: "image", source: { type: "base64", mediaType: "image/png", data: "abc" } } as any,
-				{ type: "text", text: "x".repeat(20) },
-			],
-			details: undefined,
-			isError: false,
-			timestamp: 0,
-		}
-		const result = pruneToolResult(msg, MIN_PRUNE_CHARS)
-		expect(result.content[0]).toHaveProperty("type", "image") // untouched
-		expect((result.content[1] as TextContent).text).toContain("[compacted")
-	})
-
-	it("truncates error output to last 2000 chars with header", () => {
-		const longError = "e".repeat(5000)
-		const msg = makeToolResult("bash", longError, true)
-		const result = pruneToolResult(msg, MIN_PRUNE_CHARS)
-		const text = (result.content[0] as TextContent).text
-		expect(text).toContain("[compacted: bash error")
-		expect(text).toContain("e".repeat(2000))
-		expect(text.length).toBeLessThan(longError.length)
-	})
-
-	it("preserves all ToolResultMessage fields", () => {
-		const msg = makeToolResult("read", "x".repeat(20))
-		const result = pruneToolResult(msg, MIN_PRUNE_CHARS)
-		expect(result.toolCallId).toBe(msg.toolCallId)
-		expect(result.toolName).toBe(msg.toolName)
-		expect(result.isError).toBe(msg.isError)
-		expect(result.timestamp).toBe(msg.timestamp)
-	})
-})
-
-// ── contextCompactorExtension (event wiring) ─────────────────────────────────
-
-function makeMockPI() {
-	const handlers: Record<string, (event: unknown) => Promise<unknown>> = {}
-	const entries: Array<{ customType: string; data: unknown }> = []
-	return {
-		pi: {
-			on(event: string, handler: (e: unknown) => Promise<unknown>) {
-				handlers[event] = handler
-			},
-			appendEntry(customType: string, data: unknown) {
-				entries.push({ customType, data })
-			},
-		} as unknown as ExtensionAPI,
-		async trigger(event: string, payload: unknown) {
-			return handlers[event]?.(payload)
-		},
-		entries,
+describe("contextCompactorExtension (pair-drop)", () => {
+	function makeFullTurn(callId: string, toolName: string, resultText: string) {
+		const call = makeToolCall(callId, toolName, { pattern: "x" })
+		const assistant = makeAssistantWithCalls([call])
+		const result = makeToolResultFor(callId, toolName, resultText)
+		return [assistant, result] as ContextEvent["messages"]
 	}
-}
 
-function makeMessageEndEvent(inputTokens: number) {
-	return {
-		message: {
-			role: "assistant" as const,
-			usage: {
-				input: inputTokens,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: inputTokens,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			content: [],
-			model: "test",
-			timestamp: 0,
-		},
-	}
-}
-
-describe("contextCompactorExtension", () => {
-	it("returns undefined when below token threshold", async () => {
-		const { pi, trigger } = makeMockPI()
+	it("does not fire when below 65% of context window", async () => {
+		const { pi, trigger } = makeMockPI(131_072)
 		contextCompactorExtension(pi)
-		await trigger("message_end", makeMessageEndEvent(1_000))
+		// 65% of 131072 ≈ 85196; use 50k — below threshold
+		await trigger("message_end", makeMessageEndEvent(50_000))
+		const oldTurn = makeFullTurn("c1", "grep", "x".repeat(600))
+		const recent = Array.from({ length: 50 }, makeUser)
 		const result = await trigger("context", {
-			messages: [makeToolResult("bash", "x".repeat(600))] as ContextEvent["messages"],
+			messages: [...oldTurn, ...recent] as ContextEvent["messages"],
 		})
 		expect(result).toBeUndefined()
 	})
 
-	it("returns undefined when above threshold but nothing to prune (cutoff = 0)", async () => {
-		const { pi, trigger } = makeMockPI()
+	it("fires when above 65% of context window", async () => {
+		const { pi, trigger } = makeMockPI(131_072)
 		contextCompactorExtension(pi)
-		await trigger("message_end", makeMessageEndEvent(40_000))
-		// 3 messages — fits within PROTECT_WINDOW=30, chars well under MAX_PROTECTED_CHARS
-		const messages = [makeUser(), makeAssistant(), makeToolResult("bash", "small")]
-		const result = await trigger("context", { messages: messages as ContextEvent["messages"] })
-		expect(result).toBeUndefined()
-	})
-
-	it("prunes tool results before the cutoff when above threshold", async () => {
-		const { pi, trigger } = makeMockPI()
-		contextCompactorExtension(pi)
-		await trigger("message_end", makeMessageEndEvent(40_000))
-		// 1 old tool result + 30 recent messages → cutoff = 1, index 0 is pruned
-		const oldOutput = makeToolResult("bash", "x".repeat(600)) // > MIN_PRUNE_CHARS=500
-		const recent = Array.from({ length: 30 }, makeUser)
-		const messages = [oldOutput, ...recent] as ContextEvent["messages"]
-		const result = (await trigger("context", { messages })) as { messages: ContextEvent["messages"] }
+		// 65% of 131072 ≈ 85196; use 90k
+		await trigger("message_end", makeMessageEndEvent(90_000))
+		const oldTurn = makeFullTurn("c1", "grep", "x".repeat(600))
+		const recent = Array.from({ length: 50 }, makeUser)
+		const result = (await trigger("context", {
+			messages: [...oldTurn, ...recent] as ContextEvent["messages"],
+		})) as { messages: ContextEvent["messages"] } | undefined
 		expect(result).toBeDefined()
-		const pruned = result.messages[0] as ToolResultMessage
-		expect((pruned.content[0] as TextContent).text).toContain("[compacted: bash output")
 	})
 
-	it("passes non-tool-result messages through unchanged before cutoff", async () => {
-		const { pi, trigger } = makeMockPI()
+	it("drops full assistant+result pair — no tombstones remain", async () => {
+		const { pi, trigger } = makeMockPI(131_072)
 		contextCompactorExtension(pi)
-		await trigger("message_end", makeMessageEndEvent(40_000))
-		const oldUser = makeUser()
-		const recent = Array.from({ length: 30 }, makeUser)
-		const messages = [oldUser, ...recent] as ContextEvent["messages"]
+		await trigger("message_end", makeMessageEndEvent(90_000))
+		const call = makeToolCall("c1", "grep", { pattern: "foo" })
+		const oldAssistant = makeAssistantWithCalls([call])
+		const oldResult = makeToolResultFor("c1", "grep", "5 matches found\nline2\nline3\nline4\nline5")
+		const recent = Array.from({ length: 50 }, makeUser)
+		const messages = [oldAssistant, oldResult, ...recent] as ContextEvent["messages"]
 		const result = (await trigger("context", { messages })) as { messages: ContextEvent["messages"] }
-		expect(result).toBeDefined()
-		// user message before cutoff is returned by reference (not cloned)
-		expect(result.messages[0]).toBe(oldUser)
+		expect(result.messages).not.toContain(oldAssistant)
+		expect(result.messages).not.toContain(oldResult)
+		const allText = result.messages
+			.flatMap((m) => {
+				const msg = m as ToolResultMessage
+				return msg.role === "toolResult" ? msg.content.map((c) => (c as { text?: string }).text ?? "") : []
+			})
+			.join("")
+		expect(allText).not.toContain("[compacted")
 	})
 
-	it("emits tool_result_pruning entry with correct counts when pruning fires", async () => {
-		const { pi, trigger, entries } = makeMockPI()
+	it("injects action log user message at cutoff boundary", async () => {
+		const { pi, trigger } = makeMockPI(131_072)
 		contextCompactorExtension(pi)
-		await trigger("message_end", makeMessageEndEvent(40_000))
-		const oldOutput = makeToolResult("bash", "x".repeat(600)) // 600 chars, pruned to placeholder
-		const recent = Array.from({ length: 30 }, makeUser)
-		const messages = [oldOutput, ...recent] as ContextEvent["messages"]
+		await trigger("message_end", makeMessageEndEvent(90_000))
+		const call = makeToolCall("c1", "grep", { pattern: "registerCommand" })
+		const oldAssistant = makeAssistantWithCalls([call])
+		const oldResult = makeToolResultFor("c1", "grep", "a.ts:1: x\nb.ts:2: x\nc.ts:3: x")
+		const recent = Array.from({ length: 50 }, makeUser)
+		const messages = [oldAssistant, oldResult, ...recent] as ContextEvent["messages"]
+		const result = (await trigger("context", { messages })) as { messages: ContextEvent["messages"] }
+		const first = result.messages[0] as UserMessage
+		expect(first.role).toBe("user")
+		const text = (first.content as Array<{ type: string; text: string }>)[0].text
+		expect(text).toContain(ACTION_LOG_MARKER)
+		expect(text).toContain("grep")
+		expect(text).toContain("3 match")
+	})
+
+	it("merges previous action log when it falls into the drop zone", async () => {
+		const { pi, trigger } = makeMockPI(131_072)
+		contextCompactorExtension(pi)
+		await trigger("message_end", makeMessageEndEvent(90_000))
+		const previousLogText = `${ACTION_LOG_MARKER}\n- grep("old") → 2 matches`
+		const previousLog = {
+			role: "user" as const,
+			content: [{ type: "text" as const, text: previousLogText }],
+			timestamp: 0,
+		}
+		const call = makeToolCall("c1", "read", { path: "new.ts" })
+		const newAssistant = makeAssistantWithCalls([call])
+		const newResult = makeToolResultFor("c1", "read", "x".repeat(500))
+		const recent = Array.from({ length: 50 }, makeUser)
+		const messages = [previousLog, newAssistant, newResult, ...recent] as ContextEvent["messages"]
+		const result = (await trigger("context", { messages })) as { messages: ContextEvent["messages"] }
+		const first = result.messages[0] as UserMessage
+		const text = (first.content as Array<{ type: string; text: string }>)[0].text
+		expect(text).toContain('grep("old")')
+		expect(text).toContain("read")
+	})
+
+	it("preserves user messages below the cutoff via passthrough (not clamping)", async () => {
+		const { pi, trigger } = makeMockPI(131_072)
+		contextCompactorExtension(pi)
+		await trigger("message_end", makeMessageEndEvent(90_000))
+		const userMsg = makeUser()
+		const oldTurn = makeFullTurn("c1", "grep", "x".repeat(600))
+		const recent = Array.from({ length: 50 }, makeUser)
+		const messages = [userMsg, ...oldTurn, ...recent] as ContextEvent["messages"]
+		const result = (await trigger("context", { messages })) as { messages: ContextEvent["messages"] }
+		// userMsg text "hi" must survive (merged into action log or in passthrough)
+		const allText = result.messages
+			.flatMap((m) => {
+				const u = m as UserMessage
+				if (u.role !== "user" || !Array.isArray(u.content)) return []
+				return u.content.map((c) => (c as { text?: string }).text ?? "")
+			})
+			.join("")
+		expect(allText).toContain("hi")
+	})
+
+	it("emits tool_result_pruning entry with droppedTurns and droppedMessages", async () => {
+		const { pi, trigger, entries } = makeMockPI(131_072)
+		contextCompactorExtension(pi)
+		await trigger("message_end", makeMessageEndEvent(90_000))
+		const oldTurn = makeFullTurn("c1", "grep", "x".repeat(600))
+		const recent = Array.from({ length: 50 }, makeUser)
+		const messages = [...oldTurn, ...recent] as ContextEvent["messages"]
 		await trigger("context", { messages })
 		expect(entries).toHaveLength(1)
 		expect(entries[0].customType).toBe("tool_result_pruning")
-		const data = entries[0].data as { prunedCount: number; totalCharsRemoved: number; cutoff: number }
-		expect(data.prunedCount).toBe(1)
-		expect(data.totalCharsRemoved).toBeGreaterThan(0)
-		expect(data.cutoff).toBe(1)
+		const data = entries[0].data as { droppedTurns: number; droppedMessages: number; cutoff: number }
+		expect(data.droppedTurns).toBe(1)
+		expect(data.droppedMessages).toBe(2) // 1 assistant + 1 result
+		expect(data.cutoff).toBeGreaterThan(0)
 	})
 
-	it("extends the protected window to include the most recent user message", async () => {
-		const { pi, trigger, entries } = makeMockPI()
+	it("adapts threshold to model context window (small 32k model)", async () => {
+		// 65% of 32768 ≈ 21299; use 25k input — above threshold
+		const { pi, trigger } = makeMockPI(32_768)
 		contextCompactorExtension(pi)
-		await trigger("message_end", makeMessageEndEvent(40_000))
-
-		// oldTool (index 0) is prunable, userMsg (index 1) must be preserved,
-		// and 30 tool results (indices 2-31) fill the protected window.
-		// baseCutoff = 2 would drop userMsg; floor brings it down to 1.
-		const oldTool = makeToolResult("bash", "x".repeat(600))
-		const userMsg = makeUser()
-		const recent = Array.from({ length: 30 }, () => makeToolResult("bash", "x".repeat(600)))
-		const messages = [oldTool, userMsg, ...recent] as ContextEvent["messages"]
-
-		const result = (await trigger("context", { messages })) as { messages: ContextEvent["messages"] }
+		await trigger("message_end", makeMessageEndEvent(25_000))
+		const oldTurn = makeFullTurn("c1", "grep", "x".repeat(600))
+		const recent = Array.from({ length: 50 }, makeUser)
+		const result = await trigger("context", {
+			messages: [...oldTurn, ...recent] as ContextEvent["messages"],
+		})
 		expect(result).toBeDefined()
-		expect(result.messages[1]).toBe(userMsg) // user message preserved
-		expect(entries).toHaveLength(1)
-		const data = entries[0].data as { cutoff: number }
-		expect(data.cutoff).toBe(1)
 	})
 
-	it("does not emit entry when no messages are actually pruned", async () => {
-		const { pi, trigger, entries } = makeMockPI()
+	it("preserves user messages in the drop zone — only tool-call pairs are dropped", async () => {
+		const { pi, trigger } = makeMockPI(131_072)
 		contextCompactorExtension(pi)
-		await trigger("message_end", makeMessageEndEvent(40_000))
-		// old tool result is below MIN_PRUNE_CHARS — won't be pruned
-		const oldOutput = makeToolResult("bash", "tiny")
-		const recent = Array.from({ length: 30 }, makeUser)
-		const messages = [oldOutput, ...recent] as ContextEvent["messages"]
-		await trigger("context", { messages })
-		expect(entries).toHaveLength(0)
+		await trigger("message_end", makeMessageEndEvent(90_000))
+		const oldUserMsg = makeUser()
+		const oldTurn = makeFullTurn("c1", "grep", "x".repeat(600))
+		const recent = Array.from({ length: 50 }, makeUser)
+		const messages = [oldUserMsg, ...oldTurn, ...recent] as ContextEvent["messages"]
+		const result = (await trigger("context", { messages })) as { messages: ContextEvent["messages"] }
+		// oldUserMsg text must survive (merged into action log or in passthrough)
+		const allUserText = result.messages
+			.flatMap((m) => {
+				const u = m as UserMessage
+				if (u.role !== "user" || !Array.isArray(u.content)) return []
+				return u.content.map((c) => (c as { text?: string }).text ?? "")
+			})
+			.join("")
+		expect(allUserText).toContain("hi")
+		// the tool pair must be gone
+		expect(result.messages).not.toContain(oldTurn[0]) // assistant
+		expect(result.messages).not.toContain(oldTurn[1]) // toolResult
+	})
+
+	it("preserves reasoning-only assistant messages in the drop zone", async () => {
+		const { pi, trigger } = makeMockPI(131_072)
+		contextCompactorExtension(pi)
+		await trigger("message_end", makeMessageEndEvent(90_000))
+		const reasoningAssistant = makeAssistant()
+		const oldTurn = makeFullTurn("c1", "grep", "x".repeat(600))
+		const recent = Array.from({ length: 50 }, makeUser)
+		const messages = [reasoningAssistant, ...oldTurn, ...recent] as ContextEvent["messages"]
+		const result = (await trigger("context", { messages })) as { messages: ContextEvent["messages"] }
+		expect(result.messages).toContain(reasoningAssistant)
+	})
+
+	it("merges action log into first passthrough user message to avoid consecutive user messages", async () => {
+		const { pi, trigger } = makeMockPI(131_072)
+		contextCompactorExtension(pi)
+		await trigger("message_end", makeMessageEndEvent(90_000))
+		const oldUser = makeUser()
+		const oldTurn = makeFullTurn("c1", "grep", "x".repeat(600))
+		const recent = Array.from({ length: 50 }, makeUser)
+		const messages = [oldUser, ...oldTurn, ...recent] as ContextEvent["messages"]
+		const result = (await trigger("context", { messages })) as { messages: ContextEvent["messages"] }
+		const first = result.messages[0] as UserMessage
+		expect(first.role).toBe("user")
+		const content = first.content as Array<{ type: string; text: string }>
+		const fullText = content.map((c) => c.text).join("")
+		expect(fullText).toContain(ACTION_LOG_MARKER)
+		expect(fullText).toContain("hi")
+		// Verify oldUser was merged into the action log, not left as a separate message
+		expect(result.messages).not.toContain(oldUser)
+	})
+
+	it("compacts even when only user message is at index 0", async () => {
+		const { pi, trigger } = makeMockPI(131_072)
+		contextCompactorExtension(pi)
+		await trigger("message_end", makeMessageEndEvent(90_000))
+		const userMsg = makeUser()
+		const turns = Array.from({ length: 5 }, (_, i) => makeFullTurn(`c${i}`, "grep", "x".repeat(600)))
+		const recent = Array.from({ length: 50 }, makeUser)
+		const messages = [userMsg, ...turns.flat(), ...recent] as ContextEvent["messages"]
+		const result = await trigger("context", { messages })
+		expect(result).toBeDefined()
 	})
 })
 
