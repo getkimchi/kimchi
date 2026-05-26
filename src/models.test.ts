@@ -202,6 +202,51 @@ describe("updateModelsConfig", () => {
 		expect(slugs).toContain("gpt-4")
 	})
 
+	it("reads subscription provider models from existing models.json on startup", async () => {
+		const OPENAI_MODEL = {
+			id: "o1-pro",
+			name: "o1 Pro",
+			reasoning: false,
+			input: ["text"],
+			contextWindow: 200000,
+			maxTokens: 100000,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			provider: "openai",
+		}
+
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					"kimchi-dev": {
+						baseUrl: "https://llm.kimchi.dev",
+						apiKey: "KIMCHI_API_KEY",
+						api: "openai-completions",
+						models: [OPENAI_MODEL],
+					},
+					openai: {
+						models: [OPENAI_MODEL],
+					},
+				},
+			}),
+		)
+
+		// API returns a different Kimchi model
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const slugs = result.models.map((m) => m.slug)
+		expect(slugs).toContain("kimi-k2.5") // from API
+		expect(slugs).toContain("o1-pro") // from cached providers
+
+		const written = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(written.providers.openai.models).toHaveLength(1)
+	})
+
 	it("throws on fetch failure when no cached config exists", async () => {
 		vi.mocked(fetch).mockRejectedValueOnce(new Error("network error"))
 		await expect(updateModelsConfig(modelsJsonPath, "test-key")).rejects.toThrow("network error")

@@ -59,6 +59,10 @@ export interface PiModelConfig {
 	// Persisted so telemetry can resolve the actual upstream provider after cache round-trip.
 	provider: string
 	compat?: { supportsReasoningEffort?: boolean; cacheControlFormat?: "anthropic" }
+	/** Model-level API type: upstream custom-provider parseModels falls through to this field. */
+	api?: string
+	/** Model-level base URL: upstream custom-provider parseModels falls through to this field. */
+	baseUrl?: string
 }
 
 function metadataToModel(m: ModelMetadata): PiModelConfig {
@@ -162,13 +166,14 @@ export function syncProviderModels(
 	modelsJsonPath: string,
 	providerId: string,
 	models: PiModelConfig[],
+	providerConfig?: { api?: string; baseUrl?: string },
 ): void {
-	let config: { providers?: Record<string, { models?: PiModelConfig[] }> } = {}
+	let config: { providers?: Record<string, { api?: string; baseUrl?: string; models?: PiModelConfig[] }> } = {}
 	if (existsSync(modelsJsonPath)) {
 		config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
 	}
 	if (!config.providers) config.providers = {}
-	config.providers[providerId] = { models }
+	config.providers[providerId] = { ...providerConfig, models }
 	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
 }
 

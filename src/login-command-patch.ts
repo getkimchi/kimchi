@@ -6,6 +6,9 @@
  * `InteractiveMode` instance is constructed so the prototype patch takes effect.
  */
 
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { resolve } from "node:path"
+import type { Api, Model } from "@earendil-works/pi-ai"
 import {
 	type AuthStatus,
 	ExtensionSelectorComponent,
@@ -13,12 +16,15 @@ import {
 	OAuthSelectorComponent,
 } from "@earendil-works/pi-coding-agent"
 import { Spacer, Text } from "@earendil-works/pi-tui"
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
-import { resolve } from "node:path"
-import type { Model } from "@earendil-works/pi-ai"
 import { authenticateViaBrowser } from "./cli-auth/index.js"
 import { writeApiKey } from "./config.js"
+import type { PiModelConfig } from "./models.js"
 import { syncProviderModels } from "./models.js"
+
+const getPiModels = async () => {
+	const piAi = await import("@earendil-works/pi-ai")
+	return piAi.getModels
+}
 
 const KIMCHI_PROVIDER_ID = "kimchi-dev"
 const KIMCHI_DEFAULT_MODEL_ID = "kimi-k2.6"
@@ -26,10 +32,12 @@ const KIMCHI_DEFAULT_MODEL_ID = "kimi-k2.6"
  * Convert upstream Model to Kimchi PiModelConfig so we can persist subscription
  * provider models in Kimchi's models.json.
  */
-function upstreamModelToPiConfig(m: Model<any>, providerId: string) {
+function upstreamModelToPiConfig(m: Model<Api>, providerId: string) {
 	return {
 		id: m.id,
 		name: m.name,
+		api: m.api,
+		baseUrl: m.baseUrl,
 		reasoning: m.reasoning,
 		input: m.input,
 		contextWindow: m.contextWindow,
@@ -38,6 +46,31 @@ function upstreamModelToPiConfig(m: Model<any>, providerId: string) {
 		provider: providerId,
 		compat: m.compat,
 	}
+}
+
+/**
+ * Pre-populate models.json with the subscription provider's built-in models.
+ * This is necessary because `KIMCHI_DISABLE_BUILTIN_PROVIDERS` filters them
+ * out of loadBuiltInModels(), so the only way upstream discovers them is
+ * through models.json. Writing them before showLoginDialog ensures
+ * completeProviderAuthentication() → refresh() sees them while auth is
+ * already configured.
+ */
+async function prePopulateSubscriptionModels(providerId: string): Promise<void> {
+	const getModels = await getPiModels()
+	const piModels = getModels(providerId as unknown as Parameters<typeof getModels>[0])
+	if (piModels.length === 0) return
+
+	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+	if (!agentDir) return
+
+	const modelsJsonPath = resolve(agentDir, "models.json")
+	const configs = piModels.map((m) => upstreamModelToPiConfig(m, providerId))
+	const firstModel = piModels[0]
+	syncProviderModels(modelsJsonPath, providerId, configs as PiModelConfig[], {
+		api: firstModel.api,
+		baseUrl: firstModel.baseUrl,
+	})
 }
 
 const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
@@ -209,35 +242,22 @@ function showSubscriptionLogin(im: InteractiveMode): void {
 				done()
 				const providerOption = providerOptions.find((provider) => provider.id === providerId)
 				if (!providerOption) return
+
+				// Pre-populate models.json before upstream login so that when
+				// upstream calls completeProviderAuthentication → refresh() the
+				// subscription models are already discoverable through models.json.
+				await prePopulateSubscriptionModels(providerOption.id)
+
 				await modeLike.showLoginDialog?.(providerOption.id, providerOption.name)
 
-				// After upstream login returns, sync upstream models into Kimchi's cache.
+				// After upstream login returns, refresh the registry so the models
+				// from models.json become available without requiring a manual /reload.
 				const registry = modeLike.session?.modelRegistry
-				if (registry && typeof registry.getAvailable === "function") {
+				if (registry && typeof registry.refresh === "function") {
 					try {
-						const available = (await Promise.resolve(registry.getAvailable())) as Model<any>[]
-						const providerModels = available.filter(
-							(m: Model<any>) => m.provider === providerOption.id,
-						)
-						if (providerModels.length > 0) {
-							const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
-							if (agentDir) {
-								const modelsJsonPath = resolve(agentDir, "models.json")
-								const configs = providerModels.map((m: Model<any>) =>
-									upstreamModelToPiConfig(m, providerOption.id),
-								)
-								// Merge with Kimchi's existing provider config if present.
-								let parsed: Record<string, unknown> = {}
-								if (existsSync(modelsJsonPath)) {
-									parsed = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-								}
-								const _providers = (parsed as { providers?: Record<string, unknown> }).providers ?? {}
-								syncProviderModels(modelsJsonPath, providerOption.id, configs as any)
-							}
-						}
+						registry.refresh()
 					} catch {
-						// Silent — upstream models.json already has the models from the upstream registry refresh.
-						// The sync here is best-effort Kimchi-side caching.
+						// Silent — the next manual /reload or restart will pick up the models.
 					}
 				}
 			},

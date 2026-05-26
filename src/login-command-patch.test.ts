@@ -5,6 +5,14 @@ import * as loginPatch from "./login-command-patch.js"
 
 const { applyLoginCommandPatch, oauthDelegate } = loginPatch
 
+vi.mock("@earendil-works/pi-ai", async () => {
+	const actual = await vi.importActual("@earendil-works/pi-ai")
+	return {
+		...(actual as object),
+		getModels: vi.fn().mockReturnValue([]),
+	}
+})
+
 beforeAll(() => {
 	initTheme("default")
 })
@@ -182,6 +190,120 @@ it("routes the subscription option to upstream OAuth providers without showing K
 
 	expect(fakeIm.getLoginProviderOptions).toHaveBeenCalledWith("oauth")
 	expect(fakeIm.showLoginDialog).toHaveBeenCalledWith("anthropic", "Claude")
+})
+
+it("pre-populates subscription provider models in models.json before upstream login", async () => {
+	const piAi = await import("@earendil-works/pi-ai")
+	const getModelsMock = vi.mocked(piAi.getModels)
+	getModelsMock.mockReturnValue([
+		{
+			id: "codex",
+			name: "Codex",
+			provider: "openai",
+			api: "openai-chat",
+			baseUrl: "https://api.openai.com/v1/chat/completions",
+			input: ["text"],
+			contextWindow: 200000,
+			maxTokens: 8192,
+			reasoning: false,
+			cost: { input: 3, output: 12, cacheRead: 0, cacheWrite: 0 },
+		},
+	] as ReturnType<typeof getModelsMock>)
+
+	const modelsModule = await import("./models.js")
+	const syncSpy = vi.spyOn(modelsModule, "syncProviderModels").mockImplementation(() => {})
+
+	const registry = makeFakeModelRegistry()
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.getLoginProviderOptions.mockReturnValue([{ id: "openai", name: "OpenAI", authType: "oauth" }])
+
+	const previousDir = process.env.KIMCHI_CODING_AGENT_DIR
+	process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-test-models"
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectSubscriptionLoginOption(fakeIm)
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+
+	expect(fakeIm.showLoginDialog).toHaveBeenCalledWith("openai", "OpenAI")
+	expect(syncSpy).toHaveBeenCalledOnce()
+	const [_path, providerId, configs, providerConfig] = syncSpy.mock.calls[0] as unknown as [
+		string,
+		string,
+		unknown[],
+		unknown,
+	]
+	expect(providerId).toBe("openai")
+	expect(providerConfig).toMatchObject({
+		api: "openai-chat",
+		baseUrl: "https://api.openai.com/v1/chat/completions",
+	})
+	expect(configs).toHaveLength(1)
+	expect(configs[0]).toMatchObject({
+		id: "codex",
+		name: "Codex",
+		provider: "openai",
+		input: ["text"],
+		contextWindow: 200000,
+		maxTokens: 8192,
+		reasoning: false,
+	})
+
+	if (previousDir === undefined) {
+		process.env.KIMCHI_CODING_AGENT_DIR = undefined
+	} else {
+		process.env.KIMCHI_CODING_AGENT_DIR = previousDir
+	}
+	syncSpy.mockRestore()
+	getModelsMock.mockClear()
+})
+
+it("does not crash when registry.getAvailable returns empty after subscription login", async () => {
+	const modelsModule = await import("./models.js")
+	const syncSpy = vi.spyOn(modelsModule, "syncProviderModels").mockImplementation(() => {})
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockResolvedValue([])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.getLoginProviderOptions.mockReturnValue([{ id: "openai", name: "OpenAI", authType: "oauth" }])
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectSubscriptionLoginOption(fakeIm)
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+
+	expect(fakeIm.showLoginDialog).toHaveBeenCalled()
+	expect(syncSpy).not.toHaveBeenCalled()
+
+	syncSpy.mockRestore()
+})
+
+it("does not crash when registry.getAvailable throws after subscription login", async () => {
+	const modelsModule = await import("./models.js")
+	const syncSpy = vi.spyOn(modelsModule, "syncProviderModels").mockImplementation(() => {})
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockRejectedValue(new Error("registry unavailable"))
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.getLoginProviderOptions.mockReturnValue([{ id: "openai", name: "OpenAI", authType: "oauth" }])
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectSubscriptionLoginOption(fakeIm)
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+
+	expect(fakeIm.showLoginDialog).toHaveBeenCalled()
+	expect(syncSpy).not.toHaveBeenCalled()
+
+	syncSpy.mockRestore()
 })
 
 it("passes through to original showOAuthSelector for 'logout' mode", async () => {
