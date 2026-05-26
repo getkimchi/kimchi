@@ -129,6 +129,28 @@ describe("runDoneStep", () => {
 		writeSpy.mockRestore()
 	})
 
+	it("aborts before configuring tools when model fetch fails without a cache", async () => {
+		vi.mocked(modelsModule.updateModelsConfig).mockRejectedValueOnce(
+			new Error("self signed certificate in certificate chain"),
+		)
+		const tool = getClaudeCodeTool()
+		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()
+
+		const outcome = await runDoneStep(baseState())
+
+		expect(writeSpy).not.toHaveBeenCalled()
+		expect(outcome.successes).toEqual([])
+		expect(outcome.failures).toEqual([
+			{ id: "*", error: "model fetch failed: self signed certificate in certificate chain" },
+		])
+		expect(clackMock.spinnerInstance.stop).toHaveBeenCalledWith(
+			"Could not fetch available models: self signed certificate in certificate chain",
+		)
+		expect(clackMock.outro).toHaveBeenCalledWith("Aborted.")
+
+		writeSpy.mockRestore()
+	})
+
 	it("inject mode skips the writer entirely", async () => {
 		const tool = getClaudeCodeTool()
 		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()
