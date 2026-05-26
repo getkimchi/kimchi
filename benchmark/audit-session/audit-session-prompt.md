@@ -78,6 +78,11 @@ Evaluate:
 - Were there unnecessary phase transitions or phase churn?
 - Did the phase labels accurately reflect the work being done? (e.g., was exploration happening during "build"?)
 - Was time allocation across phases proportional to session goals?
+- Were subagent tasks scoped appropriately for their budgets? (abort rate, budget utilisation vs actual output)
+- Were independent build chunks parallelised with run_in_background?
+- When subagents aborted, did the orchestrator follow the post-abort protocol (spawn follow-up agent) or manually complete the work (anti-pattern)?
+- Were subagent budgets matched to chunk complexity (concurrency, state machines, signal handling)?
+- Were all review findings resolved before the session declared completion? If the review found N issues, were all N addressed (fixed or explicitly documented as deferred with rationale)?
 
 #### 2.2 Architecture & Design Decisions
 
@@ -100,6 +105,7 @@ Evaluate:
 - Is logging structured and useful? (correlation IDs, no secrets, actionable messages)
 - Were unnecessary comments added? (CLAUDE.md says avoid comments, use self-explanatory names)
 - Is the code over-engineered for the task at hand?
+- If a review phase found issues, were they ALL resolved in subsequent build phases? Unresolved review findings are a quality gap even if tests pass.
 
 #### 2.4 Testing Strategy
 

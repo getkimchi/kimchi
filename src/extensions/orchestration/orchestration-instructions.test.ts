@@ -41,7 +41,8 @@ describe("resolveOrchestrationInstructions", () => {
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("## Your Team")
-		expect(result).toContain("Builder")
+		expect(result).toContain("**Builder**:")
+		expect(result).toContain("**Builder Lite**:")
 		expect(result).toContain("Reviewer")
 		expect(result).toContain("Explorer")
 	})
@@ -79,6 +80,7 @@ describe("resolveOrchestrationInstructions", () => {
 				orchestrator: "anthropic/claude-opus-4-7",
 				planner: "anthropic/claude-opus-4-7",
 				builder: "anthropic/claude-sonnet-4-5",
+				builderLite: "kimchi-dev/nemotron-3-super-fp4",
 				reviewer: "openai/gpt-4o",
 				explorer: "kimchi-dev/nemotron-3-super-fp4",
 			},
@@ -126,6 +128,7 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("Orchestrate the work")
 		expect(result).toContain("Token budgets")
 		expect(result).toContain("token_budget")
+		expect(result).toContain("complexity_multiplier")
 		expect(result).toContain("Plan self-validation")
 		expect(result).toContain("Plan verification")
 		expect(result).toContain("What makes a good plan")
