@@ -56,7 +56,7 @@ export class LogoHeader implements Component {
 		const accentText = (text: string) => theme.fg("accent", text)
 		const labelLine = "Kimchi's special:"
 		const tip1Text = `Use ${accentText("/ferment")} to hand off a large task with minimal interruption.`
-		const tip2Text = `${accentText("/pause")} and ${accentText("/quit")} your ferment workflow anytime.`
+		const tip2Text = `To leave the Ferment mode and return to a regular coding session, use ${accentText("/ferment exit")}.`
 
 		const labelWrap = wrapTextWithAnsi(labelLine, rightColWidth)
 		const wrap1 = wrapTextWithAnsi(tip1Text, rightColWidth)
