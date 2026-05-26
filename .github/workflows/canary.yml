@@ -178,8 +178,8 @@ jobs:
         run: pnpm run test:smoke
 
   release:
-    needs: [preflight, smoke-test]
     if: needs.preflight.outputs.should-build == 'true'
+    needs: [preflight, smoke-test]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
