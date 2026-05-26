@@ -84,8 +84,7 @@ describe("LogoHeader", () => {
 		const rightText = lines.slice(1, -1).map(stripAnsi).join(" ")
 		expect(rightText).toContain("Kimchi's special:")
 		expect(rightText).toContain("/ferment")
-		expect(rightText).toContain("/pause")
-		expect(rightText).toContain("/quit")
+		expect(rightText).toContain("exit")
 
 		// Contains a horizontal rule in the right column
 		const hrRow = lines.slice(1, -1).find((l) => {
@@ -116,8 +115,7 @@ describe("LogoHeader", () => {
 		expect(rightText).toContain("Kimchi")
 		expect(rightText).toContain("special")
 		expect(rightText).toContain("ferment")
-		expect(rightText).toContain("pause")
-		expect(rightText).toContain("quit")
+		expect(rightText).toContain("exit")
 
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(60)
@@ -138,8 +136,7 @@ describe("LogoHeader", () => {
 		expect(rightChars).toMatch(/K/i)
 		expect(rightChars).toMatch(/s\s*p\s*e\s*c/i)
 		expect(rightChars).toMatch(/f\s*e\s*r\s*m/i)
-		expect(rightChars).toMatch(/p\s*a\s*u\s*s/i)
-		expect(rightChars).toMatch(/q\s*u\s*i\s*t/i)
+		expect(rightChars).toMatch(/e\s*x\s*i\s*t/i)
 		const contentRows = lines.slice(1, -1)
 		const rowsWithRightContent = contentRows.filter((l) => {
 			const stripped = stripAnsi(l)
@@ -165,8 +162,7 @@ describe("LogoHeader", () => {
 		// Highlighted commands use theme.fg("accent", ...) which wraps with accent + reset
 		const rightSection = lines.slice(1, -1).join("\n")
 		expect(rightSection).toContain("\x1b[36m/ferment\x1b[0m")
-		expect(rightSection).toContain("\x1b[36m/pause\x1b[0m")
-		expect(rightSection).toContain("\x1b[36m/quit\x1b[0m")
+		expect(rightSection).toContain("\x1b[36m/ferment exit\x1b[0m")
 	})
 
 	it("centers the logo and info line vertically as a unit", () => {
