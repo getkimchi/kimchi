@@ -124,7 +124,10 @@ function hasExplicitModelFlag(): boolean {
 
 const initialMultiModel = hasExplicitModelFlag() ? false : readMultiModelSetting()
 let multiModelEnabled = initialMultiModel
-;(process as NodeJS.Process & { __kimchiMultiModelEnabled?: boolean }).__kimchiMultiModelEnabled = initialMultiModel
+;(
+	process as NodeJS.Process & { __kimchiMultiModelEnabled?: boolean; __kimchiOrchestratorRef?: string }
+).__kimchiMultiModelEnabled = initialMultiModel
+;(process as NodeJS.Process & { __kimchiOrchestratorRef?: string }).__kimchiOrchestratorRef = getOrchestratorModelRef()
 
 /**
  * Orchestrator model ID (without provider prefix).
@@ -224,10 +227,13 @@ export function stripEmptyToolCalls(messages: OrchestratorMessages): Orchestrato
 	return changed ? filtered : messages
 }
 
-type ProcessWithMultiModel = NodeJS.Process & { __kimchiMultiModelEnabled?: boolean }
+type ProcessWithKimchi = NodeJS.Process & {
+	__kimchiMultiModelEnabled?: boolean
+	__kimchiOrchestratorRef?: string
+}
 
 export function getMultiModelEnabled(): boolean {
-	const processFlag = (process as ProcessWithMultiModel).__kimchiMultiModelEnabled
+	const processFlag = (process as ProcessWithKimchi).__kimchiMultiModelEnabled
 	if (processFlag !== undefined && processFlag !== multiModelEnabled) {
 		multiModelEnabled = processFlag
 		writeMultiModelSetting(processFlag)
@@ -237,7 +243,8 @@ export function getMultiModelEnabled(): boolean {
 
 export function setMultiModelEnabled(enabled: boolean): void {
 	multiModelEnabled = enabled
-	;(process as ProcessWithMultiModel).__kimchiMultiModelEnabled = enabled
+	;(process as ProcessWithKimchi).__kimchiMultiModelEnabled = enabled
+	;(process as ProcessWithKimchi).__kimchiOrchestratorRef = getOrchestratorModelRef()
 	writeMultiModelSetting(enabled)
 }
 
