@@ -46,6 +46,69 @@ describe("TerminalComponent handleInput", () => {
 		expect(session.write).toHaveBeenCalledWith(Buffer.from("\x1b[A", "utf-8"))
 	})
 
+	it("converts legacy arrow with event to clean sequence", async () => {
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
+		component.handleInput("\x1b[1;2:1A")
+		expect(session.write).toHaveBeenCalledWith(Buffer.from("\x1b[1;2A"))
+	})
+
+	it("drops legacy arrow release events", async () => {
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
+		component.handleInput("\x1b[1;1:3D")
+		expect(session.write).toHaveBeenCalledWith(Buffer.alloc(0))
+	})
+
+	it("converts legacy plain arrow with event to basic sequence", async () => {
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
+		component.handleInput("\x1b[1;1:1B")
+		expect(session.write).toHaveBeenCalledWith(Buffer.from("\x1b[B"))
+	})
+
+	it("converts legacy functional key with event to clean sequence", async () => {
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
+		component.handleInput("\x1b[5;2:1~")
+		expect(session.write).toHaveBeenCalledWith(Buffer.from("\x1b[5;2~"))
+	})
+
+	it("drops legacy functional key release events", async () => {
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
+		component.handleInput("\x1b[3;1:3~")
+		expect(session.write).toHaveBeenCalledWith(Buffer.alloc(0))
+	})
+
+	it("converts legacy plain functional key with event to basic sequence", async () => {
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
+		component.handleInput("\x1b[2;1:1~")
+		expect(session.write).toHaveBeenCalledWith(Buffer.from("\x1b[2~"))
+	})
+
+	it("converts legacy home/end with event to clean sequence", async () => {
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
+		component.handleInput("\x1b[1;2:1H")
+		expect(session.write).toHaveBeenCalledWith(Buffer.from("\x1b[1;2H"))
+	})
+
+	it("drops legacy home/end release events", async () => {
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
+		component.handleInput("\x1b[1;1:3F")
+		expect(session.write).toHaveBeenCalledWith(Buffer.alloc(0))
+	})
+
+	it("converts legacy plain home with event to basic sequence", async () => {
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
+		component.handleInput("\x1b[1;1:1H")
+		expect(session.write).toHaveBeenCalledWith(Buffer.from("\x1b[H"))
+	})
+
 	it("converts kitty shift+tab to \\x1b[Z", async () => {
 		const session = mockSession()
 		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())

@@ -8,6 +8,39 @@ const KITTY_CSI_U_RE = new RegExp(
 const KITTY_LOCK_MASK = 64 + 128
 
 function toRawAnsi(data: string): Buffer | undefined {
+  // Legacy arrow sequences with optional kitty event suffix:
+  // \x1b[1;<mod>:<event>A/B/C/D
+  const mArrow = data.match(/^\x1b\[1;(\d+)(?::(\d+))?([ABCD])$/)
+  if (mArrow) {
+    const mod = Number.parseInt(mArrow[1], 10)
+    const ev = mArrow[2] ? Number.parseInt(mArrow[2], 10) : 1
+    if (ev === 3) return Buffer.alloc(0)
+    const suffix = mArrow[3]
+    return Buffer.from(mod === 1 ? `\x1b[${suffix}` : `\x1b[1;${mod}${suffix}`)
+  }
+
+  // Legacy functional key sequences with optional kitty event suffix:
+  // \x1b[<num>;<mod>:<event>~
+  const mFunc = data.match(/^\x1b\[(\d+)(?:;(\d+))?(?::(\d+))?~$/)
+  if (mFunc) {
+    const num = Number.parseInt(mFunc[1], 10)
+    const mod = mFunc[2] ? Number.parseInt(mFunc[2], 10) : 1
+    const ev = mFunc[3] ? Number.parseInt(mFunc[3], 10) : 1
+    if (ev === 3) return Buffer.alloc(0)
+    return Buffer.from(mod === 1 ? `\x1b[${num}~` : `\x1b[${num};${mod}~`)
+  }
+
+  // Legacy home/end sequences with optional kitty event suffix:
+  // \x1b[1;<mod>:<event>H/F
+  const mHomeEnd = data.match(/^\x1b\[1;(\d+)(?::(\d+))?([HF])$/)
+  if (mHomeEnd) {
+    const mod = Number.parseInt(mHomeEnd[1], 10)
+    const ev = mHomeEnd[2] ? Number.parseInt(mHomeEnd[2], 10) : 1
+    if (ev === 3) return Buffer.alloc(0)
+    const suffix = mHomeEnd[3]
+    return Buffer.from(mod === 1 ? `\x1b[${suffix}` : `\x1b[1;${mod}${suffix}`)
+  }
+
   const m = data.match(KITTY_CSI_U_RE)
   if (!m) return undefined
 
