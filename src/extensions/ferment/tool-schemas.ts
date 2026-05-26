@@ -43,6 +43,35 @@ export const GateVerdictSchema = Type.Object({
 	}),
 })
 
+export const ArchitectReviewSchema = Type.Object({
+	status: Type.Union([Type.Literal("approved"), Type.Literal("needs_revision")], {
+		description:
+			"Plan Reviewer verdict for the exact scoping plan payload. Use approved only when this exact plan is ready for user review and implementation.",
+	}),
+	summary: Type.String({
+		description:
+			"Short architecture verdict covering fit with existing patterns, complexity, dependencies, risk, and verification.",
+	}),
+	required_changes: Type.Array(Type.String(), {
+		description:
+			"Required plan changes from the Plan Reviewer. Must be non-empty when status is needs_revision; use [] when approved.",
+	}),
+	reservations: Type.Optional(Type.Array(Type.String())),
+	questions: Type.Optional(
+		Type.Array(Type.String(), {
+			description:
+				"Blocking human questions requested by the Plan Reviewer. Use only when the planner cannot safely revise the plan without a user decision; the planner must convert these into propose_ferment_scoping.questions.",
+			maxItems: 3,
+		}),
+	),
+	reviewed_plan_hash: Type.Optional(
+		Type.String({
+			description:
+				"Optional stale-review guard. Prefer the literal string 'current' when the Plan Reviewer reviewed the exact XML plan handed to it; the tool records the computed hash internally.",
+		}),
+	),
+})
+
 export const ListParams = Type.Object({
 	filter: Type.Optional(Type.String({ description: "Optional status filter" })),
 })
@@ -195,6 +224,7 @@ export const ProposeScopingParams = Type.Object({
 			}),
 		]),
 	),
+	architect_review: Type.Optional(ArchitectReviewSchema),
 	gates: Type.Array(GateVerdictSchema, {
 		description:
 			"Plan-scope gate verdicts. Required ids: P1, P2, P3. See tool description for each gate's question and what counts as 'pass' vs 'flag'.",

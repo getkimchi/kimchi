@@ -184,6 +184,7 @@ describe("buildFermentPromptBlock", () => {
 			)
 			expect(out).toContain('<discovery_sequence required="true">')
 			expect(out).toContain("if skills are not exposed in this environment, say that explicitly")
+			expect(out).toContain("Print Plan Reviewer as its own subagent type")
 			expect(out).toContain("recommended: true")
 			expect(out).toContain("choose the right style with `type`")
 			expect(out).toContain("`radio` for one choice or yes/no")
@@ -199,6 +200,17 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("exactly P1, P2, and P3")
 			expect(out).toContain("`id`, `verdict`, `rationale`, and `evidence`")
 			expect(out).toContain("Never emit a partial gates array")
+			expect(out).toContain("separate Plan Reviewer review")
+			expect(out).toContain('subagent_type: "Plan Reviewer"')
+			expect(out).toContain("<ferment_plan>")
+			expect(out).toContain("</ferment_plan>")
+			expect(out).toContain('reviewed_plan_hash: "current"')
+			expect(out).toContain("architect_review")
+			expect(out).toContain("needs_revision")
+			expect(out).toContain("Plan Reviewer may use a Researcher subagent")
+			expect(out).toContain("the tool response already contains the final Markdown plan")
+			expect(out).toContain("do not write ceremonial text")
+			expect(out).toContain("Do not guess or chase `Current plan_hash` values")
 			expect(out).toContain('After `propose_ferment_scoping` returns "Plan saved"')
 		})
 
@@ -227,6 +239,7 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("token_budget: 120000")
 			expect(out).toContain("increase only if the user explicitly asks or the missing fact is genuinely plan-blocking")
 			expect(out).toContain("run_in_background: true")
+			expect(out).toContain("Plan Reviewer subagent contract")
 			expect(out).toContain("file map/entry points")
 			expect(out).toContain("do not retry the same broad task")
 			expect(out).toContain("spawn a narrower replacement only if that missing fact is plan-blocking")
@@ -259,6 +272,7 @@ describe("buildFermentPromptBlock", () => {
 			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime()) ?? ""
 			expect(out).toContain("Available subagent types")
 			expect(out).toContain("**Explore**")
+			expect(out).toContain("**Plan Reviewer**")
 		})
 
 		it("uses the active ferment name in the planner role line", () => {

@@ -41,6 +41,7 @@ describe("resolveOrchestrationInstructions", () => {
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("## Your Team")
+		expect(result).toContain("Plan Reviewer")
 		expect(result).toContain("Builder")
 		expect(result).toContain("Reviewer")
 		expect(result).toContain("Explorer")
@@ -59,15 +60,16 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).not.toContain("standard-tier model with `build` strength")
 	})
 
-	it("instructs to always use General-Purpose subagent type", () => {
+	it("instructs to use dedicated subagent types when available", () => {
 		const result = resolveOrchestrationInstructions({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain('subagent_type: "General-Purpose"')
-		expect(result).toContain("Do not use other subagent types")
+		expect(result).toContain("Use the matching dedicated subagent type")
+		expect(result).toContain("`Plan Reviewer`, `Explore`, or `Plan`")
+		expect(result).toContain("Use `General-Purpose` for Builder")
 	})
 
 	it("shows model IDs from the roles config", () => {
@@ -77,6 +79,7 @@ describe("resolveOrchestrationInstructions", () => {
 			mode: "orchestrator",
 			roles: {
 				orchestrator: "anthropic/claude-opus-4-7",
+				architect: "kimchi-dev/minimax-m2.7",
 				planner: "anthropic/claude-opus-4-7",
 				builder: "anthropic/claude-sonnet-4-5",
 				reviewer: "openai/gpt-4o",
@@ -107,6 +110,7 @@ describe("resolveOrchestrationInstructions", () => {
 			mode: "orchestrator",
 			roles: {
 				...DEFAULT_MODEL_ROLES,
+				architect: "kimchi-dev/minimax-m2.7",
 				planner: "anthropic/claude-opus-4-7",
 			},
 		})

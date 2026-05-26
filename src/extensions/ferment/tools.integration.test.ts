@@ -49,7 +49,7 @@ vi.mock("./judge.js", async () => {
 import { pr_dim } from "./colors.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview } from "./plan-review.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
-import { registerLifecycleTools } from "./tools/lifecycle.js"
+import { buildScopingPlanHash, registerLifecycleTools } from "./tools/lifecycle.js"
 import { registerPhaseTools } from "./tools/phases.js"
 import { registerStepTools } from "./tools/steps.js"
 
@@ -1052,17 +1052,67 @@ describe("propose_ferment_scoping", () => {
 		{ name: "P3", goal: "g3", steps: [{ description: "s3" }] },
 	]
 
-	const basePayload = (ferment_id: string, overrides: Record<string, unknown> = {}) => ({
-		ferment_id,
-		title: "Proposed Ferment",
-		goal: "Build a thing",
-		success_criteria: "Tests pass",
-		constraints: ["no breaking changes"],
-		assumptions: "API is stable",
-		phases: threePhases,
-		gates: passingPlanGates(),
-		...overrides,
-	})
+	const basePayload = (ferment_id: string, overrides: Record<string, unknown> = {}) => {
+		const payload: Record<string, unknown> = {
+			ferment_id,
+			title: "Proposed Ferment",
+			goal: "Build a thing",
+			success_criteria: "Tests pass",
+			constraints: ["no breaking changes"],
+			assumptions: "API is stable",
+			phases: threePhases,
+			gates: passingPlanGates(),
+			...overrides,
+		}
+		const normalizeAssumptionsForHash = (value: unknown) => {
+			if (Array.isArray(value)) return value.join("; ")
+			if (typeof value !== "string" || !value.trim().startsWith("[")) return value
+			try {
+				const parsed = JSON.parse(value)
+				return Array.isArray(parsed) && parsed.every((item) => typeof item === "string") ? parsed.join("; ") : value
+			} catch {
+				return value
+			}
+		}
+		const normalizeQuestionsForHash = (value: unknown) =>
+			Array.isArray(value)
+				? value.map((q) =>
+						q && typeof q === "object"
+							? {
+									id: (q as { id?: unknown }).id,
+									text: (q as { question?: unknown }).question,
+									type: (q as { type?: unknown }).type,
+									options: (q as { options?: unknown }).options,
+								}
+							: q,
+					)
+				: []
+		const normalizedForHash = {
+			...payload,
+			constraints:
+				typeof payload.constraints === "string"
+					? payload.constraints
+							.split(/\r?\n|;/)
+							.map((line: string) => line.replace(/^[-*]\s+/, "").trim())
+							.filter(Boolean)
+					: payload.constraints,
+			assumptions: normalizeAssumptionsForHash(payload.assumptions),
+			phases:
+				typeof payload.phases === "string"
+					? JSON.parse(payload.phases.match(/\[[\s\S]*\]/)?.[0] ?? payload.phases)
+					: payload.phases,
+			questions: normalizeQuestionsForHash(payload.questions),
+		}
+		return {
+			...payload,
+			architect_review: overrides.architect_review ?? {
+				status: "approved",
+				summary: "Plan Reviewer approves the plan fit, complexity, and verification.",
+				required_changes: [],
+				reviewed_plan_hash: buildScopingPlanHash(normalizedForHash as never),
+			},
+		}
+	}
 
 	// Helper: seed a pending scope so propose_ferment_scoping can replace it.
 	function seedPending(id: string) {
@@ -1085,6 +1135,14 @@ describe("propose_ferment_scoping", () => {
 		expect(tool?.description).toContain("Partial gates are rejected")
 	})
 
+	it("tells the planner to include an approved Plan Reviewer review", () => {
+		const tool = h.tools.get("propose_ferment_scoping")
+		expect(tool?.description).toContain("architect_review")
+		expect(tool?.description).toContain("separate Plan Reviewer subagent review")
+		expect(tool?.description).toContain('subagent_type "Plan Reviewer"')
+		expect(tool?.description).toContain("needs_revision")
+	})
+
 	it("tells the planner to keep phases provisional when scoping questions are pending", () => {
 		const tool = h.tools.get("propose_ferment_scoping")
 		expect(tool?.description).toContain("If questions is non-empty")
@@ -1103,14 +1161,105 @@ describe("propose_ferment_scoping", () => {
 		expect(f.status).toBe("draft")
 		expect(getPendingScope(id)).toBeDefined()
 		expect(result).toContain("Plan ready for review")
-		expect(result).not.toContain("# Plan:")
+		expect(result).toContain("# Plan: Proposed Ferment")
 		expect(ctx.ui.select).not.toHaveBeenCalled()
 		expect(ctx.ui.custom).not.toHaveBeenCalled()
 		expect(getPendingPlanReview(id)).toMatchObject({
 			fermentId: id,
 			planMarkdown: expect.stringContaining("# Plan: Proposed Ferment"),
 		})
+		expect(getPendingPlanReview(id)?.planMarkdown).not.toContain("## Plan Reviewerure Feedback")
+		expect(getPendingPlanReview(id)?.planMarkdown).not.toContain("## Plan Reviewerure Reservations")
 		expect(getPendingPlanReview(id)?.planMarkdown.includes(`${String.fromCharCode(27)}[`)).toBe(false)
+	})
+
+	it("rejects scoping proposals without Plan Reviewer review", async () => {
+		const id = await createFerment("No Plan Reviewer")
+		seedPending(id)
+		const payload = basePayload(id)
+		const result = err(await h.call("propose_ferment_scoping", { ...payload, architect_review: undefined }, {}))
+
+		expect(result).toContain("architect_review")
+		expect(getPendingPlanReview(id)).toBeUndefined()
+	})
+
+	it("rejects Plan Reviewer reviews that need revision", async () => {
+		const id = await createFerment("Plan Reviewer Reject")
+		seedPending(id)
+		const payload = basePayload(id, {
+			architect_review: {
+				status: "needs_revision",
+				summary: "Plan skips verification.",
+				required_changes: ["Add verification commands to each phase."],
+				reviewed_plan_hash: "placeholder",
+			},
+		})
+		const planHash = buildScopingPlanHash({
+			...payload,
+			architect_review: payload.architect_review,
+			questions: [],
+		} as never)
+		const result = err(
+			await h.call(
+				"propose_ferment_scoping",
+				{
+					...payload,
+					architect_review: { ...payload.architect_review, reviewed_plan_hash: planHash },
+				},
+				{},
+			),
+		)
+
+		expect(result).toContain("Plan Reviewer rejected this plan")
+		expect(result).toContain("Add verification commands")
+		expect(getPendingPlanReview(id)).toBeUndefined()
+	})
+
+	it("rejects stale Plan Reviewer review hashes", async () => {
+		const id = await createFerment("Stale Plan Reviewer")
+		seedPending(id)
+		const result = err(
+			await h.call(
+				"propose_ferment_scoping",
+				basePayload(id, {
+					architect_review: {
+						status: "approved",
+						summary: "Looks good.",
+						required_changes: [],
+						reviewed_plan_hash: "stale",
+					},
+				}),
+				{},
+			),
+		)
+
+		expect(result).toContain("reviewed_plan_hash does not match")
+		expect(result).toContain("Current plan_hash:")
+		expect(getPendingPlanReview(id)).toBeUndefined()
+	})
+
+	it("rejects final proposals when Plan Reviewer asked blocking user questions", async () => {
+		const id = await createFerment("Plan Reviewer Questions")
+		seedPending(id)
+		const result = err(
+			await h.call(
+				"propose_ferment_scoping",
+				basePayload(id, {
+					architect_review: {
+						status: "approved",
+						summary: "Plan is structurally sound but scope needs one user decision.",
+						required_changes: [],
+						questions: ["Should this ferment implement fixes or only produce an audit report?"],
+						reviewed_plan_hash: "current",
+					},
+				}),
+				{},
+			),
+		)
+
+		expect(result).toContain("Plan Reviewer requested blocking user questions")
+		expect(result).toContain("Should this ferment implement fixes")
+		expect(getPendingPlanReview(id)).toBeUndefined()
 	})
 
 	it("normalizes stringified phases before storing the pending review markdown", async () => {
@@ -1559,7 +1708,7 @@ describe("propose_ferment_scoping", () => {
 		const ctx2 = {
 			ui: { select: vi.fn(), custom: vi.fn(), input: vi.fn() },
 		}
-		const payloadNoAssumptions = { ...basePayload(id), assumptions: undefined }
+		const payloadNoAssumptions = basePayload(id, { assumptions: undefined })
 		await h.call("propose_ferment_scoping", payloadNoAssumptions, ctx2)
 
 		// Buffer should be replaced wholesale — assumptions now undefined

@@ -9,6 +9,7 @@ import { createApplyAndPersist } from "../tool-helpers.js"
 import { FERMENT_TOOLS } from "../tool-names.js"
 import {
 	buildFreeformScopingFeedbackMessage,
+	buildScopingPlanHash,
 	completeFerment,
 	registerLifecycleTools,
 	scopeFerment,
@@ -92,6 +93,27 @@ const passingPlanGates = () => [
 	},
 ]
 
+function approvedArchitectReviewFor(payload: Record<string, unknown>) {
+	const normalizedQuestions = Array.isArray(payload.questions)
+		? payload.questions.map((q) =>
+				q && typeof q === "object"
+					? {
+							id: (q as { id?: unknown }).id,
+							text: (q as { question?: unknown }).question,
+							type: (q as { type?: unknown }).type,
+							options: (q as { options?: unknown }).options,
+						}
+					: q,
+			)
+		: []
+	return {
+		status: "approved",
+		summary: "Plan Reviewer approves this scoping plan.",
+		required_changes: [],
+		reviewed_plan_hash: buildScopingPlanHash({ ...payload, questions: normalizedQuestions } as never),
+	}
+}
+
 /** Helper: a complete, all-pass ferment-scope gate verdict set. */
 const passingFermentGates = () => [
 	{
@@ -128,7 +150,10 @@ describe("buildFreeformScopingFeedbackMessage", () => {
 				"</user_feedback>",
 			].join("\n"),
 		)
-		expect(message).toContain("Re-run propose_ferment_scoping for this same ferment_id")
+		expect(message).toContain(
+			"Run Plan Reviewer again on the exact updated payload inside <ferment_plan>...</ferment_plan>",
+		)
+		expect(message).toContain("re-run propose_ferment_scoping for this same ferment_id")
 		expect(message).toContain("Do not call scope_ferment")
 		expect(message).not.toContain("list_ferments")
 		expect(message).not.toContain(`drop <phase 2> & keep "core"`)
@@ -356,25 +381,26 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 	it("normalizes canonical question fields before runtime validation", async () => {
 		const { h, execute } = createProposeHarness()
 
+		const payload = {
+			ferment_id: h.fermentId,
+			title: "Lifecycle Test",
+			goal: "Ship the feature",
+			phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+			questions: [
+				{
+					id: "q1",
+					question: "Which path?",
+					options: [
+						{ id: "a", label: "A", recommended: true },
+						{ id: "b", label: "B" },
+					],
+				},
+			],
+			gates: passingPlanGates(),
+		}
 		const result = await execute(
 			"tool-call-1",
-			{
-				ferment_id: h.fermentId,
-				title: "Lifecycle Test",
-				goal: "Ship the feature",
-				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
-				questions: [
-					{
-						id: "q1",
-						question: "Which path?",
-						options: [
-							{ id: "a", label: "A", recommended: true },
-							{ id: "b", label: "B" },
-						],
-					},
-				],
-				gates: passingPlanGates(),
-			},
+			{ ...payload, architect_review: approvedArchitectReviewFor(payload) },
 			undefined,
 			undefined,
 			{ ui: {} },
@@ -438,25 +464,26 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 	it("allows empty question because the schema only requires a string", async () => {
 		const { h, execute } = createProposeHarness()
 
+		const payload = {
+			ferment_id: h.fermentId,
+			title: "Lifecycle Test",
+			goal: "Ship the feature",
+			phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+			questions: [
+				{
+					id: "q1",
+					question: "",
+					options: [
+						{ id: "a", label: "A", recommended: true },
+						{ id: "b", label: "B" },
+					],
+				},
+			],
+			gates: passingPlanGates(),
+		}
 		const result = await execute(
 			"tool-call-1",
-			{
-				ferment_id: h.fermentId,
-				title: "Lifecycle Test",
-				goal: "Ship the feature",
-				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
-				questions: [
-					{
-						id: "q1",
-						question: "",
-						options: [
-							{ id: "a", label: "A", recommended: true },
-							{ id: "b", label: "B" },
-						],
-					},
-				],
-				gates: passingPlanGates(),
-			},
+			{ ...payload, architect_review: approvedArchitectReviewFor(payload) },
 			undefined,
 			undefined,
 			{ ui: {} },

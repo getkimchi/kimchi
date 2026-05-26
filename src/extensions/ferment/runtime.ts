@@ -31,10 +31,15 @@ import {
 	consumeScopingGate,
 	getActive,
 	getActiveId,
+	getArchitectReviewAttempts,
 	getBlockRetry,
 	getContinuationPolicy,
+	getLastArchitectSummary,
 	getLastHumanInputAt,
+	getLastPlanHash,
+	getLastRejectionHash,
 	getPhaseStartRef,
+	getSameArchitectRejectionCount,
 	getStepStartRef,
 	getStorage,
 	isAutomatedContinuationEnabled,
@@ -43,7 +48,9 @@ import {
 	markHumanInput,
 	markScopingConfirmed,
 	markScopingInteractive,
+	recordArchitectReviewAttempt,
 	recordBlockHashAndCheckRepeat,
+	resetArchitectReviewState,
 	setActive,
 	setAutomatedContinuationEnabled,
 	setContinuationPolicy,
@@ -93,6 +100,24 @@ export interface FermentRuntime {
 	getBlockRetry(fermentId: string, phaseId: string): number
 	clearBlockRetry(fermentId: string, phaseId: string): void
 	recordBlockHashAndCheckRepeat(fermentId: string, phaseId: string, hash: string): boolean
+	getArchitectReviewAttempts(fermentId: string): number
+	getLastPlanHash(fermentId: string): string | undefined
+	getLastRejectionHash(fermentId: string): string | undefined
+	getSameArchitectRejectionCount(fermentId: string): number
+	getLastArchitectSummary(fermentId: string): string | undefined
+	recordArchitectReviewAttempt(
+		fermentId: string,
+		planHash: string,
+		rejectionHash: string | undefined,
+		architectSummary: string,
+	): {
+		architectReviewAttempts: number
+		lastPlanHash?: string
+		lastRejectionHash?: string
+		sameRejectionCount: number
+		lastArchitectSummary?: string
+	}
+	resetArchitectReviewState(fermentId: string): void
 	bumpStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): number
 	clearStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): void
 	clearFermentState(fermentId: string): void
@@ -151,6 +176,13 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		getBlockRetry,
 		clearBlockRetry,
 		recordBlockHashAndCheckRepeat,
+		getArchitectReviewAttempts,
+		getLastPlanHash,
+		getLastRejectionHash,
+		getSameArchitectRejectionCount,
+		getLastArchitectSummary,
+		recordArchitectReviewAttempt,
+		resetArchitectReviewState,
 		bumpStepCompleteAttempt,
 		clearStepCompleteAttempt,
 		clearFermentState,

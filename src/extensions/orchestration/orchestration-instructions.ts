@@ -72,7 +72,7 @@ Omit steps that add no value. A simple fix may need only build. A complex featur
 
 PLAN_RULE_PLACEHOLDER
 
-The model for each role is listed in the **Your Team** section above. Always use \`subagent_type: "General-Purpose"\` and pass the exact \`id\` shown there as the \`model\` parameter in your Agent tool call. Do not use other subagent types (Explore, Plan, Researcher) — the model assignment handles specialisation.
+The model for each role is listed in the **Your Team** section above. Use the matching dedicated subagent type when one exists: \`Plan Reviewer\`, \`Explore\`, or \`Plan\`. Use \`General-Purpose\` for Builder, Reviewer, and other roles without a dedicated type. Pass the exact \`id\` shown there as the \`model\` parameter in your Agent tool call when you need to force a role model.
 
 ### Step 4 — Execute
 
@@ -240,6 +240,14 @@ function buildRoleAssignmentsSection(roles: ModelRoles, registry?: ModelRegistry
 			),
 		)
 	}
+	lines.push(
+		formatRoleModel(
+			"Plan Reviewer",
+			"reviews implementation plans for architecture fit, complexity, dependencies, and risk; does not implement code",
+			roles.architect,
+			registry,
+		),
+	)
 	lines.push(formatRoleModel("Builder", "code writing, refactoring, implementation", roles.builder, registry))
 	lines.push(formatRoleModel("Reviewer", "code review, finding bugs, verifying correctness", roles.reviewer, registry))
 	lines.push(

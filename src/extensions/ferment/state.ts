@@ -15,6 +15,7 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { notifyFermentActive } from "../permissions/index.js"
 import {
+	type PersistedArchitectReviewState,
 	type PersistedRuntimeState,
 	deleteRuntimeState,
 	emptyState,
@@ -227,6 +228,8 @@ const blockRetryCounts = new CounterMap()
 const lastBlockHash = new Map<string, string>()
 
 export const MAX_BLOCK_RETRIES = 3
+export const MAX_ARCHITECT_REVIEW_ATTEMPTS = 4
+export const MAX_SAME_ARCHITECT_REJECTION = 2
 
 export function bumpBlockRetry(fermentId: string, phaseId: string): number {
 	hydrateIfNeeded(fermentId)
@@ -257,6 +260,74 @@ export function recordBlockHashAndCheckRepeat(fermentId: string, phaseId: string
 	lastBlockHash.set(key, hash)
 	persistFerment(fermentId)
 	return prev !== undefined && prev === hash
+}
+
+// ─── Planner/architect scoping loop guard ─────────────────────────────────────
+
+const architectReviewStates = new Map<string, PersistedArchitectReviewState>()
+
+function emptyArchitectReviewState(): PersistedArchitectReviewState {
+	return {
+		architectReviewAttempts: 0,
+		sameRejectionCount: 0,
+	}
+}
+
+function getArchitectReviewStateRef(fermentId: string): PersistedArchitectReviewState {
+	hydrateIfNeeded(fermentId)
+	let state = architectReviewStates.get(fermentId)
+	if (!state) {
+		state = emptyArchitectReviewState()
+		architectReviewStates.set(fermentId, state)
+	}
+	return state
+}
+
+export function getArchitectReviewAttempts(fermentId: string): number {
+	return getArchitectReviewStateRef(fermentId).architectReviewAttempts
+}
+
+export function getLastPlanHash(fermentId: string): string | undefined {
+	return getArchitectReviewStateRef(fermentId).lastPlanHash
+}
+
+export function getLastRejectionHash(fermentId: string): string | undefined {
+	return getArchitectReviewStateRef(fermentId).lastRejectionHash
+}
+
+export function getSameArchitectRejectionCount(fermentId: string): number {
+	return getArchitectReviewStateRef(fermentId).sameRejectionCount
+}
+
+export function getLastArchitectSummary(fermentId: string): string | undefined {
+	return getArchitectReviewStateRef(fermentId).lastArchitectSummary
+}
+
+export function recordArchitectReviewAttempt(
+	fermentId: string,
+	planHash: string,
+	rejectionHash: string | undefined,
+	architectSummary: string,
+): PersistedArchitectReviewState {
+	const state = getArchitectReviewStateRef(fermentId)
+	state.architectReviewAttempts += 1
+	state.lastPlanHash = planHash
+	state.lastArchitectSummary = architectSummary
+	if (rejectionHash) {
+		state.sameRejectionCount = state.lastRejectionHash === rejectionHash ? state.sameRejectionCount + 1 : 1
+		state.lastRejectionHash = rejectionHash
+	} else {
+		state.sameRejectionCount = 0
+		state.lastRejectionHash = undefined
+	}
+	persistFerment(fermentId)
+	return { ...state }
+}
+
+export function resetArchitectReviewState(fermentId: string): void {
+	hydrateIfNeeded(fermentId)
+	architectReviewStates.delete(fermentId)
+	persistFerment(fermentId)
 }
 
 // ─── Step failure / completion counter (per step) ────────────────────────────
@@ -372,6 +443,7 @@ function snapshotForFerment(fermentId: string): PersistedRuntimeState {
 	for (const [k, v] of stepStartRefs.entries()) {
 		if (k.startsWith(prefix)) snap.stepStartRefs[stripPrefix(k)] = v
 	}
+	snap.architectReview = architectReviewStates.get(fermentId) ?? emptyArchitectReviewState()
 	return snap
 }
 
@@ -389,6 +461,7 @@ function hydrateIfNeeded(fermentId: string): void {
 	for (const [k, v] of Object.entries(state.stepCompleteAttempts)) stepCompleteAttempts.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.phaseStartRefs)) phaseStartRefs.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.stepStartRefs)) stepStartRefs.set(`${prefix}${k}`, v)
+	architectReviewStates.set(fermentId, state.architectReview)
 }
 
 /** Persist the current in-memory snapshot for a ferment. Best-effort. */
@@ -420,6 +493,7 @@ export function clearFermentState(fermentId: string): void {
 	for (const key of stepStartRefs.keys()) {
 		if (key.startsWith(prefix)) stepStartRefs.delete(key)
 	}
+	architectReviewStates.delete(fermentId)
 	hydratedFerments.delete(fermentId)
 	deleteRuntimeState(fermentId, runtimeStatePersistRoot)
 }

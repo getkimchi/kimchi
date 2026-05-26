@@ -1399,7 +1399,9 @@ Model selection — YOU choose based on task complexity:
 			execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
 				const record = manager.getRecord(params.agent_id as string)
 				if (!record) {
-					return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`)
+					return textResult(
+						`Agent not found: "${params.agent_id}". Use the exact Agent ID returned by the Agent tool; do not invent IDs like "agent_001". If the ID is unavailable, rerun the agent instead of searching session output files.`,
+					)
 				}
 
 				if (params.wait && record.status === "running" && record.promise) {
@@ -1431,7 +1433,11 @@ Model selection — YOU choose based on task complexity:
 					bodyForDisplay = `Error: ${record.error}`
 					output += bodyForDisplay
 				} else {
-					bodyForDisplay = record.result?.trim() || "No output."
+					bodyForDisplay =
+						record.result?.trim() ||
+						(record.outputFile
+							? `No output was captured in the agent result. Full transcript: ${record.outputFile}`
+							: "No output.")
 					output += bodyForDisplay
 				}
 

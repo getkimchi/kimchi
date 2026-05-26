@@ -4,6 +4,7 @@ export const SCOPING_DISCOVERY_GUIDANCE = `<phase_0_inventory required="true" be
 First response action: print a concise inventory of all available skills and subagent types so the user can see what delegation surface exists.
 Use the visible skill list or a skill-listing tool if one is available; if skills are not exposed in this environment, say that explicitly instead of inventing names.
 For subagents, inspect the Agent tool subagent_type options or the available-subagent prompt section.
+Print Plan Reviewer as its own subagent type when it is available. Do not hide it under model roles.
 Do not call List, Read, Grep, Bash, or any codebase discovery tool before this inventory is printed.
 </phase_0_inventory>
 
@@ -23,6 +24,13 @@ Explore subagent contract:
 - start with token_budget: ${SCOPING_EXPLORE_TOKEN_BUDGET}; increase only if the user explicitly asks or the missing fact is genuinely plan-blocking
 - run_in_background: true when multiple independent unknowns exist
 - Prefer several narrow Explore probes over one broad "understand the whole project" scan.
+
+Plan Reviewer subagent contract:
+- subagent_type: "Plan Reviewer"
+- use only after drafting a concrete scoping plan payload
+- pass the exact plan inside <ferment_plan>...</ferment_plan>
+- Plan Reviewer reviews only; it does not implement code
+- Plan Reviewer may use a Researcher subagent for current external docs, APIs, standards, or browser behavior when those facts materially affect the review
 
 Good Explore areas:
 - file map/entry points

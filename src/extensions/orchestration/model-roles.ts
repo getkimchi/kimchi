@@ -1,8 +1,9 @@
 /**
  * Role-based model configuration for multi-model orchestration.
  *
- * Five roles:
+ * Six roles:
  *   - orchestrator: runs the main loop, delegates work
+ *   - architect: reviews implementation plans, architecture trade-offs, and risk
  *   - planner: designs the approach, writes specs (defaults to orchestrator)
  *   - builder: code implementation and research delegation
  *   - reviewer: code review
@@ -17,6 +18,7 @@
  * {
  *   "modelRoles": {
  *     "orchestrator": "anthropic/claude-sonnet-4-5",
+ *     "architect": "kimchi-dev/minimax-m2.7",
  *     "planner": "anthropic/claude-sonnet-4-5",
  *     "builder": "anthropic/claude-sonnet-4-5",
  *     "reviewer": "kimchi-dev/minimax-m2.7",
@@ -33,6 +35,8 @@ import { dirname, join } from "node:path"
 export interface ModelRoles {
 	/** Main model: runs the orchestrator loop, delegates work to other roles. */
 	orchestrator: string
+	/** Plan Reviewer model: reviews implementation plans, complexity, dependencies, and risk. Does not implement code. */
+	architect: string
 	/** Planning model: designs the approach, writes specs. Defaults to orchestrator. */
 	planner: string
 	/** Code implementation model: build and research delegation. */
@@ -46,13 +50,21 @@ export interface ModelRoles {
 /** Kimchi-dev OSS defaults — used when no user config is present. */
 export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
 	orchestrator: "kimchi-dev/kimi-k2.6",
+	architect: "kimchi-dev/minimax-m2.7",
 	planner: "kimchi-dev/kimi-k2.6",
 	builder: "kimchi-dev/minimax-m2.7",
 	reviewer: "kimchi-dev/minimax-m2.7",
 	explorer: "kimchi-dev/nemotron-3-super-fp4",
 }
 
-const ROLE_KEYS: readonly (keyof ModelRoles)[] = ["orchestrator", "planner", "builder", "reviewer", "explorer"]
+const ROLE_KEYS: readonly (keyof ModelRoles)[] = [
+	"orchestrator",
+	"architect",
+	"planner",
+	"builder",
+	"reviewer",
+	"explorer",
+]
 
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
 

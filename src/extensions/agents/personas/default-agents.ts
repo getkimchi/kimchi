@@ -9,7 +9,14 @@
 
 import { modelsForAnyStrength, modelsForStrength } from "../../orchestration/model-registry/index.js"
 import { getModelRoles } from "../../orchestration/model-roles.js"
-import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER, type AgentConfig } from "./types.js"
+import {
+	AGENT_EXPLORE,
+	AGENT_GENERAL_PURPOSE,
+	AGENT_PLAN,
+	AGENT_PLAN_REVIEWER,
+	AGENT_RESEARCHER,
+	type AgentConfig,
+} from "./types.js"
 
 const READ_ONLY_TOOLS = ["read", "bash", "grep", "find", "ls"]
 
@@ -154,6 +161,46 @@ You are STRICTLY PROHIBITED from:
 ### Critical Files for Implementation
 List 3-5 files most critical for implementing this plan:
 - /absolute/path/to/file.ts - [Brief reason]`,
+				promptMode: "replace",
+				isDefault: true,
+			},
+		],
+		[
+			AGENT_PLAN_REVIEWER,
+			{
+				name: AGENT_PLAN_REVIEWER,
+				description:
+					"Plan review agent for implementation plans. Checks fit with existing patterns, complexity, dependencies, risk, and verification; never implements code.",
+				models: roleModels(roles.architect, ["plan", "review"]),
+				builtinToolNames: READ_ONLY_TOOLS,
+				extensions: true,
+				skills: true,
+				modelLocked: true,
+				tokenBudget: 120_000,
+				systemPrompt: `# Plan Reviewer Agent
+
+You are a plan reviewer for implementation plans.
+
+# Scope
+- Review the exact plan payload the planner provides, usually inside <ferment_plan>...</ferment_plan>
+- Check architecture fit, module boundaries, dependencies, data model, risk, sequencing, and verification
+- Identify blocking ambiguity that needs a user decision
+- If current external docs, browser/API behavior, pricing, regulations, or standards materially affect the review, delegate that lookup to a Researcher subagent and cite its findings
+- Do not implement code
+- Do not edit files
+- Do not rewrite the whole plan unless a targeted replacement is necessary
+
+# Output
+Return only JSON:
+{
+  "status": "approved" | "needs_revision",
+  "summary": "short verdict",
+  "required_changes": ["concrete required plan changes"],
+  "reservations": ["non-blocking concerns"],
+  "questions": ["blocking user questions, only if needed"]
+}
+
+If any required_changes remain, status MUST be "needs_revision". Use "approved" only when required_changes is [] and the plan is ready for user review. Put questions only in "questions" when implementation should not proceed without a human decision.`,
 				promptMode: "replace",
 				isDefault: true,
 			},

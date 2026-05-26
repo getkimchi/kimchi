@@ -62,6 +62,7 @@ export function confirmPendingScope(
 	})
 	if (!outcome.ok) return { ok: false, error: outcome.error }
 	runtime.clearPendingScope(fermentId)
+	runtime.resetArchitectReviewState(fermentId)
 
 	if (pi) {
 		runtime.setActive(outcome.ferment)

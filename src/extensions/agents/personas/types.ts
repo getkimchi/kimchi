@@ -21,10 +21,17 @@ export type SubagentType = string
 export const AGENT_GENERAL_PURPOSE = "General-Purpose"
 export const AGENT_EXPLORE = "Explore"
 export const AGENT_PLAN = "Plan"
+export const AGENT_PLAN_REVIEWER = "Plan Reviewer"
 export const AGENT_RESEARCHER = "Researcher"
 
 /** Names of the embedded default agents (in canonical display order). */
-export const DEFAULT_AGENT_NAMES = [AGENT_GENERAL_PURPOSE, AGENT_EXPLORE, AGENT_PLAN, AGENT_RESEARCHER] as const
+export const DEFAULT_AGENT_NAMES = [
+	AGENT_GENERAL_PURPOSE,
+	AGENT_EXPLORE,
+	AGENT_PLAN,
+	AGENT_PLAN_REVIEWER,
+	AGENT_RESEARCHER,
+] as const
 
 /** Memory scope for persistent agent memory. */
 export type MemoryScope = "user" | "project" | "local"
