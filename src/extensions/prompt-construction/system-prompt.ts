@@ -48,12 +48,17 @@ export interface SystemPromptBuildOptions {
 	mode: PromptMode
 	/** Role-based model assignments for orchestrator mode. */
 	roles?: ModelRoles
+	/** Session ID for the active pi-mono session. Used to scope extension prompt blocks
+	 *  to this session so an in-process subagent's blocks don't leak into the parent's
+	 *  prompt and vice versa. Omit only in unit tests or before any session has started. */
+	sessionId?: string
 }
 
 const DELEGATION_TOOL_NAMES = new Set(["Agent", "get_subagent_result", "steer_subagent"])
 
 export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
-	const { pi, tools, env, contextFiles, skills, currentModelId, currentPhase, registry, mode, roles } = options
+	const { pi, tools, env, contextFiles, skills, currentModelId, currentPhase, registry, mode, roles, sessionId } =
+		options
 
 	const effectiveTools = mode === "subagent" ? tools.filter((t) => !DELEGATION_TOOL_NAMES.has(t.name)) : tools
 
@@ -70,7 +75,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	})
 
 	const phaseSection = buildPhaseGuidelinesSection(currentModelId, currentPhase, registry)
-	const blocks = pi ? renderSystemPromptBlocks(pi, { mode }) : []
+	const blocks = pi ? renderSystemPromptBlocks(sessionId, { mode }) : []
 	const suppressed = new Set<SuppressibleSection>()
 	for (const block of blocks) {
 		for (const section of block.suppress) suppressed.add(section)

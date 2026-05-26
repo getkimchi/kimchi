@@ -70,11 +70,12 @@ function formatError(err: unknown): string {
 	return err instanceof Error ? err.message : String(err)
 }
 
-// Each extension receives a unique ExtensionAPI object from pi-mono's loader, so
-// blocks must be visible across pis (the renderer's pi differs from the registrar's).
-// One slot per pi; the slot is dropped when that pi's session shuts down — naturally
-// isolates parent vs. subagent sessions without reference counting.
+// Each extension receives a unique ExtensionAPI from pi-mono's loader. Blocks must
+// be visible across pis (the renderer's pi differs from the registrar's), but only
+// across pis that belong to the SAME session — parent and in-process subagent share
+// module state but have distinct session IDs from their respective sessionManagers.
 const handlesByPi = new Map<ExtensionAPI, Set<BlocksHandle>>()
+const sessionIdByPi = new WeakMap<ExtensionAPI, string>()
 
 export function createSystemPromptBlocks(pi: ExtensionAPI, owner: string): SystemPromptBlocksHandle {
 	const handle = new BlocksHandle(pi, owner)
@@ -82,20 +83,33 @@ export function createSystemPromptBlocks(pi: ExtensionAPI, owner: string): Syste
 	if (!handles) {
 		handles = new Set()
 		handlesByPi.set(pi, handles)
+		pi.on("session_start", (_event, ctx) => {
+			const sessionId = ctx?.sessionManager?.getSessionId()
+			if (sessionId) sessionIdByPi.set(pi, sessionId)
+		})
 		pi.on("session_shutdown", () => {
 			handlesByPi.delete(pi)
+			sessionIdByPi.delete(pi)
 		})
 	}
 	handles.add(handle)
 	return handle
 }
 
+/**
+ * Render blocks registered under any pi belonging to `sessionId`. Blocks from
+ * other sessions (e.g. an in-process subagent's pis when rebuilding the parent
+ * prompt) are skipped. Pass `undefined` only in tests or before any session has
+ * started — returns an empty list in that case.
+ */
 export function renderSystemPromptBlocks(
-	_pi: ExtensionAPI,
+	sessionId: string | undefined,
 	ctx: SystemPromptBlockContext,
 ): RenderedSystemPromptBlock[] {
+	if (!sessionId) return []
 	const rendered: RenderedSystemPromptBlock[] = []
-	for (const handles of handlesByPi.values()) {
+	for (const [pi, handles] of handlesByPi) {
+		if (sessionIdByPi.get(pi) !== sessionId) continue
 		for (const handle of handles) rendered.push(...handle.render(ctx))
 	}
 	return rendered.sort((a, b) => {

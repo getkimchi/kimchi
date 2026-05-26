@@ -84,36 +84,56 @@ describe("buildFermentPromptBlock", () => {
 	})
 
 	describe("ferment-oneshot=false — injection set", () => {
-		const cases: FermentStatus[] = ["draft", "planned", "running", "paused", "complete", "abandoned"]
+		const cases: Array<{ status: FermentStatus; defined: boolean }> = [
+			{ status: "draft", defined: false },
+			{ status: "planned", defined: true },
+			{ status: "running", defined: true },
+			{ status: "paused", defined: true },
+			{ status: "complete", defined: false },
+			{ status: "abandoned", defined: false },
+		]
 
-		for (const status of cases) {
-			it(`returns text for status=${status}`, () => {
-				const out = buildFermentPromptBlock(PI_NORMAL, makeRuntime({ status }))
-				expect(out).toBeDefined()
-				expect(out).not.toBe("")
+		for (const c of cases) {
+			it(`${c.defined ? "returns text" : "returns undefined"} for status=${c.status}`, () => {
+				const out = buildFermentPromptBlock(PI_NORMAL, makeRuntime({ status: c.status }))
+				if (c.defined) {
+					expect(out).toBeDefined()
+					expect(out).not.toBe("")
+				} else {
+					expect(out).toBeUndefined()
+				}
 			})
 		}
 
-		it("returns idle hint when no ferment is active", () => {
-			const out = buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime())
-			expect(out).toContain(CREATE_GUARD)
+		it("returns undefined when no ferment is active", () => {
+			expect(buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime())).toBeUndefined()
 		})
 	})
 
 	describe("ferment-oneshot=true — injection set", () => {
-		const cases: FermentStatus[] = ["draft", "planned", "running", "paused", "complete", "abandoned"]
+		const cases: Array<{ status: FermentStatus; defined: boolean }> = [
+			{ status: "draft", defined: true },
+			{ status: "planned", defined: true },
+			{ status: "running", defined: true },
+			{ status: "paused", defined: true },
+			{ status: "complete", defined: false },
+			{ status: "abandoned", defined: false },
+		]
 
-		for (const status of cases) {
-			it(`returns text for status=${status}`, () => {
-				const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime({ status }))
-				expect(out).toBeDefined()
-				expect(out).not.toBe("")
+		for (const c of cases) {
+			it(`${c.defined ? "returns text" : "returns undefined"} for status=${c.status}`, () => {
+				const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime({ status: c.status }))
+				if (c.defined) {
+					expect(out).toBeDefined()
+					expect(out).not.toBe("")
+				} else {
+					expect(out).toBeUndefined()
+				}
 			})
 		}
 
-		it("returns idle hint when no ferment is active", () => {
-			const out = buildFermentPromptBlock(PI_ONESHOT, makeNoActiveFermentRuntime())
-			expect(out).toContain(CREATE_GUARD)
+		it("returns undefined when no ferment is active", () => {
+			expect(buildFermentPromptBlock(PI_ONESHOT, makeNoActiveFermentRuntime())).toBeUndefined()
 		})
 
 		it("returns planner supplement for draft status (one-shot scoping must not break)", () => {

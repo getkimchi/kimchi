@@ -437,6 +437,7 @@ export default function (skillPaths: string[]) {
 				registry: registry,
 				mode,
 				roles,
+				sessionId: ctx.sessionManager?.getSessionId(),
 			})
 
 			const debugSession = process.env.KIMCHI_DEBUG_SESSION

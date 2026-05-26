@@ -18,10 +18,13 @@ const testEnv: EnvironmentInfo = {
 
 type Handler = (event: unknown, ctx: unknown) => unknown
 
+const TEST_SESSION_ID = "test-session"
+
 function makePi(): ExtensionAPI & { fireShutdown: () => Promise<void> } {
 	const handlers = new Map<string, Handler[]>()
 	const tools: ToolInfo[] = []
 	let activeTools: string[] = []
+	const sessionStartCtx = { sessionManager: { getSessionId: () => TEST_SESSION_ID } }
 	const pi = {
 		registerFlag: () => {},
 		registerCommand: () => {},
@@ -33,6 +36,9 @@ function makePi(): ExtensionAPI & { fireShutdown: () => Promise<void> } {
 			const list = handlers.get(event) ?? []
 			list.push(handler)
 			handlers.set(event, list)
+			// Fire session_start synchronously on registration so sessionIdByPi
+			// is populated before any render call (mirrors pi-mono behavior).
+			if (event === "session_start") handler({}, sessionStartCtx)
 		},
 		getAllTools: () => tools,
 		getActiveTools: () => activeTools,
@@ -106,6 +112,7 @@ describe("mcp adapter system prompt block", () => {
 				tools: pi.getAllTools(),
 				env: testEnv,
 				mode: "orchestrator",
+				sessionId: TEST_SESSION_ID,
 			})
 
 			expect(result).toContain("## Tool and MCP Discovery")
@@ -128,6 +135,7 @@ describe("mcp adapter system prompt block", () => {
 				tools: pi.getAllTools(),
 				env: testEnv,
 				mode: "subagent",
+				sessionId: TEST_SESSION_ID,
 			})
 
 			expect(result).toContain("## Tool and MCP Discovery")

@@ -83,7 +83,7 @@ After \`propose_ferment_scoping\` returns "Plan saved", the host confirmation al
 }
 
 function buildPausedWarning(f: Ferment): string {
-	return `\n\n## Ferment Paused\n\nFerment "${f.name}" is paused by the user. Do NOT call any ferment tools (activate_ferment_phase, start_ferment_step, complete_ferment_step, etc.) — they will be rejected. Acknowledge any pending question briefly and wait for the user to resume with /ferment resume.\n\n${CREATE_FERMENT_REDIRECT_MESSAGE}`
+	return `\n\n## Ferment Paused\n\nFerment "${f.name}" is paused by the user. Do NOT call any ferment tools (activate_ferment_phase, start_ferment_step, complete_ferment_step, etc.) — they will be rejected. Acknowledge any pending question briefly and wait for the user to resume with /ferment resume.`
 }
 
 /**
@@ -100,18 +100,16 @@ function buildPausedWarning(f: Ferment): string {
  *
  * Returns `undefined` when no text should be injected.
  */
-const IDLE_FERMENT_HINT = `## Ferment\n\n${CREATE_FERMENT_REDIRECT_MESSAGE}`
-
 export function buildFermentPromptBlock(pi: ExtensionAPI, runtime: FermentRuntime): string | undefined {
 	const f = runtime.getActive()
-	if (!f) return IDLE_FERMENT_HINT
+	if (!f) return undefined
 
 	const oneshot = pi.getFlag("ferment-oneshot") === true
 
 	switch (f.status) {
 		case "draft":
 			if (oneshot) return buildPlannerSupplement(f, runtime.getContinuationPolicy()).trim()
-			return IDLE_FERMENT_HINT
+			return undefined
 		case "planned":
 		case "running":
 			return buildPlannerSupplement(f, runtime.getContinuationPolicy()).trim()
@@ -119,6 +117,6 @@ export function buildFermentPromptBlock(pi: ExtensionAPI, runtime: FermentRuntim
 			return buildPausedWarning(f).trim()
 		case "complete":
 		case "abandoned":
-			return IDLE_FERMENT_HINT
+			return undefined
 	}
 }

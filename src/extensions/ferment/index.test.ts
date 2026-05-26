@@ -42,12 +42,19 @@ type ShortcutHandler = (ctx: unknown) => Promise<unknown> | unknown
 
 function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<string, boolean | string> = {}) {
 	const handlers = new Map<string, EventHandler>()
+	const allHandlers = new Map<string, EventHandler[]>()
 	const commands = new Map<string, CommandHandler>()
 	const shortcuts = new Map<string, { description?: string; handler: ShortcutHandler }>()
 	const registeredFlags = new Set<string>()
 	const pi = {
 		on: (event: string, handler: EventHandler) => {
-			handlers.set(event, handler)
+			// `handlers` keeps the first registration per event for tests that fetch a
+			// known handler (e.g. ferment's session_start). `allHandlers` keeps every
+			// registration so the test fixture mirrors pi-mono's broadcast behavior.
+			if (!handlers.has(event)) handlers.set(event, handler)
+			const list = allHandlers.get(event) ?? []
+			list.push(handler)
+			allHandlers.set(event, list)
 		},
 		registerCommand: (name: string, command: { handler: CommandHandler }) => {
 			commands.set(name, command.handler)
