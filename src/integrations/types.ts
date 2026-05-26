@@ -21,6 +21,8 @@ export interface ToolDefinition {
 	installUrl?: string
 	/** Extra args passed to the install script. */
 	installArgs?: string[]
+	/** Whether the tool may prompt the user during write(). If true, no spinner is shown. */
+	interactiveWrite?: boolean
 	/** Detect whether the tool is installed locally (PATH probe, well-known dir, etc). */
 	isInstalled: () => boolean
 	/** Write configuration so this tool talks to kimchi's LLM endpoints. */

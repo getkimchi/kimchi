@@ -83,8 +83,8 @@ describe("plan review pending state", () => {
 	})
 
 	it("returns only the active ferment pending review", () => {
-		setPendingPlanReview({ fermentId: "active", fermentName: "Active", planMarkdown: "# Active" })
-		setPendingPlanReview({ fermentId: "other", fermentName: "Other", planMarkdown: "# Other" })
+		setPendingPlanReview({ fermentId: "active", planMarkdown: "# Active" })
+		setPendingPlanReview({ fermentId: "other", planMarkdown: "# Other" })
 
 		expect(getCurrentPendingPlanReview({ getActiveId: () => "active" } as never)?.fermentId).toBe("active")
 		expect(getCurrentPendingPlanReview({ getActiveId: () => "missing" } as never)).toBeUndefined()

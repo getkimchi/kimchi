@@ -74,6 +74,7 @@ function makeNoActiveFermentRuntime(): FermentRuntime {
 const STATE_MACHINE_HEADER = "**State machine:**"
 const KNOWLEDGE_HEADER = "**Knowledge capture:**"
 const FILE_RULE = "NEVER write, edit, or read files yourself"
+const CREATE_GUARD = "There is no `create_ferment` tool"
 const PAUSED_HEADER = "## Ferment Paused"
 const PAUSED_RULE = "Do NOT call any ferment tools"
 
@@ -83,56 +84,36 @@ describe("buildFermentPromptBlock", () => {
 	})
 
 	describe("ferment-oneshot=false — injection set", () => {
-		const cases: Array<{ status: FermentStatus; defined: boolean }> = [
-			{ status: "draft", defined: false },
-			{ status: "planned", defined: true },
-			{ status: "running", defined: true },
-			{ status: "paused", defined: true },
-			{ status: "complete", defined: false },
-			{ status: "abandoned", defined: false },
-		]
+		const cases: FermentStatus[] = ["draft", "planned", "running", "paused", "complete", "abandoned"]
 
-		for (const c of cases) {
-			it(`${c.defined ? "returns text" : "returns undefined"} for status=${c.status}`, () => {
-				const out = buildFermentPromptBlock(PI_NORMAL, makeRuntime({ status: c.status }))
-				if (c.defined) {
-					expect(out).toBeDefined()
-					expect(out).not.toBe("")
-				} else {
-					expect(out).toBeUndefined()
-				}
+		for (const status of cases) {
+			it(`returns text for status=${status}`, () => {
+				const out = buildFermentPromptBlock(PI_NORMAL, makeRuntime({ status }))
+				expect(out).toBeDefined()
+				expect(out).not.toBe("")
 			})
 		}
 
-		it("returns undefined when no ferment is active", () => {
-			expect(buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime())).toBeUndefined()
+		it("returns idle hint when no ferment is active", () => {
+			const out = buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime())
+			expect(out).toContain(CREATE_GUARD)
 		})
 	})
 
 	describe("ferment-oneshot=true — injection set", () => {
-		const cases: Array<{ status: FermentStatus; defined: boolean }> = [
-			{ status: "draft", defined: true },
-			{ status: "planned", defined: true },
-			{ status: "running", defined: true },
-			{ status: "paused", defined: true },
-			{ status: "complete", defined: false },
-			{ status: "abandoned", defined: false },
-		]
+		const cases: FermentStatus[] = ["draft", "planned", "running", "paused", "complete", "abandoned"]
 
-		for (const c of cases) {
-			it(`${c.defined ? "returns text" : "returns undefined"} for status=${c.status}`, () => {
-				const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime({ status: c.status }))
-				if (c.defined) {
-					expect(out).toBeDefined()
-					expect(out).not.toBe("")
-				} else {
-					expect(out).toBeUndefined()
-				}
+		for (const status of cases) {
+			it(`returns text for status=${status}`, () => {
+				const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime({ status }))
+				expect(out).toBeDefined()
+				expect(out).not.toBe("")
 			})
 		}
 
-		it("returns undefined when no ferment is active", () => {
-			expect(buildFermentPromptBlock(PI_ONESHOT, makeNoActiveFermentRuntime())).toBeUndefined()
+		it("returns idle hint when no ferment is active", () => {
+			const out = buildFermentPromptBlock(PI_ONESHOT, makeNoActiveFermentRuntime())
+			expect(out).toContain(CREATE_GUARD)
 		})
 
 		it("returns planner supplement for draft status (one-shot scoping must not break)", () => {
@@ -163,6 +144,15 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain(STATE_MACHINE_HEADER)
 			expect(out).toContain(FILE_RULE)
 			expect(out).toContain(KNOWLEDGE_HEADER)
+			expect(out).toContain(CREATE_GUARD)
+		})
+
+		it("tells planners that ferment creation is host-owned", () => {
+			const out = buildFermentPromptBlock(PI_NORMAL, makeRuntime({ status: "running" }))
+			expect(out).toContain(CREATE_GUARD)
+			expect(out).toContain('/ferment new "..."')
+			expect(out).toContain("Do not search for, retry with, or invent variants")
+			expect(out).toContain("new_ferment")
 		})
 
 		it("preserves paused warning for status=paused regardless of ferment-oneshot flag", () => {

@@ -28,6 +28,7 @@ import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
 import fermentExtension from "./extensions/ferment/index.js"
+import helpExtension from "./extensions/help.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import loginExtension from "./extensions/login/index.js"
@@ -47,7 +48,8 @@ import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import stripImagesExtension from "./extensions/strip-images.js"
 import tagsExtension from "./extensions/tags.js"
-import telemetryExtension from "./extensions/telemetry.js"
+import telemetryExtension from "./extensions/telemetry/index.js"
+import { drain as drainPreSessionTelemetry, sendPreSessionEvent } from "./extensions/telemetry/pre-session.js"
 import terminalColorsExtension from "./extensions/terminal-colors.js"
 import { probeKittyKeyboardSupport } from "./extensions/terminal-compat/keyboard-capability.js"
 import { emitTerminalCompatWarning } from "./extensions/terminal-compat/startup-warning.js"
@@ -61,8 +63,6 @@ import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { updateModelsConfig } from "./models.js"
 import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./modes/teleport/sync/session-export.js"
-import { ensureDeviceId } from "./posthog-device.js"
-import { capturePostHogEvent } from "./posthog.js"
 import resourcesExtension from "./resources/extension.js"
 import { type ManagedExtensionFactory, enabledExtensionFactories } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
@@ -74,26 +74,25 @@ import { getVersion } from "./utils.js"
 
 installCloudflare524RetryPatch()
 
-// --- PostHog device ID & analytics ---
-// Read or generate device ID (persisted; reused across invocations for
-// consistent unique-user counts in PostHog). Reads both camelCase and
-// snake_case (device_id) from config.json for backwards compatibility.
+function getSubcommand(args: string[]): string {
+	if (args.includes("--version") || args.includes("-v")) return "version"
+	if (args.includes("--help") || args.includes("-h")) return "help"
+	const sub = args[0]
+	if (!sub || sub.startsWith("-")) return "harness"
+	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry"].includes(sub)) return sub
+	return "harness"
+}
+
+// --- Telemetry ---
 const telemetryConfig = readTelemetryConfig()
-const deviceId = ensureDeviceId()
 
 // Fire-and-forget app_started on every invocation (respects telemetry opt-out).
-// Stash the promise so we can await it on shutdown to reduce truncated sends.
-// app_started has no per-event properties — default properties (cli_version,
-// os, arch) are attached automatically by capturePostHogEvent, matching the
-// DefaultEventProperties behaviour.
-const phPending: Promise<void>[] = []
+// The promise is tracked internally; drain before process.exit() to reduce
+// the chance of truncated HTTP requests.
 if (telemetryConfig.enabled) {
-	phPending.push(
-		capturePostHogEvent({
-			event: "app_started",
-			distinctId: deviceId,
-		}),
-	)
+	sendPreSessionEvent(telemetryConfig, "app_started", {
+		subcommand: getSubcommand(process.argv.slice(2)),
+	})
 }
 
 let sessionId: string | undefined
@@ -243,7 +242,7 @@ try {
 	// the version using piConfig.name = "kimchi".
 	const dispatch = await dispatchSubcommand(process.argv.slice(2))
 	if (dispatch.kind === "handled") {
-		await Promise.allSettled(phPending)
+		await drainPreSessionTelemetry()
 		process.exit(dispatch.exitCode)
 	}
 
@@ -259,13 +258,7 @@ try {
 
 		// Fire harness_launched (one shot per harness session; respects telemetry opt-out)
 		if (telemetryConfig.enabled) {
-			phPending.push(
-				capturePostHogEvent({
-					event: "harness_launched",
-					distinctId: deviceId,
-					properties: { version: getVersion() },
-				}),
-			)
+			sendPreSessionEvent(telemetryConfig, "harness_launched", { version: getVersion() })
 		}
 
 		let config = loadConfig()
@@ -328,6 +321,7 @@ try {
 				const { runWizard } = await import("./setup-wizard/index.js")
 				const wizardResult = await runWizard()
 				if (wizardResult.cancelled) {
+					await drainPreSessionTelemetry()
 					process.exit(130)
 				}
 				currentApiKey = wizardResult.apiKey ?? ""
@@ -494,6 +488,7 @@ try {
 			...enabledExtensionFactories([
 				{ id: "extensions.agents", factory: agentsExtension },
 			] satisfies ManagedExtensionFactory[]),
+			helpExtension,
 			tagsExtension,
 			telemetryExtension(telemetryConfig),
 			toolRenderingExtension,
@@ -516,7 +511,7 @@ try {
 		} else if (teleportMode) {
 			if (!currentApiKey) {
 				console.error("Error: --teleport requires an API key — run 'kimchi setup' first.")
-				await Promise.allSettled(phPending)
+				await drainPreSessionTelemetry()
 				process.exit(1)
 			}
 
@@ -533,15 +528,12 @@ try {
 			await main(rawArgs, { extensionFactories })
 		}
 	}
-	// Await pending PostHog sends before exiting to reduce truncated requests.
-	await Promise.allSettled(phPending)
 } catch (err) {
-	await Promise.allSettled(phPending)
+	await drainPreSessionTelemetry()
 	if (err instanceof SetupCancelled) {
 		process.exitCode = 130
 	} else {
 		console.error(err instanceof Error ? err.message : String(err))
-		await Promise.allSettled(phPending)
 		process.exit(1)
 	}
 }

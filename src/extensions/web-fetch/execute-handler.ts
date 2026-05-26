@@ -41,7 +41,7 @@ function buildOutput(metadataLines: string[], content: string, truncationNotice:
 	return `${metadataLines.join("\n")}\n\n${content}${truncationNotice}`
 }
 
-export async function executeWebFetch(params: WebFetchParams): Promise<WebFetchResult> {
+export async function executeWebFetch(params: WebFetchParams, signal?: AbortSignal): Promise<WebFetchResult> {
 	const format: OutputFormat = params.format ?? "markdown"
 	const timeoutSeconds = params.timeout != null ? Math.max(0, Math.min(params.timeout, MAX_TIMEOUT_SECONDS)) : undefined
 	const startedAt = Date.now()
@@ -69,7 +69,7 @@ export async function executeWebFetch(params: WebFetchParams): Promise<WebFetchR
 	// Fetch
 	let result: FetchResult
 	try {
-		result = await fetchPage(params.url, { timeoutSeconds, format })
+		result = await fetchPage(params.url, { timeoutSeconds, format, signal })
 	} catch (err: unknown) {
 		const message = err instanceof FetchError ? err.message : err instanceof Error ? err.message : String(err)
 		return errorResult(`Error: ${message}`)

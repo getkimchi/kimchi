@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
+import { FERMENT_TOOLS } from "../tool-names.js"
 import {
 	buildFreeformScopingFeedbackMessage,
 	completeFerment,
@@ -140,7 +141,6 @@ describe("FermentRuntime pending plan review cleanup", () => {
 		h.runtime.setPendingScope(h.fermentId, { goal: "Goal", successCriteria: "Done", constraints: [] })
 		h.runtime.setPendingPlanReview({
 			fermentId: h.fermentId,
-			fermentName: "Lifecycle Test",
 			planMarkdown: "# Plan",
 		})
 
@@ -159,6 +159,7 @@ describe("scopeFerment", () => {
 			h.runtime,
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				success_criteria: "Tests pass",
 				constraints: ["Keep it small"],
@@ -183,6 +184,7 @@ describe("scopeFerment", () => {
 			h.runtime,
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
@@ -192,6 +194,25 @@ describe("scopeFerment", () => {
 
 		expect(okText(result)).toContain("scoped and ready")
 		expect(h.storage.get(h.fermentId)?.status).toBe("planned")
+	})
+
+	it("rejects scope_ferment when title is blank", async () => {
+		const h = createHarness()
+
+		const result = await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				title: "   ",
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				gates: passingPlanGates(),
+			},
+			{ pi: h.pi },
+		)
+
+		expect(errText(result)).toContain('Field "title" must be a non-empty')
+		expect(h.storage.get(h.fermentId)?.status).toBe("draft")
 	})
 
 	it("refuses scoping when agent self-flags a plan gate", async () => {
@@ -211,6 +232,7 @@ describe("scopeFerment", () => {
 			h.runtime,
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				phases: [{ name: "Build", goal: "Implement" }],
 				gates: flaggedGates,
@@ -231,6 +253,7 @@ describe("scopeFerment", () => {
 			h.runtime,
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				phases: [{ name: "Build", goal: "Implement" }],
 				gates: incomplete,
@@ -252,6 +275,7 @@ describe("scopeFerment", () => {
 			h.runtime,
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				phases: [{ name: "Build", goal: "Implement" }],
 				gates: passingPlanGates(),
@@ -272,6 +296,7 @@ describe("scopeFerment", () => {
 			h.runtime,
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				success_criteria: "Tests pass",
 				assumptions: "k8s cluster exists and is reachable",
@@ -292,6 +317,7 @@ describe("scopeFerment", () => {
 			h.runtime,
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
@@ -301,6 +327,173 @@ describe("scopeFerment", () => {
 
 		const saved = h.storage.get(h.fermentId)
 		expect(saved?.scoping.assumptions).toBeUndefined()
+	})
+})
+
+describe("propose_ferment_scoping via registerLifecycleTools", () => {
+	function createProposeHarness() {
+		const h = createHarness()
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			...h.pi,
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+			getActiveTools: vi.fn(() => ["read", "bash"]),
+			getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }]),
+			setActiveTools: vi.fn(),
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, h.runtime)
+
+		const tool = tools.get("propose_ferment_scoping")
+		if (!tool) throw new Error("propose_ferment_scoping not registered")
+		const execute = tool.execute as unknown as (
+			...args: unknown[]
+		) => Promise<{ content: { text: string }[]; isError?: boolean }>
+		return { h, execute }
+	}
+
+	it("normalizes canonical question fields before runtime validation", async () => {
+		const { h, execute } = createProposeHarness()
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [
+					{
+						id: "q1",
+						question: "Which path?",
+						options: [
+							{ id: "a", label: "A", recommended: true },
+							{ id: "b", label: "B" },
+						],
+					},
+				],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			{ ui: {} },
+		)
+
+		expect(errText(result)).toContain("Cannot ask scoping questions without an interactive UI")
+		expect(errText(result)).not.toContain("questions.0.question")
+	})
+
+	it("rejects propose_ferment_scoping when title is blank", async () => {
+		const { h, execute } = createProposeHarness()
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				title: '  ""  ',
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			{ ui: {} },
+		)
+
+		expect(errText(result)).toContain('Field "title" must be a non-empty')
+	})
+
+	it("rejects prompt because question is the only public question text field", async () => {
+		const { h, execute } = createProposeHarness()
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [
+					{
+						id: "q1",
+						prompt: "Which path?",
+						options: [
+							{ id: "a", label: "A", recommended: true },
+							{ id: "b", label: "B" },
+						],
+					},
+				],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			{ ui: {} },
+		)
+
+		expect(errText(result)).toContain("questions.0.question must be a string")
+	})
+
+	it("allows empty question because the schema only requires a string", async () => {
+		const { h, execute } = createProposeHarness()
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [
+					{
+						id: "q1",
+						question: "",
+						options: [
+							{ id: "a", label: "A", recommended: true },
+							{ id: "b", label: "B" },
+						],
+					},
+				],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			{ ui: {} },
+		)
+
+		expect(errText(result)).toContain("Cannot ask scoping questions without an interactive UI")
+		expect(errText(result)).not.toContain("questions.0.question must be a string")
+	})
+
+	it("rejects text because question is the only public question text field", async () => {
+		const { h, execute } = createProposeHarness()
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [
+					{
+						id: "q1",
+						text: "Legacy text?",
+						options: [
+							{ id: "a", label: "A", recommended: true },
+							{ id: "b", label: "B" },
+						],
+					},
+				],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			{ ui: {} },
+		)
+
+		expect(errText(result)).toContain("questions.0.question must be a string")
 	})
 })
 
@@ -439,6 +632,8 @@ describe("completeFerment", () => {
 		)
 		expect(okText(first)).toContain('Ferment "Lifecycle Test" complete')
 		expect(okText(first)).toContain("Do not call bash/read/list_ferments or any ferment tools")
+		expect(okText(first)).toContain('/ferment new "..."')
+		expect(okText(first)).toContain("do not search MCP tools or invent a tool")
 		expect(mockJudgeJourneyGrade).toHaveBeenCalledTimes(1)
 
 		const second = await completeFerment(h.runtime, { ferment_id: h.fermentId }, { pi: h.pi })
@@ -490,7 +685,6 @@ describe("completeFerment", () => {
 			reason: "no_auth",
 			detail: "missing api key",
 		})
-		// pi.getFlag returns undefined (no ferment-oneshot) → askUser routes to TUI.
 		const select = vi.fn(async () => "Ship without a grade")
 		const piWithUi = { ...h.pi, getFlag: vi.fn(() => undefined) } as unknown as ExtensionAPI
 		const ctx = { ui: { select } }
@@ -526,12 +720,37 @@ describe("completeFerment", () => {
 			{ pi: piWithUi, ctx },
 		)
 
+		expect(select).toHaveBeenCalled()
 		expect(errText(result)).toContain("user declined ungraded ship")
 		expect(h.storage.get(h.fermentId)?.status).toBe("abandoned")
 		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
 	})
 
-	it("one-shot: judge unavailable → abandon directly without prompting", async () => {
+	it("interactive: judge unavailable + user cancels prompt → leaves ferment uncompleted", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: false,
+			reason: "empty_response",
+		})
+		const select = vi.fn(async () => undefined)
+		const piWithUi = { ...h.pi, getFlag: vi.fn(() => undefined) } as unknown as ExtensionAPI
+		const ctx = { ui: { select } }
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ pi: piWithUi, ctx },
+		)
+
+		expect(select).toHaveBeenCalled()
+		expect(errText(result)).toContain("user did not authorize ungraded ship")
+		expect(h.storage.get(h.fermentId)?.status).not.toBe("complete")
+		expect(h.storage.get(h.fermentId)?.status).not.toBe("abandoned")
+		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
+	})
+
+	it("one-shot: judge unavailable → ships with unavailable=true without prompting", async () => {
 		const h = createHarness()
 		createTerminalFerment(h)
 		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
@@ -551,7 +770,8 @@ describe("completeFerment", () => {
 		)
 
 		expect(select).not.toHaveBeenCalled()
-		expect(errText(result)).toContain("one-shot mode")
-		expect(h.storage.get(h.fermentId)?.status).toBe("abandoned")
+		expect(okText(result)).toContain("Final grade: B (unavailable)")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade?.unavailable).toBe(true)
 	})
 })

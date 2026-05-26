@@ -91,7 +91,7 @@ for task, task_prompt, extra_flags, in_run_all, setup_cmd in multi_model_tasks:
     setup_block = (setup_cmd + "\n") if setup_cmd else ""
     content = f"""#!/bin/zsh
 TS=$(date +%Y%m%d-%H%M%S)
-SESSION_FILE="{session_dir}/runs/{run_dir}/session-${{TS}}.jsonl"
+SESSION_FILE="{session_dir}/runs/{run_dir}/session-${{TS}}-{slug}.jsonl"
 DIR=$(mktemp -d /private/tmp/kimchi-{slug}-XXXXXX)
 echo "Working directory: $DIR"
 echo "Session file: $SESSION_FILE"
@@ -116,7 +116,7 @@ for model in models:
     script_path = os.path.join(session_dir, f"run-complex-single-{model}.sh")
     content = f"""#!/bin/zsh
 TS=$(date +%Y%m%d-%H%M%S)
-SESSION_FILE="{session_dir}/runs/{run_dir}/session-${{TS}}.jsonl"
+SESSION_FILE="{session_dir}/runs/{run_dir}/session-${{TS}}-{slug}.jsonl"
 DIR=$(mktemp -d /private/tmp/kimchi-{slug}-XXXXXX)
 echo "Working directory: $DIR"
 echo "Session file: $SESSION_FILE"

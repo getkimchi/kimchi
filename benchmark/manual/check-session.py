@@ -91,10 +91,62 @@ def resolve_session(arg: str) -> Path:
     return SESSIONS_DIR / arg
 
 
+def check_jsonl_main(jsonl_paths: list[str]) -> bool:
+    """Handle --jsonl mode: report status for each file and exit accordingly."""
+    all_done = True
+    for path_str in jsonl_paths:
+        path = Path(path_str)
+        if not path.exists():
+            print(f"  {path.name}: NO LOG")
+            all_done = False
+            continue
+
+        info = check_jsonl(path)
+        if info["has_agent_end"]:
+            status = "DONE"
+        elif info["has_terminated"]:
+            status = "TERMINATED"
+        elif info["lines"] == 0:
+            status = "NO LOG"
+            all_done = False
+        else:
+            status = f"IN PROGRESS (last write {info['file_age_s']:.0f}s ago)"
+            all_done = False
+        print(f"  {path.name}: {status}")
+
+    return all_done
+
+
 def main():
     args = sys.argv[1:]
 
-    # Determine session and task filters
+    # --- Check for --jsonl / -j flag (must be recognised before session-arg logic) ---
+    jsonl_paths: list[str] = []
+    remaining_args: list[str] = []
+    jsonl_mode = False
+
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("--jsonl", "-j") and not jsonl_mode:
+            jsonl_mode = True
+            i += 1
+            continue
+        if jsonl_mode:
+            jsonl_paths.append(arg)
+        else:
+            remaining_args.append(arg)
+        i += 1
+
+    if jsonl_mode:
+        if not jsonl_paths:
+            print("ERROR: --jsonl requires at least one file path", file=sys.stderr)
+            sys.exit(2)
+        all_done = check_jsonl_main(jsonl_paths)
+        sys.exit(0 if all_done else 1)
+
+    # --- Original session-directory logic ---
+    args = remaining_args
     session_dir = None
     task_filters: list[str] = []
 

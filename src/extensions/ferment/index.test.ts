@@ -16,10 +16,6 @@ import { getActive, isAutomatedContinuationEnabled, setActive, setContinuationPo
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { completeFerment, scopeFerment } from "./tools/lifecycle.js"
 
-vi.mock("../../ferment/shorten-title.js", () => ({
-	shortenTitle: vi.fn(async (input: string) => input),
-}))
-
 const requestSharedFooterRenderMock = vi.hoisted(() => vi.fn())
 
 vi.mock("../shared-footer.js", () => ({
@@ -783,6 +779,7 @@ describe("fermentExtension question dropdown", () => {
 			runtime,
 			{
 				ferment_id: draft.id,
+				title: "Plan Handoff",
 				goal: "Goal",
 				success_criteria: "Works",
 				constraints: [],
@@ -862,7 +859,6 @@ describe("fermentExtension question dropdown", () => {
 			})
 			setPendingPlanReview({
 				fermentId: draft.id,
-				fermentName: draft.name,
 				planMarkdown: "# Plan: Deferred Review",
 			})
 
@@ -932,12 +928,10 @@ describe("fermentExtension question dropdown", () => {
 			})
 			setPendingPlanReview({
 				fermentId: firstDraft.id,
-				fermentName: firstDraft.name,
 				planMarkdown: "# Plan: First Deferred Review",
 			})
 			setPendingPlanReview({
 				fermentId: secondDraft.id,
-				fermentName: secondDraft.name,
 				planMarkdown: "# Plan: Second Deferred Review",
 			})
 
@@ -983,7 +977,6 @@ describe("fermentExtension question dropdown", () => {
 			})
 			setPendingPlanReview({
 				fermentId: draft.id,
-				fermentName: draft.name,
 				planMarkdown: "# Plan: Deferred Feedback",
 			})
 
@@ -1045,7 +1038,6 @@ describe("fermentExtension question dropdown", () => {
 			})
 			setPendingPlanReview({
 				fermentId: draft.id,
-				fermentName: draft.name,
 				planMarkdown: "# Plan: Cancelled Review",
 			})
 
@@ -1087,7 +1079,6 @@ describe("fermentExtension question dropdown", () => {
 			})
 			setPendingPlanReview({
 				fermentId: draft.id,
-				fermentName: draft.name,
 				planMarkdown: "# Plan: Failed Confirmation",
 			})
 

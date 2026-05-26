@@ -25,6 +25,7 @@ import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
+import { trackSubagentSpawned } from "../telemetry/index.js"
 import { AgentManager } from "./manager/agent-manager.js"
 import {
 	getAgentConversation,
@@ -692,6 +693,7 @@ export default function (pi: ExtensionAPI) {
 				description: record.description,
 				visibility: record.visibility,
 			})
+			void trackSubagentSpawned(record)
 		},
 		(record, info) => {
 			pi.events.emit("subagents:compacted", {

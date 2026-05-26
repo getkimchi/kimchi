@@ -13,6 +13,7 @@ User intent: "${intent}"
 Your task — execute ALL of the following steps WITHOUT pausing to ask the user:
 1. Call scope_ferment with:
    - ferment_id: "${ferment.id}"
+   - title: concise 3-5 word Ferment name derived from the task
    - goal: derived from the user intent
    - success_criteria: what observable outcome proves the goal
    - constraints: any technical constraints implied by the intent

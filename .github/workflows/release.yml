@@ -72,8 +72,6 @@ jobs:
 
       - name: Build binary
         run: pnpm run build:binary
-        env:
-          KIMCHI_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
 
       - name: Verify binary architecture
         run: |
@@ -190,8 +188,8 @@ jobs:
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4
         with:
-          repository: castai/homebrew-tap
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          repository: getkimchi/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
           path: homebrew-tap
 
       - name: Update Formula/kimchi.rb

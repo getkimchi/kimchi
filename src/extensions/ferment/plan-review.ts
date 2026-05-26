@@ -10,8 +10,6 @@ import { getPromptUi, withWorkingHidden } from "./prompt-ui.js"
 
 export interface PendingPlanReview {
 	fermentId: string
-	fermentName: string
-	title?: string
 	planMarkdown: string
 }
 

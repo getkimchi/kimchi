@@ -51,6 +51,11 @@ export const GENERAL_TIPS = [
 		scope: "general",
 		message: "Run `/multi-model` to assign models to each role.",
 	},
+	{
+		id: "help-command",
+		scope: "general",
+		message: "Type `/help` to see all keyboard shortcuts and slash commands.",
+	},
 ] as const satisfies readonly Tip[]
 
 export function createGeneralTipProvider(): TipProvider {

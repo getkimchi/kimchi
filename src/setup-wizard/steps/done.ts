@@ -74,19 +74,25 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 			log.info(`${tool.name}: ready (launch via 'kimchi ${launchCmd}')`)
 			continue
 		}
-		const s = spinner()
-		s.start(`Configuring ${tool.name}…`)
-		// Yield briefly so clack can render the first spinner frame before
-		// potentially blocking sync work (e.g. spawnSync calls).
-		await new Promise<void>((resolve) => setTimeout(() => resolve(), 80))
+		const s = tool.interactiveWrite ? null : spinner()
+		if (s) {
+			s.start(`Configuring ${tool.name}…`)
+			// Yield briefly so clack can render the first spinner frame before
+			// potentially blocking sync work (e.g. spawnSync calls).
+			await new Promise<void>((resolve) => setTimeout(() => resolve(), 80))
+		} else {
+			log.info(`Configuring ${tool.name}…`)
+		}
 		try {
 			await tool.write(state.scope, state.apiKey, models, { telemetryEnabled: state.telemetryEnabled })
 			outcome.successes.push(tool.name)
-			s.stop(`${tool.name}: configured`)
+			if (s) s.stop(`${tool.name}: configured`)
+			else log.info(`${tool.name}: configured`)
 		} catch (err) {
 			const msg = (err as Error).message
 			outcome.failures.push({ id, error: msg })
-			s.stop(`${tool.name}: ${msg}`)
+			if (s) s.stop(`${tool.name}: ${msg}`)
+			else log.error(`${tool.name}: ${msg}`)
 		}
 	}
 

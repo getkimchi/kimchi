@@ -70,38 +70,33 @@ function formatError(err: unknown): string {
 	return err instanceof Error ? err.message : String(err)
 }
 
-interface PiRecord {
-	handles: Set<BlocksHandle>
-}
-
-const recordsByPi = new WeakMap<ExtensionAPI, PiRecord>()
-
-function getRecord(pi: ExtensionAPI): PiRecord {
-	let record = recordsByPi.get(pi)
-	if (!record) {
-		record = { handles: new Set() }
-		recordsByPi.set(pi, record)
-		const recordForHandler = record
-		pi.on("session_shutdown", () => {
-			recordsByPi.delete(pi)
-			recordForHandler.handles.clear()
-		})
-	}
-	return record
-}
+// Each extension receives a unique ExtensionAPI object from pi-mono's loader, so
+// blocks must be visible across pis (the renderer's pi differs from the registrar's).
+// One slot per pi; the slot is dropped when that pi's session shuts down — naturally
+// isolates parent vs. subagent sessions without reference counting.
+const handlesByPi = new Map<ExtensionAPI, Set<BlocksHandle>>()
 
 export function createSystemPromptBlocks(pi: ExtensionAPI, owner: string): SystemPromptBlocksHandle {
 	const handle = new BlocksHandle(pi, owner)
-	getRecord(pi).handles.add(handle)
+	let handles = handlesByPi.get(pi)
+	if (!handles) {
+		handles = new Set()
+		handlesByPi.set(pi, handles)
+		pi.on("session_shutdown", () => {
+			handlesByPi.delete(pi)
+		})
+	}
+	handles.add(handle)
 	return handle
 }
 
-export function renderSystemPromptBlocks(pi: ExtensionAPI, ctx: SystemPromptBlockContext): RenderedSystemPromptBlock[] {
+export function renderSystemPromptBlocks(
+	_pi: ExtensionAPI,
+	ctx: SystemPromptBlockContext,
+): RenderedSystemPromptBlock[] {
 	const rendered: RenderedSystemPromptBlock[] = []
-	const record = recordsByPi.get(pi)
-	if (!record) return rendered
-	for (const handle of record.handles) {
-		rendered.push(...handle.render(ctx))
+	for (const handles of handlesByPi.values()) {
+		for (const handle of handles) rendered.push(...handle.render(ctx))
 	}
 	return rendered.sort((a, b) => {
 		if (a.owner < b.owner) return -1

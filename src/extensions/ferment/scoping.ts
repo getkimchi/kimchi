@@ -6,7 +6,7 @@
  *   1. `runScopingFlow` shows ONE free-form editor prompt ("What do you want
  *      to do?"). On non-empty input it seeds the pending-scope buffer and fires a
  *      single LLM turn asking the model to call `propose_ferment_scoping` with the
- *      full draft (goal, criteria, constraints, assumptions, phases, and
+ *      full draft (title, goal, criteria, constraints, assumptions, phases, and
  *      optional clarifying questions).
  *
  *   2. `propose_ferment_scoping` (the tool) validates P-gates, replaces the buffer
@@ -49,6 +49,7 @@ function sendScopingBreadcrumb(pi: ExtensionAPI, text: string): void {
 // propose_ferment_scoping on each call. Held until the user confirms via dropdown.
 
 export interface PendingScope {
+	title?: string
 	goal: string
 	successCriteria: string
 	constraints: string[]
@@ -74,6 +75,7 @@ const pendingScopes = new Map<string, PendingScope>()
 export function attachPendingProposal(fermentId: string, partial: AttachPendingProposalPartial): boolean {
 	if (!pendingScopes.has(fermentId)) return false
 	pendingScopes.set(fermentId, {
+		title: partial.title,
 		goal: partial.goal ?? "",
 		successCriteria: partial.successCriteria ?? "",
 		constraints: partial.constraints ?? [],
@@ -198,7 +200,7 @@ Planning policy:
 - Do not split phases just for setup, directory creation, CRUD vs polish, or to make the plan look organized.
 
 Output contract:
-Call propose_ferment_scoping with ferment_id "${f.id}" and a complete payload: goal, success_criteria, constraints, assumptions, 1-7 phases, questions, and gates. Do not ask scoping questions in chat; questions must be in propose_ferment_scoping.questions, or questions: [] when no decision-blocking question remains.
+Call propose_ferment_scoping with ferment_id "${f.id}" and a complete payload: title, goal, success_criteria, constraints, assumptions, 1-7 phases, questions, and gates. title is required; set it to a concise 3-5 word Ferment name derived from the user intent and plan. Do not ask scoping questions in chat; questions must be in propose_ferment_scoping.questions, or questions: [] when no decision-blocking question remains.
 The gates array is required and must contain exactly P1, P2, and P3. Every gate object must include id, verdict, rationale, and evidence. Never emit a partial gates array, never omit rationale or evidence, and never include only P1. If a validation error happens, retry with the full payload again, including questions and all three gates.`,
 				},
 			],

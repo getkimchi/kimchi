@@ -1,54 +1,33 @@
 import { readTelemetryConfig } from "../config.js"
-import { ensureDeviceId } from "../posthog-device.js"
-import { capturePostHogEvent } from "../posthog.js"
+import { drain as drainPreSessionTelemetry, sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 import { runWizard } from "../setup-wizard/index.js"
 
 export async function runSetup(_args: string[]): Promise<number> {
 	const telemetryConfig = readTelemetryConfig()
-	const deviceId = ensureDeviceId()
-
 	const result = await runWizard()
 
-	if (!telemetryConfig.enabled || !deviceId) {
+	if (!telemetryConfig.enabled) {
 		return result.cancelled ? 130 : 0
 	}
 
-	const pending: Promise<void>[] = []
-
 	if (result.cancelled) {
-		pending.push(
-			capturePostHogEvent({
-				event: "setup_aborted",
-				distinctId: deviceId,
-				properties: { step: result.cancelledStep ?? "unknown" },
-			}),
-		)
-		await Promise.allSettled(pending)
+		sendPreSessionEvent(telemetryConfig, "setup_aborted", {
+			step: result.cancelledStep ?? "unknown",
+		})
+		await drainPreSessionTelemetry()
 		return 130
 	}
 
 	// Track each selected tool individually
 	for (const tool of result.selectedTools) {
-		pending.push(
-			capturePostHogEvent({
-				event: "tool_configured",
-				distinctId: deviceId,
-				properties: { tool_name: tool },
-			}),
-		)
+		sendPreSessionEvent(telemetryConfig, "tool_configured", { tool_name: tool })
 	}
 
-	pending.push(
-		capturePostHogEvent({
-			event: "setup_completed",
-			distinctId: deviceId,
-			properties: {
-				tools_count: result.selectedTools.length,
-				scope: result.scope ?? "global",
-			},
-		}),
-	)
+	sendPreSessionEvent(telemetryConfig, "setup_completed", {
+		tools_count: result.selectedTools.length,
+		scope: result.scope ?? "global",
+	})
 
-	await Promise.allSettled(pending)
+	await drainPreSessionTelemetry()
 	return 0
 }

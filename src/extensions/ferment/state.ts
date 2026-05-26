@@ -24,7 +24,6 @@ import {
 
 // ─── Active ferment ───────────────────────────────────────────────────────────
 
-let activeFermentId: string | undefined
 let activeFerment: Ferment | undefined
 
 export function getActive(): Ferment | undefined {
@@ -32,12 +31,11 @@ export function getActive(): Ferment | undefined {
 }
 
 export function getActiveId(): string | undefined {
-	return activeFermentId
+	return activeFerment?.id
 }
 
 export function setActive(f: Ferment | undefined): void {
 	activeFerment = f
-	activeFermentId = f?.id
 	const isResumable = f !== undefined && f.status !== "complete" && f.status !== "abandoned"
 	if (isResumable) {
 		process.env.KIMCHI_ACTIVE_FERMENT = f.id

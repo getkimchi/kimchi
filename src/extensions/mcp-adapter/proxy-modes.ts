@@ -28,6 +28,38 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai"
 
 type ContentBlock = TextContent | ImageContent
 
+interface NativeToolStatus {
+	tool: ToolInfo
+	active: boolean
+}
+
+type NativeToolStatusLookup = (toolName: string) => NativeToolStatus | undefined
+
+function nativeToolResult(
+	mode: "call" | "describe",
+	toolName: string,
+	status: NativeToolStatus,
+): ProxyToolResult {
+	const activeInstruction = status.active
+		? `Call it directly as ${toolName}; do not call it through mcp({ tool: "${toolName}" }).`
+		: "It is not active in the current context, so do not call it now and do not route it through MCP."
+	return {
+		content: [
+			{
+				type: "text" as const,
+				text: `Tool "${toolName}" is a native agent tool, not an MCP tool.\n${activeInstruction}`,
+			},
+		],
+		details: {
+			mode,
+			error: "native_tool_not_mcp",
+			requestedTool: toolName,
+			active: status.active,
+			nativeTool: status.tool.name,
+		},
+	}
+}
+
 function applyTruncation(content: ContentBlock[]): ContentBlock[] {
 	const textItems = content.filter((c): c is TextContent => c.type === "text")
 	if (textItems.length === 0) return content
@@ -264,6 +296,7 @@ export function executeDescribe(
 	state: McpExtensionState,
 	toolName: string,
 	onInject?: (specs: DirectToolSpec[]) => string[],
+	getNativeToolStatus?: NativeToolStatusLookup,
 ): ProxyToolResult {
 	let serverName: string | undefined
 	let toolMeta: ToolMetadata | undefined
@@ -278,6 +311,8 @@ export function executeDescribe(
 	}
 
 	if (!serverName || !toolMeta) {
+		const nativeStatus = getNativeToolStatus?.(toolName)
+		if (nativeStatus) return nativeToolResult("describe", toolName, nativeStatus)
 		return {
 			content: [{ type: "text" as const, text: `Tool "${toolName}" not found. Use mcp({ search: "..." }) to search.` }],
 			details: { mode: "describe", error: "tool_not_found", requestedTool: toolName },
@@ -289,8 +324,8 @@ export function executeDescribe(
 		injectedNames = onInject([
 			{
 				serverName,
-				originalName: toolMeta.name,
-				prefixedName: toolName,
+				originalName: toolMeta.originalName,
+				prefixedName: toolMeta.name,
 				description: toolMeta.description ?? "",
 				inputSchema: toolMeta.inputSchema,
 				uiResourceUri: toolMeta.uiResourceUri,
@@ -315,7 +350,8 @@ export function executeDescribe(
 	}
 
 	if (injectedNames.length > 0) {
-		text += `\n\nInjected into context. Call it using the exact name shown above (do NOT add any prefix): ${injectedNames[0]}`
+		text += `\n\nInjected into context. Call using the exact name shown above: ${injectedNames[0]}`
+		text += `\n(Available from the next turn. To call now: mcp({ tool: "${toolMeta.originalName}", args: "..." }).)`
 	}
 
 	return {
@@ -346,7 +382,8 @@ export function executeSearch(
 		}
 	}
 
-	// Pi tool search always uses regex (they're not in the MCP index)
+	// Native agent tools are not MCP tools. Surface only active native tools and
+	// label them as direct-call only so search and dispatch cannot disagree.
 	const piMatches: Array<{ name: string; description: string }> = []
 	if (!server && getPiTools) {
 		let piPattern: RegExp
@@ -439,7 +476,7 @@ export function executeSearch(
 			.filter((m) => !m.tool.resourceUri)
 			.map((m) => ({
 				serverName: m.server,
-				originalName: m.tool.name,
+				originalName: m.tool.originalName,
 				prefixedName: m.tool.name,
 				description: m.tool.description ?? "",
 				inputSchema: m.tool.inputSchema,
@@ -455,12 +492,12 @@ export function executeSearch(
 
 	for (const match of limitedPiMatches) {
 		if (showSchemas) {
-			text += `[pi tool] ${match.name}\n`
+			text += `[native tool] ${match.name}\n`
 			text += `  ${match.description || "(no description)"}\n`
-			text += `  No parameters (call directly).\n`
+			text += `  Native agent tool. Call ${match.name} directly if it appears in Available Tools; do not call it through mcp({ tool: "${match.name}" }).\n`
 			text += "\n"
 		} else {
-			text += `[pi tool] ${match.name}`
+			text += `[native tool] ${match.name}`
 			if (match.description) {
 				text += ` - ${truncateAtWord(match.description, 50)}`
 			}
@@ -488,7 +525,8 @@ export function executeSearch(
 	}
 
 	if (injectedNames.length > 0) {
-		text += `\nInjected into context. Call using the exact names shown above (do NOT add any prefix): ${injectedNames.join(", ")}`
+		text += `\nInjected into context. Call using the exact name${injectedNames.length > 1 ? "s" : ""} shown above: ${injectedNames.join(", ")}`
+		text += `\n(Available from the next turn. To call now: mcp({ tool: "<name>", args: "..." }).)`
 	}
 
 	return {
@@ -496,7 +534,7 @@ export function executeSearch(
 		details: {
 			mode: "search",
 			matches: [
-				...limitedPiMatches.map((m) => ({ server: "pi", tool: m.name })),
+				...limitedPiMatches.map((m) => ({ server: "native", tool: m.name, dispatch: "direct" })),
 				...limitedMatches.map((m) => ({ server: m.server, tool: m.tool.name })),
 			],
 			count: totalCount,
@@ -628,6 +666,7 @@ export async function executeCall(
 	serverOverride?: string,
 	ctx?: ExtensionContext,
 	maxToolResultChars?: number,
+	getNativeToolStatus?: NativeToolStatusLookup,
 ): Promise<ProxyToolResult> {
 	let serverName: string | undefined = serverOverride
 	let toolMeta: ToolMetadata | undefined
@@ -749,6 +788,8 @@ export async function executeCall(
 	}
 
 	if (!serverName || !toolMeta) {
+		const nativeStatus = getNativeToolStatus?.(toolName)
+		if (nativeStatus) return nativeToolResult("call", toolName, nativeStatus)
 		const hintServer = serverName ?? prefixMatchedServer
 		const available = hintServer ? getToolNames(state, hintServer) : []
 		let msg = `Tool "${toolName}" not found.`

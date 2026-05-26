@@ -38,17 +38,21 @@ function createHarness() {
 	const eventStorage = new FermentEventStore(tempDir)
 	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => eventStorage }
 	const tools = new Map<string, RegisteredTool>()
+	let activeTools: string[] = []
 
 	const pi = {
+		on: vi.fn(),
 		registerTool: (tool: RegisteredTool) => {
 			tools.set(tool.name, tool)
 		},
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		appendEntry: vi.fn(),
-		getActiveTools: vi.fn(() => []),
-		getAllTools: vi.fn(() => []),
-		setActiveTools: vi.fn(),
+		getActiveTools: vi.fn(() => activeTools),
+		getAllTools: vi.fn(() => Array.from(tools.keys()).map((name) => ({ name }))),
+		setActiveTools: vi.fn((names: string[]) => {
+			activeTools = names
+		}),
 		getFlag: vi.fn(() => undefined),
 	} as unknown as ExtensionAPI
 
@@ -160,6 +164,7 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 		// Step 2: simulate agent calling propose_ferment_scoping with full payload
 		const proposeScopingPayload = {
 			ferment_id: ferment.id,
+			title: "Google OAuth Login",
 			goal: "Users can sign in with Google OAuth",
 			success_criteria: "E2E test passes for OAuth login flow",
 			constraints: ["No external auth libraries beyond Google SDK"],
@@ -192,6 +197,7 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 		if (!planned) throw new Error("Ferment not found after propose_ferment_scoping")
 
 		expect(planned.status).toBe("planned")
+		expect(planned.name).toBe("Google OAuth Login")
 		expect(planned.phases).toHaveLength(1)
 		expect(planned.scoping.assumptions?.answer).toBe("Google API credentials are already provisioned")
 

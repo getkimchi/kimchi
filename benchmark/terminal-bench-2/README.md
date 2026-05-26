@@ -32,15 +32,17 @@ You will hit one of two failure modes:
 - **Do not trust reward numbers from local Apple Silicon runs.** A `0.0` may be the verifier crashing under emulation, not the model failing. Compare your numbers against published terminal-bench results only after running on real x86_64.
 - **For trusted reward numbers, run on real Linux x86_64 hardware** — a CI runner (GitHub Actions `ubuntu-latest`, etc.).
 
-## Two ways to run
+## Ways to run
 
 | Script | Binary source |
 | --- | --- |
 | `./scripts/run-local.sh` | Cross-builds `kimchi` for linux-amd64 from the current working tree (`pnpm run build:binary-linux-x64`) |
 | `./scripts/run-release.sh` | Downloads the latest release from `castai/kimchi` |
 | `./scripts/run-opencode-kimchi.sh` | Installs OpenCode in the task container and configures it to use the Kimchi gateway |
+| `./scripts/run-claude-code-kimchi.sh` | Installs Claude Code in the task container and configures it to use the Kimchi gateway |
+| `./scripts/run-gsd-kimchi.sh` | Installs GSD in the task container and configures it to use one selected Kimchi model |
 
-Both scripts target the `terminal-bench/terminal-bench-2` dataset. Extra arguments are forwarded to `harbor run`, so everything below works for either script.
+All helper scripts target the `terminal-bench/terminal-bench-2` dataset. Extra arguments are forwarded to `harbor run`, so everything below works for any script.
 
 ### Running a task
 
@@ -114,13 +116,79 @@ OPENCODE_VERSION=1.14.33 MODEL=kimchi-dev/kimi-k2.5 \
   ./scripts/run-opencode-kimchi.sh -i terminal-bench/fix-git
 ```
 
-### Single-model run (no orchestration)
+### Claude Code with the Kimchi gateway
 
-To benchmark a model on its own, bypassing kimchi's multi-model orchestration, pass `--model <provider>/<id>` to select a specific model. This starts kimchi in single-model mode.
+Use `run-claude-code-kimchi.sh` when the benchmark should evaluate the Claude Code scaffold while routing model calls through `llm.kimchi.dev`.
 
 ```bash
-MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-local.sh -n 8
+export KIMCHI_API_KEY=...
+MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
 ```
+
+The Claude Code adapter accepts any `kimchi-dev/<model-id>` returned by Kimchi's model metadata endpoint (`/v1/models/metadata?include_in_cli=true`). It configures Claude Code with Kimchi's Anthropic-compatible endpoint (`https://llm.kimchi.dev/anthropic`), maps `KIMCHI_API_KEY` to `ANTHROPIC_AUTH_TOKEN`, clears `ANTHROPIC_API_KEY`, and pins Claude Code's default Sonnet/Opus/Haiku/subagent aliases to the selected model.
+
+To change models, change only `MODEL`:
+
+```bash
+MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
+```
+
+By default Harbor installs the latest Claude Code package. Pin Claude Code for reproducible runs with `CLAUDE_CODE_VERSION`:
+
+```bash
+CLAUDE_CODE_VERSION=2.1.144 MODEL=kimchi-dev/kimi-k2.5 \
+  ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
+```
+
+### GSD with the Kimchi gateway
+
+Use `run-gsd-kimchi.sh` when the benchmark should evaluate the GSD scaffold while routing model calls through `llm.kimchi.dev`.
+
+```bash
+export KIMCHI_API_KEY=...
+MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-gsd-kimchi.sh -i terminal-bench/fix-git
+```
+
+The GSD adapter accepts any `kimchi-dev/<model-id>` returned by Kimchi's model metadata endpoint (`/v1/models/metadata?include_in_cli=true`). It installs `gsd-pi@latest` by default, writes a temporary GSD home with only the selected model, writes minimal GSD preferences that route every role to that model, and runs GSD in non-interactive print mode:
+
+```bash
+gsd --mode text --print --model <MODEL> <instruction>
+```
+
+GSD's text output is captured at `agent/gsd.txt`, the resolved version at `agent/gsd-version.txt`, and the per-task `.gsd/` directory is copied to `agent/gsd/` after the run. The adapter records GSD's raw exit code in `agent/gsd-exit-code.txt` and normalized status in `agent/gsd-status.json`; if GSD returns its blocked exit code, Harbor still proceeds to verification. GSD's managed home stays under `/tmp` during execution and is removed before artifacts are collected; only the underlying pi session JSONL is copied to `agent/gsd-sessions/` for token accounting. GSD stdout JSON event streams are intentionally not captured because they can grow very large and are not needed for Terminal Bench scoring.
+
+To change models, change only `MODEL`:
+
+```bash
+MODEL=kimchi-dev/minimax-m2.7 ./scripts/run-gsd-kimchi.sh -i terminal-bench/fix-git
+```
+
+Override the GSD package version with `GSD_VERSION`:
+
+```bash
+GSD_VERSION=3.0.0 MODEL=kimchi-dev/kimi-k2.5 \
+  ./scripts/run-gsd-kimchi.sh -i terminal-bench/fix-git
+```
+
+### Single-model run (no orchestration)
+
+To benchmark a model on its own, bypassing kimchi's multi-model orchestration, pass `--model <provider>/<id>` to select a specific model. The helper scripts do this by default through `MODEL`, which starts kimchi in single-model mode.
+
+```bash
+MODEL=kimchi-dev/kimi-k2.6 ./scripts/run-local.sh -n 8 -k 3
+```
+
+Do not use `--agent-kwarg disable-multi-model=true`; the adapter accepts that legacy kwarg for compatibility, but current kimchi has no `--multi-model` CLI flag.
+
+### Multi-model run (orchestrator)
+
+To run kimchi's multi-model orchestrator, opt into the adapter-level kwarg. In this mode the adapter intentionally does not pass `--model` to kimchi, because an explicit model flag is what disables orchestration in the kimchi CLI.
+
+```bash
+./scripts/run-local.sh -n 8 -k 3 --agent-kwarg multi-model=true
+```
+
+With no custom role config in the task container, the orchestrator model defaults to `kimchi-dev/kimi-k2.6`. The adapter writes `{"multiModel":true}` to the in-container harness settings before launching kimchi so orchestration is enabled even in a fresh benchmark image.
 
 ### One-shot ferment per task
 
@@ -170,6 +238,9 @@ Tag format is `key:value`, comma-separated; keys and values are alphanumeric plu
 | `KIMCHI_CODE_BINARY` | no | Host path to a prebuilt Linux `kimchi` binary (produced by `pnpm run build:binary-linux-x64` at `dist/bin/kimchi`). The agent uploads the binary's grandparent directory (the build/tarball root containing `bin/` + `share/kimchi/`), so the auxiliary files travel with it. When set, the agent skips the GitHub release download. `./scripts/run-local.sh` sets this for you. |
 | `GITHUB_TOKEN` | no | Raises GitHub API rate limits when fetching the latest release. Not required for public repos |
 | `MODEL` | no | Default `kimchi-dev/kimi-k2.5`. See "Picking a model" for the `<provider>/<id>` requirement |
+| `OPENCODE_VERSION` | no | Pins the OpenCode version used by `run-opencode-kimchi.sh` |
+| `CLAUDE_CODE_VERSION` | no | Pins the Claude Code version used by `run-claude-code-kimchi.sh` |
+| `GSD_VERSION` | no | Overrides the GSD package version used by `run-gsd-kimchi.sh`; default install target is `gsd-pi@latest` |
 
 ## Results
 
@@ -185,6 +256,6 @@ Tag format is `key:value`, comma-separated; keys and values are alphanumeric plu
 
 **`sha256 mismatch for kimchi_linux_*.tar.gz`** — cached tarball at `~/.cache/kimchi-bench/releases/<tag>/` is corrupt or the release was replaced. `rm -rf` that tag's directory and retry.
 
-**`KIMCHI_API_KEY is required`** — env var didn't reach the container. Set it on the host before invoking the script; both scripts forward it via `--ae`.
+**`KIMCHI_API_KEY is required`** — env var didn't reach the container. Set it on the host before invoking the script; the helper scripts forward it via `--ae`.
 
-**`harbor: command not found`** — run via `uv run`; both scripts already do.
+**`harbor: command not found`** — run via `uv run`; the helper scripts already do.

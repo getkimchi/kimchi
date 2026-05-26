@@ -1,3 +1,5 @@
+import { stripOuterQuotes } from "../../ferment/text.js"
+
 export type FermentCommand =
 	| { type: "interactive" }
 	| { type: "list" }
@@ -6,6 +8,7 @@ export type FermentCommand =
 	| { type: "progress" }
 	| { type: "pause-lifecycle" }
 	| { type: "resume-lifecycle" }
+	| { type: "exit" }
 	| { type: "delete"; target: string }
 	| { type: "switch"; verb: "switch"; target: string; force: boolean }
 	| { type: "abandon"; reason?: string }
@@ -14,18 +17,6 @@ export type FermentCommand =
 	| { type: "one-shot"; intent: string }
 	| { type: "new"; title: string }
 	| { type: "unknown"; input: string }
-
-export function stripOuterQuotes(value: string): string {
-	const trimmed = value.trim()
-	if (trimmed.length >= 2) {
-		const first = trimmed[0]
-		const last = trimmed[trimmed.length - 1]
-		if ((first === `"` && last === `"`) || (first === `'` && last === `'`)) {
-			return trimmed.slice(1, -1).trim()
-		}
-	}
-	return trimmed
-}
 
 function parseSwitch(raw: string): FermentCommand {
 	const verb = "switch"
@@ -46,6 +37,7 @@ export function parseFermentCommand(args: string): FermentCommand {
 	if (lo === "progress") return { type: "progress" }
 	if (lo === "pause") return { type: "pause-lifecycle" }
 	if (lo === "resume") return { type: "resume-lifecycle" }
+	if (lo === "exit") return { type: "exit" }
 	if (lo.startsWith("delete ")) return { type: "delete", target: stripOuterQuotes(raw.slice("delete ".length)) }
 	if (lo.startsWith("switch ")) return parseSwitch(raw)
 	if (lo === "abandon") return { type: "abandon" }

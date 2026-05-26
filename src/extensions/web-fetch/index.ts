@@ -57,8 +57,8 @@ export default function webFetchExtension(pi: ExtensionAPI): void {
 			),
 		}),
 
-		async execute(_toolCallId, params) {
-			return executeWebFetch(params)
+		async execute(_toolCallId, params, signal) {
+			return executeWebFetch(params, signal)
 		},
 
 		renderCall(args, theme, context) {

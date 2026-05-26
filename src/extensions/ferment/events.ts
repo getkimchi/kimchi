@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { shortenTitle } from "../../ferment/shorten-title.js"
 import { clearFermentCache } from "../../ferment/store.js"
+import { deriveDraftFermentTitle } from "../../ferment/title.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
@@ -20,7 +20,6 @@ import {
 	applyFermentRuntimeToolProfile,
 	applyFermentToolProfile,
 	setActiveFermentAndApplyProfile,
-	setActiveFermentState,
 } from "./tool-scope.js"
 
 type AssistantContentPart = { type: string; text?: string; name?: string }
@@ -182,7 +181,7 @@ async function maybeRunUserInputDropdown(
 			}
 			edited = result
 		}
-		const outcome = confirmPendingScope(runtime, f.id, edited, "turn_end", f.name, pi)
+		const outcome = confirmPendingScope(runtime, f.id, edited, "turn_end", pi)
 		if (outcome.ok) {
 			ctx.ui.notify?.(
 				`Plan saved for "${outcome.outcome.ferment.name}". ${outcome.outcome.ferment.phases.length} phase(s) ready.`,
@@ -293,7 +292,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			}
 		} else if (pi.getFlag("ferment-oneshot") === true) {
 			pendingOneshot = true
-			setActiveFermentState(runtime, undefined)
+			runtime.setActive(undefined)
 			applyFermentToolProfile(pi, "oneshot-planner")
 		} else {
 			pendingOneshot = false
@@ -335,15 +334,10 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 				autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
 			})
 			const storage = runtime.getStorage()
-			let shortName: string
-			try {
-				shortName = await shortenTitle(intent)
-			} catch {
-				shortName = intent.length > 60 ? `${intent.slice(0, 57).trimEnd()}...` : intent
-			}
+			const shortName = deriveDraftFermentTitle(intent)
 			const f = storage.create(shortName, intent)
 			const updated = f
-			setActiveFermentState(runtime, updated)
+			runtime.setActive(updated)
 			appendRefEntry(pi, updated.id)
 			const ackText = `One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nPolicy: automated`
 			void pi.sendMessage(

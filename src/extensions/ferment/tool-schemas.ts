@@ -81,7 +81,9 @@ export const PhaseProposalSchema = Type.Object({
 
 export const ScopeParams = Type.Object({
 	ferment_id: Type.String(),
-	title: Type.Optional(Type.String({ description: "A short 3-5 word title for this ferment" })),
+	title: Type.String({
+		description: "Required concise 3-5 word title for this ferment. The host applies it when scoping is saved.",
+	}),
 	goal: Type.String(),
 	success_criteria: Type.Optional(Type.String()),
 	constraints: Type.Optional(Type.Array(Type.String())),
@@ -126,9 +128,9 @@ export const ScopingQuestionSchema = Type.Object({
 			},
 		),
 	),
-	text: Type.String({
+	question: Type.String({
 		description:
-			"The decision-blocking question shown to the user. Do not ask preference-survey questions when a safe default can be assumed; a user request to be thorough with questions does not make default choices decision-blocking.",
+			"Canonical question sentence shown to the user. Use this field name for propose_ferment_scoping. Do not ask preference-survey questions when a safe default can be assumed; a user request to be thorough with questions does not make default choices decision-blocking.",
 	}),
 	options: Type.Optional(
 		Type.Array(ScopingQuestionOptionSchema, {
@@ -142,7 +144,10 @@ export const ProposeScopingParams = Type.Object({
 	ferment_id: Type.String({
 		description: "The ferment whose scoping you're proposing.",
 	}),
-	title: Type.Optional(Type.String({ description: "A short 3-5 word title for this ferment." })),
+	title: Type.String({
+		description:
+			"Required concise 3-5 word title for this ferment. The host applies it only after the user confirms/saves this proposal.",
+	}),
 	goal: Type.String({ description: "The ferment goal." }),
 	success_criteria: Type.Optional(Type.String()),
 	constraints: Type.Optional(
