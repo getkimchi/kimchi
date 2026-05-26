@@ -23,16 +23,17 @@ const CD_CMDS = new Set(["cd", "pushd", "popd"])
 /**
  * Extracts the effective command from a compound bash command by skipping
  * segments whose first word is a directory-change command (cd, pushd, popd).
- * Falls back to the original command if none remain or if not compound.
+ * Falls back to empty string when no non-cd segment remains.
  */
 function extractEffectiveCommand(command: string): string {
 	const segments = splitCompoundCommand(command)
 	if (!segments) return command
 	const firstRemaining = segments.find((seg) => {
 		const firstWord = seg.trim().split(/\s+/)[0] ?? ""
-		return !CD_CMDS.has(firstWord)
+		const effectiveWord = firstWord === "rtk" ? (seg.trim().split(/\s+/)[1] ?? "") : firstWord
+		return !CD_CMDS.has(effectiveWord)
 	})
-	return firstRemaining ?? command
+	return firstRemaining ?? ""
 }
 
 export function classifyTool(toolName: string, args: Record<string, unknown>): Category {
