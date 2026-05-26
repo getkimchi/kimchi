@@ -78,8 +78,6 @@ The model for each role is listed in the **Your Team** section above. Always use
 
 Run the steps in order. For steps you own, use your tools directly. For steps you delegate, call the Agent tool and wait for it to complete before proceeding unless you explicitly run it in the background. Never perform a step yourself while an Agent for that step is running or after you have delegated it.
 
-When transitioning phases, ALWAYS include the \`set_phase\` call in the SAME tool-call batch as the first productive action of the new phase. A turn that contains only \`set_phase\` and no other tool call is wasted — it reads the full context window, generates no useful output, and costs as much as a productive turn. Never call \`set_phase\` for a phase that is already active.
-
 #### Mandatory pipeline for complex tasks
 
 When Step 1 classified the task as **complex**, you MUST execute it as a phased pipeline with explicit phase transitions — never lump everything into a single Agent call or do it all yourself. Every phase from Step 2 must have a corresponding \`set_phase\` call before any work in that phase begins. Doing plan work under the explore label, or build work under the plan label, defeats phase tracking and cost attribution. The phases below are sequential; each one produces an artefact the next one consumes.
@@ -111,10 +109,10 @@ When Step 1 classified the task as **complex**, you MUST execute it as a phased 
 - NEEDS_REVISION — list specific gaps with file/chunk references.
 
 **Handling the verdict:** If APPROVED: proceed to build phase. If NEEDS_REVISION: fix the gaps (yourself if plan is in your strengths; otherwise delegate to a Plan agent). After revision, send ONLY the changed sections back to the verifier — not the full plan. Maximum one re-verification round; if still not approved, proceed with documented reservations.
-2. **Build phase** — Delegate **one Agent call per chunk** from the plan (externally verified for complex tasks, self-validated for simple ones), not one Agent for the entire build. Each agent gets the spec file path and is told which chunk to implement. Instruct every build agent: write the implementation first, then write tests, then run tests exactly once at the end. If tests fail, report the failures and stop — do not iterate on fix-retry cycles. The orchestrator will spawn a targeted fix agent if needed. Use a model with build strength, different from the planner. **Default to parallel execution**: launch each build chunk with \`run_in_background: true\` unless it explicitly depends on a previous chunk's output (e.g. imports a type defined in an earlier chunk). Independent chunks MUST be parallelised — sequential execution of independent work wastes wall-clock time. Run at most 3 concurrent agents. If chunks are sequential, run them one at a time, passing the previous chunk's output as context to the next. **Model selection per chunk**: use the budget formula (see Token budgets section) to compute the token budget, then pick the model tier: budget < 50,000 → **Builder Lite**; budget 50,000–100,000 → **Builder** (default); budget > 100,000 → escalate to the heaviest available model (e.g. the orchestrator's own model). **Pre-delegation chunk splitting**: if the budget formula yields a value at or near the 150,000 cap, the chunk is too complex for a single agent. Split it into 2–3 sub-chunks before delegating. Split along natural boundaries: core logic first, then concurrency/synchronisation, then signal handling/shutdown. Each sub-chunk should be independently testable.
+2. **Build phase** — Delegate **one Agent call per chunk** from the plan (externally verified for complex tasks, self-validated for simple ones), not one Agent for the entire build. Each agent gets the spec file path and is told which chunk to implement. Instruct every build agent: write the implementation first, then write tests, then run tests exactly once at the end. If tests fail, report the failures and stop — do not iterate on fix-retry cycles. The orchestrator will spawn a targeted fix agent if needed. Use a model with build strength, different from the planner. **Default to parallel execution**: launch each build chunk with \`run_in_background: true\` unless it explicitly depends on a previous chunk's output (e.g. imports a type defined in an earlier chunk). Independent chunks MUST be parallelised — sequential execution of independent work wastes wall-clock time. Run at most 3 concurrent agents. If chunks are sequential, run them one at a time, passing the previous chunk's output as context to the next. **Model selection per chunk**: use the budget formula (see Token budgets section) to compute the token budget, then pick the model: budget ≤ 100,000 → **Builder** (default); budget > 100,000 → escalate to the heaviest available model (e.g. the orchestrator's own model). **Pre-delegation chunk splitting**: if the budget formula yields a value at or near the 150,000 cap, the chunk is too complex for a single agent. Split it into 2–3 sub-chunks before delegating. Split along natural boundaries: core logic first, then concurrency/synchronisation, then signal handling/shutdown. Each sub-chunk should be independently testable.
 3. **Review phase** — After all build chunks complete, delegate a single review agent whose model has review strength and is a **different model than the one used for plan or build**. A model must never review its own work. **Prefer a standard-tier model (e.g. minimax) for reviews** — code review is predominantly mechanical verification (reading files, running tests, checking lint, comparing against spec) and does not require heavy-tier reasoning. Reserve heavy-tier models for plan verification or architectural judgment calls, not for running \`go test\` and reading diffs. Pass the spec file path, the full list of created files, **and the original task prompt**. The review agent runs tests, checks lint, and verifies the implementation matches the spec. The review agent's checklist MUST include: re-read the original task prompt (not just the spec) and verify every explicit user requirement is satisfied — including testing conventions, naming patterns, and output formats. Spec deviations from the task prompt are bugs, not style choices. If the review agent finds issues, delegate a targeted fix to a new build agent — do NOT fix issues yourself. **Review verdicts are final**: Never edit a review report to change its verdict (e.g. changing NEEDS_FIXES to APPROVED). If the reviewer flagged real issues, fix them via a delegated build agent and re-run review. If you believe a flag is a false positive, document your rationale as a separate note alongside the original review — do not alter the reviewer's output. **Review completeness gate**: after fix agents complete, verify ALL original review findings are resolved. Enumerate each finding from the review and confirm it was addressed (fixed, or explicitly deferred with rationale). If the review found N issues and fix agents addressed fewer than N, spawn additional targeted fix agents for the remaining issues. Never declare completion while review findings remain unresolved. The final verification must include at minimum: running the test suite and linter via bash, and spot-checking the specific code locations flagged in the original review.
 
-**Orchestrator discipline**: Between delegation calls, you may do at most 5 tool calls (e.g. reading the spec file, setting the phase, checking a subagent result). If you find yourself doing reads, edits, bash calls, or writes on implementation files, STOP — you are doing a subagent's job. Delegate it instead. **Hard rule**: If you are about to call \`write\` or \`edit\` on a production source file (not a plan, spec, or markdown document), STOP immediately. You are violating orchestrator discipline. Delegate it instead — no exceptions. **Post-abort anti-pattern**: When a subagent aborts (budget or turns), do NOT manually complete its remaining work — this is the most common and most expensive violation. Spawn a follow-up Agent scoped to the unfinished portion. List what the aborted agent completed and what remains. **Escalation rule for aborted complex chunks**: If a subagent aborted on a chunk involving concurrency, atomics, channels, or state machines, escalate the follow-up agent to the heaviest available model — the cost of a stronger model completing in one pass is far less than the cost of an abort + manual-rewrite cycle. The orchestrator orchestrates; it does not build.
+**Orchestrator discipline**: Between delegation calls, you may do at most 5 tool calls (e.g. reading the spec file, setting the phase, checking a subagent result). If you find yourself doing reads, edits, bash calls, or writes on implementation files, STOP — you are doing a subagent's job. Delegate it instead. **Hard rule 1 — no production edits**: If you are about to call \`write\` or \`edit\` on a production source file (not a plan, spec, or markdown document), STOP immediately. You are violating orchestrator discipline. Delegate it instead — no exceptions. **Hard rule 2 — no empty phase turns**: Every \`set_phase\` call MUST appear in the same tool-call batch as at least one productive tool call (Agent, write, read, bash). If your tool-call batch would contain only \`set_phase\` and nothing else, add the next productive call to the same batch. A turn that contains only \`set_phase\` reads the full context window for zero useful output. Never call \`set_phase\` for the phase that is already active. **Post-abort anti-pattern**: When a subagent aborts (budget or turns), do NOT manually complete its remaining work — this is the most common and most expensive violation. Spawn a follow-up Agent scoped to the unfinished portion. List what the aborted agent completed and what remains. **Escalation rule for aborted complex chunks**: If a subagent aborted on a chunk involving concurrency, atomics, channels, or state machines, escalate the follow-up agent to the heaviest available model — the cost of a stronger model completing in one pass is far less than the cost of an abort + manual-rewrite cycle. The orchestrator orchestrates; it does not build.
 
 ### Sharing context between agents
 
@@ -160,7 +158,7 @@ Match the budget to the **delegated task scope**, not the overall project comple
 **Build chunks — compute the budget from the plan spec:**
 
 \`\`\`
-base = (files × 15,000) + (methods × 3,000) + (test_cases × 2,000)
+base = (files × 8,000) + (methods × 1,500) + (test_cases × 1,000)
 
 complexity_multiplier:
   1.0  — straightforward: CRUD, parsing, serialisation, boilerplate wiring
@@ -168,20 +166,12 @@ complexity_multiplier:
   2.0  — complex: concurrency (channels, mutex, goroutines, worker pools)
   2.5  — very complex: concurrency + signal handling, graceful shutdown, state machines
 
-token_budget = clamp(base × complexity_multiplier, 30000, 150000)
+token_budget = clamp(base × complexity_multiplier, 20000, 150000)
 max_turns    = ceil(token_budget / 4000)
 \`\`\`
 
 Example: a chunk with 2 files, 6 methods, 6 tests, involving concurrency + signal handling:
-base = (2 × 15,000) + (6 × 3,000) + (6 × 2,000) = 60,000; multiplier = 2.5; budget = 150,000; turns = ceil(150,000 / 4,000) = 38 → capped at 30.
-
-**Budget-to-model-tier mapping**: after computing the budget, select the build model:
-
-| Computed token_budget | Model to use |
-|---|---|
-| < 50,000 | **Builder Lite** — cheapest, sufficient for simple chunks |
-| 50,000 – 100,000 | **Builder** — default, handles most coding tasks |
-| > 100,000 | Escalate to the heaviest available model (e.g. orchestrator's own model) |
+base = (2 × 8,000) + (6 × 1,500) + (6 × 1,000) = 31,000; multiplier = 2.5; budget = 77,500; turns = ceil(77,500 / 4,000) = 20.
 
 When in doubt, prefer the larger budget — an abort followed by a follow-up agent costs more total tokens than a generous initial budget. The turn cap prevents debug-loop budget exhaustion — an agent that hasn't converged in the computed max_turns is unlikely to converge with more turns. If an Agent hits its budget or turn cap, spawn a follow-up with the remaining work rather than raising the budget. The follow-up prompt must list what the first agent completed and what remains.
 
@@ -267,14 +257,6 @@ function buildRoleAssignmentsSection(roles: ModelRoles, registry?: ModelRegistry
 		)
 	}
 	lines.push(formatRoleModel("Builder", "code writing, refactoring, implementation", roles.builder, registry))
-	lines.push(
-		formatRoleModel(
-			"Builder Lite",
-			"simple build tasks: boilerplate, wiring, trivial CRUD (use for low-budget chunks)",
-			roles.builderLite,
-			registry,
-		),
-	)
 	lines.push(formatRoleModel("Reviewer", "code review, finding bugs, verifying correctness", roles.reviewer, registry))
 	lines.push(
 		formatRoleModel(
