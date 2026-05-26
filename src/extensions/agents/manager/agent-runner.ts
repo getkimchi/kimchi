@@ -403,7 +403,18 @@ async function runAgentInner(
 	const inactivity = { lastActivityAt: Date.now(), steered: false }
 	const inactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
 
-	const progressSteerThresholds = [0.5, 0.75]
+	const PROGRESS_STEER_POINTS: { threshold: number; message: string }[] = [
+		{
+			threshold: 0.75,
+			message:
+				"You're at 75% of your turn budget. Continue your current approach; avoid starting new exploratory work.",
+		},
+		{
+			threshold: 0.9,
+			message:
+				"You're at 90% of your turn budget. Finish your current edit, run verification, and summarize any remaining work.",
+		},
+	]
 	let nextProgressIdx = 0
 	let tokenSoftLimitSteered = false
 
@@ -436,13 +447,11 @@ async function runAgentInner(
 					aborted = true
 					abortReason = "max_turns"
 					session.abort()
-				} else if (!softLimitReached && nextProgressIdx < progressSteerThresholds.length) {
-					const threshold = progressSteerThresholds[nextProgressIdx] ?? 1
-					if (turnCount >= effectiveMaxTurns * threshold) {
+				} else if (!softLimitReached && nextProgressIdx < PROGRESS_STEER_POINTS.length) {
+					const point = PROGRESS_STEER_POINTS[nextProgressIdx]
+					if (point && turnCount >= effectiveMaxTurns * point.threshold) {
 						nextProgressIdx++
-						session.steer(
-							`Budget check: ${buildProgressSummary()}. Prioritize completing the most important remaining work.`,
-						)
+						session.steer(point.message)
 					}
 				}
 			}
