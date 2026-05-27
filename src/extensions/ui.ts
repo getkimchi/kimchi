@@ -148,6 +148,10 @@ export function setPasteImageHandler(handler: () => void): void {
 	pasteImageHandler = handler
 }
 
+export function insertAtCursor(text: string): void {
+	currentEditor?.insertTextAtCursor?.(text)
+}
+
 /**
  * Show or clear a short status string right-aligned on the prompt's first row,
  * next to the placeholder. Used by the clipboard-image extension to surface

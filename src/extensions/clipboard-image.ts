@@ -5,9 +5,10 @@ import { getAvailableModels } from "../startup-context.js"
 import { getNativeClipboard } from "../utils/clipboard-native-harness.js"
 import { readClipboardImage } from "../utils/clipboard-read.js"
 import { addImage, clearAllImages, setImageCacheDir } from "../utils/image-registry.js"
-import { setPasteImageHandler, setPendingImageIndicator } from "./ui.js"
+import { insertAtCursor, setPasteImageHandler, setPendingImageIndicator } from "./ui.js"
 
-let pendingImages: ImageContent[] = []
+// Slots filled async after paste; null means image read is still in-flight or failed.
+let pendingImages: (ImageContent | null)[] = []
 let currentCtx: ExtensionContext | null = null
 // Per-session running counter of images attached to user turns. Resets on
 // session_start so that a new conversation always begins at #1.
@@ -20,19 +21,8 @@ function modelSupportsImages(modelId: string | undefined): boolean {
 	return meta?.input_modalities.includes("image") ?? false
 }
 
-function buildImageMarkerPrefix(startIndex: number, count: number): string {
-	if (count <= 0) return ""
-	const markers = Array.from({ length: count }, (_, i) => `[Image #${startIndex + i}]`)
-	return markers.join(" ")
-}
-
 setPasteImageHandler(() => {
-	handlePaste().catch((err) => {
-		console.error("Clipboard paste handler error:", err)
-	})
-})
-
-async function handlePaste(): Promise<void> {
+	// Synchronous checks first — bail early without reserving a slot.
 	const model = currentCtx?.model
 	if (!modelSupportsImages(model?.id)) {
 		currentCtx?.ui?.notify(`${model?.id ?? "Current model"} does not support images`, "warning")
@@ -46,39 +36,31 @@ async function handlePaste(): Promise<void> {
 		return
 	}
 
-	let image: { bytes: Uint8Array; mimeType: string } | null
-	try {
-		image = await readClipboardImage()
-	} catch {
-		currentCtx?.ui?.notify("Clipboard image support is not available", "warning")
-		return
-	}
+	// Reserve the slot and insert the marker synchronously so it lands at the
+	// cursor position before any async work can shift state.
+	// Capture the array reference so in-flight callbacks stay bound to this
+	// session's bucket even if session_start replaces pendingImages later.
+	const bucket = pendingImages
+	const slot = bucket.length
+	bucket.push(null)
+	insertAtCursor("📎")
 
-	if (!image) {
-		currentCtx?.ui?.notify("No image found on clipboard", "info")
-		return
-	}
-
-	const base64 = Buffer.from(image.bytes).toString("base64")
-	const imageContent: ImageContent = {
-		type: "image",
-		data: base64,
-		mimeType: image.mimeType,
-	}
-	pendingImages.push(imageContent)
-	updateIndicator()
-}
-
-function updateIndicator(): void {
-	if (pendingImages.length === 0) {
-		setPendingImageIndicator(null)
-		return
-	}
-	const totalRawBytes = pendingImages.reduce((sum, img) => sum + Math.floor((img.data.length * 3) / 4), 0)
-	const kb = Math.max(1, Math.round(totalRawBytes / 1024))
-	const label = pendingImages.length === 1 ? "image" : "images"
-	setPendingImageIndicator(`📎 ${pendingImages.length} ${label} (${kb} KB)`)
-}
+	// Fill in the actual image data asynchronously.
+	readClipboardImage()
+		.then((image) => {
+			if (!image) {
+				// Leave bucket[slot] as null — the 📎 marker will be stripped on submit.
+				currentCtx?.ui?.notify("No image found on clipboard", "info")
+				return
+			}
+			const base64 = Buffer.from(image.bytes).toString("base64")
+			bucket[slot] = { type: "image", data: base64, mimeType: image.mimeType }
+		})
+		.catch(() => {
+			// Leave bucket[slot] as null — the 📎 marker will be stripped on submit.
+			currentCtx?.ui?.notify("Clipboard image support is not available", "warning")
+		})
+})
 
 export default function clipboardImageExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
@@ -89,29 +71,41 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		const dir = sessionDir ? join(sessionDir, "image-cache") : null
 		setImageCacheDir(dir)
 		clearAllImages()
-		updateIndicator()
+		setPendingImageIndicator(null)
 	})
 
 	pi.on("input", (event) => {
 		const incoming = event.images ?? []
-		const totalImages = incoming.length + pendingImages.length
+		// Count 📎 markers in text — each maps to a pending slot in push order.
+		const markerCount = (event.text.match(/📎/gu) ?? []).length
 
-		if (totalImages === 0) return
+		if (incoming.length === 0 && markerCount === 0) return
 
-		const images = [...incoming, ...pendingImages]
-		pendingImages = []
-		updateIndicator()
+		// Only consume pending slots when there are markers to resolve.
+		// Skipping this when markerCount === 0 prevents programmatic follow-up
+		// messages (e.g. from ferment) from clearing slots before the user submits.
+		let pendingSlots: (ImageContent | null)[] = []
+		if (markerCount > 0) {
+			const captured = pendingImages
+			pendingImages = []
+			pendingSlots = captured.slice(0, markerCount)
+		}
+
+		const validPending = pendingSlots.filter((img): img is ImageContent => img !== null)
+		const images = [...incoming, ...validPending]
 
 		const startIndex = imageCounter + 1
-		imageCounter += totalImages
-		// Persist each image to disk and register under its [Image #N] id.
-		images.forEach((image, i) => {
-			const id = startIndex + i
-			addImage(id, image)
+		imageCounter += images.length
+		images.forEach((image, i) => addImage(startIndex + i, image))
+
+		// Replace 📎 markers left-to-right with [Image #N].
+		// Orphaned markers (failed load or no backing slot) are stripped from the text.
+		let slotIdx = 0
+		let sessionIdx = startIndex + incoming.length
+		const text = event.text.replace(/📎/gu, () => {
+			const slot = pendingSlots[slotIdx++]
+			return slot != null ? `[Image #${sessionIdx++}]` : ""
 		})
-		const prefix = buildImageMarkerPrefix(startIndex, totalImages)
-		const trimmed = event.text.trimStart()
-		const text = trimmed ? `${prefix} ${trimmed}` : prefix
 
 		return { action: "transform" as const, text, images }
 	})
