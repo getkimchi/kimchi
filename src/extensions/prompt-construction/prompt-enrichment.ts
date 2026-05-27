@@ -427,7 +427,6 @@ export default function (skillPaths: string[]) {
 			const roles = mode === "orchestrator" ? getModelRoles() : undefined
 
 			const systemPrompt = buildSystemPrompt({
-				pi,
 				tools: tools as readonly ToolInfo[],
 				env,
 				contextFiles: cachedContextFiles,

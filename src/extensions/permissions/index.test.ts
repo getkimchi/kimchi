@@ -188,7 +188,6 @@ describe("permissions prompt inheritance", () => {
 			await harness.fire("session_start", {}, createMockContext([]))
 
 			const result = buildSystemPrompt({
-				pi: harness.pi,
 				tools: [
 					{ name: "read", description: "Read files" },
 					{ name: "bash", description: "Run shell commands" },

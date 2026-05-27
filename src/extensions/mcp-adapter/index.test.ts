@@ -108,7 +108,6 @@ describe("mcp adapter system prompt block", () => {
 
 		try {
 			const result = buildSystemPrompt({
-				pi,
 				tools: pi.getAllTools(),
 				env: testEnv,
 				mode: "orchestrator",
@@ -131,7 +130,6 @@ describe("mcp adapter system prompt block", () => {
 
 		try {
 			const result = buildSystemPrompt({
-				pi,
 				tools: pi.getAllTools(),
 				env: testEnv,
 				mode: "subagent",

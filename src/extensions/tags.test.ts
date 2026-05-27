@@ -106,7 +106,6 @@ describe("tags system prompt block", () => {
 
 		try {
 			const result = buildSystemPrompt({
-				pi,
 				tools: [
 					{ name: "read", description: "Read file contents" },
 					{ name: "set_phase", description: "Set the current work phase" },

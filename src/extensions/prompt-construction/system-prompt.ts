@@ -8,7 +8,7 @@
  * All mode-specific content lives in orchestration-instructions.ts.
  */
 
-import { type ExtensionAPI, type Skill, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent"
+import { type Skill, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent"
 import { buildPhaseGuidelinesSection } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
 import type { Phase } from "../orchestration/model-registry/types.js"
@@ -37,8 +37,6 @@ export interface ToolInfo {
 export type PromptMode = "orchestrator" | "subagent" | "single"
 
 export interface SystemPromptBuildOptions {
-	/** Backward-compatible call-site handle. System prompt blocks are scoped by sessionId. */
-	pi?: ExtensionAPI
 	tools: readonly ToolInfo[]
 	env: EnvironmentInfo
 	contextFiles?: readonly ContextFile[]

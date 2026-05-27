@@ -46,7 +46,6 @@ function makePi(sessionId = TEST_SESSION_ID): ExtensionAPI & {
 
 function prompt(pi?: ExtensionAPI & { sessionId?: string }): string {
 	return buildSystemPrompt({
-		pi,
 		tools: testTools,
 		env: testEnv,
 		contextFiles: [{ path: "/repo/AGENTS.md", content: "Project rule." }],
@@ -179,7 +178,6 @@ describe("system prompt blocks", () => {
 		})
 
 		const result = buildSystemPrompt({
-			pi,
 			tools: testTools,
 			env: testEnv,
 			contextFiles: [{ path: "/repo/AGENTS.md", content: "Project rule." }],
