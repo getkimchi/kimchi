@@ -1,6 +1,5 @@
 import { CURSOR_MARKER, type TUI, type Component, visibleWidth } from "@earendil-works/pi-tui"
 import { GhosttyCore } from "@wterm/ghostty"
-import type { SshSession } from "./ssh-session.js"
 
 interface CellData {
   char: number
@@ -218,6 +217,12 @@ function toCtrlChar(key: string): string | null {
   return null
 }
 
+export interface TerminalSink {
+  resize(rows: number, cols: number): void
+  write(data: string | ArrayBufferLike | Blob | ArrayBufferView): void
+  close(): void
+}
+
 export class TerminalComponent implements Component {
   terminal: GhosttyCore
   prevWidth = 0
@@ -227,7 +232,7 @@ export class TerminalComponent implements Component {
 
   constructor(
     tui: TUI,
-    private session: SshSession,
+    private session: TerminalSink,
     terminal: GhosttyCore,
   ) {
     this.tui = tui
@@ -293,7 +298,8 @@ export class TerminalComponent implements Component {
 
   handleInput(data: string): void {
     const raw = toRawAnsi(data)
-    this.session.write(raw !== undefined ? raw : Buffer.from(data, "utf-8"))
+    // this.session.write(raw !== undefined ? raw : Buffer.from(data, "utf-8"))
+    this.session.write(raw!)
   }
 
   wantsKeyRelease = true
