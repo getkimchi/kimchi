@@ -1,5 +1,21 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`default agents — resolved invocation config snapshot > Builder 1`] = `
+{
+  "builtinToolNames": undefined,
+  "maxTurns": undefined,
+  "modelId": "kimchi-dev/minimax-m2.7",
+  "modelLocked": undefined,
+  "name": "Builder",
+  "preferTier": "standard",
+  "strengths": [
+    "build",
+  ],
+  "thinking": "low",
+  "tokenBudget": undefined,
+}
+`;
+
 exports[`default agents — resolved invocation config snapshot > Explore 1`] = `
 {
   "builtinToolNames": [
@@ -19,20 +35,6 @@ exports[`default agents — resolved invocation config snapshot > Explore 1`] = 
   ],
   "thinking": "low",
   "tokenBudget": 120000,
-}
-`;
-
-exports[`default agents — resolved invocation config snapshot > General-Purpose 1`] = `
-{
-  "builtinToolNames": undefined,
-  "maxTurns": undefined,
-  "modelId": "kimchi-dev/minimax-m2.7",
-  "modelLocked": undefined,
-  "name": "General-Purpose",
-  "preferTier": undefined,
-  "strengths": undefined,
-  "thinking": undefined,
-  "tokenBudget": undefined,
 }
 `;
 
@@ -79,5 +81,21 @@ exports[`default agents — resolved invocation config snapshot > Researcher 1`]
   ],
   "thinking": "medium",
   "tokenBudget": 80000,
+}
+`;
+
+exports[`default agents — resolved invocation config snapshot > Reviewer 1`] = `
+{
+  "builtinToolNames": undefined,
+  "maxTurns": undefined,
+  "modelId": "kimchi-dev/minimax-m2.7",
+  "modelLocked": undefined,
+  "name": "Reviewer",
+  "preferTier": "standard",
+  "strengths": [
+    "review",
+  ],
+  "thinking": "low",
+  "tokenBudget": undefined,
 }
 `;

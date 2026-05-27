@@ -41,9 +41,13 @@ import {
 	stripStaleNudges,
 } from "../orchestration/continuation-nudge.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
+import {
+	getModelRoles,
+	modelIdFromRef,
+	splitModelRef,
+	validateModelRoles,
+} from "../orchestration/model-registry/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
-import { getModelRoles, modelIdFromRef, splitModelRef, validateModelRoles } from "../orchestration/model-roles.js"
-import { getCurrentPhase } from "../tags.js"
 import { type ContextFile, loadProjectContextFiles } from "./context-files.js"
 import { type EnvironmentInfo, type PromptMode, type ToolInfo, buildSystemPrompt } from "./system-prompt.js"
 
@@ -390,6 +394,13 @@ export default function (skillPaths: string[]) {
 		let cachedGitRemote: string | undefined | null = null
 
 		pi.on("before_agent_start", async (_event, ctx) => {
+			// Publish the current model ref so getEffectiveModelRoles() can collapse
+			// all roles to this model when multi-model is off.
+			if (ctx.model) {
+				;(process as NodeJS.Process & { __kimchiCurrentModelRef?: string }).__kimchiCurrentModelRef =
+					`${ctx.model.provider}/${ctx.model.id}`
+			}
+
 			const activeToolNames = new Set(pi.getActiveTools())
 			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
 			cachedContextFiles ??= loadProjectContextFiles(ctx.cwd)
@@ -424,7 +435,6 @@ export default function (skillPaths: string[]) {
 			}
 
 			const mode: PromptMode = subagentMode ? "subagent" : multiModelEnabled ? "orchestrator" : "single"
-			const roles = mode === "orchestrator" ? getModelRoles() : undefined
 
 			const systemPrompt = buildSystemPrompt({
 				pi,
@@ -433,10 +443,8 @@ export default function (skillPaths: string[]) {
 				contextFiles: cachedContextFiles,
 				skills: cachedSkills,
 				currentModelId: mode === "orchestrator" ? getOrchestratorModelId() : ctx.model?.id,
-				currentPhase: getCurrentPhase(),
 				registry: registry,
 				mode,
-				roles,
 			})
 
 			const debugSession = process.env.KIMCHI_DEBUG_SESSION

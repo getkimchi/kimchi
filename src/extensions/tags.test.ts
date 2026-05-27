@@ -105,7 +105,8 @@ describe("tags system prompt block", () => {
 			})
 
 			expect(result).toContain("## Phase Tagging for Analytics")
-			expect(result).toContain("You must call `set_phase` before every block of work")
+			expect(result).toContain("Optionally call `set_phase`")
+			expect(result).not.toContain("You must call `set_phase`")
 			expect(result.indexOf("## Phase Tagging for Analytics")).toBeLessThan(result.indexOf("## Available Tools"))
 		} finally {
 			pi.fireShutdown()

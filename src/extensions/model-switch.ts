@@ -11,8 +11,8 @@ import {
 	sessionHasImages,
 } from "./model-guard.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
+import { splitModelRef } from "./orchestration/model-registry/model-roles.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
-import { splitModelRef } from "./orchestration/model-roles.js"
 import {
 	getMultiModelEnabled,
 	getOrchestratorModelId,

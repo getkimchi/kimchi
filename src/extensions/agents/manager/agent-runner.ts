@@ -13,10 +13,7 @@ import {
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
-import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
-import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
-import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
@@ -30,13 +27,7 @@ import {
 	getReadOnlyMemoryToolNames,
 	getToolNamesForType,
 } from "../personas/agent-types.js"
-import { DEFAULT_AGENTS } from "../personas/default-agents.js"
-import {
-	AGENT_GENERAL_PURPOSE,
-	type AgentAbortReason,
-	type SubagentType,
-	type ThinkingLevel,
-} from "../personas/types.js"
+import type { AgentAbortReason, SubagentType, ThinkingLevel } from "../personas/types.js"
 import { buildParentContext, extractText } from "../prompt/context.js"
 import { type PromptExtras, buildAgentPrompt, formatTokenBudget } from "../prompt/prompts.js"
 import { preloadSkills } from "../prompt/skill-loader.js"
@@ -110,13 +101,6 @@ function resolveDefaultModel(
 	}
 
 	return parentModel
-}
-
-let cachedGuidelinesRegistry: ModelRegistry | undefined
-
-function getGuidelinesRegistry(): ModelRegistry {
-	cachedGuidelinesRegistry ??= new ModelRegistry(getAvailableModels())
-	return cachedGuidelinesRegistry
 }
 
 /** Info about a tool event in the subagent. */
@@ -275,10 +259,6 @@ async function runAgentInner(
 		}
 	}
 
-	const modelId = (options.model as { id?: string } | undefined)?.id
-	const guidelinesBlock = buildPhaseGuidelinesSection(modelId, getCurrentPhase(), getGuidelinesRegistry())
-	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
-
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
 	const MIN_TOKEN_BUDGET = 1024
 	const rawTokenBudget = options.tokenBudget ?? agentConfig?.tokenBudget
@@ -291,9 +271,7 @@ async function runAgentInner(
 	if (agentConfig) {
 		systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras)
 	} else {
-		const fallback = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE)
-		if (!fallback) throw new Error(`No fallback config available for unknown type "${type}"`)
-		systemPrompt = buildAgentPrompt({ ...fallback, name: type }, effectiveCwd, env, parentSystemPrompt, extras)
+		throw new Error(`Unknown agent type "${type}". Use Builder, Reviewer, Explorer, Plan, or Researcher.`)
 	}
 
 	const debugSession = process.env.KIMCHI_DEBUG_SESSION
