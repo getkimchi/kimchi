@@ -1,6 +1,7 @@
 {
 	"$schema": "https://raw.githubusercontent.com/badlogic/pi-mono/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
 	"name": "kimchi-light",
+	"shikiTheme": "github-light",
 	"vars": {
 		"orange-500": "#D94B1F",
 		"lime-600": "#5C8A00",
