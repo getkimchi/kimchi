@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
 import type { Ferment, FermentStatus } from "../../ferment/types.js"
+import { runAsAgentWorker } from "../agent-worker-context.js"
 import { registerAgents } from "../agents/personas/agent-types.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
@@ -105,8 +106,11 @@ describe("buildFermentPromptBlock", () => {
 			})
 		}
 
-		it("returns undefined when no ferment is active", () => {
-			expect(buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime())).toBeUndefined()
+		it("returns idle hint when no ferment is active", () => {
+			const out = buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime())
+			expect(out).toContain("Ferment Workflow")
+			expect(out).toContain("questionnaire")
+			expect(out).toContain("Never block")
 		})
 	})
 
@@ -132,8 +136,10 @@ describe("buildFermentPromptBlock", () => {
 			})
 		}
 
-		it("returns undefined when no ferment is active", () => {
-			expect(buildFermentPromptBlock(PI_ONESHOT, makeNoActiveFermentRuntime())).toBeUndefined()
+		it("returns idle hint when no ferment is active", () => {
+			const out = buildFermentPromptBlock(PI_ONESHOT, makeNoActiveFermentRuntime())
+			expect(out).toContain("Ferment Workflow")
+			expect(out).toContain("questionnaire")
 		})
 
 		it("returns planner supplement for draft status (one-shot scoping must not break)", () => {
@@ -175,6 +181,14 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("new_ferment")
 		})
 
+		it("returns undefined for subagent workers (no idle hint, no planner supplement)", async () => {
+			await runAsAgentWorker(async () => {
+				expect(buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime())).toBeUndefined()
+				expect(buildFermentPromptBlock(PI_NORMAL, makeRuntime({ status: "running" }))).toBeUndefined()
+				expect(buildFermentPromptBlock(PI_ONESHOT, makeRuntime({ status: "draft" }))).toBeUndefined()
+			})
+		})
+
 		it("preserves paused warning for status=paused regardless of ferment-oneshot flag", () => {
 			for (const surface of ["normal", "oneshot"] as const) {
 				const out = buildFermentPromptBlock(PI_BY_NAME[surface], makeRuntime({ status: "paused" }))
@@ -198,6 +212,9 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("do not ask the user to confirm phase advancement")
 			expect(out).toContain("propose_ferment_scoping")
 			expect(out).toContain("Ask clarifying questions only when the answer is decision-blocking")
+			expect(out).toContain("multiple plausible improvement areas")
+			expect(out).toContain("ask one `checkbox` question")
+			expect(out).toContain("Which improvement areas should this ferment include?")
 			expect(out).toContain('<phase_0_inventory required="true"')
 			expect(out).toContain(
 				"First response action: print a concise inventory of all available skills and subagent types",
@@ -295,6 +312,16 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).not.toContain("minimax-m2.7")
 			expect(out).not.toContain("kimi-k2.5")
 			expect(out).not.toContain("worker_model")
+		})
+
+		it("keeps phase tagging out of the pre-ferment classification path", () => {
+			const out = buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime()) ?? ""
+			expect(out).toContain("Do not call `set_phase`")
+			expect(out).toContain("*until* you have classified the request")
+			expect(out).toContain("called `request_ferment_workflow`")
+			expect(out).toContain("Requests to find improvements, possible features, TODOs")
+			expect(out).toContain("Ask the ferment offer before analysis, file reads, or phase tagging")
+			expect(out).toContain("Do not answer with a prose workflow menu")
 		})
 	})
 

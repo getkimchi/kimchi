@@ -4,7 +4,12 @@ import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { type EnvironmentInfo, buildSystemPrompt } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { classifyToolCall } from "./classifier.js"
-import permissionsExtension, { checkCompoundCommand, handleCompoundConfirm } from "./index.js"
+import permissionsExtension, {
+	checkCompoundCommand,
+	getCurrentPermissionsMode,
+	handleCompoundConfirm,
+	notifyFermentActive,
+} from "./index.js"
 import { SessionMemory } from "./session-memory.js"
 import type { Rule } from "./types.js"
 
@@ -133,6 +138,29 @@ function createPermissionsHarness(
 }
 
 describe("permissions plan-mode tool visibility", () => {
+	it("ferment activation leaves plan mode and restores agent tools for scoping", async () => {
+		const previousEnv = process.env.KIMCHI_PERMISSIONS
+		try {
+			process.env.KIMCHI_PERMISSIONS = "plan"
+			const harness = createPermissionsHarness(["read", "agent", "bash", "write", "grep"])
+			await harness.fire("session_start", {}, createMockContext([]))
+			expect(getCurrentPermissionsMode()).toBe("plan")
+			expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
+
+			notifyFermentActive(true)
+
+			expect(getCurrentPermissionsMode()).toBe("yolo")
+			expect(harness.activeTools().sort()).toEqual(["agent", "bash", "grep", "read", "write"])
+
+			notifyFermentActive(false)
+
+			expect(getCurrentPermissionsMode()).toBe("plan")
+			expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
+		} finally {
+			process.env.KIMCHI_PERMISSIONS = previousEnv
+		}
+	})
+
 	it("leaving plan mode does not restore tools hidden by another extension", async () => {
 		const previousEnv = process.env.KIMCHI_PERMISSIONS
 		try {

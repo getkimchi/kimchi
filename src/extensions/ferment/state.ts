@@ -34,15 +34,19 @@ export function getActiveId(): string | undefined {
 	return activeFerment?.id
 }
 
+function shouldElevatePermissions(f: Ferment | undefined): boolean {
+	return f?.status === "draft" || f?.status === "planned" || f?.status === "running" || f?.status === "paused"
+}
+
 export function setActive(f: Ferment | undefined): void {
 	activeFerment = f
-	const isResumable = f !== undefined && f.status !== "complete" && f.status !== "abandoned"
-	if (isResumable) {
+	const elevatePermissions = shouldElevatePermissions(f)
+	if (elevatePermissions && f) {
 		process.env.KIMCHI_ACTIVE_FERMENT = f.id
 	} else {
 		Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
 	}
-	notifyFermentActive(isResumable)
+	notifyFermentActive(elevatePermissions)
 }
 
 // ─── Runtime continuation policy ──────────────────────────────────────────────

@@ -1,5 +1,27 @@
-import { describe, expect, it } from "vitest"
-import { formatAnswerText } from "./questionnaire.js"
+import { afterEach, describe, expect, it } from "vitest"
+import {
+	clearFermentStartApproval,
+	consumeFermentStartApproval,
+	formatAnswerText,
+	isFermentStartApprovalQuestion,
+	normalizeQuestionType,
+	recordFermentStartApproval,
+} from "./questionnaire.js"
+
+describe("normalizeQuestionType", () => {
+	it("accepts UI-style aliases emitted by models", () => {
+		expect(normalizeQuestionType("radio")).toBe("single")
+		expect(normalizeQuestionType("checkbox")).toBe("multi")
+	})
+
+	it("keeps canonical question types unchanged", () => {
+		expect(normalizeQuestionType(undefined)).toBe("single")
+		expect(normalizeQuestionType("single")).toBe("single")
+		expect(normalizeQuestionType("multi")).toBe("multi")
+		expect(normalizeQuestionType("text")).toBe("text")
+		expect(normalizeQuestionType("confirm")).toBe("confirm")
+	})
+})
 
 describe("formatAnswerText", () => {
 	it("formats a single-select answer with index", () => {
@@ -164,5 +186,73 @@ describe("formatAnswerText", () => {
 			},
 		]
 		expect(formatAnswerText(questions, answers)).toBe("Q1: user selected: A, B")
+	})
+})
+
+describe("ferment start approval tracking", () => {
+	const startQuestion = {
+		id: "start",
+		label: "Start",
+		prompt: "This looks like multi-phase work — start a ferment for it?",
+		type: "confirm" as const,
+		options: [
+			{ value: "yes", label: "Yes" },
+			{ value: "no", label: "No" },
+		],
+		allowOther: false,
+		required: true,
+	}
+
+	afterEach(() => {
+		clearFermentStartApproval()
+	})
+
+	it("records and consumes a yes answer to the start-ferment confirm question", () => {
+		recordFermentStartApproval(
+			[startQuestion],
+			[{ id: "start", value: "yes", label: "Yes", wasCustom: false, index: 1 }],
+			100,
+		)
+
+		expect(consumeFermentStartApproval(101)).toBe(true)
+		expect(consumeFermentStartApproval(102)).toBe(false)
+	})
+
+	it("does not record non-start scope questions as ferment-start approval", () => {
+		const scopeQuestion = {
+			...startQuestion,
+			id: "scope",
+			prompt: "Which improvement areas should this ferment include?",
+			type: "multi" as const,
+			options: [{ value: "cache", label: "Cache cleanup" }],
+		}
+
+		expect(isFermentStartApprovalQuestion(scopeQuestion)).toBe(false)
+		recordFermentStartApproval(
+			[scopeQuestion],
+			[
+				{
+					id: "scope",
+					value: "cache",
+					label: "Cache cleanup",
+					wasCustom: false,
+					values: ["cache"],
+					labels: ["Cache cleanup"],
+				},
+			],
+			100,
+		)
+
+		expect(consumeFermentStartApproval(101)).toBe(false)
+	})
+
+	it("does not record no answers", () => {
+		recordFermentStartApproval(
+			[startQuestion],
+			[{ id: "start", value: "no", label: "No", wasCustom: false, index: 2 }],
+			100,
+		)
+
+		expect(consumeFermentStartApproval(101)).toBe(false)
 	})
 })

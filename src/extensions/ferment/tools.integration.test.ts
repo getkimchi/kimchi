@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { clearFermentStartApproval, recordFermentStartApproval } from "../questionnaire.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { clearAllPendingScopes, getPendingScope, setPendingScope } from "./scoping.js"
 import {
@@ -94,6 +95,7 @@ function createHarness(): Harness {
 		getActiveTools: vi.fn(() => ["read", "bash", "complete_ferment"]),
 		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "complete_ferment" }]),
 		setActiveTools: vi.fn(),
+		on: vi.fn(),
 	} as unknown as ExtensionAPI
 
 	registerLifecycleTools(pi, runtime)
@@ -109,6 +111,17 @@ function createHarness(): Harness {
 	}
 
 	return { storage, runtime, tempDir, tools, pi, call }
+}
+
+function createWorkflowCtx() {
+	return {
+		hasUI: true,
+		ui: {
+			notify: vi.fn(),
+			setStatus: vi.fn(),
+			confirm: vi.fn(async () => false),
+		},
+	}
 }
 
 // Helpers for asserting on tool results.
@@ -137,6 +150,7 @@ beforeEach(() => {
 	clearAllScopingGates()
 	clearAllPendingScopes()
 	clearAllPendingPlanReviews()
+	clearFermentStartApproval()
 	setActive(undefined)
 })
 
@@ -146,6 +160,7 @@ afterEach(() => {
 	clearAllScopingGates()
 	clearAllPendingScopes()
 	clearAllPendingPlanReviews()
+	clearFermentStartApproval()
 	setActive(undefined)
 })
 
@@ -224,6 +239,57 @@ function loadFerment(id: string): Ferment {
 	if (!f) throw new Error(`Ferment ${id} not found`)
 	return f
 }
+
+// ─── request_ferment_workflow ────────────────────────────────────────────────
+
+describe("request_ferment_workflow approval gate", () => {
+	const startQuestion = {
+		id: "start",
+		label: "Start",
+		prompt: "This looks like multi-phase work — start a ferment for it?",
+		type: "confirm" as const,
+		options: [
+			{ value: "yes", label: "Yes" },
+			{ value: "no", label: "No" },
+		],
+		allowOther: false,
+		required: true,
+	}
+
+	it("refuses to start when the user has not approved the start-ferment question", async () => {
+		const text = err(await h.call("request_ferment_workflow", { title: "No Consent" }, createWorkflowCtx()))
+
+		expect(text).toContain("request_ferment_workflow refused")
+		expect(text).toContain("explicitly approved starting a ferment")
+		expect(getActive()).toBeUndefined()
+	})
+
+	it("starts after a yes answer to the start-ferment question", async () => {
+		recordFermentStartApproval(
+			[startQuestion],
+			[{ id: "start", value: "yes", label: "Yes", wasCustom: false, index: 1 }],
+		)
+
+		const text = ok(await h.call("request_ferment_workflow", { title: "Approved Ferment" }, createWorkflowCtx()))
+
+		expect(text).toContain('Ferment "Approved Ferment" created')
+		expect(getActive()?.status).toBe("draft")
+		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBe(getActive()?.id)
+	})
+
+	it("bypasses the approval gate in yolo mode", async () => {
+		const previous = process.env.KIMCHI_PERMISSIONS
+		process.env.KIMCHI_PERMISSIONS = "yolo"
+		try {
+			const text = ok(await h.call("request_ferment_workflow", { title: "Yolo Ferment" }, createWorkflowCtx()))
+
+			expect(text).toContain('Ferment "Yolo Ferment" created')
+			expect(getActive()?.status).toBe("draft")
+		} finally {
+			process.env.KIMCHI_PERMISSIONS = previous
+		}
+	})
+})
 
 // ─── list_ferments ────────────────────────────────────────────────────────────
 
@@ -853,8 +919,16 @@ describe("complete_ferment", () => {
 // ─── active ferment env propagation ───────────────────────────────────────────
 
 describe("active ferment environment", () => {
+	it("exposes draft ferments as permission-elevated active work after approval", async () => {
+		const id = await createFerment("Draft Env Test")
+
+		expect(getActive()?.id).toBe(id)
+		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBe(id)
+	})
+
 	it("deletes KIMCHI_ACTIVE_FERMENT when active ferment is cleared", async () => {
 		const id = await createFerment("Env Clear Test")
+		await scopeFerment(id)
 		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBe(id)
 
 		setActive(undefined)
@@ -1089,6 +1163,49 @@ describe("propose_ferment_scoping", () => {
 		const tool = h.tools.get("propose_ferment_scoping")
 		expect(tool?.description).toContain("If questions is non-empty")
 		expect(tool?.description).toContain("answer-agnostic")
+	})
+
+	it("rejects broad improvement proposals without a checkbox question once", async () => {
+		const id = await createFerment("Improve Kimchi Extension", "Find potential improvements to this application")
+		seedPending(id)
+		const ctx = { ui: { select: vi.fn(), custom: vi.fn() } }
+		const improvementPhases = [
+			{
+				name: "Deduplicate shared utilities",
+				goal: "Extract duplicated helper logic",
+				steps: [{ description: "Extract helpers" }],
+			},
+			{
+				name: "Fetch live model data",
+				goal: "Replace stale hardcoded model lists",
+				steps: [{ description: "Use API data" }],
+			},
+			{
+				name: "Improve UX feedback",
+				goal: "Show progress while work starts",
+				steps: [{ description: "Move feedback earlier" }],
+			},
+		]
+		const payload = basePayload(id, {
+			title: "Improve Kimchi Extension",
+			goal: "Find and reason about potential improvements to this application",
+			success_criteria: "Selected improvement areas are implemented and verified",
+			assumptions: "The user asked for potential improvements but did not say to implement all of them.",
+			phases: improvementPhases,
+		})
+
+		const first = err(await h.call("propose_ferment_scoping", payload, ctx))
+
+		expect(first).toContain("Scope boundary question required")
+		expect(first).toContain("Ask one checkbox question")
+		expect(first).toContain('type: "checkbox"')
+		expect(first).toContain("Which improvement areas should this ferment include?")
+		expect(getPendingScope(id)?.scopeBoundaryQuestionGuarded).toBe(true)
+		expect(ctx.ui.custom).not.toHaveBeenCalled()
+		expect(getPendingPlanReview(id)).toBeUndefined()
+
+		const retry = ok(await h.call("propose_ferment_scoping", payload, ctx))
+		expect(retry).toContain("Plan ready for review")
 	})
 
 	// (a) zero-questions + interactive UI -> deferred local review

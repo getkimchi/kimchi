@@ -3154,8 +3154,17 @@ function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, sp: (pat
 		case "question":
 			return summarizeText(getStringArg(args, "question") || "ask user", 72)
 		case "questionnaire": {
-			const questions = Array.isArray(args?.questions) ? args.questions.length : 0
-			return questions > 0 ? `${questions} questions` : theme.fg("muted", "questionnaire")
+			const qs = Array.isArray(args?.questions) ? (args.questions as Array<Record<string, unknown>>) : []
+			if (qs.length === 0) return theme.fg("muted", "questionnaire")
+			const firstText =
+				typeof qs[0]?.question === "string"
+					? (qs[0].question as string)
+					: typeof qs[0]?.text === "string"
+						? (qs[0].text as string)
+						: ""
+			if (!firstText) return `${qs.length} question${qs.length === 1 ? "" : "s"}`
+			if (qs.length === 1) return summarizeText(firstText, 72)
+			return `${summarizeText(firstText, 48)} ${theme.fg("muted", `(+${qs.length - 1} more)`)}`
 		}
 		case "context_tag":
 			return getStringArg(args, "name") || theme.fg("muted", "save point")

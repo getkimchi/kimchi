@@ -54,8 +54,21 @@ type Phase = (typeof VALID_PHASES)[number]
 
 const PHASE_TAGGING_PROMPT = `## Phase Tagging for Analytics
 
-You must call \`set_phase\` before every block of work. Never take an action without the correct phase being set first. Use one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\` strictly matching current work type.
-The session starts in \`explore\` phase by default. Call \`set_phase\` immediately when your work type changes. Only one phase is active at a time — the most recent call wins.`
+Call \`set_phase\` before substantive work blocks once the user has chosen an execution path. Use one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\` matching current work type.
+Do not call \`set_phase\` before the initial request classification, before the ferment-offer questionnaire, or before \`request_ferment_workflow\`. For fresh requests that ask to find improvements, possible features, TODOs, audits, reviews, or recommendations for an app/extension/codebase, the next tool must be \`questionnaire\` for the ferment offer — not \`set_phase\`. The session starts in \`explore\` phase by default. Call \`set_phase\` when your work type changes after that point. Only one phase is active at a time — the most recent call wins.`
+
+function inputStartsUserRequest(event: unknown): boolean {
+	if (!event || typeof event !== "object") return false
+	const source = (event as { source?: unknown }).source
+	return source === "interactive"
+}
+
+function toolNameFromEvent(event: unknown): string | undefined {
+	if (!event || typeof event !== "object") return undefined
+	const e = event as { toolName?: unknown; name?: unknown; tool?: { name?: unknown } }
+	const raw = e.toolName ?? e.name ?? e.tool?.name
+	return typeof raw === "string" ? raw : undefined
+}
 
 export function isValidPhase(phase: string): phase is Phase {
 	return VALID_PHASES.includes(phase as Phase)
@@ -537,6 +550,7 @@ export function getActiveTags(): string[] {
 export default function tagsExtension(pi: ExtensionAPI) {
 	const tagManager = new TagManager()
 	tagManagerInstance = tagManager
+	let firstUserRequestToolMustNotBeSetPhase = false
 
 	// Register the /tags command
 	pi.registerCommand("tags", {
@@ -573,6 +587,20 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const phase = params.phase as Phase
 
+			if (firstUserRequestToolMustNotBeSetPhase && !process.env.KIMCHI_ACTIVE_FERMENT) {
+				return {
+					isError: true,
+					content: [
+						{
+							type: "text",
+							text: "`set_phase` is premature before request classification. First decide from the user's text whether this is a small inline task or a ferment candidate. For broad improvement, feature, TODO, audit, review, or recommendation requests, call `questionnaire` to ask whether to start a ferment before any exploration. Do not retry `set_phase` until after that classification path has begun.",
+						},
+					],
+					details: { phase, premature: true, model: ctx.model?.id },
+				}
+			}
+
+			firstUserRequestToolMustNotBeSetPhase = false
 			tagManager.setPhase(phase)
 
 			if (ctx.hasUI) {
@@ -612,6 +640,19 @@ export default function tagsExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		tagManager.setPhase("explore")
 		updateFooterStatus(tagManager, ctx)
+	})
+
+	pi.on("input", async (event) => {
+		if (inputStartsUserRequest(event)) {
+			firstUserRequestToolMustNotBeSetPhase = true
+		}
+	})
+
+	pi.on("tool_execution_start", async (event) => {
+		const toolName = toolNameFromEvent(event)
+		if (toolName && toolName !== "set_phase") {
+			firstUserRequestToolMustNotBeSetPhase = false
+		}
 	})
 
 	// Inject tags into every LLM request

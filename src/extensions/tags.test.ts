@@ -19,28 +19,47 @@ const testEnv: EnvironmentInfo = {
 type Handler = (event: unknown, ctx: unknown) => unknown
 const TEST_SESSION_ID = "test-session"
 
-function makePi(): ExtensionAPI & { fireSessionStart: () => Promise<void>; fireShutdown: () => void } {
-	const startHandlers: Handler[] = []
+type RegisteredTool = {
+	name: string
+	execute: (...args: unknown[]) => unknown
+}
+
+function makePi(): ExtensionAPI & {
+	fire: (event: string, payload?: unknown, ctx?: unknown) => Promise<void>
+	fireShutdown: () => void
+	tools: Map<string, RegisteredTool>
+} {
 	const shutdownHandlers: Array<() => void> = []
-	const sessionContext = {
-		hasUI: false,
-		sessionManager: { getSessionId: () => TEST_SESSION_ID },
-	}
+	const handlers = new Map<string, Handler[]>()
+	const sessionStartCtx = { hasUI: false, sessionManager: { getSessionId: () => TEST_SESSION_ID } }
+	const tools = new Map<string, RegisteredTool>()
 	const pi = {
 		registerCommand: () => {},
-		registerTool: () => {},
-		on: (event: string, handler: Handler) => {
-			if (event === "session_start") startHandlers.push(handler)
-			if (event === "session_shutdown") shutdownHandlers.push(handler as () => void)
+		registerTool: (tool: RegisteredTool) => {
+			tools.set(tool.name, tool)
 		},
-		fireSessionStart: async () => {
-			for (const handler of startHandlers) await handler({}, sessionContext)
+		on: (event: string, handler: Handler) => {
+			const existing = handlers.get(event) ?? []
+			existing.push(handler)
+			handlers.set(event, existing)
+			if (event === "session_shutdown") shutdownHandlers.push(handler as () => void)
+			if (event === "session_start") handler({}, sessionStartCtx)
+		},
+		fire: async (event: string, payload: unknown = {}, ctx: unknown = {}) => {
+			for (const handler of handlers.get(event) ?? []) {
+				await handler(payload, ctx)
+			}
 		},
 		fireShutdown: () => {
 			for (const handler of shutdownHandlers) handler()
 		},
+		tools,
 	}
-	return pi as unknown as ExtensionAPI & { fireSessionStart: () => Promise<void>; fireShutdown: () => void }
+	return pi as unknown as ExtensionAPI & {
+		fire: (event: string, payload?: unknown, ctx?: unknown) => Promise<void>
+		fireShutdown: () => void
+		tools: Map<string, RegisteredTool>
+	}
 }
 
 describe("isValidTag", () => {
@@ -102,7 +121,6 @@ describe("tags system prompt block", () => {
 	it("registers phase tagging instructions with the extension that owns set_phase", async () => {
 		const pi = makePi()
 		tagsExtension(pi)
-		await pi.fireSessionStart()
 
 		try {
 			const result = buildSystemPrompt({
@@ -116,10 +134,73 @@ describe("tags system prompt block", () => {
 			})
 
 			expect(result).toContain("## Phase Tagging for Analytics")
-			expect(result).toContain("You must call `set_phase` before every block of work")
+			expect(result).toContain("Call `set_phase` before substantive work blocks")
+			expect(result).toContain("Do not call `set_phase` before the initial request classification")
+			expect(result).toContain("before `request_ferment_workflow`")
+			expect(result).toContain("the next tool must be `questionnaire` for the ferment offer")
 			expect(result.indexOf("## Phase Tagging for Analytics")).toBeLessThan(result.indexOf("## Available Tools"))
 		} finally {
 			pi.fireShutdown()
+		}
+	})
+
+	it("rejects set_phase as the first tool after fresh interactive input", async () => {
+		const pi = makePi()
+		tagsExtension(pi)
+
+		await pi.fire("input", { source: "interactive", text: "Find improvements to this extension" })
+
+		const tool = pi.tools.get("set_phase")
+		expect(tool).toBeDefined()
+
+		const result = await tool?.execute("call-1", { phase: "explore" }, undefined, undefined, { hasUI: false })
+
+		expect(result).toMatchObject({
+			isError: true,
+			details: { phase: "explore", premature: true },
+		})
+		expect(JSON.stringify(result)).toContain("request classification")
+		expect(JSON.stringify(result)).toContain("call `questionnaire`")
+	})
+
+	it("allows set_phase after another tool has started classification or work", async () => {
+		const pi = makePi()
+		tagsExtension(pi)
+
+		await pi.fire("input", { source: "interactive", text: "Find improvements to this extension" })
+		await pi.fire("tool_execution_start", { toolName: "questionnaire" })
+
+		const tool = pi.tools.get("set_phase")
+		const result = await tool?.execute("call-1", { phase: "explore" }, undefined, undefined, { hasUI: false })
+
+		expect(result).toMatchObject({
+			content: [{ type: "text", text: "Phase changed to: explore" }],
+			details: { phase: "explore" },
+		})
+	})
+
+	it("allows immediate set_phase when an executable ferment is active", async () => {
+		const previous = process.env.KIMCHI_ACTIVE_FERMENT
+		process.env.KIMCHI_ACTIVE_FERMENT = "ferment-1"
+		try {
+			const pi = makePi()
+			tagsExtension(pi)
+
+			await pi.fire("input", { source: "interactive", text: "Continue" })
+
+			const tool = pi.tools.get("set_phase")
+			const result = await tool?.execute("call-1", { phase: "build" }, undefined, undefined, { hasUI: false })
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: "Phase changed to: build" }],
+				details: { phase: "build" },
+			})
+		} finally {
+			if (previous === undefined) {
+				process.env.KIMCHI_ACTIVE_FERMENT = undefined
+			} else {
+				process.env.KIMCHI_ACTIVE_FERMENT = previous
+			}
 		}
 	})
 })

@@ -56,7 +56,20 @@ const EMPTY_LOADED_CONFIG: LoadedConfig = {
 }
 
 // bash is allowed but gated per-command by isReadOnlyBashCommand.
-const PLAN_MODE_TOOLS = ["read", "grep", "find", "ls", "web_search", "web_fetch", "questionnaire", "bash"]
+const PLAN_MODE_TOOLS = [
+	"read",
+	"grep",
+	"find",
+	"ls",
+	"web_search",
+	"web_fetch",
+	"questionnaire",
+	"bash",
+	// `request_ferment_workflow` only writes to .kimchi (host-owned ferment storage)
+	// and requires an explicit user "yes" via questionnaire on the same turn. Allow it
+	// in plan mode so the agent can transition the user into a fully-scoped workflow.
+	"request_ferment_workflow",
+]
 const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 
 // Tools that auto-approve in headless/auto modes without LLM classification.
@@ -251,17 +264,22 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// a ferment is activated or cleared, so permissions can switch to/from yolo.
 	_onFermentActiveChange = (hasActiveFerment: boolean) => {
 		if (cliMode) return // explicit CLI flag always wins
+		const previousMode = currentMode()
 		if (hasActiveFerment) {
 			runtimeMode = "yolo"
 		} else {
 			// Only clear runtimeMode if we set it for ferment (not if user changed it manually)
 			if (runtimeMode === "yolo") runtimeMode = undefined
 		}
+		const nextMode = currentMode()
+		if (previousMode === "plan" && nextMode !== "plan") restoreToolsFromPlanMode()
+		if (nextMode === "plan") applyPlanModeTools()
 		propagateModeToEnv()
 		if (_lastCtx) {
 			updateStatus(_lastCtx)
 			maybeShowYoloWarning(_lastCtx, currentMode())
 		}
+		_modeChangeListener?.(nextMode)
 	}
 
 	function doLoadConfig(ctx: ExtensionContext): { errors: string[] } {
@@ -351,7 +369,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// YOLO mode: --yolo and --dangerously-skip-permissions both set yolo mode (no classifier, auto-approve all)
 		else if (pi.getFlag("yolo") || pi.getFlag("dangerously-skip-permissions")) cliMode = "yolo"
 
-		// Active ferment → auto-yolo so all ferment tools execute without approval prompts.
+		// Active ferment → auto-yolo so scoping/lifecycle work can proceed without approval prompts.
+		// No env var is set before the user explicitly approves ferment creation.
 		// Only applies when no explicit CLI mode flag was given.
 		if (!cliMode && process.env.KIMCHI_ACTIVE_FERMENT) {
 			runtimeMode = "yolo"

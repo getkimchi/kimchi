@@ -22,6 +22,7 @@ import { type Static, Type } from "typebox"
 import {
 	type Answer,
 	type Question,
+	type QuestionType,
 	type QuestionnaireEffect,
 	type QuestionnaireEvent,
 	type QuestionnaireState,
@@ -42,10 +43,22 @@ interface QuestionnaireResult {
 	cancelled: boolean
 }
 
+interface FermentStartApproval {
+	approvedAt: number
+	prompt: string
+}
+
+let fermentStartApproval: FermentStartApproval | undefined
+
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
 const QuestionOptionSchema = Type.Object({
-	value: Type.String({ description: "The value returned when selected" }),
+	value: Type.Optional(
+		Type.String({
+			description: "The value returned when selected. Defaults to the option's `id` or `label` if omitted.",
+		}),
+	),
+	id: Type.Optional(Type.String({ description: "Stable id for the option. Used as `value` when `value` is omitted." })),
 	label: Type.String({ description: "Display label for the option" }),
 	description: Type.Optional(Type.String({ description: "Optional help text shown below the label" })),
 })
@@ -59,9 +72,20 @@ const QuestionSchema = Type.Object({
 	),
 	prompt: Type.String({ description: "The full question text to display" }),
 	type: Type.Optional(
-		Type.Union([Type.Literal("single"), Type.Literal("multi"), Type.Literal("text"), Type.Literal("confirm")], {
-			description: "Question type: single (radio, default), multi (checkbox), text (free-text), confirm (yes/no).",
-		}),
+		Type.Union(
+			[
+				Type.Literal("single"),
+				Type.Literal("multi"),
+				Type.Literal("text"),
+				Type.Literal("confirm"),
+				Type.Literal("radio"),
+				Type.Literal("checkbox"),
+			],
+			{
+				description:
+					"Question type: single/radio (one choice, default), multi/checkbox (multiple choices), text (free-text), confirm (yes/no).",
+			},
+		),
 	),
 	options: Type.Optional(
 		Type.Array(QuestionOptionSchema, {
@@ -81,6 +105,73 @@ const QuestionnaireParams = Type.Object({
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+export type QuestionnaireQuestionTypeInput = QuestionType | "radio" | "checkbox"
+
+export function normalizeQuestionType(type: QuestionnaireQuestionTypeInput | undefined): QuestionType {
+	if (type === "radio") return "single"
+	if (type === "checkbox") return "multi"
+	return type ?? "single"
+}
+
+function isAffirmativeAnswer(answer: Answer | undefined): boolean {
+	if (!answer) return false
+	if (answer.value.toLowerCase() === "yes") return true
+	if (answer.label.toLowerCase() === "yes") return true
+	return answer.values?.some((value) => value.toLowerCase() === "yes") ?? false
+}
+
+const FERMENT_START_APPROVAL_VERBS = new Set(["start", "begin", "create", "launch", "open", "use"])
+
+function isWordChar(char: string): boolean {
+	return (char >= "a" && char <= "z") || (char >= "0" && char <= "9") || char === "_"
+}
+
+function wordsIn(text: string): Set<string> {
+	const words = new Set<string>()
+	let current = ""
+	for (const char of text.toLowerCase()) {
+		if (isWordChar(char)) {
+			current += char
+			continue
+		}
+		if (current) {
+			words.add(current)
+			current = ""
+		}
+	}
+	if (current) words.add(current)
+	return words
+}
+
+export function isFermentStartApprovalQuestion(question: Question): boolean {
+	if (question.type !== "confirm") return false
+	const words = wordsIn(question.prompt)
+	return words.has("ferment") && Array.from(FERMENT_START_APPROVAL_VERBS).some((verb) => words.has(verb))
+}
+
+export function recordFermentStartApproval(questions: Question[], answers: Answer[], now = Date.now()): void {
+	const approved = questions.some((question) => {
+		if (!isFermentStartApprovalQuestion(question)) return false
+		return isAffirmativeAnswer(answers.find((answer) => answer.id === question.id))
+	})
+	if (!approved) return
+	fermentStartApproval = {
+		approvedAt: now,
+		prompt: questions.find(isFermentStartApprovalQuestion)?.prompt ?? "",
+	}
+}
+
+export function consumeFermentStartApproval(now = Date.now()): boolean {
+	const approval = fermentStartApproval
+	fermentStartApproval = undefined
+	if (!approval) return false
+	return now - approval.approvedAt <= 10 * 60_000
+}
+
+export function clearFermentStartApproval(): void {
+	fermentStartApproval = undefined
+}
+
 function errorResult(
 	message: string,
 	questions: Question[] = [],
@@ -92,7 +183,14 @@ function errorResult(
 }
 
 function normalizeQuestion(q: Static<typeof QuestionSchema>, index: number): Question {
-	const type = q.type ?? "single"
+	const type = normalizeQuestionType(q.type)
+	const rawOptions = q.options ?? []
+	const normalizedOptions = rawOptions.map((opt) => ({
+		// LLMs frequently emit `id+label` and omit `value`. Fall back to id, then label.
+		value: opt.value ?? opt.id ?? opt.label,
+		label: opt.label,
+		description: opt.description,
+	}))
 	return {
 		id: q.id,
 		label: q.label || `Q${index + 1}`,
@@ -104,7 +202,7 @@ function normalizeQuestion(q: Static<typeof QuestionSchema>, index: number): Que
 						{ value: "yes", label: "Yes" },
 						{ value: "no", label: "No" },
 					]
-				: (q.options ?? []),
+				: normalizedOptions,
 		allowOther: q.allowOther ?? type === "single",
 		required: q.required !== false,
 	}
@@ -145,11 +243,17 @@ export function formatAnswerText(questions: Question[], answers: Answer[]): stri
 // ─── Extension ────────────────────────────────────────────────────────────────
 
 export default function questionnaireExtension(pi: ExtensionAPI): void {
+	pi.on?.("input", (event) => {
+		if ((event as { source?: unknown } | undefined)?.source === "interactive") {
+			clearFermentStartApproval()
+		}
+	})
+
 	pi.registerTool({
 		name: "questionnaire",
 		label: "Questionnaire",
 		description:
-			"Ask the user one or more structured questions. Use for clarifying requirements, getting preferences, or confirming decisions before acting. Supports single-select (radio), multi-select (checkbox), free-text input, and yes/no confirmation. For a single question, shows a simple option list. For multiple questions, shows a tab-based interface. Prefer this over outputting questions as plain text.",
+			"Ask the user one or more structured questions. Use for clarifying requirements, getting preferences, or confirming decisions before acting. Supports single-select (single/radio), multi-select (multi/checkbox), free-text input, and yes/no confirmation. For a single question, shows a simple option list. For multiple questions, shows a tab-based interface. Prefer this over outputting questions as plain text.",
 		parameters: QuestionnaireParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -437,6 +541,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 			}
 
 			const text = formatAnswerText(questions, result.answers)
+			recordFermentStartApproval(questions, result.answers)
 			return {
 				content: [{ type: "text", text }],
 				details: result,
