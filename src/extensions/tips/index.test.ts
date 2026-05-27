@@ -37,9 +37,13 @@ function createHarness(options: { hasUI: boolean }) {
 		}),
 	}
 	const ctx = { hasUI: options.hasUI, ui }
+	const commands = new Map<string, unknown>()
 	const api = {
 		on: vi.fn((event: string, handler: Handler) => {
 			handlers.set(event, handler)
+		}),
+		registerCommand: vi.fn((name: string, command: unknown) => {
+			commands.set(name, command)
 		}),
 	} as unknown as ExtensionAPI
 

@@ -1,9 +1,11 @@
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory, WidgetPlacement } from "@earendil-works/pi-coding-agent"
-import { createGeneralTipProvider } from "./general-tips.js"
+import { FERMENT_TIPS } from "../ferment/tips.js"
+import { GENERAL_TIPS, createGeneralTipProvider } from "./general-tips.js"
 import { TipPresenter } from "./presenter.js"
 import { type TipRegistry, globalTipRegistry } from "./registry.js"
 import { TipRow } from "./tip-row.js"
-import type { TipProvider } from "./types.js"
+import { createTipsPanel } from "./tips-panel.js"
+import type { TipCandidate, TipProvider } from "./types.js"
 
 export const TIPS_WIDGET_KEY = "kimchi-tips"
 type VisibleTipWidgetLocation = Extract<WidgetPlacement, "aboveEditor">
@@ -133,5 +135,54 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 			unregisterLocationChange?.()
 			unregisterLocationChange = undefined
 		})
+
+		pi.registerCommand("tips", {
+			description: "Show all tips",
+			handler: async (_args, ctx) => {
+				const tips = collectAllTips(registry)
+				if (!ctx.hasUI) {
+					const lines = tips.map((t, i) => `${i + 1}. ${t.message}`)
+					ctx.ui.notify(lines.join("\n"), "info")
+					return
+				}
+				await ctx.ui.custom<void>((tui, theme, _kb, done) => createTipsPanel(tips, theme, tui, done), {
+					overlay: true,
+					overlayOptions: { anchor: "center", width: "80%", maxHeight: "90%" },
+				})
+			},
+		})
 	}
+}
+
+/**
+ * Collect all known tips — both static definitions and dynamically registered
+ * third-party providers. Static tip arrays (GENERAL_TIPS, FERMENT_TIPS) are
+ * always included regardless of runtime state, so the /tips panel shows the
+ * full catalog.
+ */
+function collectAllTips(registry: TipRegistry): TipCandidate[] {
+	const seen = new Set<string>()
+	const all: TipCandidate[] = []
+
+	// Static general tips — always present
+	for (const tip of GENERAL_TIPS) {
+		seen.add(tip.id)
+		all.push({ ...tip, source: "kimchi.general" })
+	}
+
+	// Static ferment tips — all of them, regardless of ferment state
+	for (const tip of Object.values(FERMENT_TIPS)) {
+		seen.add(tip.id)
+		all.push({ ...tip, source: "kimchi.ferment" })
+	}
+
+	// Any additional tips from third-party providers not already included
+	for (const candidate of registry.getEligibleTips()) {
+		if (!seen.has(candidate.id)) {
+			seen.add(candidate.id)
+			all.push(candidate)
+		}
+	}
+
+	return all
 }

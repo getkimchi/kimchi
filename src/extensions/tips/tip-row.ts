@@ -38,7 +38,7 @@ function formatTipContent(message: string, theme: Theme): string {
 	return `${theme.fg("success", "Tip:")} ${formatTipMessage(message, theme)}`
 }
 
-function formatTipMessage(message: string, theme: Theme): string {
+export function formatTipMessage(message: string, theme: Theme): string {
 	return message
 		.split(/(`[^`\n]+`)/g)
 		.map((part) =>

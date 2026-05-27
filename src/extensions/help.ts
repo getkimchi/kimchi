@@ -29,6 +29,7 @@ const HELP_ROWS: HelpRow[] = [
 	{ kind: "entry", key: "/mcp", desc: "Show MCP server status" },
 	{ kind: "entry", key: "/resources", desc: "Manage resources (files, URLs, images)" },
 	{ kind: "entry", key: "/tags", desc: "Manage usage tracking tags" },
+	{ kind: "entry", key: "/tips", desc: "Show all tips" },
 	{ kind: "entry", key: "/help", desc: "Show this help" },
 	{ kind: "entry", key: "/exit", desc: "Exit the application" },
 ]
