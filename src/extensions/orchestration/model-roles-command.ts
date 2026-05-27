@@ -15,7 +15,7 @@ import {
 	modelIdFromRef,
 	saveModelRoles,
 	splitModelRef,
-} from "../model-registry/model-roles.js"
+} from "./model-registry/model-roles.js"
 
 const ROLE_LABELS: Record<keyof ModelRoles, { label: string; description: string }> = {
 	orchestrator: { label: "Orchestrator", description: "main model, delegates work" },

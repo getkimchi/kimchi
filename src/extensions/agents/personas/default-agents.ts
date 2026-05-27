@@ -13,9 +13,9 @@ import {
 	DEFAULT_PLAN_GUIDELINES,
 	DEFAULT_RESEARCH_GUIDELINES,
 	DEFAULT_REVIEW_GUIDELINES,
-} from "../../model-registry/guidelines/default-phase-guidelines.js"
-import { modelsForAnyStrength, modelsForStrength } from "../../model-registry/index.js"
-import { getEffectiveModelRoles } from "../../model-registry/model-roles.js"
+} from "../../orchestration/model-registry/guidelines/default-phase-guidelines.js"
+import { modelsForAnyStrength, modelsForStrength } from "../../orchestration/model-registry/index.js"
+import { getEffectiveModelRoles } from "../../orchestration/model-registry/model-roles.js"
 import { SUBAGENT_RESPONSE_PROTOCOL } from "../../orchestration/orchestration-instructions.js"
 import {
 	BASE_INSTRUCTIONS,

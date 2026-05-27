@@ -9,7 +9,7 @@
  */
 
 import { getAgentConfig, getDefaultAgentNames } from "../agents/personas/agent-types.js"
-import { shouldDelegatePlanning } from "../model-registry/model-roles.js"
+import { shouldDelegatePlanning } from "../orchestration/model-registry/model-roles.js"
 import type { PermissionMode } from "../permissions/types.js"
 
 // ---------------------------------------------------------------------------

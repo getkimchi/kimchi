@@ -345,16 +345,4 @@ describe("shouldDelegatePlanning", () => {
 		// DEFAULT_MODEL_ROLES has planner === orchestrator
 		expect(shouldDelegatePlanning()).toBe(false)
 	})
-
-	it("returns true when multi-model is on and planner differs from orchestrator", () => {
-		;(process as P).__kimchiMultiModelEnabled = true
-		// Override via saveModelRoles isn't practical in unit tests; inject via
-		// the cache-reset path with a custom settings file instead.
-		// Simplest: verify that when effective roles differ, result is true.
-		// We test the internal logic by checking that two different refs produce true.
-		const roles = getEffectiveModelRoles()
-		// With defaults, planner === orchestrator, so this is false.
-		expect(roles.planner).toBe(roles.orchestrator)
-		expect(shouldDelegatePlanning()).toBe(false)
-	})
 })

@@ -3,7 +3,7 @@
  */
 
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
-import type { ModelStrength, ModelTier } from "../../model-registry/types.js"
+import type { ModelStrength, ModelTier } from "../../orchestration/model-registry/types.js"
 import type { LifetimeUsage } from "../manager/usage.js"
 
 /** Thinking/reasoning level for models that support it. */

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 
 // Mock getEffectiveModelRoles BEFORE default-agents.ts is imported so buildDefaultAgents()
 // uses deterministic defaults instead of reading ~/.config/kimchi/harness/settings.json.
-vi.mock("../../model-registry/model-roles.js", async (importOriginal) => {
+vi.mock("../../orchestration/model-registry/model-roles.js", async (importOriginal) => {
 	const actual = (await importOriginal()) as Record<string, unknown>
 	return {
 		...actual,
@@ -14,7 +14,7 @@ import { DEFAULT_AGENTS, SUBAGENT_BASE_PROMPT } from "./default-agents.js"
 import { AGENT_BUILDER, AGENT_EXPLORE, AGENT_PLAN, AGENT_RESEARCHER, AGENT_REVIEWER } from "./types.js"
 
 // Stub pickFromModelListByTier and recommendModel so snapshots are deterministic.
-vi.mock("../../model-registry/recommend.js", () => ({
+vi.mock("../../orchestration/model-registry/recommend.js", () => ({
 	recommendModel: vi.fn().mockReturnValue(undefined),
 	pickFromModelListByTier: vi.fn().mockImplementation((list: readonly string[], preferTier?: string) => {
 		if (preferTier === "heavy") {

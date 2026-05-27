@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resolveAgentInvocationConfig } from "./invocation-config.js"
 
-vi.mock("../../model-registry/recommend.js", () => ({
+vi.mock("../../orchestration/model-registry/recommend.js", () => ({
 	recommendModel: vi.fn(),
 	pickFromModelListByTier: vi.fn(),
 }))
@@ -10,7 +10,7 @@ vi.mock("../../tags.js", () => ({
 	getCurrentPhase: vi.fn(),
 }))
 
-import { pickFromModelListByTier, recommendModel } from "../../model-registry/recommend.js"
+import { pickFromModelListByTier, recommendModel } from "../../orchestration/model-registry/recommend.js"
 import { getCurrentPhase } from "../../tags.js"
 
 const mockRecommend = vi.mocked(recommendModel)

@@ -13,11 +13,11 @@
  * It falls through to buildDispatchOnlyBlock as a defensive default.
  */
 
-import { buildModelGuidelinesSection } from "../model-registry/guidelines/guidelines-resolver.js"
-import type { ModelRegistry } from "../model-registry/index.js"
 import type { PermissionMode } from "../permissions/types.js"
 import { buildDispatchOnlyBlock, buildFullOrchestratorBlock } from "../prompt-construction/orchestrator-block.js"
 import type { PromptMode } from "../prompt-construction/system-prompt.js"
+import { buildModelGuidelinesSection } from "./model-registry/guidelines/guidelines-resolver.js"
+import type { ModelRegistry } from "./model-registry/index.js"
 
 export interface OrchestrationInstructionsContext {
 	currentModelId?: string

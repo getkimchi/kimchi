@@ -35,14 +35,9 @@ export interface ModelCapabilities {
 	strengths: ModelStrength[]
 	tier: ModelTier
 	description: string
-	/** Phase-specific guideline annexes. If a phase key is present, its value
-	 *  REPLACES the default guideline for that phase. If absent, the default
-	 *  guideline is used. */
-	guidelines?: Partial<Readonly<Record<Phase, string>>>
-	/** Orchestration-specific guideline annex. Appended to the system prompt
-	 *  when this model acts as the orchestrator. If absent, the default
-	 *  orchestration guideline is used. */
-	orchestrationGuidelines?: string
+	/** Model-specific guideline annex. Appended to the system prompt alongside
+	 *  the orchestrator block. If absent, the default model guideline is used. */
+	modelGuidelines?: string
 }
 
 /**

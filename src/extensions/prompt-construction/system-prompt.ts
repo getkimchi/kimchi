@@ -9,7 +9,7 @@
  */
 
 import { type ExtensionAPI, type Skill, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent"
-import type { ModelRegistry } from "../model-registry/index.js"
+import type { ModelRegistry } from "../orchestration/model-registry/index.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
 import type { PermissionMode } from "../permissions/types.js"
 import type { ContextFile } from "./context-files.js"

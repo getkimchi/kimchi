@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../models.js"
-import { MODEL_CAPABILITIES, ModelRegistry } from "../model-registry/index.js"
+import { MODEL_CAPABILITIES, ModelRegistry } from "./model-registry/index.js"
 import { resolveOrchestrationInstructions } from "./orchestration-instructions.js"
 
 const ALL_KNOWN_IDS = [...MODEL_CAPABILITIES.keys()]

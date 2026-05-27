@@ -1,5 +1,5 @@
-import { pickFromModelListByTier, recommendModel } from "../../model-registry/recommend.js"
-import type { ModelStrength } from "../../model-registry/types.js"
+import { pickFromModelListByTier, recommendModel } from "../../orchestration/model-registry/recommend.js"
+import type { ModelStrength } from "../../orchestration/model-registry/types.js"
 import { getCurrentPhase } from "../../tags.js"
 import type { AgentConfig, IsolationMode, JoinMode, ThinkingLevel } from "../personas/types.js"
 

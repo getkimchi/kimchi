@@ -24,7 +24,7 @@ import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
-import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../model-registry/index.js"
+import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
 import { AgentManager } from "./manager/agent-manager.js"
 import {

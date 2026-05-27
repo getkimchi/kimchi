@@ -29,20 +29,10 @@ describe("MODEL_CAPABILITIES completeness invariants", () => {
 		}
 	})
 
-	it.each(LIVE_ENTRIES)("%s — orchestrationGuidelines is a non-empty string", (_id, cap) => {
-		expect(typeof cap.orchestrationGuidelines).toBe("string")
-		expect((cap.orchestrationGuidelines as string).trim().length).toBeGreaterThan(0)
-	})
-
-	it.each(LIVE_ENTRIES)("%s — every declared strength phase has a non-empty guidelines entry", (_id, cap) => {
-		for (const strength of cap.strengths) {
-			const guidelineValue = cap.guidelines?.[strength]
-			expect(
-				guidelineValue,
-				`guidelines["${strength}"] must be a non-empty string (strength declared in strengths[])`,
-			).toBeTruthy()
-			expect(typeof guidelineValue).toBe("string")
-			expect((guidelineValue as string).trim().length).toBeGreaterThan(0)
+	it.each(LIVE_ENTRIES)("%s — modelGuidelines is a non-empty string when present", (_id, cap) => {
+		if (cap.modelGuidelines !== undefined) {
+			expect(typeof cap.modelGuidelines).toBe("string")
+			expect(cap.modelGuidelines.trim().length).toBeGreaterThan(0)
 		}
 	})
 })

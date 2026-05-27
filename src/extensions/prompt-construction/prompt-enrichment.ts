@@ -31,8 +31,6 @@ import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
-import { ModelRegistry } from "../model-registry/index.js"
-import { getModelRoles, modelIdFromRef, splitModelRef, validateModelRoles } from "../model-registry/model-roles.js"
 import {
 	CONTINUATION_NUDGE_TEXT,
 	ContinuationNudge,
@@ -42,6 +40,13 @@ import {
 	type OrchestratorMessages,
 	stripStaleNudges,
 } from "../orchestration/continuation-nudge.js"
+import { ModelRegistry } from "../orchestration/model-registry/index.js"
+import {
+	getModelRoles,
+	modelIdFromRef,
+	splitModelRef,
+	validateModelRoles,
+} from "../orchestration/model-registry/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
 import { type ContextFile, loadProjectContextFiles } from "./context-files.js"
 import { type EnvironmentInfo, type PromptMode, type ToolInfo, buildSystemPrompt } from "./system-prompt.js"

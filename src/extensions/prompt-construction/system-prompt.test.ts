@@ -1,7 +1,7 @@
 import type { Skill } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../models.js"
-import { MODEL_CAPABILITIES, ModelRegistry } from "../model-registry/index.js"
+import { MODEL_CAPABILITIES, ModelRegistry } from "../orchestration/model-registry/index.js"
 import { type EnvironmentInfo, buildSystemPrompt } from "./system-prompt.js"
 
 const testEnv: EnvironmentInfo = {
