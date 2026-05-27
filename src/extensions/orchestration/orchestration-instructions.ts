@@ -134,7 +134,7 @@ Pass plans and structured findings as Markdown files in the Documents directory,
 
 Review is often the most token-intensive phase — it involves reading files, running tests, writing smoke harnesses, and iterating on fixes. Most of this work is mechanical verification, not architectural judgment.
 
-- **Delegate review to the Reviewer model.** The Reviewer is configured to be a different model than the Builder, ensuring cross-model verification. Call the Reviewer Agent with the diff/spec context, a budget from the token budget table matched to the scope of the work being reviewed, and a clear checklist of what to verify. The reviewer must produce specific code-level findings — not just a pass/fail verdict.
+- **Delegate review to the Reviewer model.** The Reviewer is configured to be a different model than the Builder, ensuring cross-model verification. Call the Reviewer Agent with the diff/spec context, a budget from the token budget table matched to the scope of the work being reviewed, and a clear checklist of what to verify. The reviewer must produce specific code-level findings — not just a pass/fail verdict. **The review agent MUST write its findings to a Markdown file in the Documents directory** (e.g., \`review_findings.md\`) and return the file path. The orchestrator reads ONLY that file to understand the findings — never re-read the source files the reviewer already analysed. The findings file must list each issue with: severity (MAJOR/MINOR), file:line, description, and suggested fix.
 - **Always use a different model than build/plan.** Review must be performed by a model that did not do the plan or build work. This is mandatory, not a preference — self-review has no value. Fresh eyes catch different issues and reduce over-reliance on a single model's biases.
 - **Reserve the orchestrator for the final judgment call.** Once the review Agent returns its findings, assess the results yourself: is the architecture sound? Do the interfaces match the spec? Are there design-level issues the automated checks could not catch? This assessment is reading one summary and making a decision — not re-running tests or re-reading files.
 - **Never run a full review loop yourself when a cheaper model can do it.** If you find yourself reading files, running \`go test\`, and fixing lint errors in sequence, that is mechanical work — delegate it.
@@ -177,7 +177,17 @@ Do NOT use the old formula-based approach. The complexity hint is the single inp
 
 **Pre-delegation chunk splitting**: if a chunk is \`complex\` AND touches 3+ files, split it into 2–3 sub-chunks before delegating. Split along natural boundaries: core logic first, then concurrency/synchronisation, then signal handling/shutdown. Each sub-chunk inherits the parent's complexity level unless the split produces a clearly simpler piece.
 
-**Review agent budget**: \`token_budget = max(60,000, total_production_loc × 100 + total_test_loc × 50)\`. If the review covers more than 500 LOC of production code, use at least 120,000. Cap at 200,000.
+**Review agent budget**: \`token_budget = max(60,000, total_production_loc × 100 + total_test_loc × 50)\`. If the review covers more than 500 LOC of production code, use at least 120,000. Cap at 200,000. Set \`max_duration: 180000\` (3 minutes) — a review that takes longer than 3 minutes is likely stuck or over-reading. The review agent should read files, run tests once, and produce findings. It does not need multiple iteration cycles.
+
+**Fix agent budget**: match the fix agent's budget to the number of findings × complexity. Use this table:
+
+| Findings | Complexity of fixes | token_budget | max_turns |
+|---|---|---|---|
+| 1–3 simple fixes (typos, unused code, missing error check) | simple | 30,000 | 10 |
+| 3–6 fixes or any fix touching logic/tests | moderate | 80,000 | 15 |
+| 6+ fixes or fixes involving concurrency/architecture | complex | 150,000 | 20 |
+
+The fix agent prompt MUST include the full list of findings from the review file and instruct it to produce a per-finding resolution summary.
 
 **Plan verification budget**: token_budget = 15,000, max_turns = 5. Plan verification is a checklist task — it reads a spec and checks coverage. It does not need a large budget.
 
@@ -194,7 +204,7 @@ A plan is "good" when an independent model can build from it without asking ques
 5. **Interface contracts** — Method signatures, types, and data structures are defined, not described vaguely.
 6. **Acceptance criteria** — Each chunk has 2–4 concrete, verifiable criteria (e.g. "test X passes", "API returns 404 on missing item").
 7. **Edge cases** — Error handling, timeouts, concurrency, empty inputs, and malformed data are addressed.
-8. **Test strategy** — Testing approach is stated: unit vs integration, which files need new tests, mock strategy if any. If the task specifies a test table format (e.g. "map-based test cases"), include a concrete code example in the spec showing the expected pattern so build agents match it verbatim.
+8. **Test strategy** — Testing approach is stated: unit vs integration, which files need new tests, mock strategy if any. If the task specifies a test table format (e.g. "map-based test cases"), include a concrete code example in the spec showing the expected pattern so build agents match it verbatim. For HTTP APIs and CLI tools, the plan MUST include at least one integration/smoke test chunk that exercises the full pipeline end-to-end (e.g., \`httptest.NewServer\` for Go APIs, subprocess invocation for CLI tools). Unit tests alone are insufficient — they miss wiring bugs between layers.
 9. **No ambiguity** — API choices, library versions, and design decisions are explicit. Alternatives rejected are noted in one line each.
 10. **Feasibility** — The plan fits within the token budgets allocated for each chunk. No chunk requires >150k tokens to build.`
 
