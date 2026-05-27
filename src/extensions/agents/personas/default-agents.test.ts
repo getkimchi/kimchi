@@ -1,26 +1,20 @@
 import { describe, expect, it, vi } from "vitest"
 
-// Mock getModelRoles BEFORE default-agents.ts is imported so buildDefaultAgents()
+// Mock getEffectiveModelRoles BEFORE default-agents.ts is imported so buildDefaultAgents()
 // uses deterministic defaults instead of reading ~/.config/kimchi/harness/settings.json.
-vi.mock("../../orchestration/model-roles.js", async (importOriginal) => {
+vi.mock("../../model-registry/model-roles.js", async (importOriginal) => {
 	const actual = (await importOriginal()) as Record<string, unknown>
 	return {
 		...actual,
-		getModelRoles: vi.fn().mockReturnValue(actual.DEFAULT_MODEL_ROLES),
+		getEffectiveModelRoles: vi.fn().mockReturnValue(actual.DEFAULT_MODEL_ROLES),
 	}
 })
 
-import { DEFAULT_AGENTS } from "./default-agents.js"
-import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER } from "./types.js"
+import { DEFAULT_AGENTS, SUBAGENT_BASE_PROMPT } from "./default-agents.js"
+import { AGENT_BUILDER, AGENT_EXPLORE, AGENT_PLAN, AGENT_RESEARCHER, AGENT_REVIEWER } from "./types.js"
 
 // Stub pickFromModelListByTier and recommendModel so snapshots are deterministic.
-// default-agents.ts calls modelsForStrength/modelsForAnyStrength at module load time
-// (before any mock can intercept), so DEFAULT_AGENTS.models[] is already populated
-// with real strings. We therefore stub only the functions called at resolve-time:
-//   - pickFromModelListByTier (used when models[] is populated — all 4 default agents)
-//   - recommendModel          (only reachable when models[] is absent — never for defaults)
-//   - getCurrentPhase         (only reachable when both models[] and strengths are absent)
-vi.mock("../../orchestration/model-registry/recommend.js", () => ({
+vi.mock("../../model-registry/recommend.js", () => ({
 	recommendModel: vi.fn().mockReturnValue(undefined),
 	pickFromModelListByTier: vi.fn().mockImplementation((list: readonly string[], preferTier?: string) => {
 		if (preferTier === "heavy") {
@@ -41,11 +35,26 @@ vi.mock("../../tags.js", () => ({
 import { resolveAgentInvocationConfig } from "../resolution/invocation-config.js"
 
 describe("DEFAULT_AGENTS", () => {
-	it("always includes General-Purpose, Explore, Plan, and Researcher agents", () => {
-		expect(DEFAULT_AGENTS.has(AGENT_GENERAL_PURPOSE)).toBe(true)
+	it("includes Builder, Reviewer, Explore, Plan, and Researcher agents", () => {
+		expect(DEFAULT_AGENTS.has(AGENT_BUILDER)).toBe(true)
+		expect(DEFAULT_AGENTS.has(AGENT_REVIEWER)).toBe(true)
 		expect(DEFAULT_AGENTS.has(AGENT_EXPLORE)).toBe(true)
 		expect(DEFAULT_AGENTS.has(AGENT_PLAN)).toBe(true)
 		expect(DEFAULT_AGENTS.has(AGENT_RESEARCHER)).toBe(true)
+	})
+
+	it("does not include General-Purpose", () => {
+		expect(DEFAULT_AGENTS.has("General-Purpose")).toBe(false)
+	})
+
+	it("Builder agent uses a kimchi-dev model", () => {
+		const b = DEFAULT_AGENTS.get(AGENT_BUILDER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(b.models?.[0]).toMatch(/^kimchi-dev\//)
+	})
+
+	it("Reviewer agent uses a kimchi-dev model", () => {
+		const r = DEFAULT_AGENTS.get(AGENT_REVIEWER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(r.models?.[0]).toMatch(/^kimchi-dev\//)
 	})
 
 	it("Explore agent uses a kimchi-dev model", () => {
@@ -63,9 +72,35 @@ describe("DEFAULT_AGENTS", () => {
 		expect(r.models?.[0]).toMatch(/^kimchi-dev\//)
 	})
 
-	it("General-Purpose agent declares a models[] array", () => {
-		const gp = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
-		expect(gp.models?.length).toBeGreaterThan(0)
+	it("every persona's systemPrompt starts with SUBAGENT_BASE_PROMPT content", () => {
+		const sentinel = "You are Kimchi, an AI coding agent"
+		for (const [name, agent] of DEFAULT_AGENTS) {
+			expect(agent.systemPrompt, `${name} systemPrompt should start with base`).toContain(sentinel)
+		}
+	})
+
+	it("every persona's systemPrompt contains SUBAGENT_RESPONSE_PROTOCOL", () => {
+		for (const [name, agent] of DEFAULT_AGENTS) {
+			expect(agent.systemPrompt, `${name} should contain response protocol`).toContain("Subagent response protocol")
+			expect(agent.systemPrompt, `${name} should contain JSON shape`).toContain('"summary"')
+		}
+	})
+
+	it("Researcher has includeContextFiles false", () => {
+		const r = DEFAULT_AGENTS.get(AGENT_RESEARCHER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(r.includeContextFiles).toBe(false)
+	})
+
+	it("Builder and Reviewer have includeContextFiles true", () => {
+		const b = DEFAULT_AGENTS.get(AGENT_BUILDER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		const r = DEFAULT_AGENTS.get(AGENT_REVIEWER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(b.includeContextFiles).toBe(true)
+		expect(r.includeContextFiles).toBe(true)
+	})
+
+	it("Researcher has skills false", () => {
+		const r = DEFAULT_AGENTS.get(AGENT_RESEARCHER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(r.skills).toBe(false)
 	})
 
 	it("all default agents are marked isDefault", () => {
@@ -80,31 +115,36 @@ describe("DEFAULT_AGENTS", () => {
 		expect(plan.builtinToolNames).toContain("edit")
 	})
 
-	it("Plan agent has strengths set to plan", () => {
-		const plan = DEFAULT_AGENTS.get(AGENT_PLAN) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
-		expect(plan.strengths).toContain("plan")
-	})
-
-	it("Plan agent has includeContextFiles set to true", () => {
-		const plan = DEFAULT_AGENTS.get(AGENT_PLAN) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
-		expect(plan.includeContextFiles).toBe(true)
-	})
-
-	it("Explore agent has strengths set to explore", () => {
-		const explore = DEFAULT_AGENTS.get(AGENT_EXPLORE) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
-		expect(explore.strengths).toContain("explore")
-	})
-
-	it("Researcher agent has strengths set to research", () => {
-		const r = DEFAULT_AGENTS.get(AGENT_RESEARCHER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
-		expect(r.strengths).toContain("research")
+	it("SUBAGENT_BASE_PROMPT is exported and contains expected sections", () => {
+		expect(SUBAGENT_BASE_PROMPT).toContain("You are Kimchi")
+		expect(SUBAGENT_BASE_PROMPT).toContain("Documents")
+		expect(SUBAGENT_BASE_PROMPT).toContain("Guidelines")
+		expect(SUBAGENT_BASE_PROMPT).toContain("Factual Accuracy")
+		expect(SUBAGENT_BASE_PROMPT).toContain("Subagent response protocol")
 	})
 })
 
 describe("default agents — resolved invocation config snapshot", () => {
-	it("General-Purpose", () => {
-		const agent = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE)
-		if (!agent) throw new Error("expected default agent 'General-Purpose' to exist")
+	it("Builder", () => {
+		const agent = DEFAULT_AGENTS.get(AGENT_BUILDER)
+		if (!agent) throw new Error("expected default agent 'Builder' to exist")
+		const resolved = resolveAgentInvocationConfig(agent, {})
+		expect({
+			name: agent.name,
+			modelId: resolved.modelInput,
+			modelLocked: agent.modelLocked,
+			thinking: resolved.thinking,
+			maxTurns: resolved.maxTurns,
+			tokenBudget: resolved.tokenBudget,
+			preferTier: agent.preferTier,
+			strengths: agent.strengths,
+			builtinToolNames: agent.builtinToolNames,
+		}).toMatchSnapshot()
+	})
+
+	it("Reviewer", () => {
+		const agent = DEFAULT_AGENTS.get(AGENT_REVIEWER)
+		if (!agent) throw new Error("expected default agent 'Reviewer' to exist")
 		const resolved = resolveAgentInvocationConfig(agent, {})
 		expect({
 			name: agent.name,

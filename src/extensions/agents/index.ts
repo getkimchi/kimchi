@@ -24,7 +24,7 @@ import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
-import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
+import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../model-registry/index.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
 import { AgentManager } from "./manager/agent-manager.js"
 import {
@@ -58,7 +58,7 @@ import {
 } from "./personas/agent-types.js"
 import { loadCustomAgents } from "./personas/custom-agents.js"
 import {
-	AGENT_GENERAL_PURPOSE,
+	AGENT_BUILDER,
 	type AgentAbortReason,
 	type AgentConfig,
 	type AgentRecord,
@@ -998,7 +998,7 @@ Model selection — YOU choose based on task complexity:
 
 				const rawType = params.subagent_type as SubagentType
 				const resolved = resolveType(rawType)
-				const subagentType = resolved ?? AGENT_GENERAL_PURPOSE
+				const subagentType = resolved ?? rawType
 				const fellBack = resolved === undefined
 
 				const displayName = getDisplayName(subagentType)
@@ -1287,9 +1287,7 @@ Model selection — YOU choose based on task complexity:
 
 				const details = buildDetails(detailBase, record, fgState, { tokens: tokenText })
 
-				const fallbackNote = fellBack
-					? `Note: Unknown agent type "${rawType}" — using ${AGENT_GENERAL_PURPOSE}.\n\n`
-					: ""
+				const fallbackNote = fellBack ? `Note: Unknown agent type "${rawType}".\n\n` : ""
 
 				if (record.status === "error") {
 					return textResult(`${fallbackNote}Agent failed: ${record.error}`, details)
@@ -1929,7 +1927,7 @@ memory: <"user" (global), "project" (per-project), or "local" (gitignored per-pr
 
 Write the file using the write tool. Only write the file, nothing else.`
 
-		const record = await manager.spawnAndWait(pi, ctx as ExtensionContext, AGENT_GENERAL_PURPOSE, generatePrompt, {
+		const record = await manager.spawnAndWait(pi, ctx as ExtensionContext, AGENT_BUILDER, generatePrompt, {
 			description: `Generate ${name} agent`,
 			maxTurns: 5,
 		})

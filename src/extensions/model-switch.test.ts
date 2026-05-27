@@ -348,7 +348,7 @@ describe("modelSwitchExtension", () => {
 
 	describe("MODEL_CAPABILITIES lookup", () => {
 		it("MODEL_CAPABILITIES contains expected keys", async () => {
-			const { MODEL_CAPABILITIES } = await import("./orchestration/model-registry/builtin-models.js")
+			const { MODEL_CAPABILITIES } = await import("./model-registry/builtin-models.js")
 			const kimiCaps = MODEL_CAPABILITIES.get("kimi-k2.6")
 			const nemotronCaps = MODEL_CAPABILITIES.get("nemotron-3-super-fp4")
 			expect(kimiCaps).toBeDefined()
@@ -364,7 +364,7 @@ describe("modelSwitchExtension", () => {
 		})
 
 		it("getModelTier returns correct tier for known models via the tool execution context", async () => {
-			const { MODEL_CAPABILITIES } = await import("./orchestration/model-registry/builtin-models.js")
+			const { MODEL_CAPABILITIES } = await import("./model-registry/builtin-models.js")
 			const fakeModel = { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] } as { id: string }
 			const caps = MODEL_CAPABILITIES.get(fakeModel.id)
 			expect(caps).toBeDefined()
@@ -375,7 +375,7 @@ describe("modelSwitchExtension", () => {
 		})
 
 		it("getModelTier returns heavy for kimi-k2.6 and light for nemotron (fresh import)", async () => {
-			const { MODEL_CAPABILITIES } = await import("./orchestration/model-registry/builtin-models.js")
+			const { MODEL_CAPABILITIES } = await import("./model-registry/builtin-models.js")
 			const currentTier = getModelTier({ id: "kimi-k2.6", provider: "kimchi-dev" } as never, MODEL_CAPABILITIES)
 			const targetTier = getModelTier(
 				{ id: "nemotron-3-super-fp4", provider: "kimchi-dev" } as never,

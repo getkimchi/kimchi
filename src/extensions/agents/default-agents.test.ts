@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest"
 import { DEFAULT_AGENTS } from "./personas/default-agents.js"
-import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER } from "./personas/types.js"
+import { AGENT_BUILDER, AGENT_EXPLORE, AGENT_PLAN, AGENT_RESEARCHER, AGENT_REVIEWER } from "./personas/types.js"
 
 describe("DEFAULT_AGENTS", () => {
-	it("always includes General-Purpose, Explore, Plan, and Researcher agents", () => {
-		expect(DEFAULT_AGENTS.has(AGENT_GENERAL_PURPOSE)).toBe(true)
+	it("includes Builder, Reviewer, Explore, Plan, and Researcher agents", () => {
+		expect(DEFAULT_AGENTS.has(AGENT_BUILDER)).toBe(true)
+		expect(DEFAULT_AGENTS.has(AGENT_REVIEWER)).toBe(true)
 		expect(DEFAULT_AGENTS.has(AGENT_EXPLORE)).toBe(true)
 		expect(DEFAULT_AGENTS.has(AGENT_PLAN)).toBe(true)
 		expect(DEFAULT_AGENTS.has(AGENT_RESEARCHER)).toBe(true)
+	})
+
+	it("does not include General-Purpose", () => {
+		expect(DEFAULT_AGENTS.has("General-Purpose")).toBe(false)
 	})
 
 	it("Explore agent uses a kimchi-dev model", () => {
@@ -25,9 +30,9 @@ describe("DEFAULT_AGENTS", () => {
 		expect(r.models?.[0]).toMatch(/^kimchi-dev\//)
 	})
 
-	it("General-Purpose agent declares a models[] array", () => {
-		const gp = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
-		expect(gp.models?.length).toBeGreaterThan(0)
+	it("Builder agent declares a models[] array", () => {
+		const b = DEFAULT_AGENTS.get(AGENT_BUILDER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(b.models?.length).toBeGreaterThan(0)
 	})
 
 	it("all default agents are marked isDefault", () => {

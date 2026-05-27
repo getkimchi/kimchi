@@ -18,7 +18,7 @@ import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
-import { splitModelRef } from "./orchestration/model-roles.js"
+import { splitModelRef } from "./model-registry/model-roles.js"
 import {
 	getMultiModelEnabled,
 	getOrchestratorModelId,

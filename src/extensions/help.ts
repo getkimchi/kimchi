@@ -24,7 +24,6 @@ const HELP_ROWS: HelpRow[] = [
 	{ kind: "entry", key: "/new", desc: "Start a new session" },
 	{ kind: "entry", key: "/agents", desc: "Manage background agents" },
 	{ kind: "entry", key: "/permissions", desc: "View or change permission mode and rules" },
-	{ kind: "entry", key: "/phase", desc: "Show or change the current work phase" },
 	{ kind: "entry", key: "/stats", desc: "View coding analytics and metrics" },
 	{ kind: "entry", key: "/mcp", desc: "Show MCP server status" },
 	{ kind: "entry", key: "/resources", desc: "Manage resources (files, URLs, images)" },

@@ -3,7 +3,7 @@
  */
 
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
-import type { ModelStrength, ModelTier } from "../../orchestration/model-registry/types.js"
+import type { ModelStrength, ModelTier } from "../../model-registry/types.js"
 import type { LifetimeUsage } from "../manager/usage.js"
 
 /** Thinking/reasoning level for models that support it. */
@@ -18,13 +18,14 @@ export type SubagentType = string
  * Named constants for the embedded default agents.
  * Use these instead of hardcoded string literals so renames stay safe.
  */
-export const AGENT_GENERAL_PURPOSE = "General-Purpose"
+export const AGENT_BUILDER = "Builder"
+export const AGENT_REVIEWER = "Reviewer"
 export const AGENT_EXPLORE = "Explore"
 export const AGENT_PLAN = "Plan"
 export const AGENT_RESEARCHER = "Researcher"
 
 /** Names of the embedded default agents (in canonical display order). */
-export const DEFAULT_AGENT_NAMES = [AGENT_GENERAL_PURPOSE, AGENT_EXPLORE, AGENT_PLAN, AGENT_RESEARCHER] as const
+export const DEFAULT_AGENT_NAMES = [AGENT_BUILDER, AGENT_REVIEWER, AGENT_EXPLORE, AGENT_PLAN, AGENT_RESEARCHER] as const
 
 /** Memory scope for persistent agent memory. */
 export type MemoryScope = "user" | "project" | "local"

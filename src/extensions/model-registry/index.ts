@@ -1,0 +1,8 @@
+export { KIMCHI_DEV_PROVIDER, ModelRegistry } from "./model-registry.js"
+export { MODEL_CAPABILITIES } from "./builtin-models.js"
+export type { ModelRegistryWarning } from "./model-registry.js"
+export type { ModelStrength, ModelTier, ModelCapabilities, OrchestrationModelDescriptor } from "./types.js"
+export { modelsForStrength, modelsForAnyStrength } from "./by-strength.js"
+export type { StrengthResolveOptions } from "./by-strength.js"
+export { recommendModel } from "./recommend.js"
+export type { RecommendOptions, RecommendResult } from "./recommend.js"

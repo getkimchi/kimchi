@@ -1,7 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
-import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
-import type { ModelTier } from "../orchestration/model-registry/types.js"
+import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../model-registry/index.js"
+import type { ModelTier } from "../model-registry/types.js"
 
 /** Tier ordering from cheapest to most expensive. */
 const TIER_RANK: Record<ModelTier, number> = { light: 0, standard: 1, heavy: 2 }

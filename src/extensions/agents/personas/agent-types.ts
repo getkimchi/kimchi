@@ -6,7 +6,7 @@
  */
 
 import { DEFAULT_AGENTS } from "./default-agents.js"
-import { AGENT_GENERAL_PURPOSE, type AgentConfig } from "./types.js"
+import type { AgentConfig } from "./types.js"
 
 /** All known built-in tool names. */
 export const BUILTIN_TOOL_NAMES: string[] = ["read", "bash", "edit", "write", "grep", "find", "ls"]
@@ -105,7 +105,7 @@ export function getToolNamesForType(type: string): string[] {
 	return names
 }
 
-/** Get config for a type (case-insensitive, returns a SubagentTypeConfig-compatible object). Falls back to General-Purpose. */
+/** Get config for a type (case-insensitive). Throws if the persona is unknown or disabled. */
 export function getConfig(type: string): {
 	displayName: string
 	description: string
@@ -126,25 +126,7 @@ export function getConfig(type: string): {
 			promptMode: config.promptMode,
 		}
 	}
-
-	const gp = agents.get(AGENT_GENERAL_PURPOSE)
-	if (gp && gp.enabled !== false) {
-		return {
-			displayName: gp.displayName ?? gp.name,
-			description: gp.description,
-			builtinToolNames: gp.builtinToolNames ?? BUILTIN_TOOL_NAMES,
-			extensions: gp.extensions,
-			skills: gp.skills,
-			promptMode: gp.promptMode,
-		}
-	}
-
-	return {
-		displayName: "General Purpose",
-		description: "General purpose agent for all kind of tasks.",
-		builtinToolNames: BUILTIN_TOOL_NAMES,
-		extensions: true,
-		skills: true,
-		promptMode: "append",
-	}
+	throw new Error(
+		`Unknown or disabled agent persona "${type}". Available: ${[...agents.keys()].filter((k) => agents.get(k)?.enabled !== false).join(", ")}`,
+	)
 }

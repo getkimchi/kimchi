@@ -1,7 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
-import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
+import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../model-registry/index.js"
 import { resolveClassifierModel } from "./classifier-model.js"
 
 /** Minimal Model stub — only the fields resolveClassifierModel inspects. */

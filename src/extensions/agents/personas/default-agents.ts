@@ -2,14 +2,35 @@
  * default-agents.ts — Embedded default agent configurations.
  *
  * These are always available but can be overridden by user .md files with the same name.
- * Models are resolved from the role-based configuration (model-roles.ts).
+ * Models are resolved from the effective role config (getEffectiveModelRoles).
  * The strength-based lookup (modelsForStrength) is preserved as a fallback for
  * custom personas that use strengths in their frontmatter.
  */
 
-import { modelsForAnyStrength, modelsForStrength } from "../../orchestration/model-registry/index.js"
-import { getModelRoles } from "../../orchestration/model-roles.js"
-import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER, type AgentConfig } from "./types.js"
+import {
+	DEFAULT_BUILD_GUIDELINES,
+	DEFAULT_EXPLORE_GUIDELINES,
+	DEFAULT_PLAN_GUIDELINES,
+	DEFAULT_RESEARCH_GUIDELINES,
+	DEFAULT_REVIEW_GUIDELINES,
+} from "../../model-registry/guidelines/default-phase-guidelines.js"
+import { modelsForAnyStrength, modelsForStrength } from "../../model-registry/index.js"
+import { getEffectiveModelRoles } from "../../model-registry/model-roles.js"
+import { SUBAGENT_RESPONSE_PROTOCOL } from "../../orchestration/orchestration-instructions.js"
+import {
+	BASE_INSTRUCTIONS,
+	CORE_GUIDELINES,
+	DOCUMENTS_SECTION,
+	FACTUAL_ACCURACY,
+} from "../../prompt-construction/system-prompt.js"
+import {
+	AGENT_BUILDER,
+	AGENT_EXPLORE,
+	AGENT_PLAN,
+	AGENT_RESEARCHER,
+	AGENT_REVIEWER,
+	type AgentConfig,
+} from "./types.js"
 
 const READ_ONLY_TOOLS = ["read", "bash", "grep", "find", "ls"]
 
@@ -30,20 +51,69 @@ function roleModels(
 	return pick(fallbackStrengths)
 }
 
+/**
+ * Core content shared by all worker personas.
+ * Ensures replace-mode personas get the same quality baseline as the main agent.
+ */
+export const SUBAGENT_BASE_PROMPT = `${BASE_INSTRUCTIONS}
+
+## Documents
+
+${DOCUMENTS_SECTION}
+
+## Guidelines
+
+${CORE_GUIDELINES}
+
+## Factual Accuracy
+${FACTUAL_ACCURACY}
+
+${SUBAGENT_RESPONSE_PROTOCOL}`
+
 function buildDefaultAgents(): Map<string, AgentConfig> {
-	const roles = getModelRoles()
+	const roles = getEffectiveModelRoles()
 	return new Map([
 		[
-			AGENT_GENERAL_PURPOSE,
+			AGENT_BUILDER,
 			{
-				name: AGENT_GENERAL_PURPOSE,
-				displayName: "General Purpose",
-				description: "General-purpose agent for complex, multi-step tasks",
+				name: AGENT_BUILDER,
+				displayName: AGENT_BUILDER,
+				description: "Code implementation agent — writes, modifies, and refactors code",
 				extensions: true,
 				skills: true,
-				models: roleModels(roles.builder, ["build", "explore", "plan", "review", "research"]),
-				systemPrompt: "",
-				promptMode: "append",
+				includeContextFiles: true,
+				models: roleModels(roles.builder, ["build"]),
+				strengths: ["build"],
+				preferTier: "standard",
+				thinking: "low",
+				systemPrompt: `${SUBAGENT_BASE_PROMPT}
+
+## Builder Guidelines
+
+${DEFAULT_BUILD_GUIDELINES}`,
+				promptMode: "replace",
+				isDefault: true,
+			},
+		],
+		[
+			AGENT_REVIEWER,
+			{
+				name: AGENT_REVIEWER,
+				displayName: AGENT_REVIEWER,
+				description: "Code review agent — finds bugs and verifies correctness",
+				extensions: true,
+				skills: true,
+				includeContextFiles: true,
+				models: roleModels(roles.reviewer, ["review"]),
+				strengths: ["review"],
+				preferTier: "standard",
+				thinking: "low",
+				systemPrompt: `${SUBAGENT_BASE_PROMPT}
+
+## Reviewer Guidelines
+
+${DEFAULT_REVIEW_GUIDELINES}`,
+				promptMode: "replace",
 				isDefault: true,
 			},
 		],
@@ -56,12 +126,19 @@ function buildDefaultAgents(): Map<string, AgentConfig> {
 				builtinToolNames: READ_ONLY_TOOLS,
 				extensions: true,
 				skills: true,
+				includeContextFiles: true,
 				models: roleModels(roles.explorer, ["explore"]),
 				strengths: ["explore"],
 				preferTier: "light",
 				thinking: "low",
 				tokenBudget: 120_000,
-				systemPrompt: `# CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS
+				systemPrompt: `${SUBAGENT_BASE_PROMPT}
+
+## Explorer Guidelines
+
+${DEFAULT_EXPLORE_GUIDELINES}
+
+# CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS
 You are a file search specialist. You excel at thoroughly navigating and exploring files/directories.
 Your role is EXCLUSIVELY to search and analyze existing code. You do NOT have access to file editing tools.
 
@@ -109,7 +186,13 @@ Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find,
 				preferTier: "heavy",
 				thinking: "high",
 				tokenBudget: 120_000,
-				systemPrompt: `# Plan Agent — Write Access Scoped to .kimchi/plans/
+				systemPrompt: `${SUBAGENT_BASE_PROMPT}
+
+## Planner Guidelines
+
+${DEFAULT_PLAN_GUIDELINES}
+
+# Plan Agent — Write Access Scoped to .kimchi/plans/
 You are a software architect and planning specialist.
 Your role is to explore the codebase and design implementation plans, capturing them as plan files.
 
@@ -167,12 +250,19 @@ List 3-5 files most critical for implementing this plan:
 				builtinToolNames: READ_ONLY_TOOLS,
 				extensions: true,
 				skills: false,
+				includeContextFiles: false,
 				models: roleModels(roles.orchestrator, ["research"]),
 				strengths: ["research"],
 				preferTier: "heavy",
 				thinking: "medium",
 				tokenBudget: 80_000,
-				systemPrompt: `You are a research specialist. Your job is to find accurate, well-sourced answers from the web, documentation, and the local codebase.
+				systemPrompt: `${SUBAGENT_BASE_PROMPT}
+
+## Researcher Guidelines
+
+${DEFAULT_RESEARCH_GUIDELINES}
+
+You are a research specialist. Your job is to find accurate, well-sourced answers from the web, documentation, and the local codebase.
 
 Focus areas:
 - Search broadly, then narrow to the most authoritative sources

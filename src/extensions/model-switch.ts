@@ -10,9 +10,9 @@ import {
 	resolveContextTokens,
 	sessionHasImages,
 } from "./model-guard.js"
-import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
-import type { ModelTier } from "./orchestration/model-registry/types.js"
-import { splitModelRef } from "./orchestration/model-roles.js"
+import { MODEL_CAPABILITIES } from "./model-registry/builtin-models.js"
+import { splitModelRef } from "./model-registry/model-roles.js"
+import type { ModelTier } from "./model-registry/types.js"
 import {
 	getMultiModelEnabled,
 	getOrchestratorModelId,
