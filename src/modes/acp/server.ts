@@ -1,6 +1,7 @@
 // ACP (Agent Client Protocol) mode: JSON-RPC 2.0 over stdio using
 // @agentclientprotocol/sdk. Lets Zed / openclaw drive kimchi in-process.
 
+import { join } from "node:path"
 import { Readable, Writable } from "node:stream"
 import {
 	type Agent,
@@ -26,11 +27,14 @@ import {
 	type ToolKind,
 	ndJsonStream,
 } from "@agentclientprotocol/sdk"
+import type { ImageContent } from "@earendil-works/pi-ai"
 import {
 	type AgentSession,
 	type AgentSessionEvent,
+	AuthStorage,
 	DefaultResourceLoader,
 	type ExtensionFactory,
+	ModelRegistry,
 	SettingsManager,
 	createAgentSession,
 } from "@earendil-works/pi-coding-agent"
@@ -73,6 +77,7 @@ type SessionEntry = {
 export class KimchiAcpAgent implements Agent {
 	private sessions = new Map<string, SessionEntry>()
 	private readonly sessionFactory: AcpSessionFactory
+	private readonly agentDir: string
 	// Track non-text prompt block types we've already warned about so a
 	// misbehaving client that sends 1000 image blocks doesn't flood stderr.
 	private warnedBlockTypes = new Set<string>()
@@ -83,14 +88,18 @@ export class KimchiAcpAgent implements Agent {
 		options: RunAcpOptions,
 	) {
 		this.sessionFactory = options.sessionFactory ?? defaultSessionFactory(options)
+		this.agentDir = options.agentDir
 	}
 
 	async initialize(_: InitializeRequest): Promise<InitializeResponse> {
+		const authStorage = AuthStorage.create(join(this.agentDir, "auth.json"))
+		const modelRegistry = ModelRegistry.create(authStorage, join(this.agentDir, "models.json"))
+		const supportsImages = modelRegistry.getAvailable().some((m) => m.input?.includes("image"))
 		return {
 			protocolVersion: PROTOCOL_VERSION,
 			agentCapabilities: {
 				loadSession: false,
-				promptCapabilities: { image: false, audio: false, embeddedContext: false },
+				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
 			},
 			authMethods: [],
 		}
@@ -163,21 +172,32 @@ export class KimchiAcpAgent implements Agent {
 		if (entry.turn) {
 			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
 		}
-		// Capabilities declare image/audio/embeddedContext: false, so a compliant
-		// client will only send text blocks. A misbehaving client that sends other
-		// block types gets them dropped — warn once per unseen type so the silent
-		// empty-turn isn't confusing to debug.
+		// Image support is per-model; check if active model supports vision input.
+		const supportsImages = entry.session.model?.input?.includes("image") ?? false
+		// Warn about unsupported block types (audio, embeddedContext) once per type.
+		// Also warn when dropping image blocks for non-vision models.
 		for (const b of params.prompt) {
-			if (b.type !== "text" && !this.warnedBlockTypes.has(b.type)) {
+			if (b.type !== "text" && (b.type !== "image" || !supportsImages) && !this.warnedBlockTypes.has(b.type)) {
 				this.warnedBlockTypes.add(b.type)
-				process.stderr.write(`acp prompt: dropping unsupported block type "${b.type}"\n`)
+				const reason = b.type === "image" ? "active model has no vision input" : "unsupported block type"
+				process.stderr.write(`acp prompt: dropping ${b.type} block (${reason})\n`)
 			}
 		}
 		const text = params.prompt
 			.map((b: ContentBlock) => (b.type === "text" ? b.text : ""))
 			.join("")
 			.trim()
-		if (!text) {
+		// Extract image blocks from the prompt only if model supports vision.
+		const images: ImageContent[] = supportsImages
+			? params.prompt
+					.filter((b: ContentBlock): b is ContentBlock & { type: "image" } => b.type === "image")
+					.map((b) => ({
+						type: "image" as const,
+						data: b.data,
+						mimeType: b.mimeType,
+					}))
+			: []
+		if (!text && images.length === 0) {
 			return { stopReason: "end_turn" }
 		}
 		let turnResolve!: (r: PromptResponse) => void
@@ -199,7 +219,7 @@ export class KimchiAcpAgent implements Agent {
 		// paused on `await session.prompt()`. Instead, attach handlers that drive
 		// finalizeTurn/failTurn and return `result` directly; settling `result`
 		// propagates to the caller regardless of whether session.prompt ever resolves.
-		entry.session.prompt(text, { source: "rpc" }).then(
+		entry.session.prompt(text, { source: "rpc", images }).then(
 			() => {
 				// pi-coding-agent's session.prompt() short-circuits for extension commands,
 				// input-handler intercepts, and no-op paths — in those cases agent.prompt()

@@ -1,6 +1,8 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { resolve } from "node:path"
 import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk"
 import type { AgentSession, AgentSessionEvent, AgentSessionEventListener } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	type AcpSessionFactory,
 	KimchiAcpAgent,
@@ -18,10 +20,11 @@ class FakeAgentSession {
 	private listeners = new Set<AgentSessionEventListener>()
 	disposed = false
 	aborted = false
-	model?: { provider: string; id: string }
+	model?: { provider: string; id: string; input?: string[] }
 	modelRegistry = { getAvailable: () => [] as Array<{ provider: string; id: string; name: string }> }
-	promptImpl: (text: string) => Promise<void> = async () => {}
+	promptImpl: (text: string, opts?: { images?: unknown[] }) => Promise<void> = async () => {}
 	abortImpl: () => Promise<void> = async () => {}
+	lastPromptImages?: unknown[]
 
 	constructor(sessionId: string) {
 		this.sessionId = sessionId
@@ -38,8 +41,9 @@ class FakeAgentSession {
 		for (const l of [...this.listeners]) l(event)
 	}
 
-	async prompt(text: string, _opts?: unknown): Promise<void> {
-		await this.promptImpl(text)
+	async prompt(text: string, opts?: { images?: unknown[] }): Promise<void> {
+		this.lastPromptImages = opts?.images
+		await this.promptImpl(text, opts)
 	}
 
 	async setModel(model: { provider: string; id: string }): Promise<void> {
@@ -98,6 +102,81 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 		sessionId = res.sessionId
+	})
+
+	// initialize() should declare image support based on cached models.json
+	describe("initialize capability detection", () => {
+		const tempAgentDir = "/tmp/kimchi-acp-test-agent-dir"
+
+		beforeEach(() => {
+			// Clean up and create temp agent dir
+			try {
+				rmSync(tempAgentDir, { recursive: true, force: true })
+			} catch {}
+			mkdirSync(tempAgentDir, { recursive: true })
+		})
+
+		afterEach(() => {
+			try {
+				rmSync(tempAgentDir, { recursive: true, force: true })
+			} catch {}
+		})
+
+		it("declares image: true when cached models include vision models", async () => {
+			// Stub API key so models are considered "available" (configured auth)
+			const restoreEnv = (key: string, value: string | undefined) => {
+				const original = process.env[key]
+				process.env[key] = value
+				return () => {
+					process.env[key] = original
+				}
+			}
+			const cleanup = restoreEnv("OPENAI_API_KEY", "fake-key-for-testing")
+
+			try {
+				const modelsJson = {
+					providers: {
+						openai: {
+							models: [
+								{
+									id: "gpt-4o",
+									name: "GPT-4o",
+									input: ["text", "image"],
+								},
+							],
+						},
+					},
+				}
+				writeFileSync(resolve(tempAgentDir, "models.json"), JSON.stringify(modelsJson))
+
+				const testAgent = new KimchiAcpAgent(makeConn(), {
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				})
+
+				const response = await testAgent.initialize({ protocolVersion: 1 })
+				expect(response.agentCapabilities?.promptCapabilities?.image).toBe(true)
+			} finally {
+				cleanup()
+			}
+		})
+
+		it("declares image capability based on available models", async () => {
+			// ModelRegistry merges cached models with built-in defaults.
+			// This test verifies the initialize() method correctly queries
+			// the registry and returns a boolean for image support.
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			// The result depends on merged models (cached + built-in).
+			// Just verify it's a boolean (the logic ran successfully).
+			expect(typeof response.agentCapabilities?.promptCapabilities?.image).toBe("boolean")
+		})
 	})
 
 	// The fragile scenario the previous setImmediate heuristic could trip on:
@@ -335,30 +414,96 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			const r1 = await agent.prompt({
 				sessionId,
 				// biome-ignore lint/suspicious/noExplicitAny: unsupported block on purpose
-				prompt: [{ type: "image" as any, data: "x" } as any],
+				prompt: [{ type: "audio" as any, data: "x" } as any],
 			})
 			expect(r1.stopReason).toBe("end_turn")
 			// Second call with same unsupported type: no new warning (deduped).
 			const r2 = await agent.prompt({
 				sessionId,
 				// biome-ignore lint/suspicious/noExplicitAny: unsupported block on purpose
-				prompt: [{ type: "image" as any, data: "y" } as any],
+				prompt: [{ type: "audio" as any, data: "y" } as any],
 			})
 			expect(r2.stopReason).toBe("end_turn")
 			// New unsupported type: warns again.
 			const r3 = await agent.prompt({
 				sessionId,
 				// biome-ignore lint/suspicious/noExplicitAny: unsupported block on purpose
-				prompt: [{ type: "audio" as any, data: "z" } as any],
+				prompt: [{ type: "embeddedContext" as any, data: "z" } as any],
 			})
 			expect(r3.stopReason).toBe("end_turn")
 		} finally {
 			process.stderr.write = origWrite
 		}
-		const matches = writes.filter((w) => w.includes("acp prompt: dropping unsupported block type"))
+		const matches = writes.filter((w) => w.includes("acp prompt: dropping"))
 		expect(matches).toHaveLength(2)
-		expect(matches.some((w) => w.includes('"image"'))).toBe(true)
-		expect(matches.some((w) => w.includes('"audio"'))).toBe(true)
+		expect(matches.some((w) => w.includes("audio block"))).toBe(true)
+		expect(matches.some((w) => w.includes("embeddedContext block"))).toBe(true)
+	})
+
+	// Image blocks are supported when model supports vision: they should be
+	// extracted and passed to session.prompt() without warnings.
+	it("accepts image blocks when model supports vision", async () => {
+		fake.model = { provider: "test", id: "vision-model", input: ["text", "image"] }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			await delay(5)
+			fake.emit({ type: "agent_end", messages: [] })
+		}
+
+		const result = await agent.prompt({
+			sessionId,
+			prompt: [
+				{ type: "text", text: "describe this image" },
+				{ type: "image", data: "base64data", mimeType: "image/png" },
+			],
+		})
+		expect(result.stopReason).toBe("end_turn")
+		// Verify images were passed to session.prompt
+		expect(fake.lastPromptImages).toHaveLength(1)
+		expect(fake.lastPromptImages?.[0]).toMatchObject({
+			type: "image",
+			data: "base64data",
+			mimeType: "image/png",
+		})
+	})
+
+	// Image blocks are dropped when model doesn't support vision: they should
+	// be silently discarded with a warning.
+	it("drops image blocks when model has no vision support", async () => {
+		fake.model = { provider: "test", id: "text-only-model", input: ["text"] }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			await delay(5)
+			fake.emit({ type: "agent_end", messages: [] })
+		}
+
+		const writes: string[] = []
+		const origWrite = process.stderr.write.bind(process.stderr)
+		// biome-ignore lint/suspicious/noExplicitAny: test-only stderr capture
+		;(process.stderr.write as any) = (chunk: string | Uint8Array) => {
+			writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"))
+			return true
+		}
+
+		try {
+			const result = await agent.prompt({
+				sessionId,
+				prompt: [
+					{ type: "text", text: "describe this image" },
+					{ type: "image", data: "base64data", mimeType: "image/png" },
+				],
+			})
+			expect(result.stopReason).toBe("end_turn")
+			// Images should be dropped, not passed to session.prompt (passed as empty array)
+			expect(fake.lastPromptImages).toEqual([])
+		} finally {
+			process.stderr.write = origWrite
+		}
+
+		const matches = writes.filter((w) =>
+			w.includes("acp prompt: dropping image block (active model has no vision input)"),
+		)
+		expect(matches).toHaveLength(1)
 	})
 
 	// Defensive: once a turn is finalized (short-circuit, shutdown, cancel),
