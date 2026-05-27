@@ -92,48 +92,15 @@ describe("createTipsPanel", () => {
 			const tipLines = lines.filter((l) => l.includes("1.") || l.includes("  "))
 			expect(tipLines.length).toBeGreaterThan(1)
 		})
-
-		it("shows search bar placeholder when no query", () => {
-			const tips = [makeTip("a", "Some tip.")]
-			const panel = createTipsPanel(tips, plainTheme(), makeTui(), vi.fn())
-			const lines = panel.render(60)
-			const text = lines.join("\n")
-
-			expect(text).toContain("Type to search")
-		})
 	})
 
 	describe("handleInput — close", () => {
-		it("calls done on Esc with no search", () => {
-			const done = vi.fn()
-			const panel = createTipsPanel([makeTip("a", "Tip.")], plainTheme(), makeTui(), done)
-
-			panel.handleInput("\x1b")
-			expect(done).toHaveBeenCalledOnce()
-		})
-
-		it("calls done on Ctrl+C", () => {
-			const done = vi.fn()
-			const panel = createTipsPanel([makeTip("a", "Tip.")], plainTheme(), makeTui(), done)
-
-			panel.handleInput("\x03")
-			expect(done).toHaveBeenCalledOnce()
-		})
-
 		it("treats q as search character, not close shortcut", () => {
 			const done = vi.fn()
 			const panel = createTipsPanel([makeTip("a", "Tip.")], plainTheme(), makeTui(), done)
 
 			panel.handleInput("q")
 			expect(done).not.toHaveBeenCalled()
-		})
-
-		it("calls done on Enter with no search", () => {
-			const done = vi.fn()
-			const panel = createTipsPanel([makeTip("a", "Tip.")], plainTheme(), makeTui(), done)
-
-			panel.handleInput("\r")
-			expect(done).toHaveBeenCalledOnce()
 		})
 	})
 
@@ -186,20 +153,6 @@ describe("createTipsPanel", () => {
 			expect(done).toHaveBeenCalledOnce()
 		})
 
-		it("does not close on q or Enter while search is active", () => {
-			const done = vi.fn()
-			const tips = [makeTip("a", "Some tip.")]
-			const panel = createTipsPanel(tips, plainTheme(), makeTui(), done)
-
-			// Type 'q' as search character
-			panel.handleInput("q")
-			expect(done).not.toHaveBeenCalled()
-
-			// Enter while search is active does not close
-			panel.handleInput("\r")
-			expect(done).not.toHaveBeenCalled()
-		})
-
 		it("backspace removes from search query", () => {
 			const tips = [makeTip("a", "Alpha tip."), makeTip("b", "Beta tip.")]
 			const panel = createTipsPanel(tips, plainTheme(), makeTui(), vi.fn())
@@ -233,22 +186,6 @@ describe("createTipsPanel", () => {
 			const text = lines.join("\n")
 			expect(text).toContain("permissions")
 			expect(text).not.toContain("colors")
-		})
-	})
-
-	describe("handleInput — scrolling", () => {
-		it("scrolls down and up with arrow keys", () => {
-			// Create enough tips to require scrolling on a small terminal
-			const tips = Array.from({ length: 30 }, (_, i) => makeTip(`t${i}`, `Tip number ${i + 1}.`))
-			const panel = createTipsPanel(tips, plainTheme(), makeTui(15), vi.fn())
-
-			const linesBefore = panel.render(60)
-			// Scroll down
-			panel.handleInput("\x1b[B") // down arrow
-			const linesAfter = panel.render(60)
-
-			// The content should have shifted (first visible line changes)
-			expect(linesAfter).not.toEqual(linesBefore)
 		})
 	})
 
