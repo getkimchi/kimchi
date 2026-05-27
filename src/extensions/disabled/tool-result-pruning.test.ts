@@ -7,7 +7,7 @@ import contextCompactorExtension, {
 	pruneToolResult,
 	RETAIN_HEAD_LINES,
 	RETAIN_TAIL_LINES,
-} from "./context-compactor.js"
+} from "./tool-result-pruning.js"
 
 // helpers
 /** Create multi-line text that will be compacted (>60 lines, >minChars chars) */

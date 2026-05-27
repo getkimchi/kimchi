@@ -26,7 +26,6 @@ import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import bashCollapseExtension from "./extensions/bash-collapse.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
-import contextCompactorExtension from "./extensions/context-compactor.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
@@ -479,7 +478,6 @@ try {
 			resourceToolBlockerExtension,
 			behavioursExtension,
 			promptSummaryExtension,
-			contextCompactorExtension,
 			hideThinkingExtension,
 			thinkingStepsExtension,
 			assistantPrefixExtension,

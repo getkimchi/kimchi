@@ -1,6 +1,6 @@
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
+import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
 
 const PRUNE_THRESHOLD = 35_000
 const PROTECT_WINDOW = 30
