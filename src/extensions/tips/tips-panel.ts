@@ -1,12 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
-import {
-	Key,
-	decodeKittyPrintable,
-	isKeyRelease,
-	matchesKey,
-	visibleWidth,
-	wrapTextWithAnsi,
-} from "@earendil-works/pi-tui"
+import { Key, decodeKittyPrintable, matchesKey, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { formatTipMessage } from "./tip-row.js"
 import type { TipCandidate } from "./types.js"
 
@@ -117,6 +110,7 @@ export function createTipsPanel(
 	const allGroups = groupTips(tips)
 	let searchQuery = ""
 	let scrollOffset = 0
+	let lastContentW = 60
 
 	function getFilteredGroups(): TipGroup[] {
 		if (!searchQuery) return allGroups
@@ -137,6 +131,7 @@ export function createTipsPanel(
 		render(width: number): string[] {
 			const innerW = Math.max(20, width - 2)
 			const contentW = innerW - 2 // 1 space padding on each side
+			lastContentW = contentW
 
 			const filteredGroups = getFilteredGroups()
 			const contentLines = buildDisplayLines(filteredGroups, theme, contentW)
@@ -202,11 +197,6 @@ export function createTipsPanel(
 				}
 			}
 
-			// If no content lines fit the viewport (shouldn't happen, but safety)
-			if (visible.length === 0) {
-				out.push(emptyRow())
-			}
-
 			// Bottom divider
 			out.push(border(`├${"─".repeat(innerW)}┤`))
 
@@ -223,8 +213,6 @@ export function createTipsPanel(
 		},
 
 		handleInput(data: string): void {
-			if (isKeyRelease(data)) return
-
 			if (matchesKey(data, "ctrl+c")) {
 				done(undefined)
 				return
@@ -258,9 +246,8 @@ export function createTipsPanel(
 
 			if (matchesKey(data, Key.down)) {
 				const filteredGroups = getFilteredGroups()
-				// We need contentWidth to compute lines, but we don't have it here.
-				// Use a conservative estimate — the actual render will clamp.
-				const maxScroll = Math.max(0, estimateContentLines(filteredGroups) - viewportHeight())
+				const lines = buildDisplayLines(filteredGroups, theme, lastContentW).length
+				const maxScroll = Math.max(0, lines - viewportHeight())
 				scrollOffset = Math.min(maxScroll, scrollOffset + 1)
 				tui.requestRender()
 				return
@@ -276,12 +263,16 @@ export function createTipsPanel(
 			if (matchesKey(data, Key.pageDown)) {
 				const vp = viewportHeight()
 				const filteredGroups = getFilteredGroups()
-				const maxScroll = Math.max(0, estimateContentLines(filteredGroups) - vp)
+				const lines = buildDisplayLines(filteredGroups, theme, lastContentW).length
+				const maxScroll = Math.max(0, lines - vp)
 				scrollOffset = Math.min(maxScroll, scrollOffset + vp)
 				tui.requestRender()
 				return
 			}
 
+			// Backspace must be checked BEFORE Kitty printable decode.
+			// Kitty sends backspace as \x1b[127u which decodeKittyPrintable would
+			// incorrectly treat as a printable character.
 			if (matchesKey(data, "backspace")) {
 				if (searchQuery.length > 0) {
 					searchQuery = searchQuery.slice(0, -1)
@@ -316,21 +307,4 @@ export function createTipsPanel(
 
 		invalidate(): void {},
 	}
-}
-
-/**
- * Estimate the total number of display lines for scroll bounds.
- * This is an approximation (assumes no wrapping) used by handleInput
- * where we don't have the render width. The actual render method clamps
- * scrollOffset properly.
- */
-function estimateContentLines(groups: TipGroup[]): number {
-	let count = 0
-	for (const group of groups) {
-		if (group.tips.length === 0) continue
-		count += 2 // blank line + header
-		count += group.tips.length // 1 line per tip (no wrap estimate)
-	}
-	count += 1 // trailing blank
-	return count
 }
