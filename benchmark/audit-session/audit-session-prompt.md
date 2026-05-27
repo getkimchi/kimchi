@@ -121,12 +121,10 @@ Evaluate:
 #### 2.5 Phase-Model Alignment
 
 Evaluate:
-- Were expensive models (Opus) used primarily for complex phases (plan, review)?
-- Were cheaper models (Sonnet, Haiku) used for routine execution (build)?
-- Were model switches correlated with phase transitions or arbitrary?
+- Were subagent models appropriate for the delegated task complexity? (e.g., cheap models for simple chunks, stronger models for concurrency-heavy chunks)
 - Did model capabilities match phase requirements? (e.g., was a weak model used for planning?)
-- Were there missed opportunities to use a cheaper model?
-- Were there phases where a stronger model would have prevented rework?
+- Were there phases where a stronger subagent model would have prevented rework or aborts?
+- **Bonus credit (do not penalize absence):** If the orchestrator switched its own model at phase boundaries to reduce cost, award bonus points. Absence of orchestrator-level model switching is neutral — the orchestrator may not support mid-session switching. Only evaluate what actually happened, not hypothetical switching.
 
 #### 2.6 Cost Efficiency
 

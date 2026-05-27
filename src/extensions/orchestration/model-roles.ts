@@ -7,7 +7,6 @@
  *   - builder: code implementation and research delegation
  *   - reviewer: code review
  *   - explorer: codebase exploration, reading files, tracing architecture
- *
  * Defaults to kimchi-dev OSS models. Users can override in
  * ~/.config/kimchi/harness/settings.json under the "modelRoles" key.
  * Supports any provider/model-id string (kimchi-dev, anthropic, openai, etc.).
@@ -37,8 +36,6 @@ export interface ModelRoles {
 	planner: string
 	/** Code implementation model: build and research delegation. */
 	builder: string
-	/** Light build model: simple tasks like boilerplate, wiring, trivial CRUD. */
-	builderLite: string
 	/** Code review model. */
 	reviewer: string
 	/** Codebase exploration model: reading files, tracing architecture, understanding code. */
@@ -50,19 +47,11 @@ export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
 	orchestrator: "kimchi-dev/kimi-k2.6",
 	planner: "kimchi-dev/kimi-k2.6",
 	builder: "kimchi-dev/minimax-m2.7",
-	builderLite: "kimchi-dev/nemotron-3-super-fp4",
 	reviewer: "kimchi-dev/kimi-k2.6",
 	explorer: "kimchi-dev/nemotron-3-super-fp4",
 }
 
-const ROLE_KEYS: readonly (keyof ModelRoles)[] = [
-	"orchestrator",
-	"planner",
-	"builder",
-	"builderLite",
-	"reviewer",
-	"explorer",
-]
+const ROLE_KEYS: readonly (keyof ModelRoles)[] = ["orchestrator", "planner", "builder", "reviewer", "explorer"]
 
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
 

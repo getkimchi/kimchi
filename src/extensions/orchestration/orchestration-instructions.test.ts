@@ -42,7 +42,7 @@ describe("resolveOrchestrationInstructions", () => {
 		})
 		expect(result).toContain("## Your Team")
 		expect(result).toContain("**Builder**:")
-		expect(result).toContain("**Builder Lite**:")
+		expect(result).not.toContain("**Builder Lite**:")
 		expect(result).toContain("Reviewer")
 		expect(result).toContain("Explorer")
 	})
@@ -80,7 +80,6 @@ describe("resolveOrchestrationInstructions", () => {
 				orchestrator: "anthropic/claude-opus-4-7",
 				planner: "anthropic/claude-opus-4-7",
 				builder: "anthropic/claude-sonnet-4-5",
-				builderLite: "kimchi-dev/nemotron-3-super-fp4",
 				reviewer: "openai/gpt-4o",
 				explorer: "kimchi-dev/nemotron-3-super-fp4",
 			},
