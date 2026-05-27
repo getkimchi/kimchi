@@ -169,7 +169,7 @@ export function createTipsPanel(
 			if (searchQuery) {
 				out.push(wrapRowAnsi(`${searchIcon}  ${searchQuery}${cursor}`))
 			} else {
-				out.push(wrapRowAnsi(`${searchIcon}  ${theme.fg("dim", italic("search..."))}`))
+				out.push(wrapRowAnsi(`${searchIcon}  ${theme.fg("dim", italic("Type to search"))}`))
 			}
 			out.push(emptyRow())
 
@@ -203,7 +203,7 @@ export function createTipsPanel(
 			// Footer hints
 			out.push(emptyRow())
 			const scrollHint = hasScroll ? " · ↑↓ to scroll" : ""
-			const hintText = `type to search${scrollHint} · esc close`
+			const hintText = `Esc/Enter to close${scrollHint}`
 			out.push(wrapRow(theme.fg("dim", `  ${hintText}`), hintText.length + 2))
 
 			// Bottom border

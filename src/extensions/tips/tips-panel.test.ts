@@ -99,7 +99,7 @@ describe("createTipsPanel", () => {
 			const lines = panel.render(60)
 			const text = lines.join("\n")
 
-			expect(text).toContain("search...")
+			expect(text).toContain("Type to search")
 		})
 	})
 
