@@ -27,6 +27,7 @@ import bashCollapseExtension from "./extensions/bash-collapse.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import contextCompactorExtension from "./extensions/context-compactor.js"
+import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
@@ -461,6 +462,7 @@ try {
 			terminalColorsExtension,
 			kimchiMinimalTintsExtension,
 			loopGuardExtension,
+			explorationGuardExtension,
 			lspExtension,
 			...enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
