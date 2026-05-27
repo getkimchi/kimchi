@@ -370,10 +370,19 @@ function appendWorkedDurationLine(message: any, durationMs: number): void {
 	lastText.text = `${text.trimEnd()}\n\n${inlineWorkedDurationText(durationMs)}`
 }
 
-// OSC 133 zone marker that UserMessageComponent prepends to lines[0].
-const OSC133_ZONE_START = "\x1b]133;A\x07"
+// OSC 133 zone markers that UserMessageComponent prepends/appends for shell integration.
+// A one-line message can start with multiple markers because the first and last
+// rendered lines are the same physical line.
+const OSC133_MARKER_RE = /^(?:\x1b\]133;[ABC]\x07)+/
 
-function patchUserMessageRender(): void {
+export function splitLeadingOsc133Markers(line: string): { markers: string; rest: string } {
+	const match = line.match(OSC133_MARKER_RE)
+	if (!match) return { markers: "", rest: line }
+	const markers = match[0]
+	return { markers, rest: line.slice(markers.length) }
+}
+
+export function patchUserMessageRender(): void {
 	const proto = UserMessageComponent.prototype as any
 	if (proto[USER_MESSAGE_PATCH_FLAG]) return
 	const originalRender = proto.render
@@ -396,17 +405,15 @@ function patchUserMessageRender(): void {
 		const innerWidth = Math.max(1, width - prefixW)
 		const lines: string[] = originalRender.call(this, innerWidth)
 		if (!Array.isArray(lines) || lines.length === 0) return lines
-		const first = lines[0]
-		const osc = first.startsWith(OSC133_ZONE_START) ? OSC133_ZONE_START : ""
 		const indent = " ".repeat(prefixW)
 		const hasBg = typeof theme?.bg === "function"
 		for (let i = 0; i < lines.length; i++) {
 			const linePrefix = i === 0 ? prefix : indent
-			const rawLine = i === 0 ? lines[0].slice(osc.length) : lines[i]
-			const composed = linePrefix + rawLine
+			const { markers, rest } = i === 0 ? splitLeadingOsc133Markers(lines[0]) : { markers: "", rest: lines[i] }
+			const composed = linePrefix + rest
 			const pad = Math.max(0, width - visibleWidth(composed))
 			const styled = hasBg ? theme.bg("userMessageBg", composed + " ".repeat(pad)) : composed
-			lines[i] = (i === 0 ? osc : "") + styled
+			lines[i] = markers + styled
 		}
 		return lines
 	}
