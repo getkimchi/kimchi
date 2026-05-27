@@ -3156,14 +3156,14 @@ export function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, s
 		case "questionnaire": {
 			const qs = Array.isArray(args?.questions) ? (args.questions as Array<Record<string, unknown>>) : []
 			if (qs.length === 0) return theme.fg("muted", "questionnaire")
-			const firstText =
-				typeof qs[0]?.question === "string"
-					? (qs[0].question as string)
-					: typeof qs[0]?.prompt === "string"
-						? (qs[0].prompt as string)
-						: typeof qs[0]?.text === "string"
-							? (qs[0].text as string)
-							: ""
+			let firstText = ""
+			for (const key of ["question", "prompt", "text"]) {
+				const value = qs[0]?.[key]
+				if (typeof value === "string") {
+					firstText = value
+					break
+				}
+			}
 			if (!firstText) return `${qs.length} question${qs.length === 1 ? "" : "s"}`
 			if (qs.length === 1) return summarizeText(firstText, 72)
 			return `${summarizeText(firstText, 48)} ${theme.fg("muted", `(+${qs.length - 1} more)`)}`
