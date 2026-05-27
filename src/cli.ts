@@ -13,6 +13,7 @@ import { dispatchSubcommand } from "./commands/dispatch.js"
 import "./login-command-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
+	getActiveVendorSkillPaths,
 	loadConfig,
 	readTelemetryConfig,
 	writeApiKey,
@@ -47,6 +48,7 @@ import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import stripImagesExtension from "./extensions/strip-images.js"
+import superpowersExtension from "./extensions/superpowers.js"
 import tagsExtension from "./extensions/tags.js"
 import telemetryExtension from "./extensions/telemetry/index.js"
 import { drain as drainPreSessionTelemetry, sendPreSessionEvent } from "./extensions/telemetry/pre-session.js"
@@ -455,6 +457,7 @@ try {
 		})
 		const extensionFactories = [
 			startupUpdateExtension,
+			superpowersExtension,
 			sessionIdCaptureExtension,
 			shutdownMarkerExtension,
 			statsExtension,
@@ -470,7 +473,7 @@ try {
 				{ id: "extensions.ferment", factory: fermentExtension },
 			] satisfies ManagedExtensionFactory[]),
 			questionnaireExtension,
-			promptEnrichmentExtension(skillPaths),
+			promptEnrichmentExtension([...new Set([...skillPaths, ...getActiveVendorSkillPaths()])]),
 			bashCollapseExtension,
 			permissionsExtension,
 			resourcesExtension,

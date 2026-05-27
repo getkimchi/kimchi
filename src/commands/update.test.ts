@@ -4,6 +4,7 @@ const isHomebrewInstallMock = vi.fn(() => false)
 const checkForUpdateMock = vi.fn()
 const applyUpdateMock = vi.fn()
 const getVersionMock = vi.fn(() => "v0.0.23")
+const ensureSuperpowersInstalledMock = vi.fn()
 
 vi.mock("../update/paths.js", () => ({
 	isHomebrewInstall: () => isHomebrewInstallMock(),
@@ -14,6 +15,9 @@ vi.mock("../update/workflow.js", () => ({
 }))
 vi.mock("../utils.js", () => ({
 	getVersion: () => getVersionMock(),
+}))
+vi.mock("../extensions/superpowers/installer.js", () => ({
+	ensureSuperpowersInstalled: (...args: unknown[]) => ensureSuperpowersInstalledMock(...args),
 }))
 
 const { runUpdate } = await import("./update.js")
@@ -101,6 +105,8 @@ describe("runUpdate non-interactive composition", () => {
 		isHomebrewInstallMock.mockReturnValue(false)
 		checkForUpdateMock.mockReset()
 		applyUpdateMock.mockReset()
+		ensureSuperpowersInstalledMock.mockReset()
+		ensureSuperpowersInstalledMock.mockResolvedValue(true)
 	})
 
 	afterEach(() => {
@@ -132,5 +138,54 @@ describe("runUpdate non-interactive composition", () => {
 		const code = await runUpdate(["--canary", "--force"])
 		expect(code).toBe(0)
 		expect(applyUpdateMock).toHaveBeenCalledWith({ tag: "canary" })
+	})
+
+	it("installs superpowers after successful update", async () => {
+		checkForUpdateMock.mockResolvedValue({
+			hasUpdate: true,
+			latestVersion: "v0.0.80",
+			tag: "v0.0.80",
+		})
+		applyUpdateMock.mockResolvedValue(undefined)
+		const code = await runUpdate(["--force"])
+		expect(code).toBe(0)
+		expect(ensureSuperpowersInstalledMock).toHaveBeenCalledOnce()
+	})
+
+	it("does not install superpowers if update fails", async () => {
+		checkForUpdateMock.mockResolvedValue({
+			hasUpdate: true,
+			latestVersion: "v0.0.80",
+			tag: "v0.0.80",
+		})
+		applyUpdateMock.mockRejectedValue(new Error("network error"))
+		const code = await runUpdate(["--force"])
+		expect(code).toBe(1)
+		expect(ensureSuperpowersInstalledMock).not.toHaveBeenCalled()
+	})
+
+	it("does not install superpowers on --dry-run", async () => {
+		checkForUpdateMock.mockResolvedValue({
+			hasUpdate: true,
+			latestVersion: "v0.0.80",
+			tag: "v0.0.80",
+			releaseUrl: "https://example.com",
+		})
+		const code = await runUpdate(["--dry-run"])
+		expect(code).toBe(0)
+		expect(applyUpdateMock).not.toHaveBeenCalled()
+		expect(ensureSuperpowersInstalledMock).not.toHaveBeenCalled()
+	})
+
+	it("succeeds even if superpowers install throws", async () => {
+		checkForUpdateMock.mockResolvedValue({
+			hasUpdate: true,
+			latestVersion: "v0.0.80",
+			tag: "v0.0.80",
+		})
+		applyUpdateMock.mockResolvedValue(undefined)
+		ensureSuperpowersInstalledMock.mockRejectedValue(new Error("offline"))
+		const code = await runUpdate(["--force"])
+		expect(code).toBe(0)
 	})
 })

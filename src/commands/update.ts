@@ -1,3 +1,4 @@
+import { ensureSuperpowersInstalled } from "../extensions/superpowers/installer.js"
 import { isHomebrewInstall } from "../update/paths.js"
 import { applyUpdate, checkForUpdate } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
@@ -112,6 +113,12 @@ export async function runUpdate(args: string[]): Promise<number> {
 			"Please copy the error message above and create a bug report at https://github.com/castai/kimchi/issues",
 		)
 		return 1
+	}
+
+	try {
+		await ensureSuperpowersInstalled()
+	} catch {
+		// Non-fatal — skills can be refreshed by re-running kimchi update
 	}
 
 	if (process.platform === "win32") {
