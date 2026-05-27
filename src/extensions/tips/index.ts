@@ -139,7 +139,7 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 		pi.registerCommand("tips", {
 			description: "Show all tips",
 			handler: async (_args, ctx) => {
-				const tips = collectAllTips(registry)
+				const tips = collectAllTips(registry).filter((t) => t.id !== "show-all-tips")
 				if (!ctx.hasUI) {
 					const lines = tips.map((t, i) => `${i + 1}. ${t.message}`)
 					ctx.ui.notify(lines.join("\n"), "info")

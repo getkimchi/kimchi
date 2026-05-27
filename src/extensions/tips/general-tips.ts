@@ -56,6 +56,11 @@ export const GENERAL_TIPS = [
 		scope: "general",
 		message: "Type `/help` to see all keyboard shortcuts and slash commands.",
 	},
+	{
+		id: "show-all-tips",
+		scope: "general",
+		message: "Run `/tips` to see all available tips.",
+	},
 ] as const satisfies readonly Tip[]
 
 export function createGeneralTipProvider(): TipProvider {
