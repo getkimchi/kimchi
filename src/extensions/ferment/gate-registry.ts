@@ -45,7 +45,7 @@ export type GateScope = "plan" | "step" | "phase" | "ferment"
 
 export type OwnerTurn = "scope_ferment" | "complete_ferment_step" | "complete_ferment_phase" | "complete_ferment"
 
-export type GateVerdictValue = "pass" | "flag" | "warn" | "omitted"
+export type GateVerdictValue = "pass" | "flag" | "omitted"
 
 export interface GateDefinition {
 	id: GateId
@@ -328,8 +328,8 @@ export function validateGateVerdict(v: { id: string; verdict: string; rationale:
 	if (!v.id) return "gate verdict missing id"
 	const def = getGateDefinition(v.id)
 	if (!def) return `gate verdict has unknown id: ${v.id}`
-	if (v.verdict !== "pass" && v.verdict !== "flag" && v.verdict !== "warn" && v.verdict !== "omitted") {
-		return `gate ${v.id} has invalid verdict: ${v.verdict} (expected pass | flag | warn | omitted)`
+	if (v.verdict !== "pass" && v.verdict !== "flag" && v.verdict !== "omitted") {
+		return `gate ${v.id} has invalid verdict: ${v.verdict} (expected pass | flag | omitted)`
 	}
 	if (typeof v.rationale !== "string" || v.rationale.trim().length === 0) {
 		return `gate ${v.id} requires a non-empty rationale`
