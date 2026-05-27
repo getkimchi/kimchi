@@ -128,6 +128,7 @@ const testEnv: EnvironmentInfo = {
 	localDate: "2026-01-01",
 	isGitRepo: false,
 }
+const TEST_SESSION_ID = "test-session"
 
 describe("wireBehaviours — session_start", () => {
 	it("appends behaviour_loaded for a session-triggered behaviour", async () => {
@@ -266,7 +267,7 @@ describe("wireBehaviours — before_agent_start", () => {
 
 	it("registers the rules block for baseline behaviours in the system prompt", async () => {
 		const pi = setupWired([baseline])
-		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("session_start", {}, { cwd: "/tmp", sessionManager: { getSessionId: () => TEST_SESSION_ID } })
 
 		const sp = buildSystemPrompt({
 			pi: pi.asExtensionAPI(),
@@ -274,6 +275,7 @@ describe("wireBehaviours — before_agent_start", () => {
 			env: testEnv,
 			contextFiles: [{ path: "/repo/AGENTS.md", content: "Project rule." }],
 			mode: "orchestrator",
+			sessionId: TEST_SESSION_ID,
 		})
 
 		expect(sp).toContain("## Rules")

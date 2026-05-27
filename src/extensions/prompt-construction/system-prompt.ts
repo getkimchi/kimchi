@@ -37,6 +37,7 @@ export interface ToolInfo {
 export type PromptMode = "orchestrator" | "subagent" | "single"
 
 export interface SystemPromptBuildOptions {
+	/** Backward-compatible call-site handle. System prompt blocks are scoped by sessionId. */
 	pi?: ExtensionAPI
 	tools: readonly ToolInfo[]
 	env: EnvironmentInfo
@@ -57,8 +58,7 @@ export interface SystemPromptBuildOptions {
 const DELEGATION_TOOL_NAMES = new Set(["Agent", "get_subagent_result", "steer_subagent"])
 
 export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
-	const { pi, tools, env, contextFiles, skills, currentModelId, currentPhase, registry, mode, roles, sessionId } =
-		options
+	const { tools, env, contextFiles, skills, currentModelId, currentPhase, registry, mode, roles, sessionId } = options
 
 	const effectiveTools = mode === "subagent" ? tools.filter((t) => !DELEGATION_TOOL_NAMES.has(t.name)) : tools
 
@@ -75,7 +75,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	})
 
 	const phaseSection = buildPhaseGuidelinesSection(currentModelId, currentPhase, registry)
-	const blocks = pi ? renderSystemPromptBlocks(sessionId, { mode }) : []
+	const blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode }) : []
 	const suppressed = new Set<SuppressibleSection>()
 	for (const block of blocks) {
 		for (const section of block.suppress) suppressed.add(section)
