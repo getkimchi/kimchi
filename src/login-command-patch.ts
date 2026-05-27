@@ -58,11 +58,14 @@ function upstreamModelToPiConfig(m: Model<Api>, providerId: string) {
  */
 async function prePopulateSubscriptionModels(providerId: string): Promise<void> {
 	const getModels = await getPiModels()
-	const piModels = getModels(providerId as unknown as Parameters<typeof getModels>[0])
+	const piModels = getModels?.(providerId as unknown as Parameters<typeof getModels>[0]) ?? []
 	if (piModels.length === 0) return
 
 	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
-	if (!agentDir) return
+	if (!agentDir) {
+		console.warn("KIMCHI_CODING_AGENT_DIR environment variable is missing. Models cannot be cached.")
+		return
+	}
 
 	const modelsJsonPath = resolve(agentDir, "models.json")
 	const configs = piModels.map((m) => upstreamModelToPiConfig(m, providerId))
@@ -243,22 +246,26 @@ function showSubscriptionLogin(im: InteractiveMode): void {
 				const providerOption = providerOptions.find((provider) => provider.id === providerId)
 				if (!providerOption) return
 
-				// Pre-populate models.json before upstream login so that when
-				// upstream calls completeProviderAuthentication → refresh() the
-				// subscription models are already discoverable through models.json.
-				await prePopulateSubscriptionModels(providerOption.id)
+				try {
+					// Pre-populate models.json before upstream login so that when
+					// upstream calls completeProviderAuthentication → refresh() the
+					// subscription models are already discoverable through models.json.
+					await prePopulateSubscriptionModels(providerOption.id)
 
-				await modeLike.showLoginDialog?.(providerOption.id, providerOption.name)
+					await modeLike.showLoginDialog?.(providerOption.id, providerOption.name)
 
-				// After upstream login returns, refresh the registry so the models
-				// from models.json become available without requiring a manual /reload.
-				const registry = modeLike.session?.modelRegistry
-				if (registry && typeof registry.refresh === "function") {
-					try {
-						registry.refresh()
-					} catch {
-						// Silent — the next manual /reload or restart will pick up the models.
+					// After upstream login returns, refresh the registry so the models
+					// from models.json become available without requiring a manual /reload.
+					const registry = modeLike.session?.modelRegistry
+					if (registry && typeof registry.refresh === "function") {
+						try {
+							registry.refresh()
+						} catch {
+							// Silent — the next manual /reload or restart will pick up the models.
+						}
 					}
+				} catch (error) {
+					im.showError(`Subscription login failed: ${error instanceof Error ? error.message : String(error)}`)
 				}
 			},
 			() => {

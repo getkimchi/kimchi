@@ -122,7 +122,7 @@ function modelToMetadata(m: PiModelConfig): ModelMetadata {
 function extractModelsFromProviders(providers: Record<string, { models?: PiModelConfig[] }>): ModelMetadata[] {
 	const result: ModelMetadata[] = []
 	for (const [, provider] of Object.entries(providers)) {
-		if (Array.isArray(provider.models)) {
+		if (provider && typeof provider === "object" && Array.isArray(provider.models)) {
 			result.push(...provider.models.map(modelToMetadata))
 		}
 	}

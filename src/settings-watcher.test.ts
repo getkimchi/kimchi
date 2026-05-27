@@ -20,7 +20,8 @@ beforeEach(() => {
 afterEach(() => {
 	vi.restoreAllMocks()
 	vi.useRealTimers()
-	process.env.KIMCHI_CODING_AGENT_DIR = undefined
+	// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset rather than stringified to "undefined"
+	delete process.env.KIMCHI_CODING_AGENT_DIR
 })
 
 describe("getActiveThemeName", () => {
@@ -42,7 +43,8 @@ describe("getActiveThemeName", () => {
 	})
 
 	it("returns undefined when KIMCHI_CODING_AGENT_DIR is unset", () => {
-		process.env.KIMCHI_CODING_AGENT_DIR = undefined
+		// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset rather than stringified to "undefined"
+		delete process.env.KIMCHI_CODING_AGENT_DIR
 		expect(getActiveThemeName()).toBeUndefined()
 	})
 })

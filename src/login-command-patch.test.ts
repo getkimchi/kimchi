@@ -1,6 +1,7 @@
+import { getModels } from "@earendil-works/pi-ai"
 import { InteractiveMode, initTheme } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
-import { beforeAll, expect, it, vi } from "vitest"
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest"
 import * as loginPatch from "./login-command-patch.js"
 
 const { applyLoginCommandPatch, oauthDelegate } = loginPatch
@@ -15,6 +16,23 @@ vi.mock("@earendil-works/pi-ai", async () => {
 
 beforeAll(() => {
 	initTheme("default")
+})
+
+let originalCodingAgentDir: string | undefined
+
+beforeEach(() => {
+	originalCodingAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+})
+
+afterEach(() => {
+	if (originalCodingAgentDir === undefined) {
+		// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset rather than stringified to "undefined"
+		delete process.env.KIMCHI_CODING_AGENT_DIR
+	} else {
+		process.env.KIMCHI_CODING_AGENT_DIR = originalCodingAgentDir
+	}
+	vi.restoreAllMocks()
+	vi.mocked(getModels).mockReturnValue([])
 })
 
 function makeFakeModelRegistry() {
@@ -70,6 +88,21 @@ function getFeedbackMessages(fakeIm: FakeIm): string[] {
 async function flushAsyncLogin(): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, 0))
 	await Promise.resolve()
+}
+
+function waitForMockCall(spy: { mock: { calls: unknown[][] } }, timeout = 1000): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const start = Date.now()
+		const interval = setInterval(() => {
+			if (spy.mock.calls.length > 0) {
+				clearInterval(interval)
+				resolve()
+			} else if (Date.now() - start > timeout) {
+				clearInterval(interval)
+				reject(new Error(`Timeout waiting for mock call after ${timeout}ms`))
+			}
+		}, 2)
+	})
 }
 
 async function selectCurrentLoginOption(fakeIm: FakeIm): Promise<void> {
@@ -186,7 +219,7 @@ it("routes the subscription option to upstream OAuth providers without showing K
 	await patched.call(fakeIm, "login")
 	await selectSubscriptionLoginOption(fakeIm)
 	fakeIm.selectorComponent.handleInput("\n")
-	await Promise.resolve()
+	await waitForMockCall(fakeIm.showLoginDialog)
 
 	expect(fakeIm.getLoginProviderOptions).toHaveBeenCalledWith("oauth")
 	expect(fakeIm.showLoginDialog).toHaveBeenCalledWith("anthropic", "Claude")
@@ -220,44 +253,47 @@ it("pre-populates subscription provider models in models.json before upstream lo
 	const previousDir = process.env.KIMCHI_CODING_AGENT_DIR
 	process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-test-models"
 
-	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
-	await selectSubscriptionLoginOption(fakeIm)
-	fakeIm.selectorComponent.handleInput("\n")
-	await flushAsyncLogin()
+	try {
+		// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+		const patched = (InteractiveMode.prototype as any).showOAuthSelector
+		await patched.call(fakeIm, "login")
+		await selectSubscriptionLoginOption(fakeIm)
+		fakeIm.selectorComponent.handleInput("\n")
+		await waitForMockCall(fakeIm.showLoginDialog)
 
-	expect(fakeIm.showLoginDialog).toHaveBeenCalledWith("openai", "OpenAI")
-	expect(syncSpy).toHaveBeenCalledOnce()
-	const [_path, providerId, configs, providerConfig] = syncSpy.mock.calls[0] as unknown as [
-		string,
-		string,
-		unknown[],
-		unknown,
-	]
-	expect(providerId).toBe("openai")
-	expect(providerConfig).toMatchObject({
-		api: "openai-chat",
-		baseUrl: "https://api.openai.com/v1/chat/completions",
-	})
-	expect(configs).toHaveLength(1)
-	expect(configs[0]).toMatchObject({
-		id: "codex",
-		name: "Codex",
-		provider: "openai",
-		input: ["text"],
-		contextWindow: 200000,
-		maxTokens: 8192,
-		reasoning: false,
-	})
-
-	if (previousDir === undefined) {
-		process.env.KIMCHI_CODING_AGENT_DIR = undefined
-	} else {
-		process.env.KIMCHI_CODING_AGENT_DIR = previousDir
+		expect(fakeIm.showLoginDialog).toHaveBeenCalledWith("openai", "OpenAI")
+		expect(syncSpy).toHaveBeenCalledOnce()
+		const [_path, providerId, configs, providerConfig] = syncSpy.mock.calls[0] as unknown as [
+			string,
+			string,
+			unknown[],
+			unknown,
+		]
+		expect(providerId).toBe("openai")
+		expect(providerConfig).toMatchObject({
+			api: "openai-chat",
+			baseUrl: "https://api.openai.com/v1/chat/completions",
+		})
+		expect(configs).toHaveLength(1)
+		expect(configs[0]).toMatchObject({
+			id: "codex",
+			name: "Codex",
+			provider: "openai",
+			input: ["text"],
+			contextWindow: 200000,
+			maxTokens: 8192,
+			reasoning: false,
+		})
+	} finally {
+		if (previousDir === undefined) {
+			// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset rather than stringified to "undefined"
+			delete process.env.KIMCHI_CODING_AGENT_DIR
+		} else {
+			process.env.KIMCHI_CODING_AGENT_DIR = previousDir
+		}
+		syncSpy.mockRestore()
+		getModelsMock.mockReturnValue([])
 	}
-	syncSpy.mockRestore()
-	getModelsMock.mockClear()
 })
 
 it("does not crash when registry.getAvailable returns empty after subscription login", async () => {
@@ -275,7 +311,7 @@ it("does not crash when registry.getAvailable returns empty after subscription l
 	await patched.call(fakeIm, "login")
 	await selectSubscriptionLoginOption(fakeIm)
 	fakeIm.selectorComponent.handleInput("\n")
-	await flushAsyncLogin()
+	await waitForMockCall(fakeIm.showLoginDialog)
 
 	expect(fakeIm.showLoginDialog).toHaveBeenCalled()
 	expect(syncSpy).not.toHaveBeenCalled()
@@ -298,7 +334,7 @@ it("does not crash when registry.getAvailable throws after subscription login", 
 	await patched.call(fakeIm, "login")
 	await selectSubscriptionLoginOption(fakeIm)
 	fakeIm.selectorComponent.handleInput("\n")
-	await flushAsyncLogin()
+	await waitForMockCall(fakeIm.showLoginDialog)
 
 	expect(fakeIm.showLoginDialog).toHaveBeenCalled()
 	expect(syncSpy).not.toHaveBeenCalled()

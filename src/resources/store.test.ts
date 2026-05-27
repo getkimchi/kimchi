@@ -19,12 +19,17 @@ describe("resource store", () => {
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "kimchi-resources-"))
 		oldAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
-		process.env.KIMCHI_CODING_AGENT_DIR = undefined
+		// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset rather than stringified to "undefined"
+		delete process.env.KIMCHI_CODING_AGENT_DIR
 	})
 
 	afterEach(() => {
-		if (oldAgentDir === undefined) process.env.KIMCHI_CODING_AGENT_DIR = undefined
-		else process.env.KIMCHI_CODING_AGENT_DIR = oldAgentDir
+		if (oldAgentDir === undefined) {
+			// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset rather than stringified to "undefined"
+			delete process.env.KIMCHI_CODING_AGENT_DIR
+		} else {
+			process.env.KIMCHI_CODING_AGENT_DIR = oldAgentDir
+		}
 		rmSync(dir, { recursive: true, force: true })
 	})
 
