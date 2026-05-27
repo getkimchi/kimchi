@@ -90,6 +90,24 @@ describe("reportBugExtension", () => {
 		expect(commands.get("reportbug")?.description).toBe("Report a bug in kimchi — opens GitHub issue form")
 	})
 
+	it("registers the 'bug' command", () => {
+		const { api, commands } = makeMockPi()
+		reportBugExtension(api)
+		expect(commands.has("bug")).toBe(true)
+		expect(commands.get("bug")?.description).toBe("Report a bug in kimchi — opens GitHub issue form")
+	})
+
+	it("'bug' and 'reportbug' share the same handler", () => {
+		const { api, commands } = makeMockPi()
+		reportBugExtension(api)
+		const bugCommand = commands.get("bug")
+		const reportbugCommand = commands.get("reportbug")
+		if (bugCommand === undefined || reportbugCommand === undefined) {
+			throw new Error("bug or reportbug command not registered")
+		}
+		expect(bugCommand.handler).toBe(reportbugCommand.handler)
+	})
+
 	it("builds URL with required params when called without args (UI mode)", async () => {
 		const { api, commands } = makeMockPi()
 		reportBugExtension(api)
