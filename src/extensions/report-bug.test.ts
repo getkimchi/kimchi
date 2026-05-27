@@ -3,9 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const openMock = vi.hoisted(() => vi.fn<(_url: string) => Promise<void>>())
 const getVersionMock = vi.hoisted(() => vi.fn(() => "9.9.9-test"))
+const execFileSyncMock = vi.hoisted(() => vi.fn<typeof import("node:child_process").execFileSync>())
 
 vi.mock("open", () => ({ default: openMock }))
 vi.mock("../utils.js", () => ({ getVersion: getVersionMock }))
+vi.mock("node:child_process", () => ({ execFileSync: execFileSyncMock }))
 
 const { default: reportBugExtension } = await import("./report-bug.js")
 
@@ -58,7 +60,8 @@ function makeMockPi(): { api: ExtensionAPI; commands: Map<string, CommandConfig>
 function makeUIContext(): ExtensionCommandContext {
 	return {
 		hasUI: true,
-		ui: { notify: vi.fn(), progress: vi.fn(), custom: vi.fn() },
+		ui: { notify: vi.fn(), progress: vi.fn(), custom: vi.fn(), confirm: vi.fn() },
+		sessionManager: { getSessionFile: vi.fn(() => "/tmp/test-session.jsonl") },
 		// biome-ignore lint/suspicious/noExplicitAny: minimal mock
 	} as any
 }
@@ -66,7 +69,8 @@ function makeUIContext(): ExtensionCommandContext {
 function makeHeadlessContext(): ExtensionCommandContext {
 	return {
 		hasUI: false,
-		ui: { notify: vi.fn(), progress: vi.fn(), custom: vi.fn() },
+		ui: { notify: vi.fn(), progress: vi.fn(), custom: vi.fn(), confirm: vi.fn() },
+		sessionManager: { getSessionFile: vi.fn(() => "/tmp/test-session.jsonl") },
 		// biome-ignore lint/suspicious/noExplicitAny: minimal mock
 	} as any
 }
@@ -76,6 +80,7 @@ describe("reportBugExtension", () => {
 		openMock.mockClear()
 		getVersionMock.mockClear()
 		getVersionMock.mockReturnValue("9.9.9-test")
+		execFileSyncMock.mockClear()
 		vi.spyOn(console, "log").mockImplementation(() => {})
 	})
 
@@ -206,5 +211,116 @@ describe("reportBugExtension", () => {
 		expect(openMock).toHaveBeenCalledTimes(1)
 		const notify = (ctx.ui as unknown as { notify: ReturnType<typeof vi.fn> }).notify
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Failed to open browser"), "error")
+	})
+
+	it("registers the 'bug' alias", () => {
+		const { api, commands } = makeMockPi()
+		reportBugExtension(api)
+		expect(commands.has("bug")).toBe(true)
+		expect(commands.get("bug")?.description).toBe("Report a bug in kimchi — opens GitHub issue form")
+	})
+
+	it("calls ctx.ui.confirm when UI is available", async () => {
+		const { api, commands } = makeMockPi()
+		reportBugExtension(api)
+		const command = commands.get("reportbug")
+		if (command === undefined) {
+			throw new Error("reportbug command not registered")
+		}
+		const handler = command.handler
+		const ctx = makeUIContext()
+		const confirmMock = (ctx.ui as unknown as { confirm: ReturnType<typeof vi.fn> }).confirm
+		confirmMock.mockResolvedValue(false)
+		openMock.mockResolvedValue(undefined)
+
+		await handler("", ctx)
+
+		expect(confirmMock).toHaveBeenCalledTimes(1)
+		expect(confirmMock).toHaveBeenCalledWith(
+			"Include session export",
+			"Would you like to include a session export as a GitHub gist in the bug report?",
+		)
+	})
+
+	it("embeds session-file param when confirm is true and gh succeeds", async () => {
+		const { api, commands } = makeMockPi()
+		reportBugExtension(api)
+		const command = commands.get("reportbug")
+		if (command === undefined) {
+			throw new Error("reportbug command not registered")
+		}
+		const handler = command.handler
+		const ctx = makeUIContext()
+		const confirmMock = (ctx.ui as unknown as { confirm: ReturnType<typeof vi.fn> }).confirm
+		confirmMock.mockResolvedValue(true)
+		execFileSyncMock.mockReturnValue("https://gist.github.com/testuser/abc123\n")
+		openMock.mockResolvedValue(undefined)
+
+		await handler("", ctx)
+
+		expect(execFileSyncMock).toHaveBeenCalledTimes(1)
+		expect(openMock).toHaveBeenCalledTimes(1)
+		const url = openMock.mock.calls[0][0] as string
+		expect(url).toContain("session-file=https%3A%2F%2Fgist.github.com%2Ftestuser%2Fabc123")
+	})
+
+	it("skips gist creation when user declines confirmation", async () => {
+		const { api, commands } = makeMockPi()
+		reportBugExtension(api)
+		const command = commands.get("reportbug")
+		if (command === undefined) {
+			throw new Error("reportbug command not registered")
+		}
+		const handler = command.handler
+		const ctx = makeUIContext()
+		const confirmMock = (ctx.ui as unknown as { confirm: ReturnType<typeof vi.fn> }).confirm
+		confirmMock.mockResolvedValue(false)
+		openMock.mockResolvedValue(undefined)
+
+		await handler("", ctx)
+
+		expect(execFileSyncMock).not.toHaveBeenCalled()
+		const url = openMock.mock.calls[0][0] as string
+		expect(url).not.toContain("session-file=")
+	})
+
+	it("skips gist creation in headless mode", async () => {
+		const { api, commands } = makeMockPi()
+		reportBugExtension(api)
+		const command = commands.get("reportbug")
+		if (command === undefined) {
+			throw new Error("reportbug command not registered")
+		}
+		const handler = command.handler
+		const ctx = makeHeadlessContext()
+
+		await handler("", ctx)
+
+		expect(execFileSyncMock).not.toHaveBeenCalled()
+	})
+
+	it("falls back without session-file when gh throws", async () => {
+		const { api, commands } = makeMockPi()
+		reportBugExtension(api)
+		const command = commands.get("reportbug")
+		if (command === undefined) {
+			throw new Error("reportbug command not registered")
+		}
+		const handler = command.handler
+		const ctx = makeUIContext()
+		const confirmMock = (ctx.ui as unknown as { confirm: ReturnType<typeof vi.fn> }).confirm
+		confirmMock.mockResolvedValue(true)
+		execFileSyncMock.mockImplementation(() => {
+			throw new Error("ENOENT: gh not found")
+		})
+		openMock.mockResolvedValue(undefined)
+
+		await handler("", ctx)
+
+		expect(openMock).toHaveBeenCalledTimes(1)
+		const url = openMock.mock.calls[0][0] as string
+		expect(url).not.toContain("session-file=")
+		const notify = (ctx.ui as unknown as { notify: ReturnType<typeof vi.fn> }).notify
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Failed to create gist"), "error")
 	})
 })
