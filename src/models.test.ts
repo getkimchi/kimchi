@@ -281,18 +281,32 @@ describe("updateModelsConfig", () => {
 		await expect(updateModelsConfig(modelsJsonPath, "test-key")).rejects.toThrow("API returned empty model list")
 	})
 
-	it("falls back to cached metadata when fetch fails", async () => {
+	it("falls back to cached metadata and non-kimchi providers when fetch fails", async () => {
+		const OPENAI_MODEL = {
+			id: "gpt-4",
+			name: "GPT-4",
+			reasoning: false,
+			input: ["text"],
+			contextWindow: 8192,
+			maxTokens: 4096,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			provider: "openai",
+		}
+
 		// Seed a successful fetch so the cache is populated.
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI, SONNET_46] }),
 		} as Response)
 		await updateModelsConfig(modelsJsonPath, "test-key")
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		config.providers.openai = { models: [OPENAI_MODEL] }
+		writeFileSync(modelsJsonPath, JSON.stringify(config))
 		vi.mocked(fetch).mockRejectedValueOnce(new Error("network down"))
 
 		const result = await updateModelsConfig(modelsJsonPath, "test-key")
 
-		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5", "claude-sonnet-4-6"])
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5", "claude-sonnet-4-6", "gpt-4"])
 	})
 
 	it("falls back to cached metadata when API returns empty list", async () => {
@@ -336,7 +350,26 @@ describe("updateModelsConfig", () => {
 		expect(existsSync(nestedPath)).toBe(true)
 	})
 
-	it("returns empty models without fetching when apiKey is empty", async () => {
+	it("returns non-kimchi provider models without fetching when apiKey is empty", async () => {
+		const OPENAI_MODEL = {
+			id: "gpt-4o",
+			name: "GPT-4o",
+			reasoning: false,
+			input: ["text", "image"],
+			contextWindow: 128000,
+			maxTokens: 16384,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			provider: "openai",
+		}
+		writeFileSync(modelsJsonPath, JSON.stringify({ providers: { openai: { models: [OPENAI_MODEL] } } }))
+
+		const result = await updateModelsConfig(modelsJsonPath, "")
+
+		expect(result.models.map((m) => m.slug)).toEqual(["gpt-4o"])
+		expect(fetch).not.toHaveBeenCalled()
+	})
+
+	it("returns empty models without fetching when apiKey is empty and no cache exists", async () => {
 		const result = await updateModelsConfig(modelsJsonPath, "")
 
 		expect(result).toEqual({ models: [] })

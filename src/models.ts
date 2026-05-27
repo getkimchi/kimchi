@@ -192,23 +192,22 @@ export async function updateModelsConfig(modelsJsonPath: string, apiKey: string)
 	const dir = dirname(modelsJsonPath)
 	mkdirSync(dir, { recursive: true })
 
-	if (!apiKey) {
-		return { models: readCachedMetadata(modelsJsonPath) ?? [] }
-	}
-
 	const otherProviders = readExistingProviders(modelsJsonPath)
-
 	const otherModels = extractModelsFromProviders(otherProviders as Record<string, { models?: PiModelConfig[] }>)
+
+	if (!apiKey) {
+		return { models: sortModels([...(readCachedMetadata(modelsJsonPath) ?? []), ...otherModels]) }
+	}
 
 	let fetched: ModelMetadata[]
 	try {
 		fetched = await fetchAvailableModels(apiKey)
 	} catch (err) {
-		const cached = readCachedMetadata(modelsJsonPath)
-		if (!cached) throw err
+		const cached = readCachedMetadata(modelsJsonPath) ?? []
+		if (cached.length === 0 && otherModels.length === 0) throw err
 		const message = err instanceof Error ? err.message : String(err)
 		console.warn(`Failed to refresh models from API, using cached list: ${message}`)
-		return { models: cached }
+		return { models: sortModels([...cached, ...otherModels]) }
 	}
 
 	const models = sortModels(fetched)
