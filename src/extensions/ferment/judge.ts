@@ -21,10 +21,12 @@
 
 import { complete } from "@earendil-works/pi-ai"
 import type { Grade } from "../../ferment/types.js"
+import { recommendModel } from "../orchestration/model-registry/recommend.js"
 import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
 
-const JUDGE_MODEL_ID = "claude-opus-4-6"
-const JUDGE_PROVIDER = "kimchi-dev"
+const JUDGE_MODEL_RECOMMENDATION = recommendModel({ strengths: ["review"], preferTier: "standard" })
+const JUDGE_MODEL_ID = JUDGE_MODEL_RECOMMENDATION?.modelId ?? "claude-opus-4-6"
+const JUDGE_PROVIDER = JUDGE_MODEL_RECOMMENDATION?.provider ?? "kimchi-dev"
 
 const GRADES: Grade[] = ["A", "B", "C", "D", "F"]
 export function isGrade(value: unknown): value is Grade {
@@ -249,9 +251,9 @@ const JOURNEY_GRADE_SYSTEM = `You are the final reviewer for an autonomous codin
 Your bias is PESSIMISTIC. Most work is B or C, not A. A is reserved for ferments that delivered cleanly without retries, with concrete real-execution verification at every phase, and where every gate verdict was substantiated with specific evidence.
 
 Letter rubric (be strict):
-- A: every phase delivered, real verification of artifact ran, diff cleanly implements goal end-to-end, no warns, no block-retries needed, gate rationales cite specific files/commands not vague claims.
-- B: goal met with minor unresolved warns OR weak verification (mostly proxy/sentinel) OR thin gate rationales.
-- C: partial goal achievement, suspect coverage, summaries that hallucinate work not in the diff, OR phases needed retries to converge.
+- A: every phase delivered, real verification of artifact ran, diff cleanly implements goal end-to-end, zero warn verdicts, no block-retries needed, gate rationales cite specific files/commands not vague claims.
+- B: goal met with minor unresolved warns (warn verdicts on gates) OR weak verification (mostly proxy/sentinel) OR thin gate rationales. Each unresolved warn verdict pulls the grade toward B.
+- C: partial goal achievement, suspect coverage, summaries that hallucinate work not in the diff, OR phases needed retries to converge. Multiple unresolved warn verdicts across phases pull toward C.
 - D: substantial gaps — phases that failed, summaries that don't match the diff, gate rationales that don't ground in evidence.
 - F: goal not achieved, evidence shows clearly broken work, or the agent never actually exercised the artifact.
 

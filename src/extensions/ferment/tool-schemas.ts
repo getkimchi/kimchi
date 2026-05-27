@@ -21,6 +21,7 @@ export const GateVerdictSchema = Type.Object({
 		[
 			Type.Literal("pass"),
 			Type.Literal("flag"),
+			Type.Literal("warn"),
 			Type.Literal("omitted"),
 			// Defensive aliases for S2's verification classification vocabulary.
 			// Gate validation normalizes these before persistence.
@@ -32,7 +33,7 @@ export const GateVerdictSchema = Type.Object({
 		],
 		{
 			description:
-				"'pass' = the gate's question is answered affirmatively with concrete evidence. 'flag' = the gate identifies a real problem (blocks advancement). 'omitted' = the gate doesn't apply to this work (requires rationale). Prefer pass | flag | omitted. If you accidentally use S2 verification labels, smoke/test/syntactic normalize to pass and proxy/sentinel normalize to flag.",
+				"'pass' = the gate's question is answered affirmatively with concrete evidence. 'flag' = the gate identifies a real problem that blocks advancement. 'warn' = the gate identifies a minor issue that does not block but is recorded for the journey grade (e.g. unresolved MINOR review findings, missing edge-case tests). 'omitted' = the gate doesn't apply to this work (requires rationale). Prefer pass | flag | warn | omitted. If you accidentally use S2 verification labels, smoke/test/syntactic normalize to pass and proxy/sentinel normalize to flag.",
 		},
 	),
 	rationale: Type.String({
@@ -270,7 +271,7 @@ export const CompletePhaseParams = Type.Object({
 	summary: Type.String(),
 	gates: Type.Array(GateVerdictSchema, {
 		description:
-			"Phase-scope gate verdicts. Required ids: F1 (real verification vs proxies), F2 (combined output meets phase goal), F3 (what was deferred). A 'flag' verdict refuses phase advancement and feeds the retry/escalation pipeline.",
+			"Phase-scope gate verdicts. Required ids: F1 (real verification vs proxies), F2 (combined output meets phase goal), F3 (what was deferred). A 'flag' verdict refuses phase advancement and feeds the retry/escalation pipeline. A 'warn' verdict records an advisory issue (e.g. unresolved MINOR review finding) that does not block but penalizes the journey grade. Use 'warn' for MINOR findings the fix agent did not address — never silently drop them.",
 	}),
 })
 

@@ -115,12 +115,21 @@ function flagsFromProjectChecks(result: ProjectCheckResult): JudgeFlag[] {
 function flagsFromGateVerdicts(
 	verdicts: ReadonlyArray<{ id: string; verdict: string; rationale: string; evidence: string }>,
 ): JudgeFlag[] {
-	return flaggedVerdicts(verdicts).map((v) => ({
+	const blockResults = flaggedVerdicts(verdicts).map((v) => ({
 		problem: `Gate ${v.id} flagged: ${v.rationale}`,
 		evidence: v.evidence,
 		severity: "block" as const,
 		redirect: `Address ${v.id} before completing this phase. The flag was self-reported — fix the underlying problem and re-submit the gate with verdict 'pass' (or 'omitted' with rationale if the gate truly does not apply).`,
 	}))
+	const warnResults = verdicts
+		.filter((v) => v.verdict === "warn")
+		.map((v) => ({
+			problem: `Gate ${v.id} warned: ${v.rationale}`,
+			evidence: v.evidence,
+			severity: "warn" as const,
+			redirect: `Advisory: ${v.id} raised a warning. This does not block advancement but is recorded in the journey grade. Address if possible, or accept with rationale.`,
+		}))
+	return [...blockResults, ...warnResults]
 }
 
 function formatManualPhaseBoundaryWait(
