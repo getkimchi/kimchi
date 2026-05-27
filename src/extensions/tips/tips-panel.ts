@@ -28,23 +28,8 @@ export function sourceToLabel(source: string): string {
 	return name.charAt(0).toUpperCase() + name.slice(1)
 }
 
-function fuzzyScore(query: string, text: string): number {
-	const lq = query.toLowerCase()
-	const lt = text.toLowerCase()
-	if (lt.includes(lq)) return 100 + (lq.length / lt.length) * 50
-	let score = 0
-	let qi = 0
-	let consecutive = 0
-	for (let i = 0; i < lt.length && qi < lq.length; i++) {
-		if (lt[i] === lq[qi]) {
-			score += 10 + consecutive
-			consecutive += 5
-			qi++
-		} else {
-			consecutive = 0
-		}
-	}
-	return qi === lq.length ? score : 0
+function tipContainsQuery(query: string, message: string): boolean {
+	return message.toLowerCase().includes(query.toLowerCase())
 }
 
 function groupTips(tips: TipCandidate[]): TipGroup[] {
@@ -138,7 +123,7 @@ export function createTipsPanel(
 		return allGroups
 			.map((group) => ({
 				...group,
-				tips: group.tips.filter((tip) => fuzzyScore(searchQuery, tip.message) > 0),
+				tips: group.tips.filter((tip) => tipContainsQuery(searchQuery, tip.message)),
 			}))
 			.filter((group) => group.tips.length > 0)
 	}
