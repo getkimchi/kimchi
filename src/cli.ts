@@ -383,18 +383,21 @@ try {
 			: resolve(dirname(fileURLToPath(import.meta.url)), "../themes")
 		mkdirSync(themesDir, { recursive: true })
 
+		const startupArgs = process.argv.slice(2)
+		const printMode = startupArgs.includes("--print") || startupArgs.includes("-p")
+		const protocolOutputMode = cliMode === "json" || cliMode === "rpc" || cliMode === "acp"
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
-		// the kimchi-minimal-tints and terminal-colors extensions. Skip in ACP mode —
-		// stdout is the JSON-RPC channel and OSC escapes would corrupt the IDE's
-		// input stream.
-		if (!acpMode) {
+		// the kimchi-minimal-tints and terminal-colors extensions. Skip protocol
+		// and print modes: stdout belongs to the caller, and OSC escapes corrupt it.
+		const terminalStartupOutputAllowed = !protocolOutputMode && !printMode
+		if (terminalStartupOutputAllowed) {
 			await probeTerminalBackground()
 			await probeKittyKeyboardSupport()
 		}
 
 		// Emit warnings for terminals that don't support modifier-aware Enter.
 		// Runs after the keyboard-capability probe so the result is available.
-		emitTerminalCompatWarning(agentDir)
+		if (terminalStartupOutputAllowed) emitTerminalCompatWarning(agentDir)
 
 		// Compare contents and only write when they differ. Restarts in a second
 		// terminal must be byte-identical no-ops because pi runs `fs.watch` on the

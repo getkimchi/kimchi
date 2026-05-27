@@ -101,6 +101,7 @@ function createHarness() {
 		hasUI: false,
 		ui: { notify: vi.fn() },
 		abort: vi.fn(),
+		waitForIdle: vi.fn().mockResolvedValue(undefined),
 	} as unknown as ExtensionCommandContext
 	return { storage, runtime, pi, ctx }
 }
@@ -169,6 +170,7 @@ describe("FermentCommandController", () => {
 			}),
 			{ triggerTurn: true },
 		)
+		expect(h.ctx.waitForIdle).toHaveBeenCalledTimes(1)
 	})
 
 	it("accepts an inline new title without opening an editor in UI mode", async () => {
@@ -562,6 +564,26 @@ describe("FermentCommandController", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith('Usage: /ferment one-shot "description of what to build"')
 		expect(h.storage.list()).toHaveLength(0)
 		expect(h.pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("waits for headless one-shot turns before returning", async () => {
+		const h = createHarness()
+		const controller = new FermentCommandController()
+
+		const result = await controller.execute(
+			{ type: "one-shot", intent: "fix the failing smoke test" },
+			{ raw: 'one-shot "fix the failing smoke test"', pi: h.pi, ctx: h.ctx, runtime: h.runtime },
+		)
+
+		expect(result).toEqual({ handled: true })
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_oneshot_nudge",
+				content: [expect.objectContaining({ text: expect.stringContaining("fix the failing smoke test") })],
+			}),
+			{ triggerTurn: true },
+		)
+		expect(h.ctx.waitForIdle).toHaveBeenCalledTimes(1)
 	})
 
 	it("uses the multi-line editor for free-form goal revisions", async () => {
