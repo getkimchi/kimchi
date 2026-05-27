@@ -10,6 +10,10 @@ function mockTui(): import("@earendil-works/pi-tui").TUI {
 	return { terminal: { rows: 24, columns: 80 }, requestRender: vi.fn() } as unknown as import("@earendil-works/pi-tui").TUI
 }
 
+function stripAnsi(str: string): string {
+	return str.replace(/\x1b\[[0-9;]*m/g, "").replace(/\x1b_pi:c\x07/g, "")
+}
+
 describe("TerminalComponent handleInput", () => {
 	it("passes plain text through as UTF-8", async () => {
 		const session = mockSession()
@@ -154,6 +158,28 @@ describe("TerminalComponent writeRemoteData", () => {
 		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
 		component.writeRemoteData("\x1b[31mred\x1b[0m")
 		const lines = component.render(80)
-		expect(lines[0].trimEnd()).toBe("red")
+		expect(stripAnsi(lines[0]).trimEnd()).toBe("red")
+		expect(lines[0]).toContain("\x1b[38;2;")
+	})
+
+	it("renders plain text without ANSI codes", async () => {
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
+		component.writeRemoteData("hello")
+		const lines = component.render(80)
+		expect(lines[0]).not.toContain("\x1b[")
+		expect(lines[0].trimEnd()).toBe("hello")
+	})
+
+	it("renders styled text with ANSI codes", async () => {
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
+		component.writeRemoteData("\x1b[1;32;41mbold-green-on-red\x1b[0m")
+		const lines = component.render(80)
+		expect(stripAnsi(lines[0]).trimEnd()).toBe("bold-green-on-red")
+		expect(lines[0]).toContain("38;2;")
+		expect(lines[0]).toContain("48;2;")
+		expect(lines[0]).toContain("\x1b[0m")
+		expect(lines[0]).toContain(";1m")
 	})
 })

@@ -1,6 +1,52 @@
-import { CURSOR_MARKER, type TUI, type Component } from "@earendil-works/pi-tui"
+import { CURSOR_MARKER, type TUI, type Component, visibleWidth } from "@earendil-works/pi-tui"
 import { GhosttyCore } from "@wterm/ghostty"
 import type { SshSession } from "./ssh-session.js"
+
+interface CellData {
+  char: number
+  fg: number
+  bg: number
+  flags: number
+  fgRgb?: number
+  bgRgb?: number
+}
+
+const DEFAULT_COLOR = 256
+
+function sgrColor(base: number, code: number, rgb?: number): string {
+  if (rgb !== undefined) {
+    const r = (rgb >> 16) & 0xff
+    const g = (rgb >> 8) & 0xff
+    const b = rgb & 0xff
+    return `${base + 8};2;${r};${g};${b}`
+  }
+  if (code === DEFAULT_COLOR) return String(base + 9)
+  if (code < 8) return String(base + code)
+  if (code < 16) return String(base + code + 82)
+  return `${base + 8};5;${code}`
+}
+
+function cellStyle(cell: CellData): string {
+  const parts: string[] = []
+  if (cell.fgRgb !== undefined) {
+    parts.push(sgrColor(30, DEFAULT_COLOR, cell.fgRgb))
+  } else if (cell.fg !== DEFAULT_COLOR) {
+    parts.push(sgrColor(30, cell.fg))
+  }
+  if (cell.bgRgb !== undefined) {
+    parts.push(sgrColor(40, DEFAULT_COLOR, cell.bgRgb))
+  } else if (cell.bg !== DEFAULT_COLOR) {
+    parts.push(sgrColor(40, cell.bg))
+  }
+  if (cell.flags & 0x01) parts.push("1")
+  if (cell.flags & 0x02) parts.push("2")
+  if (cell.flags & 0x04) parts.push("3")
+  if (cell.flags & 0x08) parts.push("4")
+  if (cell.flags & 0x10) parts.push("5")
+  if (cell.flags & 0x20) parts.push("7")
+  if (cell.flags & 0x80) parts.push("9")
+  return parts.length === 0 ? "" : `\x1b[${parts.join(";")}m`
+}
 
 const KITTY_CSI_U_RE = new RegExp(
   `^\\x1b\\[(\\d+)(?::(\\d*))?(?::(\\d+))?(?:;(\\d+))?(?::(\\d+))?u$`,
@@ -205,32 +251,40 @@ export class TerminalComponent implements Component {
     }
 
     const lines: string[] = []
+    const cursor = this.terminal.getCursor()
+    const cursorRow = this.focused && cursor.visible ? cursor.row : -1
+    const cursorCol = this.focused && cursor.visible ? cursor.col : -1
     for (let i = 0; i < rows; i++) {
-      lines.push(this.getLine(i, width))
-    }
-
-    // Cursor
-    if (this.focused) {
-      const cursor = this.terminal.getCursor()
-      if (cursor.visible && cursor.row >= 0 && cursor.row < lines.length) {
-        const line = lines[cursor.row]
-        lines[cursor.row] =
-          line.slice(0, cursor.col) +
-          CURSOR_MARKER +
-          line.slice(cursor.col)
-      }
+      lines.push(this.getLine(i, width, cursorRow === i ? cursorCol : undefined))
     }
 
     return lines
   }
 
-  private getLine(row: number, width: number): string {
+  private getLine(row: number, width: number, cursorCol?: number): string {
     let text = ""
+    let prevStyle = ""
     for (let col = 0; col < width; col++) {
       const cell = this.terminal.getCell(row, col)
+      const style = cellStyle(cell)
+      if (style !== prevStyle) {
+        text += "\x1b[0m" + style
+        prevStyle = style
+      }
+      if (cursorCol === col) {
+        text += CURSOR_MARKER
+      }
       text += String.fromCodePoint(cell.char)
     }
-    return text.trimEnd().padEnd(width)
+    if (cursorCol === width) {
+      text += CURSOR_MARKER
+    }
+    if (prevStyle !== "") {
+      text += "\x1b[0m"
+    }
+    const trimmed = text.trimEnd()
+    const padCount = width - visibleWidth(trimmed)
+    return trimmed + " ".repeat(Math.max(0, padCount))
   }
 
   setFocus(focused: boolean): void {

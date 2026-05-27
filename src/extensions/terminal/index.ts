@@ -7,8 +7,6 @@ import { TerminalComponent } from "./terminal-component.js"
 import { createGhosttyCore } from "./ghostty-loader.js"
 import { SshSession } from "./ssh-session.js"
 import { parseTerminalArgs } from "./args.js"
-import fs from 'node:fs'
-import { sleep } from "../../modes/teleport/index.js"
 
 export default function terminalExtension(pi: ExtensionAPI): void {
   pi.registerCommand("terminal", {
@@ -38,6 +36,10 @@ export default function terminalExtension(pi: ExtensionAPI): void {
 
           component!.terminal.writeString(`Connecting to ${parsed.host}...\r\n`)
           tui.requestRender()
+          let rows = tui.terminal.rows
+          let cols = tui.terminal.columns
+          parsed.cols = cols
+          parsed.rows = rows
 
           session.connect(parsed, {
             onData: (data) => {

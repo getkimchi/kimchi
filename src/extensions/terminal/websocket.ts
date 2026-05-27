@@ -16,8 +16,8 @@ export async function connectTransport(
     // const { token, expireTime } = await exchangeSessionToken(apiKey, sessionId, { ...options, fetch: fetchImpl })
 
     // const { wsUrl, host } = normalizeWsUri(session.uri)
-    const url = "ws://valid-marital-lorikeet-000000-ce70.remote.kimchi.localhost:30000/ssh"
-    const connectToken = "eyJhbGciOiAiRWREU0EiLCAidHlwIjogIkpXVCIsICJraWQiOiAiWkFIR0NXcjZIY1BCc1BNTVF6enNyNGFxQjdOMmtCR3dUcGZPdU1wVUEwUSJ9.eyJpc3MiOiAibG9jYWwua2ltY2hpLmRldiIsICJleHAiOiAxNzc5ODA2NjEyLCAic2Vzc2lvbl9pZCI6ICJzLWRlMmYxOWRiLWI0YTUtNGE3MS1iNDUzLTFkOWRkN2IxMzQxNCJ9.GHLPGIYyqMZ05J9M18aeOTnpJP4aTOkT-TaNeva1djPmlt0FdJ9sXGGmGIRFjGTkp3F7y4ItLmLcdh791VubDw"
+    const url = "ws://valid-marital-lorikeet-000000-ce70.remote.kimchi.localhost:30000/connect?mode=pty&name=pty-fun"
+    const connectToken = "eyJhbGciOiAiRWREU0EiLCAidHlwIjogIkpXVCIsICJraWQiOiAiWkFIR0NXcjZIY1BCc1BNTVF6enNyNGFxQjdOMmtCR3dUcGZPdU1wVUEwUSJ9.eyJpc3MiOiAibG9jYWwua2ltY2hpLmRldiIsICJleHAiOiAxNzc5ODgwNTY5LCAic2Vzc2lvbl9pZCI6ICJzLWRlMmYxOWRiLWI0YTUtNGE3MS1iNDUzLTFkOWRkN2IxMzQxNCJ9.ssCHo0SrgZluulUG94LVS6FuiLJjB5b5ZzzTr_gQSBtzvST0KjnVjOFlEKVWmRZoXC0BksUPwVVZ-Q73J-RKCQ"
 
     let ws = new WebSocket(url, {
       headers: {

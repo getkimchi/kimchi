@@ -25,9 +25,10 @@ export class SshSession {
     return new Promise(async (resolve, reject) => {
       this.client.on("ready", () => {
         this.client.shell({
-          term: process.env.TERM ?? "xterm-256color",
-          rows: 24,
-          cols: 80,
+          // term: process.env.TERM ?? "xterm-256color",
+          term: "xterm-256color",
+          rows: args.rows ?? 24,
+          cols: args.cols ?? 80,
         }, (err, stream) => {
           if (err) {
             fs.appendFileSync("/tmp/log.txt", `Connenction error: ${(err as Error).message}\n`)
