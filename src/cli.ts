@@ -70,10 +70,10 @@ import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
-import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
+import { installRetryPatch } from "./upstream-retry-patch.js"
 import { getVersion } from "./utils.js"
 
-installCloudflare524RetryPatch()
+installRetryPatch()
 
 // --- PostHog device ID & analytics ---
 // Read or generate device ID (persisted; reused across invocations for
