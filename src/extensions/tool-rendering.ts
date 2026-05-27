@@ -3120,7 +3120,7 @@ function renderMcpToolResult(result: any, expanded: boolean, isPartial: boolean,
 	return makeText(ctx.lastComponent, withBranch(`${statusText}\n${preview}`, theme))
 }
 
-function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, sp: (path: string) => string): string {
+export function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, sp: (path: string) => string): string {
 	switch (name) {
 		case "apply_patch": {
 			const patchText = getStringArg(args, "patchText", "patch_text")
@@ -3159,9 +3159,11 @@ function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, sp: (pat
 			const firstText =
 				typeof qs[0]?.question === "string"
 					? (qs[0].question as string)
-					: typeof qs[0]?.text === "string"
-						? (qs[0].text as string)
-						: ""
+					: typeof qs[0]?.prompt === "string"
+						? (qs[0].prompt as string)
+						: typeof qs[0]?.text === "string"
+							? (qs[0].text as string)
+							: ""
 			if (!firstText) return `${qs.length} question${qs.length === 1 ? "" : "s"}`
 			if (qs.length === 1) return summarizeText(firstText, 72)
 			return `${summarizeText(firstText, 48)} ${theme.fg("muted", `(+${qs.length - 1} more)`)}`

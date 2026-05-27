@@ -257,7 +257,13 @@ describe("request_ferment_workflow approval gate", () => {
 	}
 
 	it("refuses to start when the user has not approved the start-ferment question", async () => {
-		const text = err(await h.call("request_ferment_workflow", { title: "No Consent" }, createWorkflowCtx()))
+		const text = err(
+			await h.call(
+				"request_ferment_workflow",
+				{ title: "No Consent", intent: "Find improvements to this extension." },
+				createWorkflowCtx(),
+			),
+		)
 
 		expect(text).toContain("request_ferment_workflow refused")
 		expect(text).toContain("explicitly approved starting a ferment")
@@ -270,10 +276,22 @@ describe("request_ferment_workflow approval gate", () => {
 			[{ id: "start", value: "yes", label: "Yes", wasCustom: false, index: 1 }],
 		)
 
-		const text = ok(await h.call("request_ferment_workflow", { title: "Approved Ferment" }, createWorkflowCtx()))
+		const text = ok(
+			await h.call(
+				"request_ferment_workflow",
+				{
+					title: "Approved Ferment",
+					intent: "Find improvements to this extension, but do not implement anything until I approve the plan.",
+				},
+				createWorkflowCtx(),
+			),
+		)
 
 		expect(text).toContain('Ferment "Approved Ferment" created')
 		expect(getActive()?.status).toBe("draft")
+		expect(getActive()?.description).toBe(
+			"Find improvements to this extension, but do not implement anything until I approve the plan.",
+		)
 		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBe(getActive()?.id)
 	})
 
@@ -281,10 +299,17 @@ describe("request_ferment_workflow approval gate", () => {
 		const previous = process.env.KIMCHI_PERMISSIONS
 		process.env.KIMCHI_PERMISSIONS = "yolo"
 		try {
-			const text = ok(await h.call("request_ferment_workflow", { title: "Yolo Ferment" }, createWorkflowCtx()))
+			const text = ok(
+				await h.call(
+					"request_ferment_workflow",
+					{ title: "Yolo Ferment", intent: "Create a Go app with Gin and integrate Kimchi plugin logic." },
+					createWorkflowCtx(),
+				),
+			)
 
 			expect(text).toContain('Ferment "Yolo Ferment" created')
 			expect(getActive()?.status).toBe("draft")
+			expect(getActive()?.description).toBe("Create a Go app with Gin and integrate Kimchi plugin logic.")
 		} finally {
 			process.env.KIMCHI_PERMISSIONS = previous
 		}

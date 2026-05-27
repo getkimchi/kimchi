@@ -110,6 +110,7 @@ describe("buildFermentPromptBlock", () => {
 			const out = buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime())
 			expect(out).toContain("Ferment Workflow")
 			expect(out).toContain("questionnaire")
+			expect(out).toContain("`intent` containing the full original user request")
 			expect(out).toContain("Never block")
 		})
 	})

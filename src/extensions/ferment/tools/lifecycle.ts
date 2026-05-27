@@ -752,10 +752,14 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 		name: FERMENT_TOOLS.REQUEST_WORKFLOW,
 		label: "Start Ferment Workflow",
 		description:
-			'Start the ferment workflow (interactive scoping → planner) on the user\'s behalf. Call this ONLY after the user has explicitly answered "yes" to the questionnaire asking if they want to start a ferment. Provide a concise 3-5 word title. The host will create the draft, kick off scoping, and you will see a planner supplement on the next turn. Refuses if another ferment is already running.',
+			'Start the ferment workflow (interactive scoping → planner) on the user\'s behalf. Call this ONLY after the user has explicitly answered "yes" to the questionnaire asking if they want to start a ferment. Provide a concise 3-5 word title and the full original user intent. The host will create the draft, kick off scoping, and you will see a planner supplement on the next turn. Refuses if another ferment is already running.',
 		parameters: Type.Object({
 			title: Type.String({
 				description: "Concise 3-5 word title for the new ferment (e.g. 'Rewrite login flow').",
+			}),
+			intent: Type.String({
+				description:
+					"Full original user request, preserving all constraints, scope details, and wording that the scoping turn needs.",
 			}),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -766,11 +770,14 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 					'request_ferment_workflow refused — the user has not explicitly approved starting a ferment. First call questionnaire with exactly one confirm question asking "This looks like multi-phase work — start a ferment for it?". If the user answers Yes, call request_ferment_workflow again. In yolo mode this approval gate is bypassed.',
 				)
 			}
+			const intent = typeof params.intent === "string" ? params.intent.trim() : ""
+			if (!intent) return toolErr('Field "intent" must be the full non-empty user request.')
 			const result = await startFermentForIntent({
 				pi,
 				ctx: ctx as unknown as FermentUiContext,
 				runtime,
-				rawIntent: title,
+				rawIntent: intent,
+				title,
 			})
 			if (!result) {
 				return toolErr(

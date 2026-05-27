@@ -206,11 +206,13 @@ export async function startFermentForIntent({
 	ctx,
 	runtime = defaultFermentRuntime,
 	rawIntent,
+	title,
 }: {
 	pi: ExtensionAPI
 	ctx: FermentUiContext
 	runtime?: FermentRuntime
 	rawIntent: string
+	title?: string
 }): Promise<{ name: string } | undefined> {
 	const active = runtime.getActive()
 	if (active && active.status === "running") {
@@ -226,7 +228,7 @@ export async function startFermentForIntent({
 		// ui.confirm being available means the user can decline; ferment proceeds
 		// either way with whatever branch/commit info is present.
 		await ensureGitRepo({ ui: ctx.ui })
-		const shortName = deriveDraftFermentTitle(rawIntent)
+		const shortName = deriveDraftFermentTitle(title ?? rawIntent)
 		const f = storage.create(shortName, rawIntent)
 		setActiveFermentAndApplyProfile(pi, runtime, f)
 		appendRefEntry(pi, f.id)

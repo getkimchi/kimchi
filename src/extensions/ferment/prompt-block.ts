@@ -103,7 +103,7 @@ Ferment is a phased workflow (plan → build → review) with subagent delegatio
 
 **Ferment offer — ONE question only, this turn:**
 1. Call \`questionnaire\` with EXACTLY ONE confirm-type question: "This looks like multi-phase work — start a ferment for it?". No clarifying questions in this call. No prose narration first. Do not answer with a prose workflow menu like "Option A: Ferment / Option B: Inline"; the offer must be the questionnaire tool.
-2. If user picks **yes**: call \`request_ferment_workflow\` with a concise 3-5 word \`title\` derived from the user's text alone (use defaults if details are missing; the ferment's own scoping turn collects details). Then STOP this turn — the host queues a scoping turn that refreshes your tool surface (\`propose_ferment_scoping\` and the lifecycle tools appear). Do not list ferments, read files, or do any discovery in this turn.
+2. If user picks **yes**: call \`request_ferment_workflow\` with a concise 3-5 word \`title\` derived from the user's text alone and an \`intent\` containing the full original user request, preserving all constraints and wording. Then STOP this turn — the host queues a scoping turn that refreshes your tool surface (\`propose_ferment_scoping\` and the lifecycle tools appear). Do not list ferments, read files, or do any discovery in this turn.
 3. If user picks **no**: now you may ask any clarifying questions needed for the inline approach (one \`questionnaire\` call, up to 3 questions), then implement directly.
 
 **Questionnaire schema discipline:**
