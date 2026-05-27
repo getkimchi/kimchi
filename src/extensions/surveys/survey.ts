@@ -11,6 +11,7 @@ import {
 	truncateToWidth,
 } from "@earendil-works/pi-tui"
 import { readSurveySeenAt, writeSurveySeenAt } from "../../config.js"
+import { setTipWidgetLocation } from "../tips/index.js"
 
 export const INITIAL_SURVEY = {
 	id: "first-impression-feedback-v1",
@@ -77,10 +78,16 @@ export async function showInitialSurvey(ctx: ExtensionContext, options: ShowInit
 		options.onShown?.(options.trigger)
 	}
 
-	const result = await ctx.ui.custom<InitialSurveyResult>((tui, theme, _kb, done) => {
-		const component = new InitialSurveyComponent(theme, () => tui.requestRender(), done, markRendered)
-		return component
-	})
+	const restoreTips = setTipWidgetLocation("hidden")
+	let result: InitialSurveyResult
+	try {
+		result = await ctx.ui.custom<InitialSurveyResult>((tui, theme, _kb, done) => {
+			const component = new InitialSurveyComponent(theme, () => tui.requestRender(), done, markRendered)
+			return component
+		})
+	} finally {
+		restoreTips()
+	}
 
 	if (result.kind === "answered") {
 		options.onAnswered?.(result.answerId, options.trigger)
@@ -156,7 +163,7 @@ export class InitialSurveyComponent extends Container {
 		const titleText = `${titlePrefix}${title} `
 		const ruleWidth = Math.max(3, safeWidth - titleText.length)
 		this.titleText.setText(this.theme.fg("accent", `${titleText}${"─".repeat(ruleWidth)}`))
-		this.helpText.setText(this.theme.fg("muted", truncateToWidth(INITIAL_SURVEY.question.help, safeWidth)))
+		this.helpText.setText(this.theme.fg("text", truncateToWidth(INITIAL_SURVEY.question.help, safeWidth)))
 		this.bottomRule.setText(this.theme.fg("accent", "─".repeat(safeWidth)))
 		return super.render(width)
 	}

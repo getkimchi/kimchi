@@ -3,8 +3,17 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component, TUI } from "@earendil-works/pi-tui"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { INITIAL_SURVEY, InitialSurveyComponent, _resetSurveyStateForTests, showInitialSurvey } from "./survey.js"
+
+const tipWidgetLocationMock = vi.hoisted(() => ({
+	restore: vi.fn(),
+	set: vi.fn(),
+}))
+
+vi.mock("../tips/index.js", () => ({
+	setTipWidgetLocation: tipWidgetLocationMock.set,
+}))
 
 function theme(): Theme {
 	return {
@@ -24,12 +33,19 @@ function theme(): Theme {
 describe("initial survey UI", () => {
 	afterEach(() => {
 		_resetSurveyStateForTests()
-		vi.restoreAllMocks()
+		vi.clearAllMocks()
+	})
+
+	beforeEach(() => {
+		tipWidgetLocationMock.restore.mockReset()
+		tipWidgetLocationMock.set.mockReset()
+		tipWidgetLocationMock.set.mockReturnValue(tipWidgetLocationMock.restore)
 	})
 
 	it("renders the survey design with Text, Spacer, and SelectList composition", () => {
 		let result: unknown
-		const component = new InitialSurveyComponent(theme(), vi.fn(), (value) => {
+		const surveyTheme = theme()
+		const component = new InitialSurveyComponent(surveyTheme, vi.fn(), (value) => {
 			result = value
 		})
 
@@ -39,6 +55,10 @@ describe("initial survey UI", () => {
 		expect(lines.join("\n")).toContain("Worked great")
 		expect(lines.join("\n")).toContain("Mostly worked")
 		expect(lines.join("\n")).toContain("- tweak before merge")
+		expect(surveyTheme.fg).toHaveBeenCalledWith(
+			"text",
+			"your rating tunes the orchestrator's defaults for the next run.",
+		)
 
 		component.handleInput("\x1b[B")
 		component.handleInput("\r")
@@ -106,6 +126,31 @@ describe("initial survey UI", () => {
 			expect(custom).toHaveBeenCalledTimes(1)
 			expect(raw.surveys[INITIAL_SURVEY.id].seenAt).toBe("2026-05-27T10:00:00.000Z")
 			expect(dismissed).toHaveBeenCalledWith("escape", "third_coding_prompt")
+			expect(tipWidgetLocationMock.set).toHaveBeenCalledWith("hidden")
+			expect(tipWidgetLocationMock.restore).toHaveBeenCalledTimes(1)
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true })
+		}
+	})
+
+	it("restores tips when the survey UI fails", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "kimchi-survey-"))
+		const configPath = join(tempDir, "config.json")
+		try {
+			const ctx = {
+				hasUI: true,
+				ui: {
+					custom: vi.fn(async () => {
+						throw new Error("boom")
+					}),
+					notify: vi.fn(),
+				},
+			} as unknown as ExtensionContext
+
+			await expect(showInitialSurvey(ctx, { configPath, trigger: "third_coding_prompt" })).rejects.toThrow("boom")
+
+			expect(tipWidgetLocationMock.set).toHaveBeenCalledWith("hidden")
+			expect(tipWidgetLocationMock.restore).toHaveBeenCalledTimes(1)
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true })
 		}
