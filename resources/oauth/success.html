@@ -1,76 +1,171 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{TITLE}}</title>
+  <link rel="preconnect" href="https://api.fontshare.com" />
+  <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700&display=swap" rel="stylesheet" />
   <style>
-    :root {
-      --text: #fafafa;
-      --text-dim: #a1a1aa;
-      --page-bg: #09090b;
-      --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
-      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-    }
-    * { box-sizing: border-box; }
-    html { color-scheme: dark; }
-    body {
+    *, *::before, *::after {
+      box-sizing: border-box;
       margin: 0;
-      min-height: 100vh;
+      padding: 0;
+    }
+
+    html, body {
+      height: 100%;
+      width: 100%;
+    }
+
+    body {
+      background-color: #0b0b0e;
+      color: #fafafa;
+      font-family: 'Satoshi', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 24px;
-      background: var(--page-bg);
-      color: var(--text);
-      font-family: var(--font-sans);
-      text-align: center;
+      min-height: 100vh;
+      overflow: hidden;
+      position: relative;
     }
-    main {
+
+    /* ── Background SVG ──────────────────────────────── */
+    .bg-svg {
+      position: fixed;
+      inset: 0;
       width: 100%;
-      max-width: 560px;
+      height: 100%;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Content ──────────────────────────────────────── */
+    .content {
+      position: relative;
+      z-index: 2;
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
+      gap: 32px;
     }
-    .logo {
+
+    /* Logo */
+    .logo-wrap {
+      display: flex;
+      align-items: center;
+      opacity: 0;
+      transform: translateY(-12px);
+      animation: fadeUp 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.1s forwards;
+    }
+
+    .logo-wrap svg {
+      height: 40px;
       width: auto;
-      height: 48px;
-      display: block;
-      margin: 0 auto 24px;
-    }
-    .logo svg {
-      width: auto;
-      height: 100%;
       display: block;
     }
-    h1 {
-      margin: 0 0 10px;
-      font-size: 28px;
-      line-height: 1.15;
-      font-weight: 650;
-      color: var(--text);
+
+    /* Card */
+    .card {
+      background: rgba(28, 28, 36, 0.88);
+      border: 1px solid rgba(234, 231, 226, 0.09);
+      border-radius: 20px;
+      padding: 44px 52px;
+      width: 360px;
+      text-align: center;
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      opacity: 0;
+      transform: translateY(16px);
+      animation: fadeUp 0.6s cubic-bezier(0.22, 1, 0.36, 1) 0.25s forwards;
     }
-    p {
-      margin: 0;
-      line-height: 1.7;
-      color: var(--text-dim);
-      font-size: 15px;
+
+    .card h1 {
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: #fafafa;
+      line-height: 1.3;
     }
-    .details {
-      margin-top: 16px;
-      font-family: var(--font-mono);
-      font-size: 13px;
-      color: var(--text-dim);
+
+    .card p {
+      font-size: 13.5px;
+      font-weight: 400;
+      color: #a1a1aa;
+      line-height: 1.6;
+    }
+
+    .card .details {
+      margin-top: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+      font-size: 12px;
+      color: #a1a1aa;
       white-space: pre-wrap;
       word-break: break-word;
+      text-align: left;
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 10px;
+      padding: 12px 14px;
+    }
+
+    /* ── Animations ───────────────────────────────────── */
+    @keyframes fadeUp {
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes popIn {
+      to {
+        opacity: 1;
+        transform: scale(1);
+      }
     }
   </style>
 </head>
 <body>
-  <main>
-    <div class="logo">
+
+  <!-- SVG background gradient -->
+  <svg class="bg-svg" viewBox="0 0 1440 916" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <g clip-path="url(#clip0)">
+      <rect width="1440" height="916" fill="#0A0A0D"></rect>
+      <circle cx="1643.73" cy="-109" r="602.269" fill="url(#paint0)"></circle>
+      <circle cx="1214.01" cy="1117.99" r="761.28" fill="url(#paint1)"></circle>
+      <circle cx="639.798" cy="971.665" r="950.892" fill="url(#paint2)"></circle>
+      <circle cx="840.81" cy="1199.83" r="629.662" fill="url(#paint3)"></circle>
+    </g>
+    <defs>
+      <radialGradient id="paint0" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(1643.73 -109) rotate(91.3362) scale(602.433)">
+        <stop stop-color="#AC3D1A"></stop>
+        <stop offset="1" stop-color="#0A0A0D" stop-opacity="0"></stop>
+      </radialGradient>
+      <radialGradient id="paint1" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(1214.01 1117.99) rotate(91.3362) scale(761.487)">
+        <stop stop-color="#36C3C4"></stop>
+        <stop offset="1" stop-color="#0A0A0D" stop-opacity="0"></stop>
+      </radialGradient>
+      <radialGradient id="paint2" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(639.798 971.665) rotate(91.3362) scale(951.151)">
+        <stop stop-color="#AC3D1A"></stop>
+        <stop offset="1" stop-color="#0A0A0D" stop-opacity="0"></stop>
+      </radialGradient>
+      <radialGradient id="paint3" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(840.81 1199.83) rotate(91.3362) scale(629.834)">
+        <stop stop-color="#BD978E"></stop>
+        <stop offset="0.889427" stop-color="#0A0A0D" stop-opacity="0"></stop>
+      </radialGradient>
+      <clipPath id="clip0">
+        <rect width="1440" height="916" fill="white"></rect>
+      </clipPath>
+    </defs>
+  </svg>
+
+  <!-- Main content -->
+  <div class="content">
+
+    <!-- Kimchi wordmark -->
+    <div class="logo-wrap">
       <svg width="471" height="104" viewBox="0 0 471 104" fill="none" xmlns="http://www.w3.org/2000/svg">
         <path d="M454.815 34.482L462.021 35.871L469.313 34.482V84.4004H454.815V34.482ZM462.021 29.3599C459.416 29.3599 457.275 28.6943 455.597 27.3632C453.976 25.9741 453.166 24.151 453.166 21.8939C453.166 19.5788 453.976 17.7557 455.597 16.4245C457.275 15.0355 459.416 14.341 462.021 14.341C464.683 14.341 466.825 15.0355 468.445 16.4245C470.066 17.7557 470.876 19.5788 470.876 21.8939C470.876 24.151 470.066 25.9741 468.445 27.3632C466.825 28.6943 464.683 29.3599 462.021 29.3599Z" fill="white"/>
         <path d="M391.715 17.5529H406.213V84.4002H391.715V17.5529ZM425.052 33.7004C429.74 33.7004 433.734 34.6554 437.032 36.5653C440.331 38.4174 442.849 41.0797 444.585 44.5523C446.322 48.0249 447.19 52.163 447.19 56.9668V84.4002H432.692V59.1372C432.692 54.6807 431.621 51.3238 429.48 49.0666C427.338 46.7516 424.242 45.5941 420.19 45.5941C417.354 45.5941 414.866 46.2307 412.724 47.504C410.641 48.7194 409.02 50.4267 407.863 52.626C406.763 54.8254 406.213 57.4587 406.213 60.5262L401.438 58.0086C402.075 52.7997 403.464 48.4011 405.606 44.8127C407.805 41.2244 410.583 38.4753 413.94 36.5653C417.297 34.6554 421.001 33.7004 425.052 33.7004Z" fill="white"/>
@@ -82,9 +177,15 @@
         <path d="M68.4459 24.9438C69.8639 24.1762 71.6471 23.7178 73.4821 24.2163C73.8278 24.2966 74.1339 24.3916 74.4362 24.5024L75.9186 25.0464L75.5104 26.5727C75.3469 27.1827 75.202 27.723 75.0387 28.3325L74.6442 29.8042L73.1354 29.5972C73.0242 29.5819 72.9246 29.5753 72.8082 29.5747C72.2474 29.5865 71.7542 29.8645 71.2662 30.6772C70.8883 31.307 70.5939 32.1486 70.3815 33.1079C74.871 36.0331 77.8444 41.0994 77.8444 46.8638C77.8443 49.5292 77.2072 52.0505 76.0758 54.2798C71.5108 64.3996 54.1783 84.8815 23.4655 79.0083C21.8797 78.7048 20.9918 77.4165 20.902 76.1245C20.8141 74.8561 21.479 73.487 22.8981 72.8813C31.0698 69.394 35.5884 65.7091 38.5983 61.2329C41.6553 56.6866 43.2606 51.1907 45.3287 43.7251C46.7942 36.1645 53.4462 30.4547 61.4362 30.4546L61.8834 30.4604C62.4398 30.4755 62.9894 30.519 63.5309 30.5884C63.9515 29.7288 64.4424 28.8863 65.0211 28.0659L65.1745 27.8423C65.9623 26.731 67.1108 25.6667 68.4459 24.9438Z" fill="#18181A"/>
       </svg>
     </div>
-    <h1>{{HEADING}}</h1>
-    <p>{{MESSAGE}}</p>
-    {{DETAILS}}
-  </main>
+
+    <!-- Success card -->
+    <div class="card">
+      <h1>{{HEADING}}</h1>
+      <p>{{MESSAGE}}</p>
+      {{DETAILS}}
+    </div>
+
+  </div>
+
 </body>
 </html>
