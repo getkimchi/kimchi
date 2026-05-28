@@ -127,9 +127,16 @@ If any chunk fails either check, the verdict MUST be NEEDS_REVISION with the spe
 
 The review agent runs tests, checks lint, and verifies the implementation matches the spec, then writes all findings to the review file. It must NOT fix issues itself — only report them.
 
-**Handling review results:** After the review agent completes, read ONLY the review file — do NOT re-read source files yourself. If the verdict is APPROVED, the review phase is done. If the verdict is NEEDS_FIXES, delegate a fix agent: pass it the review file path and the spec file path. The fix agent reads the review findings, applies the fixes, and runs tests. Do NOT fix issues yourself.
+**Handling review results:** After the review agent completes, read ONLY the review file — do NOT re-read source files yourself. If the verdict is APPROVED, the review phase is done. If the verdict is NEEDS_FIXES, delegate a fix agent: pass it the review file path and the spec file path.
 
-**Review verdicts are final**: Never edit a review report to change its verdict. If the reviewer flagged real issues, delegate a fix agent, then optionally re-run review with a fresh agent. If a flag is genuinely wrong, add a separate rationale note alongside the original review — do not alter the reviewer's output.
+**Fix agent contract:** Instruct the fix agent to: (1) read the review findings file, (2) apply all fixes, (3) run the full test suite and lint (\`go test -race ./...\`, \`go vet ./...\`, or equivalent), (4) write a verification report to the Documents directory (e.g. \`.kimchi/docs/verification.md\`) containing:
+- **Test output**: pass/fail count, any failures
+- **Lint output**: any warnings or errors
+- **Verdict**: ALL_PASS or HAS_FAILURES
+
+**After the fix agent completes:** Read ONLY the verification file. If the verdict is ALL_PASS, the review phase is complete — produce the final summary and stop. Do NOT re-read source files, do NOT run tests yourself, do NOT grep or smoke-test. The fix agent already verified. If the verdict is HAS_FAILURES, spawn another fix agent with the remaining failures. Maximum two fix rounds; if still failing after two rounds, report the remaining issues to the user and stop.
+
+**Review verdicts are final**: Never edit a review report to change its verdict. If a flag is genuinely wrong, add a separate rationale note alongside the original review — do not alter the reviewer's output.
 
 **Orchestrator discipline**: Between delegation calls, you may do at most 5 tool calls (e.g. reading the spec file, setting the phase, checking a subagent result). If you find yourself doing reads, edits, bash calls, or writes on implementation files, STOP — you are doing a subagent's job. Delegate it instead. **Post-abort anti-pattern**: When a subagent aborts (budget or turns), do NOT manually complete its remaining work — this is the most common violation. Spawn a follow-up Agent scoped to the unfinished portion. List what the aborted agent completed and what remains. The orchestrator orchestrates; it does not build.
 
