@@ -145,7 +145,7 @@ Use the **Available Models** section above to pick the right model for each dele
 
 Review is often the most token-intensive phase — it involves reading files, running tests, writing smoke harnesses, and iterating on fixes. Most of this work is mechanical verification, not architectural judgment.
 
-- **Delegate mechanical review to a standard-tier model.** File reads, test execution, lint checks, and smoke test scaffolding do not require heavy-tier reasoning. Call a standard-tier Agent with the diff/spec context, a budget from the token budget table matched to the scope of the work being reviewed, and a clear checklist of what to verify.
+- **Delegate review to a standard-tier model — never a light-tier model.** Review requires deeper reasoning than build: understanding intent, catching edge cases, verifying spec compliance. A light-tier model with review in its strengths may still produce shallow or zero-issue reviews. Prefer a standard-tier model for review even if a lighter option exists. Call the review Agent with the diff/spec context, a budget from the token budget table matched to the scope of the work being reviewed, and a clear checklist of what to verify.
 - **Always use a different model than build/plan.** Review must be performed by a model that did not do the plan or build work. This is mandatory, not a preference — self-review has no value. Fresh eyes catch different issues and reduce over-reliance on a single model's biases.
 - **Reserve the orchestrator for the final judgment call.** Once the review Agent returns its findings, assess the results yourself: is the architecture sound? Do the interfaces match the spec? Are there design-level issues the automated checks could not catch?
 - **Never run a full review loop yourself when a cheaper model can do it.** If you find yourself reading files, running \`go test\`, and fixing lint errors in sequence, that is mechanical work — delegate it.
@@ -160,14 +160,16 @@ If the user explicitly asks for the Agent tool with a specific \`token_budget\`,
 
 | Agent task scope | token_budget | max_turns |
 |---|---|---|
-| Single file (one module, one test file, one doc) | 50000 | 12 |
+| Single file (one module, one test file, one doc) | 50000 | 15 |
 | Multi-file package (concurrent logic, worker pools, complex state) | 150000 | 30 |
 | Full project or large codebase exploration | 100000 | 25 |
 | Plan or research document (writing, not coding) | 60000 | 10 |
 
 Use the **multi-file package** tier when a build chunk involves concurrency primitives, worker pools, channels, or complex state machines — these require more iterative test-fix cycles than simple CRUD code. When in doubt between single-file and multi-file, prefer the larger budget — an abort followed by a follow-up agent costs more total tokens than a generous initial budget.
 
-The turn cap prevents debug-loop budget exhaustion — an agent that hasn't converged in 12 turns is unlikely to converge in 20. If an Agent hits its budget or turn cap, spawn a follow-up with the remaining work rather than raising the budget. The follow-up prompt must list what the first agent completed and what remains.
+**Fix agents** must read review findings, modify code across multiple files, and run the full test suite — this is inherently multi-file work. Always use at least the **multi-file package** budget (150,000 / 30 turns) for fix agents, even if the fixes appear simple. An under-budgeted fix agent that aborts costs more total tokens than a generously budgeted one that completes in fewer turns.
+
+The turn cap prevents debug-loop budget exhaustion — an agent that hasn't converged in 15 turns is unlikely to converge in 25. If an Agent hits its budget or turn cap, spawn a follow-up with the remaining work rather than raising the budget. The follow-up prompt must list what the first agent completed and what remains.
 
 ### What makes a good plan
 

@@ -70,7 +70,7 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("Prefer cheaper models for mechanical work")
 	})
 
-	it("includes the simple 4-row budget table", () => {
+	it("includes the simple 4-row budget table with 15 turn cap for single file", () => {
 		const result = resolveOrchestrationInstructions({
 			currentModelId: "kimi-k2.6",
 			registry,
@@ -78,9 +78,9 @@ describe("resolveOrchestrationInstructions", () => {
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("| Single file")
-		expect(result).toContain("50000")
+		expect(result).toContain("| 50000 | 15 |")
 		expect(result).toContain("| Multi-file package")
-		expect(result).toContain("150000")
+		expect(result).toContain("| 150000 | 30 |")
 	})
 
 	it("populates model catalogue from roles config", () => {
@@ -200,6 +200,29 @@ describe("resolveOrchestrationInstructions", () => {
 		})
 		expect(result).toContain("review_findings.md")
 		expect(result).toContain("severity (MAJOR/MINOR)")
+	})
+
+	it("steers review toward standard-tier and away from light-tier models", () => {
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("never a light-tier model")
+		expect(result).toContain("Prefer a standard-tier model for review")
+	})
+
+	it("requires multi-file package budget for fix agents", () => {
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("Fix agents")
+		expect(result).toContain("multi-file package")
+		expect(result).toContain("150,000")
 	})
 
 	it("includes post-abort delegation rule", () => {
