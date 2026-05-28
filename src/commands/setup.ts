@@ -18,11 +18,6 @@ export async function runSetup(_args: string[]): Promise<number> {
 		return 130
 	}
 
-	// Track each selected tool individually
-	for (const tool of result.selectedTools) {
-		sendPreSessionEvent(telemetryConfig, "tool_configured", { tool_name: tool })
-	}
-
 	sendPreSessionEvent(telemetryConfig, "setup_completed", {
 		tools_count: result.selectedTools.length,
 		scope: result.scope ?? "global",

@@ -26,7 +26,13 @@ vi.mock("../setup-wizard/apply-tools.js", () => ({
 	applyToolConfigs: vi.fn(),
 }))
 
+vi.mock("../extensions/telemetry/pre-session.js", () => ({
+	sendPreSessionEvent: vi.fn(),
+	drain: vi.fn().mockResolvedValue(undefined),
+}))
+
 import { isTelemetryExplicitlyConfigured, readTelemetryConfig } from "../config.js"
+import { drain, sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 import { updateModelsConfig } from "../models.js"
 import { applyToolConfigs } from "../setup-wizard/apply-tools.js"
 import { promptTelemetry } from "../setup-wizard/steps/telemetry.js"
@@ -35,6 +41,14 @@ import { popScope, resolveApiKey } from "./_helpers.js"
 import { runSetupTools } from "./setup-tools.js"
 
 describe("runSetupTools", () => {
+	const mockTelemetryConfig = {
+		enabled: true,
+		endpoint: "https://example.com",
+		metricsEndpoint: "https://example.com",
+		headers: { Authorization: "Bearer test" },
+		apiKey: "test-key",
+	}
+
 	beforeEach(() => {
 		vi.resetModules()
 		vi.clearAllMocks()
@@ -42,13 +56,9 @@ describe("runSetupTools", () => {
 		vi.mocked(popScope).mockReturnValue("global")
 		// Default: telemetry already configured (most tests don't care about the prompt)
 		vi.mocked(isTelemetryExplicitlyConfigured).mockReturnValue(true)
-		vi.mocked(readTelemetryConfig).mockReturnValue({
-			enabled: true,
-			endpoint: "",
-			metricsEndpoint: "",
-			headers: {},
-			apiKey: "",
-		})
+		vi.mocked(readTelemetryConfig).mockReturnValue(mockTelemetryConfig)
+		vi.mocked(sendPreSessionEvent).mockClear()
+		vi.mocked(drain as ReturnType<typeof vi.fn>).mockClear()
 	})
 
 	afterEach(() => {
@@ -151,5 +161,95 @@ describe("runSetupTools", () => {
 		const result = await runSetupTools([])
 		expect(result).toBe(1)
 		expect(applyToolConfigs).not.toHaveBeenCalled()
+	})
+
+	it("does not send telemetry when telemetry is disabled", async () => {
+		vi.mocked(resolveApiKey).mockReturnValue("test-key")
+		vi.mocked(promptToolSelection).mockResolvedValue({ kind: "next", value: ["cursor"] })
+		vi.mocked(isTelemetryExplicitlyConfigured).mockReturnValue(true)
+		vi.mocked(readTelemetryConfig).mockReturnValue({
+			enabled: false,
+			endpoint: "",
+			metricsEndpoint: "",
+			headers: {},
+			apiKey: "",
+		})
+		vi.mocked(updateModelsConfig).mockResolvedValue({
+			models: [{ id: "kimi-k2.5" }],
+			// biome-ignore lint/suspicious/noExplicitAny: test data
+		} as any)
+		vi.mocked(applyToolConfigs).mockResolvedValue({ successes: ["Cursor"], failures: [] })
+
+		const result = await runSetupTools([])
+		expect(result).toBe(0)
+		expect(sendPreSessionEvent).not.toHaveBeenCalled()
+	})
+
+	it("sends tools_setup_aborted when user cancels at tool selection", async () => {
+		vi.mocked(resolveApiKey).mockReturnValue("test-key")
+		vi.mocked(promptToolSelection).mockResolvedValue({ kind: "cancel" })
+
+		const result = await runSetupTools([])
+		expect(result).toBe(1)
+		expect(sendPreSessionEvent).toHaveBeenCalledWith(mockTelemetryConfig, "tools_setup_aborted", {
+			step: "tools",
+		})
+	})
+
+	it("sends tools_setup_aborted with step telemetry when user cancels at telemetry prompt", async () => {
+		vi.mocked(resolveApiKey).mockReturnValue("test-key")
+		vi.mocked(promptToolSelection).mockResolvedValue({ kind: "next", value: ["cursor"] })
+		vi.mocked(isTelemetryExplicitlyConfigured).mockReturnValue(false)
+		vi.mocked(promptTelemetry).mockResolvedValue({ kind: "cancel" })
+
+		const result = await runSetupTools([])
+		expect(result).toBe(1)
+		expect(sendPreSessionEvent).toHaveBeenCalledWith(mockTelemetryConfig, "tools_setup_aborted", {
+			step: "telemetry",
+		})
+	})
+
+	it("sends tools_setup_aborted with step models when model fetch fails", async () => {
+		vi.mocked(resolveApiKey).mockReturnValue("test-key")
+		vi.mocked(promptToolSelection).mockResolvedValue({ kind: "next", value: ["cursor"] })
+		vi.mocked(updateModelsConfig).mockRejectedValue(new Error("network error"))
+
+		const result = await runSetupTools([])
+		expect(result).toBe(1)
+		expect(sendPreSessionEvent).toHaveBeenCalledWith(mockTelemetryConfig, "tools_setup_aborted", {
+			step: "models",
+		})
+	})
+
+	it("sends tool_configured for each success and tools_setup_completed on success", async () => {
+		vi.mocked(resolveApiKey).mockReturnValue("test-key")
+		vi.mocked(promptToolSelection).mockResolvedValue({ kind: "next", value: ["cursor", "opencode"] })
+		vi.mocked(updateModelsConfig).mockResolvedValue({
+			models: [{ id: "kimi-k2.5" }],
+			// biome-ignore lint/suspicious/noExplicitAny: test data
+		} as any)
+		vi.mocked(applyToolConfigs).mockResolvedValue({
+			successes: ["Cursor", "OpenCode"],
+			failures: [],
+		})
+
+		const result = await runSetupTools([])
+		expect(result).toBe(0)
+
+		// One tool_configured per success
+		expect(sendPreSessionEvent).toHaveBeenCalledWith(mockTelemetryConfig, "tool_configured", {
+			tool_name: "Cursor",
+		})
+		expect(sendPreSessionEvent).toHaveBeenCalledWith(mockTelemetryConfig, "tool_configured", {
+			tool_name: "OpenCode",
+		})
+
+		// tools_setup_completed with correct payload
+		expect(sendPreSessionEvent).toHaveBeenCalledWith(mockTelemetryConfig, "tools_setup_completed", {
+			tools_count: 2,
+			scope: "global",
+			mode: "override",
+			failures: 0,
+		})
 	})
 })
