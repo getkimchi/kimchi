@@ -35,7 +35,7 @@ export function renderTipText(message: string, theme: Theme, width: number): str
 }
 
 function formatTipContent(message: string, theme: Theme): string {
-	return `${theme.fg("success", "Tip:")} ${formatTipMessage(message, theme)}`
+	return `${theme.fg("muted", "Tip:")} ${formatTipMessage(message, theme)}`
 }
 
 export function formatTipMessage(message: string, theme: Theme): string {
