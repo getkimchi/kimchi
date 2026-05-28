@@ -1363,7 +1363,11 @@ function applyThemePaletteIfNeeded(theme: any): void {
 		autoDerivePending = false
 		// Auto-detect light vs dark theme and set appropriate Shiki theme when
 		// no explicit diffTheme or shikiTheme override is configured.
-		DIFF_THEME = isLightTheme(theme) ? "github-light" : "github-dark"
+		// On Apple_Terminal (MacOS default), github-light bright colours are
+		// stripped entirely leaving invisible text. Use github-dark instead —
+		// its dark text survives the stripping and remains readable on white.
+		const useLightShiki = isLightTheme(theme) && process.env.TERM_PROGRAM !== "Apple_Terminal"
+		DIFF_THEME = useLightShiki ? "github-light" : "github-dark"
 	}
 }
 
