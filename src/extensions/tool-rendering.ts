@@ -1153,10 +1153,16 @@ function relativeLuminance(rgb: Rgb): number {
 }
 
 // Detect light theme by checking toolSuccessBg luminance.
-// Only meaningful when themeAdaptive is enabled.
+// Falls back to textBg (panel bg) then foreground text colour when
+// getBgAnsi returns null (e.g. MacOS Terminal — no truecolor bg support).
+// Foreground text colour: dark text on light terminal = light theme.
 function isLightTheme(theme: any): boolean {
-	const bg = themeBgRgb(theme, "toolSuccessBg")
-	return bg !== null && relativeLuminance(bg) > 0.5
+	const bg = themeBgRgb(theme, "toolSuccessBg") ?? themeBgRgb(theme, "textBg")
+	if (bg !== null) return relativeLuminance(bg) > 0.5
+	// No bg from getBgAnsi — fall back to foreground text luminance.
+	// Dark fg on light bg (common on MacOS Terminal) → light theme.
+	const fg = themeFgRgb(theme, "text")
+	return fg !== null && relativeLuminance(fg) < 0.5
 }
 
 // Cache theme identity so we only recompute on theme change. The Theme
