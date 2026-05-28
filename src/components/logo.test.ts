@@ -68,16 +68,15 @@ describe("LogoHeader", () => {
 		const logoRows = lines.slice(1, -1).filter((l) => stripAnsi(l).includes("█"))
 		expect(logoRows.length).toBeGreaterThanOrEqual(3)
 
-		// Contains a single combined info line with version, folder, and branch
-		const infoRow = lines
+		// Version and folder appear on one info line, branch on a separate line
+		const infoLineWithVersion = lines
 			.slice(1, -1)
-			.find(
-				(l) =>
-					stripAnsi(l).includes("v1.0.0-test") && stripAnsi(l).includes("/project") && stripAnsi(l).includes("main"),
-			)
-		expect(infoRow).toBeDefined()
+			.find((l) => stripAnsi(l).includes("v1.0.0-test") && stripAnsi(l).includes("/project"))
+		expect(infoLineWithVersion).toBeDefined()
+		const infoLineWithBranch = lines.slice(1, -1).find((l) => stripAnsi(l).includes("main"))
+		expect(infoLineWithBranch).toBeDefined()
 
-		// Box should be taller due to generous vertical padding
+		// Box should be taller due to generous vertical padding and two info lines
 		expect(lines.length).toBeGreaterThan(11)
 
 		// Contains right column content
@@ -165,7 +164,7 @@ describe("LogoHeader", () => {
 		expect(rightSection).toContain("\x1b[36m/ferment exit\x1b[0m")
 	})
 
-	it("centers the logo and info line vertically as a unit", () => {
+	it("centers the logo and info lines vertically as a unit", () => {
 		const theme = createMockTheme()
 		const header = new LogoHeader(theme)
 		const lines = header.render(120)
@@ -181,34 +180,32 @@ describe("LogoHeader", () => {
 		}
 		expect(logoIndices.length).toBeGreaterThanOrEqual(3)
 
-		// Find combined info row
-		const infoIndex = lines.findIndex(
-			(l) => stripAnsi(l).includes("v1.0.0-test") && stripAnsi(l).includes("/project") && stripAnsi(l).includes("main"),
-		)
-		expect(infoIndex).toBeGreaterThan(0)
+		// Find info rows (version/folder line and branch line)
+		const infoIndex1 = lines.findIndex((l) => stripAnsi(l).includes("v1.0.0-test") && stripAnsi(l).includes("/project"))
+		const infoIndex2 = lines.findIndex((l) => stripAnsi(l).includes("main"))
+		expect(infoIndex1).toBeGreaterThan(0)
+		expect(infoIndex2).toBeGreaterThan(0)
 
 		const logoTop = logoIndices[0] - 1
-		const infoRow = infoIndex - 1
+		const lastInfoRow = infoIndex2 - 1
 
-		// There should be a gap between logo bottom and info row
+		// There should be a gap between logo bottom and first info row
 		const logoBottom = logoIndices[logoIndices.length - 1] - 1
-		expect(infoRow).toBeGreaterThan(logoBottom)
+		expect(infoIndex1 - 1).toBeGreaterThan(logoBottom)
 
-		// The unit (logo through info row) should be vertically centered
-		const unitCenter = (logoTop + infoRow) / 2
+		// The unit (logo through last info row) should be vertically centered
+		const unitCenter = (logoTop + lastInfoRow) / 2
 		const contentCenter = (contentHeight - 1) / 2
 		expect(Math.abs(unitCenter - contentCenter)).toBeLessThanOrEqual(1)
 	})
 
-	it("centers the logo and info line horizontally within the left column", () => {
+	it("centers the logo and info lines horizontally within the left column", () => {
 		const theme = createMockTheme()
 		const header = new LogoHeader(theme)
 		const lines = header.render(120)
 
-		// Find the info row
-		const infoIndex = lines.findIndex(
-			(l) => stripAnsi(l).includes("v1.0.0-test") && stripAnsi(l).includes("/project") && stripAnsi(l).includes("main"),
-		)
+		// Find the version/folder info row
+		const infoIndex = lines.findIndex((l) => stripAnsi(l).includes("v1.0.0-test") && stripAnsi(l).includes("/project"))
 		expect(infoIndex).toBeGreaterThan(0)
 
 		// Strip ANSI and split by the vertical divider character
@@ -225,7 +222,7 @@ describe("LogoHeader", () => {
 
 		// The info text should also not end at the very last position
 		// (it should have trailing padding for centering)
-		const infoEnd = leftCol.lastIndexOf("main") + "main".length
+		const infoEnd = leftCol.lastIndexOf("/project") + "/project".length
 		expect(infoEnd).toBeLessThan(leftCol.length - 1)
 
 		// A logo row should have the same total left column width as the info row
@@ -233,5 +230,80 @@ describe("LogoHeader", () => {
 		const strippedLogo = stripAnsi(lines[logoRow])
 		const logoParts = strippedLogo.split("│")
 		expect(logoParts[1].length).toBe(leftCol.length)
+	})
+
+	it("does not exceed width with a very long branch name", () => {
+		getGitBranchMock.mockReturnValue("fix-logo-aaaaaaaaaa-adasda-very-long-branch-name-goes-on-and-on")
+		const theme = createMockTheme()
+		const header = new LogoHeader(theme)
+		const lines = header.render(120)
+
+		for (const line of lines) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(120)
+		}
+	})
+
+	it("keeps left column width stable regardless of info line length", () => {
+		const themeShort = createMockTheme()
+		const headerShort = new LogoHeader(themeShort)
+		const linesShort = headerShort.render(120)
+
+		getGitBranchMock.mockReturnValue("fix-logo-aaaaaaaaaa-adasda-very-long-branch-name-goes-on-and-on")
+		const themeLong = createMockTheme()
+		const headerLong = new LogoHeader(themeLong)
+		const linesLong = headerLong.render(120)
+
+		// Extract left column width from a logo row in both renders
+		const getLeftColWidth = (lines: string[]): number => {
+			const logoRow = lines.find((l) => stripAnsi(l).includes("█"))
+			expect(logoRow).toBeDefined()
+			if (!logoRow) return 0
+			const parts = stripAnsi(logoRow).split("│")
+			return parts[1]?.length ?? 0
+		}
+
+		expect(getLeftColWidth(linesShort)).toBe(getLeftColWidth(linesLong))
+	})
+
+	it("truncates the branch line with ellipsis when branch name is too long", () => {
+		getGitBranchMock.mockReturnValue("fix-logo-aaaaaaaaaa-adasda-very-long-branch-name-goes-on-and-on")
+		const theme = createMockTheme()
+		const header = new LogoHeader(theme)
+		const lines = header.render(120)
+
+		// Find the branch line
+		const branchLine = lines.slice(1, -1).find((l) => stripAnsi(l).includes("fix-logo"))
+		expect(branchLine).toBeDefined()
+		if (branchLine) {
+			expect(stripAnsi(branchLine)).toContain("...")
+		}
+	})
+
+	it("truncates the version/folder line with ellipsis when folder path is too long", () => {
+		getFolderMock.mockReturnValue("/very/long/path/to/the/project/directory/that/keeps/going")
+		const theme = createMockTheme()
+		const header = new LogoHeader(theme)
+		const lines = header.render(120)
+
+		// Find the version/folder line
+		const folderLine = lines
+			.slice(1, -1)
+			.find((l) => stripAnsi(l).includes("v1.0.0-test") && stripAnsi(l).includes("/very"))
+		expect(folderLine).toBeDefined()
+		if (folderLine) {
+			expect(stripAnsi(folderLine)).toContain("...")
+		}
+	})
+
+	it("shows branch on its own line below version and folder", () => {
+		const theme = createMockTheme()
+		const header = new LogoHeader(theme)
+		const lines = header.render(120)
+
+		const versionIdx = lines.findIndex((l) => stripAnsi(l).includes("v1.0.0-test") && stripAnsi(l).includes("/project"))
+		const branchIdx = lines.findIndex((l) => stripAnsi(l).includes("main"))
+		expect(versionIdx).toBeGreaterThan(0)
+		expect(branchIdx).toBeGreaterThan(0)
+		expect(branchIdx).toBeGreaterThan(versionIdx)
 	})
 })

@@ -1,8 +1,9 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
-import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { RST_FG } from "../ansi.js"
-import { buildInfoLine, buildLogoLines } from "./logo-art.js"
+import { getVersion } from "../utils.js"
+import { buildInfoLines, buildLogoLines } from "./logo-art.js"
 
 export class LogoHeader implements Component {
 	private readonly theme: Theme
@@ -20,16 +21,30 @@ export class LogoHeader implements Component {
 	render(width: number): string[] {
 		const { theme } = this
 		const accentOpen = theme.getFgAnsi("accent")
-		const infoLine = buildInfoLine(theme)
-		const infoWidth = visibleWidth(infoLine)
 
 		// Logo dimensions
 		const logoWidth = Math.max(...this.logoLines.map((l) => visibleWidth(l)))
 		const logoHeight = this.logoLines.length
 		const midGap = 2
 
-		// Left column content width (widest of logo or info line)
-		const leftContentWidth = Math.max(logoWidth, infoWidth)
+		// Compute how much room the version prefix takes so we can tell
+		// buildInfoLines how much space remains for the folder before the
+		// whole line would exceed the fixed logo width.
+		const versionStr = getVersion()
+		const versionPrefixWidth = 1 + versionStr.length + 3 // "v" + version + " · "
+		const folderMaxWidth = Math.max(4, logoWidth - versionPrefixWidth)
+
+		const infoLines = buildInfoLines(theme, { folderMaxWidth })
+
+		// Left column content width is fixed to logo width so the logo never
+		// shifts or deforms when the info line (branch name, folder) is long.
+		const leftContentWidth = logoWidth
+
+		// Truncate each info line so it never exceeds the fixed left column width.
+		const infoLinesFitted = infoLines.map((line) => {
+			const w = visibleWidth(line)
+			return w > leftContentWidth ? truncateToWidth(line, leftContentWidth) : line
+		})
 
 		// Compute right column width with progressive padding reduction for narrow terminals
 		let leftPad = 10
@@ -65,14 +80,15 @@ export class LogoHeader implements Component {
 
 		const rightLines: string[] = [...labelWrap, ...wrap1, hrLine, ...wrap2]
 
-		// Left column: generous vertical padding plus centered logo + info line
-		const unitHeight = logoHeight + midGap + 1
+		// Left column: generous vertical padding plus centered logo + info lines
+		const infoLineCount = infoLinesFitted.length
+		const unitHeight = logoHeight + midGap + infoLineCount
 		const minVerticalPad = 2
 		const leftContentHeight = unitHeight + 2 * minVerticalPad
 		const totalHeight = Math.max(rightLines.length, leftContentHeight)
 
 		const logoTop = Math.floor((totalHeight - unitHeight) / 2)
-		const infoRow = logoTop + logoHeight + midGap
+		const infoRowStart = logoTop + logoHeight + midGap
 
 		const accentBorder = (char: string) => accentOpen + char + RST_FG
 		const result: string[] = []
@@ -86,8 +102,8 @@ export class LogoHeader implements Component {
 			if (row >= logoTop && row < logoTop + logoHeight) {
 				leftContent = this.logoLines[row - logoTop]
 			}
-			if (row === infoRow) {
-				leftContent = infoLine
+			if (row >= infoRowStart && row < infoRowStart + infoLineCount) {
+				leftContent = infoLinesFitted[row - infoRowStart]
 			}
 
 			// Horizontally center content within leftContentWidth
