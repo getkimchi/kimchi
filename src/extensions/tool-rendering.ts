@@ -1176,6 +1176,9 @@ function themeAdaptiveEnabled(): boolean {
 }
 
 let DIFF_THEME: BundledTheme = (process.env.DIFF_THEME as BundledTheme | undefined) ?? "github-dark"
+// On Apple_Terminal (MacOS default), all 24-bit ANSI colours are stripped.
+// Skip Shiki syntax highlighting on this terminal — return plain code.
+const _skipShikiOnAppleTerminal = process.env.TERM_PROGRAM === "Apple_Terminal"
 let codeToAnsiLoader: Promise<any> | null = null
 
 const SPLIT_MIN_WIDTH = 150
@@ -1777,6 +1780,9 @@ function touchCache(key: string, value: string[]): string[] {
 async function hlBlock(code: string, language: BundledLanguage | undefined): Promise<string[]> {
 	if (!code) return [""]
 	if (!language || code.length > MAX_HL_CHARS) return code.split("\n")
+	// On Apple_Terminal (MacOS default), all 24-bit ANSI colours are stripped.
+	// Return plain code so text is visible without any ANSI escapes.
+	if (_skipShikiOnAppleTerminal) return code.split("\n")
 	const key = `${DIFF_THEME}\0${language}\0${code}`
 	const hit = hlCache.get(key)
 	if (hit) return touchCache(key, hit)
