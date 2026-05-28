@@ -29,6 +29,7 @@ import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
+import ideAdapterExtension from "./extensions/ide-adapter/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import loginExtension from "./extensions/login/index.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
@@ -467,6 +468,7 @@ try {
 			...enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 			] satisfies ManagedExtensionFactory[]),
+			ideAdapterExtension,
 			// Ferment must see raw input before prompt enrichment rewrites print-mode text.
 			...enabledExtensionFactories([
 				{ id: "extensions.ferment", factory: fermentExtension },
