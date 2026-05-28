@@ -296,6 +296,28 @@ describe("request_ferment_workflow approval gate", () => {
 		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBe(getActive()?.id)
 	})
 
+	it("does not consume approval when intent is invalid", async () => {
+		recordFermentStartApproval(
+			"ferment_start_approval",
+			[startQuestion],
+			[{ id: "start", value: "yes", label: "Yes, start the ferment", wasCustom: false, index: 1 }],
+		)
+
+		const first = err(
+			await h.call("request_ferment_workflow", { title: "Approved Ferment", intent: "  " }, createWorkflowCtx()),
+		)
+		expect(first).toContain('Field "intent" must be the full non-empty user request')
+
+		const retry = ok(
+			await h.call(
+				"request_ferment_workflow",
+				{ title: "Approved Ferment", intent: "Find improvements to this extension." },
+				createWorkflowCtx(),
+			),
+		)
+		expect(retry).toContain('Ferment "Approved Ferment" created')
+	})
+
 	it("bypasses the approval gate in yolo mode", async () => {
 		const previous = process.env.KIMCHI_PERMISSIONS
 		process.env.KIMCHI_PERMISSIONS = "yolo"
@@ -313,6 +335,28 @@ describe("request_ferment_workflow approval gate", () => {
 			expect(getActive()?.description).toBe("Create a Go app with Gin and integrate Kimchi plugin logic.")
 		} finally {
 			process.env.KIMCHI_PERMISSIONS = previous
+		}
+	})
+
+	it("does not bypass approval when yolo came from an active ferment env", async () => {
+		const previousPermissions = process.env.KIMCHI_PERMISSIONS
+		const previousActive = process.env.KIMCHI_ACTIVE_FERMENT
+		process.env.KIMCHI_PERMISSIONS = "yolo"
+		process.env.KIMCHI_ACTIVE_FERMENT = "existing-ferment"
+		try {
+			const text = err(
+				await h.call(
+					"request_ferment_workflow",
+					{ title: "Blocked Ferment", intent: "Find improvements to this extension." },
+					createWorkflowCtx(),
+				),
+			)
+
+			expect(text).toContain("request_ferment_workflow refused")
+			expect(getActive()).toBeUndefined()
+		} finally {
+			process.env.KIMCHI_PERMISSIONS = previousPermissions
+			process.env.KIMCHI_ACTIVE_FERMENT = previousActive
 		}
 	})
 })

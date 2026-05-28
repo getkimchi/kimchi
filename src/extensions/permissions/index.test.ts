@@ -161,6 +161,27 @@ describe("permissions plan-mode tool visibility", () => {
 		}
 	})
 
+	it("hides and blocks request_ferment_workflow under explicit --plan", async () => {
+		const previousPermissions = process.env.KIMCHI_PERMISSIONS
+		try {
+			const harness = createPermissionsHarness(["read", "bash", FERMENT_TOOLS.REQUEST_WORKFLOW], { plan: true })
+
+			await harness.fire("session_start", {}, createMockContext([]))
+
+			expect(harness.activeTools().sort()).toEqual(["bash", "read"])
+			const result = await harness.fire(
+				"tool_call",
+				{ toolName: FERMENT_TOOLS.REQUEST_WORKFLOW, input: { title: "Audit", intent: "Find improvements" } },
+				createMockContext([]),
+			)
+
+			expect(result).toEqual(expect.objectContaining({ block: true }))
+			expect(JSON.stringify(result)).toContain("Plan mode")
+		} finally {
+			process.env.KIMCHI_PERMISSIONS = previousPermissions
+		}
+	})
+
 	it("leaving plan mode does not restore tools hidden by another extension", async () => {
 		const previousEnv = process.env.KIMCHI_PERMISSIONS
 		try {

@@ -19,7 +19,6 @@ import {
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
-import { getCurrentPermissionsMode } from "../../permissions/index.js"
 import { consumeFermentStartApproval } from "../../questionnaire.js"
 import { askUser, askUserForm } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
@@ -675,7 +674,7 @@ export async function completeFerment(
 }
 
 function canStartFermentWithoutQuestionnaire(): boolean {
-	return getCurrentPermissionsMode() === "yolo" || process.env.KIMCHI_PERMISSIONS === "yolo"
+	return process.env.KIMCHI_PERMISSIONS === "yolo" && !process.env.KIMCHI_ACTIVE_FERMENT
 }
 
 export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
@@ -698,13 +697,13 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const title = typeof params.title === "string" ? params.title.trim() : ""
 			if (!title) return toolErr('Field "title" must be a non-empty string.')
+			const intent = typeof params.intent === "string" ? params.intent.trim() : ""
+			if (!intent) return toolErr('Field "intent" must be the full non-empty user request.')
 			if (!canStartFermentWithoutQuestionnaire() && !consumeFermentStartApproval()) {
 				return toolErr(
 					'request_ferment_workflow refused — the user has not explicitly approved starting a ferment. First call questionnaire with purpose "ferment_start_approval" and exactly one confirm question asking whether to start a ferment. Phrase it naturally for the request and use options with values "yes" and "no". If the user answers yes, call request_ferment_workflow again. In yolo mode this approval gate is bypassed.',
 				)
 			}
-			const intent = typeof params.intent === "string" ? params.intent.trim() : ""
-			if (!intent) return toolErr('Field "intent" must be the full non-empty user request.')
 			const result = await startFermentForIntent({
 				pi,
 				ctx: ctx as unknown as FermentUiContext,
