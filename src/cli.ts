@@ -6,7 +6,7 @@ import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
-import { getCliModeArg, isHelpOrVersionArgs } from "./cli-args.js"
+import { getCliModeArg, isHelpOrVersionArgs, isProtocolOrPrintMode } from "./cli-args.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
@@ -383,13 +383,10 @@ try {
 			: resolve(dirname(fileURLToPath(import.meta.url)), "../themes")
 		mkdirSync(themesDir, { recursive: true })
 
-		const startupArgs = process.argv.slice(2)
-		const printMode = startupArgs.includes("--print") || startupArgs.includes("-p")
-		const protocolOutputMode = cliMode === "json" || cliMode === "rpc" || cliMode === "acp"
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
 		// the kimchi-minimal-tints and terminal-colors extensions. Skip protocol
 		// and print modes: stdout belongs to the caller, and OSC escapes corrupt it.
-		const terminalStartupOutputAllowed = !protocolOutputMode && !printMode
+		const terminalStartupOutputAllowed = !isProtocolOrPrintMode(process.argv.slice(2))
 		if (terminalStartupOutputAllowed) {
 			await probeTerminalBackground()
 			await probeKittyKeyboardSupport()

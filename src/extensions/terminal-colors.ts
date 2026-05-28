@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { basename, resolve } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { getCliModeArg } from "../cli-args.js"
+import { isProtocolOrPrintMode } from "../cli-args.js"
 import { getActiveThemeName, onThemeChange } from "../settings-watcher.js"
 import { QUERY_BG, getRawBgPayload } from "../terminal-bg-probe.js"
 
@@ -31,11 +31,6 @@ function hexToItermFormat(hex: string): string | null {
 	const match = hex.match(/^#?([0-9a-fA-F]{6})$/i)
 	if (!match) return null
 	return match[1].toUpperCase()
-}
-
-function isProtocolOrPrintMode(args: string[]): boolean {
-	const mode = getCliModeArg(args)
-	return mode === "json" || mode === "rpc" || mode === "acp" || args.includes("--print") || args.includes("-p")
 }
 
 function canUseTerminalOsc(args: string[]): boolean {
