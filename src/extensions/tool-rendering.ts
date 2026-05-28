@@ -1265,12 +1265,22 @@ function autoDeriveBgFromTheme(theme: any): void {
 
 	FG_ADD = `\x1b[38;2;${Math.round(addFgRgb.r)};${Math.round(addFgRgb.g)};${Math.round(addFgRgb.b)}m`
 	FG_DEL = `\x1b[38;2;${Math.round(delFgRgb.r)};${Math.round(delFgRgb.g)};${Math.round(delFgRgb.b)}m`
-	BG_ADD = rgbToBgAnsi(mixRgb(base, addTint, 0.24))
-	BG_DEL = rgbToBgAnsi(mixRgb(base, delTint, 0.12))
-	BG_ADD_W = rgbToBgAnsi(mixRgb(base, addTint, 0.44))
-	BG_DEL_W = rgbToBgAnsi(mixRgb(base, delTint, 0.26))
-	BG_GUTTER_ADD = rgbToBgAnsi(mixRgb(base, addTint, 0.14))
-	BG_GUTTER_DEL = rgbToBgAnsi(mixRgb(base, delTint, 0.08))
+
+	// On light themes, tinted truecolor backgrounds render poorly on some
+	// terminals (e.g. Mac OS Terminal). Use transparent backgrounds so the
+	// terminal's default light bg shows through and github-light Shiki
+	// syntax colours remain clearly readable.
+	const lightTheme = isLightTheme(theme)
+	if (lightTheme) {
+		BG_ADD = BG_DEL = BG_ADD_W = BG_DEL_W = BG_GUTTER_ADD = BG_GUTTER_DEL = TRANSPARENT_BG
+	} else {
+		BG_ADD = rgbToBgAnsi(mixRgb(base, addTint, 0.24))
+		BG_DEL = rgbToBgAnsi(mixRgb(base, delTint, 0.12))
+		BG_ADD_W = rgbToBgAnsi(mixRgb(base, addTint, 0.44))
+		BG_DEL_W = rgbToBgAnsi(mixRgb(base, delTint, 0.26))
+		BG_GUTTER_ADD = rgbToBgAnsi(mixRgb(base, addTint, 0.14))
+		BG_GUTTER_DEL = rgbToBgAnsi(mixRgb(base, delTint, 0.08))
+	}
 	BG_EMPTY = TRANSPARENT_BG
 	BG_BASE = TRANSPARENT_BG
 	D_RST = TRANSPARENT_RESET
