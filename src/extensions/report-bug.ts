@@ -1,7 +1,7 @@
 /**
  * Report Bug Extension
  *
- * Registers the /reportbug slash command that opens the GitHub issue form
+ * Registers the /bug slash command that opens the GitHub issue form
  * for kimchi harness bug reports.
  */
 
@@ -89,6 +89,5 @@ const BUG_COMMAND_CONFIG = {
 }
 
 export default function reportBugExtension(pi: ExtensionAPI) {
-	pi.registerCommand("reportbug", BUG_COMMAND_CONFIG)
 	pi.registerCommand("bug", BUG_COMMAND_CONFIG)
 }
