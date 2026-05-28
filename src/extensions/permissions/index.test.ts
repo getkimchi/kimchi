@@ -182,6 +182,28 @@ describe("permissions plan-mode tool visibility", () => {
 		}
 	})
 
+	it("allows request_ferment_workflow after runtime plan-mode questionnaire", async () => {
+		const previousPermissions = process.env.KIMCHI_PERMISSIONS
+		try {
+			const harness = createPermissionsHarness(["read", "questionnaire", "bash", FERMENT_TOOLS.REQUEST_WORKFLOW])
+			await harness.fire("session_start", {}, createMockContext([]))
+
+			expect(
+				await harness.fire("tool_call", { toolName: "questionnaire", input: { questions: [] } }, createMockContext([])),
+			).toBeUndefined()
+			expect(getCurrentPermissionsMode()).toBe("plan")
+
+			const result = await harness.fire(
+				"tool_call",
+				{ toolName: FERMENT_TOOLS.REQUEST_WORKFLOW, input: { title: "Audit", intent: "Find improvements" } },
+				createMockContext([]),
+			)
+			expect(result).toBeUndefined()
+		} finally {
+			process.env.KIMCHI_PERMISSIONS = previousPermissions
+		}
+	})
+
 	it("leaving plan mode does not restore tools hidden by another extension", async () => {
 		const previousEnv = process.env.KIMCHI_PERMISSIONS
 		try {

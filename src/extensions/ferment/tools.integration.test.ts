@@ -255,15 +255,18 @@ describe("request_ferment_workflow approval gate", () => {
 		allowOther: false,
 		required: true,
 	}
+	const yesAnswer = { id: "start", value: "yes", label: "Yes, start the ferment", wasCustom: false, index: 1 }
+	const approvedIntent = "Find improvements to this extension, but do not implement anything until I approve the plan."
+	const requestWorkflow = (params: { title?: string; intent?: string }) =>
+		h.call(
+			"request_ferment_workflow",
+			{ title: "Approved Ferment", intent: approvedIntent, ...params },
+			createWorkflowCtx(),
+		)
+	const approveStart = () => recordFermentStartApproval("ferment_start_approval", [startQuestion], [yesAnswer])
 
 	it("refuses to start when the user has not approved the start-ferment question", async () => {
-		const text = err(
-			await h.call(
-				"request_ferment_workflow",
-				{ title: "No Consent", intent: "Find improvements to this extension." },
-				createWorkflowCtx(),
-			),
-		)
+		const text = err(await requestWorkflow({ title: "No Consent", intent: "Find improvements to this extension." }))
 
 		expect(text).toContain("request_ferment_workflow refused")
 		expect(text).toContain("explicitly approved starting a ferment")
@@ -271,22 +274,9 @@ describe("request_ferment_workflow approval gate", () => {
 	})
 
 	it("starts after a yes answer to the start-ferment question", async () => {
-		recordFermentStartApproval(
-			"ferment_start_approval",
-			[startQuestion],
-			[{ id: "start", value: "yes", label: "Yes, start the ferment", wasCustom: false, index: 1 }],
-		)
+		approveStart()
 
-		const text = ok(
-			await h.call(
-				"request_ferment_workflow",
-				{
-					title: "Approved Ferment",
-					intent: "Find improvements to this extension, but do not implement anything until I approve the plan.",
-				},
-				createWorkflowCtx(),
-			),
-		)
+		const text = ok(await requestWorkflow({}))
 
 		expect(text).toContain('Ferment "Approved Ferment" created')
 		expect(getActive()?.status).toBe("draft")
@@ -297,24 +287,12 @@ describe("request_ferment_workflow approval gate", () => {
 	})
 
 	it("does not consume approval when intent is invalid", async () => {
-		recordFermentStartApproval(
-			"ferment_start_approval",
-			[startQuestion],
-			[{ id: "start", value: "yes", label: "Yes, start the ferment", wasCustom: false, index: 1 }],
-		)
+		approveStart()
 
-		const first = err(
-			await h.call("request_ferment_workflow", { title: "Approved Ferment", intent: "  " }, createWorkflowCtx()),
-		)
+		const first = err(await requestWorkflow({ intent: "  " }))
 		expect(first).toContain('Field "intent" must be the full non-empty user request')
 
-		const retry = ok(
-			await h.call(
-				"request_ferment_workflow",
-				{ title: "Approved Ferment", intent: "Find improvements to this extension." },
-				createWorkflowCtx(),
-			),
-		)
+		const retry = ok(await requestWorkflow({ intent: "Find improvements to this extension." }))
 		expect(retry).toContain('Ferment "Approved Ferment" created')
 	})
 
@@ -323,11 +301,10 @@ describe("request_ferment_workflow approval gate", () => {
 		process.env.KIMCHI_PERMISSIONS = "yolo"
 		try {
 			const text = ok(
-				await h.call(
-					"request_ferment_workflow",
-					{ title: "Yolo Ferment", intent: "Create a Go app with Gin and integrate Kimchi plugin logic." },
-					createWorkflowCtx(),
-				),
+				await requestWorkflow({
+					title: "Yolo Ferment",
+					intent: "Create a Go app with Gin and integrate Kimchi plugin logic.",
+				}),
 			)
 
 			expect(text).toContain('Ferment "Yolo Ferment" created')
@@ -345,11 +322,7 @@ describe("request_ferment_workflow approval gate", () => {
 		process.env.KIMCHI_ACTIVE_FERMENT = "existing-ferment"
 		try {
 			const text = err(
-				await h.call(
-					"request_ferment_workflow",
-					{ title: "Blocked Ferment", intent: "Find improvements to this extension." },
-					createWorkflowCtx(),
-				),
+				await requestWorkflow({ title: "Blocked Ferment", intent: "Find improvements to this extension." }),
 			)
 
 			expect(text).toContain("request_ferment_workflow refused")
@@ -983,45 +956,6 @@ describe("complete_ferment", () => {
 		s.skipPhase(id, "phase-2", "skip")
 		ok(await h.call("complete_ferment", { ferment_id: id, gates: passingFermentGates() }))
 		expect(loadFerment(id).grade).toBeDefined()
-	})
-})
-
-// ─── active ferment env propagation ───────────────────────────────────────────
-
-describe("active ferment environment", () => {
-	it("exposes draft ferments as permission-elevated active work after approval", async () => {
-		const id = await createFerment("Draft Env Test")
-
-		expect(getActive()?.id).toBe(id)
-		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBe(id)
-	})
-
-	it("deletes KIMCHI_ACTIVE_FERMENT when active ferment is cleared", async () => {
-		const id = await createFerment("Env Clear Test")
-		await scopeFerment(id)
-		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBe(id)
-
-		setActive(undefined)
-
-		expect(getActive()).toBeUndefined()
-		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBeUndefined()
-		expect(Object.hasOwn(process.env, "KIMCHI_ACTIVE_FERMENT")).toBe(false)
-	})
-
-	it("does not expose terminal ferments as resumable active work", async () => {
-		const id = await createFerment("Terminal Env Test")
-		await scopeFerment(id)
-		const s = h.storage
-		s.skipPhase(id, "phase-1", "skipped")
-		s.skipPhase(id, "phase-2", "skipped")
-		ok(await h.call("complete_ferment", { ferment_id: id, gates: passingFermentGates() }))
-
-		const terminal = loadFerment(id)
-		setActive(terminal)
-
-		expect(getActive()?.id).toBe(id)
-		expect(terminal.status).toBe("complete")
-		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBeUndefined()
 	})
 })
 

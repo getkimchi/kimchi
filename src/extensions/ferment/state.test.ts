@@ -31,13 +31,6 @@ afterEach(() => {
 })
 
 describe("setActive", () => {
-	it("elevates permissions for draft ferments after the user starts a ferment", () => {
-		setActive(makeFerment("draft"))
-
-		expect(notifyFermentActive).toHaveBeenLastCalledWith(true)
-		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBe("ferment-draft")
-	})
-
 	it("elevates permissions for active ferment states", () => {
 		for (const status of ["draft", "planned", "running", "paused"] as const) {
 			setActive(makeFerment(status))

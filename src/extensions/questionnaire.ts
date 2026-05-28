@@ -43,12 +43,7 @@ interface QuestionnaireResult {
 	cancelled: boolean
 }
 
-interface FermentStartApproval {
-	approvedAt: number
-	prompt: string
-}
-
-let fermentStartApproval: FermentStartApproval | undefined
+let fermentStartApprovalAt: number | undefined
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
@@ -120,11 +115,10 @@ export function normalizeQuestionType(type: QuestionnaireQuestionTypeInput | und
 	return type ?? "single"
 }
 
-function isAffirmativeAnswer(answer: Answer | undefined): boolean {
+function isFermentStartApprovalAnswer(answer: Answer | undefined): boolean {
 	if (!answer) return false
-	if (answer.value.toLowerCase() === "yes") return true
-	if (answer.label.toLowerCase() === "yes") return true
-	return answer.values?.some((value) => value.toLowerCase() === "yes") ?? false
+	if (answer.index !== undefined) return answer.index === 1
+	return answer.value === "yes" || (answer.values?.[0] === "yes" && answer.values.length === 1)
 }
 
 export function recordFermentStartApproval(
@@ -137,22 +131,18 @@ export function recordFermentStartApproval(
 	const confirmQuestions = questions.filter((question) => question.type === "confirm")
 	if (confirmQuestions.length !== 1) return
 	const question = confirmQuestions[0]
-	if (!isAffirmativeAnswer(answers.find((answer) => answer.id === question.id))) return
-	fermentStartApproval = {
-		approvedAt: now,
-		prompt: question.prompt,
-	}
+	if (!isFermentStartApprovalAnswer(answers.find((answer) => answer.id === question.id))) return
+	fermentStartApprovalAt = now
 }
 
 export function consumeFermentStartApproval(now = Date.now()): boolean {
-	const approval = fermentStartApproval
-	fermentStartApproval = undefined
-	if (!approval) return false
-	return now - approval.approvedAt <= 10 * 60_000
+	const approvedAt = fermentStartApprovalAt
+	fermentStartApprovalAt = undefined
+	return approvedAt !== undefined && now - approvedAt <= 10 * 60_000
 }
 
 export function clearFermentStartApproval(): void {
-	fermentStartApproval = undefined
+	fermentStartApprovalAt = undefined
 }
 
 function errorResult(
@@ -190,6 +180,22 @@ function normalizeQuestion(q: Static<typeof QuestionSchema>, index: number): Que
 		allowOther: q.allowOther ?? type === "single",
 		required: q.required !== false,
 	}
+}
+
+export function normalizeQuestionsForPurpose(questions: Question[], purpose: unknown): Question[] {
+	if (purpose !== "ferment_start_approval" || questions.length !== 1) return questions
+	return [
+		{
+			...questions[0],
+			type: "confirm",
+			options: [
+				{ value: "yes", label: "Yes" },
+				{ value: "no", label: "No" },
+			],
+			allowOther: false,
+			required: true,
+		},
+	]
 }
 
 function validateQuestions(questions: Question[]): string | undefined {
@@ -234,7 +240,7 @@ export function formatAnswerText(questions: Question[], answers: Answer[]): stri
 
 export default function questionnaireExtension(pi: ExtensionAPI): void {
 	pi.on?.("input", (event) => {
-		if ((event as { source?: unknown } | undefined)?.source === "interactive") {
+		if ((event as { source?: unknown } | undefined)?.source !== "extension") {
 			clearFermentStartApproval()
 		}
 	})
@@ -256,7 +262,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				return errorResult("Error: No questions provided.")
 			}
 
-			const questions = params.questions.map(normalizeQuestion)
+			const questions = normalizeQuestionsForPurpose(params.questions.map(normalizeQuestion), params.purpose)
 			const validationError = validateQuestions(questions)
 			if (validationError) {
 				return errorResult(`Error: ${validationError}`, questions)

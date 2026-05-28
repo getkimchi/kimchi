@@ -684,7 +684,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 		name: FERMENT_TOOLS.REQUEST_WORKFLOW,
 		label: "Start Ferment Workflow",
 		description:
-			'Start the ferment workflow (interactive scoping → planner) on the user\'s behalf. Call this after the user has explicitly answered "yes" to the questionnaire asking if they want to start a ferment; in yolo permissions mode, call it directly without the questionnaire. Provide a concise 3-5 word title and the full original user intent. The host will create the draft, kick off scoping, and you will see a planner supplement on the next turn. Refuses if another ferment is already running.',
+			'Start the ferment workflow (interactive scoping → planner) on the user\'s behalf. Call this after the user has explicitly answered "yes" to the questionnaire asking if they want to start a ferment; in yolo permissions mode, the default answer is yes, so call this directly without the questionnaire. Provide a concise 3-5 word title and the full original user intent. The host will create the draft, kick off scoping, and you will see a planner supplement on the next turn. Refuses if another ferment is already running.',
 		parameters: Type.Object({
 			title: Type.String({
 				description: "Concise 3-5 word title for the new ferment (e.g. 'Rewrite login flow').",
@@ -701,7 +701,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 			if (!intent) return toolErr('Field "intent" must be the full non-empty user request.')
 			if (!canStartFermentWithoutQuestionnaire() && !consumeFermentStartApproval()) {
 				return toolErr(
-					'request_ferment_workflow refused — the user has not explicitly approved starting a ferment. First call questionnaire with purpose "ferment_start_approval" and exactly one confirm question asking whether to start a ferment. Phrase it naturally for the request and use options with values "yes" and "no". If the user answers yes, call request_ferment_workflow again. In yolo mode this approval gate is bypassed.',
+					'request_ferment_workflow refused — the user has not explicitly approved starting a ferment. First call questionnaire with purpose "ferment_start_approval" and exactly one confirm question asking whether to start a ferment. The host will render canonical Yes/No options. If the user answers Yes, call request_ferment_workflow again. In yolo mode the default answer is Yes and this approval gate is bypassed.',
 				)
 			}
 			const result = await startFermentForIntent({

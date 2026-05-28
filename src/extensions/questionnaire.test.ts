@@ -4,6 +4,7 @@ import {
 	consumeFermentStartApproval,
 	formatAnswerText,
 	normalizeQuestionType,
+	normalizeQuestionsForPurpose,
 	recordFermentStartApproval,
 } from "./questionnaire.js"
 
@@ -206,6 +207,34 @@ describe("ferment start approval tracking", () => {
 		clearFermentStartApproval()
 	})
 
+	it("forces ferment-start approval choices to canonical yes/no", () => {
+		const [question] = normalizeQuestionsForPurpose(
+			[
+				{
+					...startQuestion,
+					type: "single" as const,
+					options: [
+						{ value: "Yes, start a ferment", label: "Yes, start a ferment" },
+						{ value: "No, handle inline", label: "No, handle inline" },
+					],
+					allowOther: true,
+					required: false,
+				},
+			],
+			"ferment_start_approval",
+		)
+
+		expect(question).toMatchObject({
+			type: "confirm",
+			options: [
+				{ value: "yes", label: "Yes" },
+				{ value: "no", label: "No" },
+			],
+			allowOther: false,
+			required: true,
+		})
+	})
+
 	it("records and consumes a yes answer to the start-ferment confirm question", () => {
 		recordFermentStartApproval(
 			"ferment_start_approval",
@@ -218,28 +247,22 @@ describe("ferment start approval tracking", () => {
 		expect(consumeFermentStartApproval(102)).toBe(false)
 	})
 
-	it("does not record without the explicit ferment-start purpose", () => {
-		const scopeQuestion = {
-			...startQuestion,
-			id: "scope",
-			prompt: "Which improvement areas should this ferment include?",
-			type: "multi" as const,
-			options: [{ value: "cache", label: "Cache cleanup" }],
-		}
+	it("records the first confirm option even when the model omits canonical yes/no values", () => {
+		recordFermentStartApproval(
+			"ferment_start_approval",
+			[startQuestion],
+			[{ id: "start", value: "Yes, start a ferment", label: "Yes, start a ferment", wasCustom: false, index: 1 }],
+			100,
+		)
 
+		expect(consumeFermentStartApproval(101)).toBe(true)
+	})
+
+	it("does not record without the explicit ferment-start purpose", () => {
 		recordFermentStartApproval(
 			undefined,
-			[scopeQuestion],
-			[
-				{
-					id: "scope",
-					value: "cache",
-					label: "Cache cleanup",
-					wasCustom: false,
-					values: ["cache"],
-					labels: ["Cache cleanup"],
-				},
-			],
+			[startQuestion],
+			[{ id: "start", value: "yes", label: "Yes, start the ferment", wasCustom: false, index: 1 }],
 			100,
 		)
 

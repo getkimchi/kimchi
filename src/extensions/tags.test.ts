@@ -120,9 +120,16 @@ describe("parseTag", () => {
 })
 
 describe("tags system prompt block", () => {
-	it("registers phase tagging instructions with the extension that owns set_phase", async () => {
+	const makeTagsPi = () => {
 		const pi = makePi()
 		tagsExtension(pi)
+		return pi
+	}
+	const setPhase = (pi: ReturnType<typeof makeTagsPi>, phase = "explore") =>
+		pi.tools.get("set_phase")?.execute("call-1", { phase }, undefined, undefined, { hasUI: false })
+
+	it("registers phase tagging instructions with the extension that owns set_phase", async () => {
+		const pi = makeTagsPi()
 
 		try {
 			const result = buildSystemPrompt({
@@ -146,33 +153,13 @@ describe("tags system prompt block", () => {
 		}
 	})
 
-	it("rejects set_phase as the first tool after fresh interactive input", async () => {
-		const pi = makePi()
-		tagsExtension(pi)
-
-		await pi.fire("input", { source: "interactive", text: "Find improvements to this extension" })
-
-		const tool = pi.tools.get("set_phase")
-		expect(tool).toBeDefined()
-
-		const result = await tool?.execute("call-1", { phase: "explore" }, undefined, undefined, { hasUI: false })
-
-		expect(result).toMatchObject({
-			isError: true,
-			details: { phase: "explore", premature: true },
-		})
-		expect(JSON.stringify(result)).toContain("request classification")
-		expect(JSON.stringify(result)).toContain("call `questionnaire`")
-	})
-
 	it("blocks exploration tools after premature set_phase until questionnaire", async () => {
-		const pi = makePi()
-		tagsExtension(pi)
+		const pi = makeTagsPi()
 
-		await pi.fire("input", { source: "interactive", text: "Find improvements to this extension" })
-
-		const tool = pi.tools.get("set_phase")
-		await tool?.execute("call-1", { phase: "explore" }, undefined, undefined, { hasUI: false })
+		await pi.fire("input", { text: "Find improvements to this extension" })
+		const rejection = await setPhase(pi)
+		expect(rejection).toMatchObject({ isError: true, details: { phase: "explore", premature: true } })
+		expect(JSON.stringify(rejection)).toContain("call `questionnaire`")
 
 		const [readResult] = await pi.fire("tool_call", { toolName: "read" })
 		expect(readResult).toEqual(expect.objectContaining({ block: true }))
@@ -186,14 +173,12 @@ describe("tags system prompt block", () => {
 	})
 
 	it("allows set_phase after another tool has started classification or work", async () => {
-		const pi = makePi()
-		tagsExtension(pi)
+		const pi = makeTagsPi()
 
 		await pi.fire("input", { source: "interactive", text: "Find improvements to this extension" })
 		await pi.fire("tool_execution_start", { toolName: "questionnaire" })
 
-		const tool = pi.tools.get("set_phase")
-		const result = await tool?.execute("call-1", { phase: "explore" }, undefined, undefined, { hasUI: false })
+		const result = await setPhase(pi)
 
 		expect(result).toMatchObject({
 			content: [{ type: "text", text: "Phase changed to: explore" }],
@@ -205,24 +190,19 @@ describe("tags system prompt block", () => {
 		const previous = process.env.KIMCHI_ACTIVE_FERMENT
 		process.env.KIMCHI_ACTIVE_FERMENT = "ferment-1"
 		try {
-			const pi = makePi()
-			tagsExtension(pi)
+			const pi = makeTagsPi()
 
 			await pi.fire("input", { source: "interactive", text: "Continue" })
 
-			const tool = pi.tools.get("set_phase")
-			const result = await tool?.execute("call-1", { phase: "build" }, undefined, undefined, { hasUI: false })
+			const result = await setPhase(pi, "build")
 
 			expect(result).toMatchObject({
 				content: [{ type: "text", text: "Phase changed to: build" }],
 				details: { phase: "build" },
 			})
 		} finally {
-			if (previous === undefined) {
-				process.env.KIMCHI_ACTIVE_FERMENT = undefined
-			} else {
-				process.env.KIMCHI_ACTIVE_FERMENT = previous
-			}
+			if (previous === undefined) Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
+			else process.env.KIMCHI_ACTIVE_FERMENT = previous
 		}
 	})
 })

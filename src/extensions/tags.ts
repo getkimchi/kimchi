@@ -57,17 +57,15 @@ const PHASE_TAGGING_PROMPT = `## Phase Tagging for Analytics
 Call \`set_phase\` before substantive work blocks once the user has chosen an execution path. Use one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\` matching current work type.
 Do not call \`set_phase\` before the initial request classification, before the ferment-offer questionnaire, or before \`request_ferment_workflow\`. On fresh requests, decide from the user's text whether the work is small enough to handle inline or broad enough to need a ferment offer. Broad codebase/product discovery where the output is a plan, audit, backlog, or coordinated change set should ask the ferment-offer questionnaire before analysis. If \`set_phase\` is rejected as premature, recover by calling \`questionnaire\` next; do not continue with filesystem, shell, web, or MCP exploration. The session starts in \`explore\` phase by default. Call \`set_phase\` when your work type changes after that point. Only one phase is active at a time — the most recent call wins.`
 
-function inputStartsUserRequest(event: unknown): boolean {
-	if (!event || typeof event !== "object") return false
-	const source = (event as { source?: unknown }).source
-	return source === "interactive"
-}
-
 function toolNameFromEvent(event: unknown): string | undefined {
 	if (!event || typeof event !== "object") return undefined
 	const e = event as { toolName?: unknown; name?: unknown; tool?: { name?: unknown } }
 	const raw = e.toolName ?? e.name ?? e.tool?.name
 	return typeof raw === "string" ? raw : undefined
+}
+
+function isUserInput(event: unknown): boolean {
+	return (event as { source?: unknown } | undefined)?.source !== "extension"
 }
 
 export function isValidPhase(phase: string): phase is Phase {
@@ -645,7 +643,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 	})
 
 	pi.on("input", async (event) => {
-		if (inputStartsUserRequest(event)) {
+		if (isUserInput(event)) {
 			firstUserRequestToolMustNotBeSetPhase = true
 			questionnaireRequiredAfterPrematurePhase = false
 		}

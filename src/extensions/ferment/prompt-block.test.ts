@@ -110,10 +110,10 @@ describe("buildFermentPromptBlock", () => {
 			const out = buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime())
 			expect(out).toContain("Ferment Workflow")
 			expect(out).toContain("questionnaire")
-			expect(out).toContain("In yolo permissions mode, skip the questionnaire")
+			expect(out).toContain("In yolo permissions mode the answer defaults to Yes")
 			expect(out).toContain('purpose: "ferment_start_approval"')
 			expect(out).toContain("Phrase the question naturally")
-			expect(out).toContain("labels tailored to the question")
+			expect(out).toContain("forces exactly two options, Yes and No")
 			expect(out).toContain("`intent` containing the full original user request")
 			expect(out).toContain("Never block")
 		})
@@ -140,12 +140,6 @@ describe("buildFermentPromptBlock", () => {
 				}
 			})
 		}
-
-		it("returns idle hint when no ferment is active", () => {
-			const out = buildFermentPromptBlock(PI_ONESHOT, makeNoActiveFermentRuntime())
-			expect(out).toContain("Ferment Workflow")
-			expect(out).toContain("questionnaire")
-		})
 
 		it("returns planner supplement for draft status (one-shot scoping must not break)", () => {
 			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime({ status: "draft" }))

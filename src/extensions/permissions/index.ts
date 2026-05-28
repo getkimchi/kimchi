@@ -475,7 +475,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					}
 					return undefined
 				}
-				if (!isReadOnlyTool(toolName) && !PLAN_MODE_TOOLS.includes(toolName)) {
+				if (!isPlanModeTool(toolName)) {
 					return {
 						block: true,
 						reason: `Plan mode: tool ${toolName} is not available. Use /permissions mode default to enable writes.`,

@@ -89,29 +89,18 @@ function buildPausedWarning(f: Ferment): string {
 
 const IDLE_FERMENT_HINT = `## Ferment Workflow (optional)
 
-Ferment is a phased workflow (plan → build → review) with subagent delegation. It is started either by the user via \`/ferment new "..."\` / \`/ferment one-shot "..."\`, or by you calling \`request_ferment_workflow\` after the user agrees via questionnaire. In yolo permissions mode, skip the questionnaire and call \`request_ferment_workflow\` directly for ferment-offer candidates. Do not write files under \`.kimchi/\` to bootstrap a ferment — the host owns that directory.
+Ferment is a host-owned plan → build → review workflow. Start it only with \`request_ferment_workflow\` after the user agrees via \`questionnaire\`; never create or edit \`.kimchi/\` files yourself. In yolo permissions mode the answer defaults to Yes: skip the questionnaire and call \`request_ferment_workflow\` directly.
 
-**Do NOT explore before deciding.** On the very first turn after a user request:
-- Do not call \`set_phase\`, \`list_ferments\`, \`read\`, \`ls\`, \`find\`, \`grep\`, or any filesystem/bash tool *until* you have classified the request and either (a) called \`request_ferment_workflow\`, (b) decided the task is trivial and started doing it, or (c) finished a clarifying questionnaire for a non-ferment task.
-- Classification uses the user's text only. Do not inspect the repo first "to understand the request" — that's the job of the scoping turn that fires *after* \`request_ferment_workflow\`.
+Before exploration, classify the user's text only:
+- Clear small task: handle inline.
+- Substantive, multi-step, broad discovery, or explicit ferment/planning request: offer ferment first.
+- Vague non-ferment request: ask only decision-blocking clarification, then act inline.
+Do not call \`set_phase\` or discovery tools *until* you have classified the request and either called \`request_ferment_workflow\`, chosen inline work, or asked necessary non-ferment clarification.
+Treat open-ended analysis of an existing app as substantive: ask the ferment offer before analysis, file reads, or phase tagging.
 
-**Classify the request from the user's text:**
-- **Trivial / clear-and-small** (typo, one-function change, single read/explain, quick answer): just do it. No questionnaire, no ferment.
-- **Substantive work, or user mentions "ferment"/"plan"/"build a project"/"implement a system/service/CLI"**: go to the **ferment offer** below.
-- **Broad discovery work is substantive.** If the user asks for open-ended analysis of an existing app, extension, codebase, architecture, roadmap, or feature set, and the expected output is a plan, audit, backlog, recommendation set, or coordinated change set, ask the ferment offer before analysis, file reads, or phase tagging.
-- **Vague non-ferment request** (e.g. "fix the bug" with no context): use \`questionnaire\` to ask 1–3 decision-blocking clarifying questions, then act on the answers inline.
+Ferment offer: call \`questionnaire\` with \`purpose: "ferment_start_approval"\` and exactly one confirm question. Phrase the question naturally from the request; the host forces exactly two options, Yes and No. Do not answer with a prose workflow menu first.
 
-**Ferment offer — ONE question only, this turn:**
-0. If the current permissions mode is yolo, do not ask; call \`request_ferment_workflow\` directly with \`title\` and \`intent\`.
-1. Call \`questionnaire\` with \`purpose: "ferment_start_approval"\` and EXACTLY ONE confirm-type question asking whether to start a ferment. Phrase the question naturally from the user's request instead of using a fixed template. Good examples: "You asked for a scoped audit. Start a ferment for it?", "This looks like a larger change set — use a ferment?", or "Want me to run this through ferment so we can scope it first?". Include exactly two options with values \`yes\` and \`no\`, and labels tailored to the question, such as "Yes, start the ferment" and "No, handle it inline". No clarifying questions in this call. No prose narration first. Do not answer with a prose workflow menu like "Option A: Ferment / Option B: Inline"; the offer must be the questionnaire tool.
-2. If user picks **yes**: call \`request_ferment_workflow\` with a concise 3-5 word \`title\` derived from the user's text alone and an \`intent\` containing the full original user request, preserving all constraints and wording. Then STOP this turn — the host queues a scoping turn that refreshes your tool surface (\`propose_ferment_scoping\` and the lifecycle tools appear). Do not list ferments, read files, or do any discovery in this turn.
-3. If user picks **no**: now you may ask any clarifying questions needed for the inline approach (one \`questionnaire\` call, up to 3 questions), then implement directly.
-
-**Questionnaire schema discipline:**
-- Each option needs \`label\` (display) and ideally \`value\` (returned token); if you omit \`value\` the host falls back to \`id\` or \`label\`.
-- For ordinary confirm-type questions, omit \`options\` to use Yes/No. For \`purpose: "ferment_start_approval"\`, provide two custom options with values \`yes\` and \`no\` so the labels can fit the request.
-
-Never block on this. Never call any "create" or "init" ferment tool — \`request_ferment_workflow\` is the only path, and it requires prior user yes via questionnaire.`
+If yes, call \`request_ferment_workflow\` with a concise \`title\` and an \`intent\` containing the full original user request, then stop; the host queues scoping. If no, continue inline. Never block on this.`
 
 /**
  * Renders the ferment-specific system-prompt block. Registered as a
