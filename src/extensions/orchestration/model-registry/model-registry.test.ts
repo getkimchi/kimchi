@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../../models.js"
 import { MODEL_CAPABILITIES } from "./builtin-models.js"
 import { ModelRegistry } from "./model-registry.js"
-import type { ModelStrength, ModelTier } from "./types.js"
+import type { ModelRole, ModelTier } from "./types.js"
 
 const ALLOWED_TIERS: ModelTier[] = ["light", "standard", "heavy"]
-const ALLOWED_STRENGTHS: ModelStrength[] = ["build", "explore", "plan", "review", "research"]
+const ALLOWED_ROLES: ModelRole[] = ["build", "explore", "plan", "review", "research"]
 
 const LIVE_ENTRIES = Object.entries(Object.fromEntries(MODEL_CAPABILITIES)).filter(
 	([, value]) => value !== "ignored",
@@ -21,11 +21,11 @@ describe("MODEL_CAPABILITIES completeness invariants", () => {
 		expect(ALLOWED_TIERS).toContain(cap.tier)
 	})
 
-	it.each(LIVE_ENTRIES)("%s — strengths is a non-empty array of valid ModelStrength values", (_id, cap) => {
-		expect(Array.isArray(cap.strengths)).toBe(true)
-		expect(cap.strengths.length).toBeGreaterThanOrEqual(1)
-		for (const s of cap.strengths) {
-			expect(ALLOWED_STRENGTHS).toContain(s)
+	it.each(LIVE_ENTRIES)("%s — roles is a non-empty array of valid ModelRole values", (_id, cap) => {
+		expect(Array.isArray(cap.roles)).toBe(true)
+		expect(cap.roles.length).toBeGreaterThanOrEqual(1)
+		for (const s of cap.roles) {
+			expect(ALLOWED_ROLES).toContain(s)
 		}
 	})
 
@@ -34,13 +34,10 @@ describe("MODEL_CAPABILITIES completeness invariants", () => {
 		expect((cap.orchestrationGuidelines as string).trim().length).toBeGreaterThan(0)
 	})
 
-	it.each(LIVE_ENTRIES)("%s — every declared strength phase has a non-empty guidelines entry", (_id, cap) => {
-		for (const strength of cap.strengths) {
-			const guidelineValue = cap.guidelines?.[strength]
-			expect(
-				guidelineValue,
-				`guidelines["${strength}"] must be a non-empty string (strength declared in strengths[])`,
-			).toBeTruthy()
+	it.each(LIVE_ENTRIES)("%s — every declared role has a non-empty guidelines entry", (_id, cap) => {
+		for (const role of cap.roles) {
+			const guidelineValue = cap.guidelines?.[role]
+			expect(guidelineValue, `guidelines["${role}"] must be a non-empty string (role declared in roles[])`).toBeTruthy()
 			expect(typeof guidelineValue).toBe("string")
 			expect((guidelineValue as string).trim().length).toBeGreaterThan(0)
 		}

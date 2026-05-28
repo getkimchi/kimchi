@@ -40,7 +40,7 @@ describe("resolveAgentInvocationConfig — model fallback chain", () => {
 				systemPrompt: "",
 				promptMode: "replace",
 				models: ["kimchi-dev/kimi-k2.6"],
-				strengths: ["plan"],
+				roles: ["plan"],
 			},
 			{ model: "kimchi-dev/minimax-m2.7" },
 		)
@@ -88,11 +88,11 @@ describe("resolveAgentInvocationConfig — model fallback chain", () => {
 		expect(mockRecommend).not.toHaveBeenCalled()
 	})
 
-	it("step 3: recommendModel called when strengths set but no models[]", () => {
+	it("step 3: recommendModel called when roles set but no models[]", () => {
 		mockRecommend.mockReturnValue({
 			provider: "kimchi-dev",
 			modelId: "minimax-m2.7",
-			capabilities: { vision: false, strengths: ["build"], tier: "standard", description: "" },
+			capabilities: { vision: false, roles: ["build"], tier: "standard", description: "" },
 		})
 		const result = resolveAgentInvocationConfig(
 			{
@@ -102,18 +102,18 @@ describe("resolveAgentInvocationConfig — model fallback chain", () => {
 				skills: true,
 				systemPrompt: "",
 				promptMode: "replace",
-				strengths: ["build"],
+				roles: ["build"],
 				preferTier: "standard",
 			},
 			{},
 		)
-		expect(mockRecommend).toHaveBeenCalledWith({ strengths: ["build"], preferTier: "standard" })
+		expect(mockRecommend).toHaveBeenCalledWith({ roles: ["build"], preferTier: "standard" })
 		expect(result.modelInput).toBe("kimchi-dev/minimax-m2.7")
 		expect(result.modelFromParams).toBe(false)
 	})
 
-	it("step 3: inherits parent when recommendModel returns undefined for strengths", () => {
-		mockRecommend.mockReturnValueOnce(undefined) // strengths call returns undefined
+	it("step 3: inherits parent when recommendModel returns undefined for roles", () => {
+		mockRecommend.mockReturnValueOnce(undefined) // roles call returns undefined
 		mockGetPhase.mockReturnValue("build")
 
 		const result = resolveAgentInvocationConfig(
@@ -124,20 +124,20 @@ describe("resolveAgentInvocationConfig — model fallback chain", () => {
 				skills: true,
 				systemPrompt: "",
 				promptMode: "replace",
-				strengths: ["build"],
+				roles: ["build"],
 			},
 			{},
 		)
-		// Only one call for strengths — phase is not tried when strengths are present
+		// Only one call for roles — phase is not tried when roles are present
 		expect(mockRecommend).toHaveBeenCalledTimes(1)
 		expect(result.modelInput).toBeUndefined()
 	})
 
-	it("step 4 (phase fallback): uses current phase when no config model or strengths", () => {
+	it("step 4 (phase fallback): uses current phase when no config model or roles", () => {
 		mockRecommend.mockReturnValue({
 			provider: "kimchi-dev",
 			modelId: "minimax-m2.7",
-			capabilities: { vision: false, strengths: ["build"], tier: "standard", description: "" },
+			capabilities: { vision: false, roles: ["build"], tier: "standard", description: "" },
 		})
 		mockGetPhase.mockReturnValue("build")
 
@@ -145,11 +145,11 @@ describe("resolveAgentInvocationConfig — model fallback chain", () => {
 			{ name: "test", description: "t", extensions: true, skills: true, systemPrompt: "", promptMode: "replace" },
 			{},
 		)
-		expect(mockRecommend).toHaveBeenCalledWith({ strengths: ["build"], preferTier: "standard" })
+		expect(mockRecommend).toHaveBeenCalledWith({ roles: ["build"], preferTier: "standard" })
 		expect(result.modelInput).toBe("kimchi-dev/minimax-m2.7")
 	})
 
-	it("inherits parent when no model, no strengths, no phase", () => {
+	it("inherits parent when no model, no roles, no phase", () => {
 		mockGetPhase.mockReturnValue(undefined)
 		const result = resolveAgentInvocationConfig(
 			{ name: "test", description: "t", extensions: true, skills: true, systemPrompt: "", promptMode: "replace" },
@@ -159,7 +159,7 @@ describe("resolveAgentInvocationConfig — model fallback chain", () => {
 		expect(result.modelFromParams).toBe(false)
 	})
 
-	it("ignores unknown phase values (non-strength phases)", () => {
+	it("ignores unknown phase values (non-role phases)", () => {
 		// Cast: testing the runtime guard against unexpected phase strings.
 		mockGetPhase.mockReturnValue("unknown-phase" as never)
 		const result = resolveAgentInvocationConfig(

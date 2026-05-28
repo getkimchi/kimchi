@@ -3,31 +3,31 @@
  *
  * These are always available but can be overridden by user .md files with the same name.
  * Models are resolved from the role-based configuration (model-roles.ts).
- * The strength-based lookup (modelsForStrength) is preserved as a fallback for
- * custom personas that use strengths in their frontmatter.
+ * The role-based lookup (modelsForRole) is preserved as a fallback for
+ * custom personas that use roles in their frontmatter.
  */
 
-import { modelsForAnyStrength, modelsForStrength } from "../../orchestration/model-registry/index.js"
-import { getModelRoles } from "../../orchestration/model-roles.js"
+import { modelsForAnyRole, modelsForRole } from "../../orchestration/model-registry/index.js"
+import { type RoleModelAssignment, getModelRoles, normalizeRoleModels } from "../../orchestration/model-roles.js"
 import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER, type AgentConfig } from "./types.js"
 
 const READ_ONLY_TOOLS = ["read", "bash", "grep", "find", "ls"]
 
-/** Pick models by strength; returns undefined if no model has the strength so the persona falls through to inherit.
- *  @deprecated Preserved for custom persona backward compatibility. Default agents now use role-based config. */
-function pick(strengths: readonly ("review" | "build" | "plan" | "explore" | "research")[]): string[] | undefined {
-	const list = strengths.length === 1 ? modelsForStrength(strengths[0]) : modelsForAnyStrength(strengths)
+/** Pick models by role; returns undefined if no model has the role so the persona falls through to inherit. */
+function pick(roles: readonly ("review" | "build" | "plan" | "explore" | "research")[]): string[] | undefined {
+	const list = roles.length === 1 ? modelsForRole(roles[0]) : modelsForAnyRole(roles)
 	return list.length > 0 ? list : undefined
 }
 
-/** Resolve model list for a role. Returns the role's model wrapped in an array,
- *  or falls back to strength-based lookup if the role model is empty. */
+/** Resolve model list for a role. Normalizes string|string[] to string[],
+ *  or falls back to capability-based lookup if the role assignment is empty. */
 function roleModels(
-	roleModel: string,
-	fallbackStrengths: readonly ("review" | "build" | "plan" | "explore" | "research")[],
+	assignment: RoleModelAssignment,
+	fallbackRoles: readonly ("review" | "build" | "plan" | "explore" | "research")[],
 ): string[] | undefined {
-	if (roleModel) return [roleModel]
-	return pick(fallbackStrengths)
+	const models = normalizeRoleModels(assignment)
+	if (models.length > 0 && models[0]) return models
+	return pick(fallbackRoles)
 }
 
 function buildDefaultAgents(): Map<string, AgentConfig> {
@@ -57,7 +57,7 @@ function buildDefaultAgents(): Map<string, AgentConfig> {
 				extensions: true,
 				skills: true,
 				models: roleModels(roles.explorer, ["explore"]),
-				strengths: ["explore"],
+				roles: ["explore"],
 				preferTier: "light",
 				thinking: "low",
 				tokenBudget: 120_000,
@@ -105,7 +105,7 @@ Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find,
 				includeContextFiles: true,
 				skills: true,
 				models: roleModels(roles.planner, ["plan"]),
-				strengths: ["plan"],
+				roles: ["plan"],
 				preferTier: "heavy",
 				thinking: "high",
 				tokenBudget: 120_000,
@@ -167,8 +167,8 @@ List 3-5 files most critical for implementing this plan:
 				builtinToolNames: READ_ONLY_TOOLS,
 				extensions: true,
 				skills: false,
-				models: roleModels(roles.orchestrator, ["research"]),
-				strengths: ["research"],
+				models: roleModels(roles.explorer, ["research"]),
+				roles: ["research"],
 				preferTier: "heavy",
 				thinking: "medium",
 				tokenBudget: 80_000,

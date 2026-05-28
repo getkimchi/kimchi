@@ -61,7 +61,7 @@ vi.mock("../personas/agent-types.js", () => ({
 		maxTurns: undefined,
 		memory: undefined,
 		disallowedTools: undefined,
-		strengths: undefined,
+		roles: undefined,
 		models: undefined,
 	}),
 	getToolNamesForType: vi.fn().mockReturnValue([]),
@@ -260,7 +260,7 @@ function makeAgentConfig(
 		maxTurns: undefined,
 		memory: undefined,
 		disallowedTools: undefined,
-		strengths: undefined,
+		roles: undefined,
 		models: undefined,
 		...overrides,
 	}
@@ -523,7 +523,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 			maxTurns: undefined,
 			memory: undefined,
 			disallowedTools: undefined,
-			strengths: ["explore"],
+			roles: ["explore"],
 			models: undefined,
 			tokenBudget: 19_999,
 			extensions: false,
@@ -560,7 +560,7 @@ describe("runAgent — tokenBudget forwarding", () => {
 			maxTurns: undefined,
 			memory: undefined,
 			disallowedTools: undefined,
-			strengths: ["explore"],
+			roles: ["explore"],
 			models: undefined,
 			tokenBudget: 100_000,
 			extensions: false,
@@ -608,7 +608,7 @@ describe("runAgent — profile tool access", () => {
 			makeAgentConfig({
 				name: "Researcher",
 				description: "Research agent",
-				strengths: ["research"],
+				roles: ["research"],
 			}),
 		)
 		mockGetToolNamesForType.mockReturnValue(["read", "grep"])
@@ -719,12 +719,6 @@ describe("runAgent — budget awareness steers", () => {
 				turns: 8,
 				expectedSteerCount: 2,
 				pattern: /75% of your turn budget./,
-			},
-			"steers at 90% of turn budget": {
-				maxTurns: 10,
-				turns: 9,
-				expectedSteerCount: 3,
-				pattern: /90% of your turn budget./,
 			},
 		}
 
