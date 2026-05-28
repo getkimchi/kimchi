@@ -84,8 +84,8 @@ Run the steps in order. For steps you own, use your tools directly. For steps yo
 When Step 1 classified the task as **complex**, you MUST execute it as a phased pipeline — never lump everything into a single Agent call or do it all yourself. The phases below are sequential; each one produces an artefact the next one consumes.
 
 1. **Plan phase** — Produce a Markdown spec file in the Documents directory. The spec MUST break the work into **small, independently-buildable chunks** — each chunk is a single cohesive unit (typically 1–3 files) that can be verified independently. Keep implementation and its tests in the same chunk — the agent that writes the code has the best context to test it. Include for each chunk: the file paths, method signatures / interfaces, expected behaviour, acceptance criteria, and a **complexity** classification:
-   - **simple** — straightforward CRUD, parsing, data structures, boilerplate, CLI wiring. A standard-tier Builder can implement this from the spec alone.
-   - **complex** — concurrency (goroutines, threads, channels, mutexes, worker pools), state machines, complex algorithms, signal handling, tricky synchronization. Requires a heavy-tier Builder.
+   - **simple** — straightforward CRUD, data structures, boilerplate, CLI wiring, simple input parsing. A standard-tier Builder can implement this from the spec alone.
+   - **complex** — concurrency (goroutines, threads, channels, mutexes, worker pools), state machines, graph algorithms (topological sort, cycle detection, BFS/DFS), dynamic programming, signal handling, tricky synchronization, or any logic where correctness depends on subtle ordering or edge cases. Requires a heavy-tier Builder.
 Chunks must be ordered so each one can build on the previous. If plan is in your roles, write it yourself; otherwise delegate to a Planner agent.
 
 **Plan self-validation (mandatory, lightweight):** After writing the spec, re-read it in a separate turn and cross-check every requirement from the original task against the plan. Flag any gap — missing features, ambiguous API choices (e.g. which stdlib function to use), unhandled edge cases (signals, timeouts, concurrency). Fix gaps before proceeding to build. This is a SELF check — it does not replace external verification for complex tasks.
@@ -114,7 +114,7 @@ Chunks must be ordered so each one can build on the previous. If plan is in your
 
 The verifier MUST check **build feasibility** and **complexity classification** for each chunk:
 - **Build feasibility**: is the spec detailed enough that a standard-tier Builder model can implement it without inventing design decisions? Are concurrency primitives named (e.g. "use sync.WaitGroup + channels", not just "use concurrency")? Are state transitions explicit? Are synchronization points specified?
-- **Complexity accuracy**: is the chunk classified correctly? A chunk using concurrency primitives, worker pools, channels, mutexes, or signal handling MUST be marked \`complex\`. A chunk marked \`simple\` that contains any of these is a classification error.
+- **Complexity accuracy**: is the chunk classified correctly? A chunk using concurrency primitives, worker pools, channels, mutexes, signal handling, graph algorithms (topological sort, cycle detection, BFS/DFS), or any logic where correctness depends on subtle ordering MUST be marked \`complex\`. A chunk marked \`simple\` that contains any of these is a classification error.
 If any chunk fails either check, the verdict MUST be NEEDS_REVISION with the specific gaps listed.
 
 **Handling the verdict:** If APPROVED: proceed to build phase. If NEEDS_REVISION: fix the gaps (yourself if plan is in your roles; otherwise delegate to a Planner agent). After revision, send ONLY the changed sections back to the verifier — not the full plan. Maximum one re-verification round; if still not approved, proceed with documented reservations.
