@@ -189,6 +189,13 @@ function stripAnsi(text: string): string {
 	return text.replace(ANSI_RE, "")
 }
 
+// Strips 24-bit truecolor ANSI escapes (\x1b[38;2;R;G;Bm and \x1b[48;2;R;G;Bm)
+// but preserves 256-color, basic ANSI (bold/dim/colors/reset).
+// Required for Apple_Terminal which strips all 24-bit codes.
+function stripTruecolor(text: string): string {
+	return text.replace(/\x1b\[(?:38|48);2;\d+;\d+;\d+m/g, "")
+}
+
 function isBlankLine(text: string): boolean {
 	// Strip ANSI escapes and the ▍ stroke prefix (with its trailing space) before checking.
 	return stripAnsi(text).replace(/▍ ?/g, "").trim().length === 0
@@ -2033,7 +2040,9 @@ async function renderUnified(
 	out.push(diffRule(tw))
 	if (diff.lines.length > vis.length)
 		out.push(`${BG_BASE}${FG_DIM}  ${collapsedDiffHint(diff.lines.length - vis.length, 0)}${D_RST}`)
-	return out.join("\n")
+	const result = out.join("\n")
+	// Apple_Terminal strips 24-bit ANSI — strip truecolor escapes so text is visible.
+	return _skipShikiOnAppleTerminal ? stripTruecolor(result) : result
 }
 
 async function renderSplit(
@@ -2171,7 +2180,9 @@ async function renderSplit(
 	out.push(`${diffRule(half)}${FG_RULE}┊${D_RST}${diffRule(half)}`)
 	if (rows.length > vis.length)
 		out.push(`${BG_BASE}${FG_DIM}  ${collapsedDiffHint(rows.length - vis.length, 0)}${D_RST}`)
-	return out.join("\n")
+	const result = out.join("\n")
+	// Apple_Terminal strips 24-bit ANSI — strip truecolor escapes so text is visible.
+	return _skipShikiOnAppleTerminal ? stripTruecolor(result) : result
 }
 
 function getEditOperations(input: any): Array<{ oldText: string; newText: string }> {
