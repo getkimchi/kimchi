@@ -23,6 +23,7 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 	// Per-instance mutable state (isolated from other sessions/agents)
 	let pendingAtMentions: AtMentionNotification[] = []
 	let latestSelection: SelectionChangedNotification | null = null
+	let currentCtx: ExtensionContext | null = null
 
 	function ensureMaxMentions(): void {
 		if (pendingAtMentions.length > MAX_PENDING_MENTIONS) {
@@ -162,11 +163,24 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 
 		if (m.method === "at_mentioned") {
 			if (typeof params.filePath === "string") {
-				localQueueAtMention({
+				const mention: AtMentionNotification = {
 					filePath: params.filePath,
 					lineStart: typeof params.lineStart === "number" ? params.lineStart : 0,
 					lineEnd: typeof params.lineEnd === "number" ? params.lineEnd : 0,
-				})
+				}
+				if (currentCtx?.hasUI) {
+					try {
+						currentCtx.ui.pasteToEditor(formatAtMention(mention))
+						// Force an immediate TUI render so the pasted text appears
+						// without waiting for the next user input event.
+						currentCtx.ui.setStatus("ide-adapter-mention", undefined)
+					} catch {
+						// If paste fails (e.g. no active editor), fall back to queue
+						localQueueAtMention(mention)
+					}
+				} else {
+					localQueueAtMention(mention)
+				}
 			}
 		} else if (m.method === "selection_changed") {
 			if (typeof params.filePath === "string") {
@@ -195,6 +209,7 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 	}
 
 	pi.on("session_start", (_event, ctx: ExtensionContext) => {
+		currentCtx = ctx
 		const cwd = ctx.cwd
 		isShuttingDown = false
 		reconnectRetries = 0
@@ -226,6 +241,7 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 	})
 
 	pi.on("session_shutdown", () => {
+		currentCtx = null
 		isShuttingDown = true
 		disconnect()
 	})
