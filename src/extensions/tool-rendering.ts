@@ -1147,6 +1147,18 @@ function themeBgRgb(theme: any, key: string): Rgb | null {
 	return ansi ? parseAnsiRgb(ansi) : null
 }
 
+// Relative luminance (ITU-R BT.709). Values > 0.5 are "light" backgrounds.
+function relativeLuminance(rgb: Rgb): number {
+	return (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255
+}
+
+// Detect light theme by checking toolSuccessBg luminance.
+// Only meaningful when themeAdaptive is enabled.
+function isLightTheme(theme: any): boolean {
+	const bg = themeBgRgb(theme, "toolSuccessBg")
+	return bg !== null && relativeLuminance(bg) > 0.5
+}
+
 // Cache theme identity so we only recompute on theme change. The Theme
 // object is reused across renders within a single session unless the user
 // switches themes via the picker.
@@ -1333,6 +1345,9 @@ function applyThemePaletteIfNeeded(theme: any): void {
 	if (!hasExplicitBgConfig) {
 		autoDeriveBgFromTheme(theme)
 		autoDerivePending = false
+		// Auto-detect light vs dark theme and set appropriate Shiki theme when
+		// no explicit diffTheme or shikiTheme override is configured.
+		DIFF_THEME = isLightTheme(theme) ? "github-light" : "github-dark"
 	}
 }
 
