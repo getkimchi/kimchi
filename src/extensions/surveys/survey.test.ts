@@ -50,15 +50,12 @@ describe("initial survey UI", () => {
 		})
 
 		const lines = component.render(72)
-		expect(lines.join("\n")).toContain("how did that go?")
-		expect(lines.join("\n")).toContain("your rating tunes the orchestrator's defaults for the next run.")
-		expect(lines.join("\n")).toContain("Worked great")
+		expect(lines.join("\n")).toContain("How did Kimchi do?")
+		expect(lines.join("\n")).toContain("Your feedback helps us improve.")
+		expect(lines.join("\n")).toContain("Went great")
 		expect(lines.join("\n")).toContain("Mostly worked")
-		expect(lines.join("\n")).toContain("- tweak before merge")
-		expect(surveyTheme.fg).toHaveBeenCalledWith(
-			"text",
-			"your rating tunes the orchestrator's defaults for the next run.",
-		)
+		expect(lines.join("\n")).toContain("- some tweaks before merge")
+		expect(surveyTheme.fg).toHaveBeenCalledWith("text", "Your feedback helps us improve.")
 
 		component.handleInput("\x1b[B")
 		component.handleInput("\r")
