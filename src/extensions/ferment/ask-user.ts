@@ -7,10 +7,10 @@
  *   1. Interactive sessions (plan / exec / auto with a TUI attached) — routes
  *      to a richer TUI prompt. The user picks or writes; we return structured
  *      data.
- *   2. One-shot sessions (no human at the keyboard) — routes to an Opus judge
- *      that stands in for the user. The judge sees the ferment goal + success
- *      criteria + current phase/step + question + options, picks one with a
- *      rationale.
+ *   2. One-shot sessions (no human at the keyboard) — routes to the configured
+ *      judge model that stands in for the user. The judge sees the ferment goal
+ *      + success criteria + current phase/step + question + options, picks one
+ *      with a rationale.
  *   3. Headless with no judge available — returns `{ failed: true }` and the
  *      caller is responsible for handling (typically by abandoning the
  *      ferment in one-shot mode).

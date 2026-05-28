@@ -180,7 +180,7 @@ describe("DEFAULT_MODEL_ROLES", () => {
 		expect(DEFAULT_MODEL_ROLES.builder).toBe("kimchi-dev/minimax-m2.7")
 		expect(DEFAULT_MODEL_ROLES.reviewer).toBe("kimchi-dev/minimax-m2.7")
 		expect(DEFAULT_MODEL_ROLES.explorer).toBe("kimchi-dev/nemotron-3-super-fp4")
-		expect(DEFAULT_MODEL_ROLES.judge).toBe("kimchi-dev/claude-opus-4-6")
+		expect(DEFAULT_MODEL_ROLES.judge).toBe("kimchi-dev/kimi-k2.6")
 	})
 
 	it("all defaults contain a provider prefix", () => {
@@ -238,7 +238,7 @@ describe("saveModelRoles", () => {
 })
 
 describe("validateModelRoles", () => {
-	const available = new Set(["kimi-k2.6", "minimax-m2.7", "nemotron-3-super-fp4", "claude-opus-4-6"])
+	const available = new Set(["kimi-k2.6", "minimax-m2.7", "nemotron-3-super-fp4"])
 
 	it("returns no unavailable roles when all defaults are available", () => {
 		const result = validateModelRoles(DEFAULT_MODEL_ROLES, available)
@@ -263,7 +263,7 @@ describe("validateModelRoles", () => {
 			builder: "anthropic/claude-sonnet-4-5",
 			reviewer: "kimchi-dev/minimax-m2.7",
 			explorer: "google/gemini-pro",
-			judge: "kimchi-dev/claude-opus-4-6",
+			judge: "kimchi-dev/kimi-k2.6",
 		}
 		const result = validateModelRoles(roles, available)
 		expect(result.unavailable).toHaveLength(4)

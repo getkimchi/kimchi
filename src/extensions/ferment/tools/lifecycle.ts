@@ -1027,7 +1027,7 @@ ${renderGateGuidance("complete_ferment")}`,
 
 Behavior depends on session mode:
   - Interactive (with TUI): the user answers in a structured TUI. Returns { choice | choices | text | answers, answered_by: "user" }.
-  - One-shot (no human attached): an Opus judge stands in for the user. Returns { choice | choices | text | answers, answered_by: "judge", rationale }.
+  - One-shot (no human attached): the configured judge model stands in for the user. Returns { choice | choices | text | answers, answered_by: "judge", rationale }.
 
 Hard contract: in one-shot mode, if the judge is unreachable (no API key, timeout, unparseable response) the ferment is ABANDONED — there is no fallback. False-pass is the worst outcome.
 

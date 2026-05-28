@@ -22,7 +22,7 @@
  *     "builder": "anthropic/claude-sonnet-4-5",
  *     "reviewer": "kimchi-dev/minimax-m2.7",
  *     "explorer": "kimchi-dev/nemotron-3-super-fp4",
- *     "judge": "kimchi-dev/claude-opus-4-6"
+ *     "judge": "kimchi-dev/kimi-k2.6"
  *   }
  * }
  * ```
@@ -54,7 +54,7 @@ export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
 	builder: "kimchi-dev/minimax-m2.7",
 	reviewer: "kimchi-dev/minimax-m2.7",
 	explorer: "kimchi-dev/nemotron-3-super-fp4",
-	judge: "kimchi-dev/claude-opus-4-6",
+	judge: "kimchi-dev/kimi-k2.6",
 }
 
 const ROLE_KEYS: readonly (keyof ModelRoles)[] = ["orchestrator", "planner", "builder", "reviewer", "explorer", "judge"]
