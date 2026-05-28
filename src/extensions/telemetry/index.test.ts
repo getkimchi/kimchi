@@ -26,12 +26,12 @@ const TEST_SURVEY = {
 	version: 1,
 	question: {
 		id: "how_did_that_go",
-		text: "how did that go?",
-		help: "your rating tunes the orchestrator's defaults for the next run.",
+		text: "How did Kimchi do?",
+		help: "Your feedback helps us improve.",
 	},
 	options: [
-		{ id: "worked_great", label: "Worked great - ship it", score: 5 },
-		{ id: "mostly_worked", label: "Mostly worked - tweak before merge", score: 3 },
+		{ id: "worked_great", label: "Went great - shipped it", score: 5 },
+		{ id: "mostly_worked", label: "Mostly worked - some tweaks before merge", score: 3 },
 		{ id: "didnt_work", label: "Didn't work - try again differently", score: 1 },
 	],
 } as const
@@ -214,14 +214,14 @@ describe("telemetryExtension integration", () => {
 		expect(shownAttrs.survey_id).toBe("first-impression-feedback-v1")
 		expect(shownAttrs.survey_version).toBe("1")
 		expect(shownAttrs.question_id).toBe("how_did_that_go")
-		expect(shownAttrs.question_text).toBe("how did that go?")
+		expect(shownAttrs.question_text).toBe("How did Kimchi do?")
 		expect(shownAttrs.client).toBe("pi")
 		expect(shownAttrs.source).toBe("cli")
 		expect(shownAttrs.mode).toBe("coding")
 
 		expect(answeredAttrs.impression_id).toBe(impressionId)
 		expect(answeredAttrs.answer_id).toBe("worked_great")
-		expect(answeredAttrs.answer_label).toBe("Worked great - ship it")
+		expect(answeredAttrs.answer_label).toBe("Went great - shipped it")
 		expect(answeredAttrs.answer_score).toBe("5")
 
 		expect(dismissedAttrs.impression_id).toBe(impressionId)

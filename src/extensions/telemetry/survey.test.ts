@@ -13,12 +13,12 @@ const TEST_SURVEY = {
 	version: 1,
 	question: {
 		id: "how_did_that_go",
-		text: "how did that go?",
-		help: "your rating tunes the orchestrator's defaults for the next run.",
+		text: "How did Kimchi do?",
+		help: "Your feedback helps us improve.",
 	},
 	options: [
-		{ id: "worked_great", label: "Worked great - ship it", score: 5 },
-		{ id: "mostly_worked", label: "Mostly worked - tweak before merge", score: 3 },
+		{ id: "worked_great", label: "Went great - shipped it", score: 5 },
+		{ id: "mostly_worked", label: "Mostly worked - some tweaks before merge", score: 3 },
 		{ id: "didnt_work", label: "Didn't work - try again differently", score: 1 },
 	],
 } as const
@@ -87,7 +87,7 @@ describe("survey telemetry", () => {
 		const attrMap = attrs(record)
 		expect(attrMap.impression_id).toBe("impression-1")
 		expect(attrMap.answer_id).toBe("mostly_worked")
-		expect(attrMap.answer_label).toBe("Mostly worked - tweak before merge")
+		expect(attrMap.answer_label).toBe("Mostly worked - some tweaks before merge")
 		expect(attrMap.answer_score).toBe("3")
 
 		await ctx.drain()
