@@ -89,7 +89,8 @@ const QuestionSchema = Type.Object({
 	),
 	options: Type.Optional(
 		Type.Array(QuestionOptionSchema, {
-			description: "Available choices. Required for single/multi. Ignored for text/confirm.",
+			description:
+				"Available choices. Required for single/multi. Optional for confirm to customize Yes/No labels; confirm values must remain yes/no.",
 		}),
 	),
 	allowOther: Type.Optional(
@@ -101,6 +102,12 @@ const QuestionSchema = Type.Object({
 const QuestionnaireParams = Type.Object({
 	questions: Type.Array(QuestionSchema, { description: "One or more questions to ask the user." }),
 	header: Type.Optional(Type.String({ description: "Optional header text shown above the questions." })),
+	purpose: Type.Optional(
+		Type.Literal("ferment_start_approval", {
+			description:
+				"Explicit host-level purpose. Use ferment_start_approval only for the one Yes/No question that asks whether to start a ferment.",
+		}),
+	),
 })
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -120,44 +127,20 @@ function isAffirmativeAnswer(answer: Answer | undefined): boolean {
 	return answer.values?.some((value) => value.toLowerCase() === "yes") ?? false
 }
 
-const FERMENT_START_APPROVAL_VERBS = new Set(["start", "begin", "create", "launch", "open", "use"])
-
-function isWordChar(char: string): boolean {
-	return (char >= "a" && char <= "z") || (char >= "0" && char <= "9") || char === "_"
-}
-
-function wordsIn(text: string): Set<string> {
-	const words = new Set<string>()
-	let current = ""
-	for (const char of text.toLowerCase()) {
-		if (isWordChar(char)) {
-			current += char
-			continue
-		}
-		if (current) {
-			words.add(current)
-			current = ""
-		}
-	}
-	if (current) words.add(current)
-	return words
-}
-
-export function isFermentStartApprovalQuestion(question: Question): boolean {
-	if (question.type !== "confirm") return false
-	const words = wordsIn(question.prompt)
-	return words.has("ferment") && Array.from(FERMENT_START_APPROVAL_VERBS).some((verb) => words.has(verb))
-}
-
-export function recordFermentStartApproval(questions: Question[], answers: Answer[], now = Date.now()): void {
-	const approved = questions.some((question) => {
-		if (!isFermentStartApprovalQuestion(question)) return false
-		return isAffirmativeAnswer(answers.find((answer) => answer.id === question.id))
-	})
-	if (!approved) return
+export function recordFermentStartApproval(
+	purpose: unknown,
+	questions: Question[],
+	answers: Answer[],
+	now = Date.now(),
+): void {
+	if (purpose !== "ferment_start_approval") return
+	const confirmQuestions = questions.filter((question) => question.type === "confirm")
+	if (confirmQuestions.length !== 1) return
+	const question = confirmQuestions[0]
+	if (!isAffirmativeAnswer(answers.find((answer) => answer.id === question.id))) return
 	fermentStartApproval = {
 		approvedAt: now,
-		prompt: questions.find(isFermentStartApprovalQuestion)?.prompt ?? "",
+		prompt: question.prompt,
 	}
 }
 
@@ -191,18 +174,19 @@ function normalizeQuestion(q: Static<typeof QuestionSchema>, index: number): Que
 		label: opt.label,
 		description: opt.description,
 	}))
+	const confirmOptions =
+		normalizedOptions.length > 0
+			? normalizedOptions
+			: [
+					{ value: "yes", label: "Yes" },
+					{ value: "no", label: "No" },
+				]
 	return {
 		id: q.id,
 		label: q.label || `Q${index + 1}`,
 		prompt: q.prompt,
 		type,
-		options:
-			type === "confirm"
-				? [
-						{ value: "yes", label: "Yes" },
-						{ value: "no", label: "No" },
-					]
-				: normalizedOptions,
+		options: type === "confirm" ? confirmOptions : normalizedOptions,
 		allowOther: q.allowOther ?? type === "single",
 		required: q.required !== false,
 	}
@@ -212,6 +196,12 @@ function validateQuestions(questions: Question[]): string | undefined {
 	for (const q of questions) {
 		if ((q.type === "single" || q.type === "multi") && q.options.length === 0 && !q.allowOther) {
 			return `Question "${q.id}" is type "${q.type}" but has no options and allowOther is false.`
+		}
+		if (q.type === "confirm") {
+			const values = q.options.map((option) => option.value.toLowerCase())
+			if (values.length !== 2 || !values.includes("yes") || !values.includes("no")) {
+				return `Question "${q.id}" is type "confirm" but does not have exactly two options with values "yes" and "no".`
+			}
 		}
 	}
 	return undefined
@@ -541,7 +531,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 			}
 
 			const text = formatAnswerText(questions, result.answers)
-			recordFermentStartApproval(questions, result.answers)
+			recordFermentStartApproval(params.purpose, questions, result.answers)
 			return {
 				content: [{ type: "text", text }],
 				details: result,

@@ -14,7 +14,6 @@ import type { Command, ScopePhaseInput } from "../../../ferment/state-machine.js
 import { normalizeFermentTitle } from "../../../ferment/title.js"
 import {
 	DEFAULT_SCOPING_QUESTION_TYPE,
-	type Ferment,
 	type Grade,
 	SCOPING_QUESTION_TYPES,
 	type ScopingQuestion,
@@ -78,25 +77,6 @@ type ScopingAnswer = {
 const SCOPING_STATUS_KEY = "ferment-scoping"
 const TITLE_REQUIRED_ERROR =
 	'Field "title" must be a non-empty concise 3-5 word title. Retry with the full payload including title.'
-const BROAD_IMPROVEMENT_RE =
-	/\b(improve|improvement|improvements|audit|review|recommend|recommendation|recommendations|opportunit(?:y|ies)|potential|refactor|polish|optimise|optimize|modernise|modernize|harden|hardening|cleanup|clean up)\b/i
-const EXPLICIT_ALL_SCOPE_RE =
-	/\b(all of the above|everything|the whole|the entire)\b|\b(?:implement|include|do|ship|build|port)\s+all\b|\bfull\s+(?:scope|implementation|port|plugin)\b/i
-const NEGATED_ALL_SCOPE_RE = /\b(?:did not|didn't|not|never|without)\b.{0,80}\ball\b/i
-const GENERIC_PHASE_NAMES = new Set([
-	"setup",
-	"scaffold",
-	"scaffolding",
-	"implementation",
-	"implement",
-	"build",
-	"verify",
-	"verification",
-	"tests",
-	"testing",
-	"polish",
-	"review",
-])
 
 export interface LifecycleExecutionContext {
 	pi: ExtensionAPI
@@ -386,53 +366,6 @@ function validateScopingQuestions(questions: ScopingQuestion[]): string | null {
 	}
 
 	return null
-}
-
-function normalizeScopeAreaName(value: string): string {
-	return value
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, " ")
-		.trim()
-}
-
-function countDistinctScopeAreas(phases: ScopePhaseInput[]): number {
-	const areas = new Set<string>()
-	for (const phase of phases) {
-		const name = normalizeScopeAreaName(phase.name)
-		if (!name || GENERIC_PHASE_NAMES.has(name) || /^p(?:hase)?\s*\d+$/i.test(name)) continue
-		areas.add(name)
-	}
-	return areas.size
-}
-
-function validateScopeBoundaryQuestion(opts: {
-	ferment: Ferment
-	params: NormalizedProposeScopingArgs
-	questions: ScopingQuestion[]
-	alreadyWarned: boolean
-}): string | null {
-	if (opts.alreadyWarned || opts.questions.length > 0) return null
-	if (countDistinctScopeAreas(opts.params.phases) < 3) return null
-
-	const sourceText = [
-		opts.ferment.name,
-		opts.ferment.description,
-		opts.params.title,
-		opts.params.goal,
-		opts.params.success_criteria,
-		opts.params.assumptions,
-	]
-		.filter((part): part is string => typeof part === "string" && part.trim().length > 0)
-		.join("\n")
-
-	if (!BROAD_IMPROVEMENT_RE.test(sourceText)) return null
-	if (EXPLICIT_ALL_SCOPE_RE.test(sourceText) && !NEGATED_ALL_SCOPE_RE.test(sourceText)) return null
-
-	return [
-		"Scope boundary question required: this looks like a broad improvement/audit/recommendation request with multiple plausible improvement areas.",
-		'Ask one checkbox question in `questions` using type: "checkbox", for example: "Which improvement areas should this ferment include?"',
-		"If all areas are truly in scope, call propose_ferment_scoping again with questions: [] and state that explicitly in assumptions.",
-	].join("\n")
 }
 
 export function buildPlanMarkdown(params: NormalizedProposeScopingArgs): string {
@@ -752,7 +685,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 		name: FERMENT_TOOLS.REQUEST_WORKFLOW,
 		label: "Start Ferment Workflow",
 		description:
-			'Start the ferment workflow (interactive scoping → planner) on the user\'s behalf. Call this ONLY after the user has explicitly answered "yes" to the questionnaire asking if they want to start a ferment. Provide a concise 3-5 word title and the full original user intent. The host will create the draft, kick off scoping, and you will see a planner supplement on the next turn. Refuses if another ferment is already running.',
+			'Start the ferment workflow (interactive scoping → planner) on the user\'s behalf. Call this after the user has explicitly answered "yes" to the questionnaire asking if they want to start a ferment; in yolo permissions mode, call it directly without the questionnaire. Provide a concise 3-5 word title and the full original user intent. The host will create the draft, kick off scoping, and you will see a planner supplement on the next turn. Refuses if another ferment is already running.',
 		parameters: Type.Object({
 			title: Type.String({
 				description: "Concise 3-5 word title for the new ferment (e.g. 'Rewrite login flow').",
@@ -767,7 +700,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 			if (!title) return toolErr('Field "title" must be a non-empty string.')
 			if (!canStartFermentWithoutQuestionnaire() && !consumeFermentStartApproval()) {
 				return toolErr(
-					'request_ferment_workflow refused — the user has not explicitly approved starting a ferment. First call questionnaire with exactly one confirm question asking "This looks like multi-phase work — start a ferment for it?". If the user answers Yes, call request_ferment_workflow again. In yolo mode this approval gate is bypassed.',
+					'request_ferment_workflow refused — the user has not explicitly approved starting a ferment. First call questionnaire with purpose "ferment_start_approval" and exactly one confirm question asking whether to start a ferment. Phrase it naturally for the request and use options with values "yes" and "no". If the user answers yes, call request_ferment_workflow again. In yolo mode this approval gate is bypassed.',
 				)
 			}
 			const intent = typeof params.intent === "string" ? params.intent.trim() : ""
@@ -793,7 +726,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: FERMENT_TOOLS.PROPOSE_SCOPING,
 		label: "Propose Scoping",
-		description: `Emit the full scoping draft: title, goal, criteria, constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad improvement, audit, or recommendation requests over an existing codebase, multiple plausible improvement areas are an outcome/scope boundary; ask one checkbox question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
+		description: `Emit the full scoping draft: title, goal, criteria, constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one checkbox question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
@@ -851,21 +784,6 @@ ${renderGateGuidance("scope_ferment")}`,
 				)
 			}
 
-			const scopeBoundaryQuestionError = validateScopeBoundaryQuestion({
-				ferment,
-				params,
-				questions,
-				alreadyWarned: pendingAfterSeed.scopeBoundaryQuestionGuarded === true,
-			})
-			if (scopeBoundaryQuestionError) {
-				runtime.setPendingScope(params.ferment_id, {
-					...pendingAfterSeed,
-					proposeIterations: nextIterations,
-					scopeBoundaryQuestionGuarded: true,
-				})
-				return toolErr(scopeBoundaryQuestionError)
-			}
-
 			runtime.attachPendingProposal(params.ferment_id, {
 				title: params.title,
 				goal: params.goal,
@@ -874,7 +792,6 @@ ${renderGateGuidance("scope_ferment")}`,
 				assumptions: params.assumptions,
 				phases: params.phases,
 				proposeIterations: nextIterations,
-				scopeBoundaryQuestionGuarded: pendingAfterSeed.scopeBoundaryQuestionGuarded,
 			})
 
 			// 4. Build clean markdown for final/headless tool output and local review UI.

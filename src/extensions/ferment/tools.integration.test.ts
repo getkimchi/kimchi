@@ -249,8 +249,8 @@ describe("request_ferment_workflow approval gate", () => {
 		prompt: "This looks like multi-phase work — start a ferment for it?",
 		type: "confirm" as const,
 		options: [
-			{ value: "yes", label: "Yes" },
-			{ value: "no", label: "No" },
+			{ value: "yes", label: "Yes, start the ferment" },
+			{ value: "no", label: "No, handle it inline" },
 		],
 		allowOther: false,
 		required: true,
@@ -272,8 +272,9 @@ describe("request_ferment_workflow approval gate", () => {
 
 	it("starts after a yes answer to the start-ferment question", async () => {
 		recordFermentStartApproval(
+			"ferment_start_approval",
 			[startQuestion],
-			[{ id: "start", value: "yes", label: "Yes", wasCustom: false, index: 1 }],
+			[{ id: "start", value: "yes", label: "Yes, start the ferment", wasCustom: false, index: 1 }],
 		)
 
 		const text = ok(
@@ -1188,49 +1189,6 @@ describe("propose_ferment_scoping", () => {
 		const tool = h.tools.get("propose_ferment_scoping")
 		expect(tool?.description).toContain("If questions is non-empty")
 		expect(tool?.description).toContain("answer-agnostic")
-	})
-
-	it("rejects broad improvement proposals without a checkbox question once", async () => {
-		const id = await createFerment("Improve Kimchi Extension", "Find potential improvements to this application")
-		seedPending(id)
-		const ctx = { ui: { select: vi.fn(), custom: vi.fn() } }
-		const improvementPhases = [
-			{
-				name: "Deduplicate shared utilities",
-				goal: "Extract duplicated helper logic",
-				steps: [{ description: "Extract helpers" }],
-			},
-			{
-				name: "Fetch live model data",
-				goal: "Replace stale hardcoded model lists",
-				steps: [{ description: "Use API data" }],
-			},
-			{
-				name: "Improve UX feedback",
-				goal: "Show progress while work starts",
-				steps: [{ description: "Move feedback earlier" }],
-			},
-		]
-		const payload = basePayload(id, {
-			title: "Improve Kimchi Extension",
-			goal: "Find and reason about potential improvements to this application",
-			success_criteria: "Selected improvement areas are implemented and verified",
-			assumptions: "The user asked for potential improvements but did not say to implement all of them.",
-			phases: improvementPhases,
-		})
-
-		const first = err(await h.call("propose_ferment_scoping", payload, ctx))
-
-		expect(first).toContain("Scope boundary question required")
-		expect(first).toContain("Ask one checkbox question")
-		expect(first).toContain('type: "checkbox"')
-		expect(first).toContain("Which improvement areas should this ferment include?")
-		expect(getPendingScope(id)?.scopeBoundaryQuestionGuarded).toBe(true)
-		expect(ctx.ui.custom).not.toHaveBeenCalled()
-		expect(getPendingPlanReview(id)).toBeUndefined()
-
-		const retry = ok(await h.call("propose_ferment_scoping", payload, ctx))
-		expect(retry).toContain("Plan ready for review")
 	})
 
 	// (a) zero-questions + interactive UI -> deferred local review

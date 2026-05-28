@@ -25,7 +25,7 @@ type RegisteredTool = {
 }
 
 function makePi(): ExtensionAPI & {
-	fire: (event: string, payload?: unknown, ctx?: unknown) => Promise<void>
+	fire: (event: string, payload?: unknown, ctx?: unknown) => Promise<unknown[]>
 	fireShutdown: () => void
 	tools: Map<string, RegisteredTool>
 } {
@@ -46,9 +46,11 @@ function makePi(): ExtensionAPI & {
 			if (event === "session_start") handler({}, sessionStartCtx)
 		},
 		fire: async (event: string, payload: unknown = {}, ctx: unknown = {}) => {
+			const results: unknown[] = []
 			for (const handler of handlers.get(event) ?? []) {
-				await handler(payload, ctx)
+				results.push(await handler(payload, ctx))
 			}
+			return results
 		},
 		fireShutdown: () => {
 			for (const handler of shutdownHandlers) handler()
@@ -56,7 +58,7 @@ function makePi(): ExtensionAPI & {
 		tools,
 	}
 	return pi as unknown as ExtensionAPI & {
-		fire: (event: string, payload?: unknown, ctx?: unknown) => Promise<void>
+		fire: (event: string, payload?: unknown, ctx?: unknown) => Promise<unknown[]>
 		fireShutdown: () => void
 		tools: Map<string, RegisteredTool>
 	}
@@ -137,7 +139,7 @@ describe("tags system prompt block", () => {
 			expect(result).toContain("Call `set_phase` before substantive work blocks")
 			expect(result).toContain("Do not call `set_phase` before the initial request classification")
 			expect(result).toContain("before `request_ferment_workflow`")
-			expect(result).toContain("the next tool must be `questionnaire` for the ferment offer")
+			expect(result).toContain("ask the ferment-offer questionnaire before analysis")
 			expect(result.indexOf("## Phase Tagging for Analytics")).toBeLessThan(result.indexOf("## Available Tools"))
 		} finally {
 			pi.fireShutdown()
@@ -161,6 +163,26 @@ describe("tags system prompt block", () => {
 		})
 		expect(JSON.stringify(result)).toContain("request classification")
 		expect(JSON.stringify(result)).toContain("call `questionnaire`")
+	})
+
+	it("blocks exploration tools after premature set_phase until questionnaire", async () => {
+		const pi = makePi()
+		tagsExtension(pi)
+
+		await pi.fire("input", { source: "interactive", text: "Find improvements to this extension" })
+
+		const tool = pi.tools.get("set_phase")
+		await tool?.execute("call-1", { phase: "explore" }, undefined, undefined, { hasUI: false })
+
+		const [readResult] = await pi.fire("tool_call", { toolName: "read" })
+		expect(readResult).toEqual(expect.objectContaining({ block: true }))
+		expect(JSON.stringify(readResult)).toContain("questionnaire")
+
+		const [questionnaireResult] = await pi.fire("tool_call", { toolName: "questionnaire" })
+		expect(questionnaireResult).toEqual({ block: false })
+
+		const [nextReadResult] = await pi.fire("tool_call", { toolName: "read" })
+		expect(nextReadResult).toBeUndefined()
 	})
 
 	it("allows set_phase after another tool has started classification or work", async () => {

@@ -134,7 +134,7 @@ describe("runScopingFlow", () => {
 		expect(text).toContain("Output contract:")
 		expect(text).toContain("title is required")
 		expect(text).toContain("ask those questions through the propose_ferment_scoping questions array")
-		expect(text).toContain("multiple plausible improvement areas")
+		expect(text).toContain("multiple plausible work areas")
 		expect(text).toContain("ask one checkbox question")
 		expect(text).toContain("Which improvement areas should this ferment include?")
 		expect(text).toContain("questions must be in propose_ferment_scoping.questions")

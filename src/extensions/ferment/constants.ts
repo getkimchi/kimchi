@@ -8,7 +8,7 @@ Do not call List, Read, Grep, Bash, or any codebase discovery tool before this i
 </phase_0_inventory>
 
 <discovery_sequence required="true">
-For broad improvement/audit/planning requests over an existing codebase, even when the user asks with a simple prompt:
+For broad codebase/product discovery or planning requests, even when the user asks with a simple prompt:
 1. Do a small direct scan only to identify the project shape. This means file listing plus concise manifest/README/package/config reads and, if needed, targeted searches or short entrypoint snippets.
 2. Do not use unbounded Read calls on implementation, UI, or style files before the delegation checkpoint. For source-like files, first get the file's line count or tool-reported length, then read at most a short snippet, about 60 lines or less, unless a targeted search points to a narrow range.
 3. Only read an implementation/UI/style file end-to-end during the direct scan when the line count proves it is small enough to be a snippet-sized file and the read is narrowly justified.

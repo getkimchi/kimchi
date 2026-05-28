@@ -3,7 +3,6 @@ import {
 	clearFermentStartApproval,
 	consumeFermentStartApproval,
 	formatAnswerText,
-	isFermentStartApprovalQuestion,
 	normalizeQuestionType,
 	recordFermentStartApproval,
 } from "./questionnaire.js"
@@ -196,8 +195,8 @@ describe("ferment start approval tracking", () => {
 		prompt: "This looks like multi-phase work — start a ferment for it?",
 		type: "confirm" as const,
 		options: [
-			{ value: "yes", label: "Yes" },
-			{ value: "no", label: "No" },
+			{ value: "yes", label: "Yes, start the ferment" },
+			{ value: "no", label: "No, handle it inline" },
 		],
 		allowOther: false,
 		required: true,
@@ -209,8 +208,9 @@ describe("ferment start approval tracking", () => {
 
 	it("records and consumes a yes answer to the start-ferment confirm question", () => {
 		recordFermentStartApproval(
+			"ferment_start_approval",
 			[startQuestion],
-			[{ id: "start", value: "yes", label: "Yes", wasCustom: false, index: 1 }],
+			[{ id: "start", value: "yes", label: "Yes, start the ferment", wasCustom: false, index: 1 }],
 			100,
 		)
 
@@ -218,7 +218,7 @@ describe("ferment start approval tracking", () => {
 		expect(consumeFermentStartApproval(102)).toBe(false)
 	})
 
-	it("does not record non-start scope questions as ferment-start approval", () => {
+	it("does not record without the explicit ferment-start purpose", () => {
 		const scopeQuestion = {
 			...startQuestion,
 			id: "scope",
@@ -227,8 +227,8 @@ describe("ferment start approval tracking", () => {
 			options: [{ value: "cache", label: "Cache cleanup" }],
 		}
 
-		expect(isFermentStartApprovalQuestion(scopeQuestion)).toBe(false)
 		recordFermentStartApproval(
+			undefined,
 			[scopeQuestion],
 			[
 				{
@@ -248,8 +248,9 @@ describe("ferment start approval tracking", () => {
 
 	it("does not record no answers", () => {
 		recordFermentStartApproval(
+			"ferment_start_approval",
 			[startQuestion],
-			[{ id: "start", value: "no", label: "No", wasCustom: false, index: 2 }],
+			[{ id: "start", value: "no", label: "No, handle it inline", wasCustom: false, index: 2 }],
 			100,
 		)
 

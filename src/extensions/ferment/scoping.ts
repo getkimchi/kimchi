@@ -57,8 +57,6 @@ export interface PendingScope {
 	assumptions?: string
 	/** Number of times propose_ferment_scoping has been called for this ferment. Reset on confirm. */
 	proposeIterations?: number
-	/** Set after the host has once reminded the planner to ask a scope-boundary checkbox question. */
-	scopeBoundaryQuestionGuarded?: boolean
 }
 
 export interface AttachPendingProposalPartial {
@@ -69,7 +67,6 @@ export interface AttachPendingProposalPartial {
 	assumptions?: string
 	phases?: ScopePhaseInput[]
 	proposeIterations?: number
-	scopeBoundaryQuestionGuarded?: boolean
 }
 
 const pendingScopes = new Map<string, PendingScope>()
@@ -85,7 +82,6 @@ export function attachPendingProposal(fermentId: string, partial: AttachPendingP
 		phases: partial.phases,
 		assumptions: partial.assumptions,
 		proposeIterations: partial.proposeIterations,
-		scopeBoundaryQuestionGuarded: partial.scopeBoundaryQuestionGuarded,
 	})
 	return true
 }
@@ -195,7 +191,7 @@ Question policy:
 - Do not call propose_ferment_scoping first and then ask follow-up questions in prose. If questions are needed, include them in the same propose_ferment_scoping call.
 - If no question is truly decision-blocking, emit questions: [] and record safe defaults in assumptions.
 - Do not ask preference-survey questions when there is a safe, reversible default; record the default in assumptions instead.
-- For broad improvement, audit, or recommendation requests over an existing codebase, if discovery finds multiple plausible improvement areas and the user did not explicitly ask to implement all of them, ask one checkbox question selecting which areas belong in this ferment. Treat that as an outcome/scope boundary, not a preference survey.
+- For broad discovery or planning over an existing codebase, if discovery finds multiple plausible work areas and the user did not explicitly ask to include every area, ask one checkbox question selecting which areas belong in this ferment. Treat that as an outcome/scope boundary, not a preference survey.
 - Example: for "find improvements to this app", ask "Which improvement areas should this ferment include?" with options such as "Deduplicate shared utilities", "Fetch live data", "Improve UX feedback", and "Add focused verification".
 - If the user asks to be thorough with questions, be thorough in the plan fields and verification steps; do not ask generic default-choice questions unless implementation is blocked.
 

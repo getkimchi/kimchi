@@ -96,7 +96,7 @@ describe("ProposeScopingParams schema", () => {
 			.questions
 		const schemaText = JSON.stringify(questionsSchema)
 
-		expect(schemaText).toContain("multiple plausible improvement areas")
+		expect(schemaText).toContain("multiple plausible work areas")
 		expect(schemaText).toContain("ask one checkbox question")
 		expect(schemaText).toContain("Which improvement areas should this ferment include?")
 	})
