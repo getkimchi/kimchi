@@ -4,8 +4,6 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{TITLE}}</title>
-  <link rel="preconnect" href="https://api.fontshare.com" />
-  <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700&display=swap" rel="stylesheet" />
   <style>
     *, *::before, *::after {
       box-sizing: border-box;
@@ -13,20 +11,15 @@
       padding: 0;
     }
 
-    html, body {
-      height: 100%;
-      width: 100%;
-    }
-
     body {
       background-color: #0b0b0e;
       color: #fafafa;
-      font-family: 'Satoshi', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       display: flex;
       align-items: center;
       justify-content: center;
       min-height: 100vh;
-      overflow: hidden;
+      padding: 24px;
       position: relative;
     }
 
@@ -71,7 +64,8 @@
       border: 1px solid rgba(234, 231, 226, 0.09);
       border-radius: 20px;
       padding: 44px 52px;
-      width: 360px;
+      width: 100%;
+      max-width: 360px;
       text-align: center;
       backdrop-filter: blur(24px);
       -webkit-backdrop-filter: blur(24px);
