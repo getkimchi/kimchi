@@ -143,6 +143,13 @@ export function getOrchestratorModelRef(): string {
 }
 const DELEGATION_TOOL_NAMES = new Set(["Agent", "subagent"])
 
+// Tracks sessions that have already received a deprecation notification to avoid duplicate alerts.
+const deprecatedNotificationFired = new Set<string>()
+
+export function _resetDeprecatedNotificationTracking(): void {
+	deprecatedNotificationFired.clear()
+}
+
 function isDelegationToolCallName(name: string | undefined): boolean {
 	return name != null && DELEGATION_TOOL_NAMES.has(name)
 }
@@ -262,6 +269,14 @@ export default function (skillPaths: string[]) {
 		// For sub agents we don't want to transform the prompt sent from parent with model capabilities
 		const registry = new ModelRegistry(getAvailableModels())
 
+		// Build a map of deprecated model IDs for quick lookup during session_start.
+		const deprecatedWarnings = new Map<string, string | undefined>()
+		for (const w of registry.warnings) {
+			if (w.kind === "deprecated_model") {
+				deprecatedWarnings.set(w.modelId, w.replacement)
+			}
+		}
+
 		if (!subagentMode) {
 			// Validate model roles against available API models at startup
 			const availableIds = new Set(getAvailableModels().map((m) => m.slug))
@@ -271,7 +286,32 @@ export default function (skillPaths: string[]) {
 					`[model-roles] Warning: ${role} model "${configuredModel}" is not available. Subagents for this role will fall back to the parent model.`,
 				)
 			}
+			function notifyIfDeprecated(ctx: {
+				sessionManager?: { getSessionId: () => string | undefined }
+				model?: { id: string }
+				ui?: { notify: (msg: string, kind?: "warning" | "error" | "info") => void }
+			}) {
+				const sessionId = ctx.sessionManager?.getSessionId() ?? "unknown"
+				if (ctx.model && deprecatedWarnings.has(ctx.model.id) && !deprecatedNotificationFired.has(sessionId)) {
+					deprecatedNotificationFired.add(sessionId)
+					const replacement = deprecatedWarnings.get(ctx.model.id)
+					const replacementAvailable = replacement && registry.getAll().some((m) => m.id === replacement)
+					const message =
+						replacement && replacementAvailable
+							? `Model "${ctx.model.id}" is deprecated. Switch to "${replacement}" for better performance.`
+							: `Model "${ctx.model.id}" is deprecated. It may be removed in a future update.`
+					ctx.ui?.notify(message, "warning")
+				}
+			}
+
+			pi.on("session_shutdown", async (_event, ctx) => {
+				const sessionId = ctx.sessionManager?.getSessionId()
+				if (sessionId) deprecatedNotificationFired.delete(sessionId)
+			})
+
 			pi.on("session_start", async (_event, ctx) => {
+				notifyIfDeprecated(ctx)
+
 				// In multi-model mode the orchestrator must always be the configured
 				// orchestrator model. Force-switch if the user has a different model
 				// selected via /models.
@@ -286,6 +326,10 @@ export default function (skillPaths: string[]) {
 						}
 					}
 				}
+			})
+
+			pi.on("model_select", async (_event, ctx) => {
+				notifyIfDeprecated(ctx)
 			})
 
 			// Detect the inverse of the context-event nudge below: the orchestrator reasons
