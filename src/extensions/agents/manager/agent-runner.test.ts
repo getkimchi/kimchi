@@ -698,22 +698,33 @@ describe("runAgent — budget awareness steers", () => {
 
 	const steerCases: Record<string, { maxTurns: number; turns: number; expectedSteerCount: number; pattern?: RegExp }> =
 		{
+			"does not steer before 50% of turn budget": {
+				maxTurns: 10,
+				turns: 4,
+				expectedSteerCount: 0,
+			},
+			"steers at 50% of turn budget": {
+				maxTurns: 10,
+				turns: 5,
+				expectedSteerCount: 1,
+				pattern: /50% of your turn budget./,
+			},
+			"does not steer between 50% and 75%": {
+				maxTurns: 10,
+				turns: 7,
+				expectedSteerCount: 1,
+			},
 			"steers at 75% of turn budget": {
 				maxTurns: 10,
 				turns: 8,
-				expectedSteerCount: 1,
+				expectedSteerCount: 2,
 				pattern: /75% of your turn budget./,
 			},
 			"steers at 90% of turn budget": {
 				maxTurns: 10,
 				turns: 9,
-				expectedSteerCount: 2,
+				expectedSteerCount: 3,
 				pattern: /90% of your turn budget./,
-			},
-			"does not steer before 75% of turn budget": {
-				maxTurns: 10,
-				turns: 7,
-				expectedSteerCount: 0,
 			},
 		}
 
