@@ -22,6 +22,7 @@
 		"check": "pnpm run lint && pnpm run typecheck",
 		"test": "vitest run --dir src",
 		"test:smoke": "vitest run --config tests/smoke/vitest.config.ts",
+		"postinstall": "node scripts/patch-pi-ai-oauth.js",
 		"prepare": "husky",
 		"verify": "pnpm run check && pnpm run build:binary && pnpm run test && pnpm run test:smoke"
 	},
@@ -76,9 +77,9 @@
 		"@types/turndown": "^5.0.6",
 		"@types/ws": "^8.18.1",
 		"husky": "^9.1.7",
-		"supports-color": "^10.2.2",
 		"node-pty": "^1.1.0",
 		"playwright": "^1.59.1",
+		"supports-color": "^10.2.2",
 		"tsx": "^4.21.0",
 		"turndown": "^7.2.4",
 		"typescript": "^5.9.3",
