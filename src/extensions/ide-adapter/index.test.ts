@@ -72,6 +72,11 @@ describe("ide-adapter extension", () => {
 			setThinkingLevel: vi.fn(),
 			attachFiles: vi.fn(),
 			detachFiles: vi.fn(),
+			events: {
+				on: vi.fn(),
+				off: vi.fn(),
+				emit: vi.fn(),
+			},
 		} as unknown as ExtensionAPI & {
 			_handlers: Record<string, ((...args: unknown[]) => unknown)[]>
 			registeredTools: Array<{
@@ -81,6 +86,23 @@ describe("ide-adapter extension", () => {
 				parameters: Record<string, unknown>
 				execute: (...args: unknown[]) => unknown
 			}>
+		}
+	}
+
+	function createFakeCtx(
+		options: { hasUI?: boolean; pasteToEditor?: ReturnType<typeof vi.fn>; setStatus?: ReturnType<typeof vi.fn> } = {},
+	): {
+		hasUI: boolean
+		ui: { pasteToEditor: ReturnType<typeof vi.fn>; setStatus: ReturnType<typeof vi.fn> }
+		cwd: string
+	} {
+		return {
+			hasUI: options.hasUI ?? true,
+			ui: {
+				pasteToEditor: options.pasteToEditor ?? vi.fn(),
+				setStatus: options.setStatus ?? vi.fn(),
+			},
+			cwd: "/tmp",
 		}
 	}
 
@@ -100,6 +122,119 @@ describe("ide-adapter extension", () => {
 			ideAdapterExtension(pi)
 			const result = pi._handlers.input[0]({ text: "hello" })
 			expect(result).toBeUndefined()
+		})
+	})
+
+	describe("at_mentioned notification", () => {
+		beforeEach(() => {
+			vi.useFakeTimers()
+			vi.mocked(connectToIde).mockReset()
+			vi.mocked(scanLockfiles).mockReset()
+			vi.mocked(parseLockfile).mockReset()
+			vi.mocked(findMatchingLockfile).mockReset()
+			vi.mocked(getLockfileDir).mockReset()
+		})
+
+		afterEach(() => {
+			vi.useRealTimers()
+		})
+
+		it("pastes mention immediately into editor when UI is available", async () => {
+			const pi = createFakeExtensionAPI()
+			const pasteToEditor = vi.fn()
+			const ctx = createFakeCtx({ hasUI: true, pasteToEditor })
+			ideAdapterExtension(pi)
+
+			const fakeConnection = {
+				lockfile: { ideName: "TestIDE" },
+				listTools: vi.fn().mockResolvedValue([]),
+				callTool: vi.fn(),
+				close: vi.fn().mockResolvedValue(undefined),
+				setNotificationHandler: vi.fn(),
+			}
+			vi.mocked(connectToIde).mockResolvedValue(fakeConnection as unknown as Awaited<ReturnType<typeof connectToIde>>)
+			vi.mocked(getLockfileDir).mockReturnValue("/tmp/locks")
+			vi.mocked(scanLockfiles).mockReturnValue(["/tmp/locks/ide.lock"])
+			vi.mocked(parseLockfile).mockReturnValue({
+				port: 12345,
+				pid: 1,
+				ideName: "TestIDE",
+				ideVersion: "1.0",
+				transport: "ws",
+				workspaceFolders: ["/tmp"],
+				authToken: "tok",
+			} as LockfileData)
+			vi.mocked(findMatchingLockfile).mockReturnValue({
+				port: 12345,
+				pid: 1,
+				ideName: "TestIDE",
+				ideVersion: "1.0",
+				transport: "ws",
+				workspaceFolders: ["/tmp"],
+				authToken: "tok",
+			} as LockfileData)
+
+			pi._handlers.session_start[0](null, ctx)
+			await vi.advanceTimersByTimeAsync(0)
+
+			const setHandler = vi.mocked(fakeConnection.setNotificationHandler)
+			expect(setHandler).toHaveBeenCalled()
+			const handler = setHandler.mock.calls[0][0]
+
+			handler({ method: "at_mentioned", params: { filePath: "/a/b.ts", lineStart: 10, lineEnd: 20 } })
+
+			expect(pasteToEditor).toHaveBeenCalledWith("@/a/b.ts:10-20")
+			expect(ctx.ui.setStatus).toHaveBeenCalledWith("ide-adapter-mention", undefined)
+			// Should NOT queue when pasted immediately
+			const inputResult = pi._handlers.input[0]({ text: "hello" })
+			expect(inputResult).toBeUndefined()
+		})
+
+		it("queues mention when UI is not available", async () => {
+			const pi = createFakeExtensionAPI()
+			const ctx = createFakeCtx({ hasUI: false, pasteToEditor: vi.fn() })
+			ideAdapterExtension(pi)
+
+			const fakeConnection = {
+				lockfile: { ideName: "TestIDE" },
+				listTools: vi.fn().mockResolvedValue([]),
+				callTool: vi.fn(),
+				close: vi.fn().mockResolvedValue(undefined),
+				setNotificationHandler: vi.fn(),
+			}
+			vi.mocked(connectToIde).mockResolvedValue(fakeConnection as unknown as Awaited<ReturnType<typeof connectToIde>>)
+			vi.mocked(getLockfileDir).mockReturnValue("/tmp/locks")
+			vi.mocked(scanLockfiles).mockReturnValue(["/tmp/locks/ide.lock"])
+			vi.mocked(parseLockfile).mockReturnValue({
+				port: 12345,
+				pid: 1,
+				ideName: "TestIDE",
+				ideVersion: "1.0",
+				transport: "ws",
+				workspaceFolders: ["/tmp"],
+				authToken: "tok",
+			} as LockfileData)
+			vi.mocked(findMatchingLockfile).mockReturnValue({
+				port: 12345,
+				pid: 1,
+				ideName: "TestIDE",
+				ideVersion: "1.0",
+				transport: "ws",
+				workspaceFolders: ["/tmp"],
+				authToken: "tok",
+			} as LockfileData)
+
+			pi._handlers.session_start[0](null, ctx)
+			await vi.advanceTimersByTimeAsync(0)
+
+			const setHandler = vi.mocked(fakeConnection.setNotificationHandler)
+			const handler = setHandler.mock.calls[0][0]
+
+			handler({ method: "at_mentioned", params: { filePath: "/a/b.ts", lineStart: 10, lineEnd: 20 } })
+
+			expect(ctx.ui.pasteToEditor).not.toHaveBeenCalled()
+			const inputResult = pi._handlers.input[0]({ text: "hello" })
+			expect(inputResult).toEqual({ action: "transform", text: "@/a/b.ts:10-20 hello" })
 		})
 	})
 
