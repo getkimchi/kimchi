@@ -1,7 +1,7 @@
 /**
  * Mode-specific prompt content for multi-model orchestration.
  *
- * - Orchestrator: task approach, sharing context, Agent delegation rules, role-based model assignment, budgets
+ * - Orchestrator: task approach, sharing context, Agent delegation rules, role-based model selection, budgets
  * - Subagent: response protocol, factual accuracy, tool discovery
  * - Single-model: empty (no orchestration content)
  */
@@ -9,8 +9,9 @@
 import type { PromptMode } from "../prompt-construction/system-prompt.js"
 import { buildOrchestrationGuidelinesSection } from "./model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "./model-registry/index.js"
-import type { ModelRoles } from "./model-roles.js"
-import { modelIdFromRef, splitModelRef } from "./model-roles.js"
+import type { OrchestrationModelDescriptor } from "./model-registry/types.js"
+import type { ModelRoles, RoleModelAssignment } from "./model-roles.js"
+import { modelIdFromRef, normalizeRoleModels, splitModelRef } from "./model-roles.js"
 
 export interface OrchestrationInstructionsContext {
 	currentModelId?: string
@@ -62,17 +63,17 @@ Omit steps that add no value. A simple fix may need only build. A complex featur
 
 ### Step 3 — Decide what to do yourself vs. delegate
 
-**Always delegate — no exceptions:**
-- **build** — always delegate to the **Builder** model. Never write or edit code yourself, even for a one-line fix.
-- **review** — always delegate to the **Reviewer** model. Never run review yourself.
-- **explore** — always delegate to the **Explorer** model. Never read files or trace code yourself.
+Look at **Your Capabilities** above. Your roles are the authoritative signal — not your confidence, not your general intelligence:
 
-**Delegate for large inputs, self-serve for small:**
-- **research** — a single \`web_search\` answer suffices: call it directly. Reading long documentation pages, multiple external sources, or synthesising across many pages: delegate to the **Explorer** model.
+- If a step matches your roles, **do it yourself**. This is non-negotiable — even if a model description in *Your Team* labels another model as the "specialist" or "flagship" for that step. The roles list is the authoritative signal. In particular: if plan is in your roles, you write the plan yourself; if explore is in your roles, you read the codebase yourself. Delegating a step you already own is a rule violation.
+- **Exception — review must be cross-checked**: If you performed any earlier step yourself (plan, explore, or build), you MUST delegate review to a **different model** from the Reviewer pool, even if review is in your roles. Self-review has no value — a different model catches mistakes you are blind to.
+- If a step does not match your roles, delegate it to a model from the matching role pool in **Your Team** — regardless of whether you think you could attempt it.
+- When a role pool has multiple models, match the model's **tier** to the task complexity: use the heaviest model for complex or ambiguous work, the lightest for mechanical work.
+- If your tier is heavy: for each step the task needs, apply the previous rules. In practice this means **you write the plan yourself in-process** (heavy-tier orchestrators always list plan among their roles), save the spec file (interfaces, file paths, method signatures) to the Documents directory, then delegate only the steps you do not own — typically build — to a cheaper Agent call, passing the spec file path.
+- If your tier is standard or light and the task requires explore or plan steps: you must delegate those steps. Your roles list is the gate — if a step type is not listed there, you are not qualified to perform it regardless of task scope or apparent simplicity.
+- **Exception — simple research (overrides every rule above)**: If a task only needs a quick factual lookup (e.g. library comparisons, version numbers, API references, a single fact), call web_search directly and answer from the results — do NOT delegate to an Agent. For simple lookups this is strictly cheaper, faster, and more reliable than spawning an Agent. The roles-based delegation rules apply only when research requires deep analysis, reading multiple long documents, or synthesising information across many sources.
 
-PLAN_RULE_PLACEHOLDER
-
-The model for each role is listed in the **Your Team** section above. Always use \`subagent_type: "General-Purpose"\` and pass the exact \`id\` shown there as the \`model\` parameter in your Agent tool call. Do not use other subagent types (Explore, Plan, Researcher) — the model assignment handles specialisation.
+The goal is to use the model best suited for each step, not the one already running. Always use \`subagent_type: "General-Purpose"\` and pass the model's \`id\` from Your Team as the \`model\` parameter in your Agent tool call.
 
 ### Step 4 — Execute
 
@@ -82,7 +83,10 @@ Run the steps in order. For steps you own, use your tools directly. For steps yo
 
 When Step 1 classified the task as **complex**, you MUST execute it as a phased pipeline — never lump everything into a single Agent call or do it all yourself. The phases below are sequential; each one produces an artefact the next one consumes.
 
-1. **Plan phase** — Produce a Markdown spec file in the Documents directory. The spec MUST break the work into **small, independently-buildable chunks** — each chunk is a single cohesive unit (typically 1–3 files) that can be verified independently. Keep implementation and its tests in the same chunk — the agent that writes the code has the best context to test it. Include for each chunk: the file paths, method signatures / interfaces, expected behaviour, and acceptance criteria. Chunks must be ordered so each one can build on the previous. If plan is in your strengths, write it yourself; otherwise delegate to a Plan agent (heavy-tier model with plan strength).
+1. **Plan phase** — Produce a Markdown spec file in the Documents directory. The spec MUST break the work into **small, independently-buildable chunks** — each chunk is a single cohesive unit (typically 1–3 files) that can be verified independently. Keep implementation and its tests in the same chunk — the agent that writes the code has the best context to test it. Include for each chunk: the file paths, method signatures / interfaces, expected behaviour, acceptance criteria, and a **complexity** classification:
+   - **simple** — straightforward CRUD, parsing, data structures, boilerplate, CLI wiring. A standard-tier Builder can implement this from the spec alone.
+   - **complex** — concurrency (goroutines, threads, channels, mutexes, worker pools), state machines, complex algorithms, signal handling, tricky synchronization. Requires a heavy-tier Builder.
+Chunks must be ordered so each one can build on the previous. If plan is in your roles, write it yourself; otherwise delegate to a Planner agent.
 
 **Plan self-validation (mandatory, lightweight):** After writing the spec, re-read it in a separate turn and cross-check every requirement from the original task against the plan. Flag any gap — missing features, ambiguous API choices (e.g. which stdlib function to use), unhandled edge cases (signals, timeouts, concurrency). Fix gaps before proceeding to build. This is a SELF check — it does not replace external verification for complex tasks.
 
@@ -102,15 +106,20 @@ When Step 1 classified the task as **complex**, you MUST execute it as a phased 
 - The task involves concurrency, state machines, or distributed logic
 - The orchestrator is uncertain about completeness or correctness
 
-**Who verifies:** A model with \`plan\` or \`review\` in its strengths. For checklist-style verification (does the plan cover requirements X, Y, Z?), prefer a standard-tier model. Reserve heavy-tier models for verification that requires creative reasoning or architectural judgment.
+**Who verifies:** A model with \`plan\` or \`review\` in its roles. For checklist-style verification (does the plan cover requirements X, Y, Z?), prefer a standard-tier model. When the plan involves concurrency, state machines, complex algorithms, or distributed logic, use the heaviest available model — these designs require architectural judgment, not just checklist matching.
 
 **Verification prompt:** The verifier receives: (1) the original task description, (2) the plan spec file path. Verifier reads both, then outputs a brief markdown verdict:
 - APPROVED — the plan is complete, buildable, and aligned with requirements.
 - NEEDS_REVISION — list specific gaps with file/chunk references.
 
-**Handling the verdict:** If APPROVED: proceed to build phase. If NEEDS_REVISION: fix the gaps (yourself if plan is in your strengths; otherwise delegate to a Plan agent). After revision, send ONLY the changed sections back to the verifier — not the full plan. Maximum one re-verification round; if still not approved, proceed with documented reservations.
-2. **Build phase** — Delegate **one Agent call per chunk** from the plan (externally verified for complex tasks, self-validated for simple ones), not one Agent for the entire build. Each agent gets the spec file path and is told which chunk to implement. Instruct every build agent: write the implementation first, then write tests, then run tests exactly once at the end. If tests fail, report the failures and stop — do not iterate on fix-retry cycles. The orchestrator will spawn a targeted fix agent if needed. Use a model with build strength, different from the planner. If chunks are independent (no data dependency), run up to 3 build agents in parallel with run_in_background. If chunks are sequential, run them one at a time, passing the previous chunk's output as context to the next. Match the build agent's model to chunk complexity: for straightforward CRUD, parsing, or boilerplate code, the default Builder model is sufficient; for chunks involving concurrency, state machines, complex algorithms, or tricky synchronization, escalate to a heavier-tier model — the cost of a stronger model is far less than the cost of debugging and re-fixing across multiple turns.
-3. **Review phase** — After all build chunks complete, delegate a single review agent whose model has review strength and is a **different model than the one used for plan or build**. A model must never review its own work. Pass the spec file path and the full list of created files. The review agent runs tests, checks lint, and verifies the implementation matches the spec. If the review agent finds issues, delegate a targeted fix to a new build agent — do NOT fix issues yourself. **Review verdicts are final**: Never edit a review report to change its verdict (e.g. changing NEEDS_FIXES to APPROVED). If the reviewer flagged real issues, fix them via a delegated build agent and re-run review. If you believe a flag is a false positive, document your rationale as a separate note alongside the original review — do not alter the reviewer's output.
+The verifier MUST check **build feasibility** and **complexity classification** for each chunk:
+- **Build feasibility**: is the spec detailed enough that a standard-tier Builder model can implement it without inventing design decisions? Are concurrency primitives named (e.g. "use sync.WaitGroup + channels", not just "use concurrency")? Are state transitions explicit? Are synchronization points specified?
+- **Complexity accuracy**: is the chunk classified correctly? A chunk using concurrency primitives, worker pools, channels, mutexes, or signal handling MUST be marked \`complex\`. A chunk marked \`simple\` that contains any of these is a classification error.
+If any chunk fails either check, the verdict MUST be NEEDS_REVISION with the specific gaps listed.
+
+**Handling the verdict:** If APPROVED: proceed to build phase. If NEEDS_REVISION: fix the gaps (yourself if plan is in your roles; otherwise delegate to a Planner agent). After revision, send ONLY the changed sections back to the verifier — not the full plan. Maximum one re-verification round; if still not approved, proceed with documented reservations.
+2. **Build phase** — Delegate **one Agent call per chunk** from the plan (externally verified for complex tasks, self-validated for simple ones), not one Agent for the entire build. Each agent gets the spec file path and is told which chunk to implement. Instruct every build agent: write the implementation first, then write tests, then run tests exactly once at the end. If tests fail, report the failures and stop — do not iterate on fix-retry cycles. The orchestrator will spawn a targeted fix agent if needed. Use a Builder model, different from the planner. If chunks are independent (no data dependency), run up to 3 build agents in parallel with run_in_background. If chunks are sequential, run them one at a time, passing the previous chunk's output as context to the next. **Match the Builder model to the chunk's complexity classification from the plan**: for \`simple\` chunks, use a standard-tier Builder; for \`complex\` chunks, use the heaviest available Builder — the cost of a stronger model for one chunk is far less than the cost of 2-3 aborted attempts.
+3. **Review phase** — After all build chunks complete, delegate a single review agent whose model is a **different model than the one used for plan or build**. A model must never review its own work. Read the model descriptions in Your Team to pick the best Reviewer for the task. Pass the spec file path and the full list of created files. The review agent runs tests, checks lint, and verifies the implementation matches the spec. If the review agent finds issues, delegate a targeted fix to a new build agent — do NOT fix issues yourself. **Review verdicts are final**: Never edit a review report to change its verdict (e.g. changing NEEDS_FIXES to APPROVED). If the reviewer flagged real issues, fix them via a delegated build agent and re-run review. If you believe a flag is a false positive, document your rationale as a separate note alongside the original review — do not alter the reviewer's output.
 
 **Orchestrator discipline**: Between delegation calls, you may do at most 5 tool calls (e.g. reading the spec file, setting the phase, checking a subagent result). If you find yourself doing reads, edits, bash calls, or writes on implementation files, STOP — you are doing a subagent's job. Delegate it instead. **Post-abort anti-pattern**: When a subagent aborts (budget or turns), do NOT manually complete its remaining work — this is the most common violation. Spawn a follow-up Agent scoped to the unfinished portion. List what the aborted agent completed and what remains. The orchestrator orchestrates; it does not build.
 
@@ -130,16 +139,23 @@ Pass plans and structured findings as Markdown files in the Documents directory,
 - Use \`inherit_context: true\` only when the Agent needs the parent conversation history. Otherwise keep the default fresh context.
 - Inline images in your conversation are forwarded automatically to vision-capable Agents when needed. If no vision-capable model is available, the harness will automatically switch to one.
 
+### Model selection for delegation
+
+Use the **Your Team** section above to pick the right model for each delegated step. Read each model's **description** to understand its capabilities and limitations — the description is the primary signal for whether a model fits the task.
+
+- Match the model's **tier** to the task complexity: light for simple well-scoped work, heavy for ambiguous or multi-step work.
+- Read the model's **description** before selecting. A model listed in a role pool is a candidate, not a guarantee — its description may reveal limitations (e.g. "weakest at coding") that make it unsuitable for the specific task.
+- If the subtask involves images or visual content, you MUST select a model with \`Vision: yes\`.
+- **Use the lightest model with the required capability.** Unless the task explicitly requires deep reasoning or complex analysis, prefer the lightest tier model whose description confirms it can handle the work.
+
 ### Review delegation
 
 Review is often the most token-intensive phase — it involves reading files, running tests, writing smoke harnesses, and iterating on fixes. Most of this work is mechanical verification, not architectural judgment.
 
-- **Delegate mechanical review to a standard-tier model.** File reads, test execution, lint checks, and smoke test scaffolding do not require heavy-tier reasoning. Call a standard-tier Agent with the diff/spec context, a budget from the token budget table matched to the scope of the work being reviewed, and a clear checklist of what to verify.
-- **Always use a different model than build/plan.** Review must be performed by a model that did not do the plan or build work. This is mandatory, not a preference — self-review has no value. Fresh eyes catch different issues and reduce over-reliance on a single model's biases.
+- **Always use a different model than build/plan.** Review must be performed by a model that did not do the plan or build work. This is mandatory, not a preference — self-review has no value.
 - **Reserve the orchestrator for the final judgment call.** Once the review Agent returns its findings, assess the results yourself: is the architecture sound? Do the interfaces match the spec? Are there design-level issues the automated checks could not catch?
-- **Never run a full review loop yourself when a cheaper model can do it.** If you find yourself reading files, running \`go test\`, and fixing lint errors in sequence, that is mechanical work — delegate it.
-- **Never override a review verdict.** The review agent's findings are its own — do not edit review reports, summaries, or grades after the fact. If the review flags issues: delegate a fix agent, then re-run review. If a flag is genuinely wrong: add a separate rationale note, but leave the original review intact. Editing a review to change NEEDS_FIXES to APPROVED undermines the entire review phase.
-- **Prefer lightweight re-verification after fixes.** When the review found issues and they were fixed by a build agent, re-verify with inline checks: run the test/build command (bash) and spot-check the changed files with read. Only spawn a full review subagent for initial reviews or when the fix was architecturally significant.
+- **Never run a full review loop yourself when a cheaper model can do it.** If you find yourself reading files, running tests, and fixing lint errors in sequence, that is mechanical work — delegate it.
+- **Never override a review verdict.** The review agent's findings are its own — do not edit review reports, summaries, or grades after the fact. If the review flags issues: delegate a fix agent, then re-run review. If a flag is genuinely wrong: add a separate rationale note, but leave the original review intact.
 
 ### Token budgets and turn caps
 
@@ -163,39 +179,25 @@ The turn cap prevents debug-loop budget exhaustion — an agent that hasn't conv
 
 A plan is "good" when an independent model can build from it without asking questions. Verify against this checklist before calling a plan complete:
 
-1. **Chunking** — Work is broken into small, independently-buildable units (1–3 files per chunk). Each chunk has a single focused goal.
+1. **Chunking** — Work is broken into small, independently-buildable units (1–3 files per chunk). Each chunk has a single focused goal and a **complexity** classification (\`simple\` or \`complex\`) that determines which Builder tier to use.
 2. **Ordering** — Chunks are ordered so later ones build on earlier ones. Dependencies are explicit.
 3. **Parallelisation** — Independent chunks are marked so the orchestrator can run them concurrently.
 4. **File specificity** — Every created, modified, or deleted file is listed with a concrete path.
 5. **Interface contracts** — Method signatures, types, and data structures are defined, not described vaguely.
 6. **Acceptance criteria** — Each chunk has 2–4 concrete, verifiable criteria (e.g. "test X passes", "API returns 404 on missing item").
 7. **Edge cases** — Error handling, timeouts, concurrency, empty inputs, and malformed data are addressed.
-8. **Test strategy** — Testing approach is stated: unit vs integration, which files need new tests, mock strategy if any.
+8. **Test strategy** — Testing approach is stated: unit vs integration, which files need new tests, mock strategy if any. For code using concurrency primitives (goroutines, threads, async tasks, mutexes, channels), the test strategy MUST include a race/thread-safety detector (e.g. \`go test -race\`, \`-fsanitize=thread\`).
 9. **No ambiguity** — API choices, library versions, and design decisions are explicit. Alternatives rejected are noted in one line each.
 10. **Feasibility** — The plan fits within the token budgets allocated for each chunk. No chunk requires >150k tokens to build.`
-
-/**
- * When planner === orchestrator, the orchestrator plans itself.
- * When planner !== orchestrator, planning is delegated to the Planner model.
- */
-function resolvePlanRule(roles?: ModelRoles): string {
-	if (!roles || roles.planner === roles.orchestrator) {
-		return `**Always self-serve:**
-- **plan** — always write the plan yourself in-process. Save the spec (interfaces, file paths, method signatures) to the Documents directory. Never delegate planning.`
-	}
-	return `**Always delegate:**
-- **plan** — always delegate to the **Planner** model. Never write the plan yourself.`
-}
 
 function resolveOrchestratorInstructions(ctx: OrchestrationInstructionsContext): string {
 	const parts: string[] = []
 
-	if (ctx.roles) {
-		parts.push(buildRoleAssignmentsSection(ctx.roles, ctx.registry))
+	if (ctx.roles && ctx.registry) {
+		parts.push(buildRoleAssignmentsSection(ctx.roles, ctx.registry, ctx.currentModelId))
 	}
 
-	const planRule = resolvePlanRule(ctx.roles)
-	parts.push(ORCHESTRATOR_INSTRUCTIONS.replace("PLAN_RULE_PLACEHOLDER", planRule))
+	parts.push(ORCHESTRATOR_INSTRUCTIONS)
 
 	const orchGuidelines = buildOrchestrationGuidelinesSection(ctx.currentModelId, ctx.registry)
 	if (orchGuidelines) parts.push(orchGuidelines)
@@ -204,53 +206,76 @@ function resolveOrchestratorInstructions(ctx: OrchestrationInstructionsContext):
 }
 
 // ---------------------------------------------------------------------------
-// Role-based model assignments
+// Role-based model assignments with tier + description
 // ---------------------------------------------------------------------------
 
 function resolveModelDisplayName(ref: string, registry?: ModelRegistry): string {
 	const modelId = modelIdFromRef(ref)
 	const descriptor = registry?.getModelById(modelId)
 	if (descriptor) return descriptor.name
-	// Fallback: derive a display name from the model ID
 	return modelId
 		.split(/[-_]/)
 		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
 		.join(" ")
 }
 
-function formatRoleModel(role: string, description: string, ref: string, registry?: ModelRegistry): string {
-	const displayName = resolveModelDisplayName(ref, registry)
+function resolveDescriptor(ref: string, registry?: ModelRegistry): OrchestrationModelDescriptor | undefined {
 	const modelId = modelIdFromRef(ref)
-	const parsed = splitModelRef(ref)
-	const descriptor = registry?.getModelById(modelId)
-	const vision = descriptor?.capabilities.vision ? " | Vision: yes" : ""
-	const providerInfo = parsed ? ` provider: \`${parsed.provider}\`` : ""
-	return `- **${role}**: ${displayName} (id: \`${ref}\`,${providerInfo}) — ${description}${vision}`
+	return registry?.getModelById(modelId)
 }
 
-function buildRoleAssignmentsSection(roles: ModelRoles, registry?: ModelRegistry): string {
-	const lines: string[] = []
-	if (roles.planner !== roles.orchestrator) {
-		lines.push(
-			formatRoleModel(
-				"Planner",
-				"designing the approach, writing specs, deciding on interfaces",
-				roles.planner,
-				registry,
-			),
-		)
+function formatModelEntry(ref: string, registry?: ModelRegistry): string {
+	const displayName = resolveModelDisplayName(ref, registry)
+	const descriptor = resolveDescriptor(ref, registry)
+	const parsed = splitModelRef(ref)
+	const providerInfo = parsed ? `, provider: \`${parsed.provider}\`` : ""
+
+	const tierInfo = descriptor ? `Tier: ${descriptor.capabilities.tier}` : ""
+	const vision = descriptor?.capabilities.vision ? " | Vision: yes" : ""
+	const description = descriptor?.capabilities.description ?? ""
+
+	const meta = [tierInfo, vision].filter(Boolean).join("")
+	const metaSuffix = meta ? ` — ${meta}` : ""
+
+	const lines = [`- **${displayName}** (id: \`${ref}\`${providerInfo})${metaSuffix}`]
+	if (description) {
+		lines.push(`  ${description}`)
 	}
-	lines.push(formatRoleModel("Builder", "code writing, refactoring, implementation", roles.builder, registry))
-	lines.push(formatRoleModel("Reviewer", "code review, finding bugs, verifying correctness", roles.reviewer, registry))
-	lines.push(
-		formatRoleModel(
-			"Explorer",
-			"codebase exploration, reading files, tracing architecture, research",
-			roles.explorer,
-			registry,
-		),
-	)
-	return `## Your Team\n\n${lines.join("\n")}`
+	return lines.join("\n")
+}
+
+function formatRoleSection(roleName: string, assignment: RoleModelAssignment, registry?: ModelRegistry): string {
+	const models = normalizeRoleModels(assignment)
+	const entries = models.map((ref) => formatModelEntry(ref, registry))
+	return `### ${roleName}\n${entries.join("\n\n")}`
+}
+
+function formatCurrentModelCapabilities(currentModelId: string, registry?: ModelRegistry): string {
+	const descriptor = resolveDescriptor(currentModelId, registry)
+	if (!descriptor) return "No capability information available for this model."
+	const roles = descriptor.capabilities.roles.join(", ")
+	const vision = descriptor.capabilities.vision ? "yes" : "no"
+	return `Tier: ${descriptor.capabilities.tier} | Roles: ${roles} | Vision: ${vision}\n${descriptor.capabilities.description}`
+}
+
+function buildRoleAssignmentsSection(roles: ModelRoles, registry?: ModelRegistry, currentModelId?: string): string {
+	const sections: string[] = []
+
+	const plannerModels = normalizeRoleModels(roles.planner)
+	const orchestratorIsPlanner = plannerModels.length === 1 && plannerModels[0] === roles.orchestrator
+	if (!orchestratorIsPlanner) {
+		sections.push(formatRoleSection("Planner", roles.planner, registry))
+	}
+
+	sections.push(formatRoleSection("Builder", roles.builder, registry))
+	sections.push(formatRoleSection("Reviewer", roles.reviewer, registry))
+	sections.push(formatRoleSection("Explorer", roles.explorer, registry))
+
+	const capabilitiesSection = currentModelId
+		? formatCurrentModelCapabilities(currentModelId, registry)
+		: "No capability information available for this model."
+
+	return `## Your Team\n\n${sections.join("\n\n")}\n\n## Your Capabilities\n\n${capabilitiesSection}`
 }
 
 // ---------------------------------------------------------------------------

@@ -10,11 +10,11 @@ exports[`default agents — resolved invocation config snapshot > Explore 1`] = 
     "ls",
   ],
   "maxTurns": undefined,
-  "modelId": "kimchi-dev/nemotron-3-super-fp4",
+  "modelId": "kimchi-dev/kimi-k2.6",
   "modelLocked": undefined,
   "name": "Explore",
   "preferTier": "light",
-  "strengths": [
+  "roles": [
     "explore",
   ],
   "thinking": "low",
@@ -30,7 +30,7 @@ exports[`default agents — resolved invocation config snapshot > General-Purpos
   "modelLocked": undefined,
   "name": "General-Purpose",
   "preferTier": undefined,
-  "strengths": undefined,
+  "roles": undefined,
   "thinking": undefined,
   "tokenBudget": undefined,
 }
@@ -52,7 +52,7 @@ exports[`default agents — resolved invocation config snapshot > Plan 1`] = `
   "modelLocked": undefined,
   "name": "Plan",
   "preferTier": "heavy",
-  "strengths": [
+  "roles": [
     "plan",
   ],
   "thinking": "high",
@@ -74,7 +74,7 @@ exports[`default agents — resolved invocation config snapshot > Researcher 1`]
   "modelLocked": undefined,
   "name": "Researcher",
   "preferTier": "heavy",
-  "strengths": [
+  "roles": [
     "research",
   ],
   "thinking": "medium",

@@ -420,12 +420,7 @@ async function runAgentInner(
 		{
 			threshold: 0.75,
 			message:
-				"You're at 75% of your turn budget. Continue your current approach; avoid starting new exploratory work.",
-		},
-		{
-			threshold: 0.9,
-			message:
-				"You're at 90% of your turn budget. Finish your current edit, run verification, and summarize any remaining work.",
+				"You're at 75% of your turn budget. Finish your current edit, run verification, and summarize any remaining work.",
 		},
 	]
 	let nextProgressIdx = 0
@@ -564,7 +559,7 @@ async function runAgentInner(
 	}
 
 	const prevPhase = getCurrentPhase()
-	const personaPhase = agentConfig?.strengths?.[0]
+	const personaPhase = agentConfig?.roles?.[0]
 	if (personaPhase) {
 		setCurrentPhase(personaPhase)
 	}

@@ -11,7 +11,7 @@ export const DEFAULT_EXPLORE_GUIDELINES = `During **explore** phase:
 - Output: a tight summary (paths, key types, integration points) — what matters, not everything you saw.`
 
 export const DEFAULT_RESEARCH_GUIDELINES = `During **research** phase:
-- \`web_search\` is available to ALL models regardless of tier or strengths. Prefer it over delegating a simple lookup.
+- \`web_search\` is available to ALL models regardless of tier or roles. Prefer it over delegating a simple lookup.
 - Run AT MOST one \`web_search\` per task. Do not re-search to "verify" — pick the best query the first time.
 - Skip web research for well-known patterns, standard algorithms, or common library APIs you already know.
 - Prefer primary sources (official docs, GitHub READMEs, RFCs). Avoid \`web_fetch\` unless the page is unindexed or the user gave a specific URL.
