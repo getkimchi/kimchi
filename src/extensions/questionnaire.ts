@@ -121,16 +121,20 @@ function isFermentStartApprovalAnswer(answer: Answer | undefined): boolean {
 	return answer.value === "yes" || (answer.values?.[0] === "yes" && answer.values.length === 1)
 }
 
+function isFermentStartApprovalShape(purpose: unknown, questions: Question[]): boolean {
+	if (questions.length !== 1) return false
+	if (purpose === "ferment_start_approval") return true
+	return purpose === undefined && questions[0]?.type === "confirm"
+}
+
 export function recordFermentStartApproval(
 	purpose: unknown,
 	questions: Question[],
 	answers: Answer[],
 	now = Date.now(),
 ): void {
-	if (purpose !== "ferment_start_approval") return
-	const confirmQuestions = questions.filter((question) => question.type === "confirm")
-	if (confirmQuestions.length !== 1) return
-	const question = confirmQuestions[0]
+	if (!isFermentStartApprovalShape(purpose, questions)) return
+	const question = questions[0]
 	if (!isFermentStartApprovalAnswer(answers.find((answer) => answer.id === question.id))) return
 	fermentStartApprovalAt = now
 }
@@ -183,7 +187,7 @@ function normalizeQuestion(q: Static<typeof QuestionSchema>, index: number): Que
 }
 
 export function normalizeQuestionsForPurpose(questions: Question[], purpose: unknown): Question[] {
-	if (purpose !== "ferment_start_approval" || questions.length !== 1) return questions
+	if (!isFermentStartApprovalShape(purpose, questions)) return questions
 	return [
 		{
 			...questions[0],
@@ -196,6 +200,17 @@ export function normalizeQuestionsForPurpose(questions: Question[], purpose: unk
 			required: true,
 		},
 	]
+}
+
+export function getYoloFermentStartApprovalAnswers(
+	purpose: unknown,
+	questions: Question[],
+	env: Record<string, string | undefined> = process.env,
+): Answer[] | undefined {
+	if (env.KIMCHI_PERMISSIONS !== "yolo" || env.KIMCHI_ACTIVE_FERMENT) return undefined
+	if (!isFermentStartApprovalShape(purpose, questions)) return undefined
+	const question = questions[0]
+	return [{ id: question.id, value: "yes", label: "Yes", wasCustom: false, index: 1 }]
 }
 
 function validateQuestions(questions: Question[]): string | undefined {
@@ -253,11 +268,6 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 		parameters: QuestionnaireParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			if (!ctx.hasUI) {
-				return errorResult(
-					"Error: questionnaire requires interactive mode (no UI available). Rephrase your questions as text in your response instead.",
-				)
-			}
 			if (params.questions.length === 0) {
 				return errorResult("Error: No questions provided.")
 			}
@@ -266,6 +276,21 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 			const validationError = validateQuestions(questions)
 			if (validationError) {
 				return errorResult(`Error: ${validationError}`, questions)
+			}
+
+			const autoAnswers = getYoloFermentStartApprovalAnswers(params.purpose, questions)
+			if (autoAnswers) {
+				recordFermentStartApproval(params.purpose, questions, autoAnswers)
+				return {
+					content: [{ type: "text", text: formatAnswerText(questions, autoAnswers) }],
+					details: { questions, answers: autoAnswers, cancelled: false },
+				}
+			}
+
+			if (!ctx.hasUI) {
+				return errorResult(
+					"Error: questionnaire requires interactive mode (no UI available). Rephrase your questions as text in your response instead.",
+				)
 			}
 
 			const isMulti = questions.length > 1

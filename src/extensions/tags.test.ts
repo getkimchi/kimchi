@@ -27,16 +27,24 @@ type RegisteredTool = {
 function makePi(): ExtensionAPI & {
 	fire: (event: string, payload?: unknown, ctx?: unknown) => Promise<unknown[]>
 	fireShutdown: () => void
+	getActiveTools: () => string[]
+	setActiveTools: (tools: string[]) => void
 	tools: Map<string, RegisteredTool>
 } {
 	const shutdownHandlers: Array<() => void> = []
 	const handlers = new Map<string, Handler[]>()
 	const sessionStartCtx = { hasUI: false, sessionManager: { getSessionId: () => TEST_SESSION_ID } }
 	const tools = new Map<string, RegisteredTool>()
+	let activeTools: string[] = []
 	const pi = {
 		registerCommand: () => {},
 		registerTool: (tool: RegisteredTool) => {
 			tools.set(tool.name, tool)
+			activeTools.push(tool.name)
+		},
+		getActiveTools: () => activeTools,
+		setActiveTools: (next: string[]) => {
+			activeTools = next
 		},
 		on: (event: string, handler: Handler) => {
 			const existing = handlers.get(event) ?? []
@@ -60,6 +68,8 @@ function makePi(): ExtensionAPI & {
 	return pi as unknown as ExtensionAPI & {
 		fire: (event: string, payload?: unknown, ctx?: unknown) => Promise<unknown[]>
 		fireShutdown: () => void
+		getActiveTools: () => string[]
+		setActiveTools: (tools: string[]) => void
 		tools: Map<string, RegisteredTool>
 	}
 }
@@ -143,8 +153,8 @@ describe("tags system prompt block", () => {
 			})
 
 			expect(result).toContain("## Phase Tagging for Analytics")
-			expect(result).toContain("Call `set_phase` before substantive work blocks")
-			expect(result).toContain("Do not call `set_phase` before the initial request classification")
+			expect(result).toContain("Do not call `set_phase` as the first tool after a user request")
+			expect(result).toContain("Use `set_phase` only after the initial request has been classified")
 			expect(result).toContain("before `request_ferment_workflow`")
 			expect(result).toContain("ask the ferment-offer questionnaire before analysis")
 			expect(result.indexOf("## Phase Tagging for Analytics")).toBeLessThan(result.indexOf("## Available Tools"))
@@ -170,6 +180,20 @@ describe("tags system prompt block", () => {
 
 		const [nextReadResult] = await pi.fire("tool_call", { toolName: "read" })
 		expect(nextReadResult).toBeUndefined()
+	})
+
+	it("hides set_phase until request classification starts", async () => {
+		const pi = makeTagsPi()
+
+		expect(pi.getActiveTools()).toContain("set_phase")
+
+		await pi.fire("input", { source: "interactive", text: "Find improvements to this extension" })
+
+		expect(pi.getActiveTools()).not.toContain("set_phase")
+
+		await pi.fire("tool_execution_start", { toolName: "questionnaire" })
+
+		expect(pi.getActiveTools()).toContain("set_phase")
 	})
 
 	it("allows set_phase after another tool has started classification or work", async () => {

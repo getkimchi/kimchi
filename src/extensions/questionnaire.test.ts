@@ -3,6 +3,7 @@ import {
 	clearFermentStartApproval,
 	consumeFermentStartApproval,
 	formatAnswerText,
+	getYoloFermentStartApprovalAnswers,
 	normalizeQuestionType,
 	normalizeQuestionsForPurpose,
 	recordFermentStartApproval,
@@ -258,11 +259,52 @@ describe("ferment start approval tracking", () => {
 		expect(consumeFermentStartApproval(101)).toBe(true)
 	})
 
-	it("does not record without the explicit ferment-start purpose", () => {
+	it("records single-confirm approval even when the model omits purpose", () => {
 		recordFermentStartApproval(
 			undefined,
 			[startQuestion],
 			[{ id: "start", value: "yes", label: "Yes, start the ferment", wasCustom: false, index: 1 }],
+			100,
+		)
+
+		expect(consumeFermentStartApproval(101)).toBe(true)
+	})
+
+	it("auto-answers single-confirm ferment approval as yes in yolo mode", () => {
+		const [question] = normalizeQuestionsForPurpose([startQuestion], undefined)
+
+		expect(
+			getYoloFermentStartApprovalAnswers(undefined, [question], {
+				KIMCHI_PERMISSIONS: "yolo",
+			}),
+		).toEqual([{ id: "start", value: "yes", label: "Yes", wasCustom: false, index: 1 }])
+	})
+
+	it("does not auto-answer ferment approval when yolo came from an active ferment", () => {
+		const [question] = normalizeQuestionsForPurpose([startQuestion], undefined)
+
+		expect(
+			getYoloFermentStartApprovalAnswers(undefined, [question], {
+				KIMCHI_PERMISSIONS: "yolo",
+				KIMCHI_ACTIVE_FERMENT: "ferment-1",
+			}),
+		).toBeUndefined()
+	})
+
+	it("does not record non-confirm answers without the explicit ferment-start purpose", () => {
+		recordFermentStartApproval(
+			undefined,
+			[{ ...startQuestion, type: "multi", options: [{ value: "cache", label: "Cache cleanup" }] }],
+			[
+				{
+					id: "start",
+					value: "cache",
+					label: "Cache cleanup",
+					wasCustom: false,
+					values: ["cache"],
+					labels: ["Cache cleanup"],
+				},
+			],
 			100,
 		)
 

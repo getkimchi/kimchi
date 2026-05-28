@@ -23,6 +23,7 @@ import type {
 import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
+import { createToolVisibility } from "./prompt-construction/tool-visibility.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -54,8 +55,9 @@ type Phase = (typeof VALID_PHASES)[number]
 
 const PHASE_TAGGING_PROMPT = `## Phase Tagging for Analytics
 
-Call \`set_phase\` before substantive work blocks once the user has chosen an execution path. Use one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\` matching current work type.
-Do not call \`set_phase\` before the initial request classification, before the ferment-offer questionnaire, or before \`request_ferment_workflow\`. On fresh requests, decide from the user's text whether the work is small enough to handle inline or broad enough to need a ferment offer. Broad codebase/product discovery where the output is a plan, audit, backlog, or coordinated change set should ask the ferment-offer questionnaire before analysis. If \`set_phase\` is rejected as premature, recover by calling \`questionnaire\` next; do not continue with filesystem, shell, web, or MCP exploration. The session starts in \`explore\` phase by default. Call \`set_phase\` when your work type changes after that point. Only one phase is active at a time — the most recent call wins.`
+The session starts in \`explore\` phase by default. Do not call \`set_phase\` as the first tool after a user request.
+Use \`set_phase\` only after the initial request has been classified and the execution path is chosen. Pick one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\` when the work type changes.
+Do not call \`set_phase\` before the ferment-offer questionnaire or before \`request_ferment_workflow\`. On fresh requests, decide from the user's text whether the work is small enough to handle inline or broad enough to need a ferment offer. Broad codebase/product discovery where the output is a plan, audit, backlog, or coordinated change set should ask the ferment-offer questionnaire before analysis. If \`set_phase\` is rejected as premature, recover by calling \`questionnaire\` next; do not continue with filesystem, shell, web, or MCP exploration. Only one phase is active at a time — the most recent call wins.`
 
 function toolNameFromEvent(event: unknown): string | undefined {
 	if (!event || typeof event !== "object") return undefined
@@ -547,6 +549,7 @@ export function getActiveTags(): string[] {
 
 export default function tagsExtension(pi: ExtensionAPI) {
 	const tagManager = new TagManager()
+	const phaseToolVisibility = createToolVisibility(pi)
 	tagManagerInstance = tagManager
 	let firstUserRequestToolMustNotBeSetPhase = false
 	let questionnaireRequiredAfterPrematurePhase = false
@@ -580,7 +583,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		name: "set_phase",
 		label: "Set Phase",
 		description:
-			"Set the current work phase for usage tracking and analytics. Call this when transitioning between phases (e.g., moving from exploration to planning, or planning to building). The phase will be included as a tag in subsequent LLM requests.",
+			"Set the current work phase for usage tracking and analytics after the request path is already chosen. Do not call this as the first tool after a user request; the session already starts in explore. Use only when transitioning between phases (e.g., moving from exploration to planning, or planning to building). The phase will be included as a tag in subsequent LLM requests.",
 		parameters: SetPhaseParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -646,6 +649,8 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		if (isUserInput(event)) {
 			firstUserRequestToolMustNotBeSetPhase = true
 			questionnaireRequiredAfterPrematurePhase = false
+			if (process.env.KIMCHI_ACTIVE_FERMENT) phaseToolVisibility.enable(["set_phase"])
+			else phaseToolVisibility.disable(["set_phase"])
 		}
 	})
 
@@ -667,6 +672,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		const toolName = toolNameFromEvent(event)
 		if (toolName && toolName !== "set_phase") {
 			firstUserRequestToolMustNotBeSetPhase = false
+			phaseToolVisibility.enable(["set_phase"])
 		}
 	})
 
