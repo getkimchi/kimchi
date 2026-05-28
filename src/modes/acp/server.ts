@@ -1,9 +1,11 @@
 // ACP (Agent Client Protocol) mode: JSON-RPC 2.0 over stdio using
 // @agentclientprotocol/sdk. Lets Zed / openclaw drive kimchi in-process.
 
+import { closeSync, openSync, readFileSync, readSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { Readable, Writable } from "node:stream"
 import {
+	type SessionInfo as AcpSessionInfo,
 	type Agent,
 	AgentSideConnection,
 	type AuthenticateRequest,
@@ -12,6 +14,10 @@ import {
 	type ContentBlock,
 	type InitializeRequest,
 	type InitializeResponse,
+	type ListSessionsRequest,
+	type ListSessionsResponse,
+	type LoadSessionRequest,
+	type LoadSessionResponse,
 	type NewSessionRequest,
 	type NewSessionResponse,
 	PROTOCOL_VERSION,
@@ -35,9 +41,13 @@ import {
 	DefaultResourceLoader,
 	type ExtensionFactory,
 	ModelRegistry,
+	type SessionInfo as PiSessionInfo,
+	type SessionHeader,
+	SessionManager,
 	SettingsManager,
 	createAgentSession,
 } from "@earendil-works/pi-coding-agent"
+import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
 
 /**
  * Produces a ready-to-use AgentSession for a newSession request. The returned
@@ -46,11 +56,29 @@ import {
  */
 export type AcpSessionFactory = (params: NewSessionRequest) => Promise<AgentSession>
 
+/**
+ * Enumerates persisted sessions for a listSessions request. Mirrors pi's
+ * SessionManager.list/listAll seam so tests can stub disk access.
+ */
+export type AcpSessionLister = (params: ListSessionsRequest) => Promise<PiSessionInfo[]>
+
+/**
+ * Opens a persisted session for a loadSession request. The returned AgentSession
+ * must already be fully wired (model verified, extensions bound) and seeded
+ * with the on-disk transcript; the agent only handles registration, replay,
+ * and response shaping. Exposed so tests can stub disk access.
+ */
+export type AcpSessionLoader = (params: LoadSessionRequest) => Promise<AgentSession>
+
 export interface RunAcpOptions {
 	extensionFactories: ExtensionFactory[]
 	agentDir: string
 	/** Override for tests. Defaults to the pi-coding-agent-backed factory. */
 	sessionFactory?: AcpSessionFactory
+	/** Override for tests. Defaults to {@link defaultSessionLister}. */
+	sessionLister?: AcpSessionLister
+	/** Override for tests. Defaults to {@link defaultSessionLoader}. */
+	sessionLoader?: AcpSessionLoader
 }
 
 type TurnContext = {
@@ -68,19 +96,26 @@ type TurnContext = {
 	reject: (err: unknown) => void
 }
 
-type SessionEntry = {
+type SessionRecord = {
 	session: AgentSession
 	unsubscribe: () => void
 	turn?: TurnContext
 }
 
 export class KimchiAcpAgent implements Agent {
-	private sessions = new Map<string, SessionEntry>()
+	private sessions = new Map<string, SessionRecord>()
 	private readonly sessionFactory: AcpSessionFactory
 	private readonly agentDir: string
+	private readonly sessionLister: AcpSessionLister
+	private readonly sessionLoader: AcpSessionLoader
 	// Track non-text prompt block types we've already warned about so a
 	// misbehaving client that sends 1000 image blocks doesn't flood stderr.
 	private warnedBlockTypes = new Set<string>()
+	// Ids currently inside loadSession's `await sessionLoader(...)` window.
+	// Without this, two concurrent loads of the same id both pass the
+	// `sessions.has()` guard, open the JSONL twice, and the later registration
+	// overwrites (and leaks) the earlier session record.
+	private loadingSessions = new Set<string>()
 	private shutdownPromise: Promise<void> | undefined
 
 	constructor(
@@ -89,6 +124,8 @@ export class KimchiAcpAgent implements Agent {
 	) {
 		this.sessionFactory = options.sessionFactory ?? defaultSessionFactory(options)
 		this.agentDir = options.agentDir
+		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
+		this.sessionLoader = options.sessionLoader ?? defaultSessionLoader(options)
 	}
 
 	async initialize(_: InitializeRequest): Promise<InitializeResponse> {
@@ -98,11 +135,41 @@ export class KimchiAcpAgent implements Agent {
 		return {
 			protocolVersion: PROTOCOL_VERSION,
 			agentCapabilities: {
-				loadSession: false,
+				loadSession: true,
+				// `list: {}` advertises support for session/list per spec
+				// (SessionListCapabilities is `{ _meta? }` — empty object means
+				// "supported"). loadSession remains the top-level flag because
+				// the spec hasn't unified it under sessionCapabilities yet.
+				sessionCapabilities: { list: {} },
 				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
 			},
 			authMethods: [],
 		}
+	}
+
+	async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
+		// Cursor pagination is out of scope for v1: pi reads only JSONL headers,
+		// so even four-digit session counts comfortably meet the 500ms NFR
+		// (revisit only if real installs hit slowness). `additionalDirectories`
+		// (@experimental) is honored when non-empty by the default lister.
+		const piSessions = await this.sessionLister(params)
+		// Dedupe by session id: the default lister merges results from multiple
+		// roots (cwd + additionalDirectories), and the same session can surface
+		// twice when a client passes its cwd as one of the additional roots.
+		// Keep first occurrence so cwd-listed entries win.
+		const seen = new Set<string>()
+		const sessions: ReturnType<typeof toAcpSessionInfo>[] = []
+		for (const s of piSessions) {
+			if (seen.has(s.id)) continue
+			seen.add(s.id)
+			sessions.push(toAcpSessionInfo(s))
+		}
+		// Sort newest-first by updatedAt so Zed's picker surfaces recent threads
+		// at the top without client-side sorting.
+		sessions.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))
+		// Explicit `nextCursor: null` signals end-of-pagination per the v1 spec
+		// so clients don't infer it from an omitted field.
+		return { sessions, nextCursor: null }
 	}
 
 	async authenticate(_: AuthenticateRequest): Promise<AuthenticateResponse> {
@@ -162,6 +229,69 @@ export class KimchiAcpAgent implements Agent {
 			)
 		}
 		return {}
+	}
+
+	async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+		// Same posture as newSession: mcpServers isn't plumbed, surface as
+		// invalidParams instead of silently dropping caller intent.
+		if (Array.isArray(params.mcpServers) && params.mcpServers.length > 0) {
+			throw RequestError.invalidParams(
+				undefined,
+				"mcpServers is not supported; configure MCP servers via kimchi config",
+			)
+		}
+		// Reject re-load of an already-live session: pi's JSONL is append-only and
+		// two writers on the same file would interleave entries unpredictably. Zed
+		// should close the live session before reloading. invalidRequest (-32600)
+		// signals "method valid but state forbids it now".
+		if (this.sessions.has(params.sessionId) || this.loadingSessions.has(params.sessionId)) {
+			throw RequestError.invalidRequest(undefined, `session ${params.sessionId} is already loaded; close it first`)
+		}
+		this.loadingSessions.add(params.sessionId)
+		let session: AgentSession
+		try {
+			session = await this.sessionLoader(params)
+		} finally {
+			this.loadingSessions.delete(params.sessionId)
+		}
+		// Atomic ownership transfer mirrors newSession but covers the full
+		// register → replay → respond path: a throw at any point after the
+		// loader hands back a live session must unwind registration AND dispose,
+		// otherwise the session sits in `sessions` while loadSession rejects —
+		// Zed thinks load failed but the agent thinks the id is live, and the
+		// next loadSession for the same id wrongly returns invalidRequest.
+		const sid = session.sessionId
+		// Defensive: pi reads the sessionId from the JSONL header, not the
+		// filename, so a corrupted / hand-edited session whose header id
+		// disagrees with the requested id would land under the wrong key in
+		// `sessions`. Subsequent session/prompt for params.sessionId would then
+		// fail with "unknown sessionId" while the file is still held open.
+		// Reject up front and dispose so we don't quietly diverge.
+		if (sid !== params.sessionId) {
+			session.dispose()
+			throw RequestError.invalidParams(
+				undefined,
+				`session header id ${sid} does not match requested sessionId ${params.sessionId}`,
+			)
+		}
+		try {
+			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
+			this.sessions.set(sid, { session, unsubscribe })
+			// Replay BEFORE the response resolves so Zed sees a coherent transcript
+			// when the loadSession promise settles. No turn context is created, so a
+			// concurrent session/cancel during replay is a no-op — a turn must not
+			// be considered active during replay.
+			this.replayTranscript(session)
+			return { models: this.modelStateForSession(session) }
+		} catch (err) {
+			const existing = this.sessions.get(sid)
+			if (existing) {
+				this.sessions.delete(sid)
+				existing.unsubscribe()
+			}
+			session.dispose()
+			throw err
+		}
 	}
 
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
@@ -396,6 +526,154 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
+	// Replay: walk the persisted transcript on the leaf path and emit
+	// session/update notifications per content block — text, thinking, tool
+	// calls. Tool results are paired with their originating toolCall by id so
+	// the historical tool render shape (tool_call + terminal tool_call_update)
+	// matches what live turns produce. Compaction / branch_summary /
+	// model_change / custom entries emit nothing — using getBranch() (raw
+	// entries) instead of buildSessionContext() avoids surfacing compaction
+	// summaries as synthetic user messages.
+	//
+	// Notifications go straight from this method to conn.sessionUpdate; we do
+	// NOT replay through the AgentSession event emitter, so extensions like
+	// telemetryExtension don't double-count historical turns.
+	private replayTranscript(session: AgentSession): void {
+		const sessionId = session.sessionId
+		const entries = session.sessionManager.getBranch()
+		const toolResults = collectToolResults(entries)
+		// Evaluate hide-thinking once per replay — readHideThinkingSetting()
+		// hits disk synchronously, so a 200-turn session would otherwise do
+		// hundreds of blocking reads.
+		const emitThinking = shouldEmitThinking("")
+		for (const entry of entries) {
+			if (!entry || typeof entry !== "object") continue
+			if (entry.type !== "message") continue
+			const msg = entry.message
+			if (msg.role === "user") {
+				const text = userMessageText(msg.content)
+				if (!text) continue
+				this.send({
+					sessionId,
+					update: {
+						sessionUpdate: "user_message_chunk",
+						content: { type: "text", text },
+					},
+				})
+			} else if (msg.role === "assistant") {
+				this.replayAssistantBlocks(sessionId, msg.content, toolResults, emitThinking)
+			}
+			// toolResult: handled inline alongside its originating toolCall above.
+		}
+	}
+
+	private replayAssistantBlocks(
+		sessionId: string,
+		content: unknown,
+		toolResults: Map<string, ReplayToolResult>,
+		emitThinking: boolean,
+	): void {
+		if (!Array.isArray(content)) return
+		// Buffer contiguous text blocks so a single assistant message renders as
+		// one agent_message_chunk per natural text segment — emit the full
+		// message as a single chunk, no per-token chunking. When a thinking or
+		// toolCall block interrupts the run, flush the buffered text first so
+		// ordering relative to those structural blocks is preserved.
+		let textBuffer = ""
+		const flushText = () => {
+			if (textBuffer.length === 0) return
+			this.send({
+				sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					content: { type: "text", text: textBuffer },
+				},
+			})
+			textBuffer = ""
+		}
+		for (const block of content) {
+			if (!block || typeof block !== "object") continue
+			const b = block as { type?: string }
+			if (b.type === "text") {
+				const text = (b as { text?: unknown }).text
+				if (typeof text !== "string" || text.length === 0) continue
+				for (const part of replayTextParts(text)) {
+					if (part.kind === "text") {
+						textBuffer += part.text
+					} else if (emitThinking) {
+						flushText()
+						this.send({
+							sessionId,
+							update: {
+								sessionUpdate: "agent_thought_chunk",
+								content: { type: "text", text: part.text },
+							},
+						})
+					}
+				}
+			} else if (b.type === "thinking") {
+				flushText()
+				const thinking = (b as { thinking?: unknown; redacted?: unknown }).thinking
+				const redacted = (b as { redacted?: unknown }).redacted === true
+				// Redacted thinking has no plaintext to surface — the encrypted
+				// payload only matters for multi-turn provider continuity.
+				if (redacted) continue
+				if (typeof thinking !== "string" || thinking.length === 0) continue
+				if (!emitThinking) continue
+				this.send({
+					sessionId,
+					update: {
+						sessionUpdate: "agent_thought_chunk",
+						content: { type: "text", text: stripAnsi(thinking) },
+					},
+				})
+			} else if (b.type === "toolCall") {
+				flushText()
+				const tc = b as { id?: unknown; name?: unknown; arguments?: unknown }
+				const id = typeof tc.id === "string" ? tc.id : undefined
+				const name = typeof tc.name === "string" ? tc.name : undefined
+				if (!id || !name) continue
+				const args = (tc.arguments ?? {}) as Record<string, unknown>
+				if (isHiddenToolCall(name, args)) continue
+				const result = toolResults.get(id)
+				// No persisted result → the call never finished (interrupted mid
+				// turn). "failed" is the closest terminal status; leaving the call
+				// in_progress would hang the client's spinner forever on replay.
+				const status: "completed" | "failed" = result ? (result.isError ? "failed" : "completed") : "failed"
+				const { title, kind, locations } = describeToolCall(name, args)
+				this.send({
+					sessionId,
+					update: {
+						sessionUpdate: "tool_call",
+						toolCallId: id,
+						title,
+						kind,
+						status,
+						locations,
+						rawInput: args,
+					},
+				})
+				this.send({
+					sessionId,
+					update: {
+						sessionUpdate: "tool_call_update",
+						toolCallId: id,
+						status,
+						content: result ? toolResultContent(result) : [],
+						rawOutput: result,
+					},
+				})
+			}
+		}
+		// Trailing text after the last structural block (or a text-only message)
+		// still needs to land — flushText is a no-op when the buffer is empty.
+		flushText()
+	}
+
+	private modelStateForSession(session: AgentSession): SessionModelState | null {
+		return buildSessionModelState(session)
+	}
+
 	private send(params: SessionNotification): void {
 		// Fire-and-forget is safe here because the ACP SDK chains every outbound
 		// message onto a shared writeQueue Promise (see @agentclientprotocol/sdk
@@ -411,14 +689,14 @@ export class KimchiAcpAgent implements Agent {
 		})
 	}
 
-	private finalizeTurn(entry: SessionEntry, stopReason: PromptResponse["stopReason"]): void {
+	private finalizeTurn(entry: SessionRecord, stopReason: PromptResponse["stopReason"]): void {
 		const turn = entry.turn
 		if (!turn) return
 		entry.turn = undefined
 		turn.resolve({ stopReason })
 	}
 
-	private failTurn(entry: SessionEntry, err: unknown): void {
+	private failTurn(entry: SessionRecord, err: unknown): void {
 		const turn = entry.turn
 		if (!turn) return
 		entry.turn = undefined
@@ -458,6 +736,228 @@ export function assertSessionHasModel(session: Pick<AgentSession, "model">): voi
 			undefined,
 			"No model available for ACP session. Configure an API key or models.json first.",
 		)
+	}
+}
+
+// Title falls back to the truncated first user message when the session has no
+// user-defined name. ACP clients render this in the thread-picker UI; we do
+// NOT trigger a fresh prompt-summary on listSessions because that would mean
+// an LLM call per session and break the 500ms NFR.
+export function toAcpSessionInfo(info: PiSessionInfo): AcpSessionInfo {
+	// Use truthiness rather than `??` so an empty `name` (migration artifact or
+	// hand-edited session-info entry) still falls through to firstMessage —
+	// `??` only short-circuits on null/undefined and would otherwise leave the
+	// title as the empty string and end up null below.
+	const fallback = info.firstMessage ? truncate(info.firstMessage) : ""
+	const title = info.name && info.name.length > 0 ? info.name : fallback
+	return {
+		sessionId: info.id,
+		cwd: info.cwd,
+		title: title.length > 0 ? title : null,
+		updatedAt: info.modified.toISOString(),
+	}
+}
+
+// Mirrors pi's getDefaultSessionDir (core/session-manager.js): pi declares the
+// helper but doesn't re-export it from the package index. Replicated inline so
+// listSessions points at kimchi's agentDir (~/.config/kimchi/harness/sessions/...)
+// instead of pi's own ~/.pi/agent/sessions/... — pi reads PI_CODING_AGENT_DIR,
+// not KIMCHI_CODING_AGENT_DIR, so without explicit sessionDir threading the
+// default lookup misses every kimchi session. Encoding is a public on-disk
+// format; drift surfaces as "no sessions found" rather than silent corruption.
+function encodeCwdDir(cwd: string): string {
+	return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`
+}
+
+// Find the on-disk JSONL for a sessionId. pi names files
+// `<isoTimestamp>_<sessionId>.jsonl` — match that suffix, with a fallback to
+// the bare `<sessionId>.jsonl` form so a hypothetical future pi format change
+// still resolves. That fallback is scoped to the already cwd-encoded directory
+// and the loader validates the file header id/cwd before opening it; a hand-
+// placed file must still match both to load. Returns null when the directory is
+// missing or no file matches; rethrows other errno (EACCES, EMFILE, …) so the
+// caller can surface them instead of masquerading as "session not found".
+function resolveSessionPathById(sessionDir: string, sessionId: string): string | null {
+	let entries: string[]
+	try {
+		entries = readdirSync(sessionDir)
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null
+		throw err
+	}
+	const suffix = `_${sessionId}.jsonl`
+	const bare = `${sessionId}.jsonl`
+	const match = entries.find((f) => f === bare || f.endsWith(suffix))
+	return match ? join(sessionDir, match) : null
+}
+
+const SESSION_HEADER_PEEK_BYTES = 8 * 1024
+
+function parseSessionHeader(raw: string): Pick<SessionHeader, "id" | "cwd"> | null {
+	for (const line of raw.split("\n")) {
+		const trimmed = line.trim()
+		if (!trimmed) continue
+		let entry: unknown
+		try {
+			entry = JSON.parse(trimmed)
+		} catch {
+			continue
+		}
+		if (!entry || typeof entry !== "object" || (entry as { type?: unknown }).type !== "session") continue
+		const header = entry as { id?: unknown; cwd?: unknown }
+		if (typeof header.id !== "string" || typeof header.cwd !== "string") return null
+		return { id: header.id, cwd: header.cwd }
+	}
+	return null
+}
+
+function readSessionHeaderPeek(sessionPath: string): { raw: string; complete: boolean } {
+	const fd = openSync(sessionPath, "r")
+	try {
+		const buffer = Buffer.allocUnsafe(SESSION_HEADER_PEEK_BYTES)
+		const bytesRead = readSync(fd, buffer, 0, buffer.length, 0)
+		return {
+			raw: buffer.toString("utf-8", 0, bytesRead),
+			complete: bytesRead < SESSION_HEADER_PEEK_BYTES,
+		}
+	} finally {
+		closeSync(fd)
+	}
+}
+
+function readSessionHeader(sessionPath: string): Pick<SessionHeader, "id" | "cwd"> | null {
+	const peek = readSessionHeaderPeek(sessionPath)
+	const parseablePeek = peek.complete ? peek.raw : peek.raw.slice(0, Math.max(0, peek.raw.lastIndexOf("\n") + 1))
+	const header = parseSessionHeader(parseablePeek)
+	if (header || peek.complete) return header
+	return parseSessionHeader(readFileSync(sessionPath, "utf-8"))
+}
+
+function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
+	return async (params: ListSessionsRequest) => {
+		// Build the set of roots to enumerate: cwd (when present) plus any
+		// non-empty additionalDirectories. Dedupe to avoid double-listing when
+		// a client sends cwd as one of the additional roots.
+		const roots: string[] = []
+		if (params.cwd) roots.push(params.cwd)
+		for (const dir of params.additionalDirectories ?? []) {
+			if (!roots.includes(dir)) roots.push(dir)
+		}
+		if (roots.length === 0) {
+			// listAll has no agentDir slot in pi today, so a non-default agentDir
+			// won't be honored for the unscoped path. Acceptable v1 limitation:
+			// Zed's thread-import always supplies a cwd.
+			return SessionManager.listAll()
+		}
+		const lists = await Promise.all(
+			roots.map((root) => SessionManager.list(root, join(options.agentDir, "sessions", encodeCwdDir(root)))),
+		)
+		return lists.flat()
+	}
+}
+
+function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
+	return async (params: LoadSessionRequest): Promise<AgentSession> => {
+		const cwd = params.cwd
+		// Mirror defaultSessionLister: encode cwd inline because pi doesn't
+		// re-export getDefaultSessionDir from its package index. Threading
+		// agentDir explicitly is load-bearing — pi reads PI_CODING_AGENT_DIR,
+		// not KIMCHI_CODING_AGENT_DIR, so default lookups would miss kimchi
+		// sessions stored under the kimchi agent dir.
+		const sessionDir = join(options.agentDir, "sessions", encodeCwdDir(cwd))
+		// pi writes session files as `<isoTimestamp>_<sessionId>.jsonl` (see
+		// SessionManager.setSessionFile auto-generation). Looking up by bare
+		// `<sessionId>.jsonl` would miss every real session — match the
+		// timestamp-prefixed form (and accept the bare form too as a forward-
+		// compat hedge if pi ever drops the prefix). Scan the cwd-scoped dir
+		// directly rather than calling SessionManager.list, which would parse
+		// every JSONL header just to find one file.
+		let sessionPath: string | null
+		try {
+			sessionPath = resolveSessionPathById(sessionDir, params.sessionId)
+		} catch (err) {
+			// EACCES / EMFILE / etc. — surface the underlying readdir error so
+			// Zed can show something more useful than "session not found", but
+			// still as invalidParams so it doesn't trip Zed's "server shut down
+			// unexpectedly" error path.
+			const msg = err instanceof Error ? err.message : String(err)
+			throw RequestError.invalidParams(undefined, `failed to read session directory: ${msg}`)
+		}
+		// Map "session not found" to invalidParams — SessionManager.open would
+		// silently start a fresh session on a missing file (and rewrite it with
+		// a new id), which is destructive and not what loadSession should do.
+		if (!sessionPath) {
+			throw RequestError.invalidParams(undefined, `session ${params.sessionId} not found`)
+		}
+		let header: Pick<SessionHeader, "id" | "cwd"> | null
+		try {
+			header = readSessionHeader(sessionPath)
+		} catch (err) {
+			// Same invalidParams treatment as SessionManager.open below: the file
+			// existed at resolve time but could not be read now (permissions,
+			// post-readdir delete, etc.).
+			const msg = err instanceof Error ? err.message : String(err)
+			throw RequestError.invalidParams(undefined, `failed to read session header: ${msg}`)
+		}
+		if (!header) {
+			throw RequestError.invalidParams(undefined, `session ${params.sessionId} has no valid session header`)
+		}
+		if (header.id !== params.sessionId) {
+			throw RequestError.invalidParams(
+				undefined,
+				`session header id ${header.id} does not match requested sessionId ${params.sessionId}`,
+			)
+		}
+		// Reject cwd mismatch before opening SessionManager. pi has no
+		// close/dispose hook on SessionManager itself; peeking the header avoids
+		// constructing a manager for a session this request is not allowed to
+		// load.
+		if (header.cwd !== cwd) {
+			throw RequestError.invalidParams(undefined, `session cwd ${header.cwd} does not match requested cwd ${cwd}`)
+		}
+		let sessionManager: SessionManager
+		try {
+			// Open WITHOUT cwdOverride so the on-disk header cwd is preserved —
+			// pi's open is `cwd = cwdOverride ?? header.cwd ?? process.cwd()`
+			// (no comparison), so passing params.cwd upfront would silently
+			// re-root a session created elsewhere. We compare below instead.
+			sessionManager = SessionManager.open(sessionPath, sessionDir)
+		} catch (err) {
+			// loadEntriesFromFile silently skips malformed lines, but I/O
+			// errors (permissions, post-readdir delete) and migration
+			// failures still propagate. Surface as invalidParams with a
+			// one-line message instead of crashing the connection (which
+			// triggers Zed's "server shut down unexpectedly" toast).
+			const msg = err instanceof Error ? err.message : String(err)
+			throw RequestError.invalidParams(undefined, `failed to open session: ${msg}`)
+		}
+		const settingsManager = SettingsManager.create(cwd, options.agentDir)
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir: options.agentDir,
+			settingsManager,
+			extensionFactories: options.extensionFactories,
+		})
+		await resourceLoader.reload()
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir: options.agentDir,
+			settingsManager,
+			resourceLoader,
+			sessionManager,
+		})
+		try {
+			assertSessionHasModel(session)
+			await session.bindExtensions({
+				onError: (err) => {
+					process.stderr.write(`acp ext error [${err.extensionPath}] ${err.event}: ${err.error}\n`)
+				},
+			})
+			return session
+		} catch (err) {
+			session.dispose()
+			throw err
+		}
 	}
 }
 
@@ -531,6 +1031,43 @@ export function isHiddenToolCall(toolName: string, args: unknown): boolean {
 	return typeof a.visibility === "string" && a.visibility.toLowerCase() === "system"
 }
 
+// Persisted assistant text from hide-thinking-aware models (DeepSeek, QwQ, ...)
+// can contain ANSI styling around inner <think> content. Live TUI styling means
+// "this is reasoning"; ACP plaintext has no such styling, so replay splits the
+// known thinking wrappers into agent_thought_chunk and strips remaining CSI
+// escapes from ordinary text.
+// Built from String.fromCharCode to keep the literal ESC byte out of source;
+// biome's noControlCharactersInRegex flags it inside a regex literal.
+const ANSI_ESC = String.fromCharCode(0x1b)
+const ANSI_PATTERN = new RegExp(`${ANSI_ESC}\\[[0-9;]*[A-Za-z]`, "g")
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+const ANSI_THINKING_OPEN_CODES = ["2", "38;2;102;102;102", "38;5;242"]
+const ANSI_THINKING_PATTERN = new RegExp(
+	`${ANSI_ESC}\\[(?:${ANSI_THINKING_OPEN_CODES.map(escapeRegExp).join("|")})m([\\s\\S]*?)(?:${ANSI_ESC}\\[(?:0|22)m|$)`,
+	"g",
+)
+export function stripAnsi(text: string): string {
+	return text.replace(ANSI_PATTERN, "")
+}
+
+type ReplayTextPart = { kind: "text" | "thinking"; text: string }
+
+function replayTextParts(text: string): ReplayTextPart[] {
+	const parts: ReplayTextPart[] = []
+	let lastIndex = 0
+	for (const match of text.matchAll(ANSI_THINKING_PATTERN)) {
+		const index = match.index ?? 0
+		const before = stripAnsi(text.slice(lastIndex, index))
+		if (before.length > 0) parts.push({ kind: "text", text: before })
+		const thinking = stripAnsi(match[1] ?? "")
+		if (thinking.length > 0) parts.push({ kind: "thinking", text: thinking })
+		lastIndex = index + match[0].length
+	}
+	const after = stripAnsi(text.slice(lastIndex))
+	if (after.length > 0) parts.push({ kind: "text", text: after })
+	return parts
+}
+
 export function describeToolCall(
 	toolName: string,
 	args: unknown,
@@ -551,6 +1088,79 @@ export function describeToolCall(
 		kind: TOOL_KINDS[toolName] ?? "other",
 		locations: path ? [{ path }] : [],
 	}
+}
+
+// UserMessage.content is `string | (TextContent | ImageContent)[]` per pi-ai
+// types. Replay only surfaces text — Zed has no UX surface for historical
+// image attachments, and the prompt capabilities advertise image: false so a
+// future replay path that emits historical images would also need to flip
+// that flag.
+export function userMessageText(content: unknown): string {
+	if (typeof content === "string") return content
+	if (!Array.isArray(content)) return ""
+	const parts: string[] = []
+	for (const block of content) {
+		if (block && typeof block === "object" && (block as { type?: unknown }).type === "text") {
+			const text = (block as { text?: unknown }).text
+			if (typeof text === "string") parts.push(text)
+		}
+	}
+	return parts.join("")
+}
+
+type ReplayToolResult = {
+	content?: unknown
+	isError: boolean
+	// Pass-through `details` so the replay's tool_call_update rawOutput carries
+	// the same shape as the live path's event.result (AgentToolResult includes
+	// details). Clients keying UI off rawOutput.details would otherwise see a
+	// thinner payload on replay.
+	details?: unknown
+	toolName?: string
+}
+
+// First pass over the branch: index tool results by their toolCallId so the
+// replay walker can stitch each historical toolCall block to its terminal
+// outcome (status + content) in O(1). Tool results land as separate message
+// entries in the JSONL — without this map we'd have to scan forward inside
+// the walker on every toolCall, turning replay into O(N²).
+function collectToolResults(entries: unknown[]): Map<string, ReplayToolResult> {
+	const out = new Map<string, ReplayToolResult>()
+	for (const entry of entries) {
+		if (!entry || typeof entry !== "object") continue
+		const e = entry as { type?: unknown; message?: unknown }
+		if (e.type !== "message") continue
+		const m = e.message as
+			| {
+					role?: unknown
+					toolCallId?: unknown
+					toolName?: unknown
+					content?: unknown
+					details?: unknown
+					isError?: unknown
+			  }
+			| undefined
+		if (!m || m.role !== "toolResult" || typeof m.toolCallId !== "string") continue
+		out.set(m.toolCallId, {
+			content: m.content,
+			isError: m.isError === true,
+			details: m.details,
+			toolName: typeof m.toolName === "string" ? m.toolName : undefined,
+		})
+	}
+	return out
+}
+
+// Native ThinkingContent blocks aren't routed through hideThinkingExtension
+// (which only mutates <think> tags inside text blocks), but the replay UX
+// should still honor the user's hideThinkingBlock setting — otherwise a user
+// who hides thinking sees a quiet live UI but a noisy replayed transcript.
+// Read the setting directly: a previous version probed filterThinkingForDisplay
+// with a synthetic <think>...</think> wrapper, which broke when the persisted
+// thinking text itself contained `</think>` (the inner regex terminated early
+// and the predicate falsely returned true).
+export function shouldEmitThinking(_thinking: string): boolean {
+	return !isHideThinkingEnabled()
 }
 
 function toolResultContent(result: unknown): ToolCallContent[] {
