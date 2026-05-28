@@ -169,8 +169,7 @@ List 3-5 files most critical for implementing this plan:
 			AGENT_PLAN_REVIEWER,
 			{
 				name: AGENT_PLAN_REVIEWER,
-				description:
-					"Plan review agent for implementation plans. Checks fit with existing patterns, complexity, dependencies, risk, and verification; never implements code.",
+				description: "Reviews implementation plans before execution",
 				models: roleModels(roles.architect, ["plan", "review"]),
 				builtinToolNames: READ_ONLY_TOOLS,
 				extensions: true,
