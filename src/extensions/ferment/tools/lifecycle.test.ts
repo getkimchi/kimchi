@@ -93,7 +93,7 @@ const passingPlanGates = () => [
 	},
 ]
 
-function approvedArchitectReviewFor(payload: Record<string, unknown>) {
+function approvedPlanReviewFor(payload: Record<string, unknown>) {
 	const normalizedQuestions = Array.isArray(payload.questions)
 		? payload.questions.map((q) =>
 				q && typeof q === "object"
@@ -400,7 +400,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		}
 		const result = await execute(
 			"tool-call-1",
-			{ ...payload, architect_review: approvedArchitectReviewFor(payload) },
+			{ ...payload, plan_review: approvedPlanReviewFor(payload) },
 			undefined,
 			undefined,
 			{ ui: {} },
@@ -483,7 +483,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		}
 		const result = await execute(
 			"tool-call-1",
-			{ ...payload, architect_review: approvedArchitectReviewFor(payload) },
+			{ ...payload, plan_review: approvedPlanReviewFor(payload) },
 			undefined,
 			undefined,
 			{ ui: {} },

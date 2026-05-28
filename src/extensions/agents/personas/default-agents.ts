@@ -106,7 +106,7 @@ Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find,
 			{
 				name: AGENT_PLAN,
 				displayName: AGENT_PLAN,
-				description: "Software architect for implementation planning",
+				description: "Software planner for implementation planning",
 				builtinToolNames: [...READ_ONLY_TOOLS, "write", "edit"],
 				extensions: true,
 				includeContextFiles: true,
@@ -117,7 +117,7 @@ Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find,
 				thinking: "high",
 				tokenBudget: 120_000,
 				systemPrompt: `# Plan Agent — Write Access Scoped to .kimchi/plans/
-You are a software architect and planning specialist.
+You are a software planning specialist.
 Your role is to explore the codebase and design implementation plans, capturing them as plan files.
 
 You may create and update plan files under \`.kimchi/plans/\`. Do NOT modify any other files.
@@ -170,7 +170,7 @@ List 3-5 files most critical for implementing this plan:
 			{
 				name: AGENT_PLAN_REVIEWER,
 				description: "Reviews implementation plans before execution",
-				models: roleModels(roles.architect, ["plan", "review"]),
+				models: roleModels(roles.planReviewer, ["plan", "review"]),
 				builtinToolNames: READ_ONLY_TOOLS,
 				extensions: true,
 				skills: true,

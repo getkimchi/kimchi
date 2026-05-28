@@ -1105,7 +1105,7 @@ describe("propose_ferment_scoping", () => {
 		}
 		return {
 			...payload,
-			architect_review: overrides.architect_review ?? {
+			plan_review: overrides.plan_review ?? {
 				status: "approved",
 				summary: "Plan Reviewer approves the plan fit, complexity, and verification.",
 				required_changes: [],
@@ -1137,7 +1137,7 @@ describe("propose_ferment_scoping", () => {
 
 	it("tells the planner to include an approved Plan Reviewer review", () => {
 		const tool = h.tools.get("propose_ferment_scoping")
-		expect(tool?.description).toContain("architect_review")
+		expect(tool?.description).toContain("plan_review")
 		expect(tool?.description).toContain("separate Plan Reviewer subagent review")
 		expect(tool?.description).toContain('subagent_type "Plan Reviewer"')
 		expect(tool?.description).toContain("needs_revision")
@@ -1177,9 +1177,9 @@ describe("propose_ferment_scoping", () => {
 		const id = await createFerment("No Plan Reviewer")
 		seedPending(id)
 		const payload = basePayload(id)
-		const result = err(await h.call("propose_ferment_scoping", { ...payload, architect_review: undefined }, {}))
+		const result = err(await h.call("propose_ferment_scoping", { ...payload, plan_review: undefined }, {}))
 
-		expect(result).toContain("architect_review")
+		expect(result).toContain("plan_review")
 		expect(getPendingPlanReview(id)).toBeUndefined()
 	})
 
@@ -1187,7 +1187,7 @@ describe("propose_ferment_scoping", () => {
 		const id = await createFerment("Plan Reviewer Reject")
 		seedPending(id)
 		const payload = basePayload(id, {
-			architect_review: {
+			plan_review: {
 				status: "needs_revision",
 				summary: "Plan skips verification.",
 				required_changes: ["Add verification commands to each phase."],
@@ -1196,7 +1196,7 @@ describe("propose_ferment_scoping", () => {
 		})
 		const planHash = buildScopingPlanHash({
 			...payload,
-			architect_review: payload.architect_review,
+			plan_review: payload.plan_review,
 			questions: [],
 		} as never)
 		const result = err(
@@ -1204,7 +1204,7 @@ describe("propose_ferment_scoping", () => {
 				"propose_ferment_scoping",
 				{
 					...payload,
-					architect_review: { ...payload.architect_review, reviewed_plan_hash: planHash },
+					plan_review: { ...payload.plan_review, reviewed_plan_hash: planHash },
 				},
 				{},
 			),
@@ -1222,7 +1222,7 @@ describe("propose_ferment_scoping", () => {
 			await h.call(
 				"propose_ferment_scoping",
 				basePayload(id, {
-					architect_review: {
+					plan_review: {
 						status: "approved",
 						summary: "Looks good.",
 						required_changes: [],
@@ -1245,7 +1245,7 @@ describe("propose_ferment_scoping", () => {
 			await h.call(
 				"propose_ferment_scoping",
 				basePayload(id, {
-					architect_review: {
+					plan_review: {
 						status: "approved",
 						summary: "Plan is structurally sound but scope needs one user decision.",
 						required_changes: [],

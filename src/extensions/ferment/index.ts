@@ -157,7 +157,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				return
 			}
 
-			runtime.resetArchitectReviewState(review.fermentId)
+			runtime.resetPlanReviewState(review.fermentId)
 			void pi.sendMessage(
 				{
 					content: buildFreeformScopingFeedbackMessage(review.fermentId, outcome.text),

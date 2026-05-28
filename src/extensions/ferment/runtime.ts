@@ -31,15 +31,15 @@ import {
 	consumeScopingGate,
 	getActive,
 	getActiveId,
-	getArchitectReviewAttempts,
 	getBlockRetry,
 	getContinuationPolicy,
-	getLastArchitectSummary,
 	getLastHumanInputAt,
 	getLastPlanHash,
+	getLastPlanReviewSummary,
 	getLastRejectionHash,
 	getPhaseStartRef,
-	getSameArchitectRejectionCount,
+	getPlanReviewAttempts,
+	getSamePlanReviewRejectionCount,
 	getStepStartRef,
 	getStorage,
 	isAutomatedContinuationEnabled,
@@ -48,9 +48,9 @@ import {
 	markHumanInput,
 	markScopingConfirmed,
 	markScopingInteractive,
-	recordArchitectReviewAttempt,
 	recordBlockHashAndCheckRepeat,
-	resetArchitectReviewState,
+	recordPlanReviewAttempt,
+	resetPlanReviewState,
 	setActive,
 	setAutomatedContinuationEnabled,
 	setContinuationPolicy,
@@ -100,24 +100,24 @@ export interface FermentRuntime {
 	getBlockRetry(fermentId: string, phaseId: string): number
 	clearBlockRetry(fermentId: string, phaseId: string): void
 	recordBlockHashAndCheckRepeat(fermentId: string, phaseId: string, hash: string): boolean
-	getArchitectReviewAttempts(fermentId: string): number
+	getPlanReviewAttempts(fermentId: string): number
 	getLastPlanHash(fermentId: string): string | undefined
 	getLastRejectionHash(fermentId: string): string | undefined
-	getSameArchitectRejectionCount(fermentId: string): number
-	getLastArchitectSummary(fermentId: string): string | undefined
-	recordArchitectReviewAttempt(
+	getSamePlanReviewRejectionCount(fermentId: string): number
+	getLastPlanReviewSummary(fermentId: string): string | undefined
+	recordPlanReviewAttempt(
 		fermentId: string,
 		planHash: string,
 		rejectionHash: string | undefined,
-		architectSummary: string,
+		planReviewSummary: string,
 	): {
-		architectReviewAttempts: number
+		planReviewAttempts: number
 		lastPlanHash?: string
 		lastRejectionHash?: string
 		sameRejectionCount: number
-		lastArchitectSummary?: string
+		lastPlanReviewSummary?: string
 	}
-	resetArchitectReviewState(fermentId: string): void
+	resetPlanReviewState(fermentId: string): void
 	bumpStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): number
 	clearStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): void
 	clearFermentState(fermentId: string): void
@@ -176,13 +176,13 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		getBlockRetry,
 		clearBlockRetry,
 		recordBlockHashAndCheckRepeat,
-		getArchitectReviewAttempts,
+		getPlanReviewAttempts,
 		getLastPlanHash,
 		getLastRejectionHash,
-		getSameArchitectRejectionCount,
-		getLastArchitectSummary,
-		recordArchitectReviewAttempt,
-		resetArchitectReviewState,
+		getSamePlanReviewRejectionCount,
+		getLastPlanReviewSummary,
+		recordPlanReviewAttempt,
+		resetPlanReviewState,
 		bumpStepCompleteAttempt,
 		clearStepCompleteAttempt,
 		clearFermentState,

@@ -205,7 +205,7 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("<ferment_plan>")
 			expect(out).toContain("</ferment_plan>")
 			expect(out).toContain('reviewed_plan_hash: "current"')
-			expect(out).toContain("architect_review")
+			expect(out).toContain("plan_review")
 			expect(out).toContain("needs_revision")
 			expect(out).toContain("Plan Reviewer may use a Researcher subagent")
 			expect(out).toContain("the tool response already contains the final Markdown plan")

@@ -33,8 +33,8 @@ describe("DEFAULT_AGENTS", () => {
 	})
 
 	it("Plan Reviewer agent uses a kimchi-dev model", () => {
-		const architect = DEFAULT_AGENTS.get(AGENT_PLAN_REVIEWER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
-		expect(architect.models?.[0]).toMatch(/^kimchi-dev\//)
+		const planReviewer = DEFAULT_AGENTS.get(AGENT_PLAN_REVIEWER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(planReviewer.models?.[0]).toMatch(/^kimchi-dev\//)
 	})
 
 	it("General-Purpose agent declares a models[] array", () => {

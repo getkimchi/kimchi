@@ -3,7 +3,7 @@
  *
  * Six roles:
  *   - orchestrator: runs the main loop, delegates work
- *   - architect: reviews implementation plans, architecture trade-offs, and risk
+ *   - planReviewer: reviews implementation plans, architecture trade-offs, and risk
  *   - planner: designs the approach, writes specs (defaults to orchestrator)
  *   - builder: code implementation and research delegation
  *   - reviewer: code review
@@ -18,7 +18,7 @@
  * {
  *   "modelRoles": {
  *     "orchestrator": "anthropic/claude-sonnet-4-5",
- *     "architect": "kimchi-dev/minimax-m2.7",
+ *     "planReviewer": "kimchi-dev/minimax-m2.7",
  *     "planner": "anthropic/claude-sonnet-4-5",
  *     "builder": "anthropic/claude-sonnet-4-5",
  *     "reviewer": "kimchi-dev/minimax-m2.7",
@@ -36,7 +36,7 @@ export interface ModelRoles {
 	/** Main model: runs the orchestrator loop, delegates work to other roles. */
 	orchestrator: string
 	/** Plan Reviewer model: reviews implementation plans, complexity, dependencies, and risk. Does not implement code. */
-	architect: string
+	planReviewer: string
 	/** Planning model: designs the approach, writes specs. Defaults to orchestrator. */
 	planner: string
 	/** Code implementation model: build and research delegation. */
@@ -50,7 +50,7 @@ export interface ModelRoles {
 /** Kimchi-dev OSS defaults — used when no user config is present. */
 export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
 	orchestrator: "kimchi-dev/kimi-k2.6",
-	architect: "kimchi-dev/minimax-m2.7",
+	planReviewer: "kimchi-dev/minimax-m2.7",
 	planner: "kimchi-dev/kimi-k2.6",
 	builder: "kimchi-dev/minimax-m2.7",
 	reviewer: "kimchi-dev/minimax-m2.7",
@@ -59,7 +59,7 @@ export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
 
 const ROLE_KEYS: readonly (keyof ModelRoles)[] = [
 	"orchestrator",
-	"architect",
+	"planReviewer",
 	"planner",
 	"builder",
 	"reviewer",
@@ -89,7 +89,7 @@ export function parseModelRoles(raw: unknown): { roles: ModelRoles; warnings: Mo
 	const obj = raw as Record<string, unknown>
 
 	for (const key of ROLE_KEYS) {
-		const value = obj[key]
+		const value = key === "planReviewer" ? (obj.planReviewer ?? obj.architect) : obj[key]
 		if (value === undefined || value === null) continue
 
 		if (typeof value !== "string" || value.trim().length === 0) {

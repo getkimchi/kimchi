@@ -15,7 +15,7 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { notifyFermentActive } from "../permissions/index.js"
 import {
-	type PersistedArchitectReviewState,
+	type PersistedPlanReviewState,
 	type PersistedRuntimeState,
 	deleteRuntimeState,
 	emptyState,
@@ -228,8 +228,8 @@ const blockRetryCounts = new CounterMap()
 const lastBlockHash = new Map<string, string>()
 
 export const MAX_BLOCK_RETRIES = 3
-export const MAX_ARCHITECT_REVIEW_ATTEMPTS = 4
-export const MAX_SAME_ARCHITECT_REJECTION = 2
+export const MAX_PLAN_REVIEW_ATTEMPTS = 4
+export const MAX_SAME_PLAN_REVIEW_REJECTION = 2
 
 export function bumpBlockRetry(fermentId: string, phaseId: string): number {
 	hydrateIfNeeded(fermentId)
@@ -262,57 +262,57 @@ export function recordBlockHashAndCheckRepeat(fermentId: string, phaseId: string
 	return prev !== undefined && prev === hash
 }
 
-// ─── Planner/architect scoping loop guard ─────────────────────────────────────
+// ─── Planner/planReviewer scoping loop guard ─────────────────────────────────────
 
-const architectReviewStates = new Map<string, PersistedArchitectReviewState>()
+const planReviewStates = new Map<string, PersistedPlanReviewState>()
 
-function emptyArchitectReviewState(): PersistedArchitectReviewState {
+function emptyPlanReviewState(): PersistedPlanReviewState {
 	return {
-		architectReviewAttempts: 0,
+		planReviewAttempts: 0,
 		sameRejectionCount: 0,
 	}
 }
 
-function getArchitectReviewStateRef(fermentId: string): PersistedArchitectReviewState {
+function getPlanReviewStateRef(fermentId: string): PersistedPlanReviewState {
 	hydrateIfNeeded(fermentId)
-	let state = architectReviewStates.get(fermentId)
+	let state = planReviewStates.get(fermentId)
 	if (!state) {
-		state = emptyArchitectReviewState()
-		architectReviewStates.set(fermentId, state)
+		state = emptyPlanReviewState()
+		planReviewStates.set(fermentId, state)
 	}
 	return state
 }
 
-export function getArchitectReviewAttempts(fermentId: string): number {
-	return getArchitectReviewStateRef(fermentId).architectReviewAttempts
+export function getPlanReviewAttempts(fermentId: string): number {
+	return getPlanReviewStateRef(fermentId).planReviewAttempts
 }
 
 export function getLastPlanHash(fermentId: string): string | undefined {
-	return getArchitectReviewStateRef(fermentId).lastPlanHash
+	return getPlanReviewStateRef(fermentId).lastPlanHash
 }
 
 export function getLastRejectionHash(fermentId: string): string | undefined {
-	return getArchitectReviewStateRef(fermentId).lastRejectionHash
+	return getPlanReviewStateRef(fermentId).lastRejectionHash
 }
 
-export function getSameArchitectRejectionCount(fermentId: string): number {
-	return getArchitectReviewStateRef(fermentId).sameRejectionCount
+export function getSamePlanReviewRejectionCount(fermentId: string): number {
+	return getPlanReviewStateRef(fermentId).sameRejectionCount
 }
 
-export function getLastArchitectSummary(fermentId: string): string | undefined {
-	return getArchitectReviewStateRef(fermentId).lastArchitectSummary
+export function getLastPlanReviewSummary(fermentId: string): string | undefined {
+	return getPlanReviewStateRef(fermentId).lastPlanReviewSummary
 }
 
-export function recordArchitectReviewAttempt(
+export function recordPlanReviewAttempt(
 	fermentId: string,
 	planHash: string,
 	rejectionHash: string | undefined,
-	architectSummary: string,
-): PersistedArchitectReviewState {
-	const state = getArchitectReviewStateRef(fermentId)
-	state.architectReviewAttempts += 1
+	planReviewSummary: string,
+): PersistedPlanReviewState {
+	const state = getPlanReviewStateRef(fermentId)
+	state.planReviewAttempts += 1
 	state.lastPlanHash = planHash
-	state.lastArchitectSummary = architectSummary
+	state.lastPlanReviewSummary = planReviewSummary
 	if (rejectionHash) {
 		state.sameRejectionCount = state.lastRejectionHash === rejectionHash ? state.sameRejectionCount + 1 : 1
 		state.lastRejectionHash = rejectionHash
@@ -324,9 +324,9 @@ export function recordArchitectReviewAttempt(
 	return { ...state }
 }
 
-export function resetArchitectReviewState(fermentId: string): void {
+export function resetPlanReviewState(fermentId: string): void {
 	hydrateIfNeeded(fermentId)
-	architectReviewStates.delete(fermentId)
+	planReviewStates.delete(fermentId)
 	persistFerment(fermentId)
 }
 
@@ -443,7 +443,7 @@ function snapshotForFerment(fermentId: string): PersistedRuntimeState {
 	for (const [k, v] of stepStartRefs.entries()) {
 		if (k.startsWith(prefix)) snap.stepStartRefs[stripPrefix(k)] = v
 	}
-	snap.architectReview = architectReviewStates.get(fermentId) ?? emptyArchitectReviewState()
+	snap.planReview = planReviewStates.get(fermentId) ?? emptyPlanReviewState()
 	return snap
 }
 
@@ -461,7 +461,7 @@ function hydrateIfNeeded(fermentId: string): void {
 	for (const [k, v] of Object.entries(state.stepCompleteAttempts)) stepCompleteAttempts.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.phaseStartRefs)) phaseStartRefs.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.stepStartRefs)) stepStartRefs.set(`${prefix}${k}`, v)
-	architectReviewStates.set(fermentId, state.architectReview)
+	planReviewStates.set(fermentId, state.planReview)
 }
 
 /** Persist the current in-memory snapshot for a ferment. Best-effort. */
@@ -493,7 +493,7 @@ export function clearFermentState(fermentId: string): void {
 	for (const key of stepStartRefs.keys()) {
 		if (key.startsWith(prefix)) stepStartRefs.delete(key)
 	}
-	architectReviewStates.delete(fermentId)
+	planReviewStates.delete(fermentId)
 	hydratedFerments.delete(fermentId)
 	deleteRuntimeState(fermentId, runtimeStatePersistRoot)
 }

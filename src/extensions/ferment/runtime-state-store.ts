@@ -9,7 +9,7 @@
  *   - stepCompleteAttempts   (phaseId:stepId → int)  symmetric with stepStartCounts
  *   - phaseStartRefs         (phaseId → git sha)     captured at activate_ferment_phase, consumed at complete_ferment_phase for diff evidence
  *   - stepStartRefs          (phaseId:stepId → sha)  captured at start_ferment_step, consumed at complete_ferment_step for diff evidence
- *   - architectReview        planner/architect scoping-loop guard state
+ *   - planReview        planner/planReviewer scoping-loop guard state
  *
  * What's NOT persisted (single-CLI-session only):
  *   - scopingInteractive / scopingConfirmed (TUI flow; local-only)
@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { resolve } from "node:path"
 import { resolveFermentsDir } from "../../ferment/store.js"
 
-export const RUNTIME_STATE_SCHEMA_VERSION = 1
+export const RUNTIME_STATE_SCHEMA_VERSION = 2
 
 export interface PersistedRuntimeState {
 	schemaVersion: typeof RUNTIME_STATE_SCHEMA_VERSION
@@ -44,15 +44,15 @@ export interface PersistedRuntimeState {
 	phaseStartRefs: Record<string, string>
 	/** Key: `${phaseId}:${stepId}`. Git sha captured at start_ferment_step. */
 	stepStartRefs: Record<string, string>
-	architectReview: PersistedArchitectReviewState
+	planReview: PersistedPlanReviewState
 }
 
-export interface PersistedArchitectReviewState {
-	architectReviewAttempts: number
+export interface PersistedPlanReviewState {
+	planReviewAttempts: number
 	lastPlanHash?: string
 	lastRejectionHash?: string
 	sameRejectionCount: number
-	lastArchitectSummary?: string
+	lastPlanReviewSummary?: string
 }
 
 export function emptyState(): PersistedRuntimeState {
@@ -64,8 +64,8 @@ export function emptyState(): PersistedRuntimeState {
 		stepCompleteAttempts: {},
 		phaseStartRefs: {},
 		stepStartRefs: {},
-		architectReview: {
-			architectReviewAttempts: 0,
+		planReview: {
+			planReviewAttempts: 0,
 			sameRejectionCount: 0,
 		},
 	}
@@ -100,18 +100,15 @@ export function loadRuntimeState(fermentId: string, root?: string): PersistedRun
 			merged.stepCompleteAttempts = raw.stepCompleteAttempts
 		if (raw.phaseStartRefs && typeof raw.phaseStartRefs === "object") merged.phaseStartRefs = raw.phaseStartRefs
 		if (raw.stepStartRefs && typeof raw.stepStartRefs === "object") merged.stepStartRefs = raw.stepStartRefs
-		if (raw.architectReview && typeof raw.architectReview === "object") {
-			const architectReview = raw.architectReview as Partial<PersistedArchitectReviewState>
-			merged.architectReview = {
-				architectReviewAttempts:
-					typeof architectReview.architectReviewAttempts === "number" ? architectReview.architectReviewAttempts : 0,
-				lastPlanHash: typeof architectReview.lastPlanHash === "string" ? architectReview.lastPlanHash : undefined,
-				lastRejectionHash:
-					typeof architectReview.lastRejectionHash === "string" ? architectReview.lastRejectionHash : undefined,
-				sameRejectionCount:
-					typeof architectReview.sameRejectionCount === "number" ? architectReview.sameRejectionCount : 0,
-				lastArchitectSummary:
-					typeof architectReview.lastArchitectSummary === "string" ? architectReview.lastArchitectSummary : undefined,
+		if (raw.planReview && typeof raw.planReview === "object") {
+			const planReview = raw.planReview as Partial<PersistedPlanReviewState>
+			merged.planReview = {
+				planReviewAttempts: typeof planReview.planReviewAttempts === "number" ? planReview.planReviewAttempts : 0,
+				lastPlanHash: typeof planReview.lastPlanHash === "string" ? planReview.lastPlanHash : undefined,
+				lastRejectionHash: typeof planReview.lastRejectionHash === "string" ? planReview.lastRejectionHash : undefined,
+				sameRejectionCount: typeof planReview.sameRejectionCount === "number" ? planReview.sameRejectionCount : 0,
+				lastPlanReviewSummary:
+					typeof planReview.lastPlanReviewSummary === "string" ? planReview.lastPlanReviewSummary : undefined,
 			}
 		}
 		return merged

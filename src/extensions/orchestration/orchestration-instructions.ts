@@ -244,7 +244,7 @@ function buildRoleAssignmentsSection(roles: ModelRoles, registry?: ModelRegistry
 		formatRoleModel(
 			"Plan Reviewer",
 			"reviews implementation plans for architecture fit, complexity, dependencies, and risk; does not implement code",
-			roles.architect,
+			roles.planReviewer,
 			registry,
 		),
 	)

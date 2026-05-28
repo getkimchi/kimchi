@@ -9,17 +9,17 @@ import {
 	clearAllScopingGates,
 	clearAllStepStarts,
 	clearFermentState,
-	getArchitectReviewAttempts,
 	getBlockRetry,
-	getLastArchitectSummary,
 	getLastPlanHash,
+	getLastPlanReviewSummary,
 	getLastRejectionHash,
 	getPhaseStartRef,
-	getSameArchitectRejectionCount,
+	getPlanReviewAttempts,
+	getSamePlanReviewRejectionCount,
 	getStepStartRef,
-	recordArchitectReviewAttempt,
 	recordBlockHashAndCheckRepeat,
-	resetArchitectReviewState,
+	recordPlanReviewAttempt,
+	resetPlanReviewState,
 	setPhaseStartRef,
 	setRuntimeStatePersistRoot,
 	setStepStartRef,
@@ -109,42 +109,42 @@ describe("runtime-state persistence — write-through + lazy hydrate", () => {
 	})
 
 	it("persists Plan Reviewer loop state across a simulated restart", () => {
-		const fId = "ferment-test-architect"
-		let state = recordArchitectReviewAttempt(fId, "plan-a", "reject-a", "Missing verification")
-		expect(state.architectReviewAttempts).toBe(1)
+		const fId = "ferment-test-planReviewer"
+		let state = recordPlanReviewAttempt(fId, "plan-a", "reject-a", "Missing verification")
+		expect(state.planReviewAttempts).toBe(1)
 		expect(state.sameRejectionCount).toBe(1)
-		state = recordArchitectReviewAttempt(fId, "plan-a", "reject-a", "Missing verification")
-		expect(state.architectReviewAttempts).toBe(2)
+		state = recordPlanReviewAttempt(fId, "plan-a", "reject-a", "Missing verification")
+		expect(state.planReviewAttempts).toBe(2)
 		expect(state.sameRejectionCount).toBe(2)
 
 		simulateRestart()
 
-		expect(getArchitectReviewAttempts(fId)).toBe(2)
+		expect(getPlanReviewAttempts(fId)).toBe(2)
 		expect(getLastPlanHash(fId)).toBe("plan-a")
 		expect(getLastRejectionHash(fId)).toBe("reject-a")
-		expect(getSameArchitectRejectionCount(fId)).toBe(2)
-		expect(getLastArchitectSummary(fId)).toBe("Missing verification")
+		expect(getSamePlanReviewRejectionCount(fId)).toBe(2)
+		expect(getLastPlanReviewSummary(fId)).toBe("Missing verification")
 	})
 
 	it("resets Plan Reviewer loop state", () => {
-		const fId = "ferment-test-architect-reset"
-		recordArchitectReviewAttempt(fId, "plan-a", "reject-a", "Missing verification")
+		const fId = "ferment-test-planReviewer-reset"
+		recordPlanReviewAttempt(fId, "plan-a", "reject-a", "Missing verification")
 
-		resetArchitectReviewState(fId)
+		resetPlanReviewState(fId)
 		simulateRestart()
 
-		expect(getArchitectReviewAttempts(fId)).toBe(0)
+		expect(getPlanReviewAttempts(fId)).toBe(0)
 		expect(getLastPlanHash(fId)).toBeUndefined()
 		expect(getLastRejectionHash(fId)).toBeUndefined()
-		expect(getSameArchitectRejectionCount(fId)).toBe(0)
-		expect(getLastArchitectSummary(fId)).toBeUndefined()
+		expect(getSamePlanReviewRejectionCount(fId)).toBe(0)
+		expect(getLastPlanReviewSummary(fId)).toBeUndefined()
 	})
 
 	it("clearFermentState wipes both in-memory and on-disk state", () => {
 		const fId = "ferment-test-7"
 		bumpBlockRetry(fId, "phase-1")
 		setPhaseStartRef(fId, "phase-1", "deadbeef")
-		recordArchitectReviewAttempt(fId, "plan-a", "reject-a", "Missing verification")
+		recordPlanReviewAttempt(fId, "plan-a", "reject-a", "Missing verification")
 
 		clearFermentState(fId)
 
@@ -155,7 +155,7 @@ describe("runtime-state persistence — write-through + lazy hydrate", () => {
 		simulateRestart()
 		expect(getBlockRetry(fId, "phase-1")).toBe(0)
 		expect(getPhaseStartRef(fId, "phase-1")).toBeUndefined()
-		expect(getArchitectReviewAttempts(fId)).toBe(0)
+		expect(getPlanReviewAttempts(fId)).toBe(0)
 	})
 
 	it("does not cross-contaminate between two ferments in the same session", () => {
@@ -182,7 +182,7 @@ describe("runtime-state persistence — write-through + lazy hydrate", () => {
 		// Verify the JSON shape on disk.
 		const path = join(persistRoot, fId, "runtime.json")
 		const parsed = JSON.parse(readFileSync(path, "utf-8"))
-		expect(parsed.schemaVersion).toBe(1)
+		expect(parsed.schemaVersion).toBe(2)
 		expect(parsed.blockRetries["phase-1"]).toBe(1)
 		expect(parsed.phaseStartRefs["phase-1"]).toBe("deadbeef")
 	})

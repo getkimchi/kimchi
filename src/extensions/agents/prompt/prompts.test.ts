@@ -109,7 +109,7 @@ describe("default agents — subagent system prompt snapshot", () => {
 			Platform: linux
 
 			# Plan Agent — Write Access Scoped to .kimchi/plans/
-			You are a software architect and planning specialist.
+			You are a software planning specialist.
 			Your role is to explore the codebase and design implementation plans, capturing them as plan files.
 
 			You may create and update plan files under \`.kimchi/plans/\`. Do NOT modify any other files.

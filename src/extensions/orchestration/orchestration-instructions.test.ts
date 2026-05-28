@@ -79,7 +79,7 @@ describe("resolveOrchestrationInstructions", () => {
 			mode: "orchestrator",
 			roles: {
 				orchestrator: "anthropic/claude-opus-4-7",
-				architect: "kimchi-dev/minimax-m2.7",
+				planReviewer: "kimchi-dev/minimax-m2.7",
 				planner: "anthropic/claude-opus-4-7",
 				builder: "anthropic/claude-sonnet-4-5",
 				reviewer: "openai/gpt-4o",
@@ -110,7 +110,7 @@ describe("resolveOrchestrationInstructions", () => {
 			mode: "orchestrator",
 			roles: {
 				...DEFAULT_MODEL_ROLES,
-				architect: "kimchi-dev/minimax-m2.7",
+				planReviewer: "kimchi-dev/minimax-m2.7",
 				planner: "anthropic/claude-opus-4-7",
 			},
 		})

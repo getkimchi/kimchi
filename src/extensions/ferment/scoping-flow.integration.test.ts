@@ -182,9 +182,9 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 			],
 			gates: passingPlanGates(),
 		}
-		proposeScopingPayload.architect_review = {
+		proposeScopingPayload.plan_review = {
 			status: "approved",
-			summary: "Architecture fits existing OAuth flow patterns.",
+			summary: "PlanReviewure fits existing OAuth flow patterns.",
 			required_changes: [],
 			reviewed_plan_hash: buildScopingPlanHash({ ...proposeScopingPayload, questions: [] } as never),
 		}

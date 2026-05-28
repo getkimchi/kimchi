@@ -43,7 +43,7 @@ export const GateVerdictSchema = Type.Object({
 	}),
 })
 
-export const ArchitectReviewSchema = Type.Object({
+export const PlanReviewSchema = Type.Object({
 	status: Type.Union([Type.Literal("approved"), Type.Literal("needs_revision")], {
 		description:
 			"Plan Reviewer verdict for the exact scoping plan payload. Use approved only when this exact plan is ready for user review and implementation.",
@@ -224,7 +224,7 @@ export const ProposeScopingParams = Type.Object({
 			}),
 		]),
 	),
-	architect_review: Type.Optional(ArchitectReviewSchema),
+	plan_review: Type.Optional(PlanReviewSchema),
 	gates: Type.Array(GateVerdictSchema, {
 		description:
 			"Plan-scope gate verdicts. Required ids: P1, P2, P3. See tool description for each gate's question and what counts as 'pass' vs 'flag'.",

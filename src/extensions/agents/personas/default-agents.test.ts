@@ -65,15 +65,15 @@ describe("DEFAULT_AGENTS", () => {
 	})
 
 	it("Plan Reviewer agent uses a kimchi-dev model and is read-only", () => {
-		const architect = DEFAULT_AGENTS.get(AGENT_PLAN_REVIEWER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
-		expect(architect.models?.[0]).toMatch(/^kimchi-dev\//)
-		expect(architect.builtinToolNames).toContain("read")
-		expect(architect.builtinToolNames).not.toContain("write")
-		expect(architect.builtinToolNames).not.toContain("edit")
-		expect(architect.extensions).toBe(true)
-		expect(architect.systemPrompt).toContain("<ferment_plan>")
-		expect(architect.systemPrompt).toContain("Researcher subagent")
-		expect(architect.systemPrompt).toContain('status MUST be "needs_revision"')
+		const planReviewer = DEFAULT_AGENTS.get(AGENT_PLAN_REVIEWER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(planReviewer.models?.[0]).toMatch(/^kimchi-dev\//)
+		expect(planReviewer.builtinToolNames).toContain("read")
+		expect(planReviewer.builtinToolNames).not.toContain("write")
+		expect(planReviewer.builtinToolNames).not.toContain("edit")
+		expect(planReviewer.extensions).toBe(true)
+		expect(planReviewer.systemPrompt).toContain("<ferment_plan>")
+		expect(planReviewer.systemPrompt).toContain("Researcher subagent")
+		expect(planReviewer.systemPrompt).toContain('status MUST be "needs_revision"')
 	})
 
 	it("General-Purpose agent declares a models[] array", () => {

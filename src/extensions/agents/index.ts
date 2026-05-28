@@ -812,7 +812,7 @@ Guidelines:
 - If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
 - For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
 - Use Explore for codebase searches and code understanding.
-- Use Plan for architecture and implementation planning.
+- Use Plan for technical and implementation planning.
 - Use Researcher for web/docs research with cited sources.
 - Use General-Purpose for complex tasks that need file editing.
 - Provide clear, detailed prompts so the agent can work autonomously.
