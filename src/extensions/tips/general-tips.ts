@@ -44,7 +44,7 @@ export const GENERAL_TIPS = [
 	{
 		id: "export-bug-report",
 		scope: "general",
-		message: "Run `/export` to save HTML for a bug report.",
+		message: "Run `/bug` to create GitHub issue with a bug report.",
 	},
 	{
 		id: "multi-model-roles",
