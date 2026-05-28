@@ -1,7 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
-import telemetryExtension, { trackSubagentSpawned } from "./index.js"
+import telemetryExtension, {
+	trackSubagentSpawned,
+	trackSurveyAnswered,
+	trackSurveyDismissed,
+	trackSurveyShown,
+} from "./index.js"
 import { _resetSharedAccumulators } from "./session-context.js"
 
 vi.mock("../ferment/index.js", () => ({
@@ -15,6 +20,21 @@ vi.mock("../../startup-context.js", () => ({
 vi.mock("../../api/me.js", () => ({
 	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
 }))
+
+const TEST_SURVEY = {
+	id: "first-impression-feedback-v1",
+	version: 1,
+	question: {
+		id: "how_did_that_go",
+		text: "How did Kimchi do?",
+		help: "Your feedback helps us improve.",
+	},
+	options: [
+		{ id: "worked_great", label: "Went great - shipped it", score: 5 },
+		{ id: "mostly_worked", label: "Mostly worked - some tweaks before merge", score: 3 },
+		{ id: "didnt_work", label: "Didn't work - try again differently", score: 1 },
+	],
+} as const
 
 type Handler = (...args: unknown[]) => Promise<void> | void
 
@@ -155,5 +175,57 @@ describe("telemetryExtension integration", () => {
 		expect(attrs.model).toBe("claude-opus-4-6")
 		expect(attrs.source).toBe("cli")
 		expect(attrs.mode).toBe("coding")
+	})
+
+	it("survey tracking helpers send survey events through the telemetry batch", async () => {
+		const { handlers, api } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+
+		const impressionId = "impression-1"
+		trackSurveyShown({ survey: TEST_SURVEY, impressionId })
+		trackSurveyAnswered({ survey: TEST_SURVEY, impressionId, answerId: "worked_great" })
+		trackSurveyDismissed({ survey: TEST_SURVEY, impressionId })
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		const allRecords = logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+
+		const surveyShown = allRecords.find((rec) => rec.eventName === "survey_shown")
+		const surveyAnswered = allRecords.find((rec) => rec.eventName === "survey_answered")
+		const surveyDismissed = allRecords.find((rec) => rec.eventName === "survey_dismissed")
+
+		expect(surveyShown).toBeDefined()
+		expect(surveyAnswered).toBeDefined()
+		expect(surveyDismissed).toBeDefined()
+
+		const shownAttrs = Object.fromEntries(surveyShown?.attributes.map((a) => [a.key, a.value.stringValue]) ?? [])
+		const answeredAttrs = Object.fromEntries(surveyAnswered?.attributes.map((a) => [a.key, a.value.stringValue]) ?? [])
+		const dismissedAttrs = Object.fromEntries(
+			surveyDismissed?.attributes.map((a) => [a.key, a.value.stringValue]) ?? [],
+		)
+
+		expect(shownAttrs.impression_id).toBe(impressionId)
+		expect(shownAttrs.survey_id).toBe("first-impression-feedback-v1")
+		expect(shownAttrs.survey_version).toBe("1")
+		expect(shownAttrs.question_id).toBe("how_did_that_go")
+		expect(shownAttrs.question_text).toBe("How did Kimchi do?")
+		expect(shownAttrs.client).toBe("pi")
+		expect(shownAttrs.source).toBe("cli")
+		expect(shownAttrs.mode).toBe("coding")
+
+		expect(answeredAttrs.impression_id).toBe(impressionId)
+		expect(answeredAttrs.answer_id).toBe("worked_great")
+		expect(answeredAttrs.answer_label).toBe("Went great - shipped it")
+		expect(answeredAttrs.answer_score).toBe("5")
+
+		expect(dismissedAttrs.impression_id).toBe(impressionId)
+		expect(dismissedAttrs.dismiss_reason).toBe("dismissed")
+		expect(dismissedAttrs.question_id).toBe("how_did_that_go")
 	})
 })
