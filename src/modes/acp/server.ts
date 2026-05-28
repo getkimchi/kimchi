@@ -1,7 +1,7 @@
 // ACP (Agent Client Protocol) mode: JSON-RPC 2.0 over stdio using
 // @agentclientprotocol/sdk. Lets Zed / openclaw drive kimchi in-process.
 
-import { readdirSync } from "node:fs"
+import { closeSync, openSync, readFileSync, readSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { Readable, Writable } from "node:stream"
 import {
@@ -42,6 +42,7 @@ import {
 	type ExtensionFactory,
 	ModelRegistry,
 	type SessionInfo as PiSessionInfo,
+	type SessionHeader,
 	SessionManager,
 	SettingsManager,
 	createAgentSession,
@@ -544,7 +545,7 @@ export class KimchiAcpAgent implements Agent {
 		// Evaluate hide-thinking once per replay — readHideThinkingSetting()
 		// hits disk synchronously, so a 200-turn session would otherwise do
 		// hundreds of blocking reads.
-		const emitThinking = !isHideThinkingEnabled()
+		const emitThinking = shouldEmitThinking("")
 		for (const entry of entries) {
 			if (!entry || typeof entry !== "object") continue
 			if (entry.type !== "message") continue
@@ -596,10 +597,20 @@ export class KimchiAcpAgent implements Agent {
 			if (b.type === "text") {
 				const text = (b as { text?: unknown }).text
 				if (typeof text !== "string" || text.length === 0) continue
-				// Persisted text from hide-thinking-aware models can carry ANSI
-				// dim escapes around inner thinking content (the live TUI renders
-				// them; ACP clients can't). Strip before sending — see stripAnsi.
-				textBuffer += stripAnsi(text)
+				for (const part of replayTextParts(text)) {
+					if (part.kind === "text") {
+						textBuffer += part.text
+					} else if (emitThinking) {
+						flushText()
+						this.send({
+							sessionId,
+							update: {
+								sessionUpdate: "agent_thought_chunk",
+								content: { type: "text", text: part.text },
+							},
+						})
+					}
+				}
 			} else if (b.type === "thinking") {
 				flushText()
 				const thinking = (b as { thinking?: unknown; redacted?: unknown }).thinking
@@ -761,7 +772,9 @@ function encodeCwdDir(cwd: string): string {
 // Find the on-disk JSONL for a sessionId. pi names files
 // `<isoTimestamp>_<sessionId>.jsonl` — match that suffix, with a fallback to
 // the bare `<sessionId>.jsonl` form so a hypothetical future pi format change
-// (or hand-placed file) still resolves. Returns null when the directory is
+// still resolves. That fallback is scoped to the already cwd-encoded directory
+// and the loader validates the file header id/cwd before opening it; a hand-
+// placed file must still match both to load. Returns null when the directory is
 // missing or no file matches; rethrows other errno (EACCES, EMFILE, …) so the
 // caller can surface them instead of masquerading as "session not found".
 function resolveSessionPathById(sessionDir: string, sessionId: string): string | null {
@@ -776,6 +789,48 @@ function resolveSessionPathById(sessionDir: string, sessionId: string): string |
 	const bare = `${sessionId}.jsonl`
 	const match = entries.find((f) => f === bare || f.endsWith(suffix))
 	return match ? join(sessionDir, match) : null
+}
+
+const SESSION_HEADER_PEEK_BYTES = 8 * 1024
+
+function parseSessionHeader(raw: string): Pick<SessionHeader, "id" | "cwd"> | null {
+	for (const line of raw.split("\n")) {
+		const trimmed = line.trim()
+		if (!trimmed) continue
+		let entry: unknown
+		try {
+			entry = JSON.parse(trimmed)
+		} catch {
+			continue
+		}
+		if (!entry || typeof entry !== "object" || (entry as { type?: unknown }).type !== "session") continue
+		const header = entry as { id?: unknown; cwd?: unknown }
+		if (typeof header.id !== "string" || typeof header.cwd !== "string") return null
+		return { id: header.id, cwd: header.cwd }
+	}
+	return null
+}
+
+function readSessionHeaderPeek(sessionPath: string): { raw: string; complete: boolean } {
+	const fd = openSync(sessionPath, "r")
+	try {
+		const buffer = Buffer.allocUnsafe(SESSION_HEADER_PEEK_BYTES)
+		const bytesRead = readSync(fd, buffer, 0, buffer.length, 0)
+		return {
+			raw: buffer.toString("utf-8", 0, bytesRead),
+			complete: bytesRead < SESSION_HEADER_PEEK_BYTES,
+		}
+	} finally {
+		closeSync(fd)
+	}
+}
+
+function readSessionHeader(sessionPath: string): Pick<SessionHeader, "id" | "cwd"> | null {
+	const peek = readSessionHeaderPeek(sessionPath)
+	const parseablePeek = peek.complete ? peek.raw : peek.raw.slice(0, Math.max(0, peek.raw.lastIndexOf("\n") + 1))
+	const header = parseSessionHeader(parseablePeek)
+	if (header || peek.complete) return header
+	return parseSessionHeader(readFileSync(sessionPath, "utf-8"))
 }
 
 function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
@@ -834,6 +889,32 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 		if (!sessionPath) {
 			throw RequestError.invalidParams(undefined, `session ${params.sessionId} not found`)
 		}
+		let header: Pick<SessionHeader, "id" | "cwd"> | null
+		try {
+			header = readSessionHeader(sessionPath)
+		} catch (err) {
+			// Same invalidParams treatment as SessionManager.open below: the file
+			// existed at resolve time but could not be read now (permissions,
+			// post-readdir delete, etc.).
+			const msg = err instanceof Error ? err.message : String(err)
+			throw RequestError.invalidParams(undefined, `failed to read session header: ${msg}`)
+		}
+		if (!header) {
+			throw RequestError.invalidParams(undefined, `session ${params.sessionId} has no valid session header`)
+		}
+		if (header.id !== params.sessionId) {
+			throw RequestError.invalidParams(
+				undefined,
+				`session header id ${header.id} does not match requested sessionId ${params.sessionId}`,
+			)
+		}
+		// Reject cwd mismatch before opening SessionManager. pi has no
+		// close/dispose hook on SessionManager itself; peeking the header avoids
+		// constructing a manager for a session this request is not allowed to
+		// load.
+		if (header.cwd !== cwd) {
+			throw RequestError.invalidParams(undefined, `session cwd ${header.cwd} does not match requested cwd ${cwd}`)
+		}
 		let sessionManager: SessionManager
 		try {
 			// Open WITHOUT cwdOverride so the on-disk header cwd is preserved —
@@ -849,14 +930,6 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			// triggers Zed's "server shut down unexpectedly" toast).
 			const msg = err instanceof Error ? err.message : String(err)
 			throw RequestError.invalidParams(undefined, `failed to open session: ${msg}`)
-		}
-		// Reject cwd mismatch so a session created for one project can't be
-		// silently re-rooted into another. The "project moved on disk" case
-		// isn't supported — clients must load against the original workspace,
-		// or pi's listAll surfaces the canonical cwd.
-		const sessionCwd = sessionManager.getCwd()
-		if (sessionCwd !== cwd) {
-			throw RequestError.invalidParams(undefined, `session cwd ${sessionCwd} does not match requested cwd ${cwd}`)
 		}
 		const settingsManager = SettingsManager.create(cwd, options.agentDir)
 		const resourceLoader = new DefaultResourceLoader({
@@ -958,16 +1031,41 @@ export function isHiddenToolCall(toolName: string, args: unknown): boolean {
 	return typeof a.visibility === "string" && a.visibility.toLowerCase() === "system"
 }
 
-// Persisted assistant text from hide-thinking-aware models (DeepSeek, QwQ, …)
-// can contain ANSI dim escapes wrapping inner <think> content — the live TUI
-// renders them, but ACP clients receive raw text and would surface the
-// escapes verbatim. Strip a conservative subset (CSI sequences) so the user
-// sees plain text on replay; ACP's text content type carries no styling.
-// Built from String.fromCharCode to keep the literal ESC byte out of source —
+// Persisted assistant text from hide-thinking-aware models (DeepSeek, QwQ, ...)
+// can contain ANSI styling around inner <think> content. Live TUI styling means
+// "this is reasoning"; ACP plaintext has no such styling, so replay splits the
+// known thinking wrappers into agent_thought_chunk and strips remaining CSI
+// escapes from ordinary text.
+// Built from String.fromCharCode to keep the literal ESC byte out of source;
 // biome's noControlCharactersInRegex flags it inside a regex literal.
-const ANSI_PATTERN = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*[A-Za-z]`, "g")
+const ANSI_ESC = String.fromCharCode(0x1b)
+const ANSI_PATTERN = new RegExp(`${ANSI_ESC}\\[[0-9;]*[A-Za-z]`, "g")
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+const ANSI_THINKING_OPEN_CODES = ["2", "38;2;102;102;102", "38;5;242"]
+const ANSI_THINKING_PATTERN = new RegExp(
+	`${ANSI_ESC}\\[(?:${ANSI_THINKING_OPEN_CODES.map(escapeRegExp).join("|")})m([\\s\\S]*?)(?:${ANSI_ESC}\\[(?:0|22)m|$)`,
+	"g",
+)
 export function stripAnsi(text: string): string {
 	return text.replace(ANSI_PATTERN, "")
+}
+
+type ReplayTextPart = { kind: "text" | "thinking"; text: string }
+
+function replayTextParts(text: string): ReplayTextPart[] {
+	const parts: ReplayTextPart[] = []
+	let lastIndex = 0
+	for (const match of text.matchAll(ANSI_THINKING_PATTERN)) {
+		const index = match.index ?? 0
+		const before = stripAnsi(text.slice(lastIndex, index))
+		if (before.length > 0) parts.push({ kind: "text", text: before })
+		const thinking = stripAnsi(match[1] ?? "")
+		if (thinking.length > 0) parts.push({ kind: "thinking", text: thinking })
+		lastIndex = index + match[0].length
+	}
+	const after = stripAnsi(text.slice(lastIndex))
+	if (after.length > 0) parts.push({ kind: "text", text: after })
+	return parts
 }
 
 export function describeToolCall(
@@ -999,23 +1097,6 @@ export function describeToolCall(
 // that flag.
 export function userMessageText(content: unknown): string {
 	if (typeof content === "string") return content
-	if (!Array.isArray(content)) return ""
-	const parts: string[] = []
-	for (const block of content) {
-		if (block && typeof block === "object" && (block as { type?: unknown }).type === "text") {
-			const text = (block as { text?: unknown }).text
-			if (typeof text === "string") parts.push(text)
-		}
-	}
-	return parts.join("")
-}
-
-// AssistantMessage.content is `(TextContent | ThinkingContent | ToolCall)[]`.
-// This helper extracts only the `text` blocks; thinking and tool-call blocks
-// are emitted separately by the replay walker so historical thinking respects
-// the hide-thinking redaction rules and historical tool calls render as
-// proper tool_call notifications.
-export function assistantMessageText(content: unknown): string {
 	if (!Array.isArray(content)) return ""
 	const parts: string[] = []
 	for (const block of content) {

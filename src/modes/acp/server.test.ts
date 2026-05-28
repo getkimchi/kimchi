@@ -1,5 +1,6 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs"
-import { resolve } from "node:path"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join, resolve } from "node:path"
 import type { AgentSideConnection, ListSessionsRequest, SessionNotification } from "@agentclientprotocol/sdk"
 import type {
 	AgentSession,
@@ -15,7 +16,6 @@ import {
 	type AcpSessionLoader,
 	KimchiAcpAgent,
 	assertSessionHasModel,
-	assistantMessageText,
 	buildSessionModelState,
 	describeToolCall,
 	isHiddenToolCall,
@@ -1441,6 +1441,10 @@ function toolResultEntry(
 	}
 }
 
+function testEncodeCwdDir(cwd: string): string {
+	return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`
+}
+
 describe("KimchiAcpAgent loadSession", () => {
 	function makeAgent(loader: AcpSessionLoader, opts?: { conn?: AgentSideConnection }): KimchiAcpAgent {
 		return new KimchiAcpAgent(opts?.conn ?? makeConn(), {
@@ -1509,6 +1513,37 @@ describe("KimchiAcpAgent loadSession", () => {
 		await expect(agent.loadSession({ sessionId: "missing", cwd: "/tmp", mcpServers: [] })).rejects.toThrow(
 			/session not found/,
 		)
+	})
+
+	it("rejects default-loaded sessions whose header cwd disagrees before opening", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "kimchi-acp-load-"))
+		try {
+			const sessionId = "cwd-mismatch"
+			const requestedCwd = "/tmp/requested"
+			const sessionDir = join(agentDir, "sessions", testEncodeCwdDir(requestedCwd))
+			mkdirSync(sessionDir, { recursive: true })
+			writeFileSync(
+				join(sessionDir, `2026-05-09T00-00-00.000Z_${sessionId}.jsonl`),
+				`${JSON.stringify({
+					type: "session",
+					version: 3,
+					id: sessionId,
+					timestamp: "2026-05-09T00:00:00Z",
+					cwd: "/tmp/other",
+				})}\n`,
+			)
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir,
+				sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			})
+
+			await expect(agent.loadSession({ sessionId, cwd: requestedCwd, mcpServers: [] })).rejects.toThrow(
+				/session cwd \/tmp\/other does not match requested cwd \/tmp\/requested/,
+			)
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true })
+		}
 	})
 
 	it("disposes the session if subscribe throws during loadSession", async () => {
@@ -1652,12 +1687,11 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect((updates[3].update as { content: { text: string } }).content.text).toBe("third")
 	})
 
-	it("strips ANSI escape codes from replayed text and thinking content", async () => {
+	it("routes ANSI-dimmed replay text to thought chunks and strips remaining ANSI", async () => {
 		// hide-thinking-aware models (DeepSeek, QwQ) plus hideThinkingBlock=false
 		// persist text with ANSI dim escapes around inner <think> content. The
-		// live TUI renders them; ACP's text content type is plaintext, so the
-		// replay must scrub the escapes before sending — otherwise Zed surfaces
-		// raw \x1b[...m sequences in the transcript.
+		// live TUI renders them as reasoning; ACP's text content type is
+		// plaintext, so replay must preserve that semantic split explicitly.
 		const dimmed = "before \x1b[2minner\x1b[22m after"
 		const fake = new FakeAgentSession("loaded-ansi")
 		fake.branch = [
@@ -1674,10 +1708,35 @@ describe("KimchiAcpAgent loadSession", () => {
 		const { conn, updates } = makeRecordingConn()
 		const agent = makeAgent(async () => asSession(fake), { conn })
 		await agent.loadSession({ sessionId: "loaded-ansi", cwd: "/tmp", mcpServers: [] })
-		const messageChunk = updates.find((u) => u.update.sessionUpdate === "agent_message_chunk")
-		const thoughtChunk = updates.find((u) => u.update.sessionUpdate === "agent_thought_chunk")
-		expect((messageChunk?.update as { content: { text: string } }).content.text).toBe("before inner after")
-		expect((thoughtChunk?.update as { content: { text: string } }).content.text).toBe("raw thought")
+		const messageTexts = updates
+			.filter((u) => u.update.sessionUpdate === "agent_message_chunk")
+			.map((u) => (u.update as { content: { text: string } }).content.text)
+		const thoughtTexts = updates
+			.filter((u) => u.update.sessionUpdate === "agent_thought_chunk")
+			.map((u) => (u.update as { content: { text: string } }).content.text)
+		expect(messageTexts).toEqual(["before ", " after"])
+		expect(thoughtTexts).toEqual(["inner", "raw thought"])
+	})
+
+	it("drops ANSI-dimmed replay thinking when hideThinkingBlock is enabled", async () => {
+		_setHideThinking(true)
+		try {
+			const fake = new FakeAgentSession("loaded-ansi-hidden")
+			fake.branch = [
+				userTextEntry("go", "u1", null),
+				assistantBlocksEntry([{ type: "text", text: "before \x1b[2minner\x1b[22m after" }], "a1", "u1"),
+			]
+			const { conn, updates } = makeRecordingConn()
+			const agent = makeAgent(async () => asSession(fake), { conn })
+			await agent.loadSession({ sessionId: "loaded-ansi-hidden", cwd: "/tmp", mcpServers: [] })
+			const messageTexts = updates
+				.filter((u) => u.update.sessionUpdate === "agent_message_chunk")
+				.map((u) => (u.update as { content: { text: string } }).content.text)
+			expect(updates.find((u) => u.update.sessionUpdate === "agent_thought_chunk")).toBeUndefined()
+			expect(messageTexts).toEqual(["before  after"])
+		} finally {
+			_resetHideThinking()
+		}
 	})
 
 	it("treats a concurrent session/cancel during replay as a no-op (no turn active)", async () => {
@@ -2112,7 +2171,7 @@ describe("stripAnsi", () => {
 	})
 })
 
-describe("userMessageText / assistantMessageText", () => {
+describe("userMessageText", () => {
 	it("returns string content unchanged for user messages", () => {
 		expect(userMessageText("hello world")).toBe("hello world")
 	})
@@ -2128,26 +2187,5 @@ describe("userMessageText / assistantMessageText", () => {
 	it("returns empty string for null / non-array user content", () => {
 		expect(userMessageText(null)).toBe("")
 		expect(userMessageText(42)).toBe("")
-	})
-	it("joins text blocks for assistant messages", () => {
-		expect(
-			assistantMessageText([
-				{ type: "text", text: "answer " },
-				{ type: "text", text: "in two parts" },
-			]),
-		).toBe("answer in two parts")
-	})
-	it("skips thinking and toolCall blocks in assistant content", () => {
-		expect(
-			assistantMessageText([
-				{ type: "thinking", thinking: "..." },
-				{ type: "text", text: "visible" },
-				{ type: "toolCall", id: "tc", name: "bash", arguments: {} },
-			]),
-		).toBe("visible")
-	})
-	it("returns empty string for non-array assistant content", () => {
-		expect(assistantMessageText(undefined)).toBe("")
-		expect(assistantMessageText("string-not-allowed-here")).toBe("")
 	})
 })
