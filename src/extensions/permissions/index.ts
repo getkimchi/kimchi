@@ -345,12 +345,16 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		updateStatus(ctx)
 		maybeShowYoloWarning(ctx, targetMode)
 
-		// Compact the conversation so the executing agent starts with a clean
-		// context containing only the approved plan — not all the exploration
-		// history from plan mode.
-		ctx.compact({
-			customInstructions: `The user approved the following plan. Execute it now.\n\nApproved plan saved to: ${planPath}\n\n---\n\n${planText}`,
-		})
+		// Send the approved plan as the execution trigger. No compaction needed —
+		// the plan text is already in context from the planning conversation.
+		pi.sendMessage(
+			{
+				customType: "plan-execute",
+				content: `The user approved the plan. Execute it now.\n\nApproved plan saved to: ${planPath}\n\n---\n\n${planText}`,
+				display: false,
+			},
+			{ triggerTurn: true },
+		)
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
