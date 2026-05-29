@@ -191,9 +191,9 @@ function renderBullets(label: string, items: string[]): string {
 }
 
 function renderStep(index: number, description: string): string {
-	const lines = wrapText(description, 82)
-	if (lines.length === 0) return `${index}. —`
-	return lines.map((line, lineIndex) => (lineIndex === 0 ? `${index}. ${line}` : `   ${line}`)).join("\n")
+	const lines = wrapText(description, 84)
+	if (lines.length === 0) return "- —"
+	return lines.map((line, lineIndex) => (lineIndex === 0 ? `- ${line}` : `  ${line}`)).join("\n")
 }
 
 function concatenateAssumptionStrings(items: string[]): string | undefined {
@@ -419,6 +419,7 @@ export function buildPlanMarkdown(params: NormalizedProposeScopingArgs): string 
 	})
 	return [
 		`# Plan: ${params.title}`,
+		"---",
 		"",
 		renderWrapped("## Goal", params.goal),
 		"",
@@ -429,7 +430,11 @@ export function buildPlanMarkdown(params: NormalizedProposeScopingArgs): string 
 		renderBullets("## Assumptions", splitListText(params.assumptions)),
 		"",
 		"## Phases",
+		"---",
+		"",
 		phaseBlocks.join("\n\n"),
+		"",
+		"---",
 	].join("\n")
 }
 
