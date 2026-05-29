@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../models.js"
+import { DEFAULT_AGENTS } from "../agents/personas/default-agents.js"
+import { AGENT_GENERAL_PURPOSE } from "../agents/personas/types.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "./model-registry/index.js"
 import { DEFAULT_MODEL_ROLES } from "./model-roles.js"
 import { resolveOrchestrationInstructions } from "./orchestration-instructions.js"
@@ -60,16 +62,21 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).not.toContain("standard-tier model with `build` strength")
 	})
 
-	it("instructs to use dedicated subagent types when available", () => {
+	it("lists every dedicated subagent type from the persona registry", () => {
 		const result = resolveOrchestrationInstructions({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("Use the matching dedicated subagent type")
-		expect(result).toContain("`Plan Reviewer`, `Explore`, or `Plan`")
-		expect(result).toContain("Use `General-Purpose` for Builder")
+		// Derived from DEFAULT_AGENTS, not hardcoded: every non-General-Purpose persona must appear.
+		const dedicatedTypes = [...DEFAULT_AGENTS.keys()].filter((name) => name !== AGENT_GENERAL_PURPOSE)
+		expect(dedicatedTypes.length).toBeGreaterThan(0)
+		for (const name of dedicatedTypes) {
+			expect(result).toContain(`\`${name}\``)
+		}
+		expect(result).toContain(`Use \`${AGENT_GENERAL_PURPOSE}\` for any role without a dedicated type`)
+		expect(result).toContain("as the `model` parameter")
 	})
 
 	it("shows model IDs from the roles config", () => {

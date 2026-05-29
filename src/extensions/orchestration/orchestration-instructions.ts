@@ -6,6 +6,8 @@
  * - Single-model: empty (no orchestration content)
  */
 
+import { DEFAULT_AGENTS } from "../agents/personas/default-agents.js"
+import { AGENT_GENERAL_PURPOSE } from "../agents/personas/types.js"
 import type { PromptMode } from "../prompt-construction/system-prompt.js"
 import { buildOrchestrationGuidelinesSection } from "./model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "./model-registry/index.js"
@@ -72,7 +74,7 @@ Omit steps that add no value. A simple fix may need only build. A complex featur
 
 PLAN_RULE_PLACEHOLDER
 
-The model for each role is listed in the **Your Team** section above. Use the matching dedicated subagent type when one exists: \`Plan Reviewer\`, \`Explore\`, or \`Plan\`. Use \`General-Purpose\` for Builder, Reviewer, and other roles without a dedicated type. Pass the exact \`id\` shown there as the \`model\` parameter in your Agent tool call when you need to force a role model.
+SUBAGENT_TYPE_PLACEHOLDER
 
 ### Step 4 — Execute
 
@@ -187,6 +189,20 @@ function resolvePlanRule(roles?: ModelRoles): string {
 - **plan** — always delegate to the **Planner** model. Never write the plan yourself.`
 }
 
+/**
+ * Build the delegation rule listing the dedicated subagent types the orchestrator
+ * can target. Derived from DEFAULT_AGENTS so adding/removing a persona keeps the
+ * orchestrator prompt in sync — no hardcoded persona list to update by hand.
+ */
+function resolveSubagentTypeRule(): string {
+	const dedicatedTypes = [...DEFAULT_AGENTS.keys()].filter((name) => name !== AGENT_GENERAL_PURPOSE)
+	const typeList = dedicatedTypes.map((name) => `\`${name}\``).join(", ")
+	const dedicatedClause = typeList
+		? `Use the matching dedicated subagent type when one exists: ${typeList}. Use \`${AGENT_GENERAL_PURPOSE}\` for any role without a dedicated type. `
+		: `Use the \`${AGENT_GENERAL_PURPOSE}\` subagent type. `
+	return `The model for each role is listed in the **Your Team** section above. ${dedicatedClause}Pass the exact \`id\` shown there as the \`model\` parameter in your Agent tool call when you need to force a role model.`
+}
+
 function resolveOrchestratorInstructions(ctx: OrchestrationInstructionsContext): string {
 	const parts: string[] = []
 
@@ -195,7 +211,12 @@ function resolveOrchestratorInstructions(ctx: OrchestrationInstructionsContext):
 	}
 
 	const planRule = resolvePlanRule(ctx.roles)
-	parts.push(ORCHESTRATOR_INSTRUCTIONS.replace("PLAN_RULE_PLACEHOLDER", planRule))
+	parts.push(
+		ORCHESTRATOR_INSTRUCTIONS.replace("PLAN_RULE_PLACEHOLDER", planRule).replace(
+			"SUBAGENT_TYPE_PLACEHOLDER",
+			resolveSubagentTypeRule(),
+		),
+	)
 
 	const orchGuidelines = buildOrchestrationGuidelinesSection(ctx.currentModelId, ctx.registry)
 	if (orchGuidelines) parts.push(orchGuidelines)

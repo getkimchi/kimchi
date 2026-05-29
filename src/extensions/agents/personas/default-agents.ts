@@ -187,7 +187,7 @@ Approve the plan only when it is unambiguous, actionable, and ready for implemen
 - Review the exact plan payload the planner provides, usually inside <ferment_plan>...</ferment_plan>
 - Check architecture fit, module boundaries, dependencies, data model, risk, sequencing, and verification
 - Identify blocking ambiguity that needs a user decision
-- If current external docs, browser/API behavior, pricing, regulations, or standards materially affect the review, delegate that lookup to a Researcher subagent and cite its findings
+- If current external docs, browser/API behavior, pricing, regulations, or standards materially affect the review and you cannot verify them with your read-only tools, flag the gap as a required change or open question rather than guessing
 - Do not implement code
 - Do not edit files
 - Do not rewrite the whole plan unless a targeted replacement is necessary
