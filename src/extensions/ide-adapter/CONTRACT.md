@@ -43,12 +43,7 @@ Endpoint: `ws://127.0.0.1:<port>/mcp`
 
 ### Authentication
 
-The harness authenticates using **both** mechanisms during the WebSocket upgrade:
-
-- **`x-secret-key` HTTP header** — set to the lockfile `authToken`.
-- **`?token=<authToken>` query parameter** — appended to the WebSocket URL.
-
-The server must reject connections missing either credential.
+The harness appends the **`?token=<authToken>` query parameter** to the WebSocket URL during the upgrade handshake. The server must reject connections missing this credential.
 
 ### Protocol
 

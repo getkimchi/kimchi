@@ -54,7 +54,7 @@ IDE opens project
 Kimchi starts or opens a new session
    └─> scans lockfile directory (every 5 s)
    └─> finds matching workspace folder (or first alive lockfile)
-   └─> connects WebSocket (x-secret-key header + ?token= query param)
+   └─> connects WebSocket (?token= query param)
    └─> MCP initialize / initialized handshake (10 s timeout)
    └─> calls tools/list
    └─> registers tools as ide_<name>
@@ -74,4 +74,4 @@ IDE closes project
 ## Design Notes
 
 - **Generic, not IDE-specific** — the harness contains no JetBrains/VS Code/etc. logic. Everything is driven by the lockfile and MCP tool list.
-- **Custom transport** — the WebSocket upgrade requires both a header (`x-secret-key`) and a query parameter (`token`). The official MCP SDK WebSocket transport does not support custom headers, so the harness implements its own transport on top of the `ws` package.
+- **Custom transport** — the WebSocket upgrade uses a query parameter (`token`). The harness implements its own lightweight transport on top of the `ws` package.
