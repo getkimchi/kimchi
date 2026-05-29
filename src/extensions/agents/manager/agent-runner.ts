@@ -416,6 +416,11 @@ async function runAgentInner(
 			message:
 				"You're at 75% of your turn budget. Finish your current edit, run verification, and summarize any remaining work.",
 		},
+		{
+			threshold: 0.9,
+			message:
+				"You're at 90% of your turn budget. Finish your current edit, run verification, and summarize any remaining work.",
+		},
 	]
 	let nextProgressIdx = 0
 	let tokenSoftLimitSteered = false
