@@ -143,7 +143,7 @@ function isUngroupableTool(v: unknown): boolean {
 }
 
 function breaksRun(child: unknown): boolean {
-	return !isToolLike(child) || isFailedTool(child) || isUngroupableTool(child)
+	return !isToolLike(child) || isUngroupableTool(child)
 }
 
 export function findToolGroup(self: object, children: object[]): object[] {
@@ -158,6 +158,7 @@ export function findToolGroup(self: object, children: object[]): object[] {
 	for (let i = selfIdx - 1; i >= 0; i--) {
 		const child = children[i]
 		if (child instanceof Spacer) continue
+		if (!isToolLike(child)) continue
 		if (breaksRun(child)) break
 		start = i
 	}
@@ -167,16 +168,17 @@ export function findToolGroup(self: object, children: object[]): object[] {
 	for (let i = selfIdx + 1; i < children.length; i++) {
 		const child = children[i]
 		if (child instanceof Spacer) continue
+		if (!isToolLike(child)) continue
 		if (breaksRun(child)) break
 		end = i
 	}
 
-	// Collect tools in [start..end], excluding Spacers and run-breakers
+	// Collect tools in [start..end], excluding Spacers and non-tool children
 	const tools: object[] = []
 	for (let i = start; i <= end; i++) {
 		const child = children[i]
 		if (child instanceof Spacer) continue
-		if (breaksRun(child)) continue
+		if (!isToolLike(child)) continue
 		tools.push(child)
 	}
 

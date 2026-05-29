@@ -240,23 +240,24 @@ describe("findToolGroup", () => {
 		expect(group).not.toContain(spacer)
 	})
 
-	it("non-tool, non-spacer breaks the run", () => {
+	it("non-tool, non-spacer is transparent — does not break the run", () => {
 		const a = mockTool("a")
 		const b = mockTool("b")
 		const other = { render: () => [], invalidate: () => {} }
 		const c = mockTool("c")
 		const children = [a, b, other, c]
-		expect(findToolGroup(a, children)).toEqual([a, b])
-		expect(findToolGroup(c, children)).toEqual([c])
+		expect(findToolGroup(a, children)).toEqual([a, b, c])
+		expect(findToolGroup(c, children)).toEqual([a, b, c])
 	})
 
-	it("failed tool (isError) breaks the run — excluded from group", () => {
+	it("failed tool (isError) is included in the group run", () => {
 		const a = mockTool("a")
 		const b = mockTool("b", { isError: true })
 		const c = mockTool("c")
 		const children = [a, b, c]
-		expect(findToolGroup(a, children)).toEqual([a])
-		expect(findToolGroup(c, children)).toEqual([c])
+		expect(findToolGroup(a, children)).toEqual([a, b, c])
+		expect(findToolGroup(b, children)).toEqual([a, b, c])
+		expect(findToolGroup(c, children)).toEqual([a, b, c])
 	})
 
 	it("in-progress tools are included in the run", () => {
@@ -274,10 +275,10 @@ describe("findToolGroup", () => {
 		expect(findToolGroup(other, children)).toEqual([other])
 	})
 
-	it("returns [] when self is a failed tool not present in children", () => {
+	it("returns [self] when self is a failed tool not present in children", () => {
 		const failed = mockTool("z", { isError: true })
 		const children: object[] = []
-		expect(findToolGroup(failed, children)).toEqual([])
+		expect(findToolGroup(failed, children)).toEqual([failed])
 	})
 
 	it("operation tool breaks the run and renders on its own", () => {
@@ -292,6 +293,31 @@ describe("findToolGroup", () => {
 	it("operation tool not in children returns []", () => {
 		const op = { toolName: "some_mcp_tool", toolCallId: "op1", args: {}, isPartial: false }
 		expect(findToolGroup(op, [])).toEqual([])
+	})
+
+	it("non-tool child between two tools is transparent — both tools group together", () => {
+		const a = mockTool("a")
+		const text = { type: "text" } // non-tool-like object
+		const b = mockTool("b")
+		const children = [a, text, b]
+		expect(findToolGroup(a, children)).toEqual([a, b])
+		expect(findToolGroup(b, children)).toEqual([a, b])
+	})
+
+	it("non-tool child at start is transparent", () => {
+		const text = { type: "text" }
+		const a = mockTool("a")
+		const b = mockTool("b")
+		const children = [text, a, b]
+		expect(findToolGroup(a, children)).toEqual([a, b])
+	})
+
+	it("non-tool child at end is transparent", () => {
+		const a = mockTool("a")
+		const b = mockTool("b")
+		const text = { type: "text" }
+		const children = [a, b, text]
+		expect(findToolGroup(a, children)).toEqual([a, b])
 	})
 })
 
