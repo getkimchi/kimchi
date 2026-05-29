@@ -19,8 +19,8 @@ function singleQ(): Question {
 		prompt: "Pick one",
 		type: "single",
 		options: [
-			{ value: "opt1", label: "Option 1" },
-			{ value: "opt2", label: "Option 2" },
+			{ id: "opt1", label: "Option 1" },
+			{ id: "opt2", label: "Option 2" },
 		],
 		allowOther: true,
 		required: true,
@@ -34,9 +34,9 @@ function multiQ(): Question {
 		prompt: "Pick many",
 		type: "multi",
 		options: [
-			{ value: "a", label: "Alpha" },
-			{ value: "b", label: "Beta" },
-			{ value: "c", label: "Gamma" },
+			{ id: "a", label: "Alpha" },
+			{ id: "b", label: "Beta" },
+			{ id: "c", label: "Gamma" },
 		],
 		allowOther: true,
 		required: true,
@@ -62,8 +62,8 @@ function confirmQ(): Question {
 		prompt: "Yes or no?",
 		type: "confirm",
 		options: [
-			{ value: "yes", label: "Yes" },
-			{ value: "no", label: "No" },
+			{ id: "yes", label: "Yes" },
+			{ id: "no", label: "No" },
 		],
 		allowOther: false,
 		required: true,
@@ -410,7 +410,7 @@ describe("helpers", () => {
 		const state = initialState([singleQ()])
 		const opts = currentOptions(state)
 		expect(opts).toHaveLength(3) // 2 options + Other
-		expect(opts[2]).toMatchObject({ value: "__other__", label: "Type your own answer", isOther: true })
+		expect(opts[2]).toMatchObject({ id: "__other__", label: "Type your own answer", isOther: true })
 	})
 
 	it("currentOptions returns [] for text questions", () => {

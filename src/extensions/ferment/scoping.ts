@@ -190,7 +190,7 @@ Important constraints:
 - In Step 1 (Orient), only do lightweight reads: file listing, README, config, short snippets.
 - The interview in Step 2 is iterative — reflect after each round of answers before asking more.
 - Confirm completion criteria with the user before moving to exploration.
-- Use ask_user or questionnaire for all user interactions during Steps 2 and 3.
+- Use ask_user for all user interactions during Steps 2 and 3.
 
 Question policy (for propose_ferment_scoping.questions, used in Step 5 only):
 - After Steps 1-4, any remaining decision-blocking questions go in propose_ferment_scoping.questions.

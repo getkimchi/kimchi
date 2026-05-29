@@ -146,7 +146,7 @@ function normalizePromptFormQuestion(q: PromptFormQuestion, index: number): Ques
 		label: q.label || `Q${index + 1}`,
 		prompt: q.prompt,
 		type,
-		options: (q.options ?? []).map((o) => ({ value: o.id, label: o.label, description: o.description })),
+		options: (q.options ?? []).map((o) => ({ id: o.id, label: o.label, description: o.description })),
 		allowOther: q.allowOther ?? false,
 		required: q.required !== false,
 	}
@@ -195,7 +195,7 @@ async function promptFormFallback(
 				const index = question.options.findIndex((o) => o.label === label)
 				const option = question.options[index]
 				if (option) {
-					values.push(option.value)
+					values.push(option.id)
 					labels.push(option.label)
 					indices.push(index + 1)
 				}
@@ -229,7 +229,7 @@ async function promptFormFallback(
 		const index = question.options.findIndex((o) => o.label === selected)
 		const option = question.options[index]
 		if (option) {
-			answers.push({ id: question.id, value: option.value, label: option.label, wasCustom: false, index: index + 1 })
+			answers.push({ id: question.id, value: option.id, label: option.label, wasCustom: false, index: index + 1 })
 		}
 	}
 	return { questions, answers, cancelled: false }

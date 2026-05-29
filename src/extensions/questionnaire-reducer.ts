@@ -19,7 +19,7 @@
 export type QuestionType = "single" | "multi" | "text" | "confirm"
 
 export interface QuestionOption {
-	value: string
+	id: string
 	label: string
 	description?: string
 }
@@ -112,7 +112,7 @@ export function currentOptions(state: QuestionnaireState): RenderOption[] {
 	if (!q || q.type === "text") return []
 	const opts: RenderOption[] = [...q.options]
 	if (q.allowOther) {
-		opts.push({ value: "__other__", label: "Type your own answer", isOther: true })
+		opts.push({ id: "__other__", label: "Type your own answer", isOther: true })
 	}
 	return opts
 }
@@ -186,7 +186,7 @@ function mutableCurrentOptions(s: MutableState): RenderOption[] {
 	if (!q || q.type === "text") return []
 	const opts: RenderOption[] = [...q.options]
 	if (q.allowOther) {
-		opts.push({ value: "__other__", label: "Type your own answer", isOther: true })
+		opts.push({ id: "__other__", label: "Type your own answer", isOther: true })
 	}
 	return opts
 }
@@ -213,7 +213,7 @@ function saveMultiAnswer(s: MutableState, q: Question): void {
 	const indices: number[] = []
 	for (const idx of toggled) {
 		if (idx < q.options.length) {
-			values.push(q.options[idx].value)
+			values.push(q.options[idx].id)
 			labels.push(q.options[idx].label)
 			indices.push(idx + 1)
 		}
@@ -441,7 +441,7 @@ export function reduce(state: QuestionnaireState, event: QuestionnaireEvent): Re
 			return { state: freeze(s), effects }
 		}
 		if (opt) {
-			saveAnswer(s, q.id, opt.value, opt.label, false, s.optionIndex + 1)
+			saveAnswer(s, q.id, opt.id, opt.label, false, s.optionIndex + 1)
 			advanceAfterAnswer(s, effects)
 		}
 		return { state: freeze(s), effects }

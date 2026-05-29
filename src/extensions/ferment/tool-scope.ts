@@ -14,15 +14,10 @@ export type FermentToolProfile = "idle" | "planner-active" | "paused-terminal" |
 // don't reach the running turn).
 const IDLE_FERMENT_TOOL_NAMES = [
 	FERMENT_TOOLS.LIST,
-	FERMENT_TOOLS.ASK_USER,
 	FERMENT_TOOLS.REQUEST_WORKFLOW,
 	FERMENT_TOOLS.PROPOSE_SCOPING,
 ] as const
-const PAUSED_TERMINAL_FERMENT_TOOL_NAMES = [
-	FERMENT_TOOLS.LIST,
-	FERMENT_TOOLS.ASK_USER,
-	FERMENT_TOOLS.REQUEST_WORKFLOW,
-] as const
+const PAUSED_TERMINAL_FERMENT_TOOL_NAMES = [FERMENT_TOOLS.LIST, FERMENT_TOOLS.REQUEST_WORKFLOW] as const
 
 /**
  * Tools the planner is allowed to call directly in `ferment-oneshot` mode.
