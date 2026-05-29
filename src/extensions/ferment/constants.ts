@@ -5,6 +5,11 @@ Scoping follows five steps. Work through them IN ORDER.
 
 STEP 1 — ORIENT (lightweight research)
 Read the user's intent. Before asking anything, build context:
+- First action in STEP 1: print a concise inventory of available agent/subagent
+  types so the user can see the delegation surface. Do not list skills.
+- Inspect the Agent tool subagent_type options or the available-subagent prompt
+  section. If agent types are not exposed in this environment, say that explicitly
+  instead of inventing names.
 - Do a quick project scan: file listing, README, package/config files, and short
   entrypoint snippets (at most ~60 lines each). For files >120 lines, read only
   the first 60 lines or use a targeted search — do not read them end-to-end yet.
