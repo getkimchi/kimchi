@@ -33,6 +33,7 @@ import {
 	splitCompoundCommand,
 } from "./taxonomy.js"
 import { BUILTIN_DENY, DEFAULT_CONFIG, type PermissionMode, type Rule } from "./types.js"
+import { saveApprovedPlan } from "./plan-persistence.js"
 
 /**
  * Check whether a file path is within .kimchi/plans/ relative to cwd.
@@ -332,17 +333,18 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		maybeShowYoloWarning(ctx, "plan")
 	}
 
-	function switchFromPlanAndExecute(ctx: ExtensionContext, targetMode: PermissionMode): void {
+	function switchFromPlanAndExecute(ctx: ExtensionContext, targetMode: PermissionMode, planPath?: string): void {
 		runtimeMode = targetMode
 		restoreToolsFromPlanMode()
 		propagateModeToEnv()
 		updateStatus(ctx)
 		maybeShowYoloWarning(ctx, targetMode)
 
+		const planRef = planPath ? `\n\nApproved plan saved to: ${planPath}` : ""
 		pi.sendMessage(
 			{
 				customType: "plan-execute",
-				content: "The user approved the plan. Execute it now.",
+				content: `The user approved the plan. Execute it now.${planRef}`,
 				display: false,
 			},
 			{ triggerTurn: true },
@@ -499,14 +501,21 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const EXECUTE_AUTO = "Yes — execute (auto-approve)"
 		const DECLINE = "No, do something else"
 
+		// Save the plan to disk before offering execution.
+		const planPath = saveApprovedPlan(ctx.cwd, assistantText)
+		// Notify the user where the plan is saved.
+		if (ctx.hasUI) {
+			await ctx.ui.notify(`Plan saved to ${planPath}`, "info")
+		}
+
 		const choice = await withWorkingHidden(ctx, () =>
 			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, EXECUTE_AUTO, DECLINE]),
 		)
 
 		if (choice === EXECUTE) {
-			switchFromPlanAndExecute(ctx, "default")
+			switchFromPlanAndExecute(ctx, "default", planPath)
 		} else if (choice === EXECUTE_AUTO) {
-			switchFromPlanAndExecute(ctx, "auto")
+			switchFromPlanAndExecute(ctx, "auto", planPath)
 		}
 		// Decline or escape: stay in plan mode, user types their next message.
 	})

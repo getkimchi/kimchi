@@ -14,8 +14,15 @@ import permissionsExtension, {
 	isUserChosenYolo,
 	notifyFermentActive,
 } from "./index.js"
+import type { PlanReviewOutcome } from "./plan-review-component.js"
 import { SessionMemory } from "./session-memory.js"
 import type { Rule } from "./types.js"
+
+vi.mock("node:fs", () => ({
+	existsSync: vi.fn(() => true),
+	mkdirSync: vi.fn(),
+	writeFileSync: vi.fn(),
+}))
 
 vi.mock("./classifier.js", () => ({
 	classifyToolCall: vi.fn(async () => ({ verdict: "safe", reason: "mock safe" })),
@@ -33,25 +40,31 @@ const testEnv: EnvironmentInfo = {
 
 const TEST_SESSION_ID = "test-session"
 
-// Helper to create mock ExtensionContext with ui.select
+// Helper to create mock ExtensionContext with ui.select and ui.custom
 // When an AbortSignal is passed and aborted=true, returns undefined to trigger "aborted" outcome
 function createMockContext(
 	selectResults: (string | undefined)[],
+	customResults: (PlanReviewOutcome | undefined)[] = [],
 	opts?: { abortOnFirstSelect?: boolean },
 ): ExtensionContext {
-	let callIndex = 0
+	let selectCallIndex = 0
+	let customCallIndex = 0
 	return {
 		hasUI: true,
 		cwd: "/test",
 		sessionManager: { getSessionId: () => TEST_SESSION_ID },
 		ui: {
 			select: vi.fn(async (_: string, __: string[], selectOpts?: { signal?: AbortSignal }) => {
-				// If signal is aborted when select is called, return undefined to trigger "aborted" outcome
 				if (selectOpts?.signal?.aborted) {
 					return undefined
 				}
-				const result = selectResults[callIndex]
-				callIndex++
+				const result = selectResults[selectCallIndex]
+				selectCallIndex++
+				return result
+			}),
+			custom: vi.fn(async <T>(factory: (...args: unknown[]) => unknown) => {
+				const result = customResults[customCallIndex] as T | undefined
+				customCallIndex++
 				return result
 			}),
 			input: vi.fn(async () => ""),
