@@ -336,10 +336,11 @@ export class TerminalComponent implements Component {
   }
 
   handleInput(data: string): void {
-    const scroll = parseMouseScroll(data)
-    if (scroll) {
-      return
-    }
+    // const scroll = parseMouseScroll(data)
+    // if (scroll) {
+    //   console.log("Mouse scroll:", scroll)
+    //   return
+    // }
     const raw = toRawAnsi(data)
     this.session.write(raw !== undefined ? raw : Buffer.from(data, "utf-8"))
   }
