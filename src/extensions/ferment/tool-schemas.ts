@@ -68,6 +68,22 @@ export const PlanReviewSchema = Type.Object({
 	}),
 })
 
+/** plan_review as it travels back through `propose_ferment_scoping`: the reviewer's
+ *  verdict plus a system-issued provenance token (see plan-review-provenance.ts).
+ *  `submit_plan_review` itself takes the bare PlanReviewSchema — the reviewer never
+ *  sets the token; the tool stamps it on capture and the planner copies it verbatim. */
+export const PlanReviewWithProvenanceSchema = Type.Composite([
+	PlanReviewSchema,
+	Type.Object({
+		_provenance: Type.Optional(
+			Type.String({
+				description:
+					"System-issued provenance token from submit_plan_review. Copy it verbatim from the Plan Reviewer's returned JSON; do not invent or omit it.",
+			}),
+		),
+	}),
+])
+
 export const ListParams = Type.Object({
 	filter: Type.Optional(Type.String({ description: "Optional status filter" })),
 })
@@ -220,7 +236,7 @@ export const ProposeScopingParams = Type.Object({
 			}),
 		]),
 	),
-	plan_review: Type.Optional(PlanReviewSchema),
+	plan_review: Type.Optional(PlanReviewWithProvenanceSchema),
 	gates: Type.Array(GateVerdictSchema, {
 		description:
 			"Plan-scope gate verdicts. Required ids: P1, P2, P3. See tool description for each gate's question and what counts as 'pass' vs 'flag'.",

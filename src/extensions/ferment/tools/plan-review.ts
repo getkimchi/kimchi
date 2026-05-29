@@ -6,8 +6,8 @@
  * object becomes the subagent's RunResult.structuredOutput — no free-text
  * parsing, no drift.
  *
- * Installed in two places, because the two sessions are separate processes of
- * the same run:
+ * Installed in two places, because the planner and the subagent are separate
+ * sessions of the same in-process run:
  *   - the main/planner session, via fermentExtension init (where it is hidden
  *     from the planner by FermentToolScope — the planner must spawn the subagent,
  *     not self-submit);
@@ -27,6 +27,7 @@ import type { Static } from "typebox"
 import { setAgentStructuredOutput } from "../../agent-worker-context.js"
 import { registerPersonaOutputToolFactory } from "../../agents/persona-output-tools.js"
 import { PLAN_REVIEW_SUBMIT_TOOL } from "../../agents/personas/types.js"
+import { PLAN_REVIEW_PROVENANCE_FIELD, issuePlanReviewToken } from "../plan-review-provenance.js"
 import { toolErr, toolOk } from "../tool-helpers.js"
 import { PlanReviewSchema } from "../tool-schemas.js"
 
@@ -55,7 +56,10 @@ export function registerPlanReviewTool(pi: ExtensionAPI): void {
 					"status is approved but required_changes is non-empty. Clear required_changes, or set status to needs_revision.",
 				)
 			}
-			setAgentStructuredOutput(params)
+			// Stamp a provenance token so propose_ferment_scoping can prove this verdict
+			// came from a real Plan Reviewer spawn, not a planner-fabricated object. The
+			// reviewer never sets this; the planner copies it through verbatim.
+			setAgentStructuredOutput({ ...params, [PLAN_REVIEW_PROVENANCE_FIELD]: issuePlanReviewToken() })
 			return toolOk("Plan review submitted.")
 		},
 	})
