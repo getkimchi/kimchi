@@ -192,7 +192,7 @@ Question policy:
 - If no question is truly decision-blocking, emit questions: [] and record safe defaults in assumptions.
 - Do not ask preference-survey questions when there is a safe, reversible default; record the default in assumptions instead.
 - For broad discovery or planning over an existing codebase, if discovery finds multiple plausible work areas and the user did not explicitly ask to include every area, ask one checkbox question selecting which areas belong in this ferment. Treat that as an outcome/scope boundary, not a preference survey.
-- Example: for "find improvements to this app", ask "Which improvement areas should this ferment include?" with options such as "Deduplicate shared utilities", "Fetch live data", "Improve UX feedback", and "Add focused verification".
+- Example: for "find improvements to this app", ask "Which improvement areas should this ferment include?" with options grounded in the friction you actually discovered.
 - If the user asks to be thorough with questions, be thorough in the plan fields and verification steps; do not ask generic default-choice questions unless implementation is blocked.
 
 Planning policy:

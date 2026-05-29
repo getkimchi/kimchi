@@ -23,7 +23,6 @@ import type {
 import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
-import { createToolVisibility } from "./prompt-construction/tool-visibility.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -55,20 +54,7 @@ type Phase = (typeof VALID_PHASES)[number]
 
 const PHASE_TAGGING_PROMPT = `## Phase Tagging for Analytics
 
-The session starts in \`explore\` phase by default. Do not call \`set_phase\` as the first tool after a user request.
-Use \`set_phase\` only after the initial request has been classified and the execution path is chosen. Pick one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\` when the work type changes.
-If \`set_phase\` is rejected as premature, choose the request path first and do not repeat \`set_phase\` until another tool has started. Only one phase is active at a time — the most recent call wins.`
-
-function toolNameFromEvent(event: unknown): string | undefined {
-	if (!event || typeof event !== "object") return undefined
-	const e = event as { toolName?: unknown; name?: unknown; tool?: { name?: unknown } }
-	const raw = e.toolName ?? e.name ?? e.tool?.name
-	return typeof raw === "string" ? raw : undefined
-}
-
-function isUserInput(event: unknown): boolean {
-	return (event as { source?: unknown } | undefined)?.source !== "extension"
-}
+The session starts in \`explore\` phase by default. Call \`set_phase\` when the work type changes — pick one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\`. Only one phase is active at a time; the most recent call wins. Subagents set their phase automatically from their persona, so this tool is for tagging the main thread's work.`
 
 export function isValidPhase(phase: string): phase is Phase {
 	return VALID_PHASES.includes(phase as Phase)
@@ -549,9 +535,7 @@ export function getActiveTags(): string[] {
 
 export default function tagsExtension(pi: ExtensionAPI) {
 	const tagManager = new TagManager()
-	const phaseToolVisibility = createToolVisibility(pi)
 	tagManagerInstance = tagManager
-	let firstUserRequestToolMustNotBeSetPhase = false
 
 	// Register the /tags command
 	pi.registerCommand("tags", {
@@ -582,26 +566,12 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		name: "set_phase",
 		label: "Set Phase",
 		description:
-			"Set the current work phase for usage tracking and analytics after the request path is already chosen. Do not call this as the first tool after a user request; the session already starts in explore. Use only when transitioning between phases (e.g., moving from exploration to planning, or planning to building). The phase will be included as a tag in subsequent LLM requests.",
+			"Set the current work phase for usage tracking and analytics. The session starts in explore. Call when transitioning between phases (e.g., exploration to planning, or planning to building). The phase is included as a tag in subsequent LLM requests.",
 		parameters: SetPhaseParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const phase = params.phase as Phase
 
-			if (firstUserRequestToolMustNotBeSetPhase) {
-				return {
-					isError: true,
-					content: [
-						{
-							type: "text",
-							text: "`set_phase` is premature before request classification. Choose the request path first, then call `set_phase` after another tool has started the work.",
-						},
-					],
-					details: { phase, premature: true, model: ctx.model?.id },
-				}
-			}
-
-			firstUserRequestToolMustNotBeSetPhase = false
 			tagManager.setPhase(phase)
 
 			if (ctx.hasUI) {
@@ -641,21 +611,6 @@ export default function tagsExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		tagManager.setPhase("explore")
 		updateFooterStatus(tagManager, ctx)
-	})
-
-	pi.on("input", async (event) => {
-		if (isUserInput(event)) {
-			firstUserRequestToolMustNotBeSetPhase = true
-			phaseToolVisibility.disable(["set_phase"])
-		}
-	})
-
-	pi.on("tool_execution_start", async (event) => {
-		const toolName = toolNameFromEvent(event)
-		if (toolName && toolName !== "set_phase") {
-			firstUserRequestToolMustNotBeSetPhase = false
-			phaseToolVisibility.enable(["set_phase"])
-		}
 	})
 
 	// Inject tags into every LLM request

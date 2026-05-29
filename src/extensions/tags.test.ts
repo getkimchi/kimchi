@@ -153,9 +153,8 @@ describe("tags system prompt block", () => {
 			})
 
 			expect(result).toContain("## Phase Tagging for Analytics")
-			expect(result).toContain("Do not call `set_phase` as the first tool after a user request")
-			expect(result).toContain("Use `set_phase` only after the initial request has been classified")
-			expect(result).toContain("choose the request path first")
+			expect(result).toContain("Call `set_phase` when the work type changes")
+			expect(result).toContain("Subagents set their phase automatically from their persona")
 			expect(result).not.toContain("questionnaire")
 			expect(result.indexOf("## Phase Tagging for Analytics")).toBeLessThan(result.indexOf("## Available Tools"))
 		} finally {
@@ -163,37 +162,8 @@ describe("tags system prompt block", () => {
 		}
 	})
 
-	it("rejects premature set_phase without blocking later tools", async () => {
+	it("set_phase changes the current phase", async () => {
 		const pi = makeTagsPi()
-
-		await pi.fire("input", { text: "Find improvements to this extension" })
-		const rejection = await setPhase(pi)
-		expect(rejection).toMatchObject({ isError: true, details: { phase: "explore", premature: true } })
-		expect(JSON.stringify(rejection)).toContain("Choose the request path first")
-
-		const [readResult] = await pi.fire("tool_call", { toolName: "read" })
-		expect(readResult).toBeUndefined()
-	})
-
-	it("hides set_phase until request classification starts", async () => {
-		const pi = makeTagsPi()
-
-		expect(pi.getActiveTools()).toContain("set_phase")
-
-		await pi.fire("input", { source: "interactive", text: "Find improvements to this extension" })
-
-		expect(pi.getActiveTools()).not.toContain("set_phase")
-
-		await pi.fire("tool_execution_start", { toolName: "read" })
-
-		expect(pi.getActiveTools()).toContain("set_phase")
-	})
-
-	it("allows set_phase after another tool has started classification or work", async () => {
-		const pi = makeTagsPi()
-
-		await pi.fire("input", { source: "interactive", text: "Find improvements to this extension" })
-		await pi.fire("tool_execution_start", { toolName: "read" })
 
 		const result = await setPhase(pi)
 
