@@ -17,12 +17,12 @@ export function isSimplePlan(planText: string): boolean {
 
 	// Plans with structured sections are *not* simple even if short
 	const hasStructuredSections =
-		/^##\s+Goal/im.test(trimmed) || /^##\s+Verification/im.test(trimmed) || /Accept\s+(When|ance)/i.test(trimmed)
+		/^#+\s+Goal/im.test(trimmed) || /^#+\s+Verification/im.test(trimmed) || /Accept\s+(When|ance)/i.test(trimmed)
 
 	if (hasStructuredSections) return false
 
 	// Count ## Chunk headers
-	const chunkHeaderCount = lines.filter((l) => /^##\s+Chunk\b/i.test(l)).length
+	const chunkHeaderCount = lines.filter((l) => /^#+\s+Chunk\b/i.test(l)).length
 	if (chunkHeaderCount === 1 && lines.length <= 5) return true
 
 	// Very short, unformatted plan
@@ -40,22 +40,22 @@ export function reviewPlan(planText: string): PlanReviewResult {
 	const lines = planText.split("\n")
 
 	// Check: has Goal section (multiline regex so it can appear anywhere)
-	if (!/^##\s+Goal/im.test(planText) && !/^##\s+Goals/im.test(planText)) {
-		issues.push("Missing ## Goal section")
+	if (!/^#+\s+Goal/im.test(planText) && !/^#+\s+Goals/im.test(planText)) {
+		issues.push("Missing Goal section")
 	}
 
 	// Check: has at least one chunk or work-item section
-	const chunkPattern = /^##\s+Chunk\b/i
-	const workItemPattern = /^(##|###)\s+(Step|Phase|Task|Chunk|\d+)[\s.-:)]/i
+	const chunkPattern = /^#+\s+Chunk\b/i
+	const workItemPattern = /^(#{2,3})\s+(Step|Phase|Task|Chunk|\d+)[\s.-:)]/i
 	const hasChunk = lines.some((l) => chunkPattern.test(l.trim()))
 	const hasWorkItem = lines.some((l) => workItemPattern.test(l.trim()))
 	if (!hasChunk && !hasWorkItem) {
-		issues.push("Missing ## Chunk or work-item section (### Step / ## Phase / etc.)")
+		issues.push("Missing Chunk or work-item section (# Step / ## Phase / etc.)")
 	}
 
 	// Check: has Verification section
-	if (!/^##\s+Verification/im.test(planText)) {
-		issues.push("Missing ## Verification section")
+	if (!/^#+\s+Verification/im.test(planText)) {
+		issues.push("Missing Verification section")
 	}
 
 	// Check: has Accept When / Acceptance criteria
