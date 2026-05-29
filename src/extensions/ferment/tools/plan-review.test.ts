@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { getAgentStructuredOutput, runAsAgentWorker } from "../../agent-worker-context.js"
 import { PLAN_REVIEW_SUBMIT_TOOL } from "../../agents/personas/types.js"
+import { PLAN_REVIEW_PROVENANCE_FIELD, verifyPlanReviewToken } from "../plan-review-provenance.js"
 import { PlanReviewSchema } from "../tool-schemas.js"
 import { registerPlanReviewTool } from "./plan-review.js"
 
@@ -89,7 +90,9 @@ describe("registerPlanReviewTool — execute: approved path", () => {
 			captured = getAgentStructuredOutput()
 		})
 
-		expect(captured).toEqual(APPROVED_PAYLOAD)
+		// Captured verdict carries the original fields plus a valid provenance token.
+		expect(captured).toMatchObject(APPROVED_PAYLOAD)
+		expect(verifyPlanReviewToken((captured as Record<string, unknown>)[PLAN_REVIEW_PROVENANCE_FIELD])).toBe(true)
 	})
 })
 
@@ -190,6 +193,7 @@ describe("registerPlanReviewTool — execute: valid needs_revision path", () => 
 			captured = getAgentStructuredOutput()
 		})
 
-		expect(captured).toEqual(NEEDS_REVISION_PAYLOAD)
+		expect(captured).toMatchObject(NEEDS_REVISION_PAYLOAD)
+		expect(verifyPlanReviewToken((captured as Record<string, unknown>)[PLAN_REVIEW_PROVENANCE_FIELD])).toBe(true)
 	})
 })

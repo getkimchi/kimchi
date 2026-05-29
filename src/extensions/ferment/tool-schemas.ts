@@ -72,17 +72,15 @@ export const PlanReviewSchema = Type.Object({
  *  verdict plus a system-issued provenance token (see plan-review-provenance.ts).
  *  `submit_plan_review` itself takes the bare PlanReviewSchema — the reviewer never
  *  sets the token; the tool stamps it on capture and the planner copies it verbatim. */
-export const PlanReviewWithProvenanceSchema = Type.Composite([
-	PlanReviewSchema,
-	Type.Object({
-		_provenance: Type.Optional(
-			Type.String({
-				description:
-					"System-issued provenance token from submit_plan_review. Copy it verbatim from the Plan Reviewer's returned JSON; do not invent or omit it.",
-			}),
-		),
-	}),
-])
+export const PlanReviewWithProvenanceSchema = Type.Object({
+	...PlanReviewSchema.properties,
+	_provenance: Type.Optional(
+		Type.String({
+			description:
+				"System-issued provenance token from submit_plan_review. Copy it verbatim from the Plan Reviewer's returned JSON; do not invent or omit it.",
+		}),
+	),
+})
 
 export const ListParams = Type.Object({
 	filter: Type.Optional(Type.String({ description: "Optional status filter" })),

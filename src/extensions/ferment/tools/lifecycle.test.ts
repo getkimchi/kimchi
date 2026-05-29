@@ -4,6 +4,7 @@ import { join } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
+import { issuePlanReviewToken } from "../plan-review-provenance.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
 import { FERMENT_TOOLS } from "../tool-names.js"
@@ -102,6 +103,7 @@ function approvedPlanReviewFor(_payload: Record<string, unknown>) {
 		required_changes: [],
 		reservations: [],
 		questions: [],
+		_provenance: issuePlanReviewToken(),
 	}
 }
 

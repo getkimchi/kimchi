@@ -82,23 +82,22 @@ Now investigate the codebase for implementation-specific details.
 - Wait for subagent results before proceeding.
 - Skip this step for greenfield tasks with no existing codebase; record why in assumptions.
 
-STEP 5 — PLAN
+STEP 5 — PLAN (draft → review → revise loop)
 Synthesize everything — orient findings, interview answers, confirmed criteria,
-and exploration results — into a plan.
-- Draft the complete scoping plan payload first.
-- Then run the Plan Reviewer on that exact draft (contract below) and incorporate
-  its verdict before proposing.
-- Call propose_ferment_scoping with the complete payload, including plan_review.
+and exploration results — into a plan, then refine it through the Plan Reviewer
+BEFORE the user ever sees it. Run this loop:
+  a. Draft (or revise) the complete scoping plan payload.
+  b. Run the Plan Reviewer on that exact draft (contract below).
+  c. If the verdict is "needs_revision", apply its required_changes and go back to
+     (a). Do NOT show the user a plan the Plan Reviewer rejected.
+  d. Repeat plan → review → plan → review … until the Plan Reviewer returns
+     "approved" (or the loop guard stops you and the user decides).
+  e. Only then call propose_ferment_scoping with the approved payload, including
+     plan_review — this is the best plan, surfaced for the user's review.
+- The single exception: if the Plan Reviewer raises a blocking user question, put
+  it in propose_ferment_scoping.questions and keep the plan provisional.
 - Ensure completion criteria were confirmed with the user before finalizing.
 - Default to one phase for simple tasks.
 - Add phases only for real vertical slices, different complexity tiers,
   independent workstreams, or distinct code localities.
-
-Plan Reviewer subagent contract:
-- subagent_type: "Plan Reviewer"
-- use only after drafting a concrete scoping plan payload
-- pass the exact plan inside <ferment_plan>...</ferment_plan>
-- the Plan Reviewer returns its verdict by calling its submit_plan_review tool; its Agent result is that verdict as JSON with fields status, summary, required_changes, reservations, and questions (empty arrays as [])
-- copy the entire returned JSON object verbatim into plan_review, including the _provenance field; do not re-summarize, re-type, or drop any field
-- Plan Reviewer reviews only; it does not implement code
 </scoping_sequence>`

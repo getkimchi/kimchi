@@ -239,13 +239,15 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain('subagent_type: "Plan Reviewer"')
 			expect(out).toContain("<ferment_plan>")
 			expect(out).toContain("</ferment_plan>")
-			expect(out).toContain("fields `status`, `summary`, `required_changes`, `reservations`, and `questions`")
+			expect(out).toContain("fields `status`, `summary`, `required_changes`, `reservations`")
 			expect(out).toContain("Use [] for no required changes")
 			expect(out).toContain("plan_review")
 			expect(out).toContain("needs_revision")
 			// Plan Reviewer returns its verdict via its schema-bound submit tool.
 			expect(out).toContain("`submit_plan_review` tool")
-			expect(out).toContain("Copy that JSON VERBATIM")
+			// Verdict carries a provenance token that must be copied through verbatim.
+			expect(out).toContain("Copy the ENTIRE returned JSON object VERBATIM")
+			expect(out).toContain("_provenance")
 			expect(out).toContain("the tool response already contains the final Markdown plan")
 			expect(out).toContain("do not write ceremonial text")
 			expect(out).not.toContain("reviewed_plan_hash")
