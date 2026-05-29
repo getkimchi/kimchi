@@ -39,6 +39,19 @@ function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {
 	return a.provider === b.provider && a.id === b.id
 }
 
+// True when `data` is a terminal *response* to a query rather than a user
+// keypress: OSC color reports (ESC ] … BEL/ST), DCS replies (ESC P … ST),
+// primary device-attributes / kitty-keyboard replies (ESC [ ? … c|u), and
+// cursor-position reports (ESC [ row;col R). Terminals such as iTerm2 and
+// Ghostty emit these unbidden right after startup (answering our OSC 10/11
+// background/foreground probes), so any "dismiss on any key" handler must skip
+// them or it fires before the user ever sees the prompt.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching raw terminal escape sequences
+const TERMINAL_RESPONSE_RE = /^\x1b(?:[\]P]|\[\?[0-9;]*[cu]|\[[0-9;]*R)/
+function isTerminalResponse(data: string): boolean {
+	return TERMINAL_RESPONSE_RE.test(data)
+}
+
 /** Reason a model was skipped during ctrl+p cycle. */
 export interface SkippedModel {
 	model: Model<Api>
@@ -350,6 +363,12 @@ export default function uiExtension(pi: ExtensionAPI) {
 										},
 										invalidate() {},
 										handleInput(data: string): void {
+											// Ignore terminal query responses (OSC color reports, DCS, primary
+											// device-attributes, kitty-keyboard and cursor-position replies). These
+											// arrive on stdin moments after the overlay opens — e.g. iTerm/Ghostty
+											// answering kimchi's OSC 10/11 color probe — and must NOT count as the
+											// "any key" dismissal, or the hint is torn down before it ever renders.
+											if (isTerminalResponse(data)) return
 											if (data === "d") {
 												try {
 													const s: Record<string, unknown> = {}

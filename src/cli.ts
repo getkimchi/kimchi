@@ -480,6 +480,7 @@ try {
 			terminalColorsExtension,
 			kimchiMinimalTintsExtension,
 			loginExtension,
+			uiExtension,
 			startupAuthGate,
 			loopGuardExtension,
 			explorationGuardExtension,
@@ -503,7 +504,6 @@ try {
 			thinkingStepsExtension,
 			assistantPrefixExtension,
 			clipboardImageExtension,
-			uiExtension,
 			sessionModeOnboarding,
 			tipsExtension(),
 			...enabledExtensionFactories([

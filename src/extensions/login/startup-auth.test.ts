@@ -29,6 +29,7 @@ import {
 } from "./startup-auth.js"
 
 type SessionStartHandler = (event: { reason: string }, ctx: unknown) => unknown
+type TerminalInputHandler = (data: string) => unknown
 type CustomComponent = { handleInput?(data: string): void }
 
 function theme(): Theme {
@@ -51,6 +52,7 @@ function createHarness(
 		state?: StartupAuthGateState
 		availableInitially?: boolean
 		addModelOnAuthSet?: boolean
+		overlayActiveInitially?: boolean
 		onCancel?: ReturnType<typeof vi.fn>
 		afterSessionStart?: SessionStartHandler
 	} = {},
@@ -84,12 +86,19 @@ function createHarness(
 		getProviderAuthStatus: vi.fn(() => ({ configured: false })),
 	}
 	let activeComponent: CustomComponent | undefined
-	const tui = { requestRender: vi.fn(), hasOverlay: vi.fn(() => false) } as unknown as TUI
+	let overlayActive = options.overlayActiveInitially === true
+	let terminalInputHandler: TerminalInputHandler | undefined
+	const tui = { requestRender: vi.fn(), hasOverlay: vi.fn(() => overlayActive) } as unknown as TUI
 	const ui = {
 		setWidget: vi.fn((_key: string, content: unknown) => {
 			if (typeof content === "function") content(tui, theme())
 		}),
-		onTerminalInput: vi.fn(() => vi.fn()),
+		onTerminalInput: vi.fn((handler: TerminalInputHandler) => {
+			terminalInputHandler = handler
+			return () => {
+				if (terminalInputHandler === handler) terminalInputHandler = undefined
+			}
+		}),
 		custom: vi.fn((factory: (...args: unknown[]) => CustomComponent) => {
 			return new Promise((resolve) => {
 				const done = (result: unknown) => {
@@ -118,12 +127,16 @@ function createHarness(
 		ctx,
 		modelRegistry,
 		state,
+		setOverlay: (active: boolean) => {
+			overlayActive = active
+		},
 		start: async () => {
 			for (const handler of handlers.get("session_start") ?? []) {
 				await handler({ reason: "startup" }, ctx)
 			}
 		},
 		input: (data: string) => activeComponent?.handleInput?.(data),
+		terminalInput: (data: string) => terminalInputHandler?.(data),
 		settle: async () => {
 			for (let i = 0; i < 4; i += 1) await Promise.resolve()
 		},
@@ -294,6 +307,28 @@ describe("startup auth gate", () => {
 		await started
 
 		expect(laterOnboarding).toHaveBeenCalledOnce()
+	})
+
+	it("waits for an active overlay before showing the login selector", async () => {
+		const harness = createHarness({ overlayActiveInitially: true })
+		const started = harness.start()
+
+		await harness.settle()
+
+		expect(harness.ctx.ui.custom).not.toHaveBeenCalled()
+		expect(harness.modelRegistry.authStorage.set).not.toHaveBeenCalled()
+
+		harness.setOverlay(false)
+		harness.terminalInput("x")
+		await harness.waitForCustomPrompts(1)
+
+		expect(harness.ctx.ui.custom).toHaveBeenCalledOnce()
+
+		harness.input("\n")
+		await started
+
+		expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
+		expect(harness.state.authenticated).toBe(true)
 	})
 
 	it("does not show the selector when auth is already usable", async () => {
