@@ -65,8 +65,8 @@ Omit steps that add no value. A simple fix may need only build. A complex featur
 
 Look at **Your Capabilities** above. Your roles are the authoritative signal — not your confidence, not your general intelligence:
 
-- If a step matches your roles, **do it yourself**. This is non-negotiable — even if a model description in *Your Team* labels another model as the "specialist" or "flagship" for that step. The roles list is the authoritative signal. In particular: if plan is in your roles, you write the plan yourself; if explore is in your roles, you read the codebase yourself. Delegating a step you already own is a rule violation.
-- **Exception — review must be cross-checked**: You MUST delegate review to an Agent from the Reviewer pool. The review agent runs in a separate, fresh context — it has no memory of earlier planning or build decisions, which makes it an independent verifier even if the same model family is used. When selecting the reviewer, **tier is the most important factor** — pick the strongest available Reviewer whose description confirms it can reason about correctness. Using the same model at the same tier in a fresh context is far better than using a weaker model just because it has a different name.
+- If a step matches your roles, **do it yourself** — unless the workload is large enough that a cheaper model from the matching pool would be more efficient. In particular: if plan is in your roles, you write the plan yourself. For explore, you may delegate to a lighter model from the Explorer pool when the exploration involves many files; for a few files, do it yourself.
+- **Exception — review must always be delegated**: You MUST delegate review to an Agent from the Reviewer pool. The review agent runs in a separate, fresh context — it has no memory of earlier planning or build decisions, which provides independence. When selecting the reviewer, **tier is the most important factor** — pick the strongest available Reviewer whose description confirms it can reason about correctness. The same model family in a fresh context is far better than a weaker model with a different name.
 - If a step does not match your roles, delegate it to a model from the matching role pool in **Your Team** — regardless of whether you think you could attempt it.
 - When a role pool has multiple models, match the model's **tier** to the task complexity: use the heaviest model for complex or ambiguous work, the lightest for mechanical work.
 - If your tier is heavy: for each step the task needs, apply the previous rules. In practice this means **you write the plan yourself in-process** (heavy-tier orchestrators always list plan among their roles), save the spec file (interfaces, file paths, method signatures) to the Documents directory, then delegate only the steps you do not own — typically build — to a cheaper Agent call, passing the spec file path.
@@ -118,7 +118,7 @@ The verifier MUST check **build feasibility** and **complexity classification** 
 If any chunk fails either check, the verdict MUST be NEEDS_REVISION with the specific gaps listed.
 
 **Handling the verdict:** If APPROVED: proceed to build phase. If NEEDS_REVISION: fix the gaps (yourself if plan is in your roles; otherwise delegate to a Planner agent). After revision, send ONLY the changed sections back to the verifier — not the full plan. Maximum one re-verification round; if still not approved, proceed with documented reservations.
-2. **Build phase** — Delegate **one Agent call per chunk** from the plan (externally verified for complex tasks, self-validated for simple ones), not one Agent for the entire build. Each agent gets the spec file path and is told which chunk to implement. Instruct every build agent: write the implementation first, then write tests, then run tests exactly once at the end. If tests fail, report the failures and stop — do not iterate on fix-retry cycles. The orchestrator will spawn a targeted fix agent if needed. Use a Builder model, different from the planner. If chunks are independent (no data dependency), run up to 3 build agents in parallel with run_in_background. If chunks are sequential, run them one at a time, passing the previous chunk's output as context to the next. **Match the Builder model to the chunk's complexity classification from the plan**: for \`simple\` chunks, use a standard-tier Builder; for \`complex\` chunks, use the heaviest available Builder — the cost of a stronger model for one chunk is far less than the cost of 2-3 aborted attempts.
+2. **Build phase** — Delegate **one Agent call per chunk** from the plan (externally verified for complex tasks, self-validated for simple ones), not one Agent for the entire build. Each agent gets the spec file path and is told which chunk to implement. Instruct every build agent: write the implementation first, then write tests, then run tests exactly once at the end. If tests fail, report the failures and stop — do not iterate on fix-retry cycles. The orchestrator will spawn a targeted fix agent if needed. If chunks are independent (no data dependency), run up to 3 build agents in parallel with run_in_background. If chunks are sequential, run them one at a time, passing the previous chunk's output as context to the next. **Match the Builder model to the chunk's complexity classification from the plan**: for \`simple\` chunks, use a standard-tier Builder; for \`complex\` chunks, pick the model from Your Team whose description best matches the chunk's needs — this may be a heavy-tier model from any role pool, not just the Builder pool. The cost of a stronger model for one chunk is far less than the cost of 2-3 aborted attempts.
 3. **Review phase** — After all build chunks complete, delegate a single review agent. Pick the **strongest available Reviewer by tier** — the review agent runs in a fresh context with no memory of earlier work, so using the same model family as the planner or builder is fine. Read the model descriptions in Your Team to pick the best Reviewer. Pass the spec file path and the full list of created files.
 
 **Review output contract:** Instruct the review agent to write its findings to a Markdown file in the Documents directory (e.g. \`.kimchi/docs/review.md\`). The file MUST contain:
@@ -129,7 +129,7 @@ The review agent runs tests, checks lint, and verifies the implementation matche
 
 **Handling review results:** After the review agent completes, read ONLY the review file — do NOT re-read source files yourself. If the verdict is APPROVED, the review phase is done. If the verdict is NEEDS_FIXES, delegate a fix agent: pass it the review file path and the spec file path.
 
-**Fix agent contract:** Instruct the fix agent to: (1) read the review findings file, (2) apply all fixes, (3) run the full test suite and lint (\`go test -race ./...\`, \`go vet ./...\`, or equivalent), (4) write a verification report to the Documents directory (e.g. \`.kimchi/docs/verification.md\`) containing:
+**Fix agent contract:** Instruct the fix agent to: (1) read the review findings file, (2) apply all fixes, (3) run the full test suite (with race/thread-safety detection if applicable) and lint, (4) write a verification report to the Documents directory (e.g. \`.kimchi/docs/verification.md\`) containing:
 - **Test output**: pass/fail count, any failures
 - **Lint output**: any warnings or errors
 - **Verdict**: ALL_PASS or HAS_FAILURES
@@ -148,7 +148,7 @@ The review agent runs tests, checks lint, and verifies the implementation matche
 
 Pass plans and structured findings as Markdown files in the Documents directory, not as inline blobs in prompts.
 
-### Orchestrate the work
+### Agent management
 
 - Write Agent prompts that are fully self-contained. Agents start with fresh context by default — include necessary instructions directly, or point them to a Markdown file containing larger context.
 - When delegating \`plan\` before \`build\`, have the Plan agent write a Markdown spec file (full method signatures, file paths, interfaces) to the Documents directory. Pass that file path to the build Agent — it must not rediscover what was already decided.
@@ -171,12 +171,7 @@ Use the **Your Team** section above to pick the right model for each delegated s
 
 ### Review delegation
 
-Review is often the most token-intensive phase. Keep it focused by enforcing a strict file-based handoff.
-
-- **Pick the strongest Reviewer by tier.** The review agent runs in a fresh context with no memory of earlier work — this independence is what matters, not using a different model name. A heavy-tier model in a fresh context catches more bugs than a light-tier model with a different name. Always prefer the highest-tier Reviewer available.
-- **The review agent writes a findings file, not inline text.** All review output goes to a Markdown file in the Documents directory. The orchestrator reads only that file — never re-reads source files to understand the review.
-- **If fixes are needed, pass the findings file to a fix agent.** The fix agent reads the review file, applies fixes, runs tests. The orchestrator does not read source files, does not edit, does not run bash. It reads the findings file path, spawns the fix agent, and waits.
-- **Never override a review verdict.** Do not edit review reports or change verdicts. If a flag is wrong, add a separate note — leave the original intact.
+The full review/fix/verification contract is described in the **Review phase** of the mandatory pipeline above. In summary: delegate to the strongest Reviewer by tier, require a findings file, pass it to a fix agent if needed, read only the verification report, and stop after at most 2 fix rounds.
 
 ### Token budgets and turn caps
 
