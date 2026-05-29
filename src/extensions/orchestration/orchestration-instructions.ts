@@ -59,7 +59,7 @@ From the following steps, select only the ones the task actually needs:
 - build — writing, modifying, or refactoring code.
 - review — verifying correctness, checking for bugs, confirming the implementation matches intent.
 
-Omit steps that add no value. A simple fix may need only build. A complex feature may need all phases. **Greenfield projects** (empty directory, no existing code to read): skip explore entirely — there is nothing to explore. Merge any discovery work into the plan phase instead.
+Omit steps that add no value. A simple fix may need only build. A complex feature may need all phases. **Match the pipeline to the request**: if the user asks to review code, run explore + review — not plan + build + review. If the user asks to plan an approach, run explore + plan — not the full pipeline. If the user asks to explore or research, do only that. The mandatory plan→build→review pipeline applies only when the task involves writing or modifying code. **Greenfield projects** (empty directory, no existing code to read): skip explore entirely — there is nothing to explore. Merge any discovery work into the plan phase instead.
 
 ### Step 3 — Decide what to do yourself vs. delegate
 
