@@ -389,3 +389,12 @@ describe("buildCurrentToolLine", () => {
 		expect(buildCurrentToolLine(tool)).toBe("some_mcp_tool …")
 	})
 })
+
+describe("buildGroupSummaryText with failures", () => {
+	it("counts failed tools in the summary", () => {
+		const a = mockTool("a")
+		const b = mockTool("b", { isError: true })
+		const run = [a, b]
+		expect(buildGroupSummaryText(run, false)).toBe("read 2 files")
+	})
+})

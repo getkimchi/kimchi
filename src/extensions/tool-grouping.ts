@@ -244,6 +244,7 @@ function buildGroupView(run: object[], theme: any): ToolBlockView {
 	// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on unknown object
 	const last = run[run.length - 1] as any
 	const isInProgress = last?.isPartial === true
+	const hasError = run.some((t) => isFailedTool(t))
 	const summaryText = buildGroupSummaryText(run, isInProgress)
 
 	if (isInProgress) {
@@ -251,6 +252,12 @@ function buildGroupView(run: object[], theme: any): ToolBlockView {
 		view.setHeader(`${icon} ${summaryText}…`, theme?.fg?.("dim", "(ctrl+o to expand)") ?? "(ctrl+o to expand)")
 		view.setBranchMode((s: string) => theme?.fg?.("borderMuted", s) ?? s)
 		view.setExtra([theme?.fg?.("dim", buildCurrentToolLine(last)) ?? buildCurrentToolLine(last)])
+	} else if (hasError) {
+		const icon = theme?.fg?.("error", "✗") ?? "✗"
+		view.setHeader(`${icon} ${summaryText}`, theme?.fg?.("dim", "ctrl+o") ?? "ctrl+o")
+		view.hideDivider()
+		view.setFooter("", "")
+		view.setExtra([])
 	} else {
 		const icon = theme?.fg?.("success", "✓") ?? "✓"
 		view.setHeader(`${icon} ${summaryText}`, theme?.fg?.("dim", "ctrl+o") ?? "ctrl+o")
@@ -287,13 +294,12 @@ export function patchToolGroupRendering(): void {
 		if (!parent) return originalRender.call(this, width)
 
 		const run = findToolGroup(this, parent.children)
-		if (run.length < 2) return originalRender.call(this, width)
 
 		// ctrl+o wires to component.setExpanded() on ALL tools globally.
 		// Use the last tool's .expanded field as the group's expand state.
 		// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on ToolExecutionComponent instance
 		const lastTool = run[run.length - 1] as any
-		if (lastTool.expanded === true) return originalRender.call(this, width)
+		if (lastTool.expanded === true || isFailedTool(lastTool)) return originalRender.call(this, width)
 
 		if (lastTool !== this) return []
 
