@@ -441,18 +441,19 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// presenting a plan). Without prior tool calls the agent is likely asking
 		// clarifying questions, not delivering a finished plan.
 		if (!hasText || hasToolCalls) return
-		// If the agent includes the explicit completion marker, always show the
-		// approval menu regardless of whether tools were called. This allows
-		// the agent to present a plan for simple tasks where exploration is
-		// unnecessary. For intermediate drafts and clarifying questions without
-		// the marker, toolsCalledThisCycle still gates the menu.
-		if (!toolsCalledThisCycle && !assistantText.includes("<!-- PLAN_COMPLETE -->")) return
 
 		// Extract assistant text content for assumption detection.
 		const assistantText = message.content
 			.filter((c) => c.type === "text")
 			.map((c) => (c as { type: "text"; text: string }).text)
 			.join("\n")
+
+		// If the agent includes the explicit completion marker, always show the
+		// approval menu regardless of whether tools were called. This allows
+		// the agent to present a plan for simple tasks where exploration is
+		// unnecessary. For intermediate drafts and clarifying questions without
+		// the marker, toolsCalledThisCycle still gates the menu.
+		if (!toolsCalledThisCycle && !assistantText.includes("<!-- PLAN_COMPLETE -->")) return
 
 		if (hasUnresolvedAssumptions(assistantText)) {
 			// Block the approval menu and nudge the agent to resolve via questionnaire.
