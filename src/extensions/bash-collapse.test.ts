@@ -6,7 +6,7 @@ import {
 	_resetRtkState,
 	collapseCommand,
 	detectRtk,
-	extractWorktreeContext,
+	extractBashCdContext,
 	getBashCommandForDisplay,
 	rewritePreparedBashCommand,
 	rewriteWithRtk,
@@ -290,59 +290,82 @@ describe("rtkSpawnHook", () => {
 	})
 })
 
-// ---------------------------------------------------------------------------
-// extractWorktreeContext
-// ---------------------------------------------------------------------------
+describe("extractBashCdContext", () => {
+	const repoCwd = "/Users/user/repo"
 
-describe("extractWorktreeContext", () => {
 	it("returns null for a plain command with no cd", () => {
-		expect(extractWorktreeContext("grep foo src/")).toBeNull()
+		expect(extractBashCdContext("grep foo src/", repoCwd)).toBeNull()
 	})
 
-	it("returns null for a cd not through .worktrees", () => {
-		expect(extractWorktreeContext("cd /home/user/project && grep foo src/")).toBeNull()
+	it("returns null for a non-compound command (standalone cd)", () => {
+		expect(extractBashCdContext("cd /Users/user/repo/.worktrees/feat", repoCwd)).toBeNull()
 	})
 
-	it("returns null for a standalone cd into a worktree (no real subcommand)", () => {
-		expect(extractWorktreeContext("cd /home/user/.worktrees/my-feature")).toBeNull()
+	it("returns null for cd into a subdirectory of repoCwd", () => {
+		expect(extractBashCdContext("cd /Users/user/repo/src && grep foo .", repoCwd)).toBeNull()
 	})
 
-	it("extracts worktree name and effective command for cd .worktrees && grep", () => {
-		expect(extractWorktreeContext("cd /home/user/repo/.claude/worktrees/my-feature && grep foo src/")).toEqual({
+	it("returns null for cd into repoCwd itself", () => {
+		expect(extractBashCdContext("cd /Users/user/repo && grep foo .", repoCwd)).toBeNull()
+	})
+
+	it("returns worktree context for .worktrees path", () => {
+		expect(extractBashCdContext("cd /Users/user/repo/.worktrees/my-feature && grep foo src/", repoCwd)).toEqual({
+			type: "worktree",
 			worktreeName: "my-feature",
 			effectiveCommand: "grep foo src/",
 		})
 	})
 
-	it("extracts worktree name and effective command for cd .worktrees && ls", () => {
-		expect(extractWorktreeContext("cd /a/.worktrees/feat-x && ls src/")).toEqual({
+	it("returns worktree context for /worktrees path (e.g. .claude/worktrees)", () => {
+		expect(extractBashCdContext("cd /Users/user/repo/.claude/worktrees/feat-x && ls src/", repoCwd)).toEqual({
+			type: "worktree",
 			worktreeName: "feat-x",
 			effectiveCommand: "ls src/",
 		})
 	})
 
-	it("handles deeper paths — takes the segment immediately after .worktrees/", () => {
-		expect(extractWorktreeContext("cd /very/deep/path/.worktrees/fix-auth-flow && cat README.md")).toEqual({
-			worktreeName: "fix-auth-flow",
-			effectiveCommand: "cat README.md",
+	it("returns worktree context even when worktree path is outside repoCwd", () => {
+		expect(extractBashCdContext("cd /entirely/different/.worktrees/my-feat && grep foo src/", repoCwd)).toEqual({
+			type: "worktree",
+			worktreeName: "my-feat",
+			effectiveCommand: "grep foo src/",
+		})
+	})
+
+	it("returns external context for cd into unrelated directory", () => {
+		expect(extractBashCdContext("cd /Users/user/other-project && grep foo src/", repoCwd)).toEqual({
+			type: "external",
+			path: "/Users/user/other-project",
+			effectiveCommand: "grep foo src/",
+		})
+	})
+
+	it("returns external context for cd into parent of repoCwd", () => {
+		expect(extractBashCdContext("cd /Users/user && ls", repoCwd)).toEqual({
+			type: "external",
+			path: "/Users/user",
+			effectiveCommand: "ls",
 		})
 	})
 
 	it("handles rtk-rewritten effective command", () => {
-		expect(extractWorktreeContext("cd /a/.worktrees/feat && rtk grep foo src/")).toEqual({
-			worktreeName: "feat",
+		expect(extractBashCdContext("cd /Users/user/other && rtk grep foo src/", repoCwd)).toEqual({
+			type: "external",
+			path: "/Users/user/other",
 			effectiveCommand: "rtk grep foo src/",
 		})
 	})
 
 	it("handles multiple segments after cd — joins them back", () => {
-		expect(extractWorktreeContext("cd /a/.worktrees/feat && cd src && ls")).toEqual({
-			worktreeName: "feat",
+		expect(extractBashCdContext("cd /Users/user/other && cd src && ls", repoCwd)).toEqual({
+			type: "external",
+			path: "/Users/user/other",
 			effectiveCommand: "cd src && ls",
 		})
 	})
 
-	it("returns null for a path where 'worktrees' appears mid-segment (e.g. my-old-worktrees)", () => {
-		expect(extractWorktreeContext("cd /path/my-old-worktrees/feat && grep foo src/")).toBeNull()
+	it("returns null for path where 'worktrees' appears mid-segment", () => {
+		expect(extractBashCdContext("cd /path/my-old-worktrees/feat && grep foo src/", repoCwd)).toBeNull()
 	})
 })

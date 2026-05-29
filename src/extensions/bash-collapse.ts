@@ -11,22 +11,19 @@ import { globalRtkLinkPath, managedRtkPath } from "../resources/rtk-install.js"
 import { isResourceEnabled } from "../resources/store.js"
 import { splitCompoundCommand } from "./permissions/taxonomy.js"
 
-export interface WorktreeContext {
-	worktreeName: string
-	effectiveCommand: string
-}
+export type BashCdContext =
+	| { type: "worktree"; worktreeName: string; effectiveCommand: string }
+	| { type: "external"; path: string; effectiveCommand: string }
 
 /**
- * Detects bash commands of the form:
- *   cd <path containing .worktrees/<name> or /worktrees/<name>> && <real command>
+ * For a compound bash command starting with `cd <path> &&`, returns display
+ * context to use instead of the full command string.
  *
- * Matches both `.worktrees/` (dot-hidden convention) and `/worktrees/` path
- * segments (e.g. `.claude/worktrees/<name>`).
- *
- * Returns the worktree name and the real command if found, null otherwise.
- * Returns null when there is no real subcommand after the cd (pure navigation).
+ * - "worktree": cd target contains .worktrees/<name> or /worktrees/<name> — always shown
+ * - "external": cd target is outside repoCwd — shown as dim path context
+ * - null: non-cd, non-compound, pure-cd, or cd into a subdir of repoCwd
  */
-export function extractWorktreeContext(command: string): WorktreeContext | null {
+export function extractBashCdContext(command: string, repoCwd: string): BashCdContext | null {
 	const segments = splitCompoundCommand(command)
 	if (!segments || segments.length < 2) return null
 
@@ -34,14 +31,27 @@ export function extractWorktreeContext(command: string): WorktreeContext | null 
 	const firstWord = firstSeg.split(/\s+/)[0] ?? ""
 	if (firstWord !== "cd") return null
 
-	const worktreeMatch = firstSeg.match(/[/.]worktrees\/([^/\s]+)/)
-	if (!worktreeMatch) return null
+	// Extract cd target: everything after "cd "
+	const cdPath = firstSeg.slice(firstWord.length).trim()
+	if (!cdPath) return null
 
-	const worktreeName = worktreeMatch[1]
 	const effectiveCommand = segments.slice(1).join(" && ").trim()
 	if (!effectiveCommand) return null
 
-	return { worktreeName, effectiveCommand }
+	// Worktree detection — always interesting
+	const worktreeMatch = cdPath.match(/[/.]worktrees\/([^/\s]+)/)
+	if (worktreeMatch) {
+		return { type: "worktree", worktreeName: worktreeMatch[1], effectiveCommand }
+	}
+
+	// Paths containing "worktrees" that don't match the canonical pattern are ambiguous — ignore.
+	if (cdPath.includes("worktrees")) return null
+
+	// External detection — interesting only if outside repoCwd
+	const normalizedCwd = repoCwd.endsWith("/") ? repoCwd : `${repoCwd}/`
+	if (cdPath === repoCwd || cdPath.startsWith(normalizedCwd)) return null
+
+	return { type: "external", path: cdPath, effectiveCommand }
 }
 
 export function collapseCommand(command: string | undefined): string {
