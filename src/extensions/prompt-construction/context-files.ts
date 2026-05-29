@@ -8,6 +8,11 @@
  * guidelines into our custom system prompts.
  *
  * Per directory, the first match wins: AGENTS.md is checked before CLAUDE.md.
+ * When a primary file is found, its `.local.md` variant (e.g. CLAUDE.local.md)
+ * is appended if present. A `.local.md` file without a primary file is also
+ * loaded standalone. `.local.md` files are intended for user-specific,
+ * gitignored overrides.
+ *
  * Files are returned in root → cwd order (ancestors first).
  */
 
@@ -21,15 +26,33 @@ export interface ContextFile {
 
 const CONTEXT_FILE_NAMES = ["AGENTS.md", "CLAUDE.md"]
 
+function tryReadFile(filePath: string): string | null {
+	if (!existsSync(filePath)) return null
+	try {
+		return readFileSync(filePath, "utf-8")
+	} catch {
+		return null
+	}
+}
+
+/** Derive the `.local.md` variant for a context filename, e.g. "CLAUDE.md" → "CLAUDE.local.md". */
+function localVariant(filename: string): string {
+	return filename.replace(/\.md$/, ".local.md")
+}
+
 function loadContextFileFromDir(dir: string): ContextFile | null {
 	for (const filename of CONTEXT_FILE_NAMES) {
 		const filePath = join(dir, filename)
-		if (existsSync(filePath)) {
-			try {
-				return { path: filePath, content: readFileSync(filePath, "utf-8") }
-			} catch {
-				// Unreadable file — skip silently
-			}
+		const localPath = join(dir, localVariant(filename))
+		const primary = tryReadFile(filePath)
+		const local = tryReadFile(localPath)
+
+		if (primary !== null) {
+			const content = local !== null ? `${primary}\n\n${local}` : primary
+			return { path: filePath, content }
+		}
+		if (local !== null) {
+			return { path: localPath, content: local }
 		}
 	}
 	return null
