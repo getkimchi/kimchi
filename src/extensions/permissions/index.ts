@@ -441,7 +441,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// presenting a plan). Without prior tool calls the agent is likely asking
 		// clarifying questions, not delivering a finished plan.
 		if (!hasText || hasToolCalls) return
-		if (!toolsCalledThisCycle) return
+		// If the agent includes the explicit completion marker, always show the
+		// approval menu regardless of whether tools were called. This allows
+		// the agent to present a plan for simple tasks where exploration is
+		// unnecessary. For intermediate drafts and clarifying questions without
+		// the marker, toolsCalledThisCycle still gates the menu.
+		if (!toolsCalledThisCycle && !assistantText.includes("<!-- PLAN_COMPLETE -->")) return
 
 		// Extract assistant text content for assumption detection.
 		const assistantText = message.content
@@ -479,6 +484,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (!review.approved) {
 			planMenuShownThisCycle = true
 			const issuesText = review.issues.map((i) => `- ${i}`).join("\n")
+			if (ctx.hasUI) {
+				ctx.ui.notify(
+					"Plan needs revision: " + review.issues.join("; ") + ". The agent will revise it.",
+					"warning",
+				)
+			}
 			pi.sendMessage(
 				{
 					customType: "plan-review-blocked",
