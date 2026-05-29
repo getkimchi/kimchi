@@ -41,6 +41,7 @@ import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/s
 import permissionsExtension from "./extensions/permissions/index.js"
 import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
+import promptHistoryExtension from "./extensions/prompt-history.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire.js"
 import reportBugExtension from "./extensions/report-bug.js"
@@ -481,6 +482,7 @@ try {
 			kimchiMinimalTintsExtension,
 			loginExtension,
 			uiExtension,
+			promptHistoryExtension,
 			startupAuthGate,
 			loopGuardExtension,
 			explorationGuardExtension,

@@ -125,7 +125,7 @@ function getEnabledModelIds(): Set<string> | null {
 }
 
 // Track current editor for indicator updates
-let currentEditor: PromptEditor | undefined
+export let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
 let currentSessionIndicatorText: string | null = null
 
