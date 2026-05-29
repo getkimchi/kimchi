@@ -180,12 +180,14 @@ Include a \`token_budget\` and \`max_turns\` for every Agent call. The token bud
 Match the budget to the **delegated task scope**, not the overall project complexity:
 If the user explicitly asks for the Agent tool with a specific \`token_budget\`, make that Agent call once with the requested value. Do not ask to increase the budget or substitute a larger budget before the tool runs.
 
-| Agent task scope | token_budget | max_turns |
-|---|---|---|
-| Single file (one module, one test file, one doc) | 50000 | 12 |
-| Multi-file package (concurrent logic, worker pools, complex state) | 150000 | 30 |
-| Full project or large codebase exploration | 100000 | 25 |
-| Plan or research document (writing, not coding) | 60000 | 10 |
+| Agent task scope | token_budget | max_turns | max_duration |
+|---|---|---|---|
+| Single file (one module, one test file, one doc) | 50000 | 12 | 300s |
+| Multi-file package (concurrent logic, worker pools, complex state) | 150000 | 30 | 600s |
+| Full project or large codebase exploration | 100000 | 25 | 300s |
+| Plan or research document (writing, not coding) | 60000 | 10 | 180s |
+
+**Always set \`max_duration\`** on every Agent call. Subagents can hang on blocking operations (deadlocked tests, infinite loops, stuck network calls) where token budget and turn limits do not trigger. The duration cap is the last line of defence against runaway agents.
 
 Use the **multi-file package** tier when a build chunk involves concurrency primitives, worker pools, channels, or complex state machines — these require more iterative test-fix cycles than simple CRUD code. When in doubt between single-file and multi-file, prefer the larger budget — an abort followed by a follow-up agent costs more total tokens than a generous initial budget.
 
