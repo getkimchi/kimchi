@@ -33,7 +33,7 @@ import {
 } from "@earendil-works/pi-tui"
 
 import * as Diff from "diff"
-import { extractWorktreeContext, getBashCommandForDisplay } from "./bash-collapse.js"
+import { extractBashCdContext, getBashCommandForDisplay } from "./bash-collapse.js"
 import type { BundledLanguage, BundledTheme } from "shiki"
 
 const RESET = "\x1b[0m"
@@ -3736,10 +3736,13 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderCall(args, theme, ctx) {
 			const rawCommand = getBashCommandForDisplay(args.command) ?? args.command
-			const worktree = extractWorktreeContext(rawCommand)
-			if (worktree) {
-				const summary = summarizeText(worktree.effectiveCommand, 72)
-				const badge = theme.fg("dim", ` [${worktree.worktreeName}]`)
+			const cdCtx = extractBashCdContext(rawCommand, cwd)
+			if (cdCtx) {
+				const summary = summarizeText(cdCtx.effectiveCommand, 72)
+				const badge =
+					cdCtx.type === "worktree"
+						? theme.fg("dim", ` [${cdCtx.worktreeName}]`)
+						: theme.fg("dim", ` ${cdCtx.path}`)
 				return makeText(
 					ctx.lastComponent,
 					toolHeader("Bash", summary, theme, toolStatusDot(ctx, theme)) + badge,
