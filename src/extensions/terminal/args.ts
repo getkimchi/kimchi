@@ -43,5 +43,5 @@ export function parseTerminalArgs(raw: string): TerminalArgs {
 		throw new Error("Usage: /terminal [user@]host[:port]")
 	}
 
-	return { host, port, user }
+	return { host, port, user, rows: 0, cols: 0 }
 }

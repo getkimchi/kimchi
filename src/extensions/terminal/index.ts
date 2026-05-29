@@ -3,7 +3,7 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
-import { TerminalComponent } from "./terminal-component.js"
+import { TerminalComponent, toRawAnsi } from "./terminal-component.js"
 import { createGhosttyCore } from "./ghostty-loader.js"
 import { SshSession } from "./ssh-session.js"
 import { parseTerminalArgs } from "./args.js"
@@ -33,24 +33,28 @@ export default function terminalExtension(pi: ExtensionAPI): void {
 
       ctx.ui.custom(
         async (tui, _theme, _kb, done) => {
+          console.log("\x1b[?1000h\x1b[?1006h")
+
           overlayTui = tui
           const core = await createGhosttyCore()
 
           transport = new WebSocketTransport({
             url: "ws://valid-marital-lorikeet-000000-ce70.remote.kimchi.localhost:30000/connect?mode=pty&name=pty-fun",
-            tokenProvider: () => "eyJhbGciOiAiRWREU0EiLCAidHlwIjogIkpXVCIsICJraWQiOiAiWkFIR0NXcjZIY1BCc1BNTVF6enNyNGFxQjdOMmtCR3dUcGZPdU1wVUEwUSJ9.eyJpc3MiOiAibG9jYWwua2ltY2hpLmRldiIsICJleHAiOiAxNzc5OTgzNDE1LCAic2Vzc2lvbl9pZCI6ICJzLWRlMmYxOWRiLWI0YTUtNGE3MS1iNDUzLTFkOWRkN2IxMzQxNCJ9.FY2wNTEGSsjiXQtAHd864HtDxJLW_8qcqkX1olyXsKcUjc5dRumHmtBXpjLiyaHVrld6ESbrTs2Kf6b7AWdzCw",
+            tokenProvider: () => "eyJhbGciOiAiRWREU0EiLCAidHlwIjogIkpXVCIsICJraWQiOiAiWkFIR0NXcjZIY1BCc1BNTVF6enNyNGFxQjdOMmtCR3dUcGZPdU1wVUEwUSJ9.eyJpc3MiOiAibG9jYWwua2ltY2hpLmRldiIsICJleHAiOiAxNzgwNzUxNjk0LCAic2Vzc2lvbl9pZCI6ICJzLWRlMmYxOWRiLWI0YTUtNGE3MS1iNDUzLTFkOWRkN2IxMzQxNCJ9.pKlRf2Qccbq5_a47tuus1Vfo1ipCqRqX8xT3FzqxbmkZ40oFhvKyeDLprrbNanM1oP_enWGlnR4wuW6eLKpdCQ",
             onData: (data: Uint8Array | string) => {
               if (data instanceof Uint8Array) {
                 component?.terminal.writeRaw(data)
               } else {
                 component?.terminal.writeString(data)
               }
+              tui.requestRender()
             },
             onClose: () => {
               done(undefined)
             },
-            onError: (event: Event) => {
-              ctx.ui.notify(`Connenction error: ${(event as ErrorEvent).message}`, "error")
+            onError: (err: Error) => {
+              ctx.ui.notify(`Connection error: ${err.message}: ${err.cause}`, "error")
+              done(undefined)
             },
           })
 
@@ -66,26 +70,6 @@ export default function terminalExtension(pi: ExtensionAPI): void {
           parsed.cols = cols
           parsed.rows = rows
 
-          // session.connect(parsed, {
-          //   onData: (data) => {
-          //     component!.writeRemoteData(data)
-          //     tui.requestRender()
-          //   },
-          //   onStderr: (data) => {
-          //     component!.writeRemoteData(data)
-          //     tui.requestRender()
-          //   },
-          //   onError: (err) => {
-          //     ctx.ui.notify(`Connenction error: ${(err as Error).message}`, "error")
-          //     tui.requestRender()
-          //   },
-          //   onClose: () => {
-          //     done(undefined)
-          //   },
-          // }).catch((err) => {
-          //   ctx.ui.notify(`Connection failed: ${(err as Error).message}`, "error")
-          // })
-
           tui.setShowHardwareCursor(true)
           return component
         },
@@ -100,8 +84,9 @@ export default function terminalExtension(pi: ExtensionAPI): void {
       ).catch((err) => {
         ctx.ui.notify(`Error: ${(err as Error).message}`, "error")
       }).finally(() => {
+        console.log("\x1b[?1000l\x1b[?1006l")
         overlayTui?.setShowHardwareCursor(false)
-        transport.close()
+        transport?.close()
       })
     },
   })

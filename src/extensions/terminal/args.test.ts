@@ -7,6 +7,8 @@ describe("parseTerminalArgs", () => {
 			host: "example.com",
 			port: 22,
 			user: undefined,
+			rows: 0,
+			cols: 0,
 		})
 	})
 
@@ -15,6 +17,8 @@ describe("parseTerminalArgs", () => {
 			host: "example.com",
 			port: 22,
 			user: "user",
+			rows: 0,
+			cols: 0,
 		})
 	})
 
@@ -23,6 +27,8 @@ describe("parseTerminalArgs", () => {
 			host: "example.com",
 			port: 2222,
 			user: undefined,
+			rows: 0,
+			cols: 0,
 		})
 	})
 
@@ -31,6 +37,8 @@ describe("parseTerminalArgs", () => {
 			host: "example.com",
 			port: 2222,
 			user: "admin",
+			rows: 0,
+			cols: 0,
 		})
 	})
 
@@ -39,6 +47,8 @@ describe("parseTerminalArgs", () => {
 			host: "2001:db8::1",
 			port: 22,
 			user: undefined,
+			rows: 0,
+			cols: 0,
 		})
 	})
 
@@ -47,6 +57,8 @@ describe("parseTerminalArgs", () => {
 			host: "2001:db8::1",
 			port: 2222,
 			user: undefined,
+			rows: 0,
+			cols: 0,
 		})
 	})
 

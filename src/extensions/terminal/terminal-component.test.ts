@@ -126,6 +126,70 @@ describe("TerminalComponent handleInput", () => {
 		component.handleInput("\x1b[13;3u")
 		expect(session.write).toHaveBeenCalledWith(Buffer.from("\x1b\r"))
 	})
+
+	it("intercepts SGR mouse scroll up and does not write to session", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
+		component.handleInput("\x1b[<64;10;5M")
+		expect(session.write).not.toHaveBeenCalled()
+		expect(logSpy).toHaveBeenCalledWith("Mouse scroll:", { direction: "up", x: 10, y: 5 })
+		logSpy.mockRestore()
+	})
+
+	it("intercepts SGR mouse scroll down and does not write to session", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
+		component.handleInput("\x1b[<65;20;8m")
+		expect(session.write).not.toHaveBeenCalled()
+		expect(logSpy).toHaveBeenCalledWith("Mouse scroll:", { direction: "down", x: 20, y: 8 })
+		logSpy.mockRestore()
+	})
+
+	it("intercepts X10 mouse scroll up and does not write to session", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
+		// ESC [ M \x60 \x2a \x25  => button=64 (96-32), x=10 (42-32), y=5 (37-32)
+		component.handleInput("\x1b[M\x60\x2a\x25")
+		expect(session.write).not.toHaveBeenCalled()
+		expect(logSpy).toHaveBeenCalledWith("Mouse scroll:", { direction: "up", x: 10, y: 5 })
+		logSpy.mockRestore()
+	})
+
+	it("intercepts X10 mouse scroll down and does not write to session", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
+		// ESC [ M \x61 \x34 \x28  => button=65 (97-32), x=20 (52-32), y=8 (40-32)
+		component.handleInput("\x1b[M\x61\x34\x28")
+		expect(session.write).not.toHaveBeenCalled()
+		expect(logSpy).toHaveBeenCalledWith("Mouse scroll:", { direction: "down", x: 20, y: 8 })
+		logSpy.mockRestore()
+	})
+
+	it("ignores regular SGR mouse press events", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
+		// button 0 = left press
+		component.handleInput("\x1b[<0;10;5M")
+		expect(session.write).toHaveBeenCalledTimes(1)
+		expect(logSpy).not.toHaveBeenCalled()
+		logSpy.mockRestore()
+	})
+
+	it("ignores regular X10 mouse press events", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+		const session = mockSession()
+		const component = new TerminalComponent(mockTui(), session, await createGhosttyCore())
+		// ESC [ M \x20 \x2a \x25  => button=0 (32-32), x=10, y=5
+		component.handleInput("\x1b[M\x20\x2a\x25")
+		expect(session.write).toHaveBeenCalledTimes(1)
+		expect(logSpy).not.toHaveBeenCalled()
+		logSpy.mockRestore()
+	})
 })
 
 describe("TerminalComponent writeRemoteData", () => {

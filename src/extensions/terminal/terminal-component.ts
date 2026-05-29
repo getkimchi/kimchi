@@ -52,7 +52,7 @@ const KITTY_CSI_U_RE = new RegExp(
 )
 const KITTY_LOCK_MASK = 64 + 128
 
-function toRawAnsi(data: string): Buffer | undefined {
+export function toRawAnsi(data: string): Buffer | undefined {
   // Legacy arrow sequences with optional kitty event suffix:
   // \x1b[1;<mod>:<event>A/B/C/D
   const mArrow = data.match(/^\x1b\[1;(\d+)(?::(\d+))?([ABCD])$/)
@@ -217,6 +217,45 @@ function toCtrlChar(key: string): string | null {
   return null
 }
 
+interface MouseScroll {
+  direction: "up" | "down"
+  x: number
+  y: number
+}
+
+function parseMouseScroll(data: string): MouseScroll | undefined {
+  // SGR scroll: ESC [ < 64 ; x ; y M   (scroll up)
+  // SGR scroll: ESC [ < 65 ; x ; y M   (scroll down)
+  const sgrMatch = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/)
+  if (sgrMatch) {
+    const button = Number.parseInt(sgrMatch[1], 10)
+    if (button === 64) {
+      return { direction: "up", x: Number.parseInt(sgrMatch[2], 10), y: Number.parseInt(sgrMatch[3], 10) }
+    }
+    if (button === 65) {
+      return { direction: "down", x: Number.parseInt(sgrMatch[2], 10), y: Number.parseInt(sgrMatch[3], 10) }
+    }
+  }
+
+  // X10 scroll: ESC [ M <buttonByte> <xByte> <yByte>
+  // buttonByte = 64 + 32 = 96 (\x60) for scroll up
+  // buttonByte = 65 + 32 = 97 (\x61) for scroll down
+  if (data.length === 6 && data.startsWith("\x1b[M")) {
+    const buttonByte = data.charCodeAt(3)
+    const xByte = data.charCodeAt(4)
+    const yByte = data.charCodeAt(5)
+    const button = buttonByte - 32
+    if (button === 64) {
+      return { direction: "up", x: xByte - 32, y: yByte - 32 }
+    }
+    if (button === 65) {
+      return { direction: "down", x: xByte - 32, y: yByte - 32 }
+    }
+  }
+
+  return undefined
+}
+
 export interface TerminalSink {
   resize(rows: number, cols: number): void
   write(data: string | ArrayBufferLike | Blob | ArrayBufferView): void
@@ -297,9 +336,14 @@ export class TerminalComponent implements Component {
   }
 
   handleInput(data: string): void {
+    // const scroll = parseMouseScroll(data)
+    // if (scroll) {
+    //   console.log("Mouse scroll:", scroll)
+    //   this.terminal.getScrollbackCell
+    //   return
+    // }
     const raw = toRawAnsi(data)
-    // this.session.write(raw !== undefined ? raw : Buffer.from(data, "utf-8"))
-    this.session.write(raw!)
+    this.session.write(raw !== undefined ? raw : Buffer.from(data, "utf-8"))
   }
 
   wantsKeyRelease = true
