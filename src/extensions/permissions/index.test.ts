@@ -10,6 +10,7 @@ import permissionsExtension, {
 	checkCompoundCommand,
 	getCurrentPermissionsMode,
 	handleCompoundConfirm,
+	hasUnresolvedAssumptions,
 	isUserChosenYolo,
 	notifyFermentActive,
 } from "./index.js"
@@ -262,6 +263,262 @@ describe("permissions plan-mode tool visibility", () => {
 		await command?.handler("mode default", createMockContext([]))
 
 		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read", "write"])
+	})
+})
+
+describe("plan mode assumption detection", () => {
+	// --- Unit tests for hasUnresolvedAssumptions ---
+
+	describe("hasUnresolvedAssumptions", () => {
+		it("returns false for clean plan with no assumption sections", () => {
+			const text = "# Plan\n\n## Goal\nBuild the thing.\n\n## Chunks\n- Chunk 1\n- Chunk 2\n"
+			expect(hasUnresolvedAssumptions(text)).toBe(false)
+		})
+
+		it("returns false for empty assumptions section", () => {
+			const text = "# Plan\n\n## Assumptions\n\n## Chunks\n- Chunk 1\n"
+			expect(hasUnresolvedAssumptions(text)).toBe(false)
+		})
+
+		it("returns false for assumptions section with only whitespace", () => {
+			const text = "# Plan\n\n## Assumptions\n   \n\t\n\n## Chunks\n- Chunk 1\n"
+			expect(hasUnresolvedAssumptions(text)).toBe(false)
+		})
+
+		it("returns false for assumptions section with 'none' placeholder", () => {
+			const text = "# Plan\n\n## Assumptions\nNone.\n\n## Chunks\n- Chunk 1\n"
+			expect(hasUnresolvedAssumptions(text)).toBe(false)
+		})
+
+		it("returns true when assumptions section contains content", () => {
+			const text =
+				"# Plan\n\n## Assumptions\n- Database schema may differ\n- Auth provider TBD\n\n## Chunks\n- Chunk 1\n"
+			expect(hasUnresolvedAssumptions(text)).toBe(true)
+		})
+
+		it("returns true when open questions section contains content", () => {
+			const text =
+				"# Plan\n\n## Open Questions\n- Should we use JWT or sessions?\n- Which DB?\n\n## Chunks\n- Chunk 1\n"
+			expect(hasUnresolvedAssumptions(text)).toBe(true)
+		})
+
+		it("detection is case-insensitive", () => {
+			expect(hasUnresolvedAssumptions("## ASSUMPTIONS\n- Schema TBD\n")).toBe(true)
+			expect(hasUnresolvedAssumptions("## Open Question\n- Which one?\n")).toBe(true)
+			expect(hasUnresolvedAssumptions("## open question\n- Which one?\n")).toBe(true)
+		})
+
+		it("returns false when there is no markdown heading", () => {
+			expect(hasUnresolvedAssumptions("Some text without headings")).toBe(false)
+		})
+
+		it("returns false for single '#' h1 headings", () => {
+			const text = "# My Plan\n\nNo assumptions here.\n"
+			expect(hasUnresolvedAssumptions(text)).toBe(false)
+		})
+
+		it("returns false when assumption section has blank line before content", () => {
+			const text = "## Assumptions\n\n- test\n"
+			expect(hasUnresolvedAssumptions(text)).toBe(true)
+		})
+
+		it("returns false for multiple chunks without assumptions", () => {
+			const text = `# Plan
+
+## Goal
+Build it.
+
+## Chunks
+- Chunk 1
+- Chunk 2
+
+## Verification
+Run tests.
+`
+			expect(hasUnresolvedAssumptions(text)).toBe(false)
+		})
+	})
+
+	// --- Integration tests for turn_end handler ---
+
+	function makeAssistantMessage(text: string): unknown {
+		return { role: "assistant", content: [{ type: "text", text }] }
+	}
+
+	async function fireTurnEnd(
+		harness: ReturnType<typeof createPermissionsHarness>,
+		text: string,
+		ctx: ExtensionContext,
+	) {
+		return harness.fire("turn_end", { message: makeAssistantMessage(text) }, ctx)
+	}
+
+	it("shows approval menu when plan is clean", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		// Simulate: agent called tools, then produced clean plan text
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			`# Plan\n\n## Goal\nFix the bug.\n\n## Chunk 1\nChange the code.\nAccept When: tests pass.\n\n## Verification\nRun test suite.\n\n<!-- PLAN_COMPLETE -->\n`,
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("blocks approval when assumptions present", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext([])
+		await fireTurnEnd(
+			harness,
+			"# Plan\n\n## Assumptions\n- Database schema may differ\n\n## Chunks\n- Chunk 1\n\n<!-- PLAN_COMPLETE -->\n",
+			ctx,
+		)
+
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				content: expect.stringContaining("unresolved assumptions"),
+				display: false,
+			}),
+			expect.objectContaining({ triggerTurn: true }),
+		)
+	})
+
+	it("blocks approval when open questions present", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext([])
+		await fireTurnEnd(
+			harness,
+			"# Plan\n\n## Open Questions\n- Should we use JWT or sessions?\n\n## Chunks\n- Chunk 1\n\n<!-- PLAN_COMPLETE -->\n",
+			ctx,
+		)
+
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				content: expect.stringContaining("unresolved assumptions"),
+				display: false,
+			}),
+			expect.objectContaining({ triggerTurn: true }),
+		)
+	})
+
+	it("allows plan with empty assumptions section", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			`## Goal\nFix it.\n\n## Assumptions\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.\n\n<!-- PLAN_COMPLETE -->\n`,
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("allows plan without assumptions section at all", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			`## Goal\nDo the thing.\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.\n\n<!-- PLAN_COMPLETE -->\n`,
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("detection is case-insensitive at turn_end level", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext([])
+		await fireTurnEnd(harness, "## ASSUMPTIONS\n- Schema TBD\n\n<!-- PLAN_COMPLETE -->\n", ctx)
+
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(harness.pi.sendMessage).toHaveBeenCalled()
+	})
+
+	it("blocks on assumptions section with content after blank line", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext([])
+		await fireTurnEnd(harness, "## Assumptions\n\n- Database schema may differ\n\n<!-- PLAN_COMPLETE -->\n", ctx)
+
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(harness.pi.sendMessage).toHaveBeenCalled()
+	})
+
+	it("review gate approves well-structured plan and shows menu", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			`## Goal\nAdd auth.\n\n## Chunk 1\nImplement login.\nAccept When: tests pass.\n\n## Verification\nRun the test suite.\n\n<!-- PLAN_COMPLETE -->\n`,
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+		expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "plan-review-blocked" }),
+			expect.anything(),
+		)
+	})
+
+	it("review gate rejects malformed plan and nudges agent", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext([])
+		await fireTurnEnd(
+			harness,
+			`## Chunk 1\nJust a chunk.\n\nSome extra lines\nto make it non-simple.\nMore content here.\n\n<!-- PLAN_COMPLETE -->\n`,
+			ctx,
+		)
+
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "plan-review-blocked",
+				content: expect.stringContaining("structural issues"),
+				display: false,
+			}),
+			expect.objectContaining({ triggerTurn: true }),
+		)
+	})
+
+	it("review gate skips simple plans and shows menu immediately", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(harness, "## Chunk 1\nJust one chunk.\n\n<!-- PLAN_COMPLETE -->\n", ctx)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
 	})
 })
 

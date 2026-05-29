@@ -62,9 +62,10 @@ const QuestionSchema = Type.Object({
 	),
 	prompt: Type.String({ description: "The full question text to display" }),
 	type: Type.Optional(
-		Type.Union([Type.Literal("single"), Type.Literal("multi"), Type.Literal("text"), Type.Literal("confirm")], {
+		Type.String({
 			description:
-				"Question type: single (one choice, default), multi (multiple choices), text (free-text), confirm (yes/no).",
+				"Question type. Must be 'single' (one choice, default), 'multi' (multiple choices), 'text' (free-text), or 'confirm' (yes/no). Aliases 'radio' and 'checkbox' are also accepted.",
+			pattern: "^(single|multi|text|confirm|radio|checkbox)$",
 		}),
 	),
 	options: Type.Optional(
@@ -86,10 +87,19 @@ const QuestionnaireParams = Type.Object({
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-export type QuestionnaireQuestionTypeInput = QuestionType
+export type QuestionnaireQuestionTypeInput = string
 
-export function normalizeQuestionType(type: QuestionnaireQuestionTypeInput | undefined): QuestionType {
-	return type ?? "single"
+export function normalizeQuestionType(type: string | undefined): QuestionType {
+	if (!type) return "single"
+	const aliases: Record<string, QuestionType> = {
+		single: "single",
+		radio: "single",
+		multi: "multi",
+		checkbox: "multi",
+		text: "text",
+		confirm: "confirm",
+	}
+	return aliases[type.toLowerCase()] ?? "single"
 }
 
 function errorResult(

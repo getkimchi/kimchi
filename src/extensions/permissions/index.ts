@@ -441,6 +441,58 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (!hasText || hasToolCalls) return
 		if (!toolsCalledThisCycle) return
 
+		// Extract assistant text content for assumption detection.
+		const assistantText = message.content
+			.filter((c) => c.type === "text")
+			.map((c) => (c as { type: "text"; text: string }).text)
+			.join("\n")
+
+		if (hasUnresolvedAssumptions(assistantText)) {
+			// Block the approval menu and nudge the agent to resolve via questionnaire.
+			planMenuShownThisCycle = true
+			pi.sendMessage(
+				{
+					customType: "plan-assumption-blocked",
+					content:
+						"Your plan still contains unresolved assumptions or open questions. Before presenting a final plan, resolve these with the user using the questionnaire tool.",
+					display: false,
+				},
+				{ triggerTurn: true },
+			)
+			return
+		}
+
+		// Detect if the agent is presenting a completed plan.
+		// The agent must include the explicit <!-- PLAN_COMPLETE --> marker to signal
+		// the plan is ready for user review. Without this marker the approval menu
+		// will not appear, allowing the agent to ask questions or present drafts.
+		if (!assistantText.includes("<!-- PLAN_COMPLETE -->")) {
+			// Skip the menu without marking it shown, so the menu can still appear
+			// when the agent includes the completion marker later.
+			return
+		}
+
+		// Run the plan review gate before showing the approval menu.
+		const review = reviewPlan(assistantText)
+		if (!review.approved) {
+			planMenuShownThisCycle = true
+			const issuesText = review.issues.map((i) => `- ${i}`).join("\n")
+			pi.sendMessage(
+				{
+					customType: "plan-review-blocked",
+					content:
+						"Plan review found structural issues:\n" +
+						issuesText +
+						"\n\n" +
+						"Please revise the plan to address these issues before marking it complete. " +
+						"Remember to end your response with `<!-- PLAN_COMPLETE -->` when finished.",
+					display: false,
+				},
+				{ triggerTurn: true },
+			)
+			return
+		}
+
 		planMenuShownThisCycle = true
 
 		const EXECUTE = "Yes — execute the plan"
@@ -817,6 +869,52 @@ interface CompoundCheckResult {
 	decision: "allow" | "deny" | "prompt"
 	deniedReason?: string
 	subcommands?: string[]
+}
+
+/**
+ * Detect unresolved assumptions or open questions in plan text.
+ * Looks for markdown sections whose heading contains "Assumption" or "Open Question"
+ * (case-insensitive). If such a section contains any non-empty line after the heading,
+ * the assumption is considered unresolved.
+ *
+ * Exported for testing.
+ */
+export function hasUnresolvedAssumptions(text: string): boolean {
+	const lines = text.split("\n")
+	// Match markdown headings: # or ## followed by whitespace then content
+	const headingPattern = /^##?\s+(?=\S)/
+
+	// Find indices of all markdown heading lines
+	const headingIndices: number[] = []
+	for (let i = 0; i < lines.length; i++) {
+		if (headingPattern.test(lines[i])) {
+			headingIndices.push(i)
+		}
+	}
+
+	if (headingIndices.length === 0) return false
+
+	// For each heading, check if it's an assumption/open question section with content
+	for (let h = 0; h < headingIndices.length; h++) {
+		const startIdx = headingIndices[h]
+		const endIdx = h < headingIndices.length - 1 ? headingIndices[h + 1] : lines.length
+		const headingText = lines[startIdx]
+
+		// Check if this is an assumption or open question heading
+		const lowerHeading = headingText.toLowerCase()
+		if (lowerHeading.includes("assumption") || lowerHeading.includes("open question")) {
+			// Check if there's any non-empty content between this heading and the next
+			// that is not just a placeholder like "none", "n/a", "—", "-".
+			for (let i = startIdx + 1; i < endIdx; i++) {
+				const trimmed = lines[i].trim()
+				if (trimmed.length > 0 && !/^\s*(?:none\.?|n\/a|—|-|–)\s*$/i.test(trimmed)) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
 }
 
 /**
