@@ -172,7 +172,10 @@ List 3-5 files most critical for implementing this plan:
 				name: AGENT_PLAN_REVIEWER,
 				description: "Reviews implementation plans before execution",
 				models: roleModels(roles.planReviewer, ["plan", "review"]),
-				builtinToolNames: READ_ONLY_TOOLS,
+				// Strictly read-only: no `bash`. An adversarial reviewer told to "verify
+				// against the codebase" should inspect with read/grep/find/ls, never run
+				// shell commands (READ_ONLY_TOOLS includes bash, which is too broad here).
+				builtinToolNames: ["read", "grep", "find", "ls"],
 				extensions: true,
 				skills: true,
 				modelLocked: true,

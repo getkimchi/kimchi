@@ -82,20 +82,23 @@ Now investigate the codebase for implementation-specific details.
 - Wait for subagent results before proceeding.
 - Skip this step for greenfield tasks with no existing codebase; record why in assumptions.
 
+STEP 5 — PLAN
+Synthesize everything — orient findings, interview answers, confirmed criteria,
+and exploration results — into a plan.
+- Draft the complete scoping plan payload first.
+- Then run the Plan Reviewer on that exact draft (contract below) and incorporate
+  its verdict before proposing.
+- Call propose_ferment_scoping with the complete payload, including plan_review.
+- Ensure completion criteria were confirmed with the user before finalizing.
+- Default to one phase for simple tasks.
+- Add phases only for real vertical slices, different complexity tiers,
+  independent workstreams, or distinct code localities.
+
 Plan Reviewer subagent contract:
 - subagent_type: "Plan Reviewer"
 - use only after drafting a concrete scoping plan payload
 - pass the exact plan inside <ferment_plan>...</ferment_plan>
 - the Plan Reviewer returns its verdict by calling its submit_plan_review tool; its Agent result is that verdict as JSON with fields status, summary, required_changes, reservations, and questions (empty arrays as [])
-- copy that returned JSON verbatim into plan_review; do not re-summarize or re-type it
+- copy the entire returned JSON object verbatim into plan_review, including the _provenance field; do not re-summarize, re-type, or drop any field
 - Plan Reviewer reviews only; it does not implement code
-
-STEP 5 — PLAN
-Synthesize everything — orient findings, interview answers, confirmed criteria,
-and exploration results — into a plan.
-- Call propose_ferment_scoping with the complete payload.
-- Ensure completion criteria were confirmed with the user before finalizing.
-- Default to one phase for simple tasks.
-- Add phases only for real vertical slices, different complexity tiers,
-  independent workstreams, or distinct code localities.
 </scoping_sequence>`

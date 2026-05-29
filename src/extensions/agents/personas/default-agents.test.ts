@@ -77,6 +77,8 @@ describe("DEFAULT_AGENTS", () => {
 		expect(planReviewer.builtinToolNames).toContain("read")
 		expect(planReviewer.builtinToolNames).not.toContain("write")
 		expect(planReviewer.builtinToolNames).not.toContain("edit")
+		// Strictly read-only: no shell access for an adversarial reviewer.
+		expect(planReviewer.builtinToolNames).not.toContain("bash")
 		expect(planReviewer.extensions).toBe(true)
 		expect(planReviewer.systemPrompt).toContain("adversarial plan reviewer")
 		expect(planReviewer.systemPrompt).toContain('Default to "needs_revision"')

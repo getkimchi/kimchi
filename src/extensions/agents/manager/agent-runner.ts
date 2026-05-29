@@ -403,7 +403,12 @@ async function runAgentInner(
 			return true
 		})
 		session.setActiveToolsByName(activeTools)
-	} else if (disallowedSet || ownOutputTool || outputToolNames.size > 0) {
+	} else if (disallowedSet || outputToolNames.size > 0) {
+		// Runs whenever any persona output tool exists (effectively always), because
+		// getPersonaOutputToolFactories injects EVERY output tool into this session —
+		// so even an extensions-less persona must strip the ones it doesn't own. The
+		// observable tool set is unchanged from pre-feature: the newly injected
+		// foreign tools are removed right back out here.
 		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet?.has(t) && !isForeignOutputTool(t))
 		session.setActiveToolsByName(activeTools)
 	}

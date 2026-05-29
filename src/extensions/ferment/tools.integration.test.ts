@@ -48,6 +48,7 @@ vi.mock("./judge.js", async () => {
 	}
 })
 import { pr_dim } from "./colors.js"
+import { issuePlanReviewToken } from "./plan-review-provenance.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview } from "./plan-review.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { registerLifecycleTools } from "./tools/lifecycle.js"
@@ -1127,12 +1128,17 @@ describe("propose_ferment_scoping", () => {
 		}
 		return {
 			...payload,
-			plan_review: overrides.plan_review ?? {
-				status: "approved",
-				summary: "Plan Reviewer approves the plan fit, complexity, and verification.",
-				required_changes: [],
-				reservations: [],
-				questions: [],
+			// Token first so every fixture (default or override) carries valid
+			// provenance; an override may still set its own _provenance to win.
+			plan_review: {
+				_provenance: issuePlanReviewToken(),
+				...((overrides.plan_review as Record<string, unknown> | undefined) ?? {
+					status: "approved",
+					summary: "Plan Reviewer approves the plan fit, complexity, and verification.",
+					required_changes: [],
+					reservations: [],
+					questions: [],
+				}),
 			},
 		}
 	}

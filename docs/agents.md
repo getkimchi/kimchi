@@ -47,13 +47,14 @@ to it in `subagent_type`.
 
 ## Built-in agents
 
-Four default agents are always available:
+Five default agents are always available:
 
 | Type | Display | Models | Tools | Purpose |
 |---|---|---|---|---|
 | `General-Purpose` | Agent | `nemotron-3-super-fp4` → `minimax-m2.7` → `kimi-k2.6` (LLM picks per call) | all | General multi-step tasks; inherits the parent's full system prompt |
 | `Explore` | Explore | `kimchi-dev/nemotron-3-super-fp4` | read-only | Fast codebase exploration |
-| `Plan` | Plan | `kimchi-dev/minimax-m2.7` | read-only | Technical and implementation planning |
+| `Plan` | Plan | `kimchi-dev/minimax-m2.7` | read-only + plan files | Technical and implementation planning |
+| `Plan Reviewer` | Plan Reviewer | `kimchi-dev/minimax-m2.7` | read-only | Adversarial review of implementation plans before execution; returns a schema-bound verdict via `submit_plan_review` |
 | `Researcher` | Researcher | `kimchi-dev/kimi-k2.6` | read-only + web | Web and docs research with cited sources |
 
 Override any of them by creating a project or user agent file with the same name.

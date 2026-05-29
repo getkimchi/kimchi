@@ -37,6 +37,7 @@ import { validateGatesOrErr } from "../gate-validation.js"
 import { judgeJourneyGrade } from "../judge.js"
 import { resetReactiveContinuationNudgeCount } from "../nudge.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
+import { PLAN_REVIEW_PROVENANCE_FIELD, verifyPlanReviewToken } from "../plan-review-provenance.js"
 import { getPromptUi, promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
@@ -384,7 +385,9 @@ export function normalizeAskUserOption(option: {
 	label: string
 	description?: string
 }): AskUserOption {
-	return { id: option.id ?? option.value ?? "", label: option.label, description: option.description }
+	// Fall back to the label when neither id nor value is given, so options never
+	// collapse to a shared empty-string id (which would collide at selection time).
+	return { id: option.id ?? option.value ?? option.label, label: option.label, description: option.description }
 }
 
 export function normalizeAskUserQuestionType(type: string): ScopingQuestionType {
@@ -425,6 +428,14 @@ async function validatePlanReviewOrErr(
 			'Cannot propose scoping — plan_review is required. Spawn subagent_type "Plan Reviewer" and send the exact plan payload inside <ferment_plan>...</ferment_plan>, then call propose_ferment_scoping with plan_review fields: status, summary, required_changes, reservations, and questions.',
 		)
 	}
+	// Provenance: the verdict must carry a token issued by submit_plan_review this
+	// session. A planner-fabricated plan_review (no real Plan Reviewer spawn) has no
+	// valid token and is rejected here, regardless of how well-formed it looks.
+	if (!verifyPlanReviewToken((review as Record<string, unknown>)[PLAN_REVIEW_PROVENANCE_FIELD])) {
+		return toolErr(
+			'Cannot propose scoping — plan_review is missing a valid provenance token. Spawn subagent_type "Plan Reviewer", let it call submit_plan_review, then copy its returned JSON verbatim (including the _provenance field) into plan_review. Do not hand-write plan_review.',
+		)
+	}
 	if (typeof review.summary !== "string" || review.summary.trim().length === 0) {
 		return toolErr("Cannot propose scoping — plan_review.summary is required.")
 	}
@@ -452,7 +463,9 @@ async function validatePlanReviewOrErr(
 				"Cannot propose scoping — plan_review.status is approved but required_changes is non-empty. Either clear required_changes or set status to needs_revision and revise the plan.",
 			)
 		}
-		runtime.recordPlanReviewAttempt(params.ferment_id, undefined, review.summary)
+		// Do NOT record an attempt here: the loop guard counts rejections, and an
+		// approval burning the attempt budget can trip the guard prematurely on a
+		// later needs_revision. State resets at confirm / freeform-feedback anyway.
 		return undefined
 	}
 
