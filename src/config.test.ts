@@ -396,10 +396,10 @@ describe("readTelemetryConfig", () => {
 		expect(config.metricsEndpoint).toBe("https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest")
 	})
 
-	it("disabled telemetry still returns defaults", () => {
+	it("returns defaults with telemetry enabled when no explicit preference", () => {
 		writeFileSync(configPath, JSON.stringify({}))
 		const config = readTelemetryConfig(configPath)
-		expect(config.enabled).toBe(false)
+		expect(config.enabled).toBe(true)
 		expect(config.metricsEndpoint).toBe("https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest")
 	})
 
