@@ -70,7 +70,6 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 			}
 			connection = newConnection
 			reconnectRetries = 0
-			console.log(`[ide-adapter] Connected to ${match.ideName} (${match.ideVersion})`)
 		} catch (err) {
 			reconnectRetries++
 			console.warn(
@@ -102,7 +101,6 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 				registerIdeTool(pi, tool)
 			}
 			registeredToolNames = tools.map((t) => t.name)
-			console.log(`[ide-adapter] Registered ${tools.length} IDE tool(s): ${registeredToolNames.join(", ")}`)
 		} catch (err) {
 			console.warn("[ide-adapter] Failed to list IDE tools:", err)
 		}
