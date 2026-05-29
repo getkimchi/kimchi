@@ -7,8 +7,22 @@ import { FERMENT_TOOLS, FERMENT_TOOL_NAMES, isFermentToolName } from "./tool-nam
 
 export type FermentToolProfile = "idle" | "planner-active" | "paused-terminal" | "worker" | "oneshot-planner"
 
-const IDLE_FERMENT_TOOL_NAMES = [FERMENT_TOOLS.LIST, FERMENT_TOOLS.ASK_USER] as const
-const PAUSED_TERMINAL_FERMENT_TOOL_NAMES = [FERMENT_TOOLS.LIST, FERMENT_TOOLS.ASK_USER] as const
+// Idle includes `propose_ferment_scoping` so it lives in the LLM's tool snapshot from
+// the very first turn. When `request_ferment_workflow` creates a draft mid-turn, the
+// LLM can immediately call `propose_ferment_scoping` without waiting for a new turn
+// snapshot (pi-mono snapshots active tools at turn start; mid-turn profile changes
+// don't reach the running turn).
+const IDLE_FERMENT_TOOL_NAMES = [
+	FERMENT_TOOLS.LIST,
+	FERMENT_TOOLS.ASK_USER,
+	FERMENT_TOOLS.REQUEST_WORKFLOW,
+	FERMENT_TOOLS.PROPOSE_SCOPING,
+] as const
+const PAUSED_TERMINAL_FERMENT_TOOL_NAMES = [
+	FERMENT_TOOLS.LIST,
+	FERMENT_TOOLS.ASK_USER,
+	FERMENT_TOOLS.REQUEST_WORKFLOW,
+] as const
 
 /**
  * Tools the planner is allowed to call directly in `ferment-oneshot` mode.

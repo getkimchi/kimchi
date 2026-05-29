@@ -12,7 +12,14 @@ import fermentExtension from "./index.js"
 import { resetAllReactiveContinuationNudgeCounts } from "./nudge.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
-import { getActive, isAutomatedContinuationEnabled, setActive, setContinuationPolicy } from "./state.js"
+import {
+	clearActiveFermentId,
+	getActive,
+	getActiveFermentId,
+	isAutomatedContinuationEnabled,
+	setActive,
+	setContinuationPolicy,
+} from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { completeFerment, scopeFerment } from "./tools/lifecycle.js"
 
@@ -88,7 +95,8 @@ afterEach(() => {
 	requestSharedFooterRenderMock.mockClear()
 	resetAllReactiveContinuationNudgeCounts()
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
-	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
+	vi.unstubAllEnvs()
+	clearActiveFermentId()
 	clearFermentCache()
 	const storage = new FermentStorage()
 	for (const item of storage.list()) {
@@ -184,7 +192,7 @@ describe("fermentExtension stop-policy shortcut", () => {
 
 describe("fermentExtension session resume", () => {
 	it("clears stale active ferment env when resume id no longer exists", async () => {
-		process.env.KIMCHI_ACTIVE_FERMENT = "missing-ferment-id"
+		vi.stubEnv("KIMCHI_ACTIVE_FERMENT", "missing-ferment-id")
 		const { handlers } = registerFermentExtension()
 		const sessionStart = handlers.get("session_start")
 		if (!sessionStart) throw new Error("session_start handler was not registered")
@@ -192,8 +200,7 @@ describe("fermentExtension session resume", () => {
 		await sessionStart({}, { hasUI: false })
 
 		expect(getActive()).toBeUndefined()
-		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBeUndefined()
-		expect(Object.hasOwn(process.env, "KIMCHI_ACTIVE_FERMENT")).toBe(false)
+		expect(getActiveFermentId()).toBeUndefined()
 	})
 
 	it("does not send continuation nudges or active references for completed ferments", async () => {
@@ -235,7 +242,7 @@ describe("fermentExtension session resume", () => {
 		)
 		if ("isError" in completed && completed.isError) throw new Error(completed.content[0].text)
 
-		process.env.KIMCHI_ACTIVE_FERMENT = draft.id
+		vi.stubEnv("KIMCHI_ACTIVE_FERMENT", draft.id)
 		const { handlers, pi } = registerFermentExtension(runtime)
 		const sessionStart = handlers.get("session_start")
 		if (!sessionStart) throw new Error("session_start handler was not registered")
@@ -243,8 +250,7 @@ describe("fermentExtension session resume", () => {
 		await sessionStart({}, { hasUI: false })
 
 		expect(storage.get(draft.id)?.status).toBe("complete")
-		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBeUndefined()
-		expect(Object.hasOwn(process.env, "KIMCHI_ACTIVE_FERMENT")).toBe(false)
+		expect(getActiveFermentId()).toBeUndefined()
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 		expect(pi.appendEntry).not.toHaveBeenCalledWith(
 			"ferment_breadcrumb",
@@ -320,7 +326,7 @@ describe("fermentExtension one-shot bootstrap", () => {
 	})
 
 	it("prefers active-ferment resume over the one-shot flag", async () => {
-		process.env.KIMCHI_ACTIVE_FERMENT = "missing-id"
+		vi.stubEnv("KIMCHI_ACTIVE_FERMENT", "missing-id")
 		const { handlers } = registerFermentExtension(undefined, { "ferment-oneshot": true })
 		const sessionStart = handlers.get("session_start")
 		const input = handlers.get("input")
@@ -329,7 +335,7 @@ describe("fermentExtension one-shot bootstrap", () => {
 
 		await sessionStart({}, { hasUI: false })
 
-		expect(Object.hasOwn(process.env, "KIMCHI_ACTIVE_FERMENT")).toBe(false)
+		expect(getActiveFermentId()).toBeUndefined()
 
 		// And the input handler does NOT bootstrap a ferment for the next message.
 		const result = await input({ type: "input", text: "first message", source: "interactive" }, {})

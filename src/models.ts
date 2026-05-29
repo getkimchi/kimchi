@@ -18,6 +18,8 @@ export interface ModelMetadata {
 		context_window: number
 		max_output_tokens: number
 	}
+	status?: "active" | "sunset" | "deprecated"
+	replacement?: string
 }
 
 interface ModelsMetadataResponse {
@@ -210,8 +212,12 @@ export async function updateModelsConfig(modelsJsonPath: string, apiKey: string)
 		return { models: sortModels([...cached, ...otherModels]) }
 	}
 
-	const models = sortModels(fetched)
+	const activeModels = fetched.filter((m) => m.status !== "sunset")
+	if (activeModels.length === 0 && fetched.length > 0) {
+		console.warn("All models from the API are sunset. No active models available.")
+	}
+	const models = sortModels(activeModels)
 	const merged = { providers: { ...otherProviders, ...buildModelsConfig(models).providers } }
 	writeFileSync(modelsJsonPath, JSON.stringify(merged, null, "\t"), "utf-8")
-	return { models: sortModels([...fetched, ...otherModels]) }
+	return { models: sortModels([...activeModels, ...otherModels]) }
 }

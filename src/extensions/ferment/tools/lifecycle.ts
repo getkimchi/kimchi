@@ -9,7 +9,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import type { Static } from "typebox"
+import { type Static, Type } from "typebox"
 import { stateHash } from "../../../ferment/event-store.js"
 import type { Command, ScopePhaseInput } from "../../../ferment/state-machine.js"
 import { normalizeFermentTitle } from "../../../ferment/title.js"
@@ -21,8 +21,10 @@ import {
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
+import { isUserChosenYolo } from "../../permissions/index.js"
 import { askUser, askUserForm } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
+import { startFermentForIntent } from "../commands.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { validateGatesOrErr } from "../gate-validation.js"
@@ -33,7 +35,8 @@ import { getPromptUi, promptEditor, promptForm, promptSelect } from "../prompt-u
 import { readLatestPhaseReviews } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
-import { MAX_PLAN_REVIEW_ATTEMPTS, MAX_SAME_PLAN_REVIEW_REJECTION } from "../state.js"
+import type { PendingScope } from "../scoping.js"
+import { MAX_PLAN_REVIEW_ATTEMPTS, MAX_SAME_PLAN_REVIEW_REJECTION, hasActiveFerment } from "../state.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -51,6 +54,7 @@ import {
 	ScopeParams,
 	UpdateScopeFieldParams,
 } from "../tool-schemas.js"
+import type { FermentUiContext } from "../ui.js"
 
 type ScopeArgs = Static<typeof ScopeParams>
 type ProposeScopingArgs = Static<typeof ProposeScopingParams>
@@ -824,12 +828,83 @@ export async function completeFerment(
 	)
 }
 
+function canAutoApproveFermentStart(): boolean {
+	return isUserChosenYolo() && !hasActiveFerment()
+}
+
+async function confirmFermentStart(ctx: unknown, title: string, intent: string): Promise<boolean | undefined> {
+	const hostCtx = ctx as
+		| {
+				hasUI?: boolean
+				ui?: { confirm?: (title: string, message?: string) => Promise<boolean> }
+		  }
+		| undefined
+	if (!hostCtx?.hasUI || !hostCtx.ui?.confirm) return undefined
+	return hostCtx.ui.confirm("Start Ferment Workflow", `Start a Ferment workflow for "${title}"?\n\n${intent}`)
+}
+
 export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
+
+	pi.registerTool({
+		name: FERMENT_TOOLS.REQUEST_WORKFLOW,
+		label: "Start Ferment Workflow",
+		description:
+			"Request the ferment workflow (interactive scoping -> planner) for substantive multi-step work. Provide a concise 3-5 word title and the full original user intent. The host asks the user for explicit confirmation before creating the draft; in yolo permissions mode, the host auto-approves. Refuses if another ferment is already running.",
+		parameters: Type.Object({
+			title: Type.String({
+				description: "Concise 3-5 word title for the new ferment (e.g. 'Rewrite login flow').",
+			}),
+			intent: Type.String({
+				description:
+					"Full original user request, preserving all constraints, scope details, and wording that the scoping turn needs.",
+			}),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const title = typeof params.title === "string" ? params.title.trim() : ""
+			if (!title) return toolErr('Field "title" must be a non-empty string.')
+			const intent = typeof params.intent === "string" ? params.intent.trim() : ""
+			if (!intent) return toolErr('Field "intent" must be the full non-empty user request.')
+			if (hasActiveFerment()) {
+				return toolErr(
+					"request_ferment_workflow refused — another ferment appears to be active. Continue that ferment or ask the user before starting a separate workflow.",
+				)
+			}
+			if (!canAutoApproveFermentStart()) {
+				const approved = await confirmFermentStart(ctx, title, intent)
+				if (approved === undefined) {
+					return toolErr(
+						"request_ferment_workflow refused — interactive host approval is required before starting a ferment, but no confirmation UI is available. Ask the user directly whether they want a ferment workflow, then retry when interactive UI is available.",
+					)
+				}
+				if (!approved) {
+					return toolErr(
+						"request_ferment_workflow cancelled — the user declined starting a ferment. Continue inline or ask only decision-blocking clarification.",
+					)
+				}
+			}
+			const result = await startFermentForIntent({
+				pi,
+				ctx: ctx as unknown as FermentUiContext,
+				runtime,
+				rawIntent: intent,
+				title,
+			})
+			if (!result) {
+				return toolErr(
+					"Could not start ferment workflow. Another ferment may already be running, or the host UI refused. Tell the user to check /ferment list and try again.",
+				)
+			}
+			return toolOk(
+				`Ferment "${result.name}" created. Follow the scoping nudge instructions the host injects on this turn.`,
+			)
+		},
+	})
+
 	pi.registerTool({
 		name: FERMENT_TOOLS.PROPOSE_SCOPING,
 		label: "Propose Scoping",
-		description: `Emit the full scoping draft: title, goal, criteria, constraints, assumptions, 1-7 phases, questions, plan_review, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include plan_review from a separate Plan Reviewer subagent review of the exact plan. Spawn subagent_type "Plan Reviewer" and send it the exact payload inside <ferment_plan>...</ferment_plan>; plan_review must include status, summary, required_changes, reservations, and questions, using [] for empty arrays. Missing, malformed, or needs_revision plan reviews are rejected; revise the plan and run Plan Reviewer again before calling this tool unless the Plan Reviewer identified a blocking user question. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
+		description: `Emit the full scoping draft: title, goal, criteria, constraints, assumptions, 1-7 phases, questions, plan_review, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one checkbox question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include plan_review from a separate Plan Reviewer subagent review of the exact plan. Spawn subagent_type "Plan Reviewer" and send it the exact payload inside <ferment_plan>...</ferment_plan>; plan_review must include status, summary, required_changes, reservations, and questions, using [] for empty arrays. Missing, malformed, or needs_revision plan reviews are rejected; revise the plan and run Plan Reviewer again before calling this tool unless the Plan Reviewer identified a blocking user question. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
@@ -875,9 +950,14 @@ ${renderGateGuidance("scope_ferment")}`,
 				// Seed an empty buffer so attachPendingProposal can replace it.
 				runtime.setPendingScope(params.ferment_id, { goal: "", successCriteria: "", constraints: [] })
 			}
+			const pendingAfterSeed: PendingScope = runtime.getPendingScope(params.ferment_id) ?? {
+				goal: "",
+				successCriteria: "",
+				constraints: [],
+			}
 
 			// Iteration cap: prevent infinite propose_ferment_scoping loops.
-			const currentIterations = pending?.proposeIterations ?? 0
+			const currentIterations = pendingAfterSeed.proposeIterations ?? 0
 			const nextIterations = currentIterations + 1
 			if (currentIterations >= 3 && questions.length > 0) {
 				return toolErr(

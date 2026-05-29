@@ -376,4 +376,115 @@ describe("updateModelsConfig", () => {
 		expect(fetch).not.toHaveBeenCalled()
 		expect(existsSync(modelsJsonPath)).toBe(false)
 	})
+
+	it("filters out sunset models from models.json and returned list", async () => {
+		const sunsetModel = {
+			slug: "old-model",
+			display_name: "Old Model",
+			provider: "ai-enabler",
+			reasoning: false,
+			input_modalities: ["text"],
+			is_serverless: true,
+			limits: { context_window: 100_000, max_output_tokens: 4096 },
+			status: "sunset",
+		}
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI, sunsetModel] }),
+		} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const writtenIds = config.providers["kimchi-dev"].models.map((m: { id: string }) => m.id)
+		expect(writtenIds).toEqual(["kimi-k2.5"])
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
+	})
+
+	it("warns when all API models are sunset", async () => {
+		const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const sunsetModel = {
+			slug: "old-model",
+			display_name: "Old Model",
+			provider: "ai-enabler",
+			reasoning: false,
+			input_modalities: ["text"],
+			is_serverless: true,
+			limits: { context_window: 100_000, max_output_tokens: 4096 },
+			status: "sunset",
+		}
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [sunsetModel] }),
+		} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key")
+
+		expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining("All models from the API are sunset"))
+		expect(result.models).toHaveLength(0)
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models).toHaveLength(0)
+		consoleWarnSpy.mockRestore()
+	})
+
+	it("treats models without status field as active (backward compatibility)", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models).toHaveLength(1)
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
+	})
+
+	it("preserves deprecated models in models.json and returned list", async () => {
+		const deprecatedModel = {
+			slug: "deprecated-model",
+			display_name: "Deprecated Model",
+			provider: "ai-enabler",
+			reasoning: false,
+			input_modalities: ["text"],
+			is_serverless: true,
+			limits: { context_window: 100_000, max_output_tokens: 4096 },
+			status: "deprecated",
+		}
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI, deprecatedModel] }),
+		} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const writtenIds = config.providers["kimchi-dev"].models.map((m: { id: string }) => m.id)
+		expect(writtenIds).toContain("deprecated-model")
+		expect(result.models.map((m) => m.slug)).toContain("deprecated-model")
+	})
+
+	it("preserves replacement field on deprecated/sunset models in returned metadata", async () => {
+		const deprecatedWithReplacement = {
+			slug: "old-model",
+			display_name: "Old Model",
+			provider: "ai-enabler",
+			reasoning: false,
+			input_modalities: ["text"],
+			is_serverless: true,
+			limits: { context_window: 100_000, max_output_tokens: 4096 },
+			status: "deprecated",
+			replacement: "new-model",
+		}
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [deprecatedWithReplacement] }),
+		} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const model = result.models.find((m) => m.slug === "old-model")
+		expect(model?.status).toBe("deprecated")
+		expect(model?.replacement).toBe("new-model")
+	})
 })

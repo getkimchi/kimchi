@@ -3,7 +3,8 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
-import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
+import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "../ferment/state.js"
+import { FERMENT_TOOLS, isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { resolveClassifierModel } from "./classifier-model.js"
@@ -81,12 +82,13 @@ export function getCurrentPermissionsMode(): PermissionMode {
 	return _currentPermissionsMode
 }
 
-/** Called by the ferment extension whenever a ferment becomes active or is cleared. */
-let _onFermentActiveChange: ((hasActiveFerment: boolean) => void) | undefined
+let _isUserChosenYolo: () => boolean = () => process.env.KIMCHI_PERMISSIONS === "yolo"
 
-export function notifyFermentActive(hasActiveFerment: boolean): void {
-	_onFermentActiveChange?.(hasActiveFerment)
+export function isUserChosenYolo(): boolean {
+	return _isUserChosenYolo()
 }
+
+export { notifyFermentActive }
 
 let _modeChangeListener: ((mode: PermissionMode) => void) | undefined
 
@@ -184,11 +186,16 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		}).mode
 	}
 
+	_isUserChosenYolo = () =>
+		resolveMode({ runtime: undefined, flag: cliMode, env: envBaseline, config: loaded.config.defaultMode }).mode ===
+		"yolo"
+
 	function allRules(): Rule[] {
 		return [...session.all(), ...configRules, ...builtinRules]
 	}
 
 	function isPlanModeTool(name: string): boolean {
+		if (name === FERMENT_TOOLS.REQUEST_WORKFLOW) return cliMode !== "plan"
 		return PLAN_MODE_TOOL_SET.has(name) || isReadOnlyTool(name)
 	}
 
@@ -247,22 +254,27 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		_modeChangeListener?.(next)
 	}
 
-	// Wire the cross-extension callback: ferment calls notifyFermentActive() when
-	// a ferment is activated or cleared, so permissions can switch to/from yolo.
-	_onFermentActiveChange = (hasActiveFerment: boolean) => {
+	// Ferment calls notifyFermentActive() when a ferment is activated or cleared,
+	// so permissions can switch to/from yolo.
+	onActiveFermentChange((hasActive: boolean) => {
 		if (cliMode) return // explicit CLI flag always wins
-		if (hasActiveFerment) {
+		const previousMode = currentMode()
+		if (hasActive) {
 			runtimeMode = "yolo"
 		} else {
 			// Only clear runtimeMode if we set it for ferment (not if user changed it manually)
 			if (runtimeMode === "yolo") runtimeMode = undefined
 		}
+		const nextMode = currentMode()
+		if (previousMode === "plan" && nextMode !== "plan") restoreToolsFromPlanMode()
+		if (nextMode === "plan") applyPlanModeTools()
 		propagateModeToEnv()
 		if (_lastCtx) {
 			updateStatus(_lastCtx)
 			maybeShowYoloWarning(_lastCtx, currentMode())
 		}
-	}
+		_modeChangeListener?.(nextMode)
+	})
 
 	function doLoadConfig(ctx: ExtensionContext): { errors: string[] } {
 		const { loaded: lc, errors } = loadConfig({
@@ -351,9 +363,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// YOLO mode: --yolo and --dangerously-skip-permissions both set yolo mode (no classifier, auto-approve all)
 		else if (pi.getFlag("yolo") || pi.getFlag("dangerously-skip-permissions")) cliMode = "yolo"
 
-		// Active ferment → auto-yolo so all ferment tools execute without approval prompts.
+		// Active ferment → auto-yolo so scoping/lifecycle work can proceed without approval prompts.
+		// No env var is set before the user explicitly approves ferment creation.
 		// Only applies when no explicit CLI mode flag was given.
-		if (!cliMode && process.env.KIMCHI_ACTIVE_FERMENT) {
+		if (!cliMode && hasActiveFerment()) {
 			runtimeMode = "yolo"
 		}
 
@@ -468,7 +481,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					}
 					return undefined
 				}
-				if (!isReadOnlyTool(toolName) && !PLAN_MODE_TOOLS.includes(toolName)) {
+				if (!isPlanModeTool(toolName)) {
 					return {
 						block: true,
 						reason: `Plan mode: tool ${toolName} is not available. Use /permissions mode default to enable writes.`,

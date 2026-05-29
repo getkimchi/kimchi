@@ -22,6 +22,7 @@ import { type Static, Type } from "typebox"
 import {
 	type Answer,
 	type Question,
+	type QuestionType,
 	type QuestionnaireEffect,
 	type QuestionnaireEvent,
 	type QuestionnaireState,
@@ -45,7 +46,9 @@ interface QuestionnaireResult {
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
 const QuestionOptionSchema = Type.Object({
-	value: Type.String({ description: "The value returned when selected" }),
+	value: Type.String({
+		description: "Stable unique value returned when this option is selected.",
+	}),
 	label: Type.String({ description: "Display label for the option" }),
 	description: Type.Optional(Type.String({ description: "Optional help text shown below the label" })),
 })
@@ -60,12 +63,14 @@ const QuestionSchema = Type.Object({
 	prompt: Type.String({ description: "The full question text to display" }),
 	type: Type.Optional(
 		Type.Union([Type.Literal("single"), Type.Literal("multi"), Type.Literal("text"), Type.Literal("confirm")], {
-			description: "Question type: single (radio, default), multi (checkbox), text (free-text), confirm (yes/no).",
+			description:
+				"Question type: single (one choice, default), multi (multiple choices), text (free-text), confirm (yes/no).",
 		}),
 	),
 	options: Type.Optional(
 		Type.Array(QuestionOptionSchema, {
-			description: "Available choices. Required for single/multi. Ignored for text/confirm.",
+			description:
+				"Available choices. Required for single/multi. Optional for confirm to customize Yes/No labels; confirm values must remain yes/no.",
 		}),
 	),
 	allowOther: Type.Optional(
@@ -81,6 +86,12 @@ const QuestionnaireParams = Type.Object({
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+export type QuestionnaireQuestionTypeInput = QuestionType
+
+export function normalizeQuestionType(type: QuestionnaireQuestionTypeInput | undefined): QuestionType {
+	return type ?? "single"
+}
+
 function errorResult(
 	message: string,
 	questions: Question[] = [],
@@ -92,19 +103,26 @@ function errorResult(
 }
 
 function normalizeQuestion(q: Static<typeof QuestionSchema>, index: number): Question {
-	const type = q.type ?? "single"
+	const type = normalizeQuestionType(q.type)
+	const rawOptions = q.options ?? []
+	const normalizedOptions = rawOptions.map((opt) => ({
+		value: opt.value,
+		label: opt.label,
+		description: opt.description,
+	}))
+	const confirmOptions =
+		normalizedOptions.length > 0
+			? normalizedOptions
+			: [
+					{ value: "yes", label: "Yes" },
+					{ value: "no", label: "No" },
+				]
 	return {
 		id: q.id,
 		label: q.label || `Q${index + 1}`,
 		prompt: q.prompt,
 		type,
-		options:
-			type === "confirm"
-				? [
-						{ value: "yes", label: "Yes" },
-						{ value: "no", label: "No" },
-					]
-				: (q.options ?? []),
+		options: type === "confirm" ? confirmOptions : normalizedOptions,
 		allowOther: q.allowOther ?? type === "single",
 		required: q.required !== false,
 	}
@@ -114,6 +132,12 @@ function validateQuestions(questions: Question[]): string | undefined {
 	for (const q of questions) {
 		if ((q.type === "single" || q.type === "multi") && q.options.length === 0 && !q.allowOther) {
 			return `Question "${q.id}" is type "${q.type}" but has no options and allowOther is false.`
+		}
+		if (q.type === "confirm") {
+			const values = q.options.map((option) => option.value.toLowerCase())
+			if (values.length !== 2 || !values.includes("yes") || !values.includes("no")) {
+				return `Question "${q.id}" is type "confirm" but does not have exactly two options with values "yes" and "no".`
+			}
 		}
 	}
 	return undefined
@@ -149,15 +173,10 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 		name: "questionnaire",
 		label: "Questionnaire",
 		description:
-			"Ask the user one or more structured questions. Use for clarifying requirements, getting preferences, or confirming decisions before acting. Supports single-select (radio), multi-select (checkbox), free-text input, and yes/no confirmation. For a single question, shows a simple option list. For multiple questions, shows a tab-based interface. Prefer this over outputting questions as plain text.",
+			"Ask the user one or more structured questions. Use for clarifying requirements, getting preferences, or confirming decisions before acting. Supports single-select, multi-select, free-text input, and yes/no confirmation. For a single question, shows a simple option list. For multiple questions, shows a tab-based interface. Prefer this over outputting questions as plain text.",
 		parameters: QuestionnaireParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			if (!ctx.hasUI) {
-				return errorResult(
-					"Error: questionnaire requires interactive mode (no UI available). Rephrase your questions as text in your response instead.",
-				)
-			}
 			if (params.questions.length === 0) {
 				return errorResult("Error: No questions provided.")
 			}
@@ -166,6 +185,12 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 			const validationError = validateQuestions(questions)
 			if (validationError) {
 				return errorResult(`Error: ${validationError}`, questions)
+			}
+
+			if (!ctx.hasUI) {
+				return errorResult(
+					"Error: questionnaire requires interactive mode (no UI available). Rephrase your questions as text in your response instead.",
+				)
 			}
 
 			const isMulti = questions.length > 1

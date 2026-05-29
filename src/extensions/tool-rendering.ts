@@ -3120,7 +3120,7 @@ function renderMcpToolResult(result: any, expanded: boolean, isPartial: boolean,
 	return makeText(ctx.lastComponent, withBranch(`${statusText}\n${preview}`, theme))
 }
 
-function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, sp: (path: string) => string): string {
+export function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, sp: (path: string) => string): string {
 	switch (name) {
 		case "apply_patch": {
 			const patchText = getStringArg(args, "patchText", "patch_text")
@@ -3154,8 +3154,19 @@ function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, sp: (pat
 		case "question":
 			return summarizeText(getStringArg(args, "question") || "ask user", 72)
 		case "questionnaire": {
-			const questions = Array.isArray(args?.questions) ? args.questions.length : 0
-			return questions > 0 ? `${questions} questions` : theme.fg("muted", "questionnaire")
+			const qs = Array.isArray(args?.questions) ? (args.questions as Array<Record<string, unknown>>) : []
+			if (qs.length === 0) return theme.fg("muted", "questionnaire")
+			let firstText = ""
+			for (const key of ["question", "prompt", "text"]) {
+				const value = qs[0]?.[key]
+				if (typeof value === "string") {
+					firstText = value
+					break
+				}
+			}
+			if (!firstText) return `${qs.length} question${qs.length === 1 ? "" : "s"}`
+			if (qs.length === 1) return summarizeText(firstText, 72)
+			return `${summarizeText(firstText, 48)} ${theme.fg("muted", `(+${qs.length - 1} more)`)}`
 		}
 		case "context_tag":
 			return getStringArg(args, "name") || theme.fg("muted", "save point")

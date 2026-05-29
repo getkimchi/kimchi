@@ -6,7 +6,7 @@ import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
-import { getCliModeArg, isHelpOrVersionArgs } from "./cli-args.js"
+import { getCliModeArg, isHelpOrVersionArgs, isProtocolOrPrintMode } from "./cli-args.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
@@ -385,17 +385,17 @@ try {
 		mkdirSync(themesDir, { recursive: true })
 
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
-		// the kimchi-minimal-tints and terminal-colors extensions. Skip in ACP mode —
-		// stdout is the JSON-RPC channel and OSC escapes would corrupt the IDE's
-		// input stream.
-		if (!acpMode) {
+		// the kimchi-minimal-tints and terminal-colors extensions. Skip protocol
+		// and print modes: stdout belongs to the caller, and OSC escapes corrupt it.
+		const terminalStartupOutputAllowed = !isProtocolOrPrintMode(process.argv.slice(2))
+		if (terminalStartupOutputAllowed) {
 			await probeTerminalBackground()
 			await probeKittyKeyboardSupport()
 		}
 
 		// Emit warnings for terminals that don't support modifier-aware Enter.
 		// Runs after the keyboard-capability probe so the result is available.
-		emitTerminalCompatWarning(agentDir)
+		if (terminalStartupOutputAllowed) emitTerminalCompatWarning(agentDir)
 
 		// Compare contents and only write when they differ. Restarts in a second
 		// terminal must be byte-identical no-ops because pi runs `fs.watch` on the

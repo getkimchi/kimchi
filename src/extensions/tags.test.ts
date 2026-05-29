@@ -19,28 +19,59 @@ const testEnv: EnvironmentInfo = {
 type Handler = (event: unknown, ctx: unknown) => unknown
 const TEST_SESSION_ID = "test-session"
 
-function makePi(): ExtensionAPI & { fireSessionStart: () => Promise<void>; fireShutdown: () => void } {
-	const startHandlers: Handler[] = []
+type RegisteredTool = {
+	name: string
+	execute: (...args: unknown[]) => unknown
+}
+
+function makePi(): ExtensionAPI & {
+	fire: (event: string, payload?: unknown, ctx?: unknown) => Promise<unknown[]>
+	fireShutdown: () => void
+	getActiveTools: () => string[]
+	setActiveTools: (tools: string[]) => void
+	tools: Map<string, RegisteredTool>
+} {
 	const shutdownHandlers: Array<() => void> = []
-	const sessionContext = {
-		hasUI: false,
-		sessionManager: { getSessionId: () => TEST_SESSION_ID },
-	}
+	const handlers = new Map<string, Handler[]>()
+	const sessionStartCtx = { hasUI: false, sessionManager: { getSessionId: () => TEST_SESSION_ID } }
+	const tools = new Map<string, RegisteredTool>()
+	let activeTools: string[] = []
 	const pi = {
 		registerCommand: () => {},
-		registerTool: () => {},
-		on: (event: string, handler: Handler) => {
-			if (event === "session_start") startHandlers.push(handler)
-			if (event === "session_shutdown") shutdownHandlers.push(handler as () => void)
+		registerTool: (tool: RegisteredTool) => {
+			tools.set(tool.name, tool)
+			activeTools.push(tool.name)
 		},
-		fireSessionStart: async () => {
-			for (const handler of startHandlers) await handler({}, sessionContext)
+		getActiveTools: () => activeTools,
+		setActiveTools: (next: string[]) => {
+			activeTools = next
+		},
+		on: (event: string, handler: Handler) => {
+			const existing = handlers.get(event) ?? []
+			existing.push(handler)
+			handlers.set(event, existing)
+			if (event === "session_shutdown") shutdownHandlers.push(handler as () => void)
+			if (event === "session_start") handler({}, sessionStartCtx)
+		},
+		fire: async (event: string, payload: unknown = {}, ctx: unknown = {}) => {
+			const results: unknown[] = []
+			for (const handler of handlers.get(event) ?? []) {
+				results.push(await handler(payload, ctx))
+			}
+			return results
 		},
 		fireShutdown: () => {
 			for (const handler of shutdownHandlers) handler()
 		},
+		tools,
 	}
-	return pi as unknown as ExtensionAPI & { fireSessionStart: () => Promise<void>; fireShutdown: () => void }
+	return pi as unknown as ExtensionAPI & {
+		fire: (event: string, payload?: unknown, ctx?: unknown) => Promise<unknown[]>
+		fireShutdown: () => void
+		getActiveTools: () => string[]
+		setActiveTools: (tools: string[]) => void
+		tools: Map<string, RegisteredTool>
+	}
 }
 
 describe("isValidTag", () => {
@@ -99,10 +130,16 @@ describe("parseTag", () => {
 })
 
 describe("tags system prompt block", () => {
-	it("registers phase tagging instructions with the extension that owns set_phase", async () => {
+	const makeTagsPi = () => {
 		const pi = makePi()
 		tagsExtension(pi)
-		await pi.fireSessionStart()
+		return pi
+	}
+	const setPhase = (pi: ReturnType<typeof makeTagsPi>, phase = "explore") =>
+		pi.tools.get("set_phase")?.execute("call-1", { phase }, undefined, undefined, { hasUI: false })
+
+	it("registers phase tagging instructions with the extension that owns set_phase", async () => {
+		const pi = makeTagsPi()
 
 		try {
 			const result = buildSystemPrompt({
@@ -116,11 +153,24 @@ describe("tags system prompt block", () => {
 			})
 
 			expect(result).toContain("## Phase Tagging for Analytics")
-			expect(result).toContain("You must call `set_phase` before every block of work")
+			expect(result).toContain("Call `set_phase` when the work type changes")
+			expect(result).toContain("Subagents set their phase automatically from their persona")
+			expect(result).not.toContain("questionnaire")
 			expect(result.indexOf("## Phase Tagging for Analytics")).toBeLessThan(result.indexOf("## Available Tools"))
 		} finally {
 			pi.fireShutdown()
 		}
+	})
+
+	it("set_phase changes the current phase", async () => {
+		const pi = makeTagsPi()
+
+		const result = await setPhase(pi)
+
+		expect(result).toMatchObject({
+			content: [{ type: "text", text: "Phase changed to: explore" }],
+			details: { phase: "explore" },
+		})
 	})
 })
 

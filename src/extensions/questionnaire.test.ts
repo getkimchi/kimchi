@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest"
-import { formatAnswerText } from "./questionnaire.js"
+import { formatAnswerText, normalizeQuestionType } from "./questionnaire.js"
+
+describe("normalizeQuestionType", () => {
+	it("keeps canonical question types unchanged", () => {
+		expect(normalizeQuestionType(undefined)).toBe("single")
+		expect(normalizeQuestionType("single")).toBe("single")
+		expect(normalizeQuestionType("multi")).toBe("multi")
+		expect(normalizeQuestionType("text")).toBe("text")
+		expect(normalizeQuestionType("confirm")).toBe("confirm")
+	})
+})
 
 describe("formatAnswerText", () => {
 	it("formats a single-select answer with index", () => {

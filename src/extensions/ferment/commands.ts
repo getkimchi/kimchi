@@ -164,6 +164,11 @@ export interface StartInteractiveFermentDeps {
 	runtime?: FermentRuntime
 }
 
+async function waitForHeadlessCommandTurn(ctx: FermentUiContext & ExtensionCommandContext): Promise<void> {
+	if (ctx.hasUI) return
+	await ctx.waitForIdle()
+}
+
 export async function startInteractiveFerment({
 	pi,
 	ctx,
@@ -186,11 +191,49 @@ export async function startInteractiveFerment({
 	})
 	if (!rawIntent) return
 
-	const storage = runtime.getStorage()
-	ctx.ui.setStatus?.("ferment-scoping", "Fermenting · creating…")
+	// Echo the typed intent into the transcript before the host starts working.
+	// /ferment new "X" with an inline title skips this; the title was visible in
+	// the slash command itself. The tool path (request_ferment_workflow) also skips
+	// because its tool call serves the same purpose.
 	sendFermentRequestMessage(pi, rawIntent)
+	await startFermentForIntent({ pi, ctx, runtime, rawIntent })
+}
+
+/**
+ * Create a draft ferment and run the interactive scoping flow with a
+ * pre-supplied intent. Shared between the slash command (after editor prompt)
+ * and the `request_ferment_workflow` tool (after the agent confirms with the
+ * user via questionnaire). Returns `undefined` when another ferment is already
+ * running and the call is refused.
+ */
+export async function startFermentForIntent({
+	pi,
+	ctx,
+	runtime = defaultFermentRuntime,
+	rawIntent,
+	title,
+}: {
+	pi: ExtensionAPI
+	ctx: FermentUiContext
+	runtime?: FermentRuntime
+	rawIntent: string
+	title?: string
+}): Promise<{ name: string } | undefined> {
+	const active = runtime.getActive()
+	if (active && active.status === "running") {
+		ctx.ui.notify(
+			`A ferment is already running: "${active.name}". Use /ferment progress to check status or /ferment switch to change.`,
+		)
+		return undefined
+	}
+	const storage = runtime.getStorage()
+	ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · creating…")
 	try {
-		const shortName = deriveDraftFermentTitle(rawIntent)
+		// Mirror the /ferment new path: prompt the user about git init if needed.
+		// ui.confirm being available means the user can decline; ferment proceeds
+		// either way with whatever branch/commit info is present.
+		await ensureGitRepo({ ui: ctx.ui })
+		const shortName = deriveDraftFermentTitle(title ?? rawIntent)
 		const f = storage.create(shortName, rawIntent)
 		setActiveFermentAndApplyProfile(pi, runtime, f)
 		appendRefEntry(pi, f.id)
@@ -203,8 +246,10 @@ export async function startInteractiveFerment({
 		)
 
 		await runScopingFlow(f, pi, ctx, runtime, rawIntent)
+		return { name: f.name }
 	} catch (err) {
 		ctx.ui.notify(err instanceof FermentError ? err.message : "Create failed.")
+		return undefined
 	} finally {
 		ctx.ui.setStatus?.("ferment-scoping", undefined)
 	}
@@ -851,6 +896,7 @@ export class FermentCommandController {
 					},
 					{ triggerTurn: true },
 				)
+				await waitForHeadlessCommandTurn(ctx)
 			} catch (err) {
 				ctx.ui.notify(err instanceof FermentError ? err.message : "One-shot create failed.")
 			} finally {
@@ -903,6 +949,7 @@ export class FermentCommandController {
 			)
 
 			await runScopingFlow(f, pi, ctx, runtime, scopingIntent)
+			await waitForHeadlessCommandTurn(ctx)
 		} catch (err) {
 			ctx.ui.notify(err instanceof FermentError ? err.message : "Create failed.")
 		} finally {

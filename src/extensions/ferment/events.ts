@@ -14,7 +14,7 @@ import { loadFermentSilently, resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
-import { isRestoringModel, setRestoringModel } from "./state.js"
+import { clearActiveFermentId, getActiveFermentId, isRestoringModel, setRestoringModel } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import {
 	applyFermentRuntimeToolProfile,
@@ -216,7 +216,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 	})
 
 	function recoverStuckFerments(): void {
-		// On a fresh start with no KIMCHI_ACTIVE_FERMENT, any ferment in
+		// On a fresh start with no active ferment marker, any ferment in
 		// "running" or "planned" must be stale — the previous process died
 		// without graceful shutdown. Pause them so their orphaned steps are
 		// reset to "pending" by handlePause and the engineer can restart them.
@@ -249,7 +249,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		runtime.clearAllPendingPlanReviews()
 		clearFermentCache()
 
-		const envId = process.env.KIMCHI_ACTIVE_FERMENT
+		const envId = getActiveFermentId()
 		if (!envId) {
 			try {
 				recoverStuckFerments()
@@ -261,7 +261,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 
 		if (envId) {
 			pendingOneshot = false
-			Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
+			clearActiveFermentId()
 
 			if (ctx?.hasUI && ctx.ui?.select) {
 				// F27: ask user before auto-resuming so the planner doesn't

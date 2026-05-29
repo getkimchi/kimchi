@@ -38,3 +38,11 @@ export function getCliModeArg(args: string[]): string | undefined {
 export function isHelpOrVersionArgs(args: string[]): boolean {
 	return args.some((a) => a === "--help" || a === "-h" || a === "--version" || a === "-v")
 }
+
+// Modes where stdout belongs to the caller (protocol channel or user-facing
+// print output). Terminal OSC writes and compat warnings must be suppressed
+// because they corrupt that stream.
+export function isProtocolOrPrintMode(args: string[]): boolean {
+	const mode = getCliModeArg(args)
+	return mode === "json" || mode === "rpc" || mode === "acp" || args.includes("--print") || args.includes("-p")
+}

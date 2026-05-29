@@ -101,6 +101,7 @@ function createHarness() {
 		hasUI: false,
 		ui: { notify: vi.fn() },
 		abort: vi.fn(),
+		waitForIdle: vi.fn().mockResolvedValue(undefined),
 	} as unknown as ExtensionCommandContext
 	return { storage, runtime, pi, ctx }
 }
@@ -169,6 +170,7 @@ describe("FermentCommandController", () => {
 			}),
 			{ triggerTurn: true },
 		)
+		expect(h.ctx.waitForIdle).toHaveBeenCalledTimes(1)
 	})
 
 	it("accepts an inline new title without opening an editor in UI mode", async () => {
@@ -375,7 +377,7 @@ describe("FermentCommandController", () => {
 		expect(h.storage.get(ferment.id)?.status).toBe("draft")
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "propose_ferment_scoping"])
 		expect(h.runtime.getContinuationPolicy()).toBe("manual")
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining('Exited Ferment mode for "Draft Exit"'))
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
@@ -405,7 +407,7 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ status: "paused" }))
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "propose_ferment_scoping"])
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
 	})
 
@@ -423,7 +425,7 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ status: "paused" }))
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "propose_ferment_scoping"])
 	})
 
 	it("/ferment exit leaves paused ferments paused while clearing active mode", async () => {
@@ -440,7 +442,7 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenCalledTimes(1)
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "propose_ferment_scoping"])
 	})
 
 	it("/ferment exit detaches terminal ferments without mutating lifecycle", async () => {
@@ -457,7 +459,7 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenCalledTimes(1)
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "propose_ferment_scoping"])
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(
 			'Exited Ferment mode for "Complete Exit". It remains complete and is still available from /ferment list.',
 		)
@@ -562,6 +564,26 @@ describe("FermentCommandController", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith('Usage: /ferment one-shot "description of what to build"')
 		expect(h.storage.list()).toHaveLength(0)
 		expect(h.pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("waits for headless one-shot turns before returning", async () => {
+		const h = createHarness()
+		const controller = new FermentCommandController()
+
+		const result = await controller.execute(
+			{ type: "one-shot", intent: "fix the failing smoke test" },
+			{ raw: 'one-shot "fix the failing smoke test"', pi: h.pi, ctx: h.ctx, runtime: h.runtime },
+		)
+
+		expect(result).toEqual({ handled: true })
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_oneshot_nudge",
+				content: [expect.objectContaining({ text: expect.stringContaining("fix the failing smoke test") })],
+			}),
+			{ triggerTurn: true },
+		)
+		expect(h.ctx.waitForIdle).toHaveBeenCalledTimes(1)
 	})
 
 	it("uses the multi-line editor for free-form goal revisions", async () => {

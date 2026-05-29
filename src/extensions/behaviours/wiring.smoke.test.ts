@@ -21,6 +21,7 @@ import type { Behaviour } from "./types.js"
 import { BEHAVIOUR_BODY_TYPE, wireBehaviours } from "./wiring.js"
 
 type Handler = (event: unknown, ctx?: unknown) => unknown
+const TEST_SESSION_ID = "test-session"
 
 interface Appended {
 	type: string
@@ -57,9 +58,13 @@ class FakePi {
 
 	async fire<R = unknown>(event: string, payload: unknown, ctx: unknown = {}): Promise<R[]> {
 		const list = this.handlers.get(event) ?? []
+		const eventCtx =
+			event === "session_start"
+				? { ...(ctx as Record<string, unknown>), sessionManager: { getSessionId: () => TEST_SESSION_ID } }
+				: ctx
 		const out: R[] = []
 		for (const h of list) {
-			const r = await h(payload, ctx)
+			const r = await h(payload, eventCtx)
 			if (r !== undefined) out.push(r as R)
 		}
 		return out
@@ -128,8 +133,6 @@ const testEnv: EnvironmentInfo = {
 	localDate: "2026-01-01",
 	isGitRepo: false,
 }
-const TEST_SESSION_ID = "test-session"
-
 describe("wireBehaviours — session_start", () => {
 	it("appends behaviour_loaded for a session-triggered behaviour", async () => {
 		const pi = setupWired([ghCli])
