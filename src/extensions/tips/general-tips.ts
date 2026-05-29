@@ -22,6 +22,11 @@ export const GENERAL_TIPS = [
 		message: "Use `/model` to select single model for entire session",
 	},
 	{
+		id: "agents",
+		scope: "general",
+		message: "Use `/agents` to manage agents or display running agents sessions",
+	},
+	{
 		id: "add-tags",
 		scope: "general",
 		message: "Tag requests with `/tags add key:value`, e.g. `project:myapp` `team:backend`.",
