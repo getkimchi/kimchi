@@ -76,6 +76,8 @@ let graceTurns = 5
 
 const INACTIVITY_CHECK_INTERVAL = 10_000
 const DEFAULT_INACTIVITY_TIMEOUT = 120_000
+/** Default wall-clock timeout for subagents (seconds). Prevents hangs on blocking operations. */
+const DEFAULT_MAX_DURATION = 900
 
 /** Get the grace turns value. */
 export function getGraceTurns(): number {
@@ -531,7 +533,7 @@ async function runAgentInner(
 		}
 	}, INACTIVITY_CHECK_INTERVAL)
 
-	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration
+	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION
 	const durationTimer = effectiveMaxDuration
 		? setTimeout(() => {
 				aborted = true
