@@ -18,13 +18,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
-import { clearFermentStartApproval, recordFermentStartApproval } from "../questionnaire.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { clearAllPendingScopes, getPendingScope, setPendingScope } from "./scoping.js"
 import {
 	clearAllScopingGates,
 	clearAllStepStarts,
 	getActive,
+	getActiveFermentId,
 	markScopingConfirmed,
 	markScopingInteractive,
 	setActive,
@@ -113,13 +113,13 @@ function createHarness(): Harness {
 	return { storage, runtime, tempDir, tools, pi, call }
 }
 
-function createWorkflowCtx() {
+function createWorkflowCtx(options: { confirm?: boolean } = {}) {
 	return {
 		hasUI: true,
 		ui: {
 			notify: vi.fn(),
 			setStatus: vi.fn(),
-			confirm: vi.fn(async () => false),
+			confirm: vi.fn(async () => options.confirm ?? false),
 		},
 	}
 }
@@ -150,17 +150,16 @@ beforeEach(() => {
 	clearAllScopingGates()
 	clearAllPendingScopes()
 	clearAllPendingPlanReviews()
-	clearFermentStartApproval()
 	setActive(undefined)
 })
 
 afterEach(() => {
+	vi.unstubAllEnvs()
 	clearFermentCache()
 	clearAllStepStarts()
 	clearAllScopingGates()
 	clearAllPendingScopes()
 	clearAllPendingPlanReviews()
-	clearFermentStartApproval()
 	setActive(undefined)
 })
 
@@ -243,94 +242,78 @@ function loadFerment(id: string): Ferment {
 // ─── request_ferment_workflow ────────────────────────────────────────────────
 
 describe("request_ferment_workflow approval gate", () => {
-	const startQuestion = {
-		id: "start",
-		label: "Start",
-		prompt: "This looks like multi-phase work — start a ferment for it?",
-		type: "confirm" as const,
-		options: [
-			{ value: "yes", label: "Yes, start the ferment" },
-			{ value: "no", label: "No, handle it inline" },
-		],
-		allowOther: false,
-		required: true,
-	}
-	const yesAnswer = { id: "start", value: "yes", label: "Yes, start the ferment", wasCustom: false, index: 1 }
 	const approvedIntent = "Find improvements to this extension, but do not implement anything until I approve the plan."
-	const requestWorkflow = (params: { title?: string; intent?: string }) =>
-		h.call(
-			"request_ferment_workflow",
-			{ title: "Approved Ferment", intent: approvedIntent, ...params },
-			createWorkflowCtx(),
+	const requestWorkflow = (params: { title?: string; intent?: string }, ctx = createWorkflowCtx()) =>
+		h.call("request_ferment_workflow", { title: "Approved Ferment", intent: approvedIntent, ...params }, ctx)
+
+	it("asks the host for approval and refuses when the user declines", async () => {
+		const ctx = createWorkflowCtx({ confirm: false })
+		const text = err(
+			await requestWorkflow({ title: "No Consent", intent: "Find improvements to this extension." }, ctx),
 		)
-	const approveStart = () => recordFermentStartApproval("ferment_start_approval", [startQuestion], [yesAnswer])
 
-	it("refuses to start when the user has not approved the start-ferment question", async () => {
-		const text = err(await requestWorkflow({ title: "No Consent", intent: "Find improvements to this extension." }))
-
-		expect(text).toContain("request_ferment_workflow refused")
-		expect(text).toContain("explicitly approved starting a ferment")
+		expect(ctx.ui.confirm).toHaveBeenCalledWith(
+			"Start Ferment Workflow",
+			expect.stringContaining('Start a Ferment workflow for "No Consent"?'),
+		)
+		expect(text).toContain("request_ferment_workflow cancelled")
+		expect(text).toContain("user declined")
 		expect(getActive()).toBeUndefined()
 	})
 
-	it("starts after a yes answer to the start-ferment question", async () => {
-		approveStart()
+	it("starts after host approval", async () => {
+		const ctx = createWorkflowCtx({ confirm: true })
 
-		const text = ok(await requestWorkflow({}))
+		const text = ok(await requestWorkflow({}, ctx))
 
 		expect(text).toContain('Ferment "Approved Ferment" created')
 		expect(getActive()?.status).toBe("draft")
 		expect(getActive()?.description).toBe(
 			"Find improvements to this extension, but do not implement anything until I approve the plan.",
 		)
-		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBe(getActive()?.id)
+		expect(getActiveFermentId()).toBe(getActive()?.id)
 	})
 
-	it("does not consume approval when intent is invalid", async () => {
-		approveStart()
+	it("validates intent before asking for host approval", async () => {
+		const ctx = createWorkflowCtx({ confirm: true })
 
-		const first = err(await requestWorkflow({ intent: "  " }))
+		const first = err(await requestWorkflow({ intent: "  " }, ctx))
 		expect(first).toContain('Field "intent" must be the full non-empty user request')
+		expect(ctx.ui.confirm).not.toHaveBeenCalled()
 
-		const retry = ok(await requestWorkflow({ intent: "Find improvements to this extension." }))
+		const retry = ok(await requestWorkflow({ intent: "Find improvements to this extension." }, ctx))
 		expect(retry).toContain('Ferment "Approved Ferment" created')
 	})
 
 	it("bypasses the approval gate in yolo mode", async () => {
-		const previous = process.env.KIMCHI_PERMISSIONS
-		process.env.KIMCHI_PERMISSIONS = "yolo"
-		try {
-			const text = ok(
-				await requestWorkflow({
+		vi.stubEnv("KIMCHI_PERMISSIONS", "yolo")
+		const ctx = createWorkflowCtx({ confirm: false })
+		const text = ok(
+			await requestWorkflow(
+				{
 					title: "Yolo Ferment",
 					intent: "Create a Go app with Gin and integrate Kimchi plugin logic.",
-				}),
-			)
+				},
+				ctx,
+			),
+		)
 
-			expect(text).toContain('Ferment "Yolo Ferment" created')
-			expect(getActive()?.status).toBe("draft")
-			expect(getActive()?.description).toBe("Create a Go app with Gin and integrate Kimchi plugin logic.")
-		} finally {
-			process.env.KIMCHI_PERMISSIONS = previous
-		}
+		expect(ctx.ui.confirm).not.toHaveBeenCalled()
+		expect(text).toContain('Ferment "Yolo Ferment" created')
+		expect(getActive()?.status).toBe("draft")
+		expect(getActive()?.description).toBe("Create a Go app with Gin and integrate Kimchi plugin logic.")
 	})
 
 	it("does not bypass approval when yolo came from an active ferment env", async () => {
-		const previousPermissions = process.env.KIMCHI_PERMISSIONS
-		const previousActive = process.env.KIMCHI_ACTIVE_FERMENT
-		process.env.KIMCHI_PERMISSIONS = "yolo"
-		process.env.KIMCHI_ACTIVE_FERMENT = "existing-ferment"
-		try {
-			const text = err(
-				await requestWorkflow({ title: "Blocked Ferment", intent: "Find improvements to this extension." }),
-			)
+		vi.stubEnv("KIMCHI_PERMISSIONS", "yolo")
+		vi.stubEnv("KIMCHI_ACTIVE_FERMENT", "existing-ferment")
+		const text = err(
+			await requestWorkflow({ title: "Blocked Ferment", intent: "Find improvements to this extension." }),
+		)
 
-			expect(text).toContain("request_ferment_workflow refused")
-			expect(getActive()).toBeUndefined()
-		} finally {
-			process.env.KIMCHI_PERMISSIONS = previousPermissions
-			process.env.KIMCHI_ACTIVE_FERMENT = previousActive
-		}
+		expect(text).toContain("request_ferment_workflow refused")
+		expect(text).toContain("another ferment appears to be active")
+		expect(getActive()).toBeUndefined()
 	})
 })
 
@@ -930,7 +913,7 @@ describe("complete_ferment", () => {
 		const id = await createFerment("Done Test")
 		await scopeFerment(id)
 		expect(getActive()?.id).toBe(id)
-		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBe(id)
+		expect(getActiveFermentId()).toBe(id)
 		const s = h.storage
 		s.skipPhase(id, "phase-1", "skipped")
 		s.skipPhase(id, "phase-2", "skipped")
@@ -943,7 +926,7 @@ describe("complete_ferment", () => {
 		)
 		expect(loadFerment(id).status).toBe("complete")
 		expect(getActive()).toBeUndefined()
-		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBeUndefined()
+		expect(getActiveFermentId()).toBeUndefined()
 	})
 
 	it("computes overall grade from phase grades", async () => {

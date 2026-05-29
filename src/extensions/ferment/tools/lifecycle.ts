@@ -19,7 +19,6 @@ import {
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
-import { consumeFermentStartApproval } from "../../questionnaire.js"
 import { askUser, askUserForm } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
 import { startFermentForIntent } from "../commands.js"
@@ -34,6 +33,7 @@ import { readLatestPhaseReviews } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
 import type { PendingScope } from "../scoping.js"
+import { hasActiveFerment } from "../state.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -673,8 +673,19 @@ export async function completeFerment(
 	)
 }
 
-function canStartFermentWithoutQuestionnaire(): boolean {
-	return process.env.KIMCHI_PERMISSIONS === "yolo" && !process.env.KIMCHI_ACTIVE_FERMENT
+function canAutoApproveFermentStart(): boolean {
+	return process.env.KIMCHI_PERMISSIONS === "yolo" && !hasActiveFerment()
+}
+
+async function confirmFermentStart(ctx: unknown, title: string, intent: string): Promise<boolean | undefined> {
+	const hostCtx = ctx as
+		| {
+				hasUI?: boolean
+				ui?: { confirm?: (title: string, message?: string) => Promise<boolean> }
+		  }
+		| undefined
+	if (!hostCtx?.hasUI || !hostCtx.ui?.confirm) return undefined
+	return hostCtx.ui.confirm("Start Ferment Workflow", `Start a Ferment workflow for "${title}"?\n\n${intent}`)
 }
 
 export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
@@ -684,7 +695,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 		name: FERMENT_TOOLS.REQUEST_WORKFLOW,
 		label: "Start Ferment Workflow",
 		description:
-			'Start the ferment workflow (interactive scoping → planner) on the user\'s behalf. Call this after the user has explicitly answered "yes" to the questionnaire asking if they want to start a ferment; in yolo permissions mode, the default answer is yes, so call this directly without the questionnaire. Provide a concise 3-5 word title and the full original user intent. The host will create the draft, kick off scoping, and you will see a planner supplement on the next turn. Refuses if another ferment is already running.',
+			"Request the ferment workflow (interactive scoping -> planner) for substantive multi-step work. Provide a concise 3-5 word title and the full original user intent. The host asks the user for explicit confirmation before creating the draft; in yolo permissions mode, the host auto-approves. Refuses if another ferment is already running.",
 		parameters: Type.Object({
 			title: Type.String({
 				description: "Concise 3-5 word title for the new ferment (e.g. 'Rewrite login flow').",
@@ -699,10 +710,23 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 			if (!title) return toolErr('Field "title" must be a non-empty string.')
 			const intent = typeof params.intent === "string" ? params.intent.trim() : ""
 			if (!intent) return toolErr('Field "intent" must be the full non-empty user request.')
-			if (!canStartFermentWithoutQuestionnaire() && !consumeFermentStartApproval()) {
+			if (hasActiveFerment()) {
 				return toolErr(
-					'request_ferment_workflow refused — the user has not explicitly approved starting a ferment. First call questionnaire with purpose "ferment_start_approval" and exactly one confirm question asking whether to start a ferment. The host will render canonical Yes/No options. If the user answers Yes, call request_ferment_workflow again. In yolo mode the default answer is Yes and this approval gate is bypassed.',
+					"request_ferment_workflow refused — another ferment appears to be active. Continue that ferment or ask the user before starting a separate workflow.",
 				)
+			}
+			if (!canAutoApproveFermentStart()) {
+				const approved = await confirmFermentStart(ctx, title, intent)
+				if (approved === undefined) {
+					return toolErr(
+						"request_ferment_workflow refused — interactive host approval is required before starting a ferment, but no confirmation UI is available. Ask the user directly whether they want a ferment workflow, then retry when interactive UI is available.",
+					)
+				}
+				if (!approved) {
+					return toolErr(
+						"request_ferment_workflow cancelled — the user declined starting a ferment. Continue inline or ask only decision-blocking clarification.",
+					)
+				}
 			}
 			const result = await startFermentForIntent({
 				pi,

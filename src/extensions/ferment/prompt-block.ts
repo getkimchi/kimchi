@@ -89,18 +89,16 @@ function buildPausedWarning(f: Ferment): string {
 
 const IDLE_FERMENT_HINT = `## Ferment Workflow (optional)
 
-Ferment is a host-owned plan → build → review workflow. Start it only with \`request_ferment_workflow\` after the user agrees via \`questionnaire\`; never create or edit \`.kimchi/\` files yourself. In yolo permissions mode the answer defaults to Yes: skip the questionnaire and call \`request_ferment_workflow\` directly.
+Ferment is a host-owned plan → build → review workflow. Start it only with \`request_ferment_workflow\`; never create or edit \`.kimchi/\` files yourself. The tool asks the user for explicit host confirmation before creating the workflow. In yolo permissions mode, the host auto-approves.
 
 Before exploration, classify the user's text only:
 - Clear small task: handle inline.
-- Substantive, multi-step, broad discovery, or explicit ferment/planning request: offer ferment first.
+- Substantive, multi-step, broad discovery, or explicit ferment/planning request: call \`request_ferment_workflow\` first.
 - Vague non-ferment request: ask only decision-blocking clarification, then act inline.
 Do not call \`set_phase\` or discovery tools *until* you have classified the request and either called \`request_ferment_workflow\`, chosen inline work, or asked necessary non-ferment clarification.
-Treat open-ended analysis of an existing app as substantive: ask the ferment offer before analysis, file reads, or phase tagging.
+Treat open-ended analysis of an existing app as substantive: request the ferment workflow before analysis, file reads, or phase tagging.
 
-Ferment offer: call \`questionnaire\` with \`purpose: "ferment_start_approval"\` and exactly one confirm question. Phrase the question naturally from the request; the host forces exactly two options, Yes and No. Do not answer with a prose workflow menu first.
-
-If yes, call \`request_ferment_workflow\` with a concise \`title\` and an \`intent\` containing the full original user request, then stop; the host queues scoping. If no, continue inline. Never block on this.`
+Call \`request_ferment_workflow\` with a concise \`title\` and an \`intent\` containing the full original user request, then stop; the host handles confirmation and queues scoping. If the user declines, continue inline. Never block on this.`
 
 /**
  * Renders the ferment-specific system-prompt block. Registered as a

@@ -155,31 +155,24 @@ describe("tags system prompt block", () => {
 			expect(result).toContain("## Phase Tagging for Analytics")
 			expect(result).toContain("Do not call `set_phase` as the first tool after a user request")
 			expect(result).toContain("Use `set_phase` only after the initial request has been classified")
-			expect(result).toContain("before `request_ferment_workflow`")
-			expect(result).toContain("ask the ferment-offer questionnaire before analysis")
+			expect(result).toContain("choose the request path first")
+			expect(result).not.toContain("questionnaire")
 			expect(result.indexOf("## Phase Tagging for Analytics")).toBeLessThan(result.indexOf("## Available Tools"))
 		} finally {
 			pi.fireShutdown()
 		}
 	})
 
-	it("blocks exploration tools after premature set_phase until questionnaire", async () => {
+	it("rejects premature set_phase without blocking later tools", async () => {
 		const pi = makeTagsPi()
 
 		await pi.fire("input", { text: "Find improvements to this extension" })
 		const rejection = await setPhase(pi)
 		expect(rejection).toMatchObject({ isError: true, details: { phase: "explore", premature: true } })
-		expect(JSON.stringify(rejection)).toContain("call `questionnaire`")
+		expect(JSON.stringify(rejection)).toContain("Choose the request path first")
 
 		const [readResult] = await pi.fire("tool_call", { toolName: "read" })
-		expect(readResult).toEqual(expect.objectContaining({ block: true }))
-		expect(JSON.stringify(readResult)).toContain("questionnaire")
-
-		const [questionnaireResult] = await pi.fire("tool_call", { toolName: "questionnaire" })
-		expect(questionnaireResult).toEqual({ block: false })
-
-		const [nextReadResult] = await pi.fire("tool_call", { toolName: "read" })
-		expect(nextReadResult).toBeUndefined()
+		expect(readResult).toBeUndefined()
 	})
 
 	it("hides set_phase until request classification starts", async () => {
@@ -191,7 +184,7 @@ describe("tags system prompt block", () => {
 
 		expect(pi.getActiveTools()).not.toContain("set_phase")
 
-		await pi.fire("tool_execution_start", { toolName: "questionnaire" })
+		await pi.fire("tool_execution_start", { toolName: "read" })
 
 		expect(pi.getActiveTools()).toContain("set_phase")
 	})
@@ -200,7 +193,7 @@ describe("tags system prompt block", () => {
 		const pi = makeTagsPi()
 
 		await pi.fire("input", { source: "interactive", text: "Find improvements to this extension" })
-		await pi.fire("tool_execution_start", { toolName: "questionnaire" })
+		await pi.fire("tool_execution_start", { toolName: "read" })
 
 		const result = await setPhase(pi)
 
@@ -208,26 +201,6 @@ describe("tags system prompt block", () => {
 			content: [{ type: "text", text: "Phase changed to: explore" }],
 			details: { phase: "explore" },
 		})
-	})
-
-	it("allows immediate set_phase when an executable ferment is active", async () => {
-		const previous = process.env.KIMCHI_ACTIVE_FERMENT
-		process.env.KIMCHI_ACTIVE_FERMENT = "ferment-1"
-		try {
-			const pi = makeTagsPi()
-
-			await pi.fire("input", { source: "interactive", text: "Continue" })
-
-			const result = await setPhase(pi, "build")
-
-			expect(result).toMatchObject({
-				content: [{ type: "text", text: "Phase changed to: build" }],
-				details: { phase: "build" },
-			})
-		} finally {
-			if (previous === undefined) Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
-			else process.env.KIMCHI_ACTIVE_FERMENT = previous
-		}
 	})
 })
 

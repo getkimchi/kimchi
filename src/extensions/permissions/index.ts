@@ -3,6 +3,7 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
+import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "../ferment/state.js"
 import { FERMENT_TOOLS, isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
@@ -81,12 +82,7 @@ export function getCurrentPermissionsMode(): PermissionMode {
 	return _currentPermissionsMode
 }
 
-/** Called by the ferment extension whenever a ferment becomes active or is cleared. */
-let _onFermentActiveChange: ((hasActiveFerment: boolean) => void) | undefined
-
-export function notifyFermentActive(hasActiveFerment: boolean): void {
-	_onFermentActiveChange?.(hasActiveFerment)
-}
+export { notifyFermentActive }
 
 let _modeChangeListener: ((mode: PermissionMode) => void) | undefined
 
@@ -248,12 +244,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		_modeChangeListener?.(next)
 	}
 
-	// Wire the cross-extension callback: ferment calls notifyFermentActive() when
-	// a ferment is activated or cleared, so permissions can switch to/from yolo.
-	_onFermentActiveChange = (hasActiveFerment: boolean) => {
+	// Ferment calls notifyFermentActive() when a ferment is activated or cleared,
+	// so permissions can switch to/from yolo.
+	onActiveFermentChange((hasActive: boolean) => {
 		if (cliMode) return // explicit CLI flag always wins
 		const previousMode = currentMode()
-		if (hasActiveFerment) {
+		if (hasActive) {
 			runtimeMode = "yolo"
 		} else {
 			// Only clear runtimeMode if we set it for ferment (not if user changed it manually)
@@ -268,7 +264,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			maybeShowYoloWarning(_lastCtx, currentMode())
 		}
 		_modeChangeListener?.(nextMode)
-	}
+	})
 
 	function doLoadConfig(ctx: ExtensionContext): { errors: string[] } {
 		const { loaded: lc, errors } = loadConfig({
@@ -360,7 +356,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// Active ferment → auto-yolo so scoping/lifecycle work can proceed without approval prompts.
 		// No env var is set before the user explicitly approves ferment creation.
 		// Only applies when no explicit CLI mode flag was given.
-		if (!cliMode && process.env.KIMCHI_ACTIVE_FERMENT) {
+		if (!cliMode && hasActiveFerment()) {
 			runtimeMode = "yolo"
 		}
 

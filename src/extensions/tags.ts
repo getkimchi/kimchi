@@ -57,7 +57,7 @@ const PHASE_TAGGING_PROMPT = `## Phase Tagging for Analytics
 
 The session starts in \`explore\` phase by default. Do not call \`set_phase\` as the first tool after a user request.
 Use \`set_phase\` only after the initial request has been classified and the execution path is chosen. Pick one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\` when the work type changes.
-Do not call \`set_phase\` before the ferment-offer questionnaire or before \`request_ferment_workflow\`. On fresh requests, decide from the user's text whether the work is small enough to handle inline or broad enough to need a ferment offer. Broad codebase/product discovery where the output is a plan, audit, backlog, or coordinated change set should ask the ferment-offer questionnaire before analysis. If \`set_phase\` is rejected as premature, recover by calling \`questionnaire\` next; do not continue with filesystem, shell, web, or MCP exploration. Only one phase is active at a time — the most recent call wins.`
+If \`set_phase\` is rejected as premature, choose the request path first and do not repeat \`set_phase\` until another tool has started. Only one phase is active at a time — the most recent call wins.`
 
 function toolNameFromEvent(event: unknown): string | undefined {
 	if (!event || typeof event !== "object") return undefined
@@ -552,7 +552,6 @@ export default function tagsExtension(pi: ExtensionAPI) {
 	const phaseToolVisibility = createToolVisibility(pi)
 	tagManagerInstance = tagManager
 	let firstUserRequestToolMustNotBeSetPhase = false
-	let questionnaireRequiredAfterPrematurePhase = false
 
 	// Register the /tags command
 	pi.registerCommand("tags", {
@@ -589,14 +588,13 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const phase = params.phase as Phase
 
-			if (firstUserRequestToolMustNotBeSetPhase && !process.env.KIMCHI_ACTIVE_FERMENT) {
-				questionnaireRequiredAfterPrematurePhase = true
+			if (firstUserRequestToolMustNotBeSetPhase) {
 				return {
 					isError: true,
 					content: [
 						{
 							type: "text",
-							text: "`set_phase` is premature before request classification. Your next tool must call `questionnaire`: ask exactly one confirm question about whether to start a ferment. Do not call ls/read/find/grep/bash/web/MCP tools before that questionnaire.",
+							text: "`set_phase` is premature before request classification. Choose the request path first, then call `set_phase` after another tool has started the work.",
 						},
 					],
 					details: { phase, premature: true, model: ctx.model?.id },
@@ -648,23 +646,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 	pi.on("input", async (event) => {
 		if (isUserInput(event)) {
 			firstUserRequestToolMustNotBeSetPhase = true
-			questionnaireRequiredAfterPrematurePhase = false
-			if (process.env.KIMCHI_ACTIVE_FERMENT) phaseToolVisibility.enable(["set_phase"])
-			else phaseToolVisibility.disable(["set_phase"])
-		}
-	})
-
-	pi.on("tool_call", async (event) => {
-		const toolName = toolNameFromEvent(event)
-		if (!toolName || !questionnaireRequiredAfterPrematurePhase || process.env.KIMCHI_ACTIVE_FERMENT) return
-		if (toolName === "questionnaire") {
-			questionnaireRequiredAfterPrematurePhase = false
-			return { block: false }
-		}
-		return {
-			block: true,
-			reason:
-				"`set_phase` was already rejected as premature for this user request. The next tool must be `questionnaire` to ask whether to start a ferment; do not explore with other tools first.",
+			phaseToolVisibility.disable(["set_phase"])
 		}
 	})
 

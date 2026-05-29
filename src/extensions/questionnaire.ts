@@ -43,17 +43,12 @@ interface QuestionnaireResult {
 	cancelled: boolean
 }
 
-let fermentStartApprovalAt: number | undefined
-
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
 const QuestionOptionSchema = Type.Object({
-	value: Type.Optional(
-		Type.String({
-			description: "The value returned when selected. Defaults to the option's `id` or `label` if omitted.",
-		}),
-	),
-	id: Type.Optional(Type.String({ description: "Stable id for the option. Used as `value` when `value` is omitted." })),
+	value: Type.String({
+		description: "Stable unique value returned when this option is selected.",
+	}),
 	label: Type.String({ description: "Display label for the option" }),
 	description: Type.Optional(Type.String({ description: "Optional help text shown below the label" })),
 })
@@ -67,20 +62,10 @@ const QuestionSchema = Type.Object({
 	),
 	prompt: Type.String({ description: "The full question text to display" }),
 	type: Type.Optional(
-		Type.Union(
-			[
-				Type.Literal("single"),
-				Type.Literal("multi"),
-				Type.Literal("text"),
-				Type.Literal("confirm"),
-				Type.Literal("radio"),
-				Type.Literal("checkbox"),
-			],
-			{
-				description:
-					"Question type: single/radio (one choice, default), multi/checkbox (multiple choices), text (free-text), confirm (yes/no).",
-			},
-		),
+		Type.Union([Type.Literal("single"), Type.Literal("multi"), Type.Literal("text"), Type.Literal("confirm")], {
+			description:
+				"Question type: single (one choice, default), multi (multiple choices), text (free-text), confirm (yes/no).",
+		}),
 	),
 	options: Type.Optional(
 		Type.Array(QuestionOptionSchema, {
@@ -97,56 +82,14 @@ const QuestionSchema = Type.Object({
 const QuestionnaireParams = Type.Object({
 	questions: Type.Array(QuestionSchema, { description: "One or more questions to ask the user." }),
 	header: Type.Optional(Type.String({ description: "Optional header text shown above the questions." })),
-	purpose: Type.Optional(
-		Type.Literal("ferment_start_approval", {
-			description:
-				"Explicit host-level purpose. Use ferment_start_approval only for the one Yes/No question that asks whether to start a ferment.",
-		}),
-	),
 })
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-export type QuestionnaireQuestionTypeInput = QuestionType | "radio" | "checkbox"
+export type QuestionnaireQuestionTypeInput = QuestionType
 
 export function normalizeQuestionType(type: QuestionnaireQuestionTypeInput | undefined): QuestionType {
-	if (type === "radio") return "single"
-	if (type === "checkbox") return "multi"
 	return type ?? "single"
-}
-
-function isFermentStartApprovalAnswer(answer: Answer | undefined): boolean {
-	if (!answer) return false
-	if (answer.index !== undefined) return answer.index === 1
-	return answer.value === "yes" || (answer.values?.[0] === "yes" && answer.values.length === 1)
-}
-
-function isFermentStartApprovalShape(purpose: unknown, questions: Question[]): boolean {
-	if (questions.length !== 1) return false
-	if (purpose === "ferment_start_approval") return true
-	return purpose === undefined && questions[0]?.type === "confirm"
-}
-
-export function recordFermentStartApproval(
-	purpose: unknown,
-	questions: Question[],
-	answers: Answer[],
-	now = Date.now(),
-): void {
-	if (!isFermentStartApprovalShape(purpose, questions)) return
-	const question = questions[0]
-	if (!isFermentStartApprovalAnswer(answers.find((answer) => answer.id === question.id))) return
-	fermentStartApprovalAt = now
-}
-
-export function consumeFermentStartApproval(now = Date.now()): boolean {
-	const approvedAt = fermentStartApprovalAt
-	fermentStartApprovalAt = undefined
-	return approvedAt !== undefined && now - approvedAt <= 10 * 60_000
-}
-
-export function clearFermentStartApproval(): void {
-	fermentStartApprovalAt = undefined
 }
 
 function errorResult(
@@ -163,8 +106,7 @@ function normalizeQuestion(q: Static<typeof QuestionSchema>, index: number): Que
 	const type = normalizeQuestionType(q.type)
 	const rawOptions = q.options ?? []
 	const normalizedOptions = rawOptions.map((opt) => ({
-		// LLMs frequently emit `id+label` and omit `value`. Fall back to id, then label.
-		value: opt.value ?? opt.id ?? opt.label,
+		value: opt.value,
 		label: opt.label,
 		description: opt.description,
 	}))
@@ -184,33 +126,6 @@ function normalizeQuestion(q: Static<typeof QuestionSchema>, index: number): Que
 		allowOther: q.allowOther ?? type === "single",
 		required: q.required !== false,
 	}
-}
-
-export function normalizeQuestionsForPurpose(questions: Question[], purpose: unknown): Question[] {
-	if (!isFermentStartApprovalShape(purpose, questions)) return questions
-	return [
-		{
-			...questions[0],
-			type: "confirm",
-			options: [
-				{ value: "yes", label: "Yes" },
-				{ value: "no", label: "No" },
-			],
-			allowOther: false,
-			required: true,
-		},
-	]
-}
-
-export function getYoloFermentStartApprovalAnswers(
-	purpose: unknown,
-	questions: Question[],
-	env: Record<string, string | undefined> = process.env,
-): Answer[] | undefined {
-	if (env.KIMCHI_PERMISSIONS !== "yolo" || env.KIMCHI_ACTIVE_FERMENT) return undefined
-	if (!isFermentStartApprovalShape(purpose, questions)) return undefined
-	const question = questions[0]
-	return [{ id: question.id, value: "yes", label: "Yes", wasCustom: false, index: 1 }]
 }
 
 function validateQuestions(questions: Question[]): string | undefined {
@@ -254,17 +169,11 @@ export function formatAnswerText(questions: Question[], answers: Answer[]): stri
 // ─── Extension ────────────────────────────────────────────────────────────────
 
 export default function questionnaireExtension(pi: ExtensionAPI): void {
-	pi.on?.("input", (event) => {
-		if ((event as { source?: unknown } | undefined)?.source !== "extension") {
-			clearFermentStartApproval()
-		}
-	})
-
 	pi.registerTool({
 		name: "questionnaire",
 		label: "Questionnaire",
 		description:
-			"Ask the user one or more structured questions. Use for clarifying requirements, getting preferences, or confirming decisions before acting. Supports single-select (single/radio), multi-select (multi/checkbox), free-text input, and yes/no confirmation. For a single question, shows a simple option list. For multiple questions, shows a tab-based interface. Prefer this over outputting questions as plain text.",
+			"Ask the user one or more structured questions. Use for clarifying requirements, getting preferences, or confirming decisions before acting. Supports single-select, multi-select, free-text input, and yes/no confirmation. For a single question, shows a simple option list. For multiple questions, shows a tab-based interface. Prefer this over outputting questions as plain text.",
 		parameters: QuestionnaireParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -272,19 +181,10 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				return errorResult("Error: No questions provided.")
 			}
 
-			const questions = normalizeQuestionsForPurpose(params.questions.map(normalizeQuestion), params.purpose)
+			const questions = params.questions.map(normalizeQuestion)
 			const validationError = validateQuestions(questions)
 			if (validationError) {
 				return errorResult(`Error: ${validationError}`, questions)
-			}
-
-			const autoAnswers = getYoloFermentStartApprovalAnswers(params.purpose, questions)
-			if (autoAnswers) {
-				recordFermentStartApproval(params.purpose, questions, autoAnswers)
-				return {
-					content: [{ type: "text", text: formatAnswerText(questions, autoAnswers) }],
-					details: { questions, answers: autoAnswers, cancelled: false },
-				}
 			}
 
 			if (!ctx.hasUI) {
@@ -562,7 +462,6 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 			}
 
 			const text = formatAnswerText(questions, result.answers)
-			recordFermentStartApproval(params.purpose, questions, result.answers)
 			return {
 				content: [{ type: "text", text }],
 				details: result,
