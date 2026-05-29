@@ -426,9 +426,19 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// When the agent finishes a text-only turn in plan mode, offer the user a
 	// menu to approve and execute the plan.
 	pi.on("turn_end", async (event, ctx) => {
-		if (currentMode() !== "plan") return
-		if (!ctx.hasUI) return
-		if (planMenuShownThisCycle) return
+		console.log("[PLAN_DEBUG] turn_end fired")
+		if (currentMode() !== "plan") {
+			console.log("[PLAN_DEBUG] mode is not plan, returning. currentMode=", currentMode())
+			return
+		}
+		if (!ctx.hasUI) {
+			console.log("[PLAN_DEBUG] no UI, returning")
+			return
+		}
+		if (planMenuShownThisCycle) {
+			console.log("[PLAN_DEBUG] menu already shown this cycle, returning")
+			return
+		}
 
 		const message = event.message as AssistantMessage
 		if (message.role !== "assistant") return
@@ -482,6 +492,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 		// Run the plan review gate before showing the approval menu.
 		const review = reviewPlan(assistantText)
+		console.log("[PLAN_DEBUG] review result:", review)
 		if (!review.approved) {
 			planMenuShownThisCycle = true
 			const issuesText = review.issues.map((i) => `- ${i}`).join("\n")
@@ -504,6 +515,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				},
 				{ triggerTurn: true },
 			)
+			console.log("[PLAN_DEBUG] review failed, sent nudge")
 			return
 		}
 
@@ -513,23 +525,23 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const EXECUTE_AUTO = "Yes — execute (auto-approve)"
 		const DECLINE = "No, do something else"
 
-		// Save the plan to disk before offering execution.
 		const planPath = saveApprovedPlan(ctx.cwd, assistantText)
-		// Notify the user where the plan is saved.
-		if (ctx.hasUI) {
-			await ctx.ui.notify(`Plan saved to ${planPath}`, "info")
-		}
 
+		console.log("[PLAN_DEBUG] about to show select menu")
 		const choice = await withWorkingHidden(ctx, () =>
 			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, EXECUTE_AUTO, DECLINE]),
 		)
+		console.log("[PLAN_DEBUG] user choice:", choice)
 
 		if (choice === EXECUTE) {
+			console.log("[PLAN_DEBUG] executing default")
 			switchFromPlanAndExecute(ctx, "default", planPath)
 		} else if (choice === EXECUTE_AUTO) {
+			console.log("[PLAN_DEBUG] executing auto")
 			switchFromPlanAndExecute(ctx, "auto", planPath)
+		} else {
+			console.log("[PLAN_DEBUG] declined or undefined, staying in plan mode")
 		}
-		// Decline or escape: stay in plan mode, user types their next message.
 	})
 
 	pi.on("tool_call", async (event, ctx) => {
