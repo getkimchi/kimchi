@@ -24,6 +24,7 @@ import {
 	executeConnect,
 	executeDescribe,
 	executeSearch,
+	executeStatus,
 	executeUiMessages,
 } from "./proxy-modes.js"
 import type { McpExtensionState } from "./state.js"
@@ -486,10 +487,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 					registerAndActivate(specs, undefined, ctx)
 				)
 				}
-				return {
-					content: [{ type: "text" as const, text: `Workflow Error: Missing action parameter.\nTo use MCP tools, you must first discover them and their schemas.\nUse mcp({ search: "..." }) to find tools, or mcp({ describe: "tool_name" }) to get a schema. Matched tools will then be injected for you to call directly.` }],
-					details: { error: "missing_action" },
-				}
+				return executeStatus(state)
 			},
 			renderCall(args: { tool?: string; args?: string; connect?: string; describe?: string; search?: string; limit?: number; server?: string; action?: string }, theme: Theme, context: { lastComponent: Component | undefined }) {
 				const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0)
