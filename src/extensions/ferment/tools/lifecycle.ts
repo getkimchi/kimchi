@@ -489,6 +489,7 @@ async function validatePlanReviewOrErr(
 			`Plan Reviewer loop guard stopped ferment "${ferment.name}" because ${reason}.`,
 			"",
 			"Last Plan Reviewer summary:",
+			// recordPlanReviewAttempt just set this to review.summary, so it is always present.
 			state.lastPlanReviewSummary ?? review.summary,
 			"",
 			"Required changes:",

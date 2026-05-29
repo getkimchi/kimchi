@@ -583,7 +583,7 @@ async function runAgentInner(
 		// after this retry is failed below (retry-then-fail).
 		if (agentConfig?.outputToolName && !aborted && !budgetAborted && getAgentStructuredOutput() === undefined) {
 			await session.prompt(
-				`You have not returned a result. You MUST call \`${agentConfig.outputToolName}\` exactly once, with all required fields, to submit your verdict. Do not reply with prose.`,
+				`You have not returned a result. You MUST call \`${agentConfig.outputToolName}\` exactly once, with all required fields, to submit your result. Do not reply with prose.`,
 			)
 		}
 	} finally {

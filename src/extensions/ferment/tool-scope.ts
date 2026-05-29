@@ -115,8 +115,8 @@ export class FermentToolScope {
 		// fermentExtension), and the planner must never call the submit tool itself
 		// — it has to spawn the Plan Reviewer subagent. Vote it hidden here. The
 		// subagent gets the tool in its own session (persona-output-tools registry
-		// injected by agent-runner), where agent-runner's per-persona gating keeps
-		// it active for the Plan Reviewer and strips it from every other persona.
+		// injected by agent-runner, which injects only the spawning persona's own
+		// output tool — so no other persona's session ever sees it).
 		this.visibility.disable([PLAN_REVIEW_SUBMIT_TOOL])
 	}
 }

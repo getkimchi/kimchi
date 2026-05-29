@@ -322,6 +322,12 @@ function safeStructuredBody(structuredOutput: unknown): string | undefined {
 	}
 }
 
+/** Body to surface for a completed agent: its schema-validated structured output
+ *  if present, else its trimmed free-text result, else `fallback`. */
+function agentResultBody(record: { structuredOutput?: unknown; result?: string }, fallback: string): string {
+	return safeStructuredBody(record.structuredOutput) ?? (record.result?.trim() || fallback)
+}
+
 function escapeXml(s: string): string {
 	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
 }
@@ -1324,7 +1330,7 @@ Model selection — YOU choose based on task complexity:
 				const outcome = record.status === "aborted" ? "aborted" : record.status === "stopped" ? "stopped" : "completed"
 				// A persona with a bound submit tool (AgentConfig.outputToolName) returns
 				// its schema-validated args as the body; the caller copies that verbatim.
-				const body = safeStructuredBody(record.structuredOutput) ?? (record.result?.trim() || "No output.")
+				const body = agentResultBody(record, "No output.")
 				return textResult(
 					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.${getStatusInstruction(record.status, record.abortReason)}\n\n${body}`,
 					details,
@@ -1456,12 +1462,12 @@ Model selection — YOU choose based on task complexity:
 					bodyForDisplay = `Error: ${record.error}`
 					output += bodyForDisplay
 				} else {
-					bodyForDisplay =
-						safeStructuredBody(record.structuredOutput) ??
-						(record.result?.trim() ||
-							(record.outputFile
-								? `No output was captured in the agent result. Full transcript: ${record.outputFile}`
-								: "No output."))
+					bodyForDisplay = agentResultBody(
+						record,
+						record.outputFile
+							? `No output was captured in the agent result. Full transcript: ${record.outputFile}`
+							: "No output.",
+					)
 					output += bodyForDisplay
 				}
 

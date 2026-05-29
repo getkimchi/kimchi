@@ -11,10 +11,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
  * bridge the persona is told to call a tool that was never registered in its
  * session, and the run fails with "Tool ... not found".
  *
- * The owning extension registers its installer here at startup; the agent runner
- * injects every registered installer into each subagent's extension loader so the
- * tool exists in the session. The runner's per-persona gating then keeps each
- * output tool active only for its owning persona and strips it from the rest.
+ * The owning extension registers its installer here at startup; for each subagent
+ * the agent runner injects ONLY that persona's own installer into its extension
+ * loader, so the tool exists in its session and no other persona's output tool is
+ * ever present.
  */
 export type PersonaOutputToolFactory = (pi: ExtensionAPI) => void
 

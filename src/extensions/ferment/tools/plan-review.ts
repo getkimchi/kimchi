@@ -11,12 +11,11 @@
  *   - the main/planner session, via fermentExtension init (where it is hidden
  *     from the planner by FermentToolScope — the planner must spawn the subagent,
  *     not self-submit);
- *   - every subagent session, via the persona-output-tools registry which the
- *     agent runner injects into the subagent extension loader. Subagent sessions
- *     do not load fermentExtension, so without this bridge the tool would not
- *     exist there and the reviewer's call would fail "Tool ... not found".
- * The agent runner's per-persona gating then keeps it active only for the Plan
- * Reviewer and strips it from every other persona.
+ *   - the Plan Reviewer subagent session, via the persona-output-tools registry:
+ *     the agent runner injects ONLY the spawning persona's own output tool, so the
+ *     reviewer gets it and no other persona's session does. Subagent sessions do
+ *     not load fermentExtension, so without this bridge the tool would not exist
+ *     there and the reviewer's call would fail "Tool ... not found".
  *
  * Deliberately NOT a member of FERMENT_TOOL_NAMES so FermentToolScope's ferment
  * profiles never touch it.
