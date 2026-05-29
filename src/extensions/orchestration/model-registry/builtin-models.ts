@@ -45,21 +45,27 @@ import type { ModelCapabilities } from "./types.js"
  */
 
 const KIMI_K26_DESCRIPTION = `\
-Flagship Kimi model with vision support — the key model for complex planning decisions \
-and deep research. Handles images, screenshots, and visual input with superior reasoning. \
-When a hard problem needs architectural planning, strategic analysis, or methodical \
-research, this is the model to delegate to. Best for complex multi-step tasks.`
+Flagship Kimi model with vision support — the key model for complex planning decisions, \
+deep research, and correctness-critical tasks. Handles images, screenshots, and visual input. \
+Best for: architectural planning, initial code review of complex projects, plan verification \
+involving concurrency or algorithmic design, and building chunks that require correctness \
+reasoning (graph algorithms, concurrent state machines, synchronization logic). \
+Use this model when getting it right the first time matters more than cost.`
 
 const MINIMAX_M27_DESCRIPTION = `\
 The strongest coding model in the pool. \
 Best accuracy on multi-file bugs, complex refactors, and extended tool call chains. \
-Best default choice for any well-scoped coding task.`
+Best for: well-scoped coding tasks (CRUD, parsers, handlers, CLI wiring, straightforward tests), \
+and mechanical code review of straightforward code. \
+Not reliable for algorithm-correctness tasks (graph algorithms, topological sort, complex data \
+structure invariants) — use a heavy-tier model for those.`
 
 const NEMOTRON_3_SUPER_DESCRIPTION = `\
 Cheapest and fastest. 1M token context window with near-perfect retrieval — \
 can ingest entire large codebases in a single pass. \
-Weakest at coding; not reliable for complex multi-file changes. \
-Best for codebase exploration, research, and simple well-defined tasks.`
+Best for: codebase exploration, research, and trivial re-verification (confirming tests pass \
+after a fix). \
+Not suitable for: code review, building code, or any task requiring correctness judgment.`
 
 const CLAUDE_OPUS_46_DESCRIPTION = `\
 Anthropic's flagship Claude model. Dominates at architectural planning and complex task \
