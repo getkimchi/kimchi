@@ -1,4 +1,4 @@
-import { type Theme, initTheme } from "@earendil-works/pi-coding-agent"
+import { LoginDialogComponent, type Theme, initTheme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -216,27 +216,69 @@ describe("startup auth gate", () => {
 		expect(harness.state.authenticated).toBe(true)
 	})
 
-	it("surfaces the login URL so it can be copied into the right browser/profile", async () => {
+	it("surfaces the login URL in pi's login dialog so it can be copied into the right browser/profile", async () => {
 		const loginUrl = "https://app.kimchi.dev/cli-auth?callback=http%3A%2F%2Flocalhost%3A51234&state=abc123"
 		authMock.authenticateViaBrowser.mockImplementation(async (options: { onBrowserUrl?: (url: string) => void }) => {
 			options?.onBrowserUrl?.(loginUrl)
 			return { token: "kimchi-token" }
 		})
+		// The URL is shown via the reused LoginDialogComponent's showInfo, not notify.
+		const showInfoSpy = vi.spyOn(LoginDialogComponent.prototype, "showInfo")
 
-		const harness = createHarness()
+		try {
+			const harness = createHarness()
+			const started = harness.start()
+
+			await harness.settle()
+			harness.input("\n")
+			await started
+
+			expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
+			const lines = showInfoSpy.mock.calls.flatMap((call) => call[0] as string[])
+			// Intact BEL-terminated OSC 8 hyperlink target so "Copy Link" yields the full
+			// URL even when the visible text wraps (a raw wrapped URL would get a newline
+			// injected at the wrap point, corrupting the state param on paste). The `id=`
+			// param groups the wrapped rows so the whole URL highlights as one link.
+			expect(lines.some((line) => line.includes(`;${loginUrl}\x07`))).toBe(true)
+			expect(lines.some((line) => line.includes("\x1b]8;id=kimchi-login-"))).toBe(true)
+		} finally {
+			showInfoSpy.mockRestore()
+		}
+	})
+
+	it("cancels the Kimchi login dialog without showing a login failure", async () => {
+		authMock.authenticateViaBrowser.mockImplementation(
+			(options: { signal?: AbortSignal }) =>
+				new Promise((_resolve, reject) => {
+					options.signal?.addEventListener("abort", () => reject(new Error("Browser login failed: Login cancelled")), {
+						once: true,
+					})
+				}),
+		)
+
+		const onCancel = vi.fn()
+		const harness = createHarness({ onCancel })
 		const started = harness.start()
 
 		await harness.settle()
 		harness.input("\n")
-		await started
+		await harness.waitForCustomPrompts(2)
+
+		harness.input("\x1b")
+		await harness.waitForCustomPrompts(3)
 
 		expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
-		// Intact BEL-terminated OSC 8 hyperlink target so "Copy Link" yields the full
-		// URL even when the visible text wraps (a raw wrapped URL would get a newline
-		// injected at the wrap point, corrupting the state param on paste). The `id=`
-		// param groups the wrapped rows so the whole URL highlights as one link.
-		expect(harness.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining(`;${loginUrl}\x07`), "info")
-		expect(harness.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("\x1b]8;id=kimchi-login-"), "info")
+		expect(harness.ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("Kimchi login failed"), "error")
+		expect(harness.ctx.ui.notify).not.toHaveBeenCalledWith(
+			"Login did not configure an available model. Try again or cancel.",
+			"warning",
+		)
+
+		harness.input("\x1b")
+		await started
+
+		expect(harness.state.cancelled).toBe(true)
+		expect(onCancel).toHaveBeenCalledOnce()
 	})
 
 	it("does not mint another browser key when a retry still has no available models", async () => {
@@ -253,11 +295,13 @@ describe("startup auth gate", () => {
 		try {
 			const started = harness.start()
 
+			// Each Kimchi attempt opens two customs: the auth-method selector, then the
+			// login dialog. So selectors land on prompts #1, #3, #5 (dialogs are #2, #4).
 			await harness.settle()
 			harness.input("\n")
-			await harness.waitForCustomPrompts(2)
-			harness.input("\n")
 			await harness.waitForCustomPrompts(3)
+			harness.input("\n")
+			await harness.waitForCustomPrompts(5)
 			harness.input("\x1b")
 			await started
 

@@ -8,8 +8,7 @@ import { loadConfig } from "../../config.js"
 import {
 	KIMCHI_PROVIDER_ID,
 	createLoginChoiceSelector,
-	formatBrowserLoginMessage,
-	performKimchiBrowserLogin,
+	performKimchiBrowserLoginWithDialog,
 	setKimchiAuthToken,
 	showSubscriptionLoginWithExtensionUI,
 } from "./flow.js"
@@ -156,21 +155,18 @@ async function runStartupAuthGate(
 			return
 		}
 
-		const success =
+		const result =
 			choice === "kimchi"
-				? await performKimchiBrowserLogin({
-						modelRegistry: ctx.modelRegistry,
-						setModel: (model) => pi.setModel(model as Parameters<typeof pi.setModel>[0]),
-						showStatus: (message) => ctx.ui.notify(message, "info"),
-						showError: (message) => ctx.ui.notify(message, "error"),
-						addFeedback: (message) => ctx.ui.notify(message, "info"),
-						// Surface the generated browser-login URL so the user can copy it into the
-						// right browser/profile when auto-open picks the wrong one but still succeeds.
-						onBrowserUrl: (url) => ctx.ui.notify(formatBrowserLoginMessage(url), "info"),
-					})
-				: await showSubscriptionLoginWithExtensionUI(ctx, (model) => pi.setModel(model))
+				? await performKimchiBrowserLoginWithDialog(ctx, (model) =>
+						pi.setModel(model as Parameters<typeof pi.setModel>[0]),
+					)
+				: (await showSubscriptionLoginWithExtensionUI(ctx, (model) => pi.setModel(model)))
+					? "success"
+					: "failed"
 
-		if (success && hasUsableAuth(ctx)) {
+		if (result === "cancelled") continue
+
+		if (result === "success" && hasUsableAuth(ctx)) {
 			state.authenticated = true
 			return
 		}

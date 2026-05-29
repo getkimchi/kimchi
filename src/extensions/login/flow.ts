@@ -39,11 +39,14 @@ let browserLoginLinkSeq = 0
  *    separate link and only the row under the cursor lights up). pi-tui's wrapper
  *    preserves the param when it re-opens the link on continuation rows.
  */
-export function formatBrowserLoginMessage(url: string): string {
+export function formatKimchiLoginLink(url: string): string {
 	browserLoginLinkSeq += 1
 	const id = `kimchi-login-${browserLoginLinkSeq}`
-	const linkedUrl = `\x1b]8;id=${id};${url}\x07${url}\x1b]8;;\x07`
-	return `If the wrong browser or profile opened, right-click this link, choose "Copy Link", and open it in the correct one:\n${linkedUrl}`
+	return `\x1b]8;id=${id};${url}\x07${url}\x1b]8;;\x07`
+}
+
+export function formatBrowserLoginMessage(url: string): string {
+	return `If the wrong browser or profile opened, right-click this link, choose "Copy Link", and open it in the correct one:\n${formatKimchiLoginLink(url)}`
 }
 
 type AuthSelectorProvider = ConstructorParameters<typeof OAuthSelectorComponent>[2][number]
@@ -152,6 +155,8 @@ export interface KimchiBrowserLoginHost {
 	showError?: (message: string) => void
 	addFeedback?: (message: string) => void
 	onBrowserUrl?: (url: string) => void
+	/** Abort the in-flight browser login (e.g. the login dialog was cancelled). */
+	signal?: AbortSignal
 }
 
 async function configureKimchiToken(host: KimchiBrowserLoginHost, token: string): Promise<boolean> {
@@ -216,17 +221,85 @@ export async function performKimchiBrowserLogin(host: KimchiBrowserLoginHost): P
 				browserUrl = url
 				host.onBrowserUrl?.(url)
 			},
+			signal: host.signal,
 		})
 
 		writeApiKey(token)
 		return configureKimchiToken(host, token)
 	} catch (error) {
+		// User cancelled (Esc in the login dialog aborts host.signal); that's not a
+		// failure, so stay silent instead of flashing an error toast and a misleading
+		// "Couldn't open browser" hint. Mirrors the subscription path, which ignores
+		// the "Login cancelled" error from authStorage.login.
+		if (host.signal?.aborted) return false
 		if (browserUrl) {
 			host.addFeedback?.(`Couldn't open browser automatically. Visit: ${browserUrl}`)
 		}
 		host.showError?.(`Kimchi login failed: ${error instanceof Error ? error.message : String(error)}`)
 		return false
 	}
+}
+
+export type KimchiBrowserLoginDialogResult = "success" | "failed" | "cancelled"
+
+/**
+ * Run the Kimchi browser login inside pi's `LoginDialogComponent`, mirroring how
+ * subscription login is presented (`showOAuthLoginDialogWithExtensionUI`). We reuse
+ * the dialog for its chrome and lifecycle: bordered "Log in to Kimchi" box, focus,
+ * and Esc-to-cancel (wired to abort the callback server). We feed it our own
+ * `formatKimchiLoginLink` via `showInfo` rather than the dialog's `showAuth`, which
+ * renders the URL without the `id=` grouping that keeps the wrapped link clickable
+ * and fully highlighted.
+ */
+export async function performKimchiBrowserLoginWithDialog(
+	ctx: ExtensionContext,
+	setModel?: (model: ProviderModelLike) => Promise<unknown> | unknown,
+): Promise<KimchiBrowserLoginDialogResult> {
+	return ctx.ui.custom<KimchiBrowserLoginDialogResult>((tui, _theme, _keybindings, done) => {
+		let finished = false
+		let cancelled = false
+		const finish = (result: KimchiBrowserLoginDialogResult) => {
+			if (finished) return
+			finished = true
+			done(result)
+		}
+
+		const dialog = new LoginDialogComponent(
+			tui,
+			KIMCHI_PROVIDER_ID,
+			// Fires when the dialog is cancelled (Esc). The abort below tears down the
+			// callback server; closing the dialog here resolves the surrounding custom.
+			(success) => {
+				if (!success) {
+					cancelled = true
+					finish("cancelled")
+				}
+			},
+			"Kimchi",
+			"Log in to Kimchi",
+		)
+
+		void (async () => {
+			const ok = await performKimchiBrowserLogin({
+				modelRegistry: ctx.modelRegistry,
+				setModel,
+				showStatus: (message) => dialog.showProgress(message),
+				showError: (message) => ctx.ui.notify(message, "error"),
+				addFeedback: (message) => dialog.showProgress(message),
+				onBrowserUrl: (url) =>
+					dialog.showInfo([
+						'If the wrong browser or profile opened, right-click this link, choose "Copy Link", and open it in the correct one:',
+						"",
+						formatKimchiLoginLink(url),
+					]),
+				signal: dialog.signal,
+			})
+			if (cancelled || dialog.signal.aborted) finish("cancelled")
+			else finish(ok ? "success" : "failed")
+		})()
+
+		return dialog
+	})
 }
 
 export function getSubscriptionProviderOptions(
