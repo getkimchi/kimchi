@@ -10,11 +10,9 @@ import permissionsExtension, {
 	checkCompoundCommand,
 	getCurrentPermissionsMode,
 	handleCompoundConfirm,
-	hasUnresolvedAssumptions,
 	isUserChosenYolo,
 	notifyFermentActive,
 } from "./index.js"
-import type { PlanReviewOutcome } from "./plan-review-component.js"
 import { SessionMemory } from "./session-memory.js"
 import type { Rule } from "./types.js"
 
@@ -40,15 +38,13 @@ const testEnv: EnvironmentInfo = {
 
 const TEST_SESSION_ID = "test-session"
 
-// Helper to create mock ExtensionContext with ui.select and ui.custom
+// Helper to create mock ExtensionContext with ui.select
 // When an AbortSignal is passed and aborted=true, returns undefined to trigger "aborted" outcome
 function createMockContext(
 	selectResults: (string | undefined)[],
-	customResults: (PlanReviewOutcome | undefined)[] = [],
 	opts?: { abortOnFirstSelect?: boolean },
 ): ExtensionContext {
 	let selectCallIndex = 0
-	let customCallIndex = 0
 	return {
 		hasUI: true,
 		cwd: "/test",
@@ -60,11 +56,6 @@ function createMockContext(
 				}
 				const result = selectResults[selectCallIndex]
 				selectCallIndex++
-				return result
-			}),
-			custom: vi.fn(async <T>(factory: (...args: unknown[]) => unknown) => {
-				const result = customResults[customCallIndex] as T | undefined
-				customCallIndex++
 				return result
 			}),
 			input: vi.fn(async () => ""),
@@ -280,78 +271,6 @@ describe("permissions plan-mode tool visibility", () => {
 })
 
 describe("plan mode assumption detection", () => {
-	// --- Unit tests for hasUnresolvedAssumptions ---
-
-	describe("hasUnresolvedAssumptions", () => {
-		it("returns false for clean plan with no assumption sections", () => {
-			const text = "# Plan\n\n## Goal\nBuild the thing.\n\n## Chunks\n- Chunk 1\n- Chunk 2\n"
-			expect(hasUnresolvedAssumptions(text)).toBe(false)
-		})
-
-		it("returns false for empty assumptions section", () => {
-			const text = "# Plan\n\n## Assumptions\n\n## Chunks\n- Chunk 1\n"
-			expect(hasUnresolvedAssumptions(text)).toBe(false)
-		})
-
-		it("returns false for assumptions section with only whitespace", () => {
-			const text = "# Plan\n\n## Assumptions\n   \n\t\n\n## Chunks\n- Chunk 1\n"
-			expect(hasUnresolvedAssumptions(text)).toBe(false)
-		})
-
-		it("returns false for assumptions section with 'none' placeholder", () => {
-			const text = "# Plan\n\n## Assumptions\nNone.\n\n## Chunks\n- Chunk 1\n"
-			expect(hasUnresolvedAssumptions(text)).toBe(false)
-		})
-
-		it("returns true when assumptions section contains content", () => {
-			const text =
-				"# Plan\n\n## Assumptions\n- Database schema may differ\n- Auth provider TBD\n\n## Chunks\n- Chunk 1\n"
-			expect(hasUnresolvedAssumptions(text)).toBe(true)
-		})
-
-		it("returns true when open questions section contains content", () => {
-			const text =
-				"# Plan\n\n## Open Questions\n- Should we use JWT or sessions?\n- Which DB?\n\n## Chunks\n- Chunk 1\n"
-			expect(hasUnresolvedAssumptions(text)).toBe(true)
-		})
-
-		it("detection is case-insensitive", () => {
-			expect(hasUnresolvedAssumptions("## ASSUMPTIONS\n- Schema TBD\n")).toBe(true)
-			expect(hasUnresolvedAssumptions("## Open Question\n- Which one?\n")).toBe(true)
-			expect(hasUnresolvedAssumptions("## open question\n- Which one?\n")).toBe(true)
-		})
-
-		it("returns false when there is no markdown heading", () => {
-			expect(hasUnresolvedAssumptions("Some text without headings")).toBe(false)
-		})
-
-		it("returns false for single '#' h1 headings", () => {
-			const text = "# My Plan\n\nNo assumptions here.\n"
-			expect(hasUnresolvedAssumptions(text)).toBe(false)
-		})
-
-		it("returns false when assumption section has blank line before content", () => {
-			const text = "## Assumptions\n\n- test\n"
-			expect(hasUnresolvedAssumptions(text)).toBe(true)
-		})
-
-		it("returns false for multiple chunks without assumptions", () => {
-			const text = `# Plan
-
-## Goal
-Build it.
-
-## Chunks
-- Chunk 1
-- Chunk 2
-
-## Verification
-Run tests.
-`
-			expect(hasUnresolvedAssumptions(text)).toBe(false)
-		})
-	})
-
 	// --- Integration tests for turn_end handler ---
 
 	function makeAssistantMessage(text: string): unknown {

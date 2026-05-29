@@ -180,8 +180,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 	// Plan completion menu state: tracks whether the agent used tools during the
 	// current user-input cycle so we can detect text-only turns (plan output).
-	let toolsCalledThisCycle = false
-	let planMenuShownThisCycle = false
 
 	function rebuildConfigRules(): void {
 		configRules = [
@@ -414,27 +412,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			if (currentMode() !== "plan") return undefined
 			return planModeSupplement.trim()
 		},
-	})
-
-	// Reset per-turn tracking at the start of every turn so revised plans after
-	// a review-failure nudge still get a chance to show the approval menu.
-	pi.on("turn_start", () => {
-		toolsCalledThisCycle = false
-		planMenuShownThisCycle = false
-	})
-
-	// Reset plan-completion tracking on every new user input (redundant with
-	// turn_start but kept as a safety net).
-	pi.on("input", async () => {
-		toolsCalledThisCycle = false
-		planMenuShownThisCycle = false
-	})
-
-	// Track tool calls so we can distinguish exploration turns from plan output.
-	pi.on("tool_execution_start", async () => {
-		if (currentMode() === "plan") {
-			toolsCalledThisCycle = true
-		}
 	})
 
 	// When the agent produces <!-- PLAN_COMPLETE --> in plan mode, show the approval menu.
@@ -828,52 +805,6 @@ interface CompoundCheckResult {
 	decision: "allow" | "deny" | "prompt"
 	deniedReason?: string
 	subcommands?: string[]
-}
-
-/**
- * Detect unresolved assumptions or open questions in plan text.
- * Looks for markdown sections whose heading contains "Assumption" or "Open Question"
- * (case-insensitive). If such a section contains any non-empty line after the heading,
- * the assumption is considered unresolved.
- *
- * Exported for testing.
- */
-export function hasUnresolvedAssumptions(text: string): boolean {
-	const lines = text.split("\n")
-	// Match markdown headings: # or ## followed by whitespace then content
-	const headingPattern = /^##?\s+(?=\S)/
-
-	// Find indices of all markdown heading lines
-	const headingIndices: number[] = []
-	for (let i = 0; i < lines.length; i++) {
-		if (headingPattern.test(lines[i])) {
-			headingIndices.push(i)
-		}
-	}
-
-	if (headingIndices.length === 0) return false
-
-	// For each heading, check if it's an assumption/open question section with content
-	for (let h = 0; h < headingIndices.length; h++) {
-		const startIdx = headingIndices[h]
-		const endIdx = h < headingIndices.length - 1 ? headingIndices[h + 1] : lines.length
-		const headingText = lines[startIdx]
-
-		// Check if this is an assumption or open question heading
-		const lowerHeading = headingText.toLowerCase()
-		if (lowerHeading.includes("assumption") || lowerHeading.includes("open question")) {
-			// Check if there's any non-empty content between this heading and the next
-			// that is not just a placeholder like "none", "n/a", "—", "-".
-			for (let i = startIdx + 1; i < endIdx; i++) {
-				const trimmed = lines[i].trim()
-				if (trimmed.length > 0 && !/^\s*(?:none\.?|n\/a|—|-|–)\s*$/i.test(trimmed)) {
-					return true
-				}
-			}
-		}
-	}
-
-	return false
 }
 
 /**
