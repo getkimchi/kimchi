@@ -11,6 +11,7 @@ import { Spacer, Text } from "@earendil-works/pi-tui"
 import {
 	KIMCHI_PROVIDER_ID,
 	createLoginChoiceSelector,
+	formatBrowserLoginMessage,
 	performKimchiBrowserLogin,
 	prePopulateSubscriptionModels,
 } from "./extensions/login/flow.js"
@@ -126,6 +127,10 @@ async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 		showStatus,
 		showError,
 		addFeedback: (message) => addLoginFeedback(im, message),
+		// Surface the generated browser-login URL in the TUI. The auto-open can land
+		// in the wrong browser or Chrome profile (and still "succeed"), so the user
+		// needs the URL to copy into the right one. console.log is swallowed under the TUI.
+		onBrowserUrl: (url) => addLoginFeedback(im, formatBrowserLoginMessage(url)),
 	})
 }
 

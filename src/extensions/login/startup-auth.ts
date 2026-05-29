@@ -8,6 +8,7 @@ import { loadConfig } from "../../config.js"
 import {
 	KIMCHI_PROVIDER_ID,
 	createLoginChoiceSelector,
+	formatBrowserLoginMessage,
 	performKimchiBrowserLogin,
 	setKimchiAuthToken,
 	showSubscriptionLoginWithExtensionUI,
@@ -163,6 +164,9 @@ async function runStartupAuthGate(
 						showStatus: (message) => ctx.ui.notify(message, "info"),
 						showError: (message) => ctx.ui.notify(message, "error"),
 						addFeedback: (message) => ctx.ui.notify(message, "info"),
+						// Surface the generated browser-login URL so the user can copy it into the
+						// right browser/profile when auto-open picks the wrong one but still succeeds.
+						onBrowserUrl: (url) => ctx.ui.notify(formatBrowserLoginMessage(url), "info"),
 					})
 				: await showSubscriptionLoginWithExtensionUI(ctx, (model) => pi.setModel(model))
 

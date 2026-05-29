@@ -216,6 +216,29 @@ describe("startup auth gate", () => {
 		expect(harness.state.authenticated).toBe(true)
 	})
 
+	it("surfaces the login URL so it can be copied into the right browser/profile", async () => {
+		const loginUrl = "https://app.kimchi.dev/cli-auth?callback=http%3A%2F%2Flocalhost%3A51234&state=abc123"
+		authMock.authenticateViaBrowser.mockImplementation(async (options: { onBrowserUrl?: (url: string) => void }) => {
+			options?.onBrowserUrl?.(loginUrl)
+			return { token: "kimchi-token" }
+		})
+
+		const harness = createHarness()
+		const started = harness.start()
+
+		await harness.settle()
+		harness.input("\n")
+		await started
+
+		expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
+		// Intact BEL-terminated OSC 8 hyperlink target so "Copy Link" yields the full
+		// URL even when the visible text wraps (a raw wrapped URL would get a newline
+		// injected at the wrap point, corrupting the state param on paste). The `id=`
+		// param groups the wrapped rows so the whole URL highlights as one link.
+		expect(harness.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining(`;${loginUrl}\x07`), "info")
+		expect(harness.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("\x1b]8;id=kimchi-login-"), "info")
+	})
+
 	it("does not mint another browser key when a retry still has no available models", async () => {
 		const previousAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
 		process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-startup-auth-test"

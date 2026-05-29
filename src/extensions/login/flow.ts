@@ -18,6 +18,34 @@ export const KIMCHI_DEFAULT_MODEL_ID = "kimi-k2.6"
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
 export const SUBSCRIPTION_LABEL = "Use a subscription"
 
+let browserLoginLinkSeq = 0
+
+/**
+ * Format the browser-login URL as a feedback message the user can act on when
+ * the auto-opened browser landed in the wrong app/profile.
+ *
+ * The URL is wrapped as an OSC 8 terminal hyperlink so the user can right-click
+ * "Copy Link" (or Cmd/Ctrl-click) and get the *complete* URL; selecting the
+ * raw wrapped text injects a newline at the wrap point that corrupts the `state`
+ * query param on paste.
+ *
+ * Two details make the wrapped link behave as a single link:
+ *  - BEL terminator (`\x07`), mirroring upstream `LoginDialogComponent.showAuth`,
+ *    rather than pi-tui's exported `hyperlink()` which uses the ST terminator
+ *    (`\x1b\\`); pi-tui's own line-wrapper documents that ST leaves only the
+ *    first wrapped physical line clickable in some terminals.
+ *  - a unique `id=` param so the terminal treats the wrapped rows as ONE link
+ *    and highlights the whole URL on hover (without it, each wrapped segment is a
+ *    separate link and only the row under the cursor lights up). pi-tui's wrapper
+ *    preserves the param when it re-opens the link on continuation rows.
+ */
+export function formatBrowserLoginMessage(url: string): string {
+	browserLoginLinkSeq += 1
+	const id = `kimchi-login-${browserLoginLinkSeq}`
+	const linkedUrl = `\x1b]8;id=${id};${url}\x07${url}\x1b]8;;\x07`
+	return `If the wrong browser or profile opened, right-click this link, choose "Copy Link", and open it in the correct one:\n${linkedUrl}`
+}
+
 type AuthSelectorProvider = ConstructorParameters<typeof OAuthSelectorComponent>[2][number]
 interface AuthStorageLike {
 	set(provider: string, credential: unknown): void
