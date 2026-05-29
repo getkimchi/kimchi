@@ -249,10 +249,10 @@ function buildGroupView(run: object[], theme: any): ToolBlockView {
 
 	const hint = theme?.fg?.("dim", " (ctrl+o to expand)") ?? " (ctrl+o to expand)"
 	if (isInProgress) {
-		const icon = theme?.fg?.("accent", "⟳") ?? "⟳"
-		view.setHeader(`${icon} ${summaryText}…`, theme?.fg?.("dim", "(ctrl+o to expand)") ?? "(ctrl+o to expand)")
-		view.setBranchMode((s: string) => theme?.fg?.("borderMuted", s) ?? s)
-		view.setExtra([theme?.fg?.("dim", buildCurrentToolLine(last)) ?? buildCurrentToolLine(last)])
+		view.setHeader(`${summaryText}…`, "")
+		view.hideDivider()
+		view.setFooter("", "")
+		view.setExtra([])
 	} else {
 		view.setHeader(`${summaryText}${hint}`, "")
 		view.hideDivider()
