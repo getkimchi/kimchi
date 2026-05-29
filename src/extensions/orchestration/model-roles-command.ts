@@ -38,18 +38,18 @@ const DELEGABLE_KEYS: (keyof ModelRoles)[] = ["planner", "builder", "reviewer", 
 
 const ROLE_KEYS: (keyof ModelRoles)[] = ["orchestrator", ...DELEGABLE_KEYS]
 
-function formatRoleAssignment(value: RoleModelAssignment): string {
+export function formatRoleAssignment(value: RoleModelAssignment): string {
 	const models = normalizeRoleModels(value)
 	return models.join(", ")
 }
 
-function isEqualAssignment(a: RoleModelAssignment, b: RoleModelAssignment): boolean {
+export function isEqualAssignment(a: RoleModelAssignment, b: RoleModelAssignment): boolean {
 	const arrA = normalizeRoleModels(a)
 	const arrB = normalizeRoleModels(b)
 	return arrA.length === arrB.length && arrA.every((v, i) => v === arrB[i])
 }
 
-function formatRoleDisplay(role: keyof ModelRoles, value: RoleModelAssignment): string {
+export function formatRoleDisplay(role: keyof ModelRoles, value: RoleModelAssignment): string {
 	const info = ROLE_LABELS[role]
 	const isDefault = isEqualAssignment(value, DEFAULT_MODEL_ROLES[role])
 	const suffix = isDefault ? " (default)" : ""
@@ -104,7 +104,10 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 								try {
 									await pi.setModel(target)
 								} catch {
-									// best-effort
+									ctx.ui.notify(
+										`Could not switch to ${DEFAULT_MODEL_ROLES.orchestrator}. The model will be used next session.`,
+										"warning",
+									)
 								}
 							}
 						}
