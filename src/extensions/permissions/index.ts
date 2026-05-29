@@ -333,18 +333,23 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		maybeShowYoloWarning(ctx, "plan")
 	}
 
-	function switchFromPlanAndExecute(ctx: ExtensionContext, targetMode: PermissionMode, planPath?: string): void {
+	function switchFromPlanAndExecute(
+		ctx: ExtensionContext,
+		targetMode: PermissionMode,
+		planPath: string,
+		planText: string,
+	): void {
 		runtimeMode = targetMode
 		restoreToolsFromPlanMode()
 		propagateModeToEnv()
 		updateStatus(ctx)
 		maybeShowYoloWarning(ctx, targetMode)
 
-		const planRef = planPath ? `\n\nApproved plan saved to: ${planPath}` : ""
 		pi.sendMessage(
 			{
 				customType: "plan-execute",
-				content: `The user approved the plan. Execute it now.${planRef}`,
+				content:
+					`The user approved the plan. Execute it now.\n\nApproved plan saved to: ${planPath}\n\n---\n\n${planText}`,
 				display: false,
 			},
 			{ triggerTurn: true },
@@ -457,9 +462,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		)
 
 		if (choice === EXECUTE) {
-			switchFromPlanAndExecute(ctx, "default", planPath)
+			switchFromPlanAndExecute(ctx, "default", planPath, text)
 		} else if (choice === EXECUTE_AUTO) {
-			switchFromPlanAndExecute(ctx, "auto", planPath)
+			switchFromPlanAndExecute(ctx, "auto", planPath, text)
 		}
 		// Decline or escape: stay in plan mode.
 	})
