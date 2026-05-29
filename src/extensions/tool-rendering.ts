@@ -3741,7 +3741,7 @@ export default function (pi: ExtensionAPI) {
 				const summary = summarizeText(cdCtx.effectiveCommand, 72)
 				const badge =
 					cdCtx.type === "worktree"
-						? theme.fg("dim", ` [${cdCtx.worktreeName}]`)
+						? theme.fg("dim", ` [worktree: ${cdCtx.worktreeName}]`)
 						: theme.fg("dim", ` ${cdCtx.path}`)
 				return makeText(
 					ctx.lastComponent,
