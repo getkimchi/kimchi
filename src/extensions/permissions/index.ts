@@ -82,6 +82,12 @@ export function getCurrentPermissionsMode(): PermissionMode {
 	return _currentPermissionsMode
 }
 
+let _isUserChosenYolo: () => boolean = () => process.env.KIMCHI_PERMISSIONS === "yolo"
+
+export function isUserChosenYolo(): boolean {
+	return _isUserChosenYolo()
+}
+
 export { notifyFermentActive }
 
 let _modeChangeListener: ((mode: PermissionMode) => void) | undefined
@@ -179,6 +185,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			config: loaded.config.defaultMode,
 		}).mode
 	}
+
+	_isUserChosenYolo = () =>
+		resolveMode({ runtime: undefined, flag: cliMode, env: envBaseline, config: loaded.config.defaultMode }).mode ===
+		"yolo"
 
 	function allRules(): Rule[] {
 		return [...session.all(), ...configRules, ...builtinRules]

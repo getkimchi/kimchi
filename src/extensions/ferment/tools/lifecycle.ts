@@ -19,6 +19,7 @@ import {
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
+import { isUserChosenYolo } from "../../permissions/index.js"
 import { askUser, askUserForm } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
 import { startFermentForIntent } from "../commands.js"
@@ -674,7 +675,7 @@ export async function completeFerment(
 }
 
 function canAutoApproveFermentStart(): boolean {
-	return process.env.KIMCHI_PERMISSIONS === "yolo" && !hasActiveFerment()
+	return isUserChosenYolo() && !hasActiveFerment()
 }
 
 async function confirmFermentStart(ctx: unknown, title: string, intent: string): Promise<boolean | undefined> {

@@ -8,6 +8,7 @@ import permissionsExtension, {
 	checkCompoundCommand,
 	getCurrentPermissionsMode,
 	handleCompoundConfirm,
+	isUserChosenYolo,
 	notifyFermentActive,
 } from "./index.js"
 import { SessionMemory } from "./session-memory.js"
@@ -136,6 +137,36 @@ function createPermissionsHarness(
 		},
 	}
 }
+
+describe("isUserChosenYolo", () => {
+	afterEach(() => {
+		// Production code mutates process.env directly via propagateModeToEnv; revert it.
+		notifyFermentActive(false)
+		Reflect.deleteProperty(process.env, "KIMCHI_PERMISSIONS")
+		vi.unstubAllEnvs()
+	})
+
+	it("is true when yolo comes from the launch env", () => {
+		vi.stubEnv("KIMCHI_PERMISSIONS", "yolo")
+		createPermissionsHarness(["bash"])
+
+		expect(isUserChosenYolo()).toBe(true)
+	})
+
+	it("is false when yolo is only a runtime elevation (e.g. an active ferment)", () => {
+		// No user-chosen yolo source: env unset, no CLI flag, default config.
+		createPermissionsHarness(["bash"])
+
+		// A ferment becoming active elevates runtimeMode to yolo and propagates it
+		// to the env — the exact condition that previously let the start gate be
+		// bypassed silently.
+		notifyFermentActive(true)
+		expect(process.env.KIMCHI_PERMISSIONS).toBe("yolo")
+
+		// But runtime elevation must not count as user consent.
+		expect(isUserChosenYolo()).toBe(false)
+	})
+})
 
 describe("permissions plan-mode tool visibility", () => {
 	afterEach(() => {
