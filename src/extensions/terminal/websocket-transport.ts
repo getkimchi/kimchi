@@ -45,7 +45,7 @@ export class WebSocketTransport {
     this._ws = new WebSocket(this.url, {
       headers: {
         "Authorization": `Bearer ${token}`
-      }
+      },
     })
 
     this._ws.on("open", () => {
@@ -90,8 +90,8 @@ export class WebSocketTransport {
     this._ws?.close()
   }
 
-  resize(_rows: number, _cols: number): void {
-    // no-op for WebSocket transport
+  resize(rows: number, cols: number): void {
+    this._ws?.send(Buffer.from(`\x1b[RESIZE:${cols};${rows}]`))
   }
 
   get connected(): boolean {

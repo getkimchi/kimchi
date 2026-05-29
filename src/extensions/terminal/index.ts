@@ -33,6 +33,7 @@ export default function terminalExtension(pi: ExtensionAPI): void {
 
       ctx.ui.custom(
         async (tui, _theme, _kb, done) => {
+          // NOTE(patrick.pichler): required to enable getting mouse events.
           console.log("\x1b[?1000h\x1b[?1006h")
 
           overlayTui = tui
@@ -84,6 +85,7 @@ export default function terminalExtension(pi: ExtensionAPI): void {
       ).catch((err) => {
         ctx.ui.notify(`Error: ${(err as Error).message}`, "error")
       }).finally(() => {
+        // NOTE(patrick.pichler): disable mouse capture again.
         console.log("\x1b[?1000l\x1b[?1006l")
         overlayTui?.setShowHardwareCursor(false)
         transport?.close()
