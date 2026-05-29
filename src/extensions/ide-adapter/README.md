@@ -19,6 +19,6 @@ Generic adapter that discovers IDE plugins via lockfiles and exposes their tools
 - `ARCHITECTURE.md` — Internal architecture and behaviour docs
 - `types.ts` — Protocol types
 - `lockfile.ts` — Lockfile scanning and parsing
-- `mcp-client.ts` — WebSocket MCP client with auth header support
+- `mcp-client.ts` — WebSocket MCP client with auth token query-param support
 - `at-mentions.ts` — At-mention queue and prompt injection
 - `index.ts` — Extension factory

@@ -1,6 +1,4 @@
 import type EventEmitter from "node:events"
-import type { IncomingMessage } from "node:http"
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { WebSocketServer } from "ws"
 import { IdeWebSocketTransport, connectToIde } from "./mcp-client.js"
@@ -48,17 +46,14 @@ describe("IdeWebSocketTransport", () => {
 		})
 	})
 
-	it("sends x-secret-key header and token query param during handshake", async () => {
-		const headers: Record<string, string | string[]> = {}
+	it("sends token query param during handshake", async () => {
 		const urls: string[] = []
 		wss.on("connection", (_, req) => {
-			Object.assign(headers, req.headers)
 			urls.push(req.url ?? "")
 		})
 
 		const transport = new IdeWebSocketTransport(new URL(`ws://127.0.0.1:${serverPort}/mcp`), "my-secret")
 		await transport.start()
-		expect(headers["x-secret-key"]).toBe("my-secret")
 		expect(urls).toHaveLength(1)
 		expect(urls[0]).toContain("token=my-secret")
 		await transport.close()

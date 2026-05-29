@@ -70,11 +70,7 @@ class IdeWebSocketTransport implements Transport {
 			try {
 				const urlWithToken = new URL(this.url.toString())
 				urlWithToken.searchParams.set("token", this.authToken)
-				this.ws = new WebSocket(urlWithToken, {
-					headers: {
-						"x-secret-key": this.authToken,
-					},
-				})
+				this.ws = new WebSocket(urlWithToken)
 			} catch (err) {
 				clear()
 				const error = err instanceof Error ? err : new Error(String(err))
