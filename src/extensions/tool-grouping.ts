@@ -254,13 +254,15 @@ function buildGroupView(run: object[], theme: any): ToolBlockView {
 		view.setExtra([theme?.fg?.("dim", buildCurrentToolLine(last)) ?? buildCurrentToolLine(last)])
 	} else if (hasError) {
 		const icon = theme?.fg?.("error", "✗") ?? "✗"
-		view.setHeader(`${icon} ${summaryText}`, theme?.fg?.("dim", "ctrl+o") ?? "ctrl+o")
+		const hint = theme?.fg?.("dim", " (ctrl+o to expand)") ?? " (ctrl+o to expand)"
+		view.setHeader(`${icon} ${summaryText}${hint}`, "")
 		view.hideDivider()
 		view.setFooter("", "")
 		view.setExtra([])
 	} else {
 		const icon = theme?.fg?.("success", "✓") ?? "✓"
-		view.setHeader(`${icon} ${summaryText}`, theme?.fg?.("dim", "ctrl+o") ?? "ctrl+o")
+		const hint = theme?.fg?.("dim", " (ctrl+o to expand)") ?? " (ctrl+o to expand)"
+		view.setHeader(`${icon} ${summaryText}${hint}`, "")
 		view.hideDivider()
 		view.setFooter("", "")
 		view.setExtra([])
