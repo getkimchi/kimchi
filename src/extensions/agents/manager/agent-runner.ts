@@ -22,7 +22,7 @@ import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
-import { getPersonaOutputToolFactories } from "../persona-output-tools.js"
+import { getPersonaOutputToolFactory } from "../persona-output-tools.js"
 import {
 	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
@@ -316,6 +316,12 @@ async function runAgentInner(
 
 	const agentDir = getAgentDir()
 
+	// This persona's bound submit tool (AgentConfig.outputToolName), if any. Injected
+	// into the session below and kept active by the gating filter; no other persona's
+	// output tool is injected, so none can leak into this session.
+	const ownOutputTool = agentConfig?.outputToolName
+	const ownOutputFactory = ownOutputTool ? getPersonaOutputToolFactory(ownOutputTool) : undefined
+
 	const loader = new DefaultResourceLoader({
 		cwd: effectiveCwd,
 		agentDir,
@@ -326,11 +332,11 @@ async function runAgentInner(
 		noContextFiles: true,
 		systemPromptOverride: () => systemPrompt,
 		appendSystemPromptOverride: () => [],
-		// Persona-bound submit tools (AgentConfig.outputToolName) are owned by
-		// higher-level extensions that subagent sessions do not load. Inject their
-		// installers here so the tool exists in the session; the per-persona gating
-		// below keeps each one active only for its owning persona.
-		extensionFactories: [telemetryExtension(readTelemetryConfig()), ...getPersonaOutputToolFactories()],
+		// A persona's bound submit tool (AgentConfig.outputToolName) is owned by a
+		// higher-level extension that subagent sessions do not load. Inject ONLY this
+		// persona's own installer so the tool exists in its session; foreign output
+		// tools never enter, so no per-persona stripping is needed below.
+		extensionFactories: [telemetryExtension(readTelemetryConfig()), ...(ownOutputFactory ? [ownOutputFactory] : [])],
 	})
 	await loader.reload()
 
@@ -369,15 +375,6 @@ async function runAgentInner(
 
 	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
 
-	// Persona-bound submit tools (AgentConfig.outputToolName): each is active ONLY
-	// for the persona that owns it. Gate here — agentConfig is in scope, whereas
-	// KIMCHI_AGENT_PERSONA is not set until later (post-bindExtensions).
-	const outputToolNames = new Set(
-		[...DEFAULT_AGENTS.values()].map((c) => c.outputToolName).filter((n): n is string => Boolean(n)),
-	)
-	const ownOutputTool = agentConfig?.outputToolName
-	const isForeignOutputTool = (t: string) => outputToolNames.has(t) && t !== ownOutputTool
-
 	await session.bindExtensions({
 		onError: (err) => {
 			options.onToolActivity?.({
@@ -393,7 +390,8 @@ async function runAgentInner(
 		const activeTools = session.getActiveToolNames().filter((t) => {
 			if (EXCLUDED_TOOL_NAMES.includes(t)) return false
 			if (disallowedSet?.has(t)) return false
-			if (isForeignOutputTool(t)) return false
+			// The persona's own injected output tool isn't a builtin or an extension-
+			// allowlisted tool, so keep it explicitly.
 			if (t === ownOutputTool) return true
 			if (builtinToolNameSet.has(t)) return true
 			if (allBuiltinToolNames.has(t)) return false
@@ -403,13 +401,8 @@ async function runAgentInner(
 			return true
 		})
 		session.setActiveToolsByName(activeTools)
-	} else if (disallowedSet || outputToolNames.size > 0) {
-		// Runs whenever any persona output tool exists (effectively always), because
-		// getPersonaOutputToolFactories injects EVERY output tool into this session —
-		// so even an extensions-less persona must strip the ones it doesn't own. The
-		// observable tool set is unchanged from pre-feature: the newly injected
-		// foreign tools are removed right back out here.
-		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet?.has(t) && !isForeignOutputTool(t))
+	} else if (disallowedSet) {
+		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet.has(t))
 		session.setActiveToolsByName(activeTools)
 	}
 

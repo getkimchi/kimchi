@@ -26,8 +26,10 @@ export function registerPersonaOutputToolFactory(toolName: string, factory: Pers
 	factories.set(toolName, factory)
 }
 
-/** All registered persona output-tool installers, for injection into subagent
- *  extension loaders. */
-export function getPersonaOutputToolFactories(): PersonaOutputToolFactory[] {
-	return [...factories.values()]
+/** The installer for one persona's bound submit tool, or undefined if none is
+ *  registered under that name. The agent runner injects ONLY the owning persona's
+ *  output tool into its subagent session, so foreign output tools never enter and
+ *  need no per-persona stripping. */
+export function getPersonaOutputToolFactory(toolName: string): PersonaOutputToolFactory | undefined {
+	return factories.get(toolName)
 }

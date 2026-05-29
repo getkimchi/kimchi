@@ -15,7 +15,6 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache } from "../../ferment/store.js"
-import { issuePlanReviewToken } from "./plan-review-provenance.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { clearAllPendingScopes, getPendingScope, runScopingFlow } from "./scoping.js"
 import { clearAllScopingGates, clearAllStepStarts, setActive } from "./state.js"
@@ -179,14 +178,14 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 			],
 			gates: passingPlanGates(),
 		}
-		proposeScopingPayload.plan_review = {
+		const planReview = {
 			status: "approved",
 			summary: "Architecture fits existing OAuth flow patterns.",
 			required_changes: [],
 			reservations: [],
 			questions: [],
-			_provenance: issuePlanReviewToken(),
 		}
+		proposeScopingPayload.plan_review = { ...planReview }
 
 		const toolCtx = { ui: { select: selectMock, input: vi.fn() } }
 		const result = await h.callTool("propose_ferment_scoping", proposeScopingPayload, toolCtx)

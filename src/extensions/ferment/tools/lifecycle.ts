@@ -37,7 +37,6 @@ import { validateGatesOrErr } from "../gate-validation.js"
 import { judgeJourneyGrade } from "../judge.js"
 import { resetReactiveContinuationNudgeCount } from "../nudge.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
-import { PLAN_REVIEW_PROVENANCE_FIELD, verifyPlanReviewToken } from "../plan-review-provenance.js"
 import { getPromptUi, promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
@@ -353,11 +352,9 @@ function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizePro
 }
 
 function hashPlanReviewRejection(review: PlanReview): string {
+	const requiredChanges = review.required_changes.map((change) => change.trim().replace(/\s+/g, " ")).sort()
 	return stateHash({
-		summary: review.summary,
-		required_changes: review.required_changes,
-		reservations: review.reservations ?? [],
-		questions: review.questions ?? [],
+		required_changes: requiredChanges,
 	})
 }
 
@@ -426,14 +423,6 @@ async function validatePlanReviewOrErr(
 	if (!review || typeof review !== "object") {
 		return toolErr(
 			'Cannot propose scoping — plan_review is required. Spawn subagent_type "Plan Reviewer" and send the exact plan payload inside <ferment_plan>...</ferment_plan>, then call propose_ferment_scoping with plan_review fields: status, summary, required_changes, reservations, and questions.',
-		)
-	}
-	// Provenance: the verdict must carry a token issued by submit_plan_review this
-	// session. A planner-fabricated plan_review (no real Plan Reviewer spawn) has no
-	// valid token and is rejected here, regardless of how well-formed it looks.
-	if (!verifyPlanReviewToken((review as Record<string, unknown>)[PLAN_REVIEW_PROVENANCE_FIELD])) {
-		return toolErr(
-			'Cannot propose scoping — plan_review is missing a valid provenance token. Spawn subagent_type "Plan Reviewer", let it call submit_plan_review, then copy its returned JSON verbatim (including the _provenance field) into plan_review. Do not hand-write plan_review.',
 		)
 	}
 	if (typeof review.summary !== "string" || review.summary.trim().length === 0) {

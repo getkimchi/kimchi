@@ -74,7 +74,7 @@ Omit steps that add no value. A simple fix may need only build. A complex featur
 
 PLAN_RULE_PLACEHOLDER
 
-The model for each role is listed in the **Your Team** section above. Always use \`subagent_type: "General-Purpose"\` and pass the exact \`id\` shown there as the \`model\` parameter in your Agent tool call. Do not use other subagent types (Explore, Plan, Plan Reviewer, Researcher) — the model assignment handles specialisation.
+SUBAGENT_TYPE_RULE_PLACEHOLDER
 
 ### Step 4 — Execute
 
@@ -197,11 +197,32 @@ function resolveOrchestratorInstructions(ctx: OrchestrationInstructionsContext):
 	}
 
 	const planRule = resolvePlanRule(ctx.roles)
+	parts.push(
+		ORCHESTRATOR_INSTRUCTIONS.replace("PLAN_RULE_PLACEHOLDER", planRule).replace(
+			"SUBAGENT_TYPE_RULE_PLACEHOLDER",
+			resolveSubagentTypeRule(),
+		),
+	)
 
 	const orchGuidelines = buildOrchestrationGuidelinesSection(ctx.currentModelId, ctx.registry)
 	if (orchGuidelines) parts.push(orchGuidelines)
 
 	return parts.join("\n\n")
+}
+
+function formatCodeList(items: string[]): string {
+	if (items.length === 0) return ""
+	if (items.length === 1) return `\`${items[0]}\``
+	if (items.length === 2) return `\`${items[0]}\` and \`${items[1]}\``
+	return `${items
+		.slice(0, -1)
+		.map((item) => `\`${item}\``)
+		.join(", ")}, and \`${items[items.length - 1]}\``
+}
+
+function resolveSubagentTypeRule(): string {
+	const dedicatedTypes = [...DEFAULT_AGENTS.keys()].filter((name) => name !== AGENT_GENERAL_PURPOSE)
+	return `The model for each role is listed in the **Your Team** section above. Use \`${AGENT_GENERAL_PURPOSE}\` for any role without a dedicated type. Dedicated subagent types are ${formatCodeList(dedicatedTypes)}; do not use them here because the model assignment handles specialisation. Pass the exact \`id\` shown there as the \`model\` parameter in your Agent tool call.`
 }
 
 // ---------------------------------------------------------------------------

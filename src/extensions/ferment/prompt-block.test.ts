@@ -245,9 +245,8 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("needs_revision")
 			// Plan Reviewer returns its verdict via its schema-bound submit tool.
 			expect(out).toContain("`submit_plan_review` tool")
-			// Verdict carries a provenance token that must be copied through verbatim.
+			// Verdict must be copied through verbatim.
 			expect(out).toContain("Copy the ENTIRE returned JSON object VERBATIM")
-			expect(out).toContain("_provenance")
 			expect(out).toContain("the tool response already contains the final Markdown plan")
 			expect(out).toContain("do not write ceremonial text")
 			expect(out).not.toContain("reviewed_plan_hash")

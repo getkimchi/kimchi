@@ -48,7 +48,6 @@ vi.mock("./judge.js", async () => {
 	}
 })
 import { pr_dim } from "./colors.js"
-import { issuePlanReviewToken } from "./plan-review-provenance.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview } from "./plan-review.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { registerLifecycleTools } from "./tools/lifecycle.js"
@@ -1126,20 +1125,16 @@ describe("propose_ferment_scoping", () => {
 			gates: passingPlanGates(),
 			...overrides,
 		}
+		const planReview = (overrides.plan_review as Record<string, unknown> | undefined) ?? {
+			status: "approved",
+			summary: "Plan Reviewer approves the plan fit, complexity, and verification.",
+			required_changes: [],
+			reservations: [],
+			questions: [],
+		}
 		return {
 			...payload,
-			// Token first so every fixture (default or override) carries valid
-			// provenance; an override may still set its own _provenance to win.
-			plan_review: {
-				_provenance: issuePlanReviewToken(),
-				...((overrides.plan_review as Record<string, unknown> | undefined) ?? {
-					status: "approved",
-					summary: "Plan Reviewer approves the plan fit, complexity, and verification.",
-					required_changes: [],
-					reservations: [],
-					questions: [],
-				}),
-			},
+			plan_review: { ...planReview },
 		}
 	}
 
@@ -1214,24 +1209,6 @@ describe("propose_ferment_scoping", () => {
 		expect(getPendingPlanReview(id)).toBeUndefined()
 	})
 
-	it("rejects a fabricated plan_review that has no provenance token", async () => {
-		const id = await createFerment("Fabricated Plan Reviewer")
-		seedPending(id)
-		// Well-formed approved verdict but never minted by submit_plan_review — the
-		// exact honor-system fabrication the provenance token exists to catch.
-		const fabricated = {
-			status: "approved",
-			summary: "Looks great, ship it.",
-			required_changes: [],
-			reservations: [],
-			questions: [],
-		}
-		const result = err(await h.call("propose_ferment_scoping", { ...basePayload(id), plan_review: fabricated }, {}))
-
-		expect(result).toContain("provenance token")
-		expect(getPendingPlanReview(id)).toBeUndefined()
-	})
-
 	it("rejects Plan Reviewer reviews that need revision", async () => {
 		const id = await createFerment("Plan Reviewer Reject")
 		seedPending(id)
@@ -1248,6 +1225,50 @@ describe("propose_ferment_scoping", () => {
 
 		expect(result).toContain("Plan Reviewer rejected this plan")
 		expect(result).toContain("Add verification commands")
+		expect(getPendingPlanReview(id)).toBeUndefined()
+	})
+
+	it("detects repeated Plan Reviewer required_changes even when summaries differ", async () => {
+		const id = await createFerment("Repeated Plan Reviewer Reject")
+		seedPending(id)
+		const required_changes = ["Add verification commands to each phase."]
+
+		const first = err(
+			await h.call(
+				"propose_ferment_scoping",
+				basePayload(id, {
+					plan_review: {
+						status: "needs_revision",
+						summary: "Plan skips verification.",
+						required_changes,
+						reservations: [],
+						questions: [],
+					},
+				}),
+				{},
+			),
+		)
+		expect(first).toContain("Attempt 1/")
+
+		const select = vi.fn().mockResolvedValue("Revise plan manually")
+		const second = err(
+			await h.call(
+				"propose_ferment_scoping",
+				basePayload(id, {
+					plan_review: {
+						status: "needs_revision",
+						summary: "Verification is still missing.",
+						required_changes,
+						reservations: [],
+						questions: [],
+					},
+				}),
+				{ ui: { select } },
+			),
+		)
+
+		expect(second).toContain("same Plan Reviewer rejection repeated 2 times")
+		expect(select).toHaveBeenCalledTimes(1)
 		expect(getPendingPlanReview(id)).toBeUndefined()
 	})
 

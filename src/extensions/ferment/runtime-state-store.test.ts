@@ -179,7 +179,7 @@ describe("runtime-state persistence — write-through + lazy hydrate", () => {
 		// Verify the JSON shape on disk.
 		const path = join(persistRoot, fId, "runtime.json")
 		const parsed = JSON.parse(readFileSync(path, "utf-8"))
-		expect(parsed.schemaVersion).toBe(2)
+		expect(parsed.schemaVersion).toBe(1)
 		expect(parsed.blockRetries["phase-1"]).toBe(1)
 		expect(parsed.phaseStartRefs["phase-1"]).toBe("deadbeef")
 	})

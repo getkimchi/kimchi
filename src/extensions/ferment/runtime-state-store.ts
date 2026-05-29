@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { resolve } from "node:path"
 import { resolveFermentsDir } from "../../ferment/store.js"
 
-export const RUNTIME_STATE_SCHEMA_VERSION = 2
+export const RUNTIME_STATE_SCHEMA_VERSION = 1
 
 export interface PersistedRuntimeState {
 	schemaVersion: typeof RUNTIME_STATE_SCHEMA_VERSION

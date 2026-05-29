@@ -27,7 +27,6 @@ import type { Static } from "typebox"
 import { setAgentStructuredOutput } from "../../agent-worker-context.js"
 import { registerPersonaOutputToolFactory } from "../../agents/persona-output-tools.js"
 import { PLAN_REVIEW_SUBMIT_TOOL } from "../../agents/personas/types.js"
-import { PLAN_REVIEW_PROVENANCE_FIELD, issuePlanReviewToken } from "../plan-review-provenance.js"
 import { toolErr, toolOk } from "../tool-helpers.js"
 import { PlanReviewSchema } from "../tool-schemas.js"
 
@@ -56,10 +55,7 @@ export function registerPlanReviewTool(pi: ExtensionAPI): void {
 					"status is approved but required_changes is non-empty. Clear required_changes, or set status to needs_revision.",
 				)
 			}
-			// Stamp a provenance token so propose_ferment_scoping can prove this verdict
-			// came from a real Plan Reviewer spawn, not a planner-fabricated object. The
-			// reviewer never sets this; the planner copies it through verbatim.
-			setAgentStructuredOutput({ ...params, [PLAN_REVIEW_PROVENANCE_FIELD]: issuePlanReviewToken() })
+			setAgentStructuredOutput({ ...params })
 			return toolOk("Plan review submitted.")
 		},
 	})

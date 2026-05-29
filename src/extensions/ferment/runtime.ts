@@ -34,11 +34,7 @@ import {
 	getBlockRetry,
 	getContinuationPolicy,
 	getLastHumanInputAt,
-	getLastPlanReviewSummary,
-	getLastRejectionHash,
 	getPhaseStartRef,
-	getPlanReviewAttempts,
-	getSamePlanReviewRejectionCount,
 	getStepStartRef,
 	getStorage,
 	isAutomatedContinuationEnabled,
@@ -99,10 +95,6 @@ export interface FermentRuntime {
 	getBlockRetry(fermentId: string, phaseId: string): number
 	clearBlockRetry(fermentId: string, phaseId: string): void
 	recordBlockHashAndCheckRepeat(fermentId: string, phaseId: string, hash: string): boolean
-	getPlanReviewAttempts(fermentId: string): number
-	getLastRejectionHash(fermentId: string): string | undefined
-	getSamePlanReviewRejectionCount(fermentId: string): number
-	getLastPlanReviewSummary(fermentId: string): string | undefined
 	recordPlanReviewAttempt(
 		fermentId: string,
 		rejectionHash: string | undefined,
@@ -172,10 +164,6 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		getBlockRetry,
 		clearBlockRetry,
 		recordBlockHashAndCheckRepeat,
-		getPlanReviewAttempts,
-		getLastRejectionHash,
-		getSamePlanReviewRejectionCount,
-		getLastPlanReviewSummary,
 		recordPlanReviewAttempt,
 		resetPlanReviewState,
 		bumpStepCompleteAttempt,
