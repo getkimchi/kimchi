@@ -271,7 +271,9 @@ function patchGlobalToolBorders(): void {
 
 		if (toolBackgroundMode === "outlines") {
 			const ruleWidth = Math.max(1, width)
-			const framed = core.length > 0 ? [borderLine(ruleWidth), ...core, borderLine(ruleWidth)] : []
+			// Single-line renders (e.g. collapsed group summaries) don't need top/bottom borders —
+			// the spacer above provides sufficient visual separation.
+			const framed = core.length > 1 ? [borderLine(ruleWidth), ...core, borderLine(ruleWidth)] : core
 			result = [spacerLine, ...framed, ...imageLines]
 		} else {
 			result = [spacerLine, ...core, ...imageLines]
