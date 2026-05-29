@@ -150,6 +150,36 @@ it("intercepts showOAuthSelector('login') and runs Kimchi browser auth", async (
 	expect(getFeedbackMessages(fakeIm)).toContain("✓ Logged in. Model: kimi-k2.6")
 })
 
+it("does not reuse a saved Kimchi key for explicit /login", async () => {
+	vi.mocked(configModule.loadConfig).mockReturnValue({
+		apiKey: "stale-saved-token",
+	} as ReturnType<typeof configModule.loadConfig>)
+	const cliAuthModule = await import("./cli-auth/index.js")
+	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "fresh-token" })
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
+
+	expect(authSpy).toHaveBeenCalledOnce()
+	expect(fakeIm.showStatus).toHaveBeenCalledWith("Opening browser for Kimchi login...")
+	expect(fakeIm.showStatus).not.toHaveBeenCalledWith("Refreshing Kimchi models with existing login...")
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("fresh-token")
+	expect(registry.authStorage.set).toHaveBeenCalledWith("kimchi-dev", {
+		type: "api_key",
+		key: "fresh-token",
+	})
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({
+		id: "kimi-k2.6",
+		provider: "kimchi-dev",
+	})
+})
+
 it("surfaces the login URL in the TUI so it can be copied into the right browser/profile", async () => {
 	const loginUrl = "https://app.kimchi.dev/cli-auth?callback=http%3A%2F%2Flocalhost%3A51234&state=abc123"
 	const cliAuthModule = await import("./cli-auth/index.js")

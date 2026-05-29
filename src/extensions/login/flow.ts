@@ -159,6 +159,10 @@ export interface KimchiBrowserLoginHost {
 	signal?: AbortSignal
 }
 
+export interface KimchiBrowserLoginOptions {
+	reuseExistingToken?: boolean
+}
+
 async function configureKimchiToken(host: KimchiBrowserLoginHost, token: string): Promise<boolean> {
 	let refreshError: unknown
 	try {
@@ -205,8 +209,11 @@ async function configureKimchiToken(host: KimchiBrowserLoginHost, token: string)
 	return false
 }
 
-export async function performKimchiBrowserLogin(host: KimchiBrowserLoginHost): Promise<boolean> {
-	const existingToken = loadConfig().apiKey
+export async function performKimchiBrowserLogin(
+	host: KimchiBrowserLoginHost,
+	options: KimchiBrowserLoginOptions = {},
+): Promise<boolean> {
+	const existingToken = options.reuseExistingToken ? loadConfig().apiKey : ""
 	if (existingToken) {
 		host.showStatus?.("Refreshing Kimchi models with existing login...")
 		return configureKimchiToken(host, existingToken)
@@ -280,20 +287,23 @@ export async function performKimchiBrowserLoginWithDialog(
 		)
 
 		void (async () => {
-			const ok = await performKimchiBrowserLogin({
-				modelRegistry: ctx.modelRegistry,
-				setModel,
-				showStatus: (message) => dialog.showProgress(message),
-				showError: (message) => ctx.ui.notify(message, "error"),
-				addFeedback: (message) => dialog.showProgress(message),
-				onBrowserUrl: (url) =>
-					dialog.showInfo([
-						'If the wrong browser or profile opened, right-click this link, choose "Copy Link", and open it in the correct one:',
-						"",
-						formatKimchiLoginLink(url),
-					]),
-				signal: dialog.signal,
-			})
+			const ok = await performKimchiBrowserLogin(
+				{
+					modelRegistry: ctx.modelRegistry,
+					setModel,
+					showStatus: (message) => dialog.showProgress(message),
+					showError: (message) => ctx.ui.notify(message, "error"),
+					addFeedback: (message) => dialog.showProgress(message),
+					onBrowserUrl: (url) =>
+						dialog.showInfo([
+							'If the wrong browser or profile opened, right-click this link, choose "Copy Link", and open it in the correct one:',
+							"",
+							formatKimchiLoginLink(url),
+						]),
+					signal: dialog.signal,
+				},
+				{ reuseExistingToken: true },
+			)
 			if (cancelled || dialog.signal.aborted) finish("cancelled")
 			else finish(ok ? "success" : "failed")
 		})()
