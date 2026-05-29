@@ -9,6 +9,40 @@ import {
 import { applyEnabledBashHooks } from "../resources/bash-hooks.js"
 import { globalRtkLinkPath, managedRtkPath } from "../resources/rtk-install.js"
 import { isResourceEnabled } from "../resources/store.js"
+import { splitCompoundCommand } from "./permissions/taxonomy.js"
+
+export interface WorktreeContext {
+	worktreeName: string
+	effectiveCommand: string
+}
+
+/**
+ * Detects bash commands of the form:
+ *   cd <path containing .worktrees/<name> or /worktrees/<name>> && <real command>
+ *
+ * Matches both `.worktrees/` (dot-hidden convention) and `/worktrees/` path
+ * segments (e.g. `.claude/worktrees/<name>`).
+ *
+ * Returns the worktree name and the real command if found, null otherwise.
+ * Returns null when there is no real subcommand after the cd (pure navigation).
+ */
+export function extractWorktreeContext(command: string): WorktreeContext | null {
+	const segments = splitCompoundCommand(command)
+	if (!segments || segments.length < 2) return null
+
+	const firstSeg = segments[0].trim()
+	const firstWord = firstSeg.split(/\s+/)[0] ?? ""
+	if (firstWord !== "cd") return null
+
+	const worktreeMatch = firstSeg.match(/[/.]worktrees\/([^/\s]+)/)
+	if (!worktreeMatch) return null
+
+	const worktreeName = worktreeMatch[1]
+	const effectiveCommand = segments.slice(1).join(" && ").trim()
+	if (!effectiveCommand) return null
+
+	return { worktreeName, effectiveCommand }
+}
 
 export function collapseCommand(command: string | undefined): string {
 	return (command ?? "").replace(/\n+/g, " ⏎ ")

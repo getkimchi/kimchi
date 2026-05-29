@@ -6,6 +6,7 @@ import {
 	_resetRtkState,
 	collapseCommand,
 	detectRtk,
+	extractWorktreeContext,
 	getBashCommandForDisplay,
 	rewritePreparedBashCommand,
 	rewriteWithRtk,
@@ -286,5 +287,62 @@ describe("rtkSpawnHook", () => {
 		const ctx = { command: "echo hello", cwd: "/tmp", env: process.env }
 		const result = rtkSpawnHook(ctx)
 		expect(result).toBe(ctx) // Same reference — no copy.
+	})
+})
+
+// ---------------------------------------------------------------------------
+// extractWorktreeContext
+// ---------------------------------------------------------------------------
+
+describe("extractWorktreeContext", () => {
+	it("returns null for a plain command with no cd", () => {
+		expect(extractWorktreeContext("grep foo src/")).toBeNull()
+	})
+
+	it("returns null for a cd not through .worktrees", () => {
+		expect(extractWorktreeContext("cd /home/user/project && grep foo src/")).toBeNull()
+	})
+
+	it("returns null for a standalone cd into a worktree (no real subcommand)", () => {
+		expect(extractWorktreeContext("cd /home/user/.worktrees/my-feature")).toBeNull()
+	})
+
+	it("extracts worktree name and effective command for cd .worktrees && grep", () => {
+		expect(extractWorktreeContext("cd /home/user/repo/.claude/worktrees/my-feature && grep foo src/")).toEqual({
+			worktreeName: "my-feature",
+			effectiveCommand: "grep foo src/",
+		})
+	})
+
+	it("extracts worktree name and effective command for cd .worktrees && ls", () => {
+		expect(extractWorktreeContext("cd /a/.worktrees/feat-x && ls src/")).toEqual({
+			worktreeName: "feat-x",
+			effectiveCommand: "ls src/",
+		})
+	})
+
+	it("handles deeper paths — takes the segment immediately after .worktrees/", () => {
+		expect(extractWorktreeContext("cd /very/deep/path/.worktrees/fix-auth-flow && cat README.md")).toEqual({
+			worktreeName: "fix-auth-flow",
+			effectiveCommand: "cat README.md",
+		})
+	})
+
+	it("handles rtk-rewritten effective command", () => {
+		expect(extractWorktreeContext("cd /a/.worktrees/feat && rtk grep foo src/")).toEqual({
+			worktreeName: "feat",
+			effectiveCommand: "rtk grep foo src/",
+		})
+	})
+
+	it("handles multiple segments after cd — joins them back", () => {
+		expect(extractWorktreeContext("cd /a/.worktrees/feat && cd src && ls")).toEqual({
+			worktreeName: "feat",
+			effectiveCommand: "cd src && ls",
+		})
+	})
+
+	it("returns null for a path where 'worktrees' appears mid-segment (e.g. my-old-worktrees)", () => {
+		expect(extractWorktreeContext("cd /path/my-old-worktrees/feat && grep foo src/")).toBeNull()
 	})
 })
