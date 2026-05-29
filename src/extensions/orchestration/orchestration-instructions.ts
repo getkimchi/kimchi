@@ -134,7 +134,11 @@ The review agent runs tests, checks lint, and verifies the implementation matche
 - **Lint output**: any warnings or errors
 - **Verdict**: ALL_PASS or HAS_FAILURES
 
-**After the fix agent completes:** Read ONLY the verification file. If the verdict is ALL_PASS, the review phase is complete — produce the final summary and stop. Do NOT re-read source files, do NOT run tests yourself, do NOT grep or smoke-test. The fix agent already verified. If the verdict is HAS_FAILURES, spawn another fix agent with the remaining failures. Maximum two fix rounds; if still failing after two rounds, report the remaining issues to the user and stop.
+**After the fix agent completes:** Read ONLY the verification file — this is the ONLY action you take. Do NOT re-read source files, do NOT run tests yourself, do NOT grep, do NOT smoke-test, do NOT edit any file. Then:
+- If the verdict is ALL_PASS → review phase is complete. Produce the final summary and stop.
+- If the verdict is HAS_FAILURES → this is fix round 1. Spawn ONE more fix agent with the remaining failures. When it returns its verification file, read it. That is fix round 2.
+- After round 2, STOP regardless of outcome. If failures remain, report them to the user as unresolved. Do NOT attempt a third round. Do NOT debug manually.
+- If remaining failures are tests that assert specific ordering of concurrently-executed operations (e.g. checking which goroutine/thread finishes first), these are non-deterministic test design flaws, not implementation bugs. Report them as known flaky tests and stop — do not attempt to fix non-deterministic ordering assertions.
 
 **Review verdicts are final**: Never edit a review report to change its verdict. If a flag is genuinely wrong, add a separate rationale note alongside the original review — do not alter the reviewer's output.
 
