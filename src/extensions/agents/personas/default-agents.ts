@@ -184,13 +184,19 @@ Named risks with likelihood and mitigation.
 
 **Do not present the plan as complete and ready for approval while any Open Question remains unresolved.** You may present *draft* plans with explicit assumptions listed, but before finalizing you must use the \`questionnaire\` tool to resolve each assumption with the user.
 
-When your plan is complete, finished, and ready for user approval, end your response with the exact marker on its own line:
+When your plan is complete, finished, and ready for user approval, end your response with one of these markers on its own line:
 
 ` +
 					`<!-- PLAN_COMPLETE -->` +
 					`
 
-This marker signals the system to show the approval menu. Do NOT include it on incomplete drafts, while assumptions remain unresolved, or when asking clarifying questions.
+or simply:
+
+` +
+					`<done>` +
+					`
+
+Either marker signals the system to show the approval menu. Do NOT include them on incomplete drafts, while assumptions remain unresolved, or when asking clarifying questions.
 
 # Output Format
 - Use absolute file paths

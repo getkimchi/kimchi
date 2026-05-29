@@ -6,13 +6,19 @@ When you need to ask the user questions — to clarify requirements, choose betw
 
 Use this template to draft plans directly **within this conversation**. Do NOT use \`request_ferment_workflow\`, ferment tools, or any workflow-starting mechanism. Plan mode is where YOU create the plan by investigating and writing it. The user will review it here before execution begins.
 
-When your plan is complete, finished, and all assumptions resolved, end your response with the exact marker on its own line:
+When your plan is complete, finished, and all assumptions resolved, end your response with one of these markers on its own line:
 
 ` +
 	`<!-- PLAN_COMPLETE -->` +
 	`
 
-This marker tells the system the plan is ready for user review. Do NOT include this marker on incomplete drafts, clarifying questions, or while assumptions remain unresolved.
+or simply:
+
+` +
+	`<done>` +
+	`
+
+Either marker tells the system the plan is ready for user review. Do NOT include these markers on incomplete drafts, clarifying questions, or while assumptions remain unresolved.
 
 Follow this template for every plan you produce:
 

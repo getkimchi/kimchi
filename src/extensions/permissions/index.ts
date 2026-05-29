@@ -450,7 +450,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			.map((c) => (c as { type: "text"; text: string }).text)
 			.join("\n")
 
-		if (!text.includes("<!-- PLAN_COMPLETE -->")) return
+		if (!text.includes("<!-- PLAN_COMPLETE -->") && !text.includes("<done>")) return
 
 		const EXECUTE = "Yes — execute the plan"
 		const EXECUTE_AUTO = "Yes — execute (auto-approve)"
