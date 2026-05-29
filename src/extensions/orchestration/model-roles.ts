@@ -74,9 +74,6 @@ const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "s
  * Build default model roles by scanning MODEL_CAPABILITIES.
  *
  * Each non-ignored model is placed into role pools matching its `roles` field.
- * Additionally, nemotron (light-tier) is added to builder and reviewer pools
- * as a cheap option for trivial tasks.
- *
  * The orchestrator is the heaviest model with the "plan" role.
  */
 export function buildDefaultModelRoles(): ModelRoles {

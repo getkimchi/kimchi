@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { modelsForAnyRole, modelsForRole } from "./by-strength.js"
+import { modelsForAnyRole, modelsForRole } from "./by-role.js"
 
 describe("modelsForRole", () => {
 	it("explore role returns all explore-capable models in registry insertion order", () => {
