@@ -255,6 +255,7 @@ describe("resolveOrchestrationInstructions", () => {
 				builder: ["kimchi-dev/minimax-m2.7", "kimchi-dev/kimi-k2.6"],
 				reviewer: ["kimchi-dev/kimi-k2.6", "kimchi-dev/minimax-m2.7"],
 				explorer: "kimchi-dev/nemotron-3-super-fp4",
+				judge: "kimchi-dev/kimi-k2.6",
 			},
 		})
 		expect(result).toContain("### Builder")
