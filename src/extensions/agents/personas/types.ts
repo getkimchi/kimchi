@@ -24,6 +24,11 @@ export const AGENT_PLAN = "Plan"
 export const AGENT_PLAN_REVIEWER = "Plan Reviewer"
 export const AGENT_RESEARCHER = "Researcher"
 
+/** Submit tool the Plan Reviewer persona must call to return its verdict.
+ *  Bound to the persona via AgentConfig.outputToolName; registered by the
+ *  ferment extension with PlanReviewSchema as its parameter schema. */
+export const PLAN_REVIEW_SUBMIT_TOOL = "submit_plan_review"
+
 /** Names of the embedded default agents (in canonical display order). */
 export const DEFAULT_AGENT_NAMES = [
 	AGENT_GENERAL_PURPOSE,
@@ -80,6 +85,14 @@ export interface AgentConfig {
 	runInBackground?: boolean
 	/** Default for spawn: no extension tools. undefined = caller decides. */
 	isolated?: boolean
+	/**
+	 * When set, this persona MUST return its result by calling the named submit
+	 * tool exactly once; the tool's validated args become RunResult.structuredOutput.
+	 * The tool is active ONLY for this persona (gated in the agent-runner filter),
+	 * and a run that finishes without calling it is retried once then failed.
+	 * Used to enforce a schema-bound output contract instead of relying on the prompt.
+	 */
+	outputToolName?: string
 	/** Whether to inject project context files (CLAUDE.md, AGENTS.md) into the system prompt. Default: false. */
 	includeContextFiles?: boolean
 	/** Persistent memory scope — agents with memory get a persistent directory and MEMORY.md */
@@ -117,6 +130,9 @@ export interface AgentRecord {
 	modelId?: string
 	abortReason?: AgentAbortReason
 	result?: string
+	/** Schema-validated result captured from a persona's bound submit tool
+	 *  (AgentConfig.outputToolName). undefined for agents without an output contract. */
+	structuredOutput?: unknown
 	error?: string
 	toolUses: number
 	startedAt: number

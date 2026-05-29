@@ -14,7 +14,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
-import { runAsAgentWorker } from "../../agent-worker-context.js"
+import { getAgentStructuredOutput, runAsAgentWorker } from "../../agent-worker-context.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
@@ -167,6 +167,9 @@ export interface RunResult {
 	abortReason?: AgentAbortReason
 	/** True if the agent was steered to wrap up (hit soft turn limit) but finished in time. */
 	steered: boolean
+	/** Schema-validated result captured from a persona's bound submit tool
+	 *  (AgentConfig.outputToolName). undefined when the persona has no output contract. */
+	structuredOutput?: unknown
 }
 
 function collectResponseText(session: AgentSession) {
@@ -361,6 +364,15 @@ async function runAgentInner(
 
 	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
 
+	// Persona-bound submit tools (AgentConfig.outputToolName): each is active ONLY
+	// for the persona that owns it. Gate here — agentConfig is in scope, whereas
+	// KIMCHI_AGENT_PERSONA is not set until later (post-bindExtensions).
+	const outputToolNames = new Set(
+		[...DEFAULT_AGENTS.values()].map((c) => c.outputToolName).filter((n): n is string => Boolean(n)),
+	)
+	const ownOutputTool = agentConfig?.outputToolName
+	const isForeignOutputTool = (t: string) => outputToolNames.has(t) && t !== ownOutputTool
+
 	await session.bindExtensions({
 		onError: (err) => {
 			options.onToolActivity?.({
@@ -376,6 +388,8 @@ async function runAgentInner(
 		const activeTools = session.getActiveToolNames().filter((t) => {
 			if (EXCLUDED_TOOL_NAMES.includes(t)) return false
 			if (disallowedSet?.has(t)) return false
+			if (isForeignOutputTool(t)) return false
+			if (t === ownOutputTool) return true
 			if (builtinToolNameSet.has(t)) return true
 			if (allBuiltinToolNames.has(t)) return false
 			if (Array.isArray(extensions)) {
@@ -384,8 +398,8 @@ async function runAgentInner(
 			return true
 		})
 		session.setActiveToolsByName(activeTools)
-	} else if (disallowedSet) {
-		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet.has(t))
+	} else if (disallowedSet || ownOutputTool || outputToolNames.size > 0) {
+		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet?.has(t) && !isForeignOutputTool(t))
 		session.setActiveToolsByName(activeTools)
 	}
 
@@ -561,6 +575,14 @@ async function runAgentInner(
 
 	try {
 		await session.prompt(effectivePrompt)
+		// Forced structured-output contract: if this persona must return via a
+		// submit tool but finished without calling it, nudge once. Still-missing
+		// after this retry is failed below (retry-then-fail).
+		if (agentConfig?.outputToolName && !aborted && !budgetAborted && getAgentStructuredOutput() === undefined) {
+			await session.prompt(
+				`You have not returned a result. You MUST call \`${agentConfig.outputToolName}\` exactly once, with all required fields, to submit your verdict. Do not reply with prose.`,
+			)
+		}
 	} finally {
 		clearInterval(inactivityInterval)
 		if (durationTimer) clearTimeout(durationTimer)
@@ -597,8 +619,22 @@ async function runAgentInner(
 		abortReason = "token_budget"
 	}
 
+	const structuredOutput = getAgentStructuredOutput()
+	if (agentConfig?.outputToolName && structuredOutput === undefined && !aborted && !budgetAborted) {
+		throw new Error(
+			`${agentConfig.name} did not return a structured result: it must call ${agentConfig.outputToolName} exactly once. None was submitted after a retry.`,
+		)
+	}
+
 	const responseText = collector.getText().trim() || getLastAssistantText(session)
-	return { responseText, session, aborted: aborted || budgetAborted, abortReason, steered: softLimitReached }
+	return {
+		responseText,
+		session,
+		aborted: aborted || budgetAborted,
+		abortReason,
+		steered: softLimitReached,
+		structuredOutput,
+	}
 }
 
 /**

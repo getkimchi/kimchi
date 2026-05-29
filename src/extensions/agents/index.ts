@@ -310,6 +310,18 @@ function getStatusInstruction(status: string, abortReason?: AgentAbortReason): s
 	return ""
 }
 
+/** Serialize a persona's captured structured output for the Agent tool body.
+ *  Returns undefined when there is no structured output, or when it can't be
+ *  serialized (e.g. a circular reference) so the caller falls back to text. */
+function safeStructuredBody(structuredOutput: unknown): string | undefined {
+	if (structuredOutput === undefined) return undefined
+	try {
+		return JSON.stringify(structuredOutput, null, 2)
+	} catch {
+		return undefined
+	}
+}
+
 function escapeXml(s: string): string {
 	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
 }
@@ -1310,8 +1322,11 @@ Model selection — YOU choose based on task complexity:
 				const statsParts = [`${record.toolUses} tool uses`]
 				if (tokenText) statsParts.push(tokenText)
 				const outcome = record.status === "aborted" ? "aborted" : record.status === "stopped" ? "stopped" : "completed"
+				// A persona with a bound submit tool (AgentConfig.outputToolName) returns
+				// its schema-validated args as the body; the caller copies that verbatim.
+				const body = safeStructuredBody(record.structuredOutput) ?? (record.result?.trim() || "No output.")
 				return textResult(
-					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.${getStatusInstruction(record.status, record.abortReason)}\n\n${record.result?.trim() || "No output."}`,
+					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.${getStatusInstruction(record.status, record.abortReason)}\n\n${body}`,
 					details,
 				)
 			},

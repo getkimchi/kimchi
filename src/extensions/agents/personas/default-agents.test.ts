@@ -11,7 +11,14 @@ vi.mock("../../orchestration/model-roles.js", async (importOriginal) => {
 })
 
 import { DEFAULT_AGENTS } from "./default-agents.js"
-import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_PLAN_REVIEWER, AGENT_RESEARCHER } from "./types.js"
+import {
+	AGENT_EXPLORE,
+	AGENT_GENERAL_PURPOSE,
+	AGENT_PLAN,
+	AGENT_PLAN_REVIEWER,
+	AGENT_RESEARCHER,
+	PLAN_REVIEW_SUBMIT_TOOL,
+} from "./types.js"
 
 // Stub pickFromModelListByTier and recommendModel so snapshots are deterministic.
 // default-agents.ts calls modelsForStrength/modelsForAnyStrength at module load time
@@ -71,13 +78,16 @@ describe("DEFAULT_AGENTS", () => {
 		expect(planReviewer.builtinToolNames).not.toContain("write")
 		expect(planReviewer.builtinToolNames).not.toContain("edit")
 		expect(planReviewer.extensions).toBe(true)
-		expect(planReviewer.systemPrompt).toContain("Approve the plan only when")
+		expect(planReviewer.systemPrompt).toContain("adversarial plan reviewer")
+		expect(planReviewer.systemPrompt).toContain('Default to "needs_revision"')
 		expect(planReviewer.systemPrompt).toContain("<ferment_plan>")
 		expect(planReviewer.systemPrompt).toContain("flag the gap as a required change or open question")
 		expect(planReviewer.systemPrompt).not.toContain("Researcher subagent")
 		expect(planReviewer.systemPrompt).toContain("All fields are required")
-		expect(planReviewer.systemPrompt).toContain("do not add extra keys")
 		expect(planReviewer.systemPrompt).toContain('status MUST be "needs_revision"')
+		// Output is schema-bound via the submit tool, not free-text JSON.
+		expect(planReviewer.outputToolName).toBe(PLAN_REVIEW_SUBMIT_TOOL)
+		expect(planReviewer.systemPrompt).toContain(PLAN_REVIEW_SUBMIT_TOOL)
 	})
 
 	it("General-Purpose agent declares a models[] array", () => {

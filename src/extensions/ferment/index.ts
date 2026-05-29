@@ -32,6 +32,7 @@ import { applyFermentRuntimeToolProfile } from "./tool-scope.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { buildFreeformScopingFeedbackMessage, registerLifecycleTools } from "./tools/lifecycle.js"
 import { registerPhaseTools } from "./tools/phases.js"
+import { registerPlanReviewTool } from "./tools/plan-review.js"
 import { registerStepTools } from "./tools/steps.js"
 
 // ─── Public exports for cli.ts and components/footer.ts ──────────────────────
@@ -208,4 +209,5 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	registerPhaseTools(pi, runtime)
 	registerStepTools(pi, runtime)
 	registerKnowledgeTools(pi, runtime)
+	registerPlanReviewTool(pi)
 }

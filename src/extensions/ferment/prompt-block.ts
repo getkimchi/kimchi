@@ -52,7 +52,7 @@ The Plan Reviewer subagent prompt MUST include the full exact plan payload insid
 <ferment_plan>
 JSON payload you intend to pass to propose_ferment_scoping, excluding plan_review
 </ferment_plan>
-Tell Plan Reviewer to return only JSON with required fields \`status\`, \`summary\`, \`required_changes\`, \`reservations\`, and \`questions\`; use [] for empty arrays. If Plan Reviewer has any required changes, its status must be \`needs_revision\`; \`approved\` means \`required_changes: []\`. Plan Reviewer may use a Researcher subagent when current external docs, APIs, standards, or browser behavior materially affect the review. Do not ask Plan Reviewer to implement. Do not send Plan Reviewer a prose summary instead of the XML plan.
+The Plan Reviewer returns its verdict by calling its \`submit_plan_review\` tool, and its Agent result is that verdict as JSON with fields \`status\`, \`summary\`, \`required_changes\`, \`reservations\`, and \`questions\`. Copy that JSON VERBATIM into \`plan_review\` — do not re-summarize or re-type it. If \`required_changes\` is non-empty, \`status\` is \`needs_revision\`; \`approved\` means \`required_changes: []\`. Do not ask Plan Reviewer to implement. Do not send Plan Reviewer a prose summary instead of the XML plan.
 
 \`plan_review\` must include all five Plan Reviewer JSON fields: \`status\`, \`summary\`, \`required_changes\`, \`reservations\`, and \`questions\`. Use [] for no required changes, reservations, or questions. Never summarize the plan in chat as a substitute for the tool call.
 
