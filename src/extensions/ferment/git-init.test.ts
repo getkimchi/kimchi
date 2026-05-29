@@ -104,7 +104,7 @@ describe("ensureGitRepo", () => {
 		expect(result).toBe("initialized")
 	})
 
-	it("returns init-failed when git init fails on a read-only directory", async () => {
+	it("returns init-failed when git init fails on a non-existent path", async () => {
 		// Use a path to a non-existent directory so git init fails
 		const dir = mkdtempSync(join(tmpdir(), "git-init-fail-"))
 		repos.push(dir)
