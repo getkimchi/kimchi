@@ -21,6 +21,11 @@ const IMPORT_PATHS: Record<ImportKind, string> = {
 	vscode: ".vscode/mcp.json", // Relative to project
 }
 
+export function saveMcpConfig(config: McpConfig, configPath: string): void {
+	mkdirSync(dirname(configPath), { recursive: true })
+	writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf-8")
+}
+
 export function loadMcpConfig(overridePath?: string): McpConfig {
 	const configPath = overridePath ? resolve(overridePath) : getDefaultConfigPath()
 
@@ -82,7 +87,7 @@ export function loadMcpConfig(overridePath?: string): McpConfig {
 	return config
 }
 
-function validateConfig(raw: unknown): McpConfig {
+export function validateConfig(raw: unknown): McpConfig {
 	if (!raw || typeof raw !== "object") {
 		return { mcpServers: {} }
 	}
