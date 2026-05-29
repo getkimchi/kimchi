@@ -11,7 +11,7 @@ import {
 import { type Component, Container, type TUI } from "@earendil-works/pi-tui"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { loadConfig, writeApiKey } from "../../config.js"
-import { type PiModelConfig, syncProviderModels, updateModelsConfig } from "../../models.js"
+import { type PiModelConfig, isTransientModelsError, syncProviderModels, updateModelsConfig } from "../../models.js"
 
 export const KIMCHI_PROVIDER_ID = "kimchi-dev"
 export const KIMCHI_DEFAULT_MODEL_ID = "kimi-k2.6"
@@ -155,9 +155,17 @@ async function configureKimchiToken(host: KimchiBrowserLoginHost, token: string)
 	}
 
 	if (refreshError) {
-		host.showError?.(
-			`Kimchi model refresh failed: ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`,
-		)
+		const detail = refreshError instanceof Error ? refreshError.message : String(refreshError)
+		if (isTransientModelsError(refreshError)) {
+			// Key is valid; the model list is just temporarily unreachable (rate limit,
+			// gateway error). Tell the user to wait and retry rather than implying the
+			// login failed — and the saved key means a retry won't mint a new one.
+			host.showError?.(
+				`Kimchi is temporarily unavailable (${detail}). Your API key was saved — wait a moment and try again.`,
+			)
+		} else {
+			host.showError?.(`Kimchi model refresh failed: ${detail}`)
+		}
 	} else {
 		host.showError?.("Kimchi login did not configure any available models. Your API key was saved; try again.")
 	}

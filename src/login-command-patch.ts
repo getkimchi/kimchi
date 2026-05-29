@@ -98,9 +98,15 @@ export const oauthDelegate = {
 	original: imProto.showOAuthSelector as (this: any, mode: "login" | "logout") => Promise<void>,
 }
 
+export const warningDelegate = {
+	// biome-ignore lint/suspicious/noExplicitAny: `this` context type for upstream prototype method is unknown
+	original: imProto.showWarning as (this: any, warningMessage: string) => void,
+}
+
 /** Exported for testing: applies the prototype patch (idempotent re-apply is safe). */
 export function applyLoginCommandPatch(): void {
 	imProto.showOAuthSelector = patchedShowOAuthSelector
+	imProto.showWarning = patchedShowWarning
 }
 
 async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
@@ -218,6 +224,25 @@ async function patchedShowOAuthSelector(this: InteractiveMode, mode: "login" | "
 		return
 	}
 	return oauthDelegate.original.call(this, mode)
+}
+
+function patchedShowWarning(this: InteractiveMode, warningMessage: string): void {
+	if (warningMessage.startsWith("No models available.") && hasModelsAfterStartupAuth(this)) {
+		return
+	}
+	warningDelegate.original.call(this, warningMessage)
+}
+
+function hasModelsAfterStartupAuth(im: InteractiveMode): boolean {
+	const modeLike = im as unknown as {
+		session?: { model?: unknown; modelRegistry?: { getAvailable?: () => unknown[] } }
+	}
+	if (modeLike.session?.model) return true
+	try {
+		return (modeLike.session?.modelRegistry?.getAvailable?.().length ?? 0) > 0
+	} catch {
+		return false
+	}
 }
 
 // Apply patch on module load

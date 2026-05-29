@@ -27,6 +27,7 @@ import { homedir, platform, userInfo } from "node:os"
 import { isAbsolute, join, normalize, resolve } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
+import { loadConfig } from "../../config.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -278,13 +279,18 @@ export default function (skillPaths: string[]) {
 		}
 
 		if (!subagentMode) {
-			// Validate model roles against available API models at startup
+			// Validate model roles against available API models at startup.
+			// Cached model metadata can exist before auth is configured; in that
+			// state startup auth owns the first-run login path, so role warnings
+			// would be misleading noise before the user has a usable model.
 			const availableIds = new Set(getAvailableModels().map((m) => m.slug))
-			const validation = validateModelRoles(getModelRoles(), availableIds)
-			for (const { role, configuredModel } of validation.unavailable) {
-				console.warn(
-					`[model-roles] Warning: ${role} model "${configuredModel}" is not available. Subagents for this role will fall back to the parent model.`,
-				)
+			if (loadConfig().apiKey && availableIds.size > 0) {
+				const validation = validateModelRoles(getModelRoles(), availableIds)
+				for (const { role, configuredModel } of validation.unavailable) {
+					console.warn(
+						`[model-roles] Warning: ${role} model "${configuredModel}" is not available. Subagents for this role will fall back to the parent model.`,
+					)
+				}
 			}
 			function notifyIfDeprecated(ctx: {
 				sessionManager?: { getSessionId: () => string | undefined }

@@ -6,7 +6,7 @@ import * as configModule from "./config.js"
 import * as loginPatch from "./login-command-patch.js"
 import * as modelsModule from "./models.js"
 
-const { applyLoginCommandPatch, oauthDelegate } = loginPatch
+const { applyLoginCommandPatch, oauthDelegate, warningDelegate } = loginPatch
 
 vi.mock("@earendil-works/pi-ai", async () => {
 	const actual = await vi.importActual("@earendil-works/pi-ai")
@@ -362,5 +362,42 @@ it("passes through to original showOAuthSelector for 'logout' mode", async () =>
 		expect(stub).toHaveBeenCalledWith("logout")
 	} finally {
 		oauthDelegate.original = saved
+	}
+})
+
+it("suppresses stale startup no-model warning after startup auth selected a model", () => {
+	const stub = vi.fn()
+	const saved = warningDelegate.original
+	warningDelegate.original = stub
+
+	try {
+		const fakeIm = makeFakeInteractiveMode(makeFakeModelRegistry())
+		fakeIm.session.model = { id: "kimi-k2.6", provider: "kimchi-dev" }
+
+		// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+		const patched = (InteractiveMode.prototype as any).showWarning
+		patched.call(fakeIm, "No models available. Use /login to log into a provider via OAuth or API key.")
+
+		expect(stub).not.toHaveBeenCalled()
+	} finally {
+		warningDelegate.original = saved
+	}
+})
+
+it("keeps real no-model warnings when no model became available", () => {
+	const stub = vi.fn()
+	const saved = warningDelegate.original
+	warningDelegate.original = stub
+
+	try {
+		const fakeIm = makeFakeInteractiveMode(makeFakeModelRegistry())
+
+		// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+		const patched = (InteractiveMode.prototype as any).showWarning
+		patched.call(fakeIm, "No models available. Use /login to log into a provider via OAuth or API key.")
+
+		expect(stub).toHaveBeenCalledOnce()
+	} finally {
+		warningDelegate.original = saved
 	}
 })

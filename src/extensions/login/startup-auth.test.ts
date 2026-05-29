@@ -14,6 +14,7 @@ const configMock = vi.hoisted(() => ({
 const modelsMock = vi.hoisted(() => ({
 	updateModelsConfig: vi.fn(),
 	syncProviderModels: vi.fn(),
+	isTransientModelsError: vi.fn((error: unknown) => (error as { transient?: boolean })?.transient === true),
 }))
 
 vi.mock("../../cli-auth/index.js", () => authMock)
@@ -143,9 +144,13 @@ beforeAll(() => {
 beforeEach(() => {
 	authMock.authenticateViaBrowser.mockReset()
 	authMock.authenticateViaBrowser.mockResolvedValue({ token: "kimchi-token" })
+	let savedConfigKey = ""
 	configMock.loadConfig.mockReset()
-	configMock.loadConfig.mockReturnValue({ apiKey: "" })
+	configMock.loadConfig.mockImplementation(() => ({ apiKey: savedConfigKey }))
 	configMock.writeApiKey.mockReset()
+	configMock.writeApiKey.mockImplementation((key: string) => {
+		savedConfigKey = key
+	})
 	modelsMock.updateModelsConfig.mockReset()
 	modelsMock.updateModelsConfig.mockResolvedValue({ models: [] })
 	modelsMock.syncProviderModels.mockReset()
@@ -235,6 +240,46 @@ describe("startup auth gate", () => {
 		}
 	})
 
+	it("reports a transient rate-limit failure as retryable without discarding the saved key", async () => {
+		const previousAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+		process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-startup-auth-test"
+		let savedConfigKey = ""
+		configMock.loadConfig.mockImplementation(() => ({ apiKey: savedConfigKey }))
+		configMock.writeApiKey.mockImplementation((key: string) => {
+			savedConfigKey = key
+		})
+		const transientError = Object.assign(new Error("Failed to fetch models: 429 Too Many Requests"), {
+			transient: true,
+		})
+		modelsMock.updateModelsConfig.mockRejectedValue(transientError)
+		const onCancel = vi.fn()
+		const harness = createHarness({ addModelOnAuthSet: false, onCancel })
+
+		try {
+			const started = harness.start()
+
+			await harness.settle()
+			harness.input("\n")
+			await harness.waitForCustomPrompts(2)
+			harness.input("\x1b")
+			await started
+
+			// The browser flow ran once; the retry reused the saved key (no new mint).
+			expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
+			const messages = (harness.ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[0])
+			expect(messages.some((message: string) => /temporarily unavailable/i.test(message))).toBe(true)
+			expect(harness.state.authenticated).toBe(false)
+			expect(harness.state.cancelled).toBe(true)
+		} finally {
+			if (previousAgentDir === undefined) {
+				// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset rather than stringified to "undefined"
+				delete process.env.KIMCHI_CODING_AGENT_DIR
+			} else {
+				process.env.KIMCHI_CODING_AGENT_DIR = previousAgentDir
+			}
+		}
+	})
+
 	it("keeps later startup onboarding parked while authentication is pending", async () => {
 		const laterOnboarding = vi.fn()
 		const onCancel = vi.fn()
@@ -252,12 +297,27 @@ describe("startup auth gate", () => {
 	})
 
 	it("does not show the selector when auth is already usable", async () => {
+		configMock.loadConfig.mockReturnValue({ apiKey: "saved-config-token" })
 		const harness = createHarness({ availableInitially: true })
 
 		await harness.start()
 
 		expect(harness.ctx.ui.custom).not.toHaveBeenCalled()
 		expect(harness.state.attempted).toBe(false)
+	})
+
+	it("does not treat cached Kimchi models as usable without a saved key", async () => {
+		const onCancel = vi.fn()
+		const harness = createHarness({ availableInitially: true, onCancel })
+		const started = harness.start()
+
+		await harness.waitForCustomPrompts(1)
+		harness.input("\x1b")
+		await started
+
+		expect(harness.ctx.ui.custom).toHaveBeenCalledOnce()
+		expect(harness.state.cancelled).toBe(true)
+		expect(onCancel).toHaveBeenCalledWith(harness.ctx)
 	})
 
 	it("preserves master behavior by seeding saved config keys as oauth credentials", async () => {

@@ -6,6 +6,7 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import {
+	KIMCHI_PROVIDER_ID,
 	createLoginChoiceSelector,
 	performKimchiBrowserLogin,
 	setKimchiAuthToken,
@@ -54,13 +55,19 @@ export function shouldShowStartupAuthGate(input: {
 }
 
 export function seedKimchiAuthFromConfig(ctx: ExtensionContext): void {
+	seedKimchiAuthFromConfigAndReturnKey(ctx)
+}
+
+function seedKimchiAuthFromConfigAndReturnKey(ctx: ExtensionContext): string {
 	const configKey = loadConfig().apiKey
-	if (!configKey) return
-	setKimchiAuthToken(ctx.modelRegistry, configKey, "oauth")
+	if (configKey) {
+		setKimchiAuthToken(ctx.modelRegistry, configKey, "oauth")
+	}
+	return configKey
 }
 
 export function hasUsableAuth(ctx: ExtensionContext): boolean {
-	seedKimchiAuthFromConfig(ctx)
+	const configKey = seedKimchiAuthFromConfigAndReturnKey(ctx)
 	try {
 		ctx.modelRegistry.refresh()
 	} catch {
@@ -68,7 +75,10 @@ export function hasUsableAuth(ctx: ExtensionContext): boolean {
 		// as unauthenticated here so the user gets a login path instead of Ferment.
 	}
 	try {
-		return ctx.modelRegistry.getAvailable().length > 0
+		const availableModels = ctx.modelRegistry.getAvailable()
+		if (availableModels.length === 0) return false
+		if (availableModels.some((model) => model.provider !== KIMCHI_PROVIDER_ID)) return true
+		return configKey.length > 0
 	} catch {
 		return false
 	}
