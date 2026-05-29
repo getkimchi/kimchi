@@ -167,12 +167,13 @@ Use the **Your Team** section above to pick the right model for each delegated s
 - Match the model's **tier** to the task complexity: light for simple well-scoped work, heavy for ambiguous or multi-step work.
 - Read the model's **description** before selecting. A model listed in a role pool is a candidate, not a guarantee — its description may reveal limitations (e.g. "weakest at coding") that make it unsuitable for the specific task.
 - If the subtask involves images or visual content, you MUST select a model with \`Vision: yes\`.
-- **Use the lightest model with the required capability.** Unless the task explicitly requires deep reasoning or complex analysis, prefer the lightest tier model whose description confirms it can handle the work.
+- **Use the lightest model with the required capability.** Unless the task explicitly requires deep reasoning or complex analysis, prefer the lightest tier model whose description confirms it can handle the work. Light-tier models are best suited for: codebase exploration, file reading, research, and trivial re-verification (confirming a fix agent's tests pass). They are NOT suitable for: initial code review, building code, or any task requiring correctness judgment.
 
 ### Review delegation
 
 Review is often the most token-intensive phase. Keep it focused by enforcing a strict file-based handoff.
 
+- **Use a standard-tier or heavy-tier model for initial code review.** Code review requires reasoning about correctness, not just reading files. Light-tier models are too weak for initial review — they miss subtle bugs, flaky test patterns, and coverage gaps. Reserve light-tier models for exploration and trivial re-verification only.
 - **Always use a different model than build/plan.** Self-review has no value — a different model catches mistakes you are blind to.
 - **The review agent writes a findings file, not inline text.** All review output goes to a Markdown file in the Documents directory. The orchestrator reads only that file — never re-reads source files to understand the review.
 - **If fixes are needed, pass the findings file to a fix agent.** The fix agent reads the review file, applies fixes, runs tests. The orchestrator does not read source files, does not edit, does not run bash. It reads the findings file path, spawns the fix agent, and waits.
@@ -207,7 +208,7 @@ A plan is "good" when an independent model can build from it without asking ques
 5. **Interface contracts** — Method signatures, types, and data structures are defined, not described vaguely.
 6. **Acceptance criteria** — Each chunk has 2–4 concrete, verifiable criteria (e.g. "test X passes", "API returns 404 on missing item").
 7. **Edge cases** — Error handling, timeouts, concurrency, empty inputs, and malformed data are addressed.
-8. **Test strategy** — Testing approach is stated: unit vs integration, which files need new tests, mock strategy if any. For code using concurrency primitives (goroutines, threads, async tasks, mutexes, channels), the test strategy MUST include a race/thread-safety detector (e.g. \`go test -race\`, \`-fsanitize=thread\`).
+8. **Test strategy** — Testing approach is stated: unit vs integration, which files need new tests, mock strategy if any. Target a test-to-production LOC ratio of at least 1.0. For code using concurrency primitives (goroutines, threads, async tasks, mutexes, channels), the test strategy MUST include a race/thread-safety detector (e.g. \`go test -race\`, \`-fsanitize=thread\`). **Anti-flaky rule**: tests must NEVER assert specific ordering of concurrently-produced results (e.g. which goroutine finishes first, map iteration order, channel receive order). For collections with non-deterministic ordering, assert membership or sort before comparing.
 9. **No ambiguity** — API choices, library versions, and design decisions are explicit. Alternatives rejected are noted in one line each.
 10. **Feasibility** — The plan fits within the token budgets allocated for each chunk. No chunk requires >150k tokens to build.`
 
