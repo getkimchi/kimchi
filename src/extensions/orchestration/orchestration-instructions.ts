@@ -106,7 +106,7 @@ Chunks must be ordered so each one can build on the previous. If plan is in your
 - The task involves concurrency, state machines, or distributed logic
 - The orchestrator is uncertain about completeness or correctness
 
-**Who verifies:** A model with \`plan\` or \`review\` in its roles. For checklist-style verification (does the plan cover requirements X, Y, Z?), prefer a standard-tier model. When the plan involves concurrency, state machines, complex algorithms, or distributed logic, use the heaviest available model — these designs require architectural judgment, not just checklist matching.
+**Who verifies:** A model with \`plan\` or \`review\` in its roles. Read the model descriptions to pick the right verifier — checklist-style verification can use a standard-tier model, but plans involving concurrency or algorithmic design need a model whose description confirms it can reason about correctness.
 
 **Verification prompt:** The verifier receives: (1) the original task description, (2) the plan spec file path. Verifier reads both, then outputs a brief markdown verdict:
 - APPROVED — the plan is complete, buildable, and aligned with requirements.
@@ -167,13 +167,12 @@ Use the **Your Team** section above to pick the right model for each delegated s
 - Match the model's **tier** to the task complexity: light for simple well-scoped work, heavy for ambiguous or multi-step work.
 - Read the model's **description** before selecting. A model listed in a role pool is a candidate, not a guarantee — its description may reveal limitations (e.g. "weakest at coding") that make it unsuitable for the specific task.
 - If the subtask involves images or visual content, you MUST select a model with \`Vision: yes\`.
-- **Use the lightest model with the required capability.** Unless the task explicitly requires deep reasoning or complex analysis, prefer the lightest tier model whose description confirms it can handle the work. Light-tier models are best suited for: codebase exploration, file reading, research, and trivial re-verification (confirming a fix agent's tests pass). They are NOT suitable for: initial code review, building code, or any task requiring correctness judgment.
+- **Use the lightest model with the required capability.** Unless the task explicitly requires deep reasoning or complex analysis, prefer the lightest tier model whose description confirms it can handle the work.
 
 ### Review delegation
 
 Review is often the most token-intensive phase. Keep it focused by enforcing a strict file-based handoff.
 
-- **Use a standard-tier or heavy-tier model for initial code review.** Code review requires reasoning about correctness, not just reading files. Light-tier models are too weak for initial review — they miss subtle bugs, flaky test patterns, and coverage gaps. Reserve light-tier models for exploration and trivial re-verification only.
 - **Always use a different model than build/plan.** Self-review has no value — a different model catches mistakes you are blind to.
 - **The review agent writes a findings file, not inline text.** All review output goes to a Markdown file in the Documents directory. The orchestrator reads only that file — never re-reads source files to understand the review.
 - **If fixes are needed, pass the findings file to a fix agent.** The fix agent reads the review file, applies fixes, runs tests. The orchestrator does not read source files, does not edit, does not run bash. It reads the findings file path, spawns the fix agent, and waits.
