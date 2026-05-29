@@ -31,6 +31,7 @@ import helpExtension from "./extensions/help.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import loginExtension from "./extensions/login/index.js"
+import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
@@ -448,11 +449,20 @@ try {
 		}
 
 		const rawArgs = process.argv.slice(2)
-		const sessionModeOnboarding = createSessionModeOnboardingForStartup({
-			rawArgs,
+		const interactiveStartupContext = {
 			nonInteractiveMode: acpMode,
 			stdinIsTTY: process.stdin.isTTY === true,
 			stdoutIsTTY: process.stdout.isTTY === true,
+		}
+		const startupAuthState = createStartupAuthGateState()
+		const startupAuthGate = createStartupAuthGate({
+			...interactiveStartupContext,
+			state: startupAuthState,
+		})
+		const sessionModeOnboarding = createSessionModeOnboardingForStartup({
+			rawArgs,
+			...interactiveStartupContext,
+			shouldSkip: () => startupAuthState.cancelled,
 		})
 		const extensionFactories = [
 			startupUpdateExtension,
@@ -461,6 +471,8 @@ try {
 			statsExtension,
 			terminalColorsExtension,
 			kimchiMinimalTintsExtension,
+			loginExtension,
+			startupAuthGate,
 			loopGuardExtension,
 			explorationGuardExtension,
 			lspExtension,
@@ -499,7 +511,6 @@ try {
 				{ id: "tools.web_fetch", factory: webFetchExtension },
 				{ id: "tools.web_search", factory: webSearchExtension },
 			] satisfies ManagedExtensionFactory[]),
-			loginExtension,
 			modelSwitchExtension,
 			modelGuardExtension,
 			stripImagesExtension,

@@ -1,0 +1,290 @@
+import { type Theme, initTheme } from "@earendil-works/pi-coding-agent"
+import type { TUI } from "@earendil-works/pi-tui"
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+
+const authMock = vi.hoisted(() => ({
+	authenticateViaBrowser: vi.fn(),
+}))
+
+const configMock = vi.hoisted(() => ({
+	loadConfig: vi.fn(),
+	writeApiKey: vi.fn(),
+}))
+
+const modelsMock = vi.hoisted(() => ({
+	updateModelsConfig: vi.fn(),
+	syncProviderModels: vi.fn(),
+}))
+
+vi.mock("../../cli-auth/index.js", () => authMock)
+vi.mock("../../config.js", () => configMock)
+vi.mock("../../models.js", () => modelsMock)
+
+import {
+	type StartupAuthGateState,
+	createStartupAuthGate,
+	createStartupAuthGateState,
+	shouldShowStartupAuthGate,
+} from "./startup-auth.js"
+
+type SessionStartHandler = (event: { reason: string }, ctx: unknown) => unknown
+type CustomComponent = { handleInput?(data: string): void }
+
+function theme(): Theme {
+	return {
+		fg: vi.fn((_color: string, text: string) => text),
+		bg: vi.fn((_color: string, text: string) => text),
+		bold: vi.fn((text: string) => text),
+		getFgAnsi: vi.fn(),
+		getBgAnsi: vi.fn(),
+		fgColors: {},
+		bgColors: {},
+		mode: "dark",
+		preproc: vi.fn(),
+		extensions: {},
+	} as unknown as Theme
+}
+
+function createHarness(
+	options: {
+		state?: StartupAuthGateState
+		availableInitially?: boolean
+		addModelOnAuthSet?: boolean
+		onCancel?: ReturnType<typeof vi.fn>
+		afterSessionStart?: SessionStartHandler
+	} = {},
+) {
+	const handlers = new Map<string, SessionStartHandler[]>()
+	const api = {
+		on: vi.fn((event: string, handler: SessionStartHandler) => {
+			const list = handlers.get(event) ?? []
+			list.push(handler)
+			handlers.set(event, list)
+		}),
+		setModel: vi.fn().mockResolvedValue(true),
+	}
+	const availableModels: Array<{ id: string; provider: string }> = options.availableInitially
+		? [{ id: "kimi-k2.6", provider: "kimchi-dev" }]
+		: []
+	const authStorage = {
+		set: vi.fn((provider: string) => {
+			if (provider === "kimchi-dev" && options.addModelOnAuthSet !== false && availableModels.length === 0) {
+				availableModels.push({ id: "kimi-k2.6", provider: "kimchi-dev" })
+			}
+		}),
+		get: vi.fn(),
+		getOAuthProviders: vi.fn(() => []),
+		login: vi.fn(),
+	}
+	const modelRegistry = {
+		authStorage,
+		refresh: vi.fn(),
+		getAvailable: vi.fn(() => availableModels),
+		getProviderAuthStatus: vi.fn(() => ({ configured: false })),
+	}
+	let activeComponent: CustomComponent | undefined
+	const tui = { requestRender: vi.fn(), hasOverlay: vi.fn(() => false) } as unknown as TUI
+	const ui = {
+		setWidget: vi.fn((_key: string, content: unknown) => {
+			if (typeof content === "function") content(tui, theme())
+		}),
+		onTerminalInput: vi.fn(() => vi.fn()),
+		custom: vi.fn((factory: (...args: unknown[]) => CustomComponent) => {
+			return new Promise((resolve) => {
+				const done = (result: unknown) => {
+					activeComponent = undefined
+					resolve(result)
+				}
+				activeComponent = factory(tui, theme(), {}, done)
+			})
+		}),
+		notify: vi.fn(),
+	}
+	const ctx = { hasUI: true, ui, modelRegistry }
+	const state = options.state ?? createStartupAuthGateState()
+
+	createStartupAuthGate({
+		nonInteractiveMode: false,
+		stdinIsTTY: true,
+		stdoutIsTTY: true,
+		state,
+		onCancel: options.onCancel,
+	})(api as never)
+	if (options.afterSessionStart) api.on("session_start", options.afterSessionStart)
+
+	return {
+		api,
+		ctx,
+		modelRegistry,
+		state,
+		start: async () => {
+			for (const handler of handlers.get("session_start") ?? []) {
+				await handler({ reason: "startup" }, ctx)
+			}
+		},
+		input: (data: string) => activeComponent?.handleInput?.(data),
+		settle: async () => {
+			for (let i = 0; i < 4; i += 1) await Promise.resolve()
+		},
+		waitForCustomPrompts: async (count: number) => {
+			for (let i = 0; i < 50; i += 1) {
+				if (ui.custom.mock.calls.length >= count) return
+				await new Promise((resolve) => setTimeout(resolve, 0))
+			}
+			throw new Error(`Timed out waiting for ${count} auth prompts`)
+		},
+	}
+}
+
+beforeAll(() => {
+	initTheme("default")
+})
+
+beforeEach(() => {
+	authMock.authenticateViaBrowser.mockReset()
+	authMock.authenticateViaBrowser.mockResolvedValue({ token: "kimchi-token" })
+	configMock.loadConfig.mockReset()
+	configMock.loadConfig.mockReturnValue({ apiKey: "" })
+	configMock.writeApiKey.mockReset()
+	modelsMock.updateModelsConfig.mockReset()
+	modelsMock.updateModelsConfig.mockResolvedValue({ models: [] })
+	modelsMock.syncProviderModels.mockReset()
+})
+
+describe("shouldShowStartupAuthGate", () => {
+	it("shows for an unauthenticated interactive startup", () => {
+		expect(
+			shouldShowStartupAuthGate({
+				hasUI: true,
+				stdinIsTTY: true,
+				stdoutIsTTY: true,
+				nonInteractiveMode: false,
+				sessionStartReason: "startup",
+				hasUsableAuth: false,
+			}),
+		).toBe(true)
+	})
+
+	it("skips once usable auth is available", () => {
+		expect(
+			shouldShowStartupAuthGate({
+				hasUI: true,
+				stdinIsTTY: true,
+				stdoutIsTTY: true,
+				nonInteractiveMode: false,
+				sessionStartReason: "startup",
+				hasUsableAuth: true,
+			}),
+		).toBe(false)
+	})
+})
+
+describe("startup auth gate", () => {
+	it("runs the shared Kimchi login option and selects the configured model", async () => {
+		const harness = createHarness()
+		const started = harness.start()
+
+		await harness.settle()
+		harness.input("\n")
+		await started
+
+		expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
+		expect(configMock.writeApiKey).toHaveBeenCalledWith("kimchi-token")
+		expect(harness.modelRegistry.authStorage.set).toHaveBeenCalledWith("kimchi-dev", {
+			type: "api_key",
+			key: "kimchi-token",
+		})
+		expect(harness.api.setModel).toHaveBeenCalledWith({ id: "kimi-k2.6", provider: "kimchi-dev" })
+		expect(harness.state.authenticated).toBe(true)
+	})
+
+	it("does not mint another browser key when a retry still has no available models", async () => {
+		const previousAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+		process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-startup-auth-test"
+		let savedConfigKey = ""
+		configMock.loadConfig.mockImplementation(() => ({ apiKey: savedConfigKey }))
+		configMock.writeApiKey.mockImplementation((key: string) => {
+			savedConfigKey = key
+		})
+		const onCancel = vi.fn()
+		const harness = createHarness({ addModelOnAuthSet: false, onCancel })
+
+		try {
+			const started = harness.start()
+
+			await harness.settle()
+			harness.input("\n")
+			await harness.waitForCustomPrompts(2)
+			harness.input("\n")
+			await harness.waitForCustomPrompts(3)
+			harness.input("\x1b")
+			await started
+
+			expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
+			expect(modelsMock.updateModelsConfig).toHaveBeenCalledTimes(2)
+			expect(modelsMock.updateModelsConfig.mock.calls.map((call) => call[1])).toEqual(["kimchi-token", "kimchi-token"])
+			expect(harness.state.authenticated).toBe(false)
+			expect(harness.state.cancelled).toBe(true)
+		} finally {
+			if (previousAgentDir === undefined) {
+				// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset rather than stringified to "undefined"
+				delete process.env.KIMCHI_CODING_AGENT_DIR
+			} else {
+				process.env.KIMCHI_CODING_AGENT_DIR = previousAgentDir
+			}
+		}
+	})
+
+	it("keeps later startup onboarding parked while authentication is pending", async () => {
+		const laterOnboarding = vi.fn()
+		const onCancel = vi.fn()
+		const harness = createHarness({ afterSessionStart: laterOnboarding, onCancel })
+
+		const started = harness.start()
+
+		await harness.settle()
+		expect(laterOnboarding).not.toHaveBeenCalled()
+
+		harness.input("\x1b")
+		await started
+
+		expect(laterOnboarding).toHaveBeenCalledOnce()
+	})
+
+	it("does not show the selector when auth is already usable", async () => {
+		const harness = createHarness({ availableInitially: true })
+
+		await harness.start()
+
+		expect(harness.ctx.ui.custom).not.toHaveBeenCalled()
+		expect(harness.state.attempted).toBe(false)
+	})
+
+	it("preserves master behavior by seeding saved config keys as oauth credentials", async () => {
+		configMock.loadConfig.mockReturnValue({ apiKey: "saved-config-token" })
+		const harness = createHarness()
+
+		await harness.start()
+
+		expect(harness.modelRegistry.authStorage.set).toHaveBeenCalledWith("kimchi-dev", {
+			type: "oauth",
+			access: "saved-config-token",
+			refresh: "",
+			expires: Number.MAX_SAFE_INTEGER,
+		})
+		expect(harness.ctx.ui.custom).not.toHaveBeenCalled()
+	})
+
+	it("marks cancellation and delegates shutdown behavior to the caller", async () => {
+		const onCancel = vi.fn()
+		const harness = createHarness({ onCancel })
+		const started = harness.start()
+
+		await harness.settle()
+		harness.input("\x1b")
+		await started
+
+		expect(harness.state.cancelled).toBe(true)
+		expect(onCancel).toHaveBeenCalledWith(harness.ctx)
+	})
+})

@@ -2,7 +2,9 @@ import { getModels } from "@earendil-works/pi-ai"
 import { InteractiveMode, initTheme } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest"
+import * as configModule from "./config.js"
 import * as loginPatch from "./login-command-patch.js"
+import * as modelsModule from "./models.js"
 
 const { applyLoginCommandPatch, oauthDelegate } = loginPatch
 
@@ -22,6 +24,10 @@ let originalCodingAgentDir: string | undefined
 
 beforeEach(() => {
 	originalCodingAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+	// Auth tests should be independent of the developer machine's real config.
+	vi.spyOn(configModule, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof configModule.loadConfig>)
+	vi.spyOn(configModule, "writeApiKey").mockImplementation(() => {})
+	vi.spyOn(modelsModule, "updateModelsConfig").mockResolvedValue({ models: [] })
 })
 
 afterEach(() => {
@@ -119,8 +125,6 @@ async function selectSubscriptionLoginOption(fakeIm: FakeIm): Promise<void> {
 it("intercepts showOAuthSelector('login') and runs Kimchi browser auth", async () => {
 	const cliAuthModule = await import("./cli-auth/index.js")
 	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "test-token-123" })
-	const configModule = await import("./config.js")
-	vi.spyOn(configModule, "writeApiKey").mockImplementation(() => {})
 
 	const registry = makeFakeModelRegistry()
 	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
@@ -151,8 +155,6 @@ it("falls back to the first available model when the default is not present", as
 	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({
 		token: "test-token-456",
 	})
-	const configModule = await import("./config.js")
-	vi.spyOn(configModule, "writeApiKey").mockImplementation(() => {})
 
 	const registry = makeFakeModelRegistry()
 	registry.getAvailable.mockReturnValue([{ id: "other-model", provider: "kimchi-dev" }])
@@ -170,13 +172,11 @@ it("falls back to the first available model when the default is not present", as
 	expect(getFeedbackMessages(fakeIm)).toContain("✓ Logged in. Model: other-model")
 })
 
-it("shows generic success when no models are available for the provider", async () => {
+it("reports failure when no models are available for the provider", async () => {
 	const cliAuthModule = await import("./cli-auth/index.js")
 	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({
 		token: "test-token-789",
 	})
-	const configModule = await import("./config.js")
-	vi.spyOn(configModule, "writeApiKey").mockImplementation(() => {})
 
 	const registry = makeFakeModelRegistry()
 	registry.getAvailable.mockReturnValue([])
@@ -187,7 +187,10 @@ it("shows generic success when no models are available for the provider", async 
 	await patched.call(fakeIm, "login")
 	await selectCurrentLoginOption(fakeIm)
 
-	expect(getFeedbackMessages(fakeIm)).toContain("✓ Login successful. API key saved.")
+	expect(fakeIm.showError).toHaveBeenCalledWith(
+		"Kimchi login did not configure any available models. Your API key was saved; try again.",
+	)
+	expect(getFeedbackMessages(fakeIm)).not.toContain("✓ Login successful. API key saved.")
 	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
 })
 
