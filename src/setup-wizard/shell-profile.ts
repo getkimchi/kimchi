@@ -7,6 +7,8 @@ export interface ExportResult {
 	path: string | null
 	/** Non-fatal warning (e.g. profile file contains non-UTF-8 bytes); the export was skipped. */
 	error?: string
+	/** The line the user should add manually when the automated write fails. */
+	manualLine?: string
 }
 
 /**
@@ -64,7 +66,18 @@ export function exportEnvToShellProfile(key: string, value: string): ExportResul
 	}
 
 	const newContent = upsertExportLine(existing, exportLine, matchPrefix)
-	atomicWriteFile(profilePath, newContent)
+	try {
+		atomicWriteFile(profilePath, newContent)
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code
+		const reason =
+			code === "EACCES" || code === "EPERM"
+				? `${profilePath} is read-only`
+				: err instanceof Error
+					? err.message
+					: String(err)
+		return { path: null, error: reason, manualLine: `Update ${profilePath} with:\n${exportLine}` }
+	}
 	return { path: profilePath }
 }
 
