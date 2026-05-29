@@ -203,9 +203,10 @@ describe("DEFAULT_MODEL_ROLES", () => {
 		expect(DEFAULT_MODEL_ROLES.orchestrator).toBe("kimchi-dev/kimi-k2.6")
 	})
 
-	it("builder pool contains minimax but not nemotron", () => {
+	it("builder pool contains minimax and kimi-k2.6 but not nemotron", () => {
 		const builders = normalizeRoleModels(DEFAULT_MODEL_ROLES.builder)
 		expect(builders).toContain("kimchi-dev/minimax-m2.7")
+		expect(builders).toContain("kimchi-dev/kimi-k2.6")
 		expect(builders).not.toContain("kimchi-dev/nemotron-3-super-fp4")
 	})
 
