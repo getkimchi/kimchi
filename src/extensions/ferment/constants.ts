@@ -87,7 +87,9 @@ Synthesize everything — orient findings, interview answers, confirmed criteria
 and exploration results — into a plan, then refine it through the Plan Reviewer
 BEFORE the user ever sees it. Run this loop:
   a. Draft (or revise) the complete scoping plan payload.
-  b. Run the Plan Reviewer on that exact draft (contract below).
+  b. Review that exact draft with the Plan Reviewer agent (subagent_type
+     "Plan Reviewer"). See the Plan Reviewer instructions for how to pass the plan
+     and carry its verdict into plan_review.
   c. If the verdict is "needs_revision", apply its required_changes and go back to
      (a). Do NOT show the user a plan the Plan Reviewer rejected.
   d. Repeat plan → review → plan → review … until the Plan Reviewer returns

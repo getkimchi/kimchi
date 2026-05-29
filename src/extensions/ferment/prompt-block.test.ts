@@ -277,7 +277,7 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain('subagent_type: "Explore"')
 			expect(out).toContain("token_budget: 120000")
 			expect(out).toContain("run_in_background: true")
-			expect(out).toContain("Plan Reviewer subagent contract")
+			expect(out).toContain("Review that exact draft with the Plan Reviewer agent")
 			expect(out).toContain("do not retry the same broad task")
 			expect(out).toContain("spawn a narrower replacement only if that missing fact is plan-blocking")
 			expect(out).toContain("continue with direct targeted reads")
