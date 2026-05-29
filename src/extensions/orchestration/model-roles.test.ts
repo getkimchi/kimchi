@@ -59,16 +59,10 @@ describe("parseModelRoles", () => {
 			builder: "anthropic/claude-sonnet-4-5",
 			reviewer: "openai/gpt-4o",
 			explorer: "kimchi-dev/nemotron-3-super-fp4",
+			judge: "kimchi-dev/claude-opus-4-6",
 		}
 		const { roles } = parseModelRoles(custom)
 		expect(roles).toEqual(custom)
-	})
-
-	it("accepts legacy architect settings as Plan Reviewer", () => {
-		const { roles } = parseModelRoles({
-			architect: "openai/gpt-4o",
-		})
-		expect(roles.planReviewer).toBe("openai/gpt-4o")
 	})
 
 	it("warns on non-string role values", () => {
@@ -189,6 +183,7 @@ describe("DEFAULT_MODEL_ROLES", () => {
 		expect(DEFAULT_MODEL_ROLES.builder).toBe("kimchi-dev/minimax-m2.7")
 		expect(DEFAULT_MODEL_ROLES.reviewer).toBe("kimchi-dev/minimax-m2.7")
 		expect(DEFAULT_MODEL_ROLES.explorer).toBe("kimchi-dev/nemotron-3-super-fp4")
+		expect(DEFAULT_MODEL_ROLES.judge).toBe("kimchi-dev/kimi-k2.6")
 	})
 
 	it("all defaults contain a provider prefix", () => {
@@ -272,6 +267,7 @@ describe("validateModelRoles", () => {
 			builder: "anthropic/claude-sonnet-4-5",
 			reviewer: "kimchi-dev/minimax-m2.7",
 			explorer: "google/gemini-pro",
+			judge: "kimchi-dev/kimi-k2.6",
 		}
 		const result = validateModelRoles(roles, available)
 		expect(result.unavailable).toHaveLength(4)
@@ -296,6 +292,6 @@ describe("validateModelRoles", () => {
 
 	it("handles empty available set", () => {
 		const result = validateModelRoles(DEFAULT_MODEL_ROLES, new Set())
-		expect(result.unavailable).toHaveLength(6)
+		expect(result.unavailable).toHaveLength(7)
 	})
 })

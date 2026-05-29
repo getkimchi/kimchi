@@ -518,6 +518,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 			ctx.shutdown()
 		}
 
+		// User typed something — clear any pending-user-input state so the spinner
+		// does not stay suppressed on the next assistant message that follows.
+		userInputPending = Math.max(0, userInputPending - 1)
+
 		if (newlineHintHandle) {
 			newlineHintHandle.hide()
 			newlineHintHandle = null
@@ -526,6 +530,12 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 	let stopWorkingAnimation: (() => void) | undefined
 	let toolsInFlight = 0
+	/** Tracks whether a tool-executed block is awaiting user input at the TUI.
+	 *  Incremented when toolsInFlight hits 0 and the UI may be blocking (e.g. questionnaire).
+	 *  Decremented when the user actually types a response (input event).
+	 *  message_start checks this to avoid restarting the spinner while the user is being prompted.
+	 */
+	let userInputPending = 0
 
 	const startIndicator = (ctx: ExtensionContext) => {
 		ctx.ui.setWorkingVisible(true)
@@ -549,6 +559,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 		workedForTimer = undefined
 		currentCtx = ctx
 		toolsInFlight = 0
+		userInputPending = 0
 		turnStartMs = Date.now()
 		thinkingStatus = null
 		thinkingStartMs = 0
@@ -570,10 +581,20 @@ export default function uiExtension(pi: ExtensionAPI) {
 	pi.on("message_start", (event, ctx) => {
 		if (event.message.role !== "assistant") return
 		// Only stop the tool animation when assistant text arrives if no tools are
-		// still running. Parallel tool calls (Kimi K2.5+, deepseek) may have their
-		// results arrive while the assistant message is still streaming; keeping the
-		// indicator alive until all tools finish avoids a premature flash-and-clear.
+		// still running AND we are not awaiting user input at the TUI. Parallel tool
+		// calls (Kimi K2.5+, deepseek) may have their results arrive while the
+		// assistant message is still streaming; keeping the indicator alive until all
+		// tools finish avoids a premature flash-and-clear. userInputPending is set
+		// by tool_execution_end when the last in-flight tool finishes and the UI may
+		// be blocking on a prompt (e.g. questionnaire, ask_user).
 		if (toolsInFlight === 0) {
+			if (userInputPending > 0) {
+				// Still waiting for user input — suppress spinner restart; decrement so
+				// it re-arms for the next message_start if no user input arrives (e.g.
+				// turn ends without a response).
+				userInputPending--
+				return
+			}
 			stopWorkingAnimation?.()
 			stopWorkingAnimation = undefined
 			ctx.ui.setWorkingVisible(false)
@@ -586,6 +607,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 	pi.on("tool_execution_end", (_, ctx) => {
 		toolsInFlight = Math.max(0, toolsInFlight - 1)
 		if (toolsInFlight === 0) {
+			// Last tool finished — the UI may now be blocking waiting for user input
+			// (e.g. a questionnaire prompt). Mark it so message_start does not restart
+			// the spinner on the assistant text that follows before the user responds.
+			userInputPending++
 			stopWorkingAnimation?.()
 			stopWorkingAnimation = undefined
 			ctx.ui.setWorkingVisible(false)

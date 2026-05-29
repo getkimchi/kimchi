@@ -56,20 +56,16 @@ export const PlanReviewSchema = Type.Object({
 		description:
 			"Required plan changes from the Plan Reviewer. Must be non-empty when status is needs_revision; use [] when approved.",
 	}),
-	reservations: Type.Optional(Type.Array(Type.String())),
-	questions: Type.Optional(
-		Type.Array(Type.String(), {
-			description:
-				"Blocking human questions requested by the Plan Reviewer. Use only when the planner cannot safely revise the plan without a user decision; the planner must convert these into propose_ferment_scoping.questions.",
-			maxItems: 3,
-		}),
-	),
-	reviewed_plan_hash: Type.Optional(
-		Type.String({
-			description:
-				"Optional stale-review guard. Prefer the literal string 'current' when the Plan Reviewer reviewed the exact XML plan handed to it; the tool records the computed hash internally.",
-		}),
-	),
+	reservations: Type.Array(Type.String(), {
+		description: "Non-blocking Plan Reviewer concerns. Use [] when there are none.",
+		default: [],
+	}),
+	questions: Type.Array(Type.String(), {
+		description:
+			"Blocking human questions requested by the Plan Reviewer. Use [] when there are none. The planner must convert non-empty questions into propose_ferment_scoping.questions.",
+		default: [],
+		maxItems: 3,
+	}),
 })
 
 export const ListParams = Type.Object({

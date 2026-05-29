@@ -18,7 +18,7 @@ import { clearFermentCache } from "../../ferment/store.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { clearAllPendingScopes, getPendingScope, runScopingFlow } from "./scoping.js"
 import { clearAllScopingGates, clearAllStepStarts, setActive } from "./state.js"
-import { buildScopingPlanHash, registerLifecycleTools } from "./tools/lifecycle.js"
+import { registerLifecycleTools } from "./tools/lifecycle.js"
 
 // ─── Harness ─────────────────────────────────────────────────────────────────
 
@@ -184,9 +184,10 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 		}
 		proposeScopingPayload.plan_review = {
 			status: "approved",
-			summary: "PlanReviewure fits existing OAuth flow patterns.",
+			summary: "Architecture fits existing OAuth flow patterns.",
 			required_changes: [],
-			reviewed_plan_hash: buildScopingPlanHash({ ...proposeScopingPayload, questions: [] } as never),
+			reservations: [],
+			questions: [],
 		}
 
 		const toolCtx = { ui: { select: selectMock, input: vi.fn() } }

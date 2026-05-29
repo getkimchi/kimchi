@@ -177,6 +177,76 @@ describe("updateModelsConfig", () => {
 		expect(config.providers.custom).toEqual({ models: [] })
 	})
 
+	it("includes models from non-kimchi providers in the returned list", async () => {
+		const OPENAI_MODEL = {
+			id: "gpt-4",
+			name: "GPT-4",
+			reasoning: false,
+			input: ["text"],
+			contextWindow: 8192,
+			maxTokens: 4096,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			provider: "openai",
+		}
+
+		writeFileSync(modelsJsonPath, JSON.stringify({ providers: { openai: { models: [OPENAI_MODEL] } } }))
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const slugs = result.models.map((m) => m.slug)
+		expect(slugs).toContain("kimi-k2.5")
+		expect(slugs).toContain("gpt-4")
+	})
+
+	it("reads subscription provider models from existing models.json on startup", async () => {
+		const OPENAI_MODEL = {
+			id: "o1-pro",
+			name: "o1 Pro",
+			reasoning: false,
+			input: ["text"],
+			contextWindow: 200000,
+			maxTokens: 100000,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			provider: "openai",
+		}
+
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					"kimchi-dev": {
+						baseUrl: "https://llm.kimchi.dev",
+						apiKey: "KIMCHI_API_KEY",
+						api: "openai-completions",
+						models: [OPENAI_MODEL],
+					},
+					openai: {
+						models: [OPENAI_MODEL],
+					},
+				},
+			}),
+		)
+
+		// API returns a different Kimchi model
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const slugs = result.models.map((m) => m.slug)
+		expect(slugs).toContain("kimi-k2.5") // from API
+		expect(slugs).toContain("o1-pro") // from cached providers
+
+		const written = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(written.providers.openai.models).toHaveLength(1)
+	})
+
 	it("throws on fetch failure when no cached config exists", async () => {
 		vi.mocked(fetch).mockRejectedValueOnce(new Error("network error"))
 		await expect(updateModelsConfig(modelsJsonPath, "test-key")).rejects.toThrow("network error")
@@ -211,18 +281,32 @@ describe("updateModelsConfig", () => {
 		await expect(updateModelsConfig(modelsJsonPath, "test-key")).rejects.toThrow("API returned empty model list")
 	})
 
-	it("falls back to cached metadata when fetch fails", async () => {
+	it("falls back to cached metadata and non-kimchi providers when fetch fails", async () => {
+		const OPENAI_MODEL = {
+			id: "gpt-4",
+			name: "GPT-4",
+			reasoning: false,
+			input: ["text"],
+			contextWindow: 8192,
+			maxTokens: 4096,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			provider: "openai",
+		}
+
 		// Seed a successful fetch so the cache is populated.
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI, SONNET_46] }),
 		} as Response)
 		await updateModelsConfig(modelsJsonPath, "test-key")
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		config.providers.openai = { models: [OPENAI_MODEL] }
+		writeFileSync(modelsJsonPath, JSON.stringify(config))
 		vi.mocked(fetch).mockRejectedValueOnce(new Error("network down"))
 
 		const result = await updateModelsConfig(modelsJsonPath, "test-key")
 
-		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5", "claude-sonnet-4-6"])
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5", "claude-sonnet-4-6", "gpt-4"])
 	})
 
 	it("falls back to cached metadata when API returns empty list", async () => {
@@ -266,7 +350,26 @@ describe("updateModelsConfig", () => {
 		expect(existsSync(nestedPath)).toBe(true)
 	})
 
-	it("returns empty models without fetching when apiKey is empty", async () => {
+	it("returns non-kimchi provider models without fetching when apiKey is empty", async () => {
+		const OPENAI_MODEL = {
+			id: "gpt-4o",
+			name: "GPT-4o",
+			reasoning: false,
+			input: ["text", "image"],
+			contextWindow: 128000,
+			maxTokens: 16384,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			provider: "openai",
+		}
+		writeFileSync(modelsJsonPath, JSON.stringify({ providers: { openai: { models: [OPENAI_MODEL] } } }))
+
+		const result = await updateModelsConfig(modelsJsonPath, "")
+
+		expect(result.models.map((m) => m.slug)).toEqual(["gpt-4o"])
+		expect(fetch).not.toHaveBeenCalled()
+	})
+
+	it("returns empty models without fetching when apiKey is empty and no cache exists", async () => {
 		const result = await updateModelsConfig(modelsJsonPath, "")
 
 		expect(result).toEqual({ models: [] })

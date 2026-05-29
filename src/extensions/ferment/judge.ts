@@ -21,10 +21,8 @@
 
 import { complete } from "@earendil-works/pi-ai"
 import type { Grade } from "../../ferment/types.js"
+import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
 import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
-
-const JUDGE_MODEL_ID = "claude-opus-4-6"
-const JUDGE_PROVIDER = "kimchi-dev"
 
 const GRADES: Grade[] = ["A", "B", "C", "D", "F"]
 export function isGrade(value: unknown): value is Grade {
@@ -44,7 +42,8 @@ export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTok
 	const registry = getJudgeModelRegistry()
 	if (!registry) return { ok: false, reason: "no_registry" }
 
-	const model = registry.find(JUDGE_PROVIDER, JUDGE_MODEL_ID) ?? getJudgeModel()
+	const judgeRef = splitModelRef(getModelRoles().judge)
+	const model = (judgeRef ? registry.find(judgeRef.provider, judgeRef.modelId) : undefined) ?? getJudgeModel()
 	if (!model) return { ok: false, reason: "no_model" }
 
 	const auth = await registry.getApiKeyAndHeaders(model)

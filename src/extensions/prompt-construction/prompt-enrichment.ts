@@ -427,7 +427,6 @@ export default function (skillPaths: string[]) {
 			const roles = mode === "orchestrator" ? getModelRoles() : undefined
 
 			const systemPrompt = buildSystemPrompt({
-				pi,
 				tools: tools as readonly ToolInfo[],
 				env,
 				contextFiles: cachedContextFiles,
@@ -437,6 +436,7 @@ export default function (skillPaths: string[]) {
 				registry: registry,
 				mode,
 				roles,
+				sessionId: ctx.sessionManager?.getSessionId(),
 			})
 
 			const debugSession = process.env.KIMCHI_DEBUG_SESSION

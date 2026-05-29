@@ -22,6 +22,8 @@ const testEnv: EnvironmentInfo = {
 	isGitRepo: false,
 }
 
+const TEST_SESSION_ID = "test-session"
+
 // Helper to create mock ExtensionContext with ui.select
 // When an AbortSignal is passed and aborted=true, returns undefined to trigger "aborted" outcome
 function createMockContext(
@@ -32,6 +34,7 @@ function createMockContext(
 	return {
 		hasUI: true,
 		cwd: "/test",
+		sessionManager: { getSessionId: () => TEST_SESSION_ID },
 		ui: {
 			select: vi.fn(async (_: string, __: string[], selectOpts?: { signal?: AbortSignal }) => {
 				// If signal is aborted when select is called, return undefined to trigger "aborted" outcome
@@ -185,13 +188,13 @@ describe("permissions prompt inheritance", () => {
 			await harness.fire("session_start", {}, createMockContext([]))
 
 			const result = buildSystemPrompt({
-				pi: harness.pi,
 				tools: [
 					{ name: "read", description: "Read files" },
 					{ name: "bash", description: "Run shell commands" },
 				],
 				env: testEnv,
 				mode: "subagent",
+				sessionId: TEST_SESSION_ID,
 			})
 
 			expect(result).toContain("Plan mode is active")

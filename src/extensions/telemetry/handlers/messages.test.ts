@@ -174,6 +174,24 @@ describe("handleMessageEnd", () => {
 		expect(attrs.provider).toBe("ai-enabler")
 	})
 
+	it("maps subscription provider IDs to canonical names in telemetry logs", async () => {
+		const ctx = makeCtx()
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		await handleMessageEnd(ctx, {
+			message: {
+				role: "assistant",
+				responseId: "resp-sub",
+				model: "some-model",
+				provider: "openai-codex",
+				usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
+			},
+		})
+
+		const [, attrs] = emitSpy.mock.calls[0]
+		expect(attrs.provider).toBe("openai")
+	})
+
 	it("updates currentModel for subsequent tool events", async () => {
 		const ctx = makeCtx()
 		expect(ctx.currentModel).toBe("unknown")

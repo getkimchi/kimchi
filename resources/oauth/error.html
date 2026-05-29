@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{TITLE}}</title>
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: #0b0b0e;
+      color: #fafafa;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+      position: relative;
+    }
+
+    /* ── Background SVG ──────────────────────────────── */
+    .bg-svg {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Content ──────────────────────────────────────── */
+    .content {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 32px;
+    }
+
+    /* Logo */
+    .logo-wrap {
+      display: flex;
+      align-items: center;
+      opacity: 0;
+      transform: translateY(-12px);
+      animation: fadeUp 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.1s forwards;
+    }
+
+    .logo-wrap svg {
+      height: 40px;
+      width: auto;
+      display: block;
+    }
+
+    /* Card */
+    .card {
+      background: rgba(28, 28, 36, 0.88);
+      border: 1px solid rgba(234, 231, 226, 0.09);
+      border-radius: 20px;
+      padding: 44px 52px;
+      width: 100%;
+      max-width: 360px;
+      text-align: center;
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      opacity: 0;
+      transform: translateY(16px);
+      animation: fadeUp 0.6s cubic-bezier(0.22, 1, 0.36, 1) 0.25s forwards;
+    }
+
+    .card h1 {
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: #ef4444;
+      line-height: 1.3;
+    }
+
+    .card p {
+      font-size: 13.5px;
+      font-weight: 400;
+      color: #a1a1aa;
+      line-height: 1.6;
+    }
+
+    .card .details {
+      margin-top: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+      font-size: 12px;
+      color: #fca5a5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      text-align: left;
+      background: rgba(239, 68, 68, 0.12);
+      border-radius: 10px;
+      padding: 12px 14px;
+    }
+
+    /* ── Animations ───────────────────────────────────── */
+    @keyframes fadeUp {
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes popIn {
+      to {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- SVG background gradient -->
+  <svg class="bg-svg" viewBox="0 0 1440 916" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <g clip-path="url(#clip0)">
+      <rect width="1440" height="916" fill="#0A0A0D"></rect>
+      <circle cx="1643.73" cy="-109" r="602.269" fill="url(#paint0)"></circle>
+      <circle cx="1214.01" cy="1117.99" r="761.28" fill="url(#paint1)"></circle>
+      <circle cx="639.798" cy="971.665" r="950.892" fill="url(#paint2)"></circle>
+      <circle cx="840.81" cy="1199.83" r="629.662" fill="url(#paint3)"></circle>
+    </g>
+    <defs>
+      <radialGradient id="paint0" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(1643.73 -109) rotate(91.3362) scale(602.433)">
+        <stop stop-color="#AC3D1A"></stop>
+        <stop offset="1" stop-color="#0A0A0D" stop-opacity="0"></stop>
+      </radialGradient>
+      <radialGradient id="paint1" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(1214.01 1117.99) rotate(91.3362) scale(761.487)">
+        <stop stop-color="#36C3C4"></stop>
+        <stop offset="1" stop-color="#0A0A0D" stop-opacity="0"></stop>
+      </radialGradient>
+      <radialGradient id="paint2" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(639.798 971.665) rotate(91.3362) scale(951.151)">
+        <stop stop-color="#AC3D1A"></stop>
+        <stop offset="1" stop-color="#0A0A0D" stop-opacity="0"></stop>
+      </radialGradient>
+      <radialGradient id="paint3" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(840.81 1199.83) rotate(91.3362) scale(629.834)">
+        <stop stop-color="#BD978E"></stop>
+        <stop offset="0.889427" stop-color="#0A0A0D" stop-opacity="0"></stop>
+      </radialGradient>
+      <clipPath id="clip0">
+        <rect width="1440" height="916" fill="white"></rect>
+      </clipPath>
+    </defs>
+  </svg>
+
+  <!-- Main content -->
+  <div class="content">
+
+    <!-- Kimchi wordmark -->
+    <div class="logo-wrap">
+      <svg width="471" height="104" viewBox="0 0 471 104" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M454.815 34.482L462.021 35.871L469.313 34.482V84.4004H454.815V34.482ZM462.021 29.3599C459.416 29.3599 457.275 28.6943 455.597 27.3632C453.976 25.9741 453.166 24.151 453.166 21.8939C453.166 19.5788 453.976 17.7557 455.597 16.4245C457.275 15.0355 459.416 14.341 462.021 14.341C464.683 14.341 466.825 15.0355 468.445 16.4245C470.066 17.7557 470.876 19.5788 470.876 21.8939C470.876 24.151 470.066 25.9741 468.445 27.3632C466.825 28.6943 464.683 29.3599 462.021 29.3599Z" fill="white"/>
+        <path d="M391.715 17.5529H406.213V84.4002H391.715V17.5529ZM425.052 33.7004C429.74 33.7004 433.734 34.6554 437.032 36.5653C440.331 38.4174 442.849 41.0797 444.585 44.5523C446.322 48.0249 447.19 52.163 447.19 56.9668V84.4002H432.692V59.1372C432.692 54.6807 431.621 51.3238 429.48 49.0666C427.338 46.7516 424.242 45.5941 420.19 45.5941C417.354 45.5941 414.866 46.2307 412.724 47.504C410.641 48.7194 409.02 50.4267 407.863 52.626C406.763 54.8254 406.213 57.4587 406.213 60.5262L401.438 58.0086C402.075 52.7997 403.464 48.4011 405.606 44.8127C407.805 41.2244 410.583 38.4753 413.94 36.5653C417.297 34.6554 421.001 33.7004 425.052 33.7004Z" fill="white"/>
+        <path d="M386.492 64.2595C385.913 68.4845 384.264 72.2175 381.544 75.4586C378.881 78.6997 375.438 81.2173 371.213 83.0115C366.988 84.8056 362.271 85.7027 357.062 85.7027C351.158 85.7027 345.95 84.632 341.435 82.4906C336.979 80.2913 333.477 77.2238 330.931 73.2882C328.442 69.3526 327.198 64.8383 327.198 59.7451C327.198 54.5941 328.442 50.0798 330.931 46.202C333.477 42.2664 336.979 39.199 341.435 36.9997C345.95 34.8004 351.158 33.7007 357.062 33.7007C362.271 33.7007 366.988 34.6267 371.213 36.4788C375.438 38.273 378.881 40.7906 381.544 44.0317C384.264 47.2149 385.913 50.9479 386.492 55.2308H371.994C371.242 51.8739 369.505 49.2984 366.785 47.5043C364.123 45.6522 360.882 44.7262 357.062 44.7262C353.994 44.7262 351.303 45.3339 348.988 46.5493C346.731 47.7068 344.995 49.4142 343.779 51.6714C342.564 53.8707 341.956 56.5619 341.956 59.7451C341.956 62.8705 342.564 65.5617 343.779 67.8189C344.995 70.0182 346.731 71.7256 348.988 72.941C351.303 74.0985 353.994 74.6773 357.062 74.6773C360.94 74.6773 364.21 73.7223 366.872 71.8124C369.592 69.9024 371.299 67.3848 371.994 64.2595H386.492Z" fill="white"/>
+        <path d="M227.479 35.0029H241.977L245.102 53.8417V84.4005H230.604V51.6714L227.479 35.0029ZM262.725 33.7007C267.124 33.7007 270.886 34.6557 274.011 36.5656C277.137 38.4176 279.51 41.08 281.13 44.5526C282.809 48.0251 283.648 52.1633 283.648 56.9671V84.4005H269.15V59.1374C269.15 54.6809 268.166 51.3241 266.198 49.0669C264.288 46.7519 261.481 45.5943 257.777 45.5943C255.173 45.5943 252.915 46.231 251.005 47.5043C249.096 48.7197 247.62 50.427 246.578 52.6263C245.594 54.8256 245.102 57.459 245.102 60.5265L240.327 58.0088C240.906 52.7999 242.237 48.4013 244.321 44.813C246.404 41.2247 249.009 38.4755 252.134 36.5656C255.317 34.6557 258.848 33.7007 262.725 33.7007ZM301.184 33.7007C305.583 33.7007 309.345 34.6557 312.47 36.5656C315.653 38.4176 318.055 41.08 319.676 44.5526C321.354 48.0251 322.193 52.1633 322.193 56.9671V84.4005H307.695V59.1374C307.695 54.6809 306.712 51.3241 304.744 49.0669C302.834 46.7519 300.027 45.5943 296.323 45.5943C293.718 45.5943 291.461 46.231 289.551 47.5043C287.641 48.7197 286.165 50.427 285.124 52.6263C284.14 54.8256 283.648 57.459 283.648 60.5265L278.873 58.0088C279.452 52.7999 280.783 48.4013 282.866 44.813C284.95 41.2247 287.554 38.4755 290.68 36.5656C293.863 34.6557 297.364 33.7007 301.184 33.7007Z" fill="white"/>
+        <path d="M206.993 34.482L214.199 35.871L221.491 34.482V84.4004H206.993V34.482ZM214.199 29.3599C211.594 29.3599 209.453 28.6943 207.774 27.3632C206.154 25.9741 205.344 24.151 205.344 21.8939C205.344 19.5788 206.154 17.7557 207.774 16.4245C209.453 15.0355 211.594 14.341 214.199 14.341C216.861 14.341 219.003 15.0355 220.623 16.4245C222.244 17.7557 223.054 19.5788 223.054 21.8939C223.054 24.151 222.244 25.9741 220.623 27.3632C219.003 28.6943 216.861 29.3599 214.199 29.3599Z" fill="white"/>
+        <path d="M136.97 84.4004V19.2894H151.641V72.42L147.474 69.4683L187.756 19.2894H203.47L150.252 84.4004H136.97ZM168.049 52.5395L178.641 43.0767L204.425 84.4004H187.583L168.049 52.5395Z" fill="white"/>
+        <circle cx="52" cy="52" r="52" fill="#FF521D"/>
+        <path d="M68.4459 24.9438C69.8639 24.1762 71.6471 23.7178 73.4821 24.2163C73.8278 24.2966 74.1339 24.3916 74.4362 24.5024L75.9186 25.0464L75.5104 26.5727C75.3469 27.1827 75.202 27.723 75.0387 28.3325L74.6442 29.8042L73.1354 29.5972C73.0242 29.5819 72.9246 29.5753 72.8082 29.5747C72.2474 29.5865 71.7542 29.8645 71.2662 30.6772C70.8883 31.307 70.5939 32.1486 70.3815 33.1079C74.871 36.0331 77.8444 41.0994 77.8444 46.8638C77.8443 49.5292 77.2072 52.0505 76.0758 54.2798C71.5108 64.3996 54.1783 84.8815 23.4655 79.0083C21.8797 78.7048 20.9918 77.4165 20.902 76.1245C20.8141 74.8561 21.479 73.487 22.8981 72.8813C31.0698 69.394 35.5884 65.7091 38.5983 61.2329C41.6553 56.6866 43.2606 51.1907 45.3287 43.7251C46.7942 36.1645 53.4462 30.4547 61.4362 30.4546L61.8834 30.4604C62.4398 30.4755 62.9894 30.519 63.5309 30.5884C63.9515 29.7288 64.4424 28.8863 65.0211 28.0659L65.1745 27.8423C65.9623 26.731 67.1108 25.6667 68.4459 24.9438Z" fill="#18181A"/>
+      </svg>
+    </div>
+
+    <!-- Error card -->
+    <div class="card">
+      <h1>{{HEADING}}</h1>
+      <p>{{MESSAGE}}</p>
+      {{DETAILS}}
+    </div>
+
+  </div>
+
+</body>
+</html>

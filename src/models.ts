@@ -48,7 +48,7 @@ async function fetchAvailableModels(apiKey: string): Promise<ModelMetadata[]> {
 	return body.models
 }
 
-interface PiModelConfig {
+export interface PiModelConfig {
 	id: string
 	name: string
 	reasoning: boolean
@@ -59,6 +59,10 @@ interface PiModelConfig {
 	// Persisted so telemetry can resolve the actual upstream provider after cache round-trip.
 	provider: string
 	compat?: { supportsReasoningEffort?: boolean; cacheControlFormat?: "anthropic" }
+	/** Model-level API type: upstream custom-provider parseModels falls through to this field. */
+	api?: string
+	/** Model-level base URL: upstream custom-provider parseModels falls through to this field. */
+	baseUrl?: string
 }
 
 function metadataToModel(m: ModelMetadata): PiModelConfig {
@@ -115,6 +119,16 @@ function modelToMetadata(m: PiModelConfig): ModelMetadata {
 	}
 }
 
+function extractModelsFromProviders(providers: Record<string, { models?: PiModelConfig[] }>): ModelMetadata[] {
+	const result: ModelMetadata[] = []
+	for (const [, provider] of Object.entries(providers)) {
+		if (provider && typeof provider === "object" && Array.isArray(provider.models)) {
+			result.push(...provider.models.map(modelToMetadata))
+		}
+	}
+	return result
+}
+
 function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined {
 	try {
 		const raw = readFileSync(modelsJsonPath, "utf-8")
@@ -145,6 +159,25 @@ export async function validateApiKey(apiKey: string): Promise<void> {
 }
 
 /**
+ * Overwrite or insert a provider's models in models.json.
+ * Used after OAuth subscription login to persist upstream models into Kimchi's cache.
+ */
+export function syncProviderModels(
+	modelsJsonPath: string,
+	providerId: string,
+	models: PiModelConfig[],
+	providerConfig?: { api?: string; baseUrl?: string },
+): void {
+	let config: { providers?: Record<string, { api?: string; baseUrl?: string; models?: PiModelConfig[] }> } = {}
+	if (existsSync(modelsJsonPath)) {
+		config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+	}
+	if (!config.providers) config.providers = {}
+	config.providers[providerId] = { ...providerConfig, models }
+	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
+}
+
+/**
  * Fetch available models from the kimchi metadata API and write the
  * configuration to modelsJsonPath. If no API key is configured, returns
  * cached models (if available) or an empty list without making a network call.
@@ -159,25 +192,26 @@ export async function updateModelsConfig(modelsJsonPath: string, apiKey: string)
 	const dir = dirname(modelsJsonPath)
 	mkdirSync(dir, { recursive: true })
 
-	if (!apiKey) {
-		return { models: readCachedMetadata(modelsJsonPath) ?? [] }
-	}
-
 	const otherProviders = readExistingProviders(modelsJsonPath)
+	const otherModels = extractModelsFromProviders(otherProviders as Record<string, { models?: PiModelConfig[] }>)
+
+	if (!apiKey) {
+		return { models: sortModels([...(readCachedMetadata(modelsJsonPath) ?? []), ...otherModels]) }
+	}
 
 	let fetched: ModelMetadata[]
 	try {
 		fetched = await fetchAvailableModels(apiKey)
 	} catch (err) {
-		const cached = readCachedMetadata(modelsJsonPath)
-		if (!cached) throw err
+		const cached = readCachedMetadata(modelsJsonPath) ?? []
+		if (cached.length === 0 && otherModels.length === 0) throw err
 		const message = err instanceof Error ? err.message : String(err)
 		console.warn(`Failed to refresh models from API, using cached list: ${message}`)
-		return { models: cached }
+		return { models: sortModels([...cached, ...otherModels]) }
 	}
 
 	const models = sortModels(fetched)
 	const merged = { providers: { ...otherProviders, ...buildModelsConfig(models).providers } }
 	writeFileSync(modelsJsonPath, JSON.stringify(merged, null, "\t"), "utf-8")
-	return { models }
+	return { models: sortModels([...fetched, ...otherModels]) }
 }

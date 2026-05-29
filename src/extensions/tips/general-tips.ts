@@ -44,7 +44,7 @@ export const GENERAL_TIPS = [
 	{
 		id: "export-bug-report",
 		scope: "general",
-		message: "Run `/export` to save HTML for a bug report.",
+		message: "Run `/bug` to create GitHub issue with a bug report.",
 	},
 	{
 		id: "multi-model-roles",
@@ -55,6 +55,11 @@ export const GENERAL_TIPS = [
 		id: "help-command",
 		scope: "general",
 		message: "Type `/help` to see all keyboard shortcuts and slash commands.",
+	},
+	{
+		id: "show-all-tips",
+		scope: "general",
+		message: "Run `/tips` to see all available tips.",
 	},
 ] as const satisfies readonly Tip[]
 

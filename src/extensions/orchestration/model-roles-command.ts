@@ -24,9 +24,18 @@ const ROLE_LABELS: Record<keyof ModelRoles, { label: string; description: string
 	builder: { label: "Builder", description: "code implementation" },
 	reviewer: { label: "Reviewer", description: "code review" },
 	explorer: { label: "Explorer", description: "codebase exploration, research" },
+	judge: { label: "Judge", description: "ferment verification and grading" },
 }
 
-const ROLE_KEYS: (keyof ModelRoles)[] = ["orchestrator", "planReviewer", "planner", "builder", "reviewer", "explorer"]
+const ROLE_KEYS: (keyof ModelRoles)[] = [
+	"orchestrator",
+	"planReviewer",
+	"planner",
+	"builder",
+	"reviewer",
+	"explorer",
+	"judge",
+]
 
 function formatRoleDisplay(role: keyof ModelRoles, modelRef: string): string {
 	const info = ROLE_LABELS[role]
@@ -37,7 +46,7 @@ function formatRoleDisplay(role: keyof ModelRoles, modelRef: string): string {
 
 export function registerModelRolesCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("multi-model", {
-		description: "Configure model roles (Orchestrator, Plan Reviewer, Planner, Builder, Reviewer, Explorer)",
+		description: "Configure model roles (Orchestrator, Plan Reviewer, Planner, Builder, Reviewer, Explorer, Judge)",
 		async handler(_args, ctx) {
 			if (!ctx.hasUI) {
 				ctx.ui.notify("Model roles configuration requires an interactive session.", "warning")

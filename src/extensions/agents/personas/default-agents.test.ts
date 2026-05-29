@@ -71,8 +71,11 @@ describe("DEFAULT_AGENTS", () => {
 		expect(planReviewer.builtinToolNames).not.toContain("write")
 		expect(planReviewer.builtinToolNames).not.toContain("edit")
 		expect(planReviewer.extensions).toBe(true)
+		expect(planReviewer.systemPrompt).toContain("Approve the plan only when")
 		expect(planReviewer.systemPrompt).toContain("<ferment_plan>")
 		expect(planReviewer.systemPrompt).toContain("Researcher subagent")
+		expect(planReviewer.systemPrompt).toContain("All fields are required")
+		expect(planReviewer.systemPrompt).toContain("do not add extra keys")
 		expect(planReviewer.systemPrompt).toContain('status MUST be "needs_revision"')
 	})
 

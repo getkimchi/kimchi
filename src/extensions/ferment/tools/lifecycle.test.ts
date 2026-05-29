@@ -9,7 +9,6 @@ import { createApplyAndPersist } from "../tool-helpers.js"
 import { FERMENT_TOOLS } from "../tool-names.js"
 import {
 	buildFreeformScopingFeedbackMessage,
-	buildScopingPlanHash,
 	completeFerment,
 	registerLifecycleTools,
 	scopeFerment,
@@ -93,24 +92,13 @@ const passingPlanGates = () => [
 	},
 ]
 
-function approvedPlanReviewFor(payload: Record<string, unknown>) {
-	const normalizedQuestions = Array.isArray(payload.questions)
-		? payload.questions.map((q) =>
-				q && typeof q === "object"
-					? {
-							id: (q as { id?: unknown }).id,
-							text: (q as { question?: unknown }).question,
-							type: (q as { type?: unknown }).type,
-							options: (q as { options?: unknown }).options,
-						}
-					: q,
-			)
-		: []
+function approvedPlanReviewFor(_payload: Record<string, unknown>) {
 	return {
 		status: "approved",
 		summary: "Plan Reviewer approves this scoping plan.",
 		required_changes: [],
-		reviewed_plan_hash: buildScopingPlanHash({ ...payload, questions: normalizedQuestions } as never),
+		reservations: [],
+		questions: [],
 	}
 }
 

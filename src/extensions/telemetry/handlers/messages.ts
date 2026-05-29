@@ -2,6 +2,11 @@ import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { getAvailableModels } from "../../../startup-context.js"
 import type { SessionContext } from "../session-context.js"
 
+/** Maps OAuth provider IDs to canonical names accepted by the telemetry backend. */
+const PROVIDER_TELEMETRY_MAP: Record<string, string> = {
+	"openai-codex": "openai",
+}
+
 export function handleMessageStart(
 	ctx: SessionContext,
 	event: { message: { role: string; responseId?: string; timestamp?: number; model?: string } },
@@ -30,7 +35,8 @@ export async function handleMessageEnd(
 		const availableModels = getAvailableModels()
 		const meta = availableModels.find((m: { slug: string; provider?: string }) => m.slug === model)
 		const rawProvider = String(assistant.provider ?? "unknown")
-		const provider = meta?.provider ? meta.provider : rawProvider === "kimchi-dev" ? "ai-enabler" : rawProvider
+		const resolvedProvider = meta?.provider ? meta.provider : rawProvider === "kimchi-dev" ? "ai-enabler" : rawProvider
+		const provider = PROVIDER_TELEMETRY_MAP[resolvedProvider] ?? resolvedProvider
 		const input = assistant.usage?.input ?? 0
 		const output = assistant.usage?.output ?? 0
 		const cacheRead = assistant.usage?.cacheRead ?? 0

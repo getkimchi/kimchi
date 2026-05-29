@@ -17,20 +17,30 @@ const testEnv: EnvironmentInfo = {
 }
 
 type Handler = (event: unknown, ctx: unknown) => unknown
+const TEST_SESSION_ID = "test-session"
 
-function makePi(): ExtensionAPI & { fireShutdown: () => void } {
+function makePi(): ExtensionAPI & { fireSessionStart: () => Promise<void>; fireShutdown: () => void } {
+	const startHandlers: Handler[] = []
 	const shutdownHandlers: Array<() => void> = []
+	const sessionContext = {
+		hasUI: false,
+		sessionManager: { getSessionId: () => TEST_SESSION_ID },
+	}
 	const pi = {
 		registerCommand: () => {},
 		registerTool: () => {},
 		on: (event: string, handler: Handler) => {
+			if (event === "session_start") startHandlers.push(handler)
 			if (event === "session_shutdown") shutdownHandlers.push(handler as () => void)
+		},
+		fireSessionStart: async () => {
+			for (const handler of startHandlers) await handler({}, sessionContext)
 		},
 		fireShutdown: () => {
 			for (const handler of shutdownHandlers) handler()
 		},
 	}
-	return pi as unknown as ExtensionAPI & { fireShutdown: () => void }
+	return pi as unknown as ExtensionAPI & { fireSessionStart: () => Promise<void>; fireShutdown: () => void }
 }
 
 describe("isValidTag", () => {
@@ -89,19 +99,20 @@ describe("parseTag", () => {
 })
 
 describe("tags system prompt block", () => {
-	it("registers phase tagging instructions with the extension that owns set_phase", () => {
+	it("registers phase tagging instructions with the extension that owns set_phase", async () => {
 		const pi = makePi()
 		tagsExtension(pi)
+		await pi.fireSessionStart()
 
 		try {
 			const result = buildSystemPrompt({
-				pi,
 				tools: [
 					{ name: "read", description: "Read file contents" },
 					{ name: "set_phase", description: "Set the current work phase" },
 				],
 				env: testEnv,
 				mode: "orchestrator",
+				sessionId: TEST_SESSION_ID,
 			})
 
 			expect(result).toContain("## Phase Tagging for Analytics")

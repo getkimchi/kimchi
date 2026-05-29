@@ -29,7 +29,7 @@ function parseFlags(args: string[]): UpdateFlags | string {
 
 /**
  * `kimchi update` — explicit self-update entry point. Always skips the
- * 24h cache so users get fresh results when they ask.
+ * cached state so users get fresh results when they ask.
  *
  * On Linux/macOS the swap is atomic via POSIX rename(2); on Windows we
  * rotate kimchi.exe → kimchi.exe.old and the user is told to restart
@@ -58,7 +58,7 @@ export async function runUpdate(args: string[]): Promise<number> {
 			console.log("To use canary, uninstall the Homebrew package and reinstall directly:")
 			console.log("")
 			console.log("  brew uninstall kimchi")
-			console.log("  curl -fsSL https://github.com/castai/kimchi-dev/releases/latest/download/install.sh | bash")
+			console.log("  curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash")
 			console.log("")
 			console.log("Then re-run: kimchi update --canary")
 			return 0
@@ -109,7 +109,7 @@ export async function runUpdate(args: string[]): Promise<number> {
 		console.error(`kimchi update: update failed — ${(err as Error).message}`)
 		console.error("")
 		console.error(
-			"Please copy the error message above and create a bug report at https://github.com/castai/kimchi/issues",
+			"Please copy the error message above and create a bug report at https://github.com/getkimchi/kimchi/issues",
 		)
 		return 1
 	}

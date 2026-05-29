@@ -366,6 +366,20 @@ function formatPlanReviewQuestions(questions: readonly string[]): string {
 	return questions.map((question, index) => `${index + 1}. ${question}`).join("\n")
 }
 
+function validatePlanReviewArray(
+	review: PlanReview,
+	field: "required_changes" | "reservations" | "questions",
+): string | undefined {
+	const value = review[field]
+	if (!Array.isArray(value)) {
+		return `Cannot propose scoping — plan_review.${field} must be an array. Use [] when there are none.`
+	}
+	if (value.some((item) => typeof item !== "string")) {
+		return `Cannot propose scoping — plan_review.${field} must contain only strings.`
+	}
+	return undefined
+}
+
 async function validatePlanReviewOrErr(
 	runtime: FermentRuntime,
 	params: NormalizedProposeScopingArgs,
@@ -377,25 +391,20 @@ async function validatePlanReviewOrErr(
 	const review = params.plan_review
 	if (!review || typeof review !== "object") {
 		return toolErr(
-			`Cannot propose scoping — plan_review is required. Spawn subagent_type "Plan Reviewer" and send the exact plan payload inside <ferment_plan>...</ferment_plan>, then call propose_ferment_scoping with plan_review and reviewed_plan_hash "current". Current plan_hash: ${planHash}`,
+			'Cannot propose scoping — plan_review is required. Spawn subagent_type "Plan Reviewer" and send the exact plan payload inside <ferment_plan>...</ferment_plan>, then call propose_ferment_scoping with plan_review fields: status, summary, required_changes, reservations, and questions.',
 		)
-	}
-	if (!Array.isArray(review.required_changes)) {
-		return toolErr("Cannot propose scoping — plan_review.required_changes must be an array.")
 	}
 	if (typeof review.summary !== "string" || review.summary.trim().length === 0) {
 		return toolErr("Cannot propose scoping — plan_review.summary is required.")
 	}
-	if (review.reviewed_plan_hash && review.reviewed_plan_hash !== "current" && review.reviewed_plan_hash !== planHash) {
-		return toolErr(
-			[
-				"Cannot propose scoping — plan_review.reviewed_plan_hash does not match this plan.",
-				`Current plan_hash: ${planHash}`,
-				'Do not guess hashes. Spawn subagent_type "Plan Reviewer" on the exact XML plan, then call propose_ferment_scoping with plan_review.reviewed_plan_hash set to "current" unless you are replaying an unchanged payload.',
-			].join("\n"),
-		)
+	for (const field of ["required_changes", "reservations", "questions"] as const) {
+		const error = validatePlanReviewArray(review, field)
+		if (error) return toolErr(error)
 	}
-	const planReviewQuestions = Array.isArray(review.questions) ? review.questions.filter((q) => q.trim().length > 0) : []
+	if (review.questions.length > 3) {
+		return toolErr("Cannot propose scoping — plan_review.questions must contain at most 3 questions.")
+	}
+	const planReviewQuestions = review.questions.filter((q) => q.trim().length > 0)
 	if (planReviewQuestions.length > 0 && (params.questions ?? []).length === 0) {
 		return toolErr(
 			[
@@ -820,7 +829,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: FERMENT_TOOLS.PROPOSE_SCOPING,
 		label: "Propose Scoping",
-		description: `Emit the full scoping draft: title, goal, criteria, constraints, assumptions, 1-7 phases, questions, plan_review, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include plan_review from a separate Plan Reviewer subagent review of the exact plan. Spawn subagent_type "Plan Reviewer" and send it the exact payload inside <ferment_plan>...</ferment_plan>; if it reviewed that exact XML plan, set reviewed_plan_hash to "current". Missing, stale, or needs_revision plan reviews are rejected; revise the plan and run Plan Reviewer again before calling this tool unless the Plan Reviewer identified a blocking user question. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
+		description: `Emit the full scoping draft: title, goal, criteria, constraints, assumptions, 1-7 phases, questions, plan_review, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include plan_review from a separate Plan Reviewer subagent review of the exact plan. Spawn subagent_type "Plan Reviewer" and send it the exact payload inside <ferment_plan>...</ferment_plan>; plan_review must include status, summary, required_changes, reservations, and questions, using [] for empty arrays. Missing, malformed, or needs_revision plan reviews are rejected; revise the plan and run Plan Reviewer again before calling this tool unless the Plan Reviewer identified a blocking user question. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
@@ -1178,7 +1187,7 @@ ${renderGateGuidance("complete_ferment")}`,
 
 Behavior depends on session mode:
   - Interactive (with TUI): the user answers in a structured TUI. Returns { choice | choices | text | answers, answered_by: "user" }.
-  - One-shot (no human attached): an Opus judge stands in for the user. Returns { choice | choices | text | answers, answered_by: "judge", rationale }.
+  - One-shot (no human attached): the configured judge model stands in for the user. Returns { choice | choices | text | answers, answered_by: "judge", rationale }.
 
 Hard contract: in one-shot mode, if the judge is unreachable (no API key, timeout, unparseable response) the ferment is ABANDONED — there is no fallback. False-pass is the worst outcome.
 

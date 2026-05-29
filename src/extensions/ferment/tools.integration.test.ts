@@ -49,7 +49,7 @@ vi.mock("./judge.js", async () => {
 import { pr_dim } from "./colors.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview } from "./plan-review.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
-import { buildScopingPlanHash, registerLifecycleTools } from "./tools/lifecycle.js"
+import { registerLifecycleTools } from "./tools/lifecycle.js"
 import { registerPhaseTools } from "./tools/phases.js"
 import { registerStepTools } from "./tools/steps.js"
 
@@ -1064,52 +1064,14 @@ describe("propose_ferment_scoping", () => {
 			gates: passingPlanGates(),
 			...overrides,
 		}
-		const normalizeAssumptionsForHash = (value: unknown) => {
-			if (Array.isArray(value)) return value.join("; ")
-			if (typeof value !== "string" || !value.trim().startsWith("[")) return value
-			try {
-				const parsed = JSON.parse(value)
-				return Array.isArray(parsed) && parsed.every((item) => typeof item === "string") ? parsed.join("; ") : value
-			} catch {
-				return value
-			}
-		}
-		const normalizeQuestionsForHash = (value: unknown) =>
-			Array.isArray(value)
-				? value.map((q) =>
-						q && typeof q === "object"
-							? {
-									id: (q as { id?: unknown }).id,
-									text: (q as { question?: unknown }).question,
-									type: (q as { type?: unknown }).type,
-									options: (q as { options?: unknown }).options,
-								}
-							: q,
-					)
-				: []
-		const normalizedForHash = {
-			...payload,
-			constraints:
-				typeof payload.constraints === "string"
-					? payload.constraints
-							.split(/\r?\n|;/)
-							.map((line: string) => line.replace(/^[-*]\s+/, "").trim())
-							.filter(Boolean)
-					: payload.constraints,
-			assumptions: normalizeAssumptionsForHash(payload.assumptions),
-			phases:
-				typeof payload.phases === "string"
-					? JSON.parse(payload.phases.match(/\[[\s\S]*\]/)?.[0] ?? payload.phases)
-					: payload.phases,
-			questions: normalizeQuestionsForHash(payload.questions),
-		}
 		return {
 			...payload,
 			plan_review: overrides.plan_review ?? {
 				status: "approved",
 				summary: "Plan Reviewer approves the plan fit, complexity, and verification.",
 				required_changes: [],
-				reviewed_plan_hash: buildScopingPlanHash(normalizedForHash as never),
+				reservations: [],
+				questions: [],
 			},
 		}
 	}
@@ -1140,6 +1102,8 @@ describe("propose_ferment_scoping", () => {
 		expect(tool?.description).toContain("plan_review")
 		expect(tool?.description).toContain("separate Plan Reviewer subagent review")
 		expect(tool?.description).toContain('subagent_type "Plan Reviewer"')
+		expect(tool?.description).toContain("required_changes, reservations, and questions")
+		expect(tool?.description).toContain("using [] for empty arrays")
 		expect(tool?.description).toContain("needs_revision")
 	})
 
@@ -1168,8 +1132,8 @@ describe("propose_ferment_scoping", () => {
 			fermentId: id,
 			planMarkdown: expect.stringContaining("# Plan: Proposed Ferment"),
 		})
-		expect(getPendingPlanReview(id)?.planMarkdown).not.toContain("## Plan Reviewerure Feedback")
-		expect(getPendingPlanReview(id)?.planMarkdown).not.toContain("## Plan Reviewerure Reservations")
+		expect(getPendingPlanReview(id)?.planMarkdown).not.toContain("## Architecture Feedback")
+		expect(getPendingPlanReview(id)?.planMarkdown).not.toContain("## Architecture Reservations")
 		expect(getPendingPlanReview(id)?.planMarkdown.includes(`${String.fromCharCode(27)}[`)).toBe(false)
 	})
 
@@ -1191,32 +1155,19 @@ describe("propose_ferment_scoping", () => {
 				status: "needs_revision",
 				summary: "Plan skips verification.",
 				required_changes: ["Add verification commands to each phase."],
-				reviewed_plan_hash: "placeholder",
+				reservations: [],
+				questions: [],
 			},
 		})
-		const planHash = buildScopingPlanHash({
-			...payload,
-			plan_review: payload.plan_review,
-			questions: [],
-		} as never)
-		const result = err(
-			await h.call(
-				"propose_ferment_scoping",
-				{
-					...payload,
-					plan_review: { ...payload.plan_review, reviewed_plan_hash: planHash },
-				},
-				{},
-			),
-		)
+		const result = err(await h.call("propose_ferment_scoping", payload, {}))
 
 		expect(result).toContain("Plan Reviewer rejected this plan")
 		expect(result).toContain("Add verification commands")
 		expect(getPendingPlanReview(id)).toBeUndefined()
 	})
 
-	it("rejects stale Plan Reviewer review hashes", async () => {
-		const id = await createFerment("Stale Plan Reviewer")
+	it("rejects Plan Reviewer reviews missing required arrays", async () => {
+		const id = await createFerment("Malformed Plan Reviewer")
 		seedPending(id)
 		const result = err(
 			await h.call(
@@ -1226,15 +1177,13 @@ describe("propose_ferment_scoping", () => {
 						status: "approved",
 						summary: "Looks good.",
 						required_changes: [],
-						reviewed_plan_hash: "stale",
 					},
 				}),
 				{},
 			),
 		)
 
-		expect(result).toContain("reviewed_plan_hash does not match")
-		expect(result).toContain("Current plan_hash:")
+		expect(result).toContain("plan_review.reservations must be an array")
 		expect(getPendingPlanReview(id)).toBeUndefined()
 	})
 
@@ -1249,8 +1198,8 @@ describe("propose_ferment_scoping", () => {
 						status: "approved",
 						summary: "Plan is structurally sound but scope needs one user decision.",
 						required_changes: [],
+						reservations: [],
 						questions: ["Should this ferment implement fixes or only produce an audit report?"],
-						reviewed_plan_hash: "current",
 					},
 				}),
 				{},

@@ -44,9 +44,12 @@ run("typecheck", "pnpm run typecheck")
 // If a new dependency causes a build failure, check whether it also needs --external here.
 const targetFlag = crossTarget ? ` --target=${crossTarget}` : ""
 
+// Trust the OS certificate store in addition to Bun's bundled roots so users behind
+// TLS-intercepting corporate proxies (Netskope, Zscaler, etc.) can reach the API without
+// extra env vars. Bun ignores the system store by default; --use-system-ca is additive.
 run(
 	"compile",
-	`bun build src/entry.ts --compile${targetFlag} --outfile dist/bin/kimchi --external chromium-bidi --external electron`.trim(),
+	`bun build src/entry.ts --compile${targetFlag} --compile-exec-argv="--use-system-ca" --outfile dist/bin/kimchi --external chromium-bidi --external electron`.trim(),
 )
 
 // Bun --compile produces binaries with an invalid code signature on macOS.

@@ -1399,8 +1399,16 @@ Model selection — YOU choose based on task complexity:
 			execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
 				const record = manager.getRecord(params.agent_id as string)
 				if (!record) {
+					const availableAgents = listUserVisibleAgents()
+					const availableIds =
+						availableAgents.length === 0
+							? "No agent IDs are currently available in this session."
+							: `Available agent IDs: ${availableAgents
+									.slice(0, 20)
+									.map((a) => `${a.id} (${getDisplayName(a.type)}, ${a.status})`)
+									.join(", ")}${availableAgents.length > 20 ? ", ..." : ""}.`
 					return textResult(
-						`Agent not found: "${params.agent_id}". Use the exact Agent ID returned by the Agent tool; do not invent IDs like "agent_001". If the ID is unavailable, rerun the agent instead of searching session output files.`,
+						`Agent not found: "${params.agent_id}". ${availableIds} Use the exact Agent ID returned by the Agent tool; do not invent IDs like "agent_001". If the ID is unavailable, rerun the agent instead of searching session output files.`,
 					)
 				}
 

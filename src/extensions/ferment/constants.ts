@@ -29,6 +29,7 @@ Plan Reviewer subagent contract:
 - subagent_type: "Plan Reviewer"
 - use only after drafting a concrete scoping plan payload
 - pass the exact plan inside <ferment_plan>...</ferment_plan>
+- return only JSON with required fields status, summary, required_changes, reservations, and questions; use [] when arrays are empty
 - Plan Reviewer reviews only; it does not implement code
 - Plan Reviewer may use a Researcher subagent for current external docs, APIs, standards, or browser behavior when those facts materially affect the review
 
