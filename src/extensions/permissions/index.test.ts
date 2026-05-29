@@ -383,48 +383,34 @@ Run tests.
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
 
-	it("blocks approval when assumptions present", async () => {
+	it("shows approval menu even when assumptions section is present (agent is trusted)", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 		await harness.fire("tool_execution_start", {})
 
-		const ctx = createMockContext([])
+		const ctx = createMockContext(["No, do something else"])
 		await fireTurnEnd(
 			harness,
 			"# Plan\n\n## Assumptions\n- Database schema may differ\n\n## Chunks\n- Chunk 1\n\n<!-- PLAN_COMPLETE -->\n",
 			ctx,
 		)
 
-		expect(ctx.ui.select).not.toHaveBeenCalled()
-		expect(harness.pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				content: expect.stringContaining("unresolved assumptions"),
-				display: false,
-			}),
-			expect.objectContaining({ triggerTurn: true }),
-		)
+		expect(ctx.ui.select).toHaveBeenCalled()
 	})
 
-	it("blocks approval when open questions present", async () => {
+	it("shows approval menu even when open questions section is present", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 		await harness.fire("tool_execution_start", {})
 
-		const ctx = createMockContext([])
+		const ctx = createMockContext(["No, do something else"])
 		await fireTurnEnd(
 			harness,
 			"# Plan\n\n## Open Questions\n- Should we use JWT or sessions?\n\n## Chunks\n- Chunk 1\n\n<!-- PLAN_COMPLETE -->\n",
 			ctx,
 		)
 
-		expect(ctx.ui.select).not.toHaveBeenCalled()
-		expect(harness.pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				content: expect.stringContaining("unresolved assumptions"),
-				display: false,
-			}),
-			expect.objectContaining({ triggerTurn: true }),
-		)
+		expect(ctx.ui.select).toHaveBeenCalled()
 	})
 
 	it("allows plan with empty assumptions section", async () => {
@@ -457,28 +443,26 @@ Run tests.
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
 
-	it("detection is case-insensitive at turn_end level", async () => {
+	it("shows menu for plan with assumptions (PLAN_COMPLETE is the gate)", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 		await harness.fire("tool_execution_start", {})
 
-		const ctx = createMockContext([])
+		const ctx = createMockContext(["No, do something else"])
 		await fireTurnEnd(harness, "## ASSUMPTIONS\n- Schema TBD\n\n<!-- PLAN_COMPLETE -->\n", ctx)
 
-		expect(ctx.ui.select).not.toHaveBeenCalled()
-		expect(harness.pi.sendMessage).toHaveBeenCalled()
+		expect(ctx.ui.select).toHaveBeenCalled()
 	})
 
-	it("blocks on assumptions section with content after blank line", async () => {
+	it("shows menu for plan with assumptions after blank line", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 		await harness.fire("tool_execution_start", {})
 
-		const ctx = createMockContext([])
+		const ctx = createMockContext(["No, do something else"])
 		await fireTurnEnd(harness, "## Assumptions\n\n- Database schema may differ\n\n<!-- PLAN_COMPLETE -->\n", ctx)
 
-		expect(ctx.ui.select).not.toHaveBeenCalled()
-		expect(harness.pi.sendMessage).toHaveBeenCalled()
+		expect(ctx.ui.select).toHaveBeenCalled()
 	})
 
 	it("review gate approves well-structured plan and shows menu", async () => {
@@ -500,27 +484,19 @@ Run tests.
 		)
 	})
 
-	it("review gate rejects malformed plan and nudges agent", async () => {
+	it("review gate: menu shows for any plan with PLAN_COMPLETE marker", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 		await harness.fire("tool_execution_start", {})
 
-		const ctx = createMockContext([])
+		const ctx = createMockContext(["No, do something else"])
 		await fireTurnEnd(
 			harness,
 			`## Chunk 1\nJust a chunk.\n\nSome extra lines\nto make it non-simple.\nMore content here.\n\n<!-- PLAN_COMPLETE -->\n`,
 			ctx,
 		)
 
-		expect(ctx.ui.select).not.toHaveBeenCalled()
-		expect(harness.pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				customType: "plan-review-blocked",
-				content: expect.stringContaining("structural issues"),
-				display: false,
-			}),
-			expect.objectContaining({ triggerTurn: true }),
-		)
+		expect(ctx.ui.select).toHaveBeenCalled()
 	})
 
 	it("review gate skips simple plans and shows menu immediately", async () => {

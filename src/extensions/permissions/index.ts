@@ -410,7 +410,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		},
 	})
 
-	// Reset plan-completion tracking on every new user input.
+	// Reset per-turn tracking at the start of every turn so revised plans after
+	// a review-failure nudge still get a chance to show the approval menu.
+	pi.on("turn_start", () => {
+		toolsCalledThisCycle = false
+		planMenuShownThisCycle = false
+	})
+
+	// Reset plan-completion tracking on every new user input (redundant with
+	// turn_start but kept as a safety net).
 	pi.on("input", async () => {
 		toolsCalledThisCycle = false
 		planMenuShownThisCycle = false
@@ -423,125 +431,37 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		}
 	})
 
-	// When the agent finishes a text-only turn in plan mode, offer the user a
-	// menu to approve and execute the plan.
+	// When the agent produces <!-- PLAN_COMPLETE --> in plan mode, show the approval menu.
 	pi.on("turn_end", async (event, ctx) => {
-		console.log("[PLAN_DEBUG] turn_end fired")
-		if (currentMode() !== "plan") {
-			console.log("[PLAN_DEBUG] mode is not plan, returning. currentMode=", currentMode())
-			return
-		}
-		if (!ctx.hasUI) {
-			console.log("[PLAN_DEBUG] no UI, returning")
-			return
-		}
-		if (planMenuShownThisCycle) {
-			console.log("[PLAN_DEBUG] menu already shown this cycle, returning")
-			return
-		}
+		if (currentMode() !== "plan") return
+		if (!ctx.hasUI) return
 
 		const message = event.message as AssistantMessage
 		if (message.role !== "assistant") return
 
-		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
-		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
-
-		// Only show the menu when the agent produced text without tool calls
-		// AND has called at least one tool this cycle (i.e., it explored before
-		// presenting a plan). Without prior tool calls the agent is likely asking
-		// clarifying questions, not delivering a finished plan.
-		if (!hasText || hasToolCalls) return
-
-		// Extract assistant text content for assumption detection.
-		const assistantText = message.content
+		const text = message.content
 			.filter((c) => c.type === "text")
 			.map((c) => (c as { type: "text"; text: string }).text)
 			.join("\n")
 
-		// If the agent includes the explicit completion marker, always show the
-		// approval menu regardless of whether tools were called. This allows
-		// the agent to present a plan for simple tasks where exploration is
-		// unnecessary. For intermediate drafts and clarifying questions without
-		// the marker, toolsCalledThisCycle still gates the menu.
-		if (!toolsCalledThisCycle && !assistantText.includes("<!-- PLAN_COMPLETE -->")) return
-
-		if (hasUnresolvedAssumptions(assistantText)) {
-			// Block the approval menu and nudge the agent to resolve via questionnaire.
-			planMenuShownThisCycle = true
-			pi.sendMessage(
-				{
-					customType: "plan-assumption-blocked",
-					content:
-						"Your plan still contains unresolved assumptions or open questions. Before presenting a final plan, resolve these with the user using the questionnaire tool.",
-					display: false,
-				},
-				{ triggerTurn: true },
-			)
-			return
-		}
-
-		// Detect if the agent is presenting a completed plan.
-		// The agent must include the explicit <!-- PLAN_COMPLETE --> marker to signal
-		// the plan is ready for user review. Without this marker the approval menu
-		// will not appear, allowing the agent to ask questions or present drafts.
-		if (!assistantText.includes("<!-- PLAN_COMPLETE -->")) {
-			// Skip the menu without marking it shown, so the menu can still appear
-			// when the agent includes the completion marker later.
-			return
-		}
-
-		// Run the plan review gate before showing the approval menu.
-		const review = reviewPlan(assistantText)
-		console.log("[PLAN_DEBUG] review result:", review)
-		if (!review.approved) {
-			planMenuShownThisCycle = true
-			const issuesText = review.issues.map((i) => `- ${i}`).join("\n")
-			if (ctx.hasUI) {
-				ctx.ui.notify(
-					"Plan needs revision: " + review.issues.join("; ") + ". The agent will revise it.",
-					"warning",
-				)
-			}
-			pi.sendMessage(
-				{
-					customType: "plan-review-blocked",
-					content:
-						"Plan review found structural issues:\n" +
-						issuesText +
-						"\n\n" +
-						"Please revise the plan to address these issues before marking it complete. " +
-						"Remember to end your response with `<!-- PLAN_COMPLETE -->` when finished.",
-					display: false,
-				},
-				{ triggerTurn: true },
-			)
-			console.log("[PLAN_DEBUG] review failed, sent nudge")
-			return
-		}
-
-		planMenuShownThisCycle = true
+		if (!text.includes("<!-- PLAN_COMPLETE -->")) return
 
 		const EXECUTE = "Yes — execute the plan"
 		const EXECUTE_AUTO = "Yes — execute (auto-approve)"
 		const DECLINE = "No, do something else"
 
-		const planPath = saveApprovedPlan(ctx.cwd, assistantText)
+		const planPath = saveApprovedPlan(ctx.cwd, text)
 
-		console.log("[PLAN_DEBUG] about to show select menu")
 		const choice = await withWorkingHidden(ctx, () =>
 			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, EXECUTE_AUTO, DECLINE]),
 		)
-		console.log("[PLAN_DEBUG] user choice:", choice)
 
 		if (choice === EXECUTE) {
-			console.log("[PLAN_DEBUG] executing default")
 			switchFromPlanAndExecute(ctx, "default", planPath)
 		} else if (choice === EXECUTE_AUTO) {
-			console.log("[PLAN_DEBUG] executing auto")
 			switchFromPlanAndExecute(ctx, "auto", planPath)
-		} else {
-			console.log("[PLAN_DEBUG] declined or undefined, staying in plan mode")
 		}
+		// Decline or escape: stay in plan mode.
 	})
 
 	pi.on("tool_call", async (event, ctx) => {
