@@ -2,6 +2,16 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { readFile as readFileAsync } from "node:fs/promises"
 import { extname, relative, resolve } from "node:path"
 
+import { getActiveThemeName, onThemeChange } from "../settings-watcher.js"
+import { estimateTerminalBackground, getProbedBackground } from "../terminal-bg-probe.js"
+
+// Returns true if the given RGB background is visually light.
+// Used to choose between github-light and github-dark shiki themes.
+function isLightBackground(bg: { r: number; g: number; b: number }): boolean {
+	const luminance = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b
+	return luminance > 128
+}
+
 import type {
 	BashToolDetails,
 	ExtensionAPI,
@@ -1216,6 +1226,8 @@ const ADDITION_TINT_TARGET = { r: 84, g: 190, b: 118 }
 const DELETION_TINT_TARGET = { r: 232, g: 95, b: 122 }
 // Fallback base that matches most dark themes (NOT black)
 const FALLBACK_BASE_BG = { r: 32, g: 35, b: 42 }
+// Fallback base for light themes when toolSuccessBg is unavailable (overwritten to transparent by applyToolBackgroundMode)
+const LIGHT_FALLBACK_BASE_BG = { r: 250, g: 250, b: 250 }
 const UNIVERSAL_DIFF_ADD_FG = { r: 110, g: 210, b: 130 }
 const UNIVERSAL_DIFF_DEL_FG = { r: 225, g: 110, b: 110 }
 
@@ -1246,7 +1258,11 @@ function autoDeriveBgFromTheme(theme: any): void {
 	const useTheme = themeAdaptiveEnabled() && theme
 	const addFgRgb = (useTheme && themeFgRgb(theme, "toolDiffAdded")) || UNIVERSAL_DIFF_ADD_FG
 	const delFgRgb = (useTheme && themeFgRgb(theme, "toolDiffRemoved")) || UNIVERSAL_DIFF_DEL_FG
-	const base = (useTheme && themeBgRgb(theme, "toolSuccessBg")) || FALLBACK_BASE_BG
+	// toolSuccessBg is overwritten to TRANSPARENT_BG by applyToolBackgroundMode (so tool boxes
+	// show without backgrounds). That makes parseAnsiRgb return null here. Fall back to a
+	// light or dark neutral depending on the active Shiki theme so gutter colors stay readable.
+	const rawBase = useTheme && themeBgRgb(theme, "toolSuccessBg")
+	const base = rawBase || ((DIFF_THEME as string).includes("light") ? LIGHT_FALLBACK_BASE_BG : FALLBACK_BASE_BG)
 
 	const addTint = mixRgb(addFgRgb, ADDITION_TINT_TARGET, 0.35)
 	const delTint = mixRgb(delFgRgb, DELETION_TINT_TARGET, 0.65)
@@ -1407,8 +1423,44 @@ function applyDiffPalette(): void {
 		FG_SAFE_MUTED = v
 	})
 
-	const shiki = overrides.shikiTheme ?? preset?.shikiTheme
-	if (shiki) DIFF_THEME = shiki as BundledTheme
+	// Priority: user override (diffColors.shikiTheme) > diff preset > active theme JSON
+	const explicitShiki = overrides.shikiTheme ?? preset?.shikiTheme
+	if (explicitShiki) {
+		DIFF_THEME = explicitShiki as BundledTheme
+	} else {
+		// Fall back to shikiTheme declared in the active theme's JSON file.
+		// This is the mechanism for tying code highlight to the selected UI theme.
+		// However, themes like kimchi-minimal don't specify a bg — in that case
+		// we derive the shiki theme from the actual terminal background instead.
+		let themeShiki: string | undefined
+		try {
+			const themeName = getActiveThemeName()
+			const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+			if (themeName && agentDir) {
+				const themePath = resolve(agentDir, "themes", `${themeName}.json`)
+				const raw = readFileSync(themePath, "utf-8")
+				const themeJson = JSON.parse(raw) as { shikiTheme?: string; vars?: Record<string, string>; colors?: Record<string, string> }
+				themeShiki = themeJson.shikiTheme
+
+				// If the theme file has no shikiTheme and provides no bg color,
+				// derive the shiki theme from the actual terminal background.
+				const hasBg = (themeJson.vars?.bgPrimary || themeJson.colors?.bgPrimary || "").trim() !== ""
+				if (!themeShiki && !hasBg) {
+					const bg = getProbedBackground() ?? estimateTerminalBackground()
+					themeShiki = isLightBackground(bg) ? "github-light" : "github-dark"
+					// normalizeShikiContrast replaces dark tokens with FG_SAFE_MUTED.
+					// That defaults to a medium grey (#8B949E) suited for dark terminals.
+					// For light terminals, use a dark grey so muted tokens stay readable.
+					if (themeShiki === "github-light" && !_explicitFgFields.has("fgSafeMuted")) {
+						FG_SAFE_MUTED = "\x1b[38;2;90;90;90m"
+					}
+				}
+			}
+		} catch {
+			// Theme file unreadable — fall through to default github-dark
+		}
+		if (themeShiki) DIFF_THEME = themeShiki as BundledTheme
+	}
 
 	DIVIDER = `${FG_RULE}│${D_RST}`
 	DEFAULT_DIFF_COLORS = { fgAdd: FG_ADD, fgDel: FG_DEL, fgCtx: FG_DIM }
@@ -1508,6 +1560,15 @@ function ansiState(text: string): string {
 		}
 	}
 	return bg + fg
+}
+
+// Re-injects `bg` after every \x1b[0m reset in a Shiki-highlighted line so that
+// dark-on-light syntax colors (github-light) remain readable even though ansis
+// wraps each token with a trailing reset that would otherwise expose the raw
+// terminal background.
+function splatBg(hl: string, bg: string): string {
+	if (!bg || !hl.includes("\x1b[0m")) return bg + hl
+	return bg + hl.replace(/\x1b\[0m/g, "\x1b[0m" + bg)
 }
 
 function normalizeShikiContrast(ansi: string): string {
@@ -1828,7 +1889,7 @@ function wordDiffAnalysis(
 }
 
 function injectBg(ansiLine: string, ranges: Array<[number, number]>, baseBg: string, hlBg: string): string {
-	if (!ranges.length) return baseBg + ansiLine + D_RST
+	if (!ranges.length) return splatBg(ansiLine, baseBg) + D_RST
 	let out = baseBg
 	let vis = 0
 	let inHL = false
@@ -1984,9 +2045,9 @@ async function renderUnified(
 			continue
 		}
 		for (const d of dels)
-			emitRow(d.l.oldNum, "-", BG_GUTTER_DEL, `${dc.fgDel}${D_BOLD}`, `${BG_DEL}${canHL ? d.hl : d.l.content}`, BG_DEL)
+			emitRow(d.l.oldNum, "-", BG_GUTTER_DEL, `${dc.fgDel}${D_BOLD}`, splatBg(canHL ? d.hl : d.l.content, BG_DEL), BG_DEL)
 		for (const a of adds)
-			emitRow(a.l.newNum, "+", BG_GUTTER_ADD, `${dc.fgAdd}${D_BOLD}`, `${BG_ADD}${canHL ? a.hl : a.l.content}`, BG_ADD)
+			emitRow(a.l.newNum, "+", BG_GUTTER_ADD, `${dc.fgAdd}${D_BOLD}`, splatBg(canHL ? a.hl : a.l.content, BG_ADD), BG_ADD)
 	}
 
 	out.push(diffRule(tw))
@@ -2074,7 +2135,7 @@ async function renderSplit(
 		const numFg = borderFg || FG_LNUM
 		let body: string
 		if (ranges && ranges.length > 0) body = injectBg(hl, ranges, cBg, isDel ? BG_DEL_W : BG_ADD_W)
-		else if (isDel || isAdd) body = `${cBg}${hl}`
+		else if (isDel || isAdd) body = splatBg(hl, cBg)
 		else body = `${BG_BASE}${D_DIM}${hl}`
 		const gutter = `${border}${gBg}${lnum(num, nw, numFg)}${sFg}${D_BOLD}${sign}${D_RST} ${FG_RULE}│${D_RST} `
 		const contGutter = `${border}${gBg}${" ".repeat(nw + 1)}${D_RST} ${FG_RULE}│${D_RST} `
@@ -3424,6 +3485,11 @@ export default function (pi: ExtensionAPI) {
 	patchToolExecutionRenderers()
 	patchUserMessageRender()
 	applyDiffPalette()
+	onThemeChange(() => {
+		applyDiffPalette()
+		clearHighlightCache()
+		autoDerivePending = true
+	})
 	registerThinkingLabels(pi)
 
 	// /cc-tools command — toggle tool border style at runtime

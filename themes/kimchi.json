@@ -1,5 +1,6 @@
 {
 	"name": "kimchi",
+	"shikiTheme": "github-dark",
 	"vars": {
 		"orange-500": "#F4572E",
 		"lime-500": "#BBE33B",
