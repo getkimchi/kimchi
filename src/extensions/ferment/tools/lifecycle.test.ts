@@ -10,6 +10,9 @@ import { FERMENT_TOOLS } from "../tool-names.js"
 import {
 	buildFreeformScopingFeedbackMessage,
 	completeFerment,
+	normalizeAskUserOption,
+	normalizeAskUserQuestionType,
+	normalizeAskUserResponseType,
 	registerLifecycleTools,
 	scopeFerment,
 } from "./lifecycle.js"
@@ -788,5 +791,41 @@ describe("completeFerment", () => {
 		expect(okText(result)).toContain("Final grade: B (unavailable)")
 		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
 		expect(h.storage.get(h.fermentId)?.grade?.unavailable).toBe(true)
+	})
+})
+
+describe("ask_user input normalization", () => {
+	it("maps synonym question types to the canonical radio/checkbox/text", () => {
+		expect(normalizeAskUserQuestionType("single")).toBe("radio")
+		expect(normalizeAskUserQuestionType("multi")).toBe("checkbox")
+		expect(normalizeAskUserQuestionType("radio")).toBe("radio")
+		expect(normalizeAskUserQuestionType("checkbox")).toBe("checkbox")
+		expect(normalizeAskUserQuestionType("text")).toBe("text")
+	})
+
+	it("falls back to the default type for unknown values", () => {
+		expect(normalizeAskUserQuestionType("dropdown")).toBe("radio")
+	})
+
+	it("maps response_type synonyms (radio→single, checkbox→multi)", () => {
+		expect(normalizeAskUserResponseType("radio")).toBe("single")
+		expect(normalizeAskUserResponseType("checkbox")).toBe("multi")
+		expect(normalizeAskUserResponseType("multi")).toBe("multi")
+		expect(normalizeAskUserResponseType("text")).toBe("text")
+		expect(normalizeAskUserResponseType(undefined)).toBe("single")
+		expect(normalizeAskUserResponseType("single")).toBe("single")
+	})
+
+	it("accepts `value` as an alias for option `id`", () => {
+		expect(normalizeAskUserOption({ value: "code-quality", label: "Code quality" })).toEqual({
+			id: "code-quality",
+			label: "Code quality",
+			description: undefined,
+		})
+		expect(normalizeAskUserOption({ id: "robustness", label: "Robustness", description: "errors" })).toEqual({
+			id: "robustness",
+			label: "Robustness",
+			description: "errors",
+		})
 	})
 })

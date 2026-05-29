@@ -316,10 +316,6 @@ export function getPlanReviewAttempts(fermentId: string): number {
 	return getPlanReviewStateRef(fermentId).planReviewAttempts
 }
 
-export function getLastPlanHash(fermentId: string): string | undefined {
-	return getPlanReviewStateRef(fermentId).lastPlanHash
-}
-
 export function getLastRejectionHash(fermentId: string): string | undefined {
 	return getPlanReviewStateRef(fermentId).lastRejectionHash
 }
@@ -334,13 +330,11 @@ export function getLastPlanReviewSummary(fermentId: string): string | undefined 
 
 export function recordPlanReviewAttempt(
 	fermentId: string,
-	planHash: string,
 	rejectionHash: string | undefined,
 	planReviewSummary: string,
 ): PersistedPlanReviewState {
 	const state = getPlanReviewStateRef(fermentId)
 	state.planReviewAttempts += 1
-	state.lastPlanHash = planHash
 	state.lastPlanReviewSummary = planReviewSummary
 	if (rejectionHash) {
 		state.sameRejectionCount = state.lastRejectionHash === rejectionHash ? state.sameRejectionCount + 1 : 1

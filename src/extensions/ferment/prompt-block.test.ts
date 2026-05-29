@@ -259,7 +259,7 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain('<scoping_sequence required="true">')
 			expect(out).toContain("STEP 1")
 			expect(out).toContain("ORIENT")
-			expect(out).toContain("Print Plan Reviewer as its own subagent type")
+			expect(out).toContain("print a concise inventory of available agent/subagent")
 			expect(out).toContain("If agent types are not exposed")
 			expect(out).toContain("STEP 2")
 			expect(out).toContain("INTERVIEW")

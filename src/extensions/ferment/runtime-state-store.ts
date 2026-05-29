@@ -49,7 +49,6 @@ export interface PersistedRuntimeState {
 
 export interface PersistedPlanReviewState {
 	planReviewAttempts: number
-	lastPlanHash?: string
 	lastRejectionHash?: string
 	sameRejectionCount: number
 	lastPlanReviewSummary?: string
@@ -104,7 +103,6 @@ export function loadRuntimeState(fermentId: string, root?: string): PersistedRun
 			const planReview = raw.planReview as Partial<PersistedPlanReviewState>
 			merged.planReview = {
 				planReviewAttempts: typeof planReview.planReviewAttempts === "number" ? planReview.planReviewAttempts : 0,
-				lastPlanHash: typeof planReview.lastPlanHash === "string" ? planReview.lastPlanHash : undefined,
 				lastRejectionHash: typeof planReview.lastRejectionHash === "string" ? planReview.lastRejectionHash : undefined,
 				sameRejectionCount: typeof planReview.sameRejectionCount === "number" ? planReview.sameRejectionCount : 0,
 				lastPlanReviewSummary:

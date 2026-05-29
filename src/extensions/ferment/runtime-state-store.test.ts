@@ -10,7 +10,6 @@ import {
 	clearAllStepStarts,
 	clearFermentState,
 	getBlockRetry,
-	getLastPlanHash,
 	getLastPlanReviewSummary,
 	getLastRejectionHash,
 	getPhaseStartRef,
@@ -110,17 +109,16 @@ describe("runtime-state persistence — write-through + lazy hydrate", () => {
 
 	it("persists Plan Reviewer loop state across a simulated restart", () => {
 		const fId = "ferment-test-planReviewer"
-		let state = recordPlanReviewAttempt(fId, "plan-a", "reject-a", "Missing verification")
+		let state = recordPlanReviewAttempt(fId, "reject-a", "Missing verification")
 		expect(state.planReviewAttempts).toBe(1)
 		expect(state.sameRejectionCount).toBe(1)
-		state = recordPlanReviewAttempt(fId, "plan-a", "reject-a", "Missing verification")
+		state = recordPlanReviewAttempt(fId, "reject-a", "Missing verification")
 		expect(state.planReviewAttempts).toBe(2)
 		expect(state.sameRejectionCount).toBe(2)
 
 		simulateRestart()
 
 		expect(getPlanReviewAttempts(fId)).toBe(2)
-		expect(getLastPlanHash(fId)).toBe("plan-a")
 		expect(getLastRejectionHash(fId)).toBe("reject-a")
 		expect(getSamePlanReviewRejectionCount(fId)).toBe(2)
 		expect(getLastPlanReviewSummary(fId)).toBe("Missing verification")
@@ -128,13 +126,12 @@ describe("runtime-state persistence — write-through + lazy hydrate", () => {
 
 	it("resets Plan Reviewer loop state", () => {
 		const fId = "ferment-test-planReviewer-reset"
-		recordPlanReviewAttempt(fId, "plan-a", "reject-a", "Missing verification")
+		recordPlanReviewAttempt(fId, "reject-a", "Missing verification")
 
 		resetPlanReviewState(fId)
 		simulateRestart()
 
 		expect(getPlanReviewAttempts(fId)).toBe(0)
-		expect(getLastPlanHash(fId)).toBeUndefined()
 		expect(getLastRejectionHash(fId)).toBeUndefined()
 		expect(getSamePlanReviewRejectionCount(fId)).toBe(0)
 		expect(getLastPlanReviewSummary(fId)).toBeUndefined()
@@ -144,7 +141,7 @@ describe("runtime-state persistence — write-through + lazy hydrate", () => {
 		const fId = "ferment-test-7"
 		bumpBlockRetry(fId, "phase-1")
 		setPhaseStartRef(fId, "phase-1", "deadbeef")
-		recordPlanReviewAttempt(fId, "plan-a", "reject-a", "Missing verification")
+		recordPlanReviewAttempt(fId, "reject-a", "Missing verification")
 
 		clearFermentState(fId)
 

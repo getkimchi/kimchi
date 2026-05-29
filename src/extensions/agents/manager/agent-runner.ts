@@ -22,6 +22,7 @@ import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
+import { getPersonaOutputToolFactories } from "../persona-output-tools.js"
 import {
 	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
@@ -325,7 +326,11 @@ async function runAgentInner(
 		noContextFiles: true,
 		systemPromptOverride: () => systemPrompt,
 		appendSystemPromptOverride: () => [],
-		extensionFactories: [telemetryExtension(readTelemetryConfig())],
+		// Persona-bound submit tools (AgentConfig.outputToolName) are owned by
+		// higher-level extensions that subagent sessions do not load. Inject their
+		// installers here so the tool exists in the session; the per-persona gating
+		// below keeps each one active only for its owning persona.
+		extensionFactories: [telemetryExtension(readTelemetryConfig()), ...getPersonaOutputToolFactories()],
 	})
 	await loader.reload()
 

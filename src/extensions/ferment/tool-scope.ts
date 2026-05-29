@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { PLAN_REVIEW_SUBMIT_TOOL } from "../agents/personas/types.js"
 import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import type { FermentRuntime } from "./runtime.js"
 import { FERMENT_TOOLS, FERMENT_TOOL_NAMES, isFermentToolName } from "./tool-names.js"
@@ -107,6 +108,16 @@ export class FermentToolScope {
 		// run starts; pi-mono will snapshot the resulting tool list for that run.
 		this.visibility.disable(registered)
 		this.visibility.enable(allowedRegistered)
+
+		// `submit_plan_review` is the Plan Reviewer subagent's bound output tool. It
+		// is not a ferment tool name, so the votes above never touch it. This scope
+		// only ever runs in the main/planner session (subagents don't load
+		// fermentExtension), and the planner must never call the submit tool itself
+		// — it has to spawn the Plan Reviewer subagent. Vote it hidden here. The
+		// subagent gets the tool in its own session (persona-output-tools registry
+		// injected by agent-runner), where agent-runner's per-persona gating keeps
+		// it active for the Plan Reviewer and strips it from every other persona.
+		this.visibility.disable([PLAN_REVIEW_SUBMIT_TOOL])
 	}
 }
 

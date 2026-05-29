@@ -1,20 +1,31 @@
 /**
  * `submit_plan_review` — the Plan Reviewer persona's schema-bound output tool.
  *
- * Registered globally but active ONLY for the Plan Reviewer subagent (gated in
- * the agent-runner filter via AgentConfig.outputToolName). The reviewer returns
- * its verdict by calling this tool; the harness validates the args against
- * PlanReviewSchema, and the validated object becomes the subagent's
- * RunResult.structuredOutput — no free-text parsing, no drift.
+ * The Plan Reviewer calls this in its OWN subagent session to return its verdict;
+ * the harness validates the args against PlanReviewSchema, and the validated
+ * object becomes the subagent's RunResult.structuredOutput — no free-text
+ * parsing, no drift.
  *
- * Deliberately NOT a member of FERMENT_TOOL_NAMES so FermentToolScope's
- * worker-profile gating (which disables every ferment tool for subagents) leaves
- * it alone — the Plan Reviewer is itself a worker.
+ * Installed in two places, because the two sessions are separate processes of
+ * the same run:
+ *   - the main/planner session, via fermentExtension init (where it is hidden
+ *     from the planner by FermentToolScope — the planner must spawn the subagent,
+ *     not self-submit);
+ *   - every subagent session, via the persona-output-tools registry which the
+ *     agent runner injects into the subagent extension loader. Subagent sessions
+ *     do not load fermentExtension, so without this bridge the tool would not
+ *     exist there and the reviewer's call would fail "Tool ... not found".
+ * The agent runner's per-persona gating then keeps it active only for the Plan
+ * Reviewer and strips it from every other persona.
+ *
+ * Deliberately NOT a member of FERMENT_TOOL_NAMES so FermentToolScope's ferment
+ * profiles never touch it.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import { setAgentStructuredOutput } from "../../agent-worker-context.js"
+import { registerPersonaOutputToolFactory } from "../../agents/persona-output-tools.js"
 import { PLAN_REVIEW_SUBMIT_TOOL } from "../../agents/personas/types.js"
 import { toolErr, toolOk } from "../tool-helpers.js"
 import { PlanReviewSchema } from "../tool-schemas.js"
@@ -49,3 +60,8 @@ export function registerPlanReviewTool(pi: ExtensionAPI): void {
 		},
 	})
 }
+
+// Make the tool installable inside subagent sessions (which do not load
+// fermentExtension). The agent runner injects every registered factory into the
+// subagent extension loader; gating keeps it active only for the Plan Reviewer.
+registerPersonaOutputToolFactory(PLAN_REVIEW_SUBMIT_TOOL, registerPlanReviewTool)

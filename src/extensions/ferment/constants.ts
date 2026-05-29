@@ -25,9 +25,12 @@ STEP 2 — INTERVIEW (iterative rounds)
 Ask the user about the unknowns you identified in Step 1. Run in rounds:
 
 Round structure:
-  a. Ask 1-3 focused questions via ask_user or questionnaire.
-     When presenting options, set allowOther: true and include "None of the above"
-     for predefined choices.
+  a. Ask 1-3 focused questions with the ask_user tool. Use ask_user, NOT
+     questionnaire — only ask_user falls back to the judge in one-shot mode.
+     Pass the questions in questions[]; each question's type is one of
+     "radio" (single-select), "checkbox" (multi-select), or "text", and each
+     option is { id, label }. Set allowOther: true and include a "None of the
+     above" option for predefined choices.
   b. When answers come back, REFLECT before continuing:
      - How do these answers change your understanding of the task?
      - Do you need to check anything in the codebase to validate or act on an answer?

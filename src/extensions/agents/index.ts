@@ -1457,10 +1457,11 @@ Model selection — YOU choose based on task complexity:
 					output += bodyForDisplay
 				} else {
 					bodyForDisplay =
-						record.result?.trim() ||
-						(record.outputFile
-							? `No output was captured in the agent result. Full transcript: ${record.outputFile}`
-							: "No output.")
+						safeStructuredBody(record.structuredOutput) ??
+						(record.result?.trim() ||
+							(record.outputFile
+								? `No output was captured in the agent result. Full transcript: ${record.outputFile}`
+								: "No output."))
 					output += bodyForDisplay
 				}
 

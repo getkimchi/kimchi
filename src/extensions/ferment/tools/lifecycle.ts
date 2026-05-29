@@ -22,7 +22,13 @@ import {
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
 import { isUserChosenYolo } from "../../permissions/index.js"
-import { askUser, askUserForm } from "../ask-user.js"
+import {
+	type AskUserOption,
+	type AskUserQuestion,
+	type AskUserResponseType,
+	askUser,
+	askUserForm,
+} from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
 import { startFermentForIntent } from "../commands.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
@@ -345,18 +351,6 @@ function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizePro
 	}
 }
 
-export function buildScopingPlanHash(params: NormalizedProposeScopingArgs): string {
-	return stateHash({
-		title: params.title,
-		goal: params.goal,
-		success_criteria: params.success_criteria,
-		constraints: params.constraints ?? [],
-		assumptions: params.assumptions,
-		phases: params.phases,
-		questions: params.questions ?? [],
-	})
-}
-
 function hashPlanReviewRejection(review: PlanReview): string {
 	return stateHash({
 		summary: review.summary,
@@ -368,6 +362,40 @@ function hashPlanReviewRejection(review: PlanReview): string {
 
 function formatPlanReviewQuestions(questions: readonly string[]): string {
 	return questions.map((question, index) => `${index + 1}. ${question}`).join("\n")
+}
+
+// ─── ask_user input normalization ────────────────────────────────────────────
+// The schema accepts synonym vocabularies (single/multi for the radio/checkbox
+// question type; radio/checkbox for the response_type shorthand; `value` as an
+// alias for option `id`) so the model's natural shapes don't get rejected at the
+// tool boundary. Normalize to the canonical shapes the ask-user layer expects.
+
+const QUESTION_TYPE_ALIASES: Record<string, ScopingQuestionType> = {
+	radio: "radio",
+	checkbox: "checkbox",
+	text: "text",
+	single: "radio",
+	multi: "checkbox",
+}
+
+export function normalizeAskUserOption(option: {
+	id?: string
+	value?: string
+	label: string
+	description?: string
+}): AskUserOption {
+	return { id: option.id ?? option.value ?? "", label: option.label, description: option.description }
+}
+
+export function normalizeAskUserQuestionType(type: string): ScopingQuestionType {
+	return QUESTION_TYPE_ALIASES[type] ?? DEFAULT_SCOPING_QUESTION_TYPE
+}
+
+export function normalizeAskUserResponseType(responseType: string | undefined): AskUserResponseType {
+	if (responseType === "radio") return "single"
+	if (responseType === "checkbox") return "multi"
+	if (responseType === "multi" || responseType === "text") return responseType
+	return "single"
 }
 
 function validatePlanReviewArray(
@@ -391,7 +419,6 @@ async function validatePlanReviewOrErr(
 	pi: ExtensionAPI,
 	ctx: unknown,
 ): Promise<ToolResult | undefined> {
-	const planHash = buildScopingPlanHash(params)
 	const review = params.plan_review
 	if (!review || typeof review !== "object") {
 		return toolErr(
@@ -425,7 +452,7 @@ async function validatePlanReviewOrErr(
 				"Cannot propose scoping — plan_review.status is approved but required_changes is non-empty. Either clear required_changes or set status to needs_revision and revise the plan.",
 			)
 		}
-		runtime.recordPlanReviewAttempt(params.ferment_id, planHash, undefined, review.summary)
+		runtime.recordPlanReviewAttempt(params.ferment_id, undefined, review.summary)
 		return undefined
 	}
 
@@ -435,12 +462,7 @@ async function validatePlanReviewOrErr(
 		)
 	}
 
-	const state = runtime.recordPlanReviewAttempt(
-		params.ferment_id,
-		planHash,
-		hashPlanReviewRejection(review),
-		review.summary,
-	)
+	const state = runtime.recordPlanReviewAttempt(params.ferment_id, hashPlanReviewRejection(review), review.summary)
 	const requiredChanges = review.required_changes.map((change) => `- ${change}`).join("\n")
 	const exhaustedAttempts = state.planReviewAttempts >= MAX_PLAN_REVIEW_ATTEMPTS
 	const repeatedRejection = state.sameRejectionCount >= MAX_SAME_PLAN_REVIEW_REJECTION
@@ -1299,11 +1321,27 @@ Returns structured answer fields on success, or a tool error if no audience can 
 				ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined,
 				runtime,
 			}
+			const normalizedQuestions: AskUserQuestion[] | undefined = params.questions?.map((q) => ({
+				id: q.id,
+				type: normalizeAskUserQuestionType(q.type),
+				prompt: q.prompt,
+				label: q.label,
+				options: q.options?.map(normalizeAskUserOption),
+				allowOther: q.allowOther,
+				required: q.required,
+				placeholder: q.placeholder,
+			}))
+			const normalizedOptions = params.options?.map(normalizeAskUserOption)
 			const response =
-				params.questions && params.questions.length > 0
-					? await askUserForm(params.title ?? params.question, params.description, params.questions, askContext)
+				normalizedQuestions && normalizedQuestions.length > 0
+					? await askUserForm(params.title ?? params.question, params.description, normalizedQuestions, askContext)
 					: params.question
-						? await askUser(params.question, params.options ?? [], askContext, params.response_type ?? "single")
+						? await askUser(
+								params.question,
+								normalizedOptions ?? [],
+								askContext,
+								normalizeAskUserResponseType(params.response_type),
+							)
 						: undefined
 
 			if (!response) {
