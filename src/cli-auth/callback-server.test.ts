@@ -1,5 +1,9 @@
+import { dirname, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import { describe, expect, it, vi } from "vitest"
 import { generateState, startCallbackServer } from "./callback-server.js"
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
 
 describe("generateState", () => {
 	it("produces a 64-character hex string", () => {
@@ -37,12 +41,38 @@ describe("startCallbackServer", () => {
 		const res = await request(server.port, `/callback?token=my-secret-token&state=${state}`)
 		expect(res.status).toBe(200)
 		const body = await res.text()
-		expect(body).toContain("Authentication Successful")
+		expect(body).toContain("Authentication successful")
 
 		const result = await server.result
 		expect(result.token).toBe("my-secret-token")
 		expect(result.error).toBeUndefined()
 		server.close()
+	})
+
+	it("serves the branded success template when KIMCHI_OAUTH_TEMPLATE_DIR is set", async () => {
+		const previous = process.env.KIMCHI_OAUTH_TEMPLATE_DIR
+		process.env.KIMCHI_OAUTH_TEMPLATE_DIR = resolve(repoRoot, "resources", "oauth")
+		try {
+			const state = generateState()
+			const server = await startCallbackServer(state)
+			const res = await request(server.port, `/callback?token=t&state=${state}`)
+			const body = await res.text()
+			// `bg-svg` / `class="dark"` exist only in resources/oauth/success.html, never
+			// in the minimal unbranded fallback, so this proves the Kimchi-account
+			// callback now shares the same branded pages as pi's subscription logins,
+			// with {{MESSAGE}} substituted.
+			expect(body).toContain("bg-svg")
+			expect(body).toContain("Your CLI is now connected")
+			await server.result
+			server.close()
+		} finally {
+			if (previous === undefined) {
+				// biome-ignore lint/performance/noDelete: must truly unset, not stringify to "undefined"
+				delete process.env.KIMCHI_OAUTH_TEMPLATE_DIR
+			} else {
+				process.env.KIMCHI_OAUTH_TEMPLATE_DIR = previous
+			}
+		}
 	})
 
 	it("rejects an invalid state parameter", async () => {
