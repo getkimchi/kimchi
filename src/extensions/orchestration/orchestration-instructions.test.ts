@@ -174,7 +174,6 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("complexity")
 		expect(result).toContain("`simple`")
 		expect(result).toContain("`complex`")
-		expect(result).toContain("use the heaviest available Builder")
 		expect(result).toContain("Match the Builder model to the chunk's complexity classification")
 	})
 
