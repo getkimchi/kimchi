@@ -247,22 +247,14 @@ function buildGroupView(run: object[], theme: any): ToolBlockView {
 	const hasError = run.some((t) => isFailedTool(t))
 	const summaryText = buildGroupSummaryText(run, isInProgress)
 
+	const hint = theme?.fg?.("dim", " (ctrl+o to expand)") ?? " (ctrl+o to expand)"
 	if (isInProgress) {
 		const icon = theme?.fg?.("accent", "⟳") ?? "⟳"
 		view.setHeader(`${icon} ${summaryText}…`, theme?.fg?.("dim", "(ctrl+o to expand)") ?? "(ctrl+o to expand)")
 		view.setBranchMode((s: string) => theme?.fg?.("borderMuted", s) ?? s)
 		view.setExtra([theme?.fg?.("dim", buildCurrentToolLine(last)) ?? buildCurrentToolLine(last)])
-	} else if (hasError) {
-		const icon = theme?.fg?.("error", "✗") ?? "✗"
-		const hint = theme?.fg?.("dim", " (ctrl+o to expand)") ?? " (ctrl+o to expand)"
-		view.setHeader(`${icon} ${summaryText}${hint}`, "")
-		view.hideDivider()
-		view.setFooter("", "")
-		view.setExtra([])
 	} else {
-		const icon = theme?.fg?.("success", "✓") ?? "✓"
-		const hint = theme?.fg?.("dim", " (ctrl+o to expand)") ?? " (ctrl+o to expand)"
-		view.setHeader(`${icon} ${summaryText}${hint}`, "")
+		view.setHeader(`${summaryText}${hint}`, "")
 		view.hideDivider()
 		view.setFooter("", "")
 		view.setExtra([])
