@@ -44,7 +44,9 @@ export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTok
 	const registry = getJudgeModelRegistry()
 	if (!registry) return { ok: false, reason: "no_registry" }
 
-	const judgeRef = splitModelRef(getModelRoles().judge)
+	const judgeAssignment = getModelRoles().judge
+	const judgeModelStr = Array.isArray(judgeAssignment) ? judgeAssignment[0] : judgeAssignment
+	const judgeRef = judgeModelStr ? splitModelRef(judgeModelStr) : undefined
 	const model = (judgeRef ? registry.find(judgeRef.provider, judgeRef.modelId) : undefined) ?? getJudgeModel()
 	if (!model) return { ok: false, reason: "no_model" }
 
