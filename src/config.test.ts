@@ -522,8 +522,8 @@ describe("readHideTips / writeHideTips", () => {
 		rmSync(tempDir, { recursive: true, force: true })
 	})
 
-	it("reads hideTips from onboarding config", () => {
-		writeFileSync(configPath, JSON.stringify({ onboarding: { hideTips: true } }))
+	it("reads hideTips from preferences config", () => {
+		writeFileSync(configPath, JSON.stringify({ preferences: { hideTips: true } }))
 		expect(readHideTips(configPath)).toBe(true)
 	})
 
@@ -531,18 +531,18 @@ describe("readHideTips / writeHideTips", () => {
 		expect(readHideTips(configPath)).toBe(false)
 	})
 
-	it("writes onboarding.hideTips", () => {
+	it("writes preferences.hideTips", () => {
 		writeHideTips(true, configPath)
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
-		expect(raw.onboarding.hideTips).toBe(true)
+		expect(raw.preferences.hideTips).toBe(true)
 	})
 
-	it("preserves unrelated fields and existing onboarding fields", () => {
+	it("preserves unrelated fields and existing preferences fields", () => {
 		writeFileSync(
 			configPath,
 			JSON.stringify({
 				apiKey: "key",
-				onboarding: { sessionModeWizardSeenAt: "2026-05-18T10:00:00.000Z" },
+				preferences: { hideTips: false },
 			}),
 		)
 
@@ -551,8 +551,7 @@ describe("readHideTips / writeHideTips", () => {
 
 		expect(raw).toEqual({
 			apiKey: "key",
-			onboarding: {
-				sessionModeWizardSeenAt: "2026-05-18T10:00:00.000Z",
+			preferences: {
 				hideTips: true,
 			},
 		})
