@@ -59,7 +59,7 @@ export const GENERAL_TIPS = [
 	{
 		id: "show-all-tips",
 		scope: "general",
-		message: "Run `/tips` to see all available tips.",
+		message: "Run `/tips` to see all available tips. Use `/tips disable` and `/tips enable` to toggle the widget.",
 	},
 ] as const satisfies readonly Tip[]
 
