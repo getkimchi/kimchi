@@ -16,7 +16,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI, InputEvent } from "@earendil-works/pi-coding-agent"
-import { currentEditor } from "./ui.js"
+import { getCurrentEditor } from "./ui.js"
 
 const HISTORY_FILE = join(homedir(), ".config", "kimchi", "prompt-history.json")
 const MAX_HISTORY = 500
@@ -57,7 +57,7 @@ export default function promptHistoryExtension(pi: ExtensionAPI) {
 			// Reverse order so oldest is added first — addToHistory prepends,
 			// making the final in-memory array index 0 = most recent.
 			for (let i = history.length - 1; i >= 0; i--) {
-				(currentEditor as any)?.addToHistory?.(history[i])
+				getCurrentEditor()?.addToHistory?.(history[i])
 			}
 		})
 	})
