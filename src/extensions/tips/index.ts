@@ -162,7 +162,7 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 					try {
 						writeHideTips(true)
 					} catch {
-						ctx.ui.notify("Failed to save tips preference.", "warning")
+						if (ctx.hasUI) ctx.ui.notify("Failed to save tips preference.", "warning")
 						return
 					}
 					updateTipWidgetLocation("hidden")
@@ -174,7 +174,7 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 					try {
 						writeHideTips(false)
 					} catch {
-						ctx.ui.notify("Failed to save tips preference.", "warning")
+						if (ctx.hasUI) ctx.ui.notify("Failed to save tips preference.", "warning")
 						return
 					}
 					updateTipWidgetLocation(DEFAULT_TIP_WIDGET_LOCATION)
