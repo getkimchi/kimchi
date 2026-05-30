@@ -67,6 +67,7 @@ export interface SearchStrategyConfig {
 export interface OnboardingConfig {
 	sessionModeWizardSeenAt?: string
 	hideSessionModeDialog?: boolean
+	hideTips?: boolean
 }
 
 export const SEARCH_STRATEGY_DEFAULTS: SearchStrategyConfig = {
@@ -221,10 +222,12 @@ function parseOnboardingConfig(value: unknown): OnboardingConfig | undefined {
 			? raw.sessionModeWizardSeenAt
 			: undefined
 	const hideSessionModeDialog = typeof raw.hideSessionModeDialog === "boolean" ? raw.hideSessionModeDialog : undefined
+	const hideTips = typeof raw.hideTips === "boolean" ? raw.hideTips : undefined
 
 	return {
 		...(sessionModeWizardSeenAt ? { sessionModeWizardSeenAt } : {}),
 		...(hideSessionModeDialog !== undefined ? { hideSessionModeDialog } : {}),
+		...(hideTips !== undefined ? { hideTips } : {}),
 	}
 }
 
@@ -400,6 +403,17 @@ export function writeSessionModeWizardSeenAt(seenAt: string, configPath?: string
 
 export function readHideSessionModeDialog(configPath?: string): boolean {
 	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.hideSessionModeDialog === true
+}
+
+export function readHideTips(configPath?: string): boolean {
+	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.hideTips === true
+}
+
+export function writeHideTips(hidden: boolean, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateOnboardingConfig(path, (onboarding) => {
+		onboarding.hideTips = hidden
+	})
 }
 
 export function writeMigrationState(state: MigrationState, configPath?: string): void {

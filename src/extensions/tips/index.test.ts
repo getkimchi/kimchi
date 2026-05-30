@@ -1,9 +1,17 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { visibleWidth } from "@earendil-works/pi-tui"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import tipsExtension, { TIPS_WIDGET_KEY, setTipWidgetLocation } from "./index.js"
 import { TipRegistry } from "./registry.js"
+
+const mockHideTips = vi.fn().mockReturnValue(false)
+const mockWriteHideTips = vi.fn()
+
+vi.mock("../../config.js", () => ({
+	readHideTips: (...args: unknown[]) => mockHideTips(...args),
+	writeHideTips: (...args: unknown[]) => mockWriteHideTips(...args),
+}))
 
 type Handler = (event: unknown, ctx: unknown) => unknown
 const harnesses: Array<{ shutdown: () => unknown }> = []
@@ -29,21 +37,26 @@ function createHarness(options: { hasUI: boolean }) {
 	let component: { render(width: number): string[] } | undefined
 	const requestRender = vi.fn()
 	const tui = { requestRender } as unknown as TUI
+	const notifications: Array<{ message: string; level: string }> = []
 	const ui = {
 		setWidget: vi.fn((_key: string, content: unknown) => {
 			if (typeof content === "function") {
 				component = content(tui, theme()) as { render(width: number): string[] }
 			}
 		}),
+		notify: vi.fn((message: string, level: string) => {
+			notifications.push({ message, level })
+		}),
+		custom: vi.fn(),
 	}
-	const ctx = { hasUI: options.hasUI, ui }
-	const commands = new Map<string, unknown>()
+	const ctx = { hasUI: options.hasUI, ui, cwd: "/test" }
+	const commands = new Map<string, { description: string; handler: (args: string, ctx: unknown) => Promise<unknown> }>()
 	const api = {
 		on: vi.fn((event: string, handler: Handler) => {
 			handlers.set(event, handler)
 		}),
 		registerCommand: vi.fn((name: string, command: unknown) => {
-			commands.set(name, command)
+			commands.set(name, command as { description: string; handler: (args: string, ctx: unknown) => Promise<unknown> })
 		}),
 	} as unknown as ExtensionAPI
 
@@ -52,7 +65,9 @@ function createHarness(options: { hasUI: boolean }) {
 
 	const harness = {
 		component: () => component,
+		commands,
 		ctx,
+		getNotifications: () => notifications,
 		registry,
 		start: () => handlers.get("session_start")?.({ reason: "startup" }, ctx),
 		shutdown: () => handlers.get("session_shutdown")?.({ reason: "quit" }, ctx),
@@ -64,6 +79,11 @@ function createHarness(options: { hasUI: boolean }) {
 	harnesses.push(harness)
 	return harness
 }
+
+beforeEach(() => {
+	mockHideTips.mockReturnValue(false)
+	mockWriteHideTips.mockClear()
+})
 
 afterEach(() => {
 	for (const harness of harnesses.splice(0)) harness.shutdown()
@@ -136,5 +156,43 @@ describe("tips extension", () => {
 			placement: "aboveEditor",
 		})
 		expect(harness.registry.getFirstTip("general")).toBeUndefined()
+	})
+
+	it("does not mount widget when hideTips is true", () => {
+		mockHideTips.mockReturnValue(true)
+		const harness = createHarness({ hasUI: true })
+
+		harness.start()
+
+		expect(harness.ui.setWidget).not.toHaveBeenCalledWith(TIPS_WIDGET_KEY, expect.any(Function), {
+			placement: "aboveEditor",
+		})
+	})
+
+	it("handles /tips disable command", async () => {
+		const harness = createHarness({ hasUI: true })
+		harness.start()
+
+		const tipsCmd = harness.commands.get("tips")
+		expect(tipsCmd).toBeDefined()
+		await tipsCmd?.handler("disable", harness.ctx)
+
+		expect(mockWriteHideTips).toHaveBeenCalledWith(true)
+	})
+
+	it("handles /tips enable command", async () => {
+		mockHideTips.mockReturnValue(true)
+		const harness = createHarness({ hasUI: true })
+		harness.start()
+		harness.ui.setWidget.mockClear()
+
+		const tipsCmd = harness.commands.get("tips")
+		expect(tipsCmd).toBeDefined()
+		await tipsCmd?.handler("enable", harness.ctx)
+
+		expect(mockWriteHideTips).toHaveBeenCalledWith(false)
+		expect(harness.ui.setWidget).toHaveBeenCalledWith(TIPS_WIDGET_KEY, expect.any(Function), {
+			placement: "aboveEditor",
+		})
 	})
 })

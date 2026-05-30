@@ -6,10 +6,12 @@ import {
 	clearApiKey,
 	loadConfig,
 	readGitToken,
+	readHideTips,
 	readTelemetryConfig,
 	writeApiKey,
 	writeDeviceId,
 	writeGitToken,
+	writeHideTips,
 	writeSessionModeWizardSeenAt,
 } from "./config.js"
 
@@ -502,6 +504,56 @@ describe("writeSessionModeWizardSeenAt", () => {
 			onboarding: {
 				otherWizardSeenAt: "2026-05-18T10:00:00.000Z",
 				sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z",
+			},
+		})
+	})
+})
+
+describe("readHideTips / writeHideTips", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("reads hideTips from onboarding config", () => {
+		writeFileSync(configPath, JSON.stringify({ onboarding: { hideTips: true } }))
+		expect(readHideTips(configPath)).toBe(true)
+	})
+
+	it("returns false when hideTips is absent", () => {
+		expect(readHideTips(configPath)).toBe(false)
+	})
+
+	it("writes onboarding.hideTips", () => {
+		writeHideTips(true, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.onboarding.hideTips).toBe(true)
+	})
+
+	it("preserves unrelated fields and existing onboarding fields", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				apiKey: "key",
+				onboarding: { sessionModeWizardSeenAt: "2026-05-18T10:00:00.000Z" },
+			}),
+		)
+
+		writeHideTips(true, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+
+		expect(raw).toEqual({
+			apiKey: "key",
+			onboarding: {
+				sessionModeWizardSeenAt: "2026-05-18T10:00:00.000Z",
+				hideTips: true,
 			},
 		})
 	})
