@@ -41,7 +41,7 @@
 		"@types/diff": "^8.0.0",
 		"@types/proper-lockfile": "^4.1.4",
 		"@types/ssh2": "^1.15.5",
-		"@wterm/ghostty": "^0.3.0",
+		"@xterm/headless": "^6.0.0",
 		"diff": "^9.0.0",
 		"micromatch": "^4.0.8",
 		"open": "^10.2.0",

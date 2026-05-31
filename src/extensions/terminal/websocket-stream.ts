@@ -1,8 +1,5 @@
-/* eslint no-unused-vars: ["error", { "varsIgnorePattern": "^WebSocket$" }] */
-'use strict';
-
-import WebSocket from 'ws'
-import { Duplex, DuplexOptions } from 'node:stream'
+import { Duplex, type DuplexOptions } from "node:stream"
+import type WebSocket from "ws"
 
 /**
  * Emits the `'close'` event on a stream.
@@ -11,7 +8,7 @@ import { Duplex, DuplexOptions } from 'node:stream'
  * @private
  */
 function emitClose(stream: Duplex) {
-  stream.emit('close');
+	stream.emit("close")
 }
 
 /**
@@ -23,125 +20,124 @@ function emitClose(stream: Duplex) {
  * @public
  */
 export function createWebSocketStream(ws: WebSocket, options: DuplexOptions) {
-  let terminateOnDestroy = true;
+	let terminateOnDestroy = true
 
-  const duplex = new Duplex({
-    ...options,
-    autoDestroy: false,
-    emitClose: false,
-    objectMode: false,
-    writableObjectMode: false
-  });
+	const duplex = new Duplex({
+		...options,
+		autoDestroy: false,
+		emitClose: false,
+		objectMode: false,
+		writableObjectMode: false,
+	})
 
-  ws.on('message', function message(msg: any, isBinary: boolean) {
-    const data =
-      !isBinary && (duplex as any)._readableState.objectMode ? msg.toString() : msg;
+	ws.on("message", function message(msg: any, isBinary: boolean) {
+		const data = !isBinary && (duplex as any)._readableState.objectMode ? msg.toString() : msg
 
-    if (!duplex.push(data)) ws.pause();
-  });
+		if (!duplex.push(data)) ws.pause()
+	})
 
-  ws.once('error', function error(err: any) {
-    if (duplex.destroyed) return;
+	ws.once("error", function error(err: any) {
+		if (duplex.destroyed) return
 
-    // Prevent `ws.terminate()` from being called by `duplex._destroy()`.
-    //
-    // - If the `'error'` event is emitted before the `'open'` event, then
-    //   `ws.terminate()` is a noop as no socket is assigned.
-    // - Otherwise, the error is re-emitted by the listener of the `'error'`
-    //   event of the `Receiver` object. The listener already closes the
-    //   connection by calling `ws.close()`. This allows a close frame to be
-    //   sent to the other peer. If `ws.terminate()` is called right after this,
-    //   then the close frame might not be sent.
-    terminateOnDestroy = false;
-    duplex.destroy(err);
-  });
+		// Prevent `ws.terminate()` from being called by `duplex._destroy()`.
+		//
+		// - If the `'error'` event is emitted before the `'open'` event, then
+		//   `ws.terminate()` is a noop as no socket is assigned.
+		// - Otherwise, the error is re-emitted by the listener of the `'error'`
+		//   event of the `Receiver` object. The listener already closes the
+		//   connection by calling `ws.close()`. This allows a close frame to be
+		//   sent to the other peer. If `ws.terminate()` is called right after this,
+		//   then the close frame might not be sent.
+		terminateOnDestroy = false
+		duplex.destroy(err)
+	})
 
-  ws.once('close', function close() {
-    if (duplex.destroyed) return;
+	ws.once("close", function close() {
+		if (duplex.destroyed) return
 
-    duplex.push(null);
-  });
+		duplex.push(null)
+	})
 
-  duplex._destroy = function(err, callback) {
-    if (ws.readyState === ws.CLOSED) {
-      callback(err);
-      process.nextTick(emitClose, duplex);
-      return;
-    }
+	duplex._destroy = (err, callback) => {
+		if (ws.readyState === ws.CLOSED) {
+			callback(err)
+			process.nextTick(emitClose, duplex)
+			return
+		}
 
-    let called = false;
+		let called = false
 
-    ws.once('error', function error(err: any) {
-      called = true;
-      callback(err);
-    });
+		ws.once("error", function error(err: any) {
+			called = true
+			callback(err)
+		})
 
-    ws.once('close', function close() {
-      if (!called) callback(err);
-      process.nextTick(emitClose, duplex);
-    });
+		ws.once("close", function close() {
+			if (!called) callback(err)
+			process.nextTick(emitClose, duplex)
+		})
 
-    if (terminateOnDestroy) ws.terminate();
-  };
+		if (terminateOnDestroy) ws.terminate()
+	}
 
-  duplex._final = function(callback) {
-    if (ws.readyState === ws.CONNECTING) {
-      ws.once('open', function open() {
-        duplex._final(callback);
-      });
-      return;
-    }
+	duplex._final = (callback) => {
+		if (ws.readyState === ws.CONNECTING) {
+			ws.once("open", function open() {
+				duplex._final(callback)
+			})
+			return
+		}
 
-    // If the value of the `_socket` property is `null` it means that `ws` is a
-    // client websocket and the handshake failed. In fact, when this happens, a
-    // socket is never assigned to the websocket. Wait for the `'error'` event
-    // that will be emitted by the websocket.
-    if ((ws as any)._socket === null) return;
+		// If the value of the `_socket` property is `null` it means that `ws` is a
+		// client websocket and the handshake failed. In fact, when this happens, a
+		// socket is never assigned to the websocket. Wait for the `'error'` event
+		// that will be emitted by the websocket.
+		if ((ws as any)._socket === null) return
 
-    if ((ws as any)._socket._writableState.finished) {
-      callback();
-      if ((duplex as any)._readableState.endEmitted) duplex.destroy();
-    } else {
-      (ws as any)._socket.once('finish', function finish() {
-        // `duplex` is not destroyed here because the `'end'` event will be
-        // emitted on `duplex` after this `'finish'` event. The EOF signaling
-        // `null` chunk is, in fact, pushed when the websocket emits `'close'`.
-        callback();
-      });
-      ws.close();
-    }
-  };
+		if ((ws as any)._socket._writableState.finished) {
+			callback()
+			if ((duplex as any)._readableState.endEmitted) duplex.destroy()
+		} else {
+			;(ws as any)._socket.once("finish", function finish() {
+				// `duplex` is not destroyed here because the `'end'` event will be
+				// emitted on `duplex` after this `'finish'` event. The EOF signaling
+				// `null` chunk is, in fact, pushed when the websocket emits `'close'`.
+				callback()
+			})
+			ws.close()
+		}
+	}
 
-  duplex._read = function() {
-    if (ws.isPaused) ws.resume();
-  };
+	duplex._read = () => {
+		if (ws.isPaused) ws.resume()
+	}
 
-  duplex._write = function(chunk, encoding, callback) {
-    if (ws.readyState === ws.CONNECTING) {
-      ws.once('open', function open() {
-        duplex._write(chunk, encoding, callback);
-      });
-      return;
-    }
+	duplex._write = (chunk, encoding, callback) => {
+		if (ws.readyState === ws.CONNECTING) {
+			ws.once("open", function open() {
+				duplex._write(chunk, encoding, callback)
+			})
+			return
+		}
 
-    ws.send(chunk, callback);
-  };
+		ws.send(chunk, callback)
+	}
 
-  duplex.on('end', () => {
-    if (!duplex.destroyed && (duplex as any)._writableState.finished) {
-      duplex.destroy();
-    }
-  });
-  duplex.on('error', (err) => {
-    if (duplex.destroyed) {
-      return
-    }
+	duplex.on("end", () => {
+		if (!duplex.destroyed && (duplex as any)._writableState.finished) {
+			duplex.destroy()
+		}
+	})
+	duplex.on("error", (err) => {
+		if (duplex.destroyed) {
+			return
+		}
 
-    duplex.destroy();
-    if (duplex.listenerCount('error') === 0) {
-      // Do not suppress the throwing behavior.
-      duplex.emit('error', err);
-    }
-  });
-  return duplex;
+		duplex.destroy()
+		if (duplex.listenerCount("error") === 0) {
+			// Do not suppress the throwing behavior.
+			duplex.emit("error", err)
+		}
+	})
+	return duplex
 }
