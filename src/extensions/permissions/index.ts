@@ -3,6 +3,8 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
+import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
+import { isAgentWorker } from "../agent-worker-context.js"
 import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "../ferment/state.js"
 import { FERMENT_TOOLS, isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
@@ -12,7 +14,14 @@ import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
 import { resolveMode } from "./mode.js"
-import { type CompoundSubcommand, promptForApproval, promptForCompoundApproval, withWorkingHidden } from "./prompts.js"
+import type { ToolPermissionPrompter } from "./prompter.js"
+import {
+	type CompoundSubcommand,
+	buildPermissionChoices,
+	promptForCompoundApproval,
+	terminalPrompter,
+	withWorkingHidden,
+} from "./prompts.js"
 import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import { evaluateRules, parseRules, stringifyRule } from "./rules.js"
 import { SessionMemory } from "./session-memory.js"
@@ -89,6 +98,18 @@ export function isUserChosenYolo(): boolean {
 }
 
 export { notifyFermentActive }
+
+function canPrompt(ctx: ExtensionContext): boolean {
+	if (isAgentWorker()) return false
+	if (ctx.hasUI) return true
+	return getAcpPrompter(ctx.sessionManager.getSessionId()) !== undefined
+}
+
+function resolvePrompter(ctx: ExtensionContext): ToolPermissionPrompter | undefined {
+	if (isAgentWorker()) return undefined
+	if (ctx.hasUI) return terminalPrompter(ctx)
+	return getAcpPrompter(ctx.sessionManager.getSessionId())
+}
 
 let _modeChangeListener: ((mode: PermissionMode) => void) | undefined
 
@@ -532,9 +553,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				if (isReadOnlyBashCommand(command)) return undefined
 			}
 
-			// Auto mode + headless default mode (subagents) both go through the
-			// classifier; prompts without a UI fail closed.
-			if (mode === "auto" || !ctx.hasUI) {
+			// Auto mode + non-promptable default mode (headless/subagents) both go
+			// through the classifier; prompts without a frontend fail closed.
+			const promptAvailable = canPrompt(ctx)
+			if (mode === "auto" || !promptAvailable) {
 				const classifierModel = resolveClassifierModel(ctx.model, ctx.modelRegistry)
 				if (!classifierModel) return { block: true, reason: "no model available for classifier" }
 
@@ -550,7 +572,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				if (verdict.verdict === "blocked") {
 					return { block: true, reason: `Classifier blocked: ${verdict.reason}` }
 				}
-				if (!ctx.hasUI) {
+				if (!promptAvailable) {
 					return { block: true, reason: `Classifier: ${verdict.reason} (no UI to confirm)` }
 				}
 				const result = await handleConfirm(event, {
@@ -631,31 +653,25 @@ async function handleConfirm(
 	opts: ConfirmOptions,
 ): Promise<{ block: true; reason: string } | "aborted" | undefined> {
 	const abort = new AbortController()
+	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
 	opts.activeAborts.add(abort)
 	try {
-		const outcome = await promptForApproval({
+		const prompter = resolvePrompter(opts.ctx)
+		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
+
+		const input = event.input as Record<string, unknown>
+		const outcome = await prompter.request({
+			toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
 			toolName: event.toolName,
-			input: event.input as Record<string, unknown>,
-			ctx: opts.ctx,
+			input,
 			subtitle: opts.subtitle,
+			choices: buildPermissionChoices(event.toolName, input),
 			signal: abort.signal,
 		})
 
-		if (outcome.kind === "aborted") return "aborted"
-		if (outcome.kind === "allow-once") return undefined
-		if (outcome.kind === "allow-remember") {
-			opts.session.add(outcome.rule)
-			return undefined
-		}
-		if (outcome.kind === "allow-remember-wildcard") {
-			opts.session.add(outcome.rule)
-			return undefined
-		}
-		if (outcome.kind === "deny-with-feedback") {
-			return { block: true, reason: outcome.feedback }
-		}
-		return { block: true, reason: "Declined by user" }
+		return applyApprovalOutcome(outcome, opts.session)
 	} finally {
+		unlinkAbort()
 		opts.activeAborts.delete(abort)
 	}
 }
@@ -665,8 +681,28 @@ export async function handleCompoundConfirm(
 	opts: ConfirmOptions & { subcommands: string[] },
 ): Promise<{ block: true; reason: string } | "aborted" | undefined> {
 	const abort = new AbortController()
+	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
 	opts.activeAborts.add(abort)
 	try {
+		const prompter = resolvePrompter(opts.ctx)
+		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
+
+		if (!opts.ctx.hasUI) {
+			// ACP v1 presents compound commands as one permission card. It does
+			// not offer TUI's per-subcommand picker, so remembered rules are scoped
+			// to the compound call's suggested scope rather than each segment.
+			const input = event.input as Record<string, unknown>
+			const outcome = await prompter.request({
+				toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
+				toolName: event.toolName,
+				input,
+				subtitle: opts.subtitle,
+				choices: buildPermissionChoices(event.toolName, input),
+				signal: abort.signal,
+			})
+			return applyApprovalOutcome(outcome, opts.session)
+		}
+
 		const compoundSubs: CompoundSubcommand[] = opts.subcommands.map((cmd) => ({
 			command: cmd,
 			description: `bash(${truncate(cmd, 100)})`,
@@ -724,8 +760,40 @@ export async function handleCompoundConfirm(
 
 		return { block: true, reason: "Declined by user" }
 	} finally {
+		unlinkAbort()
 		opts.activeAborts.delete(abort)
 	}
+}
+
+function applyApprovalOutcome(
+	outcome: Awaited<ReturnType<ToolPermissionPrompter["request"]>>,
+	session: SessionMemory,
+): { block: true; reason: string } | "aborted" | undefined {
+	if (outcome.kind === "aborted") return "aborted"
+	if (outcome.kind === "allow-once") return undefined
+	if (outcome.kind === "allow-remember") {
+		session.add(outcome.rule)
+		return undefined
+	}
+	if (outcome.kind === "allow-remember-wildcard") {
+		session.add(outcome.rule)
+		return undefined
+	}
+	if (outcome.kind === "deny-with-feedback") {
+		return { block: true, reason: outcome.feedback }
+	}
+	return { block: true, reason: "Declined by user" }
+}
+
+function linkAbortSignal(signal: AbortSignal | undefined, controller: AbortController): () => void {
+	if (!signal) return () => {}
+	if (signal.aborted) {
+		controller.abort()
+		return () => {}
+	}
+	const abort = () => controller.abort()
+	signal.addEventListener("abort", abort, { once: true })
+	return () => signal.removeEventListener("abort", abort)
 }
 
 function splitFlag(raw: boolean | string | undefined): string[] {

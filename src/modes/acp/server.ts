@@ -30,6 +30,7 @@ import {
 	type SetSessionModelResponse,
 	type ToolCallContent,
 	type ToolCallLocation,
+	type ToolCallUpdate,
 	type ToolKind,
 	ndJsonStream,
 } from "@agentclientprotocol/sdk"
@@ -48,11 +49,14 @@ import {
 	createAgentSession,
 } from "@earendil-works/pi-coding-agent"
 import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
+import { createAcpPermissionPrompter } from "./acp-prompter.js"
+import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 
 /**
- * Produces a ready-to-use AgentSession for a newSession request. The returned
- * session must already have its model verified and extensions bound. Exposed
- * so tests can inject fakes; production uses {@link defaultSessionFactory}.
+ * Produces an unbound AgentSession for a newSession request. The ACP agent owns
+ * model verification, extension binding, ACP prompter registration, and final
+ * lifecycle registration. Exposed so tests can inject fakes; production uses
+ * {@link defaultSessionFactory}.
  */
 export type AcpSessionFactory = (params: NewSessionRequest) => Promise<AgentSession>
 
@@ -63,10 +67,10 @@ export type AcpSessionFactory = (params: NewSessionRequest) => Promise<AgentSess
 export type AcpSessionLister = (params: ListSessionsRequest) => Promise<PiSessionInfo[]>
 
 /**
- * Opens a persisted session for a loadSession request. The returned AgentSession
- * must already be fully wired (model verified, extensions bound) and seeded
- * with the on-disk transcript; the agent only handles registration, replay,
- * and response shaping. Exposed so tests can stub disk access.
+ * Opens a persisted, unbound session for a loadSession request. The returned
+ * AgentSession is seeded with the on-disk transcript; the ACP agent owns model
+ * verification, extension binding, replay, and response shaping. Exposed so
+ * tests can stub disk access.
  */
 export type AcpSessionLoader = (params: LoadSessionRequest) => Promise<AgentSession>
 
@@ -188,16 +192,21 @@ export class KimchiAcpAgent implements Agent {
 			)
 		}
 		const session = await this.sessionFactory(params)
-		// Once the factory hands us a live session we own its lifecycle. If subscribe or
-		// the registering Map.set throws before we hand it back to the caller, nothing
-		// else will ever dispose it — so make ownership transfer atomic.
+		// Once the factory hands us a live session we own its lifecycle. If model
+		// verification, extension binding, subscribe, or the registering Map.set
+		// throws before we hand it back to the caller, nothing else will ever
+		// dispose it — so make ownership transfer atomic.
 		try {
+			assertSessionHasModel(session)
 			const sessionId = session.sessionId
+			registerAcpPrompter(sessionId, createAcpPermissionPrompter(this.conn, sessionId, buildToolCallUpdate))
+			await bindAcpExtensions(session)
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, { session, unsubscribe })
 			const models = buildSessionModelState(session)
 			return { sessionId, models }
 		} catch (err) {
+			unregisterAcpPrompter(session.sessionId)
 			session.dispose()
 			throw err
 		}
@@ -275,6 +284,9 @@ export class KimchiAcpAgent implements Agent {
 			)
 		}
 		try {
+			assertSessionHasModel(session)
+			registerAcpPrompter(sid, createAcpPermissionPrompter(this.conn, sid, buildToolCallUpdate))
+			await bindAcpExtensions(session)
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
 			this.sessions.set(sid, { session, unsubscribe })
 			// Replay BEFORE the response resolves so Zed sees a coherent transcript
@@ -284,6 +296,7 @@ export class KimchiAcpAgent implements Agent {
 			this.replayTranscript(session)
 			return { models: this.modelStateForSession(session) }
 		} catch (err) {
+			unregisterAcpPrompter(sid)
 			const existing = this.sessions.get(sid)
 			if (existing) {
 				this.sessions.delete(sid)
@@ -407,6 +420,7 @@ export class KimchiAcpAgent implements Agent {
 		for (const entry of this.sessions.values()) {
 			if (entry.turn) this.failTurn(entry, new Error("acp agent shutting down"))
 			entry.unsubscribe()
+			unregisterAcpPrompter(entry.session.sessionId)
 			// Emit session_shutdown to extensions and await all handlers before
 			// calling dispose(). dispose() is synchronous and returns void, so
 			// async extension handlers (e.g. telemetry drain, shutdown marker)
@@ -739,6 +753,14 @@ export function assertSessionHasModel(session: Pick<AgentSession, "model">): voi
 	}
 }
 
+async function bindAcpExtensions(session: AgentSession): Promise<void> {
+	await session.bindExtensions({
+		onError: (err) => {
+			process.stderr.write(`acp ext error [${err.extensionPath}] ${err.event}: ${err.error}\n`)
+		},
+	})
+}
+
 // Title falls back to the truncated first user message when the session has no
 // user-defined name. ACP clients render this in the thread-picker UI; we do
 // NOT trigger a fresh prompt-summary on listSessions because that would mean
@@ -946,18 +968,7 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			resourceLoader,
 			sessionManager,
 		})
-		try {
-			assertSessionHasModel(session)
-			await session.bindExtensions({
-				onError: (err) => {
-					process.stderr.write(`acp ext error [${err.extensionPath}] ${err.event}: ${err.error}\n`)
-				},
-			})
-			return session
-		} catch (err) {
-			session.dispose()
-			throw err
-		}
+		return session
 	}
 }
 
@@ -978,22 +989,7 @@ function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
 			settingsManager,
 			resourceLoader,
 		})
-		// From this point the session holds resources (extension loaders, model
-		// clients). Any failure on the setup path — model check or bindExtensions —
-		// must dispose before rethrowing, otherwise we leak on the newSession error
-		// path where the caller never sees a sessionId to clean up.
-		try {
-			assertSessionHasModel(session)
-			await session.bindExtensions({
-				onError: (err) => {
-					process.stderr.write(`acp ext error [${err.extensionPath}] ${err.event}: ${err.error}\n`)
-				},
-			})
-			return session
-		} catch (err) {
-			session.dispose()
-			throw err
-		}
+		return session
 	}
 }
 
@@ -1087,6 +1083,22 @@ export function describeToolCall(
 		title: truncate(rawTitle),
 		kind: TOOL_KINDS[toolName] ?? "other",
 		locations: path ? [{ path }] : [],
+	}
+}
+
+export function buildToolCallUpdate(
+	toolCallId: string,
+	toolName: string,
+	args: Record<string, unknown>,
+): ToolCallUpdate {
+	const { title, kind, locations } = describeToolCall(toolName, args)
+	return {
+		toolCallId,
+		title,
+		kind,
+		status: "pending",
+		locations,
+		rawInput: args,
 	}
 }
 
