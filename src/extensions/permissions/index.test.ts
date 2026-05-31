@@ -1,5 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolInfo } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
+import { runAsAgentWorker } from "../agent-worker-context.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { type EnvironmentInfo, buildSystemPrompt } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
@@ -81,6 +83,8 @@ function createClassifierContext(): ExtensionContext {
 // Helper to create a mock tool call event
 function createMockEvent(): ToolCallEvent {
 	return {
+		type: "tool_call",
+		toolCallId: "tool-call-1",
 		toolName: "bash",
 		input: { command: "echo a && echo b" },
 		cwd: "/test",
@@ -371,6 +375,129 @@ describe("permissions ferment tool classification", () => {
 		expect(readResult).toBeUndefined()
 		expect(bashResult).toBeUndefined()
 		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+})
+
+describe("permissions ACP prompter", () => {
+	beforeEach(() => {
+		Reflect.deleteProperty(process.env, "KIMCHI_PERMISSIONS")
+		vi.mocked(classifyToolCall).mockClear()
+	})
+
+	afterEach(() => {
+		unregisterAcpPrompter(TEST_SESSION_ID)
+		vi.unstubAllEnvs()
+	})
+
+	it("uses a registered ACP prompter in headless default mode", async () => {
+		const requests: Array<{ toolCallId: string; choices: string[] }> = []
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async (req) => {
+				requests.push({
+					toolCallId: req.toolCallId,
+					choices: req.choices.map((choice) => choice.kind),
+				})
+				return { kind: "allow-once" }
+			},
+		})
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire(
+			"tool_call",
+			{ type: "tool_call", toolCallId: "tc-acp", toolName: "bash", input: { command: "touch file.txt" } },
+			ctx,
+		)
+
+		expect(result).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+		expect(requests).toEqual([
+			{
+				toolCallId: "tc-acp",
+				choices: ["allow-once", "allow-remember", "allow-remember-wildcard", "deny"],
+			},
+		])
+	})
+
+	it("does not remember allow_once approvals", async () => {
+		const requests: string[] = []
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async (req) => {
+				requests.push(req.toolCallId)
+				return { kind: "allow-once" }
+			},
+		})
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		for (const toolCallId of ["tc-once-1", "tc-once-2"]) {
+			const result = await harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId, toolName: "bash", input: { command: "touch once.txt" } },
+				ctx,
+			)
+			expect(result).toBeUndefined()
+		}
+
+		expect(requests).toEqual(["tc-once-1", "tc-once-2"])
+	})
+
+	it("stores allow_always as a session rule", async () => {
+		const requests: string[] = []
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async (req) => {
+				requests.push(req.toolCallId)
+				const remember = req.choices.find((choice) => choice.kind === "allow-remember")
+				if (!remember || remember.kind !== "allow-remember") throw new Error("missing remember choice")
+				return { kind: "allow-remember", rule: remember.rule }
+			},
+		})
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		for (const toolCallId of ["tc-remember-1", "tc-remember-2"]) {
+			const result = await harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId, toolName: "bash", input: { command: "touch remembered.txt" } },
+				ctx,
+			)
+			expect(result).toBeUndefined()
+		}
+
+		expect(requests).toEqual(["tc-remember-1"])
+	})
+
+	it("keeps subagent workers classifier-only even when an ACP prompter is registered", async () => {
+		const requests: string[] = []
+		vi.mocked(classifyToolCall).mockResolvedValueOnce({
+			verdict: "requires-confirmation",
+			reason: "needs a human",
+			ok: true,
+		})
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async (req) => {
+				requests.push(req.toolCallId)
+				return { kind: "allow-once" }
+			},
+		})
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await runAsAgentWorker(() =>
+			harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId: "tc-worker", toolName: "bash", input: { command: "touch worker.txt" } },
+				ctx,
+			),
+		)
+
+		expect(result).toEqual({ block: true, reason: "Classifier: needs a human (no UI to confirm)" })
+		expect(requests).toEqual([])
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
 	})
 })
 

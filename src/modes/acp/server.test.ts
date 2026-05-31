@@ -1,7 +1,12 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import type { AgentSideConnection, ListSessionsRequest, SessionNotification } from "@agentclientprotocol/sdk"
+import type {
+	AgentSideConnection,
+	ListSessionsRequest,
+	RequestPermissionRequest,
+	SessionNotification,
+} from "@agentclientprotocol/sdk"
 import type {
 	AgentSession,
 	AgentSessionEvent,
@@ -10,6 +15,7 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { _resetState as _resetHideThinking, _setHideThinking } from "../../extensions/hide-thinking.js"
+import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
 	type AcpSessionFactory,
 	type AcpSessionLister,
@@ -35,10 +41,19 @@ class FakeAgentSession {
 	private listeners = new Set<AgentSessionEventListener>()
 	disposed = false
 	aborted = false
-	model?: { provider: string; id: string; name?: string; input?: string[] }
-	modelRegistry = { getAvailable: () => [] as Array<{ provider: string; id: string; name: string }> }
+	model: { provider: string; id: string; name?: string; input?: string[] } | undefined = {
+		provider: "test",
+		id: "test-model",
+		name: "Test Model",
+		input: ["text"],
+	}
+	modelRegistry = {
+		getAvailable: () =>
+			this.model ? [{ provider: this.model.provider, id: this.model.id, name: this.model.name ?? this.model.id }] : [],
+	}
 	promptImpl: (text: string, opts?: { images?: unknown[] }) => Promise<void> = async () => {}
 	abortImpl: () => Promise<void> = async () => {}
+	bindExtensionsImpl: (_bindings: unknown) => Promise<void> = async () => {}
 	lastPromptImages?: unknown[]
 	// Branch entries returned to the replay walker. Tests fill this with the
 	// shape buildSessionContext consumers expect (type:"message" + role).
@@ -74,6 +89,10 @@ class FakeAgentSession {
 	async abort(): Promise<void> {
 		this.aborted = true
 		await this.abortImpl()
+	}
+
+	async bindExtensions(bindings: unknown): Promise<void> {
+		await this.bindExtensionsImpl(bindings)
 	}
 
 	dispose(): void {
@@ -605,6 +624,118 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(leaky.disposed).toBe(true)
 	})
 
+	it("unregisters the ACP permission prompter if bindExtensions throws during newSession", async () => {
+		const leaky = new FakeAgentSession("session-bind-leak")
+		leaky.bindExtensionsImpl = async () => {
+			throw new Error("bind boom")
+		}
+		const factory: AcpSessionFactory = async () => asSession(leaky)
+		const localAgent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		await expect(localAgent.newSession({ cwd: "/tmp", mcpServers: [] })).rejects.toThrow(/bind boom/)
+		expect(leaky.disposed).toBe(true)
+		expect(getAcpPrompter("session-bind-leak")).toBeUndefined()
+	})
+
+	it("registers an ACP permission prompter that maps allow_once through requestPermission", async () => {
+		const requests: RequestPermissionRequest[] = []
+		const conn = {
+			sessionUpdate: async (_p: SessionNotification) => {},
+			requestPermission: async (params: RequestPermissionRequest) => {
+				requests.push(params)
+				return { outcome: { outcome: "selected", optionId: "choice-0" } }
+			},
+		} as unknown as AgentSideConnection
+		const localFake = new FakeAgentSession("session-permission")
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(localFake),
+		})
+		await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const prompter = getAcpPrompter("session-permission")
+		expect(prompter).toBeDefined()
+		const result = await prompter?.request({
+			toolCallId: "tc-permission",
+			toolName: "bash",
+			input: { command: "touch allowed.txt" },
+			choices: [
+				{ kind: "allow-once", label: "Allow once" },
+				{ kind: "deny", label: "Deny" },
+			],
+		})
+
+		expect(result).toEqual({ kind: "allow-once" })
+		expect(requests).toHaveLength(1)
+		expect(requests[0]).toMatchObject({
+			sessionId: "session-permission",
+			toolCall: {
+				toolCallId: "tc-permission",
+				title: "touch allowed.txt",
+				kind: "execute",
+				status: "pending",
+				rawInput: { command: "touch allowed.txt" },
+			},
+			options: [
+				{ optionId: "choice-0", name: "Allow once", kind: "allow_once" },
+				{ optionId: "choice-1", name: "Deny", kind: "reject_once" },
+			],
+		})
+
+		await localAgent.shutdown()
+		expect(getAcpPrompter("session-permission")).toBeUndefined()
+	})
+
+	it("maps ACP permission cancellation to an aborted prompt result", async () => {
+		const requests: RequestPermissionRequest[] = []
+		const conn = {
+			sessionUpdate: async (_p: SessionNotification) => {},
+			requestPermission: async (params: RequestPermissionRequest) => {
+				requests.push(params)
+				return {
+					outcome: { outcome: "cancelled" },
+				}
+			},
+		} as unknown as AgentSideConnection
+		const localFake = new FakeAgentSession("session-permission-cancel")
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(localFake),
+		})
+		await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const prompter = getAcpPrompter("session-permission-cancel")
+		const result = await prompter?.request({
+			toolCallId: "tc-cancel",
+			toolName: "write",
+			input: { path: "/tmp/out.txt", content: "x" },
+			choices: [{ kind: "allow-once", label: "Allow once" }],
+		})
+
+		expect(result).toEqual({ kind: "aborted" })
+		expect(requests).toHaveLength(1)
+
+		const abort = new AbortController()
+		abort.abort()
+		const skippedResult = await prompter?.request({
+			toolCallId: "tc-cancel-retry",
+			toolName: "write",
+			input: { path: "/tmp/out.txt", content: "x" },
+			choices: [{ kind: "allow-once", label: "Allow once" }],
+			signal: abort.signal,
+		})
+
+		expect(skippedResult).toEqual({ kind: "aborted" })
+		expect(requests).toHaveLength(1)
+		await localAgent.shutdown()
+	})
+
 	// mcpServers is declared in the ACP request shape but kimchi has no hook to
 	// wire them into a live session — pi-coding-agent loads MCP servers from its
 	// own config. Silently dropping them would leave the client believing those
@@ -934,6 +1065,7 @@ describe("assertSessionHasModel", () => {
 describe("buildSessionModelState", () => {
 	it("returns null when model is missing", () => {
 		const fake = new FakeAgentSession("s1")
+		fake.model = undefined
 		const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
 		expect(result).toBeNull()
 	})
@@ -994,18 +1126,17 @@ describe("newSession model state", () => {
 		expect(res.models?.availableModels[1]).toEqual({ modelId: "anthropic/claude-3", name: "Claude 3" })
 	})
 
-	it("returns models: null when no model is active", async () => {
+	it("rejects with authRequired when no model is active", async () => {
 		const fake = new FakeAgentSession("session-empty")
-		// model defaults to undefined
+		fake.model = undefined
 		const factory: AcpSessionFactory = async () => asSession(fake)
 		const agent = new KimchiAcpAgent(makeConn(), {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory: factory,
 		})
-		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-		expect(res.sessionId).toBe("session-empty")
-		expect(res.models).toBeNull()
+		await expect(agent.newSession({ cwd: "/tmp", mcpServers: [] })).rejects.toMatchObject({ code: -32000 })
+		expect(fake.disposed).toBe(true)
 	})
 })
 
@@ -1749,20 +1880,19 @@ describe("KimchiAcpAgent loadSession", () => {
 		await expect(agent.cancel({ sessionId: "loaded-cancel" })).resolves.toBeUndefined()
 	})
 
-	it("returns null models when the loaded session has no model", async () => {
+	it("rejects loaded sessions with no model", async () => {
 		const fake = new FakeAgentSession("loaded-no-model")
 		fake.model = undefined
 		fake.branch = []
 		const agent = makeAgent(async () => asSession(fake))
-		const res = await agent.loadSession({
-			sessionId: "loaded-no-model",
-			cwd: "/tmp",
-			mcpServers: [],
-		})
-		// modelStateForSession returns undefined when model is missing; the
-		// loadSession response normalizes that to null so clients see a
-		// consistent shape regardless.
-		expect(res.models).toBeNull()
+		await expect(
+			agent.loadSession({
+				sessionId: "loaded-no-model",
+				cwd: "/tmp",
+				mcpServers: [],
+			}),
+		).rejects.toMatchObject({ code: -32000 })
+		expect(fake.disposed).toBe(true)
 	})
 
 	it("registers the loaded session so a follow-up prompt is accepted", async () => {
