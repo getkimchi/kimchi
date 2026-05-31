@@ -736,6 +736,44 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		await localAgent.shutdown()
 	})
 
+	it("closes a live session and unregisters its ACP permission prompter", async () => {
+		expect(getAcpPrompter(sessionId)).toBeDefined()
+
+		await agent.unstable_closeSession({ sessionId })
+
+		expect(fake.disposed).toBe(true)
+		expect(getAcpPrompter(sessionId)).toBeUndefined()
+		await expect(
+			agent.prompt({
+				sessionId,
+				prompt: [{ type: "text", text: "hello" }],
+			}),
+		).rejects.toMatchObject({ code: -32602 })
+	})
+
+	it("cancels an in-flight turn when closing a session", async () => {
+		let releasePrompt!: () => void
+		const promptReleased = new Promise<void>((resolve) => {
+			releasePrompt = resolve
+		})
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			await promptReleased
+		}
+
+		const result = agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "hello" }],
+		})
+		await delay(0)
+		await agent.unstable_closeSession({ sessionId })
+		releasePrompt()
+
+		await expect(result).resolves.toEqual({ stopReason: "cancelled" })
+		expect(fake.aborted).toBe(true)
+		expect(fake.disposed).toBe(true)
+	})
+
 	// mcpServers is declared in the ACP request shape but kimchi has no hook to
 	// wire them into a live session — pi-coding-agent loads MCP servers from its
 	// own config. Silently dropping them would leave the client believing those
@@ -1593,6 +1631,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			clientCapabilities: {} as never,
 		} as never)
 		expect(init.agentCapabilities?.loadSession).toBe(true)
+		expect(init.agentCapabilities?.sessionCapabilities?.close).toEqual({})
 	})
 
 	it("rejects loadSession when mcpServers is non-empty (does not invoke loader)", async () => {
@@ -1613,28 +1652,62 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(loaderCalls.count).toBe(0)
 	})
 
-	it("rejects loadSession with invalidRequest when sessionId is already loaded", async () => {
+	it("replays and returns an already loaded session without reopening it", async () => {
 		const loaderCalls = { count: 0 }
 		const live = new FakeAgentSession("live-1")
+		live.branch = [userTextEntry("already here", "u1", null)]
 		const factory: AcpSessionFactory = async () => asSession(live)
 		const loader: AcpSessionLoader = async () => {
 			loaderCalls.count++
 			return asSession(new FakeAgentSession("unused"))
 		}
-		const agent = new KimchiAcpAgent(makeConn(), {
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory: factory,
 			sessionLoader: loader,
 		})
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-		await expect(agent.loadSession({ sessionId: "live-1", cwd: "/tmp", mcpServers: [] })).rejects.toMatchObject({
-			code: -32600,
+
+		const res = await agent.loadSession({ sessionId: "live-1", cwd: "/tmp", mcpServers: [] })
+
+		expect(res.models).toMatchObject({
+			currentModelId: "test/test-model",
 		})
-		// invalidRequest must short-circuit BEFORE the loader runs — otherwise
-		// we'd open the same JSONL twice (and pi's append-only writers would
-		// interleave entries on the next prompt).
 		expect(loaderCalls.count).toBe(0)
+		expect(updates).toHaveLength(1)
+		expect(updates[0].update).toMatchObject({
+			sessionUpdate: "user_message_chunk",
+			content: { type: "text", text: "already here" },
+		})
+	})
+
+	it("coalesces concurrent loadSession requests for the same sessionId", async () => {
+		const fake = new FakeAgentSession("coalesce-1")
+		let loaderCalls = 0
+		let markLoaderStarted!: () => void
+		let releaseLoader!: () => void
+		const loaderStarted = new Promise<void>((resolve) => {
+			markLoaderStarted = resolve
+		})
+		const release = new Promise<void>((resolve) => {
+			releaseLoader = resolve
+		})
+		const loader: AcpSessionLoader = async () => {
+			loaderCalls++
+			markLoaderStarted()
+			await release
+			return asSession(fake)
+		}
+		const agent = makeAgent(loader)
+		const first = agent.loadSession({ sessionId: "coalesce-1", cwd: "/tmp", mcpServers: [] })
+		await loaderStarted
+		const second = agent.loadSession({ sessionId: "coalesce-1", cwd: "/tmp", mcpServers: [] })
+		releaseLoader()
+
+		await expect(Promise.all([first, second])).resolves.toHaveLength(2)
+		expect(loaderCalls).toBe(1)
 	})
 
 	it("propagates loader errors (e.g. missing file → invalidParams)", async () => {

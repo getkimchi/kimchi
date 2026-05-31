@@ -2,9 +2,8 @@ import type { ToolPermissionPrompter } from "../../extensions/permissions/prompt
 
 const bySessionId = new Map<string, ToolPermissionPrompter>()
 
-// Keep this paired with every ACP session ownership path. Any future
-// closeSession/releaseSession RPC that removes from KimchiAcpAgent.sessions
-// must call unregisterAcpPrompter for the same sessionId.
+// Keep this paired with every ACP session ownership path: load/new register,
+// bind failures, session/close, and process shutdown all need symmetric cleanup.
 export function registerAcpPrompter(sessionId: string, prompter: ToolPermissionPrompter): void {
 	bySessionId.set(sessionId, prompter)
 }

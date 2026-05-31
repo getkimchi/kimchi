@@ -11,6 +11,8 @@ import {
 	type AuthenticateRequest,
 	type AuthenticateResponse,
 	type CancelNotification,
+	type CloseSessionRequest,
+	type CloseSessionResponse,
 	type ContentBlock,
 	type InitializeRequest,
 	type InitializeResponse,
@@ -115,11 +117,11 @@ export class KimchiAcpAgent implements Agent {
 	// Track non-text prompt block types we've already warned about so a
 	// misbehaving client that sends 1000 image blocks doesn't flood stderr.
 	private warnedBlockTypes = new Set<string>()
-	// Ids currently inside loadSession's `await sessionLoader(...)` window.
-	// Without this, two concurrent loads of the same id both pass the
-	// `sessions.has()` guard, open the JSONL twice, and the later registration
-	// overwrites (and leaks) the earlier session record.
-	private loadingSessions = new Set<string>()
+	// In-flight loadSession calls, keyed by session id. Without this, two
+	// concurrent loads of the same id both pass the `sessions.has()` guard, open
+	// the JSONL twice, and the later registration overwrites (and leaks) the
+	// earlier session record.
+	private loadingSessions = new Map<string, Promise<LoadSessionResponse>>()
 	private shutdownPromise: Promise<void> | undefined
 
 	constructor(
@@ -144,7 +146,7 @@ export class KimchiAcpAgent implements Agent {
 				// (SessionListCapabilities is `{ _meta? }` — empty object means
 				// "supported"). loadSession remains the top-level flag because
 				// the spec hasn't unified it under sessionCapabilities yet.
-				sessionCapabilities: { list: {} },
+				sessionCapabilities: { list: {}, close: {} },
 				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
 			},
 			authMethods: [],
@@ -249,20 +251,34 @@ export class KimchiAcpAgent implements Agent {
 				"mcpServers is not supported; configure MCP servers via kimchi config",
 			)
 		}
-		// Reject re-load of an already-live session: pi's JSONL is append-only and
-		// two writers on the same file would interleave entries unpredictably. Zed
-		// should close the live session before reloading. invalidRequest (-32600)
-		// signals "method valid but state forbids it now".
-		if (this.sessions.has(params.sessionId) || this.loadingSessions.has(params.sessionId)) {
-			throw RequestError.invalidRequest(undefined, `session ${params.sessionId} is already loaded; close it first`)
+		const existing = this.sessions.get(params.sessionId)
+		if (existing) {
+			if (existing.turn) {
+				throw RequestError.invalidRequest(
+					undefined,
+					`session ${params.sessionId} has a turn in progress; cancel it first`,
+				)
+			}
+			this.replayTranscript(existing.session)
+			return { models: this.modelStateForSession(existing.session) }
 		}
-		this.loadingSessions.add(params.sessionId)
-		let session: AgentSession
+		const loading = this.loadingSessions.get(params.sessionId)
+		if (loading) return loading
+
+		const loadingPromise = this.loadSessionFresh(params)
+		this.loadingSessions.set(params.sessionId, loadingPromise)
 		try {
-			session = await this.sessionLoader(params)
+			return await loadingPromise
 		} finally {
-			this.loadingSessions.delete(params.sessionId)
+			if (this.loadingSessions.get(params.sessionId) === loadingPromise) {
+				this.loadingSessions.delete(params.sessionId)
+			}
 		}
+	}
+
+	private async loadSessionFresh(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+		let session: AgentSession
+		session = await this.sessionLoader(params)
 		// Atomic ownership transfer mirrors newSession but covers the full
 		// register → replay → respond path: a throw at any point after the
 		// loader hands back a live session must unwind registration AND dispose,
@@ -305,6 +321,11 @@ export class KimchiAcpAgent implements Agent {
 			session.dispose()
 			throw err
 		}
+	}
+
+	async unstable_closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
+		await this.closeSessionRecord(params.sessionId)
+		return {}
 	}
 
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
@@ -419,16 +440,37 @@ export class KimchiAcpAgent implements Agent {
 		// until process exit. Reject symmetrically so the caller's await settles.
 		for (const entry of this.sessions.values()) {
 			if (entry.turn) this.failTurn(entry, new Error("acp agent shutting down"))
-			entry.unsubscribe()
-			unregisterAcpPrompter(entry.session.sessionId)
-			// Emit session_shutdown to extensions and await all handlers before
-			// calling dispose(). dispose() is synchronous and returns void, so
-			// async extension handlers (e.g. telemetry drain, shutdown marker)
-			// would be fire-and-forgotten if we relied on dispose() alone.
-			await entry.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
-			entry.session.dispose()
+			await this.disposeSessionRecord(entry)
 		}
 		this.sessions.clear()
+	}
+
+	private async closeSessionRecord(sessionId: string): Promise<void> {
+		const entry = this.sessions.get(sessionId)
+		if (!entry) return
+		this.sessions.delete(sessionId)
+		if (entry.turn) {
+			entry.turn.cancelled = true
+			try {
+				await entry.session.abort()
+			} catch {
+				// Closing is best-effort cleanup; still resolve the pending prompt
+				// as cancelled and release the session resources below.
+			}
+			this.finalizeTurn(entry, "cancelled")
+		}
+		await this.disposeSessionRecord(entry)
+	}
+
+	private async disposeSessionRecord(entry: SessionRecord): Promise<void> {
+		entry.unsubscribe()
+		unregisterAcpPrompter(entry.session.sessionId)
+		// Emit session_shutdown to extensions and await all handlers before
+		// calling dispose(). dispose() is synchronous and returns void, so async
+		// extension handlers (e.g. telemetry drain, shutdown marker) would be
+		// fire-and-forgotten if we relied on dispose() alone.
+		await entry.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
+		entry.session.dispose()
 	}
 
 	private onSessionEvent(sessionId: string, event: AgentSessionEvent): void {
