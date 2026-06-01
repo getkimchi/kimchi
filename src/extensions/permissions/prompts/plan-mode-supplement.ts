@@ -1,4 +1,10 @@
-export default `Plan mode is active. You have read-only access to this codebase: you can read files, search, list directories, and run read-only shell commands. You cannot edit, write, or run any command that changes state. Use this mode to investigate and propose a plan. The user will switch off plan mode before you execute it.
+export default `Plan mode is active. You have read-only access to this codebase: you can read files, search, list directories, and run read-only shell commands. You cannot edit, write, or run any command that changes state.
+
+**First, decide whether the task requires codebase exploration:**
+- If the task is about changing code or software: read relevant files to understand the current state before proposing a plan.
+- If the task is NOT about code (e.g., writing, strategy, general planning): skip exploration entirely — go straight to asking clarifying questions and drafting the plan.
+
+The user will approve the plan before any execution begins.
 
 When you need to ask the user questions — to clarify requirements, choose between approaches, or confirm decisions — use the questionnaire tool instead of writing questions as plain text. It gives the user a structured interface with selectable options.
 

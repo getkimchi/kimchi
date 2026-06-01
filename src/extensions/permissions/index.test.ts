@@ -474,7 +474,7 @@ describe("permissions prompt inheritance", () => {
 
 		expect(result).toContain("Plan mode is active")
 		expect(result).toContain("read-only access")
-		expect(result).toContain("The user will switch off plan mode before you execute it")
+		expect(result).toContain("The user will approve the plan before any execution begins")
 	})
 })
 
