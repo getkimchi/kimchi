@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
 	buildCurrentToolLine,
 	buildGroupSummaryText,
+	buildGroupView,
 	classifyTool,
 	findToolGroup,
 	formatSummary,
@@ -333,5 +334,44 @@ describe("buildCurrentToolLine", () => {
 	it("unknown tool shows toolName …", () => {
 		const tool = mockToolFull("some_mcp_tool", {})
 		expect(buildCurrentToolLine(tool)).toBe("some_mcp_tool …")
+	})
+})
+
+describe("buildGroupView", () => {
+	const plainTheme = {
+		fg: (key: string, value: string) => value,
+	}
+
+	it("appends timer to right header when a tool is in-progress", () => {
+		const run = [mockToolFull("read", { path: "a.ts" }), mockToolFull("read", { path: "b.ts" }, { isPartial: true })]
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		;(run[1] as any).rendererState = { _executionStartedAt: Date.now() - 5000 }
+		const view = buildGroupView(run, plainTheme)
+		const lines = view.render(120)
+		const headerLine = lines[0]
+		expect(headerLine).toContain("ctrl+o to expand")
+		expect(headerLine).toContain("5.0s")
+	})
+
+	it("appends timer for sub-second elapsed", () => {
+		const run = [mockToolFull("read", { path: "a.ts" }, { isPartial: true })]
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		;(run[0] as any).rendererState = { _executionStartedAt: Date.now() - 500 }
+		const view = buildGroupView(run, plainTheme)
+		const lines = view.render(120)
+		const headerLine = lines[0]
+		expect(headerLine).toContain("ctrl+o to expand")
+		expect(headerLine).toContain("500ms")
+	})
+
+	it("appends timer for completed groups", () => {
+		const run = [mockToolFull("read", { path: "a.ts" }), mockToolFull("read", { path: "b.ts" })]
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		;(run[1] as any).rendererState = { _executionStartedAt: Date.now() - 5000, _executionEndedAt: Date.now() }
+		const view = buildGroupView(run, plainTheme)
+		const lines = view.render(120)
+		const headerLine = lines[0]
+		expect(headerLine).toContain("ctrl+o to expand")
+		expect(headerLine).toContain("5.0s")
 	})
 })
