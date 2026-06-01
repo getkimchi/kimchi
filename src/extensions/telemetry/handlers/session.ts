@@ -25,6 +25,7 @@ export async function handleSessionShutdown(ctx: SessionContext, event: { reason
 			ended_by: endedBy,
 			source: ctx.source,
 			mode: ctx.mode,
+			session_type: getActiveFerment() ? "ferment" : "coding",
 		}),
 		ctx.userEmail,
 	)

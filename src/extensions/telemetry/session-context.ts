@@ -1,6 +1,7 @@
 import crypto from "node:crypto"
 import { getMe } from "../../api/me.js"
 import type { TelemetryConfig } from "../../config.js"
+import { getActiveFerment } from "../ferment/index.js"
 import { type CumulativeState, collectMetrics, createCumulativeState } from "./accumulator.js"
 import { toAttrs } from "./helpers.js"
 import { type LogRecord, buildLogRecord, sendLogBatch, sendMetrics } from "./transport.js"
@@ -116,7 +117,8 @@ export class SessionContext {
 	}
 
 	emit(eventName: string, attrs: Record<string, string | number | boolean>): void {
-		const merged = { ...attrs, source: this.source, mode: this.mode }
+		const sessionType = getActiveFerment() ? "ferment" : "coding"
+		const merged = { ...attrs, source: this.source, mode: this.mode, session_type: sessionType }
 		this.logBuffer.push(buildLogRecord(this.sessionId, eventName, toAttrs(merged)))
 		if (this.logBuffer.length >= LOG_BATCH_MAX_SIZE) {
 			this.flushLogBuffer()

@@ -6,6 +6,10 @@ vi.mock("../../api/me.js", () => ({
 	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
 }))
 
+vi.mock("../ferment/index.js", () => ({
+	getActiveFerment: vi.fn(() => undefined),
+}))
+
 function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 	return {
 		enabled: true,
@@ -36,6 +40,9 @@ describe("SessionContext", () => {
 	})
 
 	it("emit appends source and mode to every event", async () => {
+		const { getActiveFerment } = await import("../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue(undefined)
+
 		const ctx = new SessionContext(makeConfig(), "cli", "coding")
 		ctx.emit("test.event", { custom: "value", count: 42 })
 		ctx.flushLogBuffer()
@@ -52,6 +59,7 @@ describe("SessionContext", () => {
 
 		expect(attrMap.source).toBe("cli")
 		expect(attrMap.mode).toBe("coding")
+		expect(attrMap.session_type).toBe("coding")
 		expect(attrMap.custom).toBe("value")
 		expect(attrMap.count).toBe("42")
 	})

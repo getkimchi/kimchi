@@ -125,6 +125,7 @@ describe("telemetryExtension integration", () => {
 		for (const rec of allRecords) {
 			const attrs = Object.fromEntries(rec.attributes.map((a) => [a.key, a.value.stringValue]))
 			expect(attrs.model).toBe("claude-opus-4-6")
+			expect(attrs.session_type).toBe("coding")
 		}
 
 		const metricsCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes("/metrics"))
@@ -155,5 +156,6 @@ describe("telemetryExtension integration", () => {
 		expect(attrs.model).toBe("claude-opus-4-6")
 		expect(attrs.source).toBe("cli")
 		expect(attrs.mode).toBe("coding")
+		expect(attrs.session_type).toBe("coding")
 	})
 })

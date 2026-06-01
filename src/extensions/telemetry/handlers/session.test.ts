@@ -94,6 +94,9 @@ describe("handleSessionShutdown", () => {
 	})
 
 	it("emits kimchi.session.end with duration_ms and ended_by attributes", async () => {
+		const { getActiveFerment } = await import("../../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue(undefined)
+
 		const ctx = new SessionContext(makeConfig(), "cli", "coding")
 		await handleSessionShutdown(ctx, { reason: "user_exit" })
 
@@ -110,6 +113,7 @@ describe("handleSessionShutdown", () => {
 		expect(attrs.model).toBe("unknown")
 		expect(attrs.source).toBe("cli")
 		expect(attrs.mode).toBe("coding")
+		expect(attrs.session_type).toBe("coding")
 		expect(Number(attrs.duration_ms)).toBeGreaterThanOrEqual(0)
 	})
 })
