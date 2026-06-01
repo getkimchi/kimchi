@@ -32,7 +32,7 @@ export interface GitHubClientOptions {
 	fetch?: typeof globalThis.fetch
 }
 
-export const KIMCHI_REPO: Repo = { owner: "castai", name: "kimchi-dev", binary: "kimchi" }
+export const KIMCHI_REPO: Repo = { owner: "getkimchi", name: "kimchi", binary: "kimchi" }
 
 /** Map node `process.platform` → the goreleaser-style OS slug used in asset names. */
 function osSlug(): string {

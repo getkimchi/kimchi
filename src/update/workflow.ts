@@ -57,7 +57,7 @@ export function parseCanarySha7(version: string): string | null {
 }
 
 /**
- * Resolve the latest release for `repo`, hitting the 24h-cached state file
+ * Resolve the latest release for `repo`, hitting the 1h-cached state file
  * when fresh and falling back to the GitHub API otherwise. Honors
  * $KIMCHI_NO_UPDATE_CHECK by short-circuiting to a "no update" result.
  *

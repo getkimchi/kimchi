@@ -81,7 +81,9 @@ export const PhaseProposalSchema = Type.Object({
 
 export const ScopeParams = Type.Object({
 	ferment_id: Type.String(),
-	title: Type.Optional(Type.String({ description: "A short 3-5 word title for this ferment" })),
+	title: Type.String({
+		description: "Required concise 3-5 word title for this ferment. The host applies it when scoping is saved.",
+	}),
 	goal: Type.String(),
 	success_criteria: Type.Optional(Type.String()),
 	constraints: Type.Optional(Type.Array(Type.String())),
@@ -126,9 +128,9 @@ export const ScopingQuestionSchema = Type.Object({
 			},
 		),
 	),
-	text: Type.String({
+	question: Type.String({
 		description:
-			"The decision-blocking question shown to the user. Do not ask preference-survey questions when a safe default can be assumed; a user request to be thorough with questions does not make default choices decision-blocking.",
+			"Canonical question sentence shown to the user. Use this field name for propose_ferment_scoping. Do not ask preference-survey questions when a safe default can be assumed; a user request to be thorough with questions does not make default choices decision-blocking.",
 	}),
 	options: Type.Optional(
 		Type.Array(ScopingQuestionOptionSchema, {
@@ -142,7 +144,10 @@ export const ProposeScopingParams = Type.Object({
 	ferment_id: Type.String({
 		description: "The ferment whose scoping you're proposing.",
 	}),
-	title: Type.Optional(Type.String({ description: "A short 3-5 word title for this ferment." })),
+	title: Type.String({
+		description:
+			"Required concise 3-5 word title for this ferment. The host applies it only after the user confirms/saves this proposal.",
+	}),
 	goal: Type.String({ description: "The ferment goal." }),
 	success_criteria: Type.Optional(Type.String()),
 	constraints: Type.Optional(
@@ -182,7 +187,7 @@ export const ProposeScopingParams = Type.Object({
 		Type.Union([
 			Type.Array(ScopingQuestionSchema, {
 				description:
-					"Emit ONLY for decision-blocking uncertainty where the answer materially changes architecture, dependencies, data model, user-facing scope, security posture, deployment/runtime assumptions, or verification strategy. Hard limits: at most 3 questions; radio/checkbox questions need 2-5 options. Do not ask about defaults you can safely choose. If the user asks to be thorough with questions, be thorough in assumptions, success criteria, constraints, and verification steps; do not add default-choice questions unless implementation is blocked. Do not ask preference-survey or feature-shopping questions like tech stack, platform, persistence, or extra features for a simple greenfield app; record safe defaults in assumptions instead. If all recommended answers are generic defaults, emit questions: []. Must be a real JSON array of question objects, never a quoted string. Use type radio for one choice or yes/no, checkbox for multi-select, and text for enter-your-own only. Put options in display order; text questions omit options. The host appends Custom answer to radio/checkbox. Mark at most ONE option per question with `recommended: true`. No reason text. On replans after user answers, ask only NEW decision-blocking questions; never repeat answered questions.",
+					'Emit ONLY for decision-blocking uncertainty where the answer materially changes architecture, dependencies, data model, user-facing scope, security posture, deployment/runtime assumptions, or verification strategy. Hard limits: at most 3 questions; radio/checkbox questions need 2-5 options. Do not ask about defaults you can safely choose. For broad discovery or planning over an existing codebase, if discovery finds multiple plausible work areas and the user did not explicitly ask to include every area, ask one checkbox question selecting which areas belong in this ferment; this is an outcome/scope boundary, not a preference survey. Example question: "Which improvement areas should this ferment include?" If the user asks to be thorough with questions, be thorough in assumptions, success criteria, constraints, and verification steps; do not add default-choice questions unless implementation is blocked. Do not ask preference-survey or feature-shopping questions like tech stack, platform, persistence, or extra features for a simple greenfield app; record safe defaults in assumptions instead. If all recommended answers are generic defaults, emit questions: []. Must be a real JSON array of question objects, never a quoted string. Use type radio for one choice or yes/no, checkbox for multi-select, and text for enter-your-own only. Put options in display order; text questions omit options. The host appends Custom answer to radio/checkbox. Mark at most ONE option per question with `recommended: true`. No reason text. On replans after user answers, ask only NEW decision-blocking questions; never repeat answered questions.',
 			}),
 			Type.String({
 				description:

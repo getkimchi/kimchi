@@ -2,7 +2,6 @@ import type { ExtensionAPI, ExtensionContext, ToolInfo, ToolRenderResultOptions 
 import { Theme, keyHint } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import type { DirectToolSpec, ToolMetadata } from "./types.js"
-import { formatToolName } from "./types.js"
 import { type Component, Text } from "@earendil-works/pi-tui"
 import { registerToolCall, isToolExpanded } from "../../expand-state.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
@@ -72,7 +71,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 	}
 
 	const earlyConfigPath = getConfigPathFromArgv()
-	const earlyConfig = loadMcpConfig(earlyConfigPath)
+	const { config: earlyConfig } = loadMcpConfig(earlyConfigPath)
 	let earlyCache = loadMetadataCache()
 
 	// Drop cache entries whose configHash no longer matches the configured server
@@ -214,6 +213,11 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 	})
 
 	const getPiTools = (): ToolInfo[] => pi.getAllTools()
+	const getNativeToolStatus = (toolName: string): { tool: ToolInfo; active: boolean } | undefined => {
+		const tool = pi.getAllTools().find((candidate) => candidate.name === toolName)
+		if (!tool) return undefined
+		return { tool, active: pi.getActiveTools().includes(tool.name) }
+	}
 
 	pi.registerFlag("mcp-config", {
 		description: "Path to MCP config file",
@@ -457,14 +461,17 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 					// loadConfig throws when API key is missing; default is fine here
 				}
 				if (params.tool) {
-					return executeCall(state, params.tool, parsedArgs, params.server, ctx, maxToolResultChars)
+					return executeCall(state, params.tool, parsedArgs, params.server, ctx, maxToolResultChars, getNativeToolStatus)
 				}
 				if (params.connect) {
 					return executeConnect(state, params.connect)
 				}
 				if (params.describe) {
-					return executeDescribe(state, params.describe, (specs) =>
-						registerAndActivate(specs.map((s) => ({ ...s, prefixedName: formatToolName(s.originalName, s.serverName, prefix) })), undefined, ctx)
+					return executeDescribe(
+						state,
+						params.describe,
+						(specs) => registerAndActivate(specs, undefined, ctx),
+						getNativeToolStatus,
 					)
 				}
 				if (params.search) {
@@ -476,7 +483,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 					// no API key configured; default is fine
 				}
 				return executeSearch(state, params.search, params.regex, params.server, params.includeSchemas, getPiTools, params.limit ?? mcpSearchLimit, state.searchStrategy, (specs) =>
-					registerAndActivate(specs.map((s) => ({ ...s, prefixedName: formatToolName(s.originalName, s.serverName, prefix) })), undefined, ctx)
+					registerAndActivate(specs, undefined, ctx)
 				)
 				}
 				return {

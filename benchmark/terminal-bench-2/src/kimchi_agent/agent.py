@@ -8,6 +8,7 @@ from harbor.agents.installed.base import (
     CliFlag,
     with_prompt_template,
 )
+from harbor.models.trial.result import AgentInfo, ModelInfo
 from pydantic import ValidationError
 
 from kimchi_agent.config import KimchiAgentConfig
@@ -33,6 +34,39 @@ CONTAINER_LOGS_DIR = "/logs/agent"
 CONTAINER_SESSIONS_DIR = f"{CONTAINER_LOGS_DIR}/sessions"
 CONTAINER_MAIN_SESSION = f"{CONTAINER_SESSIONS_DIR}/main.jsonl"
 CONTAINER_AGENT_PGID_FILE = f"{CONTAINER_LOGS_DIR}/kimchi-agent.pgid"
+CONTAINER_HARNESS_SETTINGS_DIR = "~/.config/kimchi/harness"
+CONTAINER_HARNESS_SETTINGS = f"{CONTAINER_HARNESS_SETTINGS_DIR}/settings.json"
+CONTAINER_HARNESS_SKILLS_DIR = f"{CONTAINER_HARNESS_SETTINGS_DIR}/skills"
+KIMCHI_API_KEY_ENV = "KIMCHI_API_KEY"
+
+
+def _coerce_bool_kwarg(value: object, name: str) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        match value.strip().lower():
+            case "true" | "1" | "yes":
+                return True
+            case "false" | "0" | "no":
+                return False
+    raise ValueError(
+        f"Invalid value for '{name}': expected true/false/1/0/yes/no, got {value!r}"
+    )
+
+
+def _validate_model_name(model_name: str | None) -> None:
+    if not model_name or "/" not in model_name:
+        raise ValueError(
+            "--model is required and must be qualified with a provider "
+            "(e.g. kimchi-dev/kimi-k2.5, kimchi-dev/glm-5-fp8, kimchi-dev/minimax-m2.7)"
+        )
+    provider, model_id = model_name.split("/", 1)
+    if not provider or not model_id:
+        raise ValueError(
+            f"--model must be qualified as <provider>/<id> (got {model_name!r}); use e.g. kimchi-dev/kimi-k2.5"
+        )
 
 
 class Kimchi(BaseInstalledAgent):
@@ -57,11 +91,6 @@ class Kimchi(BaseInstalledAgent):
         CliFlag("tools", cli="--tools", type="str"),
         CliFlag("yolo", cli="--yolo", type="bool"),
         CliFlag(
-            "disable-multi-model",
-            cli="--multi-model=false",
-            type="bool",
-        ),
-        CliFlag(
             "dangerously-skip-permissions",
             cli="--dangerously-skip-permissions",
             type="bool",
@@ -71,12 +100,35 @@ class Kimchi(BaseInstalledAgent):
     ]
 
     def __init__(self, *args, **kwargs):
+        multi_model = _coerce_bool_kwarg(kwargs.pop("multi-model", False), "multi-model")
+        disable_multi_model = _coerce_bool_kwarg(
+            kwargs.pop("disable-multi-model", False), "disable-multi-model"
+        )
+        if multi_model and disable_multi_model:
+            raise ValueError(
+                "'multi-model=true' conflicts with legacy 'disable-multi-model=true'"
+            )
+
         super().__init__(*args, **kwargs)
-        self._config = KimchiAgentConfig()
+        self._multi_model_enabled = multi_model
+        config_kwargs = {}
+        api_key = self._get_env(KIMCHI_API_KEY_ENV)
+        if api_key is not None:
+            config_kwargs[KIMCHI_API_KEY_ENV] = api_key
+        self._config = KimchiAgentConfig(**config_kwargs)
 
     @staticmethod
     def name() -> str:
         return "kimchi"
+
+    def to_agent_info(self) -> AgentInfo:
+        if self._multi_model_enabled:
+            return AgentInfo(
+                name=self.name(),
+                version=self.version() or "unknown",
+                model_info=ModelInfo(name="multi-model", provider="kimchi"),
+            )
+        return super().to_agent_info()
 
     def get_version_command(self) -> str | None:
         # PI_PACKAGE_DIR tells entry.ts where to find package.json + theme/; without it
@@ -149,18 +201,11 @@ class Kimchi(BaseInstalledAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
-        if not self.model_name:
-            raise ValueError(
-                "--model is required and must be qualified with a provider "
-                "(e.g. kimchi-dev/kimi-k2.5, kimchi-dev/glm-5-fp8, kimchi-dev/minimax-m2.7)"
-            )
-        if "/" not in self.model_name:
+        if not self._multi_model_enabled:
             # kimchi's built-in pi-ai catalog also registers models like kimi-k2.5 under
             # the opencode provider. Without a qualifier the resolver may pick opencode and
             # fail auth with the kimchi key, so we force the caller to be explicit.
-            raise ValueError(
-                f"--model must be qualified as <provider>/<id> (got {self.model_name!r}); use e.g. kimchi-dev/kimi-k2.5"
-            )
+            _validate_model_name(self.model_name)
 
         cli_flags = self.build_cli_flags()
         if cli_flags:
@@ -208,13 +253,22 @@ class Kimchi(BaseInstalledAgent):
 
     def _kimchi_launch_command(self, instruction: str, cli_flags: str) -> str:
         runner = self._kimchi_command(cli_flags)
-        return (
+        parts = [
             # Ensure kimchi has a stable location for the main session and any
             # subagent session files before the process starts.
-            f"mkdir -p {shlex.quote(CONTAINER_SESSIONS_DIR)} && "
+            f"mkdir -p {shlex.quote(CONTAINER_SESSIONS_DIR)}",
             # Drop stale state from a previous interrupted attempt in the same
             # mounted logs directory.
-            f"rm -f {shlex.quote(CONTAINER_AGENT_PGID_FILE)} && "
+            f"rm -f {shlex.quote(CONTAINER_AGENT_PGID_FILE)}",
+        ]
+        multi_model_settings = self._multi_model_settings_command()
+        if multi_model_settings:
+            parts.append(multi_model_settings)
+        skills_registration = self._skills_registration_command()
+        if skills_registration:
+            parts.append(skills_registration)
+
+        parts.append(
             # Enable job control so the backgrounded kimchi pipeline gets a
             # process group that can be terminated as a unit on timeout.
             "set -m && { "
@@ -240,12 +294,36 @@ class Kimchi(BaseInstalledAgent):
             'exit "$agent_status"; '
             "}"
         )
+        return " && ".join(parts)
+
+    def _multi_model_settings_command(self) -> str:
+        if not self._multi_model_enabled:
+            return ""
+
+        settings_json = '{"multiModel":true}'
+        return (
+            f"mkdir -p {CONTAINER_HARNESS_SETTINGS_DIR} && "
+            f"printf '%s\\n' {shlex.quote(settings_json)} > {CONTAINER_HARNESS_SETTINGS}"
+        )
+
+    def _skills_registration_command(self) -> str:
+        if not self.skills_dir:
+            return ""
+
+        return (
+            f"mkdir -p {CONTAINER_HARNESS_SKILLS_DIR} && "
+            f"{{ cp -a {shlex.quote(self.skills_dir)}/. {CONTAINER_HARNESS_SKILLS_DIR}/ || true; }}"
+        )
 
     def _kimchi_command(self, cli_flags: str) -> str:
+        model_flag = ""
+        if not self._multi_model_enabled:
+            model_flag = f"--model {shlex.quote(self.model_name or '')} "
+
         return (
             f"{shlex.quote(BINARY_PATH)} "
             f"--print --session {shlex.quote(CONTAINER_MAIN_SESSION)} "
-            f"--model {shlex.quote(self.model_name or '')} "
+            f"{model_flag}"
             f"{cli_flags}"
         )
 

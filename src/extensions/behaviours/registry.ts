@@ -16,6 +16,7 @@ import ghCliBody from "./bodies/gh-cli.md" with { type: "text" }
 import gitHygieneBody from "./bodies/git-hygiene.md" with { type: "text" }
 import glabCliBody from "./bodies/glab-cli.md" with { type: "text" }
 import pythonEditBody from "./bodies/python-edit.md" with { type: "text" }
+import reReadBeforeEditBody from "./bodies/re-read-before-edit.md" with { type: "text" }
 import { type BehaviourSource, buildBehaviours } from "./build.js"
 import { bashInvokes, fetchesHost } from "./matchers.js"
 import { any, cli, gitRemote, gitRepo, tool } from "./triggers.js"
@@ -42,6 +43,7 @@ const sources: BehaviourSource[] = [
 		kind: "triggered",
 		triggers: { tool: pythonFileEdit },
 	},
+	{ raw: reReadBeforeEditBody, kind: "baseline" },
 	{
 		raw: ghCliBody,
 		kind: "triggered",

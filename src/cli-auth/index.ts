@@ -22,6 +22,8 @@ export interface BrowserAuthOptions {
 	onMessage?: (message: string) => void
 	/** Optional callback invoked with the browser URL before the browser opens */
 	onBrowserUrl?: (url: string) => void
+	/** Abort the flow (e.g. user pressed Esc): tears down the callback server early. */
+	signal?: AbortSignal
 }
 
 /**
@@ -43,7 +45,18 @@ export async function authenticateViaBrowser(options: BrowserAuthOptions = {}): 
 
 	const callbackServer = await startCallbackServer(state)
 
+	// Let callers cancel the wait (e.g. the login dialog's Esc) instead of leaving
+	// the callback server running until its 5-minute timeout. close() resolves the
+	// pending result with a "Login cancelled" error, which surfaces as a throw below.
+	const onAbort = () => callbackServer.close()
+
 	try {
+		if (options.signal?.aborted) {
+			callbackServer.close()
+			throw new Error("Browser login failed: Login cancelled")
+		}
+		options.signal?.addEventListener("abort", onAbort, { once: true })
+
 		const callbackUrl = encodeURIComponent(callbackServer.url)
 		const browserUrl = `${webAppUrl}/cli-auth?callback=${callbackUrl}&state=${encodeURIComponent(state)}`
 
@@ -78,5 +91,7 @@ export async function authenticateViaBrowser(options: BrowserAuthOptions = {}): 
 		// Ensure the callback server is torn down on any error path
 		callbackServer.close()
 		throw err
+	} finally {
+		options.signal?.removeEventListener("abort", onAbort)
 	}
 }

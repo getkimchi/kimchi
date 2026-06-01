@@ -24,6 +24,7 @@ import {
 	clearAllScopingGates,
 	clearAllStepStarts,
 	getActive,
+	getActiveFermentId,
 	markScopingConfirmed,
 	markScopingInteractive,
 	setActive,
@@ -94,6 +95,7 @@ function createHarness(): Harness {
 		getActiveTools: vi.fn(() => ["read", "bash", "complete_ferment"]),
 		getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "complete_ferment" }]),
 		setActiveTools: vi.fn(),
+		on: vi.fn(),
 	} as unknown as ExtensionAPI
 
 	registerLifecycleTools(pi, runtime)
@@ -109,6 +111,17 @@ function createHarness(): Harness {
 	}
 
 	return { storage, runtime, tempDir, tools, pi, call }
+}
+
+function createWorkflowCtx(options: { confirm?: boolean } = {}) {
+	return {
+		hasUI: true,
+		ui: {
+			notify: vi.fn(),
+			setStatus: vi.fn(),
+			confirm: vi.fn(async () => options.confirm ?? false),
+		},
+	}
 }
 
 // Helpers for asserting on tool results.
@@ -141,6 +154,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+	vi.unstubAllEnvs()
 	clearFermentCache()
 	clearAllStepStarts()
 	clearAllScopingGates()
@@ -183,13 +197,20 @@ async function createFerment(name: string, description?: string): Promise<string
 
 async function scopeFerment(
 	id: string,
-	overrides: Partial<{ goal: string; success_criteria: string; constraints: string[]; phases: unknown[] }> = {},
+	overrides: Partial<{
+		title: string
+		goal: string
+		success_criteria: string
+		constraints: string[]
+		phases: unknown[]
+	}> = {},
 ): Promise<void> {
 	// Bypass scoping gate — we test the gate explicitly below.
 	markScopingInteractive(id)
 	markScopingConfirmed(id)
 	const params = {
 		ferment_id: id,
+		title: overrides.title ?? h.runtime.getStorage().get(id)?.name ?? "Scoped Ferment",
 		goal: overrides.goal ?? "Make a thing",
 		success_criteria: overrides.success_criteria ?? "It works",
 		constraints: overrides.constraints ?? [],
@@ -217,6 +238,84 @@ function loadFerment(id: string): Ferment {
 	if (!f) throw new Error(`Ferment ${id} not found`)
 	return f
 }
+
+// ─── request_ferment_workflow ────────────────────────────────────────────────
+
+describe("request_ferment_workflow approval gate", () => {
+	const approvedIntent = "Find improvements to this extension, but do not implement anything until I approve the plan."
+	const requestWorkflow = (params: { title?: string; intent?: string }, ctx = createWorkflowCtx()) =>
+		h.call("request_ferment_workflow", { title: "Approved Ferment", intent: approvedIntent, ...params }, ctx)
+
+	it("asks the host for approval and refuses when the user declines", async () => {
+		const ctx = createWorkflowCtx({ confirm: false })
+		const text = err(
+			await requestWorkflow({ title: "No Consent", intent: "Find improvements to this extension." }, ctx),
+		)
+
+		expect(ctx.ui.confirm).toHaveBeenCalledWith(
+			"Start Ferment Workflow",
+			expect.stringContaining('Start a Ferment workflow for "No Consent"?'),
+		)
+		expect(text).toContain("request_ferment_workflow cancelled")
+		expect(text).toContain("user declined")
+		expect(getActive()).toBeUndefined()
+	})
+
+	it("starts after host approval", async () => {
+		const ctx = createWorkflowCtx({ confirm: true })
+
+		const text = ok(await requestWorkflow({}, ctx))
+
+		expect(text).toContain('Ferment "Approved Ferment" created')
+		expect(getActive()?.status).toBe("draft")
+		expect(getActive()?.description).toBe(
+			"Find improvements to this extension, but do not implement anything until I approve the plan.",
+		)
+		expect(getActiveFermentId()).toBe(getActive()?.id)
+	})
+
+	it("validates intent before asking for host approval", async () => {
+		const ctx = createWorkflowCtx({ confirm: true })
+
+		const first = err(await requestWorkflow({ intent: "  " }, ctx))
+		expect(first).toContain('Field "intent" must be the full non-empty user request')
+		expect(ctx.ui.confirm).not.toHaveBeenCalled()
+
+		const retry = ok(await requestWorkflow({ intent: "Find improvements to this extension." }, ctx))
+		expect(retry).toContain('Ferment "Approved Ferment" created')
+	})
+
+	it("bypasses the approval gate in yolo mode", async () => {
+		vi.stubEnv("KIMCHI_PERMISSIONS", "yolo")
+		const ctx = createWorkflowCtx({ confirm: false })
+		const text = ok(
+			await requestWorkflow(
+				{
+					title: "Yolo Ferment",
+					intent: "Create a Go app with Gin and integrate Kimchi plugin logic.",
+				},
+				ctx,
+			),
+		)
+
+		expect(ctx.ui.confirm).not.toHaveBeenCalled()
+		expect(text).toContain('Ferment "Yolo Ferment" created')
+		expect(getActive()?.status).toBe("draft")
+		expect(getActive()?.description).toBe("Create a Go app with Gin and integrate Kimchi plugin logic.")
+	})
+
+	it("does not bypass approval when yolo came from an active ferment env", async () => {
+		vi.stubEnv("KIMCHI_PERMISSIONS", "yolo")
+		vi.stubEnv("KIMCHI_ACTIVE_FERMENT", "existing-ferment")
+		const text = err(
+			await requestWorkflow({ title: "Blocked Ferment", intent: "Find improvements to this extension." }),
+		)
+
+		expect(text).toContain("request_ferment_workflow refused")
+		expect(text).toContain("another ferment appears to be active")
+		expect(getActive()).toBeUndefined()
+	})
+})
 
 // ─── list_ferments ────────────────────────────────────────────────────────────
 
@@ -278,6 +377,7 @@ describe("scope_ferment", () => {
 		markScopingConfirmed(id)
 		const result = await h.call("scope_ferment", {
 			ferment_id: id,
+			title: "Scoped Ferment",
 			goal: "Different goal",
 			phases: [],
 			gates: passingPlanGates(),
@@ -291,6 +391,7 @@ describe("scope_ferment", () => {
 		markScopingInteractive(id)
 		const result = await h.call("scope_ferment", {
 			ferment_id: id,
+			title: "Scoped Ferment",
 			goal: "X",
 			phases: [],
 			gates: passingPlanGates(),
@@ -307,6 +408,7 @@ describe("scope_ferment", () => {
 		// Don't confirm — legacy mode is inert and cannot bypass this gate.
 		const result = await h.call("scope_ferment", {
 			ferment_id: id,
+			title: "Scoped Ferment",
 			goal: "X",
 			phases: [{ name: "P1", goal: "G", steps: [{ description: "S" }] }],
 			gates: passingPlanGates(),
@@ -319,6 +421,7 @@ describe("scope_ferment", () => {
 		markScopingConfirmed("nonexistent")
 		const result = await h.call("scope_ferment", {
 			ferment_id: "nonexistent",
+			title: "Missing Ferment",
 			goal: "X",
 			phases: [],
 			gates: passingPlanGates(),
@@ -810,7 +913,7 @@ describe("complete_ferment", () => {
 		const id = await createFerment("Done Test")
 		await scopeFerment(id)
 		expect(getActive()?.id).toBe(id)
-		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBe(id)
+		expect(getActiveFermentId()).toBe(id)
 		const s = h.storage
 		s.skipPhase(id, "phase-1", "skipped")
 		s.skipPhase(id, "phase-2", "skipped")
@@ -823,7 +926,7 @@ describe("complete_ferment", () => {
 		)
 		expect(loadFerment(id).status).toBe("complete")
 		expect(getActive()).toBeUndefined()
-		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBeUndefined()
+		expect(getActiveFermentId()).toBeUndefined()
 	})
 
 	it("computes overall grade from phase grades", async () => {
@@ -836,37 +939,6 @@ describe("complete_ferment", () => {
 		s.skipPhase(id, "phase-2", "skip")
 		ok(await h.call("complete_ferment", { ferment_id: id, gates: passingFermentGates() }))
 		expect(loadFerment(id).grade).toBeDefined()
-	})
-})
-
-// ─── active ferment env propagation ───────────────────────────────────────────
-
-describe("active ferment environment", () => {
-	it("deletes KIMCHI_ACTIVE_FERMENT when active ferment is cleared", async () => {
-		const id = await createFerment("Env Clear Test")
-		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBe(id)
-
-		setActive(undefined)
-
-		expect(getActive()).toBeUndefined()
-		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBeUndefined()
-		expect(Object.hasOwn(process.env, "KIMCHI_ACTIVE_FERMENT")).toBe(false)
-	})
-
-	it("does not expose terminal ferments as resumable active work", async () => {
-		const id = await createFerment("Terminal Env Test")
-		await scopeFerment(id)
-		const s = h.storage
-		s.skipPhase(id, "phase-1", "skipped")
-		s.skipPhase(id, "phase-2", "skipped")
-		ok(await h.call("complete_ferment", { ferment_id: id, gates: passingFermentGates() }))
-
-		const terminal = loadFerment(id)
-		setActive(terminal)
-
-		expect(getActive()?.id).toBe(id)
-		expect(terminal.status).toBe("complete")
-		expect(process.env.KIMCHI_ACTIVE_FERMENT).toBeUndefined()
 	})
 })
 
@@ -1043,6 +1115,7 @@ describe("propose_ferment_scoping", () => {
 
 	const basePayload = (ferment_id: string, overrides: Record<string, unknown> = {}) => ({
 		ferment_id,
+		title: "Proposed Ferment",
 		goal: "Build a thing",
 		success_criteria: "Tests pass",
 		constraints: ["no breaking changes"],
@@ -1096,8 +1169,7 @@ describe("propose_ferment_scoping", () => {
 		expect(ctx.ui.custom).not.toHaveBeenCalled()
 		expect(getPendingPlanReview(id)).toMatchObject({
 			fermentId: id,
-			fermentName: "ZeroQ Review",
-			planMarkdown: expect.stringContaining("# Plan: ZeroQ Review"),
+			planMarkdown: expect.stringContaining("# Plan: Proposed Ferment"),
 		})
 		expect(getPendingPlanReview(id)?.planMarkdown.includes(`${String.fromCharCode(27)}[`)).toBe(false)
 	})
@@ -1228,7 +1300,7 @@ describe("propose_ferment_scoping", () => {
 		const questions = [
 			{
 				id: "q1",
-				text: "Approach?",
+				question: "Approach?",
 				options: [
 					{ id: "opt-a", label: "Option A", recommended: true },
 					{ id: "opt-b", label: "Option B" },
@@ -1236,7 +1308,7 @@ describe("propose_ferment_scoping", () => {
 			},
 			{
 				id: "q2",
-				text: "Scope?",
+				question: "Scope?",
 				options: [
 					{ id: "wide", label: "Wide" },
 					{ id: "narrow", label: "Narrow", recommended: true },
@@ -1292,7 +1364,7 @@ describe("propose_ferment_scoping", () => {
 		const questions = [
 			{
 				id: "q1",
-				text: "Approach?",
+				question: "Approach?",
 				options: [
 					{ id: "opt-a", label: "Option A", recommended: true },
 					{ id: "opt-b", label: "Option B" },
@@ -1338,7 +1410,7 @@ describe("propose_ferment_scoping", () => {
 			{
 				id: "surfaces",
 				type: "checkbox",
-				text: "Which surfaces must be included?",
+				question: "Which surfaces must be included?",
 				options: [
 					{ id: "cli", label: "CLI", recommended: true },
 					{ id: "docs", label: "Docs" },
@@ -1348,7 +1420,7 @@ describe("propose_ferment_scoping", () => {
 			{
 				id: "acceptance",
 				type: "text",
-				text: "What proof should complete mean?",
+				question: "What proof should complete mean?",
 			},
 		]
 		const ctx = {
@@ -1416,7 +1488,7 @@ describe("propose_ferment_scoping", () => {
 					{
 						id: "target",
 						type: "checkbox",
-						text: "Which target environments are in scope?",
+						question: "Which target environments are in scope?",
 						options: [
 							{ id: "ssh", label: "SSH" },
 							{ id: "docker", label: "Docker" },
@@ -1504,7 +1576,7 @@ describe("propose_ferment_scoping", () => {
 		const questions = [
 			{
 				id: "q1",
-				text: "Approach?",
+				question: "Approach?",
 				options: [
 					{ id: "opt-a", label: "Option A", recommended: true },
 					{ id: "opt-b", label: "Option B" },
@@ -1512,7 +1584,7 @@ describe("propose_ferment_scoping", () => {
 			},
 			{
 				id: "q2",
-				text: "Scope?",
+				question: "Scope?",
 				options: [
 					{ id: "wide", label: "Wide" },
 					{ id: "narrow", label: "Narrow", recommended: true },
@@ -1580,7 +1652,7 @@ describe("propose_ferment_scoping", () => {
 		const questions = [
 			{
 				id: "q1",
-				text: "Approach?",
+				question: "Approach?",
 				options: [
 					{ id: "opt-a", label: "Yes", recommended: true },
 					{ id: "opt-b", label: "Yes" },
@@ -1603,7 +1675,7 @@ describe("propose_ferment_scoping", () => {
 		const questions = [
 			{
 				id: "q1",
-				text: "Approach?",
+				question: "Approach?",
 				options: [
 					{ id: "opt-a", label: "Option A", recommended: true },
 					{ id: "opt-b", label: "Option B" },
@@ -1637,7 +1709,7 @@ describe("propose_ferment_scoping", () => {
 		const questions = [
 			{
 				id: "q1",
-				text: "Approach?",
+				question: "Approach?",
 				options: [
 					{ id: "opt-a", label: "Option A", recommended: true },
 					{ id: "opt-b", label: "Option B" },
@@ -1680,7 +1752,7 @@ describe("propose_ferment_scoping", () => {
 		const questions = [
 			{
 				id: "q1",
-				text: "Approach?",
+				question: "Approach?",
 				options: [
 					{ id: "opt-a", label: "Option A", recommended: true },
 					{ id: "opt-b", label: "Option B" },
@@ -1725,7 +1797,7 @@ describe("propose_ferment_scoping", () => {
 		const questions = [
 			{
 				id: "q1",
-				text: "Approach?",
+				question: "Approach?",
 				options: [
 					{ id: "opt-a", label: "Option A", recommended: true },
 					{ id: "opt-b", label: "Option B" },
@@ -1733,7 +1805,7 @@ describe("propose_ferment_scoping", () => {
 			},
 			{
 				id: "q2",
-				text: "Scope?",
+				question: "Scope?",
 				options: [
 					{ id: "wide", label: "Wide" },
 					{ id: "narrow", label: "Narrow", recommended: true },

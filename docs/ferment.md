@@ -89,8 +89,12 @@ Switch continuation policy at any time:
 /ferment auto
 ```
 
-Pause and resume are separate lifecycle controls: `/ferment pause` stops the
-ferment, and `/ferment resume` continues it using the current policy.
+Pause, resume, and exit are separate lifecycle controls. `/ferment pause`
+persists the active ferment as `paused` while keeping Ferment mode attached.
+`/ferment resume` continues it using the current policy. `/ferment exit` leaves
+Ferment mode without deleting or abandoning the ferment; planned/running work is
+paused first, active Ferment UI/tools are cleared, and later resume requires
+choosing the ferment again from `/ferment list` or `/ferment switch`.
 
 ---
 
@@ -177,12 +181,17 @@ Run `/ferment progress` for full phase/step navigation with grades and actions.
 ```
 /ferment pause   ← pause the ferment lifecycle
 /ferment resume  ← resume the ferment lifecycle
+/ferment exit    ← leave Ferment mode without deleting the ferment
 /ferment manual  ← ask before moving to the next phase
 /ferment auto    ← keep going until done or blocked
 ```
 
 `/ferment pause` persists the ferment as `paused`. `/ferment resume` resumes
 the lifecycle and continues according to the current continuation policy.
+`/ferment exit` clears the active Ferment from the current session. If the
+ferment was `planned` or `running`, exit pauses it before detaching; drafts stay
+drafts, paused ferments stay paused, and completed or abandoned ferments are only
+detached. Exit does not change manual/automated continuation policy.
 
 Sessions resume automatically. When you close and reopen Kimchi with an active ferment, the agent picks up exactly where it left off.
 
@@ -344,6 +353,7 @@ The file is the authoritative source of truth. You can inspect it directly, back
 | `/ferment auto` | Set automated continuation policy |
 | `/ferment pause` | Pause the active ferment lifecycle |
 | `/ferment resume` | Resume the active ferment lifecycle |
+| `/ferment exit` | Leave Ferment mode without deleting the ferment |
 
 ---
 

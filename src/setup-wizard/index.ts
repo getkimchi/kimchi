@@ -11,10 +11,8 @@ import { cancel as clackCancel } from "@clack/prompts"
 import type { WizardResult, WizardState } from "./state.js"
 import { runAuthStep } from "./steps/auth.js"
 import { runDoneStep } from "./steps/done.js"
-import { runModeStep } from "./steps/mode.js"
 import { runRtkStep } from "./steps/rtk.js"
 import { runTelemetryStep } from "./steps/telemetry.js"
-import { runToolsStep } from "./steps/tools.js"
 import { runWelcomeStep } from "./steps/welcome.js"
 
 interface Step {
@@ -25,10 +23,8 @@ interface Step {
 
 const STEPS: Step[] = [
 	{ name: "auth", run: runAuthStep },
-	{ name: "tools", run: runToolsStep },
 	{ name: "rtk", run: runRtkStep },
-	{ name: "mode", run: runModeStep },
-	{ name: "telemetry", skip: (s) => !s.selectedTools.includes("claudecode"), run: runTelemetryStep },
+	{ name: "telemetry", run: runTelemetryStep },
 ]
 
 /**
@@ -36,11 +32,7 @@ const STEPS: Step[] = [
  * forward, calling each step and respecting `state.back` (rewind to the
  * previous non-skipped step) and `state.cancelled` (abort).
  *
- * Step order: welcome → auth → tools → mode → telemetry → done.
- *
- * Telemetry is only asked when Claude Code is among the selected tools —
- * the other integrations already enable it via their own config and the
- * prompt would be noise.
+ * Step order: welcome → auth → rtk → telemetry → done.
  */
 export async function runWizard(): Promise<WizardResult> {
 	const state: WizardState = {

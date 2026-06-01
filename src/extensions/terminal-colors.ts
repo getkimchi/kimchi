@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs"
 import { basename, resolve } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { isProtocolOrPrintMode } from "../cli-args.js"
 import { getActiveThemeName, onThemeChange } from "../settings-watcher.js"
 import { QUERY_BG, getRawBgPayload } from "../terminal-bg-probe.js"
 
@@ -30,6 +31,10 @@ function hexToItermFormat(hex: string): string | null {
 	const match = hex.match(/^#?([0-9a-fA-F]{6})$/i)
 	if (!match) return null
 	return match[1].toUpperCase()
+}
+
+function canUseTerminalOsc(args: string[]): boolean {
+	return process.stdin.isTTY === true && process.stdout.isTTY === true && !isProtocolOrPrintMode(args)
 }
 
 // OSC 10/11 enforce theme-specified fg/bg over the terminal's own colors.
@@ -72,6 +77,7 @@ function getThemeColors(themeName: string): { fgHex: string; bgHex: string } | n
 }
 
 export default function terminalColorsExtension(pi: ExtensionAPI) {
+	const startupArgs = process.argv.slice(2)
 	let savedFg: string | null = null
 	let savedBg: string | null = null
 	let active = false
@@ -81,9 +87,10 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 	// Shared by the onThemeChange callback and the sensor widget so neither
 	// re-runs the OSC writes for a theme the other just handled.
 	let lastSensorTheme: string | undefined
+	const canUseOsc = () => canUseTerminalOsc(startupArgs)
 
 	const restore = () => {
-		if (!process.stdout.isTTY) return
+		if (!canUseOsc()) return
 
 		if (isIterm2()) {
 			// iTerm2: reset via named preset first, then fall back to saved OSC values
@@ -99,7 +106,7 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 	}
 
 	const apply = (fgHex: string, bgHex: string) => {
-		if (!process.stdout.isTTY) return
+		if (!canUseOsc()) return
 
 		// OSC sequences change what "default background" means in the terminal emulator,
 		// affecting future blank cells from scroll/resize. Pi-mono's own repaint covers
@@ -205,7 +212,7 @@ export default function terminalColorsExtension(pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", (_event, ctx) => {
-		if (!process.stdin.isTTY) return
+		if (!canUseOsc()) return
 		lastCtx = ctx
 		installExitHandlers()
 

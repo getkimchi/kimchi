@@ -9,6 +9,7 @@ export interface SessionModeStartupOptions {
 	stdoutIsTTY: boolean
 	configPath?: string
 	now?: () => Date
+	shouldSkip?: () => boolean
 	startFerment?: (params: { pi: ExtensionAPI; ctx: ExtensionContext }) => void | Promise<void>
 }
 
@@ -27,6 +28,7 @@ export function createSessionModeOnboardingForStartup(options: SessionModeStartu
 		}),
 		configPath: options.configPath,
 		now: options.now,
+		shouldSkip: options.shouldSkip,
 		onOutcome: (outcome, ctx, pi) => {
 			if (outcome === "ferment") return startFerment({ pi, ctx })
 		},

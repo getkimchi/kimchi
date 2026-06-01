@@ -4,6 +4,7 @@ import { byId } from "../../integrations/registry.js"
 import type { ToolId } from "../../integrations/types.js"
 import { updateModelsConfig } from "../../models.js"
 import { installRtk } from "../../resources/rtk-install.js"
+import { applyToolConfigs } from "../apply-tools.js"
 import { exportEnvToShellProfile } from "../shell-profile.js"
 import type { WizardState } from "../state.js"
 
@@ -60,35 +61,17 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 		return outcome
 	}
 
-	for (const id of state.selectedTools as ToolId[]) {
-		const tool = byId(id)
-		if (!tool) {
-			outcome.failures.push({ id, error: "integration not registered" })
-			continue
-		}
-		if (state.mode === "inject") {
-			// No disk writes in inject mode — the launcher sets env per-process.
-			outcome.successes.push(tool.name)
-			// 'claudecode' is the tool ID but the CLI command is 'claude'
-			const launchCmd = id === "claudecode" ? "claude" : id
-			log.info(`${tool.name}: ready (launch via 'kimchi ${launchCmd}')`)
-			continue
-		}
-		const s = spinner()
-		s.start(`Configuring ${tool.name}…`)
-		// Yield briefly so clack can render the first spinner frame before
-		// potentially blocking sync work (e.g. spawnSync calls).
-		await new Promise<void>((resolve) => setTimeout(() => resolve(), 80))
-		try {
-			await tool.write(state.scope, state.apiKey, models, { telemetryEnabled: state.telemetryEnabled })
-			outcome.successes.push(tool.name)
-			s.stop(`${tool.name}: configured`)
-		} catch (err) {
-			const msg = (err as Error).message
-			outcome.failures.push({ id, error: msg })
-			s.stop(`${tool.name}: ${msg}`)
-		}
-	}
+	// Apply tool configurations.
+	const toolOutcome = await applyToolConfigs({
+		selectedTools: state.selectedTools as ToolId[],
+		apiKey: state.apiKey,
+		scope: state.scope,
+		mode: state.mode,
+		telemetryEnabled: state.telemetryEnabled,
+		models,
+	})
+	outcome.successes.push(...toolOutcome.successes)
+	outcome.failures.push(...toolOutcome.failures)
 
 	if (state.installRtk) {
 		const s = spinner()
@@ -113,11 +96,16 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 		log.info(`${KIMCHI_API_KEY_ENV} exported to ${shellExport.path}`)
 	} else if (shellExport.error) {
 		log.warn(`Could not export ${KIMCHI_API_KEY_ENV} to shell profile: ${shellExport.error}`)
+		if (shellExport.manualLine) {
+			log.info(shellExport.manualLine)
+		}
 	}
 
 	const summaryLines = [
-		`Mode: ${state.mode}${state.mode === "override" ? " (configs written)" : " (runtime wrapper)"}`,
-		`Scope: ${state.scope}`,
+		state.selectedTools.length > 0
+			? `Mode: ${state.mode}${state.mode === "override" ? " (configs written)" : " (runtime wrapper)"}`
+			: "",
+		state.selectedTools.length > 0 ? `Scope: ${state.scope}` : "",
 		`Telemetry: ${state.telemetryEnabled ? "enabled" : "disabled"}`,
 		outcome.successes.length > 0 ? `Configured: ${outcome.successes.join(", ")}` : "",
 		outcome.rtkInstalled ? "RTK: installed" : "",

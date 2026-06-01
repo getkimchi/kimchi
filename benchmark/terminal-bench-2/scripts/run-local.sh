@@ -6,6 +6,7 @@
 # Usage examples:
 #   ./scripts/run-local.sh -i terminal-bench/fix-git
 #   MODEL=kimchi-dev/kimi-k2.5 ./scripts/run-local.sh -i terminal-bench/fix-git -k 3
+#   ./scripts/run-local.sh -i terminal-bench/fix-git -k 3 --agent-kwarg multi-model=true
 set -euo pipefail
 
 DATASET="terminal-bench/terminal-bench-2"

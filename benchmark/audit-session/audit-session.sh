@@ -4,6 +4,7 @@ set -euo pipefail
 SESSIONS_BASE="${HOME}/.config/kimchi/harness/sessions"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROMPT_FILE="${SCRIPT_DIR}/audit-session-prompt.md"
+SESSION_OUT=""
 
 usage() {
     cat <<EOF
@@ -21,6 +22,7 @@ Options:
   -d, --dir DIR       Use DIR to find sessions (default: current directory)
   -r, --runner CMD    Harness to use: kimchi or claude (default: kimchi)
   -m, --model MODEL   Model to use (default: kimchi-dev/claude-opus-4-6)
+  -s, --session PATH  Write session JSONL to PATH (kimchi only)
   -h, --help          Show this help
 
 Examples:
@@ -154,6 +156,7 @@ while [[ $# -gt 0 ]]; do
         -d|--dir) TARGET_DIR="$2"; shift 2 ;;
         -r|--runner) RUNNER="$2"; shift 2 ;;
         -m|--model) MODEL="$2"; shift 2 ;;
+        -s|--session) SESSION_OUT="$2"; shift 2 ;;
         *)
             if [[ -f "$1" ]]; then
                 SESSION_FILE="$1"
@@ -247,7 +250,12 @@ run_audit_agent() {
 
     case "$runner" in
         kimchi)
-            kimchi --model "$model" --yolo "@${prompt_file}"
+            local -a kimchi_args=(--model "$model" --yolo)
+            if [[ -n "$SESSION_OUT" ]]; then
+                kimchi_args+=(--session "$SESSION_OUT")
+            fi
+            kimchi_args+=("@${prompt_file}")
+            kimchi "${kimchi_args[@]}"
             ;;
         claude)
             claude --model "$model" --dangerously-skip-permissions "$(cat "$prompt_file")"

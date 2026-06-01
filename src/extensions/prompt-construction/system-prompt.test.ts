@@ -360,9 +360,9 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("Orchestrate the work")
 			expect(result).not.toContain("Model selection for delegation")
 			expect(result).not.toContain("Token budgets")
-			expect(result).not.toContain("Orchestrate the work")
 			expect(result).not.toContain("Sharing context between agents")
 			expect(result).not.toContain("Subagent response protocol")
+			expect(result).toContain("Single-Model Mode")
 		})
 
 		it("includes core sections", () => {

@@ -53,6 +53,12 @@ for (const file of kimchiThemeFiles) {
 if (!isDev) {
 	cpSync(join(projectRoot, "package.json"), join(projectRoot, "dist", "share", "kimchi", "package.json"))
 
+	// Copy custom OAuth page templates
+	const oauthSrc = join(projectRoot, "resources", "oauth")
+	const oauthDest = join(projectRoot, "dist", "share", "kimchi", "oauth")
+	mkdirSync(oauthDest, { recursive: true })
+	cpSync(oauthSrc, oauthDest, { recursive: true })
+
 	// Copy proxy-helper binary built by tools/proxy-helper/Makefile
 	const proxyHelperSrc = join(projectRoot, "tools", "proxy-helper", "bin", "proxy-helper")
 	const proxyHelperBinDest = join(projectRoot, "dist", "share", "kimchi", "bin")

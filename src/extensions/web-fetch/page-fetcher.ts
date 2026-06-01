@@ -52,7 +52,7 @@ export interface FetchResult {
 export class FetchError extends Error {
 	constructor(
 		message: string,
-		public readonly category: "timeout" | "http" | "network" | "binary" | "too_large" | "unknown",
+		public readonly category: "timeout" | "cancelled" | "http" | "network" | "binary" | "too_large" | "unknown",
 	) {
 		super(message)
 		this.name = "FetchError"
@@ -63,6 +63,7 @@ export interface FetchOptions {
 	timeoutSeconds?: number
 	/** Requested output format — when "text" and Playwright is active, uses page.textContent(). */
 	format?: "markdown" | "text" | "html"
+	signal?: AbortSignal
 }
 
 function isBinaryContentType(ct: string): boolean {
@@ -103,6 +104,20 @@ async function fetchWithPlaywright(
 ): Promise<FetchResult> {
 	const timeoutMs = (options?.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000
 	const page = await browser.newPage()
+
+	if (options?.signal) {
+		if (options.signal.aborted) {
+			void page.close().catch(() => {})
+			throw new FetchError(`Fetch of "${url}" was cancelled`, "cancelled")
+		}
+		options.signal.addEventListener(
+			"abort",
+			() => {
+				void page.close().catch(() => {})
+			},
+			{ once: true },
+		)
+	}
 
 	try {
 		const response = await page.goto(url, {
@@ -207,6 +222,9 @@ async function fetchWithPlaywright(
 		}
 	} catch (err: unknown) {
 		if (err instanceof FetchError) throw err
+		if (options?.signal?.aborted) {
+			throw new FetchError(`Fetch of "${url}" was cancelled`, "cancelled")
+		}
 		const name = err instanceof Error ? err.name : ""
 		const message = err instanceof Error ? err.message : String(err)
 		if (name === "TimeoutError" || message.includes("Timeout") || message.includes("timeout")) {
@@ -243,11 +261,12 @@ async function fetchWithNative(url: string, options?: FetchOptions): Promise<Fet
 	const timeoutMs = (options?.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000
 	const controller = new AbortController()
 	const timer = setTimeout(() => controller.abort(), timeoutMs)
+	const signal = options?.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal
 
 	let response: Response
 	try {
 		response = await fetch(url, {
-			signal: controller.signal,
+			signal,
 			redirect: "follow",
 			headers: {
 				Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -256,6 +275,9 @@ async function fetchWithNative(url: string, options?: FetchOptions): Promise<Fet
 	} catch (err: unknown) {
 		clearTimeout(timer)
 		if (err instanceof DOMException && err.name === "AbortError") {
+			if (options?.signal?.aborted) {
+				throw new FetchError(`Fetch of "${url}" was cancelled`, "cancelled")
+			}
 			throw new FetchError(
 				`Timeout: request to "${url}" timed out after ${options?.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS} seconds`,
 				"timeout",

@@ -1,10 +1,14 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import type { FermentEventStore } from "../../ferment/event-store.js"
+import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerFermentEvents } from "./events.js"
 import type { FermentRuntime } from "./runtime.js"
 import { createDefaultFermentRuntime } from "./runtime.js"
-import { FERMENT_TOOL_NAMES } from "./tool-scope.js"
+import { clearActiveFermentId } from "./state.js"
+import { FERMENT_TOOL_NAMES } from "./tool-names.js"
 
 type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown
 
@@ -38,13 +42,14 @@ function createPi() {
 }
 
 afterEach(() => {
-	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
+	vi.unstubAllEnvs()
+	clearActiveFermentId()
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 })
 
 describe("registerFermentEvents", () => {
 	it("clears injected runtime state and active cache when env resume id is missing", async () => {
-		process.env.KIMCHI_ACTIVE_FERMENT = "missing-ferment-id"
+		vi.stubEnv("KIMCHI_ACTIVE_FERMENT", "missing-ferment-id")
 		const storage = { get: vi.fn(() => undefined) } as unknown as FermentEventStore
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
@@ -251,5 +256,57 @@ describe("registerFermentEvents", () => {
 		} finally {
 			Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 		}
+	})
+
+	it("uses the buffered proposal title when draft confirmation happens at turn end", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-events-title-test-")))
+		const draft = storage.create("Draft Raw Intent")
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		runtime.setActive(draft)
+		runtime.setPendingScope(draft.id, {
+			title: "Google OAuth Login",
+			goal: "Users can sign in with Google OAuth",
+			successCriteria: "OAuth login works",
+			constraints: [],
+			phases: [{ name: "Build", goal: "Implement OAuth", steps: [{ description: "Add login flow" }] }],
+		})
+		const { handlers, pi } = createPi()
+		registerFermentEvents(pi, runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const select = vi.fn().mockResolvedValueOnce("Yes, this looks right").mockResolvedValueOnce("✓ Confirm and start")
+		const ctx = {
+			ui: {
+				select,
+				input: vi.fn(),
+				notify: vi.fn(),
+			},
+		}
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "Does this look right?" }],
+				},
+			},
+			ctx,
+		)
+
+		expect(storage.get(draft.id)?.name).toBe("Google OAuth Login")
+		expect(storage.get(draft.id)?.status).toBe("planned")
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_ack",
+				details: expect.objectContaining({
+					text: 'Named ferment "Google OAuth Login" (was "Draft Raw Intent").',
+				}),
+			}),
+			{ triggerTurn: false },
+		)
+		expect(ctx.ui.notify).toHaveBeenCalledWith('Plan saved for "Google OAuth Login". 1 phase(s) ready.')
 	})
 })

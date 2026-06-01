@@ -33,7 +33,7 @@ import {
 } from "@earendil-works/pi-tui"
 
 import * as Diff from "diff"
-import { getBashCommandForDisplay } from "./bash-collapse.js"
+import { getBashCommandForDisplay } from "./rtk-rewrite.js"
 import type { BundledLanguage, BundledTheme } from "shiki"
 
 const RESET = "\x1b[0m"
@@ -190,7 +190,8 @@ function stripAnsi(text: string): string {
 }
 
 function isBlankLine(text: string): boolean {
-	return stripAnsi(text).trim().length === 0
+	// Strip ANSI escapes and the ▍ stroke prefix (with its trailing space) before checking.
+	return stripAnsi(text).replace(/▍ ?/g, "").trim().length === 0
 }
 
 function borderLine(width: number): string {
@@ -369,69 +370,19 @@ function appendWorkedDurationLine(message: any, durationMs: number): void {
 	lastText.text = `${text.trimEnd()}\n\n${inlineWorkedDurationText(durationMs)}`
 }
 
-// Cached accent-colored › prefix — same glyph+color the prompt editor uses.
-// Rebuilt whenever the theme changes (visibleWidth is always 2: "› " + reset).
-let _userPromptPrefix = "❯ "
-let _userPromptPrefixTheme: unknown = null
+// OSC 133 zone markers that UserMessageComponent prepends/appends for shell integration.
+// A one-line message can start with multiple markers because the first and last
+// rendered lines are the same physical line.
+const OSC133_MARKER_RE = /^(?:\x1b\]133;[ABC]\x07)+/
 
-function getUserPromptPrefix(theme: any): string {
-	if (theme !== _userPromptPrefixTheme) {
-		_userPromptPrefixTheme = theme
-		_userPromptPrefix = typeof theme?.fg === "function" ? `${theme.fg("accent", "❯")} ` : "❯ "
-	}
-	return _userPromptPrefix
+export function splitLeadingOsc133Markers(line: string): { markers: string; rest: string } {
+	const match = line.match(OSC133_MARKER_RE)
+	if (!match) return { markers: "", rest: line }
+	const markers = match[0]
+	return { markers, rest: line.slice(markers.length) }
 }
 
-function skipAnsiEscapes(line: string, i: number): number {
-	while (i < line.length && line[i] === "\x1b") {
-		const m = line.indexOf("m", i)
-		if (m === -1) return i
-		i = m + 1
-	}
-	return i
-}
-
-function insertUserPromptPrefix(line: string, theme: any): string {
-	// Line structure from Box(paddingX=1, bgFn):
-	//   [1 plain space][ANSI color][▍ ][ANSI reset][content][1+ trailing spaces]
-	// We insert "❯ " right after the stroke and trim trailing spaces to maintain width.
-	const originalWidth = visibleWidth(line)
-	let i = 0
-
-	// Skip leading plain spaces (leftPad = paddingX = 1)
-	while (i < line.length && line[i] === " ") i++
-
-	// Skip ANSI color for stroke
-	i = skipAnsiEscapes(line, i)
-
-	// Skip STROKE_PREFIX "▍ " (2 chars: the bar glyph + a space)
-	if (i >= line.length) return line
-	i++ // skip "▍"
-	if (i < line.length && line[i] === " ") i++ // skip the space in STROKE_PREFIX
-
-	// Skip ANSI reset after stroke
-	i = skipAnsiEscapes(line, i)
-
-	// Insert "❯ " here and remove 2 trailing spaces to keep visible width constant
-	const prefix = getUserPromptPrefix(theme)
-	const inserted = line.slice(0, i) + prefix + line.slice(i)
-	// Drop 2 trailing spaces (Box always pads paddingX=2 spaces at the end)
-	let end = inserted.length
-	let removed = 0
-	while (end > i && removed < 2 && inserted[end - 1] === " ") {
-		end--
-		removed++
-	}
-	const result = inserted.slice(0, end)
-	// Guard: if content nearly filled the line and there were not enough trailing
-	// spaces to trim, the result could overflow. Truncate to the original width.
-	if (visibleWidth(result) > originalWidth) {
-		return truncateToWidth(result, originalWidth)
-	}
-	return result
-}
-
-function patchUserMessageRender(): void {
+export function patchUserMessageRender(): void {
 	const proto = UserMessageComponent.prototype as any
 	if (proto[USER_MESSAGE_PATCH_FLAG]) return
 	const originalRender = proto.render
@@ -439,13 +390,32 @@ function patchUserMessageRender(): void {
 	proto.render = function patchedUserMessageRender(width: number) {
 		const box = (this as any).contentBox
 		if (box) {
-			box.paddingX = 1
+			// Remove the ▍ stroke and blank padding lines. paddingX=0 lets content
+			// render at full width; we prepend the prefix and truncate explicitly.
+			box.bgFn = null
+			box.paddingY = 0
+			box.paddingX = 0
 			box.invalidateCache?.()
 		}
-		const lines: string[] = originalRender.call(this, width)
+		const theme = _themePaletteCacheTheme as any
+		const glyph = typeof theme?.fg === "function" ? theme.fg("accent", "❯") : "❯"
+		const prefix = ` ${glyph} `
+		const prefixW = visibleWidth(prefix)
+		// Render content narrower so all lines fit when we prepend the indent.
+		const innerWidth = Math.max(1, width - prefixW)
+		const lines: string[] = originalRender.call(this, innerWidth)
 		if (!Array.isArray(lines) || lines.length === 0) return lines
-		// Only the first content line (index 1) gets the ❯ prefix; padding and continuation lines are unchanged.
-		return lines.map((line, i) => (i === 1 ? insertUserPromptPrefix(line, _themePaletteCacheTheme) : line))
+		const indent = " ".repeat(prefixW)
+		const hasBg = typeof theme?.bg === "function"
+		for (let i = 0; i < lines.length; i++) {
+			const linePrefix = i === 0 ? prefix : indent
+			const { markers, rest } = i === 0 ? splitLeadingOsc133Markers(lines[0]) : { markers: "", rest: lines[i] }
+			const composed = linePrefix + rest
+			const pad = Math.max(0, width - visibleWidth(composed))
+			const styled = hasBg ? theme.bg("userMessageBg", composed + " ".repeat(pad)) : composed
+			lines[i] = markers + styled
+		}
+		return lines
 	}
 	proto[USER_MESSAGE_PATCH_FLAG] = true
 }
@@ -3150,7 +3120,7 @@ function renderMcpToolResult(result: any, expanded: boolean, isPartial: boolean,
 	return makeText(ctx.lastComponent, withBranch(`${statusText}\n${preview}`, theme))
 }
 
-function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, sp: (path: string) => string): string {
+export function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, sp: (path: string) => string): string {
 	switch (name) {
 		case "apply_patch": {
 			const patchText = getStringArg(args, "patchText", "patch_text")
@@ -3184,8 +3154,19 @@ function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, sp: (pat
 		case "question":
 			return summarizeText(getStringArg(args, "question") || "ask user", 72)
 		case "questionnaire": {
-			const questions = Array.isArray(args?.questions) ? args.questions.length : 0
-			return questions > 0 ? `${questions} questions` : theme.fg("muted", "questionnaire")
+			const qs = Array.isArray(args?.questions) ? (args.questions as Array<Record<string, unknown>>) : []
+			if (qs.length === 0) return theme.fg("muted", "questionnaire")
+			let firstText = ""
+			for (const key of ["question", "prompt", "text"]) {
+				const value = qs[0]?.[key]
+				if (typeof value === "string") {
+					firstText = value
+					break
+				}
+			}
+			if (!firstText) return `${qs.length} question${qs.length === 1 ? "" : "s"}`
+			if (qs.length === 1) return summarizeText(firstText, 72)
+			return `${summarizeText(firstText, 48)} ${theme.fg("muted", `(+${qs.length - 1} more)`)}`
 		}
 		case "context_tag":
 			return getStringArg(args, "name") || theme.fg("muted", "save point")

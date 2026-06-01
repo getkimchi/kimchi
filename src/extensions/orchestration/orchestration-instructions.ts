@@ -27,6 +27,9 @@ export function resolveOrchestrationInstructions(ctx: OrchestrationInstructionsC
 	if (ctx.mode === "orchestrator") {
 		return resolveOrchestratorInstructions(ctx)
 	}
+	if (ctx.mode === "single") {
+		return resolveSingleModelInstructions(ctx.currentModelId)
+	}
 	return ""
 }
 
@@ -248,6 +251,19 @@ function buildRoleAssignmentsSection(roles: ModelRoles, registry?: ModelRegistry
 		),
 	)
 	return `## Your Team\n\n${lines.join("\n")}`
+}
+
+// ---------------------------------------------------------------------------
+// Single-Model Mode Instructions
+// ---------------------------------------------------------------------------
+
+function resolveSingleModelInstructions(currentModelId?: string): string {
+	const modelClause = currentModelId ? ` Your model ID is \`${currentModelId}\`.` : ""
+	return `## Single-Model Mode
+
+You are running in single-model mode.${modelClause} All work in this session runs on the currently selected model. Handle tasks directly yourself unless delegation is clearly beneficial.
+
+You may spawn subagents with the \`Agent\` tool for parallel work or to isolate long-running tasks. When you do, you MUST always pass your own model ID in the \`model\` parameter — never delegate to a different model.`
 }
 
 // ---------------------------------------------------------------------------

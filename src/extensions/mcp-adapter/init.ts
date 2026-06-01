@@ -33,7 +33,14 @@ export async function initializeMcp(
 	registerBootstrappedDirectTools?: (specs: DirectToolSpec[], ctx?: Pick<ExtensionContext, "cwd">) => string[],
 ): Promise<McpExtensionState> {
 	const configPath = pi.getFlag("mcp-config") as string | undefined
-	const config = loadMcpConfig(configPath)
+	const { config, warnings: configWarnings } = loadMcpConfig(configPath)
+	for (const warning of configWarnings) {
+		if (ctx.hasUI) {
+			ctx.ui.notify(warning, "warning")
+		} else {
+			console.warn(warning)
+		}
+	}
 
 	const manager = new McpServerManager()
 	const lifecycle = new McpLifecycleManager(manager)

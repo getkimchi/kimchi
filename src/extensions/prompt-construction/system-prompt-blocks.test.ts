@@ -4,6 +4,7 @@ import { createSystemPromptBlocks } from "./system-prompt-blocks.js"
 import { type EnvironmentInfo, buildSystemPrompt } from "./system-prompt.js"
 
 type ShutdownHandler = () => void
+type StartHandler = (event: unknown, ctx: { sessionManager: { getSessionId: () => string } }) => void
 
 const testEnv: EnvironmentInfo = {
 	os: "Linux",
@@ -17,34 +18,49 @@ const testEnv: EnvironmentInfo = {
 
 const testTools = [{ name: "read", description: "Read file contents" }]
 
+const TEST_SESSION_ID = "test-session"
 const activePis: Array<{ fireShutdown: () => void }> = []
 
-function makePi(): ExtensionAPI & { fireShutdown: () => void } {
+function makePi(sessionId = TEST_SESSION_ID): ExtensionAPI & {
+	fireShutdown: () => void
+	sessionId: string
+} {
 	const shutdownHandlers: ShutdownHandler[] = []
+	const ctx = { sessionManager: { getSessionId: () => sessionId } }
 	const pi = {
-		on(event: string, handler: ShutdownHandler) {
-			if (event === "session_shutdown") shutdownHandlers.push(handler)
+		on(event: string, handler: ShutdownHandler | StartHandler) {
+			if (event === "session_shutdown") shutdownHandlers.push(handler as ShutdownHandler)
+			// Fire session_start synchronously on registration so sessionIdByPi is
+			// populated before any render call. Mirrors pi-mono firing the event
+			// once the session is created.
+			if (event === "session_start") (handler as StartHandler)({}, ctx)
 		},
 		fireShutdown() {
 			for (const handler of shutdownHandlers) handler()
 		},
+		sessionId,
 	}
 	activePis.push(pi)
-	return pi as unknown as ExtensionAPI & { fireShutdown: () => void }
+	return pi as unknown as ExtensionAPI & { fireShutdown: () => void; sessionId: string }
 }
 
-function prompt(pi?: ExtensionAPI): string {
+function prompt(pi?: ExtensionAPI & { sessionId?: string }): string {
 	return buildSystemPrompt({
-		pi,
+		tools: testTools,
+		env: testEnv,
+		contextFiles: [{ path: "/repo/AGENTS.md", content: "Project rule." }],
+		mode: "orchestrator",
+		sessionId: pi?.sessionId ?? TEST_SESSION_ID,
+	})
+}
+
+function idlePrompt(): string {
+	return buildSystemPrompt({
 		tools: testTools,
 		env: testEnv,
 		contextFiles: [{ path: "/repo/AGENTS.md", content: "Project rule." }],
 		mode: "orchestrator",
 	})
-}
-
-function idlePrompt(): string {
-	return prompt()
 }
 
 afterEach(() => {
@@ -162,7 +178,6 @@ describe("system prompt blocks", () => {
 		})
 
 		const result = buildSystemPrompt({
-			pi,
 			tools: testTools,
 			env: testEnv,
 			contextFiles: [{ path: "/repo/AGENTS.md", content: "Project rule." }],
@@ -177,6 +192,7 @@ describe("system prompt blocks", () => {
 				},
 			],
 			mode: "orchestrator",
+			sessionId: TEST_SESSION_ID,
 		})
 
 		expect(result).toContain("## A Block")
@@ -258,22 +274,21 @@ describe("system prompt blocks", () => {
 		expect(prompt(pi)).toContain("## Two")
 	})
 
-	it("renders only blocks registered to the pi building the prompt", () => {
+	it("renders blocks from all pi instances (global registry for cross-extension use)", () => {
+		// Each extension receives a unique pi from pi-mono's loader; a WeakMap keyed
+		// per-pi would silently drop other extensions' blocks. The global registry
+		// ensures any pi's renderSystemPromptBlocks call sees all registered blocks.
 		const piA = makePi()
 		const piB = makePi()
 		createSystemPromptBlocks(piA, "a").register({ id: "one", render: () => "## Pi A Block" })
 		createSystemPromptBlocks(piB, "b").register({ id: "one", render: () => "## Pi B Block" })
 
-		const resultA = prompt(piA)
-		expect(resultA).toContain("## Pi A Block")
-		expect(resultA).not.toContain("## Pi B Block")
-
-		const resultB = prompt(piB)
-		expect(resultB).not.toContain("## Pi A Block")
-		expect(resultB).toContain("## Pi B Block")
+		const result = prompt(piA)
+		expect(result).toContain("## Pi A Block")
+		expect(result).toContain("## Pi B Block")
 	})
 
-	it("keeps registrations isolated across pi instances after shutdown", () => {
+	it("drops only pi A's blocks when piA shuts down; piB's remain in the same session", () => {
 		const piA = makePi()
 		const piB = makePi()
 		createSystemPromptBlocks(piA, "a").register({ id: "one", render: () => "## Pi A Block" })
@@ -284,5 +299,21 @@ describe("system prompt blocks", () => {
 		const result = prompt(piB)
 		expect(result).not.toContain("## Pi A Block")
 		expect(result).toContain("## Pi B Block")
+	})
+
+	it("isolates blocks across sessions: parent session does not see subagent session's blocks", () => {
+		// In-process subagents share module state but have distinct session IDs.
+		const parent = makePi("parent-session")
+		const subagent = makePi("subagent-session")
+		createSystemPromptBlocks(parent, "ext").register({ id: "block", render: () => "## Parent Block" })
+		createSystemPromptBlocks(subagent, "ext").register({ id: "block", render: () => "## Subagent Block" })
+
+		const parentPrompt = prompt(parent)
+		expect(parentPrompt).toContain("## Parent Block")
+		expect(parentPrompt).not.toContain("## Subagent Block")
+
+		const subagentPrompt = prompt(subagent)
+		expect(subagentPrompt).toContain("## Subagent Block")
+		expect(subagentPrompt).not.toContain("## Parent Block")
 	})
 })

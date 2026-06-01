@@ -3,6 +3,7 @@
  */
 
 import { truncateToWidth } from "@earendil-works/pi-tui"
+import { remountTipWidget } from "../../tips/index.js"
 import type { AgentManager } from "../manager/agent-manager.js"
 import { type LifetimeUsage, type SessionLike, getLifetimeTotal, getSessionContextPercent } from "../manager/usage.js"
 import { getConfig } from "../personas/agent-types.js"
@@ -432,6 +433,9 @@ export class AgentWidget {
 				{ placement: "aboveEditor" },
 			)
 			this.widgetRegistered = true
+			// Re-insert tip widget after agents so it renders directly above the editor
+			// (framework renders aboveEditor widgets in Map insertion order).
+			remountTipWidget()
 		} else {
 			;(this.tui as { requestRender?(): void } | undefined)?.requestRender?.()
 		}

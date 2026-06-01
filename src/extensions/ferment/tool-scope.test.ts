@@ -1,11 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
-import {
-	FERMENT_TOOL_NAMES,
-	applyFermentToolProfile,
-	applyPlannerOneshotAllowlist,
-	profileForFerment,
-} from "./tool-scope.js"
+import { FERMENT_TOOLS, FERMENT_TOOL_NAMES } from "./tool-names.js"
+import { applyFermentToolProfile, applyPlannerOneshotAllowlist, profileForFerment } from "./tool-scope.js"
 
 function createPi(activeTools: string[], allTools: string[]) {
 	let active = [...activeTools]
@@ -39,13 +35,13 @@ describe("ferment tool scope", () => {
 
 	it("applies the idle profile as discovery-only ferment tools", () => {
 		const pi = createPi(
-			["read", "bash", "scope_ferment", "activate_ferment_phase", "list_ferments"],
-			["read", "bash", "scope_ferment", "activate_ferment_phase", "list_ferments"],
+			["read", "bash", "scope_ferment", "activate_ferment_phase", "list_ferments", "ask_user"],
+			["read", "bash", "scope_ferment", "activate_ferment_phase", "list_ferments", "ask_user"],
 		)
 
 		applyFermentToolProfile(pi, "idle")
 
-		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "list_ferments"])
+		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", FERMENT_TOOLS.LIST])
 	})
 
 	it("keeps the existing-ferment lifecycle surface for an active planner profile", () => {
@@ -63,13 +59,13 @@ describe("ferment tool scope", () => {
 
 	it("keeps only non-mutating ferment discovery while paused or terminal", () => {
 		const pi = createPi(
-			["read", "bash", "list_ferments", "complete_ferment"],
-			["read", "bash", "list_ferments", "complete_ferment"],
+			["read", "bash", "list_ferments", "complete_ferment", "ask_user"],
+			["read", "bash", "list_ferments", "complete_ferment", "ask_user"],
 		)
 
 		applyFermentToolProfile(pi, "paused-terminal")
 
-		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "list_ferments"])
+		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", FERMENT_TOOLS.LIST])
 	})
 
 	it("selects session profiles from ferment role and status", () => {
