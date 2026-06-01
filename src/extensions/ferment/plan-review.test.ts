@@ -93,12 +93,17 @@ describe("plan review pending state", () => {
 })
 
 describe("PlanReviewComponent", () => {
-	it("toggles the selected decision option with arrow keys", () => {
+	it("cycles the selected decision option with arrow keys", () => {
 		const { component, tui } = createComponent()
 
 		component.handleInput?.("\x1b[B")
+		expect(component.render(80).join("\n")).toContain("> Start in auto mode")
 
+		component.handleInput?.("\x1b[B")
 		expect(component.render(80).join("\n")).toContain("> Let me say something")
+
+		component.handleInput?.("\x1b[A")
+		expect(component.render(80).join("\n")).toContain("> Start in auto mode")
 		expect(tui.requestRender).toHaveBeenCalled()
 	})
 
@@ -110,9 +115,19 @@ describe("PlanReviewComponent", () => {
 		expect(done).toHaveBeenCalledWith({ kind: "start" })
 	})
 
-	it("switches to feedback mode when the second decision option is submitted", () => {
+	it("submits auto start from the second decision option", () => {
+		const { component, done } = createComponent()
+
+		component.handleInput?.("\x1b[B")
+		component.handleInput?.("\r")
+
+		expect(done).toHaveBeenCalledWith({ kind: "start_auto" })
+	})
+
+	it("switches to feedback mode when the third decision option is submitted", () => {
 		const { component } = createComponent()
 
+		component.handleInput?.("\x1b[B")
 		component.handleInput?.("\x1b[B")
 		component.handleInput?.("\r")
 
@@ -131,6 +146,7 @@ describe("PlanReviewComponent", () => {
 		const { component, done } = createComponent()
 
 		component.handleInput?.("\x1b[B")
+		component.handleInput?.("\x1b[B")
 		component.handleInput?.("\r")
 		component.handleInput?.("\r")
 
@@ -141,6 +157,7 @@ describe("PlanReviewComponent", () => {
 		const { component, done } = createComponent()
 
 		component.handleInput?.("\x1b[B")
+		component.handleInput?.("\x1b[B")
 		component.handleInput?.("\r")
 		component.handleInput?.("\x1b")
 
@@ -150,6 +167,7 @@ describe("PlanReviewComponent", () => {
 	it("submits non-empty feedback text", () => {
 		const { component, done } = createComponent()
 
+		component.handleInput?.("\x1b[B")
 		component.handleInput?.("\x1b[B")
 		component.handleInput?.("\r")
 		component.handleInput?.("drop phase 2")
