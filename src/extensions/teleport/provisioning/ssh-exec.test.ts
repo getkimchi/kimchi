@@ -60,7 +60,8 @@ describe("runSshCommandOnSandbox", () => {
 		await promise
 
 		expect(calls).toHaveLength(1)
-		const call = calls[0]!
+		const call = calls[0]
+		if (!call) throw new Error("expected one captured call")
 		expect(call.command).toBe("ssh")
 		expect(call.args).toContain("-T")
 		expect(call.args).toContain("ProxyCommand=/tmp/proxy %h")
@@ -133,7 +134,7 @@ describe("runSshCommandOnSandbox", () => {
 		queueMicrotask(() => child.emit("close", 0))
 		await promise
 
-		const opts = calls[0]!.options as { stdio: [string, string, string] }
+		const opts = calls[0]?.options as { stdio: [string, string, string] }
 		expect(opts.stdio[0]).toBe("pipe")
 		expect(Buffer.concat(written).toString("utf-8")).toBe(payload.toString("utf-8"))
 	})

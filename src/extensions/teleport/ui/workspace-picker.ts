@@ -152,6 +152,7 @@ class WorkspacePickerPanel implements Component {
 	dispose(): void {}
 }
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: needed for ANSI stripping
 const ANSI_RE = /\x1b\[[0-9;]*m/g
 
 function stripAnsi(s: string): string {

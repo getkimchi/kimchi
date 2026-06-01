@@ -58,7 +58,7 @@ describe("cloneRepoOnSandbox", () => {
 			_spawn: spawn as never,
 		})
 		expect(calls).toHaveLength(1)
-		expect(calls[0]!.at(-1)).toBe("git clone --depth 1 'https://github.com/me/repo.git' '/home/sandbox/repo/'")
+		expect(calls[0]?.at(-1)).toBe("git clone --depth 1 'https://github.com/me/repo.git' '/home/sandbox/repo/'")
 	})
 
 	it("omits --depth when shallow=false", async () => {
@@ -70,7 +70,7 @@ describe("cloneRepoOnSandbox", () => {
 			shallow: false,
 			_spawn: spawn as never,
 		})
-		expect(calls[0]!.at(-1)).toBe("git clone 'u' '/d/'")
+		expect(calls[0]?.at(-1)).toBe("git clone 'u' '/d/'")
 	})
 
 	it("adds --branch and --single-branch when branch is set", async () => {
@@ -82,7 +82,7 @@ describe("cloneRepoOnSandbox", () => {
 			branch: "main",
 			_spawn: spawn as never,
 		})
-		expect(calls[0]!.at(-1)).toBe("git clone --depth 1 --branch 'main' --single-branch 'u' '/d/'")
+		expect(calls[0]?.at(-1)).toBe("git clone --depth 1 --branch 'main' --single-branch 'u' '/d/'")
 	})
 
 	it("shell-escapes a branch containing single quotes", async () => {
@@ -94,6 +94,6 @@ describe("cloneRepoOnSandbox", () => {
 			branch: "weird'branch",
 			_spawn: spawn as never,
 		})
-		expect(calls[0]!.at(-1)).toContain("--branch 'weird'\\''branch'")
+		expect(calls[0]?.at(-1)).toContain("--branch 'weird'\\''branch'")
 	})
 })

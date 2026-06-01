@@ -158,8 +158,8 @@ async function runGitProvisioning(
 	workspaceId: string,
 	progress: ReturnType<typeof createTeleportProgress>,
 ): Promise<void> {
-	const isGitCloneMode = !!args.gitRepo
-	const gitHost = isGitCloneMode ? parseHostFromRemoteUrl(args.gitRepo!) : await getGitRemoteHost(ctx.cwd)
+	const gitRepo = args.gitRepo
+	const gitHost = gitRepo ? parseHostFromRemoteUrl(gitRepo) : await getGitRemoteHost(ctx.cwd)
 
 	let gitToken: string | undefined
 	if (!args.noGitToken && gitHost) {
@@ -230,15 +230,15 @@ async function runGitProvisioning(
 		}
 	}
 
-	if (isGitCloneMode) {
+	if (gitRepo) {
 		progress.step("Cloning repository")
 		try {
 			await cloneRepoOnSandbox({
 				remoteHost: creds.host,
 				remoteUser: SANDBOX_USER,
 				authToken: creds.connectToken,
-				repoUrl: args.gitRepo!,
-				destination: deriveSandboxDestFromRepoUrl(args.gitRepo!),
+				repoUrl: gitRepo,
+				destination: deriveSandboxDestFromRepoUrl(gitRepo),
 				branch: args.branch,
 				shallow: !args.noShallow,
 				signal: ctx.signal,

@@ -12,6 +12,7 @@ function mockTui(): TUI {
 }
 
 function stripAnsi(str: string): string {
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: needed for ANSI + cursor-marker stripping
 	return str.replace(/\x1b\[[0-9;]*m/g, "").replace(/\x1b_pi:c\x07/g, "")
 }
 

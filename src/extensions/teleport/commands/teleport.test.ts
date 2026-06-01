@@ -57,9 +57,7 @@ vi.mock("../../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: authMo
 vi.mock("../../../sandbox/cloud/readiness.js", () => ({ waitForWorkspaceReady: waitReadyMock }))
 vi.mock("../../../sandbox/cloud/workspaces.js", () => ({ listWorkspaces: listWorkspacesMock }))
 vi.mock("../../../sandbox/worker/client.js", () => ({
-	WorkerClient: class {
-		constructor(_creds: unknown) {}
-	},
+	WorkerClient: class {},
 }))
 vi.mock("../../../sandbox/worker/sessions.js", () => ({
 	listSessions: listSessionsMock,

@@ -38,12 +38,14 @@ function cellStyle(cell: CellData): string {
 	return parts.length === 0 ? "" : `\x1b[${parts.join(";")}m`
 }
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC introduces a CSI sequence we must parse
 const KITTY_CSI_U_RE = /^\x1b\[(\d+)(?::(\d*))?(?::(\d+))?(?:;(\d+))?(?::(\d+))?u$/
 const KITTY_LOCK_MASK = 64 + 128
 
 export function toRawAnsi(data: string): Buffer | undefined {
 	// Legacy arrow sequences with optional kitty event suffix:
 	// \x1b[1;<mod>:<event>A/B/C/D
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC introduces the legacy arrow CSI
 	const mArrow = data.match(/^\x1b\[1;(\d+)(?::(\d+))?([ABCD])$/)
 	if (mArrow) {
 		const mod = Number.parseInt(mArrow[1], 10)
@@ -55,6 +57,7 @@ export function toRawAnsi(data: string): Buffer | undefined {
 
 	// Legacy functional key sequences with optional kitty event suffix:
 	// \x1b[<num>;<mod>:<event>~
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC introduces the functional-key CSI
 	const mFunc = data.match(/^\x1b\[(\d+)(?:;(\d+))?(?::(\d+))?~$/)
 	if (mFunc) {
 		const num = Number.parseInt(mFunc[1], 10)
@@ -66,6 +69,7 @@ export function toRawAnsi(data: string): Buffer | undefined {
 
 	// Legacy home/end sequences with optional kitty event suffix:
 	// \x1b[1;<mod>:<event>H/F
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC introduces the home/end CSI
 	const mHomeEnd = data.match(/^\x1b\[1;(\d+)(?::(\d+))?([HF])$/)
 	if (mHomeEnd) {
 		const mod = Number.parseInt(mHomeEnd[1], 10)
@@ -194,6 +198,7 @@ interface MouseScroll {
 function parseMouseScroll(data: string): MouseScroll | undefined {
 	// SGR scroll: ESC [ < 64 ; x ; y M   (scroll up)
 	// SGR scroll: ESC [ < 65 ; x ; y M   (scroll down)
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC introduces the SGR mouse-scroll CSI
 	const sgrMatch = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/)
 	if (sgrMatch) {
 		const button = Number.parseInt(sgrMatch[1], 10)
@@ -258,12 +263,13 @@ export class TerminalComponent implements Component {
 	render(width: number): string[] {
 		let rows = this.heightOverride ?? this.tui.terminal.rows
 		if (rows <= 0 || Number.isNaN(rows)) rows = 24
-		if (width <= 0 || Number.isNaN(width)) width = 80
+		let cols = width
+		if (cols <= 0 || Number.isNaN(cols)) cols = 80
 
-		if (width !== this.prevWidth || rows !== this.prevRows) {
-			this.terminal.resize(width, rows)
-			this.session.resize(rows, width)
-			this.prevWidth = width
+		if (cols !== this.prevWidth || rows !== this.prevRows) {
+			this.terminal.resize(cols, rows)
+			this.session.resize(rows, cols)
+			this.prevWidth = cols
 			this.prevRows = rows
 		}
 
@@ -272,7 +278,7 @@ export class TerminalComponent implements Component {
 		const cursorRow = this.focused && cursor.visible ? cursor.row : -1
 		const cursorCol = this.focused && cursor.visible ? cursor.col : -1
 		for (let i = 0; i < rows; i++) {
-			lines.push(this.getLine(i, width, cursorRow === i ? cursorCol : undefined))
+			lines.push(this.getLine(i, cols, cursorRow === i ? cursorCol : undefined))
 		}
 
 		return lines
@@ -285,7 +291,7 @@ export class TerminalComponent implements Component {
 			const cell = this.terminal.getCell(row, col)
 			const style = cellStyle(cell)
 			if (style !== prevStyle) {
-				text += "\x1b[0m" + style
+				text += `\x1b[0m${style}`
 				prevStyle = style
 			}
 			if (cursorCol === col) {

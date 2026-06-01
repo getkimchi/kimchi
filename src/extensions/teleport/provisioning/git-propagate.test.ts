@@ -29,18 +29,18 @@ function makeSpawn() {
 		const child = makeFakeChild()
 		const captured: Buffer[] = []
 		child.stdin.on("data", (chunk: Buffer) => captured.push(chunk))
-		const idx = calls.length
-		calls.push({ args: [...args], stdin: Buffer.alloc(0) })
+		const call = { args: [...args], stdin: Buffer.alloc(0) as Buffer }
+		calls.push(call)
 		// finalize stdin & emit close once stdin closes (mimics SSH lifecycle)
 		child.stdin.on("finish", () => {
-			calls[idx]!.stdin = Buffer.concat(captured)
+			call.stdin = Buffer.concat(captured)
 			queueMicrotask(() => child.emit("close", 0))
 		})
 		// for stdin-less calls, no "finish" event ever fires — emit close ourselves.
 		queueMicrotask(() => {
 			if (!child.stdin.writableEnded) {
 				// pretend remote did not consume stdin; treat as immediate completion.
-				calls[idx]!.stdin = Buffer.concat(captured)
+				call.stdin = Buffer.concat(captured)
 				child.emit("close", 0)
 			}
 		})
@@ -67,7 +67,7 @@ describe("propagateGitConfigToSandbox", () => {
 		const { spawn, calls } = makeSpawn()
 		await propagateGitConfigToSandbox({ ...COMMON, gitName: "Alice", _spawn: spawn as never })
 		expect(calls).toHaveLength(1)
-		expect(calls[0]!.args.at(-1)).toBe("git config --global user.name 'Alice'")
+		expect(calls[0]?.args.at(-1)).toBe("git config --global user.name 'Alice'")
 	})
 
 	it("issues two SSH calls when both name and email are set, with shell-escaped values", async () => {
@@ -79,8 +79,8 @@ describe("propagateGitConfigToSandbox", () => {
 			_spawn: spawn as never,
 		})
 		expect(calls).toHaveLength(2)
-		expect(calls[0]!.args.at(-1)).toBe("git config --global user.name 'O'\\''Brien'")
-		expect(calls[1]!.args.at(-1)).toBe("git config --global user.email 'ob@example.com'")
+		expect(calls[0]?.args.at(-1)).toBe("git config --global user.name 'O'\\''Brien'")
+		expect(calls[1]?.args.at(-1)).toBe("git config --global user.email 'ob@example.com'")
 	})
 })
 
@@ -95,12 +95,12 @@ describe("propagateGitCredentialToSandbox", () => {
 		})
 
 		expect(calls).toHaveLength(3)
-		expect(calls[0]!.args.at(-1)).toBe("git config --global credential.helper 'cache --timeout=86400'")
-		expect(calls[1]!.args.at(-1)).toBe("git credential approve")
-		expect(calls[1]!.stdin.toString("utf-8")).toBe(
+		expect(calls[0]?.args.at(-1)).toBe("git config --global credential.helper 'cache --timeout=86400'")
+		expect(calls[1]?.args.at(-1)).toBe("git credential approve")
+		expect(calls[1]?.stdin.toString("utf-8")).toBe(
 			["protocol=https", "host=github.com", "username=oauth2", "password=ghp_x", "", ""].join("\n"),
 		)
-		expect(calls[2]!.args.at(-1)).toBe("git config --global url.https://github.com/.insteadOf 'git@github.com:'")
+		expect(calls[2]?.args.at(-1)).toBe("git config --global url.https://github.com/.insteadOf 'git@github.com:'")
 	})
 
 	it("uses a custom gitUsername when provided", async () => {
@@ -112,6 +112,6 @@ describe("propagateGitCredentialToSandbox", () => {
 			gitUsername: "alice",
 			_spawn: spawn as never,
 		})
-		expect(calls[1]!.stdin.toString("utf-8")).toContain("username=alice")
+		expect(calls[1]?.stdin.toString("utf-8")).toContain("username=alice")
 	})
 })
