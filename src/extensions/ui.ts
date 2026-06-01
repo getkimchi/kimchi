@@ -425,15 +425,15 @@ export default function uiExtension(pi: ExtensionAPI) {
 					if (!isKeyRelease(data)) {
 						const allAvailable = ctx.modelRegistry.getAvailable()
 						const enabledIds = getEnabledModelIds()
+						const available = enabledIds
+							? allAvailable.filter((m) => enabledIds.has(`${m.provider}/${m.id}`))
+							: allAvailable
 						const current = ctx.model
 						const orchRef = getOrchestratorModelRef()
 						const orchParsed = splitModelRef(orchRef)
 						const orchestratorModel = orchParsed
 							? ctx.modelRegistry.find(orchParsed.provider, orchParsed.modelId)
 							: undefined
-						const available = enabledIds
-							? allAvailable.filter((m) => enabledIds.has(`${m.provider}/${m.id}`))
-							: allAvailable
 
 						// Cycle order: model[0] → ... → model[last] → multi-model → model[0]
 						// kimi-k2.6 appears as a regular model AND multi-model appears

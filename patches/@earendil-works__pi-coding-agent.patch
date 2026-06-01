@@ -232,17 +232,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
 index 408e38417da84ba9e729cfd5f3dd95b285e57e91..5d4225f409fd7e4ef7dfcbda5e16fded6910a5ed 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -2839,6 +2839,9 @@ export class InteractiveMode {
-             else {
-                 this.footer.invalidate();
-                 this.updateEditorBorderColor();
-+                if (process.__kimchiMultiModelEnabled && process.__kimchiOrchestratorRef && result.model.id !== process.__kimchiOrchestratorRef.split('/').pop()) {
-+                    process.__kimchiMultiModelEnabled = false;
-+                }
-                 const thinkingStr = result.model.reasoning && result.thinkingLevel !== "off" ? ` (thinking: ${result.thinkingLevel})` : "";
-                 this.showStatus(`Switched to ${result.model.name || result.model.id}${thinkingStr}`);
-                 void this.maybeWarnAboutAnthropicSubscriptionAuth(result.model);
-@@ -3301,6 +3304,29 @@ ${chalk.cyan("Tip:")} ${this.getTip()}`;
+@@ -3301,6 +3301,29 @@ ${chalk.cyan("Tip:")} ${this.getTip()}`;
              this.showModelSelector();
              return;
          }
