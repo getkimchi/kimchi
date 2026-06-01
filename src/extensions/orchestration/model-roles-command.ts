@@ -10,6 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { getAvailableModels } from "../../startup-context.js"
 import {
 	DEFAULT_MODEL_ROLES,
+	MODEL_ROLE_KEYS,
 	type ModelRoles,
 	getModelRoles,
 	modelIdFromRef,
@@ -26,16 +27,6 @@ const ROLE_LABELS: Record<keyof ModelRoles, { label: string; description: string
 	explorer: { label: "Explorer", description: "codebase exploration, research" },
 	judge: { label: "Judge", description: "ferment verification and grading" },
 }
-
-const ROLE_KEYS: (keyof ModelRoles)[] = [
-	"orchestrator",
-	"planReviewer",
-	"planner",
-	"builder",
-	"reviewer",
-	"explorer",
-	"judge",
-]
 
 function formatRoleDisplay(role: keyof ModelRoles, modelRef: string): string {
 	const info = ROLE_LABELS[role]
@@ -60,7 +51,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 			const availableModelRefs = apiModels.map((m) => `kimchi-dev/${m.slug}`)
 
 			// Also allow any currently-configured model (it might be from a different provider)
-			for (const key of ROLE_KEYS) {
+			for (const key of MODEL_ROLE_KEYS) {
 				const ref = roles[key]
 				if (!availableModelRefs.includes(ref)) {
 					availableModelRefs.push(ref)
@@ -68,7 +59,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 			}
 
 			const showMainMenu = async (): Promise<void> => {
-				const options = [...ROLE_KEYS.map((key) => formatRoleDisplay(key, roles[key])), "Reset all to defaults"]
+				const options = [...MODEL_ROLE_KEYS.map((key) => formatRoleDisplay(key, roles[key])), "Reset all to defaults"]
 
 				const choice = await ctx.ui.select("Model Roles", options)
 				if (!choice) return
@@ -102,10 +93,10 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				}
 
 				// Find which role was selected
-				const roleIndex = ROLE_KEYS.findIndex((key) => choice === formatRoleDisplay(key, roles[key]))
+				const roleIndex = MODEL_ROLE_KEYS.findIndex((key) => choice === formatRoleDisplay(key, roles[key]))
 				if (roleIndex === -1) return
 
-				const roleKey = ROLE_KEYS[roleIndex]
+				const roleKey = MODEL_ROLE_KEYS[roleIndex]
 				await showRoleEditor(roleKey)
 				await showMainMenu()
 			}

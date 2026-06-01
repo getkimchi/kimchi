@@ -316,11 +316,16 @@ async function runAgentInner(
 
 	const agentDir = getAgentDir()
 
-	// This persona's bound submit tool (AgentConfig.outputToolName), if any. Injected
-	// into the session below and kept active by the gating filter; no other persona's
-	// output tool is injected, so none can leak into this session.
+	// This persona's bound submit tool (AgentConfig.outputToolName), if any. It is
+	// owned by a higher-level extension that subagent sessions do not load, so we
+	// inject ONLY this persona's own installer below — no other persona's output
+	// tool ever enters the session, and none needs stripping. Kept active by the
+	// gating filter further down.
 	const ownOutputTool = agentConfig?.outputToolName
 	const ownOutputFactory = ownOutputTool ? getPersonaOutputToolFactory(ownOutputTool) : undefined
+
+	const extensionFactories = [telemetryExtension(readTelemetryConfig())]
+	if (ownOutputFactory) extensionFactories.push(ownOutputFactory)
 
 	const loader = new DefaultResourceLoader({
 		cwd: effectiveCwd,
@@ -332,11 +337,7 @@ async function runAgentInner(
 		noContextFiles: true,
 		systemPromptOverride: () => systemPrompt,
 		appendSystemPromptOverride: () => [],
-		// A persona's bound submit tool (AgentConfig.outputToolName) is owned by a
-		// higher-level extension that subagent sessions do not load. Inject ONLY this
-		// persona's own installer so the tool exists in its session; foreign output
-		// tools never enter, so no per-persona stripping is needed below.
-		extensionFactories: [telemetryExtension(readTelemetryConfig()), ...(ownOutputFactory ? [ownOutputFactory] : [])],
+		extensionFactories,
 	})
 	await loader.reload()
 

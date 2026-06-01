@@ -64,7 +64,7 @@ export const PlanReviewSchema = Type.Object({
 		description:
 			"Blocking human questions requested by the Plan Reviewer. Use [] when there are none. The planner must convert non-empty questions into propose_ferment_scoping.questions.",
 		default: [],
-		maxItems: 3,
+		maxItems: 11,
 	}),
 })
 
@@ -357,15 +357,7 @@ export const UpdateScopeFieldParams = Type.Object({
 /** Option offered to the user (or the judge standing in for the user in
  *  one-shot mode) by the `ask_user` tool. */
 const AskUserOptionSchema = Type.Object({
-	// `id` is canonical; `value` is accepted as an alias (questionnaire-style
-	// options use `value`). The handler normalizes value → id. At least one must
-	// be present.
-	id: Type.Optional(
-		Type.String({ description: "Stable identifier returned in the response. Pick short snake-case ids." }),
-	),
-	value: Type.Optional(
-		Type.String({ description: "Alias for id (questionnaire-style). Use id; value is accepted too." }),
-	),
+	id: Type.String({ description: "Stable identifier returned in the response. Pick short snake-case ids." }),
 	label: Type.String({ description: "Human-readable label shown in the TUI." }),
 	description: Type.Optional(
 		Type.String({
@@ -376,19 +368,9 @@ const AskUserOptionSchema = Type.Object({
 
 const AskUserQuestionSchema = Type.Object({
 	id: Type.String({ description: "Stable identifier for this question. Returned with the answer." }),
-	type: Type.Union(
-		[
-			Type.Literal("radio"),
-			Type.Literal("checkbox"),
-			Type.Literal("text"),
-			Type.Literal("single"),
-			Type.Literal("multi"),
-		],
-		{
-			description:
-				"radio = single-select, checkbox = multi-select, text = free-form input. Aliases accepted: single→radio, multi→checkbox.",
-		},
-	),
+	type: Type.Union([Type.Literal("radio"), Type.Literal("checkbox"), Type.Literal("text")], {
+		description: "radio = single-select, checkbox = multi-select, text = free-form input.",
+	}),
 	prompt: Type.String({ description: "The full question text shown to the user or judge." }),
 	label: Type.Optional(Type.String({ description: "Short label shown in the TUI tab bar. Defaults to Q1, Q2, etc." })),
 	options: Type.Optional(
@@ -419,19 +401,10 @@ export const AskUserParams = Type.Object({
 		}),
 	),
 	response_type: Type.Optional(
-		Type.Union(
-			[
-				Type.Literal("single"),
-				Type.Literal("multi"),
-				Type.Literal("text"),
-				Type.Literal("radio"),
-				Type.Literal("checkbox"),
-			],
-			{
-				description:
-					"Compatibility shorthand for a single question. single returns choice, multi returns choices, text returns text. Aliases accepted: radio→single, checkbox→multi. Default: single.",
-			},
-		),
+		Type.Union([Type.Literal("single"), Type.Literal("multi"), Type.Literal("text")], {
+			description:
+				"Compatibility shorthand for a single question. single returns choice, multi returns choices, text returns text. Default: single.",
+		}),
 	),
 	question: Type.Optional(
 		Type.String({

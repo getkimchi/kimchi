@@ -77,11 +77,11 @@ describe("DEFAULT_AGENTS", () => {
 		expect(planReviewer.builtinToolNames).toContain("read")
 		expect(planReviewer.builtinToolNames).not.toContain("write")
 		expect(planReviewer.builtinToolNames).not.toContain("edit")
-		// Strictly read-only: no shell access for an adversarial reviewer.
+		// Strictly read-only: no shell access for a critical reviewer.
 		expect(planReviewer.builtinToolNames).not.toContain("bash")
 		expect(planReviewer.extensions).toBe(true)
-		expect(planReviewer.systemPrompt).toContain("adversarial plan reviewer")
-		expect(planReviewer.systemPrompt).toContain('Default to "needs_revision"')
+		expect(planReviewer.systemPrompt).toContain("critical plan reviewer")
+		expect(planReviewer.systemPrompt).toContain("evidence-based")
 		expect(planReviewer.systemPrompt).toContain("<ferment_plan>")
 		expect(planReviewer.systemPrompt).toContain("flag the gap as a required change or open question")
 		expect(planReviewer.systemPrompt).not.toContain("Researcher subagent")

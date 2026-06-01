@@ -6,8 +6,7 @@
  * - Single-model: empty (no orchestration content)
  */
 
-import { DEFAULT_AGENTS } from "../agents/personas/default-agents.js"
-import { AGENT_GENERAL_PURPOSE } from "../agents/personas/types.js"
+import { AGENT_GENERAL_PURPOSE, DEFAULT_AGENT_NAMES } from "../agents/personas/types.js"
 import type { PromptMode } from "../prompt-construction/system-prompt.js"
 import { buildOrchestrationGuidelinesSection } from "./model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "./model-registry/index.js"
@@ -210,18 +209,20 @@ function resolveOrchestratorInstructions(ctx: OrchestrationInstructionsContext):
 	return parts.join("\n\n")
 }
 
+function quoteCode(item: string): string {
+	return `\`${item}\``
+}
+
 function formatCodeList(items: string[]): string {
-	if (items.length === 0) return ""
-	if (items.length === 1) return `\`${items[0]}\``
-	if (items.length === 2) return `\`${items[0]}\` and \`${items[1]}\``
-	return `${items
-		.slice(0, -1)
-		.map((item) => `\`${item}\``)
-		.join(", ")}, and \`${items[items.length - 1]}\``
+	const quoted = items.map(quoteCode)
+	if (quoted.length === 0) return ""
+	if (quoted.length === 1) return quoted[0]
+	if (quoted.length === 2) return `${quoted[0]} and ${quoted[1]}`
+	return `${quoted.slice(0, -1).join(", ")}, and ${quoted[quoted.length - 1]}`
 }
 
 function resolveSubagentTypeRule(): string {
-	const dedicatedTypes = [...DEFAULT_AGENTS.keys()].filter((name) => name !== AGENT_GENERAL_PURPOSE)
+	const dedicatedTypes = DEFAULT_AGENT_NAMES.filter((name) => name !== AGENT_GENERAL_PURPOSE)
 	return `The model for each role is listed in the **Your Team** section above. Use \`${AGENT_GENERAL_PURPOSE}\` for any role without a dedicated type. Dedicated subagent types are ${formatCodeList(dedicatedTypes)}; do not use them here because the model assignment handles specialisation. Pass the exact \`id\` shown there as the \`model\` parameter in your Agent tool call.`
 }
 

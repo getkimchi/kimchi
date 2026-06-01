@@ -26,6 +26,8 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
+import { type Static, Type } from "typebox"
+import { Value } from "typebox/value"
 import { resolveFermentsDir } from "../../ferment/store.js"
 
 export const RUNTIME_STATE_SCHEMA_VERSION = 1
@@ -47,11 +49,24 @@ export interface PersistedRuntimeState {
 	planReview: PersistedPlanReviewState
 }
 
-export interface PersistedPlanReviewState {
-	planReviewAttempts: number
-	lastRejectionHash?: string
-	sameRejectionCount: number
-	lastPlanReviewSummary?: string
+/** Planner/Plan-Reviewer scoping-loop guard state. Defaults make the persisted
+ *  migration/defaulting rules explicit and let `normalizePlanReviewState` cast a
+ *  partial or absent on-disk value back to a complete record. */
+export const PersistedPlanReviewStateSchema = Type.Object({
+	planReviewAttempts: Type.Number({ default: 0 }),
+	lastRejectionHash: Type.Optional(Type.String()),
+	sameRejectionCount: Type.Number({ default: 0 }),
+	lastPlanReviewSummary: Type.Optional(Type.String()),
+})
+
+export type PersistedPlanReviewState = Static<typeof PersistedPlanReviewStateSchema>
+
+/** Coerce an untrusted on-disk `planReview` blob into a valid state, applying
+ *  defaults for missing fields and discarding anything malformed. */
+export function normalizePlanReviewState(raw: unknown): PersistedPlanReviewState {
+	const withDefaults = Value.Default(PersistedPlanReviewStateSchema, raw ?? {})
+	if (Value.Check(PersistedPlanReviewStateSchema, withDefaults)) return withDefaults
+	return Value.Create(PersistedPlanReviewStateSchema)
 }
 
 export function emptyState(): PersistedRuntimeState {
@@ -100,14 +115,7 @@ export function loadRuntimeState(fermentId: string, root?: string): PersistedRun
 		if (raw.phaseStartRefs && typeof raw.phaseStartRefs === "object") merged.phaseStartRefs = raw.phaseStartRefs
 		if (raw.stepStartRefs && typeof raw.stepStartRefs === "object") merged.stepStartRefs = raw.stepStartRefs
 		if (raw.planReview && typeof raw.planReview === "object") {
-			const planReview = raw.planReview as Partial<PersistedPlanReviewState>
-			merged.planReview = {
-				planReviewAttempts: typeof planReview.planReviewAttempts === "number" ? planReview.planReviewAttempts : 0,
-				lastRejectionHash: typeof planReview.lastRejectionHash === "string" ? planReview.lastRejectionHash : undefined,
-				sameRejectionCount: typeof planReview.sameRejectionCount === "number" ? planReview.sameRejectionCount : 0,
-				lastPlanReviewSummary:
-					typeof planReview.lastPlanReviewSummary === "string" ? planReview.lastPlanReviewSummary : undefined,
-			}
+			merged.planReview = normalizePlanReviewState(raw.planReview)
 		}
 		return merged
 	} catch {

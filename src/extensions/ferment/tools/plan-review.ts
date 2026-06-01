@@ -36,9 +36,7 @@ export function registerPlanReviewTool(pi: ExtensionAPI): void {
 		name: PLAN_REVIEW_SUBMIT_TOOL,
 		label: "Submit Plan Review",
 		description:
-			"Submit your plan-review verdict. Call this EXACTLY ONCE to return your result — do not reply with prose. " +
-			"All fields are required; use [] for empty arrays. If any required_changes remain, status MUST be needs_revision; " +
-			"approved means required_changes is [].",
+			"Submit the Plan Reviewer verdict. Arguments must match PlanReviewSchema; the tool enforces status/required_changes consistency. See the Plan Reviewer system prompt for when to use each status.",
 		parameters: PlanReviewSchema,
 		async execute(_, params: PlanReview) {
 			// Semantic consistency the shape schema can't express. Reject so the

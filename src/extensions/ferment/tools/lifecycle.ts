@@ -22,13 +22,7 @@ import {
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
 import { isUserChosenYolo } from "../../permissions/index.js"
-import {
-	type AskUserOption,
-	type AskUserQuestion,
-	type AskUserResponseType,
-	askUser,
-	askUserForm,
-} from "../ask-user.js"
+import { askUser, askUserForm } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
 import { startFermentForIntent } from "../commands.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
@@ -362,42 +356,6 @@ function formatPlanReviewQuestions(questions: readonly string[]): string {
 	return questions.map((question, index) => `${index + 1}. ${question}`).join("\n")
 }
 
-// ─── ask_user input normalization ────────────────────────────────────────────
-// The schema accepts synonym vocabularies (single/multi for the radio/checkbox
-// question type; radio/checkbox for the response_type shorthand; `value` as an
-// alias for option `id`) so the model's natural shapes don't get rejected at the
-// tool boundary. Normalize to the canonical shapes the ask-user layer expects.
-
-const QUESTION_TYPE_ALIASES: Record<string, ScopingQuestionType> = {
-	radio: "radio",
-	checkbox: "checkbox",
-	text: "text",
-	single: "radio",
-	multi: "checkbox",
-}
-
-export function normalizeAskUserOption(option: {
-	id?: string
-	value?: string
-	label: string
-	description?: string
-}): AskUserOption {
-	// Fall back to the label when neither id nor value is given, so options never
-	// collapse to a shared empty-string id (which would collide at selection time).
-	return { id: option.id ?? option.value ?? option.label, label: option.label, description: option.description }
-}
-
-export function normalizeAskUserQuestionType(type: string): ScopingQuestionType {
-	return QUESTION_TYPE_ALIASES[type] ?? DEFAULT_SCOPING_QUESTION_TYPE
-}
-
-export function normalizeAskUserResponseType(responseType: string | undefined): AskUserResponseType {
-	if (responseType === "radio") return "single"
-	if (responseType === "checkbox") return "multi"
-	if (responseType === "multi" || responseType === "text") return responseType
-	return "single"
-}
-
 function validatePlanReviewArray(
 	review: PlanReview,
 	field: "required_changes" | "reservations" | "questions",
@@ -432,8 +390,8 @@ async function validatePlanReviewOrErr(
 		const error = validatePlanReviewArray(review, field)
 		if (error) return toolErr(error)
 	}
-	if (review.questions.length > 3) {
-		return toolErr("Cannot propose scoping — plan_review.questions must contain at most 3 questions.")
+	if (review.questions.length > 10) {
+		return toolErr("Cannot propose scoping — plan_review.questions must contain at most 10 questions.")
 	}
 	const planReviewQuestions = review.questions.filter((q) => q.trim().length > 0)
 	if (planReviewQuestions.length > 0 && (params.questions ?? []).length === 0) {
@@ -986,7 +944,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			const nextIterations = currentIterations + 1
 			if (currentIterations >= 3 && questions.length > 0) {
 				return toolErr(
-					"You've proposed scoping 3 times. Pick the best draft, run Plan Reviewer once on that exact XML plan, then emit propose_ferment_scoping with questions=[] to let the user confirm.",
+					"You've proposed scoping 3 times. Pick the best draft, run Plan Reviewer once on that exact plan payload inside <ferment_plan> tags, then emit propose_ferment_scoping with questions=[] to let the user confirm.",
 				)
 			}
 
@@ -1324,27 +1282,11 @@ Returns structured answer fields on success, or a tool error if no audience can 
 				ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined,
 				runtime,
 			}
-			const normalizedQuestions: AskUserQuestion[] | undefined = params.questions?.map((q) => ({
-				id: q.id,
-				type: normalizeAskUserQuestionType(q.type),
-				prompt: q.prompt,
-				label: q.label,
-				options: q.options?.map(normalizeAskUserOption),
-				allowOther: q.allowOther,
-				required: q.required,
-				placeholder: q.placeholder,
-			}))
-			const normalizedOptions = params.options?.map(normalizeAskUserOption)
 			const response =
-				normalizedQuestions && normalizedQuestions.length > 0
-					? await askUserForm(params.title ?? params.question, params.description, normalizedQuestions, askContext)
+				params.questions && params.questions.length > 0
+					? await askUserForm(params.title ?? params.question, params.description, params.questions, askContext)
 					: params.question
-						? await askUser(
-								params.question,
-								normalizedOptions ?? [],
-								askContext,
-								normalizeAskUserResponseType(params.response_type),
-							)
+						? await askUser(params.question, params.options ?? [], askContext, params.response_type ?? "single")
 						: undefined
 
 			if (!response) {

@@ -62,7 +62,9 @@ export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
 	judge: "kimchi-dev/kimi-k2.6",
 }
 
-const ROLE_KEYS: readonly (keyof ModelRoles)[] = [
+/** Canonical role order. Single source of truth for parsing/saving/validation
+ *  here and for the /multi-model command's display order. */
+export const MODEL_ROLE_KEYS: readonly (keyof ModelRoles)[] = [
 	"orchestrator",
 	"planReviewer",
 	"planner",
@@ -94,7 +96,7 @@ export function parseModelRoles(raw: unknown): { roles: ModelRoles; warnings: Mo
 
 	const obj = raw as Record<string, unknown>
 
-	for (const key of ROLE_KEYS) {
+	for (const key of MODEL_ROLE_KEYS) {
 		const value = obj[key]
 		if (value === undefined || value === null) continue
 
@@ -146,7 +148,7 @@ export function saveModelRoles(roles: ModelRoles, settingsPath?: string): void {
 
 	// Only persist non-default values
 	const rolesObj: Record<string, string> = {}
-	for (const key of ROLE_KEYS) {
+	for (const key of MODEL_ROLE_KEYS) {
 		if (roles[key] !== DEFAULT_MODEL_ROLES[key]) {
 			rolesObj[key] = roles[key]
 		}
@@ -210,7 +212,7 @@ export function validateModelRoles(
 	availableModelIds: ReadonlySet<string>,
 ): ModelRoleValidationResult {
 	const unavailable: ModelRoleValidationResult["unavailable"] = []
-	for (const key of ROLE_KEYS) {
+	for (const key of MODEL_ROLE_KEYS) {
 		const ref = roles[key]
 		const id = modelIdFromRef(ref)
 		if (!availableModelIds.has(id)) {
