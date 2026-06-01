@@ -410,7 +410,7 @@ export default function (skillPaths: string[]) {
 				pi.sendMessage(
 					{
 						customType: NUDGE_CUSTOM_TYPE,
-						content: [{ type: "text", text: continuationNudge.getNudgeText() }],
+						content: continuationNudge.getNudgeText(),
 						display: false,
 					},
 					{ deliverAs: "followUp" },
