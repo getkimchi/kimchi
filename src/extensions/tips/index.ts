@@ -154,7 +154,7 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 		})
 
 		pi.registerCommand("tips", {
-			description: "Show all tips, or /tips disable /tips enable",
+			description: "Show all tips, or toggle the widget with /tips disable or /tips enable",
 			handler: async (args, ctx) => {
 				const sub = args.trim().split(/\s+/)[0]
 
