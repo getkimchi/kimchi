@@ -440,14 +440,6 @@ export function getActiveAgentCount(): number {
 	return activeManager?.getRunningCount() ?? 0
 }
 
-/** The live AgentManager instance the Agent tool and TUI agent tree share, or
- *  undefined before extension init. Lets in-process callers (e.g. ferment's
- *  host-run Plan Reviewer) spawn a subagent that is visible in the TUI, rather
- *  than invoking runAgent directly (which bypasses the manager and the tree). */
-export function getActiveAgentManager(): AgentManager | undefined {
-	return activeManager
-}
-
 export interface VisibleSubagentSpawnArgs {
 	pi: ExtensionAPI
 	ctx: ExtensionContext

@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { PlanReviewAbortedError } from "./plan-review-runner.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { clearAllPendingScopes, getPendingScope, setPendingScope } from "./scoping.js"
 import {
@@ -93,6 +94,8 @@ interface Harness {
 	call: (toolName: string, params: unknown, ctx?: unknown) => Promise<ToolResult>
 	/** Override the verdict the host-run Plan Reviewer returns for subsequent calls. */
 	setPlanReview: (verdict: PlanReviewVerdict) => void
+	/** Make the host-run Plan Reviewer throw (simulates abort / failure). */
+	setPlanReviewError: (error: Error) => void
 }
 
 function createHarness(): Harness {
@@ -100,13 +103,21 @@ function createHarness(): Harness {
 	const storage = new FermentStorage(tempDir)
 	const eventStorage = new FermentEventStore(tempDir)
 	let planReviewVerdict: PlanReviewVerdict = { ...APPROVED_REVIEW }
+	let planReviewError: Error | undefined
 	const setPlanReview = (verdict: PlanReviewVerdict) => {
+		planReviewError = undefined
 		planReviewVerdict = verdict
+	}
+	const setPlanReviewError = (error: Error) => {
+		planReviewError = error
 	}
 	const runtime = {
 		...createDefaultFermentRuntime(),
 		getStorage: () => eventStorage,
-		runPlanReview: async () => planReviewVerdict,
+		runPlanReview: async () => {
+			if (planReviewError) throw planReviewError
+			return planReviewVerdict
+		},
 	}
 	const tools = new Map<string, RegisteredTool>()
 
@@ -136,7 +147,7 @@ function createHarness(): Harness {
 		return result as ToolResult
 	}
 
-	return { storage, runtime, tempDir, tools, pi, call, setPlanReview }
+	return { storage, runtime, tempDir, tools, pi, call, setPlanReview, setPlanReviewError }
 }
 
 function createWorkflowCtx(options: { confirm?: boolean } = {}) {
@@ -1274,6 +1285,50 @@ describe("propose_ferment_scoping", () => {
 		expect(result).toContain("raised blocking user questions")
 		expect(result).toContain("Should this ferment implement fixes")
 		expect(getPendingPlanReview(id)).toBeUndefined()
+	})
+
+	it("surfaces an interrupted review without telling the planner to retry", async () => {
+		const id = await createFerment("Aborted Review")
+		seedPending(id)
+		h.setPlanReviewError(new PlanReviewAbortedError("inactivity"))
+		const result = err(await h.call("propose_ferment_scoping", basePayload(id), {}))
+
+		expect(result).toContain("interrupted")
+		expect(result).not.toContain("retry")
+		expect(getPendingPlanReview(id)).toBeUndefined()
+	})
+
+	it("surfaces the real failure reason when the reviewer errors, and asks to retry", async () => {
+		const id = await createFerment("Errored Review")
+		seedPending(id)
+		h.setPlanReviewError(new Error("model returned 500"))
+		const result = err(await h.call("propose_ferment_scoping", basePayload(id), {}))
+
+		expect(result).toContain("could not complete")
+		expect(result).toContain("model returned 500")
+		expect(result).toContain("retry")
+		expect(getPendingPlanReview(id)).toBeUndefined()
+	})
+
+	it("abandons the ferment when the loop guard trips with no interactive decision channel", async () => {
+		const id = await createFerment("LoopGuard NoUI")
+		seedPending(id)
+		const required_changes = ["Add verification commands to each phase."]
+		const needsRevision = {
+			status: "needs_revision" as const,
+			summary: "Plan skips verification.",
+			required_changes,
+			reservations: [],
+			questions: [],
+		}
+		// Same rejection twice trips MAX_SAME_PLAN_REVIEW_REJECTION; ctx has no UI/judge,
+		// so the loop-guard prompt fails — the ferment must abandon, not loop forever.
+		h.setPlanReview(needsRevision)
+		err(await h.call("propose_ferment_scoping", basePayload(id), {}))
+		const second = err(await h.call("propose_ferment_scoping", basePayload(id), {}))
+
+		expect(second).toContain("abandoned after Plan Reviewer loop guard")
+		expect(loadFerment(id).status).toBe("abandoned")
 	})
 
 	it("normalizes stringified phases before storing the pending review markdown", async () => {

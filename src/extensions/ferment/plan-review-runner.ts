@@ -20,16 +20,29 @@ export function buildPlanReviewPrompt(planJson: string): string {
 	].join("\n")
 }
 
+/** The Plan Reviewer run was cancelled (turn aborted / signal / budget), not a
+ *  genuine review outcome. Callers should NOT prompt the planner to "retry the
+ *  same plan" — nothing about the plan caused it. */
+export class PlanReviewAbortedError extends Error {
+	constructor(reason?: string) {
+		super(reason ? `Plan Reviewer was interrupted (${reason}).` : "Plan Reviewer was interrupted.")
+		this.name = "PlanReviewAbortedError"
+	}
+}
+
 function asVerdict(structuredOutput: unknown): PlanReview {
 	if (!structuredOutput || typeof structuredOutput !== "object") {
-		throw new Error("Plan Reviewer returned no structured verdict.")
+		// Reached when the reviewer finished but never called submit_plan_review
+		// (e.g. replied in prose). runAgent's output contract normally throws first.
+		throw new Error("Plan Reviewer finished without submitting a verdict (did not call submit_plan_review).")
 	}
 	return structuredOutput as PlanReview
 }
 
 /** Spawn the Plan Reviewer on `planJson` and return its validated verdict.
  *  Routes through the shared AgentManager (TUI-visible) when available; otherwise
- *  calls runAgent directly. Throws if the reviewer never submits a verdict. */
+ *  calls runAgent directly. Throws PlanReviewAbortedError if the run was cancelled,
+ *  or a descriptive Error if the reviewer errored / never submitted a verdict. */
 export async function runHostPlanReview(
 	ctx: unknown,
 	pi: ExtensionAPI,
@@ -49,9 +62,21 @@ export async function runHostPlanReview(
 			description: "Reviewing the scoping plan",
 			signal,
 		})
-		return asVerdict(record?.structuredOutput)
+		// The manager swallows run failures (resolves the record promise instead of
+		// rejecting), so the verdict is trustworthy ONLY when the run completed
+		// normally. Inspect the record's outcome before reading structuredOutput.
+		if (!record) throw new Error("Plan Reviewer did not start.")
+		if (record.status === "aborted" || record.status === "stopped") {
+			throw new PlanReviewAbortedError(record.abortReason)
+		}
+		if (record.status === "error") {
+			throw new Error(`Plan Reviewer failed: ${record.error ?? "unknown error"}`)
+		}
+		return asVerdict(record.structuredOutput)
 	}
 	// Fallback (e.g. agents extension not active in some tests): direct run.
+	// runAgent throws on hard errors and returns aborted=true on cancellation.
 	const result = await runAgent(ctx as ExtensionContext, AGENT_PLAN_REVIEWER, prompt, { pi, signal })
+	if (result.aborted) throw new PlanReviewAbortedError(result.abortReason)
 	return asVerdict(result.structuredOutput)
 }

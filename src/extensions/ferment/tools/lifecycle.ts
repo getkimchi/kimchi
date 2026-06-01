@@ -31,7 +31,7 @@ import { validateGatesOrErr } from "../gate-validation.js"
 import { judgeJourneyGrade } from "../judge.js"
 import { resetReactiveContinuationNudgeCount } from "../nudge.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
-import type { PlanReview } from "../plan-review-runner.js"
+import { type PlanReview, PlanReviewAbortedError } from "../plan-review-runner.js"
 import { getPromptUi, promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
@@ -396,8 +396,13 @@ async function hostPlanReviewOrErr(
 	try {
 		review = await runtime.runPlanReview(ctx, pi, buildPlanReviewPayload(params), signal)
 	} catch (error) {
+		// Cancellation is not a review outcome — surface it without telling the
+		// planner to retry the same plan (nothing about the plan caused it).
+		if (error instanceof PlanReviewAbortedError) {
+			return toolErr(error.message)
+		}
 		return toolErr(
-			`Plan Reviewer could not complete (${error instanceof Error ? error.message : String(error)}). Call propose_ferment_scoping again to retry.`,
+			`Plan Reviewer could not complete: ${error instanceof Error ? error.message : String(error)}. Call propose_ferment_scoping again to retry.`,
 		)
 	} finally {
 		ui?.setStatus?.(SCOPING_STATUS_KEY, undefined)
@@ -462,18 +467,25 @@ async function hostPlanReviewOrErr(
 		{ ferment, pi, ctx: ctx as { ui?: never }, runtime },
 	)
 
-	if (!choice.failed && choice.choice === "override") {
-		runtime.resetPlanReviewState(params.ferment_id)
-		return undefined
-	}
-	if (!choice.failed && choice.choice === "abandon") {
+	const abandonForLoopGuard = (why: string): ToolResult => {
 		const applyAndPersist = createApplyAndPersist(runtime)
 		const abandonOutcome = applyAndPersist(params.ferment_id, {
 			type: "abandon",
-			reason: `Plan Reviewer loop guard: ${reason}`,
+			reason: `Plan Reviewer loop guard: ${why}`,
 		})
 		if (abandonOutcome.ok) runtime.setActive(abandonOutcome.ferment)
-		return toolErr(`Ferment "${ferment.name}" abandoned after Plan Reviewer loop guard.`)
+		return toolErr(`Ferment "${ferment.name}" abandoned after Plan Reviewer loop guard (${why}).`)
+	}
+
+	if (choice.failed) {
+		return abandonForLoopGuard(`${reason}; no interactive decision available`)
+	}
+	if (choice.choice === "override") {
+		runtime.resetPlanReviewState(params.ferment_id)
+		return undefined
+	}
+	if (choice.choice === "abandon") {
+		return abandonForLoopGuard(reason)
 	}
 	return toolErr(
 		`Plan Reviewer loop guard paused before user plan review (${reason}). Revise the plan manually, then call propose_ferment_scoping again.`,
