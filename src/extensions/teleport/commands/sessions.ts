@@ -65,7 +65,7 @@ async function collectRows(workspaces: Workspace[], ctx: TeleportContext, descri
 			const creds = await authenticateWorkspace(ws.id, ctx.apiKey, description, { endpoint: ctx.endpoint })
 			const client = new WorkerClient(creds)
 			const sessions = await listSessions(client, ctx.signal)
-			return sessions.map((s) => toRow(ws, s))
+			return sessions.filter(isVisibleSession).map((s) => toRow(ws, s))
 		}),
 	)
 
@@ -85,6 +85,14 @@ async function collectRows(workspaces: Workspace[], ctx: TeleportContext, descri
 		return bt - at
 	})
 	return rows
+}
+
+// Picker-visibility predicate. Both `/sessions` and `/workspaces` count and
+// list only PTY sessions that haven't finished — those are the only ones the
+// Enter action (runTeleport) can do anything useful with. ACP/RPC sessions
+// and completed PTYs are filtered out.
+export function isVisibleSession(s: Session): boolean {
+	return s.agentMode === "PTY" && !s.finishedAt
 }
 
 export function deriveStatus(s: Session): CombinedStatus {

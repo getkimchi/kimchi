@@ -38,6 +38,7 @@ vi.mock("../ui/workspaces-panel.js", () => ({ pickWorkspace: pickWorkspaceMock }
 vi.mock("./terminal.js", () => ({ runTerminal: runTerminalMock }))
 
 import type { Workspace } from "../../../sandbox/cloud/types.js"
+import type { Session } from "../../../sandbox/worker/types.js"
 import type { TeleportContext } from "../types.js"
 import type { WorkspaceRow } from "../ui/workspaces-table.js"
 import { TeleportRefusal } from "./errors.js"
@@ -115,6 +116,21 @@ function ws(id: string, name: string, over: Partial<Workspace> = {}): Workspace 
 	}
 }
 
+function session(over: Partial<Session> = {}): Session {
+	return {
+		name: "s1",
+		agentMode: "PTY",
+		alive: true,
+		agentRunning: false,
+		clientConnected: false,
+		connectedThroughBridge: false,
+		startedAt: null,
+		finishedAt: null,
+		lastActivityAt: "2026-05-01T00:00:00Z",
+		...over,
+	}
+}
+
 function row(id: string, sessionCount: number | "?" = 0): WorkspaceRow {
 	return {
 		id,
@@ -140,7 +156,7 @@ beforeEach(() => {
 describe("collectRows", () => {
 	it("populates sessionCount from listSessions for each workspace", async () => {
 		authMock.mockResolvedValue(CREDS)
-		listSessionsMock.mockResolvedValueOnce([{}, {}, {}]).mockResolvedValueOnce([{}])
+		listSessionsMock.mockResolvedValueOnce([session(), session(), session()]).mockResolvedValueOnce([session()])
 		const { ctx } = makeCtx()
 
 		const rows = await collectRows([ws("w-1", "alpha"), ws("w-2", "beta")], ctx, "proj")
@@ -151,13 +167,29 @@ describe("collectRows", () => {
 
 	it("marks sessionCount '?' when the worker call rejects", async () => {
 		authMock.mockResolvedValue(CREDS)
-		listSessionsMock.mockResolvedValueOnce([{}, {}]).mockRejectedValueOnce(new Error("unreachable"))
+		listSessionsMock.mockResolvedValueOnce([session(), session()]).mockRejectedValueOnce(new Error("unreachable"))
 		const { ctx } = makeCtx()
 
 		const rows = await collectRows([ws("w-1", "alpha"), ws("w-2", "beta")], ctx, "proj")
 
 		const counts = Object.fromEntries(rows.map((r) => [r.id, r.sessionCount]))
 		expect(counts).toEqual({ "w-1": 2, "w-2": "?" })
+	})
+
+	it("excludes ACP, RPC, and completed PTY sessions from sessionCount", async () => {
+		authMock.mockResolvedValue(CREDS)
+		listSessionsMock.mockResolvedValueOnce([
+			session({ name: "pty-live", agentMode: "PTY" }),
+			session({ name: "pty-also-live", agentMode: "PTY" }),
+			session({ name: "pty-done", agentMode: "PTY", finishedAt: "2026-05-01T00:00:00Z" }),
+			session({ name: "acp-live", agentMode: "ACP" }),
+			session({ name: "rpc-live", agentMode: "RPC" }),
+		])
+		const { ctx } = makeCtx()
+
+		const rows = await collectRows([ws("w-1", "alpha")], ctx, "proj")
+
+		expect(rows[0]?.sessionCount).toBe(2)
 	})
 
 	it("sorts rows by lastActivityAt descending", async () => {

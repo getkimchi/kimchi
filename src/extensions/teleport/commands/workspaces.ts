@@ -9,6 +9,7 @@ import type { TeleportContext } from "../types.js"
 import { pickWorkspace } from "../ui/workspaces-panel.js"
 import type { WorkspaceRow } from "../ui/workspaces-table.js"
 import { info, refuse, status, warn } from "./errors.js"
+import { isVisibleSession } from "./sessions.js"
 import { runTerminal } from "./terminal.js"
 
 export async function runWorkspaces(_args: string, ctx: TeleportContext): Promise<void> {
@@ -77,7 +78,7 @@ export async function collectRows(
 			const creds = await authenticateWorkspace(ws.id, ctx.apiKey, description, { endpoint: ctx.endpoint })
 			const client = new WorkerClient(creds)
 			const sessions = await listSessions(client, ctx.signal)
-			return sessions.length
+			return sessions.filter(isVisibleSession).length
 		}),
 	)
 

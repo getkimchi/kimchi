@@ -33,7 +33,7 @@ import type { Session } from "../../../sandbox/worker/types.js"
 import type { TeleportContext } from "../types.js"
 import type { SessionRow } from "../ui/sessions-table.js"
 import { TeleportRefusal } from "./errors.js"
-import { deriveStatus, runSessions, toRow, unreachableRow } from "./sessions.js"
+import { deriveStatus, isVisibleSession, runSessions, toRow, unreachableRow } from "./sessions.js"
 
 const CREDS = {
 	connectToken: "tok",
@@ -145,6 +145,24 @@ describe("deriveStatus", () => {
 	})
 })
 
+describe("isVisibleSession", () => {
+	it("keeps a live PTY session", () => {
+		expect(isVisibleSession(session({ agentMode: "PTY", finishedAt: null }))).toBe(true)
+	})
+	it("keeps a PTY session that's idle (alive=false) as long as it hasn't finished", () => {
+		expect(isVisibleSession(session({ agentMode: "PTY", alive: false, finishedAt: null }))).toBe(true)
+	})
+	it("filters out a PTY session that has finished", () => {
+		expect(isVisibleSession(session({ agentMode: "PTY", finishedAt: "2026-05-01T00:00:00Z" }))).toBe(false)
+	})
+	it("filters out ACP sessions", () => {
+		expect(isVisibleSession(session({ agentMode: "ACP" }))).toBe(false)
+	})
+	it("filters out RPC sessions", () => {
+		expect(isVisibleSession(session({ agentMode: "RPC" }))).toBe(false)
+	})
+})
+
 describe("toRow / unreachableRow", () => {
 	it("maps a Session into a SessionRow", () => {
 		const row = toRow(ws("w-1", "alpha"), session({ name: "s-1", clientConnected: true }))
@@ -209,6 +227,27 @@ describe("runSessions", () => {
 
 		expect(captured.map((r) => r.sessionName)).toEqual(["newest", "newer", "old"])
 		expect(captured.map((r) => r.workspaceName)).toEqual(["beta", "alpha", "alpha"])
+	})
+
+	it("filters out ACP, RPC, and completed PTY sessions from the picker rows", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		listSessionsMock.mockResolvedValue([
+			session({ name: "pty-live", agentMode: "PTY" }),
+			session({ name: "pty-done", agentMode: "PTY", finishedAt: "2026-05-01T00:00:00Z" }),
+			session({ name: "acp-live", agentMode: "ACP" }),
+			session({ name: "rpc-live", agentMode: "RPC" }),
+		])
+
+		let captured: SessionRow[] = []
+		pickSessionMock.mockImplementation(async (_ctx: unknown, rows: SessionRow[]) => {
+			captured = rows
+			return undefined
+		})
+
+		const { ctx } = makeCtx()
+		await runSessions("", ctx)
+
+		expect(captured.map((r) => r.sessionName)).toEqual(["pty-live"])
 	})
 
 	it("renders an unreachable row when authenticateWorkspace fails for one workspace", async () => {
