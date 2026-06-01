@@ -9,4 +9,6 @@ export interface TeleportContext {
 	configPath?: string
 	signal?: AbortSignal
 	ui: ExtensionCommandContext["ui"]
+	/** Path to the local harness session.jsonl, if a session is active. */
+	sessionFile?: string
 }

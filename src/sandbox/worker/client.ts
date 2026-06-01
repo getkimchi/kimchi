@@ -1,3 +1,4 @@
+import { openAsBlob } from "node:fs"
 import type { WorkspaceCredentials } from "../cloud/types.js"
 import { WorkerError } from "./types.js"
 
@@ -52,6 +53,36 @@ export class WorkerClient {
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify(body),
+			},
+			this.#fetch,
+			this.#timeoutMs,
+			signal,
+		)
+		await checkResponse(resp, url)
+		return (await resp.json()) as T
+	}
+
+	async postMultipart<T>(
+		path: string,
+		parts: { request: unknown; sessionFile?: string },
+		signal?: AbortSignal,
+	): Promise<T> {
+		const url = this.#url(path)
+		const form = new FormData()
+		form.append("request", new Blob([JSON.stringify(parts.request)], { type: "application/json" }))
+		if (parts.sessionFile !== undefined) {
+			const blob = await openAsBlob(parts.sessionFile, { type: "application/octet-stream" })
+			form.append("sessionFile", blob, "session.jsonl")
+		}
+		const resp = await fetchWithTimeout(
+			url,
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${this.#token}`,
+					Accept: "application/json",
+				},
+				body: form,
 			},
 			this.#fetch,
 			this.#timeoutMs,

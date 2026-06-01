@@ -22,6 +22,11 @@ export interface SessionDetails {
 	tools?: SessionToolsConfig
 }
 
+/**
+ * Shape of the `request` part of the multipart `POST /session/{name}` body.
+ * The endpoint also accepts an optional `sessionFile` (session.jsonl) binary
+ * part to seed/resume the new session.
+ */
 export interface CreateSessionRequest {
 	agentMode: AgentMode
 	yolo?: boolean

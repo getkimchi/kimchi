@@ -139,10 +139,10 @@ describe("runTerminal", () => {
 		const { ctx } = makeCtx()
 		const runChild = vi.fn().mockResolvedValue(0)
 
-		await runTerminal("mywks", ctx, { _runChildWithTTYHandoff: runChild })
+		await runTerminal("33333333-3333-4333-8333-333333333333", ctx, { _runChildWithTTYHandoff: runChild })
 
 		expect(authMock).toHaveBeenCalledOnce()
-		expect(authMock.mock.calls[0][0]).toBe("mywks")
+		expect(authMock.mock.calls[0][0]).toBe("33333333-3333-4333-8333-333333333333")
 		expect(runChild).toHaveBeenCalledOnce()
 		const call = runChild.mock.calls[0][0]
 		expect(call.cmd).toBe("ssh")
@@ -187,11 +187,14 @@ describe("runTerminal", () => {
 		const { ctx, ui } = makeCtx()
 		const runChild = vi.fn().mockResolvedValue(0)
 
-		await expect(runTerminal("mywks", ctx, { _runChildWithTTYHandoff: runChild })).rejects.toBeInstanceOf(
-			TeleportRefusal,
-		)
+		await expect(
+			runTerminal("33333333-3333-4333-8333-333333333333", ctx, { _runChildWithTTYHandoff: runChild }),
+		).rejects.toBeInstanceOf(TeleportRefusal)
 		expect(runChild).not.toHaveBeenCalled()
-		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("Authentication failed for mywks"), "error")
+		expect(ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Authentication failed for 33333333-3333-4333-8333-333333333333"),
+			"error",
+		)
 	})
 
 	it("propagates git credentials once and persists the workspace id", async () => {
@@ -200,7 +203,7 @@ describe("runTerminal", () => {
 		const { ctx } = makeCtx()
 		const runChild = vi.fn().mockResolvedValue(0)
 
-		await runTerminal("mywks", ctx, { _runChildWithTTYHandoff: runChild })
+		await runTerminal("33333333-3333-4333-8333-333333333333", ctx, { _runChildWithTTYHandoff: runChild })
 
 		expect(propagateGitCredentialMock).toHaveBeenCalledOnce()
 		expect(propagateGitCredentialMock.mock.calls[0][0]).toMatchObject({
@@ -210,9 +213,9 @@ describe("runTerminal", () => {
 			gitToken: "ghp_cached",
 		})
 		const persisted = JSON.parse(readFileSync(tempStatePath, "utf-8"))
-		expect(persisted.gitCredentialsSyncedWorkspaces).toContain("mywks")
+		expect(persisted.gitCredentialsSyncedWorkspaces).toContain("33333333-3333-4333-8333-333333333333")
 
-		await runTerminal("mywks", ctx, { _runChildWithTTYHandoff: runChild })
+		await runTerminal("33333333-3333-4333-8333-333333333333", ctx, { _runChildWithTTYHandoff: runChild })
 		expect(propagateGitCredentialMock).toHaveBeenCalledOnce()
 	})
 
@@ -223,7 +226,7 @@ describe("runTerminal", () => {
 		const { ctx, ui } = makeCtx()
 		const runChild = vi.fn().mockResolvedValue(0)
 
-		await runTerminal("mywks", ctx, { _runChildWithTTYHandoff: runChild })
+		await runTerminal("33333333-3333-4333-8333-333333333333", ctx, { _runChildWithTTYHandoff: runChild })
 
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("cred boom"), "warning")
 		expect(runChild).toHaveBeenCalledOnce()
@@ -234,14 +237,14 @@ describe("runTerminal", () => {
 				return { gitCredentialsSyncedWorkspaces: [] }
 			}
 		})()
-		expect(persisted.gitCredentialsSyncedWorkspaces ?? []).not.toContain("mywks")
+		expect(persisted.gitCredentialsSyncedWorkspaces ?? []).not.toContain("33333333-3333-4333-8333-333333333333")
 	})
 
 	it("warns when ssh exits non-zero but does not throw", async () => {
 		const { ctx, ui } = makeCtx()
 		const runChild = vi.fn().mockResolvedValue(42)
 
-		await runTerminal("mywks", ctx, { _runChildWithTTYHandoff: runChild })
+		await runTerminal("33333333-3333-4333-8333-333333333333", ctx, { _runChildWithTTYHandoff: runChild })
 
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("42"), "warning")
 	})
@@ -259,9 +262,9 @@ describe("runTerminal", () => {
 		const { ctx, ui } = makeCtx({ apiKey: "" })
 		const runChild = vi.fn().mockResolvedValue(0)
 
-		await expect(runTerminal("mywks", ctx, { _runChildWithTTYHandoff: runChild })).rejects.toBeInstanceOf(
-			TeleportRefusal,
-		)
+		await expect(
+			runTerminal("33333333-3333-4333-8333-333333333333", ctx, { _runChildWithTTYHandoff: runChild }),
+		).rejects.toBeInstanceOf(TeleportRefusal)
 		expect(authMock).not.toHaveBeenCalled()
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/API key/), "error")
 	})

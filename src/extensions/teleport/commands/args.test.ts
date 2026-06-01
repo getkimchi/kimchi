@@ -44,8 +44,17 @@ describe("parseTeleportArgs", () => {
 		})
 	})
 
-	it("reads --no-shallow and --no-git-token as booleans", () => {
-		expect(parseTeleportArgs("--no-shallow --no-git-token")).toEqual({ noShallow: true, noGitToken: true })
+	it("reads --no-git-token as a boolean", () => {
+		expect(parseTeleportArgs("--no-git-token")).toEqual({ noGitToken: true })
+	})
+
+	it("rejects --no-shallow (removed in favor of worker-side clone)", () => {
+		expect(() => parseTeleportArgs("--no-shallow")).toThrow(/Unknown flag/)
+	})
+
+	it("reads --skip-session as a boolean", () => {
+		expect(parseTeleportArgs("--skip-session")).toEqual({ skipSession: true })
+		expect(parseTeleportArgs("name --skip-session")).toEqual({ name: "name", skipSession: true })
 	})
 
 	it("rejects unknown flags", () => {

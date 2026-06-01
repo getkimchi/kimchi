@@ -222,18 +222,20 @@ export function createTabsOverlay(opts: TabsOverlayOpts): OverlayFactory {
 					return
 				}
 
+				// Ctrl+D always exits the overlay back to the homebase kimchi.
+				// The dispose() path tears down every tab's transport, so socket
+				// teardown happens via the standard exit flow.
+				if (matchesKey(data, Key.ctrl("d"))) {
+					done(undefined)
+					return
+				}
+
 				// Top-level keys gated on degraded connection state. Live outside
 				// the chord parser because they're contextual (only active in
 				// fatal/lost) and target the overlay itself rather than the
 				// active tab's PTY.
 				const active = manager.activeTab
 				const bs = deriveBannerState(active)
-				if (bs?.phase === "lost" || bs?.phase === "fatal") {
-					if (matchesKey(data, Key.ctrl("d"))) {
-						done(undefined)
-						return
-					}
-				}
 				if (bs?.phase === "lost" && matchesKey(data, Key.ctrl("r"))) {
 					if (active) triggerManualRetry(active)
 					return

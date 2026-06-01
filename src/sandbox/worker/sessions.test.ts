@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
 import type { WorkspaceCredentials } from "../cloud/types.js"
 import { WorkerClient } from "./client.js"
@@ -106,7 +109,7 @@ describe("getSession", () => {
 })
 
 describe("createSession", () => {
-	it("POSTs the CreateSessionRequest body verbatim with agentMode: PTY", async () => {
+	it("POSTs a multipart body with the CreateSessionRequest under the `request` part", async () => {
 		const fixture = sessionFixture({ agentMode: "PTY", cwd: "/x" })
 		const mockFetch = vi.fn().mockResolvedValue(jsonResponse(fixture, 201))
 		const client = new WorkerClient(CREDS, { fetch: mockFetch })
@@ -123,7 +126,29 @@ describe("createSession", () => {
 		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/session/foo`)
 		const init = mockFetch.mock.calls[0][1] as RequestInit
 		expect(init.method).toBe("POST")
-		expect(JSON.parse(init.body as string)).toEqual(req)
+		expect(init.body).toBeInstanceOf(FormData)
+		const form = init.body as FormData
+		const requestPart = form.get("request")
+		expect(requestPart).toBeInstanceOf(Blob)
+		expect((requestPart as Blob).type).toBe("application/json")
+		expect(JSON.parse(await (requestPart as Blob).text())).toEqual(req)
+		expect(form.get("sessionFile")).toBeNull()
+		// fetch derives the multipart boundary; we must not set Content-Type ourselves.
+		expect((init.headers as Record<string, string>)["Content-Type"]).toBeUndefined()
+	})
+
+	it("attaches a sessionFile part when given a path to a session.jsonl", async () => {
+		const tmpFile = join(mkdtempSync(join(tmpdir(), "sessions-test-")), "session.jsonl")
+		writeFileSync(tmpFile, '{"type":"session","id":"abc"}\n')
+		const mockFetch = vi.fn().mockResolvedValue(jsonResponse(sessionFixture(), 201))
+		const client = new WorkerClient(CREDS, { fetch: mockFetch })
+
+		await createSession(client, "foo", { agentMode: "PTY" }, { sessionFile: tmpFile })
+
+		const form = (mockFetch.mock.calls[0][1] as RequestInit).body as FormData
+		const filePart = form.get("sessionFile")
+		expect(filePart).toBeInstanceOf(Blob)
+		expect(await (filePart as Blob).text()).toBe('{"type":"session","id":"abc"}\n')
 	})
 
 	it("supports agentMode RPC and ACP", async () => {
@@ -136,8 +161,10 @@ describe("createSession", () => {
 		await createSession(client, "r", { agentMode: "RPC" })
 		await createSession(client, "a", { agentMode: "ACP" })
 
-		expect(JSON.parse(mockFetch.mock.calls[0][1].body as string)).toEqual({ agentMode: "RPC" })
-		expect(JSON.parse(mockFetch.mock.calls[1][1].body as string)).toEqual({ agentMode: "ACP" })
+		const form0 = (mockFetch.mock.calls[0][1] as RequestInit).body as FormData
+		const form1 = (mockFetch.mock.calls[1][1] as RequestInit).body as FormData
+		expect(JSON.parse(await (form0.get("request") as Blob).text())).toEqual({ agentMode: "RPC" })
+		expect(JSON.parse(await (form1.get("request") as Blob).text())).toEqual({ agentMode: "ACP" })
 	})
 
 	it("propagates 409 as WorkerError with status preserved", async () => {

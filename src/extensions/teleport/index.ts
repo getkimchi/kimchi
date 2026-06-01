@@ -19,6 +19,7 @@ function makeHandler(run: CommandFn) {
 			cwd: ctx.cwd,
 			signal: ctx.signal,
 			ui: ctx.ui,
+			sessionFile: ctx.sessionManager.getSessionFile(),
 		}
 		try {
 			await run(args, tctx)

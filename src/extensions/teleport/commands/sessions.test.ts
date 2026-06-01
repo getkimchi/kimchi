@@ -1,14 +1,14 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const { authMock, listWorkspacesMock, listSessionsMock, deleteSessionMock, pickSessionMock, runTeleportMock } =
+const { authMock, listWorkspacesMock, listSessionsMock, deleteSessionMock, pickSessionMock, runAttachSessionMock } =
 	vi.hoisted(() => ({
 		authMock: vi.fn(),
 		listWorkspacesMock: vi.fn(),
 		listSessionsMock: vi.fn(),
 		deleteSessionMock: vi.fn(),
 		pickSessionMock: vi.fn(),
-		runTeleportMock: vi.fn(),
+		runAttachSessionMock: vi.fn(),
 	}))
 
 vi.mock("../../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: authMock }))
@@ -26,7 +26,7 @@ vi.mock("../../../sandbox/worker/sessions.js", () => ({
 	deleteSession: deleteSessionMock,
 }))
 vi.mock("../ui/sessions-panel.js", () => ({ pickSession: pickSessionMock }))
-vi.mock("./teleport.js", () => ({ runTeleport: runTeleportMock }))
+vi.mock("./attach.js", () => ({ runAttachSession: runAttachSessionMock }))
 
 import type { Workspace } from "../../../sandbox/cloud/types.js"
 import type { Session } from "../../../sandbox/worker/types.js"
@@ -127,7 +127,7 @@ beforeEach(() => {
 	listSessionsMock.mockReset().mockResolvedValue([])
 	deleteSessionMock.mockReset().mockResolvedValue(undefined)
 	pickSessionMock.mockReset().mockResolvedValue(undefined)
-	runTeleportMock.mockReset().mockResolvedValue(undefined)
+	runAttachSessionMock.mockReset().mockResolvedValue(undefined)
 })
 
 describe("deriveStatus", () => {
@@ -313,7 +313,7 @@ describe("runSessions", () => {
 		expect(captured.at(-1)?.status).toBe("unreachable")
 	})
 
-	it("dispatches /teleport on Enter", async () => {
+	it("dispatches runAttachSession on Enter", async () => {
 		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
 		listSessionsMock.mockResolvedValue([session({ name: "pick-me" })])
 		pickSessionMock.mockResolvedValueOnce({
@@ -330,9 +330,9 @@ describe("runSessions", () => {
 		const { ctx } = makeCtx()
 		await runSessions("", ctx)
 
-		expect(runTeleportMock).toHaveBeenCalledOnce()
-		expect(runTeleportMock.mock.calls[0][0]).toBe("--workspace w-1 pick-me")
-		expect(runTeleportMock.mock.calls[0][1]).toBe(ctx)
+		expect(runAttachSessionMock).toHaveBeenCalledOnce()
+		expect(runAttachSessionMock.mock.calls[0][0]).toEqual({ workspaceId: "w-1", sessionName: "pick-me" })
+		expect(runAttachSessionMock.mock.calls[0][1]).toBe(ctx)
 	})
 
 	it("deletes a session on 'd' + confirm, then re-renders the picker", async () => {
@@ -418,7 +418,7 @@ describe("runSessions", () => {
 		const { ctx, ui } = makeCtx()
 		await runSessions("", ctx)
 
-		expect(runTeleportMock).not.toHaveBeenCalled()
+		expect(runAttachSessionMock).not.toHaveBeenCalled()
 		expect(deleteSessionMock).not.toHaveBeenCalled()
 		expect(ui.notify).not.toHaveBeenCalled()
 	})

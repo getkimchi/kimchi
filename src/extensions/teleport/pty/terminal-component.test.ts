@@ -24,12 +24,12 @@ describe("TerminalComponent handleInput", () => {
 		expect(session.write).toHaveBeenCalledWith(Buffer.from("hello", "utf-8"))
 	})
 
-	it("closes session on ctrl+d instead of sending \\x04", async () => {
+	it("passes ctrl+d through to the session as \\x04 (overlay handles exit)", async () => {
 		const session = mockSession()
 		const component = new TerminalComponent(mockTui(), session, createXtermCore())
 		component.handleInput("\x1b[100;5u")
-		expect(session.close).toHaveBeenCalled()
-		expect(session.write).not.toHaveBeenCalled()
+		expect(session.close).not.toHaveBeenCalled()
+		expect(session.write).toHaveBeenCalledWith(Buffer.from("\x04"))
 	})
 
 	it("converts kitty plain 'd' to raw 'd'", async () => {

@@ -1,17 +1,16 @@
 import { existsSync, statSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
-import type { Workspace, WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
-import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
+import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
 import { rsyncInstallHint, whichRsync } from "../preflight/rsync.js"
 import { SANDBOX_USER } from "../provisioning/constants.js"
 import { deriveSandboxDest } from "../provisioning/paths.js"
 import { RsyncError, runRsync } from "../provisioning/rsync-runner.js"
-import { readState, updateState } from "../state.js"
+import { updateState } from "../state.js"
 import type { TeleportContext } from "../types.js"
-import { pickWorkspace } from "../ui/workspace-picker.js"
 import { parseSyncArgs } from "./args.js"
-import { TeleportRefusal, info, refuse, status } from "./errors.js"
+import { info, refuse, status } from "./errors.js"
+import { resolveWorkspaceRef } from "./workspace-ref.js"
 
 export async function runSync(rawArgs: string, ctx: TeleportContext): Promise<void> {
 	let args: ReturnType<typeof parseSyncArgs>
@@ -29,7 +28,10 @@ export async function runSync(rawArgs: string, ctx: TeleportContext): Promise<vo
 		refuse(ctx, `rsync is not on PATH. ${rsyncInstallHint()}`)
 	}
 
-	const workspaceId = await resolveWorkspaceId(ctx, args.workspace)
+	const workspaceId = await resolveWorkspaceRef(ctx, args.workspace, {
+		onEmpty: { kind: "refuse", message: "No workspaces available to sync to. Run /teleport first to create one." },
+		cannotCreateMessage: "/sync cannot create a new workspace. Run /teleport first.",
+	})
 
 	status(ctx, `Syncing ${args.direction}…`)
 	let creds: WorkspaceCredentials
@@ -125,34 +127,4 @@ function resolveSyncPaths(cwd: string, sandboxDest: string, args: ReturnType<typ
 		localPath: join(cwd, args.path),
 		remotePath: join(sandboxDest, args.path),
 	}
-}
-
-async function resolveWorkspaceId(ctx: TeleportContext, fromArgs?: string): Promise<string> {
-	if (fromArgs) return fromArgs
-
-	const cached = readState().lastWorkspaceId
-	if (cached) return cached
-
-	let workspaces: Workspace[]
-	try {
-		workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal })
-	} catch (err) {
-		refuse(ctx, `Could not list workspaces: ${err instanceof Error ? err.message : String(err)}`)
-	}
-
-	if (workspaces.length === 0) {
-		// No workspaces — there's nothing to sync against. A bare uuid mirrors the
-		// teleport flow's "new workspace" semantics but /sync has no provisioning
-		// path, so refuse instead.
-		refuse(ctx, "No workspaces available to sync to. Run /teleport first to create one.")
-	}
-
-	const choice = await pickWorkspace(ctx, workspaces)
-	if (!choice) {
-		throw new TeleportRefusal("cancelled")
-	}
-	if (choice.kind === "new") {
-		refuse(ctx, "/sync cannot create a new workspace. Run /teleport first.")
-	}
-	return choice.id
 }

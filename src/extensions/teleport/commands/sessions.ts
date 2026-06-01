@@ -8,8 +8,8 @@ import type { Session } from "../../../sandbox/worker/types.js"
 import type { TeleportContext } from "../types.js"
 import { pickSession } from "../ui/sessions-panel.js"
 import type { CombinedStatus, SessionRow } from "../ui/sessions-table.js"
+import { runAttachSession } from "./attach.js"
 import { info, refuse, status, warn } from "./errors.js"
-import { runTeleport } from "./teleport.js"
 
 export async function runSessions(_args: string, ctx: TeleportContext): Promise<void> {
 	if (!ctx.apiKey) {
@@ -35,8 +35,7 @@ export async function runSessions(_args: string, ctx: TeleportContext): Promise<
 		if (!result) return
 
 		if (result.action === "open") {
-			const argString = `--workspace ${result.row.workspaceId} ${result.row.sessionName}`
-			await runTeleport(argString, ctx)
+			await runAttachSession({ workspaceId: result.row.workspaceId, sessionName: result.row.sessionName }, ctx)
 			return
 		}
 
@@ -89,8 +88,8 @@ async function collectRows(workspaces: Workspace[], ctx: TeleportContext, descri
 
 // Picker-visibility predicate. Both `/sessions` and `/workspaces` count and
 // list only PTY sessions that haven't finished — those are the only ones the
-// Enter action (runTeleport) can do anything useful with. ACP/RPC sessions
-// and completed PTYs are filtered out.
+// Enter action (runAttachSession) can do anything useful with. ACP/RPC
+// sessions and completed PTYs are filtered out.
 export function isVisibleSession(s: Session): boolean {
 	return s.agentMode === "PTY" && !s.finishedAt
 }

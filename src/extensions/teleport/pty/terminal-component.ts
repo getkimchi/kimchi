@@ -1,4 +1,4 @@
-import { CURSOR_MARKER, type Component, Key, type TUI, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
+import { CURSOR_MARKER, type Component, type TUI, visibleWidth } from "@earendil-works/pi-tui"
 import type { CellData, XtermCore } from "./xterm-core.js"
 
 const DEFAULT_COLOR = 256
@@ -315,11 +315,6 @@ export class TerminalComponent implements Component {
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, Key.ctrl("d"))) {
-			this.session.close()
-			return
-		}
-
 		const raw = toRawAnsi(data)
 		this.session.write(raw !== undefined ? raw : Buffer.from(data, "utf-8"))
 	}

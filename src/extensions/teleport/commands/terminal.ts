@@ -10,6 +10,7 @@ import { readState, updateState } from "../state.js"
 import type { TeleportContext } from "../types.js"
 import { runChildWithTTYHandoff as runChildWithTTYHandoffImpl } from "../ui/tty-handoff.js"
 import { info, refuse, status, warn } from "./errors.js"
+import { resolveWorkspaceRef } from "./workspace-ref.js"
 
 type RunChildFn = typeof runChildWithTTYHandoffImpl
 
@@ -30,17 +31,19 @@ export async function runTerminal(
 	if (tokens.length > 1) {
 		refuse(ctx, USAGE_HINT)
 	}
-	let workspaceId: string | undefined = tokens[0]
-	if (!workspaceId) {
-		workspaceId = readState().lastWorkspaceId
-	}
-	if (!workspaceId) {
+	const rawRef = tokens[0]
+	if (!rawRef && !readState().lastWorkspaceId) {
 		refuse(ctx, `${USAGE_HINT} — no cached workspace; pass one explicitly.`)
 	}
 
 	if (!ctx.apiKey) {
 		refuse(ctx, "No API key configured. Run `kimchi login`.")
 	}
+
+	const workspaceId = await resolveWorkspaceRef(ctx, rawRef, {
+		onEmpty: { kind: "refuse", message: `${USAGE_HINT} — no workspaces available.` },
+		cannotCreateMessage: "/terminal cannot create a new workspace. Run /teleport first.",
+	})
 
 	const description = basename(ctx.cwd) || "kimchi"
 

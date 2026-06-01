@@ -1,34 +1,32 @@
-import { randomUUID } from "node:crypto"
+import { existsSync } from "node:fs"
 import { basename } from "node:path"
 import { readGitToken, writeGitToken } from "../../../config.js"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
-import type { Workspace, WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
-import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
+import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
 import { getGitRemoteHost, parseHostFromRemoteUrl } from "../../../sandbox/git-credentials.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"
 import { createSession, listSessions } from "../../../sandbox/worker/sessions.js"
-import type { Session } from "../../../sandbox/worker/types.js"
+import type { CreateSessionRequest, Session } from "../../../sandbox/worker/types.js"
 import { createTabsOverlay } from "../overlay/overlay-component.js"
 import { generateSessionName } from "../overlay/tab-manager.js"
 import { isGitRepo } from "../preflight/git.js"
 import { runPreflight } from "../preflight/index.js"
 import { SANDBOX_USER } from "../provisioning/constants.js"
-import { cloneRepoOnSandbox } from "../provisioning/git-clone.js"
 import {
 	propagateGitConfigToSandbox,
 	propagateGitCredentialToSandbox,
 	readLocalGitConfig,
 } from "../provisioning/git-propagate.js"
-import { deriveSandboxDest, deriveSandboxDestFromRepoUrl } from "../provisioning/paths.js"
+import { deriveSandboxDest, deriveSandboxDestFromRepoUrl, repoBasename } from "../provisioning/paths.js"
 import { runRsync } from "../provisioning/rsync-runner.js"
 import { readState, updateState } from "../state.js"
 import type { TeleportContext } from "../types.js"
 import { promptForGitToken } from "../ui/git-token-prompt.js"
 import { createTeleportProgress } from "../ui/progress.js"
-import { pickWorkspace } from "../ui/workspace-picker.js"
 import { parseTeleportArgs } from "./args.js"
-import { TeleportRefusal, refuse, warn } from "./errors.js"
+import { refuse, warn } from "./errors.js"
+import { resolveWorkspaceRef } from "./workspace-ref.js"
 
 export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promise<void> {
 	let args: ReturnType<typeof parseTeleportArgs>
@@ -44,7 +42,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 
 	runPreflight(ctx, args)
 
-	const workspaceId = await resolveWorkspaceId(ctx, args.workspace)
+	const workspaceId = await resolveWorkspaceRef(ctx, args.workspace, { onEmpty: { kind: "mint" } })
 	const sessionName = args.name ?? generateSessionName()
 	const description = basename(ctx.cwd) || "kimchi"
 
@@ -72,9 +70,9 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		}
 		progress.complete("Sandbox ready")
 
+		const shouldRsyncWorkspace = !args.gitRepo && isGitRepo(ctx.cwd)
 		await runGitProvisioning(args, ctx, creds, workspaceId, progress)
 
-		const shouldRsyncWorkspace = !args.gitRepo && isGitRepo(ctx.cwd)
 		if (shouldRsyncWorkspace) {
 			progress.step("Syncing workspace")
 			try {
@@ -102,22 +100,35 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		} catch (err) {
 			refuse(ctx, `Could not list sessions: ${err instanceof Error ? err.message : String(err)}`)
 		}
-		const existingMatch = existing.find((s) => s.name === sessionName)
+		if (existing.some((s) => s.name === sessionName)) {
+			refuse(ctx, `Session "${sessionName}" already exists in workspace ${workspaceId}. Use /sessions to attach.`)
+		}
 		const sessionCwd = args.gitRepo
 			? deriveSandboxDestFromRepoUrl(args.gitRepo)
 			: shouldRsyncWorkspace
 				? deriveSandboxDest(ctx.cwd)
 				: undefined
-		if (existingMatch) {
-			initialSession = existingMatch
-		} else {
-			try {
-				initialSession = await createSession(client, sessionName, { agentMode: "PTY", cwd: sessionCwd }, ctx.signal)
-			} catch (err) {
-				refuse(ctx, `Could not create session: ${err instanceof Error ? err.message : String(err)}`)
+		const sessionFileToUpload =
+			!args.skipSession && ctx.sessionFile && existsSync(ctx.sessionFile) ? ctx.sessionFile : undefined
+		const req: CreateSessionRequest = { agentMode: "PTY", cwd: sessionCwd }
+		if (args.gitRepo) {
+			req.details = {
+				git: {
+					repo: args.gitRepo,
+					branch: args.branch,
+					targetDirectory: repoBasename(args.gitRepo),
+				},
 			}
 		}
-		progress.complete(existingMatch ? "Attached to session" : "Session ready")
+		try {
+			initialSession = await createSession(client, sessionName, req, {
+				sessionFile: sessionFileToUpload,
+				signal: ctx.signal,
+			})
+		} catch (err) {
+			refuse(ctx, `Could not create session: ${err instanceof Error ? err.message : String(err)}`)
+		}
+		progress.complete("Session ready")
 
 		progress.finish({
 			id: workspaceId,
@@ -229,47 +240,4 @@ async function runGitProvisioning(
 			progress.complete("Git credentials skipped")
 		}
 	}
-
-	if (gitRepo) {
-		progress.step("Cloning repository")
-		try {
-			await cloneRepoOnSandbox({
-				remoteHost: creds.host,
-				remoteUser: SANDBOX_USER,
-				authToken: creds.connectToken,
-				repoUrl: gitRepo,
-				destination: deriveSandboxDestFromRepoUrl(gitRepo),
-				branch: args.branch,
-				shallow: !args.noShallow,
-				signal: ctx.signal,
-			})
-			progress.complete("Repository cloned")
-		} catch (err) {
-			refuse(ctx, `git clone failed: ${err instanceof Error ? err.message : String(err)}`)
-		}
-	}
-}
-
-async function resolveWorkspaceId(ctx: TeleportContext, fromArgs?: string): Promise<string> {
-	if (fromArgs) return fromArgs
-
-	const cached = readState().lastWorkspaceId
-	if (cached) return cached
-
-	let workspaces: Workspace[]
-	try {
-		workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal })
-	} catch (err) {
-		refuse(ctx, `Could not list workspaces: ${err instanceof Error ? err.message : String(err)}`)
-	}
-
-	if (workspaces.length === 0) return randomUUID()
-
-	const choice = await pickWorkspace(ctx, workspaces)
-	if (!choice) {
-		// Esc/cancel: silent refusal so makeHandler swallows.
-		throw new TeleportRefusal("cancelled")
-	}
-	if (choice.kind === "new") return randomUUID()
-	return choice.id
 }
