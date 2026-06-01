@@ -187,13 +187,13 @@ Named risks with likelihood and mitigation.
 When your plan is complete, finished, and ready for user approval, end your response with one of these markers on its own line:
 
 ` +
-					`<!-- PLAN_COMPLETE -->` +
+					"<!-- PLAN_COMPLETE -->" +
 					`
 
 or simply:
 
 ` +
-					`<done>` +
+					"<done>" +
 					`
 
 Either marker signals the system to show the approval menu. Do NOT include them on incomplete drafts, while assumptions remain unresolved, or when asking clarifying questions.

@@ -9,13 +9,13 @@ Use this template to draft plans directly **within this conversation**. Do NOT u
 When your plan is complete, finished, and all assumptions resolved, end your response with one of these markers on its own line:
 
 ` +
-	`<!-- PLAN_COMPLETE -->` +
+	"<!-- PLAN_COMPLETE -->" +
 	`
 
 or simply:
 
 ` +
-	`<done>` +
+	"<done>" +
 	`
 
 Either marker tells the system the plan is ready for user review. Do NOT include these markers on incomplete drafts, clarifying questions, or while assumptions remain unresolved.

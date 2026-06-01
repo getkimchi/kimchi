@@ -295,7 +295,7 @@ describe("plan mode assumption detection", () => {
 		const ctx = createMockContext(["No, do something else"])
 		await fireTurnEnd(
 			harness,
-			`# Plan\n\n## Goal\nFix the bug.\n\n## Chunk 1\nChange the code.\nAccept When: tests pass.\n\n## Verification\nRun test suite.\n\n<!-- PLAN_COMPLETE -->\n`,
+			"# Plan\n\n## Goal\nFix the bug.\n\n## Chunk 1\nChange the code.\nAccept When: tests pass.\n\n## Verification\nRun test suite.\n\n<!-- PLAN_COMPLETE -->\n",
 			ctx,
 		)
 
@@ -340,7 +340,7 @@ describe("plan mode assumption detection", () => {
 		const ctx = createMockContext(["No, do something else"])
 		await fireTurnEnd(
 			harness,
-			`## Goal\nFix it.\n\n## Assumptions\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.\n\n<!-- PLAN_COMPLETE -->\n`,
+			"## Goal\nFix it.\n\n## Assumptions\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.\n\n<!-- PLAN_COMPLETE -->\n",
 			ctx,
 		)
 
@@ -355,7 +355,7 @@ describe("plan mode assumption detection", () => {
 		const ctx = createMockContext(["No, do something else"])
 		await fireTurnEnd(
 			harness,
-			`## Goal\nDo the thing.\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.\n\n<!-- PLAN_COMPLETE -->\n`,
+			"## Goal\nDo the thing.\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.\n\n<!-- PLAN_COMPLETE -->\n",
 			ctx,
 		)
 
@@ -392,7 +392,7 @@ describe("plan mode assumption detection", () => {
 		const ctx = createMockContext(["No, do something else"])
 		await fireTurnEnd(
 			harness,
-			`## Goal\nAdd auth.\n\n## Chunk 1\nImplement login.\nAccept When: tests pass.\n\n## Verification\nRun the test suite.\n\n<!-- PLAN_COMPLETE -->\n`,
+			"## Goal\nAdd auth.\n\n## Chunk 1\nImplement login.\nAccept When: tests pass.\n\n## Verification\nRun the test suite.\n\n<!-- PLAN_COMPLETE -->\n",
 			ctx,
 		)
 
@@ -411,7 +411,7 @@ describe("plan mode assumption detection", () => {
 		const ctx = createMockContext(["No, do something else"])
 		await fireTurnEnd(
 			harness,
-			`## Chunk 1\nJust a chunk.\n\nSome extra lines\nto make it non-simple.\nMore content here.\n\n<!-- PLAN_COMPLETE -->\n`,
+			"## Chunk 1\nJust a chunk.\n\nSome extra lines\nto make it non-simple.\nMore content here.\n\n<!-- PLAN_COMPLETE -->\n",
 			ctx,
 		)
 

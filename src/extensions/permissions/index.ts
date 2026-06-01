@@ -334,7 +334,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	function switchFromPlanAndExecute(
 		ctx: ExtensionContext,
 		targetMode: PermissionMode,
-		planPath: string,
+		planPath: string | undefined,
 		planText: string,
 	): void {
 		runtimeMode = targetMode
@@ -345,10 +345,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 		// Send the approved plan as the execution trigger. No compaction needed —
 		// the plan text is already in context from the planning conversation.
+		const planRef = planPath ? `\n\nApproved plan saved to: ${planPath}` : ""
 		pi.sendMessage(
 			{
 				customType: "plan-execute",
-				content: `The user approved the plan. Execute it now.\n\nApproved plan saved to: ${planPath}\n\n---\n\n${planText}`,
+				content: `The user approved the plan. Execute it now.${planRef}\n\n---\n\n${planText}`,
 				display: false,
 			},
 			{ triggerTurn: true },
@@ -433,16 +434,19 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const EXECUTE_AUTO = "Yes — execute (auto-approve)"
 		const DECLINE = "No, do something else"
 
-		const planPath = saveApprovedPlan(ctx.cwd, text)
-
 		const choice = await withWorkingHidden(ctx, () =>
 			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, EXECUTE_AUTO, DECLINE]),
 		)
 
-		if (choice === EXECUTE) {
-			switchFromPlanAndExecute(ctx, "default", planPath, text)
-		} else if (choice === EXECUTE_AUTO) {
-			switchFromPlanAndExecute(ctx, "auto", planPath, text)
+		if (choice === EXECUTE || choice === EXECUTE_AUTO) {
+			let planPath: string | undefined
+			try {
+				planPath = saveApprovedPlan(ctx.cwd, text)
+			} catch {
+				// Non-fatal: plan persistence is best-effort.
+			}
+			const targetMode = choice === EXECUTE ? "default" : "auto"
+			switchFromPlanAndExecute(ctx, targetMode as PermissionMode, planPath, text)
 		}
 		// Decline or escape: stay in plan mode.
 	})
