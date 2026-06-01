@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
 import { SessionContext, _resetSharedAccumulators } from "../session-context.js"
-import { handleSessionShutdown, handleSessionStart } from "./session.js"
+import { emitSessionStartEvent, handleSessionInitialized, handleSessionShutdown } from "./session.js"
 
 vi.mock("../../ferment/index.js", () => ({
 	getActiveFerment: vi.fn(() => undefined),
@@ -22,7 +22,7 @@ function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 	}
 }
 
-describe("handleSessionStart", () => {
+describe("handleSessionInitialized", () => {
 	let originalFetch: typeof globalThis.fetch
 
 	beforeEach(() => {
@@ -40,38 +40,18 @@ describe("handleSessionStart", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("resets context and emits kimchi.session.start with model from initialModel", async () => {
-		const ctx = new SessionContext(makeConfig(), "cli", "coding")
-		handleSessionStart(ctx, "claude-opus-4-6")
-		ctx.flushLogBuffer()
+	it("resets context without emitting session.start", async () => {
+		const ctx = new SessionContext(makeConfig(), "cli")
+		handleSessionInitialized(ctx, "claude-opus-4-6")
 
-		await Promise.allSettled([...ctx.inFlight])
-
-		expect(globalThis.fetch).toHaveBeenCalled()
-		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
-		const body = JSON.parse(options.body)
-		const logRecord = body.resourceLogs[0].scopeLogs[0].logRecords[0]
-		expect(logRecord.eventName).toBe("session.start")
-		const attrs = Object.fromEntries(
-			logRecord.attributes.map((a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue]),
-		)
-		expect(attrs.model).toBe("claude-opus-4-6")
-
-		ctx.stopFlushTimer()
-	})
-
-	it("sets mode to ferment when getActiveFerment returns truthy", async () => {
-		const { getActiveFerment } = await import("../../ferment/index.js")
-		vi.mocked(getActiveFerment).mockReturnValue({ id: "test-ferment" } as never)
-
-		const ctx = new SessionContext(makeConfig(), "cli", "coding")
-		handleSessionStart(ctx)
-
-		expect(ctx.mode).toBe("ferment")
+		expect(ctx.currentModel).toBe("claude-opus-4-6")
 
 		ctx.flushLogBuffer()
 		await Promise.allSettled([...ctx.inFlight])
 		ctx.stopFlushTimer()
+
+		// session.start should NOT be emitted by handleSessionInitialized
+		expect(globalThis.fetch).not.toHaveBeenCalled()
 	})
 })
 
@@ -97,7 +77,7 @@ describe("handleSessionShutdown", () => {
 		const { getActiveFerment } = await import("../../ferment/index.js")
 		vi.mocked(getActiveFerment).mockReturnValue(undefined)
 
-		const ctx = new SessionContext(makeConfig(), "cli", "coding")
+		const ctx = new SessionContext(makeConfig(), "cli")
 		await handleSessionShutdown(ctx, { reason: "user_exit" })
 
 		expect(globalThis.fetch).toHaveBeenCalled()
@@ -112,8 +92,47 @@ describe("handleSessionShutdown", () => {
 		expect(attrs.ended_by).toBe("user_exit")
 		expect(attrs.model).toBe("unknown")
 		expect(attrs.source).toBe("cli")
-		expect(attrs.mode).toBe("coding")
 		expect(attrs.session_type).toBe("coding")
 		expect(Number(attrs.duration_ms)).toBeGreaterThanOrEqual(0)
+	})
+})
+
+describe("emitSessionStartEvent", () => {
+	let originalFetch: typeof globalThis.fetch
+
+	beforeEach(() => {
+		originalFetch = globalThis.fetch
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			text: vi.fn().mockResolvedValue(""),
+		} as unknown as Response)
+	})
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
+		vi.restoreAllMocks()
+	})
+
+	it("emits session.start with correct model attribute", async () => {
+		const ctx = new SessionContext(makeConfig(), "cli")
+		ctx.currentModel = "claude-opus-4-6"
+		emitSessionStartEvent(ctx)
+
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+		ctx.stopFlushTimer()
+
+		expect(globalThis.fetch).toHaveBeenCalled()
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const logRecord = body.resourceLogs[0].scopeLogs[0].logRecords[0]
+		expect(logRecord.eventName).toBe("session.start")
+		const attrs = Object.fromEntries(
+			logRecord.attributes.map((a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue]),
+		)
+		expect(attrs.model).toBe("claude-opus-4-6")
+		expect(attrs.source).toBe("cli")
 	})
 })

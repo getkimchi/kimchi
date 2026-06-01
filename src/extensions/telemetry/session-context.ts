@@ -1,9 +1,9 @@
 import crypto from "node:crypto"
 import { getMe } from "../../api/me.js"
 import type { TelemetryConfig } from "../../config.js"
-import { getActiveFerment } from "../ferment/index.js"
 import { type CumulativeState, collectMetrics, createCumulativeState } from "./accumulator.js"
 import { toAttrs } from "./helpers.js"
+import { getSessionType } from "./session-type.js"
 import { type LogRecord, buildLogRecord, sendLogBatch, sendMetrics } from "./transport.js"
 
 // ---------------------------------------------------------------------------
@@ -54,8 +54,6 @@ export class SessionContext {
 	sessionId: string
 	sessionStartMs: number
 	source: string
-	mode: string
-
 	currentModel = "unknown"
 	sentMessages = new Set<string>()
 	pendingArgs = new Map<string, { toolName: string; args: unknown }>()
@@ -74,10 +72,9 @@ export class SessionContext {
 	userEmailReady: Promise<void>
 	private resolveUserEmailReady!: () => void
 
-	constructor(config: TelemetryConfig, source: string, mode: string) {
+	constructor(config: TelemetryConfig, source: string) {
 		this.config = config
 		this.source = source
-		this.mode = mode
 		if (!rootSessionId) rootSessionId = crypto.randomUUID()
 		this.sessionId = rootSessionId
 		this.sessionStartMs = Date.now()
@@ -92,9 +89,8 @@ export class SessionContext {
 		return this.cumulative.sessionStartNano
 	}
 
-	reset(source: string, mode: string): void {
+	reset(source: string): void {
 		this.source = source
-		this.mode = mode
 		if (!rootSessionId) rootSessionId = crypto.randomUUID()
 		this.sessionId = rootSessionId
 		this.sessionStartMs = Date.now()
@@ -117,8 +113,8 @@ export class SessionContext {
 	}
 
 	emit(eventName: string, attrs: Record<string, string | number | boolean>): void {
-		const sessionType = getActiveFerment() ? "ferment" : "coding"
-		const merged = { ...attrs, source: this.source, mode: this.mode, session_type: sessionType }
+		const sessionType = getSessionType()
+		const merged = { ...attrs, source: this.source, session_type: sessionType }
 		this.logBuffer.push(buildLogRecord(this.sessionId, eventName, toAttrs(merged)))
 		if (this.logBuffer.length >= LOG_BATCH_MAX_SIZE) {
 			this.flushLogBuffer()

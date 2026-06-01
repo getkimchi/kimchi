@@ -31,7 +31,7 @@ export function handleToolExecutionEnd(
 
 	const { toolName, args: rawArgs } = pending
 	const args = (rawArgs ?? {}) as ToolArgs
-	const toolDurationMs = Date.now() - (ctx.messageStartTimes.get(event.toolCallId) ?? ctx.sessionStartMs)
+	const toolDurationMs = Date.now() - (ctx.toolStartTimes.get(event.toolCallId) ?? ctx.sessionStartMs)
 
 	// --- Tool usage & duration (all tools) ------------------------------------
 	const startMs = ctx.toolStartTimes.get(event.toolCallId) ?? Date.now()

@@ -1,13 +1,14 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { TelemetryConfig } from "../../config.js"
-import { getActiveFerment } from "../ferment/index.js"
+
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./handlers/messages.js"
-import { handleSessionShutdown, handleSessionStart } from "./handlers/session.js"
+import { emitSessionStartEvent, handleSessionInitialized, handleSessionShutdown } from "./handlers/session.js"
 import { handleToolExecutionEnd, handleToolExecutionStart } from "./handlers/tools.js"
 import { SessionContext } from "./session-context.js"
 
 let _ctx: SessionContext | undefined
 let _telemetryConfig: TelemetryConfig = { enabled: false, endpoint: "", metricsEndpoint: "", headers: {}, apiKey: "" }
+let sessionStartEmitted = false
 
 export { _telemetryConfig }
 
@@ -21,13 +22,12 @@ export default function telemetryExtension(config: TelemetryConfig) {
 	return (pi: ExtensionAPI) => {
 		if (!config.enabled) return
 
-		const activeFerment = getActiveFerment()
-		const ctx = new SessionContext(config, "cli", activeFerment ? "ferment" : "coding")
+		const ctx = new SessionContext(config, "cli")
 		_ctx = ctx
 
 		pi.on("session_start", async (_event, extCtx) => {
 			const modelId = (extCtx as { model?: { id?: string } } | undefined)?.model?.id
-			handleSessionStart(ctx, modelId)
+			handleSessionInitialized(ctx, modelId)
 		})
 		pi.on("session_shutdown", async (event) => handleSessionShutdown(ctx, event as { reason?: string }))
 		pi.on("message_start", async (event) =>
@@ -47,6 +47,10 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			handleToolExecutionEnd(ctx, event as { toolCallId: string; isError?: boolean; result?: unknown }),
 		)
 		pi.on("before_agent_start", async (event, extCtx) => {
+			if (!sessionStartEmitted) {
+				sessionStartEmitted = true
+				emitSessionStartEvent(ctx)
+			}
 			if (ctx.currentModel === "unknown") {
 				const modelId = (extCtx as { model?: { id?: string } } | undefined)?.model?.id
 				if (modelId) ctx.currentModel = modelId

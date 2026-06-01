@@ -1,3 +1,5 @@
+import * as fs from "node:fs"
+import * as path from "node:path"
 import type { TelemetryConfig } from "../../config.js"
 import { getVersion } from "../../utils.js"
 import { nowNano, strAttr } from "./helpers.js"
@@ -25,6 +27,21 @@ export interface LogRecord {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+const DEBUG_FLAG = process.env.KIMCHI_TELEMETRY_DEBUG
+
+function logEventToFile(event: string, properties: Record<string, unknown>): void {
+	if (!DEBUG_FLAG) return
+	try {
+		const logDir = path.join(process.cwd(), ".kimchi")
+		fs.mkdirSync(logDir, { recursive: true })
+		const entry = `${JSON.stringify({ event, properties })}
+`
+		fs.appendFileSync(path.join(logDir, "telemetry-debug.log"), entry)
+	} catch {
+		// silently ignore debug logging failures
+	}
+}
 
 function resourceAttributes() {
 	return [strAttr("service.name", "kimchi"), strAttr("user_agent.original", `kimchi/${getVersion()}`)]
@@ -91,6 +108,7 @@ export async function sendLog(
 		],
 	}
 	if (userEmail) payload.userEmail = userEmail
+	logEventToFile(eventName, attrs as Record<string, unknown>)
 	try {
 		await fetch(config.endpoint, {
 			method: "POST",
@@ -143,6 +161,18 @@ export async function sendLogBatch(config: TelemetryConfig, records: LogRecord[]
 		],
 	}
 	if (userEmail) payload.userEmail = userEmail
+	for (const record of records) {
+		const props: Record<string, unknown> = {}
+		for (const a of record.attributes) {
+			if ("value" in a && typeof a.value === "object" && a.value !== null) {
+				const v = a.value as Record<string, string>
+				props[a.key] = v.stringValue ?? v.intValue ?? v.doubleValue
+			} else {
+				props[a.key] = a.value
+			}
+		}
+		logEventToFile(record.eventName, props)
+	}
 	try {
 		await fetch(config.endpoint, {
 			method: "POST",
@@ -194,6 +224,9 @@ export async function sendMetrics(
 		],
 	}
 	if (userEmail) payload.userEmail = userEmail
+	for (const metric of metrics) {
+		logEventToFile(metric.name, { value: metric.value, ...metric.attrs })
+	}
 	try {
 		await fetch(config.metricsEndpoint, {
 			method: "POST",

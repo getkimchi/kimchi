@@ -1,13 +1,15 @@
-import { getActiveFerment } from "../../ferment/index.js"
 import { toAttrs } from "../helpers.js"
 import type { SessionContext } from "../session-context.js"
+import { getSessionType } from "../session-type.js"
 import { sendLog } from "../transport.js"
 
-export function handleSessionStart(ctx: SessionContext, initialModel?: string): void {
-	const mode = getActiveFerment() ? "ferment" : "coding"
-	ctx.reset(ctx.source, mode)
+export function handleSessionInitialized(ctx: SessionContext, initialModel?: string): void {
+	ctx.reset(ctx.source)
 	if (initialModel) ctx.currentModel = initialModel
 	ctx.startFlushTimer()
+}
+
+export function emitSessionStartEvent(ctx: SessionContext): void {
 	ctx.emit("session.start", { model: ctx.currentModel })
 }
 
@@ -24,8 +26,7 @@ export async function handleSessionShutdown(ctx: SessionContext, event: { reason
 			duration_ms: Date.now() - ctx.sessionStartMs,
 			ended_by: endedBy,
 			source: ctx.source,
-			mode: ctx.mode,
-			session_type: getActiveFerment() ? "ferment" : "coding",
+			session_type: getSessionType(),
 		}),
 		ctx.userEmail,
 	)

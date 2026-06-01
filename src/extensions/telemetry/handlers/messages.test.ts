@@ -22,8 +22,8 @@ function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 	}
 }
 
-function makeCtx(source = "cli", mode = "coding"): SessionContext {
-	return new SessionContext(makeConfig(), source, mode)
+function makeCtx(source = "cli"): SessionContext {
+	return new SessionContext(makeConfig(), source)
 }
 
 describe("handleMessageStart", () => {
@@ -83,7 +83,7 @@ describe("handleMessageEnd", () => {
 	})
 
 	it("emits api_request with source and mode", async () => {
-		const ctx = makeCtx("vscode", "ferment")
+		const ctx = makeCtx("vscode")
 		const emitSpy = vi.spyOn(ctx, "emit")
 
 		await handleMessageEnd(ctx, {
