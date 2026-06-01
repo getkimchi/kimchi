@@ -8,6 +8,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { getAvailableModels } from "../../startup-context.js"
+import { setProcessOrchestratorRef } from "../kimchi-process.js"
 import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
 import {
 	DEFAULT_MODEL_ROLES,
@@ -19,7 +20,7 @@ import {
 } from "./model-roles.js"
 
 function syncOrchestratorRef(roles: ModelRoles): void {
-	;(process as NodeJS.Process & { __kimchiOrchestratorRef?: string }).__kimchiOrchestratorRef = roles.orchestrator
+	setProcessOrchestratorRef(roles.orchestrator)
 }
 
 const ROLE_LABELS: Record<keyof ModelRoles, { label: string; description: string }> = {
