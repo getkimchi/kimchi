@@ -170,7 +170,7 @@ index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..6c58ed7f6eabfc4628b2be434ca4b489
              return;
          }
          this.allModels = this.sortModels(models);
-+        if (process.__kimchiMultiModelEnabled && process.__kimchiOrchestratorRef) {
++        if (process.__kimchiOrchestratorRef) {
 +            const orchId = process.__kimchiOrchestratorRef.split('/').pop();
 +            const orchEntry = this.allModels.find(m => m.id === orchId);
 +            if (orchEntry) {
@@ -184,7 +184,7 @@ index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..6c58ed7f6eabfc4628b2be434ca4b489
              id: scoped.model.id,
              model: scoped.model,
          }));
-+        if (process.__kimchiMultiModelEnabled && process.__kimchiOrchestratorRef) {
++        if (process.__kimchiOrchestratorRef) {
 +            const orchIdScoped = process.__kimchiOrchestratorRef.split('/').pop();
 +            const orchScopedEntry = this.scopedModelItems.find(m => m.id === orchIdScoped);
 +            if (orchScopedEntry) {

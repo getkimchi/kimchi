@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   '@earendil-works/pi-coding-agent':
-    hash: afc8b2e07bc8b86574b3ddae881d6d2f424e23a87ceb721ab13c3d7949761ee5
+    hash: 73adec8fd70a70a9165c36a0bed30ccd63c0c22d5f94b3aab9077e07a27e40d3
     path: patches/@earendil-works__pi-coding-agent.patch
   '@earendil-works/pi-tui':
     hash: e432fee0f54b7321d104a08ff5a38561d9c2cd3b002f34e6b8cbc2377889c9d2
@@ -27,7 +27,7 @@ importers:
         version: 1.3.0
       '@earendil-works/pi-coding-agent':
         specifier: ^0.75.1
-        version: 0.75.1(patch_hash=afc8b2e07bc8b86574b3ddae881d6d2f424e23a87ceb721ab13c3d7949761ee5)(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)
+        version: 0.75.1(patch_hash=73adec8fd70a70a9165c36a0bed30ccd63c0c22d5f94b3aab9077e07a27e40d3)(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-tui':
         specifier: ^0.75.1
         version: 0.75.1(patch_hash=e432fee0f54b7321d104a08ff5a38561d9c2cd3b002f34e6b8cbc2377889c9d2)
@@ -2378,7 +2378,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-coding-agent@0.75.1(patch_hash=afc8b2e07bc8b86574b3ddae881d6d2f424e23a87ceb721ab13c3d7949761ee5)(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)':
+  '@earendil-works/pi-coding-agent@0.75.1(patch_hash=73adec8fd70a70a9165c36a0bed30ccd63c0c22d5f94b3aab9077e07a27e40d3)(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)':
     dependencies:
       '@earendil-works/pi-agent-core': 0.75.1(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-ai': 0.75.1(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)
