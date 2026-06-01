@@ -242,13 +242,17 @@ index 408e38417da84ba9e729cfd5f3dd95b285e57e91..5d4225f409fd7e4ef7dfcbda5e16fded
                  const thinkingStr = result.model.reasoning && result.thinkingLevel !== "off" ? ` (thinking: ${result.thinkingLevel})` : "";
                  this.showStatus(`Switched to ${result.model.name || result.model.id}${thinkingStr}`);
                  void this.maybeWarnAboutAnthropicSubscriptionAuth(result.model);
-@@ -3301,6 +3304,25 @@ ${chalk.cyan("Tip:")} ${this.getTip()}`;
+@@ -3301,6 +3304,29 @@ ${chalk.cyan("Tip:")} ${this.getTip()}`;
              this.showModelSelector();
              return;
          }
 +        // Handle "multi-model" as a virtual model selection
 +        if (searchTerm === 'multi-model') {
-+            const orchestratorModel = this.session.modelRegistry.find('kimchi-dev', 'kimi-k2.6');
++            const orchRef = process.__kimchiOrchestratorRef;
++            const orchParts = orchRef ? orchRef.split('/') : [];
++            const orchProvider = orchParts.length >= 2 ? orchParts.slice(0, -1).join('/') : undefined;
++            const orchModelId = orchParts.length >= 2 ? orchParts[orchParts.length - 1] : undefined;
++            const orchestratorModel = orchProvider && orchModelId ? this.session.modelRegistry.find(orchProvider, orchModelId) : undefined;
 +            if (orchestratorModel) {
 +                process.__kimchiMultiModelEnabled = true;
 +                try {
@@ -261,7 +265,7 @@ index 408e38417da84ba9e729cfd5f3dd95b285e57e91..5d4225f409fd7e4ef7dfcbda5e16fded
 +                    this.showError(error instanceof Error ? error.message : String(error));
 +                }
 +            } else {
-+                this.showError('Multi-model orchestrator (kimi-k2.6) is not available.');
++                this.showError('Multi-model orchestrator is not available.');
 +            }
 +            return;
 +        }
