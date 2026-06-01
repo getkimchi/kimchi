@@ -41,7 +41,7 @@ describe("ferment tool scope", () => {
 
 		applyFermentToolProfile(pi, "idle")
 
-		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", FERMENT_TOOLS.LIST, FERMENT_TOOLS.ASK_USER])
+		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", FERMENT_TOOLS.LIST])
 	})
 
 	it("keeps the existing-ferment lifecycle surface for an active planner profile", () => {
@@ -65,7 +65,7 @@ describe("ferment tool scope", () => {
 
 		applyFermentToolProfile(pi, "paused-terminal")
 
-		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", FERMENT_TOOLS.LIST, FERMENT_TOOLS.ASK_USER])
+		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", FERMENT_TOOLS.LIST])
 	})
 
 	it("selects session profiles from ferment role and status", () => {

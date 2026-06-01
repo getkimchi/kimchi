@@ -20,7 +20,7 @@ STEP 2 — INTERVIEW (iterative rounds)
 Ask the user about the unknowns you identified in Step 1. Run in rounds:
 
 Round structure:
-  a. Ask 1-3 focused questions via ask_user or questionnaire.
+  a. Ask 1-3 focused questions via ask_user.
      When presenting options, set allowOther: true and include "None of the above"
      for predefined choices.
   b. When answers come back, REFLECT before continuing:
