@@ -44,13 +44,7 @@ export const SECOND_NUDGE_TEXT =
 export const EMPTY_TURN_NUDGE_TEXT =
 	"If you have finished, please summarize the result for the user. Otherwise, continue with the next tool call."
 
-/** Select nudge text based on how many continuation nudges have already fired. */
-function getNudgeText(count: number): string {
-	return count <= 1 ? CONTINUATION_NUDGE_TEXT : SECOND_NUDGE_TEXT
-}
-
-/**
- * Post-turn state machine for the "text-only drift" nudge.
+/** Post-turn state machine for the "text-only drift" nudge.
  *
  * Fires at most twice per user-input cycle, and only when no tool has been
  * called during that cycle — so legitimate end-of-task summaries after a
