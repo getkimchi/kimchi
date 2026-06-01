@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process"
+import { execFile } from "node:child_process"
 import { extname, join } from "node:path"
 import type { ImageContent } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
@@ -18,6 +18,7 @@ let imageCounter = 0
 const CLIPBOARD_POLL_INTERVAL_MS = 2000
 let clipboardPollId: ReturnType<typeof setInterval> | null = null
 let clipboardHasImage = false
+let isCheckingFinder = false
 
 function modelSupportsImages(modelId: string | undefined): boolean {
 	if (!modelId) return false
@@ -33,23 +34,31 @@ function isImageFormat(format: string): boolean {
 	)
 }
 
-function isFinderImageFileCopy(): boolean {
-	if (process.platform !== "darwin") return false
-	try {
-		const raw = execFileSync("/usr/bin/osascript", ["-e", "POSIX path of (the clipboard as «class furl»)"], {
-			encoding: "utf8",
-			timeout: 1000,
-			stdio: ["ignore", "pipe", "ignore"],
-		})
-		const path = raw.trim()
-		return path !== "" && IMAGE_EXT_TO_MIME[extname(path).toLowerCase()] !== undefined
-	} catch {
-		return false
-	}
+function isFinderImageFileCopy(): Promise<boolean> {
+	return new Promise<boolean>((resolve) => {
+		if (process.platform !== "darwin") {
+			resolve(false)
+			return
+		}
+		execFile(
+			"/usr/bin/osascript",
+			["-e", "POSIX path of (the clipboard as «class furl»)"],
+			{ encoding: "utf8", timeout: 300 },
+			(err, stdout) => {
+				if (err) {
+					resolve(false)
+					return
+				}
+				const path = stdout.trim()
+				resolve(path !== "" && IMAGE_EXT_TO_MIME[extname(path).toLowerCase()] !== undefined)
+			},
+		)
+	})
 }
 
 function checkClipboard(): void {
 	if (!currentCtx) return
+	if (isCheckingFinder) return
 
 	try {
 		if (!modelSupportsImages(currentCtx.model?.id)) {
@@ -69,7 +78,6 @@ function checkClipboard(): void {
 			return
 		}
 
-		let hasImage = false
 		let formats: string[] | null = null
 		if (native.availableFormats) {
 			try {
@@ -82,9 +90,22 @@ function checkClipboard(): void {
 		if (formats?.includes("public.file-url")) {
 			// Finder file copy: macOS puts public.file-url + a thumbnail on the pasteboard.
 			// hasImage() returns true for any file's thumbnail, so we can't use it here.
-			// Resolve the actual file path and check its extension — same logic as the paste handler.
-			hasImage = isFinderImageFileCopy()
+			// Resolve the actual file path asynchronously to avoid blocking the event loop.
+			isCheckingFinder = true
+			isFinderImageFileCopy()
+				.then((hasImage) => {
+					if (clipboardPollId === null) return // session shut down while checking
+					if (hasImage !== clipboardHasImage) {
+						clipboardHasImage = hasImage
+						updateIndicator()
+					}
+				})
+				.catch(() => {})
+				.finally(() => {
+					isCheckingFinder = false
+				})
 		} else {
+			let hasImage = false
 			try {
 				hasImage = native.hasImage()
 			} catch {
@@ -95,11 +116,10 @@ function checkClipboard(): void {
 			if (!hasImage && formats) {
 				hasImage = formats.some(isImageFormat)
 			}
-		}
-
-		if (hasImage !== clipboardHasImage) {
-			clipboardHasImage = hasImage
-			updateIndicator()
+			if (hasImage !== clipboardHasImage) {
+				clipboardHasImage = hasImage
+				updateIndicator()
+			}
 		}
 	} catch (err) {
 		console.error("[clipboard-image] Proactive clipboard check failed:", err)
@@ -175,6 +195,7 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			clearInterval(clipboardPollId)
 			clipboardPollId = null
 		}
+		isCheckingFinder = false
 		clipboardHasImage = false
 		currentCtx = ctx
 		pendingImages = []
@@ -183,6 +204,7 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		const dir = sessionDir ? join(sessionDir, "image-cache") : null
 		setImageCacheDir(dir)
 		clearAllImages()
+		updateIndicator()
 		checkClipboard()
 		clipboardPollId = setInterval(checkClipboard, CLIPBOARD_POLL_INTERVAL_MS)
 	})

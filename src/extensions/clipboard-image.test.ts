@@ -10,7 +10,7 @@ const {
 	mockAddImage,
 	mockClearAllImages,
 	mockSetImageCacheDir,
-	mockExecFileSync,
+	mockExecFile,
 } = vi.hoisted(() => ({
 	mockSetPendingImageIndicator: vi.fn(),
 	mockGetNativeClipboard: vi.fn(),
@@ -18,11 +18,11 @@ const {
 	mockAddImage: vi.fn(),
 	mockClearAllImages: vi.fn(),
 	mockSetImageCacheDir: vi.fn(),
-	mockExecFileSync: vi.fn(),
+	mockExecFile: vi.fn(),
 }))
 
 vi.mock("node:child_process", () => ({
-	execFileSync: mockExecFileSync,
+	execFile: mockExecFile,
 }))
 
 vi.mock("./ui.js", () => ({
@@ -226,12 +226,12 @@ describe("clipboard-image extension", () => {
 			clipboardImageExtension(pi)
 			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
 
-			// Immediate check fires once.
-			expect(mockSetPendingImageIndicator).toHaveBeenCalledTimes(1)
+			// session_start fires updateIndicator() (null reset) then checkClipboard() (hint) — 2 calls total.
+			expect(mockSetPendingImageIndicator).toHaveBeenCalledTimes(2)
 
 			// Two timer ticks pass with image still present — no additional calls.
 			vi.advanceTimersByTime(1000)
-			expect(mockSetPendingImageIndicator).toHaveBeenCalledTimes(1)
+			expect(mockSetPendingImageIndicator).toHaveBeenCalledTimes(2)
 		})
 
 		it("detects images via availableFormats fallback when hasImage returns false", () => {
@@ -294,7 +294,7 @@ describe("clipboard-image extension", () => {
 			expect(mockSetPendingImageIndicator).toHaveBeenLastCalledWith(null)
 		})
 
-		it("shows hint when an image file is copied in Finder", () => {
+		it("shows hint when an image file is copied in Finder", async () => {
 			mockGetAvailableModels.mockReturnValue([{ slug: "glm-4", input_modalities: ["text", "image"] }])
 			mockGetNativeClipboard.mockReturnValue({
 				clipboard: {
@@ -303,16 +303,23 @@ describe("clipboard-image extension", () => {
 				},
 				error: null,
 			})
-			mockExecFileSync.mockReturnValue("/Users/user/photo.jpg\n")
+			mockExecFile.mockImplementation(
+				(_cmd: string, _args: string[], _opts: unknown, cb: (err: null, stdout: string) => void) => {
+					cb(null, "/Users/user/photo.jpg\n")
+				},
+			)
 
 			const pi = makeMockPi()
 			clipboardImageExtension(pi)
 			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
 
+			// isFinderImageFileCopy is async — flush microtasks so the .then() runs.
+			await Promise.resolve()
+
 			expect(mockSetPendingImageIndicator).toHaveBeenCalledWith("Image in clipboard · ctrl+v to paste")
 		})
 
-		it("does not show hint when a non-image file is copied in Finder", () => {
+		it("does not show hint when a non-image file is copied in Finder", async () => {
 			mockGetAvailableModels.mockReturnValue([{ slug: "glm-4", input_modalities: ["text", "image"] }])
 			mockGetNativeClipboard.mockReturnValue({
 				clipboard: {
@@ -322,11 +329,17 @@ describe("clipboard-image extension", () => {
 				},
 				error: null,
 			})
-			mockExecFileSync.mockReturnValue("/Users/user/document.pdf\n")
+			mockExecFile.mockImplementation(
+				(_cmd: string, _args: string[], _opts: unknown, cb: (err: null, stdout: string) => void) => {
+					cb(null, "/Users/user/document.pdf\n")
+				},
+			)
 
 			const pi = makeMockPi()
 			clipboardImageExtension(pi)
 			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
+
+			await Promise.resolve()
 
 			expect(mockSetPendingImageIndicator).not.toHaveBeenCalledWith("Image in clipboard · ctrl+v to paste")
 		})
