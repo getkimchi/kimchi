@@ -336,5 +336,5 @@ export async function judgeJourneyGrade(
 		return { ok: true, grade: parsed.grade, rationale }
 	}
 
-	return { ok: false, reason: "empty_response", detail: `after ${JOURNEY_GRADE_MAX_ATTEMPTS} attempts` }
+	throw new Error("unreachable: journey grade retry loop exited without a result")
 }
