@@ -440,6 +440,36 @@ export function getActiveAgentCount(): number {
 	return activeManager?.getRunningCount() ?? 0
 }
 
+/** The live AgentManager instance the Agent tool and TUI agent tree share, or
+ *  undefined before extension init. Lets in-process callers (e.g. ferment's
+ *  host-run Plan Reviewer) spawn a subagent that is visible in the TUI, rather
+ *  than invoking runAgent directly (which bypasses the manager and the tree). */
+export function getActiveAgentManager(): AgentManager | undefined {
+	return activeManager
+}
+
+export interface VisibleSubagentSpawnArgs {
+	pi: ExtensionAPI
+	ctx: ExtensionContext
+	type: SubagentType
+	prompt: string
+	description: string
+	signal?: AbortSignal
+	maxTurns?: number
+}
+
+/** Spawn a foreground subagent wired to the SAME activity tracker + widget the
+ *  Agent tool uses, so it renders in the "● Agents" tree with a live spinner,
+ *  tool-use count, token usage, and the streaming activity line — identical to a
+ *  planner-spawned Explore/Plan agent. Set at extension init; undefined before. */
+let visibleSubagentSpawner: ((args: VisibleSubagentSpawnArgs) => Promise<AgentRecord | undefined>) | undefined
+
+export function getVisibleSubagentSpawner():
+	| ((args: VisibleSubagentSpawnArgs) => Promise<AgentRecord | undefined>)
+	| undefined {
+	return visibleSubagentSpawner
+}
+
 export function getActiveAgentModelIds(): string[] {
 	if (!activeManager) return []
 	return activeManager
@@ -751,6 +781,32 @@ export default function (pi: ExtensionAPI) {
 
 	const widget = new AgentWidget(manager, agentActivity)
 	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
+
+	// Expose a foreground spawn that mirrors the Agent tool's tracker+widget wiring,
+	// so in-process callers (ferment's host-run Plan Reviewer) render in the "●
+	// Agents" tree exactly like a planner-spawned Explore/Plan agent.
+	visibleSubagentSpawner = async ({ pi: spawnPi, ctx: spawnCtx, type, prompt, description, signal, maxTurns }) => {
+		const { state, callbacks } = createActivityTracker(maxTurns)
+		const id = manager.spawn(spawnPi, spawnCtx, type, prompt, {
+			description,
+			visibility: "user",
+			isBackground: false,
+			maxTurns,
+			signal,
+			...callbacks,
+		})
+		agentActivity.set(id, state)
+		widget.ensureTimer()
+		widget.update()
+		try {
+			await manager.getRecord(id)?.promise
+			return manager.getRecord(id)
+		} finally {
+			agentActivity.delete(id)
+			widget.markFinished(id)
+			widget.update()
+		}
+	}
 
 	let defaultJoinMode: JoinMode = "smart"
 	function getDefaultJoinMode(): JoinMode {

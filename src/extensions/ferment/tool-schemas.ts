@@ -220,7 +220,6 @@ export const ProposeScopingParams = Type.Object({
 			}),
 		]),
 	),
-	plan_review: Type.Optional(PlanReviewSchema),
 	gates: Type.Array(GateVerdictSchema, {
 		description:
 			"Plan-scope gate verdicts. Required ids: P1, P2, P3. See tool description for each gate's question and what counts as 'pass' vs 'flag'.",

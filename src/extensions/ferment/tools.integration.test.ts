@@ -68,6 +68,22 @@ interface ToolResult {
 	isError?: boolean
 }
 
+interface PlanReviewVerdict {
+	status: "approved" | "needs_revision"
+	summary: string
+	required_changes: string[]
+	reservations: string[]
+	questions: string[]
+}
+
+const APPROVED_REVIEW: PlanReviewVerdict = {
+	status: "approved",
+	summary: "Plan Reviewer approves the plan fit, complexity, and verification.",
+	required_changes: [],
+	reservations: [],
+	questions: [],
+}
+
 interface Harness {
 	storage: FermentStorage
 	runtime: FermentRuntime
@@ -75,13 +91,23 @@ interface Harness {
 	tools: Map<string, RegisteredTool>
 	pi: ExtensionAPI
 	call: (toolName: string, params: unknown, ctx?: unknown) => Promise<ToolResult>
+	/** Override the verdict the host-run Plan Reviewer returns for subsequent calls. */
+	setPlanReview: (verdict: PlanReviewVerdict) => void
 }
 
 function createHarness(): Harness {
 	const tempDir = mkdtempSync(join(tmpdir(), "ferment-tools-test-"))
 	const storage = new FermentStorage(tempDir)
 	const eventStorage = new FermentEventStore(tempDir)
-	const runtime = { ...createDefaultFermentRuntime(), getStorage: () => eventStorage }
+	let planReviewVerdict: PlanReviewVerdict = { ...APPROVED_REVIEW }
+	const setPlanReview = (verdict: PlanReviewVerdict) => {
+		planReviewVerdict = verdict
+	}
+	const runtime = {
+		...createDefaultFermentRuntime(),
+		getStorage: () => eventStorage,
+		runPlanReview: async () => planReviewVerdict,
+	}
 	const tools = new Map<string, RegisteredTool>()
 
 	// Mock pi: only what the tool factories actually call.
@@ -110,7 +136,7 @@ function createHarness(): Harness {
 		return result as ToolResult
 	}
 
-	return { storage, runtime, tempDir, tools, pi, call }
+	return { storage, runtime, tempDir, tools, pi, call, setPlanReview }
 }
 
 function createWorkflowCtx(options: { confirm?: boolean } = {}) {
@@ -1113,30 +1139,19 @@ describe("propose_ferment_scoping", () => {
 		{ name: "P3", goal: "g3", steps: [{ description: "s3" }] },
 	]
 
-	const basePayload = (ferment_id: string, overrides: Record<string, unknown> = {}) => {
-		const payload: Record<string, unknown> = {
-			ferment_id,
-			title: "Proposed Ferment",
-			goal: "Build a thing",
-			success_criteria: "Tests pass",
-			constraints: ["no breaking changes"],
-			assumptions: "API is stable",
-			phases: threePhases,
-			gates: passingPlanGates(),
-			...overrides,
-		}
-		const planReview = (overrides.plan_review as Record<string, unknown> | undefined) ?? {
-			status: "approved",
-			summary: "Plan Reviewer approves the plan fit, complexity, and verification.",
-			required_changes: [],
-			reservations: [],
-			questions: [],
-		}
-		return {
-			...payload,
-			plan_review: { ...planReview },
-		}
-	}
+	// The plan-review verdict is now produced by the host (runtime.runPlanReview),
+	// not supplied in the payload — drive it per-test via h.setPlanReview(...).
+	const basePayload = (ferment_id: string, overrides: Record<string, unknown> = {}) => ({
+		ferment_id,
+		title: "Proposed Ferment",
+		goal: "Build a thing",
+		success_criteria: "Tests pass",
+		constraints: ["no breaking changes"],
+		assumptions: "API is stable",
+		phases: threePhases,
+		gates: passingPlanGates(),
+		...overrides,
+	})
 
 	// Helper: seed a pending scope so propose_ferment_scoping can replace it.
 	function seedPending(id: string) {
@@ -1159,14 +1174,12 @@ describe("propose_ferment_scoping", () => {
 		expect(tool?.description).toContain("Partial gates are rejected")
 	})
 
-	it("tells the planner to include an approved Plan Reviewer review", () => {
+	it("tells the planner the host runs the Plan Reviewer automatically", () => {
 		const tool = h.tools.get("propose_ferment_scoping")
-		expect(tool?.description).toContain("plan_review")
-		expect(tool?.description).toContain("separate Plan Reviewer subagent review")
-		expect(tool?.description).toContain('subagent_type "Plan Reviewer"')
-		expect(tool?.description).toContain("required_changes, reservations, and questions")
-		expect(tool?.description).toContain("using [] for empty arrays")
+		expect(tool?.description).toContain("runs the Plan Reviewer on your exact plan")
+		expect(tool?.description).toContain("do NOT spawn a Plan Reviewer yourself")
 		expect(tool?.description).toContain("needs_revision")
+		expect(tool?.description).not.toContain("plan_review")
 	})
 
 	it("tells the planner to keep phases provisional when scoping questions are pending", () => {
@@ -1199,29 +1212,17 @@ describe("propose_ferment_scoping", () => {
 		expect(getPendingPlanReview(id)?.planMarkdown.includes(`${String.fromCharCode(27)}[`)).toBe(false)
 	})
 
-	it("rejects scoping proposals without Plan Reviewer review", async () => {
-		const id = await createFerment("No Plan Reviewer")
-		seedPending(id)
-		const payload = basePayload(id)
-		const result = err(await h.call("propose_ferment_scoping", { ...payload, plan_review: undefined }, {}))
-
-		expect(result).toContain("plan_review")
-		expect(getPendingPlanReview(id)).toBeUndefined()
-	})
-
-	it("rejects Plan Reviewer reviews that need revision", async () => {
+	it("rejects the proposal when the host Plan Reviewer requires revision", async () => {
 		const id = await createFerment("Plan Reviewer Reject")
 		seedPending(id)
-		const payload = basePayload(id, {
-			plan_review: {
-				status: "needs_revision",
-				summary: "Plan skips verification.",
-				required_changes: ["Add verification commands to each phase."],
-				reservations: [],
-				questions: [],
-			},
+		h.setPlanReview({
+			status: "needs_revision",
+			summary: "Plan skips verification.",
+			required_changes: ["Add verification commands to each phase."],
+			reservations: [],
+			questions: [],
 		})
-		const result = err(await h.call("propose_ferment_scoping", payload, {}))
+		const result = err(await h.call("propose_ferment_scoping", basePayload(id), {}))
 
 		expect(result).toContain("Plan Reviewer rejected this plan")
 		expect(result).toContain("Add verification commands")
@@ -1233,86 +1234,44 @@ describe("propose_ferment_scoping", () => {
 		seedPending(id)
 		const required_changes = ["Add verification commands to each phase."]
 
-		const first = err(
-			await h.call(
-				"propose_ferment_scoping",
-				basePayload(id, {
-					plan_review: {
-						status: "needs_revision",
-						summary: "Plan skips verification.",
-						required_changes,
-						reservations: [],
-						questions: [],
-					},
-				}),
-				{},
-			),
-		)
+		h.setPlanReview({
+			status: "needs_revision",
+			summary: "Plan skips verification.",
+			required_changes,
+			reservations: [],
+			questions: [],
+		})
+		const first = err(await h.call("propose_ferment_scoping", basePayload(id), {}))
 		expect(first).toContain("Attempt 1/")
 
+		h.setPlanReview({
+			status: "needs_revision",
+			summary: "Verification is still missing.",
+			required_changes,
+			reservations: [],
+			questions: [],
+		})
 		const select = vi.fn().mockResolvedValue("Revise plan manually")
-		const second = err(
-			await h.call(
-				"propose_ferment_scoping",
-				basePayload(id, {
-					plan_review: {
-						status: "needs_revision",
-						summary: "Verification is still missing.",
-						required_changes,
-						reservations: [],
-						questions: [],
-					},
-				}),
-				{ ui: { select } },
-			),
-		)
+		const second = err(await h.call("propose_ferment_scoping", basePayload(id), { ui: { select } }))
 
 		expect(second).toContain("same Plan Reviewer rejection repeated 2 times")
 		expect(select).toHaveBeenCalledTimes(1)
 		expect(getPendingPlanReview(id)).toBeUndefined()
 	})
 
-	it("rejects Plan Reviewer reviews missing required arrays", async () => {
-		const id = await createFerment("Malformed Plan Reviewer")
-		seedPending(id)
-		const result = err(
-			await h.call(
-				"propose_ferment_scoping",
-				basePayload(id, {
-					plan_review: {
-						status: "approved",
-						summary: "Looks good.",
-						required_changes: [],
-					},
-				}),
-				{},
-			),
-		)
-
-		expect(result).toContain("plan_review.reservations must be an array")
-		expect(getPendingPlanReview(id)).toBeUndefined()
-	})
-
-	it("rejects final proposals when Plan Reviewer asked blocking user questions", async () => {
+	it("rejects the final proposal when the Plan Reviewer raises blocking user questions", async () => {
 		const id = await createFerment("Plan Reviewer Questions")
 		seedPending(id)
-		const result = err(
-			await h.call(
-				"propose_ferment_scoping",
-				basePayload(id, {
-					plan_review: {
-						status: "approved",
-						summary: "Plan is structurally sound but scope needs one user decision.",
-						required_changes: [],
-						reservations: [],
-						questions: ["Should this ferment implement fixes or only produce an audit report?"],
-					},
-				}),
-				{},
-			),
-		)
+		h.setPlanReview({
+			status: "approved",
+			summary: "Plan is structurally sound but scope needs one user decision.",
+			required_changes: [],
+			reservations: [],
+			questions: ["Should this ferment implement fixes or only produce an audit report?"],
+		})
+		const result = err(await h.call("propose_ferment_scoping", basePayload(id), {}))
 
-		expect(result).toContain("Plan Reviewer requested blocking user questions")
+		expect(result).toContain("raised blocking user questions")
 		expect(result).toContain("Should this ferment implement fixes")
 		expect(getPendingPlanReview(id)).toBeUndefined()
 	})

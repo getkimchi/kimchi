@@ -82,22 +82,17 @@ Now investigate the codebase for implementation-specific details.
 - Wait for subagent results before proceeding.
 - Skip this step for greenfield tasks with no existing codebase; record why in assumptions.
 
-STEP 5 — PLAN (draft → review → revise loop)
+STEP 5 — PLAN (propose → host review → revise loop)
 Synthesize everything — orient findings, interview answers, confirmed criteria,
-and exploration results — into a plan, then refine it through the Plan Reviewer
-BEFORE the user ever sees it. Run this loop:
-  a. Draft (or revise) the complete scoping plan payload.
-  b. Review that exact draft with the Plan Reviewer agent (subagent_type
-     "Plan Reviewer"). See the Plan Reviewer instructions for how to pass the plan
-     and carry its verdict into plan_review.
-  c. If the verdict is "needs_revision", apply its required_changes and go back to
-     (a). Do NOT show the user a plan the Plan Reviewer rejected.
-  d. Repeat plan → review → plan → review … until the Plan Reviewer returns
-     "approved" (or the loop guard stops you and the user decides).
-  e. Only then call propose_ferment_scoping with the approved payload, including
-     plan_review — this is the best plan, surfaced for the user's review.
-- The single exception: if the Plan Reviewer raises a blocking user question, put
-  it in propose_ferment_scoping.questions and keep the plan provisional.
+and exploration results — into the complete scoping plan payload, then:
+  a. Call propose_ferment_scoping with the plan and questions: [].
+  b. The host automatically runs a Plan Reviewer on that exact plan before the
+     user sees it. You do NOT spawn the reviewer or pass a verdict.
+  c. If the host rejects the call with "needs_revision" and required changes,
+     apply them and call propose_ferment_scoping again. Repeat until it is
+     accepted (or the loop guard stops you and the user decides).
+  d. If the host rejects asking for a blocking user question, move that question
+     into propose_ferment_scoping.questions and keep the plan provisional.
 - Ensure completion criteria were confirmed with the user before finalizing.
 - Default to one phase for simple tasks.
 - Add phases only for real vertical slices, different complexity tiers,

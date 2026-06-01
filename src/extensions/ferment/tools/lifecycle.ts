@@ -31,6 +31,7 @@ import { validateGatesOrErr } from "../gate-validation.js"
 import { judgeJourneyGrade } from "../judge.js"
 import { resetReactiveContinuationNudgeCount } from "../nudge.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
+import type { PlanReview } from "../plan-review-runner.js"
 import { getPromptUi, promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
@@ -69,7 +70,6 @@ type NormalizeProposeScopingResult =
 	| { ok: false; error: ReturnType<typeof toolErr> }
 type CompleteFermentArgs = Static<typeof CompleteFermentParams>
 type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
-type PlanReview = NonNullable<NormalizedProposeScopingArgs["plan_review"]>
 type ScopingAnswer = {
 	questionId: string
 	optionId: string
@@ -356,70 +356,71 @@ function formatPlanReviewQuestions(questions: readonly string[]): string {
 	return questions.map((question, index) => `${index + 1}. ${question}`).join("\n")
 }
 
-function validatePlanReviewArray(
-	review: PlanReview,
-	field: "required_changes" | "reservations" | "questions",
-): string | undefined {
-	const value = review[field]
-	if (!Array.isArray(value)) {
-		return `Cannot propose scoping — plan_review.${field} must be an array. Use [] when there are none.`
-	}
-	if (value.some((item) => typeof item !== "string")) {
-		return `Cannot propose scoping — plan_review.${field} must contain only strings.`
-	}
-	return undefined
+/** Serialize the exact normalized scoping payload the Plan Reviewer reviews. These
+ *  are the same bytes being proposed — the reviewer can never see a different plan
+ *  than the one submitted. */
+function buildPlanReviewPayload(params: NormalizedProposeScopingArgs): string {
+	return JSON.stringify(
+		{
+			title: params.title,
+			goal: params.goal,
+			success_criteria: params.success_criteria ?? "",
+			constraints: params.constraints ?? [],
+			assumptions: params.assumptions ?? "",
+			phases: params.phases,
+			gates: params.gates,
+		},
+		null,
+		2,
+	)
 }
 
-async function validatePlanReviewOrErr(
+// Host-orchestrated Plan Reviewer gate. The host spawns the reviewer on the exact
+// normalized payload (buildPlanReviewPayload) — the planner never spawns it,
+// transcribes the plan, or supplies a verdict, so "the plan reviewed" and "the plan
+// proposed" are identical by construction. Only the final plan (questions: []) is
+// reviewed; provisional drafts with open user questions are deferred.
+async function hostPlanReviewOrErr(
 	runtime: FermentRuntime,
 	params: NormalizedProposeScopingArgs,
 	ferment: Ferment,
 	pi: ExtensionAPI,
 	ctx: unknown,
+	signal?: AbortSignal,
 ): Promise<ToolResult | undefined> {
-	const review = params.plan_review
-	if (!review || typeof review !== "object") {
+	if ((params.questions ?? []).length > 0) return undefined
+
+	const ui = (ctx as { ui?: { setStatus?: (key: string, message: string | undefined) => void } } | undefined)?.ui
+	ui?.setStatus?.(SCOPING_STATUS_KEY, "Reviewing plan…")
+	let review: PlanReview
+	try {
+		review = await runtime.runPlanReview(ctx, pi, buildPlanReviewPayload(params), signal)
+	} catch (error) {
 		return toolErr(
-			'Cannot propose scoping — plan_review is required. Spawn subagent_type "Plan Reviewer" and send the exact plan payload inside <ferment_plan>...</ferment_plan>, then call propose_ferment_scoping with plan_review fields: status, summary, required_changes, reservations, and questions.',
+			`Plan Reviewer could not complete (${error instanceof Error ? error.message : String(error)}). Call propose_ferment_scoping again to retry.`,
 		)
+	} finally {
+		ui?.setStatus?.(SCOPING_STATUS_KEY, undefined)
 	}
-	if (typeof review.summary !== "string" || review.summary.trim().length === 0) {
-		return toolErr("Cannot propose scoping — plan_review.summary is required.")
-	}
-	for (const field of ["required_changes", "reservations", "questions"] as const) {
-		const error = validatePlanReviewArray(review, field)
-		if (error) return toolErr(error)
-	}
-	if (review.questions.length > 10) {
-		return toolErr("Cannot propose scoping — plan_review.questions must contain at most 10 questions.")
-	}
-	const planReviewQuestions = review.questions.filter((q) => q.trim().length > 0)
-	if (planReviewQuestions.length > 0 && (params.questions ?? []).length === 0) {
+
+	// submit_plan_review already enforces status/required_changes consistency, so the
+	// verdict is well-formed here.
+	const planReviewQuestions = (review.questions ?? []).filter((q) => q.trim().length > 0)
+	if (planReviewQuestions.length > 0) {
 		return toolErr(
 			[
-				"Cannot propose final scoping — Plan Reviewer requested blocking user questions.",
-				"Convert these into propose_ferment_scoping.questions and keep the plan provisional:",
+				"Cannot propose final scoping — the Plan Reviewer raised blocking user questions.",
+				"Re-emit propose_ferment_scoping with these in the questions array (keep the plan provisional):",
 				formatPlanReviewQuestions(planReviewQuestions),
 			].join("\n"),
 		)
 	}
 
 	if (review.status === "approved") {
-		if (review.required_changes.length > 0) {
-			return toolErr(
-				"Cannot propose scoping — plan_review.status is approved but required_changes is non-empty. Either clear required_changes or set status to needs_revision and revise the plan.",
-			)
-		}
 		// Do NOT record an attempt here: the loop guard counts rejections, and an
 		// approval burning the attempt budget can trip the guard prematurely on a
 		// later needs_revision. State resets at confirm / freeform-feedback anyway.
 		return undefined
-	}
-
-	if (review.required_changes.length === 0) {
-		return toolErr(
-			"Cannot propose scoping — plan_review.status is needs_revision but required_changes is empty. Include concrete required_changes from the Plan Reviewer.",
-		)
 	}
 
 	const state = runtime.recordPlanReviewAttempt(params.ferment_id, hashPlanReviewRejection(review), review.summary)
@@ -429,12 +430,12 @@ async function validatePlanReviewOrErr(
 	if (!exhaustedAttempts && !repeatedRejection) {
 		return toolErr(
 			[
-				"Cannot propose scoping — Plan Reviewer rejected this plan.",
+				"Cannot propose scoping — the Plan Reviewer rejected this plan.",
 				`Attempt ${state.planReviewAttempts}/${MAX_PLAN_REVIEW_ATTEMPTS}.`,
 				"Required changes:",
 				requiredChanges,
 				"",
-				"Next action: revise the plan, run Plan Reviewer again, then call propose_ferment_scoping with status approved for the revised plan.",
+				"Next action: address these changes and call propose_ferment_scoping again — the Plan Reviewer re-reviews the revised plan automatically.",
 			].join("\n"),
 		)
 	}
@@ -475,7 +476,7 @@ async function validatePlanReviewOrErr(
 		return toolErr(`Ferment "${ferment.name}" abandoned after Plan Reviewer loop guard.`)
 	}
 	return toolErr(
-		`Plan Reviewer loop guard paused before user plan review (${reason}). Revise the plan manually, run Plan Reviewer again, then call propose_ferment_scoping.`,
+		`Plan Reviewer loop guard paused before user plan review (${reason}). Revise the plan manually, then call propose_ferment_scoping again.`,
 	)
 }
 
@@ -548,7 +549,7 @@ function buildScopingIterationMessage(questions: ScopingQuestion[], answers: Sco
 		const answerText = a.optionId === "custom" ? `free-form: "${a.label}"` : `option "${a.optionId}" ("${a.label}")`
 		return `- "${q.text}" → ${answerText}`
 	})
-	return `The user reviewed your draft and chose these answers (which OVERRIDE your recommendations):\n${bundledAnswerLines.join("\n")}\n\nUpdate the plan payload, run Plan Reviewer on that exact payload inside <ferment_plan>...</ferment_plan>, then re-emit propose_ferment_scoping ONCE with updated goal/criteria/constraints/assumptions/phases reflecting these answers. Usually emit \`questions: []\` so the user can review the final plan. You may emit new questions only if these answers reveal a genuinely new, decision-blocking ambiguity; never repeat or rephrase any question answered above. Do NOT ask questions in chat — call the tool directly.`
+	return `The user reviewed your draft and chose these answers (which OVERRIDE your recommendations):\n${bundledAnswerLines.join("\n")}\n\nUpdate the plan payload, then re-emit propose_ferment_scoping ONCE with updated goal/criteria/constraints/assumptions/phases reflecting these answers. Usually emit \`questions: []\` so the user can review the final plan (the host runs the Plan Reviewer automatically at that point). You may emit new questions only if these answers reveal a genuinely new, decision-blocking ambiguity; never repeat or rephrase any question answered above. Do NOT ask questions in chat — call the tool directly.`
 }
 
 function escapeXmlText(value: string): string {
@@ -562,7 +563,7 @@ export function buildFreeformScopingFeedbackMessage(fermentId: string, userText:
 		escapeXmlText(userText),
 		"</user_feedback>",
 		"",
-		"Run Plan Reviewer again on the exact updated payload inside <ferment_plan>...</ferment_plan>, then re-run propose_ferment_scoping for this same ferment_id. Do not call scope_ferment.",
+		"Re-run propose_ferment_scoping for this same ferment_id with the updated plan. The host runs the Plan Reviewer automatically before the user sees it. Do not call scope_ferment.",
 	].join("\n")
 }
 
@@ -887,11 +888,11 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: FERMENT_TOOLS.PROPOSE_SCOPING,
 		label: "Propose Scoping",
-		description: `Emit the full scoping draft: title, goal, criteria, constraints, assumptions, 1-7 phases, questions, plan_review, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one checkbox question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include plan_review from a separate Plan Reviewer subagent review of the exact plan. Spawn subagent_type "Plan Reviewer" and send it the exact payload inside <ferment_plan>...</ferment_plan>; plan_review must include status, summary, required_changes, reservations, and questions, using [] for empty arrays. Missing, malformed, or needs_revision plan reviews are rejected; revise the plan and run Plan Reviewer again before calling this tool unless the Plan Reviewer identified a blocking user question. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
+		description: `Emit the full scoping draft: title, goal, criteria, constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one checkbox question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. When questions is empty, this tool runs the Plan Reviewer on your exact plan before showing it to the user: if the reviewer returns needs_revision, the call is rejected with the required changes — address them and call propose_ferment_scoping again (do NOT spawn a Plan Reviewer yourself; the host does it). Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
-		async execute(_, rawParams, _signal, _onUpdate, ctx) {
+		async execute(_, rawParams, signal, _onUpdate, ctx) {
 			clearScopingStatus(ctx)
 			const normalized = normalizeProposeScopingParams(rawParams)
 			if (!normalized.ok) return normalized.error
@@ -925,7 +926,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				)
 			}
 
-			const planReviewError = await validatePlanReviewOrErr(runtime, params, ferment, pi, ctx)
+			const planReviewError = await hostPlanReviewOrErr(runtime, params, ferment, pi, ctx, signal)
 			if (planReviewError) return planReviewError
 
 			const pending = runtime.getPendingScope(params.ferment_id)
@@ -944,7 +945,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			const nextIterations = currentIterations + 1
 			if (currentIterations >= 3 && questions.length > 0) {
 				return toolErr(
-					"You've proposed scoping 3 times. Pick the best draft, run Plan Reviewer once on that exact plan payload inside <ferment_plan> tags, then emit propose_ferment_scoping with questions=[] to let the user confirm.",
+					"You've proposed scoping 3 times. Pick the best draft and emit propose_ferment_scoping with questions=[] to let the user confirm; the host runs the Plan Reviewer on it automatically.",
 				)
 			}
 

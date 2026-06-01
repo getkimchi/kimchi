@@ -48,10 +48,24 @@ function errText(result: { content: { text: string }[]; isError?: boolean }): st
 
 function createHarness() {
 	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-lifecycle-test-")))
-	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
+	let planReviewVerdict = {
+		status: "approved" as const,
+		summary: "Plan Reviewer approves this scoping plan.",
+		required_changes: [] as string[],
+		reservations: [] as string[],
+		questions: [] as string[],
+	}
+	const setPlanReview = (verdict: typeof planReviewVerdict) => {
+		planReviewVerdict = verdict
+	}
+	const runtime: FermentRuntime = {
+		...createDefaultFermentRuntime(),
+		getStorage: () => storage,
+		runPlanReview: async () => planReviewVerdict,
+	}
 	const pi = { sendMessage: vi.fn(), sendUserMessage: vi.fn(), appendEntry: vi.fn() } as unknown as ExtensionAPI
 	const ferment = storage.create("Lifecycle Test")
-	return { storage, runtime, pi, fermentId: ferment.id }
+	return { storage, runtime, pi, fermentId: ferment.id, setPlanReview }
 }
 
 function createTerminalFerment(h: ReturnType<typeof createHarness>) {
@@ -92,17 +106,6 @@ const passingPlanGates = () => [
 	},
 ]
 
-function approvedPlanReviewFor(_payload: Record<string, unknown>) {
-	const review = {
-		status: "approved",
-		summary: "Plan Reviewer approves this scoping plan.",
-		required_changes: [],
-		reservations: [],
-		questions: [],
-	}
-	return review
-}
-
 /** Helper: a complete, all-pass ferment-scope gate verdict set. */
 const passingFermentGates = () => [
 	{
@@ -139,10 +142,8 @@ describe("buildFreeformScopingFeedbackMessage", () => {
 				"</user_feedback>",
 			].join("\n"),
 		)
-		expect(message).toContain(
-			"Run Plan Reviewer again on the exact updated payload inside <ferment_plan>...</ferment_plan>",
-		)
-		expect(message).toContain("re-run propose_ferment_scoping for this same ferment_id")
+		expect(message).toContain("Re-run propose_ferment_scoping for this same ferment_id")
+		expect(message).toContain("The host runs the Plan Reviewer automatically")
 		expect(message).toContain("Do not call scope_ferment")
 		expect(message).not.toContain("list_ferments")
 		expect(message).not.toContain(`drop <phase 2> & keep "core"`)
@@ -387,13 +388,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			],
 			gates: passingPlanGates(),
 		}
-		const result = await execute(
-			"tool-call-1",
-			{ ...payload, plan_review: approvedPlanReviewFor(payload) },
-			undefined,
-			undefined,
-			{ ui: {} },
-		)
+		const result = await execute("tool-call-1", payload, undefined, undefined, { ui: {} })
 
 		expect(errText(result)).toContain("Cannot ask scoping questions without an interactive UI")
 		expect(errText(result)).not.toContain("questions.0.question")
@@ -470,13 +465,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			],
 			gates: passingPlanGates(),
 		}
-		const result = await execute(
-			"tool-call-1",
-			{ ...payload, plan_review: approvedPlanReviewFor(payload) },
-			undefined,
-			undefined,
-			{ ui: {} },
-		)
+		const result = await execute("tool-call-1", payload, undefined, undefined, { ui: {} })
 
 		expect(errText(result)).toContain("Cannot ask scoping questions without an interactive UI")
 		expect(errText(result)).not.toContain("questions.0.question must be a string")

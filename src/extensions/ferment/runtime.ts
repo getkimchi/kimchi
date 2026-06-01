@@ -1,7 +1,8 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
-import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import type { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { type PlanReview, runHostPlanReview } from "./plan-review-runner.js"
 import {
 	type PendingPlanReview,
 	clearAllPendingPlanReviews,
@@ -68,6 +69,9 @@ export interface FermentRuntime {
 	markHumanInput(): void
 	getLastHumanInputAt(): Date | undefined
 	captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry): void
+	/** Spawn the Plan Reviewer persona on the canonical plan JSON and return its
+	 *  validated verdict. Injected here so tests can stub the subagent run. */
+	runPlanReview(ctx: unknown, pi: ExtensionAPI, planJson: string, signal?: AbortSignal): Promise<PlanReview>
 	bumpStepStart(fermentId: string, phaseId: string, stepId: string): number
 	clearStepStart(fermentId: string, phaseId: string, stepId: string): void
 	clearAllStepStarts(): void
@@ -137,6 +141,7 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		markHumanInput,
 		getLastHumanInputAt,
 		captureJudgeContext,
+		runPlanReview: runHostPlanReview,
 		bumpStepStart,
 		clearStepStart,
 		clearAllStepStarts,
