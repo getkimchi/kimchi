@@ -139,32 +139,32 @@ importers:
         version: 8.20.1
     optionalDependencies:
       '@mariozechner/clipboard-darwin-arm64':
-        specifier: 0.3.9
-        version: 0.3.9
+        specifier: 0.3.2
+        version: 0.3.2
       '@mariozechner/clipboard-darwin-universal':
-        specifier: 0.3.9
-        version: 0.3.9
+        specifier: 0.3.2
+        version: 0.3.2
       '@mariozechner/clipboard-darwin-x64':
-        specifier: 0.3.9
-        version: 0.3.9
+        specifier: 0.3.2
+        version: 0.3.2
       '@mariozechner/clipboard-linux-arm64-gnu':
-        specifier: 0.3.9
-        version: 0.3.9
+        specifier: 0.3.2
+        version: 0.3.2
       '@mariozechner/clipboard-linux-arm64-musl':
-        specifier: 0.3.9
-        version: 0.3.9
+        specifier: 0.3.2
+        version: 0.3.2
       '@mariozechner/clipboard-linux-x64-gnu':
-        specifier: 0.3.9
-        version: 0.3.9
+        specifier: 0.3.2
+        version: 0.3.2
       '@mariozechner/clipboard-linux-x64-musl':
-        specifier: 0.3.9
-        version: 0.3.9
+        specifier: 0.3.2
+        version: 0.3.2
       '@mariozechner/clipboard-win32-arm64-msvc':
-        specifier: 0.3.9
-        version: 0.3.9
+        specifier: 0.3.2
+        version: 0.3.2
       '@mariozechner/clipboard-win32-x64-msvc':
-        specifier: 0.3.9
-        version: 0.3.9
+        specifier: 0.3.2
+        version: 0.3.2
 
 packages:
 
@@ -541,15 +541,32 @@ packages:
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
 
+  '@mariozechner/clipboard-darwin-arm64@0.3.2':
+    resolution: {integrity: sha512-uBf6K7Je1ihsgvmWxA8UCGCeI+nbRVRXoarZdLjl6slz94Zs1tNKFZqx7aCI5O1i3e0B6ja82zZ06BWrl0MCVw==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [darwin]
+
   '@mariozechner/clipboard-darwin-arm64@0.3.9':
     resolution: {integrity: sha512-BfgV7vCEWZwJwZJw03r6bP5+tf0iI/ANuQYCxi9RNn7FrWB3yzGuMKCrNLRl6V761vXRdL8+OqZ0wd4TqlsNOQ==}
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [darwin]
 
+  '@mariozechner/clipboard-darwin-universal@0.3.2':
+    resolution: {integrity: sha512-mxSheKTW2U9LsBdXy0SdmdCAE5HqNS9QUmpNHLnfJ+SsbFKALjEZc5oRrVMXxGQSirDvYf5bjmRyT0QYYonnlg==}
+    engines: {node: '>= 10'}
+    os: [darwin]
+
   '@mariozechner/clipboard-darwin-universal@0.3.9':
     resolution: {integrity: sha512-BGGR4iA9Z2shAjI65eI5xtyb3LYNlDW9X3gxKxDbqtbnREohsrqznov6zpKoIrsRWpzlYVEdKphS7ksJ0/ndSQ==}
     engines: {node: '>= 10'}
+    os: [darwin]
+
+  '@mariozechner/clipboard-darwin-x64@0.3.2':
+    resolution: {integrity: sha512-U1BcVEoidvwIp95+HJswSW+xr28EQiHR7rZjH6pn8Sja5yO4Yoe3yCN0Zm8Lo72BbSOK/fTSq0je7CJpaPCspg==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
     os: [darwin]
 
   '@mariozechner/clipboard-darwin-x64@0.3.9':
@@ -558,8 +575,20 @@ packages:
     cpu: [x64]
     os: [darwin]
 
+  '@mariozechner/clipboard-linux-arm64-gnu@0.3.2':
+    resolution: {integrity: sha512-BsinwG3yWTIjdgNCxsFlip7LkfwPk+ruw/aFCXHUg/fb5XC/Ksp+YMQ7u0LUtiKzIv/7LMXgZInJQH6gxbAaqQ==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [linux]
+
   '@mariozechner/clipboard-linux-arm64-gnu@0.3.9':
     resolution: {integrity: sha512-g59OkUGP2DDfCOIKypHeYgv2M55u/cKvXa5dSxFbEJ34XvIQMdcVmpKCkGUro3ZgefXiGVdwguvTMQGpHWzIXw==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [linux]
+
+  '@mariozechner/clipboard-linux-arm64-musl@0.3.2':
+    resolution: {integrity: sha512-0/Gi5Xq2V6goXBop19ePoHvXsmJD9SzFlO3S+d6+T2b+BlPcpOu3Oa0wTjl+cZrLAAEzA86aPNBI+VVAFDFPKw==}
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [linux]
@@ -576,8 +605,20 @@ packages:
     cpu: [riscv64]
     os: [linux]
 
+  '@mariozechner/clipboard-linux-x64-gnu@0.3.2':
+    resolution: {integrity: sha512-v6fVnsn7WMGg73Dab8QMwyFce7tzGfgEixKgzLP8f1GJqkJZi5zO4k4FOHzSgUufgLil63gnxvMpjWkgfeQN7A==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [linux]
+
   '@mariozechner/clipboard-linux-x64-gnu@0.3.9':
     resolution: {integrity: sha512-WORrMLd6EpElEME7JRKfSaY34nW1P5LbdgK5YNCS1ncG2LqmITsSMEJ8nh2mpvxb3TxqbOOKgY7k9eMJYlW9Mw==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [linux]
+
+  '@mariozechner/clipboard-linux-x64-musl@0.3.2':
+    resolution: {integrity: sha512-xVUtnoMQ8v2JVyfJLKKXACA6avdnchdbBkTsZs8BgJQo29qwCp5NIHAUO8gbJ40iaEGToW5RlmVk2M9V0HsHEw==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [linux]
@@ -588,10 +629,22 @@ packages:
     cpu: [x64]
     os: [linux]
 
+  '@mariozechner/clipboard-win32-arm64-msvc@0.3.2':
+    resolution: {integrity: sha512-AEgg95TNi8TGgak2wSXZkXKCvAUTjWoU1Pqb0ON7JHrX78p616XUFNTJohtIon3e0w6k0pYPZeCuqRCza/Tqeg==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [win32]
+
   '@mariozechner/clipboard-win32-arm64-msvc@0.3.9':
     resolution: {integrity: sha512-O5FHD3ErkMwMhNzAfu3ggy0ug4z7btZuoQgwwxlzPrwV2bxlD6WDpqBY4NCgICAgZdDKdp+loUEKVAVt8aYnhQ==}
     engines: {node: '>= 10'}
     cpu: [arm64]
+    os: [win32]
+
+  '@mariozechner/clipboard-win32-x64-msvc@0.3.2':
+    resolution: {integrity: sha512-tGRuYpZwDOD7HBrCpyRuhGnHHSCknELvqwKKUG4JSfSB7JIU7LKRh6zx6fMUOQd8uISK35TjFg5UcNih+vJhFA==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
     os: [win32]
 
   '@mariozechner/clipboard-win32-x64-msvc@0.3.9':
@@ -2471,16 +2524,31 @@ snapshots:
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
+  '@mariozechner/clipboard-darwin-arm64@0.3.2':
+    optional: true
+
   '@mariozechner/clipboard-darwin-arm64@0.3.9':
+    optional: true
+
+  '@mariozechner/clipboard-darwin-universal@0.3.2':
     optional: true
 
   '@mariozechner/clipboard-darwin-universal@0.3.9':
     optional: true
 
+  '@mariozechner/clipboard-darwin-x64@0.3.2':
+    optional: true
+
   '@mariozechner/clipboard-darwin-x64@0.3.9':
     optional: true
 
+  '@mariozechner/clipboard-linux-arm64-gnu@0.3.2':
+    optional: true
+
   '@mariozechner/clipboard-linux-arm64-gnu@0.3.9':
+    optional: true
+
+  '@mariozechner/clipboard-linux-arm64-musl@0.3.2':
     optional: true
 
   '@mariozechner/clipboard-linux-arm64-musl@0.3.9':
@@ -2489,13 +2557,25 @@ snapshots:
   '@mariozechner/clipboard-linux-riscv64-gnu@0.3.9':
     optional: true
 
+  '@mariozechner/clipboard-linux-x64-gnu@0.3.2':
+    optional: true
+
   '@mariozechner/clipboard-linux-x64-gnu@0.3.9':
+    optional: true
+
+  '@mariozechner/clipboard-linux-x64-musl@0.3.2':
     optional: true
 
   '@mariozechner/clipboard-linux-x64-musl@0.3.9':
     optional: true
 
+  '@mariozechner/clipboard-win32-arm64-msvc@0.3.2':
+    optional: true
+
   '@mariozechner/clipboard-win32-arm64-msvc@0.3.9':
+    optional: true
+
+  '@mariozechner/clipboard-win32-x64-msvc@0.3.2':
     optional: true
 
   '@mariozechner/clipboard-win32-x64-msvc@0.3.9':
