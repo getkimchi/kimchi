@@ -89,9 +89,10 @@ describe("ContinuationNudge.evaluateTurn", () => {
 		expect(guard.evaluateTurn(whitespaceTextMessage)).toBe(false)
 	})
 
-	it("nudges at most once per user-input cycle", () => {
+	it("nudges at most twice per user-input cycle", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
 	})
@@ -356,9 +357,10 @@ describe("EmptyTurnNudge", () => {
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
 	})
 
-	it("resets tracking after firing", () => {
+	it("resets tracking after two nudges", () => {
 		const guard = new EmptyTurnNudge()
 		guard.evaluateTurn(toolCallMessage)
+		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
 		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
 		expect(guard.evaluateTurn(emptyMessage)).toBe(false)
 	})
@@ -366,7 +368,8 @@ describe("EmptyTurnNudge", () => {
 	it("re-arms after resetForNewUserInput", () => {
 		const guard = new EmptyTurnNudge()
 		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
-		// Already nudged this cycle — second empty should not nudge
+		// Already nudged twice this cycle — third empty should not nudge
+		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
 		expect(guard.evaluateTurn(emptyMessage)).toBe(false)
 		// Reset re-arms the nudge for the next user-input cycle
 		guard.resetForNewUserInput()

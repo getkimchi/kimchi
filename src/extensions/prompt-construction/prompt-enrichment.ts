@@ -394,9 +394,11 @@ export default function (skillPaths: string[]) {
 					if (continuationNudge.isDoneSignalReceived()) {
 						return
 					}
-				}
-
-				if (emptyTurnNudge.evaluateTurn(event.message)) {
+					// While a continuation nudge response is pending, the model is already
+					// in a recovery cycle. Skip empty-turn nudge here to avoid sending
+					// mixed instructions ("call a tool" vs "summarize or continue").
+					// Fall through to continuationNudge.evaluateTurn below.
+				} else if (emptyTurnNudge.evaluateTurn(event.message)) {
 					pi.sendMessage(
 						{ customType: NUDGE_CUSTOM_TYPE, content: EMPTY_TURN_NUDGE_TEXT, display: false },
 						{ deliverAs: "followUp" },
@@ -406,7 +408,11 @@ export default function (skillPaths: string[]) {
 
 				if (!continuationNudge.evaluateTurn(event.message)) return
 				pi.sendMessage(
-					{ customType: NUDGE_CUSTOM_TYPE, content: CONTINUATION_NUDGE_TEXT, display: false },
+					{
+						customType: NUDGE_CUSTOM_TYPE,
+						content: [{ type: "text", text: continuationNudge.getNudgeText() }],
+						display: false,
+					},
 					{ deliverAs: "followUp" },
 				)
 			})
