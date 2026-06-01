@@ -109,8 +109,6 @@ describe("judgeJourneyGrade", () => {
 			async (): Promise<JudgeApiResult> => ({
 				ok: false,
 				reason: "empty_response",
-				detail:
-					"provider=kimchi-dev model=kimi-k2.6 api=openai-completions httpStatus=200 responseId=chatcmpl-test stopReason=stop content=(none) textChars=0",
 			}),
 		)
 
@@ -122,8 +120,6 @@ describe("judgeJourneyGrade", () => {
 		if (result.ok) return
 		expect(result.reason).toBe("empty_response")
 		expect(result.detail).toContain("after 3 attempts")
-		expect(result.detail).toContain("provider=kimchi-dev")
-		expect(result.detail).toContain("responseId=chatcmpl-test")
 	})
 
 	it("includes per-phase F-gate verdicts in the prompt the judge sees", async () => {

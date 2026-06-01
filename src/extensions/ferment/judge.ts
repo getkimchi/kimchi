@@ -19,108 +19,16 @@
  * failures into JudgeFlag for a uniform on-disk audit trail.
  */
 
-import { type Api, type AssistantMessage, type Model, type ProviderResponse, complete } from "@earendil-works/pi-ai"
+import { complete } from "@earendil-works/pi-ai"
 import type { Grade } from "../../ferment/types.js"
 import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
 import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
 
 const GRADES: Grade[] = ["A", "B", "C", "D", "F"]
 const JOURNEY_GRADE_MAX_ATTEMPTS = 3
-const JUDGE_DIAGNOSTIC_HEADER_KEYS = [
-	"x-request-id",
-	"x-openai-request-id",
-	"x-litellm-call-id",
-	"x-litellm-model-id",
-	"cf-ray",
-	"openai-processing-ms",
-] as const
-type AssistantDiagnostic = NonNullable<AssistantMessage["diagnostics"]>[number]
 
 export function isGrade(value: unknown): value is Grade {
 	return typeof value === "string" && (GRADES as string[]).includes(value)
-}
-
-function truncateDiagnostic(value: string, max = 180): string {
-	return value.length <= max ? value : `${value.slice(0, max - 1)}…`
-}
-
-function getHeader(headers: Record<string, string> | undefined, key: string): string | undefined {
-	if (!headers) return undefined
-	const lower = key.toLowerCase()
-	for (const [name, value] of Object.entries(headers)) {
-		if (name.toLowerCase() === lower) return value
-	}
-	return undefined
-}
-
-function formatJudgeModel(model: Model<Api>): string {
-	return `provider=${model.provider} model=${model.id} api=${model.api}`
-}
-
-function formatHttpResponse(response: ProviderResponse | undefined): string {
-	if (!response) return "httpStatus=(none)"
-	const parts = [`httpStatus=${response.status}`]
-	for (const key of JUDGE_DIAGNOSTIC_HEADER_KEYS) {
-		const value = getHeader(response.headers, key)
-		if (value) parts.push(`${key}=${truncateDiagnostic(value, 80)}`)
-	}
-	return parts.join(" ")
-}
-
-function formatContentSummary(response: AssistantMessage): string {
-	const counts = new Map<string, number>()
-	let textChars = 0
-	let thinkingChars = 0
-	let toolCalls = 0
-
-	for (const block of response.content) {
-		counts.set(block.type, (counts.get(block.type) ?? 0) + 1)
-		if (block.type === "text") textChars += block.text.length
-		else if (block.type === "thinking") thinkingChars += block.thinking.length
-		else if (block.type === "toolCall") toolCalls += 1
-	}
-
-	const content = [...counts.entries()].map(([type, count]) => `${type}:${count}`).join(",") || "(none)"
-	return `content=${content} textChars=${textChars} thinkingChars=${thinkingChars} toolCalls=${toolCalls}`
-}
-
-function formatAssistantDiagnostic(diagnostic: AssistantDiagnostic): string {
-	const detailKeys = diagnostic.details ? Object.keys(diagnostic.details).slice(0, 5).join(",") : ""
-	return [
-		`type=${diagnostic.type}`,
-		diagnostic.error?.message ? `error=${truncateDiagnostic(diagnostic.error.message, 120)}` : undefined,
-		diagnostic.error?.code !== undefined ? `code=${String(diagnostic.error.code)}` : undefined,
-		detailKeys ? `details=${detailKeys}` : undefined,
-	]
-		.filter((part): part is string => Boolean(part))
-		.join(":")
-}
-
-function formatResponseDiagnostics(response: AssistantMessage): string {
-	const diagnostics = response.diagnostics
-		?.map(formatAssistantDiagnostic)
-		.filter(Boolean)
-		.map((message) => truncateDiagnostic(message, 120))
-		.join("|")
-
-	return [
-		`responseModel=${response.responseModel ?? response.model}`,
-		`responseId=${response.responseId ?? "(none)"}`,
-		`stopReason=${response.stopReason}`,
-		response.errorMessage ? `errorMessage=${truncateDiagnostic(response.errorMessage, 160)}` : undefined,
-		formatContentSummary(response),
-		`usageOutput=${response.usage.output}`,
-		`usageTotal=${response.usage.totalTokens}`,
-		diagnostics ? `diagnostics=${diagnostics}` : undefined,
-	]
-		.filter((part): part is string => Boolean(part))
-		.join(" ")
-}
-
-function debugJudgeFailure(reason: JudgeUnavailableReason, detail: string | undefined): void {
-	const enabled = /^(1|true|yes|debug)$/i.test(process.env.KIMCHI_DEBUG_JUDGE ?? "")
-	if (!enabled) return
-	console.warn(`[kimchi:judge] ${JSON.stringify({ event: "judge_api_unavailable", reason, detail })}`)
 }
 
 // ─── Low-level API call ───────────────────────────────────────────────────────
@@ -134,23 +42,15 @@ export type JudgeApiResult = { ok: true; text: string } | { ok: false; reason: J
 
 export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTokens?: number): Promise<JudgeApiResult> {
 	const registry = getJudgeModelRegistry()
-	if (!registry) return { ok: false, reason: "no_registry", detail: "judge model registry was not captured" }
+	if (!registry) return { ok: false, reason: "no_registry" }
 
-	const configuredJudge = getModelRoles().judge
-	const judgeRef = splitModelRef(configuredJudge)
+	const judgeRef = splitModelRef(getModelRoles().judge)
 	const model = (judgeRef ? registry.find(judgeRef.provider, judgeRef.modelId) : undefined) ?? getJudgeModel()
-	if (!model) {
-		return { ok: false, reason: "no_model", detail: `configuredJudge=${configuredJudge}` }
-	}
+	if (!model) return { ok: false, reason: "no_model" }
 
 	const auth = await registry.getApiKeyAndHeaders(model)
-	if (!auth.ok || !auth.apiKey) {
-		const detail = `${formatJudgeModel(model)} auth=${auth.ok ? "missing_api_key" : truncateDiagnostic(auth.error)}`
-		debugJudgeFailure("no_auth", detail)
-		return { ok: false, reason: "no_auth", detail }
-	}
+	if (!auth.ok || !auth.apiKey) return { ok: false, reason: "no_auth" }
 
-	let providerResponse: ProviderResponse | undefined
 	try {
 		const response = await complete(
 			model,
@@ -163,9 +63,6 @@ export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTok
 				headers: auth.headers,
 				signal: AbortSignal.timeout(45_000),
 				...(maxTokens === undefined ? {} : { maxTokens }),
-				onResponse: (response) => {
-					providerResponse = response
-				},
 			},
 		)
 
@@ -174,24 +71,10 @@ export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTok
 			.map((c) => c.text)
 			.join("")
 			.trim()
-		if (!text) {
-			const detail = [
-				formatJudgeModel(model),
-				formatHttpResponse(providerResponse),
-				formatResponseDiagnostics(response),
-			].join(" ")
-			debugJudgeFailure("empty_response", detail)
-			return { ok: false, reason: "empty_response", detail }
-		}
+		if (!text) return { ok: false, reason: "empty_response" }
 		return { ok: true, text }
 	} catch (err) {
-		const detail = [
-			err instanceof Error ? truncateDiagnostic(err.message) : truncateDiagnostic(String(err)),
-			formatJudgeModel(model),
-			formatHttpResponse(providerResponse),
-		].join(" ")
-		debugJudgeFailure("api_error", detail)
-		return { ok: false, reason: "api_error", detail }
+		return { ok: false, reason: "api_error", detail: err instanceof Error ? err.message : String(err) }
 	}
 }
 
