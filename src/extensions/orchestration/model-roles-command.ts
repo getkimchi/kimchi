@@ -11,8 +11,10 @@ import { getAvailableModels } from "../../startup-context.js"
 import {
 	DEFAULT_MODEL_ROLES,
 	type ModelRoles,
+	type RoleModelAssignment,
 	getModelRoles,
 	modelIdFromRef,
+	normalizeRoleModels,
 	saveModelRoles,
 	splitModelRef,
 } from "./model-roles.js"
@@ -26,13 +28,26 @@ const ROLE_LABELS: Record<keyof ModelRoles, { label: string; description: string
 	judge: { label: "Judge", description: "ferment verification and grading" },
 }
 
-const ROLE_KEYS: (keyof ModelRoles)[] = ["orchestrator", "planner", "builder", "reviewer", "explorer", "judge"]
+const DELEGABLE_KEYS: (keyof ModelRoles)[] = ["planner", "builder", "reviewer", "explorer", "judge"]
 
-function formatRoleDisplay(role: keyof ModelRoles, modelRef: string): string {
+const ROLE_KEYS: (keyof ModelRoles)[] = ["orchestrator", ...DELEGABLE_KEYS]
+
+export function formatRoleAssignment(value: RoleModelAssignment): string {
+	const models = normalizeRoleModels(value)
+	return models.join(", ")
+}
+
+export function isEqualAssignment(a: RoleModelAssignment, b: RoleModelAssignment): boolean {
+	const arrA = normalizeRoleModels(a)
+	const arrB = normalizeRoleModels(b)
+	return arrA.length === arrB.length && arrA.every((v, i) => v === arrB[i])
+}
+
+export function formatRoleDisplay(role: keyof ModelRoles, value: RoleModelAssignment): string {
 	const info = ROLE_LABELS[role]
-	const isDefault = modelRef === DEFAULT_MODEL_ROLES[role]
+	const isDefault = isEqualAssignment(value, DEFAULT_MODEL_ROLES[role])
 	const suffix = isDefault ? " (default)" : ""
-	return `${info.label}: ${modelRef}${suffix}`
+	return `${info.label}: ${formatRoleAssignment(value)}${suffix}`
 }
 
 export function registerModelRolesCommand(pi: ExtensionAPI): void {
@@ -46,15 +61,14 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 
 			const roles = { ...getModelRoles() }
 
-			// Build the available models list from the API
 			const apiModels = getAvailableModels()
 			const availableModelRefs = apiModels.map((m) => `kimchi-dev/${m.slug}`)
 
-			// Also allow any currently-configured model (it might be from a different provider)
 			for (const key of ROLE_KEYS) {
-				const ref = roles[key]
-				if (!availableModelRefs.includes(ref)) {
-					availableModelRefs.push(ref)
+				for (const ref of normalizeRoleModels(roles[key])) {
+					if (!availableModelRefs.includes(ref)) {
+						availableModelRefs.push(ref)
+					}
 				}
 			}
 
@@ -75,7 +89,6 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					}
 					ctx.ui.notify("Model roles reset to defaults.", "info")
 
-					// Switch the active model if the orchestrator changed
 					if (prevOrchestrator !== DEFAULT_MODEL_ROLES.orchestrator) {
 						const parsed = splitModelRef(DEFAULT_MODEL_ROLES.orchestrator)
 						if (parsed) {
@@ -84,7 +97,10 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 								try {
 									await pi.setModel(target)
 								} catch {
-									// best-effort
+									ctx.ui.notify(
+										`Could not switch to ${DEFAULT_MODEL_ROLES.orchestrator}. The model will be used next session.`,
+										"warning",
+									)
 								}
 							}
 						}
@@ -92,23 +108,27 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					return
 				}
 
-				// Find which role was selected
 				const roleIndex = ROLE_KEYS.findIndex((key) => choice === formatRoleDisplay(key, roles[key]))
 				if (roleIndex === -1) return
 
 				const roleKey = ROLE_KEYS[roleIndex]
-				await showRoleEditor(roleKey)
+
+				if (roleKey === "orchestrator") {
+					await showSingleModelEditor(roleKey)
+				} else {
+					await showMultiModelEditor(roleKey)
+				}
 				await showMainMenu()
 			}
 
-			const showRoleEditor = async (roleKey: keyof ModelRoles): Promise<void> => {
+			const showSingleModelEditor = async (roleKey: keyof ModelRoles): Promise<void> => {
 				const info = ROLE_LABELS[roleKey]
-				const current = roles[roleKey]
+				const currentModels = normalizeRoleModels(roles[roleKey])
 
-				// Build options: available models + custom input
 				const modelOptions = availableModelRefs.map((ref) => {
-					const isCurrent = ref === current
-					const isDefault = ref === DEFAULT_MODEL_ROLES[roleKey]
+					const isCurrent = currentModels.includes(ref)
+					const defaultModels = normalizeRoleModels(DEFAULT_MODEL_ROLES[roleKey])
+					const isDefault = defaultModels.includes(ref)
 					const tags: string[] = []
 					if (isCurrent) tags.push("current")
 					if (isDefault) tags.push("default")
@@ -123,11 +143,10 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				let newRef: string
 
 				if (choice === "Enter custom model...") {
-					const input = await ctx.ui.input("Model (provider/model-id):", current)
+					const input = await ctx.ui.input("Model (provider/model-id):", currentModels[0] ?? "")
 					if (!input?.trim()) return
 					newRef = input.trim()
 
-					// Validate format
 					if (!splitModelRef(newRef)) {
 						ctx.ui.notify(
 							`Invalid format: "${newRef}". Expected "provider/model-id" (e.g. "anthropic/claude-sonnet-4-5").`,
@@ -136,7 +155,6 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 						return
 					}
 
-					// Warn if model is not available
 					const modelId = modelIdFromRef(newRef)
 					const availableIds = new Set(apiModels.map((m) => m.slug))
 					if (!availableIds.has(modelId)) {
@@ -146,7 +164,6 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 						)
 					}
 				} else {
-					// Strip the (current), (default) suffixes
 					newRef = choice.replace(/\s*\(.*\)$/, "")
 				}
 
@@ -159,7 +176,6 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				}
 				ctx.ui.notify(`${info.label} set to ${newRef}`, "info")
 
-				// When the orchestrator role changes, switch the active model to match
 				if (roleKey === "orchestrator") {
 					const parsed = splitModelRef(newRef)
 					if (parsed) {
@@ -173,6 +189,87 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 						}
 					}
 				}
+			}
+
+			const showMultiModelEditor = async (roleKey: keyof ModelRoles): Promise<void> => {
+				const info = ROLE_LABELS[roleKey]
+				const selected = new Set(normalizeRoleModels(roles[roleKey]))
+
+				const buildToggleOptions = (): string[] => {
+					const options = availableModelRefs.map((ref) => {
+						const isSelected = selected.has(ref)
+						const marker = isSelected ? "[x]" : "[ ]"
+						return `${marker} ${ref}`
+					})
+					options.push("Add custom model...")
+					options.push(`Done (${selected.size} selected)`)
+					return options
+				}
+
+				// eslint-disable-next-line no-constant-condition
+				while (true) {
+					const choice = await ctx.ui.select(
+						`${info.label} — toggle models (${selected.size} selected)`,
+						buildToggleOptions(),
+					)
+					if (!choice) return
+
+					if (choice.startsWith("Done")) {
+						break
+					}
+
+					if (choice === "Add custom model...") {
+						const input = await ctx.ui.input("Model (provider/model-id):")
+						if (!input?.trim()) continue
+						const ref = input.trim()
+
+						if (!splitModelRef(ref)) {
+							ctx.ui.notify(
+								`Invalid format: "${ref}". Expected "provider/model-id" (e.g. "anthropic/claude-sonnet-4-5").`,
+								"error",
+							)
+							continue
+						}
+
+						const modelId = modelIdFromRef(ref)
+						const availableIds = new Set(apiModels.map((m) => m.slug))
+						if (!availableIds.has(modelId)) {
+							ctx.ui.notify(
+								`Note: "${ref}" is not in the available models list. It will be used if the provider is configured.`,
+								"warning",
+							)
+						}
+
+						if (!availableModelRefs.includes(ref)) {
+							availableModelRefs.push(ref)
+						}
+						selected.add(ref)
+						continue
+					}
+
+					const ref = choice.replace(/^\[.\]\s*/, "").replace(/\s*\(.*\)$/, "")
+					if (selected.has(ref)) {
+						selected.delete(ref)
+					} else {
+						selected.add(ref)
+					}
+				}
+
+				if (selected.size === 0) {
+					ctx.ui.notify(`${info.label} must have at least one model. Keeping current assignment.`, "warning")
+					return
+				}
+
+				const models = [...selected]
+				const assignment: RoleModelAssignment = models.length === 1 ? models[0] : models
+				;(roles as Record<string, RoleModelAssignment>)[roleKey] = assignment
+				try {
+					saveModelRoles(roles)
+				} catch (err) {
+					ctx.ui.notify(`Failed to save model roles: ${err instanceof Error ? err.message : err}`, "error")
+					return
+				}
+				ctx.ui.notify(`${info.label} set to ${models.join(", ")}`, "info")
 			}
 
 			await showMainMenu()

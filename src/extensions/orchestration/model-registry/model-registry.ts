@@ -1,14 +1,14 @@
 /**
  * Separate from Pi's ModelRegistry which handles provider config, API keys,
  * and Model objects for inference. This registry holds orchestration metadata
- * (capabilities, strengths) so the Orchestrator LLM can make routing decisions.
+ * (capabilities, roles) so the Orchestrator LLM can make routing decisions.
  *
  * The registry is built from two sources:
  *   1. availableModels — the live metadata list fetched from the API at
  *      startup. This is the source of truth for which models actually exist
  *      and can be called.
  *   2. MODEL_CAPABILITIES — a local knowledge-base of curated orchestration
- *      metadata (tier, strengths, vision, description) keyed by model slug.
+ *      metadata (tier, roles, vision, description) keyed by model slug.
  *
  * Merging rules:
  *   - A model in the API with a capability entry → full descriptor.
@@ -28,7 +28,7 @@ export const KIMCHI_DEV_PROVIDER = "kimchi-dev"
 
 const GENERIC_CAPABILITIES: ModelCapabilities = {
 	vision: false,
-	strengths: ["build"],
+	roles: ["build"],
 	tier: "standard",
 	description: "No capability information available for this model.",
 }

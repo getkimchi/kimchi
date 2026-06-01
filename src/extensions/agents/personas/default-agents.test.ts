@@ -14,12 +14,12 @@ import { DEFAULT_AGENTS } from "./default-agents.js"
 import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER } from "./types.js"
 
 // Stub pickFromModelListByTier and recommendModel so snapshots are deterministic.
-// default-agents.ts calls modelsForStrength/modelsForAnyStrength at module load time
+// default-agents.ts calls modelsForRole/modelsForAnyRole at module load time
 // (before any mock can intercept), so DEFAULT_AGENTS.models[] is already populated
 // with real strings. We therefore stub only the functions called at resolve-time:
 //   - pickFromModelListByTier (used when models[] is populated — all 4 default agents)
 //   - recommendModel          (only reachable when models[] is absent — never for defaults)
-//   - getCurrentPhase         (only reachable when both models[] and strengths are absent)
+//   - getCurrentPhase         (only reachable when both models[] and roles are absent)
 vi.mock("../../orchestration/model-registry/recommend.js", () => ({
 	recommendModel: vi.fn().mockReturnValue(undefined),
 	pickFromModelListByTier: vi.fn().mockImplementation((list: readonly string[], preferTier?: string) => {
@@ -80,9 +80,9 @@ describe("DEFAULT_AGENTS", () => {
 		expect(plan.builtinToolNames).toContain("edit")
 	})
 
-	it("Plan agent has strengths set to plan", () => {
+	it("Plan agent has roles set to plan", () => {
 		const plan = DEFAULT_AGENTS.get(AGENT_PLAN) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
-		expect(plan.strengths).toContain("plan")
+		expect(plan.roles).toContain("plan")
 	})
 
 	it("Plan agent has includeContextFiles set to true", () => {
@@ -90,14 +90,14 @@ describe("DEFAULT_AGENTS", () => {
 		expect(plan.includeContextFiles).toBe(true)
 	})
 
-	it("Explore agent has strengths set to explore", () => {
+	it("Explore agent has roles set to explore", () => {
 		const explore = DEFAULT_AGENTS.get(AGENT_EXPLORE) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
-		expect(explore.strengths).toContain("explore")
+		expect(explore.roles).toContain("explore")
 	})
 
-	it("Researcher agent has strengths set to research", () => {
+	it("Researcher agent has roles set to research", () => {
 		const r = DEFAULT_AGENTS.get(AGENT_RESEARCHER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
-		expect(r.strengths).toContain("research")
+		expect(r.roles).toContain("research")
 	})
 })
 
@@ -114,7 +114,7 @@ describe("default agents — resolved invocation config snapshot", () => {
 			maxTurns: resolved.maxTurns,
 			tokenBudget: resolved.tokenBudget,
 			preferTier: agent.preferTier,
-			strengths: agent.strengths,
+			roles: agent.roles,
 			builtinToolNames: agent.builtinToolNames,
 		}).toMatchSnapshot()
 	})
@@ -131,7 +131,7 @@ describe("default agents — resolved invocation config snapshot", () => {
 			maxTurns: resolved.maxTurns,
 			tokenBudget: resolved.tokenBudget,
 			preferTier: agent.preferTier,
-			strengths: agent.strengths,
+			roles: agent.roles,
 			builtinToolNames: agent.builtinToolNames,
 		}).toMatchSnapshot()
 	})
@@ -148,7 +148,7 @@ describe("default agents — resolved invocation config snapshot", () => {
 			maxTurns: resolved.maxTurns,
 			tokenBudget: resolved.tokenBudget,
 			preferTier: agent.preferTier,
-			strengths: agent.strengths,
+			roles: agent.roles,
 			builtinToolNames: agent.builtinToolNames,
 		}).toMatchSnapshot()
 	})
@@ -165,7 +165,7 @@ describe("default agents — resolved invocation config snapshot", () => {
 			maxTurns: resolved.maxTurns,
 			tokenBudget: resolved.tokenBudget,
 			preferTier: agent.preferTier,
-			strengths: agent.strengths,
+			roles: agent.roles,
 			builtinToolNames: agent.builtinToolNames,
 		}).toMatchSnapshot()
 	})
