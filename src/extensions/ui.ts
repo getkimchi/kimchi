@@ -33,6 +33,7 @@ import {
 } from "./shared-footer.js"
 import { createWorkingAnimator } from "./spinner.js"
 import { getKittyKeyboardSupport } from "./terminal-compat/keyboard-capability.js"
+import { createBranchPoller } from "./ui-branch-poll.js"
 
 export { requestSharedFooterRender, setSessionModeOnboardingFooterSuppressed } from "./shared-footer.js"
 
@@ -130,12 +131,7 @@ let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
 let currentSessionIndicatorText: string | null = null
 
-// Branch change polling — header only refreshes on render, so we poll to
-// detect branch switches and request a re-render.
-const BRANCH_POLL_INTERVAL_MS = 5000
-let branchPollTimer: ReturnType<typeof setInterval> | undefined
-let lastKnownBranch: string | undefined
-let headerTui: { requestRender(): void } | undefined
+const branchPoller = createBranchPoller({ getGitBranch })
 
 type DisposableComponent = Component & { dispose?(): void }
 
@@ -278,15 +274,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 		scriptPending = false
 
 		ctx.ui.setHeader((tui, theme) => {
-			headerTui = tui
-			lastKnownBranch = getGitBranch()
-			branchPollTimer = setInterval(() => {
-				const currentBranch = getGitBranch()
-				if (currentBranch !== lastKnownBranch) {
-					lastKnownBranch = currentBranch
-					headerTui?.requestRender()
-				}
-			}, BRANCH_POLL_INTERVAL_MS)
+			branchPoller.start(() => tui.requestRender())
 			return new LogoHeader(theme)
 		})
 		ctx.ui.setFooter((tui, theme, footerData) => {
@@ -566,11 +554,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
 		currentCtx = null
-		if (branchPollTimer) {
-			clearInterval(branchPollTimer)
-			branchPollTimer = undefined
-		}
-		lastKnownBranch = undefined
+		branchPoller.stop()
 	})
 
 	pi.on("input", (event, ctx) => {
