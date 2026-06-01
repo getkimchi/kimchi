@@ -523,7 +523,7 @@ export interface CompleteFermentExecutionContext {
 export async function completeFerment(
 	runtime: FermentRuntime,
 	params: CompleteFermentArgs,
-	{ pi, ctx }: CompleteFermentExecutionContext,
+	_executionContext: CompleteFermentExecutionContext,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 
@@ -589,62 +589,22 @@ export async function completeFerment(
 			: { available: false },
 	})
 
-	// Resolve the grade, possibly via a user prompt on judge failure.
+	// Resolve the grade. The final judge is advisory; completion gates have
+	// already decided whether shipping is allowed, so judge outages must not
+	// block the user.
 	let resolvedGrade: { grade: Grade; rationale: string; unavailable?: boolean }
 	if (journeyResult.ok) {
 		resolvedGrade = { grade: journeyResult.grade, rationale: journeyResult.rationale }
 	} else {
 		const failureDetail = `${journeyResult.reason}${journeyResult.detail ? `: ${journeyResult.detail}` : ""}`
-		const isOneShot = pi.getFlag?.("ferment-oneshot") === true
-		const choice = isOneShot
-			? { failed: false as const, choice: "ship_no_grade" }
-			: await askUser(
-					`Final grade judge unreachable (${failureDetail}). Ship without a grade or abandon?`,
-					[
-						{
-							id: "ship_no_grade",
-							label: "Ship without a grade",
-							description: "Mark complete; grade will be recorded as unavailable.",
-						},
-						{ id: "abandon", label: "Abandon ferment", description: "Discard completion; the work stays on disk." },
-					],
-					{ ferment, pi, ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined, runtime },
-				)
-
-		if (choice.failed || choice.choice === "abandon") {
-			if (choice.failed) {
-				if (choice.reason !== "no_ui_no_judge") {
-					return toolErr(
-						`complete_ferment paused — final grade judge unreachable and user did not authorize ungraded ship (${choice.reason}: ${choice.detail}).`,
-					)
-				}
-				// If no prompt audience exists, keep completion moving. The gates
-				// already passed; judge failure is infrastructure noise, not
-				// product evidence.
-				resolvedGrade = {
-					grade: "B",
-					rationale: `Judge unreachable (${failureDetail}); shipped without a graded review because no prompt audience was available (${choice.reason}).`,
-					unavailable: true,
-				}
-			} else {
-				const abandonOutcome = applyAndPersist(params.ferment_id, {
-					type: "abandon",
-					reason: "judge unreachable; user declined ungraded ship",
-				})
-				if (abandonOutcome.ok) runtime.setActive(abandonOutcome.ferment)
-				return toolErr("complete_ferment refused — judge unreachable; user declined ungraded ship.")
-			}
-		} else {
-			resolvedGrade = {
-				grade: "B",
-				rationale: `Judge unreachable (${failureDetail}); user authorized ship without a graded review.`,
-				unavailable: true,
-			}
+		resolvedGrade = {
+			grade: "B",
+			rationale: `Judge unreachable (${failureDetail}); completion proceeded without a graded review.`,
+			unavailable: true,
 		}
 	}
 
-	// Persist completion and grade together so a cancelled interactive fallback
-	// leaves the ferment uncompleted instead of half-complete without a grade.
+	// Persist completion and grade together so the unavailable marker is durable.
 	const completeOutcome = applyAndPersist(params.ferment_id, {
 		type: "complete_ferment",
 		finalSummary: params.final_summary,

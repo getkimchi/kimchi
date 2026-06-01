@@ -19,14 +19,108 @@
  * failures into JudgeFlag for a uniform on-disk audit trail.
  */
 
-import { complete } from "@earendil-works/pi-ai"
+import { type Api, type AssistantMessage, type Model, type ProviderResponse, complete } from "@earendil-works/pi-ai"
 import type { Grade } from "../../ferment/types.js"
 import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
 import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
 
 const GRADES: Grade[] = ["A", "B", "C", "D", "F"]
+const JOURNEY_GRADE_MAX_ATTEMPTS = 3
+const JUDGE_DIAGNOSTIC_HEADER_KEYS = [
+	"x-request-id",
+	"x-openai-request-id",
+	"x-litellm-call-id",
+	"x-litellm-model-id",
+	"cf-ray",
+	"openai-processing-ms",
+] as const
+type AssistantDiagnostic = NonNullable<AssistantMessage["diagnostics"]>[number]
+
 export function isGrade(value: unknown): value is Grade {
 	return typeof value === "string" && (GRADES as string[]).includes(value)
+}
+
+function truncateDiagnostic(value: string, max = 180): string {
+	return value.length <= max ? value : `${value.slice(0, max - 1)}…`
+}
+
+function getHeader(headers: Record<string, string> | undefined, key: string): string | undefined {
+	if (!headers) return undefined
+	const lower = key.toLowerCase()
+	for (const [name, value] of Object.entries(headers)) {
+		if (name.toLowerCase() === lower) return value
+	}
+	return undefined
+}
+
+function formatJudgeModel(model: Model<Api>): string {
+	return `provider=${model.provider} model=${model.id} api=${model.api}`
+}
+
+function formatHttpResponse(response: ProviderResponse | undefined): string {
+	if (!response) return "httpStatus=(none)"
+	const parts = [`httpStatus=${response.status}`]
+	for (const key of JUDGE_DIAGNOSTIC_HEADER_KEYS) {
+		const value = getHeader(response.headers, key)
+		if (value) parts.push(`${key}=${truncateDiagnostic(value, 80)}`)
+	}
+	return parts.join(" ")
+}
+
+function formatContentSummary(response: AssistantMessage): string {
+	const counts = new Map<string, number>()
+	let textChars = 0
+	let thinkingChars = 0
+	let toolCalls = 0
+
+	for (const block of response.content) {
+		counts.set(block.type, (counts.get(block.type) ?? 0) + 1)
+		if (block.type === "text") textChars += block.text.length
+		else if (block.type === "thinking") thinkingChars += block.thinking.length
+		else if (block.type === "toolCall") toolCalls += 1
+	}
+
+	const content = [...counts.entries()].map(([type, count]) => `${type}:${count}`).join(",") || "(none)"
+	return `content=${content} textChars=${textChars} thinkingChars=${thinkingChars} toolCalls=${toolCalls}`
+}
+
+function formatAssistantDiagnostic(diagnostic: AssistantDiagnostic): string {
+	const detailKeys = diagnostic.details ? Object.keys(diagnostic.details).slice(0, 5).join(",") : ""
+	return [
+		`type=${diagnostic.type}`,
+		diagnostic.error?.message ? `error=${truncateDiagnostic(diagnostic.error.message, 120)}` : undefined,
+		diagnostic.error?.code !== undefined ? `code=${String(diagnostic.error.code)}` : undefined,
+		detailKeys ? `details=${detailKeys}` : undefined,
+	]
+		.filter((part): part is string => Boolean(part))
+		.join(":")
+}
+
+function formatResponseDiagnostics(response: AssistantMessage): string {
+	const diagnostics = response.diagnostics
+		?.map(formatAssistantDiagnostic)
+		.filter(Boolean)
+		.map((message) => truncateDiagnostic(message, 120))
+		.join("|")
+
+	return [
+		`responseModel=${response.responseModel ?? response.model}`,
+		`responseId=${response.responseId ?? "(none)"}`,
+		`stopReason=${response.stopReason}`,
+		response.errorMessage ? `errorMessage=${truncateDiagnostic(response.errorMessage, 160)}` : undefined,
+		formatContentSummary(response),
+		`usageOutput=${response.usage.output}`,
+		`usageTotal=${response.usage.totalTokens}`,
+		diagnostics ? `diagnostics=${diagnostics}` : undefined,
+	]
+		.filter((part): part is string => Boolean(part))
+		.join(" ")
+}
+
+function debugJudgeFailure(reason: JudgeUnavailableReason, detail: string | undefined): void {
+	const enabled = /^(1|true|yes|debug)$/i.test(process.env.KIMCHI_DEBUG_JUDGE ?? "")
+	if (!enabled) return
+	console.warn(`[kimchi:judge] ${JSON.stringify({ event: "judge_api_unavailable", reason, detail })}`)
 }
 
 // ─── Low-level API call ───────────────────────────────────────────────────────
@@ -38,17 +132,25 @@ export type JudgeUnavailableReason = "no_registry" | "no_model" | "no_auth" | "a
 
 export type JudgeApiResult = { ok: true; text: string } | { ok: false; reason: JudgeUnavailableReason; detail?: string }
 
-export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTokens = 400): Promise<JudgeApiResult> {
+export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTokens?: number): Promise<JudgeApiResult> {
 	const registry = getJudgeModelRegistry()
-	if (!registry) return { ok: false, reason: "no_registry" }
+	if (!registry) return { ok: false, reason: "no_registry", detail: "judge model registry was not captured" }
 
-	const judgeRef = splitModelRef(getModelRoles().judge)
+	const configuredJudge = getModelRoles().judge
+	const judgeRef = splitModelRef(configuredJudge)
 	const model = (judgeRef ? registry.find(judgeRef.provider, judgeRef.modelId) : undefined) ?? getJudgeModel()
-	if (!model) return { ok: false, reason: "no_model" }
+	if (!model) {
+		return { ok: false, reason: "no_model", detail: `configuredJudge=${configuredJudge}` }
+	}
 
 	const auth = await registry.getApiKeyAndHeaders(model)
-	if (!auth.ok || !auth.apiKey) return { ok: false, reason: "no_auth" }
+	if (!auth.ok || !auth.apiKey) {
+		const detail = `${formatJudgeModel(model)} auth=${auth.ok ? "missing_api_key" : truncateDiagnostic(auth.error)}`
+		debugJudgeFailure("no_auth", detail)
+		return { ok: false, reason: "no_auth", detail }
+	}
 
+	let providerResponse: ProviderResponse | undefined
 	try {
 		const response = await complete(
 			model,
@@ -60,7 +162,10 @@ export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTok
 				apiKey: auth.apiKey,
 				headers: auth.headers,
 				signal: AbortSignal.timeout(45_000),
-				maxTokens,
+				...(maxTokens === undefined ? {} : { maxTokens }),
+				onResponse: (response) => {
+					providerResponse = response
+				},
 			},
 		)
 
@@ -69,10 +174,24 @@ export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTok
 			.map((c) => c.text)
 			.join("")
 			.trim()
-		if (!text) return { ok: false, reason: "empty_response" }
+		if (!text) {
+			const detail = [
+				formatJudgeModel(model),
+				formatHttpResponse(providerResponse),
+				formatResponseDiagnostics(response),
+			].join(" ")
+			debugJudgeFailure("empty_response", detail)
+			return { ok: false, reason: "empty_response", detail }
+		}
 		return { ok: true, text }
 	} catch (err) {
-		return { ok: false, reason: "api_error", detail: err instanceof Error ? err.message : String(err) }
+		const detail = [
+			err instanceof Error ? truncateDiagnostic(err.message) : truncateDiagnostic(String(err)),
+			formatJudgeModel(model),
+			formatHttpResponse(providerResponse),
+		].join(" ")
+		debugJudgeFailure("api_error", detail)
+		return { ok: false, reason: "api_error", detail }
 	}
 }
 
@@ -243,6 +362,15 @@ export interface JudgeJourneyGradeFailure {
 
 export type JudgeJourneyGradeResult = JudgeJourneyGradeOk | JudgeJourneyGradeFailure
 
+function withJourneyGradeAttemptDetail(failure: JudgeJourneyGradeFailure, attempts: number): JudgeJourneyGradeFailure {
+	if (attempts <= 1) return failure
+	const attemptDetail = `after ${attempts} attempts`
+	return {
+		...failure,
+		detail: failure.detail ? `${attemptDetail}; ${failure.detail}` : attemptDetail,
+	}
+}
+
 const JOURNEY_GRADE_SYSTEM = `You are the final reviewer for an autonomous coding ferment. The agent has completed all phases and the ferment-scope gates (C1/C2/C3) all passed — so shipping is allowed. Your job is NOT to decide whether to ship. Your job is to assign a letter grade A–F that describes HOW WELL the work was done.
 
 Your bias is PESSIMISTIC. Most work is B or C, not A. A is reserved for ferments that delivered cleanly without retries, with concrete real-execution verification at every phase, and where every gate verdict was substantiated with specific evidence.
@@ -305,15 +433,25 @@ export async function judgeJourneyGrade(
 	input: JudgeJourneyGradeInput,
 	apiCall: (sys: string, msg: string, maxTokens?: number) => Promise<JudgeApiResult> = judgeApiCall,
 ): Promise<JudgeJourneyGradeResult> {
-	const api = await apiCall(JOURNEY_GRADE_SYSTEM, buildJourneyGradeUserMsg(input), 400)
-	if (!api.ok) return { ok: false, reason: api.reason, detail: api.detail }
-	const parsed = tryParseJson<{ grade?: string; rationale?: string }>(api.text)
-	if (parsed === undefined) {
-		return { ok: false, reason: "unparseable", detail: api.text.slice(0, 200) }
+	const userMsg = buildJourneyGradeUserMsg(input)
+	for (let attempt = 1; attempt <= JOURNEY_GRADE_MAX_ATTEMPTS; attempt++) {
+		const api = await apiCall(JOURNEY_GRADE_SYSTEM, userMsg)
+		if (!api.ok) {
+			const failure: JudgeJourneyGradeFailure = { ok: false, reason: api.reason, detail: api.detail }
+			if (api.reason === "empty_response" && attempt < JOURNEY_GRADE_MAX_ATTEMPTS) continue
+			return withJourneyGradeAttemptDetail(failure, attempt)
+		}
+
+		const parsed = tryParseJson<{ grade?: string; rationale?: string }>(api.text)
+		if (parsed === undefined) {
+			return { ok: false, reason: "unparseable", detail: api.text.slice(0, 200) }
+		}
+		if (!isGrade(parsed.grade)) {
+			return { ok: false, reason: "invalid_grade", detail: `Judge returned: ${parsed.grade}` }
+		}
+		const rationale = typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
+		return { ok: true, grade: parsed.grade, rationale }
 	}
-	if (!isGrade(parsed.grade)) {
-		return { ok: false, reason: "invalid_grade", detail: `Judge returned: ${parsed.grade}` }
-	}
-	const rationale = typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
-	return { ok: true, grade: parsed.grade, rationale }
+
+	return { ok: false, reason: "empty_response", detail: `after ${JOURNEY_GRADE_MAX_ATTEMPTS} attempts` }
 }

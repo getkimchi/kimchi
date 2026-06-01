@@ -677,38 +677,13 @@ describe("completeFerment", () => {
 		expect(h.storage.get(h.fermentId)?.grade?.unavailable).toBeUndefined()
 	})
 
-	it("interactive: judge unavailable + user chooses ship_no_grade → ships with unavailable=true", async () => {
+	it("judge unavailable ships with unavailable=true without prompting", async () => {
 		const h = createHarness()
 		createTerminalFerment(h)
 		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
 			ok: false,
 			reason: "no_auth",
 			detail: "missing api key",
-		})
-		const select = vi.fn(async () => "Ship without a grade")
-		const piWithUi = { ...h.pi, getFlag: vi.fn(() => undefined) } as unknown as ExtensionAPI
-		const ctx = { ui: { select } }
-
-		const result = await completeFerment(
-			h.runtime,
-			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
-			{ pi: piWithUi, ctx },
-		)
-
-		expect(select).toHaveBeenCalled()
-		expect(okText(result)).toContain("Final grade: B (unavailable)")
-		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
-		expect(h.storage.get(h.fermentId)?.grade?.unavailable).toBe(true)
-		expect(h.storage.get(h.fermentId)?.grade?.rationale).toContain("user authorized ship")
-	})
-
-	it("interactive: judge unavailable + user chooses abandon → ferment abandoned", async () => {
-		const h = createHarness()
-		createTerminalFerment(h)
-		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
-			ok: false,
-			reason: "api_error",
-			detail: "timeout after 45s",
 		})
 		const select = vi.fn(async () => "Abandon ferment")
 		const piWithUi = { ...h.pi, getFlag: vi.fn(() => undefined) } as unknown as ExtensionAPI
@@ -720,34 +695,11 @@ describe("completeFerment", () => {
 			{ pi: piWithUi, ctx },
 		)
 
-		expect(select).toHaveBeenCalled()
-		expect(errText(result)).toContain("user declined ungraded ship")
-		expect(h.storage.get(h.fermentId)?.status).toBe("abandoned")
-		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
-	})
-
-	it("interactive: judge unavailable + user cancels prompt → leaves ferment uncompleted", async () => {
-		const h = createHarness()
-		createTerminalFerment(h)
-		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
-			ok: false,
-			reason: "empty_response",
-		})
-		const select = vi.fn(async () => undefined)
-		const piWithUi = { ...h.pi, getFlag: vi.fn(() => undefined) } as unknown as ExtensionAPI
-		const ctx = { ui: { select } }
-
-		const result = await completeFerment(
-			h.runtime,
-			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
-			{ pi: piWithUi, ctx },
-		)
-
-		expect(select).toHaveBeenCalled()
-		expect(errText(result)).toContain("user did not authorize ungraded ship")
-		expect(h.storage.get(h.fermentId)?.status).not.toBe("complete")
-		expect(h.storage.get(h.fermentId)?.status).not.toBe("abandoned")
-		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
+		expect(select).not.toHaveBeenCalled()
+		expect(okText(result)).toContain("Final grade: B (unavailable)")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade?.unavailable).toBe(true)
+		expect(h.storage.get(h.fermentId)?.grade?.rationale).toContain("completion proceeded without a graded review")
 	})
 
 	it("one-shot: judge unavailable → ships with unavailable=true without prompting", async () => {
