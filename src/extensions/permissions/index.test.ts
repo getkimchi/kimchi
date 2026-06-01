@@ -428,6 +428,29 @@ describe("plan mode assumption detection", () => {
 
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
+
+	it("converts plan to ferment when user chooses ferment menu", async () => {
+		const harness = createPermissionsHarness(["read", "bash", FERMENT_TOOLS.REQUEST_WORKFLOW], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const planText =
+			"# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.\n\n## Verification\nRun tests.\n\n<!-- PLAN_COMPLETE -->"
+		const ctx = createMockContext(["Convert to ferment workflow"])
+		await fireTurnEnd(harness, planText, ctx)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+		expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "plan-execute",
+				content: expect.stringContaining("request_ferment_workflow"),
+				display: false,
+			}),
+			{ triggerTurn: true },
+		)
+
+		// Mode should have switched from plan to default (ferment tools unlocked)
+		expect(getCurrentPermissionsMode()).toBe("default")
+	})
 })
 
 describe("permissions prompt inheritance", () => {

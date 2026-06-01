@@ -48,7 +48,7 @@ describe("saveApprovedPlan", () => {
 		const returnedPath = saveApprovedPlan(tmpDir, "# Test")
 		const after = Date.now()
 
-		const fileName = returnedPath.split("/").pop()!
+		const fileName = returnedPath.split("/").pop() ?? ""
 		const timestamp = Number(fileName.replace("plan-", "").replace(".md", ""))
 		expect(timestamp).toBeGreaterThanOrEqual(before)
 		expect(timestamp).toBeLessThanOrEqual(after)

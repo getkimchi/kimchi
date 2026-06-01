@@ -432,10 +432,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 		const EXECUTE = "Yes — execute the plan"
 		const EXECUTE_AUTO = "Yes — execute (auto-approve)"
+		const FERMENT = "Convert to ferment workflow"
 		const DECLINE = "No, do something else"
 
 		const choice = await withWorkingHidden(ctx, () =>
-			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, EXECUTE_AUTO, DECLINE]),
+			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, EXECUTE_AUTO, FERMENT, DECLINE]),
 		)
 
 		if (choice === EXECUTE || choice === EXECUTE_AUTO) {
@@ -447,6 +448,47 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			}
 			const targetMode = choice === EXECUTE ? "default" : "auto"
 			switchFromPlanAndExecute(ctx, targetMode as PermissionMode, planPath, text)
+		} else if (choice === FERMENT) {
+			// Switch to default mode so ferment tools become available, then ask
+			// the agent to call request_ferment_workflow with the plan as intent.
+			runtimeMode = "default"
+			restoreToolsFromPlanMode()
+			propagateModeToEnv()
+			updateStatus(ctx)
+			maybeShowYoloWarning(ctx, "default")
+
+			// Extract a title from the plan text: first non-empty line after a Goal heading,
+			// or failing that the first heading text.
+			const lines = text.split(/\r?\n/)
+			const goalIdx = lines.findIndex((l) => /^#+\s*Goal\b/i.test(l))
+			let title = ""
+			if (goalIdx >= 0) {
+				for (let i = goalIdx + 1; i < lines.length; i++) {
+					const trimmed = lines[i].trim()
+					if (trimmed.length > 0 && !/^#/.test(trimmed)) {
+						title = trimmed.slice(0, 80).trim()
+						break
+					}
+				}
+			}
+			if (!title) {
+				title =
+					lines[0]
+						?.replace(/^#+\s*/, "")
+						.trim()
+						.slice(0, 80) ?? "Plan"
+			}
+			pi.sendMessage(
+				{
+					customType: "plan-execute",
+					content:
+						`The user wants to run this plan as a ferment workflow. Call \`request_ferment_workflow\` with a concise title (3–5 words) and the full plan text below as the \`intent\`.\n` +
+						`Suggested title (from the plan): "${title}"\n` +
+						`The system has already switched you out of plan mode so ferment tools are available.\n\n---\n\n${text}`,
+					display: false,
+				},
+				{ triggerTurn: true },
+			)
 		}
 		// Decline or escape: stay in plan mode.
 	})
