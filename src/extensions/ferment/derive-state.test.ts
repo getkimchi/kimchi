@@ -30,7 +30,7 @@ function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 		id: "ferment-1",
 		name: "Test Ferment",
 		goal: "Ship.",
-		successCriteria: "Works.",
+		successCriteria: ["Works."],
 		constraints: [],
 		status: "running",
 		worktree: { path: "/tmp/test", branch: undefined, commit: undefined },

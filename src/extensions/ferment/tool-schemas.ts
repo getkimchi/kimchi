@@ -47,6 +47,11 @@ export const ListParams = Type.Object({
 	filter: Type.Optional(Type.String({ description: "Optional status filter" })),
 })
 
+const SuccessCriteriaSchema = Type.Array(Type.String(), {
+	minItems: 1,
+	description: "Observable acceptance criteria. Each item must be one concrete, verifiable criterion.",
+})
+
 // Shared phase schema — used by both scope_ferment (headless path) and
 // propose_ferment_scoping (interactive path). Keep them identical so a proposed plan
 // can be applied verbatim.
@@ -85,7 +90,7 @@ export const ScopeParams = Type.Object({
 		description: "Required concise 3-5 word title for this ferment. The host applies it when scoping is saved.",
 	}),
 	goal: Type.String(),
-	success_criteria: Type.Optional(Type.String()),
+	success_criteria: SuccessCriteriaSchema,
 	constraints: Type.Optional(Type.Array(Type.String())),
 	assumptions: Type.Optional(
 		Type.Union([
@@ -149,7 +154,7 @@ export const ProposeScopingParams = Type.Object({
 			"Required concise 3-5 word title for this ferment. The host applies it only after the user confirms/saves this proposal.",
 	}),
 	goal: Type.String({ description: "The ferment goal." }),
-	success_criteria: Type.Optional(Type.String()),
+	success_criteria: SuccessCriteriaSchema,
 	constraints: Type.Optional(
 		Type.Union([
 			Type.Array(Type.String()),

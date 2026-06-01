@@ -22,7 +22,7 @@ describe("ProposeScopingParams schema", () => {
 			ferment_id: "f-123",
 			title: "Auth System",
 			goal: "Users can log in with OAuth",
-			success_criteria: "E2E tests pass",
+			success_criteria: ["E2E tests pass"],
 			constraints: ["no external auth libs"],
 			assumptions: "k8s cluster provisioned",
 			phases: minimalPhases(),
@@ -47,6 +47,7 @@ describe("ProposeScopingParams schema", () => {
 			ferment_id: "f-123",
 			title: "Test Ferment",
 			goal: "Do something",
+			success_criteria: ["Tests pass"],
 			phases: minimalPhases(),
 			questions: [
 				{
@@ -84,6 +85,7 @@ describe("ProposeScopingParams schema", () => {
 			ferment_id: "f-123",
 			title: "Test Ferment",
 			goal: "Do something",
+			success_criteria: ["Tests pass"],
 			phases: minimalPhases(),
 			gates: passingGates(),
 		}
@@ -105,6 +107,7 @@ describe("ProposeScopingParams schema", () => {
 		const payload = {
 			ferment_id: "f-123",
 			goal: "Do something",
+			success_criteria: ["Tests pass"],
 			phases: minimalPhases(),
 			gates: passingGates(),
 		}
@@ -117,6 +120,7 @@ describe("ProposeScopingParams schema", () => {
 			ferment_id: "f-123",
 			title: "Test Ferment",
 			goal: "Do something",
+			success_criteria: ["Tests pass"],
 			phases: JSON.stringify(minimalPhases()),
 			questions: JSON.stringify([
 				{
@@ -139,6 +143,7 @@ describe("ProposeScopingParams schema", () => {
 			ferment_id: "f-123",
 			title: "Test Ferment",
 			goal: "Do something",
+			success_criteria: ["Tests pass"],
 			assumptions: ["Go toolchain is installed", "The current directory is writable"],
 			phases: minimalPhases(),
 			gates: passingGates(),
@@ -147,11 +152,38 @@ describe("ProposeScopingParams schema", () => {
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 
+	it("accepts success criteria as a real string array", () => {
+		const payload = {
+			ferment_id: "f-123",
+			title: "Test Ferment",
+			goal: "Do something",
+			success_criteria: ["Tests pass", "Manual smoke works"],
+			phases: minimalPhases(),
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
+	})
+
+	it("rejects missing or empty success criteria", () => {
+		const basePayload = {
+			ferment_id: "f-123",
+			title: "Test Ferment",
+			goal: "Do something",
+			phases: minimalPhases(),
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, basePayload)).toBe(false)
+		expect(Value.Check(ProposeScopingParams, { ...basePayload, success_criteria: [] })).toBe(false)
+	})
+
 	it("allows too-few options through schema so runtime can return a focused validation error", () => {
 		const payload = {
 			ferment_id: "f-123",
 			title: "Test Ferment",
 			goal: "Do something",
+			success_criteria: ["Tests pass"],
 			phases: minimalPhases(),
 			questions: [
 				{
@@ -171,6 +203,7 @@ describe("ProposeScopingParams schema", () => {
 			ferment_id: "f-123",
 			title: "Test Ferment",
 			goal: "Do something",
+			success_criteria: ["Tests pass"],
 			phases: minimalPhases(),
 			questions: [
 				{
@@ -190,6 +223,7 @@ describe("ProposeScopingParams schema", () => {
 			ferment_id: "f-123",
 			title: "Test Ferment",
 			goal: "Do something",
+			success_criteria: ["Tests pass"],
 			phases: minimalPhases(),
 			questions: [
 				{
@@ -212,6 +246,7 @@ describe("ProposeScopingParams schema", () => {
 			ferment_id: "f-123",
 			title: "Test Ferment",
 			goal: "Do something",
+			success_criteria: ["Tests pass"],
 			phases: minimalPhases(),
 			questions: [
 				{
@@ -243,6 +278,7 @@ describe("ProposeScopingParams schema", () => {
 			ferment_id: "f-123",
 			title: "Test Ferment",
 			goal: "Do something",
+			success_criteria: ["Tests pass"],
 			phases: minimalPhases(),
 			questions: [question("q1"), question("q2"), question("q3"), question("q4")],
 			gates: passingGates(),
@@ -256,6 +292,7 @@ describe("ProposeScopingParams schema", () => {
 			ferment_id: "f-123",
 			title: "Test Ferment",
 			goal: "Do something",
+			success_criteria: ["Tests pass"],
 			phases: minimalPhases(),
 			gates: passingGates(),
 		}
@@ -274,6 +311,7 @@ describe("ProposeScopingParams schema", () => {
 			ferment_id: "f-123",
 			title: "Test Ferment",
 			goal: "Do something",
+			success_criteria: ["Tests pass"],
 			phases,
 			gates: passingGates(),
 		}
@@ -286,6 +324,7 @@ describe("ProposeScopingParams schema", () => {
 			ferment_id: "f-123",
 			title: "Test Ferment",
 			goal: "Do something",
+			success_criteria: ["Tests pass"],
 			phases: minimalPhases(),
 			questions: [
 				{
@@ -313,6 +352,7 @@ describe("ScopeParams schema", () => {
 		const payload = {
 			ferment_id: "f-123",
 			goal: "Do something",
+			success_criteria: ["Tests pass"],
 			phases: [{ name: "Build", goal: "Implement" }],
 			gates: passingGates(),
 		}
@@ -325,6 +365,7 @@ describe("ScopeParams schema", () => {
 			ferment_id: "f-123",
 			title: "Test Ferment",
 			goal: "Do something",
+			success_criteria: ["Tests pass"],
 			phases: [{ name: "Build", goal: "Implement" }],
 			gates: passingGates(),
 		}
@@ -333,6 +374,19 @@ describe("ScopeParams schema", () => {
 		expect(Value.Check(ScopeParams, { ...basePayload, assumptions: ["Go is installed", "Repo is writable"] })).toBe(
 			true,
 		)
+	})
+
+	it("accepts success criteria as an array and rejects legacy text", () => {
+		const basePayload = {
+			ferment_id: "f-123",
+			title: "Test Ferment",
+			goal: "Do something",
+			phases: [{ name: "Build", goal: "Implement" }],
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ScopeParams, { ...basePayload, success_criteria: "Tests pass" })).toBe(false)
+		expect(Value.Check(ScopeParams, { ...basePayload, success_criteria: ["Tests pass", "Smoke works"] })).toBe(true)
 	})
 })
 

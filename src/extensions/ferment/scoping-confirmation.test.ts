@@ -23,7 +23,7 @@ describe("confirmPendingScope", () => {
 		runtime.setPendingScope(ferment.id, {
 			title: "Confirmed Title",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: ["no regressions"],
 			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -50,7 +50,7 @@ describe("confirmPendingScope", () => {
 		runtime.setPendingScope(ferment.id, {
 			title: "Confirmed Title",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -71,7 +71,7 @@ describe("confirmPendingScope", () => {
 		runtime.setPendingScope(ferment.id, {
 			title: "Google OAuth Login",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -98,7 +98,7 @@ describe("confirmPendingScope", () => {
 		runtime.setPendingScope(ferment.id, {
 			title: '  ""  ',
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -114,7 +114,7 @@ describe("confirmPendingScope", () => {
 		const ferment = storage.create("Explicit")
 		runtime.setPendingScope(ferment.id, {
 			goal: "User goal",
-			successCriteria: "User criteria",
+			successCriteria: ["User criteria"],
 			constraints: ["user constraint"],
 		})
 
@@ -128,7 +128,7 @@ describe("confirmPendingScope", () => {
 		expect(result.ok).toBe(true)
 		const saved = storage.get(ferment.id)
 		expect(saved?.goal).toBe("User goal")
-		expect(saved?.successCriteria).toBe("User criteria")
+		expect(saved?.successCriteria).toEqual(["User criteria"])
 		expect(saved?.constraints).toEqual(["user constraint"])
 		expect(saved?.phases[0]?.name).toBe("P1")
 	})
@@ -140,7 +140,7 @@ describe("confirmPendingScope", () => {
 		if (!missing.ok) expect(missing.error.code).toBe("MISSING_PENDING_SCOPE")
 
 		const ferment = storage.create("No Phases")
-		runtime.setPendingScope(ferment.id, { goal: "Goal", successCriteria: "Works", constraints: [] })
+		runtime.setPendingScope(ferment.id, { goal: "Goal", successCriteria: ["Works"], constraints: [] })
 		const empty = confirmPendingScope(runtime, ferment.id, undefined, "turn_end")
 
 		expect(empty.ok).toBe(false)
@@ -154,7 +154,7 @@ describe("confirmPendingScope", () => {
 		const ferment = storage.create("With Assumptions")
 		runtime.setPendingScope(ferment.id, {
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			assumptions: "API rate limits are documented",
 			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
@@ -173,7 +173,7 @@ describe("confirmPendingScope", () => {
 		const ferment = storage.create("Scoping Source Test")
 		runtime.setPendingScope(ferment.id, {
 			goal: "Build auth",
-			successCriteria: "Tests pass",
+			successCriteria: ["Tests pass"],
 			constraints: ["no external libs"],
 			phases: [{ name: "P1", goal: "Implement OAuth", steps: [{ description: "Add handler" }] }],
 		})
@@ -194,7 +194,7 @@ describe("confirmPendingScope", () => {
 		const ferment = storage.create("No Assumptions")
 		runtime.setPendingScope(ferment.id, {
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
 		})

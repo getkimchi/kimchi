@@ -59,7 +59,7 @@ describe("ferment nudges", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -87,7 +87,7 @@ describe("ferment nudges", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -153,7 +153,7 @@ describe("ferment nudges", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [] }],
 		})

@@ -31,7 +31,7 @@ function errText(result: { content: { text: string }[]; isError?: boolean }): st
 	return result.content.map((c) => c.text).join("\n")
 }
 
-function createHarness(options: { verification?: string; goal?: string; successCriteria?: string } = {}) {
+function createHarness(options: { verification?: string; goal?: string; successCriteria?: string[] } = {}) {
 	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-steps-test-")))
 	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
 	const applyAndPersist = createApplyAndPersist(runtime)
@@ -52,7 +52,7 @@ function createHarness(options: { verification?: string; goal?: string; successC
 	const scope = applyAndPersist(ferment.id, {
 		type: "scope",
 		goal: options.goal ?? "Goal",
-		successCriteria: options.successCriteria ?? "Works",
+		successCriteria: options.successCriteria ?? ["Works"],
 		constraints: [],
 		phases: [
 			{
@@ -121,7 +121,7 @@ describe("startStep", () => {
 	it("includes fixed output paths from scoping in the worker prompt handoff", async () => {
 		const h = createHarness({
 			goal: "Write /app/jump_analyzer.py and store the TOML output in /app/output.toml",
-			successCriteria: "Running on /app/example_video.mp4 produces /app/output.toml",
+			successCriteria: ["Running on /app/example_video.mp4 produces /app/output.toml"],
 		})
 		const services = createServices({ buildWorkerContext: defaultStepHandlerServices.buildWorkerContext })
 

@@ -143,7 +143,7 @@ describe("FermentStorage v4", () => {
 			const f = storage.create("Build Tetris")
 			const updated = storage.updateGoal(f.id, "A game", "Can play 1 round")
 			expect(updated?.goal).toBe("A game")
-			expect(updated?.successCriteria).toBe("Can play 1 round")
+			expect(updated?.successCriteria).toEqual(["Can play 1 round"])
 		})
 	})
 
@@ -317,7 +317,7 @@ describe("FermentStorage v4", () => {
 				id: "v3-ferment",
 				name: "Old Ferment",
 				goal: "Build something",
-				successCriteria: "It works",
+				successCriteria: ["It works"],
 				status: "executing",
 				createdAt: "2024-01-01T00:00:00Z",
 				updatedAt: "2024-06-01T00:00:00Z",
@@ -473,6 +473,28 @@ describe("FermentStorage v4", () => {
 			expect(updated).not.toHaveProperty("mode")
 			const raw = JSON.parse(readFileSync(join(tempDir, "legacy-mode.json"), "utf-8")) as Record<string, unknown>
 			expect(raw).not.toHaveProperty("mode")
+		})
+
+		it("normalizes legacy string success criteria as one array item", () => {
+			const legacy = {
+				id: "legacy-criteria",
+				name: "Legacy Criteria",
+				status: "planned",
+				worktree: { path: tempDir },
+				goal: "goal",
+				successCriteria: "Tests pass; lint clean",
+				scoping: {},
+				phases: [],
+				decisions: [],
+				memories: [],
+				createdAt: "2026-01-01T00:00:00.000Z",
+				updatedAt: "2026-01-01T00:00:00.000Z",
+			}
+			writeFileSync(join(tempDir, "legacy-criteria.json"), `${JSON.stringify(legacy, null, 2)}\n`)
+			clearFermentCache()
+
+			const loaded = storage.get("legacy-criteria")
+			expect(loaded?.successCriteria).toEqual(["Tests pass; lint clean"])
 		})
 
 		it("strips workerModel and needsVision from step objects when loading a legacy snapshot", () => {

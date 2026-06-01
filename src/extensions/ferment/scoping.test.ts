@@ -52,7 +52,7 @@ describe("attachPendingProposal", () => {
 		// Seed a full buffer
 		runtime.setPendingScope(ferment.id, {
 			goal: "old goal",
-			successCriteria: "old criteria",
+			successCriteria: ["old criteria"],
 			constraints: ["old constraint"],
 			assumptions: "old assumption",
 			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
@@ -69,7 +69,7 @@ describe("attachPendingProposal", () => {
 		const pending = runtime.getPendingScope(ferment.id)
 		expect(pending?.title).toBe("New Title")
 		expect(pending?.goal).toBe("new goal")
-		expect(pending?.successCriteria).toBe("")
+		expect(pending?.successCriteria).toEqual([])
 		expect(pending?.constraints).toEqual([])
 		expect(pending?.assumptions).toBeUndefined()
 		expect(pending?.phases?.[0]?.name).toBe("P2")

@@ -16,6 +16,7 @@ import { dirname, resolve } from "node:path"
 import { v7 as uuidv7 } from "uuid"
 
 import { activateSinglePhase, settleAfterPhaseTerminal } from "./lifecycle.js"
+import { normalizeSuccessCriteria, successCriteriaToAnswer } from "./success-criteria.js"
 import type {
 	Decision,
 	Ferment,
@@ -212,7 +213,7 @@ function upgradeV3toV4(raw: FermentV3): Ferment {
 		status: statusMap[raw.status] ?? "draft",
 		activePhaseId,
 		goal: raw.goal,
-		successCriteria: raw.successCriteria,
+		successCriteria: normalizeSuccessCriteria(raw.successCriteria),
 		worktree: { path: detectProjectRoot() ?? process.cwd() },
 		scoping: {},
 		phases,
@@ -456,10 +457,15 @@ export class FermentStorage {
 		return updated
 	}
 
-	updateGoal(id: string, goal?: string, successCriteria?: string): Ferment | undefined {
+	updateGoal(id: string, goal?: string, successCriteria?: string | string[]): Ferment | undefined {
 		const f = this.get(id)
 		if (!f) return undefined
-		const updated: Ferment = { ...f, goal, successCriteria, updatedAt: new Date().toISOString() }
+		const updated: Ferment = {
+			...f,
+			goal,
+			successCriteria: normalizeSuccessCriteria(successCriteria),
+			updatedAt: new Date().toISOString(),
+		}
 		this.write(updated)
 		return updated
 	}
@@ -484,7 +490,7 @@ export class FermentStorage {
 		if (!f) return undefined
 		const updated: Ferment = {
 			...f,
-			successCriteria: answer,
+			successCriteria: normalizeSuccessCriteria(answer),
 			scoping: { ...f.scoping, criteria: { answer, confirmedAt: new Date().toISOString() } },
 			updatedAt: new Date().toISOString(),
 		}
@@ -856,6 +862,7 @@ function hasV4Shape(v: unknown): boolean {
 
 function normalizeFerment(f: Ferment): void {
 	Reflect.deleteProperty(f, "mode")
+	f.successCriteria = normalizeSuccessCriteria((f as { successCriteria?: unknown }).successCriteria)
 	if (!f.worktree) {
 		f.worktree = { path: detectProjectRoot() ?? process.cwd() }
 	}
@@ -887,7 +894,7 @@ function normalizeFerment(f: Ferment): void {
 			f.scoping.goal = { answer: f.goal, confirmedAt: now }
 		}
 		if (old.criteriaAnswered && f.successCriteria) {
-			f.scoping.criteria = { answer: f.successCriteria, confirmedAt: now }
+			f.scoping.criteria = { answer: successCriteriaToAnswer(f.successCriteria) ?? "", confirmedAt: now }
 		}
 		if (old.constraintsAnswered) {
 			f.scoping.constraints = { answer: (f.constraints ?? []).join(", "), confirmedAt: now }

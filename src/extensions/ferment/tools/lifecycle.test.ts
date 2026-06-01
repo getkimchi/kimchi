@@ -59,7 +59,7 @@ function createTerminalFerment(h: ReturnType<typeof createHarness>) {
 	const scoped = applyAndPersist(h.fermentId, {
 		type: "scope",
 		goal: "Ship the feature",
-		successCriteria: "Done",
+		successCriteria: ["Done"],
 		constraints: [],
 		phases: [{ name: "Build", goal: "Implement", steps: [] }],
 	})
@@ -138,7 +138,7 @@ describe("buildFreeformScopingFeedbackMessage", () => {
 describe("FermentRuntime pending plan review cleanup", () => {
 	it("clears pending scope and pending plan review for the ferment", () => {
 		const h = createHarness()
-		h.runtime.setPendingScope(h.fermentId, { goal: "Goal", successCriteria: "Done", constraints: [] })
+		h.runtime.setPendingScope(h.fermentId, { goal: "Goal", successCriteria: ["Done"], constraints: [] })
 		h.runtime.setPendingPlanReview({
 			fermentId: h.fermentId,
 			planMarkdown: "# Plan",
@@ -161,7 +161,7 @@ describe("scopeFerment", () => {
 				ferment_id: h.fermentId,
 				title: "Lifecycle Test",
 				goal: "Ship the feature",
-				success_criteria: "Tests pass",
+				success_criteria: ["Tests pass"],
 				constraints: ["Keep it small"],
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
@@ -186,6 +186,7 @@ describe("scopeFerment", () => {
 				ferment_id: h.fermentId,
 				title: "Lifecycle Test",
 				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
 			},
@@ -205,6 +206,7 @@ describe("scopeFerment", () => {
 				ferment_id: h.fermentId,
 				title: "   ",
 				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
 			},
@@ -234,6 +236,7 @@ describe("scopeFerment", () => {
 				ferment_id: h.fermentId,
 				title: "Lifecycle Test",
 				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
 				phases: [{ name: "Build", goal: "Implement" }],
 				gates: flaggedGates,
 			},
@@ -255,6 +258,7 @@ describe("scopeFerment", () => {
 				ferment_id: h.fermentId,
 				title: "Lifecycle Test",
 				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
 				phases: [{ name: "Build", goal: "Implement" }],
 				gates: incomplete,
 			},
@@ -277,6 +281,7 @@ describe("scopeFerment", () => {
 				ferment_id: h.fermentId,
 				title: "Lifecycle Test",
 				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
 				phases: [{ name: "Build", goal: "Implement" }],
 				gates: passingPlanGates(),
 			},
@@ -298,7 +303,7 @@ describe("scopeFerment", () => {
 				ferment_id: h.fermentId,
 				title: "Lifecycle Test",
 				goal: "Ship the feature",
-				success_criteria: "Tests pass",
+				success_criteria: ["Tests pass"],
 				assumptions: "k8s cluster exists and is reachable",
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
@@ -319,6 +324,7 @@ describe("scopeFerment", () => {
 				ferment_id: h.fermentId,
 				title: "Lifecycle Test",
 				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
 			},
@@ -519,7 +525,7 @@ describe("update_ferment_scope_field via registerLifecycleTools", () => {
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Original goal",
-			successCriteria: "Done",
+			successCriteria: ["Done"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [] }],
 		})

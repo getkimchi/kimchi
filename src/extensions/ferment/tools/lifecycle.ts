@@ -11,6 +11,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
 import type { Command, ScopePhaseInput } from "../../../ferment/state-machine.js"
+import {
+	type SuccessCriteria,
+	normalizeSuccessCriteriaInput,
+	renderSuccessCriteria,
+} from "../../../ferment/success-criteria.js"
 import { normalizeFermentTitle } from "../../../ferment/title.js"
 import {
 	DEFAULT_SCOPING_QUESTION_TYPE,
@@ -56,9 +61,13 @@ import type { FermentUiContext } from "../ui.js"
 
 type ScopeArgs = Static<typeof ScopeParams>
 type ProposeScopingArgs = Static<typeof ProposeScopingParams>
-type NormalizedProposeScopingArgs = Omit<ProposeScopingArgs, "constraints" | "phases" | "questions" | "assumptions"> & {
+type NormalizedProposeScopingArgs = Omit<
+	ProposeScopingArgs,
+	"constraints" | "phases" | "questions" | "assumptions" | "success_criteria"
+> & {
 	constraints?: string[]
 	assumptions?: string
+	success_criteria?: SuccessCriteria
 	phases: ScopePhaseInput[]
 	questions?: ScopingQuestion[]
 }
@@ -323,6 +332,8 @@ function normalizeScopingQuestionType(
 function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizeProposeScopingResult {
 	const title = normalizeFermentTitle(params.title)
 	if (!title) return { ok: false, error: toolErr(TITLE_REQUIRED_ERROR) }
+	const successCriteria = normalizeSuccessCriteriaInput(params.success_criteria)
+	if (!successCriteria.ok) return { ok: false, error: toolErr(successCriteria.error) }
 	const constraints = normalizeStringArray(params.constraints, "constraints")
 	if (typeof constraints === "string") return { ok: false, error: toolErr(constraints) }
 	const phases = normalizePhases(params.phases)
@@ -334,6 +345,7 @@ function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizePro
 		params: {
 			...params,
 			title,
+			success_criteria: successCriteria.value,
 			constraints,
 			assumptions: normalizeAssumptions(params.assumptions),
 			phases,
@@ -385,7 +397,7 @@ export function buildPlanMarkdown(params: NormalizedProposeScopingArgs): string 
 		"",
 		renderWrapped("## Goal", params.goal),
 		"",
-		renderBullets("## Success criteria", splitListText(params.success_criteria)),
+		renderBullets("## Success criteria", params.success_criteria ?? []),
 		"",
 		renderBullets("## Constraints", params.constraints ?? []),
 		"",
@@ -437,6 +449,8 @@ export async function scopeFerment(
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const title = normalizeFermentTitle(params.title)
 	if (!title) return toolErr(TITLE_REQUIRED_ERROR)
+	const successCriteria = normalizeSuccessCriteriaInput(params.success_criteria)
+	if (!successCriteria.ok) return toolErr(successCriteria.error)
 
 	// Plan-scope gate validation runs BEFORE any state mutation. The agent
 	// must declare verifiable success signals (P1), composition (P2), and
@@ -479,7 +493,7 @@ export async function scopeFerment(
 		type: "scope",
 		title,
 		goal: params.goal,
-		successCriteria: params.success_criteria,
+		successCriteria: successCriteria.value,
 		constraints: params.constraints,
 		assumptions: normalizeAssumptions(params.assumptions),
 		phases: params.phases ?? [],
@@ -559,7 +573,7 @@ export async function completeFerment(runtime: FermentRuntime, params: CompleteF
 	const journeyResult = await judgeJourneyGrade({
 		fermentName: ferment.name,
 		goal: ferment.goal ?? "",
-		successCriteria: ferment.successCriteria ?? "",
+		successCriteria: renderSuccessCriteria(ferment.successCriteria, ""),
 		finalSummary: params.final_summary ?? "",
 		phases: ferment.phases.map((p) => {
 			const review = phaseReviews.get(p.id)
@@ -700,7 +714,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: FERMENT_TOOLS.PROPOSE_SCOPING,
 		label: "Propose Scoping",
-		description: `Emit the full scoping draft: title, goal, criteria, constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one checkbox question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
+		description: `Emit the full scoping draft: title, goal, success_criteria (array of acceptance criteria), constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one checkbox question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
@@ -741,11 +755,11 @@ ${renderGateGuidance("scope_ferment")}`,
 			const pending = runtime.getPendingScope(params.ferment_id)
 			if (!pending) {
 				// Seed an empty buffer so attachPendingProposal can replace it.
-				runtime.setPendingScope(params.ferment_id, { goal: "", successCriteria: "", constraints: [] })
+				runtime.setPendingScope(params.ferment_id, { goal: "", successCriteria: [], constraints: [] })
 			}
 			const pendingAfterSeed: PendingScope = runtime.getPendingScope(params.ferment_id) ?? {
 				goal: "",
-				successCriteria: "",
+				successCriteria: [],
 				constraints: [],
 			}
 
@@ -1003,7 +1017,7 @@ ${renderGateGuidance("scope_ferment")}`,
 	pi.registerTool({
 		name: FERMENT_TOOLS.SCOPE,
 		label: "Scope Ferment",
-		description: `Save scoping answers and transition ferment from draft to planned. title is required and must be a concise 3-5 word Ferment name. In interactive scoping, the harness gates this call until the user has confirmed the proposed plan via TUI dropdown. You must produce verdicts for the three plan-scope gates below. A "flag" verdict refuses scoping.
+		description: `Save scoping answers and transition ferment from draft to planned. success_criteria is an array of acceptance criteria. title is required and must be a concise 3-5 word Ferment name. In interactive scoping, the harness gates this call until the user has confirmed the proposed plan via TUI dropdown. You must produce verdicts for the three plan-scope gates below. A "flag" verdict refuses scoping.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ScopeParams,

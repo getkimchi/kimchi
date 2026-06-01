@@ -23,6 +23,7 @@
  */
 
 import { activateSinglePhase, settleAfterPhaseTerminalPatch } from "./lifecycle.js"
+import { normalizeSuccessCriteria, successCriteriaToAnswer } from "./success-criteria.js"
 import {
 	type Decision,
 	type Ferment,
@@ -61,7 +62,7 @@ export type Command =
 			type: "scope"
 			title?: string
 			goal: string
-			successCriteria?: string
+			successCriteria?: string[]
 			constraints?: string[]
 			assumptions?: string
 			phases: ScopePhaseInput[]
@@ -383,7 +384,9 @@ function handleScope(
 
 	const scoping = { ...ferment.scoping }
 	scoping.goal = { answer: cmd.goal, confirmedAt: ctx.now }
-	if (cmd.successCriteria) scoping.criteria = { answer: cmd.successCriteria, confirmedAt: ctx.now }
+	const successCriteria = normalizeSuccessCriteria(cmd.successCriteria)
+	const criteriaAnswer = successCriteriaToAnswer(successCriteria)
+	if (criteriaAnswer) scoping.criteria = { answer: criteriaAnswer, confirmedAt: ctx.now }
 	if (cmd.constraints && cmd.constraints.length > 0) {
 		scoping.constraints = { answer: cmd.constraints.join(", "), confirmedAt: ctx.now }
 	}
@@ -398,7 +401,7 @@ function handleScope(
 		touch(ferment, ctx, {
 			name: cmd.title ?? ferment.name,
 			goal: cmd.goal,
-			successCriteria: cmd.successCriteria,
+			successCriteria,
 			constraints: cmd.constraints,
 			scoping,
 			phases,
@@ -421,8 +424,9 @@ function handleUpdateScopeField(
 		patch.goal = cmd.value
 		scoping.goal = { answer: cmd.value, confirmedAt: ctx.now }
 	} else if (cmd.field === "criteria") {
-		patch.successCriteria = cmd.value
-		scoping.criteria = { answer: cmd.value, confirmedAt: ctx.now }
+		const successCriteria = normalizeSuccessCriteria(cmd.value)
+		patch.successCriteria = successCriteria
+		scoping.criteria = { answer: successCriteriaToAnswer(successCriteria) ?? "", confirmedAt: ctx.now }
 	} else if (cmd.field === "constraints") {
 		const parsed = cmd.value
 			.split(",")

@@ -82,7 +82,7 @@ describe("applyCommand: scope", () => {
 				{
 					type: "scope",
 					goal: "Make a thing",
-					successCriteria: "It works",
+					successCriteria: ["It works"],
 					constraints: ["no libs", "must be fast"],
 					phases: [
 						{
@@ -99,7 +99,7 @@ describe("applyCommand: scope", () => {
 
 		expect(result.status).toBe("planned")
 		expect(result.goal).toBe("Make a thing")
-		expect(result.successCriteria).toBe("It works")
+		expect(result.successCriteria).toEqual(["It works"])
 		expect(result.constraints).toEqual(["no libs", "must be fast"])
 		expect(result.scoping.goal?.answer).toBe("Make a thing")
 		expect(result.scoping.criteria?.answer).toBe("It works")
@@ -202,7 +202,7 @@ describe("applyCommand: scope", () => {
 				{
 					type: "scope",
 					goal: "g",
-					successCriteria: "sc",
+					successCriteria: ["sc"],
 					constraints: ["c"],
 					assumptions: "k8s cluster exists",
 					phases: [{ name: "P1", goal: "g1", steps: [{ description: "s1" }] }],
@@ -265,7 +265,19 @@ describe("applyCommand: update_scope_field", () => {
 		const result = expectOk(
 			applyCommand(makeFerment(), { type: "update_scope_field", field: "criteria", value: "passes" }, ctx),
 		)
-		expect(result.successCriteria).toBe("passes")
+		expect(result.successCriteria).toEqual(["passes"])
+	})
+
+	it("updates criteria from newline-separated editor text", () => {
+		const result = expectOk(
+			applyCommand(
+				makeFerment(),
+				{ type: "update_scope_field", field: "criteria", value: "criterion A\ncriterion B\ncriterion C" },
+				ctx,
+			),
+		)
+		expect(result.successCriteria).toEqual(["criterion A", "criterion B", "criterion C"])
+		expect(result.scoping.criteria?.answer).toBe("criterion A\ncriterion B\ncriterion C")
 	})
 
 	it("updates constraints (parses comma-separated)", () => {

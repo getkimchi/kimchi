@@ -27,6 +27,7 @@ import { v7 as uuidv7 } from "uuid"
 
 import { activateSinglePhase, settleAfterPhaseTerminal } from "./lifecycle.js"
 import { FermentStorage, resolveFermentsDir } from "./store.js"
+import { normalizeSuccessCriteria } from "./success-criteria.js"
 import type {
 	Decision,
 	Ferment,
@@ -140,7 +141,10 @@ export interface ScopingGoalSetPayload {
 
 export interface ScopingCriteriaSetPayload {
 	criteria: NonNullable<Scoping["criteria"]>
-	plain?: string
+	/** New events store the denormalized top-level Ferment.successCriteria as
+	 *  string[]. Older append-only logs may have written a string here, so replay
+	 *  accepts both. The public tool schema remains array-only. */
+	plain?: string[] | string
 }
 
 export interface ScopingConstraintsSetPayload {
@@ -728,7 +732,7 @@ export class FermentEventStore {
 			pending.push({
 				timestamp: ferment.createdAt,
 				type: "scoping_criteria_set",
-				payload: { criteria: ferment.scoping.criteria },
+				payload: { criteria: ferment.scoping.criteria, plain: ferment.successCriteria },
 			})
 		}
 		if (ferment.scoping.constraints) {
@@ -994,7 +998,7 @@ export function applyFermentEvent(state: Ferment | undefined, event: FermentEven
 			const p = event.payload as ScopingCriteriaSetPayload
 			return {
 				...state,
-				successCriteria: p.plain ?? p.criteria.answer,
+				successCriteria: normalizeSuccessCriteria(p.plain) ?? normalizeSuccessCriteria(p.criteria.answer),
 				scoping: { ...state.scoping, criteria: p.criteria },
 				updatedAt: event.timestamp,
 			}

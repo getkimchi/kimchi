@@ -12,8 +12,11 @@ const simpleTodoOnePhasePayload = {
 	ferment_id: "f-todo",
 	title: "Create a TODO app",
 	goal: "Build a functional, responsive TODO application with add, edit, delete, complete, filtering, and persistence.",
-	success_criteria:
-		"Users can add, edit, delete, complete, and filter todos. Todos persist across reloads. The app works on mobile and desktop.",
+	success_criteria: [
+		"Users can add, edit, delete, complete, and filter todos",
+		"Todos persist across reloads",
+		"The app works on mobile and desktop",
+	],
 	constraints: ["Single-page browser app", "No backend required", "Use localStorage for persistence"],
 	assumptions: ["Browser-based app", "Single-user use case", "Standard TODO UX is acceptable"],
 	phases: [
@@ -48,8 +51,11 @@ const manualRunTwoPhasePayload = {
 	ferment_id: "f-manual",
 	title: "Create a TODO app",
 	goal: "Build a visually polished TODO app using Vanilla JavaScript and Tailwind CSS.",
-	success_criteria:
-		"Users can add, edit, delete, complete, and filter todos. Todos persist across reloads and the UI is responsive.",
+	success_criteria: [
+		"Users can add, edit, delete, complete, and filter todos",
+		"Todos persist across reloads",
+		"The UI is responsive",
+	],
 	constraints: ["Single-page application with no backend", "Vanilla JavaScript only", "Tailwind CSS for styling"],
 	assumptions: [
 		"Browser-based web app",

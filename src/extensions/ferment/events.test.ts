@@ -269,7 +269,7 @@ describe("registerFermentEvents", () => {
 		runtime.setPendingScope(draft.id, {
 			title: "Google OAuth Login",
 			goal: "Users can sign in with Google OAuth",
-			successCriteria: "OAuth login works",
+			successCriteria: ["OAuth login works"],
 			constraints: [],
 			phases: [{ name: "Build", goal: "Implement OAuth", steps: [{ description: "Add login flow" }] }],
 		})

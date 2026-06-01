@@ -214,7 +214,7 @@ describe("fermentExtension session resume", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [] }],
 		})
@@ -428,7 +428,7 @@ describe("fermentExtension question dropdown", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -469,7 +469,7 @@ describe("fermentExtension question dropdown", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [
 				{ name: "Done", goal: "Build", steps: [] },
@@ -521,7 +521,7 @@ describe("fermentExtension question dropdown", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -555,7 +555,7 @@ describe("fermentExtension question dropdown", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [] }],
 		})
@@ -683,7 +683,7 @@ describe("fermentExtension question dropdown", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [
 				{ name: "Done", goal: "Build", steps: [] },
@@ -786,7 +786,7 @@ describe("fermentExtension question dropdown", () => {
 				ferment_id: draft.id,
 				title: "Plan Handoff",
 				goal: "Goal",
-				success_criteria: "Works",
+				success_criteria: ["Works"],
 				constraints: [],
 				phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 				gates: [
@@ -815,7 +815,7 @@ describe("fermentExtension question dropdown", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -858,7 +858,7 @@ describe("fermentExtension question dropdown", () => {
 			runtime.setActive(draft)
 			runtime.setPendingScope(draft.id, {
 				goal: "Goal",
-				successCriteria: "Works",
+				successCriteria: ["Works"],
 				constraints: [],
 				phases: [{ name: "Phase", goal: "Build", steps: [] }],
 			})
@@ -921,13 +921,13 @@ describe("fermentExtension question dropdown", () => {
 			runtime.setActive(firstDraft)
 			runtime.setPendingScope(firstDraft.id, {
 				goal: "First goal",
-				successCriteria: "First works",
+				successCriteria: ["First works"],
 				constraints: [],
 				phases: [{ name: "First phase", goal: "Build first", steps: [] }],
 			})
 			runtime.setPendingScope(secondDraft.id, {
 				goal: "Second goal",
-				successCriteria: "Second works",
+				successCriteria: ["Second works"],
 				constraints: [],
 				phases: [{ name: "Second phase", goal: "Build second", steps: [] }],
 			})
@@ -976,7 +976,7 @@ describe("fermentExtension question dropdown", () => {
 			runtime.setActive(draft)
 			runtime.setPendingScope(draft.id, {
 				goal: "Goal",
-				successCriteria: "Works",
+				successCriteria: ["Works"],
 				constraints: [],
 				phases: [{ name: "Phase", goal: "Build", steps: [] }],
 			})
@@ -1037,7 +1037,7 @@ describe("fermentExtension question dropdown", () => {
 			runtime.setActive(draft)
 			runtime.setPendingScope(draft.id, {
 				goal: "Goal",
-				successCriteria: "Works",
+				successCriteria: ["Works"],
 				constraints: [],
 				phases: [{ name: "Phase", goal: "Build", steps: [] }],
 			})
@@ -1079,7 +1079,7 @@ describe("fermentExtension question dropdown", () => {
 			runtime.setActive(draft)
 			runtime.setPendingScope(draft.id, {
 				goal: "Goal",
-				successCriteria: "Works",
+				successCriteria: ["Works"],
 				constraints: [],
 			})
 			setPendingPlanReview({

@@ -162,7 +162,7 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 			ferment_id: ferment.id,
 			title: "Google OAuth Login",
 			goal: "Users can sign in with Google OAuth",
-			success_criteria: "E2E test passes for OAuth login flow",
+			success_criteria: ["E2E test passes for OAuth login flow"],
 			constraints: ["No external auth libraries beyond Google SDK"],
 			assumptions: "Google API credentials are already provisioned",
 			phases: [

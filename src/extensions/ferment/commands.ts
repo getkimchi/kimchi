@@ -2,6 +2,7 @@ import { writeFileSync } from "node:fs"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { computeStats, serializeStats } from "../../ferment/stats.js"
 import { FermentError } from "../../ferment/store.js"
+import { successCriteriaToAnswer } from "../../ferment/success-criteria.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
 import { requestSharedFooterRender } from "../shared-footer.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
@@ -777,7 +778,7 @@ export class FermentCommandController {
 					return { handled: true }
 				}
 				const newCriteria = await promptEditor(ctx, "Revise success criteria:", {
-					prefill: active.successCriteria ?? "",
+					prefill: successCriteriaToAnswer(active.successCriteria) ?? "",
 				})
 				if (newCriteria) {
 					const out = applyAndPersist(active.id, {
