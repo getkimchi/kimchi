@@ -127,6 +127,10 @@ function makeRecordingConn(): { conn: AgentSideConnection; updates: SessionNotif
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
+function agentEnd(): AgentSessionEvent {
+	return { type: "agent_end", messages: [], willRetry: false }
+}
+
 describe("KimchiAcpAgent turn lifecycle", () => {
 	let fake: FakeAgentSession
 	let agent: KimchiAcpAgent
@@ -236,7 +240,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			// simulating a slow downstream handler on the agent_end path.
 			setTimeout(() => {
 				agentEndDeliveredAt = Date.now()
-				fake.emit({ type: "agent_end", messages: [] })
+				fake.emit(agentEnd())
 			}, 40)
 			// Return now — agent_end has NOT reached our subscriber yet.
 		}
@@ -272,7 +276,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			// Schedule agent_start + agent_end AFTER session.prompt resolves.
 			setTimeout(() => {
 				fake.emit({ type: "agent_start" })
-				fake.emit({ type: "agent_end", messages: [] })
+				fake.emit(agentEnd())
 				lateEventsFired = true
 			}, 30)
 		}
@@ -307,7 +311,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				args: { command: "noop" },
 			})
 			await delay(5)
-			setTimeout(() => fake.emit({ type: "agent_end", messages: [] }), 30)
+			setTimeout(() => fake.emit(agentEnd()), 30)
 		}
 		const result = await agent.prompt({
 			sessionId,
@@ -344,7 +348,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			// Wait until cancel() runs.
 			while (!cancelSeen) await delay(5)
 			// pi-mono's abort path still emits agent_end on teardown.
-			fake.emit({ type: "agent_end", messages: [] })
+			fake.emit(agentEnd())
 		}
 		fake.abortImpl = async () => {
 			cancelSeen = true
@@ -487,7 +491,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
 			await delay(5)
-			fake.emit({ type: "agent_end", messages: [] })
+			fake.emit(agentEnd())
 		}
 
 		const result = await agent.prompt({
@@ -514,7 +518,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
 			await delay(5)
-			fake.emit({ type: "agent_end", messages: [] })
+			fake.emit(agentEnd())
 		}
 
 		const writes: string[] = []
@@ -602,7 +606,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 		// Stray agent_end arrives later (shouldn't happen in production, but
 		// the guard in onSessionEvent must keep us safe either way).
-		expect(() => fake.emit({ type: "agent_end", messages: [] })).not.toThrow()
+		expect(() => fake.emit(agentEnd())).not.toThrow()
 	})
 
 	// Resource safety on the newSession error path: if subscribe (or any step
@@ -811,7 +815,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			newFake.emit({ type: "agent_start" })
 			markNewPromptStarted()
 			await newPromptReleased
-			newFake.emit({ type: "agent_end", messages: [] })
+			newFake.emit(agentEnd())
 		}
 		oldFake.abortImpl = async () => {
 			await localAgent.loadSession({ sessionId: sid, cwd: "/tmp", mcpServers: [] })
@@ -926,12 +930,12 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		fakeA.promptImpl = async () => {
 			fakeA.emit({ type: "agent_start" })
 			await delay(5)
-			setTimeout(() => fakeA.emit({ type: "agent_end", messages: [] }), 60)
+			setTimeout(() => fakeA.emit(agentEnd()), 60)
 		}
 		fakeB.promptImpl = async () => {
 			fakeB.emit({ type: "agent_start" })
 			await delay(5)
-			setTimeout(() => fakeB.emit({ type: "agent_end", messages: [] }), 10)
+			setTimeout(() => fakeB.emit(agentEnd()), 10)
 		}
 
 		const [resA, resB] = await Promise.all([
@@ -998,7 +1002,7 @@ describe("KimchiAcpAgent tool execution stream", () => {
 				result: { content: [{ type: "text", text: "ab" }] },
 				isError: false,
 			})
-			fake.emit({ type: "agent_end", messages: [] })
+			fake.emit(agentEnd())
 		}
 
 		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
@@ -1057,7 +1061,7 @@ describe("KimchiAcpAgent tool execution stream", () => {
 				result: { content: [{ type: "text", text: "" }] },
 				isError: false,
 			})
-			fake.emit({ type: "agent_end", messages: [] })
+			fake.emit(agentEnd())
 		}
 
 		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
@@ -1094,7 +1098,7 @@ describe("KimchiAcpAgent tool execution stream", () => {
 				result: { content: [{ type: "text", text: "System agent started." }] },
 				isError: false,
 			})
-			fake.emit({ type: "agent_end", messages: [] })
+			fake.emit(agentEnd())
 		}
 
 		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
@@ -1120,7 +1124,7 @@ describe("KimchiAcpAgent tool execution stream", () => {
 				result: { content: [{ type: "text", text: "System agent started." }] },
 				isError: false,
 			})
-			fake.emit({ type: "agent_end", messages: [] })
+			fake.emit(agentEnd())
 		}
 
 		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
