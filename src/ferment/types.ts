@@ -135,12 +135,9 @@ export interface JudgeGrade {
 	rationale: string
 	gradedAt: string
 	deltas?: Delta[]
-	/** True when the journey-grade judge was unreachable or returned
-	 *  unparseable output at complete_ferment and the user authorized an
-	 *  ungraded ship. The grade field carries a placeholder ("B") so legacy
-	 *  consumers don't break, but stats should check this flag first and
-	 *  skip the entry when set — otherwise judge outages look like a string
-	 *  of B grades. */
+	/** Legacy marker for older completions that persisted a placeholder grade
+	 *  when the journey-grade judge was unreachable. New completions leave
+	 *  Ferment.grade unset instead of recording a synthetic grade. */
 	unavailable?: boolean
 }
 

@@ -515,16 +515,7 @@ export async function scopeFerment(
 	)
 }
 
-export interface CompleteFermentExecutionContext {
-	pi: ExtensionAPI
-	ctx?: unknown
-}
-
-export async function completeFerment(
-	runtime: FermentRuntime,
-	params: CompleteFermentArgs,
-	_executionContext: CompleteFermentExecutionContext,
-): Promise<ToolResult> {
+export async function completeFerment(runtime: FermentRuntime, params: CompleteFermentArgs): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 
 	const fSnapshot = runtime.getStorage().get(params.ferment_id)
@@ -592,28 +583,27 @@ export async function completeFerment(
 	// Resolve the grade. The final judge is advisory; completion gates have
 	// already decided whether shipping is allowed, so judge outages must not
 	// block the user.
-	let resolvedGrade: { grade: Grade; rationale: string; unavailable?: boolean }
+	let resolvedGrade: { grade: Grade; rationale: string } | undefined
+	let gradeRationale: string
 	if (journeyResult.ok) {
 		resolvedGrade = { grade: journeyResult.grade, rationale: journeyResult.rationale }
+		gradeRationale = journeyResult.rationale
 	} else {
 		const failureDetail = `${journeyResult.reason}${journeyResult.detail ? `: ${journeyResult.detail}` : ""}`
-		resolvedGrade = {
-			grade: "B",
-			rationale: `Judge unreachable (${failureDetail}); completion proceeded without a graded review.`,
-			unavailable: true,
-		}
+		gradeRationale = `Judge unreachable (${failureDetail}); completion proceeded without a graded review.`
 	}
 
-	// Persist completion and grade together so the unavailable marker is durable.
+	// Persist completion and grade together when the advisory judge returns one.
 	const completeOutcome = applyAndPersist(params.ferment_id, {
 		type: "complete_ferment",
 		finalSummary: params.final_summary,
-		grade: {
-			grade: resolvedGrade.grade,
-			rationale: resolvedGrade.rationale,
-			gradedAt: runtime.nowIso(),
-			unavailable: resolvedGrade.unavailable,
-		},
+		grade: resolvedGrade
+			? {
+					grade: resolvedGrade.grade,
+					rationale: resolvedGrade.rationale,
+					gradedAt: runtime.nowIso(),
+				}
+			: undefined,
 	})
 	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, ferment)
 
@@ -626,11 +616,11 @@ export async function completeFerment(
 	const failedPhases = fresh.phases.filter((p) => p.status === "failed").length
 	const failedNote = failedPhases > 0 ? ` (${failedPhases} phase(s) failed)` : ""
 	const gateLines = gates.map((g) => `  ${g.id} (${g.verdict}): ${g.rationale}`).join("\n")
-	const gradeLabel = resolvedGrade.unavailable ? `${resolvedGrade.grade} (unavailable)` : resolvedGrade.grade
+	const gradeLabel = resolvedGrade?.grade ?? "unavailable"
 	const terminalNotice = `This ferment is complete and terminal. Do not call bash/read/list_ferments or any ferment tools for this ferment again without clear user consent. If the user wants a new ferment, tell them to run \`/ferment new "..."\` or \`/ferment one-shot "..."\` — do not search MCP tools or invent a tool.`
 
 	return toolOk(
-		`Ferment "${fresh.name}" complete${failedNote}.\n\nFinal gates:\n${gateLines}\n\nFinal grade: ${gradeLabel} — ${resolvedGrade.rationale}\n\n${params.final_summary ?? ""}\n\n${terminalNotice}`,
+		`Ferment "${fresh.name}" complete${failedNote}.\n\nFinal gates:\n${gateLines}\n\nFinal grade: ${gradeLabel} — ${gradeRationale}\n\n${params.final_summary ?? ""}\n\n${terminalNotice}`,
 	)
 }
 
@@ -1056,8 +1046,8 @@ ${renderGateGuidance("scope_ferment")}`,
 
 ${renderGateGuidance("complete_ferment")}`,
 		parameters: CompleteFermentParams,
-		async execute(_, params, _signal, _onUpdate, ctx) {
-			return completeFerment(runtime, params, { pi, ctx })
+		async execute(_, params) {
+			return completeFerment(runtime, params)
 		},
 	})
 
