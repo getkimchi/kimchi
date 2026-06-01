@@ -774,6 +774,84 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(fake.disposed).toBe(true)
 	})
 
+	it("keeps a same-id reload isolated while close awaits abort", async () => {
+		const sid = "session-close-reload"
+		const oldFake = new FakeAgentSession(sid)
+		const newFake = new FakeAgentSession(sid)
+		const { conn, updates } = makeRecordingConn()
+		let loaderCalls = 0
+		let releaseOldPrompt!: () => void
+		const oldPromptReleased = new Promise<void>((resolve) => {
+			releaseOldPrompt = resolve
+		})
+		let releaseNewPrompt!: () => void
+		const newPromptReleased = new Promise<void>((resolve) => {
+			releaseNewPrompt = resolve
+		})
+		let markNewPromptStarted!: () => void
+		const newPromptStarted = new Promise<void>((resolve) => {
+			markNewPromptStarted = resolve
+		})
+		let newPrompt: Promise<unknown> | undefined
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(oldFake),
+			sessionLoader: async () => {
+				loaderCalls++
+				return asSession(newFake)
+			},
+		})
+
+		oldFake.promptImpl = async () => {
+			oldFake.emit({ type: "agent_start" })
+			await oldPromptReleased
+		}
+		newFake.promptImpl = async () => {
+			newFake.emit({ type: "agent_start" })
+			markNewPromptStarted()
+			await newPromptReleased
+			newFake.emit({ type: "agent_end", messages: [] })
+		}
+		oldFake.abortImpl = async () => {
+			await localAgent.loadSession({ sessionId: sid, cwd: "/tmp", mcpServers: [] })
+			newPrompt = localAgent.prompt({
+				sessionId: sid,
+				prompt: [{ type: "text", text: "new turn" }],
+			})
+			await newPromptStarted
+			oldFake.emit({
+				type: "message_update",
+				assistantMessageEvent: { type: "text_delta", delta: "stale old event" },
+			} as unknown as AgentSessionEvent)
+			releaseNewPrompt()
+		}
+
+		await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const oldPrompt = localAgent.prompt({
+			sessionId: sid,
+			prompt: [{ type: "text", text: "old turn" }],
+		})
+		await delay(0)
+
+		await localAgent.unstable_closeSession({ sessionId: sid })
+		releaseOldPrompt()
+
+		await expect(oldPrompt).resolves.toEqual({ stopReason: "cancelled" })
+		await expect(newPrompt).resolves.toEqual({ stopReason: "end_turn" })
+		expect(loaderCalls).toBe(1)
+		expect(getAcpPrompter(sid)).toBeDefined()
+		expect(
+			updates.some(
+				(u) =>
+					u.update.sessionUpdate === "agent_message_chunk" &&
+					(u.update as { content: { text: string } }).content.text === "stale old event",
+			),
+		).toBe(false)
+
+		await localAgent.shutdown()
+	})
+
 	// mcpServers is declared in the ACP request shape but kimchi has no hook to
 	// wire them into a live session — pi-coding-agent loads MCP servers from its
 	// own config. Silently dropping them would leave the client believing those

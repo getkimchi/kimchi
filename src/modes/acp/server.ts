@@ -440,6 +440,7 @@ export class KimchiAcpAgent implements Agent {
 		// until process exit. Reject symmetrically so the caller's await settles.
 		for (const entry of this.sessions.values()) {
 			if (entry.turn) this.failTurn(entry, new Error("acp agent shutting down"))
+			unregisterAcpPrompter(entry.session.sessionId)
 			await this.disposeSessionRecord(entry)
 		}
 		this.sessions.clear()
@@ -449,6 +450,8 @@ export class KimchiAcpAgent implements Agent {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return
 		this.sessions.delete(sessionId)
+		unregisterAcpPrompter(sessionId)
+		entry.unsubscribe()
 		if (entry.turn) {
 			entry.turn.cancelled = true
 			try {
@@ -459,12 +462,14 @@ export class KimchiAcpAgent implements Agent {
 			}
 			this.finalizeTurn(entry, "cancelled")
 		}
-		await this.disposeSessionRecord(entry)
+		await this.disposeSessionRecord(entry, { alreadyUnsubscribed: true })
 	}
 
-	private async disposeSessionRecord(entry: SessionRecord): Promise<void> {
-		entry.unsubscribe()
-		unregisterAcpPrompter(entry.session.sessionId)
+	private async disposeSessionRecord(
+		entry: SessionRecord,
+		opts: { alreadyUnsubscribed?: boolean } = {},
+	): Promise<void> {
+		if (!opts.alreadyUnsubscribed) entry.unsubscribe()
 		// Emit session_shutdown to extensions and await all handlers before
 		// calling dispose(). dispose() is synchronous and returns void, so async
 		// extension handlers (e.g. telemetry drain, shutdown marker) would be
