@@ -8,6 +8,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { getAvailableModels } from "../../startup-context.js"
+import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
 import {
 	DEFAULT_MODEL_ROLES,
 	type ModelRoles,
@@ -78,15 +79,17 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					}
 					ctx.ui.notify("Model roles reset to defaults.", "info")
 
-					// Switch the active model if the orchestrator changed
-					const parsed = splitModelRef(DEFAULT_MODEL_ROLES.orchestrator)
-					if (parsed) {
-						const target = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
-						if (target) {
-							try {
-								await pi.setModel(target)
-							} catch {
-								// best-effort
+					// Switch the active model only if currently in multi-model mode
+					if (getMultiModelEnabled()) {
+						const parsed = splitModelRef(DEFAULT_MODEL_ROLES.orchestrator)
+						if (parsed) {
+							const target = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
+							if (target) {
+								try {
+									await pi.setModel(target)
+								} catch {
+									// best-effort
+								}
 							}
 						}
 					}
@@ -161,8 +164,9 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				}
 				ctx.ui.notify(`${info.label} set to ${newRef}`, "info")
 
-				// When the orchestrator role changes, switch the active model to match
-				if (roleKey === "orchestrator") {
+				// When the orchestrator role changes and multi-model is active,
+				// switch the active model to the new orchestrator.
+				if (roleKey === "orchestrator" && getMultiModelEnabled()) {
 					const parsed = splitModelRef(newRef)
 					if (parsed) {
 						const target = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
