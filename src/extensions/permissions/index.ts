@@ -14,6 +14,7 @@ import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
 import { resolveMode } from "./mode.js"
+import { saveApprovedPlan } from "./plan-persistence.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
 import {
 	type CompoundSubcommand,
@@ -33,7 +34,6 @@ import {
 	splitCompoundCommand,
 } from "./taxonomy.js"
 import { BUILTIN_DENY, DEFAULT_CONFIG, type PermissionMode, type Rule } from "./types.js"
-import { saveApprovedPlan } from "./plan-persistence.js"
 
 /**
  * Check whether a file path is within .kimchi/plans/ relative to cwd.
@@ -430,24 +430,22 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 		if (!text.includes("<!-- PLAN_COMPLETE -->") && !text.includes("<done>")) return
 
-		const EXECUTE = "Yes — execute the plan"
-		const EXECUTE_AUTO = "Yes — execute (auto-approve)"
+		const EXECUTE = "Execute the plan"
 		const FERMENT = "Convert to ferment workflow"
-		const DECLINE = "No, do something else"
+		const DECLINE = "Rework the plan"
 
 		const choice = await withWorkingHidden(ctx, () =>
-			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, EXECUTE_AUTO, FERMENT, DECLINE]),
+			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, FERMENT, DECLINE]),
 		)
 
-		if (choice === EXECUTE || choice === EXECUTE_AUTO) {
+		if (choice === EXECUTE) {
 			let planPath: string | undefined
 			try {
 				planPath = saveApprovedPlan(ctx.cwd, text)
 			} catch {
 				// Non-fatal: plan persistence is best-effort.
 			}
-			const targetMode = choice === EXECUTE ? "default" : "auto"
-			switchFromPlanAndExecute(ctx, targetMode as PermissionMode, planPath, text)
+			switchFromPlanAndExecute(ctx, "auto", planPath, text)
 		} else if (choice === FERMENT) {
 			// Switch to default mode so ferment tools become available, then ask
 			// the agent to call request_ferment_workflow with the plan as intent.
@@ -481,10 +479,16 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			pi.sendMessage(
 				{
 					customType: "plan-execute",
-					content:
-						`The user wants to run this plan as a ferment workflow. Call \`request_ferment_workflow\` with a concise title (3–5 words) and the full plan text below as the \`intent\`.\n` +
-						`Suggested title (from the plan): "${title}"\n` +
-						`The system has already switched you out of plan mode so ferment tools are available.\n\n---\n\n${text}`,
+					content: `The user approved the plan and wants to run it as a ferment workflow. You MUST call \`request_ferment_workflow\` now — do not describe it, do not ask for confirmation, just call it immediately.
+
+Use these exact values:
+- title: "${title}"
+- intent: the full plan text below (copy it verbatim as the intent)
+
+The plan text:
+\`\`\`
+${text}
+\`\`\``,
 					display: false,
 				},
 				{ triggerTurn: true },
