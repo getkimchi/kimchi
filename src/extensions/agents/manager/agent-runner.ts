@@ -14,7 +14,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
-import { runAsAgentWorker } from "../../agent-worker-context.js"
+import { getAgentStructuredOutput, runAsAgentWorker } from "../../agent-worker-context.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
@@ -22,6 +22,7 @@ import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
+import { getPersonaOutputToolFactory } from "../persona-output-tools.js"
 import {
 	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
@@ -167,6 +168,9 @@ export interface RunResult {
 	abortReason?: AgentAbortReason
 	/** True if the agent was steered to wrap up (hit soft turn limit) but finished in time. */
 	steered: boolean
+	/** Schema-validated result captured from a persona's bound submit tool
+	 *  (AgentConfig.outputToolName). undefined when the persona has no output contract. */
+	structuredOutput?: unknown
 }
 
 function collectResponseText(session: AgentSession) {
@@ -312,6 +316,17 @@ async function runAgentInner(
 
 	const agentDir = getAgentDir()
 
+	// This persona's bound submit tool (AgentConfig.outputToolName), if any. It is
+	// owned by a higher-level extension that subagent sessions do not load, so we
+	// inject ONLY this persona's own installer below — no other persona's output
+	// tool ever enters the session, and none needs stripping. Kept active by the
+	// gating filter further down.
+	const ownOutputTool = agentConfig?.outputToolName
+	const ownOutputFactory = ownOutputTool ? getPersonaOutputToolFactory(ownOutputTool) : undefined
+
+	const extensionFactories = [telemetryExtension(readTelemetryConfig())]
+	if (ownOutputFactory) extensionFactories.push(ownOutputFactory)
+
 	const loader = new DefaultResourceLoader({
 		cwd: effectiveCwd,
 		agentDir,
@@ -322,7 +337,7 @@ async function runAgentInner(
 		noContextFiles: true,
 		systemPromptOverride: () => systemPrompt,
 		appendSystemPromptOverride: () => [],
-		extensionFactories: [telemetryExtension(readTelemetryConfig())],
+		extensionFactories,
 	})
 	await loader.reload()
 
@@ -376,6 +391,9 @@ async function runAgentInner(
 		const activeTools = session.getActiveToolNames().filter((t) => {
 			if (EXCLUDED_TOOL_NAMES.includes(t)) return false
 			if (disallowedSet?.has(t)) return false
+			// The persona's own injected output tool isn't a builtin or an extension-
+			// allowlisted tool, so keep it explicitly.
+			if (t === ownOutputTool) return true
 			if (builtinToolNameSet.has(t)) return true
 			if (allBuiltinToolNames.has(t)) return false
 			if (Array.isArray(extensions)) {
@@ -561,6 +579,14 @@ async function runAgentInner(
 
 	try {
 		await session.prompt(effectivePrompt)
+		// Forced structured-output contract: if this persona must return via a
+		// submit tool but finished without calling it, nudge once. Still-missing
+		// after this retry is failed below (retry-then-fail).
+		if (agentConfig?.outputToolName && !aborted && !budgetAborted && getAgentStructuredOutput() === undefined) {
+			await session.prompt(
+				`You have not returned a result. You MUST call \`${agentConfig.outputToolName}\` exactly once, with all required fields, to submit your result. Do not reply with prose.`,
+			)
+		}
 	} finally {
 		clearInterval(inactivityInterval)
 		if (durationTimer) clearTimeout(durationTimer)
@@ -597,8 +623,22 @@ async function runAgentInner(
 		abortReason = "token_budget"
 	}
 
+	const structuredOutput = getAgentStructuredOutput()
+	if (agentConfig?.outputToolName && structuredOutput === undefined && !aborted && !budgetAborted) {
+		throw new Error(
+			`${agentConfig.name} did not return a structured result: it must call ${agentConfig.outputToolName} exactly once. None was submitted after a retry.`,
+		)
+	}
+
 	const responseText = collector.getText().trim() || getLastAssistantText(session)
-	return { responseText, session, aborted: aborted || budgetAborted, abortReason, steered: softLimitReached }
+	return {
+		responseText,
+		session,
+		aborted: aborted || budgetAborted,
+		abortReason,
+		steered: softLimitReached,
+		structuredOutput,
+	}
 }
 
 /**

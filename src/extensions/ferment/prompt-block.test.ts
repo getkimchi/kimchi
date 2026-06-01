@@ -213,6 +213,9 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain('<scoping_sequence required="true">')
 			expect(out).toContain("STEP 1")
 			expect(out).toContain("ORIENT")
+			expect(out).toContain("First action in STEP 1")
+			expect(out).toContain("available agent/subagent")
+			expect(out).toContain("Do not list skills")
 			expect(out).toContain("STEP 2")
 			expect(out).toContain("INTERVIEW")
 			expect(out).toContain("STEP 3")
@@ -232,6 +235,17 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("exactly P1, P2, and P3")
 			expect(out).toContain("`id`, `verdict`, `rationale`, and `evidence`")
 			expect(out).toContain("Never emit a partial gates array")
+			// The host runs the Plan Reviewer automatically — the planner never spawns it.
+			expect(out).toContain("Plan Reviewer gates the final plan automatically")
+			expect(out).toContain("host spawns a separate Plan Reviewer on your exact plan")
+			expect(out).toContain("you do NOT spawn it, transcribe the plan, or pass a verdict")
+			expect(out).toContain("needs_revision")
+			expect(out).not.toContain("<ferment_plan>")
+			expect(out).not.toContain("submit_plan_review")
+			expect(out).not.toContain("plan_review")
+			expect(out).not.toContain("reviewed_plan_hash")
+			expect(out).toContain("the tool response already contains the final Markdown plan")
+			expect(out).toContain("do not write ceremonial text")
 			expect(out).toContain('After `propose_ferment_scoping` returns "Plan saved"')
 		})
 
@@ -242,6 +256,8 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain('<scoping_sequence required="true">')
 			expect(out).toContain("STEP 1")
 			expect(out).toContain("ORIENT")
+			expect(out).toContain("print a concise inventory of available agent/subagent")
+			expect(out).toContain("If agent types are not exposed")
 			expect(out).toContain("STEP 2")
 			expect(out).toContain("INTERVIEW")
 			expect(out).toContain("iterative rounds")
@@ -256,6 +272,7 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain('subagent_type: "Explore"')
 			expect(out).toContain("token_budget: 120000")
 			expect(out).toContain("run_in_background: true")
+			expect(out).toContain("The host automatically runs a Plan Reviewer on that exact plan")
 			expect(out).toContain("do not retry the same broad task")
 			expect(out).toContain("spawn a narrower replacement only if that missing fact is plan-blocking")
 			expect(out).toContain("continue with direct targeted reads")
@@ -287,6 +304,7 @@ describe("buildFermentPromptBlock", () => {
 			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime()) ?? ""
 			expect(out).toContain("Available subagent types")
 			expect(out).toContain("**Explore**")
+			expect(out).toContain("**Plan Reviewer**")
 		})
 
 		it("uses the active ferment name in the planner role line", () => {

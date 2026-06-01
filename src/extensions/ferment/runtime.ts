@@ -1,7 +1,8 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
-import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import type { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { type PlanReview, runHostPlanReview } from "./plan-review-runner.js"
 import {
 	type PendingPlanReview,
 	clearAllPendingPlanReviews,
@@ -44,6 +45,8 @@ import {
 	markScopingConfirmed,
 	markScopingInteractive,
 	recordBlockHashAndCheckRepeat,
+	recordPlanReviewAttempt,
+	resetPlanReviewState,
 	setActive,
 	setAutomatedContinuationEnabled,
 	setContinuationPolicy,
@@ -66,6 +69,9 @@ export interface FermentRuntime {
 	markHumanInput(): void
 	getLastHumanInputAt(): Date | undefined
 	captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry): void
+	/** Spawn the Plan Reviewer persona on the canonical plan JSON and return its
+	 *  validated verdict. Injected here so tests can stub the subagent run. */
+	runPlanReview(ctx: unknown, pi: ExtensionAPI, planJson: string, signal?: AbortSignal): Promise<PlanReview>
 	bumpStepStart(fermentId: string, phaseId: string, stepId: string): number
 	clearStepStart(fermentId: string, phaseId: string, stepId: string): void
 	clearAllStepStarts(): void
@@ -93,6 +99,17 @@ export interface FermentRuntime {
 	getBlockRetry(fermentId: string, phaseId: string): number
 	clearBlockRetry(fermentId: string, phaseId: string): void
 	recordBlockHashAndCheckRepeat(fermentId: string, phaseId: string, hash: string): boolean
+	recordPlanReviewAttempt(
+		fermentId: string,
+		rejectionHash: string | undefined,
+		planReviewSummary: string,
+	): {
+		planReviewAttempts: number
+		lastRejectionHash?: string
+		sameRejectionCount: number
+		lastPlanReviewSummary?: string
+	}
+	resetPlanReviewState(fermentId: string): void
 	bumpStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): number
 	clearStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): void
 	clearFermentState(fermentId: string): void
@@ -124,6 +141,7 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		markHumanInput,
 		getLastHumanInputAt,
 		captureJudgeContext,
+		runPlanReview: runHostPlanReview,
 		bumpStepStart,
 		clearStepStart,
 		clearAllStepStarts,
@@ -151,6 +169,8 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		getBlockRetry,
 		clearBlockRetry,
 		recordBlockHashAndCheckRepeat,
+		recordPlanReviewAttempt,
+		resetPlanReviewState,
 		bumpStepCompleteAttempt,
 		clearStepCompleteAttempt,
 		clearFermentState,

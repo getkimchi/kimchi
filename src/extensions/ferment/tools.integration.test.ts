@@ -68,6 +68,22 @@ interface ToolResult {
 	isError?: boolean
 }
 
+interface PlanReviewVerdict {
+	status: "approved" | "needs_revision"
+	summary: string
+	required_changes: string[]
+	reservations: string[]
+	questions: string[]
+}
+
+const APPROVED_REVIEW: PlanReviewVerdict = {
+	status: "approved",
+	summary: "Plan Reviewer approves the plan fit, complexity, and verification.",
+	required_changes: [],
+	reservations: [],
+	questions: [],
+}
+
 interface Harness {
 	storage: FermentStorage
 	runtime: FermentRuntime
@@ -75,13 +91,23 @@ interface Harness {
 	tools: Map<string, RegisteredTool>
 	pi: ExtensionAPI
 	call: (toolName: string, params: unknown, ctx?: unknown) => Promise<ToolResult>
+	/** Override the verdict the host-run Plan Reviewer returns for subsequent calls. */
+	setPlanReview: (verdict: PlanReviewVerdict) => void
 }
 
 function createHarness(): Harness {
 	const tempDir = mkdtempSync(join(tmpdir(), "ferment-tools-test-"))
 	const storage = new FermentStorage(tempDir)
 	const eventStorage = new FermentEventStore(tempDir)
-	const runtime = { ...createDefaultFermentRuntime(), getStorage: () => eventStorage }
+	let planReviewVerdict: PlanReviewVerdict = { ...APPROVED_REVIEW }
+	const setPlanReview = (verdict: PlanReviewVerdict) => {
+		planReviewVerdict = verdict
+	}
+	const runtime = {
+		...createDefaultFermentRuntime(),
+		getStorage: () => eventStorage,
+		runPlanReview: async () => planReviewVerdict,
+	}
 	const tools = new Map<string, RegisteredTool>()
 
 	// Mock pi: only what the tool factories actually call.
@@ -110,7 +136,7 @@ function createHarness(): Harness {
 		return result as ToolResult
 	}
 
-	return { storage, runtime, tempDir, tools, pi, call }
+	return { storage, runtime, tempDir, tools, pi, call, setPlanReview }
 }
 
 function createWorkflowCtx(options: { confirm?: boolean } = {}) {
@@ -1113,6 +1139,8 @@ describe("propose_ferment_scoping", () => {
 		{ name: "P3", goal: "g3", steps: [{ description: "s3" }] },
 	]
 
+	// The plan-review verdict is now produced by the host (runtime.runPlanReview),
+	// not supplied in the payload — drive it per-test via h.setPlanReview(...).
 	const basePayload = (ferment_id: string, overrides: Record<string, unknown> = {}) => ({
 		ferment_id,
 		title: "Proposed Ferment",
@@ -1146,6 +1174,14 @@ describe("propose_ferment_scoping", () => {
 		expect(tool?.description).toContain("Partial gates are rejected")
 	})
 
+	it("tells the planner the host runs the Plan Reviewer automatically", () => {
+		const tool = h.tools.get("propose_ferment_scoping")
+		expect(tool?.description).toContain("runs the Plan Reviewer on your exact plan")
+		expect(tool?.description).toContain("do NOT spawn a Plan Reviewer yourself")
+		expect(tool?.description).toContain("needs_revision")
+		expect(tool?.description).not.toContain("plan_review")
+	})
+
 	it("tells the planner to keep phases provisional when scoping questions are pending", () => {
 		const tool = h.tools.get("propose_ferment_scoping")
 		expect(tool?.description).toContain("If questions is non-empty")
@@ -1164,14 +1200,80 @@ describe("propose_ferment_scoping", () => {
 		expect(f.status).toBe("draft")
 		expect(getPendingScope(id)).toBeDefined()
 		expect(result).toContain("Plan ready for review")
-		expect(result).not.toContain("# Plan:")
+		expect(result).toContain("# Plan: Proposed Ferment")
 		expect(ctx.ui.select).not.toHaveBeenCalled()
 		expect(ctx.ui.custom).not.toHaveBeenCalled()
 		expect(getPendingPlanReview(id)).toMatchObject({
 			fermentId: id,
 			planMarkdown: expect.stringContaining("# Plan: Proposed Ferment"),
 		})
+		expect(getPendingPlanReview(id)?.planMarkdown).not.toContain("## Architecture Feedback")
+		expect(getPendingPlanReview(id)?.planMarkdown).not.toContain("## Architecture Reservations")
 		expect(getPendingPlanReview(id)?.planMarkdown.includes(`${String.fromCharCode(27)}[`)).toBe(false)
+	})
+
+	it("rejects the proposal when the host Plan Reviewer requires revision", async () => {
+		const id = await createFerment("Plan Reviewer Reject")
+		seedPending(id)
+		h.setPlanReview({
+			status: "needs_revision",
+			summary: "Plan skips verification.",
+			required_changes: ["Add verification commands to each phase."],
+			reservations: [],
+			questions: [],
+		})
+		const result = err(await h.call("propose_ferment_scoping", basePayload(id), {}))
+
+		expect(result).toContain("Plan Reviewer rejected this plan")
+		expect(result).toContain("Add verification commands")
+		expect(getPendingPlanReview(id)).toBeUndefined()
+	})
+
+	it("detects repeated Plan Reviewer required_changes even when summaries differ", async () => {
+		const id = await createFerment("Repeated Plan Reviewer Reject")
+		seedPending(id)
+		const required_changes = ["Add verification commands to each phase."]
+
+		h.setPlanReview({
+			status: "needs_revision",
+			summary: "Plan skips verification.",
+			required_changes,
+			reservations: [],
+			questions: [],
+		})
+		const first = err(await h.call("propose_ferment_scoping", basePayload(id), {}))
+		expect(first).toContain("Attempt 1/")
+
+		h.setPlanReview({
+			status: "needs_revision",
+			summary: "Verification is still missing.",
+			required_changes,
+			reservations: [],
+			questions: [],
+		})
+		const select = vi.fn().mockResolvedValue("Revise plan manually")
+		const second = err(await h.call("propose_ferment_scoping", basePayload(id), { ui: { select } }))
+
+		expect(second).toContain("same Plan Reviewer rejection repeated 2 times")
+		expect(select).toHaveBeenCalledTimes(1)
+		expect(getPendingPlanReview(id)).toBeUndefined()
+	})
+
+	it("rejects the final proposal when the Plan Reviewer raises blocking user questions", async () => {
+		const id = await createFerment("Plan Reviewer Questions")
+		seedPending(id)
+		h.setPlanReview({
+			status: "approved",
+			summary: "Plan is structurally sound but scope needs one user decision.",
+			required_changes: [],
+			reservations: [],
+			questions: ["Should this ferment implement fixes or only produce an audit report?"],
+		})
+		const result = err(await h.call("propose_ferment_scoping", basePayload(id), {}))
+
+		expect(result).toContain("raised blocking user questions")
+		expect(result).toContain("Should this ferment implement fixes")
+		expect(getPendingPlanReview(id)).toBeUndefined()
 	})
 
 	it("normalizes stringified phases before storing the pending review markdown", async () => {
@@ -1620,7 +1722,7 @@ describe("propose_ferment_scoping", () => {
 		const ctx2 = {
 			ui: { select: vi.fn(), custom: vi.fn(), input: vi.fn() },
 		}
-		const payloadNoAssumptions = { ...basePayload(id), assumptions: undefined }
+		const payloadNoAssumptions = basePayload(id, { assumptions: undefined })
 		await h.call("propose_ferment_scoping", payloadNoAssumptions, ctx2)
 
 		// Buffer should be replaced wholesale — assumptions now undefined

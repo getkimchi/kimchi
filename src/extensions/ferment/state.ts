@@ -14,6 +14,7 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import {
+	type PersistedPlanReviewState,
 	type PersistedRuntimeState,
 	deleteRuntimeState,
 	emptyState,
@@ -256,6 +257,8 @@ const blockRetryCounts = new CounterMap()
 const lastBlockHash = new Map<string, string>()
 
 export const MAX_BLOCK_RETRIES = 3
+export const MAX_PLAN_REVIEW_ATTEMPTS = 4
+export const MAX_SAME_PLAN_REVIEW_REJECTION = 2
 
 export function bumpBlockRetry(fermentId: string, phaseId: string): number {
 	hydrateIfNeeded(fermentId)
@@ -286,6 +289,68 @@ export function recordBlockHashAndCheckRepeat(fermentId: string, phaseId: string
 	lastBlockHash.set(key, hash)
 	persistFerment(fermentId)
 	return prev !== undefined && prev === hash
+}
+
+// ─── Planner/planReviewer scoping loop guard ─────────────────────────────────────
+
+const planReviewStates = new Map<string, PersistedPlanReviewState>()
+
+function emptyPlanReviewState(): PersistedPlanReviewState {
+	return {
+		planReviewAttempts: 0,
+		sameRejectionCount: 0,
+	}
+}
+
+function getPlanReviewStateRef(fermentId: string): PersistedPlanReviewState {
+	hydrateIfNeeded(fermentId)
+	let state = planReviewStates.get(fermentId)
+	if (!state) {
+		state = emptyPlanReviewState()
+		planReviewStates.set(fermentId, state)
+	}
+	return state
+}
+
+export function getPlanReviewAttempts(fermentId: string): number {
+	return getPlanReviewStateRef(fermentId).planReviewAttempts
+}
+
+export function getLastRejectionHash(fermentId: string): string | undefined {
+	return getPlanReviewStateRef(fermentId).lastRejectionHash
+}
+
+export function getSamePlanReviewRejectionCount(fermentId: string): number {
+	return getPlanReviewStateRef(fermentId).sameRejectionCount
+}
+
+export function getLastPlanReviewSummary(fermentId: string): string | undefined {
+	return getPlanReviewStateRef(fermentId).lastPlanReviewSummary
+}
+
+export function recordPlanReviewAttempt(
+	fermentId: string,
+	rejectionHash: string | undefined,
+	planReviewSummary: string,
+): PersistedPlanReviewState {
+	const state = getPlanReviewStateRef(fermentId)
+	state.planReviewAttempts += 1
+	state.lastPlanReviewSummary = planReviewSummary
+	if (rejectionHash) {
+		state.sameRejectionCount = state.lastRejectionHash === rejectionHash ? state.sameRejectionCount + 1 : 1
+		state.lastRejectionHash = rejectionHash
+	} else {
+		state.sameRejectionCount = 0
+		state.lastRejectionHash = undefined
+	}
+	persistFerment(fermentId)
+	return { ...state }
+}
+
+export function resetPlanReviewState(fermentId: string): void {
+	hydrateIfNeeded(fermentId)
+	planReviewStates.delete(fermentId)
+	persistFerment(fermentId)
 }
 
 // ─── Step failure / completion counter (per step) ────────────────────────────
@@ -401,6 +466,7 @@ function snapshotForFerment(fermentId: string): PersistedRuntimeState {
 	for (const [k, v] of stepStartRefs.entries()) {
 		if (k.startsWith(prefix)) snap.stepStartRefs[stripPrefix(k)] = v
 	}
+	snap.planReview = planReviewStates.get(fermentId) ?? emptyPlanReviewState()
 	return snap
 }
 
@@ -418,6 +484,7 @@ function hydrateIfNeeded(fermentId: string): void {
 	for (const [k, v] of Object.entries(state.stepCompleteAttempts)) stepCompleteAttempts.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.phaseStartRefs)) phaseStartRefs.set(`${prefix}${k}`, v)
 	for (const [k, v] of Object.entries(state.stepStartRefs)) stepStartRefs.set(`${prefix}${k}`, v)
+	planReviewStates.set(fermentId, state.planReview)
 }
 
 /** Persist the current in-memory snapshot for a ferment. Best-effort. */
@@ -449,6 +516,7 @@ export function clearFermentState(fermentId: string): void {
 	for (const key of stepStartRefs.keys()) {
 		if (key.startsWith(prefix)) stepStartRefs.delete(key)
 	}
+	planReviewStates.delete(fermentId)
 	hydratedFerments.delete(fermentId)
 	deleteRuntimeState(fermentId, runtimeStatePersistRoot)
 }

@@ -52,6 +52,20 @@ describe("buildWorkerContext", () => {
 		expect(ctx).toContain("Do the thing")
 	})
 
+	it("passes the approved plan to subagents in XML tags", () => {
+		const phase = makePhase({ steps: [makeStep()] })
+		const f = makeFerment({ id: "ferment-xml-1", name: "Todo app", phases: [phase] })
+
+		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+
+		expect(ctx).toContain("Full approved plan:")
+		expect(ctx).toContain("<ferment_plan>")
+		expect(ctx).toContain('"ferment_id": "ferment-xml-1"')
+		expect(ctx).toContain('"title": "Todo app"')
+		expect(ctx).toContain('"phases": [')
+		expect(ctx).toContain("</ferment_plan>")
+	})
+
 	it("includes verification command when present", () => {
 		const step = makeStep({ verification: { command: "pnpm test" } })
 		const phase = makePhase({ steps: [step] })

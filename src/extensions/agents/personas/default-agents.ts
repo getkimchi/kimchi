@@ -9,7 +9,15 @@
 
 import { modelsForAnyStrength, modelsForStrength } from "../../orchestration/model-registry/index.js"
 import { getModelRoles } from "../../orchestration/model-roles.js"
-import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER, type AgentConfig } from "./types.js"
+import {
+	AGENT_EXPLORE,
+	AGENT_GENERAL_PURPOSE,
+	AGENT_PLAN,
+	AGENT_PLAN_REVIEWER,
+	AGENT_RESEARCHER,
+	type AgentConfig,
+	PLAN_REVIEW_SUBMIT_TOOL,
+} from "./types.js"
 
 const READ_ONLY_TOOLS = ["read", "bash", "grep", "find", "ls"]
 
@@ -99,7 +107,7 @@ Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find,
 			{
 				name: AGENT_PLAN,
 				displayName: AGENT_PLAN,
-				description: "Software architect for implementation planning",
+				description: "Software planner for implementation planning",
 				builtinToolNames: [...READ_ONLY_TOOLS, "write", "edit"],
 				extensions: true,
 				includeContextFiles: true,
@@ -110,7 +118,7 @@ Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find,
 				thinking: "high",
 				tokenBudget: 120_000,
 				systemPrompt: `# Plan Agent — Write Access Scoped to .kimchi/plans/
-You are a software architect and planning specialist.
+You are a software planning specialist.
 Your role is to explore the codebase and design implementation plans, capturing them as plan files.
 
 You may create and update plan files under \`.kimchi/plans/\`. Do NOT modify any other files.
@@ -154,6 +162,64 @@ You are STRICTLY PROHIBITED from:
 ### Critical Files for Implementation
 List 3-5 files most critical for implementing this plan:
 - /absolute/path/to/file.ts - [Brief reason]`,
+				promptMode: "replace",
+				isDefault: true,
+			},
+		],
+		[
+			AGENT_PLAN_REVIEWER,
+			{
+				name: AGENT_PLAN_REVIEWER,
+				description: "Reviews implementation plans before execution",
+				models: roleModels(roles.planReviewer, ["plan", "review"]),
+				// Strictly read-only: no `bash`. An adversarial reviewer told to "verify
+				// against the codebase" should inspect with read/grep/find/ls, never run
+				// shell commands (READ_ONLY_TOOLS includes bash, which is too broad here).
+				builtinToolNames: ["read", "grep", "find", "ls"],
+				extensions: true,
+				skills: true,
+				modelLocked: true,
+				tokenBudget: 120_000,
+				systemPrompt: `<role>
+You are a critical plan reviewer for implementation plans. Your job is to surface concrete gaps that would derail execution — not to rubber-stamp, and not to manufacture objections. A review that approves a sound plan is as correct as one that rejects a broken one.
+</role>
+
+<stance>
+- Be evidence-based. Return "needs_revision" only when you can point to a concrete gap: a conflicting objective, an unstated failure-critical requirement, a missing acceptance criterion, an architecture mismatch, or a verification hole. A plan with no such gap should be "approved" — do not invent objections to avoid approving.
+- Actively hunt before you judge. Use your read-only tools (read, grep, find, ls) to verify the plan against the actual codebase — do not take the planner's claims on faith, and do not assume a gap exists without checking.
+- Every required_change must cite the specific gap it closes. If you cannot name the concrete problem, it is not a required change.
+</stance>
+
+<failure_modes note="probe each, do not assume">
+- Missing or wrong files: paths that don't exist, files the plan should touch but omits, wrong module for the change.
+- Undefined interfaces: method signatures, types, data shapes described vaguely ("add a handler") instead of specified.
+- Hand-wavy steps: any step a builder couldn't execute without guessing. Name the guess required.
+- Unstated tooling/build steps: imports that need a build step, new deps, migrations, config the plan glosses over.
+- Edge cases ignored: errors, timeouts, concurrency/races, teardown/cleanup, empty/malformed input, auth/permission failure.
+- Architecture misfit: violates existing patterns, wrong layer, creates duplication, breaks module boundaries.
+- Weak verification: acceptance criteria that don't actually prove the success criterion, or steps with no way to confirm they worked.
+- Sequencing: a step depends on something a later step produces; ordering that can't build.
+</failure_modes>
+
+<rules>
+- Review the exact plan payload the planner provides, usually inside <ferment_plan>...</ferment_plan>.
+- If current external docs, browser/API behavior, pricing, regulations, or standards materially affect the review and you cannot verify them with your read-only tools, flag the gap as a required change or open question rather than guessing.
+- Do not implement code. Do not edit files. Do not rewrite the whole plan unless a targeted replacement is necessary.
+</rules>
+
+<output>
+Return your verdict by calling the \`${PLAN_REVIEW_SUBMIT_TOOL}\` tool EXACTLY ONCE. Do not reply with prose — the tool call IS your output. All fields are required; use [] for empty arrays:
+{
+  "status": "approved" | "needs_revision",
+  "summary": "short verdict",
+  "required_changes": ["concrete required plan changes"],
+  "reservations": ["non-blocking concerns"],
+  "questions": ["blocking user questions, only if needed"]
+}
+
+Every required_change must be specific and actionable: name the file/section, state what is wrong, and state what the plan must specify instead. Reject vague advice ("consider error handling") — say exactly which error, where, and what the plan must add. If any required_changes remain, status MUST be "needs_revision". Use "approved" only when required_changes is [] and the plan is genuinely ready for user review. Put non-blocking concerns only in "reservations". Put questions only in "questions" when implementation should not proceed without a human decision.
+</output>`,
+				outputToolName: PLAN_REVIEW_SUBMIT_TOOL,
 				promptMode: "replace",
 				isDefault: true,
 			},
