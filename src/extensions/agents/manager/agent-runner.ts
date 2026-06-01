@@ -405,6 +405,11 @@ async function runAgentInner(
 
 	const PROGRESS_STEER_POINTS: { threshold: number; message: string }[] = [
 		{
+			threshold: 0.5,
+			message:
+				"You're at 50% of your turn budget. Pause briefly to evaluate your progress and confirm you're still on the right path. Adjust course if needed.",
+		},
+		{
 			threshold: 0.75,
 			message:
 				"You're at 75% of your turn budget. Continue your current approach; avoid starting new exploratory work.",

@@ -1,45 +1,85 @@
 export const SCOPING_EXPLORE_TOKEN_BUDGET = 120_000
 
-export const SCOPING_DISCOVERY_GUIDANCE = `<phase_0_inventory required="true" before="any filesystem read, list, grep, bash, or codebase discovery">
-First response action: print a concise inventory of all available skills and subagent types so the user can see what delegation surface exists.
-Use the visible skill list or a skill-listing tool if one is available; if skills are not exposed in this environment, say that explicitly instead of inventing names.
-For subagents, inspect the Agent tool subagent_type options or the available-subagent prompt section.
-Do not call List, Read, Grep, Bash, or any codebase discovery tool before this inventory is printed.
-</phase_0_inventory>
+export const SCOPING_DISCOVERY_GUIDANCE = `<scoping_sequence required="true">
+Scoping follows five steps. Work through them IN ORDER.
 
-<discovery_sequence required="true">
-For broad improvement/audit/planning requests over an existing codebase, even when the user asks with a simple prompt:
-1. Do a small direct scan only to identify the project shape. This means file listing plus concise manifest/README/package/config reads and, if needed, targeted searches or short entrypoint snippets.
-2. Do not use unbounded Read calls on implementation, UI, or style files before the delegation checkpoint. For source-like files, first get the file's line count or tool-reported length, then read at most a short snippet, about 60 lines or less, unless a targeted search points to a narrow range.
-3. Only read an implementation/UI/style file end-to-end during the direct scan when the line count proves it is small enough to be a snippet-sized file and the read is narrowly justified.
-4. If a file is longer than about 120 lines, or you do not yet know exactly which symbol/range you need, do not read it end-to-end during the direct scan. Delegate first.
-5. Immediately spawn 1-4 narrow Explore subagents for independent areas that could change the recommendations. One Explore subagent is valid when there is only one broad unknown; use 2-4 only when there are genuinely independent areas.
-6. Wait for their results.
-7. Synthesize findings before calling propose_ferment_scoping.
-</discovery_sequence>
+STEP 1 — ORIENT (lightweight research)
+Read the user's intent. Before asking anything, build context:
+- Do a quick project scan: file listing, README, package/config files, and short
+  entrypoint snippets (at most ~60 lines each). For files >120 lines, read only
+  the first 60 lines or use a targeted search — do not read them end-to-end yet.
+- Form an initial mental model: what kind of task is this? What technology, patterns,
+  and constraints does the codebase already use?
+- Identify your unknowns: what assumptions are you making? What could you be wrong about?
+  What decisions can only the user make?
+- If the project is greenfield (no existing codebase), note that and move on.
 
-Explore subagent contract:
-- subagent_type: "Explore" (if not available, use the closest fitting subagent type)
-- start with token_budget: ${SCOPING_EXPLORE_TOKEN_BUDGET}; increase only if the user explicitly asks or the missing fact is genuinely plan-blocking
-- run_in_background: true when multiple independent unknowns exist
-- Prefer several narrow Explore probes over one broad "understand the whole project" scan.
+This step is about YOUR understanding, not the user's. Do not ask questions yet.
 
-Good Explore areas:
-- file map/entry points
-- UI/general flow
-- background/storage/API flow
-- security/risk/refactor opportunities
-- nearby related projects
-- repo-specific architecture patterns
+STEP 2 — INTERVIEW (iterative rounds)
+Ask the user about the unknowns you identified in Step 1. Run in rounds:
 
-Direct-read boundary:
-After Phase 0 inventory, the only allowed direct scan before the delegation checkpoint is: list/find file names, read README/manifest/package/config files, targeted searches, and at most short entrypoint snippets. The next action after that scan is Agent, not more Read calls.
-Use direct reads for narrow facts and short snippets only; use Explore for broader areas that could change the plan.
-Do not "round out the initial scan" by reading lib/source/style files before delegation.
-Forbidden pattern: reading entire implementation, UI, or style files before Explore delegation, then claiming direct analysis was sufficient. This is still a violation even if you later spawn Explore subagents.
+Round structure:
+  a. Ask 1-3 focused questions via ask_user.
+     When presenting options, set allowOther: true and include "None of the above"
+     for predefined choices.
+  b. When answers come back, REFLECT before continuing:
+     - How do these answers change your understanding of the task?
+     - Do you need to check anything in the codebase to validate or act on an answer?
+       If so, do a quick targeted lookup (grep, short read) — keep it narrow.
+     - Does this introduce new assumptions or new questions?
+  c. If new questions emerged, ask them in the next round.
+  d. If scope is clear and no question would change the approach, exit the loop.
 
-Self-correction:
-If you accidentally read an entire implementation, UI, or style file before the delegation checkpoint, stop direct reads immediately. Do not analyze further, do not read more files, and do not propose scoping yet. Spawn the required Explore subagent(s), wait for results, then synthesize.
+When to ask:
+- You are making an assumption that could be wrong and would change the approach.
+  Surface it explicitly: "I'm assuming X — is that right, or should I do Y instead?"
+- The intent is ambiguous between 2+ interpretations you genuinely can't resolve.
+- There is a decision only the user can make (auth provider, DB choice, public vs internal, etc.).
 
-Skip rule:
-Do not skip this checkpoint just because the direct scan feels sufficient. Skip only when the task is simple/greenfield or the user explicitly asks not to delegate; record that reason in assumptions.`
+When NOT to ask:
+- The intent is already clear and specific — don't make the user repeat themselves.
+- There is a safe, reversible default. Pick it, note it in assumptions, move on.
+- The question is generic ("Any edge cases?", "What about error handling?").
+  If you suspect a specific edge case, name it and ask about THAT.
+
+Exit criteria: you can explain in one sentence what you're building, why, and how
+you'll know it's done — and no remaining question would change the approach.
+If the intent was unambiguous from Step 1 and you have no genuine uncertainties,
+skip this step entirely — don't manufacture questions.
+
+STEP 3 — COMPLETION CRITERIA
+Draft concrete completion criteria and validation steps, then confirm with the user.
+- State what "done" looks like in specific, testable terms.
+- Include the verification method for each criterion (test command, manual check, linter, etc.).
+- Use ask_user to present the criteria. Keep it brief:
+  "I'll consider this done when: [list]. Sound right?"
+- If the user already stated clear acceptance criteria in their intent, confirm them
+  rather than rephrasing. Don't over-formalize obvious criteria.
+- Confirm criteria with the user before proceeding to exploration.
+
+STEP 4 — DEEP EXPLORATION (targeted, not broad)
+Now investigate the codebase for implementation-specific details.
+- Focus on the unknowns that remain after the interview — don't re-explore what you
+  already learned in Step 1.
+- For deeper investigation, spawn 1-4 narrow Explore subagents for independent areas.
+  • subagent_type: "Explore" (or closest available)
+  • token_budget: ${SCOPING_EXPLORE_TOKEN_BUDGET}
+  • run_in_background: true when multiple independent unknowns exist
+  • Prefer several narrow probes over one broad "understand everything" scan
+- Do not read entire implementation files during the direct scan.
+  First get the file's line count or tool-reported length, then read at most ~60 lines
+  unless a targeted search points to a narrow range. If a file is >120 lines, delegate
+  to an Explore subagent.
+- Wait for subagent results before proceeding.
+- Skip this step for greenfield tasks with no existing codebase; record why in assumptions.
+
+STEP 5 — PLAN
+Synthesize everything — orient findings, interview answers, confirmed criteria,
+and exploration results — into a plan.
+- Call propose_ferment_scoping with the complete payload.
+- Ensure completion criteria were confirmed with the user before finalizing.
+- Default to one phase for simple tasks.
+- Add phases only for real vertical slices, different complexity tiers,
+  independent workstreams, or distinct code localities.
+</scoping_sequence>`

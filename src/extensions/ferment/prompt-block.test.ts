@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
 import type { Ferment, FermentStatus } from "../../ferment/types.js"
+import { runAsAgentWorker } from "../agent-worker-context.js"
 import { registerAgents } from "../agents/personas/agent-types.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
@@ -105,8 +106,15 @@ describe("buildFermentPromptBlock", () => {
 			})
 		}
 
-		it("returns undefined when no ferment is active", () => {
-			expect(buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime())).toBeUndefined()
+		it("returns idle hint when no ferment is active", () => {
+			const out = buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime())
+			expect(out).toContain("Ferment Workflow")
+			expect(out).toContain("The tool asks the user for explicit host confirmation")
+			expect(out).toContain("In yolo permissions mode, the host auto-approves")
+			expect(out).not.toContain("questionnaire")
+			expect(out).not.toContain("ferment_start_approval")
+			expect(out).toContain("`intent` containing the full original user request")
+			expect(out).toContain("Never block")
 		})
 	})
 
@@ -131,10 +139,6 @@ describe("buildFermentPromptBlock", () => {
 				}
 			})
 		}
-
-		it("returns undefined when no ferment is active", () => {
-			expect(buildFermentPromptBlock(PI_ONESHOT, makeNoActiveFermentRuntime())).toBeUndefined()
-		})
 
 		it("returns planner supplement for draft status (one-shot scoping must not break)", () => {
 			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime({ status: "draft" }))
@@ -175,6 +179,20 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("new_ferment")
 		})
 
+		it("returns undefined for subagent workers (no idle hint, no planner supplement)", async () => {
+			await runAsAgentWorker(async () => {
+				expect(buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime())).toBeUndefined()
+				expect(buildFermentPromptBlock(PI_NORMAL, makeRuntime({ status: "running" }))).toBeUndefined()
+				expect(buildFermentPromptBlock(PI_ONESHOT, makeRuntime({ status: "draft" }))).toBeUndefined()
+			})
+		})
+
+		it("returns undefined when permissions mode is plan (no idle hint)", () => {
+			const original = process.env.KIMCHI_PERMISSIONS
+			process.env.KIMCHI_PERMISSIONS = "plan"
+			expect(buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime())).toBeUndefined()
+			process.env.KIMCHI_PERMISSIONS = original
+		})
 		it("preserves paused warning for status=paused regardless of ferment-oneshot flag", () => {
 			for (const surface of ["normal", "oneshot"] as const) {
 				const out = buildFermentPromptBlock(PI_BY_NAME[surface], makeRuntime({ status: "paused" }))
@@ -198,12 +216,13 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("do not ask the user to confirm phase advancement")
 			expect(out).toContain("propose_ferment_scoping")
 			expect(out).toContain("Ask clarifying questions only when the answer is decision-blocking")
-			expect(out).toContain('<phase_0_inventory required="true"')
-			expect(out).toContain(
-				"First response action: print a concise inventory of all available skills and subagent types",
-			)
-			expect(out).toContain('<discovery_sequence required="true">')
-			expect(out).toContain("if skills are not exposed in this environment, say that explicitly")
+			expect(out).toContain('<scoping_sequence required="true">')
+			expect(out).toContain("STEP 1")
+			expect(out).toContain("ORIENT")
+			expect(out).toContain("STEP 2")
+			expect(out).toContain("INTERVIEW")
+			expect(out).toContain("STEP 3")
+			expect(out).toContain("COMPLETION CRITERIA")
 			expect(out).toContain("recommended: true")
 			expect(out).toContain("choose the right style with `type`")
 			expect(out).toContain("`radio` for one choice or yes/no")
@@ -222,32 +241,27 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain('After `propose_ferment_scoping` returns "Plan saved"')
 		})
 
-		it("guides plan-shaping discovery before proposing scoping", () => {
+		it("guides orient-interview discovery before proposing scoping", () => {
 			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime()) ?? ""
 			expect(out).toContain("follow the shared discovery guidance in the Upfront Contract")
-			expect(out).toContain("For broad improvement/audit/planning requests over an existing codebase")
-			expect(out).toContain("Immediately spawn 1-4 narrow Explore subagents")
-			expect(out).toContain("One Explore subagent is valid when there is only one broad unknown")
-			expect(out).toContain("short entrypoint snippets")
-			expect(out).toContain("Do not use unbounded Read calls")
-			expect(out).toContain("first get the file's line count or tool-reported length")
-			expect(out).toContain("read at most a short snippet, about 60 lines or less")
-			expect(out).toContain("Only read an implementation/UI/style file end-to-end")
-			expect(out).toContain("If a file is longer than about 120 lines")
-			expect(out).toContain("Use direct reads for narrow facts and short snippets only")
-			expect(out).toContain("file listing plus concise manifest/README/package/config reads")
-			expect(out).toContain('Do not "round out the initial scan"')
-			expect(out).toContain("Do not skip this checkpoint just because the direct scan feels sufficient")
-			expect(out).toContain("If you accidentally read an entire implementation, UI, or style file")
-			expect(out).toContain("stop direct reads immediately")
-			expect(out).toContain("Skip only when the task is simple/greenfield")
-			expect(out).toContain("record that reason in assumptions")
+			// Orient-interview scoping sequence
+			expect(out).toContain('<scoping_sequence required="true">')
+			expect(out).toContain("STEP 1")
+			expect(out).toContain("ORIENT")
+			expect(out).toContain("STEP 2")
+			expect(out).toContain("INTERVIEW")
+			expect(out).toContain("iterative rounds")
+			expect(out).toContain("REFLECT before continuing")
+			expect(out).toContain("STEP 4")
+			expect(out).toContain("DEEP EXPLORATION")
+			expect(out).toContain("read at most ~60 lines")
+			expect(out).toContain("If a file is >120 lines, delegate")
+			expect(out).toContain("Skip this step for greenfield tasks")
+			expect(out).toContain("record why in assumptions")
 			expect(out).toContain("Use Explore subagents for broader or parallel discovery")
 			expect(out).toContain('subagent_type: "Explore"')
 			expect(out).toContain("token_budget: 120000")
-			expect(out).toContain("increase only if the user explicitly asks or the missing fact is genuinely plan-blocking")
 			expect(out).toContain("run_in_background: true")
-			expect(out).toContain("file map/entry points")
 			expect(out).toContain("do not retry the same broad task")
 			expect(out).toContain("spawn a narrower replacement only if that missing fact is plan-blocking")
 			expect(out).toContain("continue with direct targeted reads")
@@ -295,6 +309,16 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).not.toContain("minimax-m2.7")
 			expect(out).not.toContain("kimi-k2.5")
 			expect(out).not.toContain("worker_model")
+		})
+
+		it("keeps phase tagging out of the pre-ferment classification path", () => {
+			const out = buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime()) ?? ""
+			expect(out).toContain("Do not call `set_phase`")
+			expect(out).toContain("*until* you have classified the request")
+			expect(out).toContain("called `request_ferment_workflow`")
+			expect(out).toContain("open-ended analysis of an existing app")
+			expect(out).toContain("request the ferment workflow before analysis, file reads, or phase tagging")
+			expect(out).toContain("the host handles confirmation and queues scoping")
 		})
 	})
 

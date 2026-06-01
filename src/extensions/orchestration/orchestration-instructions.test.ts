@@ -81,6 +81,7 @@ describe("resolveOrchestrationInstructions", () => {
 				builder: "anthropic/claude-sonnet-4-5",
 				reviewer: "openai/gpt-4o",
 				explorer: "kimchi-dev/nemotron-3-super-fp4",
+				judge: "kimchi-dev/claude-opus-4-6",
 			},
 		})
 		expect(result).toContain("anthropic/claude-sonnet-4-5")

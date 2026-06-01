@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { updateModelsConfig } from "./models.js"
+import { ModelsFetchError, isTransientModelsError, updateModelsConfig } from "./models.js"
 
 const KIMI: unknown = {
 	slug: "kimi-k2.5",
@@ -263,6 +263,53 @@ describe("updateModelsConfig", () => {
 		)
 	})
 
+	it("retries a transient 429 and succeeds on a later attempt", async () => {
+		vi.mocked(fetch)
+			.mockResolvedValueOnce({
+				ok: false,
+				status: 429,
+				statusText: "Too Many Requests",
+				headers: { get: () => null },
+			} as unknown as Response)
+			.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ models: [KIMI] }),
+			} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} })
+
+		expect(fetch).toHaveBeenCalledTimes(2)
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
+	})
+
+	it("classifies a persistent 429 as transient after exhausting retries", async () => {
+		vi.mocked(fetch).mockResolvedValue({
+			ok: false,
+			status: 429,
+			statusText: "Too Many Requests",
+			headers: { get: () => null },
+		} as unknown as Response)
+
+		const error = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} }).catch((e) => e)
+
+		expect(isTransientModelsError(error)).toBe(true)
+		expect(fetch).toHaveBeenCalledTimes(3)
+	})
+
+	it("classifies a 401 as a non-transient error and does not retry", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: false,
+			status: 401,
+			statusText: "Unauthorized",
+		} as Response)
+
+		const error = await updateModelsConfig(modelsJsonPath, "bad-key").catch((e) => e)
+
+		expect(error).toBeInstanceOf(ModelsFetchError)
+		expect(isTransientModelsError(error)).toBe(false)
+		expect(fetch).toHaveBeenCalledTimes(1)
+	})
+
 	it("throws on unexpected response shape when no cached config exists", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
@@ -375,5 +422,116 @@ describe("updateModelsConfig", () => {
 		expect(result).toEqual({ models: [] })
 		expect(fetch).not.toHaveBeenCalled()
 		expect(existsSync(modelsJsonPath)).toBe(false)
+	})
+
+	it("filters out sunset models from models.json and returned list", async () => {
+		const sunsetModel = {
+			slug: "old-model",
+			display_name: "Old Model",
+			provider: "ai-enabler",
+			reasoning: false,
+			input_modalities: ["text"],
+			is_serverless: true,
+			limits: { context_window: 100_000, max_output_tokens: 4096 },
+			status: "sunset",
+		}
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI, sunsetModel] }),
+		} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const writtenIds = config.providers["kimchi-dev"].models.map((m: { id: string }) => m.id)
+		expect(writtenIds).toEqual(["kimi-k2.5"])
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
+	})
+
+	it("warns when all API models are sunset", async () => {
+		const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const sunsetModel = {
+			slug: "old-model",
+			display_name: "Old Model",
+			provider: "ai-enabler",
+			reasoning: false,
+			input_modalities: ["text"],
+			is_serverless: true,
+			limits: { context_window: 100_000, max_output_tokens: 4096 },
+			status: "sunset",
+		}
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [sunsetModel] }),
+		} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key")
+
+		expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining("All models from the API are sunset"))
+		expect(result.models).toHaveLength(0)
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models).toHaveLength(0)
+		consoleWarnSpy.mockRestore()
+	})
+
+	it("treats models without status field as active (backward compatibility)", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models).toHaveLength(1)
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
+	})
+
+	it("preserves deprecated models in models.json and returned list", async () => {
+		const deprecatedModel = {
+			slug: "deprecated-model",
+			display_name: "Deprecated Model",
+			provider: "ai-enabler",
+			reasoning: false,
+			input_modalities: ["text"],
+			is_serverless: true,
+			limits: { context_window: 100_000, max_output_tokens: 4096 },
+			status: "deprecated",
+		}
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI, deprecatedModel] }),
+		} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const writtenIds = config.providers["kimchi-dev"].models.map((m: { id: string }) => m.id)
+		expect(writtenIds).toContain("deprecated-model")
+		expect(result.models.map((m) => m.slug)).toContain("deprecated-model")
+	})
+
+	it("preserves replacement field on deprecated/sunset models in returned metadata", async () => {
+		const deprecatedWithReplacement = {
+			slug: "old-model",
+			display_name: "Old Model",
+			provider: "ai-enabler",
+			reasoning: false,
+			input_modalities: ["text"],
+			is_serverless: true,
+			limits: { context_window: 100_000, max_output_tokens: 4096 },
+			status: "deprecated",
+			replacement: "new-model",
+		}
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [deprecatedWithReplacement] }),
+		} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const model = result.models.find((m) => m.slug === "old-model")
+		expect(model?.status).toBe("deprecated")
+		expect(model?.replacement).toBe("new-model")
 	})
 })

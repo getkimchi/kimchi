@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
+import { isAgentWorker } from "../agent-worker-context.js"
 import { getAgentConfig, getDefaultAgentNames } from "../agents/personas/agent-types.js"
 import { SCOPING_DISCOVERY_GUIDANCE, SCOPING_EXPLORE_TOKEN_BUDGET } from "./constants.js"
 import { formatDecisionsAndMemories, formatScopingContext } from "./format.js"
@@ -45,7 +46,7 @@ On the first scoping turn after \`/ferment\`, draft \`title\`/\`goal\`/\`success
 
 Use Explore subagents for broader or parallel discovery, especially work that would otherwise become an "explore", "find the existing pattern", "understand the registry", or similar discovery-only phase. Keep each Explore prompt narrowly scoped to one independent area or question. If an Explore subagent aborts on the ${SCOPING_EXPLORE_TOKEN_BUDGET} token budget, do not retry the same broad task; use any partial result, spawn a narrower replacement only if that missing fact is plan-blocking, otherwise continue with direct targeted reads or record the uncertainty in \`assumptions\`. Do not make discovery-only work a user-approved phase when that discovery is needed to decide what the approved phases should be. The plan you propose should reflect the discovered files, patterns, constraints, and implementation layer.
 
-Ask clarifying questions only when the answer is decision-blocking: it would materially change architecture, dependencies, data model, user-facing scope, security posture, deployment/runtime assumptions, or verification strategy. Do not ask preference-survey questions when there is a safe, reversible default. If the user asks to "be thorough with questions" or similar, do not increase question count by default; be thorough by writing better assumptions, success criteria, constraints, and verification steps unless a specific answer truly blocks implementation. For simple greenfield apps and other routine tasks, prefer a concrete default plan with assumptions instead of questions. Examples: for "Create a TODO app", do not ask tech stack, persistence, platform, or extra-feature questions; assume a static browser app, vanilla JS unless repo context points elsewhere, localStorage persistence, and a basic MVP unless the user requested more. If all recommended answers are generic defaults, emit \`questions: []\` and record those defaults in \`assumptions\`. Never use a question to confirm something the user already said.
+Ask clarifying questions only when the answer is decision-blocking: it would materially change architecture, dependencies, data model, user-facing scope, security posture, deployment/runtime assumptions, or verification strategy. Do not ask preference-survey questions when there is a safe, reversible default. For broad discovery or planning over an existing codebase, if discovery finds multiple plausible work areas and the user did not explicitly ask to include every area, ask one \`checkbox\` question selecting which areas belong in this ferment. Treat that as an outcome/scope boundary, not a preference survey. Example: for "find improvements to this app", ask "Which improvement areas should this ferment include?" with options grounded in the friction you actually discovered. If the user asks to "be thorough with questions" or similar, do not increase question count by default; be thorough by writing better assumptions, success criteria, constraints, and verification steps unless a specific answer truly blocks implementation. For simple greenfield apps and other routine tasks, prefer a concrete default plan with assumptions instead of questions. Examples: for "Create a TODO app", do not ask tech stack, persistence, platform, or extra-feature questions; assume a static browser app, vanilla JS unless repo context points elsewhere, localStorage persistence, and a basic MVP unless the user requested more. If all recommended answers are generic defaults, emit \`questions: []\` and record those defaults in \`assumptions\`. Never use a question to confirm something the user already said.
 
 When the user answers scoping questions and the host asks you to replan, treat those answers as final decisions. Re-emit the full updated plan. Usually set \`questions: []\`. Ask follow-up questions only for genuinely new, decision-blocking ambiguity introduced by the answers. Never repeat, rephrase, or "double check" a question the user already answered. After two question rounds, converge: make the best assumption, record it in \`assumptions\`, and let the user review the final plan.
 
@@ -86,6 +87,19 @@ function buildPausedWarning(f: Ferment): string {
 	return `\n\n## Ferment Paused\n\nFerment "${f.name}" is paused by the user. Do NOT call any ferment tools (activate_ferment_phase, start_ferment_step, complete_ferment_step, etc.) — they will be rejected. Acknowledge any pending question briefly and wait for the user to resume with /ferment resume.`
 }
 
+const IDLE_FERMENT_HINT = `## Ferment Workflow (optional)
+
+Ferment is a host-owned plan → build → review workflow. Start it only with \`request_ferment_workflow\`; never create or edit \`.kimchi/\` files yourself. The tool asks the user for explicit host confirmation before creating the workflow. In yolo permissions mode, the host auto-approves.
+
+Before exploration, classify the user's text only:
+- Clear small task: handle inline.
+- Substantive, multi-step, broad discovery, or explicit ferment/planning request: call \`request_ferment_workflow\` first.
+- Vague non-ferment request: ask only decision-blocking clarification, then act inline.
+Do not call \`set_phase\` or discovery tools *until* you have classified the request and either called \`request_ferment_workflow\`, chosen inline work, or asked necessary non-ferment clarification.
+Treat open-ended analysis of an existing app as substantive: request the ferment workflow before analysis, file reads, or phase tagging.
+
+Call \`request_ferment_workflow\` with a concise \`title\` and an \`intent\` containing the full original user request, then stop; the host handles confirmation and queues scoping. If the user declines, continue inline. Never block on this.`
+
 /**
  * Renders the ferment-specific system-prompt block. Registered as a
  * `SystemPromptBlock` from index.ts and assembled into the system prompt by
@@ -98,11 +112,19 @@ function buildPausedWarning(f: Ferment): string {
  * - flag set: draft state still gets the planner supplement because the
  *   ferment-oneshot planner must scope autonomously from the bootstrap turn.
  *
- * Returns `undefined` when no text should be injected.
+ * Returns `undefined` only for terminal/draft states that already have their
+ * own flow; idle (no ferment) renders a soft, optional hint that nudges the
+ * agent to ask the user before starting substantial work, never to block.
  */
 export function buildFermentPromptBlock(pi: ExtensionAPI, runtime: FermentRuntime): string | undefined {
+	if (isAgentWorker()) return undefined
+
+	// Plan mode is a separate lightweight planning path; suppress the ferment
+	// idle hint so the agent does not conflate it with the ferment workflow.
+	if (process.env.KIMCHI_PERMISSIONS === "plan") return undefined
+
 	const f = runtime.getActive()
-	if (!f) return undefined
+	if (!f) return IDLE_FERMENT_HINT
 
 	const oneshot = pi.getFlag("ferment-oneshot") === true
 

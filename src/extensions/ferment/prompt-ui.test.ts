@@ -135,7 +135,7 @@ function singleQuestion(
 	overrides: Partial<{
 		prompt: string
 		label: string
-		options: { value: string; label: string; description?: string }[]
+		options: { id: string; label: string; description?: string }[]
 	}> = {},
 ) {
 	return {
@@ -143,7 +143,7 @@ function singleQuestion(
 		label: "Q1",
 		prompt: "Pick one:",
 		type: "single" as const,
-		options: [{ value: "a", label: "Option A" }],
+		options: [{ id: "a", label: "Option A" }],
 		allowOther: false,
 		required: true,
 		...overrides,
@@ -208,7 +208,7 @@ describe("createPromptFormComponent render wrapping", () => {
 	describe("option labels wrap at terminal width", () => {
 		it("short label fits on one line", () => {
 			const lines = renderLines("Pick one:", 80, {
-				options: [{ value: "x", label: "Yes" }],
+				options: [{ id: "x", label: "Yes" }],
 			})
 			for (const line of lines) {
 				expect(line.length).toBeLessThanOrEqual(80)
@@ -221,7 +221,7 @@ describe("createPromptFormComponent render wrapping", () => {
 					2,
 				)
 			const lines = renderLines("Pick one:", 80, {
-				options: [{ value: "x", label: longLabel }],
+				options: [{ id: "x", label: longLabel }],
 			})
 			expect(lines.length).toBeGreaterThan(1)
 			for (const line of lines) {
@@ -232,7 +232,7 @@ describe("createPromptFormComponent render wrapping", () => {
 		it("long label at narrow width produces many short lines", () => {
 			const longLabel = "Option".repeat(30)
 			const lines = renderLines("Pick one:", 30, {
-				options: [{ value: "x", label: longLabel }],
+				options: [{ id: "x", label: longLabel }],
 			})
 			for (const line of lines) {
 				expect(line.length).toBeLessThanOrEqual(30)
@@ -243,7 +243,7 @@ describe("createPromptFormComponent render wrapping", () => {
 	describe("option descriptions wrap at terminal width", () => {
 		it("short description fits on one line", () => {
 			const lines = renderLines("Pick one:", 80, {
-				options: [{ value: "x", label: "Opt", description: "Brief." }],
+				options: [{ id: "x", label: "Opt", description: "Brief." }],
 			})
 			for (const line of lines) {
 				expect(line.length).toBeLessThanOrEqual(80)
@@ -256,7 +256,7 @@ describe("createPromptFormComponent render wrapping", () => {
 					3,
 				)
 			const lines = renderLines("Pick one:", 60, {
-				options: [{ value: "x", label: "Opt", description: longDesc }],
+				options: [{ id: "x", label: "Opt", description: longDesc }],
 			})
 			for (const line of lines) {
 				expect(line.length).toBeLessThanOrEqual(60)

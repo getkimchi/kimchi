@@ -6,78 +6,15 @@
  * `InteractiveMode` instance is constructed so the prototype patch takes effect.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
-import { resolve } from "node:path"
-import type { Api, Model } from "@earendil-works/pi-ai"
-import {
-	type AuthStatus,
-	ExtensionSelectorComponent,
-	InteractiveMode,
-	OAuthSelectorComponent,
-} from "@earendil-works/pi-coding-agent"
+import { type AuthStatus, InteractiveMode, OAuthSelectorComponent } from "@earendil-works/pi-coding-agent"
 import { Spacer, Text } from "@earendil-works/pi-tui"
-import { authenticateViaBrowser } from "./cli-auth/index.js"
-import { writeApiKey } from "./config.js"
-import type { PiModelConfig } from "./models.js"
-import { syncProviderModels } from "./models.js"
-
-const getPiModels = async () => {
-	const piAi = await import("@earendil-works/pi-ai")
-	return piAi.getModels
-}
-
-const KIMCHI_PROVIDER_ID = "kimchi-dev"
-const KIMCHI_DEFAULT_MODEL_ID = "kimi-k2.6"
-/**
- * Convert upstream Model to Kimchi PiModelConfig so we can persist subscription
- * provider models in Kimchi's models.json.
- */
-function upstreamModelToPiConfig(m: Model<Api>, providerId: string) {
-	return {
-		id: m.id,
-		name: m.name,
-		api: m.api,
-		baseUrl: m.baseUrl,
-		reasoning: m.reasoning,
-		input: m.input,
-		contextWindow: m.contextWindow,
-		maxTokens: m.maxTokens,
-		cost: m.cost,
-		provider: providerId,
-		compat: m.compat,
-	}
-}
-
-/**
- * Pre-populate models.json with the subscription provider's built-in models.
- * This is necessary because `KIMCHI_DISABLE_BUILTIN_PROVIDERS` filters them
- * out of loadBuiltInModels(), so the only way upstream discovers them is
- * through models.json. Writing them before showLoginDialog ensures
- * completeProviderAuthentication() → refresh() sees them while auth is
- * already configured.
- */
-async function prePopulateSubscriptionModels(providerId: string): Promise<void> {
-	const getModels = await getPiModels()
-	const piModels = getModels?.(providerId as unknown as Parameters<typeof getModels>[0]) ?? []
-	if (piModels.length === 0) return
-
-	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
-	if (!agentDir) {
-		console.warn("KIMCHI_CODING_AGENT_DIR environment variable is missing. Models cannot be cached.")
-		return
-	}
-
-	const modelsJsonPath = resolve(agentDir, "models.json")
-	const configs = piModels.map((m) => upstreamModelToPiConfig(m, providerId))
-	const firstModel = piModels[0]
-	syncProviderModels(modelsJsonPath, providerId, configs as PiModelConfig[], {
-		api: firstModel.api,
-		baseUrl: firstModel.baseUrl,
-	})
-}
-
-const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
-const SUBSCRIPTION_LABEL = "Use a subscription"
+import {
+	KIMCHI_PROVIDER_ID,
+	createLoginChoiceSelector,
+	formatBrowserLoginMessage,
+	performKimchiBrowserLogin,
+	prePopulateSubscriptionModels,
+} from "./extensions/login/flow.js"
 
 // ---------------------------------------------------------------------------
 // Intercept the upstream login flow to add the Kimchi browser auth choice
@@ -162,57 +99,39 @@ export const oauthDelegate = {
 	original: imProto.showOAuthSelector as (this: any, mode: "login" | "logout") => Promise<void>,
 }
 
+export const warningDelegate = {
+	// biome-ignore lint/suspicious/noExplicitAny: `this` context type for upstream prototype method is unknown
+	original: imProto.showWarning as (this: any, warningMessage: string) => void,
+}
+
 /** Exported for testing: applies the prototype patch (idempotent re-apply is safe). */
 export function applyLoginCommandPatch(): void {
 	imProto.showOAuthSelector = patchedShowOAuthSelector
+	imProto.showWarning = patchedShowWarning
 }
 
 async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 	const modeLike = im as unknown as { showStatus?: (msg: string) => void; session: SessionLike }
 	const showStatus = modeLike.showStatus?.bind(modeLike)
 	const showError = im.showError.bind(im)
-
-	let browserUrl: string | undefined
-	try {
-		showStatus?.("Opening browser for Kimchi login...")
-
-		const { token } = await authenticateViaBrowser({
-			onBrowserUrl: (url) => {
-				browserUrl = url
-			},
-		})
-
-		// Persist to Kimchi config
-		writeApiKey(token)
-
-		// Update the running session's auth storage
-		const session = modeLike.session
-		const registry = session?.modelRegistry
-		if (registry) {
-			registry.authStorage.set(KIMCHI_PROVIDER_ID, {
-				type: "api_key",
-				key: token,
-			})
-			registry.refresh()
-
-			const availableModels = registry.getAvailable()
-			const providerModels = availableModels.filter((m) => m.provider === KIMCHI_PROVIDER_ID)
-			if (providerModels.length > 0) {
-				const selectedModel = providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0]
-				await session.setModel(selectedModel)
-				addLoginFeedback(im, `✓ Logged in. Model: ${selectedModel.id}`)
-			} else {
-				addLoginFeedback(im, "✓ Login successful. API key saved.")
-			}
-		} else {
-			addLoginFeedback(im, "✓ Login successful. API key saved.")
-		}
-	} catch (error) {
-		if (browserUrl) {
-			addLoginFeedback(im, `Couldn't open browser automatically. Visit: ${browserUrl}`)
-		}
-		showError(`Kimchi login failed: ${error instanceof Error ? error.message : String(error)}`)
+	const session = modeLike.session
+	const registry = session?.modelRegistry
+	if (!registry) {
+		showError("Kimchi login failed: model registry is unavailable")
+		return
 	}
+
+	await performKimchiBrowserLogin({
+		modelRegistry: registry,
+		setModel: (model) => session.setModel(model),
+		showStatus,
+		showError,
+		addFeedback: (message) => addLoginFeedback(im, message),
+		// Surface the generated browser-login URL in the TUI. The auto-open can land
+		// in the wrong browser or Chrome profile (and still "succeed"), so the user
+		// needs the URL to copy into the right one. console.log is swallowed under the TUI.
+		onBrowserUrl: (url) => addLoginFeedback(im, formatBrowserLoginMessage(url)),
+	})
 }
 
 function showSubscriptionLogin(im: InteractiveMode): void {
@@ -286,22 +205,20 @@ function showLoginChoiceSelector(im: InteractiveMode): void {
 	}
 
 	modeLike.showSelector((done) => {
-		const selector = new ExtensionSelectorComponent(
-			"Select authentication method:",
-			[KIMCHI_ACCOUNT_LABEL, SUBSCRIPTION_LABEL],
-			(option) => {
+		const selector = createLoginChoiceSelector({
+			onKimchiAccount: () => {
 				done()
-				if (option === SUBSCRIPTION_LABEL) {
-					showSubscriptionLogin(im)
-					return
-				}
 				void handleKimchiLogin(im)
 			},
-			() => {
+			onSubscription: () => {
+				done()
+				showSubscriptionLogin(im)
+			},
+			onCancel: () => {
 				done()
 				modeLike.ui?.requestRender()
 			},
-		)
+		})
 		return { component: selector, focus: selector }
 	})
 }
@@ -312,6 +229,25 @@ async function patchedShowOAuthSelector(this: InteractiveMode, mode: "login" | "
 		return
 	}
 	return oauthDelegate.original.call(this, mode)
+}
+
+function patchedShowWarning(this: InteractiveMode, warningMessage: string): void {
+	if (warningMessage.startsWith("No models available.") && hasModelsAfterStartupAuth(this)) {
+		return
+	}
+	warningDelegate.original.call(this, warningMessage)
+}
+
+function hasModelsAfterStartupAuth(im: InteractiveMode): boolean {
+	const modeLike = im as unknown as {
+		session?: { model?: unknown; modelRegistry?: { getAvailable?: () => unknown[] } }
+	}
+	if (modeLike.session?.model) return true
+	try {
+		return (modeLike.session?.modelRegistry?.getAvailable?.().length ?? 0) > 0
+	} catch {
+		return false
+	}
 }
 
 // Apply patch on module load

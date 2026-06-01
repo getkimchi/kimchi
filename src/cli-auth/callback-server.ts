@@ -1,8 +1,10 @@
 import { randomBytes } from "node:crypto"
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http"
+import { oauthErrorHtml, oauthSuccessHtml } from "./oauth-page.js"
 
 const CALLBACK_PATH = "/callback"
 const CALLBACK_TIMEOUT_MS = 300_000 // 5 minutes
+const SUCCESS_MESSAGE = "Your CLI is now connected. You can close this window and start using Kimchi."
 
 export interface CallbackResult {
 	token?: string
@@ -14,135 +16,6 @@ export interface CallbackServer {
 	url: string
 	result: Promise<CallbackResult>
 	close: () => void
-}
-
-const HTML_SUCCESS = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Authentication Successful</title>
-  <style>
-    body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      margin: 0;
-      background: #0f172a;
-      color: #e2e8f0;
-    }
-    .container {
-      text-align: center;
-      padding: 2rem;
-      max-width: 420px;
-    }
-    .icon {
-      width: 64px;
-      height: 64px;
-      margin: 0 auto 1.5rem;
-      background: #10b981;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 32px;
-    }
-    h1 {
-      font-size: 1.5rem;
-      font-weight: 600;
-      margin-bottom: 0.5rem;
-      color: #fff;
-    }
-    p {
-      color: #94a3b8;
-      line-height: 1.6;
-      margin: 0;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="icon">&#10003;</div>
-    <h1>Authentication Successful</h1>
-    <p>Your CLI is now connected. You can close this window and start using Kimchi.</p>
-  </div>
-</body>
-</html>`
-
-function escapeHtml(unsafe: string): string {
-	return unsafe
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&#039;")
-}
-
-function htmlError(message: string, details?: string): string {
-	const detailBlock = details
-		? `<div style="margin-top: 1rem; padding: 1rem; background: rgba(248,113,113,0.1); border-radius: 0.5rem; font-family: monospace; font-size: 0.875rem; color: #fca5a5; word-break: break-word;">${escapeHtml(details)}</div>`
-		: ""
-	return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta http-equiv="refresh" content="5;url=about:blank" />
-  <title>Authentication Failed</title>
-  <style>
-    body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      margin: 0;
-      background: #0f172a;
-      color: #e2e8f0;
-    }
-    .container {
-      text-align: center;
-      padding: 2rem;
-      max-width: 420px;
-    }
-    .icon {
-      width: 64px;
-      height: 64px;
-      margin: 0 auto 1.5rem;
-      background: #ef4444;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 32px;
-    }
-    h1 {
-      font-size: 1.5rem;
-      font-weight: 600;
-      margin-bottom: 0.5rem;
-      color: #fff;
-    }
-    p {
-      color: #94a3b8;
-      line-height: 1.6;
-      margin: 0 0 1.5rem;
-    }
-    .timer {
-      color: #64748b;
-      font-size: 0.875rem;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="icon">&#10007;</div>
-    <h1>Authentication Failed</h1>
-    <p>${escapeHtml(message)}</p>
-    ${detailBlock}
-  </div>
-  <script>setTimeout(() => window.close(), 5000);</script>
-</body>
-</html>`
 }
 
 /**
@@ -192,7 +65,7 @@ export function startCallbackServer(expectedState: string): Promise<CallbackServ
 				// Only accept connections from the loopback interface
 				if (!(remote.startsWith("127.") || remote === "::1" || remote === "::ffff:127.0.0.1")) {
 					res.writeHead(403, { "Content-Type": "text/html", Connection: "close" })
-					res.end(htmlError("Forbidden", "Only localhost connections are allowed."))
+					res.end(oauthErrorHtml("Forbidden", "Only localhost connections are allowed."))
 					return
 				}
 
@@ -208,7 +81,7 @@ export function startCallbackServer(expectedState: string): Promise<CallbackServ
 				if (!state || state !== expectedState) {
 					const errorMsg = "This request isn't valid. Please try logging in again from your terminal."
 					res.writeHead(400, { "Content-Type": "text/html", Connection: "close" })
-					res.end(htmlError("Login error", errorMsg))
+					res.end(oauthErrorHtml("Login error", errorMsg))
 					finish({ error: errorMsg })
 					return
 				}
@@ -219,7 +92,7 @@ export function startCallbackServer(expectedState: string): Promise<CallbackServ
 				if (error) {
 					const errorMsg = errorDescription || error
 					res.writeHead(200, { "Content-Type": "text/html", Connection: "close" })
-					res.end(htmlError("Authentication failed", errorMsg))
+					res.end(oauthErrorHtml("Authentication failed", errorMsg))
 					finish({ error: errorMsg })
 					return
 				}
@@ -229,14 +102,14 @@ export function startCallbackServer(expectedState: string): Promise<CallbackServ
 				if (!token) {
 					const errorMsg = "No token was returned by the authentication server"
 					res.writeHead(400, { "Content-Type": "text/html", Connection: "close" })
-					res.end(htmlError("Missing token", errorMsg))
+					res.end(oauthErrorHtml("Missing token", errorMsg))
 					finish({ error: errorMsg })
 					return
 				}
 
 				// Success
 				res.writeHead(200, { "Content-Type": "text/html", Connection: "close" })
-				res.end(HTML_SUCCESS)
+				res.end(oauthSuccessHtml(SUCCESS_MESSAGE))
 				finish({ token })
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err)

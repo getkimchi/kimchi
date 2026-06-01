@@ -17,7 +17,7 @@ brew install getkimchi/tap/kimchi
 **Install script:**
 
 ```bash
-curl -fsSL https://github.com/castai/kimchi/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
 ```
 
 Then configure your API key and launch:
@@ -345,7 +345,7 @@ This script checks and installs node, pnpm, and bun if missing, runs `pnpm insta
 ### Manual setup
 
 ```bash
-git clone git@github.com:castai/kimchi.git
+git clone git@github.com:getkimchi/kimchi.git
 cd kimchi
 corepack enable
 pnpm install

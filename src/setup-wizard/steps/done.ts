@@ -96,6 +96,9 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 		log.info(`${KIMCHI_API_KEY_ENV} exported to ${shellExport.path}`)
 	} else if (shellExport.error) {
 		log.warn(`Could not export ${KIMCHI_API_KEY_ENV} to shell profile: ${shellExport.error}`)
+		if (shellExport.manualLine) {
+			log.info(shellExport.manualLine)
+		}
 	}
 
 	const summaryLines = [

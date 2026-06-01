@@ -9,7 +9,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import type { Static } from "typebox"
+import { type Static, Type } from "typebox"
 import type { Command, ScopePhaseInput } from "../../../ferment/state-machine.js"
 import { normalizeFermentTitle } from "../../../ferment/title.js"
 import {
@@ -19,8 +19,10 @@ import {
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
+import { isUserChosenYolo } from "../../permissions/index.js"
 import { askUser, askUserForm } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
+import { startFermentForIntent } from "../commands.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { validateGatesOrErr } from "../gate-validation.js"
@@ -31,6 +33,8 @@ import { getPromptUi, promptEditor, promptForm, promptSelect } from "../prompt-u
 import { readLatestPhaseReviews } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
+import type { PendingScope } from "../scoping.js"
+import { hasActiveFerment } from "../state.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -48,6 +52,7 @@ import {
 	ScopeParams,
 	UpdateScopeFieldParams,
 } from "../tool-schemas.js"
+import type { FermentUiContext } from "../ui.js"
 
 type ScopeArgs = Static<typeof ScopeParams>
 type ProposeScopingArgs = Static<typeof ProposeScopingParams>
@@ -510,16 +515,7 @@ export async function scopeFerment(
 	)
 }
 
-export interface CompleteFermentExecutionContext {
-	pi: ExtensionAPI
-	ctx?: unknown
-}
-
-export async function completeFerment(
-	runtime: FermentRuntime,
-	params: CompleteFermentArgs,
-	{ pi, ctx }: CompleteFermentExecutionContext,
-): Promise<ToolResult> {
+export async function completeFerment(runtime: FermentRuntime, params: CompleteFermentArgs): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 
 	const fSnapshot = runtime.getStorage().get(params.ferment_id)
@@ -584,71 +580,30 @@ export async function completeFerment(
 			: { available: false },
 	})
 
-	// Resolve the grade, possibly via a user prompt on judge failure.
-	let resolvedGrade: { grade: Grade; rationale: string; unavailable?: boolean }
+	// Resolve the grade. The final judge is advisory; completion gates have
+	// already decided whether shipping is allowed, so judge outages must not
+	// block the user.
+	let resolvedGrade: { grade: Grade; rationale: string } | undefined
+	let gradeRationale: string
 	if (journeyResult.ok) {
 		resolvedGrade = { grade: journeyResult.grade, rationale: journeyResult.rationale }
+		gradeRationale = journeyResult.rationale
 	} else {
 		const failureDetail = `${journeyResult.reason}${journeyResult.detail ? `: ${journeyResult.detail}` : ""}`
-		const isOneShot = pi.getFlag?.("ferment-oneshot") === true
-		const choice = isOneShot
-			? { failed: false as const, choice: "ship_no_grade" }
-			: await askUser(
-					`Final grade judge unreachable (${failureDetail}). Ship without a grade or abandon?`,
-					[
-						{
-							id: "ship_no_grade",
-							label: "Ship without a grade",
-							description: "Mark complete; grade will be recorded as unavailable.",
-						},
-						{ id: "abandon", label: "Abandon ferment", description: "Discard completion; the work stays on disk." },
-					],
-					{ ferment, pi, ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined, runtime },
-				)
-
-		if (choice.failed || choice.choice === "abandon") {
-			if (choice.failed) {
-				if (choice.reason !== "no_ui_no_judge") {
-					return toolErr(
-						`complete_ferment paused — final grade judge unreachable and user did not authorize ungraded ship (${choice.reason}: ${choice.detail}).`,
-					)
-				}
-				// If no prompt audience exists, keep completion moving. The gates
-				// already passed; judge failure is infrastructure noise, not
-				// product evidence.
-				resolvedGrade = {
-					grade: "B",
-					rationale: `Judge unreachable (${failureDetail}); shipped without a graded review because no prompt audience was available (${choice.reason}).`,
-					unavailable: true,
-				}
-			} else {
-				const abandonOutcome = applyAndPersist(params.ferment_id, {
-					type: "abandon",
-					reason: "judge unreachable; user declined ungraded ship",
-				})
-				if (abandonOutcome.ok) runtime.setActive(abandonOutcome.ferment)
-				return toolErr("complete_ferment refused — judge unreachable; user declined ungraded ship.")
-			}
-		} else {
-			resolvedGrade = {
-				grade: "B",
-				rationale: `Judge unreachable (${failureDetail}); user authorized ship without a graded review.`,
-				unavailable: true,
-			}
-		}
+		gradeRationale = `Judge unreachable (${failureDetail}); completion proceeded without a graded review.`
 	}
 
-	// Persist completion and grade together so a cancelled interactive fallback
-	// leaves the ferment uncompleted instead of half-complete without a grade.
+	// Persist completion and grade together when the advisory judge returns one.
 	const completeOutcome = applyAndPersist(params.ferment_id, {
 		type: "complete_ferment",
 		finalSummary: params.final_summary,
-		grade: {
-			grade: resolvedGrade.grade,
-			rationale: resolvedGrade.rationale,
-			gradedAt: runtime.nowIso(),
-			unavailable: resolvedGrade.unavailable,
-		},
+		grade: resolvedGrade
+			? {
+					grade: resolvedGrade.grade,
+					rationale: resolvedGrade.rationale,
+					gradedAt: runtime.nowIso(),
+				}
+			: undefined,
 	})
 	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, ferment)
 
@@ -661,20 +616,91 @@ export async function completeFerment(
 	const failedPhases = fresh.phases.filter((p) => p.status === "failed").length
 	const failedNote = failedPhases > 0 ? ` (${failedPhases} phase(s) failed)` : ""
 	const gateLines = gates.map((g) => `  ${g.id} (${g.verdict}): ${g.rationale}`).join("\n")
-	const gradeLabel = resolvedGrade.unavailable ? `${resolvedGrade.grade} (unavailable)` : resolvedGrade.grade
+	const gradeLabel = resolvedGrade?.grade ?? "unavailable"
 	const terminalNotice = `This ferment is complete and terminal. Do not call bash/read/list_ferments or any ferment tools for this ferment again without clear user consent. If the user wants a new ferment, tell them to run \`/ferment new "..."\` or \`/ferment one-shot "..."\` — do not search MCP tools or invent a tool.`
 
 	return toolOk(
-		`Ferment "${fresh.name}" complete${failedNote}.\n\nFinal gates:\n${gateLines}\n\nFinal grade: ${gradeLabel} — ${resolvedGrade.rationale}\n\n${params.final_summary ?? ""}\n\n${terminalNotice}`,
+		`Ferment "${fresh.name}" complete${failedNote}.\n\nFinal gates:\n${gateLines}\n\nFinal grade: ${gradeLabel} — ${gradeRationale}\n\n${params.final_summary ?? ""}\n\n${terminalNotice}`,
 	)
+}
+
+function canAutoApproveFermentStart(): boolean {
+	return isUserChosenYolo() && !hasActiveFerment()
+}
+
+async function confirmFermentStart(ctx: unknown, title: string, intent: string): Promise<boolean | undefined> {
+	const hostCtx = ctx as
+		| {
+				hasUI?: boolean
+				ui?: { confirm?: (title: string, message?: string) => Promise<boolean> }
+		  }
+		| undefined
+	if (!hostCtx?.hasUI || !hostCtx.ui?.confirm) return undefined
+	return hostCtx.ui.confirm("Start Ferment Workflow", `Start a Ferment workflow for "${title}"?\n\n${intent}`)
 }
 
 export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
+
+	pi.registerTool({
+		name: FERMENT_TOOLS.REQUEST_WORKFLOW,
+		label: "Start Ferment Workflow",
+		description:
+			"Request the ferment workflow (interactive scoping -> planner) for substantive multi-step work. Provide a concise 3-5 word title and the full original user intent. The host asks the user for explicit confirmation before creating the draft; in yolo permissions mode, the host auto-approves. Refuses if another ferment is already running.",
+		parameters: Type.Object({
+			title: Type.String({
+				description: "Concise 3-5 word title for the new ferment (e.g. 'Rewrite login flow').",
+			}),
+			intent: Type.String({
+				description:
+					"Full original user request, preserving all constraints, scope details, and wording that the scoping turn needs.",
+			}),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const title = typeof params.title === "string" ? params.title.trim() : ""
+			if (!title) return toolErr('Field "title" must be a non-empty string.')
+			const intent = typeof params.intent === "string" ? params.intent.trim() : ""
+			if (!intent) return toolErr('Field "intent" must be the full non-empty user request.')
+			if (hasActiveFerment()) {
+				return toolErr(
+					"request_ferment_workflow refused — another ferment appears to be active. Continue that ferment or ask the user before starting a separate workflow.",
+				)
+			}
+			if (!canAutoApproveFermentStart()) {
+				const approved = await confirmFermentStart(ctx, title, intent)
+				if (approved === undefined) {
+					return toolErr(
+						"request_ferment_workflow refused — interactive host approval is required before starting a ferment, but no confirmation UI is available. Ask the user directly whether they want a ferment workflow, then retry when interactive UI is available.",
+					)
+				}
+				if (!approved) {
+					return toolErr(
+						"request_ferment_workflow cancelled — the user declined starting a ferment. Continue inline or ask only decision-blocking clarification.",
+					)
+				}
+			}
+			const result = await startFermentForIntent({
+				pi,
+				ctx: ctx as unknown as FermentUiContext,
+				runtime,
+				rawIntent: intent,
+				title,
+			})
+			if (!result) {
+				return toolErr(
+					"Could not start ferment workflow. Another ferment may already be running, or the host UI refused. Tell the user to check /ferment list and try again.",
+				)
+			}
+			return toolOk(
+				`Ferment "${result.name}" created. Follow the scoping nudge instructions the host injects on this turn.`,
+			)
+		},
+	})
+
 	pi.registerTool({
 		name: FERMENT_TOOLS.PROPOSE_SCOPING,
 		label: "Propose Scoping",
-		description: `Emit the full scoping draft: title, goal, criteria, constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
+		description: `Emit the full scoping draft: title, goal, criteria, constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one checkbox question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
@@ -717,9 +743,14 @@ ${renderGateGuidance("scope_ferment")}`,
 				// Seed an empty buffer so attachPendingProposal can replace it.
 				runtime.setPendingScope(params.ferment_id, { goal: "", successCriteria: "", constraints: [] })
 			}
+			const pendingAfterSeed: PendingScope = runtime.getPendingScope(params.ferment_id) ?? {
+				goal: "",
+				successCriteria: "",
+				constraints: [],
+			}
 
 			// Iteration cap: prevent infinite propose_ferment_scoping loops.
-			const currentIterations = pending?.proposeIterations ?? 0
+			const currentIterations = pendingAfterSeed.proposeIterations ?? 0
 			const nextIterations = currentIterations + 1
 			if (currentIterations >= 3 && questions.length > 0) {
 				return toolErr(
@@ -1015,8 +1046,8 @@ ${renderGateGuidance("scope_ferment")}`,
 
 ${renderGateGuidance("complete_ferment")}`,
 		parameters: CompleteFermentParams,
-		async execute(_, params, _signal, _onUpdate, ctx) {
-			return completeFerment(runtime, params, { pi, ctx })
+		async execute(_, params) {
+			return completeFerment(runtime, params)
 		},
 	})
 
@@ -1027,7 +1058,7 @@ ${renderGateGuidance("complete_ferment")}`,
 
 Behavior depends on session mode:
   - Interactive (with TUI): the user answers in a structured TUI. Returns { choice | choices | text | answers, answered_by: "user" }.
-  - One-shot (no human attached): an Opus judge stands in for the user. Returns { choice | choices | text | answers, answered_by: "judge", rationale }.
+  - One-shot (no human attached): the configured judge model stands in for the user. Returns { choice | choices | text | answers, answered_by: "judge", rationale }.
 
 Hard contract: in one-shot mode, if the judge is unreachable (no API key, timeout, unparseable response) the ferment is ABANDONED — there is no fallback. False-pass is the worst outcome.
 

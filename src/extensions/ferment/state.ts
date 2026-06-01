@@ -13,7 +13,6 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
-import { notifyFermentActive } from "../permissions/index.js"
 import {
 	type PersistedRuntimeState,
 	deleteRuntimeState,
@@ -34,15 +33,45 @@ export function getActiveId(): string | undefined {
 	return activeFerment?.id
 }
 
+export function getActiveFermentId(env: Record<string, string | undefined> = process.env): string | undefined {
+	const id = env.KIMCHI_ACTIVE_FERMENT?.trim()
+	return id || undefined
+}
+
+export function hasActiveFerment(env: Record<string, string | undefined> = process.env): boolean {
+	return getActiveFermentId(env) !== undefined
+}
+
+export function clearActiveFermentId(env: Record<string, string | undefined> = process.env): void {
+	Reflect.deleteProperty(env, "KIMCHI_ACTIVE_FERMENT")
+}
+
+let activeFermentChangeListener: ((hasActive: boolean) => void) | undefined
+
+export function onActiveFermentChange(listener: (hasActive: boolean) => void): () => void {
+	activeFermentChangeListener = listener
+	return () => {
+		if (activeFermentChangeListener === listener) activeFermentChangeListener = undefined
+	}
+}
+
+export function notifyFermentActive(hasActive: boolean): void {
+	activeFermentChangeListener?.(hasActive)
+}
+
+function shouldElevatePermissions(f: Ferment | undefined): boolean {
+	return f?.status === "draft" || f?.status === "planned" || f?.status === "running" || f?.status === "paused"
+}
+
 export function setActive(f: Ferment | undefined): void {
 	activeFerment = f
-	const isResumable = f !== undefined && f.status !== "complete" && f.status !== "abandoned"
-	if (isResumable) {
+	const elevatePermissions = shouldElevatePermissions(f)
+	if (elevatePermissions && f) {
 		process.env.KIMCHI_ACTIVE_FERMENT = f.id
 	} else {
-		Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
+		clearActiveFermentId()
 	}
-	notifyFermentActive(isResumable)
+	notifyFermentActive(elevatePermissions)
 }
 
 // ─── Runtime continuation policy ──────────────────────────────────────────────

@@ -54,8 +54,7 @@ type Phase = (typeof VALID_PHASES)[number]
 
 const PHASE_TAGGING_PROMPT = `## Phase Tagging for Analytics
 
-You must call \`set_phase\` before every block of work. Never take an action without the correct phase being set first. Use one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\` strictly matching current work type.
-The session starts in \`explore\` phase by default. Call \`set_phase\` immediately when your work type changes. Only one phase is active at a time — the most recent call wins.`
+The session starts in \`explore\` phase by default. Call \`set_phase\` when the work type changes — pick one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\`. Only one phase is active at a time; the most recent call wins. Subagents set their phase automatically from their persona, so this tool is for tagging the main thread's work.`
 
 export function isValidPhase(phase: string): phase is Phase {
 	return VALID_PHASES.includes(phase as Phase)
@@ -567,7 +566,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		name: "set_phase",
 		label: "Set Phase",
 		description:
-			"Set the current work phase for usage tracking and analytics. Call this when transitioning between phases (e.g., moving from exploration to planning, or planning to building). The phase will be included as a tag in subsequent LLM requests.",
+			"Set the current work phase for usage tracking and analytics. The session starts in explore. Call when transitioning between phases (e.g., exploration to planning, or planning to building). The phase is included as a tag in subsequent LLM requests.",
 		parameters: SetPhaseParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

@@ -19,7 +19,7 @@ describe("GENERAL_TIPS", () => {
 		expect(messages).toContain('Set default tags: `export KIMCHI_TAGS="team:backend,project:api"`.')
 		expect(messages).toContain("Resume the latest session with `kimchi --continue`.")
 		expect(messages).toContain("Use `kimchi --verbose` when output looks off.")
-		expect(messages).toContain("Run `/export` to save HTML for a bug report.")
+		expect(messages).toContain("Run `/bug` to create GitHub issue with a bug report.")
 	})
 
 	it("fits every built-in tip in an 80-column row without truncation", () => {

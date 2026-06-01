@@ -156,6 +156,33 @@ describe("Threshold triggers", () => {
 		expect(steers.filter((s) => s.includes("5 consecutive turns"))).toHaveLength(1)
 		expect(steers.filter((s) => s.includes("8 consecutive turns"))).toHaveLength(1)
 	})
+
+	it("does not trigger when isEnabled returns false", () => {
+		const guard = createGuard({ isEnabled: () => false })
+		for (let i = 0; i < 10; i++) {
+			const steers = simulateReadTurn(guard)
+			expect(steers).toHaveLength(0)
+		}
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
+	})
+
+	it("resumes triggering after isEnabled becomes true", () => {
+		let enabled = false
+		const guard = createGuard({ isEnabled: () => enabled })
+		for (let i = 0; i < 5; i++) {
+			simulateReadTurn(guard)
+		}
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
+
+		enabled = true
+		for (let i = 0; i < 5; i++) {
+			const steers = simulateReadTurn(guard)
+			if (i === 4) {
+				expect(steers).toHaveLength(1)
+				expect(steers[0]).toContain("5 consecutive turns")
+			}
+		}
+	})
 })
 
 describe("Custom tool classification", () => {

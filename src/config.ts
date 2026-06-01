@@ -232,9 +232,9 @@ function parseOnboardingConfig(value: unknown): OnboardingConfig | undefined {
  * Read telemetry configuration from config.json without requiring an API key.
  * Safe to call before authentication is set up.
  *
- * Telemetry is disabled by default. It is enabled when:
- *   - KIMCHI_TELEMETRY_ENABLED env var is set to a truthy value, or
- *   - config.json has telemetry.enabled = true
+ * Telemetry is enabled by default unless explicitly disabled. It can be disabled by:
+ *   - KIMCHI_TELEMETRY_ENABLED env var set to a falsy value (0/false), or
+ *   - config.json has telemetry.enabled = false
  *
  * Auth header resolution order:
  *   1. telemetry.headers in config.json (explicit override)
@@ -277,8 +277,8 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 		headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : {}
 	}
 
-	// Enabled by default when an API key is available; explicit config/env overrides either way
-	const defaultEnabled = fileHeaders ? Object.keys(fileHeaders).length > 0 : !!apiKey
+	// Enabled by default; explicit config/env overrides either way
+	const defaultEnabled = true
 	const enabled =
 		envEnabled !== undefined ? envEnabled !== "0" && envEnabled !== "false" : (fileEnabled ?? defaultEnabled)
 

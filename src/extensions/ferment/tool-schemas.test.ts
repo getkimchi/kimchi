@@ -91,6 +91,16 @@ describe("ProposeScopingParams schema", () => {
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 
+	it("documents improvement selection as a checkbox scoping question", () => {
+		const questionsSchema = (ProposeScopingParams as unknown as { properties: { questions: unknown } }).properties
+			.questions
+		const schemaText = JSON.stringify(questionsSchema)
+
+		expect(schemaText).toContain("multiple plausible work areas")
+		expect(schemaText).toContain("ask one checkbox question")
+		expect(schemaText).toContain("Which improvement areas should this ferment include?")
+	})
+
 	it("rejects payload without title", () => {
 		const payload = {
 			ferment_id: "f-123",

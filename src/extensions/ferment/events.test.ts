@@ -7,6 +7,7 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerFermentEvents } from "./events.js"
 import type { FermentRuntime } from "./runtime.js"
 import { createDefaultFermentRuntime } from "./runtime.js"
+import { clearActiveFermentId } from "./state.js"
 import { FERMENT_TOOL_NAMES } from "./tool-names.js"
 
 type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown
@@ -41,13 +42,14 @@ function createPi() {
 }
 
 afterEach(() => {
-	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
+	vi.unstubAllEnvs()
+	clearActiveFermentId()
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 })
 
 describe("registerFermentEvents", () => {
 	it("clears injected runtime state and active cache when env resume id is missing", async () => {
-		process.env.KIMCHI_ACTIVE_FERMENT = "missing-ferment-id"
+		vi.stubEnv("KIMCHI_ACTIVE_FERMENT", "missing-ferment-id")
 		const storage = { get: vi.fn(() => undefined) } as unknown as FermentEventStore
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),

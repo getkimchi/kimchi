@@ -21,8 +21,9 @@ const IMPORT_PATHS: Record<ImportKind, string> = {
 	vscode: ".vscode/mcp.json", // Relative to project
 }
 
-export function loadMcpConfig(overridePath?: string): McpConfig {
+export function loadMcpConfig(overridePath?: string): { config: McpConfig; warnings: string[] } {
 	const configPath = overridePath ? resolve(overridePath) : getDefaultConfigPath()
+	const warnings: string[] = []
 
 	// Load base config
 	let config: McpConfig = { mcpServers: {} }
@@ -32,7 +33,8 @@ export function loadMcpConfig(overridePath?: string): McpConfig {
 			const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 			config = validateConfig(raw)
 		} catch (error) {
-			console.warn(`Failed to load MCP config from ${configPath}:`, error)
+			const msg = error instanceof Error ? error.message : String(error)
+			warnings.push(`Failed to load MCP config from ${configPath}: ${msg}`)
 		}
 	}
 
@@ -57,7 +59,8 @@ export function loadMcpConfig(overridePath?: string): McpConfig {
 					}
 				}
 			} catch (error) {
-				console.warn(`Failed to import MCP config from ${importKind}:`, error)
+				const msg = error instanceof Error ? error.message : String(error)
+				warnings.push(`Failed to import MCP config from ${importKind}: ${msg}`)
 			}
 		}
 	}
@@ -75,11 +78,12 @@ export function loadMcpConfig(overridePath?: string): McpConfig {
 				config.settings = { ...config.settings, ...validated.settings }
 			}
 		} catch (error) {
-			console.warn(`Failed to load project MCP config:`, error)
+			const msg = error instanceof Error ? error.message : String(error)
+			warnings.push(`Failed to load project MCP config: ${msg}`)
 		}
 	}
 
-	return config
+	return { config, warnings }
 }
 
 function validateConfig(raw: unknown): McpConfig {

@@ -6,7 +6,7 @@ import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
-import { getCliModeArg, isHelpOrVersionArgs } from "./cli-args.js"
+import { getCliModeArg, isHelpOrVersionArgs, isProtocolOrPrintMode } from "./cli-args.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
@@ -31,6 +31,7 @@ import helpExtension from "./extensions/help.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import loginExtension from "./extensions/login/index.js"
+import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
@@ -42,6 +43,7 @@ import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindi
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire.js"
+import reportBugExtension from "./extensions/report-bug.js"
 import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
@@ -61,7 +63,7 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
-import { updateModelsConfig } from "./models.js"
+import { isTransientModelsError, updateModelsConfig } from "./models.js"
 import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./modes/teleport/sync/session-export.js"
 import resourcesExtension from "./resources/extension.js"
 import { type ManagedExtensionFactory, enabledExtensionFactories } from "./resources/filter.js"
@@ -328,6 +330,14 @@ try {
 				writeApiKey(currentApiKey)
 				config = loadConfig()
 				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
+			} else if (isTransientModelsError(err)) {
+				// Rate limit / gateway error with no cached models to fall back on.
+				// Don't crash startup over a transient condition — continue with an
+				// empty list; the login gate and later refreshes will repopulate it.
+				console.warn(
+					`Could not load the model list right now (${err instanceof Error ? err.message : String(err)}). Continuing; models will refresh once the service is reachable.`,
+				)
+				models = []
 			} else {
 				throw err
 			}
@@ -384,17 +394,17 @@ try {
 		mkdirSync(themesDir, { recursive: true })
 
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
-		// the kimchi-minimal-tints and terminal-colors extensions. Skip in ACP mode —
-		// stdout is the JSON-RPC channel and OSC escapes would corrupt the IDE's
-		// input stream.
-		if (!acpMode) {
+		// the kimchi-minimal-tints and terminal-colors extensions. Skip protocol
+		// and print modes: stdout belongs to the caller, and OSC escapes corrupt it.
+		const terminalStartupOutputAllowed = !isProtocolOrPrintMode(process.argv.slice(2))
+		if (terminalStartupOutputAllowed) {
 			await probeTerminalBackground()
 			await probeKittyKeyboardSupport()
 		}
 
 		// Emit warnings for terminals that don't support modifier-aware Enter.
 		// Runs after the keyboard-capability probe so the result is available.
-		emitTerminalCompatWarning(agentDir)
+		if (terminalStartupOutputAllowed) emitTerminalCompatWarning(agentDir)
 
 		// Compare contents and only write when they differ. Restarts in a second
 		// terminal must be byte-identical no-ops because pi runs `fs.watch` on the
@@ -447,11 +457,20 @@ try {
 		}
 
 		const rawArgs = process.argv.slice(2)
-		const sessionModeOnboarding = createSessionModeOnboardingForStartup({
-			rawArgs,
+		const interactiveStartupContext = {
 			nonInteractiveMode: acpMode,
 			stdinIsTTY: process.stdin.isTTY === true,
 			stdoutIsTTY: process.stdout.isTTY === true,
+		}
+		const startupAuthState = createStartupAuthGateState()
+		const startupAuthGate = createStartupAuthGate({
+			...interactiveStartupContext,
+			state: startupAuthState,
+		})
+		const sessionModeOnboarding = createSessionModeOnboardingForStartup({
+			rawArgs,
+			...interactiveStartupContext,
+			shouldSkip: () => startupAuthState.cancelled,
 		})
 		const extensionFactories = [
 			startupUpdateExtension,
@@ -460,6 +479,9 @@ try {
 			statsExtension,
 			terminalColorsExtension,
 			kimchiMinimalTintsExtension,
+			loginExtension,
+			uiExtension,
+			startupAuthGate,
 			loopGuardExtension,
 			explorationGuardExtension,
 			lspExtension,
@@ -482,13 +504,13 @@ try {
 			thinkingStepsExtension,
 			assistantPrefixExtension,
 			clipboardImageExtension,
-			uiExtension,
 			sessionModeOnboarding,
 			tipsExtension(),
 			...enabledExtensionFactories([
 				{ id: "extensions.agents", factory: agentsExtension },
 			] satisfies ManagedExtensionFactory[]),
 			helpExtension,
+			reportBugExtension,
 			tagsExtension,
 			telemetryExtension(telemetryConfig),
 			toolRenderingExtension,
@@ -497,7 +519,6 @@ try {
 				{ id: "tools.web_fetch", factory: webFetchExtension },
 				{ id: "tools.web_search", factory: webSearchExtension },
 			] satisfies ManagedExtensionFactory[]),
-			loginExtension,
 			modelSwitchExtension,
 			modelGuardExtension,
 			stripImagesExtension,

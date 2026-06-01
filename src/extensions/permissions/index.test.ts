@@ -1,12 +1,26 @@
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolInfo } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
+import { runAsAgentWorker } from "../agent-worker-context.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { type EnvironmentInfo, buildSystemPrompt } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { classifyToolCall } from "./classifier.js"
-import permissionsExtension, { checkCompoundCommand, handleCompoundConfirm } from "./index.js"
+import permissionsExtension, {
+	checkCompoundCommand,
+	getCurrentPermissionsMode,
+	handleCompoundConfirm,
+	isUserChosenYolo,
+	notifyFermentActive,
+} from "./index.js"
 import { SessionMemory } from "./session-memory.js"
 import type { Rule } from "./types.js"
+
+vi.mock("node:fs", () => ({
+	existsSync: vi.fn(() => true),
+	mkdirSync: vi.fn(),
+	writeFileSync: vi.fn(),
+}))
 
 vi.mock("./classifier.js", () => ({
 	classifyToolCall: vi.fn(async () => ({ verdict: "safe", reason: "mock safe" })),
@@ -30,19 +44,18 @@ function createMockContext(
 	selectResults: (string | undefined)[],
 	opts?: { abortOnFirstSelect?: boolean },
 ): ExtensionContext {
-	let callIndex = 0
+	let selectCallIndex = 0
 	return {
 		hasUI: true,
 		cwd: "/test",
 		sessionManager: { getSessionId: () => TEST_SESSION_ID },
 		ui: {
 			select: vi.fn(async (_: string, __: string[], selectOpts?: { signal?: AbortSignal }) => {
-				// If signal is aborted when select is called, return undefined to trigger "aborted" outcome
 				if (selectOpts?.signal?.aborted) {
 					return undefined
 				}
-				const result = selectResults[callIndex]
-				callIndex++
+				const result = selectResults[selectCallIndex]
+				selectCallIndex++
 				return result
 			}),
 			input: vi.fn(async () => ""),
@@ -75,6 +88,8 @@ function createClassifierContext(): ExtensionContext {
 // Helper to create a mock tool call event
 function createMockEvent(): ToolCallEvent {
 	return {
+		type: "tool_call",
+		toolCallId: "tool-call-1",
 		toolName: "bash",
 		input: { command: "echo a && echo b" },
 		cwd: "/test",
@@ -132,77 +147,334 @@ function createPermissionsHarness(
 	}
 }
 
+describe("isUserChosenYolo", () => {
+	afterEach(() => {
+		// Production code mutates process.env directly via propagateModeToEnv; revert it.
+		notifyFermentActive(false)
+		Reflect.deleteProperty(process.env, "KIMCHI_PERMISSIONS")
+		vi.unstubAllEnvs()
+	})
+
+	it("is true when yolo comes from the launch env", () => {
+		vi.stubEnv("KIMCHI_PERMISSIONS", "yolo")
+		createPermissionsHarness(["bash"])
+
+		expect(isUserChosenYolo()).toBe(true)
+	})
+
+	it("is false when yolo is only a runtime elevation (e.g. an active ferment)", () => {
+		// No user-chosen yolo source: env unset, no CLI flag, default config.
+		createPermissionsHarness(["bash"])
+
+		// A ferment becoming active elevates runtimeMode to yolo and propagates it
+		// to the env — the exact condition that previously let the start gate be
+		// bypassed silently.
+		notifyFermentActive(true)
+		expect(process.env.KIMCHI_PERMISSIONS).toBe("yolo")
+
+		// But runtime elevation must not count as user consent.
+		expect(isUserChosenYolo()).toBe(false)
+	})
+})
+
 describe("permissions plan-mode tool visibility", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs()
+	})
+
+	it("ferment activation leaves plan mode and restores agent tools for scoping", async () => {
+		vi.stubEnv("KIMCHI_PERMISSIONS", "plan")
+		const harness = createPermissionsHarness(["read", "agent", "bash", "write", "grep"])
+		await harness.fire("session_start", {}, createMockContext([]))
+		expect(getCurrentPermissionsMode()).toBe("plan")
+		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
+
+		notifyFermentActive(true)
+
+		expect(getCurrentPermissionsMode()).toBe("yolo")
+		expect(harness.activeTools().sort()).toEqual(["agent", "bash", "grep", "read", "write"])
+
+		notifyFermentActive(false)
+
+		expect(getCurrentPermissionsMode()).toBe("plan")
+		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
+	})
+
+	it("hides and blocks request_ferment_workflow under explicit --plan", async () => {
+		const harness = createPermissionsHarness(["read", "bash", FERMENT_TOOLS.REQUEST_WORKFLOW], { plan: true })
+
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(harness.activeTools().sort()).toEqual(["bash", "read"])
+		const result = await harness.fire(
+			"tool_call",
+			{ toolName: FERMENT_TOOLS.REQUEST_WORKFLOW, input: { title: "Audit", intent: "Find improvements" } },
+			createMockContext([]),
+		)
+
+		expect(result).toEqual(expect.objectContaining({ block: true }))
+		expect(JSON.stringify(result)).toContain("Plan mode")
+	})
+
+	it("allows request_ferment_workflow after runtime plan-mode questionnaire", async () => {
+		const harness = createPermissionsHarness(["read", "questionnaire", "bash", FERMENT_TOOLS.REQUEST_WORKFLOW])
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(
+			await harness.fire("tool_call", { toolName: "questionnaire", input: { questions: [] } }, createMockContext([])),
+		).toBeUndefined()
+		expect(getCurrentPermissionsMode()).toBe("plan")
+
+		const result = await harness.fire(
+			"tool_call",
+			{ toolName: FERMENT_TOOLS.REQUEST_WORKFLOW, input: { title: "Audit", intent: "Find improvements" } },
+			createMockContext([]),
+		)
+		expect(result).toBeUndefined()
+	})
+
 	it("leaving plan mode does not restore tools hidden by another extension", async () => {
-		const previousEnv = process.env.KIMCHI_PERMISSIONS
-		try {
-			const harness = createPermissionsHarness(["read", "bash", "write", "edit", "grep"], { plan: true })
-			const peerVisibility = createToolVisibility(harness.pi)
-			peerVisibility.disable(["bash"])
+		const harness = createPermissionsHarness(["read", "bash", "write", "edit", "grep"], { plan: true })
+		const peerVisibility = createToolVisibility(harness.pi)
+		peerVisibility.disable(["bash"])
 
-			await harness.fire("session_start", {}, createMockContext([]))
-			expect(harness.activeTools().sort()).toEqual(["grep", "read"])
+		await harness.fire("session_start", {}, createMockContext([]))
+		expect(harness.activeTools().sort()).toEqual(["grep", "read"])
 
-			const command = harness.commands.get("permissions")
-			expect(command).toBeDefined()
-			await command?.handler("mode default", createMockContext([]))
+		const command = harness.commands.get("permissions")
+		expect(command).toBeDefined()
+		await command?.handler("mode default", createMockContext([]))
 
-			expect(harness.activeTools().sort()).toEqual(["edit", "grep", "read", "write"])
+		expect(harness.activeTools().sort()).toEqual(["edit", "grep", "read", "write"])
 
-			peerVisibility.enable(["bash"])
-			expect(harness.activeTools().sort()).toEqual(["bash", "edit", "grep", "read", "write"])
-		} finally {
-			process.env.KIMCHI_PERMISSIONS = previousEnv
-		}
+		peerVisibility.enable(["bash"])
+		expect(harness.activeTools().sort()).toEqual(["bash", "edit", "grep", "read", "write"])
 	})
 
 	it("leaving plan mode does not activate mutating tools that were already inactive", async () => {
-		const previousEnv = process.env.KIMCHI_PERMISSIONS
-		try {
-			const harness = createPermissionsHarness(["read", "bash", "write", "edit", "grep"], { plan: true }, [
-				"read",
-				"bash",
-				"write",
-				"grep",
-			])
+		const harness = createPermissionsHarness(["read", "bash", "write", "edit", "grep"], { plan: true }, [
+			"read",
+			"bash",
+			"write",
+			"grep",
+		])
 
-			await harness.fire("session_start", {}, createMockContext([]))
-			expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
+		await harness.fire("session_start", {}, createMockContext([]))
+		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
 
-			const command = harness.commands.get("permissions")
-			expect(command).toBeDefined()
-			await command?.handler("mode default", createMockContext([]))
+		const command = harness.commands.get("permissions")
+		expect(command).toBeDefined()
+		await command?.handler("mode default", createMockContext([]))
 
-			expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read", "write"])
-		} finally {
-			process.env.KIMCHI_PERMISSIONS = previousEnv
-		}
+		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read", "write"])
+	})
+})
+
+describe("plan mode assumption detection", () => {
+	// --- Integration tests for turn_end handler ---
+
+	function makeAssistantMessage(text: string): unknown {
+		return { role: "assistant", content: [{ type: "text", text }] }
+	}
+
+	async function fireTurnEnd(
+		harness: ReturnType<typeof createPermissionsHarness>,
+		text: string,
+		ctx: ExtensionContext,
+	) {
+		return harness.fire("turn_end", { message: makeAssistantMessage(text) }, ctx)
+	}
+
+	it("shows approval menu when plan is clean", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		// Simulate: agent called tools, then produced clean plan text
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			"# Plan\n\n## Goal\nFix the bug.\n\n## Chunk 1\nChange the code.\nAccept When: tests pass.\n\n## Verification\nRun test suite.\n\n<!-- PLAN_COMPLETE -->\n",
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("shows approval menu even when assumptions section is present (agent is trusted)", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			"# Plan\n\n## Assumptions\n- Database schema may differ\n\n## Chunks\n- Chunk 1\n\n<!-- PLAN_COMPLETE -->\n",
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("shows approval menu even when open questions section is present", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			"# Plan\n\n## Open Questions\n- Should we use JWT or sessions?\n\n## Chunks\n- Chunk 1\n\n<!-- PLAN_COMPLETE -->\n",
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("allows plan with empty assumptions section", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			"## Goal\nFix it.\n\n## Assumptions\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.\n\n<!-- PLAN_COMPLETE -->\n",
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("allows plan without assumptions section at all", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			"## Goal\nDo the thing.\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.\n\n<!-- PLAN_COMPLETE -->\n",
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("shows menu for plan with assumptions (PLAN_COMPLETE is the gate)", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(harness, "## ASSUMPTIONS\n- Schema TBD\n\n<!-- PLAN_COMPLETE -->\n", ctx)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("shows menu for plan with assumptions after blank line", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(harness, "## Assumptions\n\n- Database schema may differ\n\n<!-- PLAN_COMPLETE -->\n", ctx)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("review gate approves well-structured plan and shows menu", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			"## Goal\nAdd auth.\n\n## Chunk 1\nImplement login.\nAccept When: tests pass.\n\n## Verification\nRun the test suite.\n\n<!-- PLAN_COMPLETE -->\n",
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+		expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "plan-review-blocked" }),
+			expect.anything(),
+		)
+	})
+
+	it("review gate: menu shows for any plan with PLAN_COMPLETE marker", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			"## Chunk 1\nJust a chunk.\n\nSome extra lines\nto make it non-simple.\nMore content here.\n\n<!-- PLAN_COMPLETE -->\n",
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("review gate skips simple plans and shows menu immediately", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(harness, "## Chunk 1\nJust one chunk.\n\n<!-- PLAN_COMPLETE -->\n", ctx)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("converts plan to ferment when user chooses ferment menu", async () => {
+		const harness = createPermissionsHarness(["read", "bash", FERMENT_TOOLS.REQUEST_WORKFLOW], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const planText =
+			"# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.\n\n## Verification\nRun tests.\n\n<!-- PLAN_COMPLETE -->"
+		const ctx = createMockContext(["Convert to ferment workflow"])
+		await fireTurnEnd(harness, planText, ctx)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+		expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "plan-execute",
+				content: expect.stringContaining("request_ferment_workflow"),
+				display: false,
+			}),
+			{ triggerTurn: true },
+		)
+
+		// Mode should have switched from plan to default (ferment tools unlocked)
+		expect(getCurrentPermissionsMode()).toBe("default")
 	})
 })
 
 describe("permissions prompt inheritance", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs()
+	})
+
 	it("inherits plan-mode safety instructions to append-mode subagents", async () => {
-		const previousEnv = process.env.KIMCHI_PERMISSIONS
-		try {
-			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
-			await harness.fire("session_start", {}, createMockContext([]))
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
 
-			const result = buildSystemPrompt({
-				tools: [
-					{ name: "read", description: "Read files" },
-					{ name: "bash", description: "Run shell commands" },
-				],
-				env: testEnv,
-				mode: "subagent",
-				sessionId: TEST_SESSION_ID,
-			})
+		const result = buildSystemPrompt({
+			tools: [
+				{ name: "read", description: "Read files" },
+				{ name: "bash", description: "Run shell commands" },
+			],
+			env: testEnv,
+			mode: "subagent",
+			sessionId: TEST_SESSION_ID,
+		})
 
-			expect(result).toContain("Plan mode is active")
-			expect(result).toContain("read-only access")
-			expect(result).toContain("The user will switch off plan mode before you execute it")
-		} finally {
-			process.env.KIMCHI_PERMISSIONS = previousEnv
-		}
+		expect(result).toContain("Plan mode is active")
+		expect(result).toContain("read-only access")
+		expect(result).toContain("The user will approve the plan before any execution begins")
 	})
 })
 
@@ -211,107 +483,209 @@ describe("permissions ferment tool classification", () => {
 		vi.mocked(classifyToolCall).mockClear()
 	})
 
+	afterEach(() => {
+		vi.unstubAllEnvs()
+	})
+
 	it("allows ferment tools in auto mode without invoking the classifier", async () => {
-		const previousEnv = process.env.KIMCHI_PERMISSIONS
-		try {
-			const harness = createPermissionsHarness([FERMENT_TOOLS.PROPOSE_SCOPING], { auto: true })
-			const ctx = createClassifierContext()
-			await harness.fire("session_start", {}, ctx)
+		const harness = createPermissionsHarness([FERMENT_TOOLS.PROPOSE_SCOPING], { auto: true })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
 
-			const result = await harness.fire(
-				"tool_call",
-				{ toolName: FERMENT_TOOLS.PROPOSE_SCOPING, input: { prompt: "plan it" } },
-				ctx,
-			)
+		const result = await harness.fire(
+			"tool_call",
+			{ toolName: FERMENT_TOOLS.PROPOSE_SCOPING, input: { prompt: "plan it" } },
+			ctx,
+		)
 
-			expect(result).toBeUndefined()
-			expect(classifyToolCall).not.toHaveBeenCalled()
-		} finally {
-			process.env.KIMCHI_PERMISSIONS = previousEnv
-		}
+		expect(result).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
 	})
 
 	it("bypasses user deny rules for ferment tools (internal state-management)", async () => {
-		const previousEnv = process.env.KIMCHI_PERMISSIONS
-		try {
-			const harness = createPermissionsHarness([FERMENT_TOOLS.PROPOSE_SCOPING], {
-				auto: true,
-				"deny-tool": FERMENT_TOOLS.PROPOSE_SCOPING,
-			})
-			const ctx = createClassifierContext()
-			await harness.fire("session_start", {}, ctx)
+		const harness = createPermissionsHarness([FERMENT_TOOLS.PROPOSE_SCOPING], {
+			auto: true,
+			"deny-tool": FERMENT_TOOLS.PROPOSE_SCOPING,
+		})
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
 
-			const result = await harness.fire(
-				"tool_call",
-				{ toolName: FERMENT_TOOLS.PROPOSE_SCOPING, input: { prompt: "plan it" } },
-				ctx,
-			)
+		const result = await harness.fire(
+			"tool_call",
+			{ toolName: FERMENT_TOOLS.PROPOSE_SCOPING, input: { prompt: "plan it" } },
+			ctx,
+		)
 
-			expect(result).toBeUndefined()
-			expect(classifyToolCall).not.toHaveBeenCalled()
-		} finally {
-			process.env.KIMCHI_PERMISSIONS = previousEnv
-		}
+		expect(result).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
 	})
 
 	it("does NOT bypass user deny rules for ask_user (user-facing tool)", async () => {
-		const previousEnv = process.env.KIMCHI_PERMISSIONS
-		try {
-			const harness = createPermissionsHarness([FERMENT_TOOLS.ASK_USER], {
-				"deny-tool": FERMENT_TOOLS.ASK_USER,
-			})
-			const ctx = createClassifierContext()
-			await harness.fire("session_start", {}, ctx)
+		const harness = createPermissionsHarness([FERMENT_TOOLS.ASK_USER], {
+			"deny-tool": FERMENT_TOOLS.ASK_USER,
+		})
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
 
-			const result = await harness.fire(
-				"tool_call",
-				{ toolName: FERMENT_TOOLS.ASK_USER, input: { ferment_id: "x", question: "?" } },
-				ctx,
-			)
+		const result = await harness.fire(
+			"tool_call",
+			{ toolName: FERMENT_TOOLS.ASK_USER, input: { ferment_id: "x", question: "?" } },
+			ctx,
+		)
 
-			expect(result).toEqual(expect.objectContaining({ block: true }))
-		} finally {
-			process.env.KIMCHI_PERMISSIONS = previousEnv
-		}
+		expect(result).toEqual(expect.objectContaining({ block: true }))
 	})
 
 	it("continues to classify unknown non-ferment tools in auto mode", async () => {
-		const previousEnv = process.env.KIMCHI_PERMISSIONS
-		try {
-			const harness = createPermissionsHarness(["unknown_tool"], { auto: true })
-			const ctx = createClassifierContext()
-			await harness.fire("session_start", {}, ctx)
+		const harness = createPermissionsHarness(["unknown_tool"], { auto: true })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
 
-			const result = await harness.fire("tool_call", { toolName: "unknown_tool", input: { value: 1 } }, ctx)
+		const result = await harness.fire("tool_call", { toolName: "unknown_tool", input: { value: 1 } }, ctx)
 
-			expect(result).toBeUndefined()
-			expect(classifyToolCall).toHaveBeenCalledTimes(1)
-			expect(vi.mocked(classifyToolCall).mock.calls[0]?.[2]).toMatchObject({
-				toolName: "unknown_tool",
-				input: { value: 1 },
-				cwd: "/test",
-			})
-		} finally {
-			process.env.KIMCHI_PERMISSIONS = previousEnv
-		}
+		expect(result).toBeUndefined()
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		expect(vi.mocked(classifyToolCall).mock.calls[0]?.[2]).toMatchObject({
+			toolName: "unknown_tool",
+			input: { value: 1 },
+			cwd: "/test",
+		})
 	})
 
 	it("keeps existing read-only and bash auto-approval behavior", async () => {
-		const previousEnv = process.env.KIMCHI_PERMISSIONS
-		try {
-			const harness = createPermissionsHarness(["read", "bash"], { auto: true })
-			const ctx = createClassifierContext()
-			await harness.fire("session_start", {}, ctx)
+		const harness = createPermissionsHarness(["read", "bash"], { auto: true })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
 
-			const readResult = await harness.fire("tool_call", { toolName: "read", input: { path: "src/index.ts" } }, ctx)
-			const bashResult = await harness.fire("tool_call", { toolName: "bash", input: { command: "git status" } }, ctx)
+		const readResult = await harness.fire("tool_call", { toolName: "read", input: { path: "src/index.ts" } }, ctx)
+		const bashResult = await harness.fire("tool_call", { toolName: "bash", input: { command: "git status" } }, ctx)
 
-			expect(readResult).toBeUndefined()
-			expect(bashResult).toBeUndefined()
-			expect(classifyToolCall).not.toHaveBeenCalled()
-		} finally {
-			process.env.KIMCHI_PERMISSIONS = previousEnv
+		expect(readResult).toBeUndefined()
+		expect(bashResult).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+})
+
+describe("permissions ACP prompter", () => {
+	beforeEach(() => {
+		Reflect.deleteProperty(process.env, "KIMCHI_PERMISSIONS")
+		vi.mocked(classifyToolCall).mockClear()
+	})
+
+	afterEach(() => {
+		unregisterAcpPrompter(TEST_SESSION_ID)
+		vi.unstubAllEnvs()
+	})
+
+	it("uses a registered ACP prompter in headless default mode", async () => {
+		const requests: Array<{ toolCallId: string; choices: string[] }> = []
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async (req) => {
+				requests.push({
+					toolCallId: req.toolCallId,
+					choices: req.choices.map((choice) => choice.kind),
+				})
+				return { kind: "allow-once" }
+			},
+		})
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire(
+			"tool_call",
+			{ type: "tool_call", toolCallId: "tc-acp", toolName: "bash", input: { command: "touch file.txt" } },
+			ctx,
+		)
+
+		expect(result).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+		expect(requests).toEqual([
+			{
+				toolCallId: "tc-acp",
+				choices: ["allow-once", "allow-remember", "allow-remember-wildcard", "deny"],
+			},
+		])
+	})
+
+	it("does not remember allow_once approvals", async () => {
+		const requests: string[] = []
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async (req) => {
+				requests.push(req.toolCallId)
+				return { kind: "allow-once" }
+			},
+		})
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		for (const toolCallId of ["tc-once-1", "tc-once-2"]) {
+			const result = await harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId, toolName: "bash", input: { command: "touch once.txt" } },
+				ctx,
+			)
+			expect(result).toBeUndefined()
 		}
+
+		expect(requests).toEqual(["tc-once-1", "tc-once-2"])
+	})
+
+	it("stores allow_always as a session rule", async () => {
+		const requests: string[] = []
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async (req) => {
+				requests.push(req.toolCallId)
+				const remember = req.choices.find((choice) => choice.kind === "allow-remember")
+				if (!remember || remember.kind !== "allow-remember") throw new Error("missing remember choice")
+				return { kind: "allow-remember", rule: remember.rule }
+			},
+		})
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		for (const toolCallId of ["tc-remember-1", "tc-remember-2"]) {
+			const result = await harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId, toolName: "bash", input: { command: "touch remembered.txt" } },
+				ctx,
+			)
+			expect(result).toBeUndefined()
+		}
+
+		expect(requests).toEqual(["tc-remember-1"])
+	})
+
+	it("keeps subagent workers classifier-only even when an ACP prompter is registered", async () => {
+		const requests: string[] = []
+		vi.mocked(classifyToolCall).mockResolvedValueOnce({
+			verdict: "requires-confirmation",
+			reason: "needs a human",
+			ok: true,
+		})
+		registerAcpPrompter(TEST_SESSION_ID, {
+			request: async (req) => {
+				requests.push(req.toolCallId)
+				return { kind: "allow-once" }
+			},
+		})
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await runAsAgentWorker(() =>
+			harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId: "tc-worker", toolName: "bash", input: { command: "touch worker.txt" } },
+				ctx,
+			),
+		)
+
+		expect(result).toEqual({ block: true, reason: "Classifier: needs a human (no UI to confirm)" })
+		expect(requests).toEqual([])
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
 	})
 })
 
