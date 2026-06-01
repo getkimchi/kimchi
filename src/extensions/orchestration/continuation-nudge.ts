@@ -38,13 +38,21 @@ export const DONE_SIGNAL = "<done>"
 
 export const CONTINUATION_NUDGE_TEXT = `You ended your turn without calling a tool. If this task is complete, respond with ${DONE_SIGNAL}. If a tool call is still needed, call it now.`
 
+export const SECOND_NUDGE_TEXT =
+	"You MUST call a tool immediately. Stop writing text and execute the required tool call now — or respond with <done> if you are finished."
+
 export const EMPTY_TURN_NUDGE_TEXT =
 	"If you have finished, please summarize the result for the user. Otherwise, continue with the next tool call."
+
+/** Select nudge text based on how many continuation nudges have already fired. */
+function getNudgeText(count: number): string {
+	return count <= 1 ? CONTINUATION_NUDGE_TEXT : SECOND_NUDGE_TEXT
+}
 
 /**
  * Post-turn state machine for the "text-only drift" nudge.
  *
- * Fires at most once per user-input cycle, and only when no tool has been
+ * Fires at most twice per user-input cycle, and only when no tool has been
  * called during that cycle — so legitimate end-of-task summaries after a
  * completed tool sequence are not nudged.
  *
@@ -53,8 +61,11 @@ export const EMPTY_TURN_NUDGE_TEXT =
  * and processed.
  */
 export class ContinuationNudge {
+	/** Maximum text-only nudges allowed per user-input cycle. */
+	private static readonly MAX_NUDGES = 2
+
 	private toolsCalledSinceLastUserInput = false
-	private nudgedSinceLastUserInput = false
+	private nudgeCountThisCycle = 0
 	private nudgeResponsePending = false
 	private accumulatedResponseText = ""
 	/** Number of Agent calls still awaiting results.
@@ -64,7 +75,7 @@ export class ContinuationNudge {
 
 	resetForNewUserInput(): void {
 		this.toolsCalledSinceLastUserInput = false
-		this.nudgedSinceLastUserInput = false
+		this.nudgeCountThisCycle = 0
 		this.nudgeResponsePending = false
 		this.accumulatedResponseText = ""
 		// pendingDelegationCount is intentionally NOT reset here — it is
@@ -101,7 +112,7 @@ export class ContinuationNudge {
 	}
 
 	evaluateTurn(message: AssistantMessage): boolean {
-		if (this.nudgedSinceLastUserInput) return false
+		if (this.nudgeCountThisCycle >= ContinuationNudge.MAX_NUDGES) return false
 		if (this.toolsCalledSinceLastUserInput) return false
 		// Do not nudge while any Agent result is pending — the model must
 		// wait for all Agent outputs before it can continue or signal done.
@@ -109,7 +120,7 @@ export class ContinuationNudge {
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
 		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
 		if (hasToolCalls || !hasText) return false
-		this.nudgedSinceLastUserInput = true
+		this.nudgeCountThisCycle++
 		this.nudgeResponsePending = true
 		return true
 	}
@@ -125,6 +136,18 @@ export class ContinuationNudge {
 			this.pendingDelegationCount--
 		}
 	}
+
+	isBudgetExhausted(): boolean {
+		return this.nudgeCountThisCycle >= ContinuationNudge.MAX_NUDGES
+	}
+
+	hasToolBeenCalledThisCycle(): boolean {
+		return this.toolsCalledSinceLastUserInput
+	}
+
+	getNudgeText(): string {
+		return this.nudgeCountThisCycle <= 1 ? CONTINUATION_NUDGE_TEXT : SECOND_NUDGE_TEXT
+	}
 }
 
 /**
@@ -135,28 +158,35 @@ export class ContinuationNudge {
  * nudge the agent loop stalls because there is nothing to execute or
  * display.
  *
- * Fires at most once per user-input cycle to avoid infinite nudge loops
+ * Fires at most twice per user-input cycle to avoid infinite nudge loops
  * when a model persistently returns empty responses.
  */
 export class EmptyTurnNudge {
-	private nudgedSinceLastUserInput = false
+	/** Maximum empty-turn nudges allowed per user-input cycle. */
+	private static readonly MAX_NUDGES = 2
+
+	private nudgeCountThisCycle = 0
 
 	evaluateTurn(message: AssistantMessage): boolean {
-		if (this.nudgedSinceLastUserInput) return false
+		if (this.nudgeCountThisCycle >= EmptyTurnNudge.MAX_NUDGES) return false
 
 		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
 
 		if (!hasText && !hasToolCalls) {
-			this.nudgedSinceLastUserInput = true
+			this.nudgeCountThisCycle++
 			return true
 		}
 
 		return false
 	}
 
+	isBudgetExhausted(): boolean {
+		return this.nudgeCountThisCycle >= EmptyTurnNudge.MAX_NUDGES
+	}
+
 	resetForNewUserInput(): void {
-		this.nudgedSinceLastUserInput = false
+		this.nudgeCountThisCycle = 0
 	}
 }
 
