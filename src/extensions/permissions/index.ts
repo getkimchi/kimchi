@@ -14,6 +14,7 @@ import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
 import { resolveMode } from "./mode.js"
+import { saveApprovedPlan } from "./plan-persistence.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
 import {
 	type CompoundSubcommand,
@@ -179,8 +180,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 	// Plan completion menu state: tracks whether the agent used tools during the
 	// current user-input cycle so we can detect text-only turns (plan output).
-	let toolsCalledThisCycle = false
-	let planMenuShownThisCycle = false
 
 	function rebuildConfigRules(): void {
 		configRules = [
@@ -332,17 +331,25 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		maybeShowYoloWarning(ctx, "plan")
 	}
 
-	function switchFromPlanAndExecute(ctx: ExtensionContext, targetMode: PermissionMode): void {
+	function switchFromPlanAndExecute(
+		ctx: ExtensionContext,
+		targetMode: PermissionMode,
+		planPath: string | undefined,
+		planText: string,
+	): void {
 		runtimeMode = targetMode
 		restoreToolsFromPlanMode()
 		propagateModeToEnv()
 		updateStatus(ctx)
 		maybeShowYoloWarning(ctx, targetMode)
 
+		// Send the approved plan as the execution trigger. No compaction needed —
+		// the plan text is already in context from the planning conversation.
+		const planRef = planPath ? `\n\nApproved plan saved to: ${planPath}` : ""
 		pi.sendMessage(
 			{
 				customType: "plan-execute",
-				content: "The user approved the plan. Execute it now.",
+				content: `The user approved the plan. Execute it now.${planRef}\n\n---\n\n${planText}`,
 				display: false,
 			},
 			{ triggerTurn: true },
@@ -408,55 +415,86 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		},
 	})
 
-	// Reset plan-completion tracking on every new user input.
-	pi.on("input", async () => {
-		toolsCalledThisCycle = false
-		planMenuShownThisCycle = false
-	})
-
-	// Track tool calls so we can distinguish exploration turns from plan output.
-	pi.on("tool_execution_start", async () => {
-		if (currentMode() === "plan") {
-			toolsCalledThisCycle = true
-		}
-	})
-
-	// When the agent finishes a text-only turn in plan mode, offer the user a
-	// menu to approve and execute the plan.
+	// When the agent produces <!-- PLAN_COMPLETE --> in plan mode, show the approval menu.
 	pi.on("turn_end", async (event, ctx) => {
 		if (currentMode() !== "plan") return
 		if (!ctx.hasUI) return
-		if (planMenuShownThisCycle) return
 
 		const message = event.message as AssistantMessage
 		if (message.role !== "assistant") return
 
-		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
-		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
+		const text = message.content
+			.filter((c) => c.type === "text")
+			.map((c) => (c as { type: "text"; text: string }).text)
+			.join("\n")
 
-		// Only show the menu when the agent produced text without tool calls
-		// AND has called at least one tool this cycle (i.e., it explored before
-		// presenting a plan). Without prior tool calls the agent is likely asking
-		// clarifying questions, not delivering a finished plan.
-		if (!hasText || hasToolCalls) return
-		if (!toolsCalledThisCycle) return
+		if (!text.includes("<!-- PLAN_COMPLETE -->") && !text.includes("<done>")) return
 
-		planMenuShownThisCycle = true
-
-		const EXECUTE = "Yes — execute the plan"
-		const EXECUTE_AUTO = "Yes — execute (auto-approve)"
-		const DECLINE = "No, do something else"
+		const EXECUTE = "Execute the plan"
+		const FERMENT = "Convert to ferment workflow"
+		const DECLINE = "Rework the plan"
 
 		const choice = await withWorkingHidden(ctx, () =>
-			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, EXECUTE_AUTO, DECLINE]),
+			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, FERMENT, DECLINE]),
 		)
 
 		if (choice === EXECUTE) {
-			switchFromPlanAndExecute(ctx, "default")
-		} else if (choice === EXECUTE_AUTO) {
-			switchFromPlanAndExecute(ctx, "auto")
+			let planPath: string | undefined
+			try {
+				planPath = saveApprovedPlan(ctx.cwd, text)
+			} catch {
+				// Non-fatal: plan persistence is best-effort.
+			}
+			switchFromPlanAndExecute(ctx, "auto", planPath, text)
+		} else if (choice === FERMENT) {
+			// Switch to default mode so ferment tools become available, then ask
+			// the agent to call request_ferment_workflow with the plan as intent.
+			runtimeMode = "default"
+			restoreToolsFromPlanMode()
+			propagateModeToEnv()
+			updateStatus(ctx)
+			maybeShowYoloWarning(ctx, "default")
+
+			// Extract a title from the plan text: first non-empty line after a Goal heading,
+			// or failing that the first heading text.
+			const lines = text.split(/\r?\n/)
+			const goalIdx = lines.findIndex((l) => /^#+\s*Goal\b/i.test(l))
+			let title = ""
+			if (goalIdx >= 0) {
+				for (let i = goalIdx + 1; i < lines.length; i++) {
+					const trimmed = lines[i].trim()
+					if (trimmed.length > 0 && !/^#/.test(trimmed)) {
+						title = trimmed.slice(0, 80).trim()
+						break
+					}
+				}
+			}
+			if (!title) {
+				title =
+					lines[0]
+						?.replace(/^#+\s*/, "")
+						.trim()
+						.slice(0, 80) ?? "Plan"
+			}
+			pi.sendMessage(
+				{
+					customType: "plan-execute",
+					content: `The user approved the plan and wants to run it as a ferment workflow. You MUST call \`request_ferment_workflow\` now — do not describe it, do not ask for confirmation, just call it immediately.
+
+Use these exact values:
+- title: "${title}"
+- intent: the full plan text below (copy it verbatim as the intent)
+
+The plan text:
+\`\`\`
+${text}
+\`\`\``,
+					display: false,
+				},
+				{ triggerTurn: true },
+			)
 		}
-		// Decline or escape: stay in plan mode, user types their next message.
+		// Decline or escape: stay in plan mode.
 	})
 
 	pi.on("tool_call", async (event, ctx) => {

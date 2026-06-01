@@ -187,6 +187,12 @@ describe("buildFermentPromptBlock", () => {
 			})
 		})
 
+		it("returns undefined when permissions mode is plan (no idle hint)", () => {
+			const original = process.env.KIMCHI_PERMISSIONS
+			process.env.KIMCHI_PERMISSIONS = "plan"
+			expect(buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime())).toBeUndefined()
+			process.env.KIMCHI_PERMISSIONS = original
+		})
 		it("preserves paused warning for status=paused regardless of ferment-oneshot flag", () => {
 			for (const surface of ["normal", "oneshot"] as const) {
 				const out = buildFermentPromptBlock(PI_BY_NAME[surface], makeRuntime({ status: "paused" }))

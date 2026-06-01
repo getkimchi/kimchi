@@ -16,6 +16,12 @@ import permissionsExtension, {
 import { SessionMemory } from "./session-memory.js"
 import type { Rule } from "./types.js"
 
+vi.mock("node:fs", () => ({
+	existsSync: vi.fn(() => true),
+	mkdirSync: vi.fn(),
+	writeFileSync: vi.fn(),
+}))
+
 vi.mock("./classifier.js", () => ({
 	classifyToolCall: vi.fn(async () => ({ verdict: "safe", reason: "mock safe" })),
 }))
@@ -38,19 +44,18 @@ function createMockContext(
 	selectResults: (string | undefined)[],
 	opts?: { abortOnFirstSelect?: boolean },
 ): ExtensionContext {
-	let callIndex = 0
+	let selectCallIndex = 0
 	return {
 		hasUI: true,
 		cwd: "/test",
 		sessionManager: { getSessionId: () => TEST_SESSION_ID },
 		ui: {
 			select: vi.fn(async (_: string, __: string[], selectOpts?: { signal?: AbortSignal }) => {
-				// If signal is aborted when select is called, return undefined to trigger "aborted" outcome
 				if (selectOpts?.signal?.aborted) {
 					return undefined
 				}
-				const result = selectResults[callIndex]
-				callIndex++
+				const result = selectResults[selectCallIndex]
+				selectCallIndex++
 				return result
 			}),
 			input: vi.fn(async () => ""),
@@ -265,6 +270,189 @@ describe("permissions plan-mode tool visibility", () => {
 	})
 })
 
+describe("plan mode assumption detection", () => {
+	// --- Integration tests for turn_end handler ---
+
+	function makeAssistantMessage(text: string): unknown {
+		return { role: "assistant", content: [{ type: "text", text }] }
+	}
+
+	async function fireTurnEnd(
+		harness: ReturnType<typeof createPermissionsHarness>,
+		text: string,
+		ctx: ExtensionContext,
+	) {
+		return harness.fire("turn_end", { message: makeAssistantMessage(text) }, ctx)
+	}
+
+	it("shows approval menu when plan is clean", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		// Simulate: agent called tools, then produced clean plan text
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			"# Plan\n\n## Goal\nFix the bug.\n\n## Chunk 1\nChange the code.\nAccept When: tests pass.\n\n## Verification\nRun test suite.\n\n<!-- PLAN_COMPLETE -->\n",
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("shows approval menu even when assumptions section is present (agent is trusted)", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			"# Plan\n\n## Assumptions\n- Database schema may differ\n\n## Chunks\n- Chunk 1\n\n<!-- PLAN_COMPLETE -->\n",
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("shows approval menu even when open questions section is present", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			"# Plan\n\n## Open Questions\n- Should we use JWT or sessions?\n\n## Chunks\n- Chunk 1\n\n<!-- PLAN_COMPLETE -->\n",
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("allows plan with empty assumptions section", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			"## Goal\nFix it.\n\n## Assumptions\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.\n\n<!-- PLAN_COMPLETE -->\n",
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("allows plan without assumptions section at all", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			"## Goal\nDo the thing.\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.\n\n<!-- PLAN_COMPLETE -->\n",
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("shows menu for plan with assumptions (PLAN_COMPLETE is the gate)", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(harness, "## ASSUMPTIONS\n- Schema TBD\n\n<!-- PLAN_COMPLETE -->\n", ctx)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("shows menu for plan with assumptions after blank line", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(harness, "## Assumptions\n\n- Database schema may differ\n\n<!-- PLAN_COMPLETE -->\n", ctx)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("review gate approves well-structured plan and shows menu", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			"## Goal\nAdd auth.\n\n## Chunk 1\nImplement login.\nAccept When: tests pass.\n\n## Verification\nRun the test suite.\n\n<!-- PLAN_COMPLETE -->\n",
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+		expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "plan-review-blocked" }),
+			expect.anything(),
+		)
+	})
+
+	it("review gate: menu shows for any plan with PLAN_COMPLETE marker", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(
+			harness,
+			"## Chunk 1\nJust a chunk.\n\nSome extra lines\nto make it non-simple.\nMore content here.\n\n<!-- PLAN_COMPLETE -->\n",
+			ctx,
+		)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("review gate skips simple plans and shows menu immediately", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await harness.fire("tool_execution_start", {})
+
+		const ctx = createMockContext(["No, do something else"])
+		await fireTurnEnd(harness, "## Chunk 1\nJust one chunk.\n\n<!-- PLAN_COMPLETE -->\n", ctx)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+	})
+
+	it("converts plan to ferment when user chooses ferment menu", async () => {
+		const harness = createPermissionsHarness(["read", "bash", FERMENT_TOOLS.REQUEST_WORKFLOW], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const planText =
+			"# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.\n\n## Verification\nRun tests.\n\n<!-- PLAN_COMPLETE -->"
+		const ctx = createMockContext(["Convert to ferment workflow"])
+		await fireTurnEnd(harness, planText, ctx)
+
+		expect(ctx.ui.select).toHaveBeenCalled()
+		expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "plan-execute",
+				content: expect.stringContaining("request_ferment_workflow"),
+				display: false,
+			}),
+			{ triggerTurn: true },
+		)
+
+		// Mode should have switched from plan to default (ferment tools unlocked)
+		expect(getCurrentPermissionsMode()).toBe("default")
+	})
+})
+
 describe("permissions prompt inheritance", () => {
 	afterEach(() => {
 		vi.unstubAllEnvs()
@@ -286,7 +474,7 @@ describe("permissions prompt inheritance", () => {
 
 		expect(result).toContain("Plan mode is active")
 		expect(result).toContain("read-only access")
-		expect(result).toContain("The user will switch off plan mode before you execute it")
+		expect(result).toContain("The user will approve the plan before any execution begins")
 	})
 })
 
