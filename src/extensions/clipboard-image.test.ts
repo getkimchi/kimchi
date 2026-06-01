@@ -1,39 +1,37 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 // All mock functions must be vi.hoisted — vi.mock is hoisted and its factory
 // runs before any imports, so it cannot reference module-level consts below it.
 // vi.hoisted runs first so the mocks exist when the factory executes.
 const {
-	mockSetPasteImageHandler,
 	mockSetPendingImageIndicator,
 	mockGetNativeClipboard,
-	mockReadClipboardImage,
 	mockGetAvailableModels,
 	mockAddImage,
 	mockClearAllImages,
 	mockSetImageCacheDir,
+	mockExecFileSync,
 } = vi.hoisted(() => ({
-	mockSetPasteImageHandler: vi.fn(),
 	mockSetPendingImageIndicator: vi.fn(),
 	mockGetNativeClipboard: vi.fn(),
-	mockReadClipboardImage: vi.fn(),
 	mockGetAvailableModels: vi.fn(),
 	mockAddImage: vi.fn(),
 	mockClearAllImages: vi.fn(),
 	mockSetImageCacheDir: vi.fn(),
+	mockExecFileSync: vi.fn(),
+}))
+
+vi.mock("node:child_process", () => ({
+	execFileSync: mockExecFileSync,
 }))
 
 vi.mock("./ui.js", () => ({
-	setPasteImageHandler: mockSetPasteImageHandler,
+	setPasteImageHandler: vi.fn(),
 	setPendingImageIndicator: mockSetPendingImageIndicator,
 }))
 
 vi.mock("../utils/clipboard-native-harness.js", () => ({
 	getNativeClipboard: mockGetNativeClipboard,
-}))
-
-vi.mock("../utils/clipboard-read.js", () => ({
-	readClipboardImage: mockReadClipboardImage,
 }))
 
 vi.mock("../startup-context.js", () => ({
@@ -81,6 +79,11 @@ function callInputHandler(pi: ExtensionAPI & { _handlers: Handlers }, event: { t
 describe("clipboard-image extension", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
+		vi.useFakeTimers()
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
 	})
 
 	describe("input transform", () => {
@@ -147,6 +150,201 @@ describe("clipboard-image extension", () => {
 			const text = (result as { text: string }).text
 			expect(text).toContain("[Image #3]")
 			expect(text).toContain("[Image #4]")
+		})
+
+		it("indicator shows clipboard hint (not 📎) immediately after images are submitted", () => {
+			mockGetAvailableModels.mockReturnValue([{ slug: "glm-4", input_modalities: ["text", "image"] }])
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: { hasImage: () => true, availableFormats: () => [] },
+				error: null,
+			})
+
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
+
+			const images: ImageContent[] = [{ type: "image", mimeType: "image/png", data: "abc123" }]
+			callInputHandler(pi, { text: "look at this", images })
+
+			// After submit, pendingImages is empty. clipboardHasImage is true, so the
+			// clipboard hint takes over immediately — no 📎 lingering on screen.
+			const calls = mockSetPendingImageIndicator.mock.calls
+			const lastCall = calls[calls.length - 1][0]
+			expect(lastCall).toBe("Image in clipboard · ctrl+v to paste")
+		})
+
+		it("indicator clears to null after images are submitted when clipboard is empty", () => {
+			mockGetAvailableModels.mockReturnValue([{ slug: "glm-4", input_modalities: ["text", "image"] }])
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: { hasImage: () => false, availableFormats: () => [] },
+				error: null,
+			})
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
+
+			const images: ImageContent[] = [{ type: "image", mimeType: "image/png", data: "abc123" }]
+			callInputHandler(pi, { text: "message", images })
+
+			const calls = mockSetPendingImageIndicator.mock.calls
+			expect(calls[calls.length - 1][0]).toBeNull()
+		})
+	})
+
+	describe("proactive clipboard polling", () => {
+		const realPlatform = process.platform
+
+		beforeEach(() => {
+			vi.clearAllMocks()
+			mockGetAvailableModels.mockReturnValue([{ slug: "glm-4", input_modalities: ["text", "image"] }])
+		})
+
+		afterEach(() => {
+			Object.defineProperty(process, "platform", { value: realPlatform })
+		})
+
+		it("shows hint when clipboard contains an image", () => {
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: { hasImage: () => true, availableFormats: () => [] },
+				error: null,
+			})
+
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
+
+			expect(mockSetPendingImageIndicator).toHaveBeenCalledWith("Image in clipboard · ctrl+v to paste")
+		})
+
+		it("does not duplicate indicator on repeated polls", () => {
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: { hasImage: () => true, availableFormats: () => [] },
+				error: null,
+			})
+
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
+
+			// Immediate check fires once.
+			expect(mockSetPendingImageIndicator).toHaveBeenCalledTimes(1)
+
+			// Two timer ticks pass with image still present — no additional calls.
+			vi.advanceTimersByTime(1000)
+			expect(mockSetPendingImageIndicator).toHaveBeenCalledTimes(1)
+		})
+
+		it("detects images via availableFormats fallback when hasImage returns false", () => {
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: {
+					hasImage: () => false,
+					availableFormats: () => ["public.jpeg"],
+				},
+				error: null,
+			})
+
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
+
+			// session_start fires checkClipboard → hasImage is false, but fallback detects JPEG.
+			expect(mockSetPendingImageIndicator).toHaveBeenCalledWith("Image in clipboard · ctrl+v to paste")
+		})
+
+		it("survives when availableFormats throws", () => {
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: {
+					hasImage: () => false,
+					availableFormats: () => {
+						throw new Error("pasteboard unavailable")
+					},
+				},
+				error: null,
+			})
+
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
+
+			// Should not throw — timer keeps running.
+			expect(() => vi.advanceTimersByTime(2000)).not.toThrow()
+			// No hint shown since both hasImage and fallback failed.
+			expect(mockSetPendingImageIndicator).not.toHaveBeenCalledWith("Image in clipboard · ctrl+v to paste")
+		})
+
+		it("stops polling on session_shutdown", () => {
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: { hasImage: () => true, availableFormats: () => [] },
+				error: null,
+			})
+
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
+
+			vi.advanceTimersByTime(1000)
+			const countBeforeShutdown = mockSetPendingImageIndicator.mock.calls.length
+
+			// Trigger session_shutdown.
+			;(pi._handlers.session_shutdown as () => void)()
+			vi.advanceTimersByTime(2000)
+
+			// Only one additional call from the shutdown handler.
+			expect(mockSetPendingImageIndicator.mock.calls.length).toBe(countBeforeShutdown + 1)
+			expect(mockSetPendingImageIndicator).toHaveBeenLastCalledWith(null)
+		})
+
+		it("shows hint when an image file is copied in Finder", () => {
+			mockGetAvailableModels.mockReturnValue([{ slug: "glm-4", input_modalities: ["text", "image"] }])
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: {
+					hasImage: () => true,
+					availableFormats: () => ["public.file-url", "public.jpeg"],
+				},
+				error: null,
+			})
+			mockExecFileSync.mockReturnValue("/Users/user/photo.jpg\n")
+
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
+
+			expect(mockSetPendingImageIndicator).toHaveBeenCalledWith("Image in clipboard · ctrl+v to paste")
+		})
+
+		it("does not show hint when a non-image file is copied in Finder", () => {
+			mockGetAvailableModels.mockReturnValue([{ slug: "glm-4", input_modalities: ["text", "image"] }])
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: {
+					// macOS puts a thumbnail alongside the file URL; hasImage() returns true for it.
+					hasImage: () => true,
+					availableFormats: () => ["public.file-url", "public.png"],
+				},
+				error: null,
+			})
+			mockExecFileSync.mockReturnValue("/Users/user/document.pdf\n")
+
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
+
+			expect(mockSetPendingImageIndicator).not.toHaveBeenCalledWith("Image in clipboard · ctrl+v to paste")
+		})
+
+		it("does not show hint when model does not support images", () => {
+			mockGetAvailableModels.mockReturnValue([{ slug: "text-only", input_modalities: ["text"] }])
+			mockGetNativeClipboard.mockReturnValue({
+				clipboard: { hasImage: () => true, availableFormats: () => [] },
+				error: null,
+			})
+
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
+
+			vi.advanceTimersByTime(2000)
+
+			expect(mockSetPendingImageIndicator).not.toHaveBeenCalledWith("Image in clipboard · ctrl+v to paste")
 		})
 	})
 })
