@@ -197,6 +197,7 @@ describe("clipboard-image extension", () => {
 		beforeEach(() => {
 			vi.clearAllMocks()
 			mockGetAvailableModels.mockReturnValue([{ slug: "glm-4", input_modalities: ["text", "image"] }])
+			Object.defineProperty(process, "platform", { value: "darwin" })
 		})
 
 		afterEach(() => {
