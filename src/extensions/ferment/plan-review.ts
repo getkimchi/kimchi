@@ -128,7 +128,7 @@ class PlanReviewComponent extends Container {
 	private showDecision(): void {
 		this.clear()
 		this.addStaticContent()
-		this.addChild(new Text(this.theme.fg("text", "Proceed with this plan?"), 0, 0))
+		this.addChild(new Text(this.theme.fg("toolTitle", this.theme.bold("Proceed with this plan?")), 0, 0))
 		this.addChild(this.decisionOptions)
 		this.addChild(new Spacer(1))
 		this.updateDecisionOptions()
