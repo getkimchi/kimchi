@@ -16,6 +16,35 @@ const PRIOR_STEP_SUMMARY_MAX_CHARS = 240
 const MAX_DECISIONS = 5
 const MAX_MEMORIES = 5
 
+function buildPlanPayload(ferment: Ferment): string {
+	return JSON.stringify(
+		{
+			ferment_id: ferment.id,
+			title: ferment.name,
+			goal: ferment.scoping.goal?.answer ?? ferment.goal ?? "",
+			success_criteria: ferment.scoping.criteria?.answer ?? ferment.successCriteria ?? "",
+			constraints: ferment.scoping.constraints?.answer ?? ferment.constraints ?? [],
+			assumptions: ferment.scoping.assumptions?.answer ?? "",
+			phases: ferment.phases.map((p) => ({
+				id: p.id,
+				index: p.index,
+				name: p.name,
+				goal: p.goal,
+				constraints: p.constraints ?? [],
+				steps: p.steps.map((s) => ({
+					id: s.id,
+					index: s.index,
+					description: s.description,
+					status: s.status,
+					verification: s.verification?.command,
+				})),
+			})),
+		},
+		null,
+		2,
+	)
+}
+
 export interface WorkerContextOpts {
 	includeDecisions?: boolean
 	includeMemories?: boolean
@@ -27,6 +56,10 @@ export function buildWorkerContext(ferment: Ferment, phase: Phase, step: Step, o
 	lines.push(`Ferment: ${ferment.name}`)
 	lines.push(`Phase ${phase.index}: ${phase.name} — ${phase.goal}`)
 	lines.push(`Step ${step.index}: ${step.description}`)
+	lines.push("Full approved plan:")
+	lines.push("<ferment_plan>")
+	lines.push(buildPlanPayload(ferment))
+	lines.push("</ferment_plan>")
 	if (step.verification?.command) {
 		lines.push(`verify: ${step.verification.command}`)
 	}

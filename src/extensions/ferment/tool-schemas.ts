@@ -43,6 +43,31 @@ export const GateVerdictSchema = Type.Object({
 	}),
 })
 
+export const PlanReviewSchema = Type.Object({
+	status: Type.Union([Type.Literal("approved"), Type.Literal("needs_revision")], {
+		description:
+			"Plan Reviewer verdict for the exact scoping plan payload. Use approved only when this exact plan is ready for user review and implementation.",
+	}),
+	summary: Type.String({
+		description:
+			"Short architecture verdict covering fit with existing patterns, complexity, dependencies, risk, and verification.",
+	}),
+	required_changes: Type.Array(Type.String(), {
+		description:
+			"Required plan changes from the Plan Reviewer. Must be non-empty when status is needs_revision; use [] when approved.",
+	}),
+	reservations: Type.Array(Type.String(), {
+		description: "Non-blocking Plan Reviewer concerns. Use [] when there are none.",
+		default: [],
+	}),
+	questions: Type.Array(Type.String(), {
+		description:
+			"Blocking human questions requested by the Plan Reviewer. Use [] when there are none. The planner must convert non-empty questions into propose_ferment_scoping.questions.",
+		default: [],
+		maxItems: 11,
+	}),
+})
+
 export const ListParams = Type.Object({
 	filter: Type.Optional(Type.String({ description: "Optional status filter" })),
 })
@@ -342,12 +367,9 @@ const AskUserOptionSchema = Type.Object({
 
 const AskUserQuestionSchema = Type.Object({
 	id: Type.String({ description: "Stable identifier for this question. Returned with the answer." }),
-	type: Type.Union(
-		SCOPING_QUESTION_TYPES.map((questionType) => Type.Literal(questionType)),
-		{
-			description: "radio = single-select, checkbox = multi-select, text = free-form input.",
-		},
-	),
+	type: Type.Union([Type.Literal("radio"), Type.Literal("checkbox"), Type.Literal("text")], {
+		description: "radio = single-select, checkbox = multi-select, text = free-form input.",
+	}),
 	prompt: Type.String({ description: "The full question text shown to the user or judge." }),
 	label: Type.Optional(Type.String({ description: "Short label shown in the TUI tab bar. Defaults to Q1, Q2, etc." })),
 	options: Type.Optional(

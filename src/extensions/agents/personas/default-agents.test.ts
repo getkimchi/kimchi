@@ -11,13 +11,20 @@ vi.mock("../../orchestration/model-roles.js", async (importOriginal) => {
 })
 
 import { DEFAULT_AGENTS } from "./default-agents.js"
-import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER } from "./types.js"
+import {
+	AGENT_EXPLORE,
+	AGENT_GENERAL_PURPOSE,
+	AGENT_PLAN,
+	AGENT_PLAN_REVIEWER,
+	AGENT_RESEARCHER,
+	PLAN_REVIEW_SUBMIT_TOOL,
+} from "./types.js"
 
 // Stub pickFromModelListByTier and recommendModel so snapshots are deterministic.
 // default-agents.ts calls modelsForStrength/modelsForAnyStrength at module load time
 // (before any mock can intercept), so DEFAULT_AGENTS.models[] is already populated
 // with real strings. We therefore stub only the functions called at resolve-time:
-//   - pickFromModelListByTier (used when models[] is populated — all 4 default agents)
+//   - pickFromModelListByTier (used when models[] is populated — all default agents)
 //   - recommendModel          (only reachable when models[] is absent — never for defaults)
 //   - getCurrentPhase         (only reachable when both models[] and strengths are absent)
 vi.mock("../../orchestration/model-registry/recommend.js", () => ({
@@ -41,10 +48,11 @@ vi.mock("../../tags.js", () => ({
 import { resolveAgentInvocationConfig } from "../resolution/invocation-config.js"
 
 describe("DEFAULT_AGENTS", () => {
-	it("always includes General-Purpose, Explore, Plan, and Researcher agents", () => {
+	it("always includes General-Purpose, Explore, Plan, Plan Reviewer, and Researcher agents", () => {
 		expect(DEFAULT_AGENTS.has(AGENT_GENERAL_PURPOSE)).toBe(true)
 		expect(DEFAULT_AGENTS.has(AGENT_EXPLORE)).toBe(true)
 		expect(DEFAULT_AGENTS.has(AGENT_PLAN)).toBe(true)
+		expect(DEFAULT_AGENTS.has(AGENT_PLAN_REVIEWER)).toBe(true)
 		expect(DEFAULT_AGENTS.has(AGENT_RESEARCHER)).toBe(true)
 	})
 
@@ -61,6 +69,27 @@ describe("DEFAULT_AGENTS", () => {
 	it("Researcher agent uses a kimchi-dev model", () => {
 		const r = DEFAULT_AGENTS.get(AGENT_RESEARCHER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
 		expect(r.models?.[0]).toMatch(/^kimchi-dev\//)
+	})
+
+	it("Plan Reviewer agent uses a kimchi-dev model and is read-only", () => {
+		const planReviewer = DEFAULT_AGENTS.get(AGENT_PLAN_REVIEWER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(planReviewer.models?.[0]).toMatch(/^kimchi-dev\//)
+		expect(planReviewer.builtinToolNames).toContain("read")
+		expect(planReviewer.builtinToolNames).not.toContain("write")
+		expect(planReviewer.builtinToolNames).not.toContain("edit")
+		// Strictly read-only: no shell access for a critical reviewer.
+		expect(planReviewer.builtinToolNames).not.toContain("bash")
+		expect(planReviewer.extensions).toBe(true)
+		expect(planReviewer.systemPrompt).toContain("critical plan reviewer")
+		expect(planReviewer.systemPrompt).toContain("evidence-based")
+		expect(planReviewer.systemPrompt).toContain("<ferment_plan>")
+		expect(planReviewer.systemPrompt).toContain("flag the gap as a required change or open question")
+		expect(planReviewer.systemPrompt).not.toContain("Researcher subagent")
+		expect(planReviewer.systemPrompt).toContain("All fields are required")
+		expect(planReviewer.systemPrompt).toContain('status MUST be "needs_revision"')
+		// Output is schema-bound via the submit tool, not free-text JSON.
+		expect(planReviewer.outputToolName).toBe(PLAN_REVIEW_SUBMIT_TOOL)
+		expect(planReviewer.systemPrompt).toContain(PLAN_REVIEW_SUBMIT_TOOL)
 	})
 
 	it("General-Purpose agent declares a models[] array", () => {

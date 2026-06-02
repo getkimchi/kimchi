@@ -1,8 +1,9 @@
 /**
  * Role-based model configuration for multi-model orchestration.
  *
- * Six roles:
+ * Seven roles:
  *   - orchestrator: runs the main loop, delegates work
+ *   - planReviewer: reviews implementation plans, architecture trade-offs, and risk
  *   - planner: designs the approach, writes specs (defaults to orchestrator)
  *   - builder: code implementation and research delegation
  *   - reviewer: code review
@@ -18,6 +19,7 @@
  * {
  *   "modelRoles": {
  *     "orchestrator": "anthropic/claude-sonnet-4-5",
+ *     "planReviewer": "kimchi-dev/minimax-m2.7",
  *     "planner": "anthropic/claude-sonnet-4-5",
  *     "builder": "anthropic/claude-sonnet-4-5",
  *     "reviewer": "kimchi-dev/minimax-m2.7",
@@ -35,6 +37,8 @@ import { dirname, join } from "node:path"
 export interface ModelRoles {
 	/** Main model: runs the orchestrator loop, delegates work to other roles. */
 	orchestrator: string
+	/** Plan Reviewer model: reviews implementation plans, complexity, dependencies, and risk. Does not implement code. */
+	planReviewer: string
 	/** Planning model: designs the approach, writes specs. Defaults to orchestrator. */
 	planner: string
 	/** Code implementation model: build and research delegation. */
@@ -50,6 +54,7 @@ export interface ModelRoles {
 /** Kimchi-dev OSS defaults — used when no user config is present. */
 export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
 	orchestrator: "kimchi-dev/kimi-k2.6",
+	planReviewer: "kimchi-dev/minimax-m2.7",
 	planner: "kimchi-dev/kimi-k2.6",
 	builder: "kimchi-dev/minimax-m2.7",
 	reviewer: "kimchi-dev/minimax-m2.7",
@@ -57,7 +62,17 @@ export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
 	judge: "kimchi-dev/kimi-k2.6",
 }
 
-const ROLE_KEYS: readonly (keyof ModelRoles)[] = ["orchestrator", "planner", "builder", "reviewer", "explorer", "judge"]
+/** Canonical role order. Single source of truth for parsing/saving/validation
+ *  here and for the /multi-model command's display order. */
+export const MODEL_ROLE_KEYS: readonly (keyof ModelRoles)[] = [
+	"orchestrator",
+	"planReviewer",
+	"planner",
+	"builder",
+	"reviewer",
+	"explorer",
+	"judge",
+]
 
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
 
@@ -81,7 +96,7 @@ export function parseModelRoles(raw: unknown): { roles: ModelRoles; warnings: Mo
 
 	const obj = raw as Record<string, unknown>
 
-	for (const key of ROLE_KEYS) {
+	for (const key of MODEL_ROLE_KEYS) {
 		const value = obj[key]
 		if (value === undefined || value === null) continue
 
@@ -133,7 +148,7 @@ export function saveModelRoles(roles: ModelRoles, settingsPath?: string): void {
 
 	// Only persist non-default values
 	const rolesObj: Record<string, string> = {}
-	for (const key of ROLE_KEYS) {
+	for (const key of MODEL_ROLE_KEYS) {
 		if (roles[key] !== DEFAULT_MODEL_ROLES[key]) {
 			rolesObj[key] = roles[key]
 		}
@@ -197,7 +212,7 @@ export function validateModelRoles(
 	availableModelIds: ReadonlySet<string>,
 ): ModelRoleValidationResult {
 	const unavailable: ModelRoleValidationResult["unavailable"] = []
-	for (const key of ROLE_KEYS) {
+	for (const key of MODEL_ROLE_KEYS) {
 		const ref = roles[key]
 		const id = modelIdFromRef(ref)
 		if (!availableModelIds.has(id)) {

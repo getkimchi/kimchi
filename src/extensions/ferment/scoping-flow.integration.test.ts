@@ -36,7 +36,17 @@ interface ToolResult {
 function createHarness() {
 	const tempDir = mkdtempSync(join(tmpdir(), "ferment-scoping-flow-int-test-"))
 	const eventStorage = new FermentEventStore(tempDir)
-	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => eventStorage }
+	const runtime: FermentRuntime = {
+		...createDefaultFermentRuntime(),
+		getStorage: () => eventStorage,
+		runPlanReview: async () => ({
+			status: "approved",
+			summary: "Architecture fits existing OAuth flow patterns.",
+			required_changes: [],
+			reservations: [],
+			questions: [],
+		}),
+	}
 	const tools = new Map<string, RegisteredTool>()
 	let activeTools: string[] = []
 
@@ -158,7 +168,7 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 		expect(getPendingScope(ferment.id)).toBeDefined()
 
 		// Step 2: simulate agent calling propose_ferment_scoping with full payload
-		const proposeScopingPayload = {
+		const proposeScopingPayload: Record<string, unknown> = {
 			ferment_id: ferment.id,
 			title: "Google OAuth Login",
 			goal: "Users can sign in with Google OAuth",
@@ -178,7 +188,7 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 			],
 			gates: passingPlanGates(),
 		}
-
+		// plan_review is produced by the host (runtime.runPlanReview stub), not the payload.
 		const toolCtx = { ui: { select: selectMock, input: vi.fn() } }
 		const result = await h.callTool("propose_ferment_scoping", proposeScopingPayload, toolCtx)
 

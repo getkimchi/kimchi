@@ -6,6 +6,7 @@
  * - Single-model: empty (no orchestration content)
  */
 
+import { AGENT_GENERAL_PURPOSE, DEFAULT_AGENT_NAMES } from "../agents/personas/types.js"
 import type { PromptMode } from "../prompt-construction/system-prompt.js"
 import { buildOrchestrationGuidelinesSection } from "./model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "./model-registry/index.js"
@@ -72,7 +73,7 @@ Omit steps that add no value. A simple fix may need only build. A complex featur
 
 PLAN_RULE_PLACEHOLDER
 
-The model for each role is listed in the **Your Team** section above. Always use \`subagent_type: "General-Purpose"\` and pass the exact \`id\` shown there as the \`model\` parameter in your Agent tool call. Do not use other subagent types (Explore, Plan, Researcher) — the model assignment handles specialisation.
+SUBAGENT_TYPE_RULE_PLACEHOLDER
 
 ### Step 4 — Execute
 
@@ -195,12 +196,34 @@ function resolveOrchestratorInstructions(ctx: OrchestrationInstructionsContext):
 	}
 
 	const planRule = resolvePlanRule(ctx.roles)
-	parts.push(ORCHESTRATOR_INSTRUCTIONS.replace("PLAN_RULE_PLACEHOLDER", planRule))
+	parts.push(
+		ORCHESTRATOR_INSTRUCTIONS.replace("PLAN_RULE_PLACEHOLDER", planRule).replace(
+			"SUBAGENT_TYPE_RULE_PLACEHOLDER",
+			resolveSubagentTypeRule(),
+		),
+	)
 
 	const orchGuidelines = buildOrchestrationGuidelinesSection(ctx.currentModelId, ctx.registry)
 	if (orchGuidelines) parts.push(orchGuidelines)
 
 	return parts.join("\n\n")
+}
+
+function quoteCode(item: string): string {
+	return `\`${item}\``
+}
+
+function formatCodeList(items: string[]): string {
+	const quoted = items.map(quoteCode)
+	if (quoted.length === 0) return ""
+	if (quoted.length === 1) return quoted[0]
+	if (quoted.length === 2) return `${quoted[0]} and ${quoted[1]}`
+	return `${quoted.slice(0, -1).join(", ")}, and ${quoted[quoted.length - 1]}`
+}
+
+function resolveSubagentTypeRule(): string {
+	const dedicatedTypes = DEFAULT_AGENT_NAMES.filter((name) => name !== AGENT_GENERAL_PURPOSE)
+	return `The model for each role is listed in the **Your Team** section above. Use \`${AGENT_GENERAL_PURPOSE}\` for any role without a dedicated type. Dedicated subagent types are ${formatCodeList(dedicatedTypes)}; do not use them here because the model assignment handles specialisation. Pass the exact \`id\` shown there as the \`model\` parameter in your Agent tool call.`
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +263,14 @@ function buildRoleAssignmentsSection(roles: ModelRoles, registry?: ModelRegistry
 			),
 		)
 	}
+	lines.push(
+		formatRoleModel(
+			"Plan Reviewer",
+			"reviews implementation plans for architecture fit, complexity, dependencies, and risk; does not implement code",
+			roles.planReviewer,
+			registry,
+		),
+	)
 	lines.push(formatRoleModel("Builder", "code writing, refactoring, implementation", roles.builder, registry))
 	lines.push(formatRoleModel("Reviewer", "code review, finding bugs, verifying correctness", roles.reviewer, registry))
 	lines.push(

@@ -9,6 +9,7 @@
  *   - stepCompleteAttempts   (phaseId:stepId → int)  symmetric with stepStartCounts
  *   - phaseStartRefs         (phaseId → git sha)     captured at activate_ferment_phase, consumed at complete_ferment_phase for diff evidence
  *   - stepStartRefs          (phaseId:stepId → sha)  captured at start_ferment_step, consumed at complete_ferment_step for diff evidence
+ *   - planReview        planner/planReviewer scoping-loop guard state
  *
  * What's NOT persisted (single-CLI-session only):
  *   - scopingInteractive / scopingConfirmed (TUI flow; local-only)
@@ -25,6 +26,8 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
+import { type Static, Type } from "typebox"
+import { Value } from "typebox/value"
 import { resolveFermentsDir } from "../../ferment/store.js"
 
 export const RUNTIME_STATE_SCHEMA_VERSION = 1
@@ -43,6 +46,27 @@ export interface PersistedRuntimeState {
 	phaseStartRefs: Record<string, string>
 	/** Key: `${phaseId}:${stepId}`. Git sha captured at start_ferment_step. */
 	stepStartRefs: Record<string, string>
+	planReview: PersistedPlanReviewState
+}
+
+/** Planner/Plan-Reviewer scoping-loop guard state. Defaults make the persisted
+ *  migration/defaulting rules explicit and let `normalizePlanReviewState` cast a
+ *  partial or absent on-disk value back to a complete record. */
+export const PersistedPlanReviewStateSchema = Type.Object({
+	planReviewAttempts: Type.Number({ default: 0 }),
+	lastRejectionHash: Type.Optional(Type.String()),
+	sameRejectionCount: Type.Number({ default: 0 }),
+	lastPlanReviewSummary: Type.Optional(Type.String()),
+})
+
+export type PersistedPlanReviewState = Static<typeof PersistedPlanReviewStateSchema>
+
+/** Coerce an untrusted on-disk `planReview` blob into a valid state, applying
+ *  defaults for missing fields and discarding anything malformed. */
+export function normalizePlanReviewState(raw: unknown): PersistedPlanReviewState {
+	const withDefaults = Value.Default(PersistedPlanReviewStateSchema, raw ?? {})
+	if (Value.Check(PersistedPlanReviewStateSchema, withDefaults)) return withDefaults
+	return Value.Create(PersistedPlanReviewStateSchema)
 }
 
 export function emptyState(): PersistedRuntimeState {
@@ -54,6 +78,10 @@ export function emptyState(): PersistedRuntimeState {
 		stepCompleteAttempts: {},
 		phaseStartRefs: {},
 		stepStartRefs: {},
+		planReview: {
+			planReviewAttempts: 0,
+			sameRejectionCount: 0,
+		},
 	}
 }
 
@@ -86,6 +114,9 @@ export function loadRuntimeState(fermentId: string, root?: string): PersistedRun
 			merged.stepCompleteAttempts = raw.stepCompleteAttempts
 		if (raw.phaseStartRefs && typeof raw.phaseStartRefs === "object") merged.phaseStartRefs = raw.phaseStartRefs
 		if (raw.stepStartRefs && typeof raw.stepStartRefs === "object") merged.stepStartRefs = raw.stepStartRefs
+		if (raw.planReview && typeof raw.planReview === "object") {
+			merged.planReview = normalizePlanReviewState(raw.planReview)
+		}
 		return merged
 	} catch {
 		return emptyState()

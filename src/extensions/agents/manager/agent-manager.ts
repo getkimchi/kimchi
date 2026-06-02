@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { getAgentStructuredOutput, runAsAgentWorker } from "../../agent-worker-context.js"
 import type { AgentRecord, AgentVisibility, IsolationMode, SubagentType, ThinkingLevel } from "../personas/types.js"
 import { type ToolActivity, resumeAgent, runAgent } from "./agent-runner.js"
 import { type LifetimeUsage, addUsage } from "./usage.js"
@@ -174,12 +175,13 @@ export class AgentManager {
 				options.onSessionCreated?.(session)
 			},
 		})
-			.then(({ responseText, session, aborted, abortReason, steered }) => {
+			.then(({ responseText, session, aborted, abortReason, steered, structuredOutput }) => {
 				if (record.status !== "stopped") {
 					record.status = aborted ? "aborted" : steered ? "steered" : "completed"
 				}
 				record.abortReason = abortReason
 				record.result = responseText
+				record.structuredOutput = structuredOutput
 				record.session = session
 				record.completedAt ??= Date.now()
 
@@ -271,27 +273,37 @@ export class AgentManager {
 	async resume(id: string, prompt: string, signal?: AbortSignal): Promise<AgentRecord | undefined> {
 		const record = this.agents.get(id)
 		if (!record?.session) return undefined
+		const session = record.session
 
 		record.status = "running"
 		record.startedAt = Date.now()
 		record.completedAt = undefined
 		record.result = undefined
+		// Clear any verdict captured on a previous run so a resume that does not
+		// re-submit can't surface stale structured output.
+		record.structuredOutput = undefined
 		record.error = undefined
 		record.abortReason = undefined
 
 		try {
-			const responseText = await resumeAgent(record.session, prompt, {
-				onToolActivity: (activity) => {
-					if (activity.type === "end") record.toolUses++
-				},
-				onAssistantUsage: (usage) => {
-					addUsage(record.lifetimeUsage, usage)
-				},
-				onCompaction: (info) => {
-					record.compactionCount++
-					this.onCompact?.(record, info)
-				},
-				signal,
+			// Wrap in the worker context so a resumed persona's bound submit tool
+			// (setAgentStructuredOutput) is captured, mirroring runAgent().
+			const responseText = await runAsAgentWorker(async () => {
+				const text = await resumeAgent(session, prompt, {
+					onToolActivity: (activity) => {
+						if (activity.type === "end") record.toolUses++
+					},
+					onAssistantUsage: (usage) => {
+						addUsage(record.lifetimeUsage, usage)
+					},
+					onCompaction: (info) => {
+						record.compactionCount++
+						this.onCompact?.(record, info)
+					},
+					signal,
+				})
+				record.structuredOutput = getAgentStructuredOutput()
+				return text
 			})
 			record.status = "completed"
 			record.result = responseText

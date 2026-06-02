@@ -5,6 +5,11 @@ Scoping follows five steps. Work through them IN ORDER.
 
 STEP 1 — ORIENT (lightweight research)
 Read the user's intent. Before asking anything, build context:
+- First action in STEP 1: print a concise inventory of available agent/subagent
+  types so the user can see the delegation surface. Do not list skills.
+- Inspect the Agent tool subagent_type options or the available-subagent prompt
+  section. If agent types are not exposed in this environment, say that explicitly
+  instead of inventing names.
 - Do a quick project scan: file listing, README, package/config files, and short
   entrypoint snippets (at most ~60 lines each). For files >120 lines, read only
   the first 60 lines or use a targeted search — do not read them end-to-end yet.
@@ -20,9 +25,12 @@ STEP 2 — INTERVIEW (iterative rounds)
 Ask the user about the unknowns you identified in Step 1. Run in rounds:
 
 Round structure:
-  a. Ask 1-3 focused questions via ask_user.
-     When presenting options, set allowOther: true and include "None of the above"
-     for predefined choices.
+  a. Ask 1-3 focused questions with the ask_user tool. Use ask_user, NOT
+     questionnaire — only ask_user falls back to the judge in one-shot mode.
+     Pass the questions in questions[]; each question's type is one of
+     "radio" (single-select), "checkbox" (multi-select), or "text", and each
+     option is { id, label }. Set allowOther: true and include a "None of the
+     above" option for predefined choices.
   b. When answers come back, REFLECT before continuing:
      - How do these answers change your understanding of the task?
      - Do you need to check anything in the codebase to validate or act on an answer?
@@ -74,10 +82,17 @@ Now investigate the codebase for implementation-specific details.
 - Wait for subagent results before proceeding.
 - Skip this step for greenfield tasks with no existing codebase; record why in assumptions.
 
-STEP 5 — PLAN
+STEP 5 — PLAN (propose → host review → revise loop)
 Synthesize everything — orient findings, interview answers, confirmed criteria,
-and exploration results — into a plan.
-- Call propose_ferment_scoping with the complete payload.
+and exploration results — into the complete scoping plan payload, then:
+  a. Call propose_ferment_scoping with the plan and questions: [].
+  b. The host automatically runs a Plan Reviewer on that exact plan before the
+     user sees it. You do NOT spawn the reviewer or pass a verdict.
+  c. If the host rejects the call with "needs_revision" and required changes,
+     apply them and call propose_ferment_scoping again. Repeat until it is
+     accepted (or the loop guard stops you and the user decides).
+  d. If the host rejects asking for a blocking user question, move that question
+     into propose_ferment_scoping.questions and keep the plan provisional.
 - Ensure completion criteria were confirmed with the user before finalizing.
 - Default to one phase for simple tasks.
 - Add phases only for real vertical slices, different complexity tiers,

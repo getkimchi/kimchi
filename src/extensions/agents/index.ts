@@ -310,6 +310,24 @@ function getStatusInstruction(status: string, abortReason?: AgentAbortReason): s
 	return ""
 }
 
+/** Serialize a persona's captured structured output for the Agent tool body.
+ *  Returns undefined when there is no structured output, or when it can't be
+ *  serialized (e.g. a circular reference) so the caller falls back to text. */
+function safeStructuredBody(structuredOutput: unknown): string | undefined {
+	if (structuredOutput === undefined) return undefined
+	try {
+		return JSON.stringify(structuredOutput, null, 2)
+	} catch {
+		return undefined
+	}
+}
+
+/** Body to surface for a completed agent: its schema-validated structured output
+ *  if present, else its trimmed free-text result, else `fallback`. */
+function agentResultBody(record: { structuredOutput?: unknown; result?: string }, fallback: string): string {
+	return safeStructuredBody(record.structuredOutput) ?? (record.result?.trim() || fallback)
+}
+
 function escapeXml(s: string): string {
 	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
 }
@@ -420,6 +438,28 @@ function blockBudgetRetryIfNeeded(record: AgentRecord, candidate: BudgetRetryCan
 
 export function getActiveAgentCount(): number {
 	return activeManager?.getRunningCount() ?? 0
+}
+
+export interface VisibleSubagentSpawnArgs {
+	pi: ExtensionAPI
+	ctx: ExtensionContext
+	type: SubagentType
+	prompt: string
+	description: string
+	signal?: AbortSignal
+	maxTurns?: number
+}
+
+/** Spawn a foreground subagent wired to the SAME activity tracker + widget the
+ *  Agent tool uses, so it renders in the "● Agents" tree with a live spinner,
+ *  tool-use count, token usage, and the streaming activity line — identical to a
+ *  planner-spawned Explore/Plan agent. Set at extension init; undefined before. */
+let visibleSubagentSpawner: ((args: VisibleSubagentSpawnArgs) => Promise<AgentRecord | undefined>) | undefined
+
+export function getVisibleSubagentSpawner():
+	| ((args: VisibleSubagentSpawnArgs) => Promise<AgentRecord | undefined>)
+	| undefined {
+	return visibleSubagentSpawner
 }
 
 export function getActiveAgentModelIds(): string[] {
@@ -734,6 +774,32 @@ export default function (pi: ExtensionAPI) {
 	const widget = new AgentWidget(manager, agentActivity)
 	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
 
+	// Expose a foreground spawn that mirrors the Agent tool's tracker+widget wiring,
+	// so in-process callers (ferment's host-run Plan Reviewer) render in the "●
+	// Agents" tree exactly like a planner-spawned Explore/Plan agent.
+	visibleSubagentSpawner = async ({ pi: spawnPi, ctx: spawnCtx, type, prompt, description, signal, maxTurns }) => {
+		const { state, callbacks } = createActivityTracker(maxTurns)
+		const id = manager.spawn(spawnPi, spawnCtx, type, prompt, {
+			description,
+			visibility: "user",
+			isBackground: false,
+			maxTurns,
+			signal,
+			...callbacks,
+		})
+		agentActivity.set(id, state)
+		widget.ensureTimer()
+		widget.update()
+		try {
+			await manager.getRecord(id)?.promise
+			return manager.getRecord(id)
+		} finally {
+			agentActivity.delete(id)
+			widget.markFinished(id)
+			widget.update()
+		}
+	}
+
 	let defaultJoinMode: JoinMode = "smart"
 	function getDefaultJoinMode(): JoinMode {
 		return defaultJoinMode
@@ -812,7 +878,7 @@ Guidelines:
 - If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
 - For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
 - Use Explore for codebase searches and code understanding.
-- Use Plan for architecture and implementation planning.
+- Use Plan for technical and implementation planning.
 - Use Researcher for web/docs research with cited sources.
 - Use General-Purpose for complex tasks that need file editing.
 - Provide clear, detailed prompts so the agent can work autonomously.
@@ -1310,8 +1376,11 @@ Model selection — YOU choose based on task complexity:
 				const statsParts = [`${record.toolUses} tool uses`]
 				if (tokenText) statsParts.push(tokenText)
 				const outcome = record.status === "aborted" ? "aborted" : record.status === "stopped" ? "stopped" : "completed"
+				// A persona with a bound submit tool (AgentConfig.outputToolName) returns
+				// its schema-validated args as the body; the caller copies that verbatim.
+				const body = agentResultBody(record, "No output.")
 				return textResult(
-					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.${getStatusInstruction(record.status, record.abortReason)}\n\n${record.result?.trim() || "No output."}`,
+					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.${getStatusInstruction(record.status, record.abortReason)}\n\n${body}`,
 					details,
 				)
 			},
@@ -1399,7 +1468,17 @@ Model selection — YOU choose based on task complexity:
 			execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
 				const record = manager.getRecord(params.agent_id as string)
 				if (!record) {
-					return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`)
+					const availableAgents = listUserVisibleAgents()
+					const availableIds =
+						availableAgents.length === 0
+							? "No agent IDs are currently available in this session."
+							: `Available agent IDs: ${availableAgents
+									.slice(0, 20)
+									.map((a) => `${a.id} (${getDisplayName(a.type)}, ${a.status})`)
+									.join(", ")}${availableAgents.length > 20 ? ", ..." : ""}.`
+					return textResult(
+						`Agent not found: "${params.agent_id}". ${availableIds} Use the exact Agent ID returned by the Agent tool; do not invent IDs like "agent_001". If the ID is unavailable, rerun the agent instead of searching session output files.`,
+					)
 				}
 
 				if (params.wait && record.status === "running" && record.promise) {
@@ -1431,7 +1510,12 @@ Model selection — YOU choose based on task complexity:
 					bodyForDisplay = `Error: ${record.error}`
 					output += bodyForDisplay
 				} else {
-					bodyForDisplay = record.result?.trim() || "No output."
+					bodyForDisplay = agentResultBody(
+						record,
+						record.outputFile
+							? `No output was captured in the agent result. Full transcript: ${record.outputFile}`
+							: "No output.",
+					)
 					output += bodyForDisplay
 				}
 

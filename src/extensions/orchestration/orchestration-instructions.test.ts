@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../models.js"
+import { DEFAULT_AGENTS } from "../agents/personas/default-agents.js"
+import { AGENT_GENERAL_PURPOSE } from "../agents/personas/types.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "./model-registry/index.js"
 import { DEFAULT_MODEL_ROLES } from "./model-roles.js"
 import { resolveOrchestrationInstructions } from "./orchestration-instructions.js"
@@ -41,6 +43,7 @@ describe("resolveOrchestrationInstructions", () => {
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("## Your Team")
+		expect(result).toContain("Plan Reviewer")
 		expect(result).toContain("Builder")
 		expect(result).toContain("Reviewer")
 		expect(result).toContain("Explorer")
@@ -59,15 +62,21 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).not.toContain("standard-tier model with `build` strength")
 	})
 
-	it("instructs to always use General-Purpose subagent type", () => {
+	it("lists every dedicated subagent type from the persona registry", () => {
 		const result = resolveOrchestrationInstructions({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain('subagent_type: "General-Purpose"')
-		expect(result).toContain("Do not use other subagent types")
+		// Derived from DEFAULT_AGENTS, not hardcoded: every non-General-Purpose persona must appear.
+		const dedicatedTypes = [...DEFAULT_AGENTS.keys()].filter((name) => name !== AGENT_GENERAL_PURPOSE)
+		expect(dedicatedTypes.length).toBeGreaterThan(0)
+		for (const name of dedicatedTypes) {
+			expect(result).toContain(`\`${name}\``)
+		}
+		expect(result).toContain(`Use \`${AGENT_GENERAL_PURPOSE}\` for any role without a dedicated type`)
+		expect(result).toContain("as the `model` parameter")
 	})
 
 	it("shows model IDs from the roles config", () => {
@@ -77,6 +86,7 @@ describe("resolveOrchestrationInstructions", () => {
 			mode: "orchestrator",
 			roles: {
 				orchestrator: "anthropic/claude-opus-4-7",
+				planReviewer: "kimchi-dev/minimax-m2.7",
 				planner: "anthropic/claude-opus-4-7",
 				builder: "anthropic/claude-sonnet-4-5",
 				reviewer: "openai/gpt-4o",
@@ -108,6 +118,7 @@ describe("resolveOrchestrationInstructions", () => {
 			mode: "orchestrator",
 			roles: {
 				...DEFAULT_MODEL_ROLES,
+				planReviewer: "kimchi-dev/minimax-m2.7",
 				planner: "anthropic/claude-opus-4-7",
 			},
 		})

@@ -54,6 +54,7 @@ describe("parseModelRoles", () => {
 	it("overrides all roles", () => {
 		const custom: ModelRoles = {
 			orchestrator: "anthropic/claude-opus-4-7",
+			planReviewer: "kimchi-dev/minimax-m2.7",
 			planner: "anthropic/claude-sonnet-4-5",
 			builder: "anthropic/claude-sonnet-4-5",
 			reviewer: "openai/gpt-4o",
@@ -115,6 +116,7 @@ describe("parseModelRoles", () => {
 	it("handles mixed valid and invalid roles", () => {
 		const { roles, warnings } = parseModelRoles({
 			orchestrator: "anthropic/claude-opus-4-7",
+			planReviewer: "kimchi-dev/minimax-m2.7",
 			planner: "anthropic/claude-sonnet-4-5",
 			builder: null,
 			reviewer: 123,
@@ -176,6 +178,7 @@ describe("modelIdFromRef", () => {
 describe("DEFAULT_MODEL_ROLES", () => {
 	it("defaults to kimchi-dev OSS models", () => {
 		expect(DEFAULT_MODEL_ROLES.orchestrator).toBe("kimchi-dev/kimi-k2.6")
+		expect(DEFAULT_MODEL_ROLES.planReviewer).toBe("kimchi-dev/minimax-m2.7")
 		expect(DEFAULT_MODEL_ROLES.planner).toBe("kimchi-dev/kimi-k2.6")
 		expect(DEFAULT_MODEL_ROLES.builder).toBe("kimchi-dev/minimax-m2.7")
 		expect(DEFAULT_MODEL_ROLES.reviewer).toBe("kimchi-dev/minimax-m2.7")
@@ -259,6 +262,7 @@ describe("validateModelRoles", () => {
 	it("flags multiple unavailable roles", () => {
 		const roles: ModelRoles = {
 			orchestrator: "openai/gpt-4o",
+			planReviewer: "kimchi-dev/minimax-m2.7",
 			planner: "openai/gpt-4o",
 			builder: "anthropic/claude-sonnet-4-5",
 			reviewer: "kimchi-dev/minimax-m2.7",
@@ -272,6 +276,7 @@ describe("validateModelRoles", () => {
 		expect(flaggedRoles).toContain("planner")
 		expect(flaggedRoles).toContain("builder")
 		expect(flaggedRoles).toContain("explorer")
+		expect(flaggedRoles).not.toContain("planReviewer")
 		expect(flaggedRoles).not.toContain("reviewer")
 	})
 
@@ -287,6 +292,6 @@ describe("validateModelRoles", () => {
 
 	it("handles empty available set", () => {
 		const result = validateModelRoles(DEFAULT_MODEL_ROLES, new Set())
-		expect(result.unavailable).toHaveLength(6)
+		expect(result.unavailable).toHaveLength(7)
 	})
 })

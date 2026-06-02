@@ -10,9 +10,15 @@ import {
 	clearAllStepStarts,
 	clearFermentState,
 	getBlockRetry,
+	getLastPlanReviewSummary,
+	getLastRejectionHash,
 	getPhaseStartRef,
+	getPlanReviewAttempts,
+	getSamePlanReviewRejectionCount,
 	getStepStartRef,
 	recordBlockHashAndCheckRepeat,
+	recordPlanReviewAttempt,
+	resetPlanReviewState,
 	setPhaseStartRef,
 	setRuntimeStatePersistRoot,
 	setStepStartRef,
@@ -101,10 +107,41 @@ describe("runtime-state persistence — write-through + lazy hydrate", () => {
 		expect(getStepStartRef(fId, "phase-1", "step-1")).toBe("cafef00d")
 	})
 
+	it("persists Plan Reviewer loop state across a simulated restart", () => {
+		const fId = "ferment-test-planReviewer"
+		let state = recordPlanReviewAttempt(fId, "reject-a", "Missing verification")
+		expect(state.planReviewAttempts).toBe(1)
+		expect(state.sameRejectionCount).toBe(1)
+		state = recordPlanReviewAttempt(fId, "reject-a", "Missing verification")
+		expect(state.planReviewAttempts).toBe(2)
+		expect(state.sameRejectionCount).toBe(2)
+
+		simulateRestart()
+
+		expect(getPlanReviewAttempts(fId)).toBe(2)
+		expect(getLastRejectionHash(fId)).toBe("reject-a")
+		expect(getSamePlanReviewRejectionCount(fId)).toBe(2)
+		expect(getLastPlanReviewSummary(fId)).toBe("Missing verification")
+	})
+
+	it("resets Plan Reviewer loop state", () => {
+		const fId = "ferment-test-planReviewer-reset"
+		recordPlanReviewAttempt(fId, "reject-a", "Missing verification")
+
+		resetPlanReviewState(fId)
+		simulateRestart()
+
+		expect(getPlanReviewAttempts(fId)).toBe(0)
+		expect(getLastRejectionHash(fId)).toBeUndefined()
+		expect(getSamePlanReviewRejectionCount(fId)).toBe(0)
+		expect(getLastPlanReviewSummary(fId)).toBeUndefined()
+	})
+
 	it("clearFermentState wipes both in-memory and on-disk state", () => {
 		const fId = "ferment-test-7"
 		bumpBlockRetry(fId, "phase-1")
 		setPhaseStartRef(fId, "phase-1", "deadbeef")
+		recordPlanReviewAttempt(fId, "reject-a", "Missing verification")
 
 		clearFermentState(fId)
 
@@ -115,6 +152,7 @@ describe("runtime-state persistence — write-through + lazy hydrate", () => {
 		simulateRestart()
 		expect(getBlockRetry(fId, "phase-1")).toBe(0)
 		expect(getPhaseStartRef(fId, "phase-1")).toBeUndefined()
+		expect(getPlanReviewAttempts(fId)).toBe(0)
 	})
 
 	it("does not cross-contaminate between two ferments in the same session", () => {

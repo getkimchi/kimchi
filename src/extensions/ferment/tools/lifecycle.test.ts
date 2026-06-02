@@ -48,10 +48,24 @@ function errText(result: { content: { text: string }[]; isError?: boolean }): st
 
 function createHarness() {
 	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-lifecycle-test-")))
-	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
+	let planReviewVerdict = {
+		status: "approved" as const,
+		summary: "Plan Reviewer approves this scoping plan.",
+		required_changes: [] as string[],
+		reservations: [] as string[],
+		questions: [] as string[],
+	}
+	const setPlanReview = (verdict: typeof planReviewVerdict) => {
+		planReviewVerdict = verdict
+	}
+	const runtime: FermentRuntime = {
+		...createDefaultFermentRuntime(),
+		getStorage: () => storage,
+		runPlanReview: async () => planReviewVerdict,
+	}
 	const pi = { sendMessage: vi.fn(), sendUserMessage: vi.fn(), appendEntry: vi.fn() } as unknown as ExtensionAPI
 	const ferment = storage.create("Lifecycle Test")
-	return { storage, runtime, pi, fermentId: ferment.id }
+	return { storage, runtime, pi, fermentId: ferment.id, setPlanReview }
 }
 
 function createTerminalFerment(h: ReturnType<typeof createHarness>) {
@@ -129,6 +143,7 @@ describe("buildFreeformScopingFeedbackMessage", () => {
 			].join("\n"),
 		)
 		expect(message).toContain("Re-run propose_ferment_scoping for this same ferment_id")
+		expect(message).toContain("The host runs the Plan Reviewer automatically")
 		expect(message).toContain("Do not call scope_ferment")
 		expect(message).not.toContain("list_ferments")
 		expect(message).not.toContain(`drop <phase 2> & keep "core"`)
@@ -356,29 +371,24 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 	it("normalizes canonical question fields before runtime validation", async () => {
 		const { h, execute } = createProposeHarness()
 
-		const result = await execute(
-			"tool-call-1",
-			{
-				ferment_id: h.fermentId,
-				title: "Lifecycle Test",
-				goal: "Ship the feature",
-				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
-				questions: [
-					{
-						id: "q1",
-						question: "Which path?",
-						options: [
-							{ id: "a", label: "A", recommended: true },
-							{ id: "b", label: "B" },
-						],
-					},
-				],
-				gates: passingPlanGates(),
-			},
-			undefined,
-			undefined,
-			{ ui: {} },
-		)
+		const payload = {
+			ferment_id: h.fermentId,
+			title: "Lifecycle Test",
+			goal: "Ship the feature",
+			phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+			questions: [
+				{
+					id: "q1",
+					question: "Which path?",
+					options: [
+						{ id: "a", label: "A", recommended: true },
+						{ id: "b", label: "B" },
+					],
+				},
+			],
+			gates: passingPlanGates(),
+		}
+		const result = await execute("tool-call-1", payload, undefined, undefined, { ui: {} })
 
 		expect(errText(result)).toContain("Cannot ask scoping questions without an interactive UI")
 		expect(errText(result)).not.toContain("questions.0.question")
@@ -438,29 +448,24 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 	it("allows empty question because the schema only requires a string", async () => {
 		const { h, execute } = createProposeHarness()
 
-		const result = await execute(
-			"tool-call-1",
-			{
-				ferment_id: h.fermentId,
-				title: "Lifecycle Test",
-				goal: "Ship the feature",
-				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
-				questions: [
-					{
-						id: "q1",
-						question: "",
-						options: [
-							{ id: "a", label: "A", recommended: true },
-							{ id: "b", label: "B" },
-						],
-					},
-				],
-				gates: passingPlanGates(),
-			},
-			undefined,
-			undefined,
-			{ ui: {} },
-		)
+		const payload = {
+			ferment_id: h.fermentId,
+			title: "Lifecycle Test",
+			goal: "Ship the feature",
+			phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+			questions: [
+				{
+					id: "q1",
+					question: "",
+					options: [
+						{ id: "a", label: "A", recommended: true },
+						{ id: "b", label: "B" },
+					],
+				},
+			],
+			gates: passingPlanGates(),
+		}
+		const result = await execute("tool-call-1", payload, undefined, undefined, { ui: {} })
 
 		expect(errText(result)).toContain("Cannot ask scoping questions without an interactive UI")
 		expect(errText(result)).not.toContain("questions.0.question must be a string")

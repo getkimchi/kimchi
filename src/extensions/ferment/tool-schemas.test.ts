@@ -5,7 +5,7 @@
 
 import { Value } from "typebox/value"
 import { describe, expect, it } from "vitest"
-import { CompleteStepParams, ProposeScopingParams, ScopeParams } from "./tool-schemas.js"
+import { CompleteStepParams, PlanReviewSchema, ProposeScopingParams, ScopeParams } from "./tool-schemas.js"
 
 // Minimal valid payload fixtures
 const passingGates = () => [
@@ -17,6 +17,26 @@ const passingGates = () => [
 const minimalPhases = () => [{ name: "P1", goal: "Phase 1 goal", steps: [{ description: "Step 1" }] }]
 
 describe("ProposeScopingParams schema", () => {
+	it("requires Plan Reviewer array fields when plan_review is present", () => {
+		expect(
+			Value.Check(PlanReviewSchema, {
+				status: "approved",
+				summary: "Ready.",
+				required_changes: [],
+				reservations: [],
+				questions: [],
+			}),
+		).toBe(true)
+
+		expect(
+			Value.Check(PlanReviewSchema, {
+				status: "approved",
+				summary: "Ready.",
+				required_changes: [],
+			}),
+		).toBe(false)
+	})
+
 	it("accepts full payload with questions", () => {
 		const payload = {
 			ferment_id: "f-123",
