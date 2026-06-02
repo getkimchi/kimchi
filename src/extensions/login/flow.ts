@@ -20,6 +20,16 @@ export const SUBSCRIPTION_LABEL = "Use a subscription"
 
 let browserLoginLinkSeq = 0
 
+export function getKimchiAuthPath(): string {
+	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+	return agentDir ? resolve(agentDir, "auth.json") : "auth.json"
+}
+
+export function formatKimchiLoginSuccessMessage(modelId?: string): string {
+	const selectedModel = modelId ? ` Selected ${modelId}.` : ""
+	return `Logged in to Kimchi.${selectedModel} Credentials saved to ${getKimchiAuthPath()}`
+}
+
 /**
  * Format the browser-login URL as a feedback message the user can act on when
  * the auto-opened browser landed in the wrong app/profile.
@@ -187,7 +197,7 @@ async function configureKimchiToken(host: KimchiBrowserLoginHost, token: string)
 	if (providerModels.length > 0) {
 		const selectedModel = providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0]
 		await host.setModel?.(selectedModel)
-		host.addFeedback?.(`✓ Logged in. Model: ${selectedModel.id}`)
+		host.addFeedback?.(formatKimchiLoginSuccessMessage(selectedModel.id))
 		return true
 	}
 

@@ -123,6 +123,7 @@ async function selectSubscriptionLoginOption(fakeIm: FakeIm): Promise<void> {
 }
 
 it("intercepts showOAuthSelector('login') and runs Kimchi browser auth", async () => {
+	process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-login-test"
 	const cliAuthModule = await import("./cli-auth/index.js")
 	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "test-token-123" })
 
@@ -147,7 +148,9 @@ it("intercepts showOAuthSelector('login') and runs Kimchi browser auth", async (
 		id: "kimi-k2.6",
 		provider: "kimchi-dev",
 	})
-	expect(getFeedbackMessages(fakeIm)).toContain("✓ Logged in. Model: kimi-k2.6")
+	expect(getFeedbackMessages(fakeIm)).toContain(
+		"Logged in to Kimchi. Selected kimi-k2.6. Credentials saved to /tmp/kimchi-login-test/auth.json",
+	)
 })
 
 it("does not reuse a saved Kimchi key for explicit /login", async () => {
@@ -225,7 +228,9 @@ it("falls back to the first available model when the default is not present", as
 		id: "other-model",
 		provider: "kimchi-dev",
 	})
-	expect(getFeedbackMessages(fakeIm)).toContain("✓ Logged in. Model: other-model")
+	expect(getFeedbackMessages(fakeIm)).toContainEqual(
+		expect.stringContaining("Logged in to Kimchi. Selected other-model. Credentials saved to "),
+	)
 })
 
 it("reports failure when no models are available for the provider", async () => {
