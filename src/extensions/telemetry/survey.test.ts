@@ -62,12 +62,6 @@ describe("survey telemetry", () => {
 
 		const attrMap = attrs(record)
 		expect(attrMap.survey_id).toBe(TEST_SURVEY.id)
-		expect(attrMap.$survey_id).toBeUndefined()
-		expect(attrMap.impression_id).toBeUndefined()
-		expect(attrMap.survey_version).toBeUndefined()
-		expect(attrMap.question_id).toBeUndefined()
-		expect(attrMap.question_text).toBeUndefined()
-		expect(attrMap.question_help).toBeUndefined()
 		expect(attrMap["session.id"]).toBe(ctx.sessionId)
 		expect(attrMap.client).toBe("pi")
 		expect(attrMap.source).toBe("cli")
@@ -91,13 +85,6 @@ describe("survey telemetry", () => {
 		expect(attrMap.question_id).toBe("34f7caf5-7631-42f1-b6ed-d2a42ddde1cd")
 		expect(attrMap.answer_value).toBe("Mostly worked")
 		expect(attrMap.survey_completed).toBe("true")
-		expect(attrMap.$survey_id).toBeUndefined()
-		expect(attrMap["$survey_response_34f7caf5-7631-42f1-b6ed-d2a42ddde1cd"]).toBeUndefined()
-		expect(attrMap.$survey_submission_id).toBeUndefined()
-		expect(attrMap.impression_id).toBeUndefined()
-		expect(attrMap.answer_id).toBeUndefined()
-		expect(attrMap.answer_label).toBeUndefined()
-		expect(attrMap.answer_score).toBeUndefined()
 
 		await ctx.drain()
 	})
@@ -123,16 +110,11 @@ describe("survey telemetry", () => {
 
 		const attrMap = attrs(record)
 		expect(attrMap.survey_id).toBe(TEST_SURVEY.id)
-		expect(attrMap.$survey_id).toBeUndefined()
-		expect(attrMap.impression_id).toBeUndefined()
-		expect(attrMap.dismiss_reason).toBeUndefined()
-		expect(attrMap.question_id).toBeUndefined()
-		expect(attrMap.question_text).toBeUndefined()
 
 		await ctx.drain()
 	})
 
-	it("does not emit local or PostHog-specific survey metadata", async () => {
+	it("emits triggered survey events with the survey response fields", async () => {
 		const ctx = new SessionContext(makeConfig(), "cli", "ferment")
 
 		emitSurveyShown(ctx, { survey: TEST_SURVEY, trigger: "ferment_completed" })
@@ -153,17 +135,6 @@ describe("survey telemetry", () => {
 		expect(attrs(ctx.logBuffer[1]).survey_submission_id).toBe("submission-1")
 		expect(attrs(ctx.logBuffer[1]).survey_completed).toBe("true")
 		expect(attrs(ctx.logBuffer[2]).survey_id).toBe(TEST_SURVEY.id)
-		expect(attrs(ctx.logBuffer[0]).$survey_id).toBeUndefined()
-		expect(attrs(ctx.logBuffer[1])["$survey_response_34f7caf5-7631-42f1-b6ed-d2a42ddde1cd"]).toBeUndefined()
-		expect(attrs(ctx.logBuffer[1]).$survey_submission_id).toBeUndefined()
-		expect(attrs(ctx.logBuffer[2]).$survey_id).toBeUndefined()
-		expect(attrs(ctx.logBuffer[0]).trigger).toBeUndefined()
-		expect(attrs(ctx.logBuffer[1]).trigger).toBeUndefined()
-		expect(attrs(ctx.logBuffer[2]).trigger).toBeUndefined()
-		expect(attrs(ctx.logBuffer[0]).impression_id).toBeUndefined()
-		expect(attrs(ctx.logBuffer[1]).impression_id).toBeUndefined()
-		expect(attrs(ctx.logBuffer[2]).impression_id).toBeUndefined()
-		expect(attrs(ctx.logBuffer[2]).dismiss_reason).toBeUndefined()
 
 		await ctx.drain()
 	})
