@@ -44,7 +44,10 @@ export function buildLogoLines(theme: Theme): string[] {
 	]
 }
 
-export function buildInfoLines(theme: Theme, { folderMaxWidth }: { folderMaxWidth?: number } = {}): string[] {
+export function buildInfoLines(
+	theme: Theme,
+	{ folderMaxWidth, getBranch }: { folderMaxWidth?: number; getBranch?(): string | undefined } = {},
+): string[] {
 	if (!cachedVersion) cachedVersion = getVersion()
 	const dim = theme.getFgAnsi("dim")
 	const branchColor = theme.getFgAnsi("mdLink")
@@ -52,7 +55,7 @@ export function buildInfoLines(theme: Theme, { folderMaxWidth }: { folderMaxWidt
 	if (folderMaxWidth !== undefined && folder.length > folderMaxWidth) {
 		folder = truncatePath(folder, folderMaxWidth)
 	}
-	const branch = getGitBranch()
+	const branch = getBranch ? getBranch() : getGitBranch()
 	const vdot = ` ${dim}·${RST_FG} `
 	const lines: string[] = [`${dim}v${cachedVersion}${RST_FG}${vdot}${dim}${folder}${RST_FG}`]
 	if (branch) {

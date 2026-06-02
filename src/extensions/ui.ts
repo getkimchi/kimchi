@@ -13,7 +13,7 @@ import { PromptEditor } from "../components/editor.js"
 import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } from "../components/footer.js"
 import { LogoHeader } from "../components/logo.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
-import { getGitBranch } from "../utils.js"
+import { getGitBranch, refreshGitBranch } from "../utils.js"
 import { isBareExitAlias } from "./exit-utils.js"
 import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
@@ -131,7 +131,9 @@ let currentEditor: PromptEditor | undefined
 let pasteImageHandler: (() => void) | undefined
 let currentSessionIndicatorText: string | null = null
 
-const branchPoller = createBranchPoller({ getGitBranch })
+const branchPoller = createBranchPoller({
+	refreshBranch: (cb) => refreshGitBranch(cb),
+})
 
 type DisposableComponent = Component & { dispose?(): void }
 
@@ -275,7 +277,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 		ctx.ui.setHeader((tui, theme) => {
 			branchPoller.start(() => tui.requestRender())
-			const logo = new LogoHeader(theme)
+			const logo = new LogoHeader(theme, { getBranch: () => branchPoller.getBranch() })
 			const header: DisposableComponent = {
 				render: (w) => logo.render(w),
 				invalidate: () => logo.invalidate(),

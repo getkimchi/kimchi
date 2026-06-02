@@ -12,41 +12,40 @@ describe("createBranchPoller", () => {
 
 	it("calls onChange when the branch changes", () => {
 		let branch = "main"
-		const getGitBranch = vi.fn(() => branch)
+		const refreshBranch = vi.fn((cb: (b: string | undefined) => void) => cb(branch))
 		const onChange = vi.fn()
 
-		const poller = createBranchPoller({ getGitBranch })
+		const poller = createBranchPoller({ refreshBranch })
 		poller.start(onChange)
 
-		// Initial read happens immediately in start()
-		expect(getGitBranch).toHaveBeenCalledTimes(1)
+		expect(refreshBranch).toHaveBeenCalledTimes(1)
 		expect(onChange).not.toHaveBeenCalled()
 
 		branch = "feature-x"
 		vi.advanceTimersByTime(BRANCH_POLL_INTERVAL_MS)
 
-		expect(getGitBranch).toHaveBeenCalledTimes(2)
+		expect(refreshBranch).toHaveBeenCalledTimes(2)
 		expect(onChange).toHaveBeenCalledTimes(1)
 	})
 
 	it("does not call onChange when the branch stays the same", () => {
-		const getGitBranch = vi.fn(() => "main")
+		const refreshBranch = vi.fn((cb: (b: string | undefined) => void) => cb("main"))
 		const onChange = vi.fn()
 
-		const poller = createBranchPoller({ getGitBranch })
+		const poller = createBranchPoller({ refreshBranch })
 		poller.start(onChange)
 
 		vi.advanceTimersByTime(BRANCH_POLL_INTERVAL_MS * 3)
 
-		expect(getGitBranch).toHaveBeenCalledTimes(4)
+		expect(refreshBranch).toHaveBeenCalledTimes(4)
 		expect(onChange).not.toHaveBeenCalled()
 	})
 
-	it("does not call onChange when getGitBranch returns undefined", () => {
-		const getGitBranch = vi.fn(() => undefined)
+	it("does not call onChange when refreshBranch returns undefined", () => {
+		const refreshBranch = vi.fn((cb: (b: string | undefined) => void) => cb(undefined))
 		const onChange = vi.fn()
 
-		const poller = createBranchPoller({ getGitBranch })
+		const poller = createBranchPoller({ refreshBranch })
 		poller.start(onChange)
 
 		vi.advanceTimersByTime(BRANCH_POLL_INTERVAL_MS)
@@ -56,10 +55,10 @@ describe("createBranchPoller", () => {
 
 	it("calls onChange on every subsequent change", () => {
 		let branch = "main"
-		const getGitBranch = vi.fn(() => branch)
+		const refreshBranch = vi.fn((cb: (b: string | undefined) => void) => cb(branch))
 		const onChange = vi.fn()
 
-		const poller = createBranchPoller({ getGitBranch })
+		const poller = createBranchPoller({ refreshBranch })
 		poller.start(onChange)
 
 		branch = "a"
@@ -77,31 +76,27 @@ describe("createBranchPoller", () => {
 
 	it("resets last known branch after stop()", () => {
 		let branch = "main"
-		const getGitBranch = vi.fn(() => branch)
+		const refreshBranch = vi.fn((cb: (b: string | undefined) => void) => cb(branch))
 		const onChange = vi.fn()
 
-		const poller = createBranchPoller({ getGitBranch })
+		const poller = createBranchPoller({ refreshBranch })
 		poller.start(onChange)
 
 		poller.stop()
 
-		// Restarting should re-establish the baseline branch, so a poll
-		// that returns the same "new" branch must not trigger onChange.
 		branch = "feature-y"
 		poller.start(onChange)
 
-		// After restart, lastKnownBranch is "feature-y", so another poll
-		// with the same value should not fire.
 		vi.advanceTimersByTime(BRANCH_POLL_INTERVAL_MS)
 		expect(onChange).not.toHaveBeenCalled()
 	})
 
 	it("clears timer on stop() so onChange is never fired again", () => {
 		let branch = "main"
-		const getGitBranch = vi.fn(() => branch)
+		const refreshBranch = vi.fn((cb: (b: string | undefined) => void) => cb(branch))
 		const onChange = vi.fn()
 
-		const poller = createBranchPoller({ getGitBranch })
+		const poller = createBranchPoller({ refreshBranch })
 		poller.start(onChange)
 		poller.stop()
 
@@ -113,33 +108,29 @@ describe("createBranchPoller", () => {
 
 	it("clears previous timer when start() is called twice", () => {
 		let branch = "main"
-		const getGitBranch = vi.fn(() => branch)
+		const refreshBranch = vi.fn((cb: (b: string | undefined) => void) => cb(branch))
 		const onChange = vi.fn()
 
-		const poller = createBranchPoller({ getGitBranch })
+		const poller = createBranchPoller({ refreshBranch })
 		poller.start(onChange)
 
-		// First timer would fire here
 		branch = "feature-1"
 		vi.advanceTimersByTime(BRANCH_POLL_INTERVAL_MS)
 		expect(onChange).toHaveBeenCalledTimes(1)
 
-		// Restarting should reset baseline to current branch.
 		branch = "feature-2"
 		poller.start(onChange)
 
-		// A single interval passes — baseline was just set to "feature-2",
-		// so no change should be detected yet.
 		vi.advanceTimersByTime(BRANCH_POLL_INTERVAL_MS)
 		expect(onChange).toHaveBeenCalledTimes(1)
 	})
 
 	it("accepts a custom interval", () => {
 		let branch = "main"
-		const getGitBranch = vi.fn(() => branch)
+		const refreshBranch = vi.fn((cb: (b: string | undefined) => void) => cb(branch))
 		const onChange = vi.fn()
 
-		const poller = createBranchPoller({ getGitBranch }, 100)
+		const poller = createBranchPoller({ refreshBranch }, 100)
 		poller.start(onChange)
 
 		branch = "feature-fast"
@@ -148,5 +139,26 @@ describe("createBranchPoller", () => {
 
 		vi.advanceTimersByTime(1)
 		expect(onChange).toHaveBeenCalledTimes(1)
+	})
+
+	it("skips overlapping refreshes", () => {
+		let calls = 0
+		const refreshBranch = vi.fn((cb: (b: string | undefined) => void) => {
+			calls++
+			cb("main")
+		})
+		const onChange = vi.fn()
+
+		const poller = createBranchPoller({ refreshBranch }, 100)
+		poller.start(onChange)
+
+		vi.advanceTimersByTime(50)
+		expect(refreshBranch).toHaveBeenCalledTimes(1)
+
+		vi.advanceTimersByTime(100)
+		expect(refreshBranch).toHaveBeenCalledTimes(2)
+
+		vi.advanceTimersByTime(100)
+		expect(refreshBranch).toHaveBeenCalledTimes(3)
 	})
 })
