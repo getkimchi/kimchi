@@ -10,7 +10,7 @@ import {
 	getCliModeArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
-	isProtocolOrPrintMode,
+	isTerminalUiMode,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
@@ -398,9 +398,13 @@ try {
 		mkdirSync(themesDir, { recursive: true })
 
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
-		// the kimchi-minimal-tints and terminal-colors extensions. Skip protocol
-		// and print modes: stdout belongs to the caller, and OSC escapes corrupt it.
-		const terminalStartupOutputAllowed = !isProtocolOrPrintMode(process.argv.slice(2))
+		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
+		// modes: stdout belongs to the caller, and OSC escapes corrupt it.
+		const terminalIo = {
+			stdinIsTTY: process.stdin.isTTY === true,
+			stdoutIsTTY: process.stdout.isTTY === true,
+		}
+		const terminalStartupOutputAllowed = isTerminalUiMode(process.argv.slice(2), terminalIo)
 		if (terminalStartupOutputAllowed) {
 			await probeTerminalBackground()
 			await probeKittyKeyboardSupport()
@@ -438,7 +442,7 @@ try {
 		}
 
 		// Clear the visible viewport and home the cursor so kimchi renders at the top.
-		if (!acpMode && process.stdout.isTTY) {
+		if (terminalStartupOutputAllowed) {
 			process.stdout.write("\x1b[2J\x1b[H")
 		}
 
@@ -463,8 +467,7 @@ try {
 		const rawArgs = stripExperimentalFeaturesArg(process.argv.slice(2))
 		const interactiveStartupContext = {
 			nonInteractiveMode: acpMode,
-			stdinIsTTY: process.stdin.isTTY === true,
-			stdoutIsTTY: process.stdout.isTTY === true,
+			...terminalIo,
 		}
 		const startupAuthState = createStartupAuthGateState()
 		const startupAuthGate = createStartupAuthGate({
@@ -476,15 +479,17 @@ try {
 			...interactiveStartupContext,
 			shouldSkip: () => startupAuthState.cancelled,
 		})
+		// Terminal chrome extensions need an actual TUI, not just an extension UI protocol.
+		const terminalUiExtensionFactories = isTerminalUiMode(rawArgs, terminalIo)
+			? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
+			: []
 		const extensionFactories = [
 			startupUpdateExtension,
 			sessionIdCaptureExtension,
 			shutdownMarkerExtension,
 			statsExtension,
-			terminalColorsExtension,
-			kimchiMinimalTintsExtension,
+			...terminalUiExtensionFactories,
 			loginExtension,
-			uiExtension,
 			startupAuthGate,
 			loopGuardExtension,
 			explorationGuardExtension,
