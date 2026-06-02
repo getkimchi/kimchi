@@ -79,6 +79,7 @@ jobs:
       - name: Add labels to PR
         if: steps.parse.outputs.labels != ''
         env:
+          GH_TOKEN: ${{ github.token }}
           LABELS: ${{ steps.parse.outputs.labels }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
