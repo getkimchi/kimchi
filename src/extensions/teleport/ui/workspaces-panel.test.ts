@@ -270,6 +270,30 @@ describe("WorkspacesPanel", () => {
 		})
 	})
 
+	describe("stable height", () => {
+		it("emits the same line count across navigation when entries exceed viewport", () => {
+			const manyRows: WorkspaceRow[] = Array.from({ length: 25 }, (_, i) =>
+				makeRow({ id: `ws-${i.toString().padStart(8, "0")}`, name: `n-${i}` }),
+			)
+			const { panel } = makePanel(manyRows, { termRows: 20 })
+			const baseline = panel.render(120).length
+			for (let i = 0; i < 24; i++) {
+				panel.handleInput("j")
+				expect(panel.render(120).length).toBe(baseline)
+			}
+			for (let i = 0; i < 24; i++) {
+				panel.handleInput("k")
+				expect(panel.render(120).length).toBe(baseline)
+			}
+		})
+
+		it("emits the same line count for empty list and for a populated list", () => {
+			const { panel: empty } = makePanel([], { termRows: 20 })
+			const { panel: full } = makePanel(testRows, { termRows: 20 })
+			expect(empty.render(120).length).toBe(full.render(120).length)
+		})
+	})
+
 	describe("hideSessions", () => {
 		it("omits the SESSIONS column from the header and body", () => {
 			const { panel } = makePanel(testRows, { hideSessions: true })

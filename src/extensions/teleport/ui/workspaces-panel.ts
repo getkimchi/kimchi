@@ -3,9 +3,20 @@ import { matchesKey } from "@earendil-works/pi-tui"
 import { fg } from "../../../ansi.js"
 import type { WorkspaceStatus } from "../../../sandbox/cloud/types.js"
 import type { TeleportContext } from "../types.js"
-import { FULL_SCREEN_OVERLAY_OPTIONS, FullScreenOverlay } from "./full-screen-overlay.js"
 import { formatRelativeTime } from "./sessions-table.js"
 import type { WorkspaceRow } from "./workspaces-table.js"
+
+// Must match the maxHeight in the overlay options below. The panel sizes its
+// scrollable viewport so that the bordered chrome fits inside maxHeight, and
+// always emits the same line count regardless of selection, which keeps
+// the pi-tui overlay compositor from shifting the chat content underneath.
+const MAX_HEIGHT_PCT = 0.8
+
+// Lines outside the scrollable body:
+//   top border (1) + header (1) + divider (1)
+//   + top scroll indicator (1) + bottom scroll indicator (1)
+//   + empty row (1) + hint (1) + bottom border (1)
+const CHROME_LINES = 8
 
 export type WorkspacePickerResult =
 	| { action: "select"; row: WorkspaceRow }
@@ -259,18 +270,27 @@ export class WorkspacesPanel implements Component {
 		lines.push(ansiRow(dim(`  ${headerLine}`), headerLine.length + 2))
 		lines.push(b(`├${"─".repeat(innerW)}┤`))
 
-		// Reserve: top border(1) + header(1) + divider(1) + bottom border(1) + hint(1) + empty(1) = 6
-		const maxVisibleRows = Math.max(1, this.tui.terminal.rows - 8)
+		// Viewport height derived from MAX_HEIGHT_PCT so the panel always emits
+		// exactly `viewportRows + 2 indicator rows` of body output regardless of
+		// selection or entries count — this prevents the row-shift that would
+		// otherwise jostle chat content underneath as the user navigates.
+		const overlayMaxRows = Math.floor(this.tui.terminal.rows * MAX_HEIGHT_PCT)
+		const viewportRows = Math.max(1, overlayMaxRows - CHROME_LINES)
 
 		if (this.entries.length === 0) {
+			lines.push(emptyRow())
 			const text = "  (no workspaces)"
 			lines.push(ansiRow(dim(text), text.length))
+			for (let i = 1; i < viewportRows; i++) lines.push(emptyRow())
+			lines.push(emptyRow())
 		} else {
-			const { start, end } = computeVisibleWindow(this.selectedIndex, this.entries.length, maxVisibleRows)
+			const { start, end } = computeVisibleWindow(this.selectedIndex, this.entries.length, viewportRows)
 
 			if (start > 0) {
 				const text = `  ↑ ${start} more`
 				lines.push(ansiRow(dim(text), text.length))
+			} else {
+				lines.push(emptyRow())
 			}
 
 			for (let i = start; i < end; i++) {
@@ -296,10 +316,13 @@ export class WorkspacesPanel implements Component {
 					lines.push(ansiRow(`  ${styled}`, plainLen + 2))
 				}
 			}
+			for (let i = end - start; i < viewportRows; i++) lines.push(emptyRow())
 
 			if (end < this.entries.length) {
 				const text = `  ↓ ${this.entries.length - end} more`
 				lines.push(ansiRow(dim(text), text.length))
+			} else {
+				lines.push(emptyRow())
 			}
 		}
 
@@ -335,7 +358,7 @@ export function pickWorkspace(
 	opts?: WorkspacesPanelOptions,
 ): Promise<WorkspacePickerResult | undefined> {
 	return ctx.ui.custom<WorkspacePickerResult | undefined>(
-		(tui, _theme, _kb, done) => new FullScreenOverlay(new WorkspacesPanel(rows, tui, done, opts), tui),
-		FULL_SCREEN_OVERLAY_OPTIONS,
+		(tui, _theme, _kb, done) => new WorkspacesPanel(rows, tui, done, opts),
+		{ overlay: true, overlayOptions: { anchor: "center", width: "80%", maxHeight: "80%" } },
 	)
 }

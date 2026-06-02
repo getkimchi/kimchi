@@ -228,6 +228,28 @@ describe("SessionsPanel", () => {
 		})
 	})
 
+	describe("stable height", () => {
+		it("emits the same line count across navigation when rows exceed viewport", () => {
+			const manyRows = Array.from({ length: 25 }, (_, i) => makeRow({ sessionName: `s-${String(i).padStart(2, "0")}` }))
+			const { panel } = makePanel(manyRows, { termRows: 20 })
+			const baseline = panel.render(120).length
+			for (let i = 0; i < 24; i++) {
+				panel.handleInput("j")
+				expect(panel.render(120).length).toBe(baseline)
+			}
+			for (let i = 0; i < 24; i++) {
+				panel.handleInput("k")
+				expect(panel.render(120).length).toBe(baseline)
+			}
+		})
+
+		it("emits the same line count for empty list and for a populated list", () => {
+			const { panel: empty } = makePanel([], { termRows: 20 })
+			const { panel: full } = makePanel(testRows, { termRows: 20 })
+			expect(empty.render(120).length).toBe(full.render(120).length)
+		})
+	})
+
 	describe("factory", () => {
 		it("createSessionsPanel returns a SessionsPanel instance with lifecycle methods", () => {
 			const { panel } = makePanel()

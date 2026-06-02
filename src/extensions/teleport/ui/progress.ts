@@ -1,6 +1,5 @@
 import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
 import { type Component, truncateToWidth } from "@earendil-works/pi-tui"
-import { FULL_SCREEN_OVERLAY_OPTIONS, FullScreenOverlay } from "./full-screen-overlay.js"
 import { GitTokenPromptComponent, type GitTokenPromptResult } from "./git-token-prompt.js"
 
 const SPIN_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -261,14 +260,17 @@ export function createTeleportProgress(ui: ExtensionUIContext): TeleportProgress
 		else pending.push(fn)
 	}
 
-	ui.custom<void>((tui, theme, _kb, done) => {
-		resolveDone = () => done(undefined)
-		panel = new TeleportProgressPanel(tui, theme)
-		panel.start()
-		for (const fn of pending) fn(panel)
-		pending.length = 0
-		return new FullScreenOverlay(panel, tui)
-	}, FULL_SCREEN_OVERLAY_OPTIONS).catch(() => {})
+	ui.custom<void>(
+		(tui, theme, _kb, done) => {
+			resolveDone = () => done(undefined)
+			panel = new TeleportProgressPanel(tui, theme)
+			panel.start()
+			for (const fn of pending) fn(panel)
+			pending.length = 0
+			return panel
+		},
+		{ overlay: true, overlayOptions: { anchor: "center", width: "80%", maxHeight: "80%" } },
+	).catch(() => {})
 
 	const closeOnce = () => {
 		if (closed) return

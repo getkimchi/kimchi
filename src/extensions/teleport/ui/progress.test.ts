@@ -70,13 +70,13 @@ afterEach(() => {
 })
 
 describe("createTeleportProgress", () => {
-	it("opens a full-screen overlay via ui.custom on construction", () => {
+	it("opens a centered 80% overlay via ui.custom on construction", () => {
 		const h = makeUi()
 		createTeleportProgress(h.ui)
 		expect(h.customCalls).toHaveLength(1)
 		expect(h.customCalls[0].options).toEqual({
 			overlay: true,
-			overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
+			overlayOptions: { anchor: "center", width: "80%", maxHeight: "80%" },
 		})
 	})
 
