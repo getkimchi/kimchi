@@ -234,6 +234,10 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			clearInterval(clipboardPollId)
 			clipboardPollId = null
 		}
+		// Increment the generation so any in-flight Finder file-type probe
+		// from the dying session is treated as stale when its callback lands.
+		sessionGeneration++
+		currentCtx = null
 	})
 
 	pi.on("input", (event) => {
