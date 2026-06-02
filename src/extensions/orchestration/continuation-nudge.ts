@@ -201,3 +201,35 @@ export function stripStaleNudges(messages: OrchestratorMessages): OrchestratorMe
 	const stripped = messages.filter((m, i) => i > lastAssistantIdx || !isNudgeMessage(m))
 	return stripped.length === messages.length ? messages : stripped
 }
+
+/** Custom types that are display-only UI markers and must never reach the LLM. */
+export const UI_ONLY_CUSTOM_TYPES: ReadonlySet<string> = Object.freeze(
+	new Set([
+		"prompt-summary",
+		"curator-notification",
+		"ferment_breadcrumb",
+		"ferment_worktree_warning",
+		"ferment_ack",
+		"ferment_request",
+		"ferment_oneshot_failed",
+	]),
+)
+
+function isCustomMessage(
+	m: OrchestratorMessages[number],
+): m is Extract<OrchestratorMessages[number], { role: "custom" }> {
+	return m.role === "custom"
+}
+
+/**
+ * Strip UI-only custom messages that are meant for display but should never
+ * reach the LLM. These are emitted via `sendMessage` with `display: true` and
+ * no `triggerTurn` / `deliverAs` options, which causes pi-mono to push them
+ * into `agent.state.messages` as user-role messages.
+ */
+export function stripUiOnlyMessages(messages: OrchestratorMessages): OrchestratorMessages {
+	const filtered = messages.filter(
+		(m) => !(isCustomMessage(m) && UI_ONLY_CUSTOM_TYPES.has((m as { customType?: string }).customType ?? "")),
+	)
+	return filtered.length === messages.length ? messages : filtered
+}

@@ -115,14 +115,17 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 							baseline.add(s)
 							knownAgentSkills.add(s)
 						}
-						pi.sendMessage({
-							customType: CURATOR_NOTIFICATION_TYPE,
-							content: [
-								{ type: "text", text: "<system-annotation>Skill review created new skills</system-annotation>" },
-							],
-							display: true,
-							details: { names: newSkills } satisfies CuratorNotificationData,
-						})
+						pi.sendMessage(
+							{
+								customType: CURATOR_NOTIFICATION_TYPE,
+								content: [
+									{ type: "text", text: "<system-annotation>Skill review created new skills</system-annotation>" },
+								],
+								display: true,
+								details: { names: newSkills } satisfies CuratorNotificationData,
+							},
+							{ triggerTurn: false },
+						)
 					} catch {
 						// best-effort
 					}
@@ -155,11 +158,14 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 			const known = new Set(state.known_agent_skills ?? [])
 			const newSkills = currentAgentSkills.filter((n) => !known.has(n))
 			if (newSkills.length > 0) {
-				pi.sendMessage({
-					customType: CURATOR_NOTIFICATION_TYPE,
-					content: [{ type: "text", text: `skill review created: ${newSkills.join(", ")}` }],
-					display: true,
-				})
+				pi.sendMessage(
+					{
+						customType: CURATOR_NOTIFICATION_TYPE,
+						content: [{ type: "text", text: `skill review created: ${newSkills.join(", ")}` }],
+						display: true,
+					},
+					{ triggerTurn: false },
+				)
 				await saveState(statePath, { ...state, known_agent_skills: currentAgentSkills })
 			} else if (state.known_agent_skills === undefined) {
 				// First run — seed without notifying

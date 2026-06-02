@@ -45,6 +45,7 @@ import {
 	NUDGE_CUSTOM_TYPE,
 	type OrchestratorMessages,
 	stripStaleNudges,
+	stripUiOnlyMessages,
 } from "../orchestration/continuation-nudge.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
@@ -426,6 +427,7 @@ export default function (skillPaths: string[]) {
 			pi.on("context", async (event) => {
 				let messages = stripStaleNudges(event.messages)
 				messages = stripEmptyToolCalls(messages)
+				messages = stripUiOnlyMessages(messages)
 				if (messages !== event.messages) return { messages }
 			})
 		}

@@ -112,12 +112,15 @@ export interface FermentRequestMessageDetails {
 }
 
 export function sendFermentRequestMessage(pi: ExtensionAPI, intent: string): void {
-	void pi.sendMessage<FermentRequestMessageDetails>({
-		customType: FERMENT_REQUEST_MESSAGE_TYPE,
-		content: [{ type: "text", text: `User entered ferment request: ${intent}` }],
-		display: true,
-		details: { intent },
-	})
+	void pi.sendMessage<FermentRequestMessageDetails>(
+		{
+			customType: FERMENT_REQUEST_MESSAGE_TYPE,
+			content: [{ type: "text", text: `User entered ferment request: ${intent}` }],
+			display: true,
+			details: { intent },
+		},
+		{ triggerTurn: false },
+	)
 }
 
 // ─── Scoping flow ─────────────────────────────────────────────────────────────

@@ -160,6 +160,7 @@ describe("runScopingFlow", () => {
 				customType: "ferment_request",
 				details: { intent: "I want to build reports\nwith export tests" },
 			}),
+			{ triggerTurn: false },
 		)
 	})
 

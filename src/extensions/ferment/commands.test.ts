@@ -238,6 +238,7 @@ describe("FermentCommandController", () => {
 				display: true,
 				details: { intent: "make reports better\ninclude tests" },
 			}),
+			{ triggerTurn: false },
 		)
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -277,6 +278,7 @@ describe("FermentCommandController", () => {
 				display: true,
 				details: { intent: "make the todo app glassy\nwith tests" },
 			}),
+			{ triggerTurn: false },
 		)
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -310,6 +312,7 @@ describe("FermentCommandController", () => {
 				display: true,
 				details: { intent: "make settings searchable" },
 			}),
+			{ triggerTurn: false },
 		)
 		expect(h.runtime.setActive).toHaveBeenCalledWith(
 			expect.objectContaining({ description: "make settings searchable" }),

@@ -6,6 +6,7 @@ import {
 	EmptyTurnNudge,
 	type OrchestratorMessages,
 	stripStaleNudges,
+	stripUiOnlyMessages,
 } from "./continuation-nudge.js"
 
 function makeAssistant(content: AssistantMessage["content"]): AssistantMessage {
@@ -374,5 +375,67 @@ describe("EmptyTurnNudge", () => {
 		// Reset re-arms the nudge for the next user-input cycle
 		guard.resetForNewUserInput()
 		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+	})
+})
+
+describe("stripUiOnlyMessages", () => {
+	function makeUiOnly(customType: string): OrchestratorMessages[number] {
+		return {
+			role: "custom",
+			customType,
+			content: [{ type: "text", text: "ui-only" }],
+			display: true,
+			timestamp: Date.now(),
+		}
+	}
+
+	it("returns the same array when there are no UI-only messages", () => {
+		const messages: OrchestratorMessages = [makeUser("q"), textOnlyMessage]
+		expect(stripUiOnlyMessages(messages)).toBe(messages)
+	})
+
+	it("strips a UI-only message from the tail", () => {
+		const ui = makeUiOnly("prompt-summary")
+		const messages: OrchestratorMessages = [makeUser("q"), textOnlyMessage, ui]
+		const result = stripUiOnlyMessages(messages)
+		expect(result).not.toBe(messages)
+		expect(result).toHaveLength(2)
+		expect(result).not.toContainEqual(ui)
+	})
+
+	it("strips a UI-only message from the middle", () => {
+		const ui = makeUiOnly("ferment_breadcrumb")
+		const messages: OrchestratorMessages = [makeUser("q"), ui, textOnlyMessage]
+		const result = stripUiOnlyMessages(messages)
+		expect(result).not.toBe(messages)
+		expect(result).toHaveLength(2)
+		expect(result).not.toContainEqual(ui)
+	})
+
+	it("strips multiple distinct UI-only types", () => {
+		const messages: OrchestratorMessages = [
+			makeUser("q"),
+			makeUiOnly("prompt-summary"),
+			makeUser("q2"),
+			makeUiOnly("curator-notification"),
+			makeUiOnly("ferment_ack"),
+			textOnlyMessage,
+		]
+		const result = stripUiOnlyMessages(messages)
+		expect(result.filter((m) => m.role === "custom")).toHaveLength(0)
+		expect(result).toHaveLength(3)
+	})
+
+	it("does not strip non-UI custom messages", () => {
+		const other = {
+			role: "custom" as const,
+			customType: "subagent-notification",
+			content: [{ type: "text" as const, text: "agent done" }],
+			display: true,
+			timestamp: Date.now(),
+		}
+		const messages: OrchestratorMessages = [makeUser("q"), other, textOnlyMessage]
+		const result = stripUiOnlyMessages(messages)
+		expect(result).toBe(messages)
 	})
 })
