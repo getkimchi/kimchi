@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs"
 import { homedir } from "node:os"
-import { isAbsolute, join, posix } from "node:path"
+import { basename, isAbsolute, join, posix } from "node:path"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
 import { rsyncInstallHint, whichRsync } from "../preflight/rsync.js"
@@ -31,7 +31,7 @@ export async function runSync(rawArgs: string, ctx: TeleportContext): Promise<vo
 	const progress = createInlineProgress(ctx)
 	try {
 		progress.setPhase("Resolving workspace…")
-		const workspaceId = await resolveWorkspaceRef(ctx, args.workspace, {
+		const workspace = await resolveWorkspaceRef(ctx, args.workspace, {
 			onEmpty: {
 				kind: "refuse",
 				message: `No workspace matching "${args.workspace}". Try /workspaces to see the available ones.`,
@@ -48,7 +48,7 @@ export async function runSync(rawArgs: string, ctx: TeleportContext): Promise<vo
 		progress.setPhase("Authenticating…")
 		let creds: WorkspaceCredentials
 		try {
-			creds = await authenticateWorkspace(workspaceId, ctx.apiKey, `Sync for ${args.direction}`, {
+			creds = await authenticateWorkspace(workspace.id, ctx.apiKey, workspace.name ?? (basename(ctx.cwd) || "kimchi"), {
 				endpoint: ctx.endpoint,
 			})
 		} catch (err) {

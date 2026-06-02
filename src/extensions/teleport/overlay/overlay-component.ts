@@ -16,6 +16,9 @@ import { type Tab, TabManager } from "./tab-manager.js"
 export interface TabsOverlayOpts {
 	creds: WorkspaceCredentials
 	workspaceId: string
+	/** Current workspace name (server-stored description). Echoed back on each
+	 *  token refresh so the auth PUT doesn't clobber a name the user set. */
+	workspaceName?: string
 	apiKey: string
 	cwd: string
 	endpoint?: string
@@ -40,7 +43,8 @@ export function createTabsOverlay(opts: TabsOverlayOpts): OverlayFactory {
 		if (!Number.isNaN(expiresMs) && expiresMs - Date.now() > TOKEN_REFRESH_SKEW_MS) {
 			return creds.connectToken
 		}
-		creds = await authenticateWorkspace(opts.workspaceId, opts.apiKey, basename(opts.cwd), {
+		const description = opts.workspaceName ?? basename(opts.cwd) ?? "kimchi"
+		creds = await authenticateWorkspace(opts.workspaceId, opts.apiKey, description, {
 			endpoint: opts.endpoint,
 		})
 		return creds.connectToken

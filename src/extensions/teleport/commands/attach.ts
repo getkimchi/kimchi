@@ -13,6 +13,9 @@ import { refuse } from "./errors.js"
 export interface AttachArgs {
 	workspaceId: string
 	sessionName: string
+	/** The workspace's current server-stored name. Passed through to
+	 *  authenticateWorkspace so we don't clobber it on the auth PUT. */
+	workspaceName?: string
 }
 
 export async function runAttachSession(args: AttachArgs, ctx: TeleportContext): Promise<void> {
@@ -21,7 +24,7 @@ export async function runAttachSession(args: AttachArgs, ctx: TeleportContext): 
 	}
 
 	const { workspaceId, sessionName } = args
-	const description = basename(ctx.cwd) || "kimchi"
+	const description = args.workspaceName ?? (basename(ctx.cwd) || "kimchi")
 
 	const progress = createTeleportProgress(ctx.ui)
 	let creds: WorkspaceCredentials
@@ -76,6 +79,7 @@ export async function runAttachSession(args: AttachArgs, ctx: TeleportContext): 
 		createTabsOverlay({
 			creds,
 			workspaceId,
+			workspaceName: description,
 			apiKey: ctx.apiKey,
 			cwd: ctx.cwd,
 			endpoint: ctx.endpoint,

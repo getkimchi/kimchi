@@ -331,7 +331,11 @@ describe("runSessions", () => {
 		await runSessions("", ctx)
 
 		expect(runAttachSessionMock).toHaveBeenCalledOnce()
-		expect(runAttachSessionMock.mock.calls[0][0]).toEqual({ workspaceId: "w-1", sessionName: "pick-me" })
+		expect(runAttachSessionMock.mock.calls[0][0]).toEqual({
+			workspaceId: "w-1",
+			sessionName: "pick-me",
+			workspaceName: "alpha",
+		})
 		expect(runAttachSessionMock.mock.calls[0][1]).toBe(ctx)
 	})
 

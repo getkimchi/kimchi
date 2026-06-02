@@ -6,6 +6,7 @@ const {
 	listWorkspacesMock,
 	deleteWorkspaceMock,
 	authMock,
+	createOrUpdateWorkspaceMock,
 	listSessionsMock,
 	pickWorkspaceMock,
 	runTerminalMock,
@@ -14,6 +15,7 @@ const {
 	listWorkspacesMock: vi.fn(),
 	deleteWorkspaceMock: vi.fn(),
 	authMock: vi.fn(),
+	createOrUpdateWorkspaceMock: vi.fn(),
 	listSessionsMock: vi.fn(),
 	pickWorkspaceMock: vi.fn(),
 	runTerminalMock: vi.fn(),
@@ -24,7 +26,10 @@ vi.mock("../../../sandbox/cloud/workspaces.js", () => ({
 	listWorkspaces: listWorkspacesMock,
 	deleteWorkspace: deleteWorkspaceMock,
 }))
-vi.mock("../../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: authMock }))
+vi.mock("../../../sandbox/cloud/auth.js", () => ({
+	authenticateWorkspace: authMock,
+	createOrUpdateWorkspace: createOrUpdateWorkspaceMock,
+}))
 vi.mock("../../../sandbox/worker/client.js", () => ({
 	WorkerClient: class {
 		creds: { connectToken: string }
@@ -54,6 +59,7 @@ const CREDS = {
 function makeUi(): ExtensionUIContext & {
 	notify: ReturnType<typeof vi.fn>
 	confirm: ReturnType<typeof vi.fn>
+	input: ReturnType<typeof vi.fn>
 	setStatus: ReturnType<typeof vi.fn>
 } {
 	return {
@@ -88,6 +94,7 @@ function makeUi(): ExtensionUIContext & {
 	} as unknown as ExtensionUIContext & {
 		notify: ReturnType<typeof vi.fn>
 		confirm: ReturnType<typeof vi.fn>
+		input: ReturnType<typeof vi.fn>
 		setStatus: ReturnType<typeof vi.fn>
 	}
 }
@@ -148,6 +155,7 @@ beforeEach(() => {
 	listWorkspacesMock.mockReset()
 	deleteWorkspaceMock.mockReset()
 	authMock.mockReset()
+	createOrUpdateWorkspaceMock.mockReset()
 	listSessionsMock.mockReset()
 	pickWorkspaceMock.mockReset()
 	runTerminalMock.mockReset()
@@ -303,6 +311,72 @@ describe("runWorkspaces", () => {
 
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("Could not delete workspace"), "warning")
 		// loop still re-runs after the warn
+		expect(pickWorkspaceMock).toHaveBeenCalledTimes(2)
+	})
+
+	it("renames the workspace via createOrUpdateWorkspace when the user types a new name", async () => {
+		verifyApiKeyMock.mockResolvedValue("org-42")
+		listWorkspacesMock.mockResolvedValueOnce([ws("w-1", "alpha")]).mockResolvedValueOnce([])
+		authMock.mockResolvedValue(CREDS)
+		listSessionsMock.mockResolvedValue([])
+		// First call: pick rename; second call: pick Esc to exit the loop.
+		pickWorkspaceMock.mockResolvedValueOnce({ action: "rename", row: row("w-1") }).mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		ui.input.mockResolvedValue("renamed-box")
+		createOrUpdateWorkspaceMock.mockResolvedValue({ uri: "wss://x", description: "renamed-box" })
+
+		await runWorkspaces("", ctx)
+
+		expect(ui.input).toHaveBeenCalledWith("Rename workspace", "name-w-1")
+		expect(createOrUpdateWorkspaceMock).toHaveBeenCalledWith("org-42", "w-1", "test-key", "renamed-box", {
+			endpoint: "https://api.example.com",
+		})
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("Renamed to renamed-box"), "info")
+		// loop re-fetched after the rename
+		expect(listWorkspacesMock).toHaveBeenCalledTimes(2)
+	})
+
+	it("trims whitespace and ignores an empty rename", async () => {
+		verifyApiKeyMock.mockResolvedValue("org-1")
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		authMock.mockResolvedValue(CREDS)
+		listSessionsMock.mockResolvedValue([])
+		pickWorkspaceMock.mockResolvedValueOnce({ action: "rename", row: row("w-1") }).mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		ui.input.mockResolvedValue("   ")
+
+		await runWorkspaces("", ctx)
+
+		expect(createOrUpdateWorkspaceMock).not.toHaveBeenCalled()
+	})
+
+	it("ignores a no-op rename when the new name equals the existing one", async () => {
+		verifyApiKeyMock.mockResolvedValue("org-1")
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		authMock.mockResolvedValue(CREDS)
+		listSessionsMock.mockResolvedValue([])
+		pickWorkspaceMock.mockResolvedValueOnce({ action: "rename", row: row("w-1") }).mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		ui.input.mockResolvedValue("name-w-1")
+
+		await runWorkspaces("", ctx)
+
+		expect(createOrUpdateWorkspaceMock).not.toHaveBeenCalled()
+	})
+
+	it("warns and continues when createOrUpdateWorkspace throws on rename", async () => {
+		verifyApiKeyMock.mockResolvedValue("org-1")
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		authMock.mockResolvedValue(CREDS)
+		listSessionsMock.mockResolvedValue([])
+		pickWorkspaceMock.mockResolvedValueOnce({ action: "rename", row: row("w-1") }).mockResolvedValueOnce(undefined)
+		const { ctx, ui } = makeCtx()
+		ui.input.mockResolvedValue("new-name")
+		createOrUpdateWorkspaceMock.mockRejectedValue(new Error("boom"))
+
+		await runWorkspaces("", ctx)
+
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("Could not rename workspace"), "warning")
 		expect(pickWorkspaceMock).toHaveBeenCalledTimes(2)
 	})
 

@@ -195,7 +195,9 @@ describe("runTeleport", () => {
 
 		await runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)
 
-		expect(listWorkspacesMock).not.toHaveBeenCalled()
+		// resolveWorkspaceRef always lists now (UUID shortcut removed) so it
+		// can return the workspace's current name to preserve on auth.
+		expect(listWorkspacesMock).toHaveBeenCalledOnce()
 		expect(authMock).toHaveBeenCalledOnce()
 		expect(authMock.mock.calls[0][0]).toBe("22222222-2222-4222-8222-222222222222")
 		expect(waitReadyMock).toHaveBeenCalledOnce()

@@ -10,6 +10,7 @@ import type { WorkspaceRow } from "./workspaces-table.js"
 export type WorkspacePickerResult =
 	| { action: "select"; row: WorkspaceRow }
 	| { action: "delete"; row: WorkspaceRow }
+	| { action: "rename"; row: WorkspaceRow }
 	| { action: "new" }
 
 export interface WorkspacesPanelOptions {
@@ -17,6 +18,8 @@ export interface WorkspacesPanelOptions {
 	allowNew?: boolean
 	/** Bind `d` to delete and show it in the hint footer. */
 	allowDelete?: boolean
+	/** Bind `r` to rename and show it in the hint footer. */
+	allowRename?: boolean
 	/** Drop the SESSIONS column entirely (used when session counts aren't fetched). */
 	hideSessions?: boolean
 }
@@ -92,6 +95,7 @@ export class WorkspacesPanel implements Component {
 	private readonly entries: Entry[]
 	private readonly allowNew: boolean
 	private readonly allowDelete: boolean
+	private readonly allowRename: boolean
 	private readonly hideSessions: boolean
 
 	constructor(
@@ -102,6 +106,7 @@ export class WorkspacesPanel implements Component {
 	) {
 		this.allowNew = opts.allowNew ?? false
 		this.allowDelete = opts.allowDelete ?? false
+		this.allowRename = opts.allowRename ?? false
 		this.hideSessions = opts.hideSessions ?? false
 		const rowEntries: Entry[] = rows.map((row) => ({ kind: "row", row }))
 		this.entries = this.allowNew ? [...rowEntries, { kind: "new" }] : rowEntries
@@ -136,6 +141,12 @@ export class WorkspacesPanel implements Component {
 			const entry = this.entries[this.selectedIndex]
 			if (!entry || entry.kind !== "row") return
 			this.done({ action: "delete", row: entry.row })
+			return
+		}
+		if (this.allowRename && matchesKey(data, "r")) {
+			const entry = this.entries[this.selectedIndex]
+			if (!entry || entry.kind !== "row") return
+			this.done({ action: "rename", row: entry.row })
 			return
 		}
 		if (matchesKey(data, "escape") || matchesKey(data, "q") || matchesKey(data, "x")) {
@@ -295,6 +306,7 @@ export class WorkspacesPanel implements Component {
 		lines.push(emptyRow())
 		const hintParts = ["↑/↓ j/k: navigate", "enter: select"]
 		if (this.allowNew) hintParts.push("n: new")
+		if (this.allowRename) hintParts.push("r: rename")
 		if (this.allowDelete) hintParts.push("d: delete")
 		hintParts.push("esc: cancel")
 		const hint = hintParts.join("  ")

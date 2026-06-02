@@ -36,11 +36,12 @@ export async function runTerminal(
 		refuse(ctx, "No API key configured. Run `kimchi login`.")
 	}
 
-	const workspaceId = await resolveWorkspaceRef(ctx, rawRef, {
+	const workspace = await resolveWorkspaceRef(ctx, rawRef, {
 		onEmpty: { kind: "refuse", message: `${USAGE_HINT} — no workspaces available.` },
 	})
+	const workspaceId = workspace.id
 
-	const description = basename(ctx.cwd) || "kimchi"
+	const description = workspace.name ?? (basename(ctx.cwd) || "kimchi")
 
 	status(ctx, "Authenticating SSH…")
 	let creds: WorkspaceCredentials

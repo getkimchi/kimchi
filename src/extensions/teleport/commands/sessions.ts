@@ -19,7 +19,7 @@ export async function runSessions(_args: string, ctx: TeleportContext): Promise<
 		refuse(ctx, "No API key configured. Run `kimchi login`.")
 	}
 
-	const description = basename(ctx.cwd) || "kimchi"
+	const fallbackName = basename(ctx.cwd) || "kimchi"
 
 	while (true) {
 		status(ctx, "Loading sessions…")
@@ -31,14 +31,21 @@ export async function runSessions(_args: string, ctx: TeleportContext): Promise<
 			refuse(ctx, `Could not list workspaces: ${err instanceof Error ? err.message : String(err)}`)
 		}
 
-		const rows = await collectRows(workspaces, ctx, description)
+		const rows = await collectRows(workspaces, ctx, fallbackName)
 		status(ctx, undefined)
 
 		const result = await pickSession(ctx, rows)
 		if (!result) return
 
 		if (result.action === "open") {
-			await runAttachSession({ workspaceId: result.row.workspaceId, sessionName: result.row.sessionName }, ctx)
+			await runAttachSession(
+				{
+					workspaceId: result.row.workspaceId,
+					sessionName: result.row.sessionName,
+					workspaceName: result.row.workspaceName,
+				},
+				ctx,
+			)
 			return
 		}
 
@@ -49,9 +56,12 @@ export async function runSessions(_args: string, ctx: TeleportContext): Promise<
 		if (!ok) continue
 
 		try {
-			const creds = await authenticateWorkspace(result.row.workspaceId, ctx.apiKey, description, {
-				endpoint: ctx.endpoint,
-			})
+			const creds = await authenticateWorkspace(
+				result.row.workspaceId,
+				ctx.apiKey,
+				result.row.workspaceName || fallbackName,
+				{ endpoint: ctx.endpoint },
+			)
 			const client = new WorkerClient(creds)
 			await deleteSession(client, result.row.sessionName, ctx.signal)
 			info(ctx, `Deleted ${result.row.sessionName}`)
@@ -61,10 +71,12 @@ export async function runSessions(_args: string, ctx: TeleportContext): Promise<
 	}
 }
 
-async function collectRows(workspaces: Workspace[], ctx: TeleportContext, description: string): Promise<SessionRow[]> {
+async function collectRows(workspaces: Workspace[], ctx: TeleportContext, fallbackName: string): Promise<SessionRow[]> {
 	const results = await Promise.allSettled(
 		workspaces.map(async (ws): Promise<SessionRow[]> => {
-			const creds = await authenticateWorkspace(ws.id, ctx.apiKey, description, { endpoint: ctx.endpoint })
+			const creds = await authenticateWorkspace(ws.id, ctx.apiKey, ws.name || fallbackName, {
+				endpoint: ctx.endpoint,
+			})
 			const client = new WorkerClient(creds)
 			const sessions = await listSessions(client, ctx.signal)
 			return sessions.filter(isVisibleSession).map((s) => toRow(ws, s))

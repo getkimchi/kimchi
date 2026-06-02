@@ -31,24 +31,44 @@ export interface ResolveOpts {
 	cancelledMessage?: string
 }
 
+export interface ResolvedWorkspace {
+	id: string
+	/**
+	 * The workspace's current display name. Undefined only for the picker's
+	 * "mint a new workspace" branch — every existing-workspace path returns
+	 * it. Callers should use this as the description on subsequent
+	 * `authenticateWorkspace` calls so the server-stored name is preserved.
+	 */
+	name?: string
+}
+
 export async function resolveWorkspaceRef(
 	ctx: TeleportContext,
 	ref: string | undefined,
 	opts: ResolveOpts,
-): Promise<string> {
-	if (ref && isUuid(ref)) return ref
+): Promise<ResolvedWorkspace> {
+	// Always list so we can return the workspace's current name to the caller —
+	// the UUID shortcut is gone because callers now use `resolved.name` to
+	// avoid clobbering the server-stored description on the next PUT.
+	let workspaces: Workspace[]
+	try {
+		workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal })
+	} catch (err) {
+		refuse(ctx, `Could not list workspaces: ${err instanceof Error ? err.message : String(err)}`)
+	}
 
 	if (ref) {
-		let workspaces: Workspace[]
-		try {
-			workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal })
-		} catch (err) {
-			refuse(ctx, `Could not list workspaces: ${err instanceof Error ? err.message : String(err)}`)
+		if (isUuid(ref)) {
+			const match = workspaces.find((w) => w.id === ref)
+			if (match) return { id: match.id, name: match.name }
+			// UUID provided but not present in the list. Trust the user — the
+			// listing may be stale or paginated. Hand back the id with no name.
+			return { id: ref }
 		}
 		const matches = workspaces.filter(
 			(w) => w.name.toLowerCase() === ref.toLowerCase() || matchesHostNickname(w.host, ref),
 		)
-		if (matches.length === 1) return matches[0].id
+		if (matches.length === 1) return { id: matches[0].id, name: matches[0].name }
 		if (matches.length === 0) {
 			refuse(ctx, `No workspace matching "${ref}". Try /workspaces to see the available ones.`)
 		}
@@ -58,15 +78,8 @@ export async function resolveWorkspaceRef(
 		refuse(ctx, `Workspace "${ref}" is ambiguous. Use the UUID to disambiguate:\n${rows}`)
 	}
 
-	let workspaces: Workspace[]
-	try {
-		workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal })
-	} catch (err) {
-		refuse(ctx, `Could not list workspaces: ${err instanceof Error ? err.message : String(err)}`)
-	}
-
 	if (workspaces.length === 0) {
-		if (opts.onEmpty.kind === "mint") return randomUUID()
+		if (opts.onEmpty.kind === "mint") return { id: randomUUID() }
 		refuse(ctx, opts.onEmpty.message)
 	}
 
@@ -85,7 +98,8 @@ export async function resolveWorkspaceRef(
 		throw new TeleportRefusal(opts.cancelledMessage ?? "cancelled")
 	}
 	if (choice.action === "new") {
-		return randomUUID()
+		return { id: randomUUID() }
 	}
-	return choice.row.id
+	const picked = workspaces.find((w) => w.id === choice.row.id)
+	return { id: choice.row.id, name: picked?.name }
 }

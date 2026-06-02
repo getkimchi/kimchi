@@ -1,5 +1,5 @@
 import { basename } from "node:path"
-import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
+import { authenticateWorkspace, createOrUpdateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { verifyApiKey } from "../../../sandbox/cloud/keys.js"
 import type { Workspace } from "../../../sandbox/cloud/types.js"
 import { deleteWorkspace, listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
@@ -17,7 +17,7 @@ export async function runWorkspaces(_args: string, ctx: TeleportContext): Promis
 		refuse(ctx, "No API key configured. Run `kimchi login`.")
 	}
 
-	const description = basename(ctx.cwd) || "kimchi"
+	const fallbackName = basename(ctx.cwd) || "kimchi"
 
 	// Verify once for orgId; cache for the loop.
 	let orgId: string
@@ -37,10 +37,10 @@ export async function runWorkspaces(_args: string, ctx: TeleportContext): Promis
 			refuse(ctx, `Could not list workspaces: ${err instanceof Error ? err.message : String(err)}`)
 		}
 
-		const rows = await collectRows(workspaces, ctx, description)
+		const rows = await collectRows(workspaces, ctx, fallbackName)
 		status(ctx, undefined)
 
-		const result = await pickWorkspace(ctx, rows, { allowDelete: true })
+		const result = await pickWorkspace(ctx, rows, { allowDelete: true, allowRename: true })
 		if (!result) return
 
 		if (result.action === "select") {
@@ -48,6 +48,18 @@ export async function runWorkspaces(_args: string, ctx: TeleportContext): Promis
 			return
 		}
 		if (result.action === "new") return
+
+		if (result.action === "rename") {
+			const next = (await ctx.ui.input("Rename workspace", result.row.name))?.trim()
+			if (!next || next === result.row.name) continue
+			try {
+				await createOrUpdateWorkspace(orgId, result.row.id, ctx.apiKey, next, { endpoint: ctx.endpoint })
+				info(ctx, `Renamed to ${next}`)
+			} catch (err) {
+				warn(ctx, `Could not rename workspace: ${err instanceof Error ? err.message : String(err)}`)
+			}
+			continue
+		}
 
 		// delete
 		const label = result.row.name || result.row.id
@@ -72,11 +84,13 @@ export async function runWorkspaces(_args: string, ctx: TeleportContext): Promis
 export async function collectRows(
 	workspaces: Workspace[],
 	ctx: TeleportContext,
-	description: string,
+	fallbackName: string,
 ): Promise<WorkspaceRow[]> {
 	const results = await Promise.allSettled(
 		workspaces.map(async (ws): Promise<number> => {
-			const creds = await authenticateWorkspace(ws.id, ctx.apiKey, description, { endpoint: ctx.endpoint })
+			const creds = await authenticateWorkspace(ws.id, ctx.apiKey, ws.name || fallbackName, {
+				endpoint: ctx.endpoint,
+			})
 			const client = new WorkerClient(creds)
 			const sessions = await listSessions(client, ctx.signal)
 			return sessions.filter(isVisibleSession).length

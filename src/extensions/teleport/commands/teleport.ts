@@ -40,9 +40,12 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 
 	runPreflight(ctx, args)
 
-	const workspaceId = await resolveWorkspaceRef(ctx, args.workspace, { onEmpty: { kind: "mint" } })
+	const resolved = await resolveWorkspaceRef(ctx, args.workspace, { onEmpty: { kind: "mint" } })
+	const workspaceId = resolved.id
 	const sessionName = args.name ?? generateSessionName()
-	const description = basename(ctx.cwd) || "kimchi"
+	// For an existing workspace, preserve its stored name. For a newly minted
+	// one (resolved.name === undefined) fall back to the cwd basename.
+	const description = resolved.name ?? (basename(ctx.cwd) || "kimchi")
 
 	const progress = createTeleportProgress(ctx.ui)
 	let creds: WorkspaceCredentials
@@ -143,6 +146,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		createTabsOverlay({
 			creds,
 			workspaceId,
+			workspaceName: description,
 			apiKey: ctx.apiKey,
 			cwd: ctx.cwd,
 			endpoint: ctx.endpoint,

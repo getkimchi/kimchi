@@ -30,6 +30,7 @@ function makePanel(
 		termCols?: number
 		allowNew?: boolean
 		allowDelete?: boolean
+		allowRename?: boolean
 		hideSessions?: boolean
 	},
 ) {
@@ -41,6 +42,7 @@ function makePanel(
 	const panel = createWorkspacesPanel(rows, tui, done, {
 		allowNew: opts?.allowNew,
 		allowDelete: opts?.allowDelete ?? true,
+		allowRename: opts?.allowRename,
 		hideSessions: opts?.hideSessions,
 	})
 	return { panel, tui, done }
@@ -160,6 +162,28 @@ describe("WorkspacesPanel", () => {
 			expect(done).not.toHaveBeenCalled()
 		})
 
+		it("'r' on a row resolves done with action='rename' when allowRename=true", () => {
+			const { panel, done } = makePanel(testRows, { allowRename: true })
+			panel.handleInput("r")
+			expect(done).toHaveBeenCalledWith({ action: "rename", row: testRows[0] })
+		})
+
+		it("'r' is a no-op when allowRename=false (default)", () => {
+			const { panel, done } = makePanel(testRows, { allowRename: false })
+			panel.handleInput("r")
+			expect(done).not.toHaveBeenCalled()
+		})
+
+		it("'r' is a no-op on the synthetic '+ new' row even with allowRename=true", () => {
+			const { panel, done } = makePanel(testRows, { allowRename: true, allowNew: true })
+			// move past all real rows onto the synthetic '+ new' entry
+			panel.handleInput("j")
+			panel.handleInput("j")
+			panel.handleInput("j")
+			panel.handleInput("r")
+			expect(done).not.toHaveBeenCalled()
+		})
+
 		it("'n' is a no-op when allowNew=false (default)", () => {
 			const { panel, done } = makePanel()
 			panel.handleInput("n")
@@ -198,6 +222,20 @@ describe("WorkspacesPanel", () => {
 			const done = vi.fn()
 			const panel = new WorkspacesPanel(testRows, tui, done)
 			expect(panel.render(80).length).toBeGreaterThan(0)
+		})
+	})
+
+	describe("allowRename", () => {
+		it("shows 'r: rename' in the hint footer when allowRename=true", () => {
+			const { panel } = makePanel(testRows, { allowRename: true })
+			const text = panel.render(120).map(stripAnsi).join("\n")
+			expect(text).toContain("r: rename")
+		})
+
+		it("does NOT show 'r: rename' when allowRename=false", () => {
+			const { panel } = makePanel()
+			const text = panel.render(120).map(stripAnsi).join("\n")
+			expect(text).not.toContain("r: rename")
 		})
 	})
 
