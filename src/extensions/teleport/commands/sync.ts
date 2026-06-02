@@ -29,7 +29,6 @@ export async function runSync(rawArgs: string, ctx: TeleportContext): Promise<vo
 
 	const workspaceId = await resolveWorkspaceRef(ctx, args.workspace, {
 		onEmpty: { kind: "refuse", message: "No workspaces available to sync to. Run /teleport first to create one." },
-		cannotCreateMessage: "/sync cannot create a new workspace. Run /teleport first.",
 	})
 
 	status(ctx, `Syncing ${args.direction}…`)

@@ -7,7 +7,7 @@ const { listWorkspacesMock, pickWorkspaceMock } = vi.hoisted(() => ({
 }))
 
 vi.mock("../../../sandbox/cloud/workspaces.js", () => ({ listWorkspaces: listWorkspacesMock }))
-vi.mock("../ui/workspace-picker.js", () => ({ pickWorkspace: pickWorkspaceMock }))
+vi.mock("../ui/workspaces-panel.js", () => ({ pickWorkspace: pickWorkspaceMock }))
 
 import type { Workspace } from "../../../sandbox/cloud/types.js"
 import type { TeleportContext } from "../types.js"
@@ -216,32 +216,36 @@ describe("resolveWorkspaceRef", () => {
 
 	it("opens the picker when no ref but workspaces exist; returns the chosen id", async () => {
 		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
-		pickWorkspaceMock.mockResolvedValue({ kind: "existing", id: UUID_A })
+		pickWorkspaceMock.mockResolvedValue({ action: "select", row: { id: UUID_A } })
 		const { ctx } = makeCtx()
 		const id = await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
 		expect(id).toBe(UUID_A)
 	})
 
+	it("picker is opened with allowNew=true when onEmpty.kind === 'mint'", async () => {
+		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
+		pickWorkspaceMock.mockResolvedValue({ action: "select", row: { id: UUID_A } })
+		const { ctx } = makeCtx()
+		await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
+		expect(pickWorkspaceMock).toHaveBeenCalledOnce()
+		expect(pickWorkspaceMock.mock.calls[0][2]).toMatchObject({ allowNew: true, hideSessions: true })
+	})
+
+	it("picker is opened with allowNew=false when onEmpty.kind === 'refuse'", async () => {
+		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
+		pickWorkspaceMock.mockResolvedValue({ action: "select", row: { id: UUID_A } })
+		const { ctx } = makeCtx()
+		await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "refuse", message: "nope" } })
+		expect(pickWorkspaceMock.mock.calls[0][2]).toMatchObject({ allowNew: false, hideSessions: true })
+	})
+
 	it("picker 'new' with onEmpty=mint → fresh UUID", async () => {
 		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
-		pickWorkspaceMock.mockResolvedValue({ kind: "new" })
+		pickWorkspaceMock.mockResolvedValue({ action: "new" })
 		const { ctx } = makeCtx()
 		const id = await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
 		expect(id).toMatch(/^[0-9a-f-]{36}$/i)
 		expect(id).not.toBe(UUID_A)
-	})
-
-	it("picker 'new' with cannotCreateMessage → refuses", async () => {
-		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
-		pickWorkspaceMock.mockResolvedValue({ kind: "new" })
-		const { ctx, ui } = makeCtx()
-		await expect(
-			resolveWorkspaceRef(ctx, undefined, {
-				onEmpty: { kind: "refuse", message: "empty list msg" },
-				cannotCreateMessage: "cannot create here",
-			}),
-		).rejects.toBeInstanceOf(TeleportRefusal)
-		expect(ui.notify).toHaveBeenCalledWith("cannot create here", "error")
 	})
 
 	it("picker cancelled → TeleportRefusal('cancelled')", async () => {

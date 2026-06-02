@@ -2,6 +2,8 @@ import type { Component } from "@earendil-works/pi-tui"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
 import { FULL_SCREEN_OVERLAY_OPTIONS, FullScreenOverlay } from "./full-screen-overlay.js"
+import { WorkspacesPanel } from "./workspaces-panel.js"
+import type { WorkspaceRow } from "./workspaces-table.js"
 
 interface FakeTui {
 	requestRender(force?: boolean): void
@@ -104,6 +106,80 @@ describe("FullScreenOverlay", () => {
 		expect(FULL_SCREEN_OVERLAY_OPTIONS).toEqual({
 			overlay: true,
 			overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
+		})
+	})
+
+	describe("wraps a real WorkspacesPanel", () => {
+		const NOW = new Date("2026-05-17T12:00:00Z")
+		const rows: WorkspaceRow[] = [
+			{
+				id: "03cdc2680000000000",
+				name: "kimchi-dev",
+				status: "active",
+				createdAt: new Date(NOW.getTime() - 27 * 60_000),
+				lastActivityAt: new Date(NOW.getTime() - 27 * 60_000),
+				host: "successful-round-anteater-486e4e-abbf.remote.kimchi.dev",
+				sessionCount: 2,
+			},
+			{
+				id: "619e50070000000000",
+				name: "kimchi-dev",
+				status: "active",
+				createdAt: new Date(NOW.getTime() - 60 * 60_000),
+				lastActivityAt: new Date(NOW.getTime() - 60 * 60_000),
+				host: "low-unequal-ranger-486e4e-9abc.remote.kimchi.dev",
+				sessionCount: 5,
+			},
+		]
+
+		function firstNonBlankColumn(line: string): number {
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI stripping
+			const stripped = line.replace(/\x1b\[[0-9;]*m/g, "")
+			for (let i = 0; i < stripped.length; i++) {
+				if (stripped[i] !== " ") return i
+			}
+			return -1
+		}
+
+		const TERM_WIDTH = 148
+		const TERM_ROWS = 30
+
+		it("every emitted line has visibleWidth equal to the terminal width", () => {
+			const tui = { requestRender: vi.fn(), terminal: { rows: TERM_ROWS, cols: TERM_WIDTH } }
+			const panel = new WorkspacesPanel(rows, tui, vi.fn())
+			const overlay = new FullScreenOverlay(panel, tui)
+			const out = overlay.render(TERM_WIDTH)
+			expect(out).toHaveLength(TERM_ROWS)
+			for (const [i, line] of out.entries()) {
+				expect(visibleWidth(line), `line ${i} width`).toBe(TERM_WIDTH)
+			}
+		})
+
+		it("top border, divider, body rows, and bottom border share the same first non-blank column", () => {
+			const tui = { requestRender: vi.fn(), terminal: { rows: TERM_ROWS, cols: TERM_WIDTH } }
+			const panel = new WorkspacesPanel(rows, tui, vi.fn())
+			const overlay = new FullScreenOverlay(panel, tui)
+			const out = overlay.render(TERM_WIDTH)
+			const indents = out.map(firstNonBlankColumn).filter((c) => c >= 0)
+			// Every non-blank row must begin at the same column.
+			const distinct = new Set(indents)
+			expect(distinct.size, `distinct indents: ${[...distinct].sort().join(",")}`).toBe(1)
+		})
+
+		it("alignment is stable across selectedIndex changes (up/down navigation)", () => {
+			const tui = { requestRender: vi.fn(), terminal: { rows: TERM_ROWS, cols: TERM_WIDTH } }
+			const panel = new WorkspacesPanel(rows, tui, vi.fn())
+			const overlay = new FullScreenOverlay(panel, tui)
+
+			const out0 = overlay.render(TERM_WIDTH)
+			panel.handleInput("\x1b[B") // down arrow
+			const out1 = overlay.render(TERM_WIDTH)
+
+			expect(out0).toHaveLength(out1.length)
+			for (let i = 0; i < out0.length; i++) {
+				expect(visibleWidth(out0[i]), `out0 line ${i}`).toBe(TERM_WIDTH)
+				expect(visibleWidth(out1[i]), `out1 line ${i}`).toBe(TERM_WIDTH)
+			}
 		})
 	})
 })

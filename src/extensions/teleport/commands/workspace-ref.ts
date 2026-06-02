@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto"
 import type { Workspace } from "../../../sandbox/cloud/types.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import type { TeleportContext } from "../types.js"
-import { pickWorkspace } from "../ui/workspace-picker.js"
+import { pickWorkspace } from "../ui/workspaces-panel.js"
+import type { WorkspaceRow } from "../ui/workspaces-table.js"
 import { TeleportRefusal, refuse } from "./errors.js"
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -28,7 +29,6 @@ export function matchesHostNickname(host: string | undefined, ref: string): bool
 export interface ResolveOpts {
 	onEmpty: { kind: "mint" } | { kind: "refuse"; message: string }
 	cancelledMessage?: string
-	cannotCreateMessage?: string
 }
 
 export async function resolveWorkspaceRef(
@@ -70,14 +70,22 @@ export async function resolveWorkspaceRef(
 		refuse(ctx, opts.onEmpty.message)
 	}
 
-	const choice = await pickWorkspace(ctx, workspaces)
+	const allowNew = opts.onEmpty.kind === "mint"
+	const rows: WorkspaceRow[] = workspaces.map((w) => ({
+		id: w.id,
+		name: w.name,
+		status: w.status,
+		createdAt: w.createdAt,
+		lastActivityAt: w.lastActivityAt,
+		host: w.host,
+		sessionCount: "?",
+	}))
+	const choice = await pickWorkspace(ctx, rows, { allowNew, hideSessions: true })
 	if (!choice) {
 		throw new TeleportRefusal(opts.cancelledMessage ?? "cancelled")
 	}
-	if (choice.kind === "new") {
-		if (opts.onEmpty.kind === "mint") return randomUUID()
-		if (opts.cannotCreateMessage) refuse(ctx, opts.cannotCreateMessage)
-		refuse(ctx, opts.onEmpty.message)
+	if (choice.action === "new") {
+		return randomUUID()
 	}
-	return choice.id
+	return choice.row.id
 }

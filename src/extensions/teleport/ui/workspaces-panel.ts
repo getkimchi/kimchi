@@ -7,11 +7,18 @@ import { FULL_SCREEN_OVERLAY_OPTIONS, FullScreenOverlay } from "./full-screen-ov
 import { formatRelativeTime } from "./sessions-table.js"
 import type { WorkspaceRow } from "./workspaces-table.js"
 
-export type WorkspacePickerAction = "terminal" | "delete"
+export type WorkspacePickerResult =
+	| { action: "select"; row: WorkspaceRow }
+	| { action: "delete"; row: WorkspaceRow }
+	| { action: "new" }
 
-export interface WorkspacePickerResult {
-	action: WorkspacePickerAction
-	row: WorkspaceRow
+export interface WorkspacesPanelOptions {
+	/** Append a synthetic "+ new workspace" row and bind `n` to it. */
+	allowNew?: boolean
+	/** Bind `d` to delete and show it in the hint footer. */
+	allowDelete?: boolean
+	/** Drop the SESSIONS column entirely (used when session counts aren't fetched). */
+	hideSessions?: boolean
 }
 
 interface PickerTui {
@@ -77,15 +84,28 @@ function shortId(id: string): string {
 	return id.length > ID_SHORT_LEN ? id.slice(0, ID_SHORT_LEN) : id
 }
 
+type Entry = { kind: "row"; row: WorkspaceRow } | { kind: "new" }
+
 export class WorkspacesPanel implements Component {
 	private selectedIndex = 0
 	private readonly now = new Date()
+	private readonly entries: Entry[]
+	private readonly allowNew: boolean
+	private readonly allowDelete: boolean
+	private readonly hideSessions: boolean
 
 	constructor(
 		private readonly rows: WorkspaceRow[],
 		private readonly tui: PickerTui,
 		private readonly done: (result: WorkspacePickerResult | undefined) => void,
-	) {}
+		opts: WorkspacesPanelOptions = {},
+	) {
+		this.allowNew = opts.allowNew ?? false
+		this.allowDelete = opts.allowDelete ?? false
+		this.hideSessions = opts.hideSessions ?? false
+		const rowEntries: Entry[] = rows.map((row) => ({ kind: "row", row }))
+		this.entries = this.allowNew ? [...rowEntries, { kind: "new" }] : rowEntries
+	}
 
 	handleInput(data: string): void {
 		if (matchesKey(data, "up") || matchesKey(data, "k")) {
@@ -94,20 +114,28 @@ export class WorkspacesPanel implements Component {
 			return
 		}
 		if (matchesKey(data, "down") || matchesKey(data, "j")) {
-			this.selectedIndex = Math.min(this.rows.length - 1, this.selectedIndex + 1)
+			this.selectedIndex = Math.min(this.entries.length - 1, this.selectedIndex + 1)
 			this.tui.requestRender()
 			return
 		}
-		if (matchesKey(data, "return")) {
-			const row = this.rows[this.selectedIndex]
-			if (!row) return
-			this.done({ action: "terminal", row })
+		if (this.allowNew && matchesKey(data, "n")) {
+			this.done({ action: "new" })
 			return
 		}
-		if (matchesKey(data, "d")) {
-			const row = this.rows[this.selectedIndex]
-			if (!row) return
-			this.done({ action: "delete", row })
+		if (matchesKey(data, "return")) {
+			const entry = this.entries[this.selectedIndex]
+			if (!entry) return
+			if (entry.kind === "new") {
+				this.done({ action: "new" })
+			} else {
+				this.done({ action: "select", row: entry.row })
+			}
+			return
+		}
+		if (this.allowDelete && matchesKey(data, "d")) {
+			const entry = this.entries[this.selectedIndex]
+			if (!entry || entry.kind !== "row") return
+			this.done({ action: "delete", row: entry.row })
 			return
 		}
 		if (matchesKey(data, "escape") || matchesKey(data, "q") || matchesKey(data, "x")) {
@@ -116,7 +144,7 @@ export class WorkspacesPanel implements Component {
 	}
 
 	render(width: number): string[] {
-		const { rows } = this
+		const { rows, hideSessions } = this
 		const b = (s: string) => fg("2", s)
 		const innerW = Math.max(20, width - 2)
 		const contentW = innerW - 2
@@ -132,14 +160,24 @@ export class WorkspacesPanel implements Component {
 		const statusWidth = Math.max(HEADERS.status.length, ...rows.map((r) => STATUS_LABEL[r.status].length))
 		const createdWidth = Math.max(HEADERS.created.length, ...rows.map((r) => createdLabel(r).length))
 		const lastWidth = Math.max(HEADERS.lastActivity.length, ...rows.map((r) => lastLabel(r).length))
-		const sessionsWidth = Math.max(HEADERS.sessions.length, ...rows.map((r) => sessionsLabel(r).length))
+		const sessionsWidth = hideSessions
+			? 0
+			: Math.max(HEADERS.sessions.length, ...rows.map((r) => sessionsLabel(r).length))
 
 		const nameWidth = Math.max(HEADERS.name.length, ...rows.map((r) => nameLabel(r).length))
 		const hostWidth = Math.max(HEADERS.host.length, ...rows.map((r) => hostLabel(r).length))
 
 		// Fixed-width slice excludes the two flex columns (name, host).
 		const fixedNoFlex =
-			2 /* prefix */ + idWidth + 1 + statusWidth + 1 + createdWidth + 1 + lastWidth + 1 + sessionsWidth
+			2 /* prefix */ +
+			idWidth +
+			1 +
+			statusWidth +
+			1 +
+			createdWidth +
+			1 +
+			lastWidth +
+			(hideSessions ? 0 : 1 + sessionsWidth)
 		const availableForFlex = Math.max(2 * MIN_COL_WIDTH + 1, contentW - fixedNoFlex)
 		const desiredFlex = nameWidth + 1 + hostWidth
 		let nameW = nameWidth
@@ -156,7 +194,7 @@ export class WorkspacesPanel implements Component {
 			pad(HEADERS.status, statusWidth),
 			pad(HEADERS.created, createdWidth),
 			pad(HEADERS.lastActivity, lastWidth),
-			pad(HEADERS.sessions, sessionsWidth),
+			...(hideSessions ? [] : [pad(HEADERS.sessions, sessionsWidth)]),
 			HEADERS.host,
 		]
 		const headerLine = headerCells.join(" ")
@@ -171,9 +209,11 @@ export class WorkspacesPanel implements Component {
 			const status = pad(STATUS_LABEL[r.status], statusWidth)
 			const created = pad(createdLabel(r), createdWidth)
 			const last = pad(lastLabel(r), lastWidth)
-			const sessions = pad(sessionsLabel(r), sessionsWidth)
 			const host = truncate(hostLabel(r), hostW)
-			return [name, id, status, created, last, sessions, host].join(" ")
+			const cells = [name, id, status, created, last]
+			if (!hideSessions) cells.push(pad(sessionsLabel(r), sessionsWidth))
+			cells.push(host)
+			return cells.join(" ")
 		}
 
 		const formatStyled = (r: WorkspaceRow): { styled: string; plainLen: number } => {
@@ -184,11 +224,17 @@ export class WorkspacesPanel implements Component {
 			const statusCell = `${statusLabel(r.status)}${statusPadding}`
 			const created = pad(createdLabel(r), createdWidth)
 			const last = pad(lastLabel(r), lastWidth)
-			const sessions = pad(sessionsLabel(r), sessionsWidth)
 			const host = truncate(hostLabel(r), hostW)
-			const styled = [name, id, statusCell, created, last, sessions, host].join(" ")
-			const plainCombined = [name, id, pad(statusPlain, statusWidth), created, last, sessions, host].join(" ")
-			return { styled, plainLen: plainCombined.length }
+			const styledCells = [name, id, statusCell, created, last]
+			const plainCells = [name, id, pad(statusPlain, statusWidth), created, last]
+			if (!hideSessions) {
+				const sessionsPad = pad(sessionsLabel(r), sessionsWidth)
+				styledCells.push(sessionsPad)
+				plainCells.push(sessionsPad)
+			}
+			styledCells.push(host)
+			plainCells.push(host)
+			return { styled: styledCells.join(" "), plainLen: plainCells.join(" ").length }
 		}
 
 		const lines: string[] = []
@@ -205,11 +251,11 @@ export class WorkspacesPanel implements Component {
 		// Reserve: top border(1) + header(1) + divider(1) + bottom border(1) + hint(1) + empty(1) = 6
 		const maxVisibleRows = Math.max(1, this.tui.terminal.rows - 8)
 
-		if (rows.length === 0) {
+		if (this.entries.length === 0) {
 			const text = "  (no workspaces)"
 			lines.push(ansiRow(dim(text), text.length))
 		} else {
-			const { start, end } = computeVisibleWindow(this.selectedIndex, rows.length, maxVisibleRows)
+			const { start, end } = computeVisibleWindow(this.selectedIndex, this.entries.length, maxVisibleRows)
 
 			if (start > 0) {
 				const text = `  ↑ ${start} more`
@@ -217,25 +263,41 @@ export class WorkspacesPanel implements Component {
 			}
 
 			for (let i = start; i < end; i++) {
-				const r = rows[i] as WorkspaceRow
-				if (i === this.selectedIndex) {
-					const plain = formatPlain(r)
+				const entry = this.entries[i] as Entry
+				const isSelected = i === this.selectedIndex
+				if (entry.kind === "new") {
+					const label = "+ new workspace"
+					if (isSelected) {
+						const raw = `> ${label}`
+						lines.push(ansiRow(fg("36", raw), raw.length))
+					} else {
+						const text = `  ${fg("36", label)}`
+						lines.push(ansiRow(text, label.length + 2))
+					}
+					continue
+				}
+				if (isSelected) {
+					const plain = formatPlain(entry.row)
 					const raw = `> ${plain}`
 					lines.push(ansiRow(fg("36", raw), raw.length))
 				} else {
-					const { styled, plainLen } = formatStyled(r)
+					const { styled, plainLen } = formatStyled(entry.row)
 					lines.push(ansiRow(`  ${styled}`, plainLen + 2))
 				}
 			}
 
-			if (end < rows.length) {
-				const text = `  ↓ ${rows.length - end} more`
+			if (end < this.entries.length) {
+				const text = `  ↓ ${this.entries.length - end} more`
 				lines.push(ansiRow(dim(text), text.length))
 			}
 		}
 
 		lines.push(emptyRow())
-		const hint = "↑/↓ j/k: navigate  enter: terminal  d: delete  esc: close"
+		const hintParts = ["↑/↓ j/k: navigate", "enter: select"]
+		if (this.allowNew) hintParts.push("n: new")
+		if (this.allowDelete) hintParts.push("d: delete")
+		hintParts.push("esc: cancel")
+		const hint = hintParts.join("  ")
 		lines.push(ansiRow(dim(`  ${hint}`), hint.length + 2))
 		lines.push(b(`╰${"─".repeat(innerW)}╯`))
 
@@ -250,13 +312,18 @@ export function createWorkspacesPanel(
 	rows: WorkspaceRow[],
 	tui: PickerTui,
 	done: (result: WorkspacePickerResult | undefined) => void,
+	opts?: WorkspacesPanelOptions,
 ): WorkspacesPanel & { dispose(): void } {
-	return new WorkspacesPanel(rows, tui, done)
+	return new WorkspacesPanel(rows, tui, done, opts)
 }
 
-export function pickWorkspace(ctx: TeleportContext, rows: WorkspaceRow[]): Promise<WorkspacePickerResult | undefined> {
+export function pickWorkspace(
+	ctx: TeleportContext,
+	rows: WorkspaceRow[],
+	opts?: WorkspacesPanelOptions,
+): Promise<WorkspacePickerResult | undefined> {
 	return ctx.ui.custom<WorkspacePickerResult | undefined>(
-		(tui, _theme, _kb, done) => new FullScreenOverlay(new WorkspacesPanel(rows, tui, done), tui),
+		(tui, _theme, _kb, done) => new FullScreenOverlay(new WorkspacesPanel(rows, tui, done, opts), tui),
 		FULL_SCREEN_OVERLAY_OPTIONS,
 	)
 }

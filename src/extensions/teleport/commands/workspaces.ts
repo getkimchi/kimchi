@@ -40,13 +40,14 @@ export async function runWorkspaces(_args: string, ctx: TeleportContext): Promis
 		const rows = await collectRows(workspaces, ctx, description)
 		status(ctx, undefined)
 
-		const result = await pickWorkspace(ctx, rows)
+		const result = await pickWorkspace(ctx, rows, { allowDelete: true })
 		if (!result) return
 
-		if (result.action === "terminal") {
+		if (result.action === "select") {
 			await runTerminal(result.row.id, ctx)
 			return
 		}
+		if (result.action === "new") return
 
 		// delete
 		const label = result.row.name || result.row.id

@@ -59,7 +59,7 @@ vi.mock("../../../sandbox/worker/sessions.js", () => ({
 	createSession: createSessionMock,
 }))
 vi.mock("../overlay/overlay-component.js", () => ({ createTabsOverlay: overlayMock }))
-vi.mock("../ui/workspace-picker.js", () => ({ pickWorkspace: pickWorkspaceMock }))
+vi.mock("../ui/workspaces-panel.js", () => ({ pickWorkspace: pickWorkspaceMock }))
 vi.mock("../../../sandbox/git-credentials.js", () => ({
 	getGitRemoteHost: getGitRemoteHostMock,
 	parseHostFromRemoteUrl: parseHostMock,

@@ -1,4 +1,4 @@
-import { type Component, visibleWidth } from "@earendil-works/pi-tui"
+import { type Component, truncateToWidth } from "@earendil-works/pi-tui"
 
 interface ScreenTui {
 	requestRender(force?: boolean): void
@@ -55,12 +55,12 @@ export class FullScreenOverlay implements Component {
 
 		const blankRow = " ".repeat(width)
 		const left = " ".repeat(leftPad)
+		const rightPad = " ".repeat(rightPadW)
 		const out: string[] = []
 		for (let i = 0; i < topPad; i++) out.push(blankRow)
 		for (const line of innerLines) {
-			const lineW = visibleWidth(line)
-			const trailing = Math.max(0, innerW - lineW) + rightPadW
-			out.push(left + line + " ".repeat(trailing))
+			const normalized = truncateToWidth(line, innerW, "", true)
+			out.push(left + normalized + rightPad)
 		}
 		for (let i = 0; i < bottomPad; i++) out.push(blankRow)
 		return out

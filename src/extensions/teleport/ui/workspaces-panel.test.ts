@@ -23,13 +23,26 @@ const testRows: WorkspaceRow[] = [
 	makeRow({ id: "ws-cccccccc-3", name: "gamma", status: "completed", sessionCount: "?" }),
 ]
 
-function makePanel(rows: WorkspaceRow[] = testRows, opts?: { termRows?: number; termCols?: number }) {
+function makePanel(
+	rows: WorkspaceRow[] = testRows,
+	opts?: {
+		termRows?: number
+		termCols?: number
+		allowNew?: boolean
+		allowDelete?: boolean
+		hideSessions?: boolean
+	},
+) {
 	const tui = {
 		requestRender: vi.fn(),
 		terminal: { rows: opts?.termRows ?? 40, cols: opts?.termCols ?? 120 },
 	}
 	const done = vi.fn()
-	const panel = createWorkspacesPanel(rows, tui, done)
+	const panel = createWorkspacesPanel(rows, tui, done, {
+		allowNew: opts?.allowNew,
+		allowDelete: opts?.allowDelete ?? true,
+		hideSessions: opts?.hideSessions,
+	})
 	return { panel, tui, done }
 }
 
@@ -56,9 +69,9 @@ describe("WorkspacesPanel", () => {
 			expect(text).toContain("beta")
 			expect(text).toContain("gamma")
 			expect(text).toContain("navigate")
-			expect(text).toContain("terminal")
+			expect(text).toContain("select")
 			expect(text).toContain("delete")
-			expect(text).toContain("close")
+			expect(text).toContain("cancel")
 		})
 
 		it("shows a short id (first 8 chars) for each workspace row", () => {
@@ -129,16 +142,28 @@ describe("WorkspacesPanel", () => {
 	})
 
 	describe("actions", () => {
-		it("Enter on a row resolves done with action='terminal'", () => {
+		it("Enter on a row resolves done with action='select'", () => {
 			const { panel, done } = makePanel()
 			panel.handleInput("\r")
-			expect(done).toHaveBeenCalledWith({ action: "terminal", row: testRows[0] })
+			expect(done).toHaveBeenCalledWith({ action: "select", row: testRows[0] })
 		})
 
-		it("'d' on a row resolves done with action='delete'", () => {
+		it("'d' on a row resolves done with action='delete' when allowDelete=true", () => {
 			const { panel, done } = makePanel()
 			panel.handleInput("d")
 			expect(done).toHaveBeenCalledWith({ action: "delete", row: testRows[0] })
+		})
+
+		it("'d' is a no-op when allowDelete=false (default-off pathway)", () => {
+			const { panel, done } = makePanel(testRows, { allowDelete: false })
+			panel.handleInput("d")
+			expect(done).not.toHaveBeenCalled()
+		})
+
+		it("'n' is a no-op when allowNew=false (default)", () => {
+			const { panel, done } = makePanel()
+			panel.handleInput("n")
+			expect(done).not.toHaveBeenCalled()
 		})
 
 		it("Esc resolves done with undefined", () => {
@@ -173,6 +198,48 @@ describe("WorkspacesPanel", () => {
 			const done = vi.fn()
 			const panel = new WorkspacesPanel(testRows, tui, done)
 			expect(panel.render(80).length).toBeGreaterThan(0)
+		})
+	})
+
+	describe("allowNew", () => {
+		it("appends a '+ new workspace' row when allowNew=true", () => {
+			const { panel } = makePanel(testRows, { allowNew: true })
+			const text = panel.render(120).map(stripAnsi).join("\n")
+			expect(text).toContain("+ new workspace")
+			expect(text).toContain("n: new")
+		})
+
+		it("does NOT render '+ new workspace' when allowNew=false", () => {
+			const { panel } = makePanel()
+			const text = panel.render(120).map(stripAnsi).join("\n")
+			expect(text).not.toContain("+ new workspace")
+		})
+
+		it("'n' resolves done with action='new' when allowNew=true", () => {
+			const { panel, done } = makePanel(testRows, { allowNew: true })
+			panel.handleInput("n")
+			expect(done).toHaveBeenCalledWith({ action: "new" })
+		})
+
+		it("Enter on the synthetic '+ new' row resolves done with action='new'", () => {
+			const { panel, done } = makePanel(testRows, { allowNew: true })
+			// 3 rows + 1 synthetic = 4 entries; press down 3 times to land on the new row
+			panel.handleInput("j")
+			panel.handleInput("j")
+			panel.handleInput("j")
+			panel.handleInput("\r")
+			expect(done).toHaveBeenCalledWith({ action: "new" })
+		})
+	})
+
+	describe("hideSessions", () => {
+		it("omits the SESSIONS column from the header and body", () => {
+			const { panel } = makePanel(testRows, { hideSessions: true })
+			const text = panel.render(120).map(stripAnsi).join("\n")
+			expect(text).not.toContain("SESSIONS")
+			// Other columns are still there
+			expect(text).toContain("NAME")
+			expect(text).toContain("HOST")
 		})
 	})
 })

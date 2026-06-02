@@ -240,12 +240,12 @@ describe("runWorkspaces", () => {
 		expect(deleteWorkspaceMock).not.toHaveBeenCalled()
 	})
 
-	it("invokes runTerminal on the picked workspace id when action is 'terminal'", async () => {
+	it("invokes runTerminal on the picked workspace id when action is 'select'", async () => {
 		verifyApiKeyMock.mockResolvedValue("org-1")
 		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
 		authMock.mockResolvedValue(CREDS)
 		listSessionsMock.mockResolvedValue([])
-		pickWorkspaceMock.mockResolvedValue({ action: "terminal", row: row("w-1") })
+		pickWorkspaceMock.mockResolvedValue({ action: "select", row: row("w-1") })
 		const { ctx } = makeCtx()
 
 		await runWorkspaces("", ctx)

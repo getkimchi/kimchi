@@ -38,7 +38,6 @@ export async function runTerminal(
 
 	const workspaceId = await resolveWorkspaceRef(ctx, rawRef, {
 		onEmpty: { kind: "refuse", message: `${USAGE_HINT} — no workspaces available.` },
-		cannotCreateMessage: "/terminal cannot create a new workspace. Run /teleport first.",
 	})
 
 	const description = basename(ctx.cwd) || "kimchi"
