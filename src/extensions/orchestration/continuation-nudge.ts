@@ -202,6 +202,24 @@ export function stripStaleNudges(messages: OrchestratorMessages): OrchestratorMe
 	return stripped.length === messages.length ? messages : stripped
 }
 
+function isBehaviourMessage(m: OrchestratorMessages[number]): boolean {
+	return m.role === "custom" && "customType" in m && (m as { customType: string }).customType === "behaviour"
+}
+
+/**
+ * Strip behaviour-body messages that the model has already acted on (i.e.
+ * there is an assistant response after them). Behaviour bodies are injected
+ * once per agent start to prime the model with rules; once the model has
+ * processed them they accumulate in context as stale user-role messages and
+ * can confuse the model on subsequent turns.
+ */
+export function stripStaleBehaviours(messages: OrchestratorMessages): OrchestratorMessages {
+	const lastAssistantIdx = messages.findLastIndex((m) => m.role === "assistant")
+	if (lastAssistantIdx === -1) return messages
+	const stripped = messages.filter((m, i) => i > lastAssistantIdx || !isBehaviourMessage(m))
+	return stripped.length === messages.length ? messages : stripped
+}
+
 /** Custom types that are display-only UI markers and must never reach the LLM. */
 export const UI_ONLY_CUSTOM_TYPES: ReadonlySet<string> = Object.freeze(
 	new Set([
