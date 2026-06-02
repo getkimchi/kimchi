@@ -1,3 +1,4 @@
+import { relative } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { formatAtMention } from "./at-mentions.js"
@@ -161,8 +162,11 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 
 		if (m.method === "at_mentioned") {
 			if (typeof params.filePath === "string") {
+				const filePath = currentCtx?.cwd
+					? relative(currentCtx.cwd, params.filePath).replace(/\\/g, "/")
+					: params.filePath
 				const mention: AtMentionNotification = {
-					filePath: params.filePath,
+					filePath,
 					lineStart: typeof params.lineStart === "number" ? params.lineStart : 0,
 					lineEnd: typeof params.lineEnd === "number" ? params.lineEnd : 0,
 				}
