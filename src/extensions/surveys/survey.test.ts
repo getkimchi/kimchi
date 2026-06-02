@@ -51,11 +51,10 @@ describe("initial survey UI", () => {
 
 		const lines = component.render(72)
 		expect(lines.join("\n")).toContain("How did Kimchi do?")
-		expect(lines.join("\n")).toContain("Your feedback helps us improve.")
 		expect(lines.join("\n")).toContain("Went great")
 		expect(lines.join("\n")).toContain("Mostly worked")
-		expect(lines.join("\n")).toContain("- some tweaks before merge")
-		expect(surveyTheme.fg).toHaveBeenCalledWith("text", "Your feedback helps us improve.")
+		expect(lines.join("\n").match(/How did Kimchi do\?/g)).toHaveLength(1)
+		expect(surveyTheme.fg).not.toHaveBeenCalledWith("text", "How did Kimchi do?")
 
 		component.handleInput("\x1b[B")
 		component.handleInput("\r")

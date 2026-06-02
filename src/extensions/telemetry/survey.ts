@@ -1,6 +1,13 @@
 import type { SessionContext } from "./session-context.js"
 
-type SurveyAttrs = Record<string, string | number>
+type SurveyAttrs = Record<string, string | number | boolean>
+type SurveyOption = SurveyTelemetryDefinition["options"][number]
+
+const surveyIDAttr = "survey_id"
+const surveySubmissionIDAttr = "survey_submission_id"
+const questionIDAttr = "question_id"
+const answerValueAttr = "answer_value"
+const surveyCompletedAttr = "survey_completed"
 
 export interface SurveyTelemetryDefinition {
 	id: string
@@ -19,12 +26,12 @@ export interface SurveyTelemetryDefinition {
 
 export interface SurveyShownTelemetry {
 	survey: SurveyTelemetryDefinition
-	impressionId: string
 	trigger?: string
 }
 
 export interface SurveyAnsweredTelemetry extends SurveyShownTelemetry {
 	answerId: string
+	submissionId: string
 }
 
 export interface SurveyDismissedTelemetry extends SurveyShownTelemetry {
@@ -33,14 +40,12 @@ export interface SurveyDismissedTelemetry extends SurveyShownTelemetry {
 
 function commonSurveyAttrs(args: SurveyShownTelemetry): SurveyAttrs {
 	return {
-		impression_id: args.impressionId,
-		survey_id: args.survey.id,
-		survey_version: args.survey.version,
-		...(args.trigger ? { trigger: args.trigger } : {}),
-		question_id: args.survey.question.id,
-		question_text: args.survey.question.text,
-		...(args.survey.question.help ? { question_help: args.survey.question.help } : {}),
+		[surveyIDAttr]: args.survey.id,
 	}
+}
+
+function surveyResponseValue(answer: SurveyOption): string {
+	return answer.label
 }
 
 export function emitSurveyShown(ctx: SessionContext, args: SurveyShownTelemetry): void {
@@ -53,15 +58,13 @@ export function emitSurveyAnswered(ctx: SessionContext, args: SurveyAnsweredTele
 
 	ctx.emit("survey_answered", {
 		...commonSurveyAttrs(args),
-		answer_id: answer.id,
-		answer_label: answer.label,
-		...(answer.score !== undefined ? { answer_score: answer.score } : {}),
+		[surveySubmissionIDAttr]: args.submissionId,
+		[questionIDAttr]: args.survey.question.id,
+		[answerValueAttr]: surveyResponseValue(answer),
+		[surveyCompletedAttr]: true,
 	})
 }
 
 export function emitSurveyDismissed(ctx: SessionContext, args: SurveyDismissedTelemetry): void {
-	ctx.emit("survey_dismissed", {
-		...commonSurveyAttrs(args),
-		dismiss_reason: args.reason ?? "dismissed",
-	})
+	ctx.emit("survey_dismissed", commonSurveyAttrs(args))
 }

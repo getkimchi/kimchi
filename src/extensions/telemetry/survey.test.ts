@@ -9,17 +9,17 @@ vi.mock("../../api/me.js", () => ({
 }))
 
 const TEST_SURVEY = {
-	id: "first-impression-feedback-v1",
+	id: "019e87cc-5033-0000-d9bd-5e6501640b6e",
 	version: 1,
 	question: {
-		id: "how_did_that_go",
+		id: "34f7caf5-7631-42f1-b6ed-d2a42ddde1cd",
 		text: "How did Kimchi do?",
-		help: "Your feedback helps us improve.",
+		help: "How did Kimchi do?",
 	},
 	options: [
-		{ id: "worked_great", label: "Went great - shipped it", score: 5 },
-		{ id: "mostly_worked", label: "Mostly worked - some tweaks before merge", score: 3 },
-		{ id: "didnt_work", label: "Didn't work - try again differently", score: 1 },
+		{ id: "worked_great", label: "Went great" },
+		{ id: "mostly_worked", label: "Mostly worked" },
+		{ id: "didnt_work", label: "Didn't work" },
 	],
 } as const
 
@@ -51,22 +51,23 @@ describe("survey telemetry", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("emits survey_shown with the v1 survey context", async () => {
+	it("emits survey_shown with the survey id", async () => {
 		const ctx = new SessionContext(makeConfig(), "cli", "coding")
 
-		emitSurveyShown(ctx, { survey: TEST_SURVEY, impressionId: "impression-1" })
+		emitSurveyShown(ctx, { survey: TEST_SURVEY })
 
 		expect(ctx.logBuffer).toHaveLength(1)
 		const record = ctx.logBuffer[0]
 		expect(record.eventName).toBe("survey_shown")
 
 		const attrMap = attrs(record)
-		expect(attrMap.impression_id).toBe("impression-1")
 		expect(attrMap.survey_id).toBe(TEST_SURVEY.id)
-		expect(attrMap.survey_version).toBe(String(TEST_SURVEY.version))
-		expect(attrMap.question_id).toBe(TEST_SURVEY.question.id)
-		expect(attrMap.question_text).toBe(TEST_SURVEY.question.text)
-		expect(attrMap.question_help).toBe(TEST_SURVEY.question.help)
+		expect(attrMap.$survey_id).toBeUndefined()
+		expect(attrMap.impression_id).toBeUndefined()
+		expect(attrMap.survey_version).toBeUndefined()
+		expect(attrMap.question_id).toBeUndefined()
+		expect(attrMap.question_text).toBeUndefined()
+		expect(attrMap.question_help).toBeUndefined()
 		expect(attrMap["session.id"]).toBe(ctx.sessionId)
 		expect(attrMap.client).toBe("pi")
 		expect(attrMap.source).toBe("cli")
@@ -75,20 +76,28 @@ describe("survey telemetry", () => {
 		await ctx.drain()
 	})
 
-	it("emits survey_answered with answer metadata", async () => {
+	it("emits survey_answered with the abstract survey response fields", async () => {
 		const ctx = new SessionContext(makeConfig(), "cli", "coding")
 
-		emitSurveyAnswered(ctx, { survey: TEST_SURVEY, impressionId: "impression-1", answerId: "mostly_worked" })
+		emitSurveyAnswered(ctx, { survey: TEST_SURVEY, submissionId: "submission-1", answerId: "mostly_worked" })
 
 		expect(ctx.logBuffer).toHaveLength(1)
 		const record = ctx.logBuffer[0]
 		expect(record.eventName).toBe("survey_answered")
 
 		const attrMap = attrs(record)
-		expect(attrMap.impression_id).toBe("impression-1")
-		expect(attrMap.answer_id).toBe("mostly_worked")
-		expect(attrMap.answer_label).toBe("Mostly worked - some tweaks before merge")
-		expect(attrMap.answer_score).toBe("3")
+		expect(attrMap.survey_id).toBe(TEST_SURVEY.id)
+		expect(attrMap.survey_submission_id).toBe("submission-1")
+		expect(attrMap.question_id).toBe("34f7caf5-7631-42f1-b6ed-d2a42ddde1cd")
+		expect(attrMap.answer_value).toBe("Mostly worked")
+		expect(attrMap.survey_completed).toBe("true")
+		expect(attrMap.$survey_id).toBeUndefined()
+		expect(attrMap["$survey_response_34f7caf5-7631-42f1-b6ed-d2a42ddde1cd"]).toBeUndefined()
+		expect(attrMap.$survey_submission_id).toBeUndefined()
+		expect(attrMap.impression_id).toBeUndefined()
+		expect(attrMap.answer_id).toBeUndefined()
+		expect(attrMap.answer_label).toBeUndefined()
+		expect(attrMap.answer_score).toBeUndefined()
 
 		await ctx.drain()
 	})
@@ -96,54 +105,65 @@ describe("survey telemetry", () => {
 	it("does not emit survey_answered for an unknown answer id", async () => {
 		const ctx = new SessionContext(makeConfig(), "cli", "coding")
 
-		emitSurveyAnswered(ctx, { survey: TEST_SURVEY, impressionId: "impression-1", answerId: "unknown" })
+		emitSurveyAnswered(ctx, { survey: TEST_SURVEY, submissionId: "submission-1", answerId: "unknown" })
 
 		expect(ctx.logBuffer).toHaveLength(0)
 
 		await ctx.drain()
 	})
 
-	it("emits survey_dismissed with a dismiss reason", async () => {
+	it("emits survey_dismissed with the survey id", async () => {
 		const ctx = new SessionContext(makeConfig(), "cli", "coding")
 
-		emitSurveyDismissed(ctx, { survey: TEST_SURVEY, impressionId: "impression-1" })
+		emitSurveyDismissed(ctx, { survey: TEST_SURVEY })
 
 		expect(ctx.logBuffer).toHaveLength(1)
 		const record = ctx.logBuffer[0]
 		expect(record.eventName).toBe("survey_dismissed")
 
 		const attrMap = attrs(record)
-		expect(attrMap.impression_id).toBe("impression-1")
-		expect(attrMap.dismiss_reason).toBe("dismissed")
-		expect(attrMap.question_id).toBe(TEST_SURVEY.question.id)
-		expect(attrMap.question_text).toBe(TEST_SURVEY.question.text)
+		expect(attrMap.survey_id).toBe(TEST_SURVEY.id)
+		expect(attrMap.$survey_id).toBeUndefined()
+		expect(attrMap.impression_id).toBeUndefined()
+		expect(attrMap.dismiss_reason).toBeUndefined()
+		expect(attrMap.question_id).toBeUndefined()
+		expect(attrMap.question_text).toBeUndefined()
 
 		await ctx.drain()
 	})
 
-	it("emits survey events with trigger metadata and a shared impression id", async () => {
+	it("does not emit local or PostHog-specific survey metadata", async () => {
 		const ctx = new SessionContext(makeConfig(), "cli", "ferment")
 
-		emitSurveyShown(ctx, { survey: TEST_SURVEY, impressionId: "impression-1", trigger: "ferment_completed" })
+		emitSurveyShown(ctx, { survey: TEST_SURVEY, trigger: "ferment_completed" })
 		emitSurveyAnswered(ctx, {
 			survey: TEST_SURVEY,
-			impressionId: "impression-1",
+			submissionId: "submission-1",
 			answerId: "worked_great",
 			trigger: "ferment_completed",
 		})
 		emitSurveyDismissed(ctx, {
 			survey: TEST_SURVEY,
-			impressionId: "impression-1",
 			trigger: "ferment_completed",
 			reason: "ctrl_c",
 		})
 
-		expect(attrs(ctx.logBuffer[0]).trigger).toBe("ferment_completed")
-		expect(attrs(ctx.logBuffer[1]).trigger).toBe("ferment_completed")
-		expect(attrs(ctx.logBuffer[2]).dismiss_reason).toBe("ctrl_c")
-		expect(attrs(ctx.logBuffer[0]).impression_id).toBe("impression-1")
-		expect(attrs(ctx.logBuffer[1]).impression_id).toBe("impression-1")
-		expect(attrs(ctx.logBuffer[2]).impression_id).toBe("impression-1")
+		expect(attrs(ctx.logBuffer[0]).survey_id).toBe(TEST_SURVEY.id)
+		expect(attrs(ctx.logBuffer[1]).answer_value).toBe("Went great")
+		expect(attrs(ctx.logBuffer[1]).survey_submission_id).toBe("submission-1")
+		expect(attrs(ctx.logBuffer[1]).survey_completed).toBe("true")
+		expect(attrs(ctx.logBuffer[2]).survey_id).toBe(TEST_SURVEY.id)
+		expect(attrs(ctx.logBuffer[0]).$survey_id).toBeUndefined()
+		expect(attrs(ctx.logBuffer[1])["$survey_response_34f7caf5-7631-42f1-b6ed-d2a42ddde1cd"]).toBeUndefined()
+		expect(attrs(ctx.logBuffer[1]).$survey_submission_id).toBeUndefined()
+		expect(attrs(ctx.logBuffer[2]).$survey_id).toBeUndefined()
+		expect(attrs(ctx.logBuffer[0]).trigger).toBeUndefined()
+		expect(attrs(ctx.logBuffer[1]).trigger).toBeUndefined()
+		expect(attrs(ctx.logBuffer[2]).trigger).toBeUndefined()
+		expect(attrs(ctx.logBuffer[0]).impression_id).toBeUndefined()
+		expect(attrs(ctx.logBuffer[1]).impression_id).toBeUndefined()
+		expect(attrs(ctx.logBuffer[2]).impression_id).toBeUndefined()
+		expect(attrs(ctx.logBuffer[2]).dismiss_reason).toBeUndefined()
 
 		await ctx.drain()
 	})

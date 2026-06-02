@@ -40,23 +40,22 @@ export default function surveysExtension(options: SurveysExtensionOptions = {}) 
 			if (!ctx.hasUI) return
 			const trigger = pendingSurveyTrigger
 			surveyShowing = true
-			const impressionId = randomUUID()
+			const submissionId = randomUUID()
 			void showInitialSurvey(ctx, {
 				configPath: options.configPath,
 				now: options.now,
 				trigger,
-				onShown: (shownTrigger) => trackSurveyShown({ survey: INITIAL_SURVEY, impressionId, trigger: shownTrigger }),
+				onShown: (shownTrigger) => trackSurveyShown({ survey: INITIAL_SURVEY, trigger: shownTrigger }),
 				onAnswered: (answerId: InitialSurveyAnswerId, answeredTrigger) =>
 					trackSurveyAnswered({
 						survey: INITIAL_SURVEY,
-						impressionId,
 						answerId,
+						submissionId,
 						trigger: answeredTrigger,
 					}),
 				onDismissed: (reason: InitialSurveyDismissReason, dismissedTrigger) =>
 					trackSurveyDismissed({
 						survey: INITIAL_SURVEY,
-						impressionId,
 						reason,
 						trigger: dismissedTrigger,
 					}),

@@ -14,17 +14,17 @@ import { readSurveySeenAt, writeSurveySeenAt } from "../../config.js"
 import { setTipWidgetLocation } from "../tips/index.js"
 
 export const INITIAL_SURVEY = {
-	id: "first-impression-feedback-v1",
+	id: "019e87cc-5033-0000-d9bd-5e6501640b6e",
 	version: 1,
 	question: {
-		id: "how_did_that_go",
+		id: "34f7caf5-7631-42f1-b6ed-d2a42ddde1cd",
 		text: "How did Kimchi do?",
-		help: "Your feedback helps us improve.",
+		help: "How did Kimchi do?",
 	},
 	options: [
-		{ id: "worked_great", label: "Went great - shipped it", score: 5 },
-		{ id: "mostly_worked", label: "Mostly worked - some tweaks before merge", score: 3 },
-		{ id: "didnt_work", label: "Didn't work - try again differently", score: 1 },
+		{ id: "worked_great", label: "Went great" },
+		{ id: "mostly_worked", label: "Mostly worked" },
+		{ id: "didnt_work", label: "Didn't work" },
 	],
 } as const
 
@@ -163,7 +163,8 @@ export class InitialSurveyComponent extends Container {
 		const titleText = `${titlePrefix}${title} `
 		const ruleWidth = Math.max(3, safeWidth - titleText.length)
 		this.titleText.setText(this.theme.fg("accent", `${titleText}${"─".repeat(ruleWidth)}`))
-		this.helpText.setText(this.theme.fg("text", truncateToWidth(INITIAL_SURVEY.question.help, safeWidth)))
+		const help = INITIAL_SURVEY.question.help
+		this.helpText.setText(help && help !== title ? this.theme.fg("text", truncateToWidth(help, safeWidth)) : "")
 		this.bottomRule.setText(this.theme.fg("accent", "─".repeat(safeWidth)))
 		return super.render(width)
 	}

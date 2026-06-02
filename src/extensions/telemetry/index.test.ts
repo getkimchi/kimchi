@@ -22,17 +22,17 @@ vi.mock("../../api/me.js", () => ({
 }))
 
 const TEST_SURVEY = {
-	id: "first-impression-feedback-v1",
+	id: "019e87cc-5033-0000-d9bd-5e6501640b6e",
 	version: 1,
 	question: {
-		id: "how_did_that_go",
+		id: "34f7caf5-7631-42f1-b6ed-d2a42ddde1cd",
 		text: "How did Kimchi do?",
-		help: "Your feedback helps us improve.",
+		help: "How did Kimchi do?",
 	},
 	options: [
-		{ id: "worked_great", label: "Went great - shipped it", score: 5 },
-		{ id: "mostly_worked", label: "Mostly worked - some tweaks before merge", score: 3 },
-		{ id: "didnt_work", label: "Didn't work - try again differently", score: 1 },
+		{ id: "worked_great", label: "Went great" },
+		{ id: "mostly_worked", label: "Mostly worked" },
+		{ id: "didnt_work", label: "Didn't work" },
 	],
 } as const
 
@@ -181,10 +181,10 @@ describe("telemetryExtension integration", () => {
 		const { handlers, api } = createMockApi()
 		telemetryExtension(makeConfig())(api)
 
-		const impressionId = "impression-1"
-		trackSurveyShown({ survey: TEST_SURVEY, impressionId })
-		trackSurveyAnswered({ survey: TEST_SURVEY, impressionId, answerId: "worked_great" })
-		trackSurveyDismissed({ survey: TEST_SURVEY, impressionId })
+		const submissionId = "submission-1"
+		trackSurveyShown({ survey: TEST_SURVEY })
+		trackSurveyAnswered({ survey: TEST_SURVEY, submissionId, answerId: "worked_great" })
+		trackSurveyDismissed({ survey: TEST_SURVEY })
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
 
 		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
@@ -210,22 +210,33 @@ describe("telemetryExtension integration", () => {
 			surveyDismissed?.attributes.map((a) => [a.key, a.value.stringValue]) ?? [],
 		)
 
-		expect(shownAttrs.impression_id).toBe(impressionId)
-		expect(shownAttrs.survey_id).toBe("first-impression-feedback-v1")
-		expect(shownAttrs.survey_version).toBe("1")
-		expect(shownAttrs.question_id).toBe("how_did_that_go")
-		expect(shownAttrs.question_text).toBe("How did Kimchi do?")
+		expect(shownAttrs.survey_id).toBe("019e87cc-5033-0000-d9bd-5e6501640b6e")
+		expect(shownAttrs.$survey_id).toBeUndefined()
+		expect(shownAttrs.impression_id).toBeUndefined()
+		expect(shownAttrs.survey_version).toBeUndefined()
+		expect(shownAttrs.question_id).toBeUndefined()
+		expect(shownAttrs.question_text).toBeUndefined()
 		expect(shownAttrs.client).toBe("pi")
 		expect(shownAttrs.source).toBe("cli")
 		expect(shownAttrs.mode).toBe("coding")
 
-		expect(answeredAttrs.impression_id).toBe(impressionId)
-		expect(answeredAttrs.answer_id).toBe("worked_great")
-		expect(answeredAttrs.answer_label).toBe("Went great - shipped it")
-		expect(answeredAttrs.answer_score).toBe("5")
+		expect(answeredAttrs.survey_id).toBe("019e87cc-5033-0000-d9bd-5e6501640b6e")
+		expect(answeredAttrs.survey_submission_id).toBe(submissionId)
+		expect(answeredAttrs.question_id).toBe("34f7caf5-7631-42f1-b6ed-d2a42ddde1cd")
+		expect(answeredAttrs.answer_value).toBe("Went great")
+		expect(answeredAttrs.survey_completed).toBe("true")
+		expect(answeredAttrs.$survey_id).toBeUndefined()
+		expect(answeredAttrs["$survey_response_34f7caf5-7631-42f1-b6ed-d2a42ddde1cd"]).toBeUndefined()
+		expect(answeredAttrs.$survey_submission_id).toBeUndefined()
+		expect(answeredAttrs.impression_id).toBeUndefined()
+		expect(answeredAttrs.answer_id).toBeUndefined()
+		expect(answeredAttrs.answer_label).toBeUndefined()
+		expect(answeredAttrs.answer_score).toBeUndefined()
 
-		expect(dismissedAttrs.impression_id).toBe(impressionId)
-		expect(dismissedAttrs.dismiss_reason).toBe("dismissed")
-		expect(dismissedAttrs.question_id).toBe("how_did_that_go")
+		expect(dismissedAttrs.survey_id).toBe("019e87cc-5033-0000-d9bd-5e6501640b6e")
+		expect(dismissedAttrs.$survey_id).toBeUndefined()
+		expect(dismissedAttrs.impression_id).toBeUndefined()
+		expect(dismissedAttrs.dismiss_reason).toBeUndefined()
+		expect(dismissedAttrs.question_id).toBeUndefined()
 	})
 })

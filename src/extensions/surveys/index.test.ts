@@ -97,17 +97,14 @@ describe("surveysExtension", () => {
 			await Promise.resolve()
 
 			expect(extCtx.ui.custom).toHaveBeenCalledTimes(1)
-			expect(trackSurveyShown).toHaveBeenCalledWith(
-				expect.objectContaining({ impressionId: expect.any(String), trigger: "third_coding_prompt" }),
-			)
+			expect(trackSurveyShown).toHaveBeenCalledWith(expect.objectContaining({ trigger: "third_coding_prompt" }))
 			expect(trackSurveyAnswered).toHaveBeenCalledWith(
 				expect.objectContaining({
-					impressionId: expect.any(String),
 					answerId: "worked_great",
+					submissionId: expect.any(String),
 					trigger: "third_coding_prompt",
 				}),
 			)
-			expect(trackSurveyAnswered.mock.calls[0][0].impressionId).toBe(trackSurveyShown.mock.calls[0][0].impressionId)
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true })
 		}
@@ -121,7 +118,7 @@ describe("surveysExtension", () => {
 				configPath,
 				JSON.stringify({
 					surveys: {
-						"first-impression-feedback-v1": {
+						"019e87cc-5033-0000-d9bd-5e6501640b6e": {
 							seenAt: "2026-05-27T10:00:00.000Z",
 						},
 					},
@@ -157,17 +154,13 @@ describe("surveysExtension", () => {
 			await Promise.resolve()
 
 			expect(extCtx.ui.custom).toHaveBeenCalledTimes(1)
-			expect(trackSurveyShown).toHaveBeenCalledWith(
-				expect.objectContaining({ impressionId: expect.any(String), trigger: "ferment_completed" }),
-			)
+			expect(trackSurveyShown).toHaveBeenCalledWith(expect.objectContaining({ trigger: "ferment_completed" }))
 			expect(trackSurveyDismissed).toHaveBeenCalledWith(
 				expect.objectContaining({
-					impressionId: expect.any(String),
 					trigger: "ferment_completed",
 					reason: "ctrl_c",
 				}),
 			)
-			expect(trackSurveyDismissed.mock.calls[0][0].impressionId).toBe(trackSurveyShown.mock.calls[0][0].impressionId)
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true })
 		}
@@ -198,9 +191,7 @@ describe("surveysExtension", () => {
 
 			expect(noUiCtx.ui.custom).not.toHaveBeenCalled()
 			expect(uiCtx.ui.custom).toHaveBeenCalledTimes(1)
-			expect(trackSurveyShown).toHaveBeenCalledWith(
-				expect.objectContaining({ impressionId: expect.any(String), trigger: "ferment_completed" }),
-			)
+			expect(trackSurveyShown).toHaveBeenCalledWith(expect.objectContaining({ trigger: "ferment_completed" }))
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true })
 		}
