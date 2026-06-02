@@ -1,4 +1,9 @@
-import { readTelemetryConfig, writeTelemetryEnabled } from "../config.js"
+import {
+	readNotificationsEnabled,
+	readTelemetryConfig,
+	writeNotificationsEnabled,
+	writeTelemetryEnabled,
+} from "../config.js"
 
 const TELEMETRY_ENV = "KIMCHI_TELEMETRY_ENABLED"
 
@@ -22,6 +27,8 @@ export async function runConfig(args: string[]): Promise<number> {
 	switch (sub) {
 		case "telemetry":
 			return handleTelemetry(rest)
+		case "notify":
+			return handleNotify(rest)
 		default:
 			console.error(`kimchi config: unknown subcommand "${sub}"`)
 			printUsage()
@@ -78,7 +85,27 @@ function parseSwitch(s: string): boolean | null {
 	}
 }
 
+function handleNotify(args: string[]): number {
+	if (args.length === 0) {
+		const enabled = readNotificationsEnabled()
+		console.log(`Notifications: ${enabled ? "enabled" : "disabled"}`)
+		return 0
+	}
+
+	const value = args[0].toLowerCase()
+	const enabled = parseSwitch(value)
+	if (enabled === null) {
+		console.error(`kimchi config notify: expected "on" or "off", got "${args[0]}"`)
+		return 2
+	}
+	writeNotificationsEnabled(enabled)
+	console.log(`Notifications ${enabled ? "enabled" : "disabled"}`)
+	return 0
+}
+
 function printUsage(): void {
 	console.error("Usage: kimchi config telemetry [on|off]")
 	console.error("       kimchi config telemetry           # show current status")
+	console.error("       kimchi config notify [on|off]")
+	console.error("       kimchi config notify              # show current status")
 }

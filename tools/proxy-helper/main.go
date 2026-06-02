@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/castai/kimchi/tools/proxy-helper/cmd/proxy"
+	"github.com/castai/kimchi/tools/proxy-helper/cmd/tcgetpgrp"
 	"github.com/spf13/cobra"
 )
 
@@ -18,6 +19,7 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.AddCommand(proxy.NewSSHProxyCmd())
+	root.AddCommand(tcgetpgrp.NewTcgetpgrpCmd())
 	return root
 }
 

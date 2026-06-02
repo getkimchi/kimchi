@@ -466,6 +466,27 @@ export function writeTelemetryEnabled(enabled: boolean, configPath?: string): vo
 	})
 }
 
+/**
+ * Read notifications.enabled (top-level notificationsEnabled) from config.json.
+ */
+export function readNotificationsEnabled(configPath?: string): boolean {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	try {
+		const raw = readFileSync(path, "utf-8")
+		const parsed = JSON.parse(raw)
+		return parsed.notificationsEnabled === true
+	} catch {
+		return false
+	}
+}
+
+/**
+ * Persist notifications.enabled in the kimchi config.json.
+ */
+export function writeNotificationsEnabled(enabled: boolean, configPath?: string): void {
+	writeConfigField("notificationsEnabled", enabled, configPath ?? KIMCHI_CONFIG_PATH)
+}
+
 export function clearApiKey(configPath?: string): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateConfigFile(

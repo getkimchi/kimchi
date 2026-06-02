@@ -55,6 +55,7 @@ import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import stripImagesExtension from "./extensions/strip-images.js"
+import systemNotifyExtension from "./extensions/system-notify.js"
 import tagsExtension from "./extensions/tags.js"
 import telemetryExtension from "./extensions/telemetry/index.js"
 import { drain as drainPreSessionTelemetry, sendPreSessionEvent } from "./extensions/telemetry/pre-session.js"
@@ -533,6 +534,7 @@ try {
 			stripImagesExtension,
 			traceIdExtension,
 			activityExtension,
+			systemNotifyExtension,
 		]
 
 		if (acpMode) {
