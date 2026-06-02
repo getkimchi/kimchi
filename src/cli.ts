@@ -81,7 +81,7 @@ import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
 import { getVersion } from "./utils.js"
-import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./utils/trace-id-export.js"
+import { postProcessHtmlExport, postProcessJsonlExport } from "./utils/export-post-process.js"
 
 installCloudflare524RetryPatch()
 
@@ -124,12 +124,9 @@ const _origExportToJsonl = (AgentSession as any).prototype.exportToJsonl
 ;(AgentSession as any).prototype.exportToJsonl = function (outputPath?: string) {
 	const filePath = _origExportToJsonl.call(this, outputPath)
 	try {
-		const raw = readFileSync(filePath, "utf-8")
-		const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0)
-		const processed = injectTraceIdsIntoExport(lines)
-		writeFileSync(filePath, `${processed.join("\n")}\n`, "utf-8")
+		postProcessJsonlExport(filePath)
 	} catch (err) {
-		console.warn("[trace-id] Failed to inject trace IDs into JSONL export:", err)
+		console.warn("[export-post-process] Failed to post-process JSONL export:", err)
 	}
 	return filePath
 }
@@ -142,64 +139,9 @@ const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
 ;(AgentSession as any).prototype.exportToHtml = async function (outputPath?: string) {
 	const filePath = await _origExportToHtml.call(this, outputPath)
 	try {
-		let html = readFileSync(filePath, "utf-8")
-		const match = html.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
-		if (match) {
-			const base64 = match[1]
-			const json = Buffer.from(base64, "base64").toString("utf-8")
-			const data = JSON.parse(json) as Record<string, unknown>
-			if (Array.isArray(data.entries)) {
-				injectTraceIdsIntoEntries(data.entries as import("./utils/trace-id-export.js").ExportEntry[])
-				const modified = JSON.stringify(data)
-				const modifiedBase64 = Buffer.from(modified).toString("base64")
-				html = html.replace(
-					/<script id="session-data" type="application\/json">[\s\S]*?<\/script>/,
-					`<script id="session-data" type="application/json">${modifiedBase64}</script>`,
-				)
-			}
-		}
-
-		// Inject the trace ID renderer script before </body> (idempotent).
-		if (!html.includes('id="trace-id-renderer"')) {
-			const traceIdScript = `<script id="trace-id-renderer">
-(function() {
-    var el = document.getElementById('session-data');
-    if (!el) return;
-    var base64 = el.textContent;
-    var binary = atob(base64);
-    var bytes = new Uint8Array(binary.length);
-    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    var data = JSON.parse(new TextDecoder('utf-8').decode(bytes));
-    var entriesWithTraceIds = [];
-    for (var i = 0; i < data.entries.length; i++) {
-        var e = data.entries[i];
-        if (e.traceIds && e.traceIds.length > 0) entriesWithTraceIds.push(e);
-    }
-    if (entriesWithTraceIds.length === 0) return;
-    function inject() {
-        for (var i = 0; i < entriesWithTraceIds.length; i++) {
-            var entry = entriesWithTraceIds[i];
-            var el = document.getElementById('entry-' + entry.id);
-            if (!el) continue;
-            if (el.querySelector('.trace-ids')) continue;
-            var d = document.createElement('div');
-            d.className = 'trace-ids';
-            d.textContent = 'Trace IDs: ' + entry.traceIds.join(', ');
-            d.style.cssText = 'font-size:0.75rem;color:#666;margin-top:0.25rem;font-family:monospace';
-            el.appendChild(d);
-        }
-    }
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', inject);
-    } else { inject(); }
-})();
-</script>`
-			html = html.replace("</body>", `${traceIdScript}\n</body>`)
-		}
-
-		writeFileSync(filePath, html, "utf-8")
+		postProcessHtmlExport(filePath)
 	} catch (err) {
-		console.warn("[trace-id] Failed to inject trace IDs into HTML export:", err)
+		console.warn("[export-post-process] Failed to post-process HTML export:", err)
 	}
 	return filePath
 }
