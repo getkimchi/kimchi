@@ -15,10 +15,14 @@ let currentCtx: ExtensionContext | null = null
 // session_start so that a new conversation always begins at #1.
 let imageCounter = 0
 
-const CLIPBOARD_POLL_INTERVAL_MS = 2000
+const CLIPBOARD_POLL_INTERVAL_MS = 1000
 let clipboardPollId: ReturnType<typeof setInterval> | null = null
 let clipboardHasImage = false
 let isCheckingFinder = false
+// Monotonic counter incremented on every session_start. Async callbacks
+// capture the generation at launch and bail out if it no longer matches,
+// preventing stale Finder checks from corrupting a newer session's state.
+let sessionGeneration = 0
 
 function modelSupportsImages(modelId: string | undefined): boolean {
 	if (!modelId) return false
@@ -34,23 +38,30 @@ function isImageFormat(format: string): boolean {
 	)
 }
 
-function isFinderImageFileCopy(): Promise<boolean> {
-	return new Promise<boolean>((resolve) => {
+type FinderFileResult = "image" | "non-image" | null
+
+function checkFinderImageFileCopy(): Promise<FinderFileResult> {
+	return new Promise<FinderFileResult>((resolve) => {
 		if (process.platform !== "darwin") {
-			resolve(false)
+			resolve(null)
 			return
 		}
 		execFile(
 			"/usr/bin/osascript",
 			["-e", "POSIX path of (the clipboard as «class furl»)"],
-			{ encoding: "utf8", timeout: 300 },
+			{ encoding: "utf8", timeout: 1000 },
 			(err, stdout) => {
 				if (err) {
-					resolve(false)
+					resolve(null)
 					return
 				}
 				const path = stdout.trim()
-				resolve(path !== "" && IMAGE_EXT_TO_MIME[extname(path).toLowerCase()] !== undefined)
+				if (!path) {
+					resolve(null)
+					return
+				}
+				const isImage = IMAGE_EXT_TO_MIME[extname(path).toLowerCase()] !== undefined
+				resolve(isImage ? "image" : "non-image")
 			},
 		)
 	})
@@ -87,37 +98,46 @@ function checkClipboard(): void {
 			}
 		}
 
-		if (formats?.includes("public.file-url")) {
+		let baselineHasImage = false
+		try {
+			baselineHasImage = native.hasImage()
+		} catch {
+			baselineHasImage = false
+		}
+		// Fallback: clipboard-rs hasImage() only checks PNG/TIFF.
+		// Probe availableFormats for other image types (JPEG, HEIC, WebP, BMP, GIF).
+		if (!baselineHasImage && formats) {
+			baselineHasImage = formats.some(isImageFormat)
+		}
+
+		if (baselineHasImage && formats?.includes("public.file-url")) {
 			// Finder file copy: macOS puts public.file-url + a thumbnail on the pasteboard.
-			// hasImage() returns true for any file's thumbnail, so we can't use it here.
+			// hasImage() returns true for any file's thumbnail. We must verify the file
+			// is actually an image (not PDF etc.) before showing the hint.
 			// Resolve the actual file path asynchronously to avoid blocking the event loop.
 			isCheckingFinder = true
-			isFinderImageFileCopy()
-				.then((hasImage) => {
-					if (clipboardPollId === null) return // session shut down while checking
-					if (hasImage !== clipboardHasImage) {
-						clipboardHasImage = hasImage
+			const myGeneration = sessionGeneration
+			checkFinderImageFileCopy()
+				.then((result) => {
+					if (myGeneration !== sessionGeneration) return // stale callback
+					// Only suppress the indicator when we CONFIRM the file is not an image.
+					// If there is no file path (null) we keep the baseline — this handles
+					// spurious public.file-url reports from macOS and AppleScript timeouts.
+					const final = result === "non-image" ? false : baselineHasImage
+					if (final !== clipboardHasImage) {
+						clipboardHasImage = final
 						updateIndicator()
 					}
 				})
 				.catch(() => {})
 				.finally(() => {
-					isCheckingFinder = false
+					if (myGeneration === sessionGeneration) {
+						isCheckingFinder = false
+					}
 				})
 		} else {
-			let hasImage = false
-			try {
-				hasImage = native.hasImage()
-			} catch {
-				hasImage = false
-			}
-			// Fallback: clipboard-rs hasImage() only checks PNG/TIFF.
-			// Probe availableFormats for other image types (JPEG, HEIC, WebP, BMP, GIF).
-			if (!hasImage && formats) {
-				hasImage = formats.some(isImageFormat)
-			}
-			if (hasImage !== clipboardHasImage) {
-				clipboardHasImage = hasImage
+			if (baselineHasImage !== clipboardHasImage) {
+				clipboardHasImage = baselineHasImage
 				updateIndicator()
 			}
 		}
@@ -195,8 +215,8 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			clearInterval(clipboardPollId)
 			clipboardPollId = null
 		}
+		sessionGeneration++
 		isCheckingFinder = false
-		clipboardHasImage = false
 		currentCtx = ctx
 		pendingImages = []
 		imageCounter = 0
@@ -214,8 +234,6 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			clearInterval(clipboardPollId)
 			clipboardPollId = null
 		}
-		clipboardHasImage = false
-		setPendingImageIndicator(null)
 	})
 
 	pi.on("input", (event) => {

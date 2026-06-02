@@ -78,6 +78,18 @@ function callInputHandler(pi: ExtensionAPI & { _handlers: Handlers }, event: { t
 
 describe("clipboard-image extension", () => {
 	beforeEach(() => {
+		// Reset module-level state (clipboardHasImage) before each test.
+		// session_shutdown no longer clears it, so we drive a session_start with an
+		// empty-clipboard mock which causes checkClipboard to set clipboardHasImage=false.
+		mockGetAvailableModels.mockReturnValue([{ slug: "glm-4", input_modalities: ["text", "image"] }])
+		mockGetNativeClipboard.mockReturnValue({
+			clipboard: { hasImage: () => false, availableFormats: () => [] },
+			error: null,
+		})
+		const resetPi = makeMockPi()
+		clipboardImageExtension(resetPi)
+		;(resetPi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, makeMockCtx())
+		;(resetPi._handlers.session_shutdown as () => void)()
 		vi.clearAllMocks()
 		vi.useFakeTimers()
 	})
@@ -119,34 +131,42 @@ describe("clipboard-image extension", () => {
 			expect(result).toBeUndefined()
 		})
 
-		it("second input increments the counter and labels the next image correctly", () => {
-			// imageCounter persists across calls in the same module session.
-			// Previous test already incremented it to 1. The next image should be #2.
+		it("counter accumulates across submissions within a session", () => {
 			const pi = makeMockPi()
 			clipboardImageExtension(pi)
 
+			// First submission: image #1
+			callInputHandler(pi, { text: "first", images: [{ type: "image", mimeType: "image/png", data: "aaa" }] })
+
+			// Second submission on the same pi — counter is 1, so next image is #2
 			const result = callInputHandler(pi, {
 				text: "second",
 				images: [{ type: "image", mimeType: "image/png", data: "bbb" }],
 			})
-			const text = (result as { text: string }).text
-			// Counter was at 1 from previous test, so startIndex = 2 → #2
-			expect(text).toContain("[Image #2]")
-			expect(text).not.toContain("[Image #1]") // not the first image anymore
+			expect((result as { text: string }).text).toContain("[Image #2]")
 		})
 
-		it("multiple images in the same turn get sequential markers from the current counter position", () => {
-			// Counter is already at 2 from previous tests. With 2 new images:
-			// startIndex = 3, so markers should be #3 and #4
+		it("multiple images in the same turn get sequential markers", () => {
 			const pi = makeMockPi()
 			clipboardImageExtension(pi)
 
-			const images: ImageContent[] = [
-				{ type: "image", mimeType: "image/png", data: "aaa" },
-				{ type: "image", mimeType: "image/jpeg", data: "bbb" },
-			]
-			const result = callInputHandler(pi, { text: "check both", images })
+			// First submission advances counter by 2
+			callInputHandler(pi, {
+				text: "setup",
+				images: [
+					{ type: "image", mimeType: "image/png", data: "aaa" },
+					{ type: "image", mimeType: "image/jpeg", data: "bbb" },
+				],
+			})
 
+			// Second submission: counter is 2, so next pair is #3 and #4
+			const result = callInputHandler(pi, {
+				text: "check both",
+				images: [
+					{ type: "image", mimeType: "image/png", data: "ccc" },
+					{ type: "image", mimeType: "image/jpeg", data: "ddd" },
+				],
+			})
 			const text = (result as { text: string }).text
 			expect(text).toContain("[Image #3]")
 			expect(text).toContain("[Image #4]")
@@ -286,13 +306,12 @@ describe("clipboard-image extension", () => {
 			vi.advanceTimersByTime(1000)
 			const countBeforeShutdown = mockSetPendingImageIndicator.mock.calls.length
 
-			// Trigger session_shutdown.
+			// Trigger session_shutdown — only stops the interval, no indicator change.
 			;(pi._handlers.session_shutdown as () => void)()
 			vi.advanceTimersByTime(2000)
 
-			// Only one additional call from the shutdown handler.
-			expect(mockSetPendingImageIndicator.mock.calls.length).toBe(countBeforeShutdown + 1)
-			expect(mockSetPendingImageIndicator).toHaveBeenLastCalledWith(null)
+			// No new indicator calls after shutdown — polling stopped, state preserved.
+			expect(mockSetPendingImageIndicator.mock.calls.length).toBe(countBeforeShutdown)
 		})
 
 		it("shows hint when an image file is copied in Finder", async () => {
