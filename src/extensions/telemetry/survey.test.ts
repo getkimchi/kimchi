@@ -14,7 +14,7 @@ const TEST_SURVEY = {
 	question: {
 		id: "34f7caf5-7631-42f1-b6ed-d2a42ddde1cd",
 		text: "How did Kimchi do?",
-		help: "How did Kimchi do?",
+		help: "Your feedback helps us improve.",
 	},
 	options: [
 		{ id: "worked_great", label: "Went great" },
