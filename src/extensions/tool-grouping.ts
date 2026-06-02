@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent"
 import { Container, Spacer } from "@earendil-works/pi-tui"
 import { ToolBlockView } from "../components/tool-block.js"
+import { formatToolTimer } from "./tool-rendering.js"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -218,21 +219,29 @@ export function buildCurrentToolLine(tool: object): string {
 const GROUP_RENDER_PATCH_FLAG = Symbol.for("pi-tool-grouping:patched-render")
 
 // biome-ignore lint/suspicious/noExplicitAny: theme comes from untyped external package
-function buildGroupView(run: object[], theme: any): ToolBlockView {
+export function buildGroupView(run: object[], theme: any): ToolBlockView {
 	const view = new ToolBlockView()
 	// biome-ignore lint/suspicious/noExplicitAny: runtime duck-typing on unknown object
 	const last = run[run.length - 1] as any
 	const isInProgress = last?.isPartial === true
 	const summaryText = buildGroupSummaryText(run, isInProgress)
 
+	const startedAt = last?.rendererState?._executionStartedAt
+	const endedAt = last?.rendererState?._executionEndedAt
+	const elapsedMs = startedAt ? (endedAt ?? Date.now()) - startedAt : 0
+	const timer = formatToolTimer(elapsedMs)
+	const right = timer
+		? (theme?.fg?.("dim", `(ctrl+o to expand) • ${timer}`) ?? `(ctrl+o to expand) • ${timer}`)
+		: (theme?.fg?.("dim", "(ctrl+o to expand)") ?? "(ctrl+o to expand)")
+
 	if (isInProgress) {
 		const icon = theme?.fg?.("accent", "⟳") ?? "⟳"
-		view.setHeader(`${icon} ${summaryText}…`, theme?.fg?.("dim", "(ctrl+o to expand)") ?? "(ctrl+o to expand)")
+		view.setHeader(`${icon} ${summaryText}…`, right)
 		view.setBranchMode((s: string) => theme?.fg?.("borderMuted", s) ?? s)
 		view.setExtra([theme?.fg?.("dim", buildCurrentToolLine(last)) ?? buildCurrentToolLine(last)])
 	} else {
 		const icon = theme?.fg?.("success", "✓") ?? "✓"
-		view.setHeader(`${icon} ${summaryText}`, theme?.fg?.("dim", "ctrl+o") ?? "ctrl+o")
+		view.setHeader(`${icon} ${summaryText}`, right)
 		view.hideDivider()
 		view.setFooter("", "")
 		view.setExtra([])

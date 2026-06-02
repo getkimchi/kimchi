@@ -1,11 +1,12 @@
 import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
+import { resolveAuxiliaryFilesDir } from "../auxiliary-files/resolver.js"
 import { compareSemverGte } from "../integrations/opencode.js"
 import { extractTarGz, verifyChecksum } from "./extract.js"
 import { GitHubClient, KIMCHI_REPO, type Repo } from "./github.js"
 import { atomicInstall, copySupportingFiles, macosCodesignReSign, smokeTestBinary } from "./install.js"
-import { resolveDataDir, resolveExecutablePath } from "./paths.js"
+import { resolveExecutablePath } from "./paths.js"
 import { isStale, isUpdateCheckDisabled, loadRepoState, saveRepoState } from "./state.js"
 
 export interface CheckResult {
@@ -189,8 +190,15 @@ export async function applyUpdate(opts: UpdateOptions): Promise<UpdateResult> {
 			const { backupPath } = atomicInstall(newBinaryPath, targetPath)
 
 			// Copy supporting files after binary is installed.
+			// Use the same resolution logic as entry.ts so updated
+			// package.json (and themes, etc.) land where the next
+			// process launch will actually read them.  Fixes the
+			// bug where a system-wide install (/usr/local/bin) kept
+			// reporting the old version because share files were
+			// written to ~/.local/share while the binary's sibling
+			// share (/usr/local/share) still had the stale metadata.
 			const shareSrc = join(extractedRoot, "share", "kimchi")
-			const shareDst = resolveDataDir()
+			const shareDst = resolveAuxiliaryFilesDir(process.env, homedir(), targetPath)
 			copySupportingFiles(shareSrc, shareDst, repo.binary)
 
 			return { from: opts.tag, to: opts.tag, backupPath }

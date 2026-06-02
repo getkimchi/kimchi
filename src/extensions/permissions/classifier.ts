@@ -17,6 +17,9 @@ export interface ClassifierOptions {
 	timeoutMs: number
 }
 
+/** Internal result type that carries a retry hint without touching the public ClassifierResult. */
+type InternalResult = ClassifierResult & { retryable: boolean }
+
 export async function classifyToolCall(
 	model: Model<Api>,
 	modelRegistry: ModelRegistry,
@@ -25,6 +28,40 @@ export async function classifyToolCall(
 	signal?: AbortSignal,
 ): Promise<ClassifierResult> {
 	const auth = await modelRegistry.getApiKeyAndHeaders(model)
+	if (!auth.ok || !auth.apiKey) return unavailable("no API key for classifier")
+
+	if (signal?.aborted) return unavailable("classifier aborted")
+
+	const maxAttempts = 3
+	let lastResult: InternalResult = unavailable("classifier unavailable")
+
+	for (let attempt = 0; attempt < maxAttempts; attempt++) {
+		if (attempt > 0) {
+			const backoff = 500 * 2 ** (attempt - 1)
+			await sleep(backoff)
+			if (signal?.aborted) return unavailable("classifier aborted")
+		}
+
+		const result = await runClassifier(model, auth, call, options, signal)
+		if (result.ok) return result
+
+		if (!result.retryable) return result
+
+		lastResult = result
+	}
+
+	if (signal?.aborted) return unavailable("classifier aborted")
+
+	return lastResult
+}
+
+async function runClassifier(
+	model: Model<Api>,
+	auth: Awaited<ReturnType<ModelRegistry["getApiKeyAndHeaders"]>>,
+	call: ClassifyInput,
+	options: ClassifierOptions,
+	signal?: AbortSignal,
+): Promise<InternalResult> {
 	if (!auth.ok || !auth.apiKey) return unavailable("no API key for classifier")
 
 	if (signal?.aborted) return unavailable("classifier aborted")
@@ -62,6 +99,16 @@ export async function classifyToolCall(
 			},
 		)
 
+		if (response.stopReason === "aborted") {
+			return retryable(`classifier timeout (model=${model.id} tool=${call.toolName})`)
+		}
+
+		if (response.stopReason === "error") {
+			return unavailable(
+				`classifier error: ${response.errorMessage || "unknown"} (model=${model.id} tool=${call.toolName})`,
+			)
+		}
+
 		const text = response.content
 			.filter((c): c is { type: "text"; text: string } => c.type === "text")
 			.map((c) => c.text)
@@ -78,11 +125,12 @@ export async function classifyToolCall(
 			return unavailable(`${result.reason} (${diag})`)
 		}
 
-		return result
+		return { ...result, retryable: false }
 	} catch (err) {
 		const aborted = (err as Error)?.name === "AbortError" || controller.signal.aborted
 		const reason = aborted ? "classifier timeout" : `classifier error: ${(err as Error).message}`
-		return unavailable(`${reason} (model=${model.id} tool=${call.toolName})`)
+		const message = `${reason} (model=${model.id} tool=${call.toolName})`
+		return aborted ? retryable(message) : unavailable(message)
 	} finally {
 		clearTimeout(timeoutHandle)
 		signal?.removeEventListener("abort", onOuterAbort)
@@ -105,8 +153,12 @@ export function parseClassifierOutput(raw: string): ClassifierResult {
 	return { verdict, reason, ok: true }
 }
 
-function unavailable(reason: string): ClassifierResult {
-	return { verdict: "requires-confirmation", reason, ok: false }
+function unavailable(reason: string): InternalResult {
+	return { verdict: "requires-confirmation", reason, ok: false, retryable: false }
+}
+
+function retryable(reason: string): InternalResult {
+	return { verdict: "requires-confirmation", reason, ok: false, retryable: true }
 }
 
 function normalizeVerdict(v: unknown): ClassifierVerdict | undefined {
@@ -138,4 +190,8 @@ function safeStringify(value: unknown): string {
 function truncate(s: string, max: number): string {
 	if (s.length <= max) return s
 	return `${s.slice(0, max - 1)}…`
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms))
 }

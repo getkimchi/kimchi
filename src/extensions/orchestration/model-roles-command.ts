@@ -8,6 +8,8 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { getAvailableModels } from "../../startup-context.js"
+import { setProcessOrchestratorRef } from "../kimchi-process.js"
+import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
 import {
 	DEFAULT_MODEL_ROLES,
 	type ModelRoles,
@@ -16,6 +18,10 @@ import {
 	saveModelRoles,
 	splitModelRef,
 } from "./model-roles.js"
+
+function syncOrchestratorRef(roles: ModelRoles): void {
+	setProcessOrchestratorRef(roles.orchestrator)
+}
 
 const ROLE_LABELS: Record<keyof ModelRoles, { label: string; description: string }> = {
 	orchestrator: { label: "Orchestrator", description: "main model, delegates work" },
@@ -65,18 +71,18 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				if (!choice) return
 
 				if (choice === "Reset all to defaults") {
-					const prevOrchestrator = roles.orchestrator
 					Object.assign(roles, DEFAULT_MODEL_ROLES)
 					try {
 						saveModelRoles(roles)
+						syncOrchestratorRef(roles)
 					} catch (err) {
 						ctx.ui.notify(`Failed to save model roles: ${err instanceof Error ? err.message : err}`, "error")
 						return
 					}
 					ctx.ui.notify("Model roles reset to defaults.", "info")
 
-					// Switch the active model if the orchestrator changed
-					if (prevOrchestrator !== DEFAULT_MODEL_ROLES.orchestrator) {
+					// Switch the active model only if currently in multi-model mode
+					if (getMultiModelEnabled()) {
 						const parsed = splitModelRef(DEFAULT_MODEL_ROLES.orchestrator)
 						if (parsed) {
 							const target = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
@@ -153,14 +159,16 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				roles[roleKey] = newRef
 				try {
 					saveModelRoles(roles)
+					syncOrchestratorRef(roles)
 				} catch (err) {
 					ctx.ui.notify(`Failed to save model roles: ${err instanceof Error ? err.message : err}`, "error")
 					return
 				}
 				ctx.ui.notify(`${info.label} set to ${newRef}`, "info")
 
-				// When the orchestrator role changes, switch the active model to match
-				if (roleKey === "orchestrator") {
+				// When the orchestrator role changes and multi-model is active,
+				// switch the active model to the new orchestrator.
+				if (roleKey === "orchestrator" && getMultiModelEnabled()) {
 					const parsed = splitModelRef(newRef)
 					if (parsed) {
 						const target = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)

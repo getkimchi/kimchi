@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { readFile as readFileAsync } from "node:fs/promises"
 import { extname, relative, resolve } from "node:path"
+import { formatDuration } from "../extensions/format.js"
 
 import type {
 	BashToolDetails,
@@ -348,6 +349,25 @@ function formatWorkedDuration(ms: number): string {
 	return `${minutes}m ${seconds}s`
 }
 
+/**
+ * Returns elapsed milliseconds for a tool call.
+ *
+ * Note: `ctx.state` is the component's `rendererState` — the upstream
+ * framework's `getRenderContext` method aliases them via
+ * `state: this.rendererState`.
+ */
+export function getToolElapsedMs(ctx: any): number {
+	const startedAt = ctx?.state?._executionStartedAt
+	if (!startedAt) return 0
+	const endedAt = ctx?.state?._executionEndedAt
+	return (endedAt ?? Date.now()) - startedAt
+}
+
+export function formatToolTimer(elapsedMs: number): string | undefined {
+	if (elapsedMs <= 0) return undefined
+	return formatDuration(elapsedMs)
+}
+
 // One space of indent — aligns the ✻ glyph with the assistant message body.
 const WORKED_DURATION_INDENT = " "
 
@@ -433,7 +453,7 @@ export function patchUserMessageRender(): void {
 	proto[USER_MESSAGE_PATCH_FLAG] = true
 }
 
-function patchToolRenderCacheInvalidation(): void {
+export function patchToolRenderCacheInvalidation(): void {
 	const proto = ToolExecutionComponent.prototype as any
 	if (proto[TOOL_CACHE_PATCH_FLAG]) return
 
@@ -454,6 +474,16 @@ function patchToolRenderCacheInvalidation(): void {
 		if (typeof original !== "function") continue
 		proto[method] = function patchedToolMutation(...args: any[]) {
 			clearToolRenderCache(this)
+			if (method === "markExecutionStarted" && !this.rendererState._executionStartedAt) {
+				this.rendererState._executionStartedAt = Date.now()
+			}
+			if (
+				method === "updateResult" &&
+				!this.rendererState._executionEndedAt &&
+				args[1] !== true
+			) {
+				this.rendererState._executionEndedAt = Date.now()
+			}
 			const result = original.apply(this, args)
 			clearToolRenderCache(this)
 			return result
@@ -567,11 +597,13 @@ function shortPath(cwd: string, filePath: string): string {
 // Status dot — flickers green/gray while pending
 // ---------------------------------------------------------------------------
 
-function toolHeader(tool: string, summary: string, theme: Theme, prefix = ""): string {
+export function toolHeader(tool: string, summary: string, theme: Theme, prefix = "", timer?: string): string {
 	applyThemePaletteIfNeeded(theme)
 	const label = theme.fg("toolTitle", theme.bold(tool))
-	if (!summary) return `${prefix}${label}`
-	return `${prefix}${label} ${WRAP_MARK}${theme.fg("accent", summary)}`
+	let result = `${prefix}${label}`
+	if (summary) result += ` ${WRAP_MARK}${theme.fg("accent", summary)}`
+	if (timer) result += ` ${theme.fg("dim", timer)}`
+	return result
 }
 
 
@@ -902,6 +934,7 @@ class ToolText extends Text {
 		this.toolCachedValue = undefined
 		this.toolCachedWidth = undefined
 		this.toolCachedLines = undefined
+		super.invalidate()
 	}
 
 	render(width: number): string[] {
@@ -2603,7 +2636,8 @@ function renderGenericToolCall(name: string, args: any, theme: Theme, ctx: any):
 		return makeText(ctx.lastComponent, header)
 	}
 	const summary = stableCallSummary(ctx, "_callSummary", () => summarizeGenericToolCall(name, args, theme, sp))
-	return makeText(ctx.lastComponent, toolHeader(genericToolLabel(name), summary, theme, toolStatusDot(ctx, theme)))
+	const timer = formatToolTimer(getToolElapsedMs(ctx))
+	return makeText(ctx.lastComponent, toolHeader(genericToolLabel(name), summary, theme, toolStatusDot(ctx, theme), timer))
 }
 
 function renderGenericToolResult(name: string, result: any, options: any, theme: Theme, ctx: any): Text {
@@ -2995,7 +3029,8 @@ function getApplyPatchResultMeta(args: any, ctx: any, sp: (path: string) => stri
 function renderApplyPatchCall(args: any, theme: Theme, ctx: any, sp: (path: string) => string): Text {
 	const patchText = getStringArg(args, "patchText", "patch_text")
 	const summary = stableCallSummary(ctx, "_callSummary", () => summarizeOpenAiToolCall("apply_patch", args, theme, sp))
-	const hdr = toolHeader("Apply Patch", summary, theme, toolStatusDot(ctx, theme))
+	const timer = formatToolTimer(getToolElapsedMs(ctx))
+	const hdr = toolHeader("Apply Patch", summary, theme, toolStatusDot(ctx, theme), timer)
 
 	if (!ctx.argsComplete) return makeText(ctx.lastComponent, hdr)
 	const preview = getCachedApplyPatchPreview(patchText, sp, ctx)
@@ -3861,7 +3896,8 @@ export default function (pi: ExtensionAPI) {
 				}
 				return value
 			})
-			return makeText(ctx.lastComponent, toolHeader("Read", summary, theme, toolStatusDot(ctx, theme)))
+			const timer = formatToolTimer(getToolElapsedMs(ctx))
+			return makeText(ctx.lastComponent, toolHeader("Read", summary, theme, toolStatusDot(ctx, theme), timer))
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			if (isPartial) {
@@ -3906,7 +3942,8 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderCall(args, theme, ctx) {
 			const summary = summarizeText(getBashCommandForDisplay(args.command) ?? args.command, 72)
-			return makeText(ctx.lastComponent, toolHeader("Bash", summary, theme, toolStatusDot(ctx, theme)))
+			const timer = formatToolTimer(getToolElapsedMs(ctx))
+			return makeText(ctx.lastComponent, toolHeader("Bash", summary, theme, toolStatusDot(ctx, theme), timer))
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			const details = result.details as BashToolDetails | undefined
@@ -3958,7 +3995,8 @@ export default function (pi: ExtensionAPI) {
 				if (args.path) value += ` in ${args.path}`
 				return value
 			})
-			return makeText(ctx.lastComponent, toolHeader("Grep", summary, theme, toolStatusDot(ctx, theme)))
+			const timer = formatToolTimer(getToolElapsedMs(ctx))
+			return makeText(ctx.lastComponent, toolHeader("Grep", summary, theme, toolStatusDot(ctx, theme), timer))
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			if (isPartial) {
@@ -4000,7 +4038,8 @@ export default function (pi: ExtensionAPI) {
 				if (args.path) value += ` in ${args.path}`
 				return value
 			})
-			return makeText(ctx.lastComponent, toolHeader("Find", summary, theme, toolStatusDot(ctx, theme)))
+			const timer = formatToolTimer(getToolElapsedMs(ctx))
+			return makeText(ctx.lastComponent, toolHeader("Find", summary, theme, toolStatusDot(ctx, theme), timer))
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			if (isPartial) {
@@ -4044,7 +4083,8 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderCall(args, theme, ctx) {
 			const summary = stableCallSummary(ctx, "_callSummary", () => sp(args.path ?? "."))
-			return makeText(ctx.lastComponent, toolHeader("List", summary, theme, toolStatusDot(ctx, theme)))
+			const timer = formatToolTimer(getToolElapsedMs(ctx))
+			return makeText(ctx.lastComponent, toolHeader("List", summary, theme, toolStatusDot(ctx, theme), timer))
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			if (isPartial) {
@@ -4132,7 +4172,8 @@ export default function (pi: ExtensionAPI) {
 				},
 				revealSummary,
 			)
-			const hdr = toolHeader(label, summary, theme, toolStatusDot(ctx, theme))
+			const timer = formatToolTimer(getToolElapsedMs(ctx))
+			const hdr = toolHeader(label, summary, theme, toolStatusDot(ctx, theme), timer)
 			return makeText(ctx.lastComponent, hdr)
 		},
 		renderResult(result, { isPartial }, theme, ctx) {
@@ -4267,7 +4308,8 @@ export default function (pi: ExtensionAPI) {
 						: sp(fp),
 				revealSummary,
 			)
-			const hdr = toolHeader("Edit", summary, theme, ` ${toolStatusDot(ctx, theme)}`)
+			const timer = formatToolTimer(getToolElapsedMs(ctx))
+			const hdr = toolHeader("Edit", summary, theme, ` ${toolStatusDot(ctx, theme)}`, timer)
 			if (!(ctx.argsComplete && operations.length > 0)) return makeText(ctx.lastComponent, hdr)
 			const diffWidth = branchDiffWidth()
 			const key = `edit:${fp}:${hashText(operations.map((edit) => `${edit.oldText}\u0000${edit.newText}`).join("\u0001"))}:${diffWidth}:${ctx.expanded ? 1 : 0}`
@@ -4370,7 +4412,8 @@ export default function (pi: ExtensionAPI) {
 					if (name === "apply_patch") return renderApplyPatchCall(args, theme, ctx, sp)
 					ctx.state._openAiPatchFiles = []
 					const summary = stableCallSummary(ctx, "_callSummary", () => summarizeOpenAiToolCall(name, args, theme, sp))
-					return makeText(ctx.lastComponent, toolHeader(label, summary, theme, toolStatusDot(ctx, theme)))
+					const timer = formatToolTimer(getToolElapsedMs(ctx))
+					return makeText(ctx.lastComponent, toolHeader(label, summary, theme, toolStatusDot(ctx, theme), timer))
 				},
 				renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
 					if (name === "apply_patch") return renderApplyPatchResult(result, isPartial, theme, ctx)

@@ -33,6 +33,11 @@ import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
 import {
+	getProcessMultiModelEnabled,
+	setProcessMultiModelEnabled,
+	setProcessOrchestratorRef,
+} from "../kimchi-process.js"
+import {
 	CONTINUATION_NUDGE_TEXT,
 	ContinuationNudge,
 	EMPTY_TURN_NUDGE_TEXT,
@@ -125,7 +130,8 @@ function hasExplicitModelFlag(): boolean {
 
 const initialMultiModel = hasExplicitModelFlag() ? false : readMultiModelSetting()
 let multiModelEnabled = initialMultiModel
-;(process as NodeJS.Process & { __kimchiMultiModelEnabled?: boolean }).__kimchiMultiModelEnabled = initialMultiModel
+setProcessMultiModelEnabled(initialMultiModel)
+setProcessOrchestratorRef(getOrchestratorModelRef())
 
 /**
  * Orchestrator model ID (without provider prefix).
@@ -232,10 +238,8 @@ export function stripEmptyToolCalls(messages: OrchestratorMessages): Orchestrato
 	return changed ? filtered : messages
 }
 
-type ProcessWithMultiModel = NodeJS.Process & { __kimchiMultiModelEnabled?: boolean }
-
 export function getMultiModelEnabled(): boolean {
-	const processFlag = (process as ProcessWithMultiModel).__kimchiMultiModelEnabled
+	const processFlag = getProcessMultiModelEnabled()
 	if (processFlag !== undefined && processFlag !== multiModelEnabled) {
 		multiModelEnabled = processFlag
 		writeMultiModelSetting(processFlag)
@@ -245,7 +249,9 @@ export function getMultiModelEnabled(): boolean {
 
 export function setMultiModelEnabled(enabled: boolean): void {
 	multiModelEnabled = enabled
-	;(process as ProcessWithMultiModel).__kimchiMultiModelEnabled = enabled
+	// Only update the enabled flag — the orchestrator ref is managed separately
+	// via setProcessOrchestratorRef() when roles actually change, not here.
+	setProcessMultiModelEnabled(enabled)
 	writeMultiModelSetting(enabled)
 }
 

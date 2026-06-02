@@ -458,24 +458,37 @@ export default function uiExtension(pi: ExtensionAPI) {
 						// kimi-k2.6 appears as a regular model AND multi-model appears
 						// as a separate virtual entry right after the last real model.
 						if (getMultiModelEnabled()) {
-							// Currently on the virtual multi-model entry — wrap to first real model
+							// Currently on the virtual multi-model entry — wrap to first real model.
+							// Check ALL models (including the orchestrator itself) because we are
+							// leaving the virtual entry, not a real model — the orchestrator in
+							// single-model mode is a valid distinct destination.
 							if (available.length > 0) {
 								const usage = ctx.getContextUsage()
-								const { model: firstReal } = findNextCompatibleModel(
-									available,
-									available.length - 1,
-									usage?.tokens ?? null,
-									sessionHasImages(),
-									current ?? undefined,
-								)
+								const tokens = usage?.tokens ?? null
+								const images = sessionHasImages()
+								const curVision = current?.input.includes("image") ?? false
+								let firstReal: Model<Api> | undefined
+								for (const candidate of available) {
+									if (tokens !== null && candidate.contextWindow < tokens) continue
+									if (images && !candidate.input.includes("image") && curVision) continue
+									firstReal = candidate
+									break
+								}
 								if (firstReal) {
 									setMultiModelEnabled(false)
-									pi.setModel(firstReal).catch((err) => {
-										ctx.ui.notify(
-											`Failed to cycle model: ${err instanceof Error ? err.message : String(err)}`,
-											"warning",
-										)
-									})
+									if (current && modelsAreEqual(firstReal, current)) {
+										// Model object is the same (orchestrator → orchestrator) so setModel
+										// won't emit model_select and the footer won't re-render.
+										// Force a re-render via a no-op status update.
+										ctx.ui.setStatus("__model_cycle", undefined)
+									} else {
+										pi.setModel(firstReal).catch((err) => {
+											ctx.ui.notify(
+												`Failed to cycle model: ${err instanceof Error ? err.message : String(err)}`,
+												"warning",
+											)
+										})
+									}
 								}
 							}
 						} else if (available.length > 0 && current) {
@@ -495,9 +508,13 @@ export default function uiExtension(pi: ExtensionAPI) {
 							const wouldWrap = next === undefined || nextIdx <= idx
 
 							if (wouldWrap && orchestratorModel) {
-								// Reached end of real models — enter multi-model
+								// Reached end of real models — enter multi-model.
 								setMultiModelEnabled(true)
-								if (!modelsAreEqual(current, orchestratorModel)) {
+								if (modelsAreEqual(orchestratorModel, current)) {
+									// Already on the orchestrator — setModel won't emit model_select
+									// so the footer won't re-render.  Force it.
+									ctx.ui.setStatus("__model_cycle", undefined)
+								} else {
 									pi.setModel(orchestratorModel).catch((err) => {
 										ctx.ui.notify(
 											`Failed to switch to multi-model: ${err instanceof Error ? err.message : String(err)}`,

@@ -163,27 +163,38 @@ index fe7086d4b68a38a945016ea4274f6c6a8093f5b5..2880acd74317eddfce891ef935fa16f0
              color: (content) => theme.fg("userMessageText", content),
          }));
 diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
-index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..91401aa8880f52d847605a27a920b2d6e9cb6505 100644
+index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..6c58ed7f6eabfc4628b2be434ca4b48972229a4d 100644
 --- a/dist/modes/interactive/components/model-selector.js
 +++ b/dist/modes/interactive/components/model-selector.js
-@@ -117,6 +117,16 @@ export class ModelSelectorComponent extends Container {
+@@ -117,6 +117,13 @@ export class ModelSelectorComponent extends Container {
              return;
          }
          this.allModels = this.sortModels(models);
-+        // Inject multi-model orchestration entry at the top
-+        const orchestratorEntry = models.find(m => m.id === "kimi-k2.6");
-+        if (orchestratorEntry) {
-+            this.allModels.unshift({
-+                provider: "orchestration",
-+                id: "multi-model",
-+                model: orchestratorEntry.model,
-+                _isMultiModel: true,
-+            });
++        if (process.__kimchiOrchestratorRef) {
++            const orchId = process.__kimchiOrchestratorRef.split('/').pop();
++            const orchEntry = this.allModels.find(m => m.id === orchId);
++            if (orchEntry) {
++                this.allModels.unshift({ provider: 'orchestration', id: 'multi-model', model: orchEntry.model, _isMultiModel: true });
++            }
 +        }
          this.scopedModels = this.scopedModels.map((scoped) => {
              const refreshed = this.modelRegistry.find(scoped.model.provider, scoped.model.id);
              return refreshed ? { ...scoped, model: refreshed } : scoped;
-@@ -184,17 +194,21 @@ export class ModelSelectorComponent extends Container {
+@@ -126,6 +133,13 @@ export class ModelSelectorComponent extends Container {
+             id: scoped.model.id,
+             model: scoped.model,
+         }));
++        if (process.__kimchiOrchestratorRef) {
++            const orchIdScoped = process.__kimchiOrchestratorRef.split('/').pop();
++            const orchScopedEntry = this.scopedModelItems.find(m => m.id === orchIdScoped);
++            if (orchScopedEntry) {
++                this.scopedModelItems.unshift({ provider: 'orchestration', id: 'multi-model', model: orchScopedEntry.model, _isMultiModel: true });
++            }
++        }
+         this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
+         this.filteredModels = this.activeModels;
+         const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
+@@ -184,17 +198,21 @@ export class ModelSelectorComponent extends Container {
              if (!item)
                  continue;
              const isSelected = i === this.selectedIndex;
@@ -192,7 +203,7 @@ index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..91401aa8880f52d847605a27a920b2d6
 +            const isCurrent = item._isMultiModel
 +                ? isMultiModelEnabled
 +                : !isMultiModelEnabled && modelsAreEqual(this.currentModel, item.model);
-+            const displayId = item._isMultiModel ? "multi-model" : item.id;
++            const displayId = item._isMultiModel ? 'multi-model' : item.id;
              let line = "";
              if (isSelected) {
                  const prefix = theme.fg("accent", "→ ");
@@ -208,7 +219,7 @@ index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..91401aa8880f52d847605a27a920b2d6
                  const providerBadge = theme.fg("muted", `[${item.provider}]`);
                  const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
                  line = `${modelText} ${providerBadge}${checkmark}`;
-@@ -267,6 +281,8 @@ export class ModelSelectorComponent extends Container {
+@@ -267,6 +285,8 @@ export class ModelSelectorComponent extends Container {
          }
      }
      handleSelect(model) {
@@ -221,26 +232,30 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
 index 408e38417da84ba9e729cfd5f3dd95b285e57e91..5d4225f409fd7e4ef7dfcbda5e16fded6910a5ed 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -3301,6 +3301,25 @@ ${chalk.cyan("Tip:")} ${this.getTip()}`;
+@@ -3301,6 +3301,29 @@ ${chalk.cyan("Tip:")} ${this.getTip()}`;
              this.showModelSelector();
              return;
          }
 +        // Handle "multi-model" as a virtual model selection
-+        if (searchTerm === "multi-model") {
-+            const orchestratorModel = this.session.modelRegistry.find("kimchi-dev", "kimi-k2.6");
++        if (searchTerm === 'multi-model') {
++            const orchRef = process.__kimchiOrchestratorRef;
++            const orchParts = orchRef ? orchRef.split('/') : [];
++            const orchProvider = orchParts.length >= 2 ? orchParts.slice(0, -1).join('/') : undefined;
++            const orchModelId = orchParts.length >= 2 ? orchParts[orchParts.length - 1] : undefined;
++            const orchestratorModel = orchProvider && orchModelId ? this.session.modelRegistry.find(orchProvider, orchModelId) : undefined;
 +            if (orchestratorModel) {
 +                process.__kimchiMultiModelEnabled = true;
 +                try {
 +                    await this.session.setModel(orchestratorModel);
 +                    this.footer.invalidate();
 +                    this.updateEditorBorderColor();
-+                    this.showStatus("Model: multi-model");
++                    this.showStatus('Model: multi-model');
 +                } catch (error) {
 +                    process.__kimchiMultiModelEnabled = false;
 +                    this.showError(error instanceof Error ? error.message : String(error));
 +                }
 +            } else {
-+                this.showError("Multi-model orchestrator (kimi-k2.6) is not available.");
++                this.showError('Multi-model orchestrator is not available.');
 +            }
 +            return;
 +        }

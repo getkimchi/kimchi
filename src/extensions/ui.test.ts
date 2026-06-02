@@ -166,4 +166,20 @@ describe("findNextCompatibleModel", () => {
 		const result = findNextCompatibleModel(models, 1, null, false)
 		expect(result.model).toBe(models[0])
 	})
+
+	it("never returns the model at currentIndex (always skips self)", () => {
+		const models = [makeModel("only", 100_000)]
+		const result = findNextCompatibleModel(models, 0, null, false)
+		expect(result.model).toBeUndefined()
+	})
+
+	it("skips currentIndex even when it is the only compatible model", () => {
+		// Two models: one at currentIndex (compatible) and one incompatible.
+		// findNextCompatibleModel should return undefined because the only
+		// compatible candidate is at currentIndex itself.
+		const models = [makeModel("current", 100_000), makeModel("small", 10_000)]
+		const result = findNextCompatibleModel(models, 0, 50_000, false)
+		expect(result.model).toBeUndefined()
+		expect(result.skipped).toHaveLength(1)
+	})
 })
