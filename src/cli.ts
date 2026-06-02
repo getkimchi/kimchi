@@ -36,6 +36,7 @@ import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
+import llmResponseLogExtension from "./extensions/llm-response-log.js"
 import loginExtension from "./extensions/login/index.js"
 import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
@@ -532,6 +533,7 @@ try {
 			modelGuardExtension,
 			stripImagesExtension,
 			traceIdExtension,
+			llmResponseLogExtension,
 			activityExtension,
 		]
 
