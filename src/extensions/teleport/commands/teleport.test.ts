@@ -19,6 +19,8 @@ const {
 	parseHostMock,
 	readGitTokenMock,
 	writeGitTokenMock,
+	readTeleportHelpSeenAtMock,
+	writeTeleportHelpSeenAtMock,
 	readLocalGitConfigMock,
 	propagateGitConfigMock,
 	propagateGitCredentialMock,
@@ -43,6 +45,8 @@ const {
 	parseHostMock: vi.fn(),
 	readGitTokenMock: vi.fn(),
 	writeGitTokenMock: vi.fn(),
+	readTeleportHelpSeenAtMock: vi.fn(),
+	writeTeleportHelpSeenAtMock: vi.fn(),
 	readLocalGitConfigMock: vi.fn(),
 	propagateGitConfigMock: vi.fn(),
 	propagateGitCredentialMock: vi.fn(),
@@ -67,6 +71,8 @@ vi.mock("../../../sandbox/git-credentials.js", () => ({
 vi.mock("../../../config.js", () => ({
 	readGitToken: readGitTokenMock,
 	writeGitToken: writeGitTokenMock,
+	readTeleportHelpSeenAt: readTeleportHelpSeenAtMock,
+	writeTeleportHelpSeenAt: writeTeleportHelpSeenAtMock,
 }))
 vi.mock("../provisioning/git-propagate.js", () => ({
 	readLocalGitConfig: readLocalGitConfigMock,
@@ -180,6 +186,8 @@ beforeEach(() => {
 	parseHostMock.mockReset().mockImplementation((url: string) => (url.includes("github.com") ? "github.com" : undefined))
 	readGitTokenMock.mockReset().mockReturnValue(undefined)
 	writeGitTokenMock.mockReset()
+	readTeleportHelpSeenAtMock.mockReset().mockReturnValue("2025-01-01T00:00:00.000Z")
+	writeTeleportHelpSeenAtMock.mockReset()
 	readLocalGitConfigMock.mockReset().mockResolvedValue({})
 	propagateGitConfigMock.mockReset().mockResolvedValue(undefined)
 	propagateGitCredentialMock.mockReset().mockResolvedValue(undefined)

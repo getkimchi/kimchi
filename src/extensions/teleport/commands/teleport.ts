@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs"
 import { basename } from "node:path"
-import { readGitToken, writeGitToken } from "../../../config.js"
+import { readGitToken, readTeleportHelpSeenAt, writeGitToken, writeTeleportHelpSeenAt } from "../../../config.js"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
 import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
@@ -21,6 +21,7 @@ import {
 import { deriveSandboxDest, deriveSandboxDestFromRepoUrl, repoBasename } from "../provisioning/paths.js"
 import { runRsync } from "../provisioning/rsync-runner.js"
 import type { TeleportContext } from "../types.js"
+import { promptTeleportHelp } from "../ui/help-modal.js"
 import { createTeleportProgress } from "../ui/progress.js"
 import { parseTeleportArgs } from "./args.js"
 import { refuse, warn } from "./errors.js"
@@ -36,6 +37,19 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 
 	if (!ctx.apiKey) {
 		refuse(ctx, "No API key configured. Run `kimchi login`.")
+	}
+
+	if (readTeleportHelpSeenAt(ctx.configPath) === undefined) {
+		// Mark seen before rendering so a crash or Ctrl+C during the modal doesn't re-show it next run.
+		try {
+			writeTeleportHelpSeenAt(new Date().toISOString(), ctx.configPath)
+		} catch (err) {
+			ctx.ui.notify(
+				`Could not save teleport help state: ${err instanceof Error ? err.message : String(err)}`,
+				"warning",
+			)
+		}
+		await promptTeleportHelp(ctx.ui)
 	}
 
 	runPreflight(ctx, args)
