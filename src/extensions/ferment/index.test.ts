@@ -920,7 +920,7 @@ describe("fermentExtension question dropdown", () => {
 			runtime.setActive(draft)
 			runtime.setPendingScope(draft.id, {
 				goal: "Goal",
-				successCriteria: "Works",
+				successCriteria: ["Works"],
 				constraints: [],
 				phases: [{ name: "Phase", goal: "Build", steps: [] }],
 			})
