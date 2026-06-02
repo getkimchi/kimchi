@@ -6,7 +6,6 @@ import { getGitRemoteHost } from "../../../sandbox/git-credentials.js"
 import { SANDBOX_USER } from "../provisioning/constants.js"
 import { propagateGitCredentialToSandbox } from "../provisioning/git-propagate.js"
 import { buildProxyCommand } from "../provisioning/proxy-command.js"
-import { readState, updateState } from "../state.js"
 import type { TeleportContext } from "../types.js"
 import { runChildWithTTYHandoff as runChildWithTTYHandoffImpl } from "../ui/tty-handoff.js"
 import { info, refuse, status, warn } from "./errors.js"
@@ -32,9 +31,6 @@ export async function runTerminal(
 		refuse(ctx, USAGE_HINT)
 	}
 	const rawRef = tokens[0]
-	if (!rawRef && !readState().lastWorkspaceId) {
-		refuse(ctx, `${USAGE_HINT} — no cached workspace; pass one explicitly.`)
-	}
 
 	if (!ctx.apiKey) {
 		refuse(ctx, "No API key configured. Run `kimchi login`.")
@@ -59,32 +55,21 @@ export async function runTerminal(
 	}
 	status(ctx, undefined)
 
-	const alreadySynced = readState().gitCredentialsSyncedWorkspaces.includes(workspaceId)
-	if (!alreadySynced) {
-		const gitHost = await getGitRemoteHost(ctx.cwd)
-		if (gitHost) {
-			const gitToken = readGitToken(gitHost, ctx.configPath)
-			if (gitToken) {
-				try {
-					await propagateGitCredentialToSandbox({
-						remoteHost: creds.host,
-						remoteUser: SANDBOX_USER,
-						authToken: creds.connectToken,
-						gitHost,
-						gitToken,
-						signal: ctx.signal,
-					})
-					updateState((s) => {
-						if (!s.gitCredentialsSyncedWorkspaces.includes(workspaceId)) {
-							s.gitCredentialsSyncedWorkspaces.push(workspaceId)
-						}
-					})
-				} catch (err) {
-					warn(
-						ctx,
-						`Could not configure git credentials on sandbox: ${err instanceof Error ? err.message : String(err)}`,
-					)
-				}
+	const gitHost = await getGitRemoteHost(ctx.cwd)
+	if (gitHost) {
+		const gitToken = readGitToken(gitHost, ctx.configPath)
+		if (gitToken) {
+			try {
+				await propagateGitCredentialToSandbox({
+					remoteHost: creds.host,
+					remoteUser: SANDBOX_USER,
+					authToken: creds.connectToken,
+					gitHost,
+					gitToken,
+					signal: ctx.signal,
+				})
+			} catch (err) {
+				warn(ctx, `Could not configure git credentials on sandbox: ${err instanceof Error ? err.message : String(err)}`)
 			}
 		}
 	}

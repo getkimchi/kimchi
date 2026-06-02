@@ -6,7 +6,6 @@ import { rsyncInstallHint, whichRsync } from "../preflight/rsync.js"
 import { SANDBOX_USER } from "../provisioning/constants.js"
 import { deriveSandboxDest } from "../provisioning/paths.js"
 import { RsyncError, runRsync } from "../provisioning/rsync-runner.js"
-import { updateState } from "../state.js"
 import type { TeleportContext } from "../types.js"
 import { parseSyncArgs } from "./args.js"
 import { info, refuse, status } from "./errors.js"
@@ -67,10 +66,6 @@ export async function runSync(rawArgs: string, ctx: TeleportContext): Promise<vo
 		const sec = (result.durationMs / 1000).toFixed(1)
 		const prefix = args.dryRun ? "Dry run complete" : "Sync complete"
 		info(ctx, `${prefix}: ${result.fileCount} file(s), ${kb} KB in ${sec}s.`)
-
-		updateState((s) => {
-			s.lastWorkspaceId = workspaceId
-		})
 	} catch (err) {
 		let msg: string
 		if (err instanceof RsyncError) {

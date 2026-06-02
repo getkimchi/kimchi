@@ -1,4 +1,4 @@
-import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
+import type { Theme } from "@earendil-works/pi-coding-agent"
 import { type Component, Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -161,46 +161,4 @@ export class GitTokenPromptComponent implements Component {
 		}
 		this.requestRender()
 	}
-}
-
-// ── Prompt helper ───────────────────────────────────────────────────────────────────
-
-const GIT_TOKEN_WIDGET_KEY = "kimchi-git-token-prompt"
-const GIT_TOKEN_WIDGET_OPTIONS = { placement: "aboveEditor" } as const
-
-/**
- * Show an interactive TUI widget that asks the user to paste a git token.
- * Resolves when the user submits or skips.
- *
- * Exported for use by the teleport command; the underlying pure functions
- * and component class are exported separately for unit testing.
- */
-export function promptForGitToken(host: string, ui: ExtensionUIContext): Promise<GitTokenPromptResult> {
-	return new Promise<GitTokenPromptResult>((resolve) => {
-		let component: GitTokenPromptComponent | undefined
-
-		const cleanup = () => {
-			unsubInput()
-			ui.setWidget(GIT_TOKEN_WIDGET_KEY, undefined, GIT_TOKEN_WIDGET_OPTIONS)
-		}
-
-		const finish = (result: GitTokenPromptResult) => {
-			cleanup()
-			resolve(result)
-		}
-
-		ui.setWidget(
-			GIT_TOKEN_WIDGET_KEY,
-			(tui, theme) => {
-				component = new GitTokenPromptComponent(theme, host, finish, () => tui.requestRender())
-				return component
-			},
-			GIT_TOKEN_WIDGET_OPTIONS,
-		)
-
-		const unsubInput = ui.onTerminalInput((data) => {
-			component?.handleInput(data)
-			return { consume: true }
-		})
-	})
 }

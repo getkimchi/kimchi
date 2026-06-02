@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto"
 import type { Workspace } from "../../../sandbox/cloud/types.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
-import { readState } from "../state.js"
 import type { TeleportContext } from "../types.js"
 import { pickWorkspace } from "../ui/workspace-picker.js"
 import { TeleportRefusal, refuse } from "./errors.js"
@@ -58,9 +57,6 @@ export async function resolveWorkspaceRef(
 			.join("\n")
 		refuse(ctx, `Workspace "${ref}" is ambiguous. Use the UUID to disambiguate:\n${rows}`)
 	}
-
-	const cached = readState().lastWorkspaceId
-	if (cached) return cached
 
 	let workspaces: Workspace[]
 	try {

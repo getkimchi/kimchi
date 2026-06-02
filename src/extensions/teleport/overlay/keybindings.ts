@@ -1,10 +1,9 @@
-import { Key, matchesKey } from "@earendil-works/pi-tui"
+import { Key, isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 
 export type ChordAction =
-	| { kind: "new-tab" }
+	| { kind: "next-tab" }
+	| { kind: "prev-tab" }
 	| { kind: "switch"; index: number }
-	| { kind: "close-tab" }
-	| { kind: "delete-session" }
 	| { kind: "cancel" }
 
 /**
@@ -21,6 +20,14 @@ export class ChordParser {
 	private waiting = false
 
 	process(data: string): ChordResult {
+		// Key releases reach us because the overlay sets wantsKeyRelease=true on
+		// its Component (so the PTY can see them). They must not drive chord
+		// state transitions — otherwise the release event for Ctrl+B would
+		// satisfy the "waiting for operand" branch, swallow itself as an unknown
+		// operand, and reset us to idle before the actual operand keypress
+		// arrives.
+		if (isKeyRelease(data)) return null
+
 		if (!this.waiting) {
 			if (matchesKey(data, CHORD_PREFIX)) {
 				this.waiting = true
@@ -32,9 +39,8 @@ export class ChordParser {
 		this.waiting = false
 
 		if (matchesKey(data, "escape")) return { kind: "cancel" }
-		if (matchesKey(data, "n")) return { kind: "new-tab" }
-		if (matchesKey(data, "w")) return { kind: "close-tab" }
-		if (matchesKey(data, "x")) return { kind: "delete-session" }
+		if (matchesKey(data, "n")) return { kind: "next-tab" }
+		if (matchesKey(data, "p")) return { kind: "prev-tab" }
 
 		const digits = ["1", "2", "3", "4", "5", "6", "7", "8", "9"] as const
 		for (let i = 0; i < digits.length; i++) {

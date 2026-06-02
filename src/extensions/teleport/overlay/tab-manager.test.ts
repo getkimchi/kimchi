@@ -392,6 +392,90 @@ describe("TabManager.dispose", () => {
 	})
 })
 
+describe("TabManager lazy tabs", () => {
+	it("addTab({ eager: false }) does not allocate transport/core/component", () => {
+		const { manager } = makeManager()
+		const tab = manager.addTab(makeSession("s1"), { eager: false })
+		expect(transportInstances).toHaveLength(0)
+		expect(coreInstances).toHaveLength(0)
+		expect(tab.transport).toBeUndefined()
+		expect(tab.core).toBeUndefined()
+		expect(tab.component).toBeUndefined()
+		expect(tab.connectionStatus).toBe("disconnected")
+	})
+
+	it("first tab is still made active even when lazy", () => {
+		const { manager } = makeManager()
+		manager.addTab(makeSession("s1"), { eager: false })
+		expect(manager.activeIndex).toBe(0)
+	})
+
+	it("switchTo a lazy tab allocates and connects exactly once", () => {
+		const { manager } = makeManager()
+		manager.addTab(makeSession("s1"), { eager: true })
+		manager.addTab(makeSession("s2"), { eager: false })
+		expect(transportInstances).toHaveLength(1)
+
+		const switched = manager.switchTo(1)
+		expect(switched).toBe(true)
+		expect(transportInstances).toHaveLength(2)
+		expect(transportInstances[1].connect).toHaveBeenCalledOnce()
+		expect(manager.tabs[1].transport).toBeDefined()
+		expect(manager.tabs[1].component).toBeDefined()
+	})
+
+	it("switching back to an already-connected tab does not recreate the transport", () => {
+		const { manager } = makeManager()
+		manager.addTab(makeSession("s1"), { eager: true })
+		manager.addTab(makeSession("s2"), { eager: false })
+		manager.switchTo(1)
+		expect(transportInstances).toHaveLength(2)
+		manager.switchTo(0)
+		manager.switchTo(1)
+		expect(transportInstances).toHaveLength(2)
+		expect(transportInstances[1].connect).toHaveBeenCalledOnce()
+	})
+
+	it("closeTab on a never-activated lazy tab removes it without touching a transport", () => {
+		const { manager } = makeManager()
+		manager.addTab(makeSession("s1"), { eager: true })
+		manager.addTab(makeSession("s2"), { eager: false })
+		expect(() => manager.closeTab(1)).not.toThrow()
+		expect(manager.tabs).toHaveLength(1)
+		expect(manager.tabs[0].session.name).toBe("s1")
+	})
+
+	it("deleteTab on a lazy tab still hits the worker", async () => {
+		const { manager } = makeManager()
+		manager.addTab(makeSession("s1"), { eager: true })
+		manager.addTab(makeSession("s2"), { eager: false })
+		await manager.deleteTab(1)
+		expect(deleteSessionMock).toHaveBeenCalledOnce()
+		expect(deleteSessionMock.mock.calls[0][1]).toBe("s2")
+		expect(manager.tabs).toHaveLength(1)
+	})
+
+	it("dispose tolerates lazy tabs", () => {
+		const { manager } = makeManager()
+		manager.addTab(makeSession("s1"), { eager: false })
+		manager.addTab(makeSession("s2"), { eager: false })
+		expect(() => manager.dispose()).not.toThrow()
+		expect(manager.tabs).toHaveLength(0)
+	})
+
+	it("closing the currently-active tab promotes a neighbor and lazily connects it", () => {
+		const { manager } = makeManager()
+		manager.addTab(makeSession("s1"), { eager: true })
+		manager.addTab(makeSession("s2"), { eager: false })
+		expect(transportInstances).toHaveLength(1)
+		manager.closeTab(0)
+		// s2 inherited active, ensureConnected fired.
+		expect(manager.activeIndex).toBe(0)
+		expect(manager.tabs[0].session.name).toBe("s2")
+		expect(transportInstances).toHaveLength(2)
+	})
+})
+
 describe("generateSessionName", () => {
 	it("generates names with the pty- prefix and an 8-char hex suffix", () => {
 		const name = generateSessionName()

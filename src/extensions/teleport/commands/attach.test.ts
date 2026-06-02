@@ -1,8 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const { authMock, waitReadyMock, listSessionsMock, overlayMock, progressMock, progressInstances } = vi.hoisted(() => ({
 	authMock: vi.fn(),
@@ -15,8 +12,7 @@ const { authMock, waitReadyMock, listSessionsMock, overlayMock, progressMock, pr
 		complete: ReturnType<typeof vi.fn>
 		finish: ReturnType<typeof vi.fn>
 		stop: ReturnType<typeof vi.fn>
-		pauseInput: ReturnType<typeof vi.fn>
-		resumeInput: ReturnType<typeof vi.fn>
+		promptGitToken: ReturnType<typeof vi.fn>
 	}>,
 }))
 
@@ -33,41 +29,12 @@ vi.mock("../ui/progress.js", () => ({
 			complete: vi.fn(),
 			finish: vi.fn(),
 			stop: vi.fn(),
-			pauseInput: vi.fn(),
-			resumeInput: vi.fn(),
+			promptGitToken: vi.fn().mockResolvedValue({ outcome: "skipped" }),
 		}
 		progressInstances.push(controller)
 		return controller
 	},
 }))
-
-let tempStatePath = ""
-vi.mock("../state.js", () => {
-	let cache: { lastWorkspaceId?: string; gitCredentialsSyncedWorkspaces: string[] } = {
-		gitCredentialsSyncedWorkspaces: [],
-	}
-	return {
-		readState: () => {
-			try {
-				return JSON.parse(readFileSync(tempStatePath, "utf-8"))
-			} catch {
-				return { ...cache }
-			}
-		},
-		updateState: (update: (s: typeof cache) => void) => {
-			const s = (() => {
-				try {
-					return JSON.parse(readFileSync(tempStatePath, "utf-8"))
-				} catch {
-					return { ...cache }
-				}
-			})()
-			update(s)
-			cache = s
-			writeFileSync(tempStatePath, JSON.stringify(s))
-		},
-	}
-})
 
 import type { TeleportContext } from "../types.js"
 import { runAttachSession } from "./attach.js"
@@ -137,12 +104,7 @@ function makeCtx(over: Partial<TeleportContext> = {}): {
 	return { ctx, ui }
 }
 
-let tempDir = ""
-
 beforeEach(() => {
-	tempDir = mkdtempSync(join(tmpdir(), "attach-test-"))
-	tempStatePath = join(tempDir, "state.json")
-	writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
 	authMock.mockReset().mockResolvedValue(CREDS)
 	waitReadyMock.mockReset().mockResolvedValue(undefined)
 	listSessionsMock.mockReset().mockResolvedValue([])
@@ -155,12 +117,8 @@ beforeEach(() => {
 	progressInstances.length = 0
 })
 
-afterEach(() => {
-	if (tempDir) rmSync(tempDir, { recursive: true, force: true })
-})
-
 describe("runAttachSession", () => {
-	it("happy path: auths, waits ready, finds session, opens overlay, persists lastWorkspaceId", async () => {
+	it("happy path: auths, waits ready, finds session, opens overlay", async () => {
 		const session = { name: "pick-me", agentMode: "PTY" }
 		listSessionsMock.mockResolvedValue([{ name: "other", agentMode: "PTY" }, session])
 		const { ctx, ui } = makeCtx()
@@ -177,10 +135,6 @@ describe("runAttachSession", () => {
 			initialSession: session,
 		})
 		expect(ui.custom).toHaveBeenCalledOnce()
-		expect(ui.setHeader).toHaveBeenCalledWith(undefined)
-
-		const persisted = JSON.parse(readFileSync(tempStatePath, "utf-8"))
-		expect(persisted.lastWorkspaceId).toBe("w-1")
 	})
 
 	it("refuses when the named session no longer exists", async () => {

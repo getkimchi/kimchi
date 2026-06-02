@@ -7,7 +7,7 @@ import { TerminalComponent } from "../pty/terminal-component.js"
 import { WebSocketTransport } from "../pty/websocket-transport.js"
 import { type XtermCore, createXtermCore } from "../pty/xterm-core.js"
 
-export type TabConnectionPhase = "connecting" | "open" | "reconnecting" | "fatal"
+export type TabConnectionPhase = "disconnected" | "connecting" | "open" | "reconnecting" | "fatal"
 
 export interface ReconnectInfo {
 	attempt: number
@@ -30,13 +30,19 @@ export const FATAL_CODES: ReadonlySet<number> = new Set([1000, 4001, 4002, 4003]
 export interface Tab {
 	id: string
 	session: Session
-	transport: WebSocketTransport
-	core: XtermCore
-	component: TerminalComponent
+	/** Allocated lazily on first activation; undefined for disconnected lazy tabs. */
+	transport?: WebSocketTransport
+	core?: XtermCore
+	component?: TerminalComponent
 	dirty: boolean
 	connectionStatus: TabConnectionPhase
 	reconnectInfo?: ReconnectInfo
 	fatalInfo?: FatalInfo
+}
+
+export interface AddTabOpts {
+	/** When false, allocate only the record; defer transport/core/component until activation. */
+	eager?: boolean
 }
 
 export interface TabManagerOpts {
@@ -66,26 +72,49 @@ export class TabManager {
 		return this.tabs[this.activeIndex]
 	}
 
-	addTab(session: Session): Tab {
+	addTab(session: Session, opts: AddTabOpts = {}): Tab {
 		if (this.disposed) {
 			throw new Error("TabManager disposed")
 		}
+		const eager = opts.eager ?? true
 
 		const tab: Tab = {
 			id: randomUUID(),
 			session,
-			transport: undefined as unknown as WebSocketTransport,
-			core: undefined as unknown as XtermCore,
-			component: undefined as unknown as TerminalComponent,
 			dirty: false,
-			connectionStatus: "connecting",
+			connectionStatus: eager ? "connecting" : "disconnected",
 		}
+
+		this.tabs.push(tab)
+		const becameActive = this.activeIndex === -1
+		if (becameActive) {
+			this.activeIndex = this.tabs.length - 1
+		}
+
+		if (eager) {
+			this.ensureConnected(tab)
+			if (becameActive) {
+				tab.component?.setFocus(true)
+			} else {
+				tab.component?.setFocus(false)
+			}
+		}
+		return tab
+	}
+
+	/**
+	 * Allocate transport/core/component for a tab and kick off the WebSocket
+	 * connect. Idempotent: a no-op for tabs whose transport already exists.
+	 */
+	private ensureConnected(tab: Tab): void {
+		if (this.disposed) return
+		if (tab.transport) return
 
 		const cols = this.opts.tui.terminal.columns || 80
 		const rows = Math.max(1, (this.opts.tui.terminal.rows || 24) - 1)
 		const core = createXtermCore(cols, rows)
 
-		const url = `${stripTrailingSlash(this.opts.wsBaseUrl)}/session/${encodeURIComponent(session.name)}/connect`
+		const url = `${stripTrailingSlash(this.opts.wsBaseUrl)}/session/${encodeURIComponent(tab.session.name)}/connect`
 
 		const transport = new WebSocketTransport({
 			url,
@@ -148,27 +177,21 @@ export class TabManager {
 		tab.transport = transport
 		tab.core = core
 		tab.component = component
-
-		this.tabs.push(tab)
-		if (this.activeIndex === -1) {
-			this.activeIndex = 0
-			component.setFocus(true)
-		} else {
-			component.setFocus(false)
-		}
+		tab.connectionStatus = "connecting"
 
 		transport.connect()
-		return tab
 	}
 
 	closeTab(index: number): void {
 		const tab = this.tabs[index]
 		if (!tab) return
 		this.closingTabs.add(tab)
-		try {
-			tab.transport.close()
-		} catch {
-			// best effort
+		if (tab.transport) {
+			try {
+				tab.transport.close()
+			} catch {
+				// best effort
+			}
 		}
 		this._removeTab(index)
 	}
@@ -189,10 +212,11 @@ export class TabManager {
 		if (index < 0 || index >= this.tabs.length) return false
 		if (index === this.activeIndex) return true
 		const prev = this.tabs[this.activeIndex]
-		if (prev) prev.component.setFocus(false)
+		prev?.component?.setFocus(false)
 		this.activeIndex = index
 		const next = this.tabs[index]
-		next.component.setFocus(true)
+		this.ensureConnected(next)
+		next.component?.setFocus(true)
 		next.dirty = false
 		this.opts.onActiveChange()
 		return true
@@ -211,15 +235,19 @@ export class TabManager {
 		if (this.disposed) return
 		this.disposed = true
 		for (const tab of this.tabs) {
-			try {
-				tab.transport.close()
-			} catch {
-				// best effort
+			if (tab.transport) {
+				try {
+					tab.transport.close()
+				} catch {
+					// best effort
+				}
 			}
-			try {
-				tab.core.dispose()
-			} catch {
-				// best effort
+			if (tab.core) {
+				try {
+					tab.core.dispose()
+				} catch {
+					// best effort
+				}
 			}
 		}
 		this.tabs.length = 0
@@ -230,10 +258,12 @@ export class TabManager {
 		const tab = this.tabs[index]
 		if (!tab) return
 		this.tabs.splice(index, 1)
-		try {
-			tab.core.dispose()
-		} catch {
-			// best effort
+		if (tab.core) {
+			try {
+				tab.core.dispose()
+			} catch {
+				// best effort
+			}
 		}
 
 		if (this.tabs.length === 0) {
@@ -250,7 +280,8 @@ export class TabManager {
 		}
 		const next = this.tabs[this.activeIndex]
 		if (next) {
-			next.component.setFocus(true)
+			this.ensureConnected(next)
+			next.component?.setFocus(true)
 			next.dirty = false
 		}
 		this.opts.onActiveChange()

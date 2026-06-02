@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
@@ -14,11 +14,11 @@ const {
 	pickWorkspaceMock,
 	progressMock,
 	progressInstances,
+	promptGitTokenQueue,
 	getGitRemoteHostMock,
 	parseHostMock,
 	readGitTokenMock,
 	writeGitTokenMock,
-	promptForGitTokenMock,
 	readLocalGitConfigMock,
 	propagateGitConfigMock,
 	propagateGitCredentialMock,
@@ -36,14 +36,13 @@ const {
 		complete: ReturnType<typeof vi.fn>
 		finish: ReturnType<typeof vi.fn>
 		stop: ReturnType<typeof vi.fn>
-		pauseInput: ReturnType<typeof vi.fn>
-		resumeInput: ReturnType<typeof vi.fn>
+		promptGitToken: ReturnType<typeof vi.fn>
 	}>,
+	promptGitTokenQueue: [] as Array<{ outcome: "submitted"; token: string; save: boolean } | { outcome: "skipped" }>,
 	getGitRemoteHostMock: vi.fn(),
 	parseHostMock: vi.fn(),
 	readGitTokenMock: vi.fn(),
 	writeGitTokenMock: vi.fn(),
-	promptForGitTokenMock: vi.fn(),
 	readLocalGitConfigMock: vi.fn(),
 	propagateGitConfigMock: vi.fn(),
 	propagateGitCredentialMock: vi.fn(),
@@ -69,7 +68,6 @@ vi.mock("../../../config.js", () => ({
 	readGitToken: readGitTokenMock,
 	writeGitToken: writeGitTokenMock,
 }))
-vi.mock("../ui/git-token-prompt.js", () => ({ promptForGitToken: promptForGitTokenMock }))
 vi.mock("../provisioning/git-propagate.js", () => ({
 	readLocalGitConfig: readLocalGitConfigMock,
 	propagateGitConfigToSandbox: propagateGitConfigMock,
@@ -83,42 +81,14 @@ vi.mock("../ui/progress.js", () => ({
 			complete: vi.fn(),
 			finish: vi.fn(),
 			stop: vi.fn(),
-			pauseInput: vi.fn(),
-			resumeInput: vi.fn(),
+			promptGitToken: vi.fn().mockImplementation(async () => {
+				return promptGitTokenQueue.shift() ?? { outcome: "skipped" }
+			}),
 		}
 		progressInstances.push(controller)
 		return controller
 	},
 }))
-
-// State module reads/writes a fixed user path; we override it per-test via env.
-let tempStatePath = ""
-vi.mock("../state.js", () => {
-	let cache: { lastWorkspaceId?: string; gitCredentialsSyncedWorkspaces: string[] } = {
-		gitCredentialsSyncedWorkspaces: [],
-	}
-	return {
-		readState: () => {
-			try {
-				return JSON.parse(readFileSync(tempStatePath, "utf-8"))
-			} catch {
-				return { ...cache }
-			}
-		},
-		updateState: (update: (s: typeof cache) => void) => {
-			const s = (() => {
-				try {
-					return JSON.parse(readFileSync(tempStatePath, "utf-8"))
-				} catch {
-					return { ...cache }
-				}
-			})()
-			update(s)
-			cache = s
-			writeFileSync(tempStatePath, JSON.stringify(s))
-		},
-	}
-})
 
 import type { TeleportContext } from "../types.js"
 import { TeleportRefusal } from "./errors.js"
@@ -192,7 +162,6 @@ let tempDir = ""
 
 beforeEach(() => {
 	tempDir = mkdtempSync(join(tmpdir(), "teleport-test-"))
-	tempStatePath = join(tempDir, "state.json")
 	authMock.mockReset().mockResolvedValue(CREDS)
 	waitReadyMock.mockReset().mockResolvedValue(undefined)
 	listWorkspacesMock.mockReset().mockResolvedValue([])
@@ -206,11 +175,11 @@ beforeEach(() => {
 	}))
 	progressMock.mockReset()
 	progressInstances.length = 0
+	promptGitTokenQueue.length = 0
 	getGitRemoteHostMock.mockReset().mockResolvedValue(undefined)
 	parseHostMock.mockReset().mockImplementation((url: string) => (url.includes("github.com") ? "github.com" : undefined))
 	readGitTokenMock.mockReset().mockReturnValue(undefined)
 	writeGitTokenMock.mockReset()
-	promptForGitTokenMock.mockReset().mockResolvedValue({ outcome: "skipped" })
 	readLocalGitConfigMock.mockReset().mockResolvedValue({})
 	propagateGitConfigMock.mockReset().mockResolvedValue(undefined)
 	propagateGitCredentialMock.mockReset().mockResolvedValue(undefined)
@@ -221,8 +190,7 @@ afterEach(() => {
 })
 
 describe("runTeleport", () => {
-	it("happy path: --workspace overrides cache, creates PTY session, opens overlay", async () => {
-		writeFileSync(tempStatePath, JSON.stringify({ lastWorkspaceId: "cached", gitCredentialsSyncedWorkspaces: [] }))
+	it("happy path: creates PTY session, opens overlay", async () => {
 		const { ctx, ui } = makeCtx()
 
 		await runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)
@@ -236,24 +204,9 @@ describe("runTeleport", () => {
 		expect(createSessionMock.mock.calls[0][1]).toBe("mysession")
 		expect(createSessionMock.mock.calls[0][2]).toEqual({ agentMode: "PTY" })
 		expect(ui.custom).toHaveBeenCalledOnce()
-
-		const persisted = JSON.parse(readFileSync(tempStatePath, "utf-8"))
-		expect(persisted.lastWorkspaceId).toBe("22222222-2222-4222-8222-222222222222")
-		expect(ui.setHeader).toHaveBeenCalledWith(undefined)
-	})
-
-	it("uses the cached lastWorkspaceId when no --workspace is passed", async () => {
-		writeFileSync(tempStatePath, JSON.stringify({ lastWorkspaceId: "w-cached", gitCredentialsSyncedWorkspaces: [] }))
-		const { ctx } = makeCtx()
-
-		await runTeleport("", ctx)
-
-		expect(listWorkspacesMock).not.toHaveBeenCalled()
-		expect(authMock.mock.calls[0][0]).toBe("w-cached")
 	})
 
 	it("refuses when a session with the requested name already exists", async () => {
-		writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
 		listSessionsMock.mockResolvedValue([{ name: "mysession", agentMode: "PTY" }])
 		const { ctx, ui } = makeCtx()
 
@@ -266,7 +219,6 @@ describe("runTeleport", () => {
 	})
 
 	it("refuses when listSessions fails", async () => {
-		writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
 		listSessionsMock.mockRejectedValue(new Error("boom"))
 		const { ctx, ui } = makeCtx()
 
@@ -278,7 +230,6 @@ describe("runTeleport", () => {
 	})
 
 	it("refuses without notifying when the picker is cancelled with Esc", async () => {
-		writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
 		listWorkspacesMock.mockResolvedValue([
 			{
 				id: "11111111-1111-4111-8111-111111111111",
@@ -297,7 +248,6 @@ describe("runTeleport", () => {
 	})
 
 	it("generates a new workspace ID when there are no workspaces to pick", async () => {
-		writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
 		listWorkspacesMock.mockResolvedValue([])
 		const { ctx } = makeCtx()
 
@@ -325,7 +275,6 @@ describe("runTeleport", () => {
 	})
 
 	it("generates a default session name when none is given", async () => {
-		writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
 		const { ctx } = makeCtx()
 
 		await runTeleport("--workspace 11111111-1111-4111-8111-111111111111", ctx)
@@ -337,7 +286,6 @@ describe("runTeleport", () => {
 
 	describe("git provisioning", () => {
 		it("--git-repo: identity → credentials run in order before createSession with details.git", async () => {
-			writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
 			readGitTokenMock.mockReturnValue("ghp_cached")
 			readLocalGitConfigMock.mockResolvedValue({ name: "Alice", email: "a@example.com" })
 			const order: string[] = []
@@ -370,18 +318,17 @@ describe("runTeleport", () => {
 					},
 				},
 			})
-			expect(promptForGitTokenMock).not.toHaveBeenCalled()
+			expect(progressInstances[0]?.promptGitToken).not.toHaveBeenCalled()
 		})
 
-		it("--git-repo with no cached token: opens prompt and writes token when save is checked", async () => {
-			writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
+		it("--git-repo with no cached token: opens prompt via progress and writes token when save is checked", async () => {
 			readGitTokenMock.mockReturnValue(undefined)
-			promptForGitTokenMock.mockResolvedValue({ outcome: "submitted", token: "ghp_new", save: true })
+			promptGitTokenQueue.push({ outcome: "submitted", token: "ghp_new", save: true })
 			const { ctx } = makeCtx()
 
 			await runTeleport("--workspace 11111111-1111-4111-8111-111111111111 --git-repo https://github.com/me/x.git", ctx)
 
-			expect(promptForGitTokenMock).toHaveBeenCalledWith("github.com", expect.anything())
+			expect(progressInstances[0]?.promptGitToken).toHaveBeenCalledWith("github.com")
 			expect(writeGitTokenMock).toHaveBeenCalledWith("github.com", "ghp_new", undefined)
 			expect(propagateGitCredentialMock).toHaveBeenCalledOnce()
 			expect(propagateGitCredentialMock.mock.calls[0][0]).toMatchObject({
@@ -390,60 +337,28 @@ describe("runTeleport", () => {
 			})
 		})
 
-		it("pauses and resumes the progress input lock around the git-token prompt", async () => {
-			writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
+		it("invokes progress.promptGitToken when no cached token is available", async () => {
 			readGitTokenMock.mockReturnValue(undefined)
-			let pauseCalled = false
-			let resumeCalled = false
-			promptForGitTokenMock.mockImplementation(async () => {
-				// At the moment the prompt is open the lock must be paused but not yet resumed.
-				const ctrl = progressInstances[0]
-				pauseCalled = ctrl?.pauseInput.mock.calls.length === 1
-				resumeCalled = (ctrl?.resumeInput.mock.calls.length ?? 0) > 0
-				return { outcome: "submitted", token: "ghp_new", save: false }
-			})
 			const { ctx } = makeCtx()
 
 			await runTeleport("--workspace 11111111-1111-4111-8111-111111111111 --git-repo https://github.com/me/x.git", ctx)
 
-			expect(pauseCalled).toBe(true)
-			expect(resumeCalled).toBe(false)
-			// After the prompt resolves, resumeInput is called exactly once.
 			const ctrl = progressInstances[0]
-			expect(ctrl?.pauseInput).toHaveBeenCalledTimes(1)
-			expect(ctrl?.resumeInput).toHaveBeenCalledTimes(1)
+			expect(ctrl?.promptGitToken).toHaveBeenCalledTimes(1)
+			expect(ctrl?.promptGitToken).toHaveBeenCalledWith("github.com")
 		})
 
-		it("resumes the input lock even when the prompt rejects", async () => {
-			writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
-			readGitTokenMock.mockReturnValue(undefined)
-			promptForGitTokenMock.mockRejectedValue(new Error("prompt blew up"))
-			const { ctx } = makeCtx()
-
-			await expect(
-				runTeleport("--workspace 11111111-1111-4111-8111-111111111111 --git-repo https://github.com/me/x.git", ctx),
-			).rejects.toThrow("prompt blew up")
-
-			const ctrl = progressInstances[0]
-			expect(ctrl?.pauseInput).toHaveBeenCalledTimes(1)
-			expect(ctrl?.resumeInput).toHaveBeenCalledTimes(1)
-		})
-
-		it("does NOT pause the input lock when a cached token is available", async () => {
-			writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
+		it("does NOT invoke progress.promptGitToken when a cached token is available", async () => {
 			readGitTokenMock.mockReturnValue("ghp_cached")
 			const { ctx } = makeCtx()
 
 			await runTeleport("--workspace 11111111-1111-4111-8111-111111111111 --git-repo https://github.com/me/x.git", ctx)
 
-			expect(promptForGitTokenMock).not.toHaveBeenCalled()
 			const ctrl = progressInstances[0]
-			expect(ctrl?.pauseInput).not.toHaveBeenCalled()
-			expect(ctrl?.resumeInput).not.toHaveBeenCalled()
+			expect(ctrl?.promptGitToken).not.toHaveBeenCalled()
 		})
 
 		it("--no-git-token skips token resolution and credential propagation", async () => {
-			writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
 			readGitTokenMock.mockReturnValue("ghp_cached")
 			const { ctx } = makeCtx()
 
@@ -453,7 +368,7 @@ describe("runTeleport", () => {
 			)
 
 			expect(readGitTokenMock).not.toHaveBeenCalled()
-			expect(promptForGitTokenMock).not.toHaveBeenCalled()
+			expect(progressInstances[0]?.promptGitToken).not.toHaveBeenCalled()
 			expect(propagateGitCredentialMock).not.toHaveBeenCalled()
 			expect(createSessionMock.mock.calls[0][2]).toMatchObject({
 				details: { git: { repo: "https://github.com/me/x.git", targetDirectory: "x" } },
@@ -461,7 +376,6 @@ describe("runTeleport", () => {
 		})
 
 		it("local repo (no --git-repo): propagates identity + credentials, sends no details.git", async () => {
-			writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
 			getGitRemoteHostMock.mockResolvedValue("github.com")
 			readGitTokenMock.mockReturnValue("ghp_cached")
 			readLocalGitConfigMock.mockResolvedValue({ name: "Alice" })
@@ -474,37 +388,7 @@ describe("runTeleport", () => {
 			expect(createSessionMock.mock.calls[0][2]).toEqual({ agentMode: "PTY" })
 		})
 
-		it("skips credential propagation when workspace is already in gitCredentialsSyncedWorkspaces", async () => {
-			writeFileSync(
-				tempStatePath,
-				JSON.stringify({ gitCredentialsSyncedWorkspaces: ["11111111-1111-4111-8111-111111111111"] }),
-			)
-			getGitRemoteHostMock.mockResolvedValue("github.com")
-			readGitTokenMock.mockReturnValue("ghp_cached")
-			readLocalGitConfigMock.mockResolvedValue({ name: "Alice" })
-			const { ctx } = makeCtx()
-
-			await runTeleport("--workspace 11111111-1111-4111-8111-111111111111", ctx)
-
-			expect(propagateGitCredentialMock).not.toHaveBeenCalled()
-			// identity is not gated; it still runs
-			expect(propagateGitConfigMock).toHaveBeenCalledOnce()
-		})
-
-		it("records workspaceId in gitCredentialsSyncedWorkspaces on first successful credential push", async () => {
-			writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
-			getGitRemoteHostMock.mockResolvedValue("github.com")
-			readGitTokenMock.mockReturnValue("ghp_cached")
-			const { ctx } = makeCtx()
-
-			await runTeleport("--workspace 11111111-1111-4111-8111-111111111111", ctx)
-
-			const persisted = JSON.parse(readFileSync(tempStatePath, "utf-8"))
-			expect(persisted.gitCredentialsSyncedWorkspaces).toContain("11111111-1111-4111-8111-111111111111")
-		})
-
 		it("warns (does not refuse) on identity/credential propagation failure", async () => {
-			writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
 			readGitTokenMock.mockReturnValue("ghp_cached")
 			readLocalGitConfigMock.mockResolvedValue({ name: "Alice" })
 			propagateGitConfigMock.mockRejectedValueOnce(new Error("identity boom"))
@@ -534,7 +418,6 @@ describe("runTeleport", () => {
 
 	describe("session upload", () => {
 		it("uploads the local session file when one is present", async () => {
-			writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
 			const sessionFile = join(tempDir, "session.jsonl")
 			writeFileSync(sessionFile, '{"type":"session"}\n')
 			const { ctx } = makeCtx({ sessionFile })
@@ -546,7 +429,6 @@ describe("runTeleport", () => {
 		})
 
 		it("--skip-session opts out even when a local session file exists", async () => {
-			writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
 			const sessionFile = join(tempDir, "session.jsonl")
 			writeFileSync(sessionFile, '{"type":"session"}\n')
 			const { ctx } = makeCtx({ sessionFile })
@@ -557,7 +439,6 @@ describe("runTeleport", () => {
 		})
 
 		it("does not upload when no local session file is available", async () => {
-			writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
 			const { ctx } = makeCtx()
 
 			await runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111", ctx)
@@ -566,7 +447,6 @@ describe("runTeleport", () => {
 		})
 
 		it("silently skips upload when the session file path is stale (file missing)", async () => {
-			writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
 			const { ctx } = makeCtx({ sessionFile: join(tempDir, "does-not-exist.jsonl") })
 
 			await runTeleport("mysession --workspace 11111111-1111-4111-8111-111111111111", ctx)

@@ -20,9 +20,7 @@ import {
 } from "../provisioning/git-propagate.js"
 import { deriveSandboxDest, deriveSandboxDestFromRepoUrl, repoBasename } from "../provisioning/paths.js"
 import { runRsync } from "../provisioning/rsync-runner.js"
-import { readState, updateState } from "../state.js"
 import type { TeleportContext } from "../types.js"
-import { promptForGitToken } from "../ui/git-token-prompt.js"
 import { createTeleportProgress } from "../ui/progress.js"
 import { parseTeleportArgs } from "./args.js"
 import { refuse, warn } from "./errors.js"
@@ -71,7 +69,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		progress.complete("Sandbox ready")
 
 		const shouldRsyncWorkspace = !args.gitRepo && isGitRepo(ctx.cwd)
-		await runGitProvisioning(args, ctx, creds, workspaceId, progress)
+		await runGitProvisioning(args, ctx, creds, progress)
 
 		if (shouldRsyncWorkspace) {
 			progress.step("Syncing workspace")
@@ -135,38 +133,29 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 			url: `${creds.wsUrl}/session/${sessionName}/connect`,
 			description,
 		})
-
-		updateState((s) => {
-			s.lastWorkspaceId = workspaceId
-		})
 	} catch (err) {
 		progress.stop()
 		throw err
 	}
 
-	try {
-		await ctx.ui.custom<undefined>(
-			createTabsOverlay({
-				creds,
-				workspaceId,
-				apiKey: ctx.apiKey,
-				cwd: ctx.cwd,
-				endpoint: ctx.endpoint,
-				ui: ctx.ui,
-				initialSession,
-			}),
-			{ overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" } },
-		)
-	} finally {
-		ctx.ui.setHeader(undefined)
-	}
+	await ctx.ui.custom<undefined>(
+		createTabsOverlay({
+			creds,
+			workspaceId,
+			apiKey: ctx.apiKey,
+			cwd: ctx.cwd,
+			endpoint: ctx.endpoint,
+			ui: ctx.ui,
+			initialSession,
+		}),
+		{ overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" } },
+	)
 }
 
 async function runGitProvisioning(
 	args: ReturnType<typeof parseTeleportArgs>,
 	ctx: TeleportContext,
 	creds: WorkspaceCredentials,
-	workspaceId: string,
 	progress: ReturnType<typeof createTeleportProgress>,
 ): Promise<void> {
 	const gitRepo = args.gitRepo
@@ -176,15 +165,7 @@ async function runGitProvisioning(
 	if (!args.noGitToken && gitHost) {
 		gitToken = readGitToken(gitHost, ctx.configPath)
 		if (!gitToken) {
-			// The progress widget installs a global input lock; pause it so the
-			// prompt's keystroke handler isn't shadowed.
-			progress.pauseInput()
-			let promptResult: Awaited<ReturnType<typeof promptForGitToken>>
-			try {
-				promptResult = await promptForGitToken(gitHost, ctx.ui)
-			} finally {
-				progress.resumeInput()
-			}
+			const promptResult = await progress.promptGitToken(gitHost)
 			if (promptResult.outcome === "submitted") {
 				gitToken = promptResult.token
 				if (promptResult.save) {
@@ -217,8 +198,7 @@ async function runGitProvisioning(
 		}
 	}
 
-	const alreadySynced = readState().gitCredentialsSyncedWorkspaces.includes(workspaceId)
-	if (gitHost && gitToken && !alreadySynced) {
+	if (gitHost && gitToken) {
 		progress.step("Configuring git credentials")
 		try {
 			await propagateGitCredentialToSandbox({
@@ -228,11 +208,6 @@ async function runGitProvisioning(
 				gitHost,
 				gitToken,
 				signal: ctx.signal,
-			})
-			updateState((s) => {
-				if (!s.gitCredentialsSyncedWorkspaces.includes(workspaceId)) {
-					s.gitCredentialsSyncedWorkspaces.push(workspaceId)
-				}
 			})
 			progress.complete("Git credentials configured")
 		} catch (err) {

@@ -6,7 +6,6 @@ import { WorkerClient } from "../../../sandbox/worker/client.js"
 import { listSessions } from "../../../sandbox/worker/sessions.js"
 import type { Session } from "../../../sandbox/worker/types.js"
 import { createTabsOverlay } from "../overlay/overlay-component.js"
-import { updateState } from "../state.js"
 import type { TeleportContext } from "../types.js"
 import { createTeleportProgress } from "../ui/progress.js"
 import { refuse } from "./errors.js"
@@ -68,29 +67,21 @@ export async function runAttachSession(args: AttachArgs, ctx: TeleportContext): 
 			url: `${creds.wsUrl}/session/${sessionName}/connect`,
 			description,
 		})
-
-		updateState((s) => {
-			s.lastWorkspaceId = workspaceId
-		})
 	} catch (err) {
 		progress.stop()
 		throw err
 	}
 
-	try {
-		await ctx.ui.custom<undefined>(
-			createTabsOverlay({
-				creds,
-				workspaceId,
-				apiKey: ctx.apiKey,
-				cwd: ctx.cwd,
-				endpoint: ctx.endpoint,
-				ui: ctx.ui,
-				initialSession: session,
-			}),
-			{ overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" } },
-		)
-	} finally {
-		ctx.ui.setHeader(undefined)
-	}
+	await ctx.ui.custom<undefined>(
+		createTabsOverlay({
+			creds,
+			workspaceId,
+			apiKey: ctx.apiKey,
+			cwd: ctx.cwd,
+			endpoint: ctx.endpoint,
+			ui: ctx.ui,
+			initialSession: session,
+		}),
+		{ overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" } },
+	)
 }

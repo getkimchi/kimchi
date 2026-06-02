@@ -1,53 +1,30 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const { authMock, getGitRemoteHostMock, readGitTokenMock, propagateGitCredentialMock, buildProxyCommandMock } =
-	vi.hoisted(() => ({
-		authMock: vi.fn(),
-		getGitRemoteHostMock: vi.fn(),
-		readGitTokenMock: vi.fn(),
-		propagateGitCredentialMock: vi.fn(),
-		buildProxyCommandMock: vi.fn(),
-	}))
+const {
+	authMock,
+	getGitRemoteHostMock,
+	readGitTokenMock,
+	propagateGitCredentialMock,
+	buildProxyCommandMock,
+	listWorkspacesMock,
+} = vi.hoisted(() => ({
+	authMock: vi.fn(),
+	getGitRemoteHostMock: vi.fn(),
+	readGitTokenMock: vi.fn(),
+	propagateGitCredentialMock: vi.fn(),
+	buildProxyCommandMock: vi.fn(),
+	listWorkspacesMock: vi.fn(),
+}))
 
 vi.mock("../../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: authMock }))
+vi.mock("../../../sandbox/cloud/workspaces.js", () => ({ listWorkspaces: listWorkspacesMock }))
 vi.mock("../../../sandbox/git-credentials.js", () => ({ getGitRemoteHost: getGitRemoteHostMock }))
 vi.mock("../../../config.js", () => ({ readGitToken: readGitTokenMock }))
 vi.mock("../provisioning/git-propagate.js", () => ({
 	propagateGitCredentialToSandbox: propagateGitCredentialMock,
 }))
 vi.mock("../provisioning/proxy-command.js", () => ({ buildProxyCommand: buildProxyCommandMock }))
-
-let tempStatePath = ""
-vi.mock("../state.js", () => {
-	let cache: { lastWorkspaceId?: string; gitCredentialsSyncedWorkspaces: string[] } = {
-		gitCredentialsSyncedWorkspaces: [],
-	}
-	return {
-		readState: () => {
-			try {
-				return JSON.parse(readFileSync(tempStatePath, "utf-8"))
-			} catch {
-				return { ...cache }
-			}
-		},
-		updateState: (update: (s: typeof cache) => void) => {
-			const s = (() => {
-				try {
-					return JSON.parse(readFileSync(tempStatePath, "utf-8"))
-				} catch {
-					return { ...cache }
-				}
-			})()
-			update(s)
-			cache = s
-			writeFileSync(tempStatePath, JSON.stringify(s))
-		},
-	}
-})
 
 import { RemoteAuthError } from "../../../sandbox/cloud/types.js"
 import type { TeleportContext } from "../types.js"
@@ -116,22 +93,13 @@ function makeCtx(over: Partial<TeleportContext> = {}): {
 	return { ctx, ui }
 }
 
-let tempDir = ""
-
 beforeEach(() => {
-	tempDir = mkdtempSync(join(tmpdir(), "terminal-test-"))
-	tempStatePath = join(tempDir, "state.json")
-	// Seed a fresh state.json so the mock's `readState` reads the file (not stale module-scoped cache).
-	writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
 	authMock.mockReset().mockResolvedValue(CREDS)
 	getGitRemoteHostMock.mockReset().mockResolvedValue(undefined)
 	readGitTokenMock.mockReset().mockReturnValue(undefined)
 	propagateGitCredentialMock.mockReset().mockResolvedValue(undefined)
 	buildProxyCommandMock.mockReset().mockReturnValue("kimchi --ssh-proxy %h")
-})
-
-afterEach(() => {
-	if (tempDir) rmSync(tempDir, { recursive: true, force: true })
+	listWorkspacesMock.mockReset().mockResolvedValue([])
 })
 
 describe("runTerminal", () => {
@@ -160,26 +128,15 @@ describe("runTerminal", () => {
 		expect(call.env.AUTH_TOKEN).toBe("tok-1")
 	})
 
-	it("refuses with a usage hint when no arg and no cached workspace", async () => {
+	it("refuses with the empty-workspaces message when no arg and the account has no workspaces", async () => {
+		listWorkspacesMock.mockResolvedValue([])
 		const { ctx, ui } = makeCtx()
 		const runChild = vi.fn().mockResolvedValue(0)
 
 		await expect(runTerminal("", ctx, { _runChildWithTTYHandoff: runChild })).rejects.toBeInstanceOf(TeleportRefusal)
 		expect(authMock).not.toHaveBeenCalled()
 		expect(runChild).not.toHaveBeenCalled()
-		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Usage: \/terminal/), "error")
-	})
-
-	it("falls back to cached lastWorkspaceId when no arg is given", async () => {
-		writeFileSync(tempStatePath, JSON.stringify({ lastWorkspaceId: "w-cached", gitCredentialsSyncedWorkspaces: [] }))
-		const { ctx } = makeCtx()
-		const runChild = vi.fn().mockResolvedValue(0)
-
-		await runTerminal("", ctx, { _runChildWithTTYHandoff: runChild })
-
-		expect(authMock).toHaveBeenCalledOnce()
-		expect(authMock.mock.calls[0][0]).toBe("w-cached")
-		expect(runChild).toHaveBeenCalledOnce()
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/no workspaces available/), "error")
 	})
 
 	it("refuses with a clear message on RemoteAuthError", async () => {
@@ -197,7 +154,7 @@ describe("runTerminal", () => {
 		)
 	})
 
-	it("propagates git credentials once and persists the workspace id", async () => {
+	it("propagates git credentials on every invocation", async () => {
 		getGitRemoteHostMock.mockResolvedValue("github.com")
 		readGitTokenMock.mockReturnValue("ghp_cached")
 		const { ctx } = makeCtx()
@@ -212,11 +169,9 @@ describe("runTerminal", () => {
 			gitHost: "github.com",
 			gitToken: "ghp_cached",
 		})
-		const persisted = JSON.parse(readFileSync(tempStatePath, "utf-8"))
-		expect(persisted.gitCredentialsSyncedWorkspaces).toContain("33333333-3333-4333-8333-333333333333")
 
 		await runTerminal("33333333-3333-4333-8333-333333333333", ctx, { _runChildWithTTYHandoff: runChild })
-		expect(propagateGitCredentialMock).toHaveBeenCalledOnce()
+		expect(propagateGitCredentialMock).toHaveBeenCalledTimes(2)
 	})
 
 	it("warns and proceeds when credential propagation fails", async () => {
@@ -230,14 +185,6 @@ describe("runTerminal", () => {
 
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("cred boom"), "warning")
 		expect(runChild).toHaveBeenCalledOnce()
-		const persisted = (() => {
-			try {
-				return JSON.parse(readFileSync(tempStatePath, "utf-8"))
-			} catch {
-				return { gitCredentialsSyncedWorkspaces: [] }
-			}
-		})()
-		expect(persisted.gitCredentialsSyncedWorkspaces ?? []).not.toContain("33333333-3333-4333-8333-333333333333")
 	})
 
 	it("warns when ssh exits non-zero but does not throw", async () => {

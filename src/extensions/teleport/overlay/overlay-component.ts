@@ -4,14 +4,14 @@ import { type Component, Key, type KeybindingsManager, type TUI, matchesKey } fr
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"
-import { createSession } from "../../../sandbox/worker/sessions.js"
+import { listSessions } from "../../../sandbox/worker/sessions.js"
 import type { Session } from "../../../sandbox/worker/types.js"
 import { disableMouseCapture, enableMouseCapture } from "../pty/mouse-capture.js"
+import { isVisibleSession } from "../session-filter.js"
 import { type ChordAction, ChordParser } from "./keybindings.js"
-import { NewTabPrompt } from "./new-tab-prompt.js"
 import { type BannerState, ReconnectBanner } from "./reconnect-banner.js"
 import { TabBar } from "./tab-bar.js"
-import { type Tab, TabManager, generateSessionName } from "./tab-manager.js"
+import { type Tab, TabManager } from "./tab-manager.js"
 
 export interface TabsOverlayOpts {
 	creds: WorkspaceCredentials
@@ -49,7 +49,6 @@ export function createTabsOverlay(opts: TabsOverlayOpts): OverlayFactory {
 	return (tui, _theme, _kb, done) => {
 		let closedByHost = false
 		let disposed = false
-		let modal: NewTabPrompt | undefined
 		let tickHandle: ReturnType<typeof setInterval> | null = null
 
 		const workerClient = new WorkerClient(creds)
@@ -81,14 +80,37 @@ export function createTabsOverlay(opts: TabsOverlayOpts): OverlayFactory {
 		const tabBar = new TabBar(() => ({ tabs: manager.tabs, activeIndex: manager.activeIndex }))
 		const banner = new ReconnectBanner(() => deriveBannerState(manager.activeTab))
 
-		manager.addTab(opts.initialSession)
+		manager.addTab(opts.initialSession, { eager: true })
+
+		// Populate the bar with every other PTY session in the workspace as
+		// lazy (disconnected) tabs. Cycling to them will open the WebSocket
+		// on demand; we never hold more sockets than the user has visited.
+		void (async () => {
+			let sessions: Session[]
+			try {
+				sessions = await listSessions(workerClient)
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err)
+				opts.ui.notify(`Could not list workspace sessions: ${msg}`, "warning")
+				return
+			}
+			let added = false
+			for (const session of sessions) {
+				if (!isVisibleSession(session)) continue
+				if (session.name === opts.initialSession.name) continue
+				if (manager.tabs.some((t) => t.session.name === session.name)) continue
+				manager.addTab(session, { eager: false })
+				added = true
+			}
+			if (added) tui.requestRender()
+		})()
 
 		enableMouseCapture()
 		tui.setShowHardwareCursor(true)
 
 		function evaluateTick(): void {
 			const active = manager.activeTab
-			const wantTick = active?.connectionStatus === "reconnecting" && !!active.reconnectInfo && !modal
+			const wantTick = active?.connectionStatus === "reconnecting" && !!active.reconnectInfo
 			if (wantTick && !tickHandle) {
 				tickHandle = setInterval(() => tui.requestRender(), 1000)
 			} else if (!wantTick && tickHandle) {
@@ -108,69 +130,34 @@ export function createTabsOverlay(opts: TabsOverlayOpts): OverlayFactory {
 			evaluateTick()
 			tui.requestRender()
 			try {
-				tab.transport.forceRetry()
+				tab.transport?.forceRetry()
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err)
 				opts.ui.notify(`Retry failed: ${msg}`, "error")
 			}
 		}
 
-		async function createTabFromPrompt(name: string): Promise<void> {
-			try {
-				const session = await createSession(workerClient, name, { agentMode: "PTY", cwd: opts.cwd })
-				manager.addTab(session)
-				manager.switchTo(manager.tabs.length - 1)
-				tui.requestRender()
-			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err)
-				opts.ui.notify(`Could not create session: ${msg}`, "error")
-			}
+		function cycle(delta: 1 | -1): void {
+			const n = manager.tabs.length
+			if (n === 0) return
+			const next = (((manager.activeIndex + delta) % n) + n) % n
+			if (manager.switchTo(next)) tui.requestRender()
 		}
 
 		function dispatchChord(action: ChordAction): void {
 			if (action.kind === "cancel") return
-			if (action.kind === "new-tab") {
-				modal = new NewTabPrompt(
-					{
-						onSubmit: (name) => {
-							modal = undefined
-							evaluateTick()
-							tui.requestRender()
-							void createTabFromPrompt(name)
-						},
-						onCancel: () => {
-							modal = undefined
-							evaluateTick()
-							tui.requestRender()
-						},
-					},
-					generateSessionName(),
-				)
-				evaluateTick()
-				tui.requestRender()
-				return
-			}
 			if (action.kind === "switch") {
 				if (manager.switchTo(action.index)) {
 					tui.requestRender()
 				}
 				return
 			}
-			if (action.kind === "close-tab") {
-				if (manager.activeIndex >= 0) {
-					manager.closeTab(manager.activeIndex)
-					tui.requestRender()
-				}
+			if (action.kind === "next-tab") {
+				cycle(1)
 				return
 			}
-			if (action.kind === "delete-session") {
-				const idx = manager.activeIndex
-				if (idx < 0) return
-				manager.deleteTab(idx).catch((err) => {
-					const msg = err instanceof Error ? err.message : String(err)
-					opts.ui.notify(`Could not delete session: ${msg}`, "error")
-				})
-				tui.requestRender()
+			if (action.kind === "prev-tab") {
+				cycle(-1)
 				return
 			}
 		}
@@ -178,7 +165,7 @@ export function createTabsOverlay(opts: TabsOverlayOpts): OverlayFactory {
 		const overlay: Component & { dispose(): void } = {
 			render(width: number): string[] {
 				const totalRows = Math.max(2, tui.terminal.rows || 24)
-				const bannerLines = modal ? [] : banner.render(width)
+				const bannerLines = banner.render(width)
 				const showBanner = bannerLines.length > 0
 				const innerRows = Math.max(1, totalRows - 1 - (showBanner ? 1 : 0))
 
@@ -187,25 +174,13 @@ export function createTabsOverlay(opts: TabsOverlayOpts): OverlayFactory {
 
 				const active = manager.activeTab
 				let body: string[] = []
-				if (active) {
+				if (active?.component) {
 					active.component.setHeight(innerRows)
 					body = active.component.render(width)
 				}
 
-				if (modal) {
-					const modalLines = modal.render(width)
-					const top = Math.max(0, Math.floor((innerRows - modalLines.length) / 2))
-					for (let i = 0; i < innerRows; i++) {
-						if (i >= top && i < top + modalLines.length) {
-							lines.push(modalLines[i - top])
-						} else {
-							lines.push(" ".repeat(width))
-						}
-					}
-				} else {
-					for (let i = 0; i < innerRows; i++) {
-						lines.push(body[i] ?? " ".repeat(width))
-					}
+				for (let i = 0; i < innerRows; i++) {
+					lines.push(body[i] ?? " ".repeat(width))
 				}
 
 				if (showBanner) {
@@ -216,12 +191,6 @@ export function createTabsOverlay(opts: TabsOverlayOpts): OverlayFactory {
 			},
 
 			handleInput(data: string): void {
-				if (modal) {
-					modal.handleInput(data)
-					tui.requestRender()
-					return
-				}
-
 				// Ctrl+D always exits the overlay back to the homebase kimchi.
 				// The dispose() path tears down every tab's transport, so socket
 				// teardown happens via the standard exit flow.
@@ -255,7 +224,7 @@ export function createTabsOverlay(opts: TabsOverlayOpts): OverlayFactory {
 					return
 				}
 
-				active?.component.handleInput(data)
+				active?.component?.handleInput(data)
 			},
 
 			invalidate(): void {},

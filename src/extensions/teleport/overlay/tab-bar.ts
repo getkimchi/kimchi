@@ -67,14 +67,21 @@ export class TabBar implements Component {
 function formatLabel(index: number, tab: Tab): { styled: string; plain: string } {
 	const num = `${index + 1}`
 	const name = truncate(tab.session.name, NAME_MAX)
-	// Glyph precedence: degraded > dirty > clean. The banner conveys the
-	// reason on the active tab; the glyph is a stable marker across the bar.
+	// Glyph precedence: degraded ⚠ > disconnected ○ > dirty • > clean.
 	// "connecting" is treated as not-yet-degraded so the very first paint
 	// doesn't flicker a warning glyph in before the connection establishes.
-	const degraded = tab.connectionStatus !== "open" && tab.connectionStatus !== "connecting"
+	// "disconnected" is the lazy state: tab exists for a workspace session
+	// we haven't activated yet, so no WebSocket has been opened.
+	const degraded =
+		tab.connectionStatus !== "open" && tab.connectionStatus !== "connecting" && tab.connectionStatus !== "disconnected"
 	if (degraded) {
 		const plain = `⚠${num}:${name}`
 		const styled = `${WARN_OPEN}⚠${WARN_CLOSE}${num}:${name}`
+		return { styled, plain }
+	}
+	if (tab.connectionStatus === "disconnected") {
+		const plain = `○${num}:${name}`
+		const styled = `${DIM_OPEN}○${DIM_CLOSE}${num}:${name}`
 		return { styled, plain }
 	}
 	const dirty = tab.dirty ? "•" : " "

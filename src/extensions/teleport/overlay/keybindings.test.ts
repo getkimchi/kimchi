@@ -5,6 +5,10 @@ import { ChordParser } from "./keybindings.js"
 // one operand keystroke and resets to idle regardless of outcome.
 const CTRL_B = "\x02"
 const ESC = "\x1b"
+// Kitty CSI-u release event for ctrl+b: codepoint=98, modifier=5 (ctrl), event=3.
+const CTRL_B_RELEASE = "\x1b[98;5:3u"
+// Kitty CSI-u release event for plain `n`.
+const N_RELEASE = "\x1b[110:3u"
 
 describe("ChordParser", () => {
 	it("returns null for input that does not match the prefix", () => {
@@ -19,23 +23,26 @@ describe("ChordParser", () => {
 		expect(p.isWaiting).toBe(true)
 	})
 
-	it("maps prefix + n to new-tab", () => {
+	it("maps prefix + n to next-tab", () => {
 		const p = new ChordParser()
 		p.process(CTRL_B)
-		expect(p.process("n")).toEqual({ kind: "new-tab" })
+		expect(p.process("n")).toEqual({ kind: "next-tab" })
 		expect(p.isWaiting).toBe(false)
 	})
 
-	it("maps prefix + w to close-tab", () => {
+	it("maps prefix + p to prev-tab", () => {
 		const p = new ChordParser()
 		p.process(CTRL_B)
-		expect(p.process("w")).toEqual({ kind: "close-tab" })
+		expect(p.process("p")).toEqual({ kind: "prev-tab" })
 	})
 
-	it("maps prefix + x to delete-session", () => {
-		const p = new ChordParser()
-		p.process(CTRL_B)
-		expect(p.process("x")).toEqual({ kind: "delete-session" })
+	it("swallows the removed c/w/x operands silently (no leak to the PTY)", () => {
+		for (const operand of ["c", "w", "x"]) {
+			const p = new ChordParser()
+			p.process(CTRL_B)
+			expect(p.process(operand)).toBe("consumed")
+			expect(p.isWaiting).toBe(false)
+		}
 	})
 
 	it("maps prefix + 1..9 to switch with the corresponding 0-based index", () => {
@@ -70,5 +77,25 @@ describe("ChordParser", () => {
 	it("does not produce an action on the prefix press itself", () => {
 		const p = new ChordParser()
 		expect(p.process(CTRL_B)).toBe("consumed")
+	})
+
+	// Regression: the overlay enables key-release events for the PTY mirror.
+	// Releases were previously consumed as unknown operands, which silently
+	// reset the chord state — so `Ctrl+B n` couldn't complete because the
+	// release of Ctrl+B clobbered the waiting state before `n` arrived.
+
+	it("ignores release events while waiting for operand (regression)", () => {
+		const p = new ChordParser()
+		p.process(CTRL_B)
+		expect(p.isWaiting).toBe(true)
+		expect(p.process(CTRL_B_RELEASE)).toBeNull()
+		expect(p.isWaiting).toBe(true)
+		expect(p.process("n")).toEqual({ kind: "next-tab" })
+	})
+
+	it("ignores release events while idle", () => {
+		const p = new ChordParser()
+		expect(p.process(N_RELEASE)).toBeNull()
+		expect(p.isWaiting).toBe(false)
 	})
 })

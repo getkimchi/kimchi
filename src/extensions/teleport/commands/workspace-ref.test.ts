@@ -1,8 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const { listWorkspacesMock, pickWorkspaceMock } = vi.hoisted(() => ({
 	listWorkspacesMock: vi.fn(),
@@ -11,34 +8,6 @@ const { listWorkspacesMock, pickWorkspaceMock } = vi.hoisted(() => ({
 
 vi.mock("../../../sandbox/cloud/workspaces.js", () => ({ listWorkspaces: listWorkspacesMock }))
 vi.mock("../ui/workspace-picker.js", () => ({ pickWorkspace: pickWorkspaceMock }))
-
-let tempStatePath = ""
-vi.mock("../state.js", () => {
-	let cache: { lastWorkspaceId?: string; gitCredentialsSyncedWorkspaces: string[] } = {
-		gitCredentialsSyncedWorkspaces: [],
-	}
-	return {
-		readState: () => {
-			try {
-				return JSON.parse(readFileSync(tempStatePath, "utf-8"))
-			} catch {
-				return { ...cache }
-			}
-		},
-		updateState: (update: (s: typeof cache) => void) => {
-			const s = (() => {
-				try {
-					return JSON.parse(readFileSync(tempStatePath, "utf-8"))
-				} catch {
-					return { ...cache }
-				}
-			})()
-			update(s)
-			cache = s
-			writeFileSync(tempStatePath, JSON.stringify(s))
-		},
-	}
-})
 
 import type { Workspace } from "../../../sandbox/cloud/types.js"
 import type { TeleportContext } from "../types.js"
@@ -105,18 +74,9 @@ function ws(over: Partial<Workspace> = {}): Workspace {
 	}
 }
 
-let tempDir = ""
-
 beforeEach(() => {
-	tempDir = mkdtempSync(join(tmpdir(), "ref-test-"))
-	tempStatePath = join(tempDir, "state.json")
-	writeFileSync(tempStatePath, JSON.stringify({ gitCredentialsSyncedWorkspaces: [] }))
 	listWorkspacesMock.mockReset().mockResolvedValue([])
 	pickWorkspaceMock.mockReset()
-})
-
-afterEach(() => {
-	if (tempDir) rmSync(tempDir, { recursive: true, force: true })
 })
 
 describe("isUuid", () => {
@@ -240,21 +200,13 @@ describe("resolveWorkspaceRef", () => {
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/No workspace matching "bogus"/), "error")
 	})
 
-	it("returns the cached lastWorkspaceId when ref is undefined", async () => {
-		writeFileSync(tempStatePath, JSON.stringify({ lastWorkspaceId: UUID_A, gitCredentialsSyncedWorkspaces: [] }))
-		const { ctx } = makeCtx()
-		const id = await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
-		expect(id).toBe(UUID_A)
-		expect(listWorkspacesMock).not.toHaveBeenCalled()
-	})
-
-	it("mints a new UUID when no ref, no cache, no workspaces (onEmpty=mint)", async () => {
+	it("mints a new UUID when no ref, no workspaces (onEmpty=mint)", async () => {
 		const { ctx } = makeCtx()
 		const id = await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
 		expect(id).toMatch(/^[0-9a-f-]{36}$/i)
 	})
 
-	it("refuses when no ref, no cache, no workspaces (onEmpty=refuse)", async () => {
+	it("refuses when no ref, no workspaces (onEmpty=refuse)", async () => {
 		const { ctx, ui } = makeCtx()
 		await expect(
 			resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "refuse", message: "no ws" } }),
@@ -262,7 +214,7 @@ describe("resolveWorkspaceRef", () => {
 		expect(ui.notify).toHaveBeenCalledWith("no ws", "error")
 	})
 
-	it("opens the picker when no ref, no cache, but workspaces exist; returns the chosen id", async () => {
+	it("opens the picker when no ref but workspaces exist; returns the chosen id", async () => {
 		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
 		pickWorkspaceMock.mockResolvedValue({ kind: "existing", id: UUID_A })
 		const { ctx } = makeCtx()
