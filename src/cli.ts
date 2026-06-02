@@ -31,6 +31,7 @@ import helpExtension from "./extensions/help.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import loginExtension from "./extensions/login/index.js"
+import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
@@ -62,7 +63,7 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
-import { updateModelsConfig } from "./models.js"
+import { isTransientModelsError, updateModelsConfig } from "./models.js"
 import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./modes/teleport/sync/session-export.js"
 import resourcesExtension from "./resources/extension.js"
 import { type ManagedExtensionFactory, enabledExtensionFactories } from "./resources/filter.js"
@@ -329,6 +330,14 @@ try {
 				writeApiKey(currentApiKey)
 				config = loadConfig()
 				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
+			} else if (isTransientModelsError(err)) {
+				// Rate limit / gateway error with no cached models to fall back on.
+				// Don't crash startup over a transient condition — continue with an
+				// empty list; the login gate and later refreshes will repopulate it.
+				console.warn(
+					`Could not load the model list right now (${err instanceof Error ? err.message : String(err)}). Continuing; models will refresh once the service is reachable.`,
+				)
+				models = []
 			} else {
 				throw err
 			}
@@ -448,11 +457,20 @@ try {
 		}
 
 		const rawArgs = process.argv.slice(2)
-		const sessionModeOnboarding = createSessionModeOnboardingForStartup({
-			rawArgs,
+		const interactiveStartupContext = {
 			nonInteractiveMode: acpMode,
 			stdinIsTTY: process.stdin.isTTY === true,
 			stdoutIsTTY: process.stdout.isTTY === true,
+		}
+		const startupAuthState = createStartupAuthGateState()
+		const startupAuthGate = createStartupAuthGate({
+			...interactiveStartupContext,
+			state: startupAuthState,
+		})
+		const sessionModeOnboarding = createSessionModeOnboardingForStartup({
+			rawArgs,
+			...interactiveStartupContext,
+			shouldSkip: () => startupAuthState.cancelled,
 		})
 		const extensionFactories = [
 			startupUpdateExtension,
@@ -461,6 +479,9 @@ try {
 			statsExtension,
 			terminalColorsExtension,
 			kimchiMinimalTintsExtension,
+			loginExtension,
+			uiExtension,
+			startupAuthGate,
 			loopGuardExtension,
 			explorationGuardExtension,
 			lspExtension,
@@ -483,7 +504,6 @@ try {
 			thinkingStepsExtension,
 			assistantPrefixExtension,
 			clipboardImageExtension,
-			uiExtension,
 			sessionModeOnboarding,
 			tipsExtension(),
 			...enabledExtensionFactories([
@@ -499,7 +519,6 @@ try {
 				{ id: "tools.web_fetch", factory: webFetchExtension },
 				{ id: "tools.web_search", factory: webSearchExtension },
 			] satisfies ManagedExtensionFactory[]),
-			loginExtension,
 			modelSwitchExtension,
 			modelGuardExtension,
 			stripImagesExtension,

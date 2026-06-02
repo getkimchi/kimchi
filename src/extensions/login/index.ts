@@ -2,6 +2,9 @@ import { resolve } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { clearApiKey, loadConfig, writeApiKey } from "../../config.js"
 import { updateModelsConfig, validateApiKey } from "../../models.js"
+import { KIMCHI_PROVIDER_ID, setKimchiAuthToken } from "./flow.js"
+
+const KIMCHI_LOGOUT_PATCHED = Symbol("kimchi.logoutPatched")
 
 export default function loginExtension(pi: ExtensionAPI): void {
 	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
@@ -13,19 +16,23 @@ export default function loginExtension(pi: ExtensionAPI): void {
 
 		const configKey = loadConfig().apiKey
 		if (configKey) {
-			authStorage.set("kimchi-dev", { type: "oauth", access: configKey, refresh: "", expires: Number.MAX_SAFE_INTEGER })
+			setKimchiAuthToken(ctx.modelRegistry, configKey, "oauth")
 		}
 
-		const originalLogout = authStorage.logout.bind(authStorage)
-		authStorage.logout = (provider: string) => {
+		const patchedAuthStorage = authStorage as typeof authStorage & { [KIMCHI_LOGOUT_PATCHED]?: boolean }
+		if (patchedAuthStorage[KIMCHI_LOGOUT_PATCHED]) return
+
+		const originalLogout = patchedAuthStorage.logout.bind(patchedAuthStorage)
+		patchedAuthStorage.logout = (provider: string) => {
 			originalLogout(provider)
-			if (provider === "kimchi-dev") {
+			if (provider === KIMCHI_PROVIDER_ID) {
 				clearApiKey()
 			}
 		}
+		patchedAuthStorage[KIMCHI_LOGOUT_PATCHED] = true
 	})
 
-	pi.registerProvider("kimchi-dev", {
+	pi.registerProvider(KIMCHI_PROVIDER_ID, {
 		oauth: {
 			name: "Kimchi",
 			login: async (callbacks) => {

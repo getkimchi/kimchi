@@ -1,7 +1,12 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import type { AgentSideConnection, ListSessionsRequest, SessionNotification } from "@agentclientprotocol/sdk"
+import type {
+	AgentSideConnection,
+	ListSessionsRequest,
+	RequestPermissionRequest,
+	SessionNotification,
+} from "@agentclientprotocol/sdk"
 import type {
 	AgentSession,
 	AgentSessionEvent,
@@ -10,6 +15,7 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { _resetState as _resetHideThinking, _setHideThinking } from "../../extensions/hide-thinking.js"
+import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
 	type AcpSessionFactory,
 	type AcpSessionLister,
@@ -35,10 +41,19 @@ class FakeAgentSession {
 	private listeners = new Set<AgentSessionEventListener>()
 	disposed = false
 	aborted = false
-	model?: { provider: string; id: string; name?: string; input?: string[] }
-	modelRegistry = { getAvailable: () => [] as Array<{ provider: string; id: string; name: string }> }
+	model: { provider: string; id: string; name?: string; input?: string[] } | undefined = {
+		provider: "test",
+		id: "test-model",
+		name: "Test Model",
+		input: ["text"],
+	}
+	modelRegistry = {
+		getAvailable: () =>
+			this.model ? [{ provider: this.model.provider, id: this.model.id, name: this.model.name ?? this.model.id }] : [],
+	}
 	promptImpl: (text: string, opts?: { images?: unknown[] }) => Promise<void> = async () => {}
 	abortImpl: () => Promise<void> = async () => {}
+	bindExtensionsImpl: (_bindings: unknown) => Promise<void> = async () => {}
 	lastPromptImages?: unknown[]
 	// Branch entries returned to the replay walker. Tests fill this with the
 	// shape buildSessionContext consumers expect (type:"message" + role).
@@ -76,6 +91,10 @@ class FakeAgentSession {
 		await this.abortImpl()
 	}
 
+	async bindExtensions(bindings: unknown): Promise<void> {
+		await this.bindExtensionsImpl(bindings)
+	}
+
 	dispose(): void {
 		this.disposed = true
 		this.listeners.clear()
@@ -107,6 +126,10 @@ function makeRecordingConn(): { conn: AgentSideConnection; updates: SessionNotif
 }
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+function agentEnd(): AgentSessionEvent {
+	return { type: "agent_end", messages: [], willRetry: false }
+}
 
 describe("KimchiAcpAgent turn lifecycle", () => {
 	let fake: FakeAgentSession
@@ -217,7 +240,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			// simulating a slow downstream handler on the agent_end path.
 			setTimeout(() => {
 				agentEndDeliveredAt = Date.now()
-				fake.emit({ type: "agent_end", messages: [] })
+				fake.emit(agentEnd())
 			}, 40)
 			// Return now — agent_end has NOT reached our subscriber yet.
 		}
@@ -253,7 +276,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			// Schedule agent_start + agent_end AFTER session.prompt resolves.
 			setTimeout(() => {
 				fake.emit({ type: "agent_start" })
-				fake.emit({ type: "agent_end", messages: [] })
+				fake.emit(agentEnd())
 				lateEventsFired = true
 			}, 30)
 		}
@@ -288,7 +311,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				args: { command: "noop" },
 			})
 			await delay(5)
-			setTimeout(() => fake.emit({ type: "agent_end", messages: [] }), 30)
+			setTimeout(() => fake.emit(agentEnd()), 30)
 		}
 		const result = await agent.prompt({
 			sessionId,
@@ -325,7 +348,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			// Wait until cancel() runs.
 			while (!cancelSeen) await delay(5)
 			// pi-mono's abort path still emits agent_end on teardown.
-			fake.emit({ type: "agent_end", messages: [] })
+			fake.emit(agentEnd())
 		}
 		fake.abortImpl = async () => {
 			cancelSeen = true
@@ -468,7 +491,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
 			await delay(5)
-			fake.emit({ type: "agent_end", messages: [] })
+			fake.emit(agentEnd())
 		}
 
 		const result = await agent.prompt({
@@ -495,7 +518,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
 			await delay(5)
-			fake.emit({ type: "agent_end", messages: [] })
+			fake.emit(agentEnd())
 		}
 
 		const writes: string[] = []
@@ -583,7 +606,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 		// Stray agent_end arrives later (shouldn't happen in production, but
 		// the guard in onSessionEvent must keep us safe either way).
-		expect(() => fake.emit({ type: "agent_end", messages: [] })).not.toThrow()
+		expect(() => fake.emit(agentEnd())).not.toThrow()
 	})
 
 	// Resource safety on the newSession error path: if subscribe (or any step
@@ -603,6 +626,234 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 		await expect(localAgent.newSession({ cwd: "/tmp", mcpServers: [] })).rejects.toThrow(/subscribe boom/)
 		expect(leaky.disposed).toBe(true)
+	})
+
+	it("unregisters the ACP permission prompter if bindExtensions throws during newSession", async () => {
+		const leaky = new FakeAgentSession("session-bind-leak")
+		leaky.bindExtensionsImpl = async () => {
+			throw new Error("bind boom")
+		}
+		const factory: AcpSessionFactory = async () => asSession(leaky)
+		const localAgent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		await expect(localAgent.newSession({ cwd: "/tmp", mcpServers: [] })).rejects.toThrow(/bind boom/)
+		expect(leaky.disposed).toBe(true)
+		expect(getAcpPrompter("session-bind-leak")).toBeUndefined()
+	})
+
+	it("registers an ACP permission prompter that maps allow_once through requestPermission", async () => {
+		const requests: RequestPermissionRequest[] = []
+		const conn = {
+			sessionUpdate: async (_p: SessionNotification) => {},
+			requestPermission: async (params: RequestPermissionRequest) => {
+				requests.push(params)
+				return { outcome: { outcome: "selected", optionId: "choice-0" } }
+			},
+		} as unknown as AgentSideConnection
+		const localFake = new FakeAgentSession("session-permission")
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(localFake),
+		})
+		await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const prompter = getAcpPrompter("session-permission")
+		expect(prompter).toBeDefined()
+		const result = await prompter?.request({
+			toolCallId: "tc-permission",
+			toolName: "bash",
+			input: { command: "touch allowed.txt" },
+			choices: [
+				{ kind: "allow-once", label: "Allow once" },
+				{ kind: "deny", label: "Deny" },
+			],
+		})
+
+		expect(result).toEqual({ kind: "allow-once" })
+		expect(requests).toHaveLength(1)
+		expect(requests[0]).toMatchObject({
+			sessionId: "session-permission",
+			toolCall: {
+				toolCallId: "tc-permission",
+				title: "touch allowed.txt",
+				kind: "execute",
+				status: "pending",
+				rawInput: { command: "touch allowed.txt" },
+			},
+			options: [
+				{ optionId: "choice-0", name: "Allow once", kind: "allow_once" },
+				{ optionId: "choice-1", name: "Deny", kind: "reject_once" },
+			],
+		})
+
+		await localAgent.shutdown()
+		expect(getAcpPrompter("session-permission")).toBeUndefined()
+	})
+
+	it("maps ACP permission cancellation to an aborted prompt result", async () => {
+		const requests: RequestPermissionRequest[] = []
+		const conn = {
+			sessionUpdate: async (_p: SessionNotification) => {},
+			requestPermission: async (params: RequestPermissionRequest) => {
+				requests.push(params)
+				return {
+					outcome: { outcome: "cancelled" },
+				}
+			},
+		} as unknown as AgentSideConnection
+		const localFake = new FakeAgentSession("session-permission-cancel")
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(localFake),
+		})
+		await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const prompter = getAcpPrompter("session-permission-cancel")
+		const result = await prompter?.request({
+			toolCallId: "tc-cancel",
+			toolName: "write",
+			input: { path: "/tmp/out.txt", content: "x" },
+			choices: [{ kind: "allow-once", label: "Allow once" }],
+		})
+
+		expect(result).toEqual({ kind: "aborted" })
+		expect(requests).toHaveLength(1)
+
+		const abort = new AbortController()
+		abort.abort()
+		const skippedResult = await prompter?.request({
+			toolCallId: "tc-cancel-retry",
+			toolName: "write",
+			input: { path: "/tmp/out.txt", content: "x" },
+			choices: [{ kind: "allow-once", label: "Allow once" }],
+			signal: abort.signal,
+		})
+
+		expect(skippedResult).toEqual({ kind: "aborted" })
+		expect(requests).toHaveLength(1)
+		await localAgent.shutdown()
+	})
+
+	it("closes a live session and unregisters its ACP permission prompter", async () => {
+		expect(getAcpPrompter(sessionId)).toBeDefined()
+
+		await agent.unstable_closeSession({ sessionId })
+
+		expect(fake.disposed).toBe(true)
+		expect(getAcpPrompter(sessionId)).toBeUndefined()
+		await expect(
+			agent.prompt({
+				sessionId,
+				prompt: [{ type: "text", text: "hello" }],
+			}),
+		).rejects.toMatchObject({ code: -32602 })
+	})
+
+	it("cancels an in-flight turn when closing a session", async () => {
+		let releasePrompt!: () => void
+		const promptReleased = new Promise<void>((resolve) => {
+			releasePrompt = resolve
+		})
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			await promptReleased
+		}
+
+		const result = agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "hello" }],
+		})
+		await delay(0)
+		await agent.unstable_closeSession({ sessionId })
+		releasePrompt()
+
+		await expect(result).resolves.toEqual({ stopReason: "cancelled" })
+		expect(fake.aborted).toBe(true)
+		expect(fake.disposed).toBe(true)
+	})
+
+	it("keeps a same-id reload isolated while close awaits abort", async () => {
+		const sid = "session-close-reload"
+		const oldFake = new FakeAgentSession(sid)
+		const newFake = new FakeAgentSession(sid)
+		const { conn, updates } = makeRecordingConn()
+		let loaderCalls = 0
+		let releaseOldPrompt!: () => void
+		const oldPromptReleased = new Promise<void>((resolve) => {
+			releaseOldPrompt = resolve
+		})
+		let releaseNewPrompt!: () => void
+		const newPromptReleased = new Promise<void>((resolve) => {
+			releaseNewPrompt = resolve
+		})
+		let markNewPromptStarted!: () => void
+		const newPromptStarted = new Promise<void>((resolve) => {
+			markNewPromptStarted = resolve
+		})
+		let newPrompt: Promise<unknown> | undefined
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(oldFake),
+			sessionLoader: async () => {
+				loaderCalls++
+				return asSession(newFake)
+			},
+		})
+
+		oldFake.promptImpl = async () => {
+			oldFake.emit({ type: "agent_start" })
+			await oldPromptReleased
+		}
+		newFake.promptImpl = async () => {
+			newFake.emit({ type: "agent_start" })
+			markNewPromptStarted()
+			await newPromptReleased
+			newFake.emit(agentEnd())
+		}
+		oldFake.abortImpl = async () => {
+			await localAgent.loadSession({ sessionId: sid, cwd: "/tmp", mcpServers: [] })
+			newPrompt = localAgent.prompt({
+				sessionId: sid,
+				prompt: [{ type: "text", text: "new turn" }],
+			})
+			await newPromptStarted
+			oldFake.emit({
+				type: "message_update",
+				assistantMessageEvent: { type: "text_delta", delta: "stale old event" },
+			} as unknown as AgentSessionEvent)
+			releaseNewPrompt()
+		}
+
+		await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const oldPrompt = localAgent.prompt({
+			sessionId: sid,
+			prompt: [{ type: "text", text: "old turn" }],
+		})
+		await delay(0)
+
+		await localAgent.unstable_closeSession({ sessionId: sid })
+		releaseOldPrompt()
+
+		await expect(oldPrompt).resolves.toEqual({ stopReason: "cancelled" })
+		await expect(newPrompt).resolves.toEqual({ stopReason: "end_turn" })
+		expect(loaderCalls).toBe(1)
+		expect(getAcpPrompter(sid)).toBeDefined()
+		expect(
+			updates.some(
+				(u) =>
+					u.update.sessionUpdate === "agent_message_chunk" &&
+					(u.update as { content: { text: string } }).content.text === "stale old event",
+			),
+		).toBe(false)
+
+		await localAgent.shutdown()
 	})
 
 	// mcpServers is declared in the ACP request shape but kimchi has no hook to
@@ -679,12 +930,12 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		fakeA.promptImpl = async () => {
 			fakeA.emit({ type: "agent_start" })
 			await delay(5)
-			setTimeout(() => fakeA.emit({ type: "agent_end", messages: [] }), 60)
+			setTimeout(() => fakeA.emit(agentEnd()), 60)
 		}
 		fakeB.promptImpl = async () => {
 			fakeB.emit({ type: "agent_start" })
 			await delay(5)
-			setTimeout(() => fakeB.emit({ type: "agent_end", messages: [] }), 10)
+			setTimeout(() => fakeB.emit(agentEnd()), 10)
 		}
 
 		const [resA, resB] = await Promise.all([
@@ -751,7 +1002,7 @@ describe("KimchiAcpAgent tool execution stream", () => {
 				result: { content: [{ type: "text", text: "ab" }] },
 				isError: false,
 			})
-			fake.emit({ type: "agent_end", messages: [] })
+			fake.emit(agentEnd())
 		}
 
 		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
@@ -810,7 +1061,7 @@ describe("KimchiAcpAgent tool execution stream", () => {
 				result: { content: [{ type: "text", text: "" }] },
 				isError: false,
 			})
-			fake.emit({ type: "agent_end", messages: [] })
+			fake.emit(agentEnd())
 		}
 
 		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
@@ -847,7 +1098,7 @@ describe("KimchiAcpAgent tool execution stream", () => {
 				result: { content: [{ type: "text", text: "System agent started." }] },
 				isError: false,
 			})
-			fake.emit({ type: "agent_end", messages: [] })
+			fake.emit(agentEnd())
 		}
 
 		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
@@ -873,7 +1124,7 @@ describe("KimchiAcpAgent tool execution stream", () => {
 				result: { content: [{ type: "text", text: "System agent started." }] },
 				isError: false,
 			})
-			fake.emit({ type: "agent_end", messages: [] })
+			fake.emit(agentEnd())
 		}
 
 		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
@@ -934,6 +1185,7 @@ describe("assertSessionHasModel", () => {
 describe("buildSessionModelState", () => {
 	it("returns null when model is missing", () => {
 		const fake = new FakeAgentSession("s1")
+		fake.model = undefined
 		const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
 		expect(result).toBeNull()
 	})
@@ -994,18 +1246,17 @@ describe("newSession model state", () => {
 		expect(res.models?.availableModels[1]).toEqual({ modelId: "anthropic/claude-3", name: "Claude 3" })
 	})
 
-	it("returns models: null when no model is active", async () => {
+	it("rejects with authRequired when no model is active", async () => {
 		const fake = new FakeAgentSession("session-empty")
-		// model defaults to undefined
+		fake.model = undefined
 		const factory: AcpSessionFactory = async () => asSession(fake)
 		const agent = new KimchiAcpAgent(makeConn(), {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory: factory,
 		})
-		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-		expect(res.sessionId).toBe("session-empty")
-		expect(res.models).toBeNull()
+		await expect(agent.newSession({ cwd: "/tmp", mcpServers: [] })).rejects.toMatchObject({ code: -32000 })
+		expect(fake.disposed).toBe(true)
 	})
 })
 
@@ -1462,6 +1713,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			clientCapabilities: {} as never,
 		} as never)
 		expect(init.agentCapabilities?.loadSession).toBe(true)
+		expect(init.agentCapabilities?.sessionCapabilities?.close).toEqual({})
 	})
 
 	it("rejects loadSession when mcpServers is non-empty (does not invoke loader)", async () => {
@@ -1482,28 +1734,62 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(loaderCalls.count).toBe(0)
 	})
 
-	it("rejects loadSession with invalidRequest when sessionId is already loaded", async () => {
+	it("replays and returns an already loaded session without reopening it", async () => {
 		const loaderCalls = { count: 0 }
 		const live = new FakeAgentSession("live-1")
+		live.branch = [userTextEntry("already here", "u1", null)]
 		const factory: AcpSessionFactory = async () => asSession(live)
 		const loader: AcpSessionLoader = async () => {
 			loaderCalls.count++
 			return asSession(new FakeAgentSession("unused"))
 		}
-		const agent = new KimchiAcpAgent(makeConn(), {
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory: factory,
 			sessionLoader: loader,
 		})
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-		await expect(agent.loadSession({ sessionId: "live-1", cwd: "/tmp", mcpServers: [] })).rejects.toMatchObject({
-			code: -32600,
+
+		const res = await agent.loadSession({ sessionId: "live-1", cwd: "/tmp", mcpServers: [] })
+
+		expect(res.models).toMatchObject({
+			currentModelId: "test/test-model",
 		})
-		// invalidRequest must short-circuit BEFORE the loader runs — otherwise
-		// we'd open the same JSONL twice (and pi's append-only writers would
-		// interleave entries on the next prompt).
 		expect(loaderCalls.count).toBe(0)
+		expect(updates).toHaveLength(1)
+		expect(updates[0].update).toMatchObject({
+			sessionUpdate: "user_message_chunk",
+			content: { type: "text", text: "already here" },
+		})
+	})
+
+	it("coalesces concurrent loadSession requests for the same sessionId", async () => {
+		const fake = new FakeAgentSession("coalesce-1")
+		let loaderCalls = 0
+		let markLoaderStarted!: () => void
+		let releaseLoader!: () => void
+		const loaderStarted = new Promise<void>((resolve) => {
+			markLoaderStarted = resolve
+		})
+		const release = new Promise<void>((resolve) => {
+			releaseLoader = resolve
+		})
+		const loader: AcpSessionLoader = async () => {
+			loaderCalls++
+			markLoaderStarted()
+			await release
+			return asSession(fake)
+		}
+		const agent = makeAgent(loader)
+		const first = agent.loadSession({ sessionId: "coalesce-1", cwd: "/tmp", mcpServers: [] })
+		await loaderStarted
+		const second = agent.loadSession({ sessionId: "coalesce-1", cwd: "/tmp", mcpServers: [] })
+		releaseLoader()
+
+		await expect(Promise.all([first, second])).resolves.toHaveLength(2)
+		expect(loaderCalls).toBe(1)
 	})
 
 	it("propagates loader errors (e.g. missing file → invalidParams)", async () => {
@@ -1749,20 +2035,19 @@ describe("KimchiAcpAgent loadSession", () => {
 		await expect(agent.cancel({ sessionId: "loaded-cancel" })).resolves.toBeUndefined()
 	})
 
-	it("returns null models when the loaded session has no model", async () => {
+	it("rejects loaded sessions with no model", async () => {
 		const fake = new FakeAgentSession("loaded-no-model")
 		fake.model = undefined
 		fake.branch = []
 		const agent = makeAgent(async () => asSession(fake))
-		const res = await agent.loadSession({
-			sessionId: "loaded-no-model",
-			cwd: "/tmp",
-			mcpServers: [],
-		})
-		// modelStateForSession returns undefined when model is missing; the
-		// loadSession response normalizes that to null so clients see a
-		// consistent shape regardless.
-		expect(res.models).toBeNull()
+		await expect(
+			agent.loadSession({
+				sessionId: "loaded-no-model",
+				cwd: "/tmp",
+				mcpServers: [],
+			}),
+		).rejects.toMatchObject({ code: -32000 })
+		expect(fake.disposed).toBe(true)
 	})
 
 	it("registers the loaded session so a follow-up prompt is accepted", async () => {

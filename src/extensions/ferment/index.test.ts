@@ -227,19 +227,15 @@ describe("fermentExtension session resume", () => {
 			summary: "done",
 		})
 		if (!completedPhase.ok) throw new Error(completedPhase.error.message)
-		const completed = await completeFerment(
-			runtime,
-			{
-				ferment_id: draft.id,
-				final_summary: "done",
-				gates: [
-					{ id: "C1", verdict: "pass", rationale: "ok", evidence: "n/a" },
-					{ id: "C2", verdict: "pass", rationale: "ok", evidence: "n/a" },
-					{ id: "C3", verdict: "pass", rationale: "ok", evidence: "n/a" },
-				],
-			},
-			{ pi: {} as never },
-		)
+		const completed = await completeFerment(runtime, {
+			ferment_id: draft.id,
+			final_summary: "done",
+			gates: [
+				{ id: "C1", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "C2", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "C3", verdict: "pass", rationale: "ok", evidence: "n/a" },
+			],
+		})
 		if ("isError" in completed && completed.isError) throw new Error(completed.content[0].text)
 
 		vi.stubEnv("KIMCHI_ACTIVE_FERMENT", draft.id)
@@ -577,19 +573,15 @@ describe("fermentExtension question dropdown", () => {
 		const { handlers, pi } = registerFermentExtension(runtime)
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
-		await completeFerment(
-			runtime,
-			{
-				ferment_id: draft.id,
-				final_summary: "done",
-				gates: [
-					{ id: "C1", verdict: "pass", rationale: "ok", evidence: "n/a" },
-					{ id: "C2", verdict: "pass", rationale: "ok", evidence: "n/a" },
-					{ id: "C3", verdict: "pass", rationale: "ok", evidence: "n/a" },
-				],
-			},
-			{ pi: {} as never },
-		)
+		await completeFerment(runtime, {
+			ferment_id: draft.id,
+			final_summary: "done",
+			gates: [
+				{ id: "C1", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "C2", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "C3", verdict: "pass", rationale: "ok", evidence: "n/a" },
+			],
+		})
 
 		await turnEnd(
 			{
@@ -909,6 +901,59 @@ describe("fermentExtension question dropdown", () => {
 					],
 				}),
 				expect.anything(),
+			)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("starts pending plan review in automated policy when auto option is selected", async () => {
+		vi.useFakeTimers()
+		try {
+			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-plan-review-auto-test-")))
+			const runtime: FermentRuntime = {
+				...createDefaultFermentRuntime(),
+				getStorage: () => storage,
+			}
+			runtime.setContinuationPolicy("manual")
+			const draft = storage.create("Auto Deferred Review")
+			runtime.setActive(draft)
+			runtime.setPendingScope(draft.id, {
+				goal: "Goal",
+				successCriteria: "Works",
+				constraints: [],
+				phases: [{ name: "Phase", goal: "Build", steps: [] }],
+			})
+			setPendingPlanReview({
+				fermentId: draft.id,
+				planMarkdown: "# Plan: Auto Deferred Review",
+			})
+
+			const { handlers, pi } = registerFermentExtension(runtime)
+			const agentEnd = handlers.get("agent_end")
+			if (!agentEnd) throw new Error("agent_end handler was not registered")
+			const ctx = {
+				ui: {
+					custom: vi.fn().mockResolvedValue({ kind: "start_auto" }),
+					notify: vi.fn(),
+					setWorkingVisible: vi.fn(),
+				},
+			}
+
+			await agentEnd({ type: "agent_end" }, ctx)
+			await vi.runOnlyPendingTimersAsync()
+
+			expect(runtime.getContinuationPolicy()).toBe("automated")
+			expect(requestSharedFooterRenderMock).toHaveBeenCalled()
+			expect(storage.get(draft.id)?.status).toBe("planned")
+			expect(getPendingPlanReview(draft.id)).toBeUndefined()
+			expect(pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "ferment_continuation_nudge", display: false }),
+				expect.objectContaining({ triggerTurn: true, deliverAs: "followUp" }),
+			)
+			expect(pi.appendEntry).toHaveBeenCalledWith(
+				"ferment_breadcrumb",
+				expect.objectContaining({ text: expect.stringContaining("policy automated") }),
 			)
 		} finally {
 			vi.useRealTimers()

@@ -67,6 +67,7 @@ export interface SessionModeOnboardingExtensionOptions {
 	launchContext: SessionModeLaunchContext
 	configPath?: string
 	now?: () => Date
+	shouldSkip?: () => boolean
 	onOutcome?: (
 		outcome: Extract<SessionModeWizardOutcome, "default" | "ferment">,
 		ctx: ExtensionContext,
@@ -81,6 +82,7 @@ export default function sessionModeOnboardingExtension(options: SessionModeOnboa
 		pi.on("session_start", (event, ctx) => {
 			cleanupActiveWizard?.()
 			cleanupActiveWizard = undefined
+			if (options.shouldSkip?.()) return
 			const seenAt = readSessionModeWizardSeenAt(options.configPath)
 			const decision = decideSessionModeOnboarding({
 				launchContext: options.launchContext,

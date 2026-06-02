@@ -71,7 +71,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 	}
 
 	const earlyConfigPath = getConfigPathFromArgv()
-	const earlyConfig = loadMcpConfig(earlyConfigPath)
+	const { config: earlyConfig } = loadMcpConfig(earlyConfigPath)
 	let earlyCache = loadMetadataCache()
 
 	// Drop cache entries whose configHash no longer matches the configured server

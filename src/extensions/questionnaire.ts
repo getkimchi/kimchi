@@ -46,8 +46,8 @@ interface QuestionnaireResult {
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
 const QuestionOptionSchema = Type.Object({
-	value: Type.String({
-		description: "Stable unique value returned when this option is selected.",
+	id: Type.String({
+		description: "Stable unique value returned when this option is selected. Pick short snake-case ids.",
 	}),
 	label: Type.String({ description: "Display label for the option" }),
 	description: Type.Optional(Type.String({ description: "Optional help text shown below the label" })),
@@ -62,9 +62,10 @@ const QuestionSchema = Type.Object({
 	),
 	prompt: Type.String({ description: "The full question text to display" }),
 	type: Type.Optional(
-		Type.Union([Type.Literal("single"), Type.Literal("multi"), Type.Literal("text"), Type.Literal("confirm")], {
+		Type.String({
 			description:
-				"Question type: single (one choice, default), multi (multiple choices), text (free-text), confirm (yes/no).",
+				"Question type. Must be 'single' (one choice, default), 'multi' (multiple choices), 'text' (free-text), or 'confirm' (yes/no). Aliases 'radio' and 'checkbox' are also accepted.",
+			pattern: "^(single|multi|text|confirm|radio|checkbox)$",
 		}),
 	),
 	options: Type.Optional(
@@ -86,10 +87,19 @@ const QuestionnaireParams = Type.Object({
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-export type QuestionnaireQuestionTypeInput = QuestionType
+export type QuestionnaireQuestionTypeInput = string
 
-export function normalizeQuestionType(type: QuestionnaireQuestionTypeInput | undefined): QuestionType {
-	return type ?? "single"
+export function normalizeQuestionType(type: string | undefined): QuestionType {
+	if (!type) return "single"
+	const aliases: Record<string, QuestionType> = {
+		single: "single",
+		radio: "single",
+		multi: "multi",
+		checkbox: "multi",
+		text: "text",
+		confirm: "confirm",
+	}
+	return aliases[type.toLowerCase()] ?? "single"
 }
 
 function errorResult(
@@ -106,7 +116,7 @@ function normalizeQuestion(q: Static<typeof QuestionSchema>, index: number): Que
 	const type = normalizeQuestionType(q.type)
 	const rawOptions = q.options ?? []
 	const normalizedOptions = rawOptions.map((opt) => ({
-		value: opt.value,
+		id: opt.id,
 		label: opt.label,
 		description: opt.description,
 	}))
@@ -114,8 +124,8 @@ function normalizeQuestion(q: Static<typeof QuestionSchema>, index: number): Que
 		normalizedOptions.length > 0
 			? normalizedOptions
 			: [
-					{ value: "yes", label: "Yes" },
-					{ value: "no", label: "No" },
+					{ id: "yes", label: "Yes" },
+					{ id: "no", label: "No" },
 				]
 	return {
 		id: q.id,
@@ -134,9 +144,9 @@ function validateQuestions(questions: Question[]): string | undefined {
 			return `Question "${q.id}" is type "${q.type}" but has no options and allowOther is false.`
 		}
 		if (q.type === "confirm") {
-			const values = q.options.map((option) => option.value.toLowerCase())
-			if (values.length !== 2 || !values.includes("yes") || !values.includes("no")) {
-				return `Question "${q.id}" is type "confirm" but does not have exactly two options with values "yes" and "no".`
+			const ids = q.options.map((option) => option.id.toLowerCase())
+			if (ids.length !== 2 || !ids.includes("yes") || !ids.includes("no")) {
+				return `Question "${q.id}" is type "confirm" but does not have exactly two options with ids "yes" and "no".`
 			}
 		}
 	}

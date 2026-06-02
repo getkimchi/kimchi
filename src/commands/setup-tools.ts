@@ -9,6 +9,7 @@ import "../integrations/opencode.js"
 import { resolve } from "node:path"
 import { intro, log, note, outro, spinner } from "@clack/prompts"
 import { isTelemetryExplicitlyConfigured, readTelemetryConfig } from "../config.js"
+import { drain as drainPreSessionTelemetry, sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 import { updateModelsConfig } from "../models.js"
 import { applyToolConfigs } from "../setup-wizard/apply-tools.js"
 import type { ConfigMode } from "../setup-wizard/state.js"
@@ -25,6 +26,8 @@ import { popScope, resolveApiKey } from "./_helpers.js"
  * through the full setup flow again.
  */
 export async function runSetupTools(args: string[]): Promise<number> {
+	const telemetryConfig = readTelemetryConfig()
+
 	// Parse flags.
 	let mode: ConfigMode = "override"
 	for (let i = 0; i < args.length; i++) {
@@ -48,6 +51,10 @@ export async function runSetupTools(args: string[]): Promise<number> {
 	// Select tools.
 	const selection = await promptToolSelection({ backable: false })
 	if (selection.kind === "cancel") {
+		if (telemetryConfig.enabled) {
+			sendPreSessionEvent(telemetryConfig, "tools_setup_aborted", { step: "tools" })
+			await drainPreSessionTelemetry()
+		}
 		outro("Cancelled.")
 		return 1
 	}
@@ -73,6 +80,10 @@ export async function runSetupTools(args: string[]): Promise<number> {
 	} else {
 		const telemetryResult = await promptTelemetry({ backable: false })
 		if (telemetryResult.kind === "cancel" || telemetryResult.kind === "back") {
+			if (telemetryConfig.enabled) {
+				sendPreSessionEvent(telemetryConfig, "tools_setup_aborted", { step: "telemetry" })
+				await drainPreSessionTelemetry()
+			}
 			outro("Cancelled.")
 			return 1
 		}
@@ -93,6 +104,10 @@ export async function runSetupTools(args: string[]): Promise<number> {
 	} catch (err) {
 		const msg = (err as Error).message
 		modelSpinner.stop(`Could not fetch available models: ${msg}`)
+		if (telemetryConfig.enabled) {
+			sendPreSessionEvent(telemetryConfig, "tools_setup_aborted", { step: "models" })
+			await drainPreSessionTelemetry()
+		}
 		outro("Aborted.")
 		return 1
 	}
@@ -113,6 +128,19 @@ export async function runSetupTools(args: string[]): Promise<number> {
 		models,
 	})
 
+	if (telemetryConfig.enabled) {
+		for (const toolName of outcome.successes) {
+			sendPreSessionEvent(telemetryConfig, "tool_configured", { tool_name: toolName })
+		}
+
+		sendPreSessionEvent(telemetryConfig, "tools_setup_completed", {
+			tools_count: selectedTools.length,
+			scope,
+			mode,
+			failures: outcome.failures.length,
+		})
+	}
+
 	// Print summary.
 	const summaryLines = [
 		`Mode: ${mode}${mode === "override" ? " (configs written)" : " (runtime wrapper)"}`,
@@ -124,5 +152,10 @@ export async function runSetupTools(args: string[]): Promise<number> {
 
 	note(summaryLines.join("\n"), "Summary")
 	outro(outcome.failures.length === 0 ? "Done." : "Done with errors. Check above for details.")
+
+	if (telemetryConfig.enabled) {
+		await drainPreSessionTelemetry()
+	}
+
 	return outcome.failures.length === 0 ? 0 : 1
 }

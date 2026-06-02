@@ -15,10 +15,12 @@ export interface PendingPlanReview {
 
 export type PlanReviewOutcome =
 	| { kind: "start" }
+	| { kind: "start_auto" }
 	| { kind: "feedback"; text: string }
 	| { kind: "cancelled"; reason: "decision_cancelled" | "feedback_cancelled" | "empty_feedback" }
 
 const pendingPlanReviews = new Map<string, PendingPlanReview>()
+const DECISION_OPTIONS = ["Start execution", "Start execution in auto mode", "Let me say something"] as const
 
 export function setPendingPlanReview(review: PendingPlanReview): void {
 	pendingPlanReviews.set(review.fermentId, review)
@@ -100,7 +102,8 @@ class PlanReviewComponent extends Container {
 		}
 
 		if (matchesKey(data, Key.up) || matchesKey(data, Key.down)) {
-			this.selectedIndex = this.selectedIndex === 0 ? 1 : 0
+			const delta = matchesKey(data, Key.up) ? -1 : 1
+			this.selectedIndex = (this.selectedIndex + delta + DECISION_OPTIONS.length) % DECISION_OPTIONS.length
 			this.updateDecisionOptions()
 			this.tui.requestRender()
 			return
@@ -112,6 +115,8 @@ class PlanReviewComponent extends Container {
 		if (matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
 			if (this.selectedIndex === 0) {
 				this.done({ kind: "start" })
+			} else if (this.selectedIndex === 1) {
+				this.done({ kind: "start_auto" })
 			} else {
 				this.mode = "feedback"
 				this.showFeedback()
@@ -154,7 +159,7 @@ class PlanReviewComponent extends Container {
 	}
 
 	private renderDecisionOptions(): string[] {
-		return ["Start execution", "Let me say something"].map((label, index) => {
+		return DECISION_OPTIONS.map((label, index) => {
 			const selected = index === this.selectedIndex
 			const marker = selected ? this.theme.fg("accent", "> ") : "  "
 			const styledLabel = selected ? this.theme.fg("accent", label) : this.theme.fg("text", label)

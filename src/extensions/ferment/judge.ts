@@ -25,6 +25,8 @@ import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
 import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
 
 const GRADES: Grade[] = ["A", "B", "C", "D", "F"]
+const JOURNEY_GRADE_MAX_ATTEMPTS = 3
+
 export function isGrade(value: unknown): value is Grade {
 	return typeof value === "string" && (GRADES as string[]).includes(value)
 }
@@ -38,7 +40,7 @@ export type JudgeUnavailableReason = "no_registry" | "no_model" | "no_auth" | "a
 
 export type JudgeApiResult = { ok: true; text: string } | { ok: false; reason: JudgeUnavailableReason; detail?: string }
 
-export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTokens = 400): Promise<JudgeApiResult> {
+export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTokens?: number): Promise<JudgeApiResult> {
 	const registry = getJudgeModelRegistry()
 	if (!registry) return { ok: false, reason: "no_registry" }
 
@@ -60,7 +62,7 @@ export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTok
 				apiKey: auth.apiKey,
 				headers: auth.headers,
 				signal: AbortSignal.timeout(45_000),
-				maxTokens,
+				...(maxTokens === undefined ? {} : { maxTokens }),
 			},
 		)
 
@@ -243,6 +245,15 @@ export interface JudgeJourneyGradeFailure {
 
 export type JudgeJourneyGradeResult = JudgeJourneyGradeOk | JudgeJourneyGradeFailure
 
+function withJourneyGradeAttemptDetail(failure: JudgeJourneyGradeFailure, attempts: number): JudgeJourneyGradeFailure {
+	if (attempts <= 1) return failure
+	const attemptDetail = `after ${attempts} attempts`
+	return {
+		...failure,
+		detail: failure.detail ? `${attemptDetail}; ${failure.detail}` : attemptDetail,
+	}
+}
+
 const JOURNEY_GRADE_SYSTEM = `You are the final reviewer for an autonomous coding ferment. The agent has completed all phases and the ferment-scope gates (C1/C2/C3) all passed — so shipping is allowed. Your job is NOT to decide whether to ship. Your job is to assign a letter grade A–F that describes HOW WELL the work was done.
 
 Your bias is PESSIMISTIC. Most work is B or C, not A. A is reserved for ferments that delivered cleanly without retries, with concrete real-execution verification at every phase, and where every gate verdict was substantiated with specific evidence.
@@ -305,15 +316,25 @@ export async function judgeJourneyGrade(
 	input: JudgeJourneyGradeInput,
 	apiCall: (sys: string, msg: string, maxTokens?: number) => Promise<JudgeApiResult> = judgeApiCall,
 ): Promise<JudgeJourneyGradeResult> {
-	const api = await apiCall(JOURNEY_GRADE_SYSTEM, buildJourneyGradeUserMsg(input), 400)
-	if (!api.ok) return { ok: false, reason: api.reason, detail: api.detail }
-	const parsed = tryParseJson<{ grade?: string; rationale?: string }>(api.text)
-	if (parsed === undefined) {
-		return { ok: false, reason: "unparseable", detail: api.text.slice(0, 200) }
+	const userMsg = buildJourneyGradeUserMsg(input)
+	for (let attempt = 1; attempt <= JOURNEY_GRADE_MAX_ATTEMPTS; attempt++) {
+		const api = await apiCall(JOURNEY_GRADE_SYSTEM, userMsg)
+		if (!api.ok) {
+			const failure: JudgeJourneyGradeFailure = { ok: false, reason: api.reason, detail: api.detail }
+			if (api.reason === "empty_response" && attempt < JOURNEY_GRADE_MAX_ATTEMPTS) continue
+			return withJourneyGradeAttemptDetail(failure, attempt)
+		}
+
+		const parsed = tryParseJson<{ grade?: string; rationale?: string }>(api.text)
+		if (parsed === undefined) {
+			return { ok: false, reason: "unparseable", detail: api.text.slice(0, 200) }
+		}
+		if (!isGrade(parsed.grade)) {
+			return { ok: false, reason: "invalid_grade", detail: `Judge returned: ${parsed.grade}` }
+		}
+		const rationale = typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
+		return { ok: true, grade: parsed.grade, rationale }
 	}
-	if (!isGrade(parsed.grade)) {
-		return { ok: false, reason: "invalid_grade", detail: `Judge returned: ${parsed.grade}` }
-	}
-	const rationale = typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
-	return { ok: true, grade: parsed.grade, rationale }
+
+	throw new Error("unreachable: journey grade retry loop exited without a result")
 }

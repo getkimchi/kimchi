@@ -68,4 +68,43 @@ describe("loadProjectContextFiles", () => {
 		const paths = inTmp.map((f) => f.path)
 		expect(new Set(paths).size).toBe(paths.length)
 	})
+
+	it("appends CLAUDE.local.md content to CLAUDE.md when both exist", () => {
+		writeFileSync(join(nested, "CLAUDE.md"), "shared rules")
+		writeFileSync(join(nested, "CLAUDE.local.md"), "my local rules")
+		const result = loadProjectContextFiles(nested)
+		const inTmp = result.filter((f) => f.path.startsWith(tmpBase))
+		expect(inTmp).toHaveLength(1)
+		expect(inTmp[0].path).toBe(join(nested, "CLAUDE.md"))
+		expect(inTmp[0].content).toBe("shared rules\n\nmy local rules")
+	})
+
+	it("appends AGENTS.local.md content to AGENTS.md when both exist", () => {
+		writeFileSync(join(nested, "AGENTS.md"), "shared agents")
+		writeFileSync(join(nested, "AGENTS.local.md"), "my local agents")
+		const result = loadProjectContextFiles(nested)
+		const inTmp = result.filter((f) => f.path.startsWith(tmpBase))
+		expect(inTmp).toHaveLength(1)
+		expect(inTmp[0].path).toBe(join(nested, "AGENTS.md"))
+		expect(inTmp[0].content).toBe("shared agents\n\nmy local agents")
+	})
+
+	it("loads CLAUDE.local.md standalone when CLAUDE.md is absent", () => {
+		writeFileSync(join(nested, "CLAUDE.local.md"), "only local")
+		const result = loadProjectContextFiles(nested)
+		const inTmp = result.filter((f) => f.path.startsWith(tmpBase))
+		expect(inTmp).toHaveLength(1)
+		expect(inTmp[0].path).toBe(join(nested, "CLAUDE.local.md"))
+		expect(inTmp[0].content).toBe("only local")
+	})
+
+	it("ignores CLAUDE.local.md when AGENTS.md wins priority in same dir", () => {
+		writeFileSync(join(nested, "AGENTS.md"), "agents wins")
+		writeFileSync(join(nested, "CLAUDE.local.md"), "claude local ignored")
+		const result = loadProjectContextFiles(nested)
+		const inTmp = result.filter((f) => f.path.startsWith(tmpBase))
+		expect(inTmp).toHaveLength(1)
+		expect(inTmp[0].path).toBe(join(nested, "AGENTS.md"))
+		expect(inTmp[0].content).toBe("agents wins")
+	})
 })

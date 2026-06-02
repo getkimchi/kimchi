@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { updateModelsConfig } from "./models.js"
+import { ModelsFetchError, isTransientModelsError, updateModelsConfig } from "./models.js"
 
 const KIMI: unknown = {
 	slug: "kimi-k2.5",
@@ -261,6 +261,53 @@ describe("updateModelsConfig", () => {
 		await expect(updateModelsConfig(modelsJsonPath, "bad-key")).rejects.toThrow(
 			"Failed to fetch models: 401 Unauthorized",
 		)
+	})
+
+	it("retries a transient 429 and succeeds on a later attempt", async () => {
+		vi.mocked(fetch)
+			.mockResolvedValueOnce({
+				ok: false,
+				status: 429,
+				statusText: "Too Many Requests",
+				headers: { get: () => null },
+			} as unknown as Response)
+			.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ models: [KIMI] }),
+			} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} })
+
+		expect(fetch).toHaveBeenCalledTimes(2)
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
+	})
+
+	it("classifies a persistent 429 as transient after exhausting retries", async () => {
+		vi.mocked(fetch).mockResolvedValue({
+			ok: false,
+			status: 429,
+			statusText: "Too Many Requests",
+			headers: { get: () => null },
+		} as unknown as Response)
+
+		const error = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} }).catch((e) => e)
+
+		expect(isTransientModelsError(error)).toBe(true)
+		expect(fetch).toHaveBeenCalledTimes(3)
+	})
+
+	it("classifies a 401 as a non-transient error and does not retry", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: false,
+			status: 401,
+			statusText: "Unauthorized",
+		} as Response)
+
+		const error = await updateModelsConfig(modelsJsonPath, "bad-key").catch((e) => e)
+
+		expect(error).toBeInstanceOf(ModelsFetchError)
+		expect(isTransientModelsError(error)).toBe(false)
+		expect(fetch).toHaveBeenCalledTimes(1)
 	})
 
 	it("throws on unexpected response shape when no cached config exists", async () => {

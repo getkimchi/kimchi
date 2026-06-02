@@ -139,7 +139,7 @@ async function openModePicker(ctx: ExtensionContext, deps: CommandDeps): Promise
 	if (selected === CANCEL) return
 
 	let picked: PermissionMode
-	switch (choice) {
+	switch (selected) {
 		case OPT_PLAN:
 			picked = "plan"
 			break
@@ -206,7 +206,7 @@ function showStatus(ctx: ExtensionCommandContext, deps: CommandDeps): void {
 function handleMode(ctx: ExtensionContext, deps: CommandDeps, arg: string): void {
 	const mode = parseModeString(arg)
 	if (!mode) {
-		ctx.ui.notify(`unknown mode "${arg}". Valid: default, plan, auto`, "warning")
+		ctx.ui.notify(`unknown mode "${arg}". Valid: default, plan, auto, yolo`, "warning")
 		return
 	}
 	const prev = deps.getMode()

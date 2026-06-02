@@ -81,9 +81,45 @@ describe("judgeJourneyGrade", () => {
 	it("propagates judge_unavailable when the API call fails", async () => {
 		const apiCall = vi.fn(async (): Promise<JudgeApiResult> => ({ ok: false, reason: "no_auth" }))
 		const result = await judgeJourneyGrade(makeInput(), apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(1)
 		expect(result.ok).toBe(false)
 		if (result.ok) return
 		expect(result.reason).toBe("no_auth")
+	})
+
+	it("retries empty_response before accepting a later grade", async () => {
+		const apiCall = vi
+			.fn<(_sys: string, _msg: string, _maxTokens?: number) => Promise<JudgeApiResult>>()
+			.mockResolvedValueOnce({ ok: false, reason: "empty_response" })
+			.mockResolvedValueOnce({ ok: false, reason: "empty_response" })
+			.mockResolvedValueOnce(ok('{"grade":"B","rationale":"Recovered on retry."}'))
+
+		const result = await judgeJourneyGrade(makeInput(), apiCall)
+
+		expect(apiCall).toHaveBeenCalledTimes(3)
+		expect(apiCall.mock.calls.map((call) => call.length)).toEqual([2, 2, 2])
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("B")
+		expect(result.rationale).toContain("Recovered")
+	})
+
+	it("returns empty_response after the retry budget is exhausted", async () => {
+		const apiCall = vi.fn(
+			async (): Promise<JudgeApiResult> => ({
+				ok: false,
+				reason: "empty_response",
+			}),
+		)
+
+		const result = await judgeJourneyGrade(makeInput(), apiCall)
+
+		expect(apiCall).toHaveBeenCalledTimes(3)
+		expect(apiCall.mock.calls.map((call) => call.length)).toEqual([2, 2, 2])
+		expect(result.ok).toBe(false)
+		if (result.ok) return
+		expect(result.reason).toBe("empty_response")
+		expect(result.detail).toContain("after 3 attempts")
 	})
 
 	it("includes per-phase F-gate verdicts in the prompt the judge sees", async () => {

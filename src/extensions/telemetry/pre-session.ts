@@ -6,8 +6,8 @@
  * identical to in-session events (same resource attributes, same log-record
  * structure, same `client` attribute placement).
  *
- * Events: app_started, harness_launched, setup_aborted, tool_configured,
- * setup_completed.
+ * Events: app_started, harness_launched, setup_aborted, setup_completed,
+ * tools_setup_aborted, tool_configured, tools_setup_completed.
  *
  * Fire-and-forget: errors are swallowed. Callers should call `drain()` before
  * `process.exit()` to reduce the chance of truncated HTTP requests.

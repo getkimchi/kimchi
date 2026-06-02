@@ -121,6 +121,10 @@ Call \`request_ferment_workflow\` with a concise \`title\` and an \`intent\` con
 export function buildFermentPromptBlock(pi: ExtensionAPI, runtime: FermentRuntime): string | undefined {
 	if (isAgentWorker()) return undefined
 
+	// Plan mode is a separate lightweight planning path; suppress the ferment
+	// idle hint so the agent does not conflate it with the ferment workflow.
+	if (process.env.KIMCHI_PERMISSIONS === "plan") return undefined
+
 	const f = runtime.getActive()
 	if (!f) return IDLE_FERMENT_HINT
 

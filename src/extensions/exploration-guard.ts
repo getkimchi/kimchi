@@ -26,6 +26,8 @@ export interface ExplorationGuardOptions {
 	hypothesisThreshold?: number
 	/** Number of consecutive read-only turns before a mandatory steer is injected. Default: 8 */
 	steerThreshold?: number
+	/** Optional predicate to temporarily disable the guard (e.g., during plan mode). */
+	isEnabled?: () => boolean
 }
 
 const HYPOTHESIS_REMINDER_BASE =
@@ -41,6 +43,7 @@ export class ExplorationGuard {
 	private readonly writeTools: Set<string>
 	private readonly hypothesisThreshold: number
 	private readonly steerThreshold: number
+	private readonly isEnabled: () => boolean
 
 	private consecutiveReadOnlyTurns = 0
 	private currentTurnHasWriteTool = false
@@ -51,6 +54,7 @@ export class ExplorationGuard {
 		this.writeTools = options.writeTools ?? new Set(DEFAULT_WRITE_TOOLS)
 		this.hypothesisThreshold = options.hypothesisThreshold ?? 5
 		this.steerThreshold = options.steerThreshold ?? 8
+		this.isEnabled = options.isEnabled ?? (() => true)
 	}
 
 	reset(): void {
@@ -72,6 +76,8 @@ export class ExplorationGuard {
 	}
 
 	turnEnd(sendSteer: (text: string) => void): void {
+		if (!this.isEnabled()) return
+
 		// A turn is read-only only if it contains at least one tool and none
 		// of them are write tools. Turns with no tools or with write tools
 		// reset the streak.
@@ -96,7 +102,10 @@ export class ExplorationGuard {
 }
 
 export default function explorationGuardExtension(pi: ExtensionAPI, options?: ExplorationGuardOptions): void {
-	const guard = new ExplorationGuard(options)
+	const guard = new ExplorationGuard({
+		...options,
+		isEnabled: () => process.env.KIMCHI_PERMISSIONS !== "plan",
+	})
 
 	pi.on("session_start", () => {
 		guard.reset()
