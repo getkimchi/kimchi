@@ -19,7 +19,7 @@ jobs:
           BODY=$(printf '%s' "$PR_BODY" | tr -d '\r')
 
           # Extract the "## Type of Change" section (between that heading and the next ## heading or end of string)
-          SECTION=$(printf '%s' "$BODY" | sed -n '/^## Type of Change$/,/^## /p' | sed '$d')
+          SECTION=$(printf '%s' "$BODY" | awk '/^## Type of Change$/{flag=1; next} /^## /{flag=0} flag')
 
           # If the section is empty or the marker wasn't found, exit gracefully
           if [ -z "$SECTION" ]; then
