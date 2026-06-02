@@ -245,7 +245,7 @@ export function createTabsOverlay(opts: TabsOverlayOpts): OverlayFactory {
 					// best effort
 				}
 				disableMouseCapture()
-				tui.setShowHardwareCursor(false)
+				tui.setShowHardwareCursor(true)
 			},
 		}
 
