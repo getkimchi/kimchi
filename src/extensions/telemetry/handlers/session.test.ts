@@ -140,9 +140,9 @@ describe("handleSessionShutdown", () => {
 		}>
 
 		const typeChangedRecord = allRecords.find((r) => r.eventName === "session.type_changed")
-		expect(typeChangedRecord).toBeDefined()
+		if (!typeChangedRecord) expect.fail("expected session.type_changed record")
 		const typeChangedAttrs = Object.fromEntries(
-			typeChangedRecord?.attributes.map((a: { key: string; value: { stringValue: string } }) => [
+			typeChangedRecord.attributes.map((a: { key: string; value: { stringValue: string } }) => [
 				a.key,
 				a.value.stringValue,
 			]),
