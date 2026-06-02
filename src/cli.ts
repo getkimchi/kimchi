@@ -72,7 +72,12 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
-import { injectExperimentalProvider, isTransientModelsError, updateModelsConfig } from "./models.js"
+import {
+	injectExperimentalProvider,
+	isTransientModelsError,
+	readExperimentalModels,
+	updateModelsConfig,
+} from "./models.js"
 import resourcesExtension from "./resources/extension.js"
 import { type ManagedExtensionFactory, enabledExtensionFactories } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
@@ -316,7 +321,10 @@ try {
 		let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
 		try {
 			;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
-			if (experimentalFeatures) injectExperimentalProvider(modelsJsonPath)
+			if (experimentalFeatures) {
+				injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")
+				models = [...models, ...readExperimentalModels(modelsJsonPath)]
+			}
 		} catch (err) {
 			const is401 = err instanceof Error && err.message.includes("401")
 			if (is401 && process.stdin.isTTY) {
@@ -333,7 +341,10 @@ try {
 				writeApiKey(currentApiKey)
 				config = loadConfig()
 				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
-				if (experimentalFeatures) injectExperimentalProvider(modelsJsonPath)
+				if (experimentalFeatures) {
+					injectExperimentalProvider(modelsJsonPath, currentApiKey)
+					models = [...models, ...readExperimentalModels(modelsJsonPath)]
+				}
 			} else if (isTransientModelsError(err)) {
 				// Rate limit / gateway error with no cached models to fall back on.
 				// Don't crash startup over a transient condition — continue with an

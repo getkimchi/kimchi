@@ -2,7 +2,13 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { ModelsFetchError, injectExperimentalProvider, isTransientModelsError, updateModelsConfig } from "./models.js"
+import {
+	ModelsFetchError,
+	injectExperimentalProvider,
+	isTransientModelsError,
+	readExperimentalModels,
+	updateModelsConfig,
+} from "./models.js"
 
 const KIMI: unknown = {
 	slug: "kimi-k2.5",
@@ -560,7 +566,7 @@ describe("readExistingProviders strips kimchi-experimental", () => {
 				providers: {
 					"kimchi-experimental": {
 						baseUrl: "https://llm.kimchi.dev/experimental/openai/v1",
-						apiKey: "KIMCHI_API_KEY",
+						apiKey: "some-key",
 						api: "openai-completions",
 						authHeader: true,
 						headers: {},
@@ -599,19 +605,19 @@ describe("injectExperimentalProvider", () => {
 
 	it("is a no-op when kimchi-dev is absent", () => {
 		writeFileSync(modelsJsonPath, JSON.stringify({ providers: {} }))
-		injectExperimentalProvider(modelsJsonPath)
+		injectExperimentalProvider(modelsJsonPath, "test-api-key")
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
 		expect(config.providers["kimchi-experimental"]).toBeUndefined()
 	})
 
-	it("copies the kimchi-dev block with experimental baseUrl", async () => {
+	it("copies the kimchi-dev block with kimchi-experimental baseUrl", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [KIMI] }),
 		} as Response)
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
-		injectExperimentalProvider(modelsJsonPath)
+		injectExperimentalProvider(modelsJsonPath, "test-api-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
 		const dev = config.providers["kimchi-dev"]
@@ -619,8 +625,7 @@ describe("injectExperimentalProvider", () => {
 
 		expect(exp).toBeDefined()
 		expect(exp.baseUrl).toBe("https://llm.kimchi.dev/experimental/openai/v1")
-		// Everything else is identical to kimchi-dev
-		expect(exp.apiKey).toBe(dev.apiKey)
+		expect(exp.apiKey).toBe("test-api-key")
 		expect(exp.api).toBe(dev.api)
 		expect(exp.authHeader).toBe(dev.authHeader)
 		expect(exp.models).toEqual(dev.models)
@@ -644,7 +649,7 @@ describe("injectExperimentalProvider", () => {
 			}),
 		)
 
-		injectExperimentalProvider(modelsJsonPath)
+		injectExperimentalProvider(modelsJsonPath, "test-api-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
 		expect(config.providers["my-custom"]).toBeDefined()
@@ -652,7 +657,45 @@ describe("injectExperimentalProvider", () => {
 	})
 
 	it("is a no-op when models.json does not exist", () => {
-		injectExperimentalProvider(modelsJsonPath)
+		injectExperimentalProvider(modelsJsonPath, "test-api-key")
 		expect(existsSync(modelsJsonPath)).toBe(false)
+	})
+})
+
+describe("readExperimentalModels", () => {
+	let tempDir: string
+	let modelsJsonPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-read-exp-test-"))
+		modelsJsonPath = join(tempDir, "models.json")
+		vi.stubGlobal("fetch", vi.fn())
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+		vi.restoreAllMocks()
+	})
+
+	it("returns empty array when models.json does not exist", () => {
+		expect(readExperimentalModels(modelsJsonPath)).toEqual([])
+	})
+
+	it("returns empty array when kimchi-experimental is absent", () => {
+		writeFileSync(modelsJsonPath, JSON.stringify({ providers: { "kimchi-dev": { models: [] } } }))
+		expect(readExperimentalModels(modelsJsonPath)).toEqual([])
+	})
+
+	it("returns ModelMetadata for each model in kimchi-experimental", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		injectExperimentalProvider(modelsJsonPath, "test-api-key")
+
+		const result = readExperimentalModels(modelsJsonPath)
+		expect(result).toHaveLength(1)
+		expect(result[0].slug).toBe("kimi-k2.5")
 	})
 })
