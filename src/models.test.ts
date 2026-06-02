@@ -536,3 +536,48 @@ describe("updateModelsConfig", () => {
 		expect(model?.replacement).toBe("new-model")
 	})
 })
+
+describe("readExistingProviders strips kimchi-experimental", () => {
+	let tempDir: string
+	let modelsJsonPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-models-exp-test-"))
+		modelsJsonPath = join(tempDir, "models.json")
+		vi.stubGlobal("fetch", vi.fn())
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+		vi.restoreAllMocks()
+	})
+
+	it("clobbers kimchi-experimental on the next updateModelsConfig call", async () => {
+		// Simulate a previous run that left kimchi-experimental in models.json
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					"kimchi-experimental": {
+						baseUrl: "https://llm.kimchi.dev/experimental/openai/v1",
+						apiKey: "KIMCHI_API_KEY",
+						api: "openai-completions",
+						authHeader: true,
+						headers: {},
+						models: [],
+					},
+				},
+			}),
+		)
+
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-experimental"]).toBeUndefined()
+	})
+})

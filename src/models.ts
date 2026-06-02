@@ -221,7 +221,7 @@ function readExistingProviders(modelsJsonPath: string): Record<string, unknown> 
 		const raw = readFileSync(modelsJsonPath, "utf-8")
 		const config = JSON.parse(raw)
 		const providers = config?.providers ?? {}
-		const { "kimchi-dev": _kimchi, ...rest } = providers as Record<string, unknown>
+		const { "kimchi-dev": _kimchi, "kimchi-experimental": _exp, ...rest } = providers as Record<string, unknown>
 		return rest
 	} catch {
 		return {}
