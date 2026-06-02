@@ -158,12 +158,12 @@ export class InitialSurveyComponent extends Container {
 	render(width: number): string[] {
 		this.onFirstRender?.()
 		const safeWidth = Math.max(24, width)
-		const title = INITIAL_SURVEY.question.text
+		const title: string = INITIAL_SURVEY.question.text
 		const titlePrefix = "─── "
 		const titleText = `${titlePrefix}${title} `
 		const ruleWidth = Math.max(3, safeWidth - titleText.length)
 		this.titleText.setText(this.theme.fg("accent", `${titleText}${"─".repeat(ruleWidth)}`))
-		const help = INITIAL_SURVEY.question.help
+		const help: string | undefined = INITIAL_SURVEY.question.help
 		this.helpText.setText(help && help !== title ? this.theme.fg("text", truncateToWidth(help, safeWidth)) : "")
 		this.bottomRule.setText(this.theme.fg("accent", "─".repeat(safeWidth)))
 		return super.render(width)
