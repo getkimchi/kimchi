@@ -20,6 +20,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
+import type { SuccessCriteria } from "../../ferment/success-criteria.js"
 import type { Ferment } from "../../ferment/types.js"
 import { SCOPING_DISCOVERY_GUIDANCE } from "./constants.js"
 import { promptEditor } from "./prompt-ui.js"
@@ -51,7 +52,7 @@ function sendScopingBreadcrumb(pi: ExtensionAPI, text: string): void {
 export interface PendingScope {
 	title?: string
 	goal: string
-	successCriteria: string
+	successCriteria: SuccessCriteria
 	constraints: string[]
 	phases?: ScopePhaseInput[]
 	assumptions?: string
@@ -62,7 +63,7 @@ export interface PendingScope {
 export interface AttachPendingProposalPartial {
 	title?: string
 	goal?: string
-	successCriteria?: string
+	successCriteria?: SuccessCriteria
 	constraints?: string[]
 	assumptions?: string
 	phases?: ScopePhaseInput[]
@@ -77,7 +78,7 @@ export function attachPendingProposal(fermentId: string, partial: AttachPendingP
 	pendingScopes.set(fermentId, {
 		title: partial.title,
 		goal: partial.goal ?? "",
-		successCriteria: partial.successCriteria ?? "",
+		successCriteria: partial.successCriteria ?? [],
 		constraints: partial.constraints ?? [],
 		phases: partial.phases,
 		assumptions: partial.assumptions,
@@ -160,7 +161,7 @@ export async function runScopingFlow(
 
 	runtime.markScopingInteractive(f.id)
 	// Seed an empty buffer so propose_ferment_scoping detects the interactive flow is active.
-	runtime.setPendingScope(f.id, { goal: "", successCriteria: "", constraints: [] })
+	runtime.setPendingScope(f.id, { goal: "", successCriteria: [], constraints: [] })
 	if (preIntent === undefined) {
 		sendFermentRequestMessage(pi, intent)
 	}

@@ -70,7 +70,7 @@ export interface Ferment {
 	tags?: string[]
 
 	goal?: string
-	successCriteria?: string
+	successCriteria?: string[]
 	constraints?: string[]
 
 	status: FermentStatus
@@ -250,7 +250,7 @@ export interface FermentV3 {
 	name: string
 	description?: string
 	goal?: string
-	successCriteria?: string
+	successCriteria?: string | string[]
 	status: // old 7-state
 	"pending_goal" | "planned" | "batch_planned" | "executing" | "paused" | "completed" | "abandoned"
 	createdAt: string

@@ -101,7 +101,7 @@ vi.mock("../../../config.js", () => ({
 	}),
 }))
 
-import { DefaultResourceLoader, createAgentSession } from "@earendil-works/pi-coding-agent"
+import { type AgentSession, DefaultResourceLoader, createAgentSession } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import telemetryExtension from "../../telemetry/index.js"
@@ -707,7 +707,7 @@ describe("runAgent — budget awareness steers", () => {
 				maxTurns: 10,
 				turns: 5,
 				expectedSteerCount: 1,
-				pattern: /50% of your turn budget./,
+				pattern: /\[Orchestrator — automated system instruction, not a user message\][\s\S]*50% of your turn budget./,
 			},
 			"does not steer between 50% and 75%": {
 				maxTurns: 10,
@@ -718,13 +718,13 @@ describe("runAgent — budget awareness steers", () => {
 				maxTurns: 10,
 				turns: 8,
 				expectedSteerCount: 2,
-				pattern: /75% of your turn budget./,
+				pattern: /\[Orchestrator — automated system instruction, not a user message\][\s\S]*75% of your turn budget./,
 			},
 			"steers at 90% of turn budget": {
 				maxTurns: 10,
 				turns: 9,
 				expectedSteerCount: 3,
-				pattern: /90% of your turn budget./,
+				pattern: /\[Orchestrator — automated system instruction, not a user message\][\s\S]*90% of your turn budget./,
 			},
 		}
 
@@ -1037,5 +1037,54 @@ describe("runAgent — includeContextFiles", () => {
 		expect(mockLoadProjectContextFiles).not.toHaveBeenCalled()
 		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
 		expect(extras?.contextFiles).toBeUndefined()
+	})
+})
+
+describe("steerAgent — explicit steering", () => {
+	it("does NOT add orchestrator prefix to explicit steer messages", async () => {
+		const { steerAgent } = await import("./agent-runner.js")
+		const session = makeFakeSession()
+		await steerAgent(session as unknown as AgentSession, "custom user steer")
+		expect(session.steer).toHaveBeenCalledWith("custom user steer")
+		expect(session.steer).not.toHaveBeenCalledWith(expect.stringContaining("[Orchestrator"))
+	})
+})
+
+describe("resumeAgent — inactivity steering", () => {
+	it("adds orchestrator prefix to automated inactivity steer", async () => {
+		const { resumeAgent } = await import("./agent-runner.js")
+		vi.useFakeTimers()
+
+		const subscribers: Subscriber[] = []
+		const session = {
+			subscribe: vi.fn((cb: Subscriber) => {
+				subscribers.push(cb)
+				return () => {
+					const idx = subscribers.indexOf(cb)
+					if (idx !== -1) subscribers.splice(idx, 1)
+				}
+			}),
+			abort: vi.fn(),
+			steer: vi.fn(),
+			messages: [],
+			prompt: vi.fn().mockImplementation(async () => {
+				// Advance time past inactivity timeout during prompt
+				await vi.advanceTimersByTimeAsync(130_000)
+			}),
+			extensionRunner: { emit: vi.fn().mockResolvedValue(true) },
+		}
+
+		const promise = resumeAgent(session as unknown as AgentSession, "resume prompt", {
+			inactivityTimeout: 120_000,
+		})
+
+		await promise
+
+		expect(session.steer).toHaveBeenCalledWith(
+			expect.stringMatching(/\[Orchestrator — automated system instruction, not a user message\]/),
+		)
+		expect(session.steer).toHaveBeenCalledWith(expect.stringContaining("You appear to be stalled"))
+
+		vi.useRealTimers()
 	})
 })

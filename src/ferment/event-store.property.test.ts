@@ -71,7 +71,7 @@ function legalCommands(f: Ferment, rng: Rng): Command[] {
 		out.push({
 			type: "scope",
 			goal: "Auto goal",
-			successCriteria: "Auto criteria",
+			successCriteria: ["Auto criteria"],
 			constraints: ["c1"],
 			phases: usesGroup
 				? [

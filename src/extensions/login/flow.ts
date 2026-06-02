@@ -446,6 +446,10 @@ async function showOAuthLoginDialogWithExtensionUI(
 							dialog.showWaiting("Waiting for browser authentication...")
 						}
 					},
+					onDeviceCode: (info) => {
+						dialog.showDeviceCode(info)
+						dialog.showWaiting("Waiting for authentication...")
+					},
 					onPrompt: async (prompt) => dialog.showPrompt(prompt.message, prompt.placeholder),
 					onProgress: (message) => {
 						dialog.showProgress(message)

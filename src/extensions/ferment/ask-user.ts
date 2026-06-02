@@ -26,6 +26,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { renderLabeledSuccessCriteria } from "../../ferment/success-criteria.js"
 import type { Ferment, ScopingQuestionType } from "../../ferment/types.js"
 import { type JudgeApiResult, judgeApiCall } from "./judge.js"
 import { promptForm } from "./prompt-ui.js"
@@ -181,7 +182,7 @@ function buildAskJudgeUserMsg(
 	const parts: string[] = []
 	parts.push(`Ferment: "${ferment.name}"`)
 	parts.push(`Goal: ${ferment.goal ?? "(none specified)"}`)
-	parts.push(`Success criteria: ${ferment.successCriteria ?? "(none specified)"}`)
+	parts.push(renderLabeledSuccessCriteria("Success criteria", ferment.successCriteria))
 	if (activePhase) parts.push(`Active phase: ${activePhase.index}. "${activePhase.name}" — ${activePhase.goal}`)
 	if (activeStep) parts.push(`Active step: ${activeStep.index}. "${activeStep.description}"`)
 	parts.push("")
@@ -206,7 +207,7 @@ function buildAskJudgeFormUserMsg(
 	const parts: string[] = []
 	parts.push(`Ferment: "${ferment.name}"`)
 	parts.push(`Goal: ${ferment.goal ?? "(none specified)"}`)
-	parts.push(`Success criteria: ${ferment.successCriteria ?? "(none specified)"}`)
+	parts.push(renderLabeledSuccessCriteria("Success criteria", ferment.successCriteria))
 	if (activePhase) parts.push(`Active phase: ${activePhase.index}. "${activePhase.name}" — ${activePhase.goal}`)
 	if (activeStep) parts.push(`Active step: ${activeStep.index}. "${activeStep.description}"`)
 	parts.push("")

@@ -200,7 +200,7 @@ async function scopeFerment(
 	overrides: Partial<{
 		title: string
 		goal: string
-		success_criteria: string
+		success_criteria: string[]
 		constraints: string[]
 		phases: unknown[]
 	}> = {},
@@ -212,7 +212,7 @@ async function scopeFerment(
 		ferment_id: id,
 		title: overrides.title ?? h.runtime.getStorage().get(id)?.name ?? "Scoped Ferment",
 		goal: overrides.goal ?? "Make a thing",
-		success_criteria: overrides.success_criteria ?? "It works",
+		success_criteria: overrides.success_criteria ?? ["It works"],
 		constraints: overrides.constraints ?? [],
 		phases: overrides.phases ?? [
 			{
@@ -1117,7 +1117,7 @@ describe("propose_ferment_scoping", () => {
 		ferment_id,
 		title: "Proposed Ferment",
 		goal: "Build a thing",
-		success_criteria: "Tests pass",
+		success_criteria: ["Tests pass"],
 		constraints: ["no breaking changes"],
 		assumptions: "API is stable",
 		phases: threePhases,
@@ -1127,7 +1127,7 @@ describe("propose_ferment_scoping", () => {
 
 	// Helper: seed a pending scope so propose_ferment_scoping can replace it.
 	function seedPending(id: string) {
-		setPendingScope(id, { goal: "", successCriteria: "", constraints: [] })
+		setPendingScope(id, { goal: "", successCriteria: [], constraints: [] })
 		markScopingInteractive(id)
 	}
 
@@ -1227,6 +1227,29 @@ describe("propose_ferment_scoping", () => {
 		expect(result).toContain("Plan saved")
 		expect(result).toContain("- Go toolchain is installed")
 		expect(result).toContain("- The current directory is writable")
+	})
+
+	it("persists success criteria as an array from propose_ferment_scoping", async () => {
+		const id = await createFerment("Array Criteria")
+		seedPending(id)
+		const ctx = { ui: { select: vi.fn().mockResolvedValue("Start execution  ✓"), input: vi.fn() } }
+
+		const result = ok(
+			await h.call(
+				"propose_ferment_scoping",
+				basePayload(id, {
+					success_criteria: ["Tests pass", "Manual smoke works"],
+				}),
+				ctx,
+			),
+		)
+
+		const f = loadFerment(id)
+		expect(f.status).toBe("planned")
+		expect(f.successCriteria).toEqual(["Tests pass", "Manual smoke works"])
+		expect(f.scoping.criteria?.answer).toBe("Tests pass\nManual smoke works")
+		expect(result).toContain("- Tests pass")
+		expect(result).toContain("- Manual smoke works")
 	})
 
 	it("normalizes string-array assumptions before rendering the plan UI", async () => {

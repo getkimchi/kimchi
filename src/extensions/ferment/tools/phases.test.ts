@@ -36,7 +36,7 @@ function createHarness(options: { phases?: number } = {}) {
 	const scope = applyAndPersist(ferment.id, {
 		type: "scope",
 		goal: "Goal",
-		successCriteria: "Works",
+		successCriteria: ["Works"],
 		constraints: [],
 		phases: Array.from({ length: phaseCount }, (_, index) => ({
 			name: `Phase ${index + 1}`,

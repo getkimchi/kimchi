@@ -22,7 +22,7 @@ function scopeDraft(applyAndPersist: ReturnType<typeof createApplyAndPersist>, f
 	const outcome = applyAndPersist(ferment.id, {
 		type: "scope",
 		goal: "Goal",
-		successCriteria: "Works",
+		successCriteria: ["Works"],
 		constraints: [],
 		phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 	})
@@ -43,7 +43,7 @@ describe("createApplyAndPersist", () => {
 		const outcome = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -62,7 +62,7 @@ describe("createApplyAndPersist", () => {
 		const outcome = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -80,7 +80,7 @@ describe("createApplyAndPersist", () => {
 		const outcome = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build" }],
 		})

@@ -41,7 +41,7 @@ function createHarness(): {
 	const scoped = applyAndPersist(draft.id, {
 		type: "scope",
 		goal: "Goal",
-		successCriteria: "Works",
+		successCriteria: ["Works"],
 		constraints: [],
 		phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 	})
@@ -122,7 +122,7 @@ describe("progress overlay parallel rendering", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [
 				{

@@ -113,7 +113,7 @@ function createPlannedFerment(h: CommandHarness, name: string): Ferment {
 	const scoped = createApplyAndPersist(h.runtime)(ferment.id, {
 		type: "scope",
 		goal: "Goal",
-		successCriteria: "Works",
+		successCriteria: ["Works"],
 		constraints: [],
 		phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 	})
@@ -140,7 +140,7 @@ function createCompleteFerment(h: CommandHarness, name: string): Ferment {
 	const scoped = createApplyAndPersist(h.runtime)(ferment.id, {
 		type: "scope",
 		goal: "Goal",
-		successCriteria: "Works",
+		successCriteria: ["Works"],
 		constraints: [],
 		phases: [],
 	})
@@ -479,8 +479,8 @@ describe("FermentCommandController", () => {
 			fermentId: other.id,
 			planMarkdown: "# Plan: Other Pending State",
 		})
-		h.runtime.setPendingScope(active.id, { goal: "Goal", successCriteria: "Works", constraints: [] })
-		h.runtime.setPendingScope(other.id, { goal: "Other", successCriteria: "Works", constraints: [] })
+		h.runtime.setPendingScope(active.id, { goal: "Goal", successCriteria: ["Works"], constraints: [] })
+		h.runtime.setPendingScope(other.id, { goal: "Other", successCriteria: ["Works"], constraints: [] })
 		h.runtime.markScopingInteractive(active.id)
 		h.runtime.markScopingConfirmed(active.id)
 		h.runtime.markScopingInteractive(other.id)
@@ -819,7 +819,7 @@ describe("registerFermentCommands", () => {
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "First", goal: "Start", steps: [{ description: "Do it" }] }],
 		})
@@ -853,7 +853,7 @@ describe("registerFermentCommands", () => {
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [
 				{ name: "Done", goal: "Build", steps: [] },
@@ -904,7 +904,7 @@ describe("registerFermentCommands", () => {
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -987,7 +987,7 @@ describe("registerFermentCommands", () => {
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [
 				{ name: "Done", goal: "Build", steps: [] },
@@ -1036,7 +1036,7 @@ describe("registerFermentCommands", () => {
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -1087,7 +1087,7 @@ describe("registerFermentCommands", () => {
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [
 				{ name: "Done", goal: "Build", steps: [] },
@@ -1164,7 +1164,7 @@ describe("registerFermentCommands", () => {
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -1204,7 +1204,7 @@ describe("registerFermentCommands", () => {
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -1242,7 +1242,7 @@ describe("registerFermentCommands", () => {
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }, { description: "Test it" }] }],
 		})
@@ -1321,7 +1321,7 @@ describe("registerFermentCommands", () => {
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -1372,7 +1372,7 @@ describe("registerFermentCommands", () => {
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [
 				{ name: "Done", goal: "Build", steps: [] },
@@ -1434,7 +1434,7 @@ describe("registerFermentCommands", () => {
 		const scoped = applyAndPersist(ferment.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [
 				{ name: "Done", goal: "Build", steps: [] },

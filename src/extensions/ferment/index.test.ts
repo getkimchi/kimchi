@@ -214,7 +214,7 @@ describe("fermentExtension session resume", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [] }],
 		})
@@ -428,7 +428,7 @@ describe("fermentExtension question dropdown", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -469,7 +469,7 @@ describe("fermentExtension question dropdown", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [
 				{ name: "Done", goal: "Build", steps: [] },
@@ -521,7 +521,7 @@ describe("fermentExtension question dropdown", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -555,7 +555,7 @@ describe("fermentExtension question dropdown", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [] }],
 		})
@@ -683,7 +683,7 @@ describe("fermentExtension question dropdown", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [
 				{ name: "Done", goal: "Build", steps: [] },
@@ -786,7 +786,7 @@ describe("fermentExtension question dropdown", () => {
 				ferment_id: draft.id,
 				title: "Plan Handoff",
 				goal: "Goal",
-				success_criteria: "Works",
+				success_criteria: ["Works"],
 				constraints: [],
 				phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 				gates: [
@@ -815,7 +815,7 @@ describe("fermentExtension question dropdown", () => {
 		const scoped = applyAndPersist(draft.id, {
 			type: "scope",
 			goal: "Goal",
-			successCriteria: "Works",
+			successCriteria: ["Works"],
 			constraints: [],
 			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
 		})
@@ -858,7 +858,7 @@ describe("fermentExtension question dropdown", () => {
 			runtime.setActive(draft)
 			runtime.setPendingScope(draft.id, {
 				goal: "Goal",
-				successCriteria: "Works",
+				successCriteria: ["Works"],
 				constraints: [],
 				phases: [{ name: "Phase", goal: "Build", steps: [] }],
 			})
@@ -907,6 +907,59 @@ describe("fermentExtension question dropdown", () => {
 		}
 	})
 
+	it("starts pending plan review in automated policy when auto option is selected", async () => {
+		vi.useFakeTimers()
+		try {
+			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-plan-review-auto-test-")))
+			const runtime: FermentRuntime = {
+				...createDefaultFermentRuntime(),
+				getStorage: () => storage,
+			}
+			runtime.setContinuationPolicy("manual")
+			const draft = storage.create("Auto Deferred Review")
+			runtime.setActive(draft)
+			runtime.setPendingScope(draft.id, {
+				goal: "Goal",
+				successCriteria: ["Works"],
+				constraints: [],
+				phases: [{ name: "Phase", goal: "Build", steps: [] }],
+			})
+			setPendingPlanReview({
+				fermentId: draft.id,
+				planMarkdown: "# Plan: Auto Deferred Review",
+			})
+
+			const { handlers, pi } = registerFermentExtension(runtime)
+			const agentEnd = handlers.get("agent_end")
+			if (!agentEnd) throw new Error("agent_end handler was not registered")
+			const ctx = {
+				ui: {
+					custom: vi.fn().mockResolvedValue({ kind: "start_auto" }),
+					notify: vi.fn(),
+					setWorkingVisible: vi.fn(),
+				},
+			}
+
+			await agentEnd({ type: "agent_end" }, ctx)
+			await vi.runOnlyPendingTimersAsync()
+
+			expect(runtime.getContinuationPolicy()).toBe("automated")
+			expect(requestSharedFooterRenderMock).toHaveBeenCalled()
+			expect(storage.get(draft.id)?.status).toBe("planned")
+			expect(getPendingPlanReview(draft.id)).toBeUndefined()
+			expect(pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "ferment_continuation_nudge", display: false }),
+				expect.objectContaining({ triggerTurn: true, deliverAs: "followUp" }),
+			)
+			expect(pi.appendEntry).toHaveBeenCalledWith(
+				"ferment_breadcrumb",
+				expect.objectContaining({ text: expect.stringContaining("policy automated") }),
+			)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
 	it("runs the pending plan review captured before the agent_end timer", async () => {
 		vi.useFakeTimers()
 		try {
@@ -921,13 +974,13 @@ describe("fermentExtension question dropdown", () => {
 			runtime.setActive(firstDraft)
 			runtime.setPendingScope(firstDraft.id, {
 				goal: "First goal",
-				successCriteria: "First works",
+				successCriteria: ["First works"],
 				constraints: [],
 				phases: [{ name: "First phase", goal: "Build first", steps: [] }],
 			})
 			runtime.setPendingScope(secondDraft.id, {
 				goal: "Second goal",
-				successCriteria: "Second works",
+				successCriteria: ["Second works"],
 				constraints: [],
 				phases: [{ name: "Second phase", goal: "Build second", steps: [] }],
 			})
@@ -976,7 +1029,7 @@ describe("fermentExtension question dropdown", () => {
 			runtime.setActive(draft)
 			runtime.setPendingScope(draft.id, {
 				goal: "Goal",
-				successCriteria: "Works",
+				successCriteria: ["Works"],
 				constraints: [],
 				phases: [{ name: "Phase", goal: "Build", steps: [] }],
 			})
@@ -1037,7 +1090,7 @@ describe("fermentExtension question dropdown", () => {
 			runtime.setActive(draft)
 			runtime.setPendingScope(draft.id, {
 				goal: "Goal",
-				successCriteria: "Works",
+				successCriteria: ["Works"],
 				constraints: [],
 				phases: [{ name: "Phase", goal: "Build", steps: [] }],
 			})
@@ -1079,7 +1132,7 @@ describe("fermentExtension question dropdown", () => {
 			runtime.setActive(draft)
 			runtime.setPendingScope(draft.id, {
 				goal: "Goal",
-				successCriteria: "Works",
+				successCriteria: ["Works"],
 				constraints: [],
 			})
 			setPendingPlanReview({

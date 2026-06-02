@@ -90,7 +90,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Build it",
-				successCriteria: "Tests pass",
+				successCriteria: ["Tests pass"],
 				constraints: ["one constraint"],
 				phases: [{ name: "P1", goal: "G1" }],
 			})
@@ -110,7 +110,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Build it",
-				successCriteria: "Tests pass",
+				successCriteria: ["Tests pass"],
 				constraints: [],
 				assumptions: "Redis is available",
 				phases: [{ name: "P1", goal: "G1" }],
@@ -130,7 +130,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
-				successCriteria: "criteria",
+				successCriteria: ["criteria"],
 				constraints: [],
 				phases: [{ name: "P1", goal: "G1" }],
 			})
@@ -148,7 +148,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
-				successCriteria: "criteria",
+				successCriteria: ["criteria"],
 				constraints: [],
 				phases: [
 					{ name: "P1", goal: "G1" },
@@ -177,7 +177,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
-				successCriteria: "criteria",
+				successCriteria: ["criteria"],
 				constraints: [],
 				phases: [{ name: "P1", goal: "G1" }],
 			})
@@ -203,7 +203,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
-				successCriteria: "criteria",
+				successCriteria: ["criteria"],
 				constraints: [],
 				phases: [{ name: "P1", goal: "G1" }],
 			})
@@ -226,7 +226,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
-				successCriteria: "criteria",
+				successCriteria: ["criteria"],
 				constraints: [],
 				phases: [{ name: "P1", goal: "G1" }],
 			})
@@ -259,7 +259,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
-				successCriteria: "c",
+				successCriteria: ["c"],
 				constraints: [],
 				phases: [{ name: "P1", goal: "G1" }],
 			})
@@ -279,7 +279,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
-				successCriteria: "c",
+				successCriteria: ["c"],
 				constraints: [],
 				phases: [
 					{ name: "P1", goal: "G1" },
@@ -309,7 +309,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
-				successCriteria: "criteria",
+				successCriteria: ["criteria"],
 				constraints: [],
 				phases: [
 					{ name: "P1", goal: "G1", parallel_group: 1, steps: [] },
@@ -348,7 +348,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
-				successCriteria: "c",
+				successCriteria: ["c"],
 				constraints: [],
 				phases: [{ name: "P1", goal: "G1" }],
 			})
@@ -387,7 +387,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "g",
-				successCriteria: "c",
+				successCriteria: ["c"],
 				constraints: [],
 				phases: [{ name: "P1", goal: "G1", steps: [] }],
 			})
@@ -424,7 +424,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "g",
-				successCriteria: "c",
+				successCriteria: ["c"],
 				constraints: ["c1"],
 				phases: [
 					{ name: "P1", goal: "G1", parallel_group: 1, steps: [{ description: "S1" }] },
@@ -466,7 +466,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "Goal",
-				successCriteria: "criteria",
+				successCriteria: ["criteria"],
 				constraints: ["c1"],
 				phases: [{ name: "P1", goal: "G1" }],
 			})
@@ -608,6 +608,32 @@ describe("FermentEventStore", () => {
 			expect(modeSet).not.toHaveProperty("mode")
 		})
 
+		it("folds legacy criteria events from newline-separated answers", () => {
+			const created = applyFermentEvent(undefined, {
+				id: "event-1",
+				timestamp: "2026-01-01T00:00:00.000Z",
+				type: "ferment_created",
+				preStateHash: "0".repeat(16),
+				postStateHash: "legacy",
+				payload: { id: "legacy-criteria", name: "Legacy Criteria" },
+			} as FermentEvent)
+			const scoped = applyFermentEvent(created, {
+				id: "event-2",
+				timestamp: "2026-01-02T00:00:00.000Z",
+				type: "scoping_criteria_set",
+				preStateHash: "legacy",
+				postStateHash: "legacy-2",
+				payload: {
+					criteria: {
+						answer: "criterion A\ncriterion B",
+						confirmedAt: "2026-01-02T00:00:00.000Z",
+					},
+				},
+			} as FermentEvent)
+
+			expect(scoped.successCriteria).toEqual(["criterion A", "criterion B"])
+		})
+
 		it("list() returns ferments", () => {
 			eventStore.create("Alpha")
 			eventStore.create("Beta")
@@ -643,7 +669,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "g",
-				successCriteria: "c",
+				successCriteria: ["c"],
 				constraints: [],
 				phases: [{ name: "P1", goal: "G1" }],
 			})
@@ -662,7 +688,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "g",
-				successCriteria: "c",
+				successCriteria: ["c"],
 				constraints: [],
 				phases: [{ name: "P1", goal: "G1" }],
 			})
@@ -674,7 +700,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, f.id, {
 				type: "scope",
 				goal: "g",
-				successCriteria: "c",
+				successCriteria: ["c"],
 				constraints: [],
 				phases: [{ name: "P1", goal: "G1" }],
 			})
@@ -701,7 +727,7 @@ describe("FermentEventStore", () => {
 
 			const folded = eventStore.get(f.id)
 			expect(folded?.goal).toBe("g2")
-			expect(folded?.successCriteria).toBe("c2")
+			expect(folded?.successCriteria).toEqual(["c2"])
 		})
 	})
 
@@ -715,7 +741,7 @@ describe("FermentEventStore", () => {
 			exec(eventStore, baseFerment.id, {
 				type: "scope",
 				goal: "g",
-				successCriteria: "c",
+				successCriteria: ["c"],
 				constraints: [],
 				phases: [{ name: "P", goal: "build", steps: [{ description: "stub" }] }],
 			})
