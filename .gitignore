@@ -41,6 +41,3 @@ kimchi-session-*.html
 
 .memory
 bin
-
-# Generated PostHog key — overwritten during release builds
-src/generated/posthog-key.generated.ts

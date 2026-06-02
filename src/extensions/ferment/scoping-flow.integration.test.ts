@@ -38,17 +38,21 @@ function createHarness() {
 	const eventStorage = new FermentEventStore(tempDir)
 	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => eventStorage }
 	const tools = new Map<string, RegisteredTool>()
+	let activeTools: string[] = []
 
 	const pi = {
+		on: vi.fn(),
 		registerTool: (tool: RegisteredTool) => {
 			tools.set(tool.name, tool)
 		},
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		appendEntry: vi.fn(),
-		getActiveTools: vi.fn(() => []),
-		getAllTools: vi.fn(() => []),
-		setActiveTools: vi.fn(),
+		getActiveTools: vi.fn(() => activeTools),
+		getAllTools: vi.fn(() => Array.from(tools.keys()).map((name) => ({ name }))),
+		setActiveTools: vi.fn((names: string[]) => {
+			activeTools = names
+		}),
 		getFlag: vi.fn(() => undefined),
 	} as unknown as ExtensionAPI
 
@@ -129,30 +133,26 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 		const contentText: string = Array.isArray(msgArg.content)
 			? msgArg.content.map((c: { text?: string }) => c.text ?? "").join("")
 			: String(msgArg.content)
-		expect(contentText).toContain("Task:\nDraft a complete Ferment scoping proposal.")
+		expect(contentText).toContain("Task:\nScope a Ferment through a structured orient-interview-plan flow.")
 		expect(contentText).toContain("Context:")
 		expect(contentText).toContain("I want to add Google OAuth")
 		expect(contentText).toContain(`ferment_id "${ferment.id}"`)
 		expect(contentText).toContain("Do NOT call create_ferment")
-		expect(contentText).toContain('<phase_0_inventory required="true"')
-		expect(contentText).toContain(
-			"First response action: print a concise inventory of all available skills and subagent types",
-		)
-		expect(contentText).toContain('<discovery_sequence required="true">')
-		expect(contentText).toContain("Do not use unbounded Read calls")
-		expect(contentText).toContain("first get the file's line count or tool-reported length")
-		expect(contentText).toContain("read at most a short snippet, about 60 lines or less")
-		expect(contentText).toContain("Only read an implementation/UI/style file end-to-end")
-		expect(contentText).toContain("If a file is longer than about 120 lines")
-		expect(contentText).toContain("Immediately spawn 1-4 narrow Explore subagents")
+		expect(contentText).toContain('<scoping_sequence required="true">')
+		expect(contentText).toContain("STEP 1")
+		expect(contentText).toContain("ORIENT")
+		expect(contentText).toContain("STEP 2")
+		expect(contentText).toContain("INTERVIEW")
+		expect(contentText).toContain("STEP 3")
+		expect(contentText).toContain("COMPLETION CRITERIA")
+		expect(contentText).toContain("STEP 4")
+		expect(contentText).toContain("DEEP EXPLORATION")
+		expect(contentText).toContain("STEP 5")
 		expect(contentText).toContain('subagent_type: "Explore"')
-		expect(contentText).toContain("start with token_budget: 120000")
+		expect(contentText).toContain("token_budget: 120000")
 		expect(contentText).toContain("Output contract:")
-		expect(contentText).toContain("ask those questions through the propose_ferment_scoping questions array")
-		expect(contentText).toContain("questions must be in propose_ferment_scoping.questions")
 		expect(contentText).toContain("gates array is required")
 		expect(contentText).toContain("exactly P1, P2, and P3")
-		expect(contentText).not.toContain("Don't research with file/bash tools first")
 
 		// Pending scope seeded
 		expect(getPendingScope(ferment.id)).toBeDefined()
@@ -160,6 +160,7 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 		// Step 2: simulate agent calling propose_ferment_scoping with full payload
 		const proposeScopingPayload = {
 			ferment_id: ferment.id,
+			title: "Google OAuth Login",
 			goal: "Users can sign in with Google OAuth",
 			success_criteria: "E2E test passes for OAuth login flow",
 			constraints: ["No external auth libraries beyond Google SDK"],
@@ -192,6 +193,7 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 		if (!planned) throw new Error("Ferment not found after propose_ferment_scoping")
 
 		expect(planned.status).toBe("planned")
+		expect(planned.name).toBe("Google OAuth Login")
 		expect(planned.phases).toHaveLength(1)
 		expect(planned.scoping.assumptions?.answer).toBe("Google API credentials are already provisioned")
 

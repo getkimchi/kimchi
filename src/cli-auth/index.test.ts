@@ -39,6 +39,40 @@ describe("authenticateViaBrowser", () => {
 		expect(result.token).toBe("castai_v1_test_token_123")
 	})
 
+	it("aborts the callback wait when the signal fires (e.g. login dialog cancelled)", async () => {
+		openMock.mockResolvedValue(undefined)
+		const controller = new AbortController()
+
+		const promise = authenticateViaBrowser({ webAppUrl: "https://app.kimchi.dev", signal: controller.signal })
+		let rejection: Error | undefined
+		promise.catch((err) => {
+			rejection = err instanceof Error ? err : new Error(String(err))
+		})
+		await vi.waitFor(() => {
+			expect(openMock).toHaveBeenCalledTimes(1)
+		})
+
+		// Abort instead of completing the browser callback; the server must tear down
+		// and the wait must reject rather than hang until the 5-minute timeout.
+		controller.abort()
+
+		await vi.waitFor(() => {
+			expect(rejection).toBeInstanceOf(Error)
+		})
+		expect((rejection as Error).message).toMatch(/cancelled/i)
+	})
+
+	it("does not open the browser when the signal is already aborted", async () => {
+		openMock.mockResolvedValue(undefined)
+		const controller = new AbortController()
+		controller.abort()
+
+		await expect(
+			authenticateViaBrowser({ webAppUrl: "https://app.kimchi.dev", signal: controller.signal }),
+		).rejects.toThrow(/cancelled/i)
+		expect(openMock).not.toHaveBeenCalled()
+	})
+
 	it("throws when the browser callback returns an error", async () => {
 		openMock.mockResolvedValue(undefined)
 

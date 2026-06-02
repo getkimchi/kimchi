@@ -20,9 +20,6 @@ import {
 	setMultiModelEnabled,
 } from "./prompt-construction/prompt-enrichment.js"
 
-/** Tier ordering for downgrade detection: higher index = lower tier. */
-const TIER_ORDER: ModelTier[] = ["heavy", "standard", "light"]
-
 /** Prevents model_select handler from re-checking what set_model tool already validated. */
 let suppressModelSelectGuard = false
 
@@ -246,17 +243,6 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 				"error",
 			)
 			return
-		}
-
-		// Tier-downgrade info — non-blocking
-		const prevTier = getModelTier(event.previousModel as never, MODEL_CAPABILITIES)
-		const nextTier = getModelTier(event.model as never, MODEL_CAPABILITIES)
-		// Explicit model selection (e.g. /model) disables multi-model unless the orchestrator itself was picked
-		if (prevTier && nextTier && TIER_ORDER.indexOf(prevTier) < TIER_ORDER.indexOf(nextTier)) {
-			ctx.ui?.notify(
-				`Switching from ${prevTier}-tier to ${nextTier}-tier model. Reasoning quality may be reduced for complex tasks.`,
-				"info",
-			)
 		}
 
 		if (event.source === "set") {

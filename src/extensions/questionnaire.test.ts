@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest"
-import { formatAnswerText } from "./questionnaire.js"
+import { formatAnswerText, normalizeQuestionType } from "./questionnaire.js"
+
+describe("normalizeQuestionType", () => {
+	it("keeps canonical question types unchanged", () => {
+		expect(normalizeQuestionType(undefined)).toBe("single")
+		expect(normalizeQuestionType("single")).toBe("single")
+		expect(normalizeQuestionType("multi")).toBe("multi")
+		expect(normalizeQuestionType("text")).toBe("text")
+		expect(normalizeQuestionType("confirm")).toBe("confirm")
+	})
+})
 
 describe("formatAnswerText", () => {
 	it("formats a single-select answer with index", () => {
@@ -9,7 +19,7 @@ describe("formatAnswerText", () => {
 				label: "Scope",
 				prompt: "What scope?",
 				type: "single" as const,
-				options: [{ value: "auth", label: "Auth module" }],
+				options: [{ id: "auth", label: "Auth module" }],
 				allowOther: false,
 				required: true,
 			},
@@ -42,8 +52,8 @@ describe("formatAnswerText", () => {
 				prompt: "Which features?",
 				type: "multi" as const,
 				options: [
-					{ value: "a", label: "Pagination" },
-					{ value: "b", label: "Sorting" },
+					{ id: "a", label: "Pagination" },
+					{ id: "b", label: "Sorting" },
 				],
 				allowOther: false,
 				required: true,
@@ -70,7 +80,7 @@ describe("formatAnswerText", () => {
 				label: "Scope",
 				prompt: "?",
 				type: "single" as const,
-				options: [{ value: "a", label: "A" }],
+				options: [{ id: "a", label: "A" }],
 				allowOther: false,
 				required: true,
 			},
@@ -79,7 +89,7 @@ describe("formatAnswerText", () => {
 				label: "Priority",
 				prompt: "?",
 				type: "single" as const,
-				options: [{ value: "h", label: "High" }],
+				options: [{ id: "h", label: "High" }],
 				allowOther: false,
 				required: true,
 			},
@@ -99,8 +109,8 @@ describe("formatAnswerText", () => {
 				prompt: "Proceed?",
 				type: "confirm" as const,
 				options: [
-					{ value: "yes", label: "Yes" },
-					{ value: "no", label: "No" },
+					{ id: "yes", label: "Yes" },
+					{ id: "no", label: "No" },
 				],
 				allowOther: false,
 				required: true,
@@ -117,7 +127,7 @@ describe("formatAnswerText", () => {
 				label: "Q1",
 				prompt: "?",
 				type: "single" as const,
-				options: [{ value: "v", label: "Val" }],
+				options: [{ id: "v", label: "Val" }],
 				allowOther: false,
 				required: true,
 			},

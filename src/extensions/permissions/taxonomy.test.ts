@@ -83,6 +83,11 @@ describe("extractBashProgram", () => {
 	it("strips leading env-var assignments", () => {
 		expect(extractBashProgram("FOO=bar BAZ=1 git status")).toEqual({ program: "git", subcommand: "status" })
 	})
+
+	it("sees through rtk wrapper to extract the real program", () => {
+		expect(extractBashProgram("rtk git status")).toEqual({ program: "git", subcommand: "status" })
+		expect(extractBashProgram("rtk ls -la")).toEqual({ program: "ls", subcommand: "-la" })
+	})
 })
 
 describe("isReadOnlyBashCommand", () => {
@@ -199,6 +204,43 @@ describe("isReadOnlyBashCommand", () => {
 		expect(isReadOnlyBashCommand("FOO=bar cat foo")).toBe(true)
 		expect(isReadOnlyBashCommand("FOO=bar git status")).toBe(true)
 	})
+
+	it("sees through rtk wrapper for read-only programs", () => {
+		expect(isReadOnlyBashCommand("rtk ls -la")).toBe(true)
+		expect(isReadOnlyBashCommand("rtk cat foo.txt")).toBe(true)
+		expect(isReadOnlyBashCommand("rtk tree -L 2")).toBe(true)
+	})
+
+	it("sees through rtk wrapper for read-only git subcommands", () => {
+		expect(isReadOnlyBashCommand("rtk git status")).toBe(true)
+		expect(isReadOnlyBashCommand("rtk git log --oneline")).toBe(true)
+		expect(isReadOnlyBashCommand("rtk git diff HEAD")).toBe(true)
+		expect(isReadOnlyBashCommand("rtk git branch")).toBe(true)
+	})
+
+	it("blocks rtk-wrapped git subcommands outside allowlist", () => {
+		expect(isReadOnlyBashCommand("rtk git push")).toBe(false)
+		expect(isReadOnlyBashCommand("rtk git commit -am x")).toBe(false)
+		expect(isReadOnlyBashCommand("rtk git reset --hard")).toBe(false)
+	})
+
+	it("blocks rtk-wrapped unknown programs", () => {
+		expect(isReadOnlyBashCommand("rtk rm -rf foo")).toBe(false)
+		expect(isReadOnlyBashCommand("rtk curl https://x.com")).toBe(false)
+	})
+
+	it("rejects bare rtk with no wrapped command", () => {
+		expect(isReadOnlyBashCommand("rtk")).toBe(false)
+	})
+
+	it("allows rtk in compound commands when all segments are read-only", () => {
+		expect(isReadOnlyBashCommand("rtk git status && rtk ls -la")).toBe(true)
+		expect(isReadOnlyBashCommand("rtk git status | head -5")).toBe(true)
+	})
+
+	it("blocks rtk in compound commands when any segment is not read-only", () => {
+		expect(isReadOnlyBashCommand("rtk git status && rtk git push")).toBe(false)
+	})
 })
 
 describe("isHardBlockedBash", () => {
@@ -227,6 +269,12 @@ describe("isHardBlockedBash", () => {
 		expect(isHardBlockedBash("rm -rf ./build")).toBe(false)
 		expect(isHardBlockedBash("rm foo.txt")).toBe(false)
 		expect(isHardBlockedBash("rm -f node_modules/.cache")).toBe(false)
+	})
+
+	it("sees through rtk wrapper for hard-blocked commands", () => {
+		expect(isHardBlockedBash("rtk sudo ls")).toBe(true)
+		expect(isHardBlockedBash("rtk rm -rf /")).toBe(true)
+		expect(isHardBlockedBash("rtk rm -rf /etc")).toBe(true)
 	})
 })
 

@@ -1,7 +1,18 @@
 import { execSync } from "node:child_process"
-import { existsSync } from "node:fs"
-import { join } from "node:path"
 import type { FermentUi } from "./ui.js"
+
+/**
+ * Check if `cwd` is inside a git repository (including subdirectories).
+ * Uses `git rev-parse --is-inside-work-tree` which correctly handles subdirectories.
+ */
+function isInsideGitRepo(cwd: string): boolean {
+	try {
+		execSync("git rev-parse --is-inside-work-tree", { cwd, stdio: ["ignore", "ignore", "ignore"] })
+		return true
+	} catch {
+		return false
+	}
+}
 
 export type EnsureGitRepoOutcome = "already-repo" | "initialized" | "declined" | "skipped" | "init-failed"
 
@@ -28,7 +39,7 @@ export interface EnsureGitRepoOptions {
  */
 export async function ensureGitRepo(opts: EnsureGitRepoOptions = {}): Promise<EnsureGitRepoOutcome> {
 	const cwd = opts.cwd ?? process.cwd()
-	if (existsSync(join(cwd, ".git"))) return "already-repo"
+	if (isInsideGitRepo(cwd)) return "already-repo"
 
 	if (!opts.autoInit) {
 		if (typeof opts.ui?.confirm !== "function") return "skipped"

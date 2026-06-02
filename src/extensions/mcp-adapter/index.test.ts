@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { type EnvironmentInfo, buildSystemPrompt } from "../prompt-construction/system-prompt.js"
-import { executeDescribe, executeSearch } from "./proxy-modes.js"
+import { executeCall, executeDescribe, executeSearch } from "./proxy-modes.js"
 import type { McpExtensionState } from "./state.js"
 import type { DirectToolSpec, ToolMetadata } from "./types.js"
 import mcpAdapter from "./index.js"
@@ -18,10 +18,13 @@ const testEnv: EnvironmentInfo = {
 
 type Handler = (event: unknown, ctx: unknown) => unknown
 
+const TEST_SESSION_ID = "test-session"
+
 function makePi(): ExtensionAPI & { fireShutdown: () => Promise<void> } {
 	const handlers = new Map<string, Handler[]>()
 	const tools: ToolInfo[] = []
 	let activeTools: string[] = []
+	const sessionStartCtx = { sessionManager: { getSessionId: () => TEST_SESSION_ID } }
 	const pi = {
 		registerFlag: () => {},
 		registerCommand: () => {},
@@ -33,6 +36,9 @@ function makePi(): ExtensionAPI & { fireShutdown: () => Promise<void> } {
 			const list = handlers.get(event) ?? []
 			list.push(handler)
 			handlers.set(event, list)
+			// Fire session_start synchronously on registration so sessionIdByPi
+			// is populated before any render call (mirrors pi-mono behavior).
+			if (event === "session_start") handler({}, sessionStartCtx)
 		},
 		getAllTools: () => tools,
 		getActiveTools: () => activeTools,
@@ -102,10 +108,10 @@ describe("mcp adapter system prompt block", () => {
 
 		try {
 			const result = buildSystemPrompt({
-				pi,
 				tools: pi.getAllTools(),
 				env: testEnv,
 				mode: "orchestrator",
+				sessionId: TEST_SESSION_ID,
 			})
 
 			expect(result).toContain("## Tool and MCP Discovery")
@@ -115,6 +121,99 @@ describe("mcp adapter system prompt block", () => {
 		} finally {
 			await pi.fireShutdown()
 		}
+	})
+
+	it("inherits tool and MCP discovery instructions to append-mode subagents", async () => {
+		vi.stubEnv("MCP_DIRECT_TOOLS", "__none__")
+		const pi = makePi()
+		mcpAdapter(pi)
+
+		try {
+			const result = buildSystemPrompt({
+				tools: pi.getAllTools(),
+				env: testEnv,
+				mode: "subagent",
+				sessionId: TEST_SESSION_ID,
+			})
+
+			expect(result).toContain("## Tool and MCP Discovery")
+			expect(result).toContain('use mcp({ search: "query" })')
+		} finally {
+			await pi.fireShutdown()
+		}
+	})
+})
+
+describe("proxy native tool boundaries", () => {
+	it("labels active native tools as direct-only search results and does not inject them as MCP tools", () => {
+		const state = makeState(makeMetadata("pal_chat", "pal", "server"), "pal")
+		const onInject = vi.fn()
+
+		const result = executeSearch(
+			state,
+			"propose_ferment_scoping",
+			undefined,
+			undefined,
+			true,
+			() =>
+				[
+					{
+						name: "propose_ferment_scoping",
+						description: "draft ferment scope",
+						parameters: {},
+					},
+				] as ToolInfo[],
+			5,
+			undefined,
+			onInject,
+		)
+
+		const block = result.content[0]
+		const text = block.type === "text" ? block.text : ""
+		expect(text).toContain("[native tool] propose_ferment_scoping")
+		expect(text).toContain("do not call it through mcp")
+		expect(onInject).not.toHaveBeenCalled()
+		expect(result.details).toMatchObject({
+			matches: [{ server: "native", tool: "propose_ferment_scoping", dispatch: "direct" }],
+		})
+	})
+
+	it("explains that native tools are not callable through mcp({ tool })", async () => {
+		const state = makeState(makeMetadata("pal_chat", "pal", "server"), "pal")
+
+		const result = await executeCall(
+			state,
+			"propose_ferment_scoping",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			() => ({
+				tool: { name: "propose_ferment_scoping", description: "draft ferment scope", parameters: {} } as ToolInfo,
+				active: false,
+			}),
+		)
+
+		const block = result.content[0]
+		const text = block.type === "text" ? block.text : ""
+		expect(text).toContain('Tool "propose_ferment_scoping" is a native agent tool')
+		expect(text).toContain("not active in the current context")
+		expect(result.details).toMatchObject({ error: "native_tool_not_mcp", active: false })
+	})
+
+	it("explains that native tools are described by the native tool surface, not MCP describe", () => {
+		const state = makeState(makeMetadata("pal_chat", "pal", "server"), "pal")
+
+		const result = executeDescribe(state, "propose_ferment_scoping", undefined, () => ({
+			tool: { name: "propose_ferment_scoping", description: "draft ferment scope", parameters: {} } as ToolInfo,
+			active: true,
+		}))
+
+		const block = result.content[0]
+		const text = block.type === "text" ? block.text : ""
+		expect(text).toContain('Tool "propose_ferment_scoping" is a native agent tool')
+		expect(text).toContain("Call it directly as propose_ferment_scoping")
+		expect(result.details).toMatchObject({ error: "native_tool_not_mcp", active: true })
 	})
 })
 

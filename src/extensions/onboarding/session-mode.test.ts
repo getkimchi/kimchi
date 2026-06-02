@@ -273,6 +273,18 @@ describe("session-mode onboarding persistence", () => {
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 	})
 
+	it("does not mount or mark seen while a startup prerequisite suppresses onboarding", async () => {
+		const harness = createExtensionHarness()
+		sessionModeOnboardingExtension({ launchContext: launch([]), configPath, now, shouldSkip: () => true })(
+			harness.api as unknown as Parameters<ReturnType<typeof sessionModeOnboardingExtension>>[0],
+		)
+
+		await harness.start()
+
+		expect(harness.ui.setWidget).not.toHaveBeenCalled()
+		expect(existsSync(configPath)).toBe(false)
+	})
+
 	it("extension mounts the picker and records Default selection", async () => {
 		const harness = createExtensionHarness()
 

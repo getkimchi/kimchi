@@ -11,13 +11,33 @@ interface ActiveTipGroup {
 	providers: ProviderTips[]
 }
 
+export interface TipPresenterOptions {
+	minCompletedTurnsVisible?: number
+	minVisibleMs?: number
+	now?: () => number
+}
+
+const DEFAULT_MIN_COMPLETED_TURNS_VISIBLE = 3
+const DEFAULT_MIN_VISIBLE_MS = 60_000
+
 export class TipPresenter {
 	private current: TipCandidate | undefined
 	private completedTurnsVisible = 0
+	private visibleSinceMs: number | undefined
 	private activeGroupKey: string | undefined
 	private readonly nextTipIndexBySource = new Map<string, number>()
+	private readonly minCompletedTurnsVisible: number
+	private readonly minVisibleMs: number
+	private readonly now: () => number
 
-	constructor(private readonly registry: TipRegistry) {}
+	constructor(
+		private readonly registry: TipRegistry,
+		options: TipPresenterOptions = {},
+	) {
+		this.minCompletedTurnsVisible = Math.max(0, options.minCompletedTurnsVisible ?? DEFAULT_MIN_COMPLETED_TURNS_VISIBLE)
+		this.minVisibleMs = Math.max(0, options.minVisibleMs ?? DEFAULT_MIN_VISIBLE_MS)
+		this.now = options.now ?? Date.now
+	}
 
 	getCurrentTip(): TipCandidate | undefined {
 		return this.refresh(false)
@@ -25,12 +45,13 @@ export class TipPresenter {
 
 	onTurnEnd(): TipCandidate | undefined {
 		if (this.current) this.completedTurnsVisible += 1
-		return this.refresh(this.completedTurnsVisible >= 1)
+		return this.refresh(this.canRotateCurrentTip())
 	}
 
 	clear(): void {
 		this.current = undefined
 		this.completedTurnsVisible = 0
+		this.visibleSinceMs = undefined
 		this.activeGroupKey = undefined
 		this.nextTipIndexBySource.clear()
 	}
@@ -40,6 +61,7 @@ export class TipPresenter {
 		if (!group) {
 			this.current = undefined
 			this.completedTurnsVisible = 0
+			this.visibleSinceMs = undefined
 			this.activeGroupKey = undefined
 			return undefined
 		}
@@ -72,6 +94,7 @@ export class TipPresenter {
 		if (!nextProvider) {
 			this.current = undefined
 			this.completedTurnsVisible = 0
+			this.visibleSinceMs = undefined
 			return undefined
 		}
 
@@ -82,7 +105,14 @@ export class TipPresenter {
 
 		this.current = nextTip
 		this.completedTurnsVisible = 0
+		this.visibleSinceMs = this.now()
 		return nextTip
+	}
+
+	private canRotateCurrentTip(): boolean {
+		if (!this.current || this.visibleSinceMs === undefined) return false
+		if (this.completedTurnsVisible < this.minCompletedTurnsVisible) return false
+		return this.now() - this.visibleSinceMs >= this.minVisibleMs
 	}
 
 	private getActiveGroup(): ActiveTipGroup | undefined {

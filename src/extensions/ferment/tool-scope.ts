@@ -3,33 +3,21 @@ import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import type { FermentRuntime } from "./runtime.js"
-
-export const FERMENT_TOOL_NAMES = [
-	"propose_ferment_scoping",
-	"list_ferments",
-	"scope_ferment",
-	"update_ferment_scope_field",
-	"complete_ferment",
-	"activate_ferment_phase",
-	"refine_ferment_phase",
-	"complete_ferment_phase",
-	"skip_ferment_phase",
-	"fail_ferment_phase",
-	"start_ferment_step",
-	"complete_ferment_step",
-	"verify_ferment_step",
-	"skip_ferment_step",
-	"fail_ferment_step",
-	"add_ferment_decision",
-	"add_ferment_memory",
-] as const
-
-const FERMENT_TOOL_NAME_SET = new Set<string>(FERMENT_TOOL_NAMES)
+import { FERMENT_TOOLS, FERMENT_TOOL_NAMES, isFermentToolName } from "./tool-names.js"
 
 export type FermentToolProfile = "idle" | "planner-active" | "paused-terminal" | "worker" | "oneshot-planner"
 
-const IDLE_FERMENT_TOOL_NAMES = ["list_ferments"] as const
-const PAUSED_TERMINAL_FERMENT_TOOL_NAMES = ["list_ferments"] as const
+// Idle includes `propose_ferment_scoping` so it lives in the LLM's tool snapshot from
+// the very first turn. When `request_ferment_workflow` creates a draft mid-turn, the
+// LLM can immediately call `propose_ferment_scoping` without waiting for a new turn
+// snapshot (pi-mono snapshots active tools at turn start; mid-turn profile changes
+// don't reach the running turn).
+const IDLE_FERMENT_TOOL_NAMES = [
+	FERMENT_TOOLS.LIST,
+	FERMENT_TOOLS.REQUEST_WORKFLOW,
+	FERMENT_TOOLS.PROPOSE_SCOPING,
+] as const
+const PAUSED_TERMINAL_FERMENT_TOOL_NAMES = [FERMENT_TOOLS.LIST, FERMENT_TOOLS.REQUEST_WORKFLOW] as const
 
 /**
  * Tools the planner is allowed to call directly in `ferment-oneshot` mode.
@@ -63,7 +51,7 @@ function registeredFermentToolNames(pi: ExtensionAPI): string[] {
 	return pi
 		.getAllTools()
 		.map((tool) => tool.name)
-		.filter((name) => FERMENT_TOOL_NAME_SET.has(name))
+		.filter((name) => isFermentToolName(name))
 }
 
 function allowedFermentToolNamesForProfile(profile: FermentToolProfile): readonly string[] {
@@ -134,10 +122,6 @@ export function applyFermentToolProfile(pi: ExtensionAPI, profile: FermentToolPr
 
 export function applyFermentRuntimeToolProfile(pi: ExtensionAPI, runtime: FermentRuntime): void {
 	applyFermentToolProfile(pi, profileForFerment(runtime.getActive()))
-}
-
-export function setActiveFermentState(runtime: FermentRuntime, ferment: Ferment | undefined): void {
-	runtime.setActive(ferment)
 }
 
 export function setActiveFermentAndApplyProfile(

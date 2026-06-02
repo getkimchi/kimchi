@@ -6,7 +6,7 @@ import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
-import { getCliModeArg, isHelpOrVersionArgs } from "./cli-args.js"
+import { getCliModeArg, isHelpOrVersionArgs, isProtocolOrPrintMode } from "./cli-args.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
@@ -23,15 +23,15 @@ import { isBunBinary } from "./env.js"
 import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
-import bashCollapseExtension from "./extensions/bash-collapse.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
-import contextCompactorExtension from "./extensions/context-compactor.js"
+import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import loginExtension from "./extensions/login/index.js"
+import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
 import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
@@ -43,12 +43,15 @@ import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindi
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire.js"
+import reportBugExtension from "./extensions/report-bug.js"
+import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import stripImagesExtension from "./extensions/strip-images.js"
 import tagsExtension from "./extensions/tags.js"
-import telemetryExtension from "./extensions/telemetry.js"
+import telemetryExtension from "./extensions/telemetry/index.js"
+import { drain as drainPreSessionTelemetry, sendPreSessionEvent } from "./extensions/telemetry/pre-session.js"
 import terminalColorsExtension from "./extensions/terminal-colors.js"
 import { probeKittyKeyboardSupport } from "./extensions/terminal-compat/keyboard-capability.js"
 import { emitTerminalCompatWarning } from "./extensions/terminal-compat/startup-warning.js"
@@ -61,10 +64,8 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
-import { updateModelsConfig } from "./models.js"
+import { isTransientModelsError, updateModelsConfig } from "./models.js"
 import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./modes/teleport/sync/session-export.js"
-import { ensureDeviceId } from "./posthog-device.js"
-import { capturePostHogEvent } from "./posthog.js"
 import resourcesExtension from "./resources/extension.js"
 import { type ManagedExtensionFactory, enabledExtensionFactories } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
@@ -76,26 +77,25 @@ import { getVersion } from "./utils.js"
 
 installCloudflare524RetryPatch()
 
-// --- PostHog device ID & analytics ---
-// Read or generate device ID (persisted; reused across invocations for
-// consistent unique-user counts in PostHog). Reads both camelCase and
-// snake_case (device_id) from config.json for backwards compatibility.
+function getSubcommand(args: string[]): string {
+	if (args.includes("--version") || args.includes("-v")) return "version"
+	if (args.includes("--help") || args.includes("-h")) return "help"
+	const sub = args[0]
+	if (!sub || sub.startsWith("-")) return "harness"
+	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry"].includes(sub)) return sub
+	return "harness"
+}
+
+// --- Telemetry ---
 const telemetryConfig = readTelemetryConfig()
-const deviceId = ensureDeviceId()
 
 // Fire-and-forget app_started on every invocation (respects telemetry opt-out).
-// Stash the promise so we can await it on shutdown to reduce truncated sends.
-// app_started has no per-event properties — default properties (cli_version,
-// os, arch) are attached automatically by capturePostHogEvent, matching the
-// DefaultEventProperties behaviour.
-const phPending: Promise<void>[] = []
+// The promise is tracked internally; drain before process.exit() to reduce
+// the chance of truncated HTTP requests.
 if (telemetryConfig.enabled) {
-	phPending.push(
-		capturePostHogEvent({
-			event: "app_started",
-			distinctId: deviceId,
-		}),
-	)
+	sendPreSessionEvent(telemetryConfig, "app_started", {
+		subcommand: getSubcommand(process.argv.slice(2)),
+	})
 }
 
 let sessionId: string | undefined
@@ -245,7 +245,7 @@ try {
 	// the version using piConfig.name = "kimchi".
 	const dispatch = await dispatchSubcommand(process.argv.slice(2))
 	if (dispatch.kind === "handled") {
-		await Promise.allSettled(phPending)
+		await drainPreSessionTelemetry()
 		process.exit(dispatch.exitCode)
 	}
 
@@ -261,13 +261,7 @@ try {
 
 		// Fire harness_launched (one shot per harness session; respects telemetry opt-out)
 		if (telemetryConfig.enabled) {
-			phPending.push(
-				capturePostHogEvent({
-					event: "harness_launched",
-					distinctId: deviceId,
-					properties: { version: getVersion() },
-				}),
-			)
+			sendPreSessionEvent(telemetryConfig, "harness_launched", { version: getVersion() })
 		}
 
 		let config = loadConfig()
@@ -330,12 +324,21 @@ try {
 				const { runWizard } = await import("./setup-wizard/index.js")
 				const wizardResult = await runWizard()
 				if (wizardResult.cancelled) {
+					await drainPreSessionTelemetry()
 					process.exit(130)
 				}
 				currentApiKey = wizardResult.apiKey ?? ""
 				writeApiKey(currentApiKey)
 				config = loadConfig()
 				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
+			} else if (isTransientModelsError(err)) {
+				// Rate limit / gateway error with no cached models to fall back on.
+				// Don't crash startup over a transient condition — continue with an
+				// empty list; the login gate and later refreshes will repopulate it.
+				console.warn(
+					`Could not load the model list right now (${err instanceof Error ? err.message : String(err)}). Continuing; models will refresh once the service is reachable.`,
+				)
+				models = []
 			} else {
 				throw err
 			}
@@ -392,17 +395,17 @@ try {
 		mkdirSync(themesDir, { recursive: true })
 
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
-		// the kimchi-minimal-tints and terminal-colors extensions. Skip in ACP mode —
-		// stdout is the JSON-RPC channel and OSC escapes would corrupt the IDE's
-		// input stream.
-		if (!acpMode) {
+		// the kimchi-minimal-tints and terminal-colors extensions. Skip protocol
+		// and print modes: stdout belongs to the caller, and OSC escapes corrupt it.
+		const terminalStartupOutputAllowed = !isProtocolOrPrintMode(process.argv.slice(2))
+		if (terminalStartupOutputAllowed) {
 			await probeTerminalBackground()
 			await probeKittyKeyboardSupport()
 		}
 
 		// Emit warnings for terminals that don't support modifier-aware Enter.
 		// Runs after the keyboard-capability probe so the result is available.
-		emitTerminalCompatWarning(agentDir)
+		if (terminalStartupOutputAllowed) emitTerminalCompatWarning(agentDir)
 
 		// Compare contents and only write when they differ. Restarts in a second
 		// terminal must be byte-identical no-ops because pi runs `fs.watch` on the
@@ -455,11 +458,20 @@ try {
 		}
 
 		const rawArgs = process.argv.slice(2)
-		const sessionModeOnboarding = createSessionModeOnboardingForStartup({
-			rawArgs,
+		const interactiveStartupContext = {
 			nonInteractiveMode: acpMode,
 			stdinIsTTY: process.stdin.isTTY === true,
 			stdoutIsTTY: process.stdout.isTTY === true,
+		}
+		const startupAuthState = createStartupAuthGateState()
+		const startupAuthGate = createStartupAuthGate({
+			...interactiveStartupContext,
+			state: startupAuthState,
+		})
+		const sessionModeOnboarding = createSessionModeOnboardingForStartup({
+			rawArgs,
+			...interactiveStartupContext,
+			shouldSkip: () => startupAuthState.cancelled,
 		})
 		const extensionFactories = [
 			startupUpdateExtension,
@@ -468,7 +480,11 @@ try {
 			statsExtension,
 			terminalColorsExtension,
 			kimchiMinimalTintsExtension,
+			loginExtension,
+			uiExtension,
+			startupAuthGate,
 			loopGuardExtension,
+			explorationGuardExtension,
 			lspExtension,
 			...enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
@@ -479,24 +495,23 @@ try {
 			] satisfies ManagedExtensionFactory[]),
 			questionnaireExtension,
 			promptEnrichmentExtension(skillPaths),
-			bashCollapseExtension,
+			rtkRewriteExtension,
 			permissionsExtension,
 			resourcesExtension,
 			resourceToolBlockerExtension,
 			behavioursExtension,
 			promptSummaryExtension,
-			contextCompactorExtension,
 			hideThinkingExtension,
 			thinkingStepsExtension,
 			assistantPrefixExtension,
 			clipboardImageExtension,
-			uiExtension,
 			sessionModeOnboarding,
 			tipsExtension(),
 			...enabledExtensionFactories([
 				{ id: "extensions.agents", factory: agentsExtension },
 			] satisfies ManagedExtensionFactory[]),
 			helpExtension,
+			reportBugExtension,
 			tagsExtension,
 			telemetryExtension(telemetryConfig),
 			toolRenderingExtension,
@@ -522,7 +537,7 @@ try {
 		} else if (teleportMode) {
 			if (!currentApiKey) {
 				console.error("Error: --teleport requires an API key — run 'kimchi setup' first.")
-				await Promise.allSettled(phPending)
+				await drainPreSessionTelemetry()
 				process.exit(1)
 			}
 
@@ -539,15 +554,12 @@ try {
 			await main(rawArgs, { extensionFactories })
 		}
 	}
-	// Await pending PostHog sends before exiting to reduce truncated requests.
-	await Promise.allSettled(phPending)
 } catch (err) {
-	await Promise.allSettled(phPending)
+	await drainPreSessionTelemetry()
 	if (err instanceof SetupCancelled) {
 		process.exitCode = 130
 	} else {
 		console.error(err instanceof Error ? err.message : String(err))
-		await Promise.allSettled(phPending)
 		process.exit(1)
 	}
 }

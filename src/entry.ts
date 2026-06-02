@@ -6,6 +6,7 @@
 // cannot set PI_PACKAGE_DIR early enough. This module has zero pi-mono transitive deps,
 // guaranteeing the env var is in place before config.js reads it.
 
+import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { resolve } from "node:path"
 import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
@@ -33,6 +34,13 @@ if (!preSet) {
 	}
 }
 process.env.PI_PACKAGE_DIR = auxiliaryDir
+
+const oauthTemplateDir = resolve(process.env.PI_PACKAGE_DIR, "resources", "oauth")
+if (existsSync(oauthTemplateDir)) {
+	process.env.KIMCHI_OAUTH_TEMPLATE_DIR = oauthTemplateDir
+} else {
+	process.env.KIMCHI_OAUTH_TEMPLATE_DIR = resolve(process.env.PI_PACKAGE_DIR, "oauth")
+}
 
 const agentDir = resolve(homedir(), ".config", "kimchi", "harness")
 process.env.KIMCHI_CODING_AGENT_DIR = agentDir

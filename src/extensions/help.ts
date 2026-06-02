@@ -26,11 +26,13 @@ const HELP_ROWS: HelpRow[] = [
 	{ kind: "entry", key: "/agents", desc: "Manage background agents" },
 	{ kind: "entry", key: "/permissions", desc: "View or change permission mode and rules" },
 	{ kind: "entry", key: "/phase", desc: "Show or change the current work phase" },
+	{ kind: "entry", key: "/bug", desc: "Report a bug — opens GitHub issue form" },
 	{ kind: "entry", key: "/stats", desc: "View coding analytics and metrics" },
 	{ kind: "entry", key: "/mcp", desc: "Show MCP server status" },
 	{ kind: "entry", key: "/resources", desc: "Manage resources (files, URLs, images)" },
 	{ kind: "entry", key: "/tags", desc: "Manage usage tracking tags" },
 	{ kind: "entry", key: "/todos", desc: "Open todo overlay / manage short-lived todo items" },
+	{ kind: "entry", key: "/tips", desc: "Show all tips" },
 	{ kind: "entry", key: "/help", desc: "Show this help" },
 	{ kind: "entry", key: "/exit", desc: "Exit the application" },
 ]

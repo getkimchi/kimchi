@@ -98,7 +98,7 @@ vi.mock("../../prompt-construction/context-files.js", () => ({
 	loadProjectContextFiles: vi.fn().mockReturnValue([]),
 }))
 
-vi.mock("../../telemetry.js", () => ({
+vi.mock("../../telemetry/index.js", () => ({
 	default: vi.fn().mockReturnValue(() => {}),
 }))
 
@@ -108,13 +108,14 @@ vi.mock("../../../config.js", () => ({
 		endpoint: "https://test/logs",
 		metricsEndpoint: "https://test/metrics",
 		headers: { Authorization: "Bearer test" },
+		apiKey: "",
 	}),
 }))
 
 import { DefaultResourceLoader, createAgentSession } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
-import telemetryExtension from "../../telemetry.js"
+import telemetryExtension from "../../telemetry/index.js"
 import { SUBAGENT_INTERNAL_TODOS_ENV } from "../internal-todos.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
@@ -781,22 +782,33 @@ describe("runAgent — budget awareness steers", () => {
 
 	const steerCases: Record<string, { maxTurns: number; turns: number; expectedSteerCount: number; pattern?: RegExp }> =
 		{
+			"does not steer before 50% of turn budget": {
+				maxTurns: 10,
+				turns: 4,
+				expectedSteerCount: 0,
+			},
 			"steers at 50% of turn budget": {
 				maxTurns: 10,
 				turns: 5,
 				expectedSteerCount: 1,
-				pattern: /Budget check.*Turn 5\/10/,
+				pattern: /50% of your turn budget./,
+			},
+			"does not steer between 50% and 75%": {
+				maxTurns: 10,
+				turns: 7,
+				expectedSteerCount: 1,
 			},
 			"steers at 75% of turn budget": {
 				maxTurns: 10,
 				turns: 8,
 				expectedSteerCount: 2,
-				pattern: /Budget check.*Turn 8\/10/,
+				pattern: /75% of your turn budget./,
 			},
-			"does not steer before 50% of turn budget": {
+			"steers at 90% of turn budget": {
 				maxTurns: 10,
-				turns: 4,
-				expectedSteerCount: 0,
+				turns: 9,
+				expectedSteerCount: 3,
+				pattern: /90% of your turn budget./,
 			},
 		}
 

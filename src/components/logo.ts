@@ -1,7 +1,9 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
-import { buildLogoLines, buildPathLine, buildVersionLine } from "./logo-art.js"
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { RST_FG } from "../ansi.js"
+import { getVersion } from "../utils.js"
+import { buildInfoLines, buildLogoLines } from "./logo-art.js"
 
 export class LogoHeader implements Component {
 	private readonly theme: Theme
@@ -18,40 +20,118 @@ export class LogoHeader implements Component {
 
 	render(width: number): string[] {
 		const { theme } = this
-		const versionLine = buildVersionLine(theme)
-		const pathLine = buildPathLine(theme)
+		const accentOpen = theme.getFgAnsi("accent")
 
-		const versionWidth = visibleWidth(versionLine)
-		const pathWidth = visibleWidth(pathLine)
-		const leftPad = "    " // 4 spaces to shift logo right
-		const gap = 3
+		// Logo dimensions
+		const logoWidth = Math.max(...this.logoLines.map((l) => visibleWidth(l)))
+		const logoHeight = this.logoLines.length
+		const midGap = 2
 
-		// Find the widest logo line (without leftPad)
-		let maxLogoWidth = 0
-		for (const line of this.logoLines) {
-			maxLogoWidth = Math.max(maxLogoWidth, visibleWidth(line))
+		// Compute how much room the version prefix takes so we can tell
+		// buildInfoLines how much space remains for the folder before the
+		// whole line would exceed the fixed logo width.
+		const versionStr = getVersion()
+		const versionPrefixWidth = 1 + versionStr.length + 3 // "v" + version + " · "
+		const folderMaxWidth = Math.max(4, logoWidth - versionPrefixWidth)
+
+		const infoLines = buildInfoLines(theme, { folderMaxWidth })
+
+		// Left column content width is fixed to logo width so the logo never
+		// shifts or deforms when the info line (branch name, folder) is long.
+		const leftContentWidth = logoWidth
+
+		// Truncate each info line so it never exceeds the fixed left column width.
+		const infoLinesFitted = infoLines.map((line) => {
+			const w = visibleWidth(line)
+			return w > leftContentWidth ? truncateToWidth(line, leftContentWidth) : line
+		})
+
+		// Compute right column width with progressive padding reduction for narrow terminals
+		let leftPad = 10
+		let midPad = 10
+		let rightPad = 1
+		let endPad = 1
+		let rightColWidth = width - (2 + leftPad + leftContentWidth + midPad + 1 + rightPad + endPad)
+
+		if (rightColWidth < 8) {
+			midPad = 0
+			rightPad = 0
+			rightColWidth = width - (2 + leftPad + leftContentWidth + 1 + endPad)
+		}
+		if (rightColWidth < 8) {
+			leftPad = 0
+			endPad = 0
+			rightColWidth = width - (2 + leftContentWidth + 1)
+		}
+		if (rightColWidth < 1) {
+			rightColWidth = 1
 		}
 
-		const result: string[] = [""]
+		// Right column content (static text — no dynamic tip mechanism exists yet)
+		const accentText = (text: string) => theme.fg("accent", text)
+		const labelLine = "Kimchi's special:"
+		const tip1Text = `Use ${accentText("/ferment")} to hand off a large task with minimal interruption.`
+		const tip2Text = `To leave the Ferment mode and return to a regular coding session, use ${accentText("/ferment exit")}.`
 
-		// Logo lines - position right content to the right of the logo
-		// Version on line 2, path on line 3 (0-indexed 1 and 2) for vertical centering
-		for (let i = 0; i < this.logoLines.length; i++) {
-			const logoLine = leftPad + this.logoLines[i]
-			const lineWidth = visibleWidth(this.logoLines[i])
-			const padding = " ".repeat(maxLogoWidth - lineWidth + gap)
+		const labelWrap = wrapTextWithAnsi(labelLine, rightColWidth)
+		const wrap1 = wrapTextWithAnsi(tip1Text, rightColWidth)
+		const wrap2 = wrapTextWithAnsi(tip2Text, rightColWidth)
+		const hrLine = accentOpen + "─".repeat(Math.max(0, rightColWidth)) + RST_FG
 
-			let rightContent = ""
-			if (i === 1 && versionWidth > 0) {
-				rightContent = padding + versionLine
-			} else if (i === 2 && pathWidth > 0) {
-				rightContent = padding + pathLine
+		const rightLines: string[] = [...labelWrap, ...wrap1, hrLine, ...wrap2]
+
+		// Left column: generous vertical padding plus centered logo + info lines
+		const infoLineCount = infoLinesFitted.length
+		const unitHeight = logoHeight + midGap + infoLineCount
+		const minVerticalPad = 2
+		const leftContentHeight = unitHeight + 2 * minVerticalPad
+		const totalHeight = Math.max(rightLines.length, leftContentHeight)
+
+		const logoTop = Math.floor((totalHeight - unitHeight) / 2)
+		const infoRowStart = logoTop + logoHeight + midGap
+
+		const accentBorder = (char: string) => accentOpen + char + RST_FG
+		const result: string[] = []
+
+		// Top border
+		const borderInner = Math.max(0, width - 2)
+		result.push(accentBorder(`┌${"─".repeat(borderInner)}┐`))
+
+		for (let row = 0; row < totalHeight; row++) {
+			let leftContent = ""
+			if (row >= logoTop && row < logoTop + logoHeight) {
+				leftContent = this.logoLines[row - logoTop]
+			}
+			if (row >= infoRowStart && row < infoRowStart + infoLineCount) {
+				leftContent = infoLinesFitted[row - infoRowStart]
 			}
 
-			result.push(truncateToWidth(logoLine + rightContent, width))
+			// Horizontally center content within leftContentWidth
+			const contentWidth = visibleWidth(leftContent)
+			const hPad = Math.floor((leftContentWidth - contentWidth) / 2)
+			const leftPadded = " ".repeat(hPad) + leftContent + " ".repeat(leftContentWidth - contentWidth - hPad)
+
+			const rightContent = rightLines[row] || ""
+			const rightVisible = visibleWidth(rightContent)
+			const rightPadded = rightContent + " ".repeat(Math.max(0, rightColWidth - rightVisible))
+
+			const line =
+				accentBorder("│") +
+				" ".repeat(leftPad) +
+				leftPadded +
+				" ".repeat(midPad) +
+				accentBorder("│") +
+				" ".repeat(rightPad) +
+				rightPadded +
+				" ".repeat(endPad) +
+				accentBorder("│")
+
+			result.push(line)
 		}
 
-		result.push("")
+		// Bottom border
+		result.push(accentBorder(`└${"─".repeat(borderInner)}┘`))
+
 		return result
 	}
 }

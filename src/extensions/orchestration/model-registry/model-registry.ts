@@ -45,8 +45,9 @@ function deriveName(m: ModelMetadata): string {
 }
 
 export interface ModelRegistryWarning {
-	kind: "unknown_model"
+	kind: "unknown_model" | "deprecated_model"
 	modelId: string
+	replacement?: string // only for deprecated_model
 }
 
 export class ModelRegistry {
@@ -60,10 +61,22 @@ export class ModelRegistry {
 		const allModels: OrchestrationModelDescriptor[] = []
 
 		for (const m of availableModels) {
+			// Sunset models are excluded entirely, like "ignored"
+			if (m.status === "sunset") continue
+
+			// Deprecated warning is emitted even for ignored models so the
+			// user gets notified even if the model isn't routed to subagents.
+			if (m.status === "deprecated") {
+				warnings.push({ kind: "deprecated_model", modelId: m.slug, replacement: m.replacement })
+			}
+
 			const entry = MODEL_CAPABILITIES.get(m.slug)
 			if (entry === "ignored") continue
+
 			if (entry === undefined) {
-				warnings.push({ kind: "unknown_model", modelId: m.slug })
+				if (m.status !== "deprecated") {
+					warnings.push({ kind: "unknown_model", modelId: m.slug })
+				}
 				allModels.push({
 					id: m.slug,
 					provider: KIMCHI_DEV_PROVIDER,

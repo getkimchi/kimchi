@@ -1,14 +1,15 @@
 import { writeFileSync } from "node:fs"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
-import { shortenTitle } from "../../ferment/shorten-title.js"
 import { computeStats, serializeStats } from "../../ferment/stats.js"
 import { FermentError } from "../../ferment/store.js"
+import { deriveDraftFermentTitle } from "../../ferment/title.js"
+import { requestSharedFooterRender } from "../shared-footer.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { decideContinuation } from "./continuation.js"
 import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
-import { appendRefEntry } from "./nudge.js"
+import { appendRefEntry, resetReactiveContinuationNudgeCount } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import {
 	buildPhaseActionOptions,
@@ -67,6 +68,7 @@ const FERMENT_SUBCOMMAND_COMPLETIONS: FermentArgumentCompletion[] = [
 	{ value: "progress", label: "progress", description: "Open phase/step progress" },
 	{ value: "pause", label: "pause", description: "Pause the active ferment lifecycle" },
 	{ value: "resume", label: "resume", description: "Resume the active ferment lifecycle" },
+	{ value: "exit", label: "exit", description: "Exit Ferment mode" },
 	{ value: "list", label: "list", description: "List ferments" },
 	{ value: "switch ", label: "switch", description: "Switch active ferment by id or name" },
 	{ value: "delete ", label: "delete", description: "Delete a ferment" },
@@ -77,7 +79,7 @@ const FERMENT_SUBCOMMAND_COMPLETIONS: FermentArgumentCompletion[] = [
 ]
 
 const FERMENT_COMMAND_USAGE =
-	'Unknown /ferment command. Use /ferment, /ferment new "Name", /ferment progress, /ferment list, /ferment switch <id-or-name>, /ferment pause, or /ferment resume.'
+	'Unknown /ferment command. Use /ferment, /ferment new "Name", /ferment progress, /ferment list, /ferment switch <id-or-name>, /ferment pause, /ferment resume, or /ferment exit.'
 
 const FERMENT_REVISE_COMPLETIONS: FermentArgumentCompletion[] = [
 	{ value: "revise goal", label: "goal", description: "Revise the ferment goal" },
@@ -162,6 +164,11 @@ export interface StartInteractiveFermentDeps {
 	runtime?: FermentRuntime
 }
 
+async function waitForHeadlessCommandTurn(ctx: FermentUiContext & ExtensionCommandContext): Promise<void> {
+	if (ctx.hasUI) return
+	await ctx.waitForIdle()
+}
+
 export async function startInteractiveFerment({
 	pi,
 	ctx,
@@ -184,11 +191,49 @@ export async function startInteractiveFerment({
 	})
 	if (!rawIntent) return
 
-	const storage = runtime.getStorage()
-	ctx.ui.setStatus?.("ferment-scoping", "Fermenting · naming…")
+	// Echo the typed intent into the transcript before the host starts working.
+	// /ferment new "X" with an inline title skips this; the title was visible in
+	// the slash command itself. The tool path (request_ferment_workflow) also skips
+	// because its tool call serves the same purpose.
 	sendFermentRequestMessage(pi, rawIntent)
+	await startFermentForIntent({ pi, ctx, runtime, rawIntent })
+}
+
+/**
+ * Create a draft ferment and run the interactive scoping flow with a
+ * pre-supplied intent. Shared between the slash command (after editor prompt)
+ * and the `request_ferment_workflow` tool (after the agent confirms with the
+ * user via questionnaire). Returns `undefined` when another ferment is already
+ * running and the call is refused.
+ */
+export async function startFermentForIntent({
+	pi,
+	ctx,
+	runtime = defaultFermentRuntime,
+	rawIntent,
+	title,
+}: {
+	pi: ExtensionAPI
+	ctx: FermentUiContext
+	runtime?: FermentRuntime
+	rawIntent: string
+	title?: string
+}): Promise<{ name: string } | undefined> {
+	const active = runtime.getActive()
+	if (active && active.status === "running") {
+		ctx.ui.notify(
+			`A ferment is already running: "${active.name}". Use /ferment progress to check status or /ferment switch to change.`,
+		)
+		return undefined
+	}
+	const storage = runtime.getStorage()
+	ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · creating…")
 	try {
-		const shortName = await shortenTitle(rawIntent)
+		// Mirror the /ferment new path: prompt the user about git init if needed.
+		// ui.confirm being available means the user can decline; ferment proceeds
+		// either way with whatever branch/commit info is present.
+		await ensureGitRepo({ ui: ctx.ui })
+		const shortName = deriveDraftFermentTitle(title ?? rawIntent)
 		const f = storage.create(shortName, rawIntent)
 		setActiveFermentAndApplyProfile(pi, runtime, f)
 		appendRefEntry(pi, f.id)
@@ -201,8 +246,10 @@ export async function startInteractiveFerment({
 		)
 
 		await runScopingFlow(f, pi, ctx, runtime, rawIntent)
+		return { name: f.name }
 	} catch (err) {
 		ctx.ui.notify(err instanceof FermentError ? err.message : "Create failed.")
+		return undefined
 	} finally {
 		ctx.ui.setStatus?.("ferment-scoping", undefined)
 	}
@@ -418,6 +465,48 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: FermentUiContext, runt
 	}
 }
 
+function exitFermentMode(
+	pi: ExtensionAPI,
+	ctx: FermentUiContext & Pick<ExtensionCommandContext, "abort">,
+	runtime: FermentRuntime,
+): void {
+	const applyAndPersist = createApplyAndPersist(runtime)
+	const active = runtime.getActive()
+	if (!active) {
+		ctx.ui.notify("No active ferment to exit.")
+		return
+	}
+
+	let statusLabel = active.status
+	if (active.status === "running" || active.status === "planned") {
+		const outcome = applyAndPersist(active.id, { type: "pause" })
+		if (!outcome.ok) {
+			ctx.ui.notify(`Failed to exit "${active.name}": ${outcome.error.message}`)
+			return
+		}
+		statusLabel = "paused"
+	}
+
+	runtime.clearPendingPlanReview(active.id)
+	runtime.clearPendingScope(active.id)
+	runtime.consumeScopingGate(active.id)
+	resetReactiveContinuationNudgeCount(active.id)
+	setActiveFermentAndApplyProfile(pi, runtime, undefined)
+	const detail = formatExitDetail(statusLabel)
+	const message = `Exited Ferment mode for "${active.name}". ${detail}`
+	sendBreadcrumb(pi, message, "ack", "ferment_ack")
+	ctx.ui.notify(message)
+	requestSharedFooterRender()
+	ctx.abort()
+}
+
+function formatExitDetail(status: string): string {
+	if (status === "paused") return "It is paused and can be selected later from /ferment list or /ferment switch."
+	if (status === "complete" || status === "abandoned")
+		return `It remains ${status} and is still available from /ferment list.`
+	return `It remains ${status} and can be selected later from /ferment list or /ferment switch.`
+}
+
 export class FermentCommandController {
 	async execute(command: FermentCliCommand, deps: FermentCommandDeps): Promise<FermentCommandResult> {
 		const { pi, ctx, runtime } = deps
@@ -511,6 +600,11 @@ export class FermentCommandController {
 
 		if (command.type === "progress") {
 			await openFermentProgress(pi, ctx, runtime)
+			return { handled: true }
+		}
+
+		if (command.type === "exit") {
+			exitFermentMode(pi, ctx, runtime)
 			return { handled: true }
 		}
 
@@ -771,7 +865,7 @@ export class FermentCommandController {
 				if (!typed) return { handled: true }
 				resolvedIntent = typed
 			}
-			ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · naming…")
+			ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · creating…")
 			try {
 				// One-shot is non-interactive by definition — only auto-init when the
 				// user opted in via flag or env var. Otherwise skip silently.
@@ -780,7 +874,7 @@ export class FermentCommandController {
 					autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
 				})
 				runtime.setContinuationPolicy("automated")
-				const shortName = await shortenTitle(resolvedIntent)
+				const shortName = deriveDraftFermentTitle(resolvedIntent)
 				const f = storage.create(shortName, resolvedIntent)
 				const updated = f
 				setActiveFermentAndApplyProfile(pi, runtime, updated)
@@ -802,6 +896,7 @@ export class FermentCommandController {
 					},
 					{ triggerTurn: true },
 				)
+				await waitForHeadlessCommandTurn(ctx)
 			} catch (err) {
 				ctx.ui.notify(err instanceof FermentError ? err.message : "One-shot create failed.")
 			} finally {
@@ -836,12 +931,12 @@ export class FermentCommandController {
 			scopingIntent = typed
 			sendFermentRequestMessage(pi, typed)
 		}
-		ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · naming…")
+		ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · creating…")
 		try {
 			// Interactive path: ui.confirm is available, so ensureGitRepo will ask.
 			// User can decline; ferment still proceeds with no branch/commit info.
 			await ensureGitRepo({ ui: ctx.ui })
-			const shortName = await shortenTitle(rawName)
+			const shortName = deriveDraftFermentTitle(rawName)
 			const f = storage.create(shortName, rawName)
 			setActiveFermentAndApplyProfile(pi, runtime, f)
 			appendRefEntry(pi, f.id)
@@ -854,6 +949,7 @@ export class FermentCommandController {
 			)
 
 			await runScopingFlow(f, pi, ctx, runtime, scopingIntent)
+			await waitForHeadlessCommandTurn(ctx)
 		} catch (err) {
 			ctx.ui.notify(err instanceof FermentError ? err.message : "Create failed.")
 		} finally {

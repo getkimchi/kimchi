@@ -6,6 +6,7 @@ export const DEFAULT_EXPLORE_GUIDELINES = `During **explore** phase:
 - Start broad with \`grep\`/\`find\`/\`ls\`; then \`read\` the 3–5 most relevant files in full.
 - Trace imports and call chains across module boundaries — note the actual entry points and seams, not every file you saw.
 - Batch independent reads in a single turn to minimise round-trips.
+- **Hypothesis testing**: After 5 consecutive read-only turns without a concrete hypothesis, state your hypothesis and run ONE targeted command to test it. Exploration without a hypothesis wastes tokens.
 - Stop as soon as you have enough context to plan. Over-exploring wastes tokens.
 - Output: a tight summary (paths, key types, integration points) — what matters, not everything you saw.`
 

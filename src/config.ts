@@ -54,6 +54,7 @@ export interface TelemetryConfig {
 	endpoint: string
 	metricsEndpoint: string
 	headers: Record<string, string>
+	apiKey: string
 }
 
 export interface SearchStrategyConfig {
@@ -231,9 +232,9 @@ function parseOnboardingConfig(value: unknown): OnboardingConfig | undefined {
  * Read telemetry configuration from config.json without requiring an API key.
  * Safe to call before authentication is set up.
  *
- * Telemetry is disabled by default. It is enabled when:
- *   - KIMCHI_TELEMETRY_ENABLED env var is set to a truthy value, or
- *   - config.json has telemetry.enabled = true
+ * Telemetry is enabled by default unless explicitly disabled. It can be disabled by:
+ *   - KIMCHI_TELEMETRY_ENABLED env var set to a falsy value (0/false), or
+ *   - config.json has telemetry.enabled = false
  *
  * Auth header resolution order:
  *   1. telemetry.headers in config.json (explicit override)
@@ -266,19 +267,18 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 
 	// Resolve auth headers: explicit config override takes priority, then API key
 	let headers: Record<string, string>
-	let apiKey: string | undefined
+	const apiKey =
+		(typeof process.env.KIMCHI_API_KEY === "string" && process.env.KIMCHI_API_KEY.length > 0
+			? process.env.KIMCHI_API_KEY
+			: undefined) ?? readApiKeyFromConfigFile(path)
 	if (fileHeaders) {
 		headers = fileHeaders
 	} else {
-		apiKey =
-			(typeof process.env.KIMCHI_API_KEY === "string" && process.env.KIMCHI_API_KEY.length > 0
-				? process.env.KIMCHI_API_KEY
-				: undefined) ?? readApiKeyFromConfigFile(path)
 		headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : {}
 	}
 
-	// Enabled by default when an API key is available; explicit config/env overrides either way
-	const defaultEnabled = fileHeaders ? Object.keys(fileHeaders).length > 0 : !!apiKey
+	// Enabled by default; explicit config/env overrides either way
+	const defaultEnabled = true
 	const enabled =
 		envEnabled !== undefined ? envEnabled !== "0" && envEnabled !== "false" : (fileEnabled ?? defaultEnabled)
 
@@ -293,6 +293,7 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 		endpoint: fileEndpoint ?? DEFAULT_TELEMETRY_LOGS_ENDPOINT,
 		metricsEndpoint: fileMetricsEndpoint ?? DEFAULT_TELEMETRY_METRICS_ENDPOINT,
 		headers,
+		apiKey: apiKey ?? "",
 	}
 }
 
@@ -436,6 +437,26 @@ export function writeDeviceId(id: string, configPath?: string): void {
  * KIMCHI_TELEMETRY_ENABLED is set — but the persisted value is still useful
  * for fresh shells.
  */
+/**
+ * Check whether the user has explicitly set a telemetry preference —
+ * either via the KIMCHI_TELEMETRY_ENABLED env var or by persisting
+ * telemetry.enabled in config.json. Returns false when neither is set,
+ * meaning the user has never been asked / never chose.
+ */
+export function isTelemetryExplicitlyConfigured(configPath?: string): boolean {
+	if (process.env.KIMCHI_TELEMETRY_ENABLED !== undefined) return true
+	try {
+		const path = configPath ?? KIMCHI_CONFIG_PATH
+		const raw = readFileSync(path, "utf-8")
+		const parsed = JSON.parse(raw)
+		const t = parsed.telemetry
+		if (t && typeof t === "object" && typeof t.enabled === "boolean") return true
+	} catch {
+		// missing or invalid config — not configured
+	}
+	return false
+}
+
 export function writeTelemetryEnabled(enabled: boolean, configPath?: string): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateConfigFile(path, (raw) => {

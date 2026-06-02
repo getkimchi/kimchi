@@ -154,11 +154,16 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 			if (!isCurrentPendingReview(review)) return
 
-			if (outcome.kind === "start") {
-				const scopeOutcome = confirmPendingScope(runtime, review.fermentId, undefined, "turn_end", review.title, pi)
+			if (outcome.kind === "start" || outcome.kind === "start_auto") {
+				const scopeOutcome = confirmPendingScope(runtime, review.fermentId, undefined, "turn_end", pi)
 				if (!scopeOutcome.ok) {
 					ctx?.ui?.notify?.(`Failed to save plan: ${scopeOutcome.error.message}`, "error")
 					return
+				}
+				if (outcome.kind === "start_auto") {
+					runtime.setContinuationPolicy("automated")
+					applyFermentRuntimeToolProfile(pi, runtime)
+					requestSharedFooterRender()
 				}
 				runtime.clearPendingPlanReview(review.fermentId)
 				scheduleFermentWakeUp(pi, runtime, {

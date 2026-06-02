@@ -216,11 +216,13 @@ export function isHardBlockedBash(command: string): boolean {
 	if (/:\(\)\s*\{/.test(command)) return true
 
 	for (const segment of parseCommandSegments(command)) {
-		const program = segment.tokens[0]
+		// See through RTK wrapper so `rtk rm -rf /` is still caught.
+		const tokens = segment.tokens[0] === "rtk" ? segment.tokens.slice(1) : segment.tokens
+		const program = tokens[0]
 		if (!program) continue
 		if (HARD_BLOCK_PROGRAMS.has(program)) return true
-		if (program === "rm" && isDangerousRmSegment(segment.tokens)) return true
-		if (program === "dd" && segment.tokens.some((t) => t.startsWith("of=/dev/"))) return true
+		if (program === "rm" && isDangerousRmSegment(tokens)) return true
+		if (program === "dd" && tokens.some((t) => t.startsWith("of=/dev/"))) return true
 	}
 	return false
 }
@@ -304,7 +306,9 @@ export function splitCompoundCommand(command: string): string[] | null {
 }
 
 export function extractBashProgram(command: string): { program: string; subcommand: string | undefined } {
-	const tokens = firstSegmentTokens(command)
+	// See through the RTK wrapper so callers get the real program/subcommand.
+	const raw = firstSegmentTokens(command)
+	const tokens = raw[0] === "rtk" ? raw.slice(1) : raw
 	return { program: tokens[0] ?? "", subcommand: tokens[1] }
 }
 
@@ -328,6 +332,14 @@ export function isReadOnlyBashCommand(command: string): boolean {
 function isSegmentReadOnly(tokens: string[]): boolean {
 	const program = tokens[0]
 	if (!program) return false
+
+	// RTK is a transparent wrapper (`rtk git status` → classify `git status`).
+	// Delegate to the wrapped command so read-only checks apply as if RTK
+	// were not present.  If there is no wrapped command, reject — bare `rtk`
+	// is not read-only.
+	if (program === "rtk") {
+		return tokens.length > 1 ? isSegmentReadOnly(tokens.slice(1)) : false
+	}
 
 	const allowedSubs = READ_ONLY_SUBCOMMANDS[program]
 	if (allowedSubs) {

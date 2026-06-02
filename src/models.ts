@@ -7,6 +7,53 @@ const MODELS_METADATA_API = `${KIMCHI_API}/v1/models/metadata?include_in_cli=tru
 const CHAT_COMPLETIONS_API = `${KIMCHI_API}/openai/v1`
 const FETCH_TIMEOUT_MS = 5000
 
+// HTTP statuses worth retrying: rate limiting and transient gateway/server errors.
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
+const MAX_FETCH_ATTEMPTS = 3
+const BASE_RETRY_DELAY_MS = 500
+const MAX_RETRY_DELAY_MS = 4000
+
+/**
+ * Error raised when the model metadata API cannot be reached. `transient` marks
+ * failures that are expected to clear on their own (rate limiting, gateway/server
+ * errors, network blips) so callers can offer "try again" instead of treating the
+ * user's saved API key as invalid.
+ */
+export class ModelsFetchError extends Error {
+	readonly status?: number
+	readonly transient: boolean
+	constructor(message: string, options: { status?: number; transient: boolean }) {
+		super(message)
+		this.name = "ModelsFetchError"
+		this.status = options.status
+		this.transient = options.transient
+	}
+}
+
+/** True when `error` is a transient (retryable) model-refresh failure. */
+export function isTransientModelsError(error: unknown): boolean {
+	return error instanceof ModelsFetchError && error.transient
+}
+
+export interface FetchModelsOptions {
+	/** Injected sleep for deterministic tests; defaults to a setTimeout-based delay. */
+	sleep?: (ms: number) => Promise<void>
+}
+
+const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Delay before the next retry, honoring a `Retry-After` header when present. */
+function retryDelayMs(response: Response, attempt: number): number {
+	const header = response.headers?.get?.("retry-after")
+	if (header) {
+		const seconds = Number(header)
+		if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, MAX_RETRY_DELAY_MS)
+		const dateMs = Date.parse(header)
+		if (!Number.isNaN(dateMs)) return Math.min(Math.max(dateMs - Date.now(), 0), MAX_RETRY_DELAY_MS)
+	}
+	return Math.min(BASE_RETRY_DELAY_MS * 2 ** (attempt - 1), MAX_RETRY_DELAY_MS)
+}
+
 export interface ModelMetadata {
 	slug: string
 	display_name: string
@@ -18,6 +65,8 @@ export interface ModelMetadata {
 		context_window: number
 		max_output_tokens: number
 	}
+	status?: "active" | "sunset" | "deprecated"
+	replacement?: string
 }
 
 interface ModelsMetadataResponse {
@@ -30,25 +79,50 @@ function sortModels(models: ModelMetadata[]): ModelMetadata[] {
 	return [...serverless, ...rest]
 }
 
-async function fetchAvailableModels(apiKey: string): Promise<ModelMetadata[]> {
-	const response = await fetch(MODELS_METADATA_API, {
-		headers: { Authorization: `Bearer ${apiKey}` },
-		signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-	})
-	if (!response.ok) {
-		throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`)
+async function fetchAvailableModels(apiKey: string, options: FetchModelsOptions = {}): Promise<ModelMetadata[]> {
+	const sleep = options.sleep ?? defaultSleep
+	let lastError: ModelsFetchError | undefined
+
+	for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt += 1) {
+		let response: Response
+		try {
+			response = await fetch(MODELS_METADATA_API, {
+				headers: { Authorization: `Bearer ${apiKey}` },
+				signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+			})
+		} catch (err) {
+			// Network/timeout failures are transient; surface them so the caller can
+			// offer a retry rather than discarding the user's saved API key.
+			throw new ModelsFetchError(`Failed to fetch models: ${err instanceof Error ? err.message : String(err)}`, {
+				transient: true,
+			})
+		}
+
+		if (response.ok) {
+			const body = (await response.json()) as ModelsMetadataResponse
+			if (!Array.isArray(body?.models)) {
+				throw new ModelsFetchError("Unexpected response shape from models API", { transient: false })
+			}
+			if (body.models.length === 0) {
+				throw new ModelsFetchError("API returned empty model list", { transient: false })
+			}
+			return body.models
+		}
+
+		const transient = RETRYABLE_STATUSES.has(response.status)
+		lastError = new ModelsFetchError(`Failed to fetch models: ${response.status} ${response.statusText}`, {
+			status: response.status,
+			transient,
+		})
+		if (!transient || attempt === MAX_FETCH_ATTEMPTS) throw lastError
+		await sleep(retryDelayMs(response, attempt))
 	}
-	const body = (await response.json()) as ModelsMetadataResponse
-	if (!Array.isArray(body?.models)) {
-		throw new Error("Unexpected response shape from models API")
-	}
-	if (body.models.length === 0) {
-		throw new Error("API returned empty model list")
-	}
-	return body.models
+
+	// Unreachable: the loop returns on success or throws on the final attempt.
+	throw lastError ?? new ModelsFetchError("Failed to fetch models", { transient: true })
 }
 
-interface PiModelConfig {
+export interface PiModelConfig {
 	id: string
 	name: string
 	reasoning: boolean
@@ -59,6 +133,10 @@ interface PiModelConfig {
 	// Persisted so telemetry can resolve the actual upstream provider after cache round-trip.
 	provider: string
 	compat?: { supportsReasoningEffort?: boolean; cacheControlFormat?: "anthropic" }
+	/** Model-level API type: upstream custom-provider parseModels falls through to this field. */
+	api?: string
+	/** Model-level base URL: upstream custom-provider parseModels falls through to this field. */
+	baseUrl?: string
 }
 
 function metadataToModel(m: ModelMetadata): PiModelConfig {
@@ -115,6 +193,16 @@ function modelToMetadata(m: PiModelConfig): ModelMetadata {
 	}
 }
 
+function extractModelsFromProviders(providers: Record<string, { models?: PiModelConfig[] }>): ModelMetadata[] {
+	const result: ModelMetadata[] = []
+	for (const [, provider] of Object.entries(providers)) {
+		if (provider && typeof provider === "object" && Array.isArray(provider.models)) {
+			result.push(...provider.models.map(modelToMetadata))
+		}
+	}
+	return result
+}
+
 function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined {
 	try {
 		const raw = readFileSync(modelsJsonPath, "utf-8")
@@ -145,6 +233,25 @@ export async function validateApiKey(apiKey: string): Promise<void> {
 }
 
 /**
+ * Overwrite or insert a provider's models in models.json.
+ * Used after OAuth subscription login to persist upstream models into Kimchi's cache.
+ */
+export function syncProviderModels(
+	modelsJsonPath: string,
+	providerId: string,
+	models: PiModelConfig[],
+	providerConfig?: { api?: string; baseUrl?: string },
+): void {
+	let config: { providers?: Record<string, { api?: string; baseUrl?: string; models?: PiModelConfig[] }> } = {}
+	if (existsSync(modelsJsonPath)) {
+		config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+	}
+	if (!config.providers) config.providers = {}
+	config.providers[providerId] = { ...providerConfig, models }
+	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
+}
+
+/**
  * Fetch available models from the kimchi metadata API and write the
  * configuration to modelsJsonPath. If no API key is configured, returns
  * cached models (if available) or an empty list without making a network call.
@@ -155,29 +262,38 @@ export async function validateApiKey(apiKey: string): Promise<void> {
  * User-added providers (anything other than "kimchi-dev") are preserved across
  * updates so custom model configurations are not lost on startup.
  */
-export async function updateModelsConfig(modelsJsonPath: string, apiKey: string): Promise<ModelsConfigResult> {
+export async function updateModelsConfig(
+	modelsJsonPath: string,
+	apiKey: string,
+	options: FetchModelsOptions = {},
+): Promise<ModelsConfigResult> {
 	const dir = dirname(modelsJsonPath)
 	mkdirSync(dir, { recursive: true })
 
-	if (!apiKey) {
-		return { models: readCachedMetadata(modelsJsonPath) ?? [] }
-	}
-
 	const otherProviders = readExistingProviders(modelsJsonPath)
+	const otherModels = extractModelsFromProviders(otherProviders as Record<string, { models?: PiModelConfig[] }>)
+
+	if (!apiKey) {
+		return { models: sortModels([...(readCachedMetadata(modelsJsonPath) ?? []), ...otherModels]) }
+	}
 
 	let fetched: ModelMetadata[]
 	try {
-		fetched = await fetchAvailableModels(apiKey)
+		fetched = await fetchAvailableModels(apiKey, options)
 	} catch (err) {
-		const cached = readCachedMetadata(modelsJsonPath)
-		if (!cached) throw err
+		const cached = readCachedMetadata(modelsJsonPath) ?? []
+		if (cached.length === 0 && otherModels.length === 0) throw err
 		const message = err instanceof Error ? err.message : String(err)
 		console.warn(`Failed to refresh models from API, using cached list: ${message}`)
-		return { models: cached }
+		return { models: sortModels([...cached, ...otherModels]) }
 	}
 
-	const models = sortModels(fetched)
+	const activeModels = fetched.filter((m) => m.status !== "sunset")
+	if (activeModels.length === 0 && fetched.length > 0) {
+		console.warn("All models from the API are sunset. No active models available.")
+	}
+	const models = sortModels(activeModels)
 	const merged = { providers: { ...otherProviders, ...buildModelsConfig(models).providers } }
 	writeFileSync(modelsJsonPath, JSON.stringify(merged, null, "\t"), "utf-8")
-	return { models }
+	return { models: sortModels([...activeModels, ...otherModels]) }
 }

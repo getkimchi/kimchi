@@ -33,6 +33,7 @@ import {
 	toolOk,
 	withNextActionHint,
 } from "../tool-helpers.js"
+import { FERMENT_TOOLS } from "../tool-names.js"
 import { ActivateParams, CompletePhaseParams, FailPhaseParams, RefineParams, SkipPhaseParams } from "../tool-schemas.js"
 import type { FermentUi, FermentUiContext } from "../ui.js"
 
@@ -484,7 +485,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 		onPhaseCompleted: () => onPhaseCompleted(runtime),
 	}
 	pi.registerTool({
-		name: "activate_ferment_phase",
+		name: FERMENT_TOOLS.ACTIVATE_PHASE,
 		label: "Activate Phase",
 		description: "Start a planned phase.",
 		parameters: ActivateParams,
@@ -570,7 +571,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 	})
 
 	pi.registerTool({
-		name: "refine_ferment_phase",
+		name: FERMENT_TOOLS.REFINE_PHASE,
 		label: "Refine Phase",
 		description:
 			"Add steps to an active phase. Overwrites existing. Use the phase_id returned by activate_ferment_phase.",
@@ -625,7 +626,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 	})
 
 	pi.registerTool({
-		name: "complete_ferment_phase",
+		name: FERMENT_TOOLS.COMPLETE_PHASE,
 		label: "Complete Phase",
 		description: `Mark phase as completed. You must produce verdicts for the three phase-scope gates below. A "flag" verdict refuses advancement.
 
@@ -637,7 +638,7 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 	})
 
 	pi.registerTool({
-		name: "skip_ferment_phase",
+		name: FERMENT_TOOLS.SKIP_PHASE,
 		label: "Skip Phase",
 		description: "Skip a phase.",
 		parameters: SkipPhaseParams,
@@ -669,7 +670,7 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 	})
 
 	pi.registerTool({
-		name: "fail_ferment_phase",
+		name: FERMENT_TOOLS.FAIL_PHASE,
 		label: "Fail Phase",
 		description: "Mark a phase as failed with a reason.",
 		parameters: FailPhaseParams,

@@ -1,4 +1,5 @@
 import {
+	chmodSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -136,5 +137,18 @@ describe("exportEnvToShellProfile", () => {
 		const result = exportEnvToShellProfile("KIMCHI_API_KEY", "key")
 		expect(result.path).toBeNull()
 		expect(result.error).toMatch(/non-UTF-8/)
+	})
+
+	it("surfaces permission error when parent directory is read-only", () => {
+		process.env.SHELL = "/bin/zsh"
+		const profile = join(tmpHome, ".zshrc")
+		writeFileSync(profile, "# existing\n")
+		chmodSync(tmpHome, 0o555)
+
+		const result = exportEnvToShellProfile("KIMCHI_API_KEY", "key")
+		expect(result.path).toBeNull()
+		expect(result.error).toMatch(/read-only/)
+
+		chmodSync(tmpHome, 0o755)
 	})
 })

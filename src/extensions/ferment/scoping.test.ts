@@ -17,13 +17,17 @@ function createRuntime(): { runtime: FermentRuntime; storage: FermentEventStore 
 }
 
 function makePi(): ExtensionAPI {
+	let activeTools: string[] = []
 	return {
+		on: vi.fn(),
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
-		getActiveTools: vi.fn(() => []),
-		getAllTools: vi.fn(() => []),
-		setActiveTools: vi.fn(),
+		getActiveTools: vi.fn(() => activeTools),
+		getAllTools: vi.fn(() => [{ name: "propose_ferment_scoping" }, { name: "list_ferments" }]),
+		setActiveTools: vi.fn((names: string[]) => {
+			activeTools = names
+		}),
 	} as unknown as ExtensionAPI
 }
 
@@ -56,12 +60,14 @@ describe("attachPendingProposal", () => {
 
 		// Replace with only goal+phases; other fields should be cleared
 		const replaced = runtime.attachPendingProposal(ferment.id, {
+			title: "New Title",
 			goal: "new goal",
 			phases: [{ name: "P2", goal: "Ship", steps: [{ description: "Deploy" }] }],
 		})
 
 		expect(replaced).toBe(true)
 		const pending = runtime.getPendingScope(ferment.id)
+		expect(pending?.title).toBe("New Title")
 		expect(pending?.goal).toBe("new goal")
 		expect(pending?.successCriteria).toBe("")
 		expect(pending?.constraints).toEqual([])
@@ -103,34 +109,31 @@ describe("runScopingFlow", () => {
 			.mock.calls.find((call) => (call[0] as { customType?: string }).customType === "ferment_created_nudge")
 		const msg = nudgeCall?.[0] as { content: { type: string; text: string }[] }
 		const text = msg.content.map((c) => c.text).join("")
-		expect(text).toContain("Task:\nDraft a complete Ferment scoping proposal.")
+		expect(text).toContain("Task:\nScope a Ferment through a structured orient-interview-plan flow.")
 		expect(text).toContain("Context:")
 		expect(text).toContain("I want to build a login system")
 		expect(text).toContain(`ferment_id "${ferment.id}"`)
 		expect(text).toContain("Do NOT call create_ferment")
-		expect(text).toContain('<phase_0_inventory required="true"')
-		expect(text).toContain(
-			"First response action: print a concise inventory of all available skills and subagent types",
-		)
-		expect(text).toContain('<discovery_sequence required="true">')
-		expect(text).toContain("Do not use unbounded Read calls")
-		expect(text).toContain("first get the file's line count or tool-reported length")
-		expect(text).toContain("read at most a short snippet, about 60 lines or less")
-		expect(text).toContain("Only read an implementation/UI/style file end-to-end")
-		expect(text).toContain("If a file is longer than about 120 lines")
-		expect(text).toContain("Immediately spawn 1-4 narrow Explore subagents")
+		// Orient-interview scoping sequence
+		expect(text).toContain('<scoping_sequence required="true">')
+		expect(text).toContain("STEP 1")
+		expect(text).toContain("ORIENT")
+		expect(text).toContain("STEP 2")
+		expect(text).toContain("INTERVIEW")
+		expect(text).toContain("iterative rounds")
+		expect(text).toContain("STEP 3")
+		expect(text).toContain("COMPLETION CRITERIA")
+		expect(text).toContain("STEP 4")
+		expect(text).toContain("DEEP EXPLORATION")
+		expect(text).toContain("STEP 5")
+		expect(text).toContain("PLAN")
 		expect(text).toContain('subagent_type: "Explore"')
-		expect(text).toContain("start with token_budget: 120000")
-		expect(text).toContain('Do not "round out the initial scan"')
-		expect(text).toContain("Forbidden pattern: reading entire implementation, UI, or style files")
-		expect(text).toContain("Question policy:")
+		expect(text).toContain("token_budget: 120000")
+		expect(text).toContain("Orient \u2192 Interview \u2192 Criteria \u2192 Explore \u2192 Plan")
 		expect(text).toContain("Planning policy:")
 		expect(text).toContain("Output contract:")
-		expect(text).toContain("ask those questions through the propose_ferment_scoping questions array")
-		expect(text).toContain("questions must be in propose_ferment_scoping.questions")
 		expect(text).toContain("gates array is required")
 		expect(text).toContain("exactly P1, P2, and P3")
-		expect(text).not.toContain("Don't research with file/bash tools first")
 		expect(text).toContain("Call propose_ferment_scoping")
 	})
 

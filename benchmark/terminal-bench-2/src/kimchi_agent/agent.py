@@ -36,6 +36,7 @@ CONTAINER_MAIN_SESSION = f"{CONTAINER_SESSIONS_DIR}/main.jsonl"
 CONTAINER_AGENT_PGID_FILE = f"{CONTAINER_LOGS_DIR}/kimchi-agent.pgid"
 CONTAINER_HARNESS_SETTINGS_DIR = "~/.config/kimchi/harness"
 CONTAINER_HARNESS_SETTINGS = f"{CONTAINER_HARNESS_SETTINGS_DIR}/settings.json"
+CONTAINER_HARNESS_SKILLS_DIR = f"{CONTAINER_HARNESS_SETTINGS_DIR}/skills"
 KIMCHI_API_KEY_ENV = "KIMCHI_API_KEY"
 
 
@@ -263,6 +264,9 @@ class Kimchi(BaseInstalledAgent):
         multi_model_settings = self._multi_model_settings_command()
         if multi_model_settings:
             parts.append(multi_model_settings)
+        skills_registration = self._skills_registration_command()
+        if skills_registration:
+            parts.append(skills_registration)
 
         parts.append(
             # Enable job control so the backgrounded kimchi pipeline gets a
@@ -300,6 +304,15 @@ class Kimchi(BaseInstalledAgent):
         return (
             f"mkdir -p {CONTAINER_HARNESS_SETTINGS_DIR} && "
             f"printf '%s\\n' {shlex.quote(settings_json)} > {CONTAINER_HARNESS_SETTINGS}"
+        )
+
+    def _skills_registration_command(self) -> str:
+        if not self.skills_dir:
+            return ""
+
+        return (
+            f"mkdir -p {CONTAINER_HARNESS_SKILLS_DIR} && "
+            f"{{ cp -a {shlex.quote(self.skills_dir)}/. {CONTAINER_HARNESS_SKILLS_DIR}/ || true; }}"
         )
 
     def _kimchi_command(self, cli_flags: str) -> str:
