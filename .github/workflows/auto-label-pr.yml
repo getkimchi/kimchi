@@ -31,7 +31,7 @@ jobs:
           echo "Extracted section:"
           printf '%s' "$SECTION"
           echo "section<<EOF" >> $GITHUB_OUTPUT
-          printf '%s' "$SECTION" >> $GITHUB_OUTPUT
+          printf '%s\n' "$SECTION" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Parse checked boxes and build label list
