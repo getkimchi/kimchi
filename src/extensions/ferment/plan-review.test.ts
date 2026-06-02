@@ -97,13 +97,13 @@ describe("PlanReviewComponent", () => {
 		const { component, tui } = createComponent()
 
 		component.handleInput?.("\x1b[B")
-		expect(component.render(80).join("\n")).toContain("> Start in auto mode")
+		expect(component.render(80).join("\n")).toContain("> Start execution in auto mode")
 
 		component.handleInput?.("\x1b[B")
 		expect(component.render(80).join("\n")).toContain("> Let me say something")
 
 		component.handleInput?.("\x1b[A")
-		expect(component.render(80).join("\n")).toContain("> Start in auto mode")
+		expect(component.render(80).join("\n")).toContain("> Start execution in auto mode")
 		expect(tui.requestRender).toHaveBeenCalled()
 	})
 

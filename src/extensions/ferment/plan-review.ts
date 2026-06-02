@@ -20,7 +20,7 @@ export type PlanReviewOutcome =
 	| { kind: "cancelled"; reason: "decision_cancelled" | "feedback_cancelled" | "empty_feedback" }
 
 const pendingPlanReviews = new Map<string, PendingPlanReview>()
-const DECISION_OPTIONS = ["Start execution", "Start in auto mode", "Let me say something"] as const
+const DECISION_OPTIONS = ["Start execution", "Start execution in auto mode", "Let me say something"] as const
 
 export function setPendingPlanReview(review: PendingPlanReview): void {
 	pendingPlanReviews.set(review.fermentId, review)
