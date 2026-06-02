@@ -68,6 +68,7 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].apiKey).toBe("$KIMCHI_API_KEY")
 		expect(config.providers["kimchi-dev"].models).toEqual([
 			{
 				id: "kimi-k2.5",
@@ -220,7 +221,7 @@ describe("updateModelsConfig", () => {
 				providers: {
 					"kimchi-dev": {
 						baseUrl: "https://llm.kimchi.dev",
-						apiKey: "KIMCHI_API_KEY",
+						apiKey: "$KIMCHI_API_KEY",
 						api: "openai-completions",
 						models: [OPENAI_MODEL],
 					},

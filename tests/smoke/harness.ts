@@ -43,7 +43,7 @@ beforeAll(() => {
 				providers: {
 					"kimchi-dev": {
 						baseUrl: "https://llm.kimchi.dev/openai/v1",
-						apiKey: "KIMCHI_API_KEY",
+						apiKey: "$KIMCHI_API_KEY",
 						api: "openai-completions",
 						authHeader: true,
 						models: [

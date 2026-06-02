@@ -165,7 +165,7 @@ function buildModelsConfig(models: ModelMetadata[]) {
 		providers: {
 			"kimchi-dev": {
 				baseUrl: CHAT_COMPLETIONS_API,
-				apiKey: "KIMCHI_API_KEY",
+				apiKey: "$KIMCHI_API_KEY",
 				api: "openai-completions",
 				authHeader: true,
 				headers: { "User-Agent": `kimchi/${getVersion()}` },
