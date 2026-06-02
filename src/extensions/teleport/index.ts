@@ -32,6 +32,9 @@ function makeHandler(run: CommandFn) {
 }
 
 export default function teleportExtension(pi: ExtensionAPI): void {
+	if (process.env.KIMCHI_EXPERIMENTAL_TELEPORT === undefined || process.env.KIMCHI_EXPERIMENTAL_TELEPORT === "") {
+		return
+	}
 	pi.registerCommand("teleport", {
 		description: "Open a kimchi PTY session in a sandbox workspace",
 		handler: makeHandler(runTeleport),

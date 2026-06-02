@@ -75,8 +75,9 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 			progress.step("Syncing workspace")
 			try {
 				await runRsync({
-					source: ctx.cwd,
-					destination: deriveSandboxDest(ctx.cwd),
+					localPath: ctx.cwd,
+					remotePath: deriveSandboxDest(ctx.cwd),
+					isSourceDirectory: true,
 					remoteHost: creds.host,
 					remoteUser: SANDBOX_USER,
 					authToken: creds.connectToken,

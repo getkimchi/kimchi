@@ -73,9 +73,14 @@ describe("parseTeleportArgs", () => {
 })
 
 describe("parseSyncArgs", () => {
-	it("defaults to direction=up when no args are passed", () => {
-		expect(parseSyncArgs("")).toEqual({
+	const required = "--workspace w-1 --source ./src --target /home/sandbox/project/src"
+
+	it("parses a full up command with all required flags", () => {
+		expect(parseSyncArgs(`up ${required}`)).toEqual({
 			direction: "up",
+			workspace: "w-1",
+			source: "./src",
+			target: "/home/sandbox/project/src",
 			exclude: [],
 			includeIgnored: false,
 			delete: false,
@@ -83,52 +88,79 @@ describe("parseSyncArgs", () => {
 		})
 	})
 
-	it("reads direction as the first positional", () => {
-		expect(parseSyncArgs("up").direction).toBe("up")
-		expect(parseSyncArgs("down").direction).toBe("down")
-	})
-
-	it("reads path as the second positional", () => {
-		expect(parseSyncArgs("up README.md").path).toBe("README.md")
-		expect(parseSyncArgs("down src/foo.ts").path).toBe("src/foo.ts")
-	})
-
-	it("treats a non-direction first positional as the path (direction defaults to up)", () => {
-		const args = parseSyncArgs("README.md")
-		expect(args.direction).toBe("up")
-		expect(args.path).toBe("README.md")
-	})
-
-	it("reads --workspace, --exclude, --include-ignored, --delete, --dry-run", () => {
-		expect(parseSyncArgs("down --workspace w-1 --exclude '*.tmp' --include-ignored --delete --dry-run")).toMatchObject({
+	it("parses a full down command (source is remote, target is local)", () => {
+		expect(parseSyncArgs("down --workspace w-1 --source ~/project/dist/ --target ./dist/")).toMatchObject({
 			direction: "down",
 			workspace: "w-1",
-			exclude: ["'*.tmp'"],
+			source: "~/project/dist/",
+			target: "./dist/",
+		})
+	})
+
+	it("reads --exclude (repeatable), --include-ignored, --delete, --dry-run", () => {
+		expect(
+			parseSyncArgs(`down ${required} --exclude '*.tmp' --exclude logs/ --include-ignored --delete --dry-run`),
+		).toMatchObject({
+			direction: "down",
+			exclude: ["'*.tmp'", "logs/"],
 			includeIgnored: true,
 			delete: true,
 			dryRun: true,
 		})
 	})
 
-	it("supports --path as an alternative to the positional", () => {
-		const args = parseSyncArgs("up --path src/foo.ts")
-		expect(args.path).toBe("src/foo.ts")
+	it("--no-delete overrides a preceding --delete", () => {
+		expect(parseSyncArgs(`up ${required} --delete --no-delete`).delete).toBe(false)
 	})
 
-	it("rejects --path specified twice", () => {
-		expect(() => parseSyncArgs("up src/foo.ts --path src/bar.ts")).toThrow(/more than once/)
+	it("accepts flags in any order", () => {
+		const args = parseSyncArgs("--source ./a --workspace w-1 --target /b up")
+		expect(args).toMatchObject({ direction: "up", workspace: "w-1", source: "./a", target: "/b" })
+	})
+
+	it("supports --flag=value form", () => {
+		expect(parseSyncArgs("up --workspace=w-1 --source=./a --target=/b")).toMatchObject({
+			workspace: "w-1",
+			source: "./a",
+			target: "/b",
+		})
+	})
+
+	it("rejects missing direction", () => {
+		expect(() => parseSyncArgs(required)).toThrow(/Missing direction/)
+	})
+
+	it("rejects an invalid direction", () => {
+		expect(() => parseSyncArgs(`sideways ${required}`)).toThrow(/Direction must be "up" or "down"/)
+	})
+
+	it("rejects extra positional arguments", () => {
+		expect(() => parseSyncArgs(`up down ${required}`)).toThrow(/Unexpected positional/)
+		expect(() => parseSyncArgs(`up README.md ${required}`)).toThrow(/Unexpected positional/)
+	})
+
+	it("rejects missing --workspace / --source / --target", () => {
+		expect(() => parseSyncArgs("up --source ./a --target /b")).toThrow(/--workspace/)
+		expect(() => parseSyncArgs("up --workspace w --target /b")).toThrow(/--source/)
+		expect(() => parseSyncArgs("up --workspace w --source ./a")).toThrow(/--target/)
+		expect(() => parseSyncArgs("up")).toThrow(/--workspace.*--source.*--target/)
+	})
+
+	it("rejects the removed --path flag", () => {
+		expect(() => parseSyncArgs(`up ${required} --path src/foo.ts`)).toThrow(/Unknown flag/)
 	})
 
 	it("rejects unknown flags", () => {
-		expect(() => parseSyncArgs("--bogus")).toThrow(/Unknown flag/)
+		expect(() => parseSyncArgs(`up ${required} --bogus`)).toThrow(/Unknown flag/)
 	})
 
-	it("rejects --workspace without a value", () => {
-		expect(() => parseSyncArgs("--workspace")).toThrow(/requires a value/)
-		expect(() => parseSyncArgs("--workspace --delete")).toThrow(/requires a value/)
+	it("rejects --workspace / --source / --target without a value", () => {
+		expect(() => parseSyncArgs("up --workspace")).toThrow(/--workspace requires a value/)
+		expect(() => parseSyncArgs("up --source --target /b --workspace w")).toThrow(/--source requires a value/)
+		expect(() => parseSyncArgs("up --workspace=")).toThrow(/non-empty/)
 	})
 
 	it("rejects --exclude without a value", () => {
-		expect(() => parseSyncArgs("--exclude")).toThrow(/requires a glob/)
+		expect(() => parseSyncArgs(`up ${required} --exclude`)).toThrow(/requires a glob/)
 	})
 })

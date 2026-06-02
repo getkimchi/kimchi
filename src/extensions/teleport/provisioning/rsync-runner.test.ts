@@ -94,8 +94,8 @@ describe("buildSshOption", () => {
 describe("buildRsyncArgv", () => {
 	it("produces the expected argv (snapshot)", () => {
 		const argv = buildRsyncArgv({
-			source: "/home/dev/project",
-			destination: "/home/sandbox",
+			localPath: "/home/dev/project/",
+			remotePath: "/home/sandbox/",
 			remoteHost: "session-host.example.com",
 			remoteUser: "sandbox",
 			proxyCommand: "node /opt/kimchi/teleport-proxy.js %h %p",
@@ -119,8 +119,8 @@ describe("buildRsyncArgv", () => {
 
 	it("includes --delete by default, omits it when deleteExtraneous is false", () => {
 		const withDelete = buildRsyncArgv({
-			source: "/a",
-			destination: "/b",
+			localPath: "/a",
+			remotePath: "/b",
 			remoteHost: "h",
 			remoteUser: "u",
 			proxyCommand: "node /p %h %p",
@@ -129,8 +129,8 @@ describe("buildRsyncArgv", () => {
 		})
 		expect(withDelete).toContain("--delete")
 		const withoutDelete = buildRsyncArgv({
-			source: "/a",
-			destination: "/b",
+			localPath: "/a",
+			remotePath: "/b",
 			remoteHost: "h",
 			remoteUser: "u",
 			proxyCommand: "node /p %h %p",
@@ -141,24 +141,42 @@ describe("buildRsyncArgv", () => {
 		expect(withoutDelete).not.toContain("--delete")
 	})
 
-	it("ensures trailing slashes on source and destination so rsync copies contents, not the dir itself", () => {
+	it("passes local and remote paths verbatim — no trailing slash forcing", () => {
 		const argv = buildRsyncArgv({
-			source: "/no-slash",
-			destination: "/also-no-slash",
+			localPath: "/file/no-slash",
+			remotePath: "/file/also-no-slash",
 			remoteHost: "h",
 			remoteUser: "u",
 			proxyCommand: "node /p %h %p",
 			knownHostsFile: "/k",
 			excludeFile: "/e",
 		})
-		expect(argv).toContain("/no-slash/")
-		expect(argv).toContain("u@h:/also-no-slash/")
+		// Caller decides directory-contents vs. directory-itself via trailing
+		// slash; the builder must not mutate either path.
+		expect(argv).toContain("/file/no-slash")
+		expect(argv).toContain("u@h:/file/also-no-slash")
+		expect(argv).not.toContain("/file/no-slash/")
+		expect(argv).not.toContain("u@h:/file/also-no-slash/")
 	})
 
-	it("swaps source/destination order when direction is 'down'", () => {
+	it("preserves trailing slashes that the caller supplied", () => {
 		const argv = buildRsyncArgv({
-			source: "/local",
-			destination: "/remote",
+			localPath: "/local/dir/",
+			remotePath: "/remote/dir/",
+			remoteHost: "h",
+			remoteUser: "u",
+			proxyCommand: "node /p %h %p",
+			knownHostsFile: "/k",
+			excludeFile: "/e",
+		})
+		expect(argv).toContain("/local/dir/")
+		expect(argv).toContain("u@h:/remote/dir/")
+	})
+
+	it("swaps local/remote order when direction is 'down'", () => {
+		const argv = buildRsyncArgv({
+			localPath: "/local",
+			remotePath: "/remote",
 			remoteHost: "h",
 			remoteUser: "u",
 			proxyCommand: "node /p %h %p",
@@ -166,8 +184,8 @@ describe("buildRsyncArgv", () => {
 			excludeFile: "/e",
 			direction: "down",
 		})
-		const remoteIdx = argv.indexOf("u@h:/remote/")
-		const localIdx = argv.indexOf("/local/")
+		const remoteIdx = argv.indexOf("u@h:/remote")
+		const localIdx = argv.indexOf("/local")
 		expect(remoteIdx).toBeGreaterThan(-1)
 		expect(localIdx).toBeGreaterThan(-1)
 		expect(remoteIdx).toBeLessThan(localIdx)
@@ -175,8 +193,8 @@ describe("buildRsyncArgv", () => {
 
 	it("appends --dry-run when dryRun is true", () => {
 		const argv = buildRsyncArgv({
-			source: "/a",
-			destination: "/b",
+			localPath: "/a",
+			remotePath: "/b",
 			remoteHost: "h",
 			remoteUser: "u",
 			proxyCommand: "node /p %h %p",
@@ -186,38 +204,16 @@ describe("buildRsyncArgv", () => {
 		})
 		expect(argv).toContain("--dry-run")
 	})
-
-	it("injects --include <name> --exclude * before --exclude-from when fileFilter is set", () => {
-		const argv = buildRsyncArgv({
-			source: "/a",
-			destination: "/b",
-			remoteHost: "h",
-			remoteUser: "u",
-			proxyCommand: "node /p %h %p",
-			knownHostsFile: "/k",
-			excludeFile: "/e",
-			fileFilter: "README.md",
-		})
-		const includeIdx = argv.indexOf("--include")
-		const excludeStarIdx = argv.indexOf("--exclude")
-		const excludeFromIdx = argv.indexOf("--exclude-from")
-		expect(includeIdx).toBeGreaterThan(-1)
-		expect(argv[includeIdx + 1]).toBe("README.md")
-		expect(excludeStarIdx).toBeGreaterThan(includeIdx)
-		expect(argv[excludeStarIdx + 1]).toBe("*")
-		// The include rule must come before the exclude-from so it wins.
-		expect(includeIdx).toBeLessThan(excludeFromIdx)
-	})
 })
 
 describe("buildMkdirArgv", () => {
-	it("builds an ssh argv that pre-creates the destination on the sandbox", () => {
+	it("builds an ssh argv that pre-creates a directory on the sandbox", () => {
 		const argv = buildMkdirArgv({
 			remoteHost: "h",
 			remoteUser: "u",
 			proxyCommand: "node /p %h %p",
 			knownHostsFile: "/k",
-			destination: "/home/sandbox",
+			remoteDir: "/home/sandbox",
 		})
 		expect(argv).toEqual([
 			"-o",

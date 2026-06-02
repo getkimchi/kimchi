@@ -105,8 +105,9 @@ export type SyncDirection = "up" | "down"
 
 export interface SyncArgs {
 	direction: SyncDirection
-	path?: string
-	workspace?: string
+	workspace: string
+	source: string
+	target: string
 	exclude: string[]
 	includeIgnored: boolean
 	/** When true, extraneous files at the destination are deleted. Default: false. */
@@ -115,43 +116,41 @@ export interface SyncArgs {
 }
 
 /**
- * Parse `/sync [up|down] [path] [--workspace ID] [--exclude GLOB]
- *               [--include-ignored] [--delete] [--no-delete] [--dry-run] [--path PATH]`.
+ * Parse `/sync up|down --workspace <ref> --source <path> --target <path>
+ *                     [--exclude GLOB]… [--include-ignored]
+ *                     [--delete | --no-delete] [--dry-run]`.
  *
- * The first positional is treated as the direction (defaults to "up"); a
- * second positional is treated as the relative `path`. Either can also be
- * passed explicitly via `--path`.
+ * Direction (`up` or `down`) is the only positional and is required. The
+ * three flags `--workspace`, `--source`, `--target` are all mandatory.
+ *
+ * For `up`, `--source` is local and `--target` is remote.
+ * For `down`, `--source` is remote and `--target` is local.
  */
 export function parseSyncArgs(raw: string): SyncArgs {
 	const tokens = tokenize(raw)
-	const result: SyncArgs = {
-		direction: "up",
-		exclude: [],
-		includeIgnored: false,
-		delete: false,
-		dryRun: false,
-	}
+	let direction: SyncDirection | undefined
+	let workspace: string | undefined
+	let source: string | undefined
+	let target: string | undefined
+	const exclude: string[] = []
+	let includeIgnored = false
+	let deleteExtraneous = false
+	let dryRun = false
 
-	let directionSet = false
 	for (let i = 0; i < tokens.length; i++) {
 		const t = tokens[i] as string
 		if (t === "--") {
 			throw new Error("Unexpected `--` in /sync arguments")
 		}
 		if (!t.startsWith("--")) {
-			if (!directionSet && (t === "up" || t === "down")) {
-				result.direction = t
-				directionSet = true
-				continue
+			if (direction !== undefined) {
+				throw new Error(`Unexpected positional argument: ${t}`)
 			}
-			if (result.path === undefined) {
-				result.path = t
-				// First positional is treated as path when it's not up/down;
-				// from here on we've effectively consumed the direction slot.
-				directionSet = true
-				continue
+			if (t !== "up" && t !== "down") {
+				throw new Error(`Direction must be "up" or "down" (got "${t}")`)
 			}
-			throw new Error(`Unexpected positional argument: ${t}`)
+			direction = t
+			continue
 		}
 		const eqIdx = t.indexOf("=")
 		const flag = eqIdx === -1 ? t : t.slice(0, eqIdx)
@@ -160,16 +159,16 @@ export function parseSyncArgs(raw: string): SyncArgs {
 
 		switch (flag) {
 			case "--include-ignored":
-				result.includeIgnored = true
+				includeIgnored = true
 				continue
 			case "--delete":
-				result.delete = true
+				deleteExtraneous = true
 				continue
 			case "--no-delete":
-				result.delete = false
+				deleteExtraneous = false
 				continue
 			case "--dry-run":
-				result.dryRun = true
+				dryRun = true
 				continue
 			case "--exclude": {
 				if (value === undefined) {
@@ -179,31 +178,23 @@ export function parseSyncArgs(raw: string): SyncArgs {
 					}
 					i++
 				}
-				result.exclude.push(value)
+				exclude.push(value)
 				continue
 			}
-			case "--path": {
+			case "--workspace":
+			case "--source":
+			case "--target": {
 				if (value === undefined) {
 					value = tokens[i + 1]
 					if (value === undefined || value.startsWith("--")) {
-						throw new Error("--path requires an argument")
+						throw new Error(`${flag} requires a value`)
 					}
 					i++
 				}
-				if (result.path !== undefined) throw new Error("--path specified more than once")
-				result.path = value
-				continue
-			}
-			case "--workspace": {
-				if (value === undefined) {
-					value = tokens[i + 1]
-					if (value === undefined || value.startsWith("--")) {
-						throw new Error("--workspace requires a value")
-					}
-					i++
-				}
-				if (value.length === 0) throw new Error("--workspace requires a non-empty value")
-				result.workspace = value
+				if (value.length === 0) throw new Error(`${flag} requires a non-empty value`)
+				if (flag === "--workspace") workspace = value
+				else if (flag === "--source") source = value
+				else target = value
 				continue
 			}
 			default:
@@ -211,5 +202,25 @@ export function parseSyncArgs(raw: string): SyncArgs {
 		}
 	}
 
-	return result
+	if (direction === undefined) {
+		throw new Error("Missing direction. Usage: /sync up|down --workspace <ref> --source <path> --target <path>")
+	}
+	const missing: string[] = []
+	if (workspace === undefined) missing.push("--workspace")
+	if (source === undefined) missing.push("--source")
+	if (target === undefined) missing.push("--target")
+	if (missing.length > 0) {
+		throw new Error(`Missing required flag(s): ${missing.join(", ")}`)
+	}
+
+	return {
+		direction,
+		workspace: workspace as string,
+		source: source as string,
+		target: target as string,
+		exclude,
+		includeIgnored,
+		delete: deleteExtraneous,
+		dryRun,
+	}
 }
