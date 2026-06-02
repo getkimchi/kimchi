@@ -1,6 +1,7 @@
 import crypto from "node:crypto"
 import { getMe } from "../../api/me.js"
 import type { TelemetryConfig } from "../../config.js"
+import { getActiveFerment } from "../ferment/index.js"
 import { type CumulativeState, collectMetrics, createCumulativeState } from "./accumulator.js"
 import { toAttrs } from "./helpers.js"
 import { getSessionType } from "./session-type.js"
@@ -65,6 +66,7 @@ export class SessionContext {
 	flushTimer: NodeJS.Timeout | undefined
 	logBuffer: LogRecord[] = []
 	private logFlushTimer: NodeJS.Timeout | undefined
+	lastSessionType: string | undefined
 
 	/** Cached user email from /v1/me — populated once in the background. */
 	userEmail: string | undefined
@@ -99,6 +101,7 @@ export class SessionContext {
 		this.pendingArgs.clear()
 		this.messageStartTimes.clear()
 		this.toolStartTimes.clear()
+		this.lastSessionType = undefined
 		this.cumulative = getOrCreateAccumulator(this.sessionId)
 		this.inFlight.clear()
 		this.shuttingDown = false
@@ -114,7 +117,21 @@ export class SessionContext {
 
 	emit(eventName: string, attrs: Record<string, string | number | boolean>): void {
 		const sessionType = getSessionType()
-		const merged = { ...attrs, source: this.source, session_type: sessionType }
+		const ferment = getActiveFerment()
+
+		// Detect and emit session.type_changed when the type transitions
+		if (this.lastSessionType !== undefined && sessionType !== this.lastSessionType) {
+			const changeAttrs = toAttrs({
+				session_type: sessionType,
+				previous_session_type: this.lastSessionType,
+				source: this.source,
+				ferment_id: ferment?.id ?? "",
+			})
+			this.logBuffer.push(buildLogRecord(this.sessionId, "session.type_changed", changeAttrs))
+		}
+		this.lastSessionType = sessionType
+
+		const merged = { ...attrs, source: this.source, session_type: sessionType, ferment_id: ferment?.id ?? "" }
 		this.logBuffer.push(buildLogRecord(this.sessionId, eventName, toAttrs(merged)))
 		if (this.logBuffer.length >= LOG_BATCH_MAX_SIZE) {
 			this.flushLogBuffer()

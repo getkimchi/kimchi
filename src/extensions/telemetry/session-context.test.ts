@@ -59,8 +59,78 @@ describe("SessionContext", () => {
 
 		expect(attrMap.source).toBe("cli")
 		expect(attrMap.session_type).toBe("coding")
+		expect(attrMap.ferment_id).toBe("")
 		expect(attrMap.custom).toBe("value")
 		expect(attrMap.count).toBe("42")
+	})
+
+	it("first emit seeds lastSessionType without firing session.type_changed", async () => {
+		const { getActiveFerment } = await import("../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue(undefined)
+
+		const ctx = new SessionContext(makeConfig(), "cli")
+		ctx.emit("test.event", {})
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const records = body.resourceLogs[0].scopeLogs[0].logRecords
+		expect(records).toHaveLength(1)
+		expect(records[0].eventName).toBe("test.event")
+		expect(ctx.lastSessionType).toBe("coding")
+	})
+
+	it("emits session.type_changed before the original event on transition", async () => {
+		const { getActiveFerment } = await import("../ferment/index.js")
+		// emit() calls getActiveFerment() twice per call (getSessionType + ferment lookup)
+		vi.mocked(getActiveFerment)
+			.mockReturnValueOnce(undefined) // emit 1, call 1
+			.mockReturnValueOnce(undefined) // emit 1, call 2
+			.mockReturnValueOnce({ id: "f-1" } as never) // emit 2, call 1
+			.mockReturnValueOnce({ id: "f-1" } as never) // emit 2, call 2
+
+		const ctx = new SessionContext(makeConfig(), "cli")
+		ctx.emit("event.first", {})
+		ctx.emit("event.second", {})
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const records = body.resourceLogs[0].scopeLogs[0].logRecords
+		expect(records).toHaveLength(3)
+
+		expect(records[0].eventName).toBe("event.first")
+		expect(records[1].eventName).toBe("session.type_changed")
+		expect(records[2].eventName).toBe("event.second")
+
+		const changeAttrs = Object.fromEntries(
+			records[1].attributes.map((a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue]),
+		)
+		expect(changeAttrs.session_type).toBe("ferment")
+		expect(changeAttrs.previous_session_type).toBe("coding")
+		expect(changeAttrs.ferment_id).toBe("f-1")
+		expect(changeAttrs.source).toBe("cli")
+	})
+
+	it("does not emit session.type_changed when type stays the same", async () => {
+		const { getActiveFerment } = await import("../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue(undefined)
+
+		const ctx = new SessionContext(makeConfig(), "cli")
+		ctx.emit("event.a", {})
+		ctx.emit("event.b", {})
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const records = body.resourceLogs[0].scopeLogs[0].logRecords
+		expect(records).toHaveLength(2)
+		expect(records.every((r: { eventName: string }) => r.eventName !== "session.type_changed")).toBe(true)
 	})
 
 	it("emit buffers records instead of sending immediately", () => {

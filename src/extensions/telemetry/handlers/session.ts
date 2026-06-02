@@ -1,7 +1,4 @@
-import { toAttrs } from "../helpers.js"
 import type { SessionContext } from "../session-context.js"
-import { getSessionType } from "../session-type.js"
-import { sendLog } from "../transport.js"
 
 export function handleSessionInitialized(ctx: SessionContext, initialModel?: string): void {
 	ctx.reset(ctx.source)
@@ -14,21 +11,12 @@ export function emitSessionStartEvent(ctx: SessionContext): void {
 }
 
 export async function handleSessionShutdown(ctx: SessionContext, event: { reason?: string }): Promise<void> {
-	ctx.flushLogBuffer()
 	const endedBy = event?.reason ?? "unknown"
-	await ctx.userEmailReady
-	await sendLog(
-		ctx.config,
-		ctx.sessionId,
-		"session.end",
-		toAttrs({
-			model: ctx.currentModel,
-			duration_ms: Date.now() - ctx.sessionStartMs,
-			ended_by: endedBy,
-			source: ctx.source,
-			session_type: getSessionType(),
-		}),
-		ctx.userEmail,
-	)
+	ctx.emit("session.end", {
+		model: ctx.currentModel,
+		duration_ms: Date.now() - ctx.sessionStartMs,
+		ended_by: endedBy,
+	})
+	ctx.flushLogBuffer()
 	await ctx.drain()
 }

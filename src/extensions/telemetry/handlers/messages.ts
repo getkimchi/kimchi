@@ -9,13 +9,16 @@ const PROVIDER_TELEMETRY_MAP: Record<string, string> = {
 
 export function handleMessageStart(
 	ctx: SessionContext,
-	event: { message: { role: string; responseId?: string; timestamp?: number; model?: string } },
+	event: { message: { role: string; timestamp?: number; model?: string } },
 ): void {
 	const msg = event.message
 	if (msg.role !== "assistant") return
 	if (msg.model && msg.model !== "unknown") ctx.currentModel = msg.model
-	const id = msg.responseId ? String(msg.responseId) : String(msg.timestamp)
-	ctx.messageStartTimes.set(id, Date.now())
+	// Always key timing by timestamp — it's set at message creation and never changes.
+	// responseId may not exist at message_start yet (assigned by provider mid-stream).
+	if (msg.timestamp != null) {
+		ctx.messageStartTimes.set(String(msg.timestamp), Date.now())
+	}
 }
 
 export async function handleMessageEnd(
@@ -42,9 +45,12 @@ export async function handleMessageEnd(
 		const cacheRead = assistant.usage?.cacheRead ?? 0
 		const cacheWrite = assistant.usage?.cacheWrite ?? 0
 		const costTotal = assistant.usage?.cost?.total ?? 0
-		const startMs = ctx.messageStartTimes.get(msgId) ?? ctx.sessionStartMs
-		const durationMs = Date.now() - startMs
-		ctx.messageStartTimes.delete(msgId)
+		let startMs: number | undefined
+		if (assistant.timestamp != null) {
+			startMs = ctx.messageStartTimes.get(String(assistant.timestamp))
+			ctx.messageStartTimes.delete(String(assistant.timestamp))
+		}
+		const durationMs = Date.now() - (startMs ?? ctx.sessionStartMs)
 
 		ctx.emit("api_request", {
 			model,

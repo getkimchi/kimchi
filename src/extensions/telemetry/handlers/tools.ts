@@ -98,7 +98,19 @@ export function handleToolExecutionEnd(
 
 	// --- Error tracking -------------------------------------------------------
 	if (event.isError) {
-		const errorMsg = typeof event.result === "string" ? event.result.slice(0, 300) : "unknown tool error"
-		ctx.emit("error", { model, error_type: "tool_failure", error_message: errorMsg })
+		let errorMsg = "unknown tool error"
+		if (
+			event.result &&
+			typeof event.result === "object" &&
+			Array.isArray((event.result as { content?: unknown }).content)
+		) {
+			const result = event.result as { content: Array<{ type: string; text?: string }> }
+			errorMsg = result.content
+				.filter((c: { type: string; text?: string }) => c.type === "text")
+				.map((c: { type: string; text?: string }) => c.text ?? "")
+				.join("\n")
+				.slice(0, 300)
+		}
+		ctx.emit("error", { model, error_type: "tool_failure", tool_name: toolName, error_message: errorMsg })
 	}
 }

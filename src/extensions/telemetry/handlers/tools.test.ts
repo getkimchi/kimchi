@@ -199,7 +199,11 @@ describe("handlers/tools", () => {
 			const toolCallId = "tc-bash-err"
 
 			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "false" } })
-			handleToolExecutionEnd(ctx, { toolCallId, isError: true, result: "command failed with exit code 1" })
+			handleToolExecutionEnd(ctx, {
+				toolCallId,
+				isError: true,
+				result: { content: [{ type: "text", text: "command failed with exit code 1" }] },
+			})
 
 			ctx.flushLogBuffer()
 			await Promise.allSettled([...ctx.inFlight])

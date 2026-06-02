@@ -35,8 +35,7 @@ function logEventToFile(event: string, properties: Record<string, unknown>): voi
 	try {
 		const logDir = path.join(process.cwd(), ".kimchi")
 		fs.mkdirSync(logDir, { recursive: true })
-		const entry = `${JSON.stringify({ event, properties })}
-`
+		const entry = `${JSON.stringify({ timestamp: new Date().toISOString(), event, properties })}\n`
 		fs.appendFileSync(path.join(logDir, "telemetry-debug.log"), entry)
 	} catch {
 		// silently ignore debug logging failures
@@ -45,15 +44,6 @@ function logEventToFile(event: string, properties: Record<string, unknown>): voi
 
 function resourceAttributes() {
 	return [strAttr("service.name", "kimchi"), strAttr("user_agent.original", `kimchi/${getVersion()}`)]
-}
-
-function attr(key: string, value: string | number): { key: string; value: AttrValue } {
-	if (typeof value === "number") {
-		return Number.isInteger(value)
-			? { key, value: { intValue: String(value) } }
-			: { key, value: { doubleValue: value } }
-	}
-	return { key, value: { stringValue: value } }
 }
 
 export interface MetricData {
@@ -74,50 +64,8 @@ export async function sendLog(
 	attrs: Record<string, string | number>,
 	userEmail?: string,
 ): Promise<void> {
-	if (!config.enabled || !config.endpoint) return
-	const now = nowNano()
-	const payload: Record<string, unknown> = {
-		resourceLogs: [
-			{
-				resource: { attributes: resourceAttributes(), droppedAttributesCount: 0 },
-				scopeLogs: [
-					{
-						scope: { name: "kimchi", version: "1.0.0" },
-						logRecords: [
-							{
-								timeUnixNano: now,
-								observedTimeUnixNano: now,
-								severityNumber: 9,
-								severityText: "INFO",
-								eventName,
-								body: { stringValue: eventName },
-								attributes: [
-									strAttr("session.id", sessionId),
-									strAttr("client", "pi"),
-									...Object.entries(attrs).map(([k, v]) => strAttr(k, String(v))),
-								],
-								droppedAttributesCount: 0,
-								flags: 0,
-								traceId: "",
-								spanId: "",
-							},
-						],
-					},
-				],
-			},
-		],
-	}
-	if (userEmail) payload.userEmail = userEmail
-	logEventToFile(eventName, attrs as Record<string, unknown>)
-	try {
-		await fetch(config.endpoint, {
-			method: "POST",
-			headers: { "Content-Type": "application/json", ...config.headers },
-			body: JSON.stringify(payload),
-		})
-	} catch (err) {
-		// telemetry is best effort, noop on failure
-	}
+	const record = buildLogRecord(sessionId, eventName, attrs)
+	await sendLogBatch(config, [record], userEmail)
 }
 
 export function buildLogRecord(
@@ -162,25 +110,34 @@ export async function sendLogBatch(config: TelemetryConfig, records: LogRecord[]
 	}
 	if (userEmail) payload.userEmail = userEmail
 	for (const record of records) {
-		const props: Record<string, unknown> = {}
-		for (const a of record.attributes) {
-			if ("value" in a && typeof a.value === "object" && a.value !== null) {
-				const v = a.value as Record<string, string>
-				props[a.key] = v.stringValue ?? v.intValue ?? v.doubleValue
-			} else {
-				props[a.key] = a.value
-			}
-		}
+		const props = Object.fromEntries(
+			record.attributes.map((a) => {
+				const v = a.value as Record<string, unknown>
+				return [a.key, v.stringValue ?? v.intValue ?? v.doubleValue]
+			}),
+		)
 		logEventToFile(record.eventName, props)
 	}
 	try {
-		await fetch(config.endpoint, {
+		const response = await fetch(config.endpoint, {
 			method: "POST",
 			headers: { "Content-Type": "application/json", ...config.headers },
 			body: JSON.stringify(payload),
 		})
+		if (!response.ok) {
+			logEventToFile("telemetry.response.error", {
+				endpoint: config.endpoint,
+				status: response.status,
+				statusText: response.statusText,
+				recordCount: records.length,
+			})
+		}
 	} catch (err) {
-		// telemetry is best effort, noop on failure
+		logEventToFile("telemetry.request.error", {
+			endpoint: config.endpoint,
+			error: String(err),
+			recordCount: records.length,
+		})
 	}
 }
 
@@ -228,12 +185,24 @@ export async function sendMetrics(
 		logEventToFile(metric.name, { value: metric.value, ...metric.attrs })
 	}
 	try {
-		await fetch(config.metricsEndpoint, {
+		const response = await fetch(config.metricsEndpoint, {
 			method: "POST",
 			headers: { "Content-Type": "application/json", ...config.headers },
 			body: JSON.stringify(payload),
 		})
+		if (!response.ok) {
+			logEventToFile("telemetry.response.error", {
+				endpoint: config.metricsEndpoint,
+				status: response.status,
+				statusText: response.statusText,
+				metricCount: metrics.length,
+			})
+		}
 	} catch (err) {
-		// telemetry is best effort, noop on failure
+		logEventToFile("telemetry.request.error", {
+			endpoint: config.metricsEndpoint,
+			error: String(err),
+			metricCount: metrics.length,
+		})
 	}
 }

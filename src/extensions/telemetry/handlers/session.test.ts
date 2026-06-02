@@ -93,7 +93,66 @@ describe("handleSessionShutdown", () => {
 		expect(attrs.model).toBe("unknown")
 		expect(attrs.source).toBe("cli")
 		expect(attrs.session_type).toBe("coding")
+		expect(attrs.ferment_id).toBe("")
 		expect(Number(attrs.duration_ms)).toBeGreaterThanOrEqual(0)
+	})
+
+	it("includes ferment_id when a ferment is active", async () => {
+		const { getActiveFerment } = await import("../../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue({ id: "ferment-abc" } as never)
+
+		const ctx = new SessionContext(makeConfig(), "cli")
+		await handleSessionShutdown(ctx, { reason: "user_exit" })
+
+		expect(globalThis.fetch).toHaveBeenCalled()
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const attrs = Object.fromEntries(
+			body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes.map(
+				(a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue],
+			),
+		)
+		expect(attrs.ferment_id).toBe("ferment-abc")
+	})
+
+	it("emits session.type_changed before session.end when type drifted", async () => {
+		const { getActiveFerment } = await import("../../ferment/index.js")
+		// seed emit: 2 calls; shutdown: getSessionType(1) + type_changed emit(2) + end emit(2) = 5 calls
+		vi.mocked(getActiveFerment)
+			.mockReturnValueOnce(undefined)
+			.mockReturnValueOnce(undefined)
+			.mockReturnValueOnce({ id: "f-drift" } as never)
+			.mockReturnValueOnce({ id: "f-drift" } as never)
+			.mockReturnValueOnce({ id: "f-drift" } as never)
+			.mockReturnValueOnce({ id: "f-drift" } as never)
+			.mockReturnValueOnce({ id: "f-drift" } as never)
+
+		const ctx = new SessionContext(makeConfig(), "cli")
+		ctx.emit("seed.event", {})
+		await handleSessionShutdown(ctx, { reason: "user_exit" })
+
+		const allRecords = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs?.[0]?.scopeLogs?.[0]?.logRecords ?? []
+		}) as Array<{
+			eventName: string
+			attributes: Array<{ key: string; value: { stringValue: string } }>
+		}>
+
+		const typeChangedRecord = allRecords.find((r) => r.eventName === "session.type_changed")
+		expect(typeChangedRecord).toBeDefined()
+		const typeChangedAttrs = Object.fromEntries(
+			typeChangedRecord?.attributes.map((a: { key: string; value: { stringValue: string } }) => [
+				a.key,
+				a.value.stringValue,
+			]),
+		)
+		expect(typeChangedAttrs.session_type).toBe("ferment")
+		expect(typeChangedAttrs.previous_session_type).toBe("coding")
+		expect(typeChangedAttrs.ferment_id).toBe("f-drift")
+
+		const endRecord = allRecords.find((r) => r.eventName === "session.end")
+		expect(endRecord).toBeDefined()
 	})
 })
 
@@ -134,5 +193,6 @@ describe("emitSessionStartEvent", () => {
 		)
 		expect(attrs.model).toBe("claude-opus-4-6")
 		expect(attrs.source).toBe("cli")
+		expect(attrs.ferment_id).toBe("")
 	})
 })
