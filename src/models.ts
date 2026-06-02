@@ -221,7 +221,7 @@ function readExistingProviders(modelsJsonPath: string): Record<string, unknown> 
 		const raw = readFileSync(modelsJsonPath, "utf-8")
 		const config = JSON.parse(raw)
 		const providers = config?.providers ?? {}
-		const { "kimchi-dev": _kimchi, ...rest } = providers as Record<string, unknown>
+		const { "kimchi-dev": _kimchi, "kimchi-experimental": _exp, ...rest } = providers as Record<string, unknown>
 		return rest
 	} catch {
 		return {}
@@ -248,6 +248,24 @@ export function syncProviderModels(
 	}
 	if (!config.providers) config.providers = {}
 	config.providers[providerId] = { ...providerConfig, models }
+	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
+}
+
+export function injectExperimentalProvider(modelsJsonPath: string): void {
+	if (!existsSync(modelsJsonPath)) return
+	let config: { providers?: Record<string, unknown> }
+	try {
+		config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+	} catch {
+		return
+	}
+	const kimchiDev = config.providers?.["kimchi-dev"]
+	if (!kimchiDev) return
+	const experimental = {
+		...(kimchiDev as Record<string, unknown>),
+		baseUrl: "https://llm.kimchi.dev/experimental/openai/v1",
+	}
+	config.providers = { ...config.providers, "kimchi-experimental": experimental }
 	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
 }
 

@@ -6,7 +6,13 @@ import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
-import { getCliModeArg, isHelpOrVersionArgs, isProtocolOrPrintMode } from "./cli-args.js"
+import {
+	getCliModeArg,
+	isExperimentalFeaturesArg,
+	isHelpOrVersionArgs,
+	isProtocolOrPrintMode,
+	stripExperimentalFeaturesArg,
+} from "./cli-args.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
@@ -63,7 +69,7 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
-import { isTransientModelsError, updateModelsConfig } from "./models.js"
+import { injectExperimentalProvider, isTransientModelsError, updateModelsConfig } from "./models.js"
 import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./modes/teleport/sync/session-export.js"
 import resourcesExtension from "./resources/extension.js"
 import { type ManagedExtensionFactory, enabledExtensionFactories } from "./resources/filter.js"
@@ -263,6 +269,7 @@ try {
 			sendPreSessionEvent(telemetryConfig, "harness_launched", { version: getVersion() })
 		}
 
+		const experimentalFeatures = isExperimentalFeaturesArg(process.argv.slice(2))
 		let config = loadConfig()
 
 		const envKey = process.env.KIMCHI_API_KEY || undefined
@@ -314,6 +321,7 @@ try {
 		let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
 		try {
 			;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
+			if (experimentalFeatures) injectExperimentalProvider(modelsJsonPath)
 		} catch (err) {
 			const is401 = err instanceof Error && err.message.includes("401")
 			if (is401 && process.stdin.isTTY) {
@@ -330,6 +338,7 @@ try {
 				writeApiKey(currentApiKey)
 				config = loadConfig()
 				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
+				if (experimentalFeatures) injectExperimentalProvider(modelsJsonPath)
 			} else if (isTransientModelsError(err)) {
 				// Rate limit / gateway error with no cached models to fall back on.
 				// Don't crash startup over a transient condition — continue with an
@@ -456,7 +465,7 @@ try {
 			globalThis.fetch = patchedFetch
 		}
 
-		const rawArgs = process.argv.slice(2)
+		const rawArgs = stripExperimentalFeaturesArg(process.argv.slice(2))
 		const interactiveStartupContext = {
 			nonInteractiveMode: acpMode,
 			stdinIsTTY: process.stdin.isTTY === true,

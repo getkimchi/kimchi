@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { getCliModeArg, isHelpOrVersionArgs, isPreDispatchValueFlag } from "./cli-args.js"
+import {
+	getCliModeArg,
+	isExperimentalFeaturesArg,
+	isHelpOrVersionArgs,
+	isPreDispatchValueFlag,
+	stripExperimentalFeaturesArg,
+} from "./cli-args.js"
 
 describe("getCliModeArg", () => {
 	it("reads --mode value", () => {
@@ -60,4 +66,45 @@ describe("isPreDispatchValueFlag", () => {
 			expect(isPreDispatchValueFlag(arg)).toBe(false)
 		},
 	)
+})
+
+describe("isExperimentalFeaturesArg", () => {
+	it("returns true when flag is present", () => {
+		expect(isExperimentalFeaturesArg(["--enable-experimental-features"])).toBe(true)
+	})
+
+	it("returns true when mixed with other args", () => {
+		expect(isExperimentalFeaturesArg(["--model", "foo", "--enable-experimental-features"])).toBe(true)
+	})
+
+	it("returns false when flag is absent", () => {
+		expect(isExperimentalFeaturesArg(["--model", "foo"])).toBe(false)
+	})
+
+	it("returns false for empty args", () => {
+		expect(isExperimentalFeaturesArg([])).toBe(false)
+	})
+})
+
+describe("stripExperimentalFeaturesArg", () => {
+	it("removes the flag from the array", () => {
+		expect(stripExperimentalFeaturesArg(["--enable-experimental-features", "--model", "foo"])).toEqual([
+			"--model",
+			"foo",
+		])
+	})
+
+	it("removes all occurrences", () => {
+		expect(stripExperimentalFeaturesArg(["--enable-experimental-features", "--enable-experimental-features"])).toEqual(
+			[],
+		)
+	})
+
+	it("returns the array unchanged when flag is absent", () => {
+		expect(stripExperimentalFeaturesArg(["--model", "foo"])).toEqual(["--model", "foo"])
+	})
+
+	it("returns empty array for empty input", () => {
+		expect(stripExperimentalFeaturesArg([])).toEqual([])
+	})
 })
