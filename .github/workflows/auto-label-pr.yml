@@ -1,4 +1,4 @@
-name: Auto-label PR based on description
+name: Auto-label PR
 
 on:
   pull_request:
