@@ -3,6 +3,7 @@
  */
 
 import type { ContextFile } from "../../prompt-construction/context-files.js"
+import { renderSubagentInternalTodosPromptBlock } from "../internal-todos.js"
 import type { AgentConfig, EnvInfo } from "../personas/types.js"
 
 /** Budget limits communicated to the agent so it can plan its work. */
@@ -23,6 +24,8 @@ export interface PromptExtras {
 	budget?: BudgetInfo
 	/** Project context files (AGENTS.md, CLAUDE.md) to inject. */
 	contextFiles?: ContextFile[]
+	/** Private subagent todo board guidance. */
+	internalTodos?: { agentName?: string }
 }
 
 /**
@@ -48,6 +51,9 @@ Platform: ${env.platform}`
 	const extraSections: string[] = []
 	const budgetBlock = buildBudgetBlock(extras?.budget)
 	if (budgetBlock) extraSections.push(budgetBlock)
+	if (extras?.internalTodos) {
+		extraSections.push(renderSubagentInternalTodosPromptBlock(extras.internalTodos.agentName))
+	}
 	if (extras?.guidelinesBlock) {
 		extraSections.push(extras.guidelinesBlock)
 	}

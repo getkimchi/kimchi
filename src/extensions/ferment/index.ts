@@ -16,6 +16,8 @@ import type { Step } from "../../ferment/types.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { requestSharedFooterRender } from "../shared-footer.js"
 import { registerTipProvider } from "../tips/registry.js"
+import { getActiveFermentStepScope } from "../todos/selectors.js"
+import type { FermentTodoScope } from "../todos/types.js"
 import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
 import { registerFermentEvents } from "./events.js"
@@ -75,6 +77,16 @@ export function getCurrentBatchName(): string | undefined {
 export function getCurrentRecipe(): Step[] {
 	const f = getActive()
 	return f?.phases.find((p) => p.id === f.activePhaseId)?.steps ?? []
+}
+
+/**
+ * Active ferment scope that TODO-like integrations can use to default work to
+ * the current phase/step context.
+ */
+export function getActiveFermentTodoScope(): FermentTodoScope | undefined {
+	const ferment = getActive()
+	if (!ferment) return undefined
+	return getActiveFermentStepScope(ferment)
 }
 
 function registerFermentStopPolicyShortcut(pi: ExtensionAPI, runtime: FermentRuntime): void {

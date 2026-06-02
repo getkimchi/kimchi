@@ -56,6 +56,11 @@ export const GENERAL_TIPS = [
 		scope: "general",
 		message: "Type `/help` to see all keyboard shortcuts and slash commands.",
 	},
+	{
+		id: "todos-overlay",
+		scope: "general",
+		message: "Todos: `/todos` or `ctrl+shift+t`; expand tools with `ctrl+o`.",
+	},
 ] as const satisfies readonly Tip[]
 
 export function createGeneralTipProvider(): TipProvider {

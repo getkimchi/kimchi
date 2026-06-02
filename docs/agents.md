@@ -79,6 +79,7 @@ disallowed_tools: <csv>          # Comma-separated tools to deny even if otherwi
 extensions: <bool|csv>           # true (inherit MCP/extension tools) | false (disable) | comma-list
 skills: <bool|csv>               # true (inherit) | false | comma-list of skill names to preload
 memory: <scope>                  # user | project | local — enables persistent agent memory
+internal_todos: <bool>           # false opts out of the private subagent write_todos board
 max_turns: <int>                 # Cap conversation turns; omit for unlimited (pi's 30-min hard cap still applies)
 inherit_context: <bool>          # If true, fork parent conversation into the subagent's history
 isolated: <bool>                 # If true, agent gets no extension/MCP tools — only built-ins
@@ -113,6 +114,12 @@ You are a senior X engineer who...
   system prompt. The default `replace` makes the persona fully self-contained.
 - **`disallowed_tools`** — Always-deny list. Wins over `extensions` and inherited
   tools. Useful for read-only agents that may inherit a write tool from MCP.
+- **`internal_todos`** — Defaults to enabled when the `todos` extension is
+  available. Subagents get a private `write_todos` board scoped to their own
+  run, so their checklist does not overwrite the parent session's global or
+  Ferment todos. Set `internal_todos: false`, add `write_todos` to
+  `disallowed_tools`, or run with `KIMCHI_SUBAGENT_INTERNAL_TODOS=false` to
+  disable it.
 
 ## Examples
 
@@ -275,6 +282,10 @@ before the interruption. No manual cleanup is needed.
 Subagents cannot spawn further subagents. The `Agent`, `get_subagent_result`,
 and `steer_subagent` tools are filtered out of any spawned agent's tool set,
 preventing fork-bombs and runaway delegation chains.
+
+When the `todos` extension is enabled, subagents may still receive
+`write_todos` for their own internal tactical checklist. Those todos are
+agent-scoped and are not the parent-visible global or Ferment todo board.
 
 ## Persistent memory
 

@@ -42,6 +42,14 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		restartRequired: true,
 	},
 	{
+		id: "extensions.todos",
+		kind: "extensions",
+		label: "Todos",
+		description: "Enable tactical todo tracking with a live overlay.",
+		defaultEnabled: true,
+		restartRequired: true,
+	},
+	{
 		id: "plugins.mcp-apps",
 		kind: "plugins",
 		label: "MCP apps",

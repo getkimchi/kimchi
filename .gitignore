@@ -25,6 +25,7 @@ Thumbs.db
 
 # Test coverage
 coverage/
+.tui-test/
 
 # Kimchi docs directory
 .kimchi/

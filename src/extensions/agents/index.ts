@@ -1797,6 +1797,7 @@ Model selection — YOU choose based on task complexity:
 		if (cfg.skills === false) fmFields.push("skills: false")
 		else if (Array.isArray(cfg.skills)) fmFields.push(`skills: ${cfg.skills.join(", ")}`)
 		if (cfg.disallowedTools?.length) fmFields.push(`disallowed_tools: ${cfg.disallowedTools.join(", ")}`)
+		if (cfg.internalTodos === false) fmFields.push("internal_todos: false")
 		if (cfg.inheritContext) fmFields.push("inherit_context: true")
 		if (cfg.runInBackground) fmFields.push("run_in_background: true")
 		if (cfg.isolated) fmFields.push("isolated: true")
@@ -1916,6 +1917,7 @@ prompt_mode: <"replace" (body IS the full system prompt) or "append" (body is ap
 extensions: <true (inherit all MCP/extension tools), false (none), or comma-separated names. Default: true>
 skills: <true (inherit all), false (none), or comma-separated skill names to preload into prompt. Default: true>
 disallowed_tools: <comma-separated tool names to block, even if otherwise available. Omit for none>
+internal_todos: <false to opt out of the private subagent write_todos board. Default: true when the todos extension is enabled>
 inherit_context: <true to fork parent conversation into agent so it sees chat history. Default: false>
 run_in_background: <true to run in background by default. Default: false>
 isolated: <true for no extension/MCP tools, only built-in tools. Default: false>

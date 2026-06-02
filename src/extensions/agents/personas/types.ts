@@ -73,6 +73,8 @@ export interface AgentConfig {
 	runInBackground?: boolean
 	/** Default for spawn: no extension tools. undefined = caller decides. */
 	isolated?: boolean
+	/** false = do not expose the private write_todos board to this subagent. Defaults to true when todos are enabled. */
+	internalTodos?: boolean
 	/** Whether to inject project context files (CLAUDE.md, AGENTS.md) into the system prompt. Default: false. */
 	includeContextFiles?: boolean
 	/** Persistent memory scope — agents with memory get a persistent directory and MEMORY.md */

@@ -1,9 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+const mockLoadedExtensionToolNames = vi.hoisted(() => ({ value: [] as string[] }))
+
 vi.mock("@earendil-works/pi-coding-agent", async () => {
 	return {
 		DefaultResourceLoader: vi.fn().mockImplementation(() => ({
 			reload: vi.fn().mockResolvedValue(undefined),
+			getExtensions: vi.fn(() => ({
+				extensions: [
+					{
+						tools: new Map(mockLoadedExtensionToolNames.value.map((name) => [name, {}])),
+					},
+				],
+				errors: [],
+				runtime: {},
+			})),
 		})),
 		SessionManager: {
 			inMemory: vi.fn().mockReturnValue({}),
@@ -104,6 +115,7 @@ import { DefaultResourceLoader, createAgentSession } from "@earendil-works/pi-co
 import { readTelemetryConfig } from "../../../config.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import telemetryExtension from "../../telemetry.js"
+import { SUBAGENT_INTERNAL_TODOS_ENV } from "../internal-todos.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
 import { type RunOptions, runAgent } from "./agent-runner.js"
@@ -283,6 +295,7 @@ describe("runAgent — telemetry extension", () => {
 
 	afterEach(() => {
 		vi.clearAllMocks()
+		vi.unstubAllEnvs()
 	})
 
 	it("passes telemetryExtension as extensionFactories to DefaultResourceLoader", async () => {
@@ -611,15 +624,18 @@ describe("runAgent — profile tool access", () => {
 			}),
 		)
 		mockGetToolNamesForType.mockReturnValue(["read", "grep"])
+		mockLoadedExtensionToolNames.value = ["web_search", "write_todos"]
 	})
 
 	afterEach(() => {
 		vi.clearAllMocks()
+		vi.unstubAllEnvs()
+		mockLoadedExtensionToolNames.value = []
 	})
 
-	it("does not pass a hard tools allowlist when profile extensions are enabled", async () => {
+	it("keeps private write_todos when profile extensions are enabled", async () => {
 		const session = makeFakeSession({
-			activeToolNames: ["read", "grep", "edit", "web_search", "Agent", "steer_subagent"],
+			activeToolNames: ["read", "grep", "edit", "web_search", "Agent", "steer_subagent", "write_todos"],
 		})
 		mockCreateAgentSession.mockResolvedValue({
 			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
@@ -633,7 +649,75 @@ describe("runAgent — profile tool access", () => {
 		})
 
 		expect(mockCreateAgentSession).toHaveBeenCalledWith(expect.not.objectContaining({ tools: expect.anything() }))
+		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "grep", "web_search", "write_todos"])
+		expect(mockBuildAgentPrompt.mock.calls.at(-1)?.[4]?.internalTodos).toEqual({ agentName: "Researcher" })
+	})
+
+	it("does not add private todo prompt guidance when the todo extension tool is not loaded", async () => {
+		mockLoadedExtensionToolNames.value = ["web_search"]
+		const session = makeFakeSession({
+			activeToolNames: ["read", "grep", "web_search"],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
 		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "grep", "web_search"])
+		expect(mockBuildAgentPrompt.mock.calls.at(-1)?.[4]?.internalTodos).toBeUndefined()
+	})
+
+	it("filters write_todos when the persona disables internal todos", async () => {
+		mockGetAgentConfig.mockReturnValue(
+			makeAgentConfig({
+				name: "Researcher",
+				description: "Research agent",
+				extensions: true,
+				internalTodos: false,
+			}),
+		)
+		const session = makeFakeSession({
+			activeToolNames: ["read", "grep", "web_search", "write_todos"],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "grep", "web_search"])
+		expect(mockBuildAgentPrompt.mock.calls.at(-1)?.[4]?.internalTodos).toBeUndefined()
+	})
+
+	it("filters write_todos when the global internal todo flag is disabled", async () => {
+		vi.stubEnv(SUBAGENT_INTERNAL_TODOS_ENV, "false")
+		const session = makeFakeSession({
+			activeToolNames: ["read", "grep", "web_search", "write_todos"],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "grep", "web_search"])
+		expect(mockBuildAgentPrompt.mock.calls.at(-1)?.[4]?.internalTodos).toBeUndefined()
 	})
 
 	it("keeps only matching extension tools when profile names an extension allowlist", async () => {
@@ -644,7 +728,7 @@ describe("runAgent — profile tool access", () => {
 			}),
 		)
 		const session = makeFakeSession({
-			activeToolNames: ["read", "grep", "web_search", "mcp__db__query", "Agent"],
+			activeToolNames: ["read", "grep", "web_search", "mcp__db__query", "Agent", "write_todos"],
 		})
 		mockCreateAgentSession.mockResolvedValue({
 			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],

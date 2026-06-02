@@ -21,6 +21,7 @@ import { loadProjectContextFiles } from "../../prompt-construction/context-files
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry.js"
 import { detectEnv } from "../env.js"
+import { shouldEnableSubagentInternalTodos, toolMatchesExtensionAllowlist } from "../internal-todos.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
 import {
 	BUILTIN_TOOL_NAMES,
@@ -157,6 +158,10 @@ export interface RunOptions {
 	inactivityTimeout?: number
 	/** Maximum wall-clock duration in seconds. The agent is aborted when this limit is exceeded. */
 	maxDuration?: number
+	/** Stable id for worker-local resources such as internal todos. */
+	agentId?: string
+	/** Human-readable label for worker-local resources such as internal todos. */
+	agentLabel?: string
 }
 
 export interface RunResult {
@@ -217,13 +222,20 @@ function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => 
 	return () => signal.removeEventListener("abort", onAbort)
 }
 
+function extensionToolLoaded(loader: DefaultResourceLoader, toolName: string): boolean {
+	return loader.getExtensions().extensions.some((extension) => extension.tools.has(toolName))
+}
+
 export async function runAgent(
 	ctx: ExtensionContext,
 	type: SubagentType,
 	prompt: string,
 	options: RunOptions,
 ): Promise<RunResult> {
-	return runAsAgentWorker(() => runAgentInner(ctx, type, prompt, options))
+	return runAsAgentWorker(() => runAgentInner(ctx, type, prompt, options), {
+		agentId: options.agentId,
+		agentLabel: options.agentLabel,
+	})
 }
 
 async function runAgentInner(
@@ -287,26 +299,14 @@ async function runAgentInner(
 		extras.budget = { maxTurns: effectiveMaxTurns, tokenBudget: effectiveTokenBudget }
 	}
 
-	let systemPrompt: string
-	if (agentConfig) {
-		systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras)
-	} else {
+	const buildSystemPrompt = () => {
+		if (agentConfig) return buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras)
 		const fallback = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE)
 		if (!fallback) throw new Error(`No fallback config available for unknown type "${type}"`)
-		systemPrompt = buildAgentPrompt({ ...fallback, name: type }, effectiveCwd, env, parentSystemPrompt, extras)
+		return buildAgentPrompt({ ...fallback, name: type }, effectiveCwd, env, parentSystemPrompt, extras)
 	}
 
-	const debugSession = process.env.KIMCHI_DEBUG_SESSION
-	if (debugSession) {
-		try {
-			const debugDir = join(effectiveCwd, ".kimchi", "debug", debugSession)
-			mkdirSync(debugDir, { recursive: true })
-			const agentLabel = agentConfig?.name ?? type
-			writeFileSync(join(debugDir, `agent-${agentLabel}-${Date.now()}.md`), systemPrompt)
-		} catch {
-			// best-effort debug logging
-		}
-	}
+	let systemPrompt = buildSystemPrompt()
 
 	const noSkills = skills === false || Array.isArray(skills)
 
@@ -325,6 +325,25 @@ async function runAgentInner(
 		extensionFactories: [telemetryExtension(readTelemetryConfig())],
 	})
 	await loader.reload()
+	const internalTodosEnabled =
+		shouldEnableSubagentInternalTodos(agentConfig, extensions) && extensionToolLoaded(loader, "write_todos")
+	if (internalTodosEnabled) {
+		extras.internalTodos = { agentName: agentConfig?.displayName ?? agentConfig?.name ?? type }
+		systemPrompt = buildSystemPrompt()
+		await loader.reload()
+	}
+
+	const debugSession = process.env.KIMCHI_DEBUG_SESSION
+	if (debugSession) {
+		try {
+			const debugDir = join(effectiveCwd, ".kimchi", "debug", debugSession)
+			mkdirSync(debugDir, { recursive: true })
+			const agentLabel = agentConfig?.name ?? type
+			writeFileSync(join(debugDir, `agent-${agentLabel}-${Date.now()}.md`), systemPrompt)
+		} catch {
+			// best-effort debug logging
+		}
+	}
 
 	const model =
 		options.model ??
@@ -375,11 +394,12 @@ async function runAgentInner(
 		const allBuiltinToolNames = new Set(BUILTIN_TOOL_NAMES)
 		const activeTools = session.getActiveToolNames().filter((t) => {
 			if (EXCLUDED_TOOL_NAMES.includes(t)) return false
+			if (t === "write_todos" && !internalTodosEnabled) return false
 			if (disallowedSet?.has(t)) return false
 			if (builtinToolNameSet.has(t)) return true
 			if (allBuiltinToolNames.has(t)) return false
 			if (Array.isArray(extensions)) {
-				return extensions.some((ext) => t.startsWith(ext) || t.includes(ext))
+				return toolMatchesExtensionAllowlist(t, extensions)
 			}
 			return true
 		})

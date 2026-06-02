@@ -71,6 +71,7 @@ function loadFromDir(dir: string, agentsMap: Map<string, AgentConfig>, source: "
 			inheritContext: fm.inherit_context != null ? fm.inherit_context === true : undefined,
 			runInBackground: fm.run_in_background != null ? fm.run_in_background === true : undefined,
 			isolated: fm.isolated != null ? fm.isolated === true : undefined,
+			internalTodos: parseOptionalBoolean(fm.internal_todos ?? fm.internalTodos),
 			memory: parseMemory(fm.memory),
 			isolation: fm.isolation === "worktree" ? "worktree" : undefined,
 			enabled: fm.enabled !== false,
@@ -92,6 +93,10 @@ function nonNegativeInt(val: unknown): number | undefined {
 function positiveInt(val: unknown): number | undefined {
 	const n = nonNegativeInt(val)
 	return n != null && n > 0 ? n : undefined
+}
+
+function parseOptionalBoolean(val: unknown): boolean | undefined {
+	return typeof val === "boolean" ? val : undefined
 }
 
 function parseCsvField(val: unknown): string[] | undefined {

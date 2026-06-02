@@ -358,7 +358,7 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: FermentUiContext, runt
 				break
 			}
 
-			const stepOpts = buildPhaseStepOptions(ph)
+			const stepOpts = buildPhaseStepOptions(ph, f2.id)
 			const stepCount = ph.steps.length
 
 			const l2choice = await select(buildPhaseDetailTitle(f2, ph), stepOpts)
@@ -406,7 +406,7 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: FermentUiContext, runt
 				}
 
 				const stepActionOpts = buildStepActionOptions(ph3, st)
-				const l3choice = await select(buildStepDetailTitle(ph3, st), stepActionOpts)
+				const l3choice = await select(buildStepDetailTitle(ph3, st, f3.id), stepActionOpts)
 
 				if (!l3choice || l3choice === "Back to phase") {
 					atStepDetail = false

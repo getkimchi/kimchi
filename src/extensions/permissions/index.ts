@@ -62,8 +62,8 @@ const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 // `set_phase` is a kimchi built-in. `agent`/`get_subagent_result`/`steer_subagent`
 // are the agents-extension surface — `agent` is the canonical delegation tool,
 // the other two are read-only/control-plane operations on already-approved spawns.
-// `ferment` tools are internal state-management operations from the ferment
-// extension — they never write user files or run shell commands.
+// `ferment` and `write_todos` tools are internal state-management operations —
+// they never write user files or run shell commands.
 //
 // Names are lowercased because the tool_call handler lowercases event.toolName
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
@@ -72,6 +72,7 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 	"agent",
 	"get_subagent_result",
 	"steer_subagent",
+	"write_todos",
 	"list_ferments",
 	"scope_ferment",
 	"update_ferment_scope_field",

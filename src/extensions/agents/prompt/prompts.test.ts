@@ -184,6 +184,17 @@ describe("default agents — subagent system prompt snapshot", () => {
 })
 
 describe("contextFiles injection", () => {
+	it("includes private internal todo guidance when provided", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			internalTodos: { agentName: "General Purpose" },
+		})
+		expect(output).toContain("<internal_todos>")
+		expect(output).toContain("private tactical todo board for General Purpose")
+		expect(output).toContain("Omit the scope field")
+		expect(output).toContain("They do not edit the parent session's global todos or Ferment plan")
+	})
+
 	it("includes ## Project Guidelines block when contextFiles are provided", () => {
 		const agent = getRequired(AGENT_GENERAL_PURPOSE)
 		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {

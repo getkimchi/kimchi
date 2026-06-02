@@ -11,6 +11,7 @@ const HELP_ROWS: HelpRow[] = [
 	{ kind: "entry", key: "Escape", desc: "Close dialog / Abort running agent" },
 	{ kind: "entry", key: "Ctrl+C", desc: "Clear input / Abort running agent" },
 	{ kind: "entry", key: "Ctrl+P", desc: "Cycle to next model" },
+	{ kind: "entry", key: "Ctrl+Shift+T", desc: "Open todo overlay" },
 	{ kind: "entry", key: "Shift+Tab", desc: "Change permissions mode" },
 
 	{ kind: "spacer" },
@@ -29,6 +30,7 @@ const HELP_ROWS: HelpRow[] = [
 	{ kind: "entry", key: "/mcp", desc: "Show MCP server status" },
 	{ kind: "entry", key: "/resources", desc: "Manage resources (files, URLs, images)" },
 	{ kind: "entry", key: "/tags", desc: "Manage usage tracking tags" },
+	{ kind: "entry", key: "/todos", desc: "Open todo overlay / manage short-lived todo items" },
 	{ kind: "entry", key: "/help", desc: "Show this help" },
 	{ kind: "entry", key: "/exit", desc: "Exit the application" },
 ]

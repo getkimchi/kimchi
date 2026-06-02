@@ -194,4 +194,65 @@ describe("progress overlay parallel rendering", () => {
 		expect(buildStepDetailTitle(implement, parallelStep)).toMatch(/parallel group 1/)
 		expect(buildStepDetailTitle(implement, serialStep)).not.toMatch(/parallel group/)
 	})
+
+	it("shows todo counts for phase and step overlays", () => {
+		const ferment = makeParallelFerment()
+		const todoCountsByScope = new Map([
+			["phase-1", { total: 4, completed: 1, pending: 3, blocked: 0, inProgress: 0 }],
+			["phase-3", { total: 3, completed: 2, pending: 1, blocked: 0, inProgress: 0 }],
+			["phase-3:step-1", { total: 2, completed: 1, pending: 1, blocked: 0, inProgress: 0 }],
+			["phase-3:step-3", { total: 0, completed: 0, pending: 0, blocked: 0, inProgress: 0 }],
+		])
+
+		const resolver = (scope: { fermentId: string; phaseId?: string; stepId?: string }) => {
+			if (scope?.phaseId && scope?.stepId) {
+				return (
+					todoCountsByScope.get(`${scope.phaseId}:${scope.stepId}`) ?? {
+						total: 0,
+						completed: 0,
+						pending: 0,
+						blocked: 0,
+						inProgress: 0,
+					}
+				)
+			}
+			if (scope?.phaseId) {
+				return (
+					todoCountsByScope.get(scope.phaseId) ?? {
+						total: 0,
+						completed: 0,
+						pending: 0,
+						blocked: 0,
+						inProgress: 0,
+					}
+				)
+			}
+			return { total: 0, completed: 0, pending: 0, blocked: 0, inProgress: 0 }
+		}
+
+		const phaseOptions = buildPhaseListOptions(ferment, { getTodoProgressForScope: resolver })
+		const implementLine = phaseOptions.find((o) => o.includes("Implement"))
+		const stepLines = buildPhaseStepOptions(ferment.phases[2], ferment.id, { getTodoProgressForScope: resolver })
+		const implementStepLine = stepLines.find((l) => l.includes("Final wire-up"))
+
+		expect(implementLine).toMatch(/todo 2\/3/)
+		expect(implementLine).toMatch(/(1 pending)/)
+		expect(implementStepLine).toContain("Final wire-up")
+		expect(implementStepLine).not.toContain("todo")
+	})
+
+	it("adds tactical-work context in step detail with resolver counts", () => {
+		const ferment = makeParallelFerment()
+		const implement = ferment.phases.find((p) => p.name === "Implement")
+		if (!implement) throw new Error("Implement phase missing")
+		const step = implement.steps.find((s) => s.description === "Update token A")
+		if (!step) throw new Error("Step missing")
+
+		const title = buildStepDetailTitle(implement, step, ferment.id, {
+			getTodoProgressForScope: () => ({ total: 5, completed: 3, pending: 2, blocked: 0, inProgress: 0 }),
+		})
+
+		expect(title).toContain("tactical work")
+		expect(title).toMatch(/todo 3\/5/)
+	})
 })

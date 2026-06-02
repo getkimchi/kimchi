@@ -86,6 +86,36 @@ describe("AgentConfig.tokenBudget parsing", () => {
 	})
 })
 
+describe("AgentConfig.internalTodos parsing", () => {
+	let projectDir: string
+	let projectAgentsDir: string
+
+	beforeEach(() => {
+		mockGetAgentDir.mockReturnValue(FAKE_AGENT_DIR)
+		mkdirSync(FAKE_AGENT_DIR, { recursive: true })
+		projectDir = join(tmpdir(), `kimchi-project-internal-todos-${Date.now()}`)
+		projectAgentsDir = join(projectDir, ".kimchi", "agents")
+	})
+
+	it("parses internal_todos: false as an opt-out", () => {
+		writeAgentMd(projectAgentsDir, "no-internal-todos", "description: no todos\ninternal_todos: false")
+
+		const agents = loadCustomAgents(projectDir)
+		const agent = agents.get("no-internal-todos")
+
+		expect(agent?.internalTodos).toBe(false)
+	})
+
+	it("leaves internalTodos undefined by default so runtime enables it when todos are available", () => {
+		writeAgentMd(projectAgentsDir, "default-internal-todos", "description: default")
+
+		const agents = loadCustomAgents(projectDir)
+		const agent = agents.get("default-internal-todos")
+
+		expect(agent?.internalTodos).toBeUndefined()
+	})
+})
+
 describe("custom agents — user override hierarchy preserves new fields", () => {
 	let packageAgentsDir: string
 	let globalAgentsDir: string

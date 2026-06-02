@@ -22,7 +22,10 @@
 		"typecheck": "pnpm run generate-posthog-stub && tsc --noEmit",
 		"check": "pnpm run lint && pnpm run typecheck",
 		"test": "pnpm run generate-posthog-stub && vitest run --dir src",
+		"test:todos:benchmark": "pnpm run generate-posthog-stub && KIMCHI_TODOS_BENCHMARK=1 vitest run src/extensions/todos/benchmark.test.ts",
 		"test:smoke": "vitest run --config tests/smoke/vitest.config.ts",
+		"test:tui": "pnpm run build:binary && tui-test",
+		"test:tui:live": "KIMCHI_TUI_LIVE_LLM=1 pnpm run test:tui",
 		"prepare": "husky",
 		"verify": "pnpm run check && pnpm run build:binary && pnpm run test && pnpm run test:smoke"
 	},
@@ -69,6 +72,7 @@
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.4",
 		"@earendil-works/pi-ai": "^0.75.1",
+		"@microsoft/tui-test": "^0.0.4",
 		"@mixmark-io/domino": "^2.2.0",
 		"@types/micromatch": "^4.0.10",
 		"@types/node": "^22.19.18",
