@@ -214,6 +214,14 @@ describe("isMcpToolName", () => {
 	it("returns false for empty string", () => {
 		expect(isMcpToolName("")).toBe(false)
 	})
+
+	it("returns false for mcp as substring without separator (mcptool)", () => {
+		expect(isMcpToolName("mcptool")).toBe(false)
+	})
+
+	it("returns true for MCP_ prefix (case-insensitive)", () => {
+		expect(isMcpToolName("MCP_tool")).toBe(true)
+	})
 })
 
 describe("summarizeMcpToolInvocationArgs", () => {
@@ -250,6 +258,10 @@ describe("summarizeMcpToolInvocationArgs", () => {
 
 	it("skips null and undefined values", () => {
 		expect(summarizeMcpToolInvocationArgs({ args: '{"a":null,"b":"hello"}' })).toBe("(b=hello)")
+	})
+
+	it("skips empty arrays", () => {
+		expect(summarizeMcpToolInvocationArgs({ args: '{"tags":[],"name":"foo"}' })).toBe("(name=foo)")
 	})
 
 	it("skips nested objects", () => {
