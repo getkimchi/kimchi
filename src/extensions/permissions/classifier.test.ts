@@ -118,6 +118,38 @@ describe("classifyToolCall", () => {
 		expect(completeMock).toHaveBeenCalledTimes(3)
 	})
 
+	it("returns 'classifier aborted' when signal aborts during final attempt", async () => {
+		const controller = new AbortController()
+
+		// First two attempts: timeout (retryable). Third attempt: also timeout,
+		// but the outer signal is aborted during this attempt.
+		let callCount = 0
+		completeMock.mockImplementation(() => {
+			callCount++
+			if (callCount === 3) {
+				// Simulate the outer signal aborting during the final classifier call
+				controller.abort()
+			}
+			return fakeResponse({ stopReason: "aborted" })
+		})
+
+		const promise = classifyToolCall(
+			fakeModel(),
+			fakeRegistry(),
+			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
+			{ timeoutMs: 5000 },
+			controller.signal,
+		)
+
+		await vi.runAllTimersAsync()
+		const result = await promise
+
+		expect(completeMock).toHaveBeenCalledTimes(3)
+		expect(result.verdict).toBe("requires-confirmation")
+		expect(result.ok).toBe(false)
+		expect(result.reason).toBe("classifier aborted")
+	})
+
 	it("does not retry when signal is aborted before first attempt", async () => {
 		const controller = new AbortController()
 		controller.abort()

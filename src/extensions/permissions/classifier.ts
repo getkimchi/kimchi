@@ -50,6 +50,8 @@ export async function classifyToolCall(
 		lastResult = result
 	}
 
+	if (signal?.aborted) return unavailable("classifier aborted")
+
 	return lastResult
 }
 
