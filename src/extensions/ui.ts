@@ -275,7 +275,13 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 		ctx.ui.setHeader((tui, theme) => {
 			branchPoller.start(() => tui.requestRender())
-			return new LogoHeader(theme)
+			const logo = new LogoHeader(theme)
+			const header: DisposableComponent = {
+				render: (w) => logo.render(w),
+				invalidate: () => logo.invalidate(),
+				dispose: () => branchPoller.stop(),
+			}
+			return header
 		})
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			uiTui = tui
