@@ -176,7 +176,7 @@ describe("llmResponseLogExtension", () => {
 		expect(appendEntryMock).not.toHaveBeenCalled()
 	})
 
-	it("error handling: appendEntry throws does not propagate", async () => {
+	it("error handling: appendEntry throws does not propagate and logs error", async () => {
 		const { pi, trigger } = makeMockPI()
 		llmResponseLogExtension(pi)
 
@@ -185,11 +185,16 @@ describe("llmResponseLogExtension", () => {
 			throw new Error("appendEntry failed")
 		}
 
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+
 		// Should not throw
 		await expect(
 			trigger("message_end", {
 				message: makeAssistantMessage(),
 			}),
 		).resolves.not.toThrow()
+
+		expect(consoleErrorSpy).toHaveBeenCalledWith("[llm-response-log] failed to append debug entry:", expect.any(Error))
+		consoleErrorSpy.mockRestore()
 	})
 })

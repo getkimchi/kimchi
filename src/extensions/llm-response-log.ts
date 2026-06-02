@@ -79,9 +79,9 @@ export default function llmResponseLogExtension(pi: ExtensionAPI): void {
 				timestamp: Date.now(),
 			}
 
-			pi.appendEntry("llm_response_debug", entry)
-		} catch {
-			// Silent fail - don't break the session if logging fails
+			await pi.appendEntry("llm_response_debug", entry)
+		} catch (err) {
+			console.error("[llm-response-log] failed to append debug entry:", err)
 		}
 	})
 }
