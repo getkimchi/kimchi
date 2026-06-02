@@ -2601,7 +2601,7 @@ function humanizeToolName(name: string): string {
 		.replace(/\b\w/g, (char) => char.toUpperCase())
 }
 
-function isMcpToolName(name: string): boolean {
+export function isMcpToolName(name: string): boolean {
 	return name === "mcp" || /^mcp[_:-]/i.test(name) || /[_:-]mcp[_:-]/i.test(name)
 }
 
@@ -3170,7 +3170,7 @@ const MCP_ARGS_SUFFIX_MAX = 120
  * whole suffix is capped at MCP_ARGS_SUFFIX_MAX chars so the header stays on
  * one line. When `expanded` is true all values are shown in full.
  */
-function summarizeMcpToolInvocationArgs(args: any, expanded = false): string {
+export function summarizeMcpToolInvocationArgs(args: any, expanded = false): string {
 	const rawArgs = getStringArg(args, "args")
 	if (!rawArgs) return ""
 	try {
@@ -3235,7 +3235,7 @@ function summarizeMcpToolCall(args: any, theme: Theme, expanded = false): string
  * - Discovery (`args.search` / `args.describe` / …): label = "Tool search" / "Tool describe" / …
  * - Connect: label = "Tool connect"
  */
-function mcpCallLabelAndSummary(
+export function mcpCallLabelAndSummary(
 	args: any,
 	theme: Theme,
 	expanded = false,
