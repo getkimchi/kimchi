@@ -45,6 +45,14 @@ import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSess
 /** Names of tools registered by this extension that subagents must NOT inherit. */
 const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"]
 
+/** Prefix applied to automated steering messages so the LLM does not attribute them to the user. */
+const ORCHESTRATOR_PREFIX = "[Orchestrator — automated system instruction, not a user message]\n\n"
+
+/** Send a steering message that is clearly marked as coming from the orchestrator, not the user. */
+function steerAsOrchestrator(session: AgentSession, message: string): Promise<void> {
+	return session.steer(ORCHESTRATOR_PREFIX + message)
+}
+
 /** Default max turns. undefined = unlimited (no turn limit). */
 let defaultMaxTurns: number | undefined = 30
 
@@ -445,7 +453,8 @@ async function runAgentInner(
 			if (effectiveMaxTurns != null) {
 				if (!softLimitReached && turnCount >= effectiveMaxTurns) {
 					softLimitReached = true
-					session.steer(
+					steerAsOrchestrator(
+						session,
 						"You have reached your turn limit. Stop exploring. Complete your current edit, ensure file syntax is valid, undo any git state mutations so your work is visible on the filesystem, and summarize progress for the orchestrator. Do not start new edits.",
 					)
 				} else if (softLimitReached && turnCount >= effectiveMaxTurns + graceTurns) {
@@ -456,7 +465,7 @@ async function runAgentInner(
 					const point = PROGRESS_STEER_POINTS[nextProgressIdx]
 					if (point && turnCount >= effectiveMaxTurns * point.threshold) {
 						nextProgressIdx++
-						session.steer(point.message)
+						steerAsOrchestrator(session, point.message)
 					}
 				}
 			}
@@ -501,7 +510,8 @@ async function runAgentInner(
 						session.abort()
 					} else if (!tokenSoftLimitSteered && cumulativeTokens >= effectiveTokenBudget * 0.8) {
 						tokenSoftLimitSteered = true
-						session.steer(
+						steerAsOrchestrator(
+							session,
 							`Budget check: ${buildProgressSummary()}. You are approaching your output token limit. Wrap up your current work and summarize any remaining tasks.`,
 						)
 					}
@@ -522,7 +532,7 @@ async function runAgentInner(
 			session.abort()
 		} else if (!inactivity.steered && elapsed >= inactivityTimeout) {
 			inactivity.steered = true
-			session.steer("You appear to be stalled. Resume work immediately or summarize your progress.")
+			steerAsOrchestrator(session, "You appear to be stalled. Resume work immediately or summarize your progress.")
 		}
 	}, INACTIVITY_CHECK_INTERVAL)
 
@@ -652,7 +662,7 @@ export async function resumeAgent(
 			session.abort()
 		} else if (!resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
 			resumeInactivity.steered = true
-			session.steer("You appear to be stalled. Resume work immediately or summarize your progress.")
+			steerAsOrchestrator(session, "You appear to be stalled. Resume work immediately or summarize your progress.")
 		}
 	}, INACTIVITY_CHECK_INTERVAL)
 
