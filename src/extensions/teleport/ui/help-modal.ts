@@ -47,6 +47,23 @@ class TeleportHelpComponent extends Container {
 			),
 		)
 		this.addChild(new Spacer(1))
+		this.addChild(new Text(this.theme.fg("text", this.theme.bold("Topbar")), 0, 0))
+		this.addChild(new Text(this.theme.fg("muted", "Each session is a tab — the active one is highlighted."), 0, 0))
+		this.addChild(new Spacer(1))
+		const bar = [
+			this.mockTab(" 1:fix-auth", { active: true }),
+			this.mockTab("•2:run-tests"),
+			this.mockTab("○3:lost-conn", { muted: true }),
+			this.mockTab("⚠4:retrying", { warning: true }),
+		].join(this.mockSep())
+		this.addChild(new Text(`    ${bar}`, 0, 0))
+		this.addChild(new Spacer(1))
+		const legend =
+			`    ${this.theme.fg("muted", "•")}  unread output` +
+			`     ${this.theme.fg("dim", "○")}  disconnected` +
+			`     ${this.theme.fg("warning", "⚠")}  reconnecting / failed`
+		this.addChild(new Text(legend, 0, 0))
+		this.addChild(new Spacer(1))
 		this.addChild(new Text(this.theme.fg("text", this.theme.bold("Tips")), 0, 0))
 		for (const tip of TIPS) {
 			const keys = this.theme.fg("accent", tip.keys)
@@ -61,6 +78,18 @@ class TeleportHelpComponent extends Container {
 		const rule = this.theme.fg("borderMuted", "─".repeat(Math.max(0, width)))
 		const rail = this.theme.fg("muted", TeleportHelpComponent.rail)
 		return [rule, ...lines.map((line) => `${rail}${line}`), rule]
+	}
+
+	private mockTab(text: string, opts: { active?: boolean; muted?: boolean; warning?: boolean } = {}): string {
+		const padded = ` ${text} `
+		if (opts.active) return this.theme.inverse(padded)
+		if (opts.muted) return this.theme.fg("dim", padded)
+		if (opts.warning) return this.theme.fg("warning", padded)
+		return this.theme.fg("muted", padded)
+	}
+
+	private mockSep(): string {
+		return this.theme.fg("dim", "│")
 	}
 }
 
