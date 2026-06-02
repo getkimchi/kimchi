@@ -46,3 +46,11 @@ export function isProtocolOrPrintMode(args: string[]): boolean {
 	const mode = getCliModeArg(args)
 	return mode === "json" || mode === "rpc" || mode === "acp" || args.includes("--print") || args.includes("-p")
 }
+
+export function isExperimentalFeaturesArg(args: string[]): boolean {
+	return args.includes("--enable-experimental-features")
+}
+
+export function stripExperimentalFeaturesArg(args: string[]): string[] {
+	return args.filter((a) => a !== "--enable-experimental-features")
+}
