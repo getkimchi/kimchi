@@ -230,20 +230,28 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 		// Poll until the agent is idle before sending — a plain setTimeout(0)
 		// is not enough because isStreaming can still be true when agent_end fires,
 		// causing sendMessage to take the steer path and trigger a new LLM turn.
+		let attempts = 0
+		const MAX_ATTEMPTS = 100 // 5s max
 		const trySend = () => {
-			if (ctx?.isIdle() === false) {
+			if (ctx?.isIdle() === false && attempts++ < MAX_ATTEMPTS) {
 				setTimeout(trySend, 50)
 				return
 			}
-			pi.sendMessage(
-				{
-					customType: "prompt-summary",
-					content: [{ type: "text", text: `<system-annotation>Prompt summary (${data.elapsed})</system-annotation>` }],
-					display: true,
-					details: data,
-				},
-				{ triggerTurn: false },
-			)
+			try {
+				pi.sendMessage(
+					{
+						customType: "prompt-summary",
+						content: [
+							{ type: "text", text: `<system-annotation>Prompt summary (${data.elapsed})</system-annotation>` },
+						],
+						display: true,
+						details: data,
+					},
+					{ triggerTurn: false },
+				)
+			} catch (err) {
+				console.error("[prompt-summary] Failed to send:", err)
+			}
 		}
 		trySend()
 	})
