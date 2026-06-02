@@ -13,74 +13,76 @@ jobs:
     steps:
       - name: Extract Type of Change section
         id: extract
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          PR_BODY="${{ github.event.pull_request.body }}"
-          
+          BODY=$(printf '%s' "$PR_BODY" | tr -d '\r')
+
           # Extract the "## Type of Change" section (between that heading and the next ## heading or end of string)
-          SECTION=$(echo "$PR_BODY" | sed -n '/^## Type of Change$/,/^## /p' | sed '$d')
-          
+          SECTION=$(printf '%s' "$BODY" | sed -n '/^## Type of Change$/,/^## /p' | sed '$d')
+
           # If the section is empty or the marker wasn't found, exit gracefully
-          if [ -z "$SECTION" ] || [ "$SECTION" = "$PR_BODY" ]; then
+          if [ -z "$SECTION" ]; then
             echo "No Type of Change section found, skipping."
             echo "labels=" >> $GITHUB_OUTPUT
             exit 0
           fi
-          
+
           echo "Extracted section:"
-          echo "$SECTION"
+          printf '%s' "$SECTION"
           echo "section<<EOF" >> $GITHUB_OUTPUT
-          echo "$SECTION" >> $GITHUB_OUTPUT
+          printf '%s' "$SECTION" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Parse checked boxes and build label list
         id: parse
+        env:
+          SECTION: ${{ steps.extract.outputs.section }}
         run: |
-          SECTION="${{ steps.extract.outputs.section }}"
-          
           # Find all checked boxes (- [x] or - [X])
-          CHECKED=$(echo "$SECTION" | grep -iE '^\s*-\s*\[[xX]\]' || true)
-          
+          CHECKED=$(printf '%s' "$SECTION" | grep -iE '^\s*-\s*\[[xX]]' || true)
+
           if [ -z "$CHECKED" ]; then
             echo "No checked items found, skipping."
             echo "labels=" >> $GITHUB_OUTPUT
             exit 0
           fi
-          
+
           echo "Checked items found:"
-          echo "$CHECKED"
-          
+          printf '%s' "$CHECKED"
+
           # Map checked items to labels
           LABELS=""
-          
-          if echo "$CHECKED" | grep -qi "Bug fix"; then
+
+          if printf '%s' "$CHECKED" | grep -qi "Bug fix"; then
             LABELS="${LABELS}bug,"
           fi
-          
-          if echo "$CHECKED" | grep -qi "New feature"; then
+
+          if printf '%s' "$CHECKED" | grep -qi "New feature"; then
             LABELS="${LABELS}new feature,"
           fi
-          
-          if echo "$CHECKED" | grep -qi "Breaking change"; then
+
+          if printf '%s' "$CHECKED" | grep -qi "Breaking change"; then
             LABELS="${LABELS}breaking change,"
           fi
-          
-          if echo "$CHECKED" | grep -qi "Documentation update"; then
+
+          if printf '%s' "$CHECKED" | grep -qi "Documentation update"; then
             LABELS="${LABELS}documentation,"
           fi
-          
+
           # Remove trailing comma
-          LABELS=$(echo "$LABELS" | sed 's/,$//')
-          
+          LABELS=$(printf '%s' "$LABELS" | sed 's/,$//')
+
           echo "Labels to add: $LABELS"
           echo "labels=$LABELS" >> $GITHUB_OUTPUT
 
       - name: Add labels to PR
         if: steps.parse.outputs.labels != ''
+        env:
+          LABELS: ${{ steps.parse.outputs.labels }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          LABELS="${{ steps.parse.outputs.labels }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          
           echo "Adding labels to PR #$PR_NUMBER: $LABELS"
-          
+
           # gh pr edit adds labels (duplicates are handled gracefully)
-          gh pr edit $PR_NUMBER --add-label "$LABELS"
+          gh pr edit "$PR_NUMBER" --add-label "$LABELS"
