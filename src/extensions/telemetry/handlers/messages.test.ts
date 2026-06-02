@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
 import { SessionContext, _resetSharedAccumulators } from "../session-context.js"
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./messages.js"
+const BASE_TS = new Date("2026-06-02T10:00:00.000Z").getTime()
 
 vi.mock("../../../startup-context.js", () => ({
 	getAvailableModels: vi.fn(() => []),
@@ -30,37 +31,37 @@ describe("handleMessageStart", () => {
 	it("sets messageStartTime for assistant messages using timestamp", () => {
 		const ctx = makeCtx()
 		const before = Date.now()
-		handleMessageStart(ctx, { message: { role: "assistant", timestamp: 1700000000000 } })
+		handleMessageStart(ctx, { message: { role: "assistant", timestamp: BASE_TS } })
 		const after = Date.now()
-		const stored = ctx.messageStartTimes.get("1700000000000")
+		const stored = ctx.messageStartTimes.get(String(BASE_TS))
 		expect(stored).toBeGreaterThanOrEqual(before)
 		expect(stored).toBeLessThanOrEqual(after)
 	})
 
-	it("sets messageStartTime using timestamp even when responseId is present", () => {
+	it("sets messageStartTime using timestamp", () => {
 		const ctx = makeCtx()
-		handleMessageStart(ctx, { message: { role: "assistant", timestamp: 1700000000000 } })
+		handleMessageStart(ctx, { message: { role: "assistant", timestamp: BASE_TS } })
 		// Only timestamp is used for timing tracking; responseId is ignored here.
-		expect(ctx.messageStartTimes.has("1700000000000")).toBe(true)
+		expect(ctx.messageStartTimes.has(String(BASE_TS))).toBe(true)
 	})
 
 	it("ignores non-assistant messages", () => {
 		const ctx = makeCtx()
-		handleMessageStart(ctx, { message: { role: "user", timestamp: 1700000000001 } })
+		handleMessageStart(ctx, { message: { role: "user", timestamp: BASE_TS + 1 } })
 		expect(ctx.messageStartTimes.size).toBe(0)
 	})
 
 	it("updates currentModel from message when available", () => {
 		const ctx = makeCtx()
 		expect(ctx.currentModel).toBe("unknown")
-		handleMessageStart(ctx, { message: { role: "assistant", timestamp: 1700000000002, model: "claude-3-5-sonnet" } })
+		handleMessageStart(ctx, { message: { role: "assistant", timestamp: BASE_TS + 2, model: "claude-3-5-sonnet" } })
 		expect(ctx.currentModel).toBe("claude-3-5-sonnet")
 	})
 
 	it("does not overwrite currentModel with unknown", () => {
 		const ctx = makeCtx()
 		ctx.currentModel = "claude-3-5-sonnet"
-		handleMessageStart(ctx, { message: { role: "assistant", timestamp: 1700000000003 } })
+		handleMessageStart(ctx, { message: { role: "assistant", timestamp: BASE_TS + 3 } })
 		expect(ctx.currentModel).toBe("claude-3-5-sonnet")
 	})
 })
@@ -83,7 +84,7 @@ describe("handleMessageEnd", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("emits api_request with source and mode", async () => {
+	it("emits api_request with source and session_type", async () => {
 		const ctx = makeCtx("vscode")
 		const emitSpy = vi.spyOn(ctx, "emit")
 
@@ -210,18 +211,18 @@ describe("handleMessageEnd", () => {
 		expect(ctx.currentModel).toBe("claude-3-5-sonnet")
 	})
 
-	it("computes correct duration when responseId is present at both events", async () => {
+	it("computes correct duration using matched timestamp", async () => {
 		const ctx = makeCtx()
 		// Let sessionStartMs age so we can distinguish fallback from correct lookup
 		await new Promise((r) => setTimeout(r, 50))
-		handleMessageStart(ctx, { message: { role: "assistant", timestamp: 1700000000001 } })
+		handleMessageStart(ctx, { message: { role: "assistant", timestamp: BASE_TS + 1 } })
 
 		const emitSpy = vi.spyOn(ctx, "emit")
 		await handleMessageEnd(ctx, {
 			message: {
 				role: "assistant",
 				responseId: "resp-dur",
-				timestamp: 1700000000001,
+				timestamp: BASE_TS + 1,
 				model: "claude-3-5-sonnet",
 				provider: "anthropic",
 				usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
@@ -233,13 +234,13 @@ describe("handleMessageEnd", () => {
 		expect(attrs.duration_ms).toBeLessThan(20)
 	})
 
-	it("computes correct duration when responseId appears at message_end", async () => {
+	it("computes correct duration when message_start lacks responseId", async () => {
 		const ctx = makeCtx()
 		// Let sessionStartMs age
 		await new Promise((r) => setTimeout(r, 50))
 
 		// message_start fires WITHOUT responseId (common for streaming start)
-		handleMessageStart(ctx, { message: { role: "assistant", timestamp: 1700000000000 } })
+		handleMessageStart(ctx, { message: { role: "assistant", timestamp: BASE_TS } })
 
 		// message_end fires WITH responseId (assigned by provider after response completes)
 		const emitSpy = vi.spyOn(ctx, "emit")
@@ -247,7 +248,7 @@ describe("handleMessageEnd", () => {
 			message: {
 				role: "assistant",
 				responseId: "resp-after",
-				timestamp: 1700000000000,
+				timestamp: BASE_TS,
 				model: "claude-3-5-sonnet",
 				provider: "anthropic",
 				usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },

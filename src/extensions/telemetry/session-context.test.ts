@@ -39,7 +39,7 @@ describe("SessionContext", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("emit appends source and mode to every event", async () => {
+	it("emit appends source and session_type to every event", async () => {
 		const { getActiveFerment } = await import("../ferment/index.js")
 		vi.mocked(getActiveFerment).mockReturnValue(undefined)
 

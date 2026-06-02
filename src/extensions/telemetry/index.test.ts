@@ -135,7 +135,7 @@ describe("telemetryExtension integration", () => {
 		expect(metricsCalls.length).toBeGreaterThan(0)
 	})
 
-	it("trackSubagentSpawned sends kimchi.subagent.spawned with source and mode", async () => {
+	it("trackSubagentSpawned sends kimchi.subagent.spawned with source and session_type", async () => {
 		const { handlers, api } = createMockApi()
 		telemetryExtension(makeConfig())(api)
 		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
