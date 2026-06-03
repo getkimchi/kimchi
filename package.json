@@ -41,15 +41,19 @@
 		"@shikijs/cli": "^4.0.2",
 		"@types/diff": "^8.0.0",
 		"@types/proper-lockfile": "^4.1.4",
+		"@types/ssh2": "^1.15.5",
+		"@xterm/headless": "^6.0.0",
 		"diff": "^9.0.0",
 		"micromatch": "^4.0.8",
 		"open": "^10.2.0",
 		"proper-lockfile": "^4.1.2",
 		"shell-quote": "^1.8.3",
 		"shiki": "^4.0.2",
+		"ssh2": "^1.17.0",
 		"tar": "^7.5.15",
 		"undici": "^8.2.0",
 		"uuid": "^14.0.0",
+		"wcwidth": "^1.0.1",
 		"yaml": "^2.8.4",
 		"zod": "^4.4.3"
 	},
@@ -98,6 +102,10 @@
 			"koffi",
 			"node-pty",
 			"protobufjs"
+		],
+		"ignoredOptionalDependencies": [
+			"cpu-features",
+			"nan"
 		],
 		"patchedDependencies": {
 			"@earendil-works/pi-coding-agent": "patches/@earendil-works__pi-coding-agent.patch",

@@ -69,6 +69,10 @@ export interface OnboardingConfig {
 	hideSessionModeDialog?: boolean
 }
 
+export interface SurveyConfig {
+	seenAt?: string
+}
+
 export const SEARCH_STRATEGY_DEFAULTS: SearchStrategyConfig = {
 	strategy: "bm25",
 	bm25K1: 1.2,
@@ -387,6 +391,40 @@ function updateOnboardingConfig(configPath: string, update: (onboarding: Record<
 	})
 }
 
+function readSurveyConfig(surveyId: string, configPath: string): SurveyConfig | undefined {
+	try {
+		const parsed = JSON.parse(readFileSync(configPath, "utf-8"))
+		const surveys = parsed.surveys
+		if (!surveys || typeof surveys !== "object" || Array.isArray(surveys)) return undefined
+		const survey = (surveys as Record<string, unknown>)[surveyId]
+		if (!survey || typeof survey !== "object" || Array.isArray(survey)) return undefined
+		const seenAt = (survey as Record<string, unknown>).seenAt
+		return typeof seenAt === "string" && seenAt.length > 0 ? { seenAt } : undefined
+	} catch {
+		return undefined
+	}
+}
+
+function updateSurveyConfig(
+	configPath: string,
+	surveyId: string,
+	update: (survey: Record<string, unknown>) => void,
+): void {
+	updateConfigFile(configPath, (raw) => {
+		const surveys =
+			raw.surveys && typeof raw.surveys === "object" && !Array.isArray(raw.surveys)
+				? { ...(raw.surveys as Record<string, unknown>) }
+				: {}
+		const survey =
+			surveys[surveyId] && typeof surveys[surveyId] === "object" && !Array.isArray(surveys[surveyId])
+				? { ...(surveys[surveyId] as Record<string, unknown>) }
+				: {}
+		update(survey)
+		surveys[surveyId] = survey
+		raw.surveys = surveys
+	})
+}
+
 export function readSessionModeWizardSeenAt(configPath?: string): string | undefined {
 	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.sessionModeWizardSeenAt
 }
@@ -395,6 +433,16 @@ export function writeSessionModeWizardSeenAt(seenAt: string, configPath?: string
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateOnboardingConfig(path, (onboarding) => {
 		onboarding.sessionModeWizardSeenAt = seenAt
+	})
+}
+
+export function readSurveySeenAt(surveyId: string, configPath?: string): string | undefined {
+	return readSurveyConfig(surveyId, configPath ?? KIMCHI_CONFIG_PATH)?.seenAt
+}
+
+export function writeSurveySeenAt(surveyId: string, seenAt: string, configPath?: string): void {
+	updateSurveyConfig(configPath ?? KIMCHI_CONFIG_PATH, surveyId, (survey) => {
+		survey.seenAt = seenAt
 	})
 }
 
