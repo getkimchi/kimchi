@@ -31,6 +31,7 @@ import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
+import codexHooksAdapter from "./extensions/codex-hook-adapter/index.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
@@ -504,6 +505,9 @@ try {
 			questionnaireExtension,
 			promptEnrichmentExtension(skillPaths),
 			rtkRewriteExtension,
+			...enabledExtensionFactories([
+				{ id: "extensions.codex-hook-adapter", factory: codexHooksAdapter },
+			] satisfies ManagedExtensionFactory[]),
 			permissionsExtension,
 			resourcesExtension,
 			resourceToolBlockerExtension,

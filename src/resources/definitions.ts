@@ -42,6 +42,14 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		restartRequired: true,
 	},
 	{
+		id: "extensions.codex-hook-adapter",
+		kind: "extensions",
+		label: "Codex hook adapter",
+		description: "Run Codex command hooks from .codex hooks.json files.",
+		defaultEnabled: false,
+		restartRequired: true,
+	},
+	{
 		id: "plugins.mcp-apps",
 		kind: "plugins",
 		label: "MCP apps",

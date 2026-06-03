@@ -103,6 +103,69 @@ exit 2
 
 Any other failure is treated as allow unchanged. This keeps a broken local hook from breaking the agent session.
 
+## Codex Adapter
+
+Codex hook format is not part of the kimchi core hook contract. Kimchi can run existing Codex command hooks through a disabled-by-default compatibility extension.
+
+Enable the adapter:
+
+```bash
+kimchi resources enable extensions.codex-hook-adapter
+```
+
+Restart Kimchi after enabling the adapter. Individual hook commands inside Codex config files are not shown separately in `/resources`.
+
+The adapter reads hooks from:
+
+```bash
+~/.codex/hooks.json
+.codex/hooks.json
+```
+
+Supported events:
+
+- `PreToolUse`
+- `PostToolUse`
+- `SessionStart`
+- `PreCompact`
+- `PostCompact`
+- `UserPromptSubmit`
+- `Stop`
+
+Codex `async: true` command hooks are skipped, matching current Codex behavior. Inline `[hooks]` tables in `.codex/config.toml` are not supported in this adapter version.
+
+Example:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.codex/hooks/session_start.py"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.codex/hooks/pre_tool_use_policy.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
 ## Examples
 
 ### Rewrite `git status`
