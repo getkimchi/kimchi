@@ -3,7 +3,9 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
+	VENDOR_SKILL_PATHS,
 	clearApiKey,
+	getActiveVendorSkillPaths,
 	loadConfig,
 	readGitToken,
 	readHideTips,
@@ -624,5 +626,40 @@ describe("readGitToken / writeGitToken", () => {
 	it("round-trips write then read", () => {
 		writeGitToken("github.com", "ghp_roundtrip", configPath)
 		expect(readGitToken("github.com", configPath)).toBe("ghp_roundtrip")
+	})
+})
+
+describe("getActiveVendorSkillPaths", () => {
+	let originalHome: string | undefined
+	let mockHome: string
+
+	beforeEach(() => {
+		originalHome = process.env.HOME
+		mockHome = mkdtempSync(join(tmpdir(), "kimchi-vendor-test-"))
+		process.env.HOME = mockHome
+	})
+
+	afterEach(() => {
+		if (originalHome !== undefined) process.env.HOME = originalHome
+		else {
+			// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
+			delete process.env.HOME
+		}
+		rmSync(mockHome, { recursive: true, force: true })
+	})
+
+	it("returns vendor paths when vendor dir exists and no sentinel", () => {
+		mkdirSync(join(mockHome, ".config", "kimchi", "vendor", "superpowers", "skills"), { recursive: true })
+		expect(getActiveVendorSkillPaths()).toEqual(VENDOR_SKILL_PATHS)
+	})
+
+	it("returns empty array when sentinel exists in harness skills dir", () => {
+		mkdirSync(join(mockHome, ".config", "kimchi", "harness", "skills", "using-superpowers"), { recursive: true })
+		writeFileSync(join(mockHome, ".config", "kimchi", "harness", "skills", "using-superpowers", "SKILL.md"), "")
+		expect(getActiveVendorSkillPaths()).toEqual([])
+	})
+
+	it("returns empty array when vendor dir does not exist", () => {
+		expect(getActiveVendorSkillPaths()).toEqual([])
 	})
 })
