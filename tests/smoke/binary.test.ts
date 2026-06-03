@@ -1,4 +1,4 @@
-import { constants, accessSync, copyFileSync, mkdtempSync, rmSync, statSync } from "node:fs"
+import { constants, accessSync, copyFileSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -111,6 +111,9 @@ describe("binary smoke tests", () => {
 			expect(result.stdout).toContain(outPath)
 			// Output must load the template + vendor bundle (marked + highlight ≈ 200KB), so 10KB is a safe regression floor.
 			expect(statSync(outPath).size).toBeGreaterThan(10_000)
+			const html = readFileSync(outPath, "utf-8")
+			expect(html).toContain("window.__KIMCHI_VERSION")
+			expect(html).toContain('class="info-label">Version:')
 		})
 	})
 

@@ -256,6 +256,25 @@ Kimchi stores its configuration (settings, sessions, models) under:
 ~/.config/kimchi/harness/
 ```
 
+### Packages
+
+Kimchi supports native Pi packages. `kimchi install npm:<package>` installs a package only for Kimchi, while `pi install npm:<package>` keeps the package owned by the original Pi harness. Kimchi can also load original Pi packages through the **Pi package lookup** resource, so both CLIs can use Pi packages without sharing Kimchi's install scope.
+
+If the same package is installed in both places, the Kimchi install wins. Disable original Pi package lookup with:
+
+```bash
+kimchi resources disable extensions.pi-package-lookup
+```
+
+Update packages with:
+
+```bash
+kimchi update                  # update installed packages, then Kimchi itself
+kimchi update --extensions     # update installed packages only
+kimchi update context-mode     # update one package by source or display name
+kimchi update self             # update Kimchi itself only
+```
+
 ### HTTP proxy
 
 Kimchi respects `HTTP_PROXY` / `HTTPS_PROXY` environment variables for network requests.

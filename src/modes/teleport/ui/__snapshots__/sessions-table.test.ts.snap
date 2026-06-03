@@ -1,9 +1,0 @@
-// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
-
-exports[`renderSessionsTable > emits a stable snapshot for a representative mix 1`] = `
-"  ID       HOST  NAME      STATUS LAST ACTIVITY
-* abcd1234 x-y-z feature-x idle   2m ago
-  ef567890 x-y-z bugfix-y  idle   15m ago
-  12345678 x-y-z exp-z     idle   3h ago
-  9abc0def x-y-z -         active just now"
-`;

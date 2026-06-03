@@ -1,7 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
-import telemetryExtension, { trackSubagentSpawned } from "./index.js"
+import telemetryExtension, {
+	trackSubagentSpawned,
+	trackSurveyAnswered,
+	trackSurveyDismissed,
+	trackSurveyShown,
+} from "./index.js"
 import { _resetSharedAccumulators } from "./session-context.js"
 
 vi.mock("../ferment/index.js", () => ({
@@ -15,6 +20,21 @@ vi.mock("../../startup-context.js", () => ({
 vi.mock("../../api/me.js", () => ({
 	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
 }))
+
+const TEST_SURVEY = {
+	id: "019e87cc-5033-0000-d9bd-5e6501640b6e",
+	version: 1,
+	question: {
+		id: "34f7caf5-7631-42f1-b6ed-d2a42ddde1cd",
+		text: "How did Kimchi do?",
+		help: "Your feedback helps us improve.",
+	},
+	options: [
+		{ id: "worked_great", label: "Went great" },
+		{ id: "mostly_worked", label: "Mostly worked" },
+		{ id: "didnt_work", label: "Didn't work" },
+	],
+} as const
 
 type Handler = (...args: unknown[]) => Promise<void> | void
 
@@ -155,5 +175,52 @@ describe("telemetryExtension integration", () => {
 		expect(attrs.model).toBe("claude-opus-4-6")
 		expect(attrs.source).toBe("cli")
 		expect(attrs.mode).toBe("coding")
+	})
+
+	it("survey tracking helpers send survey events through the telemetry batch", async () => {
+		const { handlers, api } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+
+		const submissionId = "submission-1"
+		trackSurveyShown({ survey: TEST_SURVEY })
+		trackSurveyAnswered({ survey: TEST_SURVEY, submissionId, answerId: "worked_great" })
+		trackSurveyDismissed({ survey: TEST_SURVEY })
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		const allRecords = logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+
+		const surveyShown = allRecords.find((rec) => rec.eventName === "survey_shown")
+		const surveyAnswered = allRecords.find((rec) => rec.eventName === "survey_answered")
+		const surveyDismissed = allRecords.find((rec) => rec.eventName === "survey_dismissed")
+
+		expect(surveyShown).toBeDefined()
+		expect(surveyAnswered).toBeDefined()
+		expect(surveyDismissed).toBeDefined()
+
+		const shownAttrs = Object.fromEntries(surveyShown?.attributes.map((a) => [a.key, a.value.stringValue]) ?? [])
+		const answeredAttrs = Object.fromEntries(surveyAnswered?.attributes.map((a) => [a.key, a.value.stringValue]) ?? [])
+		const dismissedAttrs = Object.fromEntries(
+			surveyDismissed?.attributes.map((a) => [a.key, a.value.stringValue]) ?? [],
+		)
+
+		expect(shownAttrs.survey_id).toBe("019e87cc-5033-0000-d9bd-5e6501640b6e")
+		expect(shownAttrs.client).toBe("pi")
+		expect(shownAttrs.source).toBe("cli")
+		expect(shownAttrs.mode).toBe("coding")
+
+		expect(answeredAttrs.survey_id).toBe("019e87cc-5033-0000-d9bd-5e6501640b6e")
+		expect(answeredAttrs.survey_submission_id).toBe(submissionId)
+		expect(answeredAttrs.question_id).toBe("34f7caf5-7631-42f1-b6ed-d2a42ddde1cd")
+		expect(answeredAttrs.answer_value).toBe("Went great")
+		expect(answeredAttrs.survey_completed).toBe("true")
+
+		expect(dismissedAttrs.survey_id).toBe("019e87cc-5033-0000-d9bd-5e6501640b6e")
 	})
 })

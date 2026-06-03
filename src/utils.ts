@@ -1,8 +1,23 @@
-import { execSync } from "node:child_process"
+import { execFile, execSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
+
+export function refreshGitBranch(onResult: (branch: string | undefined) => void, cwd?: string): void {
+	execFile(
+		"git",
+		["symbolic-ref", "--short", "HEAD"],
+		{
+			cwd: cwd ?? process.cwd(),
+			encoding: "utf8",
+			timeout: 500,
+		},
+		(err, stdout) => {
+			onResult(err ? undefined : stdout.trim() || undefined)
+		},
+	)
+}
 
 export function getGitBranch(cwd?: string): string | undefined {
 	try {

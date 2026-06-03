@@ -80,4 +80,14 @@ describe("bash hook discovery", () => {
 		expect(applyEnabledBashHooks("git status", join(dir, "project"))).toEqual({ command: "git status --short" })
 		expect(mockExecFileSync).toHaveBeenCalledOnce()
 	})
+
+	it("skips bash hooks when the bash hook subsystem is disabled", () => {
+		const globalDir = join(dir, "agent", "hooks", "bash")
+		mkdirSync(globalDir, { recursive: true })
+		writeFileSync(join(globalDir, "rewrite.sh"), "unused\n")
+		writeFileSync(join(dir, "agent", "settings.json"), JSON.stringify({ resources: { "hooks.bash": false } }))
+
+		expect(applyEnabledBashHooks("git status", join(dir, "project"))).toEqual({ command: "git status" })
+		expect(mockExecFileSync).not.toHaveBeenCalled()
+	})
 })
