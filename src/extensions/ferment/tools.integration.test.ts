@@ -1426,13 +1426,13 @@ describe("propose_ferment_scoping", () => {
 		expect(result).toMatch(/updating the plan/i)
 	})
 
-	it("supports checkbox and text scoping question styles", async () => {
+	it("supports multi and text scoping question styles", async () => {
 		const id = await createFerment("Question Styles")
 		seedPending(id)
 		const questions = [
 			{
 				id: "surfaces",
-				type: "checkbox",
+				type: "multi",
 				question: "Which surfaces must be included?",
 				options: [
 					{ id: "cli", label: "CLI", recommended: true },
@@ -1475,6 +1475,78 @@ describe("propose_ferment_scoping", () => {
 		expect(msgContent).toContain('free-form: "Browser smoke test passes"')
 	})
 
+	it("accepts questionnaire vocabulary (single) and synthesizes Yes/No for confirm scoping questions", async () => {
+		const id = await createFerment("Questionnaire Vocabulary")
+		seedPending(id)
+		const questions = [
+			{
+				id: "approach",
+				type: "single",
+				question: "Approach?",
+				options: [
+					{ id: "opt-a", label: "Option A", recommended: true },
+					{ id: "opt-b", label: "Option B" },
+				],
+			},
+			{
+				// confirm with no options — host must default to Yes/No.
+				id: "ship",
+				type: "confirm",
+				question: "Ship behind a flag?",
+			},
+		]
+		const ctx = {
+			ui: {
+				// Both questions are single-choice style, so the select-per-question path runs:
+				// Q1 option, Q2 Yes/No, then the review confirmation.
+				select: vi
+					.fn()
+					.mockResolvedValueOnce("Option A  ★ Recommended")
+					.mockResolvedValueOnce("Yes")
+					.mockResolvedValueOnce("Update plan  ✓"),
+				input: vi.fn(),
+			},
+		}
+
+		const result = ok(await h.call("propose_ferment_scoping", basePayload(id, { questions }), ctx))
+
+		expect(loadFerment(id).status).toBe("draft")
+		expect(result).toContain("Your answers")
+		expect(result).toContain("Option A")
+		// The confirm question offered Yes/No and recorded the Yes answer.
+		const shipCall = ctx.ui.select.mock.calls.find((c: unknown[]) => String(c[0]).includes("Ship behind a flag?"))
+		expect(shipCall).toBeDefined()
+		expect(shipCall?.[1]).toEqual(expect.arrayContaining(["Yes", "No"]))
+	})
+
+	it("rejects confirm scoping questions that carry options rather than rewriting them", async () => {
+		const id = await createFerment("Confirm With Options")
+		seedPending(id)
+		const ctx = { ui: { select: vi.fn(), input: vi.fn() } }
+
+		const result = await h.call(
+			"propose_ferment_scoping",
+			basePayload(id, {
+				questions: [
+					{
+						id: "ship",
+						type: "confirm",
+						question: "Ship behind a flag?",
+						options: [
+							{ id: "yes", label: "Definitely" },
+							{ id: "no", label: "Not yet" },
+						],
+					},
+				],
+			}),
+			ctx,
+		)
+
+		expect(result.isError).toBe(true)
+		expect(err(result)).toContain("confirm")
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+	})
+
 	it("returns a focused runtime validation error for too many scoping questions", async () => {
 		const id = await createFerment("Too Many Questions")
 		seedPending(id)
@@ -1510,7 +1582,7 @@ describe("propose_ferment_scoping", () => {
 				questions: [
 					{
 						id: "target",
-						type: "checkbox",
+						type: "multi",
 						question: "Which target environments are in scope?",
 						options: [
 							{ id: "ssh", label: "SSH" },

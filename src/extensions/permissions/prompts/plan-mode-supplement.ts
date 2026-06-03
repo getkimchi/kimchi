@@ -54,7 +54,7 @@ Named risks with likelihood and mitigation approach.
 
 You are encouraged to make assumptions when planning — exploration often requires educated guesses. However, **every assumption must be surfaced explicitly and resolved with the user before the plan is finalized.**
 
-**Ask clarifying questions before committing to a plan.** If the request omits information you need to choose a technology, bound the scope, or set performance targets, use the \`questionnaire\` tool. Ask 1–3 focused questions. Prefer checkbox questions when multiple options apply; radio for single choices. Do not ask preference-survey questions when a safe default is obvious.
+**Ask clarifying questions before committing to a plan.** If the request omits information you need to choose a technology, bound the scope, or set performance targets, use the \`questionnaire\` tool. Ask 1–3 focused questions. Prefer multi questions when multiple options apply; single for one choice. Do not ask preference-survey questions when a safe default is obvious.
 
 When you make an assumption:
 - Add it to the **Open Questions** section of the relevant chunk

@@ -5,7 +5,7 @@
 
 import { Value } from "typebox/value"
 import { describe, expect, it } from "vitest"
-import { CompleteStepParams, ProposeScopingParams, ScopeParams } from "./tool-schemas.js"
+import { AskUserParams, CompleteStepParams, ProposeScopingParams, ScopeParams } from "./tool-schemas.js"
 
 // Minimal valid payload fixtures
 const passingGates = () => [
@@ -42,7 +42,7 @@ describe("ProposeScopingParams schema", () => {
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 
-	it("accepts radio, checkbox, and text scoping question styles", () => {
+	it("accepts single, multi, confirm, and text scoping question styles", () => {
 		const payload = {
 			ferment_id: "f-123",
 			title: "Test Ferment",
@@ -52,20 +52,25 @@ describe("ProposeScopingParams schema", () => {
 			questions: [
 				{
 					id: "ship",
-					type: "radio",
+					type: "confirm",
 					question: "Ship this as a yes/no decision?",
-					options: [
-						{ id: "yes", label: "Yes", recommended: true },
-						{ id: "no", label: "No" },
-					],
 				},
 				{
 					id: "surfaces",
-					type: "checkbox",
+					type: "multi",
 					question: "Which surfaces must be included?",
 					options: [
 						{ id: "cli", label: "CLI" },
 						{ id: "docs", label: "Docs" },
+					],
+				},
+				{
+					id: "approach",
+					type: "single",
+					question: "Which approach?",
+					options: [
+						{ id: "a", label: "A", recommended: true },
+						{ id: "b", label: "B" },
 					],
 				},
 				{
@@ -78,6 +83,30 @@ describe("ProposeScopingParams schema", () => {
 		}
 
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
+	})
+
+	it("rejects the old radio/checkbox vocabulary", () => {
+		const payload = {
+			ferment_id: "f-123",
+			title: "Test Ferment",
+			goal: "Do something",
+			success_criteria: ["Tests pass"],
+			phases: minimalPhases(),
+			questions: [
+				{
+					id: "surfaces",
+					type: "checkbox",
+					question: "Which surfaces?",
+					options: [
+						{ id: "cli", label: "CLI" },
+						{ id: "docs", label: "Docs" },
+					],
+				},
+			],
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
 	})
 
 	it("accepts payload without questions (questions is optional)", () => {
@@ -93,13 +122,13 @@ describe("ProposeScopingParams schema", () => {
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 
-	it("documents improvement selection as a checkbox scoping question", () => {
+	it("documents improvement selection as a multi scoping question", () => {
 		const questionsSchema = (ProposeScopingParams as unknown as { properties: { questions: unknown } }).properties
 			.questions
 		const schemaText = JSON.stringify(questionsSchema)
 
 		expect(schemaText).toContain("multiple plausible work areas")
-		expect(schemaText).toContain("ask one checkbox question")
+		expect(schemaText).toContain("ask one multi question")
 		expect(schemaText).toContain("Which improvement areas should this ferment include?")
 	})
 
@@ -405,5 +434,48 @@ describe("CompleteStepParams schema", () => {
 		}
 
 		expect(Value.Check(CompleteStepParams, payload)).toBe(true)
+	})
+})
+
+describe("AskUserParams schema", () => {
+	const base = (questions: unknown) => ({ ferment_id: "f-1", questions })
+
+	it("accepts confirm response_type for the top-level shorthand", () => {
+		const payload = {
+			ferment_id: "f-1",
+			question:
+				"I'll consider this done when the script continuously prints CPU temperature and exits cleanly. Sound right?",
+			response_type: "confirm",
+		}
+		expect(Value.Check(AskUserParams, payload)).toBe(true)
+	})
+
+	it("accepts the single/multi/text/confirm question vocabulary", () => {
+		const payload = base([
+			{ id: "approach", type: "single", prompt: "Which?", options: [{ id: "a", label: "A" }] },
+			{ id: "areas", type: "multi", prompt: "Which areas?", options: [{ id: "x", label: "X" }] },
+			{ id: "note", type: "text", prompt: "Anything else?" },
+			{ id: "ship", type: "confirm", prompt: "Ship behind a flag?" },
+		])
+		expect(Value.Check(AskUserParams, payload)).toBe(true)
+	})
+
+	// LLM-1928: the original failure was ask_user.questions[].type using the
+	// wrong vocabulary. These types must now be rejected at the schema layer.
+	it("rejects the old radio vocabulary in questions[].type", () => {
+		const payload = base([{ id: "approach", type: "radio", prompt: "Which?", options: [{ id: "a", label: "A" }] }])
+		expect(Value.Check(AskUserParams, payload)).toBe(false)
+	})
+
+	it("rejects the old checkbox vocabulary in questions[].type", () => {
+		const payload = base([
+			{ id: "areas", type: "checkbox", prompt: "Which areas?", options: [{ id: "x", label: "X" }] },
+		])
+		expect(Value.Check(AskUserParams, payload)).toBe(false)
+	})
+
+	it("rejects an invented question type", () => {
+		const payload = base([{ id: "ship", type: "confirmation", prompt: "Ship?" }])
+		expect(Value.Check(AskUserParams, payload)).toBe(false)
 	})
 })

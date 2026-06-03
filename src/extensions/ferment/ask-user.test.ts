@@ -1,7 +1,15 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import type { Ferment } from "../../ferment/types.js"
-import { type AskUserOption, askJudge, askJudgeForm, askUser, askUserForm } from "./ask-user.js"
+import {
+	type AskUserOption,
+	askJudge,
+	askJudgeForm,
+	askUser,
+	askUserForm,
+	normalizeAskUserQuestions,
+	toScopingQuestionType,
+} from "./ask-user.js"
 import type { JudgeApiResult } from "./judge.js"
 
 function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
@@ -122,6 +130,34 @@ describe("askUser routing", () => {
 		expect(result.rationale).toBe("Preserves optionality.")
 	})
 
+	it("routes confirm shorthand to the judge without requiring caller options", async () => {
+		const ferment = makeFerment()
+		const apiCall = vi.fn(async () => ({
+			ok: true as const,
+			text: '{"choice":"yes","rationale":"criteria are clear"}',
+		}))
+		const judge = vi.fn((question, options, activeFerment, responseType) =>
+			askJudge(question, options, activeFerment, responseType, apiCall),
+		)
+		const result = await askUser(
+			"Sound right?",
+			[],
+			{
+				ferment,
+				pi: makePi({ "ferment-oneshot": true }),
+				ctx: undefined,
+			},
+			"confirm",
+			{ askJudge: judge },
+		)
+		expect(judge).toHaveBeenCalledWith("Sound right?", [], ferment, "confirm")
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.response_type).toBe("confirm")
+		expect(result.choice).toBe("yes")
+		expect(result.answered_by).toBe("judge")
+	})
+
 	it("routes text questions to TUI input", async () => {
 		const input = vi.fn(async () => "Use the conservative path.")
 		const result = await askUser(
@@ -159,6 +195,42 @@ describe("askUser routing", () => {
 		expect(result.choices).toEqual(["proceed", "abandon"])
 	})
 
+	it("routes confirm shorthand as a Yes/No choice", async () => {
+		const select = vi.fn(async () => "Yes")
+		const result = await askUser(
+			"Sound right?",
+			[],
+			{
+				ferment: makeFerment(),
+				pi: makePi(),
+				ctx: { ui: { select } as never },
+			},
+			"confirm",
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.response_type).toBe("confirm")
+		expect(result.choice).toBe("yes")
+		expect(select).toHaveBeenCalledWith("Sound right?", ["Yes", "No"])
+	})
+
+	it("rejects confirm shorthand when caller supplies options", async () => {
+		const result = await askUser(
+			"Sound right?",
+			[{ id: "custom-yes", label: "Sure" }],
+			{
+				ferment: makeFerment(),
+				pi: makePi(),
+				ctx: { ui: { select: vi.fn() } as never },
+			},
+			"confirm",
+		)
+		expect(result.failed).toBe(true)
+		if (!result.failed) return
+		expect(result.reason).toBe("invalid_choice")
+		expect(result.detail).toContain("confirm")
+	})
+
 	it("routes form questions through fallback UI when custom UI is unavailable", async () => {
 		const select = vi.fn(async () => "Type your own answer")
 		const input = vi
@@ -172,14 +244,14 @@ describe("askUser routing", () => {
 			[
 				{
 					id: "approach",
-					type: "radio",
+					type: "single",
 					prompt: "Which approach?",
 					options: [{ id: "safe", label: "Safe path" }],
 					allowOther: true,
 				},
 				{
 					id: "scope",
-					type: "checkbox",
+					type: "multi",
 					prompt: "What is in scope?",
 					options: [{ id: "tests", label: "Tests" }],
 					allowOther: true,
@@ -195,10 +267,10 @@ describe("askUser routing", () => {
 		if (result.failed) return
 		expect(result.response_type).toBe("form")
 		expect(result.answers).toEqual([
-			{ id: "approach", type: "radio", value: "custom answer", label: "custom answer", wasCustom: true },
+			{ id: "approach", type: "single", value: "custom answer", label: "custom answer", wasCustom: true },
 			{
 				id: "scope",
-				type: "checkbox",
+				type: "multi",
 				value: "tests, custom answer",
 				label: "Tests, custom answer",
 				wasCustom: true,
@@ -206,6 +278,85 @@ describe("askUser routing", () => {
 				labels: ["Tests", "custom answer"],
 			},
 		])
+	})
+})
+
+describe("toScopingQuestionType", () => {
+	it("keeps the canonical question vocabulary unchanged", () => {
+		expect(toScopingQuestionType("single")).toEqual({ type: "single", isConfirm: false })
+		expect(toScopingQuestionType("multi")).toEqual({ type: "multi", isConfirm: false })
+		expect(toScopingQuestionType("text")).toEqual({ type: "text", isConfirm: false })
+		expect(toScopingQuestionType("confirm")).toEqual({ type: "confirm", isConfirm: true })
+	})
+
+	it("defaults to single only for omitted input", () => {
+		expect(toScopingQuestionType(undefined)).toEqual({ type: "single", isConfirm: false })
+	})
+
+	it("throws on unknown strings instead of silently defaulting (no aliases)", () => {
+		expect(() => toScopingQuestionType("radio")).toThrow(/Unknown question type/)
+		expect(() => toScopingQuestionType("checkbox")).toThrow(/Unknown question type/)
+		expect(() => toScopingQuestionType("bogus")).toThrow(/Unknown question type/)
+	})
+})
+
+describe("normalizeAskUserQuestions", () => {
+	it("keeps the canonical question vocabulary in ask_user forms (LLM-1928)", () => {
+		const result = normalizeAskUserQuestions([
+			{ id: "a", type: "single", prompt: "One?", options: [{ id: "x", label: "X" }] },
+			{ id: "b", type: "multi", prompt: "Many?", options: [{ id: "y", label: "Y" }] },
+			{ id: "c", type: "text", prompt: "Free?" },
+		])
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.questions.map((q) => q.type)).toEqual(["single", "multi", "text"])
+	})
+
+	it("renders confirm as a fixed Yes/No question when no options are supplied", () => {
+		const result = normalizeAskUserQuestions([{ id: "ok", type: "confirm", prompt: "Proceed?" }])
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.questions[0]?.type).toBe("confirm")
+		expect(result.questions[0]?.options).toEqual([
+			{ id: "yes", label: "Yes" },
+			{ id: "no", label: "No" },
+		])
+	})
+
+	it("rejects confirm questions that carry options instead of silently rewriting them", () => {
+		const result = normalizeAskUserQuestions([
+			{
+				id: "ok",
+				type: "confirm",
+				prompt: "Proceed?",
+				options: [
+					{ id: "ship", label: "Ship it" },
+					{ id: "hold", label: "Hold" },
+				],
+			},
+		])
+		expect(result.ok).toBe(false)
+		if (result.ok) return
+		expect(result.error).toContain("confirm")
+	})
+
+	it("rejects confirm questions that set allowOther instead of silently dropping it", () => {
+		const result = normalizeAskUserQuestions([{ id: "ok", type: "confirm", prompt: "Proceed?", allowOther: true }])
+		expect(result.ok).toBe(false)
+		if (result.ok) return
+		expect(result.error).toContain("allowOther")
+	})
+
+	it("reports an unknown type as a tool error rather than throwing", () => {
+		expect(() =>
+			normalizeAskUserQuestions([{ id: "bad", type: "bogus", prompt: "Which?", options: [{ id: "x", label: "X" }] }]),
+		).not.toThrow()
+		const result = normalizeAskUserQuestions([
+			{ id: "bad", type: "bogus", prompt: "Which?", options: [{ id: "x", label: "X" }] },
+		])
+		expect(result.ok).toBe(false)
+		if (result.ok) return
+		expect(result.error).toMatch(/Unknown question type/)
 	})
 })
 
@@ -287,6 +438,22 @@ describe("askJudge", () => {
 		expect(result.text).toBe("Ask for a reversible plan.")
 	})
 
+	it("parses confirm judge responses with synthesized Yes/No options", async () => {
+		let userMsg = ""
+		const apiCall = vi.fn(async (_sys: string, msg: string) => {
+			userMsg = msg
+			return ok('{"choice":"yes","rationale":"criteria are clear"}')
+		})
+		const result = await askJudge("Sound right?", [], makeFerment(), "confirm", apiCall)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.response_type).toBe("confirm")
+		expect(result.choice).toBe("yes")
+		expect(userMsg).toContain("Requested response type: confirm")
+		expect(userMsg).toContain('id="yes"')
+		expect(userMsg).toContain('id="no"')
+	})
+
 	it("parses structured form judge responses", async () => {
 		const apiCall = vi.fn(async () =>
 			ok(
@@ -299,13 +466,13 @@ describe("askJudge", () => {
 			[
 				{
 					id: "approach",
-					type: "radio",
+					type: "single",
 					prompt: "Which approach?",
 					options: [{ id: "safe", label: "Safe path" }],
 				},
 				{
 					id: "scope",
-					type: "checkbox",
+					type: "multi",
 					prompt: "What is in scope?",
 					options: [{ id: "tests", label: "Tests" }],
 					allowOther: true,
@@ -320,10 +487,10 @@ describe("askJudge", () => {
 		expect(result.response_type).toBe("form")
 		expect(result.answered_by).toBe("judge")
 		expect(result.answers).toEqual([
-			{ id: "approach", type: "radio", value: "safe", label: "Safe path", wasCustom: false },
+			{ id: "approach", type: "single", value: "safe", label: "Safe path", wasCustom: false },
 			{
 				id: "scope",
-				type: "checkbox",
+				type: "multi",
 				value: "tests, extra docs",
 				label: "Tests, extra docs",
 				wasCustom: true,
@@ -342,7 +509,7 @@ describe("askJudge", () => {
 			[
 				{
 					id: "approach",
-					type: "radio",
+					type: "single",
 					prompt: "Which approach?",
 					options: [{ id: "safe", label: "Safe path" }],
 				},
