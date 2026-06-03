@@ -23,7 +23,7 @@ const stripSgr = (line: string): string => line.replace(SGR_RE, "")
 const plainTheme = {
 	fg: (_name: string, value: string) => value,
 	bold: (value: string) => value,
-} as unknown as Theme
+} as unknown: Theme
 
 describe("user message render patch", () => {
 	beforeAll(() => {
@@ -345,5 +345,17 @@ describe("mcpCallLabelAndSummary", () => {
 			true,
 		)
 		expect(result.summary).toContain(longVal)
+	})
+})
+
+describe("set_phase tool summary", () => {
+	it("summarizes set_phase calls with the phase value", () => {
+		const summary = summarizeOpenAiToolCall("set_phase", { phase: "plan" }, plainTheme, (path) => path)
+		expect(summary).toBe("plan")
+	})
+
+	it("summarizes set_phase calls with unknown phase fallback", () => {
+		const summary = summarizeOpenAiToolCall("set_phase", {}, plainTheme, (path) => path)
+		expect(summary).toBe("set phase")
 	})
 })
