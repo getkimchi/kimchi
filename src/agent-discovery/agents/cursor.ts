@@ -21,17 +21,19 @@ interface CursorServerRaw {
 	disabled?: boolean
 }
 
-function transformCursorServer(raw: CursorServerRaw): ServerEntry | undefined {
-	if (raw.disabled === true) return undefined
+function transformCursorServer(raw: unknown): ServerEntry | undefined {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined
+	const server = raw as CursorServerRaw
+	if (server.disabled === true) return undefined
 
 	const entry: ServerEntry = {}
-	if (raw.command !== undefined) entry.command = raw.command
-	if (raw.args !== undefined) entry.args = raw.args
-	if (raw.env !== undefined) entry.env = raw.env
-	if (raw.url !== undefined) entry.url = raw.url
-	if (raw.headers !== undefined) {
-		entry.headers = raw.headers
-		if (raw.url && hasBearerAuthorizationHeader(raw.headers)) {
+	if (server.command !== undefined) entry.command = server.command
+	if (server.args !== undefined) entry.args = server.args
+	if (server.env !== undefined) entry.env = server.env
+	if (server.url !== undefined) entry.url = server.url
+	if (server.headers !== undefined) {
+		entry.headers = server.headers
+		if (server.url && hasBearerAuthorizationHeader(server.headers)) {
 			entry.auth = "bearer"
 		}
 	}
@@ -65,7 +67,7 @@ export function makeCursorDefinition(overrides?: {
 		},
 
 		transformServer(raw, _name) {
-			return transformCursorServer(raw as CursorServerRaw)
+			return transformCursorServer(raw)
 		},
 	}
 }
