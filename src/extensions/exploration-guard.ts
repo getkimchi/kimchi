@@ -126,7 +126,9 @@ export default function explorationGuardExtension(pi: ExtensionAPI, options?: Ex
 			try {
 				// Avoid a hard import cycle: ferment state is optional.
 				// eslint-disable-next-line @typescript-eslint/no-require-imports
-				const { hasActiveFerment, isScopingInteractive, getActiveFermentId } = require("./ferment/state.js") as typeof import("./ferment/state.js")
+				const { isScopingInteractive, getActiveFermentId } = require("./ferment/state.js") as typeof import(
+					"./ferment/state.js",
+				)
 				const fermentId = getActiveFermentId()
 				if (fermentId && isScopingInteractive(fermentId)) return false
 				// Keep guard active during ferment execution phases — scoping is done.
