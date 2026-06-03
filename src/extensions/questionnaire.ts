@@ -20,7 +20,7 @@ import { Text, truncateToWidth } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
 
 import { createQuestionForm } from "./questionnaire-form.js"
-import type { Answer, Question, QuestionType } from "./questionnaire-reducer.js"
+import { type Answer, type Question, type QuestionType, YES_NO_OPTIONS } from "./questionnaire-reducer.js"
 
 export type { Answer, Question }
 
@@ -57,12 +57,14 @@ const QuestionSchema = Type.Object({
 	),
 	options: Type.Optional(
 		Type.Array(QuestionOptionSchema, {
-			description:
-				"Available choices. Required for single/multi. Optional for confirm to customize Yes/No labels; confirm values must remain yes/no.",
+			description: "Available choices. Required for single/multi. Omit for text and confirm; confirm is always Yes/No.",
 		}),
 	),
 	allowOther: Type.Optional(
-		Type.Boolean({ description: "Add a 'Type your own answer' option. Default: true for single, false for others." }),
+		Type.Boolean({
+			description:
+				"For single/multi questions only. Add a 'Type your own answer' option. Must be omitted for confirm. Default: true for single, false for others.",
+		}),
 	),
 	required: Type.Optional(Type.Boolean({ description: "Whether an answer is required. Default: true." })),
 })
@@ -113,34 +115,35 @@ function normalizeQuestion(q: Static<typeof QuestionSchema>, index: number): Que
 		label: opt.label,
 		description: opt.description,
 	}))
-	const confirmOptions =
-		normalizedOptions.length > 0
-			? normalizedOptions
-			: [
-					{ id: "yes", label: "Yes" },
-					{ id: "no", label: "No" },
-				]
 	return {
 		id: q.id,
 		label: q.label || `Q${index + 1}`,
 		prompt: q.prompt,
 		type,
-		options: type === "confirm" ? confirmOptions : normalizedOptions,
+		options: type === "confirm" ? [...YES_NO_OPTIONS] : normalizedOptions,
 		allowOther: q.allowOther ?? type === "single",
 		required: q.required !== false,
 	}
+}
+
+function validateRawQuestions(questions: Static<typeof QuestionSchema>[]): string | undefined {
+	for (const q of questions) {
+		const type = normalizeQuestionType(q.type)
+		if (type !== "confirm") continue
+		if ((q.options?.length ?? 0) > 0) {
+			return `Question "${q.id}" is type "confirm" and must not have options — confirm is always Yes/No.`
+		}
+		if (q.allowOther) {
+			return `Question "${q.id}" is type "confirm" and must not set allowOther — confirm is always Yes/No.`
+		}
+	}
+	return undefined
 }
 
 function validateQuestions(questions: Question[]): string | undefined {
 	for (const q of questions) {
 		if ((q.type === "single" || q.type === "multi") && q.options.length === 0 && !q.allowOther) {
 			return `Question "${q.id}" is type "${q.type}" but has no options and allowOther is false.`
-		}
-		if (q.type === "confirm") {
-			const ids = q.options.map((option) => option.id.toLowerCase())
-			if (ids.length !== 2 || !ids.includes("yes") || !ids.includes("no")) {
-				return `Question "${q.id}" is type "confirm" but does not have exactly two options with ids "yes" and "no".`
-			}
 		}
 	}
 	return undefined
@@ -182,6 +185,11 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			if (params.questions.length === 0) {
 				return errorResult("Error: No questions provided.")
+			}
+
+			const rawValidationError = validateRawQuestions(params.questions)
+			if (rawValidationError) {
+				return errorResult(`Error: ${rawValidationError}`)
 			}
 
 			const questions = params.questions.map(normalizeQuestion)

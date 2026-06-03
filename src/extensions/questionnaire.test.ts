@@ -1,5 +1,28 @@
-import { describe, expect, it } from "vitest"
-import { formatAnswerText, normalizeQuestionType } from "./questionnaire.js"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { describe, expect, it, vi } from "vitest"
+import questionnaireExtension, { formatAnswerText, normalizeQuestionType } from "./questionnaire.js"
+
+function registeredQuestionnaireTool() {
+	let tool:
+		| {
+				execute: (
+					toolCallId: string,
+					params: unknown,
+					signal: AbortSignal | undefined,
+					onUpdate: unknown,
+					ctx: unknown,
+				) => Promise<{ content: { text: string }[]; details: { cancelled: boolean } }>
+		  }
+		| undefined
+	const pi = {
+		registerTool: vi.fn((registered) => {
+			tool = registered as typeof tool
+		}),
+	} as unknown as ExtensionAPI
+	questionnaireExtension(pi)
+	if (!tool) throw new Error("questionnaire tool was not registered")
+	return tool
+}
 
 describe("normalizeQuestionType", () => {
 	it("keeps canonical question types unchanged", () => {
@@ -14,6 +37,47 @@ describe("normalizeQuestionType", () => {
 		expect(() => normalizeQuestionType("radio")).toThrow(/Unknown question type/)
 		expect(() => normalizeQuestionType("checkbox")).toThrow(/Unknown question type/)
 		expect(() => normalizeQuestionType("")).toThrow(/Unknown question type/)
+	})
+})
+
+describe("questionnaire confirm validation", () => {
+	it("rejects confirm options", async () => {
+		const tool = registeredQuestionnaireTool()
+		const result = await tool.execute(
+			"call-1",
+			{
+				questions: [
+					{
+						id: "ship",
+						type: "confirm",
+						prompt: "Ship it?",
+						options: [{ id: "sure", label: "Sure" }],
+					},
+				],
+			},
+			undefined,
+			undefined,
+			{ hasUI: true, ui: { custom: vi.fn() } },
+		)
+		expect(result.details.cancelled).toBe(true)
+		expect(result.content[0]?.text).toContain('type "confirm"')
+		expect(result.content[0]?.text).toContain("must not have options")
+	})
+
+	it("rejects allowOther on confirm", async () => {
+		const tool = registeredQuestionnaireTool()
+		const result = await tool.execute(
+			"call-1",
+			{
+				questions: [{ id: "ship", type: "confirm", prompt: "Ship it?", allowOther: true }],
+			},
+			undefined,
+			undefined,
+			{ hasUI: true, ui: { custom: vi.fn() } },
+		)
+		expect(result.details.cancelled).toBe(true)
+		expect(result.content[0]?.text).toContain('type "confirm"')
+		expect(result.content[0]?.text).toContain("must not set allowOther")
 	})
 })
 

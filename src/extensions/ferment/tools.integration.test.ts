@@ -1497,7 +1497,7 @@ describe("propose_ferment_scoping", () => {
 		]
 		const ctx = {
 			ui: {
-				// All questions map to radio, so the select-per-question path runs:
+				// Both questions are single-choice style, so the select-per-question path runs:
 				// Q1 option, Q2 Yes/No, then the review confirmation.
 				select: vi
 					.fn()

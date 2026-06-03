@@ -37,16 +37,16 @@ export interface ScopingQuestionOption {
 	recommended?: boolean
 }
 
-export const SCOPING_QUESTION_TYPES = ["radio", "checkbox", "text"] as const
+export const SCOPING_QUESTION_TYPES = ["single", "multi", "text", "confirm"] as const
 export type ScopingQuestionType = (typeof SCOPING_QUESTION_TYPES)[number]
-export const DEFAULT_SCOPING_QUESTION_TYPE: ScopingQuestionType = "radio"
+export const DEFAULT_SCOPING_QUESTION_TYPE: ScopingQuestionType = "single"
 
 export interface ScopingQuestion {
 	id: string
 	text: string
-	/** Omitted means radio for backward compatibility with existing scoping questions. */
+	/** Omitted means single for backward compatibility with existing scoping questions. */
 	type?: ScopingQuestionType
-	/** Required for radio/checkbox; omitted for text questions. */
+	/** Required for single/multi; omitted for text and confirm questions. */
 	options?: ScopingQuestionOption[]
 }
 

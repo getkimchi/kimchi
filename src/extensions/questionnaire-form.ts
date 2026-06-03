@@ -206,7 +206,9 @@ export function createQuestionForm(
 					}
 				}
 				if (opt.description) {
-					add(`     ${theme.fg("muted", opt.description)}`)
+					for (const descLine of wrapTextWithAnsi(opt.description, Math.max(1, width - 8))) {
+						add(`     ${theme.fg("muted", descLine)}`)
+					}
 				}
 			}
 		}

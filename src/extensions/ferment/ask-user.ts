@@ -28,7 +28,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { renderLabeledSuccessCriteria } from "../../ferment/success-criteria.js"
 import type { Ferment, ScopingQuestionType } from "../../ferment/types.js"
-import type { QuestionType } from "../questionnaire-reducer.js"
+import { YES_NO_OPTIONS } from "../questionnaire-reducer.js"
 import { normalizeQuestionType } from "../questionnaire.js"
 import { type JudgeApiResult, judgeApiCall } from "./judge.js"
 import { promptForm } from "./prompt-ui.js"
@@ -46,7 +46,7 @@ export interface AskUserOption {
 }
 
 export type AskUserAnsweredBy = "user" | "judge"
-export type AskUserResponseType = "single" | "multi" | "text"
+export type AskUserResponseType = "single" | "multi" | "text" | "confirm"
 export type AskUserQuestionType = ScopingQuestionType
 
 export interface AskUserQuestion {
@@ -63,9 +63,9 @@ export interface AskUserQuestion {
 export interface AskUserAnswer {
 	id: string
 	type: AskUserQuestionType
-	/** Single value for radio/text, or comma-joined values for checkbox. */
+	/** Single value for single/confirm/text, or comma-joined values for multi. */
 	value: string
-	/** Display label for radio/text, or comma-joined labels for checkbox. */
+	/** Display label for single/confirm/text, or comma-joined labels for multi. */
 	label: string
 	/** True when the answer came from free text / Other. */
 	wasCustom: boolean
@@ -126,38 +126,24 @@ function isOneShotSession(pi: ExtensionAPI): boolean {
 	return pi.getFlag?.("ferment-oneshot") === true
 }
 
-/** The single agent-facing vocabulary is single/multi/text/confirm (shared with
- *  the questionnaire tool). Internally the TUI and judge speak radio/checkbox/text,
- *  so map the agent type onto it. `confirm` is always a Yes/No radio. */
-const SCOPING_TYPE_BY_CANONICAL: Record<QuestionType, AskUserQuestionType> = {
-	single: "radio",
-	multi: "checkbox",
-	text: "text",
-	confirm: "radio",
-}
-
-const YES_NO_OPTIONS: AskUserOption[] = [
-	{ id: "yes", label: "Yes" },
-	{ id: "no", label: "No" },
-]
-
 export interface NormalizedScopingType {
-	/** Internal radio/checkbox/text vocabulary used by the TUI and judge. */
+	/** Canonical question vocabulary shared across Ferment and questionnaire. */
 	type: AskUserQuestionType
-	/** True when the agent asked for a yes/no confirm — callers render it as a
-	 *  Yes/No radio. */
+	/** True when the agent asked for a yes/no confirm. */
 	isConfirm: boolean
 }
 
-/** Map one agent-facing question type (single/multi/text/confirm) onto the
- *  internal radio/checkbox/text type. The only accepted words are the four
- *  canonical ones — there are no radio/checkbox aliases. Delegates to
- *  `normalizeQuestionType`, so an omitted type defaults to single and any unknown
- *  string throws rather than silently becoming single. Shared by the `ask_user`
- *  tool and `propose_ferment_scoping` so every question surface uses one contract. */
+/** Normalize one question type to the canonical single/multi/text/confirm
+ *  vocabulary. There are no radio/checkbox aliases. Delegates to
+ *  `normalizeQuestionType`, so an omitted type defaults to single and any
+ *  unknown string throws rather than silently becoming single. Shared by the
+ *  `ask_user` tool and `propose_ferment_scoping` so every question surface uses
+ *  one contract. */
 export function toScopingQuestionType(rawType: string | undefined): NormalizedScopingType {
-	const canonical = normalizeQuestionType(rawType)
-	return { type: SCOPING_TYPE_BY_CANONICAL[canonical], isConfirm: canonical === "confirm" }
+	// The generic questionnaire type and Ferment scoping type are intentionally
+	// declared in separate layers; this helper is the narrow bridge between them.
+	const canonical = normalizeQuestionType(rawType) as AskUserQuestionType
+	return { type: canonical, isConfirm: canonical === "confirm" }
 }
 
 /** A question as it arrives from the tool schema, before type normalization.
@@ -170,12 +156,11 @@ export interface RawAskUserQuestion extends Omit<AskUserQuestion, "type"> {
 
 export type NormalizeAskUserResult = { ok: true; questions: AskUserQuestion[] } | { ok: false; error: string }
 
-/** Normalize the agent-facing question type to the internal radio/checkbox/text
- *  vocabulary. `single`→radio, `multi`→checkbox, `text`→text, and `confirm`→a
- *  Yes/No radio. `confirm` is always Yes/No and must not carry options or
- *  `allowOther`; supplying either is rejected rather than silently rewritten, so a
- *  bad tool call surfaces. An unknown `type` is reported as a tool error rather
- *  than thrown, matching the `propose_ferment_scoping` path. */
+/** Normalize the agent-facing question type. `confirm` is always Yes/No and
+ *  must not carry options or `allowOther`; supplying either is rejected rather
+ *  than silently rewritten, so a bad tool call surfaces. An unknown `type` is
+ *  reported as a tool error rather than thrown, matching the
+ *  `propose_ferment_scoping` path. */
 export function normalizeAskUserQuestions(questions: ReadonlyArray<RawAskUserQuestion>): NormalizeAskUserResult {
 	const normalized: AskUserQuestion[] = []
 	for (const q of questions) {
@@ -199,7 +184,7 @@ export function normalizeAskUserQuestions(questions: ReadonlyArray<RawAskUserQue
 					error: `Question "${q.id}" is type "confirm" and must not set allowOther — confirm is always Yes/No.`,
 				}
 			}
-			normalized.push({ ...q, type, options: YES_NO_OPTIONS })
+			normalized.push({ ...q, type, options: [...YES_NO_OPTIONS] })
 			continue
 		}
 		normalized.push({ ...q, type })
@@ -221,7 +206,7 @@ You will be given:
 - The set of options, each with an id and a label (sometimes a description).
 
 Return EXACTLY one JSON object, no markdown, no prose:
-For single-choice questions return:
+For single-choice and confirm questions return:
 {"choice":"<option_id>","rationale":"<one sentence justifying the choice>"}
 
 The "choice" MUST be one of the provided option ids verbatim. If you cannot in good faith pick any option, choose the option whose id contains "pause", "abandon", or "cancel" — falling back to the FIRST option only as a last resort.
@@ -246,8 +231,9 @@ Your bias:
 Return EXACTLY one JSON object, no markdown, no prose:
 {"answers":[{"id":"<question_id>","value":"<answer>"}],"rationale":"<one sentence justifying the answers>"}
 
-For radio questions, "value" MUST be one provided option id unless allowOther is true.
-For checkbox questions, "value" MUST be an array of one or more provided option ids unless allowOther is true.
+For single questions, "value" MUST be one provided option id unless allowOther is true.
+For confirm questions, "value" MUST be "yes" or "no".
+For multi questions, "value" MUST be an array of one or more provided option ids unless allowOther is true.
 For text questions, "value" MUST be a concise directly usable string.
 Optional questions may be omitted. Required questions must be answered.`
 
@@ -369,8 +355,17 @@ function validateFormQuestions(questions: ReadonlyArray<AskUserQuestion>): strin
 		if (seen.has(q.id)) return `askUserForm question id "${q.id}" is duplicated.`
 		seen.add(q.id)
 		if (!q.prompt.trim()) return `askUserForm question "${q.id}" prompt must be non-empty.`
-		if ((q.type === "radio" || q.type === "checkbox") && (q.options?.length ?? 0) === 0 && !q.allowOther) {
+		if ((q.type === "single" || q.type === "multi") && (q.options?.length ?? 0) === 0 && !q.allowOther) {
 			return `askUserForm question "${q.id}" is type "${q.type}" but has no options and allowOther is false.`
+		}
+		if (q.type === "confirm") {
+			const ids = (q.options ?? []).map((o) => o.id)
+			if (ids.length !== 2 || !ids.includes("yes") || !ids.includes("no")) {
+				return `askUserForm question "${q.id}" is type "confirm" but does not have fixed Yes/No options.`
+			}
+			if (q.allowOther) {
+				return `askUserForm question "${q.id}" is type "confirm" and must not set allowOther.`
+			}
 		}
 	}
 	return undefined
@@ -385,7 +380,7 @@ function answerFromValue(q: AskUserQuestion, rawValue: unknown): AskUserAnswer |
 		return { id: q.id, type, value: text, label: text, wasCustom: true }
 	}
 
-	if (type === "radio") {
+	if (type === "single" || type === "confirm") {
 		if (typeof rawValue !== "string") return undefined
 		const value = rawValue.trim()
 		if (!value) return undefined
@@ -395,6 +390,8 @@ function answerFromValue(q: AskUserQuestion, rawValue: unknown): AskUserAnswer |
 			return { id: q.id, type, value: value.slice(0, 1000), label: value.slice(0, 1000), wasCustom: true }
 		return undefined
 	}
+
+	if (type !== "multi") return undefined
 
 	const rawValues = Array.isArray(rawValue)
 		? rawValue
@@ -475,7 +472,7 @@ function mapPromptFormAnswers(
 ): AskUserAnswer[] {
 	return answers.map((answer) => {
 		const question = questions.find((q) => q.id === answer.id)
-		const type = question?.type ?? (answer.values ? "checkbox" : answer.wasCustom ? "text" : "radio")
+		const type = question?.type ?? (answer.values ? "multi" : answer.wasCustom ? "text" : "single")
 		return {
 			id: answer.id,
 			type,
@@ -503,7 +500,9 @@ export async function askJudge(
 	const responseType = typeof responseTypeOrApiCall === "string" ? responseTypeOrApiCall : "single"
 	const apiCall =
 		typeof responseTypeOrApiCall === "function" ? responseTypeOrApiCall : (apiCallOverride ?? judgeApiCall)
-	const userMsg = buildAskJudgeUserMsg(question, options, ferment, responseType)
+	const normalizedOptions = normalizeShorthandOptions(responseType, options)
+	if (!normalizedOptions.ok) return normalizedOptions.failure
+	const userMsg = buildAskJudgeUserMsg(question, normalizedOptions.options, ferment, responseType)
 	const result = await apiCall(ASK_USER_SYSTEM, userMsg, 200)
 	if (!result.ok) {
 		return {
@@ -512,7 +511,7 @@ export async function askJudge(
 			detail: `Judge unreachable (${result.reason}${result.detail ? `: ${result.detail}` : ""}).`,
 		}
 	}
-	const parsed = parseJudgeAnswer(result.text, options, responseType)
+	const parsed = parseJudgeAnswer(result.text, normalizedOptions.options, responseType)
 	if (!parsed) {
 		return {
 			failed: true,
@@ -521,6 +520,37 @@ export async function askJudge(
 		}
 	}
 	return { ...parsed, response_type: responseType, answered_by: "judge" }
+}
+
+function normalizeShorthandOptions(
+	responseType: AskUserResponseType,
+	options: ReadonlyArray<AskUserOption>,
+): { ok: true; options: ReadonlyArray<AskUserOption> } | { ok: false; failure: AskUserFailure } {
+	if (responseType === "text") return { ok: true, options }
+	if (responseType === "confirm") {
+		if (options.length > 0) {
+			return {
+				ok: false,
+				failure: {
+					failed: true,
+					reason: "invalid_choice",
+					detail: "askUser confirm shorthand must not provide options — confirm is always Yes/No.",
+				},
+			}
+		}
+		return { ok: true, options: YES_NO_OPTIONS }
+	}
+	if (options.length === 0) {
+		return {
+			ok: false,
+			failure: {
+				failed: true,
+				reason: "invalid_choice",
+				detail: `askUser called with empty options array for ${responseType} question.`,
+			},
+		}
+	}
+	return { ok: true, options }
 }
 
 export async function askJudgeForm(
@@ -604,13 +634,8 @@ export async function askUser(
 ): Promise<AskUserResponse> {
 	const responseType = typeof responseTypeOrOverrides === "string" ? responseTypeOrOverrides : "single"
 	const effectiveOverrides = typeof responseTypeOrOverrides === "string" ? overrides : responseTypeOrOverrides
-	if (responseType !== "text" && options.length === 0) {
-		return {
-			failed: true,
-			reason: "invalid_choice",
-			detail: `askUser called with empty options array for ${responseType} question.`,
-		}
-	}
+	const normalizedOptions = normalizeShorthandOptions(responseType, options)
+	if (!normalizedOptions.ok) return normalizedOptions.failure
 
 	const oneShot = isOneShotSession(context.pi)
 
@@ -629,9 +654,9 @@ export async function askUser(
 			questions: [
 				{
 					id: "answer",
-					type: responseType === "multi" ? "checkbox" : responseType === "text" ? "text" : "radio",
+					type: responseType,
 					prompt: question,
-					options,
+					options: normalizedOptions.options,
 					allowOther: false,
 				},
 			],
@@ -652,7 +677,7 @@ export async function askUser(
 		}
 		if (responseType === "multi") {
 			const choices = answer.values ?? answer.value.split(",").map((value) => value.trim())
-			if (choices.length === 0 || choices.some((choice) => !options.some((o) => o.id === choice))) {
+			if (choices.length === 0 || choices.some((choice) => !normalizedOptions.options.some((o) => o.id === choice))) {
 				return {
 					failed: true,
 					reason: "invalid_choice",
@@ -662,7 +687,7 @@ export async function askUser(
 			context.runtime?.markHumanInput()
 			return { choices, response_type: "multi", answered_by: "user" }
 		}
-		if (!options.some((o) => o.id === answer.value)) {
+		if (!normalizedOptions.options.some((o) => o.id === answer.value)) {
 			return {
 				failed: true,
 				reason: "invalid_choice",
@@ -673,7 +698,11 @@ export async function askUser(
 		// prompt-block freshness) reflect that the user just interacted.
 		// Skipped for judge-answered responses since no human was involved.
 		context.runtime?.markHumanInput()
-		return { choice: answer.value, response_type: "single", answered_by: "user" }
+		return {
+			choice: answer.value,
+			response_type: responseType === "confirm" ? "confirm" : "single",
+			answered_by: "user",
+		}
 	}
 
 	return {

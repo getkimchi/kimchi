@@ -20,10 +20,12 @@ import { normalizeFermentTitle } from "../../../ferment/title.js"
 import {
 	DEFAULT_SCOPING_QUESTION_TYPE,
 	type Grade,
+	SCOPING_QUESTION_TYPES,
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
 import { isUserChosenYolo } from "../../permissions/index.js"
+import { YES_NO_OPTIONS } from "../../questionnaire-reducer.js"
 import {
 	type AskUserQuestion,
 	askUser,
@@ -293,7 +295,7 @@ function normalizeQuestions(value: ProposeScopingArgs["questions"]): ScopingQues
 			questions.push({ id: q.id, text, type })
 			continue
 		}
-		// confirm (mapped to radio) is always Yes/No and must not carry options.
+		// confirm is always Yes/No and must not carry options.
 		// Reject supplied options rather than silently rewriting them.
 		if (questionType.isConfirm) {
 			if (q.options !== undefined && (!Array.isArray(q.options) || q.options.length > 0)) {
@@ -303,10 +305,7 @@ function normalizeQuestions(value: ProposeScopingArgs["questions"]): ScopingQues
 				id: q.id,
 				text,
 				type,
-				options: [
-					{ id: "yes", label: "Yes" },
-					{ id: "no", label: "No" },
-				],
+				options: [...YES_NO_OPTIONS],
 			})
 			continue
 		}
@@ -338,22 +337,19 @@ function normalizeQuestions(value: ProposeScopingArgs["questions"]): ScopingQues
 }
 
 function getScopingQuestionType(question: ScopingQuestion): ScopingQuestionType {
-	return question.type ?? DEFAULT_SCOPING_QUESTION_TYPE
+	const rawType = (question as { type?: unknown }).type
+	if (rawType === undefined) return DEFAULT_SCOPING_QUESTION_TYPE
+	if (rawType === "radio") return "single"
+	if (rawType === "checkbox") return "multi"
+	return rawType as ScopingQuestionType
 }
-
-/** The one agent-facing scoping question vocabulary — no radio/checkbox aliases.
- *  Kept identical to ask_user. */
-const SCOPING_QUESTION_TYPE_INPUTS = ["single", "multi", "text", "confirm"] as const
 
 function normalizeScopingQuestionType(
 	value: unknown,
 ): { ok: true; type: ScopingQuestionType; isConfirm: boolean } | { ok: false; error: string } {
 	if (value === undefined) return { ok: true, type: DEFAULT_SCOPING_QUESTION_TYPE, isConfirm: false }
-	if (
-		typeof value !== "string" ||
-		!SCOPING_QUESTION_TYPE_INPUTS.includes(value.toLowerCase() as (typeof SCOPING_QUESTION_TYPE_INPUTS)[number])
-	) {
-		return { ok: false, error: `must be ${SCOPING_QUESTION_TYPE_INPUTS.join(", ")}.` }
+	if (typeof value !== "string" || !SCOPING_QUESTION_TYPES.includes(value.toLowerCase() as ScopingQuestionType)) {
+		return { ok: false, error: `must be ${SCOPING_QUESTION_TYPES.join(", ")}.` }
 	}
 	return { ok: true, ...toScopingQuestionType(value) }
 }
@@ -875,22 +871,29 @@ ${renderGateGuidance("scope_ferment")}`,
 
 			// 7. Tabbed question form + review loop.
 			const runQuestions = async (): Promise<ScopingAnswer[] | "cancelled" | { kind: "dismiss"; qn: number }> => {
-				if (!getPromptUi(ctx)?.custom && questions.every((q) => getScopingQuestionType(q) === "radio")) {
+				if (
+					!getPromptUi(ctx)?.custom &&
+					questions.every((q) => {
+						const type = getScopingQuestionType(q)
+						return type === "single" || type === "confirm"
+					})
+				) {
 					const answers: ScopingAnswer[] = []
 					const customLabel = `✎ ${pr_dim("Custom answer...")}`
 					for (let n = 0; n < questions.length; n++) {
 						const q = questions[n]
+						const questionType = getScopingQuestionType(q)
 						const labeledOptions = (q.options ?? []).map((o) => ({
 							option: o,
 							label: o.recommended === true ? `${o.label}  ★ Recommended` : o.label,
 						}))
 						const optionLabels = labeledOptions.map((o) => o.label)
-						optionLabels.push(customLabel)
+						if (questionType === "single") optionLabels.push(customLabel)
 
 						const title = `[Q${n + 1}/${questions.length}] ${q.text}`
 						const chosen = await promptSelect(ctx, title, optionLabels)
 						if (chosen === undefined) return { kind: "dismiss", qn: n + 1 }
-						if (chosen === customLabel) {
+						if (questionType === "single" && chosen === customLabel) {
 							const freeForm = await promptEditor(ctx, `[Q${n + 1}/${questions.length}] Your answer for: ${q.text}`)
 							if (!freeForm) return "cancelled"
 							answers.push({ questionId: q.id, optionId: "custom", label: freeForm, recommended: false })
@@ -919,7 +922,7 @@ ${renderGateGuidance("scope_ferment")}`,
 							id: o.id,
 							label: o.recommended === true ? `${o.label}  ★ Recommended` : o.label,
 						})),
-						allowOther: getScopingQuestionType(q) !== "text",
+						allowOther: getScopingQuestionType(q) === "single" || getScopingQuestionType(q) === "multi",
 					})),
 				})
 				if (!result) return { kind: "dismiss", qn: 1 }
@@ -934,7 +937,7 @@ ${renderGateGuidance("scope_ferment")}`,
 						answers.push({ questionId: q.id, optionId: "custom", label: answer.label, recommended: false })
 						continue
 					}
-					if (questionType === "checkbox") {
+					if (questionType === "multi") {
 						const values = answer.values ?? [answer.value]
 						const labels = values.map(
 							(value, index) => (q.options ?? []).find((o) => o.id === value)?.label ?? answer.labels?.[index] ?? value,
@@ -1107,8 +1110,8 @@ Hard contract: in one-shot mode, if the judge is unreachable (no API key, timeou
 
 The agent should:
   1. Frame the question concretely. The user/judge sees only the question plus options/context in this call.
-  2. Prefer questions[] for the full TUI: single, multi, text, confirm; allowOther enables a custom free-text option.
-  3. Use response_type="single" | "multi" | "text" only as a compatibility shorthand for one question.
+  2. Prefer questions[] for the full TUI: single, multi, text, confirm. allowOther is only for single/multi custom free-text options.
+  3. Use response_type="single" | "multi" | "text" | "confirm" only as a compatibility shorthand for one question.
   4. For single/multi, provide stable snake-case option ids and short labels (confirm defaults to Yes/No).
   5. Include "pause" or "abandon" as an explicit option when one is appropriate — the judge prefers these when uncertain.
   6. Act on the returned \`answers\`, \`choice\`, \`choices\`, or \`text\` field.

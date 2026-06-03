@@ -440,6 +440,16 @@ describe("CompleteStepParams schema", () => {
 describe("AskUserParams schema", () => {
 	const base = (questions: unknown) => ({ ferment_id: "f-1", questions })
 
+	it("accepts confirm response_type for the top-level shorthand", () => {
+		const payload = {
+			ferment_id: "f-1",
+			question:
+				"I'll consider this done when the script continuously prints CPU temperature and exits cleanly. Sound right?",
+			response_type: "confirm",
+		}
+		expect(Value.Check(AskUserParams, payload)).toBe(true)
+	})
+
 	it("accepts the single/multi/text/confirm question vocabulary", () => {
 		const payload = base([
 			{ id: "approach", type: "single", prompt: "Which?", options: [{ id: "a", label: "A" }] },

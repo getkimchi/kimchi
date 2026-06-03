@@ -2,7 +2,7 @@ import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import type { ScopingQuestionType } from "../../ferment/types.js"
 import { createQuestionForm } from "../questionnaire-form.js"
-import type { Answer, Question } from "../questionnaire-reducer.js"
+import type { Answer, Question, QuestionType } from "../questionnaire-reducer.js"
 import { setTipWidgetLocation } from "../tips/index.js"
 
 export type PromptUi = {
@@ -128,7 +128,7 @@ export async function promptForm(ctx: unknown, spec: PromptFormSpec): Promise<Pr
 }
 
 function normalizePromptFormQuestion(q: PromptFormQuestion, index: number): Question {
-	const type = q.type === "radio" ? "single" : q.type === "checkbox" ? "multi" : "text"
+	const type = normalizePromptFormQuestionType(q.type)
 	return {
 		id: q.id,
 		label: q.label || `Q${index + 1}`,
@@ -138,6 +138,13 @@ function normalizePromptFormQuestion(q: PromptFormQuestion, index: number): Ques
 		allowOther: q.allowOther ?? false,
 		required: q.required !== false,
 	}
+}
+
+function normalizePromptFormQuestionType(type: PromptFormQuestionType): QuestionType {
+	const legacyType = type as string
+	if (legacyType === "radio") return "single"
+	if (legacyType === "checkbox") return "multi"
+	return type
 }
 
 async function promptFormFallback(

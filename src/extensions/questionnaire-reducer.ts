@@ -24,6 +24,11 @@ export interface QuestionOption {
 	description?: string
 }
 
+export const YES_NO_OPTIONS: readonly QuestionOption[] = [
+	{ id: "yes", label: "Yes" },
+	{ id: "no", label: "No" },
+]
+
 export interface Question {
 	id: string
 	label: string

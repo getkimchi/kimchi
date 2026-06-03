@@ -360,7 +360,7 @@ const AskUserQuestionSchema = Type.Object({
 	allowOther: Type.Optional(
 		Type.Boolean({
 			description:
-				"When true, the TUI adds an Other/free-text option. The judge may also return a custom value. Default: false.",
+				"For single/multi questions only. When true, the TUI adds an Other/free-text option and the judge may return a custom value. Must be omitted for confirm. Default: false.",
 		}),
 	),
 	required: Type.Optional(Type.Boolean({ description: "Whether this question must be answered. Default: true." })),
@@ -380,9 +380,9 @@ export const AskUserParams = Type.Object({
 		}),
 	),
 	response_type: Type.Optional(
-		Type.Union([Type.Literal("single"), Type.Literal("multi"), Type.Literal("text")], {
+		Type.Union([Type.Literal("single"), Type.Literal("multi"), Type.Literal("text"), Type.Literal("confirm")], {
 			description:
-				"Compatibility shorthand for a single question. single returns choice, multi returns choices, text returns text. Default: single.",
+				"Compatibility shorthand for a single question. single/confirm return choice, multi returns choices, text returns text. confirm is always Yes/No and must not provide options. Default: single.",
 		}),
 	),
 	question: Type.Optional(
@@ -394,7 +394,7 @@ export const AskUserParams = Type.Object({
 	options: Type.Optional(
 		Type.Array(AskUserOptionSchema, {
 			description:
-				"Compatibility shorthand options for single/multi questions. Each option needs a stable id and a human label. Omit for text questions.",
+				"Compatibility shorthand options for single/multi questions. Each option needs a stable id and a human label. Omit for text and confirm questions.",
 		}),
 	),
 	questions: Type.Optional(
