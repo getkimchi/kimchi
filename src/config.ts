@@ -87,6 +87,8 @@ export interface KimchiConfig {
 	apiKey: string
 	agentConfigDir: string
 	llmEndpoint: string
+	/** The user-configured endpoint, undefined if not explicitly set. Use this when passing to updateModelsConfig. */
+	customLlmEndpoint: string | undefined
 	maxToolResultChars: number
 	mcpSearchLimit: number
 	mcpSearch: SearchStrategyConfig
@@ -345,6 +347,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		apiKey: extras.apiKey ?? "",
 		agentConfigDir: AGENT_CONFIG_DIR,
 		llmEndpoint: extras.llmEndpoint ?? CAST_AI_LLM_ENDPOINT,
+		customLlmEndpoint: extras.llmEndpoint,
 		maxToolResultChars: extras.maxToolResultChars ?? 10_000,
 		mcpSearchLimit: extras.mcpSearchLimit ?? 5,
 		mcpSearch: { ...SEARCH_STRATEGY_DEFAULTS, ...extras.mcpSearch },
