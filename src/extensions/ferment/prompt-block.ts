@@ -54,7 +54,12 @@ If you emit non-empty \`questions\`, keep the accompanying phases answer-agnosti
 
 For each question: choose the right style with \`type\`: \`single\` for one choice, \`confirm\` for yes/no, \`multi\` for multi-select, and \`text\` for enter-your-own only. Hard limits: emit at most 3 questions; single/multi questions must have 2-5 options. Omit \`type\` for single. Single/multi options need stable ids and must be emitted as a real JSON array of objects; text and confirm questions omit options (confirm is always Yes/No). Good scoping question framings include: outcome boundary ("What must this include to count as done?"), risk/tradeoff ("Which constraint should win if X conflicts with Y?"), integration/deployment target ("Where must this run?"), verification standard ("What proof should complete mean?"), and non-goal/scope cut ("What should explicitly stay out?"). Avoid a run of generic "Which X do you prefer?" questions. Keep options in the display order you want; the host preserves your order and appends "Custom answer..." last for single/multi. Mark ONE option as \`recommended: true\` (what you'd pick if no answer came back), but do not move it to the top unless that is also the natural ordering. No reason text on recommendations.
 
-Plans are rendered by the host in markdown style. Keep plan field content markdown-friendly: concise sentences, concrete phase names, and step descriptions that read well as numbered markdown lists.
+Plans are rendered by the host in markdown style with syntax highlighting. Use structural markdown syntax so the host can apply color and formatting:
+- Use \`## Headings\` for major sections.
+- Use \`**bold**\` for labels and emphasis.
+- Use \`-\` bullet lists for success criteria, constraints, assumptions, and steps.
+- Use \`\`\`code\`\`\` for file paths, shell commands, and gate ids.
+Keep descriptions concise and concrete so they read well as markdown.
 
 **No markdown in question text or option labels.** Plain text only. Do NOT write \`**bold**\`, \`*italics*\`, \`(recommended)\`, \`*(recommended)*\`, \`[default]\`, or any markup. The host renders the recommended flag for you as "★ Recommended" — your label just contains the choice itself ("React", "Vue", "Vanilla JS"). Never include the question id (e.g. "tech-stack-clarify") in the question text — the id is internal.
 

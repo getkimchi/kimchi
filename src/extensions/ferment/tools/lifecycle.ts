@@ -8,7 +8,8 @@
  *   4. Format result text — host concern
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { type ExtensionAPI, getMarkdownTheme } from "@earendil-works/pi-coding-agent"
+import { Markdown } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
 import type { Command, ScopePhaseInput } from "../../../ferment/state-machine.js"
 import {
@@ -553,7 +554,7 @@ export async function scopeFerment(
 
 	return toolOk(
 		withNextActionHint(
-			`Ferment "${fresh.name}" scoped and ready.\nferment_id: ${fresh.id}\nGoal: ${params.goal}\nPhases:\n${phaseList}`,
+			`**Ferment "${fresh.name}"** scoped and ready.\n\n- **ferment_id:** ${fresh.id}\n- **Goal:** ${params.goal}\n\n**Phases:**\n${phaseList}`,
 			fresh,
 		),
 	)
@@ -664,7 +665,7 @@ export async function completeFerment(runtime: FermentRuntime, params: CompleteF
 	const terminalNotice = `This ferment is complete and terminal. Do not call bash/read/list_ferments or any ferment tools for this ferment again without clear user consent. If the user wants a new ferment, tell them to run \`/ferment new "..."\` or \`/ferment one-shot "..."\` — do not search MCP tools or invent a tool.`
 
 	return toolOk(
-		`Ferment "${fresh.name}" complete${failedNote}.\n\nFinal gates:\n${gateLines}\n\nFinal grade: ${gradeLabel} — ${gradeRationale}\n\n${params.final_summary ?? ""}\n\n${terminalNotice}`,
+		`**Ferment "${fresh.name}"** complete${failedNote}.\n\n---\n\n**Final gates:**\n${gateLines}\n\n**Final grade:** ${gradeLabel} — ${gradeRationale}\n\n${params.final_summary ?? ""}\n\n---\n\n${terminalNotice}`,
 	)
 }
 
@@ -748,6 +749,10 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
+		renderResult(result) {
+			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
+			return new Markdown(text, 1, 0, getMarkdownTheme())
+		},
 		async execute(_, rawParams, _signal, _onUpdate, ctx) {
 			clearScopingStatus(ctx)
 			const normalized = normalizeProposeScopingParams(rawParams)
@@ -1047,7 +1052,11 @@ ${renderGateGuidance("scope_ferment")}`,
 				const active = f.id === activeId ? " ← active" : ""
 				return `- ${f.id} │ ${f.name} [${f.status}] — ${f.phaseCount} phases${active}`
 			})
-			return toolOk(`Ferments:\n${lines.join("\n")}`)
+			return toolOk(`**Ferments:**\n${lines.join("\n")}`)
+		},
+		renderResult(result) {
+			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
+			return new Markdown(text, 1, 0, getMarkdownTheme())
 		},
 	})
 
@@ -1058,6 +1067,10 @@ ${renderGateGuidance("scope_ferment")}`,
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ScopeParams,
+		renderResult(result) {
+			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
+			return new Markdown(text, 1, 0, getMarkdownTheme())
+		},
 		async execute(_, params) {
 			return scopeFerment(runtime, params, { pi })
 		},
@@ -1097,6 +1110,10 @@ ${renderGateGuidance("scope_ferment")}`,
 
 ${renderGateGuidance("complete_ferment")}`,
 		parameters: CompleteFermentParams,
+		renderResult(result) {
+			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
+			return new Markdown(text, 1, 0, getMarkdownTheme())
+		},
 		async execute(_, params) {
 			return completeFerment(runtime, params)
 		},
