@@ -315,7 +315,7 @@ try {
 		let currentApiKey = apiKey
 		let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
 		try {
-			;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
+			;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, { endpoint: config.llmEndpoint }))
 			if (experimentalFeatures) injectExperimentalProvider(modelsJsonPath)
 		} catch (err) {
 			const is401 = err instanceof Error && err.message.includes("401")
