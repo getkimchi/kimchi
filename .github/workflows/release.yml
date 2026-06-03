@@ -73,6 +73,22 @@ jobs:
       - name: Build binary
         run: pnpm run build:binary
 
+      - name: Generate screenshot and update README on main
+        if: matrix.target == 'bun-linux-x64'
+        run: |
+          # Generate screenshot using the built binary
+          npx svg-term-cli --command "./dist/bin/kimchi --help" --out ./kimchi.png --width 100 --height 20 --no-cursor
+          # Check out main
+          git checkout main
+          # Commit and push
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add kimchi.png
+          git commit -m "Update screenshot for release ${GITHUB_REF_NAME}"
+          git push
+          # Go back to the previous branch (the tag commit in detached HEAD)
+          git checkout -
+
       - name: Verify binary architecture
         run: |
           file dist/bin/kimchi

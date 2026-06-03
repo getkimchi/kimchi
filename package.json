@@ -85,6 +85,7 @@
 		"node-pty": "^1.1.0",
 		"playwright": "^1.59.1",
 		"supports-color": "^10.2.2",
+    "svg-term-cli": "^3.0.3",
 		"tsx": "^4.21.0",
 		"turndown": "^7.2.4",
 		"typescript": "^5.9.3",
