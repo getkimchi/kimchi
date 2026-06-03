@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { appendBeforeBody, escapeHtml, postProcessHtmlExport, postProcessJsonlExport } from "./export-post-process.js"
+import { appendBeforeBody, postProcessHtmlExport, postProcessJsonlExport } from "./export-post-process.js"
 
 describe("postProcessJsonlExport", () => {
 	let tmpDir: string
@@ -118,7 +118,7 @@ describe("postProcessHtmlExport", () => {
 		}
 	})
 
-	it("injects trace-id renderer script and version footer before </body>", () => {
+	it("injects trace-id renderer script before </body>", () => {
 		const sessionData = {
 			version: 3,
 			id: "test-session",
@@ -143,7 +143,6 @@ describe("postProcessHtmlExport", () => {
 
 		const result = readFileSync(outputPath, "utf-8")
 		expect(result).toContain('id="trace-id-renderer"')
-		expect(result).toContain('id="kimchi-export-version"')
 		expect(result).toContain("</body>")
 	})
 
@@ -164,9 +163,7 @@ describe("postProcessHtmlExport", () => {
 
 		const result = readFileSync(outputPath, "utf-8")
 		const traceIdCount = result.split('id="trace-id-renderer"').length - 1
-		const versionCount = result.split('id="kimchi-export-version"').length - 1
 		expect(traceIdCount).toBe(1)
-		expect(versionCount).toBe(1)
 	})
 
 	it("appends footer and script to end when </body> is missing", () => {
@@ -192,8 +189,7 @@ describe("postProcessHtmlExport", () => {
 
 		const result = readFileSync(outputPath, "utf-8")
 		expect(result).toContain('id="trace-id-renderer"')
-		expect(result).toContain('id="kimchi-export-version"')
-		expect(result.endsWith("</div>\n")).toBe(true)
+		expect(result.endsWith("</script>\n")).toBe(true)
 	})
 
 	it("throws on corrupted base64 session data", () => {
@@ -208,16 +204,6 @@ describe("postProcessHtmlExport", () => {
 		writeFileSync(outputPath, mockHtml, "utf-8")
 
 		expect(() => postProcessHtmlExport(outputPath)).toThrow()
-	})
-})
-
-describe("escapeHtml", () => {
-	it("escapes HTML metacharacters", () => {
-		expect(escapeHtml(`<script>alert("xss")</script>`)).toBe("&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;")
-	})
-
-	it("leaves plain text unchanged", () => {
-		expect(escapeHtml("dev")).toBe("dev")
 	})
 })
 
