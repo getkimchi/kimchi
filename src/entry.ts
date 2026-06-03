@@ -44,6 +44,7 @@ if (existsSync(oauthTemplateDir)) {
 
 const agentDir = resolve(homedir(), ".config", "kimchi", "harness")
 process.env.KIMCHI_CODING_AGENT_DIR = agentDir
+process.env.PI_CODING_AGENT_DIR = agentDir
 
 process.title = "kimchi"
 process.env.PI_SKIP_VERSION_CHECK = "1"
