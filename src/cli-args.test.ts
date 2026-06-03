@@ -4,6 +4,8 @@ import {
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
 	isPreDispatchValueFlag,
+	isProtocolOrPrintMode,
+	isTerminalUiMode,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
 
@@ -33,6 +35,44 @@ describe("isHelpOrVersionArgs", () => {
 
 	it("returns false without help or version flags", () => {
 		expect(isHelpOrVersionArgs(["--mode", "json"])).toBe(false)
+	})
+})
+
+describe("isProtocolOrPrintMode", () => {
+	it.each([
+		["pi rpc mode", ["--mode", "rpc"]],
+		["pi json mode", ["--mode", "json"]],
+		["pi print mode", ["--print", "hello"]],
+		["pi short print mode", ["-p", "hello"]],
+		["raw equals mode fallback", ["--mode=rpc"]],
+		["kimchi acp mode", ["--mode", "acp"]],
+	])("returns true for %s", (_name, args) => {
+		expect(isProtocolOrPrintMode(args)).toBe(true)
+	})
+
+	it("returns false for interactive invocations", () => {
+		expect(isProtocolOrPrintMode([])).toBe(false)
+		expect(isProtocolOrPrintMode(["fix tests"])).toBe(false)
+	})
+})
+
+describe("isTerminalUiMode", () => {
+	const tty = { stdinIsTTY: true, stdoutIsTTY: true }
+
+	it("returns true for an interactive terminal invocation", () => {
+		expect(isTerminalUiMode([], tty)).toBe(true)
+	})
+
+	it.each([["--mode", "acp"], ["--mode", "rpc"], ["--mode=json"], ["--print"], ["-p"]])(
+		"returns false for protocol or print args %j",
+		(...args) => {
+			expect(isTerminalUiMode(args, tty)).toBe(false)
+		},
+	)
+
+	it("returns false when stdin or stdout is not a TTY", () => {
+		expect(isTerminalUiMode([], { stdinIsTTY: false, stdoutIsTTY: true })).toBe(false)
+		expect(isTerminalUiMode([], { stdinIsTTY: true, stdoutIsTTY: false })).toBe(false)
 	})
 })
 

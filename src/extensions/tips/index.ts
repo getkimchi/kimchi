@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory, WidgetPlacement } from "@earendil-works/pi-coding-agent"
+import { readHideTips, writeHideTips } from "../../config.js"
 import { FERMENT_TIPS } from "../ferment/tips.js"
 import { GENERAL_TIPS, createGeneralTipProvider } from "./general-tips.js"
 import { TipPresenter } from "./presenter.js"
@@ -130,6 +131,10 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 			}
 			activeCtx = ctx
 
+			if (readHideTips()) {
+				updateTipWidgetLocation("hidden")
+			}
+
 			updateWidget(ctx)
 		})
 
@@ -149,8 +154,34 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 		})
 
 		pi.registerCommand("tips", {
-			description: "Show all tips",
-			handler: async (_args, ctx) => {
+			description: "Show all tips, or toggle the widget with /tips disable or /tips enable",
+			handler: async (args, ctx) => {
+				const sub = args.trim().split(/\s+/)[0]
+
+				if (sub === "disable") {
+					try {
+						writeHideTips(true)
+					} catch {
+						if (ctx.hasUI) ctx.ui.notify("Failed to save tips preference.", "warning")
+						return
+					}
+					updateTipWidgetLocation("hidden")
+					if (activeCtx) updateWidget(activeCtx)
+					return
+				}
+
+				if (sub === "enable") {
+					try {
+						writeHideTips(false)
+					} catch {
+						if (ctx.hasUI) ctx.ui.notify("Failed to save tips preference.", "warning")
+						return
+					}
+					updateTipWidgetLocation(DEFAULT_TIP_WIDGET_LOCATION)
+					if (activeCtx) updateWidget(activeCtx)
+					return
+				}
+
 				const tips = collectAllTips(registry).filter((t) => t.id !== "show-all-tips")
 				if (!ctx.hasUI) {
 					const lines = tips.map((t, i) => `${i + 1}. ${t.message}`)

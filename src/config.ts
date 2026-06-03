@@ -67,10 +67,15 @@ export interface SearchStrategyConfig {
 export interface OnboardingConfig {
 	sessionModeWizardSeenAt?: string
 	hideSessionModeDialog?: boolean
+	teleportHelpSeenAt?: string
 }
 
 export interface SurveyConfig {
 	seenAt?: string
+}
+
+export interface PreferencesConfig {
+	hideTips?: boolean
 }
 
 export const SEARCH_STRATEGY_DEFAULTS: SearchStrategyConfig = {
@@ -124,6 +129,7 @@ function readConfigExtras(configPath: string): {
 	skillPaths?: string[]
 	migrationState?: MigrationState
 	onboarding?: OnboardingConfig
+	preferences?: PreferencesConfig
 	deviceId?: string
 } {
 	try {
@@ -171,6 +177,7 @@ function readConfigExtras(configPath: string): {
 				? (parsed.migrationState as MigrationState)
 				: undefined
 		const onboarding = parseOnboardingConfig(parsed.onboarding)
+		const preferences = parsePreferencesConfig(parsed.preferences)
 		// Read apiKey (prefer camelCase, fall back to snake_case)
 		let apiKey: string | undefined
 		if (typeof parsed.apiKey === "string" && parsed.apiKey.length > 0) {
@@ -199,6 +206,7 @@ function readConfigExtras(configPath: string): {
 			migrationState,
 			onboarding,
 			deviceId,
+			preferences,
 		}
 	} catch {
 		return {}
@@ -225,10 +233,23 @@ function parseOnboardingConfig(value: unknown): OnboardingConfig | undefined {
 			? raw.sessionModeWizardSeenAt
 			: undefined
 	const hideSessionModeDialog = typeof raw.hideSessionModeDialog === "boolean" ? raw.hideSessionModeDialog : undefined
+	const teleportHelpSeenAt =
+		typeof raw.teleportHelpSeenAt === "string" && raw.teleportHelpSeenAt.length > 0 ? raw.teleportHelpSeenAt : undefined
 
 	return {
 		...(sessionModeWizardSeenAt ? { sessionModeWizardSeenAt } : {}),
 		...(hideSessionModeDialog !== undefined ? { hideSessionModeDialog } : {}),
+		...(teleportHelpSeenAt ? { teleportHelpSeenAt } : {}),
+	}
+}
+
+function parsePreferencesConfig(value: unknown): PreferencesConfig | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+	const raw = value as Record<string, unknown>
+	const hideTips = typeof raw.hideTips === "boolean" ? raw.hideTips : undefined
+
+	return {
+		...(hideTips !== undefined ? { hideTips } : {}),
 	}
 }
 
@@ -436,6 +457,17 @@ export function writeSessionModeWizardSeenAt(seenAt: string, configPath?: string
 	})
 }
 
+export function readTeleportHelpSeenAt(configPath?: string): string | undefined {
+	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.teleportHelpSeenAt
+}
+
+export function writeTeleportHelpSeenAt(seenAt: string, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateOnboardingConfig(path, (onboarding) => {
+		onboarding.teleportHelpSeenAt = seenAt
+	})
+}
+
 export function readSurveySeenAt(surveyId: string, configPath?: string): string | undefined {
 	return readSurveyConfig(surveyId, configPath ?? KIMCHI_CONFIG_PATH)?.seenAt
 }
@@ -448,6 +480,28 @@ export function writeSurveySeenAt(surveyId: string, seenAt: string, configPath?:
 
 export function readHideSessionModeDialog(configPath?: string): boolean {
 	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.hideSessionModeDialog === true
+}
+
+export function readHideTips(configPath?: string): boolean {
+	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).preferences?.hideTips === true
+}
+
+function updatePreferencesConfig(configPath: string, update: (preferences: Record<string, unknown>) => void): void {
+	updateConfigFile(configPath, (raw) => {
+		const preferences =
+			raw.preferences && typeof raw.preferences === "object" && !Array.isArray(raw.preferences)
+				? { ...(raw.preferences as Record<string, unknown>) }
+				: {}
+		update(preferences)
+		raw.preferences = preferences
+	})
+}
+
+export function writeHideTips(hidden: boolean, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updatePreferencesConfig(path, (preferences) => {
+		preferences.hideTips = hidden
+	})
 }
 
 export function writeMigrationState(state: MigrationState, configPath?: string): void {

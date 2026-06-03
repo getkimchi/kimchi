@@ -1,11 +1,11 @@
 /**
  * package-resources.ts — Discover resource directories contributed by installed
- * kimchi extension packages.
+ * extension packages.
  *
  * Each pi package can ship its own `skills/`, `agents/`, etc. dirs alongside
- * the standard pi resources. This helper enumerates installed packages via
- * pi's `DefaultPackageManager` and returns the subset that have a given
- * resource subdirectory present on disk.
+ * the standard pi resources. This helper enumerates Kimchi-native packages
+ * plus original Pi packages when Pi package lookup is enabled, then returns
+ * the subset that have a given resource subdirectory present on disk.
  *
  * Used by:
  *   - `custom-agents.ts` — to load <pkg>/agents/*.md
@@ -17,16 +17,12 @@
 
 import { existsSync } from "node:fs"
 import { join } from "node:path"
-import { DefaultPackageManager, SettingsManager, getAgentDir } from "@earendil-works/pi-coding-agent"
+import { getConfiguredPackageResourceRecords } from "../../resources/package-resources.js"
 
 export function getInstalledPackageResourceDirs(cwd: string, subdir: string): string[] {
 	try {
-		const agentDir = getAgentDir()
-		const settingsManager = SettingsManager.create(cwd, agentDir)
-		const pm = new DefaultPackageManager({ cwd, agentDir, settingsManager })
-		const packages = pm.listConfiguredPackages()
 		const dirs: string[] = []
-		for (const pkg of packages) {
+		for (const pkg of getConfiguredPackageResourceRecords(cwd)) {
 			if (!pkg.installedPath) continue
 			const candidate = join(pkg.installedPath, subdir)
 			if (existsSync(candidate)) dirs.push(candidate)

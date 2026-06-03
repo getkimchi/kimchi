@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
-import { readResourceSettings } from "./store.js"
+import { isResourceEnabled, readResourceSettings } from "./store.js"
 import type { ResourceId } from "./types.js"
 
 export interface BashHookResult {
@@ -18,6 +18,7 @@ interface HookJsonOutput {
 }
 
 export function applyEnabledBashHooks(command: string, cwd = process.cwd()): BashHookResult {
+	if (!isResourceEnabled("hooks.bash")) return { command }
 	let current = command
 	const settings = readResourceSettings()
 	for (const hook of discoverBashHookResources(cwd)) {

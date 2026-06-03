@@ -9,6 +9,7 @@ import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "..
 import { FERMENT_TOOLS, isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { isRawInputCaptureActive } from "../shared-input.js"
 import { resolveClassifierModel } from "./classifier-model.js"
 import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
@@ -371,6 +372,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (ctx.hasUI) {
 			unsubscribeTerminalInput = ctx.ui.onTerminalInput((data) => {
 				if (matchesKey(data, "shift+tab")) {
+					// Defer to a foreground UI that is forwarding raw terminal input
+					// (e.g. the teleport overlay), so its consumer sees Shift+Tab.
+					if (isRawInputCaptureActive()) return undefined
 					// Kitty keyboard protocol sends both press and release events;
 					// ignore the release to avoid cycling the mode twice per keystroke.
 					if (!isKeyRelease(data)) {

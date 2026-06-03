@@ -1,10 +1,21 @@
 # Kimchi Hooks
 
-Kimchi supports user-owned Bash hooks for commands executed through the `bash` tool and interactive `!` / `!!` shell commands.
+Kimchi supports Pi-native extension package hooks and user-owned Bash hooks.
 
-Hooks can rewrite a command before it runs, or block it. Use them for local policy, command normalization, formatter wrappers, safety checks, and token-saving rewrites.
+## Native Pi Packages
 
-## Hook Locations
+Use Pi packages when a package ships native Pi hooks:
+
+```bash
+kimchi install npm:<package-name>
+kimchi list
+```
+
+Pi package extensions subscribe to native Pi events such as `tool_call`, `tool_result`, `session_start`, `session_before_compact`, `session_compact`, and `session_shutdown`. Kimchi includes a narrow Pi compatibility shim for packages that expect older field names, including `tool_result.output`, `tool_result.params`, and the legacy `before_provider_response` event name.
+
+## Core Bash Hooks
+
+Kimchi core still supports local Bash command hooks for commands executed through the `bash` tool and interactive `!` / `!!` shell commands.
 
 Global hooks:
 
@@ -20,7 +31,9 @@ Project hooks:
 .kimchi/hooks/bash/*.bash
 ```
 
-Global hooks are enabled by default. Project hooks are discovered but default to disabled, so a repository cannot silently add shell policy. Enable or disable hooks from:
+Global Bash hooks are enabled by default. Project Bash hooks are discovered but disabled by default.
+
+Manage hook resources from:
 
 ```text
 /resources
@@ -31,15 +44,12 @@ or from the CLI:
 
 ```bash
 kimchi resources list
+kimchi resources disable hooks.bash
 kimchi resources enable hooks.bash.project.my-hook-sh
 kimchi resources disable hooks.bash.global.my-hook-sh
 ```
 
-## Runtime Data
-
-Each hook runs with `bash <hook-path>`. It does not need executable mode, but making it executable is still fine.
-
-Kimchi passes the current command in environment variables:
+Each Bash hook runs as `bash <hook-path>`. Kimchi passes the current command in environment variables:
 
 ```bash
 KIMCHI_HOOK_EVENT=tool_call
@@ -60,10 +70,6 @@ Kimchi also writes JSON to stdin:
 }
 ```
 
-`CRUSH_TOOL_INPUT_COMMAND` is provided so simple Crush-style hook examples can be adapted with minimal changes.
-
-## Output Protocol
-
 No output means "allow unchanged":
 
 ```bash
@@ -82,12 +88,6 @@ JSON stdout can rewrite the command:
 printf '%s\n' '{"decision":"allow","command":"git status --short"}'
 ```
 
-Crush-style JSON is also supported:
-
-```bash
-printf '%s\n' '{"decision":"allow","updated_input":"{\"command\":\"git status --short\"}"}'
-```
-
 Block by returning JSON:
 
 ```bash
@@ -102,6 +102,59 @@ exit 2
 ```
 
 Any other failure is treated as allow unchanged. This keeps a broken local hook from breaking the agent session.
+
+## Claude Code Adapter
+
+Claude Code hook format is not part of the kimchi core hook contract. Kimchi can run existing Claude Code command hooks through a disabled-by-default compatibility extension.
+
+Enable the adapter:
+
+```bash
+kimchi resources enable extensions.claude-code-hook-adapter
+```
+
+Restart Kimchi after enabling the adapter. Individual hook commands inside Claude Code config files are not shown separately in `/resources`.
+
+The adapter reads hooks from:
+
+```bash
+~/.claude/settings.json
+.claude/settings.json
+.claude/settings.local.json
+```
+
+It honors top-level `disableAllHooks: true`.
+
+Supported events:
+
+- `PreToolUse`
+- `PostToolUse`
+- `SessionStart`
+- `PreCompact`
+- `PostCompact`
+- `UserPromptSubmit`
+- `Stop`
+- `SessionEnd`
+
+Example:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/pre_tool_use.py"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
 
 ## Examples
 
@@ -179,6 +232,10 @@ Disable it with:
 ```bash
 kimchi resources disable hooks.rtk-rewrite
 ```
+
+## References
+
+- Pi packages: `https://pi.dev/packages`
 
 ## Notes
 

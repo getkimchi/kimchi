@@ -4,7 +4,32 @@ const isHomebrewInstallMock = vi.fn(() => false)
 const checkForUpdateMock = vi.fn()
 const applyUpdateMock = vi.fn()
 const getVersionMock = vi.fn(() => "v0.0.23")
+interface ConfiguredPackageFixture {
+	source: string
+	scope: "user" | "project"
+	filtered: boolean
+	installedPath?: string
+}
+const listConfiguredPackagesMock = vi.fn((): ConfiguredPackageFixture[] => [])
+const packageUpdateMock = vi.fn(async (_source?: string): Promise<void> => {})
+const setProgressCallbackMock = vi.fn()
+const settingsManagerCreateMock = vi.fn((_cwd: unknown, _agentDir: unknown) => ({}))
 
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()
+	return {
+		...actual,
+		getAgentDir: () => "/agent",
+		SettingsManager: {
+			create: (cwd: unknown, agentDir: unknown) => settingsManagerCreateMock(cwd, agentDir),
+		},
+		DefaultPackageManager: vi.fn().mockImplementation(() => ({
+			listConfiguredPackages: listConfiguredPackagesMock,
+			setProgressCallback: setProgressCallbackMock,
+			update: packageUpdateMock,
+		})),
+	}
+})
 vi.mock("../update/paths.js", () => ({
 	isHomebrewInstall: () => isHomebrewInstallMock(),
 }))
@@ -29,6 +54,12 @@ describe("runUpdate flag parsing", () => {
 		isHomebrewInstallMock.mockReturnValue(false)
 		checkForUpdateMock.mockReset()
 		applyUpdateMock.mockReset()
+		listConfiguredPackagesMock.mockReset()
+		listConfiguredPackagesMock.mockReturnValue([])
+		packageUpdateMock.mockReset()
+		setProgressCallbackMock.mockReset()
+		settingsManagerCreateMock.mockReset()
+		settingsManagerCreateMock.mockReturnValue({})
 	})
 
 	afterEach(() => {
@@ -49,21 +80,63 @@ describe("runUpdate flag parsing", () => {
 		expect(code).toBe(2)
 		expect(errSpy).toHaveBeenCalled()
 	})
+
+	it("rejects global Pi flags that are not valid for update", async () => {
+		const code = await runUpdate(["--model", "kimchi-dev/kimi-k2.6"])
+		expect(code).toBe(2)
+		expect(errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")).toContain("unknown flag: --model")
+	})
+
+	it("keeps -f as an alias for --force", async () => {
+		checkForUpdateMock.mockResolvedValue({
+			hasUpdate: true,
+			latestVersion: "0.0.24",
+			tag: "v0.0.24",
+		})
+		applyUpdateMock.mockResolvedValue(undefined)
+
+		const code = await runUpdate(["self", "-f"])
+
+		expect(code).toBe(0)
+		expect(applyUpdateMock).toHaveBeenCalledWith({ tag: "v0.0.24" })
+	})
+
+	it("rejects --extension when the next token is another flag", async () => {
+		const code = await runUpdate(["--extension", "--force"])
+		expect(code).toBe(2)
+		expect(errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")).toContain("missing value for --extension")
+	})
+
+	it("rejects conflicting package selectors", async () => {
+		const code = await runUpdate(["--extension", "context-mode", "--extensions"])
+		expect(code).toBe(2)
+		expect(errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")).toContain(
+			"--extension cannot be combined with --self or --extensions",
+		)
+	})
 })
 
 describe("runUpdate Homebrew branch", () => {
 	let logSpy: ReturnType<typeof vi.spyOn>
+	let errSpy: ReturnType<typeof vi.spyOn>
 
 	beforeEach(() => {
 		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
-		vi.spyOn(console, "error").mockImplementation(() => {})
+		errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
 		isHomebrewInstallMock.mockReset()
 		checkForUpdateMock.mockReset()
 		applyUpdateMock.mockReset()
+		listConfiguredPackagesMock.mockReset()
+		listConfiguredPackagesMock.mockReturnValue([])
+		packageUpdateMock.mockReset()
+		setProgressCallbackMock.mockReset()
+		settingsManagerCreateMock.mockReset()
+		settingsManagerCreateMock.mockReturnValue({})
 	})
 
 	afterEach(() => {
-		vi.restoreAllMocks()
+		logSpy.mockRestore()
+		errSpy.mockRestore()
 	})
 
 	it("prints canary-specific message on Homebrew + --canary and skips download", async () => {
@@ -93,18 +166,26 @@ describe("runUpdate Homebrew branch", () => {
 
 describe("runUpdate non-interactive composition", () => {
 	let logSpy: ReturnType<typeof vi.spyOn>
+	let errSpy: ReturnType<typeof vi.spyOn>
 
 	beforeEach(() => {
 		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
-		vi.spyOn(console, "error").mockImplementation(() => {})
+		errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
 		isHomebrewInstallMock.mockReset()
 		isHomebrewInstallMock.mockReturnValue(false)
 		checkForUpdateMock.mockReset()
 		applyUpdateMock.mockReset()
+		listConfiguredPackagesMock.mockReset()
+		listConfiguredPackagesMock.mockReturnValue([])
+		packageUpdateMock.mockReset()
+		setProgressCallbackMock.mockReset()
+		settingsManagerCreateMock.mockReset()
+		settingsManagerCreateMock.mockReturnValue({})
 	})
 
 	afterEach(() => {
-		vi.restoreAllMocks()
+		logSpy.mockRestore()
+		errSpy.mockRestore()
 	})
 
 	it("--canary --dry-run reports the canary version without installing", async () => {
@@ -132,5 +213,89 @@ describe("runUpdate non-interactive composition", () => {
 		const code = await runUpdate(["--canary", "--force"])
 		expect(code).toBe(0)
 		expect(applyUpdateMock).toHaveBeenCalledWith({ tag: "canary" })
+	})
+})
+
+describe("runUpdate package targets", () => {
+	let logSpy: ReturnType<typeof vi.spyOn>
+	let errSpy: ReturnType<typeof vi.spyOn>
+
+	beforeEach(() => {
+		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+		errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		isHomebrewInstallMock.mockReset()
+		isHomebrewInstallMock.mockReturnValue(false)
+		checkForUpdateMock.mockReset()
+		checkForUpdateMock.mockResolvedValue({ hasUpdate: false })
+		applyUpdateMock.mockReset()
+		listConfiguredPackagesMock.mockReset()
+		listConfiguredPackagesMock.mockReturnValue([
+			{ source: "npm:context-mode", scope: "user", filtered: false, installedPath: "/packages/context-mode" },
+		])
+		packageUpdateMock.mockReset()
+		packageUpdateMock.mockResolvedValue(undefined)
+		setProgressCallbackMock.mockReset()
+		settingsManagerCreateMock.mockReset()
+		settingsManagerCreateMock.mockReturnValue({})
+	})
+
+	afterEach(() => {
+		logSpy.mockRestore()
+		errSpy.mockRestore()
+	})
+
+	it("updates a package by bare display name", async () => {
+		const code = await runUpdate(["context-mode"])
+
+		expect(code).toBe(0)
+		expect(packageUpdateMock).toHaveBeenCalledWith("npm:context-mode")
+		expect(checkForUpdateMock).not.toHaveBeenCalled()
+		expect(logSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")).toContain("Updated npm:context-mode")
+	})
+
+	it("updates a package by --extension display name", async () => {
+		const code = await runUpdate(["--extension", "context-mode"])
+
+		expect(code).toBe(0)
+		expect(packageUpdateMock).toHaveBeenCalledWith("npm:context-mode")
+		expect(checkForUpdateMock).not.toHaveBeenCalled()
+	})
+
+	it("updates all packages before checking Kimchi self-updates on bare update", async () => {
+		const code = await runUpdate([])
+
+		expect(code).toBe(0)
+		expect(packageUpdateMock).toHaveBeenCalledWith(undefined)
+		expect(checkForUpdateMock).toHaveBeenCalledWith(expect.objectContaining({ skipCache: true }))
+		const out = logSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
+		expect(out).toContain("Updated packages")
+		expect(out).toContain("kimchi: already up to date")
+	})
+
+	it("updates all packages only with --extensions", async () => {
+		const code = await runUpdate(["--extensions"])
+
+		expect(code).toBe(0)
+		expect(packageUpdateMock).toHaveBeenCalledWith(undefined)
+		expect(checkForUpdateMock).not.toHaveBeenCalled()
+	})
+
+	it("keeps --dry-run as a Kimchi self-update check", async () => {
+		const code = await runUpdate(["--dry-run"])
+
+		expect(code).toBe(0)
+		expect(packageUpdateMock).not.toHaveBeenCalled()
+		expect(checkForUpdateMock).toHaveBeenCalled()
+	})
+
+	it("reports unknown package names instead of treating them as flags", async () => {
+		const code = await runUpdate(["missing-package"])
+
+		expect(code).toBe(1)
+		expect(packageUpdateMock).not.toHaveBeenCalled()
+		expect(checkForUpdateMock).not.toHaveBeenCalled()
+		expect(errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")).toContain(
+			"no matching package found for missing-package",
+		)
 	})
 })
