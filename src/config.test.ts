@@ -285,6 +285,14 @@ describe("writeApiKey", () => {
 		expect(raw.apiKey).toBe("sekrit-42")
 		expect(raw.llmEndpoint).toBe("https://custom.kimchi.example")
 	})
+
+	it("clears llmEndpoint when no endpoint is provided (prevents stale endpoint after browser login)", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "old-key", llmEndpoint: "https://custom.example" }))
+		writeApiKey("new-browser-token", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("new-browser-token")
+		expect(raw.llmEndpoint).toBeUndefined()
+	})
 })
 
 describe("clearApiKey", () => {
