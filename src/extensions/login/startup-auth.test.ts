@@ -1,6 +1,6 @@
 import { LoginDialogComponent, type Theme, initTheme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
 const authMock = vi.hoisted(() => ({
 	authenticateViaBrowser: vi.fn(),
@@ -168,6 +168,10 @@ beforeEach(() => {
 	modelsMock.updateModelsConfig.mockReset()
 	modelsMock.updateModelsConfig.mockResolvedValue({ models: [] })
 	modelsMock.syncProviderModels.mockReset()
+})
+
+afterEach(() => {
+	vi.unstubAllEnvs()
 })
 
 describe("shouldShowStartupAuthGate", () => {
@@ -452,6 +456,7 @@ describe("startup auth gate", () => {
 	})
 
 	it("runs the API key login option and authenticates with a custom endpoint", async () => {
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-startup-auth-test")
 		const harness = createHarness()
 
 		// Simulate user providing API key and custom endpoint via ctx.ui.input
