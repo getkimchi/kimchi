@@ -1,6 +1,8 @@
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { dirname, isAbsolute, join, resolve } from "node:path"
 import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent"
-import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
+import { getAgentDir, loadSkills, loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import type { Static } from "typebox"
 import { loadConfig } from "../../config.js"
@@ -84,6 +86,9 @@ export default function claudeCodeSkillsExtension(pi: ExtensionAPI): void {
 }
 
 function findClaudeCodeSkill(cwd: string, name: string): Skill | undefined {
+	const nativeSkill = findNativeSkill(cwd, name)
+	if (nativeSkill) return nativeSkill
+
 	const skills = new Map<string, Skill>()
 	for (const dir of getClaudeCodeSkillResourcePaths(cwd, { excludeNativeSkillNames: false })) {
 		const result = loadSkillsFromDir({ dir, source: dir })
@@ -92,6 +97,80 @@ function findClaudeCodeSkill(cwd: string, name: string): Skill | undefined {
 		}
 	}
 	return skills.get(name)
+}
+
+function findNativeSkill(cwd: string, name: string): Skill | undefined {
+	const config = loadConfig({ cwd })
+	const result = loadSkills({
+		cwd,
+		agentDir: getAgentDir(),
+		skillPaths: getNativeSkillSearchPaths(cwd, config.skillPaths ?? []),
+		includeDefaults: false,
+	})
+	return result.skills.find((skill) => skill.name === name)
+}
+
+function getNativeSkillSearchPaths(cwd: string, configuredSkillPaths: string[]): string[] {
+	const paths = [
+		resolve(cwd, ".pi", "skills"),
+		...discoverAncestorSkillDirs(cwd, join(".agents", "skills")),
+		...expandConfiguredSkillPaths(configuredSkillPaths, cwd).filter((path) => !isClaudeSkillPath(path)),
+		join(homedir(), ".config", "kimchi", "harness", "skills"),
+		join(homedir(), ".pi", "agent", "skills"),
+		join(homedir(), ".agents", "skills"),
+	]
+
+	const seen = new Set<string>()
+	const result: string[] = []
+	for (const path of paths) {
+		const resolved = resolve(path)
+		if (seen.has(resolved)) continue
+		seen.add(resolved)
+		result.push(resolved)
+	}
+	return result
+}
+
+function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
+	const home = homedir()
+	const expanded: string[] = []
+	for (const path of paths) {
+		if (isAbsolute(path)) {
+			expanded.push(path)
+		} else if (path.startsWith("~/")) {
+			expanded.push(resolve(home, path.slice(2)))
+		} else {
+			expanded.push(resolve(home, path), resolve(cwd, path))
+		}
+	}
+	return expanded
+}
+
+function discoverAncestorSkillDirs(cwd: string, relativeSkillDir: string): string[] {
+	const dirs: string[] = []
+	let dir = resolve(cwd)
+	const gitRoot = findGitRepoRoot(dir)
+	while (true) {
+		dirs.push(join(dir, relativeSkillDir))
+		if (gitRoot && dir === gitRoot) return dirs
+		const parent = dirname(dir)
+		if (parent === dir) return dirs
+		dir = parent
+	}
+}
+
+function findGitRepoRoot(startDir: string): string | undefined {
+	let dir = resolve(startDir)
+	while (true) {
+		if (existsSync(join(dir, ".git"))) return dir
+		const parent = dirname(dir)
+		if (parent === dir) return undefined
+		dir = parent
+	}
+}
+
+function isClaudeSkillPath(path: string): boolean {
+	return path.split(/[\\/]+/).includes(".claude")
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

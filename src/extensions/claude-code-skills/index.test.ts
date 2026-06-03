@@ -65,6 +65,24 @@ describe("Claude Code skills extension", () => {
 		expect(result.details).not.toEqual({ success: true, name: "typescript-safety", filePath: skillPath })
 	})
 
+	it("loads native project skills before user or Claude copies", async () => {
+		const projectSkillPath = join(dir, "project", ".agents", "skills", "best-practices", "SKILL.md")
+		writeSkill(projectSkillPath, "Project-native skill instructions.")
+		writeSkill(join(dir, "home", ".agents", "skills", "best-practices", "SKILL.md"), "User-native skill instructions.")
+		writeSkill(join(dir, "project", ".claude", "skills", "best-practices", "SKILL.md"), "Claude skill instructions.")
+		const { tools } = registerExtension()
+
+		const result = await tools[0].execute("call-1", { skill: "best-practices" }, undefined, undefined, {
+			cwd: join(dir, "project"),
+			sessionManager: { getSessionId: () => "session-1" },
+		} as never)
+
+		expect(textResult(result)).toContain("Project-native skill instructions.")
+		expect(textResult(result)).not.toContain("User-native skill instructions.")
+		expect(textResult(result)).not.toContain("Claude skill instructions.")
+		expect(result.details).toEqual({ success: true, name: "best-practices", filePath: projectSkillPath })
+	})
+
 	it("returns an error when the skill is missing", async () => {
 		const { tools } = registerExtension()
 
