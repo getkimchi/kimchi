@@ -222,7 +222,6 @@ async function configureKimchiToken(
 	try {
 		await refreshKimchiModels(token, endpoint, {
 			allowCachedFallback: !options.strictFreshDiscovery,
-			requireActiveModels: options.strictFreshDiscovery,
 		})
 	} catch (error) {
 		refreshError = error

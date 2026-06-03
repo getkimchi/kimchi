@@ -484,7 +484,7 @@ describe("startup auth gate", () => {
 		expect(modelsMock.updateModelsConfig).toHaveBeenCalledWith(
 			expect.stringContaining("models.json"),
 			"my-api-key",
-			expect.objectContaining({ endpoint: "https://custom.kimchi.example", requireActiveModels: true }),
+			expect.objectContaining({ endpoint: "https://custom.kimchi.example" }),
 		)
 		expect(harness.state.authenticated).toBe(true)
 	})

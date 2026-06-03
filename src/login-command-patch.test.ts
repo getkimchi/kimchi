@@ -303,7 +303,6 @@ it("prompts for Kimchi API key and endpoint with the default endpoint", async ()
 		{
 			allowCachedFallback: false,
 			endpoint: "https://llm.kimchi.dev",
-			requireActiveModels: true,
 		},
 	)
 	expect(registry.authStorage.set).toHaveBeenCalledWith("kimchi-dev", {
@@ -338,7 +337,6 @@ it("uses a custom Kimchi endpoint for API-key model discovery and config persist
 		{
 			allowCachedFallback: false,
 			endpoint: "https://custom.example/",
-			requireActiveModels: true,
 		},
 	)
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-456", undefined, {
