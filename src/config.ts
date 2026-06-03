@@ -458,10 +458,16 @@ export function writeSkillPaths(paths: string[], configPath?: string): void {
 	writeConfigField("skillPaths", paths, configPath ?? KIMCHI_CONFIG_PATH)
 }
 
-export function writeApiKey(key: string, configPath?: string): void {
+export interface WriteApiKeyOptions {
+	llmEndpoint?: string
+}
+
+export function writeApiKey(key: string, configPath?: string, options: WriteApiKeyOptions = {}): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateConfigFile(path, (raw) => {
 		raw.apiKey = key
+		const llmEndpoint = options.llmEndpoint?.trim()
+		if (llmEndpoint) raw.llmEndpoint = llmEndpoint
 		// Clear legacy snake_case key so we don't keep stale data
 		// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
 		delete raw.api_key

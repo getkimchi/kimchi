@@ -16,7 +16,9 @@ import { type PiModelConfig, isTransientModelsError, syncProviderModels, updateM
 export const KIMCHI_PROVIDER_ID = "kimchi-dev"
 export const KIMCHI_DEFAULT_MODEL_ID = "kimi-k2.6"
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
+export const KIMCHI_API_KEY_LABEL = "Use a Kimchi API key"
 export const SUBSCRIPTION_LABEL = "Use a subscription"
+export const KIMCHI_DEFAULT_ENDPOINT = "https://llm.kimchi.dev"
 
 let browserLoginLinkSeq = 0
 
@@ -63,6 +65,7 @@ type AuthSelectorProvider = ConstructorParameters<typeof OAuthSelectorComponent>
 interface AuthStorageLike {
 	set(provider: string, credential: unknown): void
 	get(provider: string): unknown
+	remove?(provider: string): void
 }
 
 interface ProviderModelLike {
@@ -79,15 +82,23 @@ interface ModelRegistryLike<TModel extends ProviderModelLike = ProviderModelLike
 
 export function createLoginChoiceSelector(options: {
 	onKimchiAccount: () => void
+	onKimchiApiKey?: () => void
 	onSubscription: () => void
 	onCancel: () => void
 }): ExtensionSelectorComponent {
+	const labels = options.onKimchiApiKey
+		? [KIMCHI_ACCOUNT_LABEL, KIMCHI_API_KEY_LABEL, SUBSCRIPTION_LABEL]
+		: [KIMCHI_ACCOUNT_LABEL, SUBSCRIPTION_LABEL]
 	return new ExtensionSelectorComponent(
 		"Select authentication method:",
-		[KIMCHI_ACCOUNT_LABEL, SUBSCRIPTION_LABEL],
+		labels,
 		(option) => {
 			if (option === SUBSCRIPTION_LABEL) {
 				options.onSubscription()
+				return
+			}
+			if (option === KIMCHI_API_KEY_LABEL && options.onKimchiApiKey) {
+				options.onKimchiApiKey()
 				return
 			}
 			options.onKimchiAccount()
@@ -131,10 +142,14 @@ export async function prePopulateSubscriptionModels(providerId: string): Promise
 	})
 }
 
-async function refreshKimchiModels(token: string): Promise<void> {
+async function refreshKimchiModels(
+	token: string,
+	endpoint?: string,
+	options: { allowCachedFallback?: boolean; requireActiveModels?: boolean } = {},
+): Promise<void> {
 	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
 	if (!agentDir) return
-	await updateModelsConfig(resolve(agentDir, "models.json"), token)
+	await updateModelsConfig(resolve(agentDir, "models.json"), token, { endpoint, ...options })
 }
 
 export function setKimchiAuthToken(
@@ -173,14 +188,52 @@ export interface KimchiBrowserLoginOptions {
 	reuseExistingToken?: boolean
 }
 
-async function configureKimchiToken(host: KimchiBrowserLoginHost, token: string): Promise<boolean> {
+export interface KimchiApiKeyLoginOptions {
+	apiKey: string
+	endpoint: string
+}
+
+function restoreKimchiAuth(modelRegistry: ModelRegistryLike, previousCredential: unknown): void {
+	if (previousCredential !== undefined) {
+		modelRegistry.authStorage.set(KIMCHI_PROVIDER_ID, previousCredential)
+		return
+	}
+	modelRegistry.authStorage.remove?.(KIMCHI_PROVIDER_ID)
+}
+
+function formatKimchiTokenError(error: unknown, options: { saved: boolean }): string {
+	const detail = error instanceof Error ? error.message : String(error)
+	const savedSuffix = options.saved
+		? " Your API key was saved; wait a moment and try again."
+		: " No changes were saved."
+	if (isTransientModelsError(error)) {
+		return `Kimchi endpoint is unreachable or temporarily unavailable (${detail}). Check the endpoint and try again.${savedSuffix}`
+	}
+	return `Kimchi model refresh failed: ${detail}.${savedSuffix}`
+}
+
+async function configureKimchiToken(
+	host: KimchiBrowserLoginHost,
+	token: string,
+	endpoint?: string,
+	options: { strictFreshDiscovery?: boolean; persistConfig?: () => void } = {},
+): Promise<boolean> {
 	let refreshError: unknown
 	try {
-		await refreshKimchiModels(token)
+		await refreshKimchiModels(token, endpoint, {
+			allowCachedFallback: !options.strictFreshDiscovery,
+			requireActiveModels: options.strictFreshDiscovery,
+		})
 	} catch (error) {
 		refreshError = error
 	}
 
+	if (refreshError && options.strictFreshDiscovery) {
+		host.showError?.(formatKimchiTokenError(refreshError, { saved: false }))
+		return false
+	}
+
+	const previousCredential = host.modelRegistry.authStorage.get(KIMCHI_PROVIDER_ID)
 	setKimchiAuthToken(host.modelRegistry, token)
 	try {
 		host.modelRegistry.refresh()
@@ -195,28 +248,48 @@ async function configureKimchiToken(host: KimchiBrowserLoginHost, token: string)
 		refreshError ??= error
 	}
 	if (providerModels.length > 0) {
+		options.persistConfig?.()
 		const selectedModel = providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0]
 		await host.setModel?.(selectedModel)
 		host.addFeedback?.(formatKimchiLoginSuccessMessage(selectedModel.id))
 		return true
 	}
 
+	if (options.strictFreshDiscovery) {
+		restoreKimchiAuth(host.modelRegistry, previousCredential)
+		host.showError?.("Kimchi API-key login found no available Kimchi models. No changes were saved.")
+		return false
+	}
+
 	if (refreshError) {
-		const detail = refreshError instanceof Error ? refreshError.message : String(refreshError)
-		if (isTransientModelsError(refreshError)) {
-			// Key is valid; the model list is just temporarily unreachable (rate limit,
-			// gateway error). Tell the user to wait and retry rather than implying the
-			// login failed — and the saved key means a retry won't mint a new one.
-			host.showError?.(
-				`Kimchi is temporarily unavailable (${detail}). Your API key was saved — wait a moment and try again.`,
-			)
-		} else {
-			host.showError?.(`Kimchi model refresh failed: ${detail}`)
-		}
+		host.showError?.(formatKimchiTokenError(refreshError, { saved: true }))
 	} else {
 		host.showError?.("Kimchi login did not configure any available models. Your API key was saved; try again.")
 	}
 	return false
+}
+
+export async function performKimchiApiKeyLogin(
+	host: KimchiBrowserLoginHost,
+	options: KimchiApiKeyLoginOptions,
+): Promise<boolean> {
+	const token = options.apiKey.trim()
+	const endpoint = options.endpoint.trim() || KIMCHI_DEFAULT_ENDPOINT
+	if (!token) {
+		host.showError?.("Kimchi API key is required.")
+		return false
+	}
+
+	try {
+		host.showStatus?.(`Refreshing Kimchi models from ${endpoint}...`)
+		return configureKimchiToken(host, token, endpoint, {
+			strictFreshDiscovery: true,
+			persistConfig: () => writeApiKey(token, undefined, { llmEndpoint: endpoint }),
+		})
+	} catch (error) {
+		host.showError?.(`Kimchi API-key login failed: ${error instanceof Error ? error.message : String(error)}`)
+		return false
+	}
 }
 
 export async function performKimchiBrowserLogin(

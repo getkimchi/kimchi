@@ -278,6 +278,13 @@ describe("writeApiKey", () => {
 		const raw = readFileSync(configPath, "utf-8")
 		expect(JSON.parse(raw).apiKey).toBe("second")
 	})
+
+	it("can persist the Kimchi API endpoint with the API key", () => {
+		writeApiKey("sekrit-42", configPath, { llmEndpoint: " https://custom.kimchi.example " })
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("sekrit-42")
+		expect(raw.llmEndpoint).toBe("https://custom.kimchi.example")
+	})
 })
 
 describe("clearApiKey", () => {

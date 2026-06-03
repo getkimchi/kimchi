@@ -46,6 +46,7 @@ function makeFakeModelRegistry() {
 		authStorage: {
 			set: vi.fn(),
 			get: vi.fn(),
+			remove: vi.fn(),
 		},
 		refresh: vi.fn(),
 		getAvailable: vi.fn().mockReturnValue([]),
@@ -62,6 +63,7 @@ function makeFakeInteractiveMode(registry: ReturnType<typeof makeFakeModelRegist
 		showError: vi.fn(),
 		showStatus: vi.fn(),
 		showLoginDialog: vi.fn().mockResolvedValue(undefined),
+		showExtensionInput: vi.fn(),
 		getLoginProviderOptions: vi.fn().mockReturnValue([]),
 		chatContainer: {
 			addChild: vi.fn((child: unknown) => children.push(child)),
@@ -116,7 +118,14 @@ async function selectCurrentLoginOption(fakeIm: FakeIm): Promise<void> {
 	await flushAsyncLogin()
 }
 
+async function selectApiKeyLoginOption(fakeIm: FakeIm): Promise<void> {
+	fakeIm.selectorComponent.handleInput("j")
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+}
+
 async function selectSubscriptionLoginOption(fakeIm: FakeIm): Promise<void> {
+	fakeIm.selectorComponent.handleInput("j")
 	fakeIm.selectorComponent.handleInput("j")
 	fakeIm.selectorComponent.handleInput("\n")
 	await Promise.resolve()
@@ -268,6 +277,165 @@ it("shows error when browser auth fails", async () => {
 
 	expect(fakeIm.showError).toHaveBeenCalledWith("Kimchi login failed: Browser closed")
 	expect(registry.authStorage.set).not.toHaveBeenCalled()
+})
+
+it("prompts for Kimchi API key and endpoint with the default endpoint", async () => {
+	process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-api-login-test"
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce("api-key-123").mockResolvedValueOnce("")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm)
+	await waitForMockCall(fakeIm.session.setModel)
+
+	expect(fakeIm.showExtensionInput).toHaveBeenNthCalledWith(1, "Kimchi API Key:", "Enter your Kimchi API key")
+	expect(fakeIm.showExtensionInput).toHaveBeenNthCalledWith(2, "Kimchi endpoint:", "https://llm.kimchi.dev")
+	expect(fakeIm.showStatus).toHaveBeenCalledWith("Refreshing Kimchi models from https://llm.kimchi.dev...")
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-123", undefined, {
+		llmEndpoint: "https://llm.kimchi.dev",
+	})
+	expect(modelsModule.updateModelsConfig).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/models.json",
+		"api-key-123",
+		{
+			allowCachedFallback: false,
+			endpoint: "https://llm.kimchi.dev",
+			requireActiveModels: true,
+		},
+	)
+	expect(registry.authStorage.set).toHaveBeenCalledWith("kimchi-dev", {
+		type: "api_key",
+		key: "api-key-123",
+	})
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({
+		id: "kimi-k2.6",
+		provider: "kimchi-dev",
+	})
+})
+
+it("uses a custom Kimchi endpoint for API-key model discovery and config persistence", async () => {
+	process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-api-login-test"
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "custom-model", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce(" api-key-456 ").mockResolvedValueOnce(" https://custom.example/ ")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm)
+	await waitForMockCall(fakeIm.session.setModel)
+
+	expect(fakeIm.showStatus).toHaveBeenCalledWith("Refreshing Kimchi models from https://custom.example/...")
+	expect(modelsModule.updateModelsConfig).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/models.json",
+		"api-key-456",
+		{
+			allowCachedFallback: false,
+			endpoint: "https://custom.example/",
+			requireActiveModels: true,
+		},
+	)
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-456", undefined, {
+		llmEndpoint: "https://custom.example/",
+	})
+	expect(registry.authStorage.set).toHaveBeenCalledWith("kimchi-dev", {
+		type: "api_key",
+		key: "api-key-456",
+	})
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "custom-model", provider: "kimchi-dev" })
+})
+
+it("does not persist API-key login when model discovery rejects an invalid key", async () => {
+	process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-api-login-test"
+	vi.mocked(modelsModule.updateModelsConfig).mockRejectedValueOnce(
+		new modelsModule.ModelsFetchError("Failed to fetch models: 401 Unauthorized", {
+			status: 401,
+			transient: false,
+		}),
+	)
+
+	const registry = makeFakeModelRegistry()
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce("bad-key").mockResolvedValueOnce("https://llm.kimchi.dev")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm)
+	await waitForMockCall(fakeIm.showError)
+
+	expect(fakeIm.showError).toHaveBeenCalledWith(
+		"Kimchi model refresh failed: Failed to fetch models: 401 Unauthorized. No changes were saved.",
+	)
+	expect(configModule.writeApiKey).not.toHaveBeenCalled()
+	expect(registry.authStorage.set).not.toHaveBeenCalled()
+	expect(registry.authStorage.remove).not.toHaveBeenCalled()
+	expect(registry.refresh).not.toHaveBeenCalled()
+	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
+})
+
+it("does not persist API-key login when the endpoint is unreachable", async () => {
+	process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-api-login-test"
+	vi.mocked(modelsModule.updateModelsConfig).mockRejectedValueOnce(
+		new modelsModule.ModelsFetchError("Failed to fetch models: network down", { transient: true }),
+	)
+
+	const registry = makeFakeModelRegistry()
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce("api-key-123").mockResolvedValueOnce("https://offline.example")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm)
+	await waitForMockCall(fakeIm.showError)
+
+	expect(fakeIm.showError).toHaveBeenCalledWith(
+		"Kimchi endpoint is unreachable or temporarily unavailable (Failed to fetch models: network down). Check the endpoint and try again. No changes were saved.",
+	)
+	expect(configModule.writeApiKey).not.toHaveBeenCalled()
+	expect(registry.authStorage.set).not.toHaveBeenCalled()
+	expect(registry.authStorage.remove).not.toHaveBeenCalled()
+	expect(registry.refresh).not.toHaveBeenCalled()
+	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
+})
+
+it("rolls back API-key auth when fresh discovery succeeds but no Kimchi models become available", async () => {
+	process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-api-login-test"
+
+	const previousCredential = { type: "api_key", key: "previous-key" }
+	const registry = makeFakeModelRegistry()
+	registry.authStorage.get.mockReturnValue(previousCredential)
+	registry.getAvailable.mockReturnValue([{ id: "gpt-4", provider: "openai" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce("api-key-123").mockResolvedValueOnce("https://llm.kimchi.dev")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm)
+	await waitForMockCall(fakeIm.showError)
+
+	expect(fakeIm.showError).toHaveBeenCalledWith(
+		"Kimchi API-key login found no available Kimchi models. No changes were saved.",
+	)
+	expect(registry.authStorage.set).toHaveBeenNthCalledWith(1, "kimchi-dev", {
+		type: "api_key",
+		key: "api-key-123",
+	})
+	expect(registry.authStorage.set).toHaveBeenNthCalledWith(2, "kimchi-dev", previousCredential)
+	expect(configModule.writeApiKey).not.toHaveBeenCalled()
+	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
 })
 
 it("routes the subscription option to upstream OAuth providers without showing Kimchi as a duplicate", async () => {
