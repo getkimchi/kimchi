@@ -236,6 +236,8 @@ describe("runUpdate package targets", () => {
 		checkForUpdateMock.mockReset()
 		checkForUpdateMock.mockResolvedValue({ hasUpdate: false })
 		applyUpdateMock.mockReset()
+		ensureSuperpowersInstalledMock.mockReset()
+		ensureSuperpowersInstalledMock.mockResolvedValue(true)
 		listConfiguredPackagesMock.mockReset()
 		listConfiguredPackagesMock.mockReturnValue([
 			{ source: "npm:context-mode", scope: "user", filtered: false, installedPath: "/packages/context-mode" },
