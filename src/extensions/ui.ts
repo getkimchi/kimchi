@@ -30,6 +30,7 @@ import {
 	registerSharedFooterRenderer,
 	setSessionModeOnboardingFooterSuppressed,
 } from "./shared-footer.js"
+import { isRawInputCaptureActive } from "./shared-input.js"
 import { createWorkingAnimator } from "./spinner.js"
 import { getKittyKeyboardSupport } from "./terminal-compat/keyboard-capability.js"
 
@@ -441,6 +442,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 					return undefined
 				}
 				if (matchesKey(data, "ctrl+p")) {
+					// Defer to a foreground UI that is forwarding raw terminal input
+					// (e.g. the teleport overlay), so its consumer sees Ctrl+P.
+					if (isRawInputCaptureActive()) return undefined
 					if (!isKeyRelease(data)) {
 						const allAvailable = ctx.modelRegistry.getAvailable()
 						const enabledIds = getEnabledModelIds()

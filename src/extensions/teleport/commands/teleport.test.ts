@@ -269,6 +269,28 @@ describe("runTeleport", () => {
 		expect(workspaceId).toMatch(/^[0-9a-f-]{36}$/)
 	})
 
+	it("--help shows the help modal and skips teleport", async () => {
+		const { ctx, ui } = makeCtx()
+
+		await runTeleport("--help", ctx)
+
+		expect(ui.custom).toHaveBeenCalledTimes(1)
+		expect(authMock).not.toHaveBeenCalled()
+		expect(overlayMock).not.toHaveBeenCalled()
+		expect(createSessionMock).not.toHaveBeenCalled()
+		expect(readTeleportHelpSeenAtMock).not.toHaveBeenCalled()
+		expect(writeTeleportHelpSeenAtMock).not.toHaveBeenCalled()
+	})
+
+	it("--help ignores other arguments and works without an apiKey", async () => {
+		const { ctx } = makeCtx({ apiKey: "" })
+
+		await runTeleport("name --workspace bogus --unknown --help extra", ctx)
+
+		expect(authMock).not.toHaveBeenCalled()
+		expect(overlayMock).not.toHaveBeenCalled()
+	})
+
 	it("refuses when apiKey is missing", async () => {
 		const { ctx, ui } = makeCtx({ apiKey: "" })
 

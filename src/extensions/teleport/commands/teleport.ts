@@ -28,6 +28,11 @@ import { refuse, warn } from "./errors.js"
 import { resolveWorkspaceRef } from "./workspace-ref.js"
 
 export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promise<void> {
+	if (hasHelpFlag(rawArgs)) {
+		await promptTeleportHelp(ctx.ui)
+		return
+	}
+
 	let args: ReturnType<typeof parseTeleportArgs>
 	try {
 		args = parseTeleportArgs(rawArgs)
@@ -169,6 +174,13 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		}),
 		{ overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" } },
 	)
+}
+
+function hasHelpFlag(raw: string): boolean {
+	return raw
+		.trim()
+		.split(/\s+/)
+		.some((t) => t === "--help")
 }
 
 async function runGitProvisioning(
