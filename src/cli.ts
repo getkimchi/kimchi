@@ -332,7 +332,7 @@ try {
 				currentApiKey = wizardResult.apiKey ?? ""
 				writeApiKey(currentApiKey)
 				config = loadConfig()
-				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
+				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, { endpoint: config.llmEndpoint }))
 				if (experimentalFeatures) injectExperimentalProvider(modelsJsonPath)
 			} else if (isTransientModelsError(err)) {
 				// Rate limit / gateway error with no cached models to fall back on.

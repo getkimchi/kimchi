@@ -20,10 +20,8 @@ beforeAll(() => {
 	initTheme("default")
 })
 
-let originalCodingAgentDir: string | undefined
-
 beforeEach(() => {
-	originalCodingAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
 	// Auth tests should be independent of the developer machine's real config.
 	vi.spyOn(configModule, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof configModule.loadConfig>)
 	vi.spyOn(configModule, "writeApiKey").mockImplementation(() => {})
@@ -31,12 +29,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-	if (originalCodingAgentDir === undefined) {
-		// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset rather than stringified to "undefined"
-		delete process.env.KIMCHI_CODING_AGENT_DIR
-	} else {
-		process.env.KIMCHI_CODING_AGENT_DIR = originalCodingAgentDir
-	}
+	vi.unstubAllEnvs()
 	vi.restoreAllMocks()
 	vi.mocked(getModels).mockReturnValue([])
 })
@@ -132,7 +125,7 @@ async function selectSubscriptionLoginOption(fakeIm: FakeIm): Promise<void> {
 }
 
 it("intercepts showOAuthSelector('login') and runs Kimchi browser auth", async () => {
-	process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-login-test"
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-login-test")
 	const cliAuthModule = await import("./cli-auth/index.js")
 	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "test-token-123" })
 
@@ -280,7 +273,7 @@ it("shows error when browser auth fails", async () => {
 })
 
 it("prompts for Kimchi API key and endpoint with the default endpoint", async () => {
-	process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-api-login-test"
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
 
 	const registry = makeFakeModelRegistry()
 	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
@@ -295,7 +288,11 @@ it("prompts for Kimchi API key and endpoint with the default endpoint", async ()
 	await waitForMockCall(fakeIm.session.setModel)
 
 	expect(fakeIm.showExtensionInput).toHaveBeenNthCalledWith(1, "Kimchi API Key:", "Enter your Kimchi API key")
-	expect(fakeIm.showExtensionInput).toHaveBeenNthCalledWith(2, "Kimchi endpoint:", "https://llm.kimchi.dev")
+	expect(fakeIm.showExtensionInput).toHaveBeenNthCalledWith(
+		2,
+		"Kimchi endpoint (press Enter to use https://llm.kimchi.dev):",
+		"",
+	)
 	expect(fakeIm.showStatus).toHaveBeenCalledWith("Refreshing Kimchi models from https://llm.kimchi.dev...")
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-123", undefined, {
 		llmEndpoint: "https://llm.kimchi.dev",
@@ -320,7 +317,7 @@ it("prompts for Kimchi API key and endpoint with the default endpoint", async ()
 })
 
 it("uses a custom Kimchi endpoint for API-key model discovery and config persistence", async () => {
-	process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-api-login-test"
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
 
 	const registry = makeFakeModelRegistry()
 	registry.getAvailable.mockReturnValue([{ id: "custom-model", provider: "kimchi-dev" }])
@@ -355,7 +352,7 @@ it("uses a custom Kimchi endpoint for API-key model discovery and config persist
 })
 
 it("does not persist API-key login when model discovery rejects an invalid key", async () => {
-	process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-api-login-test"
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
 	vi.mocked(modelsModule.updateModelsConfig).mockRejectedValueOnce(
 		new modelsModule.ModelsFetchError("Failed to fetch models: 401 Unauthorized", {
 			status: 401,
@@ -384,7 +381,7 @@ it("does not persist API-key login when model discovery rejects an invalid key",
 })
 
 it("does not persist API-key login when the endpoint is unreachable", async () => {
-	process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-api-login-test"
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
 	vi.mocked(modelsModule.updateModelsConfig).mockRejectedValueOnce(
 		new modelsModule.ModelsFetchError("Failed to fetch models: network down", { transient: true }),
 	)
@@ -410,7 +407,7 @@ it("does not persist API-key login when the endpoint is unreachable", async () =
 })
 
 it("rolls back API-key auth when fresh discovery succeeds but no Kimchi models become available", async () => {
-	process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-api-login-test"
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
 
 	const previousCredential = { type: "api_key", key: "previous-key" }
 	const registry = makeFakeModelRegistry()
@@ -482,50 +479,40 @@ it("pre-populates subscription provider models in models.json before upstream lo
 	const fakeIm = makeFakeInteractiveMode(registry)
 	fakeIm.getLoginProviderOptions.mockReturnValue([{ id: "openai", name: "OpenAI", authType: "oauth" }])
 
-	const previousDir = process.env.KIMCHI_CODING_AGENT_DIR
-	process.env.KIMCHI_CODING_AGENT_DIR = "/tmp/kimchi-test-models"
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-test-models")
 
-	try {
-		// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-		const patched = (InteractiveMode.prototype as any).showOAuthSelector
-		await patched.call(fakeIm, "login")
-		await selectSubscriptionLoginOption(fakeIm)
-		fakeIm.selectorComponent.handleInput("\n")
-		await waitForMockCall(fakeIm.showLoginDialog)
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectSubscriptionLoginOption(fakeIm)
+	fakeIm.selectorComponent.handleInput("\n")
+	await waitForMockCall(fakeIm.showLoginDialog)
 
-		expect(fakeIm.showLoginDialog).toHaveBeenCalledWith("openai", "OpenAI")
-		expect(syncSpy).toHaveBeenCalledOnce()
-		const [_path, providerId, configs, providerConfig] = syncSpy.mock.calls[0] as unknown as [
-			string,
-			string,
-			unknown[],
-			unknown,
-		]
-		expect(providerId).toBe("openai")
-		expect(providerConfig).toMatchObject({
-			api: "openai-chat",
-			baseUrl: "https://api.openai.com/v1/chat/completions",
-		})
-		expect(configs).toHaveLength(1)
-		expect(configs[0]).toMatchObject({
-			id: "codex",
-			name: "Codex",
-			provider: "openai",
-			input: ["text"],
-			contextWindow: 200000,
-			maxTokens: 8192,
-			reasoning: false,
-		})
-	} finally {
-		if (previousDir === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset rather than stringified to "undefined"
-			delete process.env.KIMCHI_CODING_AGENT_DIR
-		} else {
-			process.env.KIMCHI_CODING_AGENT_DIR = previousDir
-		}
-		syncSpy.mockRestore()
-		getModelsMock.mockReturnValue([])
-	}
+	expect(fakeIm.showLoginDialog).toHaveBeenCalledWith("openai", "OpenAI")
+	expect(syncSpy).toHaveBeenCalledOnce()
+	const [_path, providerId, configs, providerConfig] = syncSpy.mock.calls[0] as unknown as [
+		string,
+		string,
+		unknown[],
+		unknown,
+	]
+	expect(providerId).toBe("openai")
+	expect(providerConfig).toMatchObject({
+		api: "openai-chat",
+		baseUrl: "https://api.openai.com/v1/chat/completions",
+	})
+	expect(configs).toHaveLength(1)
+	expect(configs[0]).toMatchObject({
+		id: "codex",
+		name: "Codex",
+		provider: "openai",
+		input: ["text"],
+		contextWindow: 200000,
+		maxTokens: 8192,
+		reasoning: false,
+	})
+	syncSpy.mockRestore()
+	getModelsMock.mockReturnValue([])
 })
 
 it("does not crash when registry.getAvailable returns empty after subscription login", async () => {

@@ -400,6 +400,27 @@ export async function performKimchiBrowserLoginWithDialog(
 	})
 }
 
+export async function performKimchiApiKeyLoginViaExtensionUI(
+	ctx: ExtensionContext,
+	setModel?: (model: ProviderModelLike) => Promise<unknown> | unknown,
+): Promise<"success" | "failed" | "cancelled"> {
+	const apiKey = await ctx.ui.input("Kimchi API Key:")
+	if (!apiKey?.trim()) return "cancelled"
+	const endpoint = await ctx.ui.input(`Kimchi endpoint (press Enter to use ${KIMCHI_DEFAULT_ENDPOINT}):`)
+	const trimmedEndpoint = endpoint?.trim() || KIMCHI_DEFAULT_ENDPOINT
+	const ok = await performKimchiApiKeyLogin(
+		{
+			modelRegistry: ctx.modelRegistry,
+			setModel,
+			showStatus: (message) => ctx.ui.notify(message, "info"),
+			showError: (message) => ctx.ui.notify(message, "error"),
+			addFeedback: (message) => ctx.ui.notify(message, "info"),
+		},
+		{ apiKey: apiKey.trim(), endpoint: trimmedEndpoint },
+	)
+	return ok ? "success" : "failed"
+}
+
 export function getSubscriptionProviderOptions(
 	modelRegistry: ExtensionContext["modelRegistry"],
 ): AuthSelectorProvider[] {

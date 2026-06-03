@@ -154,7 +154,10 @@ async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
 
 	const apiKey = await modeLike.showExtensionInput("Kimchi API Key:", "Enter your Kimchi API key")
 	if (apiKey === undefined) return
-	const endpointInput = await modeLike.showExtensionInput("Kimchi endpoint:", KIMCHI_DEFAULT_ENDPOINT)
+	const endpointInput = await modeLike.showExtensionInput(
+		`Kimchi endpoint (press Enter to use ${KIMCHI_DEFAULT_ENDPOINT}):`,
+		"",
+	)
 	if (endpointInput === undefined) return
 
 	await performKimchiApiKeyLogin(

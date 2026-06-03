@@ -8,6 +8,7 @@ import { loadConfig } from "../../config.js"
 import {
 	KIMCHI_PROVIDER_ID,
 	createLoginChoiceSelector,
+	performKimchiApiKeyLoginViaExtensionUI,
 	performKimchiBrowserLoginWithDialog,
 	setKimchiAuthToken,
 	showSubscriptionLoginWithExtensionUI,
@@ -119,11 +120,12 @@ async function waitForOverlayClear(ctx: ExtensionContext): Promise<void> {
 	})
 }
 
-async function promptAuthChoice(ctx: ExtensionContext): Promise<"kimchi" | "subscription" | undefined> {
+async function promptAuthChoice(ctx: ExtensionContext): Promise<"kimchi" | "api-key" | "subscription" | undefined> {
 	await waitForOverlayClear(ctx)
-	return ctx.ui.custom<"kimchi" | "subscription" | undefined>((_tui, _theme, _keybindings, done) => {
+	return ctx.ui.custom<"kimchi" | "api-key" | "subscription" | undefined>((_tui, _theme, _keybindings, done) => {
 		const selector = createLoginChoiceSelector({
 			onKimchiAccount: () => done("kimchi"),
+			onKimchiApiKey: () => done("api-key"),
 			onSubscription: () => done("subscription"),
 			onCancel: () => done(undefined),
 		})
@@ -160,9 +162,13 @@ async function runStartupAuthGate(
 				? await performKimchiBrowserLoginWithDialog(ctx, (model) =>
 						pi.setModel(model as Parameters<typeof pi.setModel>[0]),
 					)
-				: (await showSubscriptionLoginWithExtensionUI(ctx, (model) => pi.setModel(model)))
-					? "success"
-					: "failed"
+				: choice === "api-key"
+					? await performKimchiApiKeyLoginViaExtensionUI(ctx, (model) =>
+							pi.setModel(model as Parameters<typeof pi.setModel>[0]),
+						)
+					: (await showSubscriptionLoginWithExtensionUI(ctx, (model) => pi.setModel(model)))
+						? "success"
+						: "failed"
 
 		if (result === "cancelled") continue
 
