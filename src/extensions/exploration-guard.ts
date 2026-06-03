@@ -11,9 +11,11 @@ export const DEFAULT_READ_TOOLS = new Set([
 	"lsp_definition",
 	"lsp_references",
 	"lsp_diagnostics",
-	// bash is intentionally excluded: it is used for execution (tests, git ops,
-	// builds) as often as for inspection, so classifying it as read-only causes
-	// too many false positives on legitimate work turns.
+	// bash is intentionally excluded from the default read set. It is used for
+	// execution (tests, git ops, builds) as often as for inspection (git diff,
+	// git log, grep). The false positives it caused on work turns outweigh the
+	// missed detections. Callers who want bash to count can pass a custom
+	// readTools set that includes it.
 	"mcp",
 ])
 
@@ -86,7 +88,12 @@ export class ExplorationGuard {
 	}
 
 	turnEnd(sendSteer: (text: string) => void): void {
-		if (!this.isEnabled()) return
+		if (!this.isEnabled()) {
+			// Reset the streak while the guard is suppressed so it doesn't
+			// fire immediately when it becomes re-enabled (e.g. after scoping).
+			this.consecutiveReadOnlyTurns = 0
+			return
+		}
 
 		// A turn is read-only only if it contains at least one read tool and none
 		// of them are write tools. Turns with no tools, with write tools, or with

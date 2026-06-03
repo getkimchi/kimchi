@@ -248,6 +248,31 @@ describe("Threshold triggers", () => {
 			}
 		}
 	})
+
+	it("resets streak while disabled so it does not fire immediately on re-enable", () => {
+		// Simulates: 4 read turns → guard disabled (e.g. scoping starts) →
+		// 3 more read turns while disabled → guard re-enabled → should need
+		// a full 5 turns before firing, not just 1.
+		let enabled = true
+		const guard = createGuard({ isEnabled: () => enabled })
+
+		for (let i = 0; i < 4; i++) simulateReadTurn(guard)
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(4)
+
+		enabled = false
+		for (let i = 0; i < 3; i++) simulateReadTurn(guard)
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
+
+		enabled = true
+		const steers: string[] = []
+		for (let i = 0; i < 4; i++) {
+			guard.turnStart()
+			guard.recordToolCall("read")
+			guard.turnEnd((text) => steers.push(text))
+		}
+		expect(steers).toHaveLength(0) // streak only at 4, not yet at 5
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(4)
+	})
 })
 
 describe("Custom tool classification", () => {
