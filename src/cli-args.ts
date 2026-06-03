@@ -1,6 +1,7 @@
-// Pre-dispatch scanners need to skip values for known CLI flags before the
-// upstream pi-coding-agent parser runs. Keep this mirrored with the upstream
-// parser because that parser is not exported through the package API.
+import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
+
+// Pre-dispatch scanners still need to skip values for Kimchi-local raw scans
+// such as `--mode acp`, which upstream pi does not parse.
 const PRE_DISPATCH_VALUE_FLAGS = new Set([
 	"--provider",
 	"--model",
@@ -43,8 +44,13 @@ export function isHelpOrVersionArgs(args: string[]): boolean {
 // print output). Terminal OSC writes and compat warnings must be suppressed
 // because they corrupt that stream.
 export function isProtocolOrPrintMode(args: string[]): boolean {
-	const mode = getCliModeArg(args)
-	return mode === "json" || mode === "rpc" || mode === "acp" || args.includes("--print") || args.includes("-p")
+	const parsed = parsePiArgs(args)
+	const mode = parsed.mode ?? getCliModeArg(args)
+	return mode === "json" || mode === "rpc" || mode === "acp" || parsed.print === true
+}
+
+export function isTerminalUiMode(args: string[], io: { stdinIsTTY: boolean; stdoutIsTTY: boolean }): boolean {
+	return io.stdinIsTTY && io.stdoutIsTTY && !isProtocolOrPrintMode(args)
 }
 
 export function isExperimentalFeaturesArg(args: string[]): boolean {

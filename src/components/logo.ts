@@ -7,10 +7,12 @@ import { buildInfoLines, buildLogoLines } from "./logo-art.js"
 
 export class LogoHeader implements Component {
 	private readonly theme: Theme
+	private readonly getBranch?: () => string | undefined
 	private logoLines: string[]
 
-	constructor(theme: Theme) {
+	constructor(theme: Theme, opts?: { getBranch?(): string | undefined }) {
 		this.theme = theme
+		this.getBranch = opts?.getBranch
 		this.logoLines = buildLogoLines(theme)
 	}
 
@@ -34,7 +36,7 @@ export class LogoHeader implements Component {
 		const versionPrefixWidth = 1 + versionStr.length + 3 // "v" + version + " · "
 		const folderMaxWidth = Math.max(4, logoWidth - versionPrefixWidth)
 
-		const infoLines = buildInfoLines(theme, { folderMaxWidth })
+		const infoLines = buildInfoLines(theme, { folderMaxWidth, getBranch: this.getBranch })
 
 		// Left column content width is fixed to logo width so the logo never
 		// shifts or deforms when the info line (branch name, folder) is long.

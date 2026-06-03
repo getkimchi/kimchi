@@ -10,7 +10,7 @@ import {
 	getCliModeArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
-	isProtocolOrPrintMode,
+	isTerminalUiMode,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
@@ -35,6 +35,7 @@ import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
+import ideAdapterExtension from "./extensions/ide-adapter/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import llmResponseLogExtension from "./extensions/llm-response-log.js"
 import loginExtension from "./extensions/login/index.js"
@@ -47,6 +48,7 @@ import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import permissionsExtension from "./extensions/permissions/index.js"
 import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
+import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup/native-compat.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire.js"
@@ -72,7 +74,12 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
-import { injectExperimentalProvider, isTransientModelsError, updateModelsConfig } from "./models.js"
+import {
+	injectExperimentalProvider,
+	isTransientModelsError,
+	readExperimentalModels,
+	updateModelsConfig,
+} from "./models.js"
 import resourcesExtension from "./resources/extension.js"
 import { type ManagedExtensionFactory, enabledExtensionFactories } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
@@ -81,9 +88,10 @@ import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
 import { getVersion } from "./utils.js"
-import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./utils/trace-id-export.js"
+import { postProcessHtmlExport, postProcessJsonlExport } from "./utils/export-post-process.js"
 
 installCloudflare524RetryPatch()
+installPiNativeCompatibilityShim()
 
 function getSubcommand(args: string[]): string {
 	if (args.includes("--version") || args.includes("-v")) return "version"
@@ -124,12 +132,9 @@ const _origExportToJsonl = (AgentSession as any).prototype.exportToJsonl
 ;(AgentSession as any).prototype.exportToJsonl = function (outputPath?: string) {
 	const filePath = _origExportToJsonl.call(this, outputPath)
 	try {
-		const raw = readFileSync(filePath, "utf-8")
-		const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0)
-		const processed = injectTraceIdsIntoExport(lines)
-		writeFileSync(filePath, `${processed.join("\n")}\n`, "utf-8")
+		postProcessJsonlExport(filePath)
 	} catch (err) {
-		console.warn("[trace-id] Failed to inject trace IDs into JSONL export:", err)
+		console.warn("[export-post-process] Failed to post-process JSONL export:", err)
 	}
 	return filePath
 }
@@ -142,64 +147,9 @@ const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
 ;(AgentSession as any).prototype.exportToHtml = async function (outputPath?: string) {
 	const filePath = await _origExportToHtml.call(this, outputPath)
 	try {
-		let html = readFileSync(filePath, "utf-8")
-		const match = html.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
-		if (match) {
-			const base64 = match[1]
-			const json = Buffer.from(base64, "base64").toString("utf-8")
-			const data = JSON.parse(json) as Record<string, unknown>
-			if (Array.isArray(data.entries)) {
-				injectTraceIdsIntoEntries(data.entries as import("./utils/trace-id-export.js").ExportEntry[])
-				const modified = JSON.stringify(data)
-				const modifiedBase64 = Buffer.from(modified).toString("base64")
-				html = html.replace(
-					/<script id="session-data" type="application\/json">[\s\S]*?<\/script>/,
-					`<script id="session-data" type="application/json">${modifiedBase64}</script>`,
-				)
-			}
-		}
-
-		// Inject the trace ID renderer script before </body> (idempotent).
-		if (!html.includes('id="trace-id-renderer"')) {
-			const traceIdScript = `<script id="trace-id-renderer">
-(function() {
-    var el = document.getElementById('session-data');
-    if (!el) return;
-    var base64 = el.textContent;
-    var binary = atob(base64);
-    var bytes = new Uint8Array(binary.length);
-    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    var data = JSON.parse(new TextDecoder('utf-8').decode(bytes));
-    var entriesWithTraceIds = [];
-    for (var i = 0; i < data.entries.length; i++) {
-        var e = data.entries[i];
-        if (e.traceIds && e.traceIds.length > 0) entriesWithTraceIds.push(e);
-    }
-    if (entriesWithTraceIds.length === 0) return;
-    function inject() {
-        for (var i = 0; i < entriesWithTraceIds.length; i++) {
-            var entry = entriesWithTraceIds[i];
-            var el = document.getElementById('entry-' + entry.id);
-            if (!el) continue;
-            if (el.querySelector('.trace-ids')) continue;
-            var d = document.createElement('div');
-            d.className = 'trace-ids';
-            d.textContent = 'Trace IDs: ' + entry.traceIds.join(', ');
-            d.style.cssText = 'font-size:0.75rem;color:#666;margin-top:0.25rem;font-family:monospace';
-            el.appendChild(d);
-        }
-    }
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', inject);
-    } else { inject(); }
-})();
-</script>`
-			html = html.replace("</body>", `${traceIdScript}\n</body>`)
-		}
-
-		writeFileSync(filePath, html, "utf-8")
+		postProcessHtmlExport(filePath)
 	} catch (err) {
-		console.warn("[trace-id] Failed to inject trace IDs into HTML export:", err)
+		console.warn("[export-post-process] Failed to post-process HTML export:", err)
 	}
 	return filePath
 }
@@ -316,7 +266,10 @@ try {
 		let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
 		try {
 			;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, { endpoint: config.llmEndpoint }))
-			if (experimentalFeatures) injectExperimentalProvider(modelsJsonPath)
+			if (experimentalFeatures) {
+				injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")
+				models = [...models, ...readExperimentalModels(modelsJsonPath)]
+			}
 		} catch (err) {
 			const is401 = err instanceof Error && err.message.includes("401")
 			if (is401 && process.stdin.isTTY) {
@@ -333,7 +286,10 @@ try {
 				writeApiKey(currentApiKey)
 				config = loadConfig()
 				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, { endpoint: config.llmEndpoint }))
-				if (experimentalFeatures) injectExperimentalProvider(modelsJsonPath)
+				if (experimentalFeatures) {
+					injectExperimentalProvider(modelsJsonPath, currentApiKey)
+					models = [...models, ...readExperimentalModels(modelsJsonPath)]
+				}
 			} else if (isTransientModelsError(err)) {
 				// Rate limit / gateway error with no cached models to fall back on.
 				// Don't crash startup over a transient condition — continue with an
@@ -398,9 +354,14 @@ try {
 		mkdirSync(themesDir, { recursive: true })
 
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
-		// the kimchi-minimal-tints and terminal-colors extensions. Skip protocol
-		// and print modes: stdout belongs to the caller, and OSC escapes corrupt it.
-		const terminalStartupOutputAllowed = !isProtocolOrPrintMode(process.argv.slice(2))
+		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
+		// modes: stdout belongs to the caller, and OSC escapes corrupt it.
+		const rawArgs = stripExperimentalFeaturesArg(process.argv.slice(2))
+		const terminalIo = {
+			stdinIsTTY: process.stdin.isTTY === true,
+			stdoutIsTTY: process.stdout.isTTY === true,
+		}
+		const terminalStartupOutputAllowed = isTerminalUiMode(rawArgs, terminalIo)
 		if (terminalStartupOutputAllowed) {
 			await probeTerminalBackground()
 			await probeKittyKeyboardSupport()
@@ -438,7 +399,7 @@ try {
 		}
 
 		// Clear the visible viewport and home the cursor so kimchi renders at the top.
-		if (!acpMode && process.stdout.isTTY) {
+		if (terminalStartupOutputAllowed) {
 			process.stdout.write("\x1b[2J\x1b[H")
 		}
 
@@ -460,11 +421,9 @@ try {
 			globalThis.fetch = patchedFetch
 		}
 
-		const rawArgs = stripExperimentalFeaturesArg(process.argv.slice(2))
 		const interactiveStartupContext = {
 			nonInteractiveMode: acpMode,
-			stdinIsTTY: process.stdin.isTTY === true,
-			stdoutIsTTY: process.stdout.isTTY === true,
+			...terminalIo,
 		}
 		const startupAuthState = createStartupAuthGateState()
 		const startupAuthGate = createStartupAuthGate({
@@ -476,15 +435,17 @@ try {
 			...interactiveStartupContext,
 			shouldSkip: () => startupAuthState.cancelled,
 		})
+		// Terminal chrome extensions need an actual TUI, not just an extension UI protocol.
+		const terminalUiExtensionFactories = isTerminalUiMode(rawArgs, terminalIo)
+			? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
+			: []
 		const extensionFactories = [
 			startupUpdateExtension,
 			sessionIdCaptureExtension,
 			shutdownMarkerExtension,
 			statsExtension,
-			terminalColorsExtension,
-			kimchiMinimalTintsExtension,
+			...terminalUiExtensionFactories,
 			loginExtension,
-			uiExtension,
 			startupAuthGate,
 			loopGuardExtension,
 			explorationGuardExtension,
@@ -492,6 +453,7 @@ try {
 			...enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 			] satisfies ManagedExtensionFactory[]),
+			ideAdapterExtension,
 			// Ferment must see raw input before prompt enrichment rewrites print-mode text.
 			...enabledExtensionFactories([
 				{ id: "extensions.ferment", factory: fermentExtension },

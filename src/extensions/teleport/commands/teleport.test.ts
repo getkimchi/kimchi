@@ -19,6 +19,8 @@ const {
 	parseHostMock,
 	readGitTokenMock,
 	writeGitTokenMock,
+	readTeleportHelpSeenAtMock,
+	writeTeleportHelpSeenAtMock,
 	readLocalGitConfigMock,
 	propagateGitConfigMock,
 	propagateGitCredentialMock,
@@ -43,6 +45,8 @@ const {
 	parseHostMock: vi.fn(),
 	readGitTokenMock: vi.fn(),
 	writeGitTokenMock: vi.fn(),
+	readTeleportHelpSeenAtMock: vi.fn(),
+	writeTeleportHelpSeenAtMock: vi.fn(),
 	readLocalGitConfigMock: vi.fn(),
 	propagateGitConfigMock: vi.fn(),
 	propagateGitCredentialMock: vi.fn(),
@@ -67,6 +71,8 @@ vi.mock("../../../sandbox/git-credentials.js", () => ({
 vi.mock("../../../config.js", () => ({
 	readGitToken: readGitTokenMock,
 	writeGitToken: writeGitTokenMock,
+	readTeleportHelpSeenAt: readTeleportHelpSeenAtMock,
+	writeTeleportHelpSeenAt: writeTeleportHelpSeenAtMock,
 }))
 vi.mock("../provisioning/git-propagate.js", () => ({
 	readLocalGitConfig: readLocalGitConfigMock,
@@ -180,6 +186,8 @@ beforeEach(() => {
 	parseHostMock.mockReset().mockImplementation((url: string) => (url.includes("github.com") ? "github.com" : undefined))
 	readGitTokenMock.mockReset().mockReturnValue(undefined)
 	writeGitTokenMock.mockReset()
+	readTeleportHelpSeenAtMock.mockReset().mockReturnValue("2025-01-01T00:00:00.000Z")
+	writeTeleportHelpSeenAtMock.mockReset()
 	readLocalGitConfigMock.mockReset().mockResolvedValue({})
 	propagateGitConfigMock.mockReset().mockResolvedValue(undefined)
 	propagateGitCredentialMock.mockReset().mockResolvedValue(undefined)
@@ -259,6 +267,28 @@ describe("runTeleport", () => {
 		expect(authMock).toHaveBeenCalledOnce()
 		const workspaceId = authMock.mock.calls[0][0] as string
 		expect(workspaceId).toMatch(/^[0-9a-f-]{36}$/)
+	})
+
+	it("--help shows the help modal and skips teleport", async () => {
+		const { ctx, ui } = makeCtx()
+
+		await runTeleport("--help", ctx)
+
+		expect(ui.custom).toHaveBeenCalledTimes(1)
+		expect(authMock).not.toHaveBeenCalled()
+		expect(overlayMock).not.toHaveBeenCalled()
+		expect(createSessionMock).not.toHaveBeenCalled()
+		expect(readTeleportHelpSeenAtMock).not.toHaveBeenCalled()
+		expect(writeTeleportHelpSeenAtMock).not.toHaveBeenCalled()
+	})
+
+	it("--help ignores other arguments and works without an apiKey", async () => {
+		const { ctx } = makeCtx({ apiKey: "" })
+
+		await runTeleport("name --workspace bogus --unknown --help extra", ctx)
+
+		expect(authMock).not.toHaveBeenCalled()
+		expect(overlayMock).not.toHaveBeenCalled()
 	})
 
 	it("refuses when apiKey is missing", async () => {

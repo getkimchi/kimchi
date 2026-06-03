@@ -6,6 +6,7 @@ import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"
 import { listSessions } from "../../../sandbox/worker/sessions.js"
 import type { Session } from "../../../sandbox/worker/types.js"
+import { claimRawInputCapture } from "../../shared-input.js"
 import { disableMouseCapture, enableMouseCapture } from "../pty/mouse-capture.js"
 import { isVisibleSession } from "../session-filter.js"
 import { type ChordAction, ChordParser } from "./keybindings.js"
@@ -111,6 +112,7 @@ export function createTabsOverlay(opts: TabsOverlayOpts): OverlayFactory {
 
 		enableMouseCapture()
 		tui.setShowHardwareCursor(true)
+		const releaseRawInputCapture = claimRawInputCapture()
 
 		function evaluateTick(): void {
 			const active = manager.activeTab
@@ -239,6 +241,7 @@ export function createTabsOverlay(opts: TabsOverlayOpts): OverlayFactory {
 				if (disposed) return
 				disposed = true
 				closedByHost = true
+				releaseRawInputCapture()
 				if (tickHandle) {
 					clearInterval(tickHandle)
 					tickHandle = null

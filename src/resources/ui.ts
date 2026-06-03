@@ -65,19 +65,22 @@ export class ResourceManagerComponent {
 		this.tui.requestRender()
 	}
 
-	private createList(): SettingsList {
-		return new SettingsList(
-			resourceItems(this.activeTab),
+	private createList(selectedId?: string): SettingsList {
+		const items = resourceItems(this.activeTab)
+		const list = new SettingsList(
+			items,
 			12,
 			getSettingsListTheme(),
 			(id, value) => {
 				setResourceOverride(id, value === VALUE_ENABLED)
-				this.list = this.createList()
+				this.list = this.createList(id)
 				this.tui.requestRender()
 			},
 			this.done,
 			{ enableSearch: false },
 		)
+		setSelectedResource(list, items, selectedId)
+		return list
 	}
 
 	private renderTabs(): string {
@@ -181,4 +184,38 @@ function resourceLabel(resource: ResourceDefinition, tab: ResourceTab): string {
 function resourceDescription(resource: ResourceDefinition): string {
 	const scope = resource.restartRequired ? "Applies after restart." : "Applies immediately."
 	return `${resource.id} — ${scope} ${resource.description}`
+}
+
+function setSelectedResource(list: SettingsList, items: SettingItem[], id: string | undefined): void {
+	if (!id) return
+	const index = items.findIndex((item) => item.id === id)
+	if (index < 0) return
+	const target = selectedIndexTarget(list)
+	if (!target) return
+	target.selectedIndex = index
+}
+
+type SelectedIndexTarget = { selectedIndex: number }
+
+function selectedIndexTarget(list: SettingsList): SelectedIndexTarget | undefined {
+	const candidate = list as unknown
+	if (!isRecord(candidate)) return undefined
+	if (typeof candidate.selectedIndex !== "number") return undefined
+	const descriptor = propertyDescriptor(candidate, "selectedIndex")
+	if (descriptor?.writable !== true && descriptor?.set === undefined) return undefined
+	return candidate as unknown as SelectedIndexTarget
+}
+
+function propertyDescriptor(value: object, key: PropertyKey): PropertyDescriptor | undefined {
+	let current: object | null = value
+	while (current) {
+		const descriptor = Object.getOwnPropertyDescriptor(current, key)
+		if (descriptor) return descriptor
+		current = Object.getPrototypeOf(current)
+	}
+	return undefined
+}
+
+function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
+	return value !== null && typeof value === "object"
 }

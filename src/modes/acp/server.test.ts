@@ -13,7 +13,11 @@ import type {
 	AgentSessionEventListener,
 	SessionInfo as PiSessionInfo,
 } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
+const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
+
 import { _resetState as _resetHideThinking, _setHideThinking } from "../../extensions/hide-thinking.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
@@ -24,6 +28,7 @@ import {
 	assertSessionHasModel,
 	buildSessionModelState,
 	describeToolCall,
+	initializeHeadlessTheme,
 	isHiddenToolCall,
 	shouldEmitThinking,
 	stripAnsi,
@@ -1179,6 +1184,31 @@ describe("assertSessionHasModel", () => {
 		expect(() =>
 			assertSessionHasModel({ model: {} as NonNullable<Parameters<typeof assertSessionHasModel>[0]["model"]> }),
 		).not.toThrow()
+	})
+})
+
+describe("initializeHeadlessTheme", () => {
+	beforeEach(() => {
+		vi.stubGlobal(THEME_KEY, undefined)
+		vi.stubGlobal(THEME_KEY_OLD, undefined)
+	})
+
+	afterEach(() => {
+		vi.unstubAllGlobals()
+	})
+
+	it("initializes pi's global theme proxy for headless sessions", () => {
+		const globals = globalThis as Record<symbol, unknown>
+
+		expect(globals[THEME_KEY]).toBeUndefined()
+		expect(globals[THEME_KEY_OLD]).toBeUndefined()
+
+		initializeHeadlessTheme({ getTheme: () => "default" })
+
+		expect(globals[THEME_KEY]).toBeDefined()
+		expect(globals[THEME_KEY_OLD]).toBeDefined()
+		const initializedTheme = globals[THEME_KEY] as { getFgAnsi(color: string): string }
+		expect(() => initializedTheme.getFgAnsi("accent")).not.toThrow()
 	})
 })
 

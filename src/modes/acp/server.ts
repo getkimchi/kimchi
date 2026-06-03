@@ -49,6 +49,7 @@ import {
 	SessionManager,
 	SettingsManager,
 	createAgentSession,
+	initTheme,
 } from "@earendil-works/pi-coding-agent"
 import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
@@ -800,6 +801,10 @@ export function assertSessionHasModel(session: Pick<AgentSession, "model">): voi
 	}
 }
 
+export function initializeHeadlessTheme(settingsManager: Pick<SettingsManager, "getTheme">): void {
+	initTheme(settingsManager.getTheme(), false)
+}
+
 async function bindAcpExtensions(session: AgentSession): Promise<void> {
 	await session.bindExtensions({
 		onError: (err) => {
@@ -1001,6 +1006,7 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			throw RequestError.invalidParams(undefined, `failed to open session: ${msg}`)
 		}
 		const settingsManager = SettingsManager.create(cwd, options.agentDir)
+		initializeHeadlessTheme(settingsManager)
 		const resourceLoader = new DefaultResourceLoader({
 			cwd,
 			agentDir: options.agentDir,
@@ -1023,6 +1029,7 @@ function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
 	return async (params: NewSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
 		const settingsManager = SettingsManager.create(cwd, options.agentDir)
+		initializeHeadlessTheme(settingsManager)
 		const resourceLoader = new DefaultResourceLoader({
 			cwd,
 			agentDir: options.agentDir,
