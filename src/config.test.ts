@@ -127,6 +127,19 @@ describe("loadConfig", () => {
 		rmSync(projectDir, { recursive: true, force: true })
 	})
 
+	it("customLlmEndpoint is undefined when no endpoint is saved", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "my-key" }))
+		const config = loadConfig({ configPath })
+		expect(config.customLlmEndpoint).toBeUndefined()
+	})
+
+	it("customLlmEndpoint returns the saved value when explicitly configured", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "my-key", llmEndpoint: "https://custom.example" }))
+		const config = loadConfig({ configPath })
+		expect(config.customLlmEndpoint).toBe("https://custom.example")
+		expect(config.llmEndpoint).toBe("https://custom.example")
+	})
+
 	it("project llmEndpoint overrides global", () => {
 		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
 		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
