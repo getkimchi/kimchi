@@ -1,4 +1,9 @@
-import { DefaultPackageManager, SettingsManager, getAgentDir } from "@earendil-works/pi-coding-agent"
+import {
+	DefaultPackageManager,
+	SettingsManager,
+	getAgentDir,
+	parseArgs as parsePiArgs,
+} from "@earendil-works/pi-coding-agent"
 import { isHomebrewInstall } from "../update/paths.js"
 import { applyUpdate, checkForUpdate } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
@@ -11,43 +16,69 @@ interface UpdateFlags {
 	packageSource?: string
 }
 
+const UPDATE_USAGE = [
+	"Usage: kimchi update [source|self|pi] [--self] [--extensions] [--extension <source>] [--canary] [--force] [--dry-run]",
+	"",
+	"  source        Update one installed Pi package, e.g. context-mode or npm:context-mode",
+	"  self, pi      Update Kimchi itself only",
+	"  --self        Update Kimchi itself only",
+	"  --extensions  Update installed Pi packages only",
+	"  --extension   Update one installed Pi package by source or display name",
+	"  --canary      Install the latest canary build from master",
+	"  --force, -f   Skip the confirmation prompt",
+	"  --dry-run     Check Kimchi self-updates without installing",
+].join("\n")
+
+const UPDATE_FLAGS = new Set([
+	"--help",
+	"-h",
+	"--force",
+	"-f",
+	"--dry-run",
+	"--canary",
+	"--self",
+	"--extensions",
+	"--extension",
+])
+
+const UPDATE_BOOLEAN_FLAGS = ["force", "dry-run", "canary", "self", "extensions"] as const
+
 function parseFlags(args: string[]): UpdateFlags | string {
+	const unsupported = findUnsupportedUpdateFlag(args)
+	if (unsupported) return `unknown flag: ${unsupported}`
+
+	const parsed = parsePiArgs(args.map((arg) => (arg === "-f" ? "--force" : arg)))
+	if (parsed.help) return UPDATE_USAGE
+
+	const diagnostic = parsed.diagnostics.find((entry) => entry.type === "error")
+	if (diagnostic) return diagnostic.message
+
+	const messages = [...parsed.messages]
 	const flags = { force: false, dryRun: false, canary: false }
 	let self = false
 	let extensions = false
-	let positional: string | undefined
-	let packageSource: string | undefined
 
-	for (let index = 0; index < args.length; index++) {
-		const a = args[index]
-		if (a === "--force" || a === "-f") flags.force = true
-		else if (a === "--dry-run") flags.dryRun = true
-		else if (a === "--canary") flags.canary = true
-		else if (a === "--self") self = true
-		else if (a === "--extensions") extensions = true
-		else if (a === "--extension") {
-			const value = args[index + 1]
-			if (!value || value.startsWith("-")) return "missing value for --extension"
-			if (packageSource) return "--extension can only be provided once"
-			packageSource = value
-			index++
-		} else if (a === "--help" || a === "-h") {
-			return [
-				"Usage: kimchi update [source|self|pi] [--self] [--extensions] [--extension <source>] [--canary] [--force] [--dry-run]",
-				"",
-				"  source        Update one installed Pi package, e.g. context-mode or npm:context-mode",
-				"  self, pi      Update Kimchi itself only",
-				"  --self        Update Kimchi itself only",
-				"  --extensions  Update installed Pi packages only",
-				"  --extension   Update one installed Pi package by source or display name",
-				"  --canary      Install the latest canary build from master",
-				"  --force, -f   Skip the confirmation prompt",
-				"  --dry-run     Check Kimchi self-updates without installing",
-			].join("\n")
-		} else if (a.startsWith("-")) return `unknown flag: ${a}`
-		else if (!positional) positional = a
-		else return `unexpected argument: ${a}`
+	for (const flag of UPDATE_BOOLEAN_FLAGS) {
+		const enabled = readUpdateBooleanFlag(parsed.unknownFlags, flag, messages, args)
+		if (typeof enabled === "string") return enabled
+		if (!enabled) continue
+		if (flag === "force") flags.force = true
+		else if (flag === "dry-run") flags.dryRun = true
+		else if (flag === "canary") flags.canary = true
+		else if (flag === "self") self = true
+		else if (flag === "extensions") extensions = true
 	}
+
+	const extensionValues = [...(parsed.extensions ?? [])]
+	const extensionEqualsValue = parsed.unknownFlags.get("extension")
+	if (typeof extensionEqualsValue === "string") extensionValues.push(extensionEqualsValue)
+	else if (extensionEqualsValue === true) return "missing value for --extension"
+	if (extensionValues.length > 1) return "--extension can only be provided once"
+	let packageSource = extensionValues[0]
+	if (packageSource?.startsWith("-")) return "missing value for --extension"
+
+	if (messages.length > 1) return `unexpected argument: ${messages[1]}`
+	const positional = messages[0]
 
 	if (packageSource && positional) return "--extension cannot be combined with a positional source"
 	if (packageSource && (self || extensions)) return "--extension cannot be combined with --self or --extensions"
@@ -66,6 +97,29 @@ function parseFlags(args: string[]): UpdateFlags | string {
 	const target: UpdateFlags["target"] =
 		flags.canary || flags.dryRun || (self && !extensions) ? "self" : packageTarget && !self ? "packages" : "all"
 	return { ...flags, target, packageSource }
+}
+
+function findUnsupportedUpdateFlag(args: string[]): string | undefined {
+	for (const arg of args) {
+		if (!arg.startsWith("-")) continue
+		const flag = arg.startsWith("--") ? arg.slice(0, arg.indexOf("=") === -1 ? undefined : arg.indexOf("=")) : arg
+		if (!UPDATE_FLAGS.has(flag)) return flag
+	}
+}
+
+function readUpdateBooleanFlag(
+	unknownFlags: Map<string, boolean | string>,
+	name: (typeof UPDATE_BOOLEAN_FLAGS)[number],
+	messages: string[],
+	args: string[],
+): boolean | string {
+	const value = unknownFlags.get(name)
+	if (value === undefined) return false
+	const flag = `--${name}`
+	if (typeof value !== "string") return true
+	if (args.some((arg) => arg.startsWith(`${flag}=`))) return `${flag} does not take a value`
+	messages.push(value)
+	return true
 }
 
 /**

@@ -15,17 +15,21 @@ const packageUpdateMock = vi.fn(async (_source?: string): Promise<void> => {})
 const setProgressCallbackMock = vi.fn()
 const settingsManagerCreateMock = vi.fn((_cwd: unknown, _agentDir: unknown) => ({}))
 
-vi.mock("@earendil-works/pi-coding-agent", () => ({
-	getAgentDir: () => "/agent",
-	SettingsManager: {
-		create: (cwd: unknown, agentDir: unknown) => settingsManagerCreateMock(cwd, agentDir),
-	},
-	DefaultPackageManager: vi.fn().mockImplementation(() => ({
-		listConfiguredPackages: listConfiguredPackagesMock,
-		setProgressCallback: setProgressCallbackMock,
-		update: packageUpdateMock,
-	})),
-}))
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()
+	return {
+		...actual,
+		getAgentDir: () => "/agent",
+		SettingsManager: {
+			create: (cwd: unknown, agentDir: unknown) => settingsManagerCreateMock(cwd, agentDir),
+		},
+		DefaultPackageManager: vi.fn().mockImplementation(() => ({
+			listConfiguredPackages: listConfiguredPackagesMock,
+			setProgressCallback: setProgressCallbackMock,
+			update: packageUpdateMock,
+		})),
+	}
+})
 vi.mock("../update/paths.js", () => ({
 	isHomebrewInstall: () => isHomebrewInstallMock(),
 }))
@@ -75,6 +79,32 @@ describe("runUpdate flag parsing", () => {
 		const code = await runUpdate(["--bogus"])
 		expect(code).toBe(2)
 		expect(errSpy).toHaveBeenCalled()
+	})
+
+	it("rejects global Pi flags that are not valid for update", async () => {
+		const code = await runUpdate(["--model", "kimchi-dev/kimi-k2.6"])
+		expect(code).toBe(2)
+		expect(errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")).toContain("unknown flag: --model")
+	})
+
+	it("keeps -f as an alias for --force", async () => {
+		checkForUpdateMock.mockResolvedValue({
+			hasUpdate: true,
+			latestVersion: "0.0.24",
+			tag: "v0.0.24",
+		})
+		applyUpdateMock.mockResolvedValue(undefined)
+
+		const code = await runUpdate(["self", "-f"])
+
+		expect(code).toBe(0)
+		expect(applyUpdateMock).toHaveBeenCalledWith({ tag: "v0.0.24" })
+	})
+
+	it("rejects --extension when the next token is another flag", async () => {
+		const code = await runUpdate(["--extension", "--force"])
+		expect(code).toBe(2)
+		expect(errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")).toContain("missing value for --extension")
 	})
 
 	it("rejects conflicting package selectors", async () => {
