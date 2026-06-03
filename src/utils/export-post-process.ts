@@ -2,6 +2,24 @@ import { readFileSync, writeFileSync } from "node:fs"
 import { getVersion } from "../utils.js"
 import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./trace-id-export.js"
 
+/** Escape HTML metacharacters so a string can be safely interpolated into HTML. */
+export function escapeHtml(text: string): string {
+	return text
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;")
+}
+
+/** Append a snippet before `</body>` if present, otherwise append to the end of the document. */
+export function appendBeforeBody(html: string, snippet: string): string {
+	if (html.includes("</body>")) {
+		return html.replace("</body>", `${snippet}\n</body>`)
+	}
+	return `${html}\n${snippet}\n`
+}
+
 export function postProcessJsonlExport(filePath: string): void {
 	const raw = readFileSync(filePath, "utf-8")
 	const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0)
@@ -73,14 +91,14 @@ export function postProcessHtmlExport(filePath: string): void {
     } else { inject(); }
 })();
 </script>`
-		html = html.replace("</body>", `${traceIdScript}\n</body>`)
+		html = appendBeforeBody(html, traceIdScript)
 	}
 
 	// Inject version footer before </body> (idempotent).
 	if (!html.includes('id="kimchi-export-version"')) {
-		const version = getVersion()
+		const version = escapeHtml(getVersion())
 		const footer = `<div id="kimchi-export-version" style="font-size:0.75rem;color:var(--muted);padding:1rem;text-align:center;font-family:monospace">${version}</div>`
-		html = html.replace("</body>", `${footer}\n</body>`)
+		html = appendBeforeBody(html, footer)
 	}
 
 	writeFileSync(filePath, html, "utf-8")
