@@ -29,7 +29,9 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 			update: packageUpdateMock,
 		})),
 	}
-})const ensureSuperpowersInstalledMock = vi.fn()
+})
+
+const ensureSuperpowersInstalledMock = vi.fn()
 
 vi.mock("../update/paths.js", () => ({
 	isHomebrewInstall: () => isHomebrewInstallMock(),
