@@ -5,6 +5,14 @@ import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessage
 import { handleSessionShutdown, handleSessionStart } from "./handlers/session.js"
 import { handleToolExecutionEnd, handleToolExecutionStart } from "./handlers/tools.js"
 import { SessionContext } from "./session-context.js"
+import {
+	type SurveyAnsweredTelemetry,
+	type SurveyDismissedTelemetry,
+	type SurveyShownTelemetry,
+	emitSurveyAnswered,
+	emitSurveyDismissed,
+	emitSurveyShown,
+} from "./survey.js"
 
 let _ctx: SessionContext | undefined
 let _telemetryConfig: TelemetryConfig = { enabled: false, endpoint: "", metricsEndpoint: "", headers: {}, apiKey: "" }
@@ -14,6 +22,21 @@ export { _telemetryConfig }
 export async function trackSubagentSpawned(args: { id: string; type: string; description: string }): Promise<void> {
 	if (!_ctx || !_telemetryConfig.enabled || !_telemetryConfig.endpoint) return
 	_ctx.emit("subagent.spawned", { model: _ctx.currentModel, agent_type: args.type, reason: args.description })
+}
+
+export function trackSurveyShown(args: SurveyShownTelemetry): void {
+	if (!_ctx || !_telemetryConfig.enabled || !_telemetryConfig.endpoint) return
+	emitSurveyShown(_ctx, args)
+}
+
+export function trackSurveyAnswered(args: SurveyAnsweredTelemetry): void {
+	if (!_ctx || !_telemetryConfig.enabled || !_telemetryConfig.endpoint) return
+	emitSurveyAnswered(_ctx, args)
+}
+
+export function trackSurveyDismissed(args: SurveyDismissedTelemetry): void {
+	if (!_ctx || !_telemetryConfig.enabled || !_telemetryConfig.endpoint) return
+	emitSurveyDismissed(_ctx, args)
 }
 
 export default function telemetryExtension(config: TelemetryConfig) {
@@ -43,18 +66,19 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.on("tool_execution_start", async (event) =>
 			handleToolExecutionStart(ctx, event as { toolCallId: string; toolName: string; args: unknown }),
 		)
-		pi.on("tool_execution_end", async (event) =>
-			handleToolExecutionEnd(ctx, event as { toolCallId: string; isError?: boolean; result?: unknown }),
-		)
+		pi.on("tool_execution_end", async (event) => {
+			handleToolExecutionEnd(ctx, event as { toolCallId: string; isError?: boolean; result?: unknown })
+		})
 		pi.on("before_agent_start", async (event, extCtx) => {
 			if (ctx.currentModel === "unknown") {
 				const modelId = (extCtx as { model?: { id?: string } } | undefined)?.model?.id
 				if (modelId) ctx.currentModel = modelId
 			}
-			handleBeforeAgentStart(ctx, event as { prompt: string })
+			const e = event as { prompt: string }
+			handleBeforeAgentStart(ctx, e)
 		})
-		pi.on("agent_end", async (event) =>
-			handleAgentEnd(ctx, event as { messages?: { role?: string; content?: unknown[] }[] }),
-		)
+		pi.on("agent_end", async (event) => {
+			handleAgentEnd(ctx, event as { messages?: { role?: string; content?: unknown[] }[] })
+		})
 	}
 }

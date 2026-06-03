@@ -201,7 +201,7 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 		}
 	})
 
-	pi.on("agent_end", async () => {
+	pi.on("agent_end", async (event, ctx) => {
 		const grandTotal: UsageTotals = {
 			input: orchestrator.input + subagents.input,
 			output: orchestrator.output + subagents.output,
@@ -227,22 +227,32 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 			extras: extras.length > 0 ? extras : undefined,
 		}
 
-		// Defer so the agent event loop finishes and isStreaming resets to false
-		// before sendMessage is called — otherwise it gets queued as a steer message
-		// and only appears after the next user prompt.
-		await new Promise((resolve) => setTimeout(resolve, 0))
-
-		pi.sendMessage(
-			{
-				customType: "prompt-summary",
-				// Wrap in a tag so the LLM treats this as a system annotation, not user input.
-				// All custom messages are transformed to role:"user" by pi-mono, so without
-				// this the model interprets "Prompt summary (Xs)" as something the user typed.
-				content: [{ type: "text", text: `<system-annotation>Prompt summary (${data.elapsed})</system-annotation>` }],
-				display: true,
-				details: data,
-			},
-			{ triggerTurn: false },
-		)
+		// Poll until the agent is idle before sending — a plain setTimeout(0)
+		// is not enough because isStreaming can still be true when agent_end fires,
+		// causing sendMessage to take the steer path and trigger a new LLM turn.
+		let attempts = 0
+		const MAX_ATTEMPTS = 100 // 5s max
+		const trySend = () => {
+			if (ctx?.isIdle() === false && attempts++ < MAX_ATTEMPTS) {
+				setTimeout(trySend, 50)
+				return
+			}
+			try {
+				pi.sendMessage(
+					{
+						customType: "prompt-summary",
+						content: [
+							{ type: "text", text: `<system-annotation>Prompt summary (${data.elapsed})</system-annotation>` },
+						],
+						display: true,
+						details: data,
+					},
+					{ triggerTurn: false },
+				)
+			} catch (err) {
+				console.error("[prompt-summary] Failed to send:", err)
+			}
+		}
+		trySend()
 	})
 }

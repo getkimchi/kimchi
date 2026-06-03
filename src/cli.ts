@@ -36,6 +36,7 @@ import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
+import llmResponseLogExtension from "./extensions/llm-response-log.js"
 import loginExtension from "./extensions/login/index.js"
 import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
 import loopGuardExtension from "./extensions/loop-guard.js"
@@ -55,10 +56,12 @@ import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import stripImagesExtension from "./extensions/strip-images.js"
+import surveysExtension from "./extensions/surveys/index.js"
 import systemNotifyExtension from "./extensions/system-notify.js"
 import tagsExtension from "./extensions/tags.js"
 import telemetryExtension from "./extensions/telemetry/index.js"
 import { drain as drainPreSessionTelemetry, sendPreSessionEvent } from "./extensions/telemetry/pre-session.js"
+import teleportExtension from "./extensions/teleport/index.js"
 import terminalColorsExtension from "./extensions/terminal-colors.js"
 import { probeKittyKeyboardSupport } from "./extensions/terminal-compat/keyboard-capability.js"
 import { emitTerminalCompatWarning } from "./extensions/terminal-compat/startup-warning.js"
@@ -71,7 +74,6 @@ import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { injectExperimentalProvider, isTransientModelsError, updateModelsConfig } from "./models.js"
-import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./modes/teleport/sync/session-export.js"
 import resourcesExtension from "./resources/extension.js"
 import { type ManagedExtensionFactory, enabledExtensionFactories } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
@@ -80,6 +82,7 @@ import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
 import { getVersion } from "./utils.js"
+import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./utils/trace-id-export.js"
 
 installCloudflare524RetryPatch()
 
@@ -113,7 +116,6 @@ let sessionStarted = false
 // at module load, before anything else runs.
 const cliMode = getCliModeArg(process.argv.slice(2))
 const acpMode = cliMode === "acp"
-const teleportMode = isTeleportFlag(process.argv.slice(2))
 
 // Monkey-patch AgentSession.prototype.exportToJsonl so ALL JSONL exports
 // (interactive, ACP, and teleport mode) get trace IDs injected inline.
@@ -148,7 +150,7 @@ const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
 			const json = Buffer.from(base64, "base64").toString("utf-8")
 			const data = JSON.parse(json) as Record<string, unknown>
 			if (Array.isArray(data.entries)) {
-				injectTraceIdsIntoEntries(data.entries as import("./modes/teleport/sync/session-export.js").ExportEntry[])
+				injectTraceIdsIntoEntries(data.entries as import("./utils/trace-id-export.js").ExportEntry[])
 				const modified = JSON.stringify(data)
 				const modifiedBase64 = Buffer.from(modified).toString("base64")
 				html = html.replace(
@@ -235,13 +237,6 @@ function sessionIdCaptureExtension(pi: ExtensionAPI) {
 			// ignore — exit handler falls back to --continue
 		}
 	})
-}
-
-function isTeleportFlag(args: string[]): boolean {
-	for (const a of args) {
-		if (a === "--teleport") return true
-	}
-	return false
 }
 
 try {
@@ -522,7 +517,9 @@ try {
 			helpExtension,
 			reportBugExtension,
 			tagsExtension,
+			teleportExtension,
 			telemetryExtension(telemetryConfig),
+			surveysExtension(),
 			toolRenderingExtension,
 			toolGroupingExtension,
 			...enabledExtensionFactories([
@@ -533,6 +530,7 @@ try {
 			modelGuardExtension,
 			stripImagesExtension,
 			traceIdExtension,
+			llmResponseLogExtension,
 			activityExtension,
 			systemNotifyExtension,
 		]
@@ -540,20 +538,6 @@ try {
 		if (acpMode) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
 			await runAcpMode({ extensionFactories, agentDir })
-		} else if (teleportMode) {
-			if (!currentApiKey) {
-				console.error("Error: --teleport requires an API key — run 'kimchi setup' first.")
-				await drainPreSessionTelemetry()
-				process.exit(1)
-			}
-
-			const { runTeleportSession } = await import("./modes/teleport/run-interactive-teleport.js")
-			await runTeleportSession({
-				extensionFactories,
-				agentDir,
-				apiKey: currentApiKey,
-				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
-			})
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
 			const { main } = await import("@earendil-works/pi-coding-agent")
