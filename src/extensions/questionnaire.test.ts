@@ -9,6 +9,12 @@ describe("normalizeQuestionType", () => {
 		expect(normalizeQuestionType("text")).toBe("text")
 		expect(normalizeQuestionType("confirm")).toBe("confirm")
 	})
+
+	it("throws on unknown strings instead of defaulting to single (no aliases)", () => {
+		expect(() => normalizeQuestionType("radio")).toThrow(/Unknown question type/)
+		expect(() => normalizeQuestionType("checkbox")).toThrow(/Unknown question type/)
+		expect(() => normalizeQuestionType("")).toThrow(/Unknown question type/)
+	})
 })
 
 describe("formatAnswerText", () => {

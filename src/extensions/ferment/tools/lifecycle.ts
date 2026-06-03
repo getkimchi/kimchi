@@ -20,12 +20,17 @@ import { normalizeFermentTitle } from "../../../ferment/title.js"
 import {
 	DEFAULT_SCOPING_QUESTION_TYPE,
 	type Grade,
-	SCOPING_QUESTION_TYPES,
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
 import { isUserChosenYolo } from "../../permissions/index.js"
-import { askUser, askUserForm } from "../ask-user.js"
+import {
+	type AskUserQuestion,
+	askUser,
+	askUserForm,
+	normalizeAskUserQuestions,
+	toScopingQuestionType,
+} from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
 import { startFermentForIntent } from "../commands.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
@@ -288,6 +293,23 @@ function normalizeQuestions(value: ProposeScopingArgs["questions"]): ScopingQues
 			questions.push({ id: q.id, text, type })
 			continue
 		}
+		// confirm (mapped to radio) is always Yes/No and must not carry options.
+		// Reject supplied options rather than silently rewriting them.
+		if (questionType.isConfirm) {
+			if (q.options !== undefined && (!Array.isArray(q.options) || q.options.length > 0)) {
+				return `questions.${questionIndex}.options must be omitted for confirm questions — confirm is always Yes/No.`
+			}
+			questions.push({
+				id: q.id,
+				text,
+				type,
+				options: [
+					{ id: "yes", label: "Yes" },
+					{ id: "no", label: "No" },
+				],
+			})
+			continue
+		}
 		if (!Array.isArray(q.options)) return `questions.${questionIndex}.options must be an array for ${type} questions.`
 		if (q.options.length < 2 || q.options.length > 5) {
 			return `questions.${questionIndex}.options must contain 2-5 options.`
@@ -319,14 +341,21 @@ function getScopingQuestionType(question: ScopingQuestion): ScopingQuestionType 
 	return question.type ?? DEFAULT_SCOPING_QUESTION_TYPE
 }
 
+/** The one agent-facing scoping question vocabulary — no radio/checkbox aliases.
+ *  Kept identical to ask_user. */
+const SCOPING_QUESTION_TYPE_INPUTS = ["single", "multi", "text", "confirm"] as const
+
 function normalizeScopingQuestionType(
 	value: unknown,
-): { ok: true; type: ScopingQuestionType } | { ok: false; error: string } {
-	if (value === undefined) return { ok: true, type: DEFAULT_SCOPING_QUESTION_TYPE }
-	if (typeof value === "string" && SCOPING_QUESTION_TYPES.includes(value as ScopingQuestionType)) {
-		return { ok: true, type: value as ScopingQuestionType }
+): { ok: true; type: ScopingQuestionType; isConfirm: boolean } | { ok: false; error: string } {
+	if (value === undefined) return { ok: true, type: DEFAULT_SCOPING_QUESTION_TYPE, isConfirm: false }
+	if (
+		typeof value !== "string" ||
+		!SCOPING_QUESTION_TYPE_INPUTS.includes(value.toLowerCase() as (typeof SCOPING_QUESTION_TYPE_INPUTS)[number])
+	) {
+		return { ok: false, error: `must be ${SCOPING_QUESTION_TYPE_INPUTS.join(", ")}.` }
 	}
-	return { ok: false, error: `must be ${SCOPING_QUESTION_TYPES.join(", ")}.` }
+	return { ok: true, ...toScopingQuestionType(value) }
 }
 
 function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizeProposeScopingResult {
@@ -714,7 +743,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: FERMENT_TOOLS.PROPOSE_SCOPING,
 		label: "Propose Scoping",
-		description: `Emit the full scoping draft: title, goal, success_criteria (array of acceptance criteria), constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one checkbox question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
+		description: `Emit the full scoping draft: title, goal, success_criteria (array of acceptance criteria), constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one multi question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
@@ -1078,17 +1107,17 @@ Hard contract: in one-shot mode, if the judge is unreachable (no API key, timeou
 
 The agent should:
   1. Frame the question concretely. The user/judge sees only the question plus options/context in this call.
-  2. Prefer questions[] for the full TUI: radio, checkbox, text; allowOther enables a custom free-text option.
+  2. Prefer questions[] for the full TUI: single, multi, text, confirm; allowOther enables a custom free-text option.
   3. Use response_type="single" | "multi" | "text" only as a compatibility shorthand for one question.
-  4. For radio/checkbox, provide stable snake-case option ids and short labels.
+  4. For single/multi, provide stable snake-case option ids and short labels (confirm defaults to Yes/No).
   5. Include "pause" or "abandon" as an explicit option when one is appropriate — the judge prefers these when uncertain.
   6. Act on the returned \`answers\`, \`choice\`, \`choices\`, or \`text\` field.
 
 TUI controls for questions[]:
   - Tab / Shift+Tab moves between questions
   - Up/Down navigates options
-  - Space toggles checkboxes
-  - Enter selects radio / submits text / advances
+  - Space toggles multi-select options
+  - Enter selects an option / submits text / advances
   - Esc cancels
 
 Returns structured answer fields on success, or a tool error if no audience can be reached.`,
@@ -1104,12 +1133,17 @@ Returns structured answer fields on success, or a tool error if no audience can 
 				ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined,
 				runtime,
 			}
-			const response =
-				params.questions && params.questions.length > 0
-					? await askUserForm(params.title ?? params.question, params.description, params.questions, askContext)
-					: params.question
-						? await askUser(params.question, params.options ?? [], askContext, params.response_type ?? "single")
-						: undefined
+			let normalizedQuestions: AskUserQuestion[] | undefined
+			if (params.questions && params.questions.length > 0) {
+				const normalizeResult = normalizeAskUserQuestions(params.questions)
+				if (!normalizeResult.ok) return toolErr(normalizeResult.error)
+				normalizedQuestions = normalizeResult.questions
+			}
+			const response = normalizedQuestions
+				? await askUserForm(params.title ?? params.question, params.description, normalizedQuestions, askContext)
+				: params.question
+					? await askUser(params.question, params.options ?? [], askContext, params.response_type ?? "single")
+					: undefined
 
 			if (!response) {
 				return toolErr("ask_user requires either question or questions[].")

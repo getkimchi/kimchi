@@ -1,7 +1,15 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import type { Ferment } from "../../ferment/types.js"
-import { type AskUserOption, askJudge, askJudgeForm, askUser, askUserForm } from "./ask-user.js"
+import {
+	type AskUserOption,
+	askJudge,
+	askJudgeForm,
+	askUser,
+	askUserForm,
+	normalizeAskUserQuestions,
+	toScopingQuestionType,
+} from "./ask-user.js"
 import type { JudgeApiResult } from "./judge.js"
 
 function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
@@ -206,6 +214,66 @@ describe("askUser routing", () => {
 				labels: ["Tests", "custom answer"],
 			},
 		])
+	})
+})
+
+describe("toScopingQuestionType", () => {
+	it("maps the one agent vocabulary onto the internal radio/checkbox/text types", () => {
+		expect(toScopingQuestionType("single")).toEqual({ type: "radio", isConfirm: false })
+		expect(toScopingQuestionType("multi")).toEqual({ type: "checkbox", isConfirm: false })
+		expect(toScopingQuestionType("text")).toEqual({ type: "text", isConfirm: false })
+		expect(toScopingQuestionType("confirm")).toEqual({ type: "radio", isConfirm: true })
+	})
+
+	it("defaults to single (radio) only for omitted input", () => {
+		expect(toScopingQuestionType(undefined)).toEqual({ type: "radio", isConfirm: false })
+	})
+
+	it("throws on unknown strings instead of silently defaulting (no aliases)", () => {
+		expect(() => toScopingQuestionType("radio")).toThrow(/Unknown question type/)
+		expect(() => toScopingQuestionType("checkbox")).toThrow(/Unknown question type/)
+		expect(() => toScopingQuestionType("bogus")).toThrow(/Unknown question type/)
+	})
+})
+
+describe("normalizeAskUserQuestions", () => {
+	it("maps the agent vocabulary onto ask_user's internal radio/checkbox/text types (LLM-1928)", () => {
+		const result = normalizeAskUserQuestions([
+			{ id: "a", type: "single", prompt: "One?", options: [{ id: "x", label: "X" }] },
+			{ id: "b", type: "multi", prompt: "Many?", options: [{ id: "y", label: "Y" }] },
+			{ id: "c", type: "text", prompt: "Free?" },
+		])
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.questions.map((q) => q.type)).toEqual(["radio", "checkbox", "text"])
+	})
+
+	it("renders confirm as a Yes/No radio when no options are supplied", () => {
+		const result = normalizeAskUserQuestions([{ id: "ok", type: "confirm", prompt: "Proceed?" }])
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.questions[0]?.type).toBe("radio")
+		expect(result.questions[0]?.options).toEqual([
+			{ id: "yes", label: "Yes" },
+			{ id: "no", label: "No" },
+		])
+	})
+
+	it("rejects confirm questions that carry options instead of silently rewriting them", () => {
+		const result = normalizeAskUserQuestions([
+			{
+				id: "ok",
+				type: "confirm",
+				prompt: "Proceed?",
+				options: [
+					{ id: "ship", label: "Ship it" },
+					{ id: "hold", label: "Hold" },
+				],
+			},
+		])
+		expect(result.ok).toBe(false)
+		if (result.ok) return
+		expect(result.error).toContain("confirm")
 	})
 })
 

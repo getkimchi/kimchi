@@ -16,24 +16,11 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { Input, Key, Text, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { Text, truncateToWidth } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
 
-import {
-	type Answer,
-	type Question,
-	type QuestionType,
-	type QuestionnaireEffect,
-	type QuestionnaireEvent,
-	type QuestionnaireState,
-	type RenderOption,
-	allRequiredAnswered,
-	currentOptions,
-	currentQuestion,
-	initialState,
-	isSubmitTab,
-	reduce,
-} from "./questionnaire-reducer.js"
+import { createQuestionForm } from "./questionnaire-form.js"
+import type { Answer, Question, QuestionType } from "./questionnaire-reducer.js"
 
 export type { Answer, Question }
 
@@ -64,8 +51,8 @@ const QuestionSchema = Type.Object({
 	type: Type.Optional(
 		Type.String({
 			description:
-				"Question type. Must be 'single' (one choice, default), 'multi' (multiple choices), 'text' (free-text), or 'confirm' (yes/no). Aliases 'radio' and 'checkbox' are also accepted.",
-			pattern: "^(single|multi|text|confirm|radio|checkbox)$",
+				"Question type. Must be 'single' (one choice, default), 'multi' (multiple choices), 'text' (free-text), or 'confirm' (yes/no).",
+			pattern: "^(single|multi|text|confirm)$",
 		}),
 	),
 	options: Type.Optional(
@@ -89,17 +76,23 @@ const QuestionnaireParams = Type.Object({
 
 export type QuestionnaireQuestionTypeInput = string
 
+/** Normalize an agent-supplied question type to the canonical vocabulary.
+ *  Only an omitted (undefined) type defaults to "single"; any other string must
+ *  be one of single|multi|text|confirm (case-insensitive). Unknown strings throw
+ *  rather than silently becoming "single" — there is one vocabulary, no aliases.
+ *  Normal tool calls never reach the throw because the TypeBox pattern rejects
+ *  bad types first; it guards direct/internal callers that bypass the schema. */
 export function normalizeQuestionType(type: string | undefined): QuestionType {
-	if (!type) return "single"
-	const aliases: Record<string, QuestionType> = {
+	if (type === undefined) return "single"
+	const canonical: Record<string, QuestionType> = {
 		single: "single",
-		radio: "single",
 		multi: "multi",
-		checkbox: "multi",
 		text: "text",
 		confirm: "confirm",
 	}
-	return aliases[type.toLowerCase()] ?? "single"
+	const mapped = canonical[type.toLowerCase()]
+	if (!mapped) throw new Error(`Unknown question type: "${type}". Expected single, multi, text, or confirm.`)
+	return mapped
 }
 
 function errorResult(
@@ -203,266 +196,9 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				)
 			}
 
-			const isMulti = questions.length > 1
-
-			const result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) => {
-				// ── State ──
-				let state: QuestionnaireState = initialState(questions)
-				let cachedLines: string[] | undefined
-				let cachedWidth = 0
-
-				const editor = new Input()
-				editor.focused = true
-
-				// ── Effects & dispatch ──
-				function applyEffects(effects: QuestionnaireEffect[]): void {
-					for (const eff of effects) {
-						switch (eff.kind) {
-							case "render":
-								cachedLines = undefined
-								tui.requestRender()
-								break
-							case "editor-set-text":
-								editor.setValue(eff.text)
-								break
-							case "editor-handle-input":
-								editor.handleInput(eff.data)
-								break
-							case "done":
-								done({ questions, answers: Array.from(state.answers.values()), cancelled: eff.cancelled })
-								break
-						}
-					}
-				}
-
-				function dispatch(event: QuestionnaireEvent): void {
-					const result = reduce(state, event)
-					state = result.state
-					applyEffects(result.effects)
-				}
-
-				// ── Text input wiring ──
-				editor.onSubmit = (value: string) => dispatch({ kind: "editor-submit", value })
-
-				// ── Input handling (pure key→event mapper) ──
-				function handleInput(data: string): void {
-					if (state.inputMode) {
-						if (matchesKey(data, Key.escape)) {
-							dispatch({ kind: "key-escape" })
-							return
-						}
-						// Forward everything else directly to the live editor and re-render.
-						editor.handleInput(data)
-						cachedLines = undefined
-						tui.requestRender()
-						return
-					}
-
-					if (matchesKey(data, Key.up)) {
-						dispatch({ kind: "key-up" })
-						return
-					}
-					if (matchesKey(data, Key.down)) {
-						dispatch({ kind: "key-down" })
-						return
-					}
-					if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) {
-						dispatch({ kind: "key-right" })
-						return
-					}
-					if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left)) {
-						dispatch({ kind: "key-left" })
-						return
-					}
-					if (matchesKey(data, Key.enter)) {
-						dispatch({ kind: "key-enter" })
-						return
-					}
-					if (matchesKey(data, Key.escape)) {
-						dispatch({ kind: "key-escape" })
-						return
-					}
-					if (data === " ") {
-						dispatch({ kind: "key-space" })
-						return
-					}
-					if (data.length === 1 && data >= " ") {
-						dispatch({ kind: "char-typed", char: data })
-						return
-					}
-				}
-
-				// ── Rendering ──
-				function render(width: number): string[] {
-					if (cachedLines && cachedWidth === width) return cachedLines
-
-					const lines: string[] = []
-					const q = currentQuestion(state)
-					const opts = currentOptions(state)
-
-					const add = (s: string) => {
-						for (const line of wrapTextWithAnsi(s, width)) {
-							lines.push(line)
-						}
-					}
-					add(theme.fg("accent", "\u2500".repeat(width)))
-
-					// Header
-					if (params.header) {
-						add(` ${theme.fg("text", params.header)}`)
-						lines.push("")
-					}
-
-					// Tab bar (multi-question only)
-					if (isMulti) {
-						const tabs: string[] = ["\u2190 "]
-						for (let i = 0; i < questions.length; i++) {
-							const isActive = i === state.currentTab
-							const isAnswered = state.answers.has(questions[i].id)
-							const lbl = questions[i].label
-							const box = isAnswered ? "\u25A0" : "\u25A1"
-							const color = isAnswered ? "success" : "muted"
-							const text = ` ${box} ${lbl} `
-							const styled = isActive ? theme.bg("selectedBg", theme.fg("text", text)) : theme.fg(color, text)
-							tabs.push(`${styled} `)
-						}
-						const canSubmit = allRequiredAnswered(state)
-						const onSubmitTab = isSubmitTab(state)
-						const submitText = " \u2713 Submit "
-						const submitStyled = onSubmitTab
-							? theme.bg("selectedBg", theme.fg("text", submitText))
-							: theme.fg(canSubmit ? "success" : "dim", submitText)
-						tabs.push(`${submitStyled} \u2192`)
-						add(` ${tabs.join("")}`)
-						lines.push("")
-					}
-
-					// Render options list helper
-					function renderOptions(): void {
-						const toggled = q ? (state.multiToggles.get(q.id) ?? new Set()) : new Set()
-						const customText = q ? state.multiCustomText.get(q.id) : undefined
-						for (let i = 0; i < opts.length; i++) {
-							const opt = opts[i]
-							const selected = i === state.optionIndex
-							const isOther = opt.isOther === true
-
-							if (q?.type === "multi") {
-								const checked = toggled.has(i)
-								const box = checked ? "[x]" : "[ ]"
-								const prefix = selected ? theme.fg("accent", "> ") : "  "
-								const color = selected ? "accent" : "text"
-								if (isOther) {
-									const labelText = customText ?? opt.label
-									const suffix =
-										state.inputMode && q.id === state.inputQuestionId ? " \u270E" : customText ? " \u270E" : ""
-									add(`${prefix}${theme.fg(color, `${box} ${i + 1}. ${labelText}${suffix}`)}`)
-								} else {
-									add(`${prefix}${theme.fg(color, `${box} ${i + 1}. ${opt.label}`)}`)
-								}
-							} else {
-								const prefix = selected ? theme.fg("accent", "> ") : "  "
-								const color = selected ? "accent" : "text"
-								if (isOther && state.inputMode) {
-									add(`${prefix}${theme.fg("accent", `${i + 1}. ${opt.label} \u270E`)}`)
-								} else {
-									add(`${prefix}${theme.fg(color, `${i + 1}. ${opt.label}`)}`)
-								}
-							}
-							if (opt.description) {
-								add(`     ${theme.fg("muted", opt.description)}`)
-							}
-						}
-					}
-
-					// Content
-					if (state.inputMode && q) {
-						add(theme.fg("text", ` ${q.prompt}`))
-						lines.push("")
-						if (opts.length > 0) renderOptions()
-						lines.push("")
-						add(theme.fg("muted", " Your answer:"))
-						for (const line of editor.render(width - 2)) {
-							add(` ${line}`)
-						}
-						lines.push("")
-						add(theme.fg("dim", " Enter to submit \u2022 Esc to cancel"))
-					} else if (isSubmitTab(state)) {
-						// Submit tab
-						add(theme.fg("accent", theme.bold(" Ready to submit")))
-						lines.push("")
-						for (const question of questions) {
-							const answer = state.answers.get(question.id)
-							if (answer) {
-								const prefix = answer.wasCustom ? "(wrote) " : ""
-								const display = answer.values ? (answer.labels?.join(", ") ?? answer.label) : prefix + answer.label
-								add(`${theme.fg("muted", ` ${question.label}: `)}${theme.fg("text", display)}`)
-							} else if (!question.required) {
-								add(`${theme.fg("muted", ` ${question.label}: `)}${theme.fg("dim", "(skipped)")}`)
-							}
-						}
-						lines.push("")
-						if (allRequiredAnswered(state)) {
-							add(theme.fg("success", " Press Enter to submit"))
-						} else {
-							const missing = questions
-								.filter((qq) => qq.required && !state.answers.has(qq.id))
-								.map((qq) => qq.label)
-								.join(", ")
-							add(theme.fg("warning", ` Unanswered: ${missing}`))
-						}
-					} else if (q && q.type === "text") {
-						add(theme.fg("text", ` ${q.prompt}`))
-						lines.push("")
-						const existing = state.answers.get(q.id)
-						if (existing) {
-							add(theme.fg("muted", ` Current: ${existing.label}`))
-							lines.push("")
-						}
-						add(theme.fg("dim", " Press Enter or start typing to answer"))
-					} else if (q) {
-						add(theme.fg("text", ` ${q.prompt}`))
-						lines.push("")
-						renderOptions()
-					}
-
-					lines.push("")
-					if (!state.inputMode) {
-						let help: string
-						if (isSubmitTab(state)) {
-							help = isMulti
-								? " Tab/\u2190\u2192 navigate \u2022 Enter submit \u2022 Esc cancel"
-								: " Enter submit \u2022 Esc cancel"
-						} else if (q?.type === "multi") {
-							help = isMulti
-								? " Tab/\u2190\u2192 navigate \u2022 \u2191\u2193 select \u2022 Space toggle \u2022 Enter submit \u2022 Esc cancel"
-								: " \u2191\u2193 navigate \u2022 Space toggle \u2022 Enter submit \u2022 Esc cancel"
-						} else if (q?.type === "text") {
-							help = isMulti
-								? " Tab/\u2190\u2192 navigate \u2022 Type answer \u2022 Enter edit \u2022 Esc cancel"
-								: " Type answer \u2022 Enter edit \u2022 Esc cancel"
-						} else {
-							help = isMulti
-								? " Tab/\u2190\u2192 navigate \u2022 \u2191\u2193 select \u2022 Enter confirm \u2022 Esc cancel"
-								: " \u2191\u2193 navigate \u2022 Enter select \u2022 Esc cancel"
-						}
-						add(theme.fg("dim", help))
-					}
-					add(theme.fg("accent", "\u2500".repeat(width)))
-
-					cachedLines = lines
-					cachedWidth = width
-					return lines
-				}
-
-				return {
-					render,
-					invalidate: () => {
-						cachedLines = undefined
-						cachedWidth = 0
-					},
-					handleInput,
-				}
-			})
+			const result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
+				createQuestionForm(tui, theme, questions, { title: params.header }, done),
+			)
 
 			if (result.cancelled) {
 				return {

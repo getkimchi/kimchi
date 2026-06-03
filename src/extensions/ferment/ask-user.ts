@@ -28,6 +28,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { renderLabeledSuccessCriteria } from "../../ferment/success-criteria.js"
 import type { Ferment, ScopingQuestionType } from "../../ferment/types.js"
+import type { QuestionType } from "../questionnaire-reducer.js"
+import { normalizeQuestionType } from "../questionnaire.js"
 import { type JudgeApiResult, judgeApiCall } from "./judge.js"
 import { promptForm } from "./prompt-ui.js"
 import type { FermentRuntime } from "./runtime.js"
@@ -122,6 +124,73 @@ export interface AskUserContext {
  *  attached, so any question must route to the judge. */
 function isOneShotSession(pi: ExtensionAPI): boolean {
 	return pi.getFlag?.("ferment-oneshot") === true
+}
+
+/** The single agent-facing vocabulary is single/multi/text/confirm (shared with
+ *  the questionnaire tool). Internally the TUI and judge speak radio/checkbox/text,
+ *  so map the agent type onto it. `confirm` is always a Yes/No radio. */
+const SCOPING_TYPE_BY_CANONICAL: Record<QuestionType, AskUserQuestionType> = {
+	single: "radio",
+	multi: "checkbox",
+	text: "text",
+	confirm: "radio",
+}
+
+const YES_NO_OPTIONS: AskUserOption[] = [
+	{ id: "yes", label: "Yes" },
+	{ id: "no", label: "No" },
+]
+
+export interface NormalizedScopingType {
+	/** Internal radio/checkbox/text vocabulary used by the TUI and judge. */
+	type: AskUserQuestionType
+	/** True when the agent asked for a yes/no confirm — callers render it as a
+	 *  Yes/No radio. */
+	isConfirm: boolean
+}
+
+/** Map one agent-facing question type (single/multi/text/confirm) onto the
+ *  internal radio/checkbox/text type. The only accepted words are the four
+ *  canonical ones — there are no radio/checkbox aliases. Delegates to
+ *  `normalizeQuestionType`, so an omitted type defaults to single and any unknown
+ *  string throws rather than silently becoming single. Shared by the `ask_user`
+ *  tool and `propose_ferment_scoping` so every question surface uses one contract. */
+export function toScopingQuestionType(rawType: string | undefined): NormalizedScopingType {
+	const canonical = normalizeQuestionType(rawType)
+	return { type: SCOPING_TYPE_BY_CANONICAL[canonical], isConfirm: canonical === "confirm" }
+}
+
+/** A question as it arrives from the tool schema, before type normalization.
+ *  The agent-facing `type` is single/multi/text/confirm — one vocabulary, no
+ *  aliases — so ask_user and the questionnaire tool present one identical
+ *  contract (the fix for LLM-1928). */
+export interface RawAskUserQuestion extends Omit<AskUserQuestion, "type"> {
+	type?: string
+}
+
+export type NormalizeAskUserResult = { ok: true; questions: AskUserQuestion[] } | { ok: false; error: string }
+
+/** Normalize the agent-facing question type to the internal radio/checkbox/text
+ *  vocabulary. `single`→radio, `multi`→checkbox, `text`→text, and `confirm`→a
+ *  Yes/No radio. `confirm` is always Yes/No and must not carry options; supplying
+ *  them is rejected rather than silently rewritten, so a bad tool call surfaces. */
+export function normalizeAskUserQuestions(questions: ReadonlyArray<RawAskUserQuestion>): NormalizeAskUserResult {
+	const normalized: AskUserQuestion[] = []
+	for (const q of questions) {
+		const { type, isConfirm } = toScopingQuestionType(q.type)
+		if (isConfirm) {
+			if ((q.options?.length ?? 0) > 0) {
+				return {
+					ok: false,
+					error: `Question "${q.id}" is type "confirm" and must not have options — confirm is always Yes/No.`,
+				}
+			}
+			normalized.push({ ...q, type, options: YES_NO_OPTIONS })
+			continue
+		}
+		normalized.push({ ...q, type })
+	}
+	return { ok: true, questions: normalized }
 }
 
 const ASK_USER_SYSTEM = `You are standing in for the user during an autonomous ferment run. A planner agent has reached a decision point it cannot resolve from context alone and is asking the user. There is no human available — you decide.
