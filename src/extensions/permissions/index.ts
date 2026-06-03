@@ -797,7 +797,7 @@ export async function handleCompoundConfirm(
 		}
 
 		if (outcome.kind === "deny-with-feedback") {
-			return { block: true, reason: outcome.feedback }
+			return { block: true, reason: `The user declined this action before execution and said: ${outcome.feedback}` }
 		}
 
 		return { block: true, reason: "Declined by user" }
@@ -822,7 +822,7 @@ function applyApprovalOutcome(
 		return undefined
 	}
 	if (outcome.kind === "deny-with-feedback") {
-		return { block: true, reason: outcome.feedback }
+		return { block: true, reason: `The user declined this action before execution and said: ${outcome.feedback}` }
 	}
 	return { block: true, reason: "Declined by user" }
 }
