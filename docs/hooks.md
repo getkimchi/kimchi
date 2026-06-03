@@ -1,19 +1,17 @@
 # Kimchi Hooks
 
-Kimchi's primary hook surface is Pi-native extension packages. Compatibility formats from other agent CLIs live behind opt-in adapter extensions.
+Kimchi supports Pi-native extension package hooks and user-owned Bash hooks.
 
 ## Native Pi Packages
 
-Use Pi packages when a tool ships a Pi adapter:
+Use Pi packages when a package ships native Pi hooks:
 
 ```bash
-kimchi install npm:context-mode
+kimchi install npm:<package-name>
 kimchi list
 ```
 
-Pi package extensions subscribe to native Pi events such as `tool_call`, `tool_result`, `session_start`, `session_before_compact`, `session_compact`, and `session_shutdown`. Kimchi includes a narrow Pi compatibility shim for package adapters that expect older field names, including `tool_result.output`, `tool_result.params`, and the legacy `before_provider_response` event name.
-
-This is the recommended path for packages like `context-mode`.
+Pi package extensions subscribe to native Pi events such as `tool_call`, `tool_result`, `session_start`, `session_before_compact`, `session_compact`, and `session_shutdown`. Kimchi includes a narrow Pi compatibility shim for packages that expect older field names, including `tool_result.output`, `tool_result.params`, and the legacy `before_provider_response` event name.
 
 ## Core Bash Hooks
 
@@ -185,7 +183,6 @@ kimchi resources disable hooks.rtk-rewrite
 ## References
 
 - Pi packages: `https://pi.dev/packages`
-- Context Mode package: `https://pi.dev/packages/context-mode`
 
 ## Notes
 
@@ -194,5 +191,3 @@ kimchi resources disable hooks.rtk-rewrite
 - Hook output is interpreted as a command rewrite unless it is recognized JSON.
 - Use `/resources` to see discovered hook IDs.
 - Restart is not required for hook enable/disable changes, but adding or removing hook files is easiest to verify by restarting Kimchi.
-- Claude Code hooks: `https://code.claude.com/docs/en/hooks`
-- Codex hooks: `https://developers.openai.com/codex/hooks`
