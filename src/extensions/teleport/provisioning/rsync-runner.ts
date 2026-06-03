@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join, dirname as nodePathDirname, posix } from "node:path"
 
 const posixDirname = posix.dirname
+import { estimateUploadBytes } from "./estimate-bytes.js"
 import { buildProxyCommand } from "./proxy-command.js"
 
 /**
@@ -55,13 +56,52 @@ export interface RsyncOptions {
 	/** Skip the `git ls-files --others --ignored --exclude-standard` step.
 	 *  Only meaningful when `isSourceDirectory` is true. */
 	includeIgnored?: boolean
-	/** Optional progress callback. Fires for each rsync progress2 tick. */
+	/** Precomputed gitignored paths. When set, `runRsync` skips its internal
+	 *  `resolveGitIgnored` call (saving the git ls-files subprocess cost) and
+	 *  uses these paths directly for both the rsync exclude file and the
+	 *  `estimateUploadBytes` denominator. Must match what
+	 *  `resolveGitIgnored(localPath)` would return — caller's responsibility.
+	 *  Ignored when `includeIgnored` is true, or when `filesFrom` is set. */
+	gitignoredPaths?: string[]
+	/** Explicit include list (paths relative to `localPath`, POSIX
+	 *  separators). When set, rsync is invoked with `--files-from <file>`
+	 *  instead of `--exclude-from <file>` and only these files are
+	 *  considered for transfer. Far faster than `--exclude-from` for
+	 *  trees with a huge gitignored set — no per-file pattern matching.
+	 *  Mutually exclusive with `gitignoredPaths` / `excludeGlobs` /
+	 *  `includeIgnored`: when `filesFrom` is set, those are ignored. */
+	filesFrom?: string[]
+	/** Optional progress callback. Fires for each rsync progress tick. Values
+	 *  are per-file (rsync's `--progress` shows current-file bytes/%), not
+	 *  cumulative — use `onCumulativeProgress` (with `precomputeTotal`) for
+	 *  a monotonic total. */
 	onProgress?: (pct: number, bytes: number) => void
-	/** Optional phase callback. Fires once with "mkdir" immediately before the
-	 *  pre-flight ssh mkdir step, and once with "rsync" immediately before the
+	/** Optional cumulative-progress callback. Fires only when `precomputeTotal`
+	 *  is true. Reports bytes transferred across the whole rsync so far, the
+	 *  dry-run-derived total, and the resulting percentage (capped at 99
+	 *  until the rsync exits successfully — then a final tick with pct=100
+	 *  fires). */
+	onCumulativeProgress?: (info: { transferredBytes: number; totalBytes: number; pct: number }) => void
+	/** Precomputed estimated upload bytes. When set together with
+	 *  `precomputeTotal: true`, runRsync skips its internal estimator (no
+	 *  re-walk of the tree, no `onPhase("estimate")` emit) and uses this
+	 *  value directly as the cumulative-progress denominator. */
+	precomputedTotalBytes?: number
+	/** When true, runRsync first walks the local source tree to estimate
+	 *  the total upload size (skipping `PRUNE_DIRS` and any path in the
+	 *  gitignored set), then reports cumulative progress via
+	 *  `onCumulativeProgress` during the real rsync. Local-only — no
+	 *  subprocess, no remote roundtrip. Only meaningful for directory
+	 *  sources transferred up (local → remote); ignored otherwise. If the
+	 *  estimator fails the real rsync still runs but no cumulative
+	 *  progress is reported. */
+	precomputeTotal?: boolean
+	/** Optional phase callback. Fires with "estimate" before the local
+	 *  file-walk estimator (only when `precomputeTotal` is true), "mkdir"
+	 *  before the pre-flight ssh mkdir step, and "rsync" before the real
 	 *  rsync child is spawned. Lets the caller switch status text per step.
 	 */
-	onPhase?: (phase: "mkdir" | "rsync") => void
+	onPhase?: (phase: "estimate" | "mkdir" | "rsync") => void
 	/** Cancellation. Kills the running ssh/rsync children if it fires. */
 	signal?: AbortSignal
 	/** If false, omits the `--delete` flag so the remote keeps pre-existing files. */
@@ -138,6 +178,8 @@ export function buildSshOption(input: BuildSshOptionInput): string {
 	].join(" ")
 }
 
+export type RsyncListMode = { kind: "exclude-from"; file: string } | { kind: "files-from"; file: string }
+
 interface BuildRsyncArgvInput {
 	localPath: string
 	remotePath: string
@@ -145,7 +187,10 @@ interface BuildRsyncArgvInput {
 	remoteUser: string
 	proxyCommand: string
 	knownHostsFile: string
-	excludeFile: string
+	/** Either an `--exclude-from` patterns file or a `--files-from` explicit
+	 *  include list. The runner chooses based on whether the caller supplied
+	 *  an explicit `filesFrom` list. */
+	listMode: RsyncListMode
 	deleteExtraneous?: boolean
 	/** Transfer direction: "up" = local→remote (default), "down" = remote→local. */
 	direction?: "up" | "down"
@@ -160,6 +205,10 @@ interface BuildRsyncArgvInput {
  * ("foo/" copies *contents* of foo, "foo" copies the dir itself) is owned
  * by the caller. For single files, the caller passes the file path directly
  * and rsync handles the file → file or file → dir cases natively.
+ *
+ * `--files-from` mode is far faster than `--exclude-from` for trees with
+ * a huge gitignored set — rsync just walks the supplied list instead of
+ * scanning everything and matching every file against every pattern.
  */
 export function buildRsyncArgv(input: BuildRsyncArgvInput): string[] {
 	const sshOption = buildSshOption({
@@ -170,7 +219,12 @@ export function buildRsyncArgv(input: BuildRsyncArgvInput): string[] {
 	// macOS. The newer `--info=progress2` would give nicer multi-file totals but
 	// errors out on BSD rsync with a usage dump, which is way worse UX.
 	const args: string[] = ["-az", "--progress", "--stats", "--partial"]
-	args.push("--exclude-from", input.excludeFile, "-e", sshOption)
+	if (input.listMode.kind === "files-from") {
+		args.push("--files-from", input.listMode.file)
+	} else {
+		args.push("--exclude-from", input.listMode.file)
+	}
+	args.push("-e", sshOption)
 	if (input.deleteExtraneous !== false) args.push("--delete")
 	if (input.dryRun) args.push("--dry-run")
 
@@ -228,9 +282,16 @@ export function buildExcludeList(opts: {
 }
 
 /**
- * Run `git ls-files --others --ignored --exclude-standard` against `cwd`.
- * Returns the gitignored paths, or an empty array if the directory is not
- * a git repository (git exits non-zero) or git is not installed.
+ * Run `git ls-files --cached --others --ignored --exclude-standard` against
+ * `cwd`. Returns every path git considers ignored — both untracked files
+ * matching `.gitignore` patterns *and* tracked files that nonetheless match
+ * (e.g. files committed before the pattern was added, or force-added via
+ * `git add -f`). Without `--cached`, that second class slips through and
+ * gets rsynced to the sandbox even though the user expects gitignore to
+ * keep them local.
+ *
+ * Returns an empty array if the directory is not a git repository (git
+ * exits non-zero) or git is not installed.
  */
 export async function resolveGitIgnored(
 	cwd: string,
@@ -240,7 +301,7 @@ export async function resolveGitIgnored(
 	return new Promise((resolve) => {
 		let stdout = ""
 		let stderr = ""
-		const child = spawner("git", ["ls-files", "--others", "--ignored", "--exclude-standard"], {
+		const child = spawner("git", ["ls-files", "--cached", "--others", "--ignored", "--exclude-standard"], {
 			cwd,
 			signal,
 			stdio: ["ignore", "pipe", "pipe"],
@@ -282,32 +343,88 @@ export async function runRsync(opts: RsyncOptions): Promise<RsyncResult> {
 	const spawner = opts._spawn ?? spawn
 	const sessionDir = join(tmpdir(), `kimchi-teleport-${randomUUID()}`)
 	const knownHostsFile = join(sessionDir, "known_hosts")
-	const excludeFile = join(sessionDir, "excludes")
 	const dir = opts.direction ?? "up"
 
 	try {
 		await mkdir(sessionDir, { recursive: true })
 		await writeFile(knownHostsFile, "", "utf-8")
 
-		// Base excludes and gitignore filtering only make sense when syncing a
-		// whole directory. For an explicit single-file source the user named
-		// the file by hand — applying excludes could silently skip it (e.g.
-		// `.env` matching BASE_EXCLUDE_GLOBS). Caller-supplied --exclude
-		// patterns are still honored either way since they're explicit intent.
-		let excludeList: string[]
-		if (opts.isSourceDirectory) {
-			const gitignored = opts.includeIgnored ? [] : await resolveGitIgnored(opts.localPath, opts.signal, spawner)
-			excludeList = buildExcludeList({ extras: opts.excludeGlobs, gitignored })
+		// Two list-file modes, mutually exclusive: `--files-from` (explicit
+		// include list, far faster on huge gitignored trees) or
+		// `--exclude-from` (the legacy path used by `/sync`). The caller
+		// picks via the `filesFrom` option.
+		let listMode: RsyncListMode
+		let gitignoredPaths: string[] = []
+		if (opts.filesFrom?.length) {
+			const filesFromFile = join(sessionDir, "files-from")
+			await writeFile(filesFromFile, `${opts.filesFrom.join("\n")}\n`, "utf-8")
+			listMode = { kind: "files-from", file: filesFromFile }
 		} else {
-			excludeList = [...(opts.excludeGlobs ?? [])]
+			// Base excludes and gitignore filtering only make sense when syncing a
+			// whole directory. For an explicit single-file source the user named
+			// the file by hand — applying excludes could silently skip it (e.g.
+			// `.env` matching BASE_EXCLUDE_GLOBS). Caller-supplied --exclude
+			// patterns are still honored either way since they're explicit intent.
+			let excludeList: string[]
+			if (opts.isSourceDirectory) {
+				gitignoredPaths = opts.includeIgnored
+					? []
+					: (opts.gitignoredPaths ?? (await resolveGitIgnored(opts.localPath, opts.signal, spawner)))
+				excludeList = buildExcludeList({ extras: opts.excludeGlobs, gitignored: gitignoredPaths })
+			} else {
+				excludeList = [...(opts.excludeGlobs ?? [])]
+			}
+			const excludeFile = join(sessionDir, "excludes")
+			await writeFile(excludeFile, `${excludeList.join("\n")}\n`, "utf-8")
+			listMode = { kind: "exclude-from", file: excludeFile }
 		}
-		await writeFile(excludeFile, `${excludeList.join("\n")}\n`, "utf-8")
 
 		const env: NodeJS.ProcessEnv = { ...process.env, AUTH_TOKEN: opts.authToken }
 
 		const proxyCommand = opts.proxyCommand ?? buildProxyCommand()
 
-		// 1) Pre-create the destination directory so rsync has somewhere to land.
+		const rsyncArgs = buildRsyncArgv({
+			localPath: opts.localPath,
+			remotePath: opts.remotePath,
+			remoteHost: opts.remoteHost,
+			remoteUser: opts.remoteUser,
+			proxyCommand,
+			knownHostsFile,
+			listMode,
+			deleteExtraneous: opts.deleteExtraneous,
+			direction: dir,
+			dryRun: opts.dryRun,
+		})
+
+		// 1) Optional local-walk pre-pass to estimate the total transfer size.
+		//    Used to drive cumulative progress in the real run. This is a
+		//    fast local heuristic — no remote roundtrip, no rsync subprocess
+		//    — that prunes the same hardcoded noisy dirs as the exclude
+		//    file and additionally subtracts every path in the gitignored
+		//    set we just computed. An estimator failure is non-fatal: we
+		//    fall back to running without cumulative progress.
+		let estimatedTotalBytes = 0
+		if (opts.precomputeTotal && !opts.dryRun && opts.isSourceDirectory && dir === "up") {
+			if (opts.precomputedTotalBytes !== undefined) {
+				estimatedTotalBytes = opts.precomputedTotalBytes
+			} else if (!opts.filesFrom) {
+				// Fallback estimator only applies in `--exclude-from` mode where
+				// the gitignored set is meaningful for the walker. With
+				// `--files-from` the caller has an exact list and is responsible
+				// for precomputing total bytes themselves (otherwise no
+				// cumulative progress will be reported).
+				opts.onPhase?.("estimate")
+				try {
+					estimatedTotalBytes = await estimateUploadBytes(opts.localPath, new Set(gitignoredPaths), opts.signal)
+				} catch {
+					// Swallow; the real run below will still execute. We just lose
+					// the cumulative progress denominator for this teleport.
+					estimatedTotalBytes = 0
+				}
+			}
+		}
+
+		// 2) Pre-create the destination directory so rsync has somewhere to land.
 		//    For directory sources we create the whole target; for single-file
 		//    sources we create the *parent* of the target (rsync will write the
 		//    file itself).
@@ -332,26 +449,20 @@ export async function runRsync(opts: RsyncOptions): Promise<RsyncResult> {
 			})
 		}
 
-		// 2) rsync.
+		// 3) Real rsync. Cumulative tracking only runs when we got a usable
+		//    total from the local estimator.
 		opts.onPhase?.("rsync")
-		const rsyncArgs = buildRsyncArgv({
-			localPath: opts.localPath,
-			remotePath: opts.remotePath,
-			remoteHost: opts.remoteHost,
-			remoteUser: opts.remoteUser,
-			proxyCommand,
-			knownHostsFile,
-			excludeFile,
-			deleteExtraneous: opts.deleteExtraneous,
-			direction: dir,
-			dryRun: opts.dryRun,
-		})
+		const cumulative =
+			estimatedTotalBytes > 0 && opts.onCumulativeProgress
+				? { totalBytes: estimatedTotalBytes, onCumulativeProgress: opts.onCumulativeProgress }
+				: undefined
 		const stats = await runRsyncChild({
 			spawner,
 			args: rsyncArgs,
 			env,
 			signal: opts.signal,
 			onProgress: opts.onProgress,
+			cumulative,
 		})
 
 		return {
@@ -391,17 +502,28 @@ async function runChild(input: RunChildInput): Promise<void> {
 	})
 }
 
+interface CumulativeInput {
+	totalBytes: number
+	onCumulativeProgress: (info: { transferredBytes: number; totalBytes: number; pct: number }) => void
+}
+
 interface RunRsyncChildInput {
 	spawner: typeof spawn
 	args: string[]
 	env: NodeJS.ProcessEnv
 	signal?: AbortSignal
 	onProgress?: (pct: number, bytes: number) => void
+	cumulative?: CumulativeInput
 }
 
 export interface RsyncStats {
 	fileCount: number
 	totalBytes: number
+}
+
+export interface CumulativeState {
+	completedBytes: number
+	currentFileBytes: number
 }
 
 const PROGRESS_LINE = /^\s*([\d,]+)\s+(\d+)%/
@@ -417,6 +539,18 @@ async function runRsyncChild(input: RunRsyncChildInput): Promise<RsyncStats> {
 		let stderr = ""
 		let buf = ""
 		const stats: RsyncStats = { fileCount: 0, totalBytes: 0 }
+		const cumState: CumulativeState = { completedBytes: 0, currentFileBytes: 0 }
+		const cum = input.cumulative
+		const onLine = (line: string) => {
+			handleLine(line, stats, input.onProgress)
+			if (cum) {
+				if (trackCumulative(line, cumState)) {
+					const transferred = cumState.completedBytes + cumState.currentFileBytes
+					const pct = Math.min(99, Math.round((transferred / cum.totalBytes) * 100))
+					cum.onCumulativeProgress({ transferredBytes: transferred, totalBytes: cum.totalBytes, pct })
+				}
+			}
+		}
 		let child: ChildProcess
 		try {
 			child = input.spawner("rsync", input.args, {
@@ -437,13 +571,21 @@ async function runRsyncChild(input: RunRsyncChildInput): Promise<RsyncStats> {
 			buf += chunk.toString("utf-8").replace(/\r(?!\n)/g, "\n")
 			const lines = buf.split("\n")
 			buf = lines.pop() ?? ""
-			for (const line of lines) handleLine(line, stats, input.onProgress)
+			for (const line of lines) onLine(line)
 		})
 		child.on("error", (err) => reject(err))
 		child.on("close", (code) => {
-			if (buf.length > 0) handleLine(buf, stats, input.onProgress)
-			if (code === 0) resolve(stats)
-			else reject(new RsyncError(code ?? -1, stderr))
+			if (buf.length > 0) onLine(buf)
+			if (code === 0) {
+				if (cum) {
+					cum.onCumulativeProgress({
+						transferredBytes: cum.totalBytes,
+						totalBytes: cum.totalBytes,
+						pct: 100,
+					})
+				}
+				resolve(stats)
+			} else reject(new RsyncError(code ?? -1, stderr))
 		})
 	})
 }
@@ -456,6 +598,37 @@ const SUFFIX_MULTIPLIER: Record<string, number> = {
 	G: 1024 ** 3,
 	T: 1024 ** 4,
 	P: 1024 ** 5,
+}
+
+/**
+ * Exported for testing — updates cumulative byte tracking from a single
+ * rsync stdout line. Returns true when the caller should emit a cumulative
+ * progress update.
+ *
+ * File boundary detection is flavor-agnostic: a path line is any non-empty
+ * line that doesn't match `PROGRESS_LINE`. When we see one (and we've
+ * previously accumulated bytes for an in-flight file), the current file is
+ * done and its last reported byte count rolls into `completedBytes`. Stats
+ * lines (which appear after the last transfer) also count as boundaries,
+ * which is fine — the post-boundary state (currentFileBytes=0) prevents
+ * any double-counting from subsequent stats lines.
+ */
+export function trackCumulative(line: string, state: CumulativeState): boolean {
+	const progress = line.match(PROGRESS_LINE)
+	if (progress) {
+		const bytes = Number(progress[1].replace(/,/g, ""))
+		if (!Number.isNaN(bytes)) {
+			state.currentFileBytes = bytes
+			return true
+		}
+		return false
+	}
+	if (line.trim().length > 0 && state.currentFileBytes > 0) {
+		state.completedBytes += state.currentFileBytes
+		state.currentFileBytes = 0
+		return true
+	}
+	return false
 }
 
 /** Exported for testing — parses a single rsync stdout line and updates stats. */

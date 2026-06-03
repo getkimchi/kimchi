@@ -36,6 +36,8 @@ const {
 	progressInstances: [] as Array<{
 		step: ReturnType<typeof vi.fn>
 		complete: ReturnType<typeof vi.fn>
+		setStepDetail: ReturnType<typeof vi.fn>
+		setCancelling: ReturnType<typeof vi.fn>
 		finish: ReturnType<typeof vi.fn>
 		stop: ReturnType<typeof vi.fn>
 		promptGitToken: ReturnType<typeof vi.fn>
@@ -85,6 +87,8 @@ vi.mock("../ui/progress.js", () => ({
 		const controller = {
 			step: vi.fn(),
 			complete: vi.fn(),
+			setStepDetail: vi.fn(),
+			setCancelling: vi.fn(),
 			finish: vi.fn(),
 			stop: vi.fn(),
 			promptGitToken: vi.fn().mockImplementation(async () => {
@@ -198,6 +202,50 @@ afterEach(() => {
 })
 
 describe("runTeleport", () => {
+	it("shows an inline footer status while resolving the workspace, and clears it before the overlay opens", async () => {
+		const { ctx, ui } = makeCtx()
+		const setStatusMock = ui.setStatus as unknown as ReturnType<typeof vi.fn>
+
+		await runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)
+
+		const teleportStatusCalls = setStatusMock.mock.calls.filter((c) => c[0] === "teleport")
+		expect(teleportStatusCalls.length).toBeGreaterThanOrEqual(2)
+		expect(teleportStatusCalls[0]).toEqual(["teleport", "Teleport: resolving workspace…"])
+		expect(teleportStatusCalls.at(-1)).toEqual(["teleport", undefined])
+	})
+
+	it("kicks off local work in parallel with the authentication network call", async () => {
+		// Hold authMock open until we say so, so we can observe whether the
+		// local readLocalGitConfig + getGitRemoteHost calls happened during
+		// the wait or only after.
+		let releaseAuth: (v: typeof CREDS) => void = () => {}
+		authMock.mockImplementation(
+			() =>
+				new Promise<typeof CREDS>((resolve) => {
+					releaseAuth = resolve
+				}),
+		)
+		const calledDuringAuthWait = { readLocalGitConfig: false, getGitRemoteHost: false }
+		readLocalGitConfigMock.mockImplementation(async () => {
+			calledDuringAuthWait.readLocalGitConfig = true
+			return {}
+		})
+		getGitRemoteHostMock.mockImplementation(async () => {
+			calledDuringAuthWait.getGitRemoteHost = true
+			return undefined
+		})
+		const { ctx } = makeCtx()
+
+		const p = runTeleport("--workspace 11111111-1111-4111-8111-111111111111", ctx)
+		// Yield enough microtasks for runTeleport's eager local kick-off to land.
+		await new Promise<void>((resolve) => setTimeout(resolve, 0))
+		expect(calledDuringAuthWait.readLocalGitConfig).toBe(true)
+		expect(calledDuringAuthWait.getGitRemoteHost).toBe(true)
+		// Let auth finish so the rest of runTeleport can complete.
+		releaseAuth(CREDS)
+		await p
+	})
+
 	it("happy path: creates PTY session, opens overlay", async () => {
 		const { ctx, ui } = makeCtx()
 
@@ -237,6 +285,59 @@ describe("runTeleport", () => {
 		)
 		expect(createSessionMock).not.toHaveBeenCalled()
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Could not list sessions/), "error")
+	})
+
+	it("cancels cleanly when the progress panel fires onCancel mid-flight: notify instead of throw", async () => {
+		// Block at sandbox-ready so the cancel callback has time to fire.
+		let releaseReady: () => void = () => {}
+		waitReadyMock.mockImplementation(
+			() =>
+				new Promise<void>((_resolve, reject) => {
+					releaseReady = () => reject(new Error("aborted"))
+				}),
+		)
+		const { ctx, ui } = makeCtx()
+
+		const teleportPromise = runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)
+
+		// Wait a microtask so createTeleportProgress is invoked and we can
+		// grab the onCancel hook from its options.
+		await new Promise<void>((resolve) => setTimeout(resolve, 0))
+		const onCancel = (progressMock.mock.calls[0]?.[1] as { onCancel?: () => void } | undefined)?.onCancel
+		expect(onCancel).toBeTypeOf("function")
+		onCancel?.()
+		// The local abort cascades; release the blocking promise so the await unwinds.
+		releaseReady()
+
+		await expect(teleportPromise).resolves.toBeUndefined()
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Teleport cancelled/), "info")
+		// We had creds (auth succeeded before the cancel) → notify must include the workspace hint.
+		expect(ui.notify).toHaveBeenCalledWith(
+			expect.stringMatching(/Workspace .* is still up.*\/workspaces.*\/teleport/),
+			"info",
+		)
+		expect(progressInstances[0]?.stop).toHaveBeenCalled()
+		expect(createSessionMock).not.toHaveBeenCalled()
+	})
+
+	it("cancel before auth completes: notify has no workspace hint (creds were never set)", async () => {
+		let releaseAuth: () => void = () => {}
+		authMock.mockImplementation(
+			() =>
+				new Promise((_resolve, reject) => {
+					releaseAuth = () => reject(new Error("aborted"))
+				}),
+		)
+		const { ctx, ui } = makeCtx()
+
+		const teleportPromise = runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)
+		await new Promise<void>((resolve) => setTimeout(resolve, 0))
+		const onCancel = (progressMock.mock.calls[0]?.[1] as { onCancel?: () => void } | undefined)?.onCancel
+		onCancel?.()
+		releaseAuth()
+
+		await expect(teleportPromise).resolves.toBeUndefined()
+		expect(ui.notify).toHaveBeenCalledWith("Teleport cancelled.", "info")
 	})
 
 	it("refuses without notifying when the picker is cancelled with Esc", async () => {

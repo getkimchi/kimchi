@@ -4,6 +4,7 @@ import { Readable } from "node:stream"
 import { describe, expect, it } from "vitest"
 import {
 	BASE_EXCLUDE_GLOBS,
+	type CumulativeState,
 	type RsyncStats,
 	buildExcludeList,
 	buildMkdirArgv,
@@ -11,6 +12,8 @@ import {
 	buildSshOption,
 	handleLine,
 	resolveGitIgnored,
+	runRsync,
+	trackCumulative,
 } from "./rsync-runner.js"
 
 // POSIX-ish word splitter that honors single quotes the way rsync's `-e`
@@ -100,7 +103,7 @@ describe("buildRsyncArgv", () => {
 			remoteUser: "sandbox",
 			proxyCommand: "node /opt/kimchi/teleport-proxy.js %h %p",
 			knownHostsFile: "/tmp/k/known_hosts",
-			excludeFile: "/tmp/k/excludes",
+			listMode: { kind: "exclude-from", file: "/tmp/k/excludes" },
 		})
 		expect(argv).toEqual([
 			"-az",
@@ -125,7 +128,7 @@ describe("buildRsyncArgv", () => {
 			remoteUser: "u",
 			proxyCommand: "node /p %h %p",
 			knownHostsFile: "/k",
-			excludeFile: "/e",
+			listMode: { kind: "exclude-from", file: "/e" },
 		})
 		expect(withDelete).toContain("--delete")
 		const withoutDelete = buildRsyncArgv({
@@ -135,7 +138,7 @@ describe("buildRsyncArgv", () => {
 			remoteUser: "u",
 			proxyCommand: "node /p %h %p",
 			knownHostsFile: "/k",
-			excludeFile: "/e",
+			listMode: { kind: "exclude-from", file: "/e" },
 			deleteExtraneous: false,
 		})
 		expect(withoutDelete).not.toContain("--delete")
@@ -149,7 +152,7 @@ describe("buildRsyncArgv", () => {
 			remoteUser: "u",
 			proxyCommand: "node /p %h %p",
 			knownHostsFile: "/k",
-			excludeFile: "/e",
+			listMode: { kind: "exclude-from", file: "/e" },
 		})
 		// Caller decides directory-contents vs. directory-itself via trailing
 		// slash; the builder must not mutate either path.
@@ -167,7 +170,7 @@ describe("buildRsyncArgv", () => {
 			remoteUser: "u",
 			proxyCommand: "node /p %h %p",
 			knownHostsFile: "/k",
-			excludeFile: "/e",
+			listMode: { kind: "exclude-from", file: "/e" },
 		})
 		expect(argv).toContain("/local/dir/")
 		expect(argv).toContain("u@h:/remote/dir/")
@@ -181,7 +184,7 @@ describe("buildRsyncArgv", () => {
 			remoteUser: "u",
 			proxyCommand: "node /p %h %p",
 			knownHostsFile: "/k",
-			excludeFile: "/e",
+			listMode: { kind: "exclude-from", file: "/e" },
 			direction: "down",
 		})
 		const remoteIdx = argv.indexOf("u@h:/remote")
@@ -199,10 +202,75 @@ describe("buildRsyncArgv", () => {
 			remoteUser: "u",
 			proxyCommand: "node /p %h %p",
 			knownHostsFile: "/k",
-			excludeFile: "/e",
+			listMode: { kind: "exclude-from", file: "/e" },
 			dryRun: true,
 		})
 		expect(argv).toContain("--dry-run")
+	})
+
+	it("uses --files-from when the caller passes that list mode", () => {
+		const argv = buildRsyncArgv({
+			localPath: "/a",
+			remotePath: "/b",
+			remoteHost: "h",
+			remoteUser: "u",
+			proxyCommand: "node /p %h %p",
+			knownHostsFile: "/k",
+			listMode: { kind: "files-from", file: "/tmp/files-from" },
+		})
+		// Crucial: --files-from replaces --exclude-from; never both.
+		expect(argv).toContain("--files-from")
+		expect(argv).toContain("/tmp/files-from")
+		expect(argv).not.toContain("--exclude-from")
+	})
+})
+
+describe("runRsync filesFrom guard", () => {
+	// Run rsync end-to-end with a fake spawner so we can observe which list-mode
+	// branch was taken. The two children spawned are (1) ssh mkdir and (2) the
+	// rsync itself; we capture the rsync argv and assert on it.
+	async function runWithFakeSpawn(filesFrom: string[] | undefined): Promise<string[]> {
+		let rsyncArgs: string[] = []
+		const fakeSpawn: typeof spawn = ((binary: string, args: readonly string[], _opts?: unknown) => {
+			if (binary === "rsync") rsyncArgs = [...args]
+			// rsync emits an empty stats block — enough for parsing to succeed.
+			return makeFakeChild({ stdout: "", exitCode: 0 })
+		}) as unknown as typeof spawn
+		await runRsync({
+			localPath: "/tmp/no-such-dir",
+			remotePath: "/sandbox",
+			isSourceDirectory: true,
+			remoteHost: "h",
+			remoteUser: "u",
+			authToken: "tok",
+			proxyCommand: "node /p %h %p",
+			// Skip the gitignore subprocess — we don't care about its output here.
+			gitignoredPaths: [],
+			filesFrom,
+			_spawn: fakeSpawn,
+		})
+		return rsyncArgs
+	}
+
+	it("uses --files-from when filesFrom has entries", async () => {
+		const argv = await runWithFakeSpawn(["src/a.ts", "src/b.ts"])
+		expect(argv).toContain("--files-from")
+		expect(argv).not.toContain("--exclude-from")
+	})
+
+	it("falls back to --exclude-from when filesFrom is an empty array (regression)", async () => {
+		// Empty array was previously truthy under `if (opts.filesFrom)`, so rsync
+		// got an empty manifest and silently transferred nothing. The guard now
+		// checks `?.length` so [] is treated like undefined.
+		const argv = await runWithFakeSpawn([])
+		expect(argv).toContain("--exclude-from")
+		expect(argv).not.toContain("--files-from")
+	})
+
+	it("falls back to --exclude-from when filesFrom is undefined", async () => {
+		const argv = await runWithFakeSpawn(undefined)
+		expect(argv).toContain("--exclude-from")
+		expect(argv).not.toContain("--files-from")
 	})
 })
 
@@ -264,14 +332,31 @@ function makeFakeChild(opts: { stdout?: string; stderr?: string; exitCode: numbe
 }
 
 describe("resolveGitIgnored", () => {
-	it("returns the trimmed stdout lines on success", async () => {
+	it("invokes git ls-files with --cached --others --ignored --exclude-standard and parses the stdout", async () => {
+		let calledArgs: readonly string[] | undefined
+		const fakeSpawn: typeof spawn = ((_cmd: string, args?: readonly string[], _opts?: unknown) => {
+			calledArgs = args
+			return makeFakeChild({
+				stdout: "build/output.txt\nlogs/access.log\n",
+				exitCode: 0,
+			})
+		}) as unknown as typeof spawn
+		const result = await resolveGitIgnored("/dummy", undefined, fakeSpawn)
+		expect(calledArgs).toEqual(["ls-files", "--cached", "--others", "--ignored", "--exclude-standard"])
+		expect(result).toEqual(["build/output.txt", "logs/access.log"])
+	})
+
+	it("returns both untracked-ignored and tracked-ignored paths so tracked files matching gitignore don't leak past rsync excludes", async () => {
 		const fakeSpawn: typeof spawn = ((_cmd: string, _args?: readonly string[], _opts?: unknown) =>
 			makeFakeChild({
-				stdout: "build/output.txt\nlogs/access.log\n",
+				// Mixed output: an untracked-ignored path and a tracked-ignored path.
+				// Without --cached, the tracked one would be missing — and would
+				// then sync to the sandbox in violation of .gitignore.
+				stdout: "secrets/api.key\n.claude/settings.json\n",
 				exitCode: 0,
 			})) as unknown as typeof spawn
 		const result = await resolveGitIgnored("/dummy", undefined, fakeSpawn)
-		expect(result).toEqual(["build/output.txt", "logs/access.log"])
+		expect(result).toEqual(["secrets/api.key", ".claude/settings.json"])
 	})
 
 	it("returns [] when git exits non-zero (not a repo)", async () => {
@@ -365,5 +450,66 @@ describe("handleLine", () => {
 		handleLine("", s)
 		handleLine("file.txt", s)
 		expect(s).toEqual({ fileCount: 0, totalBytes: 0 })
+	})
+})
+
+describe("trackCumulative", () => {
+	const fresh = (): CumulativeState => ({ completedBytes: 0, currentFileBytes: 0 })
+
+	it("updates currentFileBytes on a progress line", () => {
+		const s = fresh()
+		expect(trackCumulative("      1,048,576  50%   1.00MB/s", s)).toBe(true)
+		expect(s).toEqual({ completedBytes: 0, currentFileBytes: 1048576 })
+	})
+
+	it("rolls currentFileBytes into completedBytes when a new path line appears", () => {
+		const s = fresh()
+		trackCumulative("src/foo.ts", s) // header — no in-flight file yet, no-op
+		expect(s).toEqual({ completedBytes: 0, currentFileBytes: 0 })
+
+		trackCumulative("        65,536  50%   1.00MB/s", s)
+		trackCumulative("       131,072 100%   2.00MB/s    0:00:00 (xfr#1, to-chk=10/12)", s)
+		expect(s.currentFileBytes).toBe(131072)
+
+		// Next file's path line: previous file's bytes graduate to completedBytes.
+		expect(trackCumulative("src/bar.ts", s)).toBe(true)
+		expect(s).toEqual({ completedBytes: 131072, currentFileBytes: 0 })
+	})
+
+	it("accumulates across multiple files", () => {
+		const s = fresh()
+		trackCumulative("a.txt", s)
+		trackCumulative("       100  100%   1.00kB/s    0:00:00", s)
+		trackCumulative("b.txt", s)
+		expect(s.completedBytes).toBe(100)
+
+		trackCumulative("       200  100%   1.00kB/s    0:00:00", s)
+		trackCumulative("c.txt", s)
+		expect(s.completedBytes).toBe(300)
+	})
+
+	it("ignores empty lines as boundaries", () => {
+		const s = fresh()
+		trackCumulative("       100  100%   1.00kB/s    0:00:00", s)
+		expect(trackCumulative("", s)).toBe(false)
+		expect(s).toEqual({ completedBytes: 0, currentFileBytes: 100 })
+	})
+
+	it("ignores boundaries while no file is in flight", () => {
+		const s = fresh()
+		expect(trackCumulative("sending incremental file list", s)).toBe(false)
+		expect(s).toEqual({ completedBytes: 0, currentFileBytes: 0 })
+	})
+
+	it("does not double-count when multiple stats lines follow the last file", () => {
+		const s = fresh()
+		trackCumulative("last-file.txt", s)
+		trackCumulative("       500  100%   1.00MB/s    0:00:00", s)
+		// Trailing stats lines from rsync — first one rolls the file in, the
+		// rest are no-ops because currentFileBytes is back to 0.
+		trackCumulative("Number of files: 1", s)
+		trackCumulative("Number of regular files transferred: 1", s)
+		trackCumulative("Total transferred file size: 500 bytes", s)
+		expect(s).toEqual({ completedBytes: 500, currentFileBytes: 0 })
 	})
 })

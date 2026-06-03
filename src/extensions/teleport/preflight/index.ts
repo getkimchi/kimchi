@@ -1,8 +1,7 @@
-import { refuse, warn } from "../commands/errors.js"
+import { refuse } from "../commands/errors.js"
 import type { TeleportContext } from "../types.js"
 import { gitWorkingTreeDirty } from "./git.js"
 import { rsyncInstallHint, whichRsync } from "./rsync.js"
-import { SIZE_REFUSE_BYTES, SIZE_WARN_BYTES, estimateWorkspaceBytes } from "./workspace-size.js"
 
 export interface PreflightArgs {
 	allowDirty?: boolean
@@ -18,16 +17,20 @@ export interface PreflightArgs {
 export interface PreflightDeps {
 	whichRsync?: typeof whichRsync
 	gitWorkingTreeDirty?: typeof gitWorkingTreeDirty
-	estimateWorkspaceBytes?: typeof estimateWorkspaceBytes
 	rsyncInstallHint?: typeof rsyncInstallHint
 }
 
+/**
+ * Preflight checks that must complete before the progress overlay opens.
+ * Kept fast (sub-100 ms) on purpose: the slow workspace-size check is
+ * deferred to `runTeleport`'s parallel kick-off, which uses the
+ * gitignored-aware local-walker estimate instead of a 5+ second `du -sk`.
+ */
 export function runPreflight(ctx: TeleportContext, args: PreflightArgs, deps: PreflightDeps = {}): void {
 	if (args.gitRepo) return
 
 	const checkRsync = deps.whichRsync ?? whichRsync
 	const checkDirty = deps.gitWorkingTreeDirty ?? gitWorkingTreeDirty
-	const checkSize = deps.estimateWorkspaceBytes ?? estimateWorkspaceBytes
 	const installHint = deps.rsyncInstallHint ?? rsyncInstallHint
 
 	if (!checkRsync()) {
@@ -36,15 +39,5 @@ export function runPreflight(ctx: TeleportContext, args: PreflightArgs, deps: Pr
 
 	if (!args.allowDirty && checkDirty(ctx.cwd)) {
 		refuse(ctx, "Working tree has uncommitted changes. Re-run with --allow-dirty to ship them.")
-	}
-
-	const wsBytes = checkSize(ctx.cwd)
-	if (wsBytes > SIZE_REFUSE_BYTES && !args.force) {
-		const gb = (wsBytes / 1_000_000_000).toFixed(1)
-		refuse(ctx, `Workspace is large (${gb} GB). Re-run with --force to proceed.`)
-	}
-	if (wsBytes > SIZE_WARN_BYTES) {
-		const mb = (wsBytes / 1_000_000).toFixed(0)
-		warn(ctx, `Workspace is ${mb} MB — sync may take a while.`)
 	}
 }
