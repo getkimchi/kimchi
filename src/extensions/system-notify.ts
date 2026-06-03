@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "node:child_process"
+import { execFile } from "node:child_process"
 import { basename } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { readNotificationsEnabled, writeNotificationsEnabled } from "../config.js"
@@ -20,20 +20,19 @@ function getProxyHelper(): string | null {
 	return _proxyHelper
 }
 
-function isTerminalFocused(): boolean {
+async function isTerminalFocused(): Promise<boolean> {
 	const bin = getProxyHelper()
 	if (!bin) return false
-	try {
-		execFileSync(bin, ["tcgetpgrp"], { timeout: 500 })
-		return true
-	} catch {
-		return false
-	}
+	return new Promise((resolve) => {
+		execFile(bin, ["tcgetpgrp"], { timeout: 500 }, (err) => {
+			resolve(err === null)
+		})
+	})
 }
 
-function shouldNotify(notificationsEnabled: boolean): boolean {
+async function shouldNotify(notificationsEnabled: boolean): Promise<boolean> {
 	if (!notificationsEnabled) return false
-	if (isTerminalFocused()) return false
+	if (await isTerminalFocused()) return false
 	const now = Date.now()
 	if (now - lastNotifyTime < COOLDOWN_MS) return false
 	lastNotifyTime = now
@@ -128,7 +127,7 @@ export default function systemNotifyExtension(pi: ExtensionAPI): void {
 	})
 
 	pi.on("agent_end", async () => {
-		if (shouldNotify(notificationsEnabled)) {
+		if (await shouldNotify(notificationsEnabled)) {
 			const body = await buildBody("Agent ended work")
 			sendSystemNotification(body)
 		}
@@ -137,14 +136,14 @@ export default function systemNotifyExtension(pi: ExtensionAPI): void {
 	pi.on("tool_execution_start", async (event) => {
 		const e = event as { toolName: string }
 		if (e.toolName === "questionnaire" || e.toolName === "ask_user") {
-			if (!shouldNotify(notificationsEnabled)) return
+			if (!(await shouldNotify(notificationsEnabled))) return
 			const body = await buildBody("Your input is needed")
 			sendSystemNotification(body)
 		}
 	})
 
 	pi.on("turn_end", async () => {
-		if (shouldNotify(notificationsEnabled)) {
+		if (await shouldNotify(notificationsEnabled)) {
 			const body = await buildBody("Agent responded")
 			sendSystemNotification(body)
 		}

@@ -1,15 +1,23 @@
-import { execFile, execFileSync } from "node:child_process"
+import { execFile } from "node:child_process"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { readNotificationsEnabled, writeNotificationsEnabled } from "../config.js"
 import { asAppleScriptString } from "./system-notify.js"
 import systemNotifyExtension from "./system-notify.js"
 
+// Mutable box so the hoisted vi.mock factory can close over it and tests can mutate it.
+const focusState = { focused: false }
+
 vi.mock("node:child_process", () => ({
-	// Auto-invoke the callback so promise-wrapped callers (getGitBranch) resolve immediately.
-	// Tests that care about specific execFile calls (sendSystemNotification) can inspect all calls.
-	execFile: vi.fn((_cmd, _args, cb) => cb(null, "", "")),
-	execFileSync: vi.fn(),
+	execFile: vi.fn((_cmd, args, _opts, cb) => {
+		// execFile can be called as (cmd, args, cb) or (cmd, args, opts, cb)
+		const callback = typeof _opts === "function" ? _opts : cb
+		if (Array.isArray(args) && args.includes("tcgetpgrp")) {
+			callback(focusState.focused ? null : new Error("exit 1"), "", "")
+		} else {
+			callback(null, "", "")
+		}
+	}),
 }))
 
 vi.mock("../config.js", () => ({
@@ -96,6 +104,7 @@ describe("systemNotifyExtension", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 		vi.useRealTimers()
+		focusState.focused = false
 		// Each test gets a unique timestamp far apart to avoid cooldown interference
 		testTime += 100_000
 		vi.useFakeTimers({ toFake: ["Date"] })
@@ -200,26 +209,18 @@ describe("systemNotifyExtension", () => {
 
 	describe("notifications suppressed when terminal is focused", () => {
 		it("does not send notification on agent_end when terminal focused", async () => {
-			vi.mocked(execFileSync).mockReturnValue(Buffer.from("")) // tcgetpgrp exits 0 = focused
+			focusState.focused = true
 			vi.mocked(readNotificationsEnabled).mockReturnValue(true)
 
 			const pi = makeMockApi()
 			systemNotifyExtension(pi)
 			const ctx = makeMockCtx()
-			pi.emit("agent_end", {}, ctx)
-			await Promise.resolve()
+			await pi.emit("agent_end", {}, ctx)
 
-			expect(vi.mocked(execFile)).not.toHaveBeenCalledWith(
-				expect.stringContaining("osascript"),
-				expect.anything(),
-				expect.anything(),
-			)
+			expect(vi.mocked(execFile)).not.toHaveBeenCalledWith("osascript", expect.anything(), expect.anything())
 		})
 
 		it("sends notification on agent_end when terminal not focused", async () => {
-			vi.mocked(execFileSync).mockImplementation(() => {
-				throw new Error("exit 1") // tcgetpgrp exits 1 = not focused
-			})
 			vi.mocked(readNotificationsEnabled).mockReturnValue(true)
 
 			const pi = makeMockApi()
@@ -233,9 +234,6 @@ describe("systemNotifyExtension", () => {
 
 	describe("cooldown", () => {
 		it("suppresses a second notification within the cooldown window", async () => {
-			vi.mocked(execFileSync).mockImplementation(() => {
-				throw new Error("exit 1")
-			})
 			vi.mocked(readNotificationsEnabled).mockReturnValue(true)
 
 			const pi = makeMockApi()
@@ -251,9 +249,6 @@ describe("systemNotifyExtension", () => {
 		})
 
 		it("allows a notification after the cooldown has elapsed", async () => {
-			vi.mocked(execFileSync).mockImplementation(() => {
-				throw new Error("exit 1")
-			})
 			vi.mocked(readNotificationsEnabled).mockReturnValue(true)
 
 			const pi = makeMockApi()
@@ -271,9 +266,6 @@ describe("systemNotifyExtension", () => {
 
 	describe("tool_execution_start", () => {
 		it("sends notification for questionnaire tool when not focused", async () => {
-			vi.mocked(execFileSync).mockImplementation(() => {
-				throw new Error("exit 1")
-			})
 			vi.mocked(readNotificationsEnabled).mockReturnValue(true)
 
 			const pi = makeMockApi()
@@ -285,9 +277,6 @@ describe("systemNotifyExtension", () => {
 		})
 
 		it("does not send notification for unrelated tools", async () => {
-			vi.mocked(execFileSync).mockImplementation(() => {
-				throw new Error("exit 1")
-			})
 			vi.mocked(readNotificationsEnabled).mockReturnValue(true)
 
 			const pi = makeMockApi()
