@@ -460,10 +460,7 @@ describe("startup auth gate", () => {
 		const harness = createHarness()
 
 		// Simulate user providing API key and custom endpoint via ctx.ui.input
-		harness.ctx.ui.input
-			// biome-ignore lint/suspicious/noExplicitAny: mock chaining
-			.mockResolvedValueOnce("my-api-key")
-			.mockResolvedValueOnce("https://custom.kimchi.example")
+		harness.ctx.ui.input.mockResolvedValueOnce("my-api-key").mockResolvedValueOnce("https://custom.kimchi.example")
 
 		modelsMock.updateModelsConfig.mockResolvedValue({ models: [{ slug: "kimi-k2.6", provider: "ai-enabler" }] })
 
