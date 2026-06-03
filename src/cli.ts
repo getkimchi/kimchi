@@ -400,11 +400,12 @@ try {
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
 		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
 		// modes: stdout belongs to the caller, and OSC escapes corrupt it.
+		const rawArgs = stripExperimentalFeaturesArg(process.argv.slice(2))
 		const terminalIo = {
 			stdinIsTTY: process.stdin.isTTY === true,
 			stdoutIsTTY: process.stdout.isTTY === true,
 		}
-		const terminalStartupOutputAllowed = isTerminalUiMode(process.argv.slice(2), terminalIo)
+		const terminalStartupOutputAllowed = isTerminalUiMode(rawArgs, terminalIo)
 		if (terminalStartupOutputAllowed) {
 			await probeTerminalBackground()
 			await probeKittyKeyboardSupport()
@@ -464,7 +465,6 @@ try {
 			globalThis.fetch = patchedFetch
 		}
 
-		const rawArgs = stripExperimentalFeaturesArg(process.argv.slice(2))
 		const interactiveStartupContext = {
 			nonInteractiveMode: acpMode,
 			...terminalIo,
