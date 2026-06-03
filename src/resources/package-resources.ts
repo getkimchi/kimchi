@@ -1,19 +1,18 @@
 import { createHash } from "node:crypto"
 import { resolve, sep } from "node:path"
 import { DefaultPackageManager, SettingsManager, getAgentDir } from "@earendil-works/pi-coding-agent"
+import {
+	type ConfiguredPackageEntry,
+	getOriginalPiConfiguredPackages,
+	isOriginalPiPackageLookupEnabled,
+} from "../pi-package-lookup.js"
 import type { ResourceDefinition } from "./types.js"
-
-interface ConfiguredPackageEntry {
-	source: string
-	scope: "user" | "project"
-	filtered: boolean
-	installedPath?: string
-}
 
 export interface PackageResourceRecord {
 	id: string
 	source: string
 	scope: ConfiguredPackageEntry["scope"]
+	origin: NonNullable<ConfiguredPackageEntry["origin"]>
 	installedPath?: string
 }
 
@@ -22,7 +21,10 @@ export function discoverPackageResources(cwd = process.cwd()): ResourceDefinitio
 		id: record.id,
 		kind: "plugins",
 		label: `Package: ${packageDisplayName(record.source)}`,
-		description: `Enable Pi package ${record.source}.`,
+		description:
+			record.origin === "pi"
+				? `Enable package ${record.source} discovered from the original pi CLI.`
+				: `Enable Kimchi package ${record.source}.`,
 		defaultEnabled: true,
 		restartRequired: true,
 	}))
@@ -33,7 +35,11 @@ export function getConfiguredPackageResourceRecords(cwd = process.cwd()): Packag
 		const agentDir = getAgentDir()
 		const settingsManager = SettingsManager.create(cwd, agentDir)
 		const pm = new DefaultPackageManager({ cwd, agentDir, settingsManager })
-		return packageResourceRecordsFromConfiguredPackages(pm.listConfiguredPackages())
+		const nativePackages = pm
+			.listConfiguredPackages()
+			.map((pkg): ConfiguredPackageEntry => ({ ...pkg, origin: "kimchi" }))
+		const piPackages = isOriginalPiPackageLookupEnabled() ? getOriginalPiConfiguredPackages(cwd) : []
+		return packageResourceRecordsFromConfiguredPackages([...nativePackages, ...piPackages])
 	} catch (err) {
 		console.warn(`Failed to discover package resources: ${err instanceof Error ? err.message : String(err)}`)
 		return []
@@ -43,24 +49,20 @@ export function getConfiguredPackageResourceRecords(cwd = process.cwd()): Packag
 export function packageResourceRecordsFromConfiguredPackages(
 	packages: readonly ConfiguredPackageEntry[],
 ): PackageResourceRecord[] {
-	const recordsById = new Map<string, PackageResourceRecord>()
-	const seenSources = new Map<string, PackageResourceRecord>()
-
+	const dedupedByIdentity = new Map<string, ConfiguredPackageEntry>()
 	for (const pkg of packages) {
+		const source = pkg.source.trim()
+		if (!source) continue
+		const key = packageDedupKey(source, pkg.scope, pkg.origin ?? "kimchi")
+		const existing = dedupedByIdentity.get(key)
+		if (!existing || packagePrecedence(pkg) < packagePrecedence(existing)) dedupedByIdentity.set(key, pkg)
+	}
+
+	const recordsById = new Map<string, PackageResourceRecord>()
+
+	for (const pkg of dedupedByIdentity.values()) {
 		const sourceKey = pkg.source.trim()
 		if (!sourceKey) continue
-
-		const sourceRecord = seenSources.get(sourceKey)
-		if (sourceRecord) {
-			if (pkg.scope === "project") {
-				seenSources.set(sourceKey, {
-					...sourceRecord,
-					scope: pkg.scope,
-					installedPath: pkg.installedPath ?? sourceRecord.installedPath,
-				})
-			}
-			continue
-		}
 
 		const baseId = packageResourceId(pkg.source)
 		const id =
@@ -71,13 +73,13 @@ export function packageResourceRecordsFromConfiguredPackages(
 			id,
 			source: pkg.source,
 			scope: pkg.scope,
+			origin: pkg.origin ?? "kimchi",
 			installedPath: pkg.installedPath,
 		}
-		seenSources.set(sourceKey, record)
 		recordsById.set(id, record)
 	}
 
-	return [...seenSources.values()].sort((a, b) => a.id.localeCompare(b.id))
+	return [...recordsById.values()].sort((a, b) => a.id.localeCompare(b.id))
 }
 
 export function packageResourceId(source: string): string {
@@ -95,6 +97,25 @@ function packageDisplayName(source: string): string {
 	const trimmed = source.trim()
 	if (trimmed.startsWith("npm:")) return trimmed.slice("npm:".length)
 	return trimmed
+}
+
+function packagePrecedence(pkg: ConfiguredPackageEntry): number {
+	const scopeRank = pkg.scope === "project" ? 0 : 10
+	const originRank = (pkg.origin ?? "kimchi") === "kimchi" ? 0 : 1
+	return scopeRank + originRank
+}
+
+function packageDedupKey(source: string, scope: ConfiguredPackageEntry["scope"], origin: string): string {
+	if (source.startsWith("npm:")) return `npm:${npmPackageName(source.slice("npm:".length))}`
+	if (source.startsWith("git:")) return source
+	if (/^[a-z]+:\/\//i.test(source) || /^[^@\s]+@[^:\s]+:.+/.test(source)) return source
+	return `${origin}:${scope}:${source}`
+}
+
+function npmPackageName(spec: string): string {
+	const slash = spec.indexOf("/")
+	const versionAt = spec.startsWith("@") ? spec.indexOf("@", Math.max(slash, 0) + 1) : spec.indexOf("@")
+	return versionAt > 0 ? spec.slice(0, versionAt) : spec
 }
 
 function slugPackageSource(source: string): string {

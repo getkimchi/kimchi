@@ -82,6 +82,7 @@ describe("pi native compatibility", () => {
 					id: "plugins.package.npm-context-mode",
 					source: "npm:context-mode",
 					scope: "user",
+					origin: "kimchi",
 					installedPath: "/packages/context-mode",
 				},
 			],
@@ -103,7 +104,7 @@ describe("pi native compatibility", () => {
 
 		filterDisabledPackageExtensions(
 			result,
-			[{ id: "plugins.package.npm-context-mode", source: "npm:context-mode", scope: "user" }],
+			[{ id: "plugins.package.npm-context-mode", source: "npm:context-mode", scope: "user", origin: "kimchi" }],
 			() => false,
 		)
 

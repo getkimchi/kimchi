@@ -1,4 +1,14 @@
-import { DefaultResourceLoader, type LoadExtensionsResult } from "@earendil-works/pi-coding-agent"
+import {
+	DefaultPackageManager,
+	DefaultResourceLoader,
+	type LoadExtensionsResult,
+} from "@earendil-works/pi-coding-agent"
+import {
+	getPackageManagerPackageIdentities,
+	isOriginalPiPackageManager,
+	mergeResolvedPaths,
+	resolveOriginalPiPackageResources,
+} from "./pi-package-lookup.js"
 import { getConfiguredPackageResourceRecords, isPathInsidePackage } from "./resources/package-resources.js"
 import { isResourceEnabled } from "./resources/store.js"
 
@@ -9,6 +19,7 @@ const ORIGINAL_GET_EXTENSIONS = Symbol.for("kimchi.piNativeCompat.originalGetExt
 const ORIGINAL_GET_SKILLS = Symbol.for("kimchi.piNativeCompat.originalGetSkills")
 const ORIGINAL_GET_PROMPTS = Symbol.for("kimchi.piNativeCompat.originalGetPrompts")
 const ORIGINAL_GET_THEMES = Symbol.for("kimchi.piNativeCompat.originalGetThemes")
+const ORIGINAL_PACKAGE_RESOLVE = Symbol.for("kimchi.piNativeCompat.originalPackageResolve")
 
 type HandlerFn = (event: unknown, ctx: unknown) => unknown
 type ExtensionWithMarker = LoadExtensionsResult["extensions"][number] & { [NORMALIZED]?: boolean }
@@ -17,6 +28,11 @@ type ResourceLoaderWithOriginal = DefaultResourceLoader & {
 	[ORIGINAL_GET_SKILLS]?: DefaultResourceLoader["getSkills"]
 	[ORIGINAL_GET_PROMPTS]?: DefaultResourceLoader["getPrompts"]
 	[ORIGINAL_GET_THEMES]?: DefaultResourceLoader["getThemes"]
+}
+type PackageManagerWithOriginal = {
+	cwd?: string
+	resolve: DefaultPackageManager["resolve"]
+	[ORIGINAL_PACKAGE_RESOLVE]?: DefaultPackageManager["resolve"]
 }
 
 export function installPiNativeCompatibilityShim(): void {
@@ -51,6 +67,20 @@ export function installPiNativeCompatibilityShim(): void {
 	): ReturnType<DefaultResourceLoader["getThemes"]> {
 		const result = originalGetThemes.call(this)
 		return { ...result, themes: filterDisabledPackageItems(result.themes) }
+	}
+
+	const packageProto = DefaultPackageManager.prototype as unknown as PackageManagerWithOriginal
+	const originalPackageResolve = packageProto.resolve
+	packageProto[ORIGINAL_PACKAGE_RESOLVE] = originalPackageResolve
+	packageProto.resolve = async function patchedPackageResolve(
+		this: DefaultPackageManager,
+		...args: Parameters<DefaultPackageManager["resolve"]>
+	): ReturnType<DefaultPackageManager["resolve"]> {
+		const nativeResolvedPaths = await originalPackageResolve.apply(this, args)
+		if (isOriginalPiPackageManager(this)) return nativeResolvedPaths
+		const cwd = (this as unknown as PackageManagerWithOriginal).cwd ?? process.cwd()
+		const piResolvedPaths = await resolveOriginalPiPackageResources(cwd, getPackageManagerPackageIdentities(this))
+		return mergeResolvedPaths(nativeResolvedPaths, piResolvedPaths)
 	}
 	proto[INSTALLED] = true
 }

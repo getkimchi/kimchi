@@ -1,3 +1,4 @@
+import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../pi-package-lookup.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
 import { discoverPackageResources } from "./package-resources.js"
 import type { ResourceDefinition, ResourceKind } from "./types.js"
@@ -46,6 +47,14 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		kind: "extensions",
 		label: "Ferment",
 		description: "Enable guided project workflow tools.",
+		defaultEnabled: true,
+		restartRequired: true,
+	},
+	{
+		id: PI_PACKAGE_LOOKUP_RESOURCE_ID,
+		kind: "extensions",
+		label: "Pi package lookup",
+		description: "Load packages installed by the original pi CLI.",
 		defaultEnabled: true,
 		restartRequired: true,
 	},

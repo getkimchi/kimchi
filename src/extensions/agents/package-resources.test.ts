@@ -3,21 +3,13 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-// NOTE: Using vi.mock (hoisted) but placing it in a describe block level
-// to avoid affecting other test files that import the same module
-const mocks = vi.hoisted(() => ({
-	getAgentDir: vi.fn(() => "/fake/agent/dir"),
-	SettingsManager: {
-		create: vi.fn(() => ({})),
-	},
-	DefaultPackageManager: vi.fn().mockImplementation(() => ({
-		listConfiguredPackages: vi.fn(() => []),
-	})),
+const packageResourceMocks = vi.hoisted(() => ({
+	getConfiguredPackageResourceRecords: vi.fn(() => []),
 }))
 
-vi.mock("@earendil-works/pi-coding-agent", () => mocks)
+vi.mock("../../resources/package-resources.js", () => packageResourceMocks)
 
-import { DefaultPackageManager } from "@earendil-works/pi-coding-agent"
+import { getConfiguredPackageResourceRecords } from "../../resources/package-resources.js"
 import { getInstalledPackageResourceDirs } from "./package-resources.js"
 
 describe("getInstalledPackageResourceDirs", () => {
@@ -26,6 +18,7 @@ describe("getInstalledPackageResourceDirs", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "pkg-resources-test-"))
 		vi.clearAllMocks()
+		packageResourceMocks.getConfiguredPackageResourceRecords.mockReturnValue([])
 	})
 
 	afterEach(() => {
@@ -33,12 +26,7 @@ describe("getInstalledPackageResourceDirs", () => {
 	})
 
 	it("returns [] when no packages are configured", () => {
-		vi.mocked(DefaultPackageManager).mockImplementationOnce(
-			() =>
-				({
-					listConfiguredPackages: vi.fn(() => []),
-				}) as unknown as DefaultPackageManager,
-		)
+		vi.mocked(getConfiguredPackageResourceRecords).mockReturnValueOnce([])
 
 		const result = getInstalledPackageResourceDirs("/any/cwd", "agents")
 		expect(result).toEqual([])
@@ -50,15 +38,10 @@ describe("getInstalledPackageResourceDirs", () => {
 		mkdirSync(join(pkg1Dir, "agents"), { recursive: true })
 		mkdirSync(join(pkg2Dir, "agents"), { recursive: true })
 
-		vi.mocked(DefaultPackageManager).mockImplementationOnce(
-			() =>
-				({
-					listConfiguredPackages: vi.fn(() => [
-						{ installedPath: pkg1Dir, source: "p1", scope: "user" as const, filtered: false },
-						{ installedPath: pkg2Dir, source: "p2", scope: "user" as const, filtered: false },
-					]),
-				}) as unknown as DefaultPackageManager,
-		)
+		vi.mocked(getConfiguredPackageResourceRecords).mockReturnValueOnce([
+			{ id: "plugins.package.p1", installedPath: pkg1Dir, source: "p1", scope: "user", origin: "kimchi" },
+			{ id: "plugins.package.p2", installedPath: pkg2Dir, source: "p2", scope: "user", origin: "kimchi" },
+		])
 
 		const result = getInstalledPackageResourceDirs("/any/cwd", "agents")
 		expect(result).toEqual([join(pkg1Dir, "agents"), join(pkg2Dir, "agents")])
@@ -70,15 +53,10 @@ describe("getInstalledPackageResourceDirs", () => {
 		mkdirSync(join(pkg1Dir, "agents"), { recursive: true })
 		// pkg2Dir's agents/ subdir is intentionally NOT created
 
-		vi.mocked(DefaultPackageManager).mockImplementationOnce(
-			() =>
-				({
-					listConfiguredPackages: vi.fn(() => [
-						{ installedPath: pkg1Dir, source: "p1", scope: "user" as const, filtered: false },
-						{ installedPath: pkg2Dir, source: "p2", scope: "user" as const, filtered: false },
-					]),
-				}) as unknown as DefaultPackageManager,
-		)
+		vi.mocked(getConfiguredPackageResourceRecords).mockReturnValueOnce([
+			{ id: "plugins.package.p1", installedPath: pkg1Dir, source: "p1", scope: "user", origin: "kimchi" },
+			{ id: "plugins.package.p2", installedPath: pkg2Dir, source: "p2", scope: "user", origin: "kimchi" },
+		])
 
 		const result = getInstalledPackageResourceDirs("/any/cwd", "agents")
 		expect(result).toEqual([join(pkg1Dir, "agents")])
@@ -88,15 +66,10 @@ describe("getInstalledPackageResourceDirs", () => {
 		const pkgWithPath = join(tmpDir, "pkg-with-path")
 		mkdirSync(join(pkgWithPath, "agents"), { recursive: true })
 
-		vi.mocked(DefaultPackageManager).mockImplementationOnce(
-			() =>
-				({
-					listConfiguredPackages: vi.fn(() => [
-						{ installedPath: undefined, source: "p1", scope: "user" as const, filtered: false },
-						{ installedPath: pkgWithPath, source: "p2", scope: "user" as const, filtered: false },
-					]),
-				}) as unknown as DefaultPackageManager,
-		)
+		vi.mocked(getConfiguredPackageResourceRecords).mockReturnValueOnce([
+			{ id: "plugins.package.p1", installedPath: undefined, source: "p1", scope: "user", origin: "kimchi" },
+			{ id: "plugins.package.p2", installedPath: pkgWithPath, source: "p2", scope: "user", origin: "kimchi" },
+		])
 
 		const result = getInstalledPackageResourceDirs("/any/cwd", "agents")
 		expect(result).toEqual([join(pkgWithPath, "agents")])
@@ -105,14 +78,9 @@ describe("getInstalledPackageResourceDirs", () => {
 	it("returns [] and logs a warning when listConfiguredPackages throws", () => {
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 
-		vi.mocked(DefaultPackageManager).mockImplementationOnce(
-			() =>
-				({
-					listConfiguredPackages: vi.fn(() => {
-						throw new Error("package manager exploded")
-					}),
-				}) as unknown as DefaultPackageManager,
-		)
+		vi.mocked(getConfiguredPackageResourceRecords).mockImplementationOnce(() => {
+			throw new Error("package manager exploded")
+		})
 
 		const result = getInstalledPackageResourceDirs("/any/cwd", "agents")
 		expect(result).toEqual([])
@@ -127,13 +95,13 @@ describe("getInstalledPackageResourceDirs", () => {
 		mkdirSync(join(pkgDir, "agents"), { recursive: true })
 		mkdirSync(join(pkgDir, "skills"), { recursive: true })
 
-		const mockReturn = () =>
-			({
-				listConfiguredPackages: vi.fn(() => [
-					{ installedPath: pkgDir, source: "p", scope: "user" as const, filtered: false },
-				]),
-			}) as unknown as DefaultPackageManager
-		vi.mocked(DefaultPackageManager).mockImplementationOnce(mockReturn).mockImplementationOnce(mockReturn)
+		vi.mocked(getConfiguredPackageResourceRecords)
+			.mockReturnValueOnce([
+				{ id: "plugins.package.p", installedPath: pkgDir, source: "p", scope: "user", origin: "kimchi" },
+			])
+			.mockReturnValueOnce([
+				{ id: "plugins.package.p", installedPath: pkgDir, source: "p", scope: "user", origin: "kimchi" },
+			])
 
 		const agentsResult = getInstalledPackageResourceDirs("/any/cwd", "agents")
 		const skillsResult = getInstalledPackageResourceDirs("/any/cwd", "skills")
