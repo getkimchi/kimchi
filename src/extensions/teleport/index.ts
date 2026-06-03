@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { loadConfig } from "../../config.js"
 import { TeleportRefusal } from "./commands/errors.js"
 import { runSessions } from "./commands/sessions.js"
+import { runSshConfig } from "./commands/ssh-config.js"
 import { runSync } from "./commands/sync.js"
 import { runTeleport } from "./commands/teleport.js"
 import { runTerminal } from "./commands/terminal.js"
@@ -54,5 +55,9 @@ export default function teleportExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("workspaces", {
 		description: "List and manage kimchi workspaces",
 		handler: makeHandler(runWorkspaces),
+	})
+	pi.registerCommand("ssh-config", {
+		description: "Refresh ~/.config/kimchi/ssh_config from your workspaces",
+		handler: makeHandler(runSshConfig),
 	})
 }
