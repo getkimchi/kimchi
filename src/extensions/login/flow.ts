@@ -11,7 +11,13 @@ import {
 import { type Component, Container, type TUI } from "@earendil-works/pi-tui"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { loadConfig, writeApiKey } from "../../config.js"
-import { type PiModelConfig, isTransientModelsError, syncProviderModels, updateModelsConfig } from "../../models.js"
+import {
+	ModelsFetchError,
+	type PiModelConfig,
+	isTransientModelsError,
+	syncProviderModels,
+	updateModelsConfig,
+} from "../../models.js"
 
 export const KIMCHI_PROVIDER_ID = "kimchi-dev"
 export const KIMCHI_DEFAULT_MODEL_ID = "kimi-k2.6"
@@ -208,6 +214,9 @@ function formatKimchiTokenError(error: unknown, options: { saved: boolean }): st
 		: " No changes were saved."
 	if (isTransientModelsError(error)) {
 		return `Kimchi endpoint is unreachable or temporarily unavailable (${detail}). Check the endpoint and try again.${savedSuffix}`
+	}
+	if (error instanceof ModelsFetchError && error.status === 401) {
+		return `Invalid API key. Please check your key and try again.${savedSuffix}`
 	}
 	return `Kimchi model refresh failed: ${detail}.${savedSuffix}`
 }

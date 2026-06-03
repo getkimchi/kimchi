@@ -369,7 +369,7 @@ it("does not persist API-key login when model discovery rejects an invalid key",
 	await waitForMockCall(fakeIm.showError)
 
 	expect(fakeIm.showError).toHaveBeenCalledWith(
-		"Kimchi model refresh failed: Failed to fetch models: 401 Unauthorized. No changes were saved.",
+		"Invalid API key. Please check your key and try again. No changes were saved.",
 	)
 	expect(configModule.writeApiKey).not.toHaveBeenCalled()
 	expect(registry.authStorage.set).not.toHaveBeenCalled()
