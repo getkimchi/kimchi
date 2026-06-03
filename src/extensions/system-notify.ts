@@ -31,8 +31,8 @@ function isTerminalFocused(): boolean {
 	}
 }
 
-function shouldNotify(): boolean {
-	if (!readNotificationsEnabled()) return false
+function shouldNotify(notificationsEnabled: boolean): boolean {
+	if (!notificationsEnabled) return false
 	if (isTerminalFocused()) return false
 	const now = Date.now()
 	if (now - lastNotifyTime < COOLDOWN_MS) return false
@@ -98,6 +98,8 @@ function sendSystemNotification(body: string): void {
 }
 
 export default function systemNotifyExtension(pi: ExtensionAPI): void {
+	let notificationsEnabled = readNotificationsEnabled()
+
 	pi.registerCommand("notify", {
 		description: "Toggle system notifications for agent events (on|off)",
 		handler: async (args, ctx) => {
@@ -115,9 +117,10 @@ export default function systemNotifyExtension(pi: ExtensionAPI): void {
 			) {
 				enabled = false
 			} else {
-				enabled = !readNotificationsEnabled()
+				enabled = !notificationsEnabled
 			}
 			writeNotificationsEnabled(enabled)
+			notificationsEnabled = enabled
 			if (ctx.hasUI) {
 				ctx.ui.notify(`System notifications ${enabled ? "enabled" : "disabled"}`, "info")
 			}
@@ -125,7 +128,7 @@ export default function systemNotifyExtension(pi: ExtensionAPI): void {
 	})
 
 	pi.on("agent_end", async () => {
-		if (shouldNotify()) {
+		if (shouldNotify(notificationsEnabled)) {
 			const body = await buildBody("Agent ended work")
 			sendSystemNotification(body)
 		}
@@ -134,14 +137,14 @@ export default function systemNotifyExtension(pi: ExtensionAPI): void {
 	pi.on("tool_execution_start", async (event) => {
 		const e = event as { toolName: string }
 		if (e.toolName === "questionnaire" || e.toolName === "ask_user") {
-			if (!shouldNotify()) return
+			if (!shouldNotify(notificationsEnabled)) return
 			const body = await buildBody("Your input is needed")
 			sendSystemNotification(body)
 		}
 	})
 
 	pi.on("turn_end", async () => {
-		if (shouldNotify()) {
+		if (shouldNotify(notificationsEnabled)) {
 			const body = await buildBody("Agent responded")
 			sendSystemNotification(body)
 		}
