@@ -5,7 +5,7 @@ import {
 	type ConfiguredPackageEntry,
 	getOriginalPiConfiguredPackages,
 	isOriginalPiPackageLookupEnabled,
-} from "../pi-package-lookup.js"
+} from "../extensions/pi-package-lookup/index.js"
 import type { ResourceDefinition } from "./types.js"
 
 export interface PackageResourceRecord {

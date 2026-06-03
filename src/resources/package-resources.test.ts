@@ -15,13 +15,13 @@ const piLookupMocks = vi.hoisted(() => ({
 }))
 
 vi.mock("@earendil-works/pi-coding-agent", () => mocks)
-vi.mock("../pi-package-lookup.js", () => ({
+vi.mock("../extensions/pi-package-lookup/index.js", () => ({
 	...piLookupMocks,
 	PI_PACKAGE_LOOKUP_RESOURCE_ID: "extensions.pi-package-lookup",
 }))
 
 import { DefaultPackageManager } from "@earendil-works/pi-coding-agent"
-import { getOriginalPiConfiguredPackages } from "../pi-package-lookup.js"
+import { getOriginalPiConfiguredPackages } from "../extensions/pi-package-lookup/index.js"
 import {
 	discoverPackageResources,
 	packageResourceId,

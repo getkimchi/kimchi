@@ -3,14 +3,14 @@ import {
 	DefaultResourceLoader,
 	type LoadExtensionsResult,
 } from "@earendil-works/pi-coding-agent"
+import { getConfiguredPackageResourceRecords, isPathInsidePackage } from "../../resources/package-resources.js"
+import { isResourceEnabled } from "../../resources/store.js"
 import {
 	getPackageManagerPackageIdentities,
 	isOriginalPiPackageManager,
 	mergeResolvedPaths,
 	resolveOriginalPiPackageResources,
-} from "./pi-package-lookup.js"
-import { getConfiguredPackageResourceRecords, isPathInsidePackage } from "./resources/package-resources.js"
-import { isResourceEnabled } from "./resources/store.js"
+} from "./index.js"
 
 const INSTALLED = Symbol.for("kimchi.piNativeCompat.installed")
 const NORMALIZED = Symbol.for("kimchi.piNativeCompat.normalized")

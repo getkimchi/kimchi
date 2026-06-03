@@ -9,7 +9,7 @@ import {
 	isOriginalPiPackageLookupEnabled,
 	mergeResolvedPaths,
 	resolveOriginalPiPackageResources,
-} from "./pi-package-lookup.js"
+} from "./index.js"
 
 describe("original pi package lookup", () => {
 	let dir: string

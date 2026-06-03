@@ -1,6 +1,6 @@
 import type { LoadExtensionsResult } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
-import { filterDisabledPackageExtensions, normalizePiNativeExtensions } from "./pi-native-compat.js"
+import { filterDisabledPackageExtensions, normalizePiNativeExtensions } from "./native-compat.js"
 
 describe("pi native compatibility", () => {
 	it("adds legacy aliases to tool_result events for package adapters", async () => {

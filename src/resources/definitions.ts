@@ -1,4 +1,4 @@
-import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../pi-package-lookup.js"
+import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../extensions/pi-package-lookup/index.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
 import { discoverPackageResources } from "./package-resources.js"
 import type { ResourceDefinition, ResourceKind } from "./types.js"
