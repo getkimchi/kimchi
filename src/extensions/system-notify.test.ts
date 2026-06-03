@@ -2,6 +2,7 @@ import { execFile, execFileSync } from "node:child_process"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { readNotificationsEnabled, writeNotificationsEnabled } from "../config.js"
+import { asAppleScriptString } from "./system-notify.js"
 import systemNotifyExtension from "./system-notify.js"
 
 vi.mock("node:child_process", () => ({
@@ -99,6 +100,24 @@ describe("systemNotifyExtension", () => {
 		testTime += 100_000
 		vi.useFakeTimers({ toFake: ["Date"] })
 		vi.setSystemTime(testTime)
+	})
+
+	describe("asAppleScriptString", () => {
+		it("wraps plain text in double quotes", () => {
+			expect(asAppleScriptString("hello")).toBe('"hello"')
+		})
+
+		it("splits on double quotes and joins with quote constant", () => {
+			expect(asAppleScriptString('say "hi" there')).toBe('"say " & quote & "hi" & quote & " there"')
+		})
+
+		it("handles string starting with a quote", () => {
+			expect(asAppleScriptString('"quoted"')).toBe('"" & quote & "quoted" & quote & ""')
+		})
+
+		it("handles string with no quotes unchanged except wrapping", () => {
+			expect(asAppleScriptString("no quotes here")).toBe('"no quotes here"')
+		})
 	})
 
 	it("registers /notify command", () => {

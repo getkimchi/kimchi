@@ -59,12 +59,19 @@ async function buildBody(baseMessage: string): Promise<string> {
 	return `${baseMessage}\n${context}`
 }
 
+export function asAppleScriptString(s: string): string {
+	// AppleScript strings use " as delimiter and have no backslash escaping.
+	// Embed literal quotes via: "before" & quote & "after"
+	const parts = s.split('"').map((p) => `"${p}"`)
+	return parts.join(" & quote & ")
+}
+
 function sendSystemNotification(body: string): void {
 	if (process.platform === "darwin") {
 		// AppleScript display notification does not support a custom icon.
 		execFile(
 			"osascript",
-			["-e", `display notification ${JSON.stringify(body)} with title ${JSON.stringify(TITLE)}`],
+			["-e", `display notification ${asAppleScriptString(body)} with title ${asAppleScriptString(TITLE)}`],
 			(err) => {
 				if (err) {
 					// eslint-disable-next-line no-console
