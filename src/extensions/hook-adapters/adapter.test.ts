@@ -3,6 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setResourceOverride } from "../../resources/store.js"
 import claudeCodeHooksAdapter from "../claude-code-hook-adapter/index.js"
 import { parseCommandHookOutput, runCommandHook } from "./adapter.js"
 
@@ -115,6 +116,81 @@ describe("hook adapter command execution", () => {
 		)
 	})
 
+	it("passes Claude Code file_path alias for path-based tool inputs", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				PreToolUse: [{ matcher: "Write", hooks: [{ type: "command", command: "file-policy" }] }],
+			},
+		})
+		mockExecFileSync.mockReturnValueOnce("")
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		const event = {
+			type: "tool_call",
+			toolCallId: "1",
+			toolName: "write",
+			input: { path: "src/page.tsx", content: "export {}" },
+		}
+		await pi.handlers.tool_call[0](event, fakeCtx())
+
+		const payload = JSON.parse(mockExecFileSync.mock.calls[0][2].input)
+		expect(payload.tool_name).toBe("Write")
+		expect(payload.tool_input.path).toBe("src/page.tsx")
+		expect(payload.tool_input.file_path).toBe("src/page.tsx")
+		expect(event.input).toEqual({ path: "src/page.tsx", content: "export {}" })
+	})
+
+	it("skips disabled individual Claude Code hook resources", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				PreToolUse: [{ matcher: "Write", hooks: [{ type: "command", command: "file-policy" }] }],
+			},
+		})
+		setResourceOverride("hooks.claude-code.user.pre-tool-use.0", false)
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.tool_call[0](
+			{
+				type: "tool_call",
+				toolCallId: "1",
+				toolName: "write",
+				input: { path: "src/page.tsx", content: "export {}" },
+			},
+			fakeCtx(),
+		)
+
+		expect(mockExecFileSync).not.toHaveBeenCalled()
+	})
+
+	it("maps SKILL.md reads to Claude Code PostToolUse Skill hooks", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				PostToolUse: [{ matcher: "Skill", hooks: [{ type: "command", command: "skill-ack" }] }],
+			},
+		})
+		mockExecFileSync.mockReturnValueOnce("")
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.tool_result[0](
+			{
+				type: "tool_result",
+				toolCallId: "1",
+				toolName: "read",
+				input: { path: "/project/.claude/skills/typescript-safety/SKILL.md" },
+				content: [{ type: "text", text: "skill body" }],
+				isError: false,
+			},
+			fakeCtx(),
+		)
+
+		const payload = JSON.parse(mockExecFileSync.mock.calls[0][2].input)
+		expect(payload.tool_name).toBe("Skill")
+		expect(payload.tool_input).toEqual({ skill: "typescript-safety" })
+	})
+
 	it("sends a follow-up message when a Claude Code Stop hook requests continuation", async () => {
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			hooks: {
@@ -179,6 +255,23 @@ describe("hook adapter command execution", () => {
 			{ triggerTurn: false },
 		)
 		expect(pi.sendUserMessage).not.toHaveBeenCalled()
+	})
+
+	it("passes Claude Code user_prompt in UserPromptSubmit payloads", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				UserPromptSubmit: [{ hooks: [{ type: "command", command: "prompt-policy" }] }],
+			},
+		})
+		mockExecFileSync.mockReturnValueOnce("")
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.input[0]({ type: "input", text: "use best practices", source: "user" }, fakeCtx())
+
+		const payload = JSON.parse(mockExecFileSync.mock.calls[0][2].input)
+		expect(payload.prompt).toBe("use best practices")
+		expect(payload.user_prompt).toBe("use best practices")
 	})
 
 	it("spawns async handlers without waiting for stdout", () => {

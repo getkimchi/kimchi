@@ -1,5 +1,6 @@
 import { homedir } from "node:os"
-import { join, resolve } from "node:path"
+import { join } from "node:path"
+import { findClaudeProjectDir } from "../claude-code/paths.js"
 import {
 	type CommandHookAdapterDefinition,
 	type CommandHookSource,
@@ -29,9 +30,10 @@ export function discoverClaudeCodeHookResources(cwd = process.cwd()) {
 }
 
 function claudeCodeHookSources(cwd = process.cwd()): CommandHookSource[] {
+	const projectDir = findClaudeProjectDir(cwd)
 	return [
 		{ scope: "user", path: join(homedir(), ".claude", "settings.json") },
-		{ scope: "project", path: resolve(cwd, ".claude", "settings.json") },
-		{ scope: "local", path: resolve(cwd, ".claude", "settings.local.json") },
+		{ scope: "project", path: join(projectDir, ".claude", "settings.json") },
+		{ scope: "local", path: join(projectDir, ".claude", "settings.local.json") },
 	]
 }

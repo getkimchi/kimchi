@@ -13,6 +13,7 @@ import type {
 	ToolResultEvent,
 	TurnEndEvent,
 } from "@earendil-works/pi-coding-agent"
+import { isResourceEnabled } from "../../resources/store.js"
 import {
 	type CommandHookAdapterDefinition,
 	type CommandHookEventName,
@@ -184,7 +185,7 @@ function runPreToolUse(
 	const result = runMatchingHooks(definition, "PreToolUse", ctx, matcherCandidates(event.toolName), {
 		tool_name: externalName,
 		tool_use_id: event.toolCallId,
-		tool_input: event.input,
+		tool_input: claudeToolInput(event.input),
 	})
 	if (!result) return undefined
 	if (result.additionalContext) sendAdditionalContext(definition, pi, result.additionalContext, "steer")
@@ -199,14 +200,26 @@ function runPostToolUse(
 	event: ToolResultEvent,
 	ctx: ExtensionContext,
 ): HookToolResultEventResult | undefined {
-	const result = runMatchingHooks(definition, "PostToolUse", ctx, matcherCandidates(event.toolName), {
+	const basePayload = {
 		tool_name: externalToolName(event.toolName),
 		tool_use_id: event.toolCallId,
-		tool_input: event.input,
+		tool_input: claudeToolInput(event.input),
 		tool_response: event.content,
 		tool_output: textContent(event.content),
 		is_error: event.isError,
-	})
+	}
+	let result = runMatchingHooks(definition, "PostToolUse", ctx, matcherCandidates(event.toolName), basePayload)
+	const skillName = skillNameFromReadPath(event)
+	if (skillName) {
+		result = mergeOptionalResults(
+			result,
+			runMatchingHooks(definition, "PostToolUse", ctx, ["Skill"], {
+				...basePayload,
+				tool_name: "Skill",
+				tool_input: { skill: skillName },
+			}),
+		)
+	}
 	if (!result) return undefined
 	if (result.additionalContext) sendAdditionalContext(definition, pi, result.additionalContext, "steer")
 	if (result.block) {
@@ -263,6 +276,7 @@ function runUserPromptSubmit(
 ): InputEventResult | undefined {
 	const result = runMatchingHooks(definition, "UserPromptSubmit", ctx, [], {
 		prompt: event.text,
+		user_prompt: event.text,
 		source: event.source,
 	})
 	if (!result) return undefined
@@ -308,6 +322,7 @@ function runMatchingHooks(
 	const payload = basePayload(eventName, ctx, eventPayload)
 	let combined: HookCommandResult | undefined
 	for (const hook of discoverCommandHookResources(definition, ctx.cwd)) {
+		if (!isResourceEnabled(hook.id)) continue
 		if (hook.eventName !== eventName) continue
 		if (!matchesHook(hook, matcherValues, eventPayload)) continue
 		const result = runCommandHook(hook, payload, ctx.cwd)
@@ -343,6 +358,13 @@ function mergeResults(current: HookCommandResult | undefined, next: HookCommandR
 		updatedOutput: next.updatedOutput ?? current.updatedOutput,
 		additionalContext: [current.additionalContext, next.additionalContext].filter(Boolean).join("\n\n") || undefined,
 	}
+}
+
+function mergeOptionalResults(
+	current: HookCommandResult | undefined,
+	next: HookCommandResult | undefined,
+): HookCommandResult | undefined {
+	return next ? mergeResults(current, next) : current
 }
 
 function matchesHook(
@@ -415,6 +437,19 @@ function sendVisibleHookMessage(definition: CommandHookAdapterDefinition, pi: Ex
 
 function textContent(content: ToolResultEvent["content"]): string {
 	return content.map((part) => (part.type === "text" ? part.text : "[image]")).join("")
+}
+
+function claudeToolInput(input: Record<string, unknown>): Record<string, unknown> {
+	if (typeof input.path !== "string" || typeof input.file_path === "string") return input
+	return { ...input, file_path: input.path }
+}
+
+function skillNameFromReadPath(event: ToolResultEvent): string | undefined {
+	if (event.toolName !== "read" || event.isError) return undefined
+	const path = stringValue(event.input.path)
+	if (!path || !path.endsWith("/SKILL.md")) return undefined
+	const parts = path.split("/")
+	return parts.at(-2) || undefined
 }
 
 function lastAssistantText(message: TurnEndEvent["message"]): string | null {

@@ -113,14 +113,22 @@ Enable the adapter:
 kimchi resources enable extensions.claude-code-hook-adapter
 ```
 
-Restart Kimchi after enabling the adapter. Individual hook commands inside Claude Code config files are not shown separately in `/resources`.
+Restart Kimchi after enabling the adapter. Discovered Claude Code hook commands also appear under the Hooks tab in `/resources`, where they can be enabled or disabled individually.
 
-The adapter reads hooks from:
+If those hooks depend on Claude Code skills, enable the separate skill compatibility extension:
 
 ```bash
-~/.claude/settings.json
-.claude/settings.json
-.claude/settings.local.json
+kimchi resources enable extensions.claude-code-skills
+```
+
+That extension loads `~/.claude/skills` and the nearest project `.claude/skills` directory into Kimchi's native available-skills prompt, contributes them through Pi resource discovery so `/skill:name` works, and provides a Claude-compatible `Skill` tool for hooks that ask the model to invoke `Skill("name")`.
+
+The adapter reads hooks from the user config and the nearest ancestor project config:
+
+```bash
+~/.claude/settings.json       # user
+.claude/settings.json         # project
+.claude/settings.local.json   # local project
 ```
 
 It honors top-level `disableAllHooks: true`.

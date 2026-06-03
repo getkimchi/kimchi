@@ -1,5 +1,7 @@
+import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../extensions/claude-code-skills/definition.js"
 import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../extensions/pi-package-lookup/index.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
+import { discoverClaudeCodeHookResourceDefinitions } from "./claude-code-hook-resources.js"
 import { discoverPackageResources } from "./package-resources.js"
 import type { ResourceDefinition, ResourceKind } from "./types.js"
 
@@ -59,6 +61,14 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		restartRequired: true,
 	},
 	{
+		id: CLAUDE_CODE_SKILLS_RESOURCE_ID,
+		kind: "extensions",
+		label: "Claude Code skills",
+		description: "Load Claude Code skills from .claude/skills into Kimchi's native skill prompt.",
+		defaultEnabled: false,
+		restartRequired: true,
+	},
+	{
 		id: PI_PACKAGE_LOOKUP_RESOURCE_ID,
 		kind: "extensions",
 		label: "Pi package lookup",
@@ -86,13 +96,19 @@ export const TOOL_RESOURCE_IDS: Readonly<Record<string, string>> = {
 const staticDefinitionsById = new Map(STATIC_RESOURCE_DEFINITIONS.map((definition) => [definition.id, definition]))
 
 export function getResourceDefinitions(): ResourceDefinition[] {
-	return [...STATIC_RESOURCE_DEFINITIONS, ...discoverBashHookResources(), ...discoverPackageResources()]
+	return [
+		...STATIC_RESOURCE_DEFINITIONS,
+		...discoverBashHookResources(),
+		...discoverClaudeCodeHookResourceDefinitions(),
+		...discoverPackageResources(),
+	]
 }
 
 export function getResourceDefinition(id: string): ResourceDefinition | undefined {
 	return (
 		staticDefinitionsById.get(id) ??
 		discoverBashHookResources().find((definition) => definition.id === id) ??
+		discoverClaudeCodeHookResourceDefinitions().find((definition) => definition.id === id) ??
 		discoverPackageResources().find((definition) => definition.id === id)
 	)
 }
