@@ -50,10 +50,16 @@ export function discoverCommandHookResources(
 	cwd = process.cwd(),
 ): CommandHookResource[] {
 	const supported = new Set(definition.supportedEvents)
+	const sources = definition.sources(cwd).map((source) => ({
+		source,
+		config: existsSync(source.path) ? parseHooksConfig(source.path) : undefined,
+	}))
+	if (sources.some(({ config }) => config?.disableAllHooks)) return []
+
 	const resources: CommandHookResource[] = []
 
-	for (const source of definition.sources(cwd)) {
-		for (const resource of discoverCommandHooksInFile(definition, source, supported)) {
+	for (const { source, config } of sources) {
+		for (const resource of discoverCommandHooksInFile(definition, source, supported, config)) {
 			resources.push(resource)
 		}
 	}
@@ -65,10 +71,9 @@ function discoverCommandHooksInFile(
 	definition: CommandHookAdapterDefinition,
 	source: CommandHookSource,
 	supported: ReadonlySet<CommandHookEventName>,
+	config?: HookConfig,
 ): CommandHookResource[] {
-	if (!existsSync(source.path)) return []
-	const config = parseHooksConfig(source.path)
-	if (!config || config.disableAllHooks) return []
+	if (!config) return []
 
 	const resources: CommandHookResource[] = []
 	for (const [eventName, entries] of Object.entries(config.hooks)) {

@@ -137,6 +137,30 @@ describe("hook adapter command execution", () => {
 		expect(pi.sendUserMessage).toHaveBeenCalledWith("Run tests before stopping.", { deliverAs: "followUp" })
 	})
 
+	it("surfaces a Claude Code UserPromptSubmit denial reason without starting another turn", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				UserPromptSubmit: [{ hooks: [{ type: "command", command: "prompt-policy" }] }],
+			},
+		})
+		mockExecFileSync.mockReturnValueOnce(JSON.stringify({ decision: "deny", reason: "Do not share secrets." }))
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		const result = await pi.handlers.input[0]({ type: "input", text: "secret", source: "user" }, fakeCtx())
+
+		expect(result).toEqual({ action: "handled" })
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				content: "Do not share secrets.",
+				display: true,
+				details: expect.objectContaining({ blocked: true, source: "claude-code" }),
+			}),
+			{ triggerTurn: false },
+		)
+		expect(pi.sendUserMessage).not.toHaveBeenCalled()
+	})
+
 	it("spawns async handlers without waiting for stdout", () => {
 		const stdin = { end: vi.fn() }
 		mockSpawn.mockReturnValueOnce({ stdin, unref: vi.fn() })

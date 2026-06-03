@@ -250,7 +250,10 @@ function runUserPromptSubmit(
 	})
 	if (!result) return undefined
 	if (result.additionalContext) sendAdditionalContext(definition, pi, result.additionalContext, "steer")
-	if (result.block) return { action: "handled" }
+	if (result.block) {
+		if (result.reason) sendVisibleHookMessage(definition, pi, result.reason)
+		return { action: "handled" }
+	}
 	const prompt = stringValue(result.updatedInput?.prompt ?? result.updatedInput?.text)
 	return prompt === undefined ? undefined : { action: "transform", text: prompt, images: event.images }
 }
@@ -378,6 +381,18 @@ function sendAdditionalContext(
 			details: { source: definition.id },
 		},
 		{ deliverAs, triggerTurn: false },
+	)
+}
+
+function sendVisibleHookMessage(definition: CommandHookAdapterDefinition, pi: ExtensionAPI, content: string): void {
+	pi.sendMessage(
+		{
+			customType: definition.customType,
+			content,
+			display: true,
+			details: { source: definition.id, blocked: true },
+		},
+		{ triggerTurn: false },
 	)
 }
 
