@@ -103,6 +103,59 @@ exit 2
 
 Any other failure is treated as allow unchanged. This keeps a broken local hook from breaking the agent session.
 
+## Claude Code Adapter
+
+Claude Code hook format is not part of the kimchi core hook contract. Kimchi can run existing Claude Code command hooks through a disabled-by-default compatibility extension.
+
+Enable the adapter:
+
+```bash
+kimchi resources enable extensions.claude-code-hook-adapter
+```
+
+Restart Kimchi after enabling the adapter. Individual hook commands inside Claude Code config files are not shown separately in `/resources`.
+
+The adapter reads hooks from:
+
+```bash
+~/.claude/settings.json
+.claude/settings.json
+.claude/settings.local.json
+```
+
+It honors top-level `disableAllHooks: true`.
+
+Supported events:
+
+- `PreToolUse`
+- `PostToolUse`
+- `SessionStart`
+- `PreCompact`
+- `PostCompact`
+- `UserPromptSubmit`
+- `Stop`
+- `SessionEnd`
+
+Example:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/pre_tool_use.py"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
 ## Examples
 
 ### Rewrite `git status`

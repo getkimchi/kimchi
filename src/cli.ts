@@ -30,6 +30,7 @@ import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
+import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
@@ -504,6 +505,9 @@ try {
 			questionnaireExtension,
 			promptEnrichmentExtension(skillPaths),
 			rtkRewriteExtension,
+			...enabledExtensionFactories([
+				{ id: "extensions.claude-code-hook-adapter", factory: claudeCodeHooksAdapter },
+			] satisfies ManagedExtensionFactory[]),
 			permissionsExtension,
 			resourcesExtension,
 			resourceToolBlockerExtension,
