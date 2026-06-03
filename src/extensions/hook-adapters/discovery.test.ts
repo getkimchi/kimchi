@@ -70,6 +70,19 @@ describe("hook adapter discovery", () => {
 
 		expect(discoverClaudeCodeHookResources(join(dir, "project"))).toEqual([])
 	})
+
+	it("honors disableAllHooks even when hooks are omitted", () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			disableAllHooks: true,
+		})
+		writeJson(join(dir, "project", ".claude", "settings.json"), {
+			hooks: {
+				PreToolUse: [{ hooks: [{ type: "command", command: "project-guard" }] }],
+			},
+		})
+
+		expect(discoverClaudeCodeHookResources(join(dir, "project"))).toEqual([])
+	})
 })
 
 function writeJson(path: string, data: unknown): void {

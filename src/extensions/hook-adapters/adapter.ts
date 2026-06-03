@@ -52,7 +52,7 @@ type HookToolResultEventResult = {
 
 export function createCommandHookAdapter(definition: CommandHookAdapterDefinition): (pi: ExtensionAPI) => void {
 	return (pi) => {
-		let stopHookActive = false
+		let stopHookFollowUpPending = false
 
 		pi.on("tool_call", (event, ctx) => runPreToolUse(definition, pi, event, ctx))
 		pi.on("tool_result", (event, ctx) => runPostToolUse(definition, pi, event, ctx))
@@ -65,13 +65,14 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 		})
 		pi.on("session_before_compact", (event, ctx) => runPreCompact(definition, pi, event, ctx))
 		pi.on("input", (event, ctx) => {
-			stopHookActive = false
 			return runUserPromptSubmit(definition, pi, event, ctx)
 		})
 		pi.on("turn_end", (event, ctx) => {
+			const stopHookActive = stopHookFollowUpPending
 			const result = runStop(definition, event, ctx, stopHookActive)
+			if (stopHookActive) stopHookFollowUpPending = false
 			if (result?.block && result.reason && !stopHookActive) {
-				stopHookActive = true
+				stopHookFollowUpPending = true
 				pi.sendUserMessage(result.reason, { deliverAs: "followUp" })
 			}
 		})
@@ -88,14 +89,30 @@ export function runCommandHook(
 ): HookCommandResult {
 	const input = `${JSON.stringify(payload)}\n`
 	if (hook.async) {
-		const child = spawn(shellBinary(), shellArgs(hook.command), {
-			cwd,
-			env: hookEnv(payload),
-			stdio: ["pipe", "ignore", "ignore"],
-			detached: true,
-		})
-		child.stdin.end(input)
-		child.unref()
+		try {
+			const child = spawn(shellBinary(), shellArgs(hook.command), {
+				cwd,
+				env: hookEnv(payload),
+				stdio: ["pipe", "ignore", "ignore"],
+				detached: true,
+			})
+			child.on("error", () => {})
+			let timeout: NodeJS.Timeout | undefined
+			const clearKillTimer = () => {
+				if (timeout) clearTimeout(timeout)
+				timeout = undefined
+			}
+			timeout = setTimeout(() => {
+				child.kill()
+			}, hook.timeoutMs)
+			timeout.unref?.()
+			child.once("exit", clearKillTimer)
+			child.once("close", clearKillTimer)
+			child.stdin.end(input)
+			child.unref()
+		} catch {
+			return {}
+		}
 		return {}
 	}
 

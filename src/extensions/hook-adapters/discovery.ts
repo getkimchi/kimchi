@@ -113,9 +113,9 @@ function discoverCommandHooksInFile(
 function parseHooksConfig(path: string): HookConfig | undefined {
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf-8"))
-		if (!isRecord(parsed) || !isRecord(parsed.hooks)) return undefined
+		if (!isRecord(parsed)) return undefined
 		return {
-			hooks: parsed.hooks,
+			hooks: isRecord(parsed.hooks) ? parsed.hooks : {},
 			disableAllHooks: parsed.disableAllHooks === true,
 		}
 	} catch {

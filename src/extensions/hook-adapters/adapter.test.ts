@@ -31,6 +31,7 @@ describe("hook adapter command execution", () => {
 	})
 
 	afterEach(() => {
+		vi.useRealTimers()
 		if (oldHome === undefined) {
 			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.HOME
@@ -137,6 +138,25 @@ describe("hook adapter command execution", () => {
 		expect(pi.sendUserMessage).toHaveBeenCalledWith("Run tests before stopping.", { deliverAs: "followUp" })
 	})
 
+	it("keeps Stop hook active across an intervening input event", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				Stop: [{ hooks: [{ type: "command", command: "continue" }] }],
+			},
+		})
+		mockExecFileSync.mockReturnValue(JSON.stringify({ decision: "block", reason: "Continue once." }))
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.turn_end[0](turnEndEvent(1), fakeCtx())
+		await pi.handlers.input[0]({ type: "input", text: "follow-up", source: "user" }, fakeCtx())
+		await pi.handlers.turn_end[0](turnEndEvent(2), fakeCtx())
+
+		expect(pi.sendUserMessage).toHaveBeenCalledTimes(1)
+		const secondStopPayload = JSON.parse(mockExecFileSync.mock.calls[1][2].input)
+		expect(secondStopPayload.stop_hook_active).toBe(true)
+	})
+
 	it("surfaces a Claude Code UserPromptSubmit denial reason without starting another turn", async () => {
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			hooks: {
@@ -162,14 +182,57 @@ describe("hook adapter command execution", () => {
 	})
 
 	it("spawns async handlers without waiting for stdout", () => {
-		const stdin = { end: vi.fn() }
-		mockSpawn.mockReturnValueOnce({ stdin, unref: vi.fn() })
+		const child = fakeChild()
+		mockSpawn.mockReturnValueOnce(child)
 
 		runCommandHook({ command: "notify", async: true, timeoutMs: 1000 }, { hook_event_name: "SessionEnd" }, dir)
 
 		expect(mockSpawn).toHaveBeenCalledOnce()
 		expect(mockExecFileSync).not.toHaveBeenCalled()
-		expect(stdin.end).toHaveBeenCalled()
+		expect(child.stdin.end).toHaveBeenCalled()
+		expect(child.on).toHaveBeenCalledWith("error", expect.any(Function))
+		expect(child.once).toHaveBeenCalledWith("exit", expect.any(Function))
+		expect(child.once).toHaveBeenCalledWith("close", expect.any(Function))
+	})
+
+	it("swallows async spawn failures", () => {
+		mockSpawn.mockImplementationOnce(() => {
+			throw new Error("spawn failed")
+		})
+
+		expect(
+			runCommandHook({ command: "notify", async: true, timeoutMs: 1000 }, { hook_event_name: "SessionEnd" }, dir),
+		).toEqual({})
+	})
+
+	it("kills async handlers after their timeout", () => {
+		vi.useFakeTimers()
+		const child = fakeChild()
+		mockSpawn.mockReturnValueOnce(child)
+
+		runCommandHook({ command: "notify", async: true, timeoutMs: 1000 }, { hook_event_name: "SessionEnd" }, dir)
+		vi.advanceTimersByTime(999)
+		expect(child.kill).not.toHaveBeenCalled()
+
+		vi.advanceTimersByTime(1)
+		expect(child.kill).toHaveBeenCalledOnce()
+	})
+
+	it("clears async handler timeout when the process closes", () => {
+		vi.useFakeTimers()
+		const child = fakeChild()
+		const callbacks: Record<string, () => void> = {}
+		child.once.mockImplementation((event: string, handler: () => void) => {
+			callbacks[event] = handler
+			return child
+		})
+		mockSpawn.mockReturnValueOnce(child)
+
+		runCommandHook({ command: "notify", async: true, timeoutMs: 1000 }, { hook_event_name: "SessionEnd" }, dir)
+		callbacks.close()
+		vi.advanceTimersByTime(1000)
+
+		expect(child.kill).not.toHaveBeenCalled()
 	})
 })
 
@@ -198,5 +261,24 @@ function fakeCtx() {
 		cwd: join(dir, "project"),
 		model: { id: "test-model" },
 		sessionManager: { getSessionId: () => "session-1" },
+	}
+}
+
+function turnEndEvent(turnIndex: number) {
+	return {
+		type: "turn_end",
+		turnIndex,
+		message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+		toolResults: [],
+	}
+}
+
+function fakeChild() {
+	return {
+		stdin: { end: vi.fn() },
+		unref: vi.fn(),
+		on: vi.fn(),
+		once: vi.fn(),
+		kill: vi.fn(),
 	}
 }
