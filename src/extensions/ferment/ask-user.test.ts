@@ -275,6 +275,25 @@ describe("normalizeAskUserQuestions", () => {
 		if (result.ok) return
 		expect(result.error).toContain("confirm")
 	})
+
+	it("rejects confirm questions that set allowOther instead of silently dropping it", () => {
+		const result = normalizeAskUserQuestions([{ id: "ok", type: "confirm", prompt: "Proceed?", allowOther: true }])
+		expect(result.ok).toBe(false)
+		if (result.ok) return
+		expect(result.error).toContain("allowOther")
+	})
+
+	it("reports an unknown type as a tool error rather than throwing", () => {
+		expect(() =>
+			normalizeAskUserQuestions([{ id: "bad", type: "bogus", prompt: "Which?", options: [{ id: "x", label: "X" }] }]),
+		).not.toThrow()
+		const result = normalizeAskUserQuestions([
+			{ id: "bad", type: "bogus", prompt: "Which?", options: [{ id: "x", label: "X" }] },
+		])
+		expect(result.ok).toBe(false)
+		if (result.ok) return
+		expect(result.error).toMatch(/Unknown question type/)
+	})
 })
 
 describe("askJudge", () => {

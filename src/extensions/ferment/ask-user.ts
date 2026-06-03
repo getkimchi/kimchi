@@ -172,17 +172,31 @@ export type NormalizeAskUserResult = { ok: true; questions: AskUserQuestion[] } 
 
 /** Normalize the agent-facing question type to the internal radio/checkbox/text
  *  vocabulary. `single`→radio, `multi`→checkbox, `text`→text, and `confirm`→a
- *  Yes/No radio. `confirm` is always Yes/No and must not carry options; supplying
- *  them is rejected rather than silently rewritten, so a bad tool call surfaces. */
+ *  Yes/No radio. `confirm` is always Yes/No and must not carry options or
+ *  `allowOther`; supplying either is rejected rather than silently rewritten, so a
+ *  bad tool call surfaces. An unknown `type` is reported as a tool error rather
+ *  than thrown, matching the `propose_ferment_scoping` path. */
 export function normalizeAskUserQuestions(questions: ReadonlyArray<RawAskUserQuestion>): NormalizeAskUserResult {
 	const normalized: AskUserQuestion[] = []
 	for (const q of questions) {
-		const { type, isConfirm } = toScopingQuestionType(q.type)
+		let normalizedType: NormalizedScopingType
+		try {
+			normalizedType = toScopingQuestionType(q.type)
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) }
+		}
+		const { type, isConfirm } = normalizedType
 		if (isConfirm) {
 			if ((q.options?.length ?? 0) > 0) {
 				return {
 					ok: false,
 					error: `Question "${q.id}" is type "confirm" and must not have options — confirm is always Yes/No.`,
+				}
+			}
+			if (q.allowOther) {
+				return {
+					ok: false,
+					error: `Question "${q.id}" is type "confirm" and must not set allowOther — confirm is always Yes/No.`,
 				}
 			}
 			normalized.push({ ...q, type, options: YES_NO_OPTIONS })
