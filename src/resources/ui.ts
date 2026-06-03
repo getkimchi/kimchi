@@ -190,5 +190,32 @@ function setSelectedResource(list: SettingsList, items: SettingItem[], id: strin
 	if (!id) return
 	const index = items.findIndex((item) => item.id === id)
 	if (index < 0) return
-	;(list as unknown as { selectedIndex: number }).selectedIndex = index
+	const target = selectedIndexTarget(list)
+	if (!target) return
+	target.selectedIndex = index
+}
+
+type SelectedIndexTarget = { selectedIndex: number }
+
+function selectedIndexTarget(list: SettingsList): SelectedIndexTarget | undefined {
+	const candidate = list as unknown
+	if (!isRecord(candidate)) return undefined
+	if (typeof candidate.selectedIndex !== "number") return undefined
+	const descriptor = propertyDescriptor(candidate, "selectedIndex")
+	if (descriptor?.writable !== true && descriptor?.set === undefined) return undefined
+	return candidate as unknown as SelectedIndexTarget
+}
+
+function propertyDescriptor(value: object, key: PropertyKey): PropertyDescriptor | undefined {
+	let current: object | null = value
+	while (current) {
+		const descriptor = Object.getOwnPropertyDescriptor(current, key)
+		if (descriptor) return descriptor
+		current = Object.getPrototypeOf(current)
+	}
+	return undefined
+}
+
+function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
+	return value !== null && typeof value === "object"
 }

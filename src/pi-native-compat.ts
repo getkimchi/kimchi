@@ -86,13 +86,26 @@ export function installPiNativeCompatibilityShim(): void {
 }
 
 export function normalizePiNativeExtensions(result: LoadExtensionsResult): LoadExtensionsResult {
-	for (const extension of result.extensions as ExtensionWithMarker[]) {
-		if (extension[NORMALIZED]) continue
-		normalizeToolResultHandlers(extension.handlers)
-		aliasBeforeProviderResponse(extension.handlers)
-		extension[NORMALIZED] = true
+	return {
+		...result,
+		extensions: result.extensions.map((extension) =>
+			hasNormalizedMarker(extension) ? extension : normalizedExtension(extension),
+		),
 	}
-	return result
+}
+
+function hasNormalizedMarker(extension: LoadExtensionsResult["extensions"][number]): boolean {
+	return (extension as ExtensionWithMarker)[NORMALIZED] === true
+}
+
+function normalizedExtension(
+	extension: LoadExtensionsResult["extensions"][number],
+): LoadExtensionsResult["extensions"][number] {
+	const copy = { ...extension, handlers: new Map(extension.handlers) } as ExtensionWithMarker
+	normalizeToolResultHandlers(copy.handlers)
+	aliasBeforeProviderResponse(copy.handlers)
+	copy[NORMALIZED] = true
+	return copy
 }
 
 export function filterDisabledPackageExtensions(
@@ -117,13 +130,17 @@ export function filterDisabledPackageExtensions(
 			.flatMap((extension) => [extension.path, extension.resolvedPath].filter((path) => typeof path === "string")),
 	)
 
-	result.runtime.pendingProviderRegistrations = result.runtime.pendingProviderRegistrations.filter(
+	const pendingProviderRegistrations = result.runtime.pendingProviderRegistrations.filter(
 		(registration) =>
 			!disabledExtensionPaths.has(registration.extensionPath) && !isDisabledPackagePath(registration.extensionPath),
 	)
 
 	return {
 		...result,
+		runtime: {
+			...result.runtime,
+			pendingProviderRegistrations,
+		},
 		extensions: result.extensions.filter((extension) => !isDisabledPackageExtension(extension)),
 		errors: result.errors.filter((error) => !isDisabledPackagePath(error.path)),
 	}

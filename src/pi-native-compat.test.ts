@@ -7,8 +7,8 @@ describe("pi native compatibility", () => {
 		const handler = vi.fn(async () => undefined)
 		const result = loadResultWithHandlers("tool_result", [handler])
 
-		normalizePiNativeExtensions(result)
-		await result.extensions[0].handlers.get("tool_result")?.[0](
+		const normalized = normalizePiNativeExtensions(result)
+		await normalized.extensions[0].handlers.get("tool_result")?.[0](
 			{
 				type: "tool_result",
 				toolName: "bash",
@@ -19,6 +19,8 @@ describe("pi native compatibility", () => {
 			{},
 		)
 
+		expect(normalized.extensions[0]).not.toBe(result.extensions[0])
+		expect(result.extensions[0].handlers.get("tool_result")?.[0]).toBe(handler)
 		expect(handler).toHaveBeenCalledWith(
 			expect.objectContaining({
 				params: { command: "pwd" },
@@ -33,8 +35,8 @@ describe("pi native compatibility", () => {
 		const legacy = vi.fn(async () => undefined)
 		const result = loadResultWithHandlers("before_provider_response", [legacy])
 
-		normalizePiNativeExtensions(result)
-		await result.extensions[0].handlers.get("after_provider_response")?.[0](
+		const normalized = normalizePiNativeExtensions(result)
+		await normalized.extensions[0].handlers.get("after_provider_response")?.[0](
 			{
 				type: "after_provider_response",
 				status: 200,
@@ -43,6 +45,7 @@ describe("pi native compatibility", () => {
 			{},
 		)
 
+		expect(result.extensions[0].handlers.has("after_provider_response")).toBe(false)
 		expect(legacy).toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "before_provider_response",
@@ -57,11 +60,11 @@ describe("pi native compatibility", () => {
 		const handler = vi.fn(async () => undefined)
 		const result = loadResultWithHandlers("tool_result", [handler])
 
-		normalizePiNativeExtensions(result)
-		const wrapped = result.extensions[0].handlers.get("tool_result")?.[0]
-		normalizePiNativeExtensions(result)
+		const normalized = normalizePiNativeExtensions(result)
+		const wrapped = normalized.extensions[0].handlers.get("tool_result")?.[0]
+		const normalizedAgain = normalizePiNativeExtensions(normalized)
 
-		expect(result.extensions[0].handlers.get("tool_result")?.[0]).toBe(wrapped)
+		expect(normalizedAgain.extensions[0].handlers.get("tool_result")?.[0]).toBe(wrapped)
 	})
 
 	it("filters disabled package extensions and provider registrations", () => {
@@ -91,7 +94,11 @@ describe("pi native compatibility", () => {
 
 		expect(filtered.extensions.map((extension) => extension.path)).toEqual(["/packages/other/extensions/index.js"])
 		expect(filtered.errors).toEqual([])
-		expect(result.runtime.pendingProviderRegistrations.map((registration) => registration.name)).toEqual(["other"])
+		expect(filtered.runtime.pendingProviderRegistrations.map((registration) => registration.name)).toEqual(["other"])
+		expect(result.runtime.pendingProviderRegistrations.map((registration) => registration.name)).toEqual([
+			"ctx",
+			"other",
+		])
 	})
 
 	it("filters disabled package provider registrations by disabled extension path when no package root is known", () => {
@@ -102,13 +109,20 @@ describe("pi native compatibility", () => {
 			extensionPath: "/somewhere/context-mode.js",
 		})
 
-		filterDisabledPackageExtensions(
+		const filtered = filterDisabledPackageExtensions(
 			result,
 			[{ id: "plugins.package.npm-context-mode", source: "npm:context-mode", scope: "user", origin: "kimchi" }],
 			() => false,
 		)
 
-		expect(result.runtime.pendingProviderRegistrations).toEqual([])
+		expect(filtered.runtime.pendingProviderRegistrations).toEqual([])
+		expect(result.runtime.pendingProviderRegistrations).toEqual([
+			{
+				name: "ctx",
+				config: {},
+				extensionPath: "/somewhere/context-mode.js",
+			},
+		])
 	})
 })
 
