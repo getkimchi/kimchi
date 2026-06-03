@@ -1,7 +1,15 @@
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
+import { discoverPackageResources } from "./package-resources.js"
 import type { ResourceDefinition, ResourceKind } from "./types.js"
 
 export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
+	{
+		id: "hooks.bash",
+		kind: "hooks",
+		label: "Bash hooks",
+		description: "Enable Bash hook scripts discovered from hooks/bash directories.",
+		defaultEnabled: true,
+	},
 	{
 		id: "hooks.rtk-rewrite",
 		kind: "hooks",
@@ -61,11 +69,15 @@ export const TOOL_RESOURCE_IDS: Readonly<Record<string, string>> = {
 const staticDefinitionsById = new Map(STATIC_RESOURCE_DEFINITIONS.map((definition) => [definition.id, definition]))
 
 export function getResourceDefinitions(): ResourceDefinition[] {
-	return [...STATIC_RESOURCE_DEFINITIONS, ...discoverBashHookResources()]
+	return [...STATIC_RESOURCE_DEFINITIONS, ...discoverBashHookResources(), ...discoverPackageResources()]
 }
 
 export function getResourceDefinition(id: string): ResourceDefinition | undefined {
-	return staticDefinitionsById.get(id) ?? discoverBashHookResources().find((definition) => definition.id === id)
+	return (
+		staticDefinitionsById.get(id) ??
+		discoverBashHookResources().find((definition) => definition.id === id) ??
+		discoverPackageResources().find((definition) => definition.id === id)
+	)
 }
 
 export function getResourcesByKind(kind: ResourceKind): ResourceDefinition[] {

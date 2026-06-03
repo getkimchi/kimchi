@@ -65,19 +65,22 @@ export class ResourceManagerComponent {
 		this.tui.requestRender()
 	}
 
-	private createList(): SettingsList {
-		return new SettingsList(
-			resourceItems(this.activeTab),
+	private createList(selectedId?: string): SettingsList {
+		const items = resourceItems(this.activeTab)
+		const list = new SettingsList(
+			items,
 			12,
 			getSettingsListTheme(),
 			(id, value) => {
 				setResourceOverride(id, value === VALUE_ENABLED)
-				this.list = this.createList()
+				this.list = this.createList(id)
 				this.tui.requestRender()
 			},
 			this.done,
 			{ enableSearch: false },
 		)
+		setSelectedResource(list, items, selectedId)
+		return list
 	}
 
 	private renderTabs(): string {
@@ -181,4 +184,11 @@ function resourceLabel(resource: ResourceDefinition, tab: ResourceTab): string {
 function resourceDescription(resource: ResourceDefinition): string {
 	const scope = resource.restartRequired ? "Applies after restart." : "Applies immediately."
 	return `${resource.id} — ${scope} ${resource.description}`
+}
+
+function setSelectedResource(list: SettingsList, items: SettingItem[], id: string | undefined): void {
+	if (!id) return
+	const index = items.findIndex((item) => item.id === id)
+	if (index < 0) return
+	;(list as unknown as { selectedIndex: number }).selectedIndex = index
 }
