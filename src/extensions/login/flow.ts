@@ -239,6 +239,11 @@ async function configureKimchiToken(
 		host.modelRegistry.refresh()
 	} catch (error) {
 		refreshError ??= error
+		if (options.strictFreshDiscovery) {
+			restoreKimchiAuth(host.modelRegistry, previousCredential)
+			host.showError?.(formatKimchiTokenError(error, { saved: false }))
+			return false
+		}
 	}
 
 	let providerModels: ProviderModelLike[] = []
@@ -282,7 +287,7 @@ export async function performKimchiApiKeyLogin(
 
 	try {
 		host.showStatus?.(`Refreshing Kimchi models from ${endpoint}...`)
-		return configureKimchiToken(host, token, endpoint, {
+		return await configureKimchiToken(host, token, endpoint, {
 			strictFreshDiscovery: true,
 			persistConfig: () => writeApiKey(token, undefined, { llmEndpoint: endpoint }),
 		})
