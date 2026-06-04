@@ -1,13 +1,22 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { loadProjectContextFiles } from "./context-files.js"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+const FAKE_AGENT_DIR = join(tmpdir(), `kimchi-global-context-${Date.now()}`)
+const tmpBase = join(tmpdir(), `kimchi-project-context-${Date.now()}`)
+const nested = join(tmpBase, "a", "b", "c")
+
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+	const actual = (await importOriginal()) as Record<string, unknown>
+	return { ...actual, getAgentDir: () => FAKE_AGENT_DIR }
+})
+
+import { loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 
 describe("loadProjectContextFiles", () => {
-	const tmpBase = join(import.meta.dirname, "__test_tmp_context__")
-	const nested = join(tmpBase, "a", "b", "c")
-
 	beforeEach(() => {
+		rmSync(tmpBase, { recursive: true, force: true })
 		mkdirSync(nested, { recursive: true })
 	})
 
@@ -106,5 +115,53 @@ describe("loadProjectContextFiles", () => {
 		expect(inTmp).toHaveLength(1)
 		expect(inTmp[0].path).toBe(join(nested, "AGENTS.md"))
 		expect(inTmp[0].content).toBe("agents wins")
+	})
+})
+
+describe("loadGlobalContextFiles", () => {
+	beforeEach(() => {
+		rmSync(FAKE_AGENT_DIR, { recursive: true, force: true })
+		rmSync(tmpBase, { recursive: true, force: true })
+		mkdirSync(FAKE_AGENT_DIR, { recursive: true })
+	})
+
+	afterEach(() => {
+		rmSync(FAKE_AGENT_DIR, { recursive: true, force: true })
+		rmSync(tmpBase, { recursive: true, force: true })
+	})
+
+	it("returns empty array when no global context files exist", () => {
+		const result = loadGlobalContextFiles()
+		expect(result).toEqual([])
+	})
+
+	it("discovers AGENTS.md in agent dir", () => {
+		writeFileSync(join(FAKE_AGENT_DIR, "AGENTS.md"), "# Global rules")
+		const result = loadGlobalContextFiles()
+		expect(result).toHaveLength(1)
+		expect(result[0].path).toBe(join(FAKE_AGENT_DIR, "AGENTS.md"))
+		expect(result[0].content).toBe("# Global rules")
+	})
+
+	it("appends AGENTS.local.md content to AGENTS.md when both exist", () => {
+		writeFileSync(join(FAKE_AGENT_DIR, "AGENTS.md"), "global shared agents")
+		writeFileSync(join(FAKE_AGENT_DIR, "AGENTS.local.md"), "global local agents")
+		const result = loadGlobalContextFiles()
+		expect(result).toHaveLength(1)
+		expect(result[0].path).toBe(join(FAKE_AGENT_DIR, "AGENTS.md"))
+		expect(result[0].content).toBe("global shared agents\n\nglobal local agents")
+	})
+
+	it("returns global files before project files when combined", () => {
+		mkdirSync(nested, { recursive: true })
+		writeFileSync(join(FAKE_AGENT_DIR, "AGENTS.md"), "global first")
+		writeFileSync(join(nested, "AGENTS.md"), "project second")
+		const globalResult = loadGlobalContextFiles()
+		const projectResult = loadProjectContextFiles(nested)
+		const combined = [...globalResult, ...projectResult]
+		const inTmp = combined.filter((f) => f.path.startsWith(FAKE_AGENT_DIR) || f.path.startsWith(tmpBase))
+		expect(inTmp).toHaveLength(2)
+		expect(inTmp[0].content).toBe("global first")
+		expect(inTmp[1].content).toBe("project second")
 	})
 })

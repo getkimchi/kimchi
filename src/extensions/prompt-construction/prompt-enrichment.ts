@@ -51,7 +51,7 @@ import { ModelRegistry } from "../orchestration/model-registry/index.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
 import { getModelRoles, modelIdFromRef, splitModelRef, validateModelRoles } from "../orchestration/model-roles.js"
 import { getCurrentPhase } from "../tags.js"
-import { type ContextFile, loadProjectContextFiles } from "./context-files.js"
+import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { type EnvironmentInfo, type PromptMode, type ToolInfo, buildSystemPrompt } from "./system-prompt.js"
 
 function expandSkillPaths(configuredPaths: string[], cwd: string): string[] {
@@ -456,7 +456,7 @@ export default function (skillPaths: string[]) {
 		pi.on("before_agent_start", async (_event, ctx) => {
 			const activeToolNames = new Set(pi.getActiveTools())
 			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
-			cachedContextFiles ??= loadProjectContextFiles(ctx.cwd)
+			cachedContextFiles ??= [...loadGlobalContextFiles(), ...loadProjectContextFiles(ctx.cwd)]
 			if (cachedSkills === undefined) {
 				const allSkillPaths = [
 					...expandSkillPaths(skillPaths, ctx.cwd),
