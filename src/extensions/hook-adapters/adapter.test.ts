@@ -150,6 +150,36 @@ describe("hook adapter command execution", () => {
 		)
 	})
 
+	it("defers SessionStart additional context until action methods are available", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				SessionStart: [{ matcher: "startup", hooks: [{ type: "command", command: "session-context" }] }],
+			},
+		})
+		mockExecFileSync.mockReturnValueOnce("remember startup")
+		const pi = fakePi()
+		let runtimeReady = false
+		pi.sendMessage.mockImplementation(() => {
+			if (!runtimeReady) {
+				throw new Error("Extension runtime not initialized. Action methods cannot be called during extension loading.")
+			}
+		})
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.session_start[0]({ type: "session_start", reason: "startup" }, fakeCtx())
+
+		expect(mockExecFileSync).toHaveBeenCalledOnce()
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+
+		runtimeReady = true
+		await flushDeferredActions()
+
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ content: "remember startup", display: false }),
+			{ deliverAs: "nextTurn", triggerTurn: false },
+		)
+	})
+
 	it("passes Claude Code file_path alias for path-based tool inputs", async () => {
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			hooks: {
@@ -464,4 +494,8 @@ function fakeChild() {
 		once: vi.fn(),
 		kill: vi.fn(),
 	}
+}
+
+function flushDeferredActions(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, 0))
 }

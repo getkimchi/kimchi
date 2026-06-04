@@ -14,6 +14,7 @@ import type {
 	TurnEndEvent,
 } from "@earendil-works/pi-coding-agent"
 import { isResourceEnabled } from "../../resources/store.js"
+import { deferExtensionAction } from "../deferred-action.js"
 import {
 	type CommandHookAdapterDefinition,
 	type CommandHookEventName,
@@ -248,7 +249,11 @@ function runSessionStart(
 ): void {
 	const source = event.type === "session_compact" ? "compact" : sessionStartSource(event.reason)
 	const result = runMatchingHooks(definition, "SessionStart", ctx, [source], { source })
-	if (result?.additionalContext) sendAdditionalContext(definition, pi, result.additionalContext, "nextTurn")
+	const additionalContext = result?.additionalContext
+	if (!additionalContext) return
+	const send = () => sendAdditionalContext(definition, pi, additionalContext, "nextTurn")
+	if (event.type === "session_compact") send()
+	else deferExtensionAction(send)
 }
 
 function runPreCompact(

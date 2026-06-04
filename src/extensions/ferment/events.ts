@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { clearFermentCache } from "../../ferment/store.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { deferExtensionAction } from "../deferred-action.js"
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { decideContinuation } from "./continuation.js"
@@ -239,7 +240,6 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (isAgentWorker()) {
-			applyFermentToolProfile(pi, "worker")
 			return
 		}
 		runtime.setContinuationPolicy(ctx?.hasUI ? "manual" : "automated")
@@ -263,15 +263,16 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			pendingOneshot = false
 			clearActiveFermentId()
 
+			const storage = runtime.getStorage()
+			const ferment = storage.get(envId)
+			if (!ferment || ferment.status === "complete" || ferment.status === "abandoned") {
+				runtime.setActive(undefined)
+				return
+			}
+
 			if (ctx?.hasUI && ctx.ui?.select) {
 				// F27: ask user before auto-resuming so the planner doesn't
 				// hijack the session before they're ready.
-				const storage = runtime.getStorage()
-				const ferment = storage.get(envId)
-				if (!ferment) {
-					setActiveFermentAndApplyProfile(pi, runtime, undefined)
-					return
-				}
 				const activePhase = ferment.phases.find((p) => p.id === ferment.activePhaseId)
 				const activeStep = activePhase?.steps.find((s) => s.status === "running" || s.status === "pending")
 				const phaseInfo = activePhase ? ` — Phase ${activePhase.index}/${ferment.phases.length}` : ""
@@ -283,20 +284,21 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 				const choice = await ctx.ui.select(banner, ["Resume", "Leave paused"])
 				runtime.markHumanInput()
 				if (choice === "Resume") {
-					resumeFerment(pi, envId, ctx, runtime)
+					deferExtensionAction(() => resumeFerment(pi, envId, ctx, runtime))
 				} else {
-					loadFermentSilently(pi, envId, runtime)
+					deferExtensionAction(() => {
+						loadFermentSilently(pi, envId, runtime)
+					})
 				}
 			} else {
-				resumeFerment(pi, envId, ctx, runtime)
+				deferExtensionAction(() => resumeFerment(pi, envId, ctx, runtime))
 			}
 		} else if (pi.getFlag("ferment-oneshot") === true) {
 			pendingOneshot = true
 			runtime.setActive(undefined)
-			applyFermentToolProfile(pi, "oneshot-planner")
 		} else {
 			pendingOneshot = false
-			setActiveFermentAndApplyProfile(pi, runtime, undefined)
+			runtime.setActive(undefined)
 		}
 	})
 

@@ -10,6 +10,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { deferExtensionAction } from "../deferred-action.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { TriggerEngine } from "./engine.js"
 import { EvalEngine } from "./eval-engine.js"
@@ -77,11 +78,15 @@ export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[
 		currentTurnIndex = 0
 		const sessionContext = resolveSessionContext(sessionSpecs, ctx.cwd, options.resolverIO)
 		const events = engine.evaluateSessionTriggers(sessionContext, currentTurnIndex)
-		for (const e of events) {
-			pi.appendEntry<BehaviourLoadedData>(BEHAVIOUR_LOADED_TYPE, {
-				name: e.name,
-				trigger: e.trigger,
-				turnIndex: e.turnIndex,
+		if (events.length > 0) {
+			deferExtensionAction(() => {
+				for (const e of events) {
+					pi.appendEntry<BehaviourLoadedData>(BEHAVIOUR_LOADED_TYPE, {
+						name: e.name,
+						trigger: e.trigger,
+						turnIndex: e.turnIndex,
+					})
+				}
 			})
 		}
 	})

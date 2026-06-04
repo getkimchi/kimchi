@@ -75,7 +75,7 @@ describe("registerFermentEvents", () => {
 		expect(pi.appendEntry).not.toHaveBeenCalled()
 	})
 
-	it("applies the oneshot planner profile during session_start before first input", async () => {
+	it("stages oneshot planner mode during session_start and applies tools before first agent run", async () => {
 		const storage = { list: vi.fn(() => []) } as unknown as FermentEventStore
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
@@ -105,6 +105,14 @@ describe("registerFermentEvents", () => {
 		await sessionStart({}, { hasUI: false })
 
 		expect(runtime.setActive).toHaveBeenCalledWith(undefined)
+		expect(pi.getAllTools).not.toHaveBeenCalled()
+		expect(pi.setActiveTools).not.toHaveBeenCalled()
+
+		const beforeAgentStart = handlers.get("before_agent_start")
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		await beforeAgentStart({ systemPrompt: "base" }, {})
+
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
 		expect(lastCall).not.toContain("bash")
 		expect(lastCall).toContain("read")
