@@ -23,6 +23,7 @@ describe("hook adapter command execution", () => {
 	beforeEach(() => {
 		dir = join(tmpdir(), `kimchi-hook-adapter-runtime-${process.pid}-${Math.random().toString(16).slice(2)}`)
 		mkdirSync(dir, { recursive: true })
+		mkdirSync(join(dir, "project", ".claude"), { recursive: true })
 		oldHome = process.env.HOME
 		oldAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
 		process.env.HOME = join(dir, "home")

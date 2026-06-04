@@ -5,7 +5,6 @@ import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { z } from "zod"
-import { findClaudeProjectDir } from "../claude-code/paths.js"
 
 export const CLAUDE_CODE_SKILLS_RESOURCE_ID = "extensions.claude-code-skills"
 
@@ -25,10 +24,14 @@ const SkillFrontmatterSchema = z
 type SkillFrontmatter = z.infer<typeof SkillFrontmatterSchema>
 
 export function discoverClaudeCodeSkillDirs(cwd = process.cwd()): string[] {
-	const dirs = [
-		join(homedir(), ".claude", "skills"),
-		join(findClaudeProjectDir(cwd, ["skills", "settings.json", "settings.local.json"]), ".claude", "skills"),
-	]
+	const projectDir = resolve(cwd)
+	if (!existsSync(join(projectDir, ".claude"))) return []
+
+	const homeDir = homedir()
+	const dirs = [join(homeDir, ".claude", "skills")]
+	if (resolve(projectDir) !== resolve(homeDir)) {
+		dirs.push(join(projectDir, ".claude", "skills"))
+	}
 
 	const seen = new Set<string>()
 	const result: string[] = []

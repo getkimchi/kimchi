@@ -35,7 +35,7 @@ export default function claudeCodeSkillsExtension(pi: ExtensionAPI): void {
 		name: "Skill",
 		label: "Skill",
 		description:
-			"Claude Code compatibility tool. Loads a named Claude Code skill from ~/.claude/skills or the nearest project .claude/skills directory.",
+			"Claude Code compatibility tool. Loads a named Claude Code skill from ~/.claude/skills or the current project .claude/skills directory when cwd contains .claude.",
 		promptSnippet: "Load a Claude Code skill by name",
 		parameters: SkillToolSchema,
 		prepareArguments(args): SkillToolArgs {

@@ -33,20 +33,27 @@ describe("Claude Code skill discovery", () => {
 		rmSync(dir, { recursive: true, force: true })
 	})
 
-	it("discovers user and nearest-project Claude Code skill directories", () => {
+	it("discovers user and current-project Claude Code skill directories", () => {
 		const userSkills = join(dir, "home", ".claude", "skills")
 		const projectSkills = join(dir, "project", ".claude", "skills")
 		writeSkill(join(userSkills, "user-only", "SKILL.md"))
 		writeSkill(join(projectSkills, "project-only", "SKILL.md"))
 
-		expect(discoverClaudeCodeSkillDirs(join(dir, "project", ".claude"))).toEqual([userSkills, projectSkills])
+		expect(discoverClaudeCodeSkillDirs(join(dir, "project"))).toEqual([userSkills, projectSkills])
 	})
 
 	it("does not return missing or duplicate skill directories", () => {
 		const skills = join(dir, "home", ".claude", "skills")
 		writeSkill(join(skills, "shared", "SKILL.md"))
 
-		expect(discoverClaudeCodeSkillDirs(join(dir, "home", ".claude", "skills", "shared"))).toEqual([skills])
+		expect(discoverClaudeCodeSkillDirs(join(dir, "home"))).toEqual([skills])
+	})
+
+	it("does not discover Claude Code skill directories without cwd .claude", () => {
+		const project = join(dir, "project")
+		writeSkill(join(project, ".claude", "skills", "typescript-safety", "SKILL.md"))
+
+		expect(discoverClaudeCodeSkillDirs(join(project, "src"))).toEqual([])
 	})
 
 	it("materializes Claude Code skill directories into sanitized cache paths", () => {
@@ -109,7 +116,7 @@ describe("Claude Code skill discovery", () => {
 		expect(getClaudeCodeSkillResourcePaths(cwd)).toEqual([])
 	})
 
-	it("does not materialize Claude Code skills already present in ancestor native project skills", () => {
+	it("does not materialize Claude Code skills from an ancestor .claude directory", () => {
 		const project = join(dir, "project")
 		const cwd = join(project, "src", "feature")
 		writeSkill(join(project, ".agents", "skills", "typescript-safety", "SKILL.md"))

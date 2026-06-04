@@ -24,7 +24,7 @@ describe("Claude Code hook discovery", () => {
 		rmSync(dir, { recursive: true, force: true })
 	})
 
-	it("does not treat user Claude settings as project hooks when cwd is under home", () => {
+	it("does not load user Claude settings when cwd lacks .claude", () => {
 		const home = process.env.HOME ?? ""
 		const cwd = join(home, "work", "project")
 		mkdirSync(cwd, { recursive: true })
@@ -41,12 +41,7 @@ describe("Claude Code hook discovery", () => {
 
 		const resources = discoverClaudeCodeHookResources(cwd)
 
-		expect(resources.map((resource) => resource.id)).toEqual(["hooks.claude-code.user.session-start.0"])
-		expect(resources[0]).toMatchObject({
-			scope: "user",
-			path: join(home, ".claude", "settings.json"),
-			command: "load-context",
-		})
+		expect(resources).toEqual([])
 	})
 })
 

@@ -46,7 +46,7 @@ describe("hook adapter discovery", () => {
 		expect(hooks.find((hook) => hook.eventName === "PreToolUse")?.matcher).toBe("Bash|Read")
 	})
 
-	it("discovers project Claude Code hooks when cwd is inside .claude", () => {
+	it("does not discover project Claude Code hooks when cwd is inside .claude", () => {
 		writeJson(join(dir, "project", ".claude", "settings.json"), {
 			hooks: {
 				UserPromptSubmit: [{ hooks: [{ type: "command", command: "prompt-policy" }] }],
@@ -56,13 +56,11 @@ describe("hook adapter discovery", () => {
 
 		const hooks = discoverClaudeCodeHookResources(join(dir, "project", ".claude"))
 
-		expect(hooks.map((hook) => hook.id)).toEqual([
-			"hooks.claude-code.project.pre-tool-use.0",
-			"hooks.claude-code.project.user-prompt-submit.0",
-		])
+		expect(hooks).toEqual([])
 	})
 
 	it("honors disableAllHooks in JSON hook configs", () => {
+		mkdirSync(join(dir, "project", ".claude"), { recursive: true })
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			disableAllHooks: true,
 			hooks: {

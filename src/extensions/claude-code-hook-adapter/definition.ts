@@ -1,6 +1,6 @@
+import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
-import { findClaudeProjectDir } from "../claude-code/paths.js"
 import {
 	type CommandHookAdapterDefinition,
 	type CommandHookSource,
@@ -31,7 +31,8 @@ export function discoverClaudeCodeHookResources(cwd = process.cwd()) {
 
 function claudeCodeHookSources(cwd = process.cwd()): CommandHookSource[] {
 	const homeDir = homedir()
-	const projectDir = findClaudeProjectDir(cwd)
+	const projectDir = resolve(cwd)
+	if (!existsSync(join(projectDir, ".claude"))) return []
 	const sources: CommandHookSource[] = [{ scope: "user", path: join(homeDir, ".claude", "settings.json") }]
 	if (resolve(projectDir) !== resolve(homeDir)) {
 		sources.push(

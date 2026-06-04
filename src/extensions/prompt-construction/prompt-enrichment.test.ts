@@ -299,8 +299,8 @@ describe("prompt enrichment Claude Code skills", () => {
 		rmSync(dir, { recursive: true, force: true })
 	})
 
-	it("injects nearest-project Claude Code skills when the extension is enabled", async () => {
-		const cwd = join(dir, "project", ".claude")
+	it("injects current-project Claude Code skills when the extension is enabled", async () => {
+		const cwd = join(dir, "project")
 		writeSkill(join(dir, "project", ".claude", "skills", "typescript-safety", "SKILL.md"), {
 			description: "Use safe TypeScript patterns before editing TypeScript files.",
 		})
@@ -316,6 +316,25 @@ describe("prompt enrichment Claude Code skills", () => {
 		expect(result.systemPrompt).toContain("<available_skills>")
 		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
 		expect(result.systemPrompt).toContain("Use safe TypeScript patterns")
+	})
+
+	it("does not inject ancestor Claude Code skills without cwd .claude", async () => {
+		const project = join(dir, "project")
+		const cwd = join(project, "src")
+		writeSkill(join(project, ".claude", "skills", "typescript-safety", "SKILL.md"), {
+			description: "Use safe TypeScript patterns before editing TypeScript files.",
+		})
+		setResourceOverride(CLAUDE_CODE_SKILLS_RESOURCE_ID, true)
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{},
+			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).not.toContain("<available_skills>")
+		expect(result.systemPrompt).not.toContain("typescript-safety")
 	})
 
 	it("injects sanitized Claude Code skills when .claude/skills is configured", async () => {

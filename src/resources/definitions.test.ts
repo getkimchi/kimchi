@@ -29,6 +29,7 @@ describe("resource definitions", () => {
 	})
 
 	it("surfaces Claude Code hooks as individual hook resources", () => {
+		mkdirSync(join(dir, ".claude"), { recursive: true })
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			hooks: {
 				SessionStart: [{ hooks: [{ type: "command", command: "load-context" }] }],
