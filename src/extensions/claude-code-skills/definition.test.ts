@@ -88,6 +88,15 @@ describe("Claude Code skill discovery", () => {
 		expect(getClaudeCodeSkillResourcePaths(cwd)).toEqual([])
 	})
 
+	it("does not materialize Claude Code skills already present in ancestor native project skills", () => {
+		const project = join(dir, "project")
+		const cwd = join(project, "src", "feature")
+		writeSkill(join(project, ".agents", "skills", "typescript-safety", "SKILL.md"))
+		writeSkill(join(project, ".claude", "skills", "typescript-safety", "SKILL.md"))
+
+		expect(getClaudeCodeSkillResourcePaths(cwd)).toEqual([])
+	})
+
 	it("does not materialize Claude Code skills already present in configured skill paths", () => {
 		const cwd = join(dir, "project")
 		writeSkill(join(cwd, ".custom", "skills", "typescript-safety", "SKILL.md"))

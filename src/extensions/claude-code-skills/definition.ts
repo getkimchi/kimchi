@@ -245,9 +245,10 @@ function getNativeSkillNames(cwd: string, configuredSkillPaths: string[]): Set<s
 }
 
 function discoverNativeSkillDirs(cwd: string): string[] {
+	const ancestorAgentsSkills = findNearestAncestorSkillDir(cwd, join(".agents", "skills"))
 	const dirs = [
 		resolve(cwd, ".pi", "skills"),
-		resolve(cwd, ".agents", "skills"),
+		...(ancestorAgentsSkills ? [ancestorAgentsSkills] : []),
 		join(homedir(), ".config", "kimchi", "harness", "skills"),
 		join(homedir(), ".pi", "agent", "skills"),
 		join(homedir(), ".agents", "skills"),
@@ -262,6 +263,17 @@ function discoverNativeSkillDirs(cwd: string): string[] {
 		result.push(resolved)
 	}
 	return result
+}
+
+function findNearestAncestorSkillDir(cwd: string, relativeSkillDir: string): string | undefined {
+	let dir = resolve(cwd)
+	while (true) {
+		const skillDir = join(dir, relativeSkillDir)
+		if (existsSync(skillDir)) return skillDir
+		const parent = dirname(dir)
+		if (parent === dir) return undefined
+		dir = parent
+	}
 }
 
 function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
@@ -323,23 +335,19 @@ function readSkillName(skillDir: string): string {
 	try {
 		const content = readFileSync(join(skillDir, "SKILL.md"), "utf-8")
 		const frontmatter = splitFrontmatter(content)
-		const name = frontmatter ? readFrontmatterScalar(frontmatter.frontmatter, "name") : undefined
+		const name = frontmatter ? readSkillFrontmatterName(frontmatter.frontmatter) : undefined
 		return normalizeSkillName(name ?? fallbackName, fallbackName)
 	} catch {
 		return normalizeSkillName(fallbackName)
 	}
 }
 
-function readFrontmatterScalar(frontmatter: string, key: string): string | undefined {
+function readSkillFrontmatterName(frontmatter: string): string | undefined {
 	for (const line of frontmatter.split(/\r?\n/)) {
-		const keyValue = new RegExp(`^${escapeRegExp(key)}:\\s*(.*)$`).exec(line)
+		const keyValue = /^name:\s*(.*)$/.exec(line)
 		if (keyValue === null) continue
 		const value = keyValue[1].trim()
 		if (value === "" || isBlockScalar(value)) return undefined
 		return stripOuterQuotes(value)
 	}
-}
-
-function escapeRegExp(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
