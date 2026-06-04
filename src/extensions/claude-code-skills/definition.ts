@@ -246,11 +246,11 @@ function getNativeSkillNames(cwd: string, configuredSkillPaths: string[]): Set<s
 
 function discoverNativeSkillDirs(cwd: string): string[] {
 	const dirs = [
+		resolve(cwd, ".pi", "skills"),
+		resolve(cwd, ".agents", "skills"),
 		join(homedir(), ".config", "kimchi", "harness", "skills"),
 		join(homedir(), ".pi", "agent", "skills"),
 		join(homedir(), ".agents", "skills"),
-		...discoverAncestorSkillDirs(cwd, join(".pi", "skills")),
-		...discoverAncestorSkillDirs(cwd, join(".agents", "skills")),
 	]
 
 	const seen = new Set<string>()
@@ -262,17 +262,6 @@ function discoverNativeSkillDirs(cwd: string): string[] {
 		result.push(resolved)
 	}
 	return result
-}
-
-function discoverAncestorSkillDirs(cwd: string, relativeSkillDir: string): string[] {
-	const dirs: string[] = []
-	let dir = resolve(cwd)
-	while (true) {
-		dirs.push(join(dir, relativeSkillDir))
-		const parent = dirname(dir)
-		if (parent === dir) return dirs
-		dir = parent
-	}
 }
 
 function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {

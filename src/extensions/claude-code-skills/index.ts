@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, isAbsolute, join, resolve } from "node:path"
+import { isAbsolute, join, resolve } from "node:path"
 import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent"
 import { getAgentDir, loadSkills, loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
@@ -113,7 +113,7 @@ function findNativeSkill(cwd: string, name: string): Skill | undefined {
 function getNativeSkillSearchPaths(cwd: string, configuredSkillPaths: string[]): string[] {
 	const paths = [
 		resolve(cwd, ".pi", "skills"),
-		...discoverAncestorSkillDirs(cwd, join(".agents", "skills")),
+		resolve(cwd, ".agents", "skills"),
 		...expandConfiguredSkillPaths(configuredSkillPaths, cwd).filter((path) => !isClaudeSkillPath(path)),
 		join(homedir(), ".config", "kimchi", "harness", "skills"),
 		join(homedir(), ".pi", "agent", "skills"),
@@ -144,29 +144,6 @@ function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
 		}
 	}
 	return expanded
-}
-
-function discoverAncestorSkillDirs(cwd: string, relativeSkillDir: string): string[] {
-	const dirs: string[] = []
-	let dir = resolve(cwd)
-	const gitRoot = findGitRepoRoot(dir)
-	while (true) {
-		dirs.push(join(dir, relativeSkillDir))
-		if (gitRoot && dir === gitRoot) return dirs
-		const parent = dirname(dir)
-		if (parent === dir) return dirs
-		dir = parent
-	}
-}
-
-function findGitRepoRoot(startDir: string): string | undefined {
-	let dir = resolve(startDir)
-	while (true) {
-		if (existsSync(join(dir, ".git"))) return dir
-		const parent = dirname(dir)
-		if (parent === dir) return undefined
-		dir = parent
-	}
 }
 
 function isClaudeSkillPath(path: string): boolean {
