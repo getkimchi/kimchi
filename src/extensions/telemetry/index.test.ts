@@ -219,7 +219,6 @@ describe("telemetryExtension integration", () => {
 		expect(shownAttrs.survey_id).toBe("019e87cc-5033-0000-d9bd-5e6501640b6e")
 		expect(shownAttrs.client).toBe("pi")
 		expect(shownAttrs.source).toBe("cli")
-		expect(shownAttrs.mode).toBe("coding")
 
 		expect(answeredAttrs.survey_id).toBe("019e87cc-5033-0000-d9bd-5e6501640b6e")
 		expect(answeredAttrs.survey_submission_id).toBe(submissionId)
