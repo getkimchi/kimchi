@@ -52,7 +52,7 @@ describe("survey telemetry", () => {
 	})
 
 	it("emits survey_shown with the survey id", async () => {
-		const ctx = new SessionContext(makeConfig(), "cli", "coding")
+		const ctx = new SessionContext(makeConfig(), "cli")
 
 		emitSurveyShown(ctx, { survey: TEST_SURVEY })
 
@@ -65,13 +65,12 @@ describe("survey telemetry", () => {
 		expect(attrMap["session.id"]).toBe(ctx.sessionId)
 		expect(attrMap.client).toBe("pi")
 		expect(attrMap.source).toBe("cli")
-		expect(attrMap.mode).toBe("coding")
 
 		await ctx.drain()
 	})
 
 	it("emits survey_answered with the abstract survey response fields", async () => {
-		const ctx = new SessionContext(makeConfig(), "cli", "coding")
+		const ctx = new SessionContext(makeConfig(), "cli")
 
 		emitSurveyAnswered(ctx, { survey: TEST_SURVEY, submissionId: "submission-1", answerId: "mostly_worked" })
 
@@ -90,7 +89,7 @@ describe("survey telemetry", () => {
 	})
 
 	it("does not emit survey_answered for an unknown answer id", async () => {
-		const ctx = new SessionContext(makeConfig(), "cli", "coding")
+		const ctx = new SessionContext(makeConfig(), "cli")
 
 		emitSurveyAnswered(ctx, { survey: TEST_SURVEY, submissionId: "submission-1", answerId: "unknown" })
 
@@ -100,7 +99,7 @@ describe("survey telemetry", () => {
 	})
 
 	it("emits survey_dismissed with the survey id", async () => {
-		const ctx = new SessionContext(makeConfig(), "cli", "coding")
+		const ctx = new SessionContext(makeConfig(), "cli")
 
 		emitSurveyDismissed(ctx, { survey: TEST_SURVEY })
 
@@ -115,7 +114,7 @@ describe("survey telemetry", () => {
 	})
 
 	it("emits triggered survey events with the survey response fields", async () => {
-		const ctx = new SessionContext(makeConfig(), "cli", "ferment")
+		const ctx = new SessionContext(makeConfig(), "cli")
 
 		emitSurveyShown(ctx, { survey: TEST_SURVEY, trigger: "ferment_completed" })
 		emitSurveyAnswered(ctx, {
