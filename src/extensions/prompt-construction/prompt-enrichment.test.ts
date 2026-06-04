@@ -564,3 +564,122 @@ describe("deprecated model notification", () => {
 		)
 	})
 })
+
+describe("continuation nudge turn_end handler", () => {
+	beforeEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	function buildNudgeHandlers() {
+		const handlerMap = new Map<string, Array<(event: unknown, ctx?: unknown) => Promise<unknown> | unknown>>()
+		const sendMessageCalls: Array<{ message: unknown; options: unknown }> = []
+
+		vi.spyOn(agentWorkerContext, "isAgentWorker").mockReturnValue(false)
+		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
+		vi.spyOn(config, "loadConfig").mockReturnValue({
+			apiKey: "",
+			agentConfigDir: "",
+			llmEndpoint: "",
+			customLlmEndpoint: undefined,
+			maxToolResultChars: 0,
+			mcpSearchLimit: 5,
+			mcpSearch: {
+				strategy: "bm25" as const,
+				bm25K1: 1.2,
+				bm25B: 0.75,
+				fieldWeights: { name: 6, description: 2, schemaKey: 1 },
+			},
+			onboarding: {},
+			deviceId: "test",
+		})
+
+		const pi = {
+			registerFlag: () => {},
+			registerCommand: () => {},
+			on: (event: string, handler: (event: unknown, ctx?: unknown) => Promise<unknown> | unknown) => {
+				const list = handlerMap.get(event) ?? []
+				list.push(handler)
+				handlerMap.set(event, list)
+			},
+			getAllTools: () => [],
+			getActiveTools: () => [],
+			getFlag: () => false,
+			sendMessage: (message: unknown, options: unknown) => {
+				sendMessageCalls.push({ message, options })
+			},
+			events: { on: () => {}, emit: () => {} },
+		} as unknown as ExtensionAPI
+
+		promptEnrichmentExtension([])(pi)
+
+		const fire = async (event: string, payload: unknown) => {
+			const handlers = handlerMap.get(event) ?? []
+			for (const h of handlers) await h(payload)
+		}
+
+		return { fire, sendMessageCalls }
+	}
+
+	function makeAssistantWithStop(
+		content: AssistantMessage["content"],
+		stopReason: AssistantMessage["stopReason"] = "stop",
+	): AssistantMessage {
+		return { ...makeAssistant(content), stopReason }
+	}
+
+	it("sends a continuation nudge on a text-only turn with no tools called", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Simulate user input to reset the nudge state.
+		await fire("input", { source: "user" })
+
+		// Model responds with text-only, stopReason "stop".
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "I will delegate this." }]),
+		})
+
+		// A continuation nudge should have been sent.
+		expect(sendMessageCalls.length).toBe(1)
+		expect((sendMessageCalls[0].message as { customType?: string }).customType).toBe("nudge")
+	})
+
+	it("does not send a second nudge when model responds to nudge with stopReason 'stop'", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Simulate user input.
+		await fire("input", { source: "user" })
+
+		// First text-only turn triggers the continuation nudge.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "I will delegate this." }]),
+		})
+		expect(sendMessageCalls.length).toBe(1)
+
+		// Model responds to the nudge with text and stopReason "stop".
+		// The handler should NOT send a second nudge.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "OK, I am done." }]),
+		})
+		expect(sendMessageCalls.length).toBe(1) // no new nudge
+	})
+
+	it("falls through to second nudge when model responds with non-stop stopReason", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		await fire("input", { source: "user" })
+
+		// First text-only turn triggers the continuation nudge.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "I will delegate this." }]),
+		})
+		expect(sendMessageCalls.length).toBe(1)
+
+		// Model responds with stopReason "length" (e.g. output truncated).
+		// The handler should allow a second nudge since the model did not
+		// intentionally stop.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "text", text: "I was going to say..." }], "length"),
+		})
+		expect(sendMessageCalls.length).toBe(2)
+	})
+})

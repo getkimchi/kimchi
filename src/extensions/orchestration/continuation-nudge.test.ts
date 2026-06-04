@@ -197,6 +197,42 @@ describe("ContinuationNudge.isDoneSignalReceived", () => {
 	})
 })
 
+describe("ContinuationNudge nudge-response-pending state", () => {
+	it("marks nudge response pending after evaluateTurn fires", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		expect(guard.isNudgeResponsePending()).toBe(false)
+		guard.evaluateTurn(textOnlyMessage)
+		expect(guard.isNudgeResponsePending()).toBe(true)
+	})
+
+	it("remains pending when model responds without tool calls (handler must check stopReason)", () => {
+		// After a nudge fires and the model responds with text-only (no <done>),
+		// isNudgeResponsePending() stays true because recordToolCall() is never
+		// called. The turn_end handler in prompt-enrichment.ts checks stopReason
+		// to decide whether to honour the stop or send another nudge.
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		guard.evaluateTurn(textOnlyMessage) // first nudge fires
+		expect(guard.isNudgeResponsePending()).toBe(true)
+		// Model responds with text but not <done>; no tool calls recorded.
+		guard.accumulateResponse("I am done with the task.")
+		expect(guard.isNudgeResponsePending()).toBe(true)
+		expect(guard.isDoneSignalReceived()).toBe(false)
+		// At this point the handler checks stopReason === "stop" to break
+		// the nudge cycle instead of falling through to evaluateTurn again.
+	})
+
+	it("clears pending state when model calls a tool after nudge", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		guard.evaluateTurn(textOnlyMessage) // nudge fires
+		expect(guard.isNudgeResponsePending()).toBe(true)
+		guard.recordToolCall() // model obeyed the nudge
+		expect(guard.isNudgeResponsePending()).toBe(false)
+	})
+})
+
 describe("ContinuationNudge Agent-pending suppression", () => {
 	it("suppresses the nudge when an Agent call is pending", () => {
 		const guard = new ContinuationNudge()

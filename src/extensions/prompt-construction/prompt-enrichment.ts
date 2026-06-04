@@ -387,25 +387,31 @@ export default function (skillPaths: string[]) {
 
 			pi.on("turn_end", async (event) => {
 				if (event.message.role !== "assistant") return
+				// Safe after the role guard: AgentMessage with role "assistant" is AssistantMessage.
+				const assistantMsg = event.message as AssistantMessage
 
 				// Mark each delegation tool call so the continuation nudge stays
 				// suppressed until all delegated-agent results have been received.
 				// A single turn may contain multiple parallel agent calls.
-				for (const c of event.message.content) {
+				for (const c of assistantMsg.content) {
 					if (c.type === "toolCall" && isDelegationToolCallName((c as { name?: string }).name)) {
 						continuationNudge.markDelegationCall()
 					}
 				}
 
 				if (continuationNudge.isNudgeResponsePending()) {
-					if (continuationNudge.isDoneSignalReceived()) {
+					if (continuationNudge.isDoneSignalReceived() || assistantMsg.stopReason === "stop") {
+						// The model either explicitly sent the <done> signal or ended its
+						// turn with stopReason "stop" (intentional end-of-turn). Either
+						// way, respect the stop — do not send another nudge that would
+						// trigger a new turn and make the model think it received user input.
 						return
 					}
 					// While a continuation nudge response is pending, the model is already
 					// in a recovery cycle. Skip empty-turn nudge here to avoid sending
 					// mixed instructions ("call a tool" vs "summarize or continue").
 					// Fall through to continuationNudge.evaluateTurn below.
-				} else if (emptyTurnNudge.evaluateTurn(event.message)) {
+				} else if (emptyTurnNudge.evaluateTurn(assistantMsg)) {
 					pi.sendMessage(
 						{ customType: NUDGE_CUSTOM_TYPE, content: EMPTY_TURN_NUDGE_TEXT, display: false },
 						{ deliverAs: "followUp" },
@@ -413,7 +419,7 @@ export default function (skillPaths: string[]) {
 					return
 				}
 
-				if (!continuationNudge.evaluateTurn(event.message)) return
+				if (!continuationNudge.evaluateTurn(assistantMsg)) return
 				pi.sendMessage(
 					{
 						customType: NUDGE_CUSTOM_TYPE,
