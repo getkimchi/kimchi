@@ -61,7 +61,7 @@ describe("handlers/tools", () => {
 
 	describe("read tool", () => {
 		it("emits tool_result and kimchi.file_read with language and file_hash", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli", "coding")
+			const ctx = new SessionContext(makeConfig(), "cli")
 			ctx.currentModel = "claude-3-5-sonnet"
 			const toolCallId = "tc-read-1"
 
@@ -84,11 +84,10 @@ describe("handlers/tools", () => {
 			expect(fileRead?.attrs.file_hash).toMatch(/^[0-9a-f]{12}$/)
 			expect(fileRead?.attrs.model).toBe("claude-3-5-sonnet")
 			expect(fileRead?.attrs.source).toBe("cli")
-			expect(fileRead?.attrs.mode).toBe("coding")
 		})
 
 		it("does NOT emit kimchi.file_read when path is empty", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli", "coding")
+			const ctx = new SessionContext(makeConfig(), "cli")
 			const toolCallId = "tc-read-2"
 
 			handleToolExecutionStart(ctx, { toolCallId, toolName: "read", args: {} })
@@ -109,7 +108,7 @@ describe("handlers/tools", () => {
 
 	describe("write tool", () => {
 		it("emits tool_result and kimchi.file_written with lines_added, language, file_hash", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli", "coding")
+			const ctx = new SessionContext(makeConfig(), "cli")
 			const toolCallId = "tc-write-1"
 
 			handleToolExecutionStart(ctx, {
@@ -141,7 +140,7 @@ describe("handlers/tools", () => {
 
 	describe("edit tool", () => {
 		it("emits tool_result and kimchi.file_edited with file_hash, language, lines_added, lines_deleted", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli", "coding")
+			const ctx = new SessionContext(makeConfig(), "cli")
 			const toolCallId = "tc-edit-1"
 
 			handleToolExecutionStart(ctx, {
@@ -174,7 +173,7 @@ describe("handlers/tools", () => {
 
 	describe("bash tool", () => {
 		it("emits tool_result and kimchi.command_executed", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli", "coding")
+			const ctx = new SessionContext(makeConfig(), "cli")
 			const toolCallId = "tc-bash-1"
 
 			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "ls -la" } })
@@ -196,11 +195,15 @@ describe("handlers/tools", () => {
 		})
 
 		it("emits kimchi.error on tool failure", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli", "coding")
+			const ctx = new SessionContext(makeConfig(), "cli")
 			const toolCallId = "tc-bash-err"
 
 			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "false" } })
-			handleToolExecutionEnd(ctx, { toolCallId, isError: true, result: "command failed with exit code 1" })
+			handleToolExecutionEnd(ctx, {
+				toolCallId,
+				isError: true,
+				result: { content: [{ type: "text", text: "command failed with exit code 1" }] },
+			})
 
 			ctx.flushLogBuffer()
 			await Promise.allSettled([...ctx.inFlight])
@@ -228,7 +231,7 @@ describe("handlers/tools", () => {
 
 	describe("cumulative metrics", () => {
 		it("accumulates commit count for bash git commit", () => {
-			const ctx = new SessionContext(makeConfig(), "cli", "coding")
+			const ctx = new SessionContext(makeConfig(), "cli")
 			const toolCallId = "tc-commit"
 
 			handleToolExecutionStart(ctx, {
@@ -242,7 +245,7 @@ describe("handlers/tools", () => {
 		})
 
 		it("accumulates LOC for edit tool", () => {
-			const ctx = new SessionContext(makeConfig(), "cli", "coding")
+			const ctx = new SessionContext(makeConfig(), "cli")
 			const toolCallId = "tc-edit-loc"
 
 			handleToolExecutionStart(ctx, {
@@ -263,7 +266,7 @@ describe("handlers/tools", () => {
 
 	describe("tool usage & duration tracking", () => {
 		it("accumulates tool usage count for each tool call", () => {
-			const ctx = new SessionContext(makeConfig(), "cli", "coding")
+			const ctx = new SessionContext(makeConfig(), "cli")
 
 			handleToolExecutionStart(ctx, { toolCallId: "b1", toolName: "bash", args: { command: "ls" } })
 			handleToolExecutionEnd(ctx, { toolCallId: "b1", isError: false })
@@ -277,7 +280,7 @@ describe("handlers/tools", () => {
 		})
 
 		it("records tool start times and cleans them up on end", () => {
-			const ctx = new SessionContext(makeConfig(), "cli", "coding")
+			const ctx = new SessionContext(makeConfig(), "cli")
 
 			handleToolExecutionStart(ctx, { toolCallId: "b1", toolName: "bash", args: { command: "ls" } })
 			expect(ctx.toolStartTimes.has("b1")).toBe(true)
@@ -293,7 +296,7 @@ describe("handlers/tools", () => {
 
 	describe("edge cases", () => {
 		it("ignores toolCallId not found in pendingArgs", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli", "coding")
+			const ctx = new SessionContext(makeConfig(), "cli")
 			// No start call, just end — should not throw
 			handleToolExecutionEnd(ctx, { toolCallId: "unknown-id", isError: false })
 

@@ -105,6 +105,7 @@ describe("telemetryExtension integration", () => {
 
 		const mockExtCtx = { model: { id: "claude-opus-4-6" } }
 		await getHandler(handlers, "session_start")({}, mockExtCtx)
+		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, mockExtCtx)
 
 		await getHandler(
 			handlers,
@@ -137,6 +138,7 @@ describe("telemetryExtension integration", () => {
 		})
 		const eventNames = allRecords.map((r) => r.eventName)
 		expect(eventNames).toContain("session.start")
+		expect(eventNames).toContain("user_message")
 		expect(eventNames).toContain("api_request")
 		expect(eventNames).toContain("tool_result")
 		expect(eventNames).toContain("file_edited")
@@ -145,16 +147,19 @@ describe("telemetryExtension integration", () => {
 		for (const rec of allRecords) {
 			const attrs = Object.fromEntries(rec.attributes.map((a) => [a.key, a.value.stringValue]))
 			expect(attrs.model).toBe("claude-opus-4-6")
+			expect(attrs.session_type).toBe("coding")
+			expect(attrs.ferment_id).toBe("")
 		}
 
 		const metricsCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes("/metrics"))
 		expect(metricsCalls.length).toBeGreaterThan(0)
 	})
 
-	it("trackSubagentSpawned sends kimchi.subagent.spawned with source and mode", async () => {
+	it("trackSubagentSpawned sends kimchi.subagent.spawned with source and session_type", async () => {
 		const { handlers, api } = createMockApi()
 		telemetryExtension(makeConfig())(api)
 		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
+		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, { model: { id: "claude-opus-4-6" } })
 
 		await trackSubagentSpawned({ id: "a1", type: "explore", description: "find files" })
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
@@ -174,7 +179,8 @@ describe("telemetryExtension integration", () => {
 		expect(attrs.reason).toBe("find files")
 		expect(attrs.model).toBe("claude-opus-4-6")
 		expect(attrs.source).toBe("cli")
-		expect(attrs.mode).toBe("coding")
+		expect(attrs.session_type).toBe("coding")
+		expect(attrs.ferment_id).toBe("")
 	})
 
 	it("survey tracking helpers send survey events through the telemetry batch", async () => {
@@ -213,7 +219,6 @@ describe("telemetryExtension integration", () => {
 		expect(shownAttrs.survey_id).toBe("019e87cc-5033-0000-d9bd-5e6501640b6e")
 		expect(shownAttrs.client).toBe("pi")
 		expect(shownAttrs.source).toBe("cli")
-		expect(shownAttrs.mode).toBe("coding")
 
 		expect(answeredAttrs.survey_id).toBe("019e87cc-5033-0000-d9bd-5e6501640b6e")
 		expect(answeredAttrs.survey_submission_id).toBe(submissionId)

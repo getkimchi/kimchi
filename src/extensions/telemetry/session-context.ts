@@ -1,8 +1,10 @@
 import crypto from "node:crypto"
 import { getMe } from "../../api/me.js"
 import type { TelemetryConfig } from "../../config.js"
+import { getActiveFerment } from "../ferment/index.js"
 import { type CumulativeState, collectMetrics, createCumulativeState } from "./accumulator.js"
 import { toAttrs } from "./helpers.js"
+import { getSessionType } from "./session-type.js"
 import { type LogRecord, buildLogRecord, sendLogBatch, sendMetrics } from "./transport.js"
 
 // ---------------------------------------------------------------------------
@@ -53,8 +55,6 @@ export class SessionContext {
 	sessionId: string
 	sessionStartMs: number
 	source: string
-	mode: string
-
 	currentModel = "unknown"
 	sentMessages = new Set<string>()
 	pendingArgs = new Map<string, { toolName: string; args: unknown }>()
@@ -66,6 +66,7 @@ export class SessionContext {
 	flushTimer: NodeJS.Timeout | undefined
 	logBuffer: LogRecord[] = []
 	private logFlushTimer: NodeJS.Timeout | undefined
+	lastSessionType: string | undefined
 
 	/** Cached user email from /v1/me — populated once in the background. */
 	userEmail: string | undefined
@@ -73,10 +74,9 @@ export class SessionContext {
 	userEmailReady: Promise<void>
 	private resolveUserEmailReady!: () => void
 
-	constructor(config: TelemetryConfig, source: string, mode: string) {
+	constructor(config: TelemetryConfig, source: string) {
 		this.config = config
 		this.source = source
-		this.mode = mode
 		if (!rootSessionId) rootSessionId = crypto.randomUUID()
 		this.sessionId = rootSessionId
 		this.sessionStartMs = Date.now()
@@ -91,9 +91,8 @@ export class SessionContext {
 		return this.cumulative.sessionStartNano
 	}
 
-	reset(source: string, mode: string): void {
+	reset(source: string): void {
 		this.source = source
-		this.mode = mode
 		if (!rootSessionId) rootSessionId = crypto.randomUUID()
 		this.sessionId = rootSessionId
 		this.sessionStartMs = Date.now()
@@ -102,6 +101,7 @@ export class SessionContext {
 		this.pendingArgs.clear()
 		this.messageStartTimes.clear()
 		this.toolStartTimes.clear()
+		this.lastSessionType = undefined
 		this.cumulative = getOrCreateAccumulator(this.sessionId)
 		this.inFlight.clear()
 		this.shuttingDown = false
@@ -116,7 +116,22 @@ export class SessionContext {
 	}
 
 	emit(eventName: string, attrs: Record<string, string | number | boolean>): void {
-		const merged = { ...attrs, source: this.source, mode: this.mode }
+		const sessionType = getSessionType()
+		const ferment = getActiveFerment()
+
+		// Detect and emit session.type_changed when the type transitions
+		if (this.lastSessionType !== undefined && sessionType !== this.lastSessionType) {
+			const changeAttrs = toAttrs({
+				session_type: sessionType,
+				previous_session_type: this.lastSessionType,
+				source: this.source,
+				ferment_id: ferment?.id ?? "",
+			})
+			this.logBuffer.push(buildLogRecord(this.sessionId, "session.type_changed", changeAttrs))
+		}
+		this.lastSessionType = sessionType
+
+		const merged = { ...attrs, source: this.source, session_type: sessionType, ferment_id: ferment?.id ?? "" }
 		this.logBuffer.push(buildLogRecord(this.sessionId, eventName, toAttrs(merged)))
 		if (this.logBuffer.length >= LOG_BATCH_MAX_SIZE) {
 			this.flushLogBuffer()

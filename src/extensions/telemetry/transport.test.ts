@@ -3,6 +3,8 @@ import type { TelemetryConfig } from "../../config.js"
 import { buildLogRecord, sendLog, sendLogBatch, sendMetrics } from "./transport.js"
 import type { MetricData } from "./transport.js"
 
+const BASE_NS = String(new Date("2026-06-02T10:00:00.000Z").getTime() * 1_000_000)
+
 function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 	return {
 		enabled: true,
@@ -228,7 +230,7 @@ describe("sendMetrics", () => {
 				attrs: { model: "claude-3-5-sonnet", type: "input" },
 			},
 		]
-		await sendMetrics(config, "session-abc", metrics, "1700000000000000000")
+		await sendMetrics(config, "session-abc", metrics, BASE_NS)
 
 		expect(globalThis.fetch).toHaveBeenCalledOnce()
 		const [url, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
@@ -253,7 +255,7 @@ describe("sendMetrics", () => {
 
 		const dataPoint = metric.sum.dataPoints[0]
 		expect(dataPoint.asInt).toBe("100")
-		expect(dataPoint.startTimeUnixNano).toBe("1700000000000000000")
+		expect(dataPoint.startTimeUnixNano).toBe(BASE_NS)
 
 		const attrKeys = dataPoint.attributes.map((a: { key: string }) => a.key)
 		expect(attrKeys).toContain("session.id")
@@ -266,20 +268,20 @@ describe("sendMetrics", () => {
 
 	it("skips when metrics array is empty", async () => {
 		const config = makeConfig()
-		await sendMetrics(config, "session-abc", [], "1700000000000000000")
+		await sendMetrics(config, "session-abc", [], BASE_NS)
 		expect(globalThis.fetch).not.toHaveBeenCalled()
 	})
 
 	it("skips when metricsEndpoint is empty", async () => {
 		const config = makeConfig({ metricsEndpoint: "" })
 		const metrics: MetricData[] = [{ name: "claude_code.token.usage", type: "Sum", value: 100, attrs: {} }]
-		await sendMetrics(config, "session-abc", metrics, "1700000000000000000")
+		await sendMetrics(config, "session-abc", metrics, BASE_NS)
 		expect(globalThis.fetch).not.toHaveBeenCalled()
 	})
 
 	it("includes userEmail in metrics payload when provided", async () => {
 		const metrics: MetricData[] = [{ name: "claude_code.token.usage", type: "Sum", value: 50, attrs: {} }]
-		await sendMetrics(makeConfig(), "session-abc", metrics, "1700000000000000000", "carol@test.com")
+		await sendMetrics(makeConfig(), "session-abc", metrics, BASE_NS, "carol@test.com")
 		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
 		const body = JSON.parse(options.body)
 		expect(body.userEmail).toBe("carol@test.com")
@@ -287,7 +289,7 @@ describe("sendMetrics", () => {
 
 	it("omits userEmail from metrics payload when not provided", async () => {
 		const metrics: MetricData[] = [{ name: "claude_code.token.usage", type: "Sum", value: 50, attrs: {} }]
-		await sendMetrics(makeConfig(), "session-abc", metrics, "1700000000000000000")
+		await sendMetrics(makeConfig(), "session-abc", metrics, BASE_NS)
 		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
 		const body = JSON.parse(options.body)
 		expect(body.userEmail).toBeUndefined()
