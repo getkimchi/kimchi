@@ -23,6 +23,19 @@ You are editing the kimchi-code CLI harness. This repo extends the pi-mono SDK (
 - `.kimchi/docs/` → Transient AI working files — git-ignored, do NOT commit
 - `/docs/` → Permanent project documentation — commit here
 
+## PR Labeling
+
+A CI job auto-labels PRs based on the PR template checklist. If you create a PR directly via `gh pr create`, assign the correct label(s) explicitly:
+
+| Type of Change | Label |
+|---|---|
+| Bug fix | `bug` |
+| New feature | `new feature` |
+| Breaking change | `breaking change` |
+| Documentation update | `documentation` |
+
+Example: `gh pr create --label "bug" ...`
+
 ## Before Adding Features
 
 This repo extends `@earendil-works/pi-coding-agent` (pi-mono). Most
