@@ -47,6 +47,10 @@ describe("package resources", () => {
 		expect(packageResourceId("npm:context-mode")).toBe("plugins.package.npm-context-mode")
 	})
 
+	it("creates a stable resource id from a scoped npm package source", () => {
+		expect(packageResourceId("npm:@juicesharp/rpiv-todo")).toBe("plugins.package.npm-juicesharp-rpiv-todo")
+	})
+
 	it("surfaces configured packages as plugin resources", () => {
 		vi.mocked(DefaultPackageManager).mockImplementationOnce(
 			() =>
@@ -118,6 +122,29 @@ describe("package resources", () => {
 				kind: "plugins",
 				label: "Package: pi-subagents",
 				description: "Enable package npm:pi-subagents discovered from the original pi CLI.",
+				defaultEnabled: true,
+				restartRequired: true,
+			},
+		])
+	})
+
+	it("surfaces scoped packages discovered through the original pi lookup", () => {
+		vi.mocked(getOriginalPiConfiguredPackages).mockReturnValueOnce([
+			{
+				source: "npm:@juicesharp/rpiv-todo",
+				scope: "user",
+				filtered: false,
+				origin: "pi",
+				installedPath: "/pi/agent/npm/node_modules/@juicesharp/rpiv-todo",
+			},
+		])
+
+		expect(discoverPackageResources("/repo")).toEqual([
+			{
+				id: "plugins.package.npm-juicesharp-rpiv-todo",
+				kind: "plugins",
+				label: "Package: @juicesharp/rpiv-todo",
+				description: "Enable package npm:@juicesharp/rpiv-todo discovered from the original pi CLI.",
 				defaultEnabled: true,
 				restartRequired: true,
 			},

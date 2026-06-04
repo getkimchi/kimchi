@@ -92,7 +92,13 @@ class OriginalPiSettingsStorage implements SettingsStorage {
 }
 
 export function getOriginalPiAgentDir(): string {
-	return resolveTilde(process.env.PI_CODING_AGENT_DIR || join(homedir(), ORIGINAL_PI_CONFIG_DIR_NAME, "agent"))
+	const explicitAgentDir = process.env.KIMCHI_ORIGINAL_PI_CODING_AGENT_DIR
+	if (explicitAgentDir) return resolveTilde(explicitAgentDir)
+
+	const piAgentDir = process.env.PI_CODING_AGENT_DIR
+	if (piAgentDir && !isKimchiAgentDir(piAgentDir)) return resolveTilde(piAgentDir)
+
+	return resolveTilde(join(homedir(), ORIGINAL_PI_CONFIG_DIR_NAME, "agent"))
 }
 
 export function isOriginalPiPackageLookupEnabled(settingsPath = kimchiSettingsPath()): boolean {
@@ -236,6 +242,14 @@ function getKimchiAgentDir(): string {
 	return process.env.KIMCHI_CODING_AGENT_DIR
 		? resolve(process.env.KIMCHI_CODING_AGENT_DIR)
 		: join(homedir(), ".config", "kimchi", "harness")
+}
+
+function isKimchiAgentDir(path: string): boolean {
+	try {
+		return resolveTilde(path) === getKimchiAgentDir()
+	} catch {
+		return false
+	}
 }
 
 function kimchiSettingsPath(): string {
