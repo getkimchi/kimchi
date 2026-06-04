@@ -83,6 +83,23 @@ describe("hook adapter command execution", () => {
 		})
 	})
 
+	it("falls back to stdout when exit code 2 stderr only contains a protocol marker", () => {
+		mockExecFileSync.mockImplementationOnce(() => {
+			const err = new Error("blocked") as Error & { status: number; stderr: string; stdout: string }
+			err.status = 2
+			err.stderr = "__CM_FS__:52\n"
+			err.stdout = "blocked by real hook\n"
+			throw err
+		})
+
+		expect(
+			runCommandHook({ command: "guard", async: false, timeoutMs: 1000 }, { hook_event_name: "PreToolUse" }, dir),
+		).toEqual({
+			block: true,
+			reason: "blocked by real hook",
+		})
+	})
+
 	it("mutates Claude Code PreToolUse input and delivers additional context", async () => {
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			hooks: {

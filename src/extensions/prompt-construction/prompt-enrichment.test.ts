@@ -318,6 +318,25 @@ describe("prompt enrichment Claude Code skills", () => {
 		expect(result.systemPrompt).toContain("Use safe TypeScript patterns")
 	})
 
+	it("injects sanitized Claude Code skills when .claude/skills is configured", async () => {
+		const cwd = join(dir, "project")
+		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), {
+			description: "Use: generated API types",
+		})
+		setResourceOverride(CLAUDE_CODE_SKILLS_RESOURCE_ID, true)
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers([".claude/skills"])
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{},
+			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).toContain("<available_skills>")
+		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
+		expect(result.systemPrompt).toContain("Use: generated API types")
+	})
+
 	it("does not inject Claude Code skills when the extension is disabled", async () => {
 		const cwd = join(dir, "project")
 		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), {
@@ -406,7 +425,7 @@ describe("model role startup warnings", () => {
 	})
 })
 
-function buildPromptExtensionWithHandlers() {
+function buildPromptExtensionWithHandlers(skillPaths: string[] = []) {
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
 	const pi = {
 		registerFlag: () => {},
@@ -418,7 +437,7 @@ function buildPromptExtensionWithHandlers() {
 		getActiveTools: () => [],
 		getFlag: () => false,
 	} as unknown as ExtensionAPI
-	promptEnrichmentExtension([])(pi)
+	promptEnrichmentExtension(skillPaths)(pi)
 	return {
 		handlers,
 		beforeAgentStart: handlers.get("before_agent_start"),

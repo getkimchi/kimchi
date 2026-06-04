@@ -282,7 +282,24 @@ function hash(value: string): string {
 }
 
 function getNativeSkillNames(cwd: string, configuredSkillPaths: string[]): Set<string> {
-	return collectSkillNames([...discoverNativeSkillDirs(cwd), ...expandConfiguredSkillPaths(configuredSkillPaths, cwd)])
+	return collectSkillNames([
+		...discoverNativeSkillDirs(cwd),
+		...excludeClaudeCodeSkillPaths(expandConfiguredSkillPaths(configuredSkillPaths, cwd), cwd),
+	])
+}
+
+function excludeClaudeCodeSkillPaths(paths: string[], cwd: string): string[] {
+	const claudeCodeSkillDirs = discoverClaudeCodeSkillDirs(cwd).map((dir) => resolve(dir))
+	if (claudeCodeSkillDirs.length === 0) return paths
+	return paths.filter((path) => {
+		const resolved = resolve(path)
+		return !claudeCodeSkillDirs.some((dir) => isSameOrDescendant(resolved, dir))
+	})
+}
+
+function isSameOrDescendant(path: string, parent: string): boolean {
+	const relativePath = relative(parent, path)
+	return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath))
 }
 
 function discoverNativeSkillDirs(cwd: string): string[] {

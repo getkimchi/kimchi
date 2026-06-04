@@ -129,9 +129,10 @@ export function runCommandHook(
 	} catch (err) {
 		const execErr = err as { status?: number; stdout?: string; stderr?: string; message?: string }
 		if (execErr.status === 2) {
+			const reason = firstLine(execErr.stderr) || firstLine(execErr.stdout) || "Hook blocked operation"
 			return {
 				block: true,
-				reason: firstLine(execErr.stderr) ?? firstLine(execErr.stdout) ?? "Hook blocked operation",
+				reason,
 			}
 		}
 		return {}
@@ -530,6 +531,11 @@ function stringValue(value: unknown): string | undefined {
 }
 
 function firstLine(value: string | undefined): string | undefined {
-	const line = value?.trim().split(/\r?\n/).find(Boolean)
-	return line || undefined
+	const trimmed = value?.replace(/\p{C}/gu, "").trim()
+	if (!trimmed) return undefined
+	return trimmed.split(/\r?\n/).find((line) => line !== "" && !isProtocolMarkerLine(line))
+}
+
+function isProtocolMarkerLine(line: string): boolean {
+	return /^__[A-Z0-9_]+__:\d+$/.test(line)
 }
