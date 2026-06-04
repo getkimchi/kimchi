@@ -463,21 +463,34 @@ describe("modelGuardExtension handler", () => {
 		expect(result).toBeUndefined()
 	})
 
-	it("truncates when usage.tokens exceeds safety margin of context window", async () => {
+	it("does not truncate when usage.tokens is below the hard context window limit", async () => {
 		const { pi, trigger } = makeMockPI()
 		modelGuardExtension(pi)
 		const ctx = makeMockCtx({
 			model: { id: "claude", input: ["text"], contextWindow: 10_000 } as ExtensionContext["model"],
+			// 96% of context window — old threshold fired here, new one should not
 			getContextUsage: () => ({ tokens: 9_600, contextWindow: 10_000, percent: 96 }),
 		})
-		// 30 user messages at ~500 tokens each (2000 chars) = 15,000 tokens — will be truncated
-		const msgs: ContextEvent["messages"] = Array.from({ length: 30 }, (_, i) => makeUser("x".repeat(2000)))
+		const msgs: ContextEvent["messages"] = Array.from({ length: 30 }, () => makeUser("x".repeat(2000)))
+		const result = await trigger("context", { messages: msgs }, ctx)
+		expect(result).toBeUndefined()
+	})
+
+	it("truncates when usage.tokens exceeds the hard context window limit", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const ctx = makeMockCtx({
+			model: { id: "claude", input: ["text"], contextWindow: 10_000 } as ExtensionContext["model"],
+			// Exceeds the hard limit — context built against a larger window (e.g. model switch)
+			getContextUsage: () => ({ tokens: 10_001, contextWindow: 10_000, percent: 100.01 }),
+		})
+		const msgs: ContextEvent["messages"] = Array.from({ length: 30 }, () => makeUser("x".repeat(2000)))
 		const result = (await trigger("context", { messages: msgs }, ctx)) as { messages: ContextEvent["messages"] }
 		expect(result).toBeDefined()
 		expect(result.messages.length).toBeLessThan(30)
 	})
 
-	it("returns undefined when within safety margin", async () => {
+	it("returns undefined when within context window", async () => {
 		const { pi, trigger } = makeMockPI()
 		modelGuardExtension(pi)
 		const ctx = makeMockCtx({
@@ -494,7 +507,8 @@ describe("modelGuardExtension handler", () => {
 		modelGuardExtension(pi)
 		const ctx = makeMockCtx({
 			model: { id: "gpt-4", input: ["text"], contextWindow: 5_000 } as ExtensionContext["model"],
-			getContextUsage: () => ({ tokens: 5_100, contextWindow: 5_000, percent: 100 }),
+			// Over the hard limit
+			getContextUsage: () => ({ tokens: 5_100, contextWindow: 5_000, percent: 102 }),
 		})
 		// "msg N " (6-7 chars) + 1900 x's = ~1906 chars → ceil(1906/4)=477 + image 1000 = ~1477 tokens each; 20 msgs ~ 29,540 tokens
 		const msgs: ContextEvent["messages"] = Array.from({ length: 20 }, (_, i) =>
@@ -506,7 +520,7 @@ describe("modelGuardExtension handler", () => {
 		expect(result.messages.length).toBeLessThan(20)
 	})
 
-	it("returns undefined when usage.tokens is null", async () => {
+	it("returns undefined when usage.tokens is null and local estimate is within window", async () => {
 		const { pi, trigger } = makeMockPI()
 		modelGuardExtension(pi)
 		const ctx = makeMockCtx({
@@ -525,12 +539,119 @@ describe("modelGuardExtension handler", () => {
 			model: { id: "kimi-k2.6", input: ["text"], contextWindow: 10_000 } as ExtensionContext["model"],
 			getContextUsage: () => ({ tokens: null, contextWindow: 10_000, percent: null }),
 		})
-		// 30 messages × 2000 chars each → ceil(2000/4)=500 tokens each = 15,000 tokens
-		// This exceeds 10_000 * 0.95 = 9,500, so truncation should fire
+		// 30 messages × 2000 chars each → ceil(2000/4)=500 tokens each = 15,000 tokens > 10,000
 		const msgs: ContextEvent["messages"] = Array.from({ length: 30 }, () => makeUser("x".repeat(2000)))
 		const result = (await trigger("context", { messages: msgs }, ctx)) as { messages: ContextEvent["messages"] }
 		expect(result).toBeDefined()
 		expect(result.messages.length).toBeLessThan(30)
+	})
+})
+
+// ── turn_end compaction guard ─────────────────────────────────────────────────
+
+function makeTurnEndEvent(totalTokens: number, stopReason: string) {
+	return {
+		type: "turn_end" as const,
+		turnIndex: 1,
+		message: {
+			role: "assistant" as const,
+			content: [{ type: "toolCall" as const, name: "read", arguments: {}, id: "tc1" }],
+			usage: {
+				input: totalTokens - 100,
+				output: 100,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			api: "openai-completions" as const,
+			provider: "kimchi-dev" as const,
+			stopReason,
+			model: "kimi-k2.6",
+			timestamp: Date.now(),
+		},
+		toolResults: [],
+	}
+}
+
+describe("turn_end compaction guard", () => {
+	const CONTEXT_WINDOW = 262_144
+	const RESERVE = 16_384
+	const THRESHOLD = CONTEXT_WINDOW - RESERVE // 245,760
+
+	it("does not compact when totalTokens is below the compaction threshold", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const compact = vi.fn()
+		const ctx = makeMockCtx({
+			model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+			compact,
+		})
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD - 1, "toolUse"), ctx)
+		expect(compact).not.toHaveBeenCalled()
+	})
+
+	it("calls compact with notification callbacks when totalTokens exceeds the compaction threshold mid-turn", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const compact = vi.fn()
+		const notify = vi.fn()
+		const ctx = makeMockCtx({
+			model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+			compact,
+			ui: { notify } as unknown as ExtensionContext["ui"],
+		})
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+		expect(compact).toHaveBeenCalledOnce()
+
+		// Verify the options shape includes onComplete/onError callbacks
+		const options = compact.mock.calls[0][0]
+		expect(typeof options.onComplete).toBe("function")
+		expect(typeof options.onError).toBe("function")
+
+		// Simulate a successful compaction callback
+		options.onComplete({ tokensBefore: THRESHOLD + 1 })
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Context compacted"), "info")
+
+		// Simulate a failed compaction callback
+		notify.mockClear()
+		options.onError(new Error("summariser failed"))
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("summariser failed"), "error")
+	})
+
+	it("does not compact when stopReason is not toolUse (turn already ending)", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const compact = vi.fn()
+		const ctx = makeMockCtx({
+			model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+			compact,
+		})
+		for (const stopReason of ["stop", "length", "error", "aborted"]) {
+			await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, stopReason), ctx)
+		}
+		expect(compact).not.toHaveBeenCalled()
+	})
+
+	it("does not compact when no model is set", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const compact = vi.fn()
+		const ctx = makeMockCtx({ model: undefined, compact })
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+		expect(compact).not.toHaveBeenCalled()
+	})
+
+	it("does not compact at exactly the threshold boundary", async () => {
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const compact = vi.fn()
+		const ctx = makeMockCtx({
+			model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+			compact,
+		})
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD, "toolUse"), ctx)
+		expect(compact).not.toHaveBeenCalled()
 	})
 })
 

@@ -305,12 +305,17 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 			}
 		}
 
-		// Truncate when context usage exceeds the target model's context window.
-		// Falls back to local estimate when upstream tokens are null (post-compaction).
+		// Emergency truncation: only fires when the context was built against a larger
+		// window than the current model accepts (e.g. session restored onto a smaller
+		// model). In the normal same-model case usage.input is always < contextWindow
+		// by API contract, so this never triggers and compaction handles growth instead.
+		// Using the 95% safety-margin threshold here was wrong: it fired inside the
+		// compaction zone, silently dropped history without a summary, and reset the
+		// token estimate to ~20k — preventing compaction from triggering on the very
+		// next turn.
 		if (model) {
 			const tokens = resolveContextTokens(usage, result)
-			const threshold = Math.floor(model.contextWindow * SAFETY_MARGIN)
-			if (tokens != null && tokens > threshold) {
+			if (tokens != null && tokens > model.contextWindow) {
 				const truncated = truncateMessages(result, model.contextWindow)
 				if (truncated !== result) {
 					result = truncated
@@ -320,6 +325,54 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 		}
 
 		if (modified) return { messages: result }
+	})
+
+	// Compaction mid-turn guard: upstream auto-compaction only checks the threshold
+	// once per user turn (after agent.prompt() returns). In a long tool-call chain
+	// the context can exceed the compaction threshold many times over before the
+	// turn ends. turn_end fires after every individual LLM response inside the
+	// loop, giving us a chance to compact before the hard limit is hit.
+	_pi.on("turn_end", async (event, ctx: ExtensionContext) => {
+		const model = ctx.model
+		if (!model) return
+
+		const msg = event.message
+		if (msg.role !== "assistant") return
+		// Only act on tool-use responses — the turn is still in progress.
+		// stop/error/aborted responses are already handled by _handlePostAgentRun.
+		if (msg.stopReason !== "toolUse") return
+
+		const usage = "usage" in msg ? msg.usage : undefined
+		if (!usage?.totalTokens) return
+
+		// Use the same threshold as upstream auto-compaction: contextWindow - reserveTokens.
+		// reserveTokens defaults to 16,384 in DEFAULT_COMPACTION_SETTINGS.
+		const RESERVE_TOKENS = 16_384
+		if (usage.totalTokens <= model.contextWindow - RESERVE_TOKENS) return
+
+		// Threshold exceeded mid-turn. Compact now.
+		//
+		// NOTE: ctx.compact() is the manual compaction path which calls abort() on the
+		// current agent run. This means the in-progress tool-call chain stops here and
+		// the user must send another message to resume. This is worse UX than upstream
+		// auto-compaction (which transparently retries via agent.continue()), but it is
+		// the only option available from an extension — _runAutoCompaction and the
+		// agent.continue() path are not exposed on ExtensionContext.
+		//
+		// The proper upstream fix is to wire _checkCompaction into the agent loop via
+		// shouldStopAfterTurn or after_provider_response so compaction fires inside
+		// the loop with transparent retry. This handler is a pragmatic stopgap.
+		ctx.compact({
+			onComplete: (result) => {
+				ctx.ui?.notify(
+					`Context compacted (${(result.tokensBefore ?? 0).toLocaleString()} tokens → summary). Continue to resume.`,
+					"info",
+				)
+			},
+			onError: (error) => {
+				ctx.ui?.notify(`Context compaction failed: ${error.message}`, "error")
+			},
+		})
 	})
 
 	_pi.on("model_select", async () => {
