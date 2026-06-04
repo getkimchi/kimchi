@@ -190,7 +190,7 @@ function runPreToolUse(
 	})
 	if (!result) return undefined
 	if (result.additionalContext) sendAdditionalContext(definition, pi, result.additionalContext, "steer")
-	if (result.updatedInput) Object.assign(event.input, result.updatedInput)
+	if (result.updatedInput) Object.assign(event.input, kimchiToolInput(result.updatedInput, event.input))
 	if (result.block) return { block: true, reason: result.reason }
 	return undefined
 }
@@ -214,11 +214,18 @@ function runPostToolUse(
 	if (skillName) {
 		result = mergeOptionalResults(
 			result,
-			runMatchingHooks(definition, "PostToolUse", ctx, ["Skill"], {
-				...basePayload,
-				tool_name: "Skill",
-				tool_input: { skill: skillName },
-			}),
+			runMatchingHooks(
+				definition,
+				"PostToolUse",
+				ctx,
+				["Skill"],
+				{
+					...basePayload,
+					tool_name: "Skill",
+					tool_input: { skill: skillName },
+				},
+				{ includeUniversalMatchers: false },
+			),
 		)
 	}
 	if (!result) return undefined
@@ -318,6 +325,7 @@ function runMatchingHooks(
 	ctx: ExtensionContext,
 	matcherValues: string[],
 	eventPayload: Record<string, unknown>,
+	options: { includeUniversalMatchers?: boolean } = {},
 ): HookCommandResult | undefined {
 	if (!definition.supportedEvents.includes(eventName)) return undefined
 	const payload = basePayload(eventName, ctx, eventPayload)
@@ -325,7 +333,7 @@ function runMatchingHooks(
 	for (const hook of discoverCommandHookResources(definition, ctx.cwd)) {
 		if (!isResourceEnabled(hook.id)) continue
 		if (hook.eventName !== eventName) continue
-		if (!matchesHook(hook, matcherValues, eventPayload)) continue
+		if (!matchesHook(hook, matcherValues, eventPayload, options)) continue
 		const result = runCommandHook(hook, payload, ctx.cwd)
 		const next = mergeResults(combined, result)
 		combined = next
@@ -372,8 +380,9 @@ function matchesHook(
 	hook: CommandHookResource,
 	matcherValues: string[],
 	eventPayload: Record<string, unknown>,
+	options: { includeUniversalMatchers?: boolean } = {},
 ): boolean {
-	if (!hook.matcher || hook.matcher === "*") return true
+	if (!hook.matcher || hook.matcher === "*") return options.includeUniversalMatchers !== false
 	if (matcherValues.length === 0) return true
 	const paren = hook.matcher.match(/^([^(]+)\((.*)\)$/)
 	if (paren) {
@@ -443,6 +452,16 @@ function textContent(content: ToolResultEvent["content"]): string {
 function claudeToolInput(input: Record<string, unknown>): Record<string, unknown> {
 	if (typeof input.path !== "string" || typeof input.file_path === "string") return input
 	return { ...input, file_path: input.path }
+}
+
+function kimchiToolInput(
+	updatedInput: Record<string, unknown>,
+	currentInput: Record<string, unknown>,
+): Record<string, unknown> {
+	if (typeof updatedInput.file_path !== "string" || typeof currentInput.path !== "string") return updatedInput
+	const next = Object.fromEntries(Object.entries(updatedInput).filter(([key]) => key !== "file_path"))
+	if (typeof next.path !== "string") next.path = updatedInput.file_path
+	return next
 }
 
 function skillNameFromReadPath(event: ToolResultEvent): string | undefined {
@@ -531,9 +550,10 @@ function stringValue(value: unknown): string | undefined {
 }
 
 function firstLine(value: string | undefined): string | undefined {
-	const trimmed = value?.replace(/\p{C}/gu, "").trim()
-	if (!trimmed) return undefined
-	return trimmed.split(/\r?\n/).find((line) => line !== "" && !isProtocolMarkerLine(line))
+	return value
+		?.split(/\r?\n/)
+		.map((line) => line.replace(/\p{C}/gu, "").trim())
+		.find((line) => line !== "" && !isProtocolMarkerLine(line))
 }
 
 function isProtocolMarkerLine(line: string): boolean {

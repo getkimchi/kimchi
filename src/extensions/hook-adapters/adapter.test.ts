@@ -101,6 +101,22 @@ describe("hook adapter command execution", () => {
 		})
 	})
 
+	it("ignores protocol marker lines before surfacing blocking stderr", () => {
+		mockExecFileSync.mockImplementationOnce(() => {
+			const err = new Error("blocked") as Error & { status: number; stderr: string }
+			err.status = 2
+			err.stderr = "__CM_FS__:52\nblocked by real hook\n"
+			throw err
+		})
+
+		expect(
+			runCommandHook({ command: "guard", async: false, timeoutMs: 1000 }, { hook_event_name: "PreToolUse" }, dir),
+		).toEqual({
+			block: true,
+			reason: "blocked by real hook",
+		})
+	})
+
 	it("mutates Claude Code PreToolUse input and delivers additional context", async () => {
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			hooks: {
@@ -159,6 +175,33 @@ describe("hook adapter command execution", () => {
 		expect(event.input).toEqual({ path: "src/page.tsx", content: "export {}" })
 	})
 
+	it("maps returned Claude Code file_path aliases back to path-based tool inputs", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				PreToolUse: [{ matcher: "Write", hooks: [{ type: "command", command: "file-policy" }] }],
+			},
+		})
+		mockExecFileSync.mockReturnValueOnce(
+			JSON.stringify({
+				hookSpecificOutput: {
+					updatedInput: { file_path: "src/rewritten.tsx" },
+				},
+			}),
+		)
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		const event = {
+			type: "tool_call",
+			toolCallId: "1",
+			toolName: "write",
+			input: { path: "src/page.tsx", content: "export {}" },
+		}
+		await pi.handlers.tool_call[0](event, fakeCtx())
+
+		expect(event.input).toEqual({ path: "src/rewritten.tsx", content: "export {}" })
+	})
+
 	it("skips disabled individual Claude Code hook resources", async () => {
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			hooks: {
@@ -207,6 +250,35 @@ describe("hook adapter command execution", () => {
 		const payload = JSON.parse(mockExecFileSync.mock.calls[0][2].input)
 		expect(payload.tool_name).toBe("Skill")
 		expect(payload.tool_input).toEqual({ skill: "typescript-safety" })
+	})
+
+	it("does not run catch-all PostToolUse hooks twice for SKILL.md reads", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				PostToolUse: [
+					{ hooks: [{ type: "command", command: "read-observer" }] },
+					{ matcher: "Skill", hooks: [{ type: "command", command: "skill-ack" }] },
+				],
+			},
+		})
+		mockExecFileSync.mockReturnValue("")
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.tool_result[0](
+			{
+				type: "tool_result",
+				toolCallId: "1",
+				toolName: "read",
+				input: { path: "/project/.claude/skills/typescript-safety/SKILL.md" },
+				content: [{ type: "text", text: "skill body" }],
+				isError: false,
+			},
+			fakeCtx(),
+		)
+
+		expect(mockExecFileSync).toHaveBeenCalledTimes(2)
+		expect(mockExecFileSync.mock.calls.map((call) => (call[1] as string[])[1])).toEqual(["read-observer", "skill-ack"])
 	})
 
 	it("sends a follow-up message when a Claude Code Stop hook requests continuation", async () => {
