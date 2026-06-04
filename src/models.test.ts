@@ -159,6 +159,24 @@ describe("updateModelsConfig", () => {
 		)
 	})
 
+	it("uses a provided Kimchi endpoint for metadata fetch and kimchi-dev baseUrl", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "my-api-key", { endpoint: "https://custom.kimchi.example/" })
+
+		expect(fetch).toHaveBeenCalledWith(
+			"https://custom.kimchi.example/v1/models/metadata?include_in_cli=true",
+			expect.objectContaining({
+				headers: { Authorization: "Bearer my-api-key" },
+			}),
+		)
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].baseUrl).toBe("https://custom.kimchi.example/openai/v1")
+	})
+
 	it("returns discovered metadata when fetch succeeds", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
@@ -177,10 +195,11 @@ describe("updateModelsConfig", () => {
 			json: async () => ({ models: [KIMI] }),
 		} as Response)
 
-		await updateModelsConfig(modelsJsonPath, "test-key")
+		await updateModelsConfig(modelsJsonPath, "test-key", { endpoint: "https://custom.kimchi.example" })
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
 		expect(config.providers["kimchi-dev"].models.map((m: { id: string }) => m.id)).toEqual(["kimi-k2.5"])
+		expect(config.providers["kimchi-dev"].baseUrl).toBe("https://custom.kimchi.example/openai/v1")
 		expect(config.providers.custom).toEqual({ models: [] })
 	})
 
@@ -479,6 +498,37 @@ describe("updateModelsConfig", () => {
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
 		expect(config.providers["kimchi-dev"].models).toHaveLength(0)
 		consoleWarnSpy.mockRestore()
+	})
+
+	it("throws without changing models.json when strict fresh discovery finds no active Kimchi models", async () => {
+		const existingConfig = {
+			providers: {
+				openai: { models: [{ id: "gpt-4o", name: "GPT-4o", provider: "openai" }] },
+				"kimchi-dev": { models: [{ id: "old-kimchi", name: "Old Kimchi", provider: "ai-enabler" }] },
+			},
+		}
+		writeFileSync(modelsJsonPath, JSON.stringify(existingConfig, null, "\t"), "utf-8")
+		const before = readFileSync(modelsJsonPath, "utf-8")
+		const sunsetModel = {
+			slug: "old-model",
+			display_name: "Old Model",
+			provider: "ai-enabler",
+			reasoning: false,
+			input_modalities: ["text"],
+			is_serverless: true,
+			limits: { context_window: 100_000, max_output_tokens: 4096 },
+			status: "sunset",
+		}
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [sunsetModel] }),
+		} as Response)
+
+		await expect(updateModelsConfig(modelsJsonPath, "test-key", { requireActiveModels: true })).rejects.toThrow(
+			"No active Kimchi models are available for this API key",
+		)
+
+		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(before)
 	})
 
 	it("treats models without status field as active (backward compatibility)", async () => {

@@ -1,12 +1,17 @@
 changelog:
   categories:
-    - label: "breaking change"
-      title: "Breaking Changes"
-    - label: "new feature"
-      title: "New Features"
-    - label: "bug"
-      title: "Bug Fixes"
-    - label: "documentation"
-      title: "Documentation"
-    - label: "*"
-      title: "Other Changes"
+    - title: "Breaking Changes"
+      labels:
+        - "breaking change"
+    - title: "New Features"
+      labels:
+        - "new feature"
+    - title: "Bug Fixes"
+      labels:
+        - "bug"
+    - title: "Documentation"
+      labels:
+        - "documentation"
+    - title: "Other Changes"
+      labels:
+        - "*"

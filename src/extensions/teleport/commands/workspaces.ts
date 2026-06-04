@@ -5,6 +5,7 @@ import type { Workspace } from "../../../sandbox/cloud/types.js"
 import { deleteWorkspace, listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"
 import { listSessions } from "../../../sandbox/worker/sessions.js"
+import { ensureIncludeDirective, syncSshConfig } from "../ssh-config/sync.js"
 import type { TeleportContext } from "../types.js"
 import { pickWorkspace } from "../ui/workspaces-panel.js"
 import type { WorkspaceRow } from "../ui/workspaces-table.js"
@@ -36,6 +37,9 @@ export async function runWorkspaces(_args: string, ctx: TeleportContext): Promis
 			status(ctx, undefined)
 			refuse(ctx, `Could not list workspaces: ${err instanceof Error ? err.message : String(err)}`)
 		}
+
+		await ensureIncludeDirective(ctx)
+		await syncSshConfig(workspaces, ctx)
 
 		const rows = await collectRows(workspaces, ctx, fallbackName)
 		status(ctx, undefined)

@@ -159,6 +159,66 @@ describe("createTeleportProgress", () => {
 		expect(result).toEqual({ outcome: "skipped" })
 	})
 
+	it("setStepDetail renders a dim suffix on the active step", () => {
+		const h = makeUi()
+		const progress = createTeleportProgress(h.ui)
+		progress.step("Syncing workspace")
+		progress.setStepDetail("12.3 MB / 30.0 MB (41%)")
+		const joined = (h.customCalls[0].component?.render(80) ?? []).join("\n")
+		expect(joined).toContain("Syncing workspace")
+		expect(joined).toContain("12.3 MB / 30.0 MB (41%)")
+	})
+
+	it("fires onCancel on Esc while in progress mode", () => {
+		const h = makeUi()
+		const onCancel = vi.fn()
+		createTeleportProgress(h.ui, { onCancel })
+		h.customCalls[0].component?.handleInput?.("\x1b") // Esc
+		expect(onCancel).toHaveBeenCalledTimes(1)
+	})
+
+	it("fires onCancel on Ctrl+C while in progress mode", () => {
+		const h = makeUi()
+		const onCancel = vi.fn()
+		createTeleportProgress(h.ui, { onCancel })
+		h.customCalls[0].component?.handleInput?.("\x03") // Ctrl+C
+		expect(onCancel).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not fire onCancel for Esc while in git-token mode (prompt handles it as skip)", async () => {
+		const h = makeUi()
+		const onCancel = vi.fn()
+		const progress = createTeleportProgress(h.ui, { onCancel })
+		const promise = progress.promptGitToken("github.com")
+		h.customCalls[0].component?.handleInput?.("\x1b") // Esc — prompt should consume as skip
+		const result = await promise
+		expect(result).toEqual({ outcome: "skipped" })
+		expect(onCancel).not.toHaveBeenCalled()
+	})
+
+	it("setCancelling renders a 'Cancelling…' header in place of the fun-phase spinner", () => {
+		const h = makeUi()
+		const progress = createTeleportProgress(h.ui)
+		progress.step("Syncing workspace")
+		progress.setCancelling()
+		const joined = (h.customCalls[0].component?.render(80) ?? []).join("\n")
+		expect(joined).toContain("Cancelling…")
+		expect(joined).toContain("Syncing workspace")
+	})
+
+	it("complete clears the step detail so it does not leak to the next step", () => {
+		const h = makeUi()
+		const progress = createTeleportProgress(h.ui)
+		progress.step("Syncing workspace")
+		progress.setStepDetail("12.3 MB / 30.0 MB (41%)")
+		progress.complete("Workspace synced")
+		progress.step("Opening session")
+		const joined = (h.customCalls[0].component?.render(80) ?? []).join("\n")
+		expect(joined).toContain("Workspace synced")
+		expect(joined).toContain("Opening session")
+		expect(joined).not.toContain("12.3 MB / 30.0 MB (41%)")
+	})
+
 	it("buffers early step calls until the factory mounts the panel", () => {
 		const h = makeUi("manual")
 		const progress = createTeleportProgress(h.ui)

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, relative, resolve } from "node:path"
+import { SUPERPOWERS_SKILL_PATH } from "./extensions/superpowers/config.js"
 import { getVersion } from "./utils.js"
 
 const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
@@ -13,11 +14,35 @@ export const ALWAYS_SHOWN_SKILL_PATHS = [join(".config", "kimchi", "harness", "s
 
 export const OPTIONAL_SKILL_PATHS = [join(".pi", "agent", "skills"), join(".claude", "skills")]
 
+/**
+ * Relative-to-home skill paths for auto-installed vendor packages.
+ * Resolved to absolute by expandSkillPaths() at runtime.
+ */
+export const VENDOR_SKILL_PATHS = [SUPERPOWERS_SKILL_PATH]
+
+/**
+ * Returns vendor skill paths that aren't already covered by the user's harness
+ * skills directory. Prevents duplicate skills when a user manually installed
+ * superpowers before we started vendoring it.
+ *
+ * The sentinel is a representative skill from each vendor package — if the user
+ * already has it in their harness skills dir, skip that vendor path entirely.
+ */
+export function getActiveVendorSkillPaths(): string[] {
+	const home = homedir()
+	const harnessSkillsDir = join(home, ".config", "kimchi", "harness", "skills")
+	const superPowersSentinel = join(harnessSkillsDir, "using-superpowers", "SKILL.md")
+	if (existsSync(superPowersSentinel)) return []
+	// Only inject the vendor path if the dir actually exists on disk
+	if (!existsSync(join(home, SUPERPOWERS_SKILL_PATH))) return []
+	return VENDOR_SKILL_PATHS
+}
+
 export const envConfig = {
 	KIMCHI_WEB_APP_URL: process.env.KIMCHI_WEB_APP_URL ?? "https://app.kimchi.dev",
 }
 
-export const DEFAULT_SKILL_PATHS = [...ALWAYS_SHOWN_SKILL_PATHS, ...OPTIONAL_SKILL_PATHS]
+export const DEFAULT_SKILL_PATHS = [...ALWAYS_SHOWN_SKILL_PATHS, ...OPTIONAL_SKILL_PATHS, ...VENDOR_SKILL_PATHS]
 
 export function buildSkillPathOptions(discoveredDirs: string[]): string[] {
 	const home = homedir()
@@ -32,6 +57,13 @@ export function buildSkillPathOptions(discoveredDirs: string[]): string[] {
 	}
 
 	for (const p of OPTIONAL_SKILL_PATHS) {
+		if (!seen.has(p) && existsSync(join(home, p))) {
+			seen.add(p)
+			result.push(p)
+		}
+	}
+
+	for (const p of VENDOR_SKILL_PATHS) {
 		if (!seen.has(p) && existsSync(join(home, p))) {
 			seen.add(p)
 			result.push(p)
@@ -91,6 +123,8 @@ export interface KimchiConfig {
 	apiKey: string
 	agentConfigDir: string
 	llmEndpoint: string
+	/** The user-configured endpoint, undefined if not explicitly set. Use this when passing to updateModelsConfig. */
+	customLlmEndpoint: string | undefined
 	maxToolResultChars: number
 	mcpSearchLimit: number
 	mcpSearch: SearchStrategyConfig
@@ -362,6 +396,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		apiKey: extras.apiKey ?? "",
 		agentConfigDir: AGENT_CONFIG_DIR,
 		llmEndpoint: extras.llmEndpoint ?? CAST_AI_LLM_ENDPOINT,
+		customLlmEndpoint: extras.llmEndpoint,
 		maxToolResultChars: extras.maxToolResultChars ?? 10_000,
 		mcpSearchLimit: extras.mcpSearchLimit ?? 5,
 		mcpSearch: { ...SEARCH_STRATEGY_DEFAULTS, ...extras.mcpSearch },
@@ -512,10 +547,21 @@ export function writeSkillPaths(paths: string[], configPath?: string): void {
 	writeConfigField("skillPaths", paths, configPath ?? KIMCHI_CONFIG_PATH)
 }
 
-export function writeApiKey(key: string, configPath?: string): void {
+export interface WriteApiKeyOptions {
+	llmEndpoint?: string
+}
+
+export function writeApiKey(key: string, configPath?: string, options: WriteApiKeyOptions = {}): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateConfigFile(path, (raw) => {
 		raw.apiKey = key
+		const llmEndpoint = options.llmEndpoint?.trim()
+		if (llmEndpoint) {
+			raw.llmEndpoint = llmEndpoint
+		} else {
+			// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
+			delete raw.llmEndpoint
+		}
 		// Clear legacy snake_case key so we don't keep stale data
 		// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
 		delete raw.api_key

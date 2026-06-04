@@ -1,5 +1,5 @@
 import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
-import { type Component, truncateToWidth } from "@earendil-works/pi-tui"
+import { type Component, Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
 import { GitTokenPromptComponent, type GitTokenPromptResult } from "./git-token-prompt.js"
 
 const SPIN_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -40,7 +40,9 @@ interface PanelTui {
 class TeleportProgressPanel implements Component {
 	private readonly steps: ProgressStep[] = []
 	private finished = false
+	private cancelling = false
 	private sessionInfo: SessionInfo | undefined
+	private currentStepDetail: string | undefined
 
 	private phaseIdx = 0
 	private phaseFrameIdx = 0
@@ -57,6 +59,7 @@ class TeleportProgressPanel implements Component {
 	constructor(
 		private readonly tui: PanelTui,
 		private readonly theme: Theme,
+		private readonly onCancel: (() => void) | undefined,
 	) {}
 
 	start(): void {
@@ -96,6 +99,7 @@ class TeleportProgressPanel implements Component {
 
 	appendStep(label: string): void {
 		this.steps.push({ label, done: false })
+		this.currentStepDetail = undefined
 		this.tui.requestRender()
 	}
 
@@ -105,6 +109,20 @@ class TeleportProgressPanel implements Component {
 			cur.done = true
 			if (doneLabel) cur.label = doneLabel
 		}
+		this.currentStepDetail = undefined
+		this.tui.requestRender()
+	}
+
+	setStepDetail(detail: string | undefined): void {
+		// No requestRender — the stepSpinId interval (every 80ms) re-renders
+		// the panel and will pick up the new detail. Avoids amplifying rsync's
+		// per-tick flurry of updates into render storms.
+		this.currentStepDetail = detail
+	}
+
+	setCancelling(): void {
+		if (this.cancelling) return
+		this.cancelling = true
 		this.tui.requestRender()
 	}
 
@@ -147,6 +165,11 @@ class TeleportProgressPanel implements Component {
 	handleInput(data: string): void {
 		if (this.mode === "git-token" && this.gitTokenPrompt) {
 			this.gitTokenPrompt.handleInput(data)
+			return
+		}
+		if (this.finished || this.cancelling) return
+		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
+			this.onCancel?.()
 		}
 	}
 
@@ -213,6 +236,8 @@ class TeleportProgressPanel implements Component {
 
 		if (this.finished) {
 			lines.push(`${theme.fg("success", "✓")} ${theme.fg("success", "Teleported")}`)
+		} else if (this.cancelling) {
+			lines.push(`${dim("⚠")} ${dim("Cancelling…")}`)
 		} else {
 			const p = this.currentPhase()
 			const char = p.frames[this.phaseFrameIdx % p.frames.length]
@@ -224,7 +249,8 @@ class TeleportProgressPanel implements Component {
 				lines.push(`  ${theme.fg("success", "✓")} ${dim(s.label)}`)
 			} else {
 				const frame = SPIN_FRAMES[this.stepSpinIdx]
-				lines.push(`  ${theme.fg("accent", frame)} ${s.label}`)
+				const suffix = this.currentStepDetail ? dim(` · ${this.currentStepDetail}`) : ""
+				lines.push(`  ${theme.fg("accent", frame)} ${s.label}${suffix}`)
 			}
 		}
 
@@ -244,12 +270,21 @@ class TeleportProgressPanel implements Component {
 export interface TeleportProgress {
 	step(label: string): void
 	complete(doneLabel?: string): void
+	setStepDetail(detail: string | undefined): void
+	setCancelling(): void
 	finish(info: SessionInfo): void
 	stop(): void
 	promptGitToken(host: string): Promise<GitTokenPromptResult>
 }
 
-export function createTeleportProgress(ui: ExtensionUIContext): TeleportProgress {
+export interface CreateTeleportProgressOptions {
+	onCancel?: () => void
+}
+
+export function createTeleportProgress(
+	ui: ExtensionUIContext,
+	options: CreateTeleportProgressOptions = {},
+): TeleportProgress {
 	let panel: TeleportProgressPanel | undefined
 	let resolveDone: (() => void) | undefined
 	let closed = false
@@ -263,7 +298,7 @@ export function createTeleportProgress(ui: ExtensionUIContext): TeleportProgress
 	ui.custom<void>(
 		(tui, theme, _kb, done) => {
 			resolveDone = () => done(undefined)
-			panel = new TeleportProgressPanel(tui, theme)
+			panel = new TeleportProgressPanel(tui, theme, options.onCancel)
 			panel.start()
 			for (const fn of pending) fn(panel)
 			pending.length = 0
@@ -285,6 +320,12 @@ export function createTeleportProgress(ui: ExtensionUIContext): TeleportProgress
 		},
 		complete(doneLabel) {
 			withPanel((p) => p.completeStep(doneLabel))
+		},
+		setStepDetail(detail) {
+			withPanel((p) => p.setStepDetail(detail))
+		},
+		setCancelling() {
+			withPanel((p) => p.setCancelling())
 		},
 		finish(info) {
 			withPanel((p) => p.setFinished(info))

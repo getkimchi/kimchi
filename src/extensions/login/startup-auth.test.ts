@@ -1,6 +1,6 @@
 import { LoginDialogComponent, type Theme, initTheme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
 const authMock = vi.hoisted(() => ({
 	authenticateViaBrowser: vi.fn(),
@@ -109,6 +109,7 @@ function createHarness(
 			})
 		}),
 		notify: vi.fn(),
+		input: vi.fn(),
 	}
 	const ctx = { hasUI: true, ui, modelRegistry }
 	const state = options.state ?? createStartupAuthGateState()
@@ -167,6 +168,10 @@ beforeEach(() => {
 	modelsMock.updateModelsConfig.mockReset()
 	modelsMock.updateModelsConfig.mockResolvedValue({ models: [] })
 	modelsMock.syncProviderModels.mockReset()
+})
+
+afterEach(() => {
+	vi.unstubAllEnvs()
 })
 
 describe("shouldShowStartupAuthGate", () => {
@@ -448,5 +453,57 @@ describe("startup auth gate", () => {
 
 		expect(harness.state.cancelled).toBe(true)
 		expect(onCancel).toHaveBeenCalledWith(harness.ctx)
+	})
+
+	it("runs the API key login option and authenticates with a custom endpoint", async () => {
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-startup-auth-test")
+		const harness = createHarness()
+
+		// Simulate user providing API key and custom endpoint via ctx.ui.input
+		harness.ctx.ui.input.mockResolvedValueOnce("my-api-key").mockResolvedValueOnce("https://custom.kimchi.example")
+
+		modelsMock.updateModelsConfig.mockResolvedValue({ models: [{ slug: "kimi-k2.6", provider: "ai-enabler" }] })
+
+		const started = harness.start()
+		await harness.settle()
+
+		// Select the API key option (second item: j then Enter)
+		harness.input("j")
+		harness.input("\n")
+
+		await started
+
+		expect(harness.ctx.ui.input).toHaveBeenNthCalledWith(1, "Kimchi API Key:")
+		expect(harness.ctx.ui.input).toHaveBeenNthCalledWith(
+			2,
+			"Kimchi endpoint (press Enter to use https://llm.kimchi.dev):",
+		)
+		expect(modelsMock.updateModelsConfig).toHaveBeenCalledWith(
+			expect.stringContaining("models.json"),
+			"my-api-key",
+			expect.objectContaining({ endpoint: "https://custom.kimchi.example" }),
+		)
+		expect(harness.state.authenticated).toBe(true)
+	})
+
+	it("cancels API key login when the user dismisses the API key input", async () => {
+		const onCancel = vi.fn().mockResolvedValue(undefined)
+		const harness = createHarness({ onCancel })
+		harness.ctx.ui.input.mockResolvedValueOnce(undefined) // user pressed Escape
+
+		const started = harness.start()
+		await harness.settle()
+
+		// Select API key option
+		harness.input("j")
+		harness.input("\n")
+
+		// After cancellation the gate loops back to the selector — cancel it
+		await harness.waitForCustomPrompts(2)
+		harness.input("\x1b")
+		await started
+
+		expect(harness.state.cancelled).toBe(true)
+		expect(modelsMock.updateModelsConfig).not.toHaveBeenCalled()
 	})
 })

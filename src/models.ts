@@ -3,9 +3,20 @@ import { dirname } from "node:path"
 import { getVersion } from "./utils.js"
 
 const KIMCHI_API = "https://llm.kimchi.dev"
-const MODELS_METADATA_API = `${KIMCHI_API}/v1/models/metadata?include_in_cli=true`
-const CHAT_COMPLETIONS_API = `${KIMCHI_API}/openai/v1`
 const FETCH_TIMEOUT_MS = 5000
+
+function normalizeKimchiEndpoint(endpoint?: string): string {
+	const trimmed = endpoint?.trim()
+	return (trimmed && trimmed.length > 0 ? trimmed : KIMCHI_API).replace(/\/+$/, "")
+}
+
+function modelsMetadataApi(endpoint?: string): string {
+	return `${normalizeKimchiEndpoint(endpoint)}/v1/models/metadata?include_in_cli=true`
+}
+
+function chatCompletionsApi(endpoint?: string): string {
+	return `${normalizeKimchiEndpoint(endpoint)}/openai/v1`
+}
 
 // HTTP statuses worth retrying: rate limiting and transient gateway/server errors.
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
@@ -38,6 +49,12 @@ export function isTransientModelsError(error: unknown): boolean {
 export interface FetchModelsOptions {
 	/** Injected sleep for deterministic tests; defaults to a setTimeout-based delay. */
 	sleep?: (ms: number) => Promise<void>
+	/** Base Kimchi service endpoint; defaults to https://llm.kimchi.dev. */
+	endpoint?: string
+	/** When false, fetch failures throw even if models.json contains cached models. */
+	allowCachedFallback?: boolean
+	/** When true, an API response with no active models throws instead of writing an empty kimchi-dev block. */
+	requireActiveModels?: boolean
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
@@ -81,12 +98,13 @@ function sortModels(models: ModelMetadata[]): ModelMetadata[] {
 
 async function fetchAvailableModels(apiKey: string, options: FetchModelsOptions = {}): Promise<ModelMetadata[]> {
 	const sleep = options.sleep ?? defaultSleep
+	const metadataUrl = modelsMetadataApi(options.endpoint)
 	let lastError: ModelsFetchError | undefined
 
 	for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt += 1) {
 		let response: Response
 		try {
-			response = await fetch(MODELS_METADATA_API, {
+			response = await fetch(metadataUrl, {
 				headers: { Authorization: `Bearer ${apiKey}` },
 				signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 			})
@@ -160,11 +178,11 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 	}
 }
 
-function buildModelsConfig(models: ModelMetadata[]) {
+function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 	return {
 		providers: {
 			"kimchi-dev": {
-				baseUrl: CHAT_COMPLETIONS_API,
+				baseUrl: chatCompletionsApi(endpoint),
 				apiKey: "$KIMCHI_API_KEY",
 				api: "openai-completions",
 				authHeader: true,
@@ -228,8 +246,8 @@ function readExistingProviders(modelsJsonPath: string): Record<string, unknown> 
 	}
 }
 
-export async function validateApiKey(apiKey: string): Promise<void> {
-	await fetchAvailableModels(apiKey)
+export async function validateApiKey(apiKey: string, options: FetchModelsOptions = {}): Promise<void> {
+	await fetchAvailableModels(apiKey, options)
 }
 
 /**
@@ -313,7 +331,7 @@ export async function updateModelsConfig(
 		fetched = await fetchAvailableModels(apiKey, options)
 	} catch (err) {
 		const cached = readCachedMetadata(modelsJsonPath) ?? []
-		if (cached.length === 0 && otherModels.length === 0) throw err
+		if (options.allowCachedFallback === false || (cached.length === 0 && otherModels.length === 0)) throw err
 		const message = err instanceof Error ? err.message : String(err)
 		console.warn(`Failed to refresh models from API, using cached list: ${message}`)
 		return { models: sortModels([...cached, ...otherModels]) }
@@ -321,10 +339,13 @@ export async function updateModelsConfig(
 
 	const activeModels = fetched.filter((m) => m.status !== "sunset")
 	if (activeModels.length === 0 && fetched.length > 0) {
+		if (options.requireActiveModels) {
+			throw new ModelsFetchError("No active Kimchi models are available for this API key", { transient: false })
+		}
 		console.warn("All models from the API are sunset. No active models available.")
 	}
 	const models = sortModels(activeModels)
-	const merged = { providers: { ...otherProviders, ...buildModelsConfig(models).providers } }
+	const merged = { providers: { ...otherProviders, ...buildModelsConfig(models, options.endpoint).providers } }
 	writeFileSync(modelsJsonPath, JSON.stringify(merged, null, "\t"), "utf-8")
 	return { models: sortModels([...activeModels, ...otherModels]) }
 }

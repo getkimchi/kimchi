@@ -19,6 +19,7 @@ import { dispatchSubcommand } from "./commands/dispatch.js"
 import "./login-command-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
+	getActiveVendorSkillPaths,
 	loadConfig,
 	readTelemetryConfig,
 	writeApiKey,
@@ -60,6 +61,7 @@ import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import stripImagesExtension from "./extensions/strip-images.js"
+import superpowersExtension from "./extensions/superpowers.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
 import telemetryExtension from "./extensions/telemetry/index.js"
@@ -267,7 +269,7 @@ try {
 		let currentApiKey = apiKey
 		let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
 		try {
-			;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
+			;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, { endpoint: config.customLlmEndpoint }))
 			if (experimentalFeatures) {
 				injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")
 				models = [...models, ...readExperimentalModels(modelsJsonPath)]
@@ -287,7 +289,7 @@ try {
 				currentApiKey = wizardResult.apiKey ?? ""
 				writeApiKey(currentApiKey)
 				config = loadConfig()
-				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey))
+				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, { endpoint: config.customLlmEndpoint }))
 				if (experimentalFeatures) {
 					injectExperimentalProvider(modelsJsonPath, currentApiKey)
 					models = [...models, ...readExperimentalModels(modelsJsonPath)]
@@ -443,6 +445,7 @@ try {
 			: []
 		const extensionFactories = [
 			startupUpdateExtension,
+			superpowersExtension,
 			sessionIdCaptureExtension,
 			shutdownMarkerExtension,
 			statsExtension,
@@ -464,7 +467,7 @@ try {
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-skills", factory: claudeCodeSkillsExtension },
 			] satisfies ManagedExtensionFactory[]),
-			promptEnrichmentExtension(skillPaths),
+			promptEnrichmentExtension([...new Set([...skillPaths, ...getActiveVendorSkillPaths()])]),
 			rtkRewriteExtension,
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-hook-adapter", factory: claudeCodeHooksAdapter },

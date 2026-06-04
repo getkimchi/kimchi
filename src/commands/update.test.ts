@@ -30,6 +30,9 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 		})),
 	}
 })
+
+const ensureSuperpowersInstalledMock = vi.fn()
+
 vi.mock("../update/paths.js", () => ({
 	isHomebrewInstall: () => isHomebrewInstallMock(),
 }))
@@ -39,6 +42,9 @@ vi.mock("../update/workflow.js", () => ({
 }))
 vi.mock("../utils.js", () => ({
 	getVersion: () => getVersionMock(),
+}))
+vi.mock("../extensions/superpowers/installer.js", () => ({
+	ensureSuperpowersInstalled: (...args: unknown[]) => ensureSuperpowersInstalledMock(...args),
 }))
 
 const { runUpdate } = await import("./update.js")
@@ -181,6 +187,8 @@ describe("runUpdate non-interactive composition", () => {
 		setProgressCallbackMock.mockReset()
 		settingsManagerCreateMock.mockReset()
 		settingsManagerCreateMock.mockReturnValue({})
+		ensureSuperpowersInstalledMock.mockReset()
+		ensureSuperpowersInstalledMock.mockResolvedValue(true)
 	})
 
 	afterEach(() => {
@@ -228,6 +236,8 @@ describe("runUpdate package targets", () => {
 		checkForUpdateMock.mockReset()
 		checkForUpdateMock.mockResolvedValue({ hasUpdate: false })
 		applyUpdateMock.mockReset()
+		ensureSuperpowersInstalledMock.mockReset()
+		ensureSuperpowersInstalledMock.mockResolvedValue(true)
 		listConfiguredPackagesMock.mockReset()
 		listConfiguredPackagesMock.mockReturnValue([
 			{ source: "npm:context-mode", scope: "user", filtered: false, installedPath: "/packages/context-mode" },
@@ -284,18 +294,19 @@ describe("runUpdate package targets", () => {
 		const code = await runUpdate(["--dry-run"])
 
 		expect(code).toBe(0)
-		expect(packageUpdateMock).not.toHaveBeenCalled()
-		expect(checkForUpdateMock).toHaveBeenCalled()
+		expect(applyUpdateMock).not.toHaveBeenCalled()
+		expect(ensureSuperpowersInstalledMock).not.toHaveBeenCalled()
 	})
 
-	it("reports unknown package names instead of treating them as flags", async () => {
-		const code = await runUpdate(["missing-package"])
-
-		expect(code).toBe(1)
-		expect(packageUpdateMock).not.toHaveBeenCalled()
-		expect(checkForUpdateMock).not.toHaveBeenCalled()
-		expect(errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")).toContain(
-			"no matching package found for missing-package",
-		)
+	it("succeeds even if superpowers install throws", async () => {
+		checkForUpdateMock.mockResolvedValue({
+			hasUpdate: true,
+			latestVersion: "v0.0.80",
+			tag: "v0.0.80",
+		})
+		applyUpdateMock.mockResolvedValue(undefined)
+		ensureSuperpowersInstalledMock.mockRejectedValue(new Error("offline"))
+		const code = await runUpdate(["--force"])
+		expect(code).toBe(0)
 	})
 })

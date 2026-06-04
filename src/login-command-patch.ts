@@ -9,9 +9,11 @@
 import { type AuthStatus, InteractiveMode, OAuthSelectorComponent } from "@earendil-works/pi-coding-agent"
 import { Spacer, Text } from "@earendil-works/pi-tui"
 import {
+	KIMCHI_DEFAULT_ENDPOINT,
 	KIMCHI_PROVIDER_ID,
 	createLoginChoiceSelector,
 	formatBrowserLoginMessage,
+	performKimchiApiKeyLogin,
 	performKimchiBrowserLogin,
 	prePopulateSubscriptionModels,
 } from "./extensions/login/flow.js"
@@ -60,6 +62,7 @@ type LoginModeLike = {
 	showSelector?: ShowSelector
 	showStatus?: (msg: string) => void
 	showLoginDialog?: (providerId: string, providerName: string) => Promise<void>
+	showExtensionInput?: (title: string, placeholder?: string) => Promise<string | undefined>
 	getLoginProviderOptions?: (authType: "oauth" | "api_key") => AuthSelectorProvider[]
 	session: SessionLike
 	ui?: UiLike
@@ -132,6 +135,44 @@ async function handleKimchiLogin(im: InteractiveMode): Promise<void> {
 		// needs the URL to copy into the right one. console.log is swallowed under the TUI.
 		onBrowserUrl: (url) => addLoginFeedback(im, formatBrowserLoginMessage(url)),
 	})
+}
+
+async function handleKimchiApiKeyLogin(im: InteractiveMode): Promise<void> {
+	const modeLike = im as unknown as LoginModeLike
+	const showStatus = modeLike.showStatus?.bind(modeLike)
+	const showError = im.showError.bind(im)
+	const session = modeLike.session
+	const registry = session?.modelRegistry
+	if (!registry) {
+		showError("Kimchi API-key login failed: model registry is unavailable")
+		return
+	}
+	if (!modeLike.showExtensionInput) {
+		showError("Kimchi API-key login failed: text input is unavailable")
+		return
+	}
+
+	const apiKey = await modeLike.showExtensionInput("Kimchi API Key:", "Enter your Kimchi API key")
+	if (apiKey === undefined) return
+	const endpointInput = await modeLike.showExtensionInput(
+		`Kimchi endpoint (press Enter to use ${KIMCHI_DEFAULT_ENDPOINT}):`,
+		"",
+	)
+	if (endpointInput === undefined) return
+
+	await performKimchiApiKeyLogin(
+		{
+			modelRegistry: registry,
+			setModel: (model) => session.setModel(model),
+			showStatus,
+			showError,
+			addFeedback: (message) => addLoginFeedback(im, message),
+		},
+		{
+			apiKey,
+			endpoint: endpointInput.trim() || KIMCHI_DEFAULT_ENDPOINT,
+		},
+	)
 }
 
 function showSubscriptionLogin(im: InteractiveMode): void {
@@ -209,6 +250,10 @@ function showLoginChoiceSelector(im: InteractiveMode): void {
 			onKimchiAccount: () => {
 				done()
 				void handleKimchiLogin(im)
+			},
+			onKimchiApiKey: () => {
+				done()
+				void handleKimchiApiKeyLogin(im)
 			},
 			onSubscription: () => {
 				done()

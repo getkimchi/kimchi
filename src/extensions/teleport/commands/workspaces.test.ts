@@ -10,6 +10,8 @@ const {
 	listSessionsMock,
 	pickWorkspaceMock,
 	runTerminalMock,
+	syncSshConfigMock,
+	ensureIncludeDirectiveMock,
 } = vi.hoisted(() => ({
 	verifyApiKeyMock: vi.fn(),
 	listWorkspacesMock: vi.fn(),
@@ -19,6 +21,8 @@ const {
 	listSessionsMock: vi.fn(),
 	pickWorkspaceMock: vi.fn(),
 	runTerminalMock: vi.fn(),
+	syncSshConfigMock: vi.fn(),
+	ensureIncludeDirectiveMock: vi.fn(),
 }))
 
 vi.mock("../../../sandbox/cloud/keys.js", () => ({ verifyApiKey: verifyApiKeyMock }))
@@ -41,6 +45,10 @@ vi.mock("../../../sandbox/worker/client.js", () => ({
 vi.mock("../../../sandbox/worker/sessions.js", () => ({ listSessions: listSessionsMock }))
 vi.mock("../ui/workspaces-panel.js", () => ({ pickWorkspace: pickWorkspaceMock }))
 vi.mock("./terminal.js", () => ({ runTerminal: runTerminalMock }))
+vi.mock("../ssh-config/sync.js", () => ({
+	syncSshConfig: syncSshConfigMock,
+	ensureIncludeDirective: ensureIncludeDirectiveMock,
+}))
 
 import type { Workspace } from "../../../sandbox/cloud/types.js"
 import type { Session } from "../../../sandbox/worker/types.js"
@@ -159,6 +167,8 @@ beforeEach(() => {
 	listSessionsMock.mockReset()
 	pickWorkspaceMock.mockReset()
 	runTerminalMock.mockReset()
+	syncSshConfigMock.mockReset().mockResolvedValue(undefined)
+	ensureIncludeDirectiveMock.mockReset().mockResolvedValue(undefined)
 })
 
 describe("collectRows", () => {

@@ -175,7 +175,7 @@ describe("default agents — subagent system prompt snapshot", () => {
 
 			# Question Rule
 
-			**Ask clarifying questions before committing to a plan.** If the request omits information you need to choose a technology, bound the scope, or set performance targets, use the \`questionnaire\` tool. Ask 1–3 focused questions. Prefer checkbox questions when multiple options apply; radio for single choices. Do not ask preference-survey questions when a safe default is obvious.
+			**Ask clarifying questions before committing to a plan.** If the request omits information you need to choose a technology, bound the scope, or set performance targets, use the \`questionnaire\` tool. Ask 1–3 focused questions. Prefer multi questions when multiple options apply; single for one choice. Do not ask preference-survey questions when a safe default is obvious.
 
 			# Finalization Rule
 

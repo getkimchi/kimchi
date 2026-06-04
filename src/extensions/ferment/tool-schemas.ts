@@ -6,7 +6,6 @@
  */
 
 import { Type } from "typebox"
-import { SCOPING_QUESTION_TYPES } from "../../ferment/types.js"
 
 /** Structured quality-gate verdict the agent must produce on every completion
  *  tool call. The set of valid `id`s, and which set is required for which
@@ -125,13 +124,11 @@ export const ScopingQuestionOptionSchema = Type.Object({
 export const ScopingQuestionSchema = Type.Object({
 	id: Type.String({ description: "Stable identifier for this question." }),
 	type: Type.Optional(
-		Type.Union(
-			SCOPING_QUESTION_TYPES.map((questionType) => Type.Literal(questionType)),
-			{
-				description:
-					"Question style. radio = one choice, checkbox = multiple choices, text = enter-your-own answer only. Omit for radio.",
-			},
-		),
+		Type.String({
+			description:
+				"Question style. Must be 'single' (one choice, default), 'multi' (multiple choices), 'text' (enter-your-own answer only), or 'confirm' (yes/no, always Yes/No — no options). Omit for single.",
+			pattern: "^(single|multi|text|confirm)$",
+		}),
 	),
 	question: Type.String({
 		description:
@@ -140,7 +137,7 @@ export const ScopingQuestionSchema = Type.Object({
 	options: Type.Optional(
 		Type.Array(ScopingQuestionOptionSchema, {
 			description:
-				"2–5 concrete options for radio/checkbox questions. Omit for text questions. Vary question framing across outcome boundary, risk/tradeoff, integration/deployment target, verification standard, and non-goal/scope-cut decisions. Avoid feature-shopping options; scope extras out unless requested.",
+				"2–5 concrete options for single/multi questions. Omit for text and confirm questions (confirm is always Yes/No). Vary question framing across outcome boundary, risk/tradeoff, integration/deployment target, verification standard, and non-goal/scope-cut decisions. Avoid feature-shopping options; scope extras out unless requested.",
 		}),
 	),
 })
@@ -192,7 +189,7 @@ export const ProposeScopingParams = Type.Object({
 		Type.Union([
 			Type.Array(ScopingQuestionSchema, {
 				description:
-					'Emit ONLY for decision-blocking uncertainty where the answer materially changes architecture, dependencies, data model, user-facing scope, security posture, deployment/runtime assumptions, or verification strategy. Hard limits: at most 3 questions; radio/checkbox questions need 2-5 options. Do not ask about defaults you can safely choose. For broad discovery or planning over an existing codebase, if discovery finds multiple plausible work areas and the user did not explicitly ask to include every area, ask one checkbox question selecting which areas belong in this ferment; this is an outcome/scope boundary, not a preference survey. Example question: "Which improvement areas should this ferment include?" If the user asks to be thorough with questions, be thorough in assumptions, success criteria, constraints, and verification steps; do not add default-choice questions unless implementation is blocked. Do not ask preference-survey or feature-shopping questions like tech stack, platform, persistence, or extra features for a simple greenfield app; record safe defaults in assumptions instead. If all recommended answers are generic defaults, emit questions: []. Must be a real JSON array of question objects, never a quoted string. Use type radio for one choice or yes/no, checkbox for multi-select, and text for enter-your-own only. Put options in display order; text questions omit options. The host appends Custom answer to radio/checkbox. Mark at most ONE option per question with `recommended: true`. No reason text. On replans after user answers, ask only NEW decision-blocking questions; never repeat answered questions.',
+					'Emit ONLY for decision-blocking uncertainty where the answer materially changes architecture, dependencies, data model, user-facing scope, security posture, deployment/runtime assumptions, or verification strategy. Hard limits: at most 3 questions; single/multi questions need 2-5 options. Do not ask about defaults you can safely choose. For broad discovery or planning over an existing codebase, if discovery finds multiple plausible work areas and the user did not explicitly ask to include every area, ask one multi question selecting which areas belong in this ferment; this is an outcome/scope boundary, not a preference survey. Example question: "Which improvement areas should this ferment include?" If the user asks to be thorough with questions, be thorough in assumptions, success criteria, constraints, and verification steps; do not add default-choice questions unless implementation is blocked. Do not ask preference-survey or feature-shopping questions like tech stack, platform, persistence, or extra features for a simple greenfield app; record safe defaults in assumptions instead. If all recommended answers are generic defaults, emit questions: []. Must be a real JSON array of question objects, never a quoted string. Use type single for one choice, confirm for yes/no, multi for multi-select, and text for enter-your-own only. Put options in display order; text and confirm questions omit options (confirm is always Yes/No). The host appends Custom answer to single/multi. Mark at most ONE option per question with `recommended: true`. No reason text. On replans after user answers, ask only NEW decision-blocking questions; never repeat answered questions.',
 			}),
 			Type.String({
 				description:
@@ -347,23 +344,23 @@ const AskUserOptionSchema = Type.Object({
 
 const AskUserQuestionSchema = Type.Object({
 	id: Type.String({ description: "Stable identifier for this question. Returned with the answer." }),
-	type: Type.Union(
-		SCOPING_QUESTION_TYPES.map((questionType) => Type.Literal(questionType)),
-		{
-			description: "radio = single-select, checkbox = multi-select, text = free-form input.",
-		},
-	),
+	type: Type.String({
+		description:
+			"Question type. Must be 'single' (one choice), 'multi' (multiple choices), 'text' (free-form input), or 'confirm' (yes/no, always Yes/No — no options).",
+		pattern: "^(single|multi|text|confirm)$",
+	}),
 	prompt: Type.String({ description: "The full question text shown to the user or judge." }),
 	label: Type.Optional(Type.String({ description: "Short label shown in the TUI tab bar. Defaults to Q1, Q2, etc." })),
 	options: Type.Optional(
 		Type.Array(AskUserOptionSchema, {
-			description: "Options for radio/checkbox questions. Omit for text questions.",
+			description:
+				"Options for single/multi questions. Omit for text and confirm questions (confirm is always Yes/No).",
 		}),
 	),
 	allowOther: Type.Optional(
 		Type.Boolean({
 			description:
-				"When true, the TUI adds an Other/free-text option. The judge may also return a custom value. Default: false.",
+				"For single/multi questions only. When true, the TUI adds an Other/free-text option and the judge may return a custom value. Must be omitted for confirm. Default: false.",
 		}),
 	),
 	required: Type.Optional(Type.Boolean({ description: "Whether this question must be answered. Default: true." })),
@@ -383,27 +380,27 @@ export const AskUserParams = Type.Object({
 		}),
 	),
 	response_type: Type.Optional(
-		Type.Union([Type.Literal("single"), Type.Literal("multi"), Type.Literal("text")], {
+		Type.Union([Type.Literal("single"), Type.Literal("multi"), Type.Literal("text"), Type.Literal("confirm")], {
 			description:
-				"Compatibility shorthand for a single question. single returns choice, multi returns choices, text returns text. Default: single.",
+				"Compatibility shorthand for a single question. single/confirm return choice, multi returns choices, text returns text. confirm is always Yes/No and must not provide options. Default: single.",
 		}),
 	),
 	question: Type.Optional(
 		Type.String({
 			description:
-				"Compatibility shorthand for one question. For 1:1 TUI behavior, prefer questions[] with radio/checkbox/text.",
+				"Compatibility shorthand for one question. For 1:1 TUI behavior, prefer questions[] with single/multi/text/confirm.",
 		}),
 	),
 	options: Type.Optional(
 		Type.Array(AskUserOptionSchema, {
 			description:
-				"Compatibility shorthand options for single/multi questions. Each option needs a stable id and a human label. Omit for text questions.",
+				"Compatibility shorthand options for single/multi questions. Each option needs a stable id and a human label. Omit for text and confirm questions.",
 		}),
 	),
 	questions: Type.Optional(
 		Type.Array(AskUserQuestionSchema, {
 			description:
-				"One or more form questions. Supports radio, checkbox, and text; radio/checkbox support allowOther. Multiple questions use Tab/Shift+Tab navigation and a Submit tab.",
+				"One or more form questions. Supports single, multi, text, and confirm; single/multi support allowOther. Multiple questions use Tab/Shift+Tab navigation and a Submit tab.",
 		}),
 	),
 })

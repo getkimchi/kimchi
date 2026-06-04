@@ -10,11 +10,15 @@ import { findProxyHelper } from "../../../ssh-proxy.js"
  *
  * In dev mode (running under `node`/`bun`), falls back to locating the
  * standalone proxy helper script and injects the API key via the environment.
+ *
+ * When `target` is "%h" (default), the proxy-helper receives the SSH host name
+ * at connect time and resolves it via the listing endpoint. When `target` is a
+ * literal session id, the helper takes the fast direct-fetch path.
  */
-export function buildProxyCommand(): string {
+export function buildProxyCommand(target = "%h"): string {
 	const binaryName = basename(process.execPath)
 	if (binaryName !== "bun" && binaryName !== "node") {
-		return `${binaryName} --ssh-proxy %h`
+		return `${binaryName} --ssh-proxy ${target}`
 	}
 
 	// Fallback for when running in dev mode.
@@ -22,5 +26,5 @@ export function buildProxyCommand(): string {
 	const proxyHelper = findProxyHelper()
 	const apiKey = process.env.KIMCHI_API_KEY ?? readApiKeyFromConfigFile()
 
-	return `env KIMCHI_API_KEY=${apiKey} ${proxyHelper} ssh-proxy %h`
+	return `env KIMCHI_API_KEY=${apiKey} ${proxyHelper} ssh-proxy ${target}`
 }

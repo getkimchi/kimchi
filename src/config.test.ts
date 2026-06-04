@@ -3,7 +3,9 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
+	VENDOR_SKILL_PATHS,
 	clearApiKey,
+	getActiveVendorSkillPaths,
 	loadConfig,
 	readGitToken,
 	readHideTips,
@@ -127,6 +129,19 @@ describe("loadConfig", () => {
 
 		rmSync(globalDir, { recursive: true, force: true })
 		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("customLlmEndpoint is undefined when no endpoint is saved", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "my-key" }))
+		const config = loadConfig({ configPath })
+		expect(config.customLlmEndpoint).toBeUndefined()
+	})
+
+	it("customLlmEndpoint returns the saved value when explicitly configured", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "my-key", llmEndpoint: "https://custom.example" }))
+		const config = loadConfig({ configPath })
+		expect(config.customLlmEndpoint).toBe("https://custom.example")
+		expect(config.llmEndpoint).toBe("https://custom.example")
 	})
 
 	it("project llmEndpoint overrides global", () => {
@@ -279,6 +294,21 @@ describe("writeApiKey", () => {
 		writeApiKey("second", configPath)
 		const raw = readFileSync(configPath, "utf-8")
 		expect(JSON.parse(raw).apiKey).toBe("second")
+	})
+
+	it("can persist the Kimchi API endpoint with the API key", () => {
+		writeApiKey("sekrit-42", configPath, { llmEndpoint: " https://custom.kimchi.example " })
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("sekrit-42")
+		expect(raw.llmEndpoint).toBe("https://custom.kimchi.example")
+	})
+
+	it("clears llmEndpoint when no endpoint is provided (prevents stale endpoint after browser login)", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "old-key", llmEndpoint: "https://custom.example" }))
+		writeApiKey("new-browser-token", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("new-browser-token")
+		expect(raw.llmEndpoint).toBeUndefined()
 	})
 })
 
@@ -624,5 +654,40 @@ describe("readGitToken / writeGitToken", () => {
 	it("round-trips write then read", () => {
 		writeGitToken("github.com", "ghp_roundtrip", configPath)
 		expect(readGitToken("github.com", configPath)).toBe("ghp_roundtrip")
+	})
+})
+
+describe("getActiveVendorSkillPaths", () => {
+	let originalHome: string | undefined
+	let mockHome: string
+
+	beforeEach(() => {
+		originalHome = process.env.HOME
+		mockHome = mkdtempSync(join(tmpdir(), "kimchi-vendor-test-"))
+		process.env.HOME = mockHome
+	})
+
+	afterEach(() => {
+		if (originalHome !== undefined) process.env.HOME = originalHome
+		else {
+			// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
+			delete process.env.HOME
+		}
+		rmSync(mockHome, { recursive: true, force: true })
+	})
+
+	it("returns vendor paths when vendor dir exists and no sentinel", () => {
+		mkdirSync(join(mockHome, ".config", "kimchi", "vendor", "superpowers", "skills"), { recursive: true })
+		expect(getActiveVendorSkillPaths()).toEqual(VENDOR_SKILL_PATHS)
+	})
+
+	it("returns empty array when sentinel exists in harness skills dir", () => {
+		mkdirSync(join(mockHome, ".config", "kimchi", "harness", "skills", "using-superpowers"), { recursive: true })
+		writeFileSync(join(mockHome, ".config", "kimchi", "harness", "skills", "using-superpowers", "SKILL.md"), "")
+		expect(getActiveVendorSkillPaths()).toEqual([])
+	})
+
+	it("returns empty array when vendor dir does not exist", () => {
+		expect(getActiveVendorSkillPaths()).toEqual([])
 	})
 })

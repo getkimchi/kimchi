@@ -37,6 +37,23 @@ function simulateMixedTurn(guard: ExplorationGuard): string[] {
 	return steers
 }
 
+function simulateNeutralTurn(guard: ExplorationGuard): string[] {
+	const steers: string[] = []
+	guard.turnStart()
+	guard.recordToolCall("set_phase")
+	guard.turnEnd((text) => steers.push(text))
+	return steers
+}
+
+function simulateNeutralPlusReadTurn(guard: ExplorationGuard): string[] {
+	const steers: string[] = []
+	guard.turnStart()
+	guard.recordToolCall("set_phase")
+	guard.recordToolCall("read")
+	guard.turnEnd((text) => steers.push(text))
+	return steers
+}
+
 describe("ExplorationGuard.reset", () => {
 	it("clears the streak", () => {
 		const guard = createGuard()
@@ -80,6 +97,20 @@ describe("Read-only turn counting", () => {
 		simulateNoToolTurn(guard)
 		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
 	})
+
+	it("resets streak on a neutral tool turn", () => {
+		const guard = createGuard()
+		for (let i = 0; i < 3; i++) simulateReadTurn(guard)
+		simulateNeutralTurn(guard)
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
+	})
+
+	it("counts a mixed neutral+read turn as read-only", () => {
+		const guard = createGuard()
+		for (let i = 0; i < 3; i++) simulateReadTurn(guard)
+		simulateNeutralPlusReadTurn(guard)
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(4)
+	})
 })
 
 describe("Threshold triggers", () => {
@@ -95,8 +126,8 @@ describe("Threshold triggers", () => {
 		guard.turnEnd((text) => steers.push(text))
 		expect(steers).toHaveLength(1)
 		expect(steers[0]).toContain("Exploration guard")
-		expect(steers[0]).toContain("5 consecutive turns")
-		expect(steers[0]).toContain("hypothesis")
+		expect(steers[0]).toContain("5 consecutive read-only turns")
+		expect(steers[0]).toContain("concrete action")
 	})
 
 	it("emits a mandatory steer at the default steer threshold (8)", () => {
@@ -114,8 +145,8 @@ describe("Threshold triggers", () => {
 		guard.recordToolCall("find")
 		guard.turnEnd((text) => steers.push(text))
 		expect(steers).toHaveLength(2)
-		expect(steers[1]).toContain("8 consecutive turns")
-		expect(steers[1]).toContain("MUST")
+		expect(steers[1]).toContain("8 consecutive read-only turns")
+		expect(steers[1]).toContain("concrete action")
 	})
 
 	it("uses custom thresholds", () => {
@@ -131,7 +162,7 @@ describe("Threshold triggers", () => {
 		guard.recordToolCall("ls")
 		guard.turnEnd((text) => steers.push(text))
 		expect(steers).toHaveLength(1)
-		expect(steers[0]).toContain("2 consecutive turns")
+		expect(steers[0]).toContain("2 consecutive read-only turns")
 
 		guard.turnStart()
 		guard.recordToolCall("ls")
@@ -142,19 +173,53 @@ describe("Threshold triggers", () => {
 		guard.recordToolCall("ls")
 		guard.turnEnd((text) => steers.push(text))
 		expect(steers).toHaveLength(2)
-		expect(steers[1]).toContain("4 consecutive turns")
+		expect(steers[1]).toContain("4 consecutive read-only turns")
 	})
 
-	it("does not trigger twice on the same threshold", () => {
+	it("each threshold fires once per streak; mandatory steer resets the counter", () => {
+		// 5 turns → hypothesis steer (no reset, counter stays at 5)
+		// 8 turns → mandatory steer + reset (counter back to 0)
+		// 5 more turns → hypothesis steer again in the new streak
 		const guard = createGuard()
 		const steers: string[] = []
-		for (let i = 0; i < 10; i++) {
+		const readTurn = () => {
 			guard.turnStart()
 			guard.recordToolCall("read")
 			guard.turnEnd((text) => steers.push(text))
 		}
-		expect(steers.filter((s) => s.includes("5 consecutive turns"))).toHaveLength(1)
-		expect(steers.filter((s) => s.includes("8 consecutive turns"))).toHaveLength(1)
+
+		for (let i = 0; i < 8; i++) readTurn()
+		expect(steers).toHaveLength(2)
+		expect(steers[0]).toContain("5 consecutive read-only turns")
+		expect(steers[1]).toContain("8 consecutive read-only turns")
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
+
+		for (let i = 0; i < 5; i++) readTurn() // new streak after reset
+		expect(steers).toHaveLength(3)
+		expect(steers[2]).toContain("5 consecutive read-only turns")
+	})
+
+	it("resets counter after mandatory steer fires", () => {
+		const guard = createGuard({ hypothesisThreshold: 99 }) // skip hypothesis steer
+		const steers: string[] = []
+
+		for (let i = 0; i < 8; i++) {
+			guard.turnStart()
+			guard.recordToolCall("read")
+			guard.turnEnd((text) => steers.push(text))
+		}
+		expect(steers).toHaveLength(1)
+		expect(steers[0]).toContain("concrete action")
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
+
+		// Subsequent read turns start a fresh streak
+		for (let i = 0; i < 4; i++) {
+			guard.turnStart()
+			guard.recordToolCall("read")
+			guard.turnEnd(() => {})
+		}
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(4)
+		expect(steers).toHaveLength(1)
 	})
 
 	it("does not trigger when isEnabled returns false", () => {
@@ -179,9 +244,34 @@ describe("Threshold triggers", () => {
 			const steers = simulateReadTurn(guard)
 			if (i === 4) {
 				expect(steers).toHaveLength(1)
-				expect(steers[0]).toContain("5 consecutive turns")
+				expect(steers[0]).toContain("5 consecutive read-only turns")
 			}
 		}
+	})
+
+	it("resets streak while disabled so it does not fire immediately on re-enable", () => {
+		// Simulates: 4 read turns → guard disabled (e.g. scoping starts) →
+		// 3 more read turns while disabled → guard re-enabled → should need
+		// a full 5 turns before firing, not just 1.
+		let enabled = true
+		const guard = createGuard({ isEnabled: () => enabled })
+
+		for (let i = 0; i < 4; i++) simulateReadTurn(guard)
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(4)
+
+		enabled = false
+		for (let i = 0; i < 3; i++) simulateReadTurn(guard)
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
+
+		enabled = true
+		const steers: string[] = []
+		for (let i = 0; i < 4; i++) {
+			guard.turnStart()
+			guard.recordToolCall("read")
+			guard.turnEnd((text) => steers.push(text))
+		}
+		expect(steers).toHaveLength(0) // streak only at 4, not yet at 5
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(4)
 	})
 })
 
@@ -208,6 +298,41 @@ describe("Custom tool classification", () => {
 		guard.recordToolCall("custom_write")
 		guard.turnEnd(() => {})
 		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
+	})
+})
+
+describe("bash tool classification", () => {
+	it("bash alone does not count as a read-only turn", () => {
+		const guard = createGuard()
+		for (let i = 0; i < 3; i++) {
+			guard.turnStart()
+			guard.recordToolCall("bash")
+			guard.turnEnd(() => {})
+		}
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
+	})
+
+	it("bash resets a read-only streak", () => {
+		const guard = createGuard()
+		for (let i = 0; i < 3; i++) {
+			guard.turnStart()
+			guard.recordToolCall("read")
+			guard.turnEnd(() => {})
+		}
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(3)
+		guard.turnStart()
+		guard.recordToolCall("bash")
+		guard.turnEnd(() => {})
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
+	})
+
+	it("bash combined with a read tool still counts as read-only", () => {
+		const guard = createGuard()
+		guard.turnStart()
+		guard.recordToolCall("bash")
+		guard.recordToolCall("read")
+		guard.turnEnd(() => {})
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(1)
 	})
 })
 

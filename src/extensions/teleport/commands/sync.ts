@@ -7,6 +7,7 @@ import { rsyncInstallHint, whichRsync } from "../preflight/rsync.js"
 import { SANDBOX_HOME, SANDBOX_USER } from "../provisioning/constants.js"
 import { RsyncError, runRsync } from "../provisioning/rsync-runner.js"
 import type { TeleportContext } from "../types.js"
+import { formatBytes } from "../ui/format-bytes.js"
 import { SyncProgressRow } from "../ui/sync-progress-row.js"
 import { type SyncArgs, parseSyncArgs } from "./args.js"
 import { info, refuse } from "./errors.js"
@@ -153,13 +154,6 @@ function createInlineProgress(ctx: TeleportContext): InlineProgress {
 			ctx.ui.setWidget(SYNC_WIDGET_KEY, undefined, { placement: "aboveEditor" })
 		},
 	}
-}
-
-function formatBytes(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-	if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-	return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
 export interface ResolvedPaths {
