@@ -107,6 +107,35 @@ index 2d54902da1800044206eb1f00ca07501a7310145..44daf4982a5ab6f671f5bce373a94a31
          this.rebuild();
      }
      setExpanded(expanded) {
+diff --git a/dist/modes/interactive/components/extension-selector.js b/dist/modes/interactive/components/extension-selector.js
+--- a/dist/modes/interactive/components/extension-selector.js
++++ b/dist/modes/interactive/components/extension-selector.js
+@@ -2,7 +2,7 @@
+  * Generic selector component for extensions.
+  * Displays a list of string options with keyboard navigation.
+  */
+-import { Container, getKeybindings, Spacer, Text } from "@earendil-works/pi-tui";
++import { Container, getKeybindings, matchesKey, Spacer, Text } from "@earendil-works/pi-tui";
+ import { theme } from "../theme/theme.js";
+ import { CountdownTimer } from "./countdown-timer.js";
+ import { DynamicBorder } from "./dynamic-border.js";
+@@ -75,6 +75,16 @@
+         else if (kb.matches(keyData, "tui.select.cancel")) {
+             this.onCancelCallback();
+         }
++        else {
++            for (let n = 1; n <= 9; n++) {
++                if (matchesKey(keyData, String(n))) {
++                    const selected = this.options[n - 1];
++                    if (selected)
++                        this.onSelectCallback(selected);
++                    break;
++                }
++            }
++        }
+     }
+     dispose() {
+         this.countdown?.dispose();
 diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
 index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..ee23106b19e169807cbd001372180573f43bfb1e 100644
 --- a/dist/modes/interactive/components/model-selector.js
