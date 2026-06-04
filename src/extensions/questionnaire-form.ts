@@ -11,7 +11,7 @@
  * a single `title`; ferment's `promptForm` passes `title` + `description`.
  */
 
-import type { Theme } from "@earendil-works/pi-coding-agent"
+import { type Theme, getSelectListTheme } from "@earendil-works/pi-coding-agent"
 import { Editor, Key, type TUI, matchesKey, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import type { Component } from "@earendil-works/pi-tui"
 import {
@@ -57,13 +57,7 @@ export function createQuestionForm(
 	const isMulti = questions.length > 1
 	const editorTheme = {
 		borderColor: (s: string) => theme.fg("muted", s),
-		selectList: {
-			selectedPrefix: (s: string) => theme.fg("accent", s),
-			selectedText: (s: string) => theme.fg("accent", s),
-			description: (s: string) => theme.fg("muted", s),
-			scrollInfo: (s: string) => theme.fg("dim", s),
-			noMatch: (s: string) => theme.fg("dim", s),
-		},
+		selectList: getSelectListTheme(),
 	}
 	const editor = new Editor(tui, editorTheme)
 	editor.focused = true
