@@ -91,7 +91,12 @@ function findClaudeCodeSkill(cwd: string, name: string): Skill | undefined {
 
 	const skills = new Map<string, Skill>()
 	for (const dir of getClaudeCodeSkillResourcePaths(cwd, { excludeNativeSkillNames: false })) {
-		const result = loadSkillsFromDir({ dir, source: dir })
+		let result: ReturnType<typeof loadSkillsFromDir>
+		try {
+			result = loadSkillsFromDir({ dir, source: dir })
+		} catch {
+			continue
+		}
 		for (const skill of result.skills) {
 			if (!skills.has(skill.name)) skills.set(skill.name, skill)
 		}

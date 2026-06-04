@@ -71,6 +71,27 @@ describe("Claude Code skill discovery", () => {
 		)
 	})
 
+	it("sanitizes valid skill frontmatter with YAML parsing", () => {
+		expect(
+			sanitizeSkillMarkdown(
+				'---\nname: My Skill\ndescription: "true"\nmetadata:\n  count: 1\nallowed-tools:\n  - Read\n---\nBody\n',
+				"Fallback",
+			),
+		).toBe('---\nname: my-skill\ndescription: "true"\nmetadata:\n  count: 1\n---\nBody\n')
+	})
+
+	it("preserves quoted loose scalar types when repairing invalid frontmatter", () => {
+		expect(
+			sanitizeSkillMarkdown('---\ndescription: "true"\nmetadata: Use: colons safely\n---\nBody\n', "My Skill"),
+		).toBe('---\nname: "my-skill"\ndescription: "true"\nmetadata: "Use: colons safely"\n---\nBody\n')
+	})
+
+	it("does not treat prefixed fences as closing frontmatter", () => {
+		const content = "---\ndescription: Test\n---not-a-fence\nBody\n"
+
+		expect(sanitizeSkillMarkdown(content, "My Skill")).toBe(content)
+	})
+
 	it("drops nested tool frontmatter sequences when sanitizing", () => {
 		expect(
 			sanitizeSkillMarkdown(

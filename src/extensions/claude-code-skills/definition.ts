@@ -3,6 +3,8 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statS
 import type { Dirent } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
+import { z } from "zod"
 import { findClaudeProjectDir } from "../claude-code/paths.js"
 
 export const CLAUDE_CODE_SKILLS_RESOURCE_ID = "extensions.claude-code-skills"
@@ -12,6 +14,15 @@ interface ClaudeCodeSkillResourceOptions {
 	excludeSkillNames?: Iterable<string>
 	excludeSkillPaths?: string[]
 }
+
+const SkillFrontmatterSchema = z
+	.object({
+		name: z.string().optional(),
+		description: z.string().optional(),
+	})
+	.catchall(z.unknown())
+
+type SkillFrontmatter = z.infer<typeof SkillFrontmatterSchema>
 
 export function discoverClaudeCodeSkillDirs(cwd = process.cwd()): string[] {
 	const dirs = [
@@ -52,30 +63,29 @@ export function materializeClaudeCodeSkillDir(
 	options: Pick<ClaudeCodeSkillResourceOptions, "excludeSkillNames"> = {},
 ): string[] {
 	const excludedSkillNames = new Set(options.excludeSkillNames ?? [])
-	const skillDirs = walkSkillDirs(skillsDir)
-	return skillDirs
-		.filter((skillDir) => !excludedSkillNames.has(readSkillName(skillDir)))
-		.map((skillDir) => {
-			const relativeSkillPath = relative(skillsDir, skillDir)
-			const cacheSkillPath = join(
-				getClaudeCodeSkillsCacheDir(),
-				hash(skillsDir),
-				slugPath(relativeSkillPath || basename(skillDir)),
-			)
-			return copyAndSanitizeSkillDir(skillDir, cacheSkillPath)
-		})
+	const paths: string[] = []
+	for (const skillDir of walkSkillDirs(skillsDir)) {
+		if (excludedSkillNames.has(readSkillName(skillDir))) continue
+		const relativeSkillPath = relative(skillsDir, skillDir)
+		const cacheSkillPath = join(
+			getClaudeCodeSkillsCacheDir(),
+			hash(skillsDir),
+			slugPath(relativeSkillPath || basename(skillDir)),
+		)
+		try {
+			paths.push(copyAndSanitizeSkillDir(skillDir, cacheSkillPath))
+		} catch {}
+	}
+	return paths
 }
 
 export function sanitizeSkillMarkdown(content: string, fallbackName: string): string {
-	const frontmatter = splitFrontmatter(content)
-	if (frontmatter === undefined) return content
+	const markdown = extractSkillMarkdown(content)
+	if (markdown === undefined) return content
 
-	return [
-		"---",
-		...sanitizeFrontmatterLines(frontmatter.frontmatter, fallbackName),
-		"---",
-		frontmatter.body.replace(/^\r?\n/, ""),
-	].join("\n")
+	return ["---", sanitizeFrontmatter(markdown.frontmatter, fallbackName), "---", markdown.body.replace(/^\n/, "")].join(
+		"\n",
+	)
 }
 
 function getClaudeCodeSkillsCacheDir(): string {
@@ -125,20 +135,46 @@ function copyAndSanitizeSkillDir(skillDir: string, cacheSkillPath: string): stri
 	return cacheSkillPath
 }
 
-function splitFrontmatter(content: string): { frontmatter: string; body: string } | undefined {
-	if (!content.startsWith("---\n") && !content.startsWith("---\r\n")) return undefined
+function extractSkillMarkdown(content: string): { frontmatter: string; body: string } | undefined {
+	const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+	if (!normalized.startsWith("---\n")) return undefined
 
-	const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(content)
-	if (match === null) return undefined
+	const end = normalized.indexOf("\n---\n", 4)
+	if (end === -1) return undefined
 
 	return {
-		frontmatter: match[1],
-		body: match[2],
+		frontmatter: normalized.slice(4, end),
+		body: normalized.slice(end + "\n---\n".length),
 	}
 }
 
-function sanitizeFrontmatterLines(frontmatter: string, fallbackName: string): string[] {
-	const lines = frontmatter.split(/\r?\n/)
+function sanitizeFrontmatter(frontmatter: string, fallbackName: string): string {
+	const parsed = parseSkillFrontmatter(frontmatter)
+	if (parsed) return stringifySkillFrontmatter(parsed, fallbackName)
+	return sanitizeLooseFrontmatter(frontmatter, fallbackName)
+}
+
+function parseSkillFrontmatter(frontmatter: string): SkillFrontmatter | undefined {
+	try {
+		const parsed = SkillFrontmatterSchema.safeParse(parseYaml(frontmatter) ?? {})
+		return parsed.success ? parsed.data : undefined
+	} catch {
+		return undefined
+	}
+}
+
+function stringifySkillFrontmatter(frontmatter: SkillFrontmatter, fallbackName: string): string {
+	const name = normalizeSkillName(frontmatter.name ?? fallbackName, fallbackName)
+	const sanitized: Record<string, unknown> = { name }
+	for (const [key, value] of Object.entries(frontmatter)) {
+		if (key === "name" || isToolsFrontmatterKey(key)) continue
+		sanitized[key] = value
+	}
+	return stringifyYaml(sanitized).trimEnd()
+}
+
+function sanitizeLooseFrontmatter(frontmatter: string, fallbackName: string): string {
+	const lines = frontmatter.split("\n")
 	const sanitized: string[] = []
 	let hasName = false
 
@@ -169,14 +205,14 @@ function sanitizeFrontmatterLines(frontmatter: string, fallbackName: string): st
 			continue
 		}
 
-		sanitized.push(`${key}: ${formatYamlScalar(value)}`)
+		sanitized.push(`${key}: ${formatLooseYamlScalar(value)}`)
 	}
 
 	if (!hasName) {
 		sanitized.unshift(`name: ${quoteYamlString(normalizeSkillName(fallbackName))}`)
 	}
 
-	return sanitized
+	return sanitized.join("\n")
 }
 
 function skipNestedYamlValue(lines: string[], index: number, parentIndent: number): number {
@@ -196,7 +232,8 @@ function isToolsFrontmatterKey(key: string): boolean {
 	return ["tools", "allowed-tools", "allowed_tools", "allowedTools"].includes(key)
 }
 
-function formatYamlScalar(value: string): string {
+function formatLooseYamlScalar(value: string): string {
+	if (isQuotedString(value)) return value
 	const unquoted = stripOuterQuotes(value)
 	if (/^(true|false|null)$/i.test(unquoted) || /^-?\d+(\.\d+)?$/.test(unquoted)) return unquoted
 	return quoteYamlString(unquoted)
@@ -215,10 +252,14 @@ function normalizeSkillName(name: string, fallbackName = "skill"): string {
 }
 
 function stripOuterQuotes(value: string): string {
-	if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+	if (isQuotedString(value)) {
 		return value.slice(1, -1)
 	}
 	return value
+}
+
+function isQuotedString(value: string): boolean {
+	return (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))
 }
 
 function quoteYamlString(value: string): string {
@@ -334,8 +375,8 @@ function readSkillName(skillDir: string): string {
 	const fallbackName = basename(skillDir)
 	try {
 		const content = readFileSync(join(skillDir, "SKILL.md"), "utf-8")
-		const frontmatter = splitFrontmatter(content)
-		const name = frontmatter ? readSkillFrontmatterName(frontmatter.frontmatter) : undefined
+		const markdown = extractSkillMarkdown(content)
+		const name = markdown ? readSkillFrontmatterName(markdown.frontmatter) : undefined
 		return normalizeSkillName(name ?? fallbackName, fallbackName)
 	} catch {
 		return normalizeSkillName(fallbackName)
@@ -343,7 +384,10 @@ function readSkillName(skillDir: string): string {
 }
 
 function readSkillFrontmatterName(frontmatter: string): string | undefined {
-	for (const line of frontmatter.split(/\r?\n/)) {
+	const parsed = parseSkillFrontmatter(frontmatter)
+	if (parsed) return parsed.name
+
+	for (const line of frontmatter.split("\n")) {
 		const keyValue = /^name:\s*(.*)$/.exec(line)
 		if (keyValue === null) continue
 		const value = keyValue[1].trim()
