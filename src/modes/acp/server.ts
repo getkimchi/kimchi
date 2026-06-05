@@ -51,7 +51,7 @@ import {
 	createAgentSession,
 	initTheme,
 } from "@earendil-works/pi-coding-agent"
-import { onActiveFermentChange } from "../../extensions/ferment/state.js"
+import { hasActiveFerment, onActiveFermentChange } from "../../extensions/ferment/state.js"
 import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
@@ -125,6 +125,9 @@ export class KimchiAcpAgent implements Agent {
 	// earlier session record.
 	private loadingSessions = new Map<string, Promise<LoadSessionResponse>>()
 	private shutdownPromise: Promise<void> | undefined
+	// Unsubscribe function for the active ferment change listener; stored for
+	// cleanup during shutdown to prevent leaks and stale references.
+	private unsubscribeFromFermentChanges?: () => void
 
 	constructor(
 		private readonly conn: AgentSideConnection,
@@ -136,10 +139,15 @@ export class KimchiAcpAgent implements Agent {
 		this.sessionLoader = options.sessionLoader ?? defaultSessionLoader(options)
 
 		// Subscribe to ferment state changes to update available commands
-		onActiveFermentChange((hasActive) => {
+		this.unsubscribeFromFermentChanges = onActiveFermentChange((hasActive) => {
 			// When ferment state changes, re-send available commands to all active sessions
 			for (const [sessionId, _record] of this.sessions) {
-				this.sendAvailableCommandsUpdate(sessionId, hasActive)
+				try {
+					this.sendAvailableCommandsUpdate(sessionId, hasActive)
+				} catch (err) {
+					// Log but don't let one failing session prevent updates to others
+					process.stderr.write(`acp sendAvailableCommandsUpdate failed for ${sessionId}: ${String(err)}\n`)
+				}
 			}
 		})
 	}
@@ -213,7 +221,7 @@ export class KimchiAcpAgent implements Agent {
 			const sessionId = session.sessionId
 			registerAcpPrompter(sessionId, createAcpPermissionPrompter(this.conn, sessionId, buildToolCallUpdate))
 			await bindAcpExtensions(session)
-			this.sendAvailableCommandsUpdate(sessionId)
+			this.sendAvailableCommandsUpdate(sessionId, hasActiveFerment())
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, { session, unsubscribe })
 			const models = buildSessionModelState(session)
@@ -455,6 +463,8 @@ export class KimchiAcpAgent implements Agent {
 			await this.disposeSessionRecord(entry)
 		}
 		this.sessions.clear()
+		// Unsubscribe from ferment state changes to prevent leaks and stale references
+		this.unsubscribeFromFermentChanges?.()
 	}
 
 	private async closeSessionRecord(sessionId: string): Promise<void> {

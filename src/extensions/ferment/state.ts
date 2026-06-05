@@ -57,7 +57,12 @@ export function onActiveFermentChange(listener: (hasActive: boolean) => void): (
 
 export function notifyFermentActive(hasActive: boolean): void {
 	for (const listener of activeFermentChangeListeners) {
-		listener(hasActive)
+		try {
+			listener(hasActive)
+		} catch (err) {
+			// Log but don't let one failing listener prevent others from receiving updates
+			process.stderr.write(`[ferment] active ferment change listener failed: ${String(err)}\n`)
+		}
 	}
 }
 
