@@ -26,6 +26,7 @@ import {
 	discoverPackageResources,
 	packageResourceId,
 	packageResourceRecordsFromConfiguredPackages,
+	packageSourcesMatch,
 } from "./package-resources.js"
 
 describe("package resources", () => {
@@ -49,6 +50,13 @@ describe("package resources", () => {
 
 	it("creates a stable resource id from a scoped npm package source", () => {
 		expect(packageResourceId("npm:@juicesharp/rpiv-todo")).toBe("plugins.package.npm-juicesharp-rpiv-todo")
+	})
+
+	it("matches package source aliases by npm package identity", () => {
+		expect(packageSourcesMatch("npm:@gonrocca/zero-pi", "@gonrocca/zero-pi")).toBe(true)
+		expect(packageSourcesMatch("npm:context-mode@1.0.0", "context-mode")).toBe(true)
+		expect(packageSourcesMatch("npm:context-mode", "npm:@gonrocca/zero-pi")).toBe(false)
+		expect(packageSourcesMatch("git:https://example.com/repo.git", "repo")).toBe(false)
 	})
 
 	it("surfaces configured packages as plugin resources", () => {
