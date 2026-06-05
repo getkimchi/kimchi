@@ -7,7 +7,7 @@ import type { ConfigScope } from "../config/scope.js"
 import type { ModelMetadata } from "../models.js"
 import { confirm } from "../setup-wizard/prompt.js"
 import { ANTHROPIC_BASE_URL } from "./constants.js"
-import { detectBinaryFactory } from "./detect.js"
+import { detectBinaryFactory, findBinary } from "./detect.js"
 import { register } from "./registry.js"
 import type { ToolDefinition } from "./types.js"
 
@@ -141,6 +141,13 @@ async function writeClaudeCode(
 	_models: readonly ModelMetadata[],
 	options?: { telemetryEnabled?: boolean },
 ): Promise<void> {
+	if (!findBinary("claude")) {
+		throw new Error(
+			"Claude Code is not installed or not on PATH. " +
+				"Install it first: https://docs.anthropic.com/en/docs/claude-code/setup",
+		)
+	}
+
 	if (!apiKey) {
 		throw new Error("API key not configured")
 	}
@@ -182,6 +189,24 @@ async function writeClaudeCode(
 
 	existing.env = envBlock
 	writeJson(path, existing)
+
+	// Post-write validation: re-read and verify the written file
+	const verified = readJson(path)
+	if (!verified.env || typeof verified.env !== "object" || Array.isArray(verified.env)) {
+		throw new Error(`Claude Code config validation failed at ${path}: env must be an object`)
+	}
+	const verifiedEnv = verified.env as Record<string, unknown>
+	if (typeof verifiedEnv.ANTHROPIC_AUTH_TOKEN !== "string" || verifiedEnv.ANTHROPIC_AUTH_TOKEN.length === 0) {
+		throw new Error(`Claude Code config validation failed at ${path}: ANTHROPIC_AUTH_TOKEN must be a non-empty string`)
+	}
+	if (typeof verifiedEnv.ANTHROPIC_BASE_URL !== "string" || verifiedEnv.ANTHROPIC_BASE_URL.length === 0) {
+		throw new Error(`Claude Code config validation failed at ${path}: ANTHROPIC_BASE_URL must be a non-empty string`)
+	}
+	if (verifiedEnv.ANTHROPIC_API_KEY !== "") {
+		throw new Error(
+			`Claude Code config validation failed at ${path}: ANTHROPIC_API_KEY must be an empty string so Claude Code uses ANTHROPIC_AUTH_TOKEN`,
+		)
+	}
 }
 
 register({

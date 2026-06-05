@@ -1,10 +1,29 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { TEST_MODELS } from "./__fixtures__/models.js"
 import { claudeCodeEnv, injectClaudeCodeEnv } from "./claude-code.js"
 import { byId } from "./registry.js"
+
+// Mock detect.js to control findBinary behavior in binary-check tests
+vi.mock("../integrations/detect.js", async () => {
+	const actual = await vi.importActual<typeof import("../integrations/detect.js")>("../integrations/detect.js")
+	return {
+		...actual,
+		findBinary: vi.fn(() => "/usr/bin/claude"),
+		detectBinaryFactory: actual?.detectBinaryFactory ?? vi.fn(() => () => true),
+	}
+})
+
+// Mock json.js to control readJson/writeJson in validation tests
+vi.mock("../config/json.js", async () => {
+	const actual = await vi.importActual<typeof import("../config/json.js")>("../config/json.js")
+	return {
+		readJson: vi.fn(actual.readJson),
+		writeJson: vi.fn(actual.writeJson),
+	}
+})
 
 describe("claudeCodeEnv", () => {
 	it("emits the four env vars Claude Code expects, with ANTHROPIC_API_KEY explicitly empty", () => {
@@ -182,18 +201,13 @@ describe("claude-code tool registration", () => {
 	let scratchHome: string
 	let prevHome: string | undefined
 
-	// claude-code.ts calls register() at module top-level. Vitest caches the
-	// import, so the registration runs once per test file when the module is
-	// first loaded. We don't reset the registry here — re-registering the
-	// same tool would throw, and this suite only needs to read the tool back.
-
-	beforeEach(() => {
+	beforeEach(async () => {
 		scratchHome = mkdtempSync(join(tmpdir(), "kimchi-claude-test-"))
-		// os.homedir() consults $HOME first on POSIX. Pointing it at the
-		// scratch dir lets resolveScopePath("global", "~/...") land there
-		// without monkey-patching node:os.
 		prevHome = process.env.HOME
 		process.env.HOME = scratchHome
+		// Default: findBinary returns a valid path so existing tests pass
+		const { findBinary } = await import("../integrations/detect.js")
+		vi.mocked(findBinary).mockReturnValue(join(scratchHome, "bin", "claude"))
 	})
 
 	afterEach(() => {
@@ -384,5 +398,91 @@ describe("claude-code tool registration", () => {
 		const tool = byId("claudecode")
 		expect(tool).toBeDefined()
 		await expect(tool?.write("global", "", TEST_MODELS)).rejects.toThrow(/API key/)
+	})
+
+	it("write() rejects when claude binary is not found", async () => {
+		const { findBinary } = await import("../integrations/detect.js")
+		vi.mocked(findBinary).mockReturnValue(undefined)
+
+		const tool = byId("claudecode")
+		expect(tool).toBeDefined()
+		await expect(tool?.write("global", "test-key", TEST_MODELS)).rejects.toThrow(
+			/Claude Code is not installed or not on PATH/,
+		)
+	})
+
+	it("write() rejects when the written file has a malformed env (not an object)", async () => {
+		const settings = join(scratchHome, ".claude", "settings.json")
+		mkdirSync(join(scratchHome, ".claude"), { recursive: true })
+		// Pre-write a valid file so the initial read succeeds
+		writeFileSync(settings, JSON.stringify({ env: {} }), "utf-8")
+
+		const { readJson } = await import("../config/json.js")
+		// First read returns valid env; re-read (post-write validation) returns array for env
+		vi.mocked(readJson).mockReturnValueOnce({ env: {} }).mockReturnValueOnce({ env: [] })
+
+		const tool = byId("claudecode")
+		expect(tool).toBeDefined()
+		await expect(tool?.write("global", "test-key", TEST_MODELS)).rejects.toThrow(/Claude Code config validation failed/)
+	})
+
+	it("write() rejects when ANTHROPIC_AUTH_TOKEN is missing after write", async () => {
+		const settings = join(scratchHome, ".claude", "settings.json")
+		mkdirSync(join(scratchHome, ".claude"), { recursive: true })
+		writeFileSync(settings, JSON.stringify({ env: {} }), "utf-8")
+
+		const { readJson } = await import("../config/json.js")
+		// First read returns empty env; re-read (post-write) returns valid env without AUTH_TOKEN
+		vi.mocked(readJson)
+			.mockReturnValueOnce({ env: {} })
+			.mockReturnValueOnce({ env: { ANTHROPIC_BASE_URL: "https://llm.kimchi.dev/anthropic" } })
+
+		const tool = byId("claudecode")
+		expect(tool).toBeDefined()
+		await expect(tool?.write("global", "test-key", TEST_MODELS)).rejects.toThrow(
+			/ANTHROPIC_AUTH_TOKEN must be a non-empty string/,
+		)
+	})
+
+	it("write() rejects when ANTHROPIC_BASE_URL is missing after write", async () => {
+		const settings = join(scratchHome, ".claude", "settings.json")
+		mkdirSync(join(scratchHome, ".claude"), { recursive: true })
+		writeFileSync(settings, JSON.stringify({ env: {} }), "utf-8")
+
+		const { readJson } = await import("../config/json.js")
+		// First read returns empty env; re-read (post-write) returns valid env without BASE_URL
+		vi.mocked(readJson)
+			.mockReturnValueOnce({ env: {} })
+			.mockReturnValueOnce({ env: { ANTHROPIC_AUTH_TOKEN: "test-key" } })
+
+		const tool = byId("claudecode")
+		expect(tool).toBeDefined()
+		await expect(tool?.write("global", "test-key", TEST_MODELS)).rejects.toThrow(
+			/ANTHROPIC_BASE_URL must be a non-empty string/,
+		)
+	})
+
+	it("write() rejects when ANTHROPIC_API_KEY is not empty after write", async () => {
+		const settings = join(scratchHome, ".claude", "settings.json")
+		mkdirSync(join(scratchHome, ".claude"), { recursive: true })
+		writeFileSync(settings, JSON.stringify({ env: {} }), "utf-8")
+
+		const { readJson } = await import("../config/json.js")
+		// First read returns empty env; re-read (post-write) returns env with non-empty API_KEY
+		vi.mocked(readJson)
+			.mockReturnValueOnce({ env: {} })
+			.mockReturnValueOnce({
+				env: {
+					ANTHROPIC_AUTH_TOKEN: "test-key",
+					ANTHROPIC_BASE_URL: "https://llm.kimchi.dev/anthropic",
+					ANTHROPIC_API_KEY: "should-be-empty",
+				},
+			})
+
+		const tool = byId("claudecode")
+		expect(tool).toBeDefined()
+		await expect(tool?.write("global", "test-key", TEST_MODELS)).rejects.toThrow(
+			/ANTHROPIC_API_KEY must be an empty string/,
+		)
 	})
 })
