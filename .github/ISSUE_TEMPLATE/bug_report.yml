@@ -1,66 +1,50 @@
-name: Bug Report
-description: Report an issue with the kimchi coding harness
-labels: ["bug"]
+name: Bug report
+description: Something isn't working as expected
+labels: ["bug", "needs-triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        See [Troubleshooting Guide](../../docs/troubleshooting.md) for useful debugging commands.
-
-        **Tip:** Before submitting, check that your report doesn't include any sensitive information (API keys, credentials, proprietary code).
-
+        Before filing, please check existing issues to avoid duplicates.
+  - type: input
+    id: version
+    attributes:
+      label: Kimchi version
+      description: Output of `kimchi --version`
+      placeholder: "e.g. v0.0.84"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and architecture
+      placeholder: "e.g. macOS 14, arm64"
+    validations:
+      required: true
   - type: textarea
     id: description
     attributes:
       label: What happened?
-      description: Describe what you observed and what you expected instead.
-      placeholder: |
-        **Actual:** The agent failed to edit the file and returned an empty response.
-        **Expected:** The agent should have replaced "foo" with "bar" in config.ts.
+      description: A clear description of the bug.
     validations:
       required: true
-
   - type: textarea
-    id: reproduction
+    id: repro
     attributes:
-      label: Reproduction command
-      description: |
-        A one-liner that reproduces the issue. Pin the model with `--provider` and `--model` for consistency.
+      label: Steps to reproduce
       placeholder: |
-        kimchi -p "your prompt here" --provider kimchi-dev --model kimi-k2.5
+        1. Run `kimchi ...`
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or output
       render: shell
-    validations:
-      required: true
-
-  - type: input
-    id: version
-    attributes:
-      label: Harness version
-      description: Output of `kimchi --version`
-      placeholder: "0.5.0"
-    validations:
-      required: true
-
-  - type: textarea
-    id: session-file
-    attributes:
-      label: Session file
-      description: |
-        If the bug occurred during an interactive session, paste the session file path. You can also export it to HTML for easier sharing: `kimchi --export <path-to-session.jsonl>`
-      placeholder: ~/.config/kimchi/harness/sessions/--path--/session.jsonl
-    validations:
-      required: false
-
-  - type: textarea
-    id: json-event-stream
-    attributes:
-      label: JSON event stream
-      description: |
-        Optional. Re-run your reproduction command with `--mode json --no-session` to capture a machine-readable event trace:
-        ```
-        kimchi --mode json -p "your prompt" --no-session --provider kimchi-dev --model kimi-k2.5 > events.jsonl
-        ```
-        Paste the contents or attach the file.
-      render: json
-    validations:
-      required: false
