@@ -52,6 +52,9 @@ import {
 	initTheme,
 } from "@earendil-works/pi-coding-agent"
 import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
+import { splitModelRef } from "../../extensions/orchestration/model-roles.js"
+import { resolveModelRoles } from "../../extensions/orchestration/model-roles.js"
+import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/prompt-construction/prompt-enrichment.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 
@@ -224,6 +227,34 @@ export class KimchiAcpAgent implements Agent {
 			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
 		}
 		const { session } = entry
+
+		// Handle multi-model mode
+		if (params.modelId === "multi-model") {
+			const { roles } = resolveModelRoles()
+			const orchestratorRef = roles.orchestrator
+			const parsed = splitModelRef(orchestratorRef)
+			if (!parsed) {
+				throw RequestError.invalidParams(undefined, `Invalid orchestrator model ref: ${orchestratorRef}`)
+			}
+			const orchestrator = session.modelRegistry.find(parsed.provider, parsed.modelId)
+			if (!orchestrator) {
+				throw RequestError.invalidParams(undefined, `Multi-model orchestrator (${orchestratorRef}) is not available.`)
+			}
+			try {
+				setMultiModelEnabled(true)
+				await session.setModel(orchestrator)
+			} catch (err) {
+				if (err instanceof RequestError) {
+					throw err
+				}
+				throw RequestError.invalidParams(
+					undefined,
+					`Failed to switch to multi-model mode: ${err instanceof Error ? err.message : String(err)}`,
+				)
+			}
+			return {}
+		}
+
 		const availableModels = session.modelRegistry.getAvailable()
 		const selectedModel = availableModels.find((m) => getAcpModelId(m) === params.modelId)
 		if (!selectedModel) {
@@ -779,12 +810,19 @@ export function buildSessionModelState(
 		return null
 	}
 	const availableModels = session.modelRegistry.getAvailable()
+	const multiModelActive = getMultiModelEnabled()
+	const currentModelId = multiModelActive
+		? `multi-model/${resolveModelRoles().roles.orchestrator}`
+		: getAcpModelId(currentModel)
 	return {
-		currentModelId: getAcpModelId(currentModel),
-		availableModels: availableModels.map((m) => ({
-			modelId: getAcpModelId(m),
-			name: m.name,
-		})),
+		currentModelId,
+		availableModels: [
+			{ modelId: "multi-model", name: "Multi-Model" },
+			...availableModels.map((m) => ({
+				modelId: getAcpModelId(m),
+				name: m.name,
+			})),
+		],
 	}
 }
 
