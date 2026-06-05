@@ -6,6 +6,7 @@ import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earen
 import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
+import { readFooterConfig } from "../config/footer-config.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
 import { formatFermentFooterDisplay } from "../extensions/ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
@@ -382,7 +383,7 @@ export class StatsFooter implements Component {
 		return { id: "model", text, width: visibleWidth(text), raw: { kind: "model", multiModel, modelId: rawModelId } }
 	}
 
-	private usageSegment(): Segment | null {
+	private usageSegment(pinned = false): Segment | null {
 		let totalInput = 0
 		let totalOutput = 0
 		for (const entry of this.ctx.sessionManager.getEntries()) {
@@ -394,7 +395,13 @@ export class StatsFooter implements Component {
 				}
 			}
 		}
-		if (!totalInput && !totalOutput) return null
+		if (!totalInput && !totalOutput) {
+			if (pinned) {
+				const text = this.dim("↑0 ↓0")
+				return { id: "usage", text, width: visibleWidth(text) }
+			}
+			return null
+		}
 		const tokens = [totalInput ? `↑${formatCount(totalInput)}` : "", totalOutput ? `↓${formatCount(totalOutput)}` : ""]
 			.filter(Boolean)
 			.join(" ")
@@ -422,24 +429,42 @@ export class StatsFooter implements Component {
 		return { id: "phase", text, width: visibleWidth(text), raw: { kind: "phase", phase } }
 	}
 
-	private tagsSegment(parsed: Array<{ key: string; value: string }>): Segment | null {
+	private tagsSegment(parsed: Array<{ key: string; value: string }>, pinned = false): Segment | null {
 		const display = parsed.filter((t) => t.key !== "team" && t.key !== "phase")
-		if (display.length === 0) return null
+		if (display.length === 0) {
+			if (pinned) {
+				const text = `${this.dim("tags:")} ${this.dim("—")}`
+				return { id: "tags", text, width: visibleWidth(text) }
+			}
+			return null
+		}
 		const formatted = display.map((t) => this.dim(`${t.key}:${t.value}`)).join(this.dim(" "))
 		const text = `${this.dim("tags:")}${formatted}`
 		return { id: "tags", text, width: visibleWidth(text) }
 	}
 
-	private teamSegment(parsed: Array<{ key: string; value: string }>): Segment | null {
+	private teamSegment(parsed: Array<{ key: string; value: string }>, pinned = false): Segment | null {
 		const team = parsed.find((t) => t.key === "team")
-		if (!team) return null
+		if (!team) {
+			if (pinned) {
+				const text = `${this.dim("team:")} ${this.dim("—")}`
+				return { id: "team", text, width: visibleWidth(text) }
+			}
+			return null
+		}
 		const text = `${this.dim("team:")}${this.accent(team.value)}`
 		return { id: "team", text, width: visibleWidth(text) }
 	}
 
-	private permissionsSegment(): Segment | null {
+	private permissionsSegment(pinned = false): Segment | null {
 		const mode = this.footerData.getExtensionStatuses().get("permissions-mode")
-		if (!mode) return null
+		if (!mode) {
+			if (pinned) {
+				const text = `${this.dim("● ")}${this.dim("— ")}${this.dim("→ shift+tab")}`
+				return { id: "permissions", text, width: visibleWidth(text) }
+			}
+			return null
+		}
 		return { id: "permissions", text: mode, width: visibleWidth(mode) }
 	}
 
@@ -457,19 +482,31 @@ export class StatsFooter implements Component {
 		return { id: "lsp", text, width: visibleWidth(text) }
 	}
 
-	private subagentSegment(): Segment | null {
+	private subagentSegment(pinned = false): Segment | null {
 		const count = getActiveAgentCount()
-		if (count === 0) return null
+		if (count === 0) {
+			if (pinned) {
+				const text = this.dim("0 agents")
+				return { id: "agents", text, width: visibleWidth(text) }
+			}
+			return null
+		}
 		const text = this.accent(`${count} agent${count === 1 ? "" : "s"}`)
 		return { id: "agents", text, width: visibleWidth(text) }
 	}
 
-	private fermentSegment(): Segment | null {
+	private fermentSegment(pinned = false): Segment | null {
 		const display = formatFermentFooterDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
 			dim: (s) => this.dim(s),
 			accent: (s) => this.accent(s),
 		})
-		if (!display) return null
+		if (!display) {
+			if (pinned) {
+				const text = `${this.dim("Ferment:")} ${this.dim("—")}`
+				return { id: "ferment", text, width: visibleWidth(text) }
+			}
+			return null
+		}
 
 		return {
 			id: "ferment",
@@ -485,7 +522,7 @@ export class StatsFooter implements Component {
 		return this.theme.fg("warning", text)
 	}
 
-	private updateAvailableSegment(): { text: string; width: number } | null {
+	private updateAvailableSegment(): text: string; width: number | null {
 		// Info-line segment (rendered above the status line), NOT one of the
 		// status-line `Segment`s above — it has no SegmentId because it never
 		// participates in compaction.
@@ -496,25 +533,34 @@ export class StatsFooter implements Component {
 	}
 
 	render(width: number): string[] {
+		const config = readFooterConfig()
+		const pinnedSet = new Set(config.pinned)
+
 		const tags = getActiveTags()
 			.map(parseTag)
 			.filter((t): t is { key: string; value: string } => t !== null)
 
-		const segments: Segment[] = [
-			this.fermentSegment(),
-			this.permissionsSegment(),
+		const allSegments: Segment[] = [
+			this.fermentSegment(pinnedSet.has("ferment")),
+			this.permissionsSegment(pinnedSet.has("permissions")),
 			this.modelSegment(),
-			this.subagentSegment(),
+			this.subagentSegment(pinnedSet.has("agents")),
 			this.contextSegment(),
-			this.usageSegment(),
+			this.usageSegment(pinnedSet.has("usage")),
 			this.phaseSegment(),
-			this.tagsSegment(tags),
-			this.teamSegment(tags),
+			this.tagsSegment(tags, pinnedSet.has("tags")),
+			this.teamSegment(tags, pinnedSet.has("team")),
 			this.lspSegment(),
 		].filter((s): s is Segment => s !== null)
 
+		const pinnedSegments = allSegments.filter((s) => pinnedSet.has(s.id))
+		const unpinnedSegments = allSegments.filter((s) => !pinnedSet.has(s.id))
+
 		const sep = ` ${this.dim("·")} `
 		const sepWidth = visibleWidth(sep)
+
+		// Only show / for commands hint when there are no pinned segments (simpler layout).
+		const showHint = pinnedSegments.length === 0
 
 		const hintText = this.dim("/ for commands")
 		const hintWidth = visibleWidth(hintText)
@@ -524,10 +570,24 @@ export class StatsFooter implements Component {
 			accent: (s) => this.accent(s),
 			semantic: (color, s) =>
 				`${resolvedSemanticFg(this.theme, color as "success" | "warning" | "error")}${s}${RST_FG}`,
-			showCommandHint: true,
+			showCommandHint: showHint,
 		}
 
-		const line = layoutFooter(segments, width, ctx, sep, sepWidth, { text: hintText, width: hintWidth })
+		const unpinnedLine = layoutFooter(unpinnedSegments, width, ctx, sep, sepWidth, {
+			text: hintText,
+			width: hintWidth,
+		})
+
+		// Build the full line: pinned (always full form, leftmost) + separator + unpinned (compacted).
+		let line: string
+		if (pinnedSegments.length > 0 && unpinnedSegments.length > 0) {
+			const pinnedText = pinnedSegments.map((s) => s.text).join(sep)
+			line = `${pinnedText}${sep}${unpinnedLine}`
+		} else if (pinnedSegments.length > 0) {
+			line = pinnedSegments.map((s) => s.text).join(sep)
+		} else {
+			line = unpinnedLine
+		}
 
 		const infoLine = this.buildInfoLine(width)
 		return infoLine ? [infoLine, line] : [line]

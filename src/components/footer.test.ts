@@ -1,11 +1,19 @@
 import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { FooterElementId } from "../config/footer-config.js"
 import * as AGENTS from "../extensions/agents/index.js"
 import * as FERMENT from "../extensions/ferment/index.js"
 import * as ORCHESTRATION from "../extensions/prompt-construction/prompt-enrichment.js"
 import * as TAGS from "../extensions/tags.js"
 import { SHORTCUT_TAIL, StatsFooter, buildContextCompact, buildModelAbbrev, buildPhaseCompact } from "./footer.js"
+
+// ── Mock footer-config.ts ─────────────────────────────────────────────────────
+// Controls which elements appear as pinned in each test.
+let pinnedElements: FooterElementId[] = []
+vi.mock("../config/footer-config.js", () => ({
+	readFooterConfig: () => ({ pinned: pinnedElements }),
+}))
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape stripping in test assertions
 const ANSI_ESCAPE = /\x1b\[[\d;]*m/g
@@ -576,5 +584,159 @@ describe("StatsFooter regression tests", () => {
 			const visible = stripAnsi(lines[lines.length - 1])
 			expect(visible, `width=${w}: orphan separator in "${visible}"`).not.toMatch(/\u00b7\s*\u00b7/)
 		}
+	})
+})
+
+// ── Footer pinning tests ──────────────────────────────────────────────────────
+
+function withPinned(ids: FooterElementId[], fn: () => void): void {
+	pinnedElements = ids
+	try {
+		fn()
+	} finally {
+		pinnedElements = []
+	}
+}
+
+describe("footer pinning", () => {
+	let theme: Theme
+	let restorePlatform: () => void
+
+	beforeEach(() => {
+		theme = createMockTheme()
+		pinnedElements = []
+		vi.spyOn(ORCHESTRATION, "getMultiModelEnabled").mockReturnValue(false)
+		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
+		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
+		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
+		vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
+		restorePlatform = stubPlatform("darwin")
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+		restorePlatform()
+		pinnedElements = []
+	})
+
+	function footerWithContext(opts?: MockContextOpts): StatsFooter {
+		return new StatsFooter(createMockContext(opts), theme, createMockFooterData())
+	}
+
+	it("pinned usage shows '↑0 ↓0' when no tokens are present", () => {
+		withPinned(["usage"], () => {
+			const footer = footerWithContext()
+			const visible = stripAnsi(footer.render(200)[0])
+			expect(visible).toContain("↑0")
+			expect(visible).toContain("↓0")
+		})
+	})
+
+	it("unpinned usage is hidden when no tokens (no '↑0' in output)", () => {
+		withPinned([], () => {
+			const footer = footerWithContext()
+			const visible = stripAnsi(footer.render(200)[0])
+			expect(visible).not.toContain("↑0")
+			expect(visible).not.toContain("↓0")
+		})
+	})
+
+	it("pinned agents shows '0 agents' when count is zero", () => {
+		withPinned(["agents"], () => {
+			const footer = footerWithContext()
+			const visible = stripAnsi(footer.render(200)[0])
+			expect(visible).toContain("0 agents")
+		})
+	})
+
+	it("unpinned agents is hidden when count is zero", () => {
+		withPinned([], () => {
+			const footer = footerWithContext()
+			const visible = stripAnsi(footer.render(200)[0])
+			expect(visible).not.toContain("0 agents")
+		})
+	})
+
+	it("pinned context shows full bar form (with █) at width=20", () => {
+		withPinned(["context"], () => {
+			const footer = footerWithContext({ percent: 50 })
+			const visible = stripAnsi(footer.render(20)[0])
+			// Full form includes the bar characters; compact form is just "N% ctx"
+			expect(visible).toContain("█")
+			expect(visible).toContain("░")
+		})
+	})
+
+	it("pinned permissions shows placeholder when no permissions mode is set", () => {
+		withPinned(["permissions"], () => {
+			// No permissionsMode in createMockFooterData()
+			const footer = new StatsFooter(createMockContext(), theme, createMockFooterData())
+			const visible = stripAnsi(footer.render(200)[0])
+			expect(visible).toContain("●")
+			expect(visible).toContain("—")
+		})
+	})
+
+	it("pinned team shows 'team: —' when no team tag is present", () => {
+		withPinned(["team"], () => {
+			vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod"]) // no team: tag
+			const footer = footerWithContext()
+			const visible = stripAnsi(footer.render(200)[0])
+			expect(visible).toContain("team:")
+			expect(visible).toContain("—")
+		})
+	})
+
+	it("pinned tags shows 'tags: —' when no tags are present", () => {
+		withPinned(["tags"], () => {
+			vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
+			const footer = footerWithContext()
+			const visible = stripAnsi(footer.render(200)[0])
+			expect(visible).toContain("tags:")
+			expect(visible).toContain("—")
+		})
+	})
+
+	it("pinned-first ordering: permissions pinned, agents not → permissions appears left of agents", () => {
+		withPinned(["permissions"], () => {
+			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2) // agents now visible
+			vi.spyOn(ORCHESTRATION, "getMultiModelEnabled").mockReturnValue(true)
+			vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
+			const permissionsMode = "\u25cf default \x1b[2m\u2192 shift+tab\x1b[0m"
+			const footer = new StatsFooter(createMockContext(), theme, createMockFooterData({ permissionsMode }))
+			const visible = stripAnsi(footer.render(200)[0])
+			const permIdx = visible.indexOf("default")
+			const agentsIdx = visible.indexOf("agents")
+			expect(permIdx).toBeLessThan(agentsIdx)
+		})
+	})
+
+	it("pinned and unpinned segments are separated by ' · '", () => {
+		withPinned(["permissions"], () => {
+			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2)
+			vi.spyOn(ORCHESTRATION, "getMultiModelEnabled").mockReturnValue(false)
+			vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
+			const footer = new StatsFooter(
+				createMockContext(),
+				theme,
+				createMockFooterData({ permissionsMode: "\u25cf default" }),
+			)
+			const visible = stripAnsi(footer.render(200)[0])
+			// Should contain exactly one · between pinned (permissions) and unpinned (agents, model, etc.)
+			const separators = visible.match(/ · /g) ?? []
+			expect(separators.length).toBeGreaterThanOrEqual(1)
+		})
+	})
+
+	it("unpinned context is compacted to 'N% ctx' form at width=20 (no bar characters)", () => {
+		withPinned(["model"], () => {
+			// model is pinned so it won't compact; context is unpinned and should compact
+			const footer = footerWithContext({ percent: 75 })
+			const visible = stripAnsi(footer.render(20)[0])
+			// Should NOT have the full bar form
+			expect(visible).not.toContain("█")
+			expect(visible).not.toContain("░")
+		})
 	})
 })
