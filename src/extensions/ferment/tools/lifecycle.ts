@@ -90,6 +90,9 @@ type ScopingAnswer = {
 	recommended: boolean
 }
 
+const PLAN_REVIEW_HANDOFF_MESSAGE =
+	"Plan ready for review. The review dialog will open when this turn finishes. Stop now; do not call more tools or skills, and do not treat this tool result as a user request."
+
 const SCOPING_STATUS_KEY = "ferment-scoping"
 const TITLE_REQUIRED_ERROR =
 	'Field "title" must be a non-empty concise 3-5 word title. Retry with the full payload including title.'
@@ -386,6 +389,10 @@ function validateScopingQuestions(questions: ScopingQuestion[]): string | null {
 	}
 
 	for (const q of questions) {
+		if (getScopingQuestionType(q) === "confirm") {
+			return `Question "${q.id}" uses type "confirm"; propose_ferment_scoping questions must use single, multi, or text. For final plan approval, emit questions: [] so the host plan review UI handles confirmation. For a genuinely decision-blocking yes/no scoping decision, use type "single" with explicit options.`
+		}
+
 		const options = q.options ?? []
 		const recommendedCount = options.filter((o) => o.recommended === true).length
 		if (recommendedCount > 1) {
@@ -457,7 +464,7 @@ function escapeXmlText(value: string): string {
 
 export function buildFreeformScopingFeedbackMessage(fermentId: string, userText: string): string {
 	return [
-		`User reviewed the pending plan for ferment_id "${fermentId}" and provided this feedback:`,
+		`User gave feedback on the pending ferment plan for ferment_id "${fermentId}":`,
 		"<user_feedback>",
 		escapeXmlText(userText),
 		"</user_feedback>",
@@ -866,7 +873,7 @@ ${renderGateGuidance("scope_ferment")}`,
 					fermentId: params.ferment_id,
 					planMarkdown: planEntry,
 				})
-				return planToolOk("Plan ready for review. The review dialog will open when this turn finishes.")
+				return planToolOk(PLAN_REVIEW_HANDOFF_MESSAGE)
 			}
 
 			// 7. Tabbed question form + review loop.

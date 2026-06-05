@@ -4,6 +4,7 @@ import { join } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
+import { clearAllPendingPlanReviews, getPendingPlanReview } from "../plan-review.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
 import { FERMENT_TOOLS } from "../tool-names.js"
@@ -110,6 +111,7 @@ const passingFermentGates = () => [
 ]
 
 beforeEach(() => {
+	clearAllPendingPlanReviews()
 	vi.restoreAllMocks()
 })
 
@@ -358,6 +360,66 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		) => Promise<{ content: { text: string }[]; isError?: boolean }>
 		return { h, execute }
 	}
+
+	it("rejects confirm scoping questions instead of guessing from the question text", async () => {
+		const { h, execute } = createProposeHarness()
+		const custom = vi.fn()
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Prevent plan approval from becoming a scoping question.",
+				success_criteria: ["The structured plan is shown immediately.", "The host confirmation UI is queued."],
+				constraints: ["Keep genuine decision-blocking questions working."],
+				assumptions: "The host custom UI is available.",
+				phases: [
+					{ name: "Fix", goal: "Update the scoping handoff.", steps: [{ description: "Patch lifecycle tool" }] },
+				],
+				questions: [{ id: "approve-plan", type: "confirm", question: "Proceed with this plan?" }],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			{ ui: { custom } },
+		)
+
+		const text = errText(result)
+		expect(text).toContain('uses type "confirm"')
+		expect(text).toContain("questions: []")
+		expect(text).toContain('type "single" with explicit options')
+		expect(getPendingPlanReview(h.fermentId)).toBeUndefined()
+		expect(custom).not.toHaveBeenCalled()
+	})
+
+	it("keeps the deferred review result short and stores plan markdown only in pending review state", async () => {
+		const { h, execute } = createProposeHarness()
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Queue plan review without exposing plan markdown in the tool result.",
+				success_criteria: ["The tool result is short.", "The pending review stores the plan markdown."],
+				constraints: [],
+				assumptions: "The host custom UI is available.",
+				phases: [{ name: "Fix", goal: "Queue deferred review.", steps: [{ description: "Call propose scoping" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			{ ui: { custom: vi.fn() } },
+		)
+
+		const text = okText(result)
+		expect(text).toContain("Plan ready for review")
+		expect(text).toContain("Stop now")
+		expect(text).not.toContain("# Plan:")
+		expect(getPendingPlanReview(h.fermentId)?.planMarkdown).toContain("# Plan: Lifecycle Test")
+	})
 
 	it("normalizes canonical question fields before runtime validation", async () => {
 		const { h, execute } = createProposeHarness()

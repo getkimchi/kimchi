@@ -1475,7 +1475,7 @@ describe("propose_ferment_scoping", () => {
 		expect(msgContent).toContain('free-form: "Browser smoke test passes"')
 	})
 
-	it("accepts questionnaire vocabulary (single) and synthesizes Yes/No for confirm scoping questions", async () => {
+	it("accepts questionnaire vocabulary and explicit yes/no single-choice scoping questions", async () => {
 		const id = await createFerment("Questionnaire Vocabulary")
 		seedPending(id)
 		const questions = [
@@ -1489,10 +1489,13 @@ describe("propose_ferment_scoping", () => {
 				],
 			},
 			{
-				// confirm with no options — host must default to Yes/No.
 				id: "ship",
-				type: "confirm",
+				type: "single",
 				question: "Ship behind a flag?",
+				options: [
+					{ id: "yes", label: "Yes", recommended: true },
+					{ id: "no", label: "No" },
+				],
 			},
 		]
 		const ctx = {
@@ -1513,13 +1516,13 @@ describe("propose_ferment_scoping", () => {
 		expect(loadFerment(id).status).toBe("draft")
 		expect(result).toContain("Your answers")
 		expect(result).toContain("Option A")
-		// The confirm question offered Yes/No and recorded the Yes answer.
+		// The yes/no scoping decision uses explicit single-choice labels.
 		const shipCall = ctx.ui.select.mock.calls.find((c: unknown[]) => String(c[0]).includes("Ship behind a flag?"))
 		expect(shipCall).toBeDefined()
-		expect(shipCall?.[1]).toEqual(expect.arrayContaining(["Yes", "No"]))
+		expect(shipCall?.[1]).toEqual(expect.arrayContaining(["Yes  ★ Recommended", "No"]))
 	})
 
-	it("rejects confirm scoping questions that carry options rather than rewriting them", async () => {
+	it("rejects confirm scoping questions instead of rewriting them", async () => {
 		const id = await createFerment("Confirm With Options")
 		seedPending(id)
 		const ctx = { ui: { select: vi.fn(), input: vi.fn() } }

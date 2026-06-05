@@ -42,7 +42,7 @@ describe("ProposeScopingParams schema", () => {
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 
-	it("accepts single, multi, confirm, and text scoping question styles", () => {
+	it("accepts single, multi, and text scoping question styles", () => {
 		const payload = {
 			ferment_id: "f-123",
 			title: "Test Ferment",
@@ -50,11 +50,6 @@ describe("ProposeScopingParams schema", () => {
 			success_criteria: ["Tests pass"],
 			phases: minimalPhases(),
 			questions: [
-				{
-					id: "ship",
-					type: "confirm",
-					question: "Ship this as a yes/no decision?",
-				},
 				{
 					id: "surfaces",
 					type: "multi",
@@ -83,6 +78,26 @@ describe("ProposeScopingParams schema", () => {
 		}
 
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
+	})
+
+	it("rejects confirm scoping questions because host plan review owns confirmation", () => {
+		const payload = {
+			ferment_id: "f-123",
+			title: "Test Ferment",
+			goal: "Do something",
+			success_criteria: ["Tests pass"],
+			phases: minimalPhases(),
+			questions: [
+				{
+					id: "ship",
+					type: "confirm",
+					question: "Ship this as a yes/no decision?",
+				},
+			],
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
 	})
 
 	it("rejects the old radio/checkbox vocabulary", () => {
