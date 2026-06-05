@@ -45,7 +45,8 @@ class FooterSettingsComponent implements Component {
 		if (matchesKey(data, "space") || matchesKey(data, "return") || matchesKey(data, Key.enter)) {
 			const el = FOOTER_ELEMENTS[this.selectedIndex]
 			if (!el) return
-			// Write to disk; the NEXT render() call will read the updated state.
+			// Cannot toggle permissions or model — they are always visible.
+			if (el.canPin === false) return
 			setPinned(el.id, !readFooterConfig().pinned.includes(el.id))
 			this.tui.requestRender()
 			return
@@ -92,13 +93,19 @@ class FooterSettingsComponent implements Component {
 		for (let i = 0; i < FOOTER_ELEMENTS.length; i++) {
 			const el = FOOTER_ELEMENTS[i]
 			const isSelected = i === this.selectedIndex
-			const isChecked = pinned.has(el.id)
+			const isNonPinnable = el.canPin === false
 
-			const checkMark = isChecked ? accent("● ") : dimText("○ ")
+			const checkMark = isNonPinnable ? dimText("× ") : pinned.has(el.id) ? accent("● ") : dimText("○ ")
+
 			const labelRaw = el.label.padEnd(maxLabelW)
-			const labelStyled = isSelected ? accent(labelRaw) : textColor(labelRaw)
-			const descStyled = isSelected ? dimText(el.description) : mutedColor(el.description)
-			const prefix = isSelected ? `${accent("❯ ")}` : "  "
+			const labelStyled = isNonPinnable ? mutedColor(labelRaw) : isSelected ? accent(labelRaw) : textColor(labelRaw)
+			const descStyled = isNonPinnable
+				? dimText(el.description)
+				: isSelected
+					? dimText(el.description)
+					: mutedColor(el.description)
+
+			const prefix = isNonPinnable ? "  " : isSelected ? `${accent("❯ ")}` : "  "
 
 			out.push(wrapRow(`${prefix}${checkMark}${labelStyled}  ${descStyled}`))
 		}

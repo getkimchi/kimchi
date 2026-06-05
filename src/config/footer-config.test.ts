@@ -38,7 +38,7 @@ afterEach(() => {
 
 describe("FOOTER_ELEMENTS", () => {
 	it("has 9 entries", () => {
-		expect(FOOTER_ELEMENTS).toHaveLength(5)
+		expect(FOOTER_ELEMENTS).toHaveLength(9)
 	})
 
 	it("every entry has id, label, description", () => {
@@ -49,11 +49,9 @@ describe("FOOTER_ELEMENTS", () => {
 		}
 	})
 
-	it("covers only the configurable (conditional) elements", () => {
-		// FOOTER_ELEMENTS lists only elements users can pin/unpin.
-		// context, phase, model, permissions are always shown and not listed here.
+	it("covers all FooterElementId values", () => {
 		const ids = FOOTER_ELEMENTS.map((e) => e.id).sort()
-		const expected = ["agents", "ferment", "tags", "team", "usage"].sort()
+		const expected = ["permissions", "model", "ferment", "agents", "context", "usage", "phase", "tags", "team"].sort()
 		expect(ids).toEqual(expected)
 	})
 })
