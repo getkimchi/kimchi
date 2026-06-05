@@ -17,21 +17,13 @@ export type FooterConfig = { pinned: FooterElementId[] }
 
 const FOOTER_KEY = "footer"
 
+/** Only conditional footer elements appear in the settings UI.
+ *  context, phase, model, permissions are always shown and cannot be hidden. */
 export const FOOTER_ELEMENTS: Array<{
 	id: FooterElementId
 	label: string
 	description: string
 }> = [
-	{
-		id: "permissions",
-		label: "Permissions mode",
-		description: "● default / ○ auto  → shift+tab",
-	},
-	{
-		id: "model",
-		label: "Model",
-		description: "Active model or multi-model  → ctrl+p",
-	},
 	{
 		id: "ferment",
 		label: "Ferment",
@@ -43,19 +35,9 @@ export const FOOTER_ELEMENTS: Array<{
 		description: "Active sub-agent count",
 	},
 	{
-		id: "context",
-		label: "Context",
-		description: "Context usage bar + percentage",
-	},
-	{
 		id: "usage",
 		label: "Token I/O",
 		description: "Token input (↑) and output (↓)",
-	},
-	{
-		id: "phase",
-		label: "Phase",
-		description: "Current work phase",
 	},
 	{
 		id: "tags",

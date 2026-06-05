@@ -357,7 +357,8 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		const wide = renderAt(200)
 		expect(wide.visible).toContain("Ferment: my-ferment")
 		expect(wide.visible).toContain("Stop: Phase Boundary \u2192 F6")
-		expect(wide.visible.indexOf("Ferment: my-ferment")).toBeLessThan(wide.visible.indexOf("\u25cf default"))
+		// Permissions is now the first segment, so Ferment comes after it.
+		expect(wide.visible.indexOf("Ferment: my-ferment")).toBeGreaterThan(wide.visible.indexOf("\u25cf default"))
 
 		// At a narrow width all earlier compactions have fired and the ferment
 		// prefix has also been dropped.
@@ -665,16 +666,6 @@ describe("footer pinning", () => {
 			// Full form includes the bar characters; compact form is just "N% ctx"
 			expect(visible).toContain("█")
 			expect(visible).toContain("░")
-		})
-	})
-
-	it("pinned permissions shows placeholder when no permissions mode is set", () => {
-		withPinned(["permissions"], () => {
-			// No permissionsMode in createMockFooterData()
-			const footer = new StatsFooter(createMockContext(), theme, createMockFooterData())
-			const visible = stripAnsi(footer.render(200)[0])
-			expect(visible).toContain("●")
-			expect(visible).toContain("—")
 		})
 	})
 

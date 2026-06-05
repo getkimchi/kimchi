@@ -517,13 +517,15 @@ export class StatsFooter implements Component {
 			.filter((t): t is { key: string; value: string } => t !== null)
 
 		const allSegments: Segment[] = [
-			this.fermentSegment(pinnedSet.has("ferment")),
-			this.permissionsSegment(pinnedSet.has("permissions")),
+			// Always-shown segments:
+			this.permissionsSegment(false),
 			this.modelSegment(),
-			this.subagentSegment(pinnedSet.has("agents")),
 			this.contextSegment(),
 			this.usageSegment(pinnedSet.has("usage")),
 			this.phaseSegment(),
+			// Conditional segments — can be pinned to force-show even when empty:
+			this.fermentSegment(pinnedSet.has("ferment")),
+			this.subagentSegment(pinnedSet.has("agents")),
 			this.tagsSegment(tags, pinnedSet.has("tags")),
 			this.teamSegment(tags, pinnedSet.has("team")),
 		].filter((s): s is Segment => s !== null)
