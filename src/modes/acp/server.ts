@@ -221,9 +221,12 @@ export class KimchiAcpAgent implements Agent {
 			const sessionId = session.sessionId
 			registerAcpPrompter(sessionId, createAcpPermissionPrompter(this.conn, sessionId, buildToolCallUpdate))
 			await bindAcpExtensions(session)
-			this.sendAvailableCommandsUpdate(sessionId, hasActiveFerment())
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, { session, unsubscribe })
+			// Send after sessions.set so that a throw from this.send (e.g., closed
+			// connection) doesn't abort session creation and leak the prompter
+			// registered above — disposeSessionRecord / doShutdown will clean it up.
+			this.sendAvailableCommandsUpdate(sessionId, hasActiveFerment())
 			const models = buildSessionModelState(session)
 			return { sessionId, models }
 		} catch (err) {

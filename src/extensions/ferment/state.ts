@@ -56,7 +56,9 @@ export function onActiveFermentChange(listener: (hasActive: boolean) => void): (
 }
 
 export function notifyFermentActive(hasActive: boolean): void {
-	for (const listener of activeFermentChangeListeners) {
+	// Snapshot to avoid concurrent-modification issues if a listener
+	// synchronously registers or unregisters another listener.
+	for (const listener of [...activeFermentChangeListeners]) {
 		try {
 			listener(hasActive)
 		} catch (err) {

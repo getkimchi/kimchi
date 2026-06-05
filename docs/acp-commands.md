@@ -153,9 +153,9 @@ function getAvailableCommands(fermentState: FermentState): AvailableCommand[] {
     const commands: AvailableCommand[] = [
         {
             name: 'start_ferment',
-            description: 'Start a new ferment workflow',
+            description: 'Start a new ferment workflow for structured multi-step project work',
             input: {
-                hint: 'Describe the task or paste ferment ID'
+                hint: 'Provide a concise title (3-5 words) and full intent description'
             }
         }
     ];
