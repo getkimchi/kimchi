@@ -19,8 +19,20 @@ const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
 import { _resetState as _resetHideThinking, _setHideThinking } from "../../extensions/hide-thinking.js"
-import { resolveModelRoles } from "../../extensions/orchestration/model-roles.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
+
+// Mock resolveModelRoles to ensure hermetic tests that don't depend on external settings
+vi.mock("../../extensions/orchestration/model-roles.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../extensions/orchestration/model-roles.js")>()
+	return {
+		...actual,
+		resolveModelRoles: () => ({
+			roles: { orchestrator: "test-provider/test-orchestrator" },
+			warnings: [],
+		}),
+		getModelRoles: () => ({ orchestrator: "test-provider/test-orchestrator" }),
+	}
+})
 import {
 	type AcpSessionFactory,
 	type AcpSessionLister,
@@ -1258,18 +1270,18 @@ describe("buildSessionModelState", () => {
 	it("returns multi-model currentModelId when multi-model mode is active", () => {
 		const fake = new FakeAgentSession("s1")
 		fake.model = { provider: "openai", id: "gpt-4" }
+		// Fixed test fixture for orchestrator to ensure hermetic tests
+		const TEST_ORCHESTRATOR_PROVIDER = "test-provider"
+		const TEST_ORCHESTRATOR_MODEL = "test-model"
 		fake.modelRegistry = {
 			getAvailable: () => [
 				{ provider: "openai", id: "gpt-4", name: "GPT-4" },
 				{ provider: "anthropic", id: "claude-3", name: "Claude 3" },
 			],
 			find: (provider: string, modelId: string) => {
-				// Return a model matching the orchestrator from settings
-				const { roles } = resolveModelRoles()
-				const orchRef = roles.orchestrator
-				const orchParts = orchRef.split("/")
-				if (orchParts.length === 2 && provider === orchParts[0] && modelId === orchParts[1]) {
-					return { provider: orchParts[0], id: orchParts[1], name: "Orchestrator Model" }
+				// Use fixed test fixture instead of calling resolveModelRoles()
+				if (provider === TEST_ORCHESTRATOR_PROVIDER && modelId === TEST_ORCHESTRATOR_MODEL) {
+					return { provider: TEST_ORCHESTRATOR_PROVIDER, id: TEST_ORCHESTRATOR_MODEL, name: "Orchestrator Model" }
 				}
 				return undefined
 			},
@@ -1395,10 +1407,9 @@ describe("unstable_setSessionModel", () => {
 	it("switches to multi-model mode", async () => {
 		const fake = new FakeAgentSession("switch-session")
 		fake.model = { provider: "provider-a", id: "model-a" }
-		// Use the actual orchestrator from settings to match what resolveModelRoles returns
-		const { roles } = resolveModelRoles()
-		const orchRef = roles.orchestrator
-		const [orchProvider, orchModelId] = orchRef.split("/")
+		// Use fixed test fixture for orchestrator to ensure deterministic, hermetic tests
+		const orchProvider = "test-provider"
+		const orchModelId = "test-orchestrator"
 		fake.modelRegistry = {
 			getAvailable: () => [
 				{ provider: orchProvider, id: orchModelId, name: "Orchestrator Model" },

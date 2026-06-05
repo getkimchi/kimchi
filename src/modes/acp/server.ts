@@ -128,6 +128,11 @@ export class KimchiAcpAgent implements Agent {
 	// the JSONL twice, and the later registration overwrites (and leaks) the
 	// earlier session record.
 	private loadingSessions = new Map<string, Promise<LoadSessionResponse>>()
+	// Per-session lock for model switching. Prevents race conditions where
+	// concurrent unstable_setSessionModel calls could corrupt the multiModelEnabled
+	// flag (e.g., call A sets it to true, yields, call B sets it to false, then
+	// call A resumes and overwrites it to true with the session now on single-model).
+	private modelSwitchLocks = new Map<string, Promise<void>>()
 	private shutdownPromise: Promise<void> | undefined
 
 	constructor(
@@ -228,6 +233,35 @@ export class KimchiAcpAgent implements Agent {
 		if (entry.turn) {
 			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
 		}
+
+		// Serialize concurrent model switches for the same session to prevent
+		// race conditions on entry.multiModelEnabled. The turn gate above only
+		// blocks prompts, not model switches.
+		const existingLock = this.modelSwitchLocks.get(params.sessionId)
+		if (existingLock) {
+			await existingLock
+		}
+
+		const switchPromise = this.executeModelSwitch(entry, params)
+		this.modelSwitchLocks.set(
+			params.sessionId,
+			switchPromise.then(() => undefined),
+		)
+		try {
+			return await switchPromise
+		} finally {
+			// Only clean up if this call's promise is still the current lock
+			// (handles the case where a new switch started during our await)
+			if (this.modelSwitchLocks.get(params.sessionId) === switchPromise.then(() => undefined)) {
+				this.modelSwitchLocks.delete(params.sessionId)
+			}
+		}
+	}
+
+	private async executeModelSwitch(
+		entry: SessionRecord,
+		params: SetSessionModelRequest,
+	): Promise<SetSessionModelResponse> {
 		const { session } = entry
 
 		// Handle multi-model mode
@@ -243,10 +277,14 @@ export class KimchiAcpAgent implements Agent {
 				throw RequestError.invalidParams(undefined, `Multi-model orchestrator (${orchestratorRef}) is not available.`)
 			}
 			try {
-				// Only set the flag after successfully switching models
-				await session.setModel(orchestrator)
+				// Set the flag BEFORE the await to ensure atomicity with respect
+				// to other serialized model switches. If setModel fails, we rely
+				// on the catch block to reset the flag.
 				entry.multiModelEnabled = true
+				await session.setModel(orchestrator)
 			} catch (err) {
+				// Reset the flag on failure since we didn't actually switch models
+				entry.multiModelEnabled = false
 				if (err instanceof RequestError) {
 					throw err
 				}
@@ -263,9 +301,9 @@ export class KimchiAcpAgent implements Agent {
 			throw RequestError.invalidParams(undefined, `Unknown or unavailable model: ${params.modelId}`)
 		}
 		try {
-			await session.setModel(selectedModel)
-			// Clear multi-model flag when switching to a single model
+			// Set the flag BEFORE the await for atomicity
 			entry.multiModelEnabled = false
+			await session.setModel(selectedModel)
 		} catch (err) {
 			if (err instanceof RequestError) {
 				throw err
