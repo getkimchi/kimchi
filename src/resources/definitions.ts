@@ -73,7 +73,7 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		kind: "extensions",
 		label: "Pi package lookup",
 		description: "Load packages installed by the original pi CLI.",
-		defaultEnabled: true,
+		defaultEnabled: false,
 		restartRequired: true,
 	},
 	{

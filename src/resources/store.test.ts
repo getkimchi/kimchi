@@ -43,7 +43,7 @@ describe("resource store", () => {
 		const path = tempSettingsPath()
 
 		expect(isResourceEnabled("hooks.rtk-rewrite", path)).toBe(true)
-		expect(isResourceEnabled("extensions.pi-package-lookup", path)).toBe(true)
+		expect(isResourceEnabled("extensions.pi-package-lookup", path)).toBe(false)
 		expect(getResourceOverride("hooks.rtk-rewrite", path)).toBeUndefined()
 	})
 

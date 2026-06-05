@@ -105,9 +105,9 @@ export function isOriginalPiPackageLookupEnabled(settingsPath = kimchiSettingsPa
 	try {
 		const raw = JSON.parse(readFileSync(settingsPath, "utf-8")) as { resources?: Record<string, unknown> }
 		const value = raw.resources?.[PI_PACKAGE_LOOKUP_RESOURCE_ID]
-		return typeof value === "boolean" ? value : true
+		return typeof value === "boolean" ? value : false
 	} catch {
-		return true
+		return false
 	}
 }
 

@@ -35,19 +35,19 @@ describe("original pi package lookup", () => {
 		rmSync(dir, { recursive: true, force: true })
 	})
 
-	it("defaults pi package lookup on and honors the Kimchi resource override", () => {
+	it("defaults pi package lookup off and honors the Kimchi resource override", () => {
 		const agentDir = join(dir, "kimchi-agent")
 		process.env.KIMCHI_CODING_AGENT_DIR = agentDir
 		mkdirSync(agentDir, { recursive: true })
 
-		expect(isOriginalPiPackageLookupEnabled()).toBe(true)
+		expect(isOriginalPiPackageLookupEnabled()).toBe(false)
 
 		writeFileSync(
 			join(agentDir, "settings.json"),
-			JSON.stringify({ resources: { [PI_PACKAGE_LOOKUP_RESOURCE_ID]: false } }),
+			JSON.stringify({ resources: { [PI_PACKAGE_LOOKUP_RESOURCE_ID]: true } }),
 		)
 
-		expect(isOriginalPiPackageLookupEnabled()).toBe(false)
+		expect(isOriginalPiPackageLookupEnabled()).toBe(true)
 	})
 
 	it("uses PI_CODING_AGENT_DIR when resolving the original pi agent dir", () => {
@@ -73,7 +73,12 @@ describe("original pi package lookup", () => {
 		process.env.HOME = homeDir
 		process.env.KIMCHI_CODING_AGENT_DIR = kimchiAgentDir
 		process.env.PI_CODING_AGENT_DIR = kimchiAgentDir
+		mkdirSync(kimchiAgentDir, { recursive: true })
 		mkdirSync(piAgentDir, { recursive: true })
+		writeFileSync(
+			join(kimchiAgentDir, "settings.json"),
+			JSON.stringify({ resources: { [PI_PACKAGE_LOOKUP_RESOURCE_ID]: true } }),
+		)
 		writeFileSync(join(piAgentDir, "settings.json"), JSON.stringify({ packages: ["npm:@juicesharp/rpiv-todo"] }))
 
 		expect(getOriginalPiConfiguredPackages(join(dir, "project"))).toEqual([
@@ -128,6 +133,11 @@ describe("original pi package lookup", () => {
 		process.env.PI_CODING_AGENT_DIR = piAgentDir
 		mkdirSync(join(packageDir, "extensions"), { recursive: true })
 		mkdirSync(piAgentDir, { recursive: true })
+		mkdirSync(kimchiAgentDir, { recursive: true })
+		writeFileSync(
+			join(kimchiAgentDir, "settings.json"),
+			JSON.stringify({ resources: { [PI_PACKAGE_LOOKUP_RESOURCE_ID]: true } }),
+		)
 		writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ packages: ["./local-package"] }))
 		writeFileSync(join(packageDir, "package.json"), JSON.stringify({ pi: { extensions: ["./extensions/index.js"] } }))
 		writeFileSync(extensionPath, "export default function noop() {}\n")
