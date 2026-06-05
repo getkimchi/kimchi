@@ -49,7 +49,6 @@ const COOKING_FRAMES: readonly {
 	},
 	{ frames: ["✦", "✧", "✦", "✧"], message: "Prepping aromatics", intervalMs: 140 },
 	{ frames: ["·", "+", "·", "×", "·", "+"], message: "Simmering", intervalMs: 93 },
-	{ frames: ["░", "▒", "▓", "█", "▓", "▒", "░"], message: "Fermenting", intervalMs: 80 },
 	{ frames: ["·", "+", "·", "×", "·", "+"], message: "Seasoning", intervalMs: 93 },
 	{ frames: ["ˊ", "`", "ˊ", "`"], message: "Tasting", intervalMs: 100 },
 	{ frames: ["z", "Z", "z", "Z"], message: "Letting it rest", intervalMs: 140 },
