@@ -163,13 +163,11 @@ export function filterDisabledPackageExtensions(
 		(registration) =>
 			!disabledExtensionPaths.has(registration.extensionPath) && !isDisabledPackagePath(registration.extensionPath),
 	)
+	result.runtime.pendingProviderRegistrations = pendingProviderRegistrations
 
 	return {
 		...result,
-		runtime: {
-			...result.runtime,
-			pendingProviderRegistrations,
-		},
+		runtime: result.runtime,
 		extensions: result.extensions.filter((extension) => !isDisabledPackageExtension(extension)),
 		errors: result.errors.filter((error) => !isDisabledPackagePath(error.path)),
 	}

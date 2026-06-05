@@ -99,11 +99,9 @@ describe("pi native compatibility", () => {
 
 		expect(filtered.extensions.map((extension) => extension.path)).toEqual(["/packages/other/extensions/index.js"])
 		expect(filtered.errors).toEqual([])
+		expect(filtered.runtime).toBe(result.runtime)
 		expect(filtered.runtime.pendingProviderRegistrations.map((registration) => registration.name)).toEqual(["other"])
-		expect(result.runtime.pendingProviderRegistrations.map((registration) => registration.name)).toEqual([
-			"ctx",
-			"other",
-		])
+		expect(result.runtime.pendingProviderRegistrations.map((registration) => registration.name)).toEqual(["other"])
 	})
 
 	it("filters disabled package provider registrations by disabled extension path when no package root is known", () => {
@@ -120,14 +118,9 @@ describe("pi native compatibility", () => {
 			() => false,
 		)
 
+		expect(filtered.runtime).toBe(result.runtime)
 		expect(filtered.runtime.pendingProviderRegistrations).toEqual([])
-		expect(result.runtime.pendingProviderRegistrations).toEqual([
-			{
-				name: "ctx",
-				config: {},
-				extensionPath: "/somewhere/context-mode.js",
-			},
-		])
+		expect(result.runtime.pendingProviderRegistrations).toEqual([])
 	})
 
 	it("filters disabled package resolved paths before extension modules load", () => {
