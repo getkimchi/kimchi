@@ -1,0 +1,155 @@
+name: Terminal-Bench ARC PoC
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: Terminal-Bench task id
+        type: string
+        required: true
+        default: terminal-bench/fix-git
+      model:
+        description: Kimchi model
+        type: string
+        required: true
+        default: kimchi-dev/kimi-k2.6
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arc-terminal-bench-poc
+  cancel-in-progress: false
+
+jobs:
+  check-maintainer:
+    runs-on: ubuntu-latest
+    outputs:
+      allowed: ${{ steps.check.outputs.allowed }}
+    steps:
+      - name: Check actor permission
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.actor,
+            });
+            const allowed = ['admin', 'maintain', 'write'].includes(data.permission);
+            console.log(`Actor: ${context.actor}, permission: ${data.permission}, allowed: ${allowed}`);
+            if (!allowed) {
+              core.setFailed(`${context.actor} does not have maintainer access (permission: ${data.permission})`);
+            }
+            core.setOutput('allowed', String(allowed));
+
+  terminal-bench:
+    needs: check-maintainer
+    if: needs.check-maintainer.outputs.allowed == 'true'
+    runs-on: arc-terminal-bench
+    timeout-minutes: 60
+    env:
+      KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
+      MODEL: ${{ inputs.model }}
+      KIMCHI_BINARY_TARGET: linux-x64-baseline
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system build dependencies
+        run: |
+          set -euo pipefail
+          if command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            if command -v sudo >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y build-essential ca-certificates curl git python3
+            else
+              apt-get update
+              apt-get install -y build-essential ca-certificates curl git python3
+            fi
+          else
+            echo "Unsupported runner image: apt-get not found" >&2
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+          cache-dependency-path: tools/proxy-helper/go.sum
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Install pnpm dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+
+      - name: Build proxy helper
+        run: make -C tools/proxy-helper build
+        env:
+          GOOS: linux
+          GOARCH: amd64
+
+      - name: Install Docker Compose
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64) compose_arch=x86_64 ;;
+            aarch64|arm64) compose_arch=aarch64 ;;
+            *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          compose_version=v5.1.4
+          compose_name="docker-compose-linux-${compose_arch}"
+          tmp_dir="$(mktemp -d)"
+          curl -fsSL "https://github.com/docker/compose/releases/download/${compose_version}/${compose_name}" \
+            -o "${tmp_dir}/${compose_name}"
+          curl -fsSL "https://github.com/docker/compose/releases/download/${compose_version}/${compose_name}.sha256" \
+            -o "${tmp_dir}/${compose_name}.sha256"
+          (cd "${tmp_dir}" && sha256sum -c "${compose_name}.sha256")
+          plugin_dir="${DOCKER_CONFIG:-$HOME/.docker}/cli-plugins"
+          mkdir -p "${plugin_dir}"
+          install -m 0755 "${tmp_dir}/${compose_name}" "${plugin_dir}/docker-compose"
+
+      - name: Verify Docker
+        run: |
+          set -euo pipefail
+          docker version
+          docker info
+          docker compose version
+
+      - name: Run one Terminal-Bench task with kimchi
+        run: |
+          set -euo pipefail
+          echo "MODEL=${MODEL}"
+          benchmark/terminal-bench-2/scripts/run-local.sh -i "${{ inputs.task_id }}" -k 1 -n 1
+
+      - name: Show Terminal-Bench result summary
+        if: always()
+        run: |
+          set -euo pipefail
+          find benchmark/terminal-bench-2/jobs -name result.json -print -exec cat {} \; || true
+
+      - name: Upload Terminal-Bench jobs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terminal-bench-jobs
+          path: benchmark/terminal-bench-2/jobs
+          if-no-files-found: ignore
