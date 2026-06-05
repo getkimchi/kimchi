@@ -30,6 +30,13 @@ export default function resourcesExtension(pi: ExtensionAPI): void {
 			await openResourceKindMenu(ctx, "hooks")
 		},
 	})
+
+	pi.registerCommand("plugins", {
+		description: "View/change Kimchi plugins",
+		handler: async (_args, ctx) => {
+			await openResourceKindMenu(ctx, "plugins")
+		},
+	})
 }
 
 async function ensureRtkOnStartup(ctx: ExtensionContext): Promise<void> {
