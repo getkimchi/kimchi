@@ -23,7 +23,7 @@ const stripSgr = (line: string): string => line.replace(SGR_RE, "")
 const plainTheme = {
 	fg: (_name: string, value: string) => value,
 	bold: (value: string) => value,
-} as unknown: Theme
+} as unknown as Theme
 
 describe("user message render patch", () => {
 	beforeAll(() => {
