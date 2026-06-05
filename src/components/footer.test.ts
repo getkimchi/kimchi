@@ -357,8 +357,7 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		const wide = renderAt(200)
 		expect(wide.visible).toContain("Ferment: my-ferment")
 		expect(wide.visible).toContain("Stop: Phase Boundary \u2192 F6")
-		// Permissions is now the first segment, so Ferment comes after it.
-		expect(wide.visible.indexOf("Ferment: my-ferment")).toBeGreaterThan(wide.visible.indexOf("\u25cf default"))
+		expect(wide.visible.indexOf("Ferment: my-ferment")).toBeLessThan(wide.visible.indexOf("\u25cf default"))
 
 		// At a narrow width all earlier compactions have fired and the ferment
 		// prefix has also been dropped.
