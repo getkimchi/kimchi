@@ -131,6 +131,23 @@ describe("evaluateRules precedence", () => {
 		expect(match.decision).toBe("no-match")
 	})
 
+	it("auto-rewrites bare rules to match bash invocations of that program", () => {
+		const r: Rule[] = [{ toolName: "rm", content: undefined, behavior: "deny", source: "project" }]
+		expect(evaluateRules(r, "bash", { command: "rm file.txt" }).decision).toBe("deny")
+		expect(evaluateRules(r, "bash", { command: "rtk rm file.txt" }).decision).toBe("deny")
+		expect(evaluateRules(r, "bash", { command: "mv file.txt" }).decision).toBe("no-match")
+		// When rtk wraps "bash", the underlying program is "bash", not "rm".
+		expect(evaluateRules(r, "bash", { command: "rtk bash rm file.txt" }).decision).toBe("no-match")
+	})
+
+	it("auto-rewrite affects bash builtins that share tool names", () => {
+		const r: Rule[] = [{ toolName: "read", content: undefined, behavior: "deny", source: "project" }]
+		expect(evaluateRules(r, "read", { path: "foo" }).decision).toBe("deny")
+		// read is also a bash builtin, so bare "read" rule matches bash(read ...)
+		expect(evaluateRules(r, "bash", { command: "read var" }).decision).toBe("deny")
+		expect(evaluateRules(r, "bash", { command: "echo hello" }).decision).toBe("no-match")
+	})
+
 	it("first match in source order wins across sources", () => {
 		const r: Rule[] = [
 			{ toolName: "bash", content: undefined, behavior: "allow", source: "project" },
