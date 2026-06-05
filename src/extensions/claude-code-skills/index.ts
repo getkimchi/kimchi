@@ -1,12 +1,16 @@
-import { existsSync, readFileSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, isAbsolute, join, resolve } from "node:path"
+import { join, resolve } from "node:path"
 import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent"
 import { getAgentDir, loadSkills, loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import type { Static } from "typebox"
 import { loadConfig } from "../../config.js"
-import { getClaudeCodeSkillResourcePaths } from "./definition.js"
+import {
+	expandConfiguredSkillPaths,
+	findNearestAncestorSkillDir,
+	getClaudeCodeSkillResourcePaths,
+} from "./definition.js"
 
 interface SkillToolDetails {
 	success: boolean
@@ -89,7 +93,6 @@ function findClaudeCodeSkill(cwd: string, name: string): Skill | undefined {
 	const nativeSkill = findNativeSkill(cwd, name)
 	if (nativeSkill) return nativeSkill
 
-	const skills = new Map<string, Skill>()
 	for (const dir of getClaudeCodeSkillResourcePaths(cwd, { excludeNativeSkillNames: false })) {
 		let result: ReturnType<typeof loadSkillsFromDir>
 		try {
@@ -97,11 +100,10 @@ function findClaudeCodeSkill(cwd: string, name: string): Skill | undefined {
 		} catch {
 			continue
 		}
-		for (const skill of result.skills) {
-			if (!skills.has(skill.name)) skills.set(skill.name, skill)
-		}
+		const skill = result.skills.find((s) => s.name === name)
+		if (skill) return skill
 	}
-	return skills.get(name)
+	return undefined
 }
 
 function findNativeSkill(cwd: string, name: string): Skill | undefined {
@@ -135,32 +137,6 @@ function getNativeSkillSearchPaths(cwd: string, configuredSkillPaths: string[]):
 		result.push(resolved)
 	}
 	return result
-}
-
-function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
-	const home = homedir()
-	const expanded: string[] = []
-	for (const path of paths) {
-		if (isAbsolute(path)) {
-			expanded.push(path)
-		} else if (path.startsWith("~/")) {
-			expanded.push(resolve(home, path.slice(2)))
-		} else {
-			expanded.push(resolve(home, path), resolve(cwd, path))
-		}
-	}
-	return expanded
-}
-
-function findNearestAncestorSkillDir(cwd: string, relativeSkillDir: string): string | undefined {
-	let dir = resolve(cwd)
-	while (true) {
-		const skillDir = join(dir, relativeSkillDir)
-		if (existsSync(skillDir)) return skillDir
-		const parent = dirname(dir)
-		if (parent === dir) return undefined
-		dir = parent
-	}
 }
 
 function isClaudeSkillPath(path: string): boolean {

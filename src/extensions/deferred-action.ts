@@ -1,18 +1,6 @@
 const RUNTIME_NOT_INITIALIZED = "Extension runtime not initialized"
 const STALE_EXTENSION_CONTEXT = "This extension ctx is stale after session replacement or reload"
 
-function messageFor(error: unknown): string {
-	return error instanceof Error ? error.message : String(error)
-}
-
-function isRuntimeNotInitialized(error: unknown): boolean {
-	return messageFor(error).includes(RUNTIME_NOT_INITIALIZED)
-}
-
-function isStaleExtensionContext(error: unknown): boolean {
-	return messageFor(error).includes(STALE_EXTENSION_CONTEXT)
-}
-
 export interface DeferredExtensionActionOptions {
 	delayMs?: number
 	maxAttempts?: number
@@ -36,11 +24,12 @@ export function deferExtensionAction(
 		Promise.resolve()
 			.then(action)
 			.catch((error: unknown) => {
-				if (isRuntimeNotInitialized(error) && attempts < maxAttempts) {
+				const message = error instanceof Error ? error.message : String(error)
+				if (message.includes(RUNTIME_NOT_INITIALIZED) && attempts < maxAttempts) {
 					setTimeout(run, delayMs)
 					return
 				}
-				if (isRuntimeNotInitialized(error) || isStaleExtensionContext(error)) return
+				if (message.includes(RUNTIME_NOT_INITIALIZED) || message.includes(STALE_EXTENSION_CONTEXT)) return
 				console.error("Deferred extension action failed:", error)
 			})
 	}

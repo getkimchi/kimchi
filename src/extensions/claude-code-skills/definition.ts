@@ -326,7 +326,7 @@ function discoverNativeSkillDirs(cwd: string): string[] {
 	return result
 }
 
-function findNearestAncestorSkillDir(cwd: string, relativeSkillDir: string): string | undefined {
+export function findNearestAncestorSkillDir(cwd: string, relativeSkillDir: string): string | undefined {
 	let dir = resolve(cwd)
 	while (true) {
 		const skillDir = join(dir, relativeSkillDir)
@@ -337,7 +337,7 @@ function findNearestAncestorSkillDir(cwd: string, relativeSkillDir: string): str
 	}
 }
 
-function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
+export function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
 	const home = homedir()
 	const expanded: string[] = []
 	for (const path of paths) {

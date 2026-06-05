@@ -95,22 +95,29 @@ export const TOOL_RESOURCE_IDS: Readonly<Record<string, string>> = {
 
 const staticDefinitionsById = new Map(STATIC_RESOURCE_DEFINITIONS.map((definition) => [definition.id, definition]))
 
+let dynamicResourceDefinitionsCache: ResourceDefinition[] | undefined
+
+function getDynamicResourceDefinitions(): ResourceDefinition[] {
+	if (dynamicResourceDefinitionsCache === undefined) {
+		dynamicResourceDefinitionsCache = [
+			...discoverBashHookResources(),
+			...discoverClaudeCodeHookResourceDefinitions(),
+			...discoverPackageResources(),
+		]
+	}
+	return dynamicResourceDefinitionsCache
+}
+
+export function invalidateResourceDefinitionsCache(): void {
+	dynamicResourceDefinitionsCache = undefined
+}
+
 export function getResourceDefinitions(): ResourceDefinition[] {
-	return [
-		...STATIC_RESOURCE_DEFINITIONS,
-		...discoverBashHookResources(),
-		...discoverClaudeCodeHookResourceDefinitions(),
-		...discoverPackageResources(),
-	]
+	return [...STATIC_RESOURCE_DEFINITIONS, ...getDynamicResourceDefinitions()]
 }
 
 export function getResourceDefinition(id: string): ResourceDefinition | undefined {
-	return (
-		staticDefinitionsById.get(id) ??
-		discoverBashHookResources().find((definition) => definition.id === id) ??
-		discoverClaudeCodeHookResourceDefinitions().find((definition) => definition.id === id) ??
-		discoverPackageResources().find((definition) => definition.id === id)
-	)
+	return staticDefinitionsById.get(id) ?? getDynamicResourceDefinitions().find((d) => d.id === id)
 }
 
 export function getResourcesByKind(kind: ResourceKind): ResourceDefinition[] {
