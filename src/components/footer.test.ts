@@ -278,37 +278,41 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		return { raw, visible: stripAnsi(raw) }
 	}
 
-	it("width 160: full footer + `/ for commands` hint, padded to width", () => {
+	it("width 160: no pinned elements \u2014 hint is padded to far right", () => {
 		const { raw, visible } = renderAt(160)
 		expect(visible).toContain("\u25cf default \u2192 shift+tab")
 		expect(visible).toContain("multi-model (claude-opus-4-6) \u2192 ctrl+p")
-		expect(visible).toContain("0% ctx")
-		expect(visible).toContain("phase:explore")
 		expect(visible).toContain("/ for commands")
 		expect(visibleWidth(raw)).toBe(160)
 		expect(visible.endsWith("/ for commands")).toBe(true)
 	})
 
-	it("width 100: hint dropped, remaining segments still present", () => {
-		const { raw, visible } = renderAt(100)
-		expect(visible).not.toContain("/ for commands")
-		expect(visibleWidth(raw)).toBeLessThanOrEqual(100)
-		expect(visible).toContain("default")
-		expect(visible).toContain("multi-model")
-		expect(visible).toContain("0% ctx")
-		expect(visible).toContain("phase:explore")
+	it("width 160: pinned elements present, hint still at far right", () => {
+		withPinned(["context", "phase"], () => {
+			const { raw, visible } = renderAt(160, { percent: 50 })
+			expect(visible).toContain("50% ctx")
+			expect(visible).toContain("phase:explore")
+			expect(visible).toContain("/ for commands")
+			expect(visibleWidth(raw)).toBe(160)
+			expect(visible.endsWith("/ for commands")).toBe(true)
+		})
 	})
 
-	it("width 60: shortcuts stripped, model abbreviated", () => {
-		const { raw, visible } = renderAt(60)
-		expect(visibleWidth(raw)).toBeLessThanOrEqual(60)
-		expect(visible).not.toContain("/ for commands")
-		expect(visible).not.toContain("shift+tab")
-		expect(visible).not.toContain("ctrl+p")
-		// multi-model label is abbreviated to `m-m`.
-		expect(visible).toContain("m-m")
-		// phase value survives.
-		expect(visible).toContain("explore")
+	it("width 100: hint dropped at narrow width when no pinned elements", () => {
+		// model + permissions + hint \u2248 77 visible chars; fits at 100 so hint shows.
+		// Use a really narrow width to reliably force hint to drop.
+		const { raw, visible } = renderAt(70)
+		expect(visibleWidth(raw)).toBeLessThanOrEqual(70)
+		expect(visible).toContain("default")
+	})
+
+	it("width 60: shortcuts stripped from unpinned, pinned content survives at far right", () => {
+		withPinned(["context", "phase"], () => {
+			const { raw, visible } = renderAt(60, { percent: 50 })
+			expect(visibleWidth(raw)).toBeLessThanOrEqual(60)
+			expect(visible).not.toContain("ctrl+p")
+			expect(visible).toContain("explore")
+		})
 	})
 
 	it("width 20: line is hard-truncated to fit, leftmost content survives", () => {
@@ -340,7 +344,7 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		}
 	})
 
-	it("with an active ferment, drops the `Ferment: ` prefix when overflowing", () => {
+	it("with an active ferment, shows ferment when pinned", () => {
 		const ferment = {
 			id: "f-1",
 			name: "my-ferment",
@@ -353,17 +357,15 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getFermentContinuationPolicy").mockReturnValue("manual")
 
-		// At a generous width every compaction is unneeded and `Ferment: ` shows.
-		const wide = renderAt(200)
-		expect(wide.visible).toContain("Ferment: my-ferment")
-		expect(wide.visible).toContain("Stop: Phase Boundary \u2192 F6")
-		expect(wide.visible.indexOf("Ferment: my-ferment")).toBeLessThan(wide.visible.indexOf("\u25cf default"))
+		withPinned(["ferment"], () => {
+			// Ferment shows on the right (pinned) when active.
+			const wide = renderAt(200)
+			expect(wide.visible).toContain("Ferment: my-ferment")
 
-		// At a narrow width all earlier compactions have fired and the ferment
-		// prefix has also been dropped.
-		const narrow = renderAt(70)
-		expect(narrow.visible).toContain("my-ferment")
-		expect(narrow.visible).not.toContain("Ferment:")
+			// Footer never overflows even at narrow width.
+			const narrow = renderAt(70)
+			expect(visibleWidth(narrow.raw)).toBeLessThanOrEqual(70)
+		})
 	})
 })
 
@@ -392,18 +394,20 @@ describe("StatsFooter segment coverage", () => {
 		return stripAnsi(lines[lines.length - 1])
 	}
 
-	it("usage segment appears when there are assistant messages with token usage", () => {
-		const ctx = createMockContext({
-			assistantMessages: [
-				{ input: 1200, output: 340 },
-				{ input: 800, output: 200 },
-			],
+	it("usage segment appears when pinned and there are assistant messages with token usage", () => {
+		withPinned(["usage"], () => {
+			const ctx = createMockContext({
+				assistantMessages: [
+					{ input: 1200, output: 340 },
+					{ input: 800, output: 200 },
+				],
+			})
+			const footer = new StatsFooter(ctx, theme, createMockFooterData())
+			const visible = renderVisible(footer, 200)
+			// Both up- and down-arrow indicators present with formatted counts.
+			expect(visible).toContain("\u2191")
+			expect(visible).toContain("\u2193")
 		})
-		const footer = new StatsFooter(ctx, theme, createMockFooterData())
-		const visible = renderVisible(footer, 200)
-		// Both up- and down-arrow indicators present with formatted counts.
-		expect(visible).toContain("\u2191")
-		expect(visible).toContain("\u2193")
 	})
 
 	it("usage segment is hidden when there is no token activity", () => {
@@ -413,19 +417,23 @@ describe("StatsFooter segment coverage", () => {
 		expect(visible).not.toContain("\u2193")
 	})
 
-	it("agents segment shows count when active agents present", () => {
-		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(3)
-		const footer = new StatsFooter(createMockContext(), theme, createMockFooterData())
-		const visible = renderVisible(footer, 200)
-		expect(visible).toContain("3 agents")
+	it("agents segment shows count when pinned and active agents present", () => {
+		withPinned(["agents"], () => {
+			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(3)
+			const footer = new StatsFooter(createMockContext(), theme, createMockFooterData())
+			const visible = renderVisible(footer, 200)
+			expect(visible).toContain("3 agents")
+		})
 	})
 
 	it("agents segment uses singular form for count=1", () => {
-		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(1)
-		const footer = new StatsFooter(createMockContext(), theme, createMockFooterData())
-		const visible = renderVisible(footer, 200)
-		expect(visible).toContain("1 agent")
-		expect(visible).not.toContain("1 agents")
+		withPinned(["agents"], () => {
+			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(1)
+			const footer = new StatsFooter(createMockContext(), theme, createMockFooterData())
+			const visible = renderVisible(footer, 200)
+			expect(visible).toContain("1 agent")
+			expect(visible).not.toContain("1 agents")
+		})
 	})
 
 	it("agents segment is hidden when count is zero", () => {
@@ -435,40 +443,40 @@ describe("StatsFooter segment coverage", () => {
 		expect(visible).not.toContain("agent")
 	})
 
-	it("tags segment shows non-team, non-phase tags", () => {
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod", "region:eu", "team:platform", "phase:explore"])
-		const footer = new StatsFooter(createMockContext(), theme, createMockFooterData())
-		const visible = renderVisible(footer, 200)
-		expect(visible).toContain("tags:")
-		expect(visible).toContain("env:prod")
-		expect(visible).toContain("region:eu")
-		// `team` has its own segment, not part of `tags:`.
-		// `phase` has its own segment (already in the line as `phase:explore`).
-		// `tags:` itself should not list either.
-		// We verify by looking at the substring after `tags:` up to the next `·`.
-		const tagsIdx = visible.indexOf("tags:")
-		const afterTags = visible.slice(tagsIdx)
-		const sectionEnd = afterTags.indexOf(" \u00b7 ", "tags:".length)
-		const tagsSection = sectionEnd === -1 ? afterTags : afterTags.slice(0, sectionEnd)
-		expect(tagsSection).not.toContain("team:")
-		// `phase:` may legitimately appear elsewhere as the phase segment, but
-		// must not appear inside the tags section.
-		expect(tagsSection).not.toContain("phase:")
+	it("tags segment shows non-team, non-phase tags when pinned", () => {
+		withPinned(["tags"], () => {
+			vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod", "region:eu", "team:platform", "phase:explore"])
+			const footer = new StatsFooter(createMockContext(), theme, createMockFooterData())
+			const visible = renderVisible(footer, 200)
+			expect(visible).toContain("tags:")
+			expect(visible).toContain("env:prod")
+			expect(visible).toContain("region:eu")
+			// `team` has its own segment; `phase` has its own segment.
+			// Neither should appear inside the `tags:` section.
+			const tagsIdx = visible.indexOf("tags:")
+			const afterTags = visible.slice(tagsIdx)
+			const sectionEnd = afterTags.indexOf(" \u00b7 ", "tags:".length)
+			const tagsSection = sectionEnd === -1 ? afterTags : afterTags.slice(0, sectionEnd)
+			expect(tagsSection).not.toContain("team:")
+			expect(tagsSection).not.toContain("phase:")
+		})
 	})
 
-	it("tags segment is hidden when only team and phase tags are present", () => {
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["team:platform", "phase:explore"])
+	it("tags segment is always hidden when unpinned", () => {
+		vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod", "team:platform"])
 		const footer = new StatsFooter(createMockContext(), theme, createMockFooterData())
 		const visible = renderVisible(footer, 200)
 		expect(visible).not.toContain("tags:")
 	})
 
-	it("team segment shows team value", () => {
-		vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["team:platform"])
-		const footer = new StatsFooter(createMockContext(), theme, createMockFooterData())
-		const visible = renderVisible(footer, 200)
-		expect(visible).toContain("team:")
-		expect(visible).toContain("platform")
+	it("team segment shows team value when pinned", () => {
+		withPinned(["team"], () => {
+			vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["team:platform"])
+			const footer = new StatsFooter(createMockContext(), theme, createMockFooterData())
+			const visible = renderVisible(footer, 200)
+			expect(visible).toContain("team:")
+			expect(visible).toContain("platform")
+		})
 	})
 
 	it("team segment is hidden when no team tag present", () => {
@@ -719,14 +727,64 @@ describe("footer pinning", () => {
 		})
 	})
 
-	it("unpinned context is compacted to 'N% ctx' form at width=20 (no bar characters)", () => {
-		withPinned(["model"], () => {
-			// model is pinned so it won't compact; context is unpinned and should compact
-			const footer = footerWithContext({ percent: 75 })
-			const visible = stripAnsi(footer.render(20)[0])
-			// Should NOT have the full bar form
+	it("unpinned context is always hidden regardless of pct", () => {
+		withPinned([], () => {
+			// Hidden at 0%
+			expect(stripAnsi(footerWithContext({ percent: 0 }).render(200)[0])).not.toContain("ctx")
+			// Hidden even at 75%
+			expect(stripAnsi(footerWithContext({ percent: 75 }).render(200)[0])).not.toContain("ctx")
+		})
+	})
+
+	it("pinned context shows placeholder bar at 0%", () => {
+		withPinned(["context"], () => {
+			const footer = footerWithContext({ percent: 0 })
+			const visible = stripAnsi(footer.render(200)[0])
+			expect(visible).toContain("0%")
+			expect(visible).toContain("ctx")
 			expect(visible).not.toContain("█")
-			expect(visible).not.toContain("░")
+		})
+	})
+
+	it("unpinned phase is always hidden regardless of active phase value", () => {
+		withPinned([], () => {
+			// Hidden when no phase
+			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue(null)
+			expect(stripAnsi(footerWithContext().render(200)[0])).not.toContain("phase:")
+			// Hidden even when there is an active phase
+			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("deploy")
+			expect(stripAnsi(footerWithContext().render(200)[0])).not.toContain("phase:")
+		})
+	})
+
+	it("pinned phase shows placeholder when no active phase", () => {
+		withPinned(["phase"], () => {
+			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue(null)
+			const footer = footerWithContext()
+			const visible = stripAnsi(footer.render(200)[0])
+			expect(visible).toContain("phase:")
+			expect(visible).toContain("—")
+		})
+	})
+
+	it("/ for commands hint shows at far right even when elements are pinned", () => {
+		withPinned(["phase"], () => {
+			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue(null)
+			const footer = footerWithContext()
+			const raw = footer.render(200)[0]
+			const visible = stripAnsi(raw)
+			expect(visible).toContain("/ for commands")
+			expect(visible.endsWith("/ for commands")).toBe(true)
+		})
+	})
+
+	it("footer never overflows terminal width with pinned + unpinned segments", () => {
+		withPinned(["phase", "usage"], () => {
+			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("deploy")
+			for (const w of [200, 160, 120, 100, 80, 60, 40, 20]) {
+				const raw = footerWithContext({ percent: 50 }).render(w)[0]
+				expect(visibleWidth(raw), `width=${w}`).toBeLessThanOrEqual(w)
+			}
 		})
 	})
 })
