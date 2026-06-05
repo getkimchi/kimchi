@@ -528,8 +528,8 @@ export class StatsFooter implements Component {
 			this.teamSegment(tags, pinnedSet.has("team")),
 		].filter((s): s is Segment => s !== null)
 
-		const pinnedSegments = allSegments.filter((s) => pinnedSet.has(s.id))
 		const unpinnedSegments = allSegments.filter((s) => !pinnedSet.has(s.id))
+		const pinnedSegments = allSegments.filter((s) => pinnedSet.has(s.id))
 
 		const sep = ` ${this.dim("·")} `
 		const sepWidth = visibleWidth(sep)
@@ -553,11 +553,11 @@ export class StatsFooter implements Component {
 			width: hintWidth,
 		})
 
-		// Build the full line: pinned (always full form, leftmost) + separator + unpinned (compacted).
+		// Build the full line: unpinned (compacted, leftmost) + separator + pinned (always full form, rightmost).
 		let line: string
-		if (pinnedSegments.length > 0 && unpinnedSegments.length > 0) {
+		if (unpinnedSegments.length > 0 && pinnedSegments.length > 0) {
 			const pinnedText = pinnedSegments.map((s) => s.text).join(sep)
-			line = `${pinnedText}${sep}${unpinnedLine}`
+			line = `${unpinnedLine}${sep}${pinnedText}`
 		} else if (pinnedSegments.length > 0) {
 			line = pinnedSegments.map((s) => s.text).join(sep)
 		} else {

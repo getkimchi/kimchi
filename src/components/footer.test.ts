@@ -698,7 +698,7 @@ describe("footer pinning", () => {
 			const visible = stripAnsi(footer.render(200)[0])
 			const permIdx = visible.indexOf("default")
 			const agentsIdx = visible.indexOf("agents")
-			expect(permIdx).toBeLessThan(agentsIdx)
+			expect(agentsIdx).toBeLessThan(permIdx)
 		})
 	})
 
