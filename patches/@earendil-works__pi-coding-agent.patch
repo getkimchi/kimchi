@@ -1,5 +1,5 @@
 diff --git a/dist/cli/args.js b/dist/cli/args.js
-index a15ca52038d6ad71737fca0a3a99d5a62eaa8a0b..f4ed40d3ae21f4b296cc95ecdb7ffdbd7be3bc76 100644
+index a15ca52..f4ed40d 100644
 --- a/dist/cli/args.js
 +++ b/dist/cli/args.js
 @@ -313,6 +313,7 @@ ${chalk.bold("Examples:")}
@@ -11,7 +11,7 @@ index a15ca52038d6ad71737fca0a3a99d5a62eaa8a0b..f4ed40d3ae21f4b296cc95ecdb7ffdbd
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
    OPENAI_API_KEY                   - OpenAI GPT API key
 diff --git a/dist/core/model-registry.js b/dist/core/model-registry.js
-index 41ffa679c862f6d0862f1ed07be45836046b97e4..dc6468f0627a2b85dac9abb08b5b424085c02217 100644
+index 41ffa67..dc6468f 100644
 --- a/dist/core/model-registry.js
 +++ b/dist/core/model-registry.js
 @@ -343,7 +343,8 @@ export class ModelRegistry {
@@ -25,7 +25,7 @@ index 41ffa679c862f6d0862f1ed07be45836046b97e4..dc6468f0627a2b85dac9abb08b5b4240
              const providerOverride = overrides.get(provider);
              const perModelOverrides = modelOverrides.get(provider);
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
-index 21f0270f903b0461a2fa1ef8cb53ffdad4f5894d..041ead7eeddc216065864ac0725c3eb82afd3712 100644
+index 21f0270..041ead7 100644
 --- a/dist/core/model-resolver.js
 +++ b/dist/core/model-resolver.js
 @@ -34,6 +34,7 @@ export const defaultModelPerProvider = {
@@ -37,7 +37,7 @@ index 21f0270f903b0461a2fa1ef8cb53ffdad4f5894d..041ead7eeddc216065864ac0725c3eb8
      "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
      xiaomi: "mimo-v2.5-pro",
 diff --git a/dist/core/tools/edit.js b/dist/core/tools/edit.js
-index bf8a79ebfdbe23415cd1effdd3db0b9ebfd804bc..f69116ceafe8ee7f1e2dbfeaa37f60c5d97aa84c 100644
+index bf8a79e..f69116c 100644
 --- a/dist/core/tools/edit.js
 +++ b/dist/core/tools/edit.js
 @@ -55,7 +55,7 @@ function validateEditInput(input) {
@@ -69,7 +69,7 @@ index bf8a79ebfdbe23415cd1effdd3db0b9ebfd804bc..f69116ceafe8ee7f1e2dbfeaa37f60c5
  function buildEditCallComponent(component, args, theme, cwd) {
      component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
 diff --git a/dist/modes/interactive/components/branch-summary-message.js b/dist/modes/interactive/components/branch-summary-message.js
-index e23ca6db02a29814112dd4945bd868604eb6676f..d0f6fd7aeb79c6a20655805152a30970f1b4cc2a 100644
+index e23ca6d..d0f6fd7 100644
 --- a/dist/modes/interactive/components/branch-summary-message.js
 +++ b/dist/modes/interactive/components/branch-summary-message.js
 @@ -10,7 +10,7 @@ export class BranchSummaryMessageComponent extends Box {
@@ -82,7 +82,7 @@ index e23ca6db02a29814112dd4945bd868604eb6676f..d0f6fd7aeb79c6a20655805152a30970
          this.markdownTheme = markdownTheme;
          this.updateDisplay();
 diff --git a/dist/modes/interactive/components/compaction-summary-message.js b/dist/modes/interactive/components/compaction-summary-message.js
-index 48c22718e1dff7cf4faa4cc09b8a917301b0d892..93b59defc4ecc9caf7faf907230260a1a3f7c477 100644
+index 48c2271..93b59de 100644
 --- a/dist/modes/interactive/components/compaction-summary-message.js
 +++ b/dist/modes/interactive/components/compaction-summary-message.js
 @@ -10,7 +10,7 @@ export class CompactionSummaryMessageComponent extends Box {
@@ -95,7 +95,7 @@ index 48c22718e1dff7cf4faa4cc09b8a917301b0d892..93b59defc4ecc9caf7faf907230260a1
          this.markdownTheme = markdownTheme;
          this.updateDisplay();
 diff --git a/dist/modes/interactive/components/custom-message.js b/dist/modes/interactive/components/custom-message.js
-index 2d54902da1800044206eb1f00ca07501a7310145..44daf4982a5ab6f671f5bce373a94a310a52fc73 100644
+index 2d54902..44daf49 100644
 --- a/dist/modes/interactive/components/custom-message.js
 +++ b/dist/modes/interactive/components/custom-message.js
 @@ -18,7 +18,7 @@ export class CustomMessageComponent extends Container {
@@ -108,7 +108,7 @@ index 2d54902da1800044206eb1f00ca07501a7310145..44daf4982a5ab6f671f5bce373a94a31
      }
      setExpanded(expanded) {
 diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
-index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..ee23106b19e169807cbd001372180573f43bfb1e 100644
+index 879b90f..ee23106 100644
 --- a/dist/modes/interactive/components/model-selector.js
 +++ b/dist/modes/interactive/components/model-selector.js
 @@ -117,6 +117,13 @@ export class ModelSelectorComponent extends Container {
@@ -174,7 +174,7 @@ index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..ee23106b19e169807cbd001372180573
          this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
          this.onSelectCallback(model);
 diff --git a/dist/modes/interactive/components/skill-invocation-message.js b/dist/modes/interactive/components/skill-invocation-message.js
-index 561f3d2540db0a8d934bc2bbecb097aaa7c88458..da4601b0aa0ea1145505300ba77485cfc5c48bb0 100644
+index 561f3d2..da4601b 100644
 --- a/dist/modes/interactive/components/skill-invocation-message.js
 +++ b/dist/modes/interactive/components/skill-invocation-message.js
 @@ -11,7 +11,7 @@ export class SkillInvocationMessageComponent extends Box {
@@ -187,7 +187,7 @@ index 561f3d2540db0a8d934bc2bbecb097aaa7c88458..da4601b0aa0ea1145505300ba77485cf
          this.markdownTheme = markdownTheme;
          this.updateDisplay();
 diff --git a/dist/modes/interactive/components/tool-execution.js b/dist/modes/interactive/components/tool-execution.js
-index e099877c0c53ea52f26eb1034ef7cd631371603f..69bf8eedf74f7f241b0136e844dad8a5144bc451 100644
+index e099877..69bf8ee 100644
 --- a/dist/modes/interactive/components/tool-execution.js
 +++ b/dist/modes/interactive/components/tool-execution.js
 @@ -43,8 +43,8 @@ export class ToolExecutionComponent extends Container {
@@ -216,7 +216,7 @@ index e099877c0c53ea52f26eb1034ef7cd631371603f..69bf8eedf74f7f241b0136e844dad8a5
          this.hideComponent = false;
          if (this.hasRendererDefinition()) {
 diff --git a/dist/modes/interactive/components/user-message.js b/dist/modes/interactive/components/user-message.js
-index 0e85e9006835b754e38a7af725b4f1ca18eb3a61..94ea3d983a2abe039a7729d452f60c32457a6638 100644
+index 0e85e90..94ea3d9 100644
 --- a/dist/modes/interactive/components/user-message.js
 +++ b/dist/modes/interactive/components/user-message.js
 @@ -10,7 +10,7 @@ export class UserMessageComponent extends Container {
@@ -229,7 +229,7 @@ index 0e85e9006835b754e38a7af725b4f1ca18eb3a61..94ea3d983a2abe039a7729d452f60c32
              color: (content) => theme.fg("userMessageText", content),
          }, { preserveOrderedListMarkers: true }));
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 3f7bfee32e1aad19be55097c2b8577d6380779ab..e57a08bdeaf3e213073e3c93d86e1878b71bbc6d 100644
+index 3f7bfee..e57a08b 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -3381,6 +3381,29 @@ export class InteractiveMode {
