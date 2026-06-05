@@ -135,7 +135,7 @@ describe("runSetupTools", () => {
 		expect(applyToolConfigs).toHaveBeenCalledWith(expect.objectContaining({ telemetryEnabled: false }))
 	})
 
-	it("prompts for telemetry when preference is not yet configured", async () => {
+	it("shows telemetry notice and auto-enables when preference is not yet configured", async () => {
 		vi.mocked(resolveApiKey).mockReturnValue("test-key")
 		vi.mocked(promptToolSelection).mockResolvedValue({ kind: "next", value: ["cursor"] })
 		vi.mocked(isTelemetryExplicitlyConfigured).mockReturnValue(false)
@@ -150,17 +150,6 @@ describe("runSetupTools", () => {
 
 		expect(promptTelemetry).toHaveBeenCalledWith({ backable: false })
 		expect(applyToolConfigs).toHaveBeenCalledWith(expect.objectContaining({ telemetryEnabled: true }))
-	})
-
-	it("exits with code 1 when telemetry prompt is cancelled", async () => {
-		vi.mocked(resolveApiKey).mockReturnValue("test-key")
-		vi.mocked(promptToolSelection).mockResolvedValue({ kind: "next", value: ["cursor"] })
-		vi.mocked(isTelemetryExplicitlyConfigured).mockReturnValue(false)
-		vi.mocked(promptTelemetry).mockResolvedValue({ kind: "cancel" })
-
-		const result = await runSetupTools([])
-		expect(result).toBe(1)
-		expect(applyToolConfigs).not.toHaveBeenCalled()
 	})
 
 	it("does not send telemetry when telemetry is disabled", async () => {
@@ -193,19 +182,6 @@ describe("runSetupTools", () => {
 		expect(result).toBe(1)
 		expect(sendPreSessionEvent).toHaveBeenCalledWith(mockTelemetryConfig, "tools_setup_aborted", {
 			step: "tools",
-		})
-	})
-
-	it("sends tools_setup_aborted with step telemetry when user cancels at telemetry prompt", async () => {
-		vi.mocked(resolveApiKey).mockReturnValue("test-key")
-		vi.mocked(promptToolSelection).mockResolvedValue({ kind: "next", value: ["cursor"] })
-		vi.mocked(isTelemetryExplicitlyConfigured).mockReturnValue(false)
-		vi.mocked(promptTelemetry).mockResolvedValue({ kind: "cancel" })
-
-		const result = await runSetupTools([])
-		expect(result).toBe(1)
-		expect(sendPreSessionEvent).toHaveBeenCalledWith(mockTelemetryConfig, "tools_setup_aborted", {
-			step: "telemetry",
 		})
 	})
 

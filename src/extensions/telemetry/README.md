@@ -110,4 +110,4 @@ Example: `write|accept|TypeScript|auto`
 
 - **File paths are hashed** (SHA-256, first 12 chars) before being sent as `file_hash`.
 - **No prompt content or file contents** are transmitted.
-- Telemetry is opt-in and controlled by `telemetry.enabled` in `~/.config/kimchi/config.json` (overridable via `$KIMCHI_TELEMETRY_ENABLED`).
+- Telemetry is on by default and controlled by `telemetry.enabled` in `~/.config/kimchi/config.json` (overridable via `$KIMCHI_TELEMETRY_ENABLED`).
