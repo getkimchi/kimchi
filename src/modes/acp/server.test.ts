@@ -1247,7 +1247,7 @@ describe("buildSessionModelState", () => {
 			expect(result).toEqual({
 				currentModelId: "openai/gpt-4",
 				availableModels: [
-					{ modelId: "multi-model", name: "Multi-Model" },
+					{ modelId: "multi-model", name: expect.stringContaining("Multi-Model") },
 					{ modelId: "openai/gpt-4", name: "GPT-4" },
 					{ modelId: "anthropic/claude-3", name: "Claude 3" },
 				],
@@ -1267,7 +1267,7 @@ describe("buildSessionModelState", () => {
 			const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
 			expect(result).toEqual({
 				currentModelId: "openai/gpt-4",
-				availableModels: [{ modelId: "multi-model", name: "Multi-Model" }],
+				availableModels: [{ modelId: "multi-model", name: expect.stringContaining("Multi-Model") }],
 			})
 		} finally {
 			setMultiModelEnabled(wasEnabled)
@@ -1284,11 +1284,24 @@ describe("buildSessionModelState", () => {
 					{ provider: "openai", id: "gpt-4", name: "GPT-4" },
 					{ provider: "anthropic", id: "claude-3", name: "Claude 3" },
 				],
+				find: (provider: string, modelId: string) => {
+					// Return a model matching the orchestrator from settings
+					const { roles } = resolveModelRoles()
+					const orchRef = roles.orchestrator
+					const orchParts = orchRef.split("/")
+					if (orchParts.length === 2 && provider === orchParts[0] && modelId === orchParts[1]) {
+						return { provider: orchParts[0], id: orchParts[1], name: "Orchestrator Model" }
+					}
+					return undefined
+				},
 			}
 			setMultiModelEnabled(true)
 			const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
-			expect(result?.currentModelId).toBe(`multi-model/${resolveModelRoles().roles.orchestrator}`)
-			expect(result?.availableModels[0]).toEqual({ modelId: "multi-model", name: "Multi-Model" })
+			expect(result?.currentModelId).toBe("multi-model")
+			expect(result?.availableModels[0]).toEqual({
+				modelId: "multi-model",
+				name: expect.stringContaining("Multi-Model"),
+			})
 		} finally {
 			setMultiModelEnabled(wasEnabled)
 		}
@@ -1316,7 +1329,10 @@ describe("newSession model state", () => {
 		expect(res.models).toBeDefined()
 		expect(res.models?.currentModelId).toBe("openai/gpt-4")
 		expect(res.models?.availableModels).toHaveLength(3)
-		expect(res.models?.availableModels[0]).toEqual({ modelId: "multi-model", name: "Multi-Model" })
+		expect(res.models?.availableModels[0]).toEqual({
+			modelId: "multi-model",
+			name: expect.stringContaining("Multi-Model"),
+		})
 		expect(res.models?.availableModels[1]).toEqual({ modelId: "openai/gpt-4", name: "GPT-4" })
 		expect(res.models?.availableModels[2]).toEqual({ modelId: "anthropic/claude-3", name: "Claude 3" })
 	})
@@ -2031,7 +2047,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(res.models).toMatchObject({
 			currentModelId: "test/test-model",
 			availableModels: [
-				{ modelId: "multi-model", name: "Multi-Model" },
+				{ modelId: "multi-model", name: expect.stringContaining("Multi-Model") },
 				{ modelId: "test/test-model", name: "Test Model" },
 			],
 		})
