@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 
 export type HookAdapterScope = "user" | "project" | "local"
@@ -20,11 +21,24 @@ export interface CommandHookAdapterDefinition {
 	sources(cwd?: string): CommandHookSource[]
 	defaultTimeoutMs: number
 	skipAsyncHandlers?: boolean
+	/**
+	 * How SessionStart additionalContext reaches the model.
+	 * - "nextTurn" (default): sent as a side message before the next turn.
+	 * - "systemPrompt": appended to the assembled system prompt on the first
+	 *   before_agent_start event, providing a strong steering delivery.
+	 */
+	sessionStartDelivery?: "nextTurn" | "systemPrompt"
 }
 
 export interface CommandHookSource {
 	scope: HookAdapterScope
 	path: string
+	/**
+	 * Plugin package root. When set, `${CLAUDE_PLUGIN_ROOT}` (and its Windows
+	 * form `%CLAUDE_PLUGIN_ROOT%`) in hook commands are expanded to this value
+	 * and the variable is exported into the spawned process environment.
+	 */
+	pluginRoot?: string
 }
 
 export interface CommandHookResource {
@@ -38,6 +52,7 @@ export interface CommandHookResource {
 	async: boolean
 	timeoutMs: number
 	index: number
+	env?: Record<string, string>
 }
 
 interface HookConfig {
@@ -91,7 +106,12 @@ function discoverCommandHooksInFile(
 				const async = hook.async === true
 				if (async && definition.skipAsyncHandlers) continue
 				const index = eventIndex++
-				const id = `hooks.${definition.id}.${source.scope}.${slug(eventName)}.${index}`
+				const scopeSegment = source.pluginRoot ? `${source.scope}.${shortHash(source.path)}` : source.scope
+				const id = `hooks.${definition.id}.${scopeSegment}.${slug(eventName)}.${index}`
+				const resolvedCommand = source.pluginRoot ? expandPluginRoot(command, source.pluginRoot) : command
+				const env: Record<string, string> | undefined = source.pluginRoot
+					? { CLAUDE_PLUGIN_ROOT: source.pluginRoot }
+					: undefined
 				resources.push({
 					id,
 					adapterId: definition.id,
@@ -99,10 +119,11 @@ function discoverCommandHooksInFile(
 					path: source.path,
 					eventName,
 					matcher,
-					command,
+					command: resolvedCommand,
 					async,
 					timeoutMs: timeoutMs(hook.timeout, definition.defaultTimeoutMs),
 					index,
+					env,
 				})
 			}
 		}
@@ -147,4 +168,12 @@ function slug(value: string): string {
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-+|-+$/g, "")
+}
+
+function shortHash(value: string): string {
+	return createHash("sha256").update(value).digest("hex").slice(0, 8)
+}
+
+function expandPluginRoot(command: string, pluginRoot: string): string {
+	return command.replace(/\$\{CLAUDE_PLUGIN_ROOT\}|%CLAUDE_PLUGIN_ROOT%/g, pluginRoot)
 }

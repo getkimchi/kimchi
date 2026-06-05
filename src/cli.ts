@@ -52,6 +52,7 @@ import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/s
 import permissionsExtension from "./extensions/permissions/index.js"
 import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
 import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup/native-compat.js"
+import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/index.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire.js"
@@ -472,6 +473,10 @@ try {
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-hook-adapter", factory: claudeCodeHooksAdapter },
 			] satisfies ManagedExtensionFactory[]),
+			// Always-on, not user-visible: injects installed plugin packages'
+			// SessionStart steering blocks into the system prompt. Gated per-package
+			// by each package's own resource toggle (see pluginPackageHookSources).
+			pluginPackageHooksAdapter,
 			permissionsExtension,
 			resourcesExtension,
 			resourceToolBlockerExtension,

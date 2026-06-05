@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process"
 import type {
+	BeforeAgentStartEvent,
+	BeforeAgentStartEventResult,
 	ExtensionAPI,
 	ExtensionContext,
 	InputEvent,
@@ -55,15 +57,25 @@ type HookToolResultEventResult = {
 export function createCommandHookAdapter(definition: CommandHookAdapterDefinition): (pi: ExtensionAPI) => void {
 	return (pi) => {
 		let stopHookFollowUpPending = false
+		const pendingSystemPrompt: { context?: string } = {}
+
+		if (definition.sessionStartDelivery === "systemPrompt") {
+			pi.on("before_agent_start", (event: BeforeAgentStartEvent): BeforeAgentStartEventResult | undefined => {
+				const c = pendingSystemPrompt.context
+				if (!c) return undefined
+				pendingSystemPrompt.context = undefined
+				return { systemPrompt: `${event.systemPrompt}\n\n${c}` }
+			})
+		}
 
 		pi.on("tool_call", (event, ctx) => runPreToolUse(definition, pi, event, ctx))
 		pi.on("tool_result", (event, ctx) => runPostToolUse(definition, pi, event, ctx))
 		pi.on("session_start", async (event, ctx) => {
-			await runSessionStart(definition, pi, event, ctx)
+			await runSessionStart(definition, pi, event, ctx, pendingSystemPrompt)
 		})
 		pi.on("session_compact", async (event, ctx) => {
 			await runPostCompact(definition, pi, event, ctx)
-			await runSessionStart(definition, pi, { ...event, type: "session_compact" }, ctx)
+			await runSessionStart(definition, pi, { ...event, type: "session_compact" }, ctx, pendingSystemPrompt)
 		})
 		pi.on("session_before_compact", (event, ctx) => runPreCompact(definition, pi, event, ctx))
 		pi.on("input", (event, ctx) => {
@@ -85,7 +97,7 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 }
 
 export async function runCommandHook(
-	hook: Pick<CommandHookResource, "command" | "async" | "timeoutMs">,
+	hook: Pick<CommandHookResource, "command" | "async" | "timeoutMs" | "env">,
 	payload: Record<string, unknown>,
 	cwd: string,
 ): Promise<HookCommandResult> {
@@ -94,7 +106,7 @@ export async function runCommandHook(
 		try {
 			const child = spawn(shellBinary(), shellArgs(hook.command), {
 				cwd,
-				env: hookEnv(payload),
+				env: hookEnv(payload, hook.env),
 				stdio: ["pipe", "ignore", "ignore"],
 				detached: true,
 			})
@@ -122,7 +134,7 @@ export async function runCommandHook(
 }
 
 function runBlockingCommandHook(
-	hook: Pick<CommandHookResource, "command" | "timeoutMs">,
+	hook: Pick<CommandHookResource, "command" | "timeoutMs" | "env">,
 	payload: Record<string, unknown>,
 	cwd: string,
 	input: string,
@@ -142,7 +154,7 @@ function runBlockingCommandHook(
 		try {
 			const child = spawn(shellBinary(), shellArgs(hook.command), {
 				cwd,
-				env: hookEnv(payload),
+				env: hookEnv(payload, hook.env),
 				stdio: ["pipe", "pipe", "pipe"],
 			})
 			child.stdout.setEncoding("utf-8")
@@ -285,11 +297,18 @@ async function runSessionStart(
 	pi: ExtensionAPI,
 	event: SessionStartEvent | (SessionCompactEvent & { type: "session_compact" }),
 	ctx: ExtensionContext,
+	pendingSystemPrompt: { context?: string },
 ): Promise<void> {
 	const source = event.type === "session_compact" ? "compact" : sessionStartSource(event.reason)
 	const result = await runMatchingHooks(definition, "SessionStart", ctx, [source], { source })
 	const additionalContext = result?.additionalContext
 	if (!additionalContext) return
+	if (definition.sessionStartDelivery === "systemPrompt") {
+		pendingSystemPrompt.context = pendingSystemPrompt.context
+			? `${pendingSystemPrompt.context}\n\n${additionalContext}`
+			: additionalContext
+		return
+	}
 	const send = () => sendAdditionalContext(definition, pi, additionalContext, "nextTurn")
 	if (event.type === "session_compact") send()
 	else deferExtensionAction(send)
@@ -553,11 +572,12 @@ function shellArgs(command: string): string[] {
 	return process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command]
 }
 
-function hookEnv(payload: Record<string, unknown>): NodeJS.ProcessEnv {
+function hookEnv(payload: Record<string, unknown>, extra?: Record<string, string>): NodeJS.ProcessEnv {
 	const eventName = stringValue(payload.hook_event_name) ?? ""
 	const toolName = stringValue(payload.tool_name) ?? ""
 	return {
 		...process.env,
+		...extra,
 		KIMCHI_HOOK_EVENT: eventName,
 		KIMCHI_TOOL_NAME: toolName,
 	}

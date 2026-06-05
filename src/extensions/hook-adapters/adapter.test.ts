@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { setResourceOverride } from "../../resources/store.js"
 import claudeCodeHooksAdapter from "../claude-code-hook-adapter/index.js"
+import { createCommandHookAdapter } from "./adapter.js"
 import { parseCommandHookOutput, runCommandHook } from "./adapter.js"
 
 vi.mock("node:child_process", () => ({
@@ -454,6 +455,82 @@ describe("hook adapter command execution", () => {
 		vi.advanceTimersByTime(1000)
 
 		expect(child.kill).not.toHaveBeenCalled()
+	})
+
+	it("folds SessionStart additionalContext into systemPrompt when sessionStartDelivery=systemPrompt", async () => {
+		const hooksFile = join(dir, "pkg", "hooks", "hooks.json")
+		writeJson(hooksFile, {
+			hooks: {
+				SessionStart: [{ hooks: [{ type: "command", command: "context-mode hook session-start" }] }],
+			},
+		})
+		mockBlockingHook({
+			stdout: JSON.stringify({ additionalContext: "<context_window_protection>steer</context_window_protection>" }),
+		})
+
+		const definition = {
+			id: "plugin-package",
+			label: "Plugin package",
+			customType: "kimchi-plugin-package-hook-context",
+			supportedEvents: ["SessionStart"] as const,
+			defaultTimeoutMs: 60_000,
+			sessionStartDelivery: "systemPrompt" as const,
+			sources: () => [{ scope: "user" as const, path: hooksFile }],
+		}
+		const adapter = createCommandHookAdapter(definition)
+		const pi = fakePi()
+		adapter(pi as never)
+
+		// Fire session_start
+		await pi.handlers.session_start[0]({ type: "session_start", reason: "startup" }, fakeCtx())
+
+		// sendMessage should NOT have been called — no nextTurn delivery
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+
+		// before_agent_start should inject the context into systemPrompt
+		const result = await pi.handlers.before_agent_start[0](
+			{ type: "before_agent_start", systemPrompt: "BASE", systemPromptOptions: {} },
+			fakeCtx(),
+		)
+		expect(result).toEqual({
+			systemPrompt: "BASE\n\n<context_window_protection>steer</context_window_protection>",
+		})
+
+		// Second before_agent_start flushes nothing (context already consumed)
+		const result2 = await pi.handlers.before_agent_start[0](
+			{ type: "before_agent_start", systemPrompt: "BASE", systemPromptOptions: {} },
+			fakeCtx(),
+		)
+		expect(result2).toBeUndefined()
+	})
+
+	it("passes hook env to spawn when env is set on the resource", async () => {
+		const pkgRoot = join(dir, "pkg-env")
+		const hooksFile = join(pkgRoot, "hooks", "hooks.json")
+		writeJson(hooksFile, {
+			hooks: {
+				SessionStart: [{ hooks: [{ type: "command", command: "${CLAUDE_PLUGIN_ROOT}/bin/on-start" }] }],
+			},
+		})
+		mockBlockingHook({ stdout: JSON.stringify({ additionalContext: "ctx" }) })
+
+		const definition = {
+			id: "plugin-package",
+			label: "Plugin package",
+			customType: "kimchi-plugin-package-hook-context",
+			supportedEvents: ["SessionStart"] as const,
+			defaultTimeoutMs: 60_000,
+			sessionStartDelivery: "systemPrompt" as const,
+			sources: () => [{ scope: "user" as const, path: hooksFile, pluginRoot: pkgRoot }],
+		}
+		const adapter = createCommandHookAdapter(definition)
+		const pi = fakePi()
+		adapter(pi as never)
+
+		await pi.handlers.session_start[0]({ type: "session_start", reason: "startup" }, fakeCtx())
+
+		const spawnEnv = mockSpawn.mock.calls.at(-1)?.[2]?.env as Record<string, string> | undefined
+		expect(spawnEnv?.CLAUDE_PLUGIN_ROOT).toBe(pkgRoot)
 	})
 })
 
