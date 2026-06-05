@@ -72,22 +72,13 @@ export async function runSetupTools(args: string[]): Promise<number> {
 
 	// Resolve telemetry preference. If the user has already chosen (via
 	// `kimchi setup`, `kimchi config telemetry`, or $KIMCHI_TELEMETRY_ENABLED)
-	// we respect that. Otherwise prompt — some tools (Claude Code) write
-	// telemetry settings into their config files.
+	// we respect that. Otherwise we auto-enable and show a notice.
 	let telemetryEnabled: boolean
 	if (isTelemetryExplicitlyConfigured()) {
 		telemetryEnabled = readTelemetryConfig().enabled
 	} else {
-		const telemetryResult = await promptTelemetry({ backable: false })
-		if (telemetryResult.kind === "cancel" || telemetryResult.kind === "back") {
-			if (telemetryConfig.enabled) {
-				sendPreSessionEvent(telemetryConfig, "tools_setup_aborted", { step: "telemetry" })
-				await drainPreSessionTelemetry()
-			}
-			outro("Cancelled.")
-			return 1
-		}
-		telemetryEnabled = telemetryResult.value
+		await promptTelemetry({ backable: false })
+		telemetryEnabled = true
 	}
 
 	// Fetch live models.
