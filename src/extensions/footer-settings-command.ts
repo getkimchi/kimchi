@@ -129,7 +129,7 @@ export default function footerSettingsExtension(pi: ExtensionAPI): void {
 				const pinned = new Set(readFooterConfig().pinned)
 				const lines: string[] = ["Customize Footer"]
 				for (const el of FOOTER_ELEMENTS) {
-					const mark = pinned.has(el.id) ? "[●]" : "[○]"
+					const mark = el.canPin === false ? "[×]" : pinned.has(el.id) ? "[●]" : "[○]"
 					lines.push(`  ${mark} ${el.label}  —  ${el.description}`)
 				}
 				ctx.ui.notify(lines.join("\n"), "info")
@@ -138,7 +138,16 @@ export default function footerSettingsExtension(pi: ExtensionAPI): void {
 
 			await ctx.ui.custom<void>(
 				(tui, theme, _keybindings, done) => {
-					return new FooterSettingsComponent(0, { requestRender: (force) => tui.requestRender(force) }, done, theme)
+					const firstInteractive = Math.max(
+						0,
+						FOOTER_ELEMENTS.findIndex((e) => e.canPin !== false),
+					)
+					return new FooterSettingsComponent(
+						firstInteractive,
+						{ requestRender: (force) => tui.requestRender(force) },
+						done,
+						theme,
+					)
 				},
 				{ overlay: true, overlayOptions: { anchor: "center", width: "70%", maxHeight: "85%" } },
 			)

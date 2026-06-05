@@ -374,6 +374,7 @@ export class StatsFooter implements Component {
 	}
 
 	private usageSegment(pinned = false): Segment | null {
+		if (!pinned) return null
 		let totalInput = 0
 		let totalOutput = 0
 		for (const entry of this.ctx.sessionManager.getEntries()) {
@@ -386,11 +387,8 @@ export class StatsFooter implements Component {
 			}
 		}
 		if (!totalInput && !totalOutput) {
-			if (pinned) {
-				const text = this.dim("↑0 ↓0")
-				return { id: "usage", text, width: visibleWidth(text) }
-			}
-			return null
+			const text = this.dim("↑0 ↓0")
+			return { id: "usage", text, width: visibleWidth(text) }
 		}
 		const tokens = [totalInput ? `↑${formatCount(totalInput)}` : "", totalOutput ? `↓${formatCount(totalOutput)}` : ""]
 			.filter(Boolean)
@@ -398,9 +396,21 @@ export class StatsFooter implements Component {
 		return { id: "usage", text: this.dim(tokens), width: visibleWidth(tokens) }
 	}
 
-	private contextSegment(): Segment {
+	private contextSegment(pinned = false): Segment | null {
+		if (!pinned) return null
 		const contextUsage = this.ctx.getContextUsage()
 		const pct = contextUsage?.percent ?? 0
+
+		if (pct === 0) {
+			const bar = this.dim("░".repeat(BAR_WIDTH))
+			const text = `${bar} ${this.accent("0%")} ${this.dim("ctx")}`
+			return {
+				id: "context",
+				text,
+				width: visibleWidth(text),
+				raw: { kind: "context", percent: 0, pctColor: undefined },
+			}
+		}
 
 		const filled = Math.max(0, Math.min(BAR_WIDTH, Math.round((pct / 100) * BAR_WIDTH)))
 		const fill = resolvedSemanticFg(this.theme, "success")
@@ -413,20 +423,23 @@ export class StatsFooter implements Component {
 		return { id: "context", text, width: visibleWidth(text), raw: { kind: "context", percent: pct, pctColor } }
 	}
 
-	private phaseSegment(): Segment {
-		const phase = getCurrentPhase() ?? "n/a"
+	private phaseSegment(pinned = false): Segment | null {
+		if (!pinned) return null
+		const phase = getCurrentPhase()
+		if (!phase) {
+			const text = `${this.dim("phase:")}${this.dim("—")}`
+			return { id: "phase", text, width: visibleWidth(text), raw: { kind: "phase", phase: "—" } }
+		}
 		const text = `${this.dim("phase:")}${this.accent(phase)}`
 		return { id: "phase", text, width: visibleWidth(text), raw: { kind: "phase", phase } }
 	}
 
 	private tagsSegment(parsed: Array<{ key: string; value: string }>, pinned = false): Segment | null {
+		if (!pinned) return null
 		const display = parsed.filter((t) => t.key !== "team" && t.key !== "phase")
 		if (display.length === 0) {
-			if (pinned) {
-				const text = `${this.dim("tags:")} ${this.dim("—")}`
-				return { id: "tags", text, width: visibleWidth(text) }
-			}
-			return null
+			const text = `${this.dim("tags:")} ${this.dim("—")}`
+			return { id: "tags", text, width: visibleWidth(text) }
 		}
 		const formatted = display.map((t) => this.dim(`${t.key}:${t.value}`)).join(this.dim(" "))
 		const text = `${this.dim("tags:")}${formatted}`
@@ -434,13 +447,11 @@ export class StatsFooter implements Component {
 	}
 
 	private teamSegment(parsed: Array<{ key: string; value: string }>, pinned = false): Segment | null {
+		if (!pinned) return null
 		const team = parsed.find((t) => t.key === "team")
 		if (!team) {
-			if (pinned) {
-				const text = `${this.dim("team:")} ${this.dim("—")}`
-				return { id: "team", text, width: visibleWidth(text) }
-			}
-			return null
+			const text = `${this.dim("team:")} ${this.dim("—")}`
+			return { id: "team", text, width: visibleWidth(text) }
 		}
 		const text = `${this.dim("team:")}${this.accent(team.value)}`
 		return { id: "team", text, width: visibleWidth(text) }
@@ -459,29 +470,25 @@ export class StatsFooter implements Component {
 	}
 
 	private subagentSegment(pinned = false): Segment | null {
+		if (!pinned) return null
 		const count = getActiveAgentCount()
 		if (count === 0) {
-			if (pinned) {
-				const text = this.dim("0 agents")
-				return { id: "agents", text, width: visibleWidth(text) }
-			}
-			return null
+			const text = this.dim("0 agents")
+			return { id: "agents", text, width: visibleWidth(text) }
 		}
 		const text = this.accent(`${count} agent${count === 1 ? "" : "s"}`)
 		return { id: "agents", text, width: visibleWidth(text) }
 	}
 
 	private fermentSegment(pinned = false): Segment | null {
+		if (!pinned) return null
 		const display = formatFermentFooterDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
 			dim: (s) => this.dim(s),
 			accent: (s) => this.accent(s),
 		})
 		if (!display) {
-			if (pinned) {
-				const text = `${this.dim("Ferment:")} ${this.dim("—")}`
-				return { id: "ferment", text, width: visibleWidth(text) }
-			}
-			return null
+			const text = `${this.dim("Ferment:")} ${this.dim("—")}`
+			return { id: "ferment", text, width: visibleWidth(text) }
 		}
 
 		return {
@@ -521,9 +528,9 @@ export class StatsFooter implements Component {
 			this.permissionsSegment(pinnedSet.has("permissions")),
 			this.modelSegment(),
 			this.subagentSegment(pinnedSet.has("agents")),
-			this.contextSegment(),
+			this.contextSegment(pinnedSet.has("context")),
 			this.usageSegment(pinnedSet.has("usage")),
-			this.phaseSegment(),
+			this.phaseSegment(pinnedSet.has("phase")),
 			this.tagsSegment(tags, pinnedSet.has("tags")),
 			this.teamSegment(tags, pinnedSet.has("team")),
 		].filter((s): s is Segment => s !== null)
@@ -534,34 +541,54 @@ export class StatsFooter implements Component {
 		const sep = ` ${this.dim("·")} `
 		const sepWidth = visibleWidth(sep)
 
-		// Only show / for commands hint when there are no pinned segments (simpler layout).
-		const showHint = pinnedSegments.length === 0
-
 		const hintText = this.dim("/ for commands")
 		const hintWidth = visibleWidth(hintText)
+
+		// The hint always lives at the far right edge, independent of pinning.
+		// Reserve its space upfront so compaction uses the right budget.
+		const minHintGap = 2
+		const hintReserve = hintWidth + minHintGap
+
+		// Reserve space for pinned segments so the unpinned portion compacts correctly.
+		const pinnedTotalWidth =
+			pinnedSegments.length > 0
+				? pinnedSegments.reduce((sum, s) => sum + s.width, 0) + (pinnedSegments.length - 1) * sepWidth + sepWidth // one sep between unpinned and pinned
+				: 0
+		const contentBudget = Math.max(0, width - hintReserve)
+		const unpinnedBudget = Math.max(0, contentBudget - pinnedTotalWidth)
 
 		const ctx: CompactionContext = {
 			dim: (s) => this.dim(s),
 			accent: (s) => this.accent(s),
 			semantic: (color, s) =>
 				`${resolvedSemanticFg(this.theme, color as "success" | "warning" | "error")}${s}${RST_FG}`,
-			showCommandHint: showHint,
+			showCommandHint: false, // hint is appended manually after all content
 		}
 
-		const unpinnedLine = layoutFooter(unpinnedSegments, width, ctx, sep, sepWidth, {
+		const unpinnedLine = layoutFooter(unpinnedSegments, unpinnedBudget, ctx, sep, sepWidth, {
 			text: hintText,
 			width: hintWidth,
 		})
 
-		// Build the full line: unpinned (compacted, leftmost) + separator + pinned (always full form, rightmost).
-		let line: string
+		// Build content: unpinned (left) then pinned (right).
+		let contentLine: string
 		if (unpinnedSegments.length > 0 && pinnedSegments.length > 0) {
 			const pinnedText = pinnedSegments.map((s) => s.text).join(sep)
-			line = `${unpinnedLine}${sep}${pinnedText}`
+			contentLine = `${unpinnedLine}${sep}${pinnedText}`
 		} else if (pinnedSegments.length > 0) {
-			line = pinnedSegments.map((s) => s.text).join(sep)
+			contentLine = pinnedSegments.map((s) => s.text).join(sep)
 		} else {
-			line = unpinnedLine
+			contentLine = unpinnedLine
+		}
+
+		// Append hint at the far right when there is room; truncate if not.
+		let line: string
+		const contentWidth = visibleWidth(contentLine)
+		if (contentWidth + minHintGap + hintWidth <= width) {
+			const padding = width - contentWidth - hintWidth
+			line = `${contentLine}${" ".repeat(padding)}${hintText}`
+		} else {
+			line = contentWidth > width ? truncateToWidth(contentLine, width) : contentLine
 		}
 
 		const infoLine = this.buildInfoLine(width)
