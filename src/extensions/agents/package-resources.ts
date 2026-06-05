@@ -18,11 +18,13 @@
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { getConfiguredPackageResourceRecords } from "../../resources/package-resources.js"
+import { isResourceEnabled } from "../../resources/store.js"
 
 export function getInstalledPackageResourceDirs(cwd: string, subdir: string): string[] {
 	try {
 		const dirs: string[] = []
 		for (const pkg of getConfiguredPackageResourceRecords(cwd)) {
+			if (!isResourceEnabled(pkg.id)) continue
 			if (!pkg.installedPath) continue
 			const candidate = join(pkg.installedPath, subdir)
 			if (existsSync(candidate)) dirs.push(candidate)

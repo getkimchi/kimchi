@@ -6,10 +6,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const packageResourceMocks = vi.hoisted(() => ({
 	getConfiguredPackageResourceRecords: vi.fn(() => []),
 }))
+const resourceStoreMocks = vi.hoisted(() => ({
+	isResourceEnabled: vi.fn(() => true),
+}))
 
 vi.mock("../../resources/package-resources.js", () => packageResourceMocks)
+vi.mock("../../resources/store.js", () => resourceStoreMocks)
 
 import { getConfiguredPackageResourceRecords } from "../../resources/package-resources.js"
+import { isResourceEnabled } from "../../resources/store.js"
 import { getInstalledPackageResourceDirs } from "./package-resources.js"
 
 describe("getInstalledPackageResourceDirs", () => {
@@ -19,6 +24,7 @@ describe("getInstalledPackageResourceDirs", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "pkg-resources-test-"))
 		vi.clearAllMocks()
 		packageResourceMocks.getConfiguredPackageResourceRecords.mockReturnValue([])
+		resourceStoreMocks.isResourceEnabled.mockReturnValue(true)
 	})
 
 	afterEach(() => {
@@ -60,6 +66,34 @@ describe("getInstalledPackageResourceDirs", () => {
 
 		const result = getInstalledPackageResourceDirs("/any/cwd", "agents")
 		expect(result).toEqual([join(pkg1Dir, "agents")])
+	})
+
+	it("skips disabled packages even when their subdir exists", () => {
+		const enabledPkgDir = join(tmpDir, "enabled-pkg")
+		const disabledPkgDir = join(tmpDir, "disabled-pkg")
+		mkdirSync(join(enabledPkgDir, "skills"), { recursive: true })
+		mkdirSync(join(disabledPkgDir, "skills"), { recursive: true })
+		vi.mocked(isResourceEnabled).mockImplementation((id) => id !== "plugins.package.disabled")
+
+		vi.mocked(getConfiguredPackageResourceRecords).mockReturnValueOnce([
+			{
+				id: "plugins.package.enabled",
+				installedPath: enabledPkgDir,
+				source: "enabled",
+				scope: "user",
+				origin: "kimchi",
+			},
+			{
+				id: "plugins.package.disabled",
+				installedPath: disabledPkgDir,
+				source: "disabled",
+				scope: "user",
+				origin: "kimchi",
+			},
+		])
+
+		const result = getInstalledPackageResourceDirs("/any/cwd", "skills")
+		expect(result).toEqual([join(enabledPkgDir, "skills")])
 	})
 
 	it("silently skips packages with no installedPath", () => {
