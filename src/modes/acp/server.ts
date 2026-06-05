@@ -51,6 +51,7 @@ import {
 	createAgentSession,
 	initTheme,
 } from "@earendil-works/pi-coding-agent"
+import { onActiveFermentChange } from "../../extensions/ferment/state.js"
 import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
@@ -133,6 +134,14 @@ export class KimchiAcpAgent implements Agent {
 		this.agentDir = options.agentDir
 		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
 		this.sessionLoader = options.sessionLoader ?? defaultSessionLoader(options)
+
+		// Subscribe to ferment state changes to update available commands
+		onActiveFermentChange((hasActive) => {
+			// When ferment state changes, re-send available commands to all active sessions
+			for (const [sessionId, _record] of this.sessions) {
+				this.sendAvailableCommandsUpdate(sessionId, hasActive)
+			}
+		})
 	}
 
 	async initialize(_: InitializeRequest): Promise<InitializeResponse> {
@@ -204,6 +213,7 @@ export class KimchiAcpAgent implements Agent {
 			const sessionId = session.sessionId
 			registerAcpPrompter(sessionId, createAcpPermissionPrompter(this.conn, sessionId, buildToolCallUpdate))
 			await bindAcpExtensions(session)
+			this.sendAvailableCommandsUpdate(sessionId)
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, { session, unsubscribe })
 			const models = buildSessionModelState(session)
@@ -748,6 +758,27 @@ export class KimchiAcpAgent implements Agent {
 		// _processAgentEvent does not expect.
 		this.conn.sessionUpdate(params).catch((err: unknown) => {
 			process.stderr.write(`acp sessionUpdate failed: ${String(err)}\n`)
+		})
+	}
+
+	private sendAvailableCommandsUpdate(sessionId: string, hasActive = false): void {
+		// When a ferment is active, omit the start_ferment command to prevent
+		// starting multiple ferments. The description is only sent when available.
+		const availableCommands = hasActive
+			? []
+			: [
+					{
+						name: "start_ferment",
+						description: "Start a new ferment workflow for structured multi-step project work",
+						input: { hint: "Provide a concise title (3-5 words) and full intent description" },
+					},
+				]
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "available_commands_update",
+				availableCommands,
+			},
 		})
 	}
 
