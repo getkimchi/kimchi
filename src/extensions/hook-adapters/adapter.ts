@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process"
+import { spawn } from "node:child_process"
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -58,37 +58,37 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 
 		pi.on("tool_call", (event, ctx) => runPreToolUse(definition, pi, event, ctx))
 		pi.on("tool_result", (event, ctx) => runPostToolUse(definition, pi, event, ctx))
-		pi.on("session_start", (event, ctx) => {
-			runSessionStart(definition, pi, event, ctx)
+		pi.on("session_start", async (event, ctx) => {
+			await runSessionStart(definition, pi, event, ctx)
 		})
-		pi.on("session_compact", (event, ctx) => {
-			runPostCompact(definition, pi, event, ctx)
-			runSessionStart(definition, pi, { ...event, type: "session_compact" }, ctx)
+		pi.on("session_compact", async (event, ctx) => {
+			await runPostCompact(definition, pi, event, ctx)
+			await runSessionStart(definition, pi, { ...event, type: "session_compact" }, ctx)
 		})
 		pi.on("session_before_compact", (event, ctx) => runPreCompact(definition, pi, event, ctx))
 		pi.on("input", (event, ctx) => {
 			return runUserPromptSubmit(definition, pi, event, ctx)
 		})
-		pi.on("turn_end", (event, ctx) => {
+		pi.on("turn_end", async (event, ctx) => {
 			const stopHookActive = stopHookFollowUpPending
-			const result = runStop(definition, event, ctx, stopHookActive)
+			const result = await runStop(definition, event, ctx, stopHookActive)
 			if (stopHookActive) stopHookFollowUpPending = false
 			if (result?.block && result.reason && !stopHookActive) {
 				stopHookFollowUpPending = true
 				pi.sendUserMessage(result.reason, { deliverAs: "followUp" })
 			}
 		})
-		pi.on("session_shutdown", (event, ctx) => {
-			runObserver(definition, "SessionEnd", event, ctx)
+		pi.on("session_shutdown", async (event, ctx) => {
+			await runObserver(definition, "SessionEnd", event, ctx)
 		})
 	}
 }
 
-export function runCommandHook(
+export async function runCommandHook(
 	hook: Pick<CommandHookResource, "command" | "async" | "timeoutMs">,
 	payload: Record<string, unknown>,
 	cwd: string,
-): HookCommandResult {
+): Promise<HookCommandResult> {
 	const input = `${JSON.stringify(payload)}\n`
 	if (hook.async) {
 		try {
@@ -118,26 +118,65 @@ export function runCommandHook(
 		return {}
 	}
 
-	try {
-		const stdout = execFileSync(shellBinary(), shellArgs(hook.command), {
-			cwd,
-			env: hookEnv(payload),
-			input,
-			encoding: "utf-8",
-			timeout: hook.timeoutMs,
-		})
-		return parseCommandHookOutput(stdout, stringValue(payload.hook_event_name))
-	} catch (err) {
-		const execErr = err as { status?: number; stdout?: string; stderr?: string; message?: string }
-		if (execErr.status === 2) {
-			const reason = firstLine(execErr.stderr) || firstLine(execErr.stdout) || "Hook blocked operation"
-			return {
-				block: true,
-				reason,
-			}
+	return runBlockingCommandHook(hook, payload, cwd, input)
+}
+
+function runBlockingCommandHook(
+	hook: Pick<CommandHookResource, "command" | "timeoutMs">,
+	payload: Record<string, unknown>,
+	cwd: string,
+	input: string,
+): Promise<HookCommandResult> {
+	return new Promise((resolve) => {
+		let stdout = ""
+		let stderr = ""
+		let settled = false
+		let timeout: NodeJS.Timeout | undefined
+		const settle = (result: HookCommandResult) => {
+			if (settled) return
+			settled = true
+			if (timeout) clearTimeout(timeout)
+			resolve(result)
 		}
-		return {}
-	}
+
+		try {
+			const child = spawn(shellBinary(), shellArgs(hook.command), {
+				cwd,
+				env: hookEnv(payload),
+				stdio: ["pipe", "pipe", "pipe"],
+			})
+			child.stdout.setEncoding("utf-8")
+			child.stderr.setEncoding("utf-8")
+			child.stdout.on("data", (chunk) => {
+				stdout += String(chunk)
+			})
+			child.stderr.on("data", (chunk) => {
+				stderr += String(chunk)
+			})
+			child.once("error", () => settle({}))
+			child.once("close", (code) => {
+				if (code === 0) {
+					settle(parseCommandHookOutput(stdout, stringValue(payload.hook_event_name)))
+					return
+				}
+				if (code === 2) {
+					settle({
+						block: true,
+						reason: firstLine(stderr) || firstLine(stdout) || "Hook blocked operation",
+					})
+					return
+				}
+				settle({})
+			})
+			timeout = setTimeout(() => {
+				child.kill()
+				settle({})
+			}, hook.timeoutMs)
+			child.stdin.end(input)
+		} catch {
+			settle({})
+		}
+	})
 }
 
 export function parseCommandHookOutput(stdout: string, eventName?: string): HookCommandResult {
@@ -177,14 +216,14 @@ export function parseCommandHookOutput(stdout: string, eventName?: string): Hook
 	}
 }
 
-function runPreToolUse(
+async function runPreToolUse(
 	definition: CommandHookAdapterDefinition,
 	pi: ExtensionAPI,
 	event: ToolCallEvent,
 	ctx: ExtensionContext,
-): ToolCallEventResult | undefined {
+): Promise<ToolCallEventResult | undefined> {
 	const externalName = externalToolName(event.toolName)
-	const result = runMatchingHooks(definition, "PreToolUse", ctx, matcherCandidates(event.toolName), {
+	const result = await runMatchingHooks(definition, "PreToolUse", ctx, matcherCandidates(event.toolName), {
 		tool_name: externalName,
 		tool_use_id: event.toolCallId,
 		tool_input: claudeToolInput(event.input),
@@ -196,12 +235,12 @@ function runPreToolUse(
 	return undefined
 }
 
-function runPostToolUse(
+async function runPostToolUse(
 	definition: CommandHookAdapterDefinition,
 	pi: ExtensionAPI,
 	event: ToolResultEvent,
 	ctx: ExtensionContext,
-): HookToolResultEventResult | undefined {
+): Promise<HookToolResultEventResult | undefined> {
 	const basePayload = {
 		tool_name: externalToolName(event.toolName),
 		tool_use_id: event.toolCallId,
@@ -210,12 +249,12 @@ function runPostToolUse(
 		tool_output: textContent(event.content),
 		is_error: event.isError,
 	}
-	let result = runMatchingHooks(definition, "PostToolUse", ctx, matcherCandidates(event.toolName), basePayload)
+	let result = await runMatchingHooks(definition, "PostToolUse", ctx, matcherCandidates(event.toolName), basePayload)
 	const skillName = skillNameFromReadPath(event)
 	if (skillName) {
 		result = mergeOptionalResults(
 			result,
-			runMatchingHooks(
+			await runMatchingHooks(
 				definition,
 				"PostToolUse",
 				ctx,
@@ -241,14 +280,14 @@ function runPostToolUse(
 	return undefined
 }
 
-function runSessionStart(
+async function runSessionStart(
 	definition: CommandHookAdapterDefinition,
 	pi: ExtensionAPI,
 	event: SessionStartEvent | (SessionCompactEvent & { type: "session_compact" }),
 	ctx: ExtensionContext,
-): void {
+): Promise<void> {
 	const source = event.type === "session_compact" ? "compact" : sessionStartSource(event.reason)
-	const result = runMatchingHooks(definition, "SessionStart", ctx, [source], { source })
+	const result = await runMatchingHooks(definition, "SessionStart", ctx, [source], { source })
 	const additionalContext = result?.additionalContext
 	if (!additionalContext) return
 	const send = () => sendAdditionalContext(definition, pi, additionalContext, "nextTurn")
@@ -256,38 +295,38 @@ function runSessionStart(
 	else deferExtensionAction(send)
 }
 
-function runPreCompact(
+async function runPreCompact(
 	definition: CommandHookAdapterDefinition,
 	pi: ExtensionAPI,
 	event: SessionBeforeCompactEvent,
 	ctx: ExtensionContext,
-): void {
+): Promise<void> {
 	const trigger = event.customInstructions ? "manual" : "auto"
-	const result = runMatchingHooks(definition, "PreCompact", ctx, [trigger], {
+	const result = await runMatchingHooks(definition, "PreCompact", ctx, [trigger], {
 		trigger,
 		custom_instructions: event.customInstructions,
 	})
 	if (result?.additionalContext) sendAdditionalContext(definition, pi, result.additionalContext, "steer")
 }
 
-function runPostCompact(
+async function runPostCompact(
 	definition: CommandHookAdapterDefinition,
 	pi: ExtensionAPI,
 	event: SessionCompactEvent,
 	ctx: ExtensionContext,
-): void {
+): Promise<void> {
 	const trigger = event.fromExtension ? "manual" : "auto"
-	const result = runMatchingHooks(definition, "PostCompact", ctx, [trigger], { trigger })
+	const result = await runMatchingHooks(definition, "PostCompact", ctx, [trigger], { trigger })
 	if (result?.additionalContext) sendAdditionalContext(definition, pi, result.additionalContext, "nextTurn")
 }
 
-function runUserPromptSubmit(
+async function runUserPromptSubmit(
 	definition: CommandHookAdapterDefinition,
 	pi: ExtensionAPI,
 	event: InputEvent,
 	ctx: ExtensionContext,
-): InputEventResult | undefined {
-	const result = runMatchingHooks(definition, "UserPromptSubmit", ctx, [], {
+): Promise<InputEventResult | undefined> {
+	const result = await runMatchingHooks(definition, "UserPromptSubmit", ctx, [], {
 		prompt: event.text,
 		user_prompt: event.text,
 		source: event.source,
@@ -302,12 +341,12 @@ function runUserPromptSubmit(
 	return prompt === undefined ? undefined : { action: "transform", text: prompt, images: event.images }
 }
 
-function runStop(
+async function runStop(
 	definition: CommandHookAdapterDefinition,
 	event: TurnEndEvent,
 	ctx: ExtensionContext,
 	stopHookActive: boolean,
-): HookCommandResult | undefined {
+): Promise<HookCommandResult | undefined> {
 	return runMatchingHooks(definition, "Stop", ctx, [], {
 		turn_id: String(event.turnIndex),
 		stop_hook_active: stopHookActive,
@@ -315,23 +354,23 @@ function runStop(
 	})
 }
 
-function runObserver(
+async function runObserver(
 	definition: CommandHookAdapterDefinition,
 	eventName: "SessionEnd",
 	event: SessionShutdownEvent,
 	ctx: ExtensionContext,
-): void {
-	runMatchingHooks(definition, eventName, ctx, [], event as unknown as Record<string, unknown>)
+): Promise<void> {
+	await runMatchingHooks(definition, eventName, ctx, [], event as unknown as Record<string, unknown>)
 }
 
-function runMatchingHooks(
+async function runMatchingHooks(
 	definition: CommandHookAdapterDefinition,
 	eventName: CommandHookEventName,
 	ctx: ExtensionContext,
 	matcherValues: string[],
 	eventPayload: Record<string, unknown>,
 	options: { includeUniversalMatchers?: boolean } = {},
-): HookCommandResult | undefined {
+): Promise<HookCommandResult | undefined> {
 	if (!definition.supportedEvents.includes(eventName)) return undefined
 	const payload = basePayload(eventName, ctx, eventPayload)
 	let combined: HookCommandResult | undefined
@@ -339,7 +378,7 @@ function runMatchingHooks(
 		if (!isResourceEnabled(hook.id)) continue
 		if (hook.eventName !== eventName) continue
 		if (!matchesHook(hook, matcherValues, eventPayload, options)) continue
-		const result = runCommandHook(hook, payload, ctx.cwd)
+		const result = await runCommandHook(hook, payload, ctx.cwd)
 		const next = mergeResults(combined, result)
 		combined = next
 		if (next?.block && eventName !== "Stop") break
