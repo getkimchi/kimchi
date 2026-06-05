@@ -29,6 +29,8 @@ const ORIGINAL_PACKAGE_RESOLVE = Symbol.for("kimchi.piNativeCompat.originalPacka
 
 type HandlerFn = (event: unknown, ctx: unknown) => unknown
 type ExtensionWithMarker = LoadExtensionsResult["extensions"][number] & { [NORMALIZED]?: boolean }
+type LoadedExtension = LoadExtensionsResult["extensions"][number]
+type ExtensionLoadError = LoadExtensionsResult["errors"][number]
 type ResourceLoaderWithOriginal = DefaultResourceLoader & {
 	[ORIGINAL_GET_EXTENSIONS]?: DefaultResourceLoader["getExtensions"]
 	[ORIGINAL_GET_SKILLS]?: DefaultResourceLoader["getSkills"]
@@ -54,7 +56,9 @@ export function installPiNativeCompatibilityShim(): void {
 	proto[ORIGINAL_GET_PROMPTS] = originalGetPrompts
 	proto[ORIGINAL_GET_THEMES] = originalGetThemes
 	proto.getExtensions = function patchedGetExtensions(this: DefaultResourceLoader): LoadExtensionsResult {
-		return filterDisabledPackageExtensions(normalizePiNativeExtensions(originalGetExtensions.call(this)))
+		return filterPackageExtensionToolConflicts(
+			filterDisabledPackageExtensions(normalizePiNativeExtensions(originalGetExtensions.call(this))),
+		)
 	}
 	proto.getSkills = function patchedGetSkills(
 		this: DefaultResourceLoader,
@@ -171,6 +175,83 @@ export function filterDisabledPackageExtensions(
 		extensions: result.extensions.filter((extension) => !isDisabledPackageExtension(extension)),
 		errors: result.errors.filter((error) => !isDisabledPackagePath(error.path)),
 	}
+}
+
+export function filterPackageExtensionToolConflicts(
+	result: LoadExtensionsResult,
+	records = getConfiguredPackageResourceRecords(),
+): LoadExtensionsResult {
+	const protectedToolOwners = new Map<string, string>()
+	for (const extension of result.extensions) {
+		if (isConfiguredPackageExtension(extension, records)) continue
+		for (const toolName of extension.tools.keys()) {
+			if (!protectedToolOwners.has(toolName)) protectedToolOwners.set(toolName, extension.path)
+		}
+	}
+
+	const seenToolOwners = new Map<string, string>()
+	const extensions = result.extensions.map((extension) => {
+		const packageExtension = isConfiguredPackageExtension(extension, records)
+		const nextTools = new Map(extension.tools)
+		let changed = false
+
+		if (packageExtension) {
+			for (const toolName of extension.tools.keys()) {
+				const protectedOwner = protectedToolOwners.get(toolName)
+				const existingOwner = seenToolOwners.get(toolName)
+				const owner = protectedOwner && protectedOwner !== extension.path ? protectedOwner : existingOwner
+				if (!owner || owner === extension.path) continue
+				nextTools.delete(toolName)
+				changed = true
+			}
+		}
+
+		for (const toolName of nextTools.keys()) {
+			if (!seenToolOwners.has(toolName)) seenToolOwners.set(toolName, extension.path)
+		}
+
+		return changed ? { ...extension, tools: nextTools } : extension
+	})
+
+	return {
+		...result,
+		extensions,
+		errors: [...result.errors.filter((error) => !isToolConflictError(error)), ...detectToolConflicts(extensions)],
+	}
+}
+
+function isConfiguredPackageExtension(extension: LoadedExtension, records: PackageResourceRecord[]): boolean {
+	const source = extension.sourceInfo?.source
+	const paths = [
+		extension.path,
+		extension.resolvedPath,
+		extension.sourceInfo?.path,
+		extension.sourceInfo?.baseDir,
+	].filter((path) => typeof path === "string")
+
+	return records.some(
+		(record) => packageSourcesMatch(record.source, source) || paths.some((path) => isPathInsidePackage(path, record)),
+	)
+}
+
+function isToolConflictError(error: ExtensionLoadError): boolean {
+	return /^Tool "[^"]+" conflicts with .+$/.test(error.error)
+}
+
+function detectToolConflicts(extensions: LoadedExtension[]): ExtensionLoadError[] {
+	const owners = new Map<string, string>()
+	const conflicts: ExtensionLoadError[] = []
+	for (const extension of extensions) {
+		for (const toolName of extension.tools.keys()) {
+			const existingOwner = owners.get(toolName)
+			if (existingOwner && existingOwner !== extension.path) {
+				conflicts.push({ path: extension.path, error: `Tool "${toolName}" conflicts with ${existingOwner}` })
+			} else {
+				owners.set(toolName, extension.path)
+			}
+		}
+	}
+	return conflicts
 }
 
 function filterDisabledPackageItems<T>(items: T[]): T[] {

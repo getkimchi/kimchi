@@ -4,6 +4,7 @@ import type { ResolvedPaths } from "./index.js"
 import {
 	filterDisabledPackageExtensions,
 	filterDisabledPackageResolvedPaths,
+	filterPackageExtensionToolConflicts,
 	normalizePiNativeExtensions,
 } from "./native-compat.js"
 
@@ -173,6 +174,64 @@ describe("pi native compatibility", () => {
 
 		expect(filtered.extensions).toEqual([])
 	})
+
+	it("removes package tools that collide with Kimchi-owned tools", () => {
+		const packageExtension = withTools(
+			extensionFixture("/packages/pi-web-search/extensions/index.js", "npm:@ollama/pi-web-search"),
+			["web_fetch", "web_search", "ollama_search"],
+		)
+		const kimchiWebFetch = withTools(extensionFixture("<inline:42>", "kimchi-inline"), ["web_fetch"])
+		const result = loadResultWithExtensions([packageExtension, kimchiWebFetch])
+		result.errors.push(
+			{
+				path: "<inline:42>",
+				error: 'Tool "web_fetch" conflicts with /packages/pi-web-search/extensions/index.js',
+			},
+			{
+				path: "/somewhere/else.js",
+				error: 'Flag "--web" conflicts with /packages/pi-web-search/extensions/index.js',
+			},
+		)
+
+		const filtered = filterPackageExtensionToolConflicts(result, [
+			{
+				id: "plugins.package.npm-ollama-pi-web-search",
+				source: "npm:@ollama/pi-web-search",
+				scope: "user",
+				origin: "pi",
+				installedPath: "/packages/pi-web-search",
+			},
+		])
+
+		expect([...filtered.extensions[0].tools.keys()]).toEqual(["web_search", "ollama_search"])
+		expect([...filtered.extensions[1].tools.keys()]).toEqual(["web_fetch"])
+		expect(filtered.errors).toEqual([
+			{
+				path: "/somewhere/else.js",
+				error: 'Flag "--web" conflicts with /packages/pi-web-search/extensions/index.js',
+			},
+		])
+	})
+
+	it("keeps reporting non-package tool conflicts", () => {
+		const result = loadResultWithExtensions([
+			withTools(extensionFixture("<inline:1>", "kimchi-a"), ["same_tool"]),
+			withTools(extensionFixture("<inline:2>", "kimchi-b"), ["same_tool"]),
+		])
+		result.errors.push({ path: "<inline:2>", error: 'Tool "same_tool" conflicts with <inline:1>' })
+
+		const filtered = filterPackageExtensionToolConflicts(result, [
+			{
+				id: "plugins.package.npm-ollama-pi-web-search",
+				source: "npm:@ollama/pi-web-search",
+				scope: "user",
+				origin: "pi",
+				installedPath: "/packages/pi-web-search",
+			},
+		])
+
+		expect(filtered.errors).toEqual([{ path: "<inline:2>", error: 'Tool "same_tool" conflicts with <inline:1>' }])
+	})
 })
 
 function loadResultWithHandlers(
@@ -226,5 +285,15 @@ function extensionFixture(path: string, source: string): LoadExtensionsResult["e
 		commands: new Map(),
 		flags: new Map(),
 		shortcuts: new Map(),
+	}
+}
+
+function withTools(
+	extension: LoadExtensionsResult["extensions"][number],
+	tools: string[],
+): LoadExtensionsResult["extensions"][number] {
+	return {
+		...extension,
+		tools: new Map(tools.map((tool) => [tool, {} as never])),
 	}
 }
