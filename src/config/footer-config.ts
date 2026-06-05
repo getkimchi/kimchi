@@ -96,14 +96,23 @@ export function writeFooterConfig(config: FooterConfig): void {
 }
 
 export function setPinned(id: FooterElementId, pinned: boolean): void {
-	const config = readFooterConfig()
-	const set = new Set(config.pinned)
+	const path = getSettingsPath()
+	const settings = readJson(path)
+	const raw = asRecord(settings[FOOTER_KEY])
+	const current = Array.isArray(raw.pinned) ? raw.pinned.filter((v): v is FooterElementId => typeof v === "string") : []
+	const set = new Set(current)
 	if (pinned) {
 		set.add(id)
 	} else {
 		set.delete(id)
 	}
-	writeFooterConfig({ pinned: [...set] })
+	const next: FooterConfig = { pinned: [...set] }
+	if (next.pinned.length > 0) {
+		settings[FOOTER_KEY] = next
+	} else {
+		delete settings[FOOTER_KEY]
+	}
+	writeJson(path, settings)
 }
 
 export function isPinned(id: FooterElementId): boolean {
