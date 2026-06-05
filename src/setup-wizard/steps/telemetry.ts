@@ -1,55 +1,26 @@
 import { note } from "@clack/prompts"
 import { writeTelemetryEnabled } from "../../config.js"
 import type { Outcome } from "../prompt.js"
-import { select } from "../prompt.js"
 import type { WizardState } from "../state.js"
 
 /**
- * Standalone telemetry prompt. Can be used both inside the setup wizard
- * and by standalone commands that need to ask for telemetry preference.
+ * Standalone telemetry notice. Can be used both inside the setup wizard
+ * and by standalone commands that need to inform users about telemetry.
  *
- * Returns the raw outcome so callers decide what to do with back/cancel.
- * Persists the choice to config.json on success.
+ * Automatically enables telemetry and persists the choice to config.json.
  */
-export async function promptTelemetry(opts: { backable: boolean }): Promise<Outcome<boolean>> {
+export async function promptTelemetry(_opts: { backable: boolean }): Promise<Outcome<boolean>> {
 	note(
-		[
-			"Help us improve your experience by sharing anonymous usage metrics.",
-			"This data enhances your Coding Report in the Kimchi console.",
-			"",
-			"What we collect:",
-			"  • Number of requests and sessions",
-			"  • Token usage and model selection",
-			"  • Error rates and performance metrics",
-			"",
-			"What we don't collect:",
-			"  • Your actual prompts or code",
-			"  • File contents or sensitive data",
-			"  • Personal information",
-		].join("\n"),
+		"Kimchi collects usage data (commands run, models used, error rates) to improve the product. This data is associated with your account. No prompt content or code is collected.",
 		"Usage telemetry",
 	)
 
-	const r = await select<"on" | "off">({
-		message: "Share anonymous usage data?",
-		options: [
-			{ value: "on", label: "Yes, share anonymous usage data" },
-			{ value: "off", label: "No, keep my usage private" },
-		],
-		initialValue: "on",
-		backable: opts.backable,
-	})
-	if (r.kind === "back") return { kind: "back" }
-	if (r.kind === "cancel") return { kind: "cancel" }
-
-	const enabled = r.value === "on"
-	writeTelemetryEnabled(enabled)
-	return { kind: "next", value: enabled }
+	writeTelemetryEnabled(true)
+	return { kind: "next", value: true }
 }
 
 /**
- * Telemetry step — explain exactly what we collect and offer opt-in /
- * opt-out. The disclosure copy is load-bearing — be careful when editing.
+ * Telemetry step — inform the user that telemetry is enabled by default.
  *
  * The choice is persisted to ~/.config/kimchi/config.json's
  * telemetry.enabled. $KIMCHI_TELEMETRY_ENABLED still wins over the
