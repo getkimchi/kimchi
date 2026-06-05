@@ -6,6 +6,7 @@ import {
 	PI_PACKAGE_LOOKUP_RESOURCE_ID,
 	type ResolvedPaths,
 	getOriginalPiAgentDir,
+	getOriginalPiConfiguredPackages,
 	isOriginalPiPackageLookupEnabled,
 	mergeResolvedPaths,
 	resolveOriginalPiPackageResources,
@@ -15,16 +16,22 @@ describe("original pi package lookup", () => {
 	let dir: string
 	let oldKimchiAgentDir: string | undefined
 	let oldPiAgentDir: string | undefined
+	let oldOriginalPiAgentDir: string | undefined
+	let oldHome: string | undefined
 
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "kimchi-pi-package-lookup-"))
 		oldKimchiAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
 		oldPiAgentDir = process.env.PI_CODING_AGENT_DIR
+		oldOriginalPiAgentDir = process.env.KIMCHI_ORIGINAL_PI_CODING_AGENT_DIR
+		oldHome = process.env.HOME
 	})
 
 	afterEach(() => {
 		restoreEnv("KIMCHI_CODING_AGENT_DIR", oldKimchiAgentDir)
 		restoreEnv("PI_CODING_AGENT_DIR", oldPiAgentDir)
+		restoreEnv("KIMCHI_ORIGINAL_PI_CODING_AGENT_DIR", oldOriginalPiAgentDir)
+		restoreEnv("HOME", oldHome)
 		rmSync(dir, { recursive: true, force: true })
 	})
 
@@ -47,6 +54,37 @@ describe("original pi package lookup", () => {
 		process.env.PI_CODING_AGENT_DIR = "~/custom-pi-agent"
 
 		expect(getOriginalPiAgentDir()).toContain("custom-pi-agent")
+	})
+
+	it("falls back to the default pi agent dir when PI_CODING_AGENT_DIR is Kimchi's shim", () => {
+		const homeDir = join(dir, "home")
+		const kimchiAgentDir = join(dir, "kimchi-agent")
+		process.env.HOME = homeDir
+		process.env.KIMCHI_CODING_AGENT_DIR = kimchiAgentDir
+		process.env.PI_CODING_AGENT_DIR = kimchiAgentDir
+
+		expect(getOriginalPiAgentDir()).toBe(join(homeDir, ".pi", "agent"))
+	})
+
+	it("discovers original pi packages when PI_CODING_AGENT_DIR is Kimchi's shim", () => {
+		const homeDir = join(dir, "home")
+		const kimchiAgentDir = join(dir, "kimchi-agent")
+		const piAgentDir = join(homeDir, ".pi", "agent")
+		process.env.HOME = homeDir
+		process.env.KIMCHI_CODING_AGENT_DIR = kimchiAgentDir
+		process.env.PI_CODING_AGENT_DIR = kimchiAgentDir
+		mkdirSync(piAgentDir, { recursive: true })
+		writeFileSync(join(piAgentDir, "settings.json"), JSON.stringify({ packages: ["npm:@juicesharp/rpiv-todo"] }))
+
+		expect(getOriginalPiConfiguredPackages(join(dir, "project"))).toEqual([
+			{
+				source: "npm:@juicesharp/rpiv-todo",
+				scope: "user",
+				filtered: false,
+				origin: "pi",
+				installedPath: undefined,
+			},
+		])
 	})
 
 	it("merges original pi resources behind native Kimchi resources without duplicating paths", () => {

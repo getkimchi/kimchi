@@ -6,12 +6,13 @@
  * policy at phase boundaries.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { type ExtensionAPI, getMarkdownTheme } from "@earendil-works/pi-coding-agent"
+import { Markdown } from "@earendil-works/pi-tui"
 import type { Static } from "typebox"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
 import type { Ferment, Phase } from "../../../ferment/types.js"
 import { askUser } from "../ask-user.js"
-import { gradeColor } from "../colors.js"
+import { gradeColor, pr_bold } from "../colors.js"
 import { decideContinuation } from "../continuation.js"
 import { formatDecisionsAndMemories } from "../format.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
@@ -130,13 +131,13 @@ function formatManualPhaseBoundaryWait(
 	projectChecksLine: string,
 	warnSection: string,
 	reason?: string,
-	summaryLine = `Phase "${completedPhase.name}" done.`,
+	summaryLine = `**Phase "${completedPhase.name}"** done.`,
 ): string {
 	const reasonLine = reason ? `\n\n${reason}` : ""
 	return (
 		[
-			`${summaryLine}${projectChecksLine}${warnSection}`,
-			`Next: "${nextPhase.name}".`,
+			`**Phase "${completedPhase.name}"** done.${projectChecksLine}${warnSection}`,
+			`**Next:** "${nextPhase.name}".`,
 			"",
 			"Manual continuation policy stopped here.",
 			`The ferment is paused. Do not call activate_ferment_phase yet. To continue later, the user can run /ferment resume for ferment_id "${ferment.id}", or choose Continue from /ferment list.`,
@@ -191,12 +192,12 @@ function formatManualPhaseBoundaryContinue(
 	nextPhase: Phase,
 	projectChecksLine: string,
 	warnSection: string,
-	summaryLine = `Phase "${completedPhase.name}" done.`,
+	summaryLine = `**Phase "${completedPhase.name}"** done.`,
 ): string {
 	return withNextActionHint(
 		[
-			`${summaryLine}${projectChecksLine}${warnSection}`,
-			`Next: "${nextPhase.name}".`,
+			`**Phase "${completedPhase.name}"** done.${projectChecksLine}${warnSection}`,
+			`**Next:** "${nextPhase.name}".`,
 			"",
 			"User chose to continue to the next phase.",
 		].join("\n"),
@@ -403,7 +404,7 @@ export async function completePhase(
 			// the agent's recovery surface for the next attempt.
 			const projectChecksNote = projectChecks.discovered ? `\n${projectCheckSummary}` : ""
 			return toolErr(
-				`Phase "${phase.name}" cannot complete — reviewer raised ${blockFlags.length} block flag(s) (retry ${retry}/${MAX_BLOCK_RETRIES}).${projectChecksNote}\n\n${flagLines}${warnLines}\n\nFix the issues above and call complete_ferment_phase again with an updated summary.`,
+				`**Phase "${phase.name}"** cannot complete — reviewer raised ${blockFlags.length} block flag(s) (retry ${retry}/${MAX_BLOCK_RETRIES}).${projectChecksNote}\n\n${flagLines}${warnLines}\n\nFix the issues above and call complete_ferment_phase again with an updated summary.`,
 			)
 		}
 	}
@@ -460,9 +461,9 @@ export async function completePhase(
 	if (!nextPhase) {
 		return toolOk(
 			withNextActionHint(
-				`Phase "${phase.name}" done.${projectChecksLine}${warnSection}${
+				`**Phase "${phase.name}"** done.\n\n## Summary${projectChecksLine}${warnSection}${
 					continuation.type === "idle" && continuation.action?.kind === "complete_ferment"
-						? "\nAll phases terminal."
+						? "\n**All phases terminal.**"
 						: ""
 				}`,
 				fresh,
@@ -472,7 +473,7 @@ export async function completePhase(
 
 	return toolOk(
 		withNextActionHint(
-			`Phase "${phase.name}" done.${projectChecksLine}${warnSection}\nNext: "${nextPhase.name}".`,
+			`**Phase "${phase.name}"** done.${projectChecksLine}${warnSection}\n**Next:** "${nextPhase.name}".`,
 			fresh,
 		),
 	)
@@ -632,6 +633,10 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 
 ${renderGateGuidance("complete_ferment_phase")}`,
 		parameters: CompletePhaseParams,
+		renderResult(result) {
+			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
+			return new Markdown(text, 1, 0, getMarkdownTheme())
+		},
 		async execute(_, params, _signal, _onUpdate, ctx) {
 			return completePhase(runtime, params, { pi, ctx }, phaseServices)
 		},

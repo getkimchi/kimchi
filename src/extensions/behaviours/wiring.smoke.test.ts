@@ -37,6 +37,7 @@ class FakePi {
 	readonly handlers = new Map<string, Handler[]>()
 	readonly appended: Appended[] = []
 	readonly sent: Sent[] = []
+	private runtimeReady = true
 
 	asExtensionAPI(): ExtensionAPI {
 		return this as unknown as ExtensionAPI
@@ -49,11 +50,21 @@ class FakePi {
 	}
 
 	appendEntry(type: string, data?: unknown): void {
+		if (!this.runtimeReady) {
+			throw new Error("Extension runtime not initialized. Action methods cannot be called during extension loading.")
+		}
 		this.appended.push({ type, data })
 	}
 
 	sendMessage(message: Sent["message"], options?: Sent["options"]): void {
+		if (!this.runtimeReady) {
+			throw new Error("Extension runtime not initialized. Action methods cannot be called during extension loading.")
+		}
 		this.sent.push({ message, options })
+	}
+
+	setRuntimeReady(ready: boolean): void {
+		this.runtimeReady = ready
 	}
 
 	async fire<R = unknown>(event: string, payload: unknown, ctx: unknown = {}): Promise<R[]> {
@@ -133,10 +144,16 @@ const testEnv: EnvironmentInfo = {
 	localDate: "2026-01-01",
 	isGitRepo: false,
 }
+
+function flushDeferredActions(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, 0))
+}
+
 describe("wireBehaviours — session_start", () => {
 	it("appends behaviour_loaded for a session-triggered behaviour", async () => {
 		const pi = setupWired([ghCli])
 		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await flushDeferredActions()
 
 		expect(pi.entries(BEHAVIOUR_LOADED_TYPE)).toEqual([
 			{ type: BEHAVIOUR_LOADED_TYPE, data: { name: "gh-cli", trigger: "session", turnIndex: 0 } },
@@ -146,6 +163,7 @@ describe("wireBehaviours — session_start", () => {
 	it("does not append when no session probe matches", async () => {
 		const pi = setupWired([glabCli])
 		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await flushDeferredActions()
 
 		expect(pi.entries(BEHAVIOUR_LOADED_TYPE)).toEqual([])
 	})
@@ -153,10 +171,40 @@ describe("wireBehaviours — session_start", () => {
 	it("re-fires cleanly: a second session_start drops stale state", async () => {
 		const pi = setupWired([ghCli])
 		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await flushDeferredActions()
 		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await flushDeferredActions()
 
 		// Two loads (one per session_start), not one duplicated row from the same session.
 		expect(pi.entries(BEHAVIOUR_LOADED_TYPE)).toHaveLength(2)
+	})
+
+	it("loads session-triggered behaviours before appendEntry is available", async () => {
+		const pi = setupWired([ghCli])
+		pi.setRuntimeReady(false)
+
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+
+		expect(pi.entries(BEHAVIOUR_LOADED_TYPE)).toEqual([])
+
+		const next = await pi.fire<{ message?: { customType: string; content: string; display: boolean } }>(
+			"before_agent_start",
+			{ prompt: "hi", systemPrompt: "BASE" },
+		)
+		expect(next.flatMap((r) => (r.message ? [r.message] : []))).toEqual([
+			expect.objectContaining({
+				customType: BEHAVIOUR_BODY_TYPE,
+				content: "Use gh for GitHub.",
+				display: false,
+			}),
+		])
+
+		pi.setRuntimeReady(true)
+		await flushDeferredActions()
+
+		expect(pi.entries(BEHAVIOUR_LOADED_TYPE)).toEqual([
+			{ type: BEHAVIOUR_LOADED_TYPE, data: { name: "gh-cli", trigger: "session", turnIndex: 0 } },
+		])
 	})
 })
 
@@ -183,6 +231,7 @@ describe("wireBehaviours — tool_call", () => {
 	it("appends behaviour_eval for loaded behaviours but not on the call that loaded them", async () => {
 		const pi = setupWired([ghCli])
 		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await flushDeferredActions()
 		await pi.fire("turn_start", { turnIndex: 1 })
 		await pi.fire("tool_call", { toolName: "bash", input: { command: "gh pr list" } })
 		await pi.fire("tool_call", { toolName: "bash", input: { command: "curl https://x" } })
@@ -229,6 +278,7 @@ describe("wireBehaviours — tool_result", () => {
 	it("does not steer for session-triggered bodies that are still pending", async () => {
 		const pi = setupWired([ghCli])
 		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await flushDeferredActions()
 		await pi.fire("tool_result", { toolName: "bash", input: { command: "gh pr list" } })
 
 		expect(pi.sent).toEqual([])
@@ -289,6 +339,7 @@ describe("wireBehaviours — before_agent_start", () => {
 	it("delivers the body of a loaded triggered behaviour as a hidden message, exactly once", async () => {
 		const pi = setupWired([ghCli])
 		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await flushDeferredActions()
 
 		const first = await pi.fire<{ message?: { customType: string; content: string; display: boolean } }>(
 			"before_agent_start",
@@ -313,6 +364,7 @@ describe("wireBehaviours — session_compact", () => {
 	it("appends behaviour_requeued for each loaded behaviour and re-delivers the body", async () => {
 		const pi = setupWired([ghCli])
 		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await flushDeferredActions()
 		await pi.fire("turn_start", { turnIndex: 5 })
 		// Drain initial pending.
 		await pi.fire("before_agent_start", { prompt: "hi", systemPrompt: "BASE" })
@@ -332,6 +384,7 @@ describe("wireBehaviours — session_shutdown", () => {
 	it("emits a session summary covering baseline + loaded behaviours", async () => {
 		const pi = setupWired([baseline, ghCli, glabCli])
 		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await flushDeferredActions()
 		await pi.fire("turn_start", { turnIndex: 2 })
 		await pi.fire("tool_call", { toolName: "bash", input: { command: "gh pr list" } })
 		await pi.fire("session_shutdown", {})

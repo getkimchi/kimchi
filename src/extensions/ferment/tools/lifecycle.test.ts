@@ -35,6 +35,7 @@ const { judgeJourneyGrade: mockJudgeJourneyGrade } = await import("../judge.js")
 interface RegisteredTool {
 	name: string
 	execute: (toolCallId: string, params: Record<string, unknown>) => Promise<unknown>
+	renderResult?: (result: unknown) => unknown
 }
 
 function okText(result: { content: { text: string }[]; isError?: boolean }): string {
@@ -358,7 +359,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		const execute = tool.execute as unknown as (
 			...args: unknown[]
 		) => Promise<{ content: { text: string }[]; isError?: boolean }>
-		return { h, execute }
+		return { h, execute, tool }
 	}
 
 	it("rejects confirm scoping questions instead of guessing from the question text", async () => {
@@ -563,6 +564,13 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 
 		expect(errText(result)).toContain("questions.0.question must be a string")
 	})
+
+	it("renderResult returns a Markdown component", async () => {
+		const { tool } = createProposeHarness()
+		const result = { content: [{ type: "text", text: "**Bold** plan" }] }
+		const component = tool.renderResult?.(result)
+		expect(component).toBeDefined()
+	})
 })
 
 describe("update_ferment_scope_field via registerLifecycleTools", () => {
@@ -690,7 +698,7 @@ describe("completeFerment", () => {
 			final_summary: "done",
 			gates: passingFermentGates(),
 		})
-		expect(okText(first)).toContain('Ferment "Lifecycle Test" complete')
+		expect(okText(first)).toContain('**Ferment "Lifecycle Test"** complete')
 		expect(okText(first)).toContain("Do not call bash/read/list_ferments or any ferment tools")
 		expect(okText(first)).toContain('/ferment new "..."')
 		expect(okText(first)).toContain("do not search MCP tools or invent a tool")
@@ -730,7 +738,7 @@ describe("completeFerment", () => {
 			final_summary: "done",
 			gates: passingFermentGates(),
 		})
-		expect(okText(result)).toContain("Final grade: B")
+		expect(okText(result)).toContain("**Final grade:** B")
 		expect(okText(result)).toContain("proxy")
 		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("B")
 		expect(h.storage.get(h.fermentId)?.grade?.rationale).toContain("proxy")
@@ -752,7 +760,7 @@ describe("completeFerment", () => {
 			gates: passingFermentGates(),
 		})
 
-		expect(okText(result)).toContain("Final grade: unavailable")
+		expect(okText(result)).toContain("**Final grade:** unavailable")
 		expect(okText(result)).toContain("Judge unreachable (no_auth: missing api key)")
 		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
 		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
@@ -772,7 +780,7 @@ describe("completeFerment", () => {
 			gates: passingFermentGates(),
 		})
 
-		expect(okText(result)).toContain("Final grade: unavailable")
+		expect(okText(result)).toContain("**Final grade:** unavailable")
 		expect(okText(result)).toContain("Judge unreachable (no_registry)")
 		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
 		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()

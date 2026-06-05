@@ -11,8 +11,8 @@
  * a single `title`; ferment's `promptForm` passes `title` + `description`.
  */
 
-import type { Theme } from "@earendil-works/pi-coding-agent"
-import { Input, Key, type TUI, matchesKey, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { type Theme, getSelectListTheme } from "@earendil-works/pi-coding-agent"
+import { Editor, Key, type TUI, matchesKey, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import type { Component } from "@earendil-works/pi-tui"
 import {
 	type Answer,
@@ -55,7 +55,11 @@ export function createQuestionForm(
 	let cachedLines: string[] | undefined
 	let cachedWidth = 0
 	const isMulti = questions.length > 1
-	const editor = new Input()
+	const editorTheme = {
+		borderColor: (s: string) => theme.fg("muted", s),
+		selectList: getSelectListTheme(),
+	}
+	const editor = new Editor(tui, editorTheme)
 	editor.focused = true
 
 	function applyEffects(effects: QuestionnaireEffect[]): void {
@@ -66,7 +70,7 @@ export function createQuestionForm(
 					tui.requestRender()
 					break
 				case "editor-set-text":
-					editor.setValue(eff.text)
+					editor.setText(eff.text)
 					break
 				case "editor-handle-input":
 					editor.handleInput(eff.data)
@@ -221,7 +225,7 @@ export function createQuestionForm(
 			add(theme.fg("muted", " Your answer:"))
 			for (const line of editor.render(width - 2)) add(` ${line}`)
 			lines.push("")
-			add(theme.fg("dim", " Enter to submit • Esc to cancel"))
+			add(theme.fg("dim", " Enter to submit • Shift+Enter for newline • Esc to cancel"))
 		} else if (isSubmitTab(state)) {
 			add(theme.fg("accent", theme.bold(" Ready to submit")))
 			lines.push("")

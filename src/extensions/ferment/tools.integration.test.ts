@@ -840,7 +840,7 @@ describe("skip_ferment_phase", () => {
 		)
 
 		expect(text).toContain("Manual continuation policy stopped here")
-		expect(text).toContain('Next: "Phase B"')
+		expect(text).toContain('**Next:** "Phase B"')
 		expect(text).not.toContain("Next action: call `activate_ferment_phase`")
 		const f = loadFerment(id)
 		expect(f.status).toBe("paused")

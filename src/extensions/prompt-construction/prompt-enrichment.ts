@@ -28,10 +28,12 @@ import { isAbsolute, join, normalize, resolve } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
+import { isResourceEnabled } from "../../resources/store.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
+import { CLAUDE_CODE_SKILLS_RESOURCE_ID, getClaudeCodeSkillResourcePaths } from "../claude-code-skills/definition.js"
 import {
 	getProcessMultiModelEnabled,
 	setProcessMultiModelEnabled,
@@ -466,6 +468,9 @@ export default function (skillPaths: string[]) {
 			if (cachedSkills === undefined) {
 				const allSkillPaths = [
 					...expandSkillPaths(skillPaths, ctx.cwd),
+					...(isResourceEnabled(CLAUDE_CODE_SKILLS_RESOURCE_ID)
+						? getClaudeCodeSkillResourcePaths(ctx.cwd, { excludeSkillPaths: skillPaths })
+						: []),
 					...getInstalledPackageResourceDirs(ctx.cwd, "skills"),
 				]
 				cachedSkills = loadSkills({

@@ -1,10 +1,15 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
+import { setResourceOverride } from "../../resources/store.js"
 import * as startupContext from "../../startup-context.js"
 import * as agentWorkerContext from "../agent-worker-context.js"
+import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../claude-code-skills/definition.js"
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
 import promptEnrichmentExtension, {
 	stripEmptyToolCalls,
@@ -253,6 +258,121 @@ describe("prompt enrichment tool visibility", () => {
 	})
 })
 
+describe("prompt enrichment Claude Code skills", () => {
+	let dir: string
+	let oldAgentDir: string | undefined
+	let oldHome: string | undefined
+	let oldXdgCacheHome: string | undefined
+
+	beforeEach(() => {
+		vi.restoreAllMocks()
+		dir = mkdtempSync(join(tmpdir(), "kimchi-prompt-claude-skills-"))
+		oldAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+		oldHome = process.env.HOME
+		oldXdgCacheHome = process.env.XDG_CACHE_HOME
+		process.env.KIMCHI_CODING_AGENT_DIR = join(dir, "agent")
+		process.env.HOME = join(dir, "home")
+		process.env.XDG_CACHE_HOME = join(dir, "cache")
+		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
+		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
+	})
+
+	afterEach(() => {
+		if (oldAgentDir === undefined) {
+			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
+			delete process.env.KIMCHI_CODING_AGENT_DIR
+		} else {
+			process.env.KIMCHI_CODING_AGENT_DIR = oldAgentDir
+		}
+		if (oldHome === undefined) {
+			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
+			delete process.env.HOME
+		} else {
+			process.env.HOME = oldHome
+		}
+		if (oldXdgCacheHome === undefined) {
+			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
+			delete process.env.XDG_CACHE_HOME
+		} else {
+			process.env.XDG_CACHE_HOME = oldXdgCacheHome
+		}
+		rmSync(dir, { recursive: true, force: true })
+	})
+
+	it("injects current-project Claude Code skills when the extension is enabled", async () => {
+		const cwd = join(dir, "project")
+		writeSkill(join(dir, "project", ".claude", "skills", "typescript-safety", "SKILL.md"), {
+			description: "Use safe TypeScript patterns before editing TypeScript files.",
+		})
+		setResourceOverride(CLAUDE_CODE_SKILLS_RESOURCE_ID, true)
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{},
+			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).toContain("<available_skills>")
+		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
+		expect(result.systemPrompt).toContain("Use safe TypeScript patterns")
+	})
+
+	it("does not inject ancestor Claude Code skills without cwd .claude", async () => {
+		const project = join(dir, "project")
+		const cwd = join(project, "src")
+		writeSkill(join(project, ".claude", "skills", "typescript-safety", "SKILL.md"), {
+			description: "Use safe TypeScript patterns before editing TypeScript files.",
+		})
+		setResourceOverride(CLAUDE_CODE_SKILLS_RESOURCE_ID, true)
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{},
+			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).not.toContain("<available_skills>")
+		expect(result.systemPrompt).not.toContain("typescript-safety")
+	})
+
+	it("injects sanitized Claude Code skills when .claude/skills is configured", async () => {
+		const cwd = join(dir, "project")
+		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), {
+			description: "Use: generated API types",
+		})
+		setResourceOverride(CLAUDE_CODE_SKILLS_RESOURCE_ID, true)
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers([".claude/skills"])
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{},
+			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).toContain("<available_skills>")
+		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
+		expect(result.systemPrompt).toContain("Use: generated API types")
+	})
+
+	it("does not inject Claude Code skills when the extension is disabled", async () => {
+		const cwd = join(dir, "project")
+		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), {
+			description: "Use safe TypeScript patterns before editing TypeScript files.",
+		})
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{},
+			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).not.toContain("<name>typescript-safety</name>")
+	})
+})
+
 describe("model role startup warnings", () => {
 	beforeEach(() => {
 		vi.restoreAllMocks()
@@ -323,6 +443,30 @@ describe("model role startup warnings", () => {
 		expect(warn).toHaveBeenCalledWith(expect.stringContaining("[model-roles] Warning: orchestrator"))
 	})
 })
+
+function buildPromptExtensionWithHandlers(skillPaths: string[] = []) {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
+	const pi = {
+		registerFlag: () => {},
+		registerCommand: () => {},
+		on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
+			handlers.set(event, handler)
+		},
+		getAllTools: () => [],
+		getActiveTools: () => [],
+		getFlag: () => false,
+	} as unknown as ExtensionAPI
+	promptEnrichmentExtension(skillPaths)(pi)
+	return {
+		handlers,
+		beforeAgentStart: handlers.get("before_agent_start"),
+	}
+}
+
+function writeSkill(path: string, frontmatter: { description: string }): void {
+	mkdirSync(join(path, ".."), { recursive: true })
+	writeFileSync(path, `---\ndescription: ${frontmatter.description}\n---\n# Skill\n`, "utf-8")
+}
 
 describe("deprecated model notification", () => {
 	beforeEach(() => {

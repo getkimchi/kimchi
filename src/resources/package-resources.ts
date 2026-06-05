@@ -93,6 +93,18 @@ export function isPathInsidePackage(path: string | undefined, record: PackageRes
 	return normalizedPath === packageRoot || normalizedPath.startsWith(`${packageRoot}${sep}`)
 }
 
+export function packageSourcesMatch(left: string | undefined, right: string | undefined): boolean {
+	if (typeof left !== "string" || typeof right !== "string") return false
+	const leftSource = left.trim()
+	const rightSource = right.trim()
+	if (!leftSource || !rightSource) return false
+	if (leftSource === rightSource) return true
+
+	const leftNpmName = npmPackageIdentity(leftSource)
+	const rightNpmName = npmPackageIdentity(rightSource)
+	return leftNpmName !== undefined && leftNpmName === rightNpmName
+}
+
 function packageDisplayName(source: string): string {
 	const trimmed = source.trim()
 	if (trimmed.startsWith("npm:")) return trimmed.slice("npm:".length)
@@ -116,6 +128,12 @@ function npmPackageName(spec: string): string {
 	const slash = spec.indexOf("/")
 	const versionAt = spec.startsWith("@") ? spec.indexOf("@", Math.max(slash, 0) + 1) : spec.indexOf("@")
 	return versionAt > 0 ? spec.slice(0, versionAt) : spec
+}
+
+function npmPackageIdentity(source: string): string | undefined {
+	const spec = source.startsWith("npm:") ? source.slice("npm:".length) : source
+	if (!/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+(?:@[^/\s]+)?$/i.test(spec)) return undefined
+	return npmPackageName(spec).toLowerCase()
 }
 
 function slugPackageSource(source: string): string {

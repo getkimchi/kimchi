@@ -28,22 +28,39 @@ describe("resource definitions", () => {
 		rmSync(dir, { recursive: true, force: true })
 	})
 
-	it("surfaces Claude Code hooks as one disabled extension resource", () => {
+	it("surfaces Claude Code hooks as individual hook resources", () => {
+		mkdirSync(join(dir, ".claude"), { recursive: true })
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			hooks: {
 				SessionStart: [{ hooks: [{ type: "command", command: "load-context" }] }],
+				PreToolUse: [{ matcher: "Write|Edit", hooks: [{ type: "command", command: "file-policy" }] }],
 			},
 		})
 
 		const resources = getResourceDefinitions()
-		const hookResources = resources.filter((resource) => resource.kind === "hooks").map((resource) => resource.id)
+		const hookResources = resources.filter((resource) => resource.kind === "hooks")
 		const extensionResources = resources
 			.filter((resource) => resource.kind === "extensions")
 			.map((resource) => resource.id)
 
-		expect(hookResources).not.toContain("hooks.claude-code.user.session-start.0")
+		expect(hookResources.map((resource) => resource.id)).toContain("hooks.claude-code.user.session-start.0")
+		expect(resources.find((resource) => resource.id === "hooks.claude-code.user.session-start.0")).toMatchObject({
+			label: "Claude Code: SessionStart #0",
+			description: expect.stringContaining("User Claude Code SessionStart hook"),
+			defaultEnabled: true,
+		})
+		expect(resources.find((resource) => resource.id === "hooks.claude-code.user.pre-tool-use.0")).toMatchObject({
+			label: "Claude Code: PreToolUse Write|Edit",
+			description: expect.stringContaining("Matcher: Write|Edit."),
+			defaultEnabled: true,
+		})
 		expect(extensionResources).toContain("extensions.claude-code-hook-adapter")
+		expect(extensionResources).toContain("extensions.claude-code-skills")
 		expect(resources.find((resource) => resource.id === "extensions.claude-code-hook-adapter")).toMatchObject({
+			defaultEnabled: false,
+			restartRequired: true,
+		})
+		expect(resources.find((resource) => resource.id === "extensions.claude-code-skills")).toMatchObject({
 			defaultEnabled: false,
 			restartRequired: true,
 		})

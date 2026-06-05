@@ -1,6 +1,11 @@
 import type { LoadExtensionsResult } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
-import { filterDisabledPackageExtensions, normalizePiNativeExtensions } from "./native-compat.js"
+import type { ResolvedPaths } from "./index.js"
+import {
+	filterDisabledPackageExtensions,
+	filterDisabledPackageResolvedPaths,
+	normalizePiNativeExtensions,
+} from "./native-compat.js"
 
 describe("pi native compatibility", () => {
 	it("adds legacy aliases to tool_result events for package adapters", async () => {
@@ -94,11 +99,9 @@ describe("pi native compatibility", () => {
 
 		expect(filtered.extensions.map((extension) => extension.path)).toEqual(["/packages/other/extensions/index.js"])
 		expect(filtered.errors).toEqual([])
+		expect(filtered.runtime).toBe(result.runtime)
 		expect(filtered.runtime.pendingProviderRegistrations.map((registration) => registration.name)).toEqual(["other"])
-		expect(result.runtime.pendingProviderRegistrations.map((registration) => registration.name)).toEqual([
-			"ctx",
-			"other",
-		])
+		expect(result.runtime.pendingProviderRegistrations.map((registration) => registration.name)).toEqual(["other"])
 	})
 
 	it("filters disabled package provider registrations by disabled extension path when no package root is known", () => {
@@ -115,14 +118,60 @@ describe("pi native compatibility", () => {
 			() => false,
 		)
 
+		expect(filtered.runtime).toBe(result.runtime)
 		expect(filtered.runtime.pendingProviderRegistrations).toEqual([])
-		expect(result.runtime.pendingProviderRegistrations).toEqual([
-			{
-				name: "ctx",
-				config: {},
-				extensionPath: "/somewhere/context-mode.js",
-			},
-		])
+		expect(result.runtime.pendingProviderRegistrations).toEqual([])
+	})
+
+	it("filters disabled package resolved paths before extension modules load", () => {
+		const paths = resolvedPathsFixture({
+			extensions: [
+				resolvedResourceFixture(
+					"/packages/zero-pi/extensions/zero-banner.ts",
+					"npm:@gonrocca/zero-pi",
+					"/packages/zero-pi",
+				),
+				resolvedResourceFixture("/packages/other/extensions/index.js", "npm:other", "/packages/other"),
+			],
+			prompts: [resolvedResourceFixture("/packages/zero-pi/prompts/zero.md", "@gonrocca/zero-pi")],
+		})
+
+		const filtered = filterDisabledPackageResolvedPaths(
+			paths,
+			[
+				{
+					id: "plugins.package.npm-gonrocca-zero-pi",
+					source: "npm:@gonrocca/zero-pi",
+					scope: "user",
+					origin: "kimchi",
+					installedPath: "/packages/zero-pi",
+				},
+			],
+			() => false,
+		)
+
+		expect(filtered.extensions.map((resource) => resource.path)).toEqual(["/packages/other/extensions/index.js"])
+		expect(filtered.prompts).toEqual([])
+		expect(paths.extensions).toHaveLength(2)
+	})
+
+	it("filters disabled package extensions when source metadata omits npm prefix", () => {
+		const result = loadResultWithExtensions([extensionFixture("/somewhere/zero-banner.ts", "@gonrocca/zero-pi")])
+
+		const filtered = filterDisabledPackageExtensions(
+			result,
+			[
+				{
+					id: "plugins.package.npm-gonrocca-zero-pi",
+					source: "npm:@gonrocca/zero-pi",
+					scope: "user",
+					origin: "kimchi",
+				},
+			],
+			() => false,
+		)
+
+		expect(filtered.extensions).toEqual([])
 	})
 })
 
@@ -145,6 +194,24 @@ function loadResultWithExtensions(extensions: LoadExtensionsResult["extensions"]
 		runtime: {
 			pendingProviderRegistrations: [],
 		} as never,
+	}
+}
+
+function resolvedPathsFixture(overrides: Partial<ResolvedPaths> = {}): ResolvedPaths {
+	return {
+		extensions: [],
+		skills: [],
+		prompts: [],
+		themes: [],
+		...overrides,
+	}
+}
+
+function resolvedResourceFixture(path: string, source: string, baseDir?: string): ResolvedPaths["extensions"][number] {
+	return {
+		path,
+		enabled: true,
+		metadata: { path, source, scope: "user", origin: "package", baseDir } as never,
 	}
 }
 

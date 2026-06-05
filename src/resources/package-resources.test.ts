@@ -26,6 +26,7 @@ import {
 	discoverPackageResources,
 	packageResourceId,
 	packageResourceRecordsFromConfiguredPackages,
+	packageSourcesMatch,
 } from "./package-resources.js"
 
 describe("package resources", () => {
@@ -45,6 +46,17 @@ describe("package resources", () => {
 
 	it("creates a stable resource id from an npm package source", () => {
 		expect(packageResourceId("npm:context-mode")).toBe("plugins.package.npm-context-mode")
+	})
+
+	it("creates a stable resource id from a scoped npm package source", () => {
+		expect(packageResourceId("npm:@juicesharp/rpiv-todo")).toBe("plugins.package.npm-juicesharp-rpiv-todo")
+	})
+
+	it("matches package source aliases by npm package identity", () => {
+		expect(packageSourcesMatch("npm:@gonrocca/zero-pi", "@gonrocca/zero-pi")).toBe(true)
+		expect(packageSourcesMatch("npm:context-mode@1.0.0", "context-mode")).toBe(true)
+		expect(packageSourcesMatch("npm:context-mode", "npm:@gonrocca/zero-pi")).toBe(false)
+		expect(packageSourcesMatch("git:https://example.com/repo.git", "repo")).toBe(false)
 	})
 
 	it("surfaces configured packages as plugin resources", () => {
@@ -118,6 +130,29 @@ describe("package resources", () => {
 				kind: "plugins",
 				label: "Package: pi-subagents",
 				description: "Enable package npm:pi-subagents discovered from the original pi CLI.",
+				defaultEnabled: true,
+				restartRequired: true,
+			},
+		])
+	})
+
+	it("surfaces scoped packages discovered through the original pi lookup", () => {
+		vi.mocked(getOriginalPiConfiguredPackages).mockReturnValueOnce([
+			{
+				source: "npm:@juicesharp/rpiv-todo",
+				scope: "user",
+				filtered: false,
+				origin: "pi",
+				installedPath: "/pi/agent/npm/node_modules/@juicesharp/rpiv-todo",
+			},
+		])
+
+		expect(discoverPackageResources("/repo")).toEqual([
+			{
+				id: "plugins.package.npm-juicesharp-rpiv-todo",
+				kind: "plugins",
+				label: "Package: @juicesharp/rpiv-todo",
+				description: "Enable package npm:@juicesharp/rpiv-todo discovered from the original pi CLI.",
 				defaultEnabled: true,
 				restartRequired: true,
 			},

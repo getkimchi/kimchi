@@ -3,9 +3,15 @@ import {
 	DefaultResourceLoader,
 	type LoadExtensionsResult,
 } from "@earendil-works/pi-coding-agent"
-import { getConfiguredPackageResourceRecords, isPathInsidePackage } from "../../resources/package-resources.js"
+import {
+	type PackageResourceRecord,
+	getConfiguredPackageResourceRecords,
+	isPathInsidePackage,
+	packageSourcesMatch,
+} from "../../resources/package-resources.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import {
+	type ResolvedPaths,
 	getPackageManagerPackageIdentities,
 	isOriginalPiPackageManager,
 	mergeResolvedPaths,
@@ -76,10 +82,17 @@ export function installPiNativeCompatibilityShim(): void {
 		this: DefaultPackageManager,
 		...args: Parameters<DefaultPackageManager["resolve"]>
 	): ReturnType<DefaultPackageManager["resolve"]> {
-		const nativeResolvedPaths = await originalPackageResolve.apply(this, args)
-		if (isOriginalPiPackageManager(this)) return nativeResolvedPaths
 		const cwd = (this as unknown as PackageManagerWithOriginal).cwd ?? process.cwd()
-		const piResolvedPaths = await resolveOriginalPiPackageResources(cwd, getPackageManagerPackageIdentities(this))
+		const records = getConfiguredPackageResourceRecords(cwd)
+		const nativeResolvedPaths = filterDisabledPackageResolvedPaths(
+			await originalPackageResolve.apply(this, args),
+			records,
+		)
+		if (isOriginalPiPackageManager(this)) return nativeResolvedPaths
+		const piResolvedPaths = filterDisabledPackageResolvedPaths(
+			await resolveOriginalPiPackageResources(cwd, getPackageManagerPackageIdentities(this)),
+			records,
+		)
 		return mergeResolvedPaths(nativeResolvedPaths, piResolvedPaths)
 	}
 	proto[INSTALLED] = true
@@ -108,6 +121,22 @@ function normalizedExtension(
 	return copy
 }
 
+export function filterDisabledPackageResolvedPaths(
+	paths: ResolvedPaths,
+	records = getConfiguredPackageResourceRecords(),
+	isEnabled: (id: string) => boolean = isResourceEnabled,
+): ResolvedPaths {
+	const disabledRecords = records.filter((record) => !isEnabled(record.id))
+	if (disabledRecords.length === 0) return paths
+
+	return {
+		extensions: filterDisabledResolvedResources(paths.extensions, disabledRecords),
+		skills: filterDisabledResolvedResources(paths.skills, disabledRecords),
+		prompts: filterDisabledResolvedResources(paths.prompts, disabledRecords),
+		themes: filterDisabledResolvedResources(paths.themes, disabledRecords),
+	}
+}
+
 export function filterDisabledPackageExtensions(
 	result: LoadExtensionsResult,
 	records = getConfiguredPackageResourceRecords(),
@@ -119,7 +148,7 @@ export function filterDisabledPackageExtensions(
 	const isDisabledPackagePath = (path: string | undefined) =>
 		disabledRecords.some((record) => isPathInsidePackage(path, record))
 	const isDisabledPackageSource = (source: string | undefined) =>
-		typeof source === "string" && disabledRecords.some((record) => record.source === source)
+		disabledRecords.some((record) => packageSourcesMatch(record.source, source))
 	const isDisabledPackageExtension = (extension: LoadExtensionsResult["extensions"][number]) =>
 		isDisabledPackageSource(extension.sourceInfo?.source) ||
 		isDisabledPackagePath(extension.resolvedPath) ||
@@ -134,13 +163,11 @@ export function filterDisabledPackageExtensions(
 		(registration) =>
 			!disabledExtensionPaths.has(registration.extensionPath) && !isDisabledPackagePath(registration.extensionPath),
 	)
+	result.runtime.pendingProviderRegistrations = pendingProviderRegistrations
 
 	return {
 		...result,
-		runtime: {
-			...result.runtime,
-			pendingProviderRegistrations,
-		},
+		runtime: result.runtime,
 		extensions: result.extensions.filter((extension) => !isDisabledPackageExtension(extension)),
 		errors: result.errors.filter((error) => !isDisabledPackagePath(error.path)),
 	}
@@ -162,7 +189,26 @@ function isDisabledPackageItem(
 	const paths = [sourceInfo?.path, item.filePath, item.sourcePath, item.path].filter((path) => typeof path === "string")
 
 	return disabledRecords.some(
-		(record) => record.source === source || paths.some((path) => isPathInsidePackage(path, record)),
+		(record) => packageSourcesMatch(record.source, source) || paths.some((path) => isPathInsidePackage(path, record)),
+	)
+}
+
+function filterDisabledResolvedResources<T extends ResolvedPaths[keyof ResolvedPaths][number]>(
+	resources: T[],
+	disabledRecords: PackageResourceRecord[],
+): T[] {
+	return resources.filter((resource) => !isDisabledResolvedResource(resource, disabledRecords))
+}
+
+function isDisabledResolvedResource(
+	resource: ResolvedPaths[keyof ResolvedPaths][number],
+	disabledRecords: PackageResourceRecord[],
+): boolean {
+	return disabledRecords.some(
+		(record) =>
+			packageSourcesMatch(record.source, resource.metadata.source) ||
+			isPathInsidePackage(resource.path, record) ||
+			isPathInsidePackage(resource.metadata.baseDir, record),
 	)
 }
 

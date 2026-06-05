@@ -46,7 +46,21 @@ describe("hook adapter discovery", () => {
 		expect(hooks.find((hook) => hook.eventName === "PreToolUse")?.matcher).toBe("Bash|Read")
 	})
 
+	it("does not discover project Claude Code hooks when cwd is inside .claude", () => {
+		writeJson(join(dir, "project", ".claude", "settings.json"), {
+			hooks: {
+				UserPromptSubmit: [{ hooks: [{ type: "command", command: "prompt-policy" }] }],
+				PreToolUse: [{ matcher: "Write|Edit", hooks: [{ type: "command", command: "file-policy" }] }],
+			},
+		})
+
+		const hooks = discoverClaudeCodeHookResources(join(dir, "project", ".claude"))
+
+		expect(hooks).toEqual([])
+	})
+
 	it("honors disableAllHooks in JSON hook configs", () => {
+		mkdirSync(join(dir, "project", ".claude"), { recursive: true })
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			disableAllHooks: true,
 			hooks: {

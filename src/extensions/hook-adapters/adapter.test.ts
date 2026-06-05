@@ -1,17 +1,17 @@
-import { execFileSync, spawn } from "node:child_process"
+import { spawn } from "node:child_process"
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setResourceOverride } from "../../resources/store.js"
 import claudeCodeHooksAdapter from "../claude-code-hook-adapter/index.js"
+import { createCommandHookAdapter } from "./adapter.js"
 import { parseCommandHookOutput, runCommandHook } from "./adapter.js"
 
 vi.mock("node:child_process", () => ({
-	execFileSync: vi.fn(),
 	spawn: vi.fn(),
 }))
 
-const mockExecFileSync = execFileSync as unknown as ReturnType<typeof vi.fn>
 const mockSpawn = spawn as unknown as ReturnType<typeof vi.fn>
 
 let dir: string
@@ -22,11 +22,11 @@ describe("hook adapter command execution", () => {
 	beforeEach(() => {
 		dir = join(tmpdir(), `kimchi-hook-adapter-runtime-${process.pid}-${Math.random().toString(16).slice(2)}`)
 		mkdirSync(dir, { recursive: true })
+		mkdirSync(join(dir, "project", ".claude"), { recursive: true })
 		oldHome = process.env.HOME
 		oldAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
 		process.env.HOME = join(dir, "home")
 		process.env.KIMCHI_CODING_AGENT_DIR = join(dir, "agent")
-		mockExecFileSync.mockReset()
 		mockSpawn.mockReset()
 	})
 
@@ -66,20 +66,60 @@ describe("hook adapter command execution", () => {
 		})
 	})
 
-	it("treats exit code 2 as a blocking hook result", () => {
-		mockExecFileSync.mockImplementationOnce(() => {
-			const err = new Error("blocked") as Error & { status: number; stderr: string }
-			err.status = 2
-			err.stderr = "no rm\n"
-			throw err
-		})
+	it("treats exit code 2 as a blocking hook result", async () => {
+		mockBlockingHook({ code: 2, stderr: "no rm\n" })
 
 		expect(
-			runCommandHook({ command: "guard", async: false, timeoutMs: 1000 }, { hook_event_name: "PreToolUse" }, dir),
+			await runCommandHook({ command: "guard", async: false, timeoutMs: 1000 }, { hook_event_name: "PreToolUse" }, dir),
 		).toEqual({
 			block: true,
 			reason: "no rm",
 		})
+	})
+
+	it("falls back to stdout when exit code 2 stderr only contains a protocol marker", async () => {
+		mockBlockingHook({ code: 2, stderr: "__CM_FS__:52\n", stdout: "blocked by real hook\n" })
+
+		expect(
+			await runCommandHook({ command: "guard", async: false, timeoutMs: 1000 }, { hook_event_name: "PreToolUse" }, dir),
+		).toEqual({
+			block: true,
+			reason: "blocked by real hook",
+		})
+	})
+
+	it("ignores protocol marker lines before surfacing blocking stderr", async () => {
+		mockBlockingHook({ code: 2, stderr: "__CM_FS__:52\nblocked by real hook\n" })
+
+		expect(
+			await runCommandHook({ command: "guard", async: false, timeoutMs: 1000 }, { hook_event_name: "PreToolUse" }, dir),
+		).toEqual({
+			block: true,
+			reason: "blocked by real hook",
+		})
+	})
+
+	it("awaits blocking hooks without blocking the event loop", async () => {
+		const child = fakeChild()
+		mockSpawn.mockReturnValueOnce(child)
+
+		const hookPromise = runCommandHook(
+			{ command: "slow-policy", async: false, timeoutMs: 1000 },
+			{ hook_event_name: "PreToolUse" },
+			dir,
+		)
+		let eventLoopTicked = false
+		await new Promise<void>((resolve) => {
+			setTimeout(() => {
+				eventLoopTicked = true
+				resolve()
+			}, 0)
+		})
+
+		expect(eventLoopTicked).toBe(true)
+		child.emitStdout(JSON.stringify({ additionalContext: "done" }))
+		child.emit("close", 0)
+		await expect(hookPromise).resolves.toEqual(expect.objectContaining({ additionalContext: "done" }))
 	})
 
 	it("mutates Claude Code PreToolUse input and delivers additional context", async () => {
@@ -88,14 +128,14 @@ describe("hook adapter command execution", () => {
 				PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "context-mode hook pretooluse" }] }],
 			},
 		})
-		mockExecFileSync.mockReturnValueOnce(
-			JSON.stringify({
+		mockBlockingHook({
+			stdout: JSON.stringify({
 				hookSpecificOutput: {
 					updatedInput: { command: "rtk git status" },
 					additionalContext: "context from hook",
 				},
 			}),
-		)
+		})
 		const pi = fakePi()
 		claudeCodeHooksAdapter(pi as never)
 
@@ -115,13 +155,177 @@ describe("hook adapter command execution", () => {
 		)
 	})
 
+	it("defers SessionStart additional context until action methods are available", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				SessionStart: [{ matcher: "startup", hooks: [{ type: "command", command: "session-context" }] }],
+			},
+		})
+		mockBlockingHook({ stdout: "remember startup" })
+		const pi = fakePi()
+		let runtimeReady = false
+		pi.sendMessage.mockImplementation(() => {
+			if (!runtimeReady) {
+				throw new Error("Extension runtime not initialized. Action methods cannot be called during extension loading.")
+			}
+		})
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.session_start[0]({ type: "session_start", reason: "startup" }, fakeCtx())
+
+		expect(mockSpawn).toHaveBeenCalledOnce()
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+
+		runtimeReady = true
+		await flushDeferredActions()
+
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ content: "remember startup", display: false }),
+			{ deliverAs: "nextTurn", triggerTurn: false },
+		)
+	})
+
+	it("passes Claude Code file_path alias for path-based tool inputs", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				PreToolUse: [{ matcher: "Write", hooks: [{ type: "command", command: "file-policy" }] }],
+			},
+		})
+		const child = mockBlockingHook()
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		const event = {
+			type: "tool_call",
+			toolCallId: "1",
+			toolName: "write",
+			input: { path: "src/page.tsx", content: "export {}" },
+		}
+		await pi.handlers.tool_call[0](event, fakeCtx())
+
+		const payload = hookPayload(child)
+		expect(payload.tool_name).toBe("Write")
+		expect(payload.tool_input.path).toBe("src/page.tsx")
+		expect(payload.tool_input.file_path).toBe("src/page.tsx")
+		expect(event.input).toEqual({ path: "src/page.tsx", content: "export {}" })
+	})
+
+	it("maps returned Claude Code file_path aliases back to path-based tool inputs", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				PreToolUse: [{ matcher: "Write", hooks: [{ type: "command", command: "file-policy" }] }],
+			},
+		})
+		mockBlockingHook({
+			stdout: JSON.stringify({
+				hookSpecificOutput: {
+					updatedInput: { file_path: "src/rewritten.tsx" },
+				},
+			}),
+		})
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		const event = {
+			type: "tool_call",
+			toolCallId: "1",
+			toolName: "write",
+			input: { path: "src/page.tsx", content: "export {}" },
+		}
+		await pi.handlers.tool_call[0](event, fakeCtx())
+
+		expect(event.input).toEqual({ path: "src/rewritten.tsx", content: "export {}" })
+	})
+
+	it("skips disabled individual Claude Code hook resources", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				PreToolUse: [{ matcher: "Write", hooks: [{ type: "command", command: "file-policy" }] }],
+			},
+		})
+		setResourceOverride("hooks.claude-code.user.pre-tool-use.0", false)
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.tool_call[0](
+			{
+				type: "tool_call",
+				toolCallId: "1",
+				toolName: "write",
+				input: { path: "src/page.tsx", content: "export {}" },
+			},
+			fakeCtx(),
+		)
+
+		expect(mockSpawn).not.toHaveBeenCalled()
+	})
+
+	it("maps SKILL.md reads to Claude Code PostToolUse Skill hooks", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				PostToolUse: [{ matcher: "Skill", hooks: [{ type: "command", command: "skill-ack" }] }],
+			},
+		})
+		const child = mockBlockingHook()
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.tool_result[0](
+			{
+				type: "tool_result",
+				toolCallId: "1",
+				toolName: "read",
+				input: { path: "/project/.claude/skills/typescript-safety/SKILL.md" },
+				content: [{ type: "text", text: "skill body" }],
+				isError: false,
+			},
+			fakeCtx(),
+		)
+
+		const payload = hookPayload(child)
+		expect(payload.tool_name).toBe("Skill")
+		expect(payload.tool_input).toEqual({ skill: "typescript-safety" })
+	})
+
+	it("does not run catch-all PostToolUse hooks twice for SKILL.md reads", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				PostToolUse: [
+					{ hooks: [{ type: "command", command: "read-observer" }] },
+					{ matcher: "Skill", hooks: [{ type: "command", command: "skill-ack" }] },
+				],
+			},
+		})
+		const readObserver = mockBlockingHook()
+		const skillAck = mockBlockingHook()
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.tool_result[0](
+			{
+				type: "tool_result",
+				toolCallId: "1",
+				toolName: "read",
+				input: { path: "/project/.claude/skills/typescript-safety/SKILL.md" },
+				content: [{ type: "text", text: "skill body" }],
+				isError: false,
+			},
+			fakeCtx(),
+		)
+
+		expect(mockSpawn).toHaveBeenCalledTimes(2)
+		expect(mockSpawn.mock.calls.map((call) => (call[1] as string[])[1])).toEqual(["read-observer", "skill-ack"])
+		expect(hookPayload(readObserver).tool_name).toBe("Read")
+		expect(hookPayload(skillAck).tool_name).toBe("Skill")
+	})
+
 	it("sends a follow-up message when a Claude Code Stop hook requests continuation", async () => {
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			hooks: {
 				Stop: [{ hooks: [{ type: "command", command: "continue" }] }],
 			},
 		})
-		mockExecFileSync.mockReturnValueOnce(JSON.stringify({ decision: "block", reason: "Run tests before stopping." }))
+		mockBlockingHook({ stdout: JSON.stringify({ decision: "block", reason: "Run tests before stopping." }) })
 		const pi = fakePi()
 		claudeCodeHooksAdapter(pi as never)
 
@@ -144,7 +348,8 @@ describe("hook adapter command execution", () => {
 				Stop: [{ hooks: [{ type: "command", command: "continue" }] }],
 			},
 		})
-		mockExecFileSync.mockReturnValue(JSON.stringify({ decision: "block", reason: "Continue once." }))
+		const firstStop = mockBlockingHook({ stdout: JSON.stringify({ decision: "block", reason: "Continue once." }) })
+		const secondStop = mockBlockingHook({ stdout: JSON.stringify({ decision: "block", reason: "Continue once." }) })
 		const pi = fakePi()
 		claudeCodeHooksAdapter(pi as never)
 
@@ -153,7 +358,8 @@ describe("hook adapter command execution", () => {
 		await pi.handlers.turn_end[0](turnEndEvent(2), fakeCtx())
 
 		expect(pi.sendUserMessage).toHaveBeenCalledTimes(1)
-		const secondStopPayload = JSON.parse(mockExecFileSync.mock.calls[1][2].input)
+		expect(hookPayload(firstStop).stop_hook_active).toBe(false)
+		const secondStopPayload = hookPayload(secondStop)
 		expect(secondStopPayload.stop_hook_active).toBe(true)
 	})
 
@@ -163,7 +369,7 @@ describe("hook adapter command execution", () => {
 				UserPromptSubmit: [{ hooks: [{ type: "command", command: "prompt-policy" }] }],
 			},
 		})
-		mockExecFileSync.mockReturnValueOnce(JSON.stringify({ decision: "deny", reason: "Do not share secrets." }))
+		mockBlockingHook({ stdout: JSON.stringify({ decision: "deny", reason: "Do not share secrets." }) })
 		const pi = fakePi()
 		claudeCodeHooksAdapter(pi as never)
 
@@ -181,36 +387,52 @@ describe("hook adapter command execution", () => {
 		expect(pi.sendUserMessage).not.toHaveBeenCalled()
 	})
 
-	it("spawns async handlers without waiting for stdout", () => {
+	it("passes Claude Code user_prompt in UserPromptSubmit payloads", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				UserPromptSubmit: [{ hooks: [{ type: "command", command: "prompt-policy" }] }],
+			},
+		})
+		const child = mockBlockingHook()
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.input[0]({ type: "input", text: "use best practices", source: "user" }, fakeCtx())
+
+		const payload = hookPayload(child)
+		expect(payload.prompt).toBe("use best practices")
+		expect(payload.user_prompt).toBe("use best practices")
+	})
+
+	it("spawns async handlers without waiting for stdout", async () => {
 		const child = fakeChild()
 		mockSpawn.mockReturnValueOnce(child)
 
-		runCommandHook({ command: "notify", async: true, timeoutMs: 1000 }, { hook_event_name: "SessionEnd" }, dir)
+		await runCommandHook({ command: "notify", async: true, timeoutMs: 1000 }, { hook_event_name: "SessionEnd" }, dir)
 
 		expect(mockSpawn).toHaveBeenCalledOnce()
-		expect(mockExecFileSync).not.toHaveBeenCalled()
 		expect(child.stdin.end).toHaveBeenCalled()
 		expect(child.on).toHaveBeenCalledWith("error", expect.any(Function))
 		expect(child.once).toHaveBeenCalledWith("exit", expect.any(Function))
 		expect(child.once).toHaveBeenCalledWith("close", expect.any(Function))
 	})
 
-	it("swallows async spawn failures", () => {
+	it("swallows async spawn failures", async () => {
 		mockSpawn.mockImplementationOnce(() => {
 			throw new Error("spawn failed")
 		})
 
 		expect(
-			runCommandHook({ command: "notify", async: true, timeoutMs: 1000 }, { hook_event_name: "SessionEnd" }, dir),
+			await runCommandHook({ command: "notify", async: true, timeoutMs: 1000 }, { hook_event_name: "SessionEnd" }, dir),
 		).toEqual({})
 	})
 
-	it("kills async handlers after their timeout", () => {
+	it("kills async handlers after their timeout", async () => {
 		vi.useFakeTimers()
 		const child = fakeChild()
 		mockSpawn.mockReturnValueOnce(child)
 
-		runCommandHook({ command: "notify", async: true, timeoutMs: 1000 }, { hook_event_name: "SessionEnd" }, dir)
+		await runCommandHook({ command: "notify", async: true, timeoutMs: 1000 }, { hook_event_name: "SessionEnd" }, dir)
 		vi.advanceTimersByTime(999)
 		expect(child.kill).not.toHaveBeenCalled()
 
@@ -218,7 +440,7 @@ describe("hook adapter command execution", () => {
 		expect(child.kill).toHaveBeenCalledOnce()
 	})
 
-	it("clears async handler timeout when the process closes", () => {
+	it("clears async handler timeout when the process closes", async () => {
 		vi.useFakeTimers()
 		const child = fakeChild()
 		const callbacks: Record<string, () => void> = {}
@@ -228,11 +450,87 @@ describe("hook adapter command execution", () => {
 		})
 		mockSpawn.mockReturnValueOnce(child)
 
-		runCommandHook({ command: "notify", async: true, timeoutMs: 1000 }, { hook_event_name: "SessionEnd" }, dir)
+		await runCommandHook({ command: "notify", async: true, timeoutMs: 1000 }, { hook_event_name: "SessionEnd" }, dir)
 		callbacks.close()
 		vi.advanceTimersByTime(1000)
 
 		expect(child.kill).not.toHaveBeenCalled()
+	})
+
+	it("folds SessionStart additionalContext into systemPrompt when sessionStartDelivery=systemPrompt", async () => {
+		const hooksFile = join(dir, "pkg", "hooks", "hooks.json")
+		writeJson(hooksFile, {
+			hooks: {
+				SessionStart: [{ hooks: [{ type: "command", command: "context-mode hook session-start" }] }],
+			},
+		})
+		mockBlockingHook({
+			stdout: JSON.stringify({ additionalContext: "<context_window_protection>steer</context_window_protection>" }),
+		})
+
+		const definition = {
+			id: "plugin-package",
+			label: "Plugin package",
+			customType: "kimchi-plugin-package-hook-context",
+			supportedEvents: ["SessionStart"] as const,
+			defaultTimeoutMs: 60_000,
+			sessionStartDelivery: "systemPrompt" as const,
+			sources: () => [{ scope: "user" as const, path: hooksFile }],
+		}
+		const adapter = createCommandHookAdapter(definition)
+		const pi = fakePi()
+		adapter(pi as never)
+
+		// Fire session_start
+		await pi.handlers.session_start[0]({ type: "session_start", reason: "startup" }, fakeCtx())
+
+		// sendMessage should NOT have been called — no nextTurn delivery
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+
+		// before_agent_start should inject the context into systemPrompt
+		const result = await pi.handlers.before_agent_start[0](
+			{ type: "before_agent_start", systemPrompt: "BASE", systemPromptOptions: {} },
+			fakeCtx(),
+		)
+		expect(result).toEqual({
+			systemPrompt: "BASE\n\n<context_window_protection>steer</context_window_protection>",
+		})
+
+		// Second before_agent_start flushes nothing (context already consumed)
+		const result2 = await pi.handlers.before_agent_start[0](
+			{ type: "before_agent_start", systemPrompt: "BASE", systemPromptOptions: {} },
+			fakeCtx(),
+		)
+		expect(result2).toBeUndefined()
+	})
+
+	it("passes hook env to spawn when env is set on the resource", async () => {
+		const pkgRoot = join(dir, "pkg-env")
+		const hooksFile = join(pkgRoot, "hooks", "hooks.json")
+		writeJson(hooksFile, {
+			hooks: {
+				SessionStart: [{ hooks: [{ type: "command", command: "${CLAUDE_PLUGIN_ROOT}/bin/on-start" }] }],
+			},
+		})
+		mockBlockingHook({ stdout: JSON.stringify({ additionalContext: "ctx" }) })
+
+		const definition = {
+			id: "plugin-package",
+			label: "Plugin package",
+			customType: "kimchi-plugin-package-hook-context",
+			supportedEvents: ["SessionStart"] as const,
+			defaultTimeoutMs: 60_000,
+			sessionStartDelivery: "systemPrompt" as const,
+			sources: () => [{ scope: "user" as const, path: hooksFile, pluginRoot: pkgRoot }],
+		}
+		const adapter = createCommandHookAdapter(definition)
+		const pi = fakePi()
+		adapter(pi as never)
+
+		await pi.handlers.session_start[0]({ type: "session_start", reason: "startup" }, fakeCtx())
+
+		const spawnEnv = mockSpawn.mock.calls.at(-1)?.[2]?.env as Record<string, string> | undefined
+		expect(spawnEnv?.CLAUDE_PLUGIN_ROOT).toBe(pkgRoot)
 	})
 })
 
@@ -274,11 +572,79 @@ function turnEndEvent(turnIndex: number) {
 }
 
 function fakeChild() {
-	return {
+	const handlers: Record<string, Array<(...args: unknown[]) => void>> = {}
+	const stdoutHandlers: Array<(chunk: string) => void> = []
+	const stderrHandlers: Array<(chunk: string) => void> = []
+	const child = {
 		stdin: { end: vi.fn() },
+		stdout: {
+			setEncoding: vi.fn(),
+			on: vi.fn((event: string, handler: (chunk: string) => void) => {
+				if (event === "data") stdoutHandlers.push(handler)
+				return child.stdout
+			}),
+		},
+		stderr: {
+			setEncoding: vi.fn(),
+			on: vi.fn((event: string, handler: (chunk: string) => void) => {
+				if (event === "data") stderrHandlers.push(handler)
+				return child.stderr
+			}),
+		},
 		unref: vi.fn(),
-		on: vi.fn(),
-		once: vi.fn(),
+		on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+			handlers[event] ??= []
+			handlers[event].push(handler)
+			return child
+		}),
+		once: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+			handlers[event] ??= []
+			handlers[event].push(handler)
+			return child
+		}),
 		kill: vi.fn(),
+		emit(event: string, ...args: unknown[]) {
+			for (const handler of handlers[event] ?? []) handler(...args)
+		},
+		emitStdout(chunk: string) {
+			for (const handler of stdoutHandlers) handler(chunk)
+		},
+		emitStderr(chunk: string) {
+			for (const handler of stderrHandlers) handler(chunk)
+		},
 	}
+	return child
+}
+
+function mockBlockingHook({
+	stdout = "",
+	stderr = "",
+	code = 0,
+}: { stdout?: string; stderr?: string; code?: number } = {}): ReturnType<typeof fakeChild> {
+	const child = fakeChild()
+	mockSpawn.mockReturnValueOnce(child)
+	child.stdin.end.mockImplementationOnce(() => {
+		queueMicrotask(() => {
+			if (stdout) child.emitStdout(stdout)
+			if (stderr) child.emitStderr(stderr)
+			child.emit("close", code)
+		})
+	})
+	return child
+}
+
+type HookPayload = Record<string, unknown> & {
+	prompt?: string
+	stop_hook_active?: boolean
+	tool_input: Record<string, unknown>
+	tool_name?: string
+	user_prompt?: string
+}
+
+function hookPayload(child: ReturnType<typeof fakeChild>): HookPayload {
+	return JSON.parse(String(child.stdin.end.mock.calls[0]?.[0] ?? "{}")) as HookPayload
+}
+
+function flushDeferredActions(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, 0))
 }

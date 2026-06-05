@@ -27,7 +27,7 @@ describe("Claude Code hook adapter integration", () => {
 	it("runs a real PreToolUse command hook and applies updated input/context", async () => {
 		const project = join(dir, "project")
 		const hookScript = join(dir, "rewrite-hook.cjs")
-		mkdirSync(project, { recursive: true })
+		mkdirSync(join(project, ".claude"), { recursive: true })
 		writeFileSync(
 			hookScript,
 			`
@@ -76,7 +76,7 @@ console.log(JSON.stringify({
 	it("treats a real hook exit code 2 as a blocking PreToolUse result", async () => {
 		const project = join(dir, "project")
 		const hookScript = join(dir, "block-hook.cjs")
-		mkdirSync(project, { recursive: true })
+		mkdirSync(join(project, ".claude"), { recursive: true })
 		writeFileSync(hookScript, `console.log("blocked by real hook")\nprocess.exit(2)\n`, "utf-8")
 		writeClaudeSettings({
 			hooks: {

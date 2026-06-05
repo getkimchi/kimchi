@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import {
@@ -29,9 +30,15 @@ export function discoverClaudeCodeHookResources(cwd = process.cwd()) {
 }
 
 function claudeCodeHookSources(cwd = process.cwd()): CommandHookSource[] {
-	return [
-		{ scope: "user", path: join(homedir(), ".claude", "settings.json") },
-		{ scope: "project", path: resolve(cwd, ".claude", "settings.json") },
-		{ scope: "local", path: resolve(cwd, ".claude", "settings.local.json") },
-	]
+	const homeDir = homedir()
+	const projectDir = resolve(cwd)
+	if (!existsSync(join(projectDir, ".claude"))) return []
+	const sources: CommandHookSource[] = [{ scope: "user", path: join(homeDir, ".claude", "settings.json") }]
+	if (resolve(projectDir) !== resolve(homeDir)) {
+		sources.push(
+			{ scope: "project", path: join(projectDir, ".claude", "settings.json") },
+			{ scope: "local", path: join(projectDir, ".claude", "settings.local.json") },
+		)
+	}
+	return sources
 }

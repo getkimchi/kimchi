@@ -1,5 +1,5 @@
 import { Container, Spacer } from "@earendil-works/pi-tui"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
 	buildCurrentToolLine,
 	buildGroupSummaryText,
@@ -10,6 +10,10 @@ import {
 	getParent,
 	patchAddChild,
 } from "./tool-grouping.js"
+
+afterEach(() => {
+	vi.useRealTimers()
+})
 
 describe("classifyTool", () => {
 	it("classifies read tool as file", () => {
@@ -343,9 +347,12 @@ describe("buildGroupView", () => {
 	}
 
 	it("appends timer to right header when a tool is in-progress", () => {
+		const now = new Date("2026-01-01T00:00:05.000Z")
+		vi.useFakeTimers()
+		vi.setSystemTime(now)
 		const run = [mockToolFull("read", { path: "a.ts" }), mockToolFull("read", { path: "b.ts" }, { isPartial: true })]
 		// biome-ignore lint/suspicious/noExplicitAny: mock property access
-		;(run[1] as any).rendererState = { _executionStartedAt: Date.now() - 5000 }
+		;(run[1] as any).rendererState = { _executionStartedAt: now.getTime() - 5000 }
 		const view = buildGroupView(run, plainTheme)
 		const lines = view.render(120)
 		const headerLine = lines[0]
@@ -354,9 +361,12 @@ describe("buildGroupView", () => {
 	})
 
 	it("appends timer for sub-second elapsed", () => {
+		const now = new Date("2026-01-01T00:00:00.500Z")
+		vi.useFakeTimers()
+		vi.setSystemTime(now)
 		const run = [mockToolFull("read", { path: "a.ts" }, { isPartial: true })]
 		// biome-ignore lint/suspicious/noExplicitAny: mock property access
-		;(run[0] as any).rendererState = { _executionStartedAt: Date.now() - 500 }
+		;(run[0] as any).rendererState = { _executionStartedAt: now.getTime() - 500 }
 		const view = buildGroupView(run, plainTheme)
 		const lines = view.render(120)
 		const headerLine = lines[0]

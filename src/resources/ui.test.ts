@@ -23,6 +23,7 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 
 let dir: string
 let oldAgentDir: string | undefined
+let oldHome: string | undefined
 let oldCwd: string
 
 describe("ResourceManagerComponent", () => {
@@ -30,8 +31,10 @@ describe("ResourceManagerComponent", () => {
 		dir = mkdtempSync(join(tmpdir(), "kimchi-resources-ui-"))
 		mkdirSync(join(dir, "project"), { recursive: true })
 		oldAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+		oldHome = process.env.HOME
 		oldCwd = process.cwd()
 		process.env.KIMCHI_CODING_AGENT_DIR = join(dir, "agent")
+		process.env.HOME = join(dir, "home")
 		process.chdir(join(dir, "project"))
 	})
 
@@ -42,6 +45,12 @@ describe("ResourceManagerComponent", () => {
 			delete process.env.KIMCHI_CODING_AGENT_DIR
 		} else {
 			process.env.KIMCHI_CODING_AGENT_DIR = oldAgentDir
+		}
+		if (oldHome === undefined) {
+			// biome-ignore lint/performance/noDelete: process.env requires delete operator to be truly unset.
+			delete process.env.HOME
+		} else {
+			process.env.HOME = oldHome
 		}
 		rmSync(dir, { recursive: true, force: true })
 	})

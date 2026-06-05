@@ -96,7 +96,7 @@ describe("completePhase", () => {
 
 		// Phase grades no longer exist — grading happens only at complete_ferment
 		// (the journey-grade judge). Phase completion just transitions status.
-		expect(okText(result)).toContain('Phase "Phase 1" done')
+		expect(okText(result)).toContain('**Phase "Phase 1"** done')
 		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("completed")
 		expect(h.storage.get(h.fermentId)?.phases[0].grade).toBeUndefined()
 		expect(services.gatherEvidence).toHaveBeenCalledWith("abc123")
@@ -202,7 +202,7 @@ describe("completePhase", () => {
 			"Pause here",
 		])
 		expect(text).toContain("User chose to continue to the next phase")
-		expect(text).toContain('Next: "Phase 2"')
+		expect(text).toContain('**Next:** "Phase 2"')
 		expect(text).toContain("Next action: call `activate_ferment_phase`")
 		const stored = h.storage.get(h.fermentId)
 		expect(stored?.status).toBe("planned")
@@ -231,7 +231,7 @@ describe("completePhase", () => {
 		const text = okText(result)
 		expect(selectSpy).toHaveBeenCalled()
 		expect(text).toContain("Manual continuation policy stopped here")
-		expect(text).toContain('Next: "Phase 2"')
+		expect(text).toContain('**Next:** "Phase 2"')
 		expect(text).not.toContain("Next action: call `activate_ferment_phase`")
 		const stored = h.storage.get(h.fermentId)
 		expect(stored?.status).toBe("paused")
@@ -255,7 +255,7 @@ describe("completePhase", () => {
 
 		const text = okText(result)
 		expect(text).toContain("Manual continuation policy stopped here")
-		expect(text).toContain('Next: "Phase 2"')
+		expect(text).toContain('**Next:** "Phase 2"')
 		expect(text).not.toContain("Next action: call `activate_ferment_phase`")
 		const stored = h.storage.get(h.fermentId)
 		expect(stored?.status).toBe("paused")
@@ -295,7 +295,7 @@ describe("completePhase", () => {
 		)
 
 		const text = okText(result)
-		expect(text).toContain('Next: "Phase 2"')
+		expect(text).toContain('**Next:** "Phase 2"')
 		expect(text).toContain("Next action: call `activate_ferment_phase`")
 	})
 })
@@ -348,5 +348,31 @@ describe("registerPhaseTools", () => {
 		expect(selectSpy).not.toHaveBeenCalled()
 		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("completed")
 		expect(okText(result)).toContain("Phase")
+	})
+
+	it("renderResult returns a Markdown component", async () => {
+		const tools = new Map<
+			string,
+			{ name: string; execute: (...args: unknown[]) => Promise<unknown>; renderResult?: (result: unknown) => unknown }
+		>()
+		const pi = {
+			registerTool: (t: {
+				name: string
+				execute: (...args: unknown[]) => Promise<unknown>
+				renderResult?: (result: unknown) => unknown
+			}) => tools.set(t.name, t),
+			sendUserMessage: vi.fn(),
+			appendEntry: vi.fn(),
+			sendMessage: vi.fn(),
+			getActiveTools: vi.fn(() => ["read", "bash", "complete_ferment_phase"]),
+			getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "complete_ferment_phase" }]),
+			setActiveTools: vi.fn(),
+		} as unknown as ExtensionAPI
+		const h = createHarness()
+		registerPhaseTools(pi, h.runtime)
+		const tool = tools.get("complete_ferment_phase")
+		const result = { content: [{ type: "text", text: "**Phase done**" }] }
+		const component = tool?.renderResult?.(result)
+		expect(component).toBeDefined()
 	})
 })
