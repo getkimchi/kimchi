@@ -54,7 +54,7 @@ import {
 import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
 import { splitModelRef } from "../../extensions/orchestration/model-roles.js"
 import { resolveModelRoles } from "../../extensions/orchestration/model-roles.js"
-import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/prompt-construction/prompt-enrichment.js"
+
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 
@@ -110,6 +110,8 @@ type SessionRecord = {
 	session: AgentSession
 	unsubscribe: () => void
 	turn?: TurnContext
+	/** Track whether this session is in multi-model mode (session-scoped, not global). */
+	multiModelEnabled?: boolean
 }
 
 export class KimchiAcpAgent implements Agent {
@@ -209,7 +211,7 @@ export class KimchiAcpAgent implements Agent {
 			await bindAcpExtensions(session)
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, { session, unsubscribe })
-			const models = buildSessionModelState(session)
+			const models = buildSessionModelState(session, false)
 			return { sessionId, models }
 		} catch (err) {
 			unregisterAcpPrompter(session.sessionId)
@@ -241,14 +243,14 @@ export class KimchiAcpAgent implements Agent {
 				throw RequestError.invalidParams(undefined, `Multi-model orchestrator (${orchestratorRef}) is not available.`)
 			}
 			try {
-				setMultiModelEnabled(true)
+				// Only set the flag after successfully switching models
 				await session.setModel(orchestrator)
+				entry.multiModelEnabled = true
 			} catch (err) {
 				if (err instanceof RequestError) {
 					throw err
 				}
-				throw RequestError.invalidParams(
-					undefined,
+				throw RequestError.internalError(
 					`Failed to switch to multi-model mode: ${err instanceof Error ? err.message : String(err)}`,
 				)
 			}
@@ -262,14 +264,13 @@ export class KimchiAcpAgent implements Agent {
 		}
 		try {
 			await session.setModel(selectedModel)
+			// Clear multi-model flag when switching to a single model
+			entry.multiModelEnabled = false
 		} catch (err) {
 			if (err instanceof RequestError) {
 				throw err
 			}
-			throw RequestError.invalidParams(
-				undefined,
-				`Failed to switch model: ${err instanceof Error ? err.message : String(err)}`,
-			)
+			throw RequestError.internalError(`Failed to switch model: ${err instanceof Error ? err.message : String(err)}`)
 		}
 		return {}
 	}
@@ -292,7 +293,7 @@ export class KimchiAcpAgent implements Agent {
 				)
 			}
 			this.replayTranscript(existing.session)
-			return { models: this.modelStateForSession(existing.session) }
+			return { models: this.modelStateForSession(existing.session, existing) }
 		}
 		const loading = this.loadingSessions.get(params.sessionId)
 		if (loading) return loading
@@ -336,13 +337,14 @@ export class KimchiAcpAgent implements Agent {
 			registerAcpPrompter(sid, createAcpPermissionPrompter(this.conn, sid, buildToolCallUpdate))
 			await bindAcpExtensions(session)
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
-			this.sessions.set(sid, { session, unsubscribe })
+			const entry: SessionRecord = { session, unsubscribe }
+			this.sessions.set(sid, entry)
 			// Replay BEFORE the response resolves so Zed sees a coherent transcript
 			// when the loadSession promise settles. No turn context is created, so a
 			// concurrent session/cancel during replay is a no-op — a turn must not
 			// be considered active during replay.
 			this.replayTranscript(session)
-			return { models: this.modelStateForSession(session) }
+			return { models: this.modelStateForSession(session, entry) }
 		} catch (err) {
 			unregisterAcpPrompter(sid)
 			const existing = this.sessions.get(sid)
@@ -763,8 +765,9 @@ export class KimchiAcpAgent implements Agent {
 		flushText()
 	}
 
-	private modelStateForSession(session: AgentSession): SessionModelState | null {
-		return buildSessionModelState(session)
+	private modelStateForSession(session: AgentSession, entry?: SessionRecord): SessionModelState | null {
+		const isMultiModel = entry?.multiModelEnabled ?? false
+		return buildSessionModelState(session, isMultiModel)
 	}
 
 	private send(params: SessionNotification): void {
@@ -804,18 +807,18 @@ export class KimchiAcpAgent implements Agent {
 // Zed toward an auth prompt instead of showing a generic "internal error".
 export function buildSessionModelState(
 	session: Pick<AgentSession, "model" | "modelRegistry">,
+	isMultiModel = false,
 ): SessionModelState | null {
 	const currentModel = session.model
 	if (!currentModel) {
 		return null
 	}
 	const availableModels = session.modelRegistry.getAvailable()
-	const multiModelActive = getMultiModelEnabled()
 	// When multi-model is active, return "multi-model" as currentModelId to match
 	// what clients send in setSessionModel. Include orchestrator name in the name
 	// so the UI can display "Multi-Model (Kimi K2.6)".
 	let multiModelName = "Multi-Model"
-	if (multiModelActive) {
+	if (isMultiModel) {
 		const { roles } = resolveModelRoles()
 		const parsed = splitModelRef(roles.orchestrator)
 		if (parsed) {
@@ -825,7 +828,7 @@ export function buildSessionModelState(
 			}
 		}
 	}
-	const currentModelId = multiModelActive ? "multi-model" : getAcpModelId(currentModel)
+	const currentModelId = isMultiModel ? "multi-model" : getAcpModelId(currentModel)
 	return {
 		currentModelId,
 		availableModels: [

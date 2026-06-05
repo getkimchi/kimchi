@@ -20,7 +20,6 @@ const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
 import { _resetState as _resetHideThinking, _setHideThinking } from "../../extensions/hide-thinking.js"
 import { resolveModelRoles } from "../../extensions/orchestration/model-roles.js"
-import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/prompt-construction/prompt-enrichment.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
 	type AcpSessionFactory,
@@ -1219,92 +1218,69 @@ describe("initializeHeadlessTheme", () => {
 
 describe("buildSessionModelState", () => {
 	it("returns null when model is missing", () => {
-		const wasEnabled = getMultiModelEnabled()
-		try {
-			setMultiModelEnabled(false)
-			const fake = new FakeAgentSession("s1")
-			fake.model = undefined
-			const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
-			expect(result).toBeNull()
-		} finally {
-			setMultiModelEnabled(wasEnabled)
-		}
+		const fake = new FakeAgentSession("s1")
+		fake.model = undefined
+		const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
+		expect(result).toBeNull()
 	})
 
 	it("returns currentModelId and availableModels when model is present", () => {
-		const wasEnabled = getMultiModelEnabled()
-		try {
-			setMultiModelEnabled(false)
-			const fake = new FakeAgentSession("s1")
-			fake.model = { provider: "openai", id: "gpt-4" }
-			fake.modelRegistry = {
-				getAvailable: () => [
-					{ provider: "openai", id: "gpt-4", name: "GPT-4" },
-					{ provider: "anthropic", id: "claude-3", name: "Claude 3" },
-				],
-			}
-			const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
-			expect(result).toEqual({
-				currentModelId: "openai/gpt-4",
-				availableModels: [
-					{ modelId: "multi-model", name: expect.stringContaining("Multi-Model") },
-					{ modelId: "openai/gpt-4", name: "GPT-4" },
-					{ modelId: "anthropic/claude-3", name: "Claude 3" },
-				],
-			})
-		} finally {
-			setMultiModelEnabled(wasEnabled)
+		const fake = new FakeAgentSession("s1")
+		fake.model = { provider: "openai", id: "gpt-4" }
+		fake.modelRegistry = {
+			getAvailable: () => [
+				{ provider: "openai", id: "gpt-4", name: "GPT-4" },
+				{ provider: "anthropic", id: "claude-3", name: "Claude 3" },
+			],
 		}
+		const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
+		expect(result).toEqual({
+			currentModelId: "openai/gpt-4",
+			availableModels: [
+				{ modelId: "multi-model", name: expect.stringContaining("Multi-Model") },
+				{ modelId: "openai/gpt-4", name: "GPT-4" },
+				{ modelId: "anthropic/claude-3", name: "Claude 3" },
+			],
+		})
 	})
 
 	it("returns empty availableModels when registry has no models", () => {
-		const wasEnabled = getMultiModelEnabled()
-		try {
-			setMultiModelEnabled(false)
-			const fake = new FakeAgentSession("s1")
-			fake.model = { provider: "openai", id: "gpt-4" }
-			fake.modelRegistry = { getAvailable: () => [] }
-			const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
-			expect(result).toEqual({
-				currentModelId: "openai/gpt-4",
-				availableModels: [{ modelId: "multi-model", name: expect.stringContaining("Multi-Model") }],
-			})
-		} finally {
-			setMultiModelEnabled(wasEnabled)
-		}
+		const fake = new FakeAgentSession("s1")
+		fake.model = { provider: "openai", id: "gpt-4" }
+		fake.modelRegistry = { getAvailable: () => [] }
+		const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
+		expect(result).toEqual({
+			currentModelId: "openai/gpt-4",
+			availableModels: [{ modelId: "multi-model", name: expect.stringContaining("Multi-Model") }],
+		})
 	})
 
 	it("returns multi-model currentModelId when multi-model mode is active", () => {
-		const wasEnabled = getMultiModelEnabled()
-		try {
-			const fake = new FakeAgentSession("s1")
-			fake.model = { provider: "openai", id: "gpt-4" }
-			fake.modelRegistry = {
-				getAvailable: () => [
-					{ provider: "openai", id: "gpt-4", name: "GPT-4" },
-					{ provider: "anthropic", id: "claude-3", name: "Claude 3" },
-				],
-				find: (provider: string, modelId: string) => {
-					// Return a model matching the orchestrator from settings
-					const { roles } = resolveModelRoles()
-					const orchRef = roles.orchestrator
-					const orchParts = orchRef.split("/")
-					if (orchParts.length === 2 && provider === orchParts[0] && modelId === orchParts[1]) {
-						return { provider: orchParts[0], id: orchParts[1], name: "Orchestrator Model" }
-					}
-					return undefined
-				},
-			}
-			setMultiModelEnabled(true)
-			const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
-			expect(result?.currentModelId).toBe("multi-model")
-			expect(result?.availableModels[0]).toEqual({
-				modelId: "multi-model",
-				name: expect.stringContaining("Multi-Model"),
-			})
-		} finally {
-			setMultiModelEnabled(wasEnabled)
+		const fake = new FakeAgentSession("s1")
+		fake.model = { provider: "openai", id: "gpt-4" }
+		fake.modelRegistry = {
+			getAvailable: () => [
+				{ provider: "openai", id: "gpt-4", name: "GPT-4" },
+				{ provider: "anthropic", id: "claude-3", name: "Claude 3" },
+			],
+			find: (provider: string, modelId: string) => {
+				// Return a model matching the orchestrator from settings
+				const { roles } = resolveModelRoles()
+				const orchRef = roles.orchestrator
+				const orchParts = orchRef.split("/")
+				if (orchParts.length === 2 && provider === orchParts[0] && modelId === orchParts[1]) {
+					return { provider: orchParts[0], id: orchParts[1], name: "Orchestrator Model" }
+				}
+				return undefined
+			},
 		}
+		// Pass true as second argument to enable multi-model state
+		const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0], true)
+		expect(result?.currentModelId).toBe("multi-model")
+		expect(result?.availableModels[0]).toEqual({
+			modelId: "multi-model",
+			name: expect.stringContaining("Multi-Model"),
+		})
 	})
 })
 
@@ -1417,41 +1393,35 @@ describe("unstable_setSessionModel", () => {
 	})
 
 	it("switches to multi-model mode", async () => {
-		// Save and restore multi-model state to avoid polluting other tests
-		const wasEnabled = getMultiModelEnabled()
-		try {
-			const fake = new FakeAgentSession("switch-session")
-			fake.model = { provider: "provider-a", id: "model-a" }
-			// Use the actual orchestrator from settings to match what resolveModelRoles returns
-			const { roles } = resolveModelRoles()
-			const orchRef = roles.orchestrator
-			const [orchProvider, orchModelId] = orchRef.split("/")
-			fake.modelRegistry = {
-				getAvailable: () => [
-					{ provider: orchProvider, id: orchModelId, name: "Orchestrator Model" },
-					{ provider: "provider-a", id: "model-a", name: "Model A" },
-				],
-				find: (provider: string, modelId: string) => {
-					if (provider === orchProvider && modelId === orchModelId) {
-						return { provider: orchProvider, id: orchModelId, name: "Orchestrator Model" }
-					}
-					return undefined
-				},
-			}
-			const factory: AcpSessionFactory = async () => asSession(fake)
-			const agent = new KimchiAcpAgent(makeConn(), {
-				extensionFactories: [],
-				agentDir: "/tmp/fake-agent-dir",
-				sessionFactory: factory,
-			})
-			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-			const res = await agent.unstable_setSessionModel({ sessionId: "switch-session", modelId: "multi-model" })
-			expect(res).toEqual({})
-			expect(fake.model?.provider).toBe(orchProvider)
-			expect(fake.model?.id).toBe(orchModelId)
-		} finally {
-			setMultiModelEnabled(wasEnabled)
+		const fake = new FakeAgentSession("switch-session")
+		fake.model = { provider: "provider-a", id: "model-a" }
+		// Use the actual orchestrator from settings to match what resolveModelRoles returns
+		const { roles } = resolveModelRoles()
+		const orchRef = roles.orchestrator
+		const [orchProvider, orchModelId] = orchRef.split("/")
+		fake.modelRegistry = {
+			getAvailable: () => [
+				{ provider: orchProvider, id: orchModelId, name: "Orchestrator Model" },
+				{ provider: "provider-a", id: "model-a", name: "Model A" },
+			],
+			find: (provider: string, modelId: string) => {
+				if (provider === orchProvider && modelId === orchModelId) {
+					return { provider: orchProvider, id: orchModelId, name: "Orchestrator Model" }
+				}
+				return undefined
+			},
 		}
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const res = await agent.unstable_setSessionModel({ sessionId: "switch-session", modelId: "multi-model" })
+		expect(res).toEqual({})
+		expect(fake.model?.provider).toBe(orchProvider)
+		expect(fake.model?.id).toBe(orchModelId)
 	})
 
 	it("throws invalidParams for unknown sessionId", async () => {
