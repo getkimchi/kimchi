@@ -86,15 +86,16 @@ function loadPlatformBinding(): NativeClipboard {
  * On WSL the kernel sets WSL_DISTRO_NAME / WSL_INTEROP unconditionally, and
  * WSLg sets $DISPLAY even when no graphical session is active. We therefore
  * treat WSL as "no display" unless the user has explicitly opted in by
- * setting KIMCHI_CLIPBOARD_FORCE=1. All other Linux systems require at least
- * one of DISPLAY / WAYLAND_DISPLAY to be set.
+ * setting KIMCHI_CLIPBOARD_FORCE=1. Requires DISPLAY to be set because the
+ * underlying clipboard-rs library only supports X11. WAYLAND_DISPLAY alone
+ * is not sufficient.
  */
 export function hasDisplayServer(): boolean {
 	if (process.platform !== "linux") return true
 	if (process.env.KIMCHI_CLIPBOARD_FORCE === "1") return true
 	const isWsl = Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP)
 	if (isWsl) return false
-	return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY)
+	return Boolean(process.env.DISPLAY)
 }
 
 /**

@@ -96,7 +96,7 @@ describe("hasDisplayServer — WSL / headless Linux guard", () => {
 		expect(hasDisplayServer()).toBe(true)
 	})
 
-	it("returns true on Linux with WAYLAND_DISPLAY set and no WSL", async () => {
+	it("returns false on Linux with only WAYLAND_DISPLAY set (pure Wayland, no X11)", async () => {
 		vi.stubEnv("WSL_DISTRO_NAME", "")
 		vi.stubEnv("WSL_INTEROP", "")
 		vi.stubEnv("DISPLAY", "")
@@ -104,6 +104,25 @@ describe("hasDisplayServer — WSL / headless Linux guard", () => {
 		vi.stubEnv("KIMCHI_CLIPBOARD_FORCE", "")
 
 		const hasDisplayServer = await freshHasDisplayServer()
-		expect(hasDisplayServer()).toBe(true)
+		if (process.platform === "linux") {
+			expect(hasDisplayServer()).toBe(false)
+		} else {
+			expect(hasDisplayServer()).toBe(true)
+		}
+	})
+
+	it("returns true on Linux with both DISPLAY and WAYLAND_DISPLAY set (XWayland)", async () => {
+		vi.stubEnv("WSL_DISTRO_NAME", "")
+		vi.stubEnv("WSL_INTEROP", "")
+		vi.stubEnv("DISPLAY", ":0")
+		vi.stubEnv("WAYLAND_DISPLAY", "wayland-0")
+		vi.stubEnv("KIMCHI_CLIPBOARD_FORCE", "")
+
+		const hasDisplayServer = await freshHasDisplayServer()
+		if (process.platform === "linux") {
+			expect(hasDisplayServer()).toBe(true)
+		} else {
+			expect(hasDisplayServer()).toBe(true)
+		}
 	})
 })
