@@ -61,15 +61,15 @@
 		"typebox": "*"
 	},
 	"optionalDependencies": {
-		"@mariozechner/clipboard-darwin-arm64": "0.3.2",
-		"@mariozechner/clipboard-darwin-universal": "0.3.2",
-		"@mariozechner/clipboard-darwin-x64": "0.3.2",
-		"@mariozechner/clipboard-linux-arm64-gnu": "0.3.2",
-		"@mariozechner/clipboard-linux-arm64-musl": "0.3.2",
-		"@mariozechner/clipboard-linux-x64-gnu": "0.3.2",
-		"@mariozechner/clipboard-linux-x64-musl": "0.3.2",
-		"@mariozechner/clipboard-win32-arm64-msvc": "0.3.2",
-		"@mariozechner/clipboard-win32-x64-msvc": "0.3.2"
+		"@mariozechner/clipboard-darwin-arm64": "0.3.6",
+		"@mariozechner/clipboard-darwin-universal": "0.3.6",
+		"@mariozechner/clipboard-darwin-x64": "0.3.6",
+		"@mariozechner/clipboard-linux-arm64-gnu": "0.3.6",
+		"@mariozechner/clipboard-linux-arm64-musl": "0.3.6",
+		"@mariozechner/clipboard-linux-x64-gnu": "0.3.6",
+		"@mariozechner/clipboard-linux-x64-musl": "0.3.6",
+		"@mariozechner/clipboard-win32-arm64-msvc": "0.3.6",
+		"@mariozechner/clipboard-win32-x64-msvc": "0.3.6"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.4",

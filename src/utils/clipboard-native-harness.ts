@@ -21,14 +21,12 @@
 // limitation.
 //
 // WSL / headless Linux note:
-// The clipboard-rs Rust library calls XOpenDisplay() during ClipboardContext
-// initialisation. On Linux without a real X11/Wayland server this call
-// panics (Rust unwrap on Err) rather than returning a JS exception, killing
-// the entire process. We therefore probe the binding immediately after
-// loading it by calling availableFormats() inside the same try/catch block.
-// A Rust panic propagates as a process abort that cannot be caught in JS, so
-// the only safe strategy is to never load the binding when there is no
-// display server. We also detect WSL explicitly (via WSL_DISTRO_NAME /
+// Loading the native clipboard addon when no display server is available
+// causes clipboard-initialization failures. Older versions of the library
+// (≤ 0.3.2, bundled clipboard-rs 0.2.4) would panic via Rust unwrap, turning
+// the error into an uncatchable process abort. Version 0.3.6+ handles errors
+// gracefully (returning JS exceptions), but we still avoid unnecessary addon
+// loads on headless systems. We detect WSL explicitly (via WSL_DISTRO_NAME /
 // WSL_INTEROP) because WSLg may set $DISPLAY to ":0" even when no graphical
 // session is running, giving a false positive to the simple display check.
 
