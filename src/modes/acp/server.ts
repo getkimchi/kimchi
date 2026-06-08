@@ -234,34 +234,14 @@ export class KimchiAcpAgent implements Agent {
 			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
 		}
 
-		// Serialize concurrent model switches for the same session to prevent
-		// race conditions on entry.multiModelEnabled. The turn gate above only
-		// blocks prompts, not model switches.
-		const existingLock = this.modelSwitchLocks.get(params.sessionId)
-		if (existingLock) {
-			await existingLock
+		// Serialize concurrent model switches per session. The turn gate above
+		// only blocks prompts, not model switches. We use a simple lock pattern:
+		// await any pending switch, then execute ours and store its completion promise.
+		const pending = this.modelSwitchLocks.get(params.sessionId)
+		if (pending) {
+			await pending
 		}
 
-		const switchPromise = this.executeModelSwitch(entry, params)
-		this.modelSwitchLocks.set(
-			params.sessionId,
-			switchPromise.then(() => undefined),
-		)
-		try {
-			return await switchPromise
-		} finally {
-			// Only clean up if this call's promise is still the current lock
-			// (handles the case where a new switch started during our await)
-			if (this.modelSwitchLocks.get(params.sessionId) === switchPromise.then(() => undefined)) {
-				this.modelSwitchLocks.delete(params.sessionId)
-			}
-		}
-	}
-
-	private async executeModelSwitch(
-		entry: SessionRecord,
-		params: SetSessionModelRequest,
-	): Promise<SetSessionModelResponse> {
 		const { session } = entry
 
 		// Handle multi-model mode
@@ -276,21 +256,23 @@ export class KimchiAcpAgent implements Agent {
 			if (!orchestrator) {
 				throw RequestError.invalidParams(undefined, `Multi-model orchestrator (${orchestratorRef}) is not available.`)
 			}
+
+			const switchCompletion = session.setModel(orchestrator).then(
+				() => {
+					entry.multiModelEnabled = true
+				},
+				(err) => {
+					if (err instanceof RequestError) throw err
+					throw RequestError.internalError(
+						`Failed to switch to multi-model mode: ${err instanceof Error ? err.message : String(err)}`,
+					)
+				},
+			)
+			this.modelSwitchLocks.set(params.sessionId, switchCompletion)
 			try {
-				// Set the flag BEFORE the await to ensure atomicity with respect
-				// to other serialized model switches. If setModel fails, we rely
-				// on the catch block to reset the flag.
-				entry.multiModelEnabled = true
-				await session.setModel(orchestrator)
-			} catch (err) {
-				// Reset the flag on failure since we didn't actually switch models
-				entry.multiModelEnabled = false
-				if (err instanceof RequestError) {
-					throw err
-				}
-				throw RequestError.internalError(
-					`Failed to switch to multi-model mode: ${err instanceof Error ? err.message : String(err)}`,
-				)
+				await switchCompletion
+			} finally {
+				this.modelSwitchLocks.delete(params.sessionId)
 			}
 			return {}
 		}
@@ -300,15 +282,21 @@ export class KimchiAcpAgent implements Agent {
 		if (!selectedModel) {
 			throw RequestError.invalidParams(undefined, `Unknown or unavailable model: ${params.modelId}`)
 		}
+
+		const switchCompletion = session.setModel(selectedModel).then(
+			() => {
+				entry.multiModelEnabled = false
+			},
+			(err) => {
+				if (err instanceof RequestError) throw err
+				throw RequestError.internalError(`Failed to switch model: ${err instanceof Error ? err.message : String(err)}`)
+			},
+		)
+		this.modelSwitchLocks.set(params.sessionId, switchCompletion)
 		try {
-			// Set the flag BEFORE the await for atomicity
-			entry.multiModelEnabled = false
-			await session.setModel(selectedModel)
-		} catch (err) {
-			if (err instanceof RequestError) {
-				throw err
-			}
-			throw RequestError.internalError(`Failed to switch model: ${err instanceof Error ? err.message : String(err)}`)
+			await switchCompletion
+		} finally {
+			this.modelSwitchLocks.delete(params.sessionId)
 		}
 		return {}
 	}
