@@ -21,6 +21,7 @@ import {
 	setContinuationPolicy,
 } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
+import { FERMENT_TOOLS } from "./tool-names.js"
 import { completeFerment, scopeFerment } from "./tools/lifecycle.js"
 
 const requestSharedFooterRenderMock = vi.hoisted(() => vi.fn())
@@ -84,7 +85,20 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 	} as unknown as ExtensionAPI
 
 	fermentExtension(pi, runtime)
-	return { commands, handlers, pi, shortcuts }
+	return { allHandlers, commands, handlers, pi, shortcuts }
+}
+
+async function emitHandlers(
+	allHandlers: Map<string, EventHandler[]>,
+	event: string,
+	payload: unknown,
+	ctx: unknown = {},
+) {
+	const results = []
+	for (const handler of allHandlers.get(event) ?? []) {
+		results.push(await handler(payload, ctx))
+	}
+	return results
 }
 
 afterEach(() => {
@@ -187,6 +201,81 @@ describe("fermentExtension stop-policy shortcut", () => {
 
 		expect(isAutomatedContinuationEnabled()).toBe(false)
 		expect(requestSharedFooterRenderMock).not.toHaveBeenCalled()
+	})
+})
+
+describe("fermentExtension plan review handoff guard", () => {
+	it("suppresses assistant text and blocks tool calls until agent_end after Plan ready for review", async () => {
+		const runtime = createDefaultFermentRuntime()
+		const { allHandlers } = registerFermentExtension(runtime)
+		runtime.setPendingPlanReview({ fermentId: "f-123", planMarkdown: "# Plan: Test" })
+
+		await emitHandlers(allHandlers, "tool_result", {
+			type: "tool_result",
+			toolCallId: "tool-call-1",
+			toolName: FERMENT_TOOLS.PROPOSE_SCOPING,
+			input: { ferment_id: "f-123" },
+			content: [{ type: "text", text: "Plan ready for review. The review dialog will open when this turn finishes." }],
+			isError: false,
+		})
+
+		const streamingMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "The plan has been proposed. Waiting for confirmation." }],
+		}
+		await emitHandlers(allHandlers, "message_update", {
+			type: "message_update",
+			message: streamingMessage,
+			assistantMessageEvent: {},
+		})
+		expect(streamingMessage.content).toEqual([{ type: "text", text: "" }])
+
+		const finalMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "Plan ready for review. Here is a summary." }],
+			api: "test",
+			provider: "test",
+			model: "test",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		const messageEndResults = await emitHandlers(allHandlers, "message_end", {
+			type: "message_end",
+			message: finalMessage,
+		})
+		expect(messageEndResults).toContainEqual({
+			message: expect.objectContaining({ content: [{ type: "text", text: "" }] }),
+		})
+
+		const blocked = await emitHandlers(allHandlers, "tool_call", {
+			type: "tool_call",
+			toolCallId: "tool-call-2",
+			toolName: FERMENT_TOOLS.ACTIVATE_PHASE,
+			input: { ferment_id: "f-123", phase_id: "phase-1" },
+		})
+		expect(blocked).toContainEqual(
+			expect.objectContaining({
+				block: true,
+				reason: expect.stringContaining("Plan review is pending"),
+			}),
+		)
+
+		await emitHandlers(allHandlers, "agent_end", { type: "agent_end" }, { ui: { notify: vi.fn() } })
+		const allowed = await emitHandlers(allHandlers, "tool_call", {
+			type: "tool_call",
+			toolCallId: "tool-call-3",
+			toolName: FERMENT_TOOLS.ACTIVATE_PHASE,
+			input: { ferment_id: "f-123", phase_id: "phase-1" },
+		})
+		expect(allowed).not.toContainEqual(expect.objectContaining({ block: true }))
 	})
 })
 
