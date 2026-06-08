@@ -114,18 +114,6 @@ describe("cursor AgentDefinition", () => {
 		expect(result.skillsDir).toBe(dir)
 	})
 
-	it("falls back to ~/.agents/skills when ~/.cursor/skills is absent", () => {
-		const dir = mkSkillsDir("agents-skills", ["alpha", "beta"])
-		const result = discoverAgent(
-			makeCursorDefinition({
-				configPaths: [join(tempDir, "none.json")],
-				skillsDirs: [join(tempDir, "no-cursor-skills"), dir],
-			}),
-		)
-		expect(result.skillCount).toBe(2)
-		expect(result.skillsDir).toBe(dir)
-	})
-
 	it("skips malformed mcpServers entries without crashing", () => {
 		const path = configPath()
 		writeConfig(path, {
@@ -153,6 +141,8 @@ describe("cursor AgentDefinition", () => {
 		expect(ids).toEqual(["claude-code", "opencode", "cursor"])
 	})
 
+	// Documents expected merge priority (CC > OC > Cursor). Reimplements setup-wizard
+	// merge order because mergeDiscoveries is not exported for direct testing.
 	it("loses cross-agent MCP name collisions to Claude Code and OpenCode", () => {
 		const ccPath = join(tempDir, ".claude.json")
 		const ocPath = join(tempDir, "opencode.json")
