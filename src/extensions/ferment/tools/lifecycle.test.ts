@@ -511,6 +511,86 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 	})
 })
 
+describe("ask_user via registerLifecycleTools", () => {
+	function createAskUserHarness() {
+		const h = createHarness()
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			...h.pi,
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+			getFlag: vi.fn(() => false),
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, h.runtime)
+
+		const tool = tools.get(FERMENT_TOOLS.ASK_USER)
+		if (!tool) throw new Error("ask_user not registered")
+		const execute = tool.execute as unknown as (
+			...args: unknown[]
+		) => Promise<{ content: { text: string }[]; isError?: boolean }>
+		return { h, execute }
+	}
+
+	it("allows pure confirm shorthand as a Yes/No question", async () => {
+		const { h, execute } = createAskUserHarness()
+		const select = vi.fn(async () => "Yes")
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				question: "Sound right?",
+				response_type: "confirm",
+			},
+			undefined,
+			undefined,
+			{ ui: { select } },
+		)
+
+		expect(okText(result)).toContain("Choice: yes")
+		expect(select).toHaveBeenCalledWith("Sound right?", ["Yes", "No"])
+	})
+
+	it("returns confirm and typed text answers from the recommended criteria questions form", async () => {
+		const { h, execute } = createAskUserHarness()
+		const custom = vi.fn(async () => ({
+			questions: [],
+			answers: [
+				{ id: "criteria_ok", value: "yes", label: "Yes", wasCustom: false, index: 0 },
+				{
+					id: "criteria_changes",
+					value: "Add a CLI smoke test.",
+					label: "Add a CLI smoke test.",
+					wasCustom: true,
+					index: 1,
+				},
+			],
+			cancelled: false,
+		}))
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				title: "Completion criteria",
+				questions: [
+					{ id: "criteria_ok", type: "confirm", prompt: "Do these completion criteria look right?" },
+					{ id: "criteria_changes", type: "text", prompt: "Any additions or changes?", required: false },
+				],
+			},
+			undefined,
+			undefined,
+			{ ui: { custom } },
+		)
+
+		const text = okText(result)
+		expect(text).toContain("- criteria_ok: yes")
+		expect(text).toContain("- criteria_changes: Add a CLI smoke test. (custom)")
+		expect(text).toContain("Answered by: user")
+	})
+})
+
 describe("update_ferment_scope_field via registerLifecycleTools", () => {
 	function createRegisteredHarness() {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-update-scope-test-")))

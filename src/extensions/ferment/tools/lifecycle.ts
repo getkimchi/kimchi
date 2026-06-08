@@ -1134,9 +1134,10 @@ The agent should:
   1. Frame the question concretely. The user/judge sees only the question plus options/context in this call.
   2. Prefer questions[] for the full TUI: single, multi, text, confirm. allowOther is only for single/multi custom free-text options.
   3. Use response_type="single" | "multi" | "text" | "confirm" only as a compatibility shorthand for one question.
-  4. For single/multi, provide stable snake-case option ids and short labels (confirm defaults to Yes/No).
-  5. Include "pause" or "abandon" as an explicit option when one is appropriate — the judge prefers these when uncertain.
-  6. Act on the returned \`answers\`, \`choice\`, \`choices\`, or \`text\` field.
+  4. Treat response_type="confirm" as strict Yes/No only. Any prompt asking for additions, changes, anything else, additional context, or other free-form input must use questions[] with a text question, or response_type="text" for a single free-form question.
+  5. For single/multi, provide stable snake-case option ids and short labels (confirm defaults to Yes/No).
+  6. Include "pause" or "abandon" as an explicit option when one is appropriate — the judge prefers these when uncertain.
+  7. Act on the returned \`answers\`, \`choice\`, \`choices\`, or \`text\` field.
 
 TUI controls for questions[]:
   - Tab / Shift+Tab moves between questions

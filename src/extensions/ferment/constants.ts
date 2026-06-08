@@ -52,8 +52,11 @@ STEP 3 — COMPLETION CRITERIA
 Draft concrete completion criteria and validation steps, then confirm with the user.
 - State what "done" looks like in specific, testable terms.
 - Include the verification method for each criterion (test command, manual check, linter, etc.).
-- Use ask_user to present the criteria. Keep it brief:
-  "I'll consider this done when: [list]. Sound right?"
+- Use ask_user.questions[] to present the criteria. Keep it brief:
+  • criteria_ok: type "confirm", prompt "Do these completion criteria look right?"
+  • criteria_changes: type "text", prompt "Any additions or changes?", required false
+- Proceed only when criteria_ok is yes and criteria_changes is empty. Otherwise revise
+  the criteria and ask again.
 - If the user already stated clear acceptance criteria in their intent, confirm them
   rather than rephrasing. Don't over-formalize obvious criteria.
 - Confirm criteria with the user before proceeding to exploration.
