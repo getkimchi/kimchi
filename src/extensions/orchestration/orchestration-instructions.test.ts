@@ -177,6 +177,30 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("Match the Builder model to the chunk's complexity classification")
 	})
 
+	it("includes complex chunk spec detail requirements", () => {
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("What makes a good complex chunk spec")
+		expect(result).toContain("concurrency/algorithm primitives")
+		expect(result).toContain("lifecycle of goroutines/threads")
+		expect(result).toContain("error propagation path")
+	})
+
+	it("includes review row in budget table", () => {
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("Review (read code + write findings report)")
+		expect(result).toContain("Heavy-tier model duration scaling")
+	})
+
 	it("does not include lightweight re-verification guidance", () => {
 		const result = resolveOrchestrationInstructions({
 			currentModelId: "kimi-k2.6",

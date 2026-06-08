@@ -64,14 +64,33 @@ describe("OrchestratorWriteGuard — build phase", () => {
 		expect(result).toEqual({ steer: expect.stringContaining("Delegation guard") })
 	})
 
-	it("steers only once per subagent return", () => {
+	it("steers only once then allows edits until block threshold", () => {
 		mockPhase = "build"
-		const guard = new OrchestratorWriteGuard({ buildPhaseThreshold: 2 })
+		const guard = new OrchestratorWriteGuard({ buildPhaseThreshold: 2, buildPhaseBlockThreshold: 5 })
 		guard.recordSubagentReturn()
 		guard.checkToolCall("edit")
 		guard.checkToolCall("edit")
 		expect(guard.getState().buildSteered).toBe(true)
 		expect(guard.checkToolCall("edit")).toBeUndefined()
+		expect(guard.checkToolCall("edit")).toBeUndefined()
+	})
+
+	it("blocks after block threshold edits following a subagent return", () => {
+		mockPhase = "build"
+		const guard = new OrchestratorWriteGuard({ buildPhaseThreshold: 2, buildPhaseBlockThreshold: 5 })
+		guard.recordSubagentReturn()
+		for (let i = 0; i < 4; i++) guard.checkToolCall("edit")
+		const result = guard.checkToolCall("edit")
+		expect(result).toEqual({ block: true, reason: expect.stringContaining("BLOCKED") })
+	})
+
+	it("keeps blocking on every edit after block threshold", () => {
+		mockPhase = "build"
+		const guard = new OrchestratorWriteGuard({ buildPhaseThreshold: 2, buildPhaseBlockThreshold: 5 })
+		guard.recordSubagentReturn()
+		for (let i = 0; i < 5; i++) guard.checkToolCall("edit")
+		expect(guard.checkToolCall("edit")).toEqual({ block: true, reason: expect.stringContaining("BLOCKED") })
+		expect(guard.checkToolCall("write")).toEqual({ block: true, reason: expect.stringContaining("BLOCKED") })
 	})
 
 	it("resets when a new Agent is spawned", () => {

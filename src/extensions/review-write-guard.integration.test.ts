@@ -128,9 +128,23 @@ describe("reviewWriteGuardExtension wiring", () => {
 		// After 2 edits above threshold, steer fires
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 
-		// Further edits — buildSteered = true, so no more steers
+		// Further edits — buildSteered = true, so no more steers (until block threshold)
 		emit(pi, "tool_call", { toolName: "edit" })
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("blocks after block threshold edits in build phase", () => {
+		const pi = createMockPI()
+		reviewWriteGuardExtension(pi as unknown as PI, { buildPhaseThreshold: 2, buildPhaseBlockThreshold: 4 })
+		mockPhase = "build"
+
+		emit(pi, "tool_result", { toolName: "Agent" })
+		emit(pi, "tool_call", { toolName: "edit" }) // 1
+		emit(pi, "tool_call", { toolName: "edit" }) // 2 — steer
+		emit(pi, "tool_call", { toolName: "edit" }) // 3
+		expect(pi._blockResult).toBeUndefined()
+		emit(pi, "tool_call", { toolName: "edit" }) // 4 — block
+		expect(pi._blockResult).toMatchObject({ block: true, reason: expect.stringContaining("BLOCKED") })
 	})
 
 	it("steer message is delivered via pi.sendMessage in build phase after threshold", () => {

@@ -9,6 +9,8 @@ export interface OrchestratorWriteGuardOptions {
 	implementationTools?: Set<string>
 	/** Number of implementation tool calls after a subagent return in build phase before a steer fires. Default: 2 */
 	buildPhaseThreshold?: number
+	/** Number of implementation tool calls after a subagent return in build phase before a hard block fires. Default: 5 */
+	buildPhaseBlockThreshold?: number
 }
 
 export const STEER_MESSAGE_TYPE = "review-write-guard-steer"
@@ -22,10 +24,15 @@ const BUILD_STEER_MESSAGE =
 	"The orchestrator should not fix subagent output directly — it wastes orchestrator tokens. " +
 	"Spawn a fix Agent with the test failures and let it handle the corrections."
 
+const BUILD_BLOCK_REASON =
+	"BLOCKED: You have continued editing subagent output after being warned. " +
+	"The orchestrator must not do a subagent's job. Spawn a fix Agent with the remaining work."
+
 export class OrchestratorWriteGuard {
 	private readonly implementationTools: Set<string>
 	private readonly delegationTools: Set<string>
 	private readonly buildPhaseThreshold: number
+	private readonly buildPhaseBlockThreshold: number
 
 	private subagentReturnedInBuild = false
 	private buildWriteCount = 0
@@ -35,6 +42,7 @@ export class OrchestratorWriteGuard {
 		this.implementationTools = options.implementationTools ?? new Set(IMPLEMENTATION_TOOLS)
 		this.delegationTools = new Set(DELEGATION_TOOLS)
 		this.buildPhaseThreshold = options.buildPhaseThreshold ?? 2
+		this.buildPhaseBlockThreshold = options.buildPhaseBlockThreshold ?? 5
 	}
 
 	reset(): void {
@@ -61,6 +69,9 @@ export class OrchestratorWriteGuard {
 			if (!this.subagentReturnedInBuild) return undefined
 
 			this.buildWriteCount++
+			if (this.buildWriteCount >= this.buildPhaseBlockThreshold) {
+				return { block: true, reason: BUILD_BLOCK_REASON }
+			}
 			if (this.buildWriteCount >= this.buildPhaseThreshold && !this.buildSteered) {
 				this.buildSteered = true
 				return { steer: BUILD_STEER_MESSAGE }
