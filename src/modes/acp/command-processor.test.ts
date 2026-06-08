@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest"
-import { processCommand } from "./command-processor.js"
+import {
+	type CommandResult,
+	type CreateFermentResult,
+	type UnknownCommandResult,
+	processCommand,
+} from "./command-processor.js"
+
+/** Type guard to narrow CommandResult to CreateFermentResult in tests. */
+function isCreateFermentResult(result: CommandResult): result is CreateFermentResult {
+	return result.isCommand === true && result.command === "create_ferment"
+}
+
+/** Type guard to narrow CommandResult to UnknownCommandResult in tests. */
+function isUnknownCommandResult(result: CommandResult): result is UnknownCommandResult {
+	return result.isCommand === true && result.command !== "create_ferment"
+}
 
 describe("processCommand", () => {
 	describe("non-command input", () => {
@@ -26,8 +41,8 @@ describe("processCommand", () => {
 	describe("create_ferment command", () => {
 		it("processes /create_ferment with title argument", () => {
 			const result = processCommand("/create_ferment Rewrite authentication")
-			expect(result.isCommand).toBe(true)
-			expect(result.command).toBe("create_ferment")
+			expect(isCreateFermentResult(result)).toBe(true)
+			if (!isCreateFermentResult(result)) return // TS narrowing
 			expect(result.argument).toBe("Rewrite authentication")
 			expect(result.title).toBe("Rewrite authentication")
 			expect(result.intent).toBe("User wants to create a ferment: Rewrite authentication")
@@ -41,17 +56,17 @@ describe("processCommand", () => {
 			const mixed = processCommand("/Create_Ferment Title")
 			const partial = processCommand("/CREATE_ferment Title")
 
-			for (const result of [lower, upper, mixed, partial]) {
-				expect(result.isCommand).toBe(true)
-				expect(result.command).toBe("create_ferment")
-				expect(result.title).toBe("Title")
+			for (const r of [lower, upper, mixed, partial]) {
+				expect(isCreateFermentResult(r)).toBe(true)
+				if (!isCreateFermentResult(r)) continue // TS narrowing
+				expect(r.title).toBe("Title")
 			}
 		})
 
 		it("processes /create_ferment without argument", () => {
 			const result = processCommand("/create_ferment")
-			expect(result.isCommand).toBe(true)
-			expect(result.command).toBe("create_ferment")
+			expect(isCreateFermentResult(result)).toBe(true)
+			if (!isCreateFermentResult(result)) return // TS narrowing
 			expect(result.argument).toBe("")
 			expect(result.title).toBe("New Ferment")
 			expect(result.intent).toBe("User wants to create a new ferment workflow")
@@ -61,12 +76,16 @@ describe("processCommand", () => {
 
 		it("processes /create_ferment with multiple word title", () => {
 			const result = processCommand("/create_ferment Implement OAuth2 login with Google")
+			expect(isCreateFermentResult(result)).toBe(true)
+			if (!isCreateFermentResult(result)) return // TS narrowing
 			expect(result.title).toBe("Implement OAuth2 login with Google")
 			expect(result.argument).toBe("Implement OAuth2 login with Google")
 		})
 
 		it("trims leading/trailing whitespace from argument", () => {
 			const result = processCommand("/create_ferment   My Ferment   ")
+			expect(isCreateFermentResult(result)).toBe(true)
+			if (!isCreateFermentResult(result)) return // TS narrowing
 			expect(result.title).toBe("My Ferment")
 		})
 
@@ -88,21 +107,24 @@ describe("processCommand", () => {
 	describe("unknown commands", () => {
 		it("returns unchanged for unknown commands", () => {
 			const result = processCommand("/unknown_command something")
-			expect(result.isCommand).toBe(true)
+			expect(isUnknownCommandResult(result)).toBe(true)
+			if (!isUnknownCommandResult(result)) return // TS narrowing
 			expect(result.command).toBe("unknown_command")
 			expect(result.promptText).toBe("/unknown_command something")
 		})
 
 		it("returns unchanged for /pause_ferment (not yet implemented)", () => {
 			const result = processCommand("/pause_ferment")
-			expect(result.isCommand).toBe(true)
+			expect(isUnknownCommandResult(result)).toBe(true)
+			if (!isUnknownCommandResult(result)) return // TS narrowing
 			expect(result.command).toBe("pause_ferment")
 			expect(result.promptText).toBe("/pause_ferment")
 		})
 
 		it("returns unchanged for /resume_ferment (not yet implemented)", () => {
 			const result = processCommand("/resume_ferment")
-			expect(result.isCommand).toBe(true)
+			expect(isUnknownCommandResult(result)).toBe(true)
+			if (!isUnknownCommandResult(result)) return // TS narrowing
 			expect(result.command).toBe("resume_ferment")
 			expect(result.promptText).toBe("/resume_ferment")
 		})

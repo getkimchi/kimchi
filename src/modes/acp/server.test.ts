@@ -1359,7 +1359,6 @@ describe("create_ferment command handling", () => {
 		await agent.prompt({
 			sessionId: "session-cmd-test",
 			prompt: [{ type: "text", text: "/create_ferment Rewrite authentication" }],
-			source: "client",
 		})
 
 		// Verify the session received the transformed prompt
@@ -1384,7 +1383,6 @@ describe("create_ferment command handling", () => {
 		await agent.prompt({
 			sessionId: "session-cmd-default",
 			prompt: [{ type: "text", text: "/create_ferment" }],
-			source: "client",
 		})
 
 		expect(fake.promptCalls).toHaveLength(1)
