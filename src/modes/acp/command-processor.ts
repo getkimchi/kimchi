@@ -6,42 +6,60 @@
  * structured data that can be used to build prompts.
  */
 
-export interface CommandResult {
-	/** The original input text */
+/** Common fields shared by all command results. */
+interface CommandResultBase {
+	/** The original input text, unmodified. */
 	readonly originalText: string
-	/** Whether a command was detected and processed */
-	readonly isCommand: boolean
-	/** The command name (e.g., "create_ferment") */
-	readonly command?: string
-	/** The command argument (raw text after command) */
-	readonly argument?: string
-	/** The processed text to send to the agent */
+	/** The processed text to send to the agent. */
 	readonly promptText: string
-	/** The ferment title (if applicable) */
-	readonly title?: string
-	/** The user intent description (if applicable) */
-	readonly intent?: string
 }
+
+/** Input was not a slash command — pass through unchanged. */
+export interface PassthroughResult extends CommandResultBase {
+	readonly isCommand: false
+}
+
+/** A recognised slash command with command-specific payload. */
+export interface CreateFermentResult extends CommandResultBase {
+	readonly isCommand: true
+	readonly command: "create_ferment"
+	readonly argument: string
+	readonly title: string
+	readonly intent: string
+}
+
+/** A slash command that was parsed but is not (yet) handled. */
+export interface UnknownCommandResult extends CommandResultBase {
+	readonly isCommand: true
+	readonly command: string
+	readonly argument: string
+}
+
+/**
+ * Discriminated union of all possible command processing outcomes.
+ *
+ * Discriminate on `isCommand` first, then narrow on `command` to access
+ * command-specific fields like `title` and `intent`.
+ */
+export type CommandResult = PassthroughResult | CreateFermentResult | UnknownCommandResult
 
 /**
  * Parse and process slash commands from user input.
  *
  * Supported commands:
- * - /create_ferment [title] - Creates a new ferment workflow
+ * - /create_ferment [title] — Creates a new ferment workflow
+ *
+ * Commands are case-insensitive.
  *
  * @param text - The raw input text
- * @returns CommandResult with processed data
+ * @returns A discriminated {@link CommandResult}
  */
 export function processCommand(text: string): CommandResult {
 	const trimmed = text.trim()
 
 	// Check for command prefix
 	if (!trimmed.startsWith("/")) {
-		return {
-			originalText: text,
-			isCommand: false,
-			promptText: text,
-		}
+		return { originalText: text, isCommand: false, promptText: text }
 	}
 
 	// Extract command name (case-insensitive) and argument
@@ -56,7 +74,7 @@ export function processCommand(text: string): CommandResult {
 
 	switch (command) {
 		case "create_ferment":
-			return processCreateFerment(text, argument)
+			return buildCreateFerment(text, argument)
 
 		// Future commands:
 		// case "pause_ferment":
@@ -64,7 +82,6 @@ export function processCommand(text: string): CommandResult {
 		// case "complete_ferment":
 
 		default:
-			// Unknown command - return unchanged
 			return {
 				originalText: text,
 				isCommand: true,
@@ -75,13 +92,12 @@ export function processCommand(text: string): CommandResult {
 	}
 }
 
-function processCreateFerment(originalText: string, argument: string): CommandResult {
+function buildCreateFerment(originalText: string, argument: string): CreateFermentResult {
 	const title = argument || "New Ferment"
 	const intent = argument
 		? `User wants to create a ferment: ${argument}`
 		: "User wants to create a new ferment workflow"
 
-	// Transform into a prompt that triggers the request_ferment_workflow tool
 	const promptText = `Create a ferment workflow using the request_ferment_workflow tool with title "${title}" and intent: ${intent}`
 
 	return {
