@@ -225,6 +225,39 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
+	/**
+	 * Serializes model switches per session using a simple lock pattern:
+	 * - Wait for any in-flight switch to complete
+	 * - Execute the switch function
+	 * - Track the completion promise so subsequent calls queue behind it
+	 * - Clean up the lock after completion (success or failure)
+	 *
+	 * Uses async/await with try/catch to ensure synchronous throws from
+	 * session.setModel() are also caught and normalized to RequestError.
+	 */
+	private async runSerializedModelSwitch(sessionId: string, switchFn: () => Promise<void>): Promise<void> {
+		const pending = this.modelSwitchLocks.get(sessionId)
+		if (pending) {
+			await pending
+		}
+
+		const switchCompletion = (async () => {
+			try {
+				await switchFn()
+			} catch (err) {
+				if (err instanceof RequestError) throw err
+				throw RequestError.internalError(`Failed to switch model: ${err instanceof Error ? err.message : String(err)}`)
+			}
+		})()
+
+		this.modelSwitchLocks.set(sessionId, switchCompletion)
+		try {
+			await switchCompletion
+		} finally {
+			this.modelSwitchLocks.delete(sessionId)
+		}
+	}
+
 	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
 		const entry = this.sessions.get(params.sessionId)
 		if (!entry) {
@@ -232,14 +265,6 @@ export class KimchiAcpAgent implements Agent {
 		}
 		if (entry.turn) {
 			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
-		}
-
-		// Serialize concurrent model switches per session. The turn gate above
-		// only blocks prompts, not model switches. We use a simple lock pattern:
-		// await any pending switch, then execute ours and store its completion promise.
-		const pending = this.modelSwitchLocks.get(params.sessionId)
-		if (pending) {
-			await pending
 		}
 
 		const { session } = entry
@@ -257,47 +282,24 @@ export class KimchiAcpAgent implements Agent {
 				throw RequestError.invalidParams(undefined, `Multi-model orchestrator (${orchestratorRef}) is not available.`)
 			}
 
-			const switchCompletion = session.setModel(orchestrator).then(
-				() => {
-					entry.multiModelEnabled = true
-				},
-				(err) => {
-					if (err instanceof RequestError) throw err
-					throw RequestError.internalError(
-						`Failed to switch to multi-model mode: ${err instanceof Error ? err.message : String(err)}`,
-					)
-				},
-			)
-			this.modelSwitchLocks.set(params.sessionId, switchCompletion)
-			try {
-				await switchCompletion
-			} finally {
-				this.modelSwitchLocks.delete(params.sessionId)
-			}
+			await this.runSerializedModelSwitch(params.sessionId, async () => {
+				await session.setModel(orchestrator)
+				entry.multiModelEnabled = true
+			})
 			return {}
 		}
 
+		// Single-model mode
 		const availableModels = session.modelRegistry.getAvailable()
 		const selectedModel = availableModels.find((m) => getAcpModelId(m) === params.modelId)
 		if (!selectedModel) {
 			throw RequestError.invalidParams(undefined, `Unknown or unavailable model: ${params.modelId}`)
 		}
 
-		const switchCompletion = session.setModel(selectedModel).then(
-			() => {
-				entry.multiModelEnabled = false
-			},
-			(err) => {
-				if (err instanceof RequestError) throw err
-				throw RequestError.internalError(`Failed to switch model: ${err instanceof Error ? err.message : String(err)}`)
-			},
-		)
-		this.modelSwitchLocks.set(params.sessionId, switchCompletion)
-		try {
-			await switchCompletion
-		} finally {
-			this.modelSwitchLocks.delete(params.sessionId)
-		}
+		await this.runSerializedModelSwitch(params.sessionId, async () => {
+			await session.setModel(selectedModel)
+			entry.multiModelEnabled = false
+		})
 		return {}
 	}
 
