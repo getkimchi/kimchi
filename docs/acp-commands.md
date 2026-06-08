@@ -66,8 +66,8 @@ Example command handling:
 ```typescript
 // User sends: "/create_ferment Rewrite login flow"
 // Server transforms to:
-// "Start a ferment workflow using request_ferment_workflow tool 
-//  with title "Rewrite login flow" and intent: User initiated via ACP command: Rewrite login flow"
+// "Create a ferment workflow using request_ferment_workflow tool 
+//  with title "Rewrite login flow" and intent: User initiated : Rewrite login flow"
 ```
 
 The `request_ferment_workflow` tool then:
@@ -221,11 +221,11 @@ async prompt(params: PromptRequest): Promise<PromptResponse> {
         const commandArg = text.slice('/create_ferment'.length).trim();
         const title = commandArg || 'New Ferment';
         const intent = commandArg
-            ? `User initiated via ACP command: ${commandArg}`
-            : 'User initiated a new ferment workflow via ACP command';
+            ? `User initiated : ${commandArg}`
+            : 'User initiated a new ferment workflow ';
         
         // Transform into a prompt that triggers the request_ferment_workflow tool
-        text = `Start a ferment workflow using request_ferment_workflow tool with title "${title}" and intent: ${intent}`;
+        text = `Create a ferment workflow using the request_ferment_workflow tool with title "${title}" and intent: ${intent}`;
     } else if (text.startsWith('/pause_ferment')) {
         // Handle pause_ferment command
     } else if (text.startsWith('/complete_ferment')) {

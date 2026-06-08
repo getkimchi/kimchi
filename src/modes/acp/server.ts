@@ -54,6 +54,7 @@ import {
 import { hasActiveFerment, onActiveFermentChange } from "../../extensions/ferment/state.js"
 import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
+import { processCommand } from "./command-processor.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 
 /**
@@ -374,16 +375,10 @@ export class KimchiAcpAgent implements Agent {
 			.join("")
 			.trim()
 
-		// Handle ACP commands: transform command syntax into tool invocation hints
-		if (text.startsWith("/create_ferment ") || text === "/create_ferment") {
-			const commandArg = text.slice("/create_ferment".length).trim()
-			// Use the argument as title, and use a generic intent if empty
-			const title = commandArg || "New Ferment"
-			const intent = commandArg
-				? `User initiated via ACP command: ${commandArg}`
-				: "User initiated a new ferment workflow via ACP command"
-			// Transform into a prompt that will trigger the request_ferment_workflow tool
-			text = `Start a ferment workflow using request_ferment_workflow tool with title "${title}" and intent: ${intent}`
+		// Process slash commands (e.g., /create_ferment)
+		const commandResult = processCommand(text)
+		if (commandResult.isCommand) {
+			text = commandResult.promptText
 		}
 		// Extract image blocks from the prompt only if model supports vision.
 		const images: ImageContent[] = supportsImages
