@@ -76,6 +76,7 @@ export type QuestionnaireEvent =
 	| { kind: "key-space" }
 	| { kind: "char-typed"; char: string }
 	| { kind: "editor-submit"; value: string }
+	| { kind: "select-option"; index: number }
 
 export type QuestionnaireEffect =
 	| { kind: "render" }
@@ -448,6 +449,40 @@ export function reduce(state: QuestionnaireState, event: QuestionnaireEvent): Re
 		if (opt) {
 			saveAnswer(s, q.id, opt.id, opt.label, false, s.optionIndex + 1)
 			advanceAfterAnswer(s, effects)
+		}
+		return { state: freeze(s), effects }
+	}
+
+	// ── Number-key direct selection ───────────────────────────────────────
+	// Pressing 1-9 jumps directly to that option (1-based).
+	// For single/confirm: immediately confirms the selection.
+	// For multi: moves focus to that option and toggles it.
+	if (event.kind === "select-option" && q) {
+		const idx = event.index
+		if (idx >= 0 && idx < opts.length) {
+			s.optionIndex = idx
+			const opt = opts[idx]
+			if (q.type === "multi") {
+				// Toggle like Space, but skip Other (requires typed text first)
+				if (opt && !opt.isOther) {
+					if (!s.multiToggles.has(q.id)) s.multiToggles.set(q.id, new Set())
+					const toggled = s.multiToggles.get(q.id) ?? new Set<number>()
+					if (toggled.has(idx)) {
+						toggled.delete(idx)
+					} else {
+						toggled.add(idx)
+					}
+					saveMultiAnswer(s, q)
+				}
+			} else {
+				// single / confirm: confirm immediately (skip Other)
+				if (opt && !opt.isOther) {
+					saveAnswer(s, q.id, opt.id, opt.label, false, idx + 1)
+					advanceAfterAnswer(s, effects)
+					return { state: freeze(s), effects }
+				}
+			}
+			effects.push({ kind: "render" })
 		}
 		return { state: freeze(s), effects }
 	}

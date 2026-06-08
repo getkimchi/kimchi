@@ -12,7 +12,7 @@
  */
 
 import { type Theme, getSelectListTheme } from "@earendil-works/pi-coding-agent"
-import { Editor, Key, type TUI, matchesKey, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { Editor, Key, type KeyId, type TUI, matchesKey, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import type { Component } from "@earendil-works/pi-tui"
 import {
 	type Answer,
@@ -129,6 +129,18 @@ export function createQuestionForm(
 		if (data === " ") {
 			dispatch({ kind: "key-space" })
 			return
+		}
+		// Number keys 1-9: jump directly to that option (1-based index).
+		// Only active for questions that have options (not text questions,
+		// which are handled above, and not the submit tab).
+		const q = currentQuestion(state)
+		if (data.length === 1 && data >= "1" && data <= "9" && q && q.type !== "text") {
+			for (let n = 1; n <= 9; n++) {
+				if (matchesKey(data, String(n) as KeyId)) {
+					dispatch({ kind: "select-option", index: n - 1 })
+					return
+				}
+			}
 		}
 		if (data.length === 1 && data >= " ") {
 			dispatch({ kind: "char-typed", char: data })
@@ -271,16 +283,16 @@ export function createQuestionForm(
 				help = isMulti ? " Tab/←→ navigate • Enter submit • Esc cancel" : " Enter submit • Esc cancel"
 			} else if (q?.type === "multi") {
 				help = isMulti
-					? " Tab/←→ navigate • ↑↓ select • Space toggle • Enter submit • Esc cancel"
-					: " ↑↓ navigate • Space toggle • Enter submit • Esc cancel"
+					? " Tab/←→ navigate • ↑↓/1-9 select • Space toggle • Enter submit • Esc cancel"
+					: " ↑↓/1-9 navigate • Space toggle • Enter submit • Esc cancel"
 			} else if (q?.type === "text") {
 				help = isMulti
 					? " Tab/←→ navigate • Type answer • Enter edit • Esc cancel"
 					: " Type answer • Enter edit • Esc cancel"
 			} else {
 				help = isMulti
-					? " Tab/←→ navigate • ↑↓ select • Enter confirm • Esc cancel"
-					: " ↑↓ navigate • Enter select • Esc cancel"
+					? " Tab/←→ navigate • ↑↓ select • 1-9 pick • Enter confirm • Esc cancel"
+					: " ↑↓ navigate • 1-9 pick • Enter select • Esc cancel"
 			}
 			add(theme.fg("dim", help))
 		}
