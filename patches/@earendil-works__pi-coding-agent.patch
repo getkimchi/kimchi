@@ -258,9 +258,18 @@ index 0e85e9006835b754e38a7af725b4f1ca18eb3a61..94ea3d983a2abe039a7729d452f60c32
              color: (content) => theme.fg("userMessageText", content),
          }, { preserveOrderedListMarkers: true }));
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 3f7bfee32e1aad19be55097c2b8577d6380779ab..e57a08bdeaf3e213073e3c93d86e1878b71bbc6d 100644
+index 3f7bfee32e1aad19be55097c2b8577d6380779ab..70fc577b6476bd81deaa27de272f02eb83628fb5 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
+@@ -1575,7 +1575,7 @@ export class InteractiveMode {
+             setHeader: (factory) => this.setExtensionHeader(factory),
+             setTitle: (title) => this.ui.terminal.setTitle(title),
+             custom: (factory, options) => this.showExtensionCustom(factory, options),
+-            pasteToEditor: (text) => this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
++            pasteToEditor: (text) => this.ui.handleInput(`\x1b[200~${text}\x1b[201~`),
+             setEditorText: (text) => this.editor.setText(text),
+             getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
+             editor: (title, prefill) => this.showExtensionEditor(title, prefill),
 @@ -3381,6 +3381,29 @@ export class InteractiveMode {
              this.showModelSelector();
              return;

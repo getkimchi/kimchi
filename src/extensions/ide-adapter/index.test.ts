@@ -190,6 +190,58 @@ describe("ide-adapter extension", () => {
 			expect(inputResult).toBeUndefined()
 		})
 
+		it("queues mention when pasteToEditor throws (e.g. editor hidden or no active editor)", async () => {
+			const pi = createFakeExtensionAPI()
+			const pasteToEditor = vi.fn(() => {
+				throw new Error("No active editor")
+			})
+			const ctx = createFakeCtx({ hasUI: true, pasteToEditor })
+			ideAdapterExtension(pi)
+
+			const fakeConnection = {
+				lockfile: { ideName: "TestIDE" },
+				listTools: vi.fn().mockResolvedValue([]),
+				callTool: vi.fn(),
+				close: vi.fn().mockResolvedValue(undefined),
+				setNotificationHandler: vi.fn(),
+			}
+			vi.mocked(connectToIde).mockResolvedValue(fakeConnection as unknown as Awaited<ReturnType<typeof connectToIde>>)
+			vi.mocked(getLockfileDir).mockReturnValue("/tmp/locks")
+			vi.mocked(scanLockfiles).mockReturnValue(["/tmp/locks/ide.lock"])
+			vi.mocked(parseLockfile).mockReturnValue({
+				port: 12345,
+				pid: 1,
+				ideName: "TestIDE",
+				ideVersion: "1.0",
+				transport: "ws",
+				workspaceFolders: ["/tmp"],
+				authToken: "tok",
+			} as LockfileData)
+			vi.mocked(findMatchingLockfile).mockReturnValue({
+				port: 12345,
+				pid: 1,
+				ideName: "TestIDE",
+				ideVersion: "1.0",
+				transport: "ws",
+				workspaceFolders: ["/tmp"],
+				authToken: "tok",
+			} as LockfileData)
+
+			pi._handlers.session_start[0](null, ctx)
+			await vi.advanceTimersByTimeAsync(0)
+
+			const setHandler = vi.mocked(fakeConnection.setNotificationHandler)
+			const handler = setHandler.mock.calls[0][0]
+
+			handler({ method: "at_mentioned", params: { filePath: "/a/b.ts", lineStart: 10, lineEnd: 20 } })
+
+			expect(pasteToEditor).toHaveBeenCalledWith("@../a/b.ts:10-20")
+			expect(ctx.ui.setStatus).not.toHaveBeenCalled()
+			// Falls back to queue — next input should prepend the mention
+			const inputResult = pi._handlers.input[0]({ text: "hello" })
+			expect(inputResult).toEqual({ action: "transform", text: "@../a/b.ts:10-20 hello" })
+		})
+
 		it("queues mention when UI is not available", async () => {
 			const pi = createFakeExtensionAPI()
 			const ctx = createFakeCtx({ hasUI: false, pasteToEditor: vi.fn() })
