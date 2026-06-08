@@ -844,15 +844,15 @@ export function buildSessionModelState(
 	const availableModels = session.modelRegistry.getAvailable()
 	// When multi-model is active, return "multi-model" as currentModelId to match
 	// what clients send in setSessionModel. Include orchestrator name in the name
-	// so the UI can display "Multi-Model (Kimi K2.6)".
-	let multiModelName = "Multi-Model"
+	// so the UI can display "Multi-model (Kimi K2.6)".
+	let multiModelName = "Multi-model"
 	if (isMultiModel) {
 		const { roles } = resolveModelRoles()
 		const parsed = splitModelRef(roles.orchestrator)
 		if (parsed) {
 			const orchModel = session.modelRegistry.find(parsed.provider, parsed.modelId)
 			if (orchModel) {
-				multiModelName = `Multi-Model (${orchModel.name})`
+				multiModelName = `Multi-model (${orchModel.name})`
 			}
 		}
 	}

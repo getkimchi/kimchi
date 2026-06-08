@@ -1249,7 +1249,7 @@ describe("buildSessionModelState", () => {
 		expect(result).toEqual({
 			currentModelId: "openai/gpt-4",
 			availableModels: [
-				{ modelId: "multi-model", name: expect.stringContaining("Multi-Model") },
+				{ modelId: "multi-model", name: expect.stringContaining("Multi-model") },
 				{ modelId: "openai/gpt-4", name: "GPT-4" },
 				{ modelId: "anthropic/claude-3", name: "Claude 3" },
 			],
@@ -1263,7 +1263,7 @@ describe("buildSessionModelState", () => {
 		const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
 		expect(result).toEqual({
 			currentModelId: "openai/gpt-4",
-			availableModels: [{ modelId: "multi-model", name: expect.stringContaining("Multi-Model") }],
+			availableModels: [{ modelId: "multi-model", name: expect.stringContaining("Multi-model") }],
 		})
 	})
 
@@ -1291,7 +1291,7 @@ describe("buildSessionModelState", () => {
 		expect(result?.currentModelId).toBe("multi-model")
 		expect(result?.availableModels[0]).toEqual({
 			modelId: "multi-model",
-			name: expect.stringContaining("Multi-Model"),
+			name: expect.stringContaining("Multi-model"),
 		})
 	})
 })
@@ -1319,7 +1319,7 @@ describe("newSession model state", () => {
 		expect(res.models?.availableModels).toHaveLength(3)
 		expect(res.models?.availableModels[0]).toEqual({
 			modelId: "multi-model",
-			name: expect.stringContaining("Multi-Model"),
+			name: expect.stringContaining("Multi-model"),
 		})
 		expect(res.models?.availableModels[1]).toEqual({ modelId: "openai/gpt-4", name: "GPT-4" })
 		expect(res.models?.availableModels[2]).toEqual({ modelId: "anthropic/claude-3", name: "Claude 3" })
@@ -2028,7 +2028,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(res.models).toMatchObject({
 			currentModelId: "test/test-model",
 			availableModels: [
-				{ modelId: "multi-model", name: expect.stringContaining("Multi-Model") },
+				{ modelId: "multi-model", name: expect.stringContaining("Multi-model") },
 				{ modelId: "test/test-model", name: "Test Model" },
 			],
 		})
