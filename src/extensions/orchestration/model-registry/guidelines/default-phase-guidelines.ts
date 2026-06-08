@@ -48,7 +48,7 @@ export const DEFAULT_REVIEW_GUIDELINES = `During **review** phase:
 - Prioritise: correctness bugs > security issues > architectural concerns > edge cases > style. Skip nits.
 - Be specific: quote the exact line and propose the concrete fix.
 - Flag missing tests for behaviour the diff introduces or changes.
-- Do NOT rewrite code inline unless explicitly asked. Report findings; let the author apply them.`
+- **Do NOT modify source files.** Do not apply fixes, do not refactor, do not commit changes. Your job is to report findings — never to act on them. The author or a separate build agent applies fixes.`
 
 export const DEFAULT_PHASE_GUIDELINES: Readonly<Record<Phase, string>> = {
 	explore: DEFAULT_EXPLORE_GUIDELINES,

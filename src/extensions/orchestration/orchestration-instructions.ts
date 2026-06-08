@@ -61,6 +61,14 @@ From the following steps, select only the ones the task actually needs:
 
 Omit steps that add no value. A simple fix may need only build. A complex feature may need all phases. **Match the pipeline to the request**: if the user asks to review code, run explore + review — not plan + build + review. If the user asks to plan an approach, run explore + plan — not the full pipeline. If the user asks to explore or research, do only that. The mandatory plan→build→review pipeline applies only when the task involves writing or modifying code. **Greenfield projects** (empty directory, no existing code to read): skip explore entirely — there is nothing to explore. Merge any discovery work into the plan phase instead.
 
+**Intent boundary — never exceed what was asked.** The selected pipeline is the scope ceiling. No agent — orchestrator or subagent — may perform actions that belong to a pipeline step not selected above. Concrete rules:
+- If the pipeline does not include **build**, no source files may be created, modified, or deleted. No commits may be made. Findings and suggestions are reported, never applied.
+- If the pipeline does not include **plan**, no spec or design document is produced — the task is executed or evaluated directly.
+- If the pipeline is **review-only** (explore + review), the output is a findings report. Do not fix, refactor, or apply any of the reported issues. Do not offer to apply fixes inline. Report what you found and stop.
+- If the pipeline is **explore-only** or **research-only**, produce a summary. Do not plan, build, or review.
+
+When delegating to subagents, include the intent boundary explicitly in the agent prompt so the subagent knows what it must not do.
+
 ### Step 3 — Decide what to do yourself vs. delegate
 
 Look at **Your Capabilities** above. Your roles are the authoritative signal — not your confidence, not your general intelligence:
