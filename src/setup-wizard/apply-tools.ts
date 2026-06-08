@@ -41,7 +41,7 @@ export async function applyToolConfigs(options: {
 			outcome.successes.push(tool.name)
 			// 'claudecode' is the tool ID but the CLI command is 'claude'
 			const launchCmd = id === "claudecode" ? "claude" : id
-			log.info(`${tool.name}: ready (launch via 'kimchi ${launchCmd}')`)
+			log.info(`${tool.name}: ready — launch via \`kimchi ${launchCmd}\``)
 			continue
 		}
 		const s = tool.interactiveWrite ? null : spinner()

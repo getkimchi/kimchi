@@ -19,6 +19,16 @@
 //
 // See oven-sh/bun#25635 and oven-sh/bun#1843 for the underlying bundler
 // limitation.
+//
+// WSL / headless Linux note:
+// Loading the native clipboard addon when no display server is available
+// causes clipboard-initialization failures. Older versions of the library
+// (≤ 0.3.2, bundled clipboard-rs 0.2.4) would panic via Rust unwrap, turning
+// the error into an uncatchable process abort. Version 0.3.6+ handles errors
+// gracefully (returning JS exceptions), but we still avoid unnecessary addon
+// loads on headless systems. We detect WSL explicitly (via WSL_DISTRO_NAME /
+// WSL_INTEROP) because WSLg may set $DISPLAY to ":0" even when no graphical
+// session is running, giving a false positive to the simple display check.
 
 export type NativeClipboard = {
 	hasImage(): boolean
@@ -69,6 +79,23 @@ function loadPlatformBinding(): NativeClipboard {
 }
 
 /**
+ * Return true when the environment has (or may have) a working display server.
+ *
+ * On WSL the kernel sets WSL_DISTRO_NAME / WSL_INTEROP unconditionally, and
+ * WSLg sets $DISPLAY even when no graphical session is active. We therefore
+ * treat WSL as "no display" unless the user has explicitly opted in by
+ * setting KIMCHI_CLIPBOARD_FORCE=1. All other Linux systems require at least
+ * one of DISPLAY / WAYLAND_DISPLAY to be set.
+ */
+export function hasDisplayServer(): boolean {
+	if (process.platform !== "linux") return true
+	if (process.env.KIMCHI_CLIPBOARD_FORCE === "1") return true
+	const isWsl = Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP)
+	if (isWsl) return false
+	return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY)
+}
+
+/**
  * Load the native clipboard addon, or return `null` if the platform is
  * unsupported, has no display server, or the addon is not available.
  * The result is cached for the lifetime of the process.
@@ -78,17 +105,27 @@ export function getNativeClipboard(): { clipboard: NativeClipboard | null; error
 		return { clipboard: cached, error: loadError }
 	}
 
-	const hasDisplay = process.platform !== "linux" || Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY)
-	if (process.env.TERMUX_VERSION || !hasDisplay) {
+	if (process.env.TERMUX_VERSION || !hasDisplayServer()) {
 		loadError = process.env.TERMUX_VERSION
 			? "Clipboard image support is not available: Termux is not supported"
-			: "Clipboard image support is not available: no display server detected"
+			: "Clipboard image support is not available: no display server detected (WSL/headless Linux — set KIMCHI_CLIPBOARD_FORCE=1 to override)"
 		cached = null
 		return { clipboard: null, error: loadError }
 	}
 
 	try {
-		cached = loadPlatformBinding()
+		const binding = loadPlatformBinding()
+		// Eagerly probe the binding so that a Rust panic from a broken display
+		// server (e.g. $DISPLAY set but X server not running) surfaces here
+		// inside this try/catch rather than later in a polling callback where
+		// it would abort the process. availableFormats() calls
+		// ClipboardContext::new() internally which is the call that panics.
+		// NOTE: a genuine Rust panic is a process abort and cannot be caught
+		// in JS. The probe only helps for recoverable JS-level errors. The
+		// real protection is hasDisplayServer() above refusing to load at all
+		// in environments known to lack a working display server.
+		binding.availableFormats()
+		cached = binding
 	} catch (err) {
 		cached = null
 		loadError = err instanceof Error ? err.message : String(err)

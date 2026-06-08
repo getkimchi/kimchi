@@ -866,7 +866,10 @@ describe("handleCompoundConfirm", () => {
 			subcommands: ["echo a"],
 		})
 
-		expect(result).toEqual({ block: true, reason: "Changed my mind" })
+		expect(result).toEqual({
+			block: true,
+			reason: "The user declined this action before execution and said: Changed my mind",
+		})
 	})
 
 	it("returns block with feedback for deny-with-feedback", async () => {
@@ -881,7 +884,10 @@ describe("handleCompoundConfirm", () => {
 			subcommands: ["echo a", "echo b"],
 		})
 
-		expect(result).toEqual({ block: true, reason: "Use individual commands instead" })
+		expect(result).toEqual({
+			block: true,
+			reason: "The user declined this action before execution and said: Use individual commands instead",
+		})
 	})
 
 	it("returns block with default reason when deny-with-feedback is empty", async () => {
@@ -946,7 +952,10 @@ describe("handleCompoundConfirm", () => {
 			subcommands: ["echo a", "whoami"],
 		})
 
-		expect(result).toEqual({ block: true, reason: "Please use echo separately" })
+		expect(result).toEqual({
+			block: true,
+			reason: "The user declined this action before execution and said: Please use echo separately",
+		})
 	})
 
 	it("returns block when subcommand prompt returns undefined in pick-per-subcommand mode", async () => {

@@ -10,6 +10,7 @@ import { resolve } from "node:path"
 import { intro, log, note, outro, spinner } from "@clack/prompts"
 import { isTelemetryExplicitlyConfigured, readTelemetryConfig } from "../config.js"
 import { drain as drainPreSessionTelemetry, sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
+import { all as allTools } from "../integrations/registry.js"
 import { updateModelsConfig } from "../models.js"
 import { applyToolConfigs } from "../setup-wizard/apply-tools.js"
 import type { ConfigMode } from "../setup-wizard/state.js"
@@ -142,6 +143,18 @@ export async function runSetupTools(args: string[]): Promise<number> {
 	].filter((l) => l.length > 0)
 
 	note(summaryLines.join("\n"), "Summary")
+
+	if (outcome.successes.length > 0) {
+		const nextStepsLines = outcome.successes.map((name) => {
+			const tool = allTools().find((t) => t.name === name)
+			if (!tool) return `• ${name}`
+			const launchCmd = tool.id === "claudecode" ? "claude" : tool.id
+			if (mode === "override") return `• ${launchCmd}`
+			return `• kimchi ${launchCmd}`
+		})
+		note(nextStepsLines.join("\n"), "Next steps")
+	}
+
 	outro(outcome.failures.length === 0 ? "Done." : "Done with errors. Check above for details.")
 
 	if (telemetryConfig.enabled) {

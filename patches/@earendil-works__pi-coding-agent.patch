@@ -1,8 +1,8 @@
 diff --git a/dist/cli/args.js b/dist/cli/args.js
-index d9722b792a5e2c0020bd842ea6ddb1754a51b44c..6d64db9876b8be6ae6af34322d5748cfcbbe06a7 100644
+index a15ca52038d6ad71737fca0a3a99d5a62eaa8a0b..f4ed40d3ae21f4b296cc95ecdb7ffdbd7be3bc76 100644
 --- a/dist/cli/args.js
 +++ b/dist/cli/args.js
-@@ -286,6 +286,7 @@ ${chalk.bold("Examples:")}
+@@ -313,6 +313,7 @@ ${chalk.bold("Examples:")}
    ${APP_NAME} --export session.jsonl output.html
  
  ${chalk.bold("Environment Variables:")}
@@ -11,10 +11,10 @@ index d9722b792a5e2c0020bd842ea6ddb1754a51b44c..6d64db9876b8be6ae6af34322d5748cf
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
    OPENAI_API_KEY                   - OpenAI GPT API key
 diff --git a/dist/core/model-registry.js b/dist/core/model-registry.js
-index 2d88adfd072b1f656f4f82a24f2df5ae6984287b..ec99d306d53a8753c52d2f5f8df190c716356375 100644
+index 41ffa679c862f6d0862f1ed07be45836046b97e4..dc6468f0627a2b85dac9abb08b5b424085c02217 100644
 --- a/dist/core/model-registry.js
 +++ b/dist/core/model-registry.js
-@@ -292,7 +292,8 @@ export class ModelRegistry {
+@@ -343,7 +343,8 @@ export class ModelRegistry {
      }
      /** Load built-in models and apply provider/model overrides */
      loadBuiltInModels(overrides, modelOverrides) {
@@ -25,7 +25,7 @@ index 2d88adfd072b1f656f4f82a24f2df5ae6984287b..ec99d306d53a8753c52d2f5f8df190c7
              const providerOverride = overrides.get(provider);
              const perModelOverrides = modelOverrides.get(provider);
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
-index afdb0b720f9e57875d9493fe932b4912afa9807f..c644bee905695ca37f4d124cc81fd327840e6911 100644
+index 21f0270f903b0461a2fa1ef8cb53ffdad4f5894d..041ead7eeddc216065864ac0725c3eb82afd3712 100644
 --- a/dist/core/model-resolver.js
 +++ b/dist/core/model-resolver.js
 @@ -34,6 +34,7 @@ export const defaultModelPerProvider = {
@@ -37,7 +37,7 @@ index afdb0b720f9e57875d9493fe932b4912afa9807f..c644bee905695ca37f4d124cc81fd327
      "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
      xiaomi: "mimo-v2.5-pro",
 diff --git a/dist/core/tools/edit.js b/dist/core/tools/edit.js
-index 62002dd1fa751ac168165a26b68561c2e95f6637..001ac31848098104ca4f127ce65931917bc1b292 100644
+index bf8a79ebfdbe23415cd1effdd3db0b9ebfd804bc..f69116ceafe8ee7f1e2dbfeaa37f60c5d97aa84c 100644
 --- a/dist/core/tools/edit.js
 +++ b/dist/core/tools/edit.js
 @@ -55,7 +55,7 @@ function validateEditInput(input) {
@@ -49,7 +49,7 @@ index 62002dd1fa751ac168165a26b68561c2e95f6637..001ac31848098104ca4f127ce6593191
          preview: undefined,
          previewArgsKey: undefined,
          previewPending: false,
-@@ -123,14 +123,14 @@ function formatEditResult(args, preview, result, theme, isError) {
+@@ -120,14 +120,14 @@ function formatEditResult(args, preview, result, theme, isError) {
  function getEditHeaderBg(preview, settledError, theme) {
      if (preview) {
          if ("error" in preview) {
@@ -66,7 +66,7 @@ index 62002dd1fa751ac168165a26b68561c2e95f6637..001ac31848098104ca4f127ce6593191
 -    return (text) => theme.bg("toolPendingBg", text);
 +    return (text) => theme.fg("accent", text);
  }
- function buildEditCallComponent(component, args, theme) {
+ function buildEditCallComponent(component, args, theme, cwd) {
      component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
 diff --git a/dist/modes/interactive/components/branch-summary-message.js b/dist/modes/interactive/components/branch-summary-message.js
 index e23ca6db02a29814112dd4945bd868604eb6676f..d0f6fd7aeb79c6a20655805152a30970f1b4cc2a 100644
@@ -107,63 +107,8 @@ index 2d54902da1800044206eb1f00ca07501a7310145..44daf4982a5ab6f671f5bce373a94a31
          this.rebuild();
      }
      setExpanded(expanded) {
-diff --git a/dist/modes/interactive/components/skill-invocation-message.js b/dist/modes/interactive/components/skill-invocation-message.js
-index 561f3d2540db0a8d934bc2bbecb097aaa7c88458..da4601b0aa0ea1145505300ba77485cfc5c48bb0 100644
---- a/dist/modes/interactive/components/skill-invocation-message.js
-+++ b/dist/modes/interactive/components/skill-invocation-message.js
-@@ -11,7 +11,7 @@ export class SkillInvocationMessageComponent extends Box {
-     skillBlock;
-     markdownTheme;
-     constructor(skillBlock, markdownTheme = getMarkdownTheme()) {
--        super(1, 1, (t) => theme.bg("customMessageBg", t));
-+        super(1, 1, (t) => theme.fg("accent", t));
-         this.skillBlock = skillBlock;
-         this.markdownTheme = markdownTheme;
-         this.updateDisplay();
-diff --git a/dist/modes/interactive/components/tool-execution.js b/dist/modes/interactive/components/tool-execution.js
-index e099877c0c53ea52f26eb1034ef7cd631371603f..69bf8eedf74f7f241b0136e844dad8a5144bc451 100644
---- a/dist/modes/interactive/components/tool-execution.js
-+++ b/dist/modes/interactive/components/tool-execution.js
-@@ -43,8 +43,8 @@ export class ToolExecutionComponent extends Container {
-         // Always create all shell variants. contentBox is used for default renderer-based composition.
-         // selfRenderContainer is used when the tool renders its own framing.
-         // contentText is reserved for generic fallback rendering when no tool definition exists.
--        this.contentBox = new Box(1, 1, (text) => theme.bg("toolPendingBg", text));
--        this.contentText = new Text("", 1, 1, (text) => theme.bg("toolPendingBg", text));
-+        this.contentBox = new Box(1, 1, (text) => theme.fg("accent", text));
-+        this.contentText = new Text("", 1, 1, (text) => theme.fg("accent", text));
-         this.selfRenderContainer = new Container();
-         if (this.hasRendererDefinition()) {
-             this.addChild(this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox);
-@@ -182,10 +182,10 @@ export class ToolExecutionComponent extends Container {
-     }
-     updateDisplay() {
-         const bgFn = this.isPartial
--            ? (text) => theme.bg("toolPendingBg", text)
-+            ? (text) => theme.fg("accent", text)
-             : this.result?.isError
--                ? (text) => theme.bg("toolErrorBg", text)
--                : (text) => theme.bg("toolSuccessBg", text);
-+                ? (text) => theme.fg("error", text)
-+                : (text) => theme.fg("success", text);
-         let hasContent = false;
-         this.hideComponent = false;
-         if (this.hasRendererDefinition()) {
-diff --git a/dist/modes/interactive/components/user-message.js b/dist/modes/interactive/components/user-message.js
-index fe7086d4b68a38a945016ea4274f6c6a8093f5b5..2880acd74317eddfce891ef935fa16f093d45ade 100644
---- a/dist/modes/interactive/components/user-message.js
-+++ b/dist/modes/interactive/components/user-message.js
-@@ -10,7 +10,7 @@ export class UserMessageComponent extends Container {
-     contentBox;
-     constructor(text, markdownTheme = getMarkdownTheme()) {
-         super();
--        this.contentBox = new Box(1, 1, (content) => theme.bg("userMessageBg", content));
-+        this.contentBox = new Box(1, 1, (content) => theme.fg("accent", content));
-         this.contentBox.addChild(new Markdown(text, 0, 0, markdownTheme, {
-             color: (content) => theme.fg("userMessageText", content),
-         }));
 diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
-index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..6c58ed7f6eabfc4628b2be434ca4b48972229a4d 100644
+index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..ee23106b19e169807cbd001372180573f43bfb1e 100644
 --- a/dist/modes/interactive/components/model-selector.js
 +++ b/dist/modes/interactive/components/model-selector.js
 @@ -117,6 +117,13 @@ export class ModelSelectorComponent extends Container {
@@ -228,11 +173,66 @@ index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..6c58ed7f6eabfc4628b2be434ca4b489
          // Save as new default
          this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
          this.onSelectCallback(model);
+diff --git a/dist/modes/interactive/components/skill-invocation-message.js b/dist/modes/interactive/components/skill-invocation-message.js
+index 561f3d2540db0a8d934bc2bbecb097aaa7c88458..da4601b0aa0ea1145505300ba77485cfc5c48bb0 100644
+--- a/dist/modes/interactive/components/skill-invocation-message.js
++++ b/dist/modes/interactive/components/skill-invocation-message.js
+@@ -11,7 +11,7 @@ export class SkillInvocationMessageComponent extends Box {
+     skillBlock;
+     markdownTheme;
+     constructor(skillBlock, markdownTheme = getMarkdownTheme()) {
+-        super(1, 1, (t) => theme.bg("customMessageBg", t));
++        super(1, 1, (t) => theme.fg("accent", t));
+         this.skillBlock = skillBlock;
+         this.markdownTheme = markdownTheme;
+         this.updateDisplay();
+diff --git a/dist/modes/interactive/components/tool-execution.js b/dist/modes/interactive/components/tool-execution.js
+index e099877c0c53ea52f26eb1034ef7cd631371603f..69bf8eedf74f7f241b0136e844dad8a5144bc451 100644
+--- a/dist/modes/interactive/components/tool-execution.js
++++ b/dist/modes/interactive/components/tool-execution.js
+@@ -43,8 +43,8 @@ export class ToolExecutionComponent extends Container {
+         // Always create all shell variants. contentBox is used for default renderer-based composition.
+         // selfRenderContainer is used when the tool renders its own framing.
+         // contentText is reserved for generic fallback rendering when no tool definition exists.
+-        this.contentBox = new Box(1, 1, (text) => theme.bg("toolPendingBg", text));
+-        this.contentText = new Text("", 1, 1, (text) => theme.bg("toolPendingBg", text));
++        this.contentBox = new Box(1, 1, (text) => theme.fg("accent", text));
++        this.contentText = new Text("", 1, 1, (text) => theme.fg("accent", text));
+         this.selfRenderContainer = new Container();
+         if (this.hasRendererDefinition()) {
+             this.addChild(this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox);
+@@ -182,10 +182,10 @@ export class ToolExecutionComponent extends Container {
+     }
+     updateDisplay() {
+         const bgFn = this.isPartial
+-            ? (text) => theme.bg("toolPendingBg", text)
++            ? (text) => theme.fg("accent", text)
+             : this.result?.isError
+-                ? (text) => theme.bg("toolErrorBg", text)
+-                : (text) => theme.bg("toolSuccessBg", text);
++                ? (text) => theme.fg("error", text)
++                : (text) => theme.fg("success", text);
+         let hasContent = false;
+         this.hideComponent = false;
+         if (this.hasRendererDefinition()) {
+diff --git a/dist/modes/interactive/components/user-message.js b/dist/modes/interactive/components/user-message.js
+index 0e85e9006835b754e38a7af725b4f1ca18eb3a61..94ea3d983a2abe039a7729d452f60c32457a6638 100644
+--- a/dist/modes/interactive/components/user-message.js
++++ b/dist/modes/interactive/components/user-message.js
+@@ -10,7 +10,7 @@ export class UserMessageComponent extends Container {
+     contentBox;
+     constructor(text, markdownTheme = getMarkdownTheme()) {
+         super();
+-        this.contentBox = new Box(1, 1, (content) => theme.bg("userMessageBg", content));
++        this.contentBox = new Box(1, 1, (content) => theme.fg("accent", content));
+         this.contentBox.addChild(new Markdown(text, 0, 0, markdownTheme, {
+             color: (content) => theme.fg("userMessageText", content),
+         }, { preserveOrderedListMarkers: true }));
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 408e38417da84ba9e729cfd5f3dd95b285e57e91..5d4225f409fd7e4ef7dfcbda5e16fded6910a5ed 100644
+index 3f7bfee32e1aad19be55097c2b8577d6380779ab..e57a08bdeaf3e213073e3c93d86e1878b71bbc6d 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -3301,6 +3301,29 @@ ${chalk.cyan("Tip:")} ${this.getTip()}`;
+@@ -3381,6 +3381,29 @@ export class InteractiveMode {
              this.showModelSelector();
              return;
          }
